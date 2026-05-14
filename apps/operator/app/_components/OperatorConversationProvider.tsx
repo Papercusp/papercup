@@ -58,10 +58,24 @@ import {
   writeSleepUntilMs,
   type OperatorMode,
 } from '@/lib/operator-converse-tags';
-import { getVoiceState, subscribeVoiceState } from './voice/voice-mode';
+import { getVoiceState, speak, subscribeVoiceState } from './voice/voice-mode';
 import { useSyncQuery } from '@restart/sync';
 import { useWorkspaceId } from '@/lib/use-workspace-id';
 import type { ChatMessage, ChatToolCall } from './chat/ChatConversation';
+import { useStateSnapshots } from '@/lib/use-state-snapshots';
+import { selectFocusedCard } from '@/lib/chat-cards/select-focused-card';
+import { composeAmbiguityPrompt } from '@/lib/voice-cards/compose-ambiguity-prompt';
+import {
+  attachActive as routerAttachActive,
+  BUFFER_WINDOW_MS as ROUTER_BUFFER_WINDOW_MS,
+  clearActive as routerClearActive,
+  createRouterState,
+  expirePending as routerExpirePending,
+  markPending as routerMarkPending,
+  resetRouter,
+  routeTranscript,
+} from '@/lib/voice-cards/voice-card-router';
+import { postCardResponse } from '@/lib/post-card-response';
 
 interface OperatorTurnRow {
   id: string;
@@ -546,6 +560,23 @@ const defaultGenerationFn: GenerationFn = async (req) => {
             const d = data as { name?: unknown; input?: unknown };
             if (typeof d?.name === 'string') {
               tools.push({ name: d.name, input: d.input });
+              // Surface tool_call to listeners in real time so the
+              // voice-card router (plan §C.1a) can arm `pending` the
+              // moment the brain emits chat:ask_choice — before the
+              // state-snapshot lands. Without this signal the
+              // provider only sees the card AFTER the snapshot
+              // arrives, opening a race where a fast STT answer
+              // would be dispatched as user_message instead of
+              // resolving the card.
+              if (typeof window !== 'undefined') {
+                try {
+                  window.dispatchEvent(
+                    new CustomEvent('papercusp:operatorToolCall', {
+                      detail: { name: d.name, input: d.input, tsMs: Date.now() },
+                    }),
+                  );
+                } catch { /* ignore */ }
+              }
             }
           } else if (event === 'error') {
             const msg = (data as { message?: unknown })?.message;
@@ -631,6 +662,13 @@ interface ProviderProps {
 export function OperatorConversationProvider({ children, generationFn = defaultGenerationFn }: ProviderProps) {
   const [state, dispatch] = useReducer(reducer, INITIAL, initState);
   const workspaceId = useWorkspaceId();
+
+  // ── Voice-card router state (plan §C.1 / §C.1a) ───────────────────
+  // Plain object mutated through helpers in lib/voice-cards/voice-card-router.
+  // Mutation across renders is intentional — the router models a small
+  // state machine, not React state. Buffer-window timer lives alongside.
+  const routerStateRef = useRef(createRouterState());
+  const routerBufferTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // PG-backed conversation identity. Loaded on mount; survives refresh
   // and is shared between the text path and (later) the EL voice path.
@@ -982,9 +1020,56 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
     // at commit-time; now wired. Also marks the silence-ladder
     // freshness clock so it stays active after a voice exchange.
     const onVoiceUserTurn = (e: Event) => {
-      const detail = (e as CustomEvent<{ tsMs?: number; text?: string }>).detail;
+      const detail = (e as CustomEvent<{ tsMs?: number; text?: string; confidence?: number }>).detail;
       const tsMs = typeof detail?.tsMs === 'number' ? detail.tsMs : Date.now();
       const text = typeof detail?.text === 'string' ? detail.text : '';
+      const confidence = typeof detail?.confidence === 'number' ? detail.confidence : undefined;
+
+      // Phase 2: voice-card routing (plan §C.1).
+      // Try resolving an in-flight chat:ask_choice card first; only
+      // fall through to engagement-tracking when the router doesn't
+      // claim the transcript. The router is voice-only — it bails
+      // immediately when nothing is armed.
+      if (text) {
+        const outcome = routeTranscript(
+          routerStateRef.current,
+          { text, tsMs, confidence },
+          composeAmbiguityPrompt,
+        );
+        if (outcome.kind === 'buffered') {
+          // Snapshot-arrival race: wait for it. Router timer (armed
+          // on tool_call) will flush if no snapshot lands within
+          // BUFFER_WINDOW_MS. Don't touch engagement state — the
+          // turn isn't real yet.
+          return;
+        }
+        if (outcome.kind === 'submit' || outcome.kind === 'decline') {
+          const conv = conversationIdRef.current;
+          if (conv) {
+            void postCardResponse(conv, {
+              correlationId: outcome.correlationId,
+              workspaceId,
+              action: outcome.kind,
+              payload: outcome.kind === 'submit' ? outcome.payload : undefined,
+            });
+          }
+          // Still record engagement for the silence ladder.
+          dispatch({ type: 'record_user_turn', tsMs });
+          dispatch({ type: 'mark_turn', tsMs });
+          return;
+        }
+        if (outcome.kind === 'ambiguous') {
+          // Speak the disambiguation prompt; leave router active. The
+          // user's next utterance gets re-parsed. After MAX rounds the
+          // router falls through automatically.
+          try {
+            speak(outcome.prompt, 'system:operator', 'polite');
+          } catch { /* ignore */ }
+          return;
+        }
+        // fall_through: original behavior below.
+      }
+
       dispatch({ type: 'record_user_turn', tsMs });
       dispatch({ type: 'mark_turn', tsMs });
       // E1: bridge text-path's server-side dismissal enforcement into
@@ -1233,6 +1318,112 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
   useEffect(() => {
     return subscribeVoiceState((s) => setVoiceActive(s.mode !== 'off'));
   }, []);
+
+  // ── Voice-card router lifecycle (plan §C.1a + C.6) ────────────────
+  //
+  // The router has two arming paths:
+  //   1. SSE `tool_call` for chat:ask_choice → pending (1 s buffer
+  //      window for transcripts that fire before the state-snapshot).
+  //   2. State-snapshot drops a card with voiceAnswerable:true →
+  //      promote pending → active (drains buffered transcripts).
+  //
+  // The router is voice-only — when voice deactivates, the whole
+  // router resets so a future text card never accidentally inherits
+  // stale active state. The router also re-syncs to the focused card
+  // on every state-snapshot tick: when the focused card disappears
+  // (server resolved it / aborted / workspace switch), active clears.
+  const { cards: openCards } = useStateSnapshots();
+  const focusedCard = useMemo(() => selectFocusedCard(openCards), [openCards]);
+
+  // Arm-pending listener: surfaces from defaultGenerationFn when a
+  // chat:ask_choice tool_call SSE event lands. Voice-active gates the
+  // arming; if the user is text-only, the router stays asleep.
+  useEffect(() => {
+    const onToolCall = (e: Event) => {
+      const detail = (e as CustomEvent<{ name?: string; tsMs?: number }>).detail;
+      if (!detail || detail.name !== 'chat:ask_choice') return;
+      if (!voiceActiveRef.current) return;
+      const nowMs = typeof detail.tsMs === 'number' ? detail.tsMs : Date.now();
+      routerMarkPending(routerStateRef.current, nowMs);
+      if (routerBufferTimerRef.current) clearTimeout(routerBufferTimerRef.current);
+      routerBufferTimerRef.current = setTimeout(() => {
+        // Buffer expired without a state-snapshot. Flush buffered
+        // transcripts back through the user-turn path so the brain
+        // doesn't lose them.
+        const drained = routerExpirePending(routerStateRef.current);
+        for (const tx of drained) {
+          if (typeof window === 'undefined') continue;
+          window.dispatchEvent(
+            new CustomEvent('papercusp:operatorUserTurn', {
+              detail: { text: tx.text, source: 'voice_stt', tsMs: tx.tsMs, confidence: tx.confidence },
+            }),
+          );
+        }
+      }, ROUTER_BUFFER_WINDOW_MS);
+    };
+    window.addEventListener('papercusp:operatorToolCall', onToolCall as EventListener);
+    return () => {
+      window.removeEventListener('papercusp:operatorToolCall', onToolCall as EventListener);
+    };
+  }, []);
+
+  // Sync active ref to the focused card from state-snapshot.
+  useEffect(() => {
+    if (!voiceActiveRef.current) {
+      // Voice inactive: the router stays empty. (Text users get cards
+      // via the chat surface as today.)
+      routerClearActive(routerStateRef.current);
+      return;
+    }
+    if (focusedCard === null) {
+      routerClearActive(routerStateRef.current);
+      return;
+    }
+    // Honor voiceAnswerable: only opt-in cards arm the router.
+    const presentation = focusedCard.presentation;
+    const optIn =
+      presentation !== undefined
+      && presentation.kind === 'radio'
+      && (presentation as unknown as { voiceAnswerable?: boolean }).voiceAnswerable === true;
+    if (!optIn) {
+      routerClearActive(routerStateRef.current);
+      return;
+    }
+    // Same card already armed? No-op (don't churn ambiguity counter).
+    if (routerStateRef.current.active?.correlationId === focusedCard.correlationId) {
+      return;
+    }
+    const drained = routerAttachActive(routerStateRef.current, {
+      correlationId: focusedCard.correlationId,
+      runId: focusedCard.runId,
+      card: focusedCard,
+    });
+    // Replay any buffered transcripts now that the card is active.
+    if (drained.length > 0 && typeof window !== 'undefined') {
+      for (const tx of drained) {
+        window.dispatchEvent(
+          new CustomEvent('papercusp:operatorUserTurn', {
+            detail: { text: tx.text, source: 'voice_stt', tsMs: tx.tsMs, confidence: tx.confidence },
+          }),
+        );
+      }
+    }
+    if (routerBufferTimerRef.current) {
+      clearTimeout(routerBufferTimerRef.current);
+      routerBufferTimerRef.current = null;
+    }
+  }, [focusedCard]);
+
+  // Voice-off → reset everything.
+  useEffect(() => {
+    if (!voiceActive) {
+      resetRouter(routerStateRef.current);
+      if (routerBufferTimerRef.current) {
+        clearTimeout(routerBufferTimerRef.current);
+        routerBufferTimerRef.current = null;
+      }
+    }
+  }, [voiceActive]);
 
   // Sleep gate. The LLM emits `<sleep>{minutes}</sleep>` when the user
   // says "give me a minute" / "I'm busy" — the silence-nudge timer must
