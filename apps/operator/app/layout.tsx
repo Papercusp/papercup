@@ -1,6 +1,5 @@
 import type { Metadata } from 'next';
 import { Suspense } from 'react';
-import Script from 'next/script';
 import { Toaster } from 'sonner';
 import { NuqsAdapter } from 'nuqs/adapters/next/app';
 import * as Tooltip from '@radix-ui/react-tooltip';
@@ -89,11 +88,37 @@ export default async function RootLayout({ children }: { children: React.ReactNo
   // none of our flags are user-targeted; they're binary across the
   // whole operator instance.
   const flagPayload = await getAllFlags('ssr-bootstrap');
+  // React 19 emits a dev-only "Encountered a script tag while rendering
+  // React component" warning for any <script> we render in JSX. The
+  // warning is misleading here: these are SSR-only inline scripts that
+  // run when the browser parses the HTML, BEFORE React hydrates — they
+  // are not skipped. Patch console.error first so the warning never
+  // reaches the console; everything else passes through untouched.
+  // Production builds skip the warning anyway (NODE_ENV === 'production').
+  const consolePatchScript = `(function(){
+    var orig = console.error;
+    console.error = function(){
+      var a0 = arguments[0];
+      if (typeof a0 === 'string' && a0.indexOf('Encountered a script tag while rendering React component') !== -1) return;
+      return orig.apply(console, arguments);
+    };
+  })();`;
   const flagBootstrapScript = `window.__PAPERCUSP_FLAGS__=${JSON.stringify(flagPayload)};`;
   return (
     <html lang="en" suppressHydrationWarning>
+      <head>
+        {/* Bootstrap scripts run synchronously at parse time so the first
+            paint matches saved state. They are rendered in <head> so they
+            execute before any other script. The console-error filter is
+            FIRST so subsequent React 19 hydration warnings about us
+            rendering these very scripts get dropped. */}
+        <script id="papercusp-console-patch" dangerouslySetInnerHTML={{ __html: consolePatchScript }} />
+        <script id="papercusp-flags-bootstrap" dangerouslySetInnerHTML={{ __html: flagBootstrapScript }} />
+        <script id="papercusp-visual-effects-bootstrap" dangerouslySetInnerHTML={{ __html: visualEffectsBootstrapScript }} />
+        <script id="papercusp-op-chat-bootstrap" dangerouslySetInnerHTML={{ __html: operatorChatBootstrapScript }} />
+      </head>
       {/* suppressHydrationWarning on <body>: the operator-chat
-          bootstrap script (below) adds the `has-op-chat` class
+          bootstrap script (in <head> above) adds the `has-op-chat` class
           + sets the --op-chat-w CSS var BEFORE React hydrates so
           the first paint isn't under the sidebar. Server output
           can't include that class (no localStorage server-side),
@@ -101,9 +126,6 @@ export default async function RootLayout({ children }: { children: React.ReactNo
           purely visual scaffolding — no React state depends on
           it — so suppression is safe. */}
       <body suppressHydrationWarning>
-        <Script id="papercusp-flags-bootstrap" strategy="beforeInteractive" dangerouslySetInnerHTML={{ __html: flagBootstrapScript }} />
-        <Script id="papercusp-visual-effects-bootstrap" strategy="beforeInteractive" dangerouslySetInnerHTML={{ __html: visualEffectsBootstrapScript }} />
-        <Script id="papercusp-op-chat-bootstrap" strategy="beforeInteractive" dangerouslySetInnerHTML={{ __html: operatorChatBootstrapScript }} />
         <div id="papercusp-app">
           {/* Tooltip.Provider hoisted to the root so ChromeShell-rendered
               children (OperatorPanel, OracleDock) can use the harness/Tooltip

@@ -923,7 +923,12 @@ async function maybeStartFullAgentInner(): Promise<boolean> {
   // exact thing that broke (prefs / bootstrap / SDK connect / runtime err).
   let stage: 'prefs' | 'bootstrap' | 'connect' | 'runtime' = 'prefs';
   try {
-    const prefsR = await fetch('/api/agent-mcp/operator-voice-prefs', { signal: AbortSignal.timeout(10000) });
+    // 30s timeout: Next.js dev cold-compile of this route can take 7-15s
+    // on first hit, and voice-mode auto-restores on every page load when the
+    // user previously enabled it. 10s was right at the boundary and we'd
+    // see a startup "[voice] realtime start failed at stage=prefs" warning
+    // on a cold tab; 30s leaves headroom without affecting a real hang.
+    const prefsR = await fetch('/api/agent-mcp/operator-voice-prefs', { signal: AbortSignal.timeout(30000) });
     if (!prefsR.ok) return false;
     const prefs = await prefsR.json();
     // Pull idle-timeout pref so both EL and Realtime paths can use it.
@@ -1017,7 +1022,9 @@ async function maybeStartFullAgentInner(): Promise<boolean> {
     armSessionMaxTimer();
     return true;
   } catch (err: any) {
-    console.warn('[voice] realtime start failed at stage=' + stage + ':', err);
+    // Build a readable message — bare Error objects log as `{}` in WebKit.
+    const msg = err?.name ? `${err.name}: ${err.message ?? ''}` : String(err ?? 'unknown error');
+    console.warn(`[voice] realtime start failed at stage=${stage}: ${msg}`);
     void emitVoiceToast('error', `Realtime failed at ${stage}: ${err?.message ?? String(err)}. Falling back to Whisper.`);
     return false;
   } finally {
