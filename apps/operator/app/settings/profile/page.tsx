@@ -90,13 +90,23 @@ export default function ProfilePage() {
     }
   };
 
-  if (loading) return <div><h1>Profile</h1><p>loading…</p></div>;
+  if (loading) {
+    return (
+      <div>
+        <h1>Profile</h1>
+        <p className="pc-settings-loading">Loading…</p>
+      </div>
+    );
+  }
 
   return (
     <div>
       <h1>Profile</h1>
+      <p className="pc-settings-intro">
+        Your identity (email + display name) and the model preferences used by each agent role.
+      </p>
 
-      <form onSubmit={submit(onSubmit)} className="pc-card" style={{ maxWidth: 640 }}>
+      <form onSubmit={submit(onSubmit)} className="pc-card">
         <FormField label="Email (optional)" error={errors.email?.message} description="Used to identify you in commit messages and agent attribution.">
           <input type="email" className="pc-input" placeholder="you@example.com" {...register('email')} />
         </FormField>

@@ -55,15 +55,15 @@ export default function PersonalizationSettingsPage() {
   const selectedVisualEffects = VISUAL_EFFECTS_OPTIONS.find((opt) => opt.value === visualEffectsMode) ?? VISUAL_EFFECTS_OPTIONS[0];
 
   return (
-    <div style={{ padding: '8px 4px', maxWidth: 880 }}>
-      <h1 style={{ fontSize: 22, marginBottom: 4 }}>Personalization</h1>
-      <p style={{ color: 'var(--fg-mute)', marginBottom: 24, fontSize: 14 }}>
+    <div>
+      <h1>Personalization</h1>
+      <p className="pc-settings-intro">
         Tune browser-local presentation preferences for this Operator interface.
       </p>
 
-      <section style={{ marginBottom: 24, padding: 12, border: '1px solid var(--border)', borderRadius: 8, background: 'rgba(8, 14, 24, 0.54)' }}>
-        <h2 style={{ fontSize: 16, marginBottom: 6 }}>Visual effects</h2>
-        <p style={{ fontSize: 13, color: 'var(--fg-mute)', margin: '0 0 12px' }}>
+      <section className="pc-settings-section">
+        <h2>Visual effects</h2>
+        <p className="pc-settings-hint" style={{ margin: '0 0 12px' }}>
           Controls cinematic motion on this browser/device only. Use Minimal / calm for older hardware or a quieter UI.
         </p>
         <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start', flexWrap: 'wrap' }}>

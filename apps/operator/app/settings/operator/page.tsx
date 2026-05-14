@@ -172,10 +172,10 @@ export default function OperatorSettingsPage() {
 
 
   return (
-    <div style={{ padding: '8px 4px', maxWidth: 880 }}>
+    <div>
       {confirmEl}
-      <h1 style={{ fontSize: 22, marginBottom: 4 }}>Operator</h1>
-      <p style={{ color: 'var(--fg-mute)', marginBottom: loading ? 8 : 24, fontSize: 14 }}>
+      <h1>Operator</h1>
+      <p className="pc-settings-intro">
         The Operator is the proactive concierge accessed from the top-bar Operator button.
         {cfg ? (
           <> Stored in <code>{cfg.prompt_user_path}</code> and <code>{cfg.prefs_path}</code>.</>
@@ -230,7 +230,7 @@ export default function OperatorSettingsPage() {
           <section className="pc-settings-diagnostics">
             <div className="pc-settings-diagnostics-head">
               <div>
-                <h2 style={{ fontSize: 16, margin: 0 }}>Operator diagnostics</h2>
+                <h2>Operator diagnostics</h2>
                 <p style={{ fontSize: 12, color: 'var(--fg-mute)', margin: '4px 0 0' }}>
                   Last 7 days. Useful when tuning Operator behavior; collapsed by default because it is a report, not a setting.
                 </p>
@@ -321,7 +321,7 @@ export default function OperatorSettingsPage() {
       )}
 
       <section style={{ marginBottom: 32 }}>
-        <h2 style={{ fontSize: 16, marginBottom: 8 }}>Daily budget</h2>
+        <h2>Daily budget</h2>
         <p style={{ fontSize: 13, color: 'var(--fg-mute)', marginBottom: 8 }}>
           Today: <strong>${budget?.todaySpendUsd?.toFixed(2) ?? '0.00'}</strong> of{' '}
           <strong>${budget?.dailyCapUsd?.toFixed(2) ?? '0.00'}</strong>
@@ -366,7 +366,7 @@ export default function OperatorSettingsPage() {
       </form>
 
       <section style={{ marginBottom: 32 }}>
-        <h2 style={{ fontSize: 16, marginBottom: 8 }}>Per-entry view</h2>
+        <h2>Per-entry view</h2>
         <div style={{ display: 'flex', gap: 6, marginBottom: 8 }}>
           {(['all', 'user-typed', 'operator-proposed'] as const).map((f) => (
             <button
@@ -404,7 +404,7 @@ export default function OperatorSettingsPage() {
       </section>
 
       <section>
-        <h2 style={{ fontSize: 16, marginBottom: 8 }}>Substrate prompt (read-only)</h2>
+        <h2>Substrate prompt (read-only)</h2>
         <p style={{ fontSize: 13, color: 'var(--fg-mute)', marginBottom: 8 }}>
           Tier rules, schema, and anti-patterns. Ships with the substrate; cannot be edited here.
         </p>

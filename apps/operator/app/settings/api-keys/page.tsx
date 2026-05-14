@@ -83,18 +83,28 @@ export default function ApiKeysPage() {
     }
   };
 
-  if (loading) return <div style={{ padding: 24 }}><h1>API keys</h1><p>Loading…</p></div>;
+  if (loading) {
+    return (
+      <div>
+        <h1>API keys</h1>
+        <p className="pc-settings-loading">Loading…</p>
+      </div>
+    );
+  }
 
   return (
     <div>
       <h1>API keys</h1>
+      <p className="pc-settings-intro">
+        Bring-your-own keys for the third-party LLMs, voice engines, and search providers the harness can call out to.
+      </p>
 
       <div className="pc-warn pc-settings-inline-callout" role="status">
         <strong>Keys stay on this computer.</strong>
         <span>Stored at <code>~/.papercusp/credentials.json</code> with user-only permissions; Papercusp never stores them on its servers.</span>
       </div>
 
-      <h2 style={{ marginTop: 24, fontSize: 18 }}>Core</h2>
+      <h2>Core</h2>
       <p style={{ color: 'var(--fg-mute)', fontSize: 13, marginBottom: 12 }}>
         Default backend is <code>omp</code> via Meridian — uses your Claude Max
         subscription (no API key needed). Set an Anthropic key only if you switch
@@ -147,7 +157,7 @@ export default function ApiKeysPage() {
 
       <SearchProvidersSection />
 
-      <h2 style={{ marginTop: 32, fontSize: 18 }}>Voice & cloud engines</h2>
+      <h2>Voice & cloud engines</h2>
       <p style={{ color: 'var(--fg-mute)', fontSize: 13, marginBottom: 12 }}>
         Optional keys for cloud STT (Deepgram), cloud TTS (ElevenLabs, OpenAI,
         Cartesia), wake-word/noise-suppression (Picovoice), and full-agent voice
@@ -417,7 +427,7 @@ function SearchProvidersSection() {
 
   return (
     <>
-      <h2 style={{ marginTop: 32, fontSize: 18 }}>Search providers</h2>
+      <h2>Search providers</h2>
       <p style={{ color: 'var(--fg-mute)', fontSize: 13, marginBottom: 12 }}>
         API keys for OMP&rsquo;s 14 web-search providers. Set the ones you actually use; the
         orchestrator injects them into OMP&rsquo;s spawn env. OMP&rsquo;s search chain

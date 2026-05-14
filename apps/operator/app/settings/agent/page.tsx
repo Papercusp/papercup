@@ -133,15 +133,15 @@ export default function AgentSettingsPage() {
     }
   };
 
-  if (loading) return <div style={{ padding: 24 }}><h1>Agent backend</h1><p>Loading…</p></div>;
-  if (!snapshot) return <div style={{ padding: 24 }}><h1>Agent backend</h1><p style={{ color: 'var(--bad)' }}>Failed to load config.</p></div>;
+  if (loading) return <div><h1>Agent backend</h1><p className="pc-settings-loading">Loading…</p></div>;
+  if (!snapshot) return <div><h1>Agent backend</h1><p style={{ color: 'var(--bad)' }}>Failed to load config.</p></div>;
 
   const { binaries, effectiveBackend, envOverrides } = snapshot;
 
   return (
     <div>
       <h1>Agent backend</h1>
-      <p style={{ color: 'var(--fg-mute)', marginTop: 4 }}>
+      <p className="pc-settings-intro">
         Which agent CLI the operator and harness drive. Two backends are
         supported: <code>claude-code</code> (Anthropic <code>claude</code>)
         and <code>omp</code> (<a
@@ -154,7 +154,7 @@ export default function AgentSettingsPage() {
 
       {/* Detected binaries — read-only system status */}
       <section className="pc-card" style={{ padding: 16, marginTop: 16 }}>
-        <h2 style={{ fontSize: 14, marginTop: 0, marginBottom: 8 }}>Detected on PATH</h2>
+        <h2>Detected on PATH</h2>
         <ul style={{ margin: 0, paddingLeft: 18, fontSize: 13 }}>
           <li>
             <code>claude</code>: {binaries.claude
@@ -292,7 +292,7 @@ export default function AgentSettingsPage() {
             borderColor: testResult.ok ? 'var(--good)' : 'var(--bad)',
           }}
         >
-          <h2 style={{ fontSize: 14, marginTop: 0 }}>
+          <h2>
             {testResult.ok ? '✓ Backend test passed' : '✗ Backend test failed'}
           </h2>
           {testResult.ok ? (
@@ -311,7 +311,7 @@ export default function AgentSettingsPage() {
 
       {/* Headless caveat */}
       <section className="pc-card" style={{ padding: 16, marginTop: 16 }}>
-        <h2 style={{ fontSize: 14, marginTop: 0 }}>Headless harness runs</h2>
+        <h2>Headless harness runs</h2>
         <p style={{ fontSize: 13, margin: 0 }}>
           When you run <code>~/autonomous-harness/run.sh</code> from a
           terminal directly, it does NOT inherit settings from this page —

@@ -62,9 +62,9 @@ export default function OracleClient() {
   if (loading) return <div style={{ padding: 24 }}>Loading…</div>;
 
   return (
-    <div style={{ padding: '8px 4px', maxWidth: 880 }}>
-      <h1 style={{ fontSize: 22, marginBottom: 4 }}>Oracle</h1>
-      <p style={{ color: 'var(--fg-mute)', marginBottom: 24, fontSize: 14 }}>
+    <div>
+      <h1>Oracle</h1>
+      <p className="pc-settings-intro">
         The Oracle is the always-mounted assistant in the bottom-right of every page.
         Edit its system prompt and persistent memory here. Files live at{' '}
         <code>{cfg?.prompt_path}</code> and <code>{cfg?.memory_path}</code>.
