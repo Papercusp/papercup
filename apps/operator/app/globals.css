@@ -26293,3 +26293,48 @@ body.has-op-chat:has(.operator-panel) .op-chat-sidebar {
 :where(input[type="number"]) {
   -moz-appearance: textfield;
 }
+
+/* ─────────────────────────────────────────────────────────────────────
+ * Global button baseline
+ *
+ * Native <button> + input[type=button|submit|reset] inherit the same
+ * dark-theme look as <Select> / <TextInput>. Same `:where()` specificity-0
+ * trick so any class or inline style wins — bespoke buttons (.pc-button,
+ * .h-tab, .btn-primary, GSAP-controlled icon buttons, inline-styled
+ * btnPrimary, Radix Select/Checkbox triggers, etc.) keep their look. */
+:where(
+  button,
+  input[type="button"],
+  input[type="submit"],
+  input[type="reset"]
+) {
+  background: var(--bg-2);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-family: inherit;
+  font-size: 12px;
+  padding: 4px 10px;
+  cursor: pointer;
+  outline: none;
+  transition: background 80ms ease, border-color 80ms ease;
+}
+
+:where(button, input[type="button"], input[type="submit"], input[type="reset"]):hover:not(:disabled) {
+  background: color-mix(in oklab, var(--bg-2), white 5%);
+  border-color: color-mix(in oklab, var(--border), white 12%);
+}
+
+:where(button, input[type="button"], input[type="submit"], input[type="reset"]):active:not(:disabled) {
+  background: color-mix(in oklab, var(--bg-2), black 8%);
+}
+
+:where(button, input[type="button"], input[type="submit"], input[type="reset"]):focus-visible {
+  border-color: color-mix(in oklab, var(--accent, #6aa7ff), var(--border) 30%);
+  box-shadow: 0 0 0 2px color-mix(in oklab, var(--accent, #6aa7ff), transparent 80%);
+}
+
+:where(button, input[type="button"], input[type="submit"], input[type="reset"]):disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
