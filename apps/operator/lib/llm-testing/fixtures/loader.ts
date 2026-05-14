@@ -13,7 +13,7 @@
  * loader returns an array.
  */
 
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 import type { SseEvent, TurnResult, CardEvent, ControlTag, ToolCallEvent } from '../types';
@@ -22,6 +22,35 @@ export function loadFixtureTurn(filePath: string): TurnResult {
   const text = readFileSync(filePath, 'utf8');
   const events = parseSseTape(text);
   return assembleTurn(events);
+}
+
+export interface FixtureTelemetry {
+  toolInvocations: Array<{ name: string; metadata_json?: Record<string, unknown> }>;
+  continueChainRows: Array<{ ts: string; trigger: string; secondsSinceChainStart: number; chainTurnCount: number }>;
+}
+
+/**
+ * Load the sibling `.telemetry.json` for a fixture, if present.
+ *
+ * Fixtures are SSE-only by default; the framework's writer
+ * (exportFixtureFromRun) emits a paired `.telemetry.json` so the
+ * replay path can re-evaluate deterministic asserts that read
+ * tool_invocations / operator_continue_chains. Returns null when the
+ * sibling is absent (back-compat: older fixtures keep working,
+ * telemetry-dependent asserts just under-report).
+ */
+export function loadFixtureTelemetry(sseFilePath: string): FixtureTelemetry | null {
+  const telemetryPath = sseFilePath.replace(/\.sse$/, '.telemetry.json');
+  if (!existsSync(telemetryPath)) return null;
+  try {
+    const text = readFileSync(telemetryPath, 'utf8');
+    const parsed = JSON.parse(text) as FixtureTelemetry;
+    if (!Array.isArray(parsed.toolInvocations)) parsed.toolInvocations = [];
+    if (!Array.isArray(parsed.continueChainRows)) parsed.continueChainRows = [];
+    return parsed;
+  } catch {
+    return null;
+  }
 }
 
 export function loadFixtureTurns(filePaths: string[]): TurnResult[] {

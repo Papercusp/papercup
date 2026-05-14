@@ -28,7 +28,7 @@ import { findPromotionCandidates, formatCandidatesReport } from '../lib/llm-test
 import { promoteShape } from '../lib/llm-testing/promotion/promote';
 import { replayFixture, reEvaluateRun } from '../lib/llm-testing/replay';
 
-type Verb = 'run' | 'promote-candidates' | 'promote' | 'replay';
+type Verb = 'run' | 'promote-candidates' | 'promote' | 'replay' | 'export-fixture';
 
 interface Args {
   verb: Verb;
@@ -37,6 +37,8 @@ interface Args {
   shape?: string;
   fixture?: string;
   reEvaluate?: string;
+  runId?: string;
+  fixtureSlug?: string;
   noMatrix: boolean;
   list: boolean;
   noPersist: boolean;
@@ -56,8 +58,13 @@ function parseArgs(argv: string[]): Args {
     all: false,
   };
   // First positional non-flag arg may be a verb.
-  if (argv[0] === 'promote-candidates' || argv[0] === 'promote' || argv[0] === 'replay') {
-    args.verb = argv[0];
+  if (
+    argv[0] === 'promote-candidates'
+    || argv[0] === 'promote'
+    || argv[0] === 'replay'
+    || argv[0] === 'export-fixture'
+  ) {
+    args.verb = argv[0] as Verb;
     argv = argv.slice(1);
   }
   for (let i = 0; i < argv.length; i++) {
@@ -68,6 +75,8 @@ function parseArgs(argv: string[]): Args {
       case '--shape': args.shape = argv[++i]; break;
       case '--fixture': args.fixture = argv[++i]; break;
       case '--re-evaluate': args.reEvaluate = argv[++i]; break;
+      case '--run': args.runId = argv[++i]; break;
+      case '--as': args.fixtureSlug = argv[++i]; break;
       case '--no-matrix': args.noMatrix = true; break;
       case '--no-persist': args.noPersist = true; break;
       case '--list': args.list = true; break;
@@ -144,6 +153,19 @@ async function main(): Promise<void> {
     console.log(`  Example claim: ${result.exampleClaim.slice(0, 100)}`);
     console.log(`\nNext: implement the predicate in the stub, then reference it`);
     console.log(`from a scenario with { kind: 'custom', name: '${result.assertId}', eval: evaluate }`);
+    return;
+  }
+
+  if (args.verb === 'export-fixture') {
+    if (!args.runId || !args.fixtureSlug) {
+      console.error('export-fixture requires --run <runId> and --as <fixture-slug>.');
+      process.exit(2);
+    }
+    const { exportFixtureFromRun } = await import('../lib/llm-testing/replay');
+    const result = await exportFixtureFromRun({ runId: args.runId, fixtureId: args.fixtureSlug });
+    console.log(`exported run ${args.runId} → fixture '${args.fixtureSlug}'`);
+    console.log(`  ${result.ssePath} (${result.bytesSse}B)`);
+    console.log(`  ${result.telemetryPath} (${result.bytesTelemetry}B)`);
     return;
   }
 

@@ -21,7 +21,7 @@ import postgres from 'postgres';
 import { getHarnessAdminUrl } from '@/lib/embedded-pg-discovery';
 
 import { evaluateAsserts } from './asserts/index';
-import { loadFixtureTurn, resolveFixturePath } from './fixtures/loader';
+import { loadFixtureTelemetry, loadFixtureTurn, resolveFixturePath } from './fixtures/loader';
 import { computeIdentityHash } from './identity';
 import { judgeRun } from './judge';
 import { lookupBlend } from './personas/blends';
@@ -70,6 +70,7 @@ export async function replayFixture(opts: FixtureReplayOpts): Promise<ReplayResu
   const resolved = looksLikePath ? path : resolveFixturePath(path);
 
   const turn = loadFixtureTurn(resolved);
+  const telemetry = loadFixtureTelemetry(resolved);
   const persona = resolvePersona(opts.scenario.persona, lookupBlend);
   const summary = buildSummary({
     scenario: opts.scenario,
@@ -79,7 +80,77 @@ export async function replayFixture(opts: FixtureReplayOpts): Promise<ReplayResu
     workspaceMode: 'isolated',
     transportMode: 'http-sse',
   });
+  if (telemetry) {
+    summary.toolInvocations = telemetry.toolInvocations as RunSummary['toolInvocations'];
+    summary.continueChainRows = telemetry.continueChainRows as RunSummary['continueChainRows'];
+  }
   return evaluateRun(summary, opts.scenario, persona, opts.judgeModel);
+}
+
+// =============================================================================
+// Fixture export — write a stored run as a reusable fixture pair
+// =============================================================================
+
+export interface ExportFixtureOpts {
+  /** Source run id (from harness_shared.llm_test_runs). */
+  runId: string;
+  /** Relative fixture id (e.g. 'v8-baseline/08-my-capture'). Suffixes added. */
+  fixtureId: string;
+}
+
+export interface ExportFixtureResult {
+  ssePath: string;
+  telemetryPath: string;
+  bytesSse: number;
+  bytesTelemetry: number;
+}
+
+export async function exportFixtureFromRun(opts: ExportFixtureOpts): Promise<ExportFixtureResult> {
+  const { zstdDecompressSync } = await import('node:zlib');
+  const { writeFileSync, mkdirSync } = await import('node:fs');
+  const { dirname: pathDirname } = await import('node:path');
+  const sql = db();
+  const rows = await sql<Array<{
+    transcript_raw_zstd: Buffer | null;
+    telemetry_json: { toolInvocations?: unknown; continueChainRows?: unknown } | null;
+  }>>`
+    SELECT transcript_raw_zstd, telemetry_json
+    FROM harness_shared.llm_test_runs
+    WHERE id = ${opts.runId}
+  `;
+  if (rows.length === 0) throw new Error(`run not found: ${opts.runId}`);
+  const row = rows[0];
+  if (!row.transcript_raw_zstd) {
+    throw new Error(`run ${opts.runId} has no transcript_raw_zstd (older run before zstd writer landed); re-run and try again.`);
+  }
+
+  // Decompress + reformat back to SSE-on-the-wire. The bytea holds a
+  // JSON array of SseEvent {name, data, tMs}.
+  const decompressed = zstdDecompressSync(row.transcript_raw_zstd).toString('utf8');
+  const events = JSON.parse(decompressed) as Array<{ name: string; data: unknown }>;
+  const sse = events.map((e) => {
+    const dataStr = typeof e.data === 'string' ? e.data : JSON.stringify(e.data);
+    return `event: ${e.name}\ndata: ${dataStr}\n`;
+  }).join('\n');
+
+  const telemetry = {
+    toolInvocations: (row.telemetry_json?.toolInvocations ?? []) as unknown[],
+    continueChainRows: (row.telemetry_json?.continueChainRows ?? []) as unknown[],
+  };
+
+  const ssePath = resolveFixturePath(opts.fixtureId);
+  const telemetryPath = ssePath.replace(/\.sse$/, '.telemetry.json');
+  mkdirSync(pathDirname(ssePath), { recursive: true });
+  writeFileSync(ssePath, sse, 'utf8');
+  const telemetryJson = JSON.stringify(telemetry, null, 2);
+  writeFileSync(telemetryPath, telemetryJson, 'utf8');
+
+  return {
+    ssePath,
+    telemetryPath,
+    bytesSse: Buffer.byteLength(sse, 'utf8'),
+    bytesTelemetry: Buffer.byteLength(telemetryJson, 'utf8'),
+  };
 }
 
 // =============================================================================
