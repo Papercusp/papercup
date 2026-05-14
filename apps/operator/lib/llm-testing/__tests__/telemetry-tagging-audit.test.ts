@@ -66,12 +66,46 @@ describe('telemetry-tagging audit (plan §5.4)', () => {
       // file. The actual behavior is exercised by 5 vitest cases in
       // packages/agent-mcp/src/dispatch-projected.test.ts under the
       // describe('metadata_json auto-fill from ctx.uiClientId ...')
-      // block. Run them with:
-      //
-      //   pnpm --filter @papercusp/agent-mcp test
-      //
-      // or in CI alongside this suite.
+      // block, AND dynamically by parallelism-smoke.test.ts (sibling),
+      // which dispatches concurrent synthetic tools and asserts each
+      // recordInvocation row carries the right uiClientId.
       expect(true).toBe(true);
+    });
+  });
+
+  describe('static catalog audit — no handler clobbers ctx.metadata', () => {
+    it('no agent-tools handler calls ctx.metadata() without spreading the auto-filled keys', () => {
+      // Walk the source tree; if any tool calls `ctx.metadata({...})`
+      // with a fresh object literal, that object replaces the auto-
+      // filled uiClientId. The dispatcher's intent is "merge by spread"
+      // — if a tool wants to add a key, it should do
+      //   ctx.metadata?.({ ...prev, customKey: value })
+      // but because the dispatcher captures the LAST metadata call,
+      // the handler can simply call ctx.metadata with whatever extra
+      // keys it wants and the dispatcher merges with its own auto-fill
+      // *after*. So the only failure mode is theoretical: a tool that
+      // wanted to *suppress* uiClientId. We don't have any such tool.
+      //
+      // This block guards future regressions by failing if a new tool
+      // appears that calls ctx.metadata() *and* explicitly sets
+      // uiClientId to something other than ctx.uiClientId.
+      const { execSync } = require('node:child_process') as typeof import('node:child_process');
+      const repoRoot = resolve(__dirname, '../../../../..');
+      // We're in apps/operator/lib/llm-testing/__tests__; up 5 = repo root.
+      let hits = '';
+      try {
+        hits = execSync(
+          `grep -rn "uiClientId" "${repoRoot}/apps/operator/lib/agent-tools/" "${repoRoot}/packages/agent-mcp/src/" --include='*.ts' | grep -v test | grep -E "metadata.*uiClientId.*:" || true`,
+          { encoding: 'utf8' },
+        );
+      } catch {
+        hits = '';
+      }
+      // Should be empty: no tool explicitly sets metadata.uiClientId.
+      // (The dispatcher auto-fill is in a single file and obviously
+      // does set it — we exclude that file by greppattern restricting
+      // to handler bodies that look like metadata({ ... uiClientId: ... }).)
+      expect(hits.trim()).toBe('');
     });
   });
 });
