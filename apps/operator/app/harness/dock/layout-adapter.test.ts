@@ -28,13 +28,13 @@ describe('layout-adapter', () => {
     }
   });
 
-  it('round-trips a 3-pane horizontal split (default dashboard shape)', () => {
+  it('round-trips the default dashboard layout (classic-mirroring shape)', () => {
     const doc = defaultDashboardLayout('sheets');
     const back = roundTrip(doc);
-    // Structure preservation: 3 top-level children
+    // Top-level is git rail + main-stack = 2 children.
     expect(back.root.kind).toBe('group');
     if (back.root.kind === 'group') {
-      expect(back.root.children.length).toBe(3);
+      expect(back.root.children.length).toBe(2);
     }
     // Validate the round-trip is itself a legal layout
     expect(() => validateLayoutDoc(back)).not.toThrow();

@@ -119,11 +119,28 @@ export async function getUserIdForLayouts(
 // ───────── Default layout seed ─────────
 
 /**
- * The static seed used on first read miss. Recreates today's UX:
- * Git rail | (Dashboard tabs) | (Agents+Logs).
+ * The static seed used on first read miss. **Mirrors the classic
+ * HarnessDashboard layout** at /harness/<slug> so users opening the
+ * dock for the first time see the same arrangement they're used to:
  *
- * Layout v1: nested-dock pi tab layout is single-panel (pi-terminals
- * itself is a nested dock). Phase 3+ expands as new panels register.
+ *   ┌─────────────┬───────────────────────────────────────┐
+ *   │ git (30%)   │ Feature queue                  (40%)  │
+ *   │             │                                       │
+ *   │             ├───────────────────────────────────────┤
+ *   │ + overview  │ Issues                         (35%)  │
+ *   │   tab       │                                       │
+ *   │             ├──────────────────┬────────────────────┤
+ *   │             │ Recent agents 50%│ run.log         50%│
+ *   │             │                  │                    │
+ *   └─────────────┴──────────────────┴────────────────────┘
+ *
+ * Source of truth for the classic layout: HarnessDashboard.tsx
+ * PanelGroup tree around line 4481. Git rail is collapsible at 30%
+ * default; main area splits 40/35/25 vertically, with the bottom
+ * row split 50/50 horizontally (agents | logs).
+ *
+ * `view:harness-overview` lives as a second tab in the git rail
+ * (the classic .h-header bar's metadata, displayed on demand).
  */
 export function defaultDashboardLayout(harnessSlug = ''): LayoutDoc {
   return {
@@ -133,73 +150,91 @@ export function defaultDashboardLayout(harnessSlug = ''): LayoutDoc {
       id: 'root',
       direction: 'row',
       children: [
+        // Left: Git rail with harness-overview as secondary tab.
+        // Classic dashboard defaults this to 30% width, collapsible.
+        {
+          kind: 'tabs',
+          id: 'git-rail',
+          size: 0.3,
+          activePanelId: 'p-git',
+          panels: [
+            {
+              id: 'p-git',
+              type: 'data:git',
+              params: { harnessSlug },
+            },
+            {
+              id: 'p-overview',
+              type: 'view:harness-overview',
+              params: { harnessSlug, phase: 'staging' },
+            },
+          ],
+        },
+        // Right: vertical stack of features (40%), issues (35%), and
+        // an agents+logs row (25% split 50/50).
         {
           kind: 'group',
-          id: 'context-rail',
+          id: 'main-stack',
           direction: 'col',
-          size: 0.18,
+          size: 0.7,
           children: [
             {
               kind: 'tabs',
-              id: 'context-tabs',
-              activePanelId: 'p-git',
+              id: 'features-row',
+              size: 0.4,
+              activePanelId: 'p-features',
               panels: [
                 {
-                  id: 'p-git',
-                  type: 'data:git',
+                  id: 'p-features',
+                  type: 'data:features',
                   params: { harnessSlug },
-                },
-                {
-                  id: 'p-overview',
-                  type: 'view:harness-overview',
-                  params: { harnessSlug, phase: 'staging' },
                 },
               ],
             },
-          ],
-        },
-        {
-          kind: 'tabs',
-          id: 'main',
-          activePanelId: 'p-dashboard',
-          panels: [
-            {
-              id: 'p-dashboard',
-              type: 'view:dashboard-overview',
-              params: { harnessSlug },
-            },
-            {
-              id: 'p-features',
-              type: 'data:features',
-              params: { harnessSlug },
-            },
-            {
-              id: 'p-issues',
-              type: 'data:issues',
-              params: { harnessSlug },
-            },
-          ],
-        },
-        {
-          kind: 'group',
-          id: 'telemetry-rail',
-          direction: 'col',
-          size: 0.22,
-          children: [
             {
               kind: 'tabs',
-              id: 'telemetry-tabs',
-              activePanelId: 'p-agents',
+              id: 'issues-row',
+              size: 0.35,
+              activePanelId: 'p-issues',
               panels: [
                 {
-                  id: 'p-agents',
-                  type: 'data:agents',
+                  id: 'p-issues',
+                  type: 'data:issues',
                   params: { harnessSlug },
                 },
+              ],
+            },
+            {
+              kind: 'group',
+              id: 'telemetry-row',
+              direction: 'row',
+              size: 0.25,
+              children: [
                 {
-                  id: 'p-logs',
-                  type: 'data:logs',
-                  params: { harnessSlug },
+                  kind: 'tabs',
+                  id: 'agents-cell',
+                  size: 0.5,
+                  activePanelId: 'p-agents',
+                  panels: [
+                    {
+                      id: 'p-agents',
+                      type: 'data:agents',
+                      params: { harnessSlug },
+                    },
+                  ],
+                },
+                {
+                  kind: 'tabs',
+                  id: 'logs-cell',
+                  size: 0.5,
+                  activePanelId: 'p-logs',
+                  panels: [
+                    {
+                      id: 'p-logs',
+                      type: 'data:logs',
+                      params: { harnessSlug },
+                    },
+                  ],
                 },
               ],
             },
