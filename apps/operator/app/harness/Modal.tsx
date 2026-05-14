@@ -74,7 +74,11 @@ export function Modal({
   return (
     <Dialog.Root open={open} onOpenChange={onOpenChange}>
       <Dialog.Portal>
-        <Dialog.Overlay data-anim="fade" style={overlay} />
+        <Dialog.Overlay
+          data-anim="fade"
+          style={overlay}
+          onClick={closeOnOutsideClick ? () => onOpenChange(false) : undefined}
+        />
         <div style={wrap}>
           <Dialog.Content
             data-anim="pop"

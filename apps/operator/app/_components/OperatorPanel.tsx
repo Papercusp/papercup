@@ -1277,6 +1277,7 @@ export function OperatorPanel(): ReactElement | null {
   ));
   const filteredEmpty = filterActive && hasCardEntries && !hasFeedEntries;
   const streamMuted = scanStatus === 'complete' && suggestions.length > 0;
+  const railHasActivity = decisions.length > 0 || streamLog.length > 0 || scanStatus === 'scanning' || scanStatus === 'error';
   // Per-tab empty states are independent of scanStatus: a scan-in-progress
   // does not change whether the Accepted/Ignored lists are empty, so don't
   // overwrite their copy with "Scanning workspace…".
@@ -1479,7 +1480,7 @@ export function OperatorPanel(): ReactElement | null {
           style={calmMotion ? undefined : { transformPerspective: 1800 }}
         >
           {promptEl}
-          <svg className="operator-panel__svg-frame" viewBox="0 0 1000 600" preserveAspectRatio="none" aria-hidden="true" focusable="false">
+          <svg className="operator-panel__svg-frame" viewBox="0 0 1000 600" preserveAspectRatio="xMidYMid slice" aria-hidden="true" focusable="false">
             <defs>
               <linearGradient id="operatorPanelFrameRail" x1="0%" y1="0%" x2="100%" y2="100%">
                 <stop offset="0%" stopColor="rgb(238 254 255)" stopOpacity="0.86" />
@@ -1495,7 +1496,7 @@ export function OperatorPanel(): ReactElement | null {
                 </feMerge>
               </filter>
             </defs>
-            <path className="operator-panel__svg-frame-spine" d="M46 10 H414 L448 27 H552 L586 10 H954 L990 46 V554 L954 590 H46 L10 554 V46 Z" />
+            <path className="operator-panel__svg-frame-spine" vectorEffect="non-scaling-stroke" d="M46 10 H414 L448 27 H552 L586 10 H954 L990 46 V554 L954 590 H46 L10 554 V46 Z" />
           </svg>
           <span className="operator-panel__lock-flash" aria-hidden="true" />
           <OperatorScanOverlay
@@ -1580,7 +1581,7 @@ export function OperatorPanel(): ReactElement | null {
             </div>
           )}
 
-          <div className={`operator-panel__body${decisions.length === 0 ? ' has-empty-activity' : ''} pc-animate-in pc-animate-in--down pc-animate-in--delay-1`}>
+          <div className={`operator-panel__body${decisions.length === 0 ? ' has-empty-activity' : ''}${railHasActivity ? '' : ' has-empty-rail'} pc-animate-in pc-animate-in--down pc-animate-in--delay-1`}>
 
             <main className="operator-panel__feed pc-animate-in pc-animate-in--fade pc-animate-in--delay-2">
               {firstRun && (
@@ -1593,12 +1594,12 @@ export function OperatorPanel(): ReactElement | null {
                 </section>
               )}
 
-              <div className="operator-panel__metrics operator-feed-tabs pc-animate-in pc-animate-in--down pc-animate-in--delay-1" role="tablist" aria-label="Deck action views">
+              <div className="operator-panel__metrics operator-feed-tabs pc-animate-in pc-animate-in--down pc-animate-in--delay-1" role="tablist" aria-label="Deck filters">
                 {[
-                  { key: 'cards' as MainView, count: pendingCount, label: 'Pending' },
-                  { key: 'accepted' as MainView, count: acceptedCount, label: 'Accepted' },
-                  { key: 'ignored' as MainView, count: ignoredCount, label: 'Ignored' },
-                  { key: 'scan-history' as MainView, count: null, label: 'Scans' },
+                  { key: 'cards' as MainView, count: pendingCount, label: 'Pending', ariaLabel: `Pending, ${pendingCount}` },
+                  { key: 'accepted' as MainView, count: acceptedCount, label: 'Accepted', ariaLabel: `Accepted, ${acceptedCount}` },
+                  { key: 'ignored' as MainView, count: ignoredCount, label: 'Ignored', ariaLabel: `Ignored, ${ignoredCount}` },
+                  { key: 'scan-history' as MainView, count: '—', label: 'Scans', ariaLabel: 'Scans' },
                 ].map((view) => (
                   <button
                     key={view.key}
@@ -1606,11 +1607,11 @@ export function OperatorPanel(): ReactElement | null {
                     role="tab"
                     className="operator-panel__metric-card operator-panel__metric-card--tab"
                     aria-selected={mainView === view.key}
-                    aria-label={typeof view.count === 'number' ? `${view.label}, ${view.count}` : view.label}
+                    aria-label={view.ariaLabel}
                     onClick={() => { void setMainView(view.key); }}
                   >
                     <em className="operator-tab-label" aria-hidden="true">{view.label}</em>
-                    {typeof view.count === 'number' ? <strong className="operator-tab-count" aria-hidden="true">{view.count}</strong> : null}
+                    <strong className="operator-tab-count" aria-hidden="true">{view.count}</strong>
                   </button>
                 ))}
               </div>
@@ -1893,35 +1894,33 @@ export function OperatorPanel(): ReactElement | null {
             <aside className={`operator-panel__rail operator-panel__rail--right${decisions.length === 0 ? ' is-empty' : ''} pc-animate-in pc-animate-in--fade pc-animate-in--delay-2`}>
               <DelegatesSection />
               <section className="operator-section">
+                <div className="operator-section__head">
+                  <span>Decisions</span>
+                  <em>{decisions.length === 0 ? 'empty' : 'recent'}</em>
+                </div>
                 {decisions.length === 0 ? (
                   <div className="operator-empty-rail operator-empty-rail--decisions">
                     <Info size={14} aria-hidden="true" strokeWidth={2.2} />
                     <div>
-                      <strong>Decisions</strong>
-                      <span>No recent decisions yet</span>
+                      <strong>No decisions yet</strong>
+                      <span>Accepted and ignored suggestions appear here.</span>
                     </div>
                   </div>
                 ) : (
-                  <>
-                    <div className="operator-section__head">
-                      <span>Decisions</span>
-                      <em>recent</em>
-                    </div>
-                    <ul className="operator-activity-list">
-                      {decisions.map((r) => (
-                        <li key={r.id} className="operator-activity-item">
-                          <span className="operator-activity-dot" aria-hidden="true" />
-                          <div>
-                            <strong>{r.action}</strong>
-                            <p>
-                              {r.target}{' '}
-                              <span>· {new Date(r.ts).toLocaleString()}</span>
-                            </p>
-                          </div>
-                        </li>
-                      ))}
-                    </ul>
-                  </>
+                  <ul className="operator-activity-list">
+                    {decisions.map((r) => (
+                      <li key={r.id} className="operator-activity-item">
+                        <span className="operator-activity-dot" aria-hidden="true" />
+                        <div>
+                          <strong>{r.action}</strong>
+                          <p>
+                            {r.target}{' '}
+                            <span>· {new Date(r.ts).toLocaleString()}</span>
+                          </p>
+                        </div>
+                      </li>
+                    ))}
+                  </ul>
                 )}
               </section>
               <section className={`operator-section operator-stream${streamMuted ? ' operator-stream--muted' : ''}${scanStatus === 'error' ? ' operator-stream--error' : ''}`}>
@@ -1966,6 +1965,9 @@ export function OperatorPanel(): ReactElement | null {
 
           <footer className="operator-panel__footer pc-animate-in pc-animate-in--fade pc-animate-in--delay-2">
             <span>Esc closes</span>
+            <span>{pendingCount} pending</span>
+            <span>{acceptedCount} accepted</span>
+            <span>{ignoredCount} ignored</span>
           </footer>
         </motion.div>
       ) : null}

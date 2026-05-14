@@ -113,12 +113,15 @@ export function OperatorButton(): ReactElement {
           open={state.open}
           onOpenChange={(open) => broadcastState({ open })}
           title="Deck"
+          description="Operator deck for scanning the workspace, reviewing suggestions, and inspecting live operator activity."
           srOnlyTitle
           zIndex={1180}
+          closeOnEscape
+          closeOnOutsideClick
           overlayStyle={{
-            background: 'rgba(1, 4, 10, 0.68)',
-            backdropFilter: 'blur(3px) saturate(0.72)',
-            WebkitBackdropFilter: 'blur(3px) saturate(0.72)',
+            background: 'rgba(0, 2, 6, 0.84)',
+            backdropFilter: 'blur(6px) saturate(0.6)',
+            WebkitBackdropFilter: 'blur(6px) saturate(0.6)',
           }}
           contentStyle={{ display: 'contents' }}
         >
