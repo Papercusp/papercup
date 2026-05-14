@@ -14,6 +14,7 @@
 
 import type { DockviewApi } from 'dockview';
 import { toLayoutDoc } from './layout-adapter';
+import { panelRegistry } from './panel-registry';
 import type { LayoutDoc } from '../../../lib/dock-layouts';
 
 // ───────── Module-scoped api binding (singleton, set by HarnessDock) ─────────
@@ -60,11 +61,19 @@ export interface OpenPanelArgs {
 
 export function openPanel(args: OpenPanelArgs): string {
   const id = args.id ?? cryptoId('p');
+  // Honor registry's keepAlive meta by setting dockview renderer='always'.
+  // Without this, dockview unmounts inactive panels in a tab group on
+  // every switch — losing scroll/state/intervals.
+  const entry = panelRegistry.get(args.type);
+  const renderer: 'always' | 'onlyWhenVisible' | undefined = entry?.meta.keepAlive
+    ? 'always'
+    : undefined;
   const opts: Parameters<DockviewApi['addPanel']>[0] = {
     id,
     component: args.type,
     title: args.title,
     params: args.params,
+    ...(renderer ? { renderer } : {}),
   };
   if (args.group) {
     opts.position = { referenceGroup: args.group };
@@ -168,6 +177,29 @@ export interface PanelSnapshot {
   isActive: boolean;
 }
 
+// dockview's runtime IDockviewPanel doesn't expose contentComponent
+// directly; it's available via toJSON(). For multi-panel listing,
+// calling toJSON() per panel is wasteful, so we read via the (private)
+// `view.contentComponent` field as a fallback.
+function panelType(p: unknown): string {
+  const cast = p as {
+    view?: { contentComponent?: string };
+    contentComponent?: string;
+    component?: string;
+    toJSON?: () => { contentComponent?: string };
+  };
+  if (cast.view?.contentComponent) return cast.view.contentComponent;
+  if (cast.contentComponent) return cast.contentComponent;
+  if (cast.component) return cast.component;
+  try {
+    const j = cast.toJSON?.();
+    if (j?.contentComponent) return j.contentComponent;
+  } catch {
+    /* ignore */
+  }
+  return 'unknown';
+}
+
 export function listPanels(): PanelSnapshot[] {
   const dv = api();
   return dv.panels.map((p) => {
@@ -175,13 +207,7 @@ export function listPanels(): PanelSnapshot[] {
     const isActive = p.group?.activePanel?.id === p.id;
     return {
       id: p.id,
-      // dockview's `p.view.content.props?.dvProps?.params` is the canonical
-      // place params live, but `p.params` is the documented public read
-      // accessor.
-      type:
-        (p as unknown as { contentComponent?: string }).contentComponent ??
-        (p as unknown as { component?: string }).component ??
-        'unknown',
+      type: panelType(p),
       title: p.title,
       params,
       isActive,
@@ -195,10 +221,7 @@ export function getFocusedPanel(): PanelSnapshot | null {
   if (!active) return null;
   return {
     id: active.id,
-    type:
-      (active as unknown as { contentComponent?: string }).contentComponent ??
-      (active as unknown as { component?: string }).component ??
-      'unknown',
+    type: panelType(active),
     title: active.title,
     params: (active.params ?? {}) as Record<string, unknown>,
     isActive: true,

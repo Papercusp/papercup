@@ -47,6 +47,46 @@ export function RealHarnessOverviewPanel({ params, api }: PanelComponentProps) {
   const phase = ((params.phase as Phase) ?? 'staging') as Phase;
   const [data, setData] = useState<StatusResponse | null>(null);
   const [error, setError] = useState<Error | null>(null);
+  const [phaseHydrated, setPhaseHydrated] = useState(false);
+
+  // On first mount, if the panel doesn't have an explicit phase in
+  // params (which means it was seeded with the default 'staging'),
+  // fetch the user's last-used phase for this slug and switch to it.
+  // One-shot; subsequent renders trust params.phase.
+  useEffect(() => {
+    if (phaseHydrated || !slug) return;
+    // Only auto-hydrate when params.phase wasn't explicitly set.
+    // Panels created via openPanel({ params: { phase: 'testing' } })
+    // already have their phase — respect that.
+    const hadExplicitPhase = (params as { phase?: unknown }).phase != null;
+    if (hadExplicitPhase) {
+      setPhaseHydrated(true);
+      return;
+    }
+    let cancel = false;
+    fetch(`/api/harness-phase-last-used/${encodeURIComponent(slug)}`)
+      .then((r) => (r.ok ? r.json() : { phase: null }))
+      .then((j: { phase: string | null }) => {
+        if (cancel) return;
+        if (
+          j.phase &&
+          (PHASES as readonly string[]).includes(j.phase) &&
+          j.phase !== phase
+        ) {
+          api.setParams({ ...params, phase: j.phase as Phase });
+        }
+        setPhaseHydrated(true);
+      })
+      .catch(() => {
+        if (!cancel) setPhaseHydrated(true);
+      });
+    return () => {
+      cancel = true;
+    };
+    // We intentionally omit `phase` and `params` from deps — this is a
+    // one-shot first-mount hydration.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [slug]);
 
   useEffect(() => {
     if (!slug) return;

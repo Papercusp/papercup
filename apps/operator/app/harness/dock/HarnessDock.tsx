@@ -36,7 +36,11 @@ import { useFocusedPanelTracker } from './useFocusedPanelTracker';
 import type { LayoutDoc } from '../../../lib/dock-layouts';
 
 interface HarnessDockProps {
-  /** Name of the PG-backed layout. e.g. 'default', 'dashboard'. */
+  /**
+   * Initial PG-backed layout name. e.g. 'default', 'dashboard:sheets'.
+   * Agent dispatch via `loadLayout(name)` swaps this at runtime via a
+   * window CustomEvent; the dock re-hydrates from the new layout.
+   */
   layoutName: string;
   /** Optional className on the dockview root for theming. */
   className?: string;
@@ -118,8 +122,14 @@ function collectTypes(doc: LayoutDoc, into: Set<string>): void {
   }
 }
 
-export function HarnessDock({ layoutName, className, slug }: HarnessDockProps) {
-  const { state, save, reset } = useDockLayout(layoutName);
+export function HarnessDock({ layoutName: initialLayoutName, className, slug }: HarnessDockProps) {
+  // layoutName tracked as state so loadLayout() can swap at runtime.
+  const [activeLayoutName, setActiveLayoutName] = useState(initialLayoutName);
+  useEffect(() => {
+    setActiveLayoutName(initialLayoutName);
+  }, [initialLayoutName]);
+
+  const { state, save, reset } = useDockLayout(activeLayoutName);
   const apiRef = useRef<DockviewApi | null>(null);
   const restoredOnceRef = useRef(false);
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -200,9 +210,18 @@ export function HarnessDock({ layoutName, className, slug }: HarnessDockProps) {
       restoredOnceRef.current = false;
       void reset();
     };
+    const onLoadLayout = (e: Event) => {
+      const detail = (e as CustomEvent<{ name?: string }>).detail;
+      if (detail?.name && typeof detail.name === 'string') {
+        restoredOnceRef.current = false;
+        setActiveLayoutName(detail.name);
+      }
+    };
     window.addEventListener('papercusp:dock-reset-layout', onResetLayout);
+    window.addEventListener('papercusp:dock-load-layout', onLoadLayout);
     return () => {
       window.removeEventListener('papercusp:dock-reset-layout', onResetLayout);
+      window.removeEventListener('papercusp:dock-load-layout', onLoadLayout);
     };
   }, [reset]);
 

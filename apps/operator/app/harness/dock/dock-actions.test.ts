@@ -18,6 +18,9 @@ import {
   listPanels,
   getFocusedPanel,
 } from './dock-actions';
+import { panelRegistry } from './panel-registry';
+
+const Stub = () => null;
 
 function makeFakeApi() {
   const panels: Array<{ id: string; api: any; params: any; group: any; title?: string }> = [];
@@ -64,6 +67,7 @@ function makeFakeApi() {
 
 beforeEach(() => {
   bindDockApi(null);
+  panelRegistry._reset();
 });
 
 describe('dock-actions binding', () => {
@@ -189,5 +193,44 @@ describe('dock-actions actions', () => {
     const fake = makeFakeApi();
     bindDockApi(fake);
     expect(getFocusedPanel()).toBeNull();
+  });
+
+  it('openPanel passes renderer:always when registry meta keepAlive=true', () => {
+    panelRegistry.register('keep:me', Stub, { keepAlive: true });
+    const fake = makeFakeApi();
+    bindDockApi(fake);
+    openPanel({ type: 'keep:me' });
+    expect(fake.addPanel).toHaveBeenCalledWith(
+      expect.objectContaining({ renderer: 'always' }),
+    );
+  });
+
+  it('openPanel omits renderer when keepAlive is not set', () => {
+    panelRegistry.register('drop:me', Stub, {});
+    const fake = makeFakeApi();
+    bindDockApi(fake);
+    openPanel({ type: 'drop:me' });
+    const call = fake.addPanel.mock.calls[0][0] as { renderer?: string };
+    expect(call.renderer).toBeUndefined();
+  });
+
+  it('panelType reads from view.contentComponent (real dockview shape)', () => {
+    const fake = makeFakeApi();
+    // Swap the fake panel to use the dockview-real shape: `view.contentComponent`
+    // instead of top-level `contentComponent`. listPanels must still resolve.
+    bindDockApi({
+      ...fake,
+      panels: [
+        {
+          id: 'p1',
+          title: 't',
+          params: {},
+          view: { contentComponent: 'data:features' },
+          group: { activePanel: { id: 'p1' } },
+        },
+      ],
+    } as unknown as Parameters<typeof bindDockApi>[0]);
+    const list = listPanels();
+    expect(list[0].type).toBe('data:features');
   });
 });
