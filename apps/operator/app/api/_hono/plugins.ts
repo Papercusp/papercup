@@ -450,6 +450,22 @@ plugins.get('/:slug/contributions', async (c) => {
   const dashboardTabs: Tab[] = [];
   const sidebarItems: Item[] = [];
   const routes: Route[] = [];
+  // Dockview-migration v4 §8.1: plugin-contributed dock panels.
+  type PanelContrib = {
+    pluginName: string;
+    id: string;
+    fullType: string;
+    title: string;
+    icon?: string;
+    type: 'react' | 'iframe';
+    componentRoot?: string;
+    componentId?: string;
+    src?: string;
+    defaultGroup?: string;
+    defaultFloating?: { width?: number; height?: number };
+    keepAlive?: boolean;
+  };
+  const panelsContrib: PanelContrib[] = [];
 
   for (const s of sources) {
     for (const p of await listPluginsIn(s.dir, s.source)) {
@@ -477,6 +493,65 @@ plugins.get('/:slug/contributions', async (c) => {
           iframeUrl: resolvedIframeUrl ?? tab.iframeUrl,
           pluginName: p.name,
         });
+        // Dockview-migration v4 §8.1 + §8.2: synthesize a panels[] entry
+        // from each dashboardTabs[] entry so the new dock UI can register
+        // plugin panels without forcing manifest changes. The original
+        // tab keeps working in the existing dashboard tab strip; the
+        // synthesized entry lets the new dock model surface the same
+        // plugin via panelRegistry.register('plugin:<name>:<id>', …).
+        panelsContrib.push({
+          pluginName: p.name,
+          id: tab.id,
+          fullType: `plugin:${p.name}:${tab.id}`,
+          title: tab.label,
+          icon: tab.icon,
+          type: resolvedIframeUrl ?? tab.iframeUrl ? 'iframe' : 'react',
+          componentRoot: tab.componentRoot ?? pluginRoot,
+          componentId: tab.componentId,
+          src: resolvedIframeUrl ?? tab.iframeUrl,
+        });
+      }
+      // Native `panels[]` declaration (manifest opted into the new field).
+      type PanelDecl = {
+        id: string;
+        title: string;
+        icon?: string;
+        type?: 'react' | 'iframe';
+        componentRoot?: string;
+        componentId?: string;
+        src?: string;
+        iframeUrl?: string;
+        iframeUrlConfigKey?: string;
+        defaultGroup?: string;
+        defaultFloating?: { width?: number; height?: number };
+        keepAlive?: boolean;
+      };
+      const declared = ((p as PluginManifest & { panels?: PanelDecl[] }).panels ?? []);
+      for (const panel of declared) {
+        let resolvedSrc = panel.src ?? panel.iframeUrl;
+        if (!resolvedSrc && panel.iframeUrlConfigKey) {
+          // Re-use resolveIframeUrl: synthesize a tab-shaped object.
+          const synthTab: DashboardTabManifest = {
+            id: panel.id,
+            label: panel.title,
+            iframeUrlConfigKey: panel.iframeUrlConfigKey,
+          };
+          resolvedSrc = (await resolveIframeUrl(p, synthTab, harnessConfig, slug)) ?? undefined;
+        }
+        panelsContrib.push({
+          pluginName: p.name,
+          id: panel.id,
+          fullType: `plugin:${p.name}:${panel.id}`,
+          title: panel.title,
+          icon: panel.icon,
+          type: panel.type ?? (resolvedSrc ? 'iframe' : 'react'),
+          componentRoot: panel.componentRoot ?? pluginRoot,
+          componentId: panel.componentId,
+          src: resolvedSrc,
+          defaultGroup: panel.defaultGroup,
+          defaultFloating: panel.defaultFloating,
+          keepAlive: panel.keepAlive,
+        });
       }
       for (const item of p.sidebarItems ?? []) {
         sidebarItems.push({ ...item, pluginName: p.name });
@@ -496,5 +571,6 @@ plugins.get('/:slug/contributions', async (c) => {
     dashboardTabs,
     sidebarItems,
     routes,
+    panels: panelsContrib,
   });
 });

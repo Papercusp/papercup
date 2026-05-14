@@ -30,6 +30,7 @@ import { useDockLayout, type DockLayoutRow } from './useDockLayout';
 import { bindDockApi } from './dock-actions';
 import { useNavShortcuts } from './useNavShortcuts';
 import { useLayoutResetShortcut } from './useLayoutResetShortcut';
+import { useRegisterPluginPanels } from './useRegisterPluginPanels';
 import type { LayoutDoc } from '../../../lib/dock-layouts';
 
 interface HarnessDockProps {
@@ -37,6 +38,12 @@ interface HarnessDockProps {
   layoutName: string;
   /** Optional className on the dockview root for theming. */
   className?: string;
+  /**
+   * Optional slug used to fetch + register plugin panels via
+   * /api/plugins?slug=<slug>. Required if the layout will reference any
+   * `plugin:*` types.
+   */
+  slug?: string;
 }
 
 /**
@@ -109,7 +116,7 @@ function collectTypes(doc: LayoutDoc, into: Set<string>): void {
   }
 }
 
-export function HarnessDock({ layoutName, className }: HarnessDockProps) {
+export function HarnessDock({ layoutName, className, slug }: HarnessDockProps) {
   const { state, save, reset } = useDockLayout(layoutName);
   const apiRef = useRef<DockviewApi | null>(null);
   const restoredOnceRef = useRef(false);
@@ -123,6 +130,9 @@ export function HarnessDock({ layoutName, className }: HarnessDockProps) {
     restoredOnceRef.current = false;
     void reset();
   });
+  // Plugin panels — registers in panelRegistry via /api/plugins. Hot-swap
+  // (§8.3) handles registration that lands after layout hydration.
+  useRegisterPluginPanels(slug ?? '');
 
   const layoutDoc: LayoutDoc | null =
     state.status === 'ready' && state.row.schemaVersion === 1

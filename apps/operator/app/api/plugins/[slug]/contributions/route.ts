@@ -183,6 +183,26 @@ export async function GET(_req: Request, ctx: { params: Promise<{ slug: string }
   const dashboardTabs: Tab[] = [];
   const sidebarItems: Item[] = [];
   const routes: Route[] = [];
+  // Dockview-migration v4 §8.1: plugin-contributed dock panels. Each
+  // dashboardTabs[] entry is also surfaced as a panels[] entry so the
+  // new dock can register plugin panels via panelRegistry without
+  // forcing manifest changes. Plugins using the new top-level panels[]
+  // field land here too.
+  type PanelContrib = {
+    pluginName: string;
+    id: string;
+    fullType: string;
+    title: string;
+    icon?: string;
+    type: 'react' | 'iframe';
+    componentRoot?: string;
+    componentId?: string;
+    src?: string;
+    defaultGroup?: string;
+    defaultFloating?: { width?: number; height?: number };
+    keepAlive?: boolean;
+  };
+  const panelsContrib: PanelContrib[] = [];
 
   for (const s of sources) {
     for (const p of await listPluginsIn(s.dir, s.source)) {
@@ -202,6 +222,59 @@ export async function GET(_req: Request, ctx: { params: Promise<{ slug: string }
           iframeUrl: resolvedIframeUrl ?? tab.iframeUrl,
           pluginName: p.name,
         });
+        const finalSrc = resolvedIframeUrl ?? tab.iframeUrl;
+        panelsContrib.push({
+          pluginName: p.name,
+          id: tab.id,
+          fullType: `plugin:${p.name}:${tab.id}`,
+          title: tab.label,
+          icon: tab.icon,
+          type: finalSrc ? 'iframe' : 'react',
+          componentRoot: tab.componentRoot ?? pluginRoot,
+          componentId: tab.componentId,
+          src: finalSrc ?? undefined,
+        });
+      }
+      // Native `panels[]` declaration (opt-in by manifests using the new field).
+      type PanelDecl = {
+        id: string;
+        title: string;
+        icon?: string;
+        type?: 'react' | 'iframe';
+        componentRoot?: string;
+        componentId?: string;
+        src?: string;
+        iframeUrl?: string;
+        iframeUrlConfigKey?: string;
+        defaultGroup?: string;
+        defaultFloating?: { width?: number; height?: number };
+        keepAlive?: boolean;
+      };
+      const declared = (p as PluginManifest & { panels?: PanelDecl[] }).panels ?? [];
+      for (const panel of declared) {
+        let resolvedSrc = panel.src ?? panel.iframeUrl;
+        if (!resolvedSrc && panel.iframeUrlConfigKey) {
+          const synthTab: DashboardTabManifest = {
+            id: panel.id,
+            label: panel.title,
+            iframeUrlConfigKey: panel.iframeUrlConfigKey,
+          };
+          resolvedSrc = (await resolveIframeUrl(p, synthTab, harnessConfig, slug)) ?? undefined;
+        }
+        panelsContrib.push({
+          pluginName: p.name,
+          id: panel.id,
+          fullType: `plugin:${p.name}:${panel.id}`,
+          title: panel.title,
+          icon: panel.icon,
+          type: panel.type ?? (resolvedSrc ? 'iframe' : 'react'),
+          componentRoot: panel.componentRoot ?? pluginRoot,
+          componentId: panel.componentId,
+          src: resolvedSrc,
+          defaultGroup: panel.defaultGroup,
+          defaultFloating: panel.defaultFloating,
+          keepAlive: panel.keepAlive,
+        });
       }
       for (const item of p.sidebarItems ?? []) {
         sidebarItems.push({ ...item, pluginName: p.name });
@@ -219,5 +292,6 @@ export async function GET(_req: Request, ctx: { params: Promise<{ slug: string }
   return NextResponse.json({
     project: { slug, path: projectPath },
     dashboardTabs, sidebarItems, routes,
+    panels: panelsContrib,
   });
 }

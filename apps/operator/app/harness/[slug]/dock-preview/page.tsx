@@ -149,7 +149,7 @@ export default function DockPreviewPage() {
         </button>
       </div>
       <div style={{ flex: 1, minHeight: 0 }}>
-        <HarnessDock layoutName="preview" />
+        <HarnessDock layoutName="preview" slug={routeSlug} />
       </div>
     </div>
   );
