@@ -74,8 +74,8 @@ export interface OperatorState {
 
 export type AutoAcceptLevel = 'off' | 'low' | 'medium' | 'high';
 
-const AUTO_ACCEPT_LEVELS: readonly AutoAcceptLevel[] = ['off', 'low', 'medium', 'high'];
-function isAutoAcceptLevel(v: unknown): v is AutoAcceptLevel {
+export const AUTO_ACCEPT_LEVELS: readonly AutoAcceptLevel[] = ['off', 'low', 'medium', 'high'];
+export function isAutoAcceptLevel(v: unknown): v is AutoAcceptLevel {
   return typeof v === 'string' && (AUTO_ACCEPT_LEVELS as readonly string[]).includes(v);
 }
 

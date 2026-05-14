@@ -5,8 +5,10 @@ import { Select } from '../harness/Select';
 import { DeckCardsMark } from './ChromeNavMarks';
 import { OperatorPanel } from './OperatorPanel';
 import {
+  AUTO_ACCEPT_LEVELS,
   broadcastState,
   hydrateOperatorStateFromPg,
+  isAutoAcceptLevel,
   sharedState,
   subscribeOperatorState,
   type AutoAcceptEvent,
@@ -60,11 +62,10 @@ export function OperatorButton(): ReactElement {
     paused: 'Deck — Operator paused (autonomous actions disabled)',
     'awaiting-input': 'Deck — Operator awaiting your decision on pending suggestions',
   };
-  const title = pausedActive
-    ? titleByState.paused
-    : state.paused
-      ? `${titleByState[state.iconState]} (paused — auto-dispatch off)`
-      : titleByState[state.iconState];
+  let title: string;
+  if (pausedActive) title = titleByState.paused;
+  else if (state.paused) title = `${titleByState[state.iconState]} (paused — auto-dispatch off)`;
+  else title = titleByState[state.iconState];
   const scanning = state.iconState === 'scanning' || state.iconState === 'thinking';
   const counts = useMemo(() => {
     const c = { pending: 0, accepted: 0, ignored: 0 };
@@ -196,7 +197,6 @@ function OperatorCountBubble({
 
 // Auto-accept threshold control — explicit dropdown instead of an opaque
 // cycle-on-click toggle so the current policy stays obvious.
-const AUTO_ACCEPT_LEVELS_ORDER: readonly AutoAcceptLevel[] = ['off', 'low', 'medium', 'high'];
 const AUTO_ACCEPT_LABEL: Record<AutoAcceptLevel, string> = {
   off: 'Auto: Off',
   low: 'Auto: Low',
@@ -222,12 +222,12 @@ export function OperatorAutoScanToggle(): ReactElement {
       <Select
         value={autoAccept}
         onChange={(value) => {
-          if (!(AUTO_ACCEPT_LEVELS_ORDER as readonly string[]).includes(value)) return;
-          broadcastState({ autoAccept: value as AutoAcceptLevel });
+          if (!isAutoAcceptLevel(value)) return;
+          broadcastState({ autoAccept: value });
         }}
         ariaLabel={AUTO_ACCEPT_TOOLTIP[autoAccept]}
         triggerClassName={`pc-header-cta-select${autoAccept !== 'off' ? ' is-on' : ''}`}
-        options={AUTO_ACCEPT_LEVELS_ORDER.map((value) => ({
+        options={AUTO_ACCEPT_LEVELS.map((value) => ({
           value,
           label: AUTO_ACCEPT_LABEL[value],
         }))}

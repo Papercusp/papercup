@@ -11499,10 +11499,16 @@ body.h-harness-top-collapsed .pc-header {
 }
 .operator-panel--maximal-hud .operator-panel__header,
 .operator-panel--maximal-hud .operator-panel__body,
-.operator-panel--maximal-hud .operator-panel__footer,
-.operator-panel--maximal-hud .operator-budget-overlay {
+.operator-panel--maximal-hud .operator-panel__footer {
   position: relative;
   z-index: 1;
+}
+/* Budget overlay must keep its base `position: absolute; inset: 0` so it
+ * covers the entire panel as a first-run blocker. The maximal-hud group
+ * above used to flatten it to position:relative, which dropped the
+ * overlay inline between the header and body — visible bug 2026-05-13. */
+.operator-panel--maximal-hud .operator-budget-overlay {
+  z-index: 5;
 }
 .operator-panel--maximal-hud .operator-panel__titleblock {
   display: flex;
