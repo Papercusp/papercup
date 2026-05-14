@@ -77,15 +77,32 @@ export function useRegisterPluginPanels(slug: string): void {
             });
           } else {
             // React-type plugin panels need dynamic-import wiring to
-            // resolve componentRoot/componentId. Until that lands, show
-            // MissingPanel with a clear message.
-            const NotYet = (props: Parameters<typeof MissingPanel>[0]) => (
-              <MissingPanel {...props} panelType={panel.fullType} />
+            // resolve componentRoot/componentId. That path exists in
+            // HarnessDashboard's plugin tabs but isn't wired here yet.
+            // Show an explicit message rather than the "plugin not
+            // installed" MissingPanel default, which would mislead.
+            const NotYet = () => (
+              <div
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  height: '100%',
+                  padding: 16,
+                  textAlign: 'center',
+                  color: 'var(--muted-foreground, #888)',
+                  fontSize: 12,
+                }}
+              >
+                Plugin <code style={{ color: 'var(--foreground, #ccc)' }}>{panel.pluginName}:{panel.id}</code>
+                {' '}is a React-typed panel; dock rendering for these is not yet wired
+                (componentRoot/componentId import path is HarnessDashboard-side only today).
+              </div>
             );
-            NotYet.displayName = `PluginReactPanel(${panel.fullType})`;
+            NotYet.displayName = `PluginReactPanelNotYet(${panel.fullType})`;
             panelRegistry.register(panel.fullType, NotYet, {
               title: panel.title,
-              keepAlive: panel.keepAlive,
+              keepAlive: false,
               defaultGroup: panel.defaultGroup,
             });
           }
