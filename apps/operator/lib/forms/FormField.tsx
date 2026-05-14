@@ -29,7 +29,7 @@ const descriptionStyle: React.CSSProperties = {
 };
 const errorStyle: React.CSSProperties = {
   fontSize: 11,
-  color: '#fca5a5',
+  color: 'var(--bad)',
   marginTop: 4,
 };
 
@@ -52,7 +52,7 @@ export function FormField({
   return (
     <div className={`h-form-field ${className ?? ''}`} style={{ marginBottom: 12 }}>
       <label style={labelStyle}>
-        {label} {required && <span style={{ color: '#ff6961' }}>*</span>}
+        {label} {required && <span style={{ color: 'var(--bad)' }}>*</span>}
       </label>
       {description && <div style={descriptionStyle}>{description}</div>}
       {children}

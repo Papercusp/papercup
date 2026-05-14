@@ -20,20 +20,18 @@ export function SubmitButton({
   variant?: 'primary' | 'ghost';
 } & Omit<React.ButtonHTMLAttributes<HTMLButtonElement>, 'type' | 'disabled' | 'children'>) {
   const isPrimary = variant === 'primary';
+  // Adopts the .pc-btn-primary / baseline button styling from globals.css
+  // so primary submit buttons across every RHF form (login, profile,
+  // api-keys, agent, oracle, operator) use the operator accent token
+  // and not a one-off blue. See <Button> wrapper in app/harness/Button.tsx
+  // for the variant CSS classes.
   return (
     <button
       type="submit"
       disabled={pending || rest['aria-disabled'] === 'true'}
-      className="pc-button"
+      className={isPrimary ? 'pc-btn-primary' : undefined}
       style={{
-        background: isPrimary ? '#2563eb' : 'transparent',
-        color: isPrimary ? '#fff' : 'var(--fg)',
-        border: isPrimary ? 'none' : '1px solid var(--border)',
-        borderRadius: 4,
-        padding: '0.45rem 0.9rem',
-        fontSize: 13,
         fontWeight: 600,
-        cursor: pending ? 'not-allowed' : 'pointer',
         opacity: pending ? 0.7 : 1,
         ...rest.style,
       }}
