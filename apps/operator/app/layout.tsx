@@ -15,6 +15,7 @@ import { ToasterSelectionFix } from './_components/ToasterSelectionFix';
 import { ToastHistoryRecorder } from './_components/ToastHistoryRecorder';
 import PerfObserverProvider from './admin/testing/_components/PerfObserverProvider';
 import RecorderHost from './admin/testing/_components/RecorderHost';
+import DevReloadGate from './_components/DevReloadGate';
 import { UiPresenceProvider } from './_components/UiPresenceProvider';
 import { getAllFlags } from '@papercusp/flags/server';
 import '@/lib/flag-bus';
@@ -186,6 +187,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
                   <ToastHistoryRecorder />
                   <PerfObserverProvider />
                   <RecorderHost />
+                  <DevReloadGate />
                 </NuqsAdapter>
               </Suspense>
             </RouteProgressProvider>
