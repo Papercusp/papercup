@@ -205,16 +205,16 @@ export default function UserSettingsPage() {
   }
 
   return (
-    <div style={{ padding: 32, maxWidth: 880, display: 'flex', flexDirection: 'column', gap: 32 }}>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 32 }}>
       <header>
-        <h1 style={{ marginBottom: 8 }}>User preferences</h1>
-        <p style={{ color: 'var(--text-secondary)', margin: 0 }}>
+        <h1>User preferences</h1>
+        <p className="pc-settings-intro">
           Settings here override workspace defaults just for {user.display_name}.
         </p>
       </header>
 
       <section>
-        <h2 style={{ fontSize: 16, marginBottom: 12 }}>Identity</h2>
+        <h2>Identity</h2>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
           <label>Username: <code>{user.username}</code> (immutable)</label>
           <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end' }}>
@@ -235,7 +235,7 @@ export default function UserSettingsPage() {
       </section>
 
       <section>
-        <h2 style={{ fontSize: 16, marginBottom: 12 }}>Password</h2>
+        <h2>Password</h2>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
           {user.has_password && (
             <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
@@ -264,7 +264,7 @@ export default function UserSettingsPage() {
       </section>
 
       <section>
-        <h2 style={{ fontSize: 16, marginBottom: 4 }}>Overrides</h2>
+        <h2>Overrides</h2>
         <p style={{ color: 'var(--text-secondary)', fontSize: 13, marginBottom: 12 }}>
           Set a value here to override the workspace default for your account.
           Leave a row empty (or click Clear) to fall back to the workspace.
@@ -319,7 +319,7 @@ export default function UserSettingsPage() {
       </section>
 
       <section>
-        <h2 style={{ fontSize: 16, marginBottom: 12 }}>Memory</h2>
+        <h2>Memory</h2>
         <p style={{ color: 'var(--text-secondary)', fontSize: 13 }}>
           The operator stores things it learns about you (preferences, corrections, etc).
           Inspect and delete per entry at <a href="/settings/user/memory" style={{ color: 'var(--accent)' }}>/settings/user/memory</a>.

@@ -121,8 +121,8 @@ export default function ShortcutsSettingsPage() {
       {confirmEl}
       <header className="kbd-settings-head">
         <div>
-          <h1 style={{ margin: 0 }}>Keyboard shortcuts</h1>
-          <p style={{ margin: '6px 0 0', color: 'var(--fg-dim)', fontSize: 13 }}>
+          <h1>Keyboard shortcuts</h1>
+          <p className="pc-settings-intro">
             Customize any binding. Click <strong>Record</strong> on a row and press
             the key combo you want to assign, or type it directly into the input.
             Settings persist in this browser only.

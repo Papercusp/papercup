@@ -71,8 +71,8 @@ export default function PluginToolsPage(): JSX.Element {
 
   return (
     <div>
-      <h1>Plugin Tools</h1>
-      <p style={{ marginTop: 4, color: 'var(--fg-mute)', fontSize: 13 }}>
+      <h1>Plugin tools</h1>
+      <p className="pc-settings-intro">
         Every tool currently registered in the projected-tool registry — both
         built-in agent-mcp tools and plugin-contributed tools. Each is callable
         on both transports (HTTP at the listed path, MCP under the listed name).
@@ -107,7 +107,7 @@ export default function PluginToolsPage(): JSX.Element {
 
       {grouped?.map(([pluginName, pluginTools]) => (
         <section key={pluginName} style={{ marginBottom: 32 }}>
-          <h2 style={{ fontSize: 16, marginBottom: 4 }}>
+          <h2>
             {pluginName === 'agent-mcp' ? 'Built-in (agent-mcp)' : pluginName}
             <span style={{ marginLeft: 8, color: 'var(--fg-mute)', fontSize: 12, fontWeight: 'normal' }}>
               {pluginTools.length} {pluginTools.length === 1 ? 'tool' : 'tools'}

@@ -32,10 +32,10 @@ export default function MeridianSettingsPage() {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 600 }}>
-      <header style={{ paddingBottom: 12, borderBottom: '1px solid var(--pc-border, #2a2a2a)' }}>
-        <h1 style={{ margin: 0, fontSize: 18 }}>Meridian</h1>
-        <p style={{ margin: '6px 0 0', color: 'var(--pc-muted, #9a9a9a)', fontSize: 12.5 }}>
-          Routes omp through your Claude Max subscription. Meridian's web UI is embedded below; changes are saved by Meridian directly to <code>~/.config/meridian/</code>.
+      <header style={{ paddingBottom: 12, borderBottom: '1px solid var(--border)' }}>
+        <h1>Meridian</h1>
+        <p className="pc-settings-intro" style={{ marginBottom: 0 }}>
+          Routes omp through your Claude Max subscription. Meridian&apos;s web UI is embedded below; changes are saved by Meridian directly to <code>~/.config/meridian/</code>.
         </p>
       </header>
       <nav style={{ display: 'flex', gap: 4, padding: '8px 0', borderBottom: '1px solid var(--pc-border, #2a2a2a)' }}>

@@ -142,8 +142,8 @@ export default function MemoryPage() {
     <div style={{ padding: 32, maxWidth: 920, display: 'flex', flexDirection: 'column', gap: 16 }}>
       {confirmEl}
       <header>
-        <h1 style={{ marginBottom: 8 }}>Operator memory</h1>
-        <p style={{ color: 'var(--text-secondary)', margin: 0 }}>
+        <h1>Operator memory</h1>
+        <p className="pc-settings-intro">
           Facts the operator has stored about you. Inspect, edit, or delete
           per entry. Edits and deletes are recorded as feedback signal for
           future tuning. Workspace-shared entries (visible to other users in

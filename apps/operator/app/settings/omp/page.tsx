@@ -120,15 +120,15 @@ export default function OmpSettingsPage(): JSX.Element {
 
   if (loadError) {
     return (
-      <div style={S.page}>
-        <h1 style={S.h1}>Oh-My-Pi (omp) settings</h1>
+      <div>
+        <h1>Oh-My-Pi (omp) settings</h1>
         <div style={S.error}>
           <strong>Failed to load omp config.</strong>
           <div>{loadError}</div>
-          <p style={{ marginTop: 8, color: '#94a3b8', fontSize: 13 }}>
-            Check that <code>omp</code> is on the operator's PATH and that <code>omp config list</code> works at the shell.
+          <p className="pc-settings-hint" style={{ marginTop: 8 }}>
+            Check that <code>omp</code> is on the operator&apos;s PATH and that <code>omp config list</code> works at the shell.
           </p>
-          <button style={S.btnPrimary} onClick={() => void refresh()}>Retry</button>
+          <button onClick={() => void refresh()}>Retry</button>
         </div>
       </div>
     );
@@ -136,9 +136,9 @@ export default function OmpSettingsPage(): JSX.Element {
 
   if (!sections) {
     return (
-      <div style={S.page}>
-        <h1 style={S.h1}>Oh-My-Pi (omp) settings</h1>
-        <div style={S.muted}>Loading omp config…</div>
+      <div>
+        <h1>Oh-My-Pi (omp) settings</h1>
+        <p className="pc-settings-loading">Loading omp config…</p>
       </div>
     );
   }
@@ -147,13 +147,13 @@ export default function OmpSettingsPage(): JSX.Element {
   const totalShown = filtered?.reduce((n, s) => n + s.settings.length, 0) ?? totalSettings;
 
   return (
-    <div style={S.page}>
-      <header style={S.header}>
-        <h1 style={S.h1}>Oh-My-Pi (omp) settings</h1>
-        <p style={S.intro}>
+    <div>
+      <header>
+        <h1>Oh-My-Pi (omp) settings</h1>
+        <p className="pc-settings-intro">
           Read and edit the {totalSettings} settings exposed by{' '}
-          <code style={S.code}>omp config list</code>. Changes persist immediately
-          via <code style={S.code}>omp config set</code> and apply to all new omp invocations
+          <code>omp config list</code>. Changes persist immediately
+          via <code>omp config set</code> and apply to all new omp invocations
           (existing sessions keep their startup config).
         </p>
       </header>
@@ -377,59 +377,44 @@ function JsonControl({ setting, onSave }: { setting: OmpSetting; onSave: (v: unk
 }
 
 const S: Record<string, React.CSSProperties> = {
-  page: { padding: 24, maxWidth: 1080, margin: '0 auto', fontFamily: 'inherit', color: 'var(--fg, #e2e8f0)' },
-  header: { marginBottom: 16 },
-  h1: { fontSize: 22, fontWeight: 600, margin: '0 0 8px' },
-  intro: { fontSize: 13, color: 'rgba(231, 247, 255, 0.65)', lineHeight: 1.55, margin: 0 },
-  code: { fontFamily: 'ui-monospace, monospace', fontSize: 12, background: 'rgba(255,255,255,0.06)', padding: '1px 6px', borderRadius: 4 },
   searchRow: { display: 'flex', alignItems: 'center', gap: 12, marginBottom: 16 },
-  searchInput: {
-    flex: 1, background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.1)',
-    borderRadius: 6, padding: '8px 12px', color: 'var(--fg, #e2e8f0)', fontSize: 14, outline: 'none',
-  },
-  muted: { fontSize: 12, color: 'rgba(231, 247, 255, 0.5)' },
+  searchInput: { flex: 1 },
   sections: { display: 'flex', flexDirection: 'column', gap: 8 },
-  section: { background: 'rgba(255,255,255,0.025)', border: '1px solid rgba(255,255,255,0.06)', borderRadius: 8 },
+  section: {
+    background: 'var(--bg-2)',
+    border: '1px solid var(--border)',
+    borderRadius: 6,
+  },
   sectionHeader: {
     width: '100%', display: 'flex', alignItems: 'center', gap: 8,
     background: 'transparent', border: 'none', color: 'inherit',
-    padding: '10px 14px', fontSize: 14, cursor: 'pointer', textAlign: 'left',
+    padding: '10px 14px', fontSize: 13, cursor: 'pointer', textAlign: 'left',
   },
-  sectionChevron: { fontSize: 11, color: 'rgba(231, 247, 255, 0.5)', minWidth: 12 },
-  sectionName: { fontFamily: 'ui-monospace, monospace', fontWeight: 600, fontSize: 13, color: '#7dd3fc' },
-  sectionCount: { fontSize: 11, color: 'rgba(231, 247, 255, 0.4)', marginLeft: 'auto' },
-  sectionBody: { padding: '4px 0 12px', borderTop: '1px solid rgba(255,255,255,0.04)' },
+  sectionChevron: { fontSize: 11, color: 'var(--fg-mute)', minWidth: 12 },
+  sectionName: { fontFamily: 'ui-monospace, monospace', fontWeight: 600, fontSize: 12, color: 'var(--fg)' },
+  sectionCount: { fontSize: 11, color: 'var(--fg-mute)', marginLeft: 'auto' },
+  sectionBody: {
+    padding: '4px 0 12px',
+    borderTop: '1px solid color-mix(in oklab, var(--border), transparent 50%)',
+  },
   row: {
     display: 'grid', gridTemplateColumns: 'minmax(220px, 1fr) minmax(0, 2fr) auto',
     gap: 12, padding: '8px 14px', alignItems: 'center',
-    borderBottom: '1px solid rgba(255,255,255,0.025)',
+    borderBottom: '1px solid color-mix(in oklab, var(--border), transparent 70%)',
   },
   rowKey: { display: 'flex', flexDirection: 'column', gap: 2, minWidth: 0 },
   rowControl: { minWidth: 0 },
   rowMeta: { display: 'flex', justifyContent: 'flex-end' },
-  input: {
-    background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.1)',
-    borderRadius: 6, padding: '5px 9px', color: 'var(--fg, #e2e8f0)', fontSize: 13,
-    fontFamily: 'inherit', outline: 'none', width: '100%', boxSizing: 'border-box',
-  },
-  select: {
-    background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.1)',
-    borderRadius: 6, padding: '5px 9px', color: 'var(--fg, #e2e8f0)', fontSize: 13, outline: 'none',
-  },
+  input: { width: '100%', boxSizing: 'border-box' },
+  select: {},
   toggle: { display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 13, cursor: 'pointer' },
-  btnPrimary: {
-    background: '#38bdf8', color: '#051827', border: 'none', padding: '6px 12px',
-    borderRadius: 6, fontSize: 13, fontWeight: 600, cursor: 'pointer',
-  },
-  btnGhost: {
-    background: 'transparent', color: 'rgba(231, 247, 255, 0.6)',
-    border: '1px solid rgba(255,255,255,0.1)', padding: '4px 10px',
-    borderRadius: 4, fontSize: 11, cursor: 'pointer',
-  },
-  stateInfo: { fontSize: 11, color: '#10b981', fontStyle: 'italic' },
-  stateError: { fontSize: 11, color: '#ef4444', fontStyle: 'italic', maxWidth: 360, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+  stateInfo: { fontSize: 11, color: 'var(--good, #10b981)', fontStyle: 'italic' },
+  stateError: { fontSize: 11, color: 'var(--bad, #ef4444)', fontStyle: 'italic', maxWidth: 360, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
   error: {
-    background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.3)',
-    borderRadius: 8, padding: 16, color: '#fca5a5', fontSize: 14, marginTop: 16,
+    background: 'color-mix(in oklab, var(--bad, #ef4444), transparent 92%)',
+    border: '1px solid color-mix(in oklab, var(--bad, #ef4444), transparent 70%)',
+    borderRadius: 6, padding: 16,
+    color: 'color-mix(in oklab, var(--bad, #ef4444), white 30%)',
+    fontSize: 13, marginTop: 16,
   },
 };

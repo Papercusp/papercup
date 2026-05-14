@@ -168,9 +168,9 @@ export default function BackupsSettingsPage() {
 
   return (
     <main className="pc-settings-page">
-      <header className="pc-settings-header">
+      <header>
         <h1>Backups</h1>
-        <p className="pc-settings-subtitle">
+        <p className="pc-settings-intro">
           Per-workspace deduplicated snapshots via kopia. Local repo at{' '}
           <code>~/.papercusp-workspaces/&lt;id&gt;/backups/kopia-repo/</code>. Repo password is derived
           from your workspace key — no separate secret.

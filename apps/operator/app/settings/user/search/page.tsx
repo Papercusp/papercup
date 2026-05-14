@@ -50,10 +50,10 @@ export default function SearchPage() {
   }, [q, mode]);
 
   return (
-    <div style={{ padding: 32, maxWidth: 920, display: 'flex', flexDirection: 'column', gap: 16 }}>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
       <header>
-        <h1 style={{ marginBottom: 8 }}>Search workspace</h1>
-        <p style={{ color: 'var(--text-secondary)', margin: 0 }}>
+        <h1>Search workspace</h1>
+        <p className="pc-settings-intro">
           Searches your personal memories (mem0) and the workspace prose
           (operator turns, escalations, brainstorm notes) in one place.
           Memories use semantic similarity; prose uses keyword match (BM25).
@@ -93,9 +93,9 @@ export default function SearchPage() {
 
       {memories.length > 0 && (
         <section>
-          <h2 style={{ fontSize: 14, textTransform: 'uppercase', letterSpacing: 1, color: 'var(--text-secondary)', marginBottom: 8 }}>
+          <h4 className="pc-settings-eyebrow">
             Memories ({memories.length})
-          </h2>
+          </h4>
           <ul style={{ listStyle: 'none', padding: 0, display: 'flex', flexDirection: 'column', gap: 8 }}>
             {memories.map((m) => (
               <li key={m.id} style={{ padding: 12, borderRadius: 6, border: '1px solid var(--border)', background: 'var(--surface)' }}>
@@ -116,9 +116,9 @@ export default function SearchPage() {
 
       {prose.length > 0 && (
         <section>
-          <h2 style={{ fontSize: 14, textTransform: 'uppercase', letterSpacing: 1, color: 'var(--text-secondary)', marginBottom: 8 }}>
+          <h4 className="pc-settings-eyebrow">
             Prose ({prose.length})
-          </h2>
+          </h4>
           <ul style={{ listStyle: 'none', padding: 0, display: 'flex', flexDirection: 'column', gap: 8 }}>
             {prose.map((h) => (
               <li key={`${h.source}:${h.source_id}`} style={{ padding: 12, borderRadius: 6, border: '1px solid var(--border)', background: 'var(--surface)' }}>

@@ -81,7 +81,7 @@ export default function PublishingClient() {
     <div className="pc-settings-section">
       {confirmEl}
       <h1>Publishing</h1>
-      <p>
+      <p className="pc-settings-intro">
         One-click public publishing for coding harnesses, hosted on{' '}
         <code>*.preview.papercuspai.com</code>. The substrate auto-registers a
         per-machine tenant the first time you click Publish; this page lets you

@@ -119,20 +119,20 @@ export default function MobileSettingsPage() {
   const remainingS = Math.floor(remainingMs / 1000);
 
   return (
-    <div className="space-y-8 p-6">
+    <div>
       {confirmEl}
       <header>
-        <h1 className="text-xl font-semibold">Mobile access</h1>
-        <p className="mt-1 text-sm text-neutral-500">
+        <h1>Mobile access</h1>
+        <p className="pc-settings-intro">
           Pair the Operator Mobile app on your phone to monitor harnesses, voice-control the operator, and receive intervention pushes when away from your desk.
         </p>
       </header>
 
-      <section className="rounded-xl border border-neutral-800 bg-neutral-900/40 p-6">
-        <h2 className="text-sm font-medium uppercase tracking-wide text-neutral-400">Pair a new device</h2>
+      <section className="pc-settings-section">
+        <h2>Pair a new device</h2>
 
         {!qr && (
-          <div className="mt-4 flex items-center gap-3">
+          <div style={{ marginTop: 12, display: 'flex', alignItems: 'center', gap: 12 }}>
             <Select
               value={workspaceId}
               onChange={setWorkspaceId}
@@ -143,57 +143,59 @@ export default function MobileSettingsPage() {
               }
               ariaLabel="Workspace"
             />
-            <button
-              onClick={mint}
-              disabled={busy}
-              className="rounded-md bg-cyan-500 px-4 py-2 text-sm font-medium text-neutral-950 disabled:opacity-50"
-            >
+            <button type="button" onClick={mint} disabled={busy}>
               {busy ? 'Generating…' : 'Show QR code'}
             </button>
           </div>
         )}
 
         {qr && (
-          <div className="mt-4 flex flex-col items-center gap-4">
+          <div style={{ marginTop: 16, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 16 }}>
             <QRSvg payload={qr} />
-            <div className="text-xs text-neutral-500">
+            <div className="pc-settings-hint">
               Expires in {Math.floor(remainingS / 60)}:{String(remainingS % 60).padStart(2, '0')}
             </div>
-            <p className="max-w-md text-center text-xs text-neutral-500">
-              On your phone, open PaperCusp → "Scan QR" → point at this code. Or use the manual code below.
+            <p className="pc-settings-hint" style={{ maxWidth: 420, textAlign: 'center' }}>
+              On your phone, open PaperCusp → &quot;Scan QR&quot; → point at this code. Or use the manual code below.
             </p>
             <ManualPayloadBox payload={qr} />
-            <button
-              onClick={cancel}
-              className="rounded-md border border-neutral-700 px-3 py-1.5 text-sm text-neutral-400 hover:bg-neutral-800"
-            >
-              Cancel
-            </button>
+            <button type="button" onClick={cancel}>Cancel</button>
           </div>
         )}
       </section>
 
-      <section className="rounded-xl border border-neutral-800 bg-neutral-900/40 p-6">
-        <h2 className="text-sm font-medium uppercase tracking-wide text-neutral-400">Paired devices</h2>
+      <section className="pc-settings-section">
+        <h2>Paired devices</h2>
         {devices.length === 0 ? (
-          <p className="mt-4 text-sm text-neutral-500">No devices paired yet.</p>
+          <p className="pc-settings-hint" style={{ marginTop: 12 }}>No devices paired yet.</p>
         ) : (
-          <ul className="mt-4 space-y-2">
+          <ul style={{ marginTop: 12, listStyle: 'none', padding: 0, display: 'flex', flexDirection: 'column', gap: 8 }}>
             {devices.map((d) => (
               <li
                 key={d.device_id}
-                className="flex items-center justify-between rounded-lg border border-neutral-800 bg-neutral-900/60 px-4 py-3"
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  border: '1px solid var(--border)',
+                  background: 'var(--bg-2)',
+                  borderRadius: 6,
+                  padding: '12px 16px',
+                }}
               >
                 <div>
-                  <div className="text-sm font-medium">{d.device_label ?? '(unnamed)'}</div>
-                  <div className="text-xs text-neutral-500">
+                  <div style={{ fontSize: 13, fontWeight: 500, color: 'var(--fg)' }}>
+                    {d.device_label ?? '(unnamed)'}
+                  </div>
+                  <div className="pc-settings-hint" style={{ marginTop: 2 }}>
                     workspace {d.workspace_id} • paired {new Date(d.paired_at).toLocaleString()}
                     {d.last_seen ? ` • last seen ${new Date(d.last_seen).toLocaleString()}` : ''}
                   </div>
                 </div>
                 <button
+                  type="button"
                   onClick={() => revoke(d.device_id)}
-                  className="rounded-md border border-red-800/50 px-2 py-1 text-xs text-red-400 hover:bg-red-950/30"
+                  style={{ color: 'var(--bad, #f87171)', borderColor: 'color-mix(in oklab, var(--bad, #f87171), transparent 60%)' }}
                 >
                   Revoke
                 </button>
@@ -223,25 +225,30 @@ function ManualPayloadBox({ payload }: { payload: QrPayload }) {
     }
   };
   return (
-    <div className="w-full max-w-md space-y-2 rounded-lg border-2 border-cyan-700/40 bg-neutral-950 p-4">
-      <div className="flex items-center justify-between">
-        <div className="text-xs font-medium uppercase tracking-wide text-cyan-300">Manual pair payload</div>
-        <button
-          onClick={copy}
-          className="rounded-md border border-cyan-700/60 bg-cyan-950/40 px-3 py-1 text-xs font-medium text-cyan-200 hover:bg-cyan-900/60"
-        >
-          {copied ? 'Copied ✓' : 'Copy'}
-        </button>
+    <div style={{
+      width: '100%',
+      maxWidth: 420,
+      border: '1px solid color-mix(in oklab, var(--accent, #6aa7ff), transparent 50%)',
+      background: 'var(--bg-2)',
+      borderRadius: 6,
+      padding: 12,
+      display: 'flex',
+      flexDirection: 'column',
+      gap: 8,
+    }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+        <span className="pc-settings-eyebrow" style={{ margin: 0 }}>Manual pair payload</span>
+        <button type="button" onClick={copy}>{copied ? 'Copied ✓' : 'Copy'}</button>
       </div>
       <textarea
         readOnly
         value={text}
         onFocus={(e) => e.currentTarget.select()}
         rows={3}
-        className="w-full rounded-md border border-neutral-700 bg-neutral-900 p-2 font-mono text-xs text-cyan-200 outline-none focus:border-cyan-500"
+        style={{ width: '100%', fontFamily: 'ui-monospace, monospace' }}
       />
-      <p className="text-[11px] text-neutral-500">
-        Paste this into the phone's "Manual pair code" field — it contains the server URL and token together.
+      <p className="pc-settings-hint" style={{ margin: 0, fontSize: 11 }}>
+        Paste this into the phone&apos;s &quot;Manual pair code&quot; field — it contains the server URL and token together.
       </p>
     </div>
   );
@@ -251,12 +258,11 @@ function QRSvg({ payload }: { payload: QrPayload }) {
   const json = JSON.stringify(payload);
   const src = `/api/mobile/qr.svg?payload=${encodeURIComponent(json)}`;
   return (
-    <div className="flex flex-col items-center gap-2">
-      <img
-        src={src}
-        alt="Pairing QR code"
-        className="h-64 w-64 rounded-md bg-white p-2"
-      />
-    </div>
+    // eslint-disable-next-line @next/next/no-img-element
+    <img
+      src={src}
+      alt="Pairing QR code"
+      style={{ height: 256, width: 256, borderRadius: 6, background: '#fff', padding: 8 }}
+    />
   );
 }

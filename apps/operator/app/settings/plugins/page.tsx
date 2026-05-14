@@ -183,14 +183,14 @@ export default function PluginSettingsPage() {
     }
   });
 
-  if (loading) return <div style={{ padding: 24 }}>Loading…</div>;
+  if (loading) return <div><h1>Plugins</h1><p className="pc-settings-loading">Loading…</p></div>;
 
   return (
-    <div style={{ padding: 24, maxWidth: 720 }}>
-      <h2 style={{ margin: '0 0 4px' }}>Plugin settings</h2>
-      <p style={{ color: 'var(--fg-mute, #999)', marginTop: 0 }}>
-        Per-harness configuration for installed plugins. Reads/writes
-        <code style={{ margin: '0 4px' }}>~/.papercusp/harnesses/&lt;slug&gt;/plugin-configs/</code>.
+    <div>
+      <h1>Plugins</h1>
+      <p className="pc-settings-intro">
+        Per-harness configuration for installed plugins. Reads/writes{' '}
+        <code>~/.papercusp/harnesses/&lt;slug&gt;/plugin-configs/</code>.
         See <a href="/settings/plugins/tools" style={{ color: 'var(--fg)' }}>tools contributed by plugins →</a>
       </p>
 
