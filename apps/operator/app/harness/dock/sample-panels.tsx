@@ -1,0 +1,153 @@
+/**
+ * Sample panel components registered for the dock-preview route +
+ * eventual default registrations for Phase 5 root dock.
+ *
+ * These are minimal stubs that render the panel type + params so the
+ * dock layout machinery can be exercised end-to-end without depending
+ * on the full HarnessDashboard component tree.
+ *
+ * Real implementations replace these in Phase 5 by extracting current
+ * dashboard sections into focused components.
+ */
+
+'use client';
+
+import { useEffect } from 'react';
+import { panelRegistry, type PanelComponentProps } from './panel-registry';
+import { useNavHistory } from './useNavHistory';
+import { NavChevrons } from './NavChevrons';
+
+function SamplePanel({ panelType, params }: PanelComponentProps) {
+  return (
+    <div
+      style={{
+        padding: 16,
+        height: '100%',
+        overflow: 'auto',
+        fontSize: 13,
+        color: 'var(--foreground, #ccc)',
+        fontFamily: 'system-ui, sans-serif',
+      }}
+    >
+      <h3 style={{ margin: 0, marginBottom: 8, fontSize: 14, fontWeight: 600 }}>
+        {panelType}
+      </h3>
+      <details>
+        <summary style={{ cursor: 'pointer', marginBottom: 8 }}>params</summary>
+        <pre
+          style={{
+            margin: 0,
+            padding: 8,
+            background: 'var(--card, #1a1a1a)',
+            fontSize: 11,
+            borderRadius: 4,
+            overflowX: 'auto',
+          }}
+        >
+          {JSON.stringify(params, null, 2)}
+        </pre>
+      </details>
+      <p style={{ marginTop: 16, color: 'var(--muted-foreground, #888)' }}>
+        Sample panel. Drag the tab to split, drag outside group for floating,
+        right-click the title for options.
+      </p>
+    </div>
+  );
+}
+
+/** Docs-style panel with internal navigation, demos useNavHistory. */
+function DocsSamplePanel(props: PanelComponentProps) {
+  const { params, api } = props;
+  type Route = { doc: string };
+  const initial: Route = (params.initial as Route) ?? { doc: 'getting-started' };
+
+  const nav = useNavHistory<Route>(initial, {
+    params,
+    setParams: api.setParams,
+  });
+
+  const docs = [
+    { id: 'getting-started', label: 'Getting Started', body: 'Welcome to the dock.' },
+    { id: 'panels', label: 'Panels', body: 'Each panel is a draggable view.' },
+    { id: 'floating', label: 'Floating Groups', body: 'Drag a tab outside its group to float it.' },
+    { id: 'nav', label: 'Navigation', body: 'Use the chevrons to go back and forward.' },
+  ];
+
+  const current = docs.find((d) => d.id === nav.current.doc) ?? docs[0];
+
+  return (
+    <div
+      style={{
+        padding: 12,
+        height: '100%',
+        display: 'flex',
+        flexDirection: 'column',
+        fontSize: 13,
+        color: 'var(--foreground, #ccc)',
+        fontFamily: 'system-ui, sans-serif',
+      }}
+    >
+      <div style={{ display: 'flex', alignItems: 'center', marginBottom: 12 }}>
+        <NavChevrons nav={nav} />
+        <h3 style={{ margin: 0, fontSize: 14, fontWeight: 600 }}>{current.label}</h3>
+      </div>
+      <div style={{ flex: 1, overflow: 'auto' }}>
+        <p>{current.body}</p>
+        <div style={{ marginTop: 16, display: 'flex', flexDirection: 'column', gap: 4 }}>
+          <div style={{ fontSize: 11, color: 'var(--muted-foreground, #888)', marginBottom: 4 }}>
+            Navigate to:
+          </div>
+          {docs.map((d) => (
+            <button
+              key={d.id}
+              type="button"
+              onClick={() => nav.push({ doc: d.id })}
+              disabled={d.id === current.id}
+              style={{
+                textAlign: 'left',
+                padding: '4px 8px',
+                background: d.id === current.id ? 'var(--accent, #2a2a2a)' : 'transparent',
+                color: 'inherit',
+                border: '1px solid var(--border, #333)',
+                borderRadius: 3,
+                cursor: d.id === current.id ? 'default' : 'pointer',
+                fontSize: 12,
+              }}
+            >
+              {d.label}
+            </button>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+let registered = false;
+
+/**
+ * Ensure the sample panels are registered exactly once per module load.
+ * Importable from any client component; safe to call repeatedly.
+ */
+export function registerSamplePanels(): void {
+  if (registered) return;
+  registered = true;
+  for (const t of [
+    'view:dashboard-overview',
+    'view:harness-overview',
+    'data:features',
+    'data:issues',
+    'data:agents',
+    'data:logs',
+    'data:git',
+  ]) {
+    panelRegistry.register(t, SamplePanel);
+  }
+  panelRegistry.register('view:docs', DocsSamplePanel, { keepAlive: true });
+}
+
+export function useEnsureSamplePanels(): void {
+  useEffect(() => {
+    registerSamplePanels();
+  }, []);
+}
