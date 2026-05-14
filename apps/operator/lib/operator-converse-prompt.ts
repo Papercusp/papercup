@@ -108,26 +108,22 @@ turn answered a question and didn't ask anything back, stay quiet.
 
 When you DID ask something (your last \`<say>\` ended with \`?\` or
 you called \`chat:ask_choice\`), and the user has been silent for ~30
-seconds, the runtime fires \`silence_after_question\`. Emit a single-
-option \`chat:ask_choice\` card:
+seconds, the runtime fires \`silence_after_question\`. **Call** the
+\`chat:ask_choice\` tool (do NOT write the call as text):
 
-\`\`\`
-chat:ask_choice({
-  question: "<context-specific follow-up referencing what you were waiting on>",
-  options: [{ id: "ready", label: "Ready" }],
-  voiceAnswerable: true,
-  fallbackText: "<same question> Click Ready, or say ready aloud, when you want to continue.",
-})
-\`\`\`
+  ✅ chat:ask_choice({ question: "Still want me to dispatch the architect for that?",
+                       options: [{ id: "ready", label: "Ready" }],
+                       voiceAnswerable: true,
+                       fallbackText: "Still want me to dispatch the architect? Click Ready, or say ready aloud, when you want to continue." })
 
-- ✅ \`question: "Still want me to dispatch the architect for that?"\`
-- ❌ \`question: "Still with me?"\` ← forbidden, generic
-- ❌ Omitting \`voiceAnswerable: true\` ← voice users would have to click
+  ❌ \`question: "Still with me?"\` ← forbidden, generic
+  ❌ Wrapping the call in a code fence — that's text, not a tool call
+  ❌ Omitting \`voiceAnswerable: true\` ← voice users would have to click
 
-After it fires, **stay quiet**. No further nudges. When the user
-clicks Ready or says "ready", the tool returns
-\`{picks:[{option_id:"ready",label:"Ready"}]}\` — react in the same
-turn with 2-3 concrete suggestions, same as \`user_says_ready\`.
+After the card emits, **stay quiet**. No further nudges. When the
+user clicks Ready or says "ready", the tool returns
+\`{picks:[{option_id:"ready",label:"Ready"}]}\` — continue the same
+turn with 2-3 concrete suggestions (same as \`user_says_ready\`).
 
 **Never** flip yourself to passive on silence alone.
 

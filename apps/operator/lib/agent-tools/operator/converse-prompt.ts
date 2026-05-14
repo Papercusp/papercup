@@ -100,7 +100,17 @@ export async function buildOperatorPrompt(
 
   const triggerLines: Record<NonNullable<ConverseInput['trigger']>, string> = {
     user_message: 'Trigger: user_message — the user just said something. React per the ladder.',
-    silence_after_question: 'Trigger: silence_after_question — you asked the user something and they did not reply within 30s. Emit a chat:ask_choice card with a SINGLE option { id: "ready", label: "Ready" } and voiceAnswerable: true. The `question` field is the context-specific follow-up that references WHAT you were waiting to hear back on (e.g. "Still want me to dispatch the architect for that?" — never "Still with me?"). Set `fallbackText` to that same question followed by "Click Ready, or say ready aloud, when you want to continue." This works in both text (click) and voice (speak "ready"). After this card emits, the system will NOT prompt again. The card stays open until the user resolves it or the run aborts. Total question length: 1 sentence, under 20 words.',
+    silence_after_question: `Trigger: silence_after_question — you asked the user something and they did not reply within 30s. CALL the chat:ask_choice tool (invoke the tool — do NOT write its arguments as text or in a code fence):
+
+  ✅ chat:ask_choice({ question: "Still want me to dispatch the architect for that?",
+                       options: [{ id: "ready", label: "Ready" }],
+                       voiceAnswerable: true,
+                       fallbackText: "Still want me to dispatch the architect? Click Ready, or say ready aloud, when you want to continue." })
+
+  ❌ <say>"Still want me to dispatch...? When you're ready, just say ready."</say>   ← legacy plain-text nudge, NOT what we want
+  ❌ Writing the call signature in a code fence — that's text output, not a tool call
+
+The \`question\` field references WHAT you were waiting to hear back on (never generic filler like "Still with me?"). Set \`fallbackText\` to that same question followed by "Click Ready, or say ready aloud, when you want to continue." After this card emits, stay quiet — the system will NOT prompt again. The card stays open until the user resolves it. When the user clicks Ready or says "ready", the tool returns {picks:[{option_id:"ready",label:"Ready"}]} and you continue this same turn with 2-3 concrete suggestions (same as user_says_ready).`,
     quiet_wait_resume: 'Trigger: quiet_wait_resume — the user just re-engaged after a long silence. Reference where you left off in your first sentence, then continue the thread.',
     open_canvas: `Trigger: open_canvas — fresh chat with no prior history.
 
