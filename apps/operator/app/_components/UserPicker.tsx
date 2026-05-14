@@ -1,7 +1,6 @@
 'use client';
 
 import { useEffect, useState, useCallback } from 'react';
-import { useRouter } from 'next/navigation';
 import { toast } from 'sonner';
 import { ChevronDown, UserPlus, Settings, LogOut, ArrowLeftRight } from 'lucide-react';
 import { Popover } from '../harness/Popover';
@@ -21,7 +20,6 @@ const FALLBACK_USER: User = {
 };
 
 export default function UserPicker() {
-  const router = useRouter();
   const [user, setUser] = useState<User>(FALLBACK_USER);
   const [autoLogin, setAutoLogin] = useState(true);
   // Menu open state is transient — using nuqs/useQueryState here caused a
@@ -54,10 +52,18 @@ export default function UserPicker() {
     setOpen(false);
   }, []);
 
+  // Use a hard navigation (window.location.assign) instead of next/navigation's
+  // router.push. Inside the harness route, router.push was being silently
+  // swallowed — the harness layout has enough URL-coupled state machinery
+  // (nuqs panels, RP.Select.replaceState, the dock layout reducer, etc.)
+  // that a soft navigation from inside a Radix Popover Portal never made
+  // it to the new path. Hard navigation also gives the destination a
+  // clean React tree, which is the right thing for "switch user",
+  // "log out", and "user preferences" — all cross-context jumps.
   const goTo = useCallback((href: string) => {
     close();
-    router.push(href);
-  }, [close, router]);
+    if (typeof window !== 'undefined') window.location.assign(href);
+  }, [close]);
 
   const onLogout = useCallback(async () => {
     close();
@@ -65,11 +71,11 @@ export default function UserPicker() {
       const response = await fetch('/api/auth/logout', { method: 'POST' });
       if (!response.ok) throw new Error('logout failed');
       toast.success('Logged out');
-      router.replace('/login');
+      if (typeof window !== 'undefined') window.location.assign('/login');
     } catch {
       toast.error('Logout failed');
     }
-  }, [close, router]);
+  }, [close]);
 
 
   const displayName = user.display_name || user.username || 'User';
