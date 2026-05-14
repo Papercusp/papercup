@@ -1,0 +1,13 @@
+[Unit]
+Description=Trigger the Papercusp LLM testing nightly run
+
+[Timer]
+# 03:30 local time every day — matches the existing /Backup cadence
+# and gives the operator dev shell time to be running.
+OnCalendar=*-*-* 03:30:00
+AccuracySec=10min
+Persistent=true
+Unit=llm-test-nightly.service
+
+[Install]
+WantedBy=timers.target

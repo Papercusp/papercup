@@ -1,0 +1,20 @@
+[Unit]
+Description=Papercusp LLM testing — nightly suite run
+After=network-online.target
+# Don't fire while the laptop's resuming from sleep — give the
+# operator a moment to come back.
+After=suspend.target
+
+[Service]
+Type=oneshot
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+# Bound the run — the suite shouldn't take more than 90 minutes
+# even with all matrix repeats. Fail open if it does so the
+# next night isn't blocked.
+TimeoutStartSec=90min
+# REQUIRED: the user must provide their key here (or in
+# ~/.config/environment.d/) — without it the script no-ops.
+# Environment=ANTHROPIC_API_KEY=...
+ExecStart=/home/marsh-office/papercupai-workspace/papercup/apps/operator/scripts/llm-test-nightly.sh
