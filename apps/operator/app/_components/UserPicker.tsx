@@ -1,9 +1,11 @@
 'use client';
 
-import { useEffect, useState, useCallback, useRef } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
+import { useQueryState, parseAsBoolean } from 'nuqs';
 import { toast } from 'sonner';
-import { User as UserIcon, ChevronDown, UserPlus, Settings, LogOut, ArrowLeftRight } from 'lucide-react';
+import { ChevronDown, UserPlus, Settings, LogOut, ArrowLeftRight } from 'lucide-react';
+import { Popover } from '../harness/Popover';
 
 interface User {
   id: string;
@@ -12,186 +14,137 @@ interface User {
   has_password: boolean;
 }
 
-/**
- * User picker — appears in the chrome navbar next to the workspace
- * switcher. Shows the current user's display name + a dropdown to
- * switch user, edit preferences, add new user, or log out.
- *
- * Backed by /api/auth/me which falls through to the seeded `default`
- * user when no session cookie is present (Round-13 follow-up — was
- * silently rendering nothing on default-user installs because the
- * route required an explicit cookie).
- */
+const FALLBACK_USER: User = {
+  id: '00000000-0000-0000-0000-000000000001',
+  username: 'default',
+  display_name: 'User',
+  has_password: false,
+};
+
 export default function UserPicker() {
   const router = useRouter();
-  const [user, setUser] = useState<User | null>(null);
-  const [autoLogin, setAutoLogin] = useState(false);
-  const [open, setOpen] = useState(false);
-  const ref = useRef<HTMLSpanElement | null>(null);
+  const [user, setUser] = useState<User>(FALLBACK_USER);
+  const [autoLogin, setAutoLogin] = useState(true);
+  const [open, setOpen] = useQueryState('accountMenu', parseAsBoolean.withDefault(false));
 
   useEffect(() => {
     void (async () => {
-      const fallback: User = {
-        id: '00000000-0000-0000-0000-000000000001',
-        username: 'default',
-        display_name: 'User',
-        has_password: false,
-      };
       try {
         const r = await fetch('/api/auth/me');
         if (!r.ok) {
-          // Route is unreachable / 5xx (PG down, dev server cold-start).
-          // Render the synthetic default user so chrome UI still has
-          // a user-controls cluster — the alternative is a missing
-          // top-right button with no on-screen indication.
-          setUser(fallback);
+          setUser(FALLBACK_USER);
           setAutoLogin(true);
           return;
         }
         const j = await r.json();
-        setUser(j.user ?? fallback);
+        setUser(j.user ?? FALLBACK_USER);
         setAutoLogin(j.autoLogin === true || j.user == null);
       } catch {
-        // Network failure — same fallback. Renders something instead
-        // of nothing.
-        setUser(fallback);
+        setUser(FALLBACK_USER);
         setAutoLogin(true);
       }
     })();
   }, []);
 
-  // Click-outside close.
-  useEffect(() => {
-    if (!open) return;
-    const onDoc = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
-    };
-    document.addEventListener('mousedown', onDoc);
-    return () => document.removeEventListener('mousedown', onDoc);
-  }, [open]);
+  const close = useCallback(() => {
+    void setOpen(false);
+  }, [setOpen]);
+
+  const goTo = useCallback((href: string) => {
+    close();
+    router.push(href);
+  }, [close, router]);
 
   const onLogout = useCallback(async () => {
-    setOpen(false);
+    close();
     try {
-      await fetch('/api/auth/logout', { method: 'POST' });
+      const response = await fetch('/api/auth/logout', { method: 'POST' });
+      if (!response.ok) throw new Error('logout failed');
       toast.success('Logged out');
       router.replace('/login');
     } catch {
       toast.error('Logout failed');
     }
-  }, [router]);
+  }, [close, router]);
 
-  if (!user) return null;
+
+  const displayName = user.display_name || user.username || 'User';
+  const username = user.username || 'default';
+  const initial = (displayName.trim()[0] || username.trim()[0] || 'U').toUpperCase();
+  const signedInLabel = autoLogin ? 'Auto-signed in' : 'Signed in';
 
   return (
-    <span ref={ref} className="pc-user-picker" style={{ position: 'relative', fontSize: 13 }}>
-      <button
-        type="button"
-        onClick={() => setOpen((o) => !o)}
-        title={autoLogin ? `Auto-signed in as ${user.display_name}` : `Signed in as ${user.display_name}`}
-        className="pc-user-trigger"
-        style={{
-          background: 'transparent',
-          border: '1px solid var(--border, #2a2a2a)',
-          color: 'var(--fg-dim, #aaa)',
-          padding: '3px 8px',
-          borderRadius: 6,
-          cursor: 'pointer',
-          display: 'inline-flex',
-          alignItems: 'center',
-          gap: 6,
-          fontSize: 13,
-          lineHeight: 1,
-        }}
+    <span className="pc-user-picker">
+      <Popover
+        open={open}
+        onOpenChange={setOpen}
+        ariaLabel="Account menu"
+        tooltipLabel={`${signedInLabel} as ${displayName}`}
+        side="bottom"
+        align="end"
+        sideOffset={8}
+        zIndex={1400}
+        contentClassName="pc-user-menu pc-animate-in pc-animate-in--down pc-animate-in--fast"
+        trigger={
+          <button
+            type="button"
+            className="pc-user-trigger"
+            aria-label={`${signedInLabel} as ${displayName}. Open account menu.`}
+            aria-haspopup="dialog"
+            aria-expanded={open}
+          >
+            <span className="pc-user-avatar" aria-hidden="true">{initial}</span>
+            <span className="pc-user-trigger-copy">
+              <span className="pc-user-trigger-name">{displayName}</span>
+              {autoLogin && <span className="pc-user-trigger-status">auto</span>}
+            </span>
+            <ChevronDown className="pc-user-caret" size={12} aria-hidden="true" strokeWidth={1.75} />
+          </button>
+        }
       >
-        <UserIcon size={13} aria-hidden="true" strokeWidth={1.75} />
-        <span>{user.display_name}</span>
-        <ChevronDown size={11} aria-hidden="true" strokeWidth={1.75} style={{ opacity: 0.6 }} />
-      </button>
+        <div className="pc-user-menu-head">
+          <span className="pc-user-menu-avatar" aria-hidden="true">{initial}</span>
+          <span className="pc-user-menu-identity">
+            <strong>{displayName}</strong>
+            <span>@{username}</span>
+          </span>
+          <span className="pc-user-auth-chip">{autoLogin ? 'Auto' : 'Active'}</span>
+        </div>
 
-      {open && (
-        <div
-          role="menu"
-          className="pc-user-menu"
-          style={{
-            position: 'absolute',
-            top: 'calc(100% + 4px)',
-            right: 0,
-            zIndex: 1000,
-            minWidth: 200,
-            borderRadius: 8,
-            border: '1px solid var(--border, #2a2a2a)',
-            background: 'var(--surface, #1b1b1b)',
-            padding: 4,
-            boxShadow: '0 4px 12px rgba(0,0,0,0.25)',
-          }}
-        >
-          <div
-            style={{
-              padding: '6px 10px',
-              fontSize: 11,
-              opacity: 0.55,
-              borderBottom: '1px solid var(--border, #2a2a2a)',
-              marginBottom: 4,
-            }}
-          >
-            {autoLogin ? 'Auto-signed in as' : 'Signed in as'}{' '}
-            <span style={{ opacity: 0.95 }}>{user.display_name}</span>
-          </div>
-          <button
-            type="button"
-            onClick={() => { setOpen(false); router.push('/settings/user'); }}
-            style={menuItemStyle}
-            role="menuitem"
-          >
-            <Settings size={13} aria-hidden="true" strokeWidth={1.75} />
-            <span>User preferences</span>
+        <div className="pc-user-menu-section" aria-label="Account actions">
+          <button type="button" className="pc-user-menu-item" onClick={() => goTo('/settings/user')}>
+            <Settings size={15} aria-hidden="true" strokeWidth={1.75} />
+            <span>
+              <strong>User preferences</strong>
+              <small>Profile, theme, and defaults</small>
+            </span>
           </button>
-          <button
-            type="button"
-            onClick={() => { setOpen(false); router.push('/login?switch=1'); }}
-            style={menuItemStyle}
-            role="menuitem"
-          >
-            <ArrowLeftRight size={13} aria-hidden="true" strokeWidth={1.75} />
-            <span>Switch user</span>
+          <button type="button" className="pc-user-menu-item" onClick={() => goTo('/login?switch=1')}>
+            <ArrowLeftRight size={15} aria-hidden="true" strokeWidth={1.75} />
+            <span>
+              <strong>Switch user</strong>
+              <small>Sign in as someone else</small>
+            </span>
           </button>
-          <button
-            type="button"
-            onClick={() => { setOpen(false); router.push('/signup'); }}
-            style={menuItemStyle}
-            role="menuitem"
-          >
-            <UserPlus size={13} aria-hidden="true" strokeWidth={1.75} />
-            <span>Add user</span>
-          </button>
-          <div style={{ height: 1, background: 'var(--border, #2a2a2a)', margin: '4px 0' }} />
-          <button
-            type="button"
-            onClick={onLogout}
-            style={menuItemStyle}
-            role="menuitem"
-          >
-            <LogOut size={13} aria-hidden="true" strokeWidth={1.75} />
-            <span>Log out</span>
+          <button type="button" className="pc-user-menu-item" onClick={() => goTo('/signup')}>
+            <UserPlus size={15} aria-hidden="true" strokeWidth={1.75} />
+            <span>
+              <strong>Add user</strong>
+              <small>Create another local account</small>
+            </span>
           </button>
         </div>
-      )}
+
+        <div className="pc-user-menu-divider" />
+
+        <button type="button" className="pc-user-menu-item pc-user-menu-item--danger" onClick={onLogout}>
+          <LogOut size={15} aria-hidden="true" strokeWidth={1.75} />
+          <span>
+            <strong>Log out</strong>
+            <small>Return to sign in</small>
+          </span>
+        </button>
+      </Popover>
     </span>
   );
 }
-
-const menuItemStyle: React.CSSProperties = {
-  width: '100%',
-  textAlign: 'left',
-  padding: '6px 10px',
-  borderRadius: 4,
-  background: 'none',
-  border: 'none',
-  cursor: 'pointer',
-  fontSize: 13,
-  color: 'var(--fg, #ddd)',
-  display: 'inline-flex',
-  alignItems: 'center',
-  gap: 8,
-};

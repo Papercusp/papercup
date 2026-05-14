@@ -9238,7 +9238,7 @@ body.h-harness-top-collapsed .pc-header {
 }
 
 @media (max-width: 1320px) {
-  .pc-header-right {
+  .pc-header nav.pc-header-right {
     gap: 7px;
   }
 
@@ -9520,6 +9520,7 @@ body.h-harness-top-collapsed .pc-header {
   .pc-user-trigger,
   .pc-user-caret,
   .pc-user-menu-item,
+  .pc-settings-nav-link,
   .pc-settings-nav-link::before,
   .operator-panel__metrics span,
   .operator-feed-pills button,
