@@ -168,3 +168,12 @@ export function useEnsureSamplePanels(): void {
     registerSamplePanels();
   }, []);
 }
+
+// Self-register on module import so the registry is populated before
+// any React render walks a layout. Without this, the dock's first paint
+// after hydrate shows MissingPanel for every panel until the page's
+// registerSamplePanels useEffect runs (one tick later) — a brief flash.
+//
+// Safe because panelRegistry.register is idempotent + the called
+// functions are pure component refs (no side effects).
+registerSamplePanels();
