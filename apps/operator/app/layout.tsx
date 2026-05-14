@@ -1,5 +1,6 @@
 import type { Metadata } from 'next';
 import { Suspense } from 'react';
+import Script from 'next/script';
 import { Toaster } from 'sonner';
 import { NuqsAdapter } from 'nuqs/adapters/next/app';
 import * as Tooltip from '@radix-ui/react-tooltip';
@@ -100,9 +101,9 @@ export default async function RootLayout({ children }: { children: React.ReactNo
           purely visual scaffolding — no React state depends on
           it — so suppression is safe. */}
       <body suppressHydrationWarning>
-        <script dangerouslySetInnerHTML={{ __html: flagBootstrapScript }} />
-        <script dangerouslySetInnerHTML={{ __html: visualEffectsBootstrapScript }} />
-        <script dangerouslySetInnerHTML={{ __html: operatorChatBootstrapScript }} />
+        <Script id="papercusp-flags-bootstrap" strategy="beforeInteractive" dangerouslySetInnerHTML={{ __html: flagBootstrapScript }} />
+        <Script id="papercusp-visual-effects-bootstrap" strategy="beforeInteractive" dangerouslySetInnerHTML={{ __html: visualEffectsBootstrapScript }} />
+        <Script id="papercusp-op-chat-bootstrap" strategy="beforeInteractive" dangerouslySetInnerHTML={{ __html: operatorChatBootstrapScript }} />
         <div id="papercusp-app">
           {/* Tooltip.Provider hoisted to the root so ChromeShell-rendered
               children (OperatorPanel, OracleDock) can use the harness/Tooltip

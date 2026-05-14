@@ -69,17 +69,24 @@ export function useStateSnapshots(): {
       onOpen: () => setConnected(true),
       onError: () => setConnected(false),
       handlers: {
-        snapshot: (data: unknown) => {
+        snapshot: (raw) => {
+          // @restart/sse hands handlers the raw event data string; parse here.
+          let parsed: unknown;
+          try { parsed = JSON.parse(raw); }
+          catch {
+            console.warn('[useStateSnapshots] non-JSON snapshot payload', raw);
+            return;
+          }
           // Defensive validation: any field-level malformation here
           // would crash the React render downstream when it iterates
           // openCards. Drop the event on a shape mismatch — server-side
           // bugs shouldn't take the chat surface offline.
-          if (!isValidSnapshotEnvelope(data)) {
+          if (!isValidSnapshotEnvelope(parsed)) {
             // eslint-disable-next-line no-console
-            console.warn('[useStateSnapshots] dropping malformed snapshot', data);
+            console.warn('[useStateSnapshots] dropping malformed snapshot', parsed);
             return;
           }
-          const env = data;
+          const env = parsed;
           setByRun((prev) => {
             const existing = prev.get(env.runId);
             // Versions are monotonic per run; later wins.

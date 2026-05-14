@@ -7,16 +7,19 @@
  * The browser instrumentation in app/_components/PostHogProvider.tsx
  * fetches this on mount; if !enabled, posthog-js is never initialized.
  *
- * Telemetry is OFF by default. The operator state is the source of
- * truth (set by the wizard's Step 12); env defaults fill in for the
- * host/key if the user opted in but didn't set workspace-specific
- * values.
+ * Gate: user opted in (telemetry_enabled === true)
+ *       OR PAPERCUSP_INTERNAL_BUILD === 'true'.
+ *
+ * Host + projectKey resolve from env → discovery file → bundled
+ * POSTHOG_PUBLIC_DEFAULTS so an opt-in alone is sufficient on shipped
+ * binaries; no manual posthog.json drop required.
  */
 import { NextRequest, NextResponse } from 'next/server';
 import { readOperatorState } from '@/lib/operator-state-pg';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
 import { ensureInstallId } from '@/lib/setup-wizard-install-id';
 import { getPosthogConfigWithSource } from '@/lib/posthog-config';
+import { POSTHOG_PUBLIC_DEFAULTS } from '@/lib/posthog-public-defaults';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -31,6 +34,17 @@ function isLoopback(req: NextRequest): boolean {
   );
 }
 
+function resolveHostKey(): { host: string; projectKey: string } {
+  const envHost = process.env.PAPERCUSP_POSTHOG_HOST;
+  const envKey = process.env.PAPERCUSP_POSTHOG_KEY;
+  if (envHost && envKey) return { host: envHost, projectKey: envKey };
+  const phResolved = getPosthogConfigWithSource();
+  if (phResolved.config) {
+    return { host: phResolved.config.host, projectKey: phResolved.config.projectKey };
+  }
+  return { host: POSTHOG_PUBLIC_DEFAULTS.host, projectKey: POSTHOG_PUBLIC_DEFAULTS.projectKey };
+}
+
 export async function GET(req: NextRequest) {
   if (!isLoopback(req)) {
     return NextResponse.json({ error: 'loopback only' }, { status: 403 });
@@ -39,27 +53,23 @@ export async function GET(req: NextRequest) {
   const state = await readOperatorState<{ telemetry_enabled?: boolean }>('setup_wizard_state');
 
   const userOptedIn = Boolean(state?.telemetry_enabled);
-  // PostHog must also be admin-bootstrapped via the shared resolver +
-  // testingFeatures: true. This is the same privacy moat as feature
-  // flags (see docs.papercupai.com/posthog). A shipped binary on a
-  // fresh install has no discovery file → testingFeatures is false →
-  // browser SDK never loads regardless of user opt-in.
-  const phResolved = getPosthogConfigWithSource();
-  const enabled = userOptedIn && phResolved.testingFeatures && Boolean(phResolved.config);
-  if (!enabled) {
-    return NextResponse.json({
-      enabled: false,
-      reason: !userOptedIn
-        ? 'user-opt-out'
-        : !phResolved.testingFeatures
-          ? 'posthog-testing-features-off'
-          : 'posthog-unconfigured',
-    });
+  const internalBuild = process.env.PAPERCUSP_INTERNAL_BUILD === 'true';
+  // Never ship dev clicks/sessions to production PostHog. The flags
+  // endpoint at flags.papercuspai.com also redirects unauthenticated
+  // requests, which triggers CORS preflight failures in the browser
+  // console even for non-fatal config loads.
+  if (process.env.NODE_ENV !== 'production') {
+    return NextResponse.json({ enabled: false, reason: 'dev-mode' });
   }
+  const enabled = userOptedIn || internalBuild;
+  if (!enabled) {
+    return NextResponse.json({ enabled: false, reason: 'user-opt-out' });
+  }
+  const { host, projectKey } = resolveHostKey();
   return NextResponse.json({
     enabled: true,
-    host: phResolved.config!.host,
-    project_key: phResolved.config!.projectKey,
+    host,
+    project_key: projectKey,
     distinct_id: installId,
     workspace_id: activeWorkspaceId(),
   });

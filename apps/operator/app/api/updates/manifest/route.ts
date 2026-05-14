@@ -119,11 +119,16 @@ function findSignature(release: GhRelease, assetUrl: string): string {
   return sig?.browser_download_url ?? '';
 }
 
-async function fetchReleases(): Promise<GhRelease[]> {
+async function fetchReleases(): Promise<GhRelease[] | null> {
   const url = `https://api.github.com/repos/${GITHUB_REPO}/releases?per_page=30`;
   const headers: Record<string, string> = { Accept: 'application/vnd.github+json' };
   if (process.env.GITHUB_TOKEN) headers.Authorization = `Bearer ${process.env.GITHUB_TOKEN}`;
   const res = await fetch(url, { headers, next: { revalidate: 60 } });
+  // The desktop repo isn't public on GitHub (releases are built via
+  // bin/release-local.sh). Treat 404 as "no remote releases" → 204 below,
+  // so the in-app updater quietly accepts that no update is available
+  // instead of logging 502s on every poll.
+  if (res.status === 404) return null;
   if (!res.ok) throw new Error(`github releases: ${res.status}`);
   return (await res.json()) as GhRelease[];
 }
@@ -144,11 +149,15 @@ export async function GET(req: NextRequest) {
   const stored = await readOperatorState<{ update_channel?: string }>('setup_wizard_state');
   const channel = resolveChannel(req, stored?.update_channel);
 
-  let releases: GhRelease[];
+  let releases: GhRelease[] | null;
   try {
     releases = await fetchReleases();
   } catch (e: any) {
     return NextResponse.json({ error: `releases fetch: ${e?.message}` }, { status: 502 });
+  }
+  if (!releases) {
+    // No remote release source configured / repo absent — 204 "no update".
+    return new NextResponse(null, { status: 204 });
   }
 
   const visible = visibleChannels(channel);

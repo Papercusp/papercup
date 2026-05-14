@@ -30,9 +30,9 @@ export default function InsightsPanel({
   features, totalCostUsd, totalInputTokens, totalOutputTokens, iteration, slug, onClose, inline = false,
 }: Props) {
   const stats = useMemo(() => {
-    const byStatus: Record<HarnessStatus, number> = {
-      todo: 0, in_progress: 0, validating: 0, failing: 0, blocked: 0, passed: 0,
-    };
+    const byStatus: Record<HarnessStatus, number> = Object.fromEntries(
+      STATUS_ORDER.map((s) => [s, 0]),
+    ) as Record<HarnessStatus, number>;
     let totalAttempts = 0;
     let stuckCount = 0;
     const attemptsHist = [0, 0, 0, 0, 0]; // 0, 1, 2, 3+, 5+
