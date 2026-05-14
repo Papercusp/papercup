@@ -102,17 +102,23 @@ export function isAutoAcceptedByThreshold(
 //   false → 'off'
 const AUTO_ACCEPT_KEY = 'operator:autoAccept';
 const LEGACY_AUTO_SCAN_KEY = 'operator:autoScan';
-function loadAutoAccept(): AutoAcceptLevel {
-  if (typeof window === 'undefined') return 'medium';
+/**
+ * Returns the localStorage-saved auto-accept level, or null if none is set.
+ * Used ONLY by the client-side hydrate effect — never at module-eval time
+ * for the initial state, because the server has no localStorage and an
+ * SSR / client mismatch on the resulting class name causes a React
+ * hydration error on the OperatorButton.
+ */
+function readSavedAutoAccept(): AutoAcceptLevel | null {
+  if (typeof window === 'undefined') return null;
   try {
     const v = window.localStorage.getItem(AUTO_ACCEPT_KEY);
     if (isAutoAcceptLevel(v)) return v;
-    // Legacy migration from the boolean key.
     const legacy = window.localStorage.getItem(LEGACY_AUTO_SCAN_KEY);
     if (legacy === '0') return 'off';
     if (legacy === '1') return 'medium';
   } catch { /* ignore */ }
-  return 'medium';
+  return null;
 }
 function saveAutoAccept(v: AutoAcceptLevel): void {
   if (typeof window === 'undefined') return;
@@ -128,7 +134,10 @@ const defaultState: OperatorState = {
   open: false,
   iconState: 'idle',
   paused: false,
-  autoAccept: loadAutoAccept(),
+  // MUST match between SSR and first client render — see readSavedAutoAccept
+  // above. The actual stored value is loaded inside hydrateOperatorStateFromPg
+  // after mount.
+  autoAccept: 'medium',
   cards: [],
   recentAutoAccepts: [],
 };
@@ -168,6 +177,15 @@ export async function hydrateOperatorStateFromPg(): Promise<void> {
   const store = getOperatorStateStore();
   if (store.hydrated || typeof window === 'undefined') return;
   store.hydrated = true;
+  // Apply localStorage immediately (synchronous) so the UI doesn't flicker
+  // 'medium' → saved value over the PG round-trip. SSR-safe because this
+  // only runs in the post-hydration effect.
+  const saved = readSavedAutoAccept();
+  if (saved && saved !== store.state.autoAccept) {
+    store.state = { ...store.state, autoAccept: saved };
+    sharedState = store.state;
+    for (const fn of store.setters) fn({ autoAccept: saved });
+  }
   try {
     const r = await fetch('/api/profile');
     if (!r.ok) return;

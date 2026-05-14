@@ -1,5 +1,14 @@
 import { NextResponse } from 'next/server';
-import { getSessionUser, getSessionUserOrDefault, listUsers, updateDisplayName } from '@/lib/auth';
+import { cookies, headers } from 'next/headers';
+import {
+  getSessionUser,
+  getSessionUserOrDefault,
+  listUsers,
+  login,
+  updateDisplayName,
+  SESSION_COOKIE,
+  DEFAULT_SESSION_TTL_MS,
+} from '@/lib/auth';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -20,26 +29,29 @@ export const runtime = 'nodejs';
  * require explicit auth.
  */
 export async function GET() {
-  // Each PG-touching call is wrapped — if embedded-pg is unreachable
-  // (no discovery file, port mid-restart, fresh-install racing the
-  // bootstrap migration), return a synthetic auto-login user so chrome
-  // UI (UserPicker, AutoLoginWelcomeToast) still renders. The
-  // alternative — letting the route 500 — silently hides the entire
-  // user-controls cluster from the navbar with no on-screen hint that
-  // anything's wrong (round-14 + this turn's bug).
+  // Each PG-touching call is wrapped so a failure here doesn't 500 the
+  // whole chrome UI — UserPicker silently bails on non-OK responses,
+  // and that produced the "no top-right button" symptom we hit twice.
+  //
+  // 2026-05-14: errors are now LOGGED with `console.error` instead of
+  // swallowed. The previous silent-catch round-15 fix masked real
+  // misconfigurations (e.g. missing migration, wrong creds) as
+  // "pgUnavailable" with no server-side hint at the actual cause.
   let sessionUser: Awaited<ReturnType<typeof getSessionUser>> = null;
+  let getSessionUserError: unknown;
   try {
     sessionUser = await getSessionUser();
-  } catch {
-    // Cookie lookup needs PG; on failure, treat as no session.
+  } catch (err) {
+    getSessionUserError = err;
+    console.error('[auth/me] getSessionUser threw — will fall through to default user:', err);
   }
 
   if (sessionUser) {
     let available: Awaited<ReturnType<typeof listUsers>> = [];
     try {
       available = await listUsers();
-    } catch {
-      /* available list is a UI nicety; safe to omit */
+    } catch (err) {
+      console.error('[auth/me] listUsers threw (non-fatal):', err);
     }
     return NextResponse.json({ user: sessionUser, autoLogin: false, available });
   }
@@ -49,15 +61,39 @@ export async function GET() {
     let available: Awaited<ReturnType<typeof listUsers>> = [];
     try {
       available = await listUsers();
-    } catch {
-      /* same as above */
+    } catch (err) {
+      console.error('[auth/me] listUsers threw (non-fatal):', err);
+    }
+    // Auto-establish a real session for passwordless users so endpoints
+    // that strictly require a session cookie (state-snapshot SSE etc.)
+    // don't 401 on the chrome's first paint. Single-user / passwordless
+    // installs are the common operator scenario; this is the same
+    // user the UI is already rendering as.
+    if (!user.has_password) {
+      try {
+        const h = await headers();
+        const result = await login(user.username, null, {
+          user_agent: h.get('user-agent') ?? undefined,
+          remote_addr: h.get('x-forwarded-for') ?? '127.0.0.1',
+        });
+        const jar = await cookies();
+        jar.set(SESSION_COOKIE, result.token, {
+          httpOnly: true,
+          sameSite: 'lax',
+          path: '/',
+          maxAge: Math.floor(DEFAULT_SESSION_TTL_MS / 1000),
+        });
+      } catch (err) {
+        console.error('[auth/me] auto-session establish failed (non-fatal):', err);
+      }
     }
     return NextResponse.json({ user, autoLogin: true, available });
-  } catch {
-    // PG fully unreachable. Synthesize the default user so chrome UI
-    // still mounts. has_password=false matches the seeded default-user
-    // contract (no password). pgUnavailable signals the degraded mode
-    // to clients that want to surface it.
+  } catch (err) {
+    // Fall back to a synthetic default user so the chrome UI still
+    // renders. Surface what actually broke so the operator log shows
+    // the root cause instead of the generic "pgUnavailable" lie.
+    const reason = err instanceof Error ? err.message : String(err);
+    console.error('[auth/me] getSessionUserOrDefault failed — returning synthetic default with reason:', reason, err);
     return NextResponse.json({
       user: {
         id: '00000000-0000-0000-0000-000000000001',
@@ -67,6 +103,10 @@ export async function GET() {
       },
       autoLogin: true,
       available: [],
+      degraded: true,
+      degradedReason: reason,
+      // Deprecated alias kept for one cycle so any existing client
+      // checks against `pgUnavailable` keep working.
       pgUnavailable: true,
     });
   }
