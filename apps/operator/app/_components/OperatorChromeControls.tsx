@@ -109,9 +109,11 @@ export function OperatorButton(): ReactElement {
         <OperatorAutoAcceptFeed events={state.recentAutoAccepts} />
       </span>
       {state.open ? (
-        <Suspense fallback={null}>
-          <OperatorPanel />
-        </Suspense>
+        <div className="operator-panel-host">
+          <Suspense fallback={null}>
+            <OperatorPanel />
+          </Suspense>
+        </div>
       ) : null}
     </>
   );

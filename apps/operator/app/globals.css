@@ -26149,6 +26149,10 @@ body.has-op-chat:has(.operator-panel) .op-chat-sidebar {
   }
 }
 
+.operator-panel-host {
+  display: contents;
+}
+
 .operator-panel__actions .operator-btn svg,
 .operator-entry__type-glyph svg,
 .operator-entry__review-icon svg,
