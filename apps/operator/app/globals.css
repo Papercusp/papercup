@@ -26233,6 +26233,21 @@ body.has-op-chat:has(.operator-panel) .op-chat-sidebar {
   align-content: center;
 }
 
+.operator-empty-state__icon svg {
+  display: block;
+}
+
+.operator-empty-state__actions {
+  display: flex;
+  justify-content: center;
+  margin-top: 18px;
+}
+
+.operator-empty-state__actions .operator-btn {
+  min-height: 36px !important;
+  padding-inline: 15px !important;
+}
+
 .operator-panel__footer {
   margin-top: -1px !important;
   background:

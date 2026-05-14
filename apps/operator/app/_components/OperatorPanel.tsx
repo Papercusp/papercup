@@ -1683,10 +1683,28 @@ export function OperatorPanel(): ReactElement | null {
               ) : !hasFeedEntries ? (
                 <div className={`operator-empty-state operator-empty-state--${scanStatus}`}>
                   <div className="operator-empty-state__icon" aria-hidden="true">
-                    {scanStatus === 'error' ? '!' : scanStatus === 'scanning' ? '◐' : '·'}
+                    {scanStatus === 'error' ? (
+                      <TriangleAlert size={18} strokeWidth={2.2} />
+                    ) : scanStatus === 'scanning' ? (
+                      <RefreshCcw size={18} strokeWidth={2.2} />
+                    ) : (
+                      <Search size={18} strokeWidth={2.2} />
+                    )}
                   </div>
                   <h3>{emptyTitle}</h3>
                   <p>{emptyBody}</p>
+                  {scanStatus !== 'error' && scanStatus !== 'scanning' && (
+                    <div className="operator-empty-state__actions">
+                      <button
+                        type="button"
+                        className="operator-btn operator-btn--primary operator-btn--icon"
+                        onClick={() => startScan()}
+                      >
+                        <RefreshCcw size={14} aria-hidden="true" strokeWidth={2.2} />
+                        <span>Scan workspace</span>
+                      </button>
+                    </div>
+                  )}
                   {scanStatus === 'error' && (
                     <button
                       type="button"
