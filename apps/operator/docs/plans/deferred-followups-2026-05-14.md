@@ -251,20 +251,37 @@ Plan: [voice-aware-cards-2026-05-14.md](./voice-aware-cards-2026-05-14.md). Phas
 
 **Approach when triggered.** Stub `/api/operator/state-snapshot` SSE with a synthetic card frame, stub voice prefs, drive `papercusp:operatorUserTurn` window event for the spoken "ready" path and `answerChoice` for the click path, intercept `/card-response` and assert body shape. The hard part is mocking voice-active state without exercising the engine bootstrap.
 
-### V7-A. Server-side fallback when brain returns text-only for silence_after_question
+### V7-A. ~~Server-side fallback when brain returns text-only for silence_after_question~~ — RESOLVED
 
-**Status:** `engineering deferred` — known LLM-obedience issue (audit 2026-05-14 gap #7).
+**Status:** `resolved` (2026-05-14).
 
-**The bug.** Smoke-tested 2026-05-14 against the live dev server: when `silence_after_question` fires, the brain often emits prose or a fenced JSON code block in the delta stream instead of calling the `chat:ask_choice` tool. The prompt is correctly structured (8 unit tests confirm shape + voiceAnswerable + ready-option contract), but the LLM doesn't reliably translate "CALL the tool" into an actual tool invocation. The same issue affects `user_says_ready` and `open_canvas` to a lesser degree (brain sometimes emits 2-3 options as `<say>` text rather than a card).
+**Resolved by:** [silence-nudge-reliability-2026-05-14.md](./silence-nudge-reliability-2026-05-14.md). Approach #3 from V7-A landed — the silence path bypasses the brain entirely. The provider's 30s silence timer POSTs to a new `/api/operator/conversations/:id/silence-nudge` endpoint which opens a deterministic Ready card via `registerCard`. PR-1 (deterministic card) + PR-2 (grace timer + EL teardown + wake-word handoff) shipped in commits `1f66e683` and `fbf54033`.
 
-**Trigger to revisit:** anytime the user observes the silence nudge failing to render a clickable card. Likely already happens for several percent of fires.
+The systemic chat:ask_choice underuse for `user_says_ready` / `open_canvas` is NOT addressed by this work — see V7-D below.
 
-**Approach when triggered.**
-1. **Detector**: after the brain's stream completes for `silence_after_question`, parse `assembled` text — if the brain emitted prose / fenced JSON for a chat:ask_choice signature but no real `tool_call` event landed, log + counter.
-2. **Server-side fallback**: on the same detection, the operator-converse handler synthesizes a `ctx.askUser` call with the question text the brain almost-emitted (or a generic "Ready to continue?" if parsing fails). The card lands on the state-snapshot anyway — UX preserved.
-3. **Better long-term**: switch the silence path entirely off the brain. Server-side timer in the conversation provider directly calls `/api/agent-mcp/chat-ask-choice` (new internal endpoint) with the prior turn's question as `question`, no LLM round-trip. Loses some context-specificity but is deterministic. Worth measuring trade-off after V8 lands.
+### V7-C. Unified wake-word pref schema across desktop + mobile
 
-**Note on root cause.** This is a systemic chat:ask_choice underuse, not silence-specific. A prompt-wide audit of "when should brain use cards" might find the right framing (more aggressive nudge, fewer competing example styles, explicit anti-`<say>` rules) — separate task.
+**Status:** `engineering deferred` — single-source-of-truth refactor, not blocking any user-facing bug.
+
+**Today.** Desktop has `voice.porcupineKeyword` + `voice.openwakewordKeyword` in operator voice-prefs (PG-persisted, single source of truth across desktop tabs). Mobile has its own `wakeWord` string field in iOS UserDefaults (per-device), defaulting to "hey papercup". The two are not aligned.
+
+**Why it matters eventually.** When a user configures a wake-word on the desktop, the silence-nudge fallbackText says "say {wakeword}". If they pick up their phone in the same workspace, mobile uses its own separate setting. Cross-surface continuity would be nicer.
+
+**Trigger to revisit:** next time we touch wake-word config on either platform — at that point, lift the desktop's `porcupineKeyword` + `openwakewordKeyword` (or some unified representation) into the mobile dev's existing shared-options bucket so both platforms read from one place.
+
+**Approach when triggered.** Implementation stays platform-specific (no shared code per the silence-nudge plan's decision); only the config value migrates to a shared store. Mobile's iOS VoicePrefs.swift gains a "read from server VoicePrefs" path for `wakeWord`; desktop unchanged.
+
+### V7-D. Broader chat:ask_choice underuse for user_says_ready / open_canvas
+
+**Status:** `engineering deferred` (split off from V7-A 2026-05-14).
+
+**The bug.** Same LLM-obedience pattern as V7-A: the brain often emits 2-3 options as `<say>` text rather than calling `chat:ask_choice`. Affects `user_says_ready` (when surfacing "what should we work on?" options) and `open_canvas` (welcome surface).
+
+**Why not fix the same way?** Unlike silence_after_question, these triggers have legitimate paths where prose is correct — the brain might have one obvious next step and want to suggest it, or the situation is genuinely open-ended. The full bypass that V7-A took isn't appropriate here.
+
+**Trigger to revisit:** observation that user_says_ready / open_canvas emit prose lists >50% of the time when the situation has 2+ comparable options. Hard to detect without telemetry; manual feel-test would set the threshold.
+
+**Approach when triggered.** Prompt-wide audit. Likely changes: more aggressive nudge in the "PREFER CARDS" section, fewer competing example styles, explicit anti-`<say>`-list rules. Separate plan.
 
 ### V8. Active-mode proactive ticks (the ORIGINAL "operator is passive" complaint)
 
