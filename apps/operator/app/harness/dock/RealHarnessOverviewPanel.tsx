@@ -1,0 +1,289 @@
+/**
+ * RealHarnessOverviewPanel — absorbs the .h-header block from the classic
+ * HarnessDashboard. Phase tabs + alive/idle status + project path +
+ * progress percentage + status-bucket counts.
+ *
+ * Spec: apps/operator/docs/dockview-migration-plan-v4.md §3.4
+ *
+ * Each panel instance carries its own `params.phase` so two overview
+ * panels for the same slug but different phases can sit side by side.
+ * On phase change, panel writes back via api.setParams AND PUTs
+ * /api/harness-phase-last-used/:slug so next reopen defaults to it.
+ */
+
+'use client';
+
+import { useEffect, useMemo, useState } from 'react';
+import type { PanelComponentProps } from './panel-registry';
+
+interface StatusResponse {
+  project: { slug: string; path: string };
+  counts: Record<string, number>;
+  iteration: number;
+  lastDecision: string | null;
+  alive: boolean;
+  escalated: boolean;
+  pendingCheckpoints: number;
+  activeCompetitions: number;
+  smokeFail: boolean;
+  missionCostUsd: number;
+  missionInputTokens: number;
+  missionOutputTokens: number;
+}
+
+const PHASES = ['staging', 'testing', 'production'] as const;
+type Phase = (typeof PHASES)[number];
+
+const STATUS_COLORS: Record<string, string> = {
+  passed: '#4ade80',
+  todo: '#94a3b8',
+  failing: '#f87171',
+  validating: '#fbbf24',
+  deprecated: '#71717a',
+};
+
+export function RealHarnessOverviewPanel({ params, api }: PanelComponentProps) {
+  const slug = (params.harnessSlug as string) || (params.slug as string) || '';
+  const phase = ((params.phase as Phase) ?? 'staging') as Phase;
+  const [data, setData] = useState<StatusResponse | null>(null);
+  const [error, setError] = useState<Error | null>(null);
+
+  useEffect(() => {
+    if (!slug) return;
+    setError(null);
+    let cancel = false;
+    const load = async () => {
+      try {
+        const r = await fetch(
+          `/api/harness/${encodeURIComponent(slug)}/status?phase=${encodeURIComponent(phase)}`,
+        );
+        if (!r.ok) throw new Error(`status ${r.status}`);
+        const j: StatusResponse = await r.json();
+        if (cancel) return;
+        setData(j);
+        api.setTitle(`Overview: ${slug} (${phase})`);
+      } catch (e) {
+        if (cancel) return;
+        setError(e as Error);
+      }
+    };
+    load();
+    const id = setInterval(load, 5_000);
+    return () => {
+      cancel = true;
+      clearInterval(id);
+    };
+  }, [slug, phase, api]);
+
+  // Total + done percentage
+  const stats = useMemo(() => {
+    if (!data?.counts) return null;
+    const counts = data.counts;
+    const total = Object.values(counts).reduce((a, b) => a + b, 0);
+    const passed = counts.passed ?? 0;
+    const pct = total > 0 ? Math.round((passed / total) * 100) : 0;
+    return { total, passed, pct };
+  }, [data]);
+
+  const switchPhase = async (next: Phase) => {
+    if (next === phase) return;
+    api.setParams({ ...params, phase: next });
+    // Update last-used so reopens default to this.
+    try {
+      await fetch(`/api/harness-phase-last-used/${encodeURIComponent(slug)}`, {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ phase: next }),
+      });
+    } catch {
+      // Best-effort.
+    }
+  };
+
+  if (!slug)
+    return (
+      <div style={{ padding: 16, fontSize: 13, color: 'var(--muted-foreground,#888)' }}>
+        No harness slug.
+      </div>
+    );
+  if (error)
+    return <div style={{ padding: 16, fontSize: 13, color: '#f87171' }}>Failed: {error.message}</div>;
+  if (!data)
+    return (
+      <div style={{ padding: 16, fontSize: 13, color: 'var(--muted-foreground,#888)' }}>
+        Loading…
+      </div>
+    );
+
+  return (
+    <div
+      style={{
+        padding: 12,
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 12,
+        height: '100%',
+        overflow: 'auto',
+        fontSize: 12,
+        color: 'var(--foreground,#ccc)',
+        fontFamily: 'system-ui, sans-serif',
+      }}
+    >
+      {/* Slug + alive */}
+      <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
+        <span style={{ fontWeight: 600, fontSize: 13 }}>{data.project.slug}</span>
+        <span
+          style={{
+            width: 8,
+            height: 8,
+            borderRadius: 4,
+            background: data.alive ? '#4ade80' : '#666',
+            display: 'inline-block',
+          }}
+          title={data.alive ? 'alive' : 'idle'}
+        />
+        <span style={{ color: 'var(--muted-foreground,#888)', fontSize: 11 }}>
+          {data.alive ? 'alive' : 'idle'}
+        </span>
+        {data.escalated && (
+          <span
+            style={{
+              padding: '1px 5px',
+              fontSize: 10,
+              background: '#7c2d12',
+              color: '#fed7aa',
+              borderRadius: 2,
+            }}
+          >
+            ESCALATED
+          </span>
+        )}
+        {data.smokeFail && (
+          <span
+            style={{
+              padding: '1px 5px',
+              fontSize: 10,
+              background: '#7c2d12',
+              color: '#fed7aa',
+              borderRadius: 2,
+            }}
+          >
+            SMOKE-FAIL
+          </span>
+        )}
+      </div>
+
+      {/* Project path */}
+      <div
+        style={{
+          color: 'var(--muted-foreground,#888)',
+          fontSize: 11,
+          fontFamily: 'ui-monospace, monospace',
+          overflow: 'hidden',
+          textOverflow: 'ellipsis',
+          whiteSpace: 'nowrap',
+        }}
+        title={data.project.path}
+      >
+        {data.project.path}
+      </div>
+
+      {/* Phase tabs */}
+      <div style={{ display: 'flex', gap: 2, borderBottom: '1px solid var(--border,#333)' }}>
+        {PHASES.map((p) => {
+          const active = p === phase;
+          return (
+            <button
+              key={p}
+              type="button"
+              onClick={() => void switchPhase(p)}
+              style={{
+                padding: '4px 12px',
+                fontSize: 11,
+                background: 'transparent',
+                color: active ? 'var(--foreground,#ccc)' : 'var(--muted-foreground,#888)',
+                border: 0,
+                borderBottom: active ? '2px solid #60a5fa' : '2px solid transparent',
+                cursor: 'pointer',
+                marginBottom: -1,
+              }}
+            >
+              {p}
+            </button>
+          );
+        })}
+      </div>
+
+      {/* Progress */}
+      {stats && (
+        <div>
+          <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
+            <span style={{ fontSize: 11 }}>Progress</span>
+            <span style={{ fontSize: 11, color: 'var(--muted-foreground,#888)' }}>
+              {stats.passed} / {stats.total} ({stats.pct}%)
+            </span>
+          </div>
+          <div
+            style={{
+              height: 4,
+              background: 'var(--border,#333)',
+              borderRadius: 2,
+              overflow: 'hidden',
+            }}
+          >
+            <div
+              style={{
+                height: '100%',
+                width: `${stats.pct}%`,
+                background: '#4ade80',
+                transition: 'width 0.3s',
+              }}
+            />
+          </div>
+        </div>
+      )}
+
+      {/* Status counts */}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+        {Object.entries(data.counts).map(([k, v]) => (
+          <div key={k} style={{ display: 'flex', alignItems: 'baseline', gap: 8, fontSize: 11 }}>
+            <span
+              style={{
+                width: 8,
+                height: 8,
+                borderRadius: 4,
+                background: STATUS_COLORS[k] ?? '#666',
+                flexShrink: 0,
+              }}
+            />
+            <span style={{ flex: 1, color: 'var(--muted-foreground,#888)' }}>{k}</span>
+            <span style={{ fontFamily: 'ui-monospace, monospace' }}>{v}</span>
+          </div>
+        ))}
+      </div>
+
+      {/* Misc activity */}
+      <div
+        style={{
+          fontSize: 11,
+          color: 'var(--muted-foreground,#888)',
+          paddingTop: 8,
+          borderTop: '1px solid var(--border-subtle,#222)',
+        }}
+      >
+        <div>iteration: {data.iteration}</div>
+        {data.lastDecision && (
+          <div title={data.lastDecision} style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            last: {data.lastDecision}
+          </div>
+        )}
+        <div>
+          cost: ${data.missionCostUsd.toFixed(2)} · in/out:{' '}
+          {Math.round(data.missionInputTokens / 1000)}k/{Math.round(data.missionOutputTokens / 1000)}k
+        </div>
+        {data.pendingCheckpoints > 0 && <div>checkpoints pending: {data.pendingCheckpoints}</div>}
+        {data.activeCompetitions > 0 && <div>active competitions: {data.activeCompetitions}</div>}
+      </div>
+    </div>
+  );
+}

@@ -28,7 +28,8 @@ dock/
 ├── IframePanel.tsx              # portal-pattern wrapper (§7 of plan)
 ├── iframe-host.ts               # off-DOM iframe registry (no reload on drag)
 ├── NavChevrons.tsx              # back/forward UI + per-panel nav registry
-├── HarnessSelectorChip.tsx      # ?focusSlug= driver (sidebar header chip)
+# (HarnessSelectorChip.tsx removed by user decision e4c965f5 — useFocusedPanelTracker
+#  keeps ?focusSlug= in sync from the focused panel, so the explicit chip was redundant.)
 ├── RealFeaturesPanel.tsx        # real panel — fetches /api/harness/:slug/status
 └── sample-panels.tsx            # registerSamplePanels() — stubs + DocsSamplePanel
 ```
@@ -143,7 +144,7 @@ cd apps/operator && npx vitest run --config vitest.integration.config.ts \
 | 1 | pi-tab still works on v6 | ✅ shipped |
 | 2 | pi-tab dual-writes localStorage + PG | ✅ shipped |
 | 3 | dashboard internal dockify | ⏸️ ready to mount, needs paperclip pause |
-| 4 | HarnessSelectorChip component | ✅ shipped, ready to mount in sidebar |
+| 4 | HarnessSelectorChip | ⛔ dropped by user (e4c965f5) — redundant with focused-panel tracker |
 | 4 | useFocusedPanelTracker → ?focusSlug= | ✅ shipped |
 | 4 | harness_phase_last_used API | ✅ shipped |
 | 5 | iframe portal pattern (no reload on drag) | ✅ shipped |
@@ -173,7 +174,7 @@ via `/harness/<slug>/dock-preview`. Two mount points remain:
    `pathname.startsWith('/harness/')` and remove the top-level tab strip
    + `ReactActivity` switching. Default layout already seeds correctly.
 
-3. **HarnessSelectorChip mount**: insert into `OperatorChatSidebar`
+3. ~~**HarnessSelectorChip mount**~~ — dropped (e4c965f5). Skip; `useFocusedPanelTracker` handles `?focusSlug=` from panel focus already. Original sidebar mount in `OperatorChatSidebar`
    header sub-row. Requires deciding the harness list source (currently
    91 harnesses in dev — needs filtering).
 

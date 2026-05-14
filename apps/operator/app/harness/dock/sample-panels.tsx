@@ -21,6 +21,7 @@ import { RealIssuesPanel } from './RealIssuesPanel';
 import { RealAgentsPanel } from './RealAgentsPanel';
 import { RealLogsPanel } from './RealLogsPanel';
 import { RealGitPanel } from './RealGitPanel';
+import { RealHarnessOverviewPanel } from './RealHarnessOverviewPanel';
 
 function SamplePanel({ panelType, params }: PanelComponentProps) {
   return (
@@ -137,10 +138,12 @@ let registered = false;
 export function registerSamplePanels(): void {
   if (registered) return;
   registered = true;
-  for (const t of ['view:dashboard-overview', 'view:harness-overview']) {
-    panelRegistry.register(t, SamplePanel);
-  }
+  // Only view:dashboard-overview still uses the stub — that's a multi-
+  // section "everything at a glance" view; the full implementation
+  // would need to embed multiple sub-panels and is deferred.
+  panelRegistry.register('view:dashboard-overview', SamplePanel);
   // Real implementations — fetch live data per slug.
+  panelRegistry.register('view:harness-overview', RealHarnessOverviewPanel);
   panelRegistry.register('data:features', RealFeaturesPanel);
   panelRegistry.register('data:issues', RealIssuesPanel);
   panelRegistry.register('data:agents', RealAgentsPanel, { keepAlive: true });
