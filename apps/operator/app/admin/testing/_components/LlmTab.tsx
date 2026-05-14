@@ -217,14 +217,161 @@ function RunsView() {
   );
 }
 
+type FindingsResponse = { findings: FindingRow[]; shapeCounts: Record<string, number> };
+
+type FindingFilterSeverity = '' | 'error' | 'warn' | 'info';
+type FindingFilterSource = '' | 'assert' | 'judge' | 'variance';
+
 function FindingsView() {
-  return (
-    <div className="pc-test-card">
-      <p style={{ padding: 16, color: 'var(--mut)' }}>
-        Cross-run unacknowledged findings view — implemented in Phase 1 follow-up. Until then, drill into a specific run from the Runs tab.
-      </p>
-    </div>
+  const [severity, setSeverity] = useQueryState(
+    'sev',
+    parseAsStringEnum<FindingFilterSeverity>(['', 'error', 'warn', 'info']).withDefault(''),
   );
+  const [source, setSource] = useQueryState(
+    'src',
+    parseAsStringEnum<FindingFilterSource>(['', 'assert', 'judge', 'variance']).withDefault(''),
+  );
+  const [showAck, setShowAck] = useQueryState(
+    'ack',
+    parseAsStringEnum<'open' | 'done'>(['open', 'done']).withDefault('open'),
+  );
+  const [data, setData] = useState<FindingsResponse | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [reloadKey, setReloadKey] = useState(0);
+
+  useEffect(() => {
+    let live = true;
+    const url = new URL('/api/admin/llm-tests/findings', window.location.origin);
+    if (severity) url.searchParams.set('severity', severity);
+    if (source) url.searchParams.set('source', source);
+    url.searchParams.set('acknowledged', showAck === 'done' ? 'true' : 'false');
+    fetch(url)
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
+      .then((j) => live && setData(j as FindingsResponse))
+      .catch((e) => live && setError((e as Error).message));
+    return () => { live = false; };
+  }, [severity, source, showAck, reloadKey]);
+
+  const onToggleAck = async (id: string, acknowledged: boolean) => {
+    try {
+      await fetch(`/api/admin/llm-tests/findings/${id}`, {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ acknowledged }),
+      });
+      setReloadKey((k) => k + 1);
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  };
+
+  const copy = (text: string) => {
+    void navigator.clipboard?.writeText(text);
+  };
+
+  if (error) return <ErrorBox error={error} />;
+  if (!data) return <Loading />;
+
+  return (
+    <>
+      <div className="pc-test-card-row" style={{ marginBottom: 12, flexWrap: 'wrap' }}>
+        <Button variant={showAck === 'open' ? 'primary' : 'ghost'} onClick={() => setShowAck('open')}>Open</Button>
+        <Button variant={showAck === 'done' ? 'primary' : 'ghost'} onClick={() => setShowAck('done')}>Acknowledged</Button>
+        <select className="pc-test-input" value={severity} onChange={(e) => setSeverity((e.target.value || null) as FindingFilterSeverity | null)}>
+          <option value="">any severity</option>
+          <option value="error">error</option>
+          <option value="warn">warn</option>
+          <option value="info">info</option>
+        </select>
+        <select className="pc-test-input" value={source} onChange={(e) => setSource((e.target.value || null) as FindingFilterSource | null)}>
+          <option value="">any source</option>
+          <option value="assert">deterministic assert</option>
+          <option value="judge">judge</option>
+          <option value="variance">variance</option>
+        </select>
+      </div>
+
+      {data.findings.length === 0 ? (
+        <Empty msg={showAck === 'open' ? 'No outstanding findings. Drill into a run from the Runs tab to see assertions inline.' : 'No acknowledged findings yet.'} />
+      ) : (
+        <div className="pc-test-card">
+          <table className="pc-test-table">
+            <thead>
+              <tr>
+                <th>severity</th>
+                <th>scenario · started</th>
+                <th>source · axis</th>
+                <th>claim</th>
+                <th>promotion</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              {data.findings.map((f) => {
+                const shape = f.shape ?? '';
+                const scenarioCount = shape ? data.shapeCounts[shape] ?? 0 : 0;
+                return (
+                  <tr key={f.id}>
+                    <td><SeverityBadge severity={f.severity} /></td>
+                    <td>
+                      <code>{f.scenario_id ?? f.run_id}</code>
+                      <br />
+                      <span style={{ color: 'var(--fg-mute)', fontSize: 11 }}>
+                        {f.started_at ? new Date(f.started_at as unknown as string).toLocaleString() : ''}
+                      </span>
+                    </td>
+                    <td>
+                      <span className="pc-test-badge is-muted">{f.source}</span>
+                      {f.axis ? <> · {f.axis}</> : f.assert_kind ? <> · <code>{f.assert_kind}</code></> : null}
+                    </td>
+                    <td style={{ maxWidth: 480 }}>
+                      <div>{f.claim}</div>
+                      {f.suggestion ? (
+                        <div style={{ color: 'var(--fg-mute)', fontSize: 12, marginTop: 4 }}>
+                          → {f.suggestion}
+                        </div>
+                      ) : null}
+                    </td>
+                    <td>
+                      {f.promoted_to_assert_id ? (
+                        <span className="pc-test-badge is-good" title={f.promoted_to_assert_id}>promoted</span>
+                      ) : scenarioCount >= 3 ? (
+                        <span className="pc-test-badge is-needs" title={`shape seen in ${scenarioCount} scenarios`}>
+                          candidate · {scenarioCount}×
+                        </span>
+                      ) : scenarioCount >= 2 ? (
+                        <span className="pc-test-badge is-muted" title={`shape seen in ${scenarioCount} scenarios`}>
+                          recurring · {scenarioCount}×
+                        </span>
+                      ) : null}
+                    </td>
+                    <td style={{ whiteSpace: 'nowrap' }}>
+                      {f.copy_prompt ? (
+                        <Button variant="ghost" onClick={() => copy(f.copy_prompt!)} title="Copy as agent prompt">
+                          copy prompt
+                        </Button>
+                      ) : null}
+                      <Button
+                        variant="ghost"
+                        onClick={() => onToggleAck(f.id, showAck !== 'done')}
+                      >
+                        {showAck === 'done' ? 'reopen' : 'ack'}
+                      </Button>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </>
+  );
+}
+
+function SeverityBadge({ severity }: { severity: string }) {
+  const cls = severity === 'error' ? 'is-bad' : severity === 'warn' ? 'is-needs' : 'is-muted';
+  return <span className={`pc-test-badge ${cls}`}>{severity}</span>;
 }
 
 function StatusBadge({ status }: { status: string }) {
