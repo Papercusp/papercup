@@ -80,6 +80,17 @@ const PHASE_COLOR: Record<Phase, string> = {
   testing: '#a855f7',
   production: 'var(--good)',
 };
+// When the phases flag is off, the lone 'staging'-keyed tab represents
+// the user's main / shipped branch, not a dev/staging environment. Use
+// the production green so the tab visually reads as "main" rather than
+// inheriting the staging-blue from the flag-on color scheme. (The
+// internal phase token stays 'staging' — it's the codebase's name for
+// the base worktree, see resolvePhasedProject.)
+const PHASE_COLOR_WHEN_FLAG_OFF: Record<Phase, string> = {
+  staging: 'var(--good)',
+  testing: 'var(--good)',
+  production: 'var(--good)',
+};
 
 export default function PhaseTabs({ slug, activePhase, onChange, phasesEnabled = true }: Props) {
   const displayedPhases = phasesEnabled ? PHASE_ORDER : SINGLE_PHASE;
@@ -263,7 +274,7 @@ export default function PhaseTabs({ slug, activePhase, onChange, phasesEnabled =
         const info = phases.find((x) => x.phase === p);
         const isActive = activePhase === p;
         const exists = info?.exists ?? (p === 'staging');
-        const color = PHASE_COLOR[p];
+        const color = phasesEnabled ? PHASE_COLOR[p] : PHASE_COLOR_WHEN_FLAG_OFF[p];
         const h = health[p];
         return (
           <div

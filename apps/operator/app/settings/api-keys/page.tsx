@@ -126,11 +126,11 @@ export default function ApiKeysPage() {
           error={errors.anthropic?.message}
         />
         <SecretField
-          label="OpenAI API key (LLM)"
-          help="Optional fallback for some plugins. NOTE: this is a separate slot from the OpenAI voice key below."
+          label="OpenAI API key (embeddings + LLM)"
+          help="Powers semantic search and memory embeddings (text-embedding-3-small) plus LLM fallback for some plugins. NOTE: this is a separate slot from the OpenAI voice key below."
           placeholder={masked?.openai_api_key ?? 'sk-…'}
           masked={masked?.openai_api_key}
-          uses={['LLM fallback', 'plugins']}
+          uses={['Semantic search', 'Memory', 'LLM fallback']}
           loading={loading}
           register={register('openai')}
           error={errors.openai?.message}

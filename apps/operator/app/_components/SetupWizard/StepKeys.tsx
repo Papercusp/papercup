@@ -6,14 +6,25 @@ import RouteLink from '../RouteLink';
 export function StepKeys() {
   const [voiceIntent, setVoiceIntent] = useState(false);
   const [loaded, setLoaded] = useState(false);
+  const [openaiMasked, setOpenaiMasked] = useState<string | null>(null);
+  const [openaiInput, setOpenaiInput] = useState('');
+  const [savingOpenai, setSavingOpenai] = useState(false);
+  const [openaiSaved, setOpenaiSaved] = useState<'idle' | 'saved' | 'error'>('idle');
 
   useEffect(() => {
     void (async () => {
       try {
-        const r = await fetch('/api/desktop/setup-wizard-state', { cache: 'no-store' });
-        if (r.ok) {
-          const j = (await r.json()) as { voice_intent?: boolean };
+        const [wizardRes, credsRes] = await Promise.all([
+          fetch('/api/desktop/setup-wizard-state', { cache: 'no-store' }),
+          fetch('/api/credentials', { cache: 'no-store' }),
+        ]);
+        if (wizardRes.ok) {
+          const j = (await wizardRes.json()) as { voice_intent?: boolean };
           setVoiceIntent(Boolean(j.voice_intent));
+        }
+        if (credsRes.ok) {
+          const j = (await credsRes.json()) as { openai_api_key?: string | null };
+          setOpenaiMasked(j.openai_api_key ?? null);
         }
       } finally {
         setLoaded(true);
@@ -28,6 +39,29 @@ export function StepKeys() {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ voice_intent: next }),
     });
+  };
+
+  const saveOpenaiKey = async () => {
+    const v = openaiInput.trim();
+    if (!v) return;
+    setSavingOpenai(true);
+    setOpenaiSaved('idle');
+    try {
+      const res = await fetch('/api/credentials', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ openai_api_key: v }),
+      });
+      if (!res.ok) throw new Error(`${res.status}`);
+      const j = (await res.json()) as { openai_api_key?: string | null };
+      setOpenaiMasked(j.openai_api_key ?? null);
+      setOpenaiInput('');
+      setOpenaiSaved('saved');
+    } catch {
+      setOpenaiSaved('error');
+    } finally {
+      setSavingOpenai(false);
+    }
   };
 
   return (
@@ -63,7 +97,79 @@ export function StepKeys() {
             .
           </>
         }
-      />
+      >
+        <div className="pc-key-card__input" style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 12 }}>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+            <span style={{ fontWeight: 600, fontSize: 13 }}>API key</span>
+            {openaiMasked && (
+              <span
+                style={{
+                  fontFamily: 'ui-monospace, monospace',
+                  fontSize: 12,
+                  color: 'var(--fg-mute, #888)',
+                  background: 'var(--bg-2, rgba(0,0,0,0.08))',
+                  padding: '2px 6px',
+                  borderRadius: 3,
+                }}
+              >
+                saved: {openaiMasked}
+              </span>
+            )}
+          </label>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+            <input
+              type="password"
+              autoComplete="off"
+              spellCheck={false}
+              placeholder={openaiMasked ? 'paste a new key to replace' : 'sk-…'}
+              value={openaiInput}
+              onChange={(e) => {
+                setOpenaiInput(e.target.value);
+                if (openaiSaved !== 'idle') setOpenaiSaved('idle');
+              }}
+              disabled={!loaded || savingOpenai}
+              style={{
+                flex: '1 1 280px',
+                minWidth: 200,
+                padding: '6px 10px',
+                fontFamily: 'ui-monospace, monospace',
+                fontSize: 13,
+                border: '1px solid var(--border, #ccc)',
+                borderRadius: 4,
+                background: 'var(--bg, #fff)',
+                color: 'var(--fg, #111)',
+              }}
+            />
+            <button
+              type="button"
+              onClick={() => void saveOpenaiKey()}
+              disabled={!loaded || savingOpenai || !openaiInput.trim()}
+              style={{
+                padding: '6px 14px',
+                fontSize: 13,
+                fontWeight: 600,
+                border: 'none',
+                borderRadius: 4,
+                background: 'var(--accent, #5e6ad2)',
+                color: 'white',
+                cursor: savingOpenai || !openaiInput.trim() ? 'not-allowed' : 'pointer',
+                opacity: savingOpenai || !openaiInput.trim() ? 0.6 : 1,
+              }}
+            >
+              {savingOpenai ? 'Saving…' : openaiMasked ? 'Replace' : 'Save'}
+            </button>
+            {openaiSaved === 'saved' && (
+              <span style={{ color: 'var(--good, #3fb950)', fontSize: 12 }}>Saved.</span>
+            )}
+            {openaiSaved === 'error' && (
+              <span style={{ color: 'var(--bad, #f85149)', fontSize: 12 }}>Save failed — try again.</span>
+            )}
+          </div>
+          <p style={{ margin: 0, fontSize: 11, color: 'var(--fg-mute, #888)' }}>
+            Stored in your local workspace credentials. Never broadcast over WebSocket.
+          </p>
+        </div>
+      </KeyCard>
 
       <label className="pc-consent__toggle" style={{ marginTop: 16 }}>
         <input
@@ -128,6 +234,7 @@ function KeyCard({
   cost,
   howToGet,
   required,
+  children,
 }: {
   title: string;
   description: React.ReactNode;
@@ -135,6 +242,7 @@ function KeyCard({
   cost: React.ReactNode;
   howToGet: React.ReactNode;
   required?: boolean;
+  children?: React.ReactNode;
 }) {
   return (
     <div className="pc-key-card">
@@ -152,6 +260,7 @@ function KeyCard({
         <dt>How to obtain</dt>
         <dd>{howToGet}</dd>
       </dl>
+      {children}
     </div>
   );
 }
