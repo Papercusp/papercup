@@ -22348,8 +22348,12 @@ body:has(.operator-panel) {
   background: #07111d;
 }
 
+/* 2-col layout matches the redesign (main + right rail; left rail is
+ * hidden by the rule near the end of this file). Earlier this rule was
+ * a 3-col template, which left an empty 240px gutter and crammed the
+ * main feed into the 290px left column. */
 .operator-panel__body.has-empty-activity {
-  grid-template-columns: minmax(230px, 290px) minmax(0, 1fr) minmax(190px, 240px) !important;
+  grid-template-columns: minmax(0, 1fr) minmax(280px, 320px) !important;
 }
 
 .operator-panel__rail--right {
