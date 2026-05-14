@@ -28,6 +28,8 @@ import { MissingPanel } from './MissingPanel';
 import { toDockviewJson, toLayoutDoc, type DockviewLayout } from './layout-adapter';
 import { useDockLayout, type DockLayoutRow } from './useDockLayout';
 import { bindDockApi } from './dock-actions';
+import { useNavShortcuts } from './useNavShortcuts';
+import { useLayoutResetShortcut } from './useLayoutResetShortcut';
 import type { LayoutDoc } from '../../../lib/dock-layouts';
 
 interface HarnessDockProps {
@@ -108,10 +110,19 @@ function collectTypes(doc: LayoutDoc, into: Set<string>): void {
 }
 
 export function HarnessDock({ layoutName, className }: HarnessDockProps) {
-  const { state, save } = useDockLayout(layoutName);
+  const { state, save, reset } = useDockLayout(layoutName);
   const apiRef = useRef<DockviewApi | null>(null);
   const restoredOnceRef = useRef(false);
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Cmd+[/] global shortcuts; ignored when focus is in an input.
+  useNavShortcuts();
+  // Shift+Esc (1s long-press) hard-resets to seed. Recovery hatch when
+  // the dock is wedged.
+  useLayoutResetShortcut(() => {
+    restoredOnceRef.current = false;
+    void reset();
+  });
 
   const layoutDoc: LayoutDoc | null =
     state.status === 'ready' && state.row.schemaVersion === 1
