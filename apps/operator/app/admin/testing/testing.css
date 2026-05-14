@@ -149,3 +149,53 @@
 .pc-test-badge.is-needs  { background: color-mix(in srgb, var(--warn) 20%, transparent); color: var(--warn); }
 .pc-test-badge.is-poor   { background: color-mix(in srgb, var(--bad) 20%, transparent); color: var(--bad); }
 .pc-test-badge.is-muted  { background: var(--bg-3); color: var(--fg-mute); }
+
+/* LLM testing subtab */
+.pc-test-subnav {
+  display: flex;
+  gap: 8px;
+  margin: 12px 0 0;
+}
+
+.pc-test-table {
+  width: 100%;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  border-collapse: collapse;
+}
+.pc-test-table th {
+  text-align: left;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  color: var(--fg-mute);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-weight: 600;
+}
+.pc-test-table td {
+  padding: 8px 12px;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 50%, transparent);
+  vertical-align: top;
+}
+.pc-test-table tbody tr:hover {
+  background: var(--bg-3);
+}
+
+.pc-test-input {
+  padding: 6px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg-2);
+  color: var(--fg);
+  font-size: 13px;
+}
+
+.pc-test-badge.is-bad {
+  background: color-mix(in srgb, var(--bad) 20%, transparent);
+  color: var(--bad);
+}
+
+.pc-test-card.is-bad {
+  border-color: color-mix(in srgb, var(--bad) 40%, transparent);
+}
