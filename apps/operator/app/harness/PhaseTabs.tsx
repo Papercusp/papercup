@@ -51,6 +51,13 @@ interface Props {
   slug: string;
   activePhase: Phase;
   onChange: (p: Phase) => void;
+  /**
+   * When false (default: production users without the flag enabled),
+   * only the `production` ("main") tab is rendered. The strip still
+   * shows so users see what branch they're on — they just can't
+   * switch to staging/testing.
+   */
+  phasesEnabled?: boolean;
 }
 
 // PHASE_ORDER imported from the client-safe const module (the parent
@@ -58,13 +65,15 @@ interface Props {
 // bundle). Single source of truth — adding a phase touches one file.
 import { ALL_PHASES } from '@/lib/harness-phases-const';
 const PHASE_ORDER: Phase[] = [...ALL_PHASES];
+const PRODUCTION_ONLY: Phase[] = ['production'];
 const PHASE_COLOR: Record<Phase, string> = {
   staging: '#3b82f6',
   testing: '#a855f7',
   production: 'var(--good)',
 };
 
-export default function PhaseTabs({ slug, activePhase, onChange }: Props) {
+export default function PhaseTabs({ slug, activePhase, onChange, phasesEnabled = true }: Props) {
+  const displayedPhases = phasesEnabled ? PHASE_ORDER : PRODUCTION_ONLY;
   const [phases, setPhases] = useState<PhaseInfo[]>([]);
   const [health, setHealth] = useState<Record<Phase, 'up' | 'slow' | 'down' | 'unknown'>>({
     staging: 'unknown', testing: 'unknown', production: 'unknown',
@@ -211,7 +220,9 @@ export default function PhaseTabs({ slug, activePhase, onChange }: Props) {
     return () => { cancelled = true; clearInterval(t); };
   }, [phases]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const showSetup = phases.length > 0 && phases.some((p) => !p.exists && p.phase !== 'staging');
+  // Hide the setup CTA when only production is rendered — there's no
+  // way to switch to or use the testing/staging phases this would create.
+  const showSetup = phasesEnabled && phases.length > 0 && phases.some((p) => !p.exists && p.phase !== 'staging');
 
   const setup = async () => {
     if (!await askConfirm({
@@ -239,7 +250,7 @@ export default function PhaseTabs({ slug, activePhase, onChange }: Props) {
         fontSize: '0.6rem', textTransform: 'uppercase', letterSpacing: '0.08em',
         color: 'var(--fg-dim)', fontWeight: 600, marginRight: 4,
       }}>Phases</span>
-      {PHASE_ORDER.map((p) => {
+      {displayedPhases.map((p) => {
         const info = phases.find((x) => x.phase === p);
         const isActive = activePhase === p;
         const exists = info?.exists ?? (p === 'staging');

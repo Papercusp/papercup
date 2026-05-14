@@ -2650,6 +2650,15 @@ export default function HarnessDashboard() {
     'phase',
     parseAsStringEnum<Phase>(['staging', 'testing', 'production']).withDefault('staging'),
   );
+  // When the phases flag is off (production mode), force the active
+  // phase to 'production'. Without this, a URL like ?phase=staging
+  // (lingering from a flag-on session, or hand-edited) would point
+  // every API call at a branch the user can no longer switch to.
+  useEffect(() => {
+    if (!harnessPhasesEnabled && activePhase !== 'production') {
+      void setActivePhase('production');
+    }
+  }, [harnessPhasesEnabled, activePhase, setActivePhase]);
   // Dashboard sidebar parent panel collapse — when true, only the
   // CollapsedGitRail (40px) shows; click it to expand back to the
   // full RPanel + git subpanel.
@@ -3920,9 +3929,14 @@ export default function HarnessDashboard() {
           <div className="h-header-main">
           <div className="h-project-card">
             <div className="h-project-topline">
-              {activeSlug && harnessPhasesEnabled && (
+              {activeSlug && (
                 <div className="h-project-phases">
-                  <PhaseTabs slug={activeSlug} activePhase={activePhase} onChange={setActivePhase} />
+                  <PhaseTabs
+                    slug={activeSlug}
+                    activePhase={activePhase}
+                    onChange={setActivePhase}
+                    phasesEnabled={harnessPhasesEnabled}
+                  />
                 </div>
               )}
 
