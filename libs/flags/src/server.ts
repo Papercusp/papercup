@@ -53,10 +53,26 @@ export function getBackendConfig(): PostHogConfig | null {
   return config;
 }
 
+/**
+ * Env-var override: `PAPERCUSP_FLAG_<KEY>=1` flips a single flag on
+ * without needing PostHog or in-process test overrides. Useful in dev
+ * when PostHog isn't configured but you want to exercise a gated
+ * feature (e.g. the llm-testing framework running oracle scenarios).
+ * The key is uppercased and `-` is converted to `_`.
+ */
+function resolveEnvOverride(key: FlagKey): boolean | undefined {
+  const envKey = `PAPERCUSP_FLAG_${key.toUpperCase().replace(/-/g, "_")}`;
+  const raw = process.env[envKey];
+  if (raw === undefined) return undefined;
+  return raw === "1" || raw.toLowerCase() === "true";
+}
+
 export async function getFlag(
   key: FlagKey,
   distinctId: string,
 ): Promise<boolean> {
+  const envOverride = resolveEnvOverride(key);
+  if (envOverride !== undefined) return envOverride;
   const overrides = resolveTestOverrides();
   if (overrides) return overrides[key];
   if (!client) return FLAG_DEFAULTS[key];
