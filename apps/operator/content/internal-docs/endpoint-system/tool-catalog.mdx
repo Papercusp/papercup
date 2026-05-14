@@ -1,6 +1,6 @@
 ---
 title: Tool catalog
-description: Every projected tool — built-in (defineTool) and plugin-contributed — exposed across HTTP and MCP transports. 149 tools across both registries as of writing; agents should use `agent_tools:list` for the live, role-filtered view.
+description: Every projected tool — built-in (defineTool) and plugin-contributed — exposed across HTTP and MCP transports. Counts in this page are approximate snapshots; agents should use `agent_tools:list` for the live, role-filtered view.
 ---
 
 > **Webapp retired (2026-05-14).** Any `localhost:3055` or `localhost:3070` URL on this page is only reachable while the **Tauri dev shell** is running. Start it with `cd papercusp-desktop && npm run dev`.
@@ -22,12 +22,12 @@ Every tool here is callable on **both** transports:
 - **HTTP**: `POST /api/plugins/<...>` (plugin tools) or `POST /api/agent-tools/<...>` (built-ins)
 - **MCP**: through the orchestrator-baked `.mcp.json` URL or the [superuser-mode](./superuser-mode) `?superuser=1` endpoint
 
-## Built-in tools (96)
+## Built-in tools (~100)
 
 Tools registered via `defineTool` from `packages/agent-mcp/src/tools/`. They run with a principal (bearer-resolved) and have direct PG access via `ctx.tx`.
 
-### `harness:*` (10)
-List, get, status, plan reviews, phase paths, markdown index, etc. — read views into a workspace's harness state.
+### `harness:*` (12)
+List, get, status, plan reviews, phase paths, markdown index, escalation, health, list_features, pending_reviews, etc. — read views into a workspace's harness state. (Doc-retrieval for a harness is **not** here — it lives on context-aware `docs:*`, or `cross_harness:docs_*` for explicit-slug queries from outside.)
 
 ### `operator:*` (27)
 The operator surface: scans, audit, dispatch, dedup, voice prefs, conv-voice, credentials status, scanner bootstrap/reset, decisions, preferences, multi-workspace view, budget, pause sentinel, voice/spend summary, etc.
@@ -44,8 +44,11 @@ Cross-harness messaging: `inbox`, `outbox`, `send`, `feature_inbox`, `feature_se
 ### `roles:*` (4)
 `list`, `get`, `firing_on`, `known`.
 
-### `cross_harness:*` (4)
-`inbox`, `outbox`, `supervisor_notes`, `recent_activity`.
+### `cross_harness:*` (7)
+`inbox`, `outbox`, `supervisor_notes`, `recent_activity`, `docs_outline`, `docs_get`, `docs_search` — the docs_* variants take an explicit `harnessSlug` (and optional `workspaceId`) for engineers querying a specific harness from outside its context. See [docs retrieval](/internal/docs/agents/docs-retrieval).
+
+### `docs:*` (3)
+`outline`, `get`, `search` — **context-aware**: returns the caller's harness docs when `ctx.harnessSlug` is set, the Papercusp engineering reference otherwise. Backed by `@papercusp/docs-engine`. See [docs retrieval](/internal/docs/agents/docs-retrieval).
 
 ### `projects:*` (4)
 `list`, `get`, `spec_history`, `regenerate_spec`.
