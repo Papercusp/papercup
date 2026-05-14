@@ -36,6 +36,7 @@ describe('scenario registry', () => {
       'op-S10-ask-choice',
       'op-S11-voice-card-answer',
       'op-S12-tool-error-recovery',
+      'op-S12b-tool-error-injected',
       // oracle
       'oracle-O1-docs-question',
       'oracle-O2-refuse-speculation',
