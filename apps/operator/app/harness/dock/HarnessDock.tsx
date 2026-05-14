@@ -31,6 +31,7 @@ import { bindDockApi } from './dock-actions';
 import { useNavShortcuts } from './useNavShortcuts';
 import { useLayoutResetShortcut } from './useLayoutResetShortcut';
 import { useRegisterPluginPanels } from './useRegisterPluginPanels';
+import { useFocusedPanelTracker } from './useFocusedPanelTracker';
 import type { LayoutDoc } from '../../../lib/dock-layouts';
 
 interface HarnessDockProps {
@@ -133,6 +134,9 @@ export function HarnessDock({ layoutName, className, slug }: HarnessDockProps) {
   // Plugin panels — registers in panelRegistry via /api/plugins. Hot-swap
   // (§8.3) handles registration that lands after layout hydration.
   useRegisterPluginPanels(slug ?? '');
+  // Sync focused panel's harnessSlug → ?focusSlug= so agent + voice
+  // context defaults track whichever panel the user is looking at.
+  useFocusedPanelTracker();
 
   const layoutDoc: LayoutDoc | null =
     state.status === 'ready' && state.row.schemaVersion === 1
