@@ -20,12 +20,16 @@ import { describe, it, expect } from 'vitest';
 import { SCENARIOS, getScenario } from '../scenarios';
 
 describe('scenario registry', () => {
-  it('exposes the three Phase 1 scenarios', () => {
+  it('exposes the Phase 1 + initial Phase 2 scenarios', () => {
     const ids = SCENARIOS.map((s) => s.id).sort();
     expect(ids).toEqual([
       'op-S01-status-quick',
       'op-S02-multistep-investigation',
+      'op-S03-continue-cap-count',
+      'op-S05-sleep-tag',
+      'op-S07-passive-mode',
       'op-S08-silence-nudge-ready',
+      'op-S10-ask-choice',
     ].sort());
   });
 
