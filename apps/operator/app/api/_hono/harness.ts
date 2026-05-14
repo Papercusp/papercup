@@ -5040,6 +5040,90 @@ function streamGitPatch(
   });
 }
 
+interface WorktreeEntry {
+  path: string;
+  head: string;
+  branch: string | null;
+  bare: boolean;
+  detached: boolean;
+  locked: boolean;
+  lockedReason: string | null;
+  prunable: boolean;
+  prunableReason: string | null;
+  isMain: boolean;
+  lastCommitTs: number | null;
+}
+
+function parseWorktreePorcelain(stdout: string): WorktreeEntry[] {
+  const blocks = stdout.split(/\n\n+/).map((b) => b.trim()).filter(Boolean);
+  return blocks.map((block, idx) => {
+    const wt: WorktreeEntry = {
+      path: '',
+      head: '',
+      branch: null,
+      bare: false,
+      detached: false,
+      locked: false,
+      lockedReason: null,
+      prunable: false,
+      prunableReason: null,
+      isMain: idx === 0,
+      lastCommitTs: null,
+    };
+    for (const line of block.split('\n')) {
+      if (line.startsWith('worktree ')) wt.path = line.slice('worktree '.length);
+      else if (line.startsWith('HEAD ')) wt.head = line.slice('HEAD '.length);
+      else if (line === 'bare') wt.bare = true;
+      else if (line === 'detached') wt.detached = true;
+      else if (line.startsWith('branch ')) {
+        wt.branch = line.slice('branch '.length).replace(/^refs\/heads\//, '');
+      } else if (line === 'locked' || line.startsWith('locked ')) {
+        wt.locked = true;
+        wt.lockedReason = line === 'locked' ? null : line.slice('locked '.length);
+      } else if (line === 'prunable' || line.startsWith('prunable ')) {
+        wt.prunable = true;
+        wt.prunableReason = line === 'prunable' ? null : line.slice('prunable '.length);
+      }
+    }
+    return wt;
+  }).filter((w) => w.path);
+}
+
+harness.get('/:slug/git/worktrees', async (c) => {
+  const project = await resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
+  if (!project) return c.json({ error: 'unknown project' }, 404);
+  if (!existsSync(join(project.path, '.git'))) {
+    return c.json({ worktrees: [], notAGitRepo: true });
+  }
+  try {
+    const { stdout } = await execFileP(
+      'git',
+      ['-C', project.path, 'worktree', 'list', '--porcelain'],
+      { maxBuffer: 1024 * 1024, timeout: 10_000 },
+    );
+    const worktrees = parseWorktreePorcelain(stdout);
+    await Promise.all(
+      worktrees.map(async (wt) => {
+        if (!existsSync(wt.path)) return;
+        try {
+          const { stdout: ts } = await execFileP(
+            'git',
+            ['-C', wt.path, 'log', '-1', '--format=%ct', 'HEAD'],
+            { maxBuffer: 4096, timeout: 5_000 },
+          );
+          const n = Number(ts.trim());
+          if (Number.isFinite(n) && n > 0) wt.lastCommitTs = n * 1000;
+        } catch {
+          // worktree may be locked, prunable, or otherwise unreadable — leave null
+        }
+      }),
+    );
+    return c.json({ worktrees });
+  } catch (err: any) {
+    return c.json({ error: err?.message ?? String(err) }, 500);
+  }
+});
+
 harness.get('/:slug/git/log', async (c) => {
   const project = await resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
   if (!project) return c.json({ error: 'unknown project' }, 404);
