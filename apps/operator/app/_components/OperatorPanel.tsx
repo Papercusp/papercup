@@ -146,10 +146,9 @@ type ScanStatus = 'idle' | 'scanning' | 'complete' | 'error';
 
 function titleCaseStatus(value: string): string {
   return value
-    .split(/([\s-]+)/)
-    .map((part) => (/^[a-z]/.test(part) ? part[0].toUpperCase() + part.slice(1) : part))
-    .join('')
-    .replace(/-/g, ' ');
+    .split('-')
+    .map((part) => part[0].toUpperCase() + part.slice(1))
+    .join(' ');
 }
 
 function lifecycleLabelForCard(card: SuggestionCard): string {

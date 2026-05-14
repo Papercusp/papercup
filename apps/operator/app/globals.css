@@ -26803,8 +26803,7 @@ body.has-op-chat:has(.operator-panel) .operator-panel {
   text-transform: none;
 }
 
-.operator-stream-empty + pre,
-.operator-empty-small {
+.operator-stream .operator-empty-small {
   display: none !important;
 }
 
