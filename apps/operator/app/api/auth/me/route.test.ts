@@ -67,4 +67,52 @@ describe('GET /api/auth/me', () => {
     // getSessionUserOrDefault should NOT be called when there's a real session
     expect(auth.getSessionUserOrDefault).not.toHaveBeenCalled();
   });
+
+  // Regression: when embedded-pg is unreachable (no discovery file,
+  // mid-restart, fresh-install racing the bootstrap migration), the
+  // route used to 500 — UserPicker silently bailed and the entire
+  // user-controls cluster vanished from the navbar. Now it returns a
+  // synthetic default user + pgUnavailable:true.
+  it('returns synthetic default user with pgUnavailable when PG throws everywhere', async () => {
+    const auth = await import('@/lib/auth');
+    (auth.getSessionUser as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('ECONNREFUSED'));
+    (auth.getSessionUserOrDefault as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('ECONNREFUSED'));
+    (auth.listUsers as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('ECONNREFUSED'));
+
+    const { GET } = await import('./route');
+    const r = await GET();
+    expect(r.status).toBe(200);
+    const j = await r.json();
+    expect(j.user).toEqual(defaultUser);
+    expect(j.autoLogin).toBe(true);
+    expect(j.pgUnavailable).toBe(true);
+    expect(j.available).toEqual([]);
+  });
+
+  it('handles partial PG failure (cookie lookup throws, default fallback works)', async () => {
+    const auth = await import('@/lib/auth');
+    (auth.getSessionUser as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('transient'));
+    (auth.getSessionUserOrDefault as ReturnType<typeof vi.fn>).mockResolvedValue(defaultUser);
+
+    const { GET } = await import('./route');
+    const r = await GET();
+    const j = await r.json();
+    expect(r.status).toBe(200);
+    expect(j.user).toEqual(defaultUser);
+    expect(j.autoLogin).toBe(true);
+    expect(j.pgUnavailable).toBeUndefined();
+  });
+
+  it('handles listUsers throwing without affecting user resolution', async () => {
+    const auth = await import('@/lib/auth');
+    (auth.getSessionUser as ReturnType<typeof vi.fn>).mockResolvedValue(sessionUser);
+    (auth.listUsers as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('list failed'));
+
+    const { GET } = await import('./route');
+    const r = await GET();
+    const j = await r.json();
+    expect(r.status).toBe(200);
+    expect(j.user).toEqual(sessionUser);
+    expect(j.available).toEqual([]);
+  });
 });

@@ -31,14 +31,31 @@ export default function UserPicker() {
 
   useEffect(() => {
     void (async () => {
+      const fallback: User = {
+        id: '00000000-0000-0000-0000-000000000001',
+        username: 'default',
+        display_name: 'User',
+        has_password: false,
+      };
       try {
         const r = await fetch('/api/auth/me');
-        if (!r.ok) return;
+        if (!r.ok) {
+          // Route is unreachable / 5xx (PG down, dev server cold-start).
+          // Render the synthetic default user so chrome UI still has
+          // a user-controls cluster — the alternative is a missing
+          // top-right button with no on-screen indication.
+          setUser(fallback);
+          setAutoLogin(true);
+          return;
+        }
         const j = await r.json();
-        setUser(j.user ?? null);
-        setAutoLogin(j.autoLogin === true);
+        setUser(j.user ?? fallback);
+        setAutoLogin(j.autoLogin === true || j.user == null);
       } catch {
-        /* network failure — render nothing */
+        // Network failure — same fallback. Renders something instead
+        // of nothing.
+        setUser(fallback);
+        setAutoLogin(true);
       }
     })();
   }, []);
