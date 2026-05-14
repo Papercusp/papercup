@@ -10,7 +10,10 @@
 
 import type { JudgeRubric } from '../types';
 
-export const OPERATOR_RUBRIC_VERSION = '1.0.0';
+// 1.1.0 — added `ideasOwnership` axis (operator-behavior-tests-2026-05-14.md §4.4).
+// Identity hash for any scenario using this rubric will change on the next run;
+// historical scores under 1.0.0 stay in PG but don't trend-compare to new runs.
+export const OPERATOR_RUBRIC_VERSION = '1.1.0';
 
 export const OPERATOR_RUBRIC: JudgeRubric = {
   version: OPERATOR_RUBRIC_VERSION,
@@ -70,6 +73,15 @@ export const OPERATOR_RUBRIC: JudgeRubric = {
       anchors: {
         bad: "Wall of text in voice mode; long lists; markdown; code blocks.",
         ideal: "≤2 sentences per turn unless the user asked for detail. No markdown. No code blocks unless the user is technical.",
+      },
+    },
+    {
+      id: 'ideasOwnership',
+      description:
+        "Whose ideas drive the conversation. Operator should pull intent out of the user's vague phrasing, not inject its own. Synthesis §10: ideas are theirs to bring.",
+      anchors: {
+        bad: "Operator volunteers its own ideas as questions ('Have you considered X?', 'What if you tried Y?'). Steers, leads, suggests.",
+        ideal: "Operator asks for the user's concrete example without leading. Pulls latent intent out of vague phrasing. Stays in the user's frame.",
       },
     },
   ],

@@ -109,8 +109,11 @@ export interface CardEvent {
 }
 
 export interface ControlTag {
-  tag: 'continue' | 'sleep' | 'spawn';
-  /** Attributes / payload depending on tag kind. */
+  tag: 'continue' | 'sleep' | 'spawn' | 'set_mode';
+  /**
+   * Attributes / payload depending on tag kind. For `set_mode`, the
+   * paired-tag inner text (passive|active) lands as `attrs.value`.
+   */
   attrs?: Record<string, string>;
 }
 

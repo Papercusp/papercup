@@ -307,7 +307,10 @@ function cardFromObj(c: Record<string, unknown>): CardEvent | null {
 
 function extractControlTags(text: string): ControlTag[] {
   const tags: ControlTag[] = [];
-  const re = /<(continue|sleep|spawn)(\s+([^/>]*))?\/?>/gi;
+  // Operator emits <set_mode>passive</set_mode> as a paired tag; the
+  // others are self-closing or void. We accept both forms — paired
+  // tags' inner text lands as attrs.value.
+  const re = /<(continue|sleep|spawn|set_mode)(\s+([^/>]*))?(?:>([^<]*)<\/\1>|\/?>)/gi;
   let m: RegExpExecArray | null;
   while ((m = re.exec(text)) !== null) {
     const tag = m[1].toLowerCase() as ControlTag['tag'];
@@ -318,6 +321,8 @@ function extractControlTags(text: string): ControlTag[] {
         attrs[am[1]] = am[2];
       }
     }
+    const innerText = (m[4] ?? '').trim();
+    if (innerText) attrs.value = innerText;
     tags.push({ tag, attrs: Object.keys(attrs).length > 0 ? attrs : undefined });
   }
   return tags;
