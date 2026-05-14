@@ -22485,11 +22485,15 @@ body:has(.operator-panel) {
   justify-content: center;
 }
 
+/* Align tabs to the same left edge as the search row + card list below.
+ * Previously fit-content + margin:auto centered the tabs, leaving a
+ * ~160px gap between the leftmost tab and the leftmost card — visible
+ * as a misalignment glitch. */
 .operator-feed-tabs {
-  width: fit-content !important;
-  max-width: calc(100% - 20px);
-  margin: -9px auto 2px !important;
-  justify-content: center !important;
+  width: 100% !important;
+  max-width: 100% !important;
+  margin: -9px 0 2px !important;
+  justify-content: flex-start !important;
 }
 
 .operator-feed-tabs .operator-panel__metric-card--tab {
