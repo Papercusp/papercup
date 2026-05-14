@@ -240,7 +240,12 @@ async function runOnce(args: OnceArgs): Promise<SingleRunReport> {
         finishReason = 'cap_breach';
         break;
       }
-      if (totalCostUsd > maxCostUsd) {
+      // Cap-breach is the real spend so far, not just SUT-side.
+      // operator-converse's `done` event always emits costUsd:0, so
+      // SUT cost is always 0 — sim-user is the real spender per turn.
+      // (Judge cost lands once at end-of-run, so it doesn't gate the
+      // per-turn loop; the loop's job is preventing runaway sim/SUT.)
+      if (totalCostUsd + simUser.costUsd > maxCostUsd) {
         capBreaches.push('cost');
         finishReason = 'cap_breach';
         break;
