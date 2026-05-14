@@ -1373,6 +1373,22 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
         //      not itself an auto-fire): auto-fire 'user_says_ready'
         //      to scan and surface suggestions.
         //   3. <sleep> or awaiting_reply or passive: no auto-fire.
+        //
+        // Build the history for auto-fired turns explicitly: the
+        // append_message dispatch above is async (React state
+        // commit), so stateRef.current.messages may not yet include
+        // the assistant turn we just produced. Mirror what
+        // sendUserMessage does — manually append the assistant
+        // message we just emitted. (Round-4 audit bug fix.)
+        const justEmittedAssistant: ChatMessage | null = turnHasContent
+          ? (collectedTools
+            ? { role: 'assistant' as const, content: parsed.say ?? '', tools: collectedTools }
+            : { role: 'assistant' as const, content: parsed.say ?? '' })
+          : null;
+        const nextHistoryForAutoFire: ChatMessage[] = justEmittedAssistant
+          ? [...stateRef.current.messages, justEmittedAssistant]
+          : stateRef.current.messages;
+
         const prefs = loadVoicePrefsClient();
         if (parsed.continue && !parsed.sleep) {
           // Continue chain.
@@ -1385,16 +1401,18 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
           const maxSecs = Math.max(30, Math.min(1800, prefs.maxContinueChainSecs ?? 300));
           const elapsedSecs = (nowMs - continueChainStartedAtMsRef.current) / 1000;
           if (continueChainCountRef.current <= maxCount && elapsedSecs <= maxSecs) {
-            // Fire the chained turn with the latest history.
+            // Fire the chained turn with the latest history (including
+            // the assistant turn we just emitted — see comment above
+            // about React state lag).
+            //
             // Propagate isAutoFire — if the current turn was itself an
             // auto-fire (terminal → user_says_ready), the continue chain
             // it spawns inherits that flag. Without this, a misbehaving
             // user_says_ready that emits <continue/> would chain into a
             // terminal turn, which would re-trigger terminal-auto-fire
             // and create an oscillation loop (audit round 3).
-            const nextHistory = stateRef.current.messages;
             void runGeneration('continue', {
-              messagesOverride: nextHistory,
+              messagesOverride: nextHistoryForAutoFire,
               isAutoFire: opts?.isAutoFire,
             });
             return; // do NOT also fire terminal auto-fire below
@@ -1443,9 +1461,8 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
             // Reset the continue chain — this is a terminal turn,
             // chain is over.
             resetContinueChain();
-            const nextHistory = stateRef.current.messages;
             void runGeneration('user_says_ready', {
-              messagesOverride: nextHistory,
+              messagesOverride: nextHistoryForAutoFire,
               isAutoFire: true,
             });
             return;
