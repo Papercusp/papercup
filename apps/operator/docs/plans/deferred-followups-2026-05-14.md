@@ -180,3 +180,84 @@ If those become important, the trigger remains "real plugins start shipping AND 
 **On `scope: 'global'` (A2) appearing again.** If A2 ships, future projected tools that fit the singleton-shape pattern should default to using it rather than implementing one-off SSE producers. Update the projection cookbook with examples once a second consumer materializes.
 
 **On the principal RFC (A3) appearing again.** Once the RFC lands, every existing transport's auth path becomes a `principal` populator. The signed-URL HMAC verify path migrates first (existing semantics preserved), then IPC explicit-trust path (already implemented this way), then JWT-mobile (new). After that, adding a new auth model (API tokens, OAuth, etc.) is a matter of writing one populator, not threading auth through the dispatcher.
+
+---
+
+## Section V: Voice-aware cards (2026-05-14)
+
+Plan: [voice-aware-cards-2026-05-14.md](./voice-aware-cards-2026-05-14.md). Phases 0–3, 5, 6 shipped 2026-05-14; Phase 4 deferred per Phase 0.5 spike (§K of the plan).
+
+### V1. OpenAI Realtime engine state-snapshot parity
+
+**Status:** `engineering deferred`
+
+**What's deferred.** Realtime voice sessions can't currently answer chat:ask_choice cards by voice. The Realtime engine opens a direct WebRTC connection to OpenAI; the operator brain runs *inside* the Realtime session as a baked-in system prompt and never calls `/operator-converse`, so no state-snapshot SSE reaches the engine. EL Conv AI sessions get the full voice-card path because they proxy through `askOperatorViaSse`.
+
+**Trigger to revisit:**
+- Realtime becomes the default `fullAgentEngine` (currently `elevenlabs-conv` is primary per `voice-prefs.ts:32`), OR
+- ≥ 3 user reports that Realtime users can't voice-answer cards.
+
+**Approach when triggered.** Either (a) thread state-snapshot through the Realtime session via a server-side relay + new `card.respond` browser tool in the Realtime tool surface, or (b) downgrade Realtime to a "voice front-end + delegate" mode that always routes substantive turns through `/operator-converse`. Pick at trigger-time based on observed usage.
+
+### V2. Flip `voiceAnswerable` default to true
+
+**Status:** `engineering deferred` — gated on telemetry.
+
+**Current.** v1 ships with `voiceAnswerable` defaulting to **false** on `chat:ask_choice`. Only opt-in single-select cards (the silence-nudge Ready card today) arm the voice router. Existing call sites are unaffected.
+
+**Trigger to revisit:** parser miss-rate < 5% measured across ≥ 50 voice-card answers from real users (audit log + outcome correlation). Threshold low enough to validate phonetic robustness across real option labels; high enough that flipping the default doesn't degrade today's working click-only flows.
+
+### V3. Multi-card voice handling
+
+**Status:** `engineering deferred`
+
+**Current.** When two `ctx.askUser` cards are open at once (e.g. a handler invoked two tools in parallel), the voice router only attaches to the focused card (oldest createdAt). The second card stays click-only.
+
+**Trigger to revisit:** ≥ 1 brain turn in production logs emits two concurrent `ctx.askUser` calls in a voice-active session. Cheap to detect (audit table + workspace voice state).
+
+### V4. Voice answer for `checkbox` / `text` / `date` / `slider` card kinds
+
+**Status:** `engineering deferred`
+
+**Current.** Only `presentation.kind === 'radio'` arms the voice router (M6 in the v2 plan review). Other kinds announce-only.
+
+**Trigger to revisit:** explicit user ask, or a tool's design needs multi-select / free-text voice. `checkbox` is the lowest-hanging extension (parser just collects the matching ids); `text` needs a different STT contract.
+
+### V5. Announcement-started timing (M3 in v2 review)
+
+**Status:** `engineering deferred` — requires engine plumbing.
+
+**The bug.** A user can speak the answer 100 ms after a card appears, finalize STT 1.5 s later, and pass the C.1a 250 ms pre-card guard — even though they couldn't have heard the announcement.
+
+**Trigger to revisit:** ≥ 3 audit-logged occurrences of answered-before-heard misroutes (matched-but-impossible: card transcript matched but `tsMs - announcement_start_estimate < 0`). Add the telemetry tap first as a cheap detector.
+
+**Approach.** EL Conv AI and OpenAI Realtime both need to expose a "TTS-frame-started" timestamp on the announcement event. Then the router can reject transcripts older than the announcement start.
+
+### V6. No-match announcement ("I'll kept the card open")
+
+**Status:** `engineering deferred`
+
+**Current.** When STT yields a transcript that doesn't match any option *and* isn't a decline phrase, the router falls through. The card stays visible but the user gets no audible acknowledgement.
+
+**Trigger to revisit:** ≥ 2 user reports that voice-answering a card without an audible "card stayed open" cue is confusing. Cheap implementation: announcer fires a one-line cue via the existing pref `voice.speakOpenCards`.
+
+### V7. Playwright E2E for the Ready-card voice/text flow
+
+**Status:** `engineering deferred`
+
+**What's deferred.** Phase 6 unit + trigger-line tests cover the brain-prompt contract and pure-layer state machine. A full Playwright spec (`apps/operator/e2e/voice-ready-card.spec.ts`) would assert end-to-end: focused card appears → announcer speaks → spoken "ready" → `/card-response` POST.
+
+**Trigger to revisit:** when we have a real-STT e2e fixture infrastructure (currently `apps/operator/e2e/voice-mode.spec.ts` notes "Headless Chromium can't reliably exercise SpeechRecognition / SpeechSynthesis"), OR when manual QA finds a regression the unit tests didn't catch.
+
+**Approach when triggered.** Stub `/api/operator/state-snapshot` SSE with a synthetic card frame, stub voice prefs, drive `papercusp:operatorUserTurn` window event for the spoken "ready" path and `answerChoice` for the click path, intercept `/card-response` and assert body shape. The hard part is mocking voice-active state without exercising the engine bootstrap.
+
+### V8. Active-mode proactive ticks (the ORIGINAL "operator is passive" complaint)
+
+**Status:** `engineering deferred` — separate plan, blocked on this one finishing first.
+
+**Context.** The user originally complained that the operator is passive in active mode — it only reacts to user input. The May-5 decision (Option J — brain reads MCP tools directly, no scanner-to-brain wire) optimized for *quality* of user_says_ready, not proactivity. This plan didn't fix proactivity; it fixed the Ready-card UX so the silence-nudge ladder works end-to-end in voice and text.
+
+**Trigger to revisit:** user follow-up on the original passivity complaint after this plan ships, OR telemetry showing < 1 brain turn per active hour outside reactive replies.
+
+**Approach when triggered.** Separate plan. Likely starts with periodic `runGeneration('idle_check')` in the provider, gated by `/api/agent-mcp/operator-trigger-state` fingerprint (free pre-tick gate, no LLM cost when nothing changed). Then `<sleep>` discipline as back-pressure. Stays within Option J — brain in the driver's seat, scanner unchanged.
+

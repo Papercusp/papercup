@@ -4,6 +4,8 @@ Stay on our bespoke card+event surface. Adopt four insights from researching A2U
 
 **v2 changes (from review):** H1–H4 high-priority issues addressed (card reserved name; cards live on state channel not replay buffer; auth model specified; single `onWorkspaceSwitch` hook). M1 scopes state to snapshot-only in v1. L1 PR sequencing corrected. L4 renames `accept` → `submit`. Full list in §A.
 
+**Extension landed 2026-05-14:** voice-aware cards — see [voice-aware-cards-2026-05-14.md](./voice-aware-cards-2026-05-14.md). `chat:ask_choice` now works in both text and voice when the call site opts in via `voiceAnswerable: true` on the `radio` presentation; the silence-nudge Ready card is the first such call site. EL Conv AI sessions get the full voice path; Realtime deferred per §K of that plan.
+
 **Plan-doc convention reminder:** execution happens in sibling git worktrees, one per PR. Per-turn commit + push discipline.
 
 ---
