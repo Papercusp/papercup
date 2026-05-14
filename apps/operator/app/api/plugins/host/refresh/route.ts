@@ -19,12 +19,19 @@ export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
 export async function POST() {
-  // Save reload state for plugins that opted in BEFORE wiping the host
-  // — the reset clears the `initialized` set we iterate over.
-  await captureReloadStates();
-  _resetPluginHostForTests();
-  await getPluginHost();
-  return NextResponse.json({ ok: true, status: await pluginHostStatus() });
+  try {
+    // Save reload state for plugins that opted in BEFORE wiping the host
+    // — the reset clears the `initialized` set we iterate over.
+    await captureReloadStates();
+    _resetPluginHostForTests();
+    await getPluginHost();
+    return NextResponse.json({ ok: true, status: await pluginHostStatus() });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    const stack = err instanceof Error ? err.stack : undefined;
+    console.error('[plugins/host/refresh] POST failed:', err);
+    return NextResponse.json({ ok: false, error: message, stack }, { status: 500 });
+  }
 }
 
 /**

@@ -1108,7 +1108,7 @@ export async function captureReloadStates(): Promise<void> {
   }
   for (const key of state.initialized) {
     const [pluginName, harnessSlug] = splitRegKey(key);
-    const lp = state.plugins.find((p) => p.plugin.name === pluginName);
+    const lp = state.loaded.find((p) => p.plugin.name === pluginName);
     if (!lp) continue;
     const manifest = lp.plugin as unknown as { hotReload?: { preserveState?: boolean } };
     if (!manifest.hotReload?.preserveState) continue;
