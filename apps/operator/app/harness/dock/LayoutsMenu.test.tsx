@@ -22,7 +22,6 @@ function makeFakeApi() {
 }
 
 const originalFetch = globalThis.fetch;
-const originalPrompt = globalThis.prompt;
 
 beforeEach(() => {
   bindDockApi(makeFakeApi());
@@ -48,7 +47,6 @@ beforeEach(() => {
 
 afterEach(() => {
   globalThis.fetch = originalFetch;
-  globalThis.prompt = originalPrompt;
   cleanup();
   bindDockApi(null);
 });
@@ -81,11 +79,16 @@ describe('LayoutsMenu', () => {
     expect(screen.getByText('current')).toBeTruthy();
   });
 
-  it('Save current as… dispatches PUT with the prompted name', async () => {
-    globalThis.prompt = vi.fn(() => 'my-layout');
+  it('Save current as… opens prompt + dispatches PUT on submit', async () => {
     render(<LayoutsMenu />);
     fireEvent.click(screen.getByLabelText('Layouts menu'));
     fireEvent.click(screen.getByText('+ Save current as…'));
+    // Prompt modal opens — input is the easiest unique handle.
+    const input = (await waitFor(() =>
+      screen.getByLabelText('Name'),
+    )) as HTMLInputElement;
+    fireEvent.change(input, { target: { value: 'my-layout' } });
+    fireEvent.click(screen.getByText('Save'));
     await waitFor(
       () => {
         const calls = (globalThis.fetch as unknown as { mock: { calls: Array<[string, RequestInit | undefined]> } })
@@ -98,12 +101,14 @@ describe('LayoutsMenu', () => {
     );
   });
 
-  it('Save with empty prompt is a no-op (no PUT)', async () => {
-    globalThis.prompt = vi.fn(() => '');
+  it('Save cancel: no PUT', async () => {
     render(<LayoutsMenu />);
     fireEvent.click(screen.getByLabelText('Layouts menu'));
     fireEvent.click(screen.getByText('+ Save current as…'));
-    // Give microtasks a tick to flush.
+    // Wait for the prompt to open (input labelled Name).
+    await waitFor(() => screen.getByLabelText('Name'));
+    fireEvent.click(screen.getByText('Cancel'));
+    // Give microtasks a tick.
     await Promise.resolve();
     const calls = (globalThis.fetch as unknown as { mock: { calls: Array<[string, RequestInit | undefined]> } }).mock.calls;
     const putCall = calls.find(([, init]) => init?.method === 'PUT');
