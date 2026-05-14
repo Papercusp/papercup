@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useQueryState, parseAsString, parseAsStringEnum, parseAsBoolean } from 'nuqs';
 import { Button } from '../../../harness/Button';
+import { Select } from '../../../harness/Select';
 import {
   CHANNEL_NAME,
   type ControllerMsg,
@@ -141,11 +142,17 @@ export default function ChaosTab() {
           </label>
           <label>
             Duration{' '}
-            <select value={duration} onChange={(e) => setDuration(e.target.value as Duration)} disabled={runState !== 'idle'}>
-              <option value="30s">30 seconds</option>
-              <option value="2m">2 minutes</option>
-              <option value="10m">10 minutes</option>
-            </select>
+            <Select
+              value={duration}
+              onChange={(v) => setDuration(v as Duration)}
+              disabled={runState !== 'idle'}
+              ariaLabel="Chaos run duration"
+              options={[
+                { value: '30s', label: '30 seconds' },
+                { value: '2m', label: '2 minutes' },
+                { value: '10m', label: '10 minutes' },
+              ]}
+            />
           </label>
           <label>
             <input

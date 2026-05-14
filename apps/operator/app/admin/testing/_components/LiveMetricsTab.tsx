@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useQueryState, parseAsString, parseAsStringEnum } from 'nuqs';
 import { Button } from '../../../harness/Button';
+import { Select } from '../../../harness/Select';
 import { subscribe, clearEvents, rateINP, type PerfEvent, type PerfEventKind } from '../_lib/vitals-recorder';
 
 type SortKey = 'ts' | 'duration' | 'route';
@@ -63,14 +64,19 @@ export default function LiveMetricsTab() {
         <div className="pc-test-card-row">
           <label>
             Kind{' '}
-            <select value={kindFilter} onChange={(e) => setKindFilter(e.target.value as PerfEventKind | 'all')}>
-              <option value="all">all</option>
-              <option value="interaction">interaction</option>
-              <option value="longtask">longtask</option>
-              <option value="layout-shift">layout-shift</option>
-              <option value="console-error">console-error</option>
-              <option value="unhandled-error">unhandled-error</option>
-            </select>
+            <Select
+              value={kindFilter}
+              onChange={(v) => setKindFilter(v as PerfEventKind | 'all')}
+              ariaLabel="Filter by event kind"
+              options={[
+                { value: 'all', label: 'all' },
+                { value: 'interaction', label: 'interaction' },
+                { value: 'longtask', label: 'longtask' },
+                { value: 'layout-shift', label: 'layout-shift' },
+                { value: 'console-error', label: 'console-error' },
+                { value: 'unhandled-error', label: 'unhandled-error' },
+              ]}
+            />
           </label>
           <label>
             Route contains{' '}
@@ -84,11 +90,16 @@ export default function LiveMetricsTab() {
           </label>
           <label>
             Sort{' '}
-            <select value={sort} onChange={(e) => setSort(e.target.value as SortKey)}>
-              <option value="duration">duration ↓</option>
-              <option value="ts">time ↓</option>
-              <option value="route">route ↑</option>
-            </select>
+            <Select
+              value={sort}
+              onChange={(v) => setSort(v as SortKey)}
+              ariaLabel="Sort events"
+              options={[
+                { value: 'duration', label: 'duration ↓' },
+                { value: 'ts', label: 'time ↓' },
+                { value: 'route', label: 'route ↑' },
+              ]}
+            />
           </label>
           <span style={{ marginLeft: 'auto', fontSize: 11, color: 'var(--fg-mute)' }}>
             {filtered.length} of {events.length} events
