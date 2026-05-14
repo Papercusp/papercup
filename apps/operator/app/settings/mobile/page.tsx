@@ -101,7 +101,7 @@ export default function MobileSettingsPage() {
   const revoke = async (deviceId: string) => {
     const ok = await askConfirm({
       title: 'Revoke this device?',
-      body: 'It will need to re-pair to use Operator Mobile.',
+      body: 'It will need to re-pair to use Papercup Mobile.',
       confirmLabel: 'Revoke',
       destructive: true,
     });
@@ -124,7 +124,7 @@ export default function MobileSettingsPage() {
       <header>
         <h1>Mobile access</h1>
         <p className="pc-settings-intro">
-          Pair the Operator Mobile app on your phone to monitor harnesses, voice-control the operator, and receive intervention pushes when away from your desk.
+          Pair the Papercup Mobile app on your phone to monitor harnesses, voice-control Papercup, and receive intervention pushes when away from your desk.
         </p>
       </header>
 

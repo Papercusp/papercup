@@ -89,14 +89,14 @@ export async function GET(req: NextRequest) {
   const principal = await loadOperatorBearer();
   if (!principal) {
     return new Response(
-      'Operator principal not provisioned. POST /api/agent-mcp/provision first.',
+      'Papercup principal not provisioned. POST /api/agent-mcp/provision first.',
       { status: 503 },
     );
   }
   const workspaceId = activeWorkspaceId();
   if (principal.workspaceId !== workspaceId) {
     return new Response(
-      `Operator principal workspace mismatch (file=${principal.workspaceId} active=${workspaceId}).`,
+      `Papercup principal workspace mismatch (file=${principal.workspaceId} active=${workspaceId}).`,
       { status: 503 },
     );
   }

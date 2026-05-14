@@ -49,14 +49,14 @@ export function listAdminTables(): AdminTableEntry[] {
 registerAdminTable({
   exportName: 'operatorBudgetTiersInHarnessShared',
   table: generated.operatorBudgetTiersInHarnessShared,
-  label: 'Operator budget tiers',
+  label: 'Papercup budget tiers',
   editableColumns: ['ord', 'label', 'cap_usd', 'blurb'],
 });
 
 registerAdminTable({
   exportName: 'operatorSettingsInHarnessShared',
   table: generated.operatorSettingsInHarnessShared,
-  label: 'Operator settings',
+  label: 'Papercup settings',
   editableColumns: ['key', 'value', 'description'],
 });
 

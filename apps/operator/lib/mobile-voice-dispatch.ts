@@ -73,7 +73,7 @@ export async function dispatchIntent(
 ): Promise<void> {
   switch (intent.kind) {
     case 'open':
-      send({ kind: 'speak', text: 'Operator panel is open on your desktop.', source: 'operator' });
+      send({ kind: 'speak', text: 'Papercup panel is open on your desktop.', source: 'operator' });
       return;
     case 'open-and-scan':
       await runOperatorScan(intent.query ?? '', send);
@@ -97,11 +97,11 @@ export async function dispatchCommand(
       return;
     case 'pause':
       await setPaused('mobile-voice');
-      send({ kind: 'speak', text: 'Operator paused.', source: 'operator' });
+      send({ kind: 'speak', text: 'Papercup paused.', source: 'operator' });
       return;
     case 'resume':
       await setResumed();
-      send({ kind: 'speak', text: 'Operator resumed.', source: 'operator' });
+      send({ kind: 'speak', text: 'Papercup resumed.', source: 'operator' });
       return;
     case 'scan':
       await runOperatorScan(cmd.query ?? '', send);
@@ -200,7 +200,7 @@ export async function runOperatorScan(query: string, send: SendFrame): Promise<v
       send({ kind: 'speak', text: `Scan failed: HTTP ${res.status}.`, source: 'operator' });
       return;
     }
-    send({ kind: 'speak', text: 'Scanning. Suggestions will appear in the Operator panel.', source: 'operator' });
+    send({ kind: 'speak', text: 'Scanning. Suggestions will appear in the Papercup panel.', source: 'operator' });
   } catch (e) {
     send({
       kind: 'speak',

@@ -90,7 +90,7 @@ export async function dispatchCard(card: PendingCard): Promise<string> {
     return `${card.action} cards are advisory; nothing to dispatch.`;
   }
   const principal = await loadOperatorBearer();
-  if (!principal) return 'Operator is not provisioned. Run provision first.';
+  if (!principal) return 'Papercup is not provisioned. Run provision first.';
 
   const actionId = seedToUuid(`${card.id}:dispatch`);
   const body = {

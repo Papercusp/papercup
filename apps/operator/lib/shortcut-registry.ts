@@ -86,7 +86,7 @@ export const SHORTCUTS: readonly ShortcutDef[] = [
   },
   {
     id: 'operator.toggle',
-    description: 'Open or close the Operator panel',
+    description: 'Open or close the Papercup panel',
     // mod+; (semicolon) is universally free across Firefox/Chrome/Safari.
     // mod+shift+o is kept as an alternate for muscle memory.
     defaultCombo: 'mod+;, mod+shift+o',

@@ -118,7 +118,7 @@ export function OperatorVoiceAnnouncer(): null {
         body: JSON.stringify({ kind: 'pause' }),
       }).then((r) => r.ok ? r.json() : { fired: false }).then((res) => {
         if (res.fired) {
-          speak(s.paused ? 'Operator paused.' : 'Operator resumed.', 'system:operator-nudge', 'polite');
+          speak(s.paused ? 'Papercup paused.' : 'Papercup resumed.', 'system:operator-nudge', 'polite');
         }
       }).catch(() => {});
     });

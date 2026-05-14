@@ -77,7 +77,7 @@ describe('dispatchTranscript — wake word + intent routing', () => {
   it('routes "operator open" without invoking scan', async () => {
     const { frames, send } = frameSink();
     await dispatchTranscript(claims, 'hey operator open', 'hey operator', send);
-    expect(frames).toEqual([{ kind: 'speak', text: expect.stringContaining('Operator panel'), source: 'operator' }]);
+    expect(frames).toEqual([{ kind: 'speak', text: expect.stringContaining('Papercup panel'), source: 'operator' }]);
     expect(global.fetch).not.toHaveBeenCalled();
   });
 
@@ -85,14 +85,14 @@ describe('dispatchTranscript — wake word + intent routing', () => {
     const { frames, send } = frameSink();
     await dispatchTranscript(claims, 'pause', 'hey operator', send);
     expect(setPaused).toHaveBeenCalledTimes(1);
-    expect(frames[0].text).toBe('Operator paused.');
+    expect(frames[0].text).toBe('Papercup paused.');
   });
 
   it('routes "resume" → setResumed + frame', async () => {
     const { frames, send } = frameSink();
     await dispatchTranscript(claims, 'resume', 'hey operator', send);
     expect(setResumed).toHaveBeenCalledTimes(1);
-    expect(frames[0].text).toBe('Operator resumed.');
+    expect(frames[0].text).toBe('Papercup resumed.');
   });
 
   it('respects per-user wake word override (intent path)', async () => {

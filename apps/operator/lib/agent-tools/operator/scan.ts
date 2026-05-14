@@ -115,7 +115,7 @@ export default defineTool({
     const budget = await checkBudget();
     if (budget.state && budget.exceeded) {
       ctx.emit('error', {
-        message: `Operator daily budget reached (${budget.todaySpendUsd.toFixed(2)} of ${budget.capUsd}). Raise the cap in /settings/operator or wait until tomorrow.`,
+        message: `Papercup daily budget reached (${budget.todaySpendUsd.toFixed(2)} of ${budget.capUsd}). Raise the cap in /settings/operator or wait until tomorrow.`,
         code: 'budget_exhausted',
       });
       throw new Error(`budget_exhausted: ${budget.todaySpendUsd}/${budget.capUsd}`);

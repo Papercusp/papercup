@@ -170,19 +170,19 @@ export function OperatorActiveToggle() {
       ? 'Quiet'
       : active ? 'Active' : 'Passive';
   const aria = sleeping
-    ? `Operator sleeping for ${sleepLabel}. Click to wake.`
+    ? `Papercup sleeping for ${sleepLabel}. Click to wake.`
     : quiet
-      ? 'Operator is quiet — type in the chat to pick up where you left off.'
+      ? 'Papercup is quiet — type in the chat to pick up where you left off.'
       : active
-        ? 'Operator interaction mode: active. Click to set passive.'
-        : 'Operator interaction mode: passive. Click to set active.';
+        ? 'Papercup interaction mode: active. Click to set passive.'
+        : 'Papercup interaction mode: passive. Click to set active.';
   const title = sleeping
-    ? `Operator went quiet for ${sleepLabel} (via <sleep> tag). Click to wake immediately.`
+    ? `Papercup went quiet for ${sleepLabel} (via <sleep> tag). Click to wake immediately.`
     : quiet
-      ? 'Operator went silent after the silence ladder ran out. Type in the chat to wake them.'
+      ? 'Papercup went silent after the silence ladder ran out. Type in the chat to wake them.'
       : active
-        ? 'Operator is active — speaks proactively. Click to make passive.'
-        : 'Operator is passive — only responds when spoken to. Click to make active.';
+        ? 'Papercup is active — speaks proactively. Click to make passive.'
+        : 'Papercup is passive — only responds when spoken to. Click to make active.';
   const dotKind = (sleeping || quiet) ? 'static' : active ? 'pulsing' : 'static';
 
   return (

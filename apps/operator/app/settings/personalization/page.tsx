@@ -58,7 +58,7 @@ export default function PersonalizationSettingsPage() {
     <div>
       <h1>Personalization</h1>
       <p className="pc-settings-intro">
-        Tune browser-local presentation preferences for this Operator interface.
+        Tune browser-local presentation preferences for this Papercup interface.
       </p>
 
       <section className="pc-settings-section">

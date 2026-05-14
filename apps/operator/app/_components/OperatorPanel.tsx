@@ -805,8 +805,8 @@ export function OperatorPanel(): ReactElement | null {
             }).then((nr) => nr.ok ? nr.json() : { fired: false });
             if (nudge.fired) {
               const phrase = ratio >= 1.0
-                ? `Operator paused. Daily budget reached: ${snap.todaySpendUsd.toFixed(2)}.`
-                : `Operator budget at ${Math.round(ratio * 100)} percent — ${snap.todaySpendUsd.toFixed(2)} of ${snap.dailyCapUsd}.`;
+                ? `Papercup paused. Daily budget reached: ${snap.todaySpendUsd.toFixed(2)}.`
+                : `Papercup budget at ${Math.round(ratio * 100)} percent — ${snap.todaySpendUsd.toFixed(2)} of ${snap.dailyCapUsd}.`;
               speak(phrase, 'system:operator-nudge', 'assertive');
             }
           }).catch(() => {});
@@ -1053,7 +1053,7 @@ export function OperatorPanel(): ReactElement | null {
     const reason = await askPrompt({
       title: 'Why ignore this?',
       label: 'Reason (optional)',
-      body: 'Tell Operator why this suggestion isn\'t useful so it can learn. Leave blank to dismiss without logging.',
+      body: 'Tell Papercup why this suggestion isn\'t useful so it can learn. Leave blank to dismiss without logging.',
       placeholder: 'not relevant to this harness…',
       submitLabel: 'Dismiss',
       allowEmpty: true,
@@ -1300,16 +1300,16 @@ export function OperatorPanel(): ReactElement | null {
       : mainView === 'ignored'
         ? 'No ignored actions yet'
         : scanStatus === 'error'
-          ? 'Operator scan needs setup'
+          ? 'Papercup scan needs setup'
           : scanStatus === 'scanning'
             ? 'Scanning workspace…'
             : state.paused
-              ? 'Operator is paused'
+              ? 'Papercup is paused'
               : scanStatus === 'complete' && suggestions.length === 0
                 ? 'No suggestions found'
                 : scanStarted
-                  ? "Operator hasn't surfaced any pending actions"
-                  : 'Operator has not scanned yet';
+                  ? "Papercup hasn't surfaced any pending actions"
+                  : 'Papercup has not scanned yet';
   const emptyBody = filteredEmpty
     ? 'Filters are narrowing this view. Clear the active filters or choose a different harness.'
     : mainView === 'accepted'
@@ -1317,11 +1317,11 @@ export function OperatorPanel(): ReactElement | null {
       : mainView === 'ignored'
         ? 'Ignored actions will appear here after you ignore them.'
         : scanStatus === 'error'
-          ? 'The scan did not complete. Check Operator settings or provision the substrate before scanning again.'
+          ? 'The scan did not complete. Check Papercup settings or provision the substrate before scanning again.'
           : scanStatus === 'scanning'
-            ? 'Operator is checking workspace state, recent decisions, and pending harness work.'
+            ? 'Papercup is checking workspace state, recent decisions, and pending harness work.'
             : state.paused
-              ? 'Resume Operator before automatic scans continue. You can still run a manual scan from the controls above.'
+              ? 'Resume Papercup before automatic scans continue. You can still run a manual scan from the controls above.'
               : scanStatus === 'complete' && suggestions.length === 0
                 ? `Last scan completed ${lastScanAgeLabel ?? 'recently'} and found no actions. Run Scan again when the workspace changes.`
                 : scanStarted
@@ -1572,9 +1572,9 @@ export function OperatorPanel(): ReactElement | null {
             <div className="operator-budget-overlay pc-animate-in pc-animate-in--fade">
               <div className="operator-budget-card pc-animate-in pc-animate-in--down pc-animate-in--delay-1">
                 <div className="operator-panel__eyebrow">First run</div>
-                <h3>Pick a daily budget for Operator</h3>
+                <h3>Pick a daily budget for Papercup</h3>
                 <p>
-                  Operator stops scanning automatically when today&apos;s spend reaches the cap.
+                  Papercup stops scanning automatically when today&apos;s spend reaches the cap.
                   You can change this any time at <RouteLink href="/settings/operator">/settings/operator</RouteLink>.
                 </p>
                 <div className="operator-budget-options">
@@ -1712,7 +1712,7 @@ export function OperatorPanel(): ReactElement | null {
                       onClick={() => provisionAndRescan()}
                       disabled={provisioning}
                     >
-                      {provisioning ? 'Setting up…' : 'Set up Operator →'}
+                      {provisioning ? 'Setting up…' : 'Set up Papercup →'}
                     </button>
                   )}
                 </div>
@@ -1952,14 +1952,14 @@ export function OperatorPanel(): ReactElement | null {
                 {scanStatus === 'error' ? (
                   <div className="operator-stream-error">
                     <strong>Scan errored</strong>
-                    <p>{scanError || 'Operator substrate is not ready.'}</p>
+                    <p>{scanError || 'Papercup substrate is not ready.'}</p>
                     <button
                       type="button"
                       className="operator-btn operator-btn--ghost"
                       onClick={() => provisionAndRescan()}
                       disabled={provisioning}
                     >
-                      {provisioning ? 'Setting up…' : 'Set up Operator →'}
+                      {provisioning ? 'Setting up…' : 'Set up Papercup →'}
                     </button>
                     {onSettingsPage ? null : (
                       <RouteLink className="operator-btn operator-btn--muted" href="/settings/operator">

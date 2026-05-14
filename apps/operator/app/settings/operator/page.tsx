@@ -119,7 +119,7 @@ export default function OperatorSettingsPage() {
 
   const onSave = async (data: ConfigFormData) => {
     if (!cfg) {
-      toast.error('Operator config is still loading');
+      toast.error('Papercup config is still loading');
       return;
     }
     try {
@@ -174,9 +174,9 @@ export default function OperatorSettingsPage() {
   return (
     <div>
       {confirmEl}
-      <h1>Operator</h1>
+      <h1>Papercup</h1>
       <p className="pc-settings-intro">
-        The Operator is the proactive concierge accessed from the top-bar Operator button.
+        Papercup is the proactive concierge accessed from the top-bar Papercup button.
         {cfg ? (
           <> Stored in <code>{cfg.prompt_user_path}</code> and <code>{cfg.prefs_path}</code>.</>
         ) : (
@@ -185,7 +185,7 @@ export default function OperatorSettingsPage() {
       </p>
       {loading && (
         <p role="status" style={{ color: 'var(--fg-mute)', marginBottom: 24, fontSize: 13 }}>
-          Loading Operator config…
+          Loading Papercup config…
         </p>
       )}
 
@@ -194,7 +194,7 @@ export default function OperatorSettingsPage() {
         <section style={{ background: 'rgba(255,200,0,0.08)', border: '1px solid rgba(255,170,0,0.4)', borderRadius: 6, padding: 12, marginBottom: 24 }}>
           <strong style={{ fontSize: 13 }}>Standing-approval candidates</strong>
           <p style={{ fontSize: 12, color: 'var(--fg-mute)', margin: '4px 0 8px' }}>
-            Operator dispatched these (capability, target) pairs ≥3 times in the last 24h. Approve to skip the ask-first prompt for future identical dispatches.
+            Papercup dispatched these (capability, target) pairs ≥3 times in the last 24h. Approve to skip the ask-first prompt for future identical dispatches.
           </p>
           <ul style={{ listStyle: 'none', padding: 0, margin: 0, display: 'grid', gap: 6 }}>
             {candidates.map((c) => (
@@ -212,7 +212,7 @@ export default function OperatorSettingsPage() {
 
       {recentEntries.length > 0 && (
         <section style={{ background: 'rgba(33,150,243,0.06)', border: '1px solid rgba(33,150,243,0.3)', borderRadius: 6, padding: 12, marginBottom: 24 }}>
-          <strong style={{ fontSize: 13 }}>Operator recently learned (last 24h)</strong>
+          <strong style={{ fontSize: 13 }}>Papercup recently learned (last 24h)</strong>
           <ul style={{ marginTop: 8, fontSize: 13, paddingLeft: 18 }}>
             {recentEntries.map((e) => (
               <li key={e.key} style={{ marginBottom: 4 }}>
@@ -230,9 +230,9 @@ export default function OperatorSettingsPage() {
           <section className="pc-settings-diagnostics">
             <div className="pc-settings-diagnostics-head">
               <div>
-                <h2>Operator diagnostics</h2>
+                <h2>Papercup diagnostics</h2>
                 <p style={{ fontSize: 12, color: 'var(--fg-mute)', margin: '4px 0 0' }}>
-                  Last 7 days. Useful when tuning Operator behavior; collapsed by default because it is a report, not a setting.
+                  Last 7 days. Useful when tuning Papercup behavior; collapsed by default because it is a report, not a setting.
                 </p>
               </div>
               <div className="pc-settings-diagnostics-summary">
@@ -297,7 +297,7 @@ export default function OperatorSettingsPage() {
           </div>
           {stats.unconsumedFraction !== null && stats.unconsumedFraction > 0.25 && (
             <p style={{ fontSize: 12, color: '#a04', marginTop: 8 }}>
-              ⚠ Unconsumed fraction {`>`}25% — recipient harnesses are slow to consume Operator directives.
+              ⚠ Unconsumed fraction {`>`}25% — recipient harnesses are slow to consume Papercup directives.
               The v5 plan's Path-(a) (`dispatch_role`) escalation criterion is met; consider raising the issue
               with the substrate maintainers.
             </p>

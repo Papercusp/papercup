@@ -155,12 +155,12 @@ export default defineTool({
     // transport-agnostic.
     const principal = await readSystemPrincipal('operator');
     if (!principal) {
-      throw new Error('Operator principal not provisioned. POST /api/agent-mcp/provision first.');
+      throw new Error('Papercup principal not provisioned. POST /api/agent-mcp/provision first.');
     }
     const workspaceId = activeWorkspaceId();
     if (principal.workspaceId !== workspaceId) {
       throw new Error(
-        `Operator principal workspace mismatch (file=${principal.workspaceId} active=${workspaceId}).`,
+        `Papercup principal workspace mismatch (file=${principal.workspaceId} active=${workspaceId}).`,
       );
     }
 

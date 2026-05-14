@@ -107,7 +107,7 @@ describe('askOperatorViaConverse', () => {
     expect(result.kind).toBe('bad-status');
     if (result.kind === 'bad-status') {
       expect(result.status).toBe(503);
-      expect(result.text).toMatch(/Operator is offline/);
+      expect(result.text).toMatch(/Papercup is offline/);
     }
   });
 

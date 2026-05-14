@@ -45,7 +45,7 @@ const SETTINGS_GROUPS: readonly SettingsGroup[] = [
     label: 'Assistants',
     links: [
       { href: '/settings/oracle', label: 'Oracle assistant', keywords: ['oracle', 'assistant', 'prompt', 'memory'] },
-      { href: '/settings/operator', label: 'Operator agent', keywords: ['operator', 'agent', 'prompt', 'budget', 'preferences', 'approvals'] },
+      { href: '/settings/operator', label: 'Papercup agent', keywords: ['operator', 'agent', 'prompt', 'budget', 'preferences', 'approvals'] },
       { href: '/settings/voice', label: 'Voice & speech', keywords: ['voice', 'speech', 'stt', 'tts', 'microphone', 'wake word', 'elevenlabs', 'openai', 'cartesia', 'deepgram'] },
     ],
   },

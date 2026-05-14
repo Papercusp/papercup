@@ -283,13 +283,11 @@ The systemic chat:ask_choice underuse for `user_says_ready` / `open_canvas` is N
 
 **Approach when triggered.** Prompt-wide audit. Likely changes: more aggressive nudge in the "PREFER CARDS" section, fewer competing example styles, explicit anti-`<say>`-list rules. Separate plan.
 
-### V8. Active-mode proactive ticks (the ORIGINAL "operator is passive" complaint)
+### V8. ~~Active-mode proactive ticks~~ — RESOLVED
 
-**Status:** `engineering deferred` — separate plan, blocked on this one finishing first.
+**Status:** `resolved` (2026-05-14).
 
-**Context.** The user originally complained that the operator is passive in active mode — it only reacts to user input. The May-5 decision (Option J — brain reads MCP tools directly, no scanner-to-brain wire) optimized for *quality* of user_says_ready, not proactivity. This plan didn't fix proactivity; it fixed the Ready-card UX so the silence-nudge ladder works end-to-end in voice and text.
+**Resolved by:** [active-mode-proactive-ticks-2026-05-14.md](./active-mode-proactive-ticks-2026-05-14.md), commit `db5f4c08`. Brain-driven (not timer-driven) — three end-of-turn outcomes encoded as brain signals (`<continue/>`, `chat:ask_choice`, terminal). Runtime auto-fires `'continue'` when brain emits `<continue/>` (capped) and `'user_says_ready'` after terminal turns in active mode (one-shot, anti-loop guard). "Generate ideas" button in the composer provides manual entry. Stays within May-5 Option J.
 
-**Trigger to revisit:** user follow-up on the original passivity complaint after this plan ships, OR telemetry showing < 1 brain turn per active hour outside reactive replies.
-
-**Approach when triggered.** Separate plan. Likely starts with periodic `runGeneration('idle_check')` in the provider, gated by `/api/agent-mcp/operator-trigger-state` fingerprint (free pre-tick gate, no LLM cost when nothing changed). Then `<sleep>` discipline as back-pressure. Stays within Option J — brain in the driver's seat, scanner unchanged.
+Follow-ups filed under V8-A through V8-D in the plan doc §G.
 

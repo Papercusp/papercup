@@ -19,7 +19,7 @@ const CANDIDATES: Array<{
     name: 'Sentinel Cup',
     src: '/operator-logo/sentinel.svg',
     summary: 'Closest to papercusp: the cup silhouette becomes a watchful control orb.',
-    bestFor: 'Best if you want Operator to feel like the in-house sibling of papercusp itself.',
+    bestFor: 'Best if you want Papercup to feel like the in-house sibling of papercusp itself.',
     notes: [
       'Strongest continuity with the existing mascot + wordmark language.',
       'Reads well as a sidebar badge or avatar chip.',
@@ -31,7 +31,7 @@ const CANDIDATES: Array<{
     name: 'Relay Iris',
     src: '/operator-logo/iris.svg',
     summary: 'More control-room / scanning-station. The cup is embedded inside a lens.',
-    bestFor: 'Best if Operator should feel more tactical, observant, and command-driven.',
+    bestFor: 'Best if Papercup should feel more tactical, observant, and command-driven.',
     notes: [
       'Most futuristic of the three.',
       'Strong shape for dock bubbles, overlays, and HUD-like status pills.',
@@ -43,7 +43,7 @@ const CANDIDATES: Array<{
     name: 'Command Plate',
     src: '/operator-logo/plate.svg',
     summary: 'A more app-icon / system-utility direction with a heavier chassis.',
-    bestFor: 'Best if you want Operator to feel like a persistent product surface, not a character.',
+    bestFor: 'Best if you want Papercup to feel like a persistent product surface, not a character.',
     notes: [
       'Strongest desktop / app icon candidate.',
       'Feels premium and structural on dark chrome.',
@@ -67,8 +67,8 @@ export default function OperatorLogoLabPage() {
     <div className={styles.page}>
       <div className={styles.hero}>
         <div>
-          <div className={styles.eyebrow}>Operator logo lab</div>
-          <h1 className={styles.title}>Three operator logo directions</h1>
+          <div className={styles.eyebrow}>Papercup logo lab</div>
+          <h1 className={styles.title}>Three Papercup logo directions</h1>
           <p className={styles.subtitle}>
             These are intentionally aligned to the papercusp palette: dark metallic shell,
             cyan control-light, and a cup/cusp reference so Operator still feels like part of
@@ -134,7 +134,7 @@ export default function OperatorLogoLabPage() {
                   <img src={active.src} alt="" className={styles.badgeIcon} />
                 </div>
                 <div>
-                  <div className={styles.badgeTitle}>Operator</div>
+                  <div className={styles.badgeTitle}>Papercup</div>
                   <div className={styles.badgeHint}>Workspace assistant</div>
                 </div>
               </div>
@@ -158,7 +158,7 @@ export default function OperatorLogoLabPage() {
               <div className={styles.contextLabel}>Header chip</div>
               <div className={styles.headerMock}>
                 <img src={active.src} alt="" className={styles.headerIcon} />
-                <span>Operator</span>
+                <span>Papercup</span>
                 <span className={styles.headerStatus}>active</span>
               </div>
             </div>

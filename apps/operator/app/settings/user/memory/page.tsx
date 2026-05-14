@@ -142,9 +142,9 @@ export default function MemoryPage() {
     <div style={{ padding: 32, maxWidth: 920, display: 'flex', flexDirection: 'column', gap: 16 }}>
       {confirmEl}
       <header>
-        <h1>Operator memory</h1>
+        <h1>Papercup memory</h1>
         <p className="pc-settings-intro">
-          Facts the operator has stored about you. Inspect, edit, or delete
+          Facts Papercup has stored about you. Inspect, edit, or delete
           per entry. Edits and deletes are recorded as feedback signal for
           future tuning. Workspace-shared entries (visible to other users in
           this workspace) are marked with a badge.

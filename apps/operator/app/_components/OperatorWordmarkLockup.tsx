@@ -10,7 +10,7 @@ type Props = {
 };
 
 export function OperatorWordmarkLockup({
-  title = 'Operator',
+  title = 'Papercup',
   subtitle = 'mission console',
   className,
   titleClassName,

@@ -1380,8 +1380,8 @@ function SaveSnapshotButton({ slug }: { slug: string }) {
 
         <div style={{ marginTop: 16, marginBottom: 4, fontSize: 12, color: 'var(--fg-mute)' }}>Include</div>
         <label style={checkRow}>
-          <Checkbox checked={includeOperatorNotes} onChange={setIncludeOperatorNotes} ariaLabel="Operator notes" />
-          Operator notes
+          <Checkbox checked={includeOperatorNotes} onChange={setIncludeOperatorNotes} ariaLabel="Papercup notes" />
+          Papercup notes
         </label>
         <label style={checkRow}>
           <Checkbox checked={includeAgentTranscripts} onChange={setIncludeAgentTranscripts} ariaLabel="Agent transcripts" />
@@ -3898,7 +3898,7 @@ export default function HarnessDashboard() {
     // so the palette doubles as a shortcuts cheat-sheet.
     cs.push(
       { id: 'kbd:cmdk', section: 'Keyboard shortcuts', title: 'Open command palette', icon: '⌨', shortcut: '⌘K', keywords: 'command palette search', perform: () => setPaletteOpen(true) },
-      { id: 'kbd:operator', section: 'Keyboard shortcuts', title: 'Open Operator panel', icon: '⌨', shortcut: '⌘K, O', keywords: 'operator panel concierge', perform: () => { /* triggered via handler in OperatorPanel */ } },
+      { id: 'kbd:operator', section: 'Keyboard shortcuts', title: 'Open Papercup panel', icon: '⌨', shortcut: '⌘K, O', keywords: 'operator panel concierge', perform: () => { /* triggered via handler in OperatorPanel */ } },
       { id: 'kbd:feature-jk', section: 'Keyboard shortcuts', title: 'Feature list — move selection', icon: '⌨', shortcut: 'J / K', keywords: 'feature list navigate move', perform: () => { /* see FeatureList */ } },
       { id: 'kbd:feature-enter', section: 'Keyboard shortcuts', title: 'Feature list — open selected', icon: '⌨', shortcut: '↵', keywords: 'feature list open enter', perform: () => { /* see FeatureList */ } },
       { id: 'kbd:feature-r', section: 'Keyboard shortcuts', title: 'Feature list — reset selected', icon: '⌨', shortcut: 'R', keywords: 'feature list reset', perform: () => { /* see FeatureList */ } },

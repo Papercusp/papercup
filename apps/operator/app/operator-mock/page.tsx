@@ -327,7 +327,7 @@ export default function OperatorMockPage(): JSX.Element {
         <header style={S.header}>
           <div style={S.headerTopRow}>
             <div style={S.titleRow}>
-              <div style={S.title}>Operator</div>
+              <div style={S.title}>Papercup</div>
               <div style={paused ? { ...S.statePill, ...S.statePillPaused } : scanning ? { ...S.statePill, ...S.statePillScanning } : S.statePill}>
                 <span style={S.stateDot} />
                 {paused ? 'Paused' : scanning ? 'Scanning…' : 'Idle'}
@@ -352,7 +352,7 @@ export default function OperatorMockPage(): JSX.Element {
               >
                 {paused ? '▶ Resume' : '⏸ Pause'}
               </button>
-              <button style={S.iconBtn} title="Operator settings" onClick={() => alert('mock — opens /settings/operator')}>
+              <button style={S.iconBtn} title="Papercup settings" onClick={() => alert('mock — opens /settings/operator')}>
                 ⚙
               </button>
               <button style={S.iconBtn} title="Close (Esc)" onClick={() => setClosed(true)}>
@@ -544,7 +544,7 @@ function DecisionsView({
     return (
       <div style={S.emptyState}>
         <div style={{ ...S.emptyGlyph, color: '#fbbf24' }}>⏸</div>
-        <div style={S.emptyTitle}>Operator paused</div>
+        <div style={S.emptyTitle}>Papercup paused</div>
         <div style={S.emptyHint}>
           Auto-dispatch + scans are halted. Voice and Oracle still respond. Resume from the header.
         </div>

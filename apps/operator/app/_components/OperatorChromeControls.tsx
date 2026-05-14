@@ -55,12 +55,12 @@ export function OperatorButton(): ReactElement {
 
   const pausedActive = state.paused && (state.iconState === 'idle' || state.iconState === 'awaiting-input');
   const titleByState: Record<IconState, string> = {
-    idle: 'Deck — Operator idle',
-    scanning: 'Deck — Operator scanning workspace',
-    thinking: 'Deck — Operator composing suggestions',
-    acting: 'Deck — Operator dispatching',
-    paused: 'Deck — Operator paused (autonomous actions disabled)',
-    'awaiting-input': 'Deck — Operator awaiting your decision on pending suggestions',
+    idle: 'Deck — Papercup idle',
+    scanning: 'Deck — Papercup scanning workspace',
+    thinking: 'Deck — Papercup composing suggestions',
+    acting: 'Deck — Papercup dispatching',
+    paused: 'Deck — Papercup paused (autonomous actions disabled)',
+    'awaiting-input': 'Deck — Papercup awaiting your decision on pending suggestions',
   };
   let title: string;
   if (pausedActive) title = titleByState.paused;

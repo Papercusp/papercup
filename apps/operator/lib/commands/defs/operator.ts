@@ -26,13 +26,13 @@ const Empty = z.object({}).strict();
 const scan: CommandDef<ScanArgT, { ok: true }> = {
   id: 'operator.scan',
   kind: 'command',
-  description: 'Open the Operator panel and trigger a scan with an optional query.',
+  description: 'Open the Papercup panel and trigger a scan with an optional query.',
   schema: ScanArg,
   agents: ['operator', 'oracle', 'palette'],
   browser: 'required',
   concurrent: 'allow',
   tier: 'reflexive',
-  paletteEntry: { section: 'Operator', title: 'Run Operator scan', icon: '⚲', keywords: 'operator scan run' },
+  paletteEntry: { section: 'Papercup', title: 'Run Papercup scan', icon: '⚲', keywords: 'operator scan run' },
   handler: async ({ query }) => {
     if (typeof window === 'undefined') {
       throw new CommandError({ code: 'wrong-process', message: 'scan must run in the browser', retryable: false });
@@ -83,7 +83,7 @@ const across: CommandDef<{}, { ok: true }> = {
   browser: 'required',
   concurrent: 'allow',
   tier: 'reflexive',
-  paletteEntry: { section: 'Operator', title: 'Summarize across workspaces', icon: '⌖', keywords: 'across workspaces summary' },
+  paletteEntry: { section: 'Papercup', title: 'Summarize across workspaces', icon: '⌖', keywords: 'across workspaces summary' },
   handler: async () => {
     if (typeof window === 'undefined') {
       throw new CommandError({ code: 'wrong-process', message: 'must run in the browser', retryable: false });

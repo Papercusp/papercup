@@ -56,7 +56,7 @@ const panelOpen: CommandDef<PanelArgT, { panel: string; open: boolean }> = {
   browser: 'required',
   concurrent: 'allow',
   tier: 'reflexive',
-  paletteEntry: { section: 'Operator', title: 'Open Operator panel', icon: '◉', keywords: 'operator panel show' },
+  paletteEntry: { section: 'Papercup', title: 'Open Papercup panel', icon: '◉', keywords: 'operator panel show' },
   handler: ({ panel }) => setPanelOpen(panel, true),
 };
 
@@ -69,7 +69,7 @@ const panelClose: CommandDef<PanelArgT, { panel: string; open: boolean }> = {
   browser: 'required',
   concurrent: 'allow',
   tier: 'reflexive',
-  paletteEntry: { section: 'Operator', title: 'Close Operator panel', icon: '○', keywords: 'operator panel hide' },
+  paletteEntry: { section: 'Papercup', title: 'Close Papercup panel', icon: '○', keywords: 'operator panel hide' },
   handler: ({ panel }) => setPanelOpen(panel, false),
 };
 
@@ -82,7 +82,7 @@ const panelToggle: CommandDef<PanelArgT, { panel: string; open: boolean }> = {
   browser: 'required',
   concurrent: 'allow',
   tier: 'reflexive',
-  paletteEntry: { section: 'Operator', title: 'Toggle Operator panel', icon: '◐', keywords: 'operator panel toggle' },
+  paletteEntry: { section: 'Papercup', title: 'Toggle Papercup panel', icon: '◐', keywords: 'operator panel toggle' },
   handler: async ({ panel }) => {
     if (typeof window === 'undefined') {
       throw new CommandError({

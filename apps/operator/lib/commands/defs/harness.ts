@@ -140,9 +140,9 @@ const LastScanArgs = z.object({
 const harnessLastScan: QueryDef<z.infer<typeof LastScanArgs>> = {
   id: 'harness.last-scan',
   kind: 'query',
-  description: 'Get the cached most-recent Operator scan summary for a harness.',
+  description: 'Get the cached most-recent Papercup scan summary for a harness.',
   promptDescription:
-    'Returns the cached summary from the last Operator scan (the same summary ' +
+    'Returns the cached summary from the last Papercup scan (the same summary ' +
     'that lives in the panel after a scan completes). Cheap; does NOT trigger a ' +
     'fresh scan. Use to answer "what did the operator find?" without burning a ' +
     'Claude call.',
@@ -176,9 +176,9 @@ const RecentSuggestionsArgs = z.object({
 const harnessRecentSuggestions: QueryDef<z.infer<typeof RecentSuggestionsArgs>> = {
   id: 'harness.recent-suggestions',
   kind: 'query',
-  description: 'List recent Operator-panel suggestions for a harness (cached).',
+  description: 'List recent Papercup-panel suggestions for a harness (cached).',
   promptDescription:
-    'Returns the last N suggestion cards Operator surfaced for this harness. ' +
+    'Returns the last N suggestion cards Papercup surfaced for this harness. ' +
     'Each suggestion has a title, kind (auto/needs-input/etc), and a one-line ' +
     'preview. Use after the user asks "what was the operator suggesting?"',
   schema: RecentSuggestionsArgs,

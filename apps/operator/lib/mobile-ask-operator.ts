@@ -110,7 +110,7 @@ export async function askOperatorViaConverse(opts: AskOperatorOptions): Promise<
       return {
         kind: 'bad-status',
         status: res.status,
-        text: "Operator is offline — can't reach the brain right now. Try again in a moment.",
+        text: "Papercup is offline — can't reach the brain right now. Try again in a moment.",
       };
     }
     const { assembled, eventCount } = await drainConverseStream(res.body);
@@ -131,7 +131,7 @@ export async function askOperatorViaConverse(opts: AskOperatorOptions): Promise<
       return {
         kind: 'timeout',
         timeoutMs,
-        text: `Operator brain took longer than ${timeoutMs / 1000}s — skipping this turn.`,
+        text: `Papercup brain took longer than ${timeoutMs / 1000}s — skipping this turn.`,
       };
     }
     return {

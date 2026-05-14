@@ -70,7 +70,7 @@ function toSummary(r: any): ScanSummary {
 const scansList: QueryDef<ListArgsT, { count: number; scans: ScanSummary[] }> = {
   id: 'scans.list',
   kind: 'query',
-  description: 'List recent Operator scans (summaries only — for context-light browsing).',
+  description: 'List recent Papercup scans (summaries only — for context-light browsing).',
   promptDescription:
     'Returns recent operator scans as { count, scans: [{id, startedAt, endedAt, summary, suggestionCount, costUsd, cached, error, agentSessionId}, ...] }. ' +
     'SUMMARIES ONLY — does NOT include the full suggestions array. Use to answer ' +
@@ -100,7 +100,7 @@ const scansList: QueryDef<ListArgsT, { count: number; scans: ScanSummary[] }> = 
 const scansGet: QueryDef<GetArgsT, { scan: any }> = {
   id: 'scans.get',
   kind: 'query',
-  description: 'Get a single Operator scan with its full suggestion list.',
+  description: 'Get a single Papercup scan with its full suggestion list.',
   promptDescription:
     'Returns the full scan record for a given id, including the suggestions array. ' +
     'Use AFTER scans.list when the user asks about a specific past scan ("what was ' +
@@ -134,7 +134,7 @@ type SearchArgsT = z.infer<typeof SearchArgs>;
 const scansSearch: QueryDef<SearchArgsT, { count: number; scans: ScanSummary[] }> = {
   id: 'scans.search',
   kind: 'query',
-  description: 'Search past Operator scans by free-text query (summary/request/cards).',
+  description: 'Search past Papercup scans by free-text query (summary/request/cards).',
   promptDescription:
     'Returns matching scans as { count, scans: [...] } (summaries only, same shape as scans.list). ' +
     'Use when the user names a topic that might appear in older scans ("scans about the harness", ' +
