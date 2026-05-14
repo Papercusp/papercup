@@ -28,13 +28,13 @@ export function registerDockLayouts(app: Hono): void {
   // The list lives at the `_list` sub-path instead; named GET/PUT/DELETE
   // operate on /api/dock-layouts/:name as documented.
   app.get('/dock-layouts/_list', async (c) => {
-    const principal = getUserIdForLayouts(c.req.raw);
+    const principal = await getUserIdForLayouts(c.req.raw);
     const list = await listLayouts(principal);
     return c.json({ layouts: list });
   });
 
   app.get('/dock-layouts/:name', async (c) => {
-    const principal = getUserIdForLayouts(c.req.raw);
+    const principal = await getUserIdForLayouts(c.req.raw);
     const name = c.req.param('name');
     try {
       const row = await getLayout(principal, name);
@@ -45,7 +45,7 @@ export function registerDockLayouts(app: Hono): void {
   });
 
   app.put('/dock-layouts/:name', async (c) => {
-    const principal = getUserIdForLayouts(c.req.raw);
+    const principal = await getUserIdForLayouts(c.req.raw);
     const name = c.req.param('name');
     let body: { layout: LayoutDoc };
     try {
@@ -84,7 +84,7 @@ export function registerDockLayouts(app: Hono): void {
   });
 
   app.delete('/dock-layouts/:name', async (c) => {
-    const principal = getUserIdForLayouts(c.req.raw);
+    const principal = await getUserIdForLayouts(c.req.raw);
     const name = c.req.param('name');
     await deleteLayout(principal, name);
     return c.body(null, 204);
@@ -100,14 +100,14 @@ export function registerDockLayouts(app: Hono): void {
   // miss.
 
   app.get('/harness-phase-last-used/:slug', async (c) => {
-    const principal = getUserIdForLayouts(c.req.raw);
+    const principal = await getUserIdForLayouts(c.req.raw);
     const slug = c.req.param('slug');
     const phase = await getLastUsedPhase(principal, slug);
     return c.json({ phase });
   });
 
   app.put('/harness-phase-last-used/:slug', async (c) => {
-    const principal = getUserIdForLayouts(c.req.raw);
+    const principal = await getUserIdForLayouts(c.req.raw);
     const slug = c.req.param('slug');
     let body: { phase?: string };
     try {

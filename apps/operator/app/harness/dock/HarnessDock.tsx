@@ -130,7 +130,7 @@ export function HarnessDock({ layoutName: initialLayoutName, className, slug }: 
     setActiveLayoutName(initialLayoutName);
   }, [initialLayoutName]);
 
-  const { state, save, reset } = useDockLayout(activeLayoutName);
+  const { state, save, reset, refresh } = useDockLayout(activeLayoutName);
   const apiRef = useRef<DockviewApi | null>(null);
   const restoredOnceRef = useRef(false);
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -256,8 +256,56 @@ export function HarnessDock({ layoutName: initialLayoutName, className, slug }: 
 
   if (state.status === 'error') {
     return (
-      <div style={{ padding: 16, color: '#f99', fontSize: 13 }}>
-        Failed to load layout {activeLayoutName}: {state.error.message}
+      <div
+        style={{
+          padding: 24,
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 12,
+          alignItems: 'flex-start',
+          fontSize: 13,
+          color: 'var(--foreground, #ccc)',
+        }}
+      >
+        <div style={{ color: '#f87171' }}>
+          Failed to load layout <code>{activeLayoutName}</code>:{' '}
+          {state.error.message}
+        </div>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <button
+            type="button"
+            onClick={() => void refresh()}
+            style={{
+              padding: '4px 12px',
+              fontSize: 12,
+              background: 'var(--card, #1a1a1a)',
+              color: 'var(--foreground, #ccc)',
+              border: '1px solid var(--border, #333)',
+              borderRadius: 3,
+              cursor: 'pointer',
+            }}
+          >
+            Retry
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              restoredOnceRef.current = false;
+              void reset();
+            }}
+            style={{
+              padding: '4px 12px',
+              fontSize: 12,
+              background: 'var(--card, #1a1a1a)',
+              color: 'var(--foreground, #ccc)',
+              border: '1px solid var(--border, #333)',
+              borderRadius: 3,
+              cursor: 'pointer',
+            }}
+          >
+            Reset to default
+          </button>
+        </div>
       </div>
     );
   }

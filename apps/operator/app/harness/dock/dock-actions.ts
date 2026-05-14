@@ -141,9 +141,9 @@ export function setFocusSlug(slug: string): void {
     } else {
       url.searchParams.delete('focusSlug');
     }
+    // nuqs patches history.replaceState to broadcast URL updates to
+    // useQueryState subscribers; no manual popstate dispatch needed.
     window.history.replaceState({}, '', url.toString());
-    // nuqs listens for popstate; trigger one so subscribers update.
-    window.dispatchEvent(new PopStateEvent('popstate'));
   } catch {
     // Best-effort.
   }

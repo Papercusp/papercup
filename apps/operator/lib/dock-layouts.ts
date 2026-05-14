@@ -74,16 +74,46 @@ export type LayoutPrincipal = { workspaceId: string; userId: string };
 
 /**
  * Returns the (workspaceId, userId) tuple to scope a layout request.
- * Loopback dev: workspace='default', user='_local'.
- * Webapp: pulled from authenticated session (Phase 5+ work).
+ *
+ * Resolution order:
+ *   1. Authenticated session (cookie) → real user_id
+ *   2. Loopback fallback (env vars; defaults workspace=default user=_local)
+ *
+ * Workspace ID:
+ *   1. Request URL `?ws=<id>` query param (per useWorkspaceId convention)
+ *   2. PAPERCUSP_WORKSPACE_ID env
+ *   3. 'default'
+ *
+ * Async because cookie reads via Next.js are async; getSessionUser hits PG.
  */
-export function getUserIdForLayouts(_req?: Request): LayoutPrincipal {
-  // Phase 0/2: loopback. The webapp auth pull happens in Phase 5 when
-  // we wire ui:dispatch and need cross-user isolation.
-  return {
-    workspaceId: process.env.PAPERCUSP_WORKSPACE_ID ?? 'default',
-    userId: process.env.PAPERCUSP_USER_ID ?? '_local',
-  };
+export async function getUserIdForLayouts(
+  req?: Request,
+): Promise<LayoutPrincipal> {
+  // Workspace ID — prefer URL param, then env, then default.
+  let workspaceId = process.env.PAPERCUSP_WORKSPACE_ID ?? 'default';
+  if (req) {
+    try {
+      const url = new URL(req.url);
+      const fromUrl = url.searchParams.get('ws');
+      if (fromUrl && fromUrl.length > 0) workspaceId = fromUrl;
+    } catch {
+      /* malformed URL — fall through */
+    }
+  }
+
+  // User ID — prefer authenticated session, fall back to loopback.
+  let userId = process.env.PAPERCUSP_USER_ID ?? '_local';
+  try {
+    // Lazy import to avoid the auth module's PG-pool side effects in
+    // contexts that don't need it (unit tests, scripts).
+    const { getSessionUser } = await import('./auth');
+    const user = await getSessionUser();
+    if (user?.id) userId = user.id;
+  } catch {
+    /* auth lookup failed — fall back to env */
+  }
+
+  return { workspaceId, userId };
 }
 
 // ───────── Default layout seed ─────────
