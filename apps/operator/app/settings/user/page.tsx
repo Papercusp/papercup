@@ -213,7 +213,7 @@ export default function UserSettingsPage() {
         </p>
       </header>
 
-      <section>
+      <section className="pc-settings-section">
         <h2>Identity</h2>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
           <label>Username: <code>{user.username}</code> (immutable)</label>
@@ -234,7 +234,7 @@ export default function UserSettingsPage() {
         </div>
       </section>
 
-      <section>
+      <section className="pc-settings-section">
         <h2>Password</h2>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
           {user.has_password && (
@@ -263,7 +263,7 @@ export default function UserSettingsPage() {
         </div>
       </section>
 
-      <section>
+      <section className="pc-settings-section">
         <h2>Overrides</h2>
         <p style={{ color: 'var(--text-secondary)', fontSize: 13, marginBottom: 12 }}>
           Set a value here to override the workspace default for your account.
@@ -318,7 +318,7 @@ export default function UserSettingsPage() {
         </div>
       </section>
 
-      <section>
+      <section className="pc-settings-section">
         <h2>Memory</h2>
         <p style={{ color: 'var(--text-secondary)', fontSize: 13 }}>
           The operator stores things it learns about you (preferences, corrections, etc).

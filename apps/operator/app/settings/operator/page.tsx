@@ -320,7 +320,7 @@ export default function OperatorSettingsPage() {
       </Collapsible.Root>
       )}
 
-      <section style={{ marginBottom: 32 }}>
+      <section className="pc-settings-section">
         <h2>Daily budget</h2>
         <p style={{ fontSize: 13, color: 'var(--fg-mute)', marginBottom: 8 }}>
           Today: <strong>${budget?.todaySpendUsd?.toFixed(2) ?? '0.00'}</strong> of{' '}
@@ -365,7 +365,7 @@ export default function OperatorSettingsPage() {
         </SubmitButton>
       </form>
 
-      <section style={{ marginBottom: 32 }}>
+      <section className="pc-settings-section">
         <h2>Per-entry view</h2>
         <div style={{ display: 'flex', gap: 6, marginBottom: 8 }}>
           {(['all', 'user-typed', 'operator-proposed'] as const).map((f) => (
@@ -403,7 +403,7 @@ export default function OperatorSettingsPage() {
         )}
       </section>
 
-      <section>
+      <section className="pc-settings-section">
         <h2>Substrate prompt (read-only)</h2>
         <p style={{ fontSize: 13, color: 'var(--fg-mute)', marginBottom: 8 }}>
           Tier rules, schema, and anti-patterns. Ships with the substrate; cannot be edited here.

@@ -317,7 +317,7 @@ export default function VoiceSettingsPage() {
       </p>
 
       {/* ── ENGINE SELECTORS ─────────────────────────────────────── */}
-      <section style={{ marginBottom: 32 }}>
+      <section className="pc-settings-section">
         <h2>Engines</h2>
         {(() => {
           const fullAgentOn = (prefs?.fullAgentEngine ?? 'off') !== 'off';
@@ -554,7 +554,7 @@ export default function VoiceSettingsPage() {
       {/* STT spend lives outside the ElevenLabs sub-section — Deepgram is the cloud STT,
           unrelated to TTS engine choice. Only renders once the API has loaded the state. */}
       {sttSpend && (
-        <section style={{ marginBottom: 32 }}>
+        <section className="pc-settings-section">
           <h2>STT spend (Deepgram)</h2>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginBottom: 12 }}>
             <Stat label="Today" value={`${(sttSpend.spend[0]?.estimatedUsd ?? 0).toFixed(2)}`} />
@@ -571,7 +571,7 @@ export default function VoiceSettingsPage() {
 
       {/* ── OUTPUT BEHAVIOR (delegation-related) ─────────────────── */}
       {prefs && (
-        <section style={{ marginBottom: 32 }}>
+        <section className="pc-settings-section">
           <h2>Output behavior</h2>
           <div style={{ display: 'grid', gap: 12, fontSize: 13 }}>
             <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -817,7 +817,7 @@ export default function VoiceSettingsPage() {
 
       {/* ── FEATURE TOGGLES ──────────────────────────────────────── */}
       {prefs && (
-        <section style={{ marginBottom: 32 }}>
+        <section className="pc-settings-section">
           <h2>Feature toggles</h2>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, fontSize: 13 }}>
             {([
@@ -845,7 +845,7 @@ export default function VoiceSettingsPage() {
       )}
 
       {/* ── EXISTING WAKE-WORD + RATE + PER-ROLE VOICES ──────────── */}
-      <section style={{ marginBottom: 32 }}>
+      <section className="pc-settings-section">
         <h2>Wake word (always-on mode)</h2>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           <input
@@ -942,7 +942,7 @@ export default function VoiceSettingsPage() {
         </div>
       </section>
 
-      <section style={{ marginBottom: 32 }}>
+      <section className="pc-settings-section">
         <h2>Speech rate</h2>
         <input
           type="range"
@@ -957,7 +957,7 @@ export default function VoiceSettingsPage() {
       {/* Per-role voices — wrapped in LazyDetails so the heavy table
           (21 roles × N voices = many <option>s) only mounts the first
           time the user expands it. Closed by default. */}
-      <section style={{ marginBottom: 32 }}>
+      <section className="pc-settings-section">
         <LazyDetails
           summary="Per-role voices"
           summaryStyle={{ fontSize: 16, fontWeight: 600, cursor: 'pointer', marginBottom: 8 }}
@@ -987,7 +987,7 @@ export default function VoiceSettingsPage() {
       </section>
 
       {/* ── PRECEDENCE MATRIX (debugging aid, lazy via <details>) ──── */}
-      <section style={{ marginBottom: 32 }}>
+      <section className="pc-settings-section">
         <details>
           <summary style={{ fontSize: 16, fontWeight: 600, cursor: 'pointer', marginBottom: 8 }}>
             Why isn't anything speaking? (precedence matrix)

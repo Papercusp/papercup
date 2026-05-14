@@ -92,7 +92,7 @@ export default function SearchPage() {
       )}
 
       {memories.length > 0 && (
-        <section>
+        <section className="pc-settings-section">
           <h4 className="pc-settings-eyebrow">
             Memories ({memories.length})
           </h4>
@@ -115,7 +115,7 @@ export default function SearchPage() {
       )}
 
       {prose.length > 0 && (
-        <section>
+        <section className="pc-settings-section">
           <h4 className="pc-settings-eyebrow">
             Prose ({prose.length})
           </h4>
