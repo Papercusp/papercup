@@ -301,26 +301,24 @@ export default function VoiceSettingsPage() {
   // layout's outer dimensions so there's no shift when prefs arrives.
   if (!prefs) {
     return (
-      <div className="pc-settings-page pc-settings-page--voice" style={{ padding: '8px 4px', maxWidth: 880 }} aria-busy="true">
-        <h1 style={{ fontSize: 22, marginBottom: 4 }}>Voice mode</h1>
-        <p style={{ color: 'var(--fg-mute)', marginBottom: 24, fontSize: 14 }}>
-          Loading your voice settings…
-        </p>
+      <div className="pc-settings-page--voice" aria-busy="true">
+        <h1>Voice mode</h1>
+        <p className="pc-settings-loading">Loading your voice settings…</p>
       </div>
     );
   }
 
   return (
-    <div className="pc-settings-page pc-settings-page--voice" style={{ padding: '8px 4px', maxWidth: 880 }}>
-      <h1 style={{ fontSize: 22, marginBottom: 4 }}>Voice mode</h1>
-      <p style={{ color: 'var(--fg-mute)', marginBottom: 24, fontSize: 14 }}>
+    <div className="pc-settings-page--voice">
+      <h1>Voice mode</h1>
+      <p className="pc-settings-intro">
         Voice runs in the browser. Local Voicemode (Whisper STT + Kokoro TTS) is the default;
         ElevenLabs cloud TTS is opt-in with bring-your-own API key.
       </p>
 
       {/* ── ENGINE SELECTORS ─────────────────────────────────────── */}
       <section style={{ marginBottom: 32 }}>
-        <h2 style={{ fontSize: 16, marginBottom: 12 }}>Engines</h2>
+        <h2>Engines</h2>
         {(() => {
           const fullAgentOn = (prefs?.fullAgentEngine ?? 'off') !== 'off';
           const sttTtsDisabled = savingPrefs || fullAgentOn;
@@ -459,7 +457,7 @@ export default function VoiceSettingsPage() {
       {/* ── ELEVENLABS SUB-SECTION ───────────────────────────────── */}
       {prefs?.ttsEngine === 'elevenlabs' && (
         <section style={{ marginBottom: 32, padding: 16, background: 'rgba(99, 102, 241, 0.04)', borderRadius: 6 }}>
-          <h2 style={{ fontSize: 16, marginBottom: 12 }}>ElevenLabs</h2>
+          <h2>ElevenLabs</h2>
           <p style={{ ...hint, marginBottom: 12 }}>
             Cloud TTS — text leaves the machine to ElevenLabs.
             BYO API key from <a href="https://elevenlabs.io" target="_blank" rel="noreferrer">elevenlabs.io</a>.
@@ -557,7 +555,7 @@ export default function VoiceSettingsPage() {
           unrelated to TTS engine choice. Only renders once the API has loaded the state. */}
       {sttSpend && (
         <section style={{ marginBottom: 32 }}>
-          <h2 style={{ fontSize: 16, marginBottom: 8 }}>STT spend (Deepgram)</h2>
+          <h2>STT spend (Deepgram)</h2>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginBottom: 12 }}>
             <Stat label="Today" value={`${(sttSpend.spend[0]?.estimatedUsd ?? 0).toFixed(2)}`} />
             <Stat label="Minutes" value={(sttSpend.spend[0]?.minutes ?? 0).toFixed(1)} />
@@ -574,7 +572,7 @@ export default function VoiceSettingsPage() {
       {/* ── OUTPUT BEHAVIOR (delegation-related) ─────────────────── */}
       {prefs && (
         <section style={{ marginBottom: 32 }}>
-          <h2 style={{ fontSize: 16, marginBottom: 12 }}>Output behavior</h2>
+          <h2>Output behavior</h2>
           <div style={{ display: 'grid', gap: 12, fontSize: 13 }}>
             <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
               <Checkbox
@@ -820,7 +818,7 @@ export default function VoiceSettingsPage() {
       {/* ── FEATURE TOGGLES ──────────────────────────────────────── */}
       {prefs && (
         <section style={{ marginBottom: 32 }}>
-          <h2 style={{ fontSize: 16, marginBottom: 12 }}>Feature toggles</h2>
+          <h2>Feature toggles</h2>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, fontSize: 13 }}>
             {([
               ['speakSuggestions',       'Speak suggestions when they arrive in the panel'],
@@ -848,7 +846,7 @@ export default function VoiceSettingsPage() {
 
       {/* ── EXISTING WAKE-WORD + RATE + PER-ROLE VOICES ──────────── */}
       <section style={{ marginBottom: 32 }}>
-        <h2 style={{ fontSize: 16, marginBottom: 12 }}>Wake word (always-on mode)</h2>
+        <h2>Wake word (always-on mode)</h2>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           <input
             type="text"
@@ -945,7 +943,7 @@ export default function VoiceSettingsPage() {
       </section>
 
       <section style={{ marginBottom: 32 }}>
-        <h2 style={{ fontSize: 16, marginBottom: 12 }}>Speech rate</h2>
+        <h2>Speech rate</h2>
         <input
           type="range"
           min={0.5} max={2.0} step={0.1}
