@@ -26148,3 +26148,98 @@ body.has-op-chat:has(.operator-panel) .op-chat-sidebar {
     display: none !important;
   }
 }
+
+/* ─────────────────────────────────────────────────────────────────────
+ * Global form-control baseline
+ *
+ * Native <input> + <textarea> inherit the harness's dark theme to match
+ * the Select trigger look (see app/harness/Select.tsx TRIGGER_DEFAULT_STYLE).
+ *
+ * Specificity is `:where(...)` = 0, so any inline style or class wins.
+ * Inputs that need bespoke styling (e.g. marketplace search, OracleDock
+ * composer) keep doing their own thing.
+ *
+ * The selector list is the native form-control surface where the default
+ * OS chrome looks broken in the dark theme. Excluded:
+ *   - type=checkbox / type=radio — wrappers handle those (HR2)
+ *   - type=range / type=color / type=file — bespoke widgets
+ *   - type=submit / type=button — buttons have their own styling
+ *
+ * Use `<TextInput>` from app/harness/TextInput.tsx for canonical opt-in;
+ * this rule is the unopinionated baseline for unwrapped inputs. */
+:where(
+  input[type="text"],
+  input[type="number"],
+  input[type="email"],
+  input[type="search"],
+  input[type="tel"],
+  input[type="url"],
+  input[type="password"],
+  input[type="date"],
+  input[type="time"],
+  input[type="datetime-local"],
+  input:not([type]),
+  textarea
+) {
+  background: var(--bg-2);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-family: inherit;
+  font-size: 12px;
+  padding: 4px 8px;
+  outline: none;
+  /* Native inputs in dark themes have a white internal pad — kill it. */
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+:where(
+  input[type="text"],
+  input[type="number"],
+  input[type="email"],
+  input[type="search"],
+  input[type="tel"],
+  input[type="url"],
+  input[type="password"],
+  input[type="date"],
+  input[type="time"],
+  input[type="datetime-local"],
+  input:not([type]),
+  textarea
+):focus {
+  border-color: color-mix(in oklab, var(--accent, #6aa7ff), var(--border) 30%);
+  box-shadow: 0 0 0 2px color-mix(in oklab, var(--accent, #6aa7ff), transparent 80%);
+}
+
+:where(
+  input[type="text"],
+  input[type="number"],
+  input[type="email"],
+  input[type="search"],
+  input[type="tel"],
+  input[type="url"],
+  input[type="password"],
+  input:not([type]),
+  textarea
+):disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+:where(input::placeholder, textarea::placeholder) {
+  color: var(--fg-mute, #9a9aa3);
+  opacity: 0.7;
+}
+
+/* number inputs: kill the spinner buttons in WebKit (they collide
+ * with the new border styling). Firefox-equivalent already disabled
+ * by appearance:none above. */
+:where(input[type="number"])::-webkit-outer-spin-button,
+:where(input[type="number"])::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+:where(input[type="number"]) {
+  -moz-appearance: textfield;
+}

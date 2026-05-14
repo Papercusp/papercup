@@ -77,6 +77,59 @@ If your tabs render content imperatively (no `<Tabs.Content>`), Radix only flips
 Radix Select reserves `value=""` to mean "no value selected". If your business logic uses `''` as a sentinel for "default mode", map to a non-empty string at the boundary: `value={mode || '_default'} onChange={(v) => setMode(v === '_default' ? '' : v)}`. See `DepartmentHarnessDashboard.tsx`'s mode select.
 </Callout>
 
+## Native `<input>` + `<textarea>` (styled via `globals.css` baseline)
+
+**What:** The operator app's `globals.css` adds a `:where(input, textarea)` baseline so every unwrapped native input picks up the same dark-theme look as the `<Select>` trigger: `var(--bg-2)` background, `var(--border)` border, `border-radius: 4`, font-size 12, `4px 8px` padding. Focus state gets an accent-tinted ring.
+
+**Why this one:** Inputs are scattered across hundreds of sites; migrating every one to a wrapper would be high-churn for low marginal value. A single CSS rule with `:where(...)` specificity 0 fixes the visual problem in one place — any site with an inline style or class wins, so bespoke surfaces (marketplace search, OracleDock composer, etc.) keep their custom look.
+
+**Selector list** (intentionally narrow): `input[type=text|number|email|search|tel|url|password|date|time|datetime-local]`, untyped `<input>`, and `<textarea>`. Excluded: `checkbox`/`radio` (use `<Checkbox>`), `range`/`color`/`file` (bespoke widgets), `submit`/`button` (button styling).
+
+**Number-input spinner buttons** are suppressed app-wide. Numeric input still works; the up/down arrows just stop drawing.
+
+## `<TextInput>` + `<TextArea>` wrappers
+
+**What:** Canonical text-entry wrappers at `app/harness/TextInput.tsx`. Re-exports `<input>` / `<textarea>` with the baseline style plus first-class `leading` and `trailing` slots.
+
+**Why use the wrapper:**
+
+- You need a leading or trailing element inside the bordered container (icon, prefix, unit, clear-x button).
+- You want the canonical class hook (`.pc-text-input`) for future restyling.
+- You want to opt out of any inline-style cascade a parent might be applying.
+
+**When the baseline is enough:** simple `<input type="text" value … onChange …>` lines — the global CSS rule already styles them. Don't introduce the wrapper just to look identical to surrounding inputs.
+
+```tsx
+import { TextInput, TextArea } from '@/app/harness/TextInput';
+
+<TextInput
+  type="number"
+  value={n}
+  onChange={(e) => setN(Number(e.target.value))}
+  min={1}
+  max={64}
+  style={{ width: 64 }}
+/>
+
+<TextInput
+  type="search"
+  placeholder="filter…"
+  value={q}
+  onChange={(e) => setQ(e.target.value)}
+  leading={<SearchIcon size={12} />}
+  trailing={q && <button onClick={() => setQ('')}>×</button>}
+/>
+
+<TextArea
+  value={body}
+  onChange={(e) => setBody(e.target.value)}
+  rows={6}
+  placeholder="Notes…"
+/>
+```
+
+The wrapper forwards refs and spreads all native props.
+
 ## `@radix-ui/react-checkbox`
 
 **What:** Checkbox primitive. Supports `checked={true | false | 'indeterminate'}`.
