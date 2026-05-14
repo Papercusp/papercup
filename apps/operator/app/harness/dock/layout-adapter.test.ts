@@ -112,6 +112,54 @@ describe('layout-adapter', () => {
     }
   });
 
+  it('preserves nested branch direction on round-trip (alternating depth)', () => {
+    // row → col → row → col …
+    const doc: LayoutDoc = {
+      schemaVersion: 1,
+      root: {
+        kind: 'group',
+        id: 'lvl0',
+        direction: 'row',
+        children: [
+          {
+            kind: 'group',
+            id: 'lvl1',
+            direction: 'col',
+            children: [
+              {
+                kind: 'group',
+                id: 'lvl2',
+                direction: 'row',
+                children: [
+                  {
+                    kind: 'tabs',
+                    id: 't',
+                    activePanelId: 'a',
+                    panels: [{ id: 'a', type: 'x' }],
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      },
+    };
+    const back = roundTrip(doc);
+    expect(back.root.kind).toBe('group');
+    if (back.root.kind === 'group') {
+      expect(back.root.direction).toBe('row');
+      const inner1 = back.root.children[0];
+      expect(inner1.kind).toBe('group');
+      if (inner1.kind === 'group') {
+        expect(inner1.direction).toBe('col');
+        const inner2 = inner1.children[0];
+        if (inner2.kind === 'group') {
+          expect(inner2.direction).toBe('row');
+        }
+      }
+    }
+  });
+
   it('builds a usable dockview JSON for the dashboard seed', () => {
     const doc = defaultDashboardLayout('sheets');
     const dv = toDockviewJson(doc);

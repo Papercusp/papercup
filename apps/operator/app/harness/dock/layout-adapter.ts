@@ -149,7 +149,12 @@ function panelToDv(p: PanelInstance): DvSerializedPanel {
 // ───────── dockview → LayoutDoc ─────────
 
 export function toLayoutDoc(dv: DockviewLayout): LayoutDoc {
-  const root = gridNodeToNode(dv.grid.root, dv.panels);
+  // Dockview's gridview alternates orientation at each branch depth: if
+  // the root is HORIZONTAL (=row), level-0 children stack horizontally;
+  // a branch within stacks vertically (perpendicular); deeper branches
+  // alternate again. We reverse that walk to recover direction per node.
+  const rootDir: 'row' | 'col' = dv.grid.orientation === 'VERTICAL' ? 'col' : 'row';
+  const root = gridNodeToNode(dv.grid.root, dv.panels, rootDir);
   const floating = (dv.floatingGroups ?? []).map((fg) => ({
     id: fg.data.data.id,
     x: fg.position.left,
@@ -169,6 +174,7 @@ export function toLayoutDoc(dv: DockviewLayout): LayoutDoc {
 function gridNodeToNode(
   n: DvSerializedGridNode,
   panels: Record<string, DvSerializedPanel>,
+  currentDir: 'row' | 'col',
 ): GroupNode | TabStrip {
   if (n.type === 'leaf') {
     return {
@@ -178,14 +184,12 @@ function gridNodeToNode(
       panels: n.data.views.map((id) => dvPanelToInstance(id, panels[id])),
     };
   }
+  const childDir: 'row' | 'col' = currentDir === 'row' ? 'col' : 'row';
   return {
     kind: 'group',
     id: cryptoId('g'),
-    direction: 'row', // dockview branch nodes lose the orientation
-                      // distinction in their JSON. The root carries it
-                      // (we use grid.orientation); nested branches we
-                      // default to 'row' — this is a v1 limitation.
-    children: n.data.map((c) => gridNodeToNode(c, panels)),
+    direction: currentDir,
+    children: n.data.map((c) => gridNodeToNode(c, panels, childDir)),
     size: n.size,
   };
 }

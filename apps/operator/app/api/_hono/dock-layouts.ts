@@ -24,7 +24,10 @@ import {
 } from '../../../lib/dock-layouts';
 
 export function registerDockLayouts(app: Hono): void {
-  app.get('/dock-layouts', async (c) => {
+  // Note: /api/dock-layouts (bare) collides with Next.js's catchall handling.
+  // The list lives at the `_list` sub-path instead; named GET/PUT/DELETE
+  // operate on /api/dock-layouts/:name as documented.
+  app.get('/dock-layouts/_list', async (c) => {
     const principal = getUserIdForLayouts(c.req.raw);
     const list = await listLayouts(principal);
     return c.json({ layouts: list });

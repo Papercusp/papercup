@@ -32,8 +32,9 @@ export function useFocusedPanelTracker(): void {
         const params = active.params as { harnessSlug?: string } | undefined;
         const slug = params?.harnessSlug;
         if (typeof slug === 'string' && slug.length > 0) {
-          // setFocusSlug returns a promise we don't await — best-effort.
-          void setFocusSlug(slug);
+          // Use history: 'replace' so panel-focus changes don't spam the
+          // browser's back stack. setFocusSlug returns a promise — best-effort.
+          void setFocusSlug(slug, { history: 'replace' });
         }
       };
       refresh();

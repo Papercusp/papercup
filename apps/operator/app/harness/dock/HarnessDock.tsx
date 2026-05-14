@@ -19,6 +19,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { DockviewReact, type DockviewApi, type DockviewReadyEvent, type IDockviewPanelProps } from 'dockview';
 import 'dockview-react/dist/styles/dockview.css';
+import './dock-drawer-guard.css';
 import {
   panelRegistry,
   type PanelComponent,
@@ -192,6 +193,18 @@ export function HarnessDock({ layoutName, className, slug }: HarnessDockProps) {
       bindDockApi(null);
     };
   }, []);
+
+  // Agent dispatch surface (§9.1): listen for cross-process events.
+  useEffect(() => {
+    const onResetLayout = () => {
+      restoredOnceRef.current = false;
+      void reset();
+    };
+    window.addEventListener('papercusp:dock-reset-layout', onResetLayout);
+    return () => {
+      window.removeEventListener('papercusp:dock-reset-layout', onResetLayout);
+    };
+  }, [reset]);
 
   if (state.status === 'error') {
     return (

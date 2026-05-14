@@ -138,10 +138,21 @@ let registered = false;
 export function registerSamplePanels(): void {
   if (registered) return;
   registered = true;
-  // Only view:dashboard-overview still uses the stub — that's a multi-
-  // section "everything at a glance" view; the full implementation
-  // would need to embed multiple sub-panels and is deferred.
-  panelRegistry.register('view:dashboard-overview', SamplePanel);
+  // Stub registrations so layouts referencing these types render
+  // SamplePanel (with type + params) instead of MissingPanel.
+  // Real implementations replace these as the corresponding feature
+  // panels are extracted from HarnessDashboard.
+  for (const stubType of [
+    'view:dashboard-overview',
+    'view:design',
+    'view:proposals',
+    'view:summary',
+    'view:insights',
+    'view:config',
+    'data:chat',
+  ]) {
+    panelRegistry.register(stubType, SamplePanel);
+  }
   // Real implementations — fetch live data per slug.
   panelRegistry.register('view:harness-overview', RealHarnessOverviewPanel);
   panelRegistry.register('data:features', RealFeaturesPanel);

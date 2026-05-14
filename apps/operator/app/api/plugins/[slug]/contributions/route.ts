@@ -222,6 +222,16 @@ export async function GET(_req: Request, ctx: { params: Promise<{ slug: string }
           iframeUrl: resolvedIframeUrl ?? tab.iframeUrl,
           pluginName: p.name,
         });
+        // §8.2: pluginTab.replaces is meaningful in the classic dashboard
+        // tab strip (a plugin replacing a built-in tab id). In the dock
+        // model there are no top-level tabs to replace — the plugin's
+        // panel registers as plugin:<name>:<id> regardless. Warn and
+        // ignore.
+        if (tab.replaces && Array.isArray(tab.replaces) && tab.replaces.length > 0) {
+          console.warn(
+            `[dock] plugin ${p.name} tab "${tab.id}" declares replaces=${JSON.stringify(tab.replaces)} — ignored in dock model (still honored in classic dashboard)`,
+          );
+        }
         const finalSrc = resolvedIframeUrl ?? tab.iframeUrl;
         panelsContrib.push({
           pluginName: p.name,

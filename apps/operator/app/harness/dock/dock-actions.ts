@@ -112,6 +112,51 @@ export function setPanelTitle(panelId: string, title: string): boolean {
   return true;
 }
 
+/**
+ * §9.1: agent-dispatchable layout-level actions.
+ *
+ * - `setFocusSlug(slug)` updates ?focusSlug= via nuqs from the URL
+ *   directly (no nuqs-hook scope here). Best-effort; fails silently if
+ *   the page isn't using nuqs.
+ * - `loadLayout(name)` and `resetLayout()` are best handled by the
+ *   useDockLayout hook in the mounting component; bridge them here by
+ *   firing a custom DOM event the HarnessDock listens for.
+ */
+
+export function setFocusSlug(slug: string): void {
+  if (typeof window === 'undefined') return;
+  try {
+    const url = new URL(window.location.href);
+    if (slug) {
+      url.searchParams.set('focusSlug', slug);
+    } else {
+      url.searchParams.delete('focusSlug');
+    }
+    window.history.replaceState({}, '', url.toString());
+    // nuqs listens for popstate; trigger one so subscribers update.
+    window.dispatchEvent(new PopStateEvent('popstate'));
+  } catch {
+    // Best-effort.
+  }
+}
+
+/**
+ * Emit a request for the mounting HarnessDock to load a named layout.
+ * The dock listens on `window` for `papercusp:dock-load-layout` and
+ * swaps via useDockLayout.
+ */
+export function loadLayout(name: string): void {
+  if (typeof window === 'undefined') return;
+  window.dispatchEvent(
+    new CustomEvent('papercusp:dock-load-layout', { detail: { name } }),
+  );
+}
+
+export function resetLayout(): void {
+  if (typeof window === 'undefined') return;
+  window.dispatchEvent(new CustomEvent('papercusp:dock-reset-layout'));
+}
+
 // ───────── Reads (§9.2) ─────────
 
 export interface PanelSnapshot {
