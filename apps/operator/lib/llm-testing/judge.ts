@@ -87,8 +87,31 @@ export async function judgeRun(opts: JudgeOpts, run: RunSummary, violations: Vio
     const vals = passes.map((p) => p.scores[axis.id] ?? 0);
     mergedScores[axis.id] = vals.reduce((a, b) => a + b, 0) / vals.length;
   }
+  // Plan §6.4: 'flag axes where the two passes disagree by >1 point'.
+  // Multi-pass at different models/temperatures gives us
+  // disagreement signal — surface it as a meta finding so the run
+  // doesn't silently average away a real cross-judge dispute.
+  const interPassFindings: JudgeFinding[] = [];
+  if (passes.length >= 2) {
+    for (const axis of opts.rubric.axes) {
+      const vals = passes.map((p) => p.scores[axis.id] ?? 0);
+      const spread = Math.max(...vals) - Math.min(...vals);
+      if (spread > 1) {
+        interPassFindings.push({
+          axis: 'meta',
+          severity: 'warn',
+          shape: computeFindingShape('meta', `judge_pass_disagreement:${axis.id}`),
+          claim: `Multi-pass judge scored axis '${axis.id}' as ${vals.map((v) => v.toFixed(1)).join(' vs ')} — spread ${spread.toFixed(1)} > 1.0, treat the merged score with suspicion.`,
+          suggestion: 'Re-run with a third judge pass or escalate the rubric anchor for this axis.',
+          copyPrompt: '(judge inter-pass disagreement)',
+          isNovel: false,
+        });
+      }
+    }
+  }
   const seenShapes = new Set<string>();
-  const findings: JudgeFinding[] = [];
+  const findings: JudgeFinding[] = [...interPassFindings];
+  for (const f of interPassFindings) seenShapes.add(f.shape);
   for (const p of passes) {
     for (const f of p.findings) {
       if (seenShapes.has(f.shape)) continue;
