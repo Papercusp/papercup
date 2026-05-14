@@ -153,8 +153,16 @@ export default defineTool({
 
     // mcpConfig with agentmcp HTTP via mcp-remote bridge (same pattern
     // as the old route). Reads superuser token from disk.
+    // Accept hex/dash UUIDs (the browser tab's client id) AND the
+    // llm-testing framework's `llm-testing/<uuid>` form. Both are
+    // URL-safe after encodeURIComponent. The framework's prefix is
+    // what the brain-subprocess MCP transport needs to see for the
+    // dispatcher's overrideTool hook to fire — without preserving it
+    // here, nested tool calls would lose the tag and the override
+    // would never apply.
     const uiClientId =
-      typeof input.uiClientId === 'string' && /^[0-9a-fA-F-]{16,128}$/.test(input.uiClientId)
+      typeof input.uiClientId === 'string'
+        && /^(?:llm-testing\/)?[0-9a-fA-F-]{16,128}$/.test(input.uiClientId)
         ? input.uiClientId
         : null;
     // workspace= is REQUIRED for state-channel scoping: chat:ask_choice

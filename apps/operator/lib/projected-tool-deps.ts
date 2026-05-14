@@ -18,10 +18,14 @@
  */
 
 import { getOrgPg } from '@restart/db-org';
-import type {
-  DispatchProjectedDeps,
-  UnifiedToolContext,
+import {
+  PASS_THROUGH,
+  type DispatchProjectedDeps,
+  type ToolDispatchOverrideFn,
+  type UnifiedToolContext,
 } from '@papercusp/agent-mcp';
+
+import { getOverride } from './llm-testing/dispatch-override';
 
 async function readQuotaStateImpl(
   toolName: string,
@@ -123,9 +127,32 @@ async function recordInvocationImpl(input: {
   }
 }
 
+/**
+ * Per-call override lookup. The llm-testing framework registers a
+ * `ToolDispatchOverride` for a runId via lib/llm-testing/dispatch-override.
+ * Here we connect the dispatcher to that registry: parse ctx.uiClientId
+ * for the `llm-testing/<runId>` prefix and consult the registry by
+ * runId. Anything else passes through.
+ *
+ * The override fires for EVERY dispatch under a tagged ctx — including
+ * nested tool calls the brain makes during operator:converse — because
+ * the dispatcher's uiClientId auto-fill (Phase 0) propagates the tag.
+ *
+ * Plan §10.4.
+ */
+const overrideToolImpl: ToolDispatchOverrideFn = (toolName, args, ctx) => {
+  const uic = ctx.uiClientId;
+  if (typeof uic !== 'string' || !uic.startsWith('llm-testing/')) return PASS_THROUGH;
+  const runId = uic.slice('llm-testing/'.length);
+  const override = getOverride(runId);
+  if (!override) return PASS_THROUGH;
+  return override.override(toolName, args);
+};
+
 /** Shared deps singleton. Same object reference is safe to pass to
  *  multiple dispatchers — the impls are stateless. */
 export const PROJECTED_DEPS: DispatchProjectedDeps = {
   readQuotaState: readQuotaStateImpl,
   recordInvocation: recordInvocationImpl,
+  overrideTool: overrideToolImpl,
 };

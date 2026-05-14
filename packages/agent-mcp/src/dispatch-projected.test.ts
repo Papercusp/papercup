@@ -15,6 +15,7 @@ import {
   type ProjectedTool,
   type UnifiedToolContext,
 } from './tool-projection';
+import { PASS_THROUGH } from './dispatch-projected';
 import type { ToolResult } from '@papercusp/plugin-sdk';
 
 const MAKE_CTX = (over: Partial<UnifiedToolContext> = {}): UnifiedToolContext => ({
@@ -569,5 +570,71 @@ describe('metadata_json auto-fill from ctx.uiClientId (telemetry-tagging audit)'
     );
     expect(r.ok).toBe(false);
     expect(captured).toEqual({ uiClientId: 'audit-probe-error' });
+  });
+});
+
+describe('overrideTool dep (plan §10.4 — brain-subprocess injection)', () => {
+  it('returns the override result when overrideTool returns one', async () => {
+    let handlerCalled = false;
+    const tool = makeTool({
+      fn: async () => {
+        handlerCalled = true;
+        return { content: [{ type: 'text', text: 'real-handler' }] };
+      },
+    });
+    const r = await dispatchProjectedTool(tool, 'fix.tool', {}, MAKE_CTX(), MAKE_DEPS({
+      overrideTool: () => ({ content: [{ text: '{"error":"forced"}' }], isError: true }),
+    }));
+    expect(r.ok).toBe(true);
+    expect(handlerCalled).toBe(false);
+    expect(r.result?.content[0]).toEqual({ text: '{"error":"forced"}' });
+  });
+
+  it('PASS_THROUGH falls through to the real handler', async () => {
+    let handlerCalled = false;
+    const tool = makeTool({
+      fn: async () => {
+        handlerCalled = true;
+        return { content: [{ type: 'text', text: 'real-handler' }] };
+      },
+    });
+    const r = await dispatchProjectedTool(tool, 'fix.tool', {}, MAKE_CTX(), MAKE_DEPS({
+      overrideTool: () => PASS_THROUGH,
+    }));
+    expect(r.ok).toBe(true);
+    expect(handlerCalled).toBe(true);
+    expect(r.result?.content[0]).toEqual({ type: 'text', text: 'real-handler' });
+  });
+
+  it('absent overrideTool runs the real handler (default behavior preserved)', async () => {
+    let handlerCalled = false;
+    const tool = makeTool({
+      fn: async () => {
+        handlerCalled = true;
+        return { content: [{ type: 'text', text: 'real-handler' }] };
+      },
+    });
+    await dispatchProjectedTool(tool, 'fix.tool', {}, MAKE_CTX(), MAKE_DEPS());
+    expect(handlerCalled).toBe(true);
+  });
+
+  it('overrideTool receives tool name + args + ctx for decisioning', async () => {
+    const seen: Array<{ name: string; args: unknown; uiClientId: unknown }> = [];
+    const tool = makeTool();
+    await dispatchProjectedTool(
+      tool,
+      'harness.status',
+      { slug: 'sheets' },
+      MAKE_CTX({ uiClientId: 'llm-testing/abc' }),
+      MAKE_DEPS({
+        overrideTool: (name, args, ctx) => {
+          seen.push({ name, args, uiClientId: ctx.uiClientId });
+          return PASS_THROUGH;
+        },
+      }),
+    );
+    expect(seen).toEqual([
+      { name: 'harness.status', args: { slug: 'sheets' }, uiClientId: 'llm-testing/abc' },
+    ]);
   });
 });

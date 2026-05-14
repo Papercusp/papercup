@@ -70,6 +70,29 @@ export interface DispatchProjectedResult {
 
 /* ─── Dispatch deps (DI surface) ─────────────────────────────────────── */
 
+/** Sentinel — return this from overrideTool to let the real handler run. */
+export const PASS_THROUGH = Symbol('PASS_THROUGH');
+
+/**
+ * Per-call dispatcher override. When set, the dispatcher consults this
+ * BEFORE invoking the tool handler — if it returns a ToolResult, that
+ * is used in place of the handler's return value. PASS_THROUGH lets
+ * the handler run normally.
+ *
+ * Plan: apps/operator/docs/plans/llm-testing-framework-2026-05-14.md §10.4
+ *
+ * Single optional dep, called for every dispatch. The implementation
+ * decides whether THIS call should be overridden (typically by
+ * looking up a registry keyed by ctx.uiClientId / spawnId / runId).
+ */
+export type ToolDispatchOverrideFn = (
+  toolName: string,
+  args: unknown,
+  ctx: UnifiedToolContext,
+) => Promise<{ content: Array<{ text?: string; [k: string]: unknown }>; isError?: boolean } | typeof PASS_THROUGH>
+  | { content: Array<{ text?: string; [k: string]: unknown }>; isError?: boolean }
+  | typeof PASS_THROUGH;
+
 export interface DispatchProjectedDeps {
   /** Read current quota usage. Return null to disable quota enforcement. */
   readQuotaState?(
@@ -77,6 +100,13 @@ export interface DispatchProjectedDeps {
     ctx: UnifiedToolContext,
     windowKey: string,
   ): Promise<{ count: number } | null>;
+  /**
+   * Per-call override. Consulted before tool.fn runs. Used by the
+   * llm-testing framework's ToolDispatchOverride registry to inject
+   * failures / slow responses / canned results for deterministic
+   * scenario testing. Optional; pass-through is the default.
+   */
+  overrideTool?: ToolDispatchOverrideFn;
   /** Persist a tool-invocation record. Best-effort. */
   recordInvocation?(input: {
     toolName: string;
@@ -430,7 +460,21 @@ export async function dispatchProjectedTool(
   };
 
   try {
-    const result = await tool.fn(input, handlerCtx);
+    let result: import('./tool-projection').ToolResult;
+    // ToolDispatchOverride: consulted before tool.fn. Used by the
+    // llm-testing framework to inject deterministic failures / slow
+    // responses / canned results per-test-run. PASS_THROUGH (or no
+    // override registered) runs the handler normally.
+    if (deps.overrideTool) {
+      const ov = await deps.overrideTool(toolName, input, handlerCtx);
+      if (ov !== PASS_THROUGH) {
+        result = ov as import('./tool-projection').ToolResult;
+      } else {
+        result = await tool.fn(input, handlerCtx);
+      }
+    } else {
+      result = await tool.fn(input, handlerCtx);
+    }
     // ok-on-abort race: if the watchdog (idle or wall-clock) fired
     // mid-handler but the handler returned normally without observing
     // ctx.signal.aborted, we'd otherwise emit `done` with the partial
