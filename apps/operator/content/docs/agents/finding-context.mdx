@@ -1,0 +1,55 @@
+---
+title: Finding context
+description: The retrieval surfaces every spawned agent has access to, and which to reach for when.
+---
+
+# Finding context
+
+You have several ways to find context. This page tells you which to reach for, in what order. Two doc surfaces matter:
+
+- **THIS harness's docs** — your project's SPEC, AGENTS, plans, and `<projectPath>/docs/`. Use `harness:docs_*` tools.
+- **Public Papercusp docs** — how the Papercusp framework itself works. Use `docs:*` tools.
+
+If a question is about *this specific project*, use `harness:docs_*`. If it's about *how Papercusp works*, use `docs:*`.
+
+## Decision table
+
+| Question | Reach for | Notes |
+|---|---|---|
+| "What does this harness's SPEC say?" / "Where's the plan for feature X?" | `harness:docs_outline` → `harness:docs_get` | Reads `<projectPath>/docs/` + state files (SPEC.md, AGENTS.md, .harness/{knowledge,supervisor-notes,validation-contract}.md). Call outline first; per-run cached. |
+| "How does Papercusp's endpoint system work?" / "What's the harness lifecycle?" | `docs:outline` → `docs:get` | Reads the public Papercusp framework docs. Use `docs:search` when you have a keyword but no slug. |
+| "What's the current state of this harness?" | `harness:status`, `harness:list_features`, `harness:pending_reviews`, `harness:escalation` | Runtime state — features, open reviews, escalations. |
+| "What's the history of this feature?" | `features:history` | Long-running feature state across turns. |
+| "What did we decide about X in chat / escalation?" | `search:fulltext`, `search:semantic` | PG-stored prose recall — chats, escalations, brainstorms. |
+| "What `[[name]]` references this thing?" | `wiki:backlinks` | Cross-references inside the harness. |
+| "What tools are available to me?" | `agent_tools:list` | The catalog — describes every tool you can call. |
+
+## Order of operations
+
+When you need context for a task, in this order:
+
+1. **Is it about this specific harness?** `harness:docs_outline` first (cheap, cached). Pick slugs; `harness:docs_get { slugs: [...] }`. For long pages, refine with `{ slugs: [slug], heading: 'anchor-id' }`.
+2. **Is it about Papercusp itself?** `docs:outline` first. If you don't know a slug but have a keyword, `docs:search`. Then `docs:get`.
+3. **Is it about runtime state?** `harness:status` or `harness:list_features`. Don't grep code for state PG owns.
+4. **Is it prose-recall from chats or escalations?** `search:fulltext`. Don't waste tokens scanning docs for chat decisions.
+
+## Role-flavored starting points
+
+- **Scoper** — start with `search:fulltext "scope"` and `harness:docs_outline` (SPEC + prior plans).
+- **Architect** — `harness:docs_outline` (plans), then `docs:outline` for design rationale.
+- **Worker** — `harness:docs_get` on the validation contract + the chunk's spec.
+- **Validator** — `harness:status` (open issues) + the validation contract.
+- **Debugger** — `search:fulltext "escalation"` + `features:history` on the failing feature.
+- **Reviewer** — `harness:docs_get` on the plan being reviewed + recent commits via shell.
+
+## Anti-patterns
+
+- **Don't read code before checking what's documented.** Most "how does this work?" has a doc page; find it before grepping.
+- **Don't call `*:docs_get` without first calling `*:docs_outline`** (unless you already know the exact slug). Outline tells you what exists; without it, you guess.
+- **Don't re-fetch the outline mid-run** — it's cached per run. Use what you already have.
+- **Don't use `search:fulltext` for current state.** Use `harness:status` or `harness:list_features` instead — those are authoritative.
+- **Don't confuse the two doc surfaces.** `harness:docs_*` = this harness's docs. `docs:*` = Papercusp framework docs.
+
+## Escalating
+
+If the docs are wrong or missing, surface the gap via a supervisor note or by listing it as a finding in your next artifact. Don't silently work around — the next agent will hit the same wall. Existing issues are readable via `issues:list`.
