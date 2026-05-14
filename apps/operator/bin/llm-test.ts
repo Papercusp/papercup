@@ -298,7 +298,11 @@ async function main(): Promise<void> {
         console.warn(`  ! persistence failed [${scenario.id}]: ${(err as Error).message}`);
       }
     }
-    return report.verdict === 'fail' || report.verdict === 'errored';
+    // Verdict for the UI/PG ('preview' for single-run per plan §2.4);
+    // exit-code from the per-run status so CI still flags single-run
+    // failures.
+    if (report.verdict === 'fail' || report.verdict === 'errored') return true;
+    return report.runs.some((r) => r.status === 'failed' || r.status === 'errored');
   };
 
   let anyFailed = false;

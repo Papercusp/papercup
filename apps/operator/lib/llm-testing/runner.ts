@@ -406,11 +406,13 @@ async function runOnce(args: OnceArgs): Promise<SingleRunReport> {
 function aggregate(scenario: Scenario, matrixGroupId: string | undefined, runs: SingleRunReport[]): RunReport {
   if (!matrixGroupId || runs.length === 1) {
     const r = runs[0];
-    const verdict: RunReport['verdict'] = matrixGroupId === undefined && r
-      ? r.status === 'errored' ? 'errored'
-        : r.status === 'passed' ? 'preview' // single run = preview per §2.4
-          : 'fail'
-      : 'errored';
+    // Plan §2.4: "Single-run results show as `preview` in the /tests UI,
+    // not `pass`/`fail`. Only a matrix-completed run gets a `pass`/`fail`
+    // verdict, computed from majority-of-N." Errors stay errored so they
+    // remain visible; everything else is preview.
+    const verdict: RunReport['verdict'] = !r
+      ? 'errored'
+      : r.status === 'errored' ? 'errored' : 'preview';
     return { scenarioId: scenario.id, matrixGroupId, runs, verdict, varianceByAxis: {}, varianceFindings: [] };
   }
 
