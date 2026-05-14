@@ -20,10 +20,10 @@ import { describe, it, expect } from 'vitest';
 import { SCENARIOS, getScenario } from '../scenarios';
 
 describe('scenario registry', () => {
-  it('exposes the full operator suite (S01–S12) and the oracle suite (O1–O3)', () => {
+  it('exposes the full operator suite (S01–S12 + M1–M12), oracle (O1–O3), and architect (A1–A2)', () => {
     const ids = SCENARIOS.map((s) => s.id).sort();
     expect(ids).toEqual([
-      // operator
+      // operator legacy (S-prefixed; framework build-out)
       'op-S01-status-quick',
       'op-S02-multistep-investigation',
       'op-S03-continue-cap-count',
@@ -37,10 +37,24 @@ describe('scenario registry', () => {
       'op-S11-voice-card-answer',
       'op-S12-tool-error-recovery',
       'op-S12b-tool-error-injected',
+      // operator brain-emission contracts (M-prefixed; operator-behavior-tests-2026-05-14)
+      'op-M1-continue-paired-with-say',
+      'op-M2-mutex-card-vs-continue',
+      'op-M3-opener-substance',
+      'op-M4-one-question-per-turn',
+      'op-M5-spawn-worker-has-chunk',
+      'op-M6-sleep-no-say',
+      'op-M7-after-says-ready-options',
+      'op-M8-format-utterance',
+      'op-M9-panel-close-tool',
+      'op-M10-ideas-not-operators',
+      'op-M11-no-implementation-asks',
+      'op-M12-no-stacked-questions-prose',
       // oracle
       'oracle-O1-docs-question',
       'oracle-O2-refuse-speculation',
       'oracle-O3-harness-question',
+      // architect
       'architect-A1-clarifying-questions',
       'architect-A2-scope-pushback',
     ].sort());

@@ -27,6 +27,19 @@ import { S10_ASK_CHOICE } from './operator/S10-ask-choice';
 import { S11_VOICE_CARD_ANSWER } from './operator/S11-voice-card-answer';
 import { S12_TOOL_ERROR_RECOVERY } from './operator/S12-tool-error-recovery';
 import { S12B_TOOL_ERROR_INJECTED } from './operator/S12b-tool-error-injected';
+// M1–M12: operator-behavior-tests-2026-05-14 (brain-emission contracts)
+import { M1_CONTINUE_PAIRED_WITH_SAY } from './operator/M1-continue-paired-with-say';
+import { M2_MUTEX_CARD_VS_CONTINUE } from './operator/M2-mutex-card-vs-continue';
+import { M3_OPENER_SUBSTANCE } from './operator/M3-opener-substance';
+import { M4_ONE_QUESTION_PER_TURN } from './operator/M4-one-question-per-turn';
+import { M5_SPAWN_WORKER_HAS_CHUNK } from './operator/M5-spawn-worker-has-chunk';
+import { M6_SLEEP_NO_SAY } from './operator/M6-sleep-no-say';
+import { M7_AFTER_SAYS_READY_OPTIONS } from './operator/M7-after-says-ready-options';
+import { M8_FORMAT_UTTERANCE } from './operator/M8-format-utterance';
+import { M9_PANEL_CLOSE_TOOL } from './operator/M9-panel-close-tool';
+import { M10_IDEAS_NOT_OPERATORS } from './operator/M10-ideas-not-operators';
+import { M11_NO_IMPLEMENTATION_ASKS } from './operator/M11-no-implementation-asks';
+import { M12_NO_STACKED_QUESTIONS_PROSE } from './operator/M12-no-stacked-questions-prose';
 import { O1_DOCS_QUESTION } from './oracle/O1-docs-question';
 import { O2_REFUSE_SPECULATION } from './oracle/O2-refuse-speculation';
 import { O3_HARNESS_QUESTION } from './oracle/O3-harness-question';
@@ -48,6 +61,19 @@ export const SCENARIOS: ReadonlyArray<Scenario> = [
   S11_VOICE_CARD_ANSWER,
   S12_TOOL_ERROR_RECOVERY,
   S12B_TOOL_ERROR_INJECTED,
+  // operator brain-emission contracts (M1–M12)
+  M1_CONTINUE_PAIRED_WITH_SAY,
+  M2_MUTEX_CARD_VS_CONTINUE,
+  M3_OPENER_SUBSTANCE,
+  M4_ONE_QUESTION_PER_TURN,
+  M5_SPAWN_WORKER_HAS_CHUNK,
+  M6_SLEEP_NO_SAY,
+  M7_AFTER_SAYS_READY_OPTIONS,
+  M8_FORMAT_UTTERANCE,
+  M9_PANEL_CLOSE_TOOL,
+  M10_IDEAS_NOT_OPERATORS,
+  M11_NO_IMPLEMENTATION_ASKS,
+  M12_NO_STACKED_QUESTIONS_PROSE,
   // oracle (O1–O3) — Phase 4 abstraction validation
   O1_DOCS_QUESTION,
   O2_REFUSE_SPECULATION,
