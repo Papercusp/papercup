@@ -467,3 +467,107 @@ describe('replay buffer (Phase 4 T2.2)', () => {
     expect(outB.map((e) => e.data)).toEqual([{ text: 'from-B-1' }, { text: 'from-B-2' }]);
   });
 });
+
+describe('metadata_json auto-fill from ctx.uiClientId (telemetry-tagging audit)', () => {
+  // Plan: apps/operator/docs/plans/llm-testing-framework-2026-05-14.md §5.4
+  // Every tool's invocation row must carry the spawning caller's
+  // uiClientId in metadata_json so the llm-testing framework can
+  // filter telemetry by run. The dispatcher auto-fills it when
+  // ctx.uiClientId is set and the handler didn't override.
+
+  it('auto-fills metadata_json.uiClientId when handler never calls ctx.metadata', async () => {
+    let captured: Record<string, unknown> | null | undefined = undefined;
+    const tool = makeTool({
+      fn: async () => ({ content: [{ type: 'text', text: 'ok' }] }),
+    });
+    await dispatchProjectedTool(
+      tool,
+      'fix.tool',
+      {},
+      MAKE_CTX({ uiClientId: 'audit-probe-1' }),
+      MAKE_DEPS({
+        recordInvocation: async (input) => { captured = input.metadataJson; },
+      }),
+    );
+    expect(captured).toEqual({ uiClientId: 'audit-probe-1' });
+  });
+
+  it('merges ctx.uiClientId into handler-supplied metadata', async () => {
+    let captured: Record<string, unknown> | null | undefined = undefined;
+    const tool = makeTool({
+      fn: async (_input, ctx) => {
+        ctx.metadata?.({ kind: 'docs:get', heading: 'overview' });
+        return { content: [{ type: 'text', text: 'ok' }] };
+      },
+    });
+    await dispatchProjectedTool(
+      tool,
+      'fix.tool',
+      {},
+      MAKE_CTX({ uiClientId: 'audit-probe-2' }),
+      MAKE_DEPS({
+        recordInvocation: async (input) => { captured = input.metadataJson; },
+      }),
+    );
+    expect(captured).toEqual({
+      kind: 'docs:get',
+      heading: 'overview',
+      uiClientId: 'audit-probe-2',
+    });
+  });
+
+  it('respects handler override of uiClientId (does not clobber)', async () => {
+    let captured: Record<string, unknown> | null | undefined = undefined;
+    const tool = makeTool({
+      fn: async (_input, ctx) => {
+        ctx.metadata?.({ uiClientId: 'handler-wins' });
+        return { content: [{ type: 'text', text: 'ok' }] };
+      },
+    });
+    await dispatchProjectedTool(
+      tool,
+      'fix.tool',
+      {},
+      MAKE_CTX({ uiClientId: 'audit-probe-3' }),
+      MAKE_DEPS({
+        recordInvocation: async (input) => { captured = input.metadataJson; },
+      }),
+    );
+    expect(captured).toEqual({ uiClientId: 'handler-wins' });
+  });
+
+  it('does nothing when ctx.uiClientId is null/undefined', async () => {
+    let captured: Record<string, unknown> | null | undefined = undefined;
+    const tool = makeTool({
+      fn: async () => ({ content: [{ type: 'text', text: 'ok' }] }),
+    });
+    await dispatchProjectedTool(
+      tool,
+      'fix.tool',
+      {},
+      MAKE_CTX({ uiClientId: null }),
+      MAKE_DEPS({
+        recordInvocation: async (input) => { captured = input.metadataJson; },
+      }),
+    );
+    expect(captured).toBeNull();
+  });
+
+  it('auto-fill applies on error path too', async () => {
+    let captured: Record<string, unknown> | null | undefined = undefined;
+    const tool = makeTool({
+      fn: async () => { throw new Error('boom'); },
+    });
+    const r = await dispatchProjectedTool(
+      tool,
+      'fix.tool',
+      {},
+      MAKE_CTX({ uiClientId: 'audit-probe-error' }),
+      MAKE_DEPS({
+        recordInvocation: async (input) => { captured = input.metadataJson; },
+      }),
+    );
+    expect(r.ok).toBe(false);
+    expect(captured).toEqual({ uiClientId: 'audit-probe-error' });
+  });
+});

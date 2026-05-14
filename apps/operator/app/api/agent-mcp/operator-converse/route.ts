@@ -148,6 +148,12 @@ export async function POST(req: NextRequest) {
         runId: globalThis.crypto.randomUUID(),
         spawnId: globalThis.crypto.randomUUID(),
         transport: 'in_process',
+        // Flow the caller's uiClientId so the dispatcher auto-tags
+        // every projected tool's metadata_json. This is what the
+        // llm-testing framework filters on to find rows belonging to
+        // a specific scenario run, and what nested ui:* tools default
+        // to when targeting "the tab that spawned the agent."
+        uiClientId: body.uiClientId ?? null,
       };
 
       let totalCost = 0;

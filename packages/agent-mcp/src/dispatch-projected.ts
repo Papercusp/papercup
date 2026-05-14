@@ -393,11 +393,30 @@ export async function dispatchProjectedTool(
 
   // Per-call metadata accumulator. The handler may call ctx.metadata
   // multiple times; we keep the most recent payload (overwrite, not
-  // merge) and hand it to recordInvocation at completion. NULL when
-  // the handler never called it.
+  // merge) and hand it to recordInvocation at completion.
+  //
+  // Auto-fill: when ctx.uiClientId is set (the dispatching transport
+  // knows the spawning client / test run / browser tab), we make sure
+  // it lands in metadata_json even if the handler didn't call
+  // ctx.metadata. This makes telemetry-filter-by-uiClientId reliable
+  // by construction — every tool's invocation row carries the tag,
+  // not just tools that remember to thread it through.
+  //
+  // Handlers that DO call ctx.metadata can override (or omit) the
+  // uiClientId key; we only fill it when the handler didn't provide
+  // one. Plan: apps/operator/docs/plans/llm-testing-framework-2026-05-14.md §5.4
   let metadataJson: Record<string, unknown> | null = null;
   const metadataCallback = (data: Record<string, unknown>): void => {
     metadataJson = { ...data };
+  };
+  const finalizeMetadata = (): Record<string, unknown> | null => {
+    if (ctx.uiClientId) {
+      const base = metadataJson ?? {};
+      if (base.uiClientId === undefined) {
+        return { ...base, uiClientId: ctx.uiClientId };
+      }
+    }
+    return metadataJson;
   };
 
   const handlerCtx: UnifiedToolContext = {
@@ -433,7 +452,7 @@ export async function dispatchProjectedTool(
             args: input,
 
             eventCount,
-            metadataJson,
+            metadataJson: finalizeMetadata(),
           });
         } catch { /* best-effort */ }
       }
@@ -474,7 +493,7 @@ export async function dispatchProjectedTool(
           args: input,
 
           eventCount,
-          metadataJson,
+          metadataJson: finalizeMetadata(),
         });
       } catch { /* best-effort */ }
     }
@@ -495,7 +514,7 @@ export async function dispatchProjectedTool(
           args: input,
 
           eventCount,
-          metadataJson,
+          metadataJson: finalizeMetadata(),
         });
       } catch { /* best-effort */ }
     }
