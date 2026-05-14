@@ -28,6 +28,7 @@ import { OperatorLogoMark } from './OperatorLogoMark';
 import { OperatorWordmarkLockup } from './OperatorWordmarkLockup';
 import { OperatorActiveToggle } from './OperatorActiveToggle';
 import { VoiceButton } from './voice/VoiceButton';
+import { SidebarHarnessSelector } from '../harness/dock/SidebarHarnessSelector';
 
 const STORAGE_KEY = 'papercusp.operatorChat.width';
 const MIN_WIDTH = 360;
@@ -151,6 +152,16 @@ export function OperatorChatSidebar() {
             <div className="op-chat-controls" role="group" aria-label={`Operator voice controls — ${statusText}`}>
               <OperatorActiveToggle />
               <VoiceButton />
+            </div>
+            {/*
+              Dockview-migration v4 §3.4 — harness selector chip moved
+              from the dashboard .h-header into the sidebar so it drives
+              ?focusSlug= (default for new dock panels + agent context
+              scope). Mounts only when at least one coding harness
+              exists; non-coding workspaces render nothing.
+            */}
+            <div className="op-chat-header-row">
+              <SidebarHarnessSelector />
             </div>
           </div>
         </div>
