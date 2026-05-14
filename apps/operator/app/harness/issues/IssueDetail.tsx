@@ -149,7 +149,7 @@ export function IssueDetail({
               {displayIssue.foundDuring && <span>during {displayIssue.foundDuring}</span>}
               <span>{new Date(displayIssue.foundAt).toLocaleString()}</span>
               {typeof displayIssue.attempts === 'number' && <span>{displayIssue.attempts} fix attempt{displayIssue.attempts === 1 ? '' : 's'}</span>}
-              {displayIssue.codePointer && <code style={{ color: 'var(--counter)' }}>{displayIssue.codePointer}</code>}
+              {displayIssue.codePointer && <code style={{ color: 'var(--accent)' }}>{displayIssue.codePointer}</code>}
             </div>
           </div>
 

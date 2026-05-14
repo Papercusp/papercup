@@ -32,7 +32,7 @@ class TabErrorBoundary extends Component<{ label: string; children: ReactNode },
   render() {
     if (this.state.error) {
       return (
-        <div style={{ padding: 24, color: 'var(--text-2)' }}>
+        <div style={{ padding: 24, color: 'var(--fg-dim)' }}>
           Plugin tab <strong>{this.props.label}</strong> failed to render:{' '}
           <code>{this.state.error}</code>
         </div>
@@ -47,7 +47,7 @@ export default function PluginReactTab({ pluginName, componentRoot, componentId,
   const api = makeBrowserApi(slug, pluginName);
   return (
     <TabErrorBoundary label={label}>
-      <Suspense fallback={<div style={{ padding: 24, color: 'var(--text-2)' }}>Loading {label}…</div>}>
+      <Suspense fallback={<div style={{ padding: 24, color: 'var(--fg-dim)' }}>Loading {label}…</div>}>
         <Component {...({ slug, api, readOnly } as any)} />
       </Suspense>
     </TabErrorBoundary>

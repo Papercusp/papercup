@@ -238,7 +238,7 @@ export default function InstalledTemplatesClient() {
                 </div>
 
                 {row.manifest.description ? (
-                  <p className="pc-installed-template-description" style={{ margin: '8px 0 0', fontSize: 13, color: 'var(--fg-muted)' }}>
+                  <p className="pc-installed-template-description" style={{ margin: '8px 0 0', fontSize: 13, color: 'var(--fg-mute)' }}>
                     {row.manifest.description}
                   </p>
                 ) : null}

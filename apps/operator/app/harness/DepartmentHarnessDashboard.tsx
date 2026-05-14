@@ -890,7 +890,7 @@ function DirectorAgentPanel({ departmentSlug, self }: { departmentSlug: string; 
           <button
             onClick={runLoop}
             disabled={looping || running}
-            style={{ padding: '8px 16px', background: 'var(--counter)', color: 'var(--bg)', border: 'none', borderRadius: 4, fontSize: 13, fontWeight: 600, cursor: 'pointer', opacity: looping ? 0.6 : 1 }}
+            style={{ padding: '8px 16px', background: 'var(--accent)', color: 'var(--bg)', border: 'none', borderRadius: 4, fontSize: 13, fontWeight: 600, cursor: 'pointer', opacity: looping ? 0.6 : 1 }}
           >
             {looping ? 'Looping…' : '⟳ Run autonomous loop'}
           </button>
@@ -949,7 +949,7 @@ function DirectorAgentPanel({ departmentSlug, self }: { departmentSlug: string; 
             style={{ width: 60, padding: 4, background: 'var(--bg)', color: 'var(--fg)', border: '1px solid var(--border)', borderRadius: 3, fontSize: 12 }}
           />
           <span>sec</span>
-          {autoLoop && <span style={{ color: 'var(--counter)', fontWeight: 500 }}>● ON</span>}
+          {autoLoop && <span style={{ color: 'var(--accent)', fontWeight: 500 }}>● ON</span>}
         </label>
       </div>
 
@@ -1113,7 +1113,7 @@ function MemoryPanel({ departmentSlug }: { departmentSlug: string }) {
           </button>
         </div>
       </div>
-      {err && <div style={{ padding: 8, color: 'var(--err)', background: 'var(--bg-2)', borderRadius: 4, fontSize: 12 }}>Error: {err}</div>}
+      {err && <div style={{ padding: 8, color: 'var(--bad)', background: 'var(--bg-2)', borderRadius: 4, fontSize: 12 }}>Error: {err}</div>}
       {!memory || memory.entries.length === 0 ? (
         <div style={{ padding: 16, color: 'var(--fg-dim)', fontSize: 13, background: 'var(--bg-2)', borderRadius: 6 }}>
           {loading ? 'Loading…' : 'No prior runs to synthesize. Memory will populate as the director runs.'}

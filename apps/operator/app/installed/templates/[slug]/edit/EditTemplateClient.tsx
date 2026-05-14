@@ -386,7 +386,7 @@ export default function EditTemplateClient() {
               <button
                 className="pc-template-editor-add-file"
                 onClick={() => setAddFileOpen(true)}
-                style={{ marginLeft: 'auto', padding: '2px 6px', fontSize: 11, background: 'transparent', color: 'var(--fg-muted)', border: '1px solid var(--border)', borderRadius: 3, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 3 }}
+                style={{ marginLeft: 'auto', padding: '2px 6px', fontSize: 11, background: 'transparent', color: 'var(--fg-mute)', border: '1px solid var(--border)', borderRadius: 3, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 3 }}
                 aria-label="Add a new config file to this template"
               >
                 <Plus size={11} /> new
@@ -410,7 +410,7 @@ export default function EditTemplateClient() {
                       background: isActive ? 'var(--bg-elevated, rgba(255,255,255,0.04))' : 'transparent',
                       border: 'none',
                       borderLeft: isActive ? '2px solid var(--accent, #3b82f6)' : '2px solid transparent',
-                      color: isActive ? 'var(--fg)' : 'var(--fg-muted)',
+                      color: isActive ? 'var(--fg)' : 'var(--fg-mute)',
                       cursor: 'pointer',
                       fontSize: 12,
                     }}
@@ -829,7 +829,7 @@ function ManifestStructuredEditor({ jsonText, onChange }: { jsonText: string; on
                 }}
                 style={inputStyle(140)}
               />
-              <label className="pc-template-manifest-check" style={{ fontSize: 12, color: 'var(--fg-muted)', display: 'inline-flex', gap: 4, alignItems: 'center' }}>
+              <label className="pc-template-manifest-check" style={{ fontSize: 12, color: 'var(--fg-mute)', display: 'inline-flex', gap: 4, alignItems: 'center' }}>
                 <Checkbox
                   checked={!!p.autoEnable}
                   onChange={(v) => {
@@ -988,7 +988,7 @@ const addBtnStyle: React.CSSProperties = {
   marginLeft: 'auto',
   padding: '3px 8px',
   background: 'transparent',
-  color: 'var(--fg-muted)',
+  color: 'var(--fg-mute)',
   border: '1px solid var(--border)',
   borderRadius: 3,
   fontSize: 11,

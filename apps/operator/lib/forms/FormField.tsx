@@ -4,7 +4,7 @@
  * FormField — labelled wrapper around any input with inline error display.
  *
  * Mirrors the visual conventions used elsewhere in the operator
- * (`pluginFieldLabel`, `var(--text-2)/--text-3` palette) so a hand-rolled
+ * (`pluginFieldLabel`, `var(--fg-dim)/--text-3` palette) so a hand-rolled
  * form can be migrated to react-hook-form by swapping `<label>...<input/>`
  * blocks for `<FormField label=...>...</FormField>` with zero visual delta.
  *
@@ -18,12 +18,12 @@ const labelStyle: React.CSSProperties = {
   display: 'block',
   fontSize: 12,
   fontWeight: 500,
-  color: 'var(--text-2)',
+  color: 'var(--fg-dim)',
   marginBottom: 4,
 };
 const descriptionStyle: React.CSSProperties = {
   fontSize: 11,
-  color: 'var(--text-3)',
+  color: 'var(--fg-mute)',
   marginBottom: 4,
   lineHeight: 1.4,
 };

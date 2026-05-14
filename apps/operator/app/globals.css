@@ -27,6 +27,7 @@
    *   --dur-normal: modals / drawers / tab content swap
    *   --dur-slow  : multi-element choreography only
    */
+  --font-mono: 'SFMono-Regular', Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;
 }
 
 /* ── Reusable Radix / shared motion primitives ────────────────────────

@@ -71,11 +71,11 @@ const STATUS_LABEL: Record<Status, string> = {
 };
 
 const STATUS_COLOR: Record<Status, string> = {
-  'ok': 'var(--accent-green, #5fb86b)',
+  'ok': 'var(--good)',
   'error': 'var(--accent-red, #d94f4f)',
   'timeout': 'var(--accent-orange, #d4a04f)',
   'quota-exceeded': 'var(--accent-yellow, #c8b04a)',
-  'role-not-allowed': 'var(--fg-3, #888)',
+  'role-not-allowed': 'var(--fg-mute)',
 };
 
 function fmtTs(ms: number): string {
@@ -277,11 +277,11 @@ function SpawnsTab({
     );
   }
   if (!rows) {
-    return <div style={{ padding: 24, color: 'var(--fg-3)', textAlign: 'center' }}>loading…</div>;
+    return <div style={{ padding: 24, color: 'var(--fg-mute)', textAlign: 'center' }}>loading…</div>;
   }
   if (rows.length === 0) {
     return (
-      <div style={{ padding: 24, color: 'var(--fg-3)', textAlign: 'center' }}>
+      <div style={{ padding: 24, color: 'var(--fg-mute)', textAlign: 'center' }}>
         <div style={{ fontSize: 14, marginBottom: 8 }}>no tool invocations yet</div>
         <div style={{ fontSize: 12 }}>
           Tools run in here when an agent (or the dashboard) calls a projected tool —
@@ -294,7 +294,7 @@ function SpawnsTab({
   return (
     <div style={{ display: 'flex', flexDirection: 'column', minHeight: 0, gap: 8, height: '100%' }}>
       {summary && (
-        <div style={{ display: 'flex', gap: 16, fontSize: 12, color: 'var(--fg-2)', flexWrap: 'wrap' }}>
+        <div style={{ display: 'flex', gap: 16, fontSize: 12, color: 'var(--fg-dim)', flexWrap: 'wrap' }}>
           <span>
             <strong>{summary.total}</strong> calls (24h)
           </span>
@@ -417,14 +417,14 @@ function ArtifactsTab({
     );
   }
   if (!rows) {
-    return <div style={{ padding: 24, color: 'var(--fg-3)', textAlign: 'center' }}>loading…</div>;
+    return <div style={{ padding: 24, color: 'var(--fg-mute)', textAlign: 'center' }}>loading…</div>;
   }
   if (rows.length === 0) {
     const blurb = kind === 'pack'
       ? 'Run repomix.pack or code2prompt.pack against this harness to populate.'
       : 'Run code2prompt.diff against this harness to populate.';
     return (
-      <div style={{ padding: 24, color: 'var(--fg-3)', textAlign: 'center' }}>
+      <div style={{ padding: 24, color: 'var(--fg-mute)', textAlign: 'center' }}>
         <div style={{ fontSize: 14, marginBottom: 8 }}>no {kind} artifacts in the last 7 days</div>
         <div style={{ fontSize: 12 }}>{blurb}</div>
       </div>
@@ -477,7 +477,7 @@ function ArtifactLink({ path }: { path: string }) {
       title={`${path}\n\nclick to copy path`}
       style={{ fontFamily: 'monospace', cursor: 'pointer', textDecoration: 'underline', textDecorationStyle: 'dotted' }}
     >
-      📄 {display}{copied && <span style={{ marginLeft: 6, color: 'var(--accent-green)' }}>✓ copied</span>}
+      📄 {display}{copied && <span style={{ marginLeft: 6, color: 'var(--good)' }}>✓ copied</span>}
     </span>
   );
 }
@@ -721,7 +721,7 @@ const th: React.CSSProperties = {
   fontWeight: 600,
   fontSize: 11,
   textTransform: 'uppercase',
-  color: 'var(--fg-2)',
+  color: 'var(--fg-dim)',
   letterSpacing: 0.5,
 };
 

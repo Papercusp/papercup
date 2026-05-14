@@ -663,7 +663,7 @@ function PluginIframeWithLoader({ url, title }: { url: string; title: string }) 
             display: 'flex', alignItems: 'center', justifyContent: 'center',
             flexDirection: 'column', gap: 12,
             background: 'var(--bg-2)',
-            color: 'var(--text-2)',
+            color: 'var(--fg-dim)',
             fontSize: 13,
             transition: 'opacity 200ms',
             pointerEvents: 'none',
@@ -673,13 +673,13 @@ function PluginIframeWithLoader({ url, title }: { url: string; title: string }) 
             aria-hidden
             style={{
               width: 28, height: 28, borderRadius: '50%',
-              border: '2px solid var(--border-1)', borderTopColor: 'var(--accent-1, #0ea5e9)',
+              border: '2px solid var(--border)', borderTopColor: 'var(--accent-1, #0ea5e9)',
               animation: 'papercusp-spin 0.8s linear infinite',
             }}
           />
           <div>{title} — loading…</div>
           {showHint ? (
-            <div style={{ fontSize: 11, color: 'var(--text-3)', maxWidth: 360, textAlign: 'center' }}>
+            <div style={{ fontSize: 11, color: 'var(--fg-mute)', maxWidth: 360, textAlign: 'center' }}>
               Still loading? The plugin service may not be running. Try opening{' '}
               <a href={url} target="_blank" rel="noopener noreferrer" style={{ color: 'var(--accent-1, #0ea5e9)', textDecoration: 'underline', pointerEvents: 'auto' }}>
                 {url}
@@ -943,17 +943,17 @@ function AddPluginButton({ activeSlug, alreadyEnabled, installed, error, onEnabl
           style={{
             position: 'fixed', top: coords.top, right: coords.right,
             zIndex: 1000, minWidth: 320, maxWidth: 400,
-            background: 'var(--bg-1)', color: 'var(--text-1)',
+            background: 'var(--bg-1)', color: 'var(--fg)',
             border: '1px solid var(--border)', borderRadius: 6,
             boxShadow: '0 8px 24px rgba(0,0,0,0.4)',
             padding: 8,
           }}
         >
-          <div style={{ fontSize: 11, color: 'var(--text-3)', padding: '4px 8px 8px', borderBottom: '1px solid var(--border)', marginBottom: 4 }}>
+          <div style={{ fontSize: 11, color: 'var(--fg-mute)', padding: '4px 8px 8px', borderBottom: '1px solid var(--border)', marginBottom: 4 }}>
             Add to <code style={{ fontSize: 11 }}>{activeSlug}</code>
           </div>
           {error ? (
-            <div style={{ padding: '12px 8px', fontSize: 12, color: 'var(--text-3)' }}>
+            <div style={{ padding: '12px 8px', fontSize: 12, color: 'var(--fg-mute)' }}>
               <div style={{ color: '#fca5a5', marginBottom: 6 }}>Couldn't load plugins.</div>
               <div style={{ marginBottom: 8, fontSize: 11 }}>{error}</div>
               <Tooltip label="Retry plugin discovery">
@@ -963,17 +963,17 @@ function AddPluginButton({ activeSlug, alreadyEnabled, installed, error, onEnabl
                 style={{
                   padding: '4px 10px', fontSize: 12, cursor: 'pointer',
                   background: 'var(--bg-2)', border: '1px solid var(--border)',
-                  color: 'var(--text-1)', borderRadius: 4,
+                  color: 'var(--fg)', borderRadius: 4,
                 }}
               >Retry</button>
               </Tooltip>
             </div>
           ) : installed === null ? (
-            <div style={{ padding: '12px 8px', fontSize: 12, color: 'var(--text-3)' }}>Loading…</div>
+            <div style={{ padding: '12px 8px', fontSize: 12, color: 'var(--fg-mute)' }}>Loading…</div>
           ) : (
             <ul ref={listRef} style={{ listStyle: 'none', padding: 0, margin: 0, maxHeight: 360, overflowY: 'auto' }}>
               {candidates.length > 0 && (
-                <li style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-3)', padding: '6px 10px 2px' }}>Installed</li>
+                <li style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--fg-mute)', padding: '6px 10px 2px' }}>Installed</li>
               )}
               {candidates.map((p) => {
                 const tabIcon = p.dashboardTabs?.[0]?.icon ?? p.icon ?? null;
@@ -987,7 +987,7 @@ function AddPluginButton({ activeSlug, alreadyEnabled, installed, error, onEnabl
                         style={{
                           width: '100%', textAlign: 'left', padding: '8px 10px',
                           background: 'transparent', border: 'none', cursor: busy ? 'not-allowed' : 'pointer',
-                          color: 'var(--text-1)', fontSize: 12, borderRadius: 4,
+                          color: 'var(--fg)', fontSize: 12, borderRadius: 4,
                           display: 'flex', alignItems: 'flex-start', gap: 10,
                         }}
                         onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--bg-2)')}
@@ -1002,8 +1002,8 @@ function AddPluginButton({ activeSlug, alreadyEnabled, installed, error, onEnabl
                           <PluginIcon name={tabIcon} size={14} />
                         </span>
                         <span style={{ flex: 1, minWidth: 0 }}>
-                          <div style={{ fontWeight: 500 }}>{p.name}{p.version ? <span style={{ color: 'var(--text-3)', fontWeight: 400 }}> @{p.version}</span> : null}</div>
-                          {p.description && <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 2, lineHeight: 1.4 }}>{p.description}</div>}
+                          <div style={{ fontWeight: 500 }}>{p.name}{p.version ? <span style={{ color: 'var(--fg-mute)', fontWeight: 400 }}> @{p.version}</span> : null}</div>
+                          {p.description && <div style={{ fontSize: 11, color: 'var(--fg-mute)', marginTop: 2, lineHeight: 1.4 }}>{p.description}</div>}
                         </span>
                       </button>
                     </Tooltip>
@@ -1011,10 +1011,10 @@ function AddPluginButton({ activeSlug, alreadyEnabled, installed, error, onEnabl
                 );
               })}
               {marketplace === null && marketplaceError === null && (
-                <li style={{ padding: '8px 10px', fontSize: 11, color: 'var(--text-3)' }}>Loading marketplace…</li>
+                <li style={{ padding: '8px 10px', fontSize: 11, color: 'var(--fg-mute)' }}>Loading marketplace…</li>
               )}
               {marketplaceCandidates.length > 0 && (
-                <li style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-3)', padding: '10px 10px 2px', borderTop: candidates.length > 0 ? '1px solid var(--border)' : 'none', marginTop: candidates.length > 0 ? 4 : 0 }}>Marketplace</li>
+                <li style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--fg-mute)', padding: '10px 10px 2px', borderTop: candidates.length > 0 ? '1px solid var(--border)' : 'none', marginTop: candidates.length > 0 ? 4 : 0 }}>Marketplace</li>
               )}
               {marketplaceCandidates.map((m) => {
                 const isBusy = busy === m.name;
@@ -1028,7 +1028,7 @@ function AddPluginButton({ activeSlug, alreadyEnabled, installed, error, onEnabl
                         style={{
                           width: '100%', textAlign: 'left', padding: '8px 10px',
                           background: 'transparent', border: 'none', cursor: busy ? 'not-allowed' : 'pointer',
-                          color: 'var(--text-1)', fontSize: 12, borderRadius: 4,
+                          color: 'var(--fg)', fontSize: 12, borderRadius: 4,
                           display: 'flex', alignItems: 'flex-start', gap: 10,
                         }}
                         onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--bg-2)')}
@@ -1044,10 +1044,10 @@ function AddPluginButton({ activeSlug, alreadyEnabled, installed, error, onEnabl
                         </span>
                         <span style={{ flex: 1, minWidth: 0 }}>
                           <div style={{ fontWeight: 500, display: 'flex', alignItems: 'center', gap: 6 }}>
-                            <span>{m.name}{m.version ? <span style={{ color: 'var(--text-3)', fontWeight: 400 }}> @{m.version}</span> : null}</span>
+                            <span>{m.name}{m.version ? <span style={{ color: 'var(--fg-mute)', fontWeight: 400 }}> @{m.version}</span> : null}</span>
                             <span style={{ fontSize: 9, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.04em', padding: '1px 5px', borderRadius: 3, background: 'rgba(99, 102, 241, 0.15)', color: '#a5b4fc' }}>{isBusy ? 'installing…' : 'install'}</span>
                           </div>
-                          {m.description && <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 2, lineHeight: 1.4 }}>{m.description}</div>}
+                          {m.description && <div style={{ fontSize: 11, color: 'var(--fg-mute)', marginTop: 2, lineHeight: 1.4 }}>{m.description}</div>}
                         </span>
                       </button>
                     </Tooltip>
@@ -1055,7 +1055,7 @@ function AddPluginButton({ activeSlug, alreadyEnabled, installed, error, onEnabl
                 );
               })}
               {candidates.length === 0 && marketplaceCandidates.length === 0 && marketplace !== null && (
-                <li style={{ padding: '12px 8px', fontSize: 12, color: 'var(--text-3)' }}>
+                <li style={{ padding: '12px 8px', fontSize: 12, color: 'var(--fg-mute)' }}>
                   {(installed?.length ?? 0) === 0
                     ? <>Marketplace catalog empty. {marketplaceError && <span style={{ color: '#fca5a5' }}>({marketplaceError})</span>} <a href="/marketplace/plugins" style={{ color: 'var(--accent)' }}>Browse →</a></>
                     : <>All installed plugins are already enabled here. <a href="/marketplace/plugins" style={{ color: 'var(--accent)' }}>Browse marketplace →</a></>}
@@ -1327,7 +1327,7 @@ function SaveSnapshotButton({ slug }: { slug: string }) {
 
   const labelStyle: React.CSSProperties = { display: 'block', fontSize: 12, color: 'var(--fg-mute)', marginBottom: 4 };
   const inputStyle: React.CSSProperties = {
-    width: '100%', padding: '6px 8px', background: 'var(--bg-mute)',
+    width: '100%', padding: '6px 8px', background: 'var(--bg-3)',
     border: '1px solid var(--border)', borderRadius: 4, color: 'var(--fg)', fontSize: 13,
   };
   const checkRow: React.CSSProperties = { display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, marginTop: 6 };
@@ -1764,7 +1764,7 @@ function ConfigPanel({
             border: 0,
             borderBottom: '2px solid',
             borderBottomColor: selected ? 'var(--accent)' : 'transparent',
-            color: selected ? 'var(--text-1)' : 'var(--text-3)',
+            color: selected ? 'var(--fg)' : 'var(--fg-mute)',
             padding: '6px 10px 5px',
             fontSize: 11,
             cursor: 'pointer',
@@ -1829,7 +1829,7 @@ function ConfigPanel({
             onClose={onClose}
           />
         ) : activePlugin ? (
-          <div className="h-config-plugin-pane" style={{ flex: 1, padding: '20px 28px', overflowY: 'auto', color: 'var(--text-1)' }}>
+          <div className="h-config-plugin-pane" style={{ flex: 1, padding: '20px 28px', overflowY: 'auto', color: 'var(--fg)' }}>
             <PluginPanelCard
               plugin={activePlugin}
               harnessSlug={harnessSlug}
@@ -1837,7 +1837,7 @@ function ConfigPanel({
             />
           </div>
         ) : (
-          <div style={{ flex: 1, padding: 32, color: 'var(--text-3)' }}>
+          <div style={{ flex: 1, padding: 32, color: 'var(--fg-mute)' }}>
             Plugin not found.
           </div>
         )}
@@ -1929,7 +1929,7 @@ function PluginPanelCard({ plugin, harnessSlug, onChange }: {
         <div className="h-plugin-card-main" style={{ flex: 1, minWidth: 0 }}>
           <div className="h-plugin-card-title-row" style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
             <h3 className="h-plugin-card-title" style={{ margin: 0, fontSize: 16 }}>{plugin.name}</h3>
-            <span className="h-plugin-card-version" style={{ fontSize: 11, color: 'var(--text-3)', fontFamily: "'SF Mono', monospace" }}>
+            <span className="h-plugin-card-version" style={{ fontSize: 11, color: 'var(--fg-mute)', fontFamily: "'SF Mono', monospace" }}>
               v{plugin.version}
             </span>
             {(plugin.dashboardTabs?.length ?? 0) === 0 && (
@@ -1941,7 +1941,7 @@ function PluginPanelCard({ plugin, harnessSlug, onChange }: {
             )}
           </div>
           {plugin.description && (
-            <p className="h-plugin-card-description" style={{ margin: '6px 0 0', fontSize: 13, color: 'var(--text-2)', lineHeight: 1.5 }}>
+            <p className="h-plugin-card-description" style={{ margin: '6px 0 0', fontSize: 13, color: 'var(--fg-dim)', lineHeight: 1.5 }}>
               {plugin.description}
             </p>
           )}
@@ -1971,7 +1971,7 @@ function PluginPanelCard({ plugin, harnessSlug, onChange }: {
                   border: '1px solid var(--border)',
                 }}>
                   <code className="h-plugin-action-id" style={{ fontSize: 12, fontFamily: "'SF Mono', monospace", flex: '0 0 auto' }}>{id}</code>
-                  <span className="h-plugin-action-label" style={{ flex: 1, fontSize: 12, color: 'var(--text-3)' }}>
+                  <span className="h-plugin-action-label" style={{ flex: 1, fontSize: 12, color: 'var(--fg-mute)' }}>
                     {a.label ?? a.description ?? ''}
                   </span>
                   <Tooltip label="Manually invoke this hook now">
@@ -2015,7 +2015,7 @@ function PluginPanelCard({ plugin, harnessSlug, onChange }: {
             ))}
           </div>
           {secretCaps.length > 0 && (
-            <p className="h-plugin-cli-hint" style={{ marginTop: 8, fontSize: 11, color: 'var(--text-3)' }}>
+            <p className="h-plugin-cli-hint" style={{ marginTop: 8, fontSize: 11, color: 'var(--fg-mute)' }}>
               Set secrets via the CLI:{' '}
               <code style={inlineCode}>papercusp secrets set {secretCaps[0]!.replace('secrets:read:', '')} &lt;value&gt;</code>
             </p>
@@ -2231,11 +2231,11 @@ function PluginConfigEditor({ harnessSlug, dirSlug, configPath, configSchema, de
       border: '1px solid var(--border)',
     }}>
       <div className="h-plugin-config-editor-head" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
-        <div className="h-plugin-config-editor-meta" style={{ fontSize: 11, color: 'var(--text-3)' }}>
-          <span className="h-plugin-config-title" style={{ fontWeight: 600, color: 'var(--text-2)', marginRight: 8 }}>Config</span>
+        <div className="h-plugin-config-editor-meta" style={{ fontSize: 11, color: 'var(--fg-mute)' }}>
+          <span className="h-plugin-config-title" style={{ fontWeight: 600, color: 'var(--fg-dim)', marginRight: 8 }}>Config</span>
           <code className="h-plugin-config-path" style={{ fontFamily: "'SF Mono', monospace", fontSize: 11 }}>{configPath}</code>
           {schemaKeys.length > 0 && (
-            <span className="h-plugin-config-keys" style={{ marginLeft: 12, color: 'var(--text-3)' }}>
+            <span className="h-plugin-config-keys" style={{ marginLeft: 12, color: 'var(--fg-mute)' }}>
               keys: {schemaKeys.map((k) => <code key={k} className="h-plugin-config-key" style={{ ...inlineCode, fontSize: 10, marginLeft: 4 }}>{k}</code>)}
             </span>
           )}
@@ -2253,7 +2253,7 @@ function PluginConfigEditor({ harnessSlug, dirSlug, configPath, configSchema, de
             }}>{serverError}</div>
           )}
           {loaded === null ? (
-            <div className="h-plugin-config-loading" style={{ padding: '16px 8px', fontSize: 12, color: 'var(--text-3)' }}>Loading config…</div>
+            <div className="h-plugin-config-loading" style={{ padding: '16px 8px', fontSize: 12, color: 'var(--fg-mute)' }}>Loading config…</div>
           ) : mode === 'fields' && schemaKeys.length > 0 ? (
             <div className="h-plugin-config-fields" style={{ display: 'flex', flexDirection: 'column', gap: 12, marginBottom: 8 }}>
               {schemaKeys.map((key) => {
@@ -2268,7 +2268,7 @@ function PluginConfigEditor({ harnessSlug, dirSlug, configPath, configSchema, de
                       {key} {required && <span style={{ color: '#ff6961' }}>*</span>}
                     </label>
                     {field.description && (
-                      <div className="h-plugin-config-field-description" style={{ fontSize: 11, color: 'var(--text-3)', marginBottom: 3 }}>{field.description}</div>
+                      <div className="h-plugin-config-field-description" style={{ fontSize: 11, color: 'var(--fg-mute)', marginBottom: 3 }}>{field.description}</div>
                     )}
                     {renderPluginConfigInput(key, field, current, (v) => setValue(key, v, { shouldDirty: true, shouldValidate: false }))}
                     {fieldError && (
@@ -2315,7 +2315,7 @@ function PluginConfigEditor({ harnessSlug, dirSlug, configPath, configSchema, de
               disabled={isSubmitting || !dirty}
               style={{
                 fontSize: 11, padding: '4px 10px', cursor: 'pointer',
-                background: 'transparent', color: 'var(--text-3)',
+                background: 'transparent', color: 'var(--fg-mute)',
                 border: '1px solid var(--border)', borderRadius: 4,
               }}
             >Reset</button>
@@ -2327,7 +2327,7 @@ function PluginConfigEditor({ harnessSlug, dirSlug, configPath, configSchema, de
               disabled={isSubmitting}
               style={{
                 fontSize: 11, padding: '4px 10px', cursor: 'pointer',
-                background: 'transparent', color: 'var(--text-3)',
+                background: 'transparent', color: 'var(--fg-mute)',
                 border: '1px solid var(--border)', borderRadius: 4,
               }}
             >Load defaults</button>
@@ -2340,7 +2340,7 @@ function PluginConfigEditor({ harnessSlug, dirSlug, configPath, configSchema, de
                 disabled={isSubmitting}
                 style={{
                   fontSize: 11, padding: '4px 10px', cursor: 'pointer',
-                  background: 'transparent', color: 'var(--text-3)',
+                  background: 'transparent', color: 'var(--fg-mute)',
                   border: '1px solid var(--border)', borderRadius: 4,
                 }}
               >{mode === 'fields' ? 'Edit as JSON' : 'Edit as form'}</button>
@@ -2351,7 +2351,7 @@ function PluginConfigEditor({ harnessSlug, dirSlug, configPath, configSchema, de
                 ✓ saved {new Date(savedAt).toLocaleTimeString()}
               </span>
             )}
-            <span className="h-plugin-config-cli" style={{ marginLeft: 'auto', fontSize: 10, color: 'var(--text-3)' }}>
+            <span className="h-plugin-config-cli" style={{ marginLeft: 'auto', fontSize: 10, color: 'var(--fg-mute)' }}>
               CLI:{' '}
               <code style={inlineCode}>papercusp plugin config {dirSlug} --harness {harnessSlug}</code>
             </span>
@@ -2370,7 +2370,7 @@ function renderPluginConfigInput(
 ): React.ReactElement {
   const baseInput: React.CSSProperties = {
     width: '100%', padding: '6px 9px', fontSize: 12,
-    background: 'var(--bg-2)', color: 'var(--text-1)',
+    background: 'var(--bg-2)', color: 'var(--fg)',
     border: '1px solid var(--border)', borderRadius: 5,
     fontFamily: 'inherit', boxSizing: 'border-box',
     minHeight: 30,
@@ -2428,18 +2428,18 @@ function renderPluginConfigInput(
 const pluginFieldLabel: React.CSSProperties = {
   display: 'block', fontSize: 11, fontWeight: 600,
   textTransform: 'uppercase', letterSpacing: '0.04em',
-  color: 'var(--text-2)', marginBottom: 3,
+  color: 'var(--fg-dim)', marginBottom: 3,
 };
 
 const sectionLabel: React.CSSProperties = {
   fontSize: 10, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.06em',
-  color: 'var(--text-3)', marginBottom: 8,
+  color: 'var(--fg-mute)', marginBottom: 8,
 };
 const tagStyle: React.CSSProperties = {
   fontSize: 11, fontFamily: "'SF Mono', monospace",
   padding: '2px 8px', borderRadius: 4,
   background: 'var(--bg-1)', border: '1px solid var(--border)',
-  color: 'var(--text-2)',
+  color: 'var(--fg-dim)',
 };
 
 export default function HarnessDashboard() {
@@ -4338,7 +4338,7 @@ export default function HarnessDashboard() {
           const pt = pluginTabs.find((t) => t.tabId === tabId);
           if (!pt) {
             return (
-              <div style={{ flex: 1, padding: 24, color: 'var(--text-2)' }}>
+              <div style={{ flex: 1, padding: 24, color: 'var(--fg-dim)' }}>
                 Plugin tab not found.
               </div>
             );
@@ -4383,7 +4383,7 @@ export default function HarnessDashboard() {
             );
           }
           return (
-            <div style={{ flex: 1, padding: 24, color: 'var(--text-2)' }}>
+            <div style={{ flex: 1, padding: 24, color: 'var(--fg-dim)' }}>
               <strong>{pt.label}</strong> ({pt.pluginSlug}@{pt.pluginVersion}) is enabled but
               declares neither an iframeUrl nor a (componentRoot, componentId) pair. Update the
               plugin manifest, or run{' '}

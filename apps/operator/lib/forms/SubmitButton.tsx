@@ -27,7 +27,7 @@ export function SubmitButton({
       className="pc-button"
       style={{
         background: isPrimary ? '#2563eb' : 'transparent',
-        color: isPrimary ? '#fff' : 'var(--text-1)',
+        color: isPrimary ? '#fff' : 'var(--fg)',
         border: isPrimary ? 'none' : '1px solid var(--border)',
         borderRadius: 4,
         padding: '0.45rem 0.9rem',

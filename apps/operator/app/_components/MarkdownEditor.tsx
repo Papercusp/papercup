@@ -357,7 +357,7 @@ export function MarkdownEditor({
         .pc-md-editor-host.vditor > .vditor-content > .vditor-outline { flex: 0 0 auto; max-width: 240px; overflow: auto; }
         .pc-md-editor-host.vditor > .vditor-content > .vditor-ir,
         .pc-md-editor-host.vditor > .vditor-content > .vditor-wysiwyg,
-        .pc-md-editor-host.vditor > .vditor-content > .vditor-sv { flex: 1 1 0 !important; min-height: 0 !important; overflow: auto !important; background-color: var(--textarea-background-color) !important; }
+        .pc-md-editor-host.vditor > .vditor-content > .vditor-sv { flex: 1 1 0 !important; min-height: 0 !important; overflow: auto !important; background-color: var(--bg-2) !important; }
         .pc-md-editor-host.vditor > .vditor-content > .vditor-ir > pre,
         .pc-md-editor-host.vditor > .vditor-content > .vditor-wysiwyg > pre,
         .pc-md-editor-host.vditor > .vditor-content > .vditor-sv > pre { overflow: visible !important; min-height: 100%; box-sizing: border-box; }
