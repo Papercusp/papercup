@@ -9,6 +9,9 @@ export default mergeConfig(
   defineVitestConfig({
     layer: 'unit',
     exclude: ['**/test/**', '**/node_modules/**', '**/.next/**', '**/.next-prod/**'],
+    // ResizeObserver polyfill for dockview-react in jsdom-environment
+    // tests. Phase 0 of dockview-migration v4.
+    setupFiles: [resolve(__dirname, 'vitest-shims/resize-observer.ts')],
   }),
   {
     resolve: {
