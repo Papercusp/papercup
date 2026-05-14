@@ -230,6 +230,16 @@ async function runOnce(args: OnceArgs): Promise<SingleRunReport> {
   for (const t of scenario.triggers ?? []) {
     if (t.on === 'after_turn' && typeof t.param === 'number') {
       scriptedTriggers.set(t.param, t.fire);
+    } else if (t.on === 'silence' || t.on === 'at_secs') {
+      // The runner drives turns synchronously, so 'silence' never
+      // naturally occurs and 'at_secs' wallclock-deadlines aren't
+      // perceivable without idle gaps. Faithful simulator approximation:
+      // fire the trigger at turn 0, before sim-user's first prompt.
+      // The operator-converse route receives the trigger value and
+      // behaves as if the named condition fired.
+      if (!scriptedTriggers.has(0)) {
+        scriptedTriggers.set(0, t.fire);
+      }
     }
   }
 
