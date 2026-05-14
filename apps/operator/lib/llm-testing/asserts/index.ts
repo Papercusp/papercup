@@ -12,8 +12,8 @@ import type { DeterministicAssert, RunSummary, Violation } from '../types';
 
 export type AssertEvaluator = (assert: DeterministicAssert, run: RunSummary) => Violation[];
 
-// Lazy-initialized via globalThis to avoid TDZ when side-effect-register
-// modules (./tool, ./text, ...) load before this module's `const` runs.
+// Lazy-initialized via globalThis to avoid TDZ when side-effect register
+// modules (./tool, ./text, ...) hoist above this module's `const`.
 function getRegistry(): Partial<Record<DeterministicAssert['kind'], AssertEvaluator>> {
   const g = globalThis as unknown as {
     __llmTestEvaluators?: Partial<Record<DeterministicAssert['kind'], AssertEvaluator>>;
@@ -30,8 +30,6 @@ export function registerEvaluator<K extends DeterministicAssert['kind']>(
 }
 
 export function evaluateAsserts(asserts: DeterministicAssert[], run: RunSummary): Violation[] {
-  // Touch the side-effect register modules on first call so they're loaded.
-  loadBuiltins();
   const registry = getRegistry();
   const violations: Violation[] = [];
   for (const a of asserts) {
@@ -49,17 +47,13 @@ export function evaluateAsserts(asserts: DeterministicAssert[], run: RunSummary)
   return violations;
 }
 
-let _builtinsLoaded = false;
-function loadBuiltins(): void {
-  if (_builtinsLoaded) return;
-  _builtinsLoaded = true;
-  // Side-effect imports — each module calls registerEvaluator at top level.
-  // Lazy-loaded so module init order doesn't matter.
-  require('./tool');
-  require('./text');
-  require('./card');
-  require('./control-tag');
-  require('./auto-fire');
-  require('./continue-chain');
-  require('./latency');
-}
+// Side-effect imports — each module calls registerEvaluator at top level.
+// Safe to hoist because getRegistry() lazy-initializes the globalThis-backed
+// store on first access, so import order doesn't matter.
+import './tool';
+import './text';
+import './card';
+import './control-tag';
+import './auto-fire';
+import './continue-chain';
+import './latency';

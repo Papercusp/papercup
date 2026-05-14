@@ -23,6 +23,7 @@ import { lookupBlend } from './personas/blends';
 import { resolvePersona } from './personas/traits';
 import { SimUser, type SimAction } from './sim-user';
 import { getTarget } from './targets/index';
+import { pullToolInvocations, pullContinueChainRows } from './telemetry';
 import type {
   CardEvent,
   ChatSession,
@@ -259,6 +260,20 @@ async function runOnce(args: OnceArgs): Promise<SingleRunReport> {
   }
 
   const finishedAt = new Date();
+  const uiClientId = `llm-testing/${runId}`;
+  let toolInvocations: RunSummary['toolInvocations'] = [];
+  let continueChainRows: RunSummary['continueChainRows'] = [];
+  try {
+    [toolInvocations, continueChainRows] = await Promise.all([
+      pullToolInvocations(uiClientId),
+      pullContinueChainRows(uiClientId),
+    ]);
+  } catch (err) {
+    // Telemetry pull is best-effort — a PG hiccup shouldn't crash the run
+    // when we already have the SSE-side data. Asserts that depend on
+    // PG rows will surface their own miss; this just records the warning.
+    console.warn(`[llm-testing] telemetry pull failed: ${(err as Error).message}`);
+  }
   const summary: RunSummary = {
     runId,
     scenarioId: scenario.id,
@@ -273,8 +288,8 @@ async function runOnce(args: OnceArgs): Promise<SingleRunReport> {
     workspaceMode: scenario.realWorkspace ? 'real' : 'isolated',
     transportMode: scenario.transport ?? 'http-sse',
     turns,
-    toolInvocations: [],   // populated by telemetry pull — TODO Phase 1.5
-    continueChainRows: [], // populated by telemetry pull — TODO Phase 1.5
+    toolInvocations,
+    continueChainRows,
     totalCostUsd,
     startedAt,
     finishedAt,
