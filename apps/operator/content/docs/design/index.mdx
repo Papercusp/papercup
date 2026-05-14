@@ -45,7 +45,7 @@ The library set documented here was chosen, installed, and applied across the ha
 
 1. **Never write `<div role="dialog">` or `aria-modal="true"` by hand.** Use `<Modal>` (centered) or `<Drawer.Root>` (side panel). Both wire focus trap, scroll lock, ESC, outside-click, and portal correctly.
 
-2. **Never write `<input type="checkbox">` for harness UI.** Use `<Checkbox>`. The native control fights the dark theme, can't represent indeterminate state declaratively, and won't pick up the focus ring our other controls use.
+2. **Never write `<input type="checkbox">` for harness UI.** Use `<Checkbox>`. The native control can't represent indeterminate state declaratively, and won't pick up the focus ring our other controls use. *(Carve-out: native checkboxes inside `MarkdownPreview` task lists — and other places a React wrapper can't legitimately reach — pick up `accent-color: var(--accent)` from the global baseline. The wrapper rule is still absolute for harness UI; the carve-out is for content rendered from text.)*
 
 3. **Never write `<select>` with `<option>` for harness UI.** Use `<Select>`. The native dropdown is OS-themed (white on macOS, system-chrome on Windows) and clashes hard with the dark UI. Radix Select renders a portaled listbox that we control.
 

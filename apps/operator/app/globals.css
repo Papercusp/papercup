@@ -8997,6 +8997,265 @@ body.h-harness-top-collapsed .pc-header {
   box-shadow: 0 0 0 2px color-mix(in oklab, var(--accent), transparent 84%);
 }
 
+.pc-user-picker {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  font-size: 13px;
+}
+
+.pc-user-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 30px;
+  max-width: 150px;
+  padding: 3px 8px 3px 4px;
+  border: 1px solid color-mix(in oklab, var(--border, #2a3142), transparent 34%);
+  border-radius: 999px;
+  background:
+    linear-gradient(180deg, color-mix(in oklab, var(--bg-2, #131722), white 4%), color-mix(in oklab, var(--bg-2, #131722), black 3%)),
+    var(--bg, #07101d);
+  color: var(--fg-dim, #94a3b8);
+  cursor: pointer;
+  font: inherit;
+  line-height: 1;
+  transition:
+    color var(--dur-fast) var(--ease-out),
+    background var(--dur-fast) var(--ease-out),
+    border-color var(--dur-fast) var(--ease-out),
+    transform var(--dur-fast) var(--ease-out),
+    box-shadow var(--dur-fast) var(--ease-out);
+}
+
+.pc-user-trigger:hover,
+.pc-user-trigger[aria-expanded="true"] {
+  color: var(--fg, #e2e8f0);
+  border-color: color-mix(in oklab, var(--accent, #38bdf8), transparent 56%);
+  background:
+    linear-gradient(180deg, color-mix(in oklab, var(--bg-3, #1b2432), var(--accent) 10%), color-mix(in oklab, var(--bg-2, #131722), black 2%)),
+    var(--bg, #07101d);
+  transform: translateY(-1px);
+  box-shadow: 0 12px 26px rgba(0, 0, 0, 0.32), 0 0 0 1px rgb(from var(--sky-300) r g b / 0.10);
+}
+
+.pc-user-avatar,
+.pc-user-menu-avatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  border-radius: 999px;
+  background:
+    radial-gradient(circle at 35% 20%, rgb(from var(--sky-300) r g b / 0.45), transparent 45%),
+    linear-gradient(135deg, color-mix(in oklab, var(--bg-3), var(--accent) 22%), color-mix(in oklab, var(--bg), var(--emerald-400) 16%));
+  color: var(--fg, #e2e8f0);
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  box-shadow:
+    inset 0 0 0 1px rgb(from var(--sky-300) r g b / 0.20),
+    0 0 18px rgb(from var(--sky-300) r g b / 0.14);
+}
+
+.pc-user-avatar {
+  width: 22px;
+  height: 22px;
+  font-size: 11px;
+}
+
+.pc-user-trigger-copy {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+}
+
+.pc-user-trigger-name {
+  max-width: 82px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+
+.pc-user-trigger-status,
+.pc-user-auth-chip {
+  border-radius: 999px;
+  background: rgb(from var(--emerald-400) r g b / 0.14);
+  color: var(--good, #34d399);
+  font-size: 9.5px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  line-height: 1;
+  text-transform: uppercase;
+}
+
+.pc-user-trigger-status {
+  padding: 2px 4px;
+}
+
+.pc-user-caret {
+  flex: 0 0 auto;
+  opacity: 0.66;
+  transition: transform var(--dur-fast) var(--ease-out), opacity var(--dur-fast) var(--ease-out);
+}
+
+.pc-user-trigger[aria-expanded="true"] .pc-user-caret {
+  opacity: 0.9;
+  transform: rotate(180deg);
+}
+
+.pc-user-menu {
+  width: 300px;
+  padding: 6px;
+  border: 1px solid color-mix(in oklab, var(--border, #2a3142), white 8%);
+  border-radius: 14px;
+  background:
+    linear-gradient(180deg, color-mix(in oklab, var(--bg-2, #131722), white 5%), color-mix(in oklab, var(--bg-2, #131722), black 4%)),
+    var(--bg, #07101d);
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.72), inset 0 1px 0 rgba(255, 255, 255, 0.045);
+  overflow: hidden;
+  transform-origin: top right;
+}
+
+.pc-user-menu-head {
+  display: grid;
+  grid-template-columns: 38px minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  padding: 10px;
+  border-bottom: 1px solid color-mix(in oklab, var(--border, #2a3142), transparent 42%);
+}
+
+.pc-user-menu-avatar {
+  width: 34px;
+  height: 34px;
+  font-size: 14px;
+}
+
+.pc-user-menu-identity {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.pc-user-menu-identity strong,
+.pc-user-menu-identity span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pc-user-menu-identity strong {
+  color: var(--fg, #e2e8f0);
+  font-size: 13px;
+  line-height: 1.25;
+}
+
+.pc-user-menu-identity span {
+  color: var(--fg-mute, #94a3b8);
+  font-size: 11.5px;
+}
+
+.pc-user-auth-chip {
+  padding: 4px 6px;
+}
+
+.pc-user-menu-section {
+  display: grid;
+  gap: 2px;
+  padding: 6px 0 0;
+}
+
+.pc-user-menu-item {
+  width: 100%;
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr);
+  gap: 9px;
+  align-items: center;
+  padding: 9px 10px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--fg-dim, #94a3b8);
+  cursor: pointer;
+  text-align: left;
+  transition:
+    color var(--dur-fast) var(--ease-out),
+    background var(--dur-fast) var(--ease-out),
+    transform var(--dur-fast) var(--ease-out);
+}
+
+.pc-user-menu-item svg {
+  justify-self: center;
+  color: color-mix(in oklab, var(--accent, #38bdf8), var(--fg-mute) 24%);
+}
+
+.pc-user-menu-item strong,
+.pc-user-menu-item small {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pc-user-menu-item strong {
+  color: var(--fg, #e2e8f0);
+  font-size: 12.5px;
+  line-height: 1.25;
+}
+
+.pc-user-menu-item small {
+  margin-top: 2px;
+  color: var(--fg-mute, #94a3b8);
+  font-size: 11.5px;
+  line-height: 1.35;
+}
+
+.pc-user-menu-item:hover,
+.pc-user-menu-item:focus-visible {
+  color: var(--fg, #e2e8f0);
+  background: color-mix(in oklab, var(--accent, #38bdf8), transparent 88%);
+  transform: translateY(-1px);
+  outline: none;
+}
+
+.pc-user-menu-item--danger svg,
+.pc-user-menu-item--danger strong {
+  color: var(--bad, #f87171);
+}
+
+.pc-user-menu-item--danger:hover,
+.pc-user-menu-item--danger:focus-visible {
+  background: rgb(from var(--rose-400) r g b / 0.12);
+}
+
+.pc-user-menu-divider {
+  height: 1px;
+  margin: 6px 0;
+  background: color-mix(in oklab, var(--border, #2a3142), transparent 35%);
+}
+
+@media (max-width: 1320px) {
+  .pc-header-right {
+    gap: 7px;
+  }
+
+  .pc-user-trigger {
+    width: 30px;
+    min-width: 30px;
+    justify-content: center;
+    padding: 3px;
+  }
+
+  .pc-user-trigger-copy,
+  .pc-user-caret {
+    display: none;
+  }
+}
+
+
 .pc-settings-nav-link {
   position: relative;
   overflow: hidden;
@@ -9258,7 +9517,9 @@ body.h-harness-top-collapsed .pc-header {
   .pc-workspace-menu-action,
   .pc-workspace-menu-create,
   .pc-workspace-menu-row,
-  .pc-settings-nav-link,
+  .pc-user-trigger,
+  .pc-user-caret,
+  .pc-user-menu-item,
   .pc-settings-nav-link::before,
   .operator-panel__metrics span,
   .operator-feed-pills button,
@@ -26407,4 +26668,25 @@ body.has-op-chat:has(.operator-panel) .op-chat-sidebar {
 :where(button, input[type="button"], input[type="submit"], input[type="reset"]):disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+/* ─────────────────────────────────────────────────────────────────────
+ * Native checkbox/radio/range — accent-color baseline
+ *
+ * Strictly additive. `accent-color` recolors the native control's tint
+ * without breaking the OS-rendered checkmark, focus ring, or a11y
+ * semantics. Works in every modern browser.
+ *
+ * This DOES NOT obviate HR2. Wrappers (<Checkbox>) are still required
+ * for harness interactive UI because they expose `indeterminate`
+ * declaratively, give us a stable data-state hook, and own focus
+ * styling. This is the baseline for native controls that legitimately
+ * can't be wrapped:
+ *   - <input type=checkbox> inside MarkdownPreview (rendered task lists)
+ *   - native radios in low-priority sites (settings/backups, setup wizard
+ *     channel picker) — not worth a Radio wrapper for ~5 sites
+ *   - range sliders (voice TTS rate, chat scale, sketch brush size) —
+ *     bespoke per site, accent-color is the cross-cutting tint */
+:where(input[type="checkbox"], input[type="radio"], input[type="range"]) {
+  accent-color: var(--accent);
 }

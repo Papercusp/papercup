@@ -66,6 +66,14 @@ Approved content-disclosure `<details>` sites:
 
 A tell that `<details>` is correct: the content is prose (or auto-generated text), the user doesn't tab/select inside it, and rendering it costs real work (Monaco, MarkdownPreview, a long log dump). Interactive disclosures — collapsible form sections, per-row expanders inside lists where you want shared animation and focus management — still use `<Collapsible>`.
 
+## Native checkbox / radio / range — `accent-color` is the carve-out, NOT the migration
+
+`globals.css` applies `accent-color: var(--accent)` to native `<input type="checkbox|radio|range">`. This makes the OS-rendered control's tint match the app accent without breaking semantics — a strict improvement, never a workaround.
+
+**Do not read this as "native checkboxes are fine now."** HR2 is still absolute for harness UI: use `<Checkbox>`. The wrapper exposes `indeterminate` declaratively, gives us a stable `data-state` hook, and owns focus styling. None of that comes from `accent-color`.
+
+The carve-out is narrow: native checkboxes that legitimately can't be wrapped (markdown task lists rendered via `MarkdownPreview`, low-priority radio groups where a `<RadioGroup>` would be overkill, range sliders that are bespoke per-site anyway). When in doubt, wrap.
+
 ## Floating widgets that pin to a viewport corner are NOT centered Modals
 
 A few surfaces — `OperatorPanel` (the Deck) and `OracleDock` (the chat dock) — are floating, viewport-anchored panels with their own bespoke animations (GSAP, framer-motion `AnimatePresence`, HUD overlays). They're not centered modals (Modal would yank them to screen-center and add a backdrop), not anchored Popovers (no trigger to align to), and not side Drawers (they don't slide in from the edge).

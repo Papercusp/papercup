@@ -130,6 +130,18 @@ import { TextInput, TextArea } from '@/app/harness/TextInput';
 
 The wrapper forwards refs and spreads all native props.
 
+## Native checkbox / radio / range — `accent-color` baseline
+
+**What:** `globals.css` adds `accent-color: var(--accent)` to native `<input type="checkbox|radio|range">`. The native control's tint (checkmark fill, radio dot, slider track + thumb) recolors to the app accent without breaking the OS rendering or accessibility semantics.
+
+**Why this exists alongside HR2:** the wrapper is still required for harness interactive UI (HR2 explicit). This is the baseline for native controls that *legitimately can't* be wrapped:
+
+- `<input type="checkbox">` inside `MarkdownPreview` (rendered from text — the React wrapper isn't reachable)
+- Native radios in low-priority sites (`/settings/backups` cadence/retention pickers, `SetupWizard` channel selector) — there's no `<RadioGroup>` wrapper because the cost/benefit doesn't justify one for ~5 sites
+- `<input type="range">` (voice TTS rate, chat scale, sketch brush size) — bespoke per-site; `accent-color` is the cross-cutting tint
+
+**No wrapper for radios.** Considered. Rejected: ~5 sites, no indeterminate / multi-state need, no a11y issue with native radios, and Radix `react-radio-group` would still need bespoke styling per site to match the harness theme. Native + `accent-color` is enough.
+
 ## `@radix-ui/react-checkbox`
 
 **What:** Checkbox primitive. Supports `checked={true | false | 'indeterminate'}`.
