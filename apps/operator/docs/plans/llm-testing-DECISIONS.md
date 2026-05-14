@@ -125,6 +125,71 @@ it happened so we don't grade a missing score as a 0.
 
 ---
 
+## D-009 — Skip enforced workspace isolation; live state is the SUT
+
+**Date:** 2026-05-14
+
+**Choice:** `Scenario.realWorkspace` stays as metadata only. `OperatorTarget`,
+`OracleTarget`, and `ArchitectTarget` all hit the live operator dev
+server with the live PG state. No per-run `getHarnessAdminUrl()`
+override, no schema-drop on close.
+
+**Plan §4.5 said:** "Default: isolated per-run workspace.
+`workspaceRoot=/tmp/llm-testing-runs/<runId>` — fresh per-workspace
+PG via `getHarnessAdminUrl()`. Cleanup: `close()` drops the isolated
+PG schema entirely."
+
+**Considered:**
+- Implement the plan literally: spawn an embedded-pg per run, scaffold
+  the harness_shared schema, run the operator dev server against it,
+  drop the schema on close. Days of engineering for marginal gain.
+- Hybrid: keep live PG but use a synthetic userId per run so mem0 reads/
+  writes don't cross-talk. Mem0 doesn't currently key on `uiClientId`,
+  so this needs a Mem0 contract change first.
+- Document the gap and move on. ← chosen.
+
+**Why skip:**
+- `uiClientId='llm-testing/<runId>'` already filters telemetry per run
+  (`tool_invocations.metadata_json @> '{"uiClientId": ...}'`).
+- The framework is finding REAL operator bugs against live state —
+  that's the value proposition, not synthetic-state correctness.
+- Isolated runs against a stub PG would miss exactly the integration
+  bugs we want to catch.
+
+**Follow-up:** if mem0 cross-talk becomes a real debugging cost, the
+right move is a per-run synthetic user id, not a per-run PG. Track via
+issue rather than re-litigating §4.5 today.
+
+---
+
+## D-010 — Use findings UI as the alert surface, not `harness_escalations`
+
+**Date:** 2026-05-14
+
+**Choice:** Phase 5 nightly cron does NOT write to
+`harness_shared.harness_escalations`. The "alert" path is the existing
+`/admin/testing` → LLM → Findings sub-tab, which lists every
+`acknowledged=false` finding across all runs, severity-sorted.
+
+**Plan §12 Phase 5 said:** "Alert via existing escalation surface
+when new findings appear or pass-rate drops."
+
+**Considered:**
+- Insert one `harness_escalations` row per nightly run with a summary.
+  But `harness_escalations` is keyed `(harness_slug, phase)` — single
+  upsert-able row per harness-phase pair. LLM test runs aren't harness-
+  scoped (they target the operator/oracle/architect, not a harness).
+  Forcing them in would muddy the slug-keyed semantics.
+- Add a new `system_escalations` table. Premature; we have a working
+  surface.
+- Use the findings UI as the alert surface. ← chosen.
+
+**Why findings UI:** every unacknowledged severity=error finding is
+already on the screen with a copy-as-prompt button. That's the
+actionable surface. Cron + journald carry the per-run-summary trail.
+
+---
+
 ## D-008 — Migration runner stays opt-out at the per-migration level
 
 **Date:** 2026-05-14
