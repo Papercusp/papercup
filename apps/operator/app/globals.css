@@ -9296,6 +9296,7 @@ body.h-harness-top-collapsed .pc-header {
   color: var(--fg-dim, #94a3b8);
   cursor: pointer;
   text-align: left;
+  text-decoration: none;
   transition:
     color var(--dur-fast) var(--ease-out),
     background var(--dur-fast) var(--ease-out),
@@ -26237,11 +26238,7 @@ body.has-op-chat:has(.operator-panel) .operator-panel {
   left: calc(var(--op-chat-w, 360px) + 16px) !important;
 }
 
-body.has-op-chat:has(.operator-panel) .op-chat-sidebar {
-  opacity: 0.22;
-  filter: saturate(0.45) blur(4px);
-  pointer-events: none;
-}
+
 
 .pc-header .pc-operator-popdown,
 .pc-header .pc-operator-auto-feed {
