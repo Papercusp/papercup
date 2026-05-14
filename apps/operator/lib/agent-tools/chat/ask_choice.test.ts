@@ -167,6 +167,51 @@ describe('chat:ask_choice handler', () => {
     expect(spec.allowDecline).toBe(false);
   });
 
+  it('voiceAnswerable:true propagates onto radio presentation', async () => {
+    const askUser = vi.fn(async () => ({ action: 'submit', payload: { picks: ['ready'] } }));
+    await (askChoiceTool as any).handler(
+      {
+        question: 'Ready?',
+        options: [{ id: 'ready', label: 'Ready' }],
+        voiceAnswerable: true,
+      },
+      makeCtx(askUser),
+    );
+    const spec = askUser.mock.calls[0][0] as { presentation?: { kind: string; voiceAnswerable?: boolean } };
+    expect(spec.presentation?.kind).toBe('radio');
+    expect(spec.presentation?.voiceAnswerable).toBe(true);
+  });
+
+  it('voiceAnswerable absent → flag is not set on presentation (default false)', async () => {
+    const askUser = vi.fn(async () => ({ action: 'submit', payload: { picks: ['a'] } }));
+    await (askChoiceTool as any).handler(
+      {
+        question: 'q?',
+        options: [{ id: 'a', label: 'A' }, { id: 'b', label: 'B' }],
+      },
+      makeCtx(askUser),
+    );
+    const spec = askUser.mock.calls[0][0] as { presentation?: { kind: string; voiceAnswerable?: boolean } };
+    expect(spec.presentation?.kind).toBe('radio');
+    expect(spec.presentation?.voiceAnswerable).toBeUndefined();
+  });
+
+  it('voiceAnswerable ignored on multi-select (checkbox presentation)', async () => {
+    const askUser = vi.fn(async () => ({ action: 'submit', payload: { picks: ['a'] } }));
+    await (askChoiceTool as any).handler(
+      {
+        question: 'q?',
+        options: [{ id: 'a', label: 'A' }, { id: 'b', label: 'B' }],
+        multi: true,
+        voiceAnswerable: true,
+      },
+      makeCtx(askUser),
+    );
+    const spec = askUser.mock.calls[0][0] as { presentation?: { kind: string; voiceAnswerable?: boolean } };
+    expect(spec.presentation?.kind).toBe('checkbox');
+    expect((spec.presentation as { voiceAnswerable?: boolean }).voiceAnswerable).toBeUndefined();
+  });
+
   it('end-to-end via real card-correlator: card snapshot is published; resolve unblocks the handler', async () => {
     openRun({ workspaceId: ws, runId: 'r-e2e' });
 

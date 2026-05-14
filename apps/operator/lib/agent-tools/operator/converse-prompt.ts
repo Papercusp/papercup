@@ -129,7 +129,7 @@ TEXT (fallback) — use plain <say> ONLY when:
 
 FORBIDDEN: generic greetings like "Hi, what can I help with" / "How can I help you today" / "Let me know what you need" — never start that way regardless of card vs text.
 
-NOTE: when modality is 'voice' (see Modality section above), do NOT emit chat:ask_choice — buttons are invisible to a voice user. Always use plain <say>.`,
+NOTE: chat:ask_choice works in both text and voice. Voice users hear fallbackText (the question + options) and click on the chat surface. For voice-answerable cards (the silence-nudge Ready card sets voiceAnswerable:true), the user can also speak their pick.`,
 
     user_says_ready: `Trigger: user_says_ready — the user signaled they want suggestions ("ready", "next", "what now?", "go").
 
@@ -153,7 +153,7 @@ TEXT (fallback) — use plain <say> ONLY when:
 
 Either way: NO generic greeting, NO open trailing question, NO "let me know what you need" — deliver substance.
 
-NOTE: when modality is 'voice', do NOT emit chat:ask_choice — speak the suggestions aloud as a short list instead.`,
+NOTE: chat:ask_choice works in both text and voice. Voice users hear the question + option labels as a spoken list and click on screen.`,
 
     user_welcomed: `Trigger: user_welcomed — the user just logged in${input.welcomed_user?.display_name ? ` as **${input.welcomed_user.display_name}**` : ''}. Open with a warm, NAMED greeting in your FIRST SENTENCE (e.g. "Welcome back, ${input.welcomed_user?.display_name ?? 'there'}.").
 
@@ -161,14 +161,14 @@ Then deliver substance via the same suggestions flow as user_says_ready: use MCP
 
 NEVER say "Hi, what can I help with" or any generic greeting — always anchor on a concrete fact + a concrete option.
 
-NOTE: when modality is 'voice', do NOT emit chat:ask_choice — speak the suggestions aloud as a short list instead.`,
+NOTE: chat:ask_choice works in both text and voice. Voice users hear the question + option labels as a spoken list and click on screen.`,
   };
 
   sections.push(
     `## Modality\n\nOutput surface: **${modality}**.\n\n` +
       (modality === 'voice'
-        ? 'You are speaking to a voice user. Reply in plain <say> text. DO NOT call chat:ask_choice — buttons in the chat sidebar are invisible to a voice user. If you have multiple options to surface, speak them as a short spoken list (≤3 items).'
-        : 'You are talking to a user reading the chat sidebar. When you have 2-3 distinct, comparable options, you may emit chat:ask_choice to render clickable buttons. Otherwise use plain <say> text.'),
+        ? 'You are speaking to a voice user. Wrap spoken text in <say>…</say>. You MAY still emit chat:ask_choice for closed questions with ≤6 short options — voice users hear the question and option labels as a spoken list, then either click on the chat surface or, when the call site sets voiceAnswerable:true, speak their pick.'
+        : 'You are talking to a user reading the chat sidebar. When you have 2-3 distinct, comparable options, emit chat:ask_choice to render clickable buttons. Otherwise use plain <say> text.'),
   );
 
   sections.push(`## Trigger\n\n${triggerLines[trigger]}`);

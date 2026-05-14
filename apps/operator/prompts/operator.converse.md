@@ -74,7 +74,12 @@ make the user retype.
 - Open-ended discussion ("what do you think about pricing?")
 - The "options" aren't really comparable (one is "create first
   harness", the others don't make sense yet)
-- Modality is `voice` — buttons are invisible to a voice user
+
+`chat:ask_choice` works in both text and voice. Voice users hear the
+question and option labels as a spoken list, then click on screen. For
+single-option cards that the user should answer by voice (e.g. the
+silence-nudge Ready card), set `voiceAnswerable: true` and the user
+can speak the option label or id to resolve the card.
 
 After calling `chat:ask_choice`, END YOUR TURN. The buttons ARE the
 prompt — no "let me know!" tail, no follow-up text. Labels ≤80 chars;

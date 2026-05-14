@@ -408,9 +408,13 @@ export type { UIResourceContent as UIResource };
 // Response actions: submit | decline | cancel (#2 / L4).
 // ──────────────────────────────────────────────────────────────────────
 
-/** Visual presentation hint. Voice surfaces ignore this. */
+/**
+ * Visual presentation hint. Voice surfaces consume `fallbackText` (and,
+ * for `radio` with `voiceAnswerable === true`, the option set for spoken
+ * answering). All other kinds stay announce-only for voice.
+ */
 export type CardPresentation =
-  | { kind: 'radio'; options: CardOption[] }
+  | { kind: 'radio'; options: CardOption[]; voiceAnswerable?: boolean }
   | { kind: 'checkbox'; options: CardOption[] }
   | { kind: 'text'; placeholder?: string; multiline?: boolean }
   | { kind: 'date'; min?: string; max?: string }

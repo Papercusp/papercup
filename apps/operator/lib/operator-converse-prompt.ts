@@ -86,7 +86,13 @@ better in chat and don't make the user retype.
 
 **Use cards when:** 2-3 distinct comparable picks, closed-form.
 **Use plain text when:** one obvious step, open-ended discussion,
-incomparable options, OR modality is \`voice\` (buttons invisible).
+or incomparable options.
+
+\`chat:ask_choice\` works in both text and voice. Voice users hear the
+question and option labels as a spoken list and click on screen. For
+single-option cards the user should answer by voice (e.g. the
+silence-nudge Ready card), set \`voiceAnswerable: true\` and the user
+can speak the option label or id.
 
 \`chat:ask_choice\` BLOCKS until the user picks; the tool returns
 \`{picks:[{option_id,label},...]}\`. The buttons ARE the prompt, so

@@ -58,6 +58,14 @@ const argsSchema = z.object({
   multi: z.boolean().optional(),
   /** Show Skip affordance. Default true. */
   allowDecline: z.boolean().optional(),
+  /**
+   * Single-select cards only (multi !== true). When true, voice users
+   * can answer this card by speaking the option label or id; the
+   * voice-card router resolves the card via /card-response. Default
+   * false: voice users hear fallbackText (announce-only) and must
+   * click on the chat surface. Plan §C.3 (default false / H3 review).
+   */
+  voiceAnswerable: z.boolean().optional(),
 });
 
 export default defineTool({
@@ -72,7 +80,9 @@ export default defineTool({
   requirePrincipal: false,
   roles: [...ALL_ROLES],
   rolesQuota: { worker: { perChunk: 10 }, operator: { perRun: 100 } },
-  modality: ['text'],
+  // Available in both text and voice. Voice users hear fallbackText
+  // (announce-only) by default; opt in to spoken answering via
+  // voiceAnswerable:true on single-select cards. Plan §C.4.
   args: argsSchema,
   async handler(args, ctx) {
     const serialized = JSON.stringify(args);
@@ -116,13 +126,21 @@ export default defineTool({
       `${normalized.question}\n\nOptions:\n` +
       normalized.options.map((o, i) => `  ${i + 1}. ${o.label}${o.hint ? ` — ${o.hint}` : ''}`).join('\n');
 
+    // voiceAnswerable rides on the radio presentation only (multi !== true).
+    // The router gates on presentation.kind === 'radio' + this flag — see
+    // OperatorConversationProvider's focused-card sync effect.
+    const presentation = normalized.multi
+      ? { kind: 'checkbox' as const, options: normalized.options }
+      : {
+          kind: 'radio' as const,
+          options: normalized.options,
+          ...(normalized.voiceAnswerable === true ? { voiceAnswerable: true } : {}),
+        };
+
     const response = await ctx.askUser({
       prompt: normalized.question,
       dataSchema: responseSchema,
-      presentation: {
-        kind: normalized.multi ? 'checkbox' : 'radio',
-        options: normalized.options,
-      },
+      presentation,
       fallbackText,
       allowDecline: normalized.allowDecline ?? true,
     });
