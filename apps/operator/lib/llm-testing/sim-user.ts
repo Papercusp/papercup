@@ -1,0 +1,218 @@
+/**
+ * Sim-user — the LLM that drives the conversation as a user persona.
+ *
+ * Each turn, the sim-user reads the assistant's last message + visible
+ * cards + its own goal, and emits a structured action: text reply,
+ * choice pick, give up, or declare success. Strict JSON output, one
+ * retry on schema fail.
+ *
+ * Plan §3.5.
+ */
+
+import { composePersonaPrompt } from './personas/traits';
+import { llmCall } from './llm-client';
+import type { CardEvent, GoalSpec, Persona, TurnResult } from './types';
+
+export type SimAction =
+  | { kind: 'text'; thought: string; text: string }
+  | { kind: 'choice'; thought: string; cardId: string; optionId: string; freeText?: string }
+  | { kind: 'give_up'; thought: string; reason: string }
+  | { kind: 'declare_success'; thought: string; reason: string };
+
+export interface SimUserOpts {
+  persona: Persona;
+  goal: GoalSpec;
+  model: string;
+  temperature?: number;
+}
+
+export interface SimNextInput {
+  /** Past turns (sim-user actions + SUT replies), oldest first. */
+  history: Array<
+    | { who: 'sim'; action: SimAction }
+    | { who: 'sut'; turn: TurnResult }
+  >;
+  /** Current visible cards (subset of the last SUT turn's cards that haven't been answered). */
+  cards: CardEvent[];
+  /** Turn budget — sim is told how many turns remain so it tightens up near the cap. */
+  turnsRemaining: number;
+}
+
+export class SimUser {
+  private readonly opts: SimUserOpts;
+  private readonly systemPrompt: string;
+  private totalCostUsd = 0;
+
+  constructor(opts: SimUserOpts) {
+    this.opts = opts;
+    this.systemPrompt = buildSystemPrompt(opts.persona, opts.goal);
+  }
+
+  get costUsd(): number {
+    return this.totalCostUsd;
+  }
+
+  async nextAction(input: SimNextInput): Promise<SimAction> {
+    const userPrompt = buildUserPrompt(input);
+    const result = await llmCall({
+      model: this.opts.model,
+      system: this.systemPrompt,
+      messages: [{ role: 'user', content: userPrompt }],
+      maxTokens: 512,
+      temperature: this.opts.temperature ?? 0.3,
+      responseFormat: 'json',
+    });
+    this.totalCostUsd += result.costUsd;
+
+    let action = parseAction(result.json);
+    if (!action) {
+      // One retry with a stricter nudge.
+      const retry = await llmCall({
+        model: this.opts.model,
+        system: this.systemPrompt,
+        messages: [
+          { role: 'user', content: userPrompt },
+          { role: 'assistant', content: result.text },
+          {
+            role: 'user',
+            content:
+              'Your previous response was not valid JSON matching the schema. Return ONLY a JSON object with `thought` and `action` fields. No prose, no markdown fences.',
+          },
+        ],
+        maxTokens: 512,
+        temperature: 0,
+        responseFormat: 'json',
+      });
+      this.totalCostUsd += retry.costUsd;
+      action = parseAction(retry.json);
+    }
+
+    if (!action) {
+      // Hard fail — return give_up so the runner records it cleanly.
+      return {
+        kind: 'give_up',
+        thought: 'sim-user JSON parse failed twice',
+        reason: 'sim-user emitted invalid JSON after retry; aborting',
+      };
+    }
+    return action;
+  }
+}
+
+function buildSystemPrompt(persona: Persona, goal: GoalSpec): string {
+  const personaBlock = composePersonaPrompt(persona.traits);
+  const goalBlock = describeGoal(goal);
+  return [
+    personaBlock,
+    '',
+    '## Your goal',
+    goalBlock,
+    '',
+    '## Output schema',
+    'You MUST return JSON in this exact shape (no prose, no fences):',
+    '```',
+    '{',
+    '  "thought": "private reasoning (the assistant will not see this)",',
+    '  "action": {',
+    '    "kind": "text" | "choice" | "give_up" | "declare_success",',
+    '    "text"?: "string — required when kind=text",',
+    '    "cardId"?: "string — required when kind=choice",',
+    '    "optionId"?: "string — required when kind=choice",',
+    '    "freeText"?: "string — optional, only when kind=choice and a card asks for free-form",',
+    '    "reason"?: "string — required when kind=give_up or declare_success"',
+    '  }',
+    '}',
+    '```',
+    '',
+    '## Rules',
+    '- Declare success ONLY when the goal is unambiguously satisfied.',
+    '- Give up when the assistant repeatedly refuses, loops, or asks for things you cannot provide.',
+    '- Never instruct the assistant about its own internals — speak as a real user would.',
+    '- Stay in character. Match your persona traits exactly.',
+  ].join('\n');
+}
+
+function describeGoal(goal: GoalSpec): string {
+  switch (goal.kind) {
+    case 'user_satisfied':
+      return 'Engage in conversation until you, the user, judge that your need has been satisfied. The scenario description elsewhere tells you what that need is.';
+    case 'tool_fired':
+      return `Push the assistant toward calling the \`${goal.toolName}\` tool. You do NOT mention the tool by name — you describe the user-facing request that would lead to it.`;
+    case 'card_emitted':
+      return `Push the assistant toward emitting a \`${goal.cardKind}\` card.`;
+    case 'state_reached':
+      return `Push the conversation toward a state matching: ${goal.predicate}`;
+  }
+}
+
+function buildUserPrompt(input: SimNextInput): string {
+  const parts: string[] = [];
+
+  parts.push(`## Conversation so far\n`);
+  if (input.history.length === 0) {
+    parts.push('(empty — this is your first message)');
+  } else {
+    for (const entry of input.history) {
+      if (entry.who === 'sim') {
+        parts.push(`**You said:** ${actionToText(entry.action)}`);
+      } else {
+        parts.push(`**Assistant:** ${entry.turn.assistantText.trim() || '(empty turn)'}`);
+        if (entry.turn.cards.length > 0) {
+          parts.push(`  (assistant also showed cards: ${entry.turn.cards.map((c) => c.kind).join(', ')})`);
+        }
+      }
+    }
+  }
+
+  if (input.cards.length > 0) {
+    parts.push('\n## Cards visible to you right now');
+    for (const c of input.cards) {
+      parts.push(`- **${c.kind}**${c.voiceAnswerable ? ' (voiceAnswerable)' : ''}`);
+      if (c.options) {
+        for (const o of c.options) parts.push(`    - ${o.id}: ${o.label}`);
+      }
+    }
+  }
+
+  parts.push(`\n## Turns remaining: ${input.turnsRemaining}`);
+  parts.push('\nWhat do you do next? Return JSON per the schema.');
+
+  return parts.join('\n');
+}
+
+function actionToText(a: SimAction): string {
+  switch (a.kind) {
+    case 'text': return a.text;
+    case 'choice': return `(picked option \`${a.optionId}\` on card \`${a.cardId}\`)${a.freeText ? `: ${a.freeText}` : ''}`;
+    case 'give_up': return `(gave up — ${a.reason})`;
+    case 'declare_success': return `(declared success — ${a.reason})`;
+  }
+}
+
+function parseAction(raw: unknown): SimAction | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const obj = raw as Record<string, unknown>;
+  const thought = typeof obj.thought === 'string' ? obj.thought : '';
+  const action = obj.action;
+  if (!action || typeof action !== 'object') return null;
+  const a = action as Record<string, unknown>;
+  const kind = a.kind;
+  switch (kind) {
+    case 'text':
+      if (typeof a.text !== 'string' || !a.text.trim()) return null;
+      return { kind: 'text', thought, text: a.text };
+    case 'choice':
+      if (typeof a.cardId !== 'string' || typeof a.optionId !== 'string') return null;
+      return {
+        kind: 'choice', thought,
+        cardId: a.cardId, optionId: a.optionId,
+        freeText: typeof a.freeText === 'string' ? a.freeText : undefined,
+      };
+    case 'give_up':
+      return { kind: 'give_up', thought, reason: typeof a.reason === 'string' ? a.reason : 'no reason given' };
+    case 'declare_success':
+      return { kind: 'declare_success', thought, reason: typeof a.reason === 'string' ? a.reason : 'no reason given' };
+    default:
+      return null;
+  }
+}

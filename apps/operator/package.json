@@ -29,7 +29,8 @@
     "test:agent-tools-list": "node __tests__/integration/agent-tools-list.mjs",
     "test:agent-tools-list:dev": "OPERATOR_BASE_URL=http://localhost:3055 node __tests__/integration/agent-tools-list.mjs",
     "test:admin-failures": "node __tests__/integration/admin-failures.mjs",
-    "test:admin-failures:dev": "OPERATOR_BASE_URL=http://localhost:3055 node __tests__/integration/admin-failures.mjs"
+    "test:admin-failures:dev": "OPERATOR_BASE_URL=http://localhost:3055 node __tests__/integration/admin-failures.mjs",
+    "llm-test": "tsx bin/llm-test.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.81.0",

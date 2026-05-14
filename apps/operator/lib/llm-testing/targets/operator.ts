@@ -1,0 +1,321 @@
+/**
+ * Operator ChatTarget — drives the live operator-converse endpoint
+ * over HTTP+SSE.
+ *
+ * Plan §4. Two transport modes per scenario:
+ *   - 'http-sse' (default for now)  — POST /api/agent-mcp/operator-converse
+ *                                     parse the SSE event stream.
+ *   - 'in-process' (TODO Phase 1.5) — call the converse tool handler
+ *                                     directly via dispatchProjectedToolStream.
+ *
+ * The handler invocation path is the cleaner shape per the plan's §10.4
+ * pushback, but the HTTP path is what we have working today and is what
+ * the V8 testing already exercises. Phase 1 lands with http-sse; the
+ * in-process path is a follow-up once `ToolDispatchOverride` lands in
+ * the production dispatcher.
+ */
+
+import { registerOverride, clearOverride } from '../dispatch-override';
+import type {
+  ChatSession,
+  ChatTarget,
+  SessionOptions,
+  SseEvent,
+  ToolCallEvent,
+  TurnInput,
+  TurnResult,
+  CardEvent,
+  ControlTag,
+} from '../types';
+
+const BEHAVIORS = [
+  'B1', 'B2', 'B3', 'B4', 'B5', 'B6', 'B7', 'B8', 'B9', 'B10',
+  'B11', 'B12', 'B13', 'B14', 'B15', 'B16', 'B17', 'B18', 'B19',
+  'B21', 'B22', 'B23', 'B27', 'B28', 'B29', 'B30',
+];
+
+export interface OperatorTargetOpts {
+  /** Base URL — defaults to dev server. */
+  baseUrl?: string;
+  /** Optional `harnessSlug` — most operator behavior is harness-scoped. */
+  harnessSlug?: string;
+}
+
+export class OperatorTarget implements ChatTarget {
+  readonly id = 'operator';
+  readonly behaviors = BEHAVIORS;
+  private readonly opts: OperatorTargetOpts;
+
+  constructor(opts: OperatorTargetOpts = {}) {
+    this.opts = opts;
+  }
+
+  async open(opts: SessionOptions): Promise<ChatSession> {
+    const baseUrl = this.opts.baseUrl ?? process.env.PAPERCUSP_OPERATOR_URL ?? 'http://127.0.0.1:3055';
+    if (opts.transport === 'http-sse' && opts.dispatchOverride) {
+      registerOverride(opts.runId, opts.dispatchOverride);
+    }
+    return new OperatorSession({
+      runId: opts.runId,
+      baseUrl,
+      harnessSlug: this.opts.harnessSlug,
+      transport: opts.transport,
+      hasOverride: !!opts.dispatchOverride,
+    });
+  }
+}
+
+interface SessionState {
+  runId: string;
+  baseUrl: string;
+  harnessSlug?: string;
+  transport: 'in-process' | 'http-sse';
+  hasOverride: boolean;
+}
+
+class OperatorSession implements ChatSession {
+  readonly sessionId: string;
+  private readonly state: SessionState;
+
+  constructor(state: SessionState) {
+    this.state = state;
+    // The runId doubles as a stable conversation key for `uiClientId`.
+    this.sessionId = `llm-testing/${state.runId}`;
+  }
+
+  async send(input: TurnInput): Promise<TurnResult> {
+    if (this.state.transport === 'in-process') {
+      throw new Error('in-process transport not yet implemented (Phase 1.5 follow-up)');
+    }
+    return this.sendHttpSse(input);
+  }
+
+  async close(): Promise<void> {
+    if (this.state.hasOverride) {
+      clearOverride(this.state.runId);
+    }
+  }
+
+  private async sendHttpSse(input: TurnInput): Promise<TurnResult> {
+    const url = `${this.state.baseUrl}/api/agent-mcp/operator-converse`;
+    const body = {
+      messages: input.messages,
+      trigger: input.trigger,
+      mayAskActive: true,
+      modality: (input.meta?.modality as 'text' | 'voice' | undefined) ?? 'text',
+      uiClientId: this.sessionId,
+      ...(input.meta?.welcomedUser ? { welcomed_user: input.meta.welcomedUser } : {}),
+    };
+
+    const headers: Record<string, string> = {
+      'content-type': 'application/json',
+      accept: 'text/event-stream',
+    };
+    if (this.state.hasOverride) {
+      headers['X-Tool-Dispatch-Override-Id'] = this.state.runId;
+    }
+
+    const startMs = Date.now();
+    const ctrl = new AbortController();
+    const timeoutMs = 120_000;
+    const killer = setTimeout(() => ctrl.abort(), timeoutMs);
+
+    let resp: Response;
+    try {
+      resp = await fetch(url, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(body),
+        signal: ctrl.signal,
+      });
+    } catch (err) {
+      clearTimeout(killer);
+      return errorTurn(`fetch failed: ${(err as Error).message}`, Date.now() - startMs);
+    }
+
+    if (!resp.ok || !resp.body) {
+      clearTimeout(killer);
+      const text = await resp.text().catch(() => '');
+      return errorTurn(`HTTP ${resp.status}: ${text.slice(0, 200)}`, Date.now() - startMs);
+    }
+
+    const result: TurnResult = {
+      assistantText: '',
+      toolCalls: [],
+      cards: [],
+      controlTags: [],
+      costUsd: 0,
+      latencyMs: 0,
+      finishReason: 'done',
+      rawSseTape: [],
+    };
+
+    try {
+      for await (const ev of readSse(resp.body, startMs)) {
+        result.rawSseTape.push(ev);
+        applyEvent(ev, result);
+        if (ev.name === 'done' || ev.name === 'error') break;
+      }
+    } catch (err) {
+      result.finishReason = 'error';
+      result.error = (err as Error).message;
+    } finally {
+      clearTimeout(killer);
+    }
+
+    result.latencyMs = Date.now() - startMs;
+    // Parse control tags after the fact from the accumulated assistant text.
+    result.controlTags = extractControlTags(result.assistantText);
+    return result;
+  }
+}
+
+// =============================================================================
+// SSE parsing
+// =============================================================================
+
+async function* readSse(body: ReadableStream<Uint8Array>, startMs: number): AsyncGenerator<SseEvent> {
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  let buf = '';
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+    // SSE events are delimited by double newlines.
+    let idx: number;
+    while ((idx = buf.indexOf('\n\n')) >= 0) {
+      const block = buf.slice(0, idx);
+      buf = buf.slice(idx + 2);
+      const parsed = parseSseBlock(block);
+      if (parsed) {
+        parsed.tMs = Date.now() - startMs;
+        yield parsed;
+      }
+    }
+  }
+}
+
+function parseSseBlock(block: string): SseEvent | null {
+  let name = 'message';
+  const dataLines: string[] = [];
+  for (const line of block.split('\n')) {
+    if (!line) continue;
+    if (line.startsWith(':')) continue; // SSE comment / heartbeat
+    if (line.startsWith('event:')) name = line.slice(6).trim();
+    else if (line.startsWith('data:')) dataLines.push(line.slice(5).trim());
+  }
+  if (dataLines.length === 0 && name === 'message') return null;
+  const raw = dataLines.join('\n');
+  let data: unknown = raw;
+  try { data = JSON.parse(raw); } catch { /* keep as string */ }
+  return { name, data, tMs: 0 };
+}
+
+function applyEvent(ev: SseEvent, result: TurnResult): void {
+  switch (ev.name) {
+    case 'delta': {
+      const text = extractDeltaText(ev.data);
+      if (text) result.assistantText += text;
+      break;
+    }
+    case 'tool_call': {
+      const tc = ev.data as { name?: string; input?: unknown };
+      if (tc?.name) {
+        const event: ToolCallEvent = { name: tc.name, input: tc.input };
+        result.toolCalls.push(event);
+      }
+      break;
+    }
+    case 'card':
+    case 'state-snapshot': {
+      const card = parseCardEvent(ev.data);
+      if (card) result.cards.push(card);
+      break;
+    }
+    case 'done': {
+      const d = ev.data as { costUsd?: number } | undefined;
+      if (d?.costUsd) result.costUsd = d.costUsd;
+      result.finishReason = 'done';
+      break;
+    }
+    case 'error': {
+      const e = ev.data as { message?: string } | undefined;
+      result.error = e?.message ?? 'unknown error';
+      result.finishReason = 'error';
+      break;
+    }
+  }
+}
+
+function extractDeltaText(data: unknown): string {
+  if (typeof data === 'string') return data;
+  if (data && typeof data === 'object') {
+    const obj = data as { text?: unknown; delta?: unknown };
+    if (typeof obj.text === 'string') return obj.text;
+    if (typeof obj.delta === 'string') return obj.delta;
+  }
+  return '';
+}
+
+function parseCardEvent(data: unknown): CardEvent | null {
+  if (!data || typeof data !== 'object') return null;
+  const obj = data as Record<string, unknown>;
+  // The converse SSE emits state-snapshot envelopes whose `snapshot.openCards`
+  // is the array we care about. Single 'card' events are simpler.
+  const snapshot = obj.snapshot as { openCards?: unknown } | undefined;
+  if (snapshot?.openCards && Array.isArray(snapshot.openCards)) {
+    // Return the *first* card; the runner sees one event per emitted card.
+    const c = snapshot.openCards[0] as Record<string, unknown> | undefined;
+    if (!c) return null;
+    return cardFromObj(c);
+  }
+  return cardFromObj(obj);
+}
+
+function cardFromObj(c: Record<string, unknown>): CardEvent | null {
+  const kind = typeof c.kind === 'string' ? c.kind : typeof c.cardKind === 'string' ? (c.cardKind as string) : null;
+  if (!kind) return null;
+  const opts = Array.isArray(c.options) ? (c.options as Array<{ id?: unknown; label?: unknown }>) : undefined;
+  const fallbackText = typeof c.fallbackText === 'string' ? (c.fallbackText as string) : undefined;
+  return {
+    kind,
+    options: opts
+      ?.filter((o) => typeof o.id === 'string' && typeof o.label === 'string')
+      .map((o) => ({ id: o.id as string, label: o.label as string })),
+    voiceAnswerable: !!fallbackText,
+    payload: c,
+  };
+}
+
+function extractControlTags(text: string): ControlTag[] {
+  const tags: ControlTag[] = [];
+  const re = /<(continue|sleep|spawn)(\s+([^/>]*))?\/?>/gi;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text)) !== null) {
+    const tag = m[1].toLowerCase() as ControlTag['tag'];
+    const attrs: Record<string, string> = {};
+    const attrStr = (m[3] ?? '').trim();
+    if (attrStr) {
+      for (const am of attrStr.matchAll(/(\w+)\s*=\s*"([^"]*)"/g)) {
+        attrs[am[1]] = am[2];
+      }
+    }
+    tags.push({ tag, attrs: Object.keys(attrs).length > 0 ? attrs : undefined });
+  }
+  return tags;
+}
+
+function errorTurn(message: string, latencyMs: number): TurnResult {
+  return {
+    assistantText: '',
+    toolCalls: [],
+    cards: [],
+    controlTags: [],
+    costUsd: 0,
+    latencyMs,
+    finishReason: 'error',
+    error: message,
+    rawSseTape: [],
+  };
+}

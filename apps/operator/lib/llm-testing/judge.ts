@@ -1,0 +1,334 @@
+/**
+ * Judge — the LLM that scores a completed transcript against a rubric.
+ *
+ * Plan §3.6, §6. Receives full transcript + per-turn telemetry +
+ * deterministic-assert violations + the rubric, returns scores +
+ * findings with copy-as-agent-prompt strings.
+ *
+ * Score-5 anchor (§6.5) prevents the judge from inventing novel
+ * failures when the run looks fine.
+ */
+
+import { computeFindingShape } from './identity';
+import { llmCall } from './llm-client';
+import type {
+  CardEvent,
+  JudgeFinding,
+  JudgeResult,
+  JudgeRubric,
+  RunSummary,
+  TurnResult,
+  Violation,
+} from './types';
+
+export interface JudgeOpts {
+  model: string;
+  rubric: JudgeRubric;
+  scenarioId: string;
+  scenarioDescription: string;
+  personaSummary: string;
+  goalSummary: string;
+  temperature?: number;
+}
+
+export async function judgeRun(opts: JudgeOpts, run: RunSummary, violations: Violation[]): Promise<JudgeResult> {
+  const transcript = formatTranscript(run.turns);
+  const telemetryStrip = formatTelemetry(run);
+  const violationsBlock = formatViolations(violations);
+
+  const system = buildJudgeSystemPrompt(opts);
+  const userPrompt = buildJudgeUserPrompt({
+    transcript,
+    telemetryStrip,
+    violationsBlock,
+    rubric: opts.rubric,
+  });
+
+  const passes: Array<{ scores: Record<string, number>; findings: JudgeFinding[]; notes?: string; rawText: string }> = [];
+  const passCount = opts.rubric.criticality === 'high' ? 2 : 1;
+
+  for (let i = 0; i < passCount; i++) {
+    const result = await llmCall({
+      model: opts.model,
+      system,
+      messages: [{ role: 'user', content: userPrompt }],
+      maxTokens: 4096,
+      temperature: i === 0 ? (opts.temperature ?? 0) : 0.4,
+      responseFormat: 'json',
+    });
+    const parsed = parseJudgeResponse(result.json, opts.rubric, opts.scenarioId);
+    passes.push({ ...parsed, rawText: result.text });
+  }
+
+  // Merge passes: average scores, union findings (judge sees its own first pass
+  // on the second attempt so duplicates are rare; still dedupe by shape).
+  const mergedScores: Record<string, number> = {};
+  for (const axis of opts.rubric.axes) {
+    const vals = passes.map((p) => p.scores[axis.id] ?? 0);
+    mergedScores[axis.id] = vals.reduce((a, b) => a + b, 0) / vals.length;
+  }
+  const seenShapes = new Set<string>();
+  const findings: JudgeFinding[] = [];
+  for (const p of passes) {
+    for (const f of p.findings) {
+      if (seenShapes.has(f.shape)) continue;
+      seenShapes.add(f.shape);
+      findings.push(f);
+    }
+  }
+  // Detect judge overruling: any deterministic violation that the judge marked as a false positive.
+  const overruled = findings.some((f) => f.claim.toLowerCase().includes('disagree with deterministic'));
+
+  return {
+    scores: mergedScores,
+    findings,
+    notes: passes.map((p) => p.notes).filter(Boolean).join(' / ') || undefined,
+    judgeOverruledAssert: overruled,
+  };
+}
+
+// =============================================================================
+// Prompt construction
+// =============================================================================
+
+function buildJudgeSystemPrompt(opts: JudgeOpts): string {
+  return [
+    `You are evaluating a transcript from the **${opts.scenarioId}** test scenario.`,
+    'You are not the assistant; you are an external reviewer scoring its behavior.',
+    '',
+    '## Scenario',
+    opts.scenarioDescription,
+    '',
+    '## Persona driving the user',
+    opts.personaSummary,
+    '',
+    '## Goal',
+    opts.goalSummary,
+    '',
+    '## Rubric',
+    'Score each axis 0..5 using the anchors below.',
+    ...opts.rubric.axes.map(
+      (a) =>
+        `- **${a.id}** — ${a.description}\n    0 = ${a.anchors.bad}\n    5 = ${a.anchors.ideal}`,
+    ),
+    '',
+    '## Rules',
+    '- Cite turn indices (0-based) for every finding.',
+    '- If you agree with a deterministic-assert violation, restate it with a turn-cite.',
+    '- If you DISAGREE with one, set `agrees_with_deterministic_asserts: false` and explain.',
+    "- `novel_failures` are behavioral problems NOT covered by the deterministic violations.",
+    "- **Score-5 anchor**: if every axis would score ≥4 and you have no specific turn to cite, return `novel_failures: []` and `notes: \"nominal\"`. Do not invent critique to feel useful.",
+    "- `suggestion` on each finding must be a concrete behavioral change (e.g. \"shorten the assistant turn at idx 2 to a single question\"), NOT an implementation change (\"rewrite handleConverse to...\").",
+    '- Do not propose code changes. The framework will not auto-implement.',
+    '',
+    '## Output schema',
+    'Return ONLY a JSON object with this exact shape (no prose, no fences):',
+    '```',
+    '{',
+    '  "summary": "one-paragraph headline",',
+    '  "scores": { "<axis>": 0..5, ... },',
+    '  "findings": [',
+    '    {',
+    '      "axis": "string",',
+    '      "severity": "error" | "warn" | "info",',
+    '      "evidence_turn_idx": 3,',
+    '      "claim": "string",',
+    '      "suggestion": "string"',
+    '    }',
+    '  ],',
+    '  "agrees_with_deterministic_asserts": true,',
+    '  "novel_failures": [',
+    '    { "axis": "...", "severity": "...", "evidence_turn_idx": ..., "claim": "...", "suggestion": "..." }',
+    '  ],',
+    '  "notes": "string (optional)"',
+    '}',
+    '```',
+  ].join('\n');
+}
+
+function buildJudgeUserPrompt(opts: {
+  transcript: string;
+  telemetryStrip: string;
+  violationsBlock: string;
+  rubric: JudgeRubric;
+}): string {
+  return [
+    '## Transcript',
+    opts.transcript,
+    '',
+    '## Per-turn telemetry',
+    opts.telemetryStrip,
+    '',
+    '## Deterministic-assert violations',
+    opts.violationsBlock,
+    '',
+    'Score the transcript per the rubric and return the JSON object.',
+  ].join('\n');
+}
+
+function formatTranscript(turns: TurnResult[]): string {
+  if (turns.length === 0) return '(empty transcript)';
+  const lines: string[] = [];
+  for (let i = 0; i < turns.length; i++) {
+    const t = turns[i];
+    lines.push(`### Turn ${i}`);
+    lines.push(`**Assistant text:** ${t.assistantText.trim() || '(empty)'}`);
+    if (t.toolCalls.length > 0) {
+      lines.push(`**Tool calls:** ${t.toolCalls.map((tc) => `${tc.name}(${truncJson(tc.input)})`).join(', ')}`);
+    }
+    if (t.cards.length > 0) {
+      lines.push(`**Cards:** ${t.cards.map(formatCard).join(', ')}`);
+    }
+    if (t.controlTags.length > 0) {
+      lines.push(`**Control tags:** ${t.controlTags.map((c) => `<${c.tag}/>`).join(' ')}`);
+    }
+    lines.push(`**finishReason:** ${t.finishReason}${t.error ? ` — ${t.error}` : ''}`);
+    lines.push('');
+  }
+  return lines.join('\n');
+}
+
+function formatCard(c: CardEvent): string {
+  const opts = c.options ? `[${c.options.map((o) => o.id).join('|')}]` : '';
+  return `${c.kind}${opts}${c.voiceAnswerable ? '(voice)' : ''}`;
+}
+
+function formatTelemetry(run: RunSummary): string {
+  const rows: string[] = [];
+  for (let i = 0; i < run.turns.length; i++) {
+    const t = run.turns[i];
+    rows.push(`Turn ${i}: ${t.latencyMs}ms · $${t.costUsd.toFixed(4)} · ${t.toolCalls.length} tool(s)`);
+  }
+  rows.push(`Total: ${run.totalCostUsd.toFixed(4)} USD`);
+  if (run.continueChainRows.length > 0) {
+    rows.push(`Continue chains: ${run.continueChainRows.length} row(s)`);
+  }
+  return rows.join('\n');
+}
+
+function formatViolations(violations: Violation[]): string {
+  if (violations.length === 0) return '(none — all deterministic asserts passed)';
+  return violations
+    .map(
+      (v, i) =>
+        `${i}. [${v.severity}] ${v.assertKind}${v.evidenceTurnIdx !== undefined ? ` @ turn ${v.evidenceTurnIdx}` : ''}: ${v.claim}`,
+    )
+    .join('\n');
+}
+
+function truncJson(v: unknown): string {
+  try {
+    const s = JSON.stringify(v);
+    return s.length > 120 ? s.slice(0, 117) + '...' : s;
+  } catch {
+    return String(v);
+  }
+}
+
+// =============================================================================
+// Judge response parsing
+// =============================================================================
+
+function parseJudgeResponse(
+  raw: unknown,
+  rubric: JudgeRubric,
+  scenarioId: string,
+): { scores: Record<string, number>; findings: JudgeFinding[]; notes?: string } {
+  if (!raw || typeof raw !== 'object') {
+    return {
+      scores: defaultScores(rubric),
+      findings: [
+        {
+          axis: 'meta',
+          severity: 'error',
+          shape: computeFindingShape('meta', 'judge_parse_failed'),
+          claim: `Judge response was not valid JSON for scenario ${scenarioId}`,
+          copyPrompt: '(judge parse failure — no copy prompt)',
+          isNovel: true,
+        },
+      ],
+    };
+  }
+  const obj = raw as Record<string, unknown>;
+  const scoresRaw = obj.scores;
+  const findingsRaw = Array.isArray(obj.findings) ? obj.findings : [];
+  const novelRaw = Array.isArray(obj.novel_failures) ? obj.novel_failures : [];
+  const notes = typeof obj.notes === 'string' ? obj.notes : undefined;
+
+  const scores: Record<string, number> = defaultScores(rubric);
+  if (scoresRaw && typeof scoresRaw === 'object') {
+    for (const axis of rubric.axes) {
+      const v = (scoresRaw as Record<string, unknown>)[axis.id];
+      if (typeof v === 'number') scores[axis.id] = Math.max(0, Math.min(5, v));
+    }
+  }
+
+  const findings: JudgeFinding[] = [];
+  for (const f of findingsRaw) {
+    const parsed = parseFinding(f, scenarioId, false);
+    if (parsed) findings.push(parsed);
+  }
+  for (const f of novelRaw) {
+    const parsed = parseFinding(f, scenarioId, true);
+    if (parsed) findings.push(parsed);
+  }
+
+  return { scores, findings, notes };
+}
+
+function parseFinding(raw: unknown, scenarioId: string, isNovel: boolean): JudgeFinding | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const obj = raw as Record<string, unknown>;
+  const axis = typeof obj.axis === 'string' ? obj.axis : 'unknown';
+  const severityVal = obj.severity;
+  const severity: 'error' | 'warn' | 'info' =
+    severityVal === 'error' || severityVal === 'warn' || severityVal === 'info' ? severityVal : 'warn';
+  const claim = typeof obj.claim === 'string' ? obj.claim : '';
+  if (!claim) return null;
+  const suggestion = typeof obj.suggestion === 'string' ? obj.suggestion : undefined;
+  const idxRaw = obj.evidence_turn_idx;
+  const evidenceTurnIdx = typeof idxRaw === 'number' ? idxRaw : undefined;
+  const shape = computeFindingShape(axis, claim);
+  return {
+    axis,
+    severity,
+    shape,
+    evidenceTurnIdx,
+    claim,
+    suggestion,
+    copyPrompt: formatCopyPrompt({ scenarioId, axis, severity, evidenceTurnIdx, claim, suggestion }),
+    isNovel,
+  };
+}
+
+function defaultScores(rubric: JudgeRubric): Record<string, number> {
+  const o: Record<string, number> = {};
+  for (const a of rubric.axes) o[a.id] = 0;
+  return o;
+}
+
+function formatCopyPrompt(input: {
+  scenarioId: string;
+  axis: string;
+  severity: string;
+  evidenceTurnIdx?: number;
+  claim: string;
+  suggestion?: string;
+}): string {
+  return [
+    `The operator chat in scenario \`${input.scenarioId}\` exhibits the following issue:`,
+    '',
+    `**Finding:** ${input.claim}`,
+    `**Axis:** ${input.axis}`,
+    `**Severity:** ${input.severity}`,
+    input.evidenceTurnIdx !== undefined ? `**Evidence:** turn ${input.evidenceTurnIdx}` : '',
+    input.suggestion ? `**Suggestion:** ${input.suggestion}` : '',
+    '',
+    'Please investigate. Run the scenario locally with:',
+    '```',
+    `pnpm llm-test --scenario ${input.scenarioId}`,
+    '```',
+  ]
+    .filter(Boolean)
+    .join('\n');
+}
