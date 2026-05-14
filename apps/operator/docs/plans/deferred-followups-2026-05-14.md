@@ -251,6 +251,21 @@ Plan: [voice-aware-cards-2026-05-14.md](./voice-aware-cards-2026-05-14.md). Phas
 
 **Approach when triggered.** Stub `/api/operator/state-snapshot` SSE with a synthetic card frame, stub voice prefs, drive `papercusp:operatorUserTurn` window event for the spoken "ready" path and `answerChoice` for the click path, intercept `/card-response` and assert body shape. The hard part is mocking voice-active state without exercising the engine bootstrap.
 
+### V7-A. Server-side fallback when brain returns text-only for silence_after_question
+
+**Status:** `engineering deferred` — known LLM-obedience issue (audit 2026-05-14 gap #7).
+
+**The bug.** Smoke-tested 2026-05-14 against the live dev server: when `silence_after_question` fires, the brain often emits prose or a fenced JSON code block in the delta stream instead of calling the `chat:ask_choice` tool. The prompt is correctly structured (8 unit tests confirm shape + voiceAnswerable + ready-option contract), but the LLM doesn't reliably translate "CALL the tool" into an actual tool invocation. The same issue affects `user_says_ready` and `open_canvas` to a lesser degree (brain sometimes emits 2-3 options as `<say>` text rather than a card).
+
+**Trigger to revisit:** anytime the user observes the silence nudge failing to render a clickable card. Likely already happens for several percent of fires.
+
+**Approach when triggered.**
+1. **Detector**: after the brain's stream completes for `silence_after_question`, parse `assembled` text — if the brain emitted prose / fenced JSON for a chat:ask_choice signature but no real `tool_call` event landed, log + counter.
+2. **Server-side fallback**: on the same detection, the operator-converse handler synthesizes a `ctx.askUser` call with the question text the brain almost-emitted (or a generic "Ready to continue?" if parsing fails). The card lands on the state-snapshot anyway — UX preserved.
+3. **Better long-term**: switch the silence path entirely off the brain. Server-side timer in the conversation provider directly calls `/api/agent-mcp/chat-ask-choice` (new internal endpoint) with the prior turn's question as `question`, no LLM round-trip. Loses some context-specificity but is deterministic. Worth measuring trade-off after V8 lands.
+
+**Note on root cause.** This is a systemic chat:ask_choice underuse, not silence-specific. A prompt-wide audit of "when should brain use cards" might find the right framing (more aggressive nudge, fewer competing example styles, explicit anti-`<say>` rules) — separate task.
+
 ### V8. Active-mode proactive ticks (the ORIGINAL "operator is passive" complaint)
 
 **Status:** `engineering deferred` — separate plan, blocked on this one finishing first.
