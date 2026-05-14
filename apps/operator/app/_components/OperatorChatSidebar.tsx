@@ -160,9 +160,7 @@ export function OperatorChatSidebar() {
               scope). Mounts only when at least one coding harness
               exists; non-coding workspaces render nothing.
             */}
-            <div className="op-chat-header-row">
-              <SidebarHarnessSelector />
-            </div>
+            <SidebarHarnessSelector className="op-chat-header-row" />
           </div>
         </div>
       </div>
@@ -1233,5 +1231,67 @@ body.has-op-chat .h-header {
   font-family: var(--font-mono, "SFMono-Regular", Consolas, monospace);
   font-size: 10px;
   line-height: 1.35;
+}
+
+.op-chat-header-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  margin-top: 2px;
+}
+
+.op-chat-header-row-label {
+  flex: 0 0 auto;
+  color: rgba(203, 238, 255, 0.66);
+  font-size: 10px;
+  font-weight: 760;
+  letter-spacing: 0.11em;
+  line-height: 1;
+  text-transform: uppercase;
+}
+
+.op-chat-harness-select {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 28px !important;
+  justify-content: space-between;
+  padding: 0 8px 0 10px !important;
+  border: 1px solid rgba(125, 211, 252, 0.24) !important;
+  border-radius: 10px !important;
+  background: rgba(10, 20, 33, 0.94) !important;
+  color: #eff8ff !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.035) !important;
+}
+
+.op-chat-harness-select > span:first-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.op-chat-harness-select svg {
+  flex: 0 0 auto;
+  opacity: 0.76;
+}
+
+.op-chat-harness-select:hover,
+.op-chat-harness-select[data-state="open"] {
+  border-color: rgba(103, 232, 249, 0.46) !important;
+  background: rgba(12, 24, 38, 0.99) !important;
+}
+
+.op-chat-harness-select:focus-visible {
+  outline: 2px solid rgba(103, 232, 249, 0.52);
+  outline-offset: 2px;
+}
+
+.op-chat-sidebar .oracle-msg-user .oracle-msg-avatar {
+  display: none !important;
+}
+
+.op-chat-sidebar .oracle-msg-user .oracle-msg-stack {
+  max-width: min(86%, 300px) !important;
 }
 `;

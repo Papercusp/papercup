@@ -43,5 +43,10 @@ export function SidebarHarnessSelector({ className }: { className?: string }) {
   }, []);
 
   if (options === null || options.length === 0) return null;
-  return <HarnessSelectorChip options={options} className={className} />;
+  return (
+    <div className={className}>
+      <span className="op-chat-header-row-label">Harness</span>
+      <HarnessSelectorChip options={options} className="op-chat-harness-select" />
+    </div>
+  );
 }
