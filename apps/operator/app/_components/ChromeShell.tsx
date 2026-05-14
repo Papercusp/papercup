@@ -186,10 +186,6 @@ export default function ChromeShell() {
             const p = navLinkProps('/dev');
             return <a href="/dev" {...p} className={`${p.className} is-dev`}>DEV</a>;
           })()}
-          {(() => {
-            const p = navLinkProps('/testing');
-            return <a href="/testing" {...p} className={`${p.className} is-dev`}>TEST</a>;
-          })()}
           <a href="https://github.com/papercupai" target="_blank" rel="noopener noreferrer" className="pc-header-nav-link">GitHub</a>
           {oracleFlag ? <TutorialButton /> : null}
           <UpdateChip />

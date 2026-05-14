@@ -11,6 +11,7 @@ import * as Tabs from '@radix-ui/react-tabs';
 const TABS = [
   { href: '/admin/run', label: 'Run' },
   { href: '/admin/features', label: 'Features' },
+  { href: '/admin/testing', label: 'Testing' },
 ] as const;
 
 export default function AdminShell({

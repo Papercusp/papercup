@@ -3,7 +3,7 @@
 .pc-test-shell {
   display: grid;
   grid-template-columns: 220px 1fr;
-  min-height: calc(100vh - 60px);
+  min-height: calc(100vh - 160px);
   background: var(--bg);
   color: var(--fg);
   font-size: 13px;

@@ -20,7 +20,7 @@ const TABS: Array<{ id: TabId; label: string; hint: string }> = [
   { id: 'packaged', label: 'Packaged build', hint: 'wdio + tauri-driver' },
 ];
 
-export default function TestingPage() {
+export default function TestingClient() {
   const [tab, setTab] = useQueryState(
     'tab',
     parseAsStringEnum<TabId>(['chaos', 'ai', 'live', 'routes', 'packaged']).withDefault('live'),
