@@ -313,12 +313,24 @@ const GitGraphPanelLib = dynamicWithRetry(
   'GitGraphPanel',
 );
 function GitGraphPanel({ slug }: { slug: string }) {
+  // URL-backed worktree filter so refresh + share preserves the view.
+  // '' / null = all worktrees; otherwise branch name or sha (no 'sha:' prefix
+  // — git resolves both transparently and `/git/log` accepts ?branch or ?sha).
+  const [worktree, setWorktree] = useQueryState('worktree', parseAsString);
   return (
     <GitGraphPanelLib
       scope={`harness:${slug}`}
-      gitLogUrl={(limit: number) => `/api/harness/${slug}/git/log?limit=${limit}`}
+      gitLogUrl={(limit: number, ref: string | null) => {
+        const base = `/api/harness/${slug}/git/log?limit=${limit}`;
+        if (!ref) return base;
+        // Distinguish branch from sha so the server can validate properly.
+        const param = /^[0-9a-f]{4,64}$/i.test(ref) ? 'sha' : 'branch';
+        return `${base}&${param}=${encodeURIComponent(ref)}`;
+      }}
       showCommitUrl={(sha: string) => `/api/harness/${slug}/git/show/${sha}`}
       worktreesUrl={() => `/api/harness/${slug}/git/worktrees`}
+      worktree={worktree}
+      onWorktreeChange={(next) => setWorktree(next)}
     />
   );
 }

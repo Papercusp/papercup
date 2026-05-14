@@ -269,8 +269,13 @@ interface GitCommit {
 
 const __gitLogCache = new Map<string, { headSig: string; expires: number; commits: GitCommit[] }>();
 
-async function cachedGitLog(projectPath: string, limit: number, ttlMs = 3000): Promise<GitCommit[]> {
-  const key = `${projectPath}:${limit}`;
+async function cachedGitLog(
+  projectPath: string,
+  limit: number,
+  ref: string | null,
+  ttlMs = 3000,
+): Promise<GitCommit[]> {
+  const key = `${projectPath}:${limit}:${ref ?? '*'}`;
   const now = Date.now();
   let headSig = '';
   try {
@@ -280,9 +285,9 @@ async function cachedGitLog(projectPath: string, limit: number, ttlMs = 3000): P
     // Follow `ref: refs/heads/<branch>` indirection so a commit on the
     // current branch (which doesn't touch HEAD itself) still busts cache.
     try {
-      const ref = readFileSync(headPath, 'utf8').trim();
-      if (ref.startsWith('ref: ')) {
-        const refPath = join(projectPath, '.git', ref.slice(5).trim());
+      const refContent = readFileSync(headPath, 'utf8').trim();
+      if (refContent.startsWith('ref: ')) {
+        const refPath = join(projectPath, '.git', refContent.slice(5).trim());
         if (existsSync(refPath)) {
           const rs = statSync(refPath);
           headSig += `|${rs.mtimeMs}`;
@@ -294,11 +299,13 @@ async function cachedGitLog(projectPath: string, limit: number, ttlMs = 3000): P
   if (cached && cached.headSig === headSig && cached.expires > now) return cached.commits;
 
   const SEP = '\x1f';
+  // ref === null means "all worktrees" → --all
+  const refArgs = ref ? [ref] : ['--all'];
   const { stdout } = await execFileP(
     'git',
     [
       '-C', projectPath,
-      'log', '--all', '--date-order',
+      'log', ...refArgs, '--date-order',
       `--format=%H${SEP}%P${SEP}%s${SEP}%an${SEP}%at${SEP}%D`,
       '-n', String(limit),
     ],
@@ -5184,8 +5191,25 @@ harness.get('/:slug/git/log', async (c) => {
   }
 
   const limit = Math.min(2000, Math.max(1, Number(c.req.query('limit') ?? 300)));
+  // Accept ?branch=<name> for normal worktrees or ?sha=<head> for detached
+  // ones. Branch names are validated to git's allowed set; sha to hex.
+  // When neither is set, the log spans all refs (--all).
+  const branch = (c.req.query('branch') ?? '').trim();
+  const sha = (c.req.query('sha') ?? '').trim();
+  let ref: string | null = null;
+  if (branch) {
+    if (!/^[A-Za-z0-9._/-]+$/.test(branch) || branch.startsWith('-')) {
+      return c.json({ error: 'bad branch' }, 400);
+    }
+    ref = branch;
+  } else if (sha) {
+    if (!/^[0-9a-f]{4,64}$/i.test(sha)) {
+      return c.json({ error: 'bad sha' }, 400);
+    }
+    ref = sha;
+  }
   try {
-    const commits = await cachedGitLog(project.path, limit);
+    const commits = await cachedGitLog(project.path, limit, ref);
     return c.json({ commits });
   } catch (err: any) {
     return c.json({ error: err?.message ?? String(err) }, 500);
