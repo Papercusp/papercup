@@ -303,6 +303,10 @@ async function evaluateRun(
     violations,
   );
 
+  // Replay's summary started with the original turn cost only;
+  // judge.costUsd is the cost of THIS replay's judge passes.
+  summary.totalCostUsd += judge.costUsd;
+
   const hasError = violations.some((v) => v.severity === 'error')
     || judge.findings.some((f) => f.severity === 'error');
   const status: ReplayResult['status'] = hasError ? 'failed' : 'passed';

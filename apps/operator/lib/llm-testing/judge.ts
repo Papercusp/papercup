@@ -51,6 +51,7 @@ export async function judgeRun(opts: JudgeOpts, run: RunSummary, violations: Vio
   });
 
   const passes: Array<{ scores: Record<string, number>; findings: JudgeFinding[]; notes?: string; rawText: string; agreesWithDeterministicAsserts?: boolean }> = [];
+  let costUsd = 0;
   // Per plan §6.4 + §13 Q2: criticality='high' rubrics get TWO passes —
   // pass 0 uses opts.model (default judge), pass 1 uses the
   // second-opinion model (resolveJudgeModel(sutModel).secondOpinion).
@@ -76,6 +77,7 @@ export async function judgeRun(opts: JudgeOpts, run: RunSummary, violations: Vio
     });
     const parsed = parseJudgeResponse(result.json, opts.rubric, opts.scenarioId);
     passes.push({ ...parsed, rawText: result.text });
+    costUsd += result.costUsd;
   }
 
   // Merge passes: average scores, union findings (judge sees its own first pass
@@ -117,6 +119,7 @@ export async function judgeRun(opts: JudgeOpts, run: RunSummary, violations: Vio
     findings,
     notes: passes.map((p) => p.notes).filter(Boolean).join(' / ') || undefined,
     judgeOverruledAssert: overruled,
+    costUsd,
   };
 }
 

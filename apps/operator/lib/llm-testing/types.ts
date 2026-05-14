@@ -278,6 +278,8 @@ export interface JudgeResult {
   findings: JudgeFinding[];
   notes?: string;
   judgeOverruledAssert: boolean;
+  /** Sum of judge LLM call costs across all passes. */
+  costUsd: number;
 }
 
 export interface JudgeFinding {

@@ -385,6 +385,11 @@ async function runOnce(args: OnceArgs): Promise<SingleRunReport> {
     violations,
   );
 
+  // Roll sim-user + judge cost into the summary so PG sees the
+  // honest envelope, not just the SUT-side cost (which is currently
+  // zero because operator-converse doesn't return per-stream cost).
+  summary.totalCostUsd += simUser.costUsd + judge.costUsd;
+
   const hasErrorViolation = violations.some((v) => v.severity === 'error');
   const hasErrorFinding = judge.findings.some((f) => f.severity === 'error');
   let status: SingleRunReport['status'] = 'passed';
