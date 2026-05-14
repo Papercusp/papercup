@@ -63,6 +63,12 @@ for target in $TARGETS; do
   fi
 done
 
+# ── Retention sweep ───────────────────────────────────────────────────
+# Calls harness_shared.llm_test_sweep_old(retain_days). Default 90;
+# override with LLM_TEST_RETAIN_DAYS. Runs preserve unacknowledged
+# severity=error findings regardless of age.
+SWEEP_SQL="SELECT harness_shared.llm_test_sweep_old(${LLM_TEST_RETAIN_DAYS:-90}) AS deleted;"
+
 # ── Summary ───────────────────────────────────────────────────────────
 # Query the latest run set for a one-line digest.
 SUMMARY_SQL='
@@ -88,6 +94,8 @@ if command -v psql >/dev/null 2>&1; then
   " 2>/dev/null || true)
   if [ -n "$PG_URL" ]; then
     psql "$PG_URL" -c "$SUMMARY_SQL" 2>&1 | tee -a "$LOG" || true
+    log "retention sweep:"
+    psql "$PG_URL" -c "$SWEEP_SQL" 2>&1 | tee -a "$LOG" || true
   fi
 fi
 

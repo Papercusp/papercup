@@ -101,9 +101,16 @@ function usage(): void {
 Usage:
   llm-test --scenario <id>            Run a single scenario
   llm-test --target operator          Run every scenario for a target
+  llm-test --all                      Run every scenario across all targets
   llm-test --list                     List scenarios + targets
   llm-test --no-matrix                Force N=1 (overrides runMatrix.repeat)
   llm-test --no-persist               Skip PG persistence (printing only)
+  llm-test --seed <n>                 Determinism hint: forces sim-user
+                                      temperature to 0 (SDK has no seed
+                                      param; this is the closest we get).
+  llm-test --parallel <n>             Batch scenarios into Promise.all
+                                      groups of size N. Bounded by SUT
+                                      single-flight per conversationId.
 
   llm-test promote-candidates         List novel_failure shapes seen
                                       in ≥3 scenarios over the last 14d
@@ -112,6 +119,7 @@ Usage:
 
   llm-test replay --fixture <id> --scenario <id>
                                       Re-evaluate a stored .sse fixture
+                                      (+ optional sibling .telemetry.json)
                                       against the current rubric.
                                       No SUT or sim-user calls — just
                                       asserts + judge. ~$0.10/run.
@@ -120,8 +128,20 @@ Usage:
                                       Re-judge a historical run row
                                       (e.g. after a rubric edit).
 
+  llm-test export-fixture --run <uuid> --as <slug>
+                                      Export a stored run as a paired
+                                      <slug>.sse + <slug>.telemetry.json
+                                      under fixtures/operator/. Used to
+                                      freeze a good (or bad) transcript
+                                      for replay-driven regression.
+
 Env:
-  ANTHROPIC_API_KEY                   Required (sim-user + judge)
+  ANTHROPIC_API_KEY                   Required (sim-user + judge). Falls
+                                      back to
+                                      harness_shared.operator_credentials
+                                      .anthropic_api_key when unset.
+  PAPERCUSP_LLM_TEST_SKIP_CLAIM=1     Skip the parallel-runner claim
+                                      ledger (unit tests without PG).
   PAPERCUSP_OPERATOR_URL              Operator base URL (default http://127.0.0.1:3055)
   LLM_TEST_SUT_MODEL                  Override SUT model (default claude-sonnet-4-6)
   LLM_TEST_JUDGE_MODEL                Override judge model (default claude-sonnet-4-6)

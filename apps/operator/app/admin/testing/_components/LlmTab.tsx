@@ -5,7 +5,7 @@ import { useQueryState, parseAsStringEnum, parseAsString } from 'nuqs';
 
 import { Button } from '../../../harness/Button';
 
-type Subtab = 'scenarios' | 'runs' | 'findings';
+type Subtab = 'targets' | 'scenarios' | 'runs' | 'findings';
 type RunRow = {
   id: string;
   scenario_id: string;
@@ -53,7 +53,7 @@ type FindingRow = {
 export default function LlmTab() {
   const [subtab, setSubtab] = useQueryState(
     'subtab',
-    parseAsStringEnum<Subtab>(['scenarios', 'runs', 'findings']).withDefault('runs'),
+    parseAsStringEnum<Subtab>(['targets', 'scenarios', 'runs', 'findings']).withDefault('runs'),
   );
 
   return (
@@ -73,12 +73,14 @@ export default function LlmTab() {
       <nav className="pc-test-subnav" aria-label="LLM testing subtabs">
         <Button variant={subtab === 'runs' ? 'primary' : 'ghost'} onClick={() => setSubtab('runs')}>Runs</Button>
         <Button variant={subtab === 'scenarios' ? 'primary' : 'ghost'} onClick={() => setSubtab('scenarios')}>Scenarios</Button>
+        <Button variant={subtab === 'targets' ? 'primary' : 'ghost'} onClick={() => setSubtab('targets')}>Targets</Button>
         <Button variant={subtab === 'findings' ? 'primary' : 'ghost'} onClick={() => setSubtab('findings')}>Findings</Button>
       </nav>
 
       <div style={{ marginTop: 16 }}>
         {subtab === 'runs' && <RunsView />}
         {subtab === 'scenarios' && <ScenariosView />}
+        {subtab === 'targets' && <TargetsView />}
         {subtab === 'findings' && <FindingsView />}
       </div>
     </>
@@ -168,6 +170,77 @@ function AnthropicKeyStrip() {
         Persisted in <code>harness_shared.operator_credentials</code>. Env <code>ANTHROPIC_API_KEY</code> takes precedence when set.
       </div>
       {error ? <div style={{ marginTop: 6, color: 'var(--bad, #c33)', fontSize: 12 }}>Error: {error}</div> : null}
+    </div>
+  );
+}
+
+function TargetsView() {
+  const [data, setData] = useState<ScenarioRow[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    let live = true;
+    fetch('/api/admin/llm-tests/scenarios')
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
+      .then((j) => live && setData(j.scenarios as ScenarioRow[]))
+      .catch((e) => live && setError((e as Error).message));
+    return () => { live = false; };
+  }, []);
+
+  const [, setSubtab] = useQueryState(
+    'subtab',
+    parseAsStringEnum<Subtab>(['targets', 'scenarios', 'runs', 'findings']).withDefault('runs'),
+  );
+  const [, setTargetFilter] = useQueryState('target', parseAsString.withDefault(''));
+
+  if (error) return <ErrorBox error={error} />;
+  if (!data) return <Loading />;
+
+  const byTarget = new Map<string, ScenarioRow[]>();
+  for (const s of data) {
+    const arr = byTarget.get(s.target) ?? [];
+    arr.push(s);
+    byTarget.set(s.target, arr);
+  }
+  const entries = Array.from(byTarget.entries()).sort(([a], [b]) => a.localeCompare(b));
+
+  return (
+    <div className="pc-test-card">
+      <table className="pc-test-table">
+        <thead>
+          <tr>
+            <th>target</th>
+            <th>scenarios</th>
+            <th>personas</th>
+            <th>actions</th>
+          </tr>
+        </thead>
+        <tbody>
+          {entries.map(([target, scenarios]) => {
+            const personas = new Set(scenarios.map((s) => s.persona));
+            return (
+              <tr key={target}>
+                <td><strong>{target}</strong></td>
+                <td>{scenarios.length}</td>
+                <td>{Array.from(personas).join(', ')}</td>
+                <td>
+                  <Button
+                    variant="ghost"
+                    onClick={() => {
+                      setTargetFilter(target);
+                      setSubtab('runs');
+                    }}
+                  >
+                    runs →
+                  </Button>{' '}
+                  <Button variant="ghost" onClick={() => setSubtab('scenarios')}>
+                    scenarios →
+                  </Button>
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
     </div>
   );
 }

@@ -13,7 +13,11 @@ export type TargetFactory = () => ChatTarget;
 const TARGETS: Record<string, TargetFactory> = {
   operator: () => new OperatorTarget(),
   oracle: () => new OracleTarget(),
-  architect: () => new ArchitectTarget(),
+  // Architect is harness-scoped; the chat route returns a 400 without
+  // a harnessSlug in the body. Default to 'sheets' (the long-standing
+  // dev harness present in harness_shared.projects). Scenarios can
+  // override per-turn via input.meta.harnessSlug.
+  architect: () => new ArchitectTarget({ defaultHarnessSlug: 'sheets' }),
 };
 
 export function registerTarget(id: string, factory: TargetFactory): void {
