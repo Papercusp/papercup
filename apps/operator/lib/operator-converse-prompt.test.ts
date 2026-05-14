@@ -43,4 +43,22 @@ describe('OPERATOR_CONVERSE_PROMPT', () => {
     expect(OPERATOR_CONVERSE_PROMPT).not.toMatch(/silence_after_question/);
     expect(OPERATOR_CONVERSE_PROMPT).not.toMatch(/^## Silence/m);
   });
+
+  // ── Active-mode proactive (V8) ──────────────────────────────────
+  it('teaches the <continue/> tag for multi-step user-asked work', () => {
+    expect(OPERATOR_CONVERSE_PROMPT).toContain('<continue/>');
+    // The rule must mention narration alongside the tag.
+    expect(/narrate|<say>|narration/i.test(OPERATOR_CONVERSE_PROMPT)).toBe(true);
+  });
+
+  it('forbids <continue/> from user_says_ready trigger', () => {
+    // The rule prevents auto-execution from idle context — investigation
+    // happens in one turn for user_says_ready.
+    expect(OPERATOR_CONVERSE_PROMPT).toMatch(/<continue\/?>[^.]*?user_says_ready|user_says_ready[^.]*?<continue/i);
+  });
+
+  it('teaches the known-options-must-use-card rule', () => {
+    // When options come from prior context, brain must use chat:ask_choice.
+    expect(/prior context|already decided|known options/i.test(OPERATOR_CONVERSE_PROMPT)).toBe(true);
+  });
 });

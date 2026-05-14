@@ -23,6 +23,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { OperatorChat } from './OperatorChat';
 import { LocalCardHost } from './chat/LocalCardHost';
 import { useOperatorConversation } from './OperatorConversationProvider';
+import { useShortcutAction } from '@/lib/hotkeys';
 import { useWorkspaceId } from '@/lib/use-workspace-id';
 import { OperatorLogoMark } from './OperatorLogoMark';
 import { OperatorWordmarkLockup } from './OperatorWordmarkLockup';
@@ -112,6 +113,12 @@ export function OperatorChatSidebar() {
   // wrapper around <OperatorChat> with the provider's value.
   const conv = useOperatorConversation();
   const workspaceId = useWorkspaceId();
+
+  // Cmd/Ctrl+Shift+I → Generate ideas (same as clicking the lightbulb
+  // button in the composer). Plan §C.9 promised this keyboard binding.
+  useShortcutAction('operator.generateIdeas', () => {
+    conv.generateIdeas();
+  });
 
   // Pre-hydration: render the sidebar at default width so the layout
   // doesn't jump after JS evaluates. The body padding-left is set by

@@ -94,6 +94,13 @@ export const SHORTCUTS: readonly ShortcutDef[] = [
     command: 'panel.toggle',
   },
   {
+    id: 'operator.generateIdeas',
+    description: 'Ask Papercup for suggestions (Generate ideas)',
+    // mod+shift+i — 'i' for ideas. Not bound elsewhere.
+    defaultCombo: 'mod+shift+i',
+    category: 'global',
+  },
+  {
     id: 'editor.save',
     description: 'Save the current editor (prompts, memory, etc.)',
     defaultCombo: 'mod+s',
