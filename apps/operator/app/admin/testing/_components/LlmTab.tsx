@@ -68,6 +68,8 @@ export default function LlmTab() {
         </div>
       </header>
 
+      <AnthropicKeyStrip />
+
       <nav className="pc-test-subnav" aria-label="LLM testing subtabs">
         <Button variant={subtab === 'runs' ? 'primary' : 'ghost'} onClick={() => setSubtab('runs')}>Runs</Button>
         <Button variant={subtab === 'scenarios' ? 'primary' : 'ghost'} onClick={() => setSubtab('scenarios')}>Scenarios</Button>
@@ -80,6 +82,93 @@ export default function LlmTab() {
         {subtab === 'findings' && <FindingsView />}
       </div>
     </>
+  );
+}
+
+function AnthropicKeyStrip() {
+  const [masked, setMasked] = useState<string | null>(null);
+  const [updatedAt, setUpdatedAt] = useState<string | null>(null);
+  const [draft, setDraft] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const load = () => {
+    fetch('/api/credentials')
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
+      .then((j) => { setMasked(j.anthropic_api_key ?? null); setUpdatedAt(j.updated_at ?? null); })
+      .catch((e) => setError((e as Error).message));
+  };
+
+  useEffect(load, []);
+
+  const save = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      const r = await fetch('/api/credentials', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ anthropic_api_key: draft }),
+      });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const j = await r.json();
+      setMasked(j.anthropic_api_key ?? null);
+      setUpdatedAt(j.updated_at ?? null);
+      setDraft('');
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const clear = async () => {
+    if (!confirm('Clear stored Anthropic API key?')) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const r = await fetch('/api/credentials', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ anthropic_api_key: '' }),
+      });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const j = await r.json();
+      setMasked(j.anthropic_api_key ?? null);
+      setUpdatedAt(j.updated_at ?? null);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="pc-test-card" style={{ padding: 12, marginBottom: 12 }}>
+      <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
+        <div style={{ fontWeight: 600, minWidth: 140 }}>Anthropic API key</div>
+        <div style={{ color: 'var(--fg-mute, #888)', fontSize: 12, minWidth: 220 }}>
+          {masked ? <>stored: <code>{masked}</code>{updatedAt ? ` · ${new Date(updatedAt).toLocaleString()}` : ''}</> : <em>not set — sim-user + judge will fail</em>}
+        </div>
+        <input
+          className="pc-test-input"
+          type="password"
+          placeholder="sk-ant-…"
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          style={{ flex: 1, minWidth: 280 }}
+          autoComplete="off"
+        />
+        <Button variant="primary" onClick={save} disabled={busy || !draft.trim()}>
+          {masked ? 'Replace' : 'Save'}
+        </Button>
+        {masked ? <Button variant="ghost" onClick={clear} disabled={busy}>Clear</Button> : null}
+      </div>
+      <div style={{ marginTop: 8, fontSize: 11, color: 'var(--fg-mute, #888)' }}>
+        Persisted in <code>harness_shared.operator_credentials</code>. Env <code>ANTHROPIC_API_KEY</code> takes precedence when set.
+      </div>
+      {error ? <div style={{ marginTop: 6, color: 'var(--bad, #c33)', fontSize: 12 }}>Error: {error}</div> : null}
+    </div>
   );
 }
 

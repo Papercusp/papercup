@@ -15,19 +15,30 @@
  */
 
 import Anthropic from '@anthropic-ai/sdk';
-
-const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
+import { readCredentials } from '../credentials';
 
 let _client: Anthropic | undefined;
 
-function getClient(): Anthropic {
+async function resolveKey(): Promise<string | undefined> {
+  const env = process.env.ANTHROPIC_API_KEY;
+  if (env && env.trim()) return env.trim();
+  try {
+    const creds = await readCredentials();
+    return creds.anthropic_api_key?.trim() || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+async function getClient(): Promise<Anthropic> {
   if (_client) return _client;
-  if (!ANTHROPIC_API_KEY) {
+  const key = await resolveKey();
+  if (!key) {
     throw new Error(
-      'ANTHROPIC_API_KEY required for llm-testing framework. Set it in env before running.',
+      'ANTHROPIC_API_KEY required for llm-testing framework. Set it in env, or enter it at /admin/testing → LLM testing.',
     );
   }
-  _client = new Anthropic({ apiKey: ANTHROPIC_API_KEY });
+  _client = new Anthropic({ apiKey: key });
   return _client;
 }
 
@@ -78,7 +89,7 @@ export interface LlmCallResult {
 }
 
 export async function llmCall(opts: LlmCallOpts): Promise<LlmCallResult> {
-  const client = getClient();
+  const client = await getClient();
 
   const messages = opts.messages.map((m) => ({
     role: m.role,
@@ -123,7 +134,7 @@ function tryParseJson(text: string): unknown {
   }
 }
 
-/** True when ANTHROPIC_API_KEY is unset — used to skip live tests in CI without secrets. */
-export function isLlmAvailable(): boolean {
-  return !!ANTHROPIC_API_KEY;
+/** True when an Anthropic key is resolvable (env or PG credentials). */
+export async function isLlmAvailable(): Promise<boolean> {
+  return !!(await resolveKey());
 }
