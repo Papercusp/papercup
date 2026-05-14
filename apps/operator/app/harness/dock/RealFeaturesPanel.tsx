@@ -14,6 +14,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import type { PanelComponentProps } from './panel-registry';
+import { openPanel, focusPanel } from './dock-actions';
 
 interface Feature {
   id: string;
@@ -150,12 +151,35 @@ export function RealFeaturesPanel({ params, api }: PanelComponentProps) {
             {filtered.map((f) => (
               <li
                 key={f.id}
+                onContextMenu={(e) => {
+                  e.preventDefault();
+                  const id = openPanel({
+                    type: 'pin:feature',
+                    params: { harnessSlug: slug, featureId: f.id },
+                    title: f.id,
+                  });
+                  focusPanel(id);
+                }}
+                onClick={(e) => {
+                  // Cmd/Ctrl-click pins; plain click is reserved for
+                  // future row-expand or no-op.
+                  if (e.metaKey || e.ctrlKey) {
+                    const id = openPanel({
+                      type: 'pin:feature',
+                      params: { harnessSlug: slug, featureId: f.id },
+                      title: f.id,
+                    });
+                    focusPanel(id);
+                  }
+                }}
+                title="Cmd/Ctrl-click or right-click to pin as panel"
                 style={{
                   display: 'flex',
                   gap: 8,
                   padding: '6px 12px',
                   borderBottom: '1px solid var(--border-subtle,#222)',
                   alignItems: 'baseline',
+                  cursor: 'pointer',
                 }}
               >
                 <span
