@@ -10,9 +10,14 @@
  *
  * Existing imports (`from '@/lib/agent-chat-stream'`) keep working —
  * we re-export the same symbols.
+ *
+ * When the dev-only env var `PAPERCUSP_FAKE_LLM=1` is set, runAgentChat
+ * yields a deterministic scripted stream instead of spawning a real
+ * agent. Lets the Playwright suite cover the full route → SSE → client
+ * pipeline without a live model.
  */
 import {
-  runAgentChat,
+  runAgentChat as realRunAgentChat,
   setAgentConfigBootstrap,
   type AgentBackend,
   type ChatEvent,
@@ -22,5 +27,36 @@ import { applyToProcessEnv, readAgentConfig } from './agent-config';
 
 setAgentConfigBootstrap(async () => applyToProcessEnv(await readAgentConfig()));
 
-export { runAgentChat };
+async function* fakeRunAgentChat(
+  opts: RunAgentChatOptions,
+): AsyncGenerator<ChatEvent, void, void> {
+  const tail = (opts.userMessage || '').slice(-32) || 'fake-llm';
+  const deltas = [
+    `[fake-llm] received "${tail}". `,
+    'Generating deterministic output for tests. ',
+    'Stream terminates after three deltas.',
+  ];
+  for (const text of deltas) {
+    await new Promise((r) => setTimeout(r, 5));
+    yield { type: 'delta', text };
+  }
+  yield {
+    type: 'result',
+    costUsd: 0,
+    tokensIn: 0,
+    tokensOut: deltas.join('').length,
+    finalText: deltas.join(''),
+  };
+}
+
+export async function* runAgentChat(
+  opts: RunAgentChatOptions,
+): AsyncGenerator<ChatEvent, void, void> {
+  if (process.env.PAPERCUSP_FAKE_LLM === '1') {
+    yield* fakeRunAgentChat(opts);
+    return;
+  }
+  yield* realRunAgentChat(opts);
+}
+
 export type { AgentBackend, ChatEvent, RunAgentChatOptions };
