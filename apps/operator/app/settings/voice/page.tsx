@@ -9,6 +9,7 @@ import { Checkbox } from '../../harness/Checkbox';
 import { Select } from '../../harness/Select';
 import { Modal } from '../../harness/Modal';
 import { useConfirmDialog } from '../../harness/useConfirmDialog';
+import { Button } from '../../harness/Button';
 import { RichGrid, type ColumnDef } from '@restart/grid-core';
 import {
   initVoiceMode,
@@ -434,9 +435,9 @@ export default function VoiceSettingsPage() {
         })()}
 
         <div style={{ display: 'flex', gap: 8, marginTop: 12, alignItems: 'center', flexWrap: 'wrap' }}>
-          <button type="button" onClick={onTestVoice} style={btnPrimary}>Test voice</button>
-          <button type="button" onClick={onTestAllRoles} style={btn}>Test all roles</button>
-          <button type="button" onClick={onRedetect} style={btn}>Re-detect engines</button>
+          <Button variant="primary" onClick={onTestVoice}>Test voice</Button>
+          <Button onClick={onTestAllRoles}>Test all roles</Button>
+          <Button onClick={onRedetect}>Re-detect engines</Button>
           <p style={{ ...hint, margin: 0, flexBasis: '100%' }}>
             Test buttons play immediately even when voice mode is off — they're how you check the engine works.
             Toggle voice mode (mic icon in the header) to enable announcements during normal use.
@@ -470,10 +471,10 @@ export default function VoiceSettingsPage() {
                 <code style={{ padding: '6px 10px', background: 'var(--bg-1)', borderRadius: 4, fontSize: 13 }}>
                   {credentials.apiKey ?? '(masked)'}
                 </code>
-                <button type="button" onClick={onTestConnection} disabled={testing} style={btn}>
+                <Button onClick={onTestConnection} disabled={testing}>
                   {testing ? 'Testing…' : 'Test connection'}
-                </button>
-                <button type="button" onClick={onClearKey} style={{ ...btn, color: '#fca5a5' }}>Clear</button>
+                </Button>
+                <Button variant="destructive" onClick={onClearKey}>Clear</Button>
               </div>
             ) : (
               <div style={{ display: 'flex', gap: 8 }}>
@@ -484,7 +485,7 @@ export default function VoiceSettingsPage() {
                   placeholder="sk_..."
                   style={{ flex: 1, padding: '6px 10px', fontSize: 13, fontFamily: 'monospace' }}
                 />
-                <button type="button" onClick={onSaveKey} disabled={!keyDraft.trim()} style={btnPrimary}>Save</button>
+                <Button variant="primary" onClick={onSaveKey} disabled={!keyDraft.trim()}>Save</Button>
               </div>
             )}
           </div>
@@ -1024,10 +1025,10 @@ all clear     on      on           running  true       leader      speaks
           You can re-enable Voicemode any time.
         </p>
         <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
-          <button type="button" onClick={() => setShowLeakWarning(false)} style={btn}>Cancel</button>
-          <button type="button" onClick={ackLeakWarning} style={{ ...btnPrimary, background: '#a04' }}>
+          <Button onClick={() => setShowLeakWarning(false)}>Cancel</Button>
+          <Button variant="destructive" onClick={ackLeakWarning}>
             I understand — use Web Speech
-          </button>
+          </Button>
         </div>
       </Modal>
       {confirmEl}
@@ -1299,9 +1300,13 @@ function WakeWordTestButton({ wakeWord }: { wakeWord: string }) {
 
   return (
     <>
-      <button type="button" onClick={run} disabled={stage === 'prompting'} style={stage === 'heard-correct' ? btnPrimary : btn}>
+      <Button
+        variant={stage === 'heard-correct' ? 'primary' : undefined}
+        onClick={run}
+        disabled={stage === 'prompting'}
+      >
         {label}
-      </button>
+      </Button>
       {stage === 'prompting' && (
         <span style={{ ...hint, marginTop: 0, marginLeft: 4, flexBasis: '100%' }}>
           Say <strong>"{phrase}"</strong> now. We'll wait up to 15 seconds. The Operator panel should open if the pipeline is healthy.
@@ -1518,9 +1523,9 @@ function EnginePreview({ engine }: { engine: string }) {
 
   return (
     <div style={{ marginTop: 6 }}>
-      <button type="button" onClick={onClick} disabled={busy} style={btn}>
+      <Button onClick={onClick} disabled={busy}>
         {busy ? '▶ Playing…' : `▶ Preview ${engine}`}
-      </button>
+      </Button>
       {error && <p style={{ ...hint, color: 'var(--danger, #b91c1c)' }}>{error}</p>}
     </div>
   );
@@ -1649,12 +1654,12 @@ function ConvAgentVoice(): JSX.Element {
           disabled={busy}
           onKeyDown={(e) => { if (e.key === 'Enter') void onSave(); }}
         />
-        <button type="button" onClick={onPreview} disabled={previewing || (!draft.trim() && !current?.voiceId)} style={btn}>
+        <Button onClick={onPreview} disabled={previewing || (!draft.trim() && !current?.voiceId)}>
           {previewing ? 'Playing…' : 'Preview'}
-        </button>
-        <button type="button" onClick={onSave} disabled={busy || !draft.trim()} style={btnPrimary}>
+        </Button>
+        <Button variant="primary" onClick={onSave} disabled={busy || !draft.trim()}>
           {busy ? 'Saving…' : 'Save'}
-        </button>
+        </Button>
       </div>
       <p style={hint}>
         Currently: <code>{current?.voiceId ?? '(unknown)'}</code>
@@ -1676,5 +1681,4 @@ function ConvAgentVoice(): JSX.Element {
 const lbl: React.CSSProperties = { display: 'block', fontWeight: 700, fontSize: 12, marginBottom: 4 };
 const sel: React.CSSProperties = { padding: '6px 10px', width: '100%', fontSize: 13 };
 const hint: React.CSSProperties = { fontSize: 12, color: 'var(--fg-mute)', marginTop: 6 };
-const btn: React.CSSProperties = { padding: '6px 12px', fontSize: 13, cursor: 'pointer', background: 'transparent', border: '1px solid var(--border)', borderRadius: 4, color: 'inherit' };
-const btnPrimary: React.CSSProperties = { ...btn, background: 'var(--cta-bg, #1f2937)', color: 'var(--cta-fg, #ffffff)', border: 'none', fontWeight: 600 };
+

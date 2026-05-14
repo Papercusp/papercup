@@ -87,6 +87,34 @@ Radix Select reserves `value=""` to mean "no value selected". If your business l
 
 **Number-input spinner buttons** are suppressed app-wide. Numeric input still works; the up/down arrows just stop drawing.
 
+## `<Button>` wrapper + native baseline
+
+**What:** `globals.css` adds a baseline for native `<button>` so unwrapped action buttons (Save, Add override, Clear, Cancel, +Filter, etc.) pick up the same dark-theme look as the `<Select>` trigger. The `<Button>` wrapper at `app/harness/Button.tsx` layers on three variants for the cases where more emphasis is needed:
+
+- `variant="primary"` — filled accent for the page's primary CTA
+- `variant="destructive"` — red tint for delete / clear / forget actions
+- `variant="ghost"` — transparent until hovered, for low-emphasis chrome
+
+**When to use which:**
+
+- Most action buttons should be **unwrapped** — the global baseline already styles them.
+- Use `<Button variant="primary">` for the **one** save/submit button on a page. Don't sprinkle primary buttons everywhere; the variant is for the dominant action.
+- Use `<Button variant="destructive">` whenever the button triggers `useConfirmDialog({ destructive: true })` — the visual and the confirm modal both signal "this is dangerous."
+- Use `<Button variant="ghost">` for icon-only buttons in toolbars or for "Cancel" in a modal footer where you want the primary button to dominate.
+
+```tsx
+import { Button } from '@/app/harness/Button';
+
+<Button variant="primary" onClick={handleSubmit}>Save</Button>
+<Button variant="destructive" onClick={handleDelete}>Delete forever</Button>
+<Button>Cancel</Button>  {/* baseline neutral */}
+<Button variant="ghost"><X size={12}/></Button>
+```
+
+The wrapper forwards refs and spreads all native button props. `type` defaults to `"button"` so you don't accidentally submit a form.
+
+**The variant classes** (`.pc-btn-primary`, `.pc-btn-destructive`, `.pc-btn-ghost`) can also be applied directly to a native `<button>` if you don't want the wrapper — same visual result.
+
 ## `<TextInput>` + `<TextArea>` wrappers
 
 **What:** Canonical text-entry wrappers at `app/harness/TextInput.tsx`. Re-exports `<input>` / `<textarea>` with the baseline style plus first-class `leading` and `trailing` slots.

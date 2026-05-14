@@ -26674,3 +26674,46 @@ body.has-op-chat:has(.operator-panel) .op-chat-sidebar {
   color: var(--fg-mute, #9a9aa3);
   padding: 12px 0;
 }
+
+/* ─────────────────────────────────────────────────────────────────────
+ * <Button> variants (Wave C)
+ *
+ * The native <button> baseline (the :where(button) rule earlier in this
+ * file) covers the "neutral / inline-with-form" case — most action
+ * buttons in the app. These classes layer on top for the few cases
+ * where extra emphasis is needed.
+ *
+ * Use via <Button variant="primary|destructive|ghost"> from
+ * app/harness/Button.tsx, or by adding the class to a native <button>.
+ */
+:where(.pc-btn-primary) {
+  background: var(--accent, #6aa7ff);
+  color: color-mix(in oklab, var(--accent, #6aa7ff), black 75%);
+  border-color: color-mix(in oklab, var(--accent, #6aa7ff), white 12%);
+  font-weight: 600;
+}
+
+:where(.pc-btn-primary):hover:not(:disabled) {
+  background: color-mix(in oklab, var(--accent, #6aa7ff), white 10%);
+}
+
+:where(.pc-btn-destructive) {
+  color: var(--bad, #f87171);
+  border-color: color-mix(in oklab, var(--bad, #f87171), transparent 55%);
+  background: color-mix(in oklab, var(--bad, #f87171), transparent 92%);
+}
+
+:where(.pc-btn-destructive):hover:not(:disabled) {
+  background: color-mix(in oklab, var(--bad, #f87171), transparent 85%);
+  border-color: color-mix(in oklab, var(--bad, #f87171), transparent 35%);
+}
+
+:where(.pc-btn-ghost) {
+  background: transparent;
+  border-color: transparent;
+}
+
+:where(.pc-btn-ghost):hover:not(:disabled) {
+  background: color-mix(in oklab, var(--bg-2), white 5%);
+  border-color: var(--border);
+}
