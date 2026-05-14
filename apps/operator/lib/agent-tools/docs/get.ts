@@ -70,14 +70,21 @@ export default defineTool({
   capability: 'docs:read',
   requirePrincipal: false,
   roles: [...ALL_ROLES],
+  modality: ['text'],
   rolesQuota: {
     worker: { perChunk: 10 },
     operator: { perRun: 15 },
   },
   args: argsSchema,
   async handler(args, ctx) {
-    const ctxAny = ctx as { metadata?: (data: Record<string, unknown>) => void };
-    const response = await getDocs(adapter, args, { metadata: ctxAny.metadata });
+    const ctxAny = ctx as {
+      signal?: AbortSignal;
+      metadata?: (data: Record<string, unknown>) => void;
+    };
+    const response = await getDocs(adapter, args, {
+      ...(ctxAny.signal && { signal: ctxAny.signal }),
+      ...(ctxAny.metadata && { metadata: ctxAny.metadata }),
+    });
     return { content: [{ type: 'text' as const, text: JSON.stringify(response) }] };
   },
 });

@@ -79,3 +79,11 @@ describe('buildOutline', () => {
     expect(out.sections[0].pages[0].description).toBe('A description');
   });
 });
+
+describe('buildOutline — cancellation', () => {
+  it('throws on pre-aborted signal', async () => {
+    const ac = new AbortController();
+    ac.abort();
+    await expect(buildOutline(makeSource({ pages: [] }), { signal: ac.signal })).rejects.toThrow(/cancelled/);
+  });
+});

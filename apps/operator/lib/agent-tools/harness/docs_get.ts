@@ -54,13 +54,18 @@ export default defineTool({
   capability: 'harness:read',
   requirePrincipal: false,
   roles: [...ALL_ROLES],
+  modality: ['text'],
   rolesQuota: {
     worker: { perChunk: 10 },
     operator: { perRun: 15 },
   },
   args: argsSchema,
   async handler(args, ctx) {
-    const ctxAny = ctx as { harnessSlug?: string; metadata?: (data: Record<string, unknown>) => void };
+    const ctxAny = ctx as {
+      harnessSlug?: string;
+      signal?: AbortSignal;
+      metadata?: (data: Record<string, unknown>) => void;
+    };
     const slug = ctxAny.harnessSlug;
     if (!slug) {
       return {
@@ -79,7 +84,10 @@ export default defineTool({
       };
     }
     const adapter = harnessFsAdapter(project.path, { name: `harness:${slug}` });
-    const response = await getDocs(adapter, args, { metadata: ctxAny.metadata });
+    const response = await getDocs(adapter, args, {
+      ...(ctxAny.signal && { signal: ctxAny.signal }),
+      ...(ctxAny.metadata && { metadata: ctxAny.metadata }),
+    });
     return { content: [{ type: 'text' as const, text: JSON.stringify({ ...response, harnessSlug: slug }) }] };
   },
 });

@@ -125,3 +125,14 @@ describe('getDocs', () => {
     expect(metadata.mock.calls[0][0].jsx_literals_present).toBe(true);
   });
 });
+
+describe('getDocs — cancellation', () => {
+  it('throws on pre-aborted signal', async () => {
+    const ac = new AbortController();
+    ac.abort();
+    const pages = [makePage({ slug: 'a' })];
+    await expect(
+      getDocs(makeSource({ pages, contents: { a: 'x' } }), { slugs: ['a'] }, { signal: ac.signal }),
+    ).rejects.toThrow(/cancelled/);
+  });
+});

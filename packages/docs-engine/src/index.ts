@@ -44,3 +44,4 @@ export { renderMdxToMarkdown, withPreamble } from './render-mdx';
 
 export { fumadocsAdapter, type FumadocsAdapterOptions } from './adapters/fumadocs';
 export { harnessFsAdapter, type HarnessFsAdapterOptions } from './adapters/harness-fs';
+export { RunCache, type RunCacheCtx } from './per-run-cache';

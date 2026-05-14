@@ -10,8 +10,10 @@
 import type { DocSource, EngineCtx, OutlinePayload, OutlinePageEntry, OutlineSectionEntry } from './types';
 import { humanize } from './shared';
 
-export async function buildOutline(source: DocSource, _ctx: EngineCtx = {}): Promise<OutlinePayload> {
+export async function buildOutline(source: DocSource, ctx: EngineCtx = {}): Promise<OutlinePayload> {
+  if (ctx.signal?.aborted) throw new Error('cancelled');
   const pages = await source.listPages();
+  if (ctx.signal?.aborted) throw new Error('cancelled');
 
   // Group by first slug segment (or '_root' when the page has no section).
   const bySection = new Map<string, OutlinePageEntry[]>();

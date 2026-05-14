@@ -61,6 +61,7 @@ function makeExcerpt(body: string, tokens: string[], window = 120): string {
 
 export async function searchDocs(source: DocSource, args: SearchArgs, ctx: EngineCtx = {}): Promise<SearchResult> {
   const limit = args.limit ?? 8;
+  if (ctx.signal?.aborted) throw new Error('cancelled');
   const tokens = tokenize(args.query);
   if (tokens.length === 0) {
     ctx.metadata?.({ query_tokens: 0, hit_count: 0, returned: 0 });
@@ -68,9 +69,27 @@ export async function searchDocs(source: DocSource, args: SearchArgs, ctx: Engin
   }
 
   const pages = await source.listPages();
+  if (ctx.signal?.aborted) throw new Error('cancelled');
+  ctx.progress?.(10, `searching ${pages.length} pages`);
+
+  // Per-page render, with abort checks at each step. Promise.all keeps
+  // the parallelism but every renderer throws on abort so the whole
+  // batch unwinds.
+  let scanned = 0;
   const rendered = await Promise.all(
-    pages.map(async (p) => ({ page: p, body: await source.getContent(p) })),
+    pages.map(async (p) => {
+      if (ctx.signal?.aborted) throw new Error('cancelled');
+      const body = await source.getContent(p);
+      scanned += 1;
+      if (scanned % 25 === 0) {
+        const pct = 10 + Math.floor((scanned / pages.length) * 70);
+        ctx.progress?.(pct, `scored ${scanned}/${pages.length}`);
+      }
+      return { page: p, body };
+    }),
   );
+  if (ctx.signal?.aborted) throw new Error('cancelled');
+  ctx.progress?.(85, 'ranking');
 
   const scored: SearchHit[] = [];
   for (const { page, body } of rendered) {

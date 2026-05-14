@@ -61,3 +61,26 @@ describe('searchDocs', () => {
     });
   });
 });
+
+describe('searchDocs — progress + cancellation', () => {
+  it('throws on pre-aborted signal', async () => {
+    const ac = new AbortController();
+    ac.abort();
+    const pages = [makePage({ slug: 'a', title: 'A' })];
+    await expect(
+      searchDocs(makeSource({ pages, contents: { a: 'foo' } }), { query: 'foo' }, { signal: ac.signal }),
+    ).rejects.toThrow(/cancelled/);
+  });
+  it('emits ctx.progress', async () => {
+    const progress = vi.fn();
+    const pages = [makePage({ slug: 'a', title: 'foo' }), makePage({ slug: 'b', title: 'bar' })];
+    await searchDocs(
+      makeSource({ pages, contents: { a: 'foo', b: 'bar' } }),
+      { query: 'foo' },
+      { progress },
+    );
+    expect(progress).toHaveBeenCalled();
+    const calls = progress.mock.calls.map((c) => c[0]);
+    expect(Math.min(...calls)).toBeGreaterThanOrEqual(10);
+  });
+});

@@ -58,7 +58,12 @@ export interface DocSource {
 export interface EngineCtx {
   runId?: string;
   spawnId?: string;
+  /** Phase 2.0 telemetry callback — payload lands in tool_invocations.metadata_json. */
   metadata?: (data: Record<string, unknown>) => void;
+  /** Forwarded ctx.signal from the dispatcher. Engine functions bail when aborted. */
+  signal?: AbortSignal;
+  /** Forwarded ctx.progress from the dispatcher. Engine functions emit when defined. */
+  progress?: (pct: number, msg: string) => void;
 }
 
 /* ─── Outline result ──────────────────────────────────────────────────── */

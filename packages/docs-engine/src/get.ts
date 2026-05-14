@@ -25,16 +25,19 @@ import {
 
 export async function getDocs(source: DocSource, args: GetArgs, ctx: EngineCtx = {}): Promise<GetResult> {
   const { slugs, heading } = args;
+  if (ctx.signal?.aborted) throw new Error('cancelled');
   if (slugs.length === 0) {
     ctx.metadata?.({ requested: 0, found: 0, not_found: 0, truncated: 0, sliced: 0, has_heading: !!heading });
     return { results: [] };
   }
 
   const allPages = await source.listPages();
+  if (ctx.signal?.aborted) throw new Error('cancelled');
   const allSlugs = allPages.map((p) => p.slug);
 
   const results: GetEntry[] = await Promise.all(
     slugs.map(async (slug): Promise<GetEntry> => {
+      if (ctx.signal?.aborted) throw new Error('cancelled');
       const page = await source.getPage(slug);
       if (!page) {
         return {

@@ -72,6 +72,8 @@ import './harness/health';
 import './harness/list_features';
 import './harness/docs_outline';
 import './harness/docs_get';
+import './harness/docs-resource-index';
+import './harness/docs-resource-section';
 import './operator/actions_recent';
 import './operator/notifications_recent';
 import './snapshots/list';

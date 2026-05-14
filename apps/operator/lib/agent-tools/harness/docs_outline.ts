@@ -1,17 +1,15 @@
 /**
  * harness:docs_outline — outline of THIS harness's documentation.
- *
- * Reads <projectPath>/docs/**\/*.md plus well-known state files
- * (SPEC.md, AGENTS.md, .harness/{knowledge,supervisor-notes,
- * validation-contract}.md) and returns sections + pages + headings.
- *
- * Not to be confused with docs:outline (which reads the public
- * Papercusp framework documentation).
  */
 
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
-import { buildOutline, harnessFsAdapter, type OutlinePayload } from '@papercusp/docs-engine';
+import {
+  buildOutline,
+  harnessFsAdapter,
+  RunCache,
+  type OutlinePayload,
+} from '@papercusp/docs-engine';
 import { loadHarnessRegistry } from '@/lib/harness-registry';
 
 const ALL_ROLES = [
@@ -26,9 +24,7 @@ const ALL_ROLES = [
   'curator',
 ] as const;
 
-/** Per-run cache keyed by `<runId|spawnId>:<slug>`. */
-export const harnessOutlineCache = new Map<string, OutlinePayload>();
-export const CACHE_MAX = 100;
+const cache = new RunCache<OutlinePayload>();
 
 export default defineTool({
   name: 'harness:docs_outline',
@@ -44,9 +40,16 @@ export default defineTool({
   capability: 'harness:read',
   requirePrincipal: false,
   roles: [...ALL_ROLES],
+  modality: ['text'],
   args: z.object({}),
   async handler(_args, ctx) {
-    const ctxAny = ctx as { runId?: string; spawnId?: string; harnessSlug?: string };
+    const ctxAny = ctx as {
+      runId?: string;
+      spawnId?: string;
+      harnessSlug?: string;
+      signal?: AbortSignal;
+      metadata?: (d: Record<string, unknown>) => void;
+    };
     const slug = ctxAny.harnessSlug;
     if (!slug) {
       return {
@@ -74,8 +77,7 @@ export default defineTool({
       };
     }
 
-    const key = `${ctxAny.runId ?? ctxAny.spawnId ?? '_anon'}:${slug}`;
-    const hit = harnessOutlineCache.get(key);
+    const hit = cache.get(ctxAny, slug);
     if (hit) {
       return {
         content: [{ type: 'text' as const, text: JSON.stringify({ ...hit, cached: true, harnessSlug: slug }) }],
@@ -83,23 +85,15 @@ export default defineTool({
     }
 
     const adapter = harnessFsAdapter(project.path, { name: `harness:${slug}` });
-    const payload = await buildOutline(adapter);
-    // Fix URL placeholder __SLUG__ → real slug.
-    const fixed: OutlinePayload = {
-      ...payload,
-      sections: payload.sections.map((s) => ({
-        ...s,
-        pages: s.pages.map((p) => p),
-      })),
-    };
-
-    harnessOutlineCache.set(key, fixed);
-    if (harnessOutlineCache.size > CACHE_MAX) {
-      const oldest = harnessOutlineCache.keys().next().value;
-      if (oldest !== undefined) harnessOutlineCache.delete(oldest);
-    }
+    const payload = await buildOutline(adapter, {
+      ...(ctxAny.runId !== undefined && { runId: ctxAny.runId }),
+      ...(ctxAny.spawnId !== undefined && { spawnId: ctxAny.spawnId }),
+      ...(ctxAny.signal && { signal: ctxAny.signal }),
+      ...(ctxAny.metadata && { metadata: ctxAny.metadata }),
+    });
+    cache.set(ctxAny, payload, slug);
     return {
-      content: [{ type: 'text' as const, text: JSON.stringify({ ...fixed, cached: false, harnessSlug: slug }) }],
+      content: [{ type: 'text' as const, text: JSON.stringify({ ...payload, cached: false, harnessSlug: slug }) }],
     };
   },
 });

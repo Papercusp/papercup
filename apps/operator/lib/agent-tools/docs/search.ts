@@ -56,14 +56,23 @@ export default defineTool({
   capability: 'docs:read',
   requirePrincipal: false,
   roles: [...ALL_ROLES],
+  modality: ['text'],
   rolesQuota: {
     worker: { perChunk: 8 },
     operator: { perRun: 20 },
   },
   args: argsSchema,
   async handler(args, ctx) {
-    const ctxAny = ctx as { metadata?: (data: Record<string, unknown>) => void };
-    const response = await searchDocs(adapter, args, { metadata: ctxAny.metadata });
+    const ctxAny = ctx as {
+      signal?: AbortSignal;
+      metadata?: (data: Record<string, unknown>) => void;
+      progress?: (pct: number, msg: string) => void;
+    };
+    const response = await searchDocs(adapter, args, {
+      ...(ctxAny.signal && { signal: ctxAny.signal }),
+      ...(ctxAny.metadata && { metadata: ctxAny.metadata }),
+      ...(ctxAny.progress && { progress: ctxAny.progress }),
+    });
     return { content: [{ type: 'text' as const, text: JSON.stringify(response) }] };
   },
 });
