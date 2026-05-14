@@ -22,9 +22,10 @@ function db() {
 
 export async function GET(req: NextRequest) {
   const url = new URL(req.url);
-  const target = url.searchParams.get('target') ?? undefined;
-  const scenario = url.searchParams.get('scenario') ?? undefined;
-  const status = url.searchParams.get('status') ?? undefined;
+  // Empty strings come from the UI's "any" sentinel; treat as undefined.
+  const target = url.searchParams.get('target') || undefined;
+  const scenario = url.searchParams.get('scenario') || undefined;
+  const status = url.searchParams.get('status') || undefined;
   const limit = Math.min(200, Math.max(1, Number(url.searchParams.get('limit') ?? 50)));
 
   const sql = db();

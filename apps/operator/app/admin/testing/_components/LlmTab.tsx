@@ -225,6 +225,7 @@ function ScenariosView() {
 function RunsView() {
   const [targetFilter, setTargetFilter] = useQueryState('target', parseAsString.withDefault(''));
   const [statusFilter, setStatusFilter] = useQueryState('status', parseAsString.withDefault(''));
+  const [selectedRunId, setSelectedRunId] = useQueryState('run', parseAsString.withDefault(''));
   const [runs, setRuns] = useState<RunRow[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -284,7 +285,8 @@ function RunsView() {
             </thead>
             <tbody>
               {runs.map((r) => (
-                <tr key={r.id}>
+                <tr key={r.id} onClick={() => setSelectedRunId(r.id)} style={{ cursor: 'pointer' }}
+                    className={r.id === selectedRunId ? 'is-selected' : undefined}>
                   <td title={r.started_at}>{new Date(r.started_at).toLocaleString()}</td>
                   <td><code>{r.scenario_id}</code></td>
                   <td>{r.persona_id}</td>
@@ -302,6 +304,275 @@ function RunsView() {
           </table>
         </div>
       )}
+
+      {selectedRunId ? (
+        <RunDetailPanel runId={selectedRunId} onClose={() => setSelectedRunId(null)} />
+      ) : null}
+    </>
+  );
+}
+
+interface RunDetail {
+  run: {
+    id: string;
+    scenario_id: string;
+    scenario_target: string;
+    persona_id: string;
+    persona_traits_json: Record<string, unknown>;
+    sut_model: string;
+    judge_model: string;
+    workspace_mode: string;
+    transport_mode: string;
+    status: string;
+    started_at: string;
+    finished_at: string | null;
+    cost_usd: string | number;
+    cap_breaches: string[];
+    scores_json: Record<string, number> | null;
+    transcript_norm_json: Array<{
+      idx: number;
+      assistantText: string;
+      toolCalls: Array<{ name: string; input?: unknown }>;
+      cards: Array<{ kind: string; voiceAnswerable?: boolean }>;
+      controlTags: Array<{ tag: string; attrs?: Record<string, string> }>;
+      finishReason: string;
+      costUsd: number;
+      latencyMs: number;
+      error?: string | null;
+    }>;
+    telemetry_json: { toolInvocations?: Array<{ toolName: string; status: string }>; continueChainRows?: unknown[] } | null;
+    judge_json: { scores: Record<string, number>; findings: Array<{ axis: string; severity: string; claim: string; suggestion?: string; copyPrompt?: string; evidenceTurnIdx?: number }>; notes?: string } | null;
+  };
+  findings: Array<{
+    id: string;
+    source: 'assert' | 'judge' | 'variance';
+    severity: 'error' | 'warn' | 'info';
+    axis: string | null;
+    assert_kind: string | null;
+    evidence_turn_idx: number | null;
+    claim: string;
+    suggestion: string | null;
+    copy_prompt: string | null;
+    acknowledged: boolean;
+  }>;
+}
+
+function RunDetailPanel({ runId, onClose }: { runId: string; onClose: () => void }) {
+  const [data, setData] = useState<RunDetail | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [expandedTurn, setExpandedTurn] = useState<number | null>(0);
+
+  useEffect(() => {
+    let live = true;
+    setData(null);
+    setError(null);
+    fetch(`/api/admin/llm-tests/runs/${runId}`)
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
+      .then((j) => live && setData(j as RunDetail))
+      .catch((e) => live && setError((e as Error).message));
+    return () => { live = false; };
+  }, [runId]);
+
+  return (
+    <div
+      role="dialog"
+      aria-label="Run detail"
+      style={{
+        position: 'fixed', top: 0, right: 0, bottom: 0, width: '70vw', maxWidth: 1100,
+        background: 'var(--bg, #fff)', borderLeft: '1px solid var(--border, #ddd)',
+        boxShadow: '-8px 0 24px rgba(0,0,0,0.18)',
+        overflow: 'auto', padding: 16, zIndex: 100,
+      }}
+    >
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+        <h2 style={{ margin: 0 }}>Run detail</h2>
+        <Button variant="ghost" onClick={onClose}>close</Button>
+      </div>
+      {error ? <ErrorBox error={error} /> : null}
+      {!data && !error ? <Loading /> : null}
+      {data ? <RunDetailBody data={data} expandedTurn={expandedTurn} onToggleTurn={setExpandedTurn} /> : null}
+    </div>
+  );
+}
+
+function RunDetailBody({
+  data,
+  expandedTurn,
+  onToggleTurn,
+}: {
+  data: RunDetail;
+  expandedTurn: number | null;
+  onToggleTurn: (idx: number | null) => void;
+}) {
+  const { run, findings } = data;
+  const turns = Array.isArray(run.transcript_norm_json) ? run.transcript_norm_json : [];
+  const tools = run.telemetry_json?.toolInvocations ?? [];
+  const assertViolations = findings.filter((f) => f.source === 'assert');
+  const judgeFindings = findings.filter((f) => f.source === 'judge');
+  const varianceFindings = findings.filter((f) => f.source === 'variance');
+
+  const copy = (text: string) => { void navigator.clipboard?.writeText(text); };
+
+  return (
+    <>
+      <section className="pc-test-card" style={{ padding: 12, marginBottom: 12 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 8, fontSize: 12 }}>
+          <div><strong>scenario</strong><br /><code>{run.scenario_id}</code></div>
+          <div><strong>target</strong><br />{run.scenario_target}</div>
+          <div><strong>persona</strong><br />{run.persona_id}</div>
+          <div><strong>status</strong><br /><StatusBadge status={run.status} /></div>
+          <div><strong>SUT</strong><br />{run.sut_model.replace('claude-', '')}</div>
+          <div><strong>judge</strong><br />{run.judge_model.replace('claude-', '')}</div>
+          <div><strong>cost</strong><br />${Number(run.cost_usd).toFixed(4)}</div>
+          <div><strong>workspace</strong><br />{run.workspace_mode} / {run.transport_mode}</div>
+        </div>
+        {run.scores_json ? (
+          <div style={{ marginTop: 10, fontSize: 12 }}>
+            <strong>scores:</strong>{' '}
+            {Object.entries(run.scores_json).map(([a, v]) => (
+              <span key={a} style={{ marginRight: 12 }}>
+                {a}: <strong>{Number(v).toFixed(1)}</strong>
+              </span>
+            ))}
+          </div>
+        ) : null}
+        {run.cap_breaches?.length ? (
+          <div style={{ marginTop: 8, fontSize: 12, color: 'var(--bad, #c33)' }}>
+            cap breaches: {run.cap_breaches.join(', ')}
+          </div>
+        ) : null}
+      </section>
+
+      <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: 12 }}>
+        <section>
+          <h3 style={{ marginTop: 0 }}>Transcript ({turns.length} turn{turns.length === 1 ? '' : 's'})</h3>
+          {turns.length === 0 ? (
+            <Empty msg="No turns captured." />
+          ) : (
+            turns.map((t) => {
+              const isOpen = expandedTurn === t.idx;
+              return (
+                <div key={t.idx} className="pc-test-card" style={{ padding: 10, marginBottom: 8 }}>
+                  <div
+                    onClick={() => onToggleTurn(isOpen ? null : t.idx)}
+                    style={{ cursor: 'pointer', display: 'flex', justifyContent: 'space-between', fontSize: 12 }}
+                  >
+                    <strong>turn {t.idx}</strong>
+                    <span style={{ color: 'var(--fg-mute, #888)' }}>
+                      {t.finishReason} · {t.latencyMs}ms
+                      {t.toolCalls.length > 0 ? ` · ${t.toolCalls.length} tool${t.toolCalls.length === 1 ? '' : 's'}` : ''}
+                      {t.controlTags.length > 0 ? ` · ${t.controlTags.map((c) => `<${c.tag}/>`).join(' ')}` : ''}
+                      {t.error ? ' · error' : ''}
+                    </span>
+                  </div>
+                  {isOpen ? (
+                    <div style={{ marginTop: 8, fontSize: 13 }}>
+                      <pre style={{ whiteSpace: 'pre-wrap', margin: '0 0 8px 0', background: 'var(--bg-soft, #f8f8f8)', padding: 8 }}>
+                        {t.assistantText || <em>(empty)</em>}
+                      </pre>
+                      {t.toolCalls.length > 0 ? (
+                        <details>
+                          <summary style={{ cursor: 'pointer', fontSize: 12 }}>
+                            tool calls ({t.toolCalls.length})
+                          </summary>
+                          <pre style={{ fontSize: 11, background: 'var(--bg-soft, #f8f8f8)', padding: 8 }}>
+                            {JSON.stringify(t.toolCalls, null, 2)}
+                          </pre>
+                        </details>
+                      ) : null}
+                      {t.cards.length > 0 ? (
+                        <details>
+                          <summary style={{ cursor: 'pointer', fontSize: 12 }}>cards ({t.cards.length})</summary>
+                          <pre style={{ fontSize: 11, background: 'var(--bg-soft, #f8f8f8)', padding: 8 }}>
+                            {JSON.stringify(t.cards, null, 2)}
+                          </pre>
+                        </details>
+                      ) : null}
+                      {t.error ? (
+                        <div style={{ marginTop: 4, color: 'var(--bad, #c33)', fontSize: 12 }}>
+                          error: <code>{t.error}</code>
+                        </div>
+                      ) : null}
+                    </div>
+                  ) : null}
+                </div>
+              );
+            })
+          )}
+          {tools.length > 0 ? (
+            <details style={{ marginTop: 12 }}>
+              <summary style={{ cursor: 'pointer', fontWeight: 600 }}>
+                Telemetry — tool invocations ({tools.length})
+              </summary>
+              <table className="pc-test-table" style={{ marginTop: 8 }}>
+                <thead><tr><th>tool</th><th>status</th></tr></thead>
+                <tbody>
+                  {tools.map((tl, i) => (
+                    <tr key={i}><td><code>{tl.toolName}</code></td><td>{tl.status}</td></tr>
+                  ))}
+                </tbody>
+              </table>
+            </details>
+          ) : null}
+        </section>
+
+        <aside>
+          <h3 style={{ marginTop: 0 }}>Findings</h3>
+          {assertViolations.length > 0 ? (
+            <>
+              <h4 style={{ fontSize: 12, color: 'var(--fg-mute, #888)' }}>Asserts ({assertViolations.length})</h4>
+              {assertViolations.map((f) => (
+                <div key={f.id} className="pc-test-card" style={{ padding: 8, marginBottom: 6, fontSize: 12 }}>
+                  <SeverityBadge severity={f.severity} />{' '}
+                  {f.assert_kind ? <code>{f.assert_kind}</code> : null}
+                  <div style={{ marginTop: 4 }}>{f.claim}</div>
+                  {f.evidence_turn_idx != null ? (
+                    <div style={{ fontSize: 11, marginTop: 2, color: 'var(--fg-mute, #888)' }}>
+                      turn {f.evidence_turn_idx}
+                    </div>
+                  ) : null}
+                </div>
+              ))}
+            </>
+          ) : null}
+          {judgeFindings.length > 0 ? (
+            <>
+              <h4 style={{ fontSize: 12, color: 'var(--fg-mute, #888)' }}>Judge ({judgeFindings.length})</h4>
+              {judgeFindings.map((f) => (
+                <div key={f.id} className="pc-test-card" style={{ padding: 8, marginBottom: 6, fontSize: 12 }}>
+                  <SeverityBadge severity={f.severity} />{' '}
+                  {f.axis ? <strong>{f.axis}</strong> : null}
+                  <div style={{ marginTop: 4 }}>{f.claim}</div>
+                  {f.suggestion ? (
+                    <div style={{ marginTop: 4, color: 'var(--fg-mute, #888)' }}>→ {f.suggestion}</div>
+                  ) : null}
+                  {f.copy_prompt ? (
+                    <Button variant="ghost" onClick={() => copy(f.copy_prompt!)} title="Copy as agent prompt">
+                      copy prompt
+                    </Button>
+                  ) : null}
+                </div>
+              ))}
+            </>
+          ) : null}
+          {varianceFindings.length > 0 ? (
+            <>
+              <h4 style={{ fontSize: 12, color: 'var(--fg-mute, #888)' }}>Variance ({varianceFindings.length})</h4>
+              {varianceFindings.map((f) => (
+                <div key={f.id} className="pc-test-card" style={{ padding: 8, marginBottom: 6, fontSize: 12 }}>
+                  <SeverityBadge severity={f.severity} /> {f.claim}
+                </div>
+              ))}
+            </>
+          ) : null}
+          {findings.length === 0 ? <Empty msg="No findings on this run." /> : null}
+        </aside>
+      </div>
+
+      <section style={{ marginTop: 16, fontSize: 12, color: 'var(--fg-mute, #888)' }}>
+        <strong>Re-run:</strong> use the CLI for now —{' '}
+        <code>pnpm llm-test replay --re-evaluate {run.id} --scenario {run.scenario_id}</code>
+      </section>
     </>
   );
 }
