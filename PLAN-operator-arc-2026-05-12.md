@@ -5,8 +5,11 @@ independently mergeable. Update statuses as commits land.
 
 ## Current status — 2026-05-14
 
-All Plan 1–4 items shipped or marked ⚠️ partial with the remainder in
-`apps/operator/docs/plans/deferred-followups-2026-05-14.md`.
+All Plan 1–4 items shipped (Tier-3 follow-up arc 2026-05-14 closed
+the remaining 2B.2 + 2B.3 partials via `apps/operator/docs/plans/deferred-followups-2026-05-14.md`).
+Only the A-section items in that doc (Hono shim retirement, flags
+state-shape, JWT principal) remain parked — they're framework-level
+decisions, not work from this plan.
 
 Audit rounds 1–15 caught and fixed 24 production bugs across this arc;
 round-13 + round-14 collateral fixes shipped in commit chain
@@ -123,8 +126,8 @@ User chose **Plan C (BM25 + embeddings + RRF hybrid)** but ship in order: A firs
 | 2A.2 | `search:fulltext` tool + guidance | 1h | ✅ (this turn) |
 | 2A.3 | Backfill script | 0.5h | ✅ (folded into migration 059 UPDATE) |
 | 2B.1 | pgvector + text_embeddings schema | 1h | ✅ shipped — migration 060 (pgvector) + 061 (semantic search) |
-| 2B.2 | embeddings.ts wrapper (lazy, worker-thread) | 1.5h | ⚠️ partial — lazy-init of embedder on first use ✅; worker-thread isolation deferred (see `apps/operator/docs/plans/deferred-followups-2026-05-14.md`) |
-| 2B.3 | Background embedding worker + battery awareness | 3h | ⚠️ partial — periodic worker ✅ (5-min sweep in `lib/search/embed-backfill.ts`); battery-aware pause deferred (see `apps/operator/docs/plans/deferred-followups-2026-05-14.md`) |
+| 2B.2 | embeddings.ts wrapper (lazy, worker-thread) | 1.5h | ✅ shipped — lazy-init `ae639376` + worker-thread isolation `ab021d0a` (Tier-3 B1) |
+| 2B.3 | Background embedding worker + battery awareness | 3h | ✅ shipped — 5-min periodic worker + battery-aware pause `c15f20ce` (Tier-3 B2) |
 | 2B.4 | Backfill script for existing prose | 1h | ✅ shipped — boot sweep + 5-min periodic in `lib/search/embed-backfill.ts` |
 | 2B.5 | `search:semantic` tool with RRF fusion | 2h | ✅ shipped — `search:semantic` with RRF in `63182bc4` (RRF helper + 7 unit tests in `e16351b7`) |
 

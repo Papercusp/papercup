@@ -43,6 +43,14 @@ const SUPPRESSED_PATHS: readonly string[] = ['/login', '/signup'];
 interface MeResponse {
   user?: { id: string; display_name: string } | null;
   autoLogin?: boolean;
+  /**
+   * Set by /api/auth/me when PG is unreachable and the response is a
+   * synthetic default user with a sentinel UUID. We skip the welcome
+   * toast entirely in that mode — writing a stamp keyed on the
+   * synthetic UUID would cause a duplicate welcome to fire the next
+   * time PG recovers (the real default user has a different UUID).
+   */
+  pgUnavailable?: boolean;
 }
 
 /** Compute the most recent 4am-local epoch ms boundary at or before `now`. */
@@ -84,6 +92,12 @@ export default function AutoLoginWelcomeToast() {
         const j = (await r.json()) as MeResponse;
         const user = j.user;
         if (!user) return;
+
+        // Skip the toast when the synthetic-default-user fallback fired.
+        // The synthetic UUID won't match the real default user's UUID
+        // once PG recovers, so writing a welcome stamp here causes a
+        // duplicate toast on next load. Defer to a real /me response.
+        if (j.pgUnavailable) return;
 
         const now = Date.now();
         const boundary = lastReset4amLocalMs(now);
