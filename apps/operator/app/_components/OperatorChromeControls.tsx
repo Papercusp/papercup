@@ -1,8 +1,9 @@
 'use client';
 
-import { Suspense, lazy, useCallback, useEffect, useMemo, useState, type ReactElement } from 'react';
+import { useCallback, useEffect, useMemo, useState, type ReactElement } from 'react';
 import { Select } from '../harness/Select';
 import { DeckCardsMark } from './ChromeNavMarks';
+import { OperatorPanel } from './OperatorPanel';
 import {
   broadcastState,
   hydrateOperatorStateFromPg,
@@ -13,8 +14,6 @@ import {
   type IconState,
   type OperatorState,
 } from './operator-shared-state';
-
-const OperatorPanel = lazy(() => import('./OperatorPanel').then(m => ({ default: m.OperatorPanel })));
 
 export function OperatorButton(): ReactElement {
   const [state, setState] = useState<OperatorState>(sharedState);
@@ -110,9 +109,7 @@ export function OperatorButton(): ReactElement {
       </span>
       {state.open ? (
         <div className="operator-panel-host">
-          <Suspense fallback={null}>
-            <OperatorPanel />
-          </Suspense>
+          <OperatorPanel />
         </div>
       ) : null}
     </>
