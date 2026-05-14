@@ -679,6 +679,52 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
   // gap #2 fix).
   const cardAnsweringEnabledRef = useRef<boolean>(true);
 
+  // ── Grace timer for EL teardown after a silence nudge ────────────
+  //
+  // After fireSilenceNudge() opens the Ready card, arm a one-shot
+  // timer. If the user doesn't resolve the card within
+  // silenceNudgeGraceSecs, dispatch a window event that voice-mode.ts
+  // listens for and tears down the active EL session. Wake-word
+  // listener (if configured) takes over via the existing wakeGated
+  // path. Plan: silence-nudge-reliability-2026-05-14.md §C.2.
+  //
+  // Declared up here (not next to fireSilenceNudge) so the useEffects
+  // and useCallbacks below that reference it in their deps arrays
+  // don't TDZ on first render.
+  //
+  // Cancelled by:
+  //   - Card resolution (focused-card useEffect)
+  //   - User typing (sendUserMessage cancels)
+  //   - User speaking (onVoiceUserTurn cancels)
+  //   - Voice deactivation (voiceActive useEffect cancels)
+  const nudgeGraceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const armNudgeGraceTimer = useCallback(() => {
+    if (nudgeGraceTimerRef.current) clearTimeout(nudgeGraceTimerRef.current);
+    const prefs = loadVoicePrefsClient();
+    const graceSecs = Math.max(0, Math.min(120, prefs.silenceNudgeGraceSecs ?? 30));
+    if (graceSecs === 0) return; // pref-disabled
+    nudgeGraceTimerRef.current = setTimeout(() => {
+      nudgeGraceTimerRef.current = null;
+      // Only meaningful if voice is still active. Text-only is a no-op.
+      if (!voiceActiveRef.current) return;
+      // Hand off to voice-mode. The handler tears down the EL session
+      // and arms wake-word if configured (existing wakeGated flow).
+      if (typeof window !== 'undefined') {
+        try {
+          window.dispatchEvent(new CustomEvent('papercusp:voiceSilenceTeardown', {
+            detail: { wakeword: getConfiguredWakeWordForDisplay(prefs) },
+          }));
+        } catch { /* ignore */ }
+      }
+    }, graceSecs * 1000);
+  }, []);
+  const cancelNudgeGraceTimer = useCallback(() => {
+    if (nudgeGraceTimerRef.current) {
+      clearTimeout(nudgeGraceTimerRef.current);
+      nudgeGraceTimerRef.current = null;
+    }
+  }, []);
+
   // PG-backed conversation identity. Loaded on mount; survives refresh
   // and is shared between the text path and (later) the EL voice path.
   // SessionStorage is kept as a paint-cache so refresh has no flash —
@@ -1548,49 +1594,6 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
   const errorMul = state.consecutiveErrorCount > 0
     ? Math.pow(2, Math.min(state.consecutiveErrorCount, 6))
     : 1;
-
-  // ── Grace timer for EL teardown after a silence nudge ────────────
-  //
-  // After fireSilenceNudge() opens the Ready card, arm a one-shot
-  // timer. If the user doesn't resolve the card within
-  // silenceNudgeGraceSecs, dispatch a window event that voice-mode.ts
-  // listens for and tears down the active EL session. Wake-word
-  // listener (if configured) takes over via the existing wakeGated
-  // path. Plan: silence-nudge-reliability-2026-05-14.md §C.2.
-  //
-  // Cancelled by:
-  //   - Card resolution (state-snapshot drops the card → focused-card
-  //     effect runs → router-active cleared → cleanup cancels timer)
-  //   - User typing (sendUserMessage cancels)
-  //   - Voice deactivation (voiceActive useEffect cancels)
-  //   - Workspace switch (effect cleanup runs on workspaceId change)
-  const nudgeGraceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const armNudgeGraceTimer = useCallback(() => {
-    if (nudgeGraceTimerRef.current) clearTimeout(nudgeGraceTimerRef.current);
-    const prefs = loadVoicePrefsClient();
-    const graceSecs = Math.max(0, Math.min(120, prefs.silenceNudgeGraceSecs ?? 30));
-    if (graceSecs === 0) return; // pref-disabled
-    nudgeGraceTimerRef.current = setTimeout(() => {
-      nudgeGraceTimerRef.current = null;
-      // Only meaningful if voice is still active. Text-only is a no-op.
-      if (!voiceActiveRef.current) return;
-      // Hand off to voice-mode. The handler tears down the EL session
-      // and arms wake-word if configured (existing wakeGated flow).
-      if (typeof window !== 'undefined') {
-        try {
-          window.dispatchEvent(new CustomEvent('papercusp:voiceSilenceTeardown', {
-            detail: { wakeword: getConfiguredWakeWordForDisplay(prefs) },
-          }));
-        } catch { /* ignore */ }
-      }
-    }, graceSecs * 1000);
-  }, []);
-  const cancelNudgeGraceTimer = useCallback(() => {
-    if (nudgeGraceTimerRef.current) {
-      clearTimeout(nudgeGraceTimerRef.current);
-      nudgeGraceTimerRef.current = null;
-    }
-  }, []);
 
   // Fire the deterministic silence-nudge card. Replaces the
   // previous brain-driven runGeneration('silence_after_question')
