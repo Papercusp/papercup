@@ -169,6 +169,17 @@ async function runOnce(args: OnceArgs): Promise<SingleRunReport> {
   let openCards: CardEvent[] = [];
   let pendingTrigger: TurnTrigger | null = null;
 
+  // Scenario-declared scripted triggers (§ScenarioTrigger).
+  // `on: 'after_turn'` with `param: N` fires the trigger right before
+  // turn N (0-indexed). Used by S09 to inject `generate_ideas` as the
+  // first turn before sim-user gets a say. Consumed once per match.
+  const scriptedTriggers = new Map<number, TurnTrigger>();
+  for (const t of scenario.triggers ?? []) {
+    if (t.on === 'after_turn' && typeof t.param === 'number') {
+      scriptedTriggers.set(t.param, t.fire);
+    }
+  }
+
   try {
     for (let turnIdx = 0; turnIdx < maxTurns; turnIdx++) {
       if (Date.now() > wallDeadlineMs) {
@@ -185,7 +196,11 @@ async function runOnce(args: OnceArgs): Promise<SingleRunReport> {
       let trigger: TurnTrigger;
       let turnMeta: Record<string, unknown> = { modality: persona.traits.modality };
 
-      if (pendingTrigger) {
+      const scripted = scriptedTriggers.get(turnIdx);
+      if (scripted) {
+        trigger = scripted;
+        scriptedTriggers.delete(turnIdx);
+      } else if (pendingTrigger) {
         trigger = pendingTrigger;
         pendingTrigger = null;
       } else {

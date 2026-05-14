@@ -1,27 +1,45 @@
 /**
  * Scenario registry — every scenario the framework knows about.
  *
- * Phase 1 ships S01, S02, S08. Phase 2 fills in S03–S07, S09–S12 per
- * plan §10.2.
+ * Phase 1 ships S01, S02, S08. Phase 2 fills in S03–S12 per
+ * plan §10.2. Some scenarios have caveats:
+ *   - S04 (cap-time): ledger-assert only; brain time naturally
+ *                     enforces the cap.
+ *   - S07 (passive):  requires realWorkspace + the pref flipped.
+ *   - S11 (voice):    text path with modality='voice'; a real voice
+ *                     transport test is a future VoiceTarget.
+ *   - S12 (errors):   natural error path (lookup of non-existent
+ *                     entity). The deterministic-injection version
+ *                     waits on brain-subprocess override plumbing.
  */
 
 import type { Scenario } from '../types';
 import { S01_STATUS_QUICK } from './operator/S01-status-quick';
 import { S02_MULTISTEP_INVESTIGATION } from './operator/S02-multistep-investigation';
 import { S03_CONTINUE_CAP_COUNT } from './operator/S03-continue-cap-count';
+import { S04_CONTINUE_CAP_TIME } from './operator/S04-continue-cap-time';
 import { S05_SLEEP_TAG } from './operator/S05-sleep-tag';
+import { S06_SPAWN_WORKER } from './operator/S06-spawn-worker';
 import { S07_PASSIVE_MODE } from './operator/S07-passive-mode';
 import { S08_SILENCE_NUDGE_READY } from './operator/S08-silence-nudge-ready';
+import { S09_GENERATE_IDEAS } from './operator/S09-generate-ideas';
 import { S10_ASK_CHOICE } from './operator/S10-ask-choice';
+import { S11_VOICE_CARD_ANSWER } from './operator/S11-voice-card-answer';
+import { S12_TOOL_ERROR_RECOVERY } from './operator/S12-tool-error-recovery';
 
 export const SCENARIOS: ReadonlyArray<Scenario> = [
   S01_STATUS_QUICK,
   S02_MULTISTEP_INVESTIGATION,
   S03_CONTINUE_CAP_COUNT,
+  S04_CONTINUE_CAP_TIME,
   S05_SLEEP_TAG,
+  S06_SPAWN_WORKER,
   S07_PASSIVE_MODE,
   S08_SILENCE_NUDGE_READY,
+  S09_GENERATE_IDEAS,
   S10_ASK_CHOICE,
+  S11_VOICE_CARD_ANSWER,
+  S12_TOOL_ERROR_RECOVERY,
 ];
 
 export function getScenario(id: string): Scenario {

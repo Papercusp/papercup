@@ -20,16 +20,21 @@ import { describe, it, expect } from 'vitest';
 import { SCENARIOS, getScenario } from '../scenarios';
 
 describe('scenario registry', () => {
-  it('exposes the Phase 1 + initial Phase 2 scenarios', () => {
+  it('exposes the full operator scenario suite (S01–S12)', () => {
     const ids = SCENARIOS.map((s) => s.id).sort();
     expect(ids).toEqual([
       'op-S01-status-quick',
       'op-S02-multistep-investigation',
       'op-S03-continue-cap-count',
+      'op-S04-continue-cap-time',
       'op-S05-sleep-tag',
+      'op-S06-spawn-worker',
       'op-S07-passive-mode',
       'op-S08-silence-nudge-ready',
+      'op-S09-generate-ideas',
       'op-S10-ask-choice',
+      'op-S11-voice-card-answer',
+      'op-S12-tool-error-recovery',
     ].sort());
   });
 
