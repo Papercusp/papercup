@@ -1,0 +1,93 @@
+/**
+ * Bespoke-card response endpoint — HTTP surface.
+ *
+ * Unit-test coverage (route.test.ts) exercises submit/decline/cancel
+ * happy-paths, Zod validation, cross-workspace defense-in-depth, and
+ * the 30 RPS per-user rate limit. This spec covers the parts that
+ * only show up against the live server: method handling, auth gate
+ * ordering, malformed payloads, and Content-Type handling.
+ *
+ * Plan: apps/operator/docs/plans/bespoke-card-improvements-2026-05-13.md §4.5
+ */
+import { test, expect } from '@playwright/test';
+
+const baseURL = process.env.OPERATOR_E2E_BASE_URL ?? 'http://127.0.0.1:3055';
+const path = '/api/operator/conversations/spec-fixture-id/card-response';
+
+test.describe('bespoke-card response endpoint', () => {
+  test('POST without session returns 401', async ({ request }) => {
+    const res = await request.post(`${baseURL}${path}`, {
+      data: { correlationId: 'x', action: 'cancel', workspaceId: 'w' },
+    });
+    expect(res.status()).toBe(401);
+    const body = await res.json();
+    expect(body.error).toBe('unauthorized');
+  });
+
+  test('POST without session 401s BEFORE body validation (auth gate first)', async ({
+    request,
+  }) => {
+    // Send obviously invalid body; if auth gate ordered correctly we still get 401, not 400.
+    const res = await request.post(`${baseURL}${path}`, {
+      data: { garbage: true },
+    });
+    expect(res.status()).toBe(401);
+  });
+
+  test('POST with non-JSON Content-Type still 401s without session', async ({ request }) => {
+    const res = await request.post(`${baseURL}${path}`, {
+      data: 'not-json-at-all',
+      headers: { 'Content-Type': 'text/plain' },
+    });
+    // Either auth-gates first (401) or rejects parsing (400). Must not 500.
+    expect([400, 401, 415]).toContain(res.status());
+  });
+
+  test('GET returns 405 (POST-only route)', async ({ request }) => {
+    const res = await request.get(`${baseURL}${path}`);
+    expect(res.status()).toBe(405);
+  });
+
+  test('PUT returns 405', async ({ request }) => {
+    const res = await request.put(`${baseURL}${path}`, { data: {} });
+    expect(res.status()).toBe(405);
+  });
+
+  test('DELETE returns 405', async ({ request }) => {
+    const res = await request.delete(`${baseURL}${path}`);
+    expect(res.status()).toBe(405);
+  });
+
+  test('PATCH returns 405', async ({ request }) => {
+    const res = await request.patch(`${baseURL}${path}`, { data: {} });
+    expect(res.status()).toBe(405);
+  });
+
+  test('dynamic [id] segment accepts any string without 500', async ({ request }) => {
+    // Path param is opaque (route ignores it; cards are looked up by correlationId)
+    // — try a few suspicious shapes and confirm none crash the server.
+    const ids = [
+      'normal-id',
+      'with spaces',
+      'with/slash-encoded',
+      '../../etc/passwd',
+      encodeURIComponent('special&chars?=foo'),
+    ];
+    for (const id of ids) {
+      const res = await request.post(
+        `${baseURL}/api/operator/conversations/${id}/card-response`,
+        { data: { correlationId: 'x', action: 'cancel', workspaceId: 'w' } },
+      );
+      expect(res.status()).toBeLessThan(500);
+    }
+  });
+
+  test('oversized body does not 500', async ({ request }) => {
+    const huge = 'x'.repeat(2 * 1024 * 1024); // 2MB
+    const res = await request.post(`${baseURL}${path}`, {
+      data: { correlationId: 'x', action: 'cancel', workspaceId: 'w', payload: { blob: huge } },
+    });
+    // Either auth-gates (401) or rejects size (413) — never crash.
+    expect(res.status()).toBeLessThan(500);
+  });
+});
