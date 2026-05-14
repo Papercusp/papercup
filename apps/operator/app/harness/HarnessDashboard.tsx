@@ -2584,12 +2584,15 @@ export default function HarnessDashboard() {
     parseAsStringEnum<Phase>(['staging', 'testing', 'production']).withDefault('staging'),
   );
   // When the phases flag is off (production mode), force the active
-  // phase to 'production'. Without this, a URL like ?phase=staging
-  // (lingering from a flag-on session, or hand-edited) would point
-  // every API call at a branch the user can no longer switch to.
+  // phase to 'staging'. The displayed tab in PhaseTabs renders as
+  // "production"/main, but internally everything threads through
+  // 'staging' — that's the orchestrator's default ctx.phase (from
+  // config.json), and lane rows are written keyed on it. A coerced
+  // 'production' value would route API calls + Zero subscriptions to
+  // an empty bucket and the agents-in-flight bar would stay empty.
   useEffect(() => {
-    if (!harnessPhasesEnabled && activePhase !== 'production') {
-      void setActivePhase('production');
+    if (!harnessPhasesEnabled && activePhase !== 'staging') {
+      void setActivePhase('staging');
     }
   }, [harnessPhasesEnabled, activePhase, setActivePhase]);
   // Dashboard sidebar parent panel collapse — when true, only the

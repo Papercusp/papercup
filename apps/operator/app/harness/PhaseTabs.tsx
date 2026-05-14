@@ -65,7 +65,16 @@ interface Props {
 // bundle). Single source of truth — adding a phase touches one file.
 import { ALL_PHASES } from '@/lib/harness-phases-const';
 const PHASE_ORDER: Phase[] = [...ALL_PHASES];
-const PRODUCTION_ONLY: Phase[] = ['production'];
+// In flag-off mode there is no phase concept — the user only sees one
+// tab. We render it keyed on 'staging' (the orchestrator's actual
+// ctx.phase, what lane rows are stored under) but label it "main" so
+// the user sees a familiar branch name, not the internal phase token.
+const SINGLE_PHASE: Phase[] = ['staging'];
+const PHASE_LABEL_WHEN_FLAG_OFF: Record<Phase, string> = {
+  staging: 'main',
+  testing: 'main',
+  production: 'main',
+};
 const PHASE_COLOR: Record<Phase, string> = {
   staging: '#3b82f6',
   testing: '#a855f7',
@@ -73,7 +82,7 @@ const PHASE_COLOR: Record<Phase, string> = {
 };
 
 export default function PhaseTabs({ slug, activePhase, onChange, phasesEnabled = true }: Props) {
-  const displayedPhases = phasesEnabled ? PHASE_ORDER : PRODUCTION_ONLY;
+  const displayedPhases = phasesEnabled ? PHASE_ORDER : SINGLE_PHASE;
   const [phases, setPhases] = useState<PhaseInfo[]>([]);
   const [health, setHealth] = useState<Record<Phase, 'up' | 'slow' | 'down' | 'unknown'>>({
     staging: 'unknown', testing: 'unknown', production: 'unknown',
@@ -283,7 +292,7 @@ export default function PhaseTabs({ slug, activePhase, onChange, phasesEnabled =
               animation: info?.alive ? 'hPulse 1.6s infinite' : 'none',
             }} />
             <span className="h-phase-name" style={{ color: exists ? 'var(--fg)' : 'var(--fg-dim)', fontWeight: isActive ? 600 : 400 }}>
-              {p}
+              {phasesEnabled ? p : PHASE_LABEL_WHEN_FLAG_OFF[p]}
             </span>
             {info?.exists && (
               <>
