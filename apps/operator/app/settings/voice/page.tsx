@@ -1098,7 +1098,7 @@ function PerSlugVoiceTable({
       render: ({ row }) => (
         <div style={{ display: 'flex', gap: 4 }}>
           <button type="button" onClick={() => onTest(row.key)} style={{ padding: '4px 8px', fontSize: 11 }}>Test</button>
-          <button type="button" onClick={() => onAssign(row.key, '')} style={{ padding: '4px 8px', fontSize: 11, color: '#fca5a5' }}>×</button>
+          <button type="button" onClick={() => onAssign(row.key, '')} style={{ padding: '4px 8px', fontSize: 11, color: 'var(--bad)' }}>×</button>
         </div>
       ),
     },
@@ -1351,7 +1351,7 @@ function ElSpendStatus() {
   const used = data.minutes_used;
   const pct = data.pct_used != null ? Math.round(data.pct_used * 100) : null;
   return (
-    <div style={{ marginTop: 4, fontSize: 12, color: data.over_cap ? '#ef4444' : 'inherit' }}>
+    <div style={{ marginTop: 4, fontSize: 12, color: data.over_cap ? 'var(--bad)' : 'inherit' }}>
       This month ({data.ym}): <strong>{used} min</strong>
       {cap != null && (
         <>

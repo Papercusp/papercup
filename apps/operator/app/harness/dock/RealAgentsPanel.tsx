@@ -25,7 +25,7 @@ interface AgentsResponse {
 
 const ROLE_COLORS: Record<string, string> = {
   scoper: '#60a5fa',
-  worker: '#4ade80',
+  worker: 'var(--good)',
   validator: 'var(--warn)',
   curator: '#a78bfa',
   expert: '#f472b6',
@@ -152,7 +152,7 @@ export function RealAgentsPanel({ params, api }: PanelComponentProps) {
                     width: 8,
                     height: 8,
                     borderRadius: 4,
-                    background: r.running ? '#4ade80' : '#444',
+                    background: r.running ? 'var(--good)' : '#444',
                     flexShrink: 0,
                   }}
                   title={r.running ? 'running' : 'idle'}

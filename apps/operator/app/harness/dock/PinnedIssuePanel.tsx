@@ -47,7 +47,7 @@ const STATUS_COLORS: Record<string, string> = {
   open: '#f87171',
   triaged: '#fbbf24',
   fixing: '#60a5fa',
-  fixed: '#4ade80',
+  fixed: 'var(--good)',
   closed: '#71717a',
   duplicate: '#71717a',
 };

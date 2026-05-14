@@ -213,9 +213,9 @@ function shortJson(o: unknown): string {
 }
 
 function kindColor(k: string): string {
-  if (k.endsWith('-failed')) return '#ff6961';
+  if (k.endsWith('-failed')) return 'var(--bad)';
   if (k.endsWith('-succeeded')) return '#7fcf7f';
-  if (k === 'consent-rejected') return '#ff6961';
+  if (k === 'consent-rejected') return 'var(--bad)';
   if (k === 'log-truncated') return '#e9a040';
   return '#bbb';
 }

@@ -37,7 +37,7 @@ interface StatusResponse {
 }
 
 const STATUS_COLORS: Record<string, string> = {
-  passed: '#4ade80',
+  passed: 'var(--good)',
   todo: '#94a3b8',
   failing: 'var(--bad)',
   validating: 'var(--warn)',

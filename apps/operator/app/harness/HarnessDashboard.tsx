@@ -1537,7 +1537,7 @@ function HarnessQuickActionRow({ harnessSlug, installed, enabledSlugs, pluginsMi
                 style={needsSetup ? {
                   background: 'rgba(220, 38, 38, .12)',
                   border: '1px solid rgba(220, 38, 38, .45)',
-                  color: '#ff8a8a',
+                  color: 'var(--bad)',
                 } : undefined}
               >
                 {needsSetup
@@ -2265,7 +2265,7 @@ function PluginConfigEditor({ harnessSlug, dirSlug, configPath, configSchema, de
                 return (
                   <div key={key} className="h-config-field">
                     <label className="h-plugin-config-field-label" style={pluginFieldLabel}>
-                      {key} {required && <span style={{ color: '#ff6961' }}>*</span>}
+                      {key} {required && <span style={{ color: 'var(--bad)' }}>*</span>}
                     </label>
                     {field.description && (
                       <div className="h-plugin-config-field-description" style={{ fontSize: 11, color: 'var(--fg-mute)', marginBottom: 3 }}>{field.description}</div>
@@ -2347,7 +2347,7 @@ function PluginConfigEditor({ harnessSlug, dirSlug, configPath, configSchema, de
               </Tooltip>
             )}
             {savedAt && !dirty && (
-              <span className="h-plugin-config-saved" style={{ fontSize: 10, color: '#86efac' }}>
+              <span className="h-plugin-config-saved" style={{ fontSize: 10, color: 'var(--good)' }}>
                 ✓ saved {new Date(savedAt).toLocaleTimeString()}
               </span>
             )}

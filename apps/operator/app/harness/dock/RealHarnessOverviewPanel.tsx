@@ -35,7 +35,7 @@ const PHASES = ['staging', 'testing', 'production'] as const;
 type Phase = (typeof PHASES)[number];
 
 const STATUS_COLORS: Record<string, string> = {
-  passed: '#4ade80',
+  passed: 'var(--good)',
   todo: 'var(--fg-mute)',
   failing: 'var(--bad)',
   validating: 'var(--warn)',
@@ -177,7 +177,7 @@ export function RealHarnessOverviewPanel({ params, api }: PanelComponentProps) {
             width: 8,
             height: 8,
             borderRadius: 4,
-            background: data.alive ? '#4ade80' : '#666',
+            background: data.alive ? 'var(--good)' : '#666',
             display: 'inline-block',
           }}
           title={data.alive ? 'alive' : 'idle'}
@@ -275,7 +275,7 @@ export function RealHarnessOverviewPanel({ params, api }: PanelComponentProps) {
               style={{
                 height: '100%',
                 width: `${stats.pct}%`,
-                background: '#4ade80',
+                background: 'var(--good)',
                 transition: 'width 0.3s',
               }}
             />

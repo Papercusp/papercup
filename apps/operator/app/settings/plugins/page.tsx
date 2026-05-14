@@ -266,7 +266,7 @@ export default function PluginSettingsPage() {
                   return (
                     <div key={key} style={{ marginBottom: 16 }}>
                       <label style={lbl}>
-                        {key} {required && <span style={{ color: '#ff6961' }}>*</span>}
+                        {key} {required && <span style={{ color: 'var(--bad)' }}>*</span>}
                         {field.shareable === false && (
                           <span style={badgeMute} title="Stripped from snapshots — must be re-supplied at fork time">publisher-specific</span>
                         )}

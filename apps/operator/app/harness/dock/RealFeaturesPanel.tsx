@@ -32,7 +32,7 @@ interface StatusResponse {
 type FilterKey = 'all' | 'todo' | 'failing' | 'validating' | 'passed' | 'deprecated';
 
 const STATUS_COLORS: Record<string, string> = {
-  passed: '#4ade80',
+  passed: 'var(--good)',
   todo: 'var(--fg-mute)',
   failing: 'var(--bad)',
   validating: 'var(--warn)',
