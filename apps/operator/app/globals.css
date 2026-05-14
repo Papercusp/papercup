@@ -14763,11 +14763,8 @@ body:not(.papercusp-chromeless) .pc-header {
   word-break: break-word;
 }
 
-.pc-settings-content h1:first-of-type {
-  font-size: clamp(26px, 4vw, 36px);
-  line-height: 1.05;
-  letter-spacing: -0.035em;
-}
+/* Superseded by the Wave A baseline below. Kept as a no-op so any
+ * existing imports/links don't 404 on the rule selector. */
 
 .pc-settings-page--voice {
   min-width: 0;
@@ -14852,8 +14849,13 @@ body:has(.pc-settings-page--voice) .pc-settings-shell section section[style*="pa
     overflow-x: clip;
   }
 
-  .pc-settings-content h1:first-of-type {
-    font-size: clamp(24px, 9vw, 34px);
+  /* Mobile h1 — clamped slightly larger than the baseline 22px so the
+   * page title stays comfortable on phones, but never blows up like
+   * the previous 34px max. */
+  :where(.pc-settings-content > h1):first-of-type,
+  :where(.pc-settings-content > main > h1):first-of-type,
+  :where(.pc-settings-content > div > h1):first-of-type {
+    font-size: clamp(20px, 5vw, 24px);
   }
 
   body:has(.pc-settings-page--voice) .pc-settings-content {
@@ -26690,4 +26692,108 @@ body.has-op-chat:has(.operator-panel) .op-chat-sidebar {
  *     bespoke per site, accent-color is the cross-cutting tint */
 :where(input[type="checkbox"], input[type="radio"], input[type="range"]) {
   accent-color: var(--accent);
+}
+
+/* ─────────────────────────────────────────────────────────────────────
+ * Settings page consistency baseline (Wave A of CC1/CC2/CC6/CC7/CC8)
+ *
+ * Every /settings/* page renders into <section class="pc-settings-content">
+ * from app/settings/layout.tsx. The rules below define one canonical
+ * typographic + spacing scale so individual pages don't ship bespoke
+ * inline <h1 style={…}> / <h2 style={…}> / max-width / padding.
+ *
+ * Specificity is 0 (:where) so any page can still override via inline
+ * style or a more-specific class. The point is: when a page doesn't
+ * opt in to a bespoke look, it gets the baseline for free.
+ */
+
+/* Outer page padding + width (was inline on every page, now centralized) */
+:where(.pc-settings-content) {
+  padding: 24px 32px 48px;
+  max-width: 880px;
+  margin: 0 auto;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+/* h1 — page title. Smaller than the clamp() in the existing override
+ * because every page shipped a smaller inline size (most pages were
+ * inheriting the browser default ~32px and the clamp pushed to 36px).
+ * 26px is the operator/oracle inline size — proven legible. */
+:where(.pc-settings-content > h1):first-of-type,
+:where(.pc-settings-content > main > h1):first-of-type,
+:where(.pc-settings-content > div > h1):first-of-type {
+  font-size: 22px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  margin: 0 0 6px;
+  color: var(--fg);
+}
+
+/* h2 — section heading. 15px is a compromise between the 14/16 mix
+ * currently in the wild. Slightly muted to de-emphasize against h1. */
+:where(.pc-settings-content) h2 {
+  font-size: 15px;
+  font-weight: 600;
+  margin: 0 0 10px;
+  color: var(--fg);
+}
+
+/* h3 — sub-section / row group label */
+:where(.pc-settings-content) h3 {
+  font-size: 13px;
+  font-weight: 600;
+  margin: 0 0 6px;
+  color: var(--fg);
+}
+
+/* Page intro paragraph — one-sentence "what does this page control?"
+ * Renders directly under the h1. */
+:where(.pc-settings-content) .pc-settings-intro {
+  font-size: 13px;
+  color: var(--fg-mute, #9a9aa3);
+  line-height: 1.55;
+  margin: 0 0 24px;
+  max-width: 720px;
+}
+
+/* Section blocks. Standardizes the gap pattern that drifted between
+ * marginBottom 32 / 24 / 16 / 12 across pages. */
+:where(.pc-settings-content) .pc-settings-section {
+  margin-bottom: 28px;
+}
+
+:where(.pc-settings-content) .pc-settings-section > h2 {
+  border-bottom: 1px solid color-mix(in oklab, var(--border), transparent 50%);
+  padding-bottom: 4px;
+  margin-bottom: 12px;
+}
+
+/* Eyebrow heading (small uppercase label) — for sub-sub-section labels
+ * that were previously rendered as h2 with bespoke fontSize:14 +
+ * textTransform:uppercase. Use this class instead. */
+:where(.pc-settings-content) .pc-settings-eyebrow,
+:where(.pc-settings-content) h4.pc-settings-eyebrow {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--fg-mute, #9a9aa3);
+  margin: 0 0 8px;
+}
+
+/* Hint / helper text under a control */
+:where(.pc-settings-content) .pc-settings-hint {
+  font-size: 12px;
+  color: var(--fg-mute, #9a9aa3);
+  line-height: 1.5;
+  margin: 4px 0 0;
+}
+
+/* Loading skeleton — pages can render <SettingsLoadingState /> from
+ * app/harness/SettingsLoadingState.tsx, or just use this class. */
+:where(.pc-settings-content) .pc-settings-loading {
+  font-size: 13px;
+  color: var(--fg-mute, #9a9aa3);
+  padding: 12px 0;
 }
