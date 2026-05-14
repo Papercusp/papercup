@@ -19,6 +19,7 @@ import { NavChevrons } from './NavChevrons';
 import { RealFeaturesPanel } from './RealFeaturesPanel';
 import { RealIssuesPanel } from './RealIssuesPanel';
 import { RealAgentsPanel } from './RealAgentsPanel';
+import { RealLogsPanel } from './RealLogsPanel';
 
 function SamplePanel({ panelType, params }: PanelComponentProps) {
   return (
@@ -138,7 +139,6 @@ export function registerSamplePanels(): void {
   for (const t of [
     'view:dashboard-overview',
     'view:harness-overview',
-    'data:logs',
     'data:git',
   ]) {
     panelRegistry.register(t, SamplePanel);
@@ -147,6 +147,7 @@ export function registerSamplePanels(): void {
   panelRegistry.register('data:features', RealFeaturesPanel);
   panelRegistry.register('data:issues', RealIssuesPanel);
   panelRegistry.register('data:agents', RealAgentsPanel, { keepAlive: true });
+  panelRegistry.register('data:logs', RealLogsPanel, { keepAlive: true });
   panelRegistry.register('view:docs', DocsSamplePanel, { keepAlive: true });
 }
 
