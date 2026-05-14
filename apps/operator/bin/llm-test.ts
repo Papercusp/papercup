@@ -229,7 +229,12 @@ async function main(): Promise<void> {
         ...(args.seed !== undefined && { seed: args.seed }),
       });
     } catch (err) {
-      console.error(`  ✗ runner error [${scenario.id}]: ${(err as Error).message}`);
+      const msg = (err as Error).message ?? '';
+      if (msg.startsWith('claim_busy')) {
+        process.stdout.write(`  ⊘ skipped [${scenario.id}]: ${msg}\n`);
+        return false; // not a failure — another runner is on it
+      }
+      console.error(`  ✗ runner error [${scenario.id}]: ${msg}`);
       return true;
     }
     printReport(report);

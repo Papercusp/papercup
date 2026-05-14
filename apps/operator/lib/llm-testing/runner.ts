@@ -145,6 +145,38 @@ async function runOnce(args: OnceArgs): Promise<SingleRunReport> {
     judgeModel,
   });
 
+  // Claim this (scenario × identity × matrix-index) tuple so parallel
+  // runners (--parallel >1, distributed CI, two devs sharing a DB)
+  // don't duplicate spend. Skip-claim mode for tests via the
+  // PAPERCUSP_LLM_TEST_SKIP_CLAIM env so unit suites don't depend on PG.
+  const skipClaim = process.env.PAPERCUSP_LLM_TEST_SKIP_CLAIM === '1';
+  let claimKey: string | null = null;
+  const claimOwner = `${process.pid}/${runId.slice(0, 8)}`;
+  if (!skipClaim) {
+    try {
+      const { tryClaim } = await import('./ledger');
+      const claim = await tryClaim({
+        scenarioId: scenario.id,
+        identityHash,
+        matrixIndex: args.matrixIndex,
+        ownerId: claimOwner,
+        metadata: { sutModel, judgeModel, simModel },
+      });
+      if (!claim.ok) {
+        // Another runner already owns this identity. Caller (the CLI
+        // batch loop) treats a thrown skip-error as a soft skip rather
+        // than a hard failure — see bin/llm-test.ts.
+        throw new Error(
+          `claim_busy: ${scenario.id} held by ${claim.holder.ownerId} until ${claim.holder.expiresAt.toISOString()}`,
+        );
+      }
+      claimKey = claim.claimKey;
+    } catch (err) {
+      if ((err as Error).message?.startsWith('claim_busy')) throw err;
+      console.warn(`[llm-testing] ledger unavailable (${(err as Error).message}); proceeding without claim.`);
+    }
+  }
+
   const target = getTarget(scenario.target);
   const session = await target.open({
     runId,
@@ -347,6 +379,15 @@ async function runOnce(args: OnceArgs): Promise<SingleRunReport> {
   let status: SingleRunReport['status'] = 'passed';
   if (finishReason === 'errored') status = 'errored';
   else if (hasErrorViolation || hasErrorFinding) status = 'failed';
+
+  if (claimKey) {
+    try {
+      const { release } = await import('./ledger');
+      await release(claimKey, claimOwner);
+    } catch (err) {
+      console.warn(`[llm-testing] claim release failed (${(err as Error).message}); claim will TTL out.`);
+    }
+  }
 
   return { summary, violations, judge, status };
 }
