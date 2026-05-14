@@ -122,7 +122,7 @@ export function ForkProvisioningProgress({ harnessSlug, queue, onAllDone }: Prop
               <strong>{h.plugin}</strong>{' '}
               <span className={`pc-fork-provision-outcome pc-fork-provision-outcome--${h.outcome}`} style={{
                 color: h.outcome === 'success' ? '#3fb950'
-                  : h.outcome === 'failed' ? '#f85149'
+                  : h.outcome === 'failed' ? 'var(--bad)'
                   : '#8b949e',
               }}>
                 {h.outcome}
@@ -152,7 +152,7 @@ export function ForkProvisioningProgress({ harnessSlug, queue, onAllDone }: Prop
               {h.plugin}{' '}
               <span className={`pc-fork-provision-outcome pc-fork-provision-outcome--${h.outcome}`} style={{
                 color: h.outcome === 'success' ? '#3fb950'
-                  : h.outcome === 'failed' ? '#f85149'
+                  : h.outcome === 'failed' ? 'var(--bad)'
                   : '#8b949e',
               }}>({h.outcome})</span>
             </span>

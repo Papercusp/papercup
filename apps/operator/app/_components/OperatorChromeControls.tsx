@@ -118,9 +118,9 @@ export function OperatorButton(): ReactElement {
 }
 
 const TIER_DOT_COLOR: Record<'low' | 'medium' | 'high', string> = {
-  low: '#10b981',
-  medium: '#f59e0b',
-  high: '#ef4444',
+  low: 'var(--good)',
+  medium: 'var(--warn)',
+  high: 'var(--bad)',
 };
 
 function formatRelativeAgo(now: number, then: number): string {

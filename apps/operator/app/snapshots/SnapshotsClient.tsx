@@ -267,7 +267,7 @@ function SnapshotsGrid({
             <div className="pc-snapshot-description" style={{ color: 'var(--fg)', fontSize: 12, marginTop: 2 }}>{row.description}</div>
           )}
           <div className="pc-snapshot-id" style={{ color: 'var(--fg-mute)', fontSize: 12, fontFamily: "'SF Mono', monospace" }}>{row.id}</div>
-          {row.partial && <div className="pc-snapshot-partial" style={{ color: '#f59e0b', fontSize: 11 }}>partial</div>}
+          {row.partial && <div className="pc-snapshot-partial" style={{ color: 'var(--warn)', fontSize: 11 }}>partial</div>}
           {row.publishes.length > 0 && (
             <div className="pc-snapshot-published-wrap" style={{ marginTop: 4, fontSize: 11 }}>
               <a
@@ -312,10 +312,10 @@ function SnapshotsGrid({
       render: ({ row }) => (
         <span className="pc-snapshot-redactions" style={{ fontSize: 12 }}>
           {row.redactions.verifiedHits > 0 && (
-            <span className="pc-snapshot-redaction verified" style={{ color: '#ef4444' }}>{row.redactions.verifiedHits} verified </span>
+            <span className="pc-snapshot-redaction verified" style={{ color: 'var(--bad)' }}>{row.redactions.verifiedHits} verified </span>
           )}
           {row.redactions.highRecallHits > 0 && (
-            <span className="pc-snapshot-redaction warning" style={{ color: '#f59e0b' }}>{row.redactions.highRecallHits} warns</span>
+            <span className="pc-snapshot-redaction warning" style={{ color: 'var(--warn)' }}>{row.redactions.highRecallHits} warns</span>
           )}
           {row.redactions.verifiedHits === 0 && row.redactions.highRecallHits === 0 && (
             <span className="pc-snapshot-redaction clean" style={{ color: 'var(--fg-mute)' }}>clean</span>

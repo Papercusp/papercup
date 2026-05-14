@@ -85,7 +85,7 @@ export function ConsoleLauncherButton() {
             position: 'absolute',
             top: -6,
             right: -6,
-            background: '#10b981',
+            background: 'var(--good)',
             color: '#021016',
             borderRadius: 999,
             fontSize: 11,

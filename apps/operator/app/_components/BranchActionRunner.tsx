@@ -181,7 +181,7 @@ export default function BranchActionRunner({ slug, branch, name, existingRunId, 
             marginLeft: 'auto',
             color:
               status === 'done' ? '#3fb950' :
-              status === 'failed' || status === 'error' ? '#f85149' :
+              status === 'failed' || status === 'error' ? 'var(--bad)' :
               '#58a6ff',
           }}>
             {status}{runId ? ` · ${runId}` : ''}
@@ -197,8 +197,8 @@ export default function BranchActionRunner({ slug, branch, name, existingRunId, 
         </div>
         <div ref={containerRef} style={{ flex: 1, padding: 8, background: '#0d1117', display: missingKeys ? 'none' : 'block' }} />
         {missingKeys && (
-          <div style={{ padding: 16, background: '#1c1917', color: '#fbbf24', fontSize: 13, lineHeight: 1.5, overflow: 'auto', flex: 1 }}>
-            <div style={{ fontWeight: 600, marginBottom: 8, color: '#f59e0b' }}>
+          <div style={{ padding: 16, background: '#1c1917', color: 'var(--warn)', fontSize: 13, lineHeight: 1.5, overflow: 'auto', flex: 1 }}>
+            <div style={{ fontWeight: 600, marginBottom: 8, color: 'var(--warn)' }}>
               Required keys missing
             </div>
             <div style={{ color: '#c9d1d9', marginBottom: 12 }}>
@@ -237,7 +237,7 @@ export default function BranchActionRunner({ slug, branch, name, existingRunId, 
           </div>
         )}
         {error && !missingKeys && (
-          <div style={{ padding: '6px 12px', background: '#3a1010', color: '#f85149', fontSize: 12 }}>
+          <div style={{ padding: '6px 12px', background: '#3a1010', color: 'var(--bad)', fontSize: 12 }}>
             {error}
           </div>
         )}

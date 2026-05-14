@@ -2,7 +2,6 @@
 
 import { useEffect, useState, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
-import { useQueryState, parseAsBoolean } from 'nuqs';
 import { toast } from 'sonner';
 import { ChevronDown, UserPlus, Settings, LogOut, ArrowLeftRight } from 'lucide-react';
 import { Popover } from '../harness/Popover';
@@ -25,7 +24,12 @@ export default function UserPicker() {
   const router = useRouter();
   const [user, setUser] = useState<User>(FALLBACK_USER);
   const [autoLogin, setAutoLogin] = useState(true);
-  const [open, setOpen] = useQueryState('accountMenu', parseAsBoolean.withDefault(false));
+  // Menu open state is transient — using nuqs/useQueryState here caused a
+  // race where setOpen(false)'s shallow URL replaceState overwrote the
+  // path that router.push() had just set, making every item appear to
+  // do nothing. Plain useState is the right tool for "is the dropdown
+  // open right now".
+  const [open, setOpen] = useState(false);
 
   useEffect(() => {
     void (async () => {
@@ -47,8 +51,8 @@ export default function UserPicker() {
   }, []);
 
   const close = useCallback(() => {
-    void setOpen(false);
-  }, [setOpen]);
+    setOpen(false);
+  }, []);
 
   const goTo = useCallback((href: string) => {
     close();

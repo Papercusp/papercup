@@ -216,7 +216,7 @@ export default function TerminalTab(): JSX.Element {
         <strong style={{ color: '#c9d1d9' }}>Terminal</strong>
         <span>
           status: <span style={{
-            color: status === 'error' ? '#f85149'
+            color: status === 'error' ? 'var(--bad)'
               : status === 'live' ? '#3fb950'
               : status === 'exited' ? '#d29922'
               : '#58a6ff',
@@ -225,7 +225,7 @@ export default function TerminalTab(): JSX.Element {
         </span>
         {slugRef.current && <span>harness: {slugRef.current}</span>}
         {handleRef.current && <span>pid: {handleRef.current.pid}</span>}
-        {errorMsg && <span style={{ color: '#f85149' }}>error: {errorMsg}</span>}
+        {errorMsg && <span style={{ color: 'var(--bad)' }}>error: {errorMsg}</span>}
         <button
           onClick={restart}
           style={{

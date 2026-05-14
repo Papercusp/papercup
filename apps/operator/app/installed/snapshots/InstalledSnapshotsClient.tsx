@@ -257,7 +257,7 @@ export default function InstalledSnapshotsClient() {
                         className="pc-installed-snapshot-retract"
                         style={{
                           padding: '2px 6px', fontSize: 10, background: 'transparent',
-                          border: '1px solid var(--border)', color: '#fbbf24', borderRadius: 3,
+                          border: '1px solid var(--border)', color: 'var(--warn)', borderRadius: 3,
                           cursor: busy === `${s.id}:${p.slug}` ? 'default' : 'pointer',
                         }}
                       >
@@ -292,7 +292,7 @@ export default function InstalledSnapshotsClient() {
                   disabled={busy === s.id}
                   className="pc-installed-snapshot-delete"
                   style={{
-                    padding: '4px 10px', background: 'transparent', color: '#f87171',
+                    padding: '4px 10px', background: 'transparent', color: 'var(--bad)',
                     border: '1px solid var(--border)', borderRadius: 4, fontSize: 11,
                     display: 'inline-flex', alignItems: 'center', gap: 4,
                     cursor: busy === s.id ? 'default' : 'pointer',

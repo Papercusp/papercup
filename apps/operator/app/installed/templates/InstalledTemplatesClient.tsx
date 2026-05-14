@@ -322,7 +322,7 @@ export default function InstalledTemplatesClient() {
                     style={{
                       padding: '6px 10px',
                       background: 'transparent',
-                      color: '#f87171',
+                      color: 'var(--bad)',
                       border: '1px solid var(--border)',
                       borderRadius: 4,
                       fontSize: 12,

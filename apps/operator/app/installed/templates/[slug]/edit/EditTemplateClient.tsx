@@ -291,7 +291,7 @@ export default function EditTemplateClient() {
       <div className="pc-shell pc-template-editor-shell pc-template-editor-error" style={{ padding: 24 }}>
         {/* Toaster mounted globally in app/layout.tsx. */}
         <RouteLink href="/installed/templates" style={{ fontSize: 13 }}>← back to templates</RouteLink>
-        <div style={{ marginTop: 16, color: '#f87171' }}>Could not load template: {loadError}</div>
+        <div style={{ marginTop: 16, color: 'var(--bad)' }}>Could not load template: {loadError}</div>
       </div>
     );
   }
@@ -351,7 +351,7 @@ export default function EditTemplateClient() {
           <code style={{ fontSize: 12, color: 'var(--fg-dim)' }}>v{resolvedVersion}</code>
         )}
         {tpl.publishedSlugs.length > 0 ? (
-          <span className="pc-template-editor-published" style={{ fontSize: 11, color: '#34d399' }}>
+          <span className="pc-template-editor-published" style={{ fontSize: 11, color: 'var(--good)' }}>
             published × {tpl.publishedSlugs.length}
           </span>
         ) : null}
@@ -419,7 +419,7 @@ export default function EditTemplateClient() {
                       <code className="pc-template-editor-file-code" style={{ fontSize: 12, fontWeight: isActive ? 600 : 400 }}>
                         {f.label ?? f.path}
                       </code>
-                      {isDirty ? <span className="pc-template-editor-dirty-dot" style={{ width: 6, height: 6, borderRadius: '50%', background: '#fbbf24' }} /> : null}
+                      {isDirty ? <span className="pc-template-editor-dirty-dot" style={{ width: 6, height: 6, borderRadius: '50%', background: 'var(--warn)' }} /> : null}
                     </div>
                     {f.description ? (
                       <div className="pc-template-editor-file-desc" style={{ fontSize: 11, color: 'var(--fg-dim)', marginTop: 2 }}>
@@ -623,7 +623,7 @@ function AddFileDialog({
             }} />
           </RhfFormField>
           {conflict ? (
-            <div style={{ marginTop: 8, fontSize: 12, color: '#fbbf24' }}>
+            <div style={{ marginTop: 8, fontSize: 12, color: 'var(--warn)' }}>
               &ldquo;{path}&rdquo; is already declared.
             </div>
           ) : null}
@@ -680,7 +680,7 @@ function ManifestStructuredEditor({ jsonText, onChange }: { jsonText: string; on
   }
   if (parseError) {
     return (
-      <div style={{ padding: 24, color: '#f87171', fontSize: 13 }}>
+      <div style={{ padding: 24, color: 'var(--bad)', fontSize: 13 }}>
         <strong>Manifest is not valid JSON:</strong>
         <pre style={{ marginTop: 8, fontSize: 11 }}>{parseError}</pre>
         <p style={{ color: 'var(--fg-dim)' }}>Switch to raw JSON to fix it.</p>
@@ -1001,7 +1001,7 @@ const addBtnStyle: React.CSSProperties = {
 const removeBtnStyle: React.CSSProperties = {
   padding: '2px 6px',
   background: 'transparent',
-  color: '#f87171',
+  color: 'var(--bad)',
   border: '1px solid var(--border)',
   borderRadius: 3,
   cursor: 'pointer',
@@ -1066,6 +1066,6 @@ function btnStyle(variant: 'primary' | 'accent' | 'muted'): React.CSSProperties 
     cursor: variant === 'muted' ? 'default' : 'pointer',
   };
   if (variant === 'primary') return { ...base, background: 'var(--accent, #3b82f6)', color: 'white' };
-  if (variant === 'accent') return { ...base, background: '#34d399', color: '#062c1c' };
+  if (variant === 'accent') return { ...base, background: 'var(--good)', color: '#062c1c' };
   return { ...base, background: 'var(--bg-elevated, rgba(255,255,255,0.05))', color: 'var(--fg-dim)' };
 }

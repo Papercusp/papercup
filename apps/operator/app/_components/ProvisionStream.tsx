@@ -256,7 +256,7 @@ export function ProvisionStream({
         fontFamily: 'ui-monospace, monospace',
       }}>
         <span>provision: {plugin} @ {harness}</span>
-        <span>status: <span style={{ color: status === 'error' ? '#f85149' : status === 'done' ? '#3fb950' : '#58a6ff' }}>{status}</span></span>
+        <span>status: <span style={{ color: status === 'error' ? 'var(--bad)' : status === 'done' ? '#3fb950' : '#58a6ff' }}>{status}</span></span>
         {runId && <span>runId: {runId}</span>}
       </div>
     </div>
