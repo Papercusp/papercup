@@ -1,11 +1,13 @@
 /**
  * MCP Resource: papercusp://harness/{slug}/docs/index
  *
- * Templated resource — one entry per registered harness. `read()`
- * returns a sitemap of that harness's docs (a flat list of slug,
- * title, description for every page in its docs/ folder + state
- * files), suitable for an external MCP client to discover what
- * harness-specific documentation exists before drilling in.
+ * Templated resource — one entry per registered harness. read() returns
+ * a sitemap of that harness's docs for external MCP clients (Cursor,
+ * Claude Desktop) that want to browse harness documentation by URI.
+ *
+ * Lives in cross_harness/ because the URI is explicit-slug-keyed, the
+ * same semantics as cross_harness:docs_* tools. Same code surface,
+ * different transport projection.
  */
 
 import { defineResource } from '@papercusp/agent-mcp';
@@ -14,7 +16,7 @@ import { buildOutline, harnessFsAdapter } from '@papercusp/docs-engine';
 import { loadHarnessRegistry } from '@/lib/harness-registry';
 
 export default defineResource({
-  name: 'harness:docs_index',
+  name: 'cross_harness:docs_index',
   uri: 'papercusp://harness/{slug}/docs/index',
   capability: 'harness:read',
   mimeType: 'text/plain',
@@ -55,10 +57,6 @@ export default defineResource({
       lines.push('');
     }
 
-    return {
-      uri,
-      mimeType: 'text/plain',
-      text: lines.join('\n'),
-    };
+    return { uri, mimeType: 'text/plain', text: lines.join('\n') };
   },
 });

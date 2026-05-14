@@ -1,10 +1,8 @@
 /**
  * MCP Resource: papercusp://harness/{slug}/docs/section/{section}
  *
- * Templated resource. `list()` expands the template into one entry
- * per (harness, section) pair across all registered harnesses (e.g.
- * sheets/docs, sheets/harness-state, ...). `read()` returns the
- * concatenated markdown for every page in that section.
+ * Per-harness, per-section consolidated markdown. One entry per
+ * (harness, section) across all registered harnesses.
  */
 
 import { defineResource } from '@papercusp/agent-mcp';
@@ -13,7 +11,7 @@ import { buildOutline, harnessFsAdapter, withPreamble } from '@papercusp/docs-en
 import { loadHarnessRegistry } from '@/lib/harness-registry';
 
 export default defineResource({
-  name: 'harness:docs_section',
+  name: 'cross_harness:docs_section',
   uri: 'papercusp://harness/{slug}/docs/section/{section}',
   capability: 'harness:read',
   mimeType: 'text/markdown',
@@ -29,7 +27,7 @@ export default defineResource({
         const adapter = harnessFsAdapter(project.path, { name: `harness:${project.slug}` });
         outline = await buildOutline(adapter);
       } catch {
-        continue; // harness directory may be missing on disk
+        continue;
       }
       for (const section of outline.sections) {
         if (section.slug === '_root') continue;
@@ -76,10 +74,6 @@ export default defineResource({
         });
       }),
     );
-    return {
-      uri,
-      mimeType: 'text/markdown',
-      text: rendered.join('\n\n---\n\n'),
-    };
+    return { uri, mimeType: 'text/markdown', text: rendered.join('\n\n---\n\n') };
   },
 });
