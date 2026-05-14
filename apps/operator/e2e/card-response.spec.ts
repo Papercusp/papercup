@@ -68,9 +68,9 @@ test.describe('bespoke-card response endpoint', () => {
     // — try a few suspicious shapes and confirm none crash the server.
     const ids = [
       'normal-id',
-      'with spaces',
-      'with/slash-encoded',
-      '../../etc/passwd',
+      encodeURIComponent('with spaces'),
+      encodeURIComponent('with/slash'),
+      encodeURIComponent('../../etc/passwd'),
       encodeURIComponent('special&chars?=foo'),
     ];
     for (const id of ids) {
