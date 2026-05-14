@@ -37,8 +37,8 @@ export default async function PluginRuntimePage() {
   const status = await loadStatus();
   return (
     <div>
-      <h1 style={{ marginTop: 0 }}>Plugin runtime</h1>
-      <p style={{ color: 'var(--fg-mute)', marginTop: 4 }}>
+      <h1>Plugin runtime</h1>
+      <p className="pc-settings-intro">
         In-process plugin host state. Plugins are discovered from{' '}
         <code>~/.papercusp/global-plugins/</code> on first request and cached
         until the next reset, install, uninstall, or hot-reload trigger.

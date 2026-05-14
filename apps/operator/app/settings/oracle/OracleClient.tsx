@@ -59,7 +59,7 @@ export default function OracleClient() {
     }
   };
 
-  if (loading) return <div style={{ padding: 24 }}>Loading…</div>;
+  if (loading) return <div><h1>Oracle</h1><p className="pc-settings-loading">Loading…</p></div>;
 
   return (
     <div>
