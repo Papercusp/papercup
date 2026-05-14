@@ -24,6 +24,7 @@ import { HarnessDock } from '../../dock/HarnessDock';
 import { registerSamplePanels } from '../../dock/sample-panels';
 import { openPanel, listPanels, getLayoutSnapshot, onDockApiBind, setPanelParams } from '../../dock/dock-actions';
 import { AddPanelCatalog } from '../../dock/AddPanelCatalog';
+import { DockNavChevrons } from '../../dock/DockNavChevrons';
 
 export default function DockPreviewPage() {
   const routeParams = useParams<{ slug: string }>();
@@ -85,6 +86,7 @@ export default function DockPreviewPage() {
           {ready ? `${panelCount} panels open` : 'mounting…'}
         </span>
         <div style={{ flex: 1 }} />
+        <DockNavChevrons />
         <AddPanelCatalog defaultSlug={routeSlug} />
         <button
           type="button"

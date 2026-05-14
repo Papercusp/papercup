@@ -17,6 +17,7 @@ import { useRouter } from 'next/navigation';
 import { HarnessDock } from '../dock/HarnessDock';
 import { registerSamplePanels } from '../dock/sample-panels';
 import { AddPanelCatalog } from '../dock/AddPanelCatalog';
+import { DockNavChevrons } from '../dock/DockNavChevrons';
 import {
   openPanel,
   listPanels,
@@ -98,6 +99,7 @@ export default function HarnessDockShell({ slug }: HarnessDockShellProps) {
         <strong style={{ color: 'var(--foreground, #ccc)' }}>Dock</strong>
         <span>{slug}</span>
         <div style={{ flex: 1 }} />
+        <DockNavChevrons />
         <AddPanelCatalog defaultSlug={slug} />
         <button
           type="button"

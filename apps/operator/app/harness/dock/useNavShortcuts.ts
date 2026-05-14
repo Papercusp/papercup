@@ -1,13 +1,16 @@
 /**
  * useNavShortcuts — global Cmd+[ / Cmd+] (Ctrl+[ / Ctrl+] on linux/win)
- * dispatching to the focused panel's nav history.
+ * dispatching to back/forward navigation.
  *
- * Spec: apps/operator/docs/dockview-migration-plan-v4.md §6.2
+ * Spec: apps/operator/docs/dockview-migration-plan-v4.md §6.2, §16.5
  *
- * Mount once at the dock root. Reads the focused panel id via
- * onDockApiBind + activeGroup, then looks up its nav via
- * getNavForPanel(). Panels that opt out of nav don't register; the
- * shortcut becomes a no-op for them.
+ * Precedence (option b of §16.5):
+ *   1. Focused panel's per-panel useNavHistory if it opts in
+ *      (DocsPanel, future Pin panels, plugin React panels)
+ *   2. Falls through to dock-level useTabVisitHistory — back/forward
+ *      across the panels the user has focused
+ *
+ * Ignored when focus is in an input/textarea/contenteditable.
  */
 
 'use client';
@@ -15,10 +18,12 @@
 import { useEffect } from 'react';
 import { onDockApiBind } from './dock-actions';
 import { getNavForPanel } from './NavChevrons';
+import { getTabVisitHistorySync } from './useTabVisitHistory';
 
 export function useNavShortcuts(): void {
   useEffect(() => {
     let activePanelId: string | null = null;
+    let disposable: { dispose: () => void } | null = null;
 
     const onKey = (e: KeyboardEvent) => {
       const mod = e.metaKey || e.ctrlKey;
@@ -30,33 +35,52 @@ export function useNavShortcuts(): void {
       if (tag === 'input' || tag === 'textarea' || target?.isContentEditable) {
         return;
       }
-      if (!activePanelId) return;
-      const nav = getNavForPanel(activePanelId);
-      if (!nav) return;
-      if (e.key === '[' && nav.canBack) {
+      // 1) Per-panel nav first.
+      if (activePanelId) {
+        const panelNav = getNavForPanel(activePanelId);
+        if (panelNav) {
+          if (e.key === '[' && panelNav.canBack) {
+            e.preventDefault();
+            panelNav.back();
+            return;
+          }
+          if (e.key === ']' && panelNav.canForward) {
+            e.preventDefault();
+            panelNav.forward();
+            return;
+          }
+        }
+      }
+      // 2) Fall through to dock-level tab-visit history.
+      const dockNav = getTabVisitHistorySync();
+      if (e.key === '[' && dockNav.canBack) {
         e.preventDefault();
-        nav.back();
-      } else if (e.key === ']' && nav.canForward) {
+        dockNav.back();
+      } else if (e.key === ']' && dockNav.canForward) {
         e.preventDefault();
-        nav.forward();
+        dockNav.forward();
       }
     };
 
     const unbindApi = onDockApiBind((api) => {
+      if (disposable) {
+        disposable.dispose();
+        disposable = null;
+      }
       if (!api) {
         activePanelId = null;
         return;
       }
-      const refresh = () => {
+      activePanelId = api.activeGroup?.activePanel?.id ?? null;
+      disposable = api.onDidActivePanelChange(() => {
         activePanelId = api.activeGroup?.activePanel?.id ?? null;
-      };
-      refresh();
-      api.onDidActivePanelChange(refresh);
+      });
     });
 
     window.addEventListener('keydown', onKey);
     return () => {
       window.removeEventListener('keydown', onKey);
+      if (disposable) disposable.dispose();
       unbindApi();
     };
   }, []);
