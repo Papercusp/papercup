@@ -733,3 +733,160 @@ All open questions from v3/brief now resolved by user (2026-05-13):
 ---
 
 **End of v4.**
+
+---
+
+## 16. Addendum — Top-level tab back/forward (user request 2026-05-13)
+
+User feedback during round-4 audit: in addition to the per-panel
+`useNavHistory` already shipped (§6), wire **browser-style back/forward
+scoped to the top-level dock tabs**. There is also a missing **"+ Add
+panel" button** the user noticed at the same time; that's shipped in
+the round-5 implementation, this addendum tracks only the navigation
+work.
+
+### 16.1 What "scoped by top-level tabs" means
+
+Two interpretations of the request, which we explicitly disambiguate:
+
+| | (A) Per-tab content history | (B) Tab visit history |
+|---|---|---|
+| What back/forward tracks | Navigation *within* a single tab | Which tab was previously focused |
+| Example | In Docs panel: `index → install → next` ; back returns to `install` | User clicks Features, then Issues, then Docs ; back returns to Issues |
+| Already shipped? | Partially — `useNavHistory` + `NavChevrons` exist; only DocsSamplePanel opts in | No |
+| Where chevrons live | Inside the focused panel's content area (current placement) | In dock chrome above the tab strip |
+| Stack lifetime | Lives in `params.history`; persists across layout save/restore | Session-only, per-dock-mount |
+| Cmd+[ / Cmd+] | Dispatches to focused panel's history (current) | Dispatches to dock-level history |
+
+**The user's most natural reading** is (B) — they said "back/forward
+scoped *by* top-level tabs", and the "+ Add panel" question framed it
+in tab-strip terms. (A) is "per-tab", not "scoped by tabs."
+
+But (A) and (B) are complementary, not competing. The plan ships
+**both**:
+
+- **(A)** becomes universal: every panel that exposes internal routes
+  (Docs, future Pin panels, plugin React panels) keeps using
+  `useNavHistory` + chevrons inside the panel.
+- **(B)** becomes a new dock-chrome control: a small back/forward pair
+  rendered in the dock toolbar (next to `+ Add panel`) that walks the
+  group's tab-focus history.
+
+This matches Chrome's distinction: each tab has its own page-history
+back/forward (A), plus the user can switch tabs via Cmd+Shift+T-style
+restores (a degenerate form of B). For Papercusp's dock, we don't need
+"restore closed tab" semantics — just live tab-visit history.
+
+### 16.2 Design — (B) dock-level tab visit history
+
+```
+DockTabHistory
+  - stack: PanelId[]  (sized ≤ 50)
+  - cursor: number    (points at the currently-focused tab)
+```
+
+Listener: `api.onDidActivePanelChange` → if next active panel differs
+from `stack[cursor]`, truncate the forward tail and push the new id.
+
+Back: `cursor--`; call `focusPanel(stack[cursor])`. Mark "internal
+move" so the focus-change listener doesn't push a duplicate entry.
+
+Forward: `cursor++`; same.
+
+Disabled state: `canBack = cursor > 0`, `canForward = cursor <
+stack.length - 1`.
+
+### 16.3 Scope of (B) — what's a "top-level tab"?
+
+In dockview a Group is a tab strip; a Tab inside it is a Panel. After
+Phase 5 collapse, every panel sits in *some* group. "Top-level tab" is
+slippery in a free-form dock with multiple groups + floating + popouts.
+
+**Decision**: track focus across **all panels in the dock**, not just
+one group. Reason: when the user splits Features into a side group,
+the "tab" is still conceptually a panel they want to revisit. Tracking
+per-group would lose cross-group navigation history.
+
+This means the back/forward control is **dock-global**, not
+**group-scoped** as the prose initially suggested. The user wording was
+imprecise; the cleaner mental model is "back/forward across the panels
+I've focused on, regardless of which group they live in."
+
+### 16.4 Pruning: closed panels
+
+When a panel is removed (closed by user, replaced by `loadLayout`,
+etc.), strip every occurrence from the history stack. Cursor stays at
+its current logical position (adjust if removals shifted it).
+Listener: `api.onDidRemovePanel` → `stack.filter(id => id !==
+panel.id)`.
+
+### 16.5 Keyboard shortcuts
+
+Two options for the Cmd+[ / Cmd+] binding:
+
+| Option | Behavior | Cost |
+|---|---|---|
+| **a)** Always dispatch to focused panel's `useNavHistory` (current) | (A) takes priority; (B) only via UI buttons | Panels without internal nav silently ignore | 
+| **b)** Dispatch to (A) if focused panel has nav; else (B) | Sensible fallback ladder | Slight surprise when switching between nav-aware and nav-less panels |
+| **c)** Cmd+[ for (A), Cmd+Shift+[ for (B) | Explicit binding per concept | Two-shortcut UX users have to learn |
+
+**Pick (b)**: panels with internal navigation are the minority; most
+panels (Features, Issues, Agents, Logs) have no internal routes, so
+Cmd+[ should "just work" for tab-visit history in those cases.
+Panels that opt into `useNavHistory` get the in-panel chevrons + the
+shortcut precedence.
+
+### 16.6 UI placement
+
+Render the (B) chevrons in the same dock toolbar that hosts `+ Add
+panel` (HarnessDockShell's top strip + dock-preview's header):
+
+```
+[← →]  [+ Add panel]  …          [← Classic]
+```
+
+Chevrons are always rendered for visual consistency but disabled when
+the respective direction is empty.
+
+### 16.7 Persistence
+
+Tab-visit history is **session-only**. Reload starts with an empty
+stack. Rationale: at reload the user has no mental model of the
+previous visit order; restoring it would feel arbitrary. Per-tab
+content history (A) still persists via `params.history`.
+
+### 16.8 New code surface
+
+- `apps/operator/app/harness/dock/useTabVisitHistory.ts` — hook
+  managing the stack/cursor + dockview event wiring; returns
+  `{ canBack, canForward, back, forward }`.
+- `apps/operator/app/harness/dock/DockNavChevrons.tsx` — renders the
+  chevrons + wires Cmd+[/] precedence to (A)→(B).
+- `HarnessDockShell` / `dock-preview` toolbars include
+  `<DockNavChevrons />` next to `<AddPanelCatalog />`.
+- `useNavShortcuts` (existing) — extended to fall through to
+  `useTabVisitHistory` when the focused panel has no `useNavHistory`.
+
+### 16.9 Tests
+
+Unit (new `useTabVisitHistory.test.ts`):
+- Push on focus change to a different panel
+- Pop on removePanel
+- Back/forward respect canBack/canForward
+- Cursor stays valid after a closed panel shifts indices
+- Capacity cap of 50
+
+Integration: manual smoke once shipped — open 5 panels, switch
+between them, verify back/forward walks the visit order.
+
+### 16.10 Effort
+
+~120 lines + tests. Half a day. The trickiest bit is the "internal
+move" flag so back/forward clicks don't double-push the destination
+into the stack.
+
+### 16.11 Open decision (recorded for resolution before merge)
+
+§16.5 keyboard binding option (a/b/c) — current choice is (b). Flip
+during implementation if user feedback says otherwise.
+
