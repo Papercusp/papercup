@@ -3518,14 +3518,62 @@ export default function HarnessDashboard() {
 
   const setFeatureStatus = useCallback(async (id: string, s: FeatureStatus) => {
     if (!activeSlug) return;
-    const res = await fetch(`/api/harness/${activeSlug}/features/${id}?phase=${activePhase}`, {
-      method: 'PATCH',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ status: s }),
+    // Optimistic local update so the UI reflects the click immediately.
+    // Revert on PATCH failure. The peek panel syncs from this via the
+    // useEffect below (peekFeature ← status.features[id]).
+    let prevStatus: FeatureStatus | undefined;
+    setStatus((curr) => {
+      if (!curr) return curr;
+      const i = curr.features.findIndex((f) => f.id === id);
+      if (i < 0) return curr;
+      prevStatus = curr.features[i].status as FeatureStatus;
+      const next = curr.features.slice();
+      next[i] = { ...next[i], status: s };
+      return { ...curr, features: next };
     });
-    if (res.ok) toast.success(`${id} → ${s}`);
-    else toast.error(`Failed: ${res.status}`);
-  }, [activeSlug]);
+    try {
+      const res = await fetch(`/api/harness/${activeSlug}/features/${id}?phase=${activePhase}`, {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ status: s }),
+      });
+      if (res.ok) {
+        toast.success(`${id} → ${s}`);
+        // Refetch authoritative state so derived counts (todo/passed/blocked)
+        // and any server-side side effects (attempts, last_run, etc.) catch up.
+        // Matches the pattern at HarnessDashboard.tsx:4205/4751/4812.
+        fetch(`/api/harness/${activeSlug}/status?phase=${activePhase}`)
+          .then((r) => r.json())
+          .then((next) => setStatus((prev) => prev && Array.isArray(prev.features) && prev.features.length > 0 ? { ...next, features: prev.features.map((f) => next.features.find((nf: Feature) => nf.id === f.id) ?? f) } : next))
+          .catch(() => {});
+      } else {
+        toast.error(`Failed: ${res.status}`);
+        // Revert.
+        if (prevStatus !== undefined) {
+          setStatus((curr) => {
+            if (!curr) return curr;
+            const i = curr.features.findIndex((f) => f.id === id);
+            if (i < 0) return curr;
+            const next = curr.features.slice();
+            next[i] = { ...next[i], status: prevStatus! };
+            return { ...curr, features: next };
+          });
+        }
+      }
+    } catch (e) {
+      toast.error(`Network error: ${(e as Error).message}`);
+      if (prevStatus !== undefined) {
+        setStatus((curr) => {
+          if (!curr) return curr;
+          const i = curr.features.findIndex((f) => f.id === id);
+          if (i < 0) return curr;
+          const next = curr.features.slice();
+          next[i] = { ...next[i], status: prevStatus! };
+          return { ...curr, features: next };
+        });
+      }
+    }
+  }, [activeSlug, activePhase]);
 
   const batchReset = useCallback(async (ids: string[]) => {
     await Promise.all(ids.map((id) =>
