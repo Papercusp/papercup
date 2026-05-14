@@ -16,6 +16,8 @@ import {
   listLayouts,
   getUserIdForLayouts,
   validateLayoutDoc,
+  getLastUsedPhase,
+  setLastUsedPhase,
   LayoutConflictError,
   LayoutValidationError,
   type LayoutDoc,
@@ -82,6 +84,38 @@ export function registerDockLayouts(app: Hono): void {
     const principal = getUserIdForLayouts(c.req.raw);
     const name = c.req.param('name');
     await deleteLayout(principal, name);
+    return c.body(null, 204);
+  });
+
+  // ───────── Last-used phase per harness (Phase 4 of plan v4) ─────────
+  //
+  //   GET  /api/harness-phase-last-used/:slug         → { phase: 'staging' | … } | { phase: null }
+  //   PUT  /api/harness-phase-last-used/:slug         → 204  body: { phase }
+  //
+  // Reopening an overview panel for a slug defaults to whatever phase
+  // the user last had it in for that slug; falls back to 'staging' on
+  // miss.
+
+  app.get('/harness-phase-last-used/:slug', async (c) => {
+    const principal = getUserIdForLayouts(c.req.raw);
+    const slug = c.req.param('slug');
+    const phase = await getLastUsedPhase(principal, slug);
+    return c.json({ phase });
+  });
+
+  app.put('/harness-phase-last-used/:slug', async (c) => {
+    const principal = getUserIdForLayouts(c.req.raw);
+    const slug = c.req.param('slug');
+    let body: { phase?: string };
+    try {
+      body = await c.req.json();
+    } catch {
+      return c.json({ error: 'invalid JSON body' }, 400);
+    }
+    if (!body?.phase || typeof body.phase !== 'string') {
+      return c.json({ error: 'missing { phase: string }' }, 400);
+    }
+    await setLastUsedPhase(principal, slug, body.phase);
     return c.body(null, 204);
   });
 }
