@@ -1,4 +1,4 @@
-import { source } from '@/lib/source';
+import { internalSource as source } from '@/lib/source';
 import { fumadocsAdapter, withPreamble } from '@papercusp/docs-engine';
 import { notFound } from 'next/navigation';
 

@@ -26,6 +26,10 @@ const argsSchema = z.object({
     .string()
     .min(1)
     .describe('Slug of the harness whose docs to outline (e.g. "sheets", "papercup-org").'),
+  workspaceId: z
+    .string()
+    .optional()
+    .describe('Optional workspace id when the target harness lives in a workspace other than the caller\'s active one. SU agents (admin across all workspaces) pass this; operator/oracle agents in a single workspace leave it unset.'),
 });
 
 export default defineTool({
@@ -52,7 +56,7 @@ export default defineTool({
       metadata?: (d: Record<string, unknown>) => void;
     };
 
-    const reg = await loadHarnessRegistry();
+    const reg = await loadHarnessRegistry(args.workspaceId);
     const project = reg.projects.find((p) => p.slug === args.harnessSlug);
     if (!project) {
       return {

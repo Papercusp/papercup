@@ -72,6 +72,7 @@ import './harness/health';
 import './harness/list_features';
 import './cross_harness/docs_outline';
 import './cross_harness/docs_get';
+import './cross_harness/docs_search';
 import './cross_harness/docs-resource-index';
 import './cross_harness/docs-resource-section';
 import './operator/actions_recent';

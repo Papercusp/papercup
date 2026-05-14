@@ -16,11 +16,11 @@ import {
   renderMdxToMarkdown,
   withPreamble,
 } from '@papercusp/docs-engine';
-import { source } from '@/lib/source';
+import { internalSource as source } from '@/lib/source';
 
 const adapter = fumadocsAdapter(source as never, {
   name: 'papercusp-public',
-  contentRoot: path.join(process.cwd(), 'content', 'docs'),
+  contentRoot: path.join(process.cwd(), 'content', 'internal-docs'),
 });
 
 export default defineResource({

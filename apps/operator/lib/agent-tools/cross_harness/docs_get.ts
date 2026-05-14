@@ -14,6 +14,10 @@ import { loadHarnessRegistry } from '@/lib/harness-registry';
 const argsSchema = z
   .object({
     harnessSlug: z.string().min(1).describe('Slug of the target harness (e.g. "sheets").'),
+    workspaceId: z
+      .string()
+      .optional()
+      .describe('Optional workspace id when the target harness lives in a workspace other than the caller\'s active one.'),
     slugs: z
       .array(z.string().min(1))
       .min(1)
@@ -53,7 +57,7 @@ export default defineTool({
       signal?: AbortSignal;
       metadata?: (d: Record<string, unknown>) => void;
     };
-    const reg = await loadHarnessRegistry();
+    const reg = await loadHarnessRegistry(args.workspaceId);
     const project = reg.projects.find((p) => p.slug === args.harnessSlug);
     if (!project) {
       return {
@@ -78,7 +82,7 @@ export default defineTool({
       },
     };
 
-    const { harnessSlug: _unused, ...engineArgs } = args;
+    const { harnessSlug: _unusedSlug, workspaceId: _unusedWs, ...engineArgs } = args;
     const response = await getDocs(adapter, engineArgs, {
       ...(ctxAny.signal && { signal: ctxAny.signal }),
       ...(ctxAny.metadata && { metadata: ctxAny.metadata }),

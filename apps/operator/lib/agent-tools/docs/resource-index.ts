@@ -9,7 +9,7 @@
 
 import { defineResource } from '@papercusp/agent-mcp';
 import type { ResourceContents } from '@papercusp/agent-mcp';
-import { source } from '@/lib/source';
+import { internalSource as source } from '@/lib/source';
 import { llms } from 'fumadocs-core/source';
 
 export default defineResource({

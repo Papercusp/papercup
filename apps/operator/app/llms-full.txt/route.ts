@@ -1,4 +1,4 @@
-import { source } from '@/lib/source';
+import { internalSource as source } from '@/lib/source';
 import { fumadocsAdapter, withPreamble } from '@papercusp/docs-engine';
 
 const adapter = fumadocsAdapter(source as never, { name: 'papercusp-public' });

@@ -49,7 +49,7 @@ function wrapWithPreamble(base: DocSource): DocSource {
   };
 }
 
-async function resolveAdapter(harnessSlug: string | undefined): Promise<{
+export async function resolveAdapter(harnessSlug: string | undefined): Promise<{
   adapter: DocSource;
   surface: 'harness' | 'engineering';
   error?: { code: string; slug?: string };
@@ -134,4 +134,3 @@ export default defineTool({
   },
 });
 
-export { resolveAdapter as __resolveAdapterForTesting };

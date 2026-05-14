@@ -47,7 +47,7 @@ const engineeringAdapter = fumadocsAdapter(internalSource as never, {
   contentRoot: path.join(process.cwd(), 'content', 'internal-docs'),
 });
 
-async function resolveAdapter(harnessSlug: string | undefined): Promise<{
+export async function resolveAdapter(harnessSlug: string | undefined): Promise<{
   adapter: DocSource;
   scope: string;
   surface: 'harness' | 'engineering';
@@ -127,4 +127,3 @@ export default defineTool({
   },
 });
 
-export { resolveAdapter as __resolveAdapterForTesting };
