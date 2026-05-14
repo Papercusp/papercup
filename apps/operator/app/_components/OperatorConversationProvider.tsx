@@ -1401,15 +1401,22 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
         }
 
         // Terminal auto-fire: only in active mode, voice off, with the
-        // ticks pref on, no EL cool-off active, and NOT itself an
-        // auto-fire (anti-loop guard).
+        // ticks pref on, no EL cool-off active, no active brain-emitted
+        // sleep, and NOT itself an auto-fire (anti-loop guard).
+        //
+        // sleepUntilMs gate (audit bug #1): the brain's <sleep> tag
+        // writes sleepUntilMs and tells the operator to stay quiet for
+        // N minutes. The silence-after-question effect respects that
+        // gate; this auto-fire must too, or a terminal turn AFTER a
+        // sleep tag would re-engage the user against their wishes.
         const isTerminal =
           !parsed.continue
           && !parsed.sleep
           && !awaitingReply
           && stateRef.current.mode === 'active'
           && !voiceActiveRef.current
-          && prefs.proactiveTicksEnabled !== false
+          && (prefs.proactiveTicksEnabled ?? true) === true
+          && readSleepUntilMs() <= Date.now()
           && !opts?.isAutoFire;
         if (isTerminal) {
           const ELCoolOffMs = 5 * 60 * 1000;
