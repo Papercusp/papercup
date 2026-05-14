@@ -263,9 +263,16 @@ async function main(): Promise<void> {
     if (!args.noPersist) {
       try {
         const { createHash } = await import('node:crypto');
-        const scenarioHash = scenarioFilePath
-          ? createHash('sha256').update(readFileSync(scenarioFilePath, 'utf8')).digest('hex')
-          : 'unknown';
+        let scenarioHash = 'unknown';
+        if (scenarioFilePath) {
+          try {
+            scenarioHash = createHash('sha256')
+              .update(readFileSync(scenarioFilePath, 'utf8'))
+              .digest('hex');
+          } catch {
+            scenarioHash = 'file-read-failed';
+          }
+        }
         await persistRunReport(report, scenario.rubric.version, scenarioHash);
       } catch (err) {
         console.warn(`  ! persistence failed [${scenario.id}]: ${(err as Error).message}`);
@@ -285,9 +292,12 @@ async function main(): Promise<void> {
 }
 
 function resolveScenarioFilePath(scenario: { id: string; target: string }): string | undefined {
-  // Strip the target prefix (op-, oracle-, arch-) to recover the file basename.
+  // Strip the target prefix to recover the file basename.
+  // Operator scenarios: 'op-S01-...' → files 'S01-...'
+  // Oracle scenarios:   'oracle-O1-...' → files 'O1-...'
+  // Architect:          'architect-A1-...' → files 'A1-...'
   const here = dirname(fileURLToPath(import.meta.url));
-  const idPart = scenario.id.replace(/^(op|oracle|arch)-/, '');
+  const idPart = scenario.id.replace(/^(op|oracle|architect)-/, '');
   return join(here, '..', 'lib', 'llm-testing', 'scenarios', scenario.target, `${idPart}.ts`);
 }
 
