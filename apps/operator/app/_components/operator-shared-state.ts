@@ -216,6 +216,10 @@ export function pushAutoAcceptEvent(event: AutoAcceptEvent): void {
 export function subscribeOperatorState(fn: OperatorStateSetter): () => void {
   const store = getOperatorStateStore();
   store.setters.add(fn);
+  // Module chunks can be loaded after an open/pause/autopolicy change.
+  // Seed late subscribers immediately so lazy panel mounts don't miss
+  // the broadcast that caused them to load.
+  fn(store.state);
   return () => {
     store.setters.delete(fn);
   };
