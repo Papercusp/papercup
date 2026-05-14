@@ -4946,20 +4946,38 @@ harness.get('/:slug/hook-logs/:logId', async (c) => {
   return c.json({ logId, content });
 });
 
+/**
+ * Path patterns excluded from /git/show patches by default. These are
+ * generated/agent-written files that produce massive diffs (the sheets
+ * harness's `.harness/brainstorm.canvas.json` and `.harness/issues.json`
+ * alone account for ~95% of a typical commit's patch bytes) but carry
+ * no review value. Opt back in with `?full=1`.
+ */
+const PATCH_DEFAULT_EXCLUDES = [
+  ':(exclude,glob).harness/**',
+  ':(exclude,glob)**/pnpm-lock.yaml',
+  ':(exclude,glob)**/package-lock.json',
+  ':(exclude,glob)**/yarn.lock',
+  ':(exclude,glob)**/Cargo.lock',
+  ':(exclude,glob)**/*.snap',
+];
+
 harness.get('/:slug/git/show/:sha', async (c) => {
   const project = await resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
   if (!project) return c.json({ error: 'unknown project' }, 404);
   const sha = c.req.param('sha');
   if (!/^[0-9a-f]{4,64}$/i.test(sha)) return c.json({ error: 'bad sha' }, 400);
+  const includeAll = c.req.query('full') === '1';
   try {
     const PATCH_LIMIT = 8 * 1024 * 1024; // 8 MB — enough for typical commits, bounded so multi-GB diffs don't OOM the operator.
+    const excludes = includeAll ? [] : PATCH_DEFAULT_EXCLUDES;
     const [meta, { patch, truncated, totalBytes }] = await Promise.all([
       execFileP(
         'git',
         ['-C', project.path, 'show', '--no-patch', '--format=%H%n%an%n%ae%n%at%n%P%n%s%n%n%b', sha],
         { maxBuffer: 4 * 1024 * 1024, timeout: 10_000 },
       ).then((r) => r.stdout),
-      streamGitPatch(project.path, sha, PATCH_LIMIT),
+      streamGitPatch(project.path, sha, PATCH_LIMIT, excludes),
     ]);
     const [hash, author, email, ts, parents, subject, ...bodyLines] = meta.split('\n');
     return c.json({
@@ -4983,10 +5001,13 @@ function streamGitPatch(
   cwd: string,
   sha: string,
   byteLimit: number,
+  excludePathspecs: string[] = [],
 ): Promise<{ patch: string; truncated: boolean; totalBytes: number }> {
   return new Promise((resolve, reject) => {
     const { spawn } = require('node:child_process') as typeof import('node:child_process');
-    const child = spawn('git', ['-C', cwd, 'show', '--format=', '--patch', '--stat', '-M', sha], {
+    const args = ['-C', cwd, 'show', '--format=', '--patch', '--stat', '-M', sha];
+    if (excludePathspecs.length > 0) args.push('--', '.', ...excludePathspecs);
+    const child = spawn('git', args, {
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     const chunks: Buffer[] = [];

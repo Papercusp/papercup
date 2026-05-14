@@ -319,6 +319,7 @@ function GitGraphPanel({ slug }: { slug: string }) {
       gitLogUrl={(limit: number) => `/api/harness/${slug}/git/log?limit=${limit}`}
       showCommitUrl={(sha: string) => `/api/harness/${slug}/git/show/${sha}`}
       worktreesUrl={() => `/api/harness/${slug}/git/worktrees`}
+      onCommitHref={(sha: string) => `/harness/${slug}/commit/${sha}`}
     />
   );
 }
