@@ -829,6 +829,8 @@ export default function VoiceSettingsPage() {
               ['speakCadenceStatus',     'Speak scan-start / scan-done status (chatty)'],
               ['speakNudges',            'Speak budget / breaker / pause nudges'],
               ['wakeWordIntents',        'Enable "operator scan" wake-word commands'],
+              ['speakOpenCards',         'Speak open card prompts aloud when voice is on'],
+              ['cardAnsweringEnabled',   'Resolve voice-answerable cards from spoken answers'],
             ] as const).map(([key, label]) => (
               <label key={key} style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
                 <Checkbox

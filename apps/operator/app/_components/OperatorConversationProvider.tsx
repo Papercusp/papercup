@@ -1368,10 +1368,14 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
   }, []);
 
   // Sync active ref to the focused card from state-snapshot.
+  // Also publishes 'operator:cardOpen' window events (per
+  // correlationId, dedup'd) so OperatorVoiceAnnouncer can speak the
+  // prompt when the panel is closed. The announcer event fires
+  // regardless of voiceAnswerable — even announce-only cards should
+  // be spoken when voice is on.
+  const announcedCardsRef = useRef<Set<string>>(new Set());
   useEffect(() => {
     if (!voiceActiveRef.current) {
-      // Voice inactive: the router stays empty. (Text users get cards
-      // via the chat surface as today.)
       routerClearActive(routerStateRef.current);
       return;
     }
@@ -1379,13 +1383,42 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
       routerClearActive(routerStateRef.current);
       return;
     }
+    // Announce on first sighting (any kind, any voiceAnswerable). The
+    // announcer respects its own prefs gate.
+    if (!announcedCardsRef.current.has(focusedCard.correlationId)) {
+      announcedCardsRef.current.add(focusedCard.correlationId);
+      if (typeof window !== 'undefined') {
+        try {
+          window.dispatchEvent(
+            new CustomEvent('operator:cardOpen', {
+              detail: {
+                correlationId: focusedCard.correlationId,
+                prompt: focusedCard.prompt,
+                fallbackText: focusedCard.fallbackText,
+              },
+            }),
+          );
+        } catch { /* ignore */ }
+      }
+    }
     // Honor voiceAnswerable: only opt-in cards arm the router.
+    // Master kill-switch: voice.cardAnsweringEnabled pref. When
+    // false, the user wants cards spoken (announcer above) but
+    // never resolved by voice; they must click.
     const presentation = focusedCard.presentation;
     const optIn =
       presentation !== undefined
       && presentation.kind === 'radio'
       && (presentation as unknown as { voiceAnswerable?: boolean }).voiceAnswerable === true;
-    if (!optIn) {
+    let cardAnsweringEnabled = true;
+    try {
+      // Lazy require avoids dragging voice-prefs into SSR.
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const { loadVoicePrefsClient } = require('./voice/voice-prefs-client') as
+        typeof import('./voice/voice-prefs-client');
+      cardAnsweringEnabled = loadVoicePrefsClient().cardAnsweringEnabled !== false;
+    } catch { /* prefs unreachable → permissive default */ }
+    if (!optIn || !cardAnsweringEnabled) {
       routerClearActive(routerStateRef.current);
       return;
     }
@@ -1413,6 +1446,17 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
       routerBufferTimerRef.current = null;
     }
   }, [focusedCard]);
+
+  // Drop announce-dedup entries for cards that have closed, so a
+  // future re-emit at the same correlationId would re-announce.
+  // (correlationIds are typically unique-per-card, so this mostly
+  // matters for the test surface where ids may be reused.)
+  useEffect(() => {
+    const open = new Set(openCards.map((c) => c.correlationId));
+    for (const id of Array.from(announcedCardsRef.current)) {
+      if (!open.has(id)) announcedCardsRef.current.delete(id);
+    }
+  }, [openCards]);
 
   // Voice-off → reset everything.
   useEffect(() => {

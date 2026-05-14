@@ -74,6 +74,29 @@ export function OperatorVoiceAnnouncer(): null {
 
     window.addEventListener('operator:scan', onScan as EventListener);
 
+    // ── Open-card announcer (plan §C.4 + Phase 5) ────────────────
+    // When a chat:ask_choice card appears on the state-snapshot
+    // stream, speak its fallbackText (or prompt) aloud. Gating:
+    //   - Voice must be ON (any mode, push-to-talk or always-on).
+    //   - prefs.speakOpenCards toggle on.
+    //   - Panel CLOSED — when open, the user can read the card
+    //     themselves; the chat surface already shows it.
+    // Idempotent per correlationId via the provider's dedup set;
+    // this handler will only see one event per card.
+    const onCardOpen = (e: Event) => {
+      const detail = (e as CustomEvent<{ correlationId?: string; prompt?: string; fallbackText?: string }>).detail;
+      if (!detail || !detail.correlationId) return;
+      const v = getVoiceState();
+      if (v.mode === 'off') return;
+      if (sharedState.open) return;
+      const prefs = loadVoicePrefsClient();
+      if (!prefs.speakOpenCards) return;
+      const text = (detail.fallbackText ?? '').trim() || (detail.prompt ?? '').trim();
+      if (!text) return;
+      speak(text, 'system:operator', 'polite');
+    };
+    window.addEventListener('operator:cardOpen', onCardOpen as EventListener);
+
     // Pause nudge (v4 §2e): speak when paused state flips. Per-kind dedup
     // (5 min for pause) is server-side via voice-nudges; here we just fire
     // the request and let the server arbitrate.
@@ -102,6 +125,7 @@ export function OperatorVoiceAnnouncer(): null {
 
     return () => {
       window.removeEventListener('operator:scan', onScan as EventListener);
+      window.removeEventListener('operator:cardOpen', onCardOpen as EventListener);
       unsubPause();
     };
   }, []);

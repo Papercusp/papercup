@@ -22,6 +22,8 @@ const DEFAULT_CLIENT_PREFS: VoicePrefs = {
   speakCadenceStatus: false,
   speakNudges: true,
   wakeWordIntents: true,
+  speakOpenCards: true,
+  cardAnsweringEnabled: true,
   sttEngine: 'voicemode',
   ttsEngine: 'kokoro',
   elevenlabsVoiceId: '21m00Tcm4TlvDq8ikWAM',

@@ -40,6 +40,10 @@ export interface VoicePrefs {
   speakCadenceStatus: boolean;      // OFF — chatty
   speakNudges: boolean;             // ON
   wakeWordIntents: boolean;         // ON
+  /** Speak open chat:ask_choice card prompts aloud when voice is on. */
+  speakOpenCards: boolean;          // ON
+  /** Allow STT transcripts to resolve voiceAnswerable cards via /card-response. */
+  cardAnsweringEnabled: boolean;    // ON
 
   // Engine selection
   sttEngine: SttEngineKind;
@@ -228,6 +232,8 @@ export const DEFAULT_VOICE_PREFS: VoicePrefs = {
   speakCadenceStatus: false,
   speakNudges: true,
   wakeWordIntents: true,
+  speakOpenCards: true,
+  cardAnsweringEnabled: true,
   sttEngine: 'voicemode',
   ttsEngine: 'kokoro',
   fullAgentEngine: 'off',
