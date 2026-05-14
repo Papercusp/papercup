@@ -24,10 +24,16 @@ import { runScenario } from '../lib/llm-testing/runner';
 import { SCENARIOS, getScenario, listScenarioIds } from '../lib/llm-testing/scenarios';
 import { listTargets } from '../lib/llm-testing/targets';
 import { persistRunReport } from '../lib/llm-testing/storage';
+import { findPromotionCandidates, formatCandidatesReport } from '../lib/llm-testing/promotion/candidates';
+import { promoteShape } from '../lib/llm-testing/promotion/promote';
+
+type Verb = 'run' | 'promote-candidates' | 'promote';
 
 interface Args {
+  verb: Verb;
   scenarioId?: string;
   targetId?: string;
+  shape?: string;
   noMatrix: boolean;
   list: boolean;
   noPersist: boolean;
@@ -36,16 +42,23 @@ interface Args {
 
 function parseArgs(argv: string[]): Args {
   const args: Args = {
+    verb: 'run',
     noMatrix: false,
     list: false,
     noPersist: false,
     help: false,
   };
+  // First positional non-flag arg may be a verb.
+  if (argv[0] === 'promote-candidates' || argv[0] === 'promote') {
+    args.verb = argv[0];
+    argv = argv.slice(1);
+  }
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     switch (a) {
       case '--scenario': args.scenarioId = argv[++i]; break;
       case '--target': args.targetId = argv[++i]; break;
+      case '--shape': args.shape = argv[++i]; break;
       case '--no-matrix': args.noMatrix = true; break;
       case '--no-persist': args.noPersist = true; break;
       case '--list': args.list = true; break;
@@ -65,18 +78,23 @@ function usage(): void {
   console.log(`llm-test — LLM testing framework
 
 Usage:
-  llm-test --scenario <id>       Run a single scenario
-  llm-test --target operator     Run every scenario for a target
-  llm-test --list                List scenarios + targets
-  llm-test --no-matrix           Force N=1 (overrides runMatrix.repeat)
-  llm-test --no-persist          Skip PG persistence (printing only)
+  llm-test --scenario <id>            Run a single scenario
+  llm-test --target operator          Run every scenario for a target
+  llm-test --list                     List scenarios + targets
+  llm-test --no-matrix                Force N=1 (overrides runMatrix.repeat)
+  llm-test --no-persist               Skip PG persistence (printing only)
+
+  llm-test promote-candidates         List novel_failure shapes seen
+                                      in ≥3 scenarios over the last 14d
+  llm-test promote --shape <hash>     Scaffold an asserts/<id>.ts stub
+                                      from a candidate shape
 
 Env:
-  ANTHROPIC_API_KEY              Required (sim-user + judge)
-  PAPERCUSP_OPERATOR_URL         Operator base URL (default http://127.0.0.1:3055)
-  LLM_TEST_SUT_MODEL             Override SUT model (default claude-sonnet-4-6)
-  LLM_TEST_JUDGE_MODEL           Override judge model (default claude-sonnet-4-6)
-  LLM_TEST_SIM_MODEL             Override sim-user model (default claude-haiku-4-5)
+  ANTHROPIC_API_KEY                   Required (sim-user + judge)
+  PAPERCUSP_OPERATOR_URL              Operator base URL (default http://127.0.0.1:3055)
+  LLM_TEST_SUT_MODEL                  Override SUT model (default claude-sonnet-4-6)
+  LLM_TEST_JUDGE_MODEL                Override judge model (default claude-sonnet-4-6)
+  LLM_TEST_SIM_MODEL                  Override sim-user model (default claude-haiku-4-5)
 
 Plan: apps/operator/docs/plans/llm-testing-framework-2026-05-14.md
 `);
@@ -85,6 +103,27 @@ Plan: apps/operator/docs/plans/llm-testing-framework-2026-05-14.md
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
   if (args.help) { usage(); return; }
+
+  if (args.verb === 'promote-candidates') {
+    const cs = await findPromotionCandidates();
+    console.log(formatCandidatesReport(cs));
+    return;
+  }
+
+  if (args.verb === 'promote') {
+    if (!args.shape) {
+      console.error('promote requires --shape <hash>. Use `llm-test promote-candidates` to find one.');
+      process.exit(2);
+    }
+    const result = await promoteShape(args.shape);
+    console.log(`Promoted shape ${args.shape.slice(0, 12)}…`);
+    console.log(`  Created: ${result.filePath}`);
+    console.log(`  Linked findings: ${result.findingsLinkedCount}`);
+    console.log(`  Example claim: ${result.exampleClaim.slice(0, 100)}`);
+    console.log(`\nNext: implement the predicate in the stub, then reference it`);
+    console.log(`from a scenario with { kind: 'custom', name: '${result.assertId}', eval: evaluate }`);
+    return;
+  }
 
   if (args.list) {
     console.log('Targets:');
