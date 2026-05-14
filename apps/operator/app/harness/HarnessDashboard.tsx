@@ -1577,7 +1577,13 @@ function ActiveAgentsBar({ slug, phase, runs, alive, onPillClick, onStart, onSto
   slug: string;
   phase: string;
   runs: Array<{ runId: string; role: string; featureId?: string | null; ts: number }>;
-  alive: boolean;
+  /**
+   * Liveness of the harness process. `null` means we haven't received
+   * the first /status response yet — render a "checking…" state rather
+   * than falsely flashing "Harness stopped" while the network round-trip
+   * is in flight. After /status returns, `true` / `false` for real.
+   */
+  alive: boolean | null;
   onPillClick?: (runId: string) => void;
   onStart?: () => void;
   onStop?: () => void;
@@ -1630,23 +1636,26 @@ function ActiveAgentsBar({ slug, phase, runs, alive, onPillClick, onStart, onSto
   };
 
   const isIdle = runs.length === 0;
-  const headline = !alive
-    ? 'Harness stopped'
-    : isIdle
-      ? 'No agents in flight'
-      : runs.length === 1 ? '1 agent in flight' : `${runs.length} agents in flight`;
-  const subtitle = !alive ? null : isIdle ? 'Orchestrator deciding next step…' : null;
-  const rowStateClass = !alive ? ' is-stopped' : ' is-running';
+  const isLoading = alive === null;
+  const headline = isLoading
+    ? 'Checking harness status…'
+    : !alive
+      ? 'Harness stopped'
+      : isIdle
+        ? 'No agents in flight'
+        : runs.length === 1 ? '1 agent in flight' : `${runs.length} agents in flight`;
+  const subtitle = isLoading || !alive ? null : isIdle ? 'Orchestrator deciding next step…' : null;
+  const rowStateClass = isLoading ? ' is-loading' : !alive ? ' is-stopped' : ' is-running';
 
   return (
     <div className={`h-active-agents-row${isIdle || !alive ? ' is-idle' : ''}${rowStateClass}`} aria-label="Active agents">
-      {alive && onStop && (
+      {alive === true && onStop && (
         <button type="button" className="h-active-agents-stop" onClick={onStop}>
           STOP
         </button>
       )}
       <div className="h-active-agents-copy">
-        {alive && <span>Now running</span>}
+        {alive === true && <span>Now running</span>}
         <strong>{headline}</strong>
       </div>
       <div className="h-active-agents-pills" data-count={runs.length}>
@@ -3340,8 +3349,32 @@ export default function HarnessDashboard() {
         timeline: [],
       } as unknown as AgentDetail);
     }
-    const r = await fetch(`/api/harness/${activeSlug}/agents/${runId}?phase=${activePhase}`).then((r) => r.json());
-    setSelectedAgent(r as AgentDetail);
+    // Bound the fetch — when PG is down or the dev server is mid-compile,
+    // /agents/<runId> can hang for tens of seconds before Node's default
+    // socket timeout fires. Without an AbortSignal here, the inspector
+    // panel sits on the meta-stub spinner forever. 20s gives a slow
+    // first-render of large JSONL room while still surfacing real hangs.
+    try {
+      const res = await fetch(
+        `/api/harness/${activeSlug}/agents/${runId}?phase=${activePhase}`,
+        { signal: AbortSignal.timeout(20_000) },
+      );
+      if (!res.ok) {
+        toast.error(`Failed to load run ${runId}: ${res.status}`);
+        return;
+      }
+      const r = await res.json();
+      if (r?.error) {
+        toast.error(`Run ${runId}: ${r.error}`);
+        return;
+      }
+      setSelectedAgent(r as AgentDetail);
+    } catch (e) {
+      const msg = (e as Error).name === 'TimeoutError'
+        ? `Run ${runId} took >20s — server may be backed up or PG unreachable. Check dev.log.`
+        : `Network error loading run ${runId}: ${(e as Error).message}`;
+      toast.error(msg);
+    }
   }, [activeSlug, activePhase, zeroAgentRows]);
 
 
@@ -3352,8 +3385,15 @@ export default function HarnessDashboard() {
     if (!isLive) return;
     agentPollRef.current = setInterval(async () => {
       try {
-        const r = await fetch(`/api/harness/${activeSlug}/agents/${selectedAgent.runId}?phase=${activePhase}`).then((r) => r.json());
-        setSelectedAgent(r as AgentDetail);
+        // 5s timeout — short enough that a hung response doesn't pile up
+        // overlapping fetches if the server is slow (interval is 2s).
+        const res = await fetch(
+          `/api/harness/${activeSlug}/agents/${selectedAgent.runId}?phase=${activePhase}`,
+          { signal: AbortSignal.timeout(5_000) },
+        );
+        if (!res.ok) return;
+        const r = await res.json();
+        if (!r?.error) setSelectedAgent(r as AgentDetail);
       } catch {}
     }, 2000);
     return () => { if (agentPollRef.current) { clearInterval(agentPollRef.current); agentPollRef.current = null; } };
