@@ -26,14 +26,17 @@ import { listTargets } from '../lib/llm-testing/targets';
 import { persistRunReport } from '../lib/llm-testing/storage';
 import { findPromotionCandidates, formatCandidatesReport } from '../lib/llm-testing/promotion/candidates';
 import { promoteShape } from '../lib/llm-testing/promotion/promote';
+import { replayFixture, reEvaluateRun } from '../lib/llm-testing/replay';
 
-type Verb = 'run' | 'promote-candidates' | 'promote';
+type Verb = 'run' | 'promote-candidates' | 'promote' | 'replay';
 
 interface Args {
   verb: Verb;
   scenarioId?: string;
   targetId?: string;
   shape?: string;
+  fixture?: string;
+  reEvaluate?: string;
   noMatrix: boolean;
   list: boolean;
   noPersist: boolean;
@@ -49,7 +52,7 @@ function parseArgs(argv: string[]): Args {
     help: false,
   };
   // First positional non-flag arg may be a verb.
-  if (argv[0] === 'promote-candidates' || argv[0] === 'promote') {
+  if (argv[0] === 'promote-candidates' || argv[0] === 'promote' || argv[0] === 'replay') {
     args.verb = argv[0];
     argv = argv.slice(1);
   }
@@ -59,6 +62,8 @@ function parseArgs(argv: string[]): Args {
       case '--scenario': args.scenarioId = argv[++i]; break;
       case '--target': args.targetId = argv[++i]; break;
       case '--shape': args.shape = argv[++i]; break;
+      case '--fixture': args.fixture = argv[++i]; break;
+      case '--re-evaluate': args.reEvaluate = argv[++i]; break;
       case '--no-matrix': args.noMatrix = true; break;
       case '--no-persist': args.noPersist = true; break;
       case '--list': args.list = true; break;
@@ -88,6 +93,16 @@ Usage:
                                       in ≥3 scenarios over the last 14d
   llm-test promote --shape <hash>     Scaffold an asserts/<id>.ts stub
                                       from a candidate shape
+
+  llm-test replay --fixture <id> --scenario <id>
+                                      Re-evaluate a stored .sse fixture
+                                      against the current rubric.
+                                      No SUT or sim-user calls — just
+                                      asserts + judge. ~$0.10/run.
+
+  llm-test replay --re-evaluate <run-uuid> --scenario <id>
+                                      Re-judge a historical run row
+                                      (e.g. after a rubric edit).
 
 Env:
   ANTHROPIC_API_KEY                   Required (sim-user + judge)
@@ -123,6 +138,40 @@ async function main(): Promise<void> {
     console.log(`\nNext: implement the predicate in the stub, then reference it`);
     console.log(`from a scenario with { kind: 'custom', name: '${result.assertId}', eval: evaluate }`);
     return;
+  }
+
+  if (args.verb === 'replay') {
+    if (!args.scenarioId) {
+      console.error('replay requires --scenario <id> (drives asserts + rubric).');
+      process.exit(2);
+    }
+    if (!args.fixture && !args.reEvaluate) {
+      console.error('replay requires --fixture <id|path> or --re-evaluate <run-uuid>.');
+      process.exit(2);
+    }
+    if (!isLlmAvailable()) {
+      console.error('ANTHROPIC_API_KEY required (replay still calls the judge).');
+      process.exit(1);
+    }
+    const scenario = getScenario(args.scenarioId);
+    const judgeModel = process.env.LLM_TEST_JUDGE_MODEL ?? 'claude-sonnet-4-6';
+
+    const result = args.fixture
+      ? await replayFixture({ fixture: args.fixture, scenario, judgeModel })
+      : await reEvaluateRun({ runId: args.reEvaluate!, scenarioOverride: scenario, judgeModel });
+
+    const icon = result.status === 'passed' ? '✓' : result.status === 'errored' ? '!' : '✗';
+    console.log(`${icon} replay status=${result.status}`);
+    console.log(`  scores: ${JSON.stringify(result.judge.scores)}`);
+    console.log(`  asserts: ${result.violations.filter((v) => v.severity === 'error').length} error, ${result.violations.filter((v) => v.severity === 'warn').length} warn`);
+    console.log(`  judge:   ${result.judge.findings.filter((f) => f.severity === 'error').length} error, ${result.judge.findings.filter((f) => f.severity === 'warn').length} warn`);
+    for (const v of result.violations.filter((x) => x.severity === 'error')) {
+      console.log(`    ✗ [${v.assertKind}] ${v.claim}`);
+    }
+    for (const f of result.judge.findings.filter((x) => x.severity === 'error').slice(0, 3)) {
+      console.log(`    ✗ judge[${f.axis}]: ${f.claim}`);
+    }
+    process.exit(result.status === 'passed' ? 0 : 1);
   }
 
   if (args.list) {
