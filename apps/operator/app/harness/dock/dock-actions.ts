@@ -1,0 +1,178 @@
+/**
+ * Agent + voice + command-palette dispatch surface for dock manipulation.
+ *
+ * Spec: apps/operator/docs/dockview-migration-plan-v4.md §9
+ *
+ * Bridge between agent `ui:dispatch` actions and the live DockviewApi.
+ * The dock root binds setApi() on mount; callers (UI buttons, voice
+ * handler, MCP tool, command palette) invoke the actions here.
+ *
+ * Reads (`ui:get_state` extensions §9.2) are also provided.
+ */
+
+'use client';
+
+import type { DockviewApi } from 'dockview';
+import { toLayoutDoc } from './layout-adapter';
+import type { LayoutDoc } from '../../../lib/dock-layouts';
+
+// ───────── Module-scoped api binding (singleton, set by HarnessDock) ─────────
+
+let boundApi: DockviewApi | null = null;
+const bindingListeners = new Set<(api: DockviewApi | null) => void>();
+
+export function bindDockApi(api: DockviewApi | null): void {
+  boundApi = api;
+  for (const fn of bindingListeners) fn(api);
+}
+
+export function onDockApiBind(fn: (api: DockviewApi | null) => void): () => void {
+  bindingListeners.add(fn);
+  if (boundApi) fn(boundApi);
+  return () => {
+    bindingListeners.delete(fn);
+  };
+}
+
+function api(): DockviewApi {
+  if (!boundApi) {
+    throw new Error('dock not mounted: no DockviewApi bound');
+  }
+  return boundApi;
+}
+
+// ───────── Actions (§9.1) ─────────
+
+export interface OpenPanelArgs {
+  /** Panel registry key. */
+  type: string;
+  /** Panel params. */
+  params?: Record<string, unknown>;
+  /** Optional explicit id; auto-generated if absent. */
+  id?: string;
+  /** Optional title override; falls back to registry meta or type. */
+  title?: string;
+  /** Group id to drop into; auto-positions if absent. */
+  group?: string;
+  /** If true, opens as a floating group instead of docking. */
+  floating?: { x?: number; y?: number; width?: number; height?: number };
+}
+
+export function openPanel(args: OpenPanelArgs): string {
+  const id = args.id ?? cryptoId('p');
+  const opts: Parameters<DockviewApi['addPanel']>[0] = {
+    id,
+    component: args.type,
+    title: args.title,
+    params: args.params,
+  };
+  if (args.group) {
+    opts.position = { referenceGroup: args.group };
+  }
+  if (args.floating) {
+    opts.floating = {
+      x: args.floating.x ?? 80,
+      y: args.floating.y ?? 80,
+      width: args.floating.width ?? 480,
+      height: args.floating.height ?? 360,
+    };
+  }
+  api().addPanel(opts);
+  return id;
+}
+
+export function focusPanel(panelId: string): boolean {
+  const p = api().getPanel(panelId);
+  if (!p) return false;
+  p.api.setActive();
+  return true;
+}
+
+export function closePanel(panelId: string): boolean {
+  const p = api().getPanel(panelId);
+  if (!p) return false;
+  api().removePanel(p);
+  return true;
+}
+
+export function setPanelParams(
+  panelId: string,
+  next: Record<string, unknown>,
+): boolean {
+  const p = api().getPanel(panelId);
+  if (!p) return false;
+  p.api.updateParameters(next);
+  return true;
+}
+
+export function setPanelTitle(panelId: string, title: string): boolean {
+  const p = api().getPanel(panelId);
+  if (!p) return false;
+  p.api.setTitle(title);
+  return true;
+}
+
+// ───────── Reads (§9.2) ─────────
+
+export interface PanelSnapshot {
+  id: string;
+  type: string;
+  title: string | undefined;
+  params: Record<string, unknown>;
+  /** True if this panel is currently the active one in its group. */
+  isActive: boolean;
+}
+
+export function listPanels(): PanelSnapshot[] {
+  const dv = api();
+  return dv.panels.map((p) => {
+    const params = (p.params ?? {}) as Record<string, unknown>;
+    const isActive = p.group?.activePanel?.id === p.id;
+    return {
+      id: p.id,
+      // dockview's `p.view.content.props?.dvProps?.params` is the canonical
+      // place params live, but `p.params` is the documented public read
+      // accessor.
+      type:
+        (p as unknown as { contentComponent?: string }).contentComponent ??
+        (p as unknown as { component?: string }).component ??
+        'unknown',
+      title: p.title,
+      params,
+      isActive,
+    };
+  });
+}
+
+export function getFocusedPanel(): PanelSnapshot | null {
+  const dv = api();
+  const active = dv.activeGroup?.activePanel;
+  if (!active) return null;
+  return {
+    id: active.id,
+    type:
+      (active as unknown as { contentComponent?: string }).contentComponent ??
+      (active as unknown as { component?: string }).component ??
+      'unknown',
+    title: active.title,
+    params: (active.params ?? {}) as Record<string, unknown>,
+    isActive: true,
+  };
+}
+
+export function getLayoutSnapshot(): LayoutDoc {
+  const dv = api();
+  const json = dv.toJSON() as unknown as Parameters<typeof toLayoutDoc>[0];
+  return toLayoutDoc(json);
+}
+
+// ───────── Utility ─────────
+
+function cryptoId(prefix: string): string {
+  try {
+    if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) {
+      return `${prefix}-${(crypto as Crypto).randomUUID().slice(0, 8)}`;
+    }
+  } catch {}
+  return `${prefix}-${Math.random().toString(36).slice(2, 10)}`;
+}

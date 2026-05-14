@@ -27,6 +27,7 @@ import {
 import { MissingPanel } from './MissingPanel';
 import { toDockviewJson, toLayoutDoc, type DockviewLayout } from './layout-adapter';
 import { useDockLayout, type DockLayoutRow } from './useDockLayout';
+import { bindDockApi } from './dock-actions';
 import type { LayoutDoc } from '../../../lib/dock-layouts';
 
 interface HarnessDockProps {
@@ -152,6 +153,7 @@ export function HarnessDock({ layoutName, className }: HarnessDockProps) {
 
   const onReady = useCallback((event: DockviewReadyEvent) => {
     apiRef.current = event.api;
+    bindDockApi(event.api);
     event.api.onDidLayoutChange(persist);
     event.api.onDidAddPanel(persist);
     event.api.onDidRemovePanel(persist);
@@ -162,6 +164,7 @@ export function HarnessDock({ layoutName, className }: HarnessDockProps) {
   useEffect(() => {
     return () => {
       if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+      bindDockApi(null);
     };
   }, []);
 
