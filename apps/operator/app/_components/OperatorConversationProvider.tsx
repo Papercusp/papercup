@@ -479,6 +479,19 @@ export interface GenerationRequest {
   modality: 'voice' | 'text';
   /** AbortSignal for cancellation (e.g. mode flip mid-generation). */
   signal: AbortSignal;
+  /**
+   * Conversation id, threaded to the server only for continue-chain
+   * ledger writes (plan §5.3 — apps/operator/lib/operator-continue-chains.ts).
+   * The converse tool itself derives state from `messages`.
+   */
+  conversationId?: string | null;
+  /**
+   * True when the provider auto-fired this turn — either a <continue/>
+   * chain step or the V8 terminal-question auto-fire. The route uses
+   * it to distinguish user-driven `user_says_ready` from V8 auto-fire
+   * for the ledger.
+   */
+  isAutoFire?: boolean;
 }
 
 export interface GenerationStream {
@@ -525,6 +538,10 @@ const defaultGenerationFn: GenerationFn = async (req) => {
         ? { display_name: req.welcomedUser.displayName }
         : undefined,
       uiClientId: uiClientId || undefined,
+      // V8 continue-chain ledger fields. Optional; route handles
+      // missing values gracefully.
+      conversationId: req.conversationId ?? undefined,
+      isAutoFire: req.isAutoFire ?? undefined,
     }),
     signal: req.signal,
   });
@@ -1237,6 +1254,10 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
           modality: voiceActiveRef.current ? 'voice' : 'text',
           welcomedUser: opts?.welcomedUser,
           signal: ctrl.signal,
+          // V8 continue-chain ledger plumbing — server records one
+          // row per chain turn so deterministic asserts can verify caps.
+          conversationId: conversationIdRef.current ?? undefined,
+          isAutoFire: opts?.isAutoFire,
         });
 
         let buf = '';

@@ -49,6 +49,21 @@ interface ConverseRequestBody {
   mayAskActive?: boolean;
   modality?: 'voice' | 'text';
   uiClientId?: string;
+  /**
+   * Conversation id from the client. Threaded through here only for
+   * continue-chain ledger writes (plan §5.3); the converse tool itself
+   * derives conversation state from `messages`. Optional — without it,
+   * chain rows aren't written, which silently makes V8 cap-asserts
+   * less informative but doesn't break the turn.
+   */
+  conversationId?: string;
+  /**
+   * True when the provider auto-fired this turn (continue chain or
+   * V8 terminal-question detector). Used to record the chain ledger
+   * row's `trigger`. Distinct from `trigger='continue'` because
+   * `user_says_ready` can be either user-driven or auto-fired.
+   */
+  isAutoFire?: boolean;
 }
 
 export async function POST(req: NextRequest) {
@@ -133,6 +148,34 @@ export async function POST(req: NextRequest) {
           sink.event('state-snapshot', vs);
         });
         sink.onClose(offStateChannel);
+      }
+
+      // V8 continue-chain ledger writes. Best-effort; never blocks
+      // the turn. Plan §5.3.
+      if (body.conversationId && body.uiClientId) {
+        const { recordChainEvent } = await import('@/lib/operator-continue-chains');
+        if (body.trigger === 'continue') {
+          // Provider's auto-fire of <continue/>. Chain row, trigger='continue'.
+          void recordChainEvent({
+            conversationId: body.conversationId,
+            uiClientId: body.uiClientId,
+            trigger: 'continue',
+          });
+        } else if (body.trigger === 'user_says_ready' && body.isAutoFire) {
+          // V8 terminal-question detector. Chain row, trigger='auto_fire_terminal'.
+          void recordChainEvent({
+            conversationId: body.conversationId,
+            uiClientId: body.uiClientId,
+            trigger: 'auto_fire_terminal',
+          });
+        } else if (body.trigger === 'user_message') {
+          // Genuine user input — closes any active chain.
+          void recordChainEvent({
+            conversationId: body.conversationId,
+            uiClientId: body.uiClientId,
+            trigger: 'reset',
+          });
+        }
       }
 
       const ctxBase: UnifiedToolContext = {

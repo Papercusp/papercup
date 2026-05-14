@@ -61,6 +61,10 @@ export class OperatorTarget implements ChatTarget {
       harnessSlug: this.opts.harnessSlug,
       transport: opts.transport,
       hasOverride: !!opts.dispatchOverride,
+      // The runId IS a UUID; reuse it as conversationId so chain rows
+      // for this scenario are queryable by `ui_client_id` + the same
+      // value as conversation_id.
+      conversationId: opts.runId,
     });
   }
 }
@@ -71,6 +75,14 @@ interface SessionState {
   harnessSlug?: string;
   transport: 'in-process' | 'http-sse';
   hasOverride: boolean;
+  /**
+   * Synthetic conversation_id used purely for chain-ledger writes
+   * (operator_continue_chains.conversation_id is uuid NOT NULL). The
+   * runner's own runId is fine — the schema doesn't care that it
+   * doesn't match an operator-side conversations.id, only that it's
+   * stable across the chain turns of one scenario run.
+   */
+  conversationId: string;
 }
 
 class OperatorSession implements ChatSession {
@@ -104,6 +116,11 @@ class OperatorSession implements ChatSession {
       mayAskActive: true,
       modality: (input.meta?.modality as 'text' | 'voice' | undefined) ?? 'text',
       uiClientId: this.sessionId,
+      conversationId: this.state.conversationId,
+      // The runner sets pendingTrigger='continue' when it observes a
+      // <continue/> tag in the last turn — that's an auto-fire by
+      // definition. Same shape as the production provider.
+      isAutoFire: input.trigger === 'continue',
       ...(input.meta?.welcomedUser ? { welcomed_user: input.meta.welcomedUser } : {}),
     };
 
