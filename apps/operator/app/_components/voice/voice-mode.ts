@@ -252,6 +252,38 @@ export function initVoiceMode(): void {
   };
   window.addEventListener('pagehide', releaseOnUnload);
   window.addEventListener('beforeunload', releaseOnUnload);
+
+  // Silence-nudge teardown handoff (plan: silence-nudge-reliability-2026-05-14
+  // §C.2). The conversation provider's grace timer fires this when the
+  // Ready card has been open unanswered for `silenceNudgeGraceSecs`.
+  // Tear down the active EL session + arm wake-word listening (if
+  // configured) so the user can resume hands-free. No-op when no
+  // session is active.
+  window.addEventListener('papercusp:voiceSilenceTeardown', (e) => {
+    if (!realtimeSession) return;
+    const detail = (e as CustomEvent<{ wakeword?: string | null }>).detail;
+    const wakeword = detail?.wakeword || null;
+    stopRealtimeSession();
+    setState({ status: state.mode === 'off' ? 'off' : 'idle' });
+    // Restart wake-word listener for hands-free resume. Reuses the
+    // same path the generic idle timer takes.
+    if (wakeGated && state.mode !== 'off') {
+      void startWakeWordGate(wakeGatedPrefsCache).catch(() => {});
+    }
+    // Handoff cue — gated by pref. Spoken via the standard speak()
+    // queue so it lands cleanly even mid-TTS.
+    try {
+      // Lazy-load voice-prefs to keep this file's import surface stable.
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const { loadVoicePrefsClient } = require('./voice-prefs-client') as
+        typeof import('./voice-prefs-client');
+      const prefs = loadVoicePrefsClient();
+      if (prefs.speakSessionHandoff !== false && wakeword) {
+        const msg = `Going to wake-word listening. Say ${wakeword} when you're ready.`;
+        speak(msg, 'system:operator', 'polite');
+      }
+    } catch { /* prefs unreachable → skip handoff */ }
+  });
   // Voice mode is "supported" as long as the runtime can plausibly speak
   // OR transcribe via *some* engine. Web Speech is sufficient but not
   // required — Tauri/WebKitGTK lacks it but Voicemode (local Kokoro +

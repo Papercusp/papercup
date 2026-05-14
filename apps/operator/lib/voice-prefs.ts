@@ -44,6 +44,19 @@ export interface VoicePrefs {
   speakOpenCards: boolean;          // ON
   /** Allow STT transcripts to resolve voiceAnswerable cards via /card-response. */
   cardAnsweringEnabled: boolean;    // ON
+  /**
+   * After a silence-nudge card opens with no response, tear down the
+   * active EL Conv AI session this many seconds later. Wake-word
+   * listener kicks in (when configured) so the user can resume
+   * hands-free. Range 5-120; 0 disables teardown entirely.
+   */
+  silenceNudgeGraceSecs: number;    // 30
+  /**
+   * Speak a short handoff cue ("Going to wake-word listening...")
+   * when the silence-nudge grace timer tears down the EL session.
+   * No-op when EL wasn't active or wake-word isn't configured.
+   */
+  speakSessionHandoff: boolean;     // ON
 
   // Engine selection
   sttEngine: SttEngineKind;
@@ -234,6 +247,8 @@ export const DEFAULT_VOICE_PREFS: VoicePrefs = {
   wakeWordIntents: true,
   speakOpenCards: true,
   cardAnsweringEnabled: true,
+  silenceNudgeGraceSecs: 30,
+  speakSessionHandoff: true,
   sttEngine: 'voicemode',
   ttsEngine: 'kokoro',
   fullAgentEngine: 'off',

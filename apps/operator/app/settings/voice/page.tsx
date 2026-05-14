@@ -694,6 +694,29 @@ export default function VoiceSettingsPage() {
             </div>
             <div>
               <label style={lbl}>
+                Silence-nudge grace before EL teardown (seconds)
+              </label>
+              <input
+                type="number"
+                min={0}
+                max={120}
+                value={prefs.silenceNudgeGraceSecs ?? 30}
+                onChange={(e) => {
+                  const v = Math.max(0, Math.min(120, parseInt(e.target.value, 10) || 0));
+                  savePrefsPatch({ silenceNudgeGraceSecs: v });
+                }}
+                style={{ ...sel, width: 120 }}
+                disabled={savingPrefs}
+              />
+              <p style={hint}>
+                Default <strong>30 seconds</strong>. After the silence-nudge Ready card appears,
+                tear down the active EL Conv AI session this many seconds later (saves credits
+                during silence). Wake-word listener resumes when configured. 0 disables — EL
+                stays up until its own idle timeout above. Range 5-120.
+              </p>
+            </div>
+            <div>
+              <label style={lbl}>
                 Operator history budget (tokens)
               </label>
               <input
@@ -838,6 +861,7 @@ export default function VoiceSettingsPage() {
               ['wakeWordIntents',        'Enable "operator scan" wake-word commands'],
               ['speakOpenCards',         'Speak open card prompts aloud when voice is on'],
               ['cardAnsweringEnabled',   'Resolve voice-answerable cards from spoken answers'],
+              ['speakSessionHandoff',    'Speak a cue when voice idles back to wake-word listening'],
             ] as const).map(([key, label]) => (
               <label key={key} style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
                 <Checkbox

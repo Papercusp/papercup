@@ -24,6 +24,8 @@ const DEFAULT_CLIENT_PREFS: VoicePrefs = {
   wakeWordIntents: true,
   speakOpenCards: true,
   cardAnsweringEnabled: true,
+  silenceNudgeGraceSecs: 30,
+  speakSessionHandoff: true,
   sttEngine: 'voicemode',
   ttsEngine: 'kokoro',
   elevenlabsVoiceId: '21m00Tcm4TlvDq8ikWAM',

@@ -1081,6 +1081,9 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
 
       dispatch({ type: 'record_user_turn', tsMs });
       dispatch({ type: 'mark_turn', tsMs });
+      // User spoke (whatever they said) — they're engaged, cancel
+      // any pending silence-nudge grace timer so EL stays up.
+      cancelNudgeGraceTimer();
       // E1: bridge text-path's server-side dismissal enforcement into
       // the voice path. The voice tag observer reads this stamp on the
       // next assistant flush and force-flips to passive if the brain
@@ -1467,8 +1470,22 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
         clearTimeout(routerBufferTimerRef.current);
         routerBufferTimerRef.current = null;
       }
+      // Voice off → no EL to tear down. Cancel any in-flight grace
+      // timer; the user must engage via click or by toggling voice
+      // back on.
+      cancelNudgeGraceTimer();
     }
-  }, [voiceActive]);
+  }, [voiceActive, cancelNudgeGraceTimer]);
+
+  // Card resolution OR no open card cancels the grace timer. This
+  // covers both 'user clicked Ready' and 'card auto-cancelled
+  // server-side at 120s'. The focused-card effect already runs on
+  // every state-snapshot tick, so this hook is the natural place.
+  useEffect(() => {
+    if (focusedCard === null) {
+      cancelNudgeGraceTimer();
+    }
+  }, [focusedCard, cancelNudgeGraceTimer]);
 
   // Live voice-prefs subscription. Tears down the active router ref
   // when cardAnsweringEnabled flips OFF mid-session (plan §C.10 +
@@ -1532,6 +1549,49 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
     ? Math.pow(2, Math.min(state.consecutiveErrorCount, 6))
     : 1;
 
+  // ── Grace timer for EL teardown after a silence nudge ────────────
+  //
+  // After fireSilenceNudge() opens the Ready card, arm a one-shot
+  // timer. If the user doesn't resolve the card within
+  // silenceNudgeGraceSecs, dispatch a window event that voice-mode.ts
+  // listens for and tears down the active EL session. Wake-word
+  // listener (if configured) takes over via the existing wakeGated
+  // path. Plan: silence-nudge-reliability-2026-05-14.md §C.2.
+  //
+  // Cancelled by:
+  //   - Card resolution (state-snapshot drops the card → focused-card
+  //     effect runs → router-active cleared → cleanup cancels timer)
+  //   - User typing (sendUserMessage cancels)
+  //   - Voice deactivation (voiceActive useEffect cancels)
+  //   - Workspace switch (effect cleanup runs on workspaceId change)
+  const nudgeGraceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const armNudgeGraceTimer = useCallback(() => {
+    if (nudgeGraceTimerRef.current) clearTimeout(nudgeGraceTimerRef.current);
+    const prefs = loadVoicePrefsClient();
+    const graceSecs = Math.max(0, Math.min(120, prefs.silenceNudgeGraceSecs ?? 30));
+    if (graceSecs === 0) return; // pref-disabled
+    nudgeGraceTimerRef.current = setTimeout(() => {
+      nudgeGraceTimerRef.current = null;
+      // Only meaningful if voice is still active. Text-only is a no-op.
+      if (!voiceActiveRef.current) return;
+      // Hand off to voice-mode. The handler tears down the EL session
+      // and arms wake-word if configured (existing wakeGated flow).
+      if (typeof window !== 'undefined') {
+        try {
+          window.dispatchEvent(new CustomEvent('papercusp:voiceSilenceTeardown', {
+            detail: { wakeword: getConfiguredWakeWordForDisplay(prefs) },
+          }));
+        } catch { /* ignore */ }
+      }
+    }, graceSecs * 1000);
+  }, []);
+  const cancelNudgeGraceTimer = useCallback(() => {
+    if (nudgeGraceTimerRef.current) {
+      clearTimeout(nudgeGraceTimerRef.current);
+      nudgeGraceTimerRef.current = null;
+    }
+  }, []);
+
   // Fire the deterministic silence-nudge card. Replaces the
   // previous brain-driven runGeneration('silence_after_question')
   // which was unreliable — the brain often emitted prose instead
@@ -1555,6 +1615,9 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
           ...(wakeword ? { wakeword } : {}),
         }),
       });
+      // Arm the grace timer AFTER the POST succeeds — no point
+      // arming if the card didn't actually open.
+      armNudgeGraceTimer();
     } catch (e) {
       // Best-effort: if the silence-nudge endpoint fails, we don't
       // retry — the user can still type or speak to re-engage.
@@ -1564,7 +1627,7 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
     // Transition sub to 'nudged' so the next render doesn't re-arm
     // the timer (same terminal state as the legacy brain-driven path).
     dispatch({ type: 'set_sub', sub: 'nudged' });
-  }, [workspaceId]);
+  }, [workspaceId, armNudgeGraceTimer]);
 
   useEffect(() => {
     if (state.mode !== 'active') return;
@@ -1637,6 +1700,9 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
       dispatch({ type: 'append_message', message: userMsg });
       dispatch({ type: 'record_user_turn', tsMs: nowMs });
       dispatch({ type: 'mark_turn', tsMs: nowMs });
+      // User typed — they're engaged, no need to tear EL down. Cancel
+      // any pending silence-nudge grace timer.
+      cancelNudgeGraceTimer();
       // Decline detection: if the operator just asked "want active?"
       // (within the last 60s) AND the user's reply reads as a "no",
       // record the decline so mayAskActiveNow() applies the cooldown.
@@ -1670,7 +1736,7 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
       const nextHistory = [...stateRef.current.messages, userMsg];
       void runGeneration(trigger, { messagesOverride: nextHistory });
     },
-    [runGeneration, persistTurn],
+    [runGeneration, persistTurn, cancelNudgeGraceTimer],
   );
 
   const flipMode = useCallback((mode: OperatorMode) => {
