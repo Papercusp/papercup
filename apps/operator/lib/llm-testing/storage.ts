@@ -85,10 +85,12 @@ async function persistSingleRun(
     await sql`
       INSERT INTO harness_shared.llm_test_findings (
         run_id, source, severity, axis, assert_kind, shape,
-        evidence_turn_idx, claim, suggestion, copy_prompt
+        evidence_turn_idx, claim, suggestion, copy_prompt,
+        promoted_from
       ) VALUES (
         ${s.runId}, 'assert', ${v.severity}, NULL, ${v.assertKind}, NULL,
-        ${v.evidenceTurnIdx ?? null}, ${v.claim}, ${v.suggestion ?? null}, NULL
+        ${v.evidenceTurnIdx ?? null}, ${v.claim}, ${v.suggestion ?? null}, NULL,
+        ${v.originatingFindingIds ?? []}
       )
     `;
   }

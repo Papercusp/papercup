@@ -130,13 +130,23 @@ import type { Violation } from '../types';
 
 const ASSERT_ID = ${JSON.stringify(input.assertId)};
 
+/**
+ * Originating finding ids — the judge findings that drove this
+ * assert's promotion. Storage attaches them to violation rows so the
+ * UI shows lineage ("this check came from N findings in older runs").
+ * Do NOT remove; promotion lineage breaks if this list is empty.
+ */
+const ORIGINATING_FINDING_IDS: readonly string[] = ${JSON.stringify(input.findings.map((f) => f.id))};
+
 // Custom-kind evaluator. To use, add to a scenario's asserts:
 //   { kind: 'custom', name: '${input.assertId}', eval: (run) => evaluate(run) }
 //
 // Or promote to a kind in types.ts and re-register here.
 
 export function evaluate(_run: import('../types').RunSummary): Violation[] {
-  // TODO: implement.
+  // TODO: implement the deterministic predicate. Each Violation you
+  // return should set originatingFindingIds: [...ORIGINATING_FINDING_IDS]
+  // so the lineage reaches storage.
   return [];
 }
 
@@ -145,7 +155,7 @@ export function evaluate(_run: import('../types').RunSummary): Violation[] {
 // without further wiring.
 registerEvaluator('custom', (a, run) => {
   if (a.name !== ASSERT_ID) return [];
-  return evaluate(run);
+  return evaluate(run).map((v) => ({ ...v, originatingFindingIds: [...ORIGINATING_FINDING_IDS] }));
 });
 `;
 }

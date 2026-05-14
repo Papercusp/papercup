@@ -103,6 +103,7 @@ export async function runScenario(scenario: Scenario, opts: RunnerOpts = {}): Pr
       simModel,
       matrixGroupId,
       matrixIndex: matrixGroupId ? i : undefined,
+      ...(opts.seed !== undefined && { seed: opts.seed }),
     });
     runs.push(report);
   }
@@ -119,6 +120,14 @@ interface OnceArgs {
   simModel: string;
   matrixGroupId?: string;
   matrixIndex?: number;
+  /**
+   * Optional seed; the Anthropic SDK has no seed parameter so we use
+   * it as a determinism hint: sim-user temperature → 0, judge first
+   * pass already 0 (unchanged), judge second pass also 0 instead of
+   * 0.4. Means a re-run with the same seed should usually produce the
+   * same trajectory (model-side nondeterminism still possible).
+   */
+  seed?: number;
 }
 
 async function runOnce(args: OnceArgs): Promise<SingleRunReport> {
@@ -149,6 +158,7 @@ async function runOnce(args: OnceArgs): Promise<SingleRunReport> {
     goal: scenario.goal,
     model: simModel,
     scenarioDescription: scenario.description,
+    ...(args.seed !== undefined && { temperature: 0 }),
   });
 
   const startedAt = new Date();

@@ -244,6 +244,14 @@ export interface Violation {
   evidenceTurnIdx?: number;
   claim: string;
   suggestion?: string;
+  /**
+   * If this violation came from a promoted-from-finding assert, the
+   * source finding ids that drove the promotion. storage.ts writes
+   * them into llm_test_findings.promoted_from when persisting, so the
+   * UI can show provenance ("this check originated from N judge
+   * findings in older runs").
+   */
+  originatingFindingIds?: string[];
 }
 
 // =============================================================================

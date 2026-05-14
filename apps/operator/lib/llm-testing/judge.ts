@@ -256,14 +256,43 @@ function parseJudgeResponse(
   const notes = typeof obj.notes === 'string' ? obj.notes : undefined;
 
   const scores: Record<string, number> = defaultScores(rubric);
+  const findings: JudgeFinding[] = [];
+  const rubricAxisIds = new Set(rubric.axes.map((a) => a.id));
+  const judgeAxisIds = scoresRaw && typeof scoresRaw === 'object'
+    ? Object.keys(scoresRaw as Record<string, unknown>)
+    : [];
+
   if (scoresRaw && typeof scoresRaw === 'object') {
     for (const axis of rubric.axes) {
       const v = (scoresRaw as Record<string, unknown>)[axis.id];
-      if (typeof v === 'number') scores[axis.id] = Math.max(0, Math.min(5, v));
+      if (typeof v === 'number') {
+        scores[axis.id] = Math.max(0, Math.min(5, v));
+      } else {
+        // Strict mode: missing rubric axis is a judge-protocol failure,
+        // not silently 0. Flag it as a meta finding so we don't
+        // mistake an absent score for a low score.
+        findings.push({
+          axis: 'meta',
+          severity: 'warn',
+          shape: computeFindingShape('meta', `judge_missing_axis:${axis.id}`),
+          claim: `Judge omitted score for axis '${axis.id}' — defaulting to 0, but treat with suspicion.`,
+          copyPrompt: '(judge protocol gap)',
+          isNovel: false,
+        });
+      }
     }
   }
+  for (const extra of judgeAxisIds.filter((id) => !rubricAxisIds.has(id))) {
+    findings.push({
+      axis: 'meta',
+      severity: 'info',
+      shape: computeFindingShape('meta', `judge_extraneous_axis:${extra}`),
+      claim: `Judge emitted score for axis '${extra}' which is not in the rubric — ignored.`,
+      copyPrompt: '(judge protocol noise)',
+      isNovel: false,
+    });
+  }
 
-  const findings: JudgeFinding[] = [];
   for (const f of findingsRaw) {
     const parsed = parseFinding(f, scenarioId, false);
     if (parsed) findings.push(parsed);

@@ -41,6 +41,9 @@ interface Args {
   list: boolean;
   noPersist: boolean;
   help: boolean;
+  all: boolean;
+  seed?: number;
+  parallel?: number;
 }
 
 function parseArgs(argv: string[]): Args {
@@ -50,6 +53,7 @@ function parseArgs(argv: string[]): Args {
     list: false,
     noPersist: false,
     help: false,
+    all: false,
   };
   // First positional non-flag arg may be a verb.
   if (argv[0] === 'promote-candidates' || argv[0] === 'promote' || argv[0] === 'replay') {
@@ -67,6 +71,9 @@ function parseArgs(argv: string[]): Args {
       case '--no-matrix': args.noMatrix = true; break;
       case '--no-persist': args.noPersist = true; break;
       case '--list': args.list = true; break;
+      case '--all': args.all = true; break;
+      case '--seed': args.seed = Number(argv[++i]); break;
+      case '--parallel': args.parallel = Math.max(1, Number(argv[++i])); break;
       case '-h':
       case '--help': args.help = true; break;
       default:
@@ -193,10 +200,12 @@ async function main(): Promise<void> {
     ? [getScenario(args.scenarioId)]
     : args.targetId
       ? SCENARIOS.filter((s) => s.target === args.targetId)
-      : null;
+      : args.all
+        ? [...SCENARIOS]
+        : null;
 
   if (!scenarios) {
-    console.error('Pass --scenario <id> or --target <id>. (See --list.)');
+    console.error('Pass --scenario <id>, --target <id>, or --all. (See --list.)');
     process.exit(2);
   }
   if (scenarios.length === 0) {
@@ -204,47 +213,55 @@ async function main(): Promise<void> {
     process.exit(2);
   }
 
-  let anyFailed = false;
-  for (const scenario of scenarios) {
-    const scenarioFilePath = resolveScenarioFilePath(scenario.id);
-    process.stdout.write(`\n▶ ${scenario.id}  [${scenario.target}]\n`);
+  const concurrency = Math.max(1, args.parallel ?? 1);
+  if (concurrency > 1) {
+    console.log(`[llm-test] --parallel ${concurrency} — scenarios run in batches of ${concurrency}.`);
+  }
 
+  const runOne = async (scenario: typeof scenarios[number]): Promise<boolean> => {
+    const scenarioFilePath = resolveScenarioFilePath(scenario);
+    process.stdout.write(`\n▶ ${scenario.id}  [${scenario.target}]\n`);
     let report;
     try {
       report = await runScenario(scenario, {
         forceRepeat: args.noMatrix ? 1 : undefined,
         scenarioFilePath,
+        ...(args.seed !== undefined && { seed: args.seed }),
       });
     } catch (err) {
-      console.error(`  ✗ runner error: ${(err as Error).message}`);
-      anyFailed = true;
-      continue;
+      console.error(`  ✗ runner error [${scenario.id}]: ${(err as Error).message}`);
+      return true;
     }
-
     printReport(report);
-
     if (!args.noPersist) {
       try {
+        const { createHash } = await import('node:crypto');
         const scenarioHash = scenarioFilePath
-          ? require('node:crypto').createHash('sha256').update(readFileSync(scenarioFilePath, 'utf8')).digest('hex')
+          ? createHash('sha256').update(readFileSync(scenarioFilePath, 'utf8')).digest('hex')
           : 'unknown';
         await persistRunReport(report, scenario.rubric.version, scenarioHash);
       } catch (err) {
-        console.warn(`  ! persistence failed: ${(err as Error).message}`);
+        console.warn(`  ! persistence failed [${scenario.id}]: ${(err as Error).message}`);
       }
     }
+    return report.verdict === 'fail' || report.verdict === 'errored';
+  };
 
-    if (report.verdict === 'fail' || report.verdict === 'errored') anyFailed = true;
+  let anyFailed = false;
+  for (let i = 0; i < scenarios.length; i += concurrency) {
+    const batch = scenarios.slice(i, i + concurrency);
+    const results = await Promise.all(batch.map(runOne));
+    if (results.some(Boolean)) anyFailed = true;
   }
 
   process.exit(anyFailed ? 1 : 0);
 }
 
-function resolveScenarioFilePath(scenarioId: string): string | undefined {
-  // S01-status-quick → S01-status-quick.ts under scenarios/operator/
+function resolveScenarioFilePath(scenario: { id: string; target: string }): string | undefined {
+  // Strip the target prefix (op-, oracle-, arch-) to recover the file basename.
   const here = dirname(fileURLToPath(import.meta.url));
-  const idPart = scenarioId.replace(/^op-/, '');
-  return join(here, '..', 'lib', 'llm-testing', 'scenarios', 'operator', `${idPart}.ts`);
+  const idPart = scenario.id.replace(/^(op|oracle|arch)-/, '');
+  return join(here, '..', 'lib', 'llm-testing', 'scenarios', scenario.target, `${idPart}.ts`);
 }
 
 function printReport(report: ReturnType<typeof runScenario> extends Promise<infer R> ? R : never): void {
