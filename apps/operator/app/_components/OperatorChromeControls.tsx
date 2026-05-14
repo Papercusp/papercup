@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState, type ReactElement } from 'react';
 import { Select } from '../harness/Select';
+import { Modal } from '../harness/Modal';
 import { DeckCardsMark } from './ChromeNavMarks';
 import { OperatorPanel } from './OperatorPanel';
 import {
@@ -84,7 +85,6 @@ export function OperatorButton(): ReactElement {
         <button
           className={`pc-header-cta pc-header-cta--operator pc-header-cta--${state.iconState}${state.paused ? ' is-paused' : ''}${scanning ? ' is-scanning' : ''}${state.autoAccept !== 'off' ? ' is-auto' : ''}`}
           aria-label={buttonLabel}
-          title={title}
           onClick={toggle}
           aria-expanded={state.open}
           style={{ marginLeft: 8 }}
@@ -109,9 +109,21 @@ export function OperatorButton(): ReactElement {
         <OperatorAutoAcceptFeed events={state.recentAutoAccepts} />
       </span>
       {state.open ? (
-        <div className="operator-panel-host">
+        <Modal
+          open={state.open}
+          onOpenChange={(open) => broadcastState({ open })}
+          title="Deck"
+          srOnlyTitle
+          zIndex={1180}
+          overlayStyle={{
+            background: 'rgba(1, 4, 10, 0.68)',
+            backdropFilter: 'blur(3px) saturate(0.72)',
+            WebkitBackdropFilter: 'blur(3px) saturate(0.72)',
+          }}
+          contentStyle={{ display: 'contents' }}
+        >
           <OperatorPanel />
-        </div>
+        </Modal>
       ) : null}
     </>
   );

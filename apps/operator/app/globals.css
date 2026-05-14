@@ -26530,6 +26530,324 @@ body.has-op-chat:has(.operator-panel) .operator-panel {
   }
 }
 
+/* Deck panel audit fixes — final layer over older visual passes. */
+.operator-panel {
+  border-radius: 22px !important;
+  clip-path: none !important;
+  box-shadow:
+    0 24px 80px rgba(0, 0, 0, 0.50),
+    0 0 0 1px rgb(from var(--sky-300) r g b / 0.20),
+    0 0 46px rgb(from var(--sky-300) r g b / 0.12) !important;
+}
+
+.operator-panel__svg-frame,
+.operator-panel__lock-flash,
+.operator-panel .operator-hud-overlay {
+  pointer-events: none !important;
+}
+
+.operator-panel__lock-flash {
+  z-index: 0 !important;
+}
+
+.operator-panel__svg-frame-spine {
+  vector-effect: non-scaling-stroke;
+}
+
+.operator-status {
+  text-transform: none !important;
+}
+
+.operator-panel__body {
+  grid-template-columns: minmax(0, 1fr) minmax(260px, 304px) !important;
+}
+
+.operator-panel__rail--left {
+  display: none !important;
+}
+
+.operator-panel__rail--right {
+  border-left: 0 !important;
+  padding-left: 14px !important;
+  background:
+    linear-gradient(90deg, rgb(from var(--sky-300) r g b / 0.08), transparent 1px 100%),
+    radial-gradient(circle at 0% 18%, rgb(from var(--sky-300) r g b / 0.08), transparent 12rem) !important;
+}
+
+.operator-panel__actions {
+  gap: 8px !important;
+}
+
+.operator-panel__action-strip {
+  gap: 8px !important;
+}
+
+.operator-panel__actions .operator-btn {
+  border-color: rgb(from var(--sky-300) r g b / 0.22) !important;
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.075), rgba(255,255,255,0.018)),
+    rgba(9, 18, 31, 0.76) !important;
+}
+
+.operator-panel__action-strip .operator-btn--primary {
+  color: #d7fff8 !important;
+  border-color: rgba(45, 212, 191, 0.44) !important;
+  background:
+    linear-gradient(180deg, rgba(45, 212, 191, 0.20), rgba(45, 212, 191, 0.08)),
+    rgba(4, 22, 26, 0.76) !important;
+}
+
+.operator-panel__actions .operator-btn--pause {
+  color: #ffe9a6 !important;
+  border-color: rgba(245, 181, 63, 0.42) !important;
+  background:
+    linear-gradient(180deg, rgba(245, 181, 63, 0.18), rgba(245, 181, 63, 0.07)),
+    rgba(27, 18, 8, 0.68) !important;
+}
+
+.operator-panel__actions .operator-btn--pause.is-paused {
+  color: #071018 !important;
+  border-color: rgba(245, 181, 63, 0.62) !important;
+  background: linear-gradient(180deg, #ffe7a3, #d99d26) !important;
+}
+
+.operator-panel__actions .operator-btn--close {
+  min-width: 40px !important;
+  width: 40px !important;
+  min-height: 40px !important;
+  color: #ffd6d6 !important;
+  border-color: rgba(248, 113, 113, 0.46) !important;
+  background:
+    linear-gradient(180deg, rgba(248, 113, 113, 0.16), rgba(248, 113, 113, 0.05)),
+    rgba(27, 8, 12, 0.72) !important;
+}
+
+.operator-feed-tabs {
+  grid-template-columns: repeat(4, minmax(0, 1fr)) !important;
+  gap: 6px !important;
+  padding: 0 !important;
+  align-items: center !important;
+}
+
+.operator-feed-tabs .operator-panel__metric-card--tab {
+  min-height: 42px !important;
+  padding: 8px 11px !important;
+  border-radius: 12px !important;
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.034), rgba(255,255,255,0.010)),
+    rgba(5, 13, 24, 0.48) !important;
+}
+
+.operator-feed-tabs .operator-panel__metric-card--tab[aria-selected="true"] {
+  border-color: color-mix(in oklab, var(--operator-metric-accent), white 8%) !important;
+  background:
+    linear-gradient(180deg, color-mix(in oklab, var(--operator-metric-fill), white 6%), rgba(255,255,255,0.018)),
+    rgba(5, 13, 24, 0.76) !important;
+  box-shadow:
+    inset 0 -3px 0 var(--operator-metric-accent),
+    inset 0 1px 0 rgba(255,255,255,0.10),
+    0 10px 26px color-mix(in oklab, var(--operator-metric-accent), transparent 88%) !important;
+}
+
+.operator-tab-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 10.5px;
+  font-weight: 820;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.operator-tab-count {
+  min-width: 22px;
+  height: 22px;
+  display: inline-grid;
+  place-items: center;
+  padding: 0 6px;
+  border: 1px solid color-mix(in oklab, var(--operator-metric-accent), transparent 54%);
+  border-radius: 999px;
+  background: color-mix(in oklab, var(--operator-metric-fill), transparent 14%);
+  font-size: 11px;
+  font-weight: 850;
+  letter-spacing: 0;
+}
+
+.operator-tab-label::before,
+.operator-tab-label::after,
+.operator-tab-count::before,
+.operator-tab-count::after {
+  content: none !important;
+  display: none !important;
+}
+
+.operator-feed-tabs .operator-panel__metric-card--tab .operator-tab-label,
+.operator-feed-tabs .operator-panel__metric-card--tab .operator-tab-count {
+  display: inline-flex !important;
+}
+
+
+.operator-feed-tools {
+  align-items: stretch !important;
+}
+
+.operator-feed-search,
+.operator-feed-harness-select {
+  min-height: 38px !important;
+  border: 1px solid rgb(from var(--sky-300) r g b / 0.18) !important;
+  border-radius: 14px !important;
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.040), rgba(255,255,255,0.012)),
+    rgba(5, 13, 24, 0.72) !important;
+}
+
+.operator-feed-search input {
+  min-height: 36px !important;
+  padding-block: 0 !important;
+  background: transparent !important;
+  border: 0 !important;
+}
+
+.operator-entry__heading h3 {
+  margin: 0;
+  min-width: 0;
+  color: #f6fbff;
+  font-size: clamp(15px, 1.1vw, 17px);
+  line-height: 1.25;
+  letter-spacing: -0.012em;
+}
+
+.operator-meta-sep,
+.operator-voice-slot {
+  display: none !important;
+}
+
+.operator-kind,
+.operator-tier,
+.operator-life,
+.operator-target {
+  display: inline-flex !important;
+  align-items: center;
+  min-height: 22px;
+  padding: 0 8px;
+  border: 1px solid rgba(148, 163, 184, 0.16);
+  border-radius: 999px;
+  background: rgba(255,255,255,0.022);
+}
+
+.operator-entry__buttons {
+  min-width: max-content;
+}
+
+.operator-entry__buttons .operator-mini-btn--auto {
+  color: #05201b !important;
+  border-color: rgba(45, 212, 191, 0.58) !important;
+  background: linear-gradient(180deg, #9ffbe7, #36c9b6) !important;
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.38),
+    0 0 18px rgba(45, 212, 191, 0.18) !important;
+}
+
+.operator-entry__flags span {
+  display: inline-flex !important;
+  align-items: center;
+  gap: 5px;
+  border-radius: 999px !important;
+  clip-path: none !important;
+}
+
+.operator-entry__markdown--compact {
+  max-height: 8.5rem;
+  overflow: hidden;
+}
+
+.operator-panel .operator-empty-state::before,
+.operator-panel .operator-empty-state::after {
+  content: none !important;
+  display: none !important;
+}
+
+
+.operator-empty-rail,
+.operator-stream-empty {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid rgb(from var(--sky-300) r g b / 0.14);
+  border-radius: 14px;
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.038), rgba(255,255,255,0.012)),
+    rgba(5, 13, 24, 0.58);
+}
+
+.operator-empty-rail strong,
+.operator-stream-empty strong {
+  display: block;
+  color: #f6fbff;
+  font-size: 11px;
+  letter-spacing: 0.10em;
+  text-transform: uppercase;
+}
+
+.operator-empty-rail span,
+.operator-stream-empty span {
+  display: block;
+  margin-top: 2px;
+  color: rgba(203, 213, 225, 0.72);
+  font-size: 11px;
+  line-height: 1.35;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.operator-stream-empty + pre,
+.operator-empty-small {
+  display: none !important;
+}
+
+.operator-panel__footer {
+  justify-content: flex-start !important;
+}
+
+.operator-panel__footer span:only-child {
+  min-height: 24px;
+}
+
+.operator-panel__footer span:only-child::before {
+  content: "Hint" !important;
+}
+
+@media (max-width: 960px) {
+  .operator-panel__body {
+    grid-template-columns: 1fr !important;
+  }
+
+  .operator-panel__rail--right {
+    display: grid !important;
+    border-top: 1px solid rgb(from var(--sky-300) r g b / 0.12);
+    padding-top: 12px !important;
+    padding-left: 0 !important;
+  }
+
+  .operator-panel__actions {
+    overflow: visible !important;
+  }
+
+  .operator-panel__action-strip .operator-btn span,
+  .operator-panel__actions .operator-btn--with-icon span {
+    display: none !important;
+  }
+}
+
+@media (max-width: 760px) {
+  .operator-feed-tabs {
+    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  }
+}
+
 /* ─────────────────────────────────────────────────────────────────────
  * Global form-control baseline
  *

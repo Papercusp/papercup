@@ -18,7 +18,7 @@
 
 import { useDeferredValue, useEffect, useMemo, useState, useCallback, useRef, type ReactElement } from 'react';
 import * as Collapsible from '@radix-ui/react-collapsible';
-import { ArrowUpRight, ChevronDown, Hand, Info, Mail, Pause, Play, RefreshCcw, Search, Settings2, TriangleAlert, X, Zap } from 'lucide-react';
+import { Activity, ArrowUpRight, ChevronDown, Hand, Info, Mail, Pause, Play, RefreshCcw, Search, Settings2, TriangleAlert, X, Zap } from 'lucide-react';
 import { usePathname } from 'next/navigation';
 import { useQueryState, parseAsStringLiteral } from 'nuqs';
 import { useSyncQuery } from '@restart/sync';
@@ -143,6 +143,14 @@ function tierLabel(tier: SuggestionCard['actualTier']): string {
 
 type MainView = 'cards' | 'accepted' | 'ignored' | 'scan-history';
 type ScanStatus = 'idle' | 'scanning' | 'complete' | 'error';
+
+function titleCaseStatus(value: string): string {
+  return value
+    .split(/([\s-]+)/)
+    .map((part) => (/^[a-z]/.test(part) ? part[0].toUpperCase() + part.slice(1) : part))
+    .join('')
+    .replace(/-/g, ' ');
+}
 
 function lifecycleLabelForCard(card: SuggestionCard): string {
   if (card.action === 'inform' && card.status === 'pending') return 'Informational';
@@ -501,26 +509,6 @@ export function OperatorPanel(): ReactElement | null {
     return subscribeOperatorState(fn);
   }, []);
 
-  // Click-outside or Escape to close.
-  useEffect(() => {
-    if (!state.open) return;
-    const onDocClick = (e: MouseEvent) => {
-      if (!panelRef.current) return;
-      if (panelRef.current.contains(e.target as Node)) return;
-      const target = e.target as HTMLElement;
-      if (target.closest('[aria-label^="Deck"]')) return;
-      broadcastState({ open: false });
-    };
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') broadcastState({ open: false });
-    };
-    document.addEventListener('mousedown', onDocClick);
-    document.addEventListener('keydown', onKey);
-    return () => {
-      document.removeEventListener('mousedown', onDocClick);
-      document.removeEventListener('keydown', onKey);
-    };
-  }, [state.open]);
   useEffect(() => {
     if (!state.open) return;
     // Updates `now` so relative timestamps in the panel re-render. 500ms
@@ -1332,10 +1320,10 @@ export function OperatorPanel(): ReactElement | null {
   const pausedVisible = state.paused && (state.iconState === 'idle' || state.iconState === 'awaiting-input');
   const effectiveIconState: IconState = pausedVisible ? 'paused' : state.iconState;
   const statusLabel = pausedVisible
-    ? 'paused'
+    ? 'Paused'
     : state.paused
-      ? `${state.iconState.replace('-', ' ')} (paused)`
-      : state.iconState.replace('-', ' ');
+      ? `${titleCaseStatus(state.iconState)} (Paused)`
+      : titleCaseStatus(state.iconState);
   const reducedMotion = useReducedMotion() ?? false;
   const visualEffectsEnabled = useFancyEffectsEnabled();
   const calmMotion = reducedMotion || !visualEffectsEnabled;
@@ -1481,9 +1469,6 @@ export function OperatorPanel(): ReactElement | null {
       {state.open ? (
         <motion.div
           ref={panelRef}
-          role="dialog"
-          aria-modal="true"
-          aria-label="Deck"
           data-harness-modal="true"
           data-operator-state={effectiveIconState}
           data-scan-status={scanStatus}
@@ -1545,11 +1530,11 @@ export function OperatorPanel(): ReactElement | null {
                 </button>
                 <button
                   type="button"
-                  className="operator-btn operator-btn--icon"
+                  className={`operator-btn operator-btn--icon operator-btn--pause${state.paused ? ' is-paused' : ''}`}
                   onClick={() => broadcastState({ paused: !state.paused })}
                   aria-label={state.paused ? 'Resume autonomous actions' : 'Pause autonomous actions'}
                 >
-                  {state.paused ? <Play size={14} aria-hidden="true" strokeWidth={2.3} /> : <Pause size={14} aria-hidden="true" strokeWidth={2.3} />}
+                  {state.paused ? <Play size={14} aria-hidden="true" strokeWidth={2.2} /> : <Pause size={14} aria-hidden="true" strokeWidth={2.2} />}
                   <span>{state.paused ? 'Resume' : 'Pause'}</span>
                 </button>
                 <RouteLink className="operator-btn operator-btn--ghost operator-btn--with-icon" href="/settings/operator">
@@ -1563,7 +1548,7 @@ export function OperatorPanel(): ReactElement | null {
                 onClick={() => broadcastState({ open: false })}
                 aria-label="Close"
               >
-                <X size={16} aria-hidden="true" strokeWidth={2.4} />
+                <X size={18} aria-hidden="true" strokeWidth={2.2} />
               </button>
             </div>
           </header>
@@ -1597,11 +1582,18 @@ export function OperatorPanel(): ReactElement | null {
           )}
 
           <div className={`operator-panel__body${decisions.length === 0 ? ' has-empty-activity' : ''} pc-animate-in pc-animate-in--down pc-animate-in--delay-1`}>
-            <aside className="operator-panel__rail operator-panel__rail--left">
-              <DelegatesSection />
-            </aside>
 
             <main className="operator-panel__feed pc-animate-in pc-animate-in--fade pc-animate-in--delay-2">
+              {firstRun && (
+                <section className="operator-callout operator-callout--first-run">
+                  <strong>First run</strong>
+                  <p>
+                    Papercup can write across every harness in this workspace.
+                    Edit its prompt or preferences from <RouteLink href="/settings/operator">/settings/operator</RouteLink>.
+                  </p>
+                </section>
+              )}
+
               <div className="operator-panel__metrics operator-feed-tabs pc-animate-in pc-animate-in--down pc-animate-in--delay-1" role="tablist" aria-label="Deck action views">
                 {[
                   { key: 'cards' as MainView, count: pendingCount, label: 'Pending' },
@@ -1615,11 +1607,11 @@ export function OperatorPanel(): ReactElement | null {
                     role="tab"
                     className="operator-panel__metric-card operator-panel__metric-card--tab"
                     aria-selected={mainView === view.key}
-                    aria-pressed={mainView === view.key}
+                    aria-label={typeof view.count === 'number' ? `${view.label}, ${view.count}` : view.label}
                     onClick={() => { void setMainView(view.key); }}
                   >
-                    <em>{view.label}</em>
-                    {typeof view.count === 'number' ? <strong>{view.count}</strong> : null}
+                    <em className="operator-tab-label" aria-hidden="true">{view.label}</em>
+                    {typeof view.count === 'number' ? <strong className="operator-tab-count" aria-hidden="true">{view.count}</strong> : null}
                   </button>
                 ))}
               </div>
@@ -1685,10 +1677,8 @@ export function OperatorPanel(): ReactElement | null {
                   <div className="operator-empty-state__icon" aria-hidden="true">
                     {scanStatus === 'error' ? (
                       <TriangleAlert size={18} strokeWidth={2.2} />
-                    ) : scanStatus === 'scanning' ? (
-                      <RefreshCcw size={18} strokeWidth={2.2} />
                     ) : (
-                      <Search size={18} strokeWidth={2.2} />
+                      <RefreshCcw size={18} strokeWidth={2.2} />
                     )}
                   </div>
                   <h3>{emptyTitle}</h3>
@@ -1721,7 +1711,6 @@ export function OperatorPanel(): ReactElement | null {
                   {visibleSuggestions.map((s, index) => (
                     <li
                       key={s.id}
-                      role="article"
                       aria-label={`${s.title} — ${s.status === 'accepted' ? 'accepted' : s.status === 'ignored' ? 'ignored' : s.auto_dispatch ? 'accepts automatically soon' : 'awaiting your decision'}`}
                       data-entry-index={index}
                       data-entry-state={s.status}
@@ -1739,25 +1728,18 @@ export function OperatorPanel(): ReactElement | null {
                           <span className={`operator-kind operator-kind--${s.action}`}>{s.action === 'send_directive' ? 'Directive' : s.action === 'navigate' ? 'Open' : 'Note'}</span>
                           <span className={`operator-tier operator-tier--${s.actualTier}`}>{tierLabel(s.actualTier)}</span>
                           {!(mainView === 'cards' && s.status === 'pending') && (
-                            <>
-                              <span className="operator-meta-sep" aria-hidden="true">·</span>
-                              <span className={`operator-life operator-life--${lifecycleClassForCard(s)}`}>{lifecycleLabelForCard(s)}</span>
-                            </>
+                            <span className={`operator-life operator-life--${lifecycleClassForCard(s)}`}>{lifecycleLabelForCard(s)}</span>
                           )}
                           {s.target_harness && (
-                            <>
-                              <span className="operator-meta-sep" aria-hidden="true">·</span>
-                              <span className="operator-target">{s.target_harness}</span>
-                            </>
+                            <span className="operator-target">{s.target_harness}</span>
                           )}
-                          <span className="operator-voice-slot" aria-hidden="true" />
                         </div>
                         <div className="operator-entry__title-row">
                           <div className="operator-entry__heading">
                             <span className={`operator-entry__type-glyph operator-entry__type-glyph--${s.action}`} aria-hidden="true">
                               {actionIconForCard(s)}
                             </span>
-                            <h4>{s.title}</h4>
+                            <h3>{s.title}</h3>
                           </div>
                           <div className="operator-entry__title-actions">
                             <div className="operator-entry__state">
@@ -1784,7 +1766,7 @@ export function OperatorPanel(): ReactElement | null {
                             <div className="operator-entry__buttons">
                               {/* Auto-fire countdown: Keep for review turns it into a regular pending card; otherwise the timer fires the same Accept flow. */}
                               {s.status === 'pending' && s.auto_dispatch && (
-                                <button type="button" className="operator-mini-btn operator-mini-btn--ghost" onClick={() => undoCancelSuggestion(s.id)}>
+                                <button type="button" className="operator-mini-btn operator-mini-btn--auto" onClick={() => undoCancelSuggestion(s.id)}>
                                   Keep for review
                                 </button>
                               )}
@@ -1859,10 +1841,16 @@ export function OperatorPanel(): ReactElement | null {
                         {(s.provenanceFlags?.tierMismatch || s.provenanceFlags?.capabilityUnknown) && (
                           <div className="operator-entry__flags" aria-label="Provenance warnings">
                             {s.provenanceFlags?.tierMismatch && (
-                              <span title="LLM-claimed tier overridden by substrate">⚠ tier corrected</span>
+                              <span title="LLM-claimed tier overridden by substrate">
+                                <TriangleAlert size={12} aria-hidden="true" strokeWidth={2.2} />
+                                tier corrected
+                              </span>
                             )}
                             {s.provenanceFlags?.capabilityUnknown && (
-                              <span title="Unknown capability — forced high (fail-safe)">⚠ capability unknown</span>
+                              <span title="Unknown capability — forced high (fail-safe)">
+                                <TriangleAlert size={12} aria-hidden="true" strokeWidth={2.2} />
+                                capability unknown
+                              </span>
                             )}
                           </div>
                         )}
@@ -1870,7 +1858,7 @@ export function OperatorPanel(): ReactElement | null {
                         {s.action === 'send_directive' && s.directive_body && (
                           <Collapsible.Root className="operator-entry__details">
                             <Collapsible.Trigger className="operator-entry__details-trigger">
-                              <ChevronDown size={12} aria-hidden="true" />
+                              <ChevronDown size={12} aria-hidden="true" strokeWidth={2.2} />
                               <span>Preview message</span>
                             </Collapsible.Trigger>
                             <Collapsible.Content className="operator-entry__details-content">
@@ -1904,22 +1892,15 @@ export function OperatorPanel(): ReactElement | null {
             </main>
 
             <aside className={`operator-panel__rail operator-panel__rail--right${decisions.length === 0 ? ' is-empty' : ''} pc-animate-in pc-animate-in--fade pc-animate-in--delay-2`}>
-              {firstRun && (
-                <section className="operator-callout">
-                  <strong>First-run intro</strong>
-                  <p>
-                    I have full write authority across all harnesses in this workspace.
-                    Edit my prompt or preferences from <RouteLink href="/settings/operator">/settings/operator</RouteLink>.
-                  </p>
-                </section>
-              )}
               <DelegatesSection />
               <section className="operator-section">
                 {decisions.length === 0 ? (
-                  <div className="operator-empty-rail">
-                    <strong>Decisions</strong>
-                    <span>no recent decisions</span>
-                    <em>0</em>
+                  <div className="operator-empty-rail operator-empty-rail--decisions">
+                    <Info size={14} aria-hidden="true" strokeWidth={2.2} />
+                    <div>
+                      <strong>Decisions</strong>
+                      <span>No recent decisions yet</span>
+                    </div>
                   </div>
                 ) : (
                   <>
@@ -1953,14 +1934,16 @@ export function OperatorPanel(): ReactElement | null {
                   <div className="operator-stream-error">
                     <strong>Scan errored</strong>
                     <p>{scanError || 'Papercup substrate is not ready.'}</p>
-                    <button
-                      type="button"
-                      className="operator-btn operator-btn--ghost"
-                      onClick={() => provisionAndRescan()}
-                      disabled={provisioning}
-                    >
-                      {provisioning ? 'Setting up…' : 'Set up Papercup →'}
-                    </button>
+                    {hasFeedEntries ? (
+                      <button
+                        type="button"
+                        className="operator-btn operator-btn--ghost"
+                        onClick={() => provisionAndRescan()}
+                        disabled={provisioning}
+                      >
+                        {provisioning ? 'Setting up…' : 'Set up Papercup →'}
+                      </button>
+                    ) : null}
                     {onSettingsPage ? null : (
                       <RouteLink className="operator-btn operator-btn--muted" href="/settings/operator">
                         Open settings
@@ -1968,7 +1951,13 @@ export function OperatorPanel(): ReactElement | null {
                     )}
                   </div>
                 ) : streamLog.length === 0 ? (
-                  <p className="operator-empty-small">(no stream yet)</p>
+                  <div className="operator-stream-empty">
+                    <Activity size={14} aria-hidden="true" strokeWidth={2.2} />
+                    <div>
+                      <strong>No stream yet</strong>
+                      <span>Run Scan to populate live operator events.</span>
+                    </div>
+                  </div>
                 ) : (
                   <pre>{streamLog.join('\n')}</pre>
                 )}
@@ -1977,7 +1966,7 @@ export function OperatorPanel(): ReactElement | null {
           </div>
 
           <footer className="operator-panel__footer pc-animate-in pc-animate-in--fade pc-animate-in--delay-2">
-            <span>Cmd/Ctrl+K then D • Esc closes • Click outside closes</span>
+            <span>Esc closes</span>
           </footer>
         </motion.div>
       ) : null}
