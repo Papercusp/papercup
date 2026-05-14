@@ -148,6 +148,7 @@ async function runOnce(args: OnceArgs): Promise<SingleRunReport> {
     persona,
     goal: scenario.goal,
     model: simModel,
+    scenarioDescription: scenario.description,
   });
 
   const startedAt = new Date();

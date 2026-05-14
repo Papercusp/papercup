@@ -9,6 +9,7 @@
  */
 
 import postgres from 'postgres';
+import { zstdCompressSync, zstdDecompressSync } from 'node:zlib';
 
 import { getHarnessAdminUrl } from '@/lib/embedded-pg-discovery';
 
@@ -48,9 +49,7 @@ async function persistSingleRun(
   };
 
   const transcriptRaw = JSON.stringify(s.turns.flatMap((t) => t.rawSseTape));
-  // Defer zstd compression to follow-up; for now store as plain bytea so the
-  // schema column accepts something. The eventual helper function decompresses.
-  const transcriptRawBytes = Buffer.from(transcriptRaw, 'utf8');
+  const transcriptRawBytes = zstdCompressSync(Buffer.from(transcriptRaw, 'utf8'));
 
   await sql`
     INSERT INTO harness_shared.llm_test_runs (
@@ -104,6 +103,12 @@ async function persistSingleRun(
       )
     `;
   }
+}
+
+/** Decompress a transcript_raw_zstd bytea cell back to the raw SSE JSON array. */
+export function decompressTranscript(bytes: Buffer | Uint8Array): unknown[] {
+  const decompressed = zstdDecompressSync(Buffer.from(bytes));
+  return JSON.parse(decompressed.toString('utf8')) as unknown[];
 }
 
 function normalizeTurns(turns: SingleRunReport['summary']['turns']): unknown {

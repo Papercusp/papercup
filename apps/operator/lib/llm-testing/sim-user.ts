@@ -24,6 +24,12 @@ export interface SimUserOpts {
   goal: GoalSpec;
   model: string;
   temperature?: number;
+  /**
+   * Scenario description — concrete, user-facing context for what the
+   * persona is trying to accomplish. Plan §3.5 had this as "elsewhere"
+   * but the runner never threaded it; sim-users wander without it.
+   */
+  scenarioDescription?: string;
 }
 
 export interface SimNextInput {
@@ -45,7 +51,7 @@ export class SimUser {
 
   constructor(opts: SimUserOpts) {
     this.opts = opts;
-    this.systemPrompt = buildSystemPrompt(opts.persona, opts.goal);
+    this.systemPrompt = buildSystemPrompt(opts.persona, opts.goal, opts.scenarioDescription);
   }
 
   get costUsd(): number {
@@ -99,12 +105,16 @@ export class SimUser {
   }
 }
 
-function buildSystemPrompt(persona: Persona, goal: GoalSpec): string {
+function buildSystemPrompt(persona: Persona, goal: GoalSpec, scenarioDescription?: string): string {
   const personaBlock = composePersonaPrompt(persona.traits);
   const goalBlock = describeGoal(goal);
+  const sceneBlock = scenarioDescription
+    ? `## Scenario context\n${scenarioDescription}\n\nYou are the user in the scenario described above. Drive the conversation toward what THAT user wants. Be specific about concrete things named in the scenario (harness slugs, file paths, feature ids) — a real user would name them, not gesture.`
+    : '';
+  const parts: string[] = [personaBlock, ''];
+  if (sceneBlock) parts.push(sceneBlock, '');
   return [
-    personaBlock,
-    '',
+    ...parts,
     '## Your goal',
     goalBlock,
     '',
