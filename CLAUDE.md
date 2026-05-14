@@ -28,11 +28,24 @@ If a state encodes a complex object (like a `{kind:'review'|'thread', id}` selec
 
 See `apps/operator/docs/nuqs-audit-2026-05-11.md` for the rationale + the 46+ params already migrated this session.
 
-## Deployment model: **desktop is the product, the webapp is for testing**
+## Deployment model: **desktop is the product. The standalone webapp is RETIRED.**
 
 **Source of truth: `apps/operator/providers/HarnessZeroProvider.tsx` lines 6–19** (the "Transport selection by deployment context" doc-comment).
 
-The shipping target is the **Tauri desktop app**. The `next dev` / `bin/prod` webapp on `:3055` / `:3070` exists for development, end-to-end testing, and verdict smoke-tests — it is **not** the production user surface. Don't treat web-only paths as "production parity"; treat them as test fixtures.
+The shipping target is the **Tauri desktop app**, and it is also the only supported test surface. The old `next dev` / `bin/prod` standalone webapp path (running `apps/operator` directly and opening `localhost:3055` in a browser) is **retired as of 2026-05-14** — native Postgres has been renamed to `papercusp_legacy` specifically to make accidental webapp boots fail loudly.
+
+**To run / test the app, launch the Tauri dev shell:**
+
+```bash
+cd /home/marsh-office/papercupai-workspace/papercusp-desktop
+npm run dev
+```
+
+That single command boots embedded Postgres (writes `~/.papercusp/embedded-pg.json` discovery file), starts the operator sidecar against it, applies pending SQL migrations, and opens the Tauri webview. There is no longer a "just the webapp" mode.
+
+Ports you may see internally (do not open these in a browser; let the desktop drive them):
+- `:3055` — Next.js dev server consumed by the Tauri webview as its content source.
+- `:3070` — operator harness sidecar API + standalone Fumadocs (only when the desktop is up).
 
 **Implications for any agent making transport / persistence / sync decisions:**
 
@@ -124,27 +137,16 @@ Files paperclip is most likely to rewrite:
 - `apps/operator/app/api/mobile/qr.svg/route.ts`
 - `apps/operator/lib/mobile-*.ts`
 
-## Running the operator: prefer `bin/prod` over `bin/dev`
+## Running the operator: `npm run dev` from `papercusp-desktop/`
 
-Two scripts exist; pick the right one:
+`apps/operator/bin/dev` and `apps/operator/bin/prod` are **retired** as standalone entry points. The Tauri dev shell is the only supported way to bring up the operator — it spawns the same Next.js process under the hood with embedded PG attached.
 
-- **`bin/prod`** — produces a real production build and serves it on `:3070`.
-  ~30 s rebuild cycle; warm endpoints serve in 3–10 ms; server idles at
-  <1 % CPU and ~200 MB RSS. **Default for any change that isn't pure
-  React-component CSS tweaking.** Includes server-side handlers, lib code,
-  schema changes, API endpoints, page logic.
-- **`bin/dev`** — Turbopack dev server on `:3055`. Has HMR (when it works)
-  but the dev process is currently fragile: ~20 GB RSS, 5,800 % CPU
-  sustained, fumadocs-mdx-driven crash-and-restart cycle, 14 s cold
-  compiles after each restart. HMR also frequently degrades to a full
-  reload (`[Fast Refresh] performing full reload …`), at which point dev
-  is slower than prod. Use `bin/dev` only when iterating on the visual
-  appearance of a React component and you genuinely need sub-second
-  feedback.
+```bash
+cd /home/marsh-office/papercupai-workspace/papercusp-desktop
+npm run dev
+```
 
-Audit (2026-05-05): same `/api/auth/status` was 1638 ms avg on dev vs
-50 ms avg on prod — a 33× delta. The app code is fine; the dev tooling
-isn't. Trust prod numbers, not dev numbers, when reasoning about perf.
+If you need to iterate on a server-side handler or API route and you don't want to wait for the Tauri webview to repaint, you can still reload the desktop window (Ctrl+R in the Tauri shell) or hit endpoints directly at `127.0.0.1:3055` and `127.0.0.1:3070` *while the desktop is running*. Do not try to start `apps/operator` on its own — it will fail at the first PG query because native PG was renamed to `papercusp_legacy`.
 
 ## Read this before changing code
 
@@ -154,7 +156,7 @@ gating, duplicate React keys, stale Radix pointer-events overrides, etc.).
 **Read the operator docs site's performance page before any non-trivial
 change**:
 
-→ <http://localhost:3070/docs/performance> (or `:3055` if running dev)
+→ With Tauri dev running, open `localhost:3070/docs/performance` (standalone Fumadocs) or the in-shell docs link
 → Source: `apps/operator/content/docs/performance.mdx`
 
 Pay particular attention to the "What NOT to do" sections (A1–A14). If
@@ -180,18 +182,20 @@ under load. Skip the cycle.
 for compound-key tables. Add a column to an existing table or write a
 migration in `libs/papercusp/libs/db/sql/<NNN>-...sql`.
 
-### Database topology — embedded-pg is the product, native PG is a dev crutch
+### Database topology — embedded-pg only. Native PG is retired.
 
 The shipped product is a **desktop app backed by embedded Postgres**
-(`embedded-postgres-server`, per-harness instance). The Next.js webapp
-on `:3055` / `:3070` and the system-native PG on `:5432` exist for
-**developer convenience only** — we use them because hot-reload and
-`psql` shells are nicer than poking at embedded-pg from a desktop shell.
-The desktop app is currently pointed at native PG in dev for the same
-reason.
+(`embedded-postgres-server`, per-harness instance). As of 2026-05-14
+the native-PG `papercusp` database has been **renamed to `papercusp_legacy`**
+to enforce the embedded-only path — any code that connects to
+`postgres://...@localhost:5432/papercusp` now fails immediately with
+`database "papercusp" does not exist`. That failure is the loud signal
+you forgot to launch the Tauri dev shell.
 
-**At public release: embedded-pg is the only target.** Native PG goes
-away. Anything that depends on system PG `:5432` being there will break.
+Practical rule: **never hardcode `localhost:5432`**. Resolve the admin
+DSN through `getHarnessAdminUrl()` (which reads the embedded-pg discovery
+file) so every code path automatically uses whichever embedded-pg the
+desktop spun up.
 
 Practical implications when writing code today:
 

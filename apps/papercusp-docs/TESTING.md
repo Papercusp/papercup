@@ -1,15 +1,19 @@
 # TESTING — @papercusp/docs
 
-Standalone Fumadocs build serving the public docs at `:3070`. The
-content source is shared with the operator via Pattern A (see
-`project_fumadocs_pattern_a.md`).
+Standalone Fumadocs build serving the public docs at `:3070` *while the Tauri dev shell is running*. The standalone webapp path is retired (2026-05-14); to bring up the docs site for verdict checks, launch the Tauri dev shell first:
+
+```bash
+cd /home/marsh-office/papercupai-workspace/papercusp-desktop && npm run dev
+```
+
+The content source is shared with the operator via Pattern A (see `project_fumadocs_pattern_a.md`).
 
 ## What this project's tests cover
 
 - (none) — content correctness is verified by:
   - Operator's TypeScript build (the same `content/docs/**` tree
     type-checks via Fumadocs' `.source/` types).
-  - `verdict` smoke against `:3070` for visual rendering.
+  - `verdict` smoke against `:3070` for visual rendering (Tauri dev shell must be running).
 
 ## What they don't cover
 
@@ -22,7 +26,7 @@ content source is shared with the operator via Pattern A (see
 | Edit touches                        | Run                                                   |
 | ----------------------------------- | ----------------------------------------------------- |
 | `content/docs/**` markdown          | rebuild operator: `cd apps/operator && npm run build` (Pattern A shares source) |
-| Layout / navigation                 | `npm run dev --workspace @papercusp/docs` and visual smoke |
-| Anything visible to users           | manual: `verdict` against `http://localhost:3070/docs` |
+| Layout / navigation                 | launch Tauri dev (above) and visual smoke at `:3070`  |
+| Anything visible to users           | Tauri dev + `verdict` against `http://localhost:3070/docs` |
 
 See repo-root `CLAUDE.md` and `apps/operator/content/docs/testing/` for the full strategy.

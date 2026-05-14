@@ -3,6 +3,9 @@ title: Scaffold failure recovery
 description: Runbook for partial scaffold failures (timeout, init failed, register failed). How to clean up and retry.
 ---
 
+> **Webapp retired (2026-05-14).** Any `localhost:3055` or `localhost:3070` URL on this page is only reachable while the **Tauri dev shell** is running. Start it with `cd papercusp-desktop && npm run dev`.
+
+
 `scaffold_harness` is the most complex executor verb — it shells out to `papercusp init`, writes config files, scaffolds a PG schema, and registers tokens. Any of these can fail mid-flight.
 
 ## Failure modes

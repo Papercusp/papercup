@@ -3,6 +3,9 @@ title: Feature flags
 description: The complete feature-flag system — every flag, how to flip them, where they're enforced, the V1 ship contract, and the admin UI.
 ---
 
+> **Webapp retired (2026-05-14).** Any `localhost:3055` or `localhost:3070` URL on this page is only reachable while the **Tauri dev shell** is running. Start it with `cd papercusp-desktop && npm run dev`.
+
+
 Feature flags are how Papercusp ships V1 with a minimal feature set while keeping the cut features in the codebase, ready to re-enable. Every flag defaults to **off**, the operator falls back to bundled defaults when offline, and admins flip flags through the operator's own UI — no PostHog dashboard required for day-to-day use.
 
 ## The 9 flags

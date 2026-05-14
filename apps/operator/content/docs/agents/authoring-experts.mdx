@@ -3,6 +3,9 @@ title: Authoring autonomous experts
 description: How to add a new direct-writing expert role that hooks into scoper-replan.
 ---
 
+> **Webapp retired (2026-05-14).** Any `localhost:3055` or `localhost:3070` URL on this page is only reachable while the **Tauri dev shell** is running. Start it with `cd papercusp-desktop && npm run dev`.
+
+
 # Authoring autonomous experts
 
 A "direct-writing expert" is an autonomous specialist agent that the scoper consults during `MODE=replan` and that writes its own features into `harness_features` (tagged with a non-`product` `kind`). The first concrete role is `infra-reviewer`. This page is the recipe for adding the next one.
