@@ -20,9 +20,10 @@ import { describe, it, expect } from 'vitest';
 import { SCENARIOS, getScenario } from '../scenarios';
 
 describe('scenario registry', () => {
-  it('exposes the full operator scenario suite (S01–S12)', () => {
+  it('exposes the full operator suite (S01–S12) and the oracle suite (O1–O3)', () => {
     const ids = SCENARIOS.map((s) => s.id).sort();
     expect(ids).toEqual([
+      // operator
       'op-S01-status-quick',
       'op-S02-multistep-investigation',
       'op-S03-continue-cap-count',
@@ -35,6 +36,10 @@ describe('scenario registry', () => {
       'op-S10-ask-choice',
       'op-S11-voice-card-answer',
       'op-S12-tool-error-recovery',
+      // oracle
+      'oracle-O1-docs-question',
+      'oracle-O2-refuse-speculation',
+      'oracle-O3-harness-question',
     ].sort());
   });
 
@@ -44,7 +49,7 @@ describe('scenario registry', () => {
 
   it('every scenario references a known target', () => {
     for (const s of SCENARIOS) {
-      expect(s.target).toBe('operator');
+      expect(['operator', 'oracle']).toContain(s.target);
     }
   });
 

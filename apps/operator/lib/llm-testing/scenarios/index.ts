@@ -26,8 +26,12 @@ import { S09_GENERATE_IDEAS } from './operator/S09-generate-ideas';
 import { S10_ASK_CHOICE } from './operator/S10-ask-choice';
 import { S11_VOICE_CARD_ANSWER } from './operator/S11-voice-card-answer';
 import { S12_TOOL_ERROR_RECOVERY } from './operator/S12-tool-error-recovery';
+import { O1_DOCS_QUESTION } from './oracle/O1-docs-question';
+import { O2_REFUSE_SPECULATION } from './oracle/O2-refuse-speculation';
+import { O3_HARNESS_QUESTION } from './oracle/O3-harness-question';
 
 export const SCENARIOS: ReadonlyArray<Scenario> = [
+  // operator (S01–S12)
   S01_STATUS_QUICK,
   S02_MULTISTEP_INVESTIGATION,
   S03_CONTINUE_CAP_COUNT,
@@ -40,6 +44,10 @@ export const SCENARIOS: ReadonlyArray<Scenario> = [
   S10_ASK_CHOICE,
   S11_VOICE_CARD_ANSWER,
   S12_TOOL_ERROR_RECOVERY,
+  // oracle (O1–O3) — Phase 4 abstraction validation
+  O1_DOCS_QUESTION,
+  O2_REFUSE_SPECULATION,
+  O3_HARNESS_QUESTION,
 ];
 
 export function getScenario(id: string): Scenario {

@@ -5,11 +5,13 @@
 
 import type { ChatTarget } from '../types';
 import { OperatorTarget } from './operator';
+import { OracleTarget } from './oracle';
 
 export type TargetFactory = () => ChatTarget;
 
 const TARGETS: Record<string, TargetFactory> = {
   operator: () => new OperatorTarget(),
+  oracle: () => new OracleTarget(),
 };
 
 export function registerTarget(id: string, factory: TargetFactory): void {
@@ -26,4 +28,4 @@ export function listTargets(): string[] {
   return Object.keys(TARGETS);
 }
 
-export { OperatorTarget };
+export { OperatorTarget, OracleTarget };
