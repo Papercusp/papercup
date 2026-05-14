@@ -131,7 +131,7 @@ discipline on every PR.
 ## Agent policies
 
 Behavior, scope, and review expectations for engineer-collaborator
-agents live in the docs site at **`/docs/agent-policies`** (commit /
+agents live in the docs site at **`/internal/docs/agent-policies`** (commit /
 PR conventions, when to plan vs. ship, test-vs-claim rules, scope
 discipline, when to update docs, etc.).
 
@@ -185,7 +185,7 @@ Admin tier bypasses role checks, so destructive verbs (cancel runs,
 dismiss approvals, reset scanners, mutate features) are available.
 Confirm out loud before calling any write-side tool. A stale "yes"
 from earlier shouldn't carry across topics — engineering work moves
-fast, intent shifts fast. See `/docs/agent-policies` for the exact
+fast, intent shifts fast. See `/internal/docs/agent-policies` for the exact
 rule.
 
 ### Before editing any file, claim it
@@ -264,7 +264,7 @@ already have an insight written.
 When you discover something non-obvious — a confusing failure mode
 and its root cause, a subtle invariant, a library quirk — write an
 insight at `apps/operator/content/internal-docs/agent-insights/<slug>.mdx`.
-The format is in [agent policies §18](/docs/agent-policies#18-agent-insights).
+The format is in [agent policies §18](/internal/docs/agent-policies#18-agent-insights).
 Don't wait for the user to ask; if it would have saved you an hour,
 the next agent will thank you.
 
@@ -275,7 +275,7 @@ working on X", "what did we decide about Y"), look in
 **`apps/operator/docs/plans/<slug>-<YYYY-MM-DD>.md`** first. It's the
 project's chronological design history — most non-trivial decisions
 have a plan doc that captures the *why*. See
-[agent policies §17](/docs/agent-policies#17-plans-and-project-history)
+[agent policies §17](/internal/docs/agent-policies#17-plans-and-project-history)
 for the file-naming convention and when to add a new plan yourself.
 
 ### Investigate a failure / bug the user describes
@@ -411,7 +411,7 @@ edits are picked up immediately.
   slug / feature id / workspace is the user telling you they didn't
   say enough yet. Ask.
 - **Don't ship without verification.** A passing typecheck is not a
-  working feature. See `/docs/agent-policies`.
+  working feature. See `/internal/docs/agent-policies`.
 
 ## Mid-call interactivity
 

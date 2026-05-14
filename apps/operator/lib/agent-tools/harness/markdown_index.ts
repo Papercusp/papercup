@@ -28,7 +28,7 @@ export default defineTool({
   description: 'Load the per-harness markdown index (filename + headings + anchor ids) across the workspace.',
   guidance: {
     when: 'User asks "what docs exist?", "where\'s the spec for X?", or you need to navigate to a specific section of the harness\'s markdown.',
-    notWhen: 'For the doc CONTENT, use `artifacts:load` once you have the path. For wiki-style backlinks (`[[name]]` references), use `wiki:backlinks`.',
+    notWhen: 'For the CONTENT of an indexed file (state files in any one harness), use `docs:get` — context-aware: when called inside a harness it serves that harness\'s content. For wiki-style backlinks (`[[name]]` references), use `wiki:backlinks`. This tool\'s unique value is the cross-harness sweep in one call.',
   },
   capability: 'harness:read',
   requirePrincipal: false,

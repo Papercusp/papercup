@@ -90,7 +90,7 @@ After the foundation pivot we shipped four plugins to validate the model. A fift
 | **MCP-proxy plugin** *(designed, not shipped)* | future GitNexus wrapper | Forwards to an external MCP server. Needs manifest extension `dynamicTools()` so the proxy can list at runtime instead of hard-coding. |
 | **Interactive card** | `chat:ask_choice` | Tool calls `ctx.askUser(spec)` and blocks until the user submits/declines/cancels. The card travels on the **state channel** (`state-snapshot` SSE), not the per-tool event ring buffer — so reconnect-resilient by construction. Handler returns the user's response value, not echoed args. See [ctx.askUser](./ask-user.mdx). |
 
-If your work doesn't fit one of those shapes, stop and discuss before inventing a seventh. See [Operations → When to stop and ask](/docs/endpoint-system/operations#when-to-stop-and-ask).
+If your work doesn't fit one of those shapes, stop and discuss before inventing a seventh. See [Operations → When to stop and ask](/internal/docs/endpoint-system/operations#when-to-stop-and-ask).
 
 ### Interactive-card conventions
 

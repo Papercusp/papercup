@@ -43,7 +43,7 @@ sluggish."
    chokidar watcher).
 3. Component: `const { data } = useSyncQuery({queryName, args})`. Done.
 
-Full recipe in the [Cookbook](/docs/data-sync/cookbook).
+Full recipe in the [Cookbook](/internal/docs/data-sync/cookbook).
 </Callout>
 
 ## What this section covers
@@ -104,17 +104,17 @@ Zero notices the change and pushes it to every connected client within
 
 ## Reading order for new contributors
 
-1. [RichGrid](/docs/data-sync/richgrid) — the renderer; learn this first
+1. [RichGrid](/internal/docs/data-sync/richgrid) — the renderer; learn this first
    because it's the smaller, self-contained surface.
-2. [Zero](/docs/data-sync/zero) — how a row in Postgres becomes a row in
+2. [Zero](/internal/docs/data-sync/zero) — how a row in Postgres becomes a row in
    your component.
-3. [Named queries](/docs/data-sync/named-queries) — how to add a new query
+3. [Named queries](/internal/docs/data-sync/named-queries) — how to add a new query
    to the shared catalog.
-4. [Schema conventions](/docs/data-sync/schema) — per-harness Postgres
+4. [Schema conventions](/internal/docs/data-sync/schema) — per-harness Postgres
    schemas, `harness_shared` cross-harness views, publications.
-5. [Pitfalls](/docs/data-sync/pitfalls) — non-obvious issues that have
+5. [Pitfalls](/internal/docs/data-sync/pitfalls) — non-obvious issues that have
    silently broken every panel in a schema. Read this before debugging.
-6. [Cookbook](/docs/data-sync/cookbook) — copy-paste recipes for the most
+6. [Cookbook](/internal/docs/data-sync/cookbook) — copy-paste recipes for the most
    common panel-building tasks.
 
 ## Source-of-truth files

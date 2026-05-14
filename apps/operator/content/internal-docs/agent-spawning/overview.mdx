@@ -28,11 +28,11 @@ The main loop still owns the canonical "what should this harness do next" decisi
 
 ## Where you read about how it works
 
-- [Lifecycle](/docs/agent-spawning/lifecycle) — spawn → poll → cancel; status transitions; cross-restart durability via PG
-- [Allowlist & caps](/docs/agent-spawning/allowlist-and-caps) — who can spawn whom; the five typed error codes
-- [Schema](/docs/agent-spawning/schema) — `spawned_agents` (Migration 049) + `tool_invocations_spawn_tree` (Migration 048)
-- [Observability](/docs/agent-spawning/observability) — Intel panel's Spawns sub-tab; useful PG queries for the tree
-- [Limits](/docs/agent-spawning/limits) — what v1.5 doesn't do, what's deferred to v2
+- [Lifecycle](/internal/docs/agent-spawning/lifecycle) — spawn → poll → cancel; status transitions; cross-restart durability via PG
+- [Allowlist & caps](/internal/docs/agent-spawning/allowlist-and-caps) — who can spawn whom; the five typed error codes
+- [Schema](/internal/docs/agent-spawning/schema) — `spawned_agents` (Migration 049) + `tool_invocations_spawn_tree` (Migration 048)
+- [Observability](/internal/docs/agent-spawning/observability) — Intel panel's Spawns sub-tab; useful PG queries for the tree
+- [Limits](/internal/docs/agent-spawning/limits) — what v1.5 doesn't do, what's deferred to v2
 
 ## Where it lives in code
 

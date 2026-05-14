@@ -11,7 +11,7 @@ import { Callout } from 'fumadocs-ui/components/callout';
 <Callout type="info">
 **Status:** plan, not yet shipped. Goes from architecture decisions through
 four end-to-end smokes. Estimate: 15–18 days realistic. Companion to
-[`orchestrator-port`](/docs/implementation/orchestrator-port) — that one
+[`orchestrator-port`](/internal/docs/implementation/orchestrator-port) — that one
 ports `run.sh` to TS; this one builds the harness-of-harnesses APIs the
 ported orchestrator emits actions into.
 </Callout>
@@ -560,7 +560,7 @@ For each existing template under `~/.papercusp/harnesses/` that should be spawna
 
 **Bump patch version** (e.g. `0.1.0` → `0.1.1`). Re-publish each.
 
-Document in `apps/operator/content/docs/spec/marketplace-versioning.mdx`: "Manifests are append-only at the same major.minor; additive fields require a patch bump."
+Document in `apps/operator/content/internal-docs/spec/marketplace-versioning.mdx`: "Manifests are append-only at the same major.minor; additive fields require a patch bump."
 
 **Gate:** `GET /api/marketplace/spawnable` returns at least one `kind: 'coding'` template at the new version.
 
@@ -755,14 +755,14 @@ If Smoke B passes without any code referencing "papercup-org" by name, the subst
 
 Part of the work, not afterthoughts. \~1d total, folded into the relevant steps:
 
-- `apps/operator/content/docs/spec/harness-spawning.mdx` — what `scaffold_harness` does, how `parent_slug` works, completion reporting
-- `apps/operator/content/docs/spec/spawnable-templates.mdx` — what makes a template spawnable, the `spawnable` manifest field, recognized `kind` values, how to publish
-- `apps/operator/content/docs/spec/spawning-harnesses.mdx` — how to author a harness whose director can spawn children
-- `apps/operator/content/docs/spec/cross-harness-coordination.mdx` — how `send_message` works, tiered visibility model, inspect-on-demand capabilities, conventions for `reason` strings
-- `apps/operator/content/docs/spec/auth-and-identity.mdx` *(new)* — per-harness token model, identity binding, what's derived vs body-controlled, threat model + non-goals (rotation), recovery procedure if compromised
-- `apps/operator/content/docs/spec/scaffold-failure-recovery.mdx` *(new)* — runbook for partial scaffold failures (timeout, init failed, register failed), how to clean up + retry
-- `apps/operator/content/docs/spec/marketplace-versioning.mdx` *(new)* — append-only-at-same-major.minor rule, when to bump patch
-- Update `apps/operator/content/docs/implementation/status.mdx` with rows for "Harness spawning (standard substrate feature)" and "Cross-harness coordination (auth-bound + tiered visibility + send_message bus)."
+- `apps/operator/content/internal-docs/spec/harness-spawning.mdx` — what `scaffold_harness` does, how `parent_slug` works, completion reporting
+- `apps/operator/content/internal-docs/spec/spawnable-templates.mdx` — what makes a template spawnable, the `spawnable` manifest field, recognized `kind` values, how to publish
+- `apps/operator/content/internal-docs/spec/spawning-harnesses.mdx` — how to author a harness whose director can spawn children
+- `apps/operator/content/internal-docs/spec/cross-harness-coordination.mdx` — how `send_message` works, tiered visibility model, inspect-on-demand capabilities, conventions for `reason` strings
+- `apps/operator/content/internal-docs/spec/auth-and-identity.mdx` *(new)* — per-harness token model, identity binding, what's derived vs body-controlled, threat model + non-goals (rotation), recovery procedure if compromised
+- `apps/operator/content/internal-docs/spec/scaffold-failure-recovery.mdx` *(new)* — runbook for partial scaffold failures (timeout, init failed, register failed), how to clean up + retry
+- `apps/operator/content/internal-docs/spec/marketplace-versioning.mdx` *(new)* — append-only-at-same-major.minor rule, when to bump patch
+- Update `apps/operator/content/internal-docs/implementation/status.mdx` with rows for "Harness spawning (standard substrate feature)" and "Cross-harness coordination (auth-bound + tiered visibility + send_message bus)."
 
 ## 10. Out of scope (separate plan needed)
 

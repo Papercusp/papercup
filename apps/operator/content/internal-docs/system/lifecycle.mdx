@@ -480,7 +480,7 @@ The `.harness/config.json` notes the phase/dept/models/timeouts/smokeTest/branch
 - `~/.papercusp-workspaces/<workspaceId>/.papercusp/` — per-workspace operator state (credentials, oracle config, agent config, plugin configs, plugin data).
   - **Credentials** (operator API keys, voice creds, marketplace tokens, publish creds, trust store) are PG-canonical in `harness_shared.operator_*` tables and **encrypted at rest** via pgcrypto (Migration 027 + 028).
   - **Plugin OAuth tokens** at `~/.papercusp/harnesses/<slug>/plugin-configs/<plugin>.json` are file-canonical because the substrate plugin loader reads them synchronously and cannot decrypt; the PG mirror at `harness_shared.plugin_configs` is encrypted (Migration 039), and the on-disk file is mode 0600.
-  - **Most other operator state** (operator_credentials, operator_voice_credentials, operator_paused, oauth_nonces, mobile_pair_tokens, operator_rate_limit, cooldown_marks, profile state) lives in PG; see `apps/operator/content/docs/system/storage-policy` for the full list.
+  - **Most other operator state** (operator_credentials, operator_voice_credentials, operator_paused, oauth_nonces, mobile_pair_tokens, operator_rate_limit, cooldown_marks, profile state) lives in PG; see `apps/operator/content/internal-docs/system/storage-policy` for the full list.
 - `~/.papercusp-workspaces/registry.json` — active workspace selection (bootstrap).
 - `~/.papercusp/db-encryption-key` — symmetric key (32 random bytes, base64, mode 0600) for the pgcrypto encryption-at-rest. Override via `PAPERCUSP_DB_ENCRYPTION_KEY`.
 - `<papercuspRoot>/agent/config.json` — agent backend selection (claude-code | omp | auto), custom command, per-role model overrides; written by `/settings/agent` UI.

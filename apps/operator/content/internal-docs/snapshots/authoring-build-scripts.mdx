@@ -278,7 +278,7 @@ Your script runs in a substrate-bundled bwrap (Linux) or sandbox-exec
 - **Network**: outbound only to `provision.allowedHosts` (or the
   declared `cloudProvider` preset's allowlist). The substrate hard-blocks
   IMDS (`169.254.0.0/16`), RFC1918, and loopback regardless of declared
-  hosts. See [build-scripts § Network policy floor](/docs/snapshots/build-scripts#network-policy-floor).
+  hosts. See [build-scripts § Network policy floor](/internal/docs/snapshots/build-scripts#network-policy-floor).
 - **No interactive subprocesses**. Scripts that try to read from stdin
   or open browsers mid-run are killed. Use OAuth via `ctx.oauth.token()`
   in your action handlers, not `aws sso login` from setup.
@@ -353,10 +353,10 @@ Before `papercusp snapshot publish`:
 
 ## Spec links
 
-- [Build scripts (full spec)](/docs/snapshots/build-scripts) —
+- [Build scripts (full spec)](/internal/docs/snapshots/build-scripts) —
   manifest reference, sandbox model, trust lifecycle, recovery contract.
-- [Share semantics](/docs/snapshots/share-semantics) — `secret`/`shareable`/`snapshotPolicy` in detail.
-- [OAuth integration](/docs/snapshots/oauth-integration) —
+- [Share semantics](/internal/docs/snapshots/share-semantics) — `secret`/`shareable`/`snapshotPolicy` in detail.
+- [OAuth integration](/internal/docs/snapshots/oauth-integration) —
   `oauth: { provider, scopes }` for paste-free credential acquisition.
-- [Open questions](/docs/snapshots/open-questions) — V1 scope,
+- [Open questions](/internal/docs/snapshots/open-questions) — V1 scope,
   V1.1 deferred work.

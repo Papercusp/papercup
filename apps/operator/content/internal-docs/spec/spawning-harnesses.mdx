@@ -36,7 +36,7 @@ Inside `<harness>/.harness/config.json`:
 
 When the harness is scaffolded, a `harness_token` is written into `.harness/config.json` (mode 0600). All `executeAction` calls — whether from the substrate's `process_actions_block` (run.sh) or from a hook script — read the token from this file and send it as `Authorization: Bearer <token>`.
 
-The executor derives the caller identity from the token. **Body-supplied `from` or `callingHarness` fields are rejected on mismatch**; `parent_slug` on `scaffold_harness` is never body-controlled. See [auth-and-identity](/docs/spec/auth-and-identity).
+The executor derives the caller identity from the token. **Body-supplied `from` or `callingHarness` fields are rejected on mismatch**; `parent_slug` on `scaffold_harness` is never body-controlled. See [auth-and-identity](/internal/docs/spec/auth-and-identity).
 
 ## Tier 3 substrate context
 

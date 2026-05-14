@@ -29,9 +29,9 @@ Before any other gate fires, the dispatcher verifies the per-spawn URL's HMAC si
 
 This check is **not** wired into `tools/list` — listing returns what the *claimed* role would see, so an agent can introspect what tools exist before invoking. Verification happens at `tools/call`.
 
-The `?superuser=1` door bypasses this check entirely; it has its own loopback + bearer envelope. See [Superuser mode](/docs/endpoint-system/superuser-mode).
+The `?superuser=1` door bypasses this check entirely; it has its own loopback + bearer envelope. See [Superuser mode](/internal/docs/endpoint-system/superuser-mode).
 
-Full scheme, reason codes, rotation, and observability live in [Spawn-URL signing](/docs/endpoint-system/spawn-signing).
+Full scheme, reason codes, rotation, and observability live in [Spawn-URL signing](/internal/docs/endpoint-system/spawn-signing).
 
 ## Check 1 — Role allowlist (plugin tools)
 

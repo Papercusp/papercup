@@ -13,7 +13,7 @@ All libraries below are installed in `apps/operator/package.json` and resolved t
 
 **Why this one:** Radix is the de facto standard for headless UI primitives in React. Same family as `@radix-ui/react-hover-card` already in the codebase, so peer-deps align automatically. Maintained by WorkOS, used by Vercel, Linear, and most of the React ecosystem. Tiny (~5 KB gzipped) and tree-shakable.
 
-**Why not `react-tooltip`?** Older, heavier, less accessible. Why not native `title=`? See [gotchas](/docs/design/gotchas) — it has UX problems we lived through.
+**Why not `react-tooltip`?** Older, heavier, less accessible. Why not native `title=`? See [gotchas](/internal/docs/design/gotchas) — it has UX problems we lived through.
 
 **Wrapper:** `app/harness/Tooltip.tsx` exports `<Tooltip label={...}>{trigger}</Tooltip>`. Returns the trigger unchanged when `label` is falsy. Trigger receives `asChild` so the underlying button/span keeps its DOM identity.
 
@@ -62,7 +62,7 @@ All libraries below are installed in `apps/operator/package.json` and resolved t
 2. **Filter pills (shared content)** — render content imperatively based on `Tabs.Root`'s `value` (no `<Tabs.Content>`). Radix only sets `aria-selected="true"` (not `data-state`). See `ArchitectInbox.tsx`, `ProposalsPanel.tsx`, `HarnessDashboard.tsx` (9-tab nav).
 
 <Callout type="warn" title="Style triggers via aria-selected, not data-state">
-If your tabs render content imperatively (no `<Tabs.Content>`), Radix only flips `aria-selected`, not `data-state`. Bridge with `[aria-selected="true"]` selectors in `harness.css`. See [gotchas](/docs/design/gotchas) for the trap.
+If your tabs render content imperatively (no `<Tabs.Content>`), Radix only flips `aria-selected`, not `data-state`. Bridge with `[aria-selected="true"]` selectors in `harness.css`. See [gotchas](/internal/docs/design/gotchas) for the trap.
 </Callout>
 
 ## `@radix-ui/react-select`
@@ -198,7 +198,7 @@ The wrapper forwards refs and spreads all native props.
 
 ## `@restart/grid-core` — `RichGrid`, `GridTable`, `DataGridShell`
 
-**What:** Three grid components for tabular data. Pick by what cells need to do — see the [decision matrix](/docs/design#grids--richgrid-vs-gridtable-vs-datagridshell).
+**What:** Three grid components for tabular data. Pick by what cells need to do — see the [decision matrix](/internal/docs/design#grids--richgrid-vs-gridtable-vs-datagridshell).
 
 **Built-in print + copy support** (RichGrid, default-on):
 
@@ -461,4 +461,4 @@ return (
 - `useAutoAnimate` hook: `import { useAutoAnimate } from '@formkit/auto-animate/react'`. Call it once per dynamic-list parent; spread the returned ref onto the parent element.
 - `motion`: `import { motion, AnimatePresence } from 'motion/react'` (or `framer-motion`; identical). `AnimatePresence` for exit animations on unmount; `motion.div layout` for FLIP between layouts.
 
-**Reference docs:** [Performance — animation rules](/docs/design/performance#animation-rules) (the canonical short answer for "should I add an animation here?").
+**Reference docs:** [Performance — animation rules](/internal/docs/design/performance#animation-rules) (the canonical short answer for "should I add an animation here?").

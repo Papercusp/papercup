@@ -30,7 +30,7 @@ For real isolation, run shell-omp under a different OS user with file
 ACLs that prevent the orchestrator user from reading the token.
 
 (The orchestrator-spawned path has a separate envelope — see
-[Spawn-URL signing](/docs/endpoint-system/spawn-signing). Forging a
+[Spawn-URL signing](/internal/docs/endpoint-system/spawn-signing). Forging a
 worker URL into operator-tier fails the HMAC verifier; pasting the
 superuser token into your own shell does not, by design.)
 </Callout>

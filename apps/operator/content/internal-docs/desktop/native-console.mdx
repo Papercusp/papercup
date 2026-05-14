@@ -11,10 +11,10 @@ terminal lands in the active harness's directory (or workspace root
 when there's no active harness), with env vars set and a `.mcp.json`
 written so any agent the user invokes inside it (`claude`, `codex`,
 `omp`, …) auto-discovers the operator's MCP server and gets the full
-[tool catalog](/docs/endpoint-system/tool-catalog) (145+ tools as of
+[tool catalog](/internal/docs/endpoint-system/tool-catalog) (145+ tools as of
 this writing).
 
-This is the visible end of the [superuser-mode](/docs/endpoint-system/superuser-mode)
+This is the visible end of the [superuser-mode](/internal/docs/endpoint-system/superuser-mode)
 plumbing — that doc covers the threat model + token mechanics; this
 page is about how to test it.
 
@@ -157,7 +157,7 @@ Pass `{"slug": null}` (or omit the body) for a workspace-only console
 
 ## What the agent in the terminal can do
 
-Per the [tool catalog](/docs/endpoint-system/tool-catalog), 96 built-in
+Per the [tool catalog](/internal/docs/endpoint-system/tool-catalog), 96 built-in
 tools + 36 plugin tools are exposed via `?superuser=1`:
 
 - **Read workspace state**: `harness:status`, `tasks:list`,

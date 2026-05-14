@@ -111,7 +111,7 @@ Notes:
 - **`roles` is enforced.** Workers use `perChunk` quotas (resets per chunk); everyone else uses `perRun` (resets per orchestrator run).
 - **Reads usually don't need a quota.** Only set `rolesQuota` for: external API spend, PG write bursts, subprocess fan-out.
 - **`timeoutSec` defaults to 60** if omitted. The dispatcher aborts via `ctx.signal` when it fires.
-- **`guidance` is optional but strongly recommended.** Rendered into the [prompt-assembly tools catalog](/docs/agents/prompt-assembly#section-2--tools-catalog) so every role that's allowed to call the tool gets the same `when` / `notWhen` / `chaining` framing without you having to write it in N role files. Built-in tools pass `guidance` to `defineTool({...})` as a sibling of `capability`. Omit it and the catalog falls back to description-only.
+- **`guidance` is optional but strongly recommended.** Rendered into the [prompt-assembly tools catalog](/internal/docs/agents/prompt-assembly#section-2--tools-catalog) so every role that's allowed to call the tool gets the same `when` / `notWhen` / `chaining` framing without you having to write it in N role files. Built-in tools pass `guidance` to `defineTool({...})` as a sibling of `capability`. Omit it and the catalog falls back to description-only.
 
 ### Step 2.5 — If you need a new PG schema, apply the migration manually
 
@@ -185,7 +185,7 @@ The projection registry is module-level state. HMR is unreliable. If you don't r
 - File uploads >5MB (multipart isn't wired)
 - Browser-state actions (no server function to project; use `ui:dispatch` instead — those are client commands, not tools)
 
-LLM streaming output *is* fine — declare typed events on the manifest and the framework projects them over HTTP/SSE and MCP. See [Typed event streams](/docs/endpoint-system/transports#typed-event-streams).
+LLM streaming output *is* fine — declare typed events on the manifest and the framework projects them over HTTP/SSE and MCP. See [Typed event streams](/internal/docs/endpoint-system/transports#typed-event-streams).
 
 Mid-run server-asks-client is *also* fine — use `ctx.askUser(spec)` (the state channel ships the prompt out-of-band; the handler blocks on a deferred until the user clicks). See [ctx.askUser](./ask-user.mdx).
 

@@ -22,7 +22,7 @@ The assembly function is [`assembleRolePrompt`](#api) in `apps/operator/lib/prom
 
 ## Why a separate layer
 
-The [endpoint system](/docs/endpoint-system/overview) decides *what* tools exist and *how* they get invoked across transports. The prompt-assembly layer decides *what the model is told about those tools and how to use them*. Different concerns; different files.
+The [endpoint system](/internal/docs/endpoint-system/overview) decides *what* tools exist and *how* they get invoked across transports. The prompt-assembly layer decides *what the model is told about those tools and how to use them*. Different concerns; different files.
 
 A given tool needs **three** kinds of guidance authored:
 
@@ -206,8 +206,8 @@ If the role is a chat-mode driver (drives a streaming converse loop), also:
 ## What this layer is not
 
 - **Not a tool registry.** Tools live in `packages/agent-mcp/src/tools/**` (built-ins) and `libs/papercusp/plugins/*/` (plugins). The prompt layer reads from the projection registry; it doesn't own it.
-- **Not auth or gating.** Role-allowlist, capability checks, quotas — all in the [endpoint-system dispatcher](/docs/endpoint-system/gating). The prompt layer renders text; the dispatcher decides what runs.
-- **Not a runtime tool-discovery mechanism.** Agents that hit unfamiliar tools at runtime use [`agent_tools:list`](/docs/endpoint-system/tool-catalog#singletons) — that's the live, role-filtered surface. Prompt assembly bakes in the *common* path; introspection covers the *long tail*.
+- **Not auth or gating.** Role-allowlist, capability checks, quotas — all in the [endpoint-system dispatcher](/internal/docs/endpoint-system/gating). The prompt layer renders text; the dispatcher decides what runs.
+- **Not a runtime tool-discovery mechanism.** Agents that hit unfamiliar tools at runtime use [`agent_tools:list`](/internal/docs/endpoint-system/tool-catalog#singletons) — that's the live, role-filtered surface. Prompt assembly bakes in the *common* path; introspection covers the *long tail*.
 - **Not a template engine.** The four sections are concatenated verbatim. No variables, no conditionals. If you need conditional content, do it in TypeScript before passing to `assembleRolePrompt`.
 
 ## File map
@@ -245,6 +245,6 @@ apps/operator/
 
 ## Where to read next
 
-- [Endpoint System → Writing a tool](/docs/endpoint-system/writing-a-tool) — how to add `guidance` to a `defineTool` call
-- [Endpoint System → Tool catalog](/docs/endpoint-system/tool-catalog) — the full live tool list
-- [Agents → Operator persona](/docs/agents/operator-persona) — the canonical persona example with tone, behavior, and modality rules
+- [Endpoint System → Writing a tool](/internal/docs/endpoint-system/writing-a-tool) — how to add `guidance` to a `defineTool` call
+- [Endpoint System → Tool catalog](/internal/docs/endpoint-system/tool-catalog) — the full live tool list
+- [Agents → Operator persona](/internal/docs/agents/operator-persona) — the canonical persona example with tone, behavior, and modality rules

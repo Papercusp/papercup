@@ -39,7 +39,7 @@ When a spawn finishes, we capture the last 4 KB of stdout/stderr into `spawned_a
 
 Built-in tools (those declared via `defineTool`) run with a principal but no spawn URL params. They cannot themselves call `orchestrator.spawn` — the spawn machinery requires the URL-baked context (workspace, harness, parent spawn, run) that only plugin-route invocations carry.
 
-**Workaround:** if a built-in needs to fan out work, expose its logic as a *plugin tool* instead. The decision tree in [Writing a tool](/docs/endpoint-system/writing-a-tool) covers when to pick which.
+**Workaround:** if a built-in needs to fan out work, expose its logic as a *plugin tool* instead. The decision tree in [Writing a tool](/internal/docs/endpoint-system/writing-a-tool) covers when to pick which.
 
 ## Reaper marks orphans dead, but only on first invocation per process
 

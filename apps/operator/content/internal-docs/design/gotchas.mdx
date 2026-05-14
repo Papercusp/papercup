@@ -165,11 +165,11 @@ The original migration added ~55 KB gzipped to the harness route's JS payload. L
 | `vaul` | ~6 KB |
 | `cmdk` | ~10 KB |
 
-If you find yourself reaching for a NEW library not in this list, ask first. Most cases the existing set covers — see the [decision matrix](/docs/design).
+If you find yourself reaching for a NEW library not in this list, ask first. Most cases the existing set covers — see the [decision matrix](/internal/docs/design).
 
 ## Per-field-settings pages — don't reach for RHF
 
-If you're looking at `/settings/voice`, `/settings/backups`, `/settings/operator`, or any other settings page where each control persists independently (no Submit button, no atomic "save the whole form" gesture), **do not migrate it to `useFormWith`**. That conflates the page's model with what RHF was built for. Use `useDebouncedSave(value, persist)` per field instead — full pattern is in [libraries: Form patterns](/docs/design/libraries#form-patterns--picking-the-right-model).
+If you're looking at `/settings/voice`, `/settings/backups`, `/settings/operator`, or any other settings page where each control persists independently (no Submit button, no atomic "save the whole form" gesture), **do not migrate it to `useFormWith`**. That conflates the page's model with what RHF was built for. Use `useDebouncedSave(value, persist)` per field instead — full pattern is in [libraries: Form patterns](/internal/docs/design/libraries#form-patterns--picking-the-right-model).
 
 Symptoms that mean you've picked the wrong pattern:
 - You're calling `getValues()` from a "Test microphone" / "Test connection" button just to read the user's current draft.
@@ -216,4 +216,4 @@ Multiple agents working on the same files concurrently is normal here. The harne
 
 3. **Don't blanket-replace.** A Python script that mass-removes `<Tooltip>` wrappers (because some IDE auto-import suggested them as redundant) will silently revert dozens of files. We've seen this happen.
 
-4. **When in doubt, look at a working example.** The "where to look" table on the [overview page](/docs/design) lists a canonical example for each pattern.
+4. **When in doubt, look at a working example.** The "where to look" table on the [overview page](/internal/docs/design) lists a canonical example for each pattern.

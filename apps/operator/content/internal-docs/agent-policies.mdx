@@ -286,13 +286,13 @@ The repo has settled on a few patterns. Follow them; don't fork.
 
 | You're building… | Use | Don't roll | Canonical reference |
 |---|---|---|---|
-| A new panel reading server state | `useSyncQuery({queryName, args})` | `fetch + setInterval`, raw `EventSource` for query data | [Data Sync](/docs/data-sync) |
-| New durable state | Postgres, via `operator-state-pg.ts` or `getOrgPg()` | JSON files, module-scoped `Map`s | [Storage policy](/docs/system/storage-policy) |
+| A new panel reading server state | `useSyncQuery({queryName, args})` | `fetch + setInterval`, raw `EventSource` for query data | [Data Sync](/internal/docs/data-sync) |
+| New durable state | Postgres, via `operator-state-pg.ts` or `getOrgPg()` | JSON files, module-scoped `Map`s | [Storage policy](/internal/docs/system/storage-policy) |
 | UI state (tabs, panels open, selections, filters) | `nuqs` (`useQueryState`) | `useState` for anything user-meaningful | tools.md |
-| A modal / drawer / select / checkbox / tooltip | The wrapper from `app/harness/` | Hand-rolled `<div role="dialog">`, native `<select>`, `title=` on actions | [Design — library guide](/docs/design) |
-| A tabular list | `RichGrid` / `GridTable` / `DataGridShell` from `@restart/grid-core` | Hand-rolled `<table>` | [Design — library guide](/docs/design) |
-| A form | RHF + zod for single-submit; `useDebouncedSave` for auto-save | Mixing the two; rolling your own state machine | [Design — library guide](/docs/design) §7 |
-| A new tool callable by agents | `defineTool` (built-in) or plugin manifest, pick via decision rule | Bypassing the projection registry | [Writing a tool](/docs/endpoint-system/writing-a-tool) |
+| A modal / drawer / select / checkbox / tooltip | The wrapper from `app/harness/` | Hand-rolled `<div role="dialog">`, native `<select>`, `title=` on actions | [Design — library guide](/internal/docs/design) |
+| A tabular list | `RichGrid` / `GridTable` / `DataGridShell` from `@restart/grid-core` | Hand-rolled `<table>` | [Design — library guide](/internal/docs/design) |
+| A form | RHF + zod for single-submit; `useDebouncedSave` for auto-save | Mixing the two; rolling your own state machine | [Design — library guide](/internal/docs/design) §7 |
+| A new tool callable by agents | `defineTool` (built-in) or plugin manifest, pick via decision rule | Bypassing the projection registry | [Writing a tool](/internal/docs/endpoint-system/writing-a-tool) |
 | Cross-app messaging | HTTP / SSE / in-process call, then persist to PG | Polling PG as a transport | tools.md "DB is not a transport" |
 
 ## 13. Performance bar
@@ -305,7 +305,7 @@ Hard targets — CI/review rejects violations:
 - 60 fps minimum during list updates.
 
 Full rules + the audit anti-pattern catalog at
-[Performance — rules every agent must follow](/docs/performance).
+[Performance — rules every agent must follow](/internal/docs/performance).
 Read it before any non-trivial UI/data change. The "What not to do"
 section near the bottom is load-bearing.
 
@@ -313,7 +313,7 @@ section near the bottom is load-bearing.
 
 <Callout type="warn" title="Read the testing docs first">
 Before you write a test, run a test, or touch test infrastructure,
-**read [Testing strategy](/docs/testing)**. The three-layer model,
+**read [Testing strategy](/internal/docs/testing)**. The three-layer model,
 which runner for which layer, the per-project `TESTING.md` discovery
 protocol, the affected-graph rule, and the visual-regression
 workflow are all there. Skipping that page means re-inventing
@@ -321,7 +321,7 @@ testing conventions the rest of the codebase has already settled.
 </Callout>
 
 Three layers per project — unit, integration, E2E. Conventions and
-which runner per layer live at [Testing strategy](/docs/testing).
+which runner per layer live at [Testing strategy](/internal/docs/testing).
 Specifically:
 
 - **Don't mock the database in integration tests.** Mocked tests
@@ -349,7 +349,7 @@ Specifically:
   ```bash
   curl -X POST http://localhost:3070/api/plugins/host/refresh
   ```
-  (See [Endpoint system → Operations](/docs/endpoint-system/operations).)
+  (See [Endpoint system → Operations](/internal/docs/endpoint-system/operations).)
 - **After editing a role's `persona.md` / `tools.md` /
   `defineTool({ guidance })`**, prompt-assembly auto-reloads in dev
   (`PAPERCUSP_RELOAD_PROMPTS=1` is the dev default). No restart

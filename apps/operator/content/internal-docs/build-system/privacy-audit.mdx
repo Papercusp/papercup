@@ -114,4 +114,4 @@ The bundles are gigabytes of compiled JS, minified standalone output, native bin
 - **Same-host PostHog instance accidentally pointing prod traffic somewhere it shouldn't**. Defense: see the V1 contract — even with a wrong host, the client must not start.
 - **Telemetry from other sources** (Tauri's auto-update, Next.js Fast Refresh's analytics, OS crash reporters). These are separate trust decisions documented elsewhere.
 
-If you need to validate behavioral guarantees, see [verification](/docs/build-system/verification) — that page covers the live-run smoke test (`curl /api/flags/bootstrap`, `ss -tnp | grep flags.papercuspai`) that catches behavioral leaks.
+If you need to validate behavioral guarantees, see [verification](/internal/docs/build-system/verification) — that page covers the live-run smoke test (`curl /api/flags/bootstrap`, `ss -tnp | grep flags.papercuspai`) that catches behavioral leaks.

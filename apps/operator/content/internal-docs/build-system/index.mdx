@@ -30,13 +30,13 @@ Three sections:
 - **Running** — Install + launch each platform · Launch Linux Desktop DEV · Restart 3055 · Audit prod bundles · Env probe
 - **Simulators** — Launch Android emulator · Start macOS VM · Launch iOS simulator · List iOS sim devices
 
-The button source-of-truth allow-list lives in `apps/operator/lib/admin-commands.ts`. The client only sends a `cmd` id; the server resolves it to the actual shell command — there's no path that lets the client pass raw shell. See [Admin commands](/docs/build-system/admin-commands) for the full reference.
+The button source-of-truth allow-list lives in `apps/operator/lib/admin-commands.ts`. The client only sends a `cmd` id; the server resolves it to the actual shell command — there's no path that lets the client pass raw shell. See [Admin commands](/internal/docs/build-system/admin-commands) for the full reference.
 
 ## How to use this section
 
-- **[Architecture](/docs/build-system/architecture)** — the bundle layout, the bootstrap → sidecar handoff, what runs in prod vs dev
-- **[Admin commands](/docs/build-system/admin-commands)** — every `/admin` button explained: what it runs, what it depends on, what it produces
-- **[VMs](/docs/build-system/vms)** — SSH targets, sudo passwords, port maps, "the Windows VM crashes constantly" survival kit
-- **[Privacy audit](/docs/build-system/privacy-audit)** — the V1 ship contract, `bin/audit-bundle.sh`, what gets scanned
-- **[Verification](/docs/build-system/verification)** — smoke tests for each platform, what "the build is good to ship" actually means
-- **[Troubleshooting](/docs/build-system/troubleshooting)** — every footgun this build system has surfaced. Read this before debugging "build is broken" complaints
+- **[Architecture](/internal/docs/build-system/architecture)** — the bundle layout, the bootstrap → sidecar handoff, what runs in prod vs dev
+- **[Admin commands](/internal/docs/build-system/admin-commands)** — every `/admin` button explained: what it runs, what it depends on, what it produces
+- **[VMs](/internal/docs/build-system/vms)** — SSH targets, sudo passwords, port maps, "the Windows VM crashes constantly" survival kit
+- **[Privacy audit](/internal/docs/build-system/privacy-audit)** — the V1 ship contract, `bin/audit-bundle.sh`, what gets scanned
+- **[Verification](/internal/docs/build-system/verification)** — smoke tests for each platform, what "the build is good to ship" actually means
+- **[Troubleshooting](/internal/docs/build-system/troubleshooting)** — every footgun this build system has surfaced. Read this before debugging "build is broken" complaints

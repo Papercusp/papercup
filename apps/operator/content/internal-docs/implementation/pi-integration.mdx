@@ -55,7 +55,7 @@ The interesting payoff is fine-grained cost control across roles. Pi's four mode
 
 Reasoning: opus on the rare planning calls, sonnet on hot-path worker calls (with haiku for tool-plan subtasks via pi's `--smol`), gemini flash on cheap validator passes, claude on the orchestrator for stable decision-verb output. Pairs naturally with papercusp's [hard-stop budget enforcement](/spec/state/#53-hard-stop-budget-enforcement) — the substrate enforces the hard cap; this config tunes the per-call cost.
 
-See [§16 CLI pluggability](/docs/spec/cli-pluggability) for the substrate concept this builds on.
+See [§16 CLI pluggability](/internal/docs/spec/cli-pluggability) for the substrate concept this builds on.
 
 ## Track B — Embedded pi TUI as a peer pane
 
@@ -99,7 +99,7 @@ Useful flags to pass:
 ### Phasing
 
 <Callout type="info" title="Phases 3a–3c are shipped">
-The status table on [/implementation/status/#pi-oh-my-pi-integration--tracks-a--b-phase-3abc-shipped](/docs/implementation/status) tracks landed phases. Live in the harness dashboard at `:3055/harness/<slug>` — click the `pi` tab.
+The status table on [/implementation/status/#pi-oh-my-pi-integration--tracks-a--b-phase-3abc-shipped](/internal/docs/implementation/status) tracks landed phases. Live in the harness dashboard at `:3055/harness/<slug>` — click the `pi` tab.
 </Callout>
 
 **Phase 3a — MVP terminal pane (~1 day).** ✅ shipped.

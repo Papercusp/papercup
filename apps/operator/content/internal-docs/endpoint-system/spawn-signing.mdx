@@ -179,7 +179,7 @@ A non-zero rate of `invalid_signature` outside explicit test runs is a real sign
 
 - **Same-UID code that queries PG for the key.** The agent runs as the operator's UID and has libpq access. HMAC is friction, not enforcement.
 - **Replaying another spawn's `.mcp.json`.** Each URL is a valid bearer for its `exp` window (24h default). `.mcp.json` is 0600 and worktrees are 0700, but same UID means same OS user can read across them.
-- **The `?superuser=1` door.** Separate envelope (loopback + superuser-bearer); see [Superuser mode](/docs/endpoint-system/superuser-mode). HMAC doesn't change that surface.
+- **The `?superuser=1` door.** Separate envelope (loopback + superuser-bearer); see [Superuser mode](/internal/docs/endpoint-system/superuser-mode). HMAC doesn't change that surface.
 - **Editing `~/.papercusp/granted-capabilities.json`.** Plain JSON, same UID, writable. The capability gate trusts what it finds.
 - **Operator memory dump** (`gcore <pid>`). Key is in the heap.
 - **Replacing the operator binary or PG client.** Far beyond prompt injection but in scope for same-UID ownership.

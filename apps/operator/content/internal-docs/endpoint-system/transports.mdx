@@ -86,7 +86,7 @@ When a request hits an HTTP plugin route or the MCP transport, the framework rea
 | `exp` | **Signature envelope** | Unix epoch seconds; URLs past `exp` are rejected |
 | `sig` | **Signature envelope** | HMAC-SHA256 over the canonical sorted other params, base64url-encoded |
 
-The orchestrator bakes all params into the per-spawn `.mcp.json` it writes before launching an agent process, **HMAC-signing the seven baked params plus `exp`** so the dispatcher refuses to honor a rewritten role. The agent's MCP client then carries them on every request without the agent ever having to know about them. See [Spawn-URL signing](/docs/endpoint-system/spawn-signing) for the full scheme; the minting end lives at `libs/papercusp/packages/orchestrator/src/spawn-mcp.ts:writeSignedSpawnMcp()`.
+The orchestrator bakes all params into the per-spawn `.mcp.json` it writes before launching an agent process, **HMAC-signing the seven baked params plus `exp`** so the dispatcher refuses to honor a rewritten role. The agent's MCP client then carries them on every request without the agent ever having to know about them. See [Spawn-URL signing](/internal/docs/endpoint-system/spawn-signing) for the full scheme; the minting end lives at `libs/papercusp/packages/orchestrator/src/spawn-mcp.ts:writeSignedSpawnMcp()`.
 
 ## Default exposure
 
@@ -280,7 +280,7 @@ When `defineTool({ requirePrincipal: false, … })` is called (role-gated), the 
 
 ## Trust model
 
-The per-spawn URL params are **HMAC-signed** end-to-end. The orchestrator mints with the shared key in `harness_shared.operator_secrets`; the dispatcher verifies before honoring any role claim. A worker that rewrites `?role=worker` → `?role=operator` produces an invalid signature, the request is rejected with `request_rejected: spawn_sig_invalid_signature`, and the attempt lands in `harness_shared.spawn_sig_verification_failures`. See [Spawn-URL signing](/docs/endpoint-system/spawn-signing) for the full scheme and threat model.
+The per-spawn URL params are **HMAC-signed** end-to-end. The orchestrator mints with the shared key in `harness_shared.operator_secrets`; the dispatcher verifies before honoring any role claim. A worker that rewrites `?role=worker` → `?role=operator` produces an invalid signature, the request is rejected with `request_rejected: spawn_sig_invalid_signature`, and the attempt lands in `harness_shared.spawn_sig_verification_failures`. See [Spawn-URL signing](/internal/docs/endpoint-system/spawn-signing) for the full scheme and threat model.
 
 Layered defences still apply:
 
@@ -288,7 +288,7 @@ Layered defences still apply:
 - Built-in tools still require a bearer principal when accessed without a spawn ctx. They throw `UnauthorizedToolError` (HTTP 401) when none is present.
 - `.mcp.json` is written mode 0600; per-spawn worktree dirs are mode 0700.
 
-The signing scheme defends against prompt-injected workers rewriting URL params. It does **not** defend against same-UID code reading the signing key from PG, replaying another spawn's still-valid URL, or any of the other same-UID escalation paths catalogued in [Spawn-URL signing → Threat model](/docs/endpoint-system/spawn-signing#threat-model). Off-loopback exposure still needs a real principal/auth layer in front; that's separate work.
+The signing scheme defends against prompt-injected workers rewriting URL params. It does **not** defend against same-UID code reading the signing key from PG, replaying another spawn's still-valid URL, or any of the other same-UID escalation paths catalogued in [Spawn-URL signing → Threat model](/internal/docs/endpoint-system/spawn-signing#threat-model). Off-loopback exposure still needs a real principal/auth layer in front; that's separate work.
 
 ### Desktop IPC: webview is in-boundary
 
