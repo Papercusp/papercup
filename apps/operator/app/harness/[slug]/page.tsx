@@ -1,6 +1,7 @@
 import { notFound } from 'next/navigation';
 import HarnessDashboard from '../HarnessDashboard';
 import DepartmentHarnessDashboard from '../DepartmentHarnessDashboard';
+import HarnessDockShell from './HarnessDockShell';
 import { selfUrl } from '@/lib/self-url';
 
 export const dynamic = 'force-dynamic';
@@ -38,12 +39,26 @@ async function fetchProject(slug: string): Promise<ProjectEntry | null> {
   }
 }
 
-export default async function HarnessProjectPage({ params }: { params: Promise<{ slug: string }> }) {
+export default async function HarnessProjectPage({
+  params,
+  searchParams,
+}: {
+  params: Promise<{ slug: string }>;
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
+}) {
   const { slug } = await params;
+  const search = (await searchParams) ?? {};
   const project = await fetchProject(slug);
 
   if (!project) {
     notFound();
+  }
+
+  // Phase 5 dock — opt-in via ?dock=1. Renders <HarnessDock layoutName="dashboard:<slug>">
+  // as the entire content area. Existing react-resizable-panels dashboard stays
+  // the default until dock is verified by users.
+  if (search.dock === '1') {
+    return <HarnessDockShell slug={project.slug} />;
   }
 
   if (project.harness_kind === 'department' && project.department_slug) {
