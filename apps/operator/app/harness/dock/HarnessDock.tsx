@@ -33,6 +33,7 @@ import { useNavShortcuts } from './useNavShortcuts';
 import { useLayoutResetShortcut } from './useLayoutResetShortcut';
 import { useRegisterPluginPanels } from './useRegisterPluginPanels';
 import { useFocusedPanelTracker } from './useFocusedPanelTracker';
+import { destroy as destroyIframe } from './iframe-host';
 import type { LayoutDoc } from '../../../lib/dock-layouts';
 
 interface HarnessDockProps {
@@ -187,16 +188,44 @@ export function HarnessDock({ layoutName: initialLayoutName, className, slug }: 
     }, 800);
   }, [save]);
 
+  // Track whether dockview is ready. Listeners attach via a separate
+  // effect that depends on `persist` so a loadLayout-induced re-bind
+  // of `save` correctly resubscribes (otherwise old listeners save to
+  // the previous layout name).
+  const [apiReady, setApiReady] = useState(false);
+
   const onReady = useCallback((event: DockviewReadyEvent) => {
     apiRef.current = event.api;
     bindDockApi(event.api);
-    event.api.onDidLayoutChange(persist);
-    event.api.onDidAddPanel(persist);
-    event.api.onDidRemovePanel(persist);
-  }, [persist]);
+    setApiReady(true);
+  }, []);
 
-  // Clean up the timer on unmount so a debounced save doesn't fire
-  // after the dock disappears.
+  // Subscribe to dockview events whenever `persist` changes (i.e. after
+  // `save` rebinds to a new layout name). Cleans up disposables on
+  // re-subscription + on unmount.
+  useEffect(() => {
+    if (!apiReady || !apiRef.current) return;
+    const api = apiRef.current;
+    const disposables = [
+      api.onDidLayoutChange(persist),
+      api.onDidAddPanel(persist),
+      api.onDidRemovePanel((panel) => {
+        persist();
+        // Tear down any iframe-host entry keyed by this panel id.
+        // No-op for panels that never registered an iframe.
+        try {
+          destroyIframe(panel.id);
+        } catch {
+          /* destroy is idempotent; absorb errors */
+        }
+      }),
+    ];
+    return () => {
+      for (const d of disposables) d.dispose();
+    };
+  }, [apiReady, persist]);
+
+  // Clean up the debounce timer + api-binding on unmount.
   useEffect(() => {
     return () => {
       if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
@@ -228,7 +257,7 @@ export function HarnessDock({ layoutName: initialLayoutName, className, slug }: 
   if (state.status === 'error') {
     return (
       <div style={{ padding: 16, color: '#f99', fontSize: 13 }}>
-        Failed to load layout {layoutName}: {state.error.message}
+        Failed to load layout {activeLayoutName}: {state.error.message}
       </div>
     );
   }

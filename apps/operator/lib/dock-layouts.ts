@@ -360,10 +360,19 @@ export async function getLayout(
   // Seed. Pi-tab layouts (any `pi:<slug>` name) get an opaque empty body
   // — pi-tab's persistence stores raw dockview JSON and reads back its
   // own writes, so the seed is just a placeholder that won't be parsed.
+  //
+  // Dashboard layouts use the convention `dashboard:<slug>` (Phase 5
+  // mount in HarnessDockShell). Parse the slug out so the seeded panel
+  // params carry the right harnessSlug — otherwise every panel hydrates
+  // with empty slug and fetches fail.
   const isPi = name === 'pi' || name.startsWith('pi:');
+  let seededSlug = '';
+  if (name.startsWith('dashboard:')) {
+    seededSlug = name.slice('dashboard:'.length);
+  }
   const seed = isPi
     ? ({ schemaVersion: OPAQUE_SCHEMA_VERSION, dockviewJson: null } as unknown as LayoutDoc)
-    : defaultDashboardLayout();
+    : defaultDashboardLayout(seededSlug);
   return saveLayout(principal, name, seed);
 }
 

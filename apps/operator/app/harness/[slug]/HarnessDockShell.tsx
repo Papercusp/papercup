@@ -35,22 +35,48 @@ export default function HarnessDockShell({ slug }: HarnessDockShellProps) {
   }, []);
 
   useEffect(() => {
-    return onDockApiBind((api) => {
-      if (!api) return;
-      // Patch seed: dashboard default has empty harnessSlug; fill with this route's slug.
-      try {
-        for (const p of listPanels()) {
-          const params = (p.params ?? {}) as Record<string, unknown>;
-          const hs = params.harnessSlug;
-          if (!hs || hs === '') {
-            setPanelParams(p.id, { ...params, harnessSlug: slug });
-          }
-        }
-      } catch {
-        // Layout not yet hydrated — onDidLayoutChange fires later;
-        // hydrate effect in HarnessDock handles seed itself.
+    let addPanelDispose: { dispose: () => void } | null = null;
+    const unbind = onDockApiBind((api) => {
+      // Clean up previous binding's listener (if any) before
+      // re-attaching to the new api.
+      if (addPanelDispose) {
+        addPanelDispose.dispose();
+        addPanelDispose = null;
       }
+      if (!api) return;
+      // Patch any panel still seeded with an empty harnessSlug.
+      // Server-side now bakes the slug into seeded panels
+      // (defaultDashboardLayout(seededSlug) in getLayout) so this only
+      // fires on previously-saved rows. Also subscribes to
+      // onDidAddPanel for panels added after mount (loadLayout-induced
+      // swaps + agent openPanel calls without harnessSlug).
+      const patch = (p: { id: string; params: Record<string, unknown> }) => {
+        const hs = p.params.harnessSlug;
+        if (!hs || hs === '') {
+          setPanelParams(p.id, { ...p.params, harnessSlug: slug });
+        }
+      };
+      const patchExisting = () => {
+        try {
+          for (const p of listPanels()) patch(p);
+        } catch {
+          /* dock not yet hydrated; onDidAddPanel covers it */
+        }
+      };
+      patchExisting();
+      addPanelDispose = api.onDidAddPanel((panel) => {
+        try {
+          const found = listPanels().find((x) => x.id === panel.id);
+          if (found) patch(found);
+        } catch {
+          /* ignore */
+        }
+      });
     });
+    return () => {
+      if (addPanelDispose) addPanelDispose.dispose();
+      unbind();
+    };
   }, [slug]);
 
   return (
