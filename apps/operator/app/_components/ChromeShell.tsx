@@ -7,7 +7,6 @@ import { useGSAP } from '@gsap/react';
 import { useReducedMotion } from 'motion/react';
 import { useFancyEffectsEnabled } from '@/lib/visual-effects';
 import { OperatorButton, OperatorAutoScanToggle } from './OperatorChromeControls';
-import { sharedState, subscribeOperatorState } from './operator-shared-state';
 import { ConsoleLauncherButton } from './ConsoleLauncherButton';
 import { OpsTargetMark } from './ChromeNavMarks';
 import { AriaLiveRegions } from './voice/AriaLiveRegions';
@@ -26,7 +25,6 @@ import { useFlag } from '@/lib/flag-hooks';
 // Heavy dock components — they run polling, subscriptions, and large
 // useEffects on mount. Not needed for first paint of any page; defer to
 // idle so the page becomes interactive faster.
-const OperatorPanel = lazy(() => import('./OperatorPanel').then(m => ({ default: m.OperatorPanel })));
 const OperatorChatSidebar = lazy(() => import('./OperatorChatSidebar').then(m => ({ default: m.OperatorChatSidebar })));
 const OracleDock = lazy(() => import('./OracleDock').then(m => ({ default: m.OracleDock })));
 const OperatorBackgroundScanner = lazy(() => import('./OperatorBackgroundScanner').then(m => ({ default: m.OperatorBackgroundScanner })));
@@ -201,15 +199,6 @@ export default function ChromeShell() {
       <VoiceLeaderBootstrap />
       <AriaLiveRegions />
       <AutoLoginWelcomeToast />
-      {/* OperatorPanel mounts on every page (including /settings/*) so
-          clicking the chrome-bar Deck button always opens it. The
-          panel returns null when its open state is false, so mounting
-          it everywhere is essentially free.
-
-          The other heavy docks (OracleDock, ChatwootWidget, voice infra)
-          ARE still skipped on /settings/* since the user isn't operating
-          on a settings page — that perf win still applies. */}
-      <DeferredOperatorPanel />
       {/* Operator chat sidebar — fixed left, full-height, on every
           non-chromeless page. The sidebar shifts the rest of the app
           right via body.has-op-chat padding-left (set inside the
@@ -277,22 +266,3 @@ function DeferredDocks() {
   );
 }
 
-// OperatorPanel is split out of DeferredDocks so it can mount on every
-// page including /settings/*. Keep a tiny subscriber in ChromeShell so
-// the heavy panel chunk only loads after the Deck button is opened.
-function DeferredOperatorPanel() {
-  const [open, setOpen] = useState(sharedState.open);
-
-  useEffect(() => {
-    return subscribeOperatorState((partial) => {
-      if (typeof partial.open === 'boolean') setOpen(partial.open);
-    });
-  }, []);
-
-  if (!open) return null;
-  return (
-    <Suspense fallback={null}>
-      <OperatorPanel />
-    </Suspense>
-  );
-}

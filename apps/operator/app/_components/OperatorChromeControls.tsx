@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState, type ReactElement } from 'react';
+import { Suspense, lazy, useCallback, useEffect, useMemo, useState, type ReactElement } from 'react';
 import { Select } from '../harness/Select';
 import { DeckCardsMark } from './ChromeNavMarks';
 import {
@@ -13,6 +13,8 @@ import {
   type IconState,
   type OperatorState,
 } from './operator-shared-state';
+
+const OperatorPanel = lazy(() => import('./OperatorPanel').then(m => ({ default: m.OperatorPanel })));
 
 export function OperatorButton(): ReactElement {
   const [state, setState] = useState<OperatorState>(sharedState);
@@ -77,34 +79,41 @@ export function OperatorButton(): ReactElement {
   const buttonLabel = `${title}. ${counts.pending} pending, ${counts.accepted} accepted, ${counts.ignored} ignored.`;
 
   return (
-    <span className="pc-header-cta-shell pc-header-cta-shell--operator">
-      <button
-        className={`pc-header-cta pc-header-cta--operator pc-header-cta--${state.iconState}${state.paused ? ' is-paused' : ''}${scanning ? ' is-scanning' : ''}${state.autoAccept !== 'off' ? ' is-auto' : ''}`}
-        aria-label={buttonLabel}
-        title={title}
-        onClick={toggle}
-        aria-expanded={state.open}
-        style={{ marginLeft: 8 }}
-      >
-        <span className="pc-header-cta-orb" aria-hidden="true">
-          <DeckCardsMark className="pc-header-cta-logo pc-header-cta-logo--deck" />
-          {scanning && <span className="pc-header-cta-scan-ring" aria-hidden="true" />}
-          {state.autoAccept !== 'off' && !scanning && <span className="pc-header-cta-auto-dot" aria-hidden="true" />}
-        </span>
-        <span className="pc-header-cta-label">DECK</span>
-      </button>
-      <div
-        role="status"
-        aria-label={`Deck card counts: ${counts.pending} pending, ${counts.accepted} accepted, ${counts.ignored} ignored`}
-        aria-live="polite"
-        className="pc-operator-popdown"
-      >
-        <OperatorCountBubble label="pending" count={counts.pending} tone="pending" />
-        <OperatorCountBubble label="accepted" count={counts.accepted} tone="accepted" />
-        <OperatorCountBubble label="ignored" count={counts.ignored} tone="ignored" />
-      </div>
-      <OperatorAutoAcceptFeed events={state.recentAutoAccepts} />
-    </span>
+    <>
+      <span className="pc-header-cta-shell pc-header-cta-shell--operator">
+        <button
+          className={`pc-header-cta pc-header-cta--operator pc-header-cta--${state.iconState}${state.paused ? ' is-paused' : ''}${scanning ? ' is-scanning' : ''}${state.autoAccept !== 'off' ? ' is-auto' : ''}`}
+          aria-label={buttonLabel}
+          title={title}
+          onClick={toggle}
+          aria-expanded={state.open}
+          style={{ marginLeft: 8 }}
+        >
+          <span className="pc-header-cta-orb" aria-hidden="true">
+            <DeckCardsMark className="pc-header-cta-logo pc-header-cta-logo--deck" />
+            {scanning && <span className="pc-header-cta-scan-ring" aria-hidden="true" />}
+            {state.autoAccept !== 'off' && !scanning && <span className="pc-header-cta-auto-dot" aria-hidden="true" />}
+          </span>
+          <span className="pc-header-cta-label">DECK</span>
+        </button>
+        <div
+          role="status"
+          aria-label={`Deck card counts: ${counts.pending} pending, ${counts.accepted} accepted, ${counts.ignored} ignored`}
+          aria-live="polite"
+          className="pc-operator-popdown"
+        >
+          <OperatorCountBubble label="pending" count={counts.pending} tone="pending" />
+          <OperatorCountBubble label="accepted" count={counts.accepted} tone="accepted" />
+          <OperatorCountBubble label="ignored" count={counts.ignored} tone="ignored" />
+        </div>
+        <OperatorAutoAcceptFeed events={state.recentAutoAccepts} />
+      </span>
+      {state.open ? (
+        <Suspense fallback={null}>
+          <OperatorPanel />
+        </Suspense>
+      ) : null}
+    </>
   );
 }
 
