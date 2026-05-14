@@ -23,6 +23,7 @@ import { useParams } from 'next/navigation';
 import { HarnessDock } from '../../dock/HarnessDock';
 import { registerSamplePanels } from '../../dock/sample-panels';
 import { openPanel, listPanels, getLayoutSnapshot, onDockApiBind, setPanelParams } from '../../dock/dock-actions';
+import { AddPanelCatalog } from '../../dock/AddPanelCatalog';
 
 export default function DockPreviewPage() {
   const routeParams = useParams<{ slug: string }>();
@@ -84,44 +85,7 @@ export default function DockPreviewPage() {
           {ready ? `${panelCount} panels open` : 'mounting…'}
         </span>
         <div style={{ flex: 1 }} />
-        <button
-          type="button"
-          onClick={() =>
-            openPanel({
-              type: 'data:features',
-              params: { harnessSlug: routeSlug },
-              title: `Features: ${routeSlug}`,
-            })
-          }
-          style={previewBtn}
-        >
-          + Features ({routeSlug})
-        </button>
-        <button
-          type="button"
-          onClick={() =>
-            openPanel({
-              type: 'data:issues',
-              params: { harnessSlug: routeSlug },
-              title: 'Issues',
-            })
-          }
-          style={previewBtn}
-        >
-          + Issues
-        </button>
-        <button
-          type="button"
-          onClick={() =>
-            openPanel({
-              type: 'view:docs',
-              title: 'Docs',
-            })
-          }
-          style={previewBtn}
-        >
-          + Docs
-        </button>
+        <AddPanelCatalog defaultSlug={routeSlug} />
         <button
           type="button"
           onClick={() =>
@@ -133,8 +97,9 @@ export default function DockPreviewPage() {
             })
           }
           style={previewBtn}
+          title="Quick: open Features as a floating panel"
         >
-          + Floating
+          + Floating Features
         </button>
         <button
           type="button"

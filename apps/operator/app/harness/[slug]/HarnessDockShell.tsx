@@ -16,6 +16,7 @@ import { useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { HarnessDock } from '../dock/HarnessDock';
 import { registerSamplePanels } from '../dock/sample-panels';
+import { AddPanelCatalog } from '../dock/AddPanelCatalog';
 import {
   openPanel,
   listPanels,
@@ -97,31 +98,7 @@ export default function HarnessDockShell({ slug }: HarnessDockShellProps) {
         <strong style={{ color: 'var(--foreground, #ccc)' }}>Dock</strong>
         <span>{slug}</span>
         <div style={{ flex: 1 }} />
-        <button
-          type="button"
-          onClick={() =>
-            openPanel({ type: 'data:features', params: { harnessSlug: slug }, title: 'Features' })
-          }
-          style={btn}
-        >
-          + Features
-        </button>
-        <button
-          type="button"
-          onClick={() =>
-            openPanel({ type: 'data:issues', params: { harnessSlug: slug }, title: 'Issues' })
-          }
-          style={btn}
-        >
-          + Issues
-        </button>
-        <button
-          type="button"
-          onClick={() => openPanel({ type: 'view:docs', title: 'Docs' })}
-          style={btn}
-        >
-          + Docs
-        </button>
+        <AddPanelCatalog defaultSlug={slug} />
         <button
           type="button"
           onClick={() => router.push(`/harness/${slug}`)}
