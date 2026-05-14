@@ -1231,4 +1231,55 @@ body.has-op-chat .h-header {
 .op-chat-sidebar .oracle-msg-user .oracle-msg-stack {
   max-width: min(86%, 300px) !important;
 }
+
+/* Readability/usability follow-up: keep transcript bubbles distinct in the
+   narrow rail without making the chat feel loose. Padding lives on the
+   virtualized row itself so the measured item height includes the gap. */
+.op-chat-sidebar .oracle-body {
+  padding: 10px 9px 11px !important;
+}
+
+.op-chat-sidebar .oracle-msg {
+  padding-block: 2px !important;
+}
+
+.op-chat-sidebar .oracle-msg-stack {
+  gap: 3px !important;
+}
+
+.op-chat-sidebar .oracle-msg-content {
+  padding: 9px 11px !important;
+  border-radius: 13px !important;
+  border-color: rgba(148, 163, 184, 0.36) !important;
+  background: linear-gradient(180deg, rgba(13, 26, 40, 0.99), rgba(8, 17, 29, 0.995)) !important;
+  color: #f7fbff !important;
+  line-height: 1.56 !important;
+}
+
+.op-chat-sidebar .oracle-msg-assistant .oracle-msg-content {
+  border-color: rgba(125, 211, 252, 0.28) !important;
+  background: linear-gradient(180deg, rgba(14, 29, 44, 0.995), rgba(8, 17, 29, 0.995)) !important;
+}
+
+.op-chat-sidebar .oracle-msg-user .oracle-msg-content {
+  border-color: rgba(103, 232, 249, 0.62) !important;
+  background: linear-gradient(180deg, rgba(24, 78, 113, 0.99), rgba(10, 56, 87, 0.995)) !important;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.055),
+    0 8px 18px rgba(2, 8, 23, 0.20) !important;
+}
+
+.op-chat-sidebar .oracle-msg-system .oracle-msg-content {
+  border-color: rgba(250, 204, 21, 0.30) !important;
+  background: rgba(42, 31, 9, 0.86) !important;
+  color: #fff7d6 !important;
+}
+
+.op-chat-sidebar .oracle-tool-chip {
+  margin: 0 0 3px !important;
+  border-color: rgba(103, 232, 249, 0.34) !important;
+  background: rgba(56, 189, 248, 0.16) !important;
+  color: #ddf6ff !important;
+  opacity: 1 !important;
+}
 `;
