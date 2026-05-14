@@ -25,8 +25,8 @@ interface Props {
 const KIND_META: Record<string, { color: string; icon: string; label: string }> = {
   status_change: { color: '#a855f7', icon: '⇄', label: 'status' },
   agent_run:     { color: '#3b82f6', icon: '▶', label: 'run' },
-  debug_note:    { color: '#f59e0b', icon: '🐞', label: 'debug' },
-  pr_opened:     { color: '#10b981', icon: '🔗', label: 'PR' },
+  debug_note:    { color: 'var(--warn)', icon: '🐞', label: 'debug' },
+  pr_opened:     { color: 'var(--good)', icon: '🔗', label: 'PR' },
 };
 
 function fmtTs(ts: number): string {
@@ -134,7 +134,7 @@ export default function FeatureTimelinePanel({ slug, featureId, onClose }: Props
           <span style={{ marginLeft: 'auto', fontSize: '0.75rem', color: 'var(--fg-mute)' }}>
             {events.length} event{events.length === 1 ? '' : 's'}
           </span>
-          {err && <span style={{ color: '#f87171', fontSize: '0.8rem' }}>err: {err}</span>}
+          {err && <span style={{ color: 'var(--bad)', fontSize: '0.8rem' }}>err: {err}</span>}
           <button
             onClick={onClose}
             style={{ background: 'transparent', color: 'var(--fg-mute)', border: '1px solid var(--border)', borderRadius: 3, padding: '0.35rem 0.75rem', cursor: 'pointer', fontSize: '0.8rem' }}

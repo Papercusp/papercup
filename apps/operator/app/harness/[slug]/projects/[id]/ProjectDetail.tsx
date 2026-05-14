@@ -573,7 +573,7 @@ function statusBox(kind: 'success' | 'error') {
     padding: '10px 12px', marginBottom: 12,
     background: isErr ? COLORS.dangerBg : 'rgba(16,185,129,0.12)',
     color: isErr ? COLORS.dangerText : COLORS.successText,
-    border: `1px solid ${isErr ? COLORS.dangerText : '#10b981'}`,
+    border: `1px solid ${isErr ? COLORS.dangerText : 'var(--good)'}`,
     borderRadius: RADIUS.sm,
     fontSize: SIZES.xs,
     display: 'flex', alignItems: 'center', gap: 6,

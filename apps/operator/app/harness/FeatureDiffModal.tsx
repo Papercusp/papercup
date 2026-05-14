@@ -66,13 +66,13 @@ export default function FeatureDiffModal({ slug, featureId, onClose }: Props) {
         {loading ? (
           <div style={{ padding: '2rem', color: 'var(--fg-mute)' }}>loading…</div>
         ) : error ? (
-          <div style={{ padding: '1rem', color: '#f87171', fontSize: '0.8rem' }}>
+          <div style={{ padding: '1rem', color: 'var(--bad)', fontSize: '0.8rem' }}>
             <div><strong>Diff unavailable.</strong> Likely the feature branch doesn't exist (branch isolation may be disabled, or the worker hasn't run yet).</div>
-            <pre style={{ marginTop: '0.5rem', fontFamily: 'ui-monospace, monospace', fontSize: '0.75rem', color: '#fca5a5', whiteSpace: 'pre-wrap' }}>{error}</pre>
+            <pre style={{ marginTop: '0.5rem', fontFamily: 'ui-monospace, monospace', fontSize: '0.75rem', color: 'var(--bad)', whiteSpace: 'pre-wrap' }}>{error}</pre>
           </div>
         ) : data ? (
           <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
-            <pre style={{ padding: '0.5rem 1rem', margin: 0, fontSize: '0.75rem', fontFamily: 'ui-monospace, monospace', color: '#d1d5db', whiteSpace: 'pre', borderBottom: '1px solid var(--border)', background: 'var(--bg-2)', maxHeight: '20vh', overflow: 'auto' }}>
+            <pre style={{ padding: '0.5rem 1rem', margin: 0, fontSize: '0.75rem', fontFamily: 'ui-monospace, monospace', color: 'var(--fg-dim)', whiteSpace: 'pre', borderBottom: '1px solid var(--border)', background: 'var(--bg-2)', maxHeight: '20vh', overflow: 'auto' }}>
               {data.stat || '(no changes)'}
             </pre>
             <div style={{ flex: 1, overflow: 'auto', padding: '0.5rem 1rem', background: 'var(--bg)', fontFamily: 'ui-monospace, monospace', fontSize: '0.75rem' }}>
@@ -81,11 +81,11 @@ export default function FeatureDiffModal({ slug, featureId, onClose }: Props) {
               ) : (
                 <pre style={{ margin: 0, whiteSpace: 'pre' }}>
                   {data.diff.split('\n').map((line, i) => {
-                    let color = '#d1d5db';
+                    let color = 'var(--fg-dim)';
                     if (line.startsWith('+') && !line.startsWith('+++')) color = '#6ee7b7';
-                    else if (line.startsWith('-') && !line.startsWith('---')) color = '#fca5a5';
+                    else if (line.startsWith('-') && !line.startsWith('---')) color = 'var(--bad)';
                     else if (line.startsWith('@@')) color = '#818cf8';
-                    else if (line.startsWith('diff --git')) color = '#fbbf24';
+                    else if (line.startsWith('diff --git')) color = 'var(--warn)';
                     return <div key={i} style={{ color }}>{line}</div>;
                   })}
                 </pre>

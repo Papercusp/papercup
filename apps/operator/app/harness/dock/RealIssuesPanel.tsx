@@ -29,15 +29,15 @@ interface IssuesResponse {
 }
 
 const SEVERITY_COLORS: Record<string, string> = {
-  critical: '#dc2626',
+  critical: 'var(--bad)',
   major: '#ea580c',
-  minor: '#fbbf24',
+  minor: 'var(--warn)',
   trivial: 'var(--fg-mute)',
 };
 
 const STATUS_COLORS: Record<string, string> = {
-  open: '#f87171',
-  triaged: '#fbbf24',
+  open: 'var(--bad)',
+  triaged: 'var(--warn)',
   fixing: '#60a5fa',
   fixed: '#4ade80',
   closed: '#71717a',
@@ -100,7 +100,7 @@ export function RealIssuesPanel({ params, api }: PanelComponentProps) {
   }
   if (error) {
     return (
-      <div style={{ padding: 16, fontSize: 13, color: '#f87171' }}>Failed: {error.message}</div>
+      <div style={{ padding: 16, fontSize: 13, color: 'var(--bad)' }}>Failed: {error.message}</div>
     );
   }
   if (!data) {

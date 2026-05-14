@@ -22,6 +22,8 @@ import { RealAgentsPanel } from './RealAgentsPanel';
 import { RealLogsPanel } from './RealLogsPanel';
 import { RealGitPanel } from './RealGitPanel';
 import { RealHarnessOverviewPanel } from './RealHarnessOverviewPanel';
+import { PinnedFeaturePanel } from './PinnedFeaturePanel';
+import { PinnedIssuePanel } from './PinnedIssuePanel';
 
 function SamplePanel({ panelType, params }: PanelComponentProps) {
   return (
@@ -161,6 +163,11 @@ export function registerSamplePanels(): void {
   panelRegistry.register('data:logs', RealLogsPanel, { keepAlive: true });
   panelRegistry.register('data:git', RealGitPanel, { keepAlive: true });
   panelRegistry.register('view:docs', DocsSamplePanel, { keepAlive: true });
+  // Pin-as-panel target types (§3.2). RealFeaturesPanel + RealIssuesPanel
+  // dispatch openPanel({ type: 'pin:feature', params: { harnessSlug,
+  // featureId }}) on a Cmd/Ctrl-click or right-click "Pin as panel".
+  panelRegistry.register('pin:feature', PinnedFeaturePanel);
+  panelRegistry.register('pin:issue', PinnedIssuePanel);
 }
 
 export function useEnsureSamplePanels(): void {

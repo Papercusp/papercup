@@ -126,7 +126,7 @@ export default function ArchivesPanel({ slug, onClose, onChanged }: Props) {
           <span style={{ fontFamily: 'monospace', color: 'var(--fg-mute)', fontSize: '0.75rem' }}>.harness/archives/</span>
           <span style={{ fontSize: '0.7rem', color: 'var(--fg-mute)' }}>{items.length} archive(s)</span>
           {toast && (
-            <span style={{ color: /failed/i.test(toast) ? '#f87171' : '#10b981', fontSize: '0.75rem' }}>{toast}</span>
+            <span style={{ color: /failed/i.test(toast) ? 'var(--bad)' : 'var(--good)', fontSize: '0.75rem' }}>{toast}</span>
           )}
           <button
             onClick={onClose}
@@ -185,7 +185,7 @@ function ArchivesGrid({
         header: 'ID',
         width: 2,
         sortKey: 'id',
-        render: ({ row }) => <span style={{ fontFamily: 'monospace', color: '#d1d5db' }}>{row.id}</span>,
+        render: ({ row }) => <span style={{ fontFamily: 'monospace', color: 'var(--fg-dim)' }}>{row.id}</span>,
       },
       {
         key: 'size',
@@ -204,7 +204,7 @@ function ArchivesGrid({
           <button
             onClick={(e) => { e.stopPropagation(); restore(row.id); }}
             disabled={busy}
-            style={{ background: 'transparent', color: '#fbbf24', border: '1px solid #78350f', borderRadius: 3, padding: '0.2rem 0.6rem', cursor: busy ? 'wait' : 'pointer', fontSize: '0.75rem' }}
+            style={{ background: 'transparent', color: 'var(--warn)', border: '1px solid #78350f', borderRadius: 3, padding: '0.2rem 0.6rem', cursor: busy ? 'wait' : 'pointer', fontSize: '0.75rem' }}
           >
             restore
           </button>

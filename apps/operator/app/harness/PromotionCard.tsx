@@ -89,7 +89,7 @@ export default function PromotionCard({ slug, item, onResolved }: Props) {
       padding: '10px 12px',
       background: 'color-mix(in oklab, var(--bg-2), white 3%)',
       border: '1px solid var(--border)',
-      borderLeft: `3px solid ${ready ? '#10b981' : '#f59e0b'}`,
+      borderLeft: `3px solid ${ready ? 'var(--good)' : 'var(--warn)'}`,
       borderRadius: 6,
       fontSize: 12,
     }}>
@@ -120,7 +120,7 @@ export default function PromotionCard({ slug, item, onResolved }: Props) {
           <div style={{
             width: `${scorePct}%`,
             height: '100%',
-            background: ready ? '#10b981' : '#f59e0b',
+            background: ready ? 'var(--good)' : 'var(--warn)',
             transition: 'width 400ms ease',
           }} />
         </div>
@@ -139,7 +139,7 @@ export default function PromotionCard({ slug, item, onResolved }: Props) {
               fontSize: 10, color: 'var(--fg-dim)',
             }}>
               {met
-                ? <Check size={10} style={{ color: '#10b981' }} />
+                ? <Check size={10} style={{ color: 'var(--good)' }} />
                 : <span style={{ width: 10, height: 10, borderRadius: 5, border: '1px solid var(--border)' }} />
               }
               <span style={{ fontFamily: 'ui-monospace, monospace' }}>{key}</span>
@@ -156,7 +156,7 @@ export default function PromotionCard({ slug, item, onResolved }: Props) {
             disabled={!ready || !!busy}
             style={{
               padding: '3px 10px', fontSize: 11,
-              background: ready ? '#10b981' : 'var(--border)',
+              background: ready ? 'var(--good)' : 'var(--border)',
               color: 'white', border: 'none', borderRadius: 3,
               cursor: ready ? 'pointer' : 'not-allowed',
               opacity: busy === 'confirm' ? 0.5 : 1,
@@ -204,7 +204,7 @@ export default function PromotionCard({ slug, item, onResolved }: Props) {
           <button
             type="button"
             onClick={() => { if (confirmKind === 'cancel') void performCancel(); else void performConfirm(); }}
-            style={{ padding: '6px 12px', fontSize: 12, background: confirmKind === 'cancel' ? '#ef4444' : '#10b981', color: 'white', border: 'none', borderRadius: 3, cursor: 'pointer', fontWeight: 600 }}
+            style={{ padding: '6px 12px', fontSize: 12, background: confirmKind === 'cancel' ? 'var(--bad)' : 'var(--good)', color: 'white', border: 'none', borderRadius: 3, cursor: 'pointer', fontWeight: 600 }}
           >
             {confirmKind === 'cancel' ? 'Cancel promotion' : 'Proceed'}
           </button>

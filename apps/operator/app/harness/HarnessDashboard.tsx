@@ -954,7 +954,7 @@ function AddPluginButton({ activeSlug, alreadyEnabled, installed, error, onEnabl
           </div>
           {error ? (
             <div style={{ padding: '12px 8px', fontSize: 12, color: 'var(--fg-mute)' }}>
-              <div style={{ color: '#fca5a5', marginBottom: 6 }}>Couldn't load plugins.</div>
+              <div style={{ color: 'var(--bad)', marginBottom: 6 }}>Couldn't load plugins.</div>
               <div style={{ marginBottom: 8, fontSize: 11 }}>{error}</div>
               <Tooltip label="Retry plugin discovery">
                 <button
@@ -1057,12 +1057,12 @@ function AddPluginButton({ activeSlug, alreadyEnabled, installed, error, onEnabl
               {candidates.length === 0 && marketplaceCandidates.length === 0 && marketplace !== null && (
                 <li style={{ padding: '12px 8px', fontSize: 12, color: 'var(--fg-mute)' }}>
                   {(installed?.length ?? 0) === 0
-                    ? <>Marketplace catalog empty. {marketplaceError && <span style={{ color: '#fca5a5' }}>({marketplaceError})</span>} <a href="/marketplace/plugins" style={{ color: 'var(--accent)' }}>Browse →</a></>
+                    ? <>Marketplace catalog empty. {marketplaceError && <span style={{ color: 'var(--bad)' }}>({marketplaceError})</span>} <a href="/marketplace/plugins" style={{ color: 'var(--accent)' }}>Browse →</a></>
                     : <>All installed plugins are already enabled here. <a href="/marketplace/plugins" style={{ color: 'var(--accent)' }}>Browse marketplace →</a></>}
                 </li>
               )}
               {marketplaceError && marketplace === null && (
-                <li style={{ padding: '8px 10px', fontSize: 11, color: '#fca5a5' }}>Marketplace unreachable: {marketplaceError}</li>
+                <li style={{ padding: '8px 10px', fontSize: 11, color: 'var(--bad)' }}>Marketplace unreachable: {marketplaceError}</li>
               )}
             </ul>
           )}
@@ -1784,7 +1784,7 @@ function ConfigPanel({
               aria-label="needs setup"
               style={{
                 display: 'inline-block', width: 6, height: 6, borderRadius: '50%',
-                background: '#dc2626', flex: '0 0 auto',
+                background: 'var(--bad)', flex: '0 0 auto',
               }}
             />
           )}
@@ -1951,7 +1951,7 @@ function PluginPanelCard({ plugin, harnessSlug, onChange }: {
           onClick={disable}
           disabled={busy}
           className="pc-button"
-          style={{ background: 'transparent', color: '#fca5a5', border: '1px solid var(--border)', flex: '0 0 auto' }}
+          style={{ background: 'transparent', color: 'var(--bad)', border: '1px solid var(--border)', flex: '0 0 auto' }}
         >
           {busy ? 'Disabling…' : 'Disable'}
         </button>
@@ -2008,7 +2008,7 @@ function PluginPanelCard({ plugin, harnessSlug, onChange }: {
           <div className="h-plugin-tags" style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
             {secretCaps.map((c) => {
               const key = c.replace('secrets:read:', '');
-              return <span key={c} className="h-plugin-tag h-plugin-tag-secret" style={{ ...tagStyle, color: '#fbbf24', borderColor: 'rgba(251, 191, 36, 0.3)', background: 'rgba(251, 191, 36, 0.1)' }} title={`Set this with: papercusp secrets set ${key} <value>`}>secret: {key}</span>;
+              return <span key={c} className="h-plugin-tag h-plugin-tag-secret" style={{ ...tagStyle, color: 'var(--warn)', borderColor: 'rgba(251, 191, 36, 0.3)', background: 'rgba(251, 191, 36, 0.1)' }} title={`Set this with: papercusp secrets set ${key} <value>`}>secret: {key}</span>;
             })}
             {httpFetches.map((c) => (
               <span key={c} className="h-plugin-tag" style={tagStyle}>http: {c.replace('http:fetch:', '')}</span>
@@ -2247,7 +2247,7 @@ function PluginConfigEditor({ harnessSlug, dirSlug, configPath, configSchema, de
           {serverError && (
             <div className="h-plugin-config-error" style={{
               marginBottom: 8, padding: '6px 10px',
-              background: '#450a0a', color: '#fca5a5',
+              background: '#450a0a', color: 'var(--bad)',
               border: '1px solid #7f1d1d', borderRadius: 4,
               fontSize: 11,
             }}>{serverError}</div>
@@ -2272,7 +2272,7 @@ function PluginConfigEditor({ harnessSlug, dirSlug, configPath, configSchema, de
                     )}
                     {renderPluginConfigInput(key, field, current, (v) => setValue(key, v, { shouldDirty: true, shouldValidate: false }))}
                     {fieldError && (
-                      <div role="alert" style={{ marginTop: 4, fontSize: 11, color: '#fca5a5' }}>{fieldError}</div>
+                      <div role="alert" style={{ marginTop: 4, fontSize: 11, color: 'var(--bad)' }}>{fieldError}</div>
                     )}
                   </div>
                 );

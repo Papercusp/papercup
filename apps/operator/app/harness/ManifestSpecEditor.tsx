@@ -160,7 +160,7 @@ export default function ManifestSpecEditor({
                 style={{
                   background: isActive ? '#1f2937' : 'transparent',
                   color: isActive ? 'var(--fg)' : 'var(--fg-mute)',
-                  border: '1px solid ' + (isActive ? '#4b5563' : 'transparent'),
+                  border: '1px solid ' + (isActive ? 'var(--fg-mute)' : 'transparent'),
                   borderRadius: 4,
                   padding: '0.4rem 0.9rem',
                   fontSize: '0.85rem',
@@ -177,13 +177,13 @@ export default function ManifestSpecEditor({
           {projectPath}/{activePath}
         </span>
         {alive && (
-          <span className="h-manifest-live-note" style={{ color: '#f59e0b', fontSize: '0.8rem' }}>
+          <span className="h-manifest-live-note" style={{ color: 'var(--warn)', fontSize: '0.8rem' }}>
             ⚠ harness is running — edits take effect on the next agent invocation
           </span>
         )}
         <div className="h-manifest-actions" style={{ marginLeft: 'auto', display: 'flex', gap: '0.5rem' }}>
           {toast && (
-            <span style={{ color: toast.startsWith('saved') ? '#10b981' : '#ef4444', fontSize: '0.8rem', alignSelf: 'center' }}>{toast}</span>
+            <span style={{ color: toast.startsWith('saved') ? 'var(--good)' : 'var(--bad)', fontSize: '0.8rem', alignSelf: 'center' }}>{toast}</span>
           )}
           <Tooltip label="Revert active tab to last-saved state">
             <button
@@ -228,16 +228,16 @@ export default function ManifestSpecEditor({
                 style={{
                   background: isActive ? '#1f2937' : 'transparent',
                   color: isActive ? 'var(--fg)' : (cfMissing ? 'var(--fg-mute)' : 'var(--fg-mute)'),
-                  border: '1px solid ' + (isActive ? '#4b5563' : 'transparent'),
+                  border: '1px solid ' + (isActive ? 'var(--fg-mute)' : 'transparent'),
                   borderRadius: 4, padding: '0.35rem 0.7rem',
                   fontSize: 12, cursor: 'pointer',
                   display: 'inline-flex', alignItems: 'center', gap: 6,
                 }}
               >
-                {cfDirty && <span style={{ color: '#fbbf24', fontSize: 10 }}>●</span>}
+                {cfDirty && <span style={{ color: 'var(--warn)', fontSize: 10 }}>●</span>}
                 <span>{cf.label ?? cf.path}</span>
-                {cf.sensitivity === 'secret' && <span style={{ color: '#fca5a5', fontSize: 10 }}>🔒</span>}
-                {cf.sensitivity === 'warn' && <span style={{ color: '#fbbf24', fontSize: 10 }}>⚠</span>}
+                {cf.sensitivity === 'secret' && <span style={{ color: 'var(--bad)', fontSize: 10 }}>🔒</span>}
+                {cf.sensitivity === 'warn' && <span style={{ color: 'var(--warn)', fontSize: 10 }}>⚠</span>}
                 {cfMissing && <span style={{ color: 'var(--fg-mute)', fontSize: 10 }}>(missing)</span>}
               </button>
             </Tooltip>

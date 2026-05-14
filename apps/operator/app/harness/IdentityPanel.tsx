@@ -64,7 +64,7 @@ function IdentityPanelInner({ onClose }: Props) {
           <span style={{ fontFamily: 'monospace', color: 'var(--fg-mute)', fontSize: '0.75rem' }}>~/autonomous-harness/identity/</span>
           <span style={{ fontSize: '0.75rem', color: 'var(--fg-mute)' }}>Agent-Swarm-inspired · curator-maintained · read on every role invocation</span>
           <span style={{ marginLeft: 'auto', fontSize: '0.75rem', color: 'var(--fg-mute)' }}>auto-refresh 10s</span>
-          {err && <span style={{ color: '#f87171', fontSize: '0.75rem' }}>err: {err}</span>}
+          {err && <span style={{ color: 'var(--bad)', fontSize: '0.75rem' }}>err: {err}</span>}
           <button onClick={onClose} style={{ background: 'transparent', color: 'var(--fg-mute)', border: '1px solid var(--border)', borderRadius: 3, padding: '0.35rem 0.75rem', cursor: 'pointer', fontSize: '0.8rem' }}>close</button>
         </div>
 

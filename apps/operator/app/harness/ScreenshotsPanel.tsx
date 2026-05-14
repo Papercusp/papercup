@@ -128,7 +128,7 @@ export default function ScreenshotsPanel({ slug, onClose }: Props) {
             {uploading ? 'uploading…' : '＋ upload'}
           </button>
           {toast && (
-            <span style={{ color: /failed/i.test(toast) ? '#f87171' : '#10b981', fontSize: '0.8rem' }}>{toast}</span>
+            <span style={{ color: /failed/i.test(toast) ? 'var(--bad)' : 'var(--good)', fontSize: '0.8rem' }}>{toast}</span>
           )}
           <button
             onClick={onClose}
@@ -174,7 +174,7 @@ verdict screenshot http://localhost:5173 {'>'} "$STATE_DIR/screenshots/$FEATURE_
                         loading="lazy"
                       />
                       <div style={{ padding: '0.4rem 0.5rem', fontSize: '0.7rem' }}>
-                        <div style={{ fontFamily: 'monospace', color: '#d1d5db', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={it.id}>
+                        <div style={{ fontFamily: 'monospace', color: 'var(--fg-dim)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={it.id}>
                           {it.id}
                         </div>
                         <div style={{ color: 'var(--fg-mute)', marginTop: '0.2rem' }}>
@@ -197,7 +197,7 @@ verdict screenshot http://localhost:5173 {'>'} "$STATE_DIR/screenshots/$FEATURE_
                   <span style={{ fontSize: '0.7rem', color: 'var(--fg-mute)' }}>{fmtSize(selected.sizeBytes)} · {fmtTs(selected.ts)}</span>
                   <button
                     onClick={() => remove(selected.id)}
-                    style={{ marginLeft: 'auto', background: 'transparent', color: '#f87171', border: '1px solid #7f1d1d', borderRadius: 3, padding: '0.25rem 0.65rem', cursor: 'pointer', fontSize: '0.7rem' }}
+                    style={{ marginLeft: 'auto', background: 'transparent', color: 'var(--bad)', border: '1px solid #7f1d1d', borderRadius: 3, padding: '0.25rem 0.65rem', cursor: 'pointer', fontSize: '0.7rem' }}
                   >
                     delete
                   </button>

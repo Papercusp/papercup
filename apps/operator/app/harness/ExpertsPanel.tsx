@@ -63,7 +63,7 @@ const STATUS_COLOR: Record<string, string> = {
   max_rounds: '#a16207',
   cancelled: 'var(--fg-mute)',
   superseded: 'var(--fg-mute)',
-  error: '#dc2626',
+  error: 'var(--bad)',
 };
 
 type Selection =
@@ -690,7 +690,7 @@ function SpawnModal({ harnessSlug, onClose, onSpawned }: {
               </div>
             </label>
           </div>
-          {error && <div style={{ color: '#dc2626', fontSize: 12 }}>{error}</div>}
+          {error && <div style={{ color: 'var(--bad)', fontSize: 12 }}>{error}</div>}
         </div>
         <div style={{ padding: '10px 16px', borderTop: '1px solid var(--border)', display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
           <button onClick={onClose} style={btnSecondary}>cancel</button>
@@ -990,7 +990,7 @@ function AutonomousExpertsSection({
   const dotColor = (status: DispatchRow['status']): string =>
     status === 'running' ? '#3b82f6' :
     status === 'succeeded' ? '#16a34a' :
-    status === 'failed' ? '#dc2626' :
+    status === 'failed' ? 'var(--bad)' :
     '#737373';
 
   const formatElapsed = (startMs: number, endMs?: number | null): string => {
@@ -1183,7 +1183,7 @@ function DispatchDetailView({
         {loading ? (
           <span style={{ color: 'var(--fg-dim)' }}>loading…</span>
         ) : error ? (
-          <span style={{ color: '#dc2626' }}>error: {error}</span>
+          <span style={{ color: 'var(--bad)' }}>error: {error}</span>
         ) : (
           <MarkdownPreview value={md} />
         )}

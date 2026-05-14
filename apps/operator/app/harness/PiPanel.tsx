@@ -156,7 +156,7 @@ const DARK_THEME = {
   cyan: '#7ed4cc',
   white: '#e7e7e7',
   brightBlack: '#5a5a5a',
-  brightRed: '#fca5a5',
+  brightRed: 'var(--bad)',
   brightGreen: '#a8e2c5',
   brightYellow: '#fcd591',
   brightBlue: '#aac7e3',

@@ -172,13 +172,13 @@ export default function FeatureEditor({ slug, feature, onClose, onSaved }: Props
           <span style={{ color: 'var(--fg-mute)', fontSize: '0.75rem', fontFamily: 'monospace' }} title="Features live in Postgres (harness_features); edits dispatch via /api/harness/<slug>/features">harness_features</span>
           <div style={{ marginLeft: 'auto', display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
             {toast && (
-              <span style={{ color: /failed/i.test(toast) ? '#f87171' : '#10b981', fontSize: '0.8rem' }}>{toast}</span>
+              <span style={{ color: /failed/i.test(toast) ? 'var(--bad)' : 'var(--good)', fontSize: '0.8rem' }}>{toast}</span>
             )}
             {!isCreate && (
               <button
                 onClick={remove}
                 disabled={saving}
-                style={{ background: 'transparent', color: '#f87171', border: '1px solid #7f1d1d', borderRadius: 3, padding: '0.35rem 0.75rem', cursor: saving ? 'wait' : 'pointer', fontSize: '0.8rem' }}
+                style={{ background: 'transparent', color: 'var(--bad)', border: '1px solid #7f1d1d', borderRadius: 3, padding: '0.35rem 0.75rem', cursor: saving ? 'wait' : 'pointer', fontSize: '0.8rem' }}
               >
                 delete
               </button>
@@ -302,7 +302,7 @@ export default function FeatureEditor({ slug, feature, onClose, onSaved }: Props
           {status === 'deprecated' && (
             <div>
               <label style={{ display: 'block', fontSize: '0.75rem', color: 'var(--fg-mute)', marginBottom: '0.25rem' }}>
-                Deprecation reason <span style={{ color: '#f87171' }}>(required)</span>
+                Deprecation reason <span style={{ color: 'var(--bad)' }}>(required)</span>
               </label>
               <textarea
                 value={deprecationReason}
@@ -335,7 +335,7 @@ export default function FeatureEditor({ slug, feature, onClose, onSaved }: Props
                 </button>
               </Collapsible.Trigger>
               <Collapsible.Content style={{ marginTop: '0.5rem', fontSize: '0.75rem', maxHeight: 240, overflowY: 'auto' }}>
-                {historyError && <div style={{ color: '#f87171' }}>Failed to load: {historyError}</div>}
+                {historyError && <div style={{ color: 'var(--bad)' }}>Failed to load: {historyError}</div>}
                 {!historyError && historyRows === null && historyOpen && (
                   <div style={{ color: 'var(--fg-mute)' }}>Loading…</div>
                 )}
@@ -357,7 +357,7 @@ export default function FeatureEditor({ slug, feature, onClose, onSaved }: Props
                           </span>
                           <span style={{ color: '#a1a1aa' }}>{row.actor}</span>
                           <span>
-                            <code style={{ color: '#fbbf24' }}>{row.field}</code>
+                            <code style={{ color: 'var(--warn)' }}>{row.field}</code>
                             <span style={{ color: 'var(--fg-mute)' }}>: </span>
                             <span style={{ color: 'var(--fg-mute)' }}>{fmt(row.old)}</span>
                             <span style={{ color: 'var(--fg-mute)' }}> → </span>

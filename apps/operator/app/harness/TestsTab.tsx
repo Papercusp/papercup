@@ -26,10 +26,10 @@ interface Props {
 }
 
 const STATUS_ICON = {
-  passing: <Check size={11} style={{ color: '#10b981' }} />,
-  failing: <X size={11} style={{ color: '#ef4444' }} />,
+  passing: <Check size={11} style={{ color: 'var(--good)' }} />,
+  failing: <X size={11} style={{ color: 'var(--bad)' }} />,
   skipped: <Minus size={11} style={{ color: 'var(--fg-mute)' }} />,
-  not_run: <Minus size={11} style={{ color: '#4b5563' }} />,
+  not_run: <Minus size={11} style={{ color: 'var(--fg-mute)' }} />,
 };
 
 function fmtAgo(ts: number): string {
@@ -148,7 +148,7 @@ function TestsGrid({
           const isRunning = running.has(row.id);
           return isRunning
             ? <RefreshCw size={11} className="h-spin" />
-            : (STATUS_ICON[row.status] ?? <Minus size={11} style={{ color: '#4b5563' }} />);
+            : (STATUS_ICON[row.status] ?? <Minus size={11} style={{ color: 'var(--fg-mute)' }} />);
         },
       },
       {

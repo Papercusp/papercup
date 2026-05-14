@@ -257,7 +257,7 @@ export default function PromptsTab({ slug, alive }: Props) {
                 padding: '6px 16px',
                 background: 'rgba(245, 158, 11, 0.08)',
                 borderBottom: '1px solid rgba(245, 158, 11, 0.25)',
-                fontSize: 11.5, color: '#fbbf24',
+                fontSize: 11.5, color: 'var(--warn)',
               }}>
                 ⚠ harness is running — edits take effect on the next agent invocation
               </div>

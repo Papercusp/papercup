@@ -86,8 +86,8 @@ export default function CheckpointBanner({ slug, onGranted }: Props) {
       <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', marginBottom: list.length > 1 ? 8 : 0 }}>
         <span style={{ fontSize: '1.1rem' }}>⏸</span>
         <strong>{list.length} checkpoint{list.length === 1 ? '' : 's'} awaiting approval</strong>
-        <span style={{ marginLeft: 'auto', fontSize: '0.7rem', color: '#d1d5db' }}>auto-refresh 5s</span>
-        {err && <span style={{ color: '#f87171', fontSize: '0.75rem' }}>err: {err}</span>}
+        <span style={{ marginLeft: 'auto', fontSize: '0.7rem', color: 'var(--fg-dim)' }}>auto-refresh 5s</span>
+        {err && <span style={{ color: 'var(--bad)', fontSize: '0.75rem' }}>err: {err}</span>}
       </div>
 
       {list.map((cp) => {
@@ -104,8 +104,8 @@ export default function CheckpointBanner({ slug, onGranted }: Props) {
             }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
                 <code style={{ fontSize: '0.85rem', color: '#fde68a', fontWeight: 600 }}>{cp.name}</code>
-                <span style={{ fontSize: '0.75rem', color: '#d1d5db' }}>waiting {fmtAge(cp.waitingSinceMs)}</span>
-                {cp.granted && <span style={{ fontSize: '0.7rem', color: '#10b981' }}>✓ granted</span>}
+                <span style={{ fontSize: '0.75rem', color: 'var(--fg-dim)' }}>waiting {fmtAge(cp.waitingSinceMs)}</span>
+                {cp.granted && <span style={{ fontSize: '0.7rem', color: 'var(--good)' }}>✓ granted</span>}
                 <span style={{ marginLeft: 'auto', display: 'flex', gap: 6 }}>
                   <Collapsible.Trigger asChild>
                     <button
@@ -124,7 +124,7 @@ export default function CheckpointBanner({ slug, onGranted }: Props) {
                       onClick={() => grant(cp.name)}
                       disabled={busy === cp.name}
                       style={{
-                        background: '#10b981', color: 'white', border: 'none',
+                        background: 'var(--good)', color: 'white', border: 'none',
                         padding: '0.25rem 0.75rem', borderRadius: 3,
                         cursor: busy === cp.name ? 'wait' : 'pointer',
                         fontSize: '0.8rem', fontWeight: 600,
@@ -151,7 +151,7 @@ export default function CheckpointBanner({ slug, onGranted }: Props) {
       })}
 
       {list.some((c) => c.granted) && (
-        <div style={{ marginTop: 6, fontSize: '0.75rem', color: '#d1d5db' }}>
+        <div style={{ marginTop: 6, fontSize: '0.75rem', color: 'var(--fg-dim)' }}>
           Granted checkpoints require the harness to be re-run to consume the grant.
         </div>
       )}

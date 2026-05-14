@@ -61,9 +61,9 @@ interface Props {
 
 const ROLE_COLOR: Record<string, string> = {
   planner: '#3b82f6',
-  worker: '#10b981',
+  worker: 'var(--good)',
   validator: '#a855f7',
-  orchestrator: '#f59e0b',
+  orchestrator: 'var(--warn)',
 };
 
 function fmtTs(ts: number): string {
@@ -169,7 +169,7 @@ function UsagePanelInner({ slug, onClose }: Props) {
           </button>
         </div>
 
-        {error && <div style={{ padding: '1rem', color: '#ef4444' }}>error: {error}</div>}
+        {error && <div style={{ padding: '1rem', color: 'var(--bad)' }}>error: {error}</div>}
 
         {!data ? (
           <div style={{ padding: '2rem', color: 'var(--fg-mute)' }}>loading…</div>

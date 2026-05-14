@@ -26,7 +26,7 @@ interface AgentsResponse {
 const ROLE_COLORS: Record<string, string> = {
   scoper: '#60a5fa',
   worker: '#4ade80',
-  validator: '#fbbf24',
+  validator: 'var(--warn)',
   curator: '#a78bfa',
   expert: '#f472b6',
   unknown: 'var(--fg-mute)',
@@ -89,7 +89,7 @@ export function RealAgentsPanel({ params, api }: PanelComponentProps) {
       </div>
     );
   if (error)
-    return <div style={{ padding: 16, fontSize: 13, color: '#f87171' }}>Failed: {error.message}</div>;
+    return <div style={{ padding: 16, fontSize: 13, color: 'var(--bad)' }}>Failed: {error.message}</div>;
   if (!data)
     return (
       <div style={{ padding: 16, fontSize: 13, color: 'var(--muted-foreground,#888)' }}>

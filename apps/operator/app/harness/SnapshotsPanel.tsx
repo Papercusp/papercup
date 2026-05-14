@@ -41,9 +41,9 @@ const STATUS_COLOR: Record<string, string> = {
   todo: 'var(--fg-mute)',
   in_progress: '#3b82f6',
   validating: '#a855f7',
-  failing: '#ef4444',
-  blocked: '#f59e0b',
-  passed: '#10b981',
+  failing: 'var(--bad)',
+  blocked: 'var(--warn)',
+  passed: 'var(--good)',
 };
 
 function fmtTs(ts: number): string {
@@ -163,7 +163,7 @@ function SnapshotsPanelInner({ slug, onClose, onRestored }: Props) {
           <span style={{ fontFamily: 'monospace', color: 'var(--fg-mute)', fontSize: '0.75rem' }}>.harness/snapshots/</span>
           <span style={{ marginLeft: 'auto', fontSize: '0.75rem', color: 'var(--fg-mute)' }}>live (Zero)</span>
           {toast && (
-            <span style={{ color: /failed/i.test(toast) ? '#f87171' : '#10b981', fontSize: '0.8rem' }}>{toast}</span>
+            <span style={{ color: /failed/i.test(toast) ? 'var(--bad)' : 'var(--good)', fontSize: '0.8rem' }}>{toast}</span>
           )}
           <button
             onClick={onClose}
@@ -206,13 +206,13 @@ function SnapshotsPanelInner({ slug, onClose, onRestored }: Props) {
                 <div>
                   <div style={{ fontSize: '0.7rem', color: 'var(--fg-mute)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '0.3rem' }}>Files captured</div>
                   {selected.files.map((f) => (
-                    <div key={f} style={{ fontFamily: 'monospace', fontSize: '0.75rem', color: '#d1d5db' }}>· {f}</div>
+                    <div key={f} style={{ fontFamily: 'monospace', fontSize: '0.75rem', color: 'var(--fg-dim)' }}>· {f}</div>
                   ))}
                 </div>
 
                 <div>
                   <div style={{ fontSize: '0.7rem', color: 'var(--fg-mute)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '0.3rem' }}>Restore options</div>
-                  <label style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.8rem', color: '#d1d5db', cursor: selected.files.includes('supervisor-notes.md') ? 'pointer' : 'not-allowed', opacity: selected.files.includes('supervisor-notes.md') ? 1 : 0.5 }}>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.8rem', color: 'var(--fg-dim)', cursor: selected.files.includes('supervisor-notes.md') ? 'pointer' : 'not-allowed', opacity: selected.files.includes('supervisor-notes.md') ? 1 : 0.5 }}>
                     <Checkbox
                       checked={includeNotes && selected.files.includes('supervisor-notes.md')}
                       disabled={!selected.files.includes('supervisor-notes.md')}
@@ -221,7 +221,7 @@ function SnapshotsPanelInner({ slug, onClose, onRestored }: Props) {
                     />
                     also restore supervisor-notes.md
                   </label>
-                  <label style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.8rem', color: '#d1d5db', cursor: selected.files.includes('config.json') ? 'pointer' : 'not-allowed', opacity: selected.files.includes('config.json') ? 1 : 0.5 }}>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.8rem', color: 'var(--fg-dim)', cursor: selected.files.includes('config.json') ? 'pointer' : 'not-allowed', opacity: selected.files.includes('config.json') ? 1 : 0.5 }}>
                     <Checkbox
                       checked={includeConfig && selected.files.includes('config.json')}
                       disabled={!selected.files.includes('config.json')}

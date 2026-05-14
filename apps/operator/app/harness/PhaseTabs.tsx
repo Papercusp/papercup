@@ -61,7 +61,7 @@ const PHASE_ORDER: Phase[] = [...ALL_PHASES];
 const PHASE_COLOR: Record<Phase, string> = {
   staging: '#3b82f6',
   testing: '#a855f7',
-  production: '#10b981',
+  production: 'var(--good)',
 };
 
 export default function PhaseTabs({ slug, activePhase, onChange }: Props) {
@@ -264,9 +264,9 @@ export default function PhaseTabs({ slug, activePhase, onChange }: Props) {
             <span className="h-phase-dot" style={{
               width: 7, height: 7, borderRadius: '50%',
               background:
-                h === 'up' ? '#10b981' :
-                h === 'slow' ? '#f59e0b' :
-                h === 'down' ? '#ef4444' :
+                h === 'up' ? 'var(--good)' :
+                h === 'slow' ? 'var(--warn)' :
+                h === 'down' ? 'var(--bad)' :
                 'var(--border)',
               boxShadow: info?.alive ? `0 0 0 2px color-mix(in oklab, ${color}, transparent 70%)` : 'none',
               animation: info?.alive ? 'hPulse 1.6s infinite' : 'none',
@@ -286,14 +286,14 @@ export default function PhaseTabs({ slug, activePhase, onChange }: Props) {
                 )}
                 {info.promotionInFlight && (
                   <Tooltip label="Promotion in progress">
-                    <span style={{ color: '#f59e0b', display: 'inline-flex' }}>
+                    <span style={{ color: 'var(--warn)', display: 'inline-flex' }}>
                       <AlertTriangle size={10} />
                     </span>
                   </Tooltip>
                 )}
                 {actions[p].length > 0 && (() => {
                   const anyMissing = actions[p].some((a) => !a.envStatus.ok);
-                  const chipColor = anyMissing ? '#f59e0b' : color;
+                  const chipColor = anyMissing ? 'var(--warn)' : color;
                   return (
                     <button
                       type="button"
@@ -410,7 +410,7 @@ export default function PhaseTabs({ slug, activePhase, onChange }: Props) {
                   display: 'flex', alignItems: 'center', gap: 6,
                   width: '100%', textAlign: 'left',
                   background: 'transparent', border: 'none', padding: 0,
-                  color: blocked ? '#f59e0b' : 'var(--fg)',
+                  color: blocked ? 'var(--warn)' : 'var(--fg)',
                   cursor: blocked ? 'not-allowed' : 'pointer',
                   opacity: blocked ? 0.85 : 1,
                   fontSize: 12, fontWeight: 600,
@@ -427,7 +427,7 @@ export default function PhaseTabs({ slug, activePhase, onChange }: Props) {
               </button>
               {blocked && (
                 <div className="h-phase-action-menu-note" style={{ display: 'flex', flexDirection: 'column', gap: 2, fontSize: 10 }}>
-                  <span style={{ color: '#f59e0b' }}>
+                  <span style={{ color: 'var(--warn)' }}>
                     needs: {a.envStatus.missing.map((m) => m.name).join(', ')}
                   </span>
                   {configurePlugin && (

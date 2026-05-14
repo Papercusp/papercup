@@ -22,8 +22,8 @@ interface LogResponse {
 }
 
 const LEVEL_COLORS: Record<string, string> = {
-  error: '#f87171',
-  warn: '#fbbf24',
+  error: 'var(--bad)',
+  warn: 'var(--warn)',
   info: 'var(--fg-mute)',
   debug: '#64748b',
   trace: '#475569',
@@ -85,7 +85,7 @@ export function RealLogsPanel({ params, api }: PanelComponentProps) {
       </div>
     );
   if (error)
-    return <div style={{ padding: 16, fontSize: 13, color: '#f87171' }}>Failed: {error.message}</div>;
+    return <div style={{ padding: 16, fontSize: 13, color: 'var(--bad)' }}>Failed: {error.message}</div>;
   if (!data)
     return (
       <div style={{ padding: 16, fontSize: 13, color: 'var(--muted-foreground,#888)' }}>

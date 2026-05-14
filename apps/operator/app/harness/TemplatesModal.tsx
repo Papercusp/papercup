@@ -101,7 +101,7 @@ export default function TemplatesModal({ slug, onClose, onBootstrapped }: Props)
           <strong>Mission templates</strong>
           <span style={{ color: 'var(--fg-mute)', fontSize: '0.75rem', fontFamily: 'monospace' }}>→ {slug}</span>
           {toast && (
-            <span style={{ marginLeft: 'auto', color: /failed/i.test(toast) ? '#f87171' : '#10b981', fontSize: '0.8rem' }}>{toast}</span>
+            <span style={{ marginLeft: 'auto', color: /failed/i.test(toast) ? 'var(--bad)' : 'var(--good)', fontSize: '0.8rem' }}>{toast}</span>
           )}
           <button
             onClick={onClose}
@@ -140,7 +140,7 @@ export default function TemplatesModal({ slug, onClose, onBootstrapped }: Props)
                       {t.tags && t.tags.length > 0 && (
                         <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.25rem', marginTop: '0.35rem' }}>
                           {t.tags.map((tag) => (
-                            <span key={tag} style={{ fontSize: '0.65rem', padding: '0.1rem 0.4rem', borderRadius: 3, background: 'var(--bg-3)', color: '#d1d5db' }}>
+                            <span key={tag} style={{ fontSize: '0.65rem', padding: '0.1rem 0.4rem', borderRadius: 3, background: 'var(--bg-3)', color: 'var(--fg-dim)' }}>
                               {tag}
                             </span>
                           ))}

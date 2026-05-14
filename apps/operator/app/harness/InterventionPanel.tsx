@@ -92,12 +92,12 @@ export default function InterventionPanel({ slug, alive, onClose }: Props) {
           <strong style={{ color: 'var(--fg)' }}>Intervention — {slug}</strong>
           <span style={{ fontFamily: 'monospace', color: 'var(--fg-mute)', fontSize: '0.75rem' }}>.harness/supervisor-notes.md</span>
           {alive && (
-            <span style={{ color: '#10b981', fontSize: '0.75rem', marginLeft: '0.5rem' }}>
+            <span style={{ color: 'var(--good)', fontSize: '0.75rem', marginLeft: '0.5rem' }}>
               ● mission running — next orchestrator iteration will read your note
             </span>
           )}
           {toast && (
-            <span style={{ marginLeft: 'auto', color: /failed|first/i.test(toast) ? '#f87171' : '#10b981', fontSize: '0.8rem' }}>
+            <span style={{ marginLeft: 'auto', color: /failed|first/i.test(toast) ? 'var(--bad)' : 'var(--good)', fontSize: '0.8rem' }}>
               {toast}
             </span>
           )}
@@ -122,7 +122,7 @@ export default function InterventionPanel({ slug, alive, onClose }: Props) {
           </div>
           <pre
             ref={notesRef}
-            style={{ flex: 1, overflow: 'auto', margin: 0, padding: '0.75rem 1rem', fontSize: '0.8rem', fontFamily: 'ui-monospace, monospace', color: '#d1d5db', whiteSpace: 'pre-wrap', background: 'var(--bg)' }}
+            style={{ flex: 1, overflow: 'auto', margin: 0, padding: '0.75rem 1rem', fontSize: '0.8rem', fontFamily: 'ui-monospace, monospace', color: 'var(--fg-dim)', whiteSpace: 'pre-wrap', background: 'var(--bg)' }}
           >
             {notes ?? '(no notes yet — send your first message below to seed supervisor-notes.md)'}
           </pre>

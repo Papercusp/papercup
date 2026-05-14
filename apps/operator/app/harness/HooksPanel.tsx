@@ -102,12 +102,12 @@ function fmtTs(ts: number): string {
 
 const HOOK_COLOR: Record<string, string> = {
   'pre-worker': '#3b82f6',
-  'post-worker': '#10b981',
+  'post-worker': 'var(--good)',
   'pre-validator': '#a855f7',
   'post-validator': '#8b5cf6',
-  'on-escalate': '#f59e0b',
+  'on-escalate': 'var(--warn)',
   'on-feature-passed': '#22c55e',
-  'on-feature-failing': '#ef4444',
+  'on-feature-failing': 'var(--bad)',
 };
 
 interface Props {
@@ -285,7 +285,7 @@ function HooksPanelInner({ slug, alive, onClose }: Props) {
             .harness/hooks/{tab}.sh
           </span>
           {alive && (
-            <span style={{ color: '#f59e0b', fontSize: '0.8rem', marginLeft: '1rem' }}>
+            <span style={{ color: 'var(--warn)', fontSize: '0.8rem', marginLeft: '1rem' }}>
               ⚠ harness running — changes apply from next invocation
             </span>
           )}
@@ -294,13 +294,13 @@ function HooksPanelInner({ slug, alive, onClose }: Props) {
           </span>
           <div style={{ marginLeft: 'auto', display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
             {toast && (
-              <span style={{ color: /failed/i.test(toast) ? '#ef4444' : '#10b981', fontSize: '0.8rem' }}>{toast}</span>
+              <span style={{ color: /failed/i.test(toast) ? 'var(--bad)' : 'var(--good)', fontSize: '0.8rem' }}>{toast}</span>
             )}
             {activeEntry?.exists && (
               <button
                 onClick={() => remove(tab)}
                 disabled={!!saving}
-                style={{ background: 'transparent', color: '#f87171', border: '1px solid #7f1d1d', borderRadius: 3, padding: '0.35rem 0.75rem', cursor: 'pointer', fontSize: '0.8rem' }}
+                style={{ background: 'transparent', color: 'var(--bad)', border: '1px solid #7f1d1d', borderRadius: 3, padding: '0.35rem 0.75rem', cursor: 'pointer', fontSize: '0.8rem' }}
                 title="Delete this hook file (it will no longer fire)"
               >
                 remove
@@ -349,7 +349,7 @@ function HooksPanelInner({ slug, alive, onClose }: Props) {
               >
                 {entry?.exists ? '●' : '○'}
                 {name}
-                {isDirty && <span style={{ color: '#f59e0b' }}>●</span>}
+                {isDirty && <span style={{ color: 'var(--warn)' }}>●</span>}
               </button>
             );
           })}
@@ -408,7 +408,7 @@ function HooksPanelInner({ slug, alive, onClose }: Props) {
               {selectedLog && <code style={{ color: 'var(--fg)', fontFamily: 'monospace' }}>{selectedLog.logId}.log</code>}
               {loadingLog && <span style={{ color: 'var(--fg-mute)' }}>loading…</span>}
             </div>
-            <pre style={{ flex: 1, overflow: 'auto', margin: 0, padding: '0.5rem 0.75rem', fontSize: '0.75rem', fontFamily: 'ui-monospace, monospace', color: '#d1d5db', whiteSpace: 'pre-wrap' }}>
+            <pre style={{ flex: 1, overflow: 'auto', margin: 0, padding: '0.5rem 0.75rem', fontSize: '0.75rem', fontFamily: 'ui-monospace, monospace', color: 'var(--fg-dim)', whiteSpace: 'pre-wrap' }}>
               {selectedLog ? (selectedLog.content || '(empty)') : '(click a row to view)'}
             </pre>
           </div>

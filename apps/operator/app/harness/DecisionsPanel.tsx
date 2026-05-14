@@ -47,10 +47,10 @@ interface Props {
 const VERB_COLOR: Record<string, string> = {
   NEXT_WORKER: '#3b82f6',
   NEXT_VALIDATOR: '#a855f7',
-  NEXT_ARCHITECT: '#f59e0b',
-  ESCALATE: '#ef4444',
-  CONVERTED: '#10b981',
-  DONE: '#10b981',
+  NEXT_ARCHITECT: 'var(--warn)',
+  ESCALATE: 'var(--bad)',
+  CONVERTED: 'var(--good)',
+  DONE: 'var(--good)',
 };
 
 function fmtTs(ts: number): string {
@@ -121,12 +121,12 @@ export default function DecisionsPanel({ slug, onClose }: Props) {
         <div style={{ padding: '0.6rem 1rem', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
           <strong>Decisions — {slug}</strong>
           <span style={{ fontFamily: 'monospace', color: 'var(--fg-mute)', fontSize: '0.75rem' }}>orchestrator verb timeline</span>
-          <label style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: '0.35rem', fontSize: '0.8rem', color: '#d1d5db', cursor: 'pointer' }}>
+          <label style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: '0.35rem', fontSize: '0.8rem', color: 'var(--fg-dim)', cursor: 'pointer' }}>
             <Checkbox checked={hideGhosts} onChange={setHideGhosts} ariaLabel="Hide ghosts" />
             hide ghosts
           </label>
           <span style={{ fontSize: '0.75rem', color: 'var(--fg-mute)' }}>auto-refresh 5s</span>
-          {err && <span style={{ color: '#f87171', fontSize: '0.8rem' }}>err: {err}</span>}
+          {err && <span style={{ color: 'var(--bad)', fontSize: '0.8rem' }}>err: {err}</span>}
           <button
             onClick={onClose}
             style={{ background: 'transparent', color: 'var(--fg-mute)', border: '1px solid var(--border)', borderRadius: 3, padding: '0.35rem 0.75rem', cursor: 'pointer', fontSize: '0.8rem' }}
@@ -139,11 +139,11 @@ export default function DecisionsPanel({ slug, onClose }: Props) {
         {data && (
           <div style={{ padding: '0.6rem 1rem', borderBottom: '1px solid var(--border)', display: 'flex', gap: '1.25rem', fontSize: '0.8rem', alignItems: 'center', flexWrap: 'wrap' }}>
             <span><span style={{ color: 'var(--fg-mute)' }}>total</span> <b style={{ fontFamily: 'monospace' }}>{data.total}</b></span>
-            <span><span style={{ color: 'var(--fg-mute)' }}>recognized</span> <b style={{ fontFamily: 'monospace', color: '#10b981' }}>{data.recognized}</b></span>
-            <span><span style={{ color: 'var(--fg-mute)' }}>ghosts</span> <b style={{ fontFamily: 'monospace', color: data.ghosts > 0 ? '#f87171' : '#10b981' }}>{data.ghosts}</b></span>
+            <span><span style={{ color: 'var(--fg-mute)' }}>recognized</span> <b style={{ fontFamily: 'monospace', color: 'var(--good)' }}>{data.recognized}</b></span>
+            <span><span style={{ color: 'var(--fg-mute)' }}>ghosts</span> <b style={{ fontFamily: 'monospace', color: data.ghosts > 0 ? 'var(--bad)' : 'var(--good)' }}>{data.ghosts}</b></span>
             <span>
               <span style={{ color: 'var(--fg-mute)' }}>ghost rate</span>{' '}
-              <b style={{ fontFamily: 'monospace', color: data.ghostRate >= 0.05 ? '#f87171' : '#10b981' }}>
+              <b style={{ fontFamily: 'monospace', color: data.ghostRate >= 0.05 ? 'var(--bad)' : 'var(--good)' }}>
                 {(data.ghostRate * 100).toFixed(1)}%
               </b>
             </span>
@@ -156,7 +156,7 @@ export default function DecisionsPanel({ slug, onClose }: Props) {
                   border: `1px solid ${VERB_COLOR[v] ?? '#374151'}`,
                   background: `color-mix(in oklab, ${VERB_COLOR[v] ?? '#374151'}, transparent 85%)`,
                   borderRadius: 3,
-                  color: VERB_COLOR[v] ?? '#d1d5db',
+                  color: VERB_COLOR[v] ?? 'var(--fg-dim)',
                 }}>
                   {v} <span style={{ opacity: 0.7 }}>{n}</span>
                   <span style={{
@@ -207,7 +207,7 @@ function DecisionsGrid({ rows }: { rows: Decision[] }) {
         align: 'right',
         sortKey: 'iteration',
         render: ({ row }) => (
-          <span style={{ fontFamily: 'monospace', color: '#d1d5db' }}>
+          <span style={{ fontFamily: 'monospace', color: 'var(--fg-dim)' }}>
             {row.iteration ?? '—'}
           </span>
         ),
@@ -224,12 +224,12 @@ function DecisionsGrid({ rows }: { rows: Decision[] }) {
               padding: '0.1rem 0.4rem',
               border: `1px solid ${row.isGhost ? 'var(--fg-mute)' : (VERB_COLOR[row.verb] ?? '#374151')}`,
               borderRadius: 3,
-              color: row.isGhost ? 'var(--fg-mute)' : (VERB_COLOR[row.verb] ?? '#d1d5db'),
+              color: row.isGhost ? 'var(--fg-mute)' : (VERB_COLOR[row.verb] ?? 'var(--fg-dim)'),
               background: row.isGhost ? 'transparent' : `color-mix(in oklab, ${VERB_COLOR[row.verb] ?? '#374151'}, transparent 88%)`,
             }}>
               {row.verb}
             </span>
-            {row.isGhost && <span style={{ fontSize: '0.7rem', color: '#f87171' }}>ghost</span>}
+            {row.isGhost && <span style={{ fontSize: '0.7rem', color: 'var(--bad)' }}>ghost</span>}
           </span>
         ),
       },
@@ -240,12 +240,12 @@ function DecisionsGrid({ rows }: { rows: Decision[] }) {
         render: ({ row }) => (
           <span style={{
             fontFamily: 'monospace',
-            color: '#d1d5db',
+            color: 'var(--fg-dim)',
             fontSize: '0.75rem',
             whiteSpace: 'pre-wrap',
             wordBreak: 'break-word',
           }}>
-            {row.args || <span style={{ color: '#4b5563' }}>—</span>}
+            {row.args || <span style={{ color: 'var(--fg-mute)' }}>—</span>}
           </span>
         ),
       },

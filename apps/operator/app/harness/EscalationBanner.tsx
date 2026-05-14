@@ -140,14 +140,14 @@ export default function EscalationBanner({ slug, escalated, onResumed }: Props) 
     }}>
       {confirmEl}
       <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '0.5rem' }}>
-        <span style={{ color: '#fbbf24', fontWeight: 700, fontSize: '0.85rem' }}>⚠ ESCALATION — mission halted, awaiting human</span>
+        <span style={{ color: 'var(--warn)', fontWeight: 700, fontSize: '0.85rem' }}>⚠ ESCALATION — mission halted, awaiting human</span>
         {payload.mtimeMs && (
           <span style={{ color: '#d97706', fontSize: '0.75rem' }}>
             raised {Math.round((Date.now() - payload.mtimeMs) / 60_000)}m ago
           </span>
         )}
         {toast && (
-          <span style={{ marginLeft: 'auto', color: /error|failed/i.test(toast) ? '#fca5a5' : '#a7f3d0', fontSize: '0.75rem' }}>
+          <span style={{ marginLeft: 'auto', color: /error|failed/i.test(toast) ? 'var(--bad)' : '#a7f3d0', fontSize: '0.75rem' }}>
             {toast}
           </span>
         )}
@@ -172,7 +172,7 @@ export default function EscalationBanner({ slug, escalated, onResumed }: Props) 
         <div style={{ marginBottom: '0.5rem' }}>
           <button
             onClick={() => setShowNotes((v) => !v)}
-            style={{ background: 'transparent', color: '#fbbf24', border: 'none', cursor: 'pointer', fontSize: '0.75rem', padding: 0 }}
+            style={{ background: 'transparent', color: 'var(--warn)', border: 'none', cursor: 'pointer', fontSize: '0.75rem', padding: 0 }}
           >
             {showNotes ? '▾' : '▸'} supervisor-notes.md ({payload.supervisorNotes.length.toLocaleString()} chars)
           </button>
@@ -229,7 +229,7 @@ export default function EscalationBanner({ slug, escalated, onResumed }: Props) 
             disabled={!!busy || !response.trim()}
             style={{
               background: 'transparent',
-              color: '#fbbf24',
+              color: 'var(--warn)',
               border: '1px solid #78350f',
               borderRadius: 3,
               padding: '0.4rem 0.9rem',

@@ -37,8 +37,8 @@ type Phase = (typeof PHASES)[number];
 const STATUS_COLORS: Record<string, string> = {
   passed: '#4ade80',
   todo: 'var(--fg-mute)',
-  failing: '#f87171',
-  validating: '#fbbf24',
+  failing: 'var(--bad)',
+  validating: 'var(--warn)',
   deprecated: '#71717a',
 };
 
@@ -147,7 +147,7 @@ export function RealHarnessOverviewPanel({ params, api }: PanelComponentProps) {
       </div>
     );
   if (error)
-    return <div style={{ padding: 16, fontSize: 13, color: '#f87171' }}>Failed: {error.message}</div>;
+    return <div style={{ padding: 16, fontSize: 13, color: 'var(--bad)' }}>Failed: {error.message}</div>;
   if (!data)
     return (
       <div style={{ padding: 16, fontSize: 13, color: 'var(--muted-foreground,#888)' }}>

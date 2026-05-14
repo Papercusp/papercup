@@ -309,13 +309,13 @@ export default function SpecEditor({ slug, projectPath, alive, onClose, inline =
             <span style={{ fontFamily: 'monospace', color: 'var(--fg-mute)', fontSize: '0.75rem' }}>{tabMeta.path(projectPath)}</span>
           )}
           {alive && (
-            <span style={{ color: '#f59e0b', fontSize: '0.8rem', marginLeft: '1rem' }}>
+            <span style={{ color: 'var(--warn)', fontSize: '0.8rem', marginLeft: '1rem' }}>
               ⚠ harness is running — edits take effect on the next agent invocation
             </span>
           )}
           <div style={{ marginLeft: 'auto', display: 'flex', gap: '0.5rem' }}>
             {toast && (
-              <span style={{ color: toast.startsWith('saved') ? '#10b981' : '#ef4444', fontSize: '0.8rem', alignSelf: 'center' }}>
+              <span style={{ color: toast.startsWith('saved') ? 'var(--good)' : 'var(--bad)', fontSize: '0.8rem', alignSelf: 'center' }}>
                 {toast}
               </span>
             )}
@@ -356,7 +356,7 @@ export default function SpecEditor({ slug, projectPath, alive, onClose, inline =
                 style={{
                   background: isActive ? '#1f2937' : 'transparent',
                   color: isActive ? 'var(--fg)' : 'var(--fg-mute)',
-                  border: '1px solid ' + (isActive ? '#4b5563' : 'transparent'),
+                  border: '1px solid ' + (isActive ? 'var(--fg-mute)' : 'transparent'),
                   borderRadius: 4,
                   padding: '0.4rem 0.9rem',
                   fontSize: '0.85rem',
@@ -394,7 +394,7 @@ export default function SpecEditor({ slug, projectPath, alive, onClose, inline =
                   }}
                 >
                   {t.label}
-                  {isDirty && <span style={{ color: '#f59e0b', marginLeft: 6 }}>●</span>}
+                  {isDirty && <span style={{ color: 'var(--warn)', marginLeft: 6 }}>●</span>}
                   {doesntExist && !isDirty && <span style={{ color: 'var(--fg-mute)', marginLeft: 6, fontSize: '0.7rem' }}>(new)</span>}
                 </button>
               );
@@ -404,12 +404,12 @@ export default function SpecEditor({ slug, projectPath, alive, onClose, inline =
 
         {/* Sensitivity banner (settings only) */}
         {onSettings && sensitivity === 'warn' && (
-          <div style={{ padding: '6px 16px', background: 'rgba(245, 158, 11, 0.1)', borderBottom: '1px solid rgba(245, 158, 11, 0.3)', fontSize: 11.5, color: '#fbbf24' }}>
+          <div style={{ padding: '6px 16px', background: 'rgba(245, 158, 11, 0.1)', borderBottom: '1px solid rgba(245, 158, 11, 0.3)', fontSize: 11.5, color: 'var(--warn)' }}>
             ⚠ Editing {tabMeta.label} changes the agent's tool permissions and environment for this project. Malformed JSON will break the agent CLI on the next run (omp -p / claude -p) — JSON is validated before save, but semantics are on you.
           </div>
         )}
         {onSettings && sensitivity === 'secret' && (
-          <div style={{ padding: '6px 16px', background: 'rgba(239, 68, 68, 0.1)', borderBottom: '1px solid rgba(239, 68, 68, 0.3)', fontSize: 11.5, color: '#fca5a5' }}>
+          <div style={{ padding: '6px 16px', background: 'rgba(239, 68, 68, 0.1)', borderBottom: '1px solid rgba(239, 68, 68, 0.3)', fontSize: 11.5, color: 'var(--bad)' }}>
             🔒 .env contains secrets. Opening this tab loads plaintext into browser memory. Close the tab when done. Saving requires a confirmation header — drive-by form submits will reject.
           </div>
         )}

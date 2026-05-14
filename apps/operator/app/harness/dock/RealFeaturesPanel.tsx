@@ -33,8 +33,8 @@ type FilterKey = 'all' | 'todo' | 'failing' | 'validating' | 'passed' | 'depreca
 const STATUS_COLORS: Record<string, string> = {
   passed: '#4ade80',
   todo: 'var(--fg-mute)',
-  failing: '#f87171',
-  validating: '#fbbf24',
+  failing: 'var(--bad)',
+  validating: 'var(--warn)',
   deprecated: '#71717a',
 };
 
@@ -85,7 +85,7 @@ export function RealFeaturesPanel({ params, api }: PanelComponentProps) {
 
   if (error) {
     return (
-      <div style={{ padding: 16, fontSize: 13, color: '#f87171' }}>
+      <div style={{ padding: 16, fontSize: 13, color: 'var(--bad)' }}>
         Failed: {error.message}
       </div>
     );

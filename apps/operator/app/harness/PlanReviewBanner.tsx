@@ -24,9 +24,9 @@ function extractVerdict(content: string): string | null {
 }
 
 const VERDICT_TONE: Record<string, { bg: string; border: string; fg: string; icon: string }> = {
-  accept: { bg: '#064e3b', border: '#10b981', fg: '#a7f3d0', icon: '✓' },
+  accept: { bg: '#064e3b', border: 'var(--good)', fg: '#a7f3d0', icon: '✓' },
   'accept-with-notes': { bg: '#1e3a8a', border: '#3b82f6', fg: '#93c5fd', icon: '◐' },
-  reject: { bg: '#7f1d1d', border: '#ef4444', fg: '#fca5a5', icon: '⚠' },
+  reject: { bg: '#7f1d1d', border: 'var(--bad)', fg: 'var(--bad)', icon: '⚠' },
 };
 
 export default function PlanReviewBanner({ slug, compact = false }: Props) {
@@ -67,7 +67,7 @@ export default function PlanReviewBanner({ slug, compact = false }: Props) {
   if (!content || dismissed) return null;
   const verdict = extractVerdict(content) ?? 'unknown';
   const key = verdict.toLowerCase().replace(/\s/g, '-');
-  const tone = VERDICT_TONE[key] ?? { bg: '#1f2937', border: '#374151', fg: '#d1d5db', icon: 'ℹ' };
+  const tone = VERDICT_TONE[key] ?? { bg: '#1f2937', border: '#374151', fg: 'var(--fg-dim)', icon: 'ℹ' };
 
   return (
     <>

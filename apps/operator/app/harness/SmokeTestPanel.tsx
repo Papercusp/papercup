@@ -85,7 +85,7 @@ export default function SmokeTestPanel({ slug, onClose }: Props) {
     }
   }, [slug, busy]);
 
-  const tone = data?.status === 'pass' ? '#10b981' : data?.status === 'fail' ? '#f87171' : 'var(--fg-mute)';
+  const tone = data?.status === 'pass' ? 'var(--good)' : data?.status === 'fail' ? 'var(--bad)' : 'var(--fg-mute)';
 
   return (
     <Modal
@@ -125,7 +125,7 @@ export default function SmokeTestPanel({ slug, onClose }: Props) {
         </div>
 
         <div style={{ flex: 1, overflow: 'auto', padding: '1rem' }}>
-          {err && <div style={{ color: '#f87171', marginBottom: 12 }}>err: {err}</div>}
+          {err && <div style={{ color: 'var(--bad)', marginBottom: 12 }}>err: {err}</div>}
 
           {data?.results && data.results.length > 0 && (
             <section style={{ marginBottom: 18 }}>
@@ -138,7 +138,7 @@ export default function SmokeTestPanel({ slug, onClose }: Props) {
 
           {data?.failure && (
             <section style={{ marginBottom: 18 }}>
-              <div style={{ fontSize: '0.7rem', color: '#f87171', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 6 }}>Failure report</div>
+              <div style={{ fontSize: '0.7rem', color: 'var(--bad)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 6 }}>Failure report</div>
               <pre style={{ background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.3)', borderRadius: 3, padding: '0.75rem', margin: 0, fontFamily: 'ui-monospace, monospace', fontSize: '0.75rem', whiteSpace: 'pre-wrap', color: '#fde68a' }}>
                 {data.failure}
               </pre>
@@ -147,8 +147,8 @@ export default function SmokeTestPanel({ slug, onClose }: Props) {
 
           {data?.pass && !data?.failure && (
             <section style={{ marginBottom: 18 }}>
-              <div style={{ fontSize: '0.7rem', color: '#10b981', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 6 }}>Last pass</div>
-              <pre style={{ background: 'rgba(16,185,129,0.08)', border: '1px solid rgba(16,185,129,0.3)', borderRadius: 3, padding: '0.75rem', margin: 0, fontFamily: 'ui-monospace, monospace', fontSize: '0.75rem', whiteSpace: 'pre-wrap', color: '#d1d5db' }}>
+              <div style={{ fontSize: '0.7rem', color: 'var(--good)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 6 }}>Last pass</div>
+              <pre style={{ background: 'rgba(16,185,129,0.08)', border: '1px solid rgba(16,185,129,0.3)', borderRadius: 3, padding: '0.75rem', margin: 0, fontFamily: 'ui-monospace, monospace', fontSize: '0.75rem', whiteSpace: 'pre-wrap', color: 'var(--fg-dim)' }}>
                 {data.pass}
               </pre>
             </section>
@@ -157,7 +157,7 @@ export default function SmokeTestPanel({ slug, onClose }: Props) {
           {runOutput && (
             <section style={{ marginBottom: 18 }}>
               <div style={{ fontSize: '0.7rem', color: 'var(--fg-mute)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 6 }}>Last manual run</div>
-              <pre style={{ background: '#000', border: '1px solid var(--border)', borderRadius: 3, padding: '0.75rem', margin: 0, fontFamily: 'ui-monospace, monospace', fontSize: '0.7rem', whiteSpace: 'pre-wrap', color: '#d1d5db', maxHeight: 240, overflow: 'auto' }}>
+              <pre style={{ background: '#000', border: '1px solid var(--border)', borderRadius: 3, padding: '0.75rem', margin: 0, fontFamily: 'ui-monospace, monospace', fontSize: '0.7rem', whiteSpace: 'pre-wrap', color: 'var(--fg-dim)', maxHeight: 240, overflow: 'auto' }}>
                 {runOutput}
               </pre>
             </section>
@@ -182,7 +182,7 @@ function SmokeResultsGrid({ results }: { results: SmokeResult[] }) {
         width: 4,
         render: ({ row }) => (
           <span style={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>
-            <span style={{ marginRight: 6, color: row.ok ? '#10b981' : '#f87171' }}>{row.ok ? '✓' : '✗'}</span>
+            <span style={{ marginRight: 6, color: row.ok ? 'var(--good)' : 'var(--bad)' }}>{row.ok ? '✓' : '✗'}</span>
             {row.url}
           </span>
         ),
@@ -200,14 +200,14 @@ function SmokeResultsGrid({ results }: { results: SmokeResult[] }) {
         width: 0.7,
         align: 'right',
         render: ({ row }) => (
-          <span style={{ fontFamily: 'monospace', color: row.ok ? '#10b981' : '#f87171' }}>{row.actualStatus}</span>
+          <span style={{ fontFamily: 'monospace', color: row.ok ? 'var(--good)' : 'var(--bad)' }}>{row.actualStatus}</span>
         ),
       },
       {
         key: 'reason',
         header: 'Reason',
         width: 2,
-        render: ({ row }) => <span style={{ color: '#d1d5db', fontSize: '0.75rem' }}>{row.reason || '—'}</span>,
+        render: ({ row }) => <span style={{ color: 'var(--fg-dim)', fontSize: '0.75rem' }}>{row.reason || '—'}</span>,
       },
     ],
     [],

@@ -615,7 +615,7 @@ function GraphTab({ slug }: { slug: string }) {
 
       <div style={{ flex: 1, overflow: 'auto', minHeight: 0 }}>
         {error && (
-          <div style={{ padding: 12, color: '#f87171', fontSize: 12 }}>
+          <div style={{ padding: 12, color: 'var(--bad)', fontSize: 12 }}>
             <strong>error:</strong> {error}
           </div>
         )}

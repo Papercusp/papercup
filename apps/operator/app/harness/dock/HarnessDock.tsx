@@ -267,7 +267,7 @@ export function HarnessDock({ layoutName: initialLayoutName, className, slug }: 
           color: 'var(--foreground, #ccc)',
         }}
       >
-        <div style={{ color: '#f87171' }}>
+        <div style={{ color: 'var(--bad)' }}>
           Failed to load layout <code>{activeLayoutName}</code>:{' '}
           {state.error.message}
         </div>

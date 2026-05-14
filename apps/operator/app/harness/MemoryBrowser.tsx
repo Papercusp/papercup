@@ -33,9 +33,9 @@ interface Props {
 }
 
 const TIER_META: Record<Tier, { label: string; color: string; bg: string; border: string }> = {
-  green:  { label: 'safe',     color: '#a7f3d0', bg: 'rgba(16,185,129,0.12)', border: '#10b981' },
-  yellow: { label: 'caution',  color: '#fcd34d', bg: 'rgba(245,158,11,0.12)', border: '#f59e0b' },
-  red:    { label: 'locked',   color: '#fca5a5', bg: 'rgba(239,68,68,0.12)',  border: '#ef4444' },
+  green:  { label: 'safe',     color: '#a7f3d0', bg: 'rgba(16,185,129,0.12)', border: 'var(--good)' },
+  yellow: { label: 'caution',  color: '#fcd34d', bg: 'rgba(245,158,11,0.12)', border: 'var(--warn)' },
+  red:    { label: 'locked',   color: 'var(--bad)', bg: 'rgba(239,68,68,0.12)',  border: 'var(--bad)' },
 };
 
 function fmtSize(n: number): string {
@@ -181,9 +181,9 @@ export default function MemoryBrowser({ slug, alive }: Props) {
           gap: 8,
         }}>
           <span style={{ textTransform: 'uppercase', letterSpacing: 0.8, fontWeight: 600 }}>Memory map</span>
-          <span style={{ color: '#4b5563' }}>· {files.length}</span>
+          <span style={{ color: 'var(--fg-mute)' }}>· {files.length}</span>
           {alive && (
-            <span style={{ marginLeft: 'auto', color: '#f59e0b', fontSize: 10 }}>
+            <span style={{ marginLeft: 'auto', color: 'var(--warn)', fontSize: 10 }}>
               ⚠ harness running
             </span>
           )}
@@ -214,7 +214,7 @@ export default function MemoryBrowser({ slug, alive }: Props) {
                   width: 6, height: 6, borderRadius: '50%', background: meta.border,
                 }} />
                 {tier === 'green' ? 'Safe — edit anytime' : tier === 'yellow' ? 'Caution — edits may race' : 'Locked while harness is running'}
-                <span style={{ marginLeft: 'auto', color: '#4b5563' }}>{group.length}</span>
+                <span style={{ marginLeft: 'auto', color: 'var(--fg-mute)' }}>{group.length}</span>
               </div>
               {group.map((f) => (
                 <FileRow
@@ -260,12 +260,12 @@ export default function MemoryBrowser({ slug, alive }: Props) {
                 {activeFile.purpose}
               </span>
               {activeFile.locked && (
-                <span style={{ color: '#ef4444', fontSize: 11, fontWeight: 600 }}>
+                <span style={{ color: 'var(--bad)', fontSize: 11, fontWeight: 600 }}>
                   🛑 locked — stop harness to edit
                 </span>
               )}
               {!activeFile.locked && activeFile.tier === 'yellow' && alive && (
-                <span style={{ color: '#f59e0b', fontSize: 11 }}>
+                <span style={{ color: 'var(--warn)', fontSize: 11 }}>
                   ⚠ agent may be writing to this file
                 </span>
               )}
@@ -275,7 +275,7 @@ export default function MemoryBrowser({ slug, alive }: Props) {
             {toast && (
               <span style={{
                 fontSize: 11,
-                color: toast.startsWith('saved') ? '#10b981' : '#ef4444',
+                color: toast.startsWith('saved') ? 'var(--good)' : 'var(--bad)',
               }}>{toast}</span>
             )}
             <button
@@ -411,15 +411,15 @@ function FileRow({
           textOverflow: 'ellipsis',
           whiteSpace: 'nowrap',
         }}>{file.path}</span>
-        {file.locked && <span style={{ color: '#ef4444', fontSize: 10 }}>🛑</span>}
-        {!file.exists && <span style={{ color: '#4b5563', fontSize: 10, fontStyle: 'italic' }}>empty</span>}
+        {file.locked && <span style={{ color: 'var(--bad)', fontSize: 10 }}>🛑</span>}
+        {!file.exists && <span style={{ color: 'var(--fg-mute)', fontSize: 10, fontStyle: 'italic' }}>empty</span>}
       </div>
       <div style={{ fontSize: 10, color: 'var(--fg-mute)', display: 'flex', gap: 6, alignItems: 'center' }}>
         <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
           {file.purpose}
         </span>
         {file.exists && (
-          <span style={{ fontFamily: 'ui-monospace, monospace', color: '#4b5563' }}>
+          <span style={{ fontFamily: 'ui-monospace, monospace', color: 'var(--fg-mute)' }}>
             {fmtSize(file.size)}
           </span>
         )}

@@ -104,7 +104,7 @@ export default function HarnessDockShell({ slug }: HarnessDockShellProps) {
         <button
           type="button"
           onClick={() => router.push(`/harness/${slug}`)}
-          style={{ ...btn, color: '#f87171' }}
+          style={{ ...btn, color: 'var(--bad)' }}
           title="Exit dock view, go back to classic dashboard"
         >
           ← Classic
