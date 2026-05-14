@@ -19,9 +19,39 @@
 'use client';
 
 import { useEffect } from 'react';
-import { panelRegistry } from './panel-registry';
+import dynamic from 'next/dynamic';
+import { panelRegistry, type PanelComponentProps } from './panel-registry';
 import { IframePanel } from './IframePanel';
 import { MissingPanel } from './MissingPanel';
+
+/**
+ * Known componentRoot/componentId combinations the dock can resolve
+ * locally. Used when a plugin manifest declares a `react`-type panel
+ * whose component ships inside the operator codebase rather than as
+ * a remote import. Extend as new bundled-react panels arrive.
+ *
+ * The map key is `${componentRoot}::${componentId}`.
+ */
+const KNOWN_REACT_PANELS: Record<string, () => Promise<{ default: React.ComponentType<PanelComponentProps> }>> = {
+  '@restart/papercup-shared::PiTerminalsDock': async () => {
+    const mod = await import('../PiTerminalsDock');
+    const Inner = (mod as { default?: unknown }).default ?? (mod as Record<string, unknown>).PiTerminalsDock;
+    if (typeof Inner !== 'function') {
+      throw new Error('PiTerminalsDock export not found');
+    }
+    // Wrap so the dock's PanelComponentProps shape feeds the inner
+    // component's expected props (which take slug, initialLaneId).
+    const Wrap = (props: PanelComponentProps) => {
+      const slug = (props.params.harnessSlug as string) || (props.params.slug as string) || '';
+      const initialLaneId = (props.params.initialLaneId as string) || undefined;
+      // @ts-expect-error — PiTerminalsDock has its own props shape; we
+      // pass only the ones it understands.
+      return <Inner slug={slug} initialLaneId={initialLaneId} />;
+    };
+    Wrap.displayName = 'PiTerminalsDockWrap';
+    return { default: Wrap };
+  },
+};
 
 interface PanelContrib {
   pluginName: string;
@@ -76,35 +106,65 @@ export function useRegisterPluginPanels(slug: string): void {
               defaultGroup: panel.defaultGroup,
             });
           } else {
-            // React-type plugin panels need dynamic-import wiring to
-            // resolve componentRoot/componentId. That path exists in
-            // HarnessDashboard's plugin tabs but isn't wired here yet.
-            // Show an explicit message rather than the "plugin not
-            // installed" MissingPanel default, which would mislead.
-            const NotYet = () => (
-              <div
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  height: '100%',
-                  padding: 16,
-                  textAlign: 'center',
-                  color: 'var(--muted-foreground, #888)',
-                  fontSize: 12,
-                }}
-              >
-                Plugin <code style={{ color: 'var(--foreground, #ccc)' }}>{panel.pluginName}:{panel.id}</code>
-                {' '}is a React-typed panel; dock rendering for these is not yet wired
-                (componentRoot/componentId import path is HarnessDashboard-side only today).
-              </div>
-            );
-            NotYet.displayName = `PluginReactPanelNotYet(${panel.fullType})`;
-            panelRegistry.register(panel.fullType, NotYet, {
-              title: panel.title,
-              keepAlive: false,
-              defaultGroup: panel.defaultGroup,
-            });
+            // React-type plugin panel. Check KNOWN_REACT_PANELS for a
+            // local mapping (e.g. pi-coding's PiTerminalsDock); fall
+            // back to a not-yet-wired message for genuinely-external
+            // React panels whose componentRoot can't be resolved.
+            const key = `${panel.componentRoot ?? ''}::${panel.componentId ?? ''}`;
+            const loader = KNOWN_REACT_PANELS[key];
+            if (loader) {
+              const Comp = dynamic(loader, {
+                ssr: false,
+                loading: () => (
+                  <div
+                    style={{
+                      padding: 16,
+                      fontSize: 12,
+                      color: 'var(--muted-foreground, #888)',
+                    }}
+                  >
+                    Loading {panel.title}…
+                  </div>
+                ),
+              });
+              panelRegistry.register(panel.fullType, Comp as never, {
+                title: panel.title,
+                keepAlive: panel.keepAlive ?? true,
+                defaultGroup: panel.defaultGroup,
+              });
+            } else {
+              const NotYet = () => (
+                <div
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    height: '100%',
+                    padding: 16,
+                    textAlign: 'center',
+                    color: 'var(--muted-foreground, #888)',
+                    fontSize: 12,
+                  }}
+                >
+                  Plugin{' '}
+                  <code style={{ color: 'var(--foreground, #ccc)' }}>
+                    {panel.pluginName}:{panel.id}
+                  </code>{' '}
+                  is an external React-typed panel; the dock doesn't have
+                  a loader for{' '}
+                  <code>
+                    {panel.componentRoot ?? '?'}::{panel.componentId ?? '?'}
+                  </code>{' '}
+                  yet. Add it to KNOWN_REACT_PANELS in useRegisterPluginPanels.tsx.
+                </div>
+              );
+              NotYet.displayName = `PluginReactPanelNotYet(${panel.fullType})`;
+              panelRegistry.register(panel.fullType, NotYet, {
+                title: panel.title,
+                keepAlive: false,
+                defaultGroup: panel.defaultGroup,
+              });
+            }
           }
         }
       })
