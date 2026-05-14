@@ -20,6 +20,7 @@ import { RealFeaturesPanel } from './RealFeaturesPanel';
 import { RealIssuesPanel } from './RealIssuesPanel';
 import { RealAgentsPanel } from './RealAgentsPanel';
 import { RealLogsPanel } from './RealLogsPanel';
+import { RealGitPanel } from './RealGitPanel';
 
 function SamplePanel({ panelType, params }: PanelComponentProps) {
   return (
@@ -136,11 +137,7 @@ let registered = false;
 export function registerSamplePanels(): void {
   if (registered) return;
   registered = true;
-  for (const t of [
-    'view:dashboard-overview',
-    'view:harness-overview',
-    'data:git',
-  ]) {
+  for (const t of ['view:dashboard-overview', 'view:harness-overview']) {
     panelRegistry.register(t, SamplePanel);
   }
   // Real implementations — fetch live data per slug.
@@ -148,6 +145,7 @@ export function registerSamplePanels(): void {
   panelRegistry.register('data:issues', RealIssuesPanel);
   panelRegistry.register('data:agents', RealAgentsPanel, { keepAlive: true });
   panelRegistry.register('data:logs', RealLogsPanel, { keepAlive: true });
+  panelRegistry.register('data:git', RealGitPanel, { keepAlive: true });
   panelRegistry.register('view:docs', DocsSamplePanel, { keepAlive: true });
 }
 
