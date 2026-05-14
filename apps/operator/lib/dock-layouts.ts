@@ -311,6 +311,11 @@ export type LayoutRow = {
  * Returns the named layout for (workspaceId, userId). On miss, seeds
  * `defaultDashboardLayout()` (or pi-terminals seed when `name === 'pi'`),
  * INSERTs the row, and returns it. Subsequent calls hit the row.
+ *
+ * Schema migration: stored bodies older than CURRENT_LAYOUT_SCHEMA_VERSION
+ * are lifted via migrateLayoutBody before being returned. Migrations are
+ * not persisted automatically — the next save round-trip writes the
+ * lifted body back. Opaque bodies (pi-tab) are passed through unchanged.
  */
 export async function getLayout(
   principal: LayoutPrincipal,
@@ -337,7 +342,20 @@ export async function getLayout(
      LIMIT 1
   `;
   if (rows.length > 0) {
-    return rowToLayout(rows[0]);
+    const row = rowToLayout(rows[0]);
+    // Migrate body if stale. Imported lazily to avoid a cycle.
+    const { migrateLayoutBody } = await import('./dock-layout-migrators');
+    const { layout, migrated, warning } = migrateLayoutBody(row.layoutJson, {
+      isPi: name === 'pi' || name.startsWith('pi:'),
+    });
+    if (warning) {
+      console.warn(`[dock-layouts] ${name}: ${warning}`);
+    }
+    if (migrated) {
+      row.layoutJson = layout;
+      row.schemaVersion = (layout as { schemaVersion?: number }).schemaVersion ?? row.schemaVersion;
+    }
+    return row;
   }
   // Seed. Pi-tab layouts (any `pi:<slug>` name) get an opaque empty body
   // — pi-tab's persistence stores raw dockview JSON and reads back its
