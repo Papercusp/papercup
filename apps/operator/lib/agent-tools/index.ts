@@ -70,6 +70,8 @@ import './harness/escalation';
 import './harness/pending_reviews';
 import './harness/health';
 import './harness/list_features';
+import './harness/docs_outline';
+import './harness/docs_get';
 import './operator/actions_recent';
 import './operator/notifications_recent';
 import './snapshots/list';
@@ -148,3 +150,10 @@ import './docs/get';
 import './docs/search';
 import './docs/resource-index';
 import './docs/resource-section';
+
+// SU-agent file-lock coordination — see su-agent-coordination-v3-2026-05-14.md
+import './locks/acquire';
+import './locks/release';
+import './locks/heartbeat';
+import './locks/cancel_wait';
+import './locks/queue';
