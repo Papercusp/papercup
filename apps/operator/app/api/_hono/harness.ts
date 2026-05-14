@@ -365,6 +365,27 @@ const __aliveCache: Map<string, { value: boolean; expires: number; pending: Prom
   return g[__aliveCacheKey]!;
 })();
 
+/**
+ * Single source of truth for "is this cmdline a harness driver process?".
+ *
+ * Matches:
+ *   - Legacy bash driver: `autonomous-harness/run.sh` or `/harness/run.sh`
+ *   - TS orchestrator (canonical since PAPERCUSP_USE_TS_ORCHESTRATOR
+ *     became default): cmdline contains `orchestrator/bin/run.ts` when
+ *     launched via `npx tsx .../orchestrator/bin/run.ts`.
+ *
+ * Used by liveness probes (/status), stop/pause/resume handlers, the
+ * status-sweep, and isHarnessAlive. When a new driver entry-point is
+ * added, update this predicate and every caller picks it up.
+ */
+export function isHarnessDriverCmdline(cmdline: string): boolean {
+  return (
+    cmdline.includes('autonomous-harness/run.sh') ||
+    cmdline.includes('/harness/run.sh') ||
+    cmdline.includes('orchestrator/bin/run.ts')
+  );
+}
+
 function scanForRunShCwd(projectPath: string): boolean {
   try {
     const procs = readdirSync('/proc');
@@ -374,7 +395,7 @@ function scanForRunShCwd(projectPath: string): boolean {
         const cwd = readlinkSync(`/proc/${pid}/cwd`);
         if (!cwd.startsWith(projectPath)) continue;
         const cmdline = readFileSync(`/proc/${pid}/cmdline`, 'utf8');
-        if (cmdline.includes('autonomous-harness/run.sh') || cmdline.includes('/harness/run.sh')) return true;
+        if (isHarnessDriverCmdline(cmdline)) return true;
       } catch { /* perm-denied PID — skip */ }
     }
   } catch { /* /proc unreadable — fall through */ }
@@ -5173,7 +5194,7 @@ function findHarnessPids(projectPath: string): number[] {
         const cwd = readlinkSync(`/proc/${pid}/cwd`);
         if (!cwd.startsWith(projectPath)) continue;
         const cmdline = readFileSync(`/proc/${pid}/cmdline`, 'utf8');
-        if ((cmdline.includes('autonomous-harness/run.sh') || cmdline.includes('/harness/run.sh')) || cmdline.includes('claude') || cmdline.includes('python3')) {
+        if (isHarnessDriverCmdline(cmdline) || cmdline.includes('claude') || cmdline.includes('python3')) {
           pids.push(Number(pid));
         }
       } catch {}
@@ -5215,7 +5236,7 @@ harness.post('/:slug/stop', async (c) => {
         const cwd = readlinkSync(`/proc/${pid}/cwd`);
         if (!cwd.startsWith(project.path)) continue;
         const cmdline = readFileSync(`/proc/${pid}/cmdline`, 'utf8');
-        if ((cmdline.includes('autonomous-harness/run.sh') || cmdline.includes('/harness/run.sh'))) {
+        if (isHarnessDriverCmdline(cmdline)) {
           process.kill(Number(pid), 'SIGTERM');
           killed.push(Number(pid));
         }
@@ -6179,7 +6200,7 @@ function isHarnessAlive(project: ProjectEntry): boolean {
         const cwd = readFileSync(`/proc/${pid}/cwd`, 'utf8').trim();
         if (!cwd.startsWith(project.path)) continue;
         const cmdline = readFileSync(`/proc/${pid}/cmdline`, 'utf8');
-        if ((cmdline.includes('autonomous-harness/run.sh') || cmdline.includes('/harness/run.sh'))) return true;
+        if (isHarnessDriverCmdline(cmdline)) return true;
       } catch {}
     }
   } catch {}
@@ -6713,7 +6734,7 @@ function scanRunShProcesses(): Array<{ pid: string; cwd: string }> {
       if (!/^\d+$/.test(pid)) continue;
       try {
         const cmdline = readFileSync(`/proc/${pid}/cmdline`, 'utf8');
-        if (!cmdline.includes('autonomous-harness/run.sh') && !cmdline.includes('/harness/run.sh')) continue;
+        if (!isHarnessDriverCmdline(cmdline)) continue;
         const cwd = readFileSync(`/proc/${pid}/cwd`, 'utf8').trim();
         out.push({ pid, cwd });
       } catch { /* proc went away or unreadable — skip */ }
