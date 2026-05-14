@@ -62,6 +62,7 @@ const dbcFor = (slug: string) => getLegacyClient(slug);
 const execFileP = promisify(execFile);
 
 import { papercuspRoot } from '@/lib/papercusp-root';
+import { getHarnessAdminUrl } from '@/lib/embedded-pg-discovery';
 import {
   loadHarnessRegistry,
   saveHarnessRegistry,
@@ -621,9 +622,17 @@ async function launchRun(project: ProjectEntry, extra?: string): Promise<{ ok: t
       // orchestrator's in-memory fallback (designed for tests) yields
       // an empty store, pre-loop's featuresExist() returns false, and
       // the scoper-gate fails on every launch even though PG has the
-      // feature queue. The orchestrator's embedded-pg discovery file
-      // (~/.papercusp/embedded-pg.json) resolves the DSN automatically.
+      // feature queue.
       PAPERCUSP_USE_PG_STATE: '1',
+      // spawn-mcp reads DATABASE_URL (or PAPERCUSP_PG_DSN) to load its
+      // signing key from harness_shared.operator_secrets. Without it,
+      // every tool invocation hits "no PG DSN in env" and the
+      // orchestrator hits no-tools, decides it can't do anything, and
+      // immediately escalates. We use the operator's own resolved
+      // admin URL (env → discovery file → native fallback) so the
+      // spawned orchestrator hits the exact same Postgres the operator
+      // uses, not a stale hardcoded default.
+      DATABASE_URL: getHarnessAdminUrl(),
       ...searchProviderEnv,
       ...(extra ? Object.fromEntries(extra.split(/\s+/).filter(Boolean).map((kv: string) => kv.split('='))) : {}),
     },
@@ -6735,6 +6744,17 @@ export async function resolvePhasedProject(slug: string, phase: Phase | undefine
   const base = await resolveProject(slug);
   if (!base) return null;
   if (!phase || phase === 'staging') return base;
+  // When the harness-phases flag is OFF, treat every phase as the
+  // base project. The phase-suffixed worktrees (sheets-clone--production
+  // etc.) only exist for users who explicitly opted into phases — for
+  // everyone else, "production" is just a UI label, not a separate
+  // worktree. Without this guard, the UI's coerced activePhase='production'
+  // points API calls at a stale or non-existent worktree, breaking
+  // launches against the user's actual work.
+  const { getFlag } = await import('@papercusp/flags/server');
+  const { FLAGS } = await import('@papercusp/flags');
+  const phasesEnabled = await getFlag(FLAGS.HARNESS_PHASES, 'system');
+  if (!phasesEnabled) return base;
   const p = phasePath(base, phase);
   return { ...base, path: p };
 }

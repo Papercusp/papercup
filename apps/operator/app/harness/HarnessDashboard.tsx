@@ -4248,7 +4248,9 @@ export default function HarnessDashboard() {
         <ActiveAgentsBar
           slug={activeSlug}
           phase={activePhase}
-          alive={status?.alive ?? false}
+          // `null` while we haven't received /status yet → loading state
+          // in the bar. After the first response, real true/false.
+          alive={status === null ? null : !!status.alive}
           runs={(Array.isArray(zeroLaneRows) ? zeroLaneRows : [])
             .map((l) => ({
               // Use the real runId format that the orchestrator's invoke()
