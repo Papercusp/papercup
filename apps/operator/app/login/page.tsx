@@ -39,7 +39,15 @@ function LoginForm() {
         const j = await r.json();
         // Switching: never auto-redirect even if a session exists. The
         // user is deliberately on /login to swap accounts.
-        if (j.user && !isSwitching) {
+        //
+        // pgUnavailable: skip the redirect — /api/auth/me returns a
+        // synthetic default user when embedded-pg is unreachable. If
+        // we treated that as an active session, the login page would
+        // bounce users away every time PG hiccupped, leaving no path
+        // to actually sign in. Defer to a real /me response (Bug 28
+        // from the post-Tier-3 audit; sibling to AutoLoginWelcomeToast
+        // suppression in commit bde1e061).
+        if (j.user && !isSwitching && !j.pgUnavailable) {
           router.replace(redirectTo);
           return;
         }
@@ -152,7 +160,7 @@ function LoginForm() {
           display: 'flex', flexDirection: 'column', gap: 16,
           minWidth: 320, padding: 32,
           borderRadius: 12, border: '1px solid var(--border)',
-          background: 'var(--surface)',
+          background: 'var(--bg-2)',
         }}
       >
         <h1 style={{ margin: 0, fontSize: 20 }}>
@@ -166,7 +174,7 @@ function LoginForm() {
               padding: '8px 10px',
               borderRadius: 6,
               border: '1px solid var(--border)',
-              background: 'var(--surface-2, transparent)',
+              background: 'var(--bg-3, transparent)',
               opacity: 0.85,
             }}
           >
@@ -249,7 +257,7 @@ function LoginForm() {
           onClick={() => setMode(mode === 'login' ? 'signup' : 'login')}
           style={{
             background: 'none', border: 'none',
-            color: 'var(--text-secondary)', cursor: 'pointer',
+            color: 'var(--fg-mute)', cursor: 'pointer',
             fontSize: 13, padding: 0, textAlign: 'left',
           }}
         >
