@@ -98,13 +98,14 @@ export function startRecorder(): void {
   state.started = true;
 
   // Interaction latency — the killer metric.
+  let evSeq = 0;
   try {
     const intObs = new PerformanceObserver((list) => {
       for (const entry of list.getEntries()) {
         const e = entry as PerformanceEventTiming;
         if (e.duration < 40) continue; // ignore fast interactions
         addEvent(state, {
-          id: `${e.startTime}-${e.name}`,
+          id: `ev-${++evSeq}-${e.name}`,
           kind: 'interaction',
           route: window.location.pathname,
           ts: Date.now(),
@@ -158,20 +159,29 @@ export function startRecorder(): void {
   } catch { /* not supported */ }
 
   // Console errors — useful signal during chaos runs and ambient usage.
-  state.consoleErrorOrig = console.error;
-  console.error = (...args: unknown[]) => {
-    state.consoleErrorOrig?.(...args);
-    const msg = args.map((a) => (typeof a === 'string' ? a : (a as Error)?.message ?? String(a))).join(' ').slice(0, 200);
-    addEvent(state, {
-      id: `err-${Date.now()}-${Math.random()}`,
-      kind: 'console-error',
-      route: window.location.pathname,
-      ts: Date.now(),
-      duration: 0,
-      target: 'console',
-      detail: msg,
-    });
-  };
+  // Only patch once. Tauri webview hooks console.error for native log
+  // forwarding; we wrap that, not the other way around, to avoid colliding
+  // patches dropping each other's behavior on hot-reload.
+  if (!(console.error as unknown as { __papercuspPatched?: boolean }).__papercuspPatched) {
+    state.consoleErrorOrig = console.error;
+    const patched = (...args: unknown[]) => {
+      state.consoleErrorOrig?.(...args);
+      const msg = args.map((a) => (typeof a === 'string' ? a : (a as Error)?.message ?? String(a))).join(' ').slice(0, 200);
+      try {
+        addEvent(state, {
+          id: `cerr-${++evSeq}`,
+          kind: 'console-error',
+          route: window.location.pathname,
+          ts: Date.now(),
+          duration: 0,
+          target: 'console',
+          detail: msg,
+        });
+      } catch { /* never break console.error itself */ }
+    };
+    (patched as unknown as { __papercuspPatched: boolean }).__papercuspPatched = true;
+    console.error = patched;
+  }
 
   window.addEventListener('error', (e) => {
     addEvent(state, {
