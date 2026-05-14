@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { useQueryState, parseAsString, parseAsStringEnum, parseAsBoolean } from 'nuqs';
-import Button from '../../harness/Button';
+import { Button } from '../../../harness/Button';
 import {
   CHANNEL_NAME,
   type ControllerMsg,

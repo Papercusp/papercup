@@ -145,7 +145,7 @@ export function OperatorChat({
         </>
       }
       emptyState={{
-        title: 'Operator',
+        title: 'Papercup',
         body: passive
           ? 'In passive mode. Type below to wake them.'
           : 'Tell me what you want to inspect, scan, or unblock.',
@@ -175,7 +175,7 @@ export function OperatorChat({
         ),
       }}
       labelForRole={() => ''}
-      inputPlaceholder={passive ? 'Type to wake the Operator…' : 'Reply to the Operator…'}
+      inputPlaceholder={passive ? 'Type to wake Papercup…' : 'Reply to Papercup…'}
       inputValue={input}
       onInputChange={setInput}
       onSubmit={submit}

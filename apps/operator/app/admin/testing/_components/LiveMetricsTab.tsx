@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { useQueryState, parseAsString, parseAsStringEnum } from 'nuqs';
-import Button from '../../harness/Button';
+import { Button } from '../../../harness/Button';
 import { subscribe, clearEvents, rateINP, type PerfEvent, type PerfEventKind } from '../_lib/vitals-recorder';
 
 type SortKey = 'ts' | 'duration' | 'route';
