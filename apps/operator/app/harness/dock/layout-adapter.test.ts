@@ -1,0 +1,133 @@
+import { describe, expect, it } from 'vitest';
+import { defaultDashboardLayout, validateLayoutDoc, type LayoutDoc } from '../../../lib/dock-layouts';
+import { roundTrip, toDockviewJson, toLayoutDoc } from './layout-adapter';
+
+describe('layout-adapter', () => {
+  it('round-trips a tab-only layout preserving panel ids and types', () => {
+    const doc: LayoutDoc = {
+      schemaVersion: 1,
+      root: {
+        kind: 'tabs',
+        id: 'r',
+        activePanelId: 'b',
+        panels: [
+          { id: 'a', type: 'data:features', params: { slug: 'sheets' } },
+          { id: 'b', type: 'data:issues' },
+        ],
+      },
+    };
+    const back = roundTrip(doc);
+    expect(back.schemaVersion).toBe(1);
+    expect(back.root.kind).toBe('tabs');
+    if (back.root.kind === 'tabs') {
+      expect(back.root.id).toBe('r');
+      expect(back.root.activePanelId).toBe('b');
+      expect(back.root.panels.map((p) => p.id)).toEqual(['a', 'b']);
+      expect(back.root.panels.map((p) => p.type)).toEqual(['data:features', 'data:issues']);
+      expect(back.root.panels[0].params).toEqual({ slug: 'sheets' });
+    }
+  });
+
+  it('round-trips a 3-pane horizontal split (default dashboard shape)', () => {
+    const doc = defaultDashboardLayout('sheets');
+    const back = roundTrip(doc);
+    // Structure preservation: 3 top-level children
+    expect(back.root.kind).toBe('group');
+    if (back.root.kind === 'group') {
+      expect(back.root.children.length).toBe(3);
+    }
+    // Validate the round-trip is itself a legal layout
+    expect(() => validateLayoutDoc(back)).not.toThrow();
+  });
+
+  it('preserves panel params across round-trip', () => {
+    const doc: LayoutDoc = {
+      schemaVersion: 1,
+      root: {
+        kind: 'tabs',
+        id: 'r',
+        activePanelId: 'a',
+        panels: [{ id: 'a', type: 'view:harness-overview', params: { harnessSlug: 'sheets', phase: 'testing' } }],
+      },
+    };
+    const back = roundTrip(doc);
+    if (back.root.kind === 'tabs') {
+      expect(back.root.panels[0].params).toEqual({ harnessSlug: 'sheets', phase: 'testing' });
+    }
+  });
+
+  it('handles empty/missing floating array', () => {
+    const doc: LayoutDoc = {
+      schemaVersion: 1,
+      root: { kind: 'tabs', id: 'r', activePanelId: 'a', panels: [{ id: 'a', type: 'x' }] },
+    };
+    const dv = toDockviewJson(doc);
+    expect(dv.floatingGroups).toBeUndefined();
+    const back = toLayoutDoc(dv);
+    expect(back.floating).toBeUndefined();
+  });
+
+  it('serializes floating groups', () => {
+    const doc: LayoutDoc = {
+      schemaVersion: 1,
+      root: { kind: 'tabs', id: 'r', activePanelId: 'a', panels: [{ id: 'a', type: 'x' }] },
+      floating: [
+        {
+          id: 'fg1',
+          x: 100,
+          y: 50,
+          width: 480,
+          height: 360,
+          activePanelId: 'b',
+          panels: [{ id: 'b', type: 'view:vscode' }],
+        },
+      ],
+    };
+    const dv = toDockviewJson(doc);
+    expect(dv.floatingGroups?.length).toBe(1);
+    expect(dv.floatingGroups?.[0].position).toEqual({ left: 100, top: 50, width: 480, height: 360 });
+    expect(dv.panels['b']).toBeDefined();
+    expect(dv.panels['b'].contentComponent).toBe('view:vscode');
+    const back = toLayoutDoc(dv);
+    expect(back.floating?.[0]).toMatchObject({ id: 'fg1', x: 100, y: 50, width: 480, height: 360 });
+  });
+
+  it('handles orphaned panel id in dockview JSON without throwing', () => {
+    // Simulates: layout references panel `lost` but the panels map is missing it.
+    const dv = {
+      grid: {
+        orientation: 'HORIZONTAL' as const,
+        height: 0,
+        width: 0,
+        root: {
+          type: 'leaf' as const,
+          data: { views: ['lost'], activeView: 'lost', id: 'r' },
+        },
+      },
+      panels: {},
+    };
+    const back = toLayoutDoc(dv);
+    if (back.root.kind === 'tabs') {
+      expect(back.root.panels[0].type).toBe('__missing__');
+    }
+  });
+
+  it('builds a usable dockview JSON for the dashboard seed', () => {
+    const doc = defaultDashboardLayout('sheets');
+    const dv = toDockviewJson(doc);
+    expect(dv.grid.root.type).toBe('branch');
+    // All panels referenced in leaves must exist in dv.panels
+    const referenced: string[] = [];
+    function collectLeafIds(n: typeof dv.grid.root): void {
+      if (n.type === 'leaf') {
+        referenced.push(...n.data.views);
+      } else {
+        for (const c of n.data) collectLeafIds(c);
+      }
+    }
+    collectLeafIds(dv.grid.root);
+    for (const id of referenced) {
+      expect(dv.panels[id]).toBeDefined();
+    }
+  });
+});
