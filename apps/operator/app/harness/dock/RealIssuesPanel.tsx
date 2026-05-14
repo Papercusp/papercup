@@ -1,0 +1,208 @@
+/**
+ * RealIssuesPanel — issues list backed by /api/harness/<slug>/issues-list.
+ *
+ * Second real panel implementation. Demonstrates:
+ *   - Independent fetch per panel instance (multi-slug compare)
+ *   - Severity + status filter chips
+ *   - Compact list with severity color coding
+ */
+
+'use client';
+
+import { useEffect, useMemo, useState } from 'react';
+import type { PanelComponentProps } from './panel-registry';
+
+interface Issue {
+  id: string;
+  title: string;
+  severity?: string;
+  status?: string;
+  source?: string;
+  foundAt?: string;
+  evidence?: string | null;
+  attempts?: number;
+}
+
+interface IssuesResponse {
+  issues: Issue[];
+  pending?: unknown[];
+}
+
+const SEVERITY_COLORS: Record<string, string> = {
+  critical: '#dc2626',
+  major: '#ea580c',
+  minor: '#fbbf24',
+  trivial: '#94a3b8',
+};
+
+const STATUS_COLORS: Record<string, string> = {
+  open: '#f87171',
+  triaged: '#fbbf24',
+  fixing: '#60a5fa',
+  fixed: '#4ade80',
+  closed: '#71717a',
+  duplicate: '#71717a',
+};
+
+type Filter = 'all' | 'open' | 'triaged' | 'fixed' | 'closed';
+
+export function RealIssuesPanel({ params, api }: PanelComponentProps) {
+  const slug = (params.harnessSlug as string) || (params.slug as string) || '';
+  const [data, setData] = useState<IssuesResponse | null>(null);
+  const [error, setError] = useState<Error | null>(null);
+  const [filter, setFilter] = useState<Filter>('open');
+
+  useEffect(() => {
+    if (!slug) return;
+    setError(null);
+    let cancel = false;
+    fetch(`/api/harness/${encodeURIComponent(slug)}/issues-list`)
+      .then((r) => {
+        if (!r.ok) throw new Error(`status ${r.status}`);
+        return r.json();
+      })
+      .then((j: IssuesResponse) => {
+        if (cancel) return;
+        setData(j);
+        api.setTitle(`Issues: ${slug} (${j.issues.length})`);
+      })
+      .catch((e: Error) => {
+        if (cancel) return;
+        setError(e);
+      });
+    return () => {
+      cancel = true;
+    };
+  }, [slug, api]);
+
+  const filtered = useMemo(() => {
+    if (!data) return [];
+    if (filter === 'all') return data.issues;
+    return data.issues.filter((i) => i.status === filter);
+  }, [data, filter]);
+
+  const counts = useMemo(() => {
+    if (!data) return { all: 0, open: 0, triaged: 0, fixed: 0, closed: 0 };
+    const acc = { all: data.issues.length, open: 0, triaged: 0, fixed: 0, closed: 0 };
+    for (const i of data.issues) {
+      const s = i.status ?? '';
+      if (s in acc) (acc as Record<string, number>)[s] += 1;
+    }
+    return acc;
+  }, [data]);
+
+  if (!slug) {
+    return (
+      <div style={{ padding: 16, fontSize: 13, color: 'var(--muted-foreground,#888)' }}>
+        No harness slug in params.
+      </div>
+    );
+  }
+  if (error) {
+    return (
+      <div style={{ padding: 16, fontSize: 13, color: '#f87171' }}>Failed: {error.message}</div>
+    );
+  }
+  if (!data) {
+    return (
+      <div style={{ padding: 16, fontSize: 13, color: 'var(--muted-foreground,#888)' }}>
+        Loading {slug}…
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
+      <div
+        style={{
+          display: 'flex',
+          gap: 4,
+          padding: '6px 8px',
+          borderBottom: '1px solid var(--border, #333)',
+          background: 'var(--card, #1a1a1a)',
+          flexShrink: 0,
+          flexWrap: 'wrap',
+        }}
+      >
+        {(['all', 'open', 'triaged', 'fixed', 'closed'] as Filter[]).map((key) => {
+          const active = filter === key;
+          return (
+            <button
+              key={key}
+              type="button"
+              onClick={() => setFilter(key)}
+              style={{
+                padding: '2px 8px',
+                fontSize: 11,
+                background: active ? 'var(--accent,#2a2a2a)' : 'transparent',
+                color: active ? 'var(--foreground,#ccc)' : 'var(--muted-foreground,#888)',
+                border: '1px solid var(--border,#333)',
+                borderRadius: 3,
+                cursor: 'pointer',
+              }}
+            >
+              {key} ({counts[key]})
+            </button>
+          );
+        })}
+      </div>
+      <div style={{ flex: 1, overflow: 'auto', fontSize: 12 }}>
+        {filtered.length === 0 ? (
+          <div style={{ padding: 16, color: 'var(--muted-foreground,#888)' }}>
+            No issues match.
+          </div>
+        ) : (
+          <ul style={{ margin: 0, padding: 0, listStyle: 'none' }}>
+            {filtered.map((i) => (
+              <li
+                key={i.id}
+                style={{
+                  display: 'flex',
+                  gap: 8,
+                  padding: '6px 12px',
+                  borderBottom: '1px solid var(--border-subtle,#222)',
+                  alignItems: 'baseline',
+                }}
+              >
+                <span
+                  style={{
+                    width: 6,
+                    height: 18,
+                    borderRadius: 1,
+                    background: SEVERITY_COLORS[i.severity ?? ''] ?? '#444',
+                    flexShrink: 0,
+                  }}
+                  title={`severity: ${i.severity ?? 'unknown'}`}
+                />
+                <span
+                  style={{
+                    minWidth: 60,
+                    fontFamily: 'ui-monospace, monospace',
+                    fontSize: 11,
+                    color: 'var(--muted-foreground,#888)',
+                  }}
+                >
+                  {i.id}
+                </span>
+                <span style={{ flex: 1, color: 'var(--foreground,#ccc)' }}>{i.title}</span>
+                <span
+                  style={{
+                    fontSize: 10,
+                    padding: '1px 5px',
+                    background: STATUS_COLORS[i.status ?? ''] ?? '#333',
+                    color: '#111',
+                    borderRadius: 2,
+                    flexShrink: 0,
+                  }}
+                  title={`status: ${i.status ?? 'unknown'}`}
+                >
+                  {i.status ?? '?'}
+                </span>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    </div>
+  );
+}
