@@ -81,6 +81,7 @@ import {
   subscribeVoicePrefsClient,
 } from './voice/voice-prefs-client';
 import { getConfiguredWakeWordForDisplay } from '@/lib/voice-cards/wakeword-display';
+import { sharedState as sharedOperatorState } from './operator-shared-state';
 
 interface OperatorTurnRow {
   id: string;
@@ -1385,8 +1386,17 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
           const elapsedSecs = (nowMs - continueChainStartedAtMsRef.current) / 1000;
           if (continueChainCountRef.current <= maxCount && elapsedSecs <= maxSecs) {
             // Fire the chained turn with the latest history.
+            // Propagate isAutoFire — if the current turn was itself an
+            // auto-fire (terminal → user_says_ready), the continue chain
+            // it spawns inherits that flag. Without this, a misbehaving
+            // user_says_ready that emits <continue/> would chain into a
+            // terminal turn, which would re-trigger terminal-auto-fire
+            // and create an oscillation loop (audit round 3).
             const nextHistory = stateRef.current.messages;
-            void runGeneration('continue', { messagesOverride: nextHistory });
+            void runGeneration('continue', {
+              messagesOverride: nextHistory,
+              isAutoFire: opts?.isAutoFire,
+            });
             return; // do NOT also fire terminal auto-fire below
           }
           // Cap hit — drop the chain, wait for user.
@@ -1402,18 +1412,26 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
 
         // Terminal auto-fire: only in active mode, voice off, with the
         // ticks pref on, no EL cool-off active, no active brain-emitted
-        // sleep, and NOT itself an auto-fire (anti-loop guard).
+        // sleep, operator not paused, and NOT itself an auto-fire
+        // (anti-loop guard).
         //
-        // sleepUntilMs gate (audit bug #1): the brain's <sleep> tag
+        // sleepUntilMs gate (audit round-1): the brain's <sleep> tag
         // writes sleepUntilMs and tells the operator to stay quiet for
         // N minutes. The silence-after-question effect respects that
         // gate; this auto-fire must too, or a terminal turn AFTER a
         // sleep tag would re-engage the user against their wishes.
+        //
+        // paused gate (audit round-3): the workspace-level paused
+        // state means "autonomous actions disabled." Plan §A non-goal
+        // explicitly says: do not run when paused. Read from
+        // sharedState (operator-shared-state) — different store from
+        // state.mode (active/passive).
         const isTerminal =
           !parsed.continue
           && !parsed.sleep
           && !awaitingReply
           && stateRef.current.mode === 'active'
+          && !sharedOperatorState.paused
           && !voiceActiveRef.current
           && (prefs.proactiveTicksEnabled ?? true) === true
           && readSleepUntilMs() <= Date.now()
