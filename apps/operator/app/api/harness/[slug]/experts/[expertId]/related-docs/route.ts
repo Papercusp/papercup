@@ -4,7 +4,7 @@
  * with reading material that's relevant to what the expert is drafting.
  *
  * Approach:
- *  - Walk apps/operator/content/docs/spec/ + a few sibling dirs
+ *  - Walk apps/operator/content/internal-docs/spec/ + a few sibling dirs
  *  - Score each .mdx by token overlap against the expert title +
  *    highLevelSpec (after stripping markdown noise).
  *  - Return the top match's path + raw markdown body.
@@ -32,7 +32,7 @@ interface DocCandidate {
 }
 
 const DOCS_ROOTS = [
-  'apps/operator/content/docs/spec',
+  'apps/operator/content/internal-docs/spec',
   'apps/operator/content/docs',
 ];
 

@@ -29,7 +29,7 @@ export default defineResource({
   capability: 'docs:read',
   mimeType: 'text/markdown',
   description:
-    'Whole-section consolidated documentation (markdown). One entry per top-level docs section; reading returns every page in that section joined.',
+    'Whole-section consolidated engineering reference (markdown). One entry per top-level section in /internal/docs; reading returns every page in that section joined.',
 
   async list(): Promise<ResourceListEntry[]> {
     const outline = await buildOutline(adapter);
@@ -38,7 +38,7 @@ export default defineResource({
       .map((s) => ({
         uri: `papercusp://docs/section/${s.slug}`,
         name: s.title,
-        description: s.description ?? `Consolidated markdown for every page under /docs/${s.slug}.`,
+        description: s.description ?? `Consolidated markdown for every page under /internal/docs/${s.slug}.`,
         mimeType: 'text/markdown',
       }));
   },

@@ -1,6 +1,6 @@
 # `/api/admin/execute-action` contract
 
-Locked 2026-05-01 as part of [multi-harness-spawning](../../../content/docs/implementation/multi-harness-spawning.mdx) Step 0.5. This document defines the wire contract before code lands; changes here propagate to the executor (Step 2), callers (Step 4), and smokes (Step 6).
+Locked 2026-05-01 as part of [multi-harness-spawning](../../../content/internal-docs/implementation/multi-harness-spawning.mdx) Step 0.5. This document defines the wire contract before code lands; changes here propagate to the executor (Step 2), callers (Step 4), and smokes (Step 6).
 
 ## Endpoint
 

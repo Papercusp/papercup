@@ -10,7 +10,7 @@ spawned by the same Tauri parent that spawned the Node sidecar). IPC calls
 synthesize a `principal: { role: 'operator' }` and **skip HMAC signature
 verification**. The signed-URL model applies to spawned subprocesses that
 might forge their own role — the webview is not that. See
-`apps/operator/content/docs/endpoint-system/transports.mdx` § "Trust model".
+`apps/operator/content/internal-docs/endpoint-system/transports.mdx` § "Trust model".
 
 ## Transport
 

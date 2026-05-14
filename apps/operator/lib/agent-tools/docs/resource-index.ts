@@ -18,7 +18,7 @@ export default defineResource({
   capability: 'docs:read',
   mimeType: 'text/plain',
   description:
-    'Project documentation sitemap — flat list of every page with title, URL, and description (the /llms.txt content).',
+    'Papercusp engineering reference sitemap — flat list of every page in /internal/docs with title, URL, and description (the /llms.txt content).',
 
   async read(uri): Promise<ResourceContents> {
     return {

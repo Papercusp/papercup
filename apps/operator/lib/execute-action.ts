@@ -2,7 +2,7 @@
  * executeAction core — auth + dispatch + idempotency.
  *
  * Wire contract: apps/operator/app/api/_hono/execute-action.contract.md
- * Plan: apps/operator/content/docs/implementation/multi-harness-spawning.mdx
+ * Plan: apps/operator/content/internal-docs/implementation/multi-harness-spawning.mdx
  *
  * Responsibilities:
  *   1. Verify Authorization: Bearer <token> against harness_shared.token_index

@@ -3,7 +3,7 @@
 Generic OAuth helper so plugins declare a credential field as
 `oauth: { provider, scopes }` instead of asking users to paste tokens.
 
-Spec: [/docs/snapshots/oauth-integration](../../content/docs/snapshots/oauth-integration.mdx).
+Spec: [/docs/snapshots/oauth-integration](../../content/internal-docs/snapshots/oauth-integration.mdx).
 
 ## Modules
 

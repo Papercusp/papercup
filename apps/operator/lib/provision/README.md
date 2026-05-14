@@ -3,7 +3,7 @@
 Substrate primitives for plugin build-scripts: setup / teardown / verify
 lifecycle, sandboxed execution, idempotency, recovery, and audit.
 
-Spec: [/docs/snapshots/build-scripts](../../content/docs/snapshots/build-scripts.mdx).
+Spec: [/docs/snapshots/build-scripts](../../content/internal-docs/snapshots/build-scripts.mdx).
 
 ## Module layout
 

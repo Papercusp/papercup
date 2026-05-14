@@ -7,7 +7,7 @@
  * /api/design/features and groups them by `design_status`. Embeds
  * the registry browser and memo backlog via the design-phase plugin.
  *
- * Plan §6 — apps/operator/content/docs/design/design-phase-plan.mdx.
+ * Plan §6 — apps/operator/content/internal-docs/design/design-phase-plan.mdx.
  *
  * Deliberately self-contained — does not import HarnessDashboard or
  * FeatureList. The shared mode-parameterized FeatureList is deferred
