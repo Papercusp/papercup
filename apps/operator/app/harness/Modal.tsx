@@ -49,6 +49,7 @@ export function Modal({
   description,
   children,
   contentStyle,
+  contentClassName,
   overlayStyle,
   zIndex,
   closeOnEscape = true,
@@ -61,6 +62,7 @@ export function Modal({
   description?: string;
   children: ReactNode;
   contentStyle?: CSSProperties;
+  contentClassName?: string;
   overlayStyle?: CSSProperties;
   zIndex?: number;
   closeOnEscape?: boolean;
@@ -82,6 +84,7 @@ export function Modal({
         <div style={wrap}>
           <Dialog.Content
             aria-modal="true"
+            className={contentClassName}
             data-anim="pop"
             style={content}
             onEscapeKeyDown={closeOnEscape ? undefined : (e) => e.preventDefault()}

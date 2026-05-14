@@ -151,6 +151,19 @@ function titleCaseStatus(value: string): string {
     .join(' ');
 }
 
+function humanizeAutoAcceptMode(value: AutoAcceptLevel): string {
+  switch (value) {
+    case 'low':
+      return 'low risk';
+    case 'medium':
+      return 'low + medium';
+    case 'high':
+      return 'all risks';
+    case 'off':
+      return 'off';
+  }
+}
+
 function lifecycleLabelForCard(card: SuggestionCard): string {
   if (card.action === 'inform' && card.status === 'pending') return 'Informational';
   if (card.auto_dispatch && card.status === 'pending') return 'Auto-fire pending';
@@ -294,6 +307,7 @@ import {
   sharedState,
   subscribeOperatorState,
   type OperatorState,
+  type AutoAcceptLevel,
 } from './operator-shared-state';
 
 gsap.registerPlugin(useGSAP);
@@ -1332,10 +1346,10 @@ export function OperatorPanel(): ReactElement | null {
         ? `Last scan ${lastScanAgeLabel}`
         : 'No scan yet';
   const footerAutonomyLabel = state.paused
-    ? 'Auto paused'
+    ? 'Autopilot paused'
     : state.autoAccept === 'off'
-      ? 'Auto off'
-      : `Auto ${state.autoAccept}`;
+      ? 'Autopilot off'
+      : `Autopilot: ${humanizeAutoAcceptMode(state.autoAccept)}`;
   const reducedMotion = useReducedMotion() ?? false;
   const visualEffectsEnabled = useFancyEffectsEnabled();
   const calmMotion = reducedMotion || !visualEffectsEnabled;
@@ -1605,7 +1619,7 @@ export function OperatorPanel(): ReactElement | null {
                     onClick={() => { void setMainView(view.key); }}
                   >
                     <em className="operator-tab-label" aria-hidden="true">{view.label}</em>
-                    <strong className="operator-tab-count" aria-hidden="true">{view.count}</strong>
+                    <strong className="operator-tab-count" data-zero={view.count === 0 ? 'true' : undefined} aria-hidden="true">{view.count}</strong>
                   </button>
                 ))}
               </div>
