@@ -97,6 +97,10 @@ to introspect the full role-filtered surface.
 
 8 files exist today (`operator`, `oracle`, `worker`, `scoper`, `architect`, `validator`, `reviewer`, `debugger`). Loaded by `loadRoleToolsMd(role)`.
 
+### Section 3b — Shared cross-role guides
+
+The orchestrator's spawn path additionally injects authored MDX from `apps/operator/content/docs/agents/` as a separate section after `<role>.tools.md`. Today this loads `finding-context.mdx` (the retrieval-surface decision tree). The page lives in the **public** docs site so humans + agents share one source; the orchestrator strips frontmatter and emits the body as another `## ...` section. See [Finding context](/docs/agents/finding-context).
+
 ### Section 4 — Runtime context
 
 Per-request blocks supplied by the caller via `AssembleOptions.runtime`. Conversation history, trigger reason, the `[may_ask_active]` marker, etc.
