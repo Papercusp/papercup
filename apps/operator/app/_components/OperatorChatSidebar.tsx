@@ -1291,6 +1291,19 @@ body.has-op-chat .h-header {
   opacity: 1 !important;
 }
 
+.op-chat-sidebar .oracle-input-shell input {
+  height: 100% !important;
+  border: 0 !important;
+  border-radius: inherit !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+.op-chat-sidebar .oracle-input-shell input:focus {
+  border: 0 !important;
+  box-shadow: none !important;
+}
+
 .op-chat-sidebar .oracle-thinking-row {
   flex-shrink: 0 !important;
   max-width: calc(100% - 38px) !important;
