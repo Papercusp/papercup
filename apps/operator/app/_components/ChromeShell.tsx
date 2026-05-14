@@ -7,6 +7,7 @@ import { useGSAP } from '@gsap/react';
 import { useReducedMotion } from 'motion/react';
 import { useFancyEffectsEnabled } from '@/lib/visual-effects';
 import { OperatorButton, OperatorAutoScanToggle } from './OperatorChromeControls';
+import { sharedState, subscribeOperatorState } from './operator-shared-state';
 import { ConsoleLauncherButton } from './ConsoleLauncherButton';
 import { OpsTargetMark } from './ChromeNavMarks';
 import { AriaLiveRegions } from './voice/AriaLiveRegions';
@@ -277,10 +278,18 @@ function DeferredDocks() {
 }
 
 // OperatorPanel is split out of DeferredDocks so it can mount on every
-// page including /settings/*. It renders null while closed, but keeping
-// the lazy component mounted lets it subscribe to the shared Deck state
-// before the chrome button is pressed.
+// page including /settings/*. Keep a tiny subscriber in ChromeShell so
+// the heavy panel chunk only loads after the Deck button is opened.
 function DeferredOperatorPanel() {
+  const [open, setOpen] = useState(sharedState.open);
+
+  useEffect(() => {
+    return subscribeOperatorState((partial) => {
+      if (typeof partial.open === 'boolean') setOpen(partial.open);
+    });
+  }, []);
+
+  if (!open) return null;
   return (
     <Suspense fallback={null}>
       <OperatorPanel />
