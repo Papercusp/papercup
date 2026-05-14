@@ -19,6 +19,7 @@ import { registerSamplePanels } from '../dock/sample-panels';
 import { AddPanelCatalog } from '../dock/AddPanelCatalog';
 import { DockNavChevrons } from '../dock/DockNavChevrons';
 import { DockOnboarding } from '../dock/DockOnboarding';
+import { LayoutsMenu } from '../dock/LayoutsMenu';
 import {
   openPanel,
   listPanels,
@@ -103,6 +104,7 @@ export default function HarnessDockShell({ slug }: HarnessDockShellProps) {
         <div style={{ flex: 1 }} />
         <DockNavChevrons />
         <AddPanelCatalog defaultSlug={slug} />
+        <LayoutsMenu currentLayoutName={`dashboard:${slug}`} />
         <button
           type="button"
           onClick={() => router.push(`/harness/${slug}`)}

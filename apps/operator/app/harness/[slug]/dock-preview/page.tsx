@@ -26,6 +26,7 @@ import { openPanel, listPanels, getLayoutSnapshot, onDockApiBind, setPanelParams
 import { AddPanelCatalog } from '../../dock/AddPanelCatalog';
 import { DockNavChevrons } from '../../dock/DockNavChevrons';
 import { DockOnboarding } from '../../dock/DockOnboarding';
+import { LayoutsMenu } from '../../dock/LayoutsMenu';
 
 export default function DockPreviewPage() {
   const routeParams = useParams<{ slug: string }>();
@@ -90,6 +91,7 @@ export default function DockPreviewPage() {
         <div style={{ flex: 1 }} />
         <DockNavChevrons />
         <AddPanelCatalog defaultSlug={routeSlug} />
+        <LayoutsMenu currentLayoutName="preview" />
         <button
           type="button"
           onClick={() =>
