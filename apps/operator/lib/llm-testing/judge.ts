@@ -268,7 +268,13 @@ function parseJudgeResponse(
   const scoresRaw = obj.scores;
   const findingsRaw = Array.isArray(obj.findings) ? obj.findings : [];
   const novelRaw = Array.isArray(obj.novel_failures) ? obj.novel_failures : [];
-  const notes = typeof obj.notes === 'string' ? obj.notes : undefined;
+  // Plan §3.6 listed both `summary` ("one-paragraph headline") and
+  // `notes` as judge-output fields; the example response used `notes`
+  // and the prompt mentions both. Accept either and prefer `summary`
+  // when present.
+  const summaryField = typeof obj.summary === 'string' ? obj.summary : undefined;
+  const notesField = typeof obj.notes === 'string' ? obj.notes : undefined;
+  const notes = summaryField ?? notesField;
   const agreesWithDeterministicAsserts = typeof obj.agrees_with_deterministic_asserts === 'boolean'
     ? (obj.agrees_with_deterministic_asserts as boolean)
     : undefined;
