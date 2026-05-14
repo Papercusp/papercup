@@ -19,6 +19,7 @@ import { readFileSync } from 'node:fs';
 import { evaluateAsserts } from './asserts/index';
 import { computeIdentityHash, computeScenarioHash } from './identity';
 import { judgeRun } from './judge';
+import { resolveJudgeModel } from './judges/registry';
 import { lookupBlend } from './personas/blends';
 import { resolvePersona } from './personas/traits';
 import { SimUser, type SimAction } from './sim-user';
@@ -70,9 +71,15 @@ export interface SingleRunReport {
   status: 'passed' | 'failed' | 'errored';
 }
 
+const DEFAULT_SUT_MODEL = process.env.LLM_TEST_SUT_MODEL ?? 'claude-sonnet-4-6';
 const DEFAULTS = {
-  sutModel:   process.env.LLM_TEST_SUT_MODEL   ?? 'claude-sonnet-4-6',
-  judgeModel: process.env.LLM_TEST_JUDGE_MODEL ?? 'claude-sonnet-4-6',
+  sutModel:   DEFAULT_SUT_MODEL,
+  /**
+   * Plan §6.3: judge MUST differ from SUT. The registry maps SUT
+   * family → judge family. Env override (LLM_TEST_JUDGE_MODEL) wins
+   * for explicit operator control.
+   */
+  judgeModel: process.env.LLM_TEST_JUDGE_MODEL ?? resolveJudgeModel(DEFAULT_SUT_MODEL).judge,
   simModel:   process.env.LLM_TEST_SIM_MODEL   ?? 'claude-haiku-4-5',
 };
 

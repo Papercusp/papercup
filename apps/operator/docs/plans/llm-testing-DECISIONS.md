@@ -190,6 +190,96 @@ actionable surface. Cron + journald carry the per-run-summary trail.
 
 ---
 
+## D-011 — In-process transport stays a TODO, HTTP-SSE is the default
+
+**Date:** 2026-05-14
+
+**Choice:** `OperatorTarget.send()` throws on `transport: 'in-process'`.
+Every scenario actually runs through HTTP-SSE against `/api/agent-mcp/
+operator-converse`. The `transport` field on `Scenario` is accepted
+but only HTTP-SSE works today.
+
+**Plan §10.4 said:** "Default: in-process call with
+`ToolDispatchOverride`. The operator `ChatTarget` calls the converse
+handler directly with a per-run dispatcher override, bypassing the
+HTTP route entirely."
+
+**Considered:**
+- Implement the in-process path: factor out the converse tool's
+  side-effects (budget gate, session-user resolution, mem0 dual-scope,
+  chain-ledger writes) so they're callable without the Hono route.
+  ~1–2 days; touches the operator's hottest code path.
+- Move to in-process for new targets but leave operator on HTTP-SSE.
+  Inconsistent.
+- Keep HTTP-SSE and document. ← chosen.
+
+**Why HTTP-SSE for now:**
+- The plan's stated benefit of in-process is speed (no HTTP overhead)
+  and richer ctx control. The actual operator-converse hot path is
+  ~30–90s/turn dominated by Anthropic-side generation; HTTP overhead
+  is single-digit ms.
+- `ToolDispatchOverride` still works via the shared
+  `apps/operator/lib/projected-tool-deps.ts` `overrideTool` —
+  S12b's deterministic injection path is exercised over HTTP-SSE
+  exactly the same way it would be over in-process.
+- All real bugs the framework has surfaced are in the operator's
+  HTTP-served behavior. In-process would test a route we don't ship.
+
+**Follow-up:** revisit when adding a target whose handler doesn't
+have an HTTP route (a pure tool wrapper). Then the in-process
+abstraction earns its keep.
+
+---
+
+## D-012 — Telemetry-tagging audit stays static + synthetic-dynamic
+
+**Date:** 2026-05-14
+
+**Choice:** The §5.4 telemetry-tagging audit is:
+(a) static-source check of `apps/operator/app/api/agent-mcp/operator-
+converse/route.ts` confirming `ctxBase.uiClientId = body.uiClientId`,
+(b) static catalog grep guarding against future `ctx.metadata({
+uiClientId: ... })` overrides in handlers, and
+(c) dynamic concurrency walk via `parallelism-smoke.test.ts` that
+dispatches synthetic tools and asserts per-call uiClientId fidelity.
+It is NOT the plan's "enumerate every tool via `endpoint:list-tools`,
+invoke each with probe args, assert metadata_json carries the tag."
+
+**Plan §5.4 said:** "Enumerates every tool via endpoint:list-tools.
+Invokes each tool with a probe ctx.metadata and minimal valid args
+(uses a per-tool stub registry for required inputs). Asserts the
+resulting tool_invocations row has metadata_json->>'uiClientId'."
+
+**Considered:**
+- Stand up the per-tool stub registry the plan calls for. With ~96
+  built-in tools + plugin tools, each requiring real args (workspace
+  ids, harness slugs, capability tokens, etc.), this is 1–2 days of
+  fixture-building plus brittle maintenance.
+- Use a no-args probe and accept that tools failing on arg validation
+  short-circuit before recording metadata. That defeats the audit's
+  purpose.
+- Sample a curated set of tools instead of full enumeration. Still
+  catches drift but spec-deviates.
+- Keep current static + synthetic-dynamic split. ← chosen.
+
+**Why current split is sufficient:**
+- The dispatcher auto-fill is one code path in
+  `packages/agent-mcp/src/dispatch-projected.ts`. If it works for one
+  tool, it works for all (it's tool-agnostic). The 5 unit tests in
+  `dispatch-projected.test.ts` + the parallelism-smoke's N=20 fan-out
+  exercise the path with synthetic tools, which is precisely the
+  invariant the plan wanted to guarantee.
+- The only failure mode the static check can't catch is a handler
+  that calls `ctx.metadata({ uiClientId: SOMETHING_ELSE })` — and our
+  static grep guard fails the build on any such occurrence.
+
+**Follow-up:** when adding tools that genuinely override metadata
+(plausible future: a tool that wants to override workspace_id in its
+own row), promote the static guard to a runtime audit with real PG
+roundtrip. Today's catalog has zero such tools.
+
+---
+
 ## D-008 — Migration runner stays opt-out at the per-migration level
 
 **Date:** 2026-05-14
