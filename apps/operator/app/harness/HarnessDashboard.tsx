@@ -2879,7 +2879,17 @@ export default function HarnessDashboard() {
   // Preserves existing setStatus/setAgents/setReviewCount/setLanes/
   // setPendingProposals state shape so downstream consumers don't change.
   const enablePoll = !!activeSlug;
-  const phaseKey = activePhase;
+  // When the phases flag is off, every subscription, REST call, and Zero
+  // query must thread the orchestrator's canonical 'staging' phase, not
+  // whatever the URL `?phase=` happens to be. Without this, two browsers
+  // hitting the same harness with different sticky URLs (e.g. one tab
+  // opened pre-2026-05-14 when 'production' was the default, another
+  // opened post-2026-05-14 when 'staging' is the default) saw different
+  // lane subscriptions and disagreed about which agents were running.
+  // The useEffect above repairs the URL but only after the first render;
+  // hardcoding here makes the very first render correct too. With the
+  // flag ON, multi-phase users still get full URL-driven phase routing.
+  const phaseKey = harnessPhasesEnabled ? activePhase : ('staging' as Phase);
   const activeWorkspaceParam = useWorkspaceId();
   const slugForPoll = activeSlug ?? '';
   // /status: still REST-polled for fields the orchestrator doesn't write
