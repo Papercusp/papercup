@@ -120,7 +120,7 @@ export function useRegisterPluginPanels(slug: string): void {
                     style={{
                       padding: 16,
                       fontSize: 12,
-                      color: 'var(--muted-foreground, #888)',
+                      color: 'var(--fg-mute)',
                     }}
                   >
                     Loading {panel.title}…
@@ -142,7 +142,7 @@ export function useRegisterPluginPanels(slug: string): void {
                     height: '100%',
                     padding: 16,
                     textAlign: 'center',
-                    color: 'var(--muted-foreground, #888)',
+                    color: 'var(--fg-mute)',
                     fontSize: 12,
                   }}
                 >

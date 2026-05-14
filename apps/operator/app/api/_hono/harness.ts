@@ -610,6 +610,13 @@ async function launchRun(project: ProjectEntry, extra?: string): Promise<{ ok: t
       HARNESS_DIR: harnessPackageDir(),
       PROJECT_DIR: project.path,
       HARNESS_SLUG: project.slug,
+      // PG is the canonical feature store. Without this, the
+      // orchestrator's in-memory fallback (designed for tests) yields
+      // an empty store, pre-loop's featuresExist() returns false, and
+      // the scoper-gate fails on every launch even though PG has the
+      // feature queue. The orchestrator's embedded-pg discovery file
+      // (~/.papercusp/embedded-pg.json) resolves the DSN automatically.
+      PAPERCUSP_USE_PG_STATE: '1',
       ...searchProviderEnv,
       ...(extra ? Object.fromEntries(extra.split(/\s+/).filter(Boolean).map((kv: string) => kv.split('='))) : {}),
     },

@@ -52,7 +52,7 @@ export function MissingPanel(props: PanelComponentProps) {
           alignItems: 'center',
           justifyContent: 'center',
           height: '100%',
-          color: 'var(--muted-foreground, #888)',
+          color: 'var(--fg-mute)',
           fontSize: 13,
         }}
       >
@@ -70,7 +70,7 @@ export function MissingPanel(props: PanelComponentProps) {
         justifyContent: 'center',
         height: '100%',
         gap: 12,
-        color: 'var(--muted-foreground, #888)',
+        color: 'var(--fg-mute)',
         fontSize: 13,
         padding: 16,
         textAlign: 'center',
@@ -86,7 +86,7 @@ export function MissingPanel(props: PanelComponentProps) {
         style={{
           padding: '6px 12px',
           fontSize: 12,
-          background: 'var(--card, #1a1a1a)',
+          background: 'var(--bg-2)',
           color: 'var(--foreground, #ccc)',
           border: '1px solid var(--border, #333)',
           borderRadius: 4,

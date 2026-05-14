@@ -20,6 +20,7 @@
 
 import { useEffect, useState } from 'react';
 import { useParams } from 'next/navigation';
+import { toast } from 'sonner';
 import { HarnessDock } from '../../dock/HarnessDock';
 import { registerSamplePanels } from '../../dock/sample-panels';
 import { openPanel, listPanels, getLayoutSnapshot, onDockApiBind, setPanelParams } from '../../dock/dock-actions';
@@ -77,14 +78,14 @@ export default function DockPreviewPage() {
           gap: 8,
           padding: '8px 12px',
           borderBottom: '1px solid var(--border, #333)',
-          background: 'var(--card, #1a1a1a)',
+          background: 'var(--bg-2)',
           fontSize: 12,
           color: 'var(--foreground, #ccc)',
           fontFamily: 'system-ui, sans-serif',
         }}
       >
         <strong>Dock preview</strong>
-        <span style={{ color: 'var(--muted-foreground, #888)' }}>
+        <span style={{ color: 'var(--fg-mute)' }}>
           {ready ? `${panelCount} panels open` : 'mounting…'}
         </span>
         <DockOnboarding />
@@ -112,7 +113,7 @@ export default function DockPreviewPage() {
           onClick={() => {
             const snap = getLayoutSnapshot();
             console.log('layout snapshot', snap);
-            alert(`Layout has ${listPanels().length} panels. See console.`);
+            toast.info(`Layout has ${listPanels().length} panels. See console.`);
           }}
           style={previewBtn}
         >
@@ -129,7 +130,7 @@ export default function DockPreviewPage() {
 const previewBtn: React.CSSProperties = {
   padding: '4px 10px',
   fontSize: 11,
-  background: 'var(--card, #1a1a1a)',
+  background: 'var(--bg-2)',
   color: 'var(--foreground, #ccc)',
   border: '1px solid var(--border, #333)',
   borderRadius: 4,

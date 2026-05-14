@@ -11,6 +11,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { toast } from 'sonner';
 import { useQueryState, parseAsString } from 'nuqs';
 import { Select } from '@/app/harness/Select';
+import { useConfirmDialog } from '@/app/harness/useConfirmDialog';
 import { RichGrid, type ColumnDef } from '@restart/grid-core';
 import type { RepoStats, SnapshotInfo } from '@/lib/backup';
 
@@ -44,6 +45,7 @@ function fmtAgo(iso: string | null): string {
 export default function BackupsTab() {
   interface EventRow { id: number; snapshotId: number | null; kind: string; payload: unknown; at: string; }
   interface Trace { command: string; exitCode: number; stdout: string; stderr: string; durationMs: number; }
+  const { askConfirm, confirmEl } = useConfirmDialog();
   const [terminal, setTerminal] = useState<Array<Trace & { startedAt: string }>>([]);
   const appendTrace = (t: Trace) =>
     setTerminal((prev) => [{ ...t, startedAt: new Date().toISOString() }, ...prev].slice(0, 50));
@@ -150,12 +152,13 @@ export default function BackupsTab() {
 
   const doPromote = useCallback(async () => {
     if (!lastRestoredPath) return;
-    if (!confirm(
-      'Promote this restored clone to live?\n\n'
-      + 'Live workspace becomes ".broken-<ts>/" alongside.\n'
-      + 'Reversible: rename the .broken-* dir back if this was wrong.\n\n'
-      + `Restored: ${lastRestoredPath}`,
-    )) return;
+    const ok = await askConfirm({
+      title: 'Promote this restored clone to live?',
+      body: `Live workspace becomes ".broken-<ts>/" alongside. Reversible: rename the .broken-* dir back if this was wrong.\n\nRestored: ${lastRestoredPath}`,
+      confirmLabel: 'Promote',
+      destructive: true,
+    });
+    if (!ok) return;
     setBusy('promote');
     const start = Date.now();
     try {
@@ -177,7 +180,7 @@ export default function BackupsTab() {
     } finally {
       setBusy(null);
     }
-  }, [lastRestoredPath]);
+  }, [lastRestoredPath, askConfirm]);
 
   const restoreOptions = useMemo(
     () => snapshots.filter((s) => s.kopiaSnapshotId && s.status === 'ok'),
@@ -204,6 +207,7 @@ export default function BackupsTab() {
 
   return (
     <div className="pc-dev-backups">
+      {confirmEl}
       <header className="pc-dev-tab-header">
         <h2>Backups</h2>
         <span className="pc-dev-muted">
@@ -329,7 +333,13 @@ export default function BackupsTab() {
                 type="button"
                 disabled={busy === `rollback:${b.path}`}
                 onClick={async () => {
-                  if (!confirm(`Rollback this promotion?\n\nCurrent live becomes .rolled-back-<ts>-<name>/.\nReversible.\n\n${b.path}`)) return;
+                  const ok = await askConfirm({
+                    title: 'Rollback this promotion?',
+                    body: `Current live becomes .rolled-back-<ts>-<name>/. Reversible.\n\n${b.path}`,
+                    confirmLabel: 'Rollback',
+                    destructive: true,
+                  });
+                  if (!ok) return;
                   setBusy(`rollback:${b.path}`);
                   const start = Date.now();
                   try {

@@ -94,7 +94,7 @@ export function RealIssuesPanel({ params, api }: PanelComponentProps) {
 
   if (!slug) {
     return (
-      <div style={{ padding: 16, fontSize: 13, color: 'var(--muted-foreground,#888)' }}>
+      <div style={{ padding: 16, fontSize: 13, color: 'var(--fg-mute)' }}>
         No harness slug in params.
       </div>
     );
@@ -106,7 +106,7 @@ export function RealIssuesPanel({ params, api }: PanelComponentProps) {
   }
   if (!data) {
     return (
-      <div style={{ padding: 16, fontSize: 13, color: 'var(--muted-foreground,#888)' }}>
+      <div style={{ padding: 16, fontSize: 13, color: 'var(--fg-mute)' }}>
         Loading {slug}…
       </div>
     );
@@ -120,7 +120,7 @@ export function RealIssuesPanel({ params, api }: PanelComponentProps) {
           gap: 4,
           padding: '6px 8px',
           borderBottom: '1px solid var(--border, #333)',
-          background: 'var(--card, #1a1a1a)',
+          background: 'var(--bg-2)',
           flexShrink: 0,
           flexWrap: 'wrap',
         }}
@@ -136,7 +136,7 @@ export function RealIssuesPanel({ params, api }: PanelComponentProps) {
                 padding: '2px 8px',
                 fontSize: 11,
                 background: active ? 'var(--accent,#2a2a2a)' : 'transparent',
-                color: active ? 'var(--foreground,#ccc)' : 'var(--muted-foreground,#888)',
+                color: active ? 'var(--foreground,#ccc)' : 'var(--fg-mute)',
                 border: '1px solid var(--border,#333)',
                 borderRadius: 3,
                 cursor: 'pointer',
@@ -149,7 +149,7 @@ export function RealIssuesPanel({ params, api }: PanelComponentProps) {
       </div>
       <div style={{ flex: 1, overflow: 'auto', fontSize: 12 }}>
         {filtered.length === 0 ? (
-          <div style={{ padding: 16, color: 'var(--muted-foreground,#888)' }}>
+          <div style={{ padding: 16, color: 'var(--fg-mute)' }}>
             No issues match.
           </div>
         ) : (
@@ -201,7 +201,7 @@ export function RealIssuesPanel({ params, api }: PanelComponentProps) {
                     minWidth: 60,
                     fontFamily: 'ui-monospace, monospace',
                     fontSize: 11,
-                    color: 'var(--muted-foreground,#888)',
+                    color: 'var(--fg-mute)',
                   }}
                 >
                   {i.id}

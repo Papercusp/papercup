@@ -82,7 +82,7 @@ export function PinnedFeaturePanel({ params, api }: PanelComponentProps) {
 
   if (!slug || !featureId) {
     return (
-      <div style={{ padding: 16, fontSize: 13, color: 'var(--muted-foreground,#888)' }}>
+      <div style={{ padding: 16, fontSize: 13, color: 'var(--fg-mute)' }}>
         Missing required params: harnessSlug + featureId
       </div>
     );
@@ -95,7 +95,7 @@ export function PinnedFeaturePanel({ params, api }: PanelComponentProps) {
     );
   if (!feature)
     return (
-      <div style={{ padding: 16, fontSize: 13, color: 'var(--muted-foreground,#888)' }}>
+      <div style={{ padding: 16, fontSize: 13, color: 'var(--fg-mute)' }}>
         Loading {featureId}…
       </div>
     );
@@ -126,7 +126,7 @@ export function PinnedFeaturePanel({ params, api }: PanelComponentProps) {
           style={{
             fontFamily: 'ui-monospace, monospace',
             fontSize: 11,
-            color: 'var(--muted-foreground,#888)',
+            color: 'var(--fg-mute)',
           }}
         >
           {feature.id}
@@ -143,7 +143,7 @@ export function PinnedFeaturePanel({ params, api }: PanelComponentProps) {
           {feature.status}
         </span>
         {feature.kind && (
-          <span style={{ fontSize: 10, color: 'var(--muted-foreground,#888)' }}>
+          <span style={{ fontSize: 10, color: 'var(--fg-mute)' }}>
             {feature.kind}
           </span>
         )}
@@ -165,7 +165,7 @@ export function PinnedFeaturePanel({ params, api }: PanelComponentProps) {
         {feature.title}
       </h3>
       {feature.summary && (
-        <p style={{ margin: '0 0 16px', color: 'var(--muted-foreground,#aaa)', lineHeight: 1.5 }}>
+        <p style={{ margin: '0 0 16px', color: 'var(--fg-mute)', lineHeight: 1.5 }}>
           {feature.summary}
         </p>
       )}
@@ -183,7 +183,7 @@ export function PinnedFeaturePanel({ params, api }: PanelComponentProps) {
           <summary
             style={{
               cursor: 'pointer',
-              color: 'var(--muted-foreground,#888)',
+              color: 'var(--fg-mute)',
               fontSize: 11,
             }}
           >
@@ -193,7 +193,7 @@ export function PinnedFeaturePanel({ params, api }: PanelComponentProps) {
             style={{
               margin: '4px 0 0',
               padding: 8,
-              background: 'var(--card,#1a1a1a)',
+              background: 'var(--bg-2)',
               fontSize: 11,
               borderRadius: 3,
               overflowX: 'auto',
@@ -208,7 +208,7 @@ export function PinnedFeaturePanel({ params, api }: PanelComponentProps) {
           <summary
             style={{
               cursor: 'pointer',
-              color: 'var(--muted-foreground,#888)',
+              color: 'var(--fg-mute)',
               fontSize: 11,
             }}
           >
@@ -218,7 +218,7 @@ export function PinnedFeaturePanel({ params, api }: PanelComponentProps) {
             style={{
               margin: '4px 0 0',
               padding: 8,
-              background: 'var(--card,#1a1a1a)',
+              background: 'var(--bg-2)',
               fontSize: 11,
               borderRadius: 3,
               whiteSpace: 'pre-wrap',
@@ -240,11 +240,11 @@ function Row({ label, value }: { label: string; value: string }) {
         gap: 8,
         padding: '3px 0',
         fontSize: 11,
-        color: 'var(--muted-foreground,#aaa)',
+        color: 'var(--fg-mute)',
         borderTop: '1px solid var(--border-subtle,#222)',
       }}
     >
-      <span style={{ minWidth: 80, color: 'var(--muted-foreground,#888)' }}>{label}</span>
+      <span style={{ minWidth: 80, color: 'var(--fg-mute)' }}>{label}</span>
       <span style={{ flex: 1, fontFamily: 'ui-monospace, monospace', wordBreak: 'break-word' }}>
         {value}
       </span>

@@ -90,7 +90,7 @@ export function PinnedIssuePanel({ params, api }: PanelComponentProps) {
 
   if (!slug || !issueId) {
     return (
-      <div style={{ padding: 16, fontSize: 13, color: 'var(--muted-foreground,#888)' }}>
+      <div style={{ padding: 16, fontSize: 13, color: 'var(--fg-mute)' }}>
         Missing required params: harnessSlug + issueId
       </div>
     );
@@ -103,7 +103,7 @@ export function PinnedIssuePanel({ params, api }: PanelComponentProps) {
     );
   if (!issue)
     return (
-      <div style={{ padding: 16, fontSize: 13, color: 'var(--muted-foreground,#888)' }}>
+      <div style={{ padding: 16, fontSize: 13, color: 'var(--fg-mute)' }}>
         Loading {issueId}…
       </div>
     );
@@ -134,7 +134,7 @@ export function PinnedIssuePanel({ params, api }: PanelComponentProps) {
           style={{
             fontFamily: 'ui-monospace, monospace',
             fontSize: 11,
-            color: 'var(--muted-foreground,#888)',
+            color: 'var(--fg-mute)',
           }}
         >
           {issue.id}
@@ -151,7 +151,7 @@ export function PinnedIssuePanel({ params, api }: PanelComponentProps) {
           {issue.status ?? '?'}
         </span>
         {issue.source && (
-          <span style={{ fontSize: 10, color: 'var(--muted-foreground,#888)' }}>
+          <span style={{ fontSize: 10, color: 'var(--fg-mute)' }}>
             {issue.source}
           </span>
         )}
@@ -173,7 +173,7 @@ export function PinnedIssuePanel({ params, api }: PanelComponentProps) {
           <summary
             style={{
               cursor: 'pointer',
-              color: 'var(--muted-foreground,#888)',
+              color: 'var(--fg-mute)',
               fontSize: 11,
             }}
           >
@@ -183,7 +183,7 @@ export function PinnedIssuePanel({ params, api }: PanelComponentProps) {
             style={{
               margin: '4px 0 0',
               padding: 8,
-              background: 'var(--card,#1a1a1a)',
+              background: 'var(--bg-2)',
               fontSize: 11,
               borderRadius: 3,
               overflowX: 'auto',
@@ -205,11 +205,11 @@ function Row({ label, value }: { label: string; value: string }) {
         gap: 8,
         padding: '3px 0',
         fontSize: 11,
-        color: 'var(--muted-foreground,#aaa)',
+        color: 'var(--fg-mute)',
         borderTop: '1px solid var(--border-subtle,#222)',
       }}
     >
-      <span style={{ minWidth: 100, color: 'var(--muted-foreground,#888)' }}>{label}</span>
+      <span style={{ minWidth: 100, color: 'var(--fg-mute)' }}>{label}</span>
       <span style={{ flex: 1, fontFamily: 'ui-monospace, monospace', wordBreak: 'break-word' }}>
         {value}
       </span>
@@ -223,7 +223,7 @@ function Section({ label, body }: { label: string; body: string }) {
       <summary
         style={{
           cursor: 'pointer',
-          color: 'var(--muted-foreground,#888)',
+          color: 'var(--fg-mute)',
           fontSize: 11,
           fontWeight: 600,
         }}
@@ -234,7 +234,7 @@ function Section({ label, body }: { label: string; body: string }) {
         style={{
           margin: '4px 0 0',
           padding: 8,
-          background: 'var(--card,#1a1a1a)',
+          background: 'var(--bg-2)',
           fontSize: 11,
           borderRadius: 3,
           whiteSpace: 'pre-wrap',

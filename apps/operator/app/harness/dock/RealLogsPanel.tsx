@@ -80,7 +80,7 @@ export function RealLogsPanel({ params, api }: PanelComponentProps) {
 
   if (!slug)
     return (
-      <div style={{ padding: 16, fontSize: 13, color: 'var(--muted-foreground,#888)' }}>
+      <div style={{ padding: 16, fontSize: 13, color: 'var(--fg-mute)' }}>
         No harness slug in params.
       </div>
     );
@@ -88,7 +88,7 @@ export function RealLogsPanel({ params, api }: PanelComponentProps) {
     return <div style={{ padding: 16, fontSize: 13, color: 'var(--bad)' }}>Failed: {error.message}</div>;
   if (!data)
     return (
-      <div style={{ padding: 16, fontSize: 13, color: 'var(--muted-foreground,#888)' }}>
+      <div style={{ padding: 16, fontSize: 13, color: 'var(--fg-mute)' }}>
         Loading {slug}…
       </div>
     );
@@ -101,7 +101,7 @@ export function RealLogsPanel({ params, api }: PanelComponentProps) {
           gap: 4,
           padding: '6px 8px',
           borderBottom: '1px solid var(--border, #333)',
-          background: 'var(--card, #1a1a1a)',
+          background: 'var(--bg-2)',
           flexShrink: 0,
           alignItems: 'center',
         }}
@@ -155,7 +155,7 @@ export function RealLogsPanel({ params, api }: PanelComponentProps) {
         }}
       >
         {filtered.length === 0 ? (
-          <div style={{ padding: 16, color: 'var(--muted-foreground,#888)' }}>
+          <div style={{ padding: 16, color: 'var(--fg-mute)' }}>
             No events match.
           </div>
         ) : (

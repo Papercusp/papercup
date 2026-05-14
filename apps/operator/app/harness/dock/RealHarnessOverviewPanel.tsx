@@ -142,7 +142,7 @@ export function RealHarnessOverviewPanel({ params, api }: PanelComponentProps) {
 
   if (!slug)
     return (
-      <div style={{ padding: 16, fontSize: 13, color: 'var(--muted-foreground,#888)' }}>
+      <div style={{ padding: 16, fontSize: 13, color: 'var(--fg-mute)' }}>
         No harness slug.
       </div>
     );
@@ -150,7 +150,7 @@ export function RealHarnessOverviewPanel({ params, api }: PanelComponentProps) {
     return <div style={{ padding: 16, fontSize: 13, color: 'var(--bad)' }}>Failed: {error.message}</div>;
   if (!data)
     return (
-      <div style={{ padding: 16, fontSize: 13, color: 'var(--muted-foreground,#888)' }}>
+      <div style={{ padding: 16, fontSize: 13, color: 'var(--fg-mute)' }}>
         Loading…
       </div>
     );
@@ -182,7 +182,7 @@ export function RealHarnessOverviewPanel({ params, api }: PanelComponentProps) {
           }}
           title={data.alive ? 'alive' : 'idle'}
         />
-        <span style={{ color: 'var(--muted-foreground,#888)', fontSize: 11 }}>
+        <span style={{ color: 'var(--fg-mute)', fontSize: 11 }}>
           {data.alive ? 'alive' : 'idle'}
         </span>
         {data.escalated && (
@@ -216,7 +216,7 @@ export function RealHarnessOverviewPanel({ params, api }: PanelComponentProps) {
       {/* Project path */}
       <div
         style={{
-          color: 'var(--muted-foreground,#888)',
+          color: 'var(--fg-mute)',
           fontSize: 11,
           fontFamily: 'ui-monospace, monospace',
           overflow: 'hidden',
@@ -241,7 +241,7 @@ export function RealHarnessOverviewPanel({ params, api }: PanelComponentProps) {
                 padding: '4px 12px',
                 fontSize: 11,
                 background: 'transparent',
-                color: active ? 'var(--foreground,#ccc)' : 'var(--muted-foreground,#888)',
+                color: active ? 'var(--foreground,#ccc)' : 'var(--fg-mute)',
                 border: 0,
                 borderBottom: active ? '2px solid #60a5fa' : '2px solid transparent',
                 cursor: 'pointer',
@@ -259,7 +259,7 @@ export function RealHarnessOverviewPanel({ params, api }: PanelComponentProps) {
         <div>
           <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
             <span style={{ fontSize: 11 }}>Progress</span>
-            <span style={{ fontSize: 11, color: 'var(--muted-foreground,#888)' }}>
+            <span style={{ fontSize: 11, color: 'var(--fg-mute)' }}>
               {stats.passed} / {stats.total} ({stats.pct}%)
             </span>
           </div>
@@ -296,7 +296,7 @@ export function RealHarnessOverviewPanel({ params, api }: PanelComponentProps) {
                 flexShrink: 0,
               }}
             />
-            <span style={{ flex: 1, color: 'var(--muted-foreground,#888)' }}>{k}</span>
+            <span style={{ flex: 1, color: 'var(--fg-mute)' }}>{k}</span>
             <span style={{ fontFamily: 'ui-monospace, monospace' }}>{v}</span>
           </div>
         ))}
@@ -306,7 +306,7 @@ export function RealHarnessOverviewPanel({ params, api }: PanelComponentProps) {
       <div
         style={{
           fontSize: 11,
-          color: 'var(--muted-foreground,#888)',
+          color: 'var(--fg-mute)',
           paddingTop: 8,
           borderTop: '1px solid var(--border-subtle,#222)',
         }}

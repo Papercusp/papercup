@@ -46,7 +46,7 @@ function SamplePanel({ panelType, params }: PanelComponentProps) {
           style={{
             margin: 0,
             padding: 8,
-            background: 'var(--card, #1a1a1a)',
+            background: 'var(--bg-2)',
             fontSize: 11,
             borderRadius: 4,
             overflowX: 'auto',
@@ -55,7 +55,7 @@ function SamplePanel({ panelType, params }: PanelComponentProps) {
           {JSON.stringify(params, null, 2)}
         </pre>
       </details>
-      <p style={{ marginTop: 16, color: 'var(--muted-foreground, #888)' }}>
+      <p style={{ marginTop: 16, color: 'var(--fg-mute)' }}>
         Sample panel. Drag the tab to split, drag outside group for floating,
         right-click the title for options.
       </p>
@@ -102,7 +102,7 @@ function DocsSamplePanel(props: PanelComponentProps) {
       <div style={{ flex: 1, overflow: 'auto' }}>
         <p>{current.body}</p>
         <div style={{ marginTop: 16, display: 'flex', flexDirection: 'column', gap: 4 }}>
-          <div style={{ fontSize: 11, color: 'var(--muted-foreground, #888)', marginBottom: 4 }}>
+          <div style={{ fontSize: 11, color: 'var(--fg-mute)', marginBottom: 4 }}>
             Navigate to:
           </div>
           {docs.map((d) => (

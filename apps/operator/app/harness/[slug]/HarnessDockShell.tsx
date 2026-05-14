@@ -92,9 +92,9 @@ export default function HarnessDockShell({ slug }: HarnessDockShellProps) {
           gap: 8,
           padding: '4px 12px',
           borderBottom: '1px solid var(--border, #333)',
-          background: 'var(--card, #1a1a1a)',
+          background: 'var(--bg-2)',
           fontSize: 11,
-          color: 'var(--muted-foreground, #888)',
+          color: 'var(--fg-mute)',
           fontFamily: 'system-ui, sans-serif',
         }}
       >
@@ -124,7 +124,7 @@ export default function HarnessDockShell({ slug }: HarnessDockShellProps) {
 const btn: React.CSSProperties = {
   padding: '3px 8px',
   fontSize: 11,
-  background: 'var(--card, #1a1a1a)',
+  background: 'var(--bg-2)',
   color: 'var(--foreground, #ccc)',
   border: '1px solid var(--border, #333)',
   borderRadius: 3,

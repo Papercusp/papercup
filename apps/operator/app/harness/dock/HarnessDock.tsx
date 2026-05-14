@@ -278,7 +278,7 @@ export function HarnessDock({ layoutName: initialLayoutName, className, slug }: 
             style={{
               padding: '4px 12px',
               fontSize: 12,
-              background: 'var(--card, #1a1a1a)',
+              background: 'var(--bg-2)',
               color: 'var(--foreground, #ccc)',
               border: '1px solid var(--border, #333)',
               borderRadius: 3,
@@ -296,7 +296,7 @@ export function HarnessDock({ layoutName: initialLayoutName, className, slug }: 
             style={{
               padding: '4px 12px',
               fontSize: 12,
-              background: 'var(--card, #1a1a1a)',
+              background: 'var(--bg-2)',
               color: 'var(--foreground, #ccc)',
               border: '1px solid var(--border, #333)',
               borderRadius: 3,

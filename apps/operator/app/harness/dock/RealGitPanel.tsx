@@ -14,7 +14,7 @@ import type { PanelComponentProps } from './panel-registry';
 const GitGraphPanelLib = dynamic(
   () => import('@restart/git-graph').then((m) => ({ default: m.GitGraphPanel })),
   { ssr: false, loading: () => (
-    <div style={{ padding: 16, fontSize: 13, color: 'var(--muted-foreground,#888)' }}>
+    <div style={{ padding: 16, fontSize: 13, color: 'var(--fg-mute)' }}>
       Loading git graph…
     </div>
   ) },
@@ -24,7 +24,7 @@ export function RealGitPanel({ params }: PanelComponentProps) {
   const slug = (params.harnessSlug as string) || (params.slug as string) || '';
   if (!slug) {
     return (
-      <div style={{ padding: 16, fontSize: 13, color: 'var(--muted-foreground,#888)' }}>
+      <div style={{ padding: 16, fontSize: 13, color: 'var(--fg-mute)' }}>
         No harness slug in params.
       </div>
     );

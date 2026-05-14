@@ -84,7 +84,7 @@ export function RealAgentsPanel({ params, api }: PanelComponentProps) {
 
   if (!slug)
     return (
-      <div style={{ padding: 16, fontSize: 13, color: 'var(--muted-foreground,#888)' }}>
+      <div style={{ padding: 16, fontSize: 13, color: 'var(--fg-mute)' }}>
         No harness slug in params.
       </div>
     );
@@ -92,7 +92,7 @@ export function RealAgentsPanel({ params, api }: PanelComponentProps) {
     return <div style={{ padding: 16, fontSize: 13, color: 'var(--bad)' }}>Failed: {error.message}</div>;
   if (!data)
     return (
-      <div style={{ padding: 16, fontSize: 13, color: 'var(--muted-foreground,#888)' }}>
+      <div style={{ padding: 16, fontSize: 13, color: 'var(--fg-mute)' }}>
         Loading {slug}…
       </div>
     );
@@ -105,7 +105,7 @@ export function RealAgentsPanel({ params, api }: PanelComponentProps) {
           gap: 4,
           padding: '6px 8px',
           borderBottom: '1px solid var(--border, #333)',
-          background: 'var(--card, #1a1a1a)',
+          background: 'var(--bg-2)',
           flexShrink: 0,
           alignItems: 'center',
         }}
@@ -125,13 +125,13 @@ export function RealAgentsPanel({ params, api }: PanelComponentProps) {
         >
           {showAll ? 'All' : 'Running only'} ({visible.length})
         </button>
-        <span style={{ marginLeft: 'auto', fontSize: 10, color: 'var(--muted-foreground,#888)' }}>
+        <span style={{ marginLeft: 'auto', fontSize: 10, color: 'var(--fg-mute)' }}>
           auto-refresh 5s
         </span>
       </div>
       <div style={{ flex: 1, overflow: 'auto', fontSize: 12 }}>
         {visible.length === 0 ? (
-          <div style={{ padding: 16, color: 'var(--muted-foreground,#888)' }}>
+          <div style={{ padding: 16, color: 'var(--fg-mute)' }}>
             No agents match.
           </div>
         ) : (
@@ -172,7 +172,7 @@ export function RealAgentsPanel({ params, api }: PanelComponentProps) {
                     flex: 1,
                     fontFamily: 'ui-monospace, monospace',
                     fontSize: 10,
-                    color: 'var(--muted-foreground,#888)',
+                    color: 'var(--fg-mute)',
                     overflow: 'hidden',
                     textOverflow: 'ellipsis',
                     whiteSpace: 'nowrap',
@@ -184,7 +184,7 @@ export function RealAgentsPanel({ params, api }: PanelComponentProps) {
                 <span
                   style={{
                     fontSize: 10,
-                    color: 'var(--muted-foreground,#888)',
+                    color: 'var(--fg-mute)',
                     minWidth: 50,
                     textAlign: 'right',
                   }}
@@ -194,7 +194,7 @@ export function RealAgentsPanel({ params, api }: PanelComponentProps) {
                 <span
                   style={{
                     fontSize: 10,
-                    color: 'var(--muted-foreground,#888)',
+                    color: 'var(--fg-mute)',
                     minWidth: 30,
                     textAlign: 'right',
                   }}

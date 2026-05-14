@@ -70,7 +70,7 @@ export function DockOnboarding() {
             fontFamily: 'ui-monospace, monospace',
             fontSize: 10,
             padding: '0 4px',
-            background: 'var(--card, #1a1a1a)',
+            background: 'var(--bg-2)',
             borderRadius: 2,
           }}
         >
@@ -82,7 +82,7 @@ export function DockOnboarding() {
             fontFamily: 'ui-monospace, monospace',
             fontSize: 10,
             padding: '0 4px',
-            background: 'var(--card, #1a1a1a)',
+            background: 'var(--bg-2)',
             borderRadius: 2,
           }}
         >
@@ -101,7 +101,7 @@ export function DockOnboarding() {
           marginLeft: 4,
           background: 'transparent',
           border: 0,
-          color: 'var(--muted-foreground, #888)',
+          color: 'var(--fg-mute)',
           cursor: 'pointer',
         }}
       >

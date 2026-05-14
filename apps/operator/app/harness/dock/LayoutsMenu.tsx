@@ -18,6 +18,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import { Layers, X } from 'lucide-react';
+import { usePromptDialog } from '../usePromptDialog';
 import {
   getLayoutSnapshot,
   loadLayout,
@@ -44,6 +45,7 @@ export function LayoutsMenu({
   const [list, setList] = useState<LayoutListItem[] | null>(null);
   const [error, setError] = useState<Error | null>(null);
   const [saving, setSaving] = useState(false);
+  const { prompt: askPrompt, element: promptEl } = usePromptDialog();
 
   const refresh = useCallback(async () => {
     setError(null);
@@ -72,8 +74,13 @@ export function LayoutsMenu({
   }, [open]);
 
   const saveAs = useCallback(async () => {
-    if (typeof window === 'undefined') return;
-    const name = window.prompt('Save current layout as:');
+    const name = await askPrompt({
+      title: 'Save current layout',
+      label: 'Name',
+      placeholder: 'e.g. my-dashboard',
+      submitLabel: 'Save',
+      validate: (v) => (v.trim().length > 0 ? null : 'Required'),
+    });
     if (!name || !name.trim()) return;
     const sanitized = name.trim();
     setSaving(true);
@@ -97,7 +104,7 @@ export function LayoutsMenu({
     } finally {
       setSaving(false);
     }
-  }, [refresh]);
+  }, [refresh, askPrompt]);
 
   const switchTo = (name: string) => {
     setOpen(false);
@@ -111,6 +118,7 @@ export function LayoutsMenu({
 
   return (
     <div style={{ position: 'relative', display: 'inline-block' }} className={className}>
+      {promptEl}
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
@@ -124,7 +132,7 @@ export function LayoutsMenu({
           gap: 4,
           padding: '3px 8px',
           fontSize: 11,
-          background: 'var(--card, #1a1a1a)',
+          background: 'var(--bg-2)',
           color: 'var(--foreground, #ccc)',
           border: '1px solid var(--border, #333)',
           borderRadius: 3,
@@ -151,7 +159,7 @@ export function LayoutsMenu({
               minWidth: 240,
               maxHeight: 360,
               overflowY: 'auto',
-              background: 'var(--card, #1a1a1a)',
+              background: 'var(--bg-2)',
               border: '1px solid var(--border, #333)',
               borderRadius: 4,
               boxShadow: '0 8px 24px rgba(0,0,0,0.5)',
@@ -165,7 +173,7 @@ export function LayoutsMenu({
                 alignItems: 'center',
                 padding: '6px 10px',
                 fontSize: 11,
-                color: 'var(--muted-foreground, #888)',
+                color: 'var(--fg-mute)',
                 borderBottom: '1px solid var(--border, #333)',
                 marginBottom: 2,
               }}
@@ -179,7 +187,7 @@ export function LayoutsMenu({
                   marginLeft: 'auto',
                   background: 'transparent',
                   border: 0,
-                  color: 'var(--muted-foreground, #888)',
+                  color: 'var(--fg-mute)',
                   cursor: 'pointer',
                   display: 'inline-flex',
                   padding: 2,
@@ -216,14 +224,14 @@ export function LayoutsMenu({
             )}
             {!list && !error && (
               <div
-                style={{ padding: '6px 10px', color: 'var(--muted-foreground, #888)', fontSize: 11 }}
+                style={{ padding: '6px 10px', color: 'var(--fg-mute)', fontSize: 11 }}
               >
                 Loading…
               </div>
             )}
             {list && list.length === 0 && (
               <div
-                style={{ padding: '6px 10px', color: 'var(--muted-foreground, #888)', fontSize: 11 }}
+                style={{ padding: '6px 10px', color: 'var(--fg-mute)', fontSize: 11 }}
               >
                 No saved layouts yet.
               </div>
@@ -249,7 +257,7 @@ export function LayoutsMenu({
                     >
                       <span style={{ fontWeight: 500 }}>{l.name}</span>
                       {isCurrent && (
-                        <span style={{ fontSize: 10, color: 'var(--muted-foreground, #888)' }}>
+                        <span style={{ fontSize: 10, color: 'var(--fg-mute)' }}>
                           current
                         </span>
                       )}
@@ -257,7 +265,7 @@ export function LayoutsMenu({
                     <div
                       style={{
                         fontSize: 10,
-                        color: 'var(--muted-foreground, #888)',
+                        color: 'var(--fg-mute)',
                       }}
                     >
                       saved {ageOf(l.updatedTs)}
@@ -288,7 +296,7 @@ function menuBtnStyle(disabled = false): React.CSSProperties {
     padding: '6px 10px',
     fontSize: 12,
     background: 'transparent',
-    color: disabled ? 'var(--muted-foreground, #888)' : 'var(--foreground, #ccc)',
+    color: disabled ? 'var(--fg-mute)' : 'var(--foreground, #ccc)',
     border: 0,
     borderRadius: 3,
     cursor: disabled ? 'default' : 'pointer',
