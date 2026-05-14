@@ -150,16 +150,16 @@ export default function MemoryPage() {
           this workspace) are marked with a badge.
         </p>
         {stats && (stats.total_edits > 0 || stats.total_deletes > 0) && (
-          <p style={{ fontSize: 12, color: 'var(--text-secondary)', margin: '8px 0 0' }}>
+          <p style={{ fontSize: 12, color: 'var(--fg-mute)', margin: '8px 0 0' }}>
             Lifetime feedback: <strong>{stats.total_edits}</strong> edits, <strong>{stats.total_deletes}</strong> deletes
           </p>
         )}
         {stats?.learning_instructions && (
-          <details style={{ marginTop: 12, padding: 12, borderRadius: 6, border: '1px solid var(--border)', background: 'var(--surface)' }}>
-            <summary style={{ cursor: 'pointer', fontSize: 13, color: 'var(--text-secondary)' }}>
+          <details style={{ marginTop: 12, padding: 12, borderRadius: 6, border: '1px solid var(--border)', background: 'var(--bg-2)' }}>
+            <summary style={{ cursor: 'pointer', fontSize: 13, color: 'var(--fg-mute)' }}>
               Active extraction-prompt adaptation (from your feedback)
             </summary>
-            <pre style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontSize: 12, marginTop: 8, color: 'var(--text)' }}>
+            <pre style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontSize: 12, marginTop: 8, color: 'var(--fg)' }}>
               {stats.learning_instructions}
             </pre>
           </details>
@@ -184,8 +184,8 @@ export default function MemoryPage() {
               onClick={() => setFilter(f)}
               style={{
                 padding: '4px 10px', borderRadius: 6,
-                border: filter === f ? '2px solid var(--text)' : '1px solid var(--border)',
-                background: filter === f ? 'var(--surface-hover)' : 'var(--surface)',
+                border: filter === f ? '2px solid var(--fg)' : '1px solid var(--border)',
+                background: filter === f ? 'var(--bg-3)' : 'var(--bg-2)',
                 cursor: 'pointer', fontSize: 13,
                 fontWeight: filter === f ? 600 : 400,
               }}
@@ -225,7 +225,7 @@ export default function MemoryPage() {
       </div>
 
       {filtered.length === 0 ? (
-        <p style={{ color: 'var(--text-secondary)' }}>
+        <p style={{ color: 'var(--fg-mute)' }}>
           {rows.length === 0 ? 'No memories stored yet.' : `No memories matching '${filter}'.`}
         </p>
       ) : (
@@ -241,7 +241,7 @@ export default function MemoryPage() {
                   display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start',
                   padding: 12, gap: 12,
                   borderRadius: 6, border: '1px solid var(--border)',
-                  background: 'var(--surface)',
+                  background: 'var(--bg-2)',
                 }}
               >
                 <div style={{ flex: 1, minWidth: 0 }}>
@@ -251,10 +251,10 @@ export default function MemoryPage() {
                       <span style={{ padding: '2px 8px', borderRadius: 4, background: '#3b82f6', color: '#fff', fontSize: 11 }}>shared</span>
                     )}
                     {meta.harness_slug && (
-                      <span style={{ padding: '2px 8px', borderRadius: 4, background: 'var(--surface-hover)', fontSize: 11 }}>{meta.harness_slug as string}</span>
+                      <span style={{ padding: '2px 8px', borderRadius: 4, background: 'var(--bg-3)', fontSize: 11 }}>{meta.harness_slug as string}</span>
                     )}
                     {meta.expires_at && (
-                      <span style={{ fontSize: 11, color: 'var(--text-secondary)' }}>expires {new Date(meta.expires_at as string).toLocaleString()}</span>
+                      <span style={{ fontSize: 11, color: 'var(--fg-mute)' }}>expires {new Date(meta.expires_at as string).toLocaleString()}</span>
                     )}
                   </div>
                   {editingId === row.id ? (
@@ -263,10 +263,10 @@ export default function MemoryPage() {
                         value={editingDraft}
                         onChange={(e) => setEditingDraft(e.target.value)}
                         rows={3}
-                        style={{ width: '100%', padding: 6, fontFamily: 'inherit', fontSize: 13, border: '1px solid var(--border)', borderRadius: 4, background: 'var(--surface-hover)', color: 'var(--text)' }}
+                        style={{ width: '100%', padding: 6, fontFamily: 'inherit', fontSize: 13, border: '1px solid var(--border)', borderRadius: 4, background: 'var(--bg-3)', color: 'var(--fg)' }}
                       />
                       <div style={{ display: 'flex', gap: 6 }}>
-                        <button type="button" onClick={() => onSaveEdit(row.id)} style={{ padding: '2px 10px', borderRadius: 4, border: '1px solid var(--border)', background: 'var(--surface-hover)', cursor: 'pointer', fontSize: 12 }}>Save</button>
+                        <button type="button" onClick={() => onSaveEdit(row.id)} style={{ padding: '2px 10px', borderRadius: 4, border: '1px solid var(--border)', background: 'var(--bg-3)', cursor: 'pointer', fontSize: 12 }}>Save</button>
                         <button type="button" onClick={() => setEditingId(null)} style={{ padding: '2px 10px', borderRadius: 4, border: '1px solid var(--border)', background: 'transparent', cursor: 'pointer', fontSize: 12 }}>Cancel</button>
                       </div>
                     </div>

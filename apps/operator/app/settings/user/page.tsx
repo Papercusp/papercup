@@ -265,7 +265,7 @@ export default function UserSettingsPage() {
 
       <section className="pc-settings-section">
         <h2>Overrides</h2>
-        <p style={{ color: 'var(--text-secondary)', fontSize: 13, marginBottom: 12 }}>
+        <p style={{ color: 'var(--fg-mute)', fontSize: 13, marginBottom: 12 }}>
           Set a value here to override the workspace default for your account.
           Leave a row empty (or click Clear) to fall back to the workspace.
         </p>
@@ -290,13 +290,13 @@ export default function UserSettingsPage() {
                     {overridden && (
                       <>
                         <span style={{ padding: '1px 6px', borderRadius: 3, background: '#a78bfa', color: '#fff', fontSize: 10, fontWeight: 600 }}>OVERRIDE</span>
-                        <span style={{ fontSize: 11, color: 'var(--text-secondary)' }}>
+                        <span style={{ fontSize: 11, color: 'var(--fg-mute)' }}>
                           workspace: <code>{formatValue(workspaceValue)}</code>
                         </span>
                       </>
                     )}
                   </div>
-                  <p style={{ color: 'var(--text-secondary)', fontSize: 12, margin: '0 0 8px' }}>{spec.help}</p>
+                  <p style={{ color: 'var(--fg-mute)', fontSize: 12, margin: '0 0 8px' }}>{spec.help}</p>
                   <OverrideInput
                     spec={spec}
                     value={value}
@@ -320,7 +320,7 @@ export default function UserSettingsPage() {
 
       <section className="pc-settings-section">
         <h2>Memory</h2>
-        <p style={{ color: 'var(--text-secondary)', fontSize: 13 }}>
+        <p style={{ color: 'var(--fg-mute)', fontSize: 13 }}>
           The operator stores things it learns about you (preferences, corrections, etc).
           Inspect and delete per entry at <a href="/settings/user/memory" style={{ color: 'var(--accent)' }}>/settings/user/memory</a>.
           Search across memories + workspace prose at <a href="/settings/user/search" style={{ color: 'var(--accent)' }}>/settings/user/search</a>.

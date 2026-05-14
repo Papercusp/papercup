@@ -67,7 +67,7 @@ export default function SearchPage() {
           onChange={(e) => setQ(e.target.value)}
           placeholder="What do you remember about…"
           autoFocus
-          style={{ flex: 1, minWidth: 240, padding: '8px 12px', borderRadius: 6, border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text)', fontSize: 14 }}
+          style={{ flex: 1, minWidth: 240 }}
         />
         <Tooltip label="bm25: keyword-only (fast, deterministic). hybrid: combines keyword + semantic via RRF (needs embedder).">
           <span>
@@ -82,13 +82,13 @@ export default function SearchPage() {
             />
           </span>
         </Tooltip>
-        <button type="submit" disabled={loading || !q.trim()} style={{ padding: '8px 16px', borderRadius: 6, border: '1px solid var(--border)', background: 'var(--surface-hover)', cursor: 'pointer', fontSize: 14, opacity: loading ? 0.6 : 1 }}>
+        <button type="submit" disabled={loading || !q.trim()} style={{ padding: '8px 16px', borderRadius: 6, border: '1px solid var(--border)', background: 'var(--bg-3)', cursor: 'pointer', fontSize: 14, opacity: loading ? 0.6 : 1 }}>
           {loading ? 'Searching…' : 'Search'}
         </button>
       </form>
 
       {searched && !loading && memories.length === 0 && prose.length === 0 && (
-        <p style={{ color: 'var(--text-secondary)' }}>No results.</p>
+        <p style={{ color: 'var(--fg-mute)' }}>No results.</p>
       )}
 
       {memories.length > 0 && (
@@ -98,13 +98,13 @@ export default function SearchPage() {
           </h4>
           <ul style={{ listStyle: 'none', padding: 0, display: 'flex', flexDirection: 'column', gap: 8 }}>
             {memories.map((m) => (
-              <li key={m.id} style={{ padding: 12, borderRadius: 6, border: '1px solid var(--border)', background: 'var(--surface)' }}>
+              <li key={m.id} style={{ padding: 12, borderRadius: 6, border: '1px solid var(--border)', background: 'var(--bg-2)' }}>
                 <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 4, flexWrap: 'wrap' }}>
                   {m.scope === 'workspace' && (
                     <span style={{ padding: '2px 8px', borderRadius: 4, background: '#3b82f6', color: '#fff', fontSize: 11 }}>shared</span>
                   )}
                   {typeof m.score === 'number' && (
-                    <span style={{ fontSize: 11, color: 'var(--text-secondary)' }}>score {m.score.toFixed(2)}</span>
+                    <span style={{ fontSize: 11, color: 'var(--fg-mute)' }}>score {m.score.toFixed(2)}</span>
                   )}
                 </div>
                 <div style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{m.memory}</div>
@@ -121,13 +121,13 @@ export default function SearchPage() {
           </h4>
           <ul style={{ listStyle: 'none', padding: 0, display: 'flex', flexDirection: 'column', gap: 8 }}>
             {prose.map((h) => (
-              <li key={`${h.source}:${h.source_id}`} style={{ padding: 12, borderRadius: 6, border: '1px solid var(--border)', background: 'var(--surface)' }}>
+              <li key={`${h.source}:${h.source_id}`} style={{ padding: 12, borderRadius: 6, border: '1px solid var(--border)', background: 'var(--bg-2)' }}>
                 <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 4, flexWrap: 'wrap' }}>
                   <span style={{ padding: '2px 8px', borderRadius: 4, background: SOURCE_COLOR[h.source], color: '#fff', fontSize: 11, fontWeight: 600 }}>{h.source}</span>
                   {h.harness_slug && (
-                    <span style={{ padding: '2px 8px', borderRadius: 4, background: 'var(--surface-hover)', fontSize: 11 }}>{h.harness_slug}</span>
+                    <span style={{ padding: '2px 8px', borderRadius: 4, background: 'var(--bg-3)', fontSize: 11 }}>{h.harness_slug}</span>
                   )}
-                  <span style={{ fontSize: 11, color: 'var(--text-secondary)' }}>rank {h.rank.toFixed(3)}</span>
+                  <span style={{ fontSize: 11, color: 'var(--fg-mute)' }}>rank {h.rank.toFixed(3)}</span>
                 </div>
                 <div
                   style={{ wordBreak: 'break-word' }}

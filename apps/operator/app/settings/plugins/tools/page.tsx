@@ -84,11 +84,7 @@ export default function PluginToolsPage(): JSX.Element {
           placeholder="Filter by name, plugin, or description…"
           value={filter}
           onChange={(e) => setFilter(e.target.value)}
-          style={{
-            width: '100%', maxWidth: 480, padding: '6px 10px',
-            border: '1px solid var(--border)', borderRadius: 4,
-            background: 'var(--bg)', color: 'var(--fg)', fontSize: 13,
-          }}
+          style={{ width: '100%', maxWidth: 480 }}
         />
       </div>
 
