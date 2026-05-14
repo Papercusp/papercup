@@ -315,7 +315,7 @@ function VoiceKeyRow({
             style={{ flex: 1, padding: '4px 8px', fontSize: 12, fontFamily: 'monospace' }}
           />
           <button type="button" onClick={save} disabled={busy || !draft.trim()}
-            style={{ padding: '4px 12px', fontSize: 12, background: 'var(--cta-bg, #1f2937)', color: 'var(--cta-fg, #fff)', border: 'none', borderRadius: 4, cursor: 'pointer', fontWeight: 600 }}>
+            style={{ padding: '4px 12px', fontSize: 12, background: 'var(--accent)', color: 'var(--accent-ink)', border: 'none', borderRadius: 4, cursor: 'pointer', fontWeight: 600 }}>
             Save
           </button>
         </div>

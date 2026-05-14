@@ -124,7 +124,7 @@ function ToolCard({ tool: t }: { tool: ToolRow }): JSX.Element {
   return (
     <div style={{
       border: '1px solid var(--border)', borderRadius: 6, padding: 12,
-      background: 'var(--bg-subtle, transparent)',
+      background: 'var(--bg-2)',
     }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 12 }}>
         <code style={{ fontSize: 14, fontWeight: 600 }}>{t.name}</code>

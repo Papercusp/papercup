@@ -136,7 +136,7 @@ export function RealIssuesPanel({ params, api }: PanelComponentProps) {
                 padding: '2px 8px',
                 fontSize: 11,
                 background: active ? 'var(--accent,#2a2a2a)' : 'transparent',
-                color: active ? 'var(--foreground,#ccc)' : 'var(--fg-mute)',
+                color: active ? 'var(--fg)' : 'var(--fg-mute)',
                 border: '1px solid var(--border,#333)',
                 borderRadius: 3,
                 cursor: 'pointer',
@@ -181,7 +181,7 @@ export function RealIssuesPanel({ params, api }: PanelComponentProps) {
                   display: 'flex',
                   gap: 8,
                   padding: '6px 12px',
-                  borderBottom: '1px solid var(--border-subtle,#222)',
+                  borderBottom: '1px solid var(--border)',
                   alignItems: 'baseline',
                   cursor: 'pointer',
                 }}
@@ -206,7 +206,7 @@ export function RealIssuesPanel({ params, api }: PanelComponentProps) {
                 >
                   {i.id}
                 </span>
-                <span style={{ flex: 1, color: 'var(--foreground,#ccc)' }}>{i.title}</span>
+                <span style={{ flex: 1, color: 'var(--fg)' }}>{i.title}</span>
                 <span
                   style={{
                     fontSize: 10,

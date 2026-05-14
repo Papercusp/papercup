@@ -105,7 +105,7 @@ export default function RuntimeView({ status: initial }: { status: RuntimeStatus
               getRowId={(r) => r.key}
               rowMinHeight={28}
               headerHeight={28}
-              getRowBg={(row) => row.declared.length !== row.registered.length ? 'var(--bg-warn, transparent)' : undefined}
+              getRowBg={(row) => row.declared.length !== row.registered.length ? 'var(--warn-bg, transparent)' : undefined}
             />
           </div>
         )}

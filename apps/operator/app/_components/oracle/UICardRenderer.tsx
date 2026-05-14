@@ -91,7 +91,7 @@ export function UICardRenderer({
     <div
       className={className}
       style={{
-        border: '1px solid var(--pc-border, rgba(255,255,255,.08))',
+        border: '1px solid var(--border))',
         borderRadius: 8,
         overflow: 'hidden',
         background: 'transparent',

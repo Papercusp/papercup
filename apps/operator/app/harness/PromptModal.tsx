@@ -143,14 +143,14 @@ export function PromptModal({
               marginTop: 6,
               padding: '6px 8px',
               background: 'var(--bg-2)',
-              border: `1px solid ${error ? 'var(--accent-bad, #ef5c5c)' : 'var(--border)'}`,
+              border: `1px solid ${error ? 'var(--bad)' : 'var(--border)'}`,
               borderRadius: 4,
               color: 'var(--fg)',
               fontFamily: 'inherit',
               fontSize: 13,
             }}
           />
-          {error && <span style={{ display: 'block', marginTop: 4, color: 'var(--accent-bad, #ef5c5c)' }}>{error}</span>}
+          {error && <span style={{ display: 'block', marginTop: 4, color: 'var(--bad)' }}>{error}</span>}
         </label>
         <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
           <button type="button" onClick={close} disabled={busy} style={ghostBtn(busy)}>

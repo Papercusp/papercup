@@ -64,7 +64,7 @@ function btnStyle(enabled: boolean): React.CSSProperties {
     height: 22,
     padding: 0,
     background: 'var(--bg-2)',
-    color: enabled ? 'var(--foreground, #ccc)' : 'var(--fg-mute)',
+    color: enabled ? 'var(--fg)' : 'var(--fg-mute)',
     border: '1px solid var(--border, #333)',
     borderRadius: 3,
     cursor: enabled ? 'pointer' : 'default',

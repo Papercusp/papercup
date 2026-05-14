@@ -117,7 +117,7 @@ export function RealAgentsPanel({ params, api }: PanelComponentProps) {
             padding: '2px 8px',
             fontSize: 11,
             background: showAll ? 'var(--accent,#2a2a2a)' : 'transparent',
-            color: 'var(--foreground,#ccc)',
+            color: 'var(--fg)',
             border: '1px solid var(--border,#333)',
             borderRadius: 3,
             cursor: 'pointer',
@@ -143,7 +143,7 @@ export function RealAgentsPanel({ params, api }: PanelComponentProps) {
                   display: 'flex',
                   gap: 8,
                   padding: '6px 12px',
-                  borderBottom: '1px solid var(--border-subtle,#222)',
+                  borderBottom: '1px solid var(--border)',
                   alignItems: 'baseline',
                 }}
               >

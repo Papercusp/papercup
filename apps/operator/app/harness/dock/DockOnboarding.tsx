@@ -54,7 +54,7 @@ export function DockOnboarding() {
         gap: 8,
         padding: '4px 8px 4px 10px',
         background: 'var(--accent, #1f2937)',
-        color: 'var(--foreground, #ccc)',
+        color: 'var(--fg)',
         border: '1px solid var(--border, #3a4554)',
         borderRadius: 4,
         fontSize: 11,

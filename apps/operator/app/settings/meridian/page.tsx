@@ -38,7 +38,7 @@ export default function MeridianSettingsPage() {
           Routes omp through your Claude Max subscription. Meridian&apos;s web UI is embedded below; changes are saved by Meridian directly to <code>~/.config/meridian/</code>.
         </p>
       </header>
-      <nav style={{ display: 'flex', gap: 4, padding: '8px 0', borderBottom: '1px solid var(--pc-border, #2a2a2a)' }}>
+      <nav style={{ display: 'flex', gap: 4, padding: '8px 0', borderBottom: '1px solid var(--border)' }}>
         {TABS.map((t) => (
           <button
             key={t.id}
@@ -47,9 +47,9 @@ export default function MeridianSettingsPage() {
             style={{
               padding: '6px 12px',
               borderRadius: 4,
-              border: '1px solid var(--pc-border, #2a2a2a)',
-              background: t.id === tab ? 'var(--pc-accent, #1f3a5f)' : 'transparent',
-              color: t.id === tab ? '#cce4ff' : 'var(--pc-text, #e7e7e7)',
+              border: '1px solid var(--border)',
+              background: t.id === tab ? 'var(--accent)' : 'transparent',
+              color: t.id === tab ? '#cce4ff' : 'var(--fg)',
               cursor: 'pointer',
               fontSize: 13,
             }}
@@ -62,7 +62,7 @@ export default function MeridianSettingsPage() {
           href={`${MERIDIAN_BASE}${active.path}`}
           target="_blank"
           rel="noreferrer"
-          style={{ padding: '6px 12px', fontSize: 12, color: 'var(--pc-muted, #9a9a9a)' }}
+          style={{ padding: '6px 12px', fontSize: 12, color: 'var(--fg-mute)' }}
         >
           Open in browser ↗
         </a>
@@ -84,7 +84,7 @@ export default function MeridianSettingsPage() {
           <iframe
             key={active.id}
             src={`${MERIDIAN_BASE}${active.path}`}
-            style={{ width: '100%', height: '100%', minHeight: 540, border: '1px solid var(--pc-border, #2a2a2a)', borderRadius: 4, background: '#0a0a0a' }}
+            style={{ width: '100%', height: '100%', minHeight: 540, border: '1px solid var(--border)', borderRadius: 4, background: '#0a0a0a' }}
             title={`Meridian ${active.label}`}
           />
         )}

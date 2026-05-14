@@ -60,7 +60,7 @@ export function BacklinksPanel({
           padding: '8px 12px',
           background: 'transparent',
           border: 0,
-          color: 'var(--text-2, #aaa)',
+          color: 'var(--fg-dim)',
           textTransform: 'uppercase',
           letterSpacing: '0.05em',
           fontSize: 11,
@@ -74,7 +74,7 @@ export function BacklinksPanel({
       {open && hits !== null && (
         <div style={{ padding: '0 12px 8px', maxHeight: 200, overflowY: 'auto' }}>
           {hits.length === 0 ? (
-            <div style={{ color: 'var(--text-3, #777)', fontStyle: 'italic', padding: '4px 0' }}>
+            <div style={{ color: 'var(--fg-mute)', fontStyle: 'italic', padding: '4px 0' }}>
               No files reference <code style={{ background: 'var(--bg, #0b0d10)', padding: '1px 4px', borderRadius: 3 }}>[[{target}]]</code>.
             </div>
           ) : (
@@ -90,13 +90,13 @@ export function BacklinksPanel({
                   border: '1px solid var(--border, #2a2a2a)',
                   borderRadius: 3,
                   textDecoration: 'none',
-                  color: 'var(--text-1, #e6e6e6)',
+                  color: 'var(--fg)',
                 }}
               >
                 <div style={{ color: '#6ab0ff', fontSize: 11 }}>
-                  {h.harness}/{h.filename}<span style={{ color: 'var(--text-3, #777)' }}> · L{h.line}</span>
+                  {h.harness}/{h.filename}<span style={{ color: 'var(--fg-mute)' }}> · L{h.line}</span>
                 </div>
-                <div style={{ color: 'var(--text-2, #aaa)', fontSize: 11, marginTop: 2, fontFamily: 'ui-monospace, monospace' }}>
+                <div style={{ color: 'var(--fg-dim)', fontSize: 11, marginTop: 2, fontFamily: 'ui-monospace, monospace' }}>
                   {h.snippet}
                 </div>
               </a>

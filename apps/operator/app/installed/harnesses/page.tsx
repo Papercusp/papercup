@@ -146,7 +146,7 @@ export default function InstalledHarnessesPage() {
       </header>
 
       {loading && <p className="pc-installed-ops-loading" style={{ color: 'var(--fg-mute)' }}>Loading…</p>}
-      {error && <p className="pc-installed-ops-error" style={{ color: 'var(--accent-warn, #f97583)' }}>Error: {error}</p>}
+      {error && <p className="pc-installed-ops-error" style={{ color: 'var(--warn)' }}>Error: {error}</p>}
 
       {data && data.projects.length === 0 && !loading && (
         <div className="pc-installed-ops-empty pc-installed-harnesses-empty" style={{ padding: 32, border: '1px dashed var(--border)', borderRadius: 8, textAlign: 'center' }}>

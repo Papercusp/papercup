@@ -192,7 +192,7 @@ export default function InstalledPluginsPage() {
       key: 'ok', header: 'OK', width: 1, align: 'center',
       toCopyText: (r) => r.ok ? 'OK' : 'FAIL',
       render: ({ row }) => (
-        <span style={{ color: row.ok ? 'var(--ok, #22c55e)' : 'var(--danger, #ef4444)' }}>
+        <span style={{ color: row.ok ? 'var(--good)' : 'var(--bad)' }}>
           {row.ok ? '●' : '○'}
         </span>
       ),
@@ -217,7 +217,7 @@ export default function InstalledPluginsPage() {
             </div>
           )}
           {runtimeStatus.length > 0 && (
-            <div style={{ background: 'var(--bg-elevated, #1f2937)' }}>
+            <div style={{ background: 'var(--bg-3)' }}>
               <strong>{runtimeStatus.length}</strong>
               <span>non-JS runtime{runtimeStatus.length === 1 ? '' : 's'}</span>
             </div>

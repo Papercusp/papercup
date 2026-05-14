@@ -147,7 +147,7 @@ export function useRegisterPluginPanels(slug: string): void {
                   }}
                 >
                   Plugin{' '}
-                  <code style={{ color: 'var(--foreground, #ccc)' }}>
+                  <code style={{ color: 'var(--fg)' }}>
                     {panel.pluginName}:{panel.id}
                   </code>{' '}
                   is an external React-typed panel; the dock doesn't have

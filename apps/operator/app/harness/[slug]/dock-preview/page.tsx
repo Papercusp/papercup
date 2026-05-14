@@ -80,7 +80,7 @@ export default function DockPreviewPage() {
           borderBottom: '1px solid var(--border, #333)',
           background: 'var(--bg-2)',
           fontSize: 12,
-          color: 'var(--foreground, #ccc)',
+          color: 'var(--fg)',
           fontFamily: 'system-ui, sans-serif',
         }}
       >
@@ -131,7 +131,7 @@ const previewBtn: React.CSSProperties = {
   padding: '4px 10px',
   fontSize: 11,
   background: 'var(--bg-2)',
-  color: 'var(--foreground, #ccc)',
+  color: 'var(--fg)',
   border: '1px solid var(--border, #333)',
   borderRadius: 4,
   cursor: 'pointer',

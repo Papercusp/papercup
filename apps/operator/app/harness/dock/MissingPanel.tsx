@@ -77,7 +77,7 @@ export function MissingPanel(props: PanelComponentProps) {
       }}
     >
       <div>
-        Panel type <code style={{ color: 'var(--foreground, #ccc)' }}>{panelType}</code> is not
+        Panel type <code style={{ color: 'var(--fg)' }}>{panelType}</code> is not
         installed.
       </div>
       <button
@@ -87,7 +87,7 @@ export function MissingPanel(props: PanelComponentProps) {
           padding: '6px 12px',
           fontSize: 12,
           background: 'var(--bg-2)',
-          color: 'var(--foreground, #ccc)',
+          color: 'var(--fg)',
           border: '1px solid var(--border, #333)',
           borderRadius: 4,
           cursor: 'pointer',

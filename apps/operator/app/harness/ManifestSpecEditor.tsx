@@ -337,7 +337,7 @@ function ManifestMarkdownBody({
               style={{
                 background: view === m ? 'var(--bg, #0b0d10)' : 'transparent',
                 border: '1px solid ' + (view === m ? '#4a90e2' : 'transparent'),
-                color: view === m ? '#fff' : 'var(--text-2, #aaa)',
+                color: view === m ? '#fff' : 'var(--fg-dim)',
                 padding: '3px 10px',
                 borderRadius: 3,
                 fontSize: 11,

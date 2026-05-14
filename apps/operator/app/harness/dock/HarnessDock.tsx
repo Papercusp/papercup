@@ -264,7 +264,7 @@ export function HarnessDock({ layoutName: initialLayoutName, className, slug }: 
           gap: 12,
           alignItems: 'flex-start',
           fontSize: 13,
-          color: 'var(--foreground, #ccc)',
+          color: 'var(--fg)',
         }}
       >
         <div style={{ color: 'var(--bad)' }}>
@@ -279,7 +279,7 @@ export function HarnessDock({ layoutName: initialLayoutName, className, slug }: 
               padding: '4px 12px',
               fontSize: 12,
               background: 'var(--bg-2)',
-              color: 'var(--foreground, #ccc)',
+              color: 'var(--fg)',
               border: '1px solid var(--border, #333)',
               borderRadius: 3,
               cursor: 'pointer',
@@ -297,7 +297,7 @@ export function HarnessDock({ layoutName: initialLayoutName, className, slug }: 
               padding: '4px 12px',
               fontSize: 12,
               background: 'var(--bg-2)',
-              color: 'var(--foreground, #ccc)',
+              color: 'var(--fg)',
               border: '1px solid var(--border, #333)',
               borderRadius: 3,
               cursor: 'pointer',

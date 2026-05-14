@@ -72,9 +72,9 @@ const STATUS_LABEL: Record<Status, string> = {
 
 const STATUS_COLOR: Record<Status, string> = {
   'ok': 'var(--good)',
-  'error': 'var(--accent-red, #d94f4f)',
-  'timeout': 'var(--accent-orange, #d4a04f)',
-  'quota-exceeded': 'var(--accent-yellow, #c8b04a)',
+  'error': 'var(--bad)',
+  'timeout': 'var(--warn)',
+  'quota-exceeded': 'var(--warn)',
   'role-not-allowed': 'var(--fg-mute)',
 };
 
@@ -271,7 +271,7 @@ function SpawnsTab({
 }) {
   if (error) {
     return (
-      <div style={{ padding: 16, color: 'var(--accent-red, #d94f4f)' }}>
+      <div style={{ padding: 16, color: 'var(--bad)' }}>
         <strong>Failed to load:</strong> {error}
       </div>
     );
@@ -411,7 +411,7 @@ function ArtifactsTab({
 }) {
   if (error) {
     return (
-      <div style={{ padding: 16, color: 'var(--accent-red, #d94f4f)' }}>
+      <div style={{ padding: 16, color: 'var(--bad)' }}>
         <strong>Failed to load:</strong> {error}
       </div>
     );

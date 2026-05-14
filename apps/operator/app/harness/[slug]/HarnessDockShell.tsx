@@ -98,7 +98,7 @@ export default function HarnessDockShell({ slug }: HarnessDockShellProps) {
           fontFamily: 'system-ui, sans-serif',
         }}
       >
-        <strong style={{ color: 'var(--foreground, #ccc)' }}>Dock</strong>
+        <strong style={{ color: 'var(--fg)' }}>Dock</strong>
         <span>{slug}</span>
         <DockOnboarding />
         <div style={{ flex: 1 }} />
@@ -125,7 +125,7 @@ const btn: React.CSSProperties = {
   padding: '3px 8px',
   fontSize: 11,
   background: 'var(--bg-2)',
-  color: 'var(--foreground, #ccc)',
+  color: 'var(--fg)',
   border: '1px solid var(--border, #333)',
   borderRadius: 3,
   cursor: 'pointer',

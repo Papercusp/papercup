@@ -120,9 +120,9 @@ export default function UpdateChip() {
         disabled={installing}
         title={info?.notes ?? `New version v${info!.new_version} available`}
         style={{
-          background: 'var(--accent-bg, #1f3d2a)',
+          background: 'var(--accent)',
           border: '1px solid var(--accent, #2d7a40)',
-          color: 'var(--accent-fg, #7fc99a)',
+          color: 'var(--accent-ink)',
           padding: '3px 10px',
           borderRadius: 4,
           cursor: installing ? 'wait' : 'pointer',

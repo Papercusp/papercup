@@ -531,7 +531,7 @@ function AssertionsView({ harnessSlug, expertId }: { harnessSlug: string; expert
     return <div style={{ padding: '20px 24px', color: 'var(--fg-mute)', fontSize: 13 }}>Loading…</div>;
   }
   if (error) {
-    return <div style={{ padding: '20px 24px', color: 'var(--danger, #f87171)', fontSize: 13 }}>Error: {error}</div>;
+    return <div style={{ padding: '20px 24px', color: 'var(--bad)', fontSize: 13 }}>Error: {error}</div>;
   }
   if (!content || !content.trim()) {
     return (

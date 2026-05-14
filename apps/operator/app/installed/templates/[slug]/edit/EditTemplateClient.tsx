@@ -325,7 +325,7 @@ export default function EditTemplateClient() {
             ariaLabel="Template version"
             triggerClassName="pc-template-editor-version"
             triggerStyle={{
-              fontSize: 12, padding: '4px 8px', background: 'var(--bg-elevated, rgba(255,255,255,0.05))',
+              fontSize: 12, padding: '4px 8px', background: 'var(--bg-3))',
               color: 'var(--fg)', border: '1px solid var(--border)', borderRadius: 4,
             }}
             onChange={async (next) => {
@@ -407,7 +407,7 @@ export default function EditTemplateClient() {
                       width: '100%',
                       textAlign: 'left',
                       padding: '8px 10px',
-                      background: isActive ? 'var(--bg-elevated, rgba(255,255,255,0.04))' : 'transparent',
+                      background: isActive ? 'var(--bg-3))' : 'transparent',
                       border: 'none',
                       borderLeft: isActive ? '2px solid var(--accent, #3b82f6)' : '2px solid transparent',
                       color: isActive ? 'var(--fg)' : 'var(--fg-mute)',
@@ -567,7 +567,7 @@ function AddFileDialog({
               {...register('path')}
               style={{
                 width: '100%', padding: '4px 8px',
-                background: 'var(--bg-elevated, rgba(255,255,255,0.04))', color: 'var(--fg)',
+                background: 'var(--bg-3))', color: 'var(--fg)',
                 border: '1px solid var(--border)', borderRadius: 3, fontSize: 12,
                 fontFamily: "'SF Mono', monospace",
               }}
@@ -640,14 +640,14 @@ function AddFileDialog({
 
 const inputStyleSmall: React.CSSProperties = {
   width: '100%', padding: '4px 8px',
-  background: 'var(--bg-elevated, rgba(255,255,255,0.04))', color: 'var(--fg)',
+  background: 'var(--bg-3))', color: 'var(--fg)',
   border: '1px solid var(--border)', borderRadius: 3, fontSize: 12,
 };
 
 function tabBtnStyle(active: boolean): React.CSSProperties {
   return {
     padding: '4px 10px',
-    background: active ? 'var(--bg-elevated, rgba(255,255,255,0.06))' : 'transparent',
+    background: active ? 'var(--bg-3))' : 'transparent',
     color: active ? 'var(--fg)' : 'var(--fg-dim)',
     border: '1px solid var(--border)',
     borderRadius: 3,
@@ -1010,7 +1010,7 @@ const removeBtnStyle: React.CSSProperties = {
 function inputStyle(width: number): React.CSSProperties {
   return {
     padding: '4px 8px',
-    background: 'var(--bg-elevated, rgba(255,255,255,0.04))',
+    background: 'var(--bg-3))',
     color: 'var(--fg)',
     border: '1px solid var(--border)',
     borderRadius: 3,
@@ -1032,7 +1032,7 @@ function Field({ label, value, onChange, mono, multiline }: { label: string; val
           onChange={(e) => onChange(e.target.value)}
           style={{
             width: '100%', padding: '6px 8px', minHeight: 60,
-            background: 'var(--bg-elevated, rgba(255,255,255,0.04))', color: 'var(--fg)',
+            background: 'var(--bg-3))', color: 'var(--fg)',
             border: '1px solid var(--border)', borderRadius: 3, fontSize: 12, resize: 'vertical',
           }}
         />
@@ -1043,7 +1043,7 @@ function Field({ label, value, onChange, mono, multiline }: { label: string; val
           onChange={(e) => onChange(e.target.value)}
           style={{
             width: '100%', padding: '4px 8px',
-            background: 'var(--bg-elevated, rgba(255,255,255,0.04))', color: 'var(--fg)',
+            background: 'var(--bg-3))', color: 'var(--fg)',
             border: '1px solid var(--border)', borderRadius: 3, fontSize: 12,
             fontFamily: mono ? "'SF Mono', monospace" : undefined,
           }}
@@ -1067,5 +1067,5 @@ function btnStyle(variant: 'primary' | 'accent' | 'muted'): React.CSSProperties 
   };
   if (variant === 'primary') return { ...base, background: 'var(--accent, #3b82f6)', color: 'white' };
   if (variant === 'accent') return { ...base, background: 'var(--good)', color: '#062c1c' };
-  return { ...base, background: 'var(--bg-elevated, rgba(255,255,255,0.05))', color: 'var(--fg-dim)' };
+  return { ...base, background: 'var(--bg-3))', color: 'var(--fg-dim)' };
 }

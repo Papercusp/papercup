@@ -257,7 +257,7 @@ export default function InstalledTemplatesClient() {
                     className="pc-installed-template-link"
                     style={{
                       padding: '6px 12px',
-                      background: 'var(--bg-elevated, rgba(255,255,255,0.04))',
+                      background: 'var(--bg-3))',
                       color: 'var(--fg)',
                       border: '1px solid var(--border)',
                       borderRadius: 4,

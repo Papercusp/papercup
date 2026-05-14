@@ -1322,7 +1322,7 @@ function WakeWordTestButton({ wakeWord }: { wakeWord: string }) {
         </span>
       )}
       {stage === 'heard-correct' && (
-        <span style={{ ...hint, marginTop: 0, marginLeft: 4, flexBasis: '100%', color: 'var(--success, #16a34a)' }}>
+        <span style={{ ...hint, marginTop: 0, marginLeft: 4, flexBasis: '100%', color: 'var(--good)' }}>
           Heard: <em>"{transcript}"</em> — the Operator panel should have opened.
         </span>
       )}
@@ -1535,7 +1535,7 @@ function EnginePreview({ engine }: { engine: string }) {
       <Button onClick={onClick} disabled={busy}>
         {busy ? '▶ Playing…' : `▶ Preview ${engine}`}
       </Button>
-      {error && <p style={{ ...hint, color: 'var(--danger, #b91c1c)' }}>{error}</p>}
+      {error && <p style={{ ...hint, color: 'var(--bad)' }}>{error}</p>}
     </div>
   );
 }
@@ -1679,7 +1679,7 @@ function ConvAgentVoice(): JSX.Element {
         Preview synthesises a sample with the entered (or current) voice id without changing the agent.
       </p>
       {msg && (
-        <p style={{ ...hint, color: msg.kind === 'err' ? 'var(--accent-error, #dc2626)' : 'var(--accent-success, #16a34a)' }}>
+        <p style={{ ...hint, color: msg.kind === 'err' ? 'var(--bad)' : 'var(--good)' }}>
           {msg.text}
         </p>
       )}

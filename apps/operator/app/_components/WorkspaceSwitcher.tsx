@@ -234,7 +234,7 @@ export default function WorkspaceSwitcher() {
                   gap: 6,
                   padding: '4px 8px',
                   borderRadius: 3,
-                  background: isCurrent ? 'var(--accent-bg, #1f2d3d)' : 'transparent',
+                  background: isCurrent ? 'var(--accent)' : 'transparent',
                 }}
               >
                 {isRenaming ? (

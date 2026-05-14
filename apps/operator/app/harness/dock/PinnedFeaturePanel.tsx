@@ -107,7 +107,7 @@ export function PinnedFeaturePanel({ params, api }: PanelComponentProps) {
         height: '100%',
         overflow: 'auto',
         fontSize: 12,
-        color: 'var(--foreground,#ccc)',
+        color: 'var(--fg)',
         fontFamily: 'system-ui, sans-serif',
       }}
     >
@@ -241,7 +241,7 @@ function Row({ label, value }: { label: string; value: string }) {
         padding: '3px 0',
         fontSize: 11,
         color: 'var(--fg-mute)',
-        borderTop: '1px solid var(--border-subtle,#222)',
+        borderTop: '1px solid var(--border)',
       }}
     >
       <span style={{ minWidth: 80, color: 'var(--fg-mute)' }}>{label}</span>

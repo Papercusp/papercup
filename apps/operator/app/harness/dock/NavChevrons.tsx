@@ -67,7 +67,7 @@ function chevronButtonStyle(enabled: boolean): React.CSSProperties {
     border: 0,
     borderRadius: 3,
     cursor: enabled ? 'pointer' : 'default',
-    color: enabled ? 'var(--foreground, #ccc)' : 'var(--fg-mute)',
+    color: enabled ? 'var(--fg)' : 'var(--fg-mute)',
     opacity: enabled ? 1 : 0.4,
   };
 }

@@ -33,7 +33,7 @@ function SamplePanel({ panelType, params }: PanelComponentProps) {
         height: '100%',
         overflow: 'auto',
         fontSize: 13,
-        color: 'var(--foreground, #ccc)',
+        color: 'var(--fg)',
         fontFamily: 'system-ui, sans-serif',
       }}
     >
@@ -91,7 +91,7 @@ function DocsSamplePanel(props: PanelComponentProps) {
         display: 'flex',
         flexDirection: 'column',
         fontSize: 13,
-        color: 'var(--foreground, #ccc)',
+        color: 'var(--fg)',
         fontFamily: 'system-ui, sans-serif',
       }}
     >

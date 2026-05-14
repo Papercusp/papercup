@@ -165,7 +165,7 @@ export function RealHarnessOverviewPanel({ params, api }: PanelComponentProps) {
         height: '100%',
         overflow: 'auto',
         fontSize: 12,
-        color: 'var(--foreground,#ccc)',
+        color: 'var(--fg)',
         fontFamily: 'system-ui, sans-serif',
       }}
     >
@@ -241,7 +241,7 @@ export function RealHarnessOverviewPanel({ params, api }: PanelComponentProps) {
                 padding: '4px 12px',
                 fontSize: 11,
                 background: 'transparent',
-                color: active ? 'var(--foreground,#ccc)' : 'var(--fg-mute)',
+                color: active ? 'var(--fg)' : 'var(--fg-mute)',
                 border: 0,
                 borderBottom: active ? '2px solid #60a5fa' : '2px solid transparent',
                 cursor: 'pointer',
@@ -308,7 +308,7 @@ export function RealHarnessOverviewPanel({ params, api }: PanelComponentProps) {
           fontSize: 11,
           color: 'var(--fg-mute)',
           paddingTop: 8,
-          borderTop: '1px solid var(--border-subtle,#222)',
+          borderTop: '1px solid var(--border)',
         }}
       >
         <div>iteration: {data.iteration}</div>

@@ -70,7 +70,7 @@ export default function PluginTabs({ slug, componentProps, fallback, readOnly = 
 
   if (error) {
     return (
-      <div role="alert" style={{ color: 'var(--sl-color-red, #c00)', padding: 8 }}>
+      <div role="alert" style={{ color: 'var(--bad)', padding: 8 }}>
         Plugin tabs failed to load: {error}
       </div>
     );
@@ -100,7 +100,7 @@ export default function PluginTabs({ slug, componentProps, fallback, readOnly = 
 
   return (
     <div className="plugin-tabs">
-      <div role="tablist" aria-label="Plugin-contributed tabs" style={{ display: 'flex', gap: 4, borderBottom: '1px solid var(--sl-color-hairline, #ccc)' }}>
+      <div role="tablist" aria-label="Plugin-contributed tabs" style={{ display: 'flex', gap: 4, borderBottom: '1px solid var(--border)' }}>
         {tabs.map((tab) => {
           const isActive = tab.id === activeTab.id;
           return (
@@ -112,9 +112,9 @@ export default function PluginTabs({ slug, componentProps, fallback, readOnly = 
               onClick={() => setActive(tab.id)}
               style={{
                 padding: '8px 12px',
-                background: isActive ? 'var(--sl-color-bg-accent, #e0e0e0)' : 'transparent',
+                background: isActive ? 'var(--bg-3)' : 'transparent',
                 border: 'none',
-                borderBottom: isActive ? '2px solid var(--sl-color-accent, #07b)' : '2px solid transparent',
+                borderBottom: isActive ? '2px solid var(--accent)' : '2px solid transparent',
                 cursor: 'pointer',
                 fontSize: 14,
               }}
@@ -154,7 +154,7 @@ export default function PluginTabs({ slug, componentProps, fallback, readOnly = 
           </Suspense>
         )}
         {renderMode === 'invalid' && (
-          <div role="alert" style={{ color: 'var(--sl-color-red, #c00)' }}>
+          <div role="alert" style={{ color: 'var(--bad)' }}>
             Plugin "{activeTab.pluginName}" tab "{activeTab.id}" declares neither an iframeUrl nor a (componentRoot, componentId) pair. Update the manifest.
           </div>
         )}

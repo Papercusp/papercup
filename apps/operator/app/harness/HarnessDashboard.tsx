@@ -685,7 +685,7 @@ function PluginIframeWithLoader({ url, title }: { url: string; title: string }) 
             aria-hidden
             style={{
               width: 28, height: 28, borderRadius: '50%',
-              border: '2px solid var(--border)', borderTopColor: 'var(--accent-1, #0ea5e9)',
+              border: '2px solid var(--border)', borderTopColor: 'var(--accent-strong)',
               animation: 'papercusp-spin 0.8s linear infinite',
             }}
           />
@@ -693,7 +693,7 @@ function PluginIframeWithLoader({ url, title }: { url: string; title: string }) 
           {showHint ? (
             <div style={{ fontSize: 11, color: 'var(--fg-mute)', maxWidth: 360, textAlign: 'center' }}>
               Still loading? The plugin service may not be running. Try opening{' '}
-              <a href={url} target="_blank" rel="noopener noreferrer" style={{ color: 'var(--accent-1, #0ea5e9)', textDecoration: 'underline', pointerEvents: 'auto' }}>
+              <a href={url} target="_blank" rel="noopener noreferrer" style={{ color: 'var(--accent-strong)', textDecoration: 'underline', pointerEvents: 'auto' }}>
                 {url}
               </a>{' '}
               directly.
