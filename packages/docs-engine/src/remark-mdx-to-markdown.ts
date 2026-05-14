@@ -113,7 +113,7 @@ function calloutToBlockquote(node: MdxJsxFlowElement | MdxJsxTextElement): Block
           { type: 'strong', children: [prefix] },
         ],
       },
-      ...(childrenSafe.filter((c) => c.type !== 'mdxJsxAttribute') as Blockquote['children']),
+      ...(childrenSafe as Blockquote['children']),
     ],
   };
 }

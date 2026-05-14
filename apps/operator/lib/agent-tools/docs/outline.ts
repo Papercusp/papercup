@@ -1,15 +1,17 @@
 /**
- * docs:outline tool registration.
+ * docs:outline — public Papercusp documentation outline.
  *
- * Wraps buildOutline (in outline-builder.ts) with the per-run cache
- * and the defineTool projection. Pure logic lives in the builder so
- * vitest can exercise it without fumadocs.
+ * Thin wrapper around @papercusp/docs-engine's buildOutline. The engine
+ * owns sectioning, heading extraction, and metadata; this file only
+ * configures the fumadocs adapter, the per-run cache, and the tool
+ * manifest (role gating, capability, guidance).
  */
 
+import * as path from 'node:path';
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
+import { buildOutline, fumadocsAdapter, type OutlinePayload } from '@papercusp/docs-engine';
 import { source } from '@/lib/source';
-import { buildOutline, type OutlinePayload, type OutlineSource } from './outline-builder';
 
 const ALL_ROLES = [
   'scoper',
@@ -23,18 +25,23 @@ const ALL_ROLES = [
   'curator',
 ] as const;
 
-/** Module-scoped per-run cache. */
+/** Per-run cache, module-scoped. Keyed by runId ?? spawnId. */
 export const outlineCache = new Map<string, OutlinePayload>();
 export const OUTLINE_CACHE_MAX = 100;
+
+const adapter = fumadocsAdapter(source as never, {
+  name: 'papercusp-public',
+  contentRoot: path.join(process.cwd(), 'content', 'docs'),
+});
 
 export default defineTool({
   name: 'docs:outline',
   description:
-    'Return the project documentation table-of-contents — sections, pages, page descriptions, and per-page heading ids. Call this FIRST when you need design context; the agent then drills in via docs:get. Cached per-run.',
+    'Return the public Papercusp documentation table-of-contents — sections, pages, page descriptions, and per-page heading ids. Call this FIRST when you need design context; drill in via docs:get. Cached per-run.',
   guidance: {
-    when: 'You need design context, architectural rationale, or "how does X work" answers and you have not yet called docs:outline this run.',
+    when: 'You need design context, architectural rationale, or "how does X work" answers about Papercusp itself and have not yet called docs:outline this run.',
     notWhen:
-      'You already called docs:outline this run — the cached result has the full TOC, no need to re-fetch. For per-harness specs use harness:markdown_index. For PG-stored prose recall use search:fulltext.',
+      'You already called docs:outline this run. For your own harness\'s docs (specs, plans, project files) use harness:docs_outline / harness:docs_get. For PG-stored prose recall use search:fulltext.',
     chaining:
       'docs:outline → docs:get { slugs: [...] }. Use { slug, heading } form when only one section of a long page is relevant.',
   },
@@ -48,20 +55,15 @@ export default defineTool({
 
     const hit = outlineCache.get(key);
     if (hit) {
-      return {
-        content: [{ type: 'text' as const, text: JSON.stringify({ ...hit, cached: true }) }],
-      };
+      return { content: [{ type: 'text' as const, text: JSON.stringify({ ...hit, cached: true }) }] };
     }
 
-    const payload = await buildOutline(source as unknown as OutlineSource);
+    const payload = await buildOutline(adapter);
     outlineCache.set(key, payload);
     if (outlineCache.size > OUTLINE_CACHE_MAX) {
       const oldest = outlineCache.keys().next().value;
       if (oldest !== undefined) outlineCache.delete(oldest);
     }
-
-    return {
-      content: [{ type: 'text' as const, text: JSON.stringify({ ...payload, cached: false }) }],
-    };
+    return { content: [{ type: 'text' as const, text: JSON.stringify({ ...payload, cached: false }) }] };
   },
 });

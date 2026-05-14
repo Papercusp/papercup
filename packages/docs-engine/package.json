@@ -1,0 +1,23 @@
+{
+  "name": "@papercusp/docs-engine",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Source-agnostic docs retrieval engine. Outline + get + search + MDX-to-markdown pipeline, operating on a pluggable DocSource adapter.",
+  "main": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./adapters/fumadocs": "./src/adapters/fumadocs.ts",
+    "./adapters/harness-fs": "./src/adapters/harness-fs.ts",
+    "./types": "./src/types.ts"
+  },
+  "scripts": {
+    "test": "vitest"
+  },
+  "dependencies": {
+    "fumadocs-mdx": "*",
+    "fumadocs-core": "*",
+    "remark": "*",
+    "remark-gfm": "*",
+    "remark-mdx": "*"
+  }
+}

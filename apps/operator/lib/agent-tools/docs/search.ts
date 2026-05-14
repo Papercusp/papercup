@@ -1,28 +1,15 @@
 /**
- * docs:search tool registration.
+ * docs:search — keyword search across public Papercusp docs.
  *
- * Keyword search across the project docs. Title weighted 4x,
- * description 2x, body 1x. Ranked hits with slug, url, title,
- * description, score, and excerpt around the first match.
- *
- * Uses page.data.getText('raw') (not the remark-processed markdown)
- * to keep search cheap — body matches against original MDX. JSX
- * component names will appear in the body and will match, which is
- * acceptable: a search for "Callout" should find pages that use it.
- *
- * Pairs with docs:outline (discovery) and docs:get (read). Use when
- * keyword matters more than navigation — e.g. "where is replay buffer
- * documented?" rather than "what's in endpoint-system?".
+ * Thin wrapper around @papercusp/docs-engine's searchDocs. Title ×4,
+ * description ×2, body ×1; ranked hits with slug, url, title,
+ * description, score, excerpt around the first match.
  */
 
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
+import { searchDocs, fumadocsAdapter } from '@papercusp/docs-engine';
 import { source } from '@/lib/source';
-import {
-  executeDocsSearch,
-  type SearchSource,
-  type SearchSourcePage,
-} from './search-builder';
 
 const ALL_ROLES = [
   'scoper',
@@ -51,14 +38,18 @@ const argsSchema = z.object({
     .describe('Max hits returned. Default 8.'),
 });
 
+// Use the base fumadocs adapter (no preamble) — search wants the body
+// matched cheaply; preamble adds noise.
+const adapter = fumadocsAdapter(source as never, { name: 'papercusp-public' });
+
 export default defineTool({
   name: 'docs:search',
   description:
-    'Keyword search across the project documentation. Returns ranked hits (slug, title, description, excerpt). Use when you have a specific term to look up; prefer docs:outline for browsing.',
+    'Keyword search across public Papercusp documentation. Returns ranked hits (slug, title, description, excerpt). Use when you have a specific term in mind; prefer docs:outline for browsing.',
   guidance: {
     when: 'You have specific terminology in mind (a function name, concept, or component) and want to find which doc page covers it. Faster than scanning the outline when the section name is non-obvious.',
     notWhen:
-      'You do not know what to search for — call docs:outline first to see the section taxonomy. For PG-stored prose recall (escalations, chats) use search:fulltext.',
+      'You do not know what to search for — call docs:outline first. For PG-stored prose recall (escalations, chats) use search:fulltext. For per-harness docs use harness:docs_outline.',
     chaining:
       'docs:search → docs:get { slugs: [top-hit] } (or { slug, heading } if the hit excerpt names a specific heading).',
   },
@@ -71,31 +62,8 @@ export default defineTool({
   },
   args: argsSchema,
   async handler(args, ctx) {
-    const response = await executeDocsSearch(
-      args,
-      source as unknown as SearchSource,
-      async (page) => {
-        // Cast away the InferPageType narrowing; SearchSource only needs the
-        // public slugs/url/data shape we declare in the builder. getText is
-        // a fumadocs-mdx DocMethod hung off page.data.
-        const inner = (page as unknown as { data: { getText: (k: 'raw' | 'processed') => Promise<string> } }).data;
-        return inner.getText('raw');
-      },
-    );
-
-    ctx.metadata?.({
-      query_token_count: response.tokenCount,
-      hit_count: response.hitCount,
-      returned: response.hits.length,
-      top_score: response.hits[0]?.score ?? 0,
-    });
-
-    // SearchSourcePage shape is exactly what fumadocs gives us minus the
-    // private fields. Cast is purely a type-narrowing aid.
-    void (null as unknown as SearchSourcePage);
-
-    return {
-      content: [{ type: 'text' as const, text: JSON.stringify(response) }],
-    };
+    const ctxAny = ctx as { metadata?: (data: Record<string, unknown>) => void };
+    const response = await searchDocs(adapter, args, { metadata: ctxAny.metadata });
+    return { content: [{ type: 'text' as const, text: JSON.stringify(response) }] };
   },
 });

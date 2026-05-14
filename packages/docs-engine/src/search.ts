@@ -1,47 +1,13 @@
 /**
- * Pure docs:search scoring logic — no fumadocs imports.
+ * searchDocs — substring/keyword scoring over a DocSource.
  *
- * Substring/keyword scoring over an injectable SearchSource. Title
- * matches weighted 4x, description 2x, body 1x. Returns ranked hits
- * with slug + title + description + excerpt around the first body
- * match.
- *
- * Trade-off: this reads each page's raw body via the injected
- * getText() callback. For ~120 pages that's a few ms even without
- * caching; if the corpus 10x's, swap to a PG tsvector index without
- * changing the dispatch signature.
+ * Title ×4, description ×2, body ×1. Tokenizes on common punctuation,
+ * dedupes, ignores tokens shorter than 2 chars. Reads page bodies via
+ * source.getContent — fine for ~120 pages, swap to PG tsvector when
+ * the corpus 10×s.
  */
 
-export interface SearchSourcePage {
-  slugs: string[];
-  url: string;
-  data: {
-    title?: string;
-    description?: string;
-  };
-}
-
-export interface SearchSource {
-  getPages(): SearchSourcePage[];
-}
-
-export type GetPageText = (page: SearchSourcePage) => Promise<string>;
-
-export interface DocsSearchHit {
-  slug: string;
-  url: string;
-  title: string;
-  description?: string;
-  score: number;
-  excerpt: string;
-}
-
-export interface DocsSearchResult {
-  query: string;
-  tokenCount: number;
-  hitCount: number;
-  hits: DocsSearchHit[];
-}
+import type { DocSource, EngineCtx, SearchArgs, SearchHit, SearchResult } from './types';
 
 const STOP_TOKEN_RE = /[\s,.;:!?(){}[\]<>"'`/\\]+/;
 
@@ -93,25 +59,23 @@ function makeExcerpt(body: string, tokens: string[], window = 120): string {
   return (prefix + body.slice(start, end) + suffix).replace(/\s+/g, ' ').trim();
 }
 
-export async function executeDocsSearch(
-  args: { query: string; limit: number },
-  src: SearchSource,
-  getText: GetPageText,
-): Promise<DocsSearchResult> {
+export async function searchDocs(source: DocSource, args: SearchArgs, ctx: EngineCtx = {}): Promise<SearchResult> {
+  const limit = args.limit ?? 8;
   const tokens = tokenize(args.query);
   if (tokens.length === 0) {
+    ctx.metadata?.({ query_tokens: 0, hit_count: 0, returned: 0 });
     return { query: args.query, tokenCount: 0, hitCount: 0, hits: [] };
   }
 
-  const pages = src.getPages();
+  const pages = await source.listPages();
   const rendered = await Promise.all(
-    pages.map(async (p) => ({ page: p, body: await getText(p) })),
+    pages.map(async (p) => ({ page: p, body: await source.getContent(p) })),
   );
 
-  const scored: DocsSearchHit[] = [];
+  const scored: SearchHit[] = [];
   for (const { page, body } of rendered) {
-    const title = page.data.title ?? '';
-    const description = page.data.description ?? '';
+    const title = page.title ?? '';
+    const description = page.description ?? '';
     let score = 0;
     for (const t of tokens) {
       score += countOccurrences(title, t) * 4;
@@ -120,24 +84,20 @@ export async function executeDocsSearch(
     }
     if (score === 0) continue;
 
-    const slug = page.slugs.join('/') || '_root';
     scored.push({
-      slug,
+      slug: page.slug || '_root',
       url: page.url,
       title,
-      ...(description && { description }),
+      ...(description ? { description } : {}),
       score,
       excerpt: makeExcerpt(body, tokens),
     });
   }
 
   scored.sort((a, b) => b.score - a.score || a.slug.localeCompare(b.slug));
-  const hits = scored.slice(0, args.limit);
+  const hits = scored.slice(0, limit);
 
-  return {
-    query: args.query,
-    tokenCount: tokens.length,
-    hitCount: scored.length,
-    hits,
-  };
+  ctx.metadata?.({ query_tokens: tokens.length, hit_count: scored.length, returned: hits.length });
+
+  return { query: args.query, tokenCount: tokens.length, hitCount: scored.length, hits };
 }

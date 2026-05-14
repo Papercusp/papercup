@@ -82,6 +82,7 @@
     "@papercusp/orchestrator": "file:../../libs/papercusp/packages/orchestrator",
     "@papercusp/plugin-loader": "file:../../packages/plugin-loader",
     "@papercusp/plugin-sdk": "file:../../packages/plugin-sdk",
+    "@papercusp/docs-engine": "file:../../packages/docs-engine",
     "@papercusp/publish-auth": "file:../../libs/papercusp-publish-auth",
     "@picovoice/koala-web": "^3.0.0",
     "@picovoice/porcupine-web": "^4.0.0",
