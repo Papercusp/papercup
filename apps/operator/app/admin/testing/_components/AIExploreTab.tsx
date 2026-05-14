@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { toast } from 'sonner';
-import Button from '../../../harness/Button';
+import { Button } from '../../../harness/Button';
 
 interface MaskedCoreCredentials {
   anthropic_api_key: string | null;
