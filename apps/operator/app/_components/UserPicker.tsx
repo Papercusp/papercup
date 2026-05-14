@@ -52,14 +52,12 @@ export default function UserPicker() {
     setOpen(false);
   }, []);
 
-  // Use a hard navigation (window.location.assign) instead of next/navigation's
-  // router.push. Inside the harness route, router.push was being silently
-  // swallowed — the harness layout has enough URL-coupled state machinery
-  // (nuqs panels, RP.Select.replaceState, the dock layout reducer, etc.)
-  // that a soft navigation from inside a Radix Popover Portal never made
-  // it to the new path. Hard navigation also gives the destination a
-  // clean React tree, which is the right thing for "switch user",
-  // "log out", and "user preferences" — all cross-context jumps.
+  // Hard navigation. router.push() consistently no-ops from inside the
+  // harness route (something in the harness layout / dock reducer
+  // captures soft transitions originating from a Radix Popover Portal
+  // and reverts them). window.location.assign always wins — these
+  // destinations (settings, login, signup) are out-of-context anyway,
+  // so the full page reload is the right thing for them.
   const goTo = useCallback((href: string) => {
     close();
     if (typeof window !== 'undefined') window.location.assign(href);
