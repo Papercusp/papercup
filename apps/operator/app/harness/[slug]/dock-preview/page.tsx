@@ -25,6 +25,7 @@ import { registerSamplePanels } from '../../dock/sample-panels';
 import { openPanel, listPanels, getLayoutSnapshot, onDockApiBind, setPanelParams } from '../../dock/dock-actions';
 import { AddPanelCatalog } from '../../dock/AddPanelCatalog';
 import { DockNavChevrons } from '../../dock/DockNavChevrons';
+import { DockOnboarding } from '../../dock/DockOnboarding';
 
 export default function DockPreviewPage() {
   const routeParams = useParams<{ slug: string }>();
@@ -85,6 +86,7 @@ export default function DockPreviewPage() {
         <span style={{ color: 'var(--muted-foreground, #888)' }}>
           {ready ? `${panelCount} panels open` : 'mounting…'}
         </span>
+        <DockOnboarding />
         <div style={{ flex: 1 }} />
         <DockNavChevrons />
         <AddPanelCatalog defaultSlug={routeSlug} />
