@@ -123,7 +123,6 @@ export function OperatorButton(): ReactElement {
             backdropFilter: 'blur(6px) saturate(0.6)',
             WebkitBackdropFilter: 'blur(6px) saturate(0.6)',
           }}
-          contentStyle={{ display: 'contents' }}
         >
           <OperatorPanel />
         </Modal>

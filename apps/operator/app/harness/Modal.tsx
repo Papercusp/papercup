@@ -81,6 +81,7 @@ export function Modal({
         />
         <div style={wrap}>
           <Dialog.Content
+            aria-modal="true"
             data-anim="pop"
             style={content}
             onEscapeKeyDown={closeOnEscape ? undefined : (e) => e.preventDefault()}

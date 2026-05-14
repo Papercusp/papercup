@@ -1324,6 +1324,18 @@ export function OperatorPanel(): ReactElement | null {
     : state.paused
       ? `${titleCaseStatus(state.iconState)} (Paused)`
       : titleCaseStatus(state.iconState);
+  const footerScanLabel = scanStatus === 'scanning'
+    ? 'Scan running'
+    : scanStatus === 'error'
+      ? 'Last scan errored'
+      : lastScanAgeLabel
+        ? `Last scan ${lastScanAgeLabel}`
+        : 'No scan yet';
+  const footerAutonomyLabel = state.paused
+    ? 'Auto paused'
+    : state.autoAccept === 'off'
+      ? 'Auto off'
+      : `Auto ${state.autoAccept}`;
   const reducedMotion = useReducedMotion() ?? false;
   const visualEffectsEnabled = useFancyEffectsEnabled();
   const calmMotion = reducedMotion || !visualEffectsEnabled;
@@ -1480,24 +1492,6 @@ export function OperatorPanel(): ReactElement | null {
           style={calmMotion ? undefined : { transformPerspective: 1800 }}
         >
           {promptEl}
-          <svg className="operator-panel__svg-frame" viewBox="0 0 1000 600" preserveAspectRatio="xMidYMid slice" aria-hidden="true" focusable="false">
-            <defs>
-              <linearGradient id="operatorPanelFrameRail" x1="0%" y1="0%" x2="100%" y2="100%">
-                <stop offset="0%" stopColor="rgb(238 254 255)" stopOpacity="0.86" />
-                <stop offset="34%" stopColor="rgb(99 230 255)" stopOpacity="0.92" />
-                <stop offset="58%" stopColor="rgb(255 184 68)" stopOpacity="0.78" />
-                <stop offset="100%" stopColor="rgb(16 185 235)" stopOpacity="0.86" />
-              </linearGradient>
-              <filter id="operatorPanelFrameGlow" x="-10%" y="-18%" width="120%" height="136%">
-                <feGaussianBlur stdDeviation="2.6" result="softGlow" />
-                <feMerge>
-                  <feMergeNode in="softGlow" />
-                  <feMergeNode in="SourceGraphic" />
-                </feMerge>
-              </filter>
-            </defs>
-            <path className="operator-panel__svg-frame-spine" vectorEffect="non-scaling-stroke" d="M46 10 H414 L448 27 H552 L586 10 H954 L990 46 V554 L954 590 H46 L10 554 V46 Z" />
-          </svg>
           <span className="operator-panel__lock-flash" aria-hidden="true" />
           <OperatorScanOverlay
             state={effectiveIconState}
@@ -1581,7 +1575,7 @@ export function OperatorPanel(): ReactElement | null {
             </div>
           )}
 
-          <div className={`operator-panel__body${decisions.length === 0 ? ' has-empty-activity' : ''}${railHasActivity ? '' : ' has-empty-rail'} pc-animate-in pc-animate-in--down pc-animate-in--delay-1`}>
+          <div className={`operator-panel__body${railHasActivity ? ' has-rail-activity' : ' has-empty-rail'} pc-animate-in pc-animate-in--down pc-animate-in--delay-1`}>
 
             <main className="operator-panel__feed pc-animate-in pc-animate-in--fade pc-animate-in--delay-2">
               {firstRun && (
@@ -1891,7 +1885,7 @@ export function OperatorPanel(): ReactElement | null {
               )}
             </main>
 
-            <aside className={`operator-panel__rail operator-panel__rail--right${decisions.length === 0 ? ' is-empty' : ''} pc-animate-in pc-animate-in--fade pc-animate-in--delay-2`}>
+            <aside className={`operator-panel__rail operator-panel__rail--right${railHasActivity ? '' : ' is-empty'} pc-animate-in pc-animate-in--fade pc-animate-in--delay-2`}>
               <DelegatesSection />
               <section className="operator-section">
                 <div className="operator-section__head">
@@ -1965,9 +1959,8 @@ export function OperatorPanel(): ReactElement | null {
 
           <footer className="operator-panel__footer pc-animate-in pc-animate-in--fade pc-animate-in--delay-2">
             <span>Esc closes</span>
-            <span>{pendingCount} pending</span>
-            <span>{acceptedCount} accepted</span>
-            <span>{ignoredCount} ignored</span>
+            <span>{footerScanLabel}</span>
+            <span>{footerAutonomyLabel}</span>
           </footer>
         </motion.div>
       ) : null}
