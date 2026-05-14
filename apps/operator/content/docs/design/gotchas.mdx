@@ -178,6 +178,20 @@ Symptoms that mean you've picked the wrong pattern:
 
 If any of those, stop and switch to `useDebouncedSave`. HR1/HR2/HR3/HR6 still apply — the `<Modal>` / `<Checkbox>` / `<Select>` / `<Collapsible>` wrappers are still required. You're only opting out of RHF's central form-state model.
 
+## CSS-token lint catches undefined `var(--X)` references
+
+Every `var(--X)` reference in a `.tsx` file must resolve to a token defined in `app/globals.css`, `app/_semantic.css`, or `app/_brand-primitives.css` — or be in the runtime-allowlist (`--radix-*`, `--op-chat-w`).
+
+The lint lives at `app/_lints/css-tokens.test.ts` and runs as part of the operator's unit test suite. When it fails the error message lists every undefined token + the files using it, plus the canonical operator vocabulary to map to (`--bg`, `--bg-2`, `--bg-3`, `--fg`, `--fg-dim`, `--fg-mute`, `--border`, `--accent`, `--good`, `--warn`, `--bad`, etc.).
+
+**Common regressions the lint catches:**
+- shadcn vocabulary leaking in: `--card`, `--muted-foreground`, `--foreground`
+- Tailwind-aliased semantic names: `--danger`, `--ok`, `--success`
+- Inverted re-use of swept names: `--text-1`, `--text-2`, `--text-3`, `--pc-*`
+- Starlight tokens in operator code: `--sl-color-*`
+
+**If you legitimately need a new token:** define it in `app/_semantic.css` (regenerated from `papercup/design-tokens/` via `pnpm tokens`) or in `app/globals.css :root` for a one-off semantic alias. Don't add it to the runtime allowlist unless a framework genuinely sets it at runtime.
+
 ## Migration anti-patterns
 
 Things we did wrong during the migration and had to back out — don't repeat:
