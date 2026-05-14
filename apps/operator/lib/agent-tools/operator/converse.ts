@@ -65,7 +65,6 @@ const ArgsSchema = z.object({
   trigger: z
     .union([
       z.literal('user_message'),
-      z.literal('silence_after_question'),
       z.literal('quiet_wait_resume'),
       z.literal('open_canvas'),
       z.literal('user_says_ready'),

@@ -137,14 +137,14 @@ export function VoiceAppBridge(): null {
         }
         const { parseOperatorIntent, resolveApprove } = await import('../../../lib/voice-intents');
         // Engine-agnostic wake-word strip: Voicemode/Deepgram deliver the
-        // raw transcript ("hey operator approve sheets") without going
+        // raw transcript ("hey papercup approve sheets") without going
         // through the Web Speech wake-word listener, so we re-prefix here
         // so parseOperatorIntent sees a parseable string. Web Speech path
         // already passes a normalized "operator …" string and is a no-op
         // through this helper.
         const { stripWakeWordAndPrefix } = await import('../../../lib/wake-word');
         const { getVoiceConfig } = await import('./voice-mode');
-        const wakeWord = getVoiceConfig().wakeWord ?? 'hey operator';
+        const wakeWord = getVoiceConfig().wakeWord ?? 'hey papercup';
         const stripped = stripWakeWordAndPrefix(text, wakeWord);
         // Pulse the visual wake-detected indicator on the voice button
         // so the user sees a flash the moment we recognize the wake
@@ -156,7 +156,7 @@ export function VoiceAppBridge(): null {
         }
         // Wake word with no verb → audible acknowledgement so the user
         // knows the engine heard them. They then need to say
-        // "hey operator <verb>" as a single utterance — there's no
+        // "hey papercup <verb>" as a single utterance — there's no
         // separate listen-window like Siri.
         if (stripped.matched && !stripped.trailing) {
           const { speak } = await import('./voice-mode');

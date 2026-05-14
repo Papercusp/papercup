@@ -36,15 +36,11 @@ describe('OPERATOR_CONVERSE_PROMPT', () => {
     expect(/(chunk|spawn.*worker)/i.test(OPERATOR_CONVERSE_PROMPT)).toBe(true);
   });
 
-  it('Phase 6 silence-after-question emits a Ready card with voiceAnswerable', () => {
-    // The silence-nudge ladder now resolves via a single-option
-    // chat:ask_choice card so voice users can speak "ready" and text
-    // users can click the button. The plain <say> + "say ready"
-    // affordance is gone (replaced by the card's fallbackText).
-    expect(OPERATOR_CONVERSE_PROMPT).toMatch(/silence_after_question/);
-    expect(OPERATOR_CONVERSE_PROMPT).toMatch(/chat:ask_choice/);
-    expect(OPERATOR_CONVERSE_PROMPT).toMatch(/voiceAnswerable\s*:\s*true/);
-    expect(OPERATOR_CONVERSE_PROMPT).toMatch(/id:\s*"ready"/);
-    expect(OPERATOR_CONVERSE_PROMPT).toMatch(/label:\s*"Ready"/);
+  it('silence-after-question is retired from the brain prompt (2026-05-14)', () => {
+    // The silence nudge is now emitted server-side by /silence-nudge,
+    // bypassing the LLM entirely. The prompt should no longer mention
+    // silence_after_question or the Silence section.
+    expect(OPERATOR_CONVERSE_PROMPT).not.toMatch(/silence_after_question/);
+    expect(OPERATOR_CONVERSE_PROMPT).not.toMatch(/^## Silence/m);
   });
 });

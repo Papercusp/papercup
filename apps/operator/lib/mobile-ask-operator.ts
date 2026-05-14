@@ -22,7 +22,6 @@
 
 const VALID_TRIGGERS = new Set([
   'user_message',
-  'silence_after_question',
   'quiet_wait_resume',
   'open_canvas',
   'user_says_ready',
@@ -39,7 +38,13 @@ export type AskOperatorResult =
 
 export function normalizeTrigger(raw: unknown): string {
   if (typeof raw !== 'string') return 'user_message';
-  if (raw === 'silence_nudge' || raw === 'silence_check') return 'silence_after_question';
+  // Legacy: brain-driven silence triggers retired 2026-05-14. Stale
+  // EL agent configs that still emit silence_* now collapse to
+  // user_message — the deterministic /silence-nudge endpoint emits
+  // the Ready card from the provider's timer, not from voice paths.
+  if (raw === 'silence_nudge' || raw === 'silence_check' || raw === 'silence_after_question') {
+    return 'user_message';
+  }
   return VALID_TRIGGERS.has(raw) ? raw : 'user_message';
 }
 

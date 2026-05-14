@@ -25,12 +25,13 @@ function fakeFetch(body: ReadableStream<Uint8Array> | null, init: Partial<Respon
 describe('normalizeTrigger', () => {
   it('passes through known triggers', () => {
     expect(normalizeTrigger('user_message')).toBe('user_message');
-    expect(normalizeTrigger('silence_after_question')).toBe('silence_after_question');
     expect(normalizeTrigger('open_canvas')).toBe('open_canvas');
+    expect(normalizeTrigger('user_says_ready')).toBe('user_says_ready');
   });
-  it('rewrites silence_nudge → silence_after_question', () => {
-    expect(normalizeTrigger('silence_nudge')).toBe('silence_after_question');
-    expect(normalizeTrigger('silence_check')).toBe('silence_after_question');
+  it('collapses retired silence_* triggers to user_message (2026-05-14)', () => {
+    expect(normalizeTrigger('silence_nudge')).toBe('user_message');
+    expect(normalizeTrigger('silence_check')).toBe('user_message');
+    expect(normalizeTrigger('silence_after_question')).toBe('user_message');
   });
   it('falls back to user_message for unknown / non-string', () => {
     expect(normalizeTrigger('garbage')).toBe('user_message');

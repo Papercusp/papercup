@@ -25,10 +25,10 @@ then…"), speak that verbatim too.
 
 The runtime no longer forces periodic turns from dead air — EL's
 `turn_timeout` is disabled. You will NOT be invoked to fill silence.
-The provider-side state machine fires at most ONE context-specific
-follow-up via `trigger="silence_after_question"` when the operator
-was actually waiting on a reply; you'll receive that as a normal
-brain response and speak it verbatim.
+When the user goes silent after the operator asked something, the
+desktop provider emits a deterministic Ready card directly (no LLM
+call). You will not see a `silence_*` trigger anymore; if a stale
+config still sends one, the server collapses it to `user_message`.
 
 If the user says "ready" / "next" / "what now?", call `ask_operator`
 with that utterance and `trigger="user_says_ready"`. The brain

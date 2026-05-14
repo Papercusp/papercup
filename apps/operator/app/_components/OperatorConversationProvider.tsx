@@ -80,6 +80,7 @@ import {
   loadVoicePrefsClient,
   subscribeVoicePrefsClient,
 } from './voice/voice-prefs-client';
+import { getConfiguredWakeWordForDisplay } from '@/lib/voice-cards/wakeword-display';
 
 interface OperatorTurnRow {
   id: string;
@@ -460,7 +461,6 @@ export interface GenerationRequest {
   /** Why we're calling — fed to the prompt as context. */
   trigger:
     | 'user_message'
-    | 'silence_after_question'
     | 'quiet_wait_resume'
     | 'open_canvas'
     | 'user_says_ready'
@@ -1259,10 +1259,11 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
           return;
         }
 
-        // End-of-turn sub-state (2026-05-11 redesign):
-        //   silence_after_question → 'nudged' — terminal silence, no more
-        //     escalation. The user must speak / type / say "ready" to
-        //     re-engage.
+        // End-of-turn sub-state (2026-05-11 redesign, updated 2026-05-14):
+        //   silence_after_question is no longer a trigger — silence
+        //     nudges are emitted directly by the server via
+        //     /silence-nudge, and the provider transitions sub→'nudged'
+        //     synchronously inside fireSilenceNudge (no LLM round-trip).
         //   user_message / open_canvas / user_says_ready / quiet_wait_resume:
         //     If the assistant's reply awaits a response (parsed say
         //     ends with '?' or used chat:ask_choice), → 'awaiting_reply'
@@ -1271,8 +1272,6 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
         let endSub: SubState;
         if (stateRef.current.mode === 'passive') {
           endSub = 'passive_idle';
-        } else if (trigger === 'silence_after_question') {
-          endSub = 'nudged';
         } else if (awaitingReply) {
           endSub = 'awaiting_reply';
         } else {
@@ -1532,6 +1531,41 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
   const errorMul = state.consecutiveErrorCount > 0
     ? Math.pow(2, Math.min(state.consecutiveErrorCount, 6))
     : 1;
+
+  // Fire the deterministic silence-nudge card. Replaces the
+  // previous brain-driven runGeneration('silence_after_question')
+  // which was unreliable — the brain often emitted prose instead
+  // of invoking chat:ask_choice. Now the server opens a synthetic
+  // chat:ask_choice card directly, no LLM round-trip.
+  //
+  // Plan: silence-nudge-reliability-2026-05-14.md §C.1
+  const fireSilenceNudge = useCallback(async () => {
+    const id = conversationIdRef.current;
+    if (!id) return;
+    const prefs = loadVoicePrefsClient();
+    const wakeword = getConfiguredWakeWordForDisplay(prefs);
+    try {
+      await fetch(`/api/operator/conversations/${encodeURIComponent(id)}/silence-nudge`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        credentials: 'same-origin',
+        body: JSON.stringify({
+          workspaceId,
+          voiceActive: voiceActiveRef.current,
+          ...(wakeword ? { wakeword } : {}),
+        }),
+      });
+    } catch (e) {
+      // Best-effort: if the silence-nudge endpoint fails, we don't
+      // retry — the user can still type or speak to re-engage.
+      // eslint-disable-next-line no-console
+      console.warn('[silence-nudge] POST failed:', e);
+    }
+    // Transition sub to 'nudged' so the next render doesn't re-arm
+    // the timer (same terminal state as the legacy brain-driven path).
+    dispatch({ type: 'set_sub', sub: 'nudged' });
+  }, [workspaceId]);
+
   useEffect(() => {
     if (state.mode !== 'active') return;
     if (voiceActive) return; // voice owns the conversation; no nudge filler
@@ -1546,11 +1580,12 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
     let timer: ReturnType<typeof setTimeout> | null = null;
     if (state.sub === 'awaiting_reply') {
       const wait = Math.max(0, (SILENCE_AFTER_QUESTION_MS * errorMul) - sinceLast);
-      timer = setTimeout(() => void runGeneration('silence_after_question'), wait);
+      timer = setTimeout(() => void fireSilenceNudge(), wait);
     }
     // 'ready' and 'nudged' are quiet states — no timer.
     return () => { if (timer) clearTimeout(timer); };
-  }, [state.mode, state.sub, state.lastTurnAtMs, errorMul, runGeneration, voiceActive, sleepUntilMs]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state.mode, state.sub, state.lastTurnAtMs, errorMul, voiceActive, sleepUntilMs]);
 
   // G10 — opening utterance on fresh chat. Fires ONCE on mount when the
   // sidebar is empty AND mode is active AND voice is off AND not sleeping.

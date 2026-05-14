@@ -9,7 +9,7 @@
  *   - TTS with per-role voice assignment (consistent across harnesses)
  *   - Single-utterance-at-a-time queue (only the in-focus speaker plays)
  *   - Barge-in: user starting to speak interrupts current utterance
- *   - Wake-word detection ("hey operator") for always-on mode
+ *   - Wake-word detection ("hey papercup") for always-on mode
  *
  * The voice runtime is a singleton initialized once in the operator
  * shell. Components subscribe via `subscribeVoiceState()` and dispatch
@@ -92,7 +92,7 @@ export interface VoiceState {
 }
 
 interface VoiceConfig {
-  /** Wake word for always-on mode. Default: "hey operator". */
+  /** Wake word for always-on mode. Default: "hey papercup". */
   wakeWord: string;
   /** Voice assignments by role. Falls back to default voice if missing. */
   roleVoices: Record<string, string>;
@@ -105,7 +105,7 @@ interface VoiceConfig {
 }
 
 const DEFAULT_CONFIG: VoiceConfig = {
-  wakeWord: 'hey operator',
+  wakeWord: 'hey papercup',
   roleVoices: {},
   defaultVoice: null,
   rate: 1.0,
