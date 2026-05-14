@@ -33,8 +33,8 @@ function fmtWhen(ts_ms: number): string {
   });
 }
 
-const SUBTLE = 'var(--pc-muted, #9a9a9a)';
-const BORDER = '1px solid var(--pc-border, #2a2a2a)';
+const SUBTLE = 'var(--fg-mute)';
+const BORDER = '1px solid var(--border)';
 
 export function PromptBudgetView({
   slug,

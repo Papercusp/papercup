@@ -259,7 +259,7 @@ export default function ProjectDetail({ slug, projectId }: { slug: string; proje
       <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, marginBottom: 6 }}>
         <span style={{ fontFamily: FONTS.mono, fontSize: SIZES.sm, color: COLORS.textDim, padding: '2px 8px', background: COLORS.bg, borderRadius: 3 }}>{project.id}</span>
         <h1 style={{ fontSize: 22, fontWeight: 600, margin: 0 }}>{project.name}</h1>
-        <span style={{ fontSize: SIZES.xs, padding: '2px 7px', borderRadius: 3, background: 'rgba(255,255,255,0.06)', color: COLORS.textDim }}>{project.status}</span>
+        <span style={{ fontSize: SIZES.xs, padding: '2px 7px', borderRadius: 3, background: 'var(--bg-3)', color: COLORS.textDim }}>{project.status}</span>
       </div>
 
       <div style={{ display: 'flex', gap: 14, fontSize: SIZES.xs, color: COLORS.textDim, fontFamily: FONTS.mono, marginBottom: 18 }}>
@@ -399,7 +399,7 @@ export default function ProjectDetail({ slug, projectId }: { slug: string; proje
                           <span style={{ color: COLORS.textDim, fontFamily: FONTS.mono }}>
                             {new Date(rev.ts).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
                           </span>
-                          <span style={{ fontFamily: FONTS.mono, padding: '0 5px', borderRadius: 2, background: 'rgba(255,255,255,0.05)' }}>
+                          <span style={{ fontFamily: FONTS.mono, padding: '0 5px', borderRadius: 2, background: 'var(--bg-2)' }}>
                             {rev.author_role}
                           </span>
                           {(rev.tokens_in > 0 || rev.tokens_out > 0) && (

@@ -60,7 +60,7 @@ export default function ProjectsList({ slug }: { slug: string }) {
       width: 0.8,
       sortKey: 'status',
       render: ({ row }) => (
-        <span style={{ fontSize: SIZES.xs, padding: '1px 7px', borderRadius: 3, background: 'rgba(255,255,255,0.06)', color: COLORS.textDim }}>
+        <span style={{ fontSize: SIZES.xs, padding: '1px 7px', borderRadius: 3, background: 'var(--bg-3)', color: COLORS.textDim }}>
           {row.status}
         </span>
       ),

@@ -39,8 +39,8 @@ interface MessageRow {
   status: string;
 }
 
-const ROW_BORDER = '1px solid var(--pc-border, #2a2a2a)';
-const SUBTLE = 'var(--pc-muted, #9a9a9a)';
+const ROW_BORDER = '1px solid var(--border)';
+const SUBTLE = 'var(--fg-mute)';
 
 export function FeatureTagsAndSeeAlso({
   slug,

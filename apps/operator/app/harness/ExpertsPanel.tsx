@@ -363,7 +363,7 @@ function ExpertDetailView({ harnessSlug, expertId, onChange }: { harnessSlug: st
             <Collapsible.Content>
               <div style={{
                 marginTop: 6,
-                background: 'rgba(255,255,255,0.04)',
+                background: 'var(--bg-2)',
                 border: '1px solid var(--border)',
                 borderRadius: 4,
                 fontSize: 12,
@@ -380,7 +380,7 @@ function ExpertDetailView({ harnessSlug, expertId, onChange }: { harnessSlug: st
         ) : null}
       </div>
 
-      <div style={{ display: 'flex', borderBottom: '1px solid var(--border)', background: 'rgba(255,255,255,0.03)' }}>
+      <div style={{ display: 'flex', borderBottom: '1px solid var(--border)', background: 'var(--bg-2)' }}>
         {(['spec', 'assertions', 'feedback', 'chat', 'identity'] as const).map((t) => (
           <button
             key={t}

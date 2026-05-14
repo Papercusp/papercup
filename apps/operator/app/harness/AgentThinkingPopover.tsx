@@ -156,28 +156,28 @@ export default function AgentThinkingPopover({
         width: POPOVER_WIDTH,
         maxHeight: POPOVER_MAX_HEIGHT,
         zIndex: 2147483640,
-        background: 'var(--pc-card-bg, #0d0f14)',
-        border: '1px solid var(--pc-border, #2a2a2a)',
+        background: 'var(--bg-1)',
+        border: '1px solid var(--border)',
         borderRadius: 6,
         boxShadow: '0 8px 32px rgba(0,0,0,0.55), 0 0 0 1px rgba(255,255,255,0.04)',
         display: 'flex',
         flexDirection: 'column',
         overflow: 'hidden',
         fontSize: 12,
-        color: 'var(--pc-text, #e6e6e6)',
+        color: 'var(--fg)',
       }}
     >
       <div style={{
         padding: '6px 10px',
-        borderBottom: '1px solid var(--pc-border, #2a2a2a)',
+        borderBottom: '1px solid var(--border)',
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'space-between',
         fontSize: 11,
-        background: 'rgba(255,255,255,0.02)',
+        background: 'var(--bg-2)',
       }}>
-        <span style={{ color: 'var(--pc-muted, #9a9a9a)' }}>
-          <strong style={{ color: 'var(--pc-text, #e6e6e6)' }}>{role}</strong>
+        <span style={{ color: 'var(--fg-mute)' }}>
+          <strong style={{ color: 'var(--fg)' }}>{role}</strong>
           {' · '}<code style={{ fontSize: 10 }}>{runId.slice(0, 24)}</code>
         </span>
         <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
@@ -200,7 +200,7 @@ export default function AgentThinkingPopover({
         }}
       >
         {events.length === 0 ? (
-          <div style={{ color: 'var(--pc-muted, #9a9a9a)', fontStyle: 'italic', padding: 4 }}>
+          <div style={{ color: 'var(--fg-mute)', fontStyle: 'italic', padding: 4 }}>
             {status === 'connecting' ? 'Connecting…' : 'Waiting for first output from the agent…'}
           </div>
         ) : (
@@ -209,13 +209,13 @@ export default function AgentThinkingPopover({
       </div>
       <div style={{
         padding: '5px 10px',
-        borderTop: '1px solid var(--pc-border, #2a2a2a)',
+        borderTop: '1px solid var(--border)',
         display: 'flex',
         justifyContent: 'space-between',
         alignItems: 'center',
-        background: 'rgba(255,255,255,0.02)',
+        background: 'var(--bg-2)',
         fontSize: 10.5,
-        color: 'var(--pc-muted, #9a9a9a)',
+        color: 'var(--fg-mute)',
       }}>
         <span>{events.length} event{events.length === 1 ? '' : 's'}</span>
         <button
@@ -223,8 +223,8 @@ export default function AgentThinkingPopover({
           onClick={(e) => { e.stopPropagation(); onOpenInspector(); }}
           style={{
             background: 'transparent',
-            border: '1px solid var(--pc-border, #2a2a2a)',
-            color: 'var(--pc-text, #e6e6e6)',
+            border: '1px solid var(--border)',
+            color: 'var(--fg)',
             padding: '2px 8px',
             borderRadius: 3,
             fontSize: 10.5,
@@ -258,7 +258,7 @@ function Entry({ entry }: { entry: TimelineEntry }) {
         <div style={{ color: '#7dd3fc', fontSize: 10.5, marginBottom: 2 }}>
           ▸ tool_use: <strong>{entry.toolName}</strong>
         </div>
-        <pre style={{ margin: 0, fontSize: 10.5, color: 'var(--pc-muted, #9a9a9a)', whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>
+        <pre style={{ margin: 0, fontSize: 10.5, color: 'var(--fg-mute)', whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>
           {compactJson(entry.toolInput)}
         </pre>
       </div>
@@ -278,7 +278,7 @@ function Entry({ entry }: { entry: TimelineEntry }) {
   }
   if (entry.kind === 'status') {
     return (
-      <div style={{ margin: '0 0 8px', fontSize: 10.5, color: 'var(--pc-muted, #9a9a9a)', fontStyle: 'italic' }}>
+      <div style={{ margin: '0 0 8px', fontSize: 10.5, color: 'var(--fg-mute)', fontStyle: 'italic' }}>
         ⌘ {entry.text}
       </div>
     );
@@ -291,7 +291,7 @@ function Entry({ entry }: { entry: TimelineEntry }) {
     const dur = entry.durationMs ? `${(entry.durationMs / 1000).toFixed(1)}s` : '';
     const meta = [cost, tokens, dur].filter(Boolean).join(' · ');
     return (
-      <div style={{ margin: '0 0 4px', padding: '4px 6px', background: 'rgba(255,255,255,0.04)', borderTop: '1px solid var(--pc-border, #2a2a2a)' }}>
+      <div style={{ margin: '0 0 4px', padding: '4px 6px', background: 'var(--bg-2)', borderTop: '1px solid var(--border)' }}>
         <div style={{ color: '#9a9a9a', fontSize: 10.5, marginBottom: 2 }}>
           ✓ result {meta && <span style={{ float: 'right' }}>{meta}</span>}
         </div>

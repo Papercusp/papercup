@@ -443,7 +443,7 @@ export default function HarnessSettingsPanel({
   }, [parallel, branchIso, debuggerThreshold, aiBackend, originalConfig, slug, phase, validation.ok]);
 
   if (!loaded) {
-    return <div style={{ padding: 24, color: 'var(--pc-muted, #9a9a9a)' }}>Loading…</div>;
+    return <div style={{ padding: 24, color: 'var(--fg-mute)' }}>Loading…</div>;
   }
 
   const hasMaxAboveOne = parallel.max > 1;
@@ -528,7 +528,7 @@ export default function HarnessSettingsPanel({
       toCopyText: (r) => r.synthesized === true ? 'ok' : r.synthesized === false ? `failed${r.synthesis_error ? `: ${r.synthesis_error}` : ''}` : '',
       render: ({ row }) => {
         const text = row.synthesized === true ? 'ok' : row.synthesized === false ? `failed${row.synthesis_error ? ` (${row.synthesis_error.slice(0, 40)})` : ''}` : '—';
-        const color = row.synthesized === false ? 'var(--bad, #d97757)' : 'var(--pc-muted, #9a9a9a)';
+        const color = row.synthesized === false ? 'var(--bad, #d97757)' : 'var(--fg-mute)';
         return <span style={{ color }} title={row.synthesis_error ?? undefined}>{text}</span>;
       },
     },
@@ -536,7 +536,7 @@ export default function HarnessSettingsPanel({
       key: 'outcome', header: 'Outcome', width: 1,
       toCopyText: (r) => r.outcome ?? 'pending',
       render: ({ row }) => {
-        const color = row.outcome === 'pass' ? 'var(--good, #6aa84f)' : row.outcome === 'fail' ? 'var(--bad, #d97757)' : 'var(--pc-muted, #9a9a9a)';
+        const color = row.outcome === 'pass' ? 'var(--good, #6aa84f)' : row.outcome === 'fail' ? 'var(--bad, #d97757)' : 'var(--fg-mute)';
         return <span style={{ color }}>{row.outcome ?? 'pending'}</span>;
       },
     },
@@ -551,7 +551,7 @@ export default function HarnessSettingsPanel({
     <div style={{ padding: 16, maxWidth: 920, overflowY: 'auto' }}>
       <header style={{ marginBottom: 16 }}>
         <h1 style={{ margin: 0, fontSize: 18 }}>Settings — {slug}</h1>
-        <p style={{ margin: '6px 0 0', color: 'var(--pc-muted, #9a9a9a)', fontSize: 12.5 }}>
+        <p style={{ margin: '6px 0 0', color: 'var(--fg-mute)', fontSize: 12.5 }}>
           Per-harness configuration. Saved to <code>{phase}</code> spec
           (<code>config.json</code>). Changes take effect on the next harness run.
         </p>
@@ -562,7 +562,7 @@ export default function HarnessSettingsPanel({
         <h2 style={{ fontSize: 14, margin: '0 0 8px' }}>Workers</h2>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-            <span style={{ width: 110, fontSize: 11.5, color: 'var(--pc-muted, #9a9a9a)' }}>max workers</span>
+            <span style={{ width: 110, fontSize: 11.5, color: 'var(--fg-mute)' }}>max workers</span>
             <input
               type="number"
               min={1}
@@ -574,11 +574,11 @@ export default function HarnessSettingsPanel({
               }}
               style={{ width: 64, fontSize: 13, padding: '3px 6px' }}
             />
-            <span style={{ fontSize: 11, color: 'var(--pc-muted, #9a9a9a)' }}>1-64 total concurrent</span>
+            <span style={{ fontSize: 11, color: 'var(--fg-mute)' }}>1-64 total concurrent</span>
           </div>
 
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-            <span style={{ width: 110, fontSize: 11.5, color: 'var(--pc-muted, #9a9a9a)' }}>workers / feature</span>
+            <span style={{ width: 110, fontSize: 11.5, color: 'var(--fg-mute)' }}>workers / feature</span>
             <Select
               value={parallel.workerCountMode}
               onChange={(v) =>
@@ -594,7 +594,7 @@ export default function HarnessSettingsPanel({
 
           {parallel.workerCountMode === 'fixed' && (
             <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-              <span style={{ width: 110, fontSize: 11.5, color: 'var(--pc-muted, #9a9a9a)' }}>N per feature</span>
+              <span style={{ width: 110, fontSize: 11.5, color: 'var(--fg-mute)' }}>N per feature</span>
               <input
                 type="number"
                 min={2}
@@ -612,7 +612,7 @@ export default function HarnessSettingsPanel({
                 }}
                 style={{ width: 64, fontSize: 13, padding: '3px 6px' }}
               />
-              <span style={{ fontSize: 11, color: 'var(--pc-muted, #9a9a9a)' }}>
+              <span style={{ fontSize: 11, color: 'var(--fg-mute)' }}>
                 empty = all {parallel.max} on each feature
               </span>
             </div>
@@ -625,7 +625,7 @@ export default function HarnessSettingsPanel({
               reducing the total worker budget. Always shown — users
               may want to set it before bumping max. */}
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-            <span style={{ width: 80, fontSize: 11.5, color: 'var(--pc-muted, #9a9a9a)' }}>features cap</span>
+            <span style={{ width: 80, fontSize: 11.5, color: 'var(--fg-mute)' }}>features cap</span>
             <input
               type="number"
               min={1}
@@ -642,7 +642,7 @@ export default function HarnessSettingsPanel({
               }}
               style={{ width: 64, fontSize: 13, padding: '3px 6px' }}
             />
-            <span style={{ fontSize: 11, color: 'var(--pc-muted, #9a9a9a)' }}>
+            <span style={{ fontSize: 11, color: 'var(--fg-mute)' }}>
               {parallel.max > 1
                 ? 'empty = unlimited (only worker slots limit)'
                 : 'empty = unlimited (takes effect when max > 1)'}
@@ -650,8 +650,8 @@ export default function HarnessSettingsPanel({
           </div>
 
           {/* ── Worker chunk loop knobs ───────────────────────────── */}
-          <div style={{ marginTop: 6, paddingTop: 10, borderTop: '1px dashed var(--pc-border, #333)' }}>
-            <div style={{ fontSize: 11.5, color: 'var(--pc-muted, #9a9a9a)', marginBottom: 6, fontStyle: 'italic' }}>
+          <div style={{ marginTop: 6, paddingTop: 10, borderTop: '1px dashed var(--border)' }}>
+            <div style={{ fontSize: 11.5, color: 'var(--fg-mute)', marginBottom: 6, fontStyle: 'italic' }}>
               Worker chunk loop (per-chunk file locks + L1 typecheck gate)
             </div>
 
@@ -667,7 +667,7 @@ export default function HarnessSettingsPanel({
             {parallel.useChunkLoop && (
               <>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 6 }}>
-                  <span style={{ width: 80, fontSize: 11.5, color: 'var(--pc-muted, #9a9a9a)' }}>typecheck</span>
+                  <span style={{ width: 80, fontSize: 11.5, color: 'var(--fg-mute)' }}>typecheck</span>
                   <input
                     type="text"
                     value={parallel.workingStateCheck}
@@ -680,7 +680,7 @@ export default function HarnessSettingsPanel({
                 </div>
 
                 <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 6 }}>
-                  <span style={{ width: 80, fontSize: 11.5, color: 'var(--pc-muted, #9a9a9a)' }}>strikes</span>
+                  <span style={{ width: 80, fontSize: 11.5, color: 'var(--fg-mute)' }}>strikes</span>
                   <input
                     type="number"
                     min={1}
@@ -694,13 +694,13 @@ export default function HarnessSettingsPanel({
                     }}
                     style={{ width: 64, fontSize: 13, padding: '3px 6px' }}
                   />
-                  <span style={{ fontSize: 11, color: 'var(--pc-muted, #9a9a9a)' }}>
+                  <span style={{ fontSize: 11, color: 'var(--fg-mute)' }}>
                     typecheck failures before escalating
                   </span>
                 </div>
 
                 <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                  <span style={{ width: 80, fontSize: 11.5, color: 'var(--pc-muted, #9a9a9a)' }}>escalate to</span>
+                  <span style={{ width: 80, fontSize: 11.5, color: 'var(--fg-mute)' }}>escalate to</span>
                   <input
                     type="text"
                     value={parallel.escalateToRole}
@@ -710,7 +710,7 @@ export default function HarnessSettingsPanel({
                     }
                     style={{ width: 140, fontSize: 13, padding: '3px 6px', fontFamily: 'monospace' }}
                   />
-                  <span style={{ fontSize: 11, color: 'var(--pc-muted, #9a9a9a)' }}>
+                  <span style={{ fontSize: 11, color: 'var(--fg-mute)' }}>
                     role taken over on N strikes
                   </span>
                 </div>
@@ -719,8 +719,8 @@ export default function HarnessSettingsPanel({
           </div>
 
           {/* ── Synthesizer knob ─────────────────────────────────── */}
-          <div style={{ marginTop: 6, paddingTop: 10, borderTop: '1px dashed var(--pc-border, #333)' }}>
-            <div style={{ fontSize: 11.5, color: 'var(--pc-muted, #9a9a9a)', marginBottom: 6, fontStyle: 'italic' }}>
+          <div style={{ marginTop: 6, paddingTop: 10, borderTop: '1px dashed var(--border)' }}>
+            <div style={{ fontSize: 11.5, color: 'var(--fg-mute)', marginBottom: 6, fontStyle: 'italic' }}>
               Synthesizer (always merges/polishes worker output before validation)
             </div>
             <label style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 12 }}>
@@ -730,11 +730,11 @@ export default function HarnessSettingsPanel({
                 ariaLabel="synthesize single-worker output"
               />
               <span>synthesize single-worker output</span>
-              <span style={{ fontSize: 11, color: 'var(--pc-muted, #9a9a9a)' }}>
+              <span style={{ fontSize: 11, color: 'var(--fg-mute)' }}>
                 (off = skip extra LLM call when N=1)
               </span>
             </label>
-            <div style={{ fontSize: 11, color: 'var(--pc-muted, #9a9a9a)', marginTop: 6, lineHeight: 1.5 }}>
+            <div style={{ fontSize: 11, color: 'var(--fg-mute)', marginTop: 6, lineHeight: 1.5 }}>
               ↳ to upgrade the model the synthesizer runs on (e.g. opus), add
               a <code>synthesizer</code> override in the <em>AI backend</em>
               section below.
@@ -743,7 +743,7 @@ export default function HarnessSettingsPanel({
 
           {/* ── Debugger threshold ──────────────────────────────── */}
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 6 }}>
-            <span style={{ width: 110, fontSize: 11.5, color: 'var(--pc-muted, #9a9a9a)' }}>debugger after</span>
+            <span style={{ width: 110, fontSize: 11.5, color: 'var(--fg-mute)' }}>debugger after</span>
             <input
               type="number"
               min={1}
@@ -755,7 +755,7 @@ export default function HarnessSettingsPanel({
               }}
               style={{ width: 64, fontSize: 13, padding: '3px 6px' }}
             />
-            <span style={{ fontSize: 11, color: 'var(--pc-muted, #9a9a9a)' }}>
+            <span style={{ fontSize: 11, color: 'var(--fg-mute)' }}>
               attempts (debugger auto-fires before worker)
             </span>
           </div>
@@ -766,7 +766,7 @@ export default function HarnessSettingsPanel({
               supported in code for harnesses that opt in via direct config
               edit. */}
 
-          <div style={{ fontSize: 11.5, color: 'var(--pc-muted, #9a9a9a)', lineHeight: 1.5, marginTop: 4 }}>
+          <div style={{ fontSize: 11.5, color: 'var(--fg-mute)', lineHeight: 1.5, marginTop: 4 }}>
             ↳{' '}
             {parallel.workerCountMode === 'one' ? (
               <>up to <strong>{parallel.max}</strong> different feature{parallel.max === 1 ? '' : 's'} in parallel, 1 worker each</>
@@ -798,14 +798,14 @@ export default function HarnessSettingsPanel({
       {parallel.workerCountMode === 'tiers' && (
         <section style={{ marginBottom: 24 }}>
           <h2 style={{ fontSize: 14, margin: '0 0 8px' }}>Worker count tiers</h2>
-          <p style={{ margin: '0 0 8px', color: 'var(--pc-muted, #9a9a9a)', fontSize: 11.5 }}>
+          <p style={{ margin: '0 0 8px', color: 'var(--fg-mute)', fontSize: 11.5 }}>
             2–5 ascending integer tiers. Orchestrator picks one per feature based on the rubric.
             Lowest tier is the fallback when no <code>N=</code> is emitted.
           </p>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
             {parallel.adaptive.tiers.map((value, idx) => (
               <div key={idx} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                <span style={{ width: 60, fontSize: 11, color: 'var(--pc-muted, #9a9a9a)' }}>
+                <span style={{ width: 60, fontSize: 11, color: 'var(--fg-mute)' }}>
                   Tier {idx + 1}
                 </span>
                 <input
@@ -816,7 +816,7 @@ export default function HarnessSettingsPanel({
                   onChange={(e) => updateTier(idx, e.target.value)}
                   style={{ width: 64, fontSize: 13, padding: '3px 6px' }}
                 />
-                <span style={{ fontSize: 11, color: 'var(--pc-muted, #9a9a9a)' }}>workers</span>
+                <span style={{ fontSize: 11, color: 'var(--fg-mute)' }}>workers</span>
                 <input
                   type="text"
                   value={parallel.adaptive.labels[idx] ?? ''}
@@ -847,7 +847,7 @@ export default function HarnessSettingsPanel({
           </div>
 
           <h3 style={{ fontSize: 13, margin: '16px 0 6px' }}>Difficulty rubric</h3>
-          <p style={{ margin: '0 0 8px', color: 'var(--pc-muted, #9a9a9a)', fontSize: 11.5 }}>
+          <p style={{ margin: '0 0 8px', color: 'var(--fg-mute)', fontSize: 11.5 }}>
             Appended to the orchestrator prompt — guides which tier it picks per feature.
           </p>
           <textarea
@@ -857,8 +857,8 @@ export default function HarnessSettingsPanel({
             rows={6}
             style={{
               width: '100%', fontSize: 12, padding: 8, fontFamily: 'monospace',
-              background: 'var(--pc-card-bg, #141414)',
-              border: '1px solid var(--pc-border, #2a2a2a)', borderRadius: 4,
+              background: 'var(--bg-1)',
+              border: '1px solid var(--border)', borderRadius: 4,
               color: 'inherit',
             }}
           />
@@ -868,7 +868,7 @@ export default function HarnessSettingsPanel({
       {/* ── Section 2.5: AI backend (per-harness default + per-role overrides) ─ */}
       <section style={{ marginBottom: 24 }}>
         <h2 style={{ fontSize: 14, margin: '0 0 8px' }}>AI backend</h2>
-        <p style={{ margin: '0 0 8px', color: 'var(--pc-muted, #9a9a9a)', fontSize: 11.5 }}>
+        <p style={{ margin: '0 0 8px', color: 'var(--fg-mute)', fontSize: 11.5 }}>
           Default agent command + per-role overrides. Resolution at invoke
           time: <code>roles[role]</code> ⊕ <code>default</code> ⊕ process env
           (<code>AGENT_CMD</code>). Leave blank to fall through. Common
@@ -895,7 +895,7 @@ export default function HarnessSettingsPanel({
                 }}
               >
                 {isDefault ? (
-                  <div style={{ fontSize: 12, color: 'var(--pc-muted, #9a9a9a)', fontWeight: 500 }}>
+                  <div style={{ fontSize: 12, color: 'var(--fg-mute)', fontWeight: 500 }}>
                     default (all roles)
                   </div>
                 ) : (
@@ -1010,11 +1010,11 @@ export default function HarnessSettingsPanel({
             </button>
           </div>
           {telemetry.length === 0 ? (
-            <div style={{ padding: 16, color: 'var(--pc-muted, #9a9a9a)', fontSize: 12 }}>
+            <div style={{ padding: 16, color: 'var(--fg-mute)', fontSize: 12 }}>
               No worker decisions recorded yet. Run the harness with tier-mode worker counts to populate.
             </div>
           ) : (
-            <div style={{ height: 360, border: '1px solid var(--pc-border, #2a2a2a)', borderRadius: 4 }}>
+            <div style={{ height: 360, border: '1px solid var(--border)', borderRadius: 4 }}>
               <RichGrid<TelemetryRow>
                 columns={telemetryColumns}
                 rows={telemetry}
