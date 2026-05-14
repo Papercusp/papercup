@@ -104,16 +104,17 @@ export default function ApiKeysPage() {
         <span>Stored at <code>~/.papercusp/credentials.json</code> with user-only permissions; Papercusp never stores them on its servers.</span>
       </div>
 
-      <h2>Core</h2>
-      <p style={{ color: 'var(--fg-mute)', fontSize: 13, marginBottom: 12 }}>
-        Default backend is <code>omp</code> via Meridian — uses your Claude Max
-        subscription (no API key needed). Set an Anthropic key only if you switch
-        to <code>AGENT_BACKEND=claude-code</code> and don&rsquo;t already have a
-        Claude Code OAuth session. OpenAI is a fallback for some plugins. GitHub
-        PAT is needed only when publishing harnesses to the marketplace.
-      </p>
+      <section className="pc-settings-section">
+        <h2>Core</h2>
+        <p className="pc-settings-hint" style={{ marginBottom: 12 }}>
+          Default backend is <code>omp</code> via Meridian — uses your Claude Max
+          subscription (no API key needed). Set an Anthropic key only if you switch
+          to <code>AGENT_BACKEND=claude-code</code> and don&rsquo;t already have a
+          Claude Code OAuth session. OpenAI is a fallback for some plugins. GitHub
+          PAT is needed only when publishing harnesses to the marketplace.
+        </p>
 
-      <form onSubmit={submit(onSubmit)} className="pc-card" style={{ maxWidth: 640 }}>
+        <form onSubmit={submit(onSubmit)} className="pc-card">
         <SecretField
           label="Anthropic API key"
           help="Optional. Only needed when AGENT_BACKEND=claude-code and you don&apos;t have a Claude Code OAuth session. omp + Meridian (default) uses your Claude Max subscription instead."
@@ -152,20 +153,22 @@ export default function ApiKeysPage() {
               Last updated <time dateTime={masked.updated_at}>{new Date(masked.updated_at).toLocaleString()}</time>
             </span>
           )}
-        </div>
-      </form>
+          </div>
+        </form>
+      </section>
 
       <SearchProvidersSection />
 
-      <h2>Voice & cloud engines</h2>
-      <p style={{ color: 'var(--fg-mute)', fontSize: 13, marginBottom: 12 }}>
-        Optional keys for cloud STT (Deepgram), cloud TTS (ElevenLabs, OpenAI,
-        Cartesia), wake-word/noise-suppression (Picovoice), and full-agent voice
-        modes (Google for Gemini Live, OpenAI for Realtime). Configure only the
-        ones you actually use — local Voicemode + Kokoro work without any of these.
-      </p>
-      {voiceCreds && (
-        <div style={{ maxWidth: 640 }}>
+      <section className="pc-settings-section">
+        <h2>Voice & cloud engines</h2>
+        <p className="pc-settings-hint" style={{ marginBottom: 12 }}>
+          Optional keys for cloud STT (Deepgram), cloud TTS (ElevenLabs, OpenAI,
+          Cartesia), wake-word/noise-suppression (Picovoice), and full-agent voice
+          modes (Google for Gemini Live, OpenAI for Realtime). Configure only the
+          ones you actually use — local Voicemode + Kokoro work without any of these.
+        </p>
+        {voiceCreds && (
+          <div>
           <VoiceKeyRow
             label="OpenAI (voice)"
             field="openaiApiKey"
@@ -220,8 +223,9 @@ export default function ApiKeysPage() {
             note="Google Gemini Live full-agent mode. Free tier available via AI Studio."
             onChange={(snap) => setVoiceCreds(snap)}
           />
-        </div>
-      )}
+          </div>
+        )}
+      </section>
     </div>
   );
 }
@@ -426,9 +430,9 @@ function SearchProvidersSection() {
   };
 
   return (
-    <>
+    <section className="pc-settings-section">
       <h2>Search providers</h2>
-      <p style={{ color: 'var(--fg-mute)', fontSize: 13, marginBottom: 12 }}>
+      <p className="pc-settings-hint" style={{ marginBottom: 12 }}>
         API keys for OMP&rsquo;s 14 web-search providers. Set the ones you actually use; the
         orchestrator injects them into OMP&rsquo;s spawn env. OMP&rsquo;s search chain
         falls through to whichever provider is configured.
@@ -499,6 +503,6 @@ function SearchProvidersSection() {
           </div>
         </div>
       )}
-    </>
+    </section>
   );
 }
