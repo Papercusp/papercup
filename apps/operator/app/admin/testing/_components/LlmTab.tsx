@@ -414,7 +414,7 @@ interface RunDetail {
       error?: string | null;
     }>;
     telemetry_json: { toolInvocations?: Array<{ toolName: string; status: string }>; continueChainRows?: unknown[] } | null;
-    judge_json: { scores: Record<string, number>; findings: Array<{ axis: string; severity: string; claim: string; suggestion?: string; copyPrompt?: string; evidenceTurnIdx?: number }>; notes?: string } | null;
+    judge_json: { scores: Record<string, number>; findings: Array<{ axis: string; severity: string; claim: string; suggestion?: string; copyPrompt?: string; evidenceTurnIdx?: number }>; notes?: string; judgeOverruledAssert?: boolean } | null;
   };
   findings: Array<{
     id: string;
@@ -512,6 +512,11 @@ function RunDetailBody({
         {run.cap_breaches?.length ? (
           <div style={{ marginTop: 8, fontSize: 12, color: 'var(--bad, #c33)' }}>
             cap breaches: {run.cap_breaches.join(', ')}
+          </div>
+        ) : null}
+        {run.judge_json?.judgeOverruledAssert ? (
+          <div style={{ marginTop: 8, fontSize: 12, color: 'var(--needs, #b80)' }}>
+            ⚠ judge overruled a deterministic assertion — review findings
           </div>
         ) : null}
       </section>

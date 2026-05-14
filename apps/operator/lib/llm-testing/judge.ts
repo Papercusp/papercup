@@ -76,8 +76,23 @@ export async function judgeRun(opts: JudgeOpts, run: RunSummary, violations: Vio
       findings.push(f);
     }
   }
-  // Detect judge overruling: any deterministic violation that the judge marked as a false positive.
-  const overruled = findings.some((f) => f.claim.toLowerCase().includes('disagree with deterministic'));
+  // Judge overruling: plan §3.6 says the judge returns
+  // `agrees_with_deterministic_asserts: bool`. We parse that structured
+  // field directly; fall back to substring-matching the claim text only
+  // when the judge omits the field (older responses, parse failures).
+  const agreesValues = passes
+    .map((p) => p.agreesWithDeterministicAsserts)
+    .filter((v): v is boolean => typeof v === 'boolean');
+  let overruled: boolean;
+  if (agreesValues.length > 0) {
+    // If ANY pass said it disagrees, we surface that — the
+    // single-dissenter signal matters in multi-pass mode.
+    overruled = agreesValues.some((agrees) => !agrees);
+  } else {
+    overruled = findings.some((f) =>
+      f.claim.toLowerCase().includes('disagree with deterministic'),
+    );
+  }
 
   return {
     scores: mergedScores,
@@ -233,7 +248,7 @@ function parseJudgeResponse(
   raw: unknown,
   rubric: JudgeRubric,
   scenarioId: string,
-): { scores: Record<string, number>; findings: JudgeFinding[]; notes?: string } {
+): { scores: Record<string, number>; findings: JudgeFinding[]; notes?: string; agreesWithDeterministicAsserts?: boolean } {
   if (!raw || typeof raw !== 'object') {
     return {
       scores: defaultScores(rubric),
@@ -254,6 +269,9 @@ function parseJudgeResponse(
   const findingsRaw = Array.isArray(obj.findings) ? obj.findings : [];
   const novelRaw = Array.isArray(obj.novel_failures) ? obj.novel_failures : [];
   const notes = typeof obj.notes === 'string' ? obj.notes : undefined;
+  const agreesWithDeterministicAsserts = typeof obj.agrees_with_deterministic_asserts === 'boolean'
+    ? (obj.agrees_with_deterministic_asserts as boolean)
+    : undefined;
 
   const scores: Record<string, number> = defaultScores(rubric);
   const findings: JudgeFinding[] = [];
@@ -302,7 +320,7 @@ function parseJudgeResponse(
     if (parsed) findings.push(parsed);
   }
 
-  return { scores, findings, notes };
+  return { scores, findings, notes, agreesWithDeterministicAsserts };
 }
 
 function parseFinding(raw: unknown, scenarioId: string, isNovel: boolean): JudgeFinding | null {
