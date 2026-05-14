@@ -1,12 +1,13 @@
 /**
- * Judge-model registry — Plan §6.3.
+ * Judge-model registry — Plan §6.3 + §13 Q2 + §9 cost-model.
  *
- * Maps SUT model → judge model so the judge is never the same model
- * as the SUT (self-grading bias). Plan-prescribed default mapping:
- *   SUT = Sonnet → Judge = Opus
- *   SUT = Opus   → Judge = Sonnet (a second-opinion-Opus pass lands
- *                                  via JudgeRubric.criticality='high')
- *   SUT = Haiku  → Judge = Sonnet
+ * Resolution rule (per §13 Q2 + §9 envelope):
+ *   - Default judge = same family as SUT (Sonnet/Sonnet, etc.).
+ *   - On `criticality:'high'` scenarios, a SECOND-OPINION pass uses
+ *     Opus (or whatever `secondOpinion` resolves to) so we can flag
+ *     score disagreement >1pt between the two passes. This balances
+ *     §6.3's "must differ" ideal against §9's budget envelope
+ *     ("Sonnet judge default with Opus opt-in").
  *
  * Per-scenario overrides go through Scenario / RunnerOpts.judgeModel.
  * Env override: LLM_TEST_JUDGE_MODEL — used by CI matrices or local
@@ -16,14 +17,20 @@
 export interface JudgeRegistryEntry {
   /** Default judge to use against this SUT family. */
   judge: string;
-  /** Optional second-opinion judge for criticality='high'. */
+  /** Second-opinion judge for criticality='high' (multi-pass §6.4). */
   secondOpinion?: string;
 }
 
 const SUT_PREFIXES: Array<{ match: RegExp; entry: JudgeRegistryEntry }> = [
+  // SUT=Opus: judge with Sonnet by default (cheaper); high-criticality
+  // adds an Opus second-opinion pass.
   { match: /^claude-opus/i,   entry: { judge: 'claude-sonnet-4-6', secondOpinion: 'claude-opus-4-7' } },
-  { match: /^claude-sonnet/i, entry: { judge: 'claude-opus-4-7' } },
-  { match: /^claude-haiku/i,  entry: { judge: 'claude-sonnet-4-6' } },
+  // SUT=Sonnet: same-family default (Sonnet/Sonnet) per §13 Q2 cost
+  // model; high-criticality bumps the second-opinion pass to Opus.
+  { match: /^claude-sonnet/i, entry: { judge: 'claude-sonnet-4-6', secondOpinion: 'claude-opus-4-7' } },
+  // SUT=Haiku: judge stepped up to Sonnet so the judge is meaningfully
+  // smarter than the SUT.
+  { match: /^claude-haiku/i,  entry: { judge: 'claude-sonnet-4-6', secondOpinion: 'claude-opus-4-7' } },
 ];
 
 /**

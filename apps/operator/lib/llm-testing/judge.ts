@@ -29,6 +29,12 @@ export interface JudgeOpts {
   personaSummary: string;
   goalSummary: string;
   temperature?: number;
+  /**
+   * SUT model — used by judges/registry to resolve the second-opinion
+   * model for criticality='high' rubrics. Optional; if absent the
+   * second-opinion pass reuses opts.model (no real bias mitigation).
+   */
+  sutModel?: string;
 }
 
 export async function judgeRun(opts: JudgeOpts, run: RunSummary, violations: Violation[]): Promise<JudgeResult> {
@@ -44,12 +50,24 @@ export async function judgeRun(opts: JudgeOpts, run: RunSummary, violations: Vio
     rubric: opts.rubric,
   });
 
-  const passes: Array<{ scores: Record<string, number>; findings: JudgeFinding[]; notes?: string; rawText: string }> = [];
-  const passCount = opts.rubric.criticality === 'high' ? 2 : 1;
+  const passes: Array<{ scores: Record<string, number>; findings: JudgeFinding[]; notes?: string; rawText: string; agreesWithDeterministicAsserts?: boolean }> = [];
+  // Per plan §6.4 + §13 Q2: criticality='high' rubrics get TWO passes —
+  // pass 0 uses opts.model (default judge), pass 1 uses the
+  // second-opinion model (resolveJudgeModel(sutModel).secondOpinion).
+  // The second pass at a different model is the bias-mitigation the
+  // plan called for; same-model temperature-bump alone doesn't catch
+  // self-grading.
+  const isHigh = opts.rubric.criticality === 'high';
+  const passModels: string[] = [opts.model];
+  if (isHigh) {
+    const { resolveJudgeModel } = await import('./judges/registry');
+    const second = resolveJudgeModel(opts.sutModel ?? opts.model).secondOpinion ?? opts.model;
+    passModels.push(second);
+  }
 
-  for (let i = 0; i < passCount; i++) {
+  for (let i = 0; i < passModels.length; i++) {
     const result = await llmCall({
-      model: opts.model,
+      model: passModels[i],
       system,
       messages: [{ role: 'user', content: userPrompt }],
       maxTokens: 4096,

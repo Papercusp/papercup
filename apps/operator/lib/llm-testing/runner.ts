@@ -75,9 +75,12 @@ const DEFAULT_SUT_MODEL = process.env.LLM_TEST_SUT_MODEL ?? 'claude-sonnet-4-6';
 const DEFAULTS = {
   sutModel:   DEFAULT_SUT_MODEL,
   /**
-   * Plan §6.3: judge MUST differ from SUT. The registry maps SUT
-   * family → judge family. Env override (LLM_TEST_JUDGE_MODEL) wins
-   * for explicit operator control.
+   * Plan §13 Q2 + §9 cost model: judge defaults to the SUT family
+   * for cost. Self-grading bias mitigation comes from
+   * criticality='high' rubrics adding a second-opinion pass at the
+   * registry's secondOpinion model (typically Opus). The registry's
+   * `judge` field is still consulted so non-Sonnet SUTs (Haiku) get
+   * a sensible step-up.
    */
   judgeModel: process.env.LLM_TEST_JUDGE_MODEL ?? resolveJudgeModel(DEFAULT_SUT_MODEL).judge,
   simModel:   process.env.LLM_TEST_SIM_MODEL   ?? 'claude-haiku-4-5',
@@ -371,6 +374,7 @@ async function runOnce(args: OnceArgs): Promise<SingleRunReport> {
   const judge = await judgeRun(
     {
       model: judgeModel,
+      sutModel,
       rubric: scenario.rubric,
       scenarioId: scenario.id,
       scenarioDescription: scenario.description,
