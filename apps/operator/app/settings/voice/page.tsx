@@ -19,6 +19,7 @@ import {
   assignVoiceToRole,
   speak,
 } from '@/app/_components/voice/voice-mode';
+import { setVoicePrefsClient } from '@/app/_components/voice/voice-prefs-client';
 import type { VoicePrefs, SttEngineKind, TtsEngineKind } from '@/lib/voice-prefs';
 import type { TtsSpendState } from '@/lib/tts-spend';
 import type { SttSpendState } from '@/lib/stt-spend';
@@ -148,7 +149,13 @@ export default function VoiceSettingsPage() {
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify(patch),
       });
-      if (r.ok) setPrefs(await r.json());
+      if (r.ok) {
+        const next = await r.json() as VoicePrefs;
+        setPrefs(next);
+        // Push into the module-level cache so subscribers
+        // (voice-card router, announcer, etc.) see live updates.
+        setVoicePrefsClient(next);
+      }
     } finally {
       setSavingPrefs(false);
     }

@@ -76,6 +76,10 @@ import {
   routeTranscript,
 } from '@/lib/voice-cards/voice-card-router';
 import { postCardResponse } from '@/lib/post-card-response';
+import {
+  loadVoicePrefsClient,
+  subscribeVoicePrefsClient,
+} from './voice/voice-prefs-client';
 
 interface OperatorTurnRow {
   id: string;
@@ -669,6 +673,11 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
   // state machine, not React state. Buffer-window timer lives alongside.
   const routerStateRef = useRef(createRouterState());
   const routerBufferTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Live mirror of voice-prefs.cardAnsweringEnabled. Updated via
+  // subscribeVoicePrefsClient so toggling the pref OFF mid-session
+  // immediately tears down any armed voice card (plan §C.10 / audit
+  // gap #2 fix).
+  const cardAnsweringEnabledRef = useRef<boolean>(true);
 
   // PG-backed conversation identity. Loaded on mount; survives refresh
   // and is shared between the text path and (later) the EL voice path.
@@ -1410,14 +1419,7 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
       presentation !== undefined
       && presentation.kind === 'radio'
       && (presentation as unknown as { voiceAnswerable?: boolean }).voiceAnswerable === true;
-    let cardAnsweringEnabled = true;
-    try {
-      // Lazy require avoids dragging voice-prefs into SSR.
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
-      const { loadVoicePrefsClient } = require('./voice/voice-prefs-client') as
-        typeof import('./voice/voice-prefs-client');
-      cardAnsweringEnabled = loadVoicePrefsClient().cardAnsweringEnabled !== false;
-    } catch { /* prefs unreachable → permissive default */ }
+    const cardAnsweringEnabled = cardAnsweringEnabledRef.current;
     if (!optIn || !cardAnsweringEnabled) {
       routerClearActive(routerStateRef.current);
       return;
@@ -1468,6 +1470,27 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
       }
     }
   }, [voiceActive]);
+
+  // Live voice-prefs subscription. Tears down the active router ref
+  // when cardAnsweringEnabled flips OFF mid-session (plan §C.10 +
+  // audit gap #2). Hydration also calls the listener so the initial
+  // value reflects the server cache, not the DEFAULT_CLIENT_PREFS
+  // bootstrap.
+  useEffect(() => {
+    // Seed from current cache.
+    cardAnsweringEnabledRef.current =
+      loadVoicePrefsClient().cardAnsweringEnabled !== false;
+    const unsub = subscribeVoicePrefsClient((next) => {
+      const enabled = next.cardAnsweringEnabled !== false;
+      const wasEnabled = cardAnsweringEnabledRef.current;
+      cardAnsweringEnabledRef.current = enabled;
+      if (wasEnabled && !enabled) {
+        // Flipped off — tear down any armed card immediately.
+        routerClearActive(routerStateRef.current);
+      }
+    });
+    return unsub;
+  }, []);
 
   // Sleep gate. The LLM emits `<sleep>{minutes}</sleep>` when the user
   // says "give me a minute" / "I'm busy" — the silence-nudge timer must

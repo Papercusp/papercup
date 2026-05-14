@@ -39,6 +39,7 @@ import {
 import { InputCard, type InputCardResponse } from './InputCard';
 import { useStateSnapshots, type OpenCardWithRun } from '@/lib/use-state-snapshots';
 import { postCardResponse, postRunCancel } from '@/lib/post-card-response';
+import { selectFocusedCard } from '@/lib/chat-cards/select-focused-card';
 
 interface Props {
   /** Active conversation id — passed into /card-response URL for audit. */
@@ -69,9 +70,13 @@ export function PendingCardsBar({ conversationId, workspaceId }: Props): ReactNo
   const [error, setError] = useState<string | null>(null);
   const [dismissed, setDismissed] = useState<Set<string>>(() => new Set());
 
+  // Same focused-card rule as the voice router (plan §C.7 / M4) so the
+  // two surfaces never disagree on which card is "front of queue".
+  // Local-dismiss filter is applied before selection: a card the user
+  // dismissed here is hidden from both surfaces' focus.
   const visibleCards = cards.filter((c) => !dismissed.has(c.correlationId));
-  if (visibleCards.length === 0) return null;
-  const head = visibleCards[0];
+  const head = selectFocusedCard(visibleCards);
+  if (head === null) return null;
   const remaining = visibleCards.length - 1;
 
   const post = async (
