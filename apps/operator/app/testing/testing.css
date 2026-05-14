@@ -1,0 +1,151 @@
+/* /testing — perf-test shell */
+
+.pc-test-shell {
+  display: grid;
+  grid-template-columns: 220px 1fr;
+  min-height: calc(100vh - 60px);
+  background: var(--bg);
+  color: var(--fg);
+  font-size: 13px;
+}
+
+.pc-test-left {
+  background: var(--bg-2);
+  border-right: 1px solid var(--border);
+  padding: 16px 12px;
+  overflow-y: auto;
+}
+
+.pc-test-section-label {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--fg-mute);
+  margin: 0 0 8px;
+}
+
+.pc-test-tab {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 8px 10px;
+  margin: 2px 0;
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+.pc-test-tab:hover {
+  background: var(--bg-3);
+}
+.pc-test-tab.is-active {
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  color: var(--accent);
+  font-weight: 600;
+}
+.pc-test-tab-label {
+  display: block;
+}
+.pc-test-tab-hint {
+  display: block;
+  font-size: 11px;
+  color: var(--fg-mute);
+  margin-top: 1px;
+  font-weight: normal;
+}
+
+.pc-test-main {
+  padding: 20px 24px;
+  overflow-y: auto;
+}
+
+.pc-test-tab-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+  margin: 0 0 16px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+}
+.pc-test-tab-title {
+  font-size: 18px;
+  font-weight: 600;
+  margin: 0;
+}
+.pc-test-tab-intro {
+  font-size: 12px;
+  color: var(--fg-mute);
+  margin: 4px 0 0;
+  max-width: 60ch;
+}
+
+.pc-test-stub,
+.pc-test-loading {
+  padding: 32px;
+  color: var(--fg-mute);
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.pc-test-card {
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 16px;
+  margin-bottom: 16px;
+}
+.pc-test-card-title {
+  font-size: 13px;
+  font-weight: 600;
+  margin: 0 0 8px;
+}
+.pc-test-card-row {
+  display: flex;
+  gap: 16px;
+  align-items: center;
+  flex-wrap: wrap;
+  margin: 6px 0;
+}
+
+.pc-test-metric-table {
+  width: 100%;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.pc-test-metric-table th {
+  font-weight: 600;
+  text-align: left;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--border);
+  color: var(--fg-mute);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.pc-test-metric-table td {
+  padding: 4px 8px;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 50%, transparent);
+}
+
+.pc-test-metric-table tbody tr:hover {
+  background: var(--bg-3);
+}
+
+.pc-test-badge {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+.pc-test-badge.is-good   { background: color-mix(in srgb, var(--ok) 20%, transparent); color: var(--ok); }
+.pc-test-badge.is-needs  { background: color-mix(in srgb, var(--warn) 20%, transparent); color: var(--warn); }
+.pc-test-badge.is-poor   { background: color-mix(in srgb, var(--bad) 20%, transparent); color: var(--bad); }
+.pc-test-badge.is-muted  { background: var(--bg-3); color: var(--fg-mute); }

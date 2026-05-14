@@ -1,0 +1,142 @@
+'use client';
+
+import { useEffect, useMemo, useState } from 'react';
+import { useQueryState, parseAsString, parseAsStringEnum } from 'nuqs';
+import Button from '../../harness/Button';
+import { subscribe, clearEvents, rateINP, type PerfEvent, type PerfEventKind } from '../_lib/vitals-recorder';
+
+type SortKey = 'ts' | 'duration' | 'route';
+
+export default function LiveMetricsTab() {
+  const [events, setEvents] = useState<PerfEvent[]>([]);
+  const [kindFilter, setKindFilter] = useQueryState(
+    'kind',
+    parseAsStringEnum<PerfEventKind | 'all'>(['all', 'interaction', 'longtask', 'layout-shift', 'console-error', 'unhandled-error']).withDefault('all'),
+  );
+  const [routeFilter, setRouteFilter] = useQueryState('route', parseAsString.withDefault(''));
+  const [sort, setSort] = useQueryState(
+    'sort',
+    parseAsStringEnum<SortKey>(['ts', 'duration', 'route']).withDefault('duration'),
+  );
+
+  useEffect(() => subscribe(setEvents), []);
+
+  const filtered = useMemo(() => {
+    let list = events;
+    if (kindFilter !== 'all') list = list.filter((e) => e.kind === kindFilter);
+    if (routeFilter) list = list.filter((e) => e.route.includes(routeFilter));
+    const sorted = [...list];
+    if (sort === 'ts') sorted.sort((a, b) => b.ts - a.ts);
+    else if (sort === 'duration') sorted.sort((a, b) => b.duration - a.duration);
+    else sorted.sort((a, b) => a.route.localeCompare(b.route));
+    return sorted.slice(0, 200);
+  }, [events, kindFilter, routeFilter, sort]);
+
+  const counts = useMemo(() => {
+    const c: Record<string, number> = { interaction: 0, longtask: 0, 'layout-shift': 0, 'console-error': 0, 'unhandled-error': 0 };
+    for (const e of events) c[e.kind] = (c[e.kind] ?? 0) + 1;
+    return c;
+  }, [events]);
+
+  return (
+    <>
+      <header className="pc-test-tab-header">
+        <div>
+          <h1 className="pc-test-tab-title">Live metrics</h1>
+          <p className="pc-test-tab-intro">
+            Passive observer. Every slow interaction (&gt;40ms), long task (&gt;50ms), layout shift,
+            and console error gets logged here as you use the app. The buffer survives navigation
+            and persists to localStorage. Sort by duration to see your biggest wins.
+          </p>
+        </div>
+        <Button variant="ghost" onClick={() => clearEvents()}>Clear</Button>
+      </header>
+
+      <div className="pc-test-card">
+        <div className="pc-test-card-row">
+          <span className="pc-test-badge is-muted">interactions {counts.interaction}</span>
+          <span className="pc-test-badge is-muted">long tasks {counts.longtask}</span>
+          <span className="pc-test-badge is-muted">layout shifts {counts['layout-shift']}</span>
+          <span className="pc-test-badge is-poor">console errors {counts['console-error']}</span>
+          <span className="pc-test-badge is-poor">unhandled {counts['unhandled-error']}</span>
+        </div>
+        <div className="pc-test-card-row">
+          <label>
+            Kind{' '}
+            <select value={kindFilter} onChange={(e) => setKindFilter(e.target.value as PerfEventKind | 'all')}>
+              <option value="all">all</option>
+              <option value="interaction">interaction</option>
+              <option value="longtask">longtask</option>
+              <option value="layout-shift">layout-shift</option>
+              <option value="console-error">console-error</option>
+              <option value="unhandled-error">unhandled-error</option>
+            </select>
+          </label>
+          <label>
+            Route contains{' '}
+            <input
+              type="text"
+              value={routeFilter}
+              onChange={(e) => setRouteFilter(e.target.value || null)}
+              placeholder="/harness"
+              style={{ width: 160 }}
+            />
+          </label>
+          <label>
+            Sort{' '}
+            <select value={sort} onChange={(e) => setSort(e.target.value as SortKey)}>
+              <option value="duration">duration ↓</option>
+              <option value="ts">time ↓</option>
+              <option value="route">route ↑</option>
+            </select>
+          </label>
+          <span style={{ marginLeft: 'auto', fontSize: 11, color: 'var(--fg-mute)' }}>
+            {filtered.length} of {events.length} events
+          </span>
+        </div>
+      </div>
+
+      <div className="pc-test-card">
+        <table className="pc-test-metric-table">
+          <thead>
+            <tr>
+              <th style={{ width: 90 }}>Kind</th>
+              <th style={{ width: 80 }}>Duration</th>
+              <th>Route</th>
+              <th>Target</th>
+              <th style={{ width: 100 }}>When</th>
+            </tr>
+          </thead>
+          <tbody>
+            {filtered.length === 0 ? (
+              <tr><td colSpan={5} style={{ padding: 16, color: 'var(--fg-mute)' }}>
+                No events yet — use the app and slow interactions will appear here.
+              </td></tr>
+            ) : filtered.map((e) => {
+              const rating = e.kind === 'interaction' ? rateINP(e.duration) : null;
+              const badgeCls = rating === 'good' ? 'is-good' : rating === 'needs-improvement' ? 'is-needs' : rating === 'poor' ? 'is-poor' : 'is-muted';
+              return (
+                <tr key={e.id}>
+                  <td><span className={`pc-test-badge ${badgeCls}`}>{e.kind}</span></td>
+                  <td>
+                    {e.kind === 'layout-shift'
+                      ? (e.duration / 1000).toFixed(3)
+                      : `${e.duration}ms`}
+                  </td>
+                  <td><code>{e.route}</code></td>
+                  <td>
+                    {e.target}
+                    {e.detail ? <div style={{ fontSize: 11, color: 'var(--fg-mute)' }}>{e.detail}</div> : null}
+                  </td>
+                  <td style={{ color: 'var(--fg-mute)' }}>
+                    {Math.round((Date.now() - e.ts) / 1000)}s ago
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </>
+  );
+}

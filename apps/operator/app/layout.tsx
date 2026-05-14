@@ -13,6 +13,8 @@ import RouteProgressProvider from './_components/RouteProgressProvider';
 import RouteTransitionProvider from './_components/RouteTransitionProvider';
 import { ToasterSelectionFix } from './_components/ToasterSelectionFix';
 import { ToastHistoryRecorder } from './_components/ToastHistoryRecorder';
+import PerfObserverProvider from './testing/_components/PerfObserverProvider';
+import RecorderHost from './testing/_components/RecorderHost';
 import { UiPresenceProvider } from './_components/UiPresenceProvider';
 import { getAllFlags } from '@papercusp/flags/server';
 import '@/lib/flag-bus';
@@ -159,6 +161,8 @@ export default async function RootLayout({ children }: { children: React.ReactNo
                   />
                   <ToasterSelectionFix />
                   <ToastHistoryRecorder />
+                  <PerfObserverProvider />
+                  <RecorderHost />
                 </NuqsAdapter>
               </Suspense>
             </RouteProgressProvider>
