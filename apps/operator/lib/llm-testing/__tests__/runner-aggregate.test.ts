@@ -41,6 +41,8 @@ describe('scenario registry', () => {
       'oracle-O1-docs-question',
       'oracle-O2-refuse-speculation',
       'oracle-O3-harness-question',
+      'architect-A1-clarifying-questions',
+      'architect-A2-scope-pushback',
     ].sort());
   });
 
@@ -50,7 +52,7 @@ describe('scenario registry', () => {
 
   it('every scenario references a known target', () => {
     for (const s of SCENARIOS) {
-      expect(['operator', 'oracle']).toContain(s.target);
+      expect(['operator', 'oracle', 'architect']).toContain(s.target);
     }
   });
 

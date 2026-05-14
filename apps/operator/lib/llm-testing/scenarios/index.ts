@@ -30,6 +30,8 @@ import { S12B_TOOL_ERROR_INJECTED } from './operator/S12b-tool-error-injected';
 import { O1_DOCS_QUESTION } from './oracle/O1-docs-question';
 import { O2_REFUSE_SPECULATION } from './oracle/O2-refuse-speculation';
 import { O3_HARNESS_QUESTION } from './oracle/O3-harness-question';
+import { A1_CLARIFYING_QUESTIONS } from './architect/A1-clarifying-questions';
+import { A2_SCOPE_PUSHBACK } from './architect/A2-scope-pushback';
 
 export const SCENARIOS: ReadonlyArray<Scenario> = [
   // operator (S01–S12)
@@ -50,6 +52,9 @@ export const SCENARIOS: ReadonlyArray<Scenario> = [
   O1_DOCS_QUESTION,
   O2_REFUSE_SPECULATION,
   O3_HARNESS_QUESTION,
+  // architect (A1–A2) — third target, harness-scoped
+  A1_CLARIFYING_QUESTIONS,
+  A2_SCOPE_PUSHBACK,
 ];
 
 export function getScenario(id: string): Scenario {
