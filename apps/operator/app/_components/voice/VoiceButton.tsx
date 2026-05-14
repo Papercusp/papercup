@@ -15,6 +15,7 @@ import {
   getVoiceConfig,
   getVoiceState,
   initVoiceMode,
+  setAudioReceiving,
   setVoiceMode,
   startPushToTalk,
   stopPushToTalk,
@@ -86,6 +87,20 @@ export function VoiceButton(): ReactElement {
     initVoiceMode();
     const unsub = subscribeVoiceState(setVs);
     return unsub;
+  }, []);
+
+  // Surface phase-stall failures as toasts so the user can tell a
+  // silent error apart from "still working." Wired via window event
+  // from voice-mode.ts where the per-phase timers fire.
+  useEffect(() => {
+    const onTimeout = (e: Event) => {
+      const detail = (e as CustomEvent<{ phase: string; message: string }>).detail;
+      if (!detail?.message) return;
+      const isError = detail.phase === 'no-audio';
+      (isError ? toast.error : toast.warning)(detail.message);
+    };
+    window.addEventListener('papercusp:voiceTimeout', onTimeout as EventListener);
+    return () => window.removeEventListener('papercusp:voiceTimeout', onTimeout as EventListener);
   }, []);
 
   useEffect(() => {
@@ -205,29 +220,38 @@ export function VoiceButton(): ReactElement {
     };
   }, [markPttHintSeen, pttHeld, vs.supported]);
 
-  // Live mic level — only sample when the mic is actually open. The
-  // /settings/* skip from earlier was about avoiding contention with a
-  // separate Whisper analyser on the same mic; the EL Conv AI path
-  // doesn't have that competing analyser, so we can leave the visual
-  // on everywhere when always-on or listening. Without this, the
-  // settings page (where users go to test voice) shows a dead button.
-  // 'micActive' for the CSS class — the user should see "mic is hot"
-  // regardless of which engine owns the device.
+  // Live mic level — sampled whenever the mic is open. 'micActive' is
+  // the CSS-class signal ("mic is hot, please show feedback") and the
+  // analyser is its own visualization-only stream.
   const micActive =
     vs.mode === 'always-on' || vs.status === 'listening' || pttHeld;
-  // 'analyserActive' for our local useMicLevel analyser — skip it
-  // when a full-agent engine (EL Conv AI / OpenAI Realtime) owns the
-  // mic. Two concurrent getUserMedia consumers can break WebRTC media
-  // negotiation on Chrome: the second-acquired track delivers no
-  // frames, ICE completes signaling, peer connection times out 16s
-  // later (the exact symptom in the field-reported bug). Letting EL
-  // be the sole consumer is the real fix.
-  const analyserActive = micActive && !vs.micOwnedByFullAgent && vs.status !== 'connecting';
-  const { ref: micRef } = useMicLevel(analyserActive);
+  // Run the visualization analyser during PTT regardless of who owns
+  // the mic. The previous "skip when micOwnedByFullAgent" rule was a
+  // belt-and-suspenders guard against a Chrome-specific WebRTC issue
+  // (two getUserMedia consumers contending). The cost of suppressing
+  // it was: PTT users in always-on agent mode (EL Conv AI / Realtime)
+  // got zero feedback — "I pressed the button, spoke, nothing
+  // happened." For brief PTT holds (typical: 1-3s) the contention
+  // risk is acceptable; for sustained always-on we keep the old
+  // guard. Connecting still skipped — analyser nodes during ICE
+  // negotiation can interleave audio init badly.
+  const analyserActive =
+    (pttHeld || (micActive && !vs.micOwnedByFullAgent)) &&
+    vs.status !== 'connecting';
+  const { ref: micRef } = useMicLevel(analyserActive, setAudioReceiving);
 
-  const labelText = vs.status === 'connecting'
-    ? 'Connecting…'
-    : vs.supported ? MODE_LABEL[vs.mode] : 'No mic';
+  // Phase-specific label so the user can tell apart the 5 visible
+  // states. Order matters: speaking > awaiting > processing > pressed-
+  // and-hearing > pressed-no-audio > connecting > default.
+  let labelText: string;
+  if (!vs.supported) labelText = 'No mic';
+  else if (vs.status === 'speaking') labelText = 'Speaking';
+  else if (vs.awaitingResponse) labelText = 'Thinking…';
+  else if (vs.processingTranscript) labelText = 'Processing…';
+  else if (pttHeld && vs.audioReceiving) labelText = 'Hearing you';
+  else if (pttHeld) labelText = 'Listening…';
+  else if (vs.status === 'connecting') labelText = 'Connecting…';
+  else labelText = MODE_LABEL[vs.mode];
   const title = vs.status === 'connecting'
     ? 'Voice mode: connecting to agent (waiting for WebRTC negotiation)…'
     : vs.supported
@@ -254,7 +278,7 @@ export function VoiceButton(): ReactElement {
         onTouchStart={onPttDown}
         onTouchEnd={onPttUp}
         ref={micRef as React.RefObject<HTMLButtonElement>}
-        className={`pc-voice-btn pc-voice-btn--mode-${vs.mode} pc-voice-btn--status-${vs.status}${pttHeld ? ' is-held' : ''}${vs.supported ? '' : ' is-unsupported'}${micActive ? ' is-mic-active' : ''}${vs.wakeDetected ? ' is-wake-detected' : ''}${vs.userSpoke ? ' is-user-spoke' : ''}`}
+        className={`pc-voice-btn pc-voice-btn--mode-${vs.mode} pc-voice-btn--status-${vs.status}${pttHeld ? ' is-held' : ''}${vs.supported ? '' : ' is-unsupported'}${micActive ? ' is-mic-active' : ''}${vs.wakeDetected ? ' is-wake-detected' : ''}${vs.userSpoke ? ' is-user-spoke' : ''}${vs.audioReceiving ? ' is-receiving-audio' : ''}${vs.processingTranscript ? ' is-processing-transcript' : ''}${vs.awaitingResponse ? ' is-awaiting-response' : ''}`}
       >
         <span className="pc-voice-btn-orb" aria-hidden="true">
           <span className="pc-voice-btn-level" aria-hidden="true" />

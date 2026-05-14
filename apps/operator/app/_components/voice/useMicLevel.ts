@@ -12,7 +12,19 @@
 
 import { useEffect, useRef } from 'react';
 
-export function useMicLevel(active: boolean): {
+/**
+ * Threshold (post-eased value 0..1) at which we consider the mic to be
+ * "receiving audio." Below this is silence/noise floor; above is voice.
+ * Hysteresis (separate on/off thresholds) avoids flicker on borderline
+ * input.
+ */
+const RECEIVING_ON = 0.08;
+const RECEIVING_OFF = 0.04;
+
+export function useMicLevel(
+  active: boolean,
+  onReceivingChange?: (receiving: boolean) => void,
+): {
   ref: React.RefObject<HTMLElement>;
 } {
   const ref = useRef<HTMLElement>(null);
@@ -56,6 +68,7 @@ export function useMicLevel(active: boolean): {
         const FRAME_MS = 50;
         let lastTick = 0;
         let lastWritten = -1;
+        let receivingState = false;
 
         const tick = (t: number) => {
           if (t - lastTick >= FRAME_MS) {
@@ -73,6 +86,14 @@ export function useMicLevel(active: boolean): {
             if (Math.abs(eased - lastWritten) >= 0.01) {
               lastWritten = eased;
               if (ref.current) ref.current.style.setProperty('--mic-level', eased.toFixed(2));
+            }
+            // Hysteresis threshold for "is the mic picking up voice?"
+            if (!receivingState && eased >= RECEIVING_ON) {
+              receivingState = true;
+              onReceivingChange?.(true);
+            } else if (receivingState && eased <= RECEIVING_OFF) {
+              receivingState = false;
+              onReceivingChange?.(false);
             }
           }
           rafRef.current = requestAnimationFrame(tick);
@@ -92,8 +113,9 @@ export function useMicLevel(active: boolean): {
       streamRef.current?.getTracks().forEach((t) => t.stop());
       streamRef.current = null;
       if (ref.current) ref.current.style.setProperty('--mic-level', '0');
+      onReceivingChange?.(false);
     };
-  }, [active]);
+  }, [active, onReceivingChange]);
 
   return { ref };
 }

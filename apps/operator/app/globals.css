@@ -6730,6 +6730,120 @@ body.h-harness-top-collapsed .pc-header {
   color: #fff6cf;
 }
 
+/* ============================================================
+   Per-phase PTT visual states. Five distinct visuals so the
+   user can always tell which phase voice is in:
+     1. is-held + no audio        — yellow pulse, "Listening…"
+     2. is-receiving-audio        — green glow + waveform, "Hearing you"
+     3. is-processing-transcript  — cyan spinner, "Processing…"
+     4. is-awaiting-response      — violet pulse, "Thinking…"
+     5. is-speaking (existing)    — blue glow
+   ============================================================ */
+
+/* 1) Pressed but no audio yet — yellow caution pulse */
+.pc-voice-btn.is-held:not(.is-receiving-audio):not(.is-processing-transcript):not(.is-awaiting-response) {
+  --pc-voice-icon-fill: #facc15;
+  border-color: rgba(250, 204, 21, 0.70);
+  animation: pc-voice-pulse-yellow 1.2s ease-in-out infinite;
+}
+
+@keyframes pc-voice-pulse-yellow {
+  0%,100% { box-shadow: 0 0 0 0 rgba(250, 204, 21, 0.45); }
+  50%     { box-shadow: 0 0 0 6px rgba(250, 204, 21, 0.0); }
+}
+
+/* 2) Pressed AND audio detected — green "hearing you" glow */
+.pc-voice-btn.is-receiving-audio {
+  --pc-voice-icon-fill: #22c55e;
+  border-color: rgba(34, 197, 94, 0.78);
+  animation: none;
+  background:
+    radial-gradient(circle at 18% 18%, rgba(255,255,255,0.10), transparent 22%),
+    linear-gradient(180deg, rgba(8, 36, 18, 0.99), rgba(4, 18, 9, 0.99));
+}
+
+.pc-voice-btn.is-receiving-audio .pc-voice-btn-orb {
+  box-shadow:
+    0 0 0 2px rgba(2, 6, 12, 0.72),
+    0 0 18px rgba(34, 197, 94, 0.55),
+    inset 0 1px 0 rgba(255,255,255,0.30);
+  background:
+    radial-gradient(circle at 50% 42%, color-mix(in oklab, #22c55e, white 12%) 0 38%, rgba(4, 28, 14, 0.96) 64%, rgba(2, 6, 12, 1) 100%);
+}
+
+.pc-voice-btn.is-receiving-audio .pc-voice-btn-label {
+  color: #d4ffe4;
+  text-shadow: 0 0 14px rgba(34, 197, 94, 0.38);
+}
+
+/* 3) Released, waiting for transcript — cyan rotating ring */
+.pc-voice-btn.is-processing-transcript {
+  --pc-voice-icon-fill: #22d3ee;
+  border-color: rgba(34, 211, 238, 0.62);
+  position: relative;
+}
+
+.pc-voice-btn.is-processing-transcript .pc-voice-btn-orb {
+  box-shadow:
+    0 0 0 2px rgba(2, 6, 12, 0.72),
+    0 0 14px rgba(34, 211, 238, 0.45),
+    inset 0 1px 0 rgba(255,255,255,0.28);
+}
+
+.pc-voice-btn.is-processing-transcript .pc-voice-btn-orb::before {
+  content: '';
+  position: absolute;
+  inset: -3px;
+  border-radius: 50%;
+  border: 2px solid transparent;
+  border-top-color: rgba(34, 211, 238, 0.95);
+  border-right-color: rgba(34, 211, 238, 0.55);
+  animation: pc-voice-spin 0.9s linear infinite;
+  pointer-events: none;
+}
+
+@keyframes pc-voice-spin {
+  to { transform: rotate(360deg); }
+}
+
+.pc-voice-btn.is-processing-transcript .pc-voice-btn-label {
+  color: #d6f5ff;
+  text-shadow: 0 0 14px rgba(34, 211, 238, 0.40);
+}
+
+/* 4) Transcript captured, awaiting agent — violet pulse */
+.pc-voice-btn.is-awaiting-response {
+  --pc-voice-icon-fill: #c084fc;
+  border-color: rgba(192, 132, 252, 0.62);
+  animation: pc-voice-pulse-violet 1.4s ease-in-out infinite;
+}
+
+.pc-voice-btn.is-awaiting-response .pc-voice-btn-orb {
+  box-shadow:
+    0 0 0 2px rgba(2, 6, 12, 0.72),
+    0 0 16px rgba(192, 132, 252, 0.48),
+    inset 0 1px 0 rgba(255,255,255,0.28);
+}
+
+@keyframes pc-voice-pulse-violet {
+  0%,100% { box-shadow: 0 0 0 0 rgba(192, 132, 252, 0.45), 0 0 16px rgba(192, 132, 252, 0.48); }
+  50%     { box-shadow: 0 0 0 8px rgba(192, 132, 252, 0.0), 0 0 20px rgba(192, 132, 252, 0.55); }
+}
+
+.pc-voice-btn.is-awaiting-response .pc-voice-btn-label {
+  color: #f0dcff;
+  text-shadow: 0 0 14px rgba(192, 132, 252, 0.42);
+}
+
+/* Respect reduced-motion: drop all phase animations */
+@media (prefers-reduced-motion: reduce) {
+  .pc-voice-btn.is-held,
+  .pc-voice-btn.is-awaiting-response,
+  .pc-voice-btn.is-processing-transcript .pc-voice-btn-orb::before {
+    animation: none !important;
+  }
+}
+
 @media (max-width: 760px) {
   .pc-voice-control {
     gap: 5px;

@@ -89,6 +89,18 @@ export interface VoiceState {
    *  some browsers serialize this and the second-acquired track
    *  delivers no media, breaking WebRTC negotiation downstream. */
   micOwnedByFullAgent: boolean;
+  /** True when the mic is currently picking up audio above the
+   *  silence threshold. Drives "Hearing you" visual feedback during
+   *  PTT so users can tell apart "button pressed but mic dead" from
+   *  "button pressed AND voice being captured". Set by the active
+   *  capture engine or by the local useMicLevel analyser. */
+  audioReceiving: boolean;
+  /** True between stopPushToTalk and the next onUtteranceFinal —
+   *  i.e. "you released the button, we're transcribing your audio." */
+  processingTranscript: boolean;
+  /** True between onUtteranceFinal and status='speaking' (or timeout)
+   *  — i.e. "transcript was captured, the agent is preparing a reply." */
+  awaitingResponse: boolean;
 }
 
 interface VoiceConfig {
@@ -125,7 +137,92 @@ let state: VoiceState = {
   wakeDetected: false,
   userSpoke: false,
   micOwnedByFullAgent: false,
+  audioReceiving: false,
+  processingTranscript: false,
+  awaitingResponse: false,
 };
+
+/**
+ * Set whether the mic is currently picking up audio above the silence
+ * threshold. Called by useMicLevel (the visualization analyser) and
+ * any engine that exposes input-VAD callbacks. Cheap idempotent write
+ * — guarded against redundant setState noise.
+ */
+export function setAudioReceiving(receiving: boolean): void {
+  if (state.audioReceiving === receiving) return;
+  setState({ audioReceiving: receiving });
+}
+
+// Timeouts for the two "stuck" phases. Each phase has a soft warning
+// at the end of its timer — clears the phase flag, fires a toast, so
+// the user understands "this should have happened by now and didn't"
+// rather than staring at a spinning indicator forever.
+let processingTranscriptTimer: ReturnType<typeof setTimeout> | null = null;
+let awaitingResponseTimer: ReturnType<typeof setTimeout> | null = null;
+
+/**
+ * Mark "the user just released PTT — we're transcribing whatever was
+ * captured." Auto-clears on transcript final OR after 8s with a toast
+ * warning that STT didn't return in time.
+ */
+function beginProcessingTranscript(): void {
+  if (processingTranscriptTimer) clearTimeout(processingTranscriptTimer);
+  setState({ processingTranscript: true });
+  processingTranscriptTimer = setTimeout(() => {
+    processingTranscriptTimer = null;
+    if (!state.processingTranscript) return;
+    setState({ processingTranscript: false });
+    if (typeof window !== 'undefined') {
+      try {
+        window.dispatchEvent(
+          new CustomEvent('papercusp:voiceTimeout', {
+            detail: { phase: 'transcript', message: 'No transcript received — try speaking again.' },
+          }),
+        );
+      } catch { /* ignore */ }
+    }
+  }, 8000);
+}
+
+function endProcessingTranscript(): void {
+  if (processingTranscriptTimer) {
+    clearTimeout(processingTranscriptTimer);
+    processingTranscriptTimer = null;
+  }
+  if (state.processingTranscript) setState({ processingTranscript: false });
+}
+
+/**
+ * Mark "transcript captured — the agent is composing a response."
+ * Cleared when status becomes 'speaking' (TTS started) OR after 15s
+ * with a toast warning.
+ */
+function beginAwaitingResponse(): void {
+  if (awaitingResponseTimer) clearTimeout(awaitingResponseTimer);
+  setState({ awaitingResponse: true });
+  awaitingResponseTimer = setTimeout(() => {
+    awaitingResponseTimer = null;
+    if (!state.awaitingResponse) return;
+    setState({ awaitingResponse: false });
+    if (typeof window !== 'undefined') {
+      try {
+        window.dispatchEvent(
+          new CustomEvent('papercusp:voiceTimeout', {
+            detail: { phase: 'response', message: 'Agent did not respond — check connection.' },
+          }),
+        );
+      } catch { /* ignore */ }
+    }
+  }, 15000);
+}
+
+function endAwaitingResponse(): void {
+  if (awaitingResponseTimer) {
+    clearTimeout(awaitingResponseTimer);
+    awaitingResponseTimer = null;
+  }
+  if (state.awaitingResponse) setState({ awaitingResponse: false });
+}
 
 // Pulse the wake-detected flag for ~1.2s. Auto-clears so the visual
 // indicator is a flash, not a stuck highlight. Idempotent — re-firing
@@ -1574,12 +1671,28 @@ export function startPushToTalk(): void {
 
 /** Stop push-to-talk: tear down whichever capture is running. */
 export function stopPushToTalk(): void {
-  setState({ status: state.mode === 'off' ? 'off' : 'idle' });
+  // Only enter "processing transcript" phase if we actually captured
+  // audio. If audioReceiving never became true during the hold, the
+  // mic was dead — fire a warning toast instead of pretending we're
+  // about to receive a transcript.
+  const heardAudio = state.audioReceiving || !!state.lastTranscript;
+  setState({ status: state.mode === 'off' ? 'off' : 'idle', audioReceiving: false });
   if (recognition) {
     try { recognition.stop(); } catch { /* ignore */ }
     recognition = null;
   }
   stopWhisperCaptureIfRunning();
+  if (heardAudio) {
+    beginProcessingTranscript();
+  } else if (typeof window !== 'undefined') {
+    try {
+      window.dispatchEvent(
+        new CustomEvent('papercusp:voiceTimeout', {
+          detail: { phase: 'no-audio', message: 'No audio detected — check mic permissions and try again.' },
+        }),
+      );
+    } catch { /* ignore */ }
+  }
 }
 
 async function maybeStartCaptureForPtt(): Promise<void> {
@@ -1636,6 +1749,8 @@ export function onFinalUtterance(listener: (text: string) => void): () => void {
 
 
 function onUtteranceFinal(text: string): void {
+  endProcessingTranscript();
+  beginAwaitingResponse();
   for (const l of utteranceListeners) {
     try {
       l(text);
@@ -1717,6 +1832,7 @@ function processSynthQueue(): void {
     return;
   }
   isSynthSpeaking = true;
+  endAwaitingResponse();
   setState({ status: 'speaking', speakingRole: next.role });
 
   // Engine routing: only use Web Speech if the user explicitly picked it,
