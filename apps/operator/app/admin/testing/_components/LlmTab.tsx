@@ -414,7 +414,7 @@ interface RunDetail {
       error?: string | null;
     }>;
     telemetry_json: { toolInvocations?: Array<{ toolName: string; status: string }>; continueChainRows?: unknown[] } | null;
-    judge_json: { scores: Record<string, number>; findings: Array<{ axis: string; severity: string; claim: string; suggestion?: string; copyPrompt?: string; evidenceTurnIdx?: number }>; notes?: string; judgeOverruledAssert?: boolean } | null;
+    judge_json: { scores: Record<string, number>; findings: Array<{ axis: string; severity: string; claim: string; suggestion?: string; copyPrompt?: string; evidenceTurnIdx?: number }>; notes?: string; judgeOverruledAssert?: boolean; costUsd?: number } | null;
   };
   findings: Array<{
     id: string;
@@ -496,7 +496,12 @@ function RunDetailBody({
           <div><strong>status</strong><br /><StatusBadge status={run.status} /></div>
           <div><strong>SUT</strong><br />{run.sut_model.replace('claude-', '')}</div>
           <div><strong>judge</strong><br />{run.judge_model.replace('claude-', '')}</div>
-          <div><strong>cost</strong><br />${Number(run.cost_usd).toFixed(4)}</div>
+          <div>
+            <strong>cost</strong><br />${Number(run.cost_usd).toFixed(4)}
+            {run.judge_json?.costUsd != null ? (
+              <span style={{ color: 'var(--fg-mute, #888)' }}> (judge ${run.judge_json.costUsd.toFixed(4)})</span>
+            ) : null}
+          </div>
           <div><strong>workspace</strong><br />{run.workspace_mode} / {run.transport_mode}</div>
         </div>
         {run.scores_json ? (
