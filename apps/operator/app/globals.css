@@ -26149,6 +26149,52 @@ body.has-op-chat:has(.operator-panel) .op-chat-sidebar {
   }
 }
 
+.operator-panel__actions .operator-btn svg,
+.operator-entry__type-glyph svg,
+.operator-entry__review-icon svg,
+.operator-entry__details-trigger svg {
+  flex: 0 0 auto;
+  display: block;
+}
+
+.operator-panel__actions .operator-btn--with-icon,
+.operator-panel__actions .operator-btn--icon {
+  gap: 7px !important;
+}
+
+.operator-panel__actions .operator-btn--close {
+  display: inline-grid !important;
+  place-items: center;
+}
+
+.operator-entry__rail .operator-entry__review-icon,
+.operator-entry__type-glyph {
+  border-radius: 999px !important;
+  clip-path: none !important;
+}
+
+.operator-entry__rail .operator-entry__review-icon {
+  width: 24px !important;
+  height: 24px !important;
+  color: color-mix(in oklab, var(--operator-entry-tone, var(--sky-300)), white 20%) !important;
+  background:
+    radial-gradient(circle at 35% 20%, rgba(255,255,255,0.14), transparent 42%),
+    color-mix(in oklab, var(--operator-entry-tone, var(--sky-300)), transparent 86%) !important;
+}
+
+.operator-entry__type-glyph {
+  color: color-mix(in oklab, var(--operator-entry-tone, var(--sky-300)), white 18%) !important;
+}
+
+.operator-entry__heading h4 {
+  letter-spacing: -0.012em;
+}
+
+.operator-panel__feed,
+.operator-panel__rail--right {
+  scrollbar-gutter: stable;
+}
+
 /* ─────────────────────────────────────────────────────────────────────
  * Global form-control baseline
  *

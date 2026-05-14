@@ -18,7 +18,7 @@
 
 import { useDeferredValue, useEffect, useMemo, useState, useCallback, useRef, type ReactElement } from 'react';
 import * as Collapsible from '@radix-ui/react-collapsible';
-import { ArrowUpRight, ChevronDown, Pause, Play, RefreshCcw, Search, Settings2, X } from 'lucide-react';
+import { ArrowUpRight, ChevronDown, Hand, Info, Mail, Pause, Play, RefreshCcw, Search, Settings2, TriangleAlert, X, Zap } from 'lucide-react';
 import { usePathname } from 'next/navigation';
 import { useQueryState, parseAsStringLiteral } from 'nuqs';
 import { useSyncQuery } from '@restart/sync';
@@ -195,10 +195,16 @@ const TIER_SORT_RANK: Record<SuggestionCard['actualTier'], number> = {
   low: 1,
 };
 
-function actionGlyphForCard(card: SuggestionCard): string {
-  if (card.action === 'navigate') return '↗';
-  if (card.action === 'inform') return 'ℹ';
-  return '✉';
+function actionIconForCard(card: SuggestionCard): ReactElement {
+  if (card.action === 'navigate') return <ArrowUpRight size={14} strokeWidth={2.2} />;
+  if (card.action === 'inform') return <Info size={14} strokeWidth={2.2} />;
+  return <Mail size={14} strokeWidth={2.2} />;
+}
+
+function reviewIconForCard(card: SuggestionCard): ReactElement {
+  if (card.auto_dispatch) return <Zap size={15} strokeWidth={2.2} />;
+  if (card.actualTier === 'high') return <TriangleAlert size={15} strokeWidth={2.2} />;
+  return <Hand size={15} strokeWidth={2.2} />;
 }
 
 function normalizeDuplicateText(value: string | null | undefined): string {
@@ -1534,7 +1540,7 @@ export function OperatorPanel(): ReactElement | null {
                   onClick={() => startScan()}
                   aria-label="Scan"
                 >
-                  <span aria-hidden="true">↻</span>
+                  <RefreshCcw size={14} aria-hidden="true" strokeWidth={2.2} />
                   <span>Scan</span>
                 </button>
                 <button
@@ -1543,11 +1549,12 @@ export function OperatorPanel(): ReactElement | null {
                   onClick={() => broadcastState({ paused: !state.paused })}
                   aria-label={state.paused ? 'Resume autonomous actions' : 'Pause autonomous actions'}
                 >
-                  <span aria-hidden="true">{state.paused ? '▶' : '⏸'}</span>
+                  {state.paused ? <Play size={14} aria-hidden="true" strokeWidth={2.3} /> : <Pause size={14} aria-hidden="true" strokeWidth={2.3} />}
                   <span>{state.paused ? 'Resume' : 'Pause'}</span>
                 </button>
-                <RouteLink className="operator-btn operator-btn--ghost" href="/settings/operator">
-                  Settings
+                <RouteLink className="operator-btn operator-btn--ghost operator-btn--with-icon" href="/settings/operator">
+                  <Settings2 size={14} aria-hidden="true" strokeWidth={2.2} />
+                  <span>Settings</span>
                 </RouteLink>
               </div>
               <button
@@ -1556,7 +1563,7 @@ export function OperatorPanel(): ReactElement | null {
                 onClick={() => broadcastState({ open: false })}
                 aria-label="Close"
               >
-                ×
+                <X size={16} aria-hidden="true" strokeWidth={2.4} />
               </button>
             </div>
           </header>
@@ -1705,8 +1712,8 @@ export function OperatorPanel(): ReactElement | null {
                       className={`operator-entry operator-entry--suggestion operator-entry--tier-${s.actualTier}${s.action === 'inform' ? ' operator-entry--inform-card' : ''}`}
                     >
                       <div className="operator-entry__rail">
-                        <span title={s.auto_dispatch ? 'Auto-dispatch suggestion' : s.actualTier === 'high' ? 'High-risk review required' : 'Needs your decision'}>
-                          {s.auto_dispatch ? '⚡' : s.actualTier === 'high' ? '⚠' : '✋'}
+                        <span className="operator-entry__review-icon" title={s.auto_dispatch ? 'Auto-dispatch suggestion' : s.actualTier === 'high' ? 'High-risk review required' : 'Needs your decision'}>
+                          {reviewIconForCard(s)}
                         </span>
                       </div>
                       <div className="operator-entry__content">
@@ -1730,7 +1737,7 @@ export function OperatorPanel(): ReactElement | null {
                         <div className="operator-entry__title-row">
                           <div className="operator-entry__heading">
                             <span className={`operator-entry__type-glyph operator-entry__type-glyph--${s.action}`} aria-hidden="true">
-                              {actionGlyphForCard(s)}
+                              {actionIconForCard(s)}
                             </span>
                             <h4>{s.title}</h4>
                           </div>
