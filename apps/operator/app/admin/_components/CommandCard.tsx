@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { createResilientEventSource } from '@restart/sse';
+import { Tooltip } from '@/app/harness/Tooltip';
 import { Checkbox } from '@/app/harness/Checkbox';
 
 export interface CommandSpec {
@@ -127,14 +128,15 @@ export default function CommandCard({ spec }: { spec: CommandSpec }) {
             {status === 'idle' ? 'Run' : 'Re-run'}
           </button>
         )}
-        <button
-          type="button"
-          className="pc-ops-btn pc-ops-btn-ghost"
-          onClick={() => setShowCommand((v) => !v)}
-          title="Show / hide the resolved shell command"
-        >
-          {showCommand ? 'Hide cmd' : 'Show cmd'}
-        </button>
+        <Tooltip label="Show or hide the resolved shell command" side="top" align="start">
+          <button
+            type="button"
+            className="pc-ops-btn pc-ops-btn-ghost"
+            onClick={() => setShowCommand((v) => !v)}
+          >
+            {showCommand ? 'Hide cmd' : 'Show cmd'}
+          </button>
+        </Tooltip>
         {status === 'running' && (
           <span className="pc-ops-meta">
             pid {pid ?? '–'} · {elapsedLabel}

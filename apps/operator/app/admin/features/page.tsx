@@ -9,7 +9,7 @@ export const metadata = { title: 'Admin · Features · Papercusp' };
 export default async function AdminFeaturesPage() {
   // Admin features page intentionally NOT flag-gated. Reachable by URL only.
   return (
-    <AdminShell>
+    <AdminShell title="Features">
       <FeaturesAdmin />
     </AdminShell>
   );

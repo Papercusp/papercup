@@ -3,6 +3,8 @@
 import { useCallback, useEffect, useState } from 'react';
 import { createResilientEventSource } from '@restart/sse';
 import { ALL_FLAG_KEYS, FLAGS, type FlagKey, type FlagValues } from '@papercusp/flags';
+import { Tooltip } from '@/app/harness/Tooltip';
+import { toast } from 'sonner';
 
 /**
  * Interactive feature-flag console. Lets admins:
@@ -46,7 +48,6 @@ type LoadState =
 export default function FeaturesAdmin() {
   const [state, setState] = useState<LoadState>({ kind: 'loading' });
   const [busy, setBusy] = useState<string | null>(null);
-  const [toast, setToast] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
     try {
@@ -97,13 +98,12 @@ export default function FeaturesAdmin() {
       });
       const j = await res.json();
       if (!res.ok || !j.ok) throw new Error(j.error ?? `HTTP ${res.status}`);
-      setToast(name === 'production' ? 'Switched to V1 Production' : 'Switched to Full testing');
+      toast.success(name === 'production' ? 'Switched to V1 Production' : 'Switched to Full testing');
       await refresh();
     } catch (e) {
-      setToast(`Failed: ${(e as Error).message}`);
+      toast.error('Failed to apply preset', { description: (e as Error).message });
     } finally {
       setBusy(null);
-      setTimeout(() => setToast(null), 3000);
     }
   }
 
@@ -118,11 +118,11 @@ export default function FeaturesAdmin() {
       const j = await res.json();
       if (!res.ok || !j.ok) throw new Error(j.error ?? `HTTP ${res.status}`);
       await refresh();
+      toast.success(next ? 'testingFeatures enabled' : 'testingFeatures disabled');
     } catch (e) {
-      setToast(`Failed: ${(e as Error).message}`);
+      toast.error('Failed to update testingFeatures', { description: (e as Error).message });
     } finally {
       setBusy(null);
-      setTimeout(() => setToast(null), 3000);
     }
   }
 
@@ -138,10 +138,9 @@ export default function FeaturesAdmin() {
       if (!res.ok || !j.ok) throw new Error(j.error ?? `HTTP ${res.status}`);
       await refresh();
     } catch (e) {
-      setToast(`Failed: ${(e as Error).message}`);
+      toast.error(`Failed to update ${FLAG_LABELS[key]}`, { description: (e as Error).message });
     } finally {
       setBusy(null);
-      setTimeout(() => setToast(null), 3000);
     }
   }
 
@@ -210,15 +209,21 @@ export default function FeaturesAdmin() {
               <span className="fa-source">Config source: {state.source}</span>
             </div>
           </div>
-          <button
-            type="button"
-            className={`fa-toggle${testingOn ? ' on' : ''}`}
-            disabled={busy !== null}
-            onClick={() => toggleTesting(!testingOn)}
-            aria-pressed={testingOn}
+          <Tooltip
+            label={testingOn ? 'Disable testingFeatures' : 'Enable testingFeatures'}
+            side="top"
+            align="end"
           >
-            <span className="fa-toggle-knob" />
-          </button>
+            <button
+              type="button"
+              className={`fa-toggle${testingOn ? ' on' : ''}`}
+              disabled={busy !== null}
+              onClick={() => toggleTesting(!testingOn)}
+              aria-pressed={testingOn}
+            >
+              <span className="fa-toggle-knob" />
+            </button>
+          </Tooltip>
         </div>
       </section>
 
@@ -241,120 +246,156 @@ export default function FeaturesAdmin() {
                   <div className="fa-flag-blurb">{blurb}</div>
                   <div className="fa-flag-key">{key}</div>
                 </div>
-                <button
-                  type="button"
-                  className={`fa-toggle${on ? ' on' : ''}`}
-                  disabled={!testingOn || busy !== null}
-                  onClick={() => toggleFlag(key, !on)}
-                  aria-pressed={on}
-                  title={!testingOn ? 'Turn on testingFeatures first' : on ? 'Disable' : 'Enable'}
+                <Tooltip
+                  label={!testingOn ? 'Turn on testingFeatures first' : on ? 'Disable this flag' : 'Enable this flag'}
+                  side="top"
+                  align="end"
                 >
-                  <span className="fa-toggle-knob" />
-                </button>
+                  <button
+                    type="button"
+                    className={`fa-toggle${on ? ' on' : ''}`}
+                    disabled={!testingOn || busy !== null}
+                    onClick={() => toggleFlag(key, !on)}
+                    aria-pressed={on}
+                  >
+                    <span className="fa-toggle-knob" />
+                  </button>
+                </Tooltip>
               </div>
             );
           })}
         </div>
       </section>
 
-      {toast && <div className="fa-toast">{toast}</div>}
-
       <style>{`
-        .fa-shell { padding: 20px; max-width: 920px; margin: 0 auto; display: flex; flex-direction: column; gap: 28px; }
-        .fa-section { display: flex; flex-direction: column; gap: 8px; }
-        .fa-h2 { margin: 0; font-size: 14px; font-weight: 600; color: var(--text-1, #e5e7eb); letter-spacing: 0.02em; text-transform: uppercase; }
-        .fa-p { margin: 0; color: var(--text-2, #9ca3af); font-size: 13px; line-height: 1.5; }
-        .fa-presets { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 6px; }
+        .fa-shell {
+          padding: 24px 24px 56px;
+          max-width: 1060px;
+          margin: 0 auto;
+          display: flex;
+          flex-direction: column;
+          gap: 16px;
+        }
+        .fa-section {
+          display: flex;
+          flex-direction: column;
+          gap: 10px;
+          padding: 18px 18px 20px;
+          border: 1px solid rgba(125, 211, 252, 0.14);
+          border-radius: 16px;
+          background:
+            linear-gradient(180deg, rgba(10, 20, 33, 0.94), rgba(7, 14, 24, 0.98));
+          box-shadow:
+            inset 0 1px 0 rgba(255,255,255,0.035),
+            0 18px 34px rgba(0,0,0,0.18);
+        }
+        .fa-h2 {
+          margin: 0;
+          font-size: 11px;
+          font-weight: 760;
+          color: rgba(203, 238, 255, 0.76);
+          letter-spacing: 0.12em;
+          text-transform: uppercase;
+        }
+        .fa-p {
+          margin: 0;
+          color: rgba(214, 236, 248, 0.72);
+          font-size: 13px;
+          line-height: 1.55;
+        }
+        .fa-presets { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-top: 4px; }
         .fa-preset {
           display: flex; flex-direction: column; gap: 6px;
-          padding: 16px 14px; min-height: 96px;
-          border-radius: 10px;
-          background: var(--surface-1, #0f0f0f);
-          border: 1px solid var(--border, #2a2a2a);
-          color: var(--text-1, #e5e7eb);
+          padding: 18px 16px; min-height: 110px;
+          border-radius: 14px;
+          background: rgba(6, 12, 22, 0.92);
+          border: 1px solid rgba(125, 211, 252, 0.16);
+          color: #eff8ff;
           text-align: left;
           cursor: pointer;
-          transition: background 120ms, border-color 120ms;
+          box-shadow: inset 0 1px 0 rgba(255,255,255,0.03);
+          transition: background 120ms, border-color 120ms, transform 120ms;
         }
         .fa-preset:hover:not(:disabled) {
-          background: var(--surface-2, #161616);
-          border-color: var(--border-hover, #3a3a3a);
+          background: rgba(10, 20, 33, 0.98);
+          border-color: rgba(103, 232, 249, 0.30);
+          transform: translateY(-1px);
         }
         .fa-preset.active {
-          background: var(--surface-2, #161616);
-          border-color: var(--accent, #5b8def);
+          background: linear-gradient(180deg, rgba(16, 35, 55, 0.98), rgba(8, 18, 31, 0.99));
+          border-color: rgba(103, 232, 249, 0.42);
         }
-        .fa-preset:disabled { opacity: 0.6; cursor: progress; }
+        .fa-preset:disabled { opacity: 0.62; cursor: progress; }
         .fa-preset-emoji { font-size: 20px; }
-        .fa-preset-title { font-size: 15px; font-weight: 600; }
-        .fa-preset-blurb { font-size: 12px; color: var(--text-2, #9ca3af); line-height: 1.5; }
-        .fa-preset-busy { font-size: 11px; color: var(--text-2, #9ca3af); }
-        .fa-master {
-          display: flex; align-items: center; gap: 16px;
+        .fa-preset-title { font-size: 16px; font-weight: 700; }
+        .fa-preset-blurb { font-size: 12px; color: rgba(205, 226, 240, 0.76); line-height: 1.5; }
+        .fa-preset-busy { font-size: 11px; color: rgba(186, 230, 253, 0.64); }
+        .fa-master,
+        .fa-flag {
+          display: flex;
+          align-items: center;
+          gap: 16px;
           padding: 14px 16px;
-          border-radius: 10px;
-          background: var(--surface-1, #0f0f0f);
-          border: 1px solid var(--border, #2a2a2a);
+          border-radius: 14px;
+          background: rgba(6, 12, 22, 0.88);
+          border: 1px solid rgba(125, 211, 252, 0.14);
+          box-shadow: inset 0 1px 0 rgba(255,255,255,0.025);
         }
-        .fa-master-text { flex: 1; }
-        .fa-master-blurb { color: var(--text-2, #9ca3af); font-size: 12px; line-height: 1.5; margin-top: 6px; }
-        .fa-source { color: var(--text-3, #6b7280); font-family: ui-monospace, monospace; font-size: 11px; }
+        .fa-master-text,
+        .fa-flag-main { flex: 1; min-width: 0; }
+        .fa-master-blurb { color: rgba(205, 226, 240, 0.74); font-size: 12px; line-height: 1.5; margin-top: 6px; }
+        .fa-source,
+        .fa-flag-key { color: rgba(148, 163, 184, 0.78); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; }
         .fa-pill {
-          display: inline-block; padding: 1px 8px; border-radius: 999px;
-          font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em;
+          display: inline-block; padding: 2px 8px; border-radius: 999px;
+          font-size: 10px; font-weight: 760; text-transform: uppercase; letter-spacing: 0.08em;
           margin-left: 8px;
         }
-        .fa-pill.on  { background: rgba(34, 197, 94, 0.18); color: #4ade80; }
-        .fa-pill.off { background: rgba(107, 114, 128, 0.20); color: #9ca3af; }
-        .fa-flags { display: flex; flex-direction: column; gap: 8px; margin-top: 8px; }
-        .fa-flag {
-          display: flex; align-items: center; gap: 16px;
-          padding: 12px 16px;
-          border-radius: 10px;
-          background: var(--surface-1, #0f0f0f);
-          border: 1px solid var(--border, #2a2a2a);
-        }
-        .fa-flag.disabled { opacity: 0.55; }
-        .fa-flag-main { flex: 1; }
-        .fa-flag-name { font-size: 14px; font-weight: 500; color: var(--text-1, #e5e7eb); }
-        .fa-flag-blurb { color: var(--text-2, #9ca3af); font-size: 12px; line-height: 1.5; margin-top: 2px; }
-        .fa-flag-key { color: var(--text-3, #6b7280); font-family: ui-monospace, monospace; font-size: 11px; margin-top: 2px; }
+        .fa-pill.on  { background: rgba(34, 197, 94, 0.18); color: #86efac; }
+        .fa-pill.off { background: rgba(148, 163, 184, 0.18); color: rgba(214, 236, 248, 0.72); }
+        .fa-flags { display: flex; flex-direction: column; gap: 10px; margin-top: 6px; }
+        .fa-flag.disabled { opacity: 0.62; }
+        .fa-flag-name { font-size: 14px; font-weight: 650; color: #eff8ff; }
+        .fa-flag-blurb { color: rgba(205, 226, 240, 0.76); font-size: 12px; line-height: 1.5; margin-top: 2px; }
         .fa-toggle {
           flex: 0 0 auto;
-          width: 40px; height: 22px;
+          width: 42px; height: 24px;
           padding: 2px;
           border-radius: 999px;
-          background: var(--surface-2, #2a2a2a);
-          border: 1px solid var(--border, #3a3a3a);
+          background: rgba(255,255,255,0.08);
+          border: 1px solid rgba(125, 211, 252, 0.18);
           position: relative; cursor: pointer;
-          transition: background 120ms, border-color 120ms;
+          transition: background 120ms, border-color 120ms, transform 120ms;
         }
         .fa-toggle.on {
-          background: #2563eb;
-          border-color: #1e40af;
+          background: rgba(56, 189, 248, 0.34);
+          border-color: rgba(103, 232, 249, 0.46);
+        }
+        .fa-toggle:hover:not(:disabled) {
+          border-color: rgba(103, 232, 249, 0.36);
         }
         .fa-toggle:disabled { cursor: not-allowed; }
         .fa-toggle-knob {
-          display: block; width: 16px; height: 16px;
+          display: block; width: 18px; height: 18px;
           border-radius: 50%;
-          background: #f3f4f6;
+          background: #f3fbff;
           transform: translateX(0);
           transition: transform 120ms;
+          box-shadow: 0 2px 8px rgba(0,0,0,0.24);
         }
         .fa-toggle.on .fa-toggle-knob { transform: translateX(18px); }
-        .fa-toast {
-          position: fixed; bottom: 24px; right: 24px;
-          padding: 10px 14px;
-          border-radius: 8px;
-          background: var(--surface-2, #161616);
-          border: 1px solid var(--border, #2a2a2a);
-          color: var(--text-1, #e5e7eb);
-          font-size: 13px;
-          box-shadow: 0 4px 16px rgba(0,0,0,0.4);
-          z-index: 9999;
+        .fa-error,
+        .fa-spinner {
+          padding: 16px 18px;
+          border-radius: 14px;
+          border: 1px solid rgba(125, 211, 252, 0.14);
+          background: rgba(8, 16, 28, 0.94);
         }
-        .fa-error { color: #ef4444; padding: 16px; }
-        .fa-spinner { color: var(--text-2, #9ca3af); padding: 16px; }
+        .fa-error { color: #fda4af; }
+        .fa-spinner { color: rgba(214, 236, 248, 0.72); }
+        @media (max-width: 880px) {
+          .fa-presets { grid-template-columns: 1fr; }
+        }
       `}</style>
     </div>
   );

@@ -32,12 +32,6 @@ export default function AdminOps() {
 
   return (
     <div className="pc-ops-shell">
-      <header className="pc-ops-header">
-        <h1>Admin</h1>
-        <span className="pc-ops-spacer" />
-        <span className="pc-ops-host">localhost · :3055</span>
-      </header>
-
       <div className="pc-ops-body">
         <div className="pc-ops-intro">
           <p>

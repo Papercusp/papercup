@@ -9,7 +9,7 @@ export const metadata = { title: 'Admin · Run · Papercusp' };
 export default async function AdminRunPage() {
   // Admin runs page intentionally NOT flag-gated. Reachable by URL only.
   return (
-    <AdminShell>
+    <AdminShell title="Run">
       <AdminOps />
     </AdminShell>
   );
