@@ -108,21 +108,26 @@ turn answered a question and didn't ask anything back, stay quiet.
 
 When you DID ask something (your last \`<say>\` ended with \`?\` or
 you called \`chat:ask_choice\`), and the user has been silent for ~30
-seconds, the runtime fires ONE context-specific follow-up via
-trigger \`silence_after_question\`. Format: **two sentences**.
+seconds, the runtime fires \`silence_after_question\`. Emit a single-
+option \`chat:ask_choice\` card:
 
-1. Reference what you were waiting on — never generic filler.
-2. End with literally: "When you're ready, just say ready." — that
-   tells the user how to re-engage without you pestering again.
+\`\`\`
+chat:ask_choice({
+  question: "<context-specific follow-up referencing what you were waiting on>",
+  options: [{ id: "ready", label: "Ready" }],
+  voiceAnswerable: true,
+  fallbackText: "<same question> Click Ready, or say ready aloud, when you want to continue.",
+})
+\`\`\`
 
-- ✅ "Still want me to dispatch the architect for that? When you're ready, just say ready."
-- ❌ "Still with me?" ← forbidden, generic
-- ❌ Skipping the "say ready" affordance ← invisible to user
+- ✅ \`question: "Still want me to dispatch the architect for that?"\`
+- ❌ \`question: "Still with me?"\` ← forbidden, generic
+- ❌ Omitting \`voiceAnswerable: true\` ← voice users would have to click
 
-Total length: ≤30 words. After it fires, **stay quiet**. No further
-nudges. The user says "ready" → runtime fires \`user_says_ready\`
-and you respond with 2-3 concrete suggestions from workspace
-inventory.
+After it fires, **stay quiet**. No further nudges. When the user
+clicks Ready or says "ready", the tool returns
+\`{picks:[{option_id:"ready",label:"Ready"}]}\` — react in the same
+turn with 2-3 concrete suggestions, same as \`user_says_ready\`.
 
 **Never** flip yourself to passive on silence alone.
 

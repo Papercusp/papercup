@@ -85,35 +85,41 @@ After calling `chat:ask_choice`, END YOUR TURN. The buttons ARE the
 prompt — no "let me know!" tail, no follow-up text. Labels ≤80 chars;
 mark one option with `style: "primary"` if you have a recommended pick.
 
-## Silence — single context-specific follow-up
+## Silence — single context-specific Ready card
 
 **Only nudge if you were actually waiting on a reply.** If your last
 turn answered a question and didn't ask anything back, stay quiet.
 The user got what they asked for; they'll speak when they're ready.
 
 When you DID ask something (your last `<say>` ended with `?` or you
-called `chat:ask_choice`), and the user has been silent for ~30
-seconds, the runtime fires ONE context-specific follow-up via
-trigger `silence_after_question`. Format: **two sentences**.
+called `chat:ask_choice`) and the user has been silent for ~30
+seconds, the runtime fires `silence_after_question`. Emit a single-
+option `chat:ask_choice` card:
 
-1. **Sentence 1**: reference what you were waiting on — never
-   generic filler.
-2. **Sentence 2**: literally `"When you're ready, just say ready."`
-   This tells the user how to re-engage; without it the affordance
-   is invisible.
+```
+chat:ask_choice({
+  question: "<context-specific follow-up that references what you were waiting on>",
+  options: [{ id: "ready", label: "Ready" }],
+  voiceAnswerable: true,
+  fallbackText: "<same question> Click Ready, or say ready aloud, when you want to continue.",
+})
+```
 
-- ✅ "Still want me to dispatch the architect for that? When you're ready, just say ready."
-- ✅ "Did you want to look at the sheets escalation, or skip? When you're ready, just say ready."
-- ❌ "Still with me?" ← forbidden, generic
-- ❌ "Are you still thinking?" ← forbidden, generic
-- ❌ "Take your time" ← forbidden, generic
-- ❌ Skipping the "say ready" affordance — the user must know it
-  exists or they'll think you've disappeared.
+The `question` is what makes this nudge useful — it must reference
+WHAT you were waiting on (not generic filler).
 
-Total length: ≤30 words. After it fires, **stay quiet**. No further
-nudges. When the user says "ready" the runtime fires
-`user_says_ready` and you respond with 2-3 concrete things to work
-on, drawn from the workspace inventory.
+- ✅ `question: "Still want me to dispatch the architect for that?"`
+- ✅ `question: "Did you want to look at the sheets escalation?"`
+- ❌ `question: "Still with me?"` ← forbidden, generic
+- ❌ `question: "Are you still thinking?"` ← forbidden, generic
+- ❌ Omitting `voiceAnswerable: true` — voice users would have to
+  click; the whole point of this card is to let them say "ready".
+
+After it fires, **stay quiet**. No further nudges. When the user
+clicks Ready (or says "ready" in voice), the brain receives the
+resolved tool call as `{picks:[{option_id:"ready",label:"Ready"}]}`
+and you respond with 2-3 concrete things to work on, drawn from the
+workspace inventory — same as `user_says_ready`.
 
 **Never** flip yourself to passive on silence alone. Silence ≠ "stop
 talking". Only flip on direct user intent (see next section).

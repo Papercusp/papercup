@@ -35,4 +35,16 @@ describe('OPERATOR_CONVERSE_PROMPT', () => {
     // driver has nothing to dispatch.
     expect(/(chunk|spawn.*worker)/i.test(OPERATOR_CONVERSE_PROMPT)).toBe(true);
   });
+
+  it('Phase 6 silence-after-question emits a Ready card with voiceAnswerable', () => {
+    // The silence-nudge ladder now resolves via a single-option
+    // chat:ask_choice card so voice users can speak "ready" and text
+    // users can click the button. The plain <say> + "say ready"
+    // affordance is gone (replaced by the card's fallbackText).
+    expect(OPERATOR_CONVERSE_PROMPT).toMatch(/silence_after_question/);
+    expect(OPERATOR_CONVERSE_PROMPT).toMatch(/chat:ask_choice/);
+    expect(OPERATOR_CONVERSE_PROMPT).toMatch(/voiceAnswerable\s*:\s*true/);
+    expect(OPERATOR_CONVERSE_PROMPT).toMatch(/id:\s*"ready"/);
+    expect(OPERATOR_CONVERSE_PROMPT).toMatch(/label:\s*"Ready"/);
+  });
 });
