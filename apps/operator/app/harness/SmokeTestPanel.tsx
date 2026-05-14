@@ -85,7 +85,7 @@ export default function SmokeTestPanel({ slug, onClose }: Props) {
     }
   }, [slug, busy]);
 
-  const tone = data?.status === 'pass' ? '#10b981' : data?.status === 'fail' ? '#f87171' : '#9ca3af';
+  const tone = data?.status === 'pass' ? '#10b981' : data?.status === 'fail' ? '#f87171' : 'var(--fg-mute)';
 
   return (
     <Modal
@@ -94,11 +94,11 @@ export default function SmokeTestPanel({ slug, onClose }: Props) {
       title={`Smoke test`}
       srOnlyTitle
       zIndex={60}
-      contentStyle={{ background: '#0b0e14', border: '1px solid #374151', borderRadius: 6, width: '80vw', maxWidth: 1000, height: '75vh', display: 'flex', flexDirection: 'column', overflow: 'hidden', fontFamily: 'system-ui, sans-serif', color: '#e5e7eb' }}
+      contentStyle={{ background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 6, width: '80vw', maxWidth: 1000, height: '75vh', display: 'flex', flexDirection: 'column', overflow: 'hidden', fontFamily: 'system-ui, sans-serif', color: 'var(--fg)' }}
     >
-        <div style={{ padding: '0.6rem 1rem', borderBottom: '1px solid #1f2937', display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+        <div style={{ padding: '0.6rem 1rem', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
           <strong>Smoke test — {slug}</strong>
-          <span style={{ fontFamily: 'monospace', color: '#6b7280', fontSize: '0.75rem' }}>bin/service-smoke-test.sh</span>
+          <span style={{ fontFamily: 'monospace', color: 'var(--fg-mute)', fontSize: '0.75rem' }}>bin/service-smoke-test.sh</span>
           {data && (
             <span style={{
               fontSize: '0.75rem', padding: '0.15rem 0.55rem',
@@ -108,7 +108,7 @@ export default function SmokeTestPanel({ slug, onClose }: Props) {
               {data.status}
             </span>
           )}
-          {data?.mtimeMs && <span style={{ fontSize: '0.75rem', color: '#9ca3af' }}>{fmtTs(data.mtimeMs)}</span>}
+          {data?.mtimeMs && <span style={{ fontSize: '0.75rem', color: 'var(--fg-mute)' }}>{fmtTs(data.mtimeMs)}</span>}
           <button
             onClick={runNow}
             disabled={busy}
@@ -121,7 +121,7 @@ export default function SmokeTestPanel({ slug, onClose }: Props) {
           >
             {busy ? 'running…' : '▶ Run now'}
           </button>
-          <button onClick={onClose} style={{ background: 'transparent', color: '#9ca3af', border: '1px solid #374151', borderRadius: 3, padding: '0.35rem 0.75rem', cursor: 'pointer', fontSize: '0.8rem' }}>close</button>
+          <button onClick={onClose} style={{ background: 'transparent', color: 'var(--fg-mute)', border: '1px solid var(--border)', borderRadius: 3, padding: '0.35rem 0.75rem', cursor: 'pointer', fontSize: '0.8rem' }}>close</button>
         </div>
 
         <div style={{ flex: 1, overflow: 'auto', padding: '1rem' }}>
@@ -129,7 +129,7 @@ export default function SmokeTestPanel({ slug, onClose }: Props) {
 
           {data?.results && data.results.length > 0 && (
             <section style={{ marginBottom: 18 }}>
-              <div style={{ fontSize: '0.7rem', color: '#9ca3af', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 6 }}>
+              <div style={{ fontSize: '0.7rem', color: 'var(--fg-mute)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 6 }}>
                 URL checks ({data.results.filter((r) => r.ok).length}/{data.results.length} passed)
               </div>
               <SmokeResultsGrid results={data.results} />
@@ -156,15 +156,15 @@ export default function SmokeTestPanel({ slug, onClose }: Props) {
 
           {runOutput && (
             <section style={{ marginBottom: 18 }}>
-              <div style={{ fontSize: '0.7rem', color: '#9ca3af', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 6 }}>Last manual run</div>
-              <pre style={{ background: '#000', border: '1px solid #1f2937', borderRadius: 3, padding: '0.75rem', margin: 0, fontFamily: 'ui-monospace, monospace', fontSize: '0.7rem', whiteSpace: 'pre-wrap', color: '#d1d5db', maxHeight: 240, overflow: 'auto' }}>
+              <div style={{ fontSize: '0.7rem', color: 'var(--fg-mute)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 6 }}>Last manual run</div>
+              <pre style={{ background: '#000', border: '1px solid var(--border)', borderRadius: 3, padding: '0.75rem', margin: 0, fontFamily: 'ui-monospace, monospace', fontSize: '0.7rem', whiteSpace: 'pre-wrap', color: '#d1d5db', maxHeight: 240, overflow: 'auto' }}>
                 {runOutput}
               </pre>
             </section>
           )}
 
           {data?.status === 'unknown' && !runOutput && (
-            <div style={{ color: '#9ca3af', fontStyle: 'italic', fontSize: '0.85rem' }}>
+            <div style={{ color: 'var(--fg-mute)', fontStyle: 'italic', fontSize: '0.85rem' }}>
               No smoke test has run yet. Enable <code style={{ color: '#fde68a' }}>smokeTest.enabled</code> in config and configure URLs, or click <strong>Run now</strong>.
             </div>
           )}
@@ -192,7 +192,7 @@ function SmokeResultsGrid({ results }: { results: SmokeResult[] }) {
         header: 'Expected',
         width: 0.7,
         align: 'right',
-        render: ({ row }) => <span style={{ fontFamily: 'monospace', color: '#9ca3af' }}>{row.expectStatus}</span>,
+        render: ({ row }) => <span style={{ fontFamily: 'monospace', color: 'var(--fg-mute)' }}>{row.expectStatus}</span>,
       },
       {
         key: 'actual',

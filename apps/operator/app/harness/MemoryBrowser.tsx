@@ -163,19 +163,19 @@ export default function MemoryBrowser({ slug, alive }: Props) {
   }, [files]);
 
   return (
-    <div style={{ display: 'flex', height: '100%', minHeight: 0, background: '#0b0e14' }}>
+    <div style={{ display: 'flex', height: '100%', minHeight: 0, background: 'var(--bg)' }}>
       {/* Left: file list */}
       <div style={{
         width: 320,
-        borderRight: '1px solid #1f2937',
+        borderRight: '1px solid var(--border)',
         overflowY: 'auto',
         flexShrink: 0,
       }}>
         <div style={{
           padding: '8px 10px',
-          borderBottom: '1px solid #1f2937',
+          borderBottom: '1px solid var(--border)',
           fontSize: 11,
-          color: '#9ca3af',
+          color: 'var(--fg-mute)',
           display: 'flex',
           alignItems: 'center',
           gap: 8,
@@ -201,8 +201,8 @@ export default function MemoryBrowser({ slug, alive }: Props) {
                 textTransform: 'uppercase',
                 letterSpacing: 0.8,
                 fontWeight: 600,
-                background: '#0f141f',
-                borderBottom: '1px solid #1f2937',
+                background: 'var(--bg)',
+                borderBottom: '1px solid var(--border)',
                 display: 'flex',
                 alignItems: 'center',
                 gap: 6,
@@ -234,13 +234,13 @@ export default function MemoryBrowser({ slug, alive }: Props) {
         {/* Editor header */}
         <div style={{
           padding: '8px 12px',
-          borderBottom: '1px solid #1f2937',
+          borderBottom: '1px solid var(--border)',
           display: 'flex',
           alignItems: 'center',
           gap: 10,
           flexWrap: 'wrap',
         }}>
-          <span style={{ fontFamily: 'ui-monospace, monospace', color: '#e5e7eb', fontSize: 13 }}>
+          <span style={{ fontFamily: 'ui-monospace, monospace', color: 'var(--fg)', fontSize: 13 }}>
             {active ?? '—'}
           </span>
           {activeFile && (
@@ -256,7 +256,7 @@ export default function MemoryBrowser({ slug, alive }: Props) {
               }}>
                 {TIER_META[activeFile.tier].label}
               </span>
-              <span style={{ fontSize: 11, color: '#6b7280' }}>
+              <span style={{ fontSize: 11, color: 'var(--fg-mute)' }}>
                 {activeFile.purpose}
               </span>
               {activeFile.locked && (
@@ -283,8 +283,8 @@ export default function MemoryBrowser({ slug, alive }: Props) {
               disabled={!dirty}
               style={{
                 background: 'transparent',
-                color: '#9ca3af',
-                border: '1px solid #374151',
+                color: 'var(--fg-mute)',
+                border: '1px solid var(--border)',
                 borderRadius: 3,
                 padding: '3px 9px',
                 fontSize: 11,
@@ -313,21 +313,21 @@ export default function MemoryBrowser({ slug, alive }: Props) {
         {activeFile && (
           <div style={{
             padding: '6px 12px',
-            borderBottom: '1px solid #1f2937',
-            background: '#0f141f',
+            borderBottom: '1px solid var(--border)',
+            background: 'var(--bg)',
             display: 'grid',
             gridTemplateColumns: 'auto 1fr auto 1fr auto 1fr',
             gap: 10,
             fontSize: 11,
-            color: '#9ca3af',
+            color: 'var(--fg-mute)',
             alignItems: 'center',
           }}>
-            <span style={{ color: '#6b7280' }}>written by</span>
-            <span style={{ color: '#e5e7eb' }}>{activeFile.writtenBy.join(', ') || '—'}</span>
-            <span style={{ color: '#6b7280' }}>read by</span>
-            <span style={{ color: '#e5e7eb' }}>{activeFile.readBy.join(', ') || '—'}</span>
-            <span style={{ color: '#6b7280' }}>size · modified</span>
-            <span style={{ color: '#e5e7eb', fontFamily: 'ui-monospace, monospace' }}>
+            <span style={{ color: 'var(--fg-mute)' }}>written by</span>
+            <span style={{ color: 'var(--fg)' }}>{activeFile.writtenBy.join(', ') || '—'}</span>
+            <span style={{ color: 'var(--fg-mute)' }}>read by</span>
+            <span style={{ color: 'var(--fg)' }}>{activeFile.readBy.join(', ') || '—'}</span>
+            <span style={{ color: 'var(--fg-mute)' }}>size · modified</span>
+            <span style={{ color: 'var(--fg)', fontFamily: 'ui-monospace, monospace' }}>
               {activeFile.exists ? `${fmtSize(activeFile.size)} · ${fmtAgo(activeFile.mtimeMs)} ago` : 'does not exist yet'}
             </span>
           </div>
@@ -336,7 +336,7 @@ export default function MemoryBrowser({ slug, alive }: Props) {
         {/* Editor — vditor for markdown, Monaco for everything else */}
         <div style={{ flex: 1, minHeight: 0 }}>
           {loading ? (
-            <div style={{ padding: 20, color: '#6b7280', fontSize: 13 }}>loading…</div>
+            <div style={{ padding: 20, color: 'var(--fg-mute)', fontSize: 13 }}>loading…</div>
           ) : active ? (
             activeFile?.language === 'markdown' ? (
               <MarkdownEditor
@@ -366,7 +366,7 @@ export default function MemoryBrowser({ slug, alive }: Props) {
               />
             )
           ) : (
-            <div style={{ padding: 20, color: '#6b7280', fontSize: 13 }}>Select a file on the left.</div>
+            <div style={{ padding: 20, color: 'var(--fg-mute)', fontSize: 13 }}>Select a file on the left.</div>
           )}
         </div>
       </div>
@@ -393,7 +393,7 @@ function FileRow({
         border: 'none',
         borderLeft: `2px solid ${active ? meta.border : 'transparent'}`,
         borderBottom: '1px solid #161b26',
-        color: file.exists ? '#e5e7eb' : '#6b7280',
+        color: file.exists ? 'var(--fg)' : 'var(--fg-mute)',
         fontSize: 11,
         cursor: 'pointer',
         display: 'flex',
@@ -405,7 +405,7 @@ function FileRow({
         <span style={{
           fontFamily: 'ui-monospace, monospace',
           fontSize: 11,
-          color: file.exists ? '#e5e7eb' : '#6b7280',
+          color: file.exists ? 'var(--fg)' : 'var(--fg-mute)',
           flex: 1,
           overflow: 'hidden',
           textOverflow: 'ellipsis',
@@ -414,7 +414,7 @@ function FileRow({
         {file.locked && <span style={{ color: '#ef4444', fontSize: 10 }}>🛑</span>}
         {!file.exists && <span style={{ color: '#4b5563', fontSize: 10, fontStyle: 'italic' }}>empty</span>}
       </div>
-      <div style={{ fontSize: 10, color: '#6b7280', display: 'flex', gap: 6, alignItems: 'center' }}>
+      <div style={{ fontSize: 10, color: 'var(--fg-mute)', display: 'flex', gap: 6, alignItems: 'center' }}>
         <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
           {file.purpose}
         </span>

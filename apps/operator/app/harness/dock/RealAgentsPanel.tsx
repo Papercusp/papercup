@@ -29,7 +29,7 @@ const ROLE_COLORS: Record<string, string> = {
   validator: '#fbbf24',
   curator: '#a78bfa',
   expert: '#f472b6',
-  unknown: '#94a3b8',
+  unknown: 'var(--fg-mute)',
 };
 
 function fmtAge(ms: number | undefined): string {

@@ -275,13 +275,13 @@ function HooksPanelInner({ slug, alive, onClose }: Props) {
       title={`Hooks`}
       srOnlyTitle
       zIndex={60}
-      contentStyle={{ background: '#0b0e14', border: '1px solid #374151', borderRadius: 6, width: '88vw', height: '85vh', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}
+      contentStyle={{ background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 6, width: '88vw', height: '85vh', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}
     >
         {confirmEl}
         {/* Header */}
-        <div style={{ padding: '0.6rem 1rem', borderBottom: '1px solid #1f2937', display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-          <strong style={{ color: '#e5e7eb' }}>Hooks — {slug}</strong>
-          <span style={{ fontFamily: 'monospace', color: '#6b7280', fontSize: '0.75rem' }}>
+        <div style={{ padding: '0.6rem 1rem', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+          <strong style={{ color: 'var(--fg)' }}>Hooks — {slug}</strong>
+          <span style={{ fontFamily: 'monospace', color: 'var(--fg-mute)', fontSize: '0.75rem' }}>
             .harness/hooks/{tab}.sh
           </span>
           {alive && (
@@ -289,7 +289,7 @@ function HooksPanelInner({ slug, alive, onClose }: Props) {
               ⚠ harness running — changes apply from next invocation
             </span>
           )}
-          <span style={{ color: '#6b7280', fontSize: '0.7rem', marginLeft: alive ? 0 : '1rem' }}>
+          <span style={{ color: 'var(--fg-mute)', fontSize: '0.7rem', marginLeft: alive ? 0 : '1rem' }}>
             Built-ins (branch_iso, auto_screenshot) also fire automatically — see config.json.
           </span>
           <div style={{ marginLeft: 'auto', display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
@@ -316,7 +316,7 @@ function HooksPanelInner({ slug, alive, onClose }: Props) {
             </button>
             <button
               onClick={onClose}
-              style={{ background: 'transparent', color: '#9ca3af', border: '1px solid #374151', borderRadius: 3, padding: '0.35rem 0.75rem', cursor: 'pointer' }}
+              style={{ background: 'transparent', color: 'var(--fg-mute)', border: '1px solid var(--border)', borderRadius: 3, padding: '0.35rem 0.75rem', cursor: 'pointer' }}
             >
               close
             </button>
@@ -324,7 +324,7 @@ function HooksPanelInner({ slug, alive, onClose }: Props) {
         </div>
 
         {/* Tabs */}
-        <div style={{ display: 'flex', gap: '0.25rem', padding: '0.35rem 1rem', borderBottom: '1px solid #1f2937', background: '#0f141f' }}>
+        <div style={{ display: 'flex', gap: '0.25rem', padding: '0.35rem 1rem', borderBottom: '1px solid var(--border)', background: 'var(--bg)' }}>
           {hookNames.map((name) => {
             const isActive = name === tab;
             const isDirty = dirty.has(name);
@@ -335,7 +335,7 @@ function HooksPanelInner({ slug, alive, onClose }: Props) {
                 onClick={() => setTab(name)}
                 style={{
                   background: isActive ? '#1f2937' : 'transparent',
-                  color: isActive ? '#e5e7eb' : '#9ca3af',
+                  color: isActive ? 'var(--fg)' : 'var(--fg-mute)',
                   border: '1px solid ' + (isActive ? '#374151' : 'transparent'),
                   borderRadius: 3,
                   padding: '0.3rem 0.75rem',
@@ -358,7 +358,7 @@ function HooksPanelInner({ slug, alive, onClose }: Props) {
         {/* Editor */}
         <div style={{ flex: '1 1 60%', position: 'relative', minHeight: 0 }}>
           {!hooks ? (
-            <div style={{ padding: '2rem', color: '#9ca3af' }}>loading…</div>
+            <div style={{ padding: '2rem', color: 'var(--fg-mute)' }}>loading…</div>
           ) : (
             <>
               <Editor
@@ -378,11 +378,11 @@ function HooksPanelInner({ slug, alive, onClose }: Props) {
                 }}
               />
               {isEmpty && (
-                <div style={{ position: 'absolute', top: '0.75rem', right: '0.75rem', background: '#111827', border: '1px solid #374151', padding: '0.5rem 0.75rem', borderRadius: 3, fontSize: '0.8rem', color: '#9ca3af', display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+                <div style={{ position: 'absolute', top: '0.75rem', right: '0.75rem', background: 'var(--bg-2)', border: '1px solid var(--border)', padding: '0.5rem 0.75rem', borderRadius: 3, fontSize: '0.8rem', color: 'var(--fg-mute)', display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
                   hook not yet created
                   <button
                     onClick={() => insertPlaceholder(tab)}
-                    style={{ background: '#1f2937', color: '#e5e7eb', border: '1px solid #374151', borderRadius: 3, padding: '0.2rem 0.55rem', cursor: 'pointer', fontSize: '0.75rem' }}
+                    style={{ background: 'var(--bg-2)', color: 'var(--fg)', border: '1px solid var(--border)', borderRadius: 3, padding: '0.2rem 0.55rem', cursor: 'pointer', fontSize: '0.75rem' }}
                   >
                     insert template
                   </button>
@@ -393,20 +393,20 @@ function HooksPanelInner({ slug, alive, onClose }: Props) {
         </div>
 
         {/* Recent runs + detail */}
-        <div style={{ flex: '0 0 40%', borderTop: '1px solid #1f2937', display: 'flex', minHeight: 0 }}>
-          <div style={{ flex: '0 0 38%', borderRight: '1px solid #1f2937', overflow: 'auto', padding: '0.5rem 0.75rem' }}>
-            <div style={{ fontSize: '0.75rem', color: '#9ca3af', marginBottom: '0.35rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+        <div style={{ flex: '0 0 40%', borderTop: '1px solid var(--border)', display: 'flex', minHeight: 0 }}>
+          <div style={{ flex: '0 0 38%', borderRight: '1px solid var(--border)', overflow: 'auto', padding: '0.5rem 0.75rem' }}>
+            <div style={{ fontSize: '0.75rem', color: 'var(--fg-mute)', marginBottom: '0.35rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
               recent hook runs
-              <span style={{ color: '#6b7280' }}>({runs.length})</span>
-              {runs.length === 0 && <span style={{ color: '#6b7280', fontStyle: 'italic' }}>none yet — fire a hook to see logs here</span>}
+              <span style={{ color: 'var(--fg-mute)' }}>({runs.length})</span>
+              {runs.length === 0 && <span style={{ color: 'var(--fg-mute)', fontStyle: 'italic' }}>none yet — fire a hook to see logs here</span>}
             </div>
             <HookRunsGrid runs={runs} selectedLogId={selectedLog?.logId ?? null} onSelect={openLog} />
           </div>
           <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0 }}>
-            <div style={{ fontSize: '0.75rem', color: '#9ca3af', padding: '0.5rem 0.75rem', borderBottom: '1px solid #1f2937', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+            <div style={{ fontSize: '0.75rem', color: 'var(--fg-mute)', padding: '0.5rem 0.75rem', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
               log output
-              {selectedLog && <code style={{ color: '#e5e7eb', fontFamily: 'monospace' }}>{selectedLog.logId}.log</code>}
-              {loadingLog && <span style={{ color: '#6b7280' }}>loading…</span>}
+              {selectedLog && <code style={{ color: 'var(--fg)', fontFamily: 'monospace' }}>{selectedLog.logId}.log</code>}
+              {loadingLog && <span style={{ color: 'var(--fg-mute)' }}>loading…</span>}
             </div>
             <pre style={{ flex: 1, overflow: 'auto', margin: 0, padding: '0.5rem 0.75rem', fontSize: '0.75rem', fontFamily: 'ui-monospace, monospace', color: '#d1d5db', whiteSpace: 'pre-wrap' }}>
               {selectedLog ? (selectedLog.content || '(empty)') : '(click a row to view)'}
@@ -432,7 +432,7 @@ function HookRunsGrid({
         width: 1.3,
         sortKey: 'ts',
         defaultSortDir: 'desc',
-        render: ({ row }) => <span style={{ color: '#9ca3af', whiteSpace: 'nowrap' }}>{fmtTs(row.ts)}</span>,
+        render: ({ row }) => <span style={{ color: 'var(--fg-mute)', whiteSpace: 'nowrap' }}>{fmtTs(row.ts)}</span>,
       },
       {
         key: 'name',
@@ -451,7 +451,7 @@ function HookRunsGrid({
         width: 0.5,
         align: 'right',
         sortKey: 'sizeBytes',
-        render: ({ row }) => <span style={{ color: '#6b7280', whiteSpace: 'nowrap' }}>{row.sizeBytes}B</span>,
+        render: ({ row }) => <span style={{ color: 'var(--fg-mute)', whiteSpace: 'nowrap' }}>{row.sizeBytes}B</span>,
       },
     ],
     [],

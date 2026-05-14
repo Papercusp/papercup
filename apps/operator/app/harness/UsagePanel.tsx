@@ -154,16 +154,16 @@ function UsagePanelInner({ slug, onClose }: Props) {
       title={`Usage`}
       srOnlyTitle
       zIndex={60}
-      contentStyle={{ background: '#0b0e14', border: '1px solid #374151', borderRadius: 6, width: '80vw', maxWidth: 1100, height: '80vh', display: 'flex', flexDirection: 'column', overflow: 'hidden', fontFamily: 'system-ui, sans-serif', color: '#e5e7eb' }}
+      contentStyle={{ background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 6, width: '80vw', maxWidth: 1100, height: '80vh', display: 'flex', flexDirection: 'column', overflow: 'hidden', fontFamily: 'system-ui, sans-serif', color: 'var(--fg)' }}
     >
         {/* Header */}
-        <div style={{ padding: '0.6rem 1rem', borderBottom: '1px solid #1f2937', display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+        <div style={{ padding: '0.6rem 1rem', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
           <strong>Usage — {slug}</strong>
-          <span style={{ fontFamily: 'monospace', color: '#6b7280', fontSize: '0.75rem' }}>aggregated from agent_runs (live via Zero)</span>
-          <span style={{ marginLeft: 'auto', fontSize: '0.75rem', color: '#6b7280' }}>live</span>
+          <span style={{ fontFamily: 'monospace', color: 'var(--fg-mute)', fontSize: '0.75rem' }}>aggregated from agent_runs (live via Zero)</span>
+          <span style={{ marginLeft: 'auto', fontSize: '0.75rem', color: 'var(--fg-mute)' }}>live</span>
           <button
             onClick={onClose}
-            style={{ background: 'transparent', color: '#9ca3af', border: '1px solid #374151', borderRadius: 3, padding: '0.35rem 0.75rem', cursor: 'pointer', fontSize: '0.8rem' }}
+            style={{ background: 'transparent', color: 'var(--fg-mute)', border: '1px solid var(--border)', borderRadius: 3, padding: '0.35rem 0.75rem', cursor: 'pointer', fontSize: '0.8rem' }}
           >
             close
           </button>
@@ -172,12 +172,12 @@ function UsagePanelInner({ slug, onClose }: Props) {
         {error && <div style={{ padding: '1rem', color: '#ef4444' }}>error: {error}</div>}
 
         {!data ? (
-          <div style={{ padding: '2rem', color: '#9ca3af' }}>loading…</div>
+          <div style={{ padding: '2rem', color: 'var(--fg-mute)' }}>loading…</div>
         ) : (
           <div style={{ padding: '1rem', overflow: 'auto', flex: 1, display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
             {/* Totals */}
             <div>
-              <div style={{ fontSize: '0.75rem', color: '#9ca3af', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '0.4rem' }}>Totals</div>
+              <div style={{ fontSize: '0.75rem', color: 'var(--fg-mute)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '0.4rem' }}>Totals</div>
               <div style={{ display: 'flex', gap: '2rem', flexWrap: 'wrap' }}>
                 <Stat label="runs" value={data.totals.runs.toLocaleString()} />
                 <Stat label="cost" value={fmtCost(data.totals.costUsd)} />
@@ -189,7 +189,7 @@ function UsagePanelInner({ slug, onClose }: Props) {
 
             {/* Per-role table */}
             <div>
-              <div style={{ fontSize: '0.75rem', color: '#9ca3af', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '0.4rem' }}>
+              <div style={{ fontSize: '0.75rem', color: 'var(--fg-mute)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '0.4rem' }}>
                 Per-role breakdown — {data.byRole.length === 0 ? 'no runs yet' : `${data.byRole.length} roles`}
               </div>
               {data.byRole.length > 0 && <ByRoleGrid rows={data.byRole} />}
@@ -198,9 +198,9 @@ function UsagePanelInner({ slug, onClose }: Props) {
             {/* Per-feature breakdown */}
             {data.byFeature && data.byFeature.length > 0 && (
               <div>
-                <div style={{ fontSize: '0.75rem', color: '#9ca3af', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '0.4rem' }}>
+                <div style={{ fontSize: '0.75rem', color: 'var(--fg-mute)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '0.4rem' }}>
                   Per-feature breakdown — {data.byFeature.length} features
-                  <span style={{ textTransform: 'none', marginLeft: '0.5rem', color: '#6b7280', letterSpacing: 0 }}>
+                  <span style={{ textTransform: 'none', marginLeft: '0.5rem', color: 'var(--fg-mute)', letterSpacing: 0 }}>
                     (only includes runs invoked with FEATURE_ID; older untagged runs roll up under Per-role only)
                   </span>
                 </div>
@@ -210,7 +210,7 @@ function UsagePanelInner({ slug, onClose }: Props) {
 
             {/* Recent runs */}
             <div>
-              <div style={{ fontSize: '0.75rem', color: '#9ca3af', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '0.4rem' }}>
+              <div style={{ fontSize: '0.75rem', color: 'var(--fg-mute)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '0.4rem' }}>
                 Recent runs — {data.recent.length === 0 ? 'none' : `last ${data.recent.length}`}
               </div>
               {data.recent.length > 0 && <RecentRunsGrid rows={data.recent} />}
@@ -224,7 +224,7 @@ function UsagePanelInner({ slug, onClose }: Props) {
 function Stat({ label, value }: { label: string; value: string }) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '0.2rem' }}>
-      <span style={{ fontSize: '0.65rem', color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.05em' }}>{label}</span>
+      <span style={{ fontSize: '0.65rem', color: 'var(--fg-mute)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>{label}</span>
       <span style={{ fontSize: '1.25rem', fontFamily: 'ui-monospace, monospace', fontWeight: 600 }}>{value}</span>
     </div>
   );
@@ -238,15 +238,15 @@ function ByRoleGrid({ rows }: { rows: RoleSummary[] }) {
     { key: 'cost', header: 'Total cost', width: 0.9, align: 'right', sortKey: 'costUsd',
       render: ({ row }) => <span style={{ fontFamily: 'monospace', fontWeight: 600 }}>{fmtCost(row.costUsd)}</span> },
     { key: 'avgCost', header: 'Avg cost', width: 0.8, align: 'right', sortKey: 'avgCostUsd',
-      render: ({ row }) => <span style={{ fontFamily: 'monospace', color: '#9ca3af' }}>{fmtCost(row.avgCostUsd)}</span> },
+      render: ({ row }) => <span style={{ fontFamily: 'monospace', color: 'var(--fg-mute)' }}>{fmtCost(row.avgCostUsd)}</span> },
     { key: 'inTok', header: 'Input tok', width: 0.9, align: 'right', sortKey: 'inputTokens',
-      render: ({ row }) => <span style={{ color: '#9ca3af' }}>{row.inputTokens.toLocaleString()}</span> },
+      render: ({ row }) => <span style={{ color: 'var(--fg-mute)' }}>{row.inputTokens.toLocaleString()}</span> },
     { key: 'outTok', header: 'Output tok', width: 0.9, align: 'right', sortKey: 'outputTokens',
-      render: ({ row }) => <span style={{ color: '#9ca3af' }}>{row.outputTokens.toLocaleString()}</span> },
+      render: ({ row }) => <span style={{ color: 'var(--fg-mute)' }}>{row.outputTokens.toLocaleString()}</span> },
     { key: 'dur', header: 'Total dur', width: 0.8, align: 'right', sortKey: 'durationMs',
       render: ({ row }) => <span>{fmtDuration(row.durationMs)}</span> },
     { key: 'avgDur', header: 'Avg dur', width: 0.8, align: 'right', sortKey: 'avgDurationMs',
-      render: ({ row }) => <span style={{ color: '#9ca3af' }}>{fmtDuration(row.avgDurationMs)}</span> },
+      render: ({ row }) => <span style={{ color: 'var(--fg-mute)' }}>{fmtDuration(row.avgDurationMs)}</span> },
   ], []);
   return <RichGrid<RoleSummary> rows={rows} columns={columns} getRowId={(r) => r.role} inline />;
 }
@@ -260,7 +260,7 @@ function ByFeatureGrid({ rows }: { rows: FeatureSummary[] }) {
     { key: 'cost', header: 'Total cost', width: 0.9, align: 'right', sortKey: 'costUsd',
       render: ({ row }) => <span style={{ fontFamily: 'monospace', fontWeight: 600 }}>{fmtCost(row.costUsd)}</span> },
     { key: 'avgCost', header: 'Avg cost', width: 0.9, align: 'right', sortKey: 'avgCostUsd',
-      render: ({ row }) => <span style={{ fontFamily: 'monospace', color: '#9ca3af' }}>{fmtCost(row.avgCostUsd)}</span> },
+      render: ({ row }) => <span style={{ fontFamily: 'monospace', color: 'var(--fg-mute)' }}>{fmtCost(row.avgCostUsd)}</span> },
     { key: 'perRole', header: 'Per-role cost', width: 3,
       render: ({ row }) => (
         <div style={{ display: 'flex', gap: '0.4rem', flexWrap: 'wrap' }}>
@@ -278,17 +278,17 @@ function ByFeatureGrid({ rows }: { rows: FeatureSummary[] }) {
 function RecentRunsGrid({ rows }: { rows: RecentRun[] }) {
   const columns: ColumnDef<RecentRun>[] = useMemo(() => [
     { key: 'when', header: 'When', width: 1, sortKey: 'ts', defaultSortDir: 'desc',
-      render: ({ row }) => <span style={{ color: '#9ca3af' }}>{fmtTs(row.ts)}</span> },
+      render: ({ row }) => <span style={{ color: 'var(--fg-mute)' }}>{fmtTs(row.ts)}</span> },
     { key: 'role', header: 'Role', width: 0.9, sortKey: 'role',
       render: ({ row }) => <span style={{ fontSize: '0.65rem', padding: '0.1rem 0.4rem', borderRadius: 3, background: ROLE_COLOR[row.role] ?? '#374151', color: 'white' }}>{row.role}</span> },
     { key: 'runId', header: 'Run ID', width: 1.5,
-      render: ({ row }) => <span style={{ fontFamily: 'monospace', color: '#6b7280' }}>{row.runId}</span> },
+      render: ({ row }) => <span style={{ fontFamily: 'monospace', color: 'var(--fg-mute)' }}>{row.runId}</span> },
     { key: 'cost', header: 'Cost', width: 0.7, align: 'right', sortKey: 'costUsd',
       render: ({ row }) => <span style={{ fontFamily: 'monospace' }}>{fmtCost(row.costUsd)}</span> },
     { key: 'in', header: 'In', width: 0.7, align: 'right', sortKey: 'inputTokens',
-      render: ({ row }) => <span style={{ color: '#9ca3af' }}>{row.inputTokens.toLocaleString()}</span> },
+      render: ({ row }) => <span style={{ color: 'var(--fg-mute)' }}>{row.inputTokens.toLocaleString()}</span> },
     { key: 'out', header: 'Out', width: 0.7, align: 'right', sortKey: 'outputTokens',
-      render: ({ row }) => <span style={{ color: '#9ca3af' }}>{row.outputTokens.toLocaleString()}</span> },
+      render: ({ row }) => <span style={{ color: 'var(--fg-mute)' }}>{row.outputTokens.toLocaleString()}</span> },
     { key: 'dur', header: 'Duration', width: 0.8, align: 'right', sortKey: 'durationMs',
       render: ({ row }) => <span>{fmtDuration(row.durationMs)}</span> },
   ], []);

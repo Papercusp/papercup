@@ -28,7 +28,7 @@ interface Props {
 const STATUS_ICON = {
   passing: <Check size={11} style={{ color: '#10b981' }} />,
   failing: <X size={11} style={{ color: '#ef4444' }} />,
-  skipped: <Minus size={11} style={{ color: '#9ca3af' }} />,
+  skipped: <Minus size={11} style={{ color: 'var(--fg-mute)' }} />,
   not_run: <Minus size={11} style={{ color: '#4b5563' }} />,
 };
 

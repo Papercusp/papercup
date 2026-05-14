@@ -57,21 +57,21 @@ function IdentityPanelInner({ onClose }: Props) {
       title={`Identity`}
       srOnlyTitle
       zIndex={60}
-      contentStyle={{ background: '#0b0e14', border: '1px solid #374151', borderRadius: 6, width: '85vw', maxWidth: 1200, height: '80vh', display: 'flex', flexDirection: 'column', overflow: 'hidden', fontFamily: 'system-ui, sans-serif', color: '#e5e7eb' }}
+      contentStyle={{ background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 6, width: '85vw', maxWidth: 1200, height: '80vh', display: 'flex', flexDirection: 'column', overflow: 'hidden', fontFamily: 'system-ui, sans-serif', color: 'var(--fg)' }}
     >
-        <div style={{ padding: '0.6rem 1rem', borderBottom: '1px solid #1f2937', display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+        <div style={{ padding: '0.6rem 1rem', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
           <strong>Cross-mission identity</strong>
-          <span style={{ fontFamily: 'monospace', color: '#6b7280', fontSize: '0.75rem' }}>~/autonomous-harness/identity/</span>
-          <span style={{ fontSize: '0.75rem', color: '#9ca3af' }}>Agent-Swarm-inspired · curator-maintained · read on every role invocation</span>
-          <span style={{ marginLeft: 'auto', fontSize: '0.75rem', color: '#6b7280' }}>auto-refresh 10s</span>
+          <span style={{ fontFamily: 'monospace', color: 'var(--fg-mute)', fontSize: '0.75rem' }}>~/autonomous-harness/identity/</span>
+          <span style={{ fontSize: '0.75rem', color: 'var(--fg-mute)' }}>Agent-Swarm-inspired · curator-maintained · read on every role invocation</span>
+          <span style={{ marginLeft: 'auto', fontSize: '0.75rem', color: 'var(--fg-mute)' }}>auto-refresh 10s</span>
           {err && <span style={{ color: '#f87171', fontSize: '0.75rem' }}>err: {err}</span>}
-          <button onClick={onClose} style={{ background: 'transparent', color: '#9ca3af', border: '1px solid #374151', borderRadius: 3, padding: '0.35rem 0.75rem', cursor: 'pointer', fontSize: '0.8rem' }}>close</button>
+          <button onClick={onClose} style={{ background: 'transparent', color: 'var(--fg-mute)', border: '1px solid var(--border)', borderRadius: 3, padding: '0.35rem 0.75rem', cursor: 'pointer', fontSize: '0.8rem' }}>close</button>
         </div>
 
         <div style={{ flex: 1, display: 'flex', minHeight: 0 }}>
-          <div style={{ flex: '0 0 200px', borderRight: '1px solid #1f2937', overflow: 'auto' }}>
+          <div style={{ flex: '0 0 200px', borderRight: '1px solid var(--border)', overflow: 'auto' }}>
             {list.length === 0 ? (
-              <div style={{ padding: '1rem', color: '#6b7280', fontSize: '0.85rem', textAlign: 'center' }}>no identity files</div>
+              <div style={{ padding: '1rem', color: 'var(--fg-mute)', fontSize: '0.85rem', textAlign: 'center' }}>no identity files</div>
             ) : (
               list.map((i) => {
                 const active = i.role === selected;
@@ -84,12 +84,12 @@ function IdentityPanelInner({ onClose }: Props) {
                       display: 'block', width: '100%', textAlign: 'left',
                       padding: '0.6rem 0.85rem',
                       background: active ? '#1f2937' : 'transparent',
-                      color: '#e5e7eb', border: 'none', borderBottom: '1px solid #1f2937',
+                      color: 'var(--fg)', border: 'none', borderBottom: '1px solid var(--border)',
                       cursor: 'pointer', fontSize: '0.85rem',
                     }}
                   >
                     <div style={{ fontWeight: 600 }}>{i.role}</div>
-                    <div style={{ fontSize: '0.7rem', color: '#6b7280', marginTop: 2 }}>
+                    <div style={{ fontSize: '0.7rem', color: 'var(--fg-mute)', marginTop: 2 }}>
                       {lines} lessons · {i.bytes}b · {fmtTs(i.mtimeMs)}
                     </div>
                   </button>
@@ -102,10 +102,10 @@ function IdentityPanelInner({ onClose }: Props) {
               <pre style={{
                 margin: 0, fontFamily: 'ui-monospace, monospace', fontSize: '0.8rem',
                 whiteSpace: 'pre-wrap', wordBreak: 'break-word',
-                color: '#e5e7eb',
+                color: 'var(--fg)',
               }}>{cur.content || '(empty — curator will populate as missions run)'}</pre>
             ) : (
-              <div style={{ color: '#6b7280', fontStyle: 'italic', marginTop: '20%', textAlign: 'center' }}>
+              <div style={{ color: 'var(--fg-mute)', fontStyle: 'italic', marginTop: '20%', textAlign: 'center' }}>
                 Select a role on the left.
               </div>
             )}

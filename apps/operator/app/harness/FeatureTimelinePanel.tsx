@@ -126,18 +126,18 @@ export default function FeatureTimelinePanel({ slug, featureId, onClose }: Props
       title={`Feature timeline`}
       srOnlyTitle
       zIndex={100}
-      contentStyle={{ background: '#0b0e14', border: '1px solid #374151', borderRadius: 6, width: '70vw', maxWidth: 820, maxHeight: '80vh', display: 'flex', flexDirection: 'column', overflow: 'hidden', fontFamily: 'system-ui, sans-serif', color: '#e5e7eb' }}
+      contentStyle={{ background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 6, width: '70vw', maxWidth: 820, maxHeight: '80vh', display: 'flex', flexDirection: 'column', overflow: 'hidden', fontFamily: 'system-ui, sans-serif', color: 'var(--fg)' }}
     >
-        <div style={{ padding: '0.6rem 1rem', borderBottom: '1px solid #1f2937', display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+        <div style={{ padding: '0.6rem 1rem', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
           <strong>Timeline</strong>
-          <span style={{ fontFamily: 'monospace', color: '#9ca3af', fontSize: '0.8rem' }}>{featureId}</span>
-          <span style={{ marginLeft: 'auto', fontSize: '0.75rem', color: '#6b7280' }}>
+          <span style={{ fontFamily: 'monospace', color: 'var(--fg-mute)', fontSize: '0.8rem' }}>{featureId}</span>
+          <span style={{ marginLeft: 'auto', fontSize: '0.75rem', color: 'var(--fg-mute)' }}>
             {events.length} event{events.length === 1 ? '' : 's'}
           </span>
           {err && <span style={{ color: '#f87171', fontSize: '0.8rem' }}>err: {err}</span>}
           <button
             onClick={onClose}
-            style={{ background: 'transparent', color: '#9ca3af', border: '1px solid #374151', borderRadius: 3, padding: '0.35rem 0.75rem', cursor: 'pointer', fontSize: '0.8rem' }}
+            style={{ background: 'transparent', color: 'var(--fg-mute)', border: '1px solid var(--border)', borderRadius: 3, padding: '0.35rem 0.75rem', cursor: 'pointer', fontSize: '0.8rem' }}
           >
             close (esc)
           </button>
@@ -145,16 +145,16 @@ export default function FeatureTimelinePanel({ slug, featureId, onClose }: Props
 
         <div style={{ flex: 1, overflow: 'auto', padding: '1rem 1.25rem' }}>
           {!data ? (
-            <div style={{ color: '#6b7280', textAlign: 'center', padding: '2rem' }}>loading…</div>
+            <div style={{ color: 'var(--fg-mute)', textAlign: 'center', padding: '2rem' }}>loading…</div>
           ) : events.length === 0 ? (
-            <div style={{ color: '#6b7280', textAlign: 'center', padding: '2rem' }}>
+            <div style={{ color: 'var(--fg-mute)', textAlign: 'center', padding: '2rem' }}>
               No events yet. Events are aggregated from snapshots, agent runs, debug notes, and PR metadata.
             </div>
           ) : (
             <ol style={{ listStyle: 'none', margin: 0, padding: 0, position: 'relative' }}>
-              <div style={{ position: 'absolute', left: 18, top: 0, bottom: 0, width: 1, background: '#374151' }} />
+              <div style={{ position: 'absolute', left: 18, top: 0, bottom: 0, width: 1, background: 'var(--bg-3)' }} />
               {events.map((ev, i) => {
-                const meta = KIND_META[ev.kind] ?? { color: '#6b7280', icon: '•', label: ev.kind };
+                const meta = KIND_META[ev.kind] ?? { color: 'var(--fg-mute)', icon: '•', label: ev.kind };
                 const isPrUrl = ev.kind === 'pr_opened' && /^https?:\/\//.test(ev.detail);
                 return (
                   <li key={i} style={{ display: 'flex', gap: '0.75rem', marginBottom: '0.75rem', position: 'relative' }}>
@@ -180,9 +180,9 @@ export default function FeatureTimelinePanel({ slug, featureId, onClose }: Props
                         }}>
                           {meta.label}
                         </span>
-                        <span style={{ fontFamily: 'monospace', color: '#9ca3af', fontSize: '0.75rem' }}>{fmtTs(ev.ts)}</span>
+                        <span style={{ fontFamily: 'monospace', color: 'var(--fg-mute)', fontSize: '0.75rem' }}>{fmtTs(ev.ts)}</span>
                       </div>
-                      <div style={{ marginTop: '0.3rem', fontSize: '0.85rem', color: '#e5e7eb', wordBreak: 'break-word' }}>
+                      <div style={{ marginTop: '0.3rem', fontSize: '0.85rem', color: 'var(--fg)', wordBreak: 'break-word' }}>
                         {isPrUrl ? (
                           <a href={ev.detail} target="_blank" rel="noopener noreferrer" style={{ color: '#3b82f6' }}>
                             {ev.detail}

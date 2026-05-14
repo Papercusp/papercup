@@ -94,29 +94,29 @@ export default function TemplatesModal({ slug, onClose, onBootstrapped }: Props)
       title={`Templates`}
       srOnlyTitle
       zIndex={60}
-      contentStyle={{ background: '#0b0e14', border: '1px solid #374151', borderRadius: 6, width: '80vw', maxWidth: 1000, height: '75vh', display: 'flex', flexDirection: 'column', overflow: 'hidden', fontFamily: 'system-ui, sans-serif', color: '#e5e7eb' }}
+      contentStyle={{ background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 6, width: '80vw', maxWidth: 1000, height: '75vh', display: 'flex', flexDirection: 'column', overflow: 'hidden', fontFamily: 'system-ui, sans-serif', color: 'var(--fg)' }}
     >
       {confirmEl}
-        <div style={{ padding: '0.6rem 1rem', borderBottom: '1px solid #1f2937', display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+        <div style={{ padding: '0.6rem 1rem', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
           <strong>Mission templates</strong>
-          <span style={{ color: '#6b7280', fontSize: '0.75rem', fontFamily: 'monospace' }}>→ {slug}</span>
+          <span style={{ color: 'var(--fg-mute)', fontSize: '0.75rem', fontFamily: 'monospace' }}>→ {slug}</span>
           {toast && (
             <span style={{ marginLeft: 'auto', color: /failed/i.test(toast) ? '#f87171' : '#10b981', fontSize: '0.8rem' }}>{toast}</span>
           )}
           <button
             onClick={onClose}
-            style={{ marginLeft: toast ? 0 : 'auto', background: 'transparent', color: '#9ca3af', border: '1px solid #374151', borderRadius: 3, padding: '0.35rem 0.75rem', cursor: 'pointer', fontSize: '0.8rem' }}
+            style={{ marginLeft: toast ? 0 : 'auto', background: 'transparent', color: 'var(--fg-mute)', border: '1px solid var(--border)', borderRadius: 3, padding: '0.35rem 0.75rem', cursor: 'pointer', fontSize: '0.8rem' }}
           >
             close
           </button>
         </div>
 
         <div style={{ flex: 1, display: 'flex', minHeight: 0 }}>
-          <div style={{ flex: '0 0 36%', borderRight: '1px solid #1f2937', overflow: 'auto' }}>
+          <div style={{ flex: '0 0 36%', borderRight: '1px solid var(--border)', overflow: 'auto' }}>
             {templates === null ? (
-              <div style={{ padding: '1rem', color: '#9ca3af' }}>loading…</div>
+              <div style={{ padding: '1rem', color: 'var(--fg-mute)' }}>loading…</div>
             ) : templates.length === 0 ? (
-              <div style={{ padding: '1rem', color: '#6b7280' }}>
+              <div style={{ padding: '1rem', color: 'var(--fg-mute)' }}>
                 No templates found.<br/>
                 Add directories under <code>~/autonomous-harness/templates/projects/&lt;id&gt;/</code> with a <code>meta.json</code> and SPEC.md/AGENTS.md.
               </div>
@@ -131,22 +131,22 @@ export default function TemplatesModal({ slug, onClose, onBootstrapped }: Props)
                       style={{
                         padding: '0.75rem 1rem',
                         cursor: 'pointer',
-                        borderBottom: '1px solid #1f2937',
+                        borderBottom: '1px solid var(--border)',
                         background: isActive ? '#1f2937' : 'transparent',
                       }}
                     >
                       <div style={{ fontSize: '0.9rem', fontWeight: 600 }}>{t.name}</div>
-                      <div style={{ fontSize: '0.75rem', color: '#9ca3af', marginTop: '0.2rem' }}>{t.description}</div>
+                      <div style={{ fontSize: '0.75rem', color: 'var(--fg-mute)', marginTop: '0.2rem' }}>{t.description}</div>
                       {t.tags && t.tags.length > 0 && (
                         <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.25rem', marginTop: '0.35rem' }}>
                           {t.tags.map((tag) => (
-                            <span key={tag} style={{ fontSize: '0.65rem', padding: '0.1rem 0.4rem', borderRadius: 3, background: '#374151', color: '#d1d5db' }}>
+                            <span key={tag} style={{ fontSize: '0.65rem', padding: '0.1rem 0.4rem', borderRadius: 3, background: 'var(--bg-3)', color: '#d1d5db' }}>
                               {tag}
                             </span>
                           ))}
                         </div>
                       )}
-                      <div style={{ fontSize: '0.65rem', color: '#6b7280', marginTop: '0.4rem', fontFamily: 'monospace' }}>
+                      <div style={{ fontSize: '0.65rem', color: 'var(--fg-mute)', marginTop: '0.4rem', fontFamily: 'monospace' }}>
                         {t.files.join(' · ')}
                       </div>
                     </div>
@@ -159,14 +159,14 @@ export default function TemplatesModal({ slug, onClose, onBootstrapped }: Props)
           <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0 }}>
             {selected ? (
               <>
-                <div style={{ padding: '0.5rem 0.75rem', borderBottom: '1px solid #1f2937', fontSize: '0.75rem', color: '#9ca3af', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                <div style={{ padding: '0.5rem 0.75rem', borderBottom: '1px solid var(--border)', fontSize: '0.75rem', color: 'var(--fg-mute)', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
                   SPEC.md preview
-                  {previewLoading && <span style={{ color: '#6b7280' }}>loading…</span>}
+                  {previewLoading && <span style={{ color: 'var(--fg-mute)' }}>loading…</span>}
                 </div>
                 <div style={{ flex: 1, overflow: 'auto', padding: '0.75rem 1rem' }}>
                   <MarkdownPreview value={preview?.content ?? '(preview unavailable)'} outline="left" />
                 </div>
-                <div style={{ padding: '0.6rem 0.75rem', borderTop: '1px solid #1f2937', display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+                <div style={{ padding: '0.6rem 0.75rem', borderTop: '1px solid var(--border)', display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
                   <label style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.8rem', cursor: 'pointer' }}>
                     <Checkbox checked={overwrite} onChange={setOverwrite} ariaLabel="Overwrite existing files" />
                     overwrite existing files
@@ -181,7 +181,7 @@ export default function TemplatesModal({ slug, onClose, onBootstrapped }: Props)
                 </div>
               </>
             ) : (
-              <div style={{ color: '#6b7280', textAlign: 'center', marginTop: '30%' }}>
+              <div style={{ color: 'var(--fg-mute)', textAlign: 'center', marginTop: '30%' }}>
                 Select a template to preview.
               </div>
             )}

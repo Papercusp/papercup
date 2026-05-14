@@ -115,21 +115,21 @@ export default function DecisionsPanel({ slug, onClose }: Props) {
       title={`Decisions`}
       srOnlyTitle
       zIndex={60}
-      contentStyle={{ background: '#0b0e14', border: '1px solid #374151', borderRadius: 6, width: '80vw', maxWidth: 1100, height: '75vh', display: 'flex', flexDirection: 'column', overflow: 'hidden', fontFamily: 'system-ui, sans-serif', color: '#e5e7eb' }}
+      contentStyle={{ background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 6, width: '80vw', maxWidth: 1100, height: '75vh', display: 'flex', flexDirection: 'column', overflow: 'hidden', fontFamily: 'system-ui, sans-serif', color: 'var(--fg)' }}
     >
         {/* Header */}
-        <div style={{ padding: '0.6rem 1rem', borderBottom: '1px solid #1f2937', display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+        <div style={{ padding: '0.6rem 1rem', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
           <strong>Decisions — {slug}</strong>
-          <span style={{ fontFamily: 'monospace', color: '#6b7280', fontSize: '0.75rem' }}>orchestrator verb timeline</span>
+          <span style={{ fontFamily: 'monospace', color: 'var(--fg-mute)', fontSize: '0.75rem' }}>orchestrator verb timeline</span>
           <label style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: '0.35rem', fontSize: '0.8rem', color: '#d1d5db', cursor: 'pointer' }}>
             <Checkbox checked={hideGhosts} onChange={setHideGhosts} ariaLabel="Hide ghosts" />
             hide ghosts
           </label>
-          <span style={{ fontSize: '0.75rem', color: '#6b7280' }}>auto-refresh 5s</span>
+          <span style={{ fontSize: '0.75rem', color: 'var(--fg-mute)' }}>auto-refresh 5s</span>
           {err && <span style={{ color: '#f87171', fontSize: '0.8rem' }}>err: {err}</span>}
           <button
             onClick={onClose}
-            style={{ background: 'transparent', color: '#9ca3af', border: '1px solid #374151', borderRadius: 3, padding: '0.35rem 0.75rem', cursor: 'pointer', fontSize: '0.8rem' }}
+            style={{ background: 'transparent', color: 'var(--fg-mute)', border: '1px solid var(--border)', borderRadius: 3, padding: '0.35rem 0.75rem', cursor: 'pointer', fontSize: '0.8rem' }}
           >
             close
           </button>
@@ -137,12 +137,12 @@ export default function DecisionsPanel({ slug, onClose }: Props) {
 
         {/* Summary strip */}
         {data && (
-          <div style={{ padding: '0.6rem 1rem', borderBottom: '1px solid #1f2937', display: 'flex', gap: '1.25rem', fontSize: '0.8rem', alignItems: 'center', flexWrap: 'wrap' }}>
-            <span><span style={{ color: '#9ca3af' }}>total</span> <b style={{ fontFamily: 'monospace' }}>{data.total}</b></span>
-            <span><span style={{ color: '#9ca3af' }}>recognized</span> <b style={{ fontFamily: 'monospace', color: '#10b981' }}>{data.recognized}</b></span>
-            <span><span style={{ color: '#9ca3af' }}>ghosts</span> <b style={{ fontFamily: 'monospace', color: data.ghosts > 0 ? '#f87171' : '#10b981' }}>{data.ghosts}</b></span>
+          <div style={{ padding: '0.6rem 1rem', borderBottom: '1px solid var(--border)', display: 'flex', gap: '1.25rem', fontSize: '0.8rem', alignItems: 'center', flexWrap: 'wrap' }}>
+            <span><span style={{ color: 'var(--fg-mute)' }}>total</span> <b style={{ fontFamily: 'monospace' }}>{data.total}</b></span>
+            <span><span style={{ color: 'var(--fg-mute)' }}>recognized</span> <b style={{ fontFamily: 'monospace', color: '#10b981' }}>{data.recognized}</b></span>
+            <span><span style={{ color: 'var(--fg-mute)' }}>ghosts</span> <b style={{ fontFamily: 'monospace', color: data.ghosts > 0 ? '#f87171' : '#10b981' }}>{data.ghosts}</b></span>
             <span>
-              <span style={{ color: '#9ca3af' }}>ghost rate</span>{' '}
+              <span style={{ color: 'var(--fg-mute)' }}>ghost rate</span>{' '}
               <b style={{ fontFamily: 'monospace', color: data.ghostRate >= 0.05 ? '#f87171' : '#10b981' }}>
                 {(data.ghostRate * 100).toFixed(1)}%
               </b>
@@ -172,9 +172,9 @@ export default function DecisionsPanel({ slug, onClose }: Props) {
         {/* Body */}
         <div style={{ flex: 1, overflow: 'auto' }}>
           {!data ? (
-            <div style={{ padding: '2rem', color: '#6b7280', textAlign: 'center' }}>loading…</div>
+            <div style={{ padding: '2rem', color: 'var(--fg-mute)', textAlign: 'center' }}>loading…</div>
           ) : filtered.length === 0 ? (
-            <div style={{ padding: '2rem', color: '#6b7280', textAlign: 'center' }}>
+            <div style={{ padding: '2rem', color: 'var(--fg-mute)', textAlign: 'center' }}>
               {data.total === 0 ? 'No orchestrator decisions yet.' : 'No decisions match filter.'}
             </div>
           ) : (
@@ -195,7 +195,7 @@ function DecisionsGrid({ rows }: { rows: Decision[] }) {
         sortKey: 'ts',
         defaultSortDir: 'desc',
         render: ({ row }) => (
-          <span style={{ color: '#9ca3af', fontFamily: 'monospace', fontSize: '0.75rem' }}>
+          <span style={{ color: 'var(--fg-mute)', fontFamily: 'monospace', fontSize: '0.75rem' }}>
             {fmtTs(row.ts)}
           </span>
         ),
@@ -222,9 +222,9 @@ function DecisionsGrid({ rows }: { rows: Decision[] }) {
             <span style={{
               fontFamily: 'monospace', fontSize: '0.75rem',
               padding: '0.1rem 0.4rem',
-              border: `1px solid ${row.isGhost ? '#6b7280' : (VERB_COLOR[row.verb] ?? '#374151')}`,
+              border: `1px solid ${row.isGhost ? 'var(--fg-mute)' : (VERB_COLOR[row.verb] ?? '#374151')}`,
               borderRadius: 3,
-              color: row.isGhost ? '#9ca3af' : (VERB_COLOR[row.verb] ?? '#d1d5db'),
+              color: row.isGhost ? 'var(--fg-mute)' : (VERB_COLOR[row.verb] ?? '#d1d5db'),
               background: row.isGhost ? 'transparent' : `color-mix(in oklab, ${VERB_COLOR[row.verb] ?? '#374151'}, transparent 88%)`,
             }}>
               {row.verb}

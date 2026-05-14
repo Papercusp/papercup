@@ -40,31 +40,31 @@ export default function FeatureDiffModal({ slug, featureId, onClose }: Props) {
       title={`Feature diff`}
       srOnlyTitle
       zIndex={60}
-      contentStyle={{ background: '#0b0e14', border: '1px solid #374151', borderRadius: 6, width: '88vw', maxWidth: 1200, height: '85vh', display: 'flex', flexDirection: 'column', overflow: 'hidden', fontFamily: 'system-ui, sans-serif', color: '#e5e7eb' }}
+      contentStyle={{ background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 6, width: '88vw', maxWidth: 1200, height: '85vh', display: 'flex', flexDirection: 'column', overflow: 'hidden', fontFamily: 'system-ui, sans-serif', color: 'var(--fg)' }}
     >
-        <div style={{ padding: '0.6rem 1rem', borderBottom: '1px solid #1f2937', display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+        <div style={{ padding: '0.6rem 1rem', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
           <strong>Feature diff — {featureId}</strong>
           {data && (
-            <span style={{ fontFamily: 'monospace', color: '#6b7280', fontSize: '0.75rem' }}>
+            <span style={{ fontFamily: 'monospace', color: 'var(--fg-mute)', fontSize: '0.75rem' }}>
               {data.base}...{data.branch}
             </span>
           )}
           <button
             onClick={load}
-            style={{ marginLeft: 'auto', background: 'transparent', color: '#9ca3af', border: '1px solid #374151', borderRadius: 3, padding: '0.35rem 0.75rem', cursor: 'pointer', fontSize: '0.75rem' }}
+            style={{ marginLeft: 'auto', background: 'transparent', color: 'var(--fg-mute)', border: '1px solid var(--border)', borderRadius: 3, padding: '0.35rem 0.75rem', cursor: 'pointer', fontSize: '0.75rem' }}
           >
             refresh
           </button>
           <button
             onClick={onClose}
-            style={{ background: 'transparent', color: '#9ca3af', border: '1px solid #374151', borderRadius: 3, padding: '0.35rem 0.75rem', cursor: 'pointer', fontSize: '0.8rem' }}
+            style={{ background: 'transparent', color: 'var(--fg-mute)', border: '1px solid var(--border)', borderRadius: 3, padding: '0.35rem 0.75rem', cursor: 'pointer', fontSize: '0.8rem' }}
           >
             close
           </button>
         </div>
 
         {loading ? (
-          <div style={{ padding: '2rem', color: '#9ca3af' }}>loading…</div>
+          <div style={{ padding: '2rem', color: 'var(--fg-mute)' }}>loading…</div>
         ) : error ? (
           <div style={{ padding: '1rem', color: '#f87171', fontSize: '0.8rem' }}>
             <div><strong>Diff unavailable.</strong> Likely the feature branch doesn't exist (branch isolation may be disabled, or the worker hasn't run yet).</div>
@@ -72,12 +72,12 @@ export default function FeatureDiffModal({ slug, featureId, onClose }: Props) {
           </div>
         ) : data ? (
           <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
-            <pre style={{ padding: '0.5rem 1rem', margin: 0, fontSize: '0.75rem', fontFamily: 'ui-monospace, monospace', color: '#d1d5db', whiteSpace: 'pre', borderBottom: '1px solid #1f2937', background: '#111827', maxHeight: '20vh', overflow: 'auto' }}>
+            <pre style={{ padding: '0.5rem 1rem', margin: 0, fontSize: '0.75rem', fontFamily: 'ui-monospace, monospace', color: '#d1d5db', whiteSpace: 'pre', borderBottom: '1px solid var(--border)', background: 'var(--bg-2)', maxHeight: '20vh', overflow: 'auto' }}>
               {data.stat || '(no changes)'}
             </pre>
-            <div style={{ flex: 1, overflow: 'auto', padding: '0.5rem 1rem', background: '#0b0e14', fontFamily: 'ui-monospace, monospace', fontSize: '0.75rem' }}>
+            <div style={{ flex: 1, overflow: 'auto', padding: '0.5rem 1rem', background: 'var(--bg)', fontFamily: 'ui-monospace, monospace', fontSize: '0.75rem' }}>
               {data.diff.length === 0 ? (
-                <div style={{ color: '#6b7280' }}>(no diff output)</div>
+                <div style={{ color: 'var(--fg-mute)' }}>(no diff output)</div>
               ) : (
                 <pre style={{ margin: 0, whiteSpace: 'pre' }}>
                   {data.diff.split('\n').map((line, i) => {

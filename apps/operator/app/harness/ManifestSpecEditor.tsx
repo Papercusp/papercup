@@ -130,8 +130,8 @@ export default function ManifestSpecEditor({
       className="h-manifest-editor"
       onClick={(e) => e.stopPropagation()}
       style={{
-        background: '#0b0e14',
-        border: inline ? 'none' : '1px solid #374151',
+        background: 'var(--bg)',
+        border: inline ? 'none' : '1px solid var(--border)',
         borderRadius: inline ? 0 : 6,
         width: inline ? '100%' : '90vw',
         // Inline: use flex:1 + align-self:stretch so we fill the parent
@@ -142,7 +142,7 @@ export default function ManifestSpecEditor({
         display: 'flex', flexDirection: 'column', overflow: 'hidden',
       }}
     >
-      <div className="h-manifest-editor-head" style={{ padding: '0.6rem 1rem', borderBottom: '1px solid #1f2937', display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
+      <div className="h-manifest-editor-head" style={{ padding: '0.6rem 1rem', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
         {/* Section tabs: Settings / Memory / Prompts.
             Restored 2026-05-01: Memory + Prompts disappeared when this template-driven
             editor took over from <SpecEditor> for harnesses that ship configFiles. The
@@ -159,7 +159,7 @@ export default function ManifestSpecEditor({
                 onClick={() => setSection(s)}
                 style={{
                   background: isActive ? '#1f2937' : 'transparent',
-                  color: isActive ? '#e5e7eb' : '#9ca3af',
+                  color: isActive ? 'var(--fg)' : 'var(--fg-mute)',
                   border: '1px solid ' + (isActive ? '#4b5563' : 'transparent'),
                   borderRadius: 4,
                   padding: '0.4rem 0.9rem',
@@ -173,7 +173,7 @@ export default function ManifestSpecEditor({
             );
           })}
         </div>
-        <span className="h-manifest-path" style={{ fontFamily: 'monospace', color: '#6b7280', fontSize: '0.75rem' }}>
+        <span className="h-manifest-path" style={{ fontFamily: 'monospace', color: 'var(--fg-mute)', fontSize: '0.75rem' }}>
           {projectPath}/{activePath}
         </span>
         {alive && (
@@ -190,7 +190,7 @@ export default function ManifestSpecEditor({
               className="h-manifest-action"
               onClick={() => setDraft((d) => ({ ...d, [activePath]: original[activePath] ?? '' }))}
               disabled={!activeDirty}
-              style={{ background: 'transparent', color: '#9ca3af', border: '1px solid #374151', borderRadius: 3, padding: '0.35rem 0.75rem', cursor: activeDirty ? 'pointer' : 'not-allowed', opacity: activeDirty ? 1 : 0.5 }}
+              style={{ background: 'transparent', color: 'var(--fg-mute)', border: '1px solid var(--border)', borderRadius: 3, padding: '0.35rem 0.75rem', cursor: activeDirty ? 'pointer' : 'not-allowed', opacity: activeDirty ? 1 : 0.5 }}
             >revert tab</button>
           </Tooltip>
           <Tooltip label="Save all dirty files (⌘/Ctrl+S)">
@@ -215,7 +215,7 @@ export default function ManifestSpecEditor({
         </div>
       ) : (
         <>
-      <div className="h-manifest-file-tabs" style={{ display: 'flex', flexWrap: 'wrap', gap: 4, padding: '0.5rem 1rem', borderBottom: '1px solid #1f2937', background: '#0b1018' }}>
+      <div className="h-manifest-file-tabs" style={{ display: 'flex', flexWrap: 'wrap', gap: 4, padding: '0.5rem 1rem', borderBottom: '1px solid var(--border)', background: 'var(--bg)' }}>
         {configFiles.map((cf) => {
           const isActive = cf.path === activePath;
           const cfDirty = dirty.includes(cf.path);
@@ -227,7 +227,7 @@ export default function ManifestSpecEditor({
                 className={`h-manifest-file-tab${isActive ? ' is-active' : ''}${cfDirty ? ' is-dirty' : ''}${cfMissing ? ' is-missing' : ''}`}
                 style={{
                   background: isActive ? '#1f2937' : 'transparent',
-                  color: isActive ? '#e5e7eb' : (cfMissing ? '#6b7280' : '#9ca3af'),
+                  color: isActive ? 'var(--fg)' : (cfMissing ? 'var(--fg-mute)' : 'var(--fg-mute)'),
                   border: '1px solid ' + (isActive ? '#4b5563' : 'transparent'),
                   borderRadius: 4, padding: '0.35rem 0.7rem',
                   fontSize: 12, cursor: 'pointer',
@@ -238,7 +238,7 @@ export default function ManifestSpecEditor({
                 <span>{cf.label ?? cf.path}</span>
                 {cf.sensitivity === 'secret' && <span style={{ color: '#fca5a5', fontSize: 10 }}>🔒</span>}
                 {cf.sensitivity === 'warn' && <span style={{ color: '#fbbf24', fontSize: 10 }}>⚠</span>}
-                {cfMissing && <span style={{ color: '#6b7280', fontSize: 10 }}>(missing)</span>}
+                {cfMissing && <span style={{ color: 'var(--fg-mute)', fontSize: 10 }}>(missing)</span>}
               </button>
             </Tooltip>
           );
@@ -246,18 +246,18 @@ export default function ManifestSpecEditor({
       </div>
 
       {activeSpec?.description && activeSpec.language !== 'markdown' && (
-        <div className="h-manifest-description" style={{ padding: '8px 14px', borderBottom: '1px solid #1f2937', fontSize: 12, color: '#9ca3af', background: '#0b1018' }}>
+        <div className="h-manifest-description" style={{ padding: '8px 14px', borderBottom: '1px solid var(--border)', fontSize: 12, color: 'var(--fg-mute)', background: 'var(--bg)' }}>
           {activeSpec.description}
         </div>
       )}
 
       <div className="h-manifest-editor-body" style={{ flex: 1, minHeight: 0, position: 'relative' }}>
         {loading ? (
-          <div style={{ padding: 24, color: '#9ca3af' }}>Loading…</div>
+          <div style={{ padding: 24, color: 'var(--fg-mute)' }}>Loading…</div>
         ) : activeMissing ? (
-          <div style={{ padding: 24, color: '#9ca3af' }}>
+          <div style={{ padding: 24, color: 'var(--fg-mute)' }}>
             <p style={{ margin: 0, fontSize: 13 }}>
-              <strong style={{ color: '#e5e7eb' }}>{activePath}</strong> doesn&rsquo;t exist on disk yet.
+              <strong style={{ color: 'var(--fg)' }}>{activePath}</strong> doesn&rsquo;t exist on disk yet.
             </p>
             <p style={{ marginTop: 8, fontSize: 12 }}>
               Type below — saving will create it.
@@ -352,7 +352,7 @@ function ManifestMarkdownBody({
           ))}
         </div>
         {description && (
-          <div className="h-manifest-view-description" style={{ fontSize: 12, color: '#9ca3af' }}>
+          <div className="h-manifest-view-description" style={{ fontSize: 12, color: 'var(--fg-mute)' }}>
             {description}
           </div>
         )}

@@ -106,7 +106,7 @@ export default function PlanReviewBanner({ slug, compact = false }: Props) {
         </Tooltip>
       </div>
       {open && !compact && (
-        <div style={{ margin: '0.5rem 0 0 0', padding: '0.5rem 0.75rem', background: '#0b0e14', borderRadius: 3, maxHeight: '30vh', overflow: 'auto' }}>
+        <div style={{ margin: '0.5rem 0 0 0', padding: '0.5rem 0.75rem', background: 'var(--bg)', borderRadius: 3, maxHeight: '30vh', overflow: 'auto' }}>
           <MarkdownPreview value={content} outline="left" />
         </div>
       )}
@@ -117,7 +117,7 @@ export default function PlanReviewBanner({ slug, compact = false }: Props) {
         top: popoverRect.top, left: popoverRect.left,
         width: 'min(640px, 90vw)',
         margin: 0, padding: '0.5rem 0.75rem',
-        background: '#0b0e14',
+        background: 'var(--bg)',
         border: `1px solid ${tone.border}`, borderRadius: 4,
         boxShadow: '0 12px 28px rgba(0,0,0,0.45)',
         maxHeight: '50vh', overflow: 'auto',

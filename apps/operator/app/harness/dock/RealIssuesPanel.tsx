@@ -32,7 +32,7 @@ const SEVERITY_COLORS: Record<string, string> = {
   critical: '#dc2626',
   major: '#ea580c',
   minor: '#fbbf24',
-  trivial: '#94a3b8',
+  trivial: 'var(--fg-mute)',
 };
 
 const STATUS_COLORS: Record<string, string> = {

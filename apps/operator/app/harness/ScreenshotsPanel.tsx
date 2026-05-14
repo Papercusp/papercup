@@ -102,13 +102,13 @@ export default function ScreenshotsPanel({ slug, onClose }: Props) {
       title={`Screenshots`}
       srOnlyTitle
       zIndex={60}
-      contentStyle={{ background: '#0b0e14', border: '1px solid #374151', borderRadius: 6, width: '85vw', maxWidth: 1200, height: '85vh', display: 'flex', flexDirection: 'column', overflow: 'hidden', fontFamily: 'system-ui, sans-serif', color: '#e5e7eb' }}
+      contentStyle={{ background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 6, width: '85vw', maxWidth: 1200, height: '85vh', display: 'flex', flexDirection: 'column', overflow: 'hidden', fontFamily: 'system-ui, sans-serif', color: 'var(--fg)' }}
     >
         {/* Header */}
-        <div style={{ padding: '0.6rem 1rem', borderBottom: '1px solid #1f2937', display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+        <div style={{ padding: '0.6rem 1rem', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
           <strong>Screenshots — {slug}</strong>
-          <span style={{ fontFamily: 'monospace', color: '#6b7280', fontSize: '0.75rem' }}>.harness/screenshots/</span>
-          <span style={{ fontSize: '0.7rem', color: '#6b7280' }}>{items.length} items</span>
+          <span style={{ fontFamily: 'monospace', color: 'var(--fg-mute)', fontSize: '0.75rem' }}>.harness/screenshots/</span>
+          <span style={{ fontSize: '0.7rem', color: 'var(--fg-mute)' }}>{items.length} items</span>
           <input
             ref={fileInputRef}
             type="file"
@@ -123,7 +123,7 @@ export default function ScreenshotsPanel({ slug, onClose }: Props) {
           <button
             onClick={() => fileInputRef.current?.click()}
             disabled={uploading}
-            style={{ background: '#1f2937', color: '#e5e7eb', border: '1px solid #374151', borderRadius: 3, padding: '0.3rem 0.65rem', cursor: uploading ? 'wait' : 'pointer', fontSize: '0.75rem' }}
+            style={{ background: 'var(--bg-2)', color: 'var(--fg)', border: '1px solid var(--border)', borderRadius: 3, padding: '0.3rem 0.65rem', cursor: uploading ? 'wait' : 'pointer', fontSize: '0.75rem' }}
           >
             {uploading ? 'uploading…' : '＋ upload'}
           </button>
@@ -132,7 +132,7 @@ export default function ScreenshotsPanel({ slug, onClose }: Props) {
           )}
           <button
             onClick={onClose}
-            style={{ marginLeft: 'auto', background: 'transparent', color: '#9ca3af', border: '1px solid #374151', borderRadius: 3, padding: '0.35rem 0.75rem', cursor: 'pointer', fontSize: '0.8rem' }}
+            style={{ marginLeft: 'auto', background: 'transparent', color: 'var(--fg-mute)', border: '1px solid var(--border)', borderRadius: 3, padding: '0.35rem 0.75rem', cursor: 'pointer', fontSize: '0.8rem' }}
           >
             close
           </button>
@@ -140,13 +140,13 @@ export default function ScreenshotsPanel({ slug, onClose }: Props) {
 
         <div style={{ flex: 1, display: 'flex', minHeight: 0 }}>
           {/* Grid */}
-          <div style={{ flex: '1 1 60%', overflow: 'auto', padding: '1rem', borderRight: '1px solid #1f2937' }}>
+          <div style={{ flex: '1 1 60%', overflow: 'auto', padding: '1rem', borderRight: '1px solid var(--border)' }}>
             {items.length === 0 ? (
-              <div style={{ color: '#6b7280', textAlign: 'center', marginTop: '20%' }}>
+              <div style={{ color: 'var(--fg-mute)', textAlign: 'center', marginTop: '20%' }}>
                 No screenshots yet. Upload via the button above or drop files into <code>.harness/screenshots/</code>.
                 <div style={{ marginTop: '1rem', fontSize: '0.75rem' }}>
                   A <code>post-worker.sh</code> hook can capture them automatically:<br/>
-                  <pre style={{ background: '#111827', padding: '0.6rem', borderRadius: 4, marginTop: '0.5rem', textAlign: 'left', display: 'inline-block' }}>
+                  <pre style={{ background: 'var(--bg-2)', padding: '0.6rem', borderRadius: 4, marginTop: '0.5rem', textAlign: 'left', display: 'inline-block' }}>
 verdict screenshot http://localhost:5173 {'>'} "$STATE_DIR/screenshots/$FEATURE_ID.png"
                   </pre>
                 </div>
@@ -164,7 +164,7 @@ verdict screenshot http://localhost:5173 {'>'} "$STATE_DIR/screenshots/$FEATURE_
                         border: `1px solid ${isSelected ? '#3b82f6' : '#1f2937'}`,
                         borderRadius: 4,
                         overflow: 'hidden',
-                        background: '#111827',
+                        background: 'var(--bg-2)',
                       }}
                     >
                       <img
@@ -177,7 +177,7 @@ verdict screenshot http://localhost:5173 {'>'} "$STATE_DIR/screenshots/$FEATURE_
                         <div style={{ fontFamily: 'monospace', color: '#d1d5db', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={it.id}>
                           {it.id}
                         </div>
-                        <div style={{ color: '#6b7280', marginTop: '0.2rem' }}>
+                        <div style={{ color: 'var(--fg-mute)', marginTop: '0.2rem' }}>
                           {fmtTs(it.ts)} · {fmtSize(it.sizeBytes)}
                         </div>
                       </div>
@@ -192,9 +192,9 @@ verdict screenshot http://localhost:5173 {'>'} "$STATE_DIR/screenshots/$FEATURE_
           <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0 }}>
             {selected ? (
               <>
-                <div style={{ padding: '0.5rem 0.75rem', borderBottom: '1px solid #1f2937', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                  <code style={{ fontSize: '0.8rem', color: '#e5e7eb' }}>{selected.id}</code>
-                  <span style={{ fontSize: '0.7rem', color: '#6b7280' }}>{fmtSize(selected.sizeBytes)} · {fmtTs(selected.ts)}</span>
+                <div style={{ padding: '0.5rem 0.75rem', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                  <code style={{ fontSize: '0.8rem', color: 'var(--fg)' }}>{selected.id}</code>
+                  <span style={{ fontSize: '0.7rem', color: 'var(--fg-mute)' }}>{fmtSize(selected.sizeBytes)} · {fmtTs(selected.ts)}</span>
                   <button
                     onClick={() => remove(selected.id)}
                     style={{ marginLeft: 'auto', background: 'transparent', color: '#f87171', border: '1px solid #7f1d1d', borderRadius: 3, padding: '0.25rem 0.65rem', cursor: 'pointer', fontSize: '0.7rem' }}
@@ -205,7 +205,7 @@ verdict screenshot http://localhost:5173 {'>'} "$STATE_DIR/screenshots/$FEATURE_
                     href={`/api/harness/${slug}/screenshots/${selected.id}`}
                     target="_blank"
                     rel="noreferrer"
-                    style={{ background: 'transparent', color: '#9ca3af', border: '1px solid #374151', borderRadius: 3, padding: '0.25rem 0.65rem', fontSize: '0.7rem', textDecoration: 'none' }}
+                    style={{ background: 'transparent', color: 'var(--fg-mute)', border: '1px solid var(--border)', borderRadius: 3, padding: '0.25rem 0.65rem', fontSize: '0.7rem', textDecoration: 'none' }}
                   >
                     open
                   </a>
@@ -219,7 +219,7 @@ verdict screenshot http://localhost:5173 {'>'} "$STATE_DIR/screenshots/$FEATURE_
                 </div>
               </>
             ) : (
-              <div style={{ color: '#6b7280', textAlign: 'center', marginTop: '30%' }}>
+              <div style={{ color: 'var(--fg-mute)', textAlign: 'center', marginTop: '30%' }}>
                 Click a thumbnail to view full-size.
               </div>
             )}

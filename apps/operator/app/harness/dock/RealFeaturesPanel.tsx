@@ -32,7 +32,7 @@ type FilterKey = 'all' | 'todo' | 'failing' | 'validating' | 'passed' | 'depreca
 
 const STATUS_COLORS: Record<string, string> = {
   passed: '#4ade80',
-  todo: '#94a3b8',
+  todo: 'var(--fg-mute)',
   failing: '#f87171',
   validating: '#fbbf24',
   deprecated: '#71717a',

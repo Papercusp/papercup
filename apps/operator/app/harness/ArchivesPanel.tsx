@@ -118,25 +118,25 @@ export default function ArchivesPanel({ slug, onClose, onChanged }: Props) {
       title={`Archives`}
       srOnlyTitle
       zIndex={60}
-      contentStyle={{ background: '#0b0e14', border: '1px solid #374151', borderRadius: 6, width: '70vw', maxWidth: 900, height: '70vh', display: 'flex', flexDirection: 'column', overflow: 'hidden', fontFamily: 'system-ui, sans-serif', color: '#e5e7eb' }}
+      contentStyle={{ background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 6, width: '70vw', maxWidth: 900, height: '70vh', display: 'flex', flexDirection: 'column', overflow: 'hidden', fontFamily: 'system-ui, sans-serif', color: 'var(--fg)' }}
     >
         {confirmEl}
-        <div style={{ padding: '0.6rem 1rem', borderBottom: '1px solid #1f2937', display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+        <div style={{ padding: '0.6rem 1rem', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
           <strong>Archives — {slug}</strong>
-          <span style={{ fontFamily: 'monospace', color: '#6b7280', fontSize: '0.75rem' }}>.harness/archives/</span>
-          <span style={{ fontSize: '0.7rem', color: '#6b7280' }}>{items.length} archive(s)</span>
+          <span style={{ fontFamily: 'monospace', color: 'var(--fg-mute)', fontSize: '0.75rem' }}>.harness/archives/</span>
+          <span style={{ fontSize: '0.7rem', color: 'var(--fg-mute)' }}>{items.length} archive(s)</span>
           {toast && (
             <span style={{ color: /failed/i.test(toast) ? '#f87171' : '#10b981', fontSize: '0.75rem' }}>{toast}</span>
           )}
           <button
             onClick={onClose}
-            style={{ marginLeft: 'auto', background: 'transparent', color: '#9ca3af', border: '1px solid #374151', borderRadius: 3, padding: '0.35rem 0.75rem', cursor: 'pointer', fontSize: '0.8rem' }}
+            style={{ marginLeft: 'auto', background: 'transparent', color: 'var(--fg-mute)', border: '1px solid var(--border)', borderRadius: 3, padding: '0.35rem 0.75rem', cursor: 'pointer', fontSize: '0.8rem' }}
           >
             close
           </button>
         </div>
 
-        <div style={{ padding: '0.75rem 1rem', borderBottom: '1px solid #1f2937', display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+        <div style={{ padding: '0.75rem 1rem', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
           <label style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.8rem', cursor: 'pointer' }}>
             <Checkbox checked={resetOnArchive} onChange={setResetOnArchive} ariaLabel="also reset for fresh mission" />
             also reset for fresh mission
@@ -152,7 +152,7 @@ export default function ArchivesPanel({ slug, onClose, onChanged }: Props) {
 
         <div style={{ flex: 1, overflow: 'auto' }}>
           {items.length === 0 ? (
-            <div style={{ padding: '2rem', color: '#6b7280', textAlign: 'center' }}>
+            <div style={{ padding: '2rem', color: 'var(--fg-mute)', textAlign: 'center' }}>
               No archives yet. Click "archive" above to create one.
             </div>
           ) : (
@@ -178,7 +178,7 @@ function ArchivesGrid({
         width: 1.2,
         sortKey: 'ts',
         defaultSortDir: 'desc',
-        render: ({ row }) => <span style={{ color: '#9ca3af' }}>{fmtTs(row.ts)}</span>,
+        render: ({ row }) => <span style={{ color: 'var(--fg-mute)' }}>{fmtTs(row.ts)}</span>,
       },
       {
         key: 'id',
@@ -193,7 +193,7 @@ function ArchivesGrid({
         width: 0.7,
         align: 'right',
         sortKey: 'sizeBytes',
-        render: ({ row }) => <span style={{ color: '#6b7280' }}>{fmtSize(row.sizeBytes)}</span>,
+        render: ({ row }) => <span style={{ color: 'var(--fg-mute)' }}>{fmtSize(row.sizeBytes)}</span>,
       },
       {
         key: 'action',

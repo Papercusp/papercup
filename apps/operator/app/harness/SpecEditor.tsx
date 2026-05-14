@@ -290,8 +290,8 @@ export default function SpecEditor({ slug, projectPath, alive, onClose, inline =
   const inner = (
     <div
       style={{
-        background: '#0b0e14',
-        border: inline ? 'none' : '1px solid #374151',
+        background: 'var(--bg)',
+        border: inline ? 'none' : '1px solid var(--border)',
         borderRadius: inline ? 0 : 6,
         width: inline ? '100%' : '90vw',
         // Inline: use flex:1 + align-self:stretch so we fill the parent
@@ -304,9 +304,9 @@ export default function SpecEditor({ slug, projectPath, alive, onClose, inline =
       onClick={(e) => e.stopPropagation()}
     >
         {/* Header */}
-        <div style={{ padding: '0.6rem 1rem', borderBottom: '1px solid #1f2937', display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+        <div style={{ padding: '0.6rem 1rem', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
           {onSettings && (
-            <span style={{ fontFamily: 'monospace', color: '#6b7280', fontSize: '0.75rem' }}>{tabMeta.path(projectPath)}</span>
+            <span style={{ fontFamily: 'monospace', color: 'var(--fg-mute)', fontSize: '0.75rem' }}>{tabMeta.path(projectPath)}</span>
           )}
           {alive && (
             <span style={{ color: '#f59e0b', fontSize: '0.8rem', marginLeft: '1rem' }}>
@@ -325,7 +325,7 @@ export default function SpecEditor({ slug, projectPath, alive, onClose, inline =
                   <button
                     onClick={revertActive}
                     disabled={!isDirtyTab}
-                    style={{ background: 'transparent', color: '#9ca3af', border: '1px solid #374151', borderRadius: 3, padding: '0.35rem 0.75rem', cursor: isDirtyTab ? 'pointer' : 'not-allowed', opacity: isDirtyTab ? 1 : 0.5 }}
+                    style={{ background: 'transparent', color: 'var(--fg-mute)', border: '1px solid var(--border)', borderRadius: 3, padding: '0.35rem 0.75rem', cursor: isDirtyTab ? 'pointer' : 'not-allowed', opacity: isDirtyTab ? 1 : 0.5 }}
                   >
                     revert tab
                   </button>
@@ -345,7 +345,7 @@ export default function SpecEditor({ slug, projectPath, alive, onClose, inline =
         </div>
 
         {/* Section tabs: Settings / Memory / Prompts */}
-        <div style={{ display: 'flex', gap: '0.35rem', padding: '0.5rem 1rem', borderBottom: '1px solid #1f2937', background: '#0b1018' }}>
+        <div style={{ display: 'flex', gap: '0.35rem', padding: '0.5rem 1rem', borderBottom: '1px solid var(--border)', background: 'var(--bg)' }}>
           {(['settings', 'memory', 'prompts'] as const).map((s) => {
             const isActive = section === s;
             const label = s === 'settings' ? 'Settings' : s === 'memory' ? 'Memory' : 'Prompts';
@@ -355,7 +355,7 @@ export default function SpecEditor({ slug, projectPath, alive, onClose, inline =
                 onClick={() => setSection(s)}
                 style={{
                   background: isActive ? '#1f2937' : 'transparent',
-                  color: isActive ? '#e5e7eb' : '#9ca3af',
+                  color: isActive ? 'var(--fg)' : 'var(--fg-mute)',
                   border: '1px solid ' + (isActive ? '#4b5563' : 'transparent'),
                   borderRadius: 4,
                   padding: '0.4rem 0.9rem',
@@ -372,7 +372,7 @@ export default function SpecEditor({ slug, projectPath, alive, onClose, inline =
 
         {/* Sub-tabs (only within Settings) */}
         {onSettings && (
-          <div style={{ display: 'flex', gap: '0.25rem', padding: '0.35rem 1rem', borderBottom: '1px solid #1f2937', background: '#0f141f', flexWrap: 'wrap' }}>
+          <div style={{ display: 'flex', gap: '0.25rem', padding: '0.35rem 1rem', borderBottom: '1px solid var(--border)', background: 'var(--bg)', flexWrap: 'wrap' }}>
             {TABS.map((t) => {
               const isActive = t.id === tab;
               const isSimple = SIMPLE_TABS.includes(t.id as SimpleTab);
@@ -384,7 +384,7 @@ export default function SpecEditor({ slug, projectPath, alive, onClose, inline =
                   onClick={() => setTab(t.id)}
                   style={{
                     background: isActive ? '#1f2937' : 'transparent',
-                    color: isActive ? '#e5e7eb' : '#9ca3af',
+                    color: isActive ? 'var(--fg)' : 'var(--fg-mute)',
                     border: '1px solid ' + (isActive ? '#374151' : 'transparent'),
                     borderRadius: 3,
                     padding: '0.3rem 0.75rem',
@@ -395,7 +395,7 @@ export default function SpecEditor({ slug, projectPath, alive, onClose, inline =
                 >
                   {t.label}
                   {isDirty && <span style={{ color: '#f59e0b', marginLeft: 6 }}>●</span>}
-                  {doesntExist && !isDirty && <span style={{ color: '#6b7280', marginLeft: 6, fontSize: '0.7rem' }}>(new)</span>}
+                  {doesntExist && !isDirty && <span style={{ color: 'var(--fg-mute)', marginLeft: 6, fontSize: '0.7rem' }}>(new)</span>}
                 </button>
               );
             })}
@@ -421,13 +421,13 @@ export default function SpecEditor({ slug, projectPath, alive, onClose, inline =
           ) : section === 'prompts' ? (
             <PromptsTab slug={slug} alive={alive} />
           ) : needsEnvReveal ? (
-            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', gap: 10, color: '#9ca3af' }}>
+            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', gap: 10, color: 'var(--fg-mute)' }}>
               <span style={{ fontSize: 32 }}>🔒</span>
               <div style={{ fontSize: 13 }}>.env is not loaded until you explicitly reveal it.</div>
               <button onClick={revealEnv} className="h-btn primary" style={{ padding: '6px 16px', fontSize: 12 }}>
                 Reveal .env
               </button>
-              <div style={{ fontSize: 10, color: '#6b7280', maxWidth: 340, textAlign: 'center', marginTop: 4 }}>
+              <div style={{ fontSize: 10, color: 'var(--fg-mute)', maxWidth: 340, textAlign: 'center', marginTop: 4 }}>
                 Secrets will load into browser memory. Close this tab when finished.
               </div>
             </div>
@@ -452,7 +452,7 @@ export default function SpecEditor({ slug, projectPath, alive, onClose, inline =
               }}
             />
           ) : loading ? (
-            <div style={{ padding: '2rem', color: '#9ca3af' }}>loading…</div>
+            <div style={{ padding: '2rem', color: 'var(--fg-mute)' }}>loading…</div>
           ) : simpleTab ? (
             tabMeta.language === 'markdown' && simpleTab !== 'env' ? (
               <MarkdownTabBody
@@ -481,7 +481,7 @@ export default function SpecEditor({ slug, projectPath, alive, onClose, inline =
             )
           ) : null}
           {onSettings && missing && simpleTab && !dirty.includes(simpleTab) && !isCollectionTab && (
-            <div style={{ position: 'absolute', top: '0.75rem', right: '0.75rem', background: '#111827', border: '1px solid #374151', padding: '0.35rem 0.65rem', borderRadius: 3, fontSize: '0.75rem', color: '#9ca3af' }}>
+            <div style={{ position: 'absolute', top: '0.75rem', right: '0.75rem', background: 'var(--bg-2)', border: '1px solid var(--border)', padding: '0.35rem 0.65rem', borderRadius: 3, fontSize: '0.75rem', color: 'var(--fg-mute)' }}>
               file doesn&apos;t exist yet — first save creates it
             </div>
           )}

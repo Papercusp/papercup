@@ -38,7 +38,7 @@ interface Props {
 }
 
 const STATUS_COLOR: Record<string, string> = {
-  todo: '#6b7280',
+  todo: 'var(--fg-mute)',
   in_progress: '#3b82f6',
   validating: '#a855f7',
   failing: '#ef4444',
@@ -154,20 +154,20 @@ function SnapshotsPanelInner({ slug, onClose, onRestored }: Props) {
       title={`Snapshots`}
       srOnlyTitle
       zIndex={60}
-      contentStyle={{ background: '#0b0e14', border: '1px solid #374151', borderRadius: 6, width: '80vw', maxWidth: 1100, height: '75vh', display: 'flex', flexDirection: 'column', overflow: 'hidden', fontFamily: 'system-ui, sans-serif', color: '#e5e7eb' }}
+      contentStyle={{ background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 6, width: '80vw', maxWidth: 1100, height: '75vh', display: 'flex', flexDirection: 'column', overflow: 'hidden', fontFamily: 'system-ui, sans-serif', color: 'var(--fg)' }}
     >
         {confirmEl}
         {/* Header */}
-        <div style={{ padding: '0.6rem 1rem', borderBottom: '1px solid #1f2937', display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+        <div style={{ padding: '0.6rem 1rem', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
           <strong>Snapshots — {slug}</strong>
-          <span style={{ fontFamily: 'monospace', color: '#6b7280', fontSize: '0.75rem' }}>.harness/snapshots/</span>
-          <span style={{ marginLeft: 'auto', fontSize: '0.75rem', color: '#6b7280' }}>live (Zero)</span>
+          <span style={{ fontFamily: 'monospace', color: 'var(--fg-mute)', fontSize: '0.75rem' }}>.harness/snapshots/</span>
+          <span style={{ marginLeft: 'auto', fontSize: '0.75rem', color: 'var(--fg-mute)' }}>live (Zero)</span>
           {toast && (
             <span style={{ color: /failed/i.test(toast) ? '#f87171' : '#10b981', fontSize: '0.8rem' }}>{toast}</span>
           )}
           <button
             onClick={onClose}
-            style={{ background: 'transparent', color: '#9ca3af', border: '1px solid #374151', borderRadius: 3, padding: '0.35rem 0.75rem', cursor: 'pointer', fontSize: '0.8rem' }}
+            style={{ background: 'transparent', color: 'var(--fg-mute)', border: '1px solid var(--border)', borderRadius: 3, padding: '0.35rem 0.75rem', cursor: 'pointer', fontSize: '0.8rem' }}
           >
             close
           </button>
@@ -175,9 +175,9 @@ function SnapshotsPanelInner({ slug, onClose, onRestored }: Props) {
 
         <div style={{ flex: 1, display: 'flex', minHeight: 0 }}>
           {/* List */}
-          <div style={{ flex: '0 0 55%', borderRight: '1px solid #1f2937', overflow: 'auto' }}>
+          <div style={{ flex: '0 0 55%', borderRight: '1px solid var(--border)', overflow: 'auto' }}>
             {snapshots.length === 0 ? (
-              <div style={{ padding: '2rem', color: '#6b7280', textAlign: 'center' }}>
+              <div style={{ padding: '2rem', color: 'var(--fg-mute)', textAlign: 'center' }}>
                 No snapshots yet. Each iteration of the main loop creates one.
               </div>
             ) : (
@@ -196,22 +196,22 @@ function SnapshotsPanelInner({ slug, onClose, onRestored }: Props) {
             {selected ? (
               <>
                 <div>
-                  <div style={{ fontSize: '0.7rem', color: '#9ca3af', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Snapshot</div>
+                  <div style={{ fontSize: '0.7rem', color: 'var(--fg-mute)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Snapshot</div>
                   <div style={{ fontFamily: 'monospace', fontSize: '0.85rem', marginTop: '0.25rem' }}>{selected.id}</div>
-                  <div style={{ color: '#6b7280', fontSize: '0.75rem', marginTop: '0.2rem' }}>
-                    iteration <b style={{ color: '#e5e7eb' }}>{selected.iterNum}</b> · {fmtTs(selected.ts)}
+                  <div style={{ color: 'var(--fg-mute)', fontSize: '0.75rem', marginTop: '0.2rem' }}>
+                    iteration <b style={{ color: 'var(--fg)' }}>{selected.iterNum}</b> · {fmtTs(selected.ts)}
                   </div>
                 </div>
 
                 <div>
-                  <div style={{ fontSize: '0.7rem', color: '#9ca3af', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '0.3rem' }}>Files captured</div>
+                  <div style={{ fontSize: '0.7rem', color: 'var(--fg-mute)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '0.3rem' }}>Files captured</div>
                   {selected.files.map((f) => (
                     <div key={f} style={{ fontFamily: 'monospace', fontSize: '0.75rem', color: '#d1d5db' }}>· {f}</div>
                   ))}
                 </div>
 
                 <div>
-                  <div style={{ fontSize: '0.7rem', color: '#9ca3af', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '0.3rem' }}>Restore options</div>
+                  <div style={{ fontSize: '0.7rem', color: 'var(--fg-mute)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '0.3rem' }}>Restore options</div>
                   <label style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.8rem', color: '#d1d5db', cursor: selected.files.includes('supervisor-notes.md') ? 'pointer' : 'not-allowed', opacity: selected.files.includes('supervisor-notes.md') ? 1 : 0.5 }}>
                     <Checkbox
                       checked={includeNotes && selected.files.includes('supervisor-notes.md')}
@@ -230,7 +230,7 @@ function SnapshotsPanelInner({ slug, onClose, onRestored }: Props) {
                     />
                     also restore config.json (per-role models)
                   </label>
-                  <div style={{ marginTop: '0.25rem', color: '#6b7280', fontSize: '0.7rem' }}>
+                  <div style={{ marginTop: '0.25rem', color: 'var(--fg-mute)', fontSize: '0.7rem' }}>
                     features (harness_features rows) and validation-contract.md are always restored when present.
                   </div>
                 </div>
@@ -248,12 +248,12 @@ function SnapshotsPanelInner({ slug, onClose, onRestored }: Props) {
                   {busy ? '…' : '↻ restore mission state'}
                 </button>
 
-                <div style={{ fontSize: '0.7rem', color: '#6b7280', marginTop: '0.25rem' }}>
+                <div style={{ fontSize: '0.7rem', color: 'var(--fg-mute)', marginTop: '0.25rem' }}>
                   This overwrites current state with the snapshot. If the harness is running, the next iteration will read the restored files.
                 </div>
               </>
             ) : (
-              <div style={{ color: '#6b7280', textAlign: 'center', marginTop: '20%' }}>
+              <div style={{ color: 'var(--fg-mute)', textAlign: 'center', marginTop: '20%' }}>
                 Select a snapshot to see restore options.
               </div>
             )}
@@ -280,7 +280,7 @@ function SnapshotsGrid({
         width: 1.3,
         sortKey: 'ts',
         defaultSortDir: 'desc',
-        render: ({ row }) => <span style={{ color: '#9ca3af' }}>{fmtTs(row.ts)}</span>,
+        render: ({ row }) => <span style={{ color: 'var(--fg-mute)' }}>{fmtTs(row.ts)}</span>,
       },
       {
         key: 'iter',
@@ -329,8 +329,8 @@ function SnapshotsGrid({
             disabled={busy}
             style={{
               background: 'transparent',
-              color: '#9ca3af',
-              border: '1px solid #374151',
+              color: 'var(--fg-mute)',
+              border: '1px solid var(--border)',
               borderRadius: 3,
               padding: '0.1rem 0.45rem',
               cursor: 'pointer',

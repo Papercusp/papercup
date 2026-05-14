@@ -194,8 +194,8 @@ export default function IntelPanel({ slug, onClose }: Props) {
       srOnlyTitle
       zIndex={60}
       contentStyle={{
-        background: '#0b0e14',
-        border: '1px solid #374151',
+        background: 'var(--bg)',
+        border: '1px solid var(--border)',
         borderRadius: 6,
         width: '85vw',
         maxWidth: 1300,
@@ -204,13 +204,13 @@ export default function IntelPanel({ slug, onClose }: Props) {
         flexDirection: 'column',
         overflow: 'hidden',
         fontFamily: 'system-ui, sans-serif',
-        color: '#e5e7eb',
+        color: 'var(--fg)',
       }}
     >
-      <div style={{ padding: '0.6rem 1rem', borderBottom: '1px solid #1f2937', display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+      <div style={{ padding: '0.6rem 1rem', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
         <strong>Intel — {slug}</strong>
-        <span style={{ fontFamily: 'monospace', color: '#6b7280', fontSize: '0.75rem' }}>tool-invocation telemetry</span>
-        <span style={{ marginLeft: 'auto', fontSize: '0.75rem', color: '#6b7280' }}>auto-refresh 30s</span>
+        <span style={{ fontFamily: 'monospace', color: 'var(--fg-mute)', fontSize: '0.75rem' }}>tool-invocation telemetry</span>
+        <span style={{ marginLeft: 'auto', fontSize: '0.75rem', color: 'var(--fg-mute)' }}>auto-refresh 30s</span>
         <button
           onClick={() => void fetchActive()}
           disabled={loading}
@@ -222,7 +222,7 @@ export default function IntelPanel({ slug, onClose }: Props) {
       </div>
 
       <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0, gap: 8, padding: '0.5rem 1rem 1rem' }}>
-        <div style={{ display: 'flex', gap: 8, borderBottom: '1px solid #1f2937', paddingBottom: 4 }}>
+        <div style={{ display: 'flex', gap: 8, borderBottom: '1px solid var(--border)', paddingBottom: 4 }}>
           {(['spawns', 'pack', 'diff', 'graph'] as SubTab[]).map((t) => (
             <button
               key={t}
@@ -572,7 +572,7 @@ function GraphTab({ slug }: { slug: string }) {
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder="search the code graph — e.g. &quot;auth token validation&quot;, &quot;find and replace&quot;"
-            style={{ flex: 1, padding: '6px 10px', fontSize: 13, fontFamily: 'system-ui', background: '#0e1318', border: '1px solid #1f2937', borderRadius: 4, color: '#e5e7eb' }}
+            style={{ flex: 1, padding: '6px 10px', fontSize: 13, fontFamily: 'system-ui', background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 4, color: 'var(--fg)' }}
             autoFocus
           />
           <button type="submit" disabled={loading || !query.trim()} style={{ padding: '6px 14px', fontSize: 13 }}>
@@ -587,7 +587,7 @@ function GraphTab({ slug }: { slug: string }) {
           </button>
         </div>
         {showAdvanced && (
-          <div style={{ display: 'flex', gap: 8, fontSize: 12, color: '#9ca3af' }}>
+          <div style={{ display: 'flex', gap: 8, fontSize: 12, color: 'var(--fg-mute)' }}>
             <label style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
               context
               <input
@@ -595,7 +595,7 @@ function GraphTab({ slug }: { slug: string }) {
                 value={taskContext}
                 onChange={(e) => setTaskContext(e.target.value)}
                 placeholder="e.g. &quot;adding OAuth support&quot; — helps ranking"
-                style={{ width: 320, padding: '4px 8px', background: '#0e1318', border: '1px solid #1f2937', borderRadius: 4, color: '#e5e7eb' }}
+                style={{ width: 320, padding: '4px 8px', background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 4, color: 'var(--fg)' }}
               />
             </label>
             <label style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
@@ -606,7 +606,7 @@ function GraphTab({ slug }: { slug: string }) {
                 min={1}
                 max={50}
                 onChange={(e) => setLimit(Math.max(1, Math.min(50, Number(e.target.value) || 5)))}
-                style={{ width: 60, padding: '4px 8px', background: '#0e1318', border: '1px solid #1f2937', borderRadius: 4, color: '#e5e7eb' }}
+                style={{ width: 60, padding: '4px 8px', background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 4, color: 'var(--fg)' }}
               />
             </label>
           </div>
@@ -620,7 +620,7 @@ function GraphTab({ slug }: { slug: string }) {
           </div>
         )}
         {!result && !rawText && !error && !loading && (
-          <div style={{ padding: 24, color: '#6b7280', textAlign: 'center', fontSize: 12 }}>
+          <div style={{ padding: 24, color: 'var(--fg-mute)', textAlign: 'center', fontSize: 12 }}>
             <div style={{ fontSize: 14, marginBottom: 8 }}>code-graph search</div>
             <div>
               Submit a natural-language or keyword query. Returns ranked execution flows
@@ -637,7 +637,7 @@ function GraphTab({ slug }: { slug: string }) {
         )}
         {result && <GraphResultView result={result} />}
         {!result && rawText && (
-          <pre style={{ padding: 12, fontSize: 11, fontFamily: 'monospace', whiteSpace: 'pre-wrap', color: '#9ca3af' }}>
+          <pre style={{ padding: 12, fontSize: 11, fontFamily: 'monospace', whiteSpace: 'pre-wrap', color: 'var(--fg-mute)' }}>
             {rawText}
           </pre>
         )}
@@ -655,7 +655,7 @@ function GraphResultView({ result }: { result: GraphResult }) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
       {timing && (
-        <div style={{ display: 'flex', gap: 12, fontSize: 11, color: '#9ca3af', fontFamily: 'monospace' }}>
+        <div style={{ display: 'flex', gap: 12, fontSize: 11, color: 'var(--fg-mute)', fontFamily: 'monospace' }}>
           <span>wall {fmtDuration(Math.round(timing.wall ?? 0))}</span>
           {typeof timing.bm25 === 'number' && <span>bm25 {timing.bm25.toFixed(0)}ms</span>}
           {typeof timing.vector === 'number' && <span>vector {timing.vector.toFixed(0)}ms</span>}
@@ -663,29 +663,29 @@ function GraphResultView({ result }: { result: GraphResult }) {
       )}
 
       {isEmpty && (
-        <div style={{ padding: 16, color: '#6b7280', fontSize: 12 }}>
+        <div style={{ padding: 16, color: 'var(--fg-mute)', fontSize: 12 }}>
           no matches — try a broader query, or run <code>gitnexus analyze</code> against the project.
         </div>
       )}
 
       {processes.length > 0 && (
         <section>
-          <div style={{ fontSize: 11, textTransform: 'uppercase', color: '#9ca3af', letterSpacing: 0.5, marginBottom: 6 }}>
+          <div style={{ fontSize: 11, textTransform: 'uppercase', color: 'var(--fg-mute)', letterSpacing: 0.5, marginBottom: 6 }}>
             processes ({processes.length}) — ranked by relevance
           </div>
           {processes.map((p, i) => (
-            <div key={i} style={{ marginBottom: 12, padding: 10, background: '#0e1318', border: '1px solid #1f2937', borderRadius: 4 }}>
-              <div style={{ fontFamily: 'monospace', fontSize: 13, color: '#e5e7eb', marginBottom: 4 }}>
+            <div key={i} style={{ marginBottom: 12, padding: 10, background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 4 }}>
+              <div style={{ fontFamily: 'monospace', fontSize: 13, color: 'var(--fg)', marginBottom: 4 }}>
                 {p.name ?? `process ${i + 1}`}
-                {typeof p.score === 'number' && <span style={{ marginLeft: 8, fontSize: 11, color: '#9ca3af' }}>score {p.score.toFixed(2)}</span>}
+                {typeof p.score === 'number' && <span style={{ marginLeft: 8, fontSize: 11, color: 'var(--fg-mute)' }}>score {p.score.toFixed(2)}</span>}
               </div>
               {Array.isArray(p.symbols) && p.symbols.length > 0 && (
                 <div role="list" style={{ display: 'grid', gridTemplateColumns: '20% 1fr auto', columnGap: 8, rowGap: 2, fontSize: 11, marginTop: 4 }}>
                   {p.symbols.map((s, j) => (
                     <div key={j} role="listitem" style={{ display: 'contents' }}>
                       <span style={{ ...td, fontFamily: 'monospace', color: '#a78bfa' }}>{s.kind ?? '?'}</span>
-                      <span style={{ ...td, fontFamily: 'monospace', color: '#e5e7eb' }}>{s.name ?? s.uid ?? '?'}</span>
-                      <span style={{ ...td, fontFamily: 'monospace', color: '#6b7280', fontSize: 10 }}>{s.file ?? ''}</span>
+                      <span style={{ ...td, fontFamily: 'monospace', color: 'var(--fg)' }}>{s.name ?? s.uid ?? '?'}</span>
+                      <span style={{ ...td, fontFamily: 'monospace', color: 'var(--fg-mute)', fontSize: 10 }}>{s.file ?? ''}</span>
                     </div>
                   ))}
                 </div>
@@ -697,15 +697,15 @@ function GraphResultView({ result }: { result: GraphResult }) {
 
       {definitions.length > 0 && (
         <section>
-          <div style={{ fontSize: 11, textTransform: 'uppercase', color: '#9ca3af', letterSpacing: 0.5, marginBottom: 6 }}>
+          <div style={{ fontSize: 11, textTransform: 'uppercase', color: 'var(--fg-mute)', letterSpacing: 0.5, marginBottom: 6 }}>
             definitions ({definitions.length}) — types/interfaces not in any process
           </div>
           <div role="list" style={{ display: 'grid', gridTemplateColumns: '15% 1fr auto', columnGap: 8, rowGap: 2, fontSize: 11 }}>
             {definitions.map((d, i) => (
               <div key={i} role="listitem" style={{ display: 'contents' }}>
                 <span style={{ ...td, fontFamily: 'monospace', color: '#a78bfa' }}>{d.kind ?? '?'}</span>
-                <span style={{ ...td, fontFamily: 'monospace', color: '#e5e7eb' }}>{d.name ?? '?'}</span>
-                <span style={{ ...td, fontFamily: 'monospace', color: '#6b7280', fontSize: 10 }}>{d.file ?? ''}</span>
+                <span style={{ ...td, fontFamily: 'monospace', color: 'var(--fg)' }}>{d.name ?? '?'}</span>
+                <span style={{ ...td, fontFamily: 'monospace', color: 'var(--fg-mute)', fontSize: 10 }}>{d.file ?? ''}</span>
               </div>
             ))}
           </div>

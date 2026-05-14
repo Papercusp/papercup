@@ -56,13 +56,13 @@ interface ChatRow {
 }
 
 const STATUS_COLOR: Record<string, string> = {
-  drafting: '#6b7280',
+  drafting: 'var(--fg-mute)',
   gathering_feedback: '#2563eb',
   awaiting_user: '#d97706',
   final: '#16a34a',
   max_rounds: '#a16207',
-  cancelled: '#9ca3af',
-  superseded: '#9ca3af',
+  cancelled: 'var(--fg-mute)',
+  superseded: 'var(--fg-mute)',
   error: '#dc2626',
 };
 
@@ -205,7 +205,7 @@ export default function ExpertsPanel({ harnessSlug, onClose }: { harnessSlug: st
 }
 
 function ExpertRow({ expert, selected, onSelect }: { expert: ExpertSummary; selected: boolean; onSelect: () => void }) {
-  const color = STATUS_COLOR[expert.status] ?? '#6b7280';
+  const color = STATUS_COLOR[expert.status] ?? 'var(--fg-mute)';
   return (
     <button
       onClick={onSelect}
@@ -323,7 +323,7 @@ function ExpertDetailView({ harnessSlug, expertId, onChange }: { harnessSlug: st
   if (error) return <div style={{ padding: 24, color: 'var(--bad)' }}>{error}</div>;
   if (!detail) return <div style={{ padding: 24, color: 'var(--fg-mute)' }}>loading…</div>;
 
-  const statusColor = STATUS_COLOR[detail.status] ?? '#6b7280';
+  const statusColor = STATUS_COLOR[detail.status] ?? 'var(--fg-mute)';
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', flex: 1, minWidth: 0 }}>

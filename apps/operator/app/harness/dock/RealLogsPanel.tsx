@@ -24,7 +24,7 @@ interface LogResponse {
 const LEVEL_COLORS: Record<string, string> = {
   error: '#f87171',
   warn: '#fbbf24',
-  info: '#94a3b8',
+  info: 'var(--fg-mute)',
   debug: '#64748b',
   trace: '#475569',
 };

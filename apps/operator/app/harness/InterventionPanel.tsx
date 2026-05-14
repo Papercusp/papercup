@@ -85,12 +85,12 @@ export default function InterventionPanel({ slug, alive, onClose }: Props) {
       title={`Intervention`}
       srOnlyTitle
       zIndex={60}
-      contentStyle={{ background: '#0b0e14', border: '1px solid #374151', borderRadius: 6, width: '70vw', maxWidth: 900, height: '75vh', display: 'flex', flexDirection: 'column', overflow: 'hidden', fontFamily: 'system-ui, sans-serif' }}
+      contentStyle={{ background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 6, width: '70vw', maxWidth: 900, height: '75vh', display: 'flex', flexDirection: 'column', overflow: 'hidden', fontFamily: 'system-ui, sans-serif' }}
     >
         {/* Header */}
-        <div style={{ padding: '0.6rem 1rem', borderBottom: '1px solid #1f2937', display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-          <strong style={{ color: '#e5e7eb' }}>Intervention — {slug}</strong>
-          <span style={{ fontFamily: 'monospace', color: '#6b7280', fontSize: '0.75rem' }}>.harness/supervisor-notes.md</span>
+        <div style={{ padding: '0.6rem 1rem', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+          <strong style={{ color: 'var(--fg)' }}>Intervention — {slug}</strong>
+          <span style={{ fontFamily: 'monospace', color: 'var(--fg-mute)', fontSize: '0.75rem' }}>.harness/supervisor-notes.md</span>
           {alive && (
             <span style={{ color: '#10b981', fontSize: '0.75rem', marginLeft: '0.5rem' }}>
               ● mission running — next orchestrator iteration will read your note
@@ -103,26 +103,26 @@ export default function InterventionPanel({ slug, alive, onClose }: Props) {
           )}
           <button
             onClick={onClose}
-            style={{ background: 'transparent', color: '#9ca3af', border: '1px solid #374151', borderRadius: 3, padding: '0.35rem 0.75rem', cursor: 'pointer', fontSize: '0.8rem', marginLeft: toast ? 0 : 'auto' }}
+            style={{ background: 'transparent', color: 'var(--fg-mute)', border: '1px solid var(--border)', borderRadius: 3, padding: '0.35rem 0.75rem', cursor: 'pointer', fontSize: '0.8rem', marginLeft: toast ? 0 : 'auto' }}
           >
             close
           </button>
         </div>
 
         {/* Notes read pane */}
-        <div style={{ flex: '1 1 60%', display: 'flex', flexDirection: 'column', minHeight: 0, borderBottom: '1px solid #1f2937' }}>
-          <div style={{ fontSize: '0.75rem', color: '#9ca3af', padding: '0.4rem 1rem', borderBottom: '1px solid #1f2937', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+        <div style={{ flex: '1 1 60%', display: 'flex', flexDirection: 'column', minHeight: 0, borderBottom: '1px solid var(--border)' }}>
+          <div style={{ fontSize: '0.75rem', color: 'var(--fg-mute)', padding: '0.4rem 1rem', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
             history
             {mtimeMs && (
-              <span style={{ color: '#6b7280' }}>
+              <span style={{ color: 'var(--fg-mute)' }}>
                 · updated {Math.round((Date.now() - mtimeMs) / 1000)}s ago
               </span>
             )}
-            <span style={{ marginLeft: 'auto', color: '#6b7280' }}>polls every 5s</span>
+            <span style={{ marginLeft: 'auto', color: 'var(--fg-mute)' }}>polls every 5s</span>
           </div>
           <pre
             ref={notesRef}
-            style={{ flex: 1, overflow: 'auto', margin: 0, padding: '0.75rem 1rem', fontSize: '0.8rem', fontFamily: 'ui-monospace, monospace', color: '#d1d5db', whiteSpace: 'pre-wrap', background: '#0b0e14' }}
+            style={{ flex: 1, overflow: 'auto', margin: 0, padding: '0.75rem 1rem', fontSize: '0.8rem', fontFamily: 'ui-monospace, monospace', color: '#d1d5db', whiteSpace: 'pre-wrap', background: 'var(--bg)' }}
           >
             {notes ?? '(no notes yet — send your first message below to seed supervisor-notes.md)'}
           </pre>
@@ -137,8 +137,8 @@ export default function InterventionPanel({ slug, alive, onClose }: Props) {
             placeholder="Your message to the orchestrator. Gets appended to supervisor-notes.md with a timestamp. Next iteration will read it as authoritative guidance. (Cmd/Ctrl+Enter to send)"
             style={{
               width: '100%', boxSizing: 'border-box',
-              background: '#111827', color: '#e5e7eb',
-              border: '1px solid #374151', borderRadius: 3,
+              background: 'var(--bg-2)', color: 'var(--fg)',
+              border: '1px solid var(--border)', borderRadius: 3,
               padding: '0.5rem 0.7rem',
               fontSize: '0.85rem',
               fontFamily: 'ui-monospace, monospace',
@@ -146,7 +146,7 @@ export default function InterventionPanel({ slug, alive, onClose }: Props) {
             }}
           />
           <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
-            <span style={{ fontSize: '0.7rem', color: '#6b7280' }}>
+            <span style={{ fontSize: '0.7rem', color: 'var(--fg-mute)' }}>
               Cmd/Ctrl+Enter to send
             </span>
             <button

@@ -16,7 +16,7 @@ export interface FeatureLite {
 }
 
 const STATUS_META: Record<FeatureLite['status'], { color: string; bg: string; label: string; Icon: typeof Circle }> = {
-  todo:        { color: '#9ca3af', bg: 'rgba(156,163,175,0.15)',  label: 'todo',       Icon: Clock },
+  todo:        { color: 'var(--fg-mute)', bg: 'rgba(156,163,175,0.15)',  label: 'todo',       Icon: Clock },
   in_progress: { color: '#7aa2f7', bg: 'rgba(122,162,247,0.15)', label: 'working',    Icon: Loader2 },
   validating:  { color: '#c084fc', bg: 'rgba(192,132,252,0.15)', label: 'validating', Icon: Loader2 },
   failing:     { color: '#f7768e', bg: 'rgba(247,118,142,0.15)', label: 'failing',    Icon: AlertTriangle },

@@ -163,13 +163,13 @@ export default function FeatureEditor({ slug, feature, onClose, onSaved }: Props
       title={`Edit feature`}
       srOnlyTitle
       zIndex={120}
-      contentStyle={{ background: '#0b0e14', border: '1px solid #374151', borderRadius: 6, width: '70vw', maxWidth: 720, height: '65vh', display: 'flex', flexDirection: 'column', overflow: 'hidden', fontFamily: 'system-ui, sans-serif' }}
+      contentStyle={{ background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 6, width: '70vw', maxWidth: 720, height: '65vh', display: 'flex', flexDirection: 'column', overflow: 'hidden', fontFamily: 'system-ui, sans-serif' }}
     >
         {confirmEl}
         {/* Header */}
-        <div style={{ padding: '0.75rem 1rem', borderBottom: '1px solid #1f2937', display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-          <strong style={{ color: '#e5e7eb' }}>{isCreate ? 'New feature' : `Edit ${feature!.id}`}</strong>
-          <span style={{ color: '#6b7280', fontSize: '0.75rem', fontFamily: 'monospace' }} title="Features live in Postgres (harness_features); edits dispatch via /api/harness/<slug>/features">harness_features</span>
+        <div style={{ padding: '0.75rem 1rem', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+          <strong style={{ color: 'var(--fg)' }}>{isCreate ? 'New feature' : `Edit ${feature!.id}`}</strong>
+          <span style={{ color: 'var(--fg-mute)', fontSize: '0.75rem', fontFamily: 'monospace' }} title="Features live in Postgres (harness_features); edits dispatch via /api/harness/<slug>/features">harness_features</span>
           <div style={{ marginLeft: 'auto', display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
             {toast && (
               <span style={{ color: /failed/i.test(toast) ? '#f87171' : '#10b981', fontSize: '0.8rem' }}>{toast}</span>
@@ -192,7 +192,7 @@ export default function FeatureEditor({ slug, feature, onClose, onSaved }: Props
             </button>
             <button
               onClick={onClose}
-              style={{ background: 'transparent', color: '#9ca3af', border: '1px solid #374151', borderRadius: 3, padding: '0.35rem 0.75rem', cursor: 'pointer' }}
+              style={{ background: 'transparent', color: 'var(--fg-mute)', border: '1px solid var(--border)', borderRadius: 3, padding: '0.35rem 0.75rem', cursor: 'pointer' }}
             >
               cancel
             </button>
@@ -202,7 +202,7 @@ export default function FeatureEditor({ slug, feature, onClose, onSaved }: Props
         {/* Body */}
         <div style={{ flex: 1, overflow: 'auto', padding: '1rem', display: 'flex', flexDirection: 'column', gap: '0.9rem' }}>
           <div>
-            <label style={{ display: 'block', fontSize: '0.75rem', color: '#9ca3af', marginBottom: '0.25rem' }}>ID</label>
+            <label style={{ display: 'block', fontSize: '0.75rem', color: 'var(--fg-mute)', marginBottom: '0.25rem' }}>ID</label>
             <input
               value={id}
               onChange={(e) => setId(e.target.value.toUpperCase())}
@@ -211,30 +211,30 @@ export default function FeatureEditor({ slug, feature, onClose, onSaved }: Props
               style={{
                 width: '100%', boxSizing: 'border-box',
                 background: isCreate ? '#111827' : '#1f2937',
-                color: '#e5e7eb',
-                border: '1px solid #374151',
+                color: 'var(--fg)',
+                border: '1px solid var(--border)',
                 borderRadius: 3, padding: '0.45rem 0.6rem',
                 fontFamily: 'monospace', fontSize: '0.85rem',
                 opacity: isCreate ? 1 : 0.6,
               }}
             />
             {isCreate && (
-              <div style={{ fontSize: '0.7rem', color: '#6b7280', marginTop: '0.25rem' }}>
+              <div style={{ fontSize: '0.7rem', color: 'var(--fg-mute)', marginTop: '0.25rem' }}>
                 must match <code>^F-[A-Z0-9-]+$</code>. Convention: <code>F-FIX-001</code> for fix features.
               </div>
             )}
           </div>
 
           <div>
-            <label style={{ display: 'block', fontSize: '0.75rem', color: '#9ca3af', marginBottom: '0.25rem' }}>Title</label>
+            <label style={{ display: 'block', fontSize: '0.75rem', color: 'var(--fg-mute)', marginBottom: '0.25rem' }}>Title</label>
             <textarea
               value={title}
               onChange={(e) => setTitle(e.target.value)}
               rows={2}
               style={{
                 width: '100%', boxSizing: 'border-box',
-                background: '#111827', color: '#e5e7eb',
-                border: '1px solid #374151', borderRadius: 3,
+                background: 'var(--bg-2)', color: 'var(--fg)',
+                border: '1px solid var(--border)', borderRadius: 3,
                 padding: '0.45rem 0.6rem',
                 fontSize: '0.85rem',
                 resize: 'vertical',
@@ -244,7 +244,7 @@ export default function FeatureEditor({ slug, feature, onClose, onSaved }: Props
           </div>
 
           <div>
-            <label style={{ display: 'block', fontSize: '0.75rem', color: '#9ca3af', marginBottom: '0.25rem' }}>
+            <label style={{ display: 'block', fontSize: '0.75rem', color: 'var(--fg-mute)', marginBottom: '0.25rem' }}>
               Claims — one per line (validation contract IDs)
             </label>
             <textarea
@@ -254,8 +254,8 @@ export default function FeatureEditor({ slug, feature, onClose, onSaved }: Props
               placeholder={'VAL-GRID-001\nVAL-GRID-002'}
               style={{
                 width: '100%', boxSizing: 'border-box',
-                background: '#111827', color: '#e5e7eb',
-                border: '1px solid #374151', borderRadius: 3,
+                background: 'var(--bg-2)', color: 'var(--fg)',
+                border: '1px solid var(--border)', borderRadius: 3,
                 padding: '0.45rem 0.6rem',
                 fontSize: '0.8rem',
                 fontFamily: 'ui-monospace, monospace',
@@ -266,7 +266,7 @@ export default function FeatureEditor({ slug, feature, onClose, onSaved }: Props
 
           <div style={{ display: 'flex', gap: '1rem' }}>
             <div style={{ flex: 1 }}>
-              <label style={{ display: 'block', fontSize: '0.75rem', color: '#9ca3af', marginBottom: '0.25rem' }}>Status</label>
+              <label style={{ display: 'block', fontSize: '0.75rem', color: 'var(--fg-mute)', marginBottom: '0.25rem' }}>Status</label>
               <Select
                 value={status}
                 onChange={(v) => setStatus(v as Status)}
@@ -274,15 +274,15 @@ export default function FeatureEditor({ slug, feature, onClose, onSaved }: Props
                 options={VALID_STATUSES.map((s) => ({ value: s, label: s }))}
                 triggerStyle={{
                   width: '100%', boxSizing: 'border-box',
-                  background: '#111827', color: '#e5e7eb',
-                  border: '1px solid #374151', borderRadius: 3,
+                  background: 'var(--bg-2)', color: 'var(--fg)',
+                  border: '1px solid var(--border)', borderRadius: 3,
                   padding: '0.45rem 0.6rem', fontSize: '0.85rem',
                 }}
               />
             </div>
             {!isCreate && (
               <div style={{ flex: 1 }}>
-                <label style={{ display: 'block', fontSize: '0.75rem', color: '#9ca3af', marginBottom: '0.25rem' }}>Attempts</label>
+                <label style={{ display: 'block', fontSize: '0.75rem', color: 'var(--fg-mute)', marginBottom: '0.25rem' }}>Attempts</label>
                 <input
                   type="number"
                   min={0}
@@ -290,8 +290,8 @@ export default function FeatureEditor({ slug, feature, onClose, onSaved }: Props
                   onChange={(e) => setAttempts(Math.max(0, Math.floor(Number(e.target.value) || 0)))}
                   style={{
                     width: '100%', boxSizing: 'border-box',
-                    background: '#111827', color: '#e5e7eb',
-                    border: '1px solid #374151', borderRadius: 3,
+                    background: 'var(--bg-2)', color: 'var(--fg)',
+                    border: '1px solid var(--border)', borderRadius: 3,
                     padding: '0.45rem 0.6rem', fontSize: '0.85rem',
                   }}
                 />
@@ -301,7 +301,7 @@ export default function FeatureEditor({ slug, feature, onClose, onSaved }: Props
 
           {status === 'deprecated' && (
             <div>
-              <label style={{ display: 'block', fontSize: '0.75rem', color: '#9ca3af', marginBottom: '0.25rem' }}>
+              <label style={{ display: 'block', fontSize: '0.75rem', color: 'var(--fg-mute)', marginBottom: '0.25rem' }}>
                 Deprecation reason <span style={{ color: '#f87171' }}>(required)</span>
               </label>
               <textarea
@@ -311,13 +311,13 @@ export default function FeatureEditor({ slug, feature, onClose, onSaved }: Props
                 rows={3}
                 style={{
                   width: '100%', boxSizing: 'border-box',
-                  background: '#111827', color: '#e5e7eb',
-                  border: '1px solid #374151', borderRadius: 3,
+                  background: 'var(--bg-2)', color: 'var(--fg)',
+                  border: '1px solid var(--border)', borderRadius: 3,
                   padding: '0.45rem 0.6rem', fontSize: '0.85rem',
                   fontFamily: 'inherit', resize: 'vertical',
                 }}
               />
-              <p style={{ margin: '0.35rem 0 0', fontSize: '0.7rem', color: '#9ca3af' }}>
+              <p style={{ margin: '0.35rem 0 0', fontSize: '0.7rem', color: 'var(--fg-mute)' }}>
                 Code is not auto-removed when a feature is deprecated; the row stays for audit and is hidden from default queue views.
               </p>
             </div>
@@ -327,20 +327,20 @@ export default function FeatureEditor({ slug, feature, onClose, onSaved }: Props
             <Collapsible.Root
               open={historyOpen}
               onOpenChange={setHistoryOpen}
-              style={{ marginTop: '0.5rem', borderTop: '1px solid #1f2937', paddingTop: '0.6rem' }}
+              style={{ marginTop: '0.5rem', borderTop: '1px solid var(--border)', paddingTop: '0.6rem' }}
             >
               <Collapsible.Trigger asChild>
-                <button type="button" style={{ cursor: 'pointer', fontSize: '0.8rem', color: '#9ca3af', userSelect: 'none', background: 'none', border: 'none', padding: 0, textAlign: 'left' }}>
+                <button type="button" style={{ cursor: 'pointer', fontSize: '0.8rem', color: 'var(--fg-mute)', userSelect: 'none', background: 'none', border: 'none', padding: 0, textAlign: 'left' }}>
                   History {historyRows ? `(${historyRows.length})` : ''}
                 </button>
               </Collapsible.Trigger>
               <Collapsible.Content style={{ marginTop: '0.5rem', fontSize: '0.75rem', maxHeight: 240, overflowY: 'auto' }}>
                 {historyError && <div style={{ color: '#f87171' }}>Failed to load: {historyError}</div>}
                 {!historyError && historyRows === null && historyOpen && (
-                  <div style={{ color: '#9ca3af' }}>Loading…</div>
+                  <div style={{ color: 'var(--fg-mute)' }}>Loading…</div>
                 )}
                 {!historyError && historyRows !== null && historyRows.length === 0 && (
-                  <div style={{ color: '#9ca3af' }}>No edit history yet.</div>
+                  <div style={{ color: 'var(--fg-mute)' }}>No edit history yet.</div>
                 )}
                 {historyRows && historyRows.length > 0 && (
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
@@ -351,16 +351,16 @@ export default function FeatureEditor({ slug, feature, onClose, onSaved }: Props
                         return JSON.stringify(v).slice(0, 40);
                       };
                       return (
-                        <div key={i} style={{ display: 'grid', gridTemplateColumns: '11ch 9ch 1fr', gap: '0.5rem', alignItems: 'baseline', color: '#e5e7eb' }}>
-                          <span style={{ color: '#6b7280', fontVariantNumeric: 'tabular-nums' }}>
+                        <div key={i} style={{ display: 'grid', gridTemplateColumns: '11ch 9ch 1fr', gap: '0.5rem', alignItems: 'baseline', color: 'var(--fg)' }}>
+                          <span style={{ color: 'var(--fg-mute)', fontVariantNumeric: 'tabular-nums' }}>
                             {new Date(row.ts).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
                           </span>
                           <span style={{ color: '#a1a1aa' }}>{row.actor}</span>
                           <span>
                             <code style={{ color: '#fbbf24' }}>{row.field}</code>
-                            <span style={{ color: '#9ca3af' }}>: </span>
-                            <span style={{ color: '#9ca3af' }}>{fmt(row.old)}</span>
-                            <span style={{ color: '#9ca3af' }}> → </span>
+                            <span style={{ color: 'var(--fg-mute)' }}>: </span>
+                            <span style={{ color: 'var(--fg-mute)' }}>{fmt(row.old)}</span>
+                            <span style={{ color: 'var(--fg-mute)' }}> → </span>
                             <span>{fmt(row.new)}</span>
                           </span>
                         </div>
