@@ -37,9 +37,9 @@ const CONTENT_STYLE: CSSProperties = {
  * `description` similarly maps to Dialog.Description.
  *
  * Use `contentStyle` to override sizing; the wrapper centers it. Use
- * `overlayStyle` to tweak backdrop (e.g., higher z-index).
- *
- * To prevent outside-click dismissal, pass `onPointerDownOutside={(e) => e.preventDefault()}`.
+ * `overlayStyle` to tweak backdrop (e.g., higher z-index/partial scrim).
+ * `closeOnOverlayClick` can keep a scrim dismissible even when
+ * `closeOnOutsideClick={false}` preserves live persistent chrome.
  */
 export function Modal({
   open,
@@ -54,6 +54,9 @@ export function Modal({
   zIndex,
   closeOnEscape = true,
   closeOnOutsideClick = true,
+  closeOnOverlayClick = closeOnOutsideClick,
+  modal = true,
+  nonDismissableOutsideSelector,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -67,29 +70,64 @@ export function Modal({
   zIndex?: number;
   closeOnEscape?: boolean;
   closeOnOutsideClick?: boolean;
+  closeOnOverlayClick?: boolean;
+  modal?: boolean;
+  /**
+   * Outside clicks matching this selector are allowed to reach the target
+   * without dismissing the dialog. Use sparingly for persistent app chrome
+   * that must remain live while a modal-like surface is open.
+   */
+  nonDismissableOutsideSelector?: string;
 }) {
   // Default to 100 so modals render above the persistent OracleDock (z:80).
   const z = zIndex ?? 100;
   const overlay = { ...OVERLAY_STYLE, zIndex: z, ...overlayStyle };
   const wrap = { ...CONTENT_WRAP_STYLE, zIndex: z + 1 };
   const content = { ...CONTENT_STYLE, ...contentStyle };
+  const keepAllowedOutsideInteractionOpen = (event: {
+    target: EventTarget | null;
+    detail?: { originalEvent?: Event };
+    preventDefault: () => void;
+  }) => {
+    if (!closeOnOutsideClick) {
+      event.preventDefault();
+      return;
+    }
+    const target = event.detail?.originalEvent?.target ?? event.target;
+    if (
+      nonDismissableOutsideSelector
+      && target instanceof Element
+      && target.closest(nonDismissableOutsideSelector)
+    ) {
+      event.preventDefault();
+    }
+  };
   return (
-    <Dialog.Root open={open} onOpenChange={onOpenChange}>
+    <Dialog.Root open={open} onOpenChange={onOpenChange} modal={modal}>
       <Dialog.Portal>
-        <Dialog.Overlay
-          data-anim="fade"
-          style={overlay}
-          onClick={closeOnOutsideClick ? () => onOpenChange(false) : undefined}
-        />
+        {modal ? (
+          <Dialog.Overlay
+            data-anim="fade"
+            style={overlay}
+            onClick={closeOnOverlayClick ? () => onOpenChange(false) : undefined}
+          />
+        ) : (
+          <div
+            aria-hidden="true"
+            data-anim="fade"
+            style={overlay}
+            onClick={closeOnOverlayClick ? () => onOpenChange(false) : undefined}
+          />
+        )}
         <div style={wrap}>
           <Dialog.Content
-            aria-modal="true"
+            aria-modal={modal ? 'true' : undefined}
             className={contentClassName}
             data-anim="pop"
             style={content}
             onEscapeKeyDown={closeOnEscape ? undefined : (e) => e.preventDefault()}
-            onPointerDownOutside={closeOnOutsideClick ? undefined : (e) => e.preventDefault()}
-            onInteractOutside={closeOnOutsideClick ? undefined : (e) => e.preventDefault()}
+            onPointerDownOutside={keepAllowedOutsideInteractionOpen}
+            onInteractOutside={keepAllowedOutsideInteractionOpen}
           >
             {srOnlyTitle ? (
               <Dialog.Title style={{ position: 'absolute', width: 1, height: 1, padding: 0, margin: -1, overflow: 'hidden', clip: 'rect(0,0,0,0)', whiteSpace: 'nowrap', border: 0 }}>
