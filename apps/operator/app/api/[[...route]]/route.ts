@@ -9,6 +9,7 @@
 import { Hono } from 'hono';
 import { handle } from 'hono/vercel';
 import { compress } from 'hono/compress';
+import { cors } from 'hono/cors';
 import { harness } from '../_hono/harness';
 import { plugins } from '../_hono/plugins';
 import { registerPty } from '../_hono/pty';
@@ -33,23 +34,31 @@ export const dynamic = 'force-dynamic';
 
 const app = new Hono().basePath('/api');
 
-// CORS — preview origins (admin tooling). Tightens on production.
+// Credentialed CORS for the desktop/mobile shells that call the local
+// operator API from a different WebView origin. Keep this on the Hono API
+// entrypoint so it covers /api/harness, /api/plugins, /api/oracle and dock
+// layout endpoints before any route handlers run.
 //
-// IMPORTANT: do NOT set Access-Control-Allow-Credentials together with
-// ACAO:* — the next.config.js global headers add ACAO:* for the WebKitGTK
-// Tauri-window workaround. ACAO:* + ACAC:true is spec-invalid and WebKit
-// rejects the whole response (symptom: EventSource and fetch under
-// /api/harness/* hit "access control checks" in the Tauri dev window).
-//
-// Cookies on /api/harness/* don't add real auth here — the operator binds
-// 127.0.0.1 only, and there's no real cross-origin frontend that hits these.
-// Dropping ACAC:true is safe.
-const adminPreviewCors = async (c: any, next: any) => {
-  // ACAO/methods/headers are set globally by next.config.js. Hono only owns
-  // the OPTIONS short-circuit + the OPTIONS preflight response code.
-  if (c.req.method === 'OPTIONS') return c.body(null, 204);
-  await next();
-};
+// Do not re-add wildcard ACAO in next.config.js while this uses
+// credentials:true: ACAO:* + ACAC:true is spec-invalid and WebKitGTK rejects
+// the response with "Fetch API cannot load due to access control checks".
+const tauriApiCors = cors({
+  origin: [
+    'http://localhost:1420',
+    'http://tauri.localhost',
+    'https://tauri.localhost',
+  ],
+  allowMethods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+  allowHeaders: [
+    'authorization',
+    'content-type',
+    'if-match',
+    'last-event-id',
+    'x-requested-with',
+  ],
+  credentials: true,
+  maxAge: 600,
+});
 
 // Compress JSON bodies. Next 16 with output:'standalone' skips its built-in
 // gzip even when running via `next start`, so the operator's API responses
@@ -58,10 +67,14 @@ const adminPreviewCors = async (c: any, next: any) => {
 // saves ~1.4 MB/min of bandwidth on a typical dashboard session.
 // `threshold: 1024` skips small responses where gzip overhead exceeds the
 // payload (e.g. /api/auth/me at 151 B).
-app.use('*', compress({ threshold: 1024 }));
+app.use('/harness/*', tauriApiCors);
+app.use('/plugins', tauriApiCors);
+app.use('/plugins/*', tauriApiCors);
+app.use('/oracle/*', tauriApiCors);
+app.use('/dock-layouts/*', tauriApiCors);
+app.use('/harness-phase-last-used/*', tauriApiCors);
 
-app.use('/harness/*', adminPreviewCors);
-app.use('/plugins/*', adminPreviewCors);
+app.use('*', compress({ threshold: 1024 }));
 
 registerPty(harness);
 registerOperatorNotes(harness);

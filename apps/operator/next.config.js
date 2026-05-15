@@ -214,34 +214,39 @@ const nextConfig = {
     'ollama',
     '@huggingface/transformers',
   ],
-  // /api/harness/* and /api/plugins/* are served LOCALLY by this app
-  // (mounted in app/api/[[...route]]/route.ts).
+  // Credentialed API CORS for the Tauri/mobile shells lives in
+  // app/api/[[...route]]/route.ts and app/api/_hono/mobile.ts.
   //
-  // Permissive CORS for the Tauri webview.
-  //
-  // Same-origin fetches from a WebKitGTK Tauri window are intermittently
-  // rejected with "Fetch API cannot load … due to access control checks"
-  // when the response carries `Vary: RSC, …` (Next's App Router uses Vary
-  // on `RSC`, `Next-Router-State-Tree`, etc.). Adding ACAO:* makes WebKit
-  // treat the response as definitively permissive regardless of Vary
-  // shenanigans, eliminating the false-positive block.
-  //
-  // Safe because:
-  //  - The operator dev server binds 127.0.0.1 only (PAPERCUSP_BIND_HOST
-  //    is unset). Browsers can't reach it from a remote origin in the
-  //    first place.
-  //  - Prod (:3070) is the same Next.js app behind localhost-only Tauri
-  //    sidecar; same threat model.
+  // Do NOT add wildcard `Access-Control-Allow-Origin: *` here again:
+  // those global headers are appended to API responses after Hono has
+  // emitted exact-origin + `Access-Control-Allow-Credentials: true`.
+  // ACAO:* + ACAC:true is spec-invalid and WebKitGTK reports it as
+  // "Fetch API cannot load … due to access control checks".
   async headers() {
+    // Keep the dev-only socket workaround separate from CORS. It targets
+    // WebKitGTK's stale keep-alive reuse against the Next dev server.
+    const devHeaders = process.env.NODE_ENV === 'production'
+      ? []
+      : [{ key: 'Connection', value: 'close' }];
+    return devHeaders.length
+      ? [
+          {
+            source: '/:path*',
+            headers: devHeaders,
+          },
+        ]
+      : [];
+  },
+
+  // HTTP-level redirects. Doing /settings → /settings/profile at the
+  // edge avoids server-component `redirect()` calls during render — those
+  // throw NEXT_REDIRECT, which trips React's "Rendered more hooks than
+  // during the previous render" guard in dev (StrictMode double-render +
+  // unwind). The 308 here keeps deep-links working and produces zero
+  // console noise.
+  async redirects() {
     return [
-      {
-        source: '/:path*',
-        headers: [
-          { key: 'Access-Control-Allow-Origin', value: '*' },
-          { key: 'Access-Control-Allow-Methods', value: 'GET,POST,PUT,PATCH,DELETE,OPTIONS' },
-          { key: 'Access-Control-Allow-Headers', value: '*' },
-        ],
-      },
+      { source: '/settings', destination: '/settings/profile', permanent: true },
     ];
   },
 
