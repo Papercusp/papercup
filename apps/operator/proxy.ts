@@ -20,8 +20,40 @@ import { isMarkdownPreferred, rewritePath } from 'fumadocs-core/negotiation';
 
 const docsToMarkdown = rewritePath('/docs{/*path}', '/llms.mdx{/*path}');
 
+const AGENT_MCP_CORS_HEADERS = {
+  'Access-Control-Allow-Methods': 'GET, POST, PUT, PATCH, DELETE, OPTIONS',
+  'Access-Control-Allow-Headers': 'authorization, content-type, if-match, last-event-id, x-requested-with',
+  'Access-Control-Allow-Credentials': 'true',
+  'Access-Control-Max-Age': '600',
+} as const;
+
+function allowedAgentMcpOrigin(origin: string | null): string | null {
+  if (!origin) return null;
+  if (origin === 'http://tauri.localhost' || origin === 'https://tauri.localhost') return origin;
+  if (/^http:\/\/(localhost|127\.0\.0\.1):(1420|3055|3070)$/.test(origin)) return origin;
+  return null;
+}
+
 export function proxy(req: NextRequest) {
   const pathname = req.nextUrl.pathname;
+  const origin = req.headers.get('origin');
+  const corsOrigin = pathname.startsWith('/api/agent-mcp/')
+    ? allowedAgentMcpOrigin(origin)
+    : null;
+  if (corsOrigin) {
+    const headers = new Headers({
+      'Access-Control-Allow-Origin': corsOrigin,
+      ...AGENT_MCP_CORS_HEADERS,
+    });
+    headers.append('Vary', 'Origin');
+    headers.append('Vary', 'Access-Control-Request-Headers');
+    if (req.method === 'OPTIONS') {
+      return new NextResponse(null, { status: 204, headers });
+    }
+    const response = NextResponse.next();
+    headers.forEach((value, key) => response.headers.set(key, value));
+    return response;
+  }
 
   // 1. /internal/docs/* — auth gate. Order matters: gate before any
   //    other rewrite so the markdown negotiation can't bypass it.
@@ -48,6 +80,7 @@ export function proxy(req: NextRequest) {
 
 export const config = {
   // The matcher must include every path the proxy() function might
-  // act on. /internal/docs gating + /docs Accept-header negotiation.
-  matcher: ['/internal/docs/:path*', '/docs/:path*'],
+  // act on. /internal/docs gating + /docs Accept-header negotiation +
+  // credentialed CORS for standalone /api/agent-mcp/* route handlers.
+  matcher: ['/api/agent-mcp/:path*', '/internal/docs/:path*', '/docs/:path*'],
 };
