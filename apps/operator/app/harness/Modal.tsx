@@ -26,6 +26,18 @@ const CONTENT_STYLE: CSSProperties = {
   outline: 'none',
 };
 
+const SR_ONLY_STYLE: CSSProperties = {
+  position: 'absolute',
+  width: 1,
+  height: 1,
+  padding: 0,
+  margin: -1,
+  overflow: 'hidden',
+  clip: 'rect(0,0,0,0)',
+  whiteSpace: 'nowrap',
+  border: 0,
+};
+
 /**
  * Modal — Radix Dialog wrapper that matches the harness's centered modal
  * pattern. Use:
@@ -129,13 +141,9 @@ export function Modal({
             onPointerDownOutside={keepAllowedOutsideInteractionOpen}
             onInteractOutside={keepAllowedOutsideInteractionOpen}
           >
-            {srOnlyTitle ? (
-              <Dialog.Title style={{ position: 'absolute', width: 1, height: 1, padding: 0, margin: -1, overflow: 'hidden', clip: 'rect(0,0,0,0)', whiteSpace: 'nowrap', border: 0 }}>
-                {title}
-              </Dialog.Title>
-            ) : (
-              <Dialog.Title style={{ display: 'none' }}>{title}</Dialog.Title>
-            )}
+            <Dialog.Title style={srOnlyTitle ? SR_ONLY_STYLE : { display: 'none' }}>
+              {title}
+            </Dialog.Title>
             {/*
              * Always render Dialog.Description (sr-only when no description
              * passed). Radix emits an a11y warning whenever the rendered
@@ -143,7 +151,7 @@ export function Modal({
              * aria-describedby. Empty string is fine for screen readers —
              * Title carries the meaning.
              */}
-            <Dialog.Description style={{ position: 'absolute', width: 1, height: 1, padding: 0, margin: -1, overflow: 'hidden', clip: 'rect(0,0,0,0)', whiteSpace: 'nowrap', border: 0 }}>
+            <Dialog.Description style={SR_ONLY_STYLE}>
               {description ?? ''}
             </Dialog.Description>
             {children}
