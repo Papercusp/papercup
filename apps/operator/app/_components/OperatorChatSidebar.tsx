@@ -203,7 +203,9 @@ const OP_CHAT_SIDEBAR_CSS = `
   top: 0;
   left: 0;
   bottom: 0;
-  z-index: 60;
+  /* Above .operator-panel (z-index 1200) so the Deck scrim + backdrop-filter
+     don't dim/blur the chat when the Deck panel is open. */
+  z-index: 1300;
   border-right: 1px solid rgba(125, 211, 252, 0.18);
   background:
     radial-gradient(circle at 50% -12%, rgba(56, 189, 248, 0.16), transparent 34%),
@@ -1313,5 +1315,23 @@ body.has-op-chat .h-header {
   background: rgba(10, 20, 33, 0.98) !important;
   color: #dff6ff !important;
   overflow: visible !important;
+}
+
+/* Deck panel open → chat must stay fully visible and unblurred.
+   The Deck (.operator-panel) sits behind chat at z-index 1200 and has
+   a backdrop-filter blur + box-shadow scrim that bleeds through any
+   translucent chat surface. Neutralize every backdrop-filter inside
+   the chat and force its background to opaque so the chat reads as
+   sharp, unblurred, fully interactive on top of the Deck. */
+body:has(.operator-panel) .op-chat-sidebar,
+body:has(.operator-panel) .op-chat-sidebar * {
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+body:has(.operator-panel) .op-chat-sidebar {
+  background:
+    radial-gradient(circle at 50% -12%, rgba(56, 189, 248, 0.16), transparent 34%),
+    linear-gradient(180deg, #07101d 0%, #050b14 100%),
+    #050b14 !important;
 }
 `;
