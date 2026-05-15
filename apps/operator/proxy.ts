@@ -9,9 +9,11 @@ import { isMarkdownPreferred, rewritePath } from 'fumadocs-core/negotiation';
  * Next 16 emits proxy-* manifests but its build pipeline still
  * looks up middleware-manifest.json by string.
  *
- * This single proxy handles two concerns:
- *  1. /internal/docs/* — stub auth gate (loopback-only docs).
- *  2. /docs/* — Accept-header content negotiation. When the client
+ * This single proxy handles three concerns:
+ *  1. /api/* — exact-origin credentialed CORS for local desktop/mobile shells
+ *     before Hono or standalone Next route handlers run.
+ *  2. /internal/docs/* — stub auth gate (loopback-only docs).
+ *  3. /docs/* — Accept-header content negotiation. When the client
  *     requests `text/markdown`, rewrite to the /llms.mdx surface
  *     (which runs the agent doc pipeline in lib/get-llm-text.ts)
  *     instead of the HTML render. Lets curl/agents consume the same
@@ -20,38 +22,50 @@ import { isMarkdownPreferred, rewritePath } from 'fumadocs-core/negotiation';
 
 const docsToMarkdown = rewritePath('/docs{/*path}', '/llms.mdx{/*path}');
 
-const AGENT_MCP_CORS_HEADERS = {
+const LOCAL_API_CORS_HEADERS = {
   'Access-Control-Allow-Methods': 'GET, POST, PUT, PATCH, DELETE, OPTIONS',
   'Access-Control-Allow-Headers': 'authorization, content-type, if-match, last-event-id, x-requested-with',
   'Access-Control-Allow-Credentials': 'true',
   'Access-Control-Max-Age': '600',
+  Vary: 'Origin, Access-Control-Request-Headers',
 } as const;
 
-function allowedAgentMcpOrigin(origin: string | null): string | null {
+const LOCAL_API_ORIGIN_HOSTS = new Set(['localhost', '127.0.0.1', '10.0.2.2', 'tauri.localhost']);
+const LOCAL_API_ORIGIN_PROTOCOLS = new Set(['http:', 'https:', 'tauri:', 'capacitor:', 'ionic:']);
+
+function allowedLocalApiOrigin(origin: string | null): string | null {
   if (!origin) return null;
-  if (origin === 'http://tauri.localhost' || origin === 'https://tauri.localhost') return origin;
-  if (/^http:\/\/(localhost|127\.0\.0\.1):(1420|3055|3070)$/.test(origin)) return origin;
+  if (origin === 'null') return 'null';
+
+  try {
+    const url = new URL(origin);
+    if (!LOCAL_API_ORIGIN_PROTOCOLS.has(url.protocol)) return null;
+    if (LOCAL_API_ORIGIN_HOSTS.has(url.hostname)) return origin;
+  } catch {
+    return null;
+  }
+
   return null;
 }
 
 export function proxy(req: NextRequest) {
   const pathname = req.nextUrl.pathname;
   const origin = req.headers.get('origin');
-  const corsOrigin = pathname.startsWith('/api/agent-mcp/')
-    ? allowedAgentMcpOrigin(origin)
+  const corsOrigin = pathname.startsWith('/api/')
+    ? allowedLocalApiOrigin(origin)
     : null;
   if (corsOrigin) {
-    const headers = new Headers({
+    const headers = {
       'Access-Control-Allow-Origin': corsOrigin,
-      ...AGENT_MCP_CORS_HEADERS,
-    });
-    headers.append('Vary', 'Origin');
-    headers.append('Vary', 'Access-Control-Request-Headers');
+      ...LOCAL_API_CORS_HEADERS,
+    };
     if (req.method === 'OPTIONS') {
       return new NextResponse(null, { status: 204, headers });
     }
     const response = NextResponse.next();
-    headers.forEach((value, key) => response.headers.set(key, value));
+    for (const [key, value] of Object.entries(headers)) {
+      response.headers.set(key, value);
+    }
     return response;
   }
 
@@ -80,7 +94,7 @@ export function proxy(req: NextRequest) {
 
 export const config = {
   // The matcher must include every path the proxy() function might
-  // act on. /internal/docs gating + /docs Accept-header negotiation +
-  // credentialed CORS for standalone /api/agent-mcp/* route handlers.
-  matcher: ['/api/agent-mcp/:path*', '/internal/docs/:path*', '/docs/:path*'],
+  // act on. Local API CORS + /internal/docs gating + /docs Accept-header
+  // negotiation.
+  matcher: ['/api/:path*', '/internal/docs/:path*', '/docs/:path*'],
 };
