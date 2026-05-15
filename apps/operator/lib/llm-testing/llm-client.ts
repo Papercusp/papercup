@@ -96,10 +96,14 @@ export async function llmCall(opts: LlmCallOpts): Promise<LlmCallResult> {
     content: m.content,
   }));
 
+  // Opus 4.7 deprecated the `temperature` parameter — the API errors
+  // with "temperature is deprecated for this model" on any value.
+  // Other Claude models still accept it. Skip the field for Opus.
+  const isOpus = /opus/i.test(opts.model);
   const resp = await client.messages.create({
     model: opts.model,
     max_tokens: opts.maxTokens ?? 1024,
-    temperature: opts.temperature ?? 0.7,
+    ...(isOpus ? {} : { temperature: opts.temperature ?? 0.7 }),
     ...(opts.system ? { system: opts.system } : {}),
     messages,
   });
