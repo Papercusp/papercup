@@ -1,3 +1,19 @@
+---
+title: SSE typed-events — round-11 rebase audit
+slug: sse-typed-events-rebase-note-from-main-round11
+status: active
+created: 2026-05-12
+updated: 2026-05-20
+owner: pandawamble@gmail.com
+---
+
+## Now
+
+**State:** **Status:** I found two security bugs in your T2.3 WIP (`scratch-uri.ts` and `app/api/scratch/[...path]/route.ts`) and applied fixes directly to your working-tree files. The files are still in your `?? untracked` state so your eventual commit captures my fixes naturally — but I want you to read the rationale before squashing, because both are real issues.
+
+**Next:** Owner: review current state and replace this auto-generated Now block (backfilled 2026-05-20).
+
+
 # Round-11 audit findings — T2.3 scratch-uri / scratch route
 
 **Status:** I found two security bugs in your T2.3 WIP (`scratch-uri.ts` and

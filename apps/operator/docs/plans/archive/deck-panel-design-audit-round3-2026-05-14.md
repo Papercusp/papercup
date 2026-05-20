@@ -1,3 +1,20 @@
+---
+title: Deck panel — design audit round 3
+slug: deck-panel-design-audit-round3-2026-05-14
+status: superseded
+created: 2026-05-14
+updated: 2026-05-20
+owner: pandawamble@gmail.com
+superseded-by: deck-panel-design-audit-round5-2026-05-14
+---
+
+## Now
+
+**State:** **Date:** 2026-05-14 (third pass, same day) **Previous audits:** - `apps/operator/docs/plans/deck-panel-design-audit-2026-05-14.md` (round 1) - `apps/operator/docs/plans/deck-panel-design-audit-followup-2026-05-14.md` (round 2)
+
+**Next:** Archived — no further work expected. Restore from archive/ only if context warrants.
+
+
 # Deck panel — design audit, round 3 (designer handoff)
 
 **Date:** 2026-05-14 (third pass, same day)

@@ -1,3 +1,19 @@
+---
+title: LLM testing framework — decisions log
+slug: llm-testing-DECISIONS
+status: active
+created: 2026-05-14
+updated: 2026-05-20
+owner: pandawamble@gmail.com
+---
+
+## Now
+
+**State:** **Started:** 2026-05-14 **Maintainer:** the agent currently shipping the framework, plus whoever's after. **Scope:** narrow log of *why* we picked a path when more than one was viable. Read together with the plan doc (`llm-testing-framework-2026-05-14.md`) and the handoff doc (`llm-testing-handoff-2026-05-14.md`).
+
+**Next:** Owner: review current state and replace this auto-generated Now block (backfilled 2026-05-20).
+
+
 # LLM Testing Framework — Decisions Log
 
 **Started:** 2026-05-14

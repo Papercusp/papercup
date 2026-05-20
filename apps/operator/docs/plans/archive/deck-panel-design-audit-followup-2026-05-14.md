@@ -1,3 +1,20 @@
+---
+title: Deck panel — design audit round 2
+slug: deck-panel-design-audit-followup-2026-05-14
+status: superseded
+created: 2026-05-14
+updated: 2026-05-20
+owner: pandawamble@gmail.com
+superseded-by: deck-panel-design-audit-round5-2026-05-14
+---
+
+## Now
+
+**State:** **Date:** 2026-05-14 (second pass, same day) **Previous audit:** `apps/operator/docs/plans/deck-panel-design-audit-2026-05-14.md` **Designer fixes shipped in:** `990c4c41` "fix deck panel audit issues" + `260bc6ec` "polish deck audit followups" **Re-audit method:** opened on `/harness?ws=default&slug=sheets`, sampled live DOM + computed styles, plus re-read the JSX/CSS diffs.
+
+**Next:** Archived — no further work expected. Restore from archive/ only if context warrants.
+
+
 # Deck panel — design audit, round 2 (designer handoff)
 
 **Date:** 2026-05-14 (second pass, same day)

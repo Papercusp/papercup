@@ -1,3 +1,19 @@
+---
+title: Design-spec migration — deferred fixes (2026-05-13)
+slug: design-migration-deferred-2026-05-13
+status: active
+created: 2026-05-13
+updated: 2026-05-20
+owner: pandawamble@gmail.com
+---
+
+## Now
+
+**State:** Companion to the full-app audit performed 2026-05-13 against `/docs/design`. The "safe-by-construction" subset shipped in the same session (see below). Everything else is parked here with the **risk** that prevented it from landing in the safe pass.
+
+**Next:** Owner: review current state and replace this auto-generated Now block (backfilled 2026-05-20).
+
+
 # Design-spec migration — deferred fixes (2026-05-13)
 
 Companion to the full-app audit performed 2026-05-13 against `/docs/design`. The "safe-by-construction" subset shipped in the same session (see below). Everything else is parked here with the **risk** that prevented it from landing in the safe pass.

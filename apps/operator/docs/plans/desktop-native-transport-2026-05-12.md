@@ -1,3 +1,19 @@
+---
+title: Desktop-native transport for the endpoint system
+slug: desktop-native-transport-2026-05-12
+status: active
+created: 2026-05-12
+updated: 2026-05-20
+owner: pandawamble@gmail.com
+---
+
+## Now
+
+**State:** **Status:** **implemented** on `sse-typed-events-ipc` (papercusp-desktop) + `sse-typed-events` (papercup). See decision below for the benchmark-gate override.
+
+**Next:** Owner: review current state and replace this auto-generated Now block (backfilled 2026-05-20).
+
+
 # Desktop-native transport for the endpoint system
 
 **Status:** **implemented** on `sse-typed-events-ipc` (papercusp-desktop) + `sse-typed-events` (papercup). See decision below for the benchmark-gate override.

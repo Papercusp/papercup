@@ -1,3 +1,19 @@
+---
+title: LLM testing framework — plan
+slug: llm-testing-framework-2026-05-14
+status: active
+created: 2026-05-14
+updated: 2026-05-20
+owner: pandawamble@gmail.com
+---
+
+## Now
+
+**State:** **Date:** 2026-05-14 **Status:** Round-2 review applied — approved for implementation **Revision:** v2 (12 amendments from Round-2 review baked in) **Scope:** Generic-from-day-1 framework for testing any LLM-driven chat surface in Papercup. First target = operator chat. Operator coverage doubles as the framework's own validation. UI driving is **out of scope** — that lives in `tests-page-2026-05-14.md` (Chaos / AI-Explore / WDIO). This framework drives the *backend* (HTTP/SSE / IPC) only.
+
+**Next:** Owner: review current state and replace this auto-generated Now block (backfilled 2026-05-20).
+
+
 # LLM testing framework — plan
 
 **Date:** 2026-05-14

@@ -1,3 +1,19 @@
+---
+title: Retiring `harness-fs-watcher.ts`
+slug: fs-watcher-retirement-2026-05-10
+status: active
+created: 2026-05-10
+updated: 2026-05-20
+owner: pandawamble@gmail.com
+---
+
+## Now
+
+**State:** Status as of `2cfbbd5` + `a84288f`.
+
+**Next:** Owner: review current state and replace this auto-generated Now block (backfilled 2026-05-20).
+
+
 # Retiring `harness-fs-watcher.ts`
 
 Status as of `2cfbbd5` + `a84288f`.

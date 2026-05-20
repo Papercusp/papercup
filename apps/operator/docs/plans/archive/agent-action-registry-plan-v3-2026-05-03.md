@@ -1,3 +1,19 @@
+---
+title: Agent Action Registry — Implementation Plan v3
+slug: agent-action-registry-plan-v3-2026-05-03
+status: superseded
+created: 2026-05-03
+updated: 2026-05-20
+owner: pandawamble@gmail.com
+---
+
+## Now
+
+**State:** **Status:** v3 — restructured around delegate-to-Claude pattern **Scope:** unify the agent tool surfaces (Oracle, Operator-voice, Pi) plus the user-facing surfaces (keyboard shortcuts, ⌘K command palette) under a single typed registry of commands (side-effects) and queries (reads), with a clear architectural split between **reflexive UI control** (fast, local, low-stakes) and **deep reasoning** (slow, claude-backed, high-context).
+
+**Next:** Archived — no further work expected. Restore from archive/ only if context warrants.
+
+
 # Agent Action Registry — Implementation Plan v3
 
 **Status:** v3 — restructured around delegate-to-Claude pattern

@@ -1,3 +1,19 @@
+---
+title: Serve the operator over HTTP/2 — fix SSE connection-pool exhaustion
+slug: http2-sse-transport-2026-05-20
+status: superseded
+created: 2026-05-20
+updated: 2026-05-20
+owner: pandawamble@gmail.com
+---
+
+## Now
+
+**State:** **Date:** 2026-05-20 **Status:** SUPERSEDED by `desktop-ipc-transport-completion-2026-05-20.md`. HTTP/2's distinguishing advantage was fixing the browser webapp surface too; with the webapp retired (desktop-only product) that no longer matters, and the desktop IPC transport — already built and merged — is the better fit. Kept for the record / as a fallback if IPC stalls. **Supersedes the fix section of:** `webkit-sse-connection-pool-2026-05-20.md`
+
+**Next:** Owner: review current state and replace this auto-generated Now block (backfilled 2026-05-20).
+
+
 # Serve the operator over HTTP/2 — fix SSE connection-pool exhaustion
 
 **Date:** 2026-05-20

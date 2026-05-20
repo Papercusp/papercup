@@ -43,6 +43,14 @@ jobs:
           CI: 'true'
         run: node scripts/affected-tests.mjs --integration
 
+      # Plan-doc lint — fast read-only check against apps/operator/docs/plans/.
+      # Fails the build on any error; warnings (e.g. missing ## Now)
+      # surface in logs but don't gate. Legacy plans (no frontmatter)
+      # are exempt by lintPlan itself. Spec: /internal/docs/spec/plan-format.
+      - name: Lint plans
+        working-directory: apps/operator
+        run: npm run lint:plans
+
       # Drizzle drift: regenerate generated.ts from the live test PG and
       # fail if it differs from HEAD. Proves `.sql` is the source of
       # truth (PRs that forget to re-run pull-schema fail here).

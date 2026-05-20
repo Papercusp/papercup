@@ -1,3 +1,19 @@
+---
+title: Voice-aware cards — 2026-05-14 (v2)
+slug: voice-aware-cards-2026-05-14
+status: active
+created: 2026-05-14
+updated: 2026-05-20
+owner: pandawamble@gmail.com
+---
+
+## Now
+
+**State:** Make `ctx.askUser` / `chat:ask_choice` first-class in voice mode: the brain emits **one card** regardless of modality, the voice surface **announces it**, the user **answers by speaking**, and the spoken answer **resolves the in-flight `ctx.askUser` promise** through the same `/card-response` path the text surface uses.
+
+**Next:** Owner: review current state and replace this auto-generated Now block (backfilled 2026-05-20).
+
+
 # Voice-aware cards — 2026-05-14 (v2)
 
 Make `ctx.askUser` / `chat:ask_choice` first-class in voice mode: the brain emits **one card** regardless of modality, the voice surface **announces it**, the user **answers by speaking**, and the spoken answer **resolves the in-flight `ctx.askUser` promise** through the same `/card-response` path the text surface uses.

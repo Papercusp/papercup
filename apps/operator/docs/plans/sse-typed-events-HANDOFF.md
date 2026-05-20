@@ -1,3 +1,19 @@
+---
+title: SSE typed-events — handoff and ownership
+slug: sse-typed-events-HANDOFF
+status: active
+created: 2026-05-12
+updated: 2026-05-20
+owner: pandawamble@gmail.com
+---
+
+## Now
+
+**State:** **Status:** in-flight on branches; not merged to main. Branches: - `papercupai/papercup#sse-typed-events` (43 commits ahead of main) - `papercupai/papercusp-desktop#sse-typed-events-ipc` (4 commits ahead of main)
+
+**Next:** Owner: review current state and replace this auto-generated Now block (backfilled 2026-05-20).
+
+
 # SSE typed-events / endpoint-system / IPC work — handoff & ownership
 
 **Status:** in-flight on branches; not merged to main. Branches:

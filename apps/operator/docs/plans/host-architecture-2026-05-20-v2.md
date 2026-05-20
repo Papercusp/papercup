@@ -1,3 +1,20 @@
+---
+title: Host architecture — implementation plan v2
+slug: host-architecture-2026-05-20-v2
+status: active
+created: 2026-05-20
+updated: 2026-05-20
+owner: pandawamble@gmail.com
+supersedes: [host-architecture-2026-05-20]
+---
+
+## Now
+
+**State:** **Date:** 2026-05-20 **Status:** Ready to implement. **Supersedes:** `host-architecture-2026-05-20.md` (v1). **Read with:** `host-architecture-blocker-report-2026-05-20.md` (codebase audit; informs the changes below). **Detailed sub-plan referenced:** `desktop-ipc-transport-completion-2026-05-20.md` (Phase 1 details).
+
+**Next:** Owner: review current state and replace this auto-generated Now block (backfilled 2026-05-20).
+
+
 # Host architecture — implementation plan (v2)
 
 **Date:** 2026-05-20

@@ -422,10 +422,12 @@ documenter — the rules above are yours.
 
 ## 18. Plans and project history
 
-**Plans live at `apps/operator/docs/plans/<slug>-<YYYY-MM-DD>.md`.** This
-is the canonical location for any non-trivial design document,
-implementation plan, RFC, or proposal that has been reviewed or is
-awaiting review.
+**Plans live at `apps/operator/docs/plans/<slug>-<YYYY-MM-DD>.md`,
+browsed via `plans:*` tools.** This is the canonical location for any
+non-trivial design document, implementation plan, RFC, or proposal
+that has been reviewed or is awaiting review. Format spec at
+`/internal/docs/spec/plan-format`; plan tracking spec at
+[`agent-plan-tracking-2026-05-20.md`](/internal/docs/plans/agent-plan-tracking-2026-05-20).
 
 Drop a plan here when any of these apply:
 
@@ -435,18 +437,37 @@ Drop a plan here when any of these apply:
   back on ("why did we choose X over Y?").
 - The work touches multiple subsystems or shifts a convention.
 
-File naming: `<short-kebab-case-topic>-<YYYY-MM-DD>.md`. Examples already
-in the tree: `llm-testing-framework-2026-05-14.md`,
+File naming: `<short-kebab-case-topic>-<YYYY-MM-DD>.md`. Examples
+already in the tree: `llm-testing-framework-2026-05-14.md`,
 `bespoke-card-improvements-2026-05-13.md`,
 `desktop-native-transport-2026-05-12.md`. Date is when authored;
 superseding plans get a new file rather than overwriting.
 
+### The `plans:*` tool surface
+
+Don't `find` the directory by hand. Use the tools:
+
+- `plans:list` — directory with title, status, `effectiveStatus` item
+  counts, and `## Now` next-action line.
+- `plans:get { slug }` — full parsed structure.
+- `plans:items { actionable: true }` — pickable items across plans
+  (effectiveStatus === 'todo', blockers resolved).
+- `plans:items { needsHuman: true }` — the human's inbox.
+- `plans:search { query }` — keyword search across scoped sections.
+- `plans:lint` — validate before claiming a plan-doc edit is done;
+  legacy files (no/malformed frontmatter) are exempt.
+
+Writes are tool-mediated: `plans:new` / `set-status` / `set-now` /
+`add-decision` / `add-item`. Each acquires a `locks:*` lock around
+read-modify-write; ID allocation (D-NNN, P-NNN) is serialized so
+parallel callers produce non-colliding sequential ids.
+
 ### This directory is the project history
 
-When the user asks "remember when we were working on X?" or "what did
-we decide about Y?", **`apps/operator/docs/plans/` is the first place
-to look**. Most non-trivial decisions in the codebase have a plan doc
-here that records:
+When the user asks "remember when we were working on X?" or "what
+did we decide about Y?", **`plans:search { query }` is the first
+move**. Most non-trivial decisions in the codebase have a plan doc
+that records:
 
 - What was proposed.
 - What feedback shifted it.
@@ -454,12 +475,22 @@ here that records:
 - Open questions at the time.
 
 Plans get superseded but rarely deleted. A retired plan is annotated
-at the top with `**Status:** Superseded by [<other-plan>]` — never
-silently dropped. Date the supersession.
+in its frontmatter as `status: superseded` with optional
+`superseded-by: <slug>` — never silently dropped. Move to
+`apps/operator/docs/plans/archive/` once nothing actively references
+it; `plans:list { includeArchived: true }` still surfaces them.
 
 When reading an older plan (>2 months), check the date — partial
 staleness is common. Cross-reference against current code before
 treating any plan as authoritative.
+
+### Legacy plans
+
+Plans that pre-date the format spec (no frontmatter or malformed
+frontmatter) are listed by `plans:list` with `status: 'unknown'` and
+no item counts. They're readable via `plans:get` (returns prose).
+Convert one to the new format only when you're actively working on
+the plan; lint exempts legacy files so day-one CI is green.
 
 ## 19. Agent insights
 

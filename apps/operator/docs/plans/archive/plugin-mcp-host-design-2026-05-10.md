@@ -1,3 +1,19 @@
+---
+title: Plugin MCP Host — design doc v2
+slug: plugin-mcp-host-design-2026-05-10
+status: superseded
+created: 2026-05-10
+updated: 2026-05-20
+owner: pandawamble@gmail.com
+---
+
+## Now
+
+**State:** **Status:** **shipped** as foundation PRs 0c.A–E (commits 0de6d10 → f62d4b4). **Scope:** how Papercusp plugins contribute tools that any transport (HTTP, MCP) can call. **Driver:** Foundation for shipping Repomix, GitNexus-bridge, Code2Prompt, fetch-plus, firecrawl-bridge, and any future tool plugins.
+
+**Next:** Archived — no further work expected. Restore from archive/ only if context warrants.
+
+
 # Plugin MCP Host — design doc v2
 
 **Status:** **shipped** as foundation PRs 0c.A–E (commits 0de6d10 → f62d4b4).

@@ -1,0 +1,247 @@
+/**
+ * Pure-mutator unit tests for the Phase 2 assisted-write verbs.
+ *
+ * These exercise the byte-level transformations only — the lock
+ * integration is covered by the concurrency test that needs real PG.
+ *
+ * The mutators tested here are exported as plain functions so they can
+ * be verified without spinning up the SU lock side-database.
+ */
+
+import { describe, expect, it } from 'vitest';
+import { flipStatusInBody } from '../set-status';
+import { replaceNowBlock } from '../set-now';
+import {
+  allocateNextDecisionId,
+  appendDecisionToBody,
+} from '../add-decision';
+import {
+  allocateNextItemId,
+  appendItemToBody,
+  buildItemLine,
+} from '../add-item';
+import { bumpUpdatedDate } from '../with-plan-lock';
+
+const BASE = `---
+title: t
+slug: t-2026-05-20
+status: active
+created: 2026-05-20
+updated: 2026-05-19
+---
+
+# t
+
+## Now
+
+**State:** old state
+**Next:** old next
+
+## Phase 1 — Tooling
+
+- **P-001** \`done\` First item.
+- **P-002** \`wip\` Second item.
+- **P-003** \`todo\` Third item. blocked-by: P-002
+
+## Decisions
+
+### D-001 — A decision
+Date: 2026-05-19
+Decision text.
+`;
+
+describe('flipStatusInBody', () => {
+  it('flips a known item from wip to done', () => {
+    const { newBody, found, oldStatus } = flipStatusInBody(BASE, 'P-002', 'done');
+    expect(found).toBe(true);
+    expect(oldStatus).toBe('wip');
+    expect(newBody).toContain('- **P-002** `done` Second item.');
+  });
+
+  it('preserves blocked-by + decision refs on the line', () => {
+    const { newBody } = flipStatusInBody(BASE, 'P-003', 'wip');
+    expect(newBody).toContain('- **P-003** `wip` Third item. blocked-by: P-002');
+  });
+
+  it('returns found=false for unknown items', () => {
+    const { found } = flipStatusInBody(BASE, 'P-999', 'done');
+    expect(found).toBe(false);
+  });
+
+  it('appends an optional note', () => {
+    const { newBody } = flipStatusInBody(BASE, 'P-002', 'done', 'verified');
+    expect(newBody).toMatch(/- \*\*P-002\*\* `done`.*\(verified\)/);
+  });
+
+  it('does not stomp other items with similar prefixes', () => {
+    const doc = BASE + `\n- **P-0021** \`todo\` Different item.\n`;
+    const { newBody, found } = flipStatusInBody(doc, 'P-002', 'done');
+    expect(found).toBe(true);
+    expect(newBody).toContain('- **P-002** `done` Second item.');
+    // Untouched
+    expect(newBody).toContain('- **P-0021** `todo` Different item.');
+  });
+});
+
+describe('replaceNowBlock', () => {
+  it('replaces an existing Now block', () => {
+    const out = replaceNowBlock(BASE, 'new state', 'do X next');
+    expect(out).toContain('**State:** new state');
+    expect(out).toContain('**Next:** do X next');
+    expect(out).not.toContain('old state');
+    expect(out).not.toContain('old next');
+    // Other sections preserved
+    expect(out).toContain('## Phase 1 — Tooling');
+    expect(out).toContain('## Decisions');
+  });
+
+  it('matches numbered Now headings', () => {
+    const doc = BASE.replace('## Now', '## 3. Now');
+    const out = replaceNowBlock(doc, 'replaced', 'next');
+    expect(out).toContain('**State:** replaced');
+  });
+
+  it('inserts a Now block after frontmatter when missing', () => {
+    const doc = `---
+title: t
+slug: t
+status: draft
+---
+
+# t
+
+## Phase 1
+
+- **P-001** \`todo\` first
+`;
+    const out = replaceNowBlock(doc, 'fresh', 'go');
+    expect(out).toContain('## Now\n\n**State:** fresh\n\n**Next:** go');
+    expect(out.indexOf('## Now')).toBeLessThan(out.indexOf('## Phase 1'));
+  });
+});
+
+describe('decision id allocation + append', () => {
+  it('allocates the next D-NNN', () => {
+    expect(allocateNextDecisionId(BASE)).toBe('D-002');
+  });
+
+  it('starts at D-001 when no decisions exist', () => {
+    const doc = `---
+title: t
+slug: t
+status: draft
+---
+
+# t
+`;
+    expect(allocateNextDecisionId(doc)).toBe('D-001');
+  });
+
+  it('handles non-sequential ids correctly (max+1, not count+1)', () => {
+    const doc = `---
+title: t
+slug: t
+status: draft
+---
+
+# t
+
+## Decisions
+
+### D-001 — first
+Date: 2026-05-20
+body
+### D-007 — seventh
+Date: 2026-05-20
+body
+### D-003 — third
+Date: 2026-05-20
+body
+`;
+    expect(allocateNextDecisionId(doc)).toBe('D-008');
+  });
+
+  it('appends a new decision at end of Decisions section', () => {
+    const out = appendDecisionToBody(BASE, 'D-002', 'Second decision', 'Body of decision.', '2026-05-20', ['P-001']);
+    expect(out).toContain('### D-002 — Second decision');
+    expect(out).toContain('Date: 2026-05-20');
+    expect(out).toContain('Body of decision.');
+    expect(out).toContain('Related: P-001');
+    // Original decision preserved
+    expect(out).toContain('### D-001 — A decision');
+  });
+
+  it('creates Decisions section if missing', () => {
+    const doc = `---
+title: t
+slug: t
+status: draft
+---
+
+# t
+`;
+    const out = appendDecisionToBody(doc, 'D-001', 'First', 'Body.', '2026-05-20', []);
+    expect(out).toContain('## Decisions');
+    expect(out).toContain('### D-001 — First');
+  });
+});
+
+describe('item id allocation + append', () => {
+  it('allocates next P-NNN considering both Phase items AND decision-referenced ids', () => {
+    expect(allocateNextItemId(BASE)).toBe('P-004');
+  });
+
+  it('appends to existing phase', () => {
+    const itemLine = buildItemLine('P-004', 'Fourth item', ['P-002']);
+    const { newBody, createdPhase } = appendItemToBody(BASE, 'Phase 1 — Tooling', itemLine);
+    expect(createdPhase).toBe(false);
+    expect(newBody).toContain('- **P-004** `todo` Fourth item blocked-by: P-002');
+    // Order preserved
+    const idx1 = newBody.indexOf('- **P-003**');
+    const idx4 = newBody.indexOf('- **P-004**');
+    expect(idx1).toBeLessThan(idx4);
+  });
+
+  it('creates phase section if missing, before Decisions', () => {
+    const itemLine = buildItemLine('P-100', 'New phase item', []);
+    const { newBody, createdPhase } = appendItemToBody(BASE, 'Phase 2 — Migration', itemLine);
+    expect(createdPhase).toBe(true);
+    expect(newBody).toContain('## Phase 2 — Migration');
+    expect(newBody).toContain('- **P-100** `todo` New phase item');
+    expect(newBody.indexOf('## Phase 2')).toBeLessThan(newBody.indexOf('## Decisions'));
+  });
+
+  it('matches numbered Phase headings tolerantly', () => {
+    const doc = BASE.replace('## Phase 1 — Tooling', '## 4. Phase 1 — Tooling');
+    const itemLine = buildItemLine('P-009', 'After numbered phase', []);
+    const { newBody, createdPhase } = appendItemToBody(doc, 'Phase 1 — Tooling', itemLine);
+    expect(createdPhase).toBe(false);
+    expect(newBody).toContain('- **P-009** `todo` After numbered phase');
+  });
+});
+
+describe('bumpUpdatedDate', () => {
+  it('bumps the updated field to today', () => {
+    const out = bumpUpdatedDate(BASE, new Date('2026-06-15T00:00:00Z'));
+    expect(out).toContain('updated: 2026-06-15');
+    expect(out).not.toContain('updated: 2026-05-19');
+  });
+
+  it('inserts updated if absent', () => {
+    const doc = `---
+title: t
+slug: t
+status: draft
+created: 2026-05-20
+---
+
+body`;
+    const out = bumpUpdatedDate(doc, new Date('2026-06-15T00:00:00Z'));
+    expect(out).toContain('updated: 2026-06-15');
+  });
+
+  it('leaves bodies without frontmatter alone', () => {
+    const doc = `# no frontmatter\n\nbody`;
+    expect(bumpUpdatedDate(doc)).toBe(doc);
+  });
+});

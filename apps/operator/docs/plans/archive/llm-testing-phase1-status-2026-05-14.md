@@ -1,3 +1,20 @@
+---
+title: LLM testing framework — Phase 1+1.5+2 status (superseded)
+slug: llm-testing-phase1-status-2026-05-14
+status: superseded
+created: 2026-05-14
+updated: 2026-05-20
+owner: pandawamble@gmail.com
+superseded-by: llm-testing-status-2026-05-14
+---
+
+## Now
+
+**State:** **Date:** 2026-05-14 **Plan:** `apps/operator/docs/plans/llm-testing-framework-2026-05-14.md` (v2, Round-2 review applied) **Status:** Framework shippable, end-to-end smoke not yet run.
+
+**Next:** Archived — no further work expected. Restore from archive/ only if context warrants.
+
+
 # LLM testing framework — Phase 1 + 1.5 + 2 status snapshot
 
 **Date:** 2026-05-14

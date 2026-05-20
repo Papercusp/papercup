@@ -1,3 +1,19 @@
+---
+title: nuqs audit — state that would benefit from URL serialization
+slug: nuqs-audit-2026-05-11
+status: active
+created: 2026-05-11
+updated: 2026-05-20
+owner: pandawamble@gmail.com
+---
+
+## Now
+
+**State:** **Date:** 2026-05-11 **Context:** Followup to the agent → UI control surface (ui-control-plan.md). The presence + dispatch system reads URLs to know what the user is looking at and writes URLs to drive nuqs-state changes — so every panel/tab/selection/filter that lives in `useState` instead of nuqs is invisible to agents and undriveable without a feature-registered intent.
+
+**Next:** Owner: review current state and replace this auto-generated Now block (backfilled 2026-05-20).
+
+
 # nuqs audit — state that would benefit from URL serialization
 
 **Date:** 2026-05-11

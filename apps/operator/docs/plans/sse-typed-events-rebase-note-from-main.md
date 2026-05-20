@@ -1,3 +1,19 @@
+---
+title: SSE typed-events — rebase notes from main
+slug: sse-typed-events-rebase-note-from-main
+status: active
+created: 2026-05-12
+updated: 2026-05-20
+owner: pandawamble@gmail.com
+---
+
+## Now
+
+**State:** This note tracks main-side changes the `sse-typed-events` branch will need to reconcile when rebasing. Owners on the branch are listed where known. Last updated: 2026-05-12 evening.
+
+**Next:** Owner: review current state and replace this auto-generated Now block (backfilled 2026-05-20).
+
+
 # sse-typed-events rebase notes (from main)
 
 This note tracks main-side changes the `sse-typed-events` branch will

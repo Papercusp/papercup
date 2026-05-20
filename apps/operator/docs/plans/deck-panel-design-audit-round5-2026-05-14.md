@@ -1,3 +1,20 @@
+---
+title: Deck panel — design audit round 5
+slug: deck-panel-design-audit-round5-2026-05-14
+status: active
+created: 2026-05-14
+updated: 2026-05-20
+owner: pandawamble@gmail.com
+supersedes: [deck-panel-design-audit-2026-05-14, deck-panel-design-audit-followup-2026-05-14, deck-panel-design-audit-round3-2026-05-14, deck-panel-design-audit-round4-2026-05-14]
+---
+
+## Now
+
+**State:** **Date:** 2026-05-14 (fifth pass, same day) **Previous audits:** rounds 1–4 in this folder. **Designer fixes shipped in:** `1ca25718` "fix deck panel round four audit issues" **Re-audit method:** opened on `/harness?ws=default&slug=sheets`, sampled live DOM + computed styles, plus diff-read of the commit.
+
+**Next:** Owner: review current state and replace this auto-generated Now block (backfilled 2026-05-20).
+
+
 # Deck panel — design audit, round 5 (designer handoff)
 
 **Date:** 2026-05-14 (fifth pass, same day)

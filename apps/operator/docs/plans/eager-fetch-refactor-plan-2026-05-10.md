@@ -1,3 +1,19 @@
+---
+title: Eager-fetch refactor — implementation plan v2
+slug: eager-fetch-refactor-plan-2026-05-10
+status: active
+created: 2026-05-10
+updated: 2026-05-20
+owner: pandawamble@gmail.com
+---
+
+## Now
+
+**State:** The operator dashboard exhibits visible click-delay on multiple interactions: clicking "steer" on a feature, opening the side panel, opening the edit modal, switching tabs in SpecEditor, picking a memory file, opening a brainstorm view. Each currently fires a REST round-trip on click/mount before content appears.
+
+**Next:** Owner: review current state and replace this auto-generated Now block (backfilled 2026-05-20).
+
+
 # Eager-fetch refactor — implementation plan v2
 
 ## Problem

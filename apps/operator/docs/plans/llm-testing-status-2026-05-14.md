@@ -1,3 +1,20 @@
+---
+title: LLM testing framework — true status snapshot
+slug: llm-testing-status-2026-05-14
+status: active
+created: 2026-05-14
+updated: 2026-05-20
+owner: pandawamble@gmail.com
+supersedes: [llm-testing-phase1-status-2026-05-14]
+---
+
+## Now
+
+**State:** **Last update:** 2026-05-14 (this file supersedes `llm-testing-phase1-status-2026-05-14.md`, which was written pre-runtime-verification and overclaims completion).
+
+**Next:** Owner: review current state and replace this auto-generated Now block (backfilled 2026-05-20).
+
+
 # LLM testing framework — Status (true)
 
 **Last update:** 2026-05-14 (this file supersedes

@@ -1,3 +1,19 @@
+---
+title: WebKitGTK connection-pool exhaustion — diagnosis & fix plan
+slug: webkit-sse-connection-pool-2026-05-20
+status: active
+created: 2026-05-20
+updated: 2026-05-20
+owner: pandawamble@gmail.com
+---
+
+## Now
+
+**State:** **Date:** 2026-05-20 **Status:** Awaiting review **Severity:** High — every `fetch()` in the Tauri desktop webview intermittently hangs forever.
+
+**Next:** Owner: review current state and replace this auto-generated Now block (backfilled 2026-05-20).
+
+
 # WebKitGTK connection-pool exhaustion — diagnosis & fix plan
 
 **Date:** 2026-05-20

@@ -1,3 +1,20 @@
+---
+title: Host architecture — high-level plan (v1)
+slug: host-architecture-2026-05-20-v1
+status: superseded
+created: 2026-05-20
+updated: 2026-05-20
+owner: pandawamble@gmail.com
+superseded-by: host-architecture-2026-05-20-v2
+---
+
+## Now
+
+**State:** **Date:** 2026-05-20 **Status:** SUPERSEDED by `host-architecture-2026-05-20-v2.md`. v2 folds in the findings from `host-architecture-blocker-report-2026-05-20.md` and makes the implementation order explicit. **Builds on:** `desktop-ipc-transport-completion-2026-05-20.md` (Phase 1 detail), `deferred-followups-2026-05-14.md` (A1 exemption, A2 status).
+
+**Next:** Archived — no further work expected. Restore from archive/ only if context warrants.
+
+
 # Host architecture — high-level plan
 
 **Date:** 2026-05-20

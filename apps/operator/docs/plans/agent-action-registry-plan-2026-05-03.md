@@ -1,3 +1,19 @@
+---
+title: Agent Action Registry — Implementation Plan v5 (final, implementation-ready)
+slug: agent-action-registry-plan-2026-05-03
+status: active
+created: 2026-05-03
+updated: 2026-05-20
+owner: pandawamble@gmail.com
+---
+
+## Now
+
+**State:** **Status:** v5 — final, implementation-ready. Earlier iterations preserved as `agent-action-registry-plan.v{2,3,4}.md`.
+
+**Next:** Owner: review current state and replace this auto-generated Now block (backfilled 2026-05-20).
+
+
 # Agent Action Registry — Implementation Plan v5 (final, implementation-ready)
 
 **Status:** v5 — final, implementation-ready. Earlier iterations preserved as

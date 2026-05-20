@@ -1,3 +1,19 @@
+---
+title: SU agent coordination — v3 implementation plan
+slug: su-agent-coordination-v3-2026-05-14
+status: active
+created: 2026-05-14
+updated: 2026-05-20
+owner: pandawamble@gmail.com
+---
+
+## Now
+
+**State:** **Date:** 2026-05-14 **Status:** Built — Phases 0–3 shipped 2026-05-14; per-session identity fix 2026-05-20. See `apps/operator/lib/agent-tools/locks/PHASE-STATUS.md` for the as-built phase log. **Supersedes:** v1 (filesystem locks, SQLite proposals) and v2 (PG migration with SERIALIZABLE) **Scope:** Cross-process file-claim coordination for engineer-collaborator agents reaching Papercusp via `papercusp-su`. Embedded-PG-backed, durable waiter queue with FIFO fairness,…
+
+**Next:** Owner: review current state and replace this auto-generated Now block (backfilled 2026-05-20).
+
+
 # SU agent coordination — v3 implementation plan
 
 **Date:** 2026-05-14

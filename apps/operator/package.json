@@ -17,6 +17,7 @@
     "test:el-suite:required": "EL_SUITE_REQUIRED=1 node scripts/el-suite-test.mjs",
     "test:migration-smoke": "node scripts/migration-smoke.mjs",
     "lint:el-tools": "node scripts/el-tools-check.mjs",
+    "lint:plans": "tsx scripts/lint-plans.ts",
     "storybook": "storybook dev -p 6009",
     "build-storybook": "storybook build -o storybook-static",
     "lostpixel": "lost-pixel",

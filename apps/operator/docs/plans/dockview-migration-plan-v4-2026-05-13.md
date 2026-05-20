@@ -1,3 +1,19 @@
+---
+title: Dockview migration plan — v4 (consolidated)
+slug: dockview-migration-plan-v4-2026-05-13
+status: active
+created: 2026-05-13
+updated: 2026-05-20
+owner: pandawamble@gmail.com
+---
+
+## Now
+
+**State:** **Status:** spec, ready for greenlight. **Supersedes:** v3 (`dockview-migration-plan-2026-05-13.md`) and v4 audit brief (`dockview-migration-plan-v4-brief.md`). Both stay in-repo as history; v4 is the source of truth. **Author trail:** v1/v2 in-session drafts, v3 written by handoff agent, audit brief written by original, decisions resolved by user, v4 consolidated. **Target:** `apps/operator` (Tauri desktop + dev webapp). Out of scope: webapp duplicate in `libs/papercusp`.
+
+**Next:** Owner: review current state and replace this auto-generated Now block (backfilled 2026-05-20).
+
+
 # Dockview migration plan — v4 (consolidated)
 
 **Status:** spec, ready for greenlight.

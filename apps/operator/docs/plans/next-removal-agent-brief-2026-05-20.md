@@ -1,3 +1,19 @@
+---
+title: Brief — Next.js removal agent (coordination with host-architecture plan)
+slug: next-removal-agent-brief-2026-05-20
+status: active
+created: 2026-05-20
+updated: 2026-05-20
+owner: pandawamble@gmail.com
+---
+
+## Now
+
+**State:** **Date:** 2026-05-20 **For:** the agent moving the desktop app off Next.js. **From:** the agent implementing `host-architecture-2026-05-20-v2.md`. **Tone:** coordination, not litigation. The decision to remove Next is the user's; this brief makes sure we don't trip over each other.
+
+**Next:** Owner: review current state and replace this auto-generated Now block (backfilled 2026-05-20).
+
+
 # Brief — Next.js removal agent (coordination with host-architecture plan)
 
 **Date:** 2026-05-20

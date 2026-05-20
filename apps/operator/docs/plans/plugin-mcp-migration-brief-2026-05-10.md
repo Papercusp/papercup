@@ -1,3 +1,19 @@
+---
+title: Brief: migrating components to the projected-tool MCP framework
+slug: plugin-mcp-migration-brief-2026-05-10
+status: active
+created: 2026-05-10
+updated: 2026-05-20
+owner: pandawamble@gmail.com
+---
+
+## Now
+
+**State:** For agents picking up component migrations after the spawn-system port. Read this front-to-back before touching code.
+
+**Next:** Owner: review current state and replace this auto-generated Now block (backfilled 2026-05-20).
+
+
 # Brief: migrating components to the projected-tool MCP framework
 
 For agents picking up component migrations after the spawn-system port. Read this front-to-back before touching code.

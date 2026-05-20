@@ -160,3 +160,15 @@ import './locks/release';
 import './locks/heartbeat';
 import './locks/cancel_wait';
 import './locks/queue';
+
+// SU-agent plan tracking — see agent-plan-tracking-2026-05-20.md
+import './plans/list';
+import './plans/get';
+import './plans/items';
+import './plans/search';
+import './plans/lint';
+import './plans/new';
+import './plans/set-status';
+import './plans/set-now';
+import './plans/add-decision';
+import './plans/add-item';

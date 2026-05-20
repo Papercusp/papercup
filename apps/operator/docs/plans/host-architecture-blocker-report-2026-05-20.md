@@ -1,3 +1,19 @@
+---
+title: Host architecture — pre-implementation blocker report
+slug: host-architecture-blocker-report-2026-05-20
+status: active
+created: 2026-05-20
+updated: 2026-05-20
+owner: pandawamble@gmail.com
+---
+
+## Now
+
+**State:** **Date:** 2026-05-20 **Companion to:** `host-architecture-2026-05-20.md` **Purpose:** before coding starts, walk every phase of the plan against the actual codebase and flag what would block, complicate, or change scope. Findings only; the plan should be updated where this report contradicts it.
+
+**Next:** Owner: review current state and replace this auto-generated Now block (backfilled 2026-05-20).
+
+
 # Host architecture — pre-implementation blocker report
 
 **Date:** 2026-05-20

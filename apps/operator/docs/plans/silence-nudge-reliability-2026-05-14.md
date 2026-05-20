@@ -1,3 +1,19 @@
+---
+title: Silence-nudge reliability + EL idle teardown — 2026-05-14 (v3)
+slug: silence-nudge-reliability-2026-05-14
+status: active
+created: 2026-05-14
+updated: 2026-05-20
+owner: pandawamble@gmail.com
+---
+
+## Now
+
+**State:** The 30 s silence-after-question nudge should reliably show a Ready card, and after a further 30 s of continued silence the active ElevenLabs Conv AI session should tear down so the user isn't burning credits while not talking. Wake-word detection (when configured) resumes the session and auto-resolves the open card.
+
+**Next:** Owner: review current state and replace this auto-generated Now block (backfilled 2026-05-20).
+
+
 # Silence-nudge reliability + EL idle teardown — 2026-05-14 (v3)
 
 The 30 s silence-after-question nudge should reliably show a Ready card, and after a further 30 s of continued silence the active ElevenLabs Conv AI session should tear down so the user isn't burning credits while not talking. Wake-word detection (when configured) resumes the session and auto-resolves the open card.

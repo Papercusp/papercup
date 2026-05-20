@@ -1,3 +1,19 @@
+---
+title: Auth-hardening WIP coordination note — round 12 audit
+slug: auth-hardening-coord-note-2026-05-12
+status: active
+created: 2026-05-12
+updated: 2026-05-20
+owner: pandawamble@gmail.com
+---
+
+## Now
+
+**State:** **TL;DR:** Three files form a load-bearing group. If the modified `route.ts` gets committed without the two new lib files, the login route 500s on `MODULE_NOT_FOUND`. Stage all three together.
+
+**Next:** Owner: review current state and replace this auto-generated Now block (backfilled 2026-05-20).
+
+
 # Auth-hardening WIP coordination note — round 12 audit
 
 **TL;DR:** Three files form a load-bearing group. If the modified `route.ts`

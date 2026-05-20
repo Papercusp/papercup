@@ -1,3 +1,19 @@
+---
+title: Dockview migration plan (consolidated v3) — 2026-05-13
+slug: dockview-migration-plan-2026-05-13
+status: active
+created: 2026-05-13
+updated: 2026-05-20
+owner: pandawamble@gmail.com
+---
+
+## Now
+
+**State:** **Status**: proposal, awaiting greenlight. No code shipped.
+
+**Next:** Owner: review current state and replace this auto-generated Now block (backfilled 2026-05-20).
+
+
 # Dockview migration plan (consolidated v3) — 2026-05-13
 
 **Status**: proposal, awaiting greenlight. No code shipped.

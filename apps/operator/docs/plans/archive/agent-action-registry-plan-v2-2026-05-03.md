@@ -1,3 +1,19 @@
+---
+title: Agent Action Registry — Implementation Plan
+slug: agent-action-registry-plan-v2-2026-05-03
+status: superseded
+created: 2026-05-03
+updated: 2026-05-20
+owner: pandawamble@gmail.com
+---
+
+## Now
+
+**State:** **Status:** draft v2 — reviewer feedback applied **Scope:** unify the three agent tool surfaces (Oracle, Operator, Pi) plus the user-facing surfaces (keyboard shortcuts, ⌘K command palette) under a single typed registry of commands (side-effects) and queries (reads). **Non-goals (this plan):** generic DOM clicker, free-text input tools, drag/ resize gestures, multi-step workflows. These are deliberately out of scope.
+
+**Next:** Archived — no further work expected. Restore from archive/ only if context warrants.
+
+
 # Agent Action Registry — Implementation Plan
 
 **Status:** draft v2 — reviewer feedback applied

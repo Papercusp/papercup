@@ -24,6 +24,9 @@ const EXACT: Record<string, CapabilityTier> = {
   'harness:read': 'low',
   'docs:read': 'low',
   'messages:read': 'low',
+  // SU plan-tracking (agent-plan-tracking-2026-05-20.md)
+  'plans:read': 'low',
+  'plans:write': 'medium',
   // SU file-lock coordination (su-agent-coordination-v3-2026-05-14.md)
   'locks:read': 'low',
   'locks:write': 'medium',

@@ -1,3 +1,19 @@
+---
+title: Endpoint system — Phase 4+ implementation
+slug: phase-4-endpoint-system-2026-05-12
+status: active
+created: 2026-05-12
+updated: 2026-05-20
+owner: pandawamble@gmail.com
+---
+
+## Now
+
+**State:** > **Status update 2026-05-13:** **T4.1 and T4.3 superseded by [bespoke-card-improvements-2026-05-13.md](./bespoke-card-improvements-2026-05-13.md).** PR 1 (`c0876b74`) shipped `ctx.askUser` in place of T4.1's bidirectional `ctx.awaitResponse`; PR 2 (`9d10fa4c`) shipped `ctx.publishState` v1, which subsumes T4.3 (state-shaped tools survive disconnect by construction — see §11 "What collapses out of the Phase 4 plan"). T4.2 (shared-memory IPC) remains deferred. T1.1, T1.2,…
+
+**Next:** Owner: review current state and replace this auto-generated Now block (backfilled 2026-05-20).
+
+
 # Endpoint system — Phase 4+ implementation
 
 > **Status update 2026-05-13:** **T4.1 and T4.3 superseded by [bespoke-card-improvements-2026-05-13.md](./bespoke-card-improvements-2026-05-13.md).** PR 1 (`c0876b74`) shipped `ctx.askUser` in place of T4.1's bidirectional `ctx.awaitResponse`; PR 2 (`9d10fa4c`) shipped `ctx.publishState` v1, which subsumes T4.3 (state-shaped tools survive disconnect by construction — see §11 "What collapses out of the Phase 4 plan"). T4.2 (shared-memory IPC) remains deferred. T1.1, T1.2, T2.1, T2.2, T2.3, T3.1, T3.2 all shipped earlier in this arc.

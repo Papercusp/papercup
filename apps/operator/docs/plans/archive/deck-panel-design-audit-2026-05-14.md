@@ -1,3 +1,20 @@
+---
+title: Deck panel — design audit round 1
+slug: deck-panel-design-audit-2026-05-14
+status: superseded
+created: 2026-05-14
+updated: 2026-05-20
+owner: pandawamble@gmail.com
+superseded-by: deck-panel-design-audit-round5-2026-05-14
+---
+
+## Now
+
+**State:** **Date:** 2026-05-14 **Audited surface:** `OperatorPanel` (`apps/operator/app/_components/OperatorPanel.tsx`) — the floating Deck modal triggered from the header CTA, at the default viewport (1828×1507 in our session; spot-checked at 1440×900). **How it was audited:** opened on `/harness`, inspected the live DOM + computed styles, cross-referenced the source markup and `app/globals.css` (the panel spans roughly L4961–L8930, L22235+ and L26200+ — there are many overlapping passes).
+
+**Next:** Archived — no further work expected. Restore from archive/ only if context warrants.
+
+
 # Deck panel — design audit (handoff for designer)
 
 **Date:** 2026-05-14
