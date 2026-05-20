@@ -11,9 +11,31 @@ supersedes_for_my_scope: [next-removal-2026-05-20]
 
 ## Now
 
-**State:** Plan drafted 2026-05-20. Scope: app shell, router, Vite/build, and the `@hono/node-server` host process. Backend endpoint decoupling is being executed in parallel by another agent (the "backend agent") — see [Scope split](#scope-split). The two streams end-state: `npm run dev` in `apps/operator-vite/` is the only thing the desktop loads; the existing `apps/operator/` Next surface is deleted.
+**State:** Phase 0 in progress (2026-05-20). Scope: app shell, router, Vite/build, and the `@hono/node-server` host process. **The backend endpoint-decoupling stream has SHIPPED** — see the status banner below. This migration is now **single-stream**: there is no parallel race, no coordination window, no Next sidecar.
 
-**Next:** User reviews. Then Phase 0 pre-flight: lock the boundary contract with the backend agent (one PR adds `_hono/app.ts` exports + `runBootstrap()` discipline that both hosts consume), then start Phase A scaffold.
+**Next:** Finish Phase 0 (`BOUNDARY.md` written; coord entry pending), then Phase A scaffold of `apps/operator-vite/`.
+
+---
+
+## Status banner — backend stream shipped (2026-05-20)
+
+The v1/v2 plan was written assuming two parallel streams racing toward a cutover. **That assumption is now stale, in our favor.** As of 2026-05-20:
+
+- `endpoint-route-migration-2026-05-20.md` has `status: shipped`. Git log: `endpoint-route migration SHIPPED — R1-R6 complete`, `coord(endpoints): R5 complete milestone — 0 raw route.ts remain`, `feat(endpoint-route): port openapi.json — R5 COMPLETE`.
+- **0 API `route.ts` files remain.** All of `/api/*` is served by `_hono/app.ts` mounts. The only `route.ts` files left are the catch-all shim + the two page-namespace handlers (`/wiki`, `/drizzle-studio`) — see [Inventory](#inventory-greppable-all-under-appsoperatorapp).
+- `openapi.json` was ported to a Hono route (review item #16 — done by the backend agent, as offered).
+- `export { app }` is at `app/api/_hono/app.ts:111`.
+
+**What this collapses:**
+
+| v2 plan assumed | Now |
+|---|---|
+| 70+ `route.ts` still to migrate; Phase G gated on backend finishing | Backend done. Phase G's gate is **already met**. |
+| Migration window needs a Next sidecar on `:3056` for un-migrated `/api/*` | **No Next sidecar.** The Hono host serves 100% of `/api/*` from Phase C day one. Dev = Vite `:3055` + Hono host `:3070`, two processes, no third. |
+| `derive-vite-proxy.mjs` + `prefix-migrated` coord events to track the moving `/api` split | **Dropped.** The split never exists. Vite dev-proxy is a static one-liner: all `/api/*` → `:3070`. |
+| Page-side `next/*` surface ≈ 97 sites (53/32/12) | **40 sites** (21/16/3) — the 53/32/12 were `.next`-artifact-inflated. |
+
+**Net effect:** the plan's hardest risk (two agents editing overlapping surfaces, a moving cutover target) is gone. The phases below keep their letters for continuity, but C is simpler and G is nearly free. Effort drops — see [Effort estimate](#effort-estimate).
 
 ---
 
@@ -37,34 +59,35 @@ The user has split this migration across two agents. This plan covers **only my 
 | **Joint boundary** | Both | `apps/operator/app/api/_hono/app.ts` + `apps/operator/app/api/_hono/bootstrap.ts` — already extracted (see `app/api/[[...route]]/route.ts:6-12`, comment explicitly names "operator-vite Phase C via `@hono/node-server`"). Both agents import these; both must preserve their public shape. See [Coordination](#coordination). |
 
 **My non-goals (explicit):**
-- I will not rewrite `route.ts` handler signatures or `next/server` consumers. If a route.ts isn't migrated to Hono by Phase G, I host both Vite static + the Next sidecar in parallel until the backend agent finishes — Vite serves `/`, Hono catches `/api/*`, anything not yet migrated still goes through Next behind a flag until cutover. ([Phase G](#phase-g--production-host) details the parallel-run mechanism.)
+- I will not rewrite `route.ts` handler signatures or `next/server` consumers. That work is done — the backend stream shipped (see [status banner](#status-banner--backend-stream-shipped-2026-05-20)). The Hono host serves all of `/api/*` directly; there is no Next process in the migration at any point.
 - I will not touch `next/headers` / `cookies()` consumers (6 routes). Backend agent's problem.
 - I will not refactor `packages/agent-mcp/**` or `libs/sync/**`. Host-architecture agent owns those.
 
 ---
 
-## Inventory (greppable, all under `apps/operator/`)
+## Inventory (greppable, all under `apps/operator/app/`)
 
-Measured 2026-05-20:
+**Re-measured 2026-05-20 at Phase 0 start** — the originally-drafted page-side counts (53/32/12) were inflated by `.next` / `.next-prod` build artifacts; the grep ran against `.` instead of `app/`. The `.next*` dirs alone held 119 phantom `next/navigation` hits. These are the **verified** numbers, grepped against `app/` only:
 
 | What | Count | Source of truth |
 |---|---:|---|
 | `app/**/page.tsx` (my scope) | **62** | `find app -name 'page.tsx' \| wc -l` |
 | `app/**/layout.tsx` (my scope) | **6** | `find app -name 'layout.tsx' \| wc -l` |
-| `app/**/route.ts` (backend agent's scope) | **70 remaining** (was 91; 21 batches already migrated to `defineRoute`) | `find app -name 'route.ts' \| wc -l` |
+| `app/**/route.ts` | **3** | `find app -name 'route.ts'` — see breakdown below |
 | `app/{loading,error,not-found}.tsx` files (my scope) | **6** | `find app \( -name 'loading.tsx' -o -name 'error.tsx' -o -name 'not-found.tsx' \)` |
 | Parallel routes (`@slot`) | **0** | `find app -path '*/@*'` |
 | Intercepting routes (`(.)`, `(..)`) | **0** | `find app -type d -name '(*)'` |
 | Route groups (`(group)`) | **0** | same |
-| `next/server` imports (backend agent) | **295** | `grep -rh "from 'next/server'" \| wc -l` |
-| `next/navigation` imports (my scope) | **53** | `grep -rh "from 'next/navigation'"` |
-| `next/dynamic` imports (my scope) | **32** | `grep -rh "from 'next/dynamic'"` |
-| `next/link` imports (my scope) | **12** | `grep -rh "from 'next/link'"` |
-| `next/headers` imports (backend agent) | **6** | `grep -rh "from 'next/headers'"` |
+| `next/navigation` imports (my scope) | **21** | `grep -rh "from ['\"]next/navigation" app/` |
+| `next/dynamic` imports (my scope) | **16** | `grep -rh "from ['\"]next/dynamic" app/` |
+| `next/link` imports (my scope) | **3** | `grep -rh "from ['\"]next/link" app/` |
 
-**Implication of zero parallel/intercepting routes + zero route groups:** the App Router → TanStack Router translation is **mechanical**. No bespoke routing patterns to preserve. This is the single biggest factor making this migration tractable.
+**The three `route.ts` files:**
+- `app/api/[[...route]]/route.ts` — the Hono catch-all shim. Backend agent deletes it at Phase H.
+- `app/wiki/route.ts` — page-namespace handler: resolves `[[wiki-link]]` targets, 302-redirects into `/harness/...`. **My scope** — ports to a Hono host route in Phase C (~50 lines).
+- `app/drizzle-studio/route.ts` — page-namespace handler: fetches the Drizzle Studio SPA HTML and injects `<base href>`. **My scope** — ports to a Hono host route in Phase C (~60 lines).
 
-**Note on count drift:** the page-side `next/*` counts (53/32/12) above were measured 2026-05-20 against `apps/operator/app/`. The backend agent's route migration may have removed a handful of `next/server` imports that were inlined in `route.ts` test fixtures; re-grep these three numbers at Phase 0 start to refresh the baseline. Backend hasn't touched page-side code, so the numbers should be stable, but verify rather than trust.
+**Implication of zero parallel/intercepting routes + zero route groups:** the App Router → TanStack Router translation is **mechanical**. No bespoke routing patterns to preserve. This is the single biggest factor making this migration tractable. And with the page-side `next/*` surface now known to be **21 + 16 + 3 = 40 import sites** (not the feared 97), the translation is roughly *half* the size the v2 plan budgeted.
 
 ---
 
@@ -76,7 +99,7 @@ Re-affirmed from the deferred-plan's decision table (those decisions are good; I
 |---|---|---|
 | **Bundler** | **Vite 8** (Rolldown-Vite once 1.0 is GA-stable in the workspace; default Rollup until then) | TanStack Router has a first-party Vite plugin (`@tanstack/router-plugin/vite`) for file-based route generation; no Rsbuild equivalent. Switching builders later is local to `apps/operator-vite/vite.config.ts`. |
 | **Router** | **TanStack Router 1.x**, file-based generator | File-router maps 1:1 onto our `app/**/page.tsx` tree with one mechanical convention swap (see [Phase B](#phase-b--router-translation)). Typed `Link`/`useParams`/`useSearch` close to Next's mental model. `defer`/`loader`/`pendingComponent` cover what `loading.tsx` did. |
-| **HTTP host (dev)** | Vite dev server (`vite`) on **:3055**; `@hono/node-server` Hono host on **:3070**, sibling process | The Vite stack **takes over the two Next ports directly** — `:3055` was `next dev`, `:3070` was the Next standalone. Next is being retired, so Vite claims both from the start; no Tauri/desktop env-var path changes. During the migration window only, a temporary Next sidecar runs on `:3056` for un-migrated `route.ts` (dies at Phase G). |
+| **HTTP host (dev)** | Vite dev server (`vite`) on **:3055**; `@hono/node-server` Hono host on **:3070**, sibling process | The Vite stack **takes over the two Next ports directly** — `:3055` was `next dev`, `:3070` was the Next standalone. Next is being retired, so Vite claims both from the start; no Tauri/desktop env-var path changes. **No Next process at any point in the migration** — the backend stream shipped, so the Hono host serves all `/api/*` from day one. |
 | **HTTP host (prod)** | **One process** — `@hono/node-server` on **:3070** serves the built `dist/` static + the Hono app + `/internal/docs/*` | `:3070` is "the operator host" in both dev and prod (no Vite dev server in prod — the static `dist/` is served by the Hono host). Replaces `next start` + the Next standalone; one process where there were two. |
 | **State / data layer** | TanStack Query + nuqs + Zero (**unchanged**) | None of these care about the framework. `useSyncQuery` and `transport-adapters` seams already exist; they keep working. |
 | **SSR** | **None** — SPA | Operator is an app shell, not content. Cold-paint flash is real but mitigated by Tauri's webview cache; webapp deploy is not in scope of this plan (Track A in host-arch). |
@@ -126,7 +149,7 @@ tail -5 coord/frontend.jsonl | grep -c 'operator-vite-migration'         # → �
 
 ## Phase A — Parallel app scaffold
 
-**Goal:** stand up `apps/operator-vite/` as a fresh Vite + React + TanStack Router app, in parallel with the live `apps/operator/`. No translation of pages yet — just the empty shell that builds, dev-runs, and proxies `/api/*` to the Next sidecar (moved to `:3056` so Vite can claim `:3055`) so the dev experience is end-to-end usable from day one.
+**Goal:** stand up `apps/operator-vite/` as a fresh Vite + React + TanStack Router app, in parallel with the live `apps/operator/`. No translation of pages yet — just the empty shell that builds, dev-runs, and proxies `/api/*` to the Hono host on `:3070` ([Phase C](#phase-c--hononode-server-host)) so the dev experience is end-to-end usable from day one.
 
 ### Why parallel, not in-place
 
@@ -161,25 +184,22 @@ apps/operator-vite/
 
 **No new state libs.** TanStack Query + nuqs + Zero come over from `apps/operator` via the workspace.
 
-### A2. Dev-server proxy (coord-derived)
+### A2. Dev-server proxy (static — single target)
 
-In `vite.config.ts`, proxy `/api/*` and `/api-ws/*` (if any) to the Hono catch-all that is currently being served by `next dev` on a sibling port. **The split between "go to Next sidecar (un-migrated)" and "go to `@hono/node-server` host (migrated)" is derived from `coord/frontend.jsonl`, not hand-curated** (see [Coordination — coord contract](#coordination-coord-contract)). The backend agent emits one `{kind:"prefix-migrated", prefix:"/api/foo", commit:"<sha>"}` entry per family they port; Vite re-reads the log at dev-start and emits the table:
+The backend stream shipped (see [status banner](#status-banner--backend-stream-shipped-2026-05-20)), so there is no un-migrated `/api/*` surface and no Next sidecar to split traffic with. The Vite dev proxy is a **static one-liner** — everything non-page goes to the Hono host on `:3070`:
 
 ```ts
 // vite.config.ts (illustrative)
 import { defineConfig } from 'vite';
-import { deriveProxyFromCoord } from './scripts/derive-vite-proxy.mjs';
 
 export default defineConfig({
   server: {
     port: 3055,
     host: process.env.PAPERCUSP_BIND_HOST ?? '127.0.0.1',
-    // deriveProxyFromCoord reads ../../coord/frontend.jsonl and emits:
-    //   { '/api/migrated-prefix-1': { target: 'http://127.0.0.1:3070', ... },
-    //     '/api/migrated-prefix-N': { target: 'http://127.0.0.1:3070', ... },
-    //     '/api':                   { target: 'http://127.0.0.1:3056', ws: true, ... },  // fallback to Next sidecar
-    //     '/internal/docs':         { target: 'http://127.0.0.1:3070', ... } }
-    proxy: deriveProxyFromCoord({ honoHost: 3070, nextSidecar: 3056 }),
+    proxy: {
+      '/api':           { target: 'http://127.0.0.1:3070', ws: true, changeOrigin: true },
+      '/internal/docs': { target: 'http://127.0.0.1:3070', changeOrigin: true },
+    },
   },
   plugins: [
     TanStackRouterVite({ routesDirectory: './src/routes', generatedRouteTree: './src/routeTree.gen.ts' }),
@@ -188,14 +208,9 @@ export default defineConfig({
 });
 ```
 
-`apps/operator-vite/scripts/derive-vite-proxy.mjs` is a ~40-line script that:
-1. Reads `coord/frontend.jsonl` for all `prefix-migrated` entries.
-2. De-duplicates (latest entry per prefix wins).
-3. Returns the Vite proxy object literal.
+`:3070` is the `@hono/node-server` host (stood up in [Phase C](#phase-c--hononode-server-host)). **No `next dev`, no `:3056` sidecar, no `derive-vite-proxy.mjs`** — all of that was scaffolding for a gradual cutover that the backend stream's completion made unnecessary.
 
-This way, when the backend agent ports a new family, **one line in `coord/frontend.jsonl` automatically updates the Vite dev proxy on the next dev restart** — no manual mirror, no drift.
-
-The Next sidecar runs on a *new* port (`:3056`) during the migration so Vite can own `:3055` (which is what Tauri / `PAPERCUSP_BIND_HOST`-aware scripts expect). One sed pass in `apps/operator/package.json`: `next dev -p 3055` → `next dev -p 3056`. The desktop's env config gets one update (or is gated on a `PAPERCUSP_USE_VITE=1` flag for the bring-up window) — see [Coordination](#coordination).
+**Ordering note:** because the Hono host is now trivial (~15 lines, and it works *today* — all routes are already mounted in `_hono/app.ts`), [Phase C](#phase-c--hononode-server-host) can run **before or alongside** Phase A rather than after it. Stand the host up first; Phase A's Vite proxy then has a live `:3070` to point at from its first boot. The phase letters are kept for continuity but A and C are effectively concurrent.
 
 ### A3. Root route + providers
 
@@ -225,7 +240,7 @@ The Next sidecar runs on a *new* port (`:3056`) during the migration so Vite can
 }
 ```
 
-And a `bin/dev-vite.sh` (or `bin/overmind`-style entry) that starts both Vite (:3055) and the Next sidecar (:3056) in parallel during the migration window. The exact mechanism lives in the desktop dev launcher; I'll wire it into whichever already-existing orchestrator script the desktop uses (TBD on first read of `papercusp-desktop/`).
+And a `bin/dev-vite.sh` (or `bin/overmind`-style entry) that starts **two** processes: Vite (`:3055`) and the Hono host (`:3070`, from [Phase C](#phase-c--hononode-server-host)). No Next process. The exact mechanism lives in the desktop dev launcher; I'll wire it into whichever already-existing orchestrator script the desktop uses (TBD on first read of `papercusp-desktop/`).
 
 ### A acceptance (greppable)
 
@@ -234,7 +249,7 @@ test -f apps/operator-vite/vite.config.ts
 test -f apps/operator-vite/src/routes/__root.tsx
 test -f apps/operator-vite/src/routes/index.tsx
 (cd apps/operator-vite && npm run build) && test -f apps/operator-vite/dist/index.html
-# Live: Vite on :3055 serves the hello page; /api/healthz proxies through to Next on :3056 and returns 200.
+# Live: Vite on :3055 serves the hello page; /api/healthz proxies to the Hono host on :3070 and returns 200.
 curl -sf http://127.0.0.1:3055/ | grep -q 'operator-vite'
 curl -sf http://127.0.0.1:3055/api/healthz   # 200
 ```
@@ -243,11 +258,10 @@ curl -sf http://127.0.0.1:3055/api/healthz   # 200
 
 - Zero page translations from `app/`.
 - No deletions from `apps/operator/`.
-- No Hono-host process — the Next sidecar still owns the API in this phase.
 
 ### A rollback
 
-`rm -rf apps/operator-vite` and revert the one-line `next dev -p 3056` change.
+`rm -rf apps/operator-vite`. Nothing else touched — `apps/operator/` is untouched in this phase.
 
 **Estimate:** 2–3 days.
 
@@ -377,7 +391,7 @@ Per-batch revert. Each batch is one PR; reverting it leaves the other batches in
 
 ## Phase C — `@hono/node-server` host
 
-**Goal:** stand up a standalone Node process that hosts the existing `_hono/app.ts` directly via `@hono/node-server`, with no Next involvement. Runs alongside the existing Next sidecar until enough of the backend agent's migration has landed to make it the primary. By the end of this phase the API can be served two ways (Next sidecar or `@hono/node-server`); they're interchangeable from the client's perspective.
+**Goal:** stand up a standalone Node process that hosts the existing `_hono/app.ts` directly via `@hono/node-server`, with no Next involvement. Because the backend stream shipped, this host serves the **entire** API surface from the moment it boots — there is no "interchangeable with the Next sidecar" interim state; the Hono host *is* the API host. This phase can run before or alongside Phase A.
 
 ### C1. Host process
 
@@ -398,59 +412,53 @@ serve({ fetch: app.fetch, port, hostname: host }, (info) => {
 });
 ```
 
-This is ~15 lines. It works **today** for every Hono route already mounted in `_hono/app.ts`. Routes that are still `app/**/route.ts` files (not yet migrated by the backend agent) **continue to live in the Next sidecar** during this phase. The Vite dev-proxy splits between the two:
+This is ~15 lines. It works **today** — every operator API route is already mounted in `_hono/app.ts` (the backend stream shipped). The Hono host serves 100% of `/api/*` the moment it boots; there is no split, no per-prefix proxy, no Next process. The Vite dev-proxy is the static one-liner from [A2](#a2-dev-server-proxy-static--single-target).
 
-```ts
-// vite.config.ts (illustrative, during Phase C → Phase H)
-proxy: {
-  // Routes the backend agent has migrated → Hono host on :3070.
-  '/api/healthz': { target: 'http://127.0.0.1:3070' },
-  '/api/agent-tools': { target: 'http://127.0.0.1:3070' },
-  // ... (list grows as backend agent migrates more)
-  // Everything else still goes to the Next sidecar on :3056.
-  '/api': { target: 'http://127.0.0.1:3056' },
-}
-```
+### C2. The two page-namespace route handlers (`/wiki`, `/drizzle-studio`)
 
-The backend agent's coord-channel entries announce which path prefixes have moved; I update the Vite proxy table accordingly. The map ends up empty when only the Hono path remains; then the `/api` entry becomes `:3070` and the Next sidecar can be killed.
+The endpoint-route migration covered `/api/*`. It did **not** cover the two `route.ts` files that live at *page* paths — `app/wiki/route.ts` and `app/drizzle-studio/route.ts`. These are mine. Once `next dev` is gone, nothing serves them, so Phase C ports both onto the Hono host as plain routes:
 
-### C2. Static asset serving (dev)
+- **`/wiki`** — `app.get('/wiki', ...)`: resolves the `?target=` query against registered projects, returns a 302. Pure `node:fs` + redirect logic; lifts out of `next/server` (`NextResponse.redirect` → `c.redirect`) in ~50 lines.
+- **`/drizzle-studio`** — `app.get('/drizzle-studio', ...)`: fetches the Drizzle Studio SPA HTML, injects `<base href="/drizzle-studio/">`, returns it. The companion `/drizzle-studio/:path*` CDN proxy (today a `next.config.js` rewrite) becomes a Hono route too — folded into [Phase E](#phase-e--config-replication)'s rewrite port.
+
+Mount both in the Hono host (not `_hono/app.ts` — they're page-namespace, not `/api/*`; same tier as the docs middleware).
+
+### C3. Static asset serving (dev)
 
 In dev, Vite serves static assets (from `apps/operator-vite/public/`, which symlinks to `apps/operator/public/`). No Hono involvement needed for static serving in dev.
 
-### C3. Dev launcher integration
+### C4. Dev launcher integration
 
-Update the dev-launcher (`bin/dev-vite.sh` from Phase A, or whichever orchestrator the desktop uses) to start three processes during the migration window:
+Update the dev-launcher (`bin/dev-vite.sh` from Phase A, or whichever orchestrator the desktop uses) to start **two** processes — no Next:
 1. Vite (`:3055`) — owns the page tree
-2. Next sidecar (`:3056`) — owns un-migrated `route.ts` files + the Hono catch-all (until [Phase G](#phase-g--production-host))
-3. `hono-host` (`:3070`) — owns the directly-mounted Hono routes
-
-This is temporary scaffolding; collapses to one process at cutover.
+2. `hono-host` (`:3070`) — owns `/api/*`, `/internal/docs/*`, `/wiki`, `/drizzle-studio`
 
 ### C acceptance (greppable)
 
 ```
-# The Hono host boots and serves the catch-all.
+# The Hono host boots and serves the whole API surface.
 PAPERCUSP_HONO_PORT=3070 tsx apps/operator/bin/hono-host.ts &
 sleep 2
-curl -sf http://127.0.0.1:3070/api/healthz   # 200 (assumes backend agent migrated this)
+curl -sf http://127.0.0.1:3070/api/healthz       # 200
+curl -sI http://127.0.0.1:3070/wiki?target=x | head -1   # 302
+curl -sf http://127.0.0.1:3070/drizzle-studio | grep -q '<base href="/drizzle-studio/"'
 # The Vite proxy routes API calls correctly.
-curl -sf http://127.0.0.1:3055/api/healthz   # 200, same body as direct
-# Both hosts can run side-by-side.
-ss -tnpl | grep -E ':3055|:3056|:3070' | wc -l  # → 3
+curl -sf http://127.0.0.1:3055/api/healthz       # 200, same body as direct
+# Exactly two processes — Vite + Hono host, no Next.
+ss -tnpl | grep -E ':3055|:3070' | wc -l         # → 2
+pgrep -af 'next dev' | wc -l                     # → 0
 ```
 
 ### C NOT shipping
 
-- No deletion of the Next route catch-all (`app/api/[[...route]]/route.ts`).
-- No production deploy of the Hono host yet.
-- No collapsing of Next + Hono into one process.
+- No deletion of the Next route catch-all (`app/api/[[...route]]/route.ts`) — that's Phase H, backend agent's.
+- No production deploy of the Hono host yet (Phase G).
 
 ### C rollback
 
-Stop the Hono host process; Vite proxy falls back to `:3056` for everything. Nothing else changed.
+Stop the Hono host process. `apps/operator/` is untouched; revert the `/wiki` + `/drizzle-studio` port commits if needed.
 
-**Estimate:** 2–3 days.
+**Estimate:** 2–3 days (the two page-handler ports add ~half a day over the original estimate).
 
 ---
 
@@ -548,15 +556,14 @@ Already described in [D3](#d3-proxyts-middleware--hono-middleware). The full por
 
 ### E3. Dev-server proxy table (Vite)
 
-Already partially specified in [A2](#a2-dev-server-proxy) and [C1](#c1-host-process). Final shape during the migration window:
+Already specified in [A2](#a2-dev-server-proxy-static--single-target) — it's a static two-entry table, unchanged for the whole migration:
 ```
 :3055 (vite)   → owns pages + static
-  proxy /api/<migrated-path> → :3070 (hono-host)
-  proxy /api                  → :3056 (next sidecar)
-  proxy /internal/docs        → :3070 (hono-host serves static + middleware)
+  proxy /api            → :3070 (hono-host)
+  proxy /internal/docs  → :3070 (hono-host serves static + middleware)
 ```
 
-After Phase H this collapses to a single backend on `:3070`.
+After Phase H, prod is the single `:3070` Hono host serving the built `dist/` directly — no Vite dev server, no proxy.
 
 ### E acceptance (greppable)
 
@@ -578,7 +585,7 @@ curl -sf -H 'Accept: text/markdown' http://127.0.0.1:3055/internal/docs/agent-po
 
 ### E NOT shipping
 
-- No deletion of `next.config.js` / `proxy.ts` yet — they're still active for the Next sidecar.
+- No deletion of `next.config.js` / `proxy.ts` yet — they're deleted in Phase H. (They're inert once the Hono host owns serving, but the deletion is batched into the cutover PR.)
 - No production deployment.
 
 ### E rollback
@@ -650,27 +657,19 @@ Tauri config revert + release script revert. Both single-line / single-file chan
 
 ## Phase G — Production single-process host
 
-**Goal:** collapse the three-process dev model (Vite + Next sidecar + Hono host) into the production target of **one process**. After this phase, prod is `node hono-host.js`; dev is `vite` + `hono-host` (two processes; Next sidecar is gone).
+**Goal:** make the production target **one process** — `node hono-host.js` serves the built SPA + `/api/*` + `/internal/docs/*` + the two page-namespace handlers. Dev is already two processes (`vite` + `hono-host`) from Phase C; this phase is about the *production* collapse, not the dev one.
 
-This phase **cannot start** until the backend agent has finished migrating all `route.ts` files to Hono routes in `_hono/app.ts` (i.e. the Next sidecar has nothing left to serve). Phase G is gated on a coord-channel signal from the backend agent saying "no route.ts files remain".
-
-### G1. Verify the gate
+**Gate — already met.** The v2 plan gated Phase G on the backend agent finishing the `route.ts` migration. That happened (see [status banner](#status-banner--backend-stream-shipped-2026-05-20)): `endpoint-route-migration-2026-05-20.md` is `status: shipped`, 0 API `route.ts` remain. The gate verification is now a one-line sanity check, not a wait:
 
 ```
-find apps/operator/app -name 'route.ts' -not -path '*/[[...route]]*' | wc -l   # → 0
+find apps/operator/app -name 'route.ts' -not -path '*/[[...route]]*' | wc -l   # → 2 — only /wiki + /drizzle-studio, both ported to the Hono host in Phase C
 ```
 
-(The catch-all `[[...route]]/route.ts` is the Next-side shim; **backend agent deletes it as part of their final-batch close-out, not me.** All other `route.ts` must be gone before Phase G can start.)
+(The catch-all `[[...route]]/route.ts` is the Next-side shim; **backend agent deletes it as part of Phase H, not me.**)
 
-**Backend agent ETA at plan-edit time (2026-05-20):** 70 remaining out of 91, grinding ~14 per turn → realistically a few days of focused work for them to hit zero. **Phase G start date in [Effort](#effort-estimate) is therefore pinned to "max(Phase E complete, backend at zero) + ~1 day buffer".**
+### G2. Dev launcher (already correct from Phase C)
 
-### G2. Drop the Next sidecar from the dev launcher
-
-Update `bin/dev-vite.sh` (or whatever orchestrator) to start two processes:
-1. Vite (`:3055`) — pages
-2. `hono-host` (`:3070`) — API + docs + static (for non-Tauri smoke)
-
-Vite proxy table collapses to a single entry: `/api → :3070`.
+Phase C already set the dev launcher to two processes — Vite (`:3055`) + `hono-host` (`:3070`). Nothing to drop here; there was never a Next sidecar. This sub-step is a no-op carried from the v2 plan's assumptions.
 
 ### G3. Single-process production — middleware order without changing the boundary
 
@@ -729,9 +728,9 @@ curl -sI http://127.0.0.1:3070/nonexistent | head -1         # 200 (SPA shell �
 
 ### G rollback
 
-Re-enable the Next sidecar in the launcher; flip the Vite proxy table back to the per-path split. No code changes need reverting — the sidecar files still exist (deleted in Phase H).
+Revert the production-host commit; the desktop launcher falls back to `next start` (the Next standalone files still exist until Phase H). Dev is unaffected — it was already Vite + Hono host from Phase C.
 
-**Estimate:** 2 days, blocked on backend agent's completion. Realistically gated on whenever they finish their 91-route migration.
+**Estimate:** 2 days. Gate already met (backend stream shipped), so no external blocking.
 
 ---
 
@@ -869,30 +868,16 @@ Per `feedback_paperclip_collision_race.md`: I do **not** SIGSTOP paperclip durin
 
 ### Coord contract
 
-Frozen 2026-05-20. Two structured event kinds the streams emit on `coord/frontend.jsonl` so the other side's tooling can react mechanically. (Anything else stays free-form prose under `kind: "checkpoint"` / `"note"`.)
-
-**Backend agent emits, one per migrated path family:**
-```json
-{"ts":"<ISO>","agent":"backend","kind":"prefix-migrated","prefix":"/api/foo","commit":"<sha>"}
-```
-- `prefix` is the path prefix that has moved from a Next `route.ts` to a `defineRoute` mount in `_hono/app.ts`. Examples: `/api/projects`, `/api/agent-mcp/operator-scan`, `/api/healthz`.
-- One entry per family. If a family is migrated in pieces, emit once when the whole family is on the Hono side.
-- `commit` is the SHA that landed it (so I can revert mentally if the line lies).
-
-**My `bin/derive-vite-proxy.mjs` reads these** to build the Vite dev-proxy table at dev-start (see [A2](#a2-dev-server-proxy-coord-derived)). No manual mirror.
-
-**Backend agent also emits, exactly once, at the end:**
-```json
-{"ts":"<ISO>","agent":"backend","kind":"route-ts-zero","commit":"<sha>","notes":"catch-all shim deleted in this commit"}
-```
-This is the Phase G start-gate signal. My tooling watches for it; I start Phase G's work the same day.
+Frozen 2026-05-20, then trimmed when the backend stream shipped. The v2 plan defined three event kinds for tracking a live two-stream race (`prefix-migrated`, `route-ts-zero`, `batch-shipped`). The first two are **obsolete** — the backend stream finished, so there is no moving `/api` split to track and no route-ts-zero gate to wait for. One event kind remains:
 
 **I emit, on each completed Phase B batch:**
 ```json
-{"ts":"<ISO>","agent":"frontend","kind":"batch-shipped","batch":"B-3","slugs":["/harness","/harness/[slug]",...],"commit":"<sha>"}
+{"ts":"<ISO>","agent":"frontend","kind":"batch-shipped","batch":"B-3","slugs":["/harness","/harness/$slug",...],"commit":"<sha>"}
 ```
 - `slugs` enumerates the routes that now live in `apps/operator-vite/src/routes/`.
-- Backend agent uses this to know which page-side surfaces are real (not just translated) — useful when their route migration touches a page's data layer.
+- Lets anyone touching a page's data layer know which page surfaces are real (translated + verified), not just stubbed.
+
+Everything else stays free-form prose under `kind: "checkpoint"` / `"note"`.
 
 ### Files the backend agent must NOT structurally move
 
@@ -941,22 +926,22 @@ If all eight pass, the migration is done.
 
 ## Effort estimate
 
-Refreshed 2026-05-20 after review (#9 Storybook +1-2d in F; #5 testing budget reshaped within B; #13 H expanded for the move-PR; #15 G gate pinned).
+Refreshed 2026-05-20 after the Phase-0 re-grep: the backend stream shipped (Phase G de-gated), the page-side `next/*` surface is **40 sites not 97** (Phase B shrinks), and there's no Next sidecar to wire (Phase A/C simpler).
 
 | Phase | Duration | Gating |
 |---|---:|---|
-| 0 — pre-flight & boundary (`BOUNDARY.md` only; export already shipped) | 0.5 days | backend-agent ack |
-| A — scaffold | 2–3 days | — |
-| B — router translation (6 batches, includes B6 `@bprogress` adapter + 6 Playwright smokes @ ~1d each) | 4–6 weeks | per-batch review |
-| C — `@hono/node-server` host | 2–3 days | A complete |
+| 0 — pre-flight & boundary (`BOUNDARY.md` + coord entry; export already shipped) | 0.5 days | none — done this turn |
+| A — scaffold | 2–3 days | — (can overlap C) |
+| B — router translation (62 pages, 40 `next/*` sites, B6 `@bprogress` adapter, 6 Playwright smokes @ ~1d) | **3–4 weeks** | per-batch review |
+| C — `@hono/node-server` host + `/wiki` + `/drizzle-studio` ports | 2–3 days | — (can run before/with A) |
 | D — page-side next/* audit | 1 day (rolled into B) | B complete |
 | E — config replication | 3–4 days | C complete |
 | F — Tauri shell + Storybook `@storybook/nextjs` → `@storybook/react-vite` | 3–4 days | E complete |
-| G — single-process production | 2 days | **max(E complete, backend at 0 route.ts) + ~1d buffer** |
-| H — cutover + move + import-path sweep + deps drop | 2–3 days | G complete; backend agent has already deleted catch-all shim + ported `openapi.json` |
-| **Total (mine, single-agent)** | **~7–9 weeks** | — |
+| G — single-process production | 2 days | E complete (backend gate already met) |
+| H — cutover + move + import-path sweep + deps drop | 2–3 days | G complete |
+| **Total (mine, single-agent)** | **~5–6 weeks** | — |
 
-If batches B-1..B-6 are parallelized across multiple worker-agents (per the deferred plan's "if revisited" note), total drops to ~4–5 weeks.
+Down from the v2 estimate of ~7–9 weeks: Phase B shrank (40 import sites, not 97), Phase G de-gated (no waiting on the backend stream), and the Next-sidecar scaffolding is gone. If batches B-1..B-6 parallelize across worker-agents, total drops to ~3 weeks.
 
 ---
 
@@ -969,7 +954,7 @@ These need user input. None block Phase 0/A start.
 3. **Server Actions / `'use server'`.** I haven't grepped for these (backend agent's surface). If they exist, the backend agent's plan covers them. Flagging only because their replacement (Hono routes + `useMutation`) is described in the deferred plan and the same pattern applies here.
 
 **Resolved during review (no longer open):**
-- ~~Production port~~ — decided 2026-05-20: the Vite stack takes over the two Next ports directly — **`:3055` for the Vite dev server, `:3070` for the production Hono host**. Next is being retired, so there's no collision; Vite claims both from day one. Migration window adds a temporary Next sidecar on `:3056` only.
+- ~~Production port~~ — decided 2026-05-20: the Vite stack takes over the two Next ports directly — **`:3055` for the Vite dev server, `:3070` for the production Hono host**. Next is being retired, so there's no collision; Vite claims both from day one. No third port — there is no Next sidecar (backend stream shipped).
 - ~~Final directory layout~~ — decided 2026-05-20: option (b), merge into `apps/operator-vite/`. See [Phase H](#h2-the-deletion--move-pr-option-b-merge-into-appsoperator-vite).
 - ~~`@bprogress/next` replacement~~ — moved to [Phase B6](#b6-bprogressnext--tsr-adapter-30-60-loc) as a concrete ~30-60 LOC sub-task, not config.
 
