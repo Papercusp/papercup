@@ -17,6 +17,7 @@ import { compress } from 'hono/compress';
 import { cors } from 'hono/cors';
 import { harness } from './harness';
 import { plugins } from './plugins';
+import { coord } from './coord';
 import { registerPty } from './pty';
 import { registerOperatorNotes } from './operator-notes';
 import { registerAgentChats } from './agent-chats';
@@ -94,6 +95,9 @@ app.route('/plugins', plugins);
 
 // Mobile API (pair, push, voice, workspaces) — see _hono/mobile.ts
 app.route('/mobile', registerMobile);
+
+// Coordination history (Phase B remainder — /coord UI viewer) — see _hono/coord.ts
+app.route('/coord', coord);
 
 // defineRoute endpoints — the endpoint-system's second projection.
 // Every `defineRoute` (lib/endpoint-route/routes/**) mounts here and is
