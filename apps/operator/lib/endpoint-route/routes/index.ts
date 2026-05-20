@@ -87,6 +87,10 @@ import elevenlabsWebhook from './elevenlabs/webhook';
 import elevenlabsPostCall from './elevenlabs/post-call';
 import miscScratch from './misc/scratch';
 import mobileQrSvg from './mobile/qr-svg';
+import designFeatures from './design/features';
+import designRegressions from './design/regressions';
+import designRegressionFile from './design/regression-file';
+import designSketches from './design/sketches';
 
 type AnyRoute = RouteDefinition<ZodTypeAny | undefined>;
 
@@ -169,4 +173,8 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(elevenlabsPostCall as AnyRoute),
   ...flatten(miscScratch as AnyRoute),
   ...flatten(mobileQrSvg as AnyRoute),
+  ...flatten(designFeatures as AnyRoute),
+  ...flatten(designRegressions as AnyRoute),
+  ...flatten(designRegressionFile as AnyRoute),
+  ...flatten(designSketches as AnyRoute[]),
 ];
