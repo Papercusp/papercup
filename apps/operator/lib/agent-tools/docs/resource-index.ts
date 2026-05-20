@@ -10,19 +10,9 @@
  */
 
 import { promises as fs } from 'node:fs';
-import * as path from 'node:path';
 import { defineResource } from '@papercusp/agent-mcp';
 import type { ResourceContents } from '@papercusp/agent-mcp';
-
-const LLMS_TXT = path.join(
-  process.cwd(),
-  'apps',
-  'operator',
-  'public',
-  'internal',
-  'docs',
-  'llms.txt',
-);
+import { LLMS_TXT_PATH as LLMS_TXT } from './_repo-paths';
 
 export default defineResource({
   name: 'docs:index',

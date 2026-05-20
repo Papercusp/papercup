@@ -8,27 +8,10 @@
  * @papercusp/docs-engine + starlightContentAdapter.
  */
 
-import * as path from 'node:path';
 import { defineResource } from '@papercusp/agent-mcp';
 import type { ResourceContents, ResourceListEntry } from '@papercusp/agent-mcp';
-import {
-  buildOutline,
-  starlightContentAdapter,
-  withPreamble,
-} from '@papercusp/docs-engine';
-
-const adapter = starlightContentAdapter({
-  name: 'papercusp-engineering',
-  contentRoot: path.join(
-    process.cwd(),
-    'apps',
-    'operator-docs',
-    'src',
-    'content',
-    'docs',
-  ),
-  baseUrl: '/internal/docs',
-});
+import { buildOutline, withPreamble } from '@papercusp/docs-engine';
+import { engineeringAdapter as adapter } from './_engineering-adapter';
 
 export default defineResource({
   name: 'docs:section',
