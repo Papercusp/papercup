@@ -48,6 +48,16 @@ export function subscriptionsDir(): string {
   return join(coordDir(), 'subscriptions');
 }
 
+export function watermarksDir(): string {
+  return join(coordDir(), 'watermarks');
+}
+
+/** Per-agent watermark filename (last-read pointers). ownerId sanitised. */
+export function watermarkFile(ownerId: string): string {
+  const safe = ownerId.replace(/[^A-Za-z0-9._-]/g, '_');
+  return join(watermarksDir(), `${safe}.json`);
+}
+
 export function subscriptionsFile(ownerId: string): string {
   const safe = ownerId.replace(/[^A-Za-z0-9._-]/g, '_');
   return join(subscriptionsDir(), `${safe}.jsonl`);

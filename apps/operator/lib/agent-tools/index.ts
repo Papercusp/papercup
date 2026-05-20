@@ -181,6 +181,9 @@ import './coordination/tools/handoffs';
 import './coordination/tools/watch';
 import './coordination/tools/unwatch';
 import './coordination/tools/watches';
+
+import './coordination/tools/watermark';
+import './coordination/tools/watermark-set';
 // Plan → harness on-ramp (Phase E v0.5 — preview only)
 import './coordination/tools/promote';
 

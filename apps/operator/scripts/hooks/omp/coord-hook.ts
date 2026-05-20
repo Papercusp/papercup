@@ -199,9 +199,29 @@ export async function onSessionStart(): Promise<void> {
   });
 }
 
+/**
+ * Watermark carried between turn_start and turn_end. onTurnStart records
+ * the newest inbox ts it surfaced; onTurnEnd persists it via
+ * coord:watermark-set. Conservative by design (plan §7.2): an aborted
+ * turn never reaches turn_end, so the next turn re-sees the same
+ * notifications — a missed notification is worse than a repeated one.
+ */
+let _pendingMessagesWatermark: string | null = null;
+
+/** Largest ISO ts in a list of inbox entries, or '' if empty. */
+function maxTs(entries: InboxEntry[]): string {
+  let max = '';
+  for (const e of entries) {
+    if (e.ts > max) max = e.ts;
+  }
+  return max;
+}
+
 /** Fired once per turn start. Heartbeats + returns the reminder text
  *  (the OMP adapter at the bottom of the file is responsible for
- *  surfacing it to the model). */
+ *  surfacing it to the model). Scopes the inbox to entries newer than
+ *  the agent's stored watermark so the same notification is not
+ *  re-surfaced every turn. */
 export async function onTurnStart(): Promise<string> {
   // Heartbeat: re-declare current intent (writePresence bumps heartbeat).
   // We do this fire-and-forget so the reminder fetch isn't gated on it.
@@ -210,8 +230,17 @@ export async function onTurnStart(): Promise<string> {
   });
 
   const ownerId = process.env.PAPERCUSP_AUTH_SESSION_ID ?? 'unknown';
+
+  // Read the watermark first — its messages_since_ts scopes the inbox.
+  const wmResult = await callMcpTool('coord:watermark', {});
+  const sinceTs = (() => {
+    const r = wmResult as { watermark?: { messages_since_ts?: string } } | null;
+    const v = r?.watermark?.messages_since_ts;
+    return typeof v === 'string' && v.length > 0 ? v : undefined;
+  })();
+
   const [inboxResult, locksResult] = await Promise.all([
-    callMcpTool('coord:inbox', {}),
+    callMcpTool('coord:inbox', sinceTs ? { since_ts: sinceTs } : {}),
     callMcpTool('locks:queue', { owner: ownerId }).catch(() => null),
   ]);
 
@@ -227,7 +256,23 @@ export async function onTurnStart(): Promise<string> {
     inbox.filter((e) => e.kind === 'plan_event'),
   );
 
+  // Stage the watermark advance for turn_end. Only advance past entries
+  // we actually surfaced this turn; if the inbox was empty, keep the
+  // prior watermark (don't skip past anything that lands mid-turn).
+  const surfacedMax = maxTs(inbox);
+  _pendingMessagesWatermark = surfacedMax.length > 0 ? surfacedMax : null;
+
   return formatTurnStartReminder({ ownerId, inbox, heldLocks, changedPlans });
+}
+
+/** Fired once per turn end. Persists the watermark staged by
+ *  onTurnStart so next turn's inbox is scoped to genuinely-new
+ *  entries. No-op when nothing was surfaced this turn. */
+export async function onTurnEnd(): Promise<void> {
+  if (_pendingMessagesWatermark == null) return;
+  const ts = _pendingMessagesWatermark;
+  _pendingMessagesWatermark = null;
+  await callMcpTool('coord:watermark-set', { messages_since_ts: ts });
 }
 
 /**
@@ -281,6 +326,7 @@ async function safe<T>(fn: () => Promise<T>, fallback: T): Promise<T> {
  */
 type SessionStartHandler = (event: { type: 'session_start' }, ctx: unknown) => unknown;
 type TurnStartHandler = (event: { type: 'turn_start'; turnIndex: number; timestamp: number }, ctx: unknown) => unknown;
+type TurnEndHandler = (event: { type: 'turn_end' }, ctx: unknown) => unknown;
 type ToolCallHandler = (
   event: ToolCallEvent,
   ctx: unknown,
@@ -289,6 +335,7 @@ type ToolCallHandler = (
 interface HookApi {
   on(event: 'session_start', handler: SessionStartHandler): void;
   on(event: 'turn_start', handler: TurnStartHandler): void;
+  on(event: 'turn_end', handler: TurnEndHandler): void;
   on(event: 'tool_call', handler: ToolCallHandler): void;
   sendMessage(
     message: {
@@ -321,6 +368,10 @@ export default function register(pi: HookApi): void {
         attribution: 'agent',
       });
     }
+  });
+
+  pi.on('turn_end', async () => {
+    await safe(() => onTurnEnd(), undefined);
   });
 
   pi.on('tool_call', async (event) => {

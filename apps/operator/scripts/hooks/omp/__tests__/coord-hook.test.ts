@@ -106,7 +106,12 @@ describe('register (OMP adapter)', () => {
     };
     const { default: register } = await import('../coord-hook');
     register(pi as never);
-    expect([...subs.keys()].sort()).toEqual(['session_start', 'tool_call', 'turn_start']);
+    expect([...subs.keys()].sort()).toEqual([
+      'session_start',
+      'tool_call',
+      'turn_end',
+      'turn_start',
+    ]);
     // tool_call handler permits all by default (stub).
     const block = await subs.get('tool_call')!(
       { type: 'tool_call', toolName: 'edit', toolCallId: 't1', input: {} },
