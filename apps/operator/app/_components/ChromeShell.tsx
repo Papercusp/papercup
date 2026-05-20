@@ -9,6 +9,7 @@ import { useReducedMotion } from 'motion/react';
 import { useFancyEffectsEnabled } from '@/lib/visual-effects';
 import { OperatorButton, OperatorAutoScanToggle } from './OperatorChromeControls';
 import { ConsoleLauncherButton } from './ConsoleLauncherButton';
+import { AgentLauncherButton } from './AgentLauncherButton';
 import { OpsTargetMark } from './ChromeNavMarks';
 import { AriaLiveRegions } from './voice/AriaLiveRegions';
 import { VoiceLeaderBootstrap } from './voice/VoiceLeaderBootstrap';
@@ -178,6 +179,7 @@ export default function ChromeShell() {
           <OperatorButton />
           <OperatorAutoScanToggle />
           <ConsoleLauncherButton />
+          <AgentLauncherButton />
         </div>
         <nav className="pc-header-right" aria-label="Primary navigation">
           {marketplaceFlag ? (

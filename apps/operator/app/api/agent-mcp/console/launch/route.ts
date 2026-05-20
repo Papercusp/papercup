@@ -180,6 +180,29 @@ function shellEscape(s: string): string {
   return `'${s.replace(/'/g, "'\\''")}'`;
 }
 
+/**
+ * Oneliner for `omp` mode — `cd`, inline-export the NON-secret env,
+ * then `exec` the launch command. Secret env (the power-user tokens)
+ * is deliberately absent here: it reaches the terminal via the spawn
+ * `env` option instead, so it never lands in the oneliner (which is
+ * the spawned shell's argv — visible in `ps`). See D-006.
+ *
+ * `launchCommand` is a fixed trusted literal (`papercusp-omp connect`),
+ * not user input, so it is interpolated without escaping.
+ */
+function buildOmpOneliner(
+  cwd: string,
+  env: Record<string, string>,
+  launchCommand: string,
+): string {
+  const envExports: string[] = [];
+  for (const [k, v] of Object.entries(env)) {
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(k)) continue;
+    envExports.push(`export ${k}=${shellEscape(v)}`);
+  }
+  return [`cd ${shellEscape(cwd)}`, ...envExports, `exec ${launchCommand}`].join(' && ');
+}
+
 function buildOneliner(cwd: string, env: Record<string, string>, greeting: string): string {
   const envExports: string[] = [];
   if (env.PAPERCUSP_SCRIPTS_DIR) {
@@ -217,11 +240,13 @@ export async function POST(req: NextRequest): Promise<Response> {
   }
   // Accept either application/json or text/plain (the renderer uses
   // text/plain to avoid a CORS preflight). Parse JSON from the text.
-  let body: { slug?: string | null } = {};
+  let body: { slug?: string | null; mode?: 'shell' | 'omp' } = {};
   try {
     const text = await req.text();
     if (text.trim()) body = JSON.parse(text);
   } catch { /* ignore — empty body is fine */ }
+
+  const mode = body.mode === 'omp' ? 'omp' : 'shell';
 
   let envelope;
   try {
@@ -229,12 +254,65 @@ export async function POST(req: NextRequest): Promise<Response> {
       workspaceId: activeWorkspaceId(),
       slug: body.slug ?? null,
       operatorBaseUrl: new URL(req.url).origin,
+      mode,
     });
   } catch (e: any) {
     console.warn(`[console-launch] envelope build failed: ${e?.message}`);
     return jsonRes({ status: 'error', error: e?.message ?? 'envelope build failed' }, 400);
   }
 
+  // ── omp mode — launch papercusp-omp connect ──────────────────────
+  if (envelope.mode === 'omp') {
+    if (process.platform !== 'linux') {
+      return jsonRes(
+        { status: 'error', error: 'server-side spawn only implemented for Linux' },
+        501,
+      );
+    }
+    if (!isOnPath('papercusp-omp') || !isOnPath('omp')) {
+      return jsonRes(
+        {
+          status: 'error',
+          code: 'omp_not_installed',
+          error: 'OMP / @papercusp/omp not found on PATH.',
+          installCmd: 'npm i -g @oh-my-pi/cli @papercusp/omp',
+        },
+        200,
+      );
+    }
+    const term = findLinuxTerminal();
+    if (!term) {
+      return jsonRes(
+        { status: 'error', error: 'no terminal emulator found. Set $TERMINAL or install gnome-terminal / konsole / alacritty / kitty / wezterm / xterm' },
+        500,
+      );
+    }
+    const ompOneliner = buildOmpOneliner(
+      envelope.cwd,
+      envelope.env,
+      envelope.launchCommand ?? 'papercusp-omp connect',
+    );
+    try {
+      const child = spawn(term.bin, [...term.args, 'bash', '-lc', ompOneliner], {
+        detached: true,
+        stdio: 'ignore',
+        cwd: envelope.cwd,
+        // Tokens ride the env option only — never the oneliner (D-006).
+        env: { ...process.env, ...envelope.env, ...(envelope.secretEnv ?? {}) },
+      });
+      child.unref();
+      console.log(`[console-launch] spawned omp agent ${term.bin} pid=${child.pid}`);
+      return jsonRes({ status: 'ok', pid: child.pid, terminal: term.bin, mode: 'omp' });
+    } catch (e: any) {
+      console.warn(`[console-launch] omp spawn ${term.bin} failed: ${e?.message}`);
+      return jsonRes(
+        { status: 'error', error: `spawn ${term.bin} failed: ${e?.message}` },
+        500,
+      );
+    }
+  }
+
+  // ── shell mode (engineer path, unchanged) ────────────────────────
   try {
     const mcpPath = join(envelope.cwd, '.mcp.json');
     if (existsSync(mcpPath)) {

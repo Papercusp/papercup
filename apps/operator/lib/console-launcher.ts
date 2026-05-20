@@ -25,19 +25,50 @@ import {
   resolveProjectDir,
   resolveStateDir,
 } from '@/lib/spawn-config';
+import { getSessionUserOrDefault } from '@/lib/auth';
+import { createPowerUserSession } from '@/lib/power-user-sessions';
+import { mintAccessToken, mintRefreshToken } from '@/lib/power-user-token';
+
+/**
+ * `shell` — the engineer path: a superuser console with a `.mcp.json`.
+ * `omp`   — the power-user path: launch `papercusp-omp connect`, which
+ *           seeds a workspace-scoped OMP agent. See
+ *           docs/plans/omp-power-user-bundle-2026-05-20.md §4.4.
+ */
+export type ConsoleMode = 'shell' | 'omp';
 
 export interface ConsoleEnvelope {
   /** Working directory the terminal opens in. */
   cwd: string;
-  /** Env vars to inject into the spawned shell. */
+  /**
+   * Non-secret env vars. The launcher inline-`export`s these into the
+   * oneliner — so they must NOT contain secrets (the oneliner is the
+   * spawned shell's argv and is visible in `ps`).
+   */
   env: Record<string, string>;
-  /** Pretty-printed .mcp.json contents. Tauri side writes this to cwd. */
+  /** Pretty-printed .mcp.json contents. Empty in `omp` mode (the OMP
+   *  plugin writes its own .mcp.json). */
   mcpJsonContents: string;
   /** Greeting command the launcher runs before exec'ing the user's shell. */
   greetingCmd: string;
   /** True iff ~/.papercusp/superuser-token is missing. Tauri side
    *  should run install-standalone-mcp.sh before launching. */
   needsSuperuserBootstrap: boolean;
+  /** Which launch flavour this envelope describes. */
+  mode: ConsoleMode;
+  /**
+   * `omp` mode only — secret env (the power-user access + refresh
+   * tokens). Passed to the terminal via the spawn `env` option ONLY,
+   * never inline-`export`ed into the oneliner: argv leaks to `ps`,
+   * shell history, and kernel audit (D-006). Env is visible only via
+   * `/proc/<pid>/environ` to the same user — the accepted middle.
+   */
+  secretEnv?: Record<string, string>;
+  /**
+   * `omp` mode only — the command the terminal `exec`s in place of the
+   * user's `$SHELL` (e.g. `papercusp-omp connect`).
+   */
+  launchCommand?: string;
 }
 
 export interface BuildEnvelopeOpts {
@@ -47,6 +78,8 @@ export interface BuildEnvelopeOpts {
   slug: string | null;
   /** The operator's own base URL (e.g. http://localhost:3070). */
   operatorBaseUrl: string;
+  /** Launch flavour. Default `'shell'` (preserves the engineer path). */
+  mode?: ConsoleMode;
 }
 
 const TOKEN_PATH = join(homedir(), '.papercusp', 'superuser-token');
@@ -125,6 +158,40 @@ export async function buildConsoleEnvelope(
   const scriptsDir = resolveScriptsDir();
   if (scriptsDir) env.PAPERCUSP_SCRIPTS_DIR = scriptsDir;
 
+  // 2c. omp mode — mint a power-user session + tokens and return an
+  //     envelope that launches `papercusp-omp connect`. The tokens go
+  //     in secretEnv (spawn-env only, never the oneliner). No .mcp.json
+  //     here: the OMP plugin writes its own, scoped to the workspace.
+  if ((opts.mode ?? 'shell') === 'omp') {
+    const user = await getSessionUserOrDefault();
+    const { authSessionId } = await createPowerUserSession({
+      workspaceId: opts.workspaceId,
+      userId: user.id,
+    });
+    const access = await mintAccessToken({
+      workspaceId: opts.workspaceId,
+      userId: user.id,
+      authSessionId,
+    });
+    const refresh = await mintRefreshToken({ authSessionId });
+    // Non-secret — fine to inline-export.
+    env.PAPERCUSP_BUNDLE_URL = `${opts.operatorBaseUrl}/api/agent-bundle`;
+    env.PAPERCUSP_AUTH_SESSION_ID = authSessionId;
+    return {
+      cwd,
+      env,
+      mcpJsonContents: '',
+      greetingCmd: '',
+      needsSuperuserBootstrap: false,
+      mode: 'omp',
+      secretEnv: {
+        PAPERCUSP_BUNDLE_ACCESS_TOKEN: access.token,
+        PAPERCUSP_BUNDLE_REFRESH_TOKEN: refresh.token,
+      },
+      launchCommand: 'papercusp-omp connect',
+    };
+  }
+
   // 3. Build the .mcp.json that the user's claude/codex agent will
   //    auto-discover when they cd here. Points at the superuser door.
   //    If the token is missing the Tauri side will install it before
@@ -158,5 +225,6 @@ export async function buildConsoleEnvelope(
     mcpJsonContents,
     greetingCmd: 'papercup status 2>/dev/null || true',
     needsSuperuserBootstrap,
+    mode: 'shell',
   };
 }
