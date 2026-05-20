@@ -61,6 +61,23 @@ import desktopTelemetryFlush from './desktop/telemetry-flush';
 import desktopTelemetryReport from './desktop/telemetry-report';
 import desktopVoiceConfigured from './desktop/voice-configured';
 import desktopWorkspaceValidate from './desktop/workspace-validate';
+import adminBackupOrphanCleanup from './admin/backup-orphan-cleanup';
+import adminCommands from './admin/commands';
+import adminEmbedBackfill from './admin/embed-backfill';
+import adminExecuteAction from './admin/execute-action';
+import adminLlmTestsFindings from './admin/llm-tests-findings';
+import adminLlmTestsFindingById from './admin/llm-tests-finding-by-id';
+import adminLlmTestsRuns from './admin/llm-tests-runs';
+import adminLlmTestsRunById from './admin/llm-tests-run-by-id';
+import adminLlmTestsScenarios from './admin/llm-tests-scenarios';
+import adminPruneExecutedActions from './admin/prune-executed-actions';
+import adminRotateToken from './admin/rotate-token';
+import adminRun from './admin/run';
+import adminSpawnSigningFailures from './admin/spawn-signing-failures';
+import adminSpawnSigningRotate from './admin/spawn-signing-rotate';
+import adminTables from './admin/tables';
+import adminTablesByName from './admin/tables-by-name';
+import adminTestingAiExplore from './admin/testing-ai-explore';
 
 type AnyRoute = RouteDefinition<ZodTypeAny | undefined>;
 
@@ -117,4 +134,21 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(desktopTelemetryReport as AnyRoute[]),
   ...flatten(desktopVoiceConfigured as AnyRoute),
   ...flatten(desktopWorkspaceValidate as AnyRoute),
+  ...flatten(adminBackupOrphanCleanup as AnyRoute),
+  ...flatten(adminCommands as AnyRoute),
+  ...flatten(adminEmbedBackfill as AnyRoute),
+  ...flatten(adminExecuteAction as AnyRoute),
+  ...flatten(adminLlmTestsFindings as AnyRoute),
+  ...flatten(adminLlmTestsFindingById as AnyRoute),
+  ...flatten(adminLlmTestsRuns as AnyRoute),
+  ...flatten(adminLlmTestsRunById as AnyRoute),
+  ...flatten(adminLlmTestsScenarios as AnyRoute),
+  ...flatten(adminPruneExecutedActions as AnyRoute),
+  ...flatten(adminRotateToken as AnyRoute),
+  ...flatten(adminRun as AnyRoute),
+  ...flatten(adminSpawnSigningFailures as AnyRoute),
+  ...flatten(adminSpawnSigningRotate as AnyRoute),
+  ...flatten(adminTables as AnyRoute),
+  ...flatten(adminTablesByName as AnyRoute[]),
+  ...flatten(adminTestingAiExplore as AnyRoute),
 ];
