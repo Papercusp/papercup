@@ -693,6 +693,19 @@ html[data-route-pending="true"] .pc-header::after {
   overflow: visible;
 }
 
+.pc-header-harness-collapse-slot {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  min-width: 0;
+  overflow: visible;
+}
+
+.pc-header-harness-collapse-slot:not(:empty) {
+  display: inline-flex;
+}
+
 .pc-header-right {
   display: flex;
   align-items: center;

@@ -16983,6 +16983,56 @@ html body .h-root.h-root :is(
   }
 }
 
+/* Expanded harness state: the hide/show tab is portaled into the global
+   header slot between Ops and Deck. Keep it in-flow there; when collapsed,
+   the same button portals back to body so the fixed fallback remains visible
+   while the header is hidden. */
+.pc-header-harness-collapse-slot .h-top-collapse-btn.h-top-collapse-inline {
+  position: relative !important;
+  top: auto !important;
+  left: auto !important;
+  transform: none !important;
+  z-index: auto !important;
+  width: auto !important;
+  min-width: 0 !important;
+  min-height: 32px !important;
+  height: 32px !important;
+  padding: 0 8px !important;
+  gap: 5px !important;
+  font-size: 9px !important;
+  letter-spacing: 0.07em !important;
+  box-shadow:
+    0 8px 18px rgba(0, 0, 0, 0.26),
+    0 0 0 1px rgba(7, 15, 27, 0.64),
+    inset 0 1px 0 rgba(255, 255, 255, 0.18) !important;
+}
+
+.pc-header-harness-collapse-slot .h-top-collapse-btn.h-top-collapse-inline:hover,
+.pc-header-harness-collapse-slot .h-top-collapse-btn.h-top-collapse-inline:focus-visible,
+.pc-header-harness-collapse-slot .h-top-collapse-btn.h-top-collapse-inline:active {
+  transform: none !important;
+}
+
+.pc-header-harness-collapse-slot .h-top-collapse-btn.h-top-collapse-inline .h-top-collapse-icon {
+  width: 14px !important;
+  height: 14px !important;
+  padding: 1.5px !important;
+}
+
+.pc-header-harness-collapse-slot .h-top-collapse-btn.h-top-collapse-inline .h-top-collapse-label {
+  display: none !important;
+}
+
+.pc-header-harness-collapse-slot .h-top-collapse-btn.h-top-collapse-inline .h-top-collapse-state {
+  flex: 0 0 auto !important;
+  min-width: 0 !important;
+  height: auto !important;
+  border: 0 !important;
+  background: transparent !important;
+  font-size: 9px !important;
+  letter-spacing: 0.08em !important;
+}
+
 /* Right-side drawer polish v4: make feature/issue inspectors read as first-class
    HUD panels instead of older purple popouts. Keep this last so it overrides
    legacy inline styles and the earlier drawer passes above. */

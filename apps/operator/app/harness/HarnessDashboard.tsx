@@ -510,6 +510,8 @@ function CollapseTopSectionPortalButton({
   const Icon = collapsed ? LChevronDown : LChevronUp;
   const actionLabel = collapsed ? 'Show top section' : 'Hide top section';
   const stateLabel = collapsed ? 'Show' : 'Hide';
+  const headerSlot = !collapsed ? document.getElementById('pc-harness-top-collapse-slot') : null;
+  const portalTarget = headerSlot ?? document.body;
   return createPortal(
     <button
       type="button"
@@ -523,7 +525,7 @@ function CollapseTopSectionPortalButton({
       <span className="h-top-collapse-label">Top section</span>
       <span className="h-top-collapse-state" aria-hidden="true">{stateLabel}</span>
     </button>,
-    document.body
+    portalTarget
   );
 }
 

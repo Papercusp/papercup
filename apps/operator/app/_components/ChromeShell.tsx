@@ -135,7 +135,7 @@ export default function ChromeShell() {
         <span className="pc-header-hud-line pc-header-hud-line--secondary" aria-hidden="true" />
         {/*
           Three-region grid: left = brand + quote, centre = primary CTAs
-          (Ops, Deck, auto-scan, console), right = nav. CSS Grid
+          (Ops, harness hide/show, Deck, auto-scan, console), right = nav. CSS Grid
           in `1fr auto 1fr` keeps the centre cluster geometrically centred
           in the viewport regardless of how wide the brand/quote on the left
           and the nav on the right grow.
@@ -166,6 +166,10 @@ export default function ChromeShell() {
               <span className="pc-header-cta-label">OPS</span>
             </a>
           )}
+          <span
+            id="pc-harness-top-collapse-slot"
+            className="pc-header-harness-collapse-slot"
+          />
           <OperatorButton />
           <OperatorAutoScanToggle />
           <ConsoleLauncherButton />
