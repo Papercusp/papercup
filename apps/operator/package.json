@@ -31,6 +31,8 @@
     "test:agent-tools-list:dev": "OPERATOR_BASE_URL=http://localhost:3055 node __tests__/integration/agent-tools-list.mjs",
     "test:admin-failures": "node __tests__/integration/admin-failures.mjs",
     "test:admin-failures:dev": "OPERATOR_BASE_URL=http://localhost:3055 node __tests__/integration/admin-failures.mjs",
+    "test:power-user": "node __tests__/integration/power-user-e2e.mjs",
+    "test:power-user:dev": "OPERATOR_BASE_URL=http://localhost:3055 node __tests__/integration/power-user-e2e.mjs",
     "llm-test": "tsx bin/llm-test.ts"
   },
   "dependencies": {
