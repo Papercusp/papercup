@@ -1,11 +1,8 @@
 /**
- * save-as-template input validation tests. Filesystem effects (copying
- * the recipe files, reading enabled-plugins.json) are exercised by the
- * sheets E2E smoke; here we pin the regex contracts so a typo in
- * either pattern surfaces at test time.
+ * save-as-template regex contract tests — pins SLUG_RE and SEMVER_RE.
  */
 import { describe, it, expect } from 'vitest';
-import { SLUG_RE, SEMVER_RE } from './route';
+import { SLUG_RE, SEMVER_RE } from '../routes/harness/save-as-template';
 
 describe('SLUG_RE', () => {
   it.each([
@@ -29,7 +26,6 @@ describe('SLUG_RE', () => {
     'has@symbol',
   ])('rejects %s', (s) => {
     if (s === 'WITH-CAPS') {
-      // Regex uses /i so caps are accepted. Document the actual behavior.
       expect(SLUG_RE.test(s)).toBe(true);
       return;
     }

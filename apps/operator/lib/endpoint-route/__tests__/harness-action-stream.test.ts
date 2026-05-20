@@ -1,33 +1,33 @@
 /**
- * Live in-process round-trip for the action-stream SSE route:
- *
- *   branch-action-bus.publish()  →  sseResponse sink.event()  →  response body bytes
- *
- * Asserts the wire format on the happy path (started → output → completed →
- * terminal close), without spawning anything or touching the dev server.
+ * Live in-process round-trip for the action-stream SSE route via Hono app.
+ * Asserts the wire format on the happy path.
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { publish } from '@/lib/branch-action-bus';
-import { _resetChannelsForTest, listChannels } from '@restart/sse';
 
-vi.mock('@/lib/harness-registry', () => ({
-  loadHarnessRegistry: async () => ({
-    projects: [{ slug: 'probe-slug', path: '/tmp/probe-dir-does-not-exist' }],
-  }),
+vi.mock('@/lib/harness-registry', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/harness-registry')>();
+  return {
+    ...actual,
+    loadHarnessRegistry: async () => ({
+      projects: [{ slug: 'probe-slug', path: '/tmp/probe-dir-does-not-exist' }],
+    }),
+  };
+});
+vi.mock('@/lib/endpoint-route/telemetry', () => ({
+  recordRouteInvocation: vi.fn(async () => {}),
 }));
 
-import { GET } from './route';
+import { Hono } from 'hono';
+import { publish } from '@/lib/branch-action-bus';
+import { _resetChannelsForTest, listChannels } from '@restart/sse';
+import { registerAllRoutes } from '../register';
 
-function makeReq(): { req: Request; abort: () => void } {
-  const controller = new AbortController();
-  const req = new Request(
-    'http://x.test/api/harness/probe-slug/branch/staging/action-stream?name=probe-action&runId=run-probe-1',
-    { signal: controller.signal },
-  );
-  return { req, abort: () => controller.abort() };
+let app: Hono;
+
+function makeReq(urlSuffix = 'name=probe-action&runId=run-probe-1') {
+  return app.request(`/api/harness/probe-slug/branch/staging/action-stream?${urlSuffix}`);
 }
 
-/** Wait until the branch-action channel has at least one sync subscriber. */
 async function waitForBusSubscriber(channelKey: string, timeoutMs = 2000): Promise<void> {
   const key = `branch-action:${channelKey}`;
   const start = Date.now();
@@ -39,11 +39,6 @@ async function waitForBusSubscriber(channelKey: string, timeoutMs = 2000): Promi
   throw new Error(`bus subscriber on ${key} never registered`);
 }
 
-/**
- * Helper: open the stream, wait for `attached` AND for the bus subscription
- * to be live (route.setup is async — fs.readFile resolves AFTER attached is
- * enqueued), then run publishFn, then read until predicate matches.
- */
 async function driveStream(
   res: Response,
   channelKey: string,
@@ -71,11 +66,14 @@ async function driveStream(
 }
 
 describe('action-stream route — live bus → SSE wire', () => {
-  beforeEach(() => { _resetChannelsForTest(); });
+  beforeEach(() => {
+    _resetChannelsForTest();
+    app = new Hono().basePath('/api');
+    registerAllRoutes(app);
+  });
 
   it('emits attached, then live bus events, in publish order, with monotonic ids', { timeout: 15000 }, async () => {
-    const { req } = makeReq();
-    const res = await GET(req, { params: Promise.resolve({ slug: 'probe-slug', branch: 'staging' }) });
+    const res = await makeReq();
     expect(res.headers.get('Content-Type')).toBe('text/event-stream');
 
     const ch = 'probe-slug:run-probe-1';
@@ -83,7 +81,6 @@ describe('action-stream route — live bus → SSE wire', () => {
       res,
       ch,
       () => {
-        // Bus subscription is live now; sync onPublish delivers each call inline.
         publish(ch, 'started', '', { runId: 'run-probe-1' });
         publish(ch, 'output', 'line-1\n');
         publish(ch, 'stderr', 'oops\n');
@@ -92,7 +89,6 @@ describe('action-stream route — live bus → SSE wire', () => {
       (s) => /event: done/.test(s),
     );
 
-    // Wire-format checks:
     expect(body).toMatch(/id: 1\nevent: attached\ndata: \{"runId":"run-probe-1","slug":"probe-slug","branch":"staging","name":"probe-action"\}/);
     expect(body).toContain('event: action-started');
     expect(body).toMatch(/event: output\ndata: \{"line":"line-1"\}/);
@@ -100,7 +96,6 @@ describe('action-stream route — live bus → SSE wire', () => {
     expect(body).toContain('event: action-completed');
     expect(body).toMatch(/event: done\ndata: \{"reason":"terminal","kind":"completed"\}/);
 
-    // Monotonic id ladder (1..N) — attached is id 1, then one id per bus event.
     const ids = [...body.matchAll(/^id: (\d+)$/gm)].map((m) => Number(m[1]));
     expect(ids[0]).toBe(1);
     for (let i = 1; i < ids.length; i++) {
@@ -109,9 +104,7 @@ describe('action-stream route — live bus → SSE wire', () => {
   });
 
   it('publish-after-terminal does not deliver further frames', async () => {
-    const { req } = makeReq();
-    const res = await GET(req, { params: Promise.resolve({ slug: 'probe-slug', branch: 'staging' }) });
-
+    const res = await makeReq();
     const ch = 'probe-slug:run-probe-1';
     const body = await driveStream(
       res,
@@ -119,8 +112,6 @@ describe('action-stream route — live bus → SSE wire', () => {
       () => {
         publish(ch, 'started', '');
         publish(ch, 'failed', '', { exitCode: 7 });
-        // bus.publish() after 'failed' (terminal) throws since branch-action-bus
-        // calls ch.done() on failed. Catch + verify the wire shows the failure.
         try { publish(ch, 'output', 'should-be-dropped'); } catch { /* expected */ }
       },
       (s) => /event: done/.test(s),
@@ -131,18 +122,12 @@ describe('action-stream route — live bus → SSE wire', () => {
   });
 
   it('rejects an invalid branch with 400', async () => {
-    const { req } = makeReq();
-    const res = await GET(req, { params: Promise.resolve({ slug: 'probe-slug', branch: 'bogus' as 'staging' }) });
+    const res = await app.request('/api/harness/probe-slug/branch/bogus/action-stream?name=probe&runId=run-probe-1');
     expect(res.status).toBe(400);
   });
 
   it('rejects a missing runId with 400', async () => {
-    const controller = new AbortController();
-    const req = new Request(
-      'http://x.test/api/harness/probe-slug/branch/staging/action-stream?name=probe',
-      { signal: controller.signal },
-    );
-    const res = await GET(req, { params: Promise.resolve({ slug: 'probe-slug', branch: 'staging' }) });
+    const res = await app.request('/api/harness/probe-slug/branch/staging/action-stream?name=probe');
     expect(res.status).toBe(400);
   });
 });

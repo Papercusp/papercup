@@ -52,6 +52,19 @@ import backupsHealthcheck from './backups/healthcheck';
 import backupsPromote from './backups/promote';
 import backupsRestore from './backups/restore';
 import backupsSnapshots from './backups/snapshots';
+import harnessProjects from './harness/projects';
+import harnessAllKpis from './harness/all-kpis';
+import harnessSearch from './harness/search';
+import harnessFile from './harness/file';
+import harnessManifest from './harness/manifest';
+import harnessIntelArtifacts from './harness/intel-artifacts';
+import harnessIntelSpawnTree from './harness/intel-spawn-tree';
+import harnessBranchActions from './harness/branch-actions';
+import harnessBranchActionRun from './harness/branch-action-run';
+import harnessBranchActionStream from './harness/branch-action-stream';
+import harnessBranchActionByNameRun from './harness/branch-action-by-name-run';
+import harnessExpertRelatedDocs from './harness/expert-related-docs';
+import harnessSaveAsTemplate from './harness/save-as-template';
 import devRouteInvocations from './dev/route-invocations';
 import agentConfig from './agent-config/index';
 import agentConfigTest from './agent-config/test';
@@ -195,6 +208,19 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(backupsPromote as AnyRoute),
   ...flatten(backupsRestore as AnyRoute),
   ...flatten(backupsSnapshots as AnyRoute[]),
+  ...flatten(harnessProjects as AnyRoute),
+  ...flatten(harnessAllKpis as AnyRoute),
+  ...flatten(harnessSearch as AnyRoute),
+  ...flatten(harnessFile as AnyRoute[]),
+  ...flatten(harnessManifest as AnyRoute),
+  ...flatten(harnessIntelArtifacts as AnyRoute),
+  ...flatten(harnessIntelSpawnTree as AnyRoute),
+  ...flatten(harnessBranchActions as AnyRoute),
+  ...flatten(harnessBranchActionRun as AnyRoute),
+  ...flatten(harnessBranchActionStream as AnyRoute),
+  ...flatten(harnessBranchActionByNameRun as AnyRoute),
+  ...flatten(harnessExpertRelatedDocs as AnyRoute),
+  ...flatten(harnessSaveAsTemplate as AnyRoute),
   ...flatten(devRouteInvocations as AnyRoute),
   ...flatten(agentConfig as AnyRoute[]),
   ...flatten(agentConfigTest as AnyRoute),
