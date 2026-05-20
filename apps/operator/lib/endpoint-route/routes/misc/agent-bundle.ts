@@ -108,6 +108,13 @@ export default defineRoute({
     const persona = existsSync(personaPath) ? readFileSync(personaPath, 'utf8') : '';
     const skills = readDirFiles(join(promptsDir, 'power-user-skills'), ['.md']);
     const scriptsDir = resolveScriptsDir();
+    // The `hooks` field carries OMP extension modules (`pi.on(...)`
+    // factories) — currently `coord-hook.ts`, the coordination
+    // turn-start / session-start / tool-call extension. The
+    // @papercusp/omp client must place each `hooks[].source` into the
+    // session's `~/.omp/agent/extensions/` dir so OMP's extension
+    // runner auto-discovers it. (OMP's legacy "hook" subsystem is
+    // deprecated; the field name is kept for client compatibility.)
     const hooks = readDirFiles(
       scriptsDir ? join(scriptsDir, 'hooks', 'omp') : null,
       ['.ts', '.js', '.mjs'],

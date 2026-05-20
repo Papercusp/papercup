@@ -159,6 +159,27 @@ ${HOME}/.omp/agent/CLAUDE.md:${HOME}/.omp/agent
 EOF
 fi
 
+# 4c. Install the coordination extension into OMP.
+#
+# OMP's current runtime loads `pi.on(...)` factory modules via the
+# EXTENSION runner (the legacy "hook" subsystem is deprecated — `--hook`
+# is now an alias for `--extension`). Extensions are auto-discovered
+# from `~/.omp/agent/extensions/` — any `*.ts` file there is loaded with
+# no config edit. So delivery is a plain file copy.
+#
+# NOTE: agent-coordination-architecture-v2 §7.3 says "~/.omp/agent/hooks/"
+# — that target is stale; the verified-correct directory for the modern
+# extension runtime is ~/.omp/agent/extensions/.
+COORD_EXT_SRC="${SCRIPT_DIR}/hooks/omp/coord-hook.ts"
+OMP_EXT_DIR="${OMP_CONFIG_DIR}/extensions"
+if [ -f "$COORD_EXT_SRC" ]; then
+  mkdir -p "$OMP_EXT_DIR"
+  cp "$COORD_EXT_SRC" "${OMP_EXT_DIR}/papercusp-coord.ts"
+  echo "✓ Installed coordination extension into ${OMP_EXT_DIR}/papercusp-coord.ts"
+else
+  echo "! Expected coord extension at $COORD_EXT_SRC; skipping (coordination turn-start injection will be inactive)"
+fi
+
 # 4b. Register Claude Code hooks (PreToolUse/PostToolUse) for SU file-lock
 # enforcement. The cooperative `locks:*` tool surface is universal; the
 # hooks turn it into enforced coordination for Claude Code specifically.
