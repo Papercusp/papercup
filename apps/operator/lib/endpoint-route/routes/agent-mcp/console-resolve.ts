@@ -1,0 +1,36 @@
+/**
+ * POST /api/agent-mcp/console/resolve — returns ConsoleEnvelope for native term.
+ * Ported from app/api/agent-mcp/console/resolve/route.ts. `auth: 'public'`.
+ */
+import { activeWorkspaceId } from '@/lib/workspace-registry';
+import { buildConsoleEnvelope } from '@/lib/console-launcher';
+import { PrincipalCheckError, requirePrincipal } from '@/lib/auth/require-principal';
+import { defineRoute } from '../../define-route';
+
+export default defineRoute({
+  method: 'POST',
+  path: '/agent-mcp/console/resolve',
+  auth: 'public',
+  async handler(req) {
+    try {
+      await requirePrincipal(req.headers);
+    } catch (err) {
+      if (err instanceof PrincipalCheckError) {
+        return Response.json({ error: err.reason }, { status: err.status });
+      }
+      throw err;
+    }
+    const body = (await req.json().catch(() => ({}))) as { slug?: string | null };
+    const workspaceId = activeWorkspaceId();
+    try {
+      const envelope = await buildConsoleEnvelope({
+        workspaceId,
+        slug: body.slug ?? null,
+        operatorBaseUrl: new URL(req.url).origin,
+      });
+      return Response.json(envelope);
+    } catch (e: any) {
+      return Response.json({ error: e?.message ?? 'console-resolve failed' }, { status: 400 });
+    }
+  },
+});

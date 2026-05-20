@@ -1,0 +1,57 @@
+/**
+ * GET /api/agent-mcp/run-command/sse — leader-tab SSE channel for browser commands.
+ * Ported from app/api/agent-mcp/run-command/sse/route.ts. `auth: 'public'`.
+ */
+import { sseResponse } from '@restart/sse';
+import {
+  registerSession,
+  unregisterSession,
+  heartbeatSession,
+} from '@/lib/commands/session-registry';
+import { defineRoute } from '../../define-route';
+
+type Events = {
+  hello: { workspace: string; sessionId: string };
+  command: { requestId: string; command: unknown };
+};
+
+export default defineRoute({
+  method: 'GET',
+  path: '/agent-mcp/run-command/sse',
+  auth: 'public',
+  handler(req) {
+    const url = new URL(req.url);
+    const workspace = url.searchParams.get('workspace');
+    const sessionId = url.searchParams.get('sessionId');
+    if (!workspace || !sessionId) {
+      return new Response('missing workspace or sessionId', { status: 400 });
+    }
+
+    return sseResponse<Events>({
+      signal: req.signal,
+      heartbeatMs: 5000,
+      setup: (sink) => {
+        registerSession({
+          workspace,
+          sessionId,
+          push: (request) => {
+            sink.event('command', { requestId: request.requestId, command: request.command });
+          },
+        });
+
+        sink.event('hello', { workspace, sessionId });
+
+        const sessionCheck = setInterval(() => {
+          if (!heartbeatSession(workspace, sessionId)) {
+            sink.close();
+          }
+        }, 5000);
+
+        sink.onClose(() => {
+          clearInterval(sessionCheck);
+          unregisterSession(workspace, sessionId);
+        });
+      },
+    });
+  },
+});
