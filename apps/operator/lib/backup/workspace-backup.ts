@@ -650,6 +650,27 @@ export class WorkspaceBackup {
         ? settings.retentionCustom
         : RETENTION_PRESETS[settings.retentionPreset === 'custom' ? 'default' : settings.retentionPreset];
     const ignores = [...IGNORE_PATTERNS, ...settings.excludedPaths];
+
+    // kopia's `policy set --add-ignore` only ever appends a rule — it
+    // never drops one. So when a user removes an entry from
+    // excludedPaths the stale rule lingers in the repo policy forever
+    // (removing an excluded path through the UI becomes a silent
+    // no-op). Read the current policy back, diff against the desired
+    // set, and `--remove-ignore` anything we no longer want.
+    // Best-effort: if the policy can't be read (e.g. a brand-new repo
+    // with no policy yet) fall back to add-only — there's nothing
+    // stale to drop in that case anyway.
+    let toRemove: string[] = [];
+    try {
+      const raw = await this.kopia(['policy', 'show', '--global', '--json'], { env });
+      const parsed = JSON.parse(raw) as { files?: { ignore?: string[] } };
+      const current = parsed.files?.ignore ?? [];
+      const desired = new Set(ignores);
+      toRemove = current.filter((p) => !desired.has(p));
+    } catch {
+      // No readable policy yet — nothing to remove.
+    }
+
     const args = [
       'policy', 'set', '--global',
       `--keep-latest=${retention.keepLatest}`,
@@ -657,6 +678,7 @@ export class WorkspaceBackup {
       `--keep-daily=${retention.keepDaily}`,
       `--keep-weekly=${retention.keepWeekly}`,
       `--keep-monthly=${retention.keepMonthly}`,
+      ...toRemove.map((p) => `--remove-ignore=${p}`),
       ...ignores.map((p) => `--add-ignore=${p}`),
     ];
     await this.kopia(args, { env });
