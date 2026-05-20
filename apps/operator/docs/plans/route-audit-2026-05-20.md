@@ -278,21 +278,60 @@ The final 14 `migrate`-hinted routes each got the caller-check. **Every one is p
 - Phase 6b (layering enforcement, gated on "Phase 4 ≥75%") is reachable far sooner than projected — "75% migrated" was the wrong gate; "75% classified" is the real one, and classification is fast.
 - The `review` bucket (~160 routes) will almost certainly resolve the same way: a few substrate, the rest A1 plumbing. Worth completing the sweep to be certain, but the *shape* of the answer is now known.
 
-### review (~160 — classification sweep, not migration)
+### review (174 — SWEEP COMPLETE 2026-05-20)
 
-The remaining routes need a human read — but the expectation is set: classify A1-vs-substrate, record the row, move on. Migrations, if any, will be the rare exception, not the rule. Each batch claims a family, reads each route's caller, applies the four axes, lands a doc-only PR (or a code PR in the rare genuine-migration case).
+All 174 routes the script could not classify by heuristic have now had a human read (header comment + caller-check + four axes). The verdict is uniform:
 
-### consolidate (0 remaining; 12 closed)
+| outcome | count |
+|---|---|
+| A1-exempt | **167** |
+| consolidate (loopback gate → `requirePrincipal`) | **7** |
+| substrate (already endpoint-system) | 0 |
+| genuine migrate (should become a `defineTool`) | **0** |
 
-All 12 loopback-only-gated routes the Principal RFC implementation targeted are now migrated. Shipped 2026-05-20 across three batches:
+**Per-family breakdown of the 174:**
+
+| family | count | A1 | consolidate | notes |
+|---|--:|--:|--:|---|
+| agent-mcp | 43 | 42 | 1 | browser-data / settings / voice-STT-TTS bootstrap / SSE; `console/launch` has `isLoopback` |
+| backups | 13 | 13 | 0 | backup-feature UI ops |
+| admin | 12 | 11 | 1 | admin UI + ops; `spawn-signing/failures` has `isLoopback` |
+| harness | 12 | 12 | 0 | harness-panel UI data + actions |
+| plugins | 12 | 12 | 0 | plugin UI data + plugin-host bridges |
+| snapshots | 7 | 7 | 0 | snapshot UI ops + marketplace proxies |
+| desktop | 6 | 2 | 4 | `preflight`+`version` clean; `setup-pty-commands`/`setup-status`/`setup-wizard-state`/`workspace-validate` have `isLoopback` |
+| flags | 6 | 6 | 0 | flag UI ops + 1 PostHog webhook |
+| internal | 6 | 6 | 0 | orchestrator IPC (decision/escalation/hook-log/identity/skill/test -event/-snapshot) |
+| marketplace | 6 | 6 | 0 | marketplace proxies + install ops |
+| provision | 5 | 5 | 0 | provision UI ops + 1 SSE |
+| templates | 5 | 5 | 0 | template UI CRUD + publish |
+| user | 5 | 5 | 0 | user memory / prefs / search — browser-scoped (agent memory tools exist separately) |
+| design | 3 | 3 | 0 | design-regression PNG streams + sketches CRUD |
+| oauth | 3 | 3 | 0 | OAuth transport (start / callback / verify-paste) |
+| dev | 2 | 1 | 1 | `drizzle-studio` clean; `processes/kill` has `isLoopback` |
+| agent-config, credentials, installed, publish-credentials, workspaces, zero-harness | 12 | 12 | 0 | settings CRUD / sync transports |
+| 16 single-route families | 16 | 16 | 0 | `[[...route]]` Hono entrypoint shim, agent-bundle, webhooks, qr.svg, scratch file-serve, runtime-config, updater manifest, etc. |
+| **total** | **174** | **167** | **7** | |
+
+**Confirmed: zero genuine migrations across the entire 243-route surface.** The `migrate` heuristic bucket (25) collapsed to A1; the `review` bucket (174) resolved to 167 A1 + 7 consolidate + 0 migrate. Combined with the pre-sorted buckets, the operator's API surface is **definitively** substrate (the agent tools) + plumbing (everything else). The endpoint-system migration project, as the host-architecture v2 plan imagined it, does not exist — it was already complete.
+
+### consolidate — 12 closed; 9 remaining (7 from review + 2 new)
+
+The original 12 loopback routes shipped 2026-05-20 across three batches:
 
 - 7 `desktop/*` state probes — `requirePrincipal(req.headers)` (any auth, including loopback)
 - 3 `admin/*` operations — `requirePrincipal(req.headers, { trust: ['trusted'] })` (preserves bearer-required gate)
 - 2 `agent-mcp/*` console internal — `requirePrincipal(req.headers)` (any auth; el-admin-creds tightening deferred)
 
-All 12 classify as `consolidated-already` per the updated audit script.
+The review sweep + new routes surfaced **9 more** loopback-gated routes that still need the `requirePrincipal` sweep:
 
-Phase 3b §4 walks the consolidation strategy. The consolidate bucket is now closed.
+- `agent-mcp/console/launch`
+- `admin/spawn-signing/failures`
+- `desktop/setup-pty-commands`, `desktop/setup-status`, `desktop/setup-wizard-state`, `desktop/workspace-validate`
+- `dev/processes/kill`
+- `agent-tokens/power-user`, `agent-tokens/power-user/refresh`
+
+This is the **only remaining code work in Phase 4** — a mechanical sweep identical to the first 12. Everything else is classified and closed.
 
 ## PR cadence
 
