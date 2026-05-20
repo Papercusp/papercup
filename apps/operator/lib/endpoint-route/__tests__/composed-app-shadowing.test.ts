@@ -15,11 +15,15 @@
  * `register.ts` / `_hono/app.ts` or the dispatcher's yield in
  * `plugin-api-mount.ts`.
  */
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, beforeAll, vi } from 'vitest';
+import type { Hono as HonoType } from 'hono';
 
 vi.mock('@/lib/endpoint-route/telemetry', () => ({
   recordRouteInvocation: vi.fn(),
 }));
+// `_hono/app.ts` pulls `server-only` transitively; it's a no-op marker in
+// a Node test context — stub it so the real app can be imported here.
+vi.mock('server-only', () => ({}));
 
 import { Hono } from 'hono';
 import { installPluginApiDispatcher } from '@/lib/plugin-api-mount';
@@ -94,5 +98,59 @@ describe('composed-app route shadowing (endpoint-route audit regression)', () =>
     expect(body, 'the ported defineRoute must answer, not the _hono sub-app').not.toContain(
       'fake-hono-harness',
     );
+  });
+});
+
+/**
+ * The block above guards the MECHANISM (register.ts two-phase + the
+ * dispatcher yield) against a stand-in app. This block guards the actual
+ * WIRING by importing the real `_hono/app.ts`:
+ *
+ *  - `/plugins/*` reachability — a composed-app smoke test. (Note: the
+ *    `plugin-api-mount.ts` `next()` yield alone keeps these reachable
+ *    regardless of literal-vs-dispatcher registration order, so this
+ *    assertion catches a *both-parts* revert, not a lone reorder.)
+ *  - `/harness/projects` returns exactly 200 — this DOES catch a
+ *    two-phase reorder. The ported defineRoute is a pure-FS handler that
+ *    always 200s; the colliding `_hono` `harness.get('/projects')` opens
+ *    per-slug PG pools and fails without a DB. If `registerRouteLiterals`
+ *    is moved after `app.route('/harness', …)`, the `_hono` route wins
+ *    and the status flips off 200.
+ */
+describe('composed-app route shadowing — REAL _hono/app.ts wiring', () => {
+  let app: HonoType;
+
+  beforeAll(async () => {
+    // ~6s — imports the full _hono app graph. Cached after first import.
+    const mod = await import('@/app/api/_hono/app');
+    app = mod.app as unknown as HonoType;
+  }, 120_000);
+
+  it('literal /plugins/* routes are not shadowed by the plugin dispatcher', async () => {
+    for (const p of ['/api/plugins/enabled', '/api/plugins/manifest', '/api/plugins/grants']) {
+      const res = await app.request(p);
+      expect(res.status, `${p} must reach its defineRoute, not the dispatcher 404`).not.toBe(404);
+    }
+  });
+
+  it('2-segment literal /plugins/host/query is not eaten by /:pluginName/*', async () => {
+    const res = await app.request('/api/plugins/host/query', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: '',
+    });
+    expect(res.status).not.toBe(404);
+  });
+
+  it('literal /harness/projects defineRoute wins over the _hono harness sub-app', async () => {
+    // The ported defineRoute is pure-FS and always 200s; the _hono
+    // harness sub-app's /projects opens PG pools and won't 200 here.
+    // 200 ⇒ the phase-1 literal out-ranked the sub-app (correct wiring).
+    const res = await app.request('/api/harness/projects');
+    expect(res.status, '/harness/projects must hit the defineRoute, not the _hono sub-app').toBe(
+      200,
+    );
+    const body = (await res.json()) as { projects?: unknown };
+    expect(Array.isArray(body.projects), 'defineRoute response shape').toBe(true);
   });
 });

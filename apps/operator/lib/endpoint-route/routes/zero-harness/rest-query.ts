@@ -13,6 +13,10 @@ export default defineRoute({
   method: 'GET',
   path: '/zero-harness/rest-query',
   auth: 'public',
+  // Pure sync-transport, polled ~every 3s — exempt from route_invocations
+  // telemetry so the table doesn't flood (plan Q7: sampleRate 0 for pure
+  // sync transports).
+  sampleRate: 0,
   async handler(req) {
     const u = new URL(req.url);
     const name = u.searchParams.get('name');
