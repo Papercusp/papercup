@@ -1,29 +1,42 @@
 /**
- * Tests for the /api/scratch/[...path] route's response headers.
+ * Locks the round-11 bug #27 contract for the ported scratch route:
+ *   - Always sets Content-Disposition: attachment
+ *   - Always sets X-Content-Type-Options: nosniff
+ *   - Downgrades html/svg/markdown content-types
+ *   - Rejects path traversal at the URI layer
+ *   - Rejects cross-workspace access
  *
- * Round-11 fixed bug #27 (XSS via tool-authored content) by:
- *   - Always setting Content-Disposition: attachment
- *   - Always setting X-Content-Type-Options: nosniff
- *   - Downgrading html/svg/markdown content-types
- *
- * Round-13 E2E couldn't reach the live route (PG cache hang). These
- * tests lock the contract by calling GET directly with a synthetic
- * NextRequest.
+ * Carried over from app/api/scratch/[...path]/route.test.ts.
  */
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
+import { Hono } from 'hono';
 
 vi.mock('@/lib/workspace-registry', () => ({
   activeWorkspaceId: () => 'default',
 }));
+vi.mock('../telemetry', () => ({ recordRouteInvocation: vi.fn() }));
+
+import { registerRoute } from '../define-route';
+import type { RouteDefinition } from '../define-route';
+import type { ZodTypeAny } from 'zod';
+import miscScratch from '../routes/misc/scratch';
+
+type AnyRoute = RouteDefinition<ZodTypeAny | undefined>;
 
 const ROOT = '/tmp/e2e-scratch-route-test';
 const WS = 'default';
 const TOOL = 'demo.export';
 const RUN = '12345678-1234-1234-1234-123456789012';
 
-describe('GET /api/scratch/[...path] — round-11 bug #27 headers', () => {
+function appWith(): Hono {
+  const app = new Hono();
+  registerRoute(app, miscScratch as AnyRoute);
+  return app;
+}
+
+describe('GET /scratch/:path{.+} — round-11 bug #27 headers', () => {
   beforeEach(() => {
     process.env.PAPERCUSP_SCRATCH_ROOT = ROOT;
     rmSync(ROOT, { recursive: true, force: true });
@@ -33,12 +46,10 @@ describe('GET /api/scratch/[...path] — round-11 bug #27 headers', () => {
 
   async function get(basename: string, content: string): Promise<Response> {
     writeFileSync(join(ROOT, WS, TOOL, RUN, basename), content);
-    const { GET } = await import('./route');
-    const url = `http://localhost:3055/api/scratch/${WS}/${TOOL}/${RUN}/${basename}`;
-    return GET({ url } as never);
+    return appWith().request(`/scratch/${WS}/${TOOL}/${RUN}/${basename}`);
   }
 
-  it('responds 200 + Content-Disposition: attachment for a normal CSV', async () => {
+  it('200 + Content-Disposition: attachment for a normal CSV', async () => {
     const resp = await get('out.csv', 'id,name\n1,Alice\n');
     expect(resp.status).toBe(200);
     expect(resp.headers.get('content-disposition')).toBe('attachment; filename="out.csv"');
@@ -54,7 +65,7 @@ describe('GET /api/scratch/[...path] — round-11 bug #27 headers', () => {
     expect(resp.headers.get('x-content-type-options')).toBe('nosniff');
   });
 
-  it('serves .svg as application/octet-stream (NOT image/svg+xml) — XSS downgrade', async () => {
+  it('serves .svg as application/octet-stream — XSS downgrade', async () => {
     const resp = await get('vector.svg', '<svg xmlns="http://www.w3.org/2000/svg"><script>x</script></svg>');
     expect(resp.headers.get('content-type')).toBe('application/octet-stream');
     expect(resp.headers.get('x-content-type-options')).toBe('nosniff');
@@ -65,25 +76,19 @@ describe('GET /api/scratch/[...path] — round-11 bug #27 headers', () => {
     expect(resp.headers.get('content-type')).toBe('text/plain');
   });
 
-  it('PATH TRAVERSAL: workspace=".." → 400 (caught by parseScratchUri)', async () => {
-    const { GET } = await import('./route');
-    const url = `http://localhost:3055/api/scratch/..%2F..%2F..%2Fetc%2Fpasswd/${TOOL}/${RUN}/x.txt`;
-    const resp = await GET({ url } as never);
+  it('PATH TRAVERSAL: workspace=".." → 400 (parseScratchUri rejection)', async () => {
+    const resp = await appWith().request(`/scratch/..%2F..%2F..%2Fetc%2Fpasswd/${TOOL}/${RUN}/x.txt`);
     expect(resp.status).toBe(400);
   });
 
   it('cross-workspace request → 403', async () => {
     writeFileSync(join(ROOT, WS, TOOL, RUN, 'safe.txt'), 'ok');
-    const { GET } = await import('./route');
-    const url = `http://localhost:3055/api/scratch/other-workspace/${TOOL}/${RUN}/safe.txt`;
-    const resp = await GET({ url } as never);
+    const resp = await appWith().request(`/scratch/other-workspace/${TOOL}/${RUN}/safe.txt`);
     expect(resp.status).toBe(403);
   });
 
   it('not-found → 404', async () => {
-    const { GET } = await import('./route');
-    const url = `http://localhost:3055/api/scratch/${WS}/${TOOL}/${RUN}/nope.txt`;
-    const resp = await GET({ url } as never);
+    const resp = await appWith().request(`/scratch/${WS}/${TOOL}/${RUN}/nope.txt`);
     expect(resp.status).toBe(404);
   });
 });

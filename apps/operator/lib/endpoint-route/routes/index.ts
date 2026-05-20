@@ -78,6 +78,15 @@ import adminSpawnSigningRotate from './admin/spawn-signing-rotate';
 import adminTables from './admin/tables';
 import adminTablesByName from './admin/tables-by-name';
 import adminTestingAiExplore from './admin/testing-ai-explore';
+import workspaces from './workspaces/index';
+import workspaceById from './workspaces/by-id';
+import workspaceSwitch from './workspaces/switch';
+import userActionsBySlug from './user-actions/by-slug';
+import userActionsLog from './user-actions/log';
+import elevenlabsWebhook from './elevenlabs/webhook';
+import elevenlabsPostCall from './elevenlabs/post-call';
+import miscScratch from './misc/scratch';
+import mobileQrSvg from './mobile/qr-svg';
 
 type AnyRoute = RouteDefinition<ZodTypeAny | undefined>;
 
@@ -151,4 +160,13 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(adminTables as AnyRoute),
   ...flatten(adminTablesByName as AnyRoute[]),
   ...flatten(adminTestingAiExplore as AnyRoute),
+  ...flatten(workspaces as AnyRoute[]),
+  ...flatten(workspaceById as AnyRoute[]),
+  ...flatten(workspaceSwitch as AnyRoute),
+  ...flatten(userActionsBySlug as AnyRoute),
+  ...flatten(userActionsLog as AnyRoute),
+  ...flatten(elevenlabsWebhook as AnyRoute),
+  ...flatten(elevenlabsPostCall as AnyRoute),
+  ...flatten(miscScratch as AnyRoute),
+  ...flatten(mobileQrSvg as AnyRoute),
 ];
