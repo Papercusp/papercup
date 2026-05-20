@@ -18,34 +18,35 @@ the current Papercusp persona + tools playbook + tool catalog.
 
 ## Now
 
-P-001 through P-004 implemented and verified against a live operator
-dev server (2026-05-20). Remaining before this is `shipped`:
+P-001 through P-004 implemented, regression-tested, and verified
+against a live operator dev server (2026-05-20). All
+plan-author-owned work is complete. Remaining before `shipped` is
+entirely cross-plan or a deploy step:
 
-- Land the file-locking plan's L1/L2/L3 OMP hook into
-  `apps/operator/scripts/hooks/omp/` so the bundle's `hooks[]` is
-  non-empty (§4.3.1, D-008).
-- Audience-neutral rewrite of `papercusp-su.tools.md` (D-008b, locks
-  plan owner).
-- Rebuild the desktop operator sidecar so the new routes + navbar
-  button go live in the packaged app (dev server already serves them).
-- Open questions still parked: none blocking — Q-B1/Q-E1/Q-F1 were
-  decided with the plan defaults at implementation time.
+- **(cross-plan)** Land the file-locking plan's L1/L2/L3 OMP hook
+  into `apps/operator/scripts/hooks/omp/` so the bundle's `hooks[]`
+  is non-empty (§4.3.1, D-008a). The directory + its contract
+  README exist; the hook module itself is the locks plan's.
+- **(cross-plan)** Audience-neutral rewrite of `papercusp-su.tools.md`
+  (D-008b, locks plan owner).
+- **(deploy)** Rebuild the desktop operator sidecar so the new
+  routes + navbar button go live in the packaged app. The dev
+  server already serves everything; the packaged app picks it up on
+  the next operator build.
+- Open questions: none blocking — Q-B1/Q-E1/Q-F1 were decided with
+  the plan defaults at implementation time.
 
-### Verified 2026-05-20 (operator `next dev`)
+### Verified 2026-05-20
 
-- `POST /api/agent-tokens/power-user` issues access + refresh tokens.
-- `POST .../refresh` mints a new access token; an access token used
-  as a refresh token is rejected 401 (type confusion).
-- `GET /api/agent-bundle` returns the live `papercusp-su.tools.md`
-  (18 KB), origin-derived `mcp_url`, workspace + user; 401 without a
-  token.
-- `POST /api/mcp?power_user=1` `tools/list` returns the operator-tier
-  catalog with a valid token, `[]` with a garbage token.
-- `POST /api/agent-mcp/console/launch {mode:'omp'}` returns
-  `omp_not_installed` with the install command when `papercusp-omp`
-  is absent.
-- `power-user-token` unit suite: 8/8 pass. Full operator typecheck
-  clean. `@papercusp/omp` builds + CLI smoke-tests.
+- **`power-user-token` unit suite**: 8/8 pass (HMAC roundtrip,
+  tamper, expiry, type-confusion both directions).
+- **`power-user-e2e` integration suite**: 20/20 pass against the
+  live dev operator (`npm run test:power-user`). Covers token
+  issue/refresh, type-confusion 401, agent-bundle (+ 401 without a
+  token), MCP `?power_user=1` accept/reject, and `console/launch`
+  `{mode:'omp'}`.
+- Full operator typecheck clean. `@papercusp/omp` builds + CLI
+  smoke-tests.
 
 ## 1. Problem
 
