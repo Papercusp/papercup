@@ -18,9 +18,8 @@
  */
 
 import { z } from 'zod';
-import { existsSync, readFileSync } from 'node:fs';
-import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { getHostPlatform } from '@papercusp/host-platform';
 import { defineTool } from '../../define-tool';
 
 interface WorkspaceRegistryEntry {
@@ -30,10 +29,12 @@ interface WorkspaceRegistryEntry {
 }
 
 function resolveCompanyId(workspaceId: string): string | null {
-  const path = join(homedir(), '.papercusp-workspaces', 'registry.json');
-  if (!existsSync(path)) return null;
+  const platform = getHostPlatform();
+  const path = join(platform.homedir(), '.papercusp-workspaces', 'registry.json');
+  const raw = platform.readTextFileSync(path);
+  if (raw === null) return null;
   try {
-    const reg = JSON.parse(readFileSync(path, 'utf8')) as { workspaces: WorkspaceRegistryEntry[] };
+    const reg = JSON.parse(raw) as { workspaces: WorkspaceRegistryEntry[] };
     const ws = reg.workspaces.find((w) => w.id === workspaceId);
     return ws?.companyId ?? null;
   } catch {

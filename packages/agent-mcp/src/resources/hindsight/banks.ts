@@ -7,9 +7,8 @@
  * Same auth model as the `hindsight:recall` tool.
  */
 
-import { existsSync, readFileSync } from 'node:fs';
-import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { getHostPlatform } from '@papercusp/host-platform';
 import { defineResource } from '../../define-resource';
 import type { ResourceContents } from '../../types';
 
@@ -20,12 +19,12 @@ interface WorkspaceRegistryEntry {
 }
 
 function resolveCompanyId(workspaceId: string): string | null {
-  const path = join(homedir(), '.papercusp-workspaces', 'registry.json');
-  if (!existsSync(path)) return null;
+  const platform = getHostPlatform();
+  const path = join(platform.homedir(), '.papercusp-workspaces', 'registry.json');
+  const raw = platform.readTextFileSync(path);
+  if (raw === null) return null;
   try {
-    const reg = JSON.parse(readFileSync(path, 'utf8')) as {
-      workspaces: WorkspaceRegistryEntry[];
-    };
+    const reg = JSON.parse(raw) as { workspaces: WorkspaceRegistryEntry[] };
     return reg.workspaces.find((w) => w.id === workspaceId)?.companyId ?? null;
   } catch {
     return null;

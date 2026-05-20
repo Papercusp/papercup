@@ -5,20 +5,31 @@
  * substrate edits surface immediately to MCP consumers.
  *
  * No arguments — returns the raw scanner persona.
+ *
+ * Host coupling: reaches the filesystem via `@papercusp/host-platform`
+ * rather than `node:fs` directly. On desktop hosts this is the same
+ * `readFileSync` underneath; on server hosts the call throws cleanly
+ * (and the caller should never have asked for this prompt without a
+ * filesystem to read from in the first place).
  */
 
-import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { getHostPlatform } from '@papercusp/host-platform';
 import { definePrompt } from '../../define-prompt';
 import type { PromptResult } from '../../types';
 
-function findScannerMd(): string | null {
+function findScannerMd(): { path: string; text: string } | null {
+  const platform = getHostPlatform();
   const candidates = [
     resolve(__dirname, '../../../../../libs/papercusp/packages/harness/prompts/scanner.md'),
     resolve(__dirname, '../../../../libs/papercusp/packages/harness/prompts/scanner.md'),
     resolve(process.cwd(), 'libs/papercusp/packages/harness/prompts/scanner.md'),
   ];
-  return candidates.find((p) => existsSync(p)) ?? null;
+  for (const path of candidates) {
+    const text = platform.readTextFileSync(path);
+    if (text !== null) return { path, text };
+  }
+  return null;
 }
 
 export default definePrompt({
@@ -26,14 +37,13 @@ export default definePrompt({
   description:
     'Substrate-owned Operator scanner-role prompt. Defines tier table, schema, anti-patterns. No arguments.',
   async render(): Promise<PromptResult> {
-    const path = findScannerMd();
-    if (!path) {
+    const found = findScannerMd();
+    if (!found) {
       throw new Error('Could not locate scanner.md on disk.');
     }
-    const text = readFileSync(path, 'utf8');
     return {
       description: 'Operator scanner persona — substrate canonical version.',
-      messages: [{ role: 'system', content: { type: 'text', text } }],
+      messages: [{ role: 'system', content: { type: 'text', text: found.text } }],
     };
   },
 });

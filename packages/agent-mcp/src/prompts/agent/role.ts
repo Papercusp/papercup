@@ -8,8 +8,8 @@
  * persona Papercusp uses internally.
  */
 
-import { existsSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
+import { getHostPlatform } from '@papercusp/host-platform';
 import { definePrompt } from '../../define-prompt';
 import type { PromptResult } from '../../types';
 
@@ -35,12 +35,20 @@ const KNOWN_ROLES = [
 
 function findPromptsDir(): string | null {
   // Search candidates from this file outward; works in monorepo + standalone.
+  // We probe by trying to read a known-present file (any role.md), since
+  // HostPlatform exposes file reads but not directory existence — and
+  // "did this readTextFileSync return non-null" is a sufficient existence
+  // check for the dir as a whole.
+  const platform = getHostPlatform();
   const candidates = [
     resolve(__dirname, '../../../../../libs/papercusp/packages/harness/prompts'),
     resolve(__dirname, '../../../../libs/papercusp/packages/harness/prompts'),
     resolve(process.cwd(), 'libs/papercusp/packages/harness/prompts'),
   ];
-  return candidates.find((p) => existsSync(p)) ?? null;
+  for (const dir of candidates) {
+    if (platform.fileExistsSync(join(dir, 'architect.md'))) return dir;
+  }
+  return null;
 }
 
 export default definePrompt({
@@ -68,10 +76,10 @@ export default definePrompt({
       );
     }
     const path = join(dir, `${role}.md`);
-    if (!existsSync(path)) {
+    const text = getHostPlatform().readTextFileSync(path);
+    if (text === null) {
       throw new Error(`Role prompt not found: ${path}`);
     }
-    const text = readFileSync(path, 'utf8');
     return {
       description: `Canonical ${role} role prompt.`,
       messages: [{ role: 'system', content: { type: 'text', text } }],

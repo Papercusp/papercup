@@ -18,6 +18,22 @@ export async function register(): Promise<void> {
   // process.env.NEXT_RUNTIME is "nodejs" in the Node runtime.
   if (process.env.NEXT_RUNTIME && process.env.NEXT_RUNTIME !== 'nodejs') return;
 
+  // Register the desktop HostPlatform impl. Done first so any code path
+  // that calls getHostPlatform() (prompt resolvers, hindsight readers,
+  // etc.) sees a real platform from the first request. The operator is
+  // always either Tauri-hosted or a local-dev Node process — both are
+  // "desktop" for HostPlatform purposes. A future server host would
+  // register `serverHostPlatform` instead from its own entry point.
+  try {
+    const [{ registerHostPlatform }, { desktopHostPlatform }] = await Promise.all([
+      import('@papercusp/host-platform'),
+      import('@papercusp/host-platform/desktop'),
+    ]);
+    registerHostPlatform(desktopHostPlatform);
+  } catch (err) {
+    console.warn('[host-platform] register failed (non-fatal):', err);
+  }
+
   // Pty WS server: only when not opt-out and not running under Tauri.
   // Both early-exits below ONLY skip pty-ws — they fall through to the
   // schema pre-warm so desktop and PTY-disabled environments still get
