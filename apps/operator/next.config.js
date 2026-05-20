@@ -261,12 +261,11 @@ const nextConfig = {
       // the request falls through to TS as normal.
       beforeFiles: rustOptInRewrites(),
       afterFiles: [
-      // Docs static dist — Astro emits <slug>.html files in apps/operator/public/internal/docs/;
-      // rewrite slug-only requests to the .html extension so Next's public/ serving finds them.
-      // The bare `/internal/docs` root has no slug segment, so it needs its own rewrite to
-      // index.html (the docs home); `/internal/docs/` 308-redirects here via trailingSlash.
-      { source: '/internal/docs', destination: '/internal/docs/index.html' },
-      { source: '/internal/docs/:slug+', destination: '/internal/docs/:slug+.html' },
+      // NOTE: The /internal/docs/<slug> → <slug>.html rewrite used to live
+      // here, but the unconditional rewrite produced a dev-mode 500 for
+      // unknown slugs (rewriting to a non-existent public file). Slug
+      // resolution now lives in apps/operator/proxy.ts (with fs.existsSync
+      // gating + Starlight-branded 404 for unknown slugs).
         { source: '/api/org/:path*',           destination: `${PAPERCUP_UPSTREAM}/api/org/:path*` },
         { source: '/api/briefings/:path*',     destination: `${PAPERCUP_UPSTREAM}/api/briefings/:path*` },
         { source: '/api/public/:path*',        destination: `${PAPERCUP_UPSTREAM}/api/public/:path*` },
