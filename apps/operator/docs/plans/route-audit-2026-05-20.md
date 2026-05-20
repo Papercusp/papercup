@@ -141,9 +141,9 @@ The cheap wins are **substrate** (verify + close) and **A1** (confirm + close). 
 
 Same shape applies to all five `auth/*` routes — the script hinted A1 for all of them and the manual check confirms.
 
-## Worked example — ui/intents/[id]/result
+## Worked example — ui/intents/[id]/result (a false-positive caught)
 
-`apps/operator/app/api/ui/intents/[id]/result/route.ts` (68 LoC):
+`apps/operator/app/api/ui/intents/[id]/result/route.ts` (68 LoC). The script hinted `migrate`. The four axes alone *look* migratable:
 
 | Axis | Answer | Why |
 |---|---|---|
@@ -152,7 +152,7 @@ Same shape applies to all five `auth/*` routes — the script hinted A1 for all 
 | c — cookies / cost-caps / locks | no | none |
 | d — wire contract stable | yes | tiny + stable JSON shape |
 
-**Decision: migrate.** Becomes a `defineTool({ name: 'ui:intent_result', ... })`; the route shim shrinks to a `dispatchProjectedTool()` call.
+But the **caller-check** — the axis the four-axis test misses — flips it: the route is called only by browser components (`intent-dispatcher.tsx`), and it's the browser half of the `ui:dispatch` agent tool's contract. Migrating it to a `defineTool` would put a browser-callback endpoint in the agent tool catalog. **Decision: A1-exempt.** See the batch-2 correction below — this worked example is why the audit added the caller-check as a mandatory fifth question.
 
 ## Per-family rows
 
@@ -209,11 +209,9 @@ Routes that hold non-transport state / cookies / cost-caps / plugin-host couplin
 
 **Classification method:** the audit script's heuristic, spot-validated against ≥3 routes per bucket. Where a future PR migrating a `review`-bucket route discovers a misclassification here, it corrects the row — but the heuristic held for every spot-check in batch 1.
 
-### migrate (22 high-confidence; 3 reclassified A1-exempt 2026-05-20)
+### migrate (0 — bucket fully audited, collapsed to A1)
 
-Per-PR migrations. Each PR migrates ≤ 4 routes from this list and updates the rows.
-
-Pulled from the script — exact list at the same `jq` filter with `hint=="migrate"`.
+The script hinted 25 routes `migrate`. **A full caller-check of all 25 found zero genuine migrations** — every one is plumbing, UI-data, admin, orchestrator-IPC, or transport. The batch-by-batch record is below; the bottom-line reframing is in "The `migrate` bucket is empty" further down.
 
 **Batch 2 correction — `ui/*` (3 routes) reclassified `migrate` → A1-exempt.** The script hinted `migrate` (small + PG-touching + no streaming for two of them). Reading the routes contradicted the hint:
 
@@ -244,9 +242,45 @@ They authenticate with a **harness bearer** (validated against `harness_shared.t
 
 Two batches in, **11 of the original 25 `migrate`-hinted routes turned out to be A1** (3 `ui/*` + 8 `internal/*`). The script's heuristic — "small + PG-touching + no streaming" — describes *plumbing/contract routes* exactly as well as it describes *migratable agent functions*. It cannot tell the difference between "a typed function an agent should call" and "a typed POST the browser or orchestrator makes."
 
-**Revised expectation:** the real migratable count is well under 25 — likely single digits. Every `migrate`-bucket route needs the same read `ui/*` and `internal/*` got: *is the caller an agent (or an MCP client), or is it browser/orchestrator/desktop plumbing?* Only the former migrates. The `migrate` hint is now treated as "candidate — verify caller" not "high-confidence."
+### Batch 4 — the remaining 14, caller-checked → all A1-exempt
 
-**Remaining migrate bucket (14):** harness, operator, admin, backups, design, dev, flags, user-actions, zero-harness families — one to three routes each. Each gets the caller-check before any migration.
+The final 14 `migrate`-hinted routes each got the caller-check. **Every one is plumbing, UI-data, admin, or transport — zero are agent operations:**
+
+| route | caller / role | decision |
+|---|---|---|
+| `admin/prune-executed-actions` | admin maintenance op | A1-exempt (admin) |
+| `admin/tables` | admin-UI table list | A1-exempt (admin UI data) |
+| `backups/events` | `/dev` BackupsTab | A1-exempt (UI data) |
+| `design/features` | `DesignDashboard.tsx` | A1-exempt (UI data) |
+| `dev/tables` | `/dev` UI | A1-exempt (UI data) |
+| `dev/tables/[exportName]` | `/dev` UI | A1-exempt (UI data) |
+| `flags/stream` | browser flag-stream consumer | A1-exempt (SSE transport) |
+| `harness/[slug]/intel/artifacts` | harness Intel panel | A1-exempt (UI data) |
+| `operator/budget-tiers` | first-run budget picker UI | A1-exempt (UI data) |
+| `operator/conversations` | operator chat UI | A1-exempt (UI data) |
+| `operator/settings/[key]` | `marketplace-public-ui` HomePage | A1-exempt (UI data) |
+| `plugins/host/query` | iframe plugin surfaces | A1-exempt (plugin host) |
+| `user-actions/[slug]/[id]/log` | user-action log UI | A1-exempt (UI data) |
+| `zero-harness/sse` | the harness sync layer itself | A1-exempt (core sync transport) |
+
+### The `migrate` bucket is empty — Phase 4 reframed
+
+**All 25 routes the heuristic hinted `migrate` turned out A1.** Not one was a typed agent function hiding as a route. The operator's `app/api/**` surface is — definitively, by full audit of the heuristic's highest-confidence bucket — composed of:
+
+- **substrate** — routes already dispatching through the endpoint system. These *are* the agent-tool surface.
+- **A1 / plumbing** — UI-data routes, orchestrator IPC, admin ops, plugin-host bridges, sync transports, cookie auth. These are correctly route shims and always will be.
+- **consolidate** — loopback-auth routes (all 12 swept onto `requirePrincipal`).
+
+**There is no large "migratable route" population.** The host-architecture v2 plan's Phase 4 estimate ("ongoing through the calendar year") assumed one. The audit disproves it: the endpoint-system migration surface was already essentially complete — the ~23 substrate routes are the whole agent-tool catalog, and the right move for every other route is *leave it as a shim*.
+
+**What this means for the plan:**
+- Phase 4 is **not** a multi-month migration marathon. It's a **classification sweep** — read each `review`-bucket route, confirm A1-vs-substrate, record it. No code changes for the overwhelming majority.
+- Phase 6b (layering enforcement, gated on "Phase 4 ≥75%") is reachable far sooner than projected — "75% migrated" was the wrong gate; "75% classified" is the real one, and classification is fast.
+- The `review` bucket (~160 routes) will almost certainly resolve the same way: a few substrate, the rest A1 plumbing. Worth completing the sweep to be certain, but the *shape* of the answer is now known.
+
+### review (~160 — classification sweep, not migration)
+
+The remaining routes need a human read — but the expectation is set: classify A1-vs-substrate, record the row, move on. Migrations, if any, will be the rare exception, not the rule. Each batch claims a family, reads each route's caller, applies the four axes, lands a doc-only PR (or a code PR in the rare genuine-migration case).
 
 ### consolidate (0 remaining; 12 closed)
 
@@ -259,12 +293,6 @@ All 12 loopback-only-gated routes the Principal RFC implementation targeted are 
 All 12 classify as `consolidated-already` per the updated audit script.
 
 Phase 3b §4 walks the consolidation strategy. The consolidate bucket is now closed.
-
-### review (174 — the long tail)
-
-The remaining ~72% of routes need a human read. This list is what Phase 4 PRs work through in batches. Each batch claims a family (`backups/13`, `agent-mcp/43`, etc.), reads each route, applies the four axes, and lands a PR that classifies + (where appropriate) migrates.
-
-Phase 4 PRs against `review` rows MUST update this doc's table; an unmoving row is a missed sub-deliverable.
 
 ## PR cadence
 
