@@ -1,20 +1,16 @@
 /**
  * /api/user/search — user-facing search across personal memories
  * (mem0) AND workspace prose (operator_turns/escalations/brainstorm
- * via BM25). Renders in /settings/user/search.
+ * via BM25). BM25 only by default; hybrid (BM25 + embeddings + RRF)
+ * available via `?mode=hybrid`.
  *
- * Memories: direct mem0 client.search.
- * Prose: BM25 only (semantic embeddings are the agent's superpower —
- * keeping the user-facing path cheap + deterministic).
+ * Ported from app/api/user/search/route.ts. `auth: 'public'` —
+ * session-cookie auth via getSessionUser(req.headers), 401 if absent.
  */
-
-import { NextResponse } from 'next/server';
 import { getSessionUser } from '@/lib/auth';
 import { getMemoryClient } from '@/lib/memory/mem0-client';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
-
-export const dynamic = 'force-dynamic';
-export const runtime = 'nodejs';
+import { defineRoute } from '../../define-route';
 
 const HEADLINE_OPTS =
   'StartSel=<mark>, StopSel=</mark>, MaxFragments=2, FragmentDelimiter=" … ", MaxWords=18, MinWords=5, ShortWord=2';
@@ -26,22 +22,6 @@ interface ProseHit {
   excerpt: string;
   highlight: string;
   rank: number;
-}
-
-export async function GET(req: Request) {
-  const user = await getSessionUser();
-  if (!user) return NextResponse.json({ error: 'unauthenticated' }, { status: 401 });
-  const url = new URL(req.url);
-  const q = (url.searchParams.get('q') ?? '').trim();
-  if (!q) return NextResponse.json({ q: '', memories: [], prose: [] });
-  const limit = Math.min(20, Math.max(1, Number(url.searchParams.get('limit') ?? 10)));
-  const mode = url.searchParams.get('mode') === 'hybrid' ? 'hybrid' : 'bm25';
-
-  const [memories, prose] = await Promise.all([
-    searchMemories(q, user.id, limit),
-    mode === 'hybrid' ? searchProseHybrid(q, limit) : searchProse(q, limit),
-  ]);
-  return NextResponse.json({ q, mode, memories, prose });
 }
 
 const EMBEDDER_DIM = 384;
@@ -169,7 +149,6 @@ async function searchMemories(q: string, userId: string, limit: number) {
   if (!client) return [];
   try {
     const ws = activeWorkspaceId();
-    // mem0 v3 rejects top-level userId on search() — use filters.user_id.
     const [userHits, sharedHits] = await Promise.all([
       client.search(q, { filters: { user_id: userId }, limit }),
       client.search(q, { filters: { user_id: `workspace:${ws}` }, limit }),
@@ -267,3 +246,24 @@ async function searchProse(q: string, limit: number): Promise<ProseHit[]> {
     await c.end();
   }
 }
+
+export default defineRoute({
+  method: 'GET',
+  path: '/user/search',
+  auth: 'public',
+  async handler(req) {
+    const user = await getSessionUser(req.headers);
+    if (!user) return Response.json({ error: 'unauthenticated' }, { status: 401 });
+    const url = new URL(req.url);
+    const q = (url.searchParams.get('q') ?? '').trim();
+    if (!q) return Response.json({ q: '', memories: [], prose: [] });
+    const limit = Math.min(20, Math.max(1, Number(url.searchParams.get('limit') ?? 10)));
+    const mode = url.searchParams.get('mode') === 'hybrid' ? 'hybrid' : 'bm25';
+
+    const [memories, prose] = await Promise.all([
+      searchMemories(q, user.id, limit),
+      mode === 'hybrid' ? searchProseHybrid(q, limit) : searchProse(q, limit),
+    ]);
+    return Response.json({ q, mode, memories, prose });
+  },
+});

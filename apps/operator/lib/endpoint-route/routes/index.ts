@@ -91,6 +91,11 @@ import designFeatures from './design/features';
 import designRegressions from './design/regressions';
 import designRegressionFile from './design/regression-file';
 import designSketches from './design/sketches';
+import userPreferences from './user/preferences';
+import userSearch from './user/search';
+import userMemory from './user/memory';
+import userMemoryFeedback from './user/memory-feedback';
+import userMemoryReembed from './user/memory-reembed';
 
 type AnyRoute = RouteDefinition<ZodTypeAny | undefined>;
 
@@ -177,4 +182,9 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(designRegressions as AnyRoute),
   ...flatten(designRegressionFile as AnyRoute),
   ...flatten(designSketches as AnyRoute[]),
+  ...flatten(userPreferences as AnyRoute[]),
+  ...flatten(userSearch as AnyRoute),
+  ...flatten(userMemory as AnyRoute[]),
+  ...flatten(userMemoryFeedback as AnyRoute),
+  ...flatten(userMemoryReembed as AnyRoute),
 ];
