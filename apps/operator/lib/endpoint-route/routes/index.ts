@@ -75,6 +75,20 @@ import miscZeroHarnessQuery from './misc/zero-harness-query';
 import agentToolsCatchall from './agent-tools/catchall';
 import pluginRuntimeCatchall from './plugin-runtime/catchall';
 import transport from './transport/index';
+import internalLogEvent from './internal/log-event';
+import internalRunChunk from './internal/run-chunk';
+import internalDecisionEvent from './internal/decision-event';
+import internalEscalationEvent from './internal/escalation-event';
+import internalArchiveEvent from './internal/archive-event';
+import internalCheckpointEvent from './internal/checkpoint-event';
+import internalFeatureDebugNoteEvent from './internal/feature-debug-note-event';
+import internalHookLogEvent from './internal/hook-log-event';
+import internalIdentitySnapshot from './internal/identity-snapshot';
+import internalPlanReviewEvent from './internal/plan-review-event';
+import internalPrEvent from './internal/pr-event';
+import internalSkillSnapshot from './internal/skill-snapshot';
+import internalSmokeTestEvent from './internal/smoke-test-event';
+import internalTestSnapshot from './internal/test-snapshot';
 import devRouteInvocations from './dev/route-invocations';
 import agentConfig from './agent-config/index';
 import agentConfigTest from './agent-config/test';
@@ -240,6 +254,20 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(miscZeroHarnessQuery as AnyRoute),
   ...flatten(agentToolsCatchall as AnyRoute[]),
   ...flatten(pluginRuntimeCatchall as AnyRoute),
+  ...flatten(internalLogEvent as AnyRoute),
+  ...flatten(internalRunChunk as AnyRoute),
+  ...flatten(internalDecisionEvent as AnyRoute),
+  ...flatten(internalEscalationEvent as AnyRoute),
+  ...flatten(internalArchiveEvent as AnyRoute),
+  ...flatten(internalCheckpointEvent as AnyRoute),
+  ...flatten(internalFeatureDebugNoteEvent as AnyRoute),
+  ...flatten(internalHookLogEvent as AnyRoute),
+  ...flatten(internalIdentitySnapshot as AnyRoute),
+  ...flatten(internalPlanReviewEvent as AnyRoute),
+  ...flatten(internalPrEvent as AnyRoute),
+  ...flatten(internalSkillSnapshot as AnyRoute),
+  ...flatten(internalSmokeTestEvent as AnyRoute),
+  ...flatten(internalTestSnapshot as AnyRoute),
   // Transport last — single-segment :transport must not shadow literal paths.
   ...flatten(transport as AnyRoute[]),
   ...flatten(devRouteInvocations as AnyRoute),
