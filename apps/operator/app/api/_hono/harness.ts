@@ -980,51 +980,108 @@ harness.get('/:slug/status', async (c) => {
 // Migration 034: SPEC.md / AGENTS.md / validation-contract.md / config.json
 // are PG-canonical via harness_shared.harness_project_files. The disk copies
 // are best-effort mirrors written on each PUT for editor convenience.
-async function loadProjectFiles(slug: string): Promise<{ spec: string | null; agents: string | null; contract: string | null; config: string | null }> {
+async function loadProjectFiles(slug: string): Promise<{ spec: string | null; agents: string | null; contract: string | null; config: string | null; version: number }> {
   const { ensureProjectFilesTable } = await import('@/lib/ensure-schema');
   await ensureProjectFilesTable();
-  const { db } = (await import('@restart/db-org')).getOrgPg();
-  const { generated } = await import('@restart/db-org');
-  const { eq } = await import('drizzle-orm');
-  const pf = generated.harnessProjectFilesInHarnessShared;
-  const rows = await db
-    .select({ spec: pf.spec, agents: pf.agents, contract: pf.contract, config: pf.config })
-    .from(pf)
-    .where(eq(pf.harnessSlug, slug))
-    .limit(1);
-  return rows[0] ?? { spec: null, agents: null, contract: null, config: null };
+  const { sql } = (await import('@restart/db-org')).getOrgPg();
+  const rows = await sql<Array<{ spec: string | null; agents: string | null; contract: string | null; config: string | null; version: number }>>`
+    SELECT spec, agents, contract, config, version
+      FROM harness_shared.harness_project_files
+     WHERE harness_slug = ${slug}
+     LIMIT 1
+  `;
+  return rows[0] ?? { spec: null, agents: null, contract: null, config: null, version: 0 };
 }
 
-async function saveProjectFiles(slug: string, patch: { spec?: string; agents?: string; contract?: string; config?: string }): Promise<void> {
+/**
+ * Concurrency conflict thrown by `saveProjectFiles` when `expectedVersion`
+ * is provided but does not match the row's current version. Carries the
+ * server-observed version so the caller can resolve.
+ */
+export class ProjectFilesVersionConflict extends Error {
+  readonly currentVersion: number;
+  constructor(slug: string, expected: number, current: number) {
+    super(`spec version conflict on ${slug}: expected ${expected}, current ${current}`);
+    this.name = 'ProjectFilesVersionConflict';
+    this.currentVersion = current;
+  }
+}
+
+async function saveProjectFiles(
+  slug: string,
+  patch: { spec?: string; agents?: string; contract?: string; config?: string },
+  opts: { expectedVersion?: number } = {},
+): Promise<{ version: number }> {
   const { ensureProjectFilesTable } = await import('@/lib/ensure-schema');
   await ensureProjectFilesTable();
-  const { db } = (await import('@restart/db-org')).getOrgPg();
-  const { generated } = await import('@restart/db-org');
-  const { sql: dsql } = await import('drizzle-orm');
-  const pf = generated.harnessProjectFilesInHarnessShared;
+  const { sql } = (await import('@restart/db-org')).getOrgPg();
   const now = Date.now();
-  await db
-    .insert(pf)
-    .values({
-      harnessSlug: slug,
-      spec: patch.spec ?? null,
-      agents: patch.agents ?? null,
-      contract: patch.contract ?? null,
-      config: patch.config ?? null,
-      updatedAt: now,
-    })
-    .onConflictDoUpdate({
-      target: pf.harnessSlug,
-      set: {
-        spec: dsql`COALESCE(${patch.spec ?? null}, ${pf.spec})`,
-        agents: dsql`COALESCE(${patch.agents ?? null}, ${pf.agents})`,
-        contract: dsql`COALESCE(${patch.contract ?? null}, ${pf.contract})`,
-        config: dsql`COALESCE(${patch.config ?? null}, ${pf.config})`,
-        updatedAt: now,
-      },
-    });
+
+  // Two paths: with OCC (expectedVersion set) → UPDATE-only with the
+  // version guard; without OCC → upsert with version bumped on update.
+  let version = 0;
+  if (typeof opts.expectedVersion === 'number') {
+    const updated = await sql<Array<{ version: number }>>`
+      UPDATE harness_shared.harness_project_files
+         SET spec       = COALESCE(${patch.spec ?? null}, spec),
+             agents     = COALESCE(${patch.agents ?? null}, agents),
+             contract   = COALESCE(${patch.contract ?? null}, contract),
+             config     = COALESCE(${patch.config ?? null}, config),
+             updated_at = ${now},
+             version    = version + 1
+       WHERE harness_slug = ${slug}
+         AND version = ${opts.expectedVersion}
+       RETURNING version
+    `;
+    if (updated.length === 0) {
+      // Either the row doesn't exist (expected=0 may need an insert) or the
+      // version mismatched. Disambiguate by looking up the current row.
+      const cur = await sql<Array<{ version: number }>>`
+        SELECT version FROM harness_shared.harness_project_files
+         WHERE harness_slug = ${slug} LIMIT 1
+      `;
+      if (cur.length === 0 && opts.expectedVersion === 0) {
+        await sql`
+          INSERT INTO harness_shared.harness_project_files
+            (harness_slug, spec, agents, contract, config, updated_at, version)
+          VALUES
+            (${slug}, ${patch.spec ?? null}, ${patch.agents ?? null},
+             ${patch.contract ?? null}, ${patch.config ?? null}, ${now}, 1)
+          ON CONFLICT (harness_slug) DO NOTHING
+        `;
+        const created = await sql<Array<{ version: number }>>`
+          SELECT version FROM harness_shared.harness_project_files
+           WHERE harness_slug = ${slug} LIMIT 1
+        `;
+        version = created[0]?.version ?? 1;
+      } else {
+        throw new ProjectFilesVersionConflict(slug, opts.expectedVersion, cur[0]?.version ?? 0);
+      }
+    } else {
+      version = updated[0].version;
+    }
+  } else {
+    const rows = await sql<Array<{ version: number }>>`
+      INSERT INTO harness_shared.harness_project_files
+        (harness_slug, spec, agents, contract, config, updated_at, version)
+      VALUES
+        (${slug}, ${patch.spec ?? null}, ${patch.agents ?? null},
+         ${patch.contract ?? null}, ${patch.config ?? null}, ${now}, 1)
+      ON CONFLICT (harness_slug) DO UPDATE SET
+        spec       = COALESCE(EXCLUDED.spec, harness_shared.harness_project_files.spec),
+        agents     = COALESCE(EXCLUDED.agents, harness_shared.harness_project_files.agents),
+        contract   = COALESCE(EXCLUDED.contract, harness_shared.harness_project_files.contract),
+        config     = COALESCE(EXCLUDED.config, harness_shared.harness_project_files.config),
+        updated_at = EXCLUDED.updated_at,
+        version    = harness_shared.harness_project_files.version + 1
+      RETURNING version
+    `;
+    version = rows[0]?.version ?? 1;
+  }
+
   const { notifySyncInvalidate } = await import('@/lib/sync-sse');
   await notifySyncInvalidate('harnessProjectFiles.byHarness', { harnessSlug: slug });
+  return { version };
 }
 
 harness.get('/:slug/spec', async (c) => {
@@ -1038,6 +1095,7 @@ harness.get('/:slug/spec', async (c) => {
     agents: pg.agents ?? safeRead(join(project.path, 'AGENTS.md')),
     contract: pg.contract ?? safeRead(join(harnessDir(project), 'validation-contract.md')),
     config: pg.config ?? safeRead(join(harnessDir(project), 'config.json')),
+    version: pg.version,
   });
 });
 
@@ -1045,14 +1103,37 @@ harness.get('/:slug/spec', async (c) => {
  * Write SPEC.md, AGENTS.md, validation-contract.md, or config.json. Accepts
  * any subset of { spec, agents, contract, config }. PG is canonical; disk
  * is mirrored via temp-file + rename so partial writes don't corrupt state.
+ *
+ * Optimistic concurrency: callers may pass `expected_version` (the version
+ * observed on the most recent GET). If the server-side version has moved
+ * on, the PUT returns 409 with the current version so the caller can
+ * rebase. Omitting `expected_version` performs an unconditional upsert
+ * (legacy callers continue to work).
  */
 harness.put('/:slug/spec', async (c) => {
   const slug = c.req.param('slug');
   const project = await resolvePhasedProject(slug, phasePhaseLabel(c.req.query('phase')));
   if (!project) return c.json({ error: 'unknown project' }, 404);
-  const body = await c.req.json() as { spec?: string; agents?: string; contract?: string; config?: string };
+  const body = await c.req.json() as {
+    spec?: string; agents?: string; contract?: string; config?: string;
+    expected_version?: number;
+  };
 
-  await saveProjectFiles(slug, body);
+  let saved: { version: number };
+  try {
+    saved = await saveProjectFiles(slug, body, { expectedVersion: body.expected_version });
+  } catch (err) {
+    if (err instanceof ProjectFilesVersionConflict) {
+      return c.json({
+        ok: false,
+        error: 'version_conflict',
+        expected: body.expected_version,
+        current: err.currentVersion,
+        detail: err.message,
+      }, 409);
+    }
+    throw err;
+  }
 
   const targets: Array<{ path: string; content: string | undefined; label: string }> = [
     { path: join(project.path, 'SPEC.md'), content: body.spec, label: 'spec' },
@@ -1072,7 +1153,7 @@ harness.put('/:slug/spec', async (c) => {
       written.push(t.label);
     } catch { /* mirror is best-effort; PG already has it */ }
   }
-  return c.json({ ok: true, written });
+  return c.json({ ok: true, written, version: saved.version });
 });
 
 harness.get('/:slug/issues', async (c) => {
@@ -1932,7 +2013,7 @@ harness.post('/:slug/features/import', async (c) => {
   if (!project) return c.json({ error: 'unknown project' }, 404);
   const body = await c.req.json().catch(() => null) as null | {
     features?: Array<{
-      id: string;
+      id?: string;
       title: string;
       summary?: string;
       status?: string;
@@ -1951,8 +2032,23 @@ harness.post('/:slug/features/import', async (c) => {
   if (!body?.features || !Array.isArray(body.features) || body.features.length === 0) {
     return c.json({ error: 'features array required' }, 400);
   }
-  const features = body.features;
-  const invalid = features.find((f) => !f.id || !FEATURE_ID_RE.test(f.id) || !f.title);
+  // Allocate ids for any feature missing one (F-AUTO-{ts}{rand}, mirroring
+  // doCreateFeature's autogen format so promote-style bulk imports can omit
+  // ids and let the server allocate). The allocated ids are returned to
+  // the caller so plans:promote can map them back to plan items.
+  const allocatedIds: string[] = [];
+  const features = body.features.map((raw) => {
+    if (raw.id && raw.id.length > 0) {
+      allocatedIds.push(raw.id);
+      return raw as typeof raw & { id: string };
+    }
+    const ts = Date.now().toString(36).toUpperCase();
+    const rand = Math.random().toString(36).slice(2, 6).toUpperCase();
+    const id = `F-AUTO-${ts}${rand}`;
+    allocatedIds.push(id);
+    return { ...raw, id };
+  });
+  const invalid = features.find((f) => !FEATURE_ID_RE.test(f.id) || !f.title);
   if (invalid) {
     return c.json({ error: `every feature requires a valid id (matching ${FEATURE_ID_RE.source}) and title; offender: ${JSON.stringify(invalid).slice(0, 200)}` }, 400);
   }
@@ -2012,7 +2108,14 @@ harness.post('/:slug/features/import', async (c) => {
       }
     }
   });
-  return c.json({ ok: true, inserted, updated, total: features.length, skippedKindMismatch });
+  return c.json({
+    ok: true,
+    inserted,
+    updated,
+    total: features.length,
+    skippedKindMismatch,
+    ids: allocatedIds,
+  });
 });
 
 harness.post('/:slug/features', async (c) => {

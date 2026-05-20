@@ -967,6 +967,8 @@ export async function ensureProjectFilesTable(): Promise<void> {
     );
     CREATE INDEX IF NOT EXISTS harness_project_files_workspace_idx
       ON harness_shared.harness_project_files (workspace_id);
+    ALTER TABLE harness_shared.harness_project_files
+      ADD COLUMN IF NOT EXISTS version BIGINT NOT NULL DEFAULT 0;
   `);
   try {
     await sql.unsafe(`GRANT SELECT, INSERT, UPDATE, DELETE ON harness_shared.harness_project_files TO harness_app, harness_admin`);
