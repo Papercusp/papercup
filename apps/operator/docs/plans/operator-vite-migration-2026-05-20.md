@@ -240,7 +240,7 @@ export default defineConfig({
 }
 ```
 
-And a `bin/dev-vite.sh` (or `bin/overmind`-style entry) that starts **two** processes: Vite (`:3055`) and the Hono host (`:3070`, from [Phase C](#phase-c--hononode-server-host)). No Next process. The exact mechanism lives in the desktop dev launcher; I'll wire it into whichever already-existing orchestrator script the desktop uses (TBD on first read of `papercusp-desktop/`).
+And a `bin/dev-vite.sh` (or `bin/overmind`-style entry) that starts **two** processes: Vite (`:3055`) and the Hono host (`:3070`, from [Phase C](#phase-c--hononode-server-host)). No Next process. The exact mechanism lives in the desktop dev launcher — note that **`papercusp-desktop/` is a sibling repo, not part of `papercup/`** (verified path: `papercupai-workspace/papercusp-desktop/`, alongside `papercupai-workspace/papercup/`). The launcher script lives there; wiring it is a separate-repo change — see [Phase F](#phase-f--tauri-shell) for the repo-boundary handling.
 
 ### A acceptance (greppable)
 
@@ -307,18 +307,21 @@ Each layout (`app/layout.tsx` is one; the other 5 are nested like `app/harness/l
 
 ### B2. Batches (greppable surfaces)
 
-I'll land Phase B in batches by top-level route to keep each PR small and reviewable. From the existing directory listing:
+I'll land Phase B in batches by top-level route to keep each PR small and reviewable. **Counts below are verified** — `find app -name 'page.tsx'` grouped by top-level dir, 2026-05-20 (total **62**):
 
-| Batch | Top-level | Pages |
+| Batch | Top-level | `page.tsx` count |
 |---|---|---:|
-| B-1 | `/` (root), `/login`, `/signup`, `/setup`, `/not-found` | 5 |
-| B-2 | `/admin` | ~6 |
-| B-3 | `/harness` (the big one — nested by slug) | ~15 |
-| B-4 | `/settings` | ~8 |
-| B-5 | `/dev`, `/drizzle-studio`, `/editor-demo`, `/el-min`, `/operator-mock` | ~6 |
-| B-6 | `/marketplace`, `/installed`, `/wiki`, `/snapshots`, `/support`, `/design`, `/coord`, `/pi`, `/project-docs` | ~9 |
+| B-1 | `/` (root), `/login`, `/signup`, `/setup` | 4 |
+| B-2 | `/admin` | 5 |
+| B-3 | `/harness` (nested by `$slug`) | 6 |
+| B-4a | `/settings` (first half) | 10 |
+| B-4b | `/settings` (second half) | 10 |
+| B-5 | `/marketplace` (5) + `/installed` (7) | 12 |
+| B-6 | `/dev` (3), `/editor-demo`, `/el-min`, `/operator-mock`, `/snapshots` (2), `/design` (2) | 10 |
+| B-7 | `/wiki`, `/support`, `/project-docs`, `/pi`, `/coord` | 5 |
+| | **Total** | **62** |
 
-(Exact per-batch counts will fall out of the inventory; the split is "ship a coherent surface per PR".)
+Two corrections from the v2 draft, both caught by the Phase-0-style audit: `/settings` is the **largest** surface (20 pages, not the estimated 8) — split into B-4a/B-4b; `/harness` is **6** pages, not the estimated 15. `/drizzle-studio` is *not* in any batch — it has no `page.tsx`, only a `route.ts` (ported to the Hono host in [Phase C](#phase-c--hononode-server-host)). `not-found` is `not-found.tsx`, not a `page.tsx` — it becomes `__root.tsx`'s `notFoundComponent` ([B1](#b1-build-the-route-tree-mechanically)), not a B-1 entry.
 
 Each batch acceptance: that surface's URLs render the right components and don't console-error, **verified by a strategy proportional to surface-stakes:**
 
@@ -534,7 +537,7 @@ Per-file revert (the actual changes live inside Phase B PRs).
 | `images: { unoptimized: true }` | Vite serves images as-is. No-op. |
 | `allowedDevOrigins` (Next 16 HMR origin allowlist) | Vite has `server.cors` + `server.host`; HMR origin checking is more permissive by default. Set `server.host: '0.0.0.0'` + `server.cors: true` in dev. |
 | `experimental.turbopackFileSystemCacheForDev: false` | Turbopack-specific; deleted with Next. |
-| `transpilePackages: [...]` (workspace packages) | Vite's `server.fs.allow` + workspace symlinks handle source TS automatically — **but not workspace packages that ship JSX from `node_modules`**. `@papercusp/agent-mcp` exports JSX from a few tool-return files; Vite's default esbuild loader doesn't transform JSX in `node_modules` even via symlink unless explicitly told. Add `optimizeDeps.include: ['@papercusp/agent-mcp', ...other-JSX-shipping-packages]` to `vite.config.ts`, plus `ssr.noExternal` defensively (no-op for SPA but cheap insurance). ~5 lines. Per-package verify during Phase A smoke. |
+| `transpilePackages: [...]` (workspace packages) | Vite resolves workspace-symlinked packages and esbuild-transforms their TS/TSX automatically — no per-package config needed for source-TS workspace deps. The v2 plan claimed `@papercusp/agent-mcp` ships JSX needing `optimizeDeps.include`; **that was wrong** — `packages/agent-mcp` has 0 `.tsx` files, 0 `react` imports, 0 `createElement`/`jsx()` calls, and it's a `serverExternalPackages` entry (server-only, never in the client bundle) — not a `transpilePackages` entry at all. The only real risk here is a workspace dep that ships **pre-compiled CJS** Vite's ESM resolver chokes on; if one surfaces during the Phase A smoke, add it to `optimizeDeps.include` then — don't pre-emptively list packages. |
 | `serverExternalPackages: [...]` (node-pty, agent-mcp, drizzle-kit, mem0ai, ollama, @huggingface/transformers) | Vite/Hono have no analogous concept for the **dev-time client bundle** because these are server-only packages. They live in the `hono-host` process, which is plain Node — no bundler involved at runtime. The `node-pty` `.node` binding trick that drove the Next include list works automatically. **Verify per-package during Phase G smoke.** |
 | `headers()` callback (`Connection: close` in dev) | Vite dev-server middleware (`server.middlewares.use(...)`) — 5 lines. |
 | `redirects()` (`/settings → /settings/profile`) | Either (a) a TSR `beforeLoad` redirect on `routes/settings.tsx`, or (b) Hono-host middleware. **Choice: (a)** because it's the SPA's concern, not the API's. |
@@ -599,6 +602,8 @@ Each setting's port is independently reversible (kill the middleware / proxy ent
 ## Phase F — Tauri shell
 
 **Goal:** the desktop's Tauri webview loads the Vite app instead of the Next app. Dev loads the Vite dev server URL; prod loads bundled static files.
+
+> **Repo-boundary note.** Everything in Phase F lives in **`papercusp-desktop/` — a sibling repo, not `papercup/`.** Verified: `tauri.conf.json` is at `papercupai-workspace/papercusp-desktop/src-tauri/tauri.conf.json`, and `papercusp-desktop/` sits *alongside* `papercup/`, not inside it. So Phase F's edits (`tauri.conf.json`, the desktop dev launcher, `bin/release-local.sh`) are commits in a **different git repo** — the "stage only my `papercup/` paths" discipline doesn't apply there; they're staged and committed in `papercusp-desktop/` separately. If a desktop-owning agent exists, coordinate via that repo's channel. Phases A–E and G–H are entirely within `papercup/`; only F crosses the boundary.
 
 ### F1. Dev URL
 
@@ -788,7 +793,7 @@ grep -rl "@papercusp/web" apps/ packages/ libs/ bin/ | xargs sed -i 's|@papercus
 ```
 
 **Then the deps drop:**
-- Edit `apps/operator-vite/package.json` (new home of what was `@papercusp/web`): remove `next`, `@bprogress/next`, `eslint-config-next`, `@storybook/nextjs`, `@types/next` if present.
+- Edit `apps/operator-vite/package.json` (new home of what was `@papercusp/web`): remove `next`, `@bprogress/next`, `eslint-config-next`, `@types/next` if present. (No `@storybook/nextjs` — Storybook is already on `@storybook/react-vite`.)
 - Rename: `"name": "@papercusp/web"` → `"name": "@papercusp/operator-vite"`.
 - Run `npm install --legacy-peer-deps` from repo root.
 
@@ -919,7 +924,7 @@ If all eight pass, the migration is done.
 | **A page imports `next/server` (rare; types only)** | Coord with backend agent on a shared type-shim (e.g. `import type { NextRequest }` becomes `import type { Request } from '@hono/node-server'` or similar). |
 | **`next/dynamic` had Next-specific SSR=false semantics** | Vite/SPA is SSR=false by default. Direct `React.lazy` matches. |
 | **CSS imports / globals collisions** | `apps/operator/app/globals.css` becomes `apps/operator-vite/src/styles/globals.css` (or symlink). One import in `main.tsx`. |
-| **Storybook (`storybook dev -p 6009`)** | **Real migration: `@storybook/nextjs` → `@storybook/react-vite`.** Story files (`.stories.tsx`) don't change. Preset, decorators, and any `next/image` / `next/link` / `next/navigation` mocks need rework. Budget 1-2 days in Phase F. |
+| **Storybook (`storybook dev -p 6009`)** | **No migration needed — verified.** `package.json` declares `@storybook/react-vite` (`^10.3.6`) and `.storybook/main` already has `framework: { name: '@storybook/react-vite' }`. Storybook is already on Vite and framework-independent of Next. The only Phase H touch: confirm it still resolves after the `apps/operator` → `apps/operator-vite` move (import-path sweep covers it). The v2 plan claimed a `@storybook/nextjs` → `@storybook/react-vite` migration; that was wrong — there is no `@storybook/nextjs` in the repo. |
 | **Lost-pixel visual regression tests** | Same — they don't depend on Next; verify in Phase F. |
 
 ---
@@ -936,7 +941,7 @@ Refreshed 2026-05-20 after the Phase-0 re-grep: the backend stream shipped (Phas
 | C — `@hono/node-server` host + `/wiki` + `/drizzle-studio` ports | 2–3 days | — (can run before/with A) |
 | D — page-side next/* audit | 1 day (rolled into B) | B complete |
 | E — config replication | 3–4 days | C complete |
-| F — Tauri shell + Storybook `@storybook/nextjs` → `@storybook/react-vite` | 3–4 days | E complete |
+| F — Tauri shell (sibling repo `../papercusp-desktop/`) | 2 days | E complete |
 | G — single-process production | 2 days | E complete (backend gate already met) |
 | H — cutover + move + import-path sweep + deps drop | 2–3 days | G complete |
 | **Total (mine, single-agent)** | **~5–6 weeks** | — |
