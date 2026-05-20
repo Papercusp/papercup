@@ -32,7 +32,7 @@ import { DECISION_VERBS } from '@papercusp/orchestrator/decision-parse';
 import { readFile, writeFile, appendFile, unlink, mkdir, chmod, rename, access, copyFile } from 'node:fs/promises';
 import { join, resolve, dirname } from 'node:path';
 import { homedir } from 'node:os';
-import { harnessPackageDir, harnessPath, orchestratorRunBin } from './harness-paths';
+import { harnessPackageDir, harnessPath, orchestratorRunBin, tsxBin } from './harness-paths';
 import { firePluginLifecycle, firePluginEvent } from '../../../lib/plugin-host-runtime';
 import { spawn, execFile } from 'node:child_process';
 import { runAgentChat } from '@/lib/agent-chat-stream';
@@ -593,7 +593,7 @@ async function launchRun(project: ProjectEntry, extra?: string): Promise<{ ok: t
   const orchBin = orchestratorRunBin();
   if (!existsSync(orchBin)) return { ok: false, error: 'orchestrator bin missing' };
   const logPath = `/tmp/harness-${project.slug}.log`;
-  const cmd = `nohup npx --no-install tsx ${orchBin} >> ${logPath} 2>&1 &`;
+  const cmd = `nohup node ${tsxBin()} ${orchBin} >> ${logPath} 2>&1 &`;
 
   // Decrypt search-provider keys from PG (Migration 047) and pass them
   // through as env vars so OMP's web_search providers can see them.
@@ -3863,7 +3863,7 @@ harness.post('/:slug/replan', async (c) => {
   const logPath = `/tmp/harness-replan-${project.slug}.log`;
   return new Promise((resolve) => {
     const { execFile } = require('node:child_process');
-    execFile('bash', ['-c', `MAX_ITERATIONS=0 npx --no-install tsx ${orchBin} >> ${logPath} 2>&1; echo "DONE rc=$?"`], {
+    execFile('bash', ['-c', `MAX_ITERATIONS=0 node ${tsxBin()} ${orchBin} >> ${logPath} 2>&1; echo "DONE rc=$?"`], {
       cwd: project.path,
       env: {
         ...process.env,

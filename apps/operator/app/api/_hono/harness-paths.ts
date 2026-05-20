@@ -1,3 +1,4 @@
+import { createRequire } from 'node:module';
 import { realpathSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
@@ -49,4 +50,30 @@ export function orchestratorRunBin(): string {
     real = base;
   }
   return join(real, '..', 'orchestrator', 'bin', 'run.ts');
+}
+
+/**
+ * Absolute path to the `tsx` runner used to execute the orchestrator
+ * entry point. Resolved via Node's module resolution from the
+ * orchestrator package so we don't depend on the project's CWD having
+ * `tsx` installed (the spawn happens in the user's project dir, e.g.
+ * ~/sheets-clone, which has no node_modules of its own).
+ *
+ * Why not `npx --no-install tsx`? npx walks up from CWD; in a user
+ * project directory there is no node_modules, so it aborts with
+ * `npx canceled due to missing packages and no YES option: ["tsx"]`
+ * and the harness silently fails to launch.
+ */
+export function tsxBin(): string {
+  const orch = orchestratorRunBin();
+  // <pkg>/bin/run.ts → walk up to <pkg>, resolve tsx from there.
+  const orchPkgDir = join(orch, '..', '..');
+  const req = createRequire(join(orchPkgDir, 'package.json'));
+  // tsx ships its CLI as `tsx/dist/cli.mjs` (exposed as the `tsx` bin).
+  // require.resolve('tsx') returns the package main, but we need the
+  // CLI entry — hop to the package.json then read `bin.tsx`.
+  const tsxPkgJson = req.resolve('tsx/package.json');
+  const tsxPkgDir = join(tsxPkgJson, '..');
+  // tsx's package.json: "bin": { "tsx": "./dist/cli.mjs" }
+  return join(tsxPkgDir, 'dist', 'cli.mjs');
 }
