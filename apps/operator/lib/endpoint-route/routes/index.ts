@@ -102,6 +102,11 @@ import devTables from './dev/tables';
 import devTableSchema from './dev/table-schema';
 import devTableRows from './dev/table-rows';
 import devDrizzleStudio from './dev/drizzle-studio';
+import templatesIndex from './templates/index';
+import templatesVersion from './templates/version';
+import templatesFile from './templates/file';
+import templatesInstall from './templates/install';
+import templatesPublish from './templates/publish';
 
 type AnyRoute = RouteDefinition<ZodTypeAny | undefined>;
 
@@ -199,4 +204,9 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(devTableSchema as AnyRoute),
   ...flatten(devTableRows as AnyRoute),
   ...flatten(devDrizzleStudio as AnyRoute[]),
+  ...flatten(templatesIndex as AnyRoute),
+  ...flatten(templatesVersion as AnyRoute[]),
+  ...flatten(templatesFile as AnyRoute[]),
+  ...flatten(templatesInstall as AnyRoute),
+  ...flatten(templatesPublish as AnyRoute),
 ];
