@@ -6,7 +6,7 @@
  * sheets E2E smoke.
  */
 import { describe, it, expect } from 'vitest';
-import { suggestNextFreeName } from './route';
+import { suggestNextFreeName } from '../routes/marketplace/install';
 
 describe('suggestNextFreeName', () => {
   const allTaken = (set: Set<string>) => (c: string) => set.has(c);

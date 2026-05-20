@@ -107,6 +107,12 @@ import templatesVersion from './templates/version';
 import templatesFile from './templates/file';
 import templatesInstall from './templates/install';
 import templatesPublish from './templates/publish';
+import marketplaceCatalog from './marketplace/catalog';
+import marketplaceSlug from './marketplace/slug';
+import marketplaceInstall from './marketplace/install';
+import marketplaceInstallPlugin from './marketplace/install-plugin';
+import marketplaceUninstall from './marketplace/uninstall';
+import marketplaceSpawnable from './marketplace/spawnable';
 
 type AnyRoute = RouteDefinition<ZodTypeAny | undefined>;
 
@@ -209,4 +215,10 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(templatesFile as AnyRoute[]),
   ...flatten(templatesInstall as AnyRoute),
   ...flatten(templatesPublish as AnyRoute),
+  ...flatten(marketplaceCatalog as AnyRoute),
+  ...flatten(marketplaceSlug as AnyRoute),
+  ...flatten(marketplaceInstall as AnyRoute[]),
+  ...flatten(marketplaceInstallPlugin as AnyRoute),
+  ...flatten(marketplaceUninstall as AnyRoute),
+  ...flatten(marketplaceSpawnable as AnyRoute),
 ];
