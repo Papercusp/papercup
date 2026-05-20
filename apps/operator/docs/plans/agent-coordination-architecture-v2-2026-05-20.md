@@ -18,7 +18,9 @@ How OMP-based engineer-collaborator agents and the engineer share state, coordin
 
 ## Now
 
-Spec review with user. No code lands until this plan is accepted. This v2 supersedes `agent-coordination-architecture-2026-05-20.md` (v1): it folds in a full codebase audit of v1, the plan→harness on-ramp design, and consistency fixes against the OMP-power-user-bundle plan.
+**State:** Phase A core shipped at `5c7ef757` + `cc8be513` — L1 identity primitive (`resolveAgentIdentity`, 9 unit tests green) and L1 presence (`coord_presence` table + `coord:whoami / coord:presence / coord:declare-intent` tools). All new files typecheck clean. Deferred within Phase A: the `locks/identity.ts` refactor (needs the PG-backed locks suite green) and the OMP hook (cross-phase — also carries L2 + L3 handlers, build with L3).
+
+**Next:** Phase B — `coord:send / inbox / ack / thread` message substrate + `coord/plan-events.jsonl` bolted onto the `plans:*` write verbs + the working-memory history view.
 
 ## §0 What this plan is, and what changed since v1
 

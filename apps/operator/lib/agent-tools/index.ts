@@ -166,6 +166,11 @@ import './locks/queue';
 import './coordination/tools/whoami';
 import './coordination/tools/presence';
 import './coordination/tools/declare-intent';
+// L3 channels — messages + acks + threads (Phase B core)
+import './coordination/tools/send';
+import './coordination/tools/inbox';
+import './coordination/tools/ack';
+import './coordination/tools/thread';
 
 // SU-agent plan tracking — see agent-plan-tracking-2026-05-20.md
 import './plans/list';
