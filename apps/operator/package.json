@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "next dev -p 3055 -H ${PAPERCUSP_BIND_HOST:-127.0.0.1}",
-    "build": "next build && bash scripts/postbuild-standalone.sh",
+    "build": "npm --workspace @papercupai/operator-docs run build && next build && bash scripts/postbuild-standalone.sh",
     "start": "next start -p 3055 -H ${PAPERCUSP_BIND_HOST:-127.0.0.1}",
     "test:integration": "vitest run --config vitest.integration.config.ts",
     "test:e2e": "playwright test",

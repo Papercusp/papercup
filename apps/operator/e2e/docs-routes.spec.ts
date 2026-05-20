@@ -1,23 +1,25 @@
 /**
  * Docs HTTP routes — the agent-readable internal-docs surface.
  *
- * After the fumadocs → Starlight cutover, the engineering docs are
- * Starlight static output (apps/operator-docs) copied into
- * apps/operator/public/internal/docs/ and served by Next as static
- * assets under `/internal/docs`. next.config.js rewrites bare slugs to
- * their `.html` twin; proxy.ts gates the surface to loopback hosts.
+ * The engineering docs are Starlight static output (apps/operator-docs)
+ * copied into apps/operator/public/internal/docs/ and served by Next as
+ * static assets under `/internal/docs`. next.config.js rewrites bare
+ * slugs to their `.html` twin; proxy.ts gates the surface to loopback
+ * hosts. Per-page `.md` twins are emitted by
+ * apps/operator-docs/scripts/emit-md-twins.ts (using
+ * @papercusp/docs-engine's renderMdxToMarkdown) and served via
+ * proxy.ts's `Accept: text/markdown` rewrite to <slug>.md.
  *
- *   /internal/docs                       — docs home (index.html)
- *   /internal/docs/<slug>                — page (rewritten to <slug>.html)
- *   /internal/docs/<section>/<slug>      — nested page
- *   /internal/docs/llms.txt              — sitemap-style index
- *   /internal/docs/llms-full.txt         — full corpus concatenated
- *   /internal/docs/llms-small.txt        — abridged corpus
+ *   /internal/docs                                   — docs home (index.html)
+ *   /internal/docs/<slug>                            — page (rewritten to <slug>.html)
+ *   /internal/docs/<section>/<slug>                  — nested page
+ *   /internal/docs/<slug>  (Accept: text/markdown)   — page as clean markdown (.md twin)
+ *   /internal/docs/llms.txt                          — sitemap-style index
+ *   /internal/docs/llms-full.txt                     — full corpus concatenated
+ *   /internal/docs/llms-small.txt                    — abridged corpus
  *
  * The spec runs against a loopback baseURL, so proxy.ts's loopback gate
- * permits every request. Per-page `Accept: text/markdown` negotiation
- * was dropped at the cutover (starlight-llms-txt emits no `.md` twins);
- * agents use the `docs:*` MCP tools or the llms-*.txt surfaces instead.
+ * permits every request.
  */
 import { test, expect } from '@playwright/test';
 
@@ -77,5 +79,25 @@ test.describe('docs routes', () => {
     expect(res.status()).toBe(200);
     const body = await res.text();
     expect(body.length).toBeGreaterThan(0);
+  });
+
+  test('GET /internal/docs/<slug> with Accept: text/markdown returns the .md twin', async ({ request }) => {
+    const res = await request.get(`${baseURL}/internal/docs/agent-policies`, {
+      headers: { Accept: 'text/markdown' },
+    });
+    expect(res.status()).toBe(200);
+    expect(res.headers()['content-type'] ?? '').toMatch(/text\/markdown/);
+    const body = await res.text();
+    expect(body).toMatch(/^# /m); // markdown title
+    expect(body).toContain('URL: /internal/docs/agent-policies'); // withPreamble header
+    expect(body).not.toContain('<!DOCTYPE html>'); // definitely not HTML
+  });
+
+  test('GET /internal/docs/<slug> with Accept: text/html still returns HTML', async ({ request }) => {
+    const res = await request.get(`${baseURL}/internal/docs/agent-policies`, {
+      headers: { Accept: 'text/html' },
+    });
+    expect(res.status()).toBe(200);
+    expect(res.headers()['content-type'] ?? '').toMatch(/html/);
   });
 });

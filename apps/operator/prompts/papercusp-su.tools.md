@@ -385,11 +385,27 @@ To add or update a page:
    Components available: code blocks with syntax
    highlighting, MDX-style imports from `@astrojs/starlight/components` (e.g. `Aside`, `Card`, `CardGrid`, `Tabs`, `FileTree`, `Steps`)
    (see existing pages for examples).
-5. If the dev server is running (`cd papercusp-desktop && npm run dev`),
-   the docs route hot-reloads. Hit `/internal/docs/<section>/<slug>` to verify
-   render.
-6. Commit. Document changes belong with the feature commit when
-   you're changing both; standalone when it's a doc-only fix.
+5. **Docs are static HTML — they do NOT hot-reload.** Editing a `.mdx`
+   updates only the source tree; the served HTML at
+   `/internal/docs/<section>/<slug>` (mirrored from
+   `apps/operator/public/internal/docs/`) stays stale until you rebuild.
+   To verify your edit:
+   ```
+   cd apps/operator-docs && npm run build
+   ```
+   This runs `astro build` → emits per-page `<slug>.md` twins (via
+   `scripts/emit-md-twins.ts`) → mirrors `dist/` into
+   `apps/operator/public/internal/docs/` (via `scripts/postbuild-copy.sh`).
+   Then hit `/internal/docs/<section>/<slug>` on the running operator
+   dev (`:3055` by default) to verify render. The operator's
+   `npm run build` (used by `bin/prod`) chains the docs build
+   automatically; the dev server (`bin/dev`) does not, so dev edits
+   require the explicit rebuild step.
+6. Commit. The regenerated `apps/operator/public/internal/docs/`
+   tree is committed alongside the `.mdx` source — both must land
+   together so served HTML matches source. Document changes belong
+   with the feature commit when you're changing both; standalone
+   when it's a doc-only fix.
 
 Don't:
 

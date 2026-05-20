@@ -307,11 +307,12 @@ We moved every internal-docs MDX page from `apps/operator/content/internal-docs/
 
 * `GET /internal/docs/` — Starlight HTML home.
 * `GET /internal/docs/<slug>` — HTML page (Next rewrites to `<slug>.html`).
+* `GET /internal/docs/<slug>` with `Accept: text/markdown` — clean markdown twin (`<slug>.md`).
 * `GET /internal/docs/llms.txt` — index produced by starlight-llms-txt.
 * `GET /internal/docs/llms-full.txt` — full corpus.
 * `GET /internal/docs/llms-small.txt` — abridged corpus (new; harmless).
 
-Removed: the `/docs/<slug>` with `Accept: text/markdown` rewrite that proxy.ts used to do via `fumadocs-core/negotiation`. Reason: starlight-llms-txt does not emit per-page `.md` twins, and reconstructing that channel was out of scope for the cutover. Agents that need per-page markdown use the `docs:get` MCP tool (engine-side, not HTTP) or pull from `/llms-full.txt`.
+Per-page `Accept: text/markdown` negotiation was originally dropped at the cutover and **restored separately**. `starlight-llms-txt` only emits aggregate `llms*.txt`; we restored the per-page channel by emitting `<slug>.md` twins from `apps/operator-docs/scripts/emit-md-twins.ts` (runs after `astro build`, uses `@papercusp/docs-engine`’s `renderMdxToMarkdown` + `withPreamble`). `proxy.ts` rewrites `Accept: text/markdown` on a bare slug to the static `<slug>.md`. Agents can also use the `docs:get` MCP tool (engine-side, not HTTP) or pull from `/llms-full.txt`.
 
 ## Where things live now
 
