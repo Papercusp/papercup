@@ -15,6 +15,7 @@ import { withPlanLock, bumpUpdatedDate } from './with-plan-lock';
 import { parsePlan, maskFences } from './parser';
 import { emitPlanEventForCaller } from '../coordination/plan-events';
 import { fireNotificationsForCaller } from '../coordination/subscriptions';
+import { readPlanBySlug } from './source';
 
 const SU_ROLES = [
   'scoper',
@@ -36,6 +37,13 @@ const argsSchema = z.object({
     .array(z.string().regex(/^P-\d{3,}$/))
     .optional()
     .describe('Item IDs this decision relates to. Appear in the body as P-NNN tokens.'),
+  affects: z
+    .array(z.string().min(1))
+    .max(20)
+    .optional()
+    .describe(
+      'Slugs of OTHER plans this decision bears on. The decision stays canonically in `slug`; each affected plan gets a cross-reference plan_event + a notify to its watchers. Never duplicates the decision.',
+    ),
 });
 
 function formatPadded(n: number): string {
@@ -63,6 +71,18 @@ export function allocateNextDecisionId(body: string): string {
     }
   }
   return `D-${formatPadded(max + 1)}`;
+}
+
+/**
+ * Normalise an `affects` slug list: drop the home plan's own slug (a
+ * decision can't cross-reference its own home) and de-duplicate so a
+ * caller passing the same slug twice doesn't propagate twice.
+ */
+export function normalizeAffects(
+  affects: string[] | undefined,
+  homeSlug: string,
+): string[] {
+  return [...new Set((affects ?? []).filter((s) => s !== homeSlug))];
 }
 
 export function appendDecisionToBody(
@@ -201,9 +221,48 @@ export default defineTool({
       'plan_referenced',
     );
 
+    // Cross-plan propagation (agent-coordination-architecture-v2 §6.4 #7).
+    // For each OTHER plan this decision affects: emit a cross-reference
+    // plan_event scoped to the affected plan (so its history/sidebar
+    // surfaces the incoming decision) and fire a notify to that plan's
+    // watchers. The decision itself is NOT duplicated — it lives only in
+    // `args.slug`; affected plans merely reference it. Unknown slugs are
+    // reported back rather than silently skipped.
+    const affects = normalizeAffects(args.affects, args.slug);
+    const propagatedTo: string[] = [];
+    const unknownAffects: string[] = [];
+    for (const affectedSlug of affects) {
+      const exists = await readPlanBySlug(affectedSlug);
+      if (!exists) {
+        unknownAffects.push(affectedSlug);
+        continue;
+      }
+      await emitPlanEventForCaller(ctx, {
+        planSlug: affectedSlug,
+        event: 'decision_added',
+        detail: `${ok.decisionId} (cross-ref from ${args.slug})`,
+        after: args.title,
+      });
+      await fireNotificationsForCaller(
+        ctx,
+        [`apps/operator/docs/plans/${affectedSlug}.md`],
+        'plan_referenced',
+      );
+      propagatedTo.push(affectedSlug);
+    }
+
     return {
       content: [
-        { type: 'text' as const, text: JSON.stringify({ ok: true, ...result.value, filePath: result.filePath }) },
+        {
+          type: 'text' as const,
+          text: JSON.stringify({
+            ok: true,
+            ...result.value,
+            filePath: result.filePath,
+            ...(propagatedTo.length > 0 ? { propagated_to: propagatedTo } : {}),
+            ...(unknownAffects.length > 0 ? { unknown_affects: unknownAffects } : {}),
+          }),
+        },
       ],
     };
   },

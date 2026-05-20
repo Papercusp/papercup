@@ -14,6 +14,7 @@ import { replaceNowBlock } from '../set-now';
 import {
   allocateNextDecisionId,
   appendDecisionToBody,
+  normalizeAffects,
 } from '../add-decision';
 import {
   allocateNextItemId,
@@ -238,6 +239,25 @@ status: draft
     const out = appendDecisionToBody(doc, 'D-001', 'First', 'Body.', '2026-05-20', []);
     expect(out).toContain('## Decisions');
     expect(out).toContain('### D-001 — First');
+  });
+});
+
+describe('normalizeAffects (cross-plan affects[])', () => {
+  it('returns [] for undefined / empty', () => {
+    expect(normalizeAffects(undefined, 'home')).toEqual([]);
+    expect(normalizeAffects([], 'home')).toEqual([]);
+  });
+
+  it('drops the home slug — a decision cannot cross-ref its own plan', () => {
+    expect(normalizeAffects(['home', 'other'], 'home')).toEqual(['other']);
+  });
+
+  it('de-duplicates repeated slugs so propagation fires once each', () => {
+    expect(normalizeAffects(['a', 'a', 'b', 'a'], 'home')).toEqual(['a', 'b']);
+  });
+
+  it('preserves first-seen order', () => {
+    expect(normalizeAffects(['c', 'a', 'b'], 'home')).toEqual(['c', 'a', 'b']);
   });
 });
 
