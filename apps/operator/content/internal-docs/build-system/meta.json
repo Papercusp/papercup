@@ -4,6 +4,7 @@
   "pages": [
     "index",
     "architecture",
+    "layers",
     "admin-commands",
     "vms",
     "privacy-audit",
