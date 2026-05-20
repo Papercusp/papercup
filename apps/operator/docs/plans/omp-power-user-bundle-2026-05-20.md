@@ -143,8 +143,18 @@ We add a third:
   clamps every tool call to `workspace_id` and treats the agent
   as `user_id` for audit. Tool catalog is identical to operator-tier
   (the same surface the engineer sees today via
-  `agent_tools:list { asRole: 'operator' }`). Quotas apply per
-  the workspace's normal limits.
+  `agent_tools:list { asRole: 'operator' }`).
+
+  **Quotas apply** — unlike superuser, the power-user tier does NOT
+  bypass the quota gate. The dispatch context sets both
+  `isSuperuser` (for the role-allowlist + capability bypass that
+  give it the operator-tier catalog) and `isPowerUser`; the quota
+  step bypasses only when `isSuperuser && !isPowerUser`. Because a
+  power-user MCP call gets a fresh `runId` per request, the quota
+  *window* is keyed on the stable `auth_session_id` (carried in
+  `ctx.uiClientId`) rather than the per-request run — see
+  `computeProjectedQuotaWindowKey`. So a workspace's operator-tier
+  tool quota accrues across the whole OMP session.
 
 **Naming note — two different "session" concepts.** The token claim
 `auth_session_id` (this plan) is **not** the same as

@@ -103,10 +103,11 @@ export interface BuiltSpawnContext {
   /**
    * True for the `workspace-power-user` tier (`?power_user=1`). These
    * calls run at the dispatch layer like superuser (`isSuperuser` is
-   * also set) but their `workspaceId` is clamped to the verified
-   * token's claim — never read from the URL. The flag is kept distinct
-   * from `isSuperuser` for audit clarity and so future quota work can
-   * tell the tiers apart.
+   * also set) for the role-allowlist + capability bypass, but differ
+   * in two ways: `workspaceId` is clamped to the verified token's
+   * claim (never the URL), and the quota gate is NOT bypassed —
+   * workspace quotas apply to power-users. See dispatch-stack.ts
+   * quotaStep and dispatch-types.ts computeProjectedQuotaWindowKey.
    */
   isPowerUser?: boolean;
 }
@@ -452,6 +453,7 @@ async function buildMcpToolContext(
     parentSpawnId: spawn.parentSpawnId,
     uiClientId: spawn.uiClientId,
     isSuperuser: spawn.isSuperuser ?? false,
+    isPowerUser: spawn.isPowerUser ?? false,
     log: (msg) => {
       // eslint-disable-next-line no-console
       console.log(`[mcp-tool][${spawn.harnessSlug}/${spawn.role}/${spawn.spawnId}] ${msg}`);

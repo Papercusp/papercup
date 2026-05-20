@@ -22,6 +22,15 @@ export function computeProjectedQuotaWindowKey(ctx: UnifiedToolContext): string 
     if (!ctx.chunkId) return null;
     return `chunk:${ctx.chunkId}`;
   }
+  // Power-user (`?power_user=1`) sessions get a fresh `runId` per MCP
+  // request — a run-keyed window would reset every call and never
+  // accumulate. Key on the stable auth session (`uiClientId` carries
+  // the `auth_session_id`) so the workspace's operator-tier quota
+  // actually applies across the session. See
+  // docs/plans/omp-power-user-bundle-2026-05-20.md §4.1.
+  if (ctx.isPowerUser && ctx.uiClientId) {
+    return `power-user:${ctx.uiClientId}`;
+  }
   if (!ctx.runId) return null;
   return `run:${ctx.runId}`;
 }

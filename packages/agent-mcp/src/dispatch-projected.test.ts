@@ -62,6 +62,22 @@ describe('computeProjectedQuotaWindowKey', () => {
   it('returns null for workers without a chunk', () => {
     expect(computeProjectedQuotaWindowKey(MAKE_CTX({ role: 'worker', chunkId: null }))).toBeNull();
   });
+  it('keys power-user sessions on the auth session (uiClientId), not the per-request runId', () => {
+    // Power-user MCP calls get a fresh runId per request; a run-keyed
+    // window would never accumulate. The auth session is stable.
+    expect(
+      computeProjectedQuotaWindowKey(
+        MAKE_CTX({ role: 'operator', isPowerUser: true, uiClientId: 'pus-abc', runId: 'run_ephemeral', chunkId: null }),
+      ),
+    ).toBe('power-user:pus-abc');
+  });
+  it('falls back to run:<id> for a power-user ctx missing uiClientId', () => {
+    expect(
+      computeProjectedQuotaWindowKey(
+        MAKE_CTX({ role: 'operator', isPowerUser: true, uiClientId: null, runId: 'run_A', chunkId: null }),
+      ),
+    ).toBe('run:run_A');
+  });
 });
 
 describe('dispatchProjectedTool', () => {

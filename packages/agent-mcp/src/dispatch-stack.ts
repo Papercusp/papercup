@@ -187,7 +187,11 @@ const quotaStep: DispatchStep = {
     const { tool, ctx, toolName, deps, windowKey } = exec;
     const role = ctx.role as AgentRole | undefined;
     const roleQuota = role && tool.rolesQuota?.[role];
-    if (!windowKey || !role || !roleQuota || !deps.readQuotaState || ctx.isSuperuser) return null;
+    // Superuser bypasses quota; power-user does NOT — workspace quotas
+    // apply to end users even though they share the operator-tier
+    // catalog. See omp-power-user-bundle-2026-05-20.md §4.1.
+    const quotaBypass = ctx.isSuperuser && !ctx.isPowerUser;
+    if (!windowKey || !role || !roleQuota || !deps.readQuotaState || quotaBypass) return null;
     const limit = role === 'worker' ? roleQuota.perChunk : roleQuota.perRun;
     if (typeof limit !== 'number' || limit <= 0) return null;
     try {

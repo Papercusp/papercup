@@ -317,6 +317,21 @@ export interface UnifiedToolContext {
   isSuperuser?: boolean;
 
   /**
+   * True when the call entered through the `?power_user=1` endpoint
+   * (loopback + a workspace-scoped HMAC access token — see
+   * apps/operator/lib/power-user-token.ts and
+   * apps/operator/docs/plans/omp-power-user-bundle-2026-05-20.md §4.1).
+   *
+   * Power-user calls also set `isSuperuser` for the role-allowlist and
+   * capability bypass (they run the operator-tier catalog with a
+   * synthesized principal). The distinction matters for the **quota**
+   * gate: superuser bypasses quota, power-user does NOT — workspace
+   * quotas apply to end users. The quota window is keyed on the stable
+   * auth session (`uiClientId`), not the per-request `runId`.
+   */
+  isPowerUser?: boolean;
+
+  /**
    * Which transport adapter built this context. Recorded on the
    * `tool_invocations.transport` column so /dev → Sessions / Telemetry
    * can filter by transport.
