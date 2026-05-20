@@ -96,6 +96,12 @@ import userSearch from './user/search';
 import userMemory from './user/memory';
 import userMemoryFeedback from './user/memory-feedback';
 import userMemoryReembed from './user/memory-reembed';
+import devSql from './dev/sql';
+import devProcessesKill from './dev/processes-kill';
+import devTables from './dev/tables';
+import devTableSchema from './dev/table-schema';
+import devTableRows from './dev/table-rows';
+import devDrizzleStudio from './dev/drizzle-studio';
 
 type AnyRoute = RouteDefinition<ZodTypeAny | undefined>;
 
@@ -187,4 +193,10 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(userMemory as AnyRoute[]),
   ...flatten(userMemoryFeedback as AnyRoute),
   ...flatten(userMemoryReembed as AnyRoute),
+  ...flatten(devSql as AnyRoute),
+  ...flatten(devProcessesKill as AnyRoute),
+  ...flatten(devTables as AnyRoute),
+  ...flatten(devTableSchema as AnyRoute),
+  ...flatten(devTableRows as AnyRoute),
+  ...flatten(devDrizzleStudio as AnyRoute[]),
 ];

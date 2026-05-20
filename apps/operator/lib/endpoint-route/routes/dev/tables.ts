@@ -3,19 +3,15 @@
  *
  * Lists every table the Drizzle schema knows about. Source: runtime
  * introspection of `generated.*` via `getTableConfig`. Powers the
- * /dev "Tables" tab — the schema-aware sibling of the embedded
- * Drizzle Studio.
+ * /dev "Tables" tab.
  *
- * Response: { tables: [{ exportName, schema, name, columnCount, primaryKey }] }
+ * Ported from app/api/dev/tables/route.ts. `auth: 'public'` —
+ * faithful port at current posture (D3).
  */
-import { NextResponse } from 'next/server';
 import { getTableConfig, type PgTable } from 'drizzle-orm/pg-core';
-import { is } from 'drizzle-orm';
-import { Table } from 'drizzle-orm';
+import { is, Table } from 'drizzle-orm';
 import { generated } from '@restart/db-org';
-
-export const runtime = 'nodejs';
-export const dynamic = 'force-dynamic';
+import { defineRoute } from '../../define-route';
 
 interface TableEntry {
   exportName: string;
@@ -48,6 +44,11 @@ function listDrizzleTables(): TableEntry[] {
   return out;
 }
 
-export async function GET() {
-  return NextResponse.json({ tables: listDrizzleTables() });
-}
+export default defineRoute({
+  method: 'GET',
+  path: '/dev/tables',
+  auth: 'public',
+  async handler() {
+    return Response.json({ tables: listDrizzleTables() });
+  },
+});
