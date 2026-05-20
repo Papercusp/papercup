@@ -49,6 +49,18 @@ import provisionHostCheck from './provision/host-check';
 import provisionState from './provision/state';
 import provisionRun from './provision/run';
 import provisionStream from './provision/stream';
+import desktopAgentAuthStatus from './desktop/agent-auth-status';
+import desktopAgentLoginEnvelope from './desktop/agent-login-envelope';
+import desktopGitIdentity from './desktop/git-identity';
+import desktopPreflight from './desktop/preflight';
+import desktopSetupPtyCommands from './desktop/setup-pty-commands';
+import desktopSetupStatus from './desktop/setup-status';
+import desktopSetupWizardState from './desktop/setup-wizard-state';
+import desktopTelemetryConfig from './desktop/telemetry-config';
+import desktopTelemetryFlush from './desktop/telemetry-flush';
+import desktopTelemetryReport from './desktop/telemetry-report';
+import desktopVoiceConfigured from './desktop/voice-configured';
+import desktopWorkspaceValidate from './desktop/workspace-validate';
 
 type AnyRoute = RouteDefinition<ZodTypeAny | undefined>;
 
@@ -93,4 +105,16 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(provisionState as AnyRoute),
   ...flatten(provisionRun as AnyRoute),
   ...flatten(provisionStream as AnyRoute),
+  ...flatten(desktopAgentAuthStatus as AnyRoute),
+  ...flatten(desktopAgentLoginEnvelope as AnyRoute),
+  ...flatten(desktopGitIdentity as AnyRoute),
+  ...flatten(desktopPreflight as AnyRoute[]),
+  ...flatten(desktopSetupPtyCommands as AnyRoute),
+  ...flatten(desktopSetupStatus as AnyRoute),
+  ...flatten(desktopSetupWizardState as AnyRoute[]),
+  ...flatten(desktopTelemetryConfig as AnyRoute),
+  ...flatten(desktopTelemetryFlush as AnyRoute),
+  ...flatten(desktopTelemetryReport as AnyRoute[]),
+  ...flatten(desktopVoiceConfigured as AnyRoute),
+  ...flatten(desktopWorkspaceValidate as AnyRoute),
 ];

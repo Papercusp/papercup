@@ -1,9 +1,18 @@
-import { NextResponse } from 'next/server';
+/**
+ * GET     /api/desktop/preflight — environment readiness checks (node,
+ *   postgres, omp, meridian, bash, harness, claude, soft prereqs).
+ * OPTIONS /api/desktop/preflight — CORS preflight.
+ *
+ * Ported from app/api/desktop/preflight/route.ts. `auth: 'public'` —
+ * faithful to the route's prior posture (no auth check; permissive
+ * `Access-Control-Allow-Origin: *`).
+ */
 import { existsSync } from 'node:fs';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import net from 'node:net';
 import { harnessRoot, harnessPath } from '@papercusp/harness/paths';
+import { defineRoute } from '../../define-route';
 
 const MERIDIAN_BASE = process.env.MERIDIAN_BASE_URL ?? 'http://127.0.0.1:3456';
 
@@ -28,8 +37,7 @@ async function checkBinary(bin: string, args: string[] = ['--version']): Promise
     if (err?.code === 'ENOENT') {
       // claude ships as a bundled npm dep of meridian-host (stripped at
       // build time, npm-installed at first launch by Rust). Probe the
-      // sidecar's meridian-host/node_modules/.bin too so we don't
-      // surface MISSING after the install completes.
+      // sidecar's meridian-host/node_modules/.bin too.
       if (bin === 'claude') {
         const candidates = [
           `${process.cwd()}/meridian-host/node_modules/.bin/claude`,
@@ -53,17 +61,13 @@ async function checkBinary(bin: string, args: string[] = ['--version']): Promise
 
 /**
  * Check for pi (omp). GUI app launches on macOS often miss the user's
- * login-shell PATH so 'omp' alone may fail even when installed via
- * homebrew. Probe well-known absolute locations as a fallback.
+ * login-shell PATH so 'omp' alone may fail even when installed. Probe
+ * well-known absolute locations as a fallback.
  */
 async function checkPi(): Promise<Check> {
   const direct = await checkBinary('omp');
   if (direct.status === 'ok') return { ...direct, name: 'pi' };
 
-  // The desktop bundle vendors omp at <sidecar>/bin/omp[.exe]. The Tauri
-  // shell prepends that dir to PATH so the direct check above succeeds,
-  // but probe the absolute path too in case some descendant process
-  // strips PATH (e.g. login-shell wrappers on macOS GUI apps).
   const bundledOmp = process.cwd() ? `${process.cwd()}/bin/omp` : '';
   const candidates = [
     bundledOmp,
@@ -89,8 +93,7 @@ async function checkPi(): Promise<Check> {
 
 async function checkPostgres(): Promise<Check> {
   // Preferred desktop path: embedded-postgres-server on a workspace-scoped
-  // TCP port. Tauri main sets PAPERCUSP_USE_EMBEDDED_PG=1 + PAPERCUSP_PG_PORT
-  // when it spawned successfully. Probe the loopback port.
+  // TCP port. Probe the loopback port.
   if (process.env.PAPERCUSP_USE_EMBEDDED_PG === '1') {
     const portStr = process.env.PAPERCUSP_PG_PORT;
     const port = portStr ? Number(portStr) : NaN;
@@ -152,16 +155,9 @@ async function checkPostgres(): Promise<Check> {
 
 /**
  * Probe meridian's HTTP daemon on 127.0.0.1:3456. omp routes through
- * meridian to use the user's Claude Max subscription instead of API
- * keys; if meridian is down, omp invocations fall back to direct API
- * calls (which require ANTHROPIC_API_KEY) or fail.
+ * meridian to use the user's Claude Max subscription instead of API keys.
  */
 async function checkMeridian(): Promise<Check> {
-  // Desktop builds bundle meridian and have the Rust startup spawn it.
-  // If claude-code (closed-source, stripped at build time) isn't yet
-  // installed, Rust writes a state file we surface to the splash as
-  // "installing" so users see a first-launch progress message instead
-  // of a hard MISSING.
   const workspaceHome = process.env.HOME || process.env.USERPROFILE;
   if (workspaceHome) {
     try {
@@ -187,8 +183,7 @@ async function checkMeridian(): Promise<Check> {
       }
       // state === 'ready' falls through to the live port probe below
     } catch {
-      // No state file yet — either pre-Rust-meridian build, or the
-      // background thread hasn't written it. Fall through to probe.
+      // No state file yet — fall through to probe.
     }
   }
   return new Promise((resolve) => {
@@ -211,9 +206,6 @@ async function checkMeridian(): Promise<Check> {
 }
 
 function checkHarnessDir(): Check {
-  // The TS orchestrator entry is the canonical proof the harness/orchestrator
-  // pair is installed. run.sh is no longer the iteration driver but is still
-  // checked as a fallback for installs that pre-date the TS migration.
   const harnessRootPath = harnessRoot();
   const orchBin = `${harnessRootPath}/../orchestrator/bin/run.ts`;
   const runScript = harnessPath('run.sh');
@@ -234,24 +226,14 @@ const CORS_HEADERS = {
   'Access-Control-Allow-Headers': 'Content-Type',
 };
 
-export async function OPTIONS() {
-  return new Response(null, { status: 204, headers: CORS_HEADERS });
-}
-
 // Soft-prerequisite CLIs: harness flows shell out to these, but most
 // developer machines have them. Reported as optional so the bootstrap
-// UI can show "install these to unlock all flows" without blocking the
-// app from booting. Hints aim at the platform install command.
+// UI can show "install these to unlock all flows" without blocking boot.
 const SOFT_PREREQS: Array<{ name: string; hint: string }> = [
   { name: 'git', hint: 'Bundled on Windows; macOS: install Xcode CLT (xcode-select --install); Linux: apt/dnf install git. Required by harness worktree + version-detection flows.' },
   { name: 'tar', hint: 'macOS/Linux ship tar by default. Windows 10+ has tar.exe — if missing, update Windows. Required by snapshot publish/fork.' },
   { name: 'curl', hint: 'macOS/Linux ship curl by default. Windows 10+ has curl.exe. Required by harness fetch flows.' },
   { name: 'gh', hint: 'GitHub CLI — bundled on most platforms. Used by the Setup Wizard\'s "Sign in to GitHub" button. Install: https://cli.github.com/' },
-  // node, bash, omp, code-server are all bundled now and don't need
-  // soft-prereq surfacing — preflight's hard checks pick them up via PATH
-  // (which Tauri prepends with sidecar/bin and, on Windows, the MinGit
-  // tree). If a bundled binary fails to download at build time the
-  // hard-check status is what surfaces.
 ];
 
 async function checkSoftPrereq(name: string, hint: string): Promise<Check> {
@@ -260,29 +242,39 @@ async function checkSoftPrereq(name: string, hint: string): Promise<Check> {
   return { ...probe, hint, optional: true };
 }
 
-export async function GET() {
-  const [node, claude, bash, postgres, pi, meridian, ...softs] = await Promise.all([
-    checkBinary('node'),
-    checkBinary('claude'),
-    checkBinary('bash'),
-    checkPostgres(),
-    checkPi(),
-    checkMeridian(),
-    ...SOFT_PREREQS.map((p) => checkSoftPrereq(p.name, p.hint)),
-  ]);
-  // claude is now optional (only required if AGENT_BACKEND=claude-code).
-  // omp + meridian are the default path; pi (omp) becomes a hard
-  // requirement and meridian is hard too. claude is still surfaced as
-  // a hint so users can opt into claude-code if they prefer.
-  const claudeOptional: Check = { ...claude, optional: true, hint: claude.status === 'ok'
-    ? undefined
-    : 'Optional unless AGENT_BACKEND=claude-code. Install: https://docs.anthropic.com/en/docs/claude-code/setup' };
-  const harness = checkHarnessDir();
-  const checks = [node, postgres, pi, meridian, bash, harness, claudeOptional, ...softs];
-  // Hard requirements: node/postgres/pi/meridian/bash/harness. claude is
-  // optional (only used when AGENT_BACKEND=claude-code). soft prereqs
-  // (git/tar/curl) are also optional.
-  const required = checks.filter((c) => !c.optional);
-  const allOk = required.every((c) => c.status === 'ok');
-  return NextResponse.json({ ok: allOk, checks }, { headers: CORS_HEADERS });
-}
+const options = defineRoute({
+  method: 'OPTIONS',
+  path: '/desktop/preflight',
+  auth: 'public',
+  handler() {
+    return new Response(null, { status: 204, headers: CORS_HEADERS });
+  },
+});
+
+const get = defineRoute({
+  method: 'GET',
+  path: '/desktop/preflight',
+  auth: 'public',
+  async handler() {
+    const [node, claude, bash, postgres, pi, meridian, ...softs] = await Promise.all([
+      checkBinary('node'),
+      checkBinary('claude'),
+      checkBinary('bash'),
+      checkPostgres(),
+      checkPi(),
+      checkMeridian(),
+      ...SOFT_PREREQS.map((p) => checkSoftPrereq(p.name, p.hint)),
+    ]);
+    // claude is optional (only required if AGENT_BACKEND=claude-code).
+    const claudeOptional: Check = { ...claude, optional: true, hint: claude.status === 'ok'
+      ? undefined
+      : 'Optional unless AGENT_BACKEND=claude-code. Install: https://docs.anthropic.com/en/docs/claude-code/setup' };
+    const harness = checkHarnessDir();
+    const checks = [node, postgres, pi, meridian, bash, harness, claudeOptional, ...softs];
+    const required = checks.filter((c) => !c.optional);
+    const allOk = required.every((c) => c.status === 'ok');
+    return Response.json({ ok: allOk, checks }, { headers: CORS_HEADERS });
+  },
+});
+
+export default [get, options];

@@ -1,18 +1,11 @@
 /**
- * GET /api/desktop/setup-pty-commands
+ * GET /api/desktop/setup-pty-commands — platform-correct spawn opts for
+ * the Setup Wizard's inline pty terminals (install + sign-in flows).
  *
- * Returns platform-correct spawn opts for the Setup Wizard's inline
- * pty terminals (install + sign-in flows). The wizard calls this once,
- * then hands the shape to `commands.ptySpawn` on user action.
- *
- * Loopback-only.
+ * Ported from app/api/desktop/setup-pty-commands/route.ts. `auth: {}`.
  */
-import { NextRequest, NextResponse } from 'next/server';
 import { platform, homedir } from 'node:os';
-import { PrincipalCheckError, requirePrincipal } from '@/lib/auth/require-principal';
-
-export const dynamic = 'force-dynamic';
-export const runtime = 'nodejs';
+import { defineRoute } from '../../define-route';
 
 const MERIDIAN_VERSION = '1.42.1';
 const OMP_PACKAGE = '@oh-my-pi/cli';
@@ -25,9 +18,8 @@ export interface SpawnSpec {
 }
 
 /**
- * Build the install spawn spec for a given OS. Pure — `os` is the
- * value of `process.platform` ('win32', 'darwin', 'linux', …) and
- * `home` is the user's home dir. Exported for tests.
+ * Build the install spawn spec for a given OS. Pure — `os` is the value
+ * of `process.platform` and `home` is the user's home dir.
  */
 export function buildInstallSpec(os: string, home: string): SpawnSpec {
   if (os === 'win32') {
@@ -76,25 +68,22 @@ echo '==> done'
   return { command: 'bash', args: ['-c', script], cwd: home, env: {} };
 }
 
-/** Build the login spawn spec for a provider. Pure. Exported for tests. */
+/** Build the login spawn spec for a provider. Pure. */
 export function buildLoginSpec(provider: 'claude' | 'omp', home: string): SpawnSpec {
   return { command: provider, args: ['/login'], cwd: home, env: {} };
 }
 
-export async function GET(req: NextRequest) {
-  try {
-    await requirePrincipal(req.headers);
-  } catch (err) {
-    if (err instanceof PrincipalCheckError) {
-      return NextResponse.json({ error: err.reason }, { status: err.status });
-    }
-    throw err;
-  }
-  const os = platform();
-  const home = homedir();
-  return NextResponse.json({
-    installRuntime: buildInstallSpec(os, home),
-    loginClaude: buildLoginSpec('claude', home),
-    loginOmp: buildLoginSpec('omp', home),
-  });
-}
+export default defineRoute({
+  method: 'GET',
+  path: '/desktop/setup-pty-commands',
+  auth: {},
+  handler() {
+    const os = platform();
+    const home = homedir();
+    return Response.json({
+      installRuntime: buildInstallSpec(os, home),
+      loginClaude: buildLoginSpec('claude', home),
+      loginOmp: buildLoginSpec('omp', home),
+    });
+  },
+});
