@@ -27,6 +27,7 @@ import { registerCrossHarness } from './cross-harness';
 import { registerMobile } from './mobile';
 import { registerDockLayouts } from './dock-layouts';
 import { installPluginApiDispatcher } from '../../../lib/plugin-api-mount';
+import { registerAllRoutes } from '../../../lib/endpoint-route/register';
 
 const app = new Hono().basePath('/api');
 
@@ -93,5 +94,14 @@ app.route('/plugins', plugins);
 
 // Mobile API (pair, push, voice, workspaces) — see _hono/mobile.ts
 app.route('/mobile', registerMobile);
+
+// defineRoute endpoints — the endpoint-system's second projection.
+// Every `defineRoute` (lib/endpoint-route/routes/**) mounts here and is
+// served by the [[...route]] catch-all, same as the routers above. As
+// the route-migration (endpoint-route-migration-2026-05-20.md) proceeds,
+// the per-endpoint Next route.ts files are deleted and their logic moves
+// into lib/endpoint-route/routes/** — this one call grows to cover all
+// 243 endpoints.
+registerAllRoutes(app);
 
 export { app };
