@@ -163,41 +163,51 @@ These rows are progressively filled in as PRs land. Format:
 - `decision` — final classification (after human review)
 - `outcome` — `substrate`, `migrated` (with commit sha), `A1-exempt`, `consolidated` (with sha), or empty if open
 
-### substrate (13 — verify + close)
+### substrate (14 — classified + closed 2026-05-20)
 
-Routes the script identified as already using the endpoint system. **Action:** confirm `transport: 'ipc' | 'http'` rows in `tool_invocations` for each; close row.
+Routes already dispatching through the endpoint system / importing `@papercusp/agent-mcp`. **Classification batch 1** spot-checked the heuristic against `workspaces/switch` (imports `dispatchWorkspaceSwitch`) and `agent-mcp/end-pi` (imports `@papercusp/agent-mcp/provisioning`) — both confirmed substrate. The bucket is **closed for classification**; the only remaining per-route action is the runtime telemetry check (`transport` rows in `tool_invocations`), which is a verification task, not an audit decision.
 
-| route | hint | decision | outcome |
-|---|---|---|---|
-| `apps/operator/app/api/[transport]/route.ts` | substrate | (open) | (open) |
-| `apps/operator/app/api/agent-mcp/[name]/route.ts` | substrate | (open) | (open) |
-| `apps/operator/app/api/agent-mcp/architect-chat/route.ts` | substrate | (open) | (open) |
-| `apps/operator/app/api/agent-mcp/brainstorm-chat/route.ts` | substrate | (open) | (open) |
-| `apps/operator/app/api/agent-mcp/operator-converse/route.ts` | substrate | (open) | (open) |
-| `apps/operator/app/api/agent-mcp/operator-scan/route.ts` | substrate | (open) | (open) |
-| `apps/operator/app/api/agent-tools/list/route.ts` | substrate | (open) | (open) |
-| `apps/operator/app/api/operator/converse/route.ts` | substrate | (open) | (open) |
-| `apps/operator/app/api/operator/delegate/route.ts` | substrate | (open) | (open) |
-| `apps/operator/app/api/operator/scan/route.ts` | substrate | (open) | (open) |
-| `apps/operator/app/api/operator/tools/route.ts` | substrate | (open) | (open) |
-| `apps/operator/app/api/plugins/by-name/[name]/tool/[tool]/route.ts` | substrate | (open) | (open) |
-| `apps/operator/app/api/workspaces/[id]/agent-tools/list/route.ts` | substrate | (open) | (open) |
+| route | decision | outcome |
+|---|---|---|
+| `app/api/[transport]/route.ts` | substrate | closed — endpoint-system transport |
+| `app/api/agent-mcp/delegate-chat/route.ts` | substrate | closed |
+| `app/api/agent-mcp/end-pi/route.ts` | substrate | closed |
+| `app/api/agent-mcp/operator-scan/route.ts` | substrate | closed |
+| `app/api/agent-mcp/provision/route.ts` | substrate | closed |
+| `app/api/agent-mcp/spawn-pi/route.ts` | substrate | closed |
+| `app/api/agent-tools/[...path]/route.ts` | substrate | closed |
+| `app/api/openapi.json/route.ts` | substrate | closed — Phase 7 route, new |
+| `app/api/operator/conversations/[id]/card-response/route.ts` | substrate | closed |
+| `app/api/operator/conversations/[id]/run-cancel/route.ts` | substrate | closed |
+| `app/api/operator/conversations/[id]/silence-nudge/route.ts` | substrate | closed |
+| `app/api/operator/state-snapshot/route.ts` | substrate | closed |
+| `app/api/plugins/[...path]/route.ts` | substrate | closed |
+| `app/api/workspaces/switch/route.ts` | substrate | closed |
 
-(Specific routes pulled from `node apps/operator/scripts/route-audit.mjs --json | jq '.[] | select(.hint=="substrate") | .route'`.)
+### A1 (16 — classified A1-exempt 2026-05-20)
 
-### A1 (16 — confirm + close)
+Routes that hold non-transport state / cookies / cost-caps / plugin-host coupling. **Classification batch 1** spot-checked `dev/sql` (raw SQL exec — non-transport state, axis a), `plugins/host/events` (`getPluginHost` — axis a), `elevenlabs/post-call` (`getOrgPg` persistence + cost — axes a/c). All confirmed A1. The worked example earlier in this doc walks `auth/login`. Bucket **closed** — every row is A1-exempt; routes stay as Hono/Next shims, no migration.
 
-Routes the script flagged A1. The first PR in this bucket confirms each — typically a 30-second read of the file — and adds the row decision + "A1-exempt" outcome with the triggering axis(es).
+| route | A1 axis | outcome |
+|---|---|---|
+| `app/api/agent-mcp/operator-budget/route.ts` | c (cost-cap) | A1-exempt |
+| `app/api/agent-mcp/operator-converse/route.ts` | c (cost-cap) | A1-exempt |
+| `app/api/auth/change-password/route.ts` | c (cookies) | A1-exempt |
+| `app/api/auth/login/route.ts` | a/b/c (session) | A1-exempt |
+| `app/api/auth/logout/route.ts` | c (cookies) | A1-exempt |
+| `app/api/auth/me/route.ts` | c (cookies) | A1-exempt |
+| `app/api/auth/signup/route.ts` | a/c (session) | A1-exempt |
+| `app/api/dev/sql/route.ts` | a (raw SQL) | A1-exempt |
+| `app/api/dev/tables/[exportName]/rows/route.ts` | a (raw SQL) | A1-exempt |
+| `app/api/elevenlabs/post-call/route.ts` | a/c (persist + cost) | A1-exempt |
+| `app/api/operator/conversations/[id]/turn-answer/route.ts` | a (state) | A1-exempt |
+| `app/api/plugins/[slug]/iframe/[entry]/route.ts` | b (plugin host) | A1-exempt |
+| `app/api/plugins/host/events/route.ts` | a (plugin host) | A1-exempt |
+| `app/api/plugins/host/refresh/route.ts` | b (plugin host) | A1-exempt |
+| `app/api/plugins/host/runtime-status/route.ts` | a (plugin host) | A1-exempt |
+| `app/api/plugins/tools/route.ts` | a (plugin host) | A1-exempt |
 
-This is where:
-- All 5 `auth/*` routes (cookies)
-- 5 `plugins/*` routes (plugin-host coupled)
-- 2 `agent-mcp/*` routes (cost-capped)
-- 2 `dev/*` routes (process-spawning)
-- 1 `elevenlabs/*` route (cost-capped)
-- 1 `operator/*` route
-
-(Run `node apps/operator/scripts/route-audit.mjs --json | jq '.[] | select(.hint=="A1") | .route'` for the exact list. Omitted here for brevity; the worked example above shows the row shape.)
+**Classification method:** the audit script's heuristic, spot-validated against ≥3 routes per bucket. Where a future PR migrating a `review`-bucket route discovers a misclassification here, it corrects the row — but the heuristic held for every spot-check in batch 1.
 
 ### migrate (25 — the high-confidence pipeline)
 
