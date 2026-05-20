@@ -18,6 +18,7 @@ import * as fs from 'node:fs/promises';
 import { withPlanLock } from './with-plan-lock';
 import { PLAN_STATUSES } from './parser';
 import { emitPlanEventForCaller } from '../coordination/plan-events';
+import { fireNotificationsForCaller } from '../coordination/subscriptions';
 
 const SU_ROLES = [
   'scoper',
@@ -183,6 +184,11 @@ export default defineTool({
       after: args.title,
       detail: args.title,
     });
+    await fireNotificationsForCaller(
+      ctx,
+      [`apps/operator/docs/plans/${value.slug}.md`],
+      'plan_referenced',
+    );
 
     return {
       content: [

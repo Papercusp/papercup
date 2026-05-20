@@ -27,6 +27,7 @@
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { readIdentity } from './identity';
+import { fireNotificationsForCaller } from '../coordination/subscriptions';
 import { inWorkspaceTxn } from './in-workspace-txn';
 import {
   expireWaiter,
@@ -147,6 +148,9 @@ export default defineTool({
     );
 
     if (first.ok) {
+      void fireNotificationsForCaller(ctx, first.held, 'lock_acquired').catch(
+        () => {},
+      );
       return ok(first.lock_id, first.expires_ts, first.held);
     }
 
@@ -225,6 +229,11 @@ export default defineTool({
       // tryInsertWaiter's pre-insert acquire attempt. No waiter was
       // queued; we already hold the lock.
       if ('self_granted' in inserted) {
+        void fireNotificationsForCaller(
+          ctx,
+          inserted.held,
+          'lock_acquired',
+        ).catch(() => {});
         return ok(
           inserted.lock_id,
           inserted.expires_ts,
@@ -368,6 +377,11 @@ export default defineTool({
       });
 
       if (finalBusy.won) {
+        void fireNotificationsForCaller(
+          ctx,
+          finalBusy.held,
+          'lock_acquired',
+        ).catch(() => {});
         return ok(
           finalBusy.lockId,
           finalBusy.expires,

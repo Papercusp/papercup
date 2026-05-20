@@ -250,6 +250,36 @@ export async function fireNotifications(
 }
 
 /**
+ * Best-effort fire-for-caller used by `plans:*` and `locks:*` bolt-ons.
+ * Resolves the caller's identity (falls back to `'system'` if
+ * unresolvable) and swallows every error — a notify-fan-out failure
+ * must NEVER break the calling write.
+ */
+export async function fireNotificationsForCaller(
+  ctx: import('./identity').ResolveIdentityCtx,
+  paths: string[],
+  trigger: WatchTrigger,
+): Promise<number> {
+  try {
+    let identity: AgentIdentity;
+    try {
+      identity = (await import('./identity')).resolveAgentIdentity(ctx);
+    } catch {
+      identity = {
+        ownerId: 'system',
+        ownerLabel: 'system',
+        source: 'static-client',
+        workspaceId: null,
+        userId: null,
+      };
+    }
+    return await fireNotifications(identity, paths, trigger);
+  } catch {
+    return 0;
+  }
+}
+
+/**
  * Coord kinds reachable from this module — for callers that want to
  * narrow `CoordKind` further.
  */

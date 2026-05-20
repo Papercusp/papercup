@@ -15,6 +15,7 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { withPlanLock, bumpUpdatedDate } from './with-plan-lock';
 import { ITEM_STATUSES, maskFences } from './parser';
 import { emitPlanEventForCaller } from '../coordination/plan-events';
+import { fireNotificationsForCaller } from '../coordination/subscriptions';
 
 const SU_ROLES = [
   'scoper',
@@ -150,6 +151,11 @@ export default defineTool({
       after: args.status,
       detail: args.itemId,
     });
+    await fireNotificationsForCaller(
+      ctx,
+      [`apps/operator/docs/plans/${args.slug}.md`],
+      'plan_referenced',
+    );
 
     return {
       content: [
