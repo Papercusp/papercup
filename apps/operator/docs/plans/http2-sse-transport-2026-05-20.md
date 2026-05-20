@@ -1,7 +1,11 @@
 # Serve the operator over HTTP/2 — fix SSE connection-pool exhaustion
 
 **Date:** 2026-05-20
-**Status:** Proposal — awaiting review
+**Status:** SUPERSEDED by `desktop-ipc-transport-completion-2026-05-20.md`.
+HTTP/2's distinguishing advantage was fixing the browser webapp surface
+too; with the webapp retired (desktop-only product) that no longer
+matters, and the desktop IPC transport — already built and merged — is
+the better fit. Kept for the record / as a fallback if IPC stalls.
 **Supersedes the fix section of:** `webkit-sse-connection-pool-2026-05-20.md`
 (that doc's Option A / Option B). This is a third option the prior doc
 did not evaluate, and the recommended one.
