@@ -445,6 +445,19 @@ The second is cleaner — handles become immutable; the cast goes away. Slightly
 
 ---
 
+### #12 — `workspace_id` → `coordination_domain` rename (filed from agent-coordination-architecture-v2 audit S4)
+
+**Problem.** The SU-locks `workspace_id` column does not name what it holds. The lock partition is per-machine / per-coordination-domain, *not* per-Papercusp-workspace — `workspace_id = 'default'` everywhere today (see §1 Non-goals). `agent-coordination-architecture-v2` §13 committed to owning this rename; the audit of that plan (finding S4) found the commitment had slipped — the rename is in no plan's queue. Filing it here so the decision is explicit, not orphaned.
+
+**Real footprint** (audit S4 — *not* cosmetic): the column appears in a PRIMARY KEY, two GIN indexes, the `grant_cascade` PL/pgSQL function signature, and the `LISTEN/NOTIFY` channel name. A rename is a real migration, not a `sed`.
+
+**Tension to resolve first.** §1's non-goal says future-proofing the workspace dimension without a user is overdesign. The rename does *not* add multi-workspace behaviour — it only renames the column to stop implying a Papercusp-workspace scope it does not have. The locks-plan owner should decide: (a) do the rename for naming honesty, or (b) decline it and instead document in `advisory-lock-keys.md` that `workspace_id` is a misnomer for "coordination domain." Either resolves the orphan; option (b) is near-free.
+
+**Effort.** Option (a): ~half a day (migration + handler/index/function updates + the PG-backed locks test suite to verify). Option (b): 15 minutes.
+**Where to fold in.** Option (a) belongs with #11 (the structural refactor already rewrites this surface). Option (b) is a standalone doc edit.
+
+---
+
 ## §3 Sequencing
 
 Improvements are mostly independent. Real dependencies:
