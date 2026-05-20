@@ -44,6 +44,15 @@ export function handoffsDir(): string {
   return join(coordDir(), 'handoffs');
 }
 
+export function subscriptionsDir(): string {
+  return join(coordDir(), 'subscriptions');
+}
+
+export function subscriptionsFile(ownerId: string): string {
+  const safe = ownerId.replace(/[^A-Za-z0-9._-]/g, '_');
+  return join(subscriptionsDir(), `${safe}.jsonl`);
+}
+
 /**
  * Per-agent outbox filename. ownerId is sanitised — non-[A-Za-z0-9._-]
  * chars become '_'. Two distinct owners cannot collide because the

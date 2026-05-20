@@ -177,6 +177,10 @@ import './coordination/tools/escalations';
 import './coordination/tools/resolve';
 import './coordination/tools/handoff';
 import './coordination/tools/handoffs';
+// L3 subscriptions + notify fan-out (Phase D core)
+import './coordination/tools/watch';
+import './coordination/tools/unwatch';
+import './coordination/tools/watches';
 
 // SU-agent plan tracking — see agent-plan-tracking-2026-05-20.md
 import './plans/list';
