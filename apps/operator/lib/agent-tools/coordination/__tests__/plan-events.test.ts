@@ -11,6 +11,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   emitPlanEvent,
   emitPlanEventForCaller,
+  listPlanEventsFiles,
   planEventsFile,
   readPlanEvents,
 } from '../plan-events';
@@ -42,7 +43,8 @@ describe('plan-events', () => {
       },
       detail: 'first',
     });
-    expect(planEventsFile()).toBe(join(tmp, 'plan-events.jsonl'));
+    const ym = `${new Date().getUTCFullYear()}-${String(new Date().getUTCMonth() + 1).padStart(2, '0')}`;
+    expect(planEventsFile()).toBe(join(tmp, `plan-events-${ym}.jsonl`));
     const all = await readPlanEvents();
     expect(all).toHaveLength(1);
     expect(all[0]?.kind).toBe('plan_event');
@@ -96,5 +98,52 @@ describe('plan-events', () => {
     await expect(
       emitPlanEventForCaller({}, { planSlug: 'x', event: 'created' }),
     ).resolves.toBeUndefined();
+  });
+
+  it('reads across legacy + monthly rotation files (F-M2)', async () => {
+    // A pre-rotation legacy file with one old event.
+    await fs.writeFile(
+      join(tmp, 'plan-events.jsonl'),
+      JSON.stringify({
+        ts: '2026-01-01T00:00:00.000Z',
+        msg_id: '0-0-old',
+        from: 'system',
+        to: ['*'],
+        kind: 'plan_event',
+        plan_slug: 'legacy-plan',
+        event: 'created',
+      }) + '\n',
+    );
+    // An out-of-band older monthly file.
+    await fs.writeFile(
+      join(tmp, 'plan-events-2026-03.jsonl'),
+      JSON.stringify({
+        ts: '2026-03-15T00:00:00.000Z',
+        msg_id: '1-0-mar',
+        from: 'system',
+        to: ['*'],
+        kind: 'plan_event',
+        plan_slug: 'march-plan',
+        event: 'item_added',
+      }) + '\n',
+    );
+    // A current-month event via the normal emit path.
+    await emitPlanEvent({ planSlug: 'current-plan', event: 'promoted', identity: null });
+
+    const files = await listPlanEventsFiles();
+    // legacy first, then monthly chronological — current month last.
+    expect(files[0]?.endsWith('plan-events.jsonl')).toBe(true);
+    expect(files.length).toBe(3);
+
+    const all = await readPlanEvents();
+    expect(all.map((e) => e.plan_slug)).toEqual([
+      'legacy-plan',
+      'march-plan',
+      'current-plan',
+    ]);
+
+    // filesBack caps to the most-recent N files.
+    const recent = await readPlanEvents({ filesBack: 1 });
+    expect(recent.map((e) => e.plan_slug)).toEqual(['current-plan']);
   });
 });

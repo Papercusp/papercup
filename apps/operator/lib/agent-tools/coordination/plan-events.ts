@@ -11,6 +11,7 @@
  * silently swallows; the plan-event log is observability, not state.
  */
 
+import { promises as fs } from 'node:fs';
 import { join } from 'node:path';
 import { coordDir } from './paths';
 import {
@@ -50,8 +51,44 @@ export interface EmitPlanEventOpts {
   detail?: string;
 }
 
-export function planEventsFile(): string {
+/**
+ * The plan-events file for a given month (default: current month).
+ * `coord/plan-events-<YYYY-MM>.jsonl` — monthly rotation (plan §8.2)
+ * keeps any single file bounded. Emission always targets the current
+ * month; reads concatenate across files.
+ */
+export function planEventsFile(date: Date = new Date()): string {
+  const ym = `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, '0')}`;
+  return join(coordDir(), `plan-events-${ym}.jsonl`);
+}
+
+/** Pre-rotation single-file path, still read so old history survives. */
+function legacyPlanEventsFile(): string {
   return join(coordDir(), 'plan-events.jsonl');
+}
+
+const PLAN_EVENTS_MONTHLY_RE = /^plan-events-\d{4}-\d{2}\.jsonl$/;
+
+/**
+ * All plan-events files in coord/, oldest→newest: the legacy
+ * un-suffixed file first (pre-rotation history), then the monthly
+ * files in lexical (= chronological) order.
+ */
+export async function listPlanEventsFiles(): Promise<string[]> {
+  const dir = coordDir();
+  let entries: string[];
+  try {
+    entries = await fs.readdir(dir);
+  } catch (e: unknown) {
+    if ((e as NodeJS.ErrnoException)?.code === 'ENOENT') return [];
+    throw e;
+  }
+  const out: string[] = [];
+  if (entries.includes('plan-events.jsonl')) out.push(legacyPlanEventsFile());
+  for (const f of entries.filter((x) => PLAN_EVENTS_MONTHLY_RE.test(x)).sort()) {
+    out.push(join(dir, f));
+  }
+  return out;
 }
 
 /** Append one plan_event line. Throws on filesystem failure — use
@@ -98,13 +135,25 @@ export interface ReadPlanEventsOpts {
   since_ts?: string;
   planSlugs?: string[];
   events?: PlanEventType[];
+  /** Read only the most-recent N rotation files (legacy file counts as
+   *  one). Omit to read every file. */
+  filesBack?: number;
 }
 
-/** Read the plan-event log, filtered. Sorted by ts ascending. */
+/** Read the plan-event log across all monthly rotation files,
+ *  filtered. Sorted by ts ascending. */
 export async function readPlanEvents(
   opts: ReadPlanEventsOpts = {},
 ): Promise<CoordEnvelope[]> {
-  const lines = await readCoordFile(planEventsFile());
+  const allFiles = await listPlanEventsFiles();
+  const files =
+    typeof opts.filesBack === 'number' && opts.filesBack > 0
+      ? allFiles.slice(-opts.filesBack)
+      : allFiles;
+  const lines: CoordEnvelope[] = [];
+  for (const f of files) {
+    lines.push(...(await readCoordFile(f)));
+  }
   const sinceMs = opts.since_ts ? new Date(opts.since_ts).getTime() : 0;
   const slugFilter = opts.planSlugs ? new Set(opts.planSlugs) : null;
   const eventFilter = opts.events
