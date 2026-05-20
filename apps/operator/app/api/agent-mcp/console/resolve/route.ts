@@ -17,28 +17,23 @@ import { NextRequest } from 'next/server';
 
 import { activeWorkspaceId } from '@/lib/workspace-registry';
 import { buildConsoleEnvelope } from '@/lib/console-launcher';
+import { PrincipalCheckError, requirePrincipal } from '@/lib/auth/require-principal';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
-function isLoopback(req: NextRequest): boolean {
-  const host = req.headers.get('host') ?? '';
-  if (
-    host.startsWith('127.0.0.1:') ||
-    host.startsWith('localhost:') ||
-    host === '127.0.0.1' ||
-    host === 'localhost'
-  ) {
-    return true;
-  }
-  const xfwd = req.headers.get('x-forwarded-for') ?? '';
-  if (xfwd && !xfwd.startsWith('127.') && xfwd !== '::1') return false;
-  return host.endsWith(':3055') || host.endsWith(':3070');
-}
-
 export async function POST(req: NextRequest): Promise<Response> {
-  if (!isLoopback(req)) {
-    return Response.json({ error: 'loopback only' }, { status: 403 });
+  // Console-launcher: any authenticated principal can resolve the
+  // envelope. The returned .mcp.json body intentionally contains the
+  // superuser bearer only when the token file already exists on
+  // disk; that's the actual trust gate, not the request principal.
+  try {
+    await requirePrincipal(req.headers);
+  } catch (err) {
+    if (err instanceof PrincipalCheckError) {
+      return Response.json({ error: err.reason }, { status: err.status });
+    }
+    throw err;
   }
   const body = (await req.json().catch(() => ({}))) as { slug?: string | null };
   const workspaceId = activeWorkspaceId();

@@ -14,23 +14,24 @@
 import { NextRequest } from 'next/server';
 import { readElevenLabsKey } from '@/lib/voice-credentials';
 import { loadVoicePrefs } from '@/lib/voice-prefs';
+import { PrincipalCheckError, requirePrincipal } from '@/lib/auth/require-principal';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
-function isLoopback(req: NextRequest): boolean {
-  const host = req.headers.get('host') ?? '';
-  if (host.startsWith('127.0.0.1:') || host.startsWith('localhost:') || host === '127.0.0.1' || host === 'localhost') {
-    return true;
-  }
-  const xfwd = req.headers.get('x-forwarded-for') ?? '';
-  if (xfwd && !xfwd.startsWith('127.') && xfwd !== '::1') return false;
-  return host.endsWith(':3055') || host.endsWith(':3070');
-}
-
 export async function GET(req: NextRequest): Promise<Response> {
-  if (!isLoopback(req)) {
-    return Response.json({ error: 'loopback only' }, { status: 403 });
+  // Pre-migration behavior: any loopback request got the raw key. Preserved
+  // as "any principal accepted" here. A future tightening (require
+  // trust: ['trusted']) is a follow-up policy decision — the scripts that
+  // consume this (el-agent-sync.mjs, el-voice-preview.mjs) currently send
+  // no bearer; tightening would break them until they're updated.
+  try {
+    await requirePrincipal(req.headers);
+  } catch (err) {
+    if (err instanceof PrincipalCheckError) {
+      return Response.json({ error: err.reason }, { status: err.status });
+    }
+    throw err;
   }
   const [apiKey, prefs] = await Promise.all([
     readElevenLabsKey(),

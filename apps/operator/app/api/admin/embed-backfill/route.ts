@@ -12,21 +12,21 @@
  */
 
 import { NextResponse } from 'next/server';
-import { isLoopbackRequest, isValidSuperuserBearer } from '@/lib/superuser-token';
 import { runBackfillSweep } from '@/lib/search/embed-backfill';
+import { PrincipalCheckError, requirePrincipal } from '@/lib/auth/require-principal';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 export const maxDuration = 600;
 
 export async function POST(req: Request) {
-  if (!isLoopbackRequest(req.headers)) {
-    return NextResponse.json({ error: 'loopback_only' }, { status: 403 });
-  }
-  const auth = req.headers.get('authorization') ?? '';
-  const bearer = auth.toLowerCase().startsWith('bearer ') ? auth.slice(7).trim() : null;
-  if (!isValidSuperuserBearer(bearer)) {
-    return NextResponse.json({ error: 'invalid_superuser' }, { status: 401 });
+  try {
+    await requirePrincipal(req.headers, { trust: ['trusted'] });
+  } catch (err) {
+    if (err instanceof PrincipalCheckError) {
+      return NextResponse.json({ error: err.reason }, { status: err.status });
+    }
+    throw err;
   }
   try {
     const result = await runBackfillSweep();

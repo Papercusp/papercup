@@ -205,15 +205,17 @@ Per-PR migrations. Each PR migrates ≤ 4 routes from this list and updates the 
 
 Pulled from the script — exact list at the same `jq` filter with `hint=="migrate"`. The `ui/*` (3), `internal/*` (8), and `harness/*` (1) routes are the cleanest opening batch.
 
-### consolidate (5 remaining; 7 closed)
+### consolidate (0 remaining; 12 closed)
 
-These are loopback-only-gated routes the Principal RFC implementation sweeps. The 7 `desktop/*` state probes shipped 2026-05-20 with the Phase 3b step-2 commit + the desktop-batch consolidation commit — they no longer carry local `isLoopback()` helpers; auth flows through `requirePrincipal()`. Per the audit script, those 7 now classify as `consolidated-already`.
+All 12 loopback-only-gated routes the Principal RFC implementation targeted are now migrated. Shipped 2026-05-20 across three batches:
 
-Remaining `consolidate` rows:
-- 3 `admin/*` (admin operations) — next batch.
-- 2 `agent-mcp/*` (console internal) — after the admin batch.
+- 7 `desktop/*` state probes — `requirePrincipal(req.headers)` (any auth, including loopback)
+- 3 `admin/*` operations — `requirePrincipal(req.headers, { trust: ['trusted'] })` (preserves bearer-required gate)
+- 2 `agent-mcp/*` console internal — `requirePrincipal(req.headers)` (any auth; el-admin-creds tightening deferred)
 
-Phase 3b §4 walks the consolidation strategy.
+All 12 classify as `consolidated-already` per the updated audit script.
+
+Phase 3b §4 walks the consolidation strategy. The consolidate bucket is now closed.
 
 ### review (174 — the long tail)
 

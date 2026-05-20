@@ -16,23 +16,21 @@
  */
 import { NextResponse } from 'next/server';
 import { rotateSpawnSigningKey } from '@/lib/spawn-signing';
-import { isLoopbackRequest, isValidSuperuserBearer } from '@/lib/superuser-token';
+import { PrincipalCheckError, requirePrincipal } from '@/lib/auth/require-principal';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 export async function POST(req: Request) {
-  // Loopback only: same envelope superuser-token uses everywhere else.
-  // The doc model is "friction not enforcement" — anyone with the
-  // bearer + loopback can rotate.
-  if (!isLoopbackRequest(req.headers)) {
-    return NextResponse.json({ error: 'loopback_required' }, { status: 403 });
-  }
-
-  const auth = req.headers.get('authorization') ?? '';
-  const bearer = auth.startsWith('Bearer ') ? auth.slice(7).trim() : null;
-  if (!isValidSuperuserBearer(bearer)) {
-    return NextResponse.json({ error: 'invalid_bearer' }, { status: 401 });
+  // Admin: require trusted principal. The doc model stays "friction
+  // not enforcement" — anyone with the superuser bearer can rotate.
+  try {
+    await requirePrincipal(req.headers, { trust: ['trusted'] });
+  } catch (err) {
+    if (err instanceof PrincipalCheckError) {
+      return NextResponse.json({ error: err.reason }, { status: err.status });
+    }
+    throw err;
   }
 
   try {
