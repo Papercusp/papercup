@@ -225,7 +225,28 @@ Pulled from the script — exact list at the same `jq` filter with `hint=="migra
 
 The `ui:*` *agent* surface already exists as proper `defineTool`s — `lib/agent-tools/ui/{list_clients,dispatch,get_state}.ts`. The three `/api/ui/*` routes are the browser half of that pair and stay as Hono/Next shims. This is the audit framework working as intended: the heuristic flagged 3 false positives, the human read corrected them.
 
-**Remaining migrate bucket (22):** `internal/*` (8) is the cleanest opening batch — verify each is a genuine typed-IO function before migrating (the `ui/*` lesson: confirm the route is an *agent* surface, not a browser-contract surface, before turning it into a tool).
+**Batch 3 correction — `internal/*` (8 routes) reclassified `migrate` → A1-exempt.** All eight `/api/internal/*` routes are the **orchestrator→operator event bus**, not agent tools:
+
+| route | caller | role |
+|---|---|---|
+| `internal/log-event` | `bash run.sh` `log()` | publishes log lines to the `<slug>:log/raw` bus |
+| `internal/run-chunk` | orchestrator `invoke.ts` | fans subprocess stdout to the agent SSE bus |
+| `internal/archive-event` | orchestrator | lifecycle event post |
+| `internal/checkpoint-event` | orchestrator | lifecycle event post |
+| `internal/feature-debug-note-event` | orchestrator | lifecycle event post |
+| `internal/plan-review-event` | orchestrator | lifecycle event post |
+| `internal/pr-event` | orchestrator | lifecycle event post |
+| `internal/smoke-test-event` | orchestrator | lifecycle event post |
+
+They authenticate with a **harness bearer** (validated against `harness_shared.token_index`) and the caller is `bash run.sh` / the TS orchestrator's `bus-posts.ts` — machine-to-machine, not an MCP client. Turning them into `defineTool`s would put orchestrator plumbing into the agent tool catalog. **All 8 A1-exempt** — they stay as Hono/Next shims; their wire contract is the orchestrator↔operator IPC boundary.
+
+### Heuristic finding — the `migrate` bucket over-predicts
+
+Two batches in, **11 of the original 25 `migrate`-hinted routes turned out to be A1** (3 `ui/*` + 8 `internal/*`). The script's heuristic — "small + PG-touching + no streaming" — describes *plumbing/contract routes* exactly as well as it describes *migratable agent functions*. It cannot tell the difference between "a typed function an agent should call" and "a typed POST the browser or orchestrator makes."
+
+**Revised expectation:** the real migratable count is well under 25 — likely single digits. Every `migrate`-bucket route needs the same read `ui/*` and `internal/*` got: *is the caller an agent (or an MCP client), or is it browser/orchestrator/desktop plumbing?* Only the former migrates. The `migrate` hint is now treated as "candidate — verify caller" not "high-confidence."
+
+**Remaining migrate bucket (14):** harness, operator, admin, backups, design, dev, flags, user-actions, zero-harness families — one to three routes each. Each gets the caller-check before any migration.
 
 ### consolidate (0 remaining; 12 closed)
 
