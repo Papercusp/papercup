@@ -1,0 +1,213 @@
+/**
+ * starlightContentAdapter — wrap an Astro/Starlight content directory as a DocSource.
+ *
+ * Reads MDX/MD pages from a Starlight content collection on disk
+ * (typically `apps/operator-docs/src/content/docs/`). Astro content
+ * collections are filesystem-backed, so the adapter doesn't need a
+ * running Astro server — just the source files.
+ *
+ * Slug rules (Starlight conventions):
+ *   - <root>/index.mdx                → slug = ''        (root index)
+ *   - <root>/agent-policies.mdx       → slug = 'agent-policies'
+ *   - <root>/agents/index.mdx         → slug = 'agents'   (section index)
+ *   - <root>/agents/operator.mdx      → slug = 'agents/operator'
+ *
+ * URL rules: '<baseUrl>/<slug>' for non-root, '<baseUrl>/' for root.
+ *
+ * Section metadata is derived from `<section>/index.mdx` frontmatter
+ * (title, description) when present; otherwise falls back to
+ * humanize(sectionSlug).
+ */
+
+import { promises as fs } from 'node:fs';
+import * as path from 'node:path';
+import { humanize } from '../shared';
+import { renderMdxToMarkdown } from '../render-mdx';
+import type { DocPage, DocSource, SectionMeta } from '../types';
+
+export interface StarlightContentAdapterOptions {
+  /** Stable identifier for cache namespacing + telemetry. */
+  name?: string;
+  /**
+   * Absolute path to the content collection root.
+   * For operator-docs this is `apps/operator-docs/src/content/docs`.
+   */
+  contentRoot: string;
+  /**
+   * Base URL prefix the docs site renders these pages at.
+   * Defaults to '/internal/docs'.
+   */
+  baseUrl?: string;
+  /** Max scan depth. Defaults to 8 (deep enough for any practical section nesting). */
+  maxDepth?: number;
+}
+
+const MAX_FILE_BYTES = 1024 * 1024;
+
+interface StarlightPage extends DocPage {
+  absolutePath: string;
+}
+
+/** Parse YAML-style frontmatter; returns { meta, body } where meta is a flat record. */
+function parseFrontmatter(source: string): { meta: Record<string, string>; body: string } {
+  const m = source.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?/);
+  if (!m) return { meta: {}, body: source };
+  const block = m[1];
+  const meta: Record<string, string> = {};
+  // Top-level scalar keys only; nested blocks (sidebar:) are read separately if needed.
+  for (const line of block.split(/\r?\n/)) {
+    const km = /^([A-Za-z_][\w-]*)\s*:\s*(.*)$/.exec(line);
+    if (!km) continue;
+    let v = km[2].trim();
+    // Strip surrounding quotes
+    if ((v.startsWith('"') && v.endsWith('"')) || (v.startsWith("'") && v.endsWith("'"))) {
+      v = v.slice(1, -1);
+    }
+    if (v === '') continue; // skip block-scalar parents (e.g. `sidebar:`)
+    meta[km[1]] = v;
+  }
+  return { meta, body: source.slice(m[0].length) };
+}
+
+function extractHeadings(content: string): DocPage['toc'] {
+  const out: DocPage['toc'] = [];
+  for (const line of content.split('\n')) {
+    const m = /^(#{1,6})\s+(.+?)\s*$/.exec(line);
+    if (!m) continue;
+    const text = m[2].trim();
+    if (!text) continue;
+    const id = text
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '');
+    out.push({ id, text, depth: m[1].length });
+    if (out.length >= 100) break;
+  }
+  return out;
+}
+
+function slugFromRelPath(rel: string): string {
+  let s = rel.replace(/\.(mdx|md)$/i, '');
+  // index.mdx maps to the parent directory's slug
+  if (s === 'index') return '';
+  if (s.endsWith('/index')) return s.slice(0, -'/index'.length);
+  return s;
+}
+
+async function readSafe(absPath: string): Promise<string | null> {
+  try {
+    const stat = await fs.stat(absPath);
+    if (!stat.isFile()) return null;
+    if (stat.size > MAX_FILE_BYTES) return null;
+    return await fs.readFile(absPath, 'utf-8');
+  } catch {
+    return null;
+  }
+}
+
+async function walkContent(root: string, maxDepth: number): Promise<string[]> {
+  const out: string[] = [];
+  async function walk(dir: string, depth: number): Promise<void> {
+    if (depth > maxDepth) return;
+    let entries: import('node:fs').Dirent[];
+    try {
+      entries = await fs.readdir(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const e of entries) {
+      if (e.name.startsWith('.')) continue;
+      const full = path.join(dir, e.name);
+      if (e.isDirectory()) {
+        await walk(full, depth + 1);
+      } else if (e.isFile() && /\.(mdx|md)$/i.test(e.name)) {
+        out.push(full);
+      }
+    }
+  }
+  await walk(root, 0);
+  return out;
+}
+
+export function starlightContentAdapter(opts: StarlightContentAdapterOptions): DocSource {
+  const name = opts.name ?? 'starlight';
+  const baseUrl = (opts.baseUrl ?? '/internal/docs').replace(/\/$/, '');
+  const contentRoot = path.resolve(opts.contentRoot);
+  const maxDepth = opts.maxDepth ?? 8;
+
+  let pageCache: Map<string, StarlightPage> | null = null;
+
+  async function buildPages(): Promise<Map<string, StarlightPage>> {
+    if (pageCache) return pageCache;
+    const cache = new Map<string, StarlightPage>();
+    const files = await walkContent(contentRoot, maxDepth);
+    for (const abs of files) {
+      const rel = path.relative(contentRoot, abs).replace(/\\/g, '/');
+      const slug = slugFromRelPath(rel);
+      const content = await readSafe(abs);
+      if (content === null) continue;
+      const { meta, body } = parseFrontmatter(content);
+      const slugs = slug === '' ? [] : slug.split('/');
+      const url = slug === '' ? `${baseUrl}/` : `${baseUrl}/${slug}`;
+      const title = meta.title ?? humanize(slugs[slugs.length - 1] ?? 'index');
+      const page: StarlightPage = {
+        slug,
+        slugs,
+        url,
+        title,
+        ...(meta.description ? { description: meta.description } : {}),
+        toc: extractHeadings(body),
+        absolutePath: abs,
+      };
+      cache.set(slug, page);
+    }
+    pageCache = cache;
+    return cache;
+  }
+
+  return {
+    name,
+    async listPages(): Promise<DocPage[]> {
+      const cache = await buildPages();
+      return [...cache.values()].map(({ absolutePath: _abs, ...page }) => page);
+    },
+    async getPage(slug: string): Promise<DocPage | null> {
+      const cache = await buildPages();
+      const sp = cache.get(slug);
+      if (!sp) return null;
+      const { absolutePath: _abs, ...page } = sp;
+      return page;
+    },
+    async getContent(page: DocPage): Promise<string> {
+      const cache = await buildPages();
+      const sp = cache.get(page.slug);
+      if (!sp) throw new Error(`starlightContentAdapter: page ${page.slug} not found`);
+      const raw = await readSafe(sp.absolutePath);
+      if (raw === null) {
+        throw new Error(`starlightContentAdapter: could not read ${sp.absolutePath}`);
+      }
+      const { body } = parseFrontmatter(raw);
+      if (/\.mdx$/i.test(sp.absolutePath)) {
+        return await renderMdxToMarkdown(body, sp.absolutePath);
+      }
+      return body;
+    },
+    async getSectionMeta(sectionSlug: string): Promise<SectionMeta> {
+      // Try `<section>/index.mdx` frontmatter (Starlight section-intro convention).
+      const candidates = [
+        path.join(contentRoot, sectionSlug, 'index.mdx'),
+        path.join(contentRoot, sectionSlug, 'index.md'),
+      ];
+      for (const abs of candidates) {
+        const raw = await readSafe(abs);
+        if (raw === null) continue;
+        const { meta } = parseFrontmatter(raw);
+        return {
+          ...(meta.title ? { title: meta.title } : {}),
+          ...(meta.description ? { description: meta.description } : {}),
+        };
+      }
+      return {};
+    },
+  };
+}

@@ -14,19 +14,17 @@
  * cross_harness:docs_outline.
  */
 
-import * as path from 'node:path';
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import {
   buildOutline,
-  fumadocsAdapter,
   harnessFsAdapter,
   RunCache,
   type DocSource,
   type OutlinePayload,
 } from '@papercusp/docs-engine';
-import { internalSource } from '@/lib/source';
 import { loadHarnessRegistry } from '@/lib/harness-registry';
+import { engineeringAdapter } from './_engineering-adapter';
 
 const ALL_ROLES = [
   'scoper',
@@ -41,11 +39,6 @@ const ALL_ROLES = [
 ] as const;
 
 const cache = new RunCache<OutlinePayload>();
-
-const engineeringAdapter = fumadocsAdapter(internalSource as never, {
-  name: 'papercusp-engineering',
-  contentRoot: path.join(process.cwd(), 'content', 'internal-docs'),
-});
 
 export async function resolveAdapter(harnessSlug: string | undefined): Promise<{
   adapter: DocSource;

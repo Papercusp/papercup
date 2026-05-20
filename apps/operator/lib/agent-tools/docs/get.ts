@@ -5,18 +5,16 @@
  * harness's docs; everyone else gets Papercusp engineering reference.
  */
 
-import * as path from 'node:path';
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import {
   getDocs,
-  fumadocsAdapter,
   harnessFsAdapter,
   withPreamble,
   type DocSource,
 } from '@papercusp/docs-engine';
-import { internalSource } from '@/lib/source';
 import { loadHarnessRegistry } from '@/lib/harness-registry';
+import { engineeringAdapter as engineeringBase } from './_engineering-adapter';
 
 const ALL_ROLES = [
   'scoper',
@@ -29,11 +27,6 @@ const ALL_ROLES = [
   'documenter',
   'curator',
 ] as const;
-
-const engineeringBase = fumadocsAdapter(internalSource as never, {
-  name: 'papercusp-engineering',
-  contentRoot: path.join(process.cwd(), 'content', 'internal-docs'),
-});
 
 function wrapWithPreamble(base: DocSource): DocSource {
   return {
