@@ -24,5 +24,27 @@ export default mergeConfig(
         'server-only': resolve(__dirname, 'vitest-shims/server-only.ts'),
       },
     },
+    plugins: [
+      {
+        // fumadocs-mdx content collections are imported as
+        // `*.mdx?collection=<name>` and depend on a loader the Next
+        // build supplies. Vitest's vite has no such loader, so the raw
+        // markdown reaches `vite:import-analysis` and fails to parse as
+        // JS. Any test that imports the agent-tools registry transitively
+        // pulls in the internal-docs collection (the `docs:*` tools), so
+        // this breaks unrelated suites (e.g. endpoint-ipc E2E). Stub
+        // `.mdx` to empty modules — unit tests never assert on doc
+        // *content*; docs tools are covered by integration tests against
+        // the live route.
+        name: 'papercusp:stub-mdx-for-vitest',
+        enforce: 'pre' as const,
+        load(id: string): string | undefined {
+          if (/\.mdx(\?|$)/.test(id)) {
+            return 'export default {}; export const frontmatter = {}; export const toc = [];';
+          }
+          return undefined;
+        },
+      },
+    ],
   },
 );
