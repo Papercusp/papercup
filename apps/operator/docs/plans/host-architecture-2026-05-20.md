@@ -1,7 +1,7 @@
 # Host architecture — high-level plan
 
 **Date:** 2026-05-20
-**Status:** Proposal — awaiting review (high-level; low-level codebase-grounded plan follows once this is settled).
+**Status:** SUPERSEDED by `host-architecture-2026-05-20-v2.md`. v2 folds in the findings from `host-architecture-blocker-report-2026-05-20.md` and makes the implementation order explicit.
 **Builds on:** `desktop-ipc-transport-completion-2026-05-20.md` (Phase 1 detail), `deferred-followups-2026-05-14.md` (A1 exemption, A2 status).
 
 ---
