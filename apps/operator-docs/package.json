@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "astro dev",
     "start": "astro dev",
-    "build": "astro build && bash scripts/postbuild-copy.sh",
+    "build": "astro build && tsx scripts/emit-md-twins.ts && bash scripts/postbuild-copy.sh",
     "preview": "astro preview",
     "astro": "astro",
     "check": "astro check"
@@ -16,6 +16,7 @@
     "@astrojs/mdx": "^5.0.6",
     "@astrojs/react": "^5.0.5",
     "@astrojs/starlight": "^0.39.2",
+    "@papercusp/docs-engine": "*",
     "@types/react": "^19.2.15",
     "@types/react-dom": "^19.2.3",
     "astro": "^6.3.6",
@@ -24,5 +25,8 @@
     "sharp": "^0.34.5",
     "starlight-llms-txt": "^0.10.0",
     "typescript": "^5.7.3"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.2"
   }
 }

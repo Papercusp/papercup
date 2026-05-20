@@ -17,9 +17,12 @@ import { NextResponse, type NextRequest } from 'next/server';
  *     Host headers (e.g. the api.papercupai.com tunnel) unless
  *     PAPERCUSP_INTERNAL_DOCS_BYPASS=1.
  *
- *  Note: per-page Accept-header markdown negotiation was removed at the
- *  fumadocs->Starlight cutover. Agents use docs:* MCP tools or the
- *  /internal/docs/llms.txt + /internal/docs/llms-full.txt surfaces.
+ *  Per-page `Accept: text/markdown` negotiation rewrites to the static
+ *  <slug>.md twin emitted by apps/operator-docs/scripts/emit-md-twins.ts
+ *  (sitting next to <slug>.html in apps/operator/public/internal/docs/).
+ *  Restores the agent-readable per-page-markdown contract the old
+ *  fumadocs setup provided via /llms.mdx/<slug>. Aggregate llms*.txt
+ *  remain at the same paths.
  */
 
 
@@ -98,13 +101,27 @@ export function proxy(req: NextRequest) {
   // them open.
   if (pathname.startsWith('/internal/docs')) {
     const loopback = isLoopbackHost(req.headers.get('host'));
-    if (loopback || process.env.PAPERCUSP_INTERNAL_DOCS_BYPASS === '1') {
-      return NextResponse.next();
+    if (!(loopback || process.env.PAPERCUSP_INTERNAL_DOCS_BYPASS === '1')) {
+      return new NextResponse(
+        'Internal engineering docs are loopback-only. Reach them on 127.0.0.1 / localhost, or set PAPERCUSP_INTERNAL_DOCS_BYPASS=1 to expose them.',
+        { status: 403, headers: { 'content-type': 'text/plain; charset=utf-8' } },
+      );
     }
-    return new NextResponse(
-      'Internal engineering docs are loopback-only. Reach them on 127.0.0.1 / localhost, or set PAPERCUSP_INTERNAL_DOCS_BYPASS=1 to expose them.',
-      { status: 403, headers: { 'content-type': 'text/plain; charset=utf-8' } },
-    );
+    // Per-page Accept: text/markdown — serve the .md twin. The twins live
+    // next to the .html files in public/internal/docs/ (emitted by
+    // apps/operator-docs/scripts/emit-md-twins.ts).
+    const accept = req.headers.get('accept') ?? '';
+    if (
+      accept.includes('text/markdown') &&
+      !/\.(md|txt|html|xml|js|css|json|svg|png|jpe?g|webp|gif|woff2?)$/i.test(pathname)
+    ) {
+      const stem =
+        pathname === '/internal/docs'
+          ? '/internal/docs/index'
+          : pathname.replace(/\/$/, '');
+      return NextResponse.rewrite(new URL(`${stem}.md`, req.url));
+    }
+    return NextResponse.next();
   }
 
   return NextResponse.next();

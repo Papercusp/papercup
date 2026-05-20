@@ -22,11 +22,11 @@ export type {
   SearchArgs,
   SearchHit,
   SearchResult,
-} from './types';
+} from './types.js';
 
-export { buildOutline } from './outline';
-export { getDocs, MAX_PAYLOAD_BYTES } from './get';
-export { searchDocs, tokenize } from './search';
+export { buildOutline } from './outline.js';
+export { getDocs, MAX_PAYLOAD_BYTES } from './get.js';
+export { searchDocs, tokenize } from './search.js';
 
 export {
   reactToText,
@@ -38,13 +38,13 @@ export {
   truncationTail,
   type TocEntry,
   type NearestOpts,
-} from './shared';
+} from './shared.js';
 
-export { renderMdxToMarkdown, withPreamble } from './render-mdx';
+export { renderMdxToMarkdown, withPreamble } from './render-mdx.js';
 
-export { harnessFsAdapter, type HarnessFsAdapterOptions } from './adapters/harness-fs';
+export { harnessFsAdapter, type HarnessFsAdapterOptions } from './adapters/harness-fs.js';
 export {
   starlightContentAdapter,
   type StarlightContentAdapterOptions,
-} from './adapters/starlight';
-export { RunCache, type RunCacheCtx } from './per-run-cache';
+} from './adapters/starlight.js';
+export { RunCache, type RunCacheCtx } from './per-run-cache.js';

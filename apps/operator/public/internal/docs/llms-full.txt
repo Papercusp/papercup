@@ -3209,6 +3209,69 @@ The engine doesn’t change. Wrappers are mechanical — copy `docs/outline.ts` 
 * [Prompt assembly](/internal/docs/agents/prompt-assembly#section-3b---shared-cross-role-guides) — Section 3b explains the sharedGuides injection layer
 * [Endpoint system overview](/internal/docs/endpoint-system/overview) — the framework `defineTool` + `defineResource` project onto
 
+# Finding context
+
+> The retrieval surfaces every spawned agent has access to, and which to reach for when.
+
+# Finding context
+
+[Section titled “Finding context”](#finding-context)
+
+You have several ways to find context. This page tells you which to reach for, in what order.
+
+`docs:*` is context-aware: in a harness it returns your harness’s docs; outside a harness (Papercusp engineer agents) it returns Papercusp framework engineering reference. Same tool, source picked by your context.
+
+## Decision table
+
+[Section titled “Decision table”](#decision-table)
+
+| Question                                                                 | Reach for                                                                                  | Notes                                                                                           |
+| ------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------- |
+| ”What’s documented for what I’m working on?” (SPEC, plans, architecture) | `docs:outline` → `docs:get`                                                                | Cached per run. For long pages, refine with `docs:get { slugs: [slug], heading: 'anchor-id' }`. |
+| Same question, but a keyword you have in mind                            | `docs:search`                                                                              | Use when the section name is non-obvious.                                                       |
+| ”What’s the current state of this harness?”                              | `harness:status`, `harness:list_features`, `harness:pending_reviews`, `harness:escalation` | Runtime state — features, open reviews, escalations.                                            |
+| ”What’s the history of this feature?”                                    | `features:history`                                                                         | Long-running feature state across turns.                                                        |
+| ”What did we decide about X in chat / escalation?”                       | `search:fulltext`, `search:semantic`                                                       | PG-stored prose recall — chats, escalations, brainstorms.                                       |
+| ”What `[[name]]` references this thing?”                                 | `wiki:backlinks`                                                                           | Cross-references inside the harness.                                                            |
+| ”What tools are available to me?”                                        | `agent_tools:list`                                                                         | The catalog — describes every tool you can call.                                                |
+
+## Order of operations
+
+[Section titled “Order of operations”](#order-of-operations)
+
+For any task that needs context:
+
+1. **Your docs first.** `docs:outline` (cheap, cached). Pick a slug. `docs:get { slugs: [...] }`. For long pages, refine with `{ slugs: [slug], heading: 'anchor-id' }`.
+2. **Keyword lookup if needed.** `docs:search` when you have a term but no slug.
+3. **Runtime state.** `harness:status` / `harness:list_features`. Don’t grep code for state PG owns.
+4. **Prose recall last.** `search:fulltext` for chat/escalation discussions.
+
+## Role-flavored starting points
+
+[Section titled “Role-flavored starting points”](#role-flavored-starting-points)
+
+* **Scoper** — `search:fulltext "scope"` + `docs:outline` (SPEC + prior plans).
+* **Architect** — `docs:outline` (plans + design rationale).
+* **Worker** — `docs:get` on the validation contract + the chunk’s spec.
+* **Validator** — `harness:status` (open issues) + the validation contract.
+* **Debugger** — `search:fulltext "escalation"` + `features:history` on the failing feature.
+* **Reviewer** — `docs:get` on the plan being reviewed + recent commits via shell.
+
+## Anti-patterns
+
+[Section titled “Anti-patterns”](#anti-patterns)
+
+* **Don’t read code before checking what’s documented.** Most “how does this work?” has a doc page; find it before grepping.
+* **Don’t call `docs:get` without first calling `docs:outline`** (unless you already know the exact slug). Outline tells you what exists; without it, you guess.
+* **Don’t re-fetch the outline mid-run** — it’s cached per run. Use what you already have.
+* **Don’t use `search:fulltext` for current state.** Use `harness:status` or `harness:list_features` instead — those are authoritative.
+
+## Escalating
+
+[Section titled “Escalating”](#escalating)
+
+If the docs are wrong or missing, surface the gap via a supervisor note or by listing it as a finding in your next artifact. Don’t silently work around — the next agent will hit the same wall. Existing issues are readable via `issues:list`.
+
 # Operator persona — implementation status
 
 > What ships, where it lives, and how to operate it. The voice operator's persona, narration, backstory, cost controls, and EL Conv AI integration as actually built.
@@ -22985,7 +23048,7 @@ Six tokens. One is *computed*.
 
 [Section titled “Computed-blocked”](#computed-blocked)
 
-An item with `blocked-by: P-NNN` has *effective* status `blocked` iff any `P-NNN` referenced isn’t `done`. As soon as all blockers are `done`, the effective status reverts to whatever the item is stored as (typically `todo`) — automatically, no manual flip.
+An item with `blocked-by: P-NNN` has *effective* status `blocked` iff any `P-NNN` referenced is not yet *resolved*. A blocker is resolved when its stored status is `done` (completed) or `dropped` (abandoned — it will never complete, so the dependent un-gates; `plans:lint` emits `blocker_dropped` so the dependency still gets re-evaluated). As soon as all blockers resolve, the effective status reverts to whatever the item is stored as (typically `todo`) — automatically, no manual flip.
 
 This is the load-bearing reason for the parser/effectiveStatus split:
 
@@ -23160,7 +23223,9 @@ All write verbs acquire a `locks:*` lock on the plan file before the read-modify
 
 * `missing_decisions_section` — items exist but no `## Decisions` section.
 * `unknown_decision_ref` — item references `D-NNN` that doesn’t exist (allowed; the decision may live in a different plan).
-* `stored_blocked_no_external` — `blocked` token with no `blocked-by` and no obvious external reason in the item text.
+* `stored_blocked_with_blocked_by` — an item is stored `blocked` *and* carries `blocked-by`. The `blocked` token is for external blockers only; internal dependencies are computed, so the stored token should be `todo`.
+* `blocker_dropped` — an item’s `blocked-by` points at a `dropped` item. The dependent un-gates (a dropped blocker never completes), but the dependency should be re-evaluated.
+* `unphased_item` — an item is not under a `## Phase` heading.
 * `updated_lags_mtime` — frontmatter `updated:` lags file’s git mtime by more than 7 days.
 
 ## Concurrency

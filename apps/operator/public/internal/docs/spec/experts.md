@@ -1,0 +1,232 @@
+# Experts and feedback agents
+URL: /internal/docs/spec/experts
+
+
+
+The **expert** and **feedback** roles add a deep planning pass between the
+scoper's decomposition and the worker's implementation. They turn a
+high-level spec into a detailed `SPEC.md` per feature area, with multi-agent
+critique baked in, before any code gets written.
+
+## Why
+
+The default scoper is one-shot: it reads `SPEC.md` and immediately produces
+a validation contract + work queue. That works for tightly-scoped requests
+but breaks down for ambitious features where the user's high-level
+description leaves real design questions open. Workers asked to implement
+those features either stall, or guess and produce something the user didn't
+want.
+
+The expert role fills that gap. One expert per high-level feature area;
+each authors a detailed spec by drafting it, then iterating against
+multiple personas of feedback agents (security, UX, perf, a11y, ops,
+implementer, domain-expert, devil's-advocate). When the feedback stops
+adding new issues, the spec is "done" and the scoper takes over to derive
+features from it.
+
+## Activation
+
+Off by default. Opt in per harness:
+
+```json
+// .harness/config.json
+{
+  "scoper": { "useExperts": true }
+}
+```
+
+When `useExperts` is `true`, the scoper runs in two phases. When `false`,
+behavior is exactly as before.
+
+## Roles
+
+### `expert` (instanced)
+
+One per high-level feature area. Has a stable id (`EXP-NNN`), an
+identity (`identity.json`), a working spec (`SPEC.md`), and per-agent
+feedback transcripts. Survives across orchestrator iterations until a
+terminal status (`final`, `max_rounds`, `cancelled`, `superseded`).
+
+Prompt: `prompts/expert.md`.
+
+### `feedback` (ephemeral)
+
+Spawned per conversation by an expert. Critiques `SPEC.md` from one
+assigned persona. Multi-turn: the expert can push back, ask for
+specifics, dig into edge cases. When the expert ends the conversation,
+the feedback agent emits a structured `verdict.json` with a `newIssues`
+list. Then it exits.
+
+Prompt: `prompts/feedback.md`. Filtered out of the chat-agents sidebar
+(no instance to chat with).
+
+## State layout
+
+```
+.harness/experts/<EXP-NNN>/
+  identity.json     # status, budget, persona log, lifecycle metadata
+  SPEC.md           # the canonical detailed spec the expert is authoring
+  rounds/           # SPEC.md snapshots after each agent ends (audit trail)
+  feedback/<FB-NNN>/
+    persona.txt
+    turn-NNN-(expert|feedback).md
+    verdict.json    # written on END
+  feedback/decision-log.md
+  chat/             # user chat transcripts (existing chat shape)
+```
+
+`experts/` rides along in `papercusp snapshot publish` (it's under
+`.harness/`); it does **not** ship with templates (per-mission state).
+
+## Lifecycle
+
+```
+drafting        — initial state; expert is doing prior-art search + first draft
+gathering_feedback — expert is iterating with feedback agents
+awaiting_user   — user opened a chat; autonomous loop paused
+final           — converged or budget-exhausted; scoper can derive features
+max_rounds      — agentCount cap hit; scoper still derives, with a warning
+cancelled       — user cancelled
+superseded      — forked into a successor expert
+error           — unhandled exception during processing
+```
+
+## Termination
+
+Three independent gates, server-enforced:
+
+1. **Convergence (primary).** Two consecutive feedback agents return
+   `newIssues: []` (or only `severity: "trivial"`). This is the "feedback
+   stopped adding anything" signal — it measures *feedback novelty*, not
+   spec churn. The check is server-side; experts can't self-declare.
+
+2. **Cap.** `agentCount >= expert.maxAgents` (default 12). Status →
+   `max_rounds`.
+
+3. **Budget.** Sum of `total_cost_usd` from `.harness/logs/*.jsonl` files
+   tagged with the expert's id (or its feedback ids) — once that meets
+   `budgetCents`, status → `final` with `terminationReason: "budget"`.
+   Checked before convergence in the feedback-end handler, so a runaway
+   expert can't spend past the envelope.
+
+## Sizing
+
+The expert decides how many feedback agents to consult and how many
+turns per agent. The scoper sets a `featureSize` hint when spawning:
+
+| `featureSize` | guideline             |
+| ------------- | --------------------- |
+| `small`       | 2 agents × 1 round    |
+| `standard`    | 4 agents × 3 rounds   |
+| `large`       | 10 agents × 15 rounds |
+
+These are hints, not limits — the expert spends more on areas that
+feel weak, less on ones that are solid. The mission-level budget and
+the `maxAgents` / `maxTurnsPerAgent` config caps are the real ceilings.
+
+## Orchestrator dispatch
+
+The orchestrator gains three new decision verbs:
+
+```
+NEXT_EXPERT EXP-NNN              # next iteration of work for this expert
+NEXT_FEEDBACK EXP-NNN.FB-NNN     # dispatch the matching feedback agent
+NEXT_SCOPER phase2               # re-invoke scoper to derive features
+```
+
+Note the `.` separator on `NEXT_FEEDBACK` (the orchestrator regex's
+character class doesn't include `/` or `:`).
+
+Both the expert and feedback roles are **one-shot per orchestrator
+iteration**. They call APIs (`POST /feedback`, `/turn`, `/end`) and exit;
+they don't emit decision verbs. The orchestrator drives the back-and-forth
+by reading `nextAction` on each expert (server-computed):
+
+| `nextAction`                 | meaning                                        |
+| ---------------------------- | ---------------------------------------------- |
+| `"dispatch_expert"`          | invoke `NEXT_EXPERT <id>`                      |
+| `"dispatch_feedback:FB-NNN"` | invoke `NEXT_FEEDBACK <id>.FB-NNN`             |
+| `"wait"`                     | user is in chat with this expert; skip         |
+| `"done"`                     | terminal; counts toward scoper-phase-2 trigger |
+
+The hint exists because directory-walk logic in a prompt is brittle —
+the server walks `feedback/<FB-NNN>/turn-NNN-*.md` files and tells the
+orchestrator who's next.
+
+Workers continue in parallel with the expert flow — features whose
+`notes` reference a not-yet-final expert simply sit in `todo` until
+that expert finalizes.
+
+## Worker integration
+
+When a feature was derived from an expert, its `notes` field references
+the expert's spec path (e.g. `.harness/experts/EXP-003/SPEC.md`). Workers
+read that path directly — never via the docs site URL, which isn't
+guaranteed to be running. The expert spec is authoritative; if it
+disagrees with the feature's listed claims, the spec wins.
+
+## User interaction
+
+Open a chat with any expert from the **🧠 experts** dashboard tab. While
+the chat is open, the expert's `userEngaged` flag is `true` and status is
+`awaiting_user` — the autonomous loop pauses at the next agent boundary
+(not mid-conversation). Closing the chat resumes autonomous work.
+
+User edits to `SPEC.md` during the pause are preserved; the expert sees
+them as the new baseline when it resumes.
+
+The dashboard also exposes:
+
+* **+ spawn expert** — manually create an expert (useful for testing,
+  or for adding an area the scoper missed)
+* **fork** — copy the current spec into a new expert; original goes
+  `superseded` with `forkedFrom` recorded for lineage
+* **cancel** — mark the expert `cancelled`; orchestrator stops
+  dispatching it
+
+## Configuration
+
+```jsonc
+// .harness/config.json
+{
+  "scoper": {
+    "useExperts": true
+  },
+  "expert": {
+    "maxAgents": 12,
+    "maxTurnsPerAgent": 15,
+    "sizingHints": {
+      "small":    { "agentsTarget": 2,  "turnsTarget": 1 },
+      "standard": { "agentsTarget": 4,  "turnsTarget": 3 },
+      "large":    { "agentsTarget": 10, "turnsTarget": 15 }
+    }
+  }
+}
+```
+
+## API surface
+
+All under `/api/harness/<slug>`:
+
+* `GET    /experts`                          — list (sidebar)
+* `POST   /experts`                          — create (called by scoper)
+* `GET    /experts/:id`                      — read identity + SPEC.md + spentCents
+* `PATCH  /experts/:id`                      — update status / userEngaged
+* `GET/PUT /experts/:id/spec`                — read/write SPEC.md
+* `POST   /experts/:id/feedback`             — open conversation
+* `POST   /experts/:id/feedback/:fb/turn`    — append turn
+* `POST   /experts/:id/feedback/:fb/end`     — record verdict, run termination checks
+* `GET    /experts/:id/feedback`             — list conversations
+* `POST   /experts/:id/fork`                 — fork
+* `POST   /experts/:id/cancel`               — cancel
+* `GET    /chat-agents`                      — generalized chat-agent registry
+  (static roles + non-terminal expert instances; excludes `feedback`)
+
+Chat with an expert via the existing agent-chats path:
+
+```
+POST /agent-chats { role: "expert", feature_id: "EXP-001" }
+```
+
+The server-side hook auto-flips `userEngaged` on creation and back on
+archive (DELETE).

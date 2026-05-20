@@ -21,9 +21,9 @@
 
 import { promises as fs } from 'node:fs';
 import * as path from 'node:path';
-import { humanize } from '../shared';
-import { renderMdxToMarkdown } from '../render-mdx';
-import type { DocPage, DocSource, SectionMeta } from '../types';
+import { humanize } from '../shared.js';
+import { renderMdxToMarkdown } from '../render-mdx.js';
+import type { DocPage, DocSource, SectionMeta } from '../types.js';
 
 export interface StarlightContentAdapterOptions {
   /** Stable identifier for cache namespacing + telemetry. */

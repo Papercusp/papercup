@@ -17,6 +17,10 @@ export default defineConfig({
       title: 'Papercusp Docs',
       description: 'Public documentation for the Papercusp platform.',
       pagefind: true,
+      customCss: ['./src/styles/blue-frost.css'],
+      social: [
+        { icon: 'github', label: 'GitHub', href: 'https://github.com/papercupai' },
+      ],
       sidebar: [
         { label: 'Welcome', link: '/docs/' },
         {

@@ -10,7 +10,7 @@
 import { remark } from 'remark';
 import remarkGfm from 'remark-gfm';
 import remarkMdx from 'remark-mdx';
-import remarkMdxToMarkdown from './remark-mdx-to-markdown';
+import remarkMdxToMarkdown from './remark-mdx-to-markdown.js';
 
 const processor = remark()
   .use(remarkMdx)

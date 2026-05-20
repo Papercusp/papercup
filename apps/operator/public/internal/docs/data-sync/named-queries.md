@@ -1,0 +1,133 @@
+# Named queries
+URL: /internal/docs/data-sync/named-queries
+
+The shared catalog of queries every panel reads from.
+
+## Why named queries
+
+Every Zero query the harness UI runs is registered in
+`libs/zero-harness/src/queries.ts`. The reason is twofold:
+
+1. **Type safety end-to-end** — both the panel calling
+   `queries.snapshots(slug)` and the `zero-cache` resolving the query
+   reference the same TypeScript factory. Adding a column adds it to the
+   row type. Renaming a column breaks the panel at compile time.
+2. **A surface area that's easy to grep** — when an agent asks "what does
+   the harness sync from Postgres?" the answer is: open `queries.ts`.
+   There are 16 entries and they are the entire surface.
+
+## How a named query is wired
+
+A named query is an array tuple Zero uses to identify a query:
+
+```ts
+['transform', [{ id: 'snapshots', name: 'snapshots', args: [slug] }]]
+```
+
+Two non-obvious things:
+
+* The outer wrapper is `'transform'`, not `'query'`. Don't change this.
+* `args` is an **array**, not an object. `args: { slug }` will silently
+  fail to deserialize on the server and the query returns nothing.
+
+The `queries.ts` factories handle this for you — you call
+`queries.snapshots(slugKey)` and it builds the right tuple. You don't
+construct the tuple by hand.
+
+## The current catalog
+
+(See `libs/zero-harness/src/queries.ts` for the canonical list.)
+
+| Name                   | Returns            | Args                                           |
+| ---------------------- | ------------------ | ---------------------------------------------- |
+| `snapshots`            | `SnapshotRow[]`    | `slugKey` (`harness_<slug>.harness_snapshots`) |
+| `issues`               | `IssueRow[]`       | `slugKey`                                      |
+| `proposals`            | `ProposalRow[]`    | `slugKey`                                      |
+| `agentRuns`            | `AgentRunRow[]`    | `slugKey`                                      |
+| `features`             | `FeatureRow[]`     | `slugKey`                                      |
+| `featuresConsolidated` | `FeatureRow[]`     | (none — `harness_shared` view)                 |
+| `decisions`            | `DecisionRow[]`    | `slugKey`                                      |
+| `archives`             | `ArchiveRow[]`     | `slugKey`                                      |
+| `usage`                | `UsageRow[]`       | `slugKey`                                      |
+| `hooks`                | `HookRow[]`        | `slugKey`                                      |
+| `tests`                | `TestRow[]`        | `slugKey`                                      |
+| `smokeTests`           | `SmokeTestRow[]`   | `slugKey`                                      |
+| `memoryEntries`        | `MemoryEntryRow[]` | `slugKey`                                      |
+| `directives`           | `DirectiveRow[]`   | (none — `papercup_shared`)                     |
+| `messages`             | `MessageRow[]`     | (none — `papercup_shared`)                     |
+| `comments`             | `CommentRow[]`     | (none — `papercup_shared`)                     |
+
+This list will drift; when adding new entries, update both `queries.ts`
+and `schema.ts` together.
+
+## Adding a new named query
+
+```ts
+// libs/zero-harness/src/queries.ts
+export const queries = {
+  // …existing
+  myNewThing: (slugKey: string) =>
+    z.query.myNewThing.where('slugKey', slugKey),
+};
+```
+
+Then in your panel:
+
+```tsx
+const [rows] = useQuery(queries.myNewThing(slugToMyNewThingKey(slug)));
+```
+
+You also need:
+
+1. The table declared in `libs/zero-harness/src/schema.ts`.
+2. The schema version bumped (`schemaVersion` in same file).
+3. The table added to the `zero_harness` Postgres publication for each
+   harness that has it.
+4. `zero-cache-harness` restarted.
+
+If you forget any of these the query returns 0 rows silently.
+
+## "Query does not implement QueryInternals"
+
+This error means the panel's `@rocicorp/zero` package and the one Zero
+instantiated against are different copies. Every `useQuery` call throws
+it.
+
+Standard fix in our tree:
+
+```bash
+cd apps/papercusp
+rm -rf node_modules/@rocicorp/zero
+ln -s ../../../node_modules/@rocicorp/zero node_modules/@rocicorp/zero
+```
+
+Why this exists: `apps/papercusp/package.json` historically declared
+`@rocicorp/zero` as a direct dep, which npm resolved into a private
+`node_modules` copy when workspace hoisting decided not to. Symlinking
+forces a single copy.
+
+If a fresh app you're scaffolding hits this, check whether the
+`package.json` declares `@rocicorp/zero` directly — it should consume it
+transitively from `@restart/zero-harness`.
+
+## Cross-harness queries (views)
+
+`harness_features_consolidated` is a trigger-maintained table in
+`harness_shared` that mirrors every per-harness `harness_features` table
+under one roof. The trigger fires on insert/update/delete in any
+per-harness `harness_features` and keeps the consolidated table in sync.
+
+Why a trigger-maintained table and not a Postgres view? Because Zero
+publications can't include views — they require base tables for
+logical replication.
+
+The cross-harness `/features` page reads from this table, with no
+slug arg, via the `featuresConsolidated` named query. That replaced an
+older polling implementation; the page is now real-time.
+
+If you need another cross-harness aggregation, the recipe is:
+
+1. Add a base table in `harness_shared`.
+2. Add triggers on every per-harness source table to maintain it.
+3. Add to the `zero_harness` publication.
+4. Register a named query with no slug arg.

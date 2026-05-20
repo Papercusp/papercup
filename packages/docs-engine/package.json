@@ -2,6 +2,7 @@
   "name": "@papercusp/docs-engine",
   "version": "0.1.0",
   "private": true,
+  "type": "module",
   "description": "Source-agnostic docs retrieval engine. Outline + get + search + MDX-to-markdown pipeline, operating on a pluggable DocSource adapter.",
   "main": "./src/index.ts",
   "exports": {

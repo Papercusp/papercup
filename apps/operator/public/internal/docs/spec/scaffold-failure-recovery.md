@@ -1,0 +1,97 @@
+# Scaffold failure recovery
+URL: /internal/docs/spec/scaffold-failure-recovery
+
+Runbook for partial scaffold failures (timeout, init failed, register failed). How to clean up and retry.
+
+> **Webapp retired (2026-05-14).** Any `localhost:3055` or `localhost:3070` URL on this page is only reachable while the **Tauri dev shell** is running. Start it with `cd papercusp-desktop && npm run dev`.
+
+`scaffold_harness` is the most complex executor verb — it shells out to `papercusp init`, writes config files, scaffolds a PG schema, and registers tokens. Any of these can fail mid-flight.
+
+## Failure modes
+
+### 1. `papercusp init` exited non-zero
+
+* **Symptom**: `executeAction` returns `500 internal { detail: "papercusp init failed: ..." }`.
+* **State**: any partial directory under `PAPERCUSP_PROJECTS_ROOT/<slug>` is rolled back automatically. No registry row, no schema.
+* **Recovery**: re-run with same `actionId` (idempotency cache won't have it, since 500 errors aren't cached). Or pick a different slug.
+
+### 2. 5-minute timeout
+
+* **Symptom**: `executeAction` returns `500 internal { detail: "papercusp init timeout: ...", timeout: true }`.
+* **State**: SIGTERM → SIGKILL fired. Partial directory rolled back. Same as case 1.
+* **Recovery**: same as case 1. If the install is genuinely too slow (heavy `npm install`, `git clone`), re-publish the template with smaller dependencies, or move heavy work to the role's first iteration.
+
+### 3. SPEC.md write failed
+
+* **Symptom**: `internal { detail: "failed to write SPEC: ..." }`.
+* **State**: `papercusp init` succeeded, dir exists, registry has the row. Token + schema NOT yet written.
+* **Recovery**:
+  ```bash
+  # Drop the partial state
+  curl -X DELETE http://localhost:3055/api/harness/projects/<slug>
+  rm -rf $(jq -r '.projects[] | select(.slug=="<slug>") | .path' ~/.papercusp-workspaces/default/.papercusp/registry.json)
+  # Then retry
+  ```
+
+### 4. config.json merge failed
+
+* **Symptom**: `internal { detail: "failed to write .harness/config.json: ..." }`.
+* **State**: `papercusp init` succeeded, dir exists, but `.harness/config.json` may be partially written.
+* **Recovery**: same as case 3.
+
+### 5. Schema scaffold failed
+
+* **Symptom**: `internal { detail: "schema scaffold failed: ..." }`.
+* **State**: dir exists, config.json has token and parent\_slug, but PG schema is partial or missing.
+* **Recovery**:
+  ```bash
+  # Re-run the scaffold script directly:
+  cd /home/marsh-office/papercupai-workspace/papercup
+  PGUSER=postgres_app PGPASSWORD=postgres PGHOST=localhost PGDATABASE=papercusp \
+    bash bin/scaffold-harness-schema.sh <slug>
+  # Then re-mirror the token:
+  TOKEN=$(jq -r .harness_token <projectPath>/.harness/config.json)
+  PGUSER=postgres_app PGPASSWORD=postgres psql -d papercusp -c \
+    "INSERT INTO harness_<slug>.config_token (token) VALUES ('$TOKEN') ON CONFLICT DO NOTHING;
+     INSERT INTO harness_shared.token_index (token, harness_slug) VALUES ('$TOKEN', '<slug>') ON CONFLICT (token) DO NOTHING;"
+  ```
+
+### 6. Token mirror failed (config\_token / token\_index INSERT)
+
+* **Symptom**: `internal { detail: "failed to insert config_token: ..." }`.
+* **State**: harness exists on disk + registry, schema exists, but token isn't in PG → harness can't authenticate its own outbound `executeAction` calls.
+* **Recovery**: same SQL as case 5's "re-mirror the token" block.
+
+## Slug collisions
+
+If `scaffold_harness` returns `409 slug_already_in_use`:
+
+* A registry row, a project directory, or a `harness_shared.projects` row exists for that slug.
+* Pick a different slug, OR delete the conflicting state:
+  ```bash
+  curl -X DELETE http://localhost:3055/api/harness/projects/<slug>
+  rm -rf <projectPath>
+  PGUSER=postgres_app PGPASSWORD=postgres psql -d papercusp -c "
+    DELETE FROM harness_shared.token_index WHERE harness_slug = '<slug>';
+    DROP SCHEMA IF EXISTS harness_<slug> CASCADE;
+  "
+  ```
+
+## Idempotency replay
+
+If you retry with the **same `actionId`** and the prior call succeeded, you'll get the cached `{ ok: true, ...result, cached: true }` even if the side effect was deleted out-of-band. Use a fresh `actionId` if you actually want to re-execute.
+
+5xx errors (including the failure modes above) are NOT cached, so retries with the same `actionId` re-execute the verb.
+
+## Bulk reset (for development)
+
+```bash
+PGUSER=postgres_app PGPASSWORD=postgres psql -d papercusp <<SQL
+DELETE FROM harness_shared.token_index WHERE harness_slug LIKE 'smoke-%';
+DELETE FROM harness_shared.projects WHERE slug LIKE 'smoke-%';
+SQL
+rm -rf /home/marsh-office/.papercusp/projects/smoke-* \
+       /home/marsh-office/.papercusp-workspaces/default/.papercusp/projects/smoke-*
+```
+
+For schema drops: enumerate `\dn harness_*` in psql and drop the offending ones with `DROP SCHEMA ... CASCADE`.

@@ -7,8 +7,8 @@
  * any future *_outline surfaces.
  */
 
-import type { DocSource, EngineCtx, OutlinePayload, OutlinePageEntry, OutlineSectionEntry } from './types';
-import { humanize } from './shared';
+import type { DocSource, EngineCtx, OutlinePayload, OutlinePageEntry, OutlineSectionEntry } from './types.js';
+import { humanize } from './shared.js';
 
 export async function buildOutline(source: DocSource, ctx: EngineCtx = {}): Promise<OutlinePayload> {
   if (ctx.signal?.aborted) throw new Error('cancelled');

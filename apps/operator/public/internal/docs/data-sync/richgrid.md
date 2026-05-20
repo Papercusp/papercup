@@ -1,0 +1,190 @@
+# RichGrid
+URL: /internal/docs/data-sync/richgrid
+
+Column-driven grid renderer; the only tabular UI primitive in the harness.
+
+## When to reach for RichGrid
+
+Use RichGrid for any panel that renders a list of rows where each row has
+the same columnar structure. It replaces every `<table>` and every
+hand-rolled `.map() => <div className="row">` in the codebase.
+
+Do **not** use RichGrid for:
+
+* Card-grid feeds where each card shows a different shape
+  (`ArchitectInbox`).
+* Kanban / column-board layouts (`BoardView`).
+* Master-detail explorers where the "list" is actually a sidebar to an
+  embedded editor (`MemoryBrowser`, `IdentityPanel`,
+  `PromptsTab`, `CollectionTab`).
+* Image galleries (`ScreenshotsPanel`).
+* Timeline / chronological streams (`PulseFeed`,
+  `FeatureTimelinePanel`).
+
+If you find yourself adding a "second row of metadata under each grid
+row" you're probably building one of the above and should use a card
+layout instead.
+
+## Minimal usage
+
+```tsx
+import { RichGrid, type ColumnDef } from '@restart/grid-core';
+
+interface Snapshot {
+  id: string;
+  ts: number;
+  iterNum: number;
+}
+
+const columns: ColumnDef<Snapshot>[] = [
+  { key: 'when', header: 'When', width: 1.3, sortKey: 'ts',
+    render: ({ row }) => fmtTs(row.ts) },
+  { key: 'iter', header: 'Iter', width: 0.4, align: 'right',
+    sortKey: 'iterNum',
+    render: ({ row }) => row.iterNum },
+];
+
+<RichGrid<Snapshot>
+  rows={snapshots}
+  columns={columns}
+  getRowId={(s) => s.id}
+  onRowClick={(s) => setSelected(s)}
+  inline
+/>
+```
+
+That's the entire surface for \~80% of panels.
+
+## Column definition
+
+```ts
+interface ColumnDef<Row> {
+  key: string;             // unique within the column array
+  header: string | ReactNode;
+  width: number;           // grid-template-columns fr units (1 = 1fr)
+  align?: 'left' | 'right' | 'center';
+  sortKey?: keyof Row | ((row: Row) => unknown);
+  defaultSortDir?: 'asc' | 'desc';
+  render: (ctx: { row: Row; index: number }) => ReactNode;
+}
+```
+
+### `render` receives a context object, not a row
+
+This trips up agents and humans equally. The signature is:
+
+```ts
+render: ({ row }) => ...   // ✓ correct
+render: (row) => ...       // ✗ wrong — row is actually the ctx, every cell renders empty
+```
+
+TypeScript accepts both forms because the ctx object structurally satisfies
+"the row shape plus extra fields" in many cases. The grid will silently
+render blank cells. **Always destructure `{ row }`.**
+
+### Width is `fr` units, not pixels
+
+`width: 1.3` means 1.3 fractions of the available width. The grid uses
+CSS Grid's `grid-template-columns: repeat-fr` under the hood. Pixel widths
+are not supported by design — content adapts to the panel's container.
+
+### Sort key
+
+`sortKey` can be a key of `Row` (`sortKey: 'ts'`) or a deriving function
+(`sortKey: (r) => r.feature_counts.passed / r.feature_counts.total`). The
+function form runs at sort time per row — keep it cheap.
+
+If the column has `sortKey`, the header is clickable and sort cycles
+asc → desc → unsorted.
+
+## Common props
+
+| Prop         | Type                           | Notes                                                                                                    |
+| ------------ | ------------------------------ | -------------------------------------------------------------------------------------------------------- |
+| `rows`       | `Row[]`                        | Source data. Memoize upstream if mapping from Zero results.                                              |
+| `columns`    | `ColumnDef<Row>[]`             | Wrap in `useMemo` to avoid rebuilding on every render.                                                   |
+| `getRowId`   | `(row: Row) => string`         | Required. Used as React key + sort stability.                                                            |
+| `onRowClick` | `(row: Row) => void`           | Optional. Whole row becomes click target.                                                                |
+| `getRowBg`   | `(row: Row) => string`         | Per-row background; used for selected highlight.                                                         |
+| `rowProps`   | `(row: Row) => HTMLAttributes` | Per-row class/style. **See pitfall below.**                                                              |
+| `inline`     | `boolean`                      | When true, the grid takes full width of its container instead of a fixed width. Almost always pass this. |
+| `virtual`    | `boolean`                      | Enable row virtualization. Default false; flip on for >500 rows.                                         |
+
+## Pitfall: `rowProps` + a CSS class with `display: grid`
+
+If `rowProps` returns `{ className: 'h-issue' }` and the legacy class has
+its own `display: grid`, that grid clashes with RichGrid's internal cell
+grid and every cell renders on top of itself.
+
+Fix: override with inline `style: { display: 'block' }`:
+
+```tsx
+rowProps={(row) => ({
+  className: 'h-issue', // legacy
+  style: { display: 'block' },
+})}
+```
+
+See `IssuesList.tsx` for the canonical example.
+
+## Patterns: per-row action buttons
+
+Action buttons in a column need `e.stopPropagation()` if the row also has
+`onRowClick`, otherwise a click on the button will also fire the row
+handler:
+
+```tsx
+{
+  key: 'action',
+  header: '',
+  width: 0.6,
+  align: 'right',
+  render: ({ row }) => (
+    <button
+      onClick={(e) => { e.stopPropagation(); onRemove(row.id); }}
+    >
+      delete
+    </button>
+  ),
+}
+```
+
+## Patterns: virtual rows
+
+For grids that may show >500 rows (audit logs, agent runs across years),
+pass `virtual`. Row height is fixed when virtual is on; supply
+`rowHeight={32}` if your row is taller than the default.
+
+## Multi-expand
+
+RichGrid supports per-row expanded detail via the `renderExpanded`
+prop:
+
+```tsx
+<RichGrid
+  rows={features}
+  columns={columns}
+  getRowId={f => f.id}
+  expandedIds={expanded}
+  onToggleExpand={toggleExpand}
+  renderExpanded={({ row }) => <FeatureDetail feature={row} />}
+/>
+```
+
+Used by feature detail in `FeatureList` and decision detail in
+`DecisionsPanel`. Multiple rows can be expanded simultaneously.
+
+## Testing a migrated panel
+
+After migrating from a hand-rolled list:
+
+1. Visual: open `localhost:3055/harness/<slug>` and confirm columns line
+   up. If a cell is blank, check the `render: (row) =>` vs `({ row })`
+   bug above first.
+2. Sort: click each header with a `sortKey` and confirm direction
+   indicator updates.
+3. Click: confirm `onRowClick` fires (and that buttons inside cells stop
+   propagation).
+4. Empty state: rows = `[]` should render the grid header with no
+   content; provide a sibling empty-state component if the panel needs
+   one.

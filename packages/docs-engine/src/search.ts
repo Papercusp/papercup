@@ -7,7 +7,7 @@
  * the corpus 10×s.
  */
 
-import type { DocSource, EngineCtx, SearchArgs, SearchHit, SearchResult } from './types';
+import type { DocSource, EngineCtx, SearchArgs, SearchHit, SearchResult } from './types.js';
 
 const STOP_TOKEN_RE = /[\s,.;:!?(){}[\]<>"'`/\\]+/;
 
