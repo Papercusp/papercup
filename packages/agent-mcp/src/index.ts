@@ -100,10 +100,12 @@ export {
   dispatchProjectedToolStream,
   computeProjectedQuotaWindowKey,
   UnauthorizedToolError,
+  PASS_THROUGH,
   type DispatchProjectedDeps,
   type DispatchProjectedResult,
   type DispatchProjectedErrorCode,
   type DispatchStreamEvent,
+  type ToolDispatchOverrideFn,
 } from './dispatch-projected';
 
 export {
@@ -120,6 +122,8 @@ export {
 export type {
   Principal,
   PrincipalKind,
+  PrincipalAuthMethod,
+  PrincipalTrust,
   CapabilityTier,
   ToolContext,
   ToolDefinition,
@@ -154,5 +158,16 @@ export {
   SUPPORTED_KEYWORDS as PLUGIN_EVENT_SUPPORTED_KEYWORDS,
   REJECTED_KEYWORDS as PLUGIN_EVENT_REJECTED_KEYWORDS,
 } from './plugin-events';
+
+export {
+  toolToOpenApiFragment,
+  standardResponseComponents,
+  type OpenApiFragment,
+} from './openapi-fragments';
+export {
+  assembleOpenApiDocument,
+  toolOperationName,
+  type OpenApiDocumentOptions,
+} from './openapi-assemble';
 
 import './bootstrap';
