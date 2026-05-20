@@ -1,98 +1,71 @@
 /**
  * Resolve the calling SU agent's identity for lock ownership.
  *
- * `agent_id` (the durable UUID identity) comes from the MCP request's
- * `?client=` URL param, baked in by `install-standalone-mcp.sh`. The
- * MCP layer surfaces this as `ctx.uiClientId` (or equivalent). We fall
- * back to `principal.slug` so in-process operator callers still work.
+ * As of agent-coordination-architecture-v2 (Phase A), L1 identity is
+ * owned by the coordination layer's `resolveAgentIdentity` primitive
+ * — see `apps/operator/lib/agent-tools/coordination/identity.ts`. The
+ * locks subsystem uses the *same* primitive so a held lock and a
+ * coordination message authored by the same agent share an `ownerId`.
  *
- * `owner_label` is for human display only. Built best-effort from
- * principal.slug + the agent_id tail; the trigger names of the host
- * CLI (claude-code / omp / etc.) aren't reliably surfaced through MCP,
- * so we don't try to derive a fancy "<client>@<host>:<term>" form yet.
+ * `readIdentity` here is a thin adapter that:
+ *   1. Delegates to `resolveAgentIdentity`.
+ *   2. Projects the result into the legacy `SuAgentIdentity` shape
+ *      (the locks callers destructure `{ ownerId, ownerLabel,
+ *      workspaceId }` and don't need source / userId).
+ *   3. Substitutes `'default'` for a null workspaceId — the locks
+ *      schema's `workspace_id` column is NOT NULL.
+ *
+ * Behaviour notes vs. the historical readIdentity (pre-refactor):
+ *
+ *   - Labels follow the coordination convention (`omp · pus-…`,
+ *     `su · sess-…`, `principal · slug`) — labels are display-only,
+ *     never keyed on; this is an intentional unification.
+ *
+ *   - Power-user callers are now first-class. Pre-refactor they fell
+ *     through to the superuser branch (ctx.isSuperuser is also true on
+ *     the power-user route); post-refactor they hit the dedicated
+ *     `power-user-token` branch in resolveAgentIdentity. ownerId is
+ *     identical in both cases (= ctx.uiClientId = auth_session_id).
  */
 
-/**
- * Loose ctx type — read-only access to the fields we need. Works for
- * both `ToolContext` (principal-gated) and `UnifiedToolContext`
- * (role-gated / projected). Defined locally to avoid the cross-package
- * type bridge between agent-mcp's two ctx shapes.
- */
-export interface IdentityCtx {
-  principal?:
-    | { kind?: string; slug: string; workspaceId: string }
-    | null;
-  uiClientId?: string | null;
-  isSuperuser?: boolean;
-}
+import {
+  resolveAgentIdentity,
+  type ResolveIdentityCtx,
+} from '../coordination/identity';
 
 /**
- * Default workspace id for superuser callers that don't carry a
- * principal. Matches the convention used by other operator surfaces
- * (see `apps/operator/lib/dock-layouts.ts:getUserIdForLayouts`).
+ * Loose ctx type — read-only access to the fields we need. Wraps the
+ * coordination's `ResolveIdentityCtx`; kept as a re-export so existing
+ * imports (`from '@/lib/agent-tools/locks/identity'`) still compile.
  */
-const SUPERUSER_DEFAULT_WORKSPACE = 'default';
+export type IdentityCtx = ResolveIdentityCtx;
+
+/**
+ * Default workspace id for callers whose ctx carries no workspace.
+ * Matches the convention used by other operator surfaces
+ * (`apps/operator/lib/dock-layouts.ts:getUserIdForLayouts`) and the
+ * `workspace_id NOT NULL` constraint on the locks schema.
+ */
+const DEFAULT_WORKSPACE = 'default';
 
 export interface SuAgentIdentity {
   /** Stable durable identity — used as the `owner` column. */
   ownerId: string;
   /** Human-readable label — used as the `owner_label` column. */
   ownerLabel: string;
-  /** Workspace scope from the bearer principal. */
+  /** Workspace scope from the bearer principal / power-user clamp. */
   workspaceId: string;
 }
 
 /**
- * Read identity from the agent's tool context.
- *
- * The MCP request flow:
- *   1. install-standalone-mcp.sh writes ~/.papercusp/su-agent-id (UUID)
- *      and bakes ?client=<uuid> into the MCP server URL.
- *   2. The HTTP MCP transport surfaces ?client=<uuid> on every call as
- *      a per-call context field — read here from ctx (the projection
- *      registry attaches it as uiClientId in the unified context).
- *
- * For in-process callers without a baked client (operator chat,
- * autoloop), we fall back to principal.slug so they still get a stable
- * identity per-process.
+ * Read identity from the agent's tool context. Adapter around
+ * `resolveAgentIdentity` — see the file header.
  */
 export function readIdentity(ctx: IdentityCtx): SuAgentIdentity {
-  const principal = ctx.principal;
-  const baked =
-    ctx.uiClientId && ctx.uiClientId.length > 0 ? ctx.uiClientId : null;
-
-  // Superuser callers (papercusp-su / install-standalone-mcp.sh) don't
-  // carry a principal — the `?superuser=1` path bypasses the bearer
-  // resolution that would attach one. We identify them by the baked
-  // `?client=<agent_id>` URL param.
-  if (!principal) {
-    if (!ctx.isSuperuser) {
-      throw new Error(
-        'locks:* requires an authenticated principal or superuser context',
-      );
-    }
-    if (!baked) {
-      throw new Error(
-        'locks:* superuser caller is missing ?client=<agent_id> ' +
-          '(re-run install-standalone-mcp.sh to mint one)',
-      );
-    }
-    return {
-      ownerId: baked,
-      ownerLabel: `su:${baked.slice(0, 8)}`,
-      workspaceId: SUPERUSER_DEFAULT_WORKSPACE,
-    };
-  }
-
-  const ownerId = baked ?? principal.slug;
-  const kind = principal.kind ?? 'principal';
-  const ownerLabel = baked
-    ? `${kind}:${principal.slug.slice(0, 16)}@${baked.slice(0, 8)}`
-    : `${kind}:${principal.slug}`;
-
+  const id = resolveAgentIdentity(ctx);
   return {
-    ownerId,
-    ownerLabel,
-    workspaceId: principal.workspaceId,
+    ownerId: id.ownerId,
+    ownerLabel: id.ownerLabel,
+    workspaceId: id.workspaceId ?? DEFAULT_WORKSPACE,
   };
 }
