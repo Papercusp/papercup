@@ -369,6 +369,37 @@ interface BudgetSnapshot {
   exceeded: boolean;
 }
 
+/**
+ * The `operator_budget` Zero row stores the raw PG payload
+ * (`{ dailyCapUsd?, spend? }`) — NOT the `BudgetSnapshot` shape the panel
+ * renders against. Map it the same way `GET /api/agent-mcp/operator-budget`
+ * does (see `lib/operator-budget.ts` → `checkBudget`). Without this, the
+ * raw payload's missing `configured` field reads as `undefined`, so
+ * `!budget.configured` is always true and the first-run budget overlay
+ * snaps back the instant the post-save PG NOTIFY reaches the subscription
+ * — the overlay never dismisses after the user picks a cap.
+ */
+function budgetSnapshotFromZeroPayload(payload: unknown): BudgetSnapshot {
+  const raw = (payload ?? {}) as { dailyCapUsd?: unknown; spend?: unknown };
+  const configured = typeof raw.dailyCapUsd === 'number' && raw.dailyCapUsd > 0;
+  const dailyCapUsd = configured ? (raw.dailyCapUsd as number) : 0;
+  const today = new Date().toISOString().slice(0, 10);
+  const spend = Array.isArray(raw.spend) ? raw.spend : [];
+  const todayEntry = spend.find(
+    (s): s is { date: string; usd: number } =>
+      !!s && typeof s === 'object'
+      && (s as { date?: unknown }).date === today
+      && typeof (s as { usd?: unknown }).usd === 'number',
+  );
+  const todaySpendUsd = todayEntry?.usd ?? 0;
+  return {
+    configured,
+    dailyCapUsd,
+    todaySpendUsd,
+    exceeded: configured && todaySpendUsd >= dailyCapUsd,
+  };
+}
+
 export function OperatorPanel(): ReactElement | null {
   const [state, setState] = useState<OperatorState>(sharedState);
   const [suggestions, setSuggestions] = useState<SuggestionCard[]>([]);
@@ -386,14 +417,14 @@ export function OperatorPanel(): ReactElement | null {
   // for post-mutation refresh and as REST fallback while the
   // subscription warms up.
   const operatorWorkspaceId = useWorkspaceId();
-  const { data: budgetRows } = useSyncQuery<{ workspaceId: string; payload: BudgetSnapshot; updatedAt: number }>({
+  const { data: budgetRows } = useSyncQuery<{ workspaceId: string; payload: unknown; updatedAt: number }>({
     queryName: 'operatorBudget.byWorkspace',
     args: { workspaceId: operatorWorkspaceId },
     enabled: !!operatorWorkspaceId,
   });
   useEffect(() => {
     if (!Array.isArray(budgetRows) || budgetRows.length === 0) return;
-    setBudget(budgetRows[0].payload as BudgetSnapshot);
+    setBudget(budgetSnapshotFromZeroPayload(budgetRows[0].payload));
   }, [budgetRows]);
   const { data: lastScanRows } = useSyncQuery<{ workspaceId: string; payload: unknown; updatedAt: number }>({
     queryName: 'operatorLastScan.byWorkspace',
