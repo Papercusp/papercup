@@ -112,15 +112,8 @@ export default function CoordHistory() {
   const items = data?.items ?? [];
 
   return (
-    <div className="mx-auto max-w-6xl p-6 text-slate-100">
-      <header className="mb-4 flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-semibold">Coordination history</h1>
-          <p className="text-sm text-slate-400">
-            Merged feed across plan events, messages, escalations, and handoffs.
-            From <code>coord/*</code> on disk.
-          </p>
-        </div>
+    <div className="text-slate-100">
+      <div className="mb-3 flex justify-end">
         <button
           onClick={refresh}
           className="rounded bg-slate-700 px-3 py-1 text-sm hover:bg-slate-600 disabled:opacity-50"
@@ -128,7 +121,7 @@ export default function CoordHistory() {
         >
           {loading ? 'Refreshing…' : 'Refresh'}
         </button>
-      </header>
+      </div>
 
       <div className="mb-4 flex flex-wrap items-center gap-3 rounded border border-slate-700 bg-slate-900/50 p-3">
         <div className="flex items-center gap-2">

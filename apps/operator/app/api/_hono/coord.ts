@@ -155,6 +155,79 @@ coord.get('/history', async (c) => {
   return c.json({ items: out, total: filtered.length, truncated });
 });
 
+coord.get('/presence', async (c) => {
+  const { listPresence } = await import('@/lib/agent-tools/coordination/presence');
+  const ws = c.req.query('workspace') ?? null;
+  const records = await listPresence({ workspaceId: ws });
+  const active = records.filter((r) => !r.stale);
+  const stale = records.filter((r) => r.stale);
+  return c.json({ active, stale });
+});
+
+coord.get('/inbox', async (c) => {
+  // Strictly the human-facing inbox: entries with 'human' in `to`.
+  // Distinct from /history?owner=human, which also matches '*' broadcasts.
+  const msgs = await readAllMessages();
+  const escs = await listEscalations({});
+  const hs = await listHandoffs({});
+  const items: HistoryItem[] = [];
+  for (const m of msgs) {
+    if (Array.isArray(m.to) && m.to.includes('human')) {
+      items.push(toHistoryItem('message', m));
+    }
+  }
+  // Open escalations are always human-facing — that is the channel's purpose.
+  for (const e of escs) {
+    if (e.resolved == null) items.push(toHistoryItem('escalation', e));
+  }
+  for (const h of hs) {
+    if (Array.isArray(h.record.to) && h.record.to.includes('human')) {
+      items.push(toHistoryItem('handoff', h.record));
+    }
+  }
+  items.sort((a, b) => b.ts.localeCompare(a.ts) || b.msg_id.localeCompare(a.msg_id));
+  return c.json({ items });
+});
+
+coord.get('/plans', async (c) => {
+  const { readAllPlans } = await import('@/lib/agent-tools/plans/source');
+  const all = await readAllPlans({});
+  const plans = all
+    .filter((p) => !p.parsed.isLegacy)
+    .map((p) => ({
+      slug: p.parsed.frontmatter.slug ?? p.parsed.slug,
+      title: p.parsed.frontmatter.title ?? p.parsed.slug,
+      status: p.parsed.frontmatter.status ?? 'unknown',
+      updated: p.parsed.frontmatter.updated ?? null,
+      now_state: p.parsed.now?.state ?? null,
+      now_next: p.parsed.now?.next ?? null,
+      item_count: p.parsed.items.length,
+      decision_count: p.parsed.decisions.length,
+    }));
+  return c.json({ plans });
+});
+
+coord.get('/plans/:slug', async (c) => {
+  const slug = c.req.param('slug');
+  const { readPlanBySlug } = await import('@/lib/agent-tools/plans/source');
+  const { readFile } = await import('node:fs/promises');
+  const found = await readPlanBySlug(slug);
+  if (!found) return c.json({ error: 'plan not found' }, 404);
+  let markdown = '';
+  try {
+    markdown = await readFile(found.parsed.filePath, 'utf8');
+  } catch {
+    return c.json({ error: 'plan file unreadable' }, 500);
+  }
+  return c.json({
+    slug,
+    title: found.parsed.frontmatter.title ?? slug,
+    status: found.parsed.frontmatter.status ?? 'unknown',
+    archived: found.archived,
+    markdown,
+  });
+});
+
 coord.get('/escalations', async (c) => {
   const status = c.req.query('status');
   const opts: { status?: 'open' | 'resolved' } = {};

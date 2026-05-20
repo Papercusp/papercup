@@ -1,0 +1,346 @@
+'use client';
+
+/**
+ * /coord — the coordination dashboard.
+ *
+ * agent-coordination-architecture-v2 §9. Four panels:
+ *
+ *   - Sessions — L1 presence: who is active, what they're doing.
+ *   - Inbox    — L3 human-facing: open escalations + to:['human'] msgs.
+ *   - Plans    — the plans/* docs, list + full markdown.
+ *   - History  — the merged coord/* event feed (CoordHistory).
+ *
+ * The active panel is URL-backed (nuqs) so a panel view is shareable,
+ * per the operator's nuqs-by-default policy.
+ */
+
+import { useQueryState, parseAsStringEnum } from 'nuqs';
+import { useCallback, useEffect, useState } from 'react';
+import CoordHistory from './CoordHistory';
+
+const PANELS = ['sessions', 'inbox', 'plans', 'history'] as const;
+type Panel = (typeof PANELS)[number];
+
+const PANEL_LABEL: Record<Panel, string> = {
+  sessions: 'Sessions',
+  inbox: 'Inbox',
+  plans: 'Plans',
+  history: 'History',
+};
+
+export default function CoordDashboard() {
+  const [panel, setPanel] = useQueryState<Panel>(
+    'panel',
+    parseAsStringEnum([...PANELS]).withDefault('sessions'),
+  );
+
+  return (
+    <div className="mx-auto max-w-6xl p-6 text-slate-100">
+      <header className="mb-4">
+        <h1 className="text-2xl font-semibold">Coordination</h1>
+        <p className="text-sm text-slate-400">
+          Agent coordination surface — presence, the human inbox, plans, and the
+          event history. Backed by <code>coord/*</code> + <code>plans/*</code>.
+        </p>
+      </header>
+
+      <nav className="mb-5 flex gap-1 border-b border-slate-700">
+        {PANELS.map((p) => (
+          <button
+            key={p}
+            onClick={() => setPanel(p)}
+            className={
+              'rounded-t px-4 py-2 text-sm ' +
+              (panel === p
+                ? 'border-b-2 border-blue-400 font-medium text-blue-200'
+                : 'text-slate-400 hover:text-slate-200')
+            }
+          >
+            {PANEL_LABEL[p]}
+          </button>
+        ))}
+      </nav>
+
+      {panel === 'sessions' && <SessionsPanel />}
+      {panel === 'inbox' && <InboxPanel />}
+      {panel === 'plans' && <PlansPanel />}
+      {panel === 'history' && <CoordHistory />}
+    </div>
+  );
+}
+
+// ── Sessions panel (L1 presence) ─────────────────────────────────────
+
+interface PresenceRecord {
+  ownerId: string;
+  ownerLabel: string;
+  source: string;
+  intent: string;
+  currentPlanSlug: string | null;
+  currentFiles: string[];
+  host: string;
+  heartbeatAt: string;
+  stale: boolean;
+}
+
+function usePolledJson<T>(url: string, intervalMs = 5000): {
+  data: T | null;
+  error: string | null;
+  loading: boolean;
+  refresh: () => void;
+} {
+  const [data, setData] = useState<T | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const refresh = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const r = await fetch(url);
+      if (!r.ok) throw new Error(`status ${r.status}`);
+      setData((await r.json()) as T);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setLoading(false);
+    }
+  }, [url]);
+  useEffect(() => {
+    refresh();
+    const id = window.setInterval(refresh, intervalMs);
+    return () => window.clearInterval(id);
+  }, [refresh, intervalMs]);
+  return { data, error, loading, refresh };
+}
+
+function SessionsPanel() {
+  const { data, error } = usePolledJson<{
+    active: PresenceRecord[];
+    stale: PresenceRecord[];
+  }>('/api/coord/presence');
+
+  const active = data?.active ?? [];
+  const stale = data?.stale ?? [];
+
+  return (
+    <div>
+      {error && (
+        <div className="mb-3 rounded border border-rose-900 bg-rose-950/40 p-3 text-sm text-rose-200">
+          Error: {error}
+        </div>
+      )}
+      <h2 className="mb-2 text-sm font-medium text-slate-300">
+        Active ({active.length})
+      </h2>
+      {active.length === 0 && (
+        <p className="mb-4 text-sm text-slate-500">No active agent sessions.</p>
+      )}
+      <ul className="mb-6 space-y-2">
+        {active.map((s) => (
+          <SessionRow key={s.ownerId} s={s} />
+        ))}
+      </ul>
+      {stale.length > 0 && (
+        <>
+          <h2 className="mb-2 text-sm font-medium text-slate-500">
+            Stale ({stale.length}) — heartbeat &gt; 10 min old
+          </h2>
+          <ul className="space-y-2 opacity-50">
+            {stale.map((s) => (
+              <SessionRow key={s.ownerId} s={s} />
+            ))}
+          </ul>
+        </>
+      )}
+    </div>
+  );
+}
+
+function SessionRow({ s }: { s: PresenceRecord }) {
+  return (
+    <li className="rounded border border-slate-800 bg-slate-900/40 px-3 py-2">
+      <div className="flex items-baseline justify-between gap-2">
+        <span className="text-sm font-medium text-slate-200">{s.ownerLabel}</span>
+        <span className="text-xs text-slate-500">
+          {s.source} · {new Date(s.heartbeatAt).toLocaleTimeString()}
+        </span>
+      </div>
+      <div className="mt-0.5 text-xs text-slate-400">
+        {s.intent || '(no declared intent)'}
+      </div>
+      {(s.currentPlanSlug || s.currentFiles.length > 0) && (
+        <div className="mt-1 flex flex-wrap gap-1">
+          {s.currentPlanSlug && (
+            <span className="rounded bg-slate-800 px-1.5 py-0.5 text-[10px] text-slate-400">
+              plan: {s.currentPlanSlug}
+            </span>
+          )}
+          {s.currentFiles.slice(0, 4).map((f) => (
+            <span
+              key={f}
+              className="rounded bg-slate-800 px-1.5 py-0.5 text-[10px] text-slate-500"
+            >
+              {f}
+            </span>
+          ))}
+        </div>
+      )}
+    </li>
+  );
+}
+
+// ── Inbox panel (L3 human-facing) ────────────────────────────────────
+
+interface InboxItem {
+  ts: string;
+  msg_id: string;
+  source: string;
+  kind: string;
+  from?: string;
+  summary?: string;
+  plan_slug?: string;
+}
+
+function InboxPanel() {
+  const { data, error } = usePolledJson<{ items: InboxItem[] }>(
+    '/api/coord/inbox',
+  );
+  const items = data?.items ?? [];
+  return (
+    <div>
+      {error && (
+        <div className="mb-3 rounded border border-rose-900 bg-rose-950/40 p-3 text-sm text-rose-200">
+          Error: {error}
+        </div>
+      )}
+      <p className="mb-3 text-sm text-slate-400">
+        Open escalations and messages addressed to you. This is the channel
+        agents use to surface decisions that need a human.
+      </p>
+      {items.length === 0 && (
+        <p className="text-sm text-slate-500">Inbox is empty.</p>
+      )}
+      <ul className="space-y-2">
+        {items.map((it) => (
+          <li
+            key={`${it.source}:${it.msg_id}`}
+            className={
+              'rounded border px-3 py-2 ' +
+              (it.kind === 'escalation'
+                ? 'border-amber-800 bg-amber-950/30'
+                : 'border-slate-800 bg-slate-900/40')
+            }
+          >
+            <div className="flex items-baseline gap-2">
+              <span
+                className={
+                  'shrink-0 rounded-full px-2 py-0.5 text-[10px] uppercase tracking-wider ' +
+                  (it.kind === 'escalation'
+                    ? 'bg-amber-900/50 text-amber-200'
+                    : 'bg-slate-700/50 text-slate-200')
+                }
+              >
+                {it.kind}
+              </span>
+              <span className="truncate text-sm text-slate-200">
+                {it.summary ?? '—'}
+              </span>
+            </div>
+            <div className="mt-0.5 text-xs text-slate-500">
+              {new Date(it.ts).toLocaleString()}
+              {it.from && ` · from ${it.from}`}
+              {it.plan_slug && ` · plan ${it.plan_slug}`}
+            </div>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+// ── Plans panel ──────────────────────────────────────────────────────
+
+interface PlanSummary {
+  slug: string;
+  title: string;
+  status: string;
+  updated: string | null;
+  now_state: string | null;
+  now_next: string | null;
+  item_count: number;
+  decision_count: number;
+}
+
+function PlansPanel() {
+  const { data, error } = usePolledJson<{ plans: PlanSummary[] }>(
+    '/api/coord/plans',
+    15000,
+  );
+  const [openSlug, setOpenSlug] = useState<string | null>(null);
+  const [markdown, setMarkdown] = useState<string>('');
+  const [mdLoading, setMdLoading] = useState(false);
+
+  const openPlan = useCallback(async (slug: string) => {
+    if (openSlug === slug) {
+      setOpenSlug(null);
+      return;
+    }
+    setOpenSlug(slug);
+    setMdLoading(true);
+    setMarkdown('');
+    try {
+      const r = await fetch(`/api/coord/plans/${encodeURIComponent(slug)}`);
+      const j = (await r.json()) as { markdown?: string; error?: string };
+      setMarkdown(j.markdown ?? j.error ?? '(empty)');
+    } catch (e) {
+      setMarkdown(e instanceof Error ? e.message : String(e));
+    } finally {
+      setMdLoading(false);
+    }
+  }, [openSlug]);
+
+  const plans = data?.plans ?? [];
+  return (
+    <div>
+      {error && (
+        <div className="mb-3 rounded border border-rose-900 bg-rose-950/40 p-3 text-sm text-rose-200">
+          Error: {error}
+        </div>
+      )}
+      {plans.length === 0 && (
+        <p className="text-sm text-slate-500">No structured plans found.</p>
+      )}
+      <ul className="space-y-2">
+        {plans.map((p) => (
+          <li key={p.slug} className="rounded border border-slate-800 bg-slate-900/40">
+            <button
+              onClick={() => openPlan(p.slug)}
+              className="flex w-full items-start gap-3 px-3 py-2 text-left hover:bg-slate-800/30"
+            >
+              <span className="shrink-0 rounded bg-slate-800 px-1.5 py-0.5 text-[10px] uppercase text-slate-400">
+                {p.status}
+              </span>
+              <div className="min-w-0 flex-1">
+                <div className="truncate text-sm text-slate-200">{p.title}</div>
+                <div className="mt-0.5 text-xs text-slate-500">
+                  {p.slug} · {p.item_count} items · {p.decision_count} decisions
+                  {p.updated && ` · updated ${p.updated}`}
+                </div>
+                {p.now_next && (
+                  <div className="mt-1 truncate text-xs text-slate-400">
+                    Now: {p.now_next}
+                  </div>
+                )}
+              </div>
+            </button>
+            {openSlug === p.slug && (
+              <pre className="max-h-[60vh] overflow-auto border-t border-slate-800 bg-slate-950/60 px-3 py-2 text-[11px] whitespace-pre-wrap text-slate-300">
+{mdLoading ? 'Loading…' : markdown}
+              </pre>
+            )}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
