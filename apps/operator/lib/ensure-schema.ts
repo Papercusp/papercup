@@ -82,6 +82,7 @@ type _G = {
     backupSnapshots: boolean;
     backupEvents: boolean;
     powerUserSessions: boolean;
+    coordPresence: boolean;
   };
 };
 const _g = globalThis as unknown as _G;
@@ -143,6 +144,7 @@ const flags = _g.__ensureSchemaFlags ?? (_g.__ensureSchemaFlags = {
   backupSnapshots: false,
   backupEvents: false,
   powerUserSessions: false,
+  coordPresence: false,
 });
 
 /**
@@ -1561,6 +1563,48 @@ export async function ensurePowerUserSessionsTable(): Promise<void> {
       ON harness_shared.power_user_sessions (workspace_id, created_at DESC);
   `);
   flags.powerUserSessions = true;
+}
+
+/**
+ * harness_shared.coord_presence — the L1 *liveness* layer for the agent
+ * coordination system (agent-coordination-architecture-v2 §4.2).
+ *
+ * This is deliberately NOT a re-implementation of power_user_sessions.
+ * That table is the durable per-agent record (identity, workspace,
+ * created/revoked). It is a poor liveness signal — `last_seen_at` only
+ * bumps on token refresh (~hourly) and there is no session-end write.
+ * coord_presence carries the *live* state: a frequent heartbeat plus
+ * the agent's declared intent and current work, written by the OMP
+ * hook (session_start / turn_start) and by the coord:declare-intent
+ * tool. A stale `heartbeat_at` (>10 min) means the session is dead.
+ *
+ * Keyed on `owner_id` — the resolveAgentIdentity() ownerId — not
+ * `auth_session_id`: ownerId is auth_session_id for a power-user agent
+ * and the per-session id for a superuser engineer, so one table covers
+ * both tiers. Held locks are NOT stored here; they live in the
+ * SU-locks `agent_file_locks` table and are joined in on read.
+ */
+export async function ensureCoordPresenceTable(): Promise<void> {
+  if (flags.coordPresence) return;
+  const { sql } = getOrgPg();
+  await sql.unsafe(`
+    CREATE TABLE IF NOT EXISTS harness_shared.coord_presence (
+      owner_id          TEXT PRIMARY KEY,
+      owner_label       TEXT NOT NULL DEFAULT '',
+      workspace_id      TEXT NOT NULL DEFAULT 'default',
+      source            TEXT NOT NULL DEFAULT '',
+      intent            TEXT NOT NULL DEFAULT '',
+      current_plan_slug TEXT,
+      current_files     JSONB NOT NULL DEFAULT '[]'::jsonb,
+      host              TEXT NOT NULL DEFAULT '',
+      pid               INTEGER,
+      started_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+      heartbeat_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+    CREATE INDEX IF NOT EXISTS coord_presence_workspace_idx
+      ON harness_shared.coord_presence (workspace_id, heartbeat_at DESC);
+  `);
+  flags.coordPresence = true;
 }
 
 /**

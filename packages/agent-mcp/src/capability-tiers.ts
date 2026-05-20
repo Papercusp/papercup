@@ -30,6 +30,8 @@ const EXACT: Record<string, CapabilityTier> = {
   // SU file-lock coordination (su-agent-coordination-v3-2026-05-14.md)
   'locks:read': 'low',
   'locks:write': 'medium',
+  'coord:read': 'low',
+  'coord:write': 'medium',
   'pending_events:read': 'low',
   'routines:read': 'low',
   'storage:plugin-private': 'low',

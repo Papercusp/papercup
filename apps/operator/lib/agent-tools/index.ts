@@ -161,6 +161,12 @@ import './locks/heartbeat';
 import './locks/cancel_wait';
 import './locks/queue';
 
+// L1 agent coordination (identity & presence) — see
+// agent-coordination-architecture-v2-2026-05-20.md
+import './coordination/tools/whoami';
+import './coordination/tools/presence';
+import './coordination/tools/declare-intent';
+
 // SU-agent plan tracking — see agent-plan-tracking-2026-05-20.md
 import './plans/list';
 import './plans/get';
