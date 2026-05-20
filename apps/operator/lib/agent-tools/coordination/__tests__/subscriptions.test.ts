@@ -127,4 +127,34 @@ describe('findMatchingWatchers + fireNotifications', () => {
     const n = await fireNotifications(id('s'), ['foo'], 'any');
     expect(n).toBe(0);
   });
+
+  it('dedups: overlapping patterns on one watcher → one notify per path (B3)', async () => {
+    // alice watches the same path through two overlapping globs.
+    await addWatch(id('alice'), { pattern: 'apps/**', trigger: 'any' });
+    await addWatch(id('alice'), { pattern: 'apps/operator/**', trigger: 'any' });
+
+    const n = await fireNotifications(
+      id('source'),
+      ['apps/operator/lib/x.ts'],
+      'lock_acquired',
+    );
+    // Both watches match — but the watcher gets exactly one notify.
+    expect(n).toBe(1);
+    const inbox = await readInbox('alice', { kinds: ['notify'] });
+    expect(inbox).toHaveLength(1);
+  });
+
+  it('dedup is per-path: two matched paths still yield two notifies', async () => {
+    await addWatch(id('alice'), { pattern: 'apps/**', trigger: 'any' });
+    await addWatch(id('alice'), { pattern: 'apps/operator/**', trigger: 'any' });
+
+    const n = await fireNotifications(
+      id('source'),
+      ['apps/operator/a.ts', 'apps/operator/b.ts'],
+      'lock_acquired',
+    );
+    expect(n).toBe(2);
+    const inbox = await readInbox('alice', { kinds: ['notify'] });
+    expect(inbox).toHaveLength(2);
+  });
 });
