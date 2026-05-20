@@ -76,8 +76,8 @@ Re-affirmed from the deferred-plan's decision table (those decisions are good; I
 |---|---|---|
 | **Bundler** | **Vite 8** (Rolldown-Vite once 1.0 is GA-stable in the workspace; default Rollup until then) | TanStack Router has a first-party Vite plugin (`@tanstack/router-plugin/vite`) for file-based route generation; no Rsbuild equivalent. Switching builders later is local to `apps/operator-vite/vite.config.ts`. |
 | **Router** | **TanStack Router 1.x**, file-based generator | File-router maps 1:1 onto our `app/**/page.tsx` tree with one mechanical convention swap (see [Phase B](#phase-b--router-translation)). Typed `Link`/`useParams`/`useSearch` close to Next's mental model. `defer`/`loader`/`pendingComponent` cover what `loading.tsx` did. |
-| **HTTP host (dev)** | Vite dev server (`vite`) on **:3055** with proxy to Hono on **:3057** | Mirrors the current `next dev -p 3055` port so Tauri/desktop env-var paths don't change. Hono runs in a sibling dev process. |
-| **HTTP host (prod)** | **One process** — `@hono/node-server` on **:3055** serves Vite `dist/` static + mounts the Hono app | Collapses `next start` (:3055) + Next standalone (:3070) into one. The `:3070` standalone variant goes away. |
+| **HTTP host (dev)** | Vite dev server (`vite`) on **:3055**; `@hono/node-server` Hono host on **:3070**, sibling process | The Vite stack **takes over the two Next ports directly** — `:3055` was `next dev`, `:3070` was the Next standalone. Next is being retired, so Vite claims both from the start; no Tauri/desktop env-var path changes. During the migration window only, a temporary Next sidecar runs on `:3056` for un-migrated `route.ts` (dies at Phase G). |
+| **HTTP host (prod)** | **One process** — `@hono/node-server` on **:3070** serves the built `dist/` static + the Hono app + `/internal/docs/*` | `:3070` is "the operator host" in both dev and prod (no Vite dev server in prod — the static `dist/` is served by the Hono host). Replaces `next start` + the Next standalone; one process where there were two. |
 | **State / data layer** | TanStack Query + nuqs + Zero (**unchanged**) | None of these care about the framework. `useSyncQuery` and `transport-adapters` seams already exist; they keep working. |
 | **SSR** | **None** — SPA | Operator is an app shell, not content. Cold-paint flash is real but mitigated by Tauri's webview cache; webapp deploy is not in scope of this plan (Track A in host-arch). |
 | **Tauri load target** | Dev: `http://127.0.0.1:3055` (Vite). Prod: bundled static `dist/` | Same model Next used; zero Tauri-side change in dev. Prod path changes from "Next standalone server" to "static files served by `@hono/node-server`". |
@@ -126,7 +126,7 @@ tail -5 coord/frontend.jsonl | grep -c 'operator-vite-migration'         # → �
 
 ## Phase A — Parallel app scaffold
 
-**Goal:** stand up `apps/operator-vite/` as a fresh Vite + React + TanStack Router app, in parallel with the live `apps/operator/`. No translation of pages yet — just the empty shell that builds, dev-runs, and proxies `/api/*` to the existing Next sidecar on :3055 so the dev experience is end-to-end usable from day one.
+**Goal:** stand up `apps/operator-vite/` as a fresh Vite + React + TanStack Router app, in parallel with the live `apps/operator/`. No translation of pages yet — just the empty shell that builds, dev-runs, and proxies `/api/*` to the Next sidecar (moved to `:3056` so Vite can claim `:3055`) so the dev experience is end-to-end usable from day one.
 
 ### Why parallel, not in-place
 
@@ -175,11 +175,11 @@ export default defineConfig({
     port: 3055,
     host: process.env.PAPERCUSP_BIND_HOST ?? '127.0.0.1',
     // deriveProxyFromCoord reads ../../coord/frontend.jsonl and emits:
-    //   { '/api/migrated-prefix-1': { target: 'http://127.0.0.1:3057', ... },
-    //     '/api/migrated-prefix-N': { target: 'http://127.0.0.1:3057', ... },
+    //   { '/api/migrated-prefix-1': { target: 'http://127.0.0.1:3070', ... },
+    //     '/api/migrated-prefix-N': { target: 'http://127.0.0.1:3070', ... },
     //     '/api':                   { target: 'http://127.0.0.1:3056', ws: true, ... },  // fallback to Next sidecar
-    //     '/internal/docs':         { target: 'http://127.0.0.1:3057', ... } }
-    proxy: deriveProxyFromCoord({ honoHost: 3057, nextSidecar: 3056 }),
+    //     '/internal/docs':         { target: 'http://127.0.0.1:3070', ... } }
+    proxy: deriveProxyFromCoord({ honoHost: 3070, nextSidecar: 3056 }),
   },
   plugins: [
     TanStackRouterVite({ routesDirectory: './src/routes', generatedRouteTree: './src/routeTree.gen.ts' }),
@@ -390,7 +390,7 @@ import { app } from '../app/api/_hono/app';
 import { runBootstrap } from '../app/api/_hono/bootstrap';
 
 runBootstrap(); // idempotent — safe in HMR + standalone
-const port = Number(process.env.PAPERCUSP_HONO_PORT ?? 3057);
+const port = Number(process.env.PAPERCUSP_HONO_PORT ?? 3070);
 const host = process.env.PAPERCUSP_BIND_HOST ?? '127.0.0.1';
 
 serve({ fetch: app.fetch, port, hostname: host }, (info) => {
@@ -403,16 +403,16 @@ This is ~15 lines. It works **today** for every Hono route already mounted in `_
 ```ts
 // vite.config.ts (illustrative, during Phase C → Phase H)
 proxy: {
-  // Routes the backend agent has migrated → Hono host on :3057.
-  '/api/healthz': { target: 'http://127.0.0.1:3057' },
-  '/api/agent-tools': { target: 'http://127.0.0.1:3057' },
+  // Routes the backend agent has migrated → Hono host on :3070.
+  '/api/healthz': { target: 'http://127.0.0.1:3070' },
+  '/api/agent-tools': { target: 'http://127.0.0.1:3070' },
   // ... (list grows as backend agent migrates more)
   // Everything else still goes to the Next sidecar on :3056.
   '/api': { target: 'http://127.0.0.1:3056' },
 }
 ```
 
-The backend agent's coord-channel entries announce which path prefixes have moved; I update the Vite proxy table accordingly. The map ends up empty when only the Hono path remains; then the `/api` entry becomes `:3057` and the Next sidecar can be killed.
+The backend agent's coord-channel entries announce which path prefixes have moved; I update the Vite proxy table accordingly. The map ends up empty when only the Hono path remains; then the `/api` entry becomes `:3070` and the Next sidecar can be killed.
 
 ### C2. Static asset serving (dev)
 
@@ -423,7 +423,7 @@ In dev, Vite serves static assets (from `apps/operator-vite/public/`, which syml
 Update the dev-launcher (`bin/dev-vite.sh` from Phase A, or whichever orchestrator the desktop uses) to start three processes during the migration window:
 1. Vite (`:3055`) — owns the page tree
 2. Next sidecar (`:3056`) — owns un-migrated `route.ts` files + the Hono catch-all (until [Phase G](#phase-g--production-host))
-3. `hono-host` (`:3057`) — owns the directly-mounted Hono routes
+3. `hono-host` (`:3070`) — owns the directly-mounted Hono routes
 
 This is temporary scaffolding; collapses to one process at cutover.
 
@@ -431,13 +431,13 @@ This is temporary scaffolding; collapses to one process at cutover.
 
 ```
 # The Hono host boots and serves the catch-all.
-PAPERCUSP_HONO_PORT=3057 tsx apps/operator/bin/hono-host.ts &
+PAPERCUSP_HONO_PORT=3070 tsx apps/operator/bin/hono-host.ts &
 sleep 2
-curl -sf http://127.0.0.1:3057/api/healthz   # 200 (assumes backend agent migrated this)
+curl -sf http://127.0.0.1:3070/api/healthz   # 200 (assumes backend agent migrated this)
 # The Vite proxy routes API calls correctly.
 curl -sf http://127.0.0.1:3055/api/healthz   # 200, same body as direct
 # Both hosts can run side-by-side.
-ss -tnpl | grep -E ':3055|:3056|:3057' | wc -l  # → 3
+ss -tnpl | grep -E ':3055|:3056|:3070' | wc -l  # → 3
 ```
 
 ### C NOT shipping
@@ -551,12 +551,12 @@ Already described in [D3](#d3-proxyts-middleware--hono-middleware). The full por
 Already partially specified in [A2](#a2-dev-server-proxy) and [C1](#c1-host-process). Final shape during the migration window:
 ```
 :3055 (vite)   → owns pages + static
-  proxy /api/<migrated-path> → :3057 (hono-host)
+  proxy /api/<migrated-path> → :3070 (hono-host)
   proxy /api                  → :3056 (next sidecar)
-  proxy /internal/docs        → :3057 (hono-host serves static + middleware)
+  proxy /internal/docs        → :3070 (hono-host serves static + middleware)
 ```
 
-After Phase H this collapses to a single backend on `:3057`.
+After Phase H this collapses to a single backend on `:3070`.
 
 ### E acceptance (greppable)
 
@@ -603,13 +603,13 @@ The desktop's dev orchestrator (whichever `bin/` script starts the operator + wa
 
 Today: Tauri prod loads from the `next start` (or standalone) sidecar — a separate Node process the desktop spawns.
 
-After this migration: Tauri prod loads from `http://127.0.0.1:3057` served by `bin/hono-host.ts` (the single-process backend from Phase G). The host serves `dist/index.html` + SPA assets via `serveStatic`, plus the `_hono/app.ts` mounts at `/api/*` and `/internal/docs/*` middleware. **One Node process replaces two.**
+After this migration: Tauri prod loads from `http://127.0.0.1:3070` served by `bin/hono-host.ts` (the single-process backend from Phase G). The host serves `dist/index.html` + SPA assets via `serveStatic`, plus the `_hono/app.ts` mounts at `/api/*` and `/internal/docs/*` middleware. **One Node process replaces two.**
 
 Tauri's `tauri.conf.json` `build.frontendDist` (or the older `distDir`) points at where the static SPA lives. Two options:
-- **(a) Point Tauri at `apps/operator-vite/dist/`** — Tauri loads files directly; `:3057` only serves `/api/*`. Simpler in theory but breaks the `/internal/docs/*` rewrite (Tauri's static loader has no middleware).
-- **(b) Keep loading from `http://127.0.0.1:3057`** — Hono host serves both static + API + docs middleware uniformly. **Recommended.** Matches today's "Next standalone serves the app" model; one fewer special case.
+- **(a) Point Tauri at `apps/operator-vite/dist/`** — Tauri loads files directly; `:3070` only serves `/api/*`. Simpler in theory but breaks the `/internal/docs/*` rewrite (Tauri's static loader has no middleware).
+- **(b) Keep loading from `http://127.0.0.1:3070`** — Hono host serves both static + API + docs middleware uniformly. **Recommended.** Matches today's "Next standalone serves the app" model; one fewer special case.
 
-I'll go with **(b)**. Tauri config change: `frontendDist` → `http://127.0.0.1:3057` (URL form, not path form). Same shape as today.
+I'll go with **(b)**. Tauri config change: `frontendDist` → `http://127.0.0.1:3070` (URL form, not path form). Same shape as today.
 
 ### F3. Desktop release script
 
@@ -628,11 +628,11 @@ No `next build`, no Next standalone tracer, no `.next-prod` directory. The relea
 # Dev: Tauri webview reaches the Vite-served app and renders it.
 # (manual smoke — start the desktop dev workflow and verify the operator loads)
 # Prod: built sidecar serves the SPA at /, the API at /api/*, the docs at /internal/docs/*.
-PAPERCUSP_HONO_PORT=3057 ./bin/hono-host &
+PAPERCUSP_HONO_PORT=3070 ./bin/hono-host &
 sleep 2
-curl -sf http://127.0.0.1:3057/ | grep -q 'operator-vite'   # static SPA shell
-curl -sf http://127.0.0.1:3057/api/healthz                  # 200
-curl -sf http://127.0.0.1:3057/internal/docs/agent-policies # 200
+curl -sf http://127.0.0.1:3070/ | grep -q 'operator-vite'   # static SPA shell
+curl -sf http://127.0.0.1:3070/api/healthz                  # 200
+curl -sf http://127.0.0.1:3070/internal/docs/agent-policies # 200
 ```
 
 ### F NOT shipping
@@ -668,9 +668,9 @@ find apps/operator/app -name 'route.ts' -not -path '*/[[...route]]*' | wc -l   #
 
 Update `bin/dev-vite.sh` (or whatever orchestrator) to start two processes:
 1. Vite (`:3055`) — pages
-2. `hono-host` (`:3057`) — API + docs + static (for non-Tauri smoke)
+2. `hono-host` (`:3070`) — API + docs + static (for non-Tauri smoke)
 
-Vite proxy table collapses to a single entry: `/api → :3057`.
+Vite proxy table collapses to a single entry: `/api → :3070`.
 
 ### G3. Single-process production — middleware order without changing the boundary
 
@@ -714,11 +714,11 @@ pgrep -af 'hono-host' | wc -l                                # → 1
 pgrep -af 'next start' | wc -l                               # → 0
 pgrep -af 'next dev'   | wc -l                               # → 0  (dev too, after launcher update)
 # Every URL bucket works.
-curl -sf http://127.0.0.1:3057/                              # SPA → 200
-curl -sf http://127.0.0.1:3057/login                         # SPA → 200 (client routes)
-curl -sf http://127.0.0.1:3057/api/healthz                   # API → 200
-curl -sf http://127.0.0.1:3057/internal/docs/agent-policies  # Docs → 200
-curl -sI http://127.0.0.1:3057/nonexistent | head -1         # 200 (SPA shell — client router handles 404)
+curl -sf http://127.0.0.1:3070/                              # SPA → 200
+curl -sf http://127.0.0.1:3070/login                         # SPA → 200 (client routes)
+curl -sf http://127.0.0.1:3070/api/healthz                   # API → 200
+curl -sf http://127.0.0.1:3070/internal/docs/agent-policies  # Docs → 200
+curl -sI http://127.0.0.1:3070/nonexistent | head -1         # 200 (SPA shell — client router handles 404)
 ```
 
 ### G NOT shipping
@@ -964,12 +964,12 @@ If batches B-1..B-6 are parallelized across multiple worker-agents (per the defe
 
 These need user input. None block Phase 0/A start.
 
-1. **Production port.** Today's two ports (`:3055` dev, `:3070` standalone) collapse to one. Should that one be `:3055` (matches dev) or `:3070` (matches today's prod)? **Recommendation: `:3055` everywhere.**
-2. **Webapp deploy.** The deferred plan called out webapp deploy (host-architecture Track A) as a separate concern. This plan keeps the operator desktop-shipped. Confirm webapp is still out-of-scope for this stream, even though the Vite app would in principle be deployable to any static host + the Hono host on a server.
-3. **`apps/papercup/` Next removal.** That app is still on Next (de-fumadocs'd but not de-Next'd). Out of scope for this plan; flagging that it's the next domino if you want zero Next anywhere.
-4. **Server Actions / `'use server'`.** I haven't grepped for these (backend agent's surface). If they exist, the backend agent's plan covers them. Flagging only because their replacement (Hono routes + `useMutation`) is described in the deferred plan and the same pattern applies here.
+1. **Webapp deploy.** The deferred plan called out webapp deploy (host-architecture Track A) as a separate concern. This plan keeps the operator desktop-shipped. Confirm webapp is still out-of-scope for this stream, even though the Vite app would in principle be deployable to any static host + the Hono host on a server.
+2. **`apps/papercup/` Next removal.** That app is still on Next (de-fumadocs'd but not de-Next'd). Out of scope for this plan; flagging that it's the next domino if you want zero Next anywhere.
+3. **Server Actions / `'use server'`.** I haven't grepped for these (backend agent's surface). If they exist, the backend agent's plan covers them. Flagging only because their replacement (Hono routes + `useMutation`) is described in the deferred plan and the same pattern applies here.
 
 **Resolved during review (no longer open):**
+- ~~Production port~~ — decided 2026-05-20: the Vite stack takes over the two Next ports directly — **`:3055` for the Vite dev server, `:3070` for the production Hono host**. Next is being retired, so there's no collision; Vite claims both from day one. Migration window adds a temporary Next sidecar on `:3056` only.
 - ~~Final directory layout~~ — decided 2026-05-20: option (b), merge into `apps/operator-vite/`. See [Phase H](#h2-the-deletion--move-pr-option-b-merge-into-appsoperator-vite).
 - ~~`@bprogress/next` replacement~~ — moved to [Phase B6](#b6-bprogressnext--tsr-adapter-30-60-loc) as a concrete ~30-60 LOC sub-task, not config.
 
