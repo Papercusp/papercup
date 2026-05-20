@@ -17,9 +17,12 @@ const MAKE_PRINCIPAL_CTX = (over: Record<string, unknown> = {}) =>
     signal: new AbortController().signal,
     progress: vi.fn(),
     principal: {
+      kind: 'system',
       slug: 'system:dev-page',
       workspaceId: 'default',
       capabilities: new Set(['processes:kill']),
+      authMethod: 'process-internal',
+      trust: 'trusted',
     },
     tx: null,
     ...over,

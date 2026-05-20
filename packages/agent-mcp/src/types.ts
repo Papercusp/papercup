@@ -10,17 +10,71 @@ import type { EventsSchema, UnifiedToolContext, UserEvents } from './tool-projec
 /** A Papercusp capability tier per spec/capabilities §10.6.1. */
 export type CapabilityTier = 'low' | 'medium' | 'high';
 
-/** Principal kinds resolved from a bearer token. */
-export type PrincipalKind = 'harness' | 'system' | 'pi';
+/**
+ * Principal kinds — who the caller is.
+ *
+ * Resolved Phase 3b 2026-05-20 (principal-rfc-2026-05-20.md). The plan
+ * extended the original `'harness' | 'system' | 'pi'` triad with four
+ * new kinds covering webapp users, mobile clients, external services,
+ * and the legacy loopback-only trust path.
+ */
+export type PrincipalKind =
+  | 'harness'   // sealed harness spawn URL (orchestrator-minted)
+  | 'system'    // operator self-issued (e.g. background sweepers, superuser shell)
+  | 'pi'        // shell-launched agent, bearer file
+  | 'user'      // cookie-bearing browser session
+  | 'mobile'    // JWT-bearing mobile client
+  | 'service'   // bearer-token external integration (future webapp services)
+  | 'loopback'; // host header is local; no token (legacy desktop-only gate)
+
+/**
+ * How the principal was authenticated. Orthogonal to `PrincipalKind` —
+ * a `'service'` principal might be `'bearer-token'` OR `'jwt'`; a
+ * `'user'` principal might be `'cookie-session'` today and `'jwt'`
+ * later (Phase 8). Keeping these separate lets `kind` describe *who*
+ * and `authMethod` describe *how we know*.
+ */
+export type PrincipalAuthMethod =
+  | 'bearer-token'     // ~/.papercusp/superuser-token or external bearer
+  | 'cookie-session'   // browser cookie
+  | 'jwt'              // mobile JWT, future webapp tokens
+  | 'spawn-url'        // HMAC-signed orchestrator URL
+  | 'host-loopback'    // Host header is local; no token (legacy)
+  | 'process-internal'; // in-process call (e.g. background sweeper)
+
+/**
+ * Trust ladder. Middleware reads this without having to know the full
+ * method × kind matrix.
+ *   - `'trusted'`               — process-internal, sealed spawn URL,
+ *                                 bearer file with verified hash.
+ *   - `'verified'`              — JWT signature checked, cookie session
+ *                                 validated against PG.
+ *   - `'unverified-loopback'`   — host header only; rejected when running
+ *                                 on a network-reachable host (Phase 8
+ *                                 bans these at boot when bindHost ≠
+ *                                 127.0.0.1).
+ */
+export type PrincipalTrust = 'trusted' | 'verified' | 'unverified-loopback';
 
 /** Resolved caller identity. */
 export interface Principal {
+  /** Who the caller is. */
   kind: PrincipalKind;
-  /** e.g. `"system:operator"`, `"pi:abc123"`, `"harness-foo"`. */
+  /** e.g. `"system:operator"`, `"pi:abc123"`, `"harness-foo"`, user id, mobile deviceId. */
   slug: string;
+  /** Workspace the call is scoped to. No global principals. */
   workspaceId: string;
-  /** Granted capability strings (e.g. `tasks:read`). */
+  /** How the principal was authenticated. Set by the per-transport resolver. */
+  authMethod: PrincipalAuthMethod;
+  /**
+   * Trust level. The single thing middleware reads when deciding whether
+   * to allow a host-protected operation. See `PrincipalTrust`.
+   */
+  trust: PrincipalTrust;
+  /** Granted capability strings (e.g. `tasks:read`). Freeform; namespacing convention only. */
   capabilities: ReadonlySet<string>;
+  /** Optional human-readable label for logging. Not load-bearing. */
+  label?: string;
 }
 
 /** Per-call request context. */

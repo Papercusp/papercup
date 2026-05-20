@@ -224,7 +224,14 @@ describe('handleHttpToolRequest', () => {
       MAKE_REQ({ headers: { authorization: 'Bearer test-token' } }),
       MAKE_EXTRAS({
         resolvePrincipalAndTx: vi.fn(async () => ({
-          principal: { slug: 'test', workspaceId: 'default', capabilities: new Set() },
+          principal: {
+            kind: 'system',
+            slug: 'test',
+            workspaceId: 'default',
+            capabilities: new Set(),
+            authMethod: 'process-internal',
+            trust: 'trusted',
+          },
           tx: { fake: 'tx' },
         })),
       }),

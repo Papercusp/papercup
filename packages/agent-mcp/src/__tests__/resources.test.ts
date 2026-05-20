@@ -23,6 +23,8 @@ function fakeCtx(capabilities: string[] = []): ResourceContext {
       slug: 'system:test',
       workspaceId: 'ws-test',
       capabilities: new Set(capabilities),
+      authMethod: 'process-internal',
+      trust: 'trusted',
     },
     tx: {} as any,
     log: () => {},

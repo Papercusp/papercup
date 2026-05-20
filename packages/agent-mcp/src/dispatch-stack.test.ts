@@ -162,7 +162,14 @@ describe('runDispatchStack — custom stack', () => {
       'fix.tool',
       {},
       MAKE_CTX({
-        principal: { slug: 'test', workspaceId: 'default', capabilities: new Set() },
+        principal: {
+          kind: 'system',
+          slug: 'test',
+          workspaceId: 'default',
+          capabilities: new Set(),
+          authMethod: 'process-internal',
+          trust: 'trusted',
+        },
       }),
       {
         recordInvocation: vi.fn(async (i) => {

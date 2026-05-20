@@ -66,7 +66,17 @@ export async function resolveBearer(bearer: string): Promise<Principal | null> {
   const capabilities = await loadCapabilities(workspaceId, kind, slug, bearerHash(bearer));
   if (!capabilities) return null;
 
-  const principal: Principal = { kind, slug, workspaceId, capabilities };
+  // Bearer-token-resolved principals are 'trusted' — the bearer hash was
+  // verified against the row in PG. authMethod stays 'bearer-token'
+  // for both 'system' (operator self / superuser shell) and 'pi' kinds.
+  const principal: Principal = {
+    kind,
+    slug,
+    workspaceId,
+    capabilities,
+    authMethod: 'bearer-token',
+    trust: 'trusted',
+  };
   CACHE.set(ck, principal);
   return principal;
 }
