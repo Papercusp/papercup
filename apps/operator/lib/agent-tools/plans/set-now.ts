@@ -46,10 +46,21 @@ const argsSchema = z.object({
 export function replaceNowBlock(body: string, state: string, next: string): string {
   const block = `## Now\n\n**State:** ${state.trim()}\n\n**Next:** ${next.trim()}\n`;
 
-  // Tolerant match — accept any "## [N.] Now" heading.
-  const nowRe = /^##\s+(?:\d+(?:\.\d+)?\.\s+)?Now\b[^\n]*\n([\s\S]*?)(?=^##\s|\Z)/m;
+  // Tolerant match — accept any "## [N.] Now" heading. The capture runs
+  // from just after the heading line to the next `## ` heading OR the
+  // end of the document. NOTE: JavaScript regex has no `\Z` anchor —
+  // a literal `\Z` matches the character "Z" — so end-of-input must be
+  // spelled `(?![\s\S])` ("no character follows"). The earlier `\Z`
+  // form truncated the match at the first capital Z in the Now text
+  // (corrupting the file), and when the Now block had no following
+  // `## ` heading it failed to match at all and got duplicated by the
+  // insert branch below.
+  const nowRe = /^##\s+(?:\d+(?:\.\d+)?\.\s+)?Now\b[^\n]*\n([\s\S]*?)(?=^##\s|(?![\s\S]))/m;
   if (nowRe.test(body)) {
-    return body.replace(nowRe, block + '\n');
+    // Function replacement, not a string: state/next are user-supplied
+    // and may contain dollar-sign substitution sequences that a string
+    // replacement argument would otherwise interpret as patterns.
+    return body.replace(nowRe, () => block + '\n');
   }
   // No Now block: insert after frontmatter close (or at top if none).
   if (body.startsWith('---')) {

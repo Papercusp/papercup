@@ -118,6 +118,61 @@ status: draft
     expect(out).toContain('## Now\n\n**State:** fresh\n\n**Next:** go');
     expect(out.indexOf('## Now')).toBeLessThan(out.indexOf('## Phase 1'));
   });
+
+  it('does not truncate at a capital Z in the Now text (\\Z is not a JS anchor)', () => {
+    const doc = `---
+title: t
+slug: t
+status: active
+---
+
+# t
+
+## Now
+
+**State:** Zero legacy plans remain.
+
+**Next:** ship it
+
+## Background
+
+prose
+`;
+    const out = replaceNowBlock(doc, 'new state', 'new next');
+    // Exactly one Now block; old content fully gone; no orphaned fragment.
+    expect(out.match(/^## Now/gm)).toHaveLength(1);
+    expect(out.match(/\*\*Next:\*\*/g)).toHaveLength(1);
+    expect(out).not.toContain('Zero legacy plans remain');
+    expect(out).toContain('## Background');
+    expect(out).toContain('**State:** new state');
+  });
+
+  it('replaces a Now block that is the last section without duplicating it', () => {
+    const doc = `---
+title: t
+slug: t
+status: active
+---
+
+# t
+
+## Now
+
+**State:** old state
+**Next:** old next
+`;
+    const out = replaceNowBlock(doc, 'new state', 'new next');
+    expect(out.match(/^## Now/gm)).toHaveLength(1);
+    expect(out.match(/\*\*Next:\*\*/g)).toHaveLength(1);
+    expect(out).toContain('**State:** new state');
+    expect(out).not.toContain('old state');
+  });
+
+  it('treats $ sequences in state/next as literal text, not replacement patterns', () => {
+    const tricky = 'budget is $5, see $& and $1 literally';
+    const out = replaceNowBlock(BASE, tricky, 'done');
+    expect(out).toContain(tricky);
+  });
 });
 
 describe('decision id allocation + append', () => {

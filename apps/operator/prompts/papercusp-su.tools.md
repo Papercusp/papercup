@@ -271,12 +271,34 @@ the next agent will thank you.
 ### Find prior work (project history)
 
 When the user references something old ("remember when we were
-working on X", "what did we decide about Y"), look in
-**`apps/operator/docs/plans/<slug>-<YYYY-MM-DD>.md`** first. It's the
-project's chronological design history — most non-trivial decisions
-have a plan doc that captures the *why*. See
-[agent policies §17](/internal/docs/agent-policies#17-plans-and-project-history)
-for the file-naming convention and when to add a new plan yourself.
+working on X", "what did we decide about Y"), the **`plans:*`** tool
+surface is the entry point. Plans live as markdown at
+`apps/operator/docs/plans/<slug>-<YYYY-MM-DD>.md` — see
+[agent policies §18](/internal/docs/agent-policies#18-plans-and-project-history)
+for the file-naming convention and when to add a new plan.
+
+Tool flow:
+
+1. `plans:list` — directory of plans with title, status, item counts
+   by effectiveStatus, and the `## Now` next-action line. Cheap.
+2. `plans:get { slug }` — full parsed structure: frontmatter, Now
+   block, items (with `effectiveStatus` after blocked-by resolution),
+   decisions, prose.
+3. `plans:items { actionable: true }` — pickable items across plans
+   (effectiveStatus === 'todo').
+4. `plans:items { needsHuman: true }` — the human's inbox.
+5. `plans:search { query }` — keyword search; scoped to title/now/
+   items/decisions/prose.
+6. `plans:lint` — validate plan files; legacy files (no frontmatter)
+   are exempt. Run before claiming a plan-doc edit is done.
+
+Writes: `plans:new`, `plans:set-status`, `plans:set-now`,
+`plans:add-decision`, `plans:add-item`. Each acquires a file lock
+via `locks:*` internally; ID allocation (D-NNN, P-NNN) is serialized
+so concurrent calls produce non-colliding sequential ids. Format
+spec lives at `/internal/docs/spec/plan-format`. Plans the parser
+doesn't recognize (no/malformed frontmatter) are tagged `unknown`
+and still listed — no day-one rewrite required.
 
 ### Investigate a failure / bug the user describes
 

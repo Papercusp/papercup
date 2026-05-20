@@ -571,6 +571,35 @@ genuinely can't compute. This eliminates the "blocker finished but
 item still says blocked" stale-state bug structurally, instead of
 requiring a lint warning or a manual sweep.
 
+### D-006 — Phase 3 conversion descoped to light-touch
+
+Date: 2026-05-20
+Decision: P-303 and P-304 shipped a lighter scope than their original
+item text described. Recorded here so a future reader treats the gap
+as a deliberate choice, not an accident — and so the items' `done`
+status is honest.
+
+P-303 originally called for an agent-drafted, human-ratified
+active/shipped/stale triage *table* written to a standalone doc. What
+actually shipped: the triage judgement was folded inline into the
+P-304 conversion — superseded fragments were identified per family and
+moved to `archive/` — with no standalone triage document and no
+discrete human-ratification step.
+
+P-304 originally called for the multi-fragment families
+(`sse-typed-events`, `llm-testing`, `deck-panel-design-audit`) to
+*collapse to one file each*. What actually shipped: a light-touch
+conversion — frontmatter added to every plan, family-leaders given
+full frontmatter, clearly-superseded fragments archived. The families
+were **not** collapsed; all fragments remain separate files. Collapse
+was deferred deliberately: it is a multi-thousand-line prose merge the
+light-touch pass chose not to attempt.
+
+Both items remain `done` — the consolidation, frontmatter tagging, and
+archiving genuinely shipped — but their item text has been corrected
+to describe what was built. A full multi-fragment collapse, if wanted,
+is a separate piece of work for a future plan.
+
 ## 8. Migration
 
 Migration has two cleanly separated parts. Consolidation is
@@ -714,14 +743,8 @@ This section uses the format the document specifies.
   13 dispersed, 4 multi-fragment families).
 - **P-302** `done` Consolidation (§8a) — mechanical file moves +
   slug renames. One PR. blocked-by: P-301
-- **P-303** `done` Agent drafts active/shipped/stale triage
-  table covering all consolidated plans; human ratifies.
-  blocked-by: P-302
-- **P-304** `done` Format conversion (§8b) — convert ratified-
-  active plans to the new format, plan by plan. Multi-fragment
-  families (`sse-typed-events`, `llm-testing`,
-  `deck-panel-design-audit`) collapse to one file each.
-  blocked-by: P-303
+- **P-303** `done` Triage of consolidated plans — folded inline into the P-304 light-touch conversion (superseded fragments identified per family and archived). No standalone triage doc was produced and no discrete human-ratification step occurred; corrected from the original "agent drafts a ratified triage table" scope. See D-006. blocked-by: P-302
+- **P-304** `done` Format conversion (§8b) — light-touch: frontmatter added to every plan, family-leaders given full frontmatter, clearly-superseded fragments moved to `archive/`. Multi-fragment families (`sse-typed-events`, `llm-testing`, `deck-panel-design-audit`) were NOT collapsed to one file each — all fragments remain separate files; full collapse deferred. Corrected from the original "collapse to one file each" scope. See D-006. blocked-by: P-303
 - **P-305** `done` Update `/home/marsh-office/.claude/CLAUDE.md`
   and `agent-policies.mdx` §17 to point at `plans:list`.
   blocked-by: P-110
