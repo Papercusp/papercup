@@ -113,7 +113,11 @@ export function registerOracle(app: Hono) {
           'oracle:chat',
           input,
           ctx as never,
-          undefined as never,
+          // DispatchProjectedDeps — every field is optional, so {} means
+          // "no telemetry / quota recording" (same as the operator-scan
+          // shim). Passing `undefined` CRASHES the dispatcher: it does
+          // `deps.recordInvocation` with no null-guard on `deps` itself.
+          {},
         )) {
           if (ev.kind === 'event') {
             const kind = tool.eventWireKinds?.[ev.name];

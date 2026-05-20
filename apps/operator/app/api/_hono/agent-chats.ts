@@ -337,7 +337,11 @@ export function registerAgentChats(harness: Hono): void {
             'agent_chats:chat',
             { promptText: assembled.text, cwd: projectDir ?? undefined },
             ctx as never,
-            undefined as never,
+            // DispatchProjectedDeps — all fields optional; {} = no
+            // telemetry/quota recording (matches the operator-scan shim).
+            // `undefined` here crashes the dispatcher (deps.recordInvocation
+            // is read with no null-guard on `deps`).
+            {},
           )) {
             if (ev.kind === 'event') {
               if (ev.name === 'delta') {
