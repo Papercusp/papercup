@@ -3,13 +3,15 @@ import { mkdtemp, writeFile, rm, mkdir, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawn } from 'node:child_process';
+import { IGNORE_PATTERNS } from './policy';
 
 /**
  * Integration test: prove that snapshotting workspaceRoot does NOT
  * recursively include the kopia repo (which lives inside workspaceRoot
  * at backups/kopia-repo). Two regressions have been caused by the
  * `backups` exclusion missing from IGNORE_PATTERNS — see the comment
- * on IGNORE_PATTERNS in workspace-backup.ts.
+ * on IGNORE_PATTERNS in policy.ts. The companion assertion proves
+ * db-dumps/ (the PG dump) IS captured — point-in-time restore needs it.
  *
  * We exercise the real `kopia` binary against a scratch dir, mirroring
  * the production setup (repo inside workspaceRoot, policy applied via
@@ -18,19 +20,6 @@ import { spawn } from 'node:child_process';
 
 const KOPIA_BIN = process.env.KOPIA_BIN ?? 'kopia';
 const PASSWORD = 'self-exclusion-test-password';
-
-// Mirror IGNORE_PATTERNS from workspace-backup.ts. Keep these in sync.
-const IGNORE_PATTERNS = [
-  'node_modules', '.next', 'out', 'target', 'dist', 'build', '.turbo', '.cache',
-  '.svelte-kit', '.nuxt', '.angular', '.vite', '.parcel-cache',
-  '.yarn/cache', '.pnpm-store', '.bun',
-  'coverage', '.nyc_output',
-  '__pycache__', '*.pyc', '.venv', 'venv', '.pytest_cache', '.mypy_cache', '.ruff_cache',
-  '.gradle', '.terraform',
-  'tmp', '.tmp', '*.swp', '*.swo', '.DS_Store', 'Thumbs.db',
-  'proc-macro-srv*', '*.log',
-  'backups', 'db-dumps', '.restored', '.broken-*', '.rolled-back-*',
-];
 
 function kopia(args: string[], env: NodeJS.ProcessEnv): Promise<{ stdout: string; stderr: string; code: number }> {
   return new Promise((resolve) => {
@@ -74,6 +63,10 @@ describe('backup self-exclusion', () => {
     await writeFile(join(workspaceRoot, 'hello.txt'), 'hello world\n');
     await mkdir(join(workspaceRoot, 'src'), { recursive: true });
     await writeFile(join(workspaceRoot, 'src', 'a.ts'), 'export const x = 1;\n');
+    // db-dumps/ holds the pre-snapshot PG dump — it MUST be captured by
+    // the snapshot; point-in-time DB restore depends on it.
+    await mkdir(join(workspaceRoot, 'db-dumps'), { recursive: true });
+    await writeFile(join(workspaceRoot, 'db-dumps', 'pg-embedded.sql.gz'), 'fake dump\n');
 
     await kopiaOk(['repository', 'create', 'filesystem', '--path', repoPath], env);
     await kopiaOk(
@@ -103,8 +96,10 @@ describe('backup self-exclusion', () => {
     });
     expect(names).toContain('hello.txt');
     expect(names).toContain('src');
+    // db-dumps/ IS versioned — the PG dump must be restorable.
+    expect(names).toContain('db-dumps');
+    // backups/ (the kopia repo itself) is NOT — that's the recursion guard.
     expect(names).not.toContain('backups');
-    expect(names).not.toContain('db-dumps');
   }, 60_000);
 
   it('does not balloon when snapshotted repeatedly (recursive-inclusion regression)', async () => {

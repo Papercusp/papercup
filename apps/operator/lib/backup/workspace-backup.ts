@@ -30,23 +30,9 @@ import {
   type VerifyResult,
   RETENTION_PRESETS,
 } from './types';
+import { IGNORE_PATTERNS, diffPolicyIgnores } from './policy';
 
 const KOPIA_BIN = process.env.KOPIA_BIN ?? 'kopia';
-
-const IGNORE_PATTERNS = [
-  'node_modules', '.next', 'out', 'target', 'dist', 'build', '.turbo', '.cache',
-  '.svelte-kit', '.nuxt', '.angular', '.vite', '.parcel-cache',
-  '.yarn/cache', '.pnpm-store', '.bun',
-  'coverage', '.nyc_output',
-  '__pycache__', '*.pyc', '.venv', 'venv', '.pytest_cache', '.mypy_cache', '.ruff_cache',
-  '.gradle', '.terraform',
-  'tmp', '.tmp', '*.swp', '*.swo', '.DS_Store', 'Thumbs.db',
-  'proc-macro-srv*', '*.log',
-  // Self-exclude: the kopia repo, dumps, and recovery scratch dirs all
-  // live inside the workspace root we snapshot. Without these the repo
-  // gobbles itself recursively and blows up toward 1TB. Don't remove.
-  'backups', 'db-dumps', '.restored', '.broken-*', '.rolled-back-*',
-];
 
 export interface WorkspaceBackupOpts {
   workspaceId: string;
@@ -78,7 +64,16 @@ export class WorkspaceBackup {
 
     const env = this.envWithPassword(password);
     const connected = await this.kopiaTry(['repository', 'status'], { env });
-    if (connected.ok) return;
+    if (connected.ok) {
+      // Warm repo. Re-apply the global policy so retention/excludedPaths
+      // changes made via updateSettings since the last snapshot reach
+      // kopia — updateSettings only writes PG, nothing else syncs the
+      // kopia policy. Best-effort: a transient `policy set` failure must
+      // not skip the snapshot; assertSelfExclusionPolicy still backstops
+      // the recursion guard and the next ensureRepo retries.
+      await this.applyGlobalPolicy(env, { fatal: false });
+      return;
+    }
 
     // Not connected. Try to connect (existing repo) before creating one.
     const connect = await this.kopiaTry(
@@ -643,45 +638,62 @@ export class WorkspaceBackup {
     };
   }
 
-  private async applyGlobalPolicy(env: NodeJS.ProcessEnv): Promise<void> {
-    const settings = await this.getSettings();
-    const retention =
-      settings.retentionPreset === 'custom' && settings.retentionCustom
-        ? settings.retentionCustom
-        : RETENTION_PRESETS[settings.retentionPreset === 'custom' ? 'default' : settings.retentionPreset];
-    const ignores = [...IGNORE_PATTERNS, ...settings.excludedPaths];
-
-    // kopia's `policy set --add-ignore` only ever appends a rule — it
-    // never drops one. So when a user removes an entry from
-    // excludedPaths the stale rule lingers in the repo policy forever
-    // (removing an excluded path through the UI becomes a silent
-    // no-op). Read the current policy back, diff against the desired
-    // set, and `--remove-ignore` anything we no longer want.
-    // Best-effort: if the policy can't be read (e.g. a brand-new repo
-    // with no policy yet) fall back to add-only — there's nothing
-    // stale to drop in that case anyway.
-    let toRemove: string[] = [];
+  /**
+   * Sync the kopia global policy (retention + ignore rules) to current
+   * settings. Called from ensureRepo on every path — including the
+   * warm/already-connected one — so retention and excludedPaths changes
+   * made via updateSettings actually reach kopia.
+   *
+   * `fatal` (default true): on the repo create/connect path a failure
+   * here MUST abort — a new repo without the ignore policy would
+   * snapshot its own kopia-repo recursively. On the warm path the
+   * caller passes `fatal: false`: a transient `policy set` hiccup must
+   * not skip the snapshot, and assertSelfExclusionPolicy still
+   * backstops the recursion guard.
+   */
+  private async applyGlobalPolicy(
+    env: NodeJS.ProcessEnv,
+    opts: { fatal?: boolean } = {},
+  ): Promise<void> {
+    const fatal = opts.fatal ?? true;
     try {
-      const raw = await this.kopia(['policy', 'show', '--global', '--json'], { env });
-      const parsed = JSON.parse(raw) as { files?: { ignore?: string[] } };
-      const current = parsed.files?.ignore ?? [];
-      const desired = new Set(ignores);
-      toRemove = current.filter((p) => !desired.has(p));
-    } catch {
-      // No readable policy yet — nothing to remove.
-    }
+      const settings = await this.getSettings();
+      const retention =
+        settings.retentionPreset === 'custom' && settings.retentionCustom
+          ? settings.retentionCustom
+          : RETENTION_PRESETS[settings.retentionPreset === 'custom' ? 'default' : settings.retentionPreset];
+      const ignores = [...IGNORE_PATTERNS, ...settings.excludedPaths];
 
-    const args = [
-      'policy', 'set', '--global',
-      `--keep-latest=${retention.keepLatest}`,
-      `--keep-hourly=${retention.keepHourly}`,
-      `--keep-daily=${retention.keepDaily}`,
-      `--keep-weekly=${retention.keepWeekly}`,
-      `--keep-monthly=${retention.keepMonthly}`,
-      ...toRemove.map((p) => `--remove-ignore=${p}`),
-      ...ignores.map((p) => `--add-ignore=${p}`),
-    ];
-    await this.kopia(args, { env });
+      // `kopia policy set --add-ignore` only appends — it never drops a
+      // rule. Read the policy back and `--remove-ignore` anything stale
+      // (e.g. an excludedPath the user removed in the UI). Best-effort
+      // read: a brand-new repo has no policy yet — treat as empty.
+      let current: string[] = [];
+      try {
+        const raw = await this.kopia(['policy', 'show', '--global', '--json'], { env });
+        const parsed = JSON.parse(raw) as { files?: { ignore?: string[] } };
+        current = parsed.files?.ignore ?? [];
+      } catch {
+        // No readable policy yet.
+      }
+      const { toAdd, toRemove } = diffPolicyIgnores(current, ignores);
+
+      const args = [
+        'policy', 'set', '--global',
+        `--keep-latest=${retention.keepLatest}`,
+        `--keep-hourly=${retention.keepHourly}`,
+        `--keep-daily=${retention.keepDaily}`,
+        `--keep-weekly=${retention.keepWeekly}`,
+        `--keep-monthly=${retention.keepMonthly}`,
+        ...toRemove.map((p) => `--remove-ignore=${p}`),
+        ...toAdd.map((p) => `--add-ignore=${p}`),
+      ];
+      await this.kopia(args, { env });
+    } catch (err) {
+      if (fatal) throw err;
+      // eslint-disable-next-line no-console
+      console.warn(`[backup] applyGlobalPolicy (best-effort) for ${this.workspaceId} failed:`, err);
+    }
   }
 
   /**
