@@ -1,0 +1,74 @@
+---
+title: 15. Open questions for v1.0
+sidebar:
+  order: 31
+---
+
+<p>
+        These are the questions still genuinely undecided. The list shrank
+        between drafts as previously-open issues got resolved into spec
+        sections — see "Resolved since draft 2" at the bottom for
+        traceability.
+      </p>
+
+      <h3>Still open</h3>
+
+      <ol>
+        <li>
+          <strong>Plugin-defined decision verbs.</strong> Today the orchestrator can emit `NEXT_<plugin-role>`; should we let plugins extend the verb vocabulary further (e.g., `RETRY`, `BRANCH`)? If yes, how do we keep the orchestrator's decision space bounded enough to be auditable?
+        </li>
+        <li>
+          <strong>LLM-agnosticism in the spec.</strong> The substrate is "fresh context → role prompt → response", which is LLM-agnostic in principle. Reference runtime hardcodes Claude. Should the spec require pluggable LLM providers (adapter slot), or is reference-implementation choice fine?
+        </li>
+        <li>
+          <strong>UI plugin install flow when the host isn't running.</strong> If the host UI is offline, the CLI can still drive install (`papercusp install` doesn't require the GUI), but capability prompts are text-only. Is text-only consent acceptable for high-tier capabilities (§10.6.1), or should the spec require GUI confirmation for those? Affects headless deployments.
+        </li>
+        <li>
+          <strong>Versioning of the spec itself.</strong> Plugin manifests pin against a substrate <em>service</em> version (§8.4.1), but not against a <em>spec</em> version. How do we evolve the harness contract (add a 5th required role, change state schema) without breaking installed plugins? Likely needs a `papercusp` field in the manifest pinning a spec semver range, with the same evolution rules as services.
+        </li>
+        <li>
+          <strong>Goal-graph richness.</strong> Today goals are a tree (parent_id). Real strategy involves multiple goals contributing to one outcome (DAG, not tree). Add multiple parents? Weighted contributions? Or punt to plugins?
+        </li>
+        <li>
+          <strong>Reputation and reviews.</strong> §11.6 establishes verified vs unverified trust tiers based on identity + signature, but no mechanism for community feedback. Does the marketplace need ratings, reviews, or a reporting flow for low-quality (not malicious) packages? At what scale does this become necessary, and who moderates?
+        </li>
+      </ol>
+
+      <h3>Resolved since draft 2</h3>
+
+      <p>
+        These were open questions in earlier drafts; the linked sections
+        now answer them.
+      </p>
+
+      <table>
+        <thead><tr><th>Was open</th><th>Now answered in</th></tr></thead>
+        <tbody>
+          <tr>
+            <td>Multi-tenancy in the runtime — how to scope user/install when many run side-by-side</td>
+            <td>§10.5 — per-install Postgres database; substrate explicitly does not support shared-DB multi-tenancy</td>
+          </tr>
+          <tr>
+            <td>Marketplace governance — moderation model for malicious entries; reviewer approval at publish time?</td>
+            <td>§11.6 (namespace policy + verified/unverified trust tiers via signing) + §11.9 (retraction levels: deprecated / yanked / withdrawn / quarantined, with operator-only quarantine for security incidents)</td>
+          </tr>
+          <tr>
+            <td>Permission fatigue — how to prevent users from blindly approving 30-cap manifests</td>
+            <td>§10.6 (impact-tiered budgets + grouped consent + default-deny new caps at update)</td>
+          </tr>
+          <tr>
+            <td>Cost containment for routines — how to prevent a buggy cron from draining LLM budget</td>
+            <td>§9.4 (per-routine rate limit + per-plugin daily budget + system-wide caps + auto-pause on 5 errors)</td>
+          </tr>
+          <tr>
+            <td>Plugin update flow — what happens when a new version requests new capabilities or migrates schema</td>
+            <td>§11.7 (CLI flow with capability diff and snapshot) + §10.8 (per-change-class semantics)</td>
+          </tr>
+          <tr>
+            <td>Hook ordering when multiple plugins fight for the same hook</td>
+            <td>§8.5.1 (named predicates as canonical, integer priorities as fallback)</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <hr />

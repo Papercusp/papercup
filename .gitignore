@@ -12,3 +12,7 @@ package-lock.json
 
 # Rust/Tauri build artifacts — accidentally committed before; never again.
 apps/operator-mobile/src-tauri/target/
+
+# operator-docs (Astro+Starlight)
+apps/operator-docs/dist/
+apps/operator-docs/.astro/

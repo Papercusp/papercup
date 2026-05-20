@@ -1,0 +1,412 @@
+---
+title: 7. Plugin extension points & runtime
+sidebar:
+  order: 9
+---
+
+<p>
+        Plugins extend a Papercusp install along six axes:
+      </p>
+
+      <table>
+        <thead><tr><th>Extension point</th><th>What it adds</th><th>Plugin SDK type</th></tr></thead>
+        <tbody>
+          <tr><td><strong>Roles</strong></td><td>New named agent invocations the orchestrator can dispatch</td><td>`RoleDefinition`</td></tr>
+          <tr><td><strong>Lifecycle hooks</strong></td><td>Code that runs before/after iteration phases (e.g. `onPostValidator`)</td><td>`LifecycleHooks`</td></tr>
+          <tr><td><strong>UI (full-route)</strong></td><td>A complete React panel mounted at `/harness/&lt;slug&gt;` — <strong>see §8</strong></td><td>`UiContribution`</td></tr>
+          <tr><td><strong>API routes</strong></td><td>HTTP endpoints under `/api/plugin/&lt;name&gt;/*`</td><td>`ApiRoute[]`</td></tr>
+          <tr><td><strong>DB schema</strong></td><td>Postgres migrations under the plugin's own schema</td><td>`SchemaMigration[]`</td></tr>
+          <tr><td><strong>Routines</strong></td><td>Cron / webhook / API triggers that insert into `pending_events` — <strong>see §9</strong></td><td>`RoutineDefinition[]`</td></tr>
+        </tbody>
+      </table>
+
+      <p>
+        Plugins also declare <strong>capabilities</strong> (§10) — a permission manifest that the runtime enforces at the DI boundary. Sections 7.1–7.5 below describe the substrate-level concerns that apply to every plugin regardless of which axes it extends.
+      </p>
+
+      
+
+### 7.1 Inter-plugin dependencies
+
+
+
+      <p>
+        Plugins frequently rely on services or hooks declared by other
+        plugins. The substrate makes this dependency explicit in the
+        manifest so install-time resolution can refuse incoherent
+        configurations rather than fail at runtime.
+      </p>
+
+      ```typescript
+// Plugin manifest:
+export default defineManifest({
+  name: 'shareholder-briefings',
+  version: '1.2.0',
+  requires: {
+    // Hard dependency — install fails if not satisfied.
+    'audit-log': '^1.0',
+    // Optional — plugin loads either way; check `api.hasPlugin('papercup')` at runtime.
+    'papercup': { version: '^0.0.3', optional: true },
+  },
+  // ...
+});
+```
+
+      <p><strong>Resolution at install time.</strong></p>
+
+      ```
+$ papercusp install shareholder-briefings@1.2.0
+
+shareholder-briefings@1.2.0 requires:
+  audit-log    ^1.0    ✓ found (audit-log@1.4.2 installed)
+  papercup     ^0.0.3  ⚠ not installed (optional)
+
+Continue? [Y/n]: y
+```
+
+      <p>
+        If a hard `requires` entry is missing or version-incompatible,
+        the install aborts with a one-line `papercusp install &lt;dep&gt;`
+        suggestion. Optional dependencies surface as warnings only;
+        the plugin must check `api.hasPlugin(name)` at runtime and
+        degrade gracefully when absent.
+      </p>
+
+      <p><strong>Cascading uninstall.</strong> Removing plugin A while
+      plugin B has `requires: { 'A': '^1.0' }` aborts by default; the
+      user must explicitly `papercusp uninstall A --cascade` (which
+      uninstalls B too, after a per-plugin confirmation) or
+      `--orphan` (which leaves B installed but disabled, with a banner
+      in the UI explaining why).</p>
+
+      <p><strong>Substrate version pinning.</strong> Independently of
+      plugin-to-plugin deps, every manifest declares the substrate
+      semver range it was built against:</p>
+
+      ```typescript
+export default defineManifest({
+  // ...
+  substrate: '^1.0',   // refuses to load on substrate 2.x
+});
+```
+
+      <p>
+        This is the same versioning shape as service ABI pinning
+        (§8.4.1), but at the substrate level. It catches the case where
+        a plugin built against substrate 1.0 is installed onto a 2.x
+        substrate and would otherwise hit subtle API drift bugs.
+      </p>
+
+      
+
+### 7.2 Plugin lifecycle states
+
+
+
+      <p>
+        Every installed plugin is in exactly one of these states. The
+        substrate persists state to <code>~/.papercusp/installed/&lt;name&gt;/state.json</code>
+        and exposes it via <code>papercusp status</code>.
+      </p>
+
+      <table>
+        <thead><tr><th>State</th><th>Meaning</th><th>Hooks fire?</th><th>UI mounted?</th></tr></thead>
+        <tbody>
+          <tr>
+            <td><strong>installed</strong></td>
+            <td>Tarball extracted, migrations run, capabilities granted, but never activated yet (or has been disabled).</td>
+            <td>No</td>
+            <td>No</td>
+          </tr>
+          <tr>
+            <td><strong>active</strong></td>
+            <td>Normal running state. Listening to hooks, mounting UI, accepting role dispatches.</td>
+            <td>Yes</td>
+            <td>Yes</td>
+          </tr>
+          <tr>
+            <td><strong>disabled</strong></td>
+            <td>User-initiated. Configuration and DB schema retained.</td>
+            <td>No</td>
+            <td>No</td>
+          </tr>
+          <tr>
+            <td><strong>quarantined</strong></td>
+            <td>Substrate-initiated after the crash circuit breaker (§7.3) trips. Same as disabled but with a UI banner explaining why and a "re-enable after fix" button.</td>
+            <td>No</td>
+            <td>No</td>
+          </tr>
+          <tr>
+            <td><strong>updating</strong></td>
+            <td>Transient. New version downloaded; capability diff being prompted; migrations running. Old version's hooks paused, UI replaced with a spinner.</td>
+            <td>Paused (queued)</td>
+            <td>Spinner</td>
+          </tr>
+          <tr>
+            <td><strong>uninstalling</strong></td>
+            <td>Transient. Hooks unregistered; UI unmounted; routines stopped; schema dropped (after confirmation).</td>
+            <td>No</td>
+            <td>No</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <p>Allowed transitions:</p>
+
+      ```
+              install
+                 │
+                 ▼
+            installed ─────────► uninstalling ─► (gone)
+                 │  ▲
+        activate │  │ disable
+                 ▼  │
+              active ◄─────► quarantined
+                 │  ▲
+                 │  │
+                 ▼  │
+              updating
+                 │
+                 ▼
+              active (or rolled back to installed if migration fails)
+```
+
+      <p><strong>Substrate guarantees.</strong> While a plugin is in
+      a transient state (<code>updating</code>, <code>uninstalling</code>),
+      the substrate enqueues hook fires for it; on transition back to
+      <code>active</code> within a 30-second window, queued events are
+      delivered. After 30s they're dropped with an entry in
+      <code>audit.hook_executions</code>. This avoids both the silent-loss
+      footgun and the unbounded queue growth footgun.</p>
+
+      <p><strong>State changes never silently fail.</strong> Every
+      transition writes a row to <code>audit.plugin_lifecycle</code>
+      with the trigger, the actor (substrate vs user), and any error.
+      <code>papercusp status &lt;name&gt;</code> shows the current
+      state and the last 5 transitions inline.</p>
+
+      
+
+### 7.3 Crash circuit breaker
+
+
+
+      <p>
+        Plugins fail. The substrate must not let one plugin's bugs take
+        down the whole install. The circuit breaker is per-plugin,
+        per-fault-class:
+      </p>
+
+      <table>
+        <thead><tr><th>Fault class</th><th>Threshold</th><th>Action</th></tr></thead>
+        <tbody>
+          <tr>
+            <td><strong>Hook handler throws</strong></td>
+            <td>5 throws within any 60s window for the same hook</td>
+            <td>That hook handler is removed from the chain. The plugin stays <strong>active</strong>; other handlers and hooks are unaffected. Audit row written.</td>
+          </tr>
+          <tr>
+            <td><strong>Hook handler hangs past timeout</strong></td>
+            <td>3 timeouts within any 60s window</td>
+            <td>Same: handler removed, plugin stays active.</td>
+          </tr>
+          <tr>
+            <td><strong>Init function throws</strong></td>
+            <td>Any throw on <code>onLoad()</code> during activation</td>
+            <td>Plugin transitions to <strong>quarantined</strong>. UI shows the throw + stack. <code>papercusp enable &lt;name&gt;</code> retries init.</td>
+          </tr>
+          <tr>
+            <td><strong>Migration throws</strong></td>
+            <td>Any throw during <code>papercusp install</code> or <code>update</code></td>
+            <td>Substrate rolls back the partial migration (transactional DDL where supported), plugin stays in <strong>installed</strong> at the prior version. User sees the migration error.</td>
+          </tr>
+          <tr>
+            <td><strong>UI component renders error 5x in a row</strong></td>
+            <td>5 consecutive React error-boundary catches</td>
+            <td>UI surface unmounted; rest of the plugin (hooks, routines) keeps running. UI shows a "this surface crashed — see logs" inline placeholder.</td>
+          </tr>
+          <tr>
+            <td><strong>Iframe widget fails to load</strong></td>
+            <td>3 load failures in 60s</td>
+            <td>Iframe widget hidden; placeholder shown. Plugin's other surfaces continue.</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <p><strong>Defaults are spec-defined; per-plugin overrides via
+      manifest <code>circuitBreaker</code> field require user opt-in
+      at install consent (treated as a medium-tier capability).</strong>
+      A plugin author cannot silently raise their own thresholds.</p>
+
+      <p>
+        All circuit-breaker actions are audit-logged with the fault
+        history. `papercusp logs &lt;name&gt; --circuit-breaker`
+        shows recent trips for debugging.
+      </p>
+
+      
+
+### 7.4 Failure-mode taxonomy
+
+
+
+      <p>
+        Substrate behavior must be defined for every failure class —
+        otherwise authors guess and the install feels flaky. The
+        substrate enumerates these and documents the response:
+      </p>
+
+      <table>
+        <thead>
+          <tr><th>Failure</th><th>Substrate behavior</th><th>What the plugin author does about it</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>Capability revoked mid-call</strong></td>
+            <td>DI proxy throws <code>MissingCapabilityError</code> (§10.7).</td>
+            <td>Wrap DI calls in try/catch; degrade to a no-op or prompt the user to re-grant.</td>
+          </tr>
+          <tr>
+            <td><strong>Required dependency uninstalled</strong> (with `--orphan`)</td>
+            <td>Plugin transitions to <strong>quarantined</strong>; UI banner names the missing dep.</td>
+            <td>Nothing — the user resolves by reinstalling the dep or uninstalling this plugin.</td>
+          </tr>
+          <tr>
+            <td><strong>Hook handler hits a deadline</strong></td>
+            <td>Per-hook timeout (default 5s, override in manifest with capability `hooks:long-running`). Handler is cancelled; circuit breaker increments.</td>
+            <td>Move long work to a routine; hooks are advisory, not for heavy lifting.</td>
+          </tr>
+          <tr>
+            <td><strong>Plugin's API route throws</strong></td>
+            <td>Substrate returns 500 with the plugin name and a request id; full stack in `audit.api_errors`.</td>
+            <td>Standard HTTP error handling; the substrate does not retry.</td>
+          </tr>
+          <tr>
+            <td><strong>Plugin's routine fire times out</strong></td>
+            <td>Marked as `failed` in `routine_fires` after the configured deadline; counts toward routine pause threshold (§9.4).</td>
+            <td>Either reduce work, raise the deadline (via manifest), or split into smaller routines.</td>
+          </tr>
+          <tr>
+            <td><strong>Service ABI mismatch on substrate upgrade</strong></td>
+            <td>Plugin refuses to load (§8.4.1). Status: <strong>installed</strong> not <strong>active</strong>. UI shows version mismatch.</td>
+            <td>Bump the manifest's service range and republish.</td>
+          </tr>
+          <tr>
+            <td><strong>Plugin claims a UI slot id another plugin owns</strong></td>
+            <td>Install-time abort (§10.5). User picks `--rename-id`, `--replace`, or `--supplement`.</td>
+            <td>Author should publish with a plugin-prefixed id by default.</td>
+          </tr>
+          <tr>
+            <td><strong>Unhandled exception in plugin code</strong> (anywhere)</td>
+            <td>Logged to `audit.plugin_errors` with stack + plugin version + recent context. Does not propagate to the substrate's main loop.</td>
+            <td>Same as any production bug — read the audit log.</td>
+          </tr>
+          <tr>
+            <td><strong>Migration fails partway through `papercusp update`</strong></td>
+            <td>Substrate attempts transactional rollback. If DDL is non-transactional (e.g. some CREATE INDEX CONCURRENTLY) the substrate refuses to apply it without `--allow-non-transactional` and a confirmation. Failed update leaves the plugin at the prior version.</td>
+            <td>Provide an explicit `down()` migration; test the up→down→up cycle locally.</td>
+          </tr>
+          <tr>
+            <td><strong>Plugin tarball corrupt or signature invalid</strong></td>
+            <td>Install aborted before any filesystem changes. Audit row in `audit.install_attempts`.</td>
+            <td>Republish; the marketplace re-verifies on upload.</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <p>
+        Every behavior here is enforced by the substrate, not the plugin.
+        A plugin author writes <em>their</em> code and trusts the substrate
+        to handle the failure cases above — same as a Node program trusts
+        the OS to handle a SIGSEGV.
+      </p>
+
+      
+
+### 7.5 Developer experience
+
+
+
+      <p>
+        The inner loop for plugin authors determines whether the marketplace
+        ever has third-party content. The substrate ships an opinionated
+        dev mode aimed at sub-second iteration:
+      </p>
+
+      ```
+$ papercusp dev ./my-plugin
+
+==> Linked ./my-plugin into ~/.papercusp/installed/my-plugin/ (symlink)
+==> Watching: src/**, papercusp.manifest.ts, migrations/**, public/**
+==> Substrate state: my-plugin@dev (state=active, hot-reload=on)
+==> http://localhost:3055/                ← substrate UI
+==> http://localhost:3055/harness/my-plugin   ← your UI surface
+
+[hot-reload] src/components/Tab.tsx changed → React Refresh applied (no remount)
+[hot-reload] papercusp.manifest.ts changed → manifest revalidated; new capabilities require consent (paused)
+[hot-reload] migrations/0002_add_foo.sql added → applied (foo column exists)
+```
+
+      <p><strong>Substrate guarantees in dev mode:</strong></p>
+
+      <ul>
+        <li><strong>UI components hot-swap.</strong> React Fast Refresh
+        is preserved across the substrate-plugin boundary. Component
+        state survives unless the export shape changes.</li>
+        <li><strong>Hook handler swaps.</strong> Editing a handler's body
+        replaces the registered function on next file save. In-flight
+        handler calls continue with the old function; the next fire
+        uses the new one.</li>
+        <li><strong>Service ABI mismatches surface immediately</strong>
+        as a substrate banner instead of a runtime crash.</li>
+        <li><strong>Schema migrations auto-apply</strong> on file change.
+        New `up.sql` files run in order; new `down.sql` siblings allow
+        the substrate to reverse a migration when the file is reverted
+        (`papercusp dev --no-auto-migrate` opts out).</li>
+        <li><strong>Capability changes pause the plugin</strong> with a
+        single-line consent prompt rather than auto-granting in dev.
+        The author must approve, just as users will. This catches the
+        "works on my machine, fails on user install" failure mode.</li>
+        <li><strong>Routines fire at 10× normal cadence</strong> when
+        `papercusp dev --fast-routines` is set, so cron jobs are
+        observable in a 5-minute session instead of waiting an hour.</li>
+      </ul>
+
+      <p><strong>What dev mode does not do:</strong></p>
+
+      <ul>
+        <li>It does not bypass capability checks. A plugin that needs
+        `secrets:read:FOO` in production needs it in dev too.</li>
+        <li>It does not change the wire format of any DI service or
+        hook payload. What works in dev works in install — modulo
+        environment differences.</li>
+        <li>It does not auto-publish. Publishing is always
+        `papercusp publish`, an explicit user action.</li>
+      </ul>
+
+      <p><strong>Plugin SDK scaffolding.</strong></p>
+
+      ```
+$ papercusp init my-plugin --template ui-tab
+
+==> Creating ./my-plugin/
+    package.json
+    papercusp.manifest.ts
+    src/index.ts
+    src/components/Tab.tsx
+    migrations/0001_init.sql
+    README.md
+    .papercuspignore
+
+==> Installing dependencies (papercusp/plugin-sdk@^1)
+==> Done. Next:
+    cd my-plugin && papercusp dev .
+```
+
+      <p>
+        Templates ship with the SDK and cover the common shapes:
+        <code>ui-tab</code>, <code>routine-only</code>, <code>role-pack</code>,
+        <code>full-featured</code>. Each template is itself a published
+        plugin in the marketplace under <code>papercusp/template-*</code>
+        so the scaffold output is verifiable from source.
+      </p>

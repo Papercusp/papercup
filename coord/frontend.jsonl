@@ -1,0 +1,1 @@
+{"ts":"2026-05-20T22:50:00Z","agent":"frontend-removal","action":"claim","scope":"apps/operator-docs (new)","intent":"Start fumadocs->Starlight migration F1-F5 per fumadocs-to-starlight-2026-05-20.md","note":"Creating new Astro+Starlight app. Not touching apps/operator/ or app/harness/* in this session. Will update plan estimates after audit findings (F3 is ~0.5d not 2d)."}

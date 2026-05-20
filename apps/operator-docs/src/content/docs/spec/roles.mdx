@@ -1,0 +1,142 @@
+---
+title: 4. The four core roles
+sidebar:
+  order: 5
+---
+
+<p>
+        The Papercusp specification defines four core roles. <strong>Which
+        of these are required depends on the install's declared shape</strong>
+        (see §4.1) — the most common shape (`iterative`) requires
+        all four; specialized shapes can opt out. Plugins may register
+        additional roles regardless of shape.
+      </p>
+
+      <table>
+        <thead>
+          <tr>
+            <th>Role</th>
+            <th>When invoked</th>
+            <th>Reads</th>
+            <th>Writes</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>Planner</strong></td>
+            <td>Once, at install activation; or when the goal materially changes</td>
+            <td>`goals`, install spec</td>
+            <td>`tasks` (initial breakdown), `validation_contract`</td>
+          </tr>
+          <tr>
+            <td><strong>Worker</strong></td>
+            <td>Every iteration with a `todo`/`failing` task</td>
+            <td>`tasks`, `issues`, `worker_log`, parent goal lineage</td>
+            <td>Domain output (code/text/etc.) + status update on the task</td>
+          </tr>
+          <tr>
+            <td><strong>Validator</strong></td>
+            <td>Every iteration with a `validating` task</td>
+            <td>`validation_contract`, the task's domain output, parent goal lineage</td>
+            <td>`issues`, sets task status (`passed`/`failing`)</td>
+          </tr>
+          <tr>
+            <td><strong>Orchestrator</strong></td>
+            <td>Every tick (timer-based OR event-triggered)</td>
+            <td>All of the above + `pending_events`</td>
+            <td>One decision verb (above)</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <p>
+        Roles are defined by <strong>prompt files</strong>, not code. Improvements compound without a deploy, branches are mergeable, and the cache key (the prompt content) is stable for a given role-version.
+      </p>
+
+      
+
+### 4.1 Install shapes — which roles a given install must implement
+
+
+
+      <p>
+        Not every install runs an iterative plan-then-build loop. A pure
+        scheduling install (cron + alerting, no goals) has no use for a
+        planner or validator — forcing it to ship no-op stubs invites
+        copy-paste smell. The install's `shape` in its manifest
+        determines which roles are required:
+      </p>
+
+      <table>
+        <thead>
+          <tr>
+            <th>Shape</th>
+            <th>Required roles</th>
+            <th>Use case</th>
+            <th>Examples</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>`iterative`</strong> (default)</td>
+            <td>planner + worker + validator + orchestrator</td>
+            <td>Goal-driven work that breaks down into validated tasks. The historical Papercusp shape.</td>
+            <td>Papercup, sheets-clone, habit-tracker, any product-build install</td>
+          </tr>
+          <tr>
+            <td><strong>`scheduled`</strong></td>
+            <td>worker + orchestrator</td>
+            <td>Recurring or routine-driven work without explicit goal/task decomposition. Plan and validation aren't applicable.</td>
+            <td>weekly-briefings, daily-cost-report, nightly-backup</td>
+          </tr>
+          <tr>
+            <td><strong>`reactive`</strong></td>
+            <td>orchestrator only</td>
+            <td>Pure event-handling — orchestrator dispatches plugin-defined roles in response to `pending_events`. No first-party worker.</td>
+            <td>webhook-router, slack-bot, on-call-escalator</td>
+          </tr>
+          <tr>
+            <td><strong>`passive`</strong></td>
+            <td>none (zero roles)</td>
+            <td>Pure consumer — listens to hooks, contributes UI surface, queries other plugins' data via `data:read:*` capabilities, but never invokes an LLM. No prompts to author. Schema may still be declared (for the plugin's own storage).</td>
+            <td>dashboard-widgets, status-monitors, audit-loggers, read-only reports</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <p>
+        Why `passive` matters: dashboard widgets and observability
+        plugins shouldn't be forced to ship even a `worker` stub.
+        A passive install can register hooks, contribute UI, declare its own
+        schema, and read other plugins' data — all without paying any LLM
+        budget or implementing role prompts. Most "extension" plugins (those
+        that augment, rather than build) belong in this shape.
+      </p>
+
+      ```typescript
+// In an install's manifest:
+export default defineManifest({
+  name: 'weekly-briefings',
+  shape: 'scheduled',                      // → only requires worker + orchestrator
+  // planner/validator omitted; substrate doesn't error
+  capabilities: ['routines:write', 'http:fetch:slack.com'],
+  routines: [{ name: 'weekly-summary', trigger: { kind: 'cron', expr: '0 9 * * MON' } }],
+});
+```
+
+      <p>
+        The substrate validates the shape contract at install time — a
+        `scheduled` install that ships only an orchestrator is
+        rejected with a clear error pointing at the missing worker. A
+        `reactive` install that ships a worker is accepted (extra
+        roles are always fine; missing required ones are not).
+      </p>
+
+      <p>
+        Authors writing a new install pick the most restrictive shape that
+        fits — it keeps the contract honest and saves them from writing
+        no-op prompts. The default is `iterative` for backward
+        compatibility with installs that pre-date this section.
+      </p>
+
+      

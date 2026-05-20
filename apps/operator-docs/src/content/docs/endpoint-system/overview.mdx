@@ -1,0 +1,66 @@
+---
+title: Overview
+description: One function, three transports — what the endpoint system is and why we built it this way.
+sidebar:
+  order: 1
+---
+
+## The one-line version
+
+You write **one typed function**. The framework projects it onto:
+
+- An **HTTP route** at `/api/plugins/<plugin>/<tool>` (or `/api/agent-tools/<tool>` for built-ins)
+- An **MCP `tools/call` entry** under `<plugin>.<tool>` (or `<scope>:<verb>` for built-ins)
+- An **in-process call** any TypeScript caller can `await` directly
+
+You declare exposure, role allowlist, capabilities, and quotas in a manifest. The framework handles auth gating, role enforcement, quota windows, telemetry persistence, streaming progress, and per-spawn URL context — none of which you write per tool.
+
+## Why "endpoint system" not "MCP migration"
+
+The first instinct was to call this an MCP migration. That framing is wrong.
+
+**The function is the source of truth.** HTTP and MCP are projections of it. Once a function is decoupled from any specific transport, all three callers — your dashboard, an AI agent over MCP, another module in the same Node process — get it for free, with the same auth/role/quota/telemetry behavior.
+
+The hard part isn't writing the MCP wrapper. The hard part is pulling a function out of its current transport-coupled form so that the wrapper *can be* generated. The "MCP-callable" part is the smallest-and-easiest consequence of that decoupling.
+
+## What this gets you
+
+- **No duplicated route+handler code.** A new feature is one typed function plus six lines of manifest. Both the dashboard and the agent get it.
+- **Single test surface.** You test the function. Both transports inherit correct behavior because they both go through the same dispatcher.
+- **Uniform observability.** Every invocation lands in `harness_shared.tool_invocations` with role, window key, status, duration, output size — regardless of transport. You can answer "which agents called which tools when" without per-route instrumentation.
+- **Uniform gating.** Role allowlist, capability check, and per-window quota all enforce in the same dispatcher. Adding a new sensitive tool means setting `roles: ["operator"]` + `rolesQuota: { operator: { perRun: 5 } }` and you're done.
+- **Stream-or-not, no rewrite.** A function that calls `ctx.progress(pct, msg)` automatically gets MCP `notifications/progress` events on the MCP transport and SSE events on the HTTP transport. No transport-specific wiring.
+
+## What this is not
+
+- Not a replacement for SSE chat, WebSocket voice, or anything else that holds a long-lived bidirectional connection. Those stay on dedicated routes; the endpoint system is for request → response (with optional streamed progress).
+- Not a way to expose your dashboard to the public internet. The trust model is **loopback bind + HMAC-signed per-spawn URL params** (see [Spawn-URL signing](/internal/docs/endpoint-system/spawn-signing)), suitable for local dev + Tauri desktop. Off-loopback exposure needs a real principal/auth layer in front, since same-UID code can still read the signing key from PG.
+- Not a generic RPC framework. The contract is narrow on purpose: `(input, ctx) => ToolResult`. Trying to make it accommodate exotic shapes (callbacks, multi-response, file uploads >5MB) defeats the point of having one function as truth.
+
+## Two channels at a glance
+
+A tool handler has two outbound channels available, projected uniformly across transports:
+
+| Channel | API | Wire | Replay on reconnect |
+|---|---|---|---|
+| **Events** | `ctx.emit('name', payload)`, `ctx.progress(pct, msg)` | typed SSE events / MCP notifications | Ring buffer (T2.2), bounded by `replayBufferSize` |
+| **State** | `ctx.askUser(spec)`, `ctx.publishState(snapshot)` | `state-snapshot` SSE on `/api/operator/state-snapshot` | Current snapshot only — replay does not re-prompt |
+
+Cards (`ctx.askUser`) and tool state (`ctx.publishState`) live on the state channel because they're not append-only — a reconnecting client wants the latest answered/unanswered card state, not history of every snapshot. The framework auto-installs `askUser` / `publishState` on the ctx when the call has a `workspaceId + runId` (always present for HTTP-projected calls). See [ctx.askUser](/internal/docs/endpoint-system/ask-user) and [state-shaped tools](/internal/docs/endpoint-system/state-tools).
+
+## Where to read next
+
+- [Function-as-truth](/internal/docs/endpoint-system/function-as-truth) — the architectural spine: why the function comes first
+- [Writing a tool](/internal/docs/endpoint-system/writing-a-tool) — the recipe for built-ins and plugins, end to end
+- [Transports](/internal/docs/endpoint-system/transports) — how MCP, HTTP, IPC, and in-process callers all reach the same function
+- [Voice modality](/internal/docs/endpoint-system/voice-modality) — how tools surface in the ElevenLabs Conv AI integration and how cards collapse to `fallbackText` on voice
+- [ctx.askUser](/internal/docs/endpoint-system/ask-user) — interactive prompts mid-run; the state channel; `askUserLocal` client-only variant
+- [State-shaped tools](/internal/docs/endpoint-system/state-tools) — `ctx.publishState`; when to publish snapshots instead of streaming events
+- [Gating](/internal/docs/endpoint-system/gating) — auth, capabilities, roles, quotas — what blocks what when
+- [Spawn-URL signing](/internal/docs/endpoint-system/spawn-signing) — HMAC verification of the seven per-spawn URL params; what it defends against and what it doesn't
+- [Telemetry](/internal/docs/endpoint-system/telemetry) — `tool_invocations` schema and how to read it
+- [Operations](/internal/docs/endpoint-system/operations) — host refresh, hot reload, common failure modes
+- [Superuser mode](/internal/docs/endpoint-system/superuser-mode) — `?superuser=1` loopback escape hatch for dev/admin scripts
+- [Tool catalog](/internal/docs/endpoint-system/tool-catalog) — every projected tool snapshot (live source: `/settings/plugins/tools`)
+- [Reference](/internal/docs/endpoint-system/reference) — manifest schema, error codes, file map
+- [Agents → Prompt assembly](/internal/docs/agents/prompt-assembly) — adjacent layer: how a role's system prompt is built from persona, tools catalog (powered by `defineTool({ guidance })`), and role playbook

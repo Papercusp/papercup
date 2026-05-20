@@ -1,0 +1,351 @@
+---
+title: Plan format
+description: Markdown-canonical format for SU-agent plans — frontmatter, ## Now anchor, items with computed status, decisions log. Consumed by the plans:* tool surface.
+sidebar:
+  order: 3
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+The **plan format** is a small markdown convention that lets SU agents
+browse, status-track, and cold-resume work-in-flight plans without a
+human re-briefing them. Plans live as files at
+`apps/operator/docs/plans/<slug>-<YYYY-MM-DD>.md`; the `plans:*` tool
+surface is a view over them. Filesystem is canonical — there is no
+PG mirror.
+
+This is the format spec. For the rationale, design tradeoffs, and
+roll-out plan, see
+[`agent-plan-tracking-2026-05-20.md`](/internal/docs/plans/agent-plan-tracking-2026-05-20).
+
+<Aside type="note">
+  Plans not in this format are tagged `status: 'unknown'` by the
+  parser and `plans:lint` exempts them entirely. Conversion is
+  opt-in, per plan, when you're actively working on it.
+</Aside>
+
+## File layout
+
+One file per plan, named `<slug>-<YYYY-MM-DD>.md`. The filename stem
+is the **plan id** — referenced from other plans, tools, and the
+CLAUDE.md project-history workflow.
+
+A plan has four parser-keyed structural parts:
+
+```
+---             ← YAML frontmatter
+title: ...
+slug: ...
+status: ...
+---
+
+# Title         ← optional H1
+
+## Now          ← cold-resume anchor (required)
+
+**State:** ...
+**Next:** ...
+
+## Phase N — Name   ← optional, multiple
+
+- **P-NNN** `status` text · blocked-by: P-MMM
+
+## Decisions    ← optional (recommended)
+
+### D-NNN — Title
+Date: YYYY-MM-DD
+body
+```
+
+Everything else (background, scope, verification, prose) is free.
+
+## Frontmatter
+
+```yaml
+---
+title: <Title Case sentence>
+slug: <kebab-case-slug>-<YYYY-MM-DD>   # MUST match filename stem
+status: draft | active | shipped | superseded
+created: YYYY-MM-DD
+updated: YYYY-MM-DD                     # bumped on every assisted write
+owner: <email>                          # human owner; agents don't own plans
+supersedes: [<other-slug>, ...]         # optional
+superseded-by: <other-slug>             # optional, set when status=superseded
+---
+```
+
+`status` is the **plan's** lifecycle. It's distinct from per-item
+status (see [Status vocabulary](#status-vocabulary)).
+
+A plan with missing or malformed frontmatter is **legacy** — the
+parser surfaces it with synthesized `status: 'unknown'` and no item
+counts. Conversion happens via `plans:set-now` + frontmatter edit
+when the plan is being actively worked on.
+
+## The `## Now` block
+
+Exactly one section near the top, fixed heading:
+
+```markdown
+## Now
+
+**State:** one paragraph describing where the plan currently stands.
+
+**Next:** one sentence — the single next concrete action and who
+should do it ("an agent should …" / "human decision needed on …").
+```
+
+This is the **single most-read field**. An agent dropped into a
+fresh session loads `plans:get \{ slug \}` and reads this first.
+Updating it via `plans:set-now` is the canonical way to keep the
+plan "alive" between sessions.
+
+## Items
+
+Items live under `## Phase N — <name>` sections. One item per line,
+flat permanent ID, free text after.
+
+Canonical ASCII form:
+
+```markdown
+- **P-007** `todo` Migrate stray plan files into docs/plans/.
+- **P-008** `wip` Wire plans:list to filesystem.
+- **P-009** `todo` Implement plans:lint. blocked-by: P-008
+- **P-010** `needs-human` Decide archive listing default. → D-003
+- **P-011** `done` Verify parser handles legacy files.
+```
+
+### Rules
+
+- **Permanent flat IDs** — `P-NNN`, never reused, never renumbered.
+  Reordering the list never invalidates a reference. The
+  `plans:add-item` verb allocates the next id inside a lock so
+  parallel callers don't collide.
+- **Status token** — one of six, lowercase, backticked. See
+  [Status vocabulary](#status-vocabulary).
+- **`blocked-by:`** — keyword. Parser reads it independent of any
+  separator glyph. Comma-separated IDs: `blocked-by: P-003, P-005`.
+  *Not* a status — see "Computed-blocked" below.
+- **Decision refs** — `D-NNN` tokens anywhere in the line; parser
+  picks them up by pattern, glyph-agnostic. The `→` arrow is
+  cosmetic.
+- **Separators are display-only.** Examples may use `·` or `→` for
+  human readability; the parser never depends on them. If you type
+  `,` / `-` / `->` instead, it still parses.
+
+Items not under a `## Phase N` heading are still parsed but flagged
+by lint as "unphased".
+
+## Status vocabulary
+
+Six tokens. One is *computed*.
+
+| Token | Meaning |
+|---|---|
+| `todo` | Not started. Default for new items. |
+| `wip` | In progress. The active item. Use `locks:acquire` on the plan file before flipping to `wip`. |
+| `blocked` | **External** blocker only — upstream PR, vendor response, awaiting a release, etc. *Not* used for items waiting on other plan items. |
+| `needs-human` | A human decision/approval/clarification is required. Surfaces in `plans:items \{ needsHuman: true \}`. |
+| `done` | Completed and verified. |
+| `dropped` | Decided not to do. Keep the line; record the reason in a `D-NNN` decision. |
+
+### Computed-blocked
+
+An item with `blocked-by: P-NNN` has *effective* status `blocked`
+iff any `P-NNN` referenced isn't `done`. As soon as all blockers
+are `done`, the effective status reverts to whatever the item is
+stored as (typically `todo`) — automatically, no manual flip.
+
+This is the load-bearing reason for the parser/effectiveStatus
+split:
+
+- `storedStatus` is the literal token written in the file.
+- `effectiveStatus` is what callers (such as `plans:items` with `actionable: true`) actually want.
+
+Why: a stored `blocked` would go stale the moment a blocker
+finishes, and the only way to find the staleness is to remember.
+Computing it eliminates the bug. The literal `blocked` token stays
+useful for the case markdown genuinely can't compute — an
+external blocker — where a human/agent has to explicitly declare
+it.
+
+## The `## Decisions` log
+
+Append-only. Stable IDs. Tolerant heading match (same as `## Now`).
+
+```markdown
+## Decisions
+
+### D-001 — Don't share code with harness `features`
+Date: 2026-05-20
+SU plans are standalone. The harness feature system is a workflow
+engine for the autonomous side; we share neither schema nor code.
+```
+
+### Rules
+
+- IDs are `D-NNN`, never reused. `plans:add-decision` allocates the
+  next id inside a lock.
+- New decisions append; existing ones are never edited (except a
+  small `Superseded by D-NNN` line if reversed).
+- Items reference decisions by ID; parser surfaces both directions.
+- The `Date:` line is parsed if present; falls back to "no date" if
+  absent.
+
+## Tolerant heading match
+
+The parser strips leading `N. ` / `N.M ` numbering from headings
+before matching, so all of these are recognized:
+
+- `## Now`
+- `## 3. Now`
+- `## 11.2 Now`
+
+This lets you number your sections (`## 1. Background`, `## 2.
+Goals`, `## 3. Now`, …) without breaking the parser. The format
+spec uses the unnumbered form; conversions can do either.
+
+## Fenced code blocks
+
+The parser tracks fenced code blocks (` ``` ` or `~~~`) and skips
+their contents. This means:
+
+- `### D-NNN` inside an example block doesn't fool the decisions
+  parser into thinking there's a real decision.
+- `- **P-001** \`todo\` example` inside a code fence isn't picked
+  up as a real item.
+
+ID allocators (`plans:add-decision`, `plans:add-item`) consult the
+parsed structure — not raw bytes — so example IDs in prose don't
+poison the allocator.
+
+## Optional sections
+
+- `## Background`, `## Scope`, `## Verification` — free prose,
+  parser-agnostic.
+- `## Open questions` — list of items waiting on a human decision.
+  Each question, once ratified, becomes a `D-NNN` decision.
+- `## Deferred follow-ups` — items intentionally not in scope;
+  can later be promoted to real items.
+
+## Worked example
+
+Filename: `example-feature-2026-05-20.md` (slug = stem).
+
+```markdown
+---
+title: Example feature
+slug: example-feature-2026-05-20
+status: active
+created: 2026-05-20
+updated: 2026-05-20
+owner: pandawamble@gmail.com
+---
+
+# Example feature
+
+## Now
+
+**State:** Phase 1 in flight. Parser shipped; tools wired.
+**Next:** an agent picks up P-007 (consolidation).
+
+## Phase 1 — Tooling
+
+- **P-001** `done` Spec the format. → D-002
+- **P-002** `done` Implement parser.
+- **P-003** `wip` Implement plans:list/get/items.
+- **P-004** `todo` Implement plans:lint. blocked-by: P-003
+
+## Phase 2 — Migration
+
+- **P-007** `todo` Consolidate stray plan files.
+- **P-008** `needs-human` Triage active vs stale across legacy plans.
+
+## Decisions
+
+### D-001 — Standalone, not shared with harness features
+Date: 2026-05-20
+SU plans are standalone…
+
+### D-002 — Filesystem-canonical
+Date: 2026-05-20
+Plans are documents (hand-edited, git-versioned, PR-reviewed) and
+inherit the filesystem-canonical model of the sibling `docs:*`
+system.
+```
+
+## Tool surface
+
+Plans are read and written through the `plans:*` MCP tools.
+
+### Reads
+
+- `plans:list` — directory summary with item counts by
+  `effectiveStatus`.
+- `plans:get \{ slug \}` — full parsed structure.
+- `plans:items \{ actionable, needsHuman, status, slug \}` — item-
+  level query across plans.
+- `plans:search \{ query, scope \}` — keyword search scoped to
+  title/now/items/decisions/prose.
+- `plans:lint` — validate; legacy files exempt.
+
+### Writes
+
+- `plans:new \{ slug, title \}` — create from template, slug
+  uniqueness checked inside a lock.
+- `plans:set-status \{ slug, itemId, status, note? \}` — flip one
+  item's stored token.
+- `plans:set-now \{ slug, state, next \}` — replace the Now block
+  atomically.
+- `plans:add-decision \{ slug, title, body, refs? \}` — append; D-NNN
+  allocated inside the lock.
+- `plans:add-item \{ slug, phase, text, blockedBy? \}` — append;
+  P-NNN allocated inside the lock; creates phase section if
+  missing.
+
+All write verbs acquire a `locks:*` lock on the plan file before
+the read-modify-write, surface `busy` with holder info if the lock
+is held, and auto-bump frontmatter `updated:` to today's date.
+
+## Lint rules
+
+`plans:lint` returns `errors` + `warnings`. CI must fail on errors;
+warnings are informational. Legacy files (no/malformed
+frontmatter) are exempt entirely.
+
+### Errors
+
+- `slug_mismatch` — frontmatter `slug:` doesn't match filename
+  stem.
+- `missing_now_section` — required `## Now` is absent.
+- `parse_warning` — parser surfaced a structural issue (duplicate
+  IDs, malformed line).
+- `unknown_blocked_by` — item references a `P-NNN` that doesn't
+  exist in this plan.
+- `missing_blocker` — same, from the resolver's perspective.
+- `cycle` — item is part of a `blocked-by` cycle.
+- `malformed_item_id` — item id isn't in `P-NNN` form.
+
+### Warnings
+
+- `missing_decisions_section` — items exist but no `## Decisions`
+  section.
+- `unknown_decision_ref` — item references `D-NNN` that doesn't
+  exist (allowed; the decision may live in a different plan).
+- `stored_blocked_no_external` — `blocked` token with no
+  `blocked-by` and no obvious external reason in the item text.
+- `updated_lags_mtime` — frontmatter `updated:` lags file's git
+  mtime by more than 7 days.
+
+## Concurrency
+
+Same-plan concurrent writes serialize through `locks:*`. The lock
+key is the workspace-canonical path
+`apps/operator/docs/plans/<slug>.md`, so callers with different
+absolute `repoRoot` paths still hash to the same lock. ID
+allocation (D-NNN, P-NNN) happens *inside* the lock; concurrent
+`plans:add-decision` calls produce sequential non-colliding IDs.
+
+The lock system itself is documented at
+[`/internal/docs/agent-spawning/su-agent-coordination-v3`](/internal/docs/agent-spawning/su-agent-coordination-v3).
+

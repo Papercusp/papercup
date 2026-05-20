@@ -1,0 +1,83 @@
+---
+title: 3. The harness contract
+sidebar:
+  order: 4
+---
+
+<p>
+        Every Papercusp harness, at minimum, satisfies these contracts:
+      </p>
+
+      
+
+### 3.1 Structured-state-only
+
+
+      <p>
+        All state lives in a Postgres schema (per-harness or per-install). Any role, invoked from a fresh process, can read the full state and produce the same decisions. The schema is part of the spec.
+      </p>
+
+      
+
+### 3.2 Fresh context per role
+
+
+      <p>
+        Every role invocation is a fresh LLM call with no prior conversation. The system prompt is the role's prompt file. The user prompt is generated from the current state. This is non-negotiable for the substrate; drift across iterations is what kills long-running agents.
+      </p>
+
+      
+
+### 3.3 Named decisions, named roles
+
+
+      <p>
+        Each role's output is one of a small set of structured decisions. The <strong>orchestrator</strong> chooses
+        between `NEXT_WORKER`, `NEXT_VALIDATOR`, plugin-defined verbs (`NEXT_NARRATOR`, …),
+        `DONE`, `ESCALATE`. The <strong>validator</strong> sets each task's status to{' '}
+        `passed` or `failing`. No free-form "what should I do next?" — every iteration ends with a decision verb.
+      </p>
+
+      
+
+### 3.4 Append-only audit
+
+
+      <p>
+        Every iteration writes to an audit table. The audit is the durable record;
+        UIs reconstruct state from it. Curator roles may compact older entries but never silently delete them.
+      </p>
+
+      
+
+### 3.5 Goal-traceable tasks
+
+
+      <p>
+        Every task has a parent — either another task or the install's top-level goal. Recursive lineage queries
+        let any role ask "why am I doing this?" and get an answer that goes all the way to the mission. Adopted from
+        Paperclip; structurally enforced rather than prompt-injected.
+      </p>
+
+      
+
+### 3.6 Atomic task checkout
+
+
+      <p>
+        Workers acquire tasks via Postgres `FOR UPDATE SKIP LOCKED`. Multiple workers running in parallel each get
+        a different task atomically. Tasks have an `expires_at` on checkout for orphan recovery.
+      </p>
+
+      
+
+### 3.7 Hard-stop budget enforcement
+
+
+      <p>
+        Each install has a budget at the install level and per-project. The substrate enforces atomic budget checks at the
+        accept-proposal layer: if <em>currently committed costs + proposed cost &gt; remaining budget</em>, the operation is
+        rejected before any LLM call fires. Implemented in a Postgres transaction so concurrent accepts can't both pass the check.
+      </p>
+
+      

@@ -1,0 +1,154 @@
+---
+title: Schema conventions
+description: Per-harness Postgres schemas, shared schemas, publications, scaffolding.
+sidebar:
+  order: 5
+---
+
+## Database
+
+The harness DB is `papercusp` on `localhost:5432`. (It was renamed from
+`restart_harness` in April 2026 — old references will still appear in
+older code.) Three Postgres roles see it:
+
+- `harness_app` — read/write from API routes and agent code.
+- `harness_admin` — DDL, used by scaffolders.
+- `harness_zero` — read-only via logical replication, used by
+  `zero-cache-harness`.
+
+## Schema layout
+
+```
+papercusp database
+├── harness_<slug>          (one schema per harness)
+│   ├── harness_features
+│   ├── harness_issues
+│   ├── harness_proposals
+│   ├── harness_agent_runs
+│   ├── harness_snapshots
+│   ├── harness_decisions
+│   ├── harness_archives
+│   ├── harness_usage
+│   ├── harness_hooks
+│   ├── harness_tests
+│   ├── harness_smoke_tests
+│   └── harness_memory_entries
+├── harness_shared
+│   ├── harness_features_consolidated
+│   └── harness_features_all     (cross-harness UNION view; not in Zero)
+└── papercup_shared
+    ├── projects
+    ├── directives
+    ├── messages
+    ├── comments
+    ├── recipients
+    └── directive_summaries
+```
+
+## Why schema-per-harness (Option B)
+
+Earlier designs considered a single `harness_features` table with a
+`harness_slug` column ("Option A"). We chose Option B because:
+
+- Postgres row-level security and `search_path` mean per-harness DDL is
+  cleanly isolated. A misbehaving migration in one harness can't touch
+  another.
+- Backfills, drops, and slot reset are bounded to one schema.
+- Replication slot lag was a concern with Option A's single hot table.
+- Auditing is easier — `pg_stat_user_tables` per schema tells you which
+  harness is doing the writes.
+
+Cost: every cross-harness aggregation needs either a UNION view (read
+only) or a trigger-maintained consolidated table (Zero-syncable).
+
+## Per-harness scaffolding
+
+`bin/scaffold-harness-schema.sh <slug>` creates the schema, creates all
+12 tables with the canonical DDL, grants `harness_app` and `harness_zero`
+the right privileges, and adds every table to the `zero_harness`
+publication.
+
+It is invoked automatically from `POST /api/harness/projects` so that
+creating a new harness from the UI also wires up its schema in one shot.
+
+If you add a new table to the canonical set:
+
+1. Add the `CREATE TABLE` to `bin/scaffold-harness-schema.sh`.
+2. Run the scaffold against existing harnesses (or run the
+   regenerate-schema script). Existing harnesses won't auto-migrate;
+   only newly created ones get the new shape.
+
+## The `zero_harness` publication
+
+Postgres logical replication needs a `PUBLICATION` listing every table
+to broadcast. Ours is named `zero_harness` and contains every relevant
+table from every per-harness schema plus the shared schemas.
+
+Inspect it:
+
+```sql
+SELECT schemaname, tablename
+FROM pg_publication_tables
+WHERE pubname = 'zero_harness'
+ORDER BY schemaname, tablename;
+```
+
+When you scaffold a new harness, `bin/scaffold-harness-schema.sh` runs
+the right `ALTER PUBLICATION ADD TABLE` commands. When you add a new
+canonical table, `scripts/regenerate-harness-features-view.sh` (despite
+its narrow name) regenerates the cross-harness view AND can be adapted
+to add new tables.
+
+## Cross-harness consolidated tables
+
+`harness_shared.harness_features_consolidated` is the canonical example.
+It's a base table (not a view) maintained by triggers on every
+per-harness `harness_features`. Schema:
+
+```
+harness_features_consolidated (
+  harness_slug   text,
+  feature_id     text,
+  -- …all columns of harness_features…
+  primary key (harness_slug, feature_id)
+)
+```
+
+The triggers live alongside each per-harness `harness_features` and fire
+on `INSERT`, `UPDATE`, `DELETE`. Adding a column means: add it to every
+per-harness table, add it to the consolidated table, update every
+trigger.
+
+This is a maintenance burden but it's the only way to get cross-harness
+data into Zero — views can't be in publications.
+
+## papercup_shared schema
+
+The Papercup app (organization layer, project tracking, messaging) has
+its own data that isn't per-harness:
+
+- `projects` — formerly a JSON ledger, now PG-canonical
+- `directives` — formerly JSON, now PG-canonical
+- `messages` — formerly JSON, now PG-canonical
+- `comments`, `recipients`, `directive_summaries`
+
+All of these are in the `zero_harness` publication and synced like the
+per-harness tables, just without a slug arg. Cross-app code reaches them
+via `search_path = papercup_shared, public` in the connection.
+
+JSON ledgers still exist on disk but are tagged
+`{ "derivedFromPg": true }` and rebuilt from PG — they're a derived
+snapshot for tooling that wants a file. Postgres is the source of truth.
+
+## Slug as the stable cross-store identifier
+
+Project mutations use `slug` as the primary filter, not `id`. Reason:
+
+- The JSON ledger generated UUID ids.
+- Legacy PG rows used `PROJ-<slug>` ids.
+- The two diverged silently for months.
+
+Slug is unique, stable, and the only field both stores agreed on. New
+mutations (`record-revenue`, `campaigns/metrics`, `PATCH /projects`) all
+filter by slug. If you're writing a new mutation against `projects`,
+filter by slug.
