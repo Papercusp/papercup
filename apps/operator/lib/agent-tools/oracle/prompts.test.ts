@@ -9,6 +9,14 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
+// The first test in this file pays the cold-ESM-import cost of
+// oracle/prompts.ts's dependency graph (agent-mcp, memory/injection,
+// system-principal, agents-list). vi.resetModules() in beforeEach means
+// every test re-imports fresh, so that cost recurs per-test and can
+// exceed the 5s vitest default. Bump the ceiling. See the 2026-05-20
+// SSE-migration audit (flaky-timeout finding).
+vi.setConfig({ testTimeout: 20_000, hookTimeout: 20_000 });
+
 beforeEach(() => {
   vi.resetModules();
 });

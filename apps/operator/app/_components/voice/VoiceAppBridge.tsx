@@ -107,7 +107,6 @@ export function VoiceAppBridge(): null {
     lastTranscript: '',
     speakingRole: null,
   });
-  const sessionIdRef = useRef<string | null>(null);
 
   useEffect(() => {
     const unsubState = subscribeVoiceState((s) => {
@@ -248,19 +247,15 @@ export function VoiceAppBridge(): null {
       }
       if (hasHigherPriorityConsumer()) return;
 
-      // Lazy-init session id (Oracle expects a stable session per dock).
-      if (!sessionIdRef.current) {
-        sessionIdRef.current = `voice-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-      }
-
       // POST to Oracle's chat endpoint, stream the response, speak deltas.
+      // oracle:chat's ArgsSchema requires a `messages` array (min 1); the
+      // voice bridge sends a single user turn per spoken utterance.
       try {
         const r = await fetch('/api/oracle/chat', {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({
-            sessionId: sessionIdRef.current,
-            message: text,
+            messages: [{ role: 'user', content: text }],
           }),
         });
         if (!r.ok || !r.body) return;
