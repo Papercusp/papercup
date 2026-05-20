@@ -1,73 +1,81 @@
 /**
- * Docs HTTP routes — agent-readable doc surface.
+ * Docs HTTP routes — the agent-readable internal-docs surface.
  *
- * /llms.txt        — sitemap-style index
- * /llms-full.txt   — full corpus concatenated
- * /llms.mdx/<slug> — single page as markdown
+ * After the fumadocs → Starlight cutover, the engineering docs are
+ * Starlight static output (apps/operator-docs) copied into
+ * apps/operator/public/internal/docs/ and served by Next as static
+ * assets under `/internal/docs`. next.config.js rewrites bare slugs to
+ * their `.html` twin; proxy.ts gates the surface to loopback hosts.
  *
- * Plus the Accept-header negotiation in proxy.ts (Next 16) for /docs/<slug>.
- * Spec verifies these stay stable for tooling that consumes them.
+ *   /internal/docs                       — docs home (index.html)
+ *   /internal/docs/<slug>                — page (rewritten to <slug>.html)
+ *   /internal/docs/<section>/<slug>      — nested page
+ *   /internal/docs/llms.txt              — sitemap-style index
+ *   /internal/docs/llms-full.txt         — full corpus concatenated
+ *   /internal/docs/llms-small.txt        — abridged corpus
+ *
+ * The spec runs against a loopback baseURL, so proxy.ts's loopback gate
+ * permits every request. Per-page `Accept: text/markdown` negotiation
+ * was dropped at the cutover (starlight-llms-txt emits no `.md` twins);
+ * agents use the `docs:*` MCP tools or the llms-*.txt surfaces instead.
  */
 import { test, expect } from '@playwright/test';
 
 const baseURL = process.env.OPERATOR_E2E_BASE_URL ?? 'http://127.0.0.1:3055';
 
 test.describe('docs routes', () => {
-  test('GET /llms.txt returns plaintext sitemap', async ({ request }) => {
-    const res = await request.get(`${baseURL}/llms.txt`);
+  test('GET /internal/docs serves the docs home', async ({ request }) => {
+    const res = await request.get(`${baseURL}/internal/docs`);
     expect(res.status()).toBe(200);
-    const ct = res.headers()['content-type'] ?? '';
-    expect(ct).toMatch(/text\/plain|text\/markdown/);
-    const body = await res.text();
-    expect(body.length).toBeGreaterThan(0);
+    expect(res.headers()['content-type'] ?? '').toMatch(/html/);
   });
 
-  test('GET /llms-full.txt returns full corpus', async ({ request }) => {
-    const res = await request.get(`${baseURL}/llms-full.txt`, { timeout: 30_000 });
+  test('GET /internal/docs/<slug> serves a rendered page', async ({ request }) => {
+    const res = await request.get(`${baseURL}/internal/docs/agent-policies`);
     expect(res.status()).toBe(200);
+    expect(res.headers()['content-type'] ?? '').toMatch(/html/);
     const body = await res.text();
-    expect(body.length).toBeGreaterThan(10_000);  // Sanity: corpus is many KB
-    expect(body).toMatch(/^# /m);  // markdown headings present
+    expect(body).toContain('Papercusp Internal'); // Starlight site title in <title>
   });
 
-  test('GET /llms.mdx/<known-slug> returns markdown', async ({ request }) => {
-    const res = await request.get(`${baseURL}/llms.mdx/branding`);
+  test('GET /internal/docs/<slug>.html (explicit extension) serves the page', async ({ request }) => {
+    const res = await request.get(`${baseURL}/internal/docs/agent-policies.html`);
     expect(res.status()).toBe(200);
-    const body = await res.text();
-    expect(body).toContain('# Branding');
-    expect(body).toContain('URL: /docs/branding');
+    expect(res.headers()['content-type'] ?? '').toMatch(/html/);
   });
 
-  test('GET /llms.mdx/<unknown-slug> returns 404', async ({ request }) => {
-    const res = await request.get(`${baseURL}/llms.mdx/totally-fake-slug-zzz`);
+  test('GET /internal/docs/<section>/<slug> serves a nested page', async ({ request }) => {
+    const res = await request.get(`${baseURL}/internal/docs/endpoint-system/overview`);
+    expect(res.status()).toBe(200);
+    expect(res.headers()['content-type'] ?? '').toMatch(/html/);
+  });
+
+  test('GET /internal/docs/<unknown-slug> returns 404', async ({ request }) => {
+    const res = await request.get(`${baseURL}/internal/docs/totally-fake-slug-zzz`);
     expect(res.status()).toBe(404);
   });
 
-  test('GET /docs/<slug> with Accept: text/markdown serves markdown', async ({ request }) => {
-    const res = await request.get(`${baseURL}/docs/branding`, {
-      headers: { Accept: 'text/markdown' },
-    });
-    // Either negotiated to markdown or served HTML — both prove the route works
+  test('GET /internal/docs/llms.txt returns a plaintext index', async ({ request }) => {
+    const res = await request.get(`${baseURL}/internal/docs/llms.txt`);
     expect(res.status()).toBe(200);
+    expect(res.headers()['content-type'] ?? '').toMatch(/text\/plain|text\/markdown/);
+    const body = await res.text();
+    expect(body.length).toBeGreaterThan(0);
+    expect(body).toMatch(/^# /m); // markdown headings present
   });
 
-  test('GET /docs/<slug> with default Accept serves HTML', async ({ request }) => {
-    const res = await request.get(`${baseURL}/docs/branding`);
+  test('GET /internal/docs/llms-full.txt returns the full corpus', async ({ request }) => {
+    const res = await request.get(`${baseURL}/internal/docs/llms-full.txt`, { timeout: 30_000 });
     expect(res.status()).toBe(200);
-    const ct = res.headers()['content-type'] ?? '';
-    expect(ct).toMatch(/html/);
+    const body = await res.text();
+    expect(body.length).toBeGreaterThan(10_000); // sanity: corpus is many KB
+    expect(body).toMatch(/^# /m);
   });
 
-  test('llms.txt index contains the same slugs as llms.mdx serves', async ({ request }) => {
-    const index = await request.get(`${baseURL}/llms.txt`);
-    const body = await index.text();
-    // Find at least one slug in the index and verify it 200s on /llms.mdx
-    const slugMatch = body.match(/\/docs\/([a-z0-9-/]+)/);
-    expect(slugMatch).toBeTruthy();
-    if (slugMatch) {
-      const slug = slugMatch[1];
-      const res = await request.get(`${baseURL}/llms.mdx/${slug}`);
-      expect([200, 404]).toContain(res.status());  // 404 OK for nested paths if route uses single-segment
-    }
+  test('GET /internal/docs/llms-small.txt returns the abridged corpus', async ({ request }) => {
+    const res = await request.get(`${baseURL}/internal/docs/llms-small.txt`);
+    expect(res.status()).toBe(200);
+    const body = await res.text();
+    expect(body.length).toBeGreaterThan(0);
   });
 });

@@ -1,10 +1,7 @@
 const path = require('path');
-const { createMDX } = require('fumadocs-mdx/next');
 
 const PAPERCUSP_UPSTREAM = process.env.PAPERCUP_PAPERCUSP_UPSTREAM ?? 'http://localhost:3055';
 const WEB_UPSTREAM       = process.env.PAPERCUP_WEB_UPSTREAM       ?? 'http://localhost:3001';
-
-const withMDX = createMDX();
 
 /** @type {import('next').NextConfig} */
 const nextConfig = {
@@ -38,4 +35,4 @@ const nextConfig = {
   },
 };
 
-module.exports = withMDX(nextConfig);
+module.exports = nextConfig;

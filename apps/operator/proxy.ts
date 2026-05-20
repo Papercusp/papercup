@@ -8,13 +8,18 @@ import { NextResponse, type NextRequest } from 'next/server';
  * Next 16 emits proxy-* manifests but its build pipeline still
  * looks up middleware-manifest.json by string.
  *
- * This single proxy handles three concerns:
+ * This single proxy handles two concerns:
  *  1. /api/* — exact-origin credentialed CORS for local desktop/mobile shells
  *     before Hono or standalone Next route handlers run.
- *  2. /internal/docs/* — stub auth gate (loopback-only docs).
- *  Note: per-page Accept-header markdown negotiation removed at the
+ *  2. /internal/docs/* — loopback-only gate for the internal engineering
+ *     docs (Starlight static output served from public/). Reachable on
+ *     127.0.0.1 / localhost / the Tauri webview; denied for non-loopback
+ *     Host headers (e.g. the api.papercupai.com tunnel) unless
+ *     PAPERCUSP_INTERNAL_DOCS_BYPASS=1.
+ *
+ *  Note: per-page Accept-header markdown negotiation was removed at the
  *  fumadocs->Starlight cutover. Agents use docs:* MCP tools or the
- *  /internal/docs/llms.txt + /llms-full.txt static surfaces.
+ *  /internal/docs/llms.txt + /internal/docs/llms-full.txt surfaces.
  */
 
 
@@ -29,6 +34,10 @@ const LOCAL_API_CORS_HEADERS = {
 const LOCAL_API_ORIGIN_HOSTS = new Set(['localhost', '127.0.0.1', '10.0.2.2', 'tauri.localhost']);
 const LOCAL_API_ORIGIN_PROTOCOLS = new Set(['http:', 'https:', 'tauri:', 'capacitor:', 'ionic:']);
 
+// Hostnames that count as loopback for the /internal/docs gate — the
+// local-API host set plus the IPv6 loopback literal.
+const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '::1', '10.0.2.2', 'tauri.localhost']);
+
 function allowedLocalApiOrigin(origin: string | null): string | null {
   if (!origin) return null;
   if (origin === 'null') return 'null';
@@ -42,6 +51,23 @@ function allowedLocalApiOrigin(origin: string | null): string | null {
   }
 
   return null;
+}
+
+/**
+ * True when the request's Host header points at a loopback address.
+ * Strips the port: `127.0.0.1:3070` → `127.0.0.1`, `[::1]:3070` → `::1`.
+ */
+function isLoopbackHost(host: string | null): boolean {
+  if (!host) return false;
+  const lower = host.trim().toLowerCase();
+  if (LOOPBACK_HOSTS.has(lower)) return true;
+  let hostname = lower;
+  if (hostname.startsWith('[')) {
+    hostname = hostname.slice(1, hostname.indexOf(']'));
+  } else if (hostname.includes(':')) {
+    hostname = hostname.slice(0, hostname.indexOf(':'));
+  }
+  return LOOPBACK_HOSTS.has(hostname);
 }
 
 export function proxy(req: NextRequest) {
@@ -65,25 +91,28 @@ export function proxy(req: NextRequest) {
     return response;
   }
 
-  // 1. /internal/docs/* — auth gate. Order matters: gate before any
-  //    other rewrite so the markdown negotiation can't bypass it.
+  // /internal/docs/* — loopback-only gate. The internal engineering docs
+  // (Starlight static output) are readable from 127.0.0.1 / localhost /
+  // the Tauri webview, but not over a non-loopback Host (the
+  // api.papercupai.com tunnel). PAPERCUSP_INTERNAL_DOCS_BYPASS=1 forces
+  // them open.
   if (pathname.startsWith('/internal/docs')) {
-    if (process.env.PAPERCUSP_INTERNAL_DOCS_BYPASS === '1') {
+    const loopback = isLoopbackHost(req.headers.get('host'));
+    if (loopback || process.env.PAPERCUSP_INTERNAL_DOCS_BYPASS === '1') {
       return NextResponse.next();
     }
     return new NextResponse(
-      'Internal docs are gated. Set PAPERCUSP_INTERNAL_DOCS_BYPASS=1 to bypass during development.',
-      { status: 401, headers: { 'content-type': 'text/plain; charset=utf-8' } },
+      'Internal engineering docs are loopback-only. Reach them on 127.0.0.1 / localhost, or set PAPERCUSP_INTERNAL_DOCS_BYPASS=1 to expose them.',
+      { status: 403, headers: { 'content-type': 'text/plain; charset=utf-8' } },
     );
   }
-
 
   return NextResponse.next();
 }
 
 export const config = {
-  // The matcher must include every path the proxy() function might
-  // act on. Local API CORS + /internal/docs gating
-  // negotiation.
-  matcher: ['/api/:path*', '/internal/docs/:path*', '/docs/:path*'],
+  // The matcher must include every path proxy() acts on:
+  //   /api/*           — local credentialed API CORS
+  //   /internal/docs/* — loopback-only docs gate
+  matcher: ['/api/:path*', '/internal/docs/:path*'],
 };

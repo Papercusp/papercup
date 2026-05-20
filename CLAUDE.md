@@ -45,7 +45,7 @@ That single command boots embedded Postgres (writes `~/.papercusp/embedded-pg.js
 
 Ports you may see internally (do not open these in a browser; let the desktop drive them):
 - `:3055` — Next.js dev server consumed by the Tauri webview as its content source.
-- `:3070` — operator harness sidecar API + standalone Fumadocs (only when the desktop is up).
+- `:3070` — operator harness sidecar API + internal engineering docs at `/internal/docs` (Starlight static output; only when the desktop is up).
 
 **Implications for any agent making transport / persistence / sync decisions:**
 
@@ -156,8 +156,8 @@ gating, duplicate React keys, stale Radix pointer-events overrides, etc.).
 **Read the operator docs site's performance page before any non-trivial
 change**:
 
-→ With Tauri dev running, open `localhost:3070/docs/performance` (standalone Fumadocs) or the in-shell docs link
-→ Source: `apps/operator/content/docs/performance.mdx`
+→ With Tauri dev running, open `localhost:3070/internal/docs/performance` (Starlight) or the in-shell docs link
+→ Source: `apps/operator-docs/src/content/docs/performance.mdx`
 
 Pay particular attention to the "What NOT to do" sections (A1–A14). If
 your change matches one of those anti-patterns, change the approach
@@ -242,7 +242,7 @@ Practical implications when writing code today:
 
 If you find yourself reaching for `fs.writeFileSync('something.json')`,
 ask whether you can put it in PG instead. The answer is almost always
-yes. See `apps/operator/content/docs/system/storage-policy.mdx` for the
+yes. See `apps/operator-docs/src/content/docs/system/storage-policy.mdx` for the
 full guide and the historical migration arc.
 
 ## Feature flags + PostHog
@@ -267,7 +267,7 @@ in PostHog (active=false, rollout 0), then guard pages with `requireFlag`,
 nav with `useFlag`, API routes with `gateApiRoute`, Hono routes with a
 `use('/path/*', …)` middleware, and MCP tools at registration.
 
-Full reference: `/docs/posthog` and `/docs/posthog/feature-flags`.
+Full reference: `/internal/docs/posthog` and `/internal/docs/posthog/feature-flags`.
 
 ## Tests after editing
 
