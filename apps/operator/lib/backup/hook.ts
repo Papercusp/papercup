@@ -127,7 +127,7 @@ async function dumpPg(opts: {
       if (settled) return;
       settled = true;
       clearTimeout(t);
-      out.end();
+      if (!out.destroyed) out.end();
       if (ok) {
         try {
           const s = await stat(tmp);
@@ -158,6 +158,16 @@ async function dumpPg(opts: {
     gz.on('error', (e) => {
       stderr += `gzip spawn failed: ${e.message}\n`;
       try { dump.kill('SIGKILL'); } catch { /* already gone */ }
+      void finalize(false);
+    });
+    // The output file stream fails independently of the children —
+    // disk full (ENOSPC), bad path (EISDIR/EACCES). An unhandled
+    // stream 'error' crashes the operator just like an unhandled child
+    // spawn error, so route it through finalize(false) too.
+    out.on('error', (e) => {
+      stderr += `output stream failed: ${e.message}\n`;
+      try { dump.kill('SIGKILL'); } catch { /* already gone */ }
+      try { gz.kill('SIGKILL'); } catch { /* already gone */ }
       void finalize(false);
     });
 
