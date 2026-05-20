@@ -23,6 +23,7 @@ export default defineConfig({
       description: 'Engineering reference for the Papercusp multi-agent coding harness.',
       pagefind: true,
       lastUpdated: true,
+      customCss: ['./src/styles/blue-frost.css'],
       plugins: [
         starlightLlmsTxt({
           projectName: 'Papercusp',
