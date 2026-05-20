@@ -143,6 +143,18 @@ async function tryBuildSpawnContext(extra: unknown): Promise<TrySpawnContextResu
     const wsParam = (url.searchParams.get('workspace') ?? '').trim();
     const harnessParam = (url.searchParams.get('harness') ?? '').trim();
     const clientParam = (url.searchParams.get('client') ?? '').trim();
+    // Per-session identity for SU agents (su-locks coordination).
+    // `?client=` is baked once per machine by install-standalone-mcp.sh,
+    // so two SU shells on one host share it — which would make the
+    // file-lock system treat them as the same owner. The Streamable-HTTP
+    // MCP transport assigns a distinct `Mcp-Session-Id` per client
+    // connection; prefer it so each shell gets a unique lock owner.
+    // Hook-driven calls (PreToolUse/PostToolUse) are one-shot POSTs with
+    // no MCP session — they instead pass the per-session id directly in
+    // `?client=`, so the clientParam fallback is already per-session for
+    // that path.
+    const mcpSessionId = (headers.get('mcp-session-id') ?? '').trim();
+    const suIdentity = mcpSessionId || clientParam;
     const buf = new Uint8Array(8);
     globalThis.crypto.getRandomValues(buf);
     return {
@@ -159,7 +171,7 @@ async function tryBuildSpawnContext(extra: unknown): Promise<TrySpawnContextResu
         runId: globalThis.crypto.randomUUID(),
         spawnId: `ephemeral-${Array.from(buf).map((b) => b.toString(16).padStart(2, '0')).join('')}`,
         parentSpawnId: null,
-        uiClientId: clientParam.length > 0 ? clientParam : null,
+        uiClientId: suIdentity.length > 0 ? suIdentity : null,
         isSuperuser: true,
       },
     };
