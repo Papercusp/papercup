@@ -1,11 +1,8 @@
 /**
- * Pure-helper tests for /api/plugins/updates. The route's I/O glue
- * (catalog fetch + filesystem scan) is exercised in smoke tests; here
- * we pin the version-comparison + capChange logic that decides whether
- * a row appears as an update and how the consent prompt looks.
+ * Pure-helper tests for /api/plugins/updates — version compare + capChange.
  */
 import { describe, it, expect } from 'vitest';
-import { isNewerVersion, computeCapChange } from './route';
+import { isNewerVersion, computeCapChange } from '../routes/plugins/updates';
 
 describe('isNewerVersion', () => {
   it('returns false for equal versions', () => {
@@ -29,7 +26,6 @@ describe('isNewerVersion', () => {
   });
 
   it('handles missing patch segments (treats missing as 0)', () => {
-    // '1.0' < '1.0.1' because the 3rd component is 0 vs 1
     expect(isNewerVersion('1.0.1', '1.0')).toBe(true);
     expect(isNewerVersion('1.0', '1.0.0')).toBe(false);
   });
@@ -40,11 +36,6 @@ describe('isNewerVersion', () => {
   });
 
   it('handles prerelease tail of catalog vs installed', () => {
-    // catalog "1.0.0" should beat installed "1.0.0-rc1" if the numeric
-    // segments parse equal but the bare form has no extra tail to
-    // compare against — '1.0.0' is naively > '1.0.0-rc1' because the
-    // shorter array runs out first. Pin this current behavior so we
-    // notice on accidental change.
     expect(isNewerVersion('1.0.0', '1.0.0-rc1')).toBe(false);
   });
 });

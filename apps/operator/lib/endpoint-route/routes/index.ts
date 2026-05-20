@@ -89,6 +89,25 @@ import internalPrEvent from './internal/pr-event';
 import internalSkillSnapshot from './internal/skill-snapshot';
 import internalSmokeTestEvent from './internal/smoke-test-event';
 import internalTestSnapshot from './internal/test-snapshot';
+import pluginsEnabled from './plugins/enabled';
+import pluginsManifest from './plugins/manifest';
+import pluginsGlobal from './plugins/global';
+import pluginsGrants from './plugins/grants';
+import pluginsInvoke from './plugins/invoke';
+import pluginsTools from './plugins/tools';
+import pluginsUninstall from './plugins/uninstall';
+import pluginsEnable from './plugins/enable';
+import pluginsConfig from './plugins/config';
+import pluginsConfigs from './plugins/configs';
+import pluginsHostRuntimeStatus from './plugins/host-runtime-status';
+import pluginsHostEvents from './plugins/host-events';
+import pluginsHostQuery from './plugins/host-query';
+import pluginsHostInvoke from './plugins/host-invoke';
+import pluginsHostRefresh from './plugins/host-refresh';
+import pluginsContributions from './plugins/contributions';
+import pluginsIframeEntry from './plugins/iframe-entry';
+import pluginsUpdates from './plugins/updates';
+import pluginsCatchall from './plugins/catchall';
 import devRouteInvocations from './dev/route-invocations';
 import agentConfig from './agent-config/index';
 import agentConfigTest from './agent-config/test';
@@ -268,6 +287,27 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(internalSkillSnapshot as AnyRoute),
   ...flatten(internalSmokeTestEvent as AnyRoute),
   ...flatten(internalTestSnapshot as AnyRoute),
+  // Literal plugins routes before the catch-all.
+  ...flatten(pluginsEnabled as AnyRoute),
+  ...flatten(pluginsManifest as AnyRoute),
+  ...flatten(pluginsGlobal as AnyRoute),
+  ...flatten(pluginsGrants as AnyRoute[]),
+  ...flatten(pluginsInvoke as AnyRoute),
+  ...flatten(pluginsTools as AnyRoute),
+  ...flatten(pluginsUninstall as AnyRoute),
+  ...flatten(pluginsEnable as AnyRoute),
+  ...flatten(pluginsConfig as AnyRoute[]),
+  ...flatten(pluginsConfigs as AnyRoute),
+  ...flatten(pluginsHostRuntimeStatus as AnyRoute),
+  ...flatten(pluginsHostEvents as AnyRoute),
+  ...flatten(pluginsHostQuery as AnyRoute),
+  ...flatten(pluginsHostInvoke as AnyRoute),
+  ...flatten(pluginsHostRefresh as AnyRoute[]),
+  ...flatten(pluginsContributions as AnyRoute),
+  ...flatten(pluginsIframeEntry as AnyRoute),
+  ...flatten(pluginsUpdates as AnyRoute),
+  // Plugins catch-all after literals — projected-tool dispatch.
+  ...flatten(pluginsCatchall as AnyRoute[]),
   // Transport last — single-segment :transport must not shadow literal paths.
   ...flatten(transport as AnyRoute[]),
   ...flatten(devRouteInvocations as AnyRoute),

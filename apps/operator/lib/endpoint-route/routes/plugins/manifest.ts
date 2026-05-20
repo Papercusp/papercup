@@ -1,20 +1,11 @@
 /**
- * GET /api/plugins/manifest?slug=<plugin-name>
- *   → { name, version, capabilities: string[], description?, icon? }
- *
- * Reads the on-disk manifest for an installed plugin. Used by the
- * permissions UI (/installed/plugins/<slug>/permissions) to know which
- * capabilities to surface for grant/revoke.
+ * GET /api/plugins/manifest?slug=<name> — manifest read for permissions UI.
+ * Ported from app/api/plugins/manifest/route.ts. `auth: 'public'`.
  */
-
-import { NextResponse } from 'next/server';
 import { promises as fs, existsSync } from 'node:fs';
 import { join } from 'node:path';
-
 import { papercuspRoot } from '@/lib/papercusp-root';
-
-export const dynamic = 'force-dynamic';
-export const runtime = 'nodejs';
+import { defineRoute } from '../../define-route';
 
 interface PluginManifest {
   name: string;
@@ -36,7 +27,6 @@ async function findManifest(slug: string): Promise<{ manifest: PluginManifest; p
   const directManifest = await readJson<PluginManifest>(join(direct, 'papercusp.json'));
   if (directManifest?.name) return { manifest: directManifest, path: direct };
 
-  // Scoped: walk @scope/<slug>
   const entries = await fs.readdir(root, { withFileTypes: true }).catch(() => []);
   for (const e of entries) {
     if (!e.name.startsWith('@')) continue;
@@ -45,7 +35,6 @@ async function findManifest(slug: string): Promise<{ manifest: PluginManifest; p
     if (m?.name) return { manifest: m, path: inner };
   }
 
-  // Last resort: any dir whose manifest.name matches slug
   for (const e of entries) {
     if (e.name.startsWith('.')) continue;
     const dir = join(root, e.name);
@@ -55,18 +44,23 @@ async function findManifest(slug: string): Promise<{ manifest: PluginManifest; p
   return null;
 }
 
-export async function GET(req: Request) {
-  const url = new URL(req.url);
-  const slug = url.searchParams.get('slug') ?? '';
-  if (!slug) return NextResponse.json({ error: 'slug required' }, { status: 400 });
-  const found = await findManifest(slug);
-  if (!found) return NextResponse.json({ error: 'not found' }, { status: 404 });
-  const { manifest } = found;
-  return NextResponse.json({
-    name: manifest.name,
-    version: manifest.version,
-    description: manifest.description ?? null,
-    icon: manifest.icon ?? null,
-    capabilities: Array.isArray(manifest.capabilities) ? manifest.capabilities : [],
-  });
-}
+export default defineRoute({
+  method: 'GET',
+  path: '/plugins/manifest',
+  auth: 'public',
+  async handler(req) {
+    const url = new URL(req.url);
+    const slug = url.searchParams.get('slug') ?? '';
+    if (!slug) return Response.json({ error: 'slug required' }, { status: 400 });
+    const found = await findManifest(slug);
+    if (!found) return Response.json({ error: 'not found' }, { status: 404 });
+    const { manifest } = found;
+    return Response.json({
+      name: manifest.name,
+      version: manifest.version,
+      description: manifest.description ?? null,
+      icon: manifest.icon ?? null,
+      capabilities: Array.isArray(manifest.capabilities) ? manifest.capabilities : [],
+    });
+  },
+});

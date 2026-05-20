@@ -1,15 +1,9 @@
 /**
- * Catch-all HTTP route for projected tools mounted under /api/plugins/.
- *
- * Every plugin tool with `expose.http.path` starting with /api/plugins/
- * is served by this single route. Lookup is by full pathname against the
- * agent-mcp tool-projection registry; the pure routing logic lives in
- * `@papercusp/agent-mcp`'s http-projection module so the operator route
- * is a thin shell.
- *
- * Spec: apps/operator/docs/plugin-mcp-host-design.md.
+ * GET/POST/PUT/PATCH/DELETE /api/plugins/* — projected-tool catch-all.
+ * Every plugin tool with expose.http.path starting with /api/plugins/
+ * is served by this single route.
+ * Ported from app/api/plugins/[...path]/route.ts. `auth: 'public'`.
  */
-
 import {
   handleHttpToolRequest,
   handleHttpToolRequestStreaming,
@@ -21,11 +15,7 @@ import { pluginSpawnImpl, secretImpl } from '@/lib/plugin-spawn-impl';
 import { resolveHarnessPaths } from '@/lib/resolve-harness-paths';
 import { isLoopbackRequest, isValidSuperuserBearer } from '@/lib/superuser-token';
 import { PROJECTED_DEPS } from '@/lib/projected-tool-deps';
-
-export const runtime = 'nodejs';
-export const dynamic = 'force-dynamic';
-
-/* ─── Host extras (PG-backed quota + invocation persistence) ────────── */
+import { defineRoute } from '../../define-route';
 
 const HOST_EXTRAS: HttpToolHostExtras = {
   deps: PROJECTED_DEPS,
@@ -33,7 +23,6 @@ const HOST_EXTRAS: HttpToolHostExtras = {
     // eslint-disable-next-line no-console
     console.log(`[plugin-tool/http][${ctx.harnessSlug ?? '-'}/${ctx.role ?? '-'}/${ctx.spawnId ?? '-'}] ${line}`);
   },
-  // progress wired below at request time when streaming is requested.
   spawn: pluginSpawnImpl,
   secret: secretImpl,
   resolveHarnessPaths,
@@ -49,12 +38,9 @@ const HOST_EXTRAS: HttpToolHostExtras = {
   },
 };
 
-/* ─── Request → response ─────────────────────────────────────────────── */
-
 async function dispatchHttp(req: Request): Promise<Response> {
   const url = new URL(req.url);
 
-  // Read body. Tolerant: empty body → {}.
   let body: unknown = {};
   if (req.method !== 'GET') {
     try {
@@ -76,13 +62,9 @@ async function dispatchHttp(req: Request): Promise<Response> {
     body,
   };
 
-  // Streaming opt-in: client sends `Accept: text/event-stream`.
-  // The same projected-tool dispatch runs underneath; only the response
-  // shape differs (SSE event stream vs single JSON body).
   const wantsStream = (headerMap['accept'] ?? '').includes('text/event-stream');
 
   if (wantsStream) {
-    // Strict-streamable: see agent-tools/[...path]/route.ts for rationale.
     const tool = lookupByHttpPath(url.pathname);
     const streamable =
       !!tool &&
@@ -112,8 +94,14 @@ async function dispatchHttp(req: Request): Promise<Response> {
   });
 }
 
-export const GET = dispatchHttp;
-export const POST = dispatchHttp;
-export const PUT = dispatchHttp;
-export const PATCH = dispatchHttp;
-export const DELETE = dispatchHttp;
+const PATH = '/plugins/*';
+const methods = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'] as const;
+
+export default methods.map((method) =>
+  defineRoute({
+    method,
+    path: PATH,
+    auth: 'public',
+    handler: dispatchHttp,
+  }),
+);
