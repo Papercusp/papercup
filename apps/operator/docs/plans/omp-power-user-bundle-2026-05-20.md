@@ -40,6 +40,9 @@ entirely cross-plan or a deploy step:
 
 - **`power-user-token` unit suite**: 8/8 pass (HMAC roundtrip,
   tamper, expiry, type-confusion both directions).
+- **`dispatch-projected` suite**: 38/38 pass, incl. 2 new tests
+  asserting the power-user quota window keys on the stable
+  `auth_session_id`, not the per-request `runId`.
 - **`power-user-e2e` integration suite**: 20/20 pass against the
   live dev operator (`npm run test:power-user`). Covers token
   issue/refresh, type-confusion 401, agent-bundle (+ 401 without a
@@ -47,6 +50,10 @@ entirely cross-plan or a deploy step:
   `{mode:'omp'}`.
 - Full operator typecheck clean. `@papercusp/omp` builds + CLI
   smoke-tests.
+
+No open deviations: the plan's §4.1 quota requirement is implemented
+(the power-user tier enforces workspace quotas; superuser still
+bypasses them).
 
 ## 1. Problem
 
