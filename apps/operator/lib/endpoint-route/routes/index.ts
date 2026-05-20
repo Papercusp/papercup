@@ -159,6 +159,7 @@ import agentMcp_spawnPi from './agent-mcp/spawn-pi';
 import agentMcp_voiceDebug from './agent-mcp/voice-debug';
 import agentMcp_voiceUtteranceLog from './agent-mcp/voice-utterance-log';
 import agentMcp_workspaceCompanyId from './agent-mcp/workspace-company-id';
+import openapiJson from './openapi-json';
 import devRouteInvocations from './dev/route-invocations';
 import agentConfig from './agent-config/index';
 import agentConfigTest from './agent-config/test';
@@ -317,6 +318,7 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(agentMcp_voiceDebug as AnyRoute[]),
   ...flatten(agentMcp_voiceUtteranceLog as AnyRoute),
   ...flatten(agentMcp_workspaceCompanyId as AnyRoute[]),
+  ...flatten(openapiJson as AnyRoute),
   ...flatten(flagsWebhook as AnyRoute),
   ...flatten(flagsBootstrap as AnyRoute),
   ...flatten(flagsStream as AnyRoute),
