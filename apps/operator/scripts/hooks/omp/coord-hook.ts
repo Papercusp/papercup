@@ -234,15 +234,22 @@ export async function onTurnStart(): Promise<string> {
  * Tool-call enforcement stub. Real lock enforcement (block on busy,
  * release on tool_result) is owned by `file-locking-improvements`
  * plan #2. Until that ships, this stub permits every call.
+ *
+ * Matches OMP's `ToolCallEvent` from
+ * @oh-my-pi/pi-coding-agent/src/extensibility/types.ts: discriminated
+ * `type: "tool_call"` envelope with toolName / toolCallId / input.
+ * Return shape matches `ToolCallEventResult` ({ block?, reason? }).
  */
 export interface ToolCallEvent {
-  tool: string;
-  input?: Record<string, unknown>;
+  type: 'tool_call';
+  toolName: string;
+  toolCallId: string;
+  input: Record<string, unknown>;
 }
-export async function onToolCall(_event: ToolCallEvent): Promise<{ block: boolean; reason?: string } | null> {
+export async function onToolCall(_event: ToolCallEvent): Promise<{ block?: boolean; reason?: string }> {
   // TODO(file-locking-improvements #2): inspect tool + path; call
   //   locks:acquire; return { block: true, reason } on busy.
-  return null;
+  return {};
 }
 
 // ── OMP adapter (registration) ───────────────────────────────────────
@@ -260,18 +267,38 @@ async function safe<T>(fn: () => Promise<T>, fallback: T): Promise<T> {
 }
 
 /**
- * The OMP entry point. OMP loads this via --hook=<path>.
+ * Narrow shape of the OMP HookAPI we depend on. The real interface
+ * lives at `@oh-my-pi/pi-coding-agent/src/extensibility/hooks/types.ts`
+ * (HookAPI). We don't import it because this file ships standalone
+ * to OMP — it has no dev-dependency on @oh-my-pi/pi-coding-agent.
  *
- * IMPORTANT — adapter assumption (verify at deploy): this assumes the
- * OMP HookAPI exposes `pi.on(event, handler)` and that the `turn_start`
- * handler's return value (when a non-empty string) is prepended as a
- * system message to the next turn. If OMP's actual API differs,
- * adjust the three `pi.on(...)` calls below; the underlying handlers
- * (onSessionStart / onTurnStart / onToolCall) are unchanged.
+ * Verified 2026-05-20 against the installed version: turn_start
+ * handlers receive `TurnStartEvent` and their return value is
+ * DISCARDED — to inject context, call `pi.sendMessage()` from inside
+ * the handler. tool_call handlers may return ToolCallEventResult
+ * ({ block?, reason? }) to block. session_start handlers' return
+ * values are also discarded.
  */
-type Listener = (event: unknown, api?: unknown) => unknown;
+type SessionStartHandler = (event: { type: 'session_start' }, ctx: unknown) => unknown;
+type TurnStartHandler = (event: { type: 'turn_start'; turnIndex: number; timestamp: number }, ctx: unknown) => unknown;
+type ToolCallHandler = (
+  event: ToolCallEvent,
+  ctx: unknown,
+) => Promise<{ block?: boolean; reason?: string } | void> | { block?: boolean; reason?: string } | void;
+
 interface HookApi {
-  on(event: string, handler: Listener): void;
+  on(event: 'session_start', handler: SessionStartHandler): void;
+  on(event: 'turn_start', handler: TurnStartHandler): void;
+  on(event: 'tool_call', handler: ToolCallHandler): void;
+  sendMessage(
+    message: {
+      customType: string;
+      content: string | Array<{ type: 'text'; text: string }>;
+      display?: boolean;
+      attribution?: 'user' | 'agent';
+    },
+    options?: { triggerTurn?: boolean; deliverAs?: 'steer' | 'followUp' },
+  ): void;
 }
 
 export default function register(pi: HookApi): void {
@@ -280,11 +307,23 @@ export default function register(pi: HookApi): void {
   });
 
   pi.on('turn_start', async () => {
-    return safe(() => onTurnStart(), '');
+    const reminder = await safe(() => onTurnStart(), '');
+    if (reminder.length > 0) {
+      // OMP `turn_start` discards the handler's return value, so we
+      // inject via sendMessage. attribution='agent' so the message is
+      // not billed to the user; display=false because the reminder is
+      // for the model, not the human (the /coord UI surfaces it for
+      // humans).
+      pi.sendMessage({
+        customType: 'coord-reminder',
+        content: reminder,
+        display: false,
+        attribution: 'agent',
+      });
+    }
   });
 
   pi.on('tool_call', async (event) => {
-    const e = event as ToolCallEvent;
-    return safe(() => onToolCall(e), null);
+    return safe(() => onToolCall(event), {});
   });
 }

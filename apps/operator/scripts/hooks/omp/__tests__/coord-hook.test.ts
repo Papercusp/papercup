@@ -84,6 +84,38 @@ describe('formatTurnStartReminder', () => {
   });
 });
 
+describe('register (OMP adapter)', () => {
+  /**
+   * Smoke test for the corrected OMP HookAPI contract (verified
+   * 2026-05-20 against @oh-my-pi/pi-coding-agent installed version):
+   *
+   *   - session_start / turn_start handler return values are DISCARDED
+   *   - tool_call may return ToolCallEventResult to block
+   *   - turn_start injects via pi.sendMessage(), not via return value
+   */
+  it('subscribes session_start, turn_start, and tool_call', async () => {
+    const subs = new Map<string, (e: unknown, ctx?: unknown) => unknown>();
+    const sent: Array<{ msg: unknown; opts?: unknown }> = [];
+    const pi = {
+      on: (event: string, handler: (e: unknown, ctx?: unknown) => unknown) => {
+        subs.set(event, handler);
+      },
+      sendMessage: (msg: unknown, opts?: unknown) => {
+        sent.push({ msg, opts });
+      },
+    };
+    const { default: register } = await import('../coord-hook');
+    register(pi as never);
+    expect([...subs.keys()].sort()).toEqual(['session_start', 'tool_call', 'turn_start']);
+    // tool_call handler permits all by default (stub).
+    const block = await subs.get('tool_call')!(
+      { type: 'tool_call', toolName: 'edit', toolCallId: 't1', input: {} },
+      {},
+    );
+    expect(block).toEqual({});
+  });
+});
+
 describe('summarisePlanEvents', () => {
   it('groups plan_event entries by plan_slug, preserving order', () => {
     const events: InboxEntry[] = [
