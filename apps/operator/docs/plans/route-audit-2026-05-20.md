@@ -209,11 +209,23 @@ Routes that hold non-transport state / cookies / cost-caps / plugin-host couplin
 
 **Classification method:** the audit script's heuristic, spot-validated against ≥3 routes per bucket. Where a future PR migrating a `review`-bucket route discovers a misclassification here, it corrects the row — but the heuristic held for every spot-check in batch 1.
 
-### migrate (25 — the high-confidence pipeline)
+### migrate (22 high-confidence; 3 reclassified A1-exempt 2026-05-20)
 
 Per-PR migrations. Each PR migrates ≤ 4 routes from this list and updates the rows.
 
-Pulled from the script — exact list at the same `jq` filter with `hint=="migrate"`. The `ui/*` (3), `internal/*` (8), and `harness/*` (1) routes are the cleanest opening batch.
+Pulled from the script — exact list at the same `jq` filter with `hint=="migrate"`.
+
+**Batch 2 correction — `ui/*` (3 routes) reclassified `migrate` → A1-exempt.** The script hinted `migrate` (small + PG-touching + no streaming for two of them). Reading the routes contradicted the hint:
+
+| route | script hint | decision | why |
+|---|---|---|---|
+| `app/api/ui/presence/route.ts` | migrate | **A1-exempt** | Browser→operator presence beacon. Called only by `UiPresenceProvider.tsx` / `use-ui-presence.ts`. The route IS the browser↔operator contract; migrating it to a `defineTool` would put a browser-telemetry beacon into the agent tool catalog (a category error). |
+| `app/api/ui/intents/[id]/result/route.ts` | migrate | **A1-exempt** | Browser→operator intent-result callback. Paired with the existing `ui:dispatch` agent tool's long-poll. Same contract-surface argument. |
+| `app/api/ui/intents/stream/route.ts` | migrate | **A1-exempt** | SSE long-poll (maxDuration 86400s) feeding the browser's intent dispatcher. Streaming browser-facing transport, not an agent-callable function. |
+
+The `ui:*` *agent* surface already exists as proper `defineTool`s — `lib/agent-tools/ui/{list_clients,dispatch,get_state}.ts`. The three `/api/ui/*` routes are the browser half of that pair and stay as Hono/Next shims. This is the audit framework working as intended: the heuristic flagged 3 false positives, the human read corrected them.
+
+**Remaining migrate bucket (22):** `internal/*` (8) is the cleanest opening batch — verify each is a genuine typed-IO function before migrating (the `ui/*` lesson: confirm the route is an *agent* surface, not a browser-contract surface, before turning it into a tool).
 
 ### consolidate (0 remaining; 12 closed)
 
