@@ -61,6 +61,12 @@ function usesLoopbackGate(text) {
          /isLoopbackRequest|isLoopbackIp/.test(text);
 }
 
+function usesRequirePrincipal(text) {
+  // The Principal RFC's consolidated auth gate. A route that calls
+  // requirePrincipal has already been swept; no further consolidation work.
+  return /requirePrincipal\s*\(/.test(text);
+}
+
 function usesCostCap(text) {
   return /recordSpend|enforceCostCap|checkBudget|costCap/.test(text);
 }
@@ -102,6 +108,9 @@ function classify(signals) {
   if (signals.loc > 200 && signals.usesPersistence) return 'A1';
   // Already endpoint-system → no migration needed; mark separately.
   if (signals.usesEndpointSystem) return 'substrate';
+  // Principal RFC sweep already applied — auth gate migrated to
+  // requirePrincipal(). No further consolidation work.
+  if (signals.usesRequirePrincipal) return 'consolidated-already';
   // Loopback-gated + nothing else complex = consolidation target for
   // the Principal RFC sweep, not endpoint-system migration.
   if (signals.usesLoopbackGate && signals.loc < 100 && !signals.usesPersistence) return 'consolidate';
@@ -149,6 +158,7 @@ for (const path of routes) {
     usesNextHeaders: usesNextHeaders(text),
     usesCookies: usesCookies(text),
     usesLoopbackGate: usesLoopbackGate(text),
+    usesRequirePrincipal: usesRequirePrincipal(text),
     usesCostCap: usesCostCap(text),
     usesFeatureLock: usesFeatureLock(text),
     usesPersistence: usesPersistence(text),
@@ -175,28 +185,28 @@ if (asJson) {
   // Per-family breakdown
   const byFamily = {};
   for (const r of rows) {
-    byFamily[r.family] = byFamily[r.family] ?? { migrate: 0, consolidate: 0, A1: 0, substrate: 0, review: 0 };
+    byFamily[r.family] = byFamily[r.family] ?? { migrate: 0, consolidate: 0, 'consolidated-already': 0, A1: 0, substrate: 0, review: 0 };
     byFamily[r.family][r.hint]++;
   }
   const families = Object.keys(byFamily).sort();
-  console.error('Family                        migrate consol  A1  subst  review  total');
+  console.error('Family                        migrate consol  done  A1  subst  review  total');
   for (const fam of families) {
     const s = byFamily[fam];
-    const total = s.migrate + s.consolidate + s.A1 + s.substrate + s.review;
+    const total = s.migrate + s.consolidate + s['consolidated-already'] + s.A1 + s.substrate + s.review;
     console.error(
-      `${fam.padEnd(28)}  ${String(s.migrate).padStart(7)}  ${String(s.consolidate).padStart(6)}  ${String(s.A1).padStart(2)}  ${String(s.substrate).padStart(5)}  ${String(s.review).padStart(6)}  ${String(total).padStart(5)}`,
+      `${fam.padEnd(28)}  ${String(s.migrate).padStart(7)}  ${String(s.consolidate).padStart(6)}  ${String(s['consolidated-already']).padStart(4)}  ${String(s.A1).padStart(2)}  ${String(s.substrate).padStart(5)}  ${String(s.review).padStart(6)}  ${String(total).padStart(5)}`,
     );
   }
   console.error('');
 
   // Detail rows for the family-filtered case (otherwise too noisy)
   if (familyFilter) {
-    console.log('| route | LoC | hint | sub | nextH | cook | loop | cost | lock | pers | plug | strm |');
-    console.log('|---|---|---|---|---|---|---|---|---|---|---|---|');
+    console.log('| route | LoC | hint | sub | nextH | cook | loop | req | cost | lock | pers | plug | strm |');
+    console.log('|---|---|---|---|---|---|---|---|---|---|---|---|---|');
     for (const r of rows) {
       const s = r.signals;
       console.log(
-        `| \`${r.route}\` | ${s.loc} | ${r.hint} | ${b(s.usesEndpointSystem)} | ${b(s.usesNextHeaders)} | ${b(s.usesCookies)} | ${b(s.usesLoopbackGate)} | ${b(s.usesCostCap)} | ${b(s.usesFeatureLock)} | ${b(s.usesPersistence)} | ${b(s.usesPluginHost)} | ${b(s.declaresStream)} |`,
+        `| \`${r.route}\` | ${s.loc} | ${r.hint} | ${b(s.usesEndpointSystem)} | ${b(s.usesNextHeaders)} | ${b(s.usesCookies)} | ${b(s.usesLoopbackGate)} | ${b(s.usesRequirePrincipal)} | ${b(s.usesCostCap)} | ${b(s.usesFeatureLock)} | ${b(s.usesPersistence)} | ${b(s.usesPluginHost)} | ${b(s.declaresStream)} |`,
       );
     }
   }

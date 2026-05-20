@@ -46,6 +46,7 @@ A fourth bucket is **consolidate** — loopback-gated routes that are simple eno
 | **substrate** | Already uses `defineTool` / endpoint-system dispatch. No migration needed; just verify telemetry plumb. | Confirm `transport: 'ipc' / 'http'` rows in `tool_invocations`; move on. |
 | **migrate** | Audit-recommended migration to `defineTool`. | Per-PR migration; update row to `decision: migrated → <commit-sha>`. |
 | **consolidate** | Loopback-only auth gate; small handler. Migrate auth to `requirePrincipal()` (Phase 3b), keep wire shape. | Phase 3b implementation. |
+| **consolidated-already** | Already calls `requirePrincipal()`. Phase 3b sweep applied; closed. | None — done. |
 | **A1** | A1-class. Stay as a Hono shim; do NOT migrate. | Update row to `decision: A1-exempt`; capture *which* axis triggered the exemption. |
 | **review** | Script couldn't decide. Manual classification required. | Read the file, evaluate the four axes, write a row decision. |
 
@@ -204,13 +205,13 @@ Per-PR migrations. Each PR migrates ≤ 4 routes from this list and updates the 
 
 Pulled from the script — exact list at the same `jq` filter with `hint=="migrate"`. The `ui/*` (3), `internal/*` (8), and `harness/*` (1) routes are the cleanest opening batch.
 
-### consolidate (12 — Phase 3b's sweep)
+### consolidate (5 remaining; 7 closed)
 
-These are loopback-only-gated routes that the Principal RFC implementation will sweep through. NOT Phase 4's work directly. Listed here to make the dependency visible:
+These are loopback-only-gated routes the Principal RFC implementation sweeps. The 7 `desktop/*` state probes shipped 2026-05-20 with the Phase 3b step-2 commit + the desktop-batch consolidation commit — they no longer carry local `isLoopback()` helpers; auth flows through `requirePrincipal()`. Per the audit script, those 7 now classify as `consolidated-already`.
 
-- All 7 `desktop/*` (state probes — gated by `isLoopback()`)
-- 3 `admin/*` (admin operations)
-- 2 `agent-mcp/*` (console internal)
+Remaining `consolidate` rows:
+- 3 `admin/*` (admin operations) — next batch.
+- 2 `agent-mcp/*` (console internal) — after the admin batch.
 
 Phase 3b §4 walks the consolidation strategy.
 

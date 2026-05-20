@@ -17,6 +17,7 @@
  */
 import { NextRequest, NextResponse } from 'next/server';
 import { readOperatorState, writeOperatorState } from '@/lib/operator-state-pg';
+import { PrincipalCheckError, requirePrincipal } from '@/lib/auth/require-principal';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -37,28 +38,32 @@ interface ReportsState {
   reports: StoredReport[];
 }
 
-function isLoopback(req: NextRequest): boolean {
-  const host = req.headers.get('host') ?? '';
-  return (
-    host.startsWith('127.0.0.1:') ||
-    host.startsWith('localhost:') ||
-    host === '127.0.0.1' ||
-    host === 'localhost'
-  );
-}
-
 function defaults(): ReportsState {
   return { reports: [] };
 }
 
+async function gatePrincipal(req: NextRequest): Promise<NextResponse | null> {
+  try {
+    await requirePrincipal(req.headers);
+    return null;
+  } catch (err) {
+    if (err instanceof PrincipalCheckError) {
+      return NextResponse.json({ error: err.reason }, { status: err.status });
+    }
+    throw err;
+  }
+}
+
 export async function GET(req: NextRequest) {
-  if (!isLoopback(req)) return NextResponse.json({ error: 'loopback only' }, { status: 403 });
+  const denied = await gatePrincipal(req);
+  if (denied) return denied;
   const state = (await readOperatorState<ReportsState>(REPORTS_KEY)) ?? defaults();
   return NextResponse.json(state);
 }
 
 export async function POST(req: NextRequest) {
-  if (!isLoopback(req)) return NextResponse.json({ error: 'loopback only' }, { status: 403 });
+  const denied = await gatePrincipal(req);
+  if (denied) return denied;
   const wizard = await readOperatorState<{ telemetry_enabled?: boolean }>(WIZARD_KEY);
   if (!wizard?.telemetry_enabled) {
     return NextResponse.json({ error: 'telemetry disabled' }, { status: 403 });

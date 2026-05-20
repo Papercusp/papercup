@@ -20,19 +20,10 @@ import { activeWorkspaceId } from '@/lib/workspace-registry';
 import { ensureInstallId } from '@/lib/setup-wizard-install-id';
 import { getPosthogConfigWithSource } from '@/lib/posthog-config';
 import { POSTHOG_PUBLIC_DEFAULTS } from '@/lib/posthog-public-defaults';
+import { PrincipalCheckError, requirePrincipal } from '@/lib/auth/require-principal';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
-
-function isLoopback(req: NextRequest): boolean {
-  const host = req.headers.get('host') ?? '';
-  return (
-    host.startsWith('127.0.0.1:') ||
-    host.startsWith('localhost:') ||
-    host === '127.0.0.1' ||
-    host === 'localhost'
-  );
-}
 
 function resolveHostKey(): { host: string; projectKey: string } {
   const envHost = process.env.PAPERCUSP_POSTHOG_HOST;
@@ -46,8 +37,13 @@ function resolveHostKey(): { host: string; projectKey: string } {
 }
 
 export async function GET(req: NextRequest) {
-  if (!isLoopback(req)) {
-    return NextResponse.json({ error: 'loopback only' }, { status: 403 });
+  try {
+    await requirePrincipal(req.headers);
+  } catch (err) {
+    if (err instanceof PrincipalCheckError) {
+      return NextResponse.json({ error: err.reason }, { status: err.status });
+    }
+    throw err;
   }
   const installId = await ensureInstallId();
   const state = await readOperatorState<{ telemetry_enabled?: boolean }>('setup_wizard_state');

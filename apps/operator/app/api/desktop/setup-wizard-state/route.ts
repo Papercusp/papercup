@@ -24,11 +24,12 @@ export interface SetupWizardState {
   last_visited_step?: string;
   finished_at?: string;
   update_channel?: UpdateChannel;
-  /** Telemetry opt-in. **Off by default** — the wizard's Step 12 is
-   *  the only place this flips, and only on explicit user click.
-   *  Even when true, telemetry is only forwarded when the shared
-   *  PostHog config has testingFeatures: true (per-machine admin
-   *  opt-in). See docs.papercupai.com/posthog. */
+  /** Telemetry opt-in. **Off by default** — the wizard's telemetry
+   *  step is the only place this flips, and only on explicit user
+   *  click. When true, telemetry forwards on the next flush: the
+   *  public PostHog host + projectKey are bundled, so opt-in alone is
+   *  sufficient (no per-machine admin step). PAPERCUSP_INTERNAL_BUILD
+   *  forwards regardless of opt-in for maintainer channels. */
   telemetry_enabled?: boolean;
   /** Per-install random UUID. Set once on first GET, never changes.
    *  Used as the PostHog distinct id so each installation is one

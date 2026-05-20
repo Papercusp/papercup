@@ -16,23 +16,19 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { readElevenLabsKey } from '@/lib/voice-credentials';
 import { readOperatorState } from '@/lib/operator-state-pg';
+import { PrincipalCheckError, requirePrincipal } from '@/lib/auth/require-principal';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
-function isLoopback(req: NextRequest): boolean {
-  const host = req.headers.get('host') ?? '';
-  return (
-    host.startsWith('127.0.0.1:') ||
-    host.startsWith('localhost:') ||
-    host === '127.0.0.1' ||
-    host === 'localhost'
-  );
-}
-
 export async function GET(req: NextRequest) {
-  if (!isLoopback(req)) {
-    return NextResponse.json({ error: 'loopback only' }, { status: 403 });
+  try {
+    await requirePrincipal(req.headers);
+  } catch (err) {
+    if (err instanceof PrincipalCheckError) {
+      return NextResponse.json({ error: err.reason }, { status: err.status });
+    }
+    throw err;
   }
   try {
     const [key, state] = await Promise.all([

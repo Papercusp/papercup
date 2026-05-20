@@ -142,10 +142,10 @@ async function checkPostgres(): Promise<Check> {
       try { socket.destroy(); } catch { /* ignore */ }
       resolve({ name: 'postgres', status, detail });
     };
-    socket.setTimeout(2000);
-    socket.once('connect', () => finish('ok', 'localhost:5432 reachable'));
-    socket.once('timeout', () => finish('missing', 'localhost:5432 timeout'));
-    socket.once('error', (e: any) => finish('missing', `localhost:5432 ${e?.code ?? 'unreachable'}`));
+    socket.setTimeout(8000);
+    socket.once('connect', () => finish('ok', '127.0.0.1:5432 reachable'));
+    socket.once('timeout', () => finish('missing', '127.0.0.1:5432 timeout'));
+    socket.once('error', (e: any) => finish('missing', `127.0.0.1:5432 ${e?.code ?? 'unreachable'}`));
     socket.connect(5432, '127.0.0.1');
   });
 }

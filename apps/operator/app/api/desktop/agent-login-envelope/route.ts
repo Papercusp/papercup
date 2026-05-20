@@ -10,6 +10,7 @@
  */
 import { NextRequest } from 'next/server';
 import { homedir } from 'node:os';
+import { PrincipalCheckError, requirePrincipal } from '@/lib/auth/require-principal';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -23,19 +24,14 @@ const PROVIDER_COMMANDS: Record<string, string> = {
   github: 'gh auth login',
 };
 
-function isLoopback(req: NextRequest): boolean {
-  const host = req.headers.get('host') ?? '';
-  return (
-    host.startsWith('127.0.0.1:') ||
-    host.startsWith('localhost:') ||
-    host === '127.0.0.1' ||
-    host === 'localhost'
-  );
-}
-
 export async function POST(req: NextRequest): Promise<Response> {
-  if (!isLoopback(req)) {
-    return Response.json({ error: 'loopback only' }, { status: 403 });
+  try {
+    await requirePrincipal(req.headers);
+  } catch (err) {
+    if (err instanceof PrincipalCheckError) {
+      return Response.json({ error: err.reason }, { status: err.status });
+    }
+    throw err;
   }
   const body = (await req.json().catch(() => ({}))) as { provider?: string };
   const provider = body.provider ?? '';
