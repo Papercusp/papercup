@@ -124,9 +124,18 @@ export function registerOracle(app: Hono) {
             }
           } else if (ev.kind === 'error') {
             sink.event('error', { message: ev.error.message });
+          } else if (ev.kind === 'done' && ev.result) {
+            // Terminal frame — wire symmetry with the projected catch-all URL.
+            sink.event('done', ev.result.content);
           }
-          // ev.kind === 'done' — framework auto-emits event: done via sink
         }
+        // CRITICAL: sseResponse does NOT auto-close when setup() resolves
+        // (it stays open for long-lived streams). A chat turn is finite —
+        // close here, or the consumer's reader.read() never returns
+        // { done: true } and OracleDock hangs on heartbeats after every
+        // turn. This is the audit-round-10 regression; see the round-10
+        // tests in hono-shim-dispatch.test.ts.
+        sink.close();
       },
     });
   });

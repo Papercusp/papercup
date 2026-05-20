@@ -14,7 +14,7 @@
  *   event: cost        data: { usd: number }                  ← JSON
  *   event: error       data: { message: string, stderr?: string } ← JSON
  *   event: tutorial_end data: {}                              ← JSON, sent once when final tutorial step reached
- *   event: done        data: <ToolResult.content as JSON>     ← framework auto-emit
+ *   event: done        data: <ToolResult.content as JSON>     ← terminal frame (shim dispatch loop / projected adapter emits + closes)
  *
  * Note: delta is z.object (JSON), NOT z.string raw — the consumer
  * does JSON.parse(data).text. Differs from architect:chat which uses
