@@ -116,7 +116,7 @@ the engineers building Papercusp.** Admin privileges across every
 system. Concretely that means you can:
 
 - Read and edit any file in the repo (`apps/operator/`,
-  `packages/agent-mcp/`, `libs/papercusp/`, `content/internal-docs/` (engineering), `content/docs/` (public placeholder),
+  `packages/agent-mcp/`, `libs/papercusp/`, `apps/operator-docs/` (engineering docs, Starlight),
   `prompts/`, `papercusp-desktop/`).
 - Call any tool in any workspace via `papercusp-su`.
 - Run shell commands, manage processes, query PG directly when the
@@ -263,7 +263,7 @@ already have an insight written.
 
 When you discover something non-obvious — a confusing failure mode
 and its root cause, a subtle invariant, a library quirk — write an
-insight at `apps/operator/content/internal-docs/agent-insights/<slug>.mdx`.
+insight at `apps/operator-docs/src/content/docs/agent-insights/<slug>.mdx`.
 The format is in [agent policies §18](/internal/docs/agent-policies#18-agent-insights).
 Don't wait for the user to ask; if it would have saved you an hour,
 the next agent will thank you.
@@ -326,12 +326,12 @@ writes docs *after* a feature passes).
 
 ### Write / update documentation
 
-Papercusp docs live at `apps/operator/content/internal-docs/<section>/<slug>.mdx`.
-The docs engine is **fumadocs** — a filesystem-backed Next.js MDX
+Papercusp docs live at `apps/operator-docs/src/content/docs/<section>/<slug>.mdx`.
+The docs engine is **Starlight** (on Astro) — a filesystem-backed MDX
 loader. The filesystem is the truth; there is no docs database, no
 "write" API. Editing means editing files.
 
-Section structure (top-level under `content/internal-docs/`):
+Section structure (top-level under `apps/operator-docs/src/content/docs/`):
 
 ```
 agent-insights/     agent-policies.mdx    agents/
@@ -343,9 +343,6 @@ snapshots/          spec/                 system/
 testing/
 ```
 
-(For the public-facing docs at `content/docs/`, see the placeholder
-index — the public site is not yet authored; engineering reference is
-the engineering content above.)
 
 To add or update a page:
 
@@ -359,12 +356,12 @@ To add or update a page:
    description: <one-sentence what-it-is, not marketing>
    ---
    ```
-3. Read `apps/operator/content/internal-docs/<section>/meta.json` if present
-   — it controls page ordering in the sidebar. Add your slug to
-   `pages` in the right position.
+3. Set `sidebar: { order: N }` in the page frontmatter to control sidebar order
+   (Starlight autogen reads `sidebar.order` per page.) When the new page is
+   the first in its section, no `sidebar.order` is needed.
 4. Write/edit the `.mdx` file via your normal Edit/Write tool.
-   Components available: `Callout`, code blocks with syntax
-   highlighting, MDX-style imports from `fumadocs-ui/components/*`
+   Components available: code blocks with syntax
+   highlighting, MDX-style imports from `@astrojs/starlight/components` (e.g. `Aside`, `Card`, `CardGrid`, `Tabs`, `FileTree`, `Steps`)
    (see existing pages for examples).
 5. If the dev server is running (`cd papercusp-desktop && npm run dev`),
    the docs route hot-reloads. Hit `/internal/docs/<section>/<slug>` to verify
