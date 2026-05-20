@@ -1,177 +1,174 @@
 ---
-title: Endpoint-system route management — the defineRoute primitive
+title: Endpoint route migration — porting all 243 endpoints off Next.js
 slug: endpoint-route-migration-2026-05-20
-status: design-review
+status: active
 created: 2026-05-20
 updated: 2026-05-20
 owner: pandawamble@gmail.com
-companion-to: [host-architecture-2026-05-20-v2, route-audit-2026-05-20]
+companion-to: [host-architecture-2026-05-20-v2, route-audit-2026-05-20, next-removal-2026-05-20]
 ---
 
-# Endpoint-system route management — the `defineRoute` primitive
+# Endpoint route migration — porting all 243 endpoints off Next.js
 
 **Date:** 2026-05-20
-**Status:** Design-review. No code lands until the §7 questions are resolved.
-**Supersedes the premise of:** host-architecture v2 Phase 4 ("route migration").
+**Status:** Active — scope confirmed "full" by the user. This is **load-bearing Next.js-removal work**, not optional consistency hygiene.
+**Owner of this slice:** me (endpoint porting). The Next-removal agent owns the host: app shell, router, build, `@hono/node-server`.
 
 ---
 
-## 1. Reconciliation — what this project is NOT
+## 1. Scope, as the user set it
 
-The route-audit (`route-audit-2026-05-20.md`) read all 243 routes and proved the **naive** Phase 4 — "turn the API routes into `defineTool`s" — is empty. Zero of 243 routes are agent functions hiding as routes. The 14 substrate routes already *are* the agent-tool surface; the other 229 are plumbing (UI-data, orchestrator IPC, settings CRUD, webhooks, OAuth, sync transports). Turning plumbing into agent tools is a category error.
+> "Scope is full. Meaning whatever endpoint changes are required to fully move us off Next.js. The other agent handles the Next.js-specific pieces — routing, etc. You are in charge of porting all the endpoints to our endpoint-system framework."
 
-So this plan does **not** propose route→`defineTool` migration. That project does not exist; pretending otherwise would be dishonest.
+This **reverses the framing** of the design-review draft. That draft pitched `defineRoute` as optional consistency churn you could veto. It is not optional anymore: **Next.js is being removed, and 218 of the 243 `route.ts` files import `next/*` directly** (`NextRequest`/`NextResponse`/`next/headers`). When Next is deleted, every one of those files stops compiling. Porting them is not hygiene — it is the only way the endpoints continue to exist.
 
-## 2. What the audit actually surfaced — the real project
+So: **all 243 endpoints move onto the endpoint-system framework.** No tiers-as-optional. The tiers from the draft survive only as *sequencing* (what order), never as *whether*.
 
-"A1-exempt" was recorded 229 times. It is the correct call against the *tool* question. But it quietly conflated two different things:
+## 2. The two projections — `defineTool` and `defineRoute`
 
-- **A1 in the tool sense** — "this should not become a `defineTool`." ✅ True for 229 routes.
-- **A1 as "leave it as an unmanaged raw handler forever."** ❌ This does *not* follow, and it's wrong.
+The endpoint-system framework has one projection today: `defineTool` (→ the agent tool catalog, MCP + HTTP). The route audit proved 229 of 243 endpoints must **not** become tools — they're plumbing, and putting plumbing in the agent catalog is a category error. So the framework needs its **second projection**, `defineRoute`, and the porting splits:
 
-The evidence, measured this session:
+- **14 substrate endpoints** — already `defineTool`s. Their *logic* is done; only their Next `route.ts` HTTP-path shim needs rebinding onto the new host (§4).
+- **229 plumbing endpoints** — become `defineRoute`s (§3).
 
-| Property | A `defineTool` gets it | An A1 `route.ts` gets it |
-|---|---|---|
-| Unified auth | ✅ dispatcher + principal | ❌ **22 of 243** use `requirePrincipal`; 5 still ad-hoc `isLoopback`; 19 hand-roll cookie/session; **~197 have no auth wrapper at all** |
-| Telemetry (`tool_invocations`) | ✅ every call | ❌ **3 of 243** emit anything |
-| Timeout / wedged-handler abort | ✅ dispatch-stack | ❌ none |
-| Uniform error envelope | ✅ `DispatchProjectedResult` | ❌ each route invents `{ error }` / `{ status }` shapes |
-| OpenAPI presence | ✅ Phase 7 emitter | ❌ the 229 plumbing routes are invisible to `openapi.json` |
-| One place to add a cross-cutting concern | ✅ a dispatch-stack step | ❌ 243 separate edits |
+"Porting all endpoints to the endpoint-system framework" = 14 stay `defineTool` + rebind, 229 become `defineRoute`. Both are the framework; `defineRoute` is the projection that was missing.
 
-**The real project:** bring the A1 routes onto the endpoint system's *cross-cutting machinery* — auth, telemetry, timeout, error mapping, contract surface — **without** forcing them into the tool model. The endpoint system today has exactly one projection (`defineTool` → MCP/HTTP tool). It needs a **second**: a route-shaped projection. That is what "route migration" should have meant all along.
-
-This is not invented work. The 21-route `requirePrincipal` consolidation already shipped this session is the first 9% of it, done by hand. The other ~91% is the same kind of consolidation — it just needs a primitive instead of a copy-paste.
-
-## 3. The primitive — `defineRoute`
-
-A second endpoint-system projection. Sibling to `defineTool`, deliberately different:
+## 3. `defineRoute` — the route projection
 
 ```ts
-export const { GET } = defineRoute({
+registerRoute(defineRoute({
   method: 'GET',
-  // Auth: a PrincipalRequirements object, or 'public' to opt out
-  // (webhooks, oauth/callback — routes that MUST accept unauthenticated
-  // callers). No default — every route states its stance explicitly.
-  auth: { trust: ['trusted', 'verified', 'unverified-loopback'] },
-  // Optional Zod input schema. When present: parsed + 400 on failure,
-  // and the route's OpenAPI operation carries the requestBody schema.
-  // When absent: the handler gets the raw Request — freeform routes
-  // (file-serving, qr.svg, SSE) stay freeform.
-  input: z.object({ limit: z.number().optional() }),
-  // Wall-clock timeout; default 30s. Wedged handlers abort.
+  path: '/desktop/version',
+  auth: { trust: ['trusted', 'verified', 'unverified-loopback'] }, // or 'public'
+  input: z.object({ verbose: z.coerce.boolean().optional() }),     // optional
   timeoutSec: 30,
   async handler(req, ctx) {
-    // ctx.principal — resolved Principal (or null when auth:'public')
-    // ctx.input     — parsed input when `input` schema was given
+    // ctx.principal — resolved Principal (null when auth:'public')
+    // ctx.input     — parsed input when `input` was given
     // ctx.log       — telemetry-bound logger
-    return Response.json({ ... });
+    return Response.json({ version: ... });
   },
-});
+}));
 ```
 
-What `defineRoute` **is**:
-- A declarative wrapper that produces the Next handler exports (`GET`/`POST`/…) the route file re-exports — *and* a Hono-mountable form for the `_hono/*` routers.
-- Dispatched through a **route-stack** — a small, composable middleware stack reusing the Phase 3a `DispatchStep` machinery (`dispatch-stack.ts`). The route-stack's steps are a strict subset: `auth` → `timeout` → `invoke` → `telemetry` → `error-map`. No role-allowlist, no quota, no replay-buffer, no `ctx.emit` — those are agent-streaming concerns A1 routes don't have.
-- HTTP-native. The handler signature is `(req, ctx) => Response`, not the tool's `(input, ctx) => ToolResult`.
+- **Hono-mount-primary.** `registerRoute` binds the route onto the Hono `app` (`_hono/app.ts`, the Option B extraction). It produces a Hono handler, not a Next handler export. The route's logic never touches `NextRequest`/`NextResponse` — `handler` takes the Web-standard `Request` and returns a Web-standard `Response`, which Hono speaks natively.
+- **Dispatched through the route-stack** — a 5-step composable stack (`auth → timeout → invoke → telemetry → error-map`) reusing the Phase 3a `DispatchStep` machinery (`dispatch-stack.ts`). Subset of the tool stack: no role-allowlist, no quota, no replay-buffer, no `ctx.emit`.
+- **Structurally not in the agent tool catalog.** No `expose.mcp`. `tools/list` never sees it. An agent cannot call a `defineRoute`. This is the guarantee that keeps plumbing out of the tool surface.
+- **`input` optional.** Freeform routes (`scratch/[...path]` file-serving, `mobile/qr.svg`, SSE streams) declare none and get the raw `Request`; they still get auth + telemetry + timeout + error-map.
 
-What `defineRoute` is **NOT**:
-- **Not in the agent tool catalog.** It has no `expose.mcp`. `tools/list` never sees it. An agent cannot call a `defineRoute`. This is the structural guarantee that keeps plumbing out of the tool surface — the exact category error the audit caught.
-- **Not a forced typed contract.** `input` is optional. A genuinely freeform route (`scratch/[...path]` file-serving, `mobile/qr.svg`, the SSE streams) declares no `input` and gets the raw `Request`. It still gets auth + telemetry + timeout + error-map.
+## 4. End state — no `route.ts` files
 
-## 4. Why a new primitive, not Hono middleware (design fork)
+Today every endpoint is a Next file-routing `route.ts` under `app/api/**`. The Option B refactor already extracted the Hono `app`; the `[[...route]]/route.ts` catch-all already serves everything the Hono app has routes for.
 
-Three ways to give A1 routes the cross-cutting machinery:
+The migration mechanic, per endpoint:
 
-| Option | Mechanism | Verdict |
-|---|---|---|
-| **A — Hono middleware only** | Apply auth/telemetry as Hono `app.use()` middleware | **Rejected.** Covers only the 18 `_hono/*` routers. The **243 Next-native `route.ts` files** don't run through the Hono app — they're independent Next handlers. Misses 93% of the surface. |
-| **B — `defineRoute` primitive** | Declarative wrapper → Next exports + Hono form, dispatched through the route-stack | **Recommended.** Covers both host shapes. Declarative → OpenAPI emission falls out. Reuses the Phase 3a composable-stack. One definition surface. |
-| **C — Hybrid** | Hono middleware for `_hono/*`, `defineRoute` for Next-native | Rejected — two mechanisms, two places to add a concern, the exact fragmentation we're removing. |
+1. Take `app/api/foo/bar/route.ts` (Next-native).
+2. Rewrite its logic as `defineRoute({ method, path: '/foo/bar', ... })` (or, for the 14 substrate, leave the `defineTool` and add a path binding).
+3. `registerRoute()` it onto the Hono `app`.
+4. **Delete `app/api/foo/bar/route.ts`.** `/api/foo/bar` is now served by the Hono catch-all.
 
-Recommendation: **Option B.** The route-stack is ~5 steps and reuses `DispatchStep`/`runDispatchStack` from `dispatch-stack.ts` — small surface, already tested machinery.
+**End state:** the only `route.ts` file left is `[[...route]]/route.ts` itself — and the Next-removal agent replaces *that* when they swap the Next host for `@hono/node-server` (their next-removal Phase C). At that point zero `next/*` imports remain in the endpoint layer.
 
-## 5. Scope — which routes, and the honest cost/benefit
+## 5. The seam with the Next-removal agent
 
-**Not all 229 A1 routes need this.** Three tiers:
+Clean division of labor, single contract:
 
-- **Tier 1 — auth-sensitive (migrate first, ~60 routes).** Anything touching credentials, admin ops, desktop state, plugin host, provisioning, OAuth, snapshots/templates publish. These genuinely benefit from uniform `requirePrincipal` + telemetry. The 21 already swept are a down payment on this tier.
-- **Tier 2 — UI-data routes (migrate in bulk, ~140 routes).** Settings reads, panel data, marketplace catalog. Lower auth stakes, but uniform telemetry makes `/dev → Sessions` show the *whole* API surface, and the error envelope + timeout are free wins. Mechanical.
-- **Tier 3 — skip (≈30 routes).** High-frequency transport + trivial routes where the machinery is pure overhead: `zero-harness/sse` + `rest-query*` (polled every ~3s — telemetry would flood the table), `runtime-config` (static env echo), the `[[...route]]` Hono entrypoint shim itself. These get an explicit `// endpoint-route: exempt` marker + a doc row, same as A1-exempt in the tool audit.
+| Owned by **me** (this plan) | Owned by the **Next-removal agent** |
+|---|---|
+| Every endpoint's logic, ported to `defineTool`/`defineRoute` | The app shell, pages, TanStack Router |
+| `defineRoute` primitive + route-stack | Vite / build pipeline |
+| `registerRoute` + the route registry mounted on the Hono `app` | The `@hono/node-server` host that serves the Hono `app` |
+| Deleting the per-endpoint `route.ts` files | Deleting `[[...route]]/route.ts` + the Next host at cutover |
+| `openapi.json` covering all endpoints | — |
 
-**Honest cost/benefit.** This is ~200 routes of churn for cross-cutting consistency. The benefits — one auth path, complete telemetry, complete OpenAPI, one edit-point for cross-cutting concerns — are real but are *consistency* benefits, not new features. If you'd rather not spend the churn, the defensible smaller scope is **Tier 1 only** (~60 auth-sensitive routes) — that captures the security-relevant consolidation and leaves the UI-data routes alone. Q6 asks you to pick.
+**The contract between us is the Hono `app` instance** (`apps/operator/app/api/_hono/app.ts`). I mount endpoints onto it; they serve it. Neither side needs to know the other's internals. The Option B refactor (already shipped, `0d70beea`) made `app` a clean importable — that's the seam, already in place.
+
+Coordination: `coord/` channel; `locks:acquire` per batch; I never touch the Vite/router/build files, they never touch `_hono/*` route logic. If both need `_hono/app.ts` (I add mounts, they wire the host), the mounts append — low conflict.
 
 ## 6. Phases
 
-### Phase R1 — `defineRoute` + the route-stack
+### Phase R1 — `defineRoute` + route-stack + registry
 
-- **Scope:** `route-stack.ts` (the 5-step stack, built on `DispatchStep`); `define-route.ts` (the primitive, producing Next exports + Hono form); the `RouteContext` type (`principal`, `input`, `log`). Convert **one pilot route per host shape** — one Next-native, one `_hono/*` — to prove both.
-- **Acceptance:** pilot routes emit a telemetry row; auth flows through `requirePrincipal`; a wedged handler aborts at `timeoutSec`; unit tests enumerate the route-stack in order (mirrors `dispatch-stack.test.ts`).
-- **NOT shipping:** bulk migration; OpenAPI emission; the telemetry table decision (R2).
-- **Rollback:** single-PR revert; pilots are additive.
+- **Scope:** `route-stack.ts` (5-step stack on `DispatchStep`); `define-route.ts` (the primitive); `RouteContext` type; `registerRoute` + a route registry; `registerAllRoutes(app)` mounted from `_hono/app.ts`. Convert **3 pilots**: one Next-native GET, one Next-native POST with `input`, one `public` route (a webhook — proves the auth-opt-out path).
+- **Acceptance:** the 3 pilots serve identically through the Hono catch-all with their `route.ts` deleted; telemetry rows land; a wedged handler aborts at `timeoutSec`; route-stack unit tests enumerate the steps; `tsc` clean.
+- **NOT shipping:** bulk migration; OpenAPI; the substrate rebind.
+- **Rollback:** single-PR revert; pilots restore their `route.ts`.
 
-### Phase R2 — telemetry unification
+### Phase R2 — telemetry sink
 
-- **Scope:** decide `route_invocations` (new table) vs extending `tool_invocations` (Q1). Plumb the route-stack's `telemetry` step into it. `/dev → Sessions` (or a sibling panel) reads it.
-- **Acceptance:** every `defineRoute` call lands a row; `/dev` surfaces route traffic distinctly from tool traffic.
-- **NOT shipping:** migrating routes (R4) — just the sink.
-- **Rollback:** revert; the telemetry step degrades to a no-op.
+- **Scope:** `route_invocations` table (Q1 → adopted: separate table) + migration; the route-stack `telemetry` step writes it; `/dev → Sessions` gains a route-traffic view.
+- **Acceptance:** every `defineRoute` call lands a row; `/dev` surfaces route vs tool traffic distinctly.
+- **Rollback:** revert; telemetry step no-ops.
 
 ### Phase R3 — OpenAPI extension
 
-- **Scope:** `defineRoute` operations join `openapi.json` (Phase 7) as plain HTTP operations — `requestBody` from `input` when declared, the standard error responses, **no** `text/event-stream`/tool shape. The assembler walks a route registry alongside the tool catalog.
-- **Acceptance:** `openapi.json` covers substrate tools **+** every migrated `defineRoute`; `@redocly/cli lint` clean.
-- **NOT shipping:** routes not yet migrated stay absent (expected; the doc tracks coverage).
+- **Scope:** `defineRoute` operations join `openapi.json` (Phase 7) as plain HTTP operations. The assembler walks the route registry alongside the tool catalog.
+- **Acceptance:** `openapi.json` covers substrate tools + every migrated route; `@redocly/cli lint` clean.
 - **Rollback:** revert the assembler change.
 
-### Phase R4 — bulk migration, by family
+### Phase R4 — substrate rebind (14 routes)
 
-- **Scope:** convert A1 routes to `defineRoute`, family by family, Tier 1 before Tier 2. `_hono/*` routers first (18 — already centralized, lowest risk). Then Next-native by family, ≤8 routes per PR.
-- **Audit doc linkage:** each migrated route's row in `route-audit-2026-05-20.md` flips from `A1-exempt` to `defineRoute → <sha>`.
-- **Acceptance per batch:** every route emits telemetry; auth uniform; the route's existing e2e/integration spec passes unchanged (wire contract preserved); `tsc` clean.
-- **NOT shipping:** Tier-3 exempt routes; behavior changes (pure mechanical wrap).
+- **Scope:** the 14 already-`defineTool` endpoints — move their HTTP-path binding off the Next `route.ts` shim onto the Hono `app` (a `registerRoute`-style binding that dispatches the existing tool). Delete the 14 shims.
+- **Acceptance:** the 14 tool HTTP paths serve through Hono; MCP dispatch unaffected; `tsc` clean.
+- **Rollback:** per-route revert.
+
+### Phase R5 — bulk migration (229 routes)
+
+- **Scope:** convert every plumbing endpoint to `defineRoute`, `registerRoute` it, delete the `route.ts`. Sequence: `_hono/*` internal routers first (already Hono-native — lowest risk), then Next-native by family. ≤8 routes/PR.
+- **Sequencing within R5** (the old "tiers" — now ordering, not optionality):
+  1. auth-sensitive families (credentials, admin, desktop, plugin-host, provision, oauth, snapshots) — ~60 routes
+  2. UI-data families (settings, panels, marketplace, harness, backups) — ~140 routes
+  3. transport/freeform (`zero-harness/*`, SSE streams, file-serving, webhooks) — ~29 routes; these get `defineRoute` with `input` omitted + (for high-frequency ones) a telemetry sample-rate so `route_invocations` doesn't flood
+- **Audit linkage:** each route's row in `route-audit-2026-05-20.md` flips `A1-exempt` → `defineRoute → <sha>`.
+- **Acceptance per batch:** route serves identically (existing e2e/integration spec passes, or golden-response capture for spec-less routes — Q5); `route.ts` deleted; `tsc` clean.
 - **Rollback:** per-batch PR revert.
 
-### Phase R5 — enforcement
+### Phase R6 — enforcement + cutover handoff
 
-- **Hard prerequisite:** R4 ≥80% of Tier 1 + Tier 2.
-- **Scope:** ESLint rule — a new `route.ts` under `app/api/**` must export from `defineRoute`, not a raw `export function GET`. Tier-3 exempt files carry the marker the rule recognizes.
-- **Acceptance:** a planted raw-handler route fails `lint`; the real tree passes.
-- **Rollback:** demote to warning.
+- **Prerequisite:** R4 + R5 complete — zero `route.ts` files except `[[...route]]`.
+- **Scope:** ESLint rule — no new raw `route.ts` under `app/api/**`; `git grep "from 'next/server'"` returns zero in the endpoint layer; hand the Hono `app` to the Next-removal agent for their `@hono/node-server` cutover.
+- **Acceptance:** zero `next/*` imports in the endpoint layer; a planted raw route fails lint; the Next-removal agent confirms the host swap serves all endpoints.
+- **Rollback:** n/a — this is the finish line; rollback is per-batch in R5.
 
-## 7. Open questions (block implementation)
+## 7. Decisions
 
-**Q1 — telemetry sink.** New `route_invocations` table, or extend `tool_invocations` with a `kind: 'tool' | 'route'` column? A separate table avoids polluting tool analytics + lets route rows have a different retention policy (route traffic is higher-volume). Recommend **separate table**.
+**Q6 — scope.** RESOLVED by the user: **full.** All 243 endpoints.
 
-**Q2 — `_hono/*` routers.** The 18 Hono routers could alternatively keep their current shape and just get Hono middleware (Option A applied *only* to them). Do we convert them to `defineRoute` for uniformity, or leave them Hono-native with middleware? Recommend **convert** — one primitive, one mental model — but it's a real fork.
+The remaining design questions (Q1–Q5) I am **adopting at the recommended answers** and proceeding — they are judgment calls within authorized work, each has a clear recommendation, and waiting on them would stall R1. Stated here for the record; flag any you want changed:
 
-**Q3 — auth default.** Should `defineRoute` *require* an explicit `auth` field (no default — every route states its stance), or default to fail-closed `requirePrincipal()`? Fail-closed is safer but a forgotten `auth: 'public'` breaks webhooks/OAuth-callback silently. Recommend **required explicit field** — no default, the type makes you choose.
+- **Q1 — telemetry sink → separate `route_invocations` table.** Keeps tool analytics clean; route traffic is higher-volume and wants its own retention.
+- **Q2 — `_hono/*` routers → convert to `defineRoute`.** One primitive, one mental model. They migrate first in R5 (lowest risk — already Hono-native).
+- **Q3 — auth default → required explicit `auth` field, no default.** The type makes every route state its stance; a forgotten field is a compile error, not a silent fail-open/closed. `auth: 'public'` is a deliberate keystroke for webhooks/OAuth.
+- **Q4 — typed `input` → optional.** Freeform routes (file-serving, SSE, qr.svg) declare none and get the raw `Request`.
+- **Q5 — verification → golden-response capture for auth-sensitive routes, `tsc` + existing-spec for the rest.** Routes with no spec and no golden capture get a one-shot smoke test added with the migration PR.
 
-**Q4 — typed input.** `input` optional (freeform routes pass), as drafted? Or push every route toward a Zod contract? Recommend **optional** — forcing a schema onto `scratch/[...path]` file-serving is noise.
+Genuinely still-open (need your input, but don't block R1):
 
-**Q5 — verification.** This wraps ~200 live routes. Each batch's acceptance leans on the route's existing e2e/integration spec. Routes *without* a spec — how do we verify the wrap didn't change behavior? Options: (a) require a smoke test per migrated route, (b) accept `tsc` + manual spot-check, (c) golden-response capture before/after. Recommend **(c)** for Tier 1, **(b)** for Tier 2.
-
-**Q6 — scope.** Full (Tier 1 + Tier 2, ~200 routes) or Tier 1 only (~60 auth-sensitive)? Tier 1 captures the security consolidation; Tier 2 is consistency + telemetry completeness. This is the call that sizes the project from ~2 weeks (Tier 1) to ~6–8 weeks (full).
+- **Q7 — high-frequency route telemetry.** `zero-harness/sse` + `rest-query*` are polled every ~3s. Even with a sample-rate, do you want them in `route_invocations` at all, or fully exempt? Recommend: exempt the pure sync-transport routes, sample the rest at 1%.
+- **Q8 — cutover ordering with the Next-removal agent.** Does R5 need to finish before their Phase C (`@hono/node-server`), or can the node-server stand up early and serve the Hono `app` while R5 is still migrating routes into it? Recommend: node-server early — it serves whatever's mounted; R5 fills the app incrementally; no hard ordering.
 
 ## 8. Risks
 
 | Risk | Severity | Mitigation |
 |---|---|---|
-| ~200-route churn | High | Mechanical, batched ≤8/PR, family-by-family; pre-alpha — breakage is cheap; per-batch revert. |
-| A public route gets fail-closed auth → webhook/OAuth breaks | High | Q3: explicit `auth` field, no default; `auth: 'public'` is a deliberate keystroke. R1 converts a webhook as a pilot to prove the path. |
-| Telemetry volume from high-frequency routes | Medium | Tier-3 exemption for `zero-harness/*` + polled routes; telemetry step supports a per-route sample rate. |
-| Behavior drift on routes with no test | Medium | Q5 — golden-response capture for Tier 1. |
-| Coordination — Starlight + Next-removal-deferred agents touch `app/api/**` | Medium | `locks:acquire` per batch; `_hono/*` first (smaller contention surface); coordinate via `coord/`. |
-| The whole thing is consistency, not features | Real | Q6 lets you scope to Tier 1 or veto. Stated honestly, not buried. |
+| 243-route churn | High | Mechanical, batched ≤8/PR, family-by-family; pre-alpha; per-batch revert. The audit already read all 243 — no discovery left, just execution. |
+| A public route gets fail-closed auth → webhook/OAuth breaks | High | Q3 explicit `auth` field; R1 converts a webhook as a pilot. |
+| Behavior drift on spec-less routes | Medium | Q5 golden-response capture for auth-sensitive; smoke test added per migration PR otherwise. |
+| Telemetry flood from polled routes | Medium | Q7 — exempt sync transports, sample the rest. |
+| Seam conflict with the Next-removal agent on `_hono/app.ts` | Medium | Mounts append (low conflict); `locks:acquire`; `coord/` channel; §5 ownership split is strict. |
+| Next-removal timeline slips → endpoints ported but no host | Low | The Hono catch-all already serves them under Next today; the migration is host-independent — it works whether or not the node-server cutover happens on schedule. |
 
-## 9. What this is NOT
+## 9. What this is
 
-- Not route→`defineTool`. That project does not exist (route-audit proved it).
-- Not a behavior change. `defineRoute` is a transparent wrapper — same wire contract, same responses, plus telemetry/auth/timeout.
-- Not a Next removal. `defineRoute` produces Next handler exports; it's orthogonal to the deferred Next-removal plan.
-- Not Track A. `defineRoute` *consumes* `requirePrincipal` (Phase 3b); it doesn't define auth policy.
+- **Part of the Next.js removal.** Every endpoint ends up `next/*`-free and Hono-mounted. (The design-review draft said "not a Next removal" — that is now wrong; the user rescoped it.)
+- A transparent port — same wire contract, same responses, plus auth/telemetry/timeout/OpenAPI.
 
-## 10. Recommendation
+## What this is NOT
 
-Proceed with **Option B** (`defineRoute` primitive) at **Q6 = full scope** if you want the complete telemetry + OpenAPI surface, or **Q6 = Tier 1** if you want only the security consolidation. Either way R1–R3 are identical; only R4's length changes. My recommendation: **Tier 1 now, decide on Tier 2 after R1–R3 land** — that way the primitive proves itself on the 60 routes that matter most before committing to the full 200-route churn.
+- Not route→`defineTool` for plumbing (the category error the audit caught — `defineRoute` exists precisely to avoid it).
+- Not Track A — `defineRoute` consumes `requirePrincipal`; it doesn't define auth policy.
+- Not the host swap — that's the Next-removal agent's `@hono/node-server` work; I hand them a fully-populated Hono `app`.
+
+## 10. Execution
+
+Q6 resolved (full), Q1–Q5 adopted at recommendations. **R1 starts now** — `defineRoute` + route-stack + registry + 3 pilots. Q7–Q8 don't block R1; answer them before R5's transport sub-phase. Each phase is a PR (or batch of PRs for R5); the audit doc's rows track per-route progress to the finish line: zero `route.ts`, zero `next/*` in the endpoint layer.
