@@ -1,0 +1,34 @@
+import { defineConfig } from 'astro/config';
+import starlight from '@astrojs/starlight';
+
+// Public-facing user manual for Papercusp. Engine: Starlight (on Astro).
+// The internal *engineering* docs are a separate app — apps/operator-docs.
+//
+// `base: '/docs'` is load-bearing: every in-content link is written as
+// `/docs/<slug>` (carried over from the previous fumadocs `/docs/[[...slug]]`
+// route), so the site must mount under /docs for those links to resolve.
+// If this is ever deployed at a bare docs subdomain, flip base to '/' and
+// rewrite the in-content links.
+export default defineConfig({
+  site: 'https://papercup.ai',
+  base: '/docs',
+  integrations: [
+    starlight({
+      title: 'Papercusp Docs',
+      description: 'Public documentation for the Papercusp platform.',
+      pagefind: true,
+      sidebar: [
+        { label: 'Welcome', link: '/docs/' },
+        {
+          label: 'Sections',
+          items: [
+            'using-the-app',
+            'harness-templates',
+            'harness-snapshots',
+            'plugins',
+          ],
+        },
+      ],
+    }),
+  ],
+});

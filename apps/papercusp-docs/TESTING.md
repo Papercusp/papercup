@@ -1,32 +1,23 @@
-# TESTING — @papercusp/docs
+# TESTING — @papercupai/papercusp-docs
 
-Standalone Fumadocs build serving the public docs at `:3070` *while the Tauri dev shell is running*. The standalone webapp path is retired (2026-05-14); to bring up the docs site for verdict checks, launch the Tauri dev shell first:
+Public-facing user manual for Papercusp. Engine: **Starlight (on Astro)** —
+migrated off fumadocs 2026-05-20 so the repo carries a single docs engine.
+(The internal *engineering* docs are a separate Starlight app, `apps/operator-docs`.)
 
-```bash
-cd /home/marsh-office/papercupai-workspace/papercusp-desktop && npm run dev
-```
+This is a standalone static site. It is not yet wired into any deploy or
+into the operator — `astro build` emits static HTML to `dist/` and that's it.
 
-The content source is shared with the operator via Pattern A (see `project_fumadocs_pattern_a.md`).
+## Verify after editing
 
-## What this project's tests cover
+| Edit touches | Run |
+| --- | --- |
+| `src/content/docs/**` markdown | `npm run build` — Astro fails the build on broken MDX / frontmatter |
+| `astro.config.mjs` / sidebar | `npm run dev`, open `http://localhost:4321/docs`, eyeball nav |
+| Anything visible to users | `npm run build && npm run preview`, then a `verdict` smoke against the preview URL |
 
-- (none) — content correctness is verified by:
-  - Operator's TypeScript build (the same `content/docs/**` tree
-    type-checks via Fumadocs' `.source/` types).
-  - `verdict` smoke against `:3070` for visual rendering (Tauri dev shell must be running).
+## Not covered
 
-## What they don't cover
-
-- Markdown link integrity across docs — there's no automated check.
-  Phase 5 candidate: a `lychee` link-checker job in nightly CI.
-- Search index quality — verified manually.
-
-## Run after editing
-
-| Edit touches                        | Run                                                   |
-| ----------------------------------- | ----------------------------------------------------- |
-| `content/docs/**` markdown          | rebuild operator: `cd apps/operator && npm run build` (Pattern A shares source) |
-| Layout / navigation                 | launch Tauri dev (above) and visual smoke at `:3070`  |
-| Anything visible to users           | Tauri dev + `verdict` against `http://localhost:3070/docs` |
-
-See repo-root `CLAUDE.md` and `apps/operator/content/docs/testing/` for the full strategy.
+- In-content link integrity — no automated checker yet. In-content links are
+  written `/docs/<slug>`; they resolve because `astro.config.mjs` sets
+  `base: '/docs'`.
+- Search index quality (Pagefind) — verified manually.

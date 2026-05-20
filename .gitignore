@@ -16,3 +16,7 @@ apps/operator-mobile/src-tauri/target/
 # operator-docs (Astro+Starlight)
 apps/operator-docs/dist/
 apps/operator-docs/.astro/
+
+# papercusp-docs (Astro+Starlight)
+apps/papercusp-docs/dist/
+apps/papercusp-docs/.astro/
