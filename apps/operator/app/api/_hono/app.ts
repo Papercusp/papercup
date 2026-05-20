@@ -28,7 +28,7 @@ import { registerCrossHarness } from './cross-harness';
 import { registerMobile } from './mobile';
 import { registerDockLayouts } from './dock-layouts';
 import { installPluginApiDispatcher } from '../../../lib/plugin-api-mount';
-import { registerAllRoutes } from '../../../lib/endpoint-route/register';
+import { registerRouteLiterals, registerRouteCatchalls } from '../../../lib/endpoint-route/register';
 
 const app = new Hono().basePath('/api');
 
@@ -80,6 +80,15 @@ registerAgentChats(harness);
 registerExperts(harness);
 registerProjects(harness);
 registerCrossHarness(harness);
+
+// defineRoute LITERALS — phase 1. MUST register before the sub-apps
+// below (`app.route('/harness', …)`, `app.route('/plugins', …)`):
+// Hono runs overlapping handlers in registration order, so a literal
+// like `/plugins/enabled` must out-rank the `plugins` sub-app's
+// parametric catch-all. The catch-all defineRoutes register in phase 2
+// (registerRouteCatchalls) after the sub-apps. See register.ts.
+registerRouteLiterals(app);
+
 app.route('/harness', harness);
 registerOracle(app);
 registerDockLayouts(app);
@@ -101,11 +110,13 @@ app.route('/coord', coord);
 
 // defineRoute endpoints — the endpoint-system's second projection.
 // Every `defineRoute` (lib/endpoint-route/routes/**) mounts here and is
-// served by the [[...route]] catch-all, same as the routers above. As
-// the route-migration (endpoint-route-migration-2026-05-20.md) proceeds,
-// the per-endpoint Next route.ts files are deleted and their logic moves
-// into lib/endpoint-route/routes/** — this one call grows to cover all
-// 243 endpoints.
-registerAllRoutes(app);
+// served by the [[...route]] catch-all, same as the routers above.
+//
+// defineRoute CATCH-ALLS — phase 2. `/plugins/*`, `/agent-tools/*`,
+// `/plugin-runtime/.../*`, `/:transport`. Registered AFTER the sub-apps
+// so a plugin's own apiRoutes (the `plugins` dispatcher) still gets
+// first refusal before our projected-tool catch-all. Phase 1 literals
+// registered above, before the sub-apps.
+registerRouteCatchalls(app);
 
 export { app };

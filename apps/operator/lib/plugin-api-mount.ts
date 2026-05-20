@@ -159,11 +159,16 @@ async function ensureRegistryBuilt(): Promise<void> {
  * registry is hot-swappable without re-registering this route.
  */
 export function installPluginApiDispatcher(router: Hono<any, any, any>): void {
-  router.all('/:pluginName/*', async (c) => {
+  router.all('/:pluginName/*', async (c, next) => {
     await ensureRegistryBuilt();
     const name = c.req.param('pluginName');
     const handle = __cache.registry.get(name);
-    if (!handle) return c.notFound();
+    // Registry miss → this isn't a plugin-contributed apiRoute. YIELD
+    // (`next()`), don't terminate: a literal `/plugins/<x>` defineRoute
+    // or the projected-tool `/plugins/*` catch-all may still handle it.
+    // Returning c.notFound() here would shadow every such route. See
+    // endpoint-route-migration-2026-05-20.md audit + register.ts.
+    if (!handle) return next();
     // Hand the inner handler a Request stripped of the `/<plugin-name>` prefix
     // and the parent's basePath so its own internal routing matches the way
     // it does in standalone tests.
@@ -173,11 +178,12 @@ export function installPluginApiDispatcher(router: Hono<any, any, any>): void {
     const innerReq = new Request(innerUrl, c.req.raw);
     return handle.fetch(innerReq);
   });
-  router.all('/:pluginName', async (c) => {
+  router.all('/:pluginName', async (c, next) => {
     await ensureRegistryBuilt();
     const name = c.req.param('pluginName');
     const handle = __cache.registry.get(name);
-    if (!handle) return c.notFound();
+    // Registry miss → yield (see the '/:pluginName/*' handler above).
+    if (!handle) return next();
     const url = new URL(c.req.url);
     const innerUrl = url.origin + '/' + url.search;
     const innerReq = new Request(innerUrl, c.req.raw);
