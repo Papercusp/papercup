@@ -1,7 +1,7 @@
 ---
 title: "@papercusp/omp — power-user agent bundle"
 slug: omp-power-user-bundle-2026-05-20
-status: proposed
+status: in-progress
 created: 2026-05-20
 updated: 2026-05-20
 owner: pandawamble@gmail.com
@@ -18,7 +18,34 @@ the current Papercusp persona + tools playbook + tool catalog.
 
 ## Now
 
-Spec review with user. No code lands until plan is accepted.
+P-001 through P-004 implemented and verified against a live operator
+dev server (2026-05-20). Remaining before this is `shipped`:
+
+- Land the file-locking plan's L1/L2/L3 OMP hook into
+  `apps/operator/scripts/hooks/omp/` so the bundle's `hooks[]` is
+  non-empty (§4.3.1, D-008).
+- Audience-neutral rewrite of `papercusp-su.tools.md` (D-008b, locks
+  plan owner).
+- Rebuild the desktop operator sidecar so the new routes + navbar
+  button go live in the packaged app (dev server already serves them).
+- Open questions still parked: none blocking — Q-B1/Q-E1/Q-F1 were
+  decided with the plan defaults at implementation time.
+
+### Verified 2026-05-20 (operator `next dev`)
+
+- `POST /api/agent-tokens/power-user` issues access + refresh tokens.
+- `POST .../refresh` mints a new access token; an access token used
+  as a refresh token is rejected 401 (type confusion).
+- `GET /api/agent-bundle` returns the live `papercusp-su.tools.md`
+  (18 KB), origin-derived `mcp_url`, workspace + user; 401 without a
+  token.
+- `POST /api/mcp?power_user=1` `tools/list` returns the operator-tier
+  catalog with a valid token, `[]` with a garbage token.
+- `POST /api/agent-mcp/console/launch {mode:'omp'}` returns
+  `omp_not_installed` with the install command when `papercusp-omp`
+  is absent.
+- `power-user-token` unit suite: 8/8 pass. Full operator typecheck
+  clean. `@papercusp/omp` builds + CLI smoke-tests.
 
 ## 1. Problem
 
