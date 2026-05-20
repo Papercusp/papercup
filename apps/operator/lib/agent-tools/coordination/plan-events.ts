@@ -25,15 +25,21 @@ import {
   type ResolveIdentityCtx,
 } from './identity';
 
+/**
+ * The plan-event kinds that an actual `plans:*` write verb emits. This
+ * is deliberately exhaustive over emitters — every member here has a
+ * call site (audit F-M3). When a plan-level status verb is added
+ * (draft→active→shipped on the frontmatter), reintroduce a
+ * `status_changed` / `completed` member here *together with* its
+ * emitter — not before.
+ */
 export type PlanEventType =
   | 'created'
-  | 'status_changed'
   | 'now_updated'
   | 'decision_added'
   | 'item_added'
   | 'item_status_changed'
-  | 'promoted'
-  | 'completed';
+  | 'promoted';
 
 export interface EmitPlanEventOpts {
   planSlug: string;
