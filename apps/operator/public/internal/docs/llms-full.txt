@@ -374,6 +374,14 @@ The build script is `"build": "astro build && bash scripts/postbuild-copy.sh"`. 
 
 Import path: `import { Aside } from '@astrojs/starlight/components';`
 
+## Performance
+
+[Section titled “Performance”](#performance)
+
+A full `astro build` of the 129-page site completes in \~21s, with Pagefind search indexing adding \~0.5s. The output is plain static HTML: the operator serves it straight from `public/internal/docs/`, so there is **no runtime docs cost** — no second Node process, and no per-request MDX compilation (fumadocs compiled MDX inside the Next request path).
+
+A head-to-head build-time / bundle-size comparison against the old fumadocs setup isn’t possible — the F10 cutover removed it before a baseline was captured. The concrete, measurable win is the runtime one above: docs rendering moved entirely out of the request path.
+
 ## Migration plan + companion docs
 
 [Section titled “Migration plan + companion docs”](#migration-plan--companion-docs)

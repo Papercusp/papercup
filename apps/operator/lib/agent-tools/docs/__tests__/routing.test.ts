@@ -14,7 +14,6 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.doUnmock('@/lib/harness-registry');
-  vi.doUnmock('@/lib/source');
 });
 
 describe('docs:outline resolveAdapter', () => {
@@ -22,7 +21,6 @@ describe('docs:outline resolveAdapter', () => {
     vi.doMock('@/lib/harness-registry', () => ({
       loadHarnessRegistry: vi.fn(async () => ({ projects: [] })),
     }));
-    vi.doMock('@/lib/source', () => ({ source: { getPages: () => [] }, internalSource: { getPages: () => [] } }));
     const mod = await import('../outline');
     const result = await mod.resolveAdapter(undefined);
     expect(result.surface).toBe('engineering');
@@ -36,7 +34,6 @@ describe('docs:outline resolveAdapter', () => {
         projects: [{ slug: 'sheets', path: '/tmp/harness-fixture' }],
       })),
     }));
-    vi.doMock('@/lib/source', () => ({ source: { getPages: () => [] }, internalSource: { getPages: () => [] } }));
     const mod = await import('../outline');
     const result = await mod.resolveAdapter('sheets');
     expect(result.surface).toBe('harness');
@@ -48,7 +45,6 @@ describe('docs:outline resolveAdapter', () => {
     vi.doMock('@/lib/harness-registry', () => ({
       loadHarnessRegistry: vi.fn(async () => ({ projects: [] })),
     }));
-    vi.doMock('@/lib/source', () => ({ source: { getPages: () => [] }, internalSource: { getPages: () => [] } }));
     const mod = await import('../outline');
     const result = await mod.resolveAdapter('does-not-exist');
     expect(result.error).toEqual({ code: 'harness_not_registered', slug: 'does-not-exist' });
@@ -61,7 +57,6 @@ describe('docs:get resolveAdapter', () => {
     vi.doMock('@/lib/harness-registry', () => ({
       loadHarnessRegistry: vi.fn(async () => ({ projects: [] })),
     }));
-    vi.doMock('@/lib/source', () => ({ source: { getPages: () => [] }, internalSource: { getPages: () => [] } }));
     const mod = await import('../get');
     const result = await mod.resolveAdapter(undefined);
     expect(result.surface).toBe('engineering');
@@ -74,7 +69,6 @@ describe('docs:get resolveAdapter', () => {
         projects: [{ slug: 'sheets', path: '/tmp/harness-fixture' }],
       })),
     }));
-    vi.doMock('@/lib/source', () => ({ source: { getPages: () => [] }, internalSource: { getPages: () => [] } }));
     const mod = await import('../get');
     const result = await mod.resolveAdapter('sheets');
     expect(result.surface).toBe('harness');
@@ -84,7 +78,6 @@ describe('docs:get resolveAdapter', () => {
     vi.doMock('@/lib/harness-registry', () => ({
       loadHarnessRegistry: vi.fn(async () => ({ projects: [] })),
     }));
-    vi.doMock('@/lib/source', () => ({ source: { getPages: () => [] }, internalSource: { getPages: () => [] } }));
     const mod = await import('../get');
     const result = await mod.resolveAdapter('does-not-exist');
     expect(result.error).toEqual({ code: 'harness_not_registered', slug: 'does-not-exist' });
@@ -96,7 +89,6 @@ describe('docs:search resolveAdapter', () => {
     vi.doMock('@/lib/harness-registry', () => ({
       loadHarnessRegistry: vi.fn(async () => ({ projects: [] })),
     }));
-    vi.doMock('@/lib/source', () => ({ source: { getPages: () => [] }, internalSource: { getPages: () => [] } }));
     const mod = await import('../search');
     const result = await mod.resolveAdapter(undefined);
     expect(result.surface).toBe('engineering');
@@ -108,7 +100,6 @@ describe('docs:search resolveAdapter', () => {
         projects: [{ slug: 'sheets', path: '/tmp/harness-fixture' }],
       })),
     }));
-    vi.doMock('@/lib/source', () => ({ source: { getPages: () => [] }, internalSource: { getPages: () => [] } }));
     const mod = await import('../search');
     const result = await mod.resolveAdapter('sheets');
     expect(result.surface).toBe('harness');
@@ -118,7 +109,6 @@ describe('docs:search resolveAdapter', () => {
     vi.doMock('@/lib/harness-registry', () => ({
       loadHarnessRegistry: vi.fn(async () => ({ projects: [] })),
     }));
-    vi.doMock('@/lib/source', () => ({ source: { getPages: () => [] }, internalSource: { getPages: () => [] } }));
     const mod = await import('../search');
     const result = await mod.resolveAdapter('does-not-exist');
     expect(result.error).toEqual({ code: 'harness_not_registered', slug: 'does-not-exist' });
