@@ -4,11 +4,17 @@
  * verified at deploy against a live OMP runtime.
  */
 
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { promises as fs } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 import {
   formatTurnStartReminder,
+  readInboxFs,
+  readWatermarkFs,
   summarisePlanEvents,
+  writeWatermarkFs,
   type InboxEntry,
 } from '../coord-hook';
 
@@ -120,10 +126,11 @@ describe('register (OMP adapter)', () => {
     expect(block).toEqual({});
   });
 
-  it('surfaces a degraded marker when the operator is unreachable (F-H6)', async () => {
-    // No operator is running in the unit-test env, so every callMcpTool
-    // returns null → onTurnStart reports degraded → the adapter must
-    // emit the degraded system-reminder and (best-effort) ctx.ui.notify.
+  it('operator unreachable → detached mode, not a degraded warning (F-H4)', async () => {
+    // No operator configured in the unit-test env (no PAPERCUSP_*_URL),
+    // so probeOperator() → false → the turn resolves to DETACHED mode.
+    // Detached is a supported mode, not a failure: the reminder carries
+    // the detached header and NO warning notification fires.
     const subs = new Map<string, (e: unknown, ctx?: unknown) => unknown>();
     const sent: Array<{ content: unknown }> = [];
     const notifications: Array<{ message: string; type?: string }> = [];
@@ -146,14 +153,26 @@ describe('register (OMP adapter)', () => {
       },
     };
     await subs.get('turn_start')!({ type: 'turn_start', turnIndex: 0, timestamp: 0 }, ctx);
-    // The degraded system-reminder must have been injected to the model.
-    const degradedMsg = sent.find(
-      (s) => typeof s.content === 'string' && s.content.includes('Coordination context unavailable'),
+    // The reminder must carry the detached header.
+    const detachedMsg = sent.find(
+      (s) => typeof s.content === 'string' && s.content.includes('DETACHED'),
     );
-    expect(degradedMsg).toBeTruthy();
-    // And the human-facing TUI notification must have fired.
-    expect(notifications.length).toBe(1);
-    expect(notifications[0]?.type).toBe('warning');
+    expect(detachedMsg).toBeTruthy();
+    // Detached is not an error — no warning notification.
+    expect(notifications.length).toBe(0);
+  });
+});
+
+describe('probeOperator', () => {
+  it('returns false when no operator URL is configured', async () => {
+    const prevBundle = process.env.PAPERCUSP_BUNDLE_URL;
+    const prevOp = process.env.PAPERCUSP_OPERATOR_URL;
+    delete process.env.PAPERCUSP_BUNDLE_URL;
+    delete process.env.PAPERCUSP_OPERATOR_URL;
+    const { probeOperator } = await import('../coord-hook');
+    expect(await probeOperator(200)).toBe(false);
+    if (prevBundle !== undefined) process.env.PAPERCUSP_BUNDLE_URL = prevBundle;
+    if (prevOp !== undefined) process.env.PAPERCUSP_OPERATOR_URL = prevOp;
   });
 });
 
@@ -193,5 +212,66 @@ describe('summarisePlanEvents', () => {
       { plan_slug: 'p1', events: ['created', 'now_updated'] },
       { plan_slug: 'p2', events: ['created'] },
     ]);
+  });
+});
+
+describe('detached filesystem reads (F-H4c)', () => {
+  let tmp = '';
+  let prev: string | undefined;
+  beforeEach(async () => {
+    tmp = await fs.mkdtemp(join(tmpdir(), 'coord-hook-fs-'));
+    prev = process.env.PAPERCUSP_COORD_DIR;
+    process.env.PAPERCUSP_COORD_DIR = tmp;
+  });
+  afterEach(async () => {
+    if (prev === undefined) delete process.env.PAPERCUSP_COORD_DIR;
+    else process.env.PAPERCUSP_COORD_DIR = prev;
+    await fs.rm(tmp, { recursive: true, force: true });
+  });
+
+  it('readInboxFs returns entries addressed to the owner, excludes own + others', async () => {
+    await fs.mkdir(join(tmp, 'messages'), { recursive: true });
+    // peer 'B' wrote a line to 'me' and one to 'C'.
+    await fs.writeFile(
+      join(tmp, 'messages', 'B.jsonl'),
+      [
+        JSON.stringify({ ts: '2026-05-20T01:00:00Z', msg_id: 'm1', from: 'B', to: ['me'], kind: 'message', summary: 'hi me' }),
+        JSON.stringify({ ts: '2026-05-20T02:00:00Z', msg_id: 'm2', from: 'B', to: ['C'], kind: 'message', summary: 'hi C' }),
+        JSON.stringify({ ts: '2026-05-20T03:00:00Z', msg_id: 'm3', from: 'B', to: ['*'], kind: 'message', summary: 'broadcast' }),
+      ].join('\n') + '\n',
+    );
+    // my own outbox — must be excluded.
+    await fs.writeFile(
+      join(tmp, 'messages', 'me.jsonl'),
+      JSON.stringify({ ts: '2026-05-20T04:00:00Z', msg_id: 'm4', from: 'me', to: ['*'], kind: 'message', summary: 'mine' }) + '\n',
+    );
+    const inbox = await readInboxFs('me');
+    expect(inbox.map((e) => e.msg_id)).toEqual(['m1', 'm3']);
+  });
+
+  it('readInboxFs honours the since_ts watermark', async () => {
+    await fs.mkdir(join(tmp, 'messages'), { recursive: true });
+    await fs.writeFile(
+      join(tmp, 'messages', 'B.jsonl'),
+      [
+        JSON.stringify({ ts: '2026-05-20T01:00:00Z', msg_id: 'old', from: 'B', to: ['me'], kind: 'message' }),
+        JSON.stringify({ ts: '2026-05-20T05:00:00Z', msg_id: 'new', from: 'B', to: ['me'], kind: 'message' }),
+      ].join('\n') + '\n',
+    );
+    const inbox = await readInboxFs('me', '2026-05-20T03:00:00Z');
+    expect(inbox.map((e) => e.msg_id)).toEqual(['new']);
+  });
+
+  it('readInboxFs returns [] when coord/messages is absent', async () => {
+    expect(await readInboxFs('me')).toEqual([]);
+  });
+
+  it('watermark round-trips through the filesystem', async () => {
+    expect(await readWatermarkFs('me')).toBeUndefined();
+    await writeWatermarkFs('me', '2026-05-20T10:00:00Z');
+    expect(await readWatermarkFs('me')).toBe('2026-05-20T10:00:00Z');
+    // a second write overwrites.
+    await writeWatermarkFs('me', '2026-05-20T11:00:00Z');
+    expect(await readWatermarkFs('me')).toBe('2026-05-20T11:00:00Z');
   });
 });
