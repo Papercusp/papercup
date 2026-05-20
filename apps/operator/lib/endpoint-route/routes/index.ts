@@ -72,6 +72,9 @@ import zeroHarnessSse from './zero-harness/sse';
 import zeroHarnessRestQuery from './zero-harness/rest-query';
 import zeroHarnessRestQueryBatch from './zero-harness/rest-query-batch';
 import miscZeroHarnessQuery from './misc/zero-harness-query';
+import agentToolsCatchall from './agent-tools/catchall';
+import pluginRuntimeCatchall from './plugin-runtime/catchall';
+import transport from './transport/index';
 import devRouteInvocations from './dev/route-invocations';
 import agentConfig from './agent-config/index';
 import agentConfigTest from './agent-config/test';
@@ -235,6 +238,10 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(zeroHarnessRestQuery as AnyRoute),
   ...flatten(zeroHarnessRestQueryBatch as AnyRoute),
   ...flatten(miscZeroHarnessQuery as AnyRoute),
+  ...flatten(agentToolsCatchall as AnyRoute[]),
+  ...flatten(pluginRuntimeCatchall as AnyRoute),
+  // Transport last — single-segment :transport must not shadow literal paths.
+  ...flatten(transport as AnyRoute[]),
   ...flatten(devRouteInvocations as AnyRoute),
   ...flatten(agentConfig as AnyRoute[]),
   ...flatten(agentConfigTest as AnyRoute),
