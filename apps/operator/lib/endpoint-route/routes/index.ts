@@ -17,6 +17,12 @@ import type { RouteDefinition } from '../define-route';
 import desktopVersion from './desktop/version';
 import operatorDismissed from './agent-mcp/operator-dismissed';
 import flagsWebhook from './flags/webhook';
+import flagsBootstrap from './flags/bootstrap';
+import flagsStream from './flags/stream';
+import flagsSet from './flags/set';
+import flagsTestingFeatures from './flags/testing-features';
+import flagsPreset from './flags/preset';
+import flagsDashboardUrl from './flags/dashboard-url';
 import devRouteInvocations from './dev/route-invocations';
 import agentConfig from './agent-config/index';
 import agentConfigTest from './agent-config/test';
@@ -125,6 +131,12 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(desktopVersion as AnyRoute | AnyRoute[]),
   ...flatten(operatorDismissed as AnyRoute),
   ...flatten(flagsWebhook as AnyRoute),
+  ...flatten(flagsBootstrap as AnyRoute),
+  ...flatten(flagsStream as AnyRoute),
+  ...flatten(flagsSet as AnyRoute),
+  ...flatten(flagsTestingFeatures as AnyRoute[]),
+  ...flatten(flagsPreset as AnyRoute),
+  ...flatten(flagsDashboardUrl as AnyRoute),
   ...flatten(devRouteInvocations as AnyRoute),
   ...flatten(agentConfig as AnyRoute[]),
   ...flatten(agentConfigTest as AnyRoute),

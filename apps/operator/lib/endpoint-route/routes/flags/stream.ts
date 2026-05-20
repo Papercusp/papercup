@@ -1,0 +1,43 @@
+/**
+ * GET /api/flags/stream → text/event-stream
+ *
+ * SSE: `flag_changed` events broadcast from the in-process flag bus,
+ * with Last-Event-ID resume support.
+ *
+ * Ported from app/api/flags/stream/route.ts. `auth: 'public'`.
+ */
+import { bridgeChannel, parseLastEventId, sseResponse } from '@restart/sse';
+
+import { getFlagBus, type FlagChangeEnvelope } from '@/lib/flag-bus';
+import { defineRoute } from '../../define-route';
+
+type FlagStreamVocabulary = {
+  flag_changed: FlagChangeEnvelope;
+};
+
+export default defineRoute({
+  method: 'GET',
+  path: '/flags/stream',
+  auth: 'public',
+  handler(req) {
+    const lastEventId = parseLastEventId(req);
+    const bus = getFlagBus();
+    return sseResponse<FlagStreamVocabulary>({
+      signal: req.signal,
+      lastEventId,
+      replay: () =>
+        bus.recentSince(lastEventId ?? null).map(({ id, event }) => ({
+          name: 'flag_changed',
+          data: event,
+          id,
+        })),
+      setup: async (sink) => {
+        await bridgeChannel(bus.subscribe(), sink, ({ id, event }) => ({
+          name: 'flag_changed',
+          data: event,
+          opts: { id },
+        }));
+      },
+    });
+  },
+});
