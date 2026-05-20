@@ -44,6 +44,11 @@ import authLogout from './auth/logout';
 import authSignup from './auth/signup';
 import authChangePassword from './auth/change-password';
 import authMe from './auth/me';
+import provisionConsent from './provision/consent';
+import provisionHostCheck from './provision/host-check';
+import provisionState from './provision/state';
+import provisionRun from './provision/run';
+import provisionStream from './provision/stream';
 
 type AnyRoute = RouteDefinition<ZodTypeAny | undefined>;
 
@@ -83,4 +88,9 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(authSignup as AnyRoute),
   ...flatten(authChangePassword as AnyRoute),
   ...flatten(authMe as AnyRoute[]),
+  ...flatten(provisionConsent as AnyRoute[]),
+  ...flatten(provisionHostCheck as AnyRoute[]),
+  ...flatten(provisionState as AnyRoute),
+  ...flatten(provisionRun as AnyRoute),
+  ...flatten(provisionStream as AnyRoute),
 ];
