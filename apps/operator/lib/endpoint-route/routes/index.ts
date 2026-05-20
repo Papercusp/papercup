@@ -17,6 +17,7 @@ import type { RouteDefinition } from '../define-route';
 import desktopVersion from './desktop/version';
 import operatorDismissed from './agent-mcp/operator-dismissed';
 import flagsWebhook from './flags/webhook';
+import devRouteInvocations from './dev/route-invocations';
 
 type AnyRoute = RouteDefinition<ZodTypeAny | undefined>;
 
@@ -29,4 +30,5 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(desktopVersion as AnyRoute | AnyRoute[]),
   ...flatten(operatorDismissed as AnyRoute),
   ...flatten(flagsWebhook as AnyRoute),
+  ...flatten(devRouteInvocations as AnyRoute),
 ];

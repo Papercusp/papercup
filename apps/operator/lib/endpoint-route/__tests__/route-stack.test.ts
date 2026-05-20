@@ -17,6 +17,9 @@ vi.mock('@/lib/auth/require-principal', async () => {
   return { ...actual, requirePrincipal: vi.fn() };
 });
 
+// Telemetry writes to PG — out of scope for route-stack mechanics tests.
+vi.mock('../telemetry', () => ({ recordRouteInvocation: vi.fn() }));
+
 import { defineRoute, registerRoute } from '../define-route';
 import { DEFAULT_ROUTE_STACK } from '../route-stack';
 import { registerAllRoutes } from '../register';

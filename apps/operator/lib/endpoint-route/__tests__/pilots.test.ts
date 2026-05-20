@@ -16,6 +16,9 @@ vi.mock('@/lib/operator-dismissed-cache', () => ({
   recordDismissed: vi.fn(async () => {}),
 }));
 
+// Telemetry writes to PG — not under test here.
+vi.mock('../telemetry', () => ({ recordRouteInvocation: vi.fn() }));
+
 import { registerRoute } from '../define-route';
 import type { RouteDefinition } from '../define-route';
 import type { ZodTypeAny } from 'zod';
