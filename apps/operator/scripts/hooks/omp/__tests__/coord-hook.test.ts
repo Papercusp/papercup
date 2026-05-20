@@ -119,6 +119,42 @@ describe('register (OMP adapter)', () => {
     );
     expect(block).toEqual({});
   });
+
+  it('surfaces a degraded marker when the operator is unreachable (F-H6)', async () => {
+    // No operator is running in the unit-test env, so every callMcpTool
+    // returns null → onTurnStart reports degraded → the adapter must
+    // emit the degraded system-reminder and (best-effort) ctx.ui.notify.
+    const subs = new Map<string, (e: unknown, ctx?: unknown) => unknown>();
+    const sent: Array<{ content: unknown }> = [];
+    const notifications: Array<{ message: string; type?: string }> = [];
+    const pi = {
+      on: (event: string, handler: (e: unknown, ctx?: unknown) => unknown) => {
+        subs.set(event, handler);
+      },
+      sendMessage: (msg: { content: unknown }) => {
+        sent.push({ content: msg.content });
+      },
+    };
+    const { default: register } = await import('../coord-hook');
+    register(pi as never);
+    const ctx = {
+      hasUI: true,
+      ui: {
+        notify: (message: string, type?: string) => {
+          notifications.push({ message, type });
+        },
+      },
+    };
+    await subs.get('turn_start')!({ type: 'turn_start', turnIndex: 0, timestamp: 0 }, ctx);
+    // The degraded system-reminder must have been injected to the model.
+    const degradedMsg = sent.find(
+      (s) => typeof s.content === 'string' && s.content.includes('Coordination context unavailable'),
+    );
+    expect(degradedMsg).toBeTruthy();
+    // And the human-facing TUI notification must have fired.
+    expect(notifications.length).toBe(1);
+    expect(notifications[0]?.type).toBe('warning');
+  });
 });
 
 describe('summarisePlanEvents', () => {

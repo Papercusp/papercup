@@ -217,18 +217,20 @@ function maxTs(entries: InboxEntry[]): string {
   return max;
 }
 
-/** Fired once per turn start. Heartbeats + returns the reminder text
- *  (the OMP adapter at the bottom of the file is responsible for
- *  surfacing it to the model). Scopes the inbox to entries newer than
- *  the agent's stored watermark so the same notification is not
- *  re-surfaced every turn. */
-export async function onTurnStart(): Promise<string> {
-  // Heartbeat: re-declare current intent (writePresence bumps heartbeat).
-  // We do this fire-and-forget so the reminder fetch isn't gated on it.
-  void callMcpTool('coord:declare-intent', {
-    intent: '(active — see coord:presence for current work)',
-  });
+/** Result of a turn-start assembly. `degraded` is true when the core
+ *  operator call (coord:inbox) failed — the reminder is then built from
+ *  whatever partial data arrived, and the adapter surfaces a marker
+ *  (plan §7.4 silent-failure surfacing). */
+export interface TurnStartResult {
+  reminder: string;
+  degraded: boolean;
+}
 
+/** Fired once per turn start. Heartbeats + returns the reminder text
+ *  plus a degraded flag (the OMP adapter surfaces both). Scopes the
+ *  inbox to entries newer than the agent's stored watermark so the
+ *  same notification is not re-surfaced every turn. */
+export async function onTurnStart(): Promise<TurnStartResult> {
   const ownerId = process.env.PAPERCUSP_AUTH_SESSION_ID ?? 'unknown';
 
   // Read the watermark first — its messages_since_ts scopes the inbox.
@@ -239,10 +241,23 @@ export async function onTurnStart(): Promise<string> {
     return typeof v === 'string' && v.length > 0 ? v : undefined;
   })();
 
+  // The heartbeat (declare-intent) runs concurrently with the inbox
+  // fetch — it does not gate the reminder — but is AWAITED as part of
+  // the batch. A bare `void callMcpTool(...)` could accumulate unbounded
+  // pending promises against a hung operator (audit B4); batching it
+  // bounds the in-flight count to one per turn.
   const [inboxResult, locksResult] = await Promise.all([
     callMcpTool('coord:inbox', sinceTs ? { since_ts: sinceTs } : {}),
     callMcpTool('locks:queue', { owner: ownerId }).catch(() => null),
+    callMcpTool('coord:declare-intent', {
+      intent: '(active — see coord:presence for current work)',
+    }),
   ]);
+
+  // coord:inbox returning null means the operator call FAILED (an empty
+  // inbox returns { entries: [] }, which is truthy). That is the
+  // degraded signal — the turn-start context is incomplete.
+  const degraded = inboxResult === null;
 
   const inbox: InboxEntry[] = (() => {
     const r = inboxResult as { entries?: InboxEntry[] } | null;
@@ -259,10 +274,15 @@ export async function onTurnStart(): Promise<string> {
   // Stage the watermark advance for turn_end. Only advance past entries
   // we actually surfaced this turn; if the inbox was empty, keep the
   // prior watermark (don't skip past anything that lands mid-turn).
+  // A degraded turn never advances — it saw nothing reliably.
   const surfacedMax = maxTs(inbox);
-  _pendingMessagesWatermark = surfacedMax.length > 0 ? surfacedMax : null;
+  _pendingMessagesWatermark =
+    !degraded && surfacedMax.length > 0 ? surfacedMax : null;
 
-  return formatTurnStartReminder({ ownerId, inbox, heldLocks, changedPlans });
+  return {
+    reminder: formatTurnStartReminder({ ownerId, inbox, heldLocks, changedPlans }),
+    degraded,
+  };
 }
 
 /** Fired once per turn end. Persists the watermark staged by
@@ -353,8 +373,11 @@ export default function register(pi: HookApi): void {
     await safe(() => onSessionStart(), undefined);
   });
 
-  pi.on('turn_start', async () => {
-    const reminder = await safe(() => onTurnStart(), '');
+  pi.on('turn_start', async (_event, ctx) => {
+    const { reminder, degraded } = await safe(() => onTurnStart(), {
+      reminder: '',
+      degraded: true,
+    });
     if (reminder.length > 0) {
       // OMP `turn_start` discards the handler's return value, so we
       // inject via sendMessage. attribution='agent' so the message is
@@ -367,6 +390,31 @@ export default function register(pi: HookApi): void {
         display: false,
         attribution: 'agent',
       });
+    }
+    if (degraded) {
+      // Silent-failure surfacing (plan §7.4). Two markers:
+      //  1. To the model — a reliable sendMessage note so the agent
+      //     knows its coordination context is stale this turn.
+      //  2. To the human — a best-effort OMP TUI notification. The ctx
+      //     shape is accessed defensively; if the API differs the
+      //     marker simply no-ops (consistent with the hook's
+      //     never-crash-the-session philosophy).
+      pi.sendMessage({
+        customType: 'coord-reminder',
+        content:
+          '<system-reminder type="coord">Coordination context unavailable this turn (operator unreachable). Held locks, inbox, and presence may be stale — re-check before relying on them.</system-reminder>',
+        display: false,
+        attribution: 'agent',
+      });
+      const c = ctx as
+        | { hasUI?: boolean; ui?: { notify?: (m: string, t?: string) => void } }
+        | undefined;
+      if (c?.hasUI && typeof c.ui?.notify === 'function') {
+        c.ui.notify(
+          'Papercusp coordination unavailable (operator unreachable)',
+          'warning',
+        );
+      }
     }
   });
 
