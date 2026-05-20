@@ -9,7 +9,11 @@ const section = (label, directory) => ({
 });
 
 export default defineConfig({
-  site: 'http://127.0.0.1:4325',
+  // `site` is the absolute origin baked into sitemap.xml, canonical tags,
+  // and the starlight-llms-txt manifest links. The engineering docs are
+  // served by the operator under /internal/docs; localhost:3070 is the
+  // operator's documented HTTP surface (see papercusp-su playbook).
+  site: 'http://localhost:3070',
   base: '/internal/docs',
   build: { format: 'file' },
   integrations: [

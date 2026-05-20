@@ -4,8 +4,8 @@
 
 ## Documentation Sets
 
-- [Abridged documentation](http://127.0.0.1:4325/internal/docs/llms-small.txt): a compact version of the documentation for Papercusp, with non-essential content removed
-- [Complete documentation](http://127.0.0.1:4325/internal/docs/llms-full.txt): the full documentation for Papercusp
+- [Abridged documentation](http://localhost:3070/internal/docs/llms-small.txt): a compact version of the documentation for Papercusp, with non-essential content removed
+- [Complete documentation](http://localhost:3070/internal/docs/llms-full.txt): the full documentation for Papercusp
 
 ## Notes
 
