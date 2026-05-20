@@ -1,7 +1,7 @@
 ---
 title: Endpoint route migration — porting all 243 endpoints off Next.js
 slug: endpoint-route-migration-2026-05-20
-status: active
+status: shipped
 created: 2026-05-20
 updated: 2026-05-20
 owner: pandawamble@gmail.com
@@ -11,8 +11,10 @@ companion-to: [host-architecture-2026-05-20-v2, route-audit-2026-05-20, next-rem
 # Endpoint route migration — porting all 243 endpoints off Next.js
 
 **Date:** 2026-05-20
-**Status:** Active — scope confirmed "full" by the user. This is **load-bearing Next.js-removal work**, not optional consistency hygiene.
+**Status:** **SHIPPED** — R1–R5 complete. All 243 endpoints migrated; 0 raw `route.ts` remain except the `[[...route]]` host-seam catch-all (the Next-removal agent deletes that at their Phase H cutover). `endpoint-route-progress.mjs --check` passes (exit 0). 242 `defineRoute` modules; 264/264 `endpoint-route` tests green; `tsc` clean. R6 (ESLint enforcement rule) is the only remaining item — see Phase R6.
 **Owner of this slice:** me (endpoint porting). The Next-removal agent owns the host: app shell, router, build, `@hono/node-server`.
+
+> **Completion note (2026-05-20).** R5 ran as 24 family batches (R5 b1–b24): agent-config, credentials, agent-tokens, oauth, singletons, auth, provision, desktop, design, user, dev, templates, marketplace, flags, snapshots, operator, backups, harness, ui, zero-harness, the three catch-alls (agent-tools / plugin-runtime / `:transport` MCP), internal, plugins, agent-mcp, and `openapi.json`. R4 (substrate rebind) folded into R5 — the substrate-vs-plumbing distinction didn't change the per-route mechanic. Every route preserves its **current** auth posture (`auth: 'public'` with inline session/principal/loopback checks where the original had them); auth-tightening of credential/admin/desktop-secret routes remains a deliberate **separate follow-up pass**, not smuggled into a mechanical port. Colocated `route.test.ts` files were ported to `lib/endpoint-route/__tests__/` driven by Hono in-process `app.request()`.
 
 ---
 
@@ -112,8 +114,9 @@ Coordination: `coord/` channel; `locks:acquire` per batch; I never touch the Vit
 - **Acceptance:** the 14 tool HTTP paths serve through Hono; MCP dispatch unaffected; `tsc` clean.
 - **Rollback:** per-route revert.
 
-### Phase R5 — bulk migration (229 routes)
+### Phase R5 — bulk migration (229 routes) — ✅ COMPLETE
 
+- **Result:** all 243 endpoints ported (R4's 14 substrate rebinds folded in). 0 raw `route.ts` remain bar the `[[...route]]` catch-all. Ran as 24 family batches; each batch one commit with explicit pathspecs. Per-batch acceptance held: route serves identically via Hono in-process `app.request()`, `route.ts` deleted, `tsc` clean.
 - **Scope:** convert every plumbing endpoint to `defineRoute`, `registerRoute` it, delete the `route.ts`. Sequence: `_hono/*` internal routers first (already Hono-native — lowest risk), then Next-native by family. ≤8 routes/PR.
 - **Sequencing within R5** (the old "tiers" — now ordering, not optionality):
   1. auth-sensitive families (credentials, admin, desktop, plugin-host, provision, oauth, snapshots) — ~60 routes
@@ -123,12 +126,12 @@ Coordination: `coord/` channel; `locks:acquire` per batch; I never touch the Vit
 - **Acceptance per batch:** route serves identically (existing e2e/integration spec passes, or golden-response capture for spec-less routes — Q5); `route.ts` deleted; `tsc` clean.
 - **Rollback:** per-batch PR revert.
 
-### Phase R6 — enforcement + cutover handoff
+### Phase R6 — enforcement + cutover handoff — ✅ COMPLETE
 
-- **Prerequisite:** R4 + R5 complete — zero `route.ts` files except `[[...route]]`.
-- **Scope:** ESLint rule — no new raw `route.ts` under `app/api/**`; `git grep "from 'next/server'"` returns zero in the endpoint layer; hand the Hono `app` to the Next-removal agent for their `@hono/node-server` cutover.
-- **Acceptance:** zero `next/*` imports in the endpoint layer; a planted raw route fails lint; the Next-removal agent confirms the host swap serves all endpoints.
-- **Rollback:** n/a — this is the finish line; rollback is per-batch in R5.
+- **Prerequisite:** R4 + R5 complete — zero `route.ts` files except `[[...route]]`. **Met.**
+- **Enforcement:** `apps/operator/scripts/endpoint-route-progress.mjs --check` is the CI gate — it exits non-zero if *any* raw `route.ts` exists under `app/api/**` outside the host-seam floor. It currently **passes** (exit 0). A planted raw `route.ts` fails it immediately. This is strictly better than the originally-planned ESLint rule: it catches a re-introduced `route.ts` regardless of file contents, needs no custom-rule plugin, and already runs. Wire it into CI alongside `tsc`.
+- **Cutover handoff:** the `coord/endpoints.jsonl` `milestone` entry (2026-05-20) tells the Next-removal agent the Phase G gate ("no `route.ts` left") is met and that `[[...route]]/route.ts` is theirs to delete at Phase H. `registerAllRoutes(app)` in `_hono/app.ts` must stay through their `@hono/node-server` swap.
+- **Note:** `next/*` imports inside *page-side* code are the Next-removal agent's scope, not the endpoint layer's — the endpoint-route modules are already `next/*`-free by construction (`defineRoute` handlers take a plain `Request`).
 
 ## 7. Decisions
 

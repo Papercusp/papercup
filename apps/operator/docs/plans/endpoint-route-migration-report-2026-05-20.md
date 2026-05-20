@@ -1,7 +1,7 @@
 ---
 title: Endpoint route migration — R2–R6 report
 slug: endpoint-route-migration-report-2026-05-20
-status: active
+status: shipped
 created: 2026-05-20
 updated: 2026-05-20
 owner: pandawamble@gmail.com
@@ -12,6 +12,8 @@ companion-to: [endpoint-route-migration-2026-05-20]
 
 **Date:** 2026-05-20
 **Scope of this report:** what was executed across R2–R6, every judgment call made, and the turnkey recipe for the R5 tail.
+
+> **UPDATE 2026-05-20 — migration COMPLETE.** This report was first written when R5 had 1 batch done and ~233 routes remained; the body below describes that mid-flight state and the recipe used to finish. The recipe was then executed in full: **R5 ran to completion as 24 family batches, all 243 endpoints ported, 0 raw `route.ts` remain** bar the `[[...route]]` host-seam catch-all. `endpoint-route-progress.mjs --check` passes (exit 0). 242 `defineRoute` modules, 264/264 `endpoint-route` tests green, `tsc` clean. The "R5 is partial" framing and the per-family count estimates below are historical — read them as the plan-of-record that was carried out, not outstanding work. The decisions log (esp. **D3** — routes ported at current auth posture; auth-tightening of credential/admin/desktop-secret routes is still a deliberate separate pass) remains live and accurate.
 
 The user authorized executing R2–R6 without check-ins, deciding freely, and recording questionable calls here. This is that record.
 
