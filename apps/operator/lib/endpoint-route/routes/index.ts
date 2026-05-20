@@ -31,6 +31,14 @@ import oauthCallback from './oauth/callback';
 import oauthVerifyPaste from './oauth/verify-paste';
 import publishCredentials from './publish-credentials/index';
 import publishCredentialsRotate from './publish-credentials/rotate';
+import miscRuntimeConfig from './misc/runtime-config';
+import miscToastLog from './misc/toast-log';
+import miscWikiBacklinks from './misc/wiki-backlinks';
+import miscProfile from './misc/profile';
+import miscSecurityAdvisoriesCheck from './misc/security-advisories-check';
+import miscAgentBundle from './misc/agent-bundle';
+import miscTestButtonsEcho from './misc/test-buttons-echo';
+import miscUpdatesManifest from './misc/updates-manifest';
 
 type AnyRoute = RouteDefinition<ZodTypeAny | undefined>;
 
@@ -57,4 +65,12 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(oauthVerifyPaste as AnyRoute),
   ...flatten(publishCredentials as AnyRoute[]),
   ...flatten(publishCredentialsRotate as AnyRoute),
+  ...flatten(miscRuntimeConfig as AnyRoute),
+  ...flatten(miscToastLog as AnyRoute[]),
+  ...flatten(miscWikiBacklinks as AnyRoute),
+  ...flatten(miscProfile as AnyRoute[]),
+  ...flatten(miscSecurityAdvisoriesCheck as AnyRoute),
+  ...flatten(miscAgentBundle as AnyRoute),
+  ...flatten(miscTestButtonsEcho as AnyRoute),
+  ...flatten(miscUpdatesManifest as AnyRoute),
 ];

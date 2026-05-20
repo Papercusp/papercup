@@ -1,0 +1,129 @@
+/**
+ * GET /api/agent-bundle — the bundle the @papercusp/omp plugin fetches
+ * on connect (persona, tools.md, skills, hooks, mcp_url, workspace, user).
+ *
+ * Ported from app/api/agent-bundle/route.ts. `auth: 'public'` — the
+ * route authenticates by its own power-user access-token check
+ * (verifyAccessToken on the Authorization header), not a principal.
+ */
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
+import { join, resolve as resolvePath } from 'node:path';
+import { getOrgPg } from '@restart/db-org';
+import { verifyAccessToken } from '@/lib/power-user-token';
+import { getActivePowerUserSession } from '@/lib/power-user-sessions';
+import { workspaceById } from '@/lib/workspace-registry';
+import { defineRoute } from '../../define-route';
+
+interface BundleFile {
+  name: string;
+  source: string;
+}
+
+function resolvePromptsDir(): string | null {
+  const cwd = process.cwd();
+  for (const c of [
+    resolvePath(cwd, 'prompts'),
+    resolvePath(cwd, 'apps', 'operator', 'prompts'),
+    resolvePath(cwd, '..', '..', 'prompts'),
+    resolvePath(cwd, '..', '..', '..', 'prompts'),
+  ]) {
+    if (existsSync(join(c, 'papercusp-su.tools.md'))) return c;
+  }
+  return null;
+}
+
+function resolveScriptsDir(): string | null {
+  const cwd = process.cwd();
+  for (const c of [
+    resolvePath(cwd, 'scripts'),
+    resolvePath(cwd, 'apps', 'operator', 'scripts'),
+    resolvePath(cwd, '..', '..', 'scripts'),
+    resolvePath(cwd, '..', '..', '..', 'scripts'),
+  ]) {
+    if (existsSync(c)) return c;
+  }
+  return null;
+}
+
+function readDirFiles(dir: string | null, exts: string[]): BundleFile[] {
+  if (!dir || !existsSync(dir)) return [];
+  const out: BundleFile[] = [];
+  for (const name of readdirSync(dir).sort()) {
+    if (!exts.some((e) => name.endsWith(e))) continue;
+    if (name.toLowerCase() === 'readme.md') continue;
+    try {
+      out.push({ name, source: readFileSync(join(dir, name), 'utf8') });
+    } catch {
+      /* unreadable — skip */
+    }
+  }
+  return out;
+}
+
+function bearerFrom(req: Request): string | null {
+  const raw = req.headers.get('authorization') ?? '';
+  if (!raw) return null;
+  return raw.startsWith('Bearer ') ? raw.slice(7) : raw;
+}
+
+async function lookupUser(
+  userId: string,
+): Promise<{ id: string; username: string; displayName: string }> {
+  try {
+    const { sql } = getOrgPg();
+    const rows = await sql<Array<{ id: string; username: string; display_name: string }>>`
+      SELECT id, username, display_name FROM harness_shared.users WHERE id = ${userId} LIMIT 1
+    `;
+    if (rows.length > 0) {
+      return { id: rows[0].id, username: rows[0].username, displayName: rows[0].display_name };
+    }
+  } catch {
+    /* fall through */
+  }
+  return { id: userId, username: userId, displayName: userId };
+}
+
+export default defineRoute({
+  method: 'GET',
+  path: '/agent-bundle',
+  auth: 'public',
+  async handler(req) {
+    const claims = await verifyAccessToken(bearerFrom(req));
+    if (!claims) {
+      return Response.json({ error: 'invalid or expired access token' }, { status: 401 });
+    }
+    const session = await getActivePowerUserSession(claims.authSessionId);
+    if (!session) {
+      return Response.json({ error: 'session revoked or unknown' }, { status: 401 });
+    }
+    const promptsDir = resolvePromptsDir();
+    if (!promptsDir) {
+      return Response.json(
+        { error: 'agent-bundle: prompts directory not found at runtime' },
+        { status: 500 },
+      );
+    }
+    const toolsmd = readFileSync(join(promptsDir, 'papercusp-su.tools.md'), 'utf8');
+    const personaPath = join(promptsDir, 'papercusp-su.persona.md');
+    const persona = existsSync(personaPath) ? readFileSync(personaPath, 'utf8') : '';
+    const skills = readDirFiles(join(promptsDir, 'power-user-skills'), ['.md']);
+    const scriptsDir = resolveScriptsDir();
+    const hooks = readDirFiles(
+      scriptsDir ? join(scriptsDir, 'hooks', 'omp') : null,
+      ['.ts', '.js', '.mjs'],
+    );
+    const origin = new URL(req.url).origin;
+    const ws = workspaceById(claims.workspaceId);
+    const user = await lookupUser(claims.userId);
+    return Response.json({
+      persona,
+      toolsmd,
+      skills,
+      hooks,
+      mcp_url: `${origin}/api/mcp?power_user=1`,
+      workspace: { id: claims.workspaceId, name: ws?.name ?? claims.workspaceId },
+      user,
+      expires_at: new Date(claims.exp * 1000).toISOString(),
+    });
+  },
+});
