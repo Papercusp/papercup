@@ -5007,6 +5007,11 @@ const PATCH_DEFAULT_EXCLUDES = [
 ];
 
 harness.get('/:slug/git/show/:sha', async (c) => {
+  // NOTE: the harness client fetches this route cross-origin from the
+  // sibling loopback host (localhost <-> 127.0.0.1) to escape the page
+  // origin's saturated 6-socket HTTP/1.1 pool — see lib/cross-origin-url.ts.
+  // That works because the Hono app's global CORS middleware already
+  // reflects the request Origin; no per-route header needed here.
   const project = await resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
   if (!project) return c.json({ error: 'unknown project' }, 404);
   const sha = c.req.param('sha');

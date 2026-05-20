@@ -25,6 +25,7 @@ import gsap from 'gsap';
 import { useGSAP } from '@gsap/react';
 import { useReducedMotion } from 'motion/react';
 import { useFancyEffectsEnabled } from '@/lib/visual-effects';
+import { crossOriginUrl } from '@/lib/cross-origin-url';
 import { useForm } from 'react-hook-form';
 import { useAutoAnimate } from '@formkit/auto-animate/react';
 import { makeAjvResolver } from '@/lib/forms';
@@ -327,7 +328,7 @@ function GitGraphPanel({ slug }: { slug: string }) {
         const param = /^[0-9a-f]{4,64}$/i.test(ref) ? 'sha' : 'branch';
         return `${base}&${param}=${encodeURIComponent(ref)}`;
       }}
-      showCommitUrl={(sha: string) => `/api/harness/${slug}/git/show/${sha}`}
+      showCommitUrl={(sha: string) => crossOriginUrl(`/api/harness/${slug}/git/show/${sha}`)}
       worktreesUrl={() => `/api/harness/${slug}/git/worktrees`}
       worktree={worktree}
       onWorktreeChange={(next) => setWorktree(next)}

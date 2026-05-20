@@ -10,6 +10,7 @@
 
 import dynamic from 'next/dynamic';
 import type { PanelComponentProps } from './panel-registry';
+import { crossOriginUrl } from '@/lib/cross-origin-url';
 
 const GitGraphPanelLib = dynamic(
   () => import('@restart/git-graph').then((m) => ({ default: m.GitGraphPanel })),
@@ -33,7 +34,7 @@ export function RealGitPanel({ params }: PanelComponentProps) {
     <GitGraphPanelLib
       scope={`harness:${slug}`}
       gitLogUrl={(limit: number) => `/api/harness/${slug}/git/log?limit=${limit}`}
-      showCommitUrl={(sha: string) => `/api/harness/${slug}/git/show/${sha}`}
+      showCommitUrl={(sha: string) => crossOriginUrl(`/api/harness/${slug}/git/show/${sha}`)}
       worktreesUrl={() => `/api/harness/${slug}/git/worktrees`}
       onCommitHref={(sha: string) => `/harness/${slug}/commit/${sha}`}
     />
