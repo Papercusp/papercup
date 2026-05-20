@@ -18,6 +18,10 @@ import desktopVersion from './desktop/version';
 import operatorDismissed from './agent-mcp/operator-dismissed';
 import flagsWebhook from './flags/webhook';
 import devRouteInvocations from './dev/route-invocations';
+import agentConfig from './agent-config/index';
+import agentConfigTest from './agent-config/test';
+import credentials from './credentials/index';
+import credentialsSearchProviders from './credentials/search-providers';
 
 type AnyRoute = RouteDefinition<ZodTypeAny | undefined>;
 
@@ -31,4 +35,8 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(operatorDismissed as AnyRoute),
   ...flatten(flagsWebhook as AnyRoute),
   ...flatten(devRouteInvocations as AnyRoute),
+  ...flatten(agentConfig as AnyRoute[]),
+  ...flatten(agentConfigTest as AnyRoute),
+  ...flatten(credentials as AnyRoute[]),
+  ...flatten(credentialsSearchProviders as AnyRoute[]),
 ];
