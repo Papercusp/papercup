@@ -33,8 +33,8 @@ The user has split this migration across two agents. This plan covers **only my 
 | Stream | Owner | What it does |
 |---|---|---|
 | **Frontend / host** | This plan | App shell, router, Vite build, `@hono/node-server` host process, Tauri load target, `next.config.js` rewrites/redirects/headers replication, `proxy.ts` (middleware) replication, page-side `next/*` API replacement (`next/navigation`, `next/dynamic`, `next/link`), production single-process host, deletion of `apps/operator/{app,proxy.ts,next.config.js,.next*}`, Next deps drop. |
-| **Backend / endpoints** | Other agent | Decoupling backend endpoints from Next handler signatures: `route.ts` files (91 in `apps/operator/app/`), `next/server` (NextRequest/NextResponse, ~295 uses), `next/headers` (cookies/headers, 6 uses), Server Actions, and any `'use server'` boundaries. End state: Hono routes mounted in `_hono/app.ts` for everything that today lives in `app/**/route.ts`. |
-| **Joint boundary** | Both | `apps/operator/app/_hono/app.ts` + `apps/operator/app/_hono/bootstrap.ts` — already extracted (see `app/api/[[...route]]/route.ts:6-12`, comment explicitly names "operator-vite Phase C via `@hono/node-server`"). Both agents import these; both must preserve their public shape. See [Coordination](#coordination). |
+| **Backend / endpoints** | Other agent | Decoupling backend endpoints from Next handler signatures: `route.ts` files (**70 remaining as of 2026-05-20** — backend agent has already ported 21 batches / 171 `defineRoute` modules and is grinding ~14/turn), `next/server` (NextRequest/NextResponse, ~295 uses), `next/headers` (cookies/headers, 6 uses), Server Actions, and any `'use server'` boundaries. End state: Hono routes mounted in `_hono/app.ts` for everything that today lives in `app/**/route.ts`. |
+| **Joint boundary** | Both | `apps/operator/app/api/_hono/app.ts` + `apps/operator/app/api/_hono/bootstrap.ts` — already extracted (see `app/api/[[...route]]/route.ts:6-12`, comment explicitly names "operator-vite Phase C via `@hono/node-server`"). Both agents import these; both must preserve their public shape. See [Coordination](#coordination). |
 
 **My non-goals (explicit):**
 - I will not rewrite `route.ts` handler signatures or `next/server` consumers. If a route.ts isn't migrated to Hono by Phase G, I host both Vite static + the Next sidecar in parallel until the backend agent finishes — Vite serves `/`, Hono catches `/api/*`, anything not yet migrated still goes through Next behind a flag until cutover. ([Phase G](#phase-g--production-host) details the parallel-run mechanism.)
@@ -51,7 +51,7 @@ Measured 2026-05-20:
 |---|---:|---|
 | `app/**/page.tsx` (my scope) | **62** | `find app -name 'page.tsx' \| wc -l` |
 | `app/**/layout.tsx` (my scope) | **6** | `find app -name 'layout.tsx' \| wc -l` |
-| `app/**/route.ts` (backend agent's scope) | **91** | `find app -name 'route.ts' \| wc -l` |
+| `app/**/route.ts` (backend agent's scope) | **70 remaining** (was 91; 21 batches already migrated to `defineRoute`) | `find app -name 'route.ts' \| wc -l` |
 | `app/{loading,error,not-found}.tsx` files (my scope) | **6** | `find app \( -name 'loading.tsx' -o -name 'error.tsx' -o -name 'not-found.tsx' \)` |
 | Parallel routes (`@slot`) | **0** | `find app -path '*/@*'` |
 | Intercepting routes (`(.)`, `(..)`) | **0** | `find app -type d -name '(*)'` |
@@ -63,6 +63,8 @@ Measured 2026-05-20:
 | `next/headers` imports (backend agent) | **6** | `grep -rh "from 'next/headers'"` |
 
 **Implication of zero parallel/intercepting routes + zero route groups:** the App Router → TanStack Router translation is **mechanical**. No bespoke routing patterns to preserve. This is the single biggest factor making this migration tractable.
+
+**Note on count drift:** the page-side `next/*` counts (53/32/12) above were measured 2026-05-20 against `apps/operator/app/`. The backend agent's route migration may have removed a handful of `next/server` imports that were inlined in `route.ts` test fixtures; re-grep these three numbers at Phase 0 start to refresh the baseline. Backend hasn't touched page-side code, so the numbers should be stable, but verify rather than trust.
 
 ---
 
@@ -85,29 +87,27 @@ Re-affirmed from the deferred-plan's decision table (those decisions are good; I
 
 ## Phase 0 — Pre-flight & coordination boundary
 
-**Goal:** lock the boundary contract with the backend agent before scaffolding anything. The boundary is two files: `apps/operator/app/_hono/app.ts` (the Hono app instance with all current mounts) and `apps/operator/app/_hono/bootstrap.ts` (side-effects: FS watchers, sweepers, voice WS, plugin-route population, idempotent).
+**Goal:** lock the boundary contract with the backend agent before scaffolding anything. The boundary is two files: `apps/operator/app/api/_hono/app.ts` (the Hono app instance with all current mounts) and `apps/operator/app/api/_hono/bootstrap.ts` (side-effects: FS watchers, sweepers, voice WS, plugin-route population, idempotent).
 
 These already exist — see `app/api/[[...route]]/route.ts:6-7`:
 ```ts
 import { app } from '../_hono/app';
 import { runBootstrap } from '../_hono/bootstrap';
 ```
-The Next route is a 25-line `handle(app)` shim. The comment at the top of that file even names this plan ("operator-vite Phase C via `@hono/node-server`"). So the boundary is **already done in shape**; Phase 0 is just locking it.
+The Next route is a 25-line `handle(app)` shim. The comment at the top of that file even names this plan ("operator-vite Phase C via `@hono/node-server`"). **And `export { app };` is already at `apps/operator/app/api/_hono/app.ts:111`** (shipped by the backend agent in commit `0d70beea` during their Phase 2 Option B refactor — verified 2026-05-20). So the boundary is **already done both in shape and in exports**; Phase 0 is just documenting + freezing it.
 
 ### P0 deliverables
 
-1. **One coordination commit** (mine), adding to `apps/operator/app/_hono/app.ts`:
-   - A named `export { app }` (currently only the route.ts shim imports it locally).
-   - A `BOUNDARY.md` adjacent to `_hono/` describing: "this file's exported `app` and `bootstrap`'s `runBootstrap()` are the integration surface for both the Next handler (current) and `@hono/node-server` (future). Neither may be moved, renamed, or have their signatures changed without coord-channel coordination."
+1. **One coordination commit** (mine) adding **`apps/operator/app/api/_hono/BOUNDARY.md`** — single file, ~30 lines. Content: "this directory's `app.ts` `export { app }` and `bootstrap.ts` `export function runBootstrap()` are the integration surface for both the Next handler (current shim at `app/api/[[...route]]/route.ts`) and `@hono/node-server` (future host in `bin/hono-host.ts`). Neither file may be moved, renamed, or have its public exports' signatures changed without a `coord/frontend.jsonl` entry naming the change and a one-acknowledgment from the other side."
 2. **One `coord/frontend.jsonl` entry** announcing intent, naming the boundary files, and listing the file-paths I will own during the migration (see [Coordination](#coordination)).
 3. **A "freeze" agreement** with the backend agent: between Phase A scaffold-start and Phase H cutover, neither side moves `_hono/app.ts` / `_hono/bootstrap.ts` to a different directory. Net-new Hono routes still land in `_hono/` as usual; structural moves block.
 
 ### P0 acceptance (greppable)
 
 ```
-grep -c 'export { app }' apps/operator/app/_hono/app.ts             # → ≥1
-test -f apps/operator/app/_hono/BOUNDARY.md                          # → exit 0
-tail -5 coord/frontend.jsonl | grep -c 'operator-vite-migration'    # → ≥1
+test -f apps/operator/app/api/_hono/BOUNDARY.md                          # → exit 0
+grep -c 'export { app }' apps/operator/app/api/_hono/app.ts             # → ≥1 (already shipped — sanity-check only)
+tail -5 coord/frontend.jsonl | grep -c 'operator-vite-migration'         # → ≥1
 ```
 
 ### P0 NOT shipping
@@ -161,22 +161,25 @@ apps/operator-vite/
 
 **No new state libs.** TanStack Query + nuqs + Zero come over from `apps/operator` via the workspace.
 
-### A2. Dev-server proxy
+### A2. Dev-server proxy (coord-derived)
 
-In `vite.config.ts`, proxy `/api/*` and `/api-ws/*` (if any) to the Hono catch-all that is currently being served by `next dev` on a sibling port. Concretely:
+In `vite.config.ts`, proxy `/api/*` and `/api-ws/*` (if any) to the Hono catch-all that is currently being served by `next dev` on a sibling port. **The split between "go to Next sidecar (un-migrated)" and "go to `@hono/node-server` host (migrated)" is derived from `coord/frontend.jsonl`, not hand-curated** (see [Coordination — coord contract](#coordination-coord-contract)). The backend agent emits one `{kind:"prefix-migrated", prefix:"/api/foo", commit:"<sha>"}` entry per family they port; Vite re-reads the log at dev-start and emits the table:
 
 ```ts
 // vite.config.ts (illustrative)
+import { defineConfig } from 'vite';
+import { deriveProxyFromCoord } from './scripts/derive-vite-proxy.mjs';
+
 export default defineConfig({
   server: {
     port: 3055,
     host: process.env.PAPERCUSP_BIND_HOST ?? '127.0.0.1',
-    proxy: {
-      // During Phase A/B, the Next sidecar still hosts the API.
-      // Once Phase C lands @hono/node-server, this points at :3057.
-      '/api': { target: 'http://127.0.0.1:3056', ws: true, changeOrigin: true },
-      '/internal/docs': { target: 'http://127.0.0.1:3056', changeOrigin: true },
-    },
+    // deriveProxyFromCoord reads ../../coord/frontend.jsonl and emits:
+    //   { '/api/migrated-prefix-1': { target: 'http://127.0.0.1:3057', ... },
+    //     '/api/migrated-prefix-N': { target: 'http://127.0.0.1:3057', ... },
+    //     '/api':                   { target: 'http://127.0.0.1:3056', ws: true, ... },  // fallback to Next sidecar
+    //     '/internal/docs':         { target: 'http://127.0.0.1:3057', ... } }
+    proxy: deriveProxyFromCoord({ honoHost: 3057, nextSidecar: 3056 }),
   },
   plugins: [
     TanStackRouterVite({ routesDirectory: './src/routes', generatedRouteTree: './src/routeTree.gen.ts' }),
@@ -184,6 +187,13 @@ export default defineConfig({
   ],
 });
 ```
+
+`apps/operator-vite/scripts/derive-vite-proxy.mjs` is a ~40-line script that:
+1. Reads `coord/frontend.jsonl` for all `prefix-migrated` entries.
+2. De-duplicates (latest entry per prefix wins).
+3. Returns the Vite proxy object literal.
+
+This way, when the backend agent ports a new family, **one line in `coord/frontend.jsonl` automatically updates the Vite dev proxy on the next dev restart** — no manual mirror, no drift.
 
 The Next sidecar runs on a *new* port (`:3056`) during the migration so Vite can own `:3055` (which is what Tauri / `PAPERCUSP_BIND_HOST`-aware scripts expect). One sed pass in `apps/operator/package.json`: `next dev -p 3055` → `next dev -p 3056`. The desktop's env config gets one update (or is gated on a `PAPERCUSP_USE_VITE=1` flag for the bring-up window) — see [Coordination](#coordination).
 
@@ -273,8 +283,8 @@ For each `app/**/page.tsx`:
 2. Wrap the default export in `createFileRoute('<path>')({ component: PageComponent })`.
 3. Replace `next/navigation` calls with TSR equivalents (table above).
 4. Replace `next/link` `<Link href="x">` with `import { Link } from '@tanstack/react-router'; <Link to="x">`.
-5. Replace `next/dynamic(() => import('./Foo'))` with `React.lazy(() => import('./Foo'))` and add a `<Suspense fallback={...}>` boundary. (TSR's `pendingComponent`/`defer` can supersede many of these — judge per-route.)
-6. Leave all `'use client'` directives in place (no-op in Vite/SPA, but removing them is a separate cleanup pass).
+5. Replace `next/dynamic(() => import('./Foo'))` with `React.lazy(() => import('./Foo'))` and add a `<Suspense fallback={...}>` boundary. **Audit each of the 32 sites for `loading: <Component>`** — `next/dynamic`'s `loading` option provides a synchronous loading component without a Suspense boundary; `React.lazy` always requires one. At minimum the harness-builds, marketplace-install, and (TBD via grep) surfaces have non-trivial `loading:` UI — port that UI into the Suspense `fallback` so the loading state visually survives. (TSR's `pendingComponent`/`defer` can supersede many of these — judge per-route.)
+6. Leave all `'use client'` directives in place during translation (see B4 for the audit-not-sed cleanup pass).
 7. Leave all `route.ts` files in `apps/operator/app/` **untouched** — backend agent's scope.
 
 Each layout (`app/layout.tsx` is one; the other 5 are nested like `app/harness/layout.tsx`) becomes a TSR parent file:
@@ -296,19 +306,46 @@ I'll land Phase B in batches by top-level route to keep each PR small and review
 
 (Exact per-batch counts will fall out of the inventory; the split is "ship a coherent surface per PR".)
 
-Each batch acceptance: that surface's URLs return identical HTML/UI to the live `apps/operator` on the same path, and Playwright's `docs-routes.spec.ts`-equivalent for that surface passes.
+Each batch acceptance: that surface's URLs render the right components and don't console-error, **verified by a strategy proportional to surface-stakes:**
+
+- **Smoke-tested in Playwright (mandatory): 6 highest-stakes surfaces.** `harness/[slug]`, `login`, `settings/*`, `marketplace/installed/[slug]` (the install flow), `editor-demo`, `harness/[slug]` "brainstorm" tab. Each gets one fresh Playwright smoke (~30-50 lines, ~1 day per to write + stabilize). **These tests do not exist today**; writing them is part of the batch's effort, not assumed coverage.
+- **Manual click-through (acceptable): the other ~56 pages.** Confirm via headless WebKit per `feedback_browser_e2e_verify_ui_fixes` — render, navigate sub-links, hit primary CTAs, watch for console errors.
+
+The plan does not pretend automated coverage exists for pages where it doesn't.
 
 ### B3. Translate the 53 `next/navigation` + 32 `next/dynamic` + 12 `next/link` sites
 
 These are dispersed across the page tree, so they fall out batch-by-batch. **Acceptance: zero `from 'next/navigation'|next/dynamic|next/link'` imports anywhere under `apps/operator-vite/src/`.**
 
-### B4. `'use client'` directives
+### B4. `'use client'` directives — per-file audit, not sed
 
-Vite/SPA doesn't distinguish server vs client components — everything is client. I'll leave `'use client'` directives in place during the translation pass (harmless no-op) and do a single sed-based cleanup PR at the end of Phase B. Backend agent owns equivalent cleanup on `route.ts` consumers.
+Vite/SPA doesn't distinguish server vs client components — `'use client'` is almost always a harmless no-op. **But not always.** A file that today carries `'use client'` *and* calls hooks at module-load (rare but real for context providers like `OperatorConversationProvider`, `RootSyncProvider`, `UiPresenceProvider`) may rely on Next's RSC boundary to defer evaluation. Under Vite + React 19 SPA those files evaluate eagerly at import; if any hook call runs at module scope (vs. inside the component body), it'll crash.
+
+So: **per-file audit during translation, not a single sed pass at the end.** For each `'use client'` file in a batch, grep its top-level for `use[A-Z]` calls outside function bodies. If clean, drop the directive; if not, refactor the hook into a render-time call. Backend agent owns equivalent cleanup on `route.ts` consumers.
 
 ### B5. Translate `app/_components/*`
 
 `apps/operator/app/_components/` is shared component code (not routes). Where TSR or Vite-specific changes are needed (e.g. `next/link` → TSR `Link`), edit in place inside `apps/operator/app/_components/` so both apps import the same components during the migration window. This works because the Vite app imports from `../operator/app/_components/*` via workspace path. After cutover, those files migrate to `apps/operator-vite/src/components/` in one move-only PR.
+
+### B6. `@bprogress/next` → TSR adapter (~30-60 LOC)
+
+The top-of-page navigation progress bar uses `@bprogress/next`, which hooks `next/navigation`'s router events. Replacement is `@bprogress/react` (same author) wired into TSR's `useRouterState`. The adapter:
+
+```tsx
+// apps/operator-vite/src/components/NavigationProgress.tsx (illustrative)
+import { useRouterState } from '@tanstack/react-router';
+import { useProgress } from '@bprogress/react';
+import { useEffect } from 'react';
+
+export function NavigationProgress() {
+  const status = useRouterState({ select: s => s.status }); // 'idle' | 'pending'
+  const { start, stop } = useProgress();
+  useEffect(() => { status === 'pending' ? start() : stop(); }, [status]);
+  return null;
+}
+```
+
+Mount once in `__root.tsx`. **This is real work, not config** — ~30-60 lines including the CSS port. Drop `@bprogress/next` from `package.json` at Phase H.
 
 ### B acceptance (greppable)
 
@@ -349,8 +386,8 @@ Create `apps/operator/bin/hono-host.ts` (or `apps/operator-vite/server/host.ts` 
 ```ts
 // hono-host.ts (illustrative)
 import { serve } from '@hono/node-server';
-import { app } from '../app/_hono/app';
-import { runBootstrap } from '../app/_hono/bootstrap';
+import { app } from '../app/api/_hono/app';
+import { runBootstrap } from '../app/api/_hono/bootstrap';
 
 runBootstrap(); // idempotent — safe in HMR + standalone
 const port = Number(process.env.PAPERCUSP_HONO_PORT ?? 3057);
@@ -483,13 +520,13 @@ Per-file revert (the actual changes live inside Phase B PRs).
 | `next.config.js` setting | Replication |
 |---|---|
 | `output: 'standalone'`, `distDir`, two-build-target split | Replaced by `vite build` → `apps/operator-vite/dist/`. The "standalone" Next build (`.next-prod`) goes away — Phase G is one process, no separate standalone target. |
-| `compress: true` | `@hono/node-server` has no built-in compression. Add `hono-compress` middleware on the `hono-host` server (verified API surface in Phase E execution). |
+| `compress: true` | Hono compression middleware with **content negotiation** (decision frozen 2026-05-20): brotli when `Accept-Encoding: br` is present, gzip otherwise. Next's `compress: true` was gzip-by-default; defaulting the new stack to brotli-only would silently bypass compression for any CLI/curl consumer that doesn't advertise `br`. Match Next's permissive shape, don't narrow it. |
 | `outputFileTracingRoot`, `outputFileTracingIncludes` (node-pty prebuilds, scanner.md) | Replaced by an explicit copy step in the host's build script: `bin/hono-host-build.sh` copies `node_modules/@lydell/node-pty-*/prebuilds/**` and `libs/papercusp/packages/harness/prompts/scanner.md` into the bundled output. No tracer involved — we just enumerate. |
 | `typescript: { ignoreBuildErrors: true }` | Vite doesn't typecheck during `vite build` by default — same behavior. `tsc --noEmit` runs in a separate CI step (already does). |
 | `images: { unoptimized: true }` | Vite serves images as-is. No-op. |
 | `allowedDevOrigins` (Next 16 HMR origin allowlist) | Vite has `server.cors` + `server.host`; HMR origin checking is more permissive by default. Set `server.host: '0.0.0.0'` + `server.cors: true` in dev. |
 | `experimental.turbopackFileSystemCacheForDev: false` | Turbopack-specific; deleted with Next. |
-| `transpilePackages: [...]` (workspace packages) | Vite's `server.fs.allow` + workspace symlinks handle this automatically. **No equivalent config needed** unless a package ships pre-compiled CJS that Vite can't parse; revisit per-package if any fail. |
+| `transpilePackages: [...]` (workspace packages) | Vite's `server.fs.allow` + workspace symlinks handle source TS automatically — **but not workspace packages that ship JSX from `node_modules`**. `@papercusp/agent-mcp` exports JSX from a few tool-return files; Vite's default esbuild loader doesn't transform JSX in `node_modules` even via symlink unless explicitly told. Add `optimizeDeps.include: ['@papercusp/agent-mcp', ...other-JSX-shipping-packages]` to `vite.config.ts`, plus `ssr.noExternal` defensively (no-op for SPA but cheap insurance). ~5 lines. Per-package verify during Phase A smoke. |
 | `serverExternalPackages: [...]` (node-pty, agent-mcp, drizzle-kit, mem0ai, ollama, @huggingface/transformers) | Vite/Hono have no analogous concept for the **dev-time client bundle** because these are server-only packages. They live in the `hono-host` process, which is plain Node — no bundler involved at runtime. The `node-pty` `.node` binding trick that drove the Next include list works automatically. **Verify per-package during Phase G smoke.** |
 | `headers()` callback (`Connection: close` in dev) | Vite dev-server middleware (`server.middlewares.use(...)`) — 5 lines. |
 | `redirects()` (`/settings → /settings/profile`) | Either (a) a TSR `beforeLoad` redirect on `routes/settings.tsx`, or (b) Hono-host middleware. **Choice: (a)** because it's the SPA's concern, not the API's. |
@@ -623,7 +660,9 @@ This phase **cannot start** until the backend agent has finished migrating all `
 find apps/operator/app -name 'route.ts' -not -path '*/[[...route]]*' | wc -l   # → 0
 ```
 
-(The catch-all `[[...route]]/route.ts` is the Next-side shim; that gets deleted in Phase H. All other `route.ts` must be gone.)
+(The catch-all `[[...route]]/route.ts` is the Next-side shim; **backend agent deletes it as part of their final-batch close-out, not me.** All other `route.ts` must be gone before Phase G can start.)
+
+**Backend agent ETA at plan-edit time (2026-05-20):** 70 remaining out of 91, grinding ~14 per turn → realistically a few days of focused work for them to hit zero. **Phase G start date in [Effort](#effort-estimate) is therefore pinned to "max(Phase E complete, backend at zero) + ~1 day buffer".**
 
 ### G2. Drop the Next sidecar from the dev launcher
 
@@ -633,14 +672,35 @@ Update `bin/dev-vite.sh` (or whatever orchestrator) to start two processes:
 
 Vite proxy table collapses to a single entry: `/api → :3057`.
 
-### G3. Single-process production
+### G3. Single-process production — middleware order without changing the boundary
 
-Confirm the `hono-host` serves all three concerns in a single Node process:
-- `app.get('*', serveStatic({ root: '../operator-vite/dist' }))` — the SPA shell.
-- The existing `_hono/app.ts` mounts — `/api/*`.
-- The docs-gate middleware + `/internal/docs/*` static — already from Phase E.
+The host serves three URL spaces in one process:
+- `/api/*` — owned by `app.fetch` (the existing `_hono/app.ts`).
+- `/internal/docs/*` — owned by host middleware (gate + `serveStatic`, ported from `proxy.ts` in Phase E).
+- everything else — SPA shell from `dist/index.html`.
 
-Order matters: API routes register first, then docs middleware, then the SPA catch-all (which serves `index.html` for unknown paths so client-side routing works).
+These URL spaces don't overlap, so the sequencing is **host pre-routing → app.fetch → host fallback**, not an interleave:
+
+```ts
+serve({
+  port,
+  hostname: host,
+  fetch: async (req) => {
+    const url = new URL(req.url);
+    // 1. Host pre-routing: docs gate owns /internal/docs/*
+    if (url.pathname.startsWith('/internal/docs')) {
+      return docsGate(req); // returns 200 / 403 / 404 (Starlight branded)
+    }
+    // 2. Delegate /api/* and anything else _hono/app.ts has mounted
+    const r = await app.fetch(req);
+    if (r.status !== 404) return r;
+    // 3. SPA fallback: serve dist/index.html for client-router-owned paths
+    return serveStatic({ root: '../operator-vite/dist' })({ ...req, path: '/index.html' });
+  },
+});
+```
+
+**This intentionally does NOT add a `mount(extraRoutes)` export to `_hono/app.ts`.** The boundary contract stays minimal (`export { app }, runBootstrap`). If a future need to interleave middleware *between* two of app's own mounts surfaces, we add the seam *then*, with a coord-channel entry. YAGNI for now.
 
 ### G4. Drop `next start` from the desktop sidecar launcher
 
@@ -692,25 +752,50 @@ sleep 2
 curl -sf http://127.0.0.1:4173/ | grep -q '<html'
 ```
 
-### H2. The deletion (one PR)
+### H2. The deletion + move PR (option (b): merge into `apps/operator-vite/`)
 
+**Decision frozen 2026-05-20 (was Open Q1):** after H, there is no `apps/operator/` directory. Everything that remains after the Next surface is removed gets moved under `apps/operator-vite/server/`. This is a bigger PR than "rm -rf app/" — re-budgeted from 1d → 2-3d to cover the import-path sweep.
+
+H2 is one PR with two halves:
+
+**(a) Move what stays:**
 ```
-# Page/layout/router surface.
-rm -rf apps/operator/app/
-rm    apps/operator/proxy.ts
-rm    apps/operator/next.config.js
-rm    apps/operator/next-env.d.ts
+git mv apps/operator/app/api/_hono       apps/operator-vite/server/_hono
+git mv apps/operator/bin/hono-host.ts    apps/operator-vite/server/host.ts
+git mv apps/operator/lib                 apps/operator-vite/server/lib
+git mv apps/operator/prompts             apps/operator-vite/server/prompts
+git mv apps/operator/scripts             apps/operator-vite/scripts
+git mv apps/operator/__tests__           apps/operator-vite/__tests__
+git mv apps/operator/e2e                 apps/operator-vite/e2e
+git mv apps/operator/public              apps/operator-vite/public   # (if not already symlinked there)
+```
+
+**(b) Delete what's gone:**
+```
+rm -rf apps/operator/app/         # everything left after _hono moved out
+rm     apps/operator/proxy.ts
+rm     apps/operator/next.config.js
+rm     apps/operator/next-env.d.ts
 rm -rf apps/operator/.next apps/operator/.next-prod
-# Deps (run from repo root).
-# Edit apps/operator/package.json: remove `next`, `@bprogress/next`, and Next-only adjuncts.
-# Run: npm install --legacy-peer-deps
-# Test scripts that reference next.
-# Edit apps/operator/package.json: `next dev`, `next build`, `next start` → vite/hono-host equivalents.
+rm -rf apps/operator/              # the whole dir is gone
 ```
 
-The `apps/operator/_hono/` directory **stays** — it's the boundary that backend agent owned. The `apps/operator/bin/hono-host.ts` is the production entry. `apps/operator/lib/`, `apps/operator/prompts/`, `apps/operator/scripts/`, `apps/operator/__tests__/`, `apps/operator/e2e/` all stay.
+**Then the import-path sweep:**
+```
+# Update every @papercusp/web → @papercusp/operator-vite reference.
+grep -rl "@papercusp/web" apps/ packages/ libs/ bin/ | xargs sed -i 's|@papercusp/web|@papercusp/operator-vite|g'
+# Fix relative imports that broke from the moves (e.g. lib/ paths from prompts/).
+# Run tsc --noEmit; fix what flags.
+```
 
-After this commit, `apps/operator/` is no longer a Next app; it's a Hono-host-with-shared-lib app. Whether it gets renamed (`apps/operator-host/`?) or merged with `apps/operator-vite/` is a follow-up — see [Open questions](#open-questions).
+**Then the deps drop:**
+- Edit `apps/operator-vite/package.json` (new home of what was `@papercusp/web`): remove `next`, `@bprogress/next`, `eslint-config-next`, `@storybook/nextjs`, `@types/next` if present.
+- Rename: `"name": "@papercusp/web"` → `"name": "@papercusp/operator-vite"`.
+- Run `npm install --legacy-peer-deps` from repo root.
+
+**Catch-all shim deletion is the backend agent's:** `apps/operator/app/api/[[...route]]/route.ts` (the 25-line `handle(app)` shim) is theirs to delete as part of their final-batch close-out, *before* H2 runs. The H1 gate-check accounts for this — by the time H starts, that file is already gone.
+
+**`apps/operator/app/api/openapi.json/route.ts` is also the backend agent's:** they confirmed they'll port it to `defineRoute` in their last batch (10-min change, runtime endpoint that needs the route registry at request-time). Removes the only escape-hatch that would otherwise force a Next dependency to survive Phase H.
 
 ### H3. Cross-repo sweep
 
@@ -766,8 +851,8 @@ Single revert of the deletion PR. Because every change up through Phase G was ad
 
 | Surface | Owner | Discipline |
 |---|---|---|
-| `apps/operator/app/_hono/app.ts` | Backend agent (writes routes), me (consumes `app` export) | I add `export { app }` once (P0). Backend agent owns mounts. No structural moves during the migration. |
-| `apps/operator/app/_hono/bootstrap.ts` | Backend agent | I call `runBootstrap()` from `bin/hono-host.ts`. They preserve its idempotent contract. |
+| `apps/operator/app/api/_hono/app.ts` | Backend agent (writes routes), me (consumes `app` export) | I add `export { app }` once (P0). Backend agent owns mounts. No structural moves during the migration. |
+| `apps/operator/app/api/_hono/bootstrap.ts` | Backend agent | I call `runBootstrap()` from `bin/hono-host.ts`. They preserve its idempotent contract. |
 | `apps/operator/app/_components/*` | Shared during migration; mine after Phase B | Both apps import. I prefer in-place edits during the migration window. |
 | `apps/operator/lib/*` | Shared | Library code; touched by both as needed. Coord-channel announce on big refactors. |
 | `apps/operator/package.json` deps section | Shared | Coord-channel before adding/removing deps. |
@@ -782,10 +867,37 @@ Per `feedback_paperclip_collision_race.md`: I do **not** SIGSTOP paperclip durin
 - **Pre-edit** of any shared file (`_hono/*`, `_components/*`, `lib/*`): `git log --since="48h ago" --name-only -- <path>` to see what the backend agent touched.
 - **Pre-merge** of any PR that changes `apps/operator/package.json`: ping coord channel.
 
+### Coord contract
+
+Frozen 2026-05-20. Two structured event kinds the streams emit on `coord/frontend.jsonl` so the other side's tooling can react mechanically. (Anything else stays free-form prose under `kind: "checkpoint"` / `"note"`.)
+
+**Backend agent emits, one per migrated path family:**
+```json
+{"ts":"<ISO>","agent":"backend","kind":"prefix-migrated","prefix":"/api/foo","commit":"<sha>"}
+```
+- `prefix` is the path prefix that has moved from a Next `route.ts` to a `defineRoute` mount in `_hono/app.ts`. Examples: `/api/projects`, `/api/agent-mcp/operator-scan`, `/api/healthz`.
+- One entry per family. If a family is migrated in pieces, emit once when the whole family is on the Hono side.
+- `commit` is the SHA that landed it (so I can revert mentally if the line lies).
+
+**My `bin/derive-vite-proxy.mjs` reads these** to build the Vite dev-proxy table at dev-start (see [A2](#a2-dev-server-proxy-coord-derived)). No manual mirror.
+
+**Backend agent also emits, exactly once, at the end:**
+```json
+{"ts":"<ISO>","agent":"backend","kind":"route-ts-zero","commit":"<sha>","notes":"catch-all shim deleted in this commit"}
+```
+This is the Phase G start-gate signal. My tooling watches for it; I start Phase G's work the same day.
+
+**I emit, on each completed Phase B batch:**
+```json
+{"ts":"<ISO>","agent":"frontend","kind":"batch-shipped","batch":"B-3","slugs":["/harness","/harness/[slug]",...],"commit":"<sha>"}
+```
+- `slugs` enumerates the routes that now live in `apps/operator-vite/src/routes/`.
+- Backend agent uses this to know which page-side surfaces are real (not just translated) — useful when their route migration touches a page's data layer.
+
 ### Files the backend agent must NOT structurally move
 
-- `apps/operator/app/_hono/app.ts`
-- `apps/operator/app/_hono/bootstrap.ts`
+- `apps/operator/app/api/_hono/app.ts`
+- `apps/operator/app/api/_hono/bootstrap.ts`
 
 (They can add routes to these and split them internally. They cannot move them to a different directory until Phase H is shipped.)
 
@@ -822,43 +934,44 @@ If all eight pass, the migration is done.
 | **A page imports `next/server` (rare; types only)** | Coord with backend agent on a shared type-shim (e.g. `import type { NextRequest }` becomes `import type { Request } from '@hono/node-server'` or similar). |
 | **`next/dynamic` had Next-specific SSR=false semantics** | Vite/SPA is SSR=false by default. Direct `React.lazy` matches. |
 | **CSS imports / globals collisions** | `apps/operator/app/globals.css` becomes `apps/operator-vite/src/styles/globals.css` (or symlink). One import in `main.tsx`. |
-| **Storybook (`storybook dev -p 6009`) stops working** | Storybook is a separate config — works independently of Next. Should keep working as-is; verify in Phase F. |
+| **Storybook (`storybook dev -p 6009`)** | **Real migration: `@storybook/nextjs` → `@storybook/react-vite`.** Story files (`.stories.tsx`) don't change. Preset, decorators, and any `next/image` / `next/link` / `next/navigation` mocks need rework. Budget 1-2 days in Phase F. |
 | **Lost-pixel visual regression tests** | Same — they don't depend on Next; verify in Phase F. |
 
 ---
 
 ## Effort estimate
 
+Refreshed 2026-05-20 after review (#9 Storybook +1-2d in F; #5 testing budget reshaped within B; #13 H expanded for the move-PR; #15 G gate pinned).
+
 | Phase | Duration | Gating |
 |---|---:|---|
-| 0 — pre-flight & boundary | 0.5 days | backend-agent ack |
+| 0 — pre-flight & boundary (`BOUNDARY.md` only; export already shipped) | 0.5 days | backend-agent ack |
 | A — scaffold | 2–3 days | — |
-| B — router translation (6 batches) | 3–5 weeks | per-batch review |
+| B — router translation (6 batches, includes B6 `@bprogress` adapter + 6 Playwright smokes @ ~1d each) | 4–6 weeks | per-batch review |
 | C — `@hono/node-server` host | 2–3 days | A complete |
 | D — page-side next/* audit | 1 day (rolled into B) | B complete |
 | E — config replication | 3–4 days | C complete |
-| F — Tauri shell | 2 days | E complete |
-| G — single-process production | 2 days | backend agent's route migration complete |
-| H — cutover & deletion | 1 day | G complete |
-| **Total (mine, single-agent)** | **~6–8 weeks** | — |
+| F — Tauri shell + Storybook `@storybook/nextjs` → `@storybook/react-vite` | 3–4 days | E complete |
+| G — single-process production | 2 days | **max(E complete, backend at 0 route.ts) + ~1d buffer** |
+| H — cutover + move + import-path sweep + deps drop | 2–3 days | G complete; backend agent has already deleted catch-all shim + ported `openapi.json` |
+| **Total (mine, single-agent)** | **~7–9 weeks** | — |
 
-If batches B-1..B-6 are parallelized across multiple worker-agents (per the deferred plan's "if revisited" note), total drops to ~3–4 weeks.
+If batches B-1..B-6 are parallelized across multiple worker-agents (per the deferred plan's "if revisited" note), total drops to ~4–5 weeks.
 
 ---
 
 ## Open questions
 
-These need user input before Phase H ships. None block earlier phases.
+These need user input. None block Phase 0/A start.
 
-1. **Final directory layout post-cutover.** After H, `apps/operator/` is a Hono-host-with-shared-lib app, and `apps/operator-vite/` is the SPA. Three options:
-   - (a) Keep both, rename `apps/operator/` → `apps/operator-host/`.
-   - (b) Merge: move `apps/operator/_hono/`, `apps/operator/lib/`, `apps/operator/bin/hono-host.ts` into `apps/operator-vite/server/`, delete `apps/operator/` entirely. **Recommended.**
-   - (c) Keep both, no rename, rely on README to explain the split.
-2. **Production port.** Today's two ports (`:3055` dev, `:3070` standalone) collapse to one. Should that one be `:3055` (matches dev) or `:3070` (matches today's prod)? **Recommendation: `:3055` everywhere.**
-3. **Webapp deploy.** The deferred plan called out webapp deploy (host-architecture Track A) as a separate concern. This plan keeps the operator desktop-shipped. Confirm webapp is still out-of-scope for this stream, even though the Vite app would in principle be deployable to any static host + the Hono host on a server.
-4. **`apps/papercup/` Next removal.** That app is still on Next (de-fumadocs'd but not de-Next'd). Out of scope for this plan; flagging that it's the next domino if you want zero Next anywhere.
-5. **`@bprogress/next`.** Top-level navigation progress bar specific to Next. Replacement: `@bprogress/react` (same author) wired into TSR's `useRouterState` for navigation events. Confirm replacement is acceptable.
-6. **Server Actions / `'use server'`.** I haven't grepped for these (backend agent's surface). If they exist, the backend agent's plan covers them. Flagging only because their replacement (Hono routes + `useMutation`) is described in the deferred plan and the same pattern applies here.
+1. **Production port.** Today's two ports (`:3055` dev, `:3070` standalone) collapse to one. Should that one be `:3055` (matches dev) or `:3070` (matches today's prod)? **Recommendation: `:3055` everywhere.**
+2. **Webapp deploy.** The deferred plan called out webapp deploy (host-architecture Track A) as a separate concern. This plan keeps the operator desktop-shipped. Confirm webapp is still out-of-scope for this stream, even though the Vite app would in principle be deployable to any static host + the Hono host on a server.
+3. **`apps/papercup/` Next removal.** That app is still on Next (de-fumadocs'd but not de-Next'd). Out of scope for this plan; flagging that it's the next domino if you want zero Next anywhere.
+4. **Server Actions / `'use server'`.** I haven't grepped for these (backend agent's surface). If they exist, the backend agent's plan covers them. Flagging only because their replacement (Hono routes + `useMutation`) is described in the deferred plan and the same pattern applies here.
+
+**Resolved during review (no longer open):**
+- ~~Final directory layout~~ — decided 2026-05-20: option (b), merge into `apps/operator-vite/`. See [Phase H](#h2-the-deletion--move-pr-option-b-merge-into-appsoperator-vite).
+- ~~`@bprogress/next` replacement~~ — moved to [Phase B6](#b6-bprogressnext--tsr-adapter-30-60-loc) as a concrete ~30-60 LOC sub-task, not config.
 
 ---
 
