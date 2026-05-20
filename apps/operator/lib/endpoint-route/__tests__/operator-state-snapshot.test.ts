@@ -1,14 +1,16 @@
 /**
- * Tests for the /state-snapshot SSE route.
- *
- * The route emits an SSE ReadableStream; we drain the stream with a
- * reader and assert the wire shape. Tests run in node env.
+ * Tests for the /state-snapshot SSE route. Drains the SSE wire stream
+ * and asserts initial-dump + live-update shape.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('@/lib/auth', () => ({ getSessionUser: vi.fn() }));
 vi.mock('@/lib/workspace-registry', () => ({ activeWorkspaceId: vi.fn() }));
+vi.mock('@/lib/endpoint-route/telemetry', () => ({
+  recordRouteInvocation: vi.fn(async () => {}),
+}));
 
+import { Hono } from 'hono';
 import { getSessionUser } from '@/lib/auth';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
 import {
@@ -17,8 +19,7 @@ import {
   setOpenCards,
 } from '@papercusp/agent-mcp';
 import type { OpenCardSnapshot } from '@papercusp/agent-mcp';
-
-import { GET } from './route';
+import { registerAllRoutes } from '../register';
 
 const ws = 'ws-test';
 
@@ -31,17 +32,8 @@ function card(id: string): OpenCardSnapshot {
   };
 }
 
-function makeReq(): Request {
-  return new Request('http://localhost/api/operator/state-snapshot', {
-    method: 'GET',
-  });
-}
+let app: Hono;
 
-/**
- * Open a streaming reader that yields snapshot events as they arrive.
- * The caller controls reading + cleanup; this lets tests interleave
- * reads with state-channel mutations.
- */
 function openSseReader(res: Response) {
   const reader = res.body!.getReader();
   const decoder = new TextDecoder();
@@ -50,7 +42,6 @@ function openSseReader(res: Response) {
   async function next(timeoutMs: number): Promise<string | null> {
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
-      // Drain whatever's already in buf first.
       const idx = buf.indexOf('\n\n');
       if (idx >= 0) {
         const block = buf.slice(0, idx);
@@ -70,10 +61,7 @@ function openSseReader(res: Response) {
     return null;
   }
 
-  async function close() {
-    await reader.cancel().catch(() => {});
-  }
-
+  async function close() { await reader.cancel().catch(() => {}); }
   return { next, close };
 }
 
@@ -89,12 +77,14 @@ describe('GET /api/operator/state-snapshot', () => {
       has_password: true,
     });
     vi.mocked(activeWorkspaceId).mockReturnValue(ws);
+    app = new Hono().basePath('/api');
+    registerAllRoutes(app);
   });
   afterEach(() => _resetStateChannelForTests());
 
   it('401 without session', async () => {
     vi.mocked(getSessionUser).mockResolvedValue(null);
-    const res = await GET(makeReq());
+    const res = await app.request('/api/operator/state-snapshot');
     expect(res.status).toBe(401);
   });
 
@@ -106,7 +96,7 @@ describe('GET /api/operator/state-snapshot', () => {
     openRun({ workspaceId: 'other-ws', runId: 'rOther' });
     setOpenCards('rOther', [card('o1')]);
 
-    const res = await GET(makeReq());
+    const res = await app.request('/api/operator/state-snapshot');
     const r = openSseReader(res);
     const a = await r.next(1000);
     const b = await r.next(1000);
@@ -121,7 +111,7 @@ describe('GET /api/operator/state-snapshot', () => {
     openRun({ workspaceId: ws, runId: 'rLive' });
     setOpenCards('rLive', [card('first')]);
 
-    const res = await GET(makeReq());
+    const res = await app.request('/api/operator/state-snapshot');
     const r = openSseReader(res);
     const initial = await r.next(1000);
     expect(initial).not.toBeNull();

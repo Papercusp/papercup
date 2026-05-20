@@ -30,6 +30,15 @@ import snapshotsShape from './snapshots/shape';
 import snapshotsPublish from './snapshots/publish';
 import snapshotsRetract from './snapshots/retract';
 import snapshotsInstantiate from './snapshots/instantiate';
+import operatorBudgetTiers from './operator/budget-tiers';
+import operatorStateSnapshot from './operator/state-snapshot';
+import operatorSettingsByKey from './operator/settings-by-key';
+import operatorConversations from './operator/conversations';
+import operatorConversationTurns from './operator/conversation-turns';
+import operatorCardResponse from './operator/card-response';
+import operatorSilenceNudge from './operator/silence-nudge';
+import operatorRunCancel from './operator/run-cancel';
+import operatorTurnAnswer from './operator/turn-answer';
 import devRouteInvocations from './dev/route-invocations';
 import agentConfig from './agent-config/index';
 import agentConfigTest from './agent-config/test';
@@ -151,6 +160,15 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(snapshotsPublish as AnyRoute),
   ...flatten(snapshotsRetract as AnyRoute),
   ...flatten(snapshotsInstantiate as AnyRoute),
+  ...flatten(operatorBudgetTiers as AnyRoute),
+  ...flatten(operatorStateSnapshot as AnyRoute),
+  ...flatten(operatorSettingsByKey as AnyRoute),
+  ...flatten(operatorConversations as AnyRoute[]),
+  ...flatten(operatorConversationTurns as AnyRoute[]),
+  ...flatten(operatorCardResponse as AnyRoute),
+  ...flatten(operatorSilenceNudge as AnyRoute),
+  ...flatten(operatorRunCancel as AnyRoute),
+  ...flatten(operatorTurnAnswer as AnyRoute),
   ...flatten(devRouteInvocations as AnyRoute),
   ...flatten(agentConfig as AnyRoute[]),
   ...flatten(agentConfigTest as AnyRoute),
