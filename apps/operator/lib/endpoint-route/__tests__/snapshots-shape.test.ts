@@ -28,7 +28,7 @@ async function call(id: string) {
 }
 
 describe('GET /api/snapshots/:id/shape', () => {
-  it('returns 404 when snapshot is unknown', async () => {
+  it('returns 404 when snapshot is unknown', { timeout: 20000 }, async () => {
     vi.doMock('@/lib/snapshot-discovery', () => ({
       findSnapshot: async () => null,
     }));

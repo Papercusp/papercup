@@ -65,6 +65,13 @@ import harnessBranchActionStream from './harness/branch-action-stream';
 import harnessBranchActionByNameRun from './harness/branch-action-by-name-run';
 import harnessExpertRelatedDocs from './harness/expert-related-docs';
 import harnessSaveAsTemplate from './harness/save-as-template';
+import uiPresence from './ui/presence';
+import uiIntentsStream from './ui/intents-stream';
+import uiIntentResult from './ui/intent-result';
+import zeroHarnessSse from './zero-harness/sse';
+import zeroHarnessRestQuery from './zero-harness/rest-query';
+import zeroHarnessRestQueryBatch from './zero-harness/rest-query-batch';
+import miscZeroHarnessQuery from './misc/zero-harness-query';
 import devRouteInvocations from './dev/route-invocations';
 import agentConfig from './agent-config/index';
 import agentConfigTest from './agent-config/test';
@@ -221,6 +228,13 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(harnessBranchActionByNameRun as AnyRoute),
   ...flatten(harnessExpertRelatedDocs as AnyRoute),
   ...flatten(harnessSaveAsTemplate as AnyRoute),
+  ...flatten(uiPresence as AnyRoute),
+  ...flatten(uiIntentsStream as AnyRoute),
+  ...flatten(uiIntentResult as AnyRoute),
+  ...flatten(zeroHarnessSse as AnyRoute),
+  ...flatten(zeroHarnessRestQuery as AnyRoute),
+  ...flatten(zeroHarnessRestQueryBatch as AnyRoute),
+  ...flatten(miscZeroHarnessQuery as AnyRoute),
   ...flatten(devRouteInvocations as AnyRoute),
   ...flatten(agentConfig as AnyRoute[]),
   ...flatten(agentConfigTest as AnyRoute),
