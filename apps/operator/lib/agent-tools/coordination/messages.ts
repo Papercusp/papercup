@@ -121,7 +121,10 @@ export async function readInbox(
       out.push(l);
     }
   }
-  out.sort((a, b) => a.ts.localeCompare(b.ts));
+  out.sort(
+    (a, b) =>
+      a.ts.localeCompare(b.ts) || a.msg_id.localeCompare(b.msg_id),
+  );
   return out;
 }
 
@@ -167,5 +170,8 @@ export async function readThread(rootMsgId: string): Promise<CoordEnvelope[]> {
   }
   return all
     .filter((l) => inThread.has(l.msg_id))
-    .sort((a, b) => a.ts.localeCompare(b.ts));
+    .sort(
+      (a, b) =>
+        a.ts.localeCompare(b.ts) || a.msg_id.localeCompare(b.msg_id),
+    );
 }

@@ -171,6 +171,12 @@ import './coordination/tools/send';
 import './coordination/tools/inbox';
 import './coordination/tools/ack';
 import './coordination/tools/thread';
+// L3 escalations + handoffs (Phase C)
+import './coordination/tools/escalate';
+import './coordination/tools/escalations';
+import './coordination/tools/resolve';
+import './coordination/tools/handoff';
+import './coordination/tools/handoffs';
 
 // SU-agent plan tracking — see agent-plan-tracking-2026-05-20.md
 import './plans/list';

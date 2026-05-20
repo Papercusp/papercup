@@ -36,6 +36,14 @@ export function messagesDir(): string {
   return join(coordDir(), 'messages');
 }
 
+export function escalationsDir(): string {
+  return join(coordDir(), 'escalations');
+}
+
+export function handoffsDir(): string {
+  return join(coordDir(), 'handoffs');
+}
+
 /**
  * Per-agent outbox filename. ownerId is sanitised — non-[A-Za-z0-9._-]
  * chars become '_'. Two distinct owners cannot collide because the
@@ -45,4 +53,22 @@ export function messagesDir(): string {
 export function outboxFile(ownerId: string): string {
   const safe = ownerId.replace(/[^A-Za-z0-9._-]/g, '_');
   return join(messagesDir(), `${safe}.jsonl`);
+}
+
+/**
+ * Per-event filename for an escalation / handoff record. msg_id is
+ * already time-sortable (`<base36-ms>-<hex>`); using it directly as
+ * the filename gives sortable directory listings and O(1) lookup by
+ * id (no parse-every-file scan needed).
+ */
+export function escalationFile(msgId: string): string {
+  return join(escalationsDir(), `${sanitiseMsgId(msgId)}.json`);
+}
+
+export function handoffFile(msgId: string): string {
+  return join(handoffsDir(), `${sanitiseMsgId(msgId)}.json`);
+}
+
+function sanitiseMsgId(id: string): string {
+  return id.replace(/[^A-Za-z0-9._-]/g, '_');
 }

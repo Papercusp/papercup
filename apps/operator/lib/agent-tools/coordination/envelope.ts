@@ -53,18 +53,30 @@ export interface CoordEnvelope {
 }
 
 /**
- * Generate a coord msg_id. Format: `<ms-base36>-<hex>` so ids are
- * roughly time-sortable lexicographically and unique across the
- * whole coord tree.
+ * Generate a coord msg_id. Format: `<ms-base36>-<seq-base36>-<hex>` —
+ * lex-monotonic by construction within one process even across
+ * multiple ids minted in the same millisecond, so a downstream sort
+ * by (ts, msg_id) is deterministic.
  *
- * v1 deviation from plan: the plan says "ULID". This uses a UUIDv4
- * suffix instead of a real ULID encoder. The field name is stable;
- * future code can switch encoders without changing readers.
+ * v1 deviation from plan: the plan says "ULID". This uses a process-
+ * local counter + UUIDv4 suffix instead of a real ULID encoder. The
+ * field name is stable; future code can switch encoders without
+ * changing readers.
  */
+let _lastMs = 0;
+let _seq = 0;
 export function newMsgId(): string {
-  const ms = Date.now().toString(36).padStart(8, '0');
+  const now = Date.now();
+  if (now === _lastMs) {
+    _seq += 1;
+  } else {
+    _lastMs = now;
+    _seq = 0;
+  }
+  const ms = now.toString(36).padStart(8, '0');
+  const seq = _seq.toString(36).padStart(4, '0');
   const rnd = randomUUID().replace(/-/g, '');
-  return `${ms}-${rnd}`;
+  return `${ms}-${seq}-${rnd}`;
 }
 
 /**

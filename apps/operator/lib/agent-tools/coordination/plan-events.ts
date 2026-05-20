@@ -114,6 +114,9 @@ export async function readPlanEvents(
     if (eventFilter && (!ev || !eventFilter.has(ev))) continue;
     out.push(l);
   }
-  out.sort((a, b) => a.ts.localeCompare(b.ts));
+  out.sort(
+    (a, b) =>
+      a.ts.localeCompare(b.ts) || a.msg_id.localeCompare(b.msg_id),
+  );
   return out;
 }
