@@ -127,6 +127,17 @@ export async function register(): Promise<void> {
     console.warn('[ensure-schema-prewarm] non-fatal failure:', err?.message ?? err);
   });
 
+  // Pre-warm common API routes so the first user fetch doesn't pay for
+  // Turbopack's per-route lazy-compile (5-25s on this monorepo).
+  // WebKitGTK aborts slow same-origin fetches with the misleading
+  // "Fetch API cannot load … due to access control checks" devtools
+  // message — those errors are dev-only timing, not CORS, but they
+  // litter the user's console. Firing internal GETs ~2s after boot
+  // forces compilation off the client's critical path.
+  if (process.env.NODE_ENV !== 'production') {
+    setTimeout(() => { void prewarmRoutes(); }, 2_000);
+  }
+
   // Phase 4 T2.3: schedule the scratch-storage GC sweep so stale
   // tool-output dirs get cleaned every 1h. Idempotent; safe across
   // HMR reloads. Reads the workspace registry on each sweep so
@@ -341,6 +352,12 @@ async function maybeStartEndpointIpcServer(): Promise<void> {
       //                 through as an arg.
       //
       // All Phase-3 streaming tools are IPC-eligible.
+      //
+      // sys:http — privileged HTTP-over-IPC bridge for the webview's
+      // fetch/EventSource polyfills. Not a defineTool projection; the
+      // IPC server special-cases this name and dispatches into the
+      // operator's own loopback HTTP port. Allowlist entry is uniform
+      // gating, not a tool resolution. See lib/endpoint-ipc/sys-http.ts.
       allowedTools: [
         'dev:ipc_echo',
         'operator:scan',
@@ -348,6 +365,7 @@ async function maybeStartEndpointIpcServer(): Promise<void> {
         'brainstorm:chat',
         'operator:delegate',
         'operator:converse',
+        'sys:http',
       ],
     });
   } catch (err) {
@@ -470,4 +488,49 @@ async function migrateVoicePrefsDefaults(): Promise<void> {
   if (rows.length > 0) {
     console.log(`[voice-prefs-defaults-migrate] tightened fullAgentIdleTimeoutMin 5→2 on ${rows.length} row(s)`);
   }
+}
+
+async function prewarmRoutes(): Promise<void> {
+  // Routes the operator chrome hits on every page mount. First call to
+  // each takes 5-25s under Turbopack lazy-compile in this monorepo;
+  // WebKitGTK aborts those slow fetches with a misleading "access
+  // control checks" devtools message. Pre-warming makes the user's
+  // first request hit a cached compile and respond in <50ms.
+  const ROUTES = [
+    '/api/desktop/setup-status',
+    '/api/desktop/setup-wizard-state',
+    '/api/desktop/voice-configured',
+    '/api/desktop/version',
+    '/api/agent-mcp/operator-pause-flag',
+    '/api/agent-mcp/operator-voice-prefs',
+    '/api/agent-mcp/operator-trigger-state',
+    '/api/agent-mcp/voice-debug',
+    '/api/zero-harness/rest-query?name=toastLog.recent&args=%7B%22limit%22%3A50%7D',
+    '/api/harness/projects/lite',
+    '/api/profile',
+    '/api/auth/me',
+    '/api/provision/host-check',
+    '/api/runtime-config',
+  ];
+  const host = process.env.PAPERCUSP_BIND_HOST || '127.0.0.1';
+  const port = Number(process.env.PORT) || 3055;
+  const base = `http://${host}:${port}`;
+  const http = await import('node:http');
+  const t0 = Date.now();
+  // Sequential, not parallel — parallel saturates Turbopack's worker
+  // pool and makes every route slow. One-at-a-time finishes in the
+  // same total wall-time and keeps a CPU core free for any user
+  // request that arrives during pre-warm.
+  for (const path of ROUTES) {
+    await new Promise<void>((resolve) => {
+      const req = http.get(base + path, { headers: { 'x-prewarm': '1' } }, (res) => {
+        res.resume();
+        res.on('end', () => resolve());
+        res.on('error', () => resolve());
+      });
+      req.on('error', () => resolve());
+      req.setTimeout(60_000, () => { req.destroy(); resolve(); });
+    });
+  }
+  console.log(`[prewarm-routes] done in ${Date.now() - t0}ms (${ROUTES.length} routes)`);
 }

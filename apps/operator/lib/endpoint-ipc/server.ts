@@ -35,6 +35,7 @@ import {
   type DispatchProjectedDeps,
 } from '@papercusp/agent-mcp';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
+import { handleSysHttp } from './sys-http';
 
 /** Returns the default per-process socket path on this OS. */
 export function defaultSocketPath(pid: number = process.pid): string {
@@ -270,6 +271,31 @@ function handleConnection(socket: net.Socket, deps: PerConnectionDeps): void {
       sendError(id, 'tool_not_allowed', `tool '${parsed.toolName}' is not on the IPC allowlist`);
       return;
     }
+
+    // sys:http — privileged HTTP-over-IPC bridge for the webview's
+    // fetch/EventSource polyfills. Not a defineTool projection; handled
+    // here so all /api/* traffic from the webview can ride the existing
+    // UDS instead of opening webview HTTP connections. See sys-http.ts
+    // for the wire shape. Still passes through the allowlist above for
+    // uniform gating + telemetry intent.
+    if (parsed.toolName === 'sys:http') {
+      const abort = new AbortController();
+      inFlight.set(id, abort);
+      if (preCancelledIds.delete(id)) abort.abort();
+      void handleSysHttp(id, parsed.input, abort.signal, {
+        writeFrame,
+        writeJson,
+        logger: deps.logger,
+      })
+        .catch((err) =>
+          sendError(id, 'sys_http_error', err instanceof Error ? err.message : String(err)),
+        )
+        .finally(() => {
+          inFlight.delete(id);
+        });
+      return;
+    }
+
     const tool = lookupByMcpName(parsed.toolName);
     if (!tool) {
       sendError(id, 'unknown_tool', `no projected tool named '${parsed.toolName}'`);
