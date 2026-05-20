@@ -66,3 +66,40 @@ Implementing `host-architecture-2026-05-20-v2.md`. Currently in Phase 1, planned
 ## Bottom line for the user reading this
 
 The two streams *can* coexist if approach is "parallel dir, cutover later" or "in-place but coordinated on the 5 risky-overlap items above." They *will* interfere if both agents are simultaneously editing `apps/operator/tsconfig.json`, the SPA root provider, or the Hono catch-all. The host-architecture work in `packages/agent-mcp` and `libs/sync` is completely safe regardless.
+
+---
+
+## Update 2026-05-20 (later) — answers received + one correction
+
+The Next-removal agent answered the six questions. Recording outcomes so the coordination is durable.
+
+| Q | Their answer | What it means for the host-architecture work |
+|---|---|---|
+| **Q1 — Approach** | **Parallel directory** — new `apps/operator-vite/` (name TBD), incremental, one-PR cutover at the end | **Zero overlap on the existing tree.** Phase 6a (tsconfig project references), the polyfill mount point in `RootSyncProvider.tsx`, the Hono catch-all — all mine to evolve freely in `apps/operator/` until they cut over. **Best possible outcome.** |
+| **Q2 — Timeline** | ~13–15 weeks for full removal (bootstrap → 245 routes → 62 pages → fumadocs → Tauri polish → cutover) | Phase 6a can land **immediately**, no deferral. |
+| **Q3 — Host** | Vite (dev) + Rolldown/Rollup (build) + Hono via `@hono/node-server` on the API port. SPA, no SSR/RSC. IPC bridge target stays `127.0.0.1:<INT_PORT>` | My `sys:http` bridge keeps working with **a single env var change**. URL/path conventions preserved. |
+| **Q4 — Router** | TanStack Router (file-based, type-safe; nuqs-compatible) | Polyfill provider moves to `apps/operator-vite/src/__root.tsx` at cutover. They've committed to preserving the IpcEventSource/ipcFetch install-before-data-fetch contract. |
+| **Q5 — Cookies/auth** | 6 routes + `lib/auth.ts` rewritten as Hono routes using `getCookie(c, name)` from `hono/cookie`. `cookies()` global becomes `getSessionUser(c: Context)` | `sys:http` bridge's "forward `document.cookie` in headers" pattern continues to work — Hono reads from the standard Cookie header. |
+| **Q6 — Docs site** | Original plan: keep fumadocs as Next sidecar. **CORRECTED below.** | See correction. |
+
+### Correction on Q6 — docs site is migrating to Starlight, not staying on fumadocs
+
+The user decided separately: **fumadocs is being replaced by Starlight (Astro).** Not "keep as a Next sidecar." This changes the Next-removal agent's Q6 scope:
+
+- Add **Starlight migration** to the work list (was: zero docs work).
+- Migrating the existing `apps/operator/content/internal-docs/**` MDX to Astro Starlight is mostly mechanical (frontmatter conversion + JSX-component swap for the few Callout-style components fumadocs provides). Rough estimate: ~1 week, separate from the operator-vite work.
+- After migration, there's no Next sidecar at all — the docs site is a standalone Astro build deployed however docs deploys (separate from the operator app).
+- This eliminates the "Next sidecar just for docs" workaround the original Q6 answer proposed.
+
+### Net effect on the host-architecture work
+
+- **Phase 6a unblocks** — land tsconfig project references whenever. They're not touching `apps/operator/tsconfig.json`.
+- **Phase 1 proceeds normally** — polyfill mount goes in the existing `RootSyncProvider.tsx`; at cutover they take responsibility for re-mounting at TanStack Router's `__root.tsx`.
+- **Phase 4 audit still matters to them** — once their Hono migration is done, the route surface is Hono-native (still ~245 routes, just better-typed). My Phase-4 audit's job is then to classify which Hono routes should fold into the endpoint system (`define_tool`) and which stay as Hono shims (A1-exempt). They benefit from knowing the audit findings before they rewrite each route — share early outputs.
+- **Order of operations becomes natural sequencing:** they migrate the host (Next → Hono on Node), then I migrate appropriate routes into the endpoint system. Two separate consolidations; the same audit logic applies.
+
+### Things to confirm before they kick off the Starlight work
+
+- Where the docs site lives — same repo, separate repo, or a sub-app in the same repo (e.g. `apps/docs-astro/`)?
+- Component compatibility — Starlight has its own component conventions; if any `internal-docs/**` page uses fumadocs-specific MDX components beyond `Callout`, those need explicit mappings.
+- Deploy story — fumadocs was served by Next (so it shared the operator origin); Starlight produces static HTML/JS. Where does it deploy, and how does the operator link to it?
