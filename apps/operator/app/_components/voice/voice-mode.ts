@@ -950,6 +950,19 @@ async function maybeStartFullAgentInner(): Promise<boolean> {
       // through to Whisper-always-on; surfacing the error toast is enough.
       return started;
     }
+    // WebRTC is required by both ElevenLabs Conv (LiveKit) and OpenAI
+    // Realtime (RTCPeerConnection). WebKitGTK (Tauri's webview on
+    // Linux) ships without WebRTC, so any attempt produces a noisy
+    // toast every page load. Silently fall through to Whisper on
+    // engines that need WebRTC when the API isn't available.
+    const engineNeedsWebRTC =
+      prefs.fullAgentEngine === 'elevenlabs-conv' ||
+      prefs.fullAgentEngine === 'elevenlabs-conversational' ||
+      prefs.fullAgentEngine === 'openai-realtime';
+    if (engineNeedsWebRTC && typeof RTCPeerConnection === 'undefined') {
+      debugLog('full-agent:webrtc-unsupported', { engine: prefs.fullAgentEngine });
+      return false;
+    }
     // ElevenLabs Conv AI — primary path in v5+
     if (prefs.fullAgentEngine === 'elevenlabs-conv' || prefs.fullAgentEngine === 'elevenlabs-conversational') {
       // Spend-cap check. Skip silently if the endpoint isn't reachable
@@ -1022,10 +1035,23 @@ async function maybeStartFullAgentInner(): Promise<boolean> {
     armSessionMaxTimer();
     return true;
   } catch (err: any) {
-    // Build a readable message — bare Error objects log as `{}` in WebKit.
-    const msg = err?.name ? `${err.name}: ${err.message ?? ''}` : String(err ?? 'unknown error');
-    console.warn(`[voice] realtime start failed at stage=${stage}: ${msg}`);
-    void emitVoiceToast('error', `Realtime failed at ${stage}: ${err?.message ?? String(err)}. Falling back to Whisper.`);
+    const errName = err?.name ?? '';
+    const errMsg = err?.message ?? String(err);
+    const msg = errName ? `${errName}: ${errMsg}` : errMsg;
+    debugLog('realtime:start-failed', { stage, msg });
+    // Suppress the user-facing toast for fetch-cancellation / network
+    // teardown errors — voice auto-restores on every page load and the
+    // in-flight fetch from the previous mount gets cancelled, which
+    // WebKit reports as "AbortError" / "TimeoutError" / "Load failed"
+    // depending on the platform/timing. Whisper fallback still happens
+    // via the return false; only debugLog records it.
+    const isTransient =
+      errName === 'AbortError' ||
+      errName === 'TimeoutError' ||
+      /aborted|abort\b|Load failed|Fetch is aborted|signal timed out/i.test(errMsg);
+    if (!isTransient) {
+      void emitVoiceToast('error', `Realtime failed at ${stage}: ${err?.message ?? String(err)}. Falling back to Whisper.`);
+    }
     return false;
   } finally {
     // Always clear the optimistic 'connecting' if no session ended up
@@ -1227,13 +1253,25 @@ async function startElevenLabsConvAgent(_prefs: unknown): Promise<boolean> {
     void emitVoiceToast('info', 'ElevenLabs connected — speak to talk to the operator.');
     return true;
   } catch (err: any) {
-    const msg = err?.message ?? String(err);
+    const errName = err?.name ?? '';
+    const errMsg = err?.message ?? String(err);
+    const msg = errName ? `${errName}: ${errMsg}` : errMsg;
     debugLog('el-conv:start-failed', { stage, msg });
-    console.warn('[voice] elevenlabs-conv start failed at stage=' + stage + ':', err);
-    void emitVoiceToast(
-      'error',
-      `ElevenLabs failed at ${stage}: ${msg}. Falling back to Whisper.`,
-    );
+    // Suppress the toast for fetch-cancellation / network-teardown
+    // errors — voice auto-restores on every page load and the in-flight
+    // bootstrap fetch from the previous mount gets cancelled. Whisper
+    // fallback still happens via return false; debugLog already records
+    // the detail. Real failures (5xx, missing key, etc.) still toast.
+    const isTransient =
+      errName === 'AbortError' ||
+      errName === 'TimeoutError' ||
+      /aborted|abort\b|Load failed|Fetch is aborted|signal timed out|signaling failed/i.test(errMsg);
+    if (!isTransient) {
+      void emitVoiceToast(
+        'error',
+        `ElevenLabs failed at ${stage}: ${msg}. Falling back to Whisper.`,
+      );
+    }
     // Release the mic + drop the connecting indicator. Without resetting
     // status, the wake-hint stays "Connecting…" forever after a bootstrap
     // failure (Failed to fetch / 429 cooldown / etc.).

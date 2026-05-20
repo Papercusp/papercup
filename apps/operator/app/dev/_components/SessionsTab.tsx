@@ -3,6 +3,7 @@
 import { useEffect, useState, useCallback } from 'react';
 import { useQueryState, parseAsString, parseAsStringEnum } from 'nuqs';
 import { Checkbox } from '@/app/harness/Checkbox';
+import { Select } from '@/app/harness/Select';
 import { RichGrid, type ColumnDef } from '@restart/grid-core';
 
 interface Entry {
@@ -171,17 +172,18 @@ export default function SessionsTab({ workspaceIds, onRerun }: Props) {
         <span className="pc-dev-muted">{entries.length} spawns</span>
         <label className="pc-dev-muted">
           window
-          <select
+          <Select
             value={hoursParam}
-            onChange={(e) => setHoursParam(e.target.value as '1' | '6' | '24' | '168' | '720')}
-            className="pc-dev-input pc-dev-input-inline"
-          >
-            <option value={1}>1h</option>
-            <option value={6}>6h</option>
-            <option value={24}>24h</option>
-            <option value={168}>7d</option>
-            <option value={720}>30d</option>
-          </select>
+            onChange={(v) => setHoursParam(v as '1' | '6' | '24' | '168' | '720')}
+            ariaLabel="window"
+            options={[
+              { value: '1', label: '1h' },
+              { value: '6', label: '6h' },
+              { value: '24', label: '24h' },
+              { value: '168', label: '7d' },
+              { value: '720', label: '30d' },
+            ]}
+          />
         </label>
         <fieldset className="pc-dev-muted" style={{ display: 'inline-flex', gap: 8, marginLeft: 12, alignItems: 'center', border: 0, padding: 0 }}>
           <span>transport:</span>

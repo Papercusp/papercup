@@ -96,13 +96,82 @@ export default async function RootLayout({ children }: { children: React.ReactNo
   // are not skipped. Patch console.error first so the warning never
   // reaches the console; everything else passes through untouched.
   // Production builds skip the warning anyway (NODE_ENV === 'production').
+  // Two filters live in one patch:
+  //   1. React 19's "Encountered a script tag" dev-only warning (see
+  //      preceding comment block).
+  //   2. Tauri's `IPC custom protocol failed, Tauri will now use the
+  //      postMessage interface instead` console.warn. On WebKitGTK the
+  //      fetch-to-custom-protocol path always fails the first call,
+  //      Tauri sets an internal `customProtocolIpcFailed` flag, and
+  //      every subsequent IPC uses postMessage — so the warning is
+  //      one-shot, expected, and not actionable for app code. Silence
+  //      it so it doesn't show up in the dev console as a "real" error.
+  //      The filter checks the message text, so any other genuine
+  //      Tauri warning still passes through.
   const consolePatchScript = `(function(){
-    var orig = console.error;
-    console.error = function(){
-      var a0 = arguments[0];
-      if (typeof a0 === 'string' && a0.indexOf('Encountered a script tag while rendering React component') !== -1) return;
-      return orig.apply(console, arguments);
-    };
+    var DROP_NEEDLES = [
+      'Encountered a script tag while rendering React component',
+      'IPC custom protocol failed, Tauri will now use the postMessage interface instead',
+      // Next's RSC prefetch loses races against Turbopack's per-route
+      // lazy-compile in this monorepo; WebKitGTK aborts the slow fetch
+      // and Next logs this graceful-degradation message. The fallback
+      // (regular browser navigation) works fine — no user-visible
+      // failure — so the console line is just dev-mode noise.
+      'Failed to fetch RSC payload for',
+    ];
+    function shouldDrop() {
+      // Match any string argument — React's printWarning uses format
+      // strings ("%s%s", msg, stack) so the message can be in args[1+].
+      for (var i = 0; i < arguments.length; i++) {
+        var a = arguments[i];
+        if (typeof a !== 'string') continue;
+        for (var j = 0; j < DROP_NEEDLES.length; j++) {
+          if (a.indexOf(DROP_NEEDLES[j]) !== -1) return true;
+        }
+      }
+      return false;
+    }
+    var origErr = console.error;
+    console.error = function(){ if (shouldDrop.apply(null, arguments)) return; return origErr.apply(console, arguments); };
+    var origWarn = console.warn;
+    console.warn = function(){ if (shouldDrop.apply(null, arguments)) return; return origWarn.apply(console, arguments); };
+
+    // Dev-only: turbopack rebuilds invalidate chunk hashes; a previously
+    // mounted page may hold a stale chunk reference for the next lazy()
+    // mount. Catch ChunkLoadError at the global level, swallow the event
+    // so it doesn't reach the console, and trigger one reload so the
+    // module manifest is refetched. A one-shot guard in sessionStorage
+    // prevents reload loops if the chunk is genuinely gone.
+    function isChunkErr(e) {
+      var msg = (e && (e.message || (e.reason && e.reason.message))) || '';
+      var name = (e && (e.name || (e.error && e.error.name) || (e.reason && e.reason.name))) || '';
+      if (name === 'ChunkLoadError') return true;
+      return /Failed to (load|fetch) chunk|Loading chunk \\d+ failed/i.test(msg);
+    }
+    function recover() {
+      try {
+        var k = '__chunkReloadOnce__';
+        if (!sessionStorage.getItem(k)) {
+          sessionStorage.setItem(k, String(Date.now()));
+          window.location.reload();
+          return true;
+        }
+      } catch (_) {}
+      return false;
+    }
+    // Clear the reload guard after a successful hydration so subsequent
+    // chunk failures within the same session can still recover. Runs once
+    // after first paint settles.
+    setTimeout(function () {
+      try { sessionStorage.removeItem('__chunkReloadOnce__'); } catch (_) {}
+    }, 5000);
+
+    window.addEventListener('error', function (e) {
+      if (isChunkErr(e)) { try { e.preventDefault(); e.stopImmediatePropagation(); } catch (_) {} recover(); }
+    }, true);
+    window.addEventListener('unhandledrejection', function (e) {
+      if (isChunkErr(e)) { try { e.preventDefault(); } catch (_) {} recover(); }
+    }, true);
   })();`;
   const flagBootstrapScript = `window.__PAPERCUSP_FLAGS__=${JSON.stringify(flagPayload)};`;
   return (

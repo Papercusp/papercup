@@ -15,6 +15,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useQueryState, parseAsString, parseAsBoolean, parseAsStringEnum } from 'nuqs';
 import SchemaForm from './SchemaForm';
 import { Checkbox } from '@/app/harness/Checkbox';
+import { Select } from '@/app/harness/Select';
 
 interface Tool {
   name: string;
@@ -302,17 +303,12 @@ export default function ApiTab({ workspaceIds, rerun, onRerunConsumed }: Props) 
                 </label>
                 <label>
                   role
-                  <select
+                  <Select
                     value={ctxRole}
-                    onChange={(e) => setCtxRole(e.target.value as (typeof ALL_ROLES)[number])}
-                    className="pc-dev-input"
-                  >
-                    {ALL_ROLES.map((r) => (
-                      <option key={r} value={r}>
-                        {r}
-                      </option>
-                    ))}
-                  </select>
+                    onChange={(v) => setCtxRole(v as (typeof ALL_ROLES)[number])}
+                    ariaLabel="role"
+                    options={ALL_ROLES.map((r) => ({ value: r, label: r }))}
+                  />
                 </label>
                 <label>
                   run

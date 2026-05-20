@@ -4,7 +4,7 @@
  * Resolves the source by caller context:
  *   - ctx.harnessSlug set → that harness's docs (the harnessFsAdapter)
  *   - otherwise          → Papercusp engineering reference
- *                          (fumadocsAdapter against internalSource)
+ *                          (starlightContentAdapter against operator-docs/src/content/docs)
  *
  * Same tool, same shape — the agent doesn't need to learn two surfaces.
  * Workers/scopers in a harness get their harness's docs; SU and

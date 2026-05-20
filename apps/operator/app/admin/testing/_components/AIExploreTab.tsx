@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { toast } from 'sonner';
 import { Button } from '../../../harness/Button';
 import { Select } from '../../../harness/Select';
+import { Checkbox } from '../../../harness/Checkbox';
 
 interface MaskedCoreCredentials {
   anthropic_api_key: string | null;
@@ -235,8 +236,8 @@ export default function AIExploreTab() {
             Cost cap (USD){' '}
             <input type="number" value={maxCostUsd} min={0.05} max={20} step={0.05} onChange={(e) => setMaxCostUsd(Number(e.target.value))} style={{ width: 80 }} disabled={running} />
           </label>
-          <label>
-            <input type="checkbox" checked={headless} onChange={(e) => setHeadless(e.target.checked)} disabled={running} /> Headless
+          <label style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+            <Checkbox checked={headless} onChange={setHeadless} disabled={running} /> Headless
           </label>
         </div>
         <div className="pc-test-card-row">

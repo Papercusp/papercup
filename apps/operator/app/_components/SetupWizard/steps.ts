@@ -21,8 +21,8 @@ export const SETUP_STEPS: readonly StepDef[] = [
   },
   {
     id: 'agents',
-    title: 'Coding agents',
-    summary: 'Install Claude Code and/or oh-my-pi. At least one is required.',
+    title: 'Agent Runtime',
+    summary: 'oh-my-pi + Claude Code + Meridian — all installed together.',
     required: true,
   },
   {

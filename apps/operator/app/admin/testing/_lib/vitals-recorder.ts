@@ -98,14 +98,32 @@ export function startRecorder(): void {
   state.started = true;
 
   // Interaction latency — the killer metric.
-  let evSeq = 0;
+  // evSeq must be unique across the lifetime of state.events to prevent
+  // duplicate React keys. Park the counter on window so it survives HMR
+  // module re-evaluations (which would otherwise reset a closure-local
+  // counter), and seed it past the highest seq already in state.events
+  // in case it was loaded from localStorage.
+  const w = window as unknown as { __papercuspPerfSeq?: number };
+  const seedFromEvents = state.events.reduce((max, ev) => {
+    const m = /^(?:ev|lt|ls|cerr)-(\d+)(?:-|$)/.exec(ev.id);
+    if (!m) return max;
+    const n = Number.parseInt(m[1], 10);
+    return Number.isFinite(n) && n > max ? n : max;
+  }, 0);
+  if (typeof w.__papercuspPerfSeq !== 'number' || w.__papercuspPerfSeq < seedFromEvents) {
+    w.__papercuspPerfSeq = seedFromEvents;
+  }
+  const nextSeq = (): number => {
+    w.__papercuspPerfSeq = (w.__papercuspPerfSeq ?? 0) + 1;
+    return w.__papercuspPerfSeq;
+  };
   try {
     const intObs = new PerformanceObserver((list) => {
       for (const entry of list.getEntries()) {
         const e = entry as PerformanceEventTiming;
         if (e.duration < 40) continue; // ignore fast interactions
         addEvent(state, {
-          id: `ev-${++evSeq}-${e.name}`,
+          id: `ev-${nextSeq()}-${e.name}`,
           kind: 'interaction',
           route: window.location.pathname,
           ts: Date.now(),
@@ -124,7 +142,7 @@ export function startRecorder(): void {
     const ltObs = new PerformanceObserver((list) => {
       for (const entry of list.getEntries()) {
         addEvent(state, {
-          id: `lt-${entry.startTime}`,
+          id: `lt-${nextSeq()}-${entry.startTime}`,
           kind: 'longtask',
           route: window.location.pathname,
           ts: Date.now(),
@@ -145,7 +163,7 @@ export function startRecorder(): void {
         if (ls.hadRecentInput) continue;
         if (ls.value < 0.01) continue;
         addEvent(state, {
-          id: `ls-${entry.startTime}`,
+          id: `ls-${nextSeq()}-${entry.startTime}`,
           kind: 'layout-shift',
           route: window.location.pathname,
           ts: Date.now(),
@@ -169,7 +187,7 @@ export function startRecorder(): void {
       const msg = args.map((a) => (typeof a === 'string' ? a : (a as Error)?.message ?? String(a))).join(' ').slice(0, 200);
       try {
         addEvent(state, {
-          id: `cerr-${++evSeq}`,
+          id: `cerr-${nextSeq()}`,
           kind: 'console-error',
           route: window.location.pathname,
           ts: Date.now(),
@@ -184,6 +202,7 @@ export function startRecorder(): void {
   }
 
   window.addEventListener('error', (e) => {
+    const stack = (e.error as Error | undefined)?.stack ?? '';
     addEvent(state, {
       id: `werr-${Date.now()}`,
       kind: 'unhandled-error',
@@ -191,7 +210,7 @@ export function startRecorder(): void {
       ts: Date.now(),
       duration: 0,
       target: e.filename ?? 'window',
-      detail: (e.message ?? '').slice(0, 200),
+      detail: ((e.message ?? '') + (stack ? '\n' + stack : '')).slice(0, 1600),
     });
   });
 

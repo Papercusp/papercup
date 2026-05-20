@@ -8,6 +8,7 @@
  */
 
 import { Checkbox } from '@/app/harness/Checkbox';
+import { Select } from '@/app/harness/Select';
 
 interface Schema {
   type?: string;
@@ -86,19 +87,16 @@ function renderField(
   setValue: (v: unknown) => void,
 ) {
   if (Array.isArray(schema.enum)) {
+    const cur = ((value as string) ?? (schema.default as string) ?? '') || '_none';
     return (
-      <select
-        className="pc-dev-input"
-        value={(value as string) ?? (schema.default as string) ?? ''}
-        onChange={(e) => setValue(e.target.value)}
-      >
-        <option value="">(none)</option>
-        {schema.enum.map((opt) => (
-          <option key={String(opt)} value={String(opt)}>
-            {String(opt)}
-          </option>
-        ))}
-      </select>
+      <Select
+        value={cur}
+        onChange={(v) => setValue(v === '_none' ? '' : v)}
+        options={[
+          { value: '_none', label: '(none)' },
+          ...schema.enum.map((opt) => ({ value: String(opt), label: String(opt) })),
+        ]}
+      />
     );
   }
   if (schema.type === 'boolean') {

@@ -2,7 +2,7 @@ import { redirect } from 'next/navigation';
 
 export const dynamic = 'force-dynamic';
 
-// Sign-up is just sign-in (any email creates an account on first verification).
+// Sign-up is the create-user mode of the login screen.
 export default function SignupRedirect() {
-  redirect('/login');
+  redirect('/login?mode=signup');
 }

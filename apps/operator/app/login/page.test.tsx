@@ -39,10 +39,21 @@ beforeAll(() => {
 
 const mockReplace = vi.fn();
 const mockSearchParamsGet = vi.fn<(k: string) => string | null>();
+const mockSetMode = vi.fn();
 
 vi.mock('next/navigation', () => ({
   useRouter: () => ({ replace: mockReplace, push: vi.fn() }),
   useSearchParams: () => ({ get: mockSearchParamsGet }),
+}));
+
+vi.mock('nuqs', () => ({
+  parseAsStringLiteral: () => ({
+    withDefault: (defaultValue: string) => ({ defaultValue }),
+  }),
+  useQueryState: (key: string, parser: { defaultValue: string }) => [
+    mockSearchParamsGet(key) ?? parser.defaultValue,
+    mockSetMode,
+  ],
 }));
 
 vi.mock('sonner', () => ({
@@ -166,6 +177,23 @@ describe('LoginPage — ?switch=1 handling', () => {
     });
   });
 
+
+  it('with ?mode=signup opens directly in create-user mode', () => {
+    mockSearchParamsGet.mockImplementation((k: string) => (k === 'mode' ? 'signup' : null));
+    mockFetch({
+      '/api/auth/me': async () =>
+        jsonResponse({
+          user: null,
+          available: [],
+        }),
+    });
+
+    render(<LoginPage />);
+
+    expect(screen.getByRole('heading', { name: /create a user/i })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /create user/i })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /sign in to an existing user/i })).toBeTruthy();
+  });
   it('successful switch clears other users\' welcome stamps', async () => {
     mockSearchParamsGet.mockImplementation((k: string) => (k === 'switch' ? '1' : null));
 

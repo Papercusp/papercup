@@ -324,10 +324,6 @@ export default function EditTemplateClient() {
             value={resolvedVersion ?? ''}
             ariaLabel="Template version"
             triggerClassName="pc-template-editor-version"
-            triggerStyle={{
-              fontSize: 12, padding: '4px 8px', background: 'var(--bg-3))',
-              color: 'var(--fg)', border: '1px solid var(--border)', borderRadius: 4,
-            }}
             onChange={async (next) => {
               if (!next || next === resolvedVersion) return;
               const hasDirty = Object.keys(draft).some((k) => draft[k] !== original[k]);
@@ -407,7 +403,7 @@ export default function EditTemplateClient() {
                       width: '100%',
                       textAlign: 'left',
                       padding: '8px 10px',
-                      background: isActive ? 'var(--bg-3))' : 'transparent',
+                      background: isActive ? 'var(--bg-3)' : 'transparent',
                       border: 'none',
                       borderLeft: isActive ? '2px solid var(--accent, #3b82f6)' : '2px solid transparent',
                       color: isActive ? 'var(--fg)' : 'var(--fg-mute)',
@@ -565,12 +561,7 @@ function AddFileDialog({
             <input
               type="text"
               {...register('path')}
-              style={{
-                width: '100%', padding: '4px 8px',
-                background: 'var(--bg-3))', color: 'var(--fg)',
-                border: '1px solid var(--border)', borderRadius: 3, fontSize: 12,
-                fontFamily: "'SF Mono', monospace",
-              }}
+              style={{ width: '100%', fontFamily: "'SF Mono', monospace" }}
             />
           </RhfFormField>
           <RhfFormField label="label (optional)" error={errors.label}>
@@ -638,16 +629,12 @@ function AddFileDialog({
   );
 }
 
-const inputStyleSmall: React.CSSProperties = {
-  width: '100%', padding: '4px 8px',
-  background: 'var(--bg-3))', color: 'var(--fg)',
-  border: '1px solid var(--border)', borderRadius: 3, fontSize: 12,
-};
+const inputStyleSmall: React.CSSProperties = { width: '100%' };
 
 function tabBtnStyle(active: boolean): React.CSSProperties {
   return {
     padding: '4px 10px',
-    background: active ? 'var(--bg-3))' : 'transparent',
+    background: active ? 'var(--bg-3)' : 'transparent',
     color: active ? 'var(--fg)' : 'var(--fg-dim)',
     border: '1px solid var(--border)',
     borderRadius: 3,
@@ -1009,12 +996,6 @@ const removeBtnStyle: React.CSSProperties = {
 
 function inputStyle(width: number): React.CSSProperties {
   return {
-    padding: '4px 8px',
-    background: 'var(--bg-3))',
-    color: 'var(--fg)',
-    border: '1px solid var(--border)',
-    borderRadius: 3,
-    fontSize: 12,
     width,
     fontFamily: width <= 200 ? "'SF Mono', monospace" : undefined,
   };
@@ -1030,23 +1011,14 @@ function Field({ label, value, onChange, mono, multiline }: { label: string; val
         <textarea
           value={value}
           onChange={(e) => onChange(e.target.value)}
-          style={{
-            width: '100%', padding: '6px 8px', minHeight: 60,
-            background: 'var(--bg-3))', color: 'var(--fg)',
-            border: '1px solid var(--border)', borderRadius: 3, fontSize: 12, resize: 'vertical',
-          }}
+          style={{ width: '100%', minHeight: 60, resize: 'vertical' }}
         />
       ) : (
         <input
           type="text"
           value={value}
           onChange={(e) => onChange(e.target.value)}
-          style={{
-            width: '100%', padding: '4px 8px',
-            background: 'var(--bg-3))', color: 'var(--fg)',
-            border: '1px solid var(--border)', borderRadius: 3, fontSize: 12,
-            fontFamily: mono ? "'SF Mono', monospace" : undefined,
-          }}
+          style={{ width: '100%', fontFamily: mono ? "'SF Mono', monospace" : undefined }}
         />
       )}
     </label>
@@ -1067,5 +1039,5 @@ function btnStyle(variant: 'primary' | 'accent' | 'muted'): React.CSSProperties 
   };
   if (variant === 'primary') return { ...base, background: 'var(--accent, #3b82f6)', color: 'white' };
   if (variant === 'accent') return { ...base, background: 'var(--good)', color: '#062c1c' };
-  return { ...base, background: 'var(--bg-3))', color: 'var(--fg-dim)' };
+  return { ...base, background: 'var(--bg-3)', color: 'var(--fg-dim)' };
 }

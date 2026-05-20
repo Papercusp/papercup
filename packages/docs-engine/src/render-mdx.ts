@@ -1,24 +1,19 @@
 /**
  * Pure MDX → clean markdown rendering pipeline.
  *
- * Source-agnostic: takes raw MDX text + an absolute path (for relative
- * resource resolution via remarkInclude) and returns rendered markdown
- * with JSX nodes converted (Callout → blockquote, Tabs/Steps unwrapped,
- * etc.) per the rules in remark-mdx-to-markdown.ts.
- *
- * The fumadocs adapter uses this; future adapters (harness-fs, http)
- * use this; HTTP /llms.* routes use this.
+ * Source-agnostic: takes raw MDX text + an absolute path and returns
+ * rendered markdown with JSX nodes converted (Callout/Aside →
+ * blockquote, Tabs/Steps unwrapped, etc.) per the rules in
+ * remark-mdx-to-markdown.ts. Used by adapters (starlight, harness-fs).
  */
 
 import { remark } from 'remark';
 import remarkGfm from 'remark-gfm';
 import remarkMdx from 'remark-mdx';
-import { remarkInclude } from 'fumadocs-mdx/config';
 import remarkMdxToMarkdown from './remark-mdx-to-markdown';
 
 const processor = remark()
   .use(remarkMdx)
-  .use(remarkInclude)
   .use(remarkGfm)
   .use(remarkMdxToMarkdown);
 

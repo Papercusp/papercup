@@ -1,5 +1,0 @@
-{
-  "title": "System",
-  "description": "How the harness system works end-to-end. Authoritative walkthroughs traced from live code.",
-  "pages": ["lifecycle", "storage-policy", "credentials-encryption"]
-}

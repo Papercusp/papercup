@@ -36,6 +36,7 @@ const SETTINGS_GROUPS: readonly SettingsGroup[] = [
     label: 'Identity & devices',
     links: [
       { href: '/settings/profile', label: 'Profile', keywords: ['account', 'identity', 'email', 'display name', 'project directory'] },
+      { href: '/settings/user/memory', label: 'Memory', keywords: ['memory', 'mem0', 'recall', 'forget', 'embeddings', 'history', 'identity', 'preference'] },
       { href: '/settings/user', label: 'User preferences', keywords: ['user', 'me', 'override', 'password', 'session', 'logout'] },
       { href: '/settings/mobile', label: 'Mobile access', keywords: ['phone', 'device', 'pair', 'qr', 'workspace'] },
       { href: '/settings/publishing', label: 'Publishing', keywords: ['publish', 'preview', 'subdomain', 'public', 'marketplace'] },
@@ -137,7 +138,12 @@ export default function SettingsLayout({ children }: { children: React.ReactNode
 
   const filteredLinks = filteredGroups.flatMap((g) => g.links);
 
-  const activeLink = filteredLinks.find((link) => pathname === link.href || pathname.startsWith(`${link.href}/`)) ?? filteredLinks[0];
+  // Sort by href length desc so the most-specific match wins (e.g.
+  // `/settings/user/memory` beats `/settings/user` on the memory page).
+  const activeLink = [...filteredLinks]
+    .sort((a, b) => b.href.length - a.href.length)
+    .find((link) => pathname === link.href || pathname.startsWith(`${link.href}/`))
+    ?? filteredLinks[0];
   const normalizedQuery = query.trim().toLowerCase();
 
   const visibleGroups = useMemo(() => {
@@ -199,7 +205,7 @@ export default function SettingsLayout({ children }: { children: React.ReactNode
               <div key={group.label} className="pc-settings-nav-group">
                 <div className="pc-settings-nav-heading">{group.label}</div>
                 {group.links.map((link) => {
-                  const active = pathname === link.href || pathname.startsWith(`${link.href}/`);
+                  const active = link.href === activeLink.href;
                   return (
                     <RouteLink
                       key={link.href}

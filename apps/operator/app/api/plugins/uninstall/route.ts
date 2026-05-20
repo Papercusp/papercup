@@ -34,7 +34,7 @@ export async function POST(req: Request) {
   // plugin code + optionally grants), and "I didn't mean to" recovery
   // is much faster from a kopia snapshot than reinstalling. Failure to
   // snapshot is non-fatal — we still proceed with the uninstall.
-  await triggerSnapshotEvent(activeWorkspaceId(), 'plugin_install', { op: 'uninstall', slug, purgeGrants: !!body.purgeGrants })
+  await triggerSnapshotEvent(activeWorkspaceId(), 'pre_destructive', { op: 'plugin_uninstall', slug, purgeGrants: !!body.purgeGrants })
     .catch(() => { /* ignore */ });
 
   const args = ['plugin', 'uninstall', slug];

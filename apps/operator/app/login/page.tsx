@@ -2,6 +2,7 @@
 
 import { Suspense, useEffect, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
+import { useQueryState, parseAsStringLiteral } from 'nuqs';
 import { toast } from 'sonner';
 import { Select } from '../harness/Select';
 import { Checkbox } from '../harness/Checkbox';
@@ -12,6 +13,9 @@ interface AvailableUser {
   display_name: string;
   has_password: boolean;
 }
+
+const LOGIN_MODES = ['login', 'signup'] as const;
+type LoginMode = (typeof LOGIN_MODES)[number];
 
 function LoginForm() {
   const router = useRouter();
@@ -24,7 +28,10 @@ function LoginForm() {
   const isSwitching = sp.get('switch') === '1';
 
   const [available, setAvailable] = useState<AvailableUser[]>([]);
-  const [mode, setMode] = useState<'login' | 'signup'>('login');
+  const [mode, setMode] = useQueryState<LoginMode>(
+    'mode',
+    parseAsStringLiteral(LOGIN_MODES).withDefault('login'),
+  );
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [displayName, setDisplayName] = useState('');
@@ -254,7 +261,7 @@ function LoginForm() {
 
         <button
           type="button"
-          onClick={() => setMode(mode === 'login' ? 'signup' : 'login')}
+          onClick={() => void setMode(mode === 'login' ? 'signup' : 'login')}
           style={{
             background: 'none', border: 'none',
             color: 'var(--fg-mute)', cursor: 'pointer',

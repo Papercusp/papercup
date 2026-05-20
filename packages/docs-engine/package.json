@@ -6,7 +6,6 @@
   "main": "./src/index.ts",
   "exports": {
     ".": "./src/index.ts",
-    "./adapters/fumadocs": "./src/adapters/fumadocs.ts",
     "./adapters/harness-fs": "./src/adapters/harness-fs.ts",
     "./types": "./src/types.ts"
   },
@@ -14,8 +13,6 @@
     "test": "vitest"
   },
   "dependencies": {
-    "fumadocs-mdx": "*",
-    "fumadocs-core": "*",
     "remark": "*",
     "remark-gfm": "*",
     "remark-mdx": "*"

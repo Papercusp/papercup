@@ -26,7 +26,7 @@ describe('Setup Wizard steps', () => {
   });
 
   it('findStep returns the matching definition', () => {
-    expect(findStep('agents')?.title).toBe('Coding agents');
+    expect(findStep('agents')?.title).toBe('Agent Runtime');
     expect(findStep('telemetry')?.summary).toMatch(/diagnostic/i);
   });
 

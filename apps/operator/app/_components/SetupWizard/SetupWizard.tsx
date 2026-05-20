@@ -27,7 +27,7 @@ interface Props {
 
 export function SetupWizard({ mode }: Props) {
   const router = useRouter();
-  const { statuses, persisted, voiceConfigured, refreshAll, setStepPersistedStatus, setLastVisitedStep } =
+  const { statuses, persisted, voiceConfigured, refreshAll, setLastVisitedStep } =
     useWizardStatuses();
   const [stepId, setStepId] = useQueryState('step');
   const [finishing, setFinishing] = useState(false);
@@ -49,9 +49,6 @@ export function SetupWizard({ mode }: Props) {
     () => findStep(stepId) ?? findStep(persisted.last_visited_step) ?? SETUP_STEPS[0],
     [stepId, persisted.last_visited_step],
   );
-
-  const isDismissed = persisted.step_status?.[active.id] === 'dismissed';
-  const isCompleted = persisted.step_status?.[active.id] === 'completed';
 
   // Minimum to finish setup: ≥1 coding agent installed + embedded-pg
   // ready. Workspace path is recorded server-side regardless of
@@ -129,10 +126,7 @@ export function SetupWizard({ mode }: Props) {
   };
 
   if (recap) {
-    const completed = SETUP_STEPS.filter(
-      (s) =>
-        statuses[s.id] === 'ok' || persisted.step_status?.[s.id] === 'completed',
-    );
+    const completed = SETUP_STEPS.filter((s) => statuses[s.id] === 'ok');
     return (
       <div className="pc-setup-wizard pc-setup-wizard--recap" data-mode={mode}>
         <div className="pc-step pc-step--recap">
@@ -140,8 +134,8 @@ export function SetupWizard({ mode }: Props) {
             You're all set.
           </h2>
           <p className="pc-step__lead">
-            Setup finished — {completed.length} of {SETUP_STEPS.length} steps confirmed ready.
-            Anything you skipped, you can revisit any time from Settings → Setup Wizard.
+            Setup finished — {completed.length} of {SETUP_STEPS.length} steps detected ready.
+            Anything still pending can be revisited any time from Settings → Setup Wizard.
           </p>
           <ul className="pc-bullets">
             {completed.slice(0, 6).map((s) => (
@@ -238,48 +232,6 @@ export function SetupWizard({ mode }: Props) {
                     ← Back
                   </button>
                 )}
-                {!active.required && !isDismissed && !isCompleted && (
-                  <button
-                    type="button"
-                    className="pc-btn"
-                    onClick={() => void setStepPersistedStatus(active.id, 'dismissed')}
-                  >
-                    Skip this step
-                  </button>
-                )}
-                {isDismissed && (
-                  <span className="pc-setup-wizard__skip-note">
-                    Skipped.{' '}
-                    <button
-                      type="button"
-                      className="pc-link-btn"
-                      onClick={() => void setStepPersistedStatus(active.id, null)}
-                    >
-                      Un-skip
-                    </button>
-                  </span>
-                )}
-                {!active.required && !isCompleted && active.id !== 'telemetry' && (
-                  <button
-                    type="button"
-                    className="pc-btn"
-                    onClick={() => void setStepPersistedStatus(active.id, 'completed')}
-                  >
-                    Mark as done
-                  </button>
-                )}
-                {isCompleted && (
-                  <span className="pc-setup-wizard__skip-note">
-                    Done.{' '}
-                    <button
-                      type="button"
-                      className="pc-link-btn"
-                      onClick={() => void setStepPersistedStatus(active.id, null)}
-                    >
-                      Reset
-                    </button>
-                  </span>
-                )}
               </div>
               <div className="pc-setup-wizard__main-footer-right">
                 {hasNextStep && (
@@ -351,9 +303,7 @@ function StatusBadge({ status, required }: { status: StepStatus; required?: bool
   const label = {
     ok: '✓',
     'needs-attention': '!',
-    skipped: '—',
     unknown: '·',
-    'in-progress': '…',
   }[status];
   return (
     <span className="pc-setup-wizard__status" data-status={status} data-required={required ? 'true' : undefined}>

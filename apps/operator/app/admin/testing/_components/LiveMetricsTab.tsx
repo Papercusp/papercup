@@ -123,11 +123,11 @@ export default function LiveMetricsTab() {
               <tr><td colSpan={5} style={{ padding: 16, color: 'var(--fg-mute)' }}>
                 No events yet — use the app and slow interactions will appear here.
               </td></tr>
-            ) : filtered.map((e) => {
+            ) : filtered.map((e, i) => {
               const rating = e.kind === 'interaction' ? rateINP(e.duration) : null;
               const badgeCls = rating === 'good' ? 'is-good' : rating === 'needs-improvement' ? 'is-needs' : rating === 'poor' ? 'is-poor' : 'is-muted';
               return (
-                <tr key={e.id}>
+                <tr key={`${e.id}#${i}`}>
                   <td><span className={`pc-test-badge ${badgeCls}`}>{e.kind}</span></td>
                   <td>
                     {e.kind === 'layout-shift'

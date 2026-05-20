@@ -522,7 +522,6 @@ function CollapseTopSectionPortalButton({
       aria-label={actionLabel}
     >
       <Icon className="h-top-collapse-icon" size={13} strokeWidth={2.4} aria-hidden="true" />
-      <span className="h-top-collapse-label">Top section</span>
       <span className="h-top-collapse-state" aria-hidden="true">{stateLabel}</span>
     </button>,
     portalTarget

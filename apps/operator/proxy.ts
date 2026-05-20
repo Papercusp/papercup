@@ -1,5 +1,4 @@
 import { NextResponse, type NextRequest } from 'next/server';
-import { isMarkdownPreferred, rewritePath } from 'fumadocs-core/negotiation';
 
 /*
  * Next 16 renamed `middleware.ts` → `proxy.ts` and the exported
@@ -13,14 +12,11 @@ import { isMarkdownPreferred, rewritePath } from 'fumadocs-core/negotiation';
  *  1. /api/* — exact-origin credentialed CORS for local desktop/mobile shells
  *     before Hono or standalone Next route handlers run.
  *  2. /internal/docs/* — stub auth gate (loopback-only docs).
- *  3. /docs/* — Accept-header content negotiation. When the client
- *     requests `text/markdown`, rewrite to the /llms.mdx surface
- *     (which runs the agent doc pipeline in lib/get-llm-text.ts)
- *     instead of the HTML render. Lets curl/agents consume the same
- *     content as /llms.mdx/<slug> without learning a separate URL.
+ *  Note: per-page Accept-header markdown negotiation removed at the
+ *  fumadocs->Starlight cutover. Agents use docs:* MCP tools or the
+ *  /internal/docs/llms.txt + /llms-full.txt static surfaces.
  */
 
-const docsToMarkdown = rewritePath('/docs{/*path}', '/llms.mdx{/*path}');
 
 const LOCAL_API_CORS_HEADERS = {
   'Access-Control-Allow-Methods': 'GET, POST, PUT, PATCH, DELETE, OPTIONS',
@@ -81,20 +77,13 @@ export function proxy(req: NextRequest) {
     );
   }
 
-  // 2. /docs/* with Accept: text/markdown → /llms.mdx/<slug>.
-  if (pathname.startsWith('/docs/') && isMarkdownPreferred(req)) {
-    const rewritten = docsToMarkdown.rewrite(pathname);
-    if (rewritten) {
-      return NextResponse.rewrite(new URL(rewritten, req.nextUrl));
-    }
-  }
 
   return NextResponse.next();
 }
 
 export const config = {
   // The matcher must include every path the proxy() function might
-  // act on. Local API CORS + /internal/docs gating + /docs Accept-header
+  // act on. Local API CORS + /internal/docs gating
   // negotiation.
   matcher: ['/api/:path*', '/internal/docs/:path*', '/docs/:path*'],
 };

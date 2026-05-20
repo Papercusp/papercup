@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import { useQueryState, parseAsStringEnum, parseAsString } from 'nuqs';
 import { Checkbox } from '@/app/harness/Checkbox';
+import { Select } from '@/app/harness/Select';
 import { RichGrid, type ColumnDef } from '@restart/grid-core';
 
 interface Entry {
@@ -85,17 +86,18 @@ export default function TelemetryTab({ workspaceIds, onRerun }: Props) {
         <h2>Telemetry</h2>
         <label className="pc-dev-muted">
           window
-          <select
+          <Select
             value={hoursParam}
-            onChange={(e) => setHoursParam(e.target.value as '1' | '6' | '24' | '72' | '168')}
-            className="pc-dev-input pc-dev-input-inline"
-          >
-            <option value={1}>1h</option>
-            <option value={6}>6h</option>
-            <option value={24}>24h</option>
-            <option value={72}>3d</option>
-            <option value={168}>7d</option>
-          </select>
+            onChange={(v) => setHoursParam(v as '1' | '6' | '24' | '72' | '168')}
+            ariaLabel="window"
+            options={[
+              { value: '1', label: '1h' },
+              { value: '6', label: '6h' },
+              { value: '24', label: '24h' },
+              { value: '72', label: '3d' },
+              { value: '168', label: '7d' },
+            ]}
+          />
         </label>
         <fieldset className="pc-dev-muted" style={{ display: 'inline-flex', gap: 8, marginLeft: 12, alignItems: 'center', border: 0, padding: 0 }}>
           <span>transport:</span>

@@ -14,6 +14,8 @@
  */
 
 import { useEffect, useState } from 'react';
+import { toast } from 'sonner';
+import { Tooltip } from '@/app/harness/Tooltip';
 
 // ─── Types & mock data ─────────────────────────────────────────────────────
 
@@ -334,30 +336,36 @@ export default function OperatorMockPage(): JSX.Element {
               </div>
             </div>
             <div style={S.headerActions}>
-              <button
-                style={S.iconBtn}
-                title="Re-scan workspace"
-                onClick={() => {
-                  setScanning(true);
-                  setTimeout(() => setScanning(false), 2000);
-                }}
-                disabled={paused || scanning}
-              >
-                ↻ Scan
-              </button>
-              <button
-                style={paused ? S.iconBtnActive : S.iconBtn}
-                title={paused ? 'Resume operator' : 'Pause operator (auto-dispatch + scans halt)'}
-                onClick={() => setPaused(!paused)}
-              >
-                {paused ? '▶ Resume' : '⏸ Pause'}
-              </button>
-              <button style={S.iconBtn} title="Papercup settings" onClick={() => alert('mock — opens /settings/operator')}>
-                ⚙
-              </button>
-              <button style={S.iconBtn} title="Close (Esc)" onClick={() => setClosed(true)}>
-                ✕
-              </button>
+              <Tooltip label="Re-scan workspace">
+                <button
+                  style={S.iconBtn}
+                  onClick={() => {
+                    setScanning(true);
+                    setTimeout(() => setScanning(false), 2000);
+                  }}
+                  disabled={paused || scanning}
+                >
+                  ↻ Scan
+                </button>
+              </Tooltip>
+              <Tooltip label={paused ? 'Resume operator' : 'Pause operator (auto-dispatch + scans halt)'}>
+                <button
+                  style={paused ? S.iconBtnActive : S.iconBtn}
+                  onClick={() => setPaused(!paused)}
+                >
+                  {paused ? '▶ Resume' : '⏸ Pause'}
+                </button>
+              </Tooltip>
+              <Tooltip label="Papercup settings">
+                <button style={S.iconBtn} onClick={() => toast.info('mock — opens /settings/operator')}>
+                  ⚙
+                </button>
+              </Tooltip>
+              <Tooltip label="Close (Esc)">
+                <button style={S.iconBtn} onClick={() => setClosed(true)}>
+                  ✕
+                </button>
+              </Tooltip>
             </div>
           </div>
           <div style={S.viewToggle} role="tablist" aria-label="Panel view">

@@ -11,21 +11,14 @@ interface FlushResult {
   forwardFailed: number;
   retentionDeleted: number;
   posthogConfigured: boolean;
-  testingFeatures: boolean;
+  internalBuild: boolean;
   optedIn: boolean;
-}
-
-interface TelemetryConfig {
-  enabled: boolean;
-  reason?: 'user-opt-out' | 'posthog-testing-features-off' | 'posthog-unconfigured';
 }
 
 type Choice = 'undecided' | 'yes' | 'no';
 
 export function StepTelemetry() {
   const [choice, setChoice] = useState<Choice>('undecided');
-  const [config, setConfig] = useState<TelemetryConfig | null>(null);
-  const [loaded, setLoaded] = useState(false);
   const [tauri, setTauri] = useState(false);
   const [testing, setTesting] = useState(false);
   const [flushing, setFlushing] = useState(false);
@@ -37,18 +30,11 @@ export function StepTelemetry() {
     setTauri(isTauri());
     void (async () => {
       try {
-        const [r, c] = await Promise.all([
-          fetch('/api/desktop/setup-wizard-state', { cache: 'no-store' }),
-          fetch('/api/desktop/telemetry-config', { cache: 'no-store' }),
-        ]);
+        const r = await fetch('/api/desktop/setup-wizard-state', { cache: 'no-store' });
         const j = await r.json();
         if (j.telemetry_enabled === true) setChoice('yes');
         else if (j.telemetry_enabled === false) setChoice('no');
-        else setChoice('undecided');
-        if (c.ok) setConfig((await c.json()) as TelemetryConfig);
-      } finally {
-        setLoaded(true);
-      }
+      } catch { /* keep undecided */ }
     })();
   }, []);
 
@@ -120,14 +106,6 @@ export function StepTelemetry() {
     }
   };
 
-  if (!loaded) {
-    return (
-      <div className="pc-step">
-        <p className="pc-step__lead">Loading…</p>
-      </div>
-    );
-  }
-
   // ── 1. Decision pending (default state on first visit) ─────────────
   if (choice === 'undecided') {
     return (
@@ -175,8 +153,8 @@ export function StepTelemetry() {
           <h3 className="pc-consent__heading">Where it goes</h3>
           <p>
             A PostHog instance operated by the Papercusp maintainers — not PostHog Cloud, not any
-            third-party SaaS. You can also point Papercusp at your own PostHog instance (see below
-            after opting in).
+            third-party SaaS. Power users can override the destination by setting{' '}
+            <code>PAPERCUSP_POSTHOG_HOST</code> / <code>PAPERCUSP_POSTHOG_KEY</code>.
           </p>
 
           <h3 className="pc-consent__heading">Reversibility</h3>
@@ -224,55 +202,23 @@ export function StepTelemetry() {
   }
 
   // ── 3. User opted in ─────────────────────────────────────────────
-  // Whether forwarding actually happens depends on the shared PostHog
-  // setup. config.enabled reflects (user opt-in) AND (testingFeatures
-  // === true) AND (PostHog host configured). When user opted in but
-  // testingFeatures is off, the wizard says "telemetry is queued but
-  // not phoning home."
-  const phReason = config?.reason;
-  const phLive = config?.enabled ?? false;
-
+  // Public host + projectKey are bundled, so opt-in alone flips
+  // forwarding on at the next hourly flush.
   return (
     <div className="pc-step">
-      {phLive ? (
-        <div className="pc-step__progress" data-status="ok">
-          <div className="pc-step__progress-dot" />
-          <div className="pc-step__progress-text">
-            <strong>Telemetry is on.</strong>
-            <span>Crash reports + autocapture are forwarded on each hourly flush.</span>
-          </div>
+      <div className="pc-step__progress" data-status="ok">
+        <div className="pc-step__progress-dot" />
+        <div className="pc-step__progress-text">
+          <strong>Telemetry is on.</strong>
+          <span>Crash reports + autocapture are forwarded on each hourly flush.</span>
         </div>
-      ) : (
-        <div className="pc-step__progress" data-status="missing">
-          <div className="pc-step__progress-dot" />
-          <div className="pc-step__progress-text">
-            <strong>You're opted in, but nothing is being sent yet.</strong>
-            <span>
-              {phReason === 'posthog-testing-features-off'
-                ? 'PostHog is reachable but the master testingFeatures switch is off. Ask an admin to enable it at /admin/features.'
-                : 'PostHog isn\'t configured on this machine. An admin needs to drop ~/.papercusp/posthog.json with testingFeatures: true. Until then, reports archive locally and nothing leaves your machine.'}
-            </span>
-          </div>
-        </div>
-      )}
+      </div>
 
       <div className="pc-step__actions">
         <button type="button" className="pc-btn" onClick={() => void decline()}>
           Turn off
         </button>
       </div>
-
-      <p className="pc-step__hint">
-        <strong>Privacy moat.</strong> Two switches must both be on for any data to leave your
-        machine: (1) your opt-in on this screen, and (2) the per-machine{' '}
-        <code>testingFeatures</code> flag in <code>~/.papercusp/posthog.json</code>. On a freshly
-        installed binary there is no discovery file — meaning your opt-in alone never causes an
-        outbound request. See the{' '}
-        <a href="https://docs.papercupai.com/posthog" target="_blank" rel="noreferrer">
-          PostHog docs
-        </a>{' '}
-        for the full architecture.
-      </p>
 
       <Collapsible.Root className="pc-consent__details">
         <Collapsible.Trigger asChild>
@@ -299,8 +245,8 @@ export function StepTelemetry() {
               <span>
                 archived={lastFlush.archived} forwarded={lastFlush.forwarded} failed=
                 {lastFlush.forwardFailed} retention-deleted={lastFlush.retentionDeleted}{' '}
-                opted-in={String(lastFlush.optedIn)} testing-features=
-                {String(lastFlush.testingFeatures)} posthog-configured=
+                opted-in={String(lastFlush.optedIn)} internal-build=
+                {String(lastFlush.internalBuild)} posthog-configured=
                 {String(lastFlush.posthogConfigured)}
               </span>
             </div>

@@ -2,15 +2,27 @@
  * MCP Resource: papercusp://docs/index
  *
  * Concrete (single-URI) resource that returns the same sitemap as
- * `/llms.txt` — a flat list of section/page title + URL + description.
- * Cheap discovery payload for MCP clients (Cursor, Claude Desktop,
- * etc.) that prefer browsable resources over tool calls.
+ * `/internal/docs/llms.txt` — cheap discovery payload for MCP clients
+ * (Cursor, Claude Desktop, etc.) that prefer browsable resources over
+ * tool calls. Reads the static file produced by starlight-llms-txt at
+ * build time (apps/operator-docs/dist/llms.txt, copied into the
+ * operator's public/ on every operator-docs build).
  */
 
+import { promises as fs } from 'node:fs';
+import * as path from 'node:path';
 import { defineResource } from '@papercusp/agent-mcp';
 import type { ResourceContents } from '@papercusp/agent-mcp';
-import { internalSource as source } from '@/lib/source';
-import { llms } from 'fumadocs-core/source';
+
+const LLMS_TXT = path.join(
+  process.cwd(),
+  'apps',
+  'operator',
+  'public',
+  'internal',
+  'docs',
+  'llms.txt',
+);
 
 export default defineResource({
   name: 'docs:index',
@@ -18,13 +30,9 @@ export default defineResource({
   capability: 'docs:read',
   mimeType: 'text/plain',
   description:
-    'Papercusp engineering reference sitemap — flat list of every page in /internal/docs with title, URL, and description (the /llms.txt content).',
-
+    'Papercusp engineering reference sitemap — flat list of every page in /internal/docs (the /llms.txt content emitted by starlight-llms-txt).',
   async read(uri): Promise<ResourceContents> {
-    return {
-      uri,
-      mimeType: 'text/plain',
-      text: llms(source as never).index(),
-    };
+    const text = await fs.readFile(LLMS_TXT, 'utf-8');
+    return { uri, mimeType: 'text/plain', text };
   },
 });

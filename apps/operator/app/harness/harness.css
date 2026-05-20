@@ -16983,6 +16983,56 @@ html body .h-root.h-root :is(
   }
 }
 
+/* The top-section toggle lives outside the navbar so it remains a page-edge
+   affordance in both expanded and collapsed modes. */
+body > .h-top-collapse-btn.h-top-collapse-inline {
+  position: fixed !important;
+  top: calc(env(safe-area-inset-top, 0px) + 6px) !important;
+  left: 50% !important;
+  transform: translateX(-50%) !important;
+  z-index: 1500 !important;
+  pointer-events: auto !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  gap: 5px !important;
+  width: auto !important;
+  min-width: 0 !important;
+  min-height: 22px !important;
+  height: 22px !important;
+  padding: 0 8px !important;
+  font-size: 9px !important;
+  letter-spacing: 0.07em !important;
+}
+
+body > .h-top-collapse-btn.h-top-collapse-inline:hover,
+body > .h-top-collapse-btn.h-top-collapse-inline:focus-visible,
+body > .h-top-collapse-btn.h-top-collapse-inline:active {
+  transform: translateX(-50%) !important;
+}
+
+body > .h-top-collapse-btn.h-top-collapse-inline::after {
+  left: 8px !important;
+  right: 8px !important;
+}
+
+body > .h-top-collapse-btn.h-top-collapse-inline .h-top-collapse-icon {
+  width: 14px !important;
+  height: 14px !important;
+  padding: 1.5px !important;
+}
+
+body > .h-top-collapse-btn.h-top-collapse-inline .h-top-collapse-state {
+  flex: 0 0 auto !important;
+  min-width: 0 !important;
+  height: auto !important;
+  border: 0 !important;
+  background: transparent !important;
+  font-size: 9px !important;
+  letter-spacing: 0.08em !important;
+  color: color-mix(in oklab, var(--fg), white 10%) !important;
+}
+
 /* Expanded harness state: the hide/show tab is portaled into the global
    header slot between Ops and Deck. Keep it in-flow there; when collapsed,
    the same button portals back to body so the fixed fallback remains visible

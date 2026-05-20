@@ -47,6 +47,16 @@ export function SupportAgentPanel({ surface = 'operator' }: { surface?: 'public'
 
   useEffect(() => {
     sessionIdRef.current = newSessionId();
+    // api.papercuspai.com's CORS response doesn't include localhost in
+    // Access-Control-Allow-Origin, so the status check fires console
+    // errors on every desktop mount. Skip it in dev / on localhost —
+    // assume the agent is available; if /v1/support/chat fails on send,
+    // the user sees the failure inline.
+    const isLocalhost = typeof location !== 'undefined' && /^(localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])(:|$)/i.test(location.host);
+    if (isLocalhost) {
+      setAgentAvailable(true);
+      return;
+    }
     fetch(`${API_BASE}/v1/support/status`)
       .then((r) => r.json())
       .then((s) => {

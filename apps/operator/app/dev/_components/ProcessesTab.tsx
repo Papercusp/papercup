@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useQueryState, parseAsString } from 'nuqs';
 import { Checkbox } from '@/app/harness/Checkbox';
+import { Select } from '@/app/harness/Select';
 import { RichGrid, type ColumnDef } from '@restart/grid-core';
 
 interface Process {
@@ -259,16 +260,15 @@ function KillModal({
 
         <div className="pc-dev-modal-row">
           <label className="pc-dev-muted">signal</label>
-          <select
+          <Select
             value={state.signal}
-            onChange={(e) =>
-              setState({ ...state, signal: e.target.value as 'SIGTERM' | 'SIGKILL' })
-            }
-            className="pc-dev-input pc-dev-input-inline"
-          >
-            <option value="SIGTERM">SIGTERM (graceful)</option>
-            <option value="SIGKILL">SIGKILL (force)</option>
-          </select>
+            onChange={(v) => setState({ ...state, signal: v as 'SIGTERM' | 'SIGKILL' })}
+            ariaLabel="signal"
+            options={[
+              { value: 'SIGTERM', label: 'SIGTERM (graceful)' },
+              { value: 'SIGKILL', label: 'SIGKILL (force)' },
+            ]}
+          />
         </div>
 
         <div className="pc-dev-modal-row">

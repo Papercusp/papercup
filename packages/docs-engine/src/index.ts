@@ -42,7 +42,6 @@ export {
 
 export { renderMdxToMarkdown, withPreamble } from './render-mdx';
 
-export { fumadocsAdapter, type FumadocsAdapterOptions } from './adapters/fumadocs';
 export { harnessFsAdapter, type HarnessFsAdapterOptions } from './adapters/harness-fs';
 export {
   starlightContentAdapter,

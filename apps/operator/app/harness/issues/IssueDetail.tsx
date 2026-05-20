@@ -85,7 +85,6 @@ export function IssueDetail({
           className="h-issue-detail-drawer"
           data-anim="slide-right"
           aria-describedby={undefined}
-          aria-modal="true"
           style={{
             position: 'fixed', top: 0, right: 0, bottom: 0,
             width: 'min(720px, 72vw)',

@@ -1,130 +1,227 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import { isTauriNative } from '@/lib/pty-tauri';
+import { InlinePtyTerminal } from './InlinePtyTerminal';
 
-interface PreflightCheck {
-  name: string;
-  status: 'ok' | 'missing' | 'error';
-  detail?: string;
-  hint?: string;
+interface AgentRuntime {
+  claude: boolean;
+  omp: boolean;
+  meridian: boolean;
 }
 
-interface AgentRow {
-  readonly id: 'claude' | 'omp';
-  readonly title: string;
-  readonly description: string;
-  readonly installCmd: string;
-  readonly docsHref: string;
-  readonly preflightName: string;
+interface SpawnSpec {
+  command: string;
+  args: string[];
+  cwd: string;
+  env: Record<string, string>;
 }
 
-const AGENTS: readonly AgentRow[] = [
-  {
-    id: 'claude',
-    title: 'Claude Code',
-    description:
-      "Anthropic's coding agent. The default backend; if you have a Claude Pro/Max plan, sign in once and your subscription covers usage.",
-    installCmd: 'npm install -g @anthropic-ai/claude-code',
-    docsHref: 'https://docs.anthropic.com/claude/docs/claude-code',
-    preflightName: 'claude',
-  },
-  {
-    id: 'omp',
-    title: 'oh-my-pi (OpenAI + multi-provider)',
-    description:
-      "Multi-provider coding agent (Anthropic, OpenAI, Google, others). Use this if you prefer OpenAI's models or want to switch backends per task — oh-my-pi handles the OpenAI side directly, no separate install needed.",
-    installCmd: 'npm install -g @oh-my-pi/cli',
-    docsHref: 'https://github.com/can1357/oh-my-pi',
-    preflightName: 'pi',
-  },
-];
+interface PtyCommands {
+  installRuntime: SpawnSpec;
+}
 
 export function StepAgents() {
-  const [checks, setChecks] = useState<Record<string, PreflightCheck>>({});
+  const [runtime, setRuntime] = useState<AgentRuntime | null>(null);
   const [loading, setLoading] = useState(true);
+  const [installing, setInstalling] = useState(false);
+  const [installSpec, setInstallSpec] = useState<SpawnSpec | null>(null);
+  const [lastExitCode, setLastExitCode] = useState<number | null>(null);
+  const [startError, setStartError] = useState<string | null>(null);
+  const [showManual, setShowManual] = useState(false);
+  const [tauri, setTauri] = useState(false);
+  // Bumped per install attempt so the pty terminal remounts cleanly
+  // on Retry rather than relying on spec-object reference churn.
+  const [attempt, setAttempt] = useState(0);
+
+  // Detection comes from /api/desktop/setup-status — the SAME source
+  // the wizard sidebar uses, so the card and the badge never disagree.
+  const refreshRuntime = async () => {
+    try {
+      const r = await fetch('/api/desktop/setup-status', { cache: 'no-store' });
+      if (r.ok) {
+        const j = (await r.json()) as { agentRuntime?: AgentRuntime };
+        if (j.agentRuntime) setRuntime(j.agentRuntime);
+      }
+    } finally {
+      setLoading(false);
+    }
+  };
 
   useEffect(() => {
-    let cancelled = false;
-    const tick = async () => {
-      try {
-        const r = await fetch('/api/desktop/preflight', { cache: 'no-store' });
-        const j = await r.json();
-        if (cancelled) return;
-        const map: Record<string, PreflightCheck> = {};
-        for (const c of j.checks ?? []) map[c.name] = c;
-        setChecks(map);
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    };
-    void tick();
-    const id = setInterval(tick, 5000);
-    return () => {
-      cancelled = true;
-      clearInterval(id);
-    };
+    setTauri(isTauriNative());
+    void refreshRuntime();
+    const id = setInterval(() => void refreshRuntime(), 5000);
+    return () => clearInterval(id);
   }, []);
 
-  const anyInstalled = AGENTS.some((a) => checks[a.preflightName]?.status === 'ok');
+  const claudeOk = runtime?.claude ?? false;
+  const ompOk = runtime?.omp ?? false;
+  const meridianOk = runtime?.meridian ?? false;
+  const allOk = claudeOk && ompOk && meridianOk;
+
+  const startInstall = async () => {
+    setLastExitCode(null);
+    setStartError(null);
+    try {
+      const r = await fetch('/api/desktop/setup-pty-commands', { cache: 'no-store' });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const j = (await r.json()) as PtyCommands;
+      if (!j.installRuntime?.command) throw new Error('malformed install command');
+      setAttempt((n) => n + 1);
+      setInstallSpec(j.installRuntime);
+      setInstalling(true);
+    } catch (e: any) {
+      setInstallSpec(null);
+      setInstalling(false);
+      setStartError(
+        `Couldn't start the installer: ${e?.message ?? e}. Use the manual commands below.`,
+      );
+    }
+  };
+
+  const handleExit = (code: number) => {
+    setLastExitCode(code);
+    setInstalling(false);
+    void refreshRuntime();
+    // installSpec stays set on failure so the terminal pane (with the
+    // exit log) remains visible. Clicking Retry blows it away.
+    if (code === 0) setInstallSpec(null);
+  };
+
+  const dismissPanel = () => {
+    setInstallSpec(null);
+    setLastExitCode(null);
+  };
 
   return (
     <div className="pc-step">
       <p className="pc-step__lead">
-        Papercusp drives one or both of these coding agents. <strong>At least one is required.</strong>{' '}
-        You can install both and switch between them later.
+        Papercusp drives <strong>oh-my-pi + Claude Code + Meridian</strong> as a bundle. oh-my-pi
+        is the agent runtime, Claude Code is the model that writes code, Meridian routes Claude
+        traffic through your subscription. You need all three.
       </p>
 
       {!loading && (
-        <div
-          className="pc-step__progress"
-          data-status={anyInstalled ? 'ok' : 'missing'}
-        >
+        <div className="pc-step__progress" data-status={allOk ? 'ok' : 'missing'}>
           <div className="pc-step__progress-dot" />
           <div className="pc-step__progress-text">
-            {anyInstalled ? (
+            {allOk ? (
               <>
                 <strong>Ready.</strong>
-                <span>At least one coding agent is installed.</span>
+                <span>oh-my-pi, Claude Code, and Meridian are all installed.</span>
               </>
             ) : (
               <>
-                <strong>No coding agent installed.</strong>
-                <span>Install one of the options below.</span>
+                <strong>
+                  {[
+                    !claudeOk && 'Claude Code',
+                    !ompOk && 'oh-my-pi',
+                    !meridianOk && 'Meridian',
+                  ]
+                    .filter(Boolean)
+                    .join(' + ')}{' '}
+                  missing.
+                </strong>
+                <span>Click Install — runs the install commands here in the wizard.</span>
               </>
             )}
           </div>
         </div>
       )}
 
-      <div className="pc-agent-grid">
-        {AGENTS.map((a) => {
-          const c = checks[a.preflightName];
-          const status = c?.status ?? 'missing';
-          return (
-            <div key={a.id} className="pc-agent-card" data-status={status}>
-              <div className="pc-agent-card__head">
-                <h3>{a.title}</h3>
-                <span className="pc-agent-card__badge" data-status={status}>
-                  {status === 'ok' ? 'Installed' : status === 'missing' ? 'Not installed' : 'Error'}
-                </span>
-              </div>
-              <p className="pc-agent-card__desc">{a.description}</p>
-              {c?.detail && status === 'ok' && <p className="pc-agent-card__detail">{c.detail}</p>}
-              {status !== 'ok' && (
-                <>
-                  <p className="pc-agent-card__install-label">Install from a terminal:</p>
-                  <pre className="pc-code">{a.installCmd}</pre>
-                </>
-              )}
-              <p className="pc-agent-card__link">
-                <a href={a.docsHref} target="_blank" rel="noreferrer">
-                  Docs ↗
-                </a>
-              </p>
-            </div>
-          );
-        })}
-      </div>
+      {tauri && (
+        <div
+          className="pc-step__actions"
+          style={{ marginTop: 16, display: 'flex', gap: 8, alignItems: 'center' }}
+        >
+          <button
+            type="button"
+            className="pc-btn pc-btn--primary"
+            onClick={() => void startInstall()}
+            disabled={loading || installing || allOk}
+          >
+            {loading
+              ? 'Checking…'
+              : installing
+                ? 'Installing…'
+                : allOk
+                  ? 'Installed'
+                  : lastExitCode !== null && lastExitCode !== 0
+                    ? 'Retry install'
+                    : 'Install Agent Runtime'}
+          </button>
+          {installSpec && !installing && (
+            <button type="button" className="pc-btn" onClick={dismissPanel}>
+              Dismiss log
+            </button>
+          )}
+        </div>
+      )}
+
+      {startError && (
+        <p style={{ marginTop: 8, color: 'var(--pc-color-danger, #d33)', fontSize: 13 }}>
+          {startError}
+        </p>
+      )}
+
+      {installSpec && (
+        <InlinePtyTerminal
+          key={attempt}
+          command={installSpec.command}
+          args={installSpec.args}
+          cwd={installSpec.cwd}
+          env={installSpec.env}
+          rows={20}
+          readOnly
+          onExit={handleExit}
+        />
+      )}
+
+      {!tauri && !loading && (
+        <div
+          className="pc-step__progress"
+          data-status="missing"
+          style={{ marginTop: 16 }}
+        >
+          <div className="pc-step__progress-dot" />
+          <div className="pc-step__progress-text">
+            <strong>Open this in the desktop app to install.</strong>
+            <span>The wizard's install button runs commands locally; that needs Tauri.</span>
+          </div>
+        </div>
+      )}
+
+      <p className="pc-step__hint" style={{ marginTop: 16 }}>
+        <button type="button" className="pc-link-btn" onClick={() => setShowManual((v) => !v)}>
+          {showManual ? 'Hide manual install commands' : 'Or install manually ↓'}
+        </button>
+      </p>
+      {showManual && (
+        <div className="pc-agent-card" style={{ marginTop: 8 }}>
+          <p className="pc-agent-card__install-label">From a terminal:</p>
+          <pre className="pc-code">
+            {`# Claude Code
+curl -fsSL https://claude.ai/install.sh | bash   # macOS/Linux
+iwr https://claude.ai/install.ps1 | iex          # Windows PowerShell
+
+# Meridian + oh-my-pi (per-workspace install root)
+mkdir -p ~/.papercusp/runtime
+cd ~/.papercusp/runtime && npm init -y
+npm install @rynfar/meridian @oh-my-pi/cli
+`}
+          </pre>
+          <p className="pc-agent-card__link">
+            <a href="https://docs.anthropic.com/claude/docs/claude-code" target="_blank" rel="noreferrer">
+              Claude Code docs ↗
+            </a>{' '}
+            ·{' '}
+            <a href="https://github.com/can1357/oh-my-pi" target="_blank" rel="noreferrer">
+              oh-my-pi docs ↗
+            </a>
+          </p>
+        </div>
+      )}
     </div>
   );
 }

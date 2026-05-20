@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, type MouseEvent } from 'react';
 import { toast } from 'sonner';
 import { ChevronDown, UserPlus, Settings, LogOut, ArrowLeftRight } from 'lucide-react';
 import { Popover } from '../harness/Popover';
@@ -52,16 +52,14 @@ export default function UserPicker() {
     setOpen(false);
   }, []);
 
-  // Hard navigation. router.push() consistently no-ops from inside the
-  // harness route (something in the harness layout / dock reducer
-  // captures soft transitions originating from a Radix Popover Portal
-  // and reverts them). window.location.assign always wins — these
-  // destinations (settings, login, signup) are out-of-context anyway,
-  // so the full page reload is the right thing for them.
-  const goTo = useCallback((href: string) => {
-    close();
-    if (typeof window !== 'undefined') window.location.assign(href);
-  }, [close]);
+  // Hard-navigate from the anchor's own href. Real hrefs keep the menu
+  // items right-clickable / middle-clickable; the click handler bypasses
+  // Next's soft router to dodge the dropdown-close vs route-push race.
+  const navigateTo = useCallback((event: MouseEvent<HTMLAnchorElement>) => {
+    event.preventDefault();
+    const href = event.currentTarget.getAttribute('href');
+    if (href && typeof window !== 'undefined') window.location.assign(href);
+  }, []);
 
   const onLogout = useCallback(async () => {
     close();
@@ -74,7 +72,6 @@ export default function UserPicker() {
       toast.error('Logout failed');
     }
   }, [close]);
-
 
   const displayName = user.display_name || user.username || 'User';
   const username = user.username || 'default';
@@ -120,27 +117,27 @@ export default function UserPicker() {
         </div>
 
         <div className="pc-user-menu-section" aria-label="Account actions">
-          <button type="button" className="pc-user-menu-item" onClick={() => goTo('/settings/user')}>
+          <a href="/settings/user" className="pc-user-menu-item" onClick={navigateTo}>
             <Settings size={15} aria-hidden="true" strokeWidth={1.75} />
             <span>
               <strong>User preferences</strong>
               <small>Profile, theme, and defaults</small>
             </span>
-          </button>
-          <button type="button" className="pc-user-menu-item" onClick={() => goTo('/login?switch=1')}>
+          </a>
+          <a href="/login?switch=1" className="pc-user-menu-item" onClick={navigateTo}>
             <ArrowLeftRight size={15} aria-hidden="true" strokeWidth={1.75} />
             <span>
               <strong>Switch user</strong>
               <small>Sign in as someone else</small>
             </span>
-          </button>
-          <button type="button" className="pc-user-menu-item" onClick={() => goTo('/signup')}>
+          </a>
+          <a href="/login?mode=signup" className="pc-user-menu-item" onClick={navigateTo}>
             <UserPlus size={15} aria-hidden="true" strokeWidth={1.75} />
             <span>
               <strong>Add user</strong>
               <small>Create another local account</small>
             </span>
-          </button>
+          </a>
         </div>
 
         <div className="pc-user-menu-divider" />

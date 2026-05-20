@@ -58,21 +58,43 @@ export default function DevReloadGate() {
     // 2. Patch location.reload so any Next dev call to it is suppressed.
     //    The user's manual Cmd/Ctrl+R bypasses JS reload entirely and
     //    still works.
+    //
+    //    In modern Chromium/WebKit `location.reload` is a non-writable,
+    //    non-configurable own property — direct assignment throws in
+    //    strict mode. Use defineProperty and tolerate failure: the
+    //    WebSocket block above already neutralises Next dev's reload
+    //    path; reload-patching is belt-and-braces.
     const origReload = location.reload.bind(location);
-    let patched = true;
-    (location as unknown as { reload: () => void }).reload = () => {
-      // eslint-disable-next-line no-console
-      console.info('[DevReloadGate] auto-reload suppressed — Cmd/Ctrl+R to refresh manually');
-    };
+    let reloadPatched = false;
+    try {
+      Object.defineProperty(location, 'reload', {
+        configurable: true,
+        value: () => {
+          // eslint-disable-next-line no-console
+          console.info('[DevReloadGate] auto-reload suppressed — Cmd/Ctrl+R to refresh manually');
+        },
+      });
+      reloadPatched = true;
+    } catch {
+      // Browser disallows redefining location.reload. The WebSocket
+      // gate is sufficient on its own.
+    }
 
     // eslint-disable-next-line no-console
     console.info('[DevReloadGate] HMR disabled. Save files freely; hit Cmd/Ctrl+R to load latest. Set NEXT_PUBLIC_ENABLE_HMR=1 to restore.');
 
     return () => {
-      patched = false;
-      void patched;
       (window as unknown as { WebSocket: typeof WebSocket }).WebSocket = OrigWS;
-      (location as unknown as { reload: () => void }).reload = origReload;
+      if (reloadPatched) {
+        try {
+          Object.defineProperty(location, 'reload', {
+            configurable: true,
+            value: origReload,
+          });
+        } catch {
+          // best-effort restore
+        }
+      }
     };
   }, []);
 

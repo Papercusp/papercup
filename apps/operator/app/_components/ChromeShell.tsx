@@ -1,6 +1,7 @@
 'use client';
 
-import { Suspense, lazy, useEffect, useRef, useState } from 'react';
+import { Suspense, useEffect, useRef, useState } from 'react';
+import { lazyWithRetry as lazy } from '../../lib/lazy-with-retry';
 import { usePathname } from 'next/navigation';
 import gsap from 'gsap';
 import { useGSAP } from '@gsap/react';
@@ -32,7 +33,10 @@ const VoiceAppBridge = lazy(() => import('./voice/VoiceAppBridge').then(m => ({ 
 const OperatorDelegationListener = lazy(() => import('./OperatorDelegationListener'));
 const RegistryShortcuts = lazy(() => import('../../lib/commands/shims/shortcut-shim').then(m => ({ default: m.RegistryShortcuts })));
 const OperatorVoiceAnnouncer = lazy(() => import('./voice/OperatorVoiceAnnouncer').then(m => ({ default: m.OperatorVoiceAnnouncer })));
-const ChatwootWidget = lazy(() => import('./ChatwootWidget').then(m => ({ default: m.ChatwootWidget })));
+// Eager import: ChatwootWidget is tiny (one useEffect + script tag) and was
+// repeatedly failing as a chunked lazy import in dev (turbopack chunk-hash
+// staleness across rebuilds). The bundle cost is negligible.
+import { ChatwootWidget } from './ChatwootWidget';
 
 /**
  * Renders the operator's global chrome (header, Oracle dock, hidden
@@ -79,7 +83,6 @@ export default function ChromeShell() {
   const chromeless = CHROMELESS_PATH_PREFIXES.some(
     (p) => pathname === p || pathname.startsWith(`${p}/`),
   );
-  if (chromeless) return null;
   // When the user is already on a harness page, Ops is a no-op. Render a
   // non-link span with `is-current` styling so it's visibly distinct from
   // the active CTA elsewhere in the app.
@@ -127,6 +130,8 @@ export default function ChromeShell() {
     },
     { scope: headerRef, dependencies: [pathname, fancyEffectsEnabled] },
   );
+
+  if (chromeless) return null;
 
   return (
     <>

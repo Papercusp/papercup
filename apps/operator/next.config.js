@@ -1,6 +1,5 @@
 const path = require('path');
 const fs = require('fs');
-const { createMDX } = require('fumadocs-mdx/next');
 
 const PAPERCUP_UPSTREAM = process.env.PAPERCUSP_PAPERCUP_UPSTREAM ?? 'http://localhost:3061';
 const WEB_UPSTREAM      = process.env.PAPERCUSP_WEB_UPSTREAM      ?? 'http://localhost:3001';
@@ -66,7 +65,6 @@ function rustOptInRewrites() {
   }));
 }
 
-const withMDX = createMDX();
 
 /** @type {import('next').NextConfig} */
 // Separate dist dirs for dev (:3055) and prod-standalone (:3070) so a
@@ -263,6 +261,9 @@ const nextConfig = {
       // the request falls through to TS as normal.
       beforeFiles: rustOptInRewrites(),
       afterFiles: [
+      // Docs static dist — Astro emits <slug>.html files in apps/operator/public/internal/docs/;
+      // rewrite slug-only requests to the .html extension so Next's public/ serving finds them.
+      { source: '/internal/docs/:slug+', destination: '/internal/docs/:slug+.html' },
         { source: '/api/org/:path*',           destination: `${PAPERCUP_UPSTREAM}/api/org/:path*` },
         { source: '/api/briefings/:path*',     destination: `${PAPERCUP_UPSTREAM}/api/briefings/:path*` },
         { source: '/api/public/:path*',        destination: `${PAPERCUP_UPSTREAM}/api/public/:path*` },
@@ -285,4 +286,4 @@ const nextConfig = {
   },
 };
 
-module.exports = withMDX(nextConfig);
+module.exports = nextConfig;

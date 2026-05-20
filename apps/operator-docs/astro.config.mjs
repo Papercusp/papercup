@@ -11,6 +11,7 @@ const section = (label, directory) => ({
 export default defineConfig({
   site: 'http://127.0.0.1:4325',
   base: '/internal/docs',
+  build: { format: 'file' },
   integrations: [
     react(),
     starlight({
