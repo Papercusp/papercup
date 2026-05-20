@@ -8,7 +8,7 @@
  * fs/network glue is one thin layer of read-prune-write on top.
  */
 import { describe, it, expect } from 'vitest';
-import { pruneRegistry } from './route';
+import { pruneRegistry } from '../prune';
 
 const reg = (...slugs: string[]) => ({
   projects: slugs.map((s) => ({ slug: s, path: `/fake/${s}` })),

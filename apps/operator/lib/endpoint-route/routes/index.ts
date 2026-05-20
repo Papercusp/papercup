@@ -22,6 +22,15 @@ import agentConfig from './agent-config/index';
 import agentConfigTest from './agent-config/test';
 import credentials from './credentials/index';
 import credentialsSearchProviders from './credentials/search-providers';
+import agentTokensPowerUser from './agent-tokens/power-user';
+import agentTokensPowerUserRefresh from './agent-tokens/power-user-refresh';
+import installed from './installed/index';
+import installedPrune from './installed/prune';
+import oauthStart from './oauth/start';
+import oauthCallback from './oauth/callback';
+import oauthVerifyPaste from './oauth/verify-paste';
+import publishCredentials from './publish-credentials/index';
+import publishCredentialsRotate from './publish-credentials/rotate';
 
 type AnyRoute = RouteDefinition<ZodTypeAny | undefined>;
 
@@ -39,4 +48,13 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(agentConfigTest as AnyRoute),
   ...flatten(credentials as AnyRoute[]),
   ...flatten(credentialsSearchProviders as AnyRoute[]),
+  ...flatten(agentTokensPowerUser as AnyRoute),
+  ...flatten(agentTokensPowerUserRefresh as AnyRoute),
+  ...flatten(installed as AnyRoute),
+  ...flatten(installedPrune as AnyRoute),
+  ...flatten(oauthStart as AnyRoute),
+  ...flatten(oauthCallback as AnyRoute),
+  ...flatten(oauthVerifyPaste as AnyRoute),
+  ...flatten(publishCredentials as AnyRoute[]),
+  ...flatten(publishCredentialsRotate as AnyRoute),
 ];
