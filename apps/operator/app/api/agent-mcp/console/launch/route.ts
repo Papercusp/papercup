@@ -33,21 +33,22 @@ import { NextRequest } from 'next/server';
 
 import { activeWorkspaceId } from '@/lib/workspace-registry';
 import { buildConsoleEnvelope } from '@/lib/console-launcher';
+import { PrincipalCheckError, requirePrincipal } from '@/lib/auth/require-principal';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
-function isLoopback(req: NextRequest): boolean {
-  const host = req.headers.get('host') ?? '';
-  if (
-    host.startsWith('127.0.0.1:') ||
-    host.startsWith('localhost:') ||
-    host === '127.0.0.1' ||
-    host === 'localhost'
-  ) {
-    return true;
+/** Resolve a principal or return the typed 401/403 jsonRes. Null = allowed. */
+async function gatePrincipal(req: NextRequest): Promise<Response | null> {
+  try {
+    await requirePrincipal(req.headers);
+    return null;
+  } catch (err) {
+    if (err instanceof PrincipalCheckError) {
+      return jsonRes({ status: 'error', error: err.reason }, err.status);
+    }
+    throw err;
   }
-  return host.endsWith(':3055') || host.endsWith(':3070');
 }
 
 /**
@@ -55,8 +56,8 @@ function isLoopback(req: NextRequest): boolean {
  * when the page itself was loaded from http://localhost:3055 — that's
  * what breaks vanilla fetch with WebKit's "access control checks".
  * Adding permissive CORS headers is safe here because the endpoint
- * itself is loopback-gated by isLoopback() above. The operator binds
- * to 127.0.0.1 only by default (PAPERCUSP_BIND_HOST).
+ * itself is principal-gated by requirePrincipal() in each handler. The
+ * operator binds to 127.0.0.1 only by default (PAPERCUSP_BIND_HOST).
  */
 const CORS_HEADERS: Record<string, string> = {
   'access-control-allow-origin': '*',
@@ -97,9 +98,8 @@ export async function GET(req: NextRequest): Promise<Response> {
 
   dlog(`GET spawn origin=${origin} host=${req.headers.get('host')} slug=${slug ?? '(null)'} ua=${ua.slice(0, 60)}`);
 
-  if (!isLoopback(req)) {
-    return jsonRes({ status: 'error', error: 'loopback only' }, 403);
-  }
+  const denied = await gatePrincipal(req);
+  if (denied) return denied;
   try {
     await doSpawn({ slug: slug || null, operatorBaseUrl: new URL(req.url).origin });
   } catch (e: any) {
@@ -235,9 +235,8 @@ export async function POST(req: NextRequest): Promise<Response> {
   dlog(`POST hit origin=${origin} host=${req.headers.get('host')} ua=${ua.slice(0, 60)}`);
   console.log(`[console-launch] POST hit from origin=${origin} host=${req.headers.get('host')}`);
 
-  if (!isLoopback(req)) {
-    return jsonRes({ status: 'error', error: 'loopback only' }, 403);
-  }
+  const denied = await gatePrincipal(req);
+  if (denied) return denied;
   // Accept either application/json or text/plain (the renderer uses
   // text/plain to avoid a CORS preflight). Parse JSON from the text.
   let body: { slug?: string | null; mode?: 'shell' | 'omp' } = {};

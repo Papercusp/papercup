@@ -17,7 +17,7 @@
  */
 import { NextRequest } from 'next/server';
 
-import { isLoopbackRequest } from '@/lib/superuser-token';
+import { PrincipalCheckError, requirePrincipal } from '@/lib/auth/require-principal';
 import { verifyRefreshToken, mintAccessToken } from '@/lib/power-user-token';
 import { getActivePowerUserSession } from '@/lib/power-user-sessions';
 
@@ -31,8 +31,13 @@ function bearerFrom(req: NextRequest): string | null {
 }
 
 export async function POST(req: NextRequest): Promise<Response> {
-  if (!isLoopbackRequest(req.headers)) {
-    return Response.json({ error: 'loopback only' }, { status: 403 });
+  try {
+    await requirePrincipal(req.headers);
+  } catch (err) {
+    if (err instanceof PrincipalCheckError) {
+      return Response.json({ error: err.reason }, { status: err.status });
+    }
+    throw err;
   }
   const refreshToken = bearerFrom(req);
   const claims = await verifyRefreshToken(refreshToken);

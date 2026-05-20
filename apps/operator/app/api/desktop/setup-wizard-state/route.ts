@@ -1,19 +1,23 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { readOperatorState, writeOperatorState } from '@/lib/operator-state-pg';
 import { ensureInstallId } from '@/lib/setup-wizard-install-id';
+import { PrincipalCheckError, requirePrincipal } from '@/lib/auth/require-principal';
+
+/** Resolve a principal or return the 401/403 response. Null = allowed. */
+async function gatePrincipal(req: NextRequest): Promise<NextResponse | null> {
+  try {
+    await requirePrincipal(req.headers);
+    return null;
+  } catch (err) {
+    if (err instanceof PrincipalCheckError) {
+      return NextResponse.json({ error: err.reason }, { status: err.status });
+    }
+    throw err;
+  }
+}
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
-
-function isLoopback(req: NextRequest): boolean {
-  const host = req.headers.get('host') ?? '';
-  return (
-    host.startsWith('127.0.0.1:') ||
-    host.startsWith('localhost:') ||
-    host === '127.0.0.1' ||
-    host === 'localhost'
-  );
-}
 
 const KEY = 'setup_wizard_state';
 
@@ -51,7 +55,8 @@ function defaults(): SetupWizardState {
 }
 
 export async function GET(req: NextRequest) {
-  if (!isLoopback(req)) return NextResponse.json({ error: 'loopback only' }, { status: 403 });
+  const denied = await gatePrincipal(req);
+  if (denied) return denied;
   // Mint install_id if missing — shared with telemetry-config so the
   // first event after a fresh boot always has a stable distinct id
   // regardless of which route is hit first.
@@ -61,7 +66,8 @@ export async function GET(req: NextRequest) {
 }
 
 export async function PATCH(req: NextRequest) {
-  if (!isLoopback(req)) return NextResponse.json({ error: 'loopback only' }, { status: 403 });
+  const denied = await gatePrincipal(req);
+  if (denied) return denied;
   const body = await req.json().catch(() => null);
   if (!body || typeof body !== 'object') {
     return NextResponse.json({ error: 'invalid body' }, { status: 400 });

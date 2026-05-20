@@ -21,7 +21,7 @@
  */
 import { NextRequest } from 'next/server';
 
-import { isLoopbackRequest } from '@/lib/superuser-token';
+import { PrincipalCheckError, requirePrincipal } from '@/lib/auth/require-principal';
 import { getSessionUserOrDefault } from '@/lib/auth';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
 import { createPowerUserSession } from '@/lib/power-user-sessions';
@@ -31,8 +31,13 @@ export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
 export async function POST(req: NextRequest): Promise<Response> {
-  if (!isLoopbackRequest(req.headers)) {
-    return Response.json({ error: 'loopback only' }, { status: 403 });
+  try {
+    await requirePrincipal(req.headers);
+  } catch (err) {
+    if (err instanceof PrincipalCheckError) {
+      return Response.json({ error: err.reason }, { status: err.status });
+    }
+    throw err;
   }
   const body = (await req.json().catch(() => ({}))) as { workspace?: string };
   try {

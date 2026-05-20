@@ -14,23 +14,19 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
 import { killProcess } from '@/lib/process-kill';
+import { PrincipalCheckError, requirePrincipal } from '@/lib/auth/require-principal';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
-function isLoopbackOrigin(req: NextRequest): boolean {
-  const host = req.headers.get('host') ?? '';
-  // Next.js binds to PAPERCUSP_BIND_HOST which defaults to 127.0.0.1.
-  // The host header arrives as "127.0.0.1:3055" or "localhost:3055".
-  return /^(127\.0\.0\.1|localhost|\[::1\])(:\d+)?$/.test(host);
-}
-
 export async function POST(req: NextRequest): Promise<NextResponse> {
-  if (!isLoopbackOrigin(req)) {
-    return NextResponse.json(
-      { error: 'loopback-only' },
-      { status: 403 },
-    );
+  try {
+    await requirePrincipal(req.headers);
+  } catch (err) {
+    if (err instanceof PrincipalCheckError) {
+      return NextResponse.json({ error: err.reason }, { status: err.status });
+    }
+    throw err;
   }
 
   let body: { pid?: number; signal?: 'SIGTERM' | 'SIGKILL' };

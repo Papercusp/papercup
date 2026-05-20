@@ -20,8 +20,8 @@
 import { NextResponse } from 'next/server';
 import { getOrgPg, generated } from '@restart/db-org';
 import { and, count, desc, eq, gt, sql as dsql } from 'drizzle-orm';
-import { isLoopbackRequest, isValidSuperuserBearer } from '@/lib/superuser-token';
 import { ensureSpawnSigVerificationFailuresTable } from '@/lib/ensure-schema';
+import { PrincipalCheckError, requirePrincipal } from '@/lib/auth/require-principal';
 
 const sf = generated.spawnSigVerificationFailuresInHarnessShared;
 
@@ -29,13 +29,13 @@ export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 export async function GET(req: Request) {
-  if (!isLoopbackRequest(req.headers)) {
-    return NextResponse.json({ error: 'loopback_required' }, { status: 403 });
-  }
-  const auth = req.headers.get('authorization') ?? '';
-  const bearer = auth.startsWith('Bearer ') ? auth.slice(7).trim() : null;
-  if (!isValidSuperuserBearer(bearer)) {
-    return NextResponse.json({ error: 'invalid_bearer' }, { status: 401 });
+  try {
+    await requirePrincipal(req.headers, { trust: ['trusted'] });
+  } catch (err) {
+    if (err instanceof PrincipalCheckError) {
+      return NextResponse.json({ error: err.reason }, { status: err.status });
+    }
+    throw err;
   }
 
   const url = new URL(req.url);

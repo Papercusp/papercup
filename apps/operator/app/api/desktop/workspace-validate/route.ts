@@ -18,6 +18,7 @@
  *     (we'd create it on first project).
  */
 import { NextRequest, NextResponse } from 'next/server';
+import { PrincipalCheckError, requirePrincipal } from '@/lib/auth/require-principal';
 import { promises as fs } from 'node:fs';
 import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
@@ -25,16 +26,6 @@ import { join, resolve, dirname } from 'node:path';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
-
-function isLoopback(req: NextRequest): boolean {
-  const host = req.headers.get('host') ?? '';
-  return (
-    host.startsWith('127.0.0.1:') ||
-    host.startsWith('localhost:') ||
-    host === '127.0.0.1' ||
-    host === 'localhost'
-  );
-}
 
 function expand(raw: string): string {
   const trimmed = raw.trim();
@@ -55,7 +46,14 @@ async function isWritableDir(path: string): Promise<boolean> {
 }
 
 export async function POST(req: NextRequest) {
-  if (!isLoopback(req)) return NextResponse.json({ error: 'loopback only' }, { status: 403 });
+  try {
+    await requirePrincipal(req.headers);
+  } catch (err) {
+    if (err instanceof PrincipalCheckError) {
+      return NextResponse.json({ error: err.reason }, { status: err.status });
+    }
+    throw err;
+  }
   const body = (await req.json().catch(() => null)) as { path?: string } | null;
   if (!body || typeof body.path !== 'string') {
     return NextResponse.json({ ok: false, reason: 'invalid body' }, { status: 400 });
