@@ -75,14 +75,25 @@ async function recordInvocationImpl(input: {
     const { sql } = getOrgPg();
     await sql.begin(async (tx) => {
       await tx.unsafe(`SELECT set_config('app.workspace_id', $1, true)`, [input.ctx.workspaceId]);
+      // Pull Principal audit fields off ctx.principal when present.
+      // The UnifiedToolContext inline subset doesn't carry the full
+      // {kind, authMethod, trust} shape today; only the bearer/MCP path
+      // populates a real Principal. Migration 076 added these columns
+      // as nullable so legacy gaps surface as 'unknown' in /dev.
+      const p = (input.ctx.principal ?? null) as null | {
+        kind?: string;
+        authMethod?: string;
+        trust?: string;
+      };
       await tx.unsafe(
         `INSERT INTO harness_shared.tool_invocations
            (workspace_id, harness_slug, plugin_name, tool_name, role,
             feature_id, chunk_id, run_id, spawn_id, parent_spawn_id,
             window_key, duration_ms, status, output_ref, output_size,
-            error_message, args_json, transport, event_count, metadata_json)
+            error_message, args_json, transport, event_count, metadata_json,
+            principal_kind, principal_auth_method, principal_trust)
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,
-                 $16,$17::jsonb,$18,$19,$20::jsonb)`,
+                 $16,$17::jsonb,$18,$19,$20::jsonb,$21,$22,$23)`,
         [
           input.ctx.workspaceId,
           input.ctx.harnessSlug ?? '',
@@ -118,6 +129,9 @@ async function recordInvocationImpl(input: {
           input.ctx.transport ?? null,
           input.eventCount ?? null,
           input.metadataJson ? JSON.stringify(input.metadataJson) : null,
+          p?.kind ?? null,
+          p?.authMethod ?? null,
+          p?.trust ?? null,
         ],
       );
     });
