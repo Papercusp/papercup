@@ -101,7 +101,7 @@ Re-affirmed from the deferred-plan's decision table (those decisions are good; I
 | **Router** | **TanStack Router 1.x**, file-based generator | File-router maps 1:1 onto our `app/**/page.tsx` tree with one mechanical convention swap (see [Phase B](#phase-b--router-translation)). Typed `Link`/`useParams`/`useSearch` close to Next's mental model. `defer`/`loader`/`pendingComponent` cover what `loading.tsx` did. |
 | **HTTP host (dev)** | Vite dev server (`vite`) on **:3055**; `@hono/node-server` Hono host on **:3070**, sibling process | The Vite stack **takes over the two Next ports directly** — `:3055` was `next dev`, `:3070` was the Next standalone. Next is being retired, so Vite claims both from the start; no Tauri/desktop env-var path changes. **No Next process at any point in the migration** — the backend stream shipped, so the Hono host serves all `/api/*` from day one. |
 | **HTTP host (prod)** | **One process** — `@hono/node-server` on **:3070** serves the built `dist/` static + the Hono app + `/internal/docs/*` | `:3070` is "the operator host" in both dev and prod (no Vite dev server in prod — the static `dist/` is served by the Hono host). Replaces `next start` + the Next standalone; one process where there were two. |
-| **State / data layer** | TanStack Query + nuqs + Zero (**unchanged**) | None of these care about the framework. `useSyncQuery` and `transport-adapters` seams already exist; they keep working. |
+| **State / data layer** | nuqs + Zero + the `libs/sync` sync layer (**unchanged**) | None care about the framework. `useSyncQuery` (exported from `libs/sync`) and `apps/operator/lib/transport-adapters/` are the seams — both verified present, both keep working. react-query is **not** the operator's app-level data layer (no app-wide `QueryClientProvider`); it's a `libs/sync` internal plus two leaf-component uses. |
 | **SSR** | **None** — SPA | Operator is an app shell, not content. Cold-paint flash is real but mitigated by Tauri's webview cache; webapp deploy is not in scope of this plan (Track A in host-arch). |
 | **Tauri load target** | Dev: `http://127.0.0.1:3055` (Vite). Prod: bundled static `dist/` | Same model Next used; zero Tauri-side change in dev. Prod path changes from "Next standalone server" to "static files served by `@hono/node-server`". |
 | **Docs** | Starlight (**already shipped**) | `apps/operator-docs/` builds `dist/` → mirrored into the operator's `public/internal/docs/`. Migration didn't touch docs; this plan preserves the existing rewrite path. |
@@ -178,11 +178,15 @@ apps/operator-vite/
 
 **Deps (Vite + TSR + minimal):**
 - `vite@^8`, `@vitejs/plugin-react`, `@tanstack/router-plugin` (Vite plugin, generates the route tree)
-- `@tanstack/react-router@^1`, `@tanstack/react-query` (already in root)
+- `@tanstack/react-router@^1`
 - `react@^19`, `react-dom@^19` (match what `apps/operator` already uses)
+- `hono` + `@hono/node-server` — **must be declared explicitly** (see Gap-E note below); the Phase C host imports both.
+- `@tanstack/react-query` — needed because two leaf components (`harness/ArchitectInbox.tsx`, `design/[slug]/SketchPane.tsx`) use `QueryClient` directly. **Not** an app-wide provider — see [A3](#a3-root-route--providers).
 - TS: `typescript@^5` (match root)
 
-**No new state libs.** TanStack Query + nuqs + Zero come over from `apps/operator` via the workspace.
+**Gap-E — `hono` / `@hono/node-server` are currently undeclared.** `apps/operator` uses `hono` but declares it nowhere (it resolves via workspace hoisting — only `apps/papercusp-publish` declares it). `@hono/node-server` is declared by **no** workspace `package.json` at all — it's a pure transitive dep sitting in `node_modules/`. Building the Phase C host on either via hoisting is fragile; `apps/operator-vite/package.json` declares both explicitly from the scaffold.
+
+**State / data layer.** nuqs + Zero + the `libs/sync` sync layer come over from `apps/operator` via the workspace, unchanged. react-query is **not** the operator's app-level data layer — it's a `libs/sync` internal plus the two leaf-component uses above.
 
 ### A2. Dev-server proxy (static — single target)
 
@@ -214,14 +218,28 @@ export default defineConfig({
 
 ### A3. Root route + providers
 
-`src/routes/__root.tsx` renders:
-- `<QueryClientProvider>` (TanStack Query)
-- `<RootSyncProvider>` (the Phase-1-shipped IPC/HTTP sync substrate — `apps/operator/app/_components/RootSyncProvider.tsx`, which I import as-is from the existing app via the workspace package alias)
-- `<NuqsAdapter>` (or whatever the current root layout uses — translated 1:1 from `apps/operator/app/layout.tsx`)
-- `<Outlet/>` for nested routes
-- `notFoundComponent` that renders the existing `apps/operator/app/not-found.tsx` content
+`src/routes/__root.tsx` translates the **verified** provider stack from `apps/operator/app/layout.tsx` — 1:1, same nesting order. The actual stack (read from `layout.tsx` 2026-05-20):
 
-**The IPC polyfill mount point matters.** Host-architecture Phase 1 installs `window.EventSource = IpcEventSource` / `window.fetch = ipcFetch` before any data-layer code mounts. That must remain the first thing rendered. In TSR, that's the body of `__root.tsx`'s component before `<Outlet/>`. I document this as an invariant in the file's top comment so future edits don't reorder.
+```
+Tooltip.Provider (delayDuration 150)
+  └ RootSyncProvider          # IPC/HTTP sync substrate; brings the sync layer (libs/sync)
+    └ RouteProgressProvider   # the @bprogress integration — see B6, becomes the TSR adapter
+      └ NuqsAdapter           # nuqs/adapters/next/app → swap to the TSR/SPA adapter
+        └ UiPresenceProvider  # inside NuqsAdapter (mirrors tab URL ↔ agent UI intents)
+          └ RouteTransitionProvider
+            └ OperatorConversationProvider
+              └ PostHogProvider
+                └ <Outlet/>   # nested routes
+        PerfObserverProvider  # sibling, admin/testing
+```
+
+- **There is no `QueryClientProvider`.** The v2 plan said to add one — that was wrong. `apps/operator/app/layout.tsx` mounts none; `@tanstack/react-query` is a `libs/sync` internal (+ two leaf components), not an app-wide provider. Do **not** add a root `QueryClientProvider`.
+- `<NuqsAdapter>` currently imports from `nuqs/adapters/next/app` — that's Next-coupled; swap to the nuqs SPA/React-Router adapter (nuqs ships adapters per-router).
+- `RouteProgressProvider` is the `@bprogress` integration — it gets reworked into the TSR adapter ([B6](#b6-bprogressnext--tsr-adapter-30-60-loc)).
+- `notFoundComponent` renders the existing `apps/operator/app/not-found.tsx` content.
+- Import `RootSyncProvider`, `UiPresenceProvider`, `OperatorConversationProvider`, etc. as-is from `apps/operator/app/_components/*` via the workspace path during the migration window ([B5](#b5-translate-appcomponents)).
+
+**The IPC polyfill mount point matters.** Host-architecture Phase 1 installs `window.EventSource = IpcEventSource` / `window.fetch = ipcFetch` before any data-layer code mounts. That must remain the first thing rendered — before `RootSyncProvider`. In TSR, that's the body of `__root.tsx`'s component before the provider tree. I document this as an invariant in the file's top comment so future edits don't reorder.
 
 ### A4. Hello-world page
 
@@ -346,7 +364,7 @@ So: **per-file audit during translation, not a single sed pass at the end.** For
 
 ### B6. `@bprogress/next` → TSR adapter (~30-60 LOC)
 
-The top-of-page navigation progress bar uses `@bprogress/next`, which hooks `next/navigation`'s router events. Replacement is `@bprogress/react` (same author) wired into TSR's `useRouterState`. The adapter:
+The existing integration is **`apps/operator/app/_components/RouteProgressProvider.tsx`** (verified — it's in the `layout.tsx` provider stack, see [A3](#a3-root-route--providers)), which uses `@bprogress/next` to hook `next/navigation`'s router events. Replacement is `@bprogress/react` (same author) wired into TSR's `useRouterState` — i.e. `RouteProgressProvider` is rewritten as the adapter below (keep the name, or rename to `NavigationProgress`; either way it occupies the same slot in `__root.tsx`):
 
 ```tsx
 // apps/operator-vite/src/components/NavigationProgress.tsx (illustrative)
@@ -397,6 +415,8 @@ Per-batch revert. Each batch is one PR; reverting it leaves the other batches in
 **Goal:** stand up a standalone Node process that hosts the existing `_hono/app.ts` directly via `@hono/node-server`, with no Next involvement. Because the backend stream shipped, this host serves the **entire** API surface from the moment it boots — there is no "interchangeable with the Next sidecar" interim state; the Hono host *is* the API host. This phase can run before or alongside Phase A.
 
 ### C1. Host process
+
+**Dependency prerequisite (Gap E):** before writing the host, confirm `hono` and `@hono/node-server` are **declared** in `apps/operator-vite/package.json` — they were added in [A1](#a1-scaffold). Neither is currently a declared dependency anywhere `apps/operator` could rely on (`hono` resolves only via hoisting from `apps/papercusp-publish`; `@hono/node-server` is a pure transitive dep). The host must not be built on an undeclared dep.
 
 Create `apps/operator/bin/hono-host.ts` (or `apps/operator-vite/server/host.ts` — see [Phase G](#phase-g--production-host) for the final home):
 
