@@ -18,6 +18,7 @@
 import { NextResponse } from 'next/server';
 import { assembleOpenApiDocument } from '@papercusp/agent-mcp';
 import { listAllProjectedTools } from '@papercusp/agent-mcp';
+import { allRouteFragments } from '@/lib/endpoint-route';
 import '@/lib/agent-tools/index';
 
 export const dynamic = 'force-dynamic';
@@ -35,12 +36,15 @@ export function GET(req: Request): NextResponse {
     }
   })();
   const doc = assembleOpenApiDocument(tools, {
-    title: 'Papercusp Tool API',
+    title: 'Papercusp API',
     description:
-      'Projected-tool surface — every define_tool handler as an OpenAPI ' +
-      '3.1 operation. Streaming tools document their typed event channel ' +
-      'under the text/event-stream response (oneOf + event discriminator).',
+      'The full Papercusp API surface. `defineTool` operations are agent ' +
+      'tools (POST, with a typed event channel under text/event-stream). ' +
+      '`defineRoute` operations (x-papercusp-projection: route) are HTTP ' +
+      'plumbing endpoints — UI data, webhooks, transports.',
     ...(origin ? { servers: [{ url: origin, description: 'this operator' }] } : {}),
+    // defineRoute fragments — the endpoint route migration's R3 surface.
+    extraFragments: allRouteFragments(),
   });
   return NextResponse.json(doc);
 }

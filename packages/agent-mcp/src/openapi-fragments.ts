@@ -30,7 +30,14 @@ export interface OpenApiFragment {
    * assembled document.
    */
   path: string;
-  /** Operation object — keyed under `paths[path].post` (always POST). */
+  /**
+   * HTTP method this fragment's operation is keyed under in
+   * `paths[path]`. Omitted → `'post'` (every projected tool is POST).
+   * `defineRoute` fragments set it to the route's actual method, and
+   * the assembler merges multiple methods onto one path.
+   */
+  httpMethod?: 'get' | 'post' | 'put' | 'patch' | 'delete' | 'options';
+  /** Operation object — keyed under `paths[path][httpMethod]`. */
   operation: Record<string, unknown>;
   /**
    * Schema entries — keyed under `components.schemas[<name>]` in the

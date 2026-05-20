@@ -26,3 +26,4 @@ export {
 } from './route-stack';
 export { registerAllRoutes, registeredRouteCount } from './register';
 export { ALL_ROUTES } from './routes';
+export { routeToOpenApiFragment, allRouteFragments } from './openapi';

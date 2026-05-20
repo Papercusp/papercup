@@ -96,7 +96,7 @@ describe('assembleOpenApiDocument', () => {
         makeTool({ expose: { mcp: { name: 'dup.tool' } } }),
         makeTool({ expose: { mcp: { name: 'dup.tool' } } }),
       ]),
-    ).toThrow(/path collision/);
+    ).toThrow(/collision on/);
   });
 
   it('skips tools with no exposure (no mcp + no http)', () => {

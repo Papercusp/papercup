@@ -17,6 +17,7 @@ import type { ProjectedTool } from './tool-projection';
 import {
   standardResponseComponents,
   toolToOpenApiFragment,
+  type OpenApiFragment,
 } from './openapi-fragments';
 
 export interface OpenApiDocumentOptions {
@@ -32,6 +33,14 @@ export interface OpenApiDocumentOptions {
   securitySchemeName?: string;
   /** `servers` array. Optional — omitted when absent. */
   servers?: Array<{ url: string; description?: string }>;
+  /**
+   * Extra pre-built fragments to merge alongside the tool fragments —
+   * `defineRoute` operations (endpoint route migration R3). Each carries
+   * its own `httpMethod`; multiple methods on one path merge. The host
+   * (apps/operator) builds these from its route registry and passes them
+   * in — keeps this package free of an apps/operator dependency.
+   */
+  extraFragments?: ReadonlyArray<OpenApiFragment>;
 }
 
 /**
@@ -74,17 +83,31 @@ export function assembleOpenApiDocument(
     .filter((x): x is { tool: ProjectedTool; name: string } => x.name !== null)
     .sort((a, b) => a.name.localeCompare(b.name));
 
-  for (const { tool, name } of named) {
-    const frag = toolToOpenApiFragment(name, tool, { pathPrefix, securitySchemeName });
-    if (paths[frag.path]) {
+  // Merge a fragment into `paths` keyed by its httpMethod. Multiple
+  // methods on one path coexist (e.g. a route with GET + OPTIONS);
+  // the same path+method twice is a collision.
+  const mergeFragment = (frag: OpenApiFragment): void => {
+    const method = frag.httpMethod ?? 'post';
+    const entry = (paths[frag.path] as Record<string, unknown> | undefined) ?? {};
+    if (entry[method]) {
       throw new Error(
-        `assembleOpenApiDocument: path collision on "${frag.path}" — two tools resolved to the same operation name`,
+        `assembleOpenApiDocument: collision on "${method.toUpperCase()} ${frag.path}" — two operations claim it`,
       );
     }
-    paths[frag.path] = { post: frag.operation };
+    entry[method] = frag.operation;
+    paths[frag.path] = entry;
     for (const [schemaName, schemaBody] of Object.entries(frag.schemas)) {
       schemas[schemaName] = schemaBody;
     }
+  };
+
+  for (const { tool, name } of named) {
+    mergeFragment(toolToOpenApiFragment(name, tool, { pathPrefix, securitySchemeName }));
+  }
+
+  // defineRoute fragments (R3) — already pathPrefix-resolved by the host.
+  for (const frag of opts.extraFragments ?? []) {
+    mergeFragment(frag);
   }
 
   const responses = standardResponseComponents();
