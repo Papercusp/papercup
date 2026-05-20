@@ -81,6 +81,7 @@ type _G = {
     workspaceBackupSettings: boolean;
     backupSnapshots: boolean;
     backupEvents: boolean;
+    powerUserSessions: boolean;
   };
 };
 const _g = globalThis as unknown as _G;
@@ -141,6 +142,7 @@ const flags = _g.__ensureSchemaFlags ?? (_g.__ensureSchemaFlags = {
   workspaceBackupSettings: false,
   backupSnapshots: false,
   backupEvents: false,
+  powerUserSessions: false,
 });
 
 /**
@@ -1527,6 +1529,38 @@ export async function ensureSpawnSigVerificationFailuresTable(): Promise<void> {
       ON harness_shared.spawn_sig_verification_failures (reason, ts DESC);
   `);
   flags.spawnSigVerificationFailures = true;
+}
+
+/**
+ * Creates harness_shared.power_user_sessions — one row per active
+ * `workspace-power-user` OMP session (see
+ * docs/plans/omp-power-user-bundle-2026-05-20.md §4.1).
+ *
+ * This is the revocation surface for the OAuth-style two-token scheme:
+ * refresh requests join against this table; deleting (or stamping
+ * `revoked_at` on) a row stops the refresh chain. Access tokens stay
+ * valid until their short TTL expires — worst-case revocation latency
+ * is the access-token TTL (1h).
+ *
+ * `auth_session_id` is the `pus-<uuid>` minted by power-user-token.ts;
+ * NOT the MCP transport's `Mcp-Session-Id`.
+ */
+export async function ensurePowerUserSessionsTable(): Promise<void> {
+  if (flags.powerUserSessions) return;
+  const { sql } = getOrgPg();
+  await sql.unsafe(`
+    CREATE TABLE IF NOT EXISTS harness_shared.power_user_sessions (
+      auth_session_id TEXT PRIMARY KEY,
+      workspace_id    TEXT NOT NULL,
+      user_id         TEXT NOT NULL,
+      created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+      last_seen_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+      revoked_at      TIMESTAMPTZ
+    );
+    CREATE INDEX IF NOT EXISTS power_user_sessions_workspace_idx
+      ON harness_shared.power_user_sessions (workspace_id, created_at DESC);
+  `);
+  flags.powerUserSessions = true;
 }
 
 /**

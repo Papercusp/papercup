@@ -43,6 +43,7 @@ import type { AgentRole } from '@papercusp/plugin-sdk';
 import { withWorkspace } from '@restart/db-org';
 import { isLoopbackRequest, isValidSuperuserBearer } from '@/lib/superuser-token';
 import { logVerificationFailure, verifySpawnParams } from '@/lib/spawn-signing';
+import { verifyAccessToken } from '@/lib/power-user-token';
 // Side-effect: register every operator-side first-party tool into the
 // projected-tool registry. Required on dev (next dev compiles routes
 // lazily — without this import, MCP requests would arrive before any
@@ -99,6 +100,15 @@ export interface BuiltSpawnContext {
   parentSpawnId: string | null;
   uiClientId: string | null;
   isSuperuser?: boolean;
+  /**
+   * True for the `workspace-power-user` tier (`?power_user=1`). These
+   * calls run at the dispatch layer like superuser (`isSuperuser` is
+   * also set) but their `workspaceId` is clamped to the verified
+   * token's claim — never read from the URL. The flag is kept distinct
+   * from `isSuperuser` for audit clarity and so future quota work can
+   * tell the tiers apart.
+   */
+  isPowerUser?: boolean;
 }
 
 /**
@@ -173,6 +183,50 @@ async function tryBuildSpawnContext(extra: unknown): Promise<TrySpawnContextResu
         parentSpawnId: null,
         uiClientId: suIdentity.length > 0 ? suIdentity : null,
         isSuperuser: true,
+      },
+    };
+  }
+
+  // ── (1b) Power-user ─────────────────────────────────────────────
+  // `?power_user=1` + loopback + valid HMAC access token. Unlike
+  // superuser, the workspace is clamped to the token's claim — any
+  // `?workspace=` in the URL is ignored. See power-user-token.ts and
+  // docs/plans/omp-power-user-bundle-2026-05-20.md §4.1.
+  if (url.searchParams.get('power_user') === '1') {
+    const headers = headersFromExtra(extra);
+    if (!isLoopbackRequest(headers)) {
+      return { kind: 'failed', reason: 'power_user_non_loopback' };
+    }
+    const claims = await verifyAccessToken(bearerFromExtra(extra));
+    if (!claims) {
+      return { kind: 'failed', reason: 'power_user_invalid_token' };
+    }
+    const harnessParam = (url.searchParams.get('harness') ?? '').trim();
+    const buf = new Uint8Array(8);
+    globalThis.crypto.getRandomValues(buf);
+    return {
+      kind: 'ok',
+      ctx: {
+        // Clamp: workspace comes from the verified token, NOT the URL.
+        workspaceId: claims.workspaceId,
+        // Harness is within-workspace; resolveHarnessPaths resolves it
+        // against the clamped workspace, so reading it from the URL
+        // can't cross the workspace boundary.
+        harnessSlug: harnessParam || '*',
+        role: 'operator' as AgentRole,
+        featureId: null,
+        chunkId: null,
+        runId: globalThis.crypto.randomUUID(),
+        spawnId: `poweruser-${Array.from(buf).map((b) => b.toString(16).padStart(2, '0')).join('')}`,
+        parentSpawnId: null,
+        // The auth_session_id is a stable per-OMP-session identity —
+        // exactly one lock owner per power-user session.
+        uiClientId: claims.authSessionId,
+        // Dispatch-layer parity with superuser (operator-tier catalog
+        // + synthesized system principal + workspace tx). The clamp
+        // above is the security boundary that distinguishes the tiers.
+        isSuperuser: true,
+        isPowerUser: true,
       },
     };
   }
@@ -525,6 +579,18 @@ const handler = createMcpHandler(
 
         if (projected && spawnRes.kind === 'ok') {
           const baseCtx = await buildMcpToolContext(spawnRes.ctx, progressToken, sendNotification);
+          // Power-user workspace clamp (defense in depth). The ctx's
+          // workspaceId is already token-clamped, so any tool reading
+          // ctx.workspaceId is safe. But a handful of tools accept an
+          // explicit `workspace` ARG used as a filter (audit 2026-05-20:
+          // ui:list_clients is the only current one). For the
+          // power-user tier we overwrite that arg with the clamped
+          // workspace before the tool sees it — this defends every
+          // tool, present and future, without a per-tool audit.
+          const dispatchArgs =
+            spawnRes.ctx.isPowerUser && args && typeof args === 'object' && 'workspace' in args
+              ? { ...args, workspace: spawnRes.ctx.workspaceId }
+              : args;
           // Legacy first-party tools (defineTool with default
           // requirePrincipal=true) hard-require ctx.principal + ctx.tx
           // in their projected wrapper (see registerLegacyAsProjected
@@ -538,7 +604,7 @@ const handler = createMcpHandler(
             spawnRes.ctx.workspaceId &&
             spawnRes.ctx.workspaceId !== '*';
           const runDispatch = async (ctx: UnifiedToolContext) => {
-            const r = await dispatchProjectedTool(projected, toolName, args, ctx, PROJECTED_DEPS);
+            const r = await dispatchProjectedTool(projected, toolName, dispatchArgs, ctx, PROJECTED_DEPS);
             if (!r.ok) {
               return {
                 isError: true,
