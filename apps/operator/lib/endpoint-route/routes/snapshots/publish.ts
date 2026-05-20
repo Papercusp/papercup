@@ -1,79 +1,66 @@
 /**
- * POST /api/snapshots/<id>/publish
+ * POST /api/snapshots/:id/publish
  *
- * Uploads a local snapshot tarball to the papercusp marketplace at
- * `:3057` (read by the public site at `:3060`). Authenticates via the
- * service token in `~/.papercusp/marketplace-secrets.env`.
+ * Uploads a local snapshot to the papercusp marketplace via multipart.
+ * Auth via the service token in ~/.papercusp/marketplace-secrets.env.
  *
- *   Multipart fields per marketplace-api/server.ts:1188 :
- *     manifest  — JSON string of the snapshot's papercusp.json-shaped payload
- *     tarball   — File (the .tar.gz)
- *     readme    — optional File
+ * Ported from app/api/snapshots/[id]/publish/route.ts. `auth: 'public'` — flag-gated.
  */
-
-import { NextResponse } from 'next/server';
 import { promises as fs } from 'node:fs';
-import { join } from 'node:path';
 import { findSnapshot } from '@/lib/snapshot-discovery';
 import { withSnapshotLock } from '@/lib/snapshot-locks';
 import { recordUserAction } from '@/lib/user-actions';
-
-import { papercuspPath } from '@/lib/papercusp-root';
 import { FLAGS } from '@papercusp/flags';
 import { gateApiRoute } from '@/lib/require-flag';
-export const dynamic = 'force-dynamic';
-export const runtime = 'nodejs';
-export const maxDuration = 600;
+import { readFirstServiceToken } from '@/lib/marketplace-token';
+import { defineRoute } from '../../define-route';
 
 const MARKETPLACE_URL = process.env.PAPERCUSP_MARKETPLACE_URL ?? 'http://localhost:3057';
-import { readFirstServiceToken } from '@/lib/marketplace-token';
 
 interface Body {
-  /** Override marketplace slug. Defaults to `<harness>-snapshot-<yyyymmdd>-iter1`. */
   marketplaceSlug?: string;
-  /** Override marketplace version. Defaults to `1.0.0-ts<epochms>`. */
   marketplaceVersion?: string;
 }
 
-export async function POST(req: Request, { params }: { params: Promise<{ id: string }> }) {
-  const blocked = await gateApiRoute(req, FLAGS.SNAPSHOTS);
-  if (blocked) return blocked;
-  const { id } = await params;
-  const body = (await req.json().catch(() => ({}))) as Body;
-  return withSnapshotLock(id, async () => {
-    // Look up the source harness slug for the action log; if the snapshot
-    // doesn't exist locally, fall through to publish() which returns 404.
-    const snap = await findSnapshot(id);
-    const slug = snap?.harnessSlug ?? '_unknown';
-    try {
-      return await recordUserAction(slug, 'snapshot.publish', async () => {
-        const res = await publish(id, body);
-        const cloned = res.clone();
-        const json = await cloned.json().catch(() => ({})) as { ok?: boolean; slug?: string; version?: string; browseUrl?: string };
-        return {
-          summary: json.ok
-            ? `Published ${json.slug ?? id}@${json.version ?? '?'}`
-            : `Publish rejected for ${id}`,
-          detailUrl: json.browseUrl,
-          result: res,
-        };
-      });
-    } catch {
-      // recordUserAction stamps error_text and rethrows; the original
-      // publish() may have already returned an error NextResponse — fall
-      // back to a generic failure response.
-      return NextResponse.json({ ok: false, error: 'publish failed' }, { status: 500 });
-    }
-  });
-}
+export default defineRoute({
+  method: 'POST',
+  path: '/snapshots/:id/publish',
+  auth: 'public',
+  async handler(req, ctx) {
+    const blocked = await gateApiRoute(req, FLAGS.SNAPSHOTS);
+    if (blocked) return blocked;
+    const id = ctx.params.id as string;
+    const body = (await req.json().catch(() => ({}))) as Body;
+    return withSnapshotLock(id, async () => {
+      const snap = await findSnapshot(id);
+      const slug = snap?.harnessSlug ?? '_unknown';
+      try {
+        return await recordUserAction(slug, 'snapshot.publish', async () => {
+          const res = await publish(id, body);
+          const cloned = res.clone();
+          const json = await cloned.json().catch(() => ({})) as { ok?: boolean; slug?: string; version?: string; browseUrl?: string };
+          return {
+            summary: json.ok
+              ? `Published ${json.slug ?? id}@${json.version ?? '?'}`
+              : `Publish rejected for ${id}`,
+            detailUrl: json.browseUrl,
+            result: res,
+          };
+        });
+      } catch {
+        return Response.json({ ok: false, error: 'publish failed' }, { status: 500 });
+      }
+    });
+  },
+});
 
-async function publish(id: string, body: Body): Promise<NextResponse> {
+async function publish(id: string, body: Body): Promise<Response> {
   const snap = await findSnapshot(id);
-  if (!snap) return NextResponse.json({ ok: false, error: 'snapshot not found' }, { status: 404 });
+  if (!snap) return Response.json({ ok: false, error: 'snapshot not found' }, { status: 404 });
 
   const token = await readFirstServiceToken();
   if (!token) {
-    return NextResponse.json(
+    return Response.json(
       {
         ok: false,
         error:
@@ -86,12 +73,7 @@ async function publish(id: string, body: Body): Promise<NextResponse> {
   const slug = body.marketplaceSlug ?? defaultSlug(snap.harnessSlug);
   const version = body.marketplaceVersion ?? `1.0.0-ts${Date.now()}`;
 
-  // Inherit the source template's icon so published snapshots render with
-  // a meaningful glyph instead of falling back to the generic "Layers"
-  // shape. Best-effort: failures (missing template, marketplace down)
-  // silently degrade to no-icon and the renderer's fallback kicks in.
   const sourceIcon = await resolveSourceIcon(snap.manifest.template?.name);
-
   const manifestPayload = buildMarketplaceManifest(snap.manifest, slug, version, sourceIcon);
 
   const tarballBytes = await fs.readFile(snap.tarballPath);
@@ -116,7 +98,7 @@ async function publish(id: string, body: Body): Promise<NextResponse> {
       body: form,
     });
   } catch (e: unknown) {
-    return NextResponse.json(
+    return Response.json(
       { ok: false, error: `marketplace unreachable at ${MARKETPLACE_URL}: ${(e as Error).message}` },
       { status: 502 },
     );
@@ -124,24 +106,19 @@ async function publish(id: string, body: Body): Promise<NextResponse> {
 
   const respBody = await res.json().catch(() => ({}));
   if (!res.ok) {
-    return NextResponse.json(
+    return Response.json(
       { ok: false, error: `marketplace rejected (${res.status})`, detail: respBody },
       { status: 502 },
     );
   }
 
-  // Marketplace site lives at :3060 (preferred for browsing).
   const marketplaceSite =
     process.env.PAPERCUSP_MARKETPLACE_SITE_URL ?? 'http://localhost:3060';
   const browseUrl = `${marketplaceSite}/marketplace/${slug}/${version}`;
 
-  // Persist the publish record next to the tarball so the operator UI
-  // (and the retract endpoint) can recall what slug+version this snapshot
-  // was published as. Append-only — multiple publishes accumulate, so
-  // a snapshot republished under a new version doesn't lose history.
   await recordPublish(snap.tarballPath, { slug, version, browseUrl, publishedAtMs: Date.now() });
 
-  return NextResponse.json({
+  return Response.json({
     ok: true,
     slug,
     version,
@@ -164,8 +141,7 @@ async function recordPublish(tarballPath: string, rec: PublishRecord): Promise<v
     const raw = await fs.readFile(sidecar, 'utf8');
     const parsed = JSON.parse(raw);
     if (Array.isArray(parsed)) existing = parsed.filter((x) => x && typeof x === 'object');
-  } catch { /* file missing or malformed — start fresh */ }
-  // Dedup on slug+version (idempotent re-publish under same coords).
+  } catch { /* file missing or malformed */ }
   const next = existing.filter((e) => !(e.slug === rec.slug && e.version === rec.version));
   next.push(rec);
   await fs.writeFile(sidecar, JSON.stringify(next, null, 2), 'utf8');
@@ -216,11 +192,7 @@ function buildMarketplaceManifest(
       partial: m.partial,
       capturedAt: new Date(m.createdAt).toISOString(),
       redactions: m.redactions,
-      // Pass through the original manifest verbatim so consumers can
-      // inspect the full shape without a separate fetch.
       original: m,
     },
   };
 }
-
-// Service token now PG-backed via @/lib/marketplace-token (migration 024).

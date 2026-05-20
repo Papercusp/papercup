@@ -1,15 +1,6 @@
 /**
- * Locks in the contract that GET /api/snapshots and GET /api/snapshots/[id]
- * agree on the flat top-level shape. The 2026-04-30 snapshot E2E test surfaced
- * a divergence — list flattened manifest fields (name/description/license/
- * filesCount/etc.) while detail kept everything nested under
- * `snapshot.manifest`, forcing API consumers to know two contracts.
- *
- * The fix augments detail with the same flat fields. If someone later strips
- * a field from one endpoint without the other, this test fails.
- *
- * We exercise the handlers directly with mocked snapshot-discovery so the
- * test is self-contained (no fs / no live server).
+ * GET /api/snapshots and GET /api/snapshots/:id must agree on a flat
+ * top-level shape. Pinned because the 2026-04-30 E2E found a divergence.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
@@ -17,10 +8,16 @@ vi.mock('@/lib/snapshot-discovery', () => ({
   listAllSnapshots: vi.fn(),
   findSnapshot: vi.fn(),
 }));
+vi.mock('@/lib/endpoint-route/telemetry', () => ({
+  recordRouteInvocation: vi.fn(async () => {}),
+}));
+vi.mock('@/lib/require-flag', () => ({
+  gateApiRoute: vi.fn(async () => null),
+}));
 
-import { GET as listGET } from './route';
-import { GET as detailGET } from './[id]/route';
+import { Hono } from 'hono';
 import * as discovery from '@/lib/snapshot-discovery';
+import { registerAllRoutes } from '../register';
 
 const FIXTURE = {
   id: 'snap_test',
@@ -52,43 +49,32 @@ const FIXTURE = {
   },
 };
 
+const FLAT_FIELDS = [
+  'id', 'harnessSlug', 'bytes', 'createdAtMs', 'name', 'description', 'template',
+  'filesCount', 'excludedCount', 'pluginsCount', 'partial', 'license', 'redactions', 'publishes',
+] as const;
+
+let app: Hono;
+
 beforeEach(() => {
   vi.mocked(discovery.listAllSnapshots).mockResolvedValue([FIXTURE as any]);
   vi.mocked(discovery.findSnapshot).mockResolvedValue(FIXTURE as any);
+  app = new Hono().basePath('/api');
+  registerAllRoutes(app);
 });
-
-const FLAT_FIELDS = [
-  'id',
-  'harnessSlug',
-  'bytes',
-  'createdAtMs',
-  'name',
-  'description',
-  'template',
-  'filesCount',
-  'excludedCount',
-  'pluginsCount',
-  'partial',
-  'license',
-  'redactions',
-  'publishes',
-] as const;
 
 describe('snapshot list/detail shape contract', () => {
   it('list endpoint exposes every flat field', async () => {
-    const res = await listGET();
+    const res = await app.request('/api/snapshots');
     const body = await res.json();
     expect(body.snapshots).toHaveLength(1);
-    const row = body.snapshots[0];
     for (const k of FLAT_FIELDS) {
-      expect(row, `list missing flat field "${k}"`).toHaveProperty(k);
+      expect(body.snapshots[0], `list missing flat field "${k}"`).toHaveProperty(k);
     }
   });
 
   it('detail endpoint exposes every flat field at the SAME path', async () => {
-    const res = await detailGET(new Request('http://test/'), {
-      params: Promise.resolve({ id: 'snap_test' }),
-    });
+    const res = await app.request('/api/snapshots/snap_test');
     const body = await res.json();
     expect(body.ok).toBe(true);
     for (const k of FLAT_FIELDS) {
@@ -97,32 +83,19 @@ describe('snapshot list/detail shape contract', () => {
   });
 
   it('list and detail emit identical values for every shared flat field', async () => {
-    const listRes = await listGET();
-    const listRow = (await listRes.json()).snapshots[0];
-
-    const detRes = await detailGET(new Request('http://test/'), {
-      params: Promise.resolve({ id: 'snap_test' }),
-    });
-    const detail = (await detRes.json()).snapshot;
-
+    const listRow = (await (await app.request('/api/snapshots')).json()).snapshots[0];
+    const detail = (await (await app.request('/api/snapshots/snap_test')).json()).snapshot;
     for (const k of FLAT_FIELDS) {
-      expect(detail[k], `field "${k}" differs between list and detail`)
-        .toEqual(listRow[k]);
+      expect(detail[k], `field "${k}" differs between list and detail`).toEqual(listRow[k]);
     }
   });
 
-  it('detail keeps the full manifest nested for callers who need files[]/excluded[]/plugins[]', async () => {
-    const detRes = await detailGET(new Request('http://test/'), {
-      params: Promise.resolve({ id: 'snap_test' }),
-    });
-    const detail = (await detRes.json()).snapshot;
-    expect(detail.manifest).toBeTruthy();
+  it('detail keeps the full manifest nested; list only counts', async () => {
+    const detail = (await (await app.request('/api/snapshots/snap_test')).json()).snapshot;
     expect(detail.manifest.files).toHaveLength(2);
     expect(detail.manifest.excluded).toHaveLength(1);
     expect(detail.manifest.plugins).toHaveLength(1);
-    // List does NOT include these arrays — only the counts
-    const listRes = await listGET();
-    const listRow = (await listRes.json()).snapshots[0];
+    const listRow = (await (await app.request('/api/snapshots')).json()).snapshots[0];
     expect(listRow).not.toHaveProperty('manifest');
     expect(listRow.filesCount).toBe(2);
     expect(listRow.excludedCount).toBe(1);
@@ -131,9 +104,7 @@ describe('snapshot list/detail shape contract', () => {
 
   it('detail returns 404 when the snapshot is unknown', async () => {
     vi.mocked(discovery.findSnapshot).mockResolvedValue(null);
-    const res = await detailGET(new Request('http://test/'), {
-      params: Promise.resolve({ id: 'missing' }),
-    });
+    const res = await app.request('/api/snapshots/missing');
     expect(res.status).toBe(404);
     const body = await res.json();
     expect(body.ok).toBe(false);

@@ -23,6 +23,13 @@ import flagsSet from './flags/set';
 import flagsTestingFeatures from './flags/testing-features';
 import flagsPreset from './flags/preset';
 import flagsDashboardUrl from './flags/dashboard-url';
+import snapshotsList from './snapshots/index';
+import snapshotsCreate from './snapshots/create';
+import snapshotsById from './snapshots/by-id';
+import snapshotsShape from './snapshots/shape';
+import snapshotsPublish from './snapshots/publish';
+import snapshotsRetract from './snapshots/retract';
+import snapshotsInstantiate from './snapshots/instantiate';
 import devRouteInvocations from './dev/route-invocations';
 import agentConfig from './agent-config/index';
 import agentConfigTest from './agent-config/test';
@@ -137,6 +144,13 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(flagsTestingFeatures as AnyRoute[]),
   ...flatten(flagsPreset as AnyRoute),
   ...flatten(flagsDashboardUrl as AnyRoute),
+  ...flatten(snapshotsList as AnyRoute),
+  ...flatten(snapshotsCreate as AnyRoute),
+  ...flatten(snapshotsById as AnyRoute[]),
+  ...flatten(snapshotsShape as AnyRoute),
+  ...flatten(snapshotsPublish as AnyRoute),
+  ...flatten(snapshotsRetract as AnyRoute),
+  ...flatten(snapshotsInstantiate as AnyRoute),
   ...flatten(devRouteInvocations as AnyRoute),
   ...flatten(agentConfig as AnyRoute[]),
   ...flatten(agentConfigTest as AnyRoute),

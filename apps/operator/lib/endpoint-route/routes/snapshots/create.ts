@@ -1,4 +1,11 @@
-import { NextResponse } from 'next/server';
+/**
+ * POST /api/snapshots/create
+ *
+ * Creates a snapshot of a harness — captures fs + plugin configs (redacted),
+ * applies share-semantics, wraps with recordUserAction.
+ *
+ * Ported from app/api/snapshots/create/route.ts. `auth: 'public'` — flag-gated.
+ */
 import { promises as fs } from 'node:fs';
 import { join } from 'node:path';
 import {
@@ -10,14 +17,11 @@ import {
 import { findProject } from '@/lib/snapshot-discovery';
 import { redactPluginConfig } from '@/lib/snapshot-config-redact';
 import { extractShape, type ConfigSchema } from '@/lib/snapshot-shape';
-
 import { papercuspPath } from '@/lib/papercusp-root';
 import { recordUserAction } from '@/lib/user-actions';
 import { FLAGS } from '@papercusp/flags';
 import { gateApiRoute } from '@/lib/require-flag';
-export const dynamic = 'force-dynamic';
-export const runtime = 'nodejs';
-export const maxDuration = 600;
+import { defineRoute } from '../../define-route';
 
 interface CreateBody {
   slug: string;
@@ -29,75 +33,79 @@ interface CreateBody {
   includeOperatorNotes?: boolean;
   acceptSoftCap?: boolean;
   acceptVerifiedSecrets?: boolean;
-  /** Confirm `--include-secrets` for plugins with `snapshotPolicy: "include"` fields. */
   includeSecretsConfirmed?: boolean;
 }
 
 function HARNESSES_DIR() { return papercuspPath('harnesses'); }
 
-export async function POST(req: Request) {
-  const blocked = await gateApiRoute(req, FLAGS.SNAPSHOTS);
-  if (blocked) return blocked;
-  let body: CreateBody;
-  try {
-    body = (await req.json()) as CreateBody;
-  } catch {
-    return NextResponse.json({ ok: false, error: 'invalid json body' }, { status: 400 });
-  }
-  const slug = String(body.slug ?? '').trim();
-  if (!slug) {
-    return NextResponse.json({ ok: false, error: 'slug required' }, { status: 400 });
-  }
+export default defineRoute({
+  method: 'POST',
+  path: '/snapshots/create',
+  auth: 'public',
+  async handler(req) {
+    const blocked = await gateApiRoute(req, FLAGS.SNAPSHOTS);
+    if (blocked) return blocked;
+    let body: CreateBody;
+    try {
+      body = (await req.json()) as CreateBody;
+    } catch {
+      return Response.json({ ok: false, error: 'invalid json body' }, { status: 400 });
+    }
+    const slug = String(body.slug ?? '').trim();
+    if (!slug) {
+      return Response.json({ ok: false, error: 'slug required' }, { status: 400 });
+    }
 
-  const project = await findProject(slug);
-  if (!project) {
-    return NextResponse.json({ ok: false, error: `unknown harness "${slug}"` }, { status: 404 });
-  }
+    const project = await findProject(slug);
+    if (!project) {
+      return Response.json({ ok: false, error: `unknown harness "${slug}"` }, { status: 404 });
+    }
 
-  const template = await readTemplate(slug);
-  const plugins = await readEnabledPlugins(slug, { includeSecretsConfirmed: !!body.includeSecretsConfirmed });
+    const template = await readTemplate(slug);
+    const plugins = await readEnabledPlugins(slug, { includeSecretsConfirmed: !!body.includeSecretsConfirmed });
 
-  try {
-    const result = await recordUserAction(slug, 'snapshot.create', async () => {
-      const r = await capture({
-        harnessSlug: slug,
-        projectDir: project.path,
-        template,
-        substrateVersion: '0.0.1',
-        schemaVersionDb: 0,
-        minSubstrateVersion: '0.0.1',
-        name: body.name ?? `${slug} snapshot @ ${new Date().toISOString().slice(0, 16)}`,
-        description: body.description,
-        license: body.license ?? 'MIT',
-        plugins,
-        capture: {
-          includeGit: !!body.includeGit,
-          includeAgentTranscripts: !!body.includeAgentTranscripts,
-          includeOperatorNotes: !!body.includeOperatorNotes,
-        },
-        drainMode: 'interactive',
-        acceptVerifiedSecrets: !!body.acceptVerifiedSecrets,
-        acceptSoftCap: !!body.acceptSoftCap,
+    try {
+      const result = await recordUserAction(slug, 'snapshot.create', async () => {
+        const r = await capture({
+          harnessSlug: slug,
+          projectDir: project.path,
+          template,
+          substrateVersion: '0.0.1',
+          schemaVersionDb: 0,
+          minSubstrateVersion: '0.0.1',
+          name: body.name ?? `${slug} snapshot @ ${new Date().toISOString().slice(0, 16)}`,
+          description: body.description,
+          license: body.license ?? 'MIT',
+          plugins,
+          capture: {
+            includeGit: !!body.includeGit,
+            includeAgentTranscripts: !!body.includeAgentTranscripts,
+            includeOperatorNotes: !!body.includeOperatorNotes,
+          },
+          drainMode: 'interactive',
+          acceptVerifiedSecrets: !!body.acceptVerifiedSecrets,
+          acceptSoftCap: !!body.acceptSoftCap,
+        });
+        return {
+          summary: `Snapshot ${r.manifest.id} created (${r.manifest.files.length} files, ${(r.bytesCompressed / 1024).toFixed(1)} KB)`,
+          result: r,
+        };
       });
-      return {
-        summary: `Snapshot ${r.manifest.id} created (${r.manifest.files.length} files, ${(r.bytesCompressed / 1024).toFixed(1)} KB)`,
-        result: r,
-      };
-    });
-    return NextResponse.json({
-      ok: true,
-      id: result.manifest.id,
-      tarballPath: result.tarballPath,
-      bytes: result.bytesCompressed,
-      durationMs: result.durationMs,
-      filesCount: result.manifest.files.length,
-      warnings: result.warnings,
-    });
-  } catch (e: unknown) {
-    const msg = e instanceof Error ? e.message : String(e);
-    return NextResponse.json({ ok: false, error: msg }, { status: 500 });
-  }
-}
+      return Response.json({
+        ok: true,
+        id: result.manifest.id,
+        tarballPath: result.tarballPath,
+        bytes: result.bytesCompressed,
+        durationMs: result.durationMs,
+        filesCount: result.manifest.files.length,
+        warnings: result.warnings,
+      });
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      return Response.json({ ok: false, error: msg }, { status: 500 });
+    }
+  },
+});
 
 async function readTemplate(slug: string): Promise<{ name: string; version: string }> {
   try {
@@ -151,10 +159,6 @@ async function readEnabledPlugins(
       pinExtras = readCapturePluginExtras(m);
       isBundled = isBundledPlugin(m);
     } catch { /* empty */ }
-    // Per rev3 plan G+5 / A10: bundled plugins ship with the operator
-    // install; they're substrate, not user state. Skip from snapshot —
-    // a fork's new install will already have them via its own bundled
-    // set.
     if (isBundled) {
       // eslint-disable-next-line no-console
       console.log(`[snapshot] excluding bundled plugin from snapshot.plugins[]: ${pluginSlug}`);
@@ -168,7 +172,6 @@ async function readEnabledPlugins(
       );
     } catch { /* empty */ }
 
-    // 1) Apply explicit per-field share-semantics flags (extractShape).
     let shapeJson: string | undefined;
     let shapedConfigJson = configJson;
     if (configSchema) {
@@ -184,11 +187,10 @@ async function readEnabledPlugins(
           console.log(`[snapshot] shape warnings for ${pluginSlug}:`, shape.warnings);
         }
       } catch {
-        // malformed configJson — fall through to legacy redactor only
+        // malformed configJson — fall through to legacy redactor
       }
     }
 
-    // 2) Apply legacy uiSchema:password redactor as defense-in-depth.
     const redacted = redactPluginConfig({ configJson: shapedConfigJson, uiSchema });
     out.push({
       name: pluginSlug,
@@ -196,9 +198,6 @@ async function readEnabledPlugins(
       capabilities: caps,
       configJson: redacted.configJson,
       ...(shapeJson ? { shapeJson } : {}),
-      // v2 canonical fields written first; legacy pluginVersionPinned
-      // kept for one cycle so older readers still understand. Drop
-      // legacy after one release cycle.
       ...(pinExtras.runtime ? { runtime: pinExtras.runtime } : {}),
       versionPin: pinExtras.versionPin,
       pluginVersionPinned: pinExtras.pluginVersionPinned,

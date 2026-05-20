@@ -1,4 +1,12 @@
-import { NextResponse } from 'next/server';
+/**
+ * POST /api/snapshots/:id/instantiate
+ *
+ * Forks a snapshot into a new harness. Optional user-supplied name,
+ * per-plugin config overrides for stripped fields, alias resolution
+ * against the installed manifest, grant carry-over.
+ *
+ * Ported from app/api/snapshots/[id]/instantiate/route.ts. `auth: 'public'` — flag-gated.
+ */
 import { promises as fs } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { restore, readManifestFromTarball } from '@papercusp/export-state';
@@ -8,62 +16,54 @@ import { recordUserAction } from '@/lib/user-actions';
 import { mirrorPluginConfig } from '@/lib/plugin-configs-pg';
 import { resolveAliases, type ConfigSchema } from '@/lib/snapshot-shape';
 import { copyGrantsToNewHarness } from '@/lib/plugin-grants';
-
 import { papercuspPath } from '@/lib/papercusp-root';
 import { FLAGS } from '@papercusp/flags';
 import { gateApiRoute } from '@/lib/require-flag';
-export const dynamic = 'force-dynamic';
-export const runtime = 'nodejs';
-export const maxDuration = 600;
+import { defineRoute } from '../../define-route';
 
 function PROJECTS_DIR() { return papercuspPath('projects'); }
 function REGISTRY_PATH() { return papercuspPath('registry.json'); }
+function HARNESSES_DIR() { return papercuspPath('harnesses'); }
+function GLOBAL_PLUGINS_DIR() { return papercuspPath('global-plugins'); }
 
 interface Body {
-  /** Optional human-friendly slug suffix the user supplied. Defaults to the
-   *  fork-suffix the lib generates. We rename after restore if provided. */
   name?: string;
   acceptPartial?: boolean;
   rewriteAmbiguousSlugs?: boolean;
-  /**
-   * Per-plugin config overrides supplied by the fork-completion UI to
-   * fill in `shareable: false` and `secret: true` fields the snapshot
-   * stripped. Applied AFTER restore() persists the redacted base config.
-   * Map: pluginSlug → field overrides.
-   */
   pluginConfigOverrides?: Record<string, Record<string, unknown>>;
 }
 
-export async function POST(req: Request, { params }: { params: Promise<{ id: string }> }) {
-  const blocked = await gateApiRoute(req, FLAGS.SNAPSHOTS);
-  if (blocked) return blocked;
-  const { id } = await params;
-  const body = (await req.json().catch(() => ({}))) as Body;
-  return withSnapshotLock(id, async () => {
-    const snap = await findSnapshot(id);
-    const slug = snap?.harnessSlug ?? '_unknown';
-    return recordUserAction(slug, 'snapshot.fork', async () => {
-      const res = await instantiate(id, body);
-      const cloned = res.clone();
-      const json = await cloned.json().catch(() => ({})) as { ok?: boolean; slug?: string };
-      return {
-        summary: json.ok
-          ? `Forked ${id} → ${json.slug ?? '?'}`
-          : `Fork rejected for ${id}`,
-        result: res,
-      };
+export default defineRoute({
+  method: 'POST',
+  path: '/snapshots/:id/instantiate',
+  auth: 'public',
+  async handler(req, ctx) {
+    const blocked = await gateApiRoute(req, FLAGS.SNAPSHOTS);
+    if (blocked) return blocked;
+    const id = ctx.params.id as string;
+    const body = (await req.json().catch(() => ({}))) as Body;
+    return withSnapshotLock(id, async () => {
+      const snap = await findSnapshot(id);
+      const slug = snap?.harnessSlug ?? '_unknown';
+      return recordUserAction(slug, 'snapshot.fork', async () => {
+        const res = await instantiate(id, body);
+        const cloned = res.clone();
+        const json = await cloned.json().catch(() => ({})) as { ok?: boolean; slug?: string };
+        return {
+          summary: json.ok
+            ? `Forked ${id} → ${json.slug ?? '?'}`
+            : `Fork rejected for ${id}`,
+          result: res,
+        };
+      });
     });
-  });
-}
+  },
+});
 
-async function instantiate(id: string, body: Body): Promise<NextResponse> {
+async function instantiate(id: string, body: Body): Promise<Response> {
   const snap = await findSnapshot(id);
-  if (!snap) return NextResponse.json({ ok: false, error: 'snapshot not found' }, { status: 404 });
+  if (!snap) return Response.json({ ok: false, error: 'snapshot not found' }, { status: 404 });
 
-  // Validate user-provided name (if any) before doing real work. Hyphens
-  // are not valid in unquoted Postgres identifiers, so we collapse runs
-  // of any non-[a-z0-9._] character to a single underscore — same approach
-  // the lib's `_fork_` convention takes.
   let userName: string | undefined;
   if (typeof body.name === 'string' && body.name.trim()) {
     const sanitized = body.name
@@ -72,11 +72,11 @@ async function instantiate(id: string, body: Body): Promise<NextResponse> {
       .replace(/[^a-z0-9._]+/g, '_')
       .replace(/^_+|_+$/g, '');
     if (!/^[a-z0-9][a-z0-9._]{0,63}$/i.test(sanitized)) {
-      return NextResponse.json({ ok: false, error: `invalid name "${body.name}"` }, { status: 400 });
+      return Response.json({ ok: false, error: `invalid name "${body.name}"` }, { status: 400 });
     }
     const reg = await readRegistry();
     if (reg.projects.some((p) => p.slug === sanitized)) {
-      return NextResponse.json(
+      return Response.json(
         { ok: false, error: `harness "${sanitized}" already exists` },
         { status: 409 },
       );
@@ -95,15 +95,11 @@ async function instantiate(id: string, body: Body): Promise<NextResponse> {
       consent: 'grant-all',
     });
 
-    // If user supplied a custom name, rename the schema + project dir +
-    // registry entry. Otherwise the lib's default `<orig>_fork_<6-base32>`
-    // stands. On rename failure we leave the lib-default state intact
-    // rather than half-rolled-back; lib already wrote the registry.
     if (userName && userName !== result.newSlug) {
       try {
         await renameHarness(result.newSlug, userName, result.projectDir);
       } catch (e: unknown) {
-        return NextResponse.json(
+        return Response.json(
           {
             ok: false,
             error: `restore succeeded but rename to "${userName}" failed: ${e instanceof Error ? e.message : String(e)}`,
@@ -117,27 +113,14 @@ async function instantiate(id: string, body: Body): Promise<NextResponse> {
 
     const finalSlug = userName && userName !== result.newSlug ? userName : result.newSlug;
 
-    // Carry per-(plugin, harness) capability grants from the source harness
-    // to the new fork. Without this, plugins would silently degrade to
-    // file-fallback or no-grants on first invocation in the fork until the
-    // user re-grants in /installed/plugins/<slug>/permissions. Best-effort
-    // — grants are advisory; a failure here doesn't fail the fork.
     if (snap.harnessSlug && snap.harnessSlug !== finalSlug) {
       try {
         await copyGrantsToNewHarness(snap.harnessSlug, finalSlug);
-      } catch { /* PG unavailable or table missing — fall through silently */ }
+      } catch { /* PG unavailable — silent */ }
     }
 
-    // Apply share-semantics: per-plugin overrides for stripped fields +
-    // resolve schema-evolution aliases against the *current* installed
-    // manifest. This lets a snapshot taken under v0.1 fork into a v0.2
-    // installation that renamed a field. Runs against `finalSlug`, so it
-    // works whether or not the user supplied a custom name.
     let applied: { applied: string[]; warnings: string[] } | undefined;
     if (body.pluginConfigOverrides) {
-      // Load the snapshot's preserved (post-extractShape) configs from the
-      // manifest; restore() writes them to disk under different naming
-      // conventions, so we read them back from the source-of-truth.
       let snapshotPreservedConfigs: Record<string, Record<string, unknown>> = {};
       try {
         const manifest = await readManifestFromTarball(snap.tarballPath);
@@ -147,20 +130,13 @@ async function instantiate(id: string, body: Body): Promise<NextResponse> {
             snapshotPreservedConfigs[p.name] = JSON.parse(p.configJson) as Record<string, unknown>;
           } catch { /* skip malformed */ }
         }
-      } catch {
-        // Manifest read failed — fall through with empty preserved configs.
-      }
+      } catch { /* manifest read failed */ }
       applied = await applyForkOverrides(finalSlug, body.pluginConfigOverrides, snapshotPreservedConfigs);
     }
 
-    // Compute the post-fork provisioning queue: walk the new harness's
-    // enabled-plugins.json, look up each plugin's manifest, return the
-    // ones that declare provision.setup. The fork-completion UI walks
-    // this queue (consent → run → next) before redirecting to the
-    // harness dashboard.
     const pendingProvisioning = await listPendingProvisioning(finalSlug);
 
-    return NextResponse.json({
+    return Response.json({
       ok: true,
       newSlug: finalSlug,
       projectDir: join(PROJECTS_DIR(), finalSlug),
@@ -171,12 +147,9 @@ async function instantiate(id: string, body: Body): Promise<NextResponse> {
     });
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : String(e);
-    return NextResponse.json({ ok: false, error: msg }, { status: 500 });
+    return Response.json({ ok: false, error: msg }, { status: 500 });
   }
 }
-
-function HARNESSES_DIR() { return papercuspPath('harnesses'); }
-function GLOBAL_PLUGINS_DIR() { return papercuspPath('global-plugins'); }
 
 async function applyForkOverrides(
   newSlug: string,
@@ -187,18 +160,11 @@ async function applyForkOverrides(
   const warnings: string[] = [];
   for (const [pluginSlug, fields] of Object.entries(overrides)) {
     const cfgPath = join(HARNESSES_DIR(), newSlug, 'plugin-configs', `${pluginSlug}.json`);
-    // Base = the snapshot's preserved (post-extractShape) config. The
-    // restore-written file (if any) overlays on top of this; user
-    // overrides overlay last.
     let existing: Record<string, unknown> = snapshotPreservedConfigs[pluginSlug] ?? {};
     try {
       const onDisk = JSON.parse(await fs.readFile(cfgPath, 'utf8')) as Record<string, unknown>;
       existing = { ...existing, ...onDisk };
-    } catch {
-      // No file on disk — manifest preserved config is our only base.
-    }
-    // Run alias resolution against the installed manifest (not the
-    // snapshot's manifest) so renames in the *current* schema take effect.
+    } catch { /* no file on disk */ }
     let installedSchema: ConfigSchema | undefined;
     try {
       const m = JSON.parse(
@@ -217,15 +183,11 @@ async function applyForkOverrides(
       }
     }
     const merged = { ...resolved, ...fields };
-    // Plugin slugs with `/` (npm-scoped names like `@papercupai/foo`) need
-    // the nested scope directory to exist; mkdir the cfg's parent dir.
     await fs.mkdir(dirname(cfgPath), { recursive: true });
     await fs.writeFile(cfgPath, JSON.stringify(merged, null, 2) + '\n');
     try {
       await mirrorPluginConfig(newSlug, pluginSlug, merged);
-    } catch {
-      // Best-effort PG mirror; file is authoritative.
-    }
+    } catch { /* file authoritative */ }
     applied.push(pluginSlug);
   }
   return { applied, warnings };
@@ -248,7 +210,6 @@ async function renameHarness(
 
   const newDir = join(PROJECTS_DIR(), newSlug);
   await fs.rename(oldProjectDir, newDir).catch(async () => {
-    // Cross-device fallback: copy then unlink
     await copyDir(oldProjectDir, newDir);
     await fs.rm(oldProjectDir, { recursive: true, force: true });
   });
@@ -317,7 +278,6 @@ async function listPendingProvisioning(harnessSlug: string): Promise<PendingProv
   const slugs = Object.keys(enabled?.enabled ?? {});
   if (slugs.length === 0) return [];
 
-  // Parallelized — see /docs/performance #A1.
   const results = await Promise.all(slugs.map(async (pluginSlug) => {
     const manifestPath = join(GLOBAL_PLUGINS_DIR(), pluginSlug, 'papercusp.json');
     let manifest: PluginManifest;

@@ -1,11 +1,15 @@
 /**
- * Tests for /api/snapshots/[id]/shape.
- *
- * Verifies 404 on missing snapshot, and shape extraction round-trip.
- * Mocks `findSnapshot` and `readManifestFromTarball` so we don't need a
- * real tarball on disk.
+ * Tests for /api/snapshots/:id/shape — 404, 500, shape extraction,
+ * malformed-shapeJson graceful handling.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+vi.mock('@/lib/endpoint-route/telemetry', () => ({
+  recordRouteInvocation: vi.fn(async () => {}),
+}));
+vi.mock('@/lib/require-flag', () => ({
+  gateApiRoute: vi.fn(async () => null),
+}));
 
 beforeEach(() => {
   vi.resetModules();
@@ -16,13 +20,14 @@ afterEach(() => {
 });
 
 async function call(id: string) {
-  const { GET } = await import('./route');
-  return GET(new Request(`http://x/api/snapshots/${id}/shape`), {
-    params: Promise.resolve({ id }),
-  });
+  const { Hono } = await import('hono');
+  const { registerAllRoutes } = await import('../register');
+  const app = new Hono().basePath('/api');
+  registerAllRoutes(app);
+  return app.request(`/api/snapshots/${id}/shape`);
 }
 
-describe('GET /api/snapshots/[id]/shape', () => {
+describe('GET /api/snapshots/:id/shape', () => {
   it('returns 404 when snapshot is unknown', async () => {
     vi.doMock('@/lib/snapshot-discovery', () => ({
       findSnapshot: async () => null,
@@ -36,7 +41,9 @@ describe('GET /api/snapshots/[id]/shape', () => {
       findSnapshot: async () => ({ id: 'snap_x', tarballPath: '/no/such/path.tar.gz' }),
     }));
     vi.doMock('@papercusp/export-state', () => ({
-      effectiveVersionPin: (p: { versionPin?: { mode: string; allowOverride?: string }; pluginVersionPinned?: boolean }) => p.versionPin ? { mode: p.versionPin.mode, allowOverride: p.versionPin.allowOverride ?? 'security-patch' } : { mode: p.pluginVersionPinned === false ? 'semver' : 'exact', allowOverride: 'security-patch' },
+      effectiveVersionPin: (p: any) => p.versionPin
+        ? { mode: p.versionPin.mode, allowOverride: p.versionPin.allowOverride ?? 'security-patch' }
+        : { mode: p.pluginVersionPinned === false ? 'semver' : 'exact', allowOverride: 'security-patch' },
       readManifestFromTarball: async () => { throw new Error('tarball missing'); },
     }));
     const r = await call('snap_x');
@@ -50,7 +57,9 @@ describe('GET /api/snapshots/[id]/shape', () => {
       findSnapshot: async () => ({ id: 'snap_x', tarballPath: '/fake/path.tar.gz' }),
     }));
     vi.doMock('@papercusp/export-state', () => ({
-      effectiveVersionPin: (p: { versionPin?: { mode: string; allowOverride?: string }; pluginVersionPinned?: boolean }) => p.versionPin ? { mode: p.versionPin.mode, allowOverride: p.versionPin.allowOverride ?? 'security-patch' } : { mode: p.pluginVersionPinned === false ? 'semver' : 'exact', allowOverride: 'security-patch' },
+      effectiveVersionPin: (p: any) => p.versionPin
+        ? { mode: p.versionPin.mode, allowOverride: p.versionPin.allowOverride ?? 'security-patch' }
+        : { mode: p.pluginVersionPinned === false ? 'semver' : 'exact', allowOverride: 'security-patch' },
       readManifestFromTarball: async () => ({
         plugins: [
           {
@@ -69,7 +78,6 @@ describe('GET /api/snapshots/[id]/shape', () => {
           {
             name: 'pre-v1-plugin',
             version: '0.1.0',
-            // No shapeJson — pre-V1 snapshot. Should default pinned=true and shape=null.
             configJson: JSON.stringify({ x: 1 }),
           },
         ],
@@ -90,7 +98,6 @@ describe('GET /api/snapshots/[id]/shape', () => {
 
     const old = body.plugins[1];
     expect(old.shape).toBeNull();
-    // Default `true` per spec when absent.
     expect(old.pluginVersionPinned).toBe(true);
   });
 
@@ -99,11 +106,11 @@ describe('GET /api/snapshots/[id]/shape', () => {
       findSnapshot: async () => ({ id: 'snap_x', tarballPath: '/fake/path.tar.gz' }),
     }));
     vi.doMock('@papercusp/export-state', () => ({
-      effectiveVersionPin: (p: { versionPin?: { mode: string; allowOverride?: string }; pluginVersionPinned?: boolean }) => p.versionPin ? { mode: p.versionPin.mode, allowOverride: p.versionPin.allowOverride ?? 'security-patch' } : { mode: p.pluginVersionPinned === false ? 'semver' : 'exact', allowOverride: 'security-patch' },
+      effectiveVersionPin: (p: any) => p.versionPin
+        ? { mode: p.versionPin.mode, allowOverride: p.versionPin.allowOverride ?? 'security-patch' }
+        : { mode: p.pluginVersionPinned === false ? 'semver' : 'exact', allowOverride: 'security-patch' },
       readManifestFromTarball: async () => ({
-        plugins: [
-          { name: 'broken', version: '0.1.0', shapeJson: '{not json' },
-        ],
+        plugins: [{ name: 'broken', version: '0.1.0', shapeJson: '{not json' }],
       }),
     }));
     const r = await call('snap_x');
