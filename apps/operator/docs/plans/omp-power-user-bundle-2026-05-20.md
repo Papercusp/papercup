@@ -54,10 +54,11 @@ There are three categories of Papercusp user:
 1. **End users in the desktop app.** Interact only via the chat UI,
    the harness panel, and approval prompts. Don't see MCP at all.
 2. **Engineers building Papercusp** (currently: marsh-office).
-   Run `omp` / Claude Code / Codex / Gemini against
-   `localhost:3070/api/mcp?superuser=1` with admin-tier access
-   across every workspace, seeded by a hand-installed CLAUDE.md
-   playbook.
+   Run `omp` against `localhost:3070/api/mcp?superuser=1` with
+   admin-tier access across every workspace, seeded by a
+   hand-installed playbook. OMP is the one sanctioned agent runtime
+   — engineers who want a Claude, GPT, or Gemini *model* select it
+   within OMP (`omp --model …`), not a separate agent CLI.
 3. **Advanced power users.** Today: nothing. They are end users with
    no escape hatch into the agent surface, even though they are
    capable of managing their own terminal, their own `omp` install,
@@ -66,15 +67,15 @@ There are three categories of Papercusp user:
 The middle tier is configured via `install-standalone-mcp.sh`, which:
 
 - Writes a bearer token to `~/.papercusp/superuser-token`.
-- Edits the user's global `~/.claude/CLAUDE.md` to inject the
-  `papercusp-su` playbook block.
+- Edits a global agent-config file on the user's machine to inject
+  the `papercusp-su` playbook block.
 - Wires `papercusp-su` into the user's MCP client config.
 
 That flow is correct for engineers — it is wrong for end users:
 
-- It edits a global file (CLAUDE.md) on the user's machine.
+- It edits global files on the user's machine.
 - It grants superuser-across-all-workspaces, not "power-user-in-one".
-- It assumes the user already has Claude Code, not OMP specifically.
+- It is a hand-run install script, not a one-click affordance.
 - It has no "which workspace / acting as which user" affordance —
   superuser doesn't need one; a power-user agent does.
 
@@ -95,8 +96,9 @@ plugin, launched from a button the user already has in the navbar.
   next power-user session sees the change without re-installing.
 - A user **without** `omp` installed sees a one-line install hint
   and the same launch command, copy-pasteable.
-- No global file edits on the user's machine. No `~/.claude/CLAUDE.md`
-  rewrites. No bearer token sitting in plaintext on disk forever.
+- No global file edits on the user's machine. No global
+  agent-config rewrites. No bearer token sitting in plaintext on
+  disk forever.
 
 ## 3. Non-goals
 
@@ -108,8 +110,11 @@ plugin, launched from a button the user already has in the navbar.
   not a runtime.
 - Distributing prompts via npm. Prompts live in this repo; the
   plugin fetches them at session start.
-- Supporting Claude Code / Codex / Gemini in v1. Those still use
-  `install-standalone-mcp.sh` (engineer path). v1 ships OMP only.
+- Supporting any agent runtime other than OMP. OMP is the single
+  sanctioned runtime for the power-user path — permanently, not
+  just v1. A user who wants a Claude, GPT, or Gemini *model* selects
+  it inside OMP (`omp --model …`); Papercusp does not integrate any
+  other agent CLI.
 - A new persona. The power-user agent uses the existing
   `papercusp-su.persona.md` + `papercusp-su.tools.md` as-is. Future
   divergence (a `power-user.tools.md`) is a separate plan.
@@ -524,8 +529,11 @@ independently testable.
   *Why:* cross-workspace admin belongs to the engineer install path,
   not end users; reduces blast radius. *Caveat:* see §4.1 scope
   risk — the clamp requires a catalog-wide audit, not a 5-line patch.
-- **D-005** v1 is OMP-only. *Why:* scope discipline; Claude
-  Code / Codex / Gemini already have the engineer install script.
+- **D-005** OMP is the only sanctioned agent runtime for the
+  power-user path — permanently, not just v1. *Why:* one runtime to
+  build, test, and support. OMP already multiplexes model providers,
+  so a user who wants a Claude / GPT / Gemini model gets it via
+  `omp --model …`; Papercusp does not wire up any other agent CLI.
 - **D-006** Tokens never travel in URLs **or argv**. MCP calls use
   `Authorization: Bearer` headers. Plugin-launch tokens pass via
   process env (`Command::new(...).envs(...)`) — visible to the
@@ -554,7 +562,7 @@ independently testable.
 - **D-007** No global file edits on user machines from the
   power-user path. Hooks, skills, prompts, MCP config all live in
   a session-scratch dir cleaned up on exit. *Why:* end users
-  haven't consented to having their `~/.claude/CLAUDE.md` or
+  haven't consented to having global agent-config files or
   `~/.omp/agent/` rewritten by a button click.
 - **D-008** Cross-plan coordination with
   `file-locking-improvements-2026-05-20.md`:
@@ -625,12 +633,11 @@ Resolutions agreed in plan review:
   session-scratch + `--hook=<path>` flag. Locks plan keeps its
   engineer install route (`~/.omp/agent/hooks/`) but adds a §4.X
   noting the bundle delivery path. Single source file backs both.
-- **Playbook audience neutrality** — `papercusp-su.tools.md`
-  currently describes only the Claude-Code PreToolUse hook
-  installed by `install-standalone-mcp.sh`. That paragraph gets
-  rewritten audience-neutral (describe the contract, not the
-  install path) so power users on OMP aren't told about a hook
-  they don't have. Edit lives in the locks plan.
+- **Playbook audience neutrality** — `papercusp-su.tools.md`'s
+  PreToolUse-hook paragraph describes one specific install path.
+  It gets rewritten audience-neutral (describe the lock contract,
+  not the install path) so power users on OMP aren't told about a
+  hook they don't have. Edit lives in the locks plan.
 - **`workspace_id` → `coordination_domain` rename in locks schema**
   — avoids terminology collision with Papercusp's workspace
   concept now that workspaces are first-class at the agent layer.
