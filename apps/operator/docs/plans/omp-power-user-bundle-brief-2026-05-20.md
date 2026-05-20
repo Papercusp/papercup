@@ -90,7 +90,7 @@ webkit2gtk). Linux-only today.
 | `user_id` | users-table uuid | — | token claim; `ctx` audit identity |
 | `runId` | random uuid | **one MCP call** | `ctx.runId` — ephemeral, do NOT key on it |
 | `spawnId` | `poweruser-<hex>` | one MCP call | `ctx.spawnId` — ephemeral |
-| `Mcp-Session-Id` | transport uuid | one MCP transport handshake | HTTP header, set by `mcp-handler` |
+| `Mcp-Session-Id` | — | **not assigned** — operator transport is stateless | absent for power-user sessions; see §3 note |
 
 **One OMP session = one agent.** Its identity is `auth_session_id`.
 In a power-user MCP tool context (`UnifiedToolContext`):
@@ -101,12 +101,24 @@ In a power-user MCP tool context (`UnifiedToolContext`):
   to identify the agent or as a coordination window key.
 - `ctx.isPowerUser === true`, `ctx.isSuperuser === true`.
 
-**Two distinct "session" concepts** — do not conflate:
+**On `Mcp-Session-Id`** — do not use it for coordination identity.
+Verified 2026-05-20:
 
-- `auth_session_id` — the OMP session / agent lifetime. This is what
-  L1 `AgentIdentity` should key on.
-- `Mcp-Session-Id` — the MCP transport handshake; much shorter-lived,
-  irrelevant to coordination identity.
+- The operator's MCP transport (`createMcpHandler` with
+  `disableSse: true`) is **stateless** — it assigns no
+  `Mcp-Session-Id` header at all. A power-user OMP session therefore
+  never has one (OMP's `HttpTransport.#sessionId` stays `null`).
+- Even on a stateful MCP server, OMP's token refresh
+  (`HttpTransport.onAuthError`, on 401/403) only swaps the auth
+  header and retries — it does **not** re-handshake, so
+  `Mcp-Session-Id` would *not* rotate on the hourly token refresh.
+  It rotates only on a transport reconnect (connection loss / server
+  restart), which is not 1:1 with the agent.
+
+Bottom line: `auth_session_id` is the only identifier that is both
+present and stable for the agent's whole life. L1 `AgentIdentity`
+keys on `auth_session_id`; `Mcp-Session-Id` is irrelevant here (and,
+against this operator, absent).
 
 ## 4. The MCP surface for a power-user agent
 
