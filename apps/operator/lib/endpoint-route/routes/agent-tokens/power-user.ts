@@ -21,7 +21,7 @@ export default defineRoute({
   async handler(req) {
     const body = (await req.json().catch(() => ({}))) as { workspace?: string };
     try {
-      const user = await getSessionUserOrDefault();
+      const user = await getSessionUserOrDefault(req.headers);
       const workspaceId = (body.workspace ?? '').trim() || activeWorkspaceId();
       const { authSessionId } = await createPowerUserSession({ workspaceId, userId: user.id });
       const access = await mintAccessToken({ workspaceId, userId: user.id, authSessionId });

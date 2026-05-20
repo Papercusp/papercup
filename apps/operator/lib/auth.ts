@@ -17,7 +17,6 @@
  */
 
 import { randomBytes } from 'node:crypto';
-import { cookies } from 'next/headers';
 import { getOrgPg } from '@restart/db-org';
 
 export const SESSION_COOKIE = 'papercusp_session';
@@ -40,14 +39,54 @@ function newToken(): string {
   return randomBytes(32).toString('hex');
 }
 
+/** Parse a `Cookie` request header into a name→value map. */
+function parseCookieHeader(header: string | null | undefined): Map<string, string> {
+  const out = new Map<string, string>();
+  if (!header) return out;
+  for (const part of header.split(';')) {
+    const eq = part.indexOf('=');
+    if (eq < 0) continue;
+    const k = part.slice(0, eq).trim();
+    if (!k) continue;
+    out.set(k, decodeURIComponent(part.slice(eq + 1).trim()));
+  }
+  return out;
+}
+
+/**
+ * Resolve the session token. The Next-free path: pass the request's
+ * `Headers` (every `defineRoute` handler does — `req.headers`) and the
+ * token is read from the `Cookie` header. The legacy path: omit `headers`
+ * and the token comes from Next's ambient `cookies()` — used only by
+ * `route.ts` handlers still served by Next during the endpoint migration.
+ *
+ * The Next fallback is a *dynamic* import so a fully-ported, Next-removed
+ * build carries no static `next/headers` dependency, and is wrapped in
+ * try/catch because `cookies()` throws outside a Next request scope.
+ */
+async function resolveSessionToken(headers?: Headers): Promise<string | undefined> {
+  if (headers) {
+    return parseCookieHeader(headers.get('cookie')).get(SESSION_COOKIE);
+  }
+  try {
+    const { cookies } = await import('next/headers');
+    const jar = await cookies();
+    return jar.get(SESSION_COOKIE)?.value;
+  } catch {
+    return undefined;
+  }
+}
+
 /**
  * Look up the current session user from the request cookie. Returns null
  * if no session, expired, or user inactive. Updates last_seen_at on hit.
+ *
+ * Pass `headers` from a `defineRoute` handler (`req.headers`); omit it
+ * only from legacy Next `route.ts` handlers (ambient-cookie fallback).
  */
-export async function getSessionUser(): Promise<User | null> {
+export async function getSessionUser(headers?: Headers): Promise<User | null> {
   const { sql } = getOrgPg();
-  const jar = await cookies();
-  const token = jar.get(SESSION_COOKIE)?.value;
+  const token = await resolveSessionToken(headers);
   if (!token) return null;
 
   const rows = await sql<{
@@ -91,9 +130,9 @@ export async function getSessionUser(): Promise<User | null> {
  * preferences) but want to silently use the default user when unauthenticated
  * (single-user installs).
  */
-export async function getSessionUserOrDefault(): Promise<User> {
+export async function getSessionUserOrDefault(headers?: Headers): Promise<User> {
   const { sql } = getOrgPg();
-  const user = await getSessionUser();
+  const user = await getSessionUser(headers);
   if (user) return user;
   await ensureDefaultUser();
   const rows = await sql<{ id: string; username: string; display_name: string; password_hash: string | null }>`

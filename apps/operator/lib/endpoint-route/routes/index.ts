@@ -39,6 +39,11 @@ import miscSecurityAdvisoriesCheck from './misc/security-advisories-check';
 import miscAgentBundle from './misc/agent-bundle';
 import miscTestButtonsEcho from './misc/test-buttons-echo';
 import miscUpdatesManifest from './misc/updates-manifest';
+import authLogin from './auth/login';
+import authLogout from './auth/logout';
+import authSignup from './auth/signup';
+import authChangePassword from './auth/change-password';
+import authMe from './auth/me';
 
 type AnyRoute = RouteDefinition<ZodTypeAny | undefined>;
 
@@ -73,4 +78,9 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(miscAgentBundle as AnyRoute),
   ...flatten(miscTestButtonsEcho as AnyRoute),
   ...flatten(miscUpdatesManifest as AnyRoute),
+  ...flatten(authLogin as AnyRoute),
+  ...flatten(authLogout as AnyRoute),
+  ...flatten(authSignup as AnyRoute),
+  ...flatten(authChangePassword as AnyRoute),
+  ...flatten(authMe as AnyRoute[]),
 ];

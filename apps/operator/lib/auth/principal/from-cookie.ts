@@ -1,24 +1,27 @@
 /**
  * Cookie-session → Principal resolver.
  *
- * Reads `papercusp_session` from the request cookie jar, validates against
- * the PG session row, and produces a `Principal` with `kind: 'user'`,
- * `authMethod: 'cookie-session'`, `trust: 'verified'`.
+ * Reads the `papercusp_session` cookie from the request's `Headers`,
+ * validates against the PG session row, and produces a `Principal` with
+ * `kind: 'user'`, `authMethod: 'cookie-session'`, `trust: 'verified'`.
  *
  * Returns null when there is no cookie, the cookie is expired, the user
  * is inactive, or the row is missing — every "no principal" outcome
  * resolves to null without throwing so the composite `requirePrincipal()`
  * helper can fall through to the next resolver.
  *
- * Phase 3b step 2 (principal-rfc-2026-05-20.md §5a).
+ * Phase 3b step 2 (principal-rfc-2026-05-20.md §5a). The `headers`
+ * parameter (added with the endpoint-route migration) makes this
+ * Next-free: the session token comes from the passed `Cookie` header,
+ * not `next/headers` `cookies()`.
  */
 
 import type { Principal } from '@papercusp/agent-mcp';
 import { getSessionUser } from '../../auth';
 import { activeWorkspaceId } from '../../workspace-registry';
 
-export async function principalFromCookie(): Promise<Principal | null> {
-  const user = await getSessionUser();
+export async function principalFromCookie(headers: Headers): Promise<Principal | null> {
+  const user = await getSessionUser(headers);
   if (!user) return null;
   // Cookie sessions in v1 are workspace-scoped via the desktop's
   // active-workspace concept. When the webapp ships (Phase 8) sessions

@@ -52,19 +52,19 @@ export class PrincipalCheckError extends Error {
 /**
  * Resolve the principal from a request. Throws `PrincipalCheckError` when
  * the request fails auth or the resolved principal fails the requirements
- * — never returns null. Use this from inside Next route handlers; the
- * route's `catch` lifts the error into a typed 401/403 response.
+ * — never returns null. The route's `catch` (or the route-stack `auth`
+ * step) lifts the error into a typed 401/403 response.
  *
- * The cookie resolver reads from `next/headers` cookies(); pass a request
- * shape that has its own `headers` object (NextRequest, Request, or the
- * Hono Context's `.req.raw`). For tests, construct a `new Headers({...})`.
+ * The cookie resolver reads the session cookie from the passed `headers`
+ * (no `next/headers` dependency). Pass any `Headers`: a `Request`'s, the
+ * Hono Context's `.req.raw.headers`, or `new Headers({...})` in tests.
  */
 export async function requirePrincipal(
   headers: Headers,
   reqs: PrincipalRequirements = {},
 ): Promise<Principal> {
   const principal =
-    (await principalFromCookie()) ??
+    (await principalFromCookie(headers)) ??
     principalFromMobileJwt(headers) ??
     principalFromSuperuserToken(headers) ??
     principalFromLoopback(headers);
@@ -108,7 +108,7 @@ export async function requirePrincipal(
  */
 export async function tryResolvePrincipal(headers: Headers): Promise<Principal | null> {
   return (
-    (await principalFromCookie()) ??
+    (await principalFromCookie(headers)) ??
     principalFromMobileJwt(headers) ??
     principalFromSuperuserToken(headers) ??
     principalFromLoopback(headers)
