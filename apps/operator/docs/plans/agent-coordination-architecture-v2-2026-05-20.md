@@ -1,7 +1,7 @@
 ---
 title: Agent coordination architecture v2 — identity, locks, channels, and the harness on-ramp
 slug: agent-coordination-architecture-v2-2026-05-20
-status: proposed
+status: draft
 created: 2026-05-20
 updated: 2026-05-20
 owner: pandawamble@gmail.com
@@ -86,7 +86,7 @@ The conversation arc that produced this: file-locking improvements → a compari
    ┌───────────────────────────────────────────────────────────────┐
  L1│  Identity & presence                                           │
    │  who am I (session) · who else is active · what they're doing  │
-   │  Substrate: coord/agents/<session>.json + resolveAgentIdentity │
+   │  Substrate: power_user_sessions row (PG) + coord liveness rows │
    └───────────────────────────────────────────────────────────────┘
 ```
 
@@ -143,50 +143,39 @@ v2 adds one thing to this surface: a `coord/plan-events.jsonl` event log emitted
 ```typescript
 // libs/papercusp/packages/coordination/identity.ts (new)
 export interface AgentIdentity {
-  /** Stable across one OS process. Format "<source>:<session8>",
-   *  e.g. "omp:abcd1234". */
+  /** The stable per-agent id. For a power-user agent this IS the
+   *  auth_session_id ("pus-<uuid>") minted at session launch. */
   ownerId: string;
-  ownerLabel: string;                 // display: "omp (engineer, session abcd1234)"
-  source: 'mcp-session-id' | 'omp-hook-session' | 'static-client';
+  ownerLabel: string;                 // display, e.g. "omp · pus-1a2b3c4d"
+  source: 'power-user-token' | 'omp-hook-session' | 'static-client';
   workspaceId: string | null;         // Papercusp workspace, when known
-  userId: string | null;              // human user, for power-user (acted-as) identity
+  userId: string | null;              // human user (power-user acted-as identity)
 }
 export function resolveAgentIdentity(ctx: ToolContext): AgentIdentity;
 ```
 
-**Resolution order** (highest priority first):
+Identity resolution is **tier-aware** — not the flat fallback chain v1 wrote:
 
-1. OMP hook payload `session_id` — the per-turn hook owns its identity outright.
-2. MCP `Mcp-Session-Id` header.
-3. Power-user token claims (`{ user_id, workspace_id, … }` from the OMP-bundle plan).
-4. Static `?client=<uuid>` URL param (install-script machine fallback).
+- **Power-user agent** (`?power_user=1`) — `ownerId = ctx.uiClientId`, which the `?power_user=1` route branch sets to the token's `auth_session_id` (verified at `route.ts:225`). That is the canonical agent id; it also reaches the OMP hook as the `PAPERCUSP_AUTH_SESSION_ID` env var. `Mcp-Session-Id` is **not** consulted for power-user identity — it is the MCP transport handshake, not the agent.
+- **Engineer / superuser agent** (`?superuser=1`) — no `auth_session_id` exists; identity is the OMP hook's `session_id`, else the `Mcp-Session-Id` header, else the static `?client=<uuid>` install-script machine id.
 
-One resolver, consumed by: the L2 lock code (replacing its ad-hoc `headers.get('mcp-session-id')` / `?client=` reads), the OMP hook, every `coord:*` tool, and the `plans:*` write verbs (replacing the self-reported `owner_label`).
+**Never key coordination on `ctx.runId` or `ctx.spawnId`** — both regenerate on every MCP call (OMP-bundle brief §3).
+
+One resolver, consumed by: the L2 lock code (replacing its ad-hoc header reads), the OMP hook, every `coord:*` tool, and the `plans:*` write verbs (replacing the self-reported `owner_label`).
 
 ### §4.2 Presence
 
-One file per live session at `coord/agents/<session>.json`:
+Presence has two parts — and the durable part **already exists**; v2 must not rebuild it.
 
-```json
-{
-  "session": "abcd1234",
-  "owner_id": "omp:abcd1234",
-  "owner_label": "omp (engineer, session abcd1234)",
-  "source": "omp-hook-session",
-  "host": "host.example", "pid": 12345,
-  "intent": "drafting agent-coordination-architecture-v2 plan",
-  "started_ts": "2026-05-20T15:00:00Z",
-  "last_heartbeat_ts": "2026-05-20T15:42:00Z",
-  "active_lock_ids": ["7754d99d-..."],
-  "current_plan_slug": null,
-  "current_files": ["apps/operator/docs/plans/..."]
-}
-```
+**Durable record — `harness_shared.power_user_sessions` (shipped).** One row per power-user agent for its whole life: `auth_session_id` PK, `workspace_id`, `user_id`, `created_at`, `last_seen_at`, `revoked_at`. The shipped helper `listActivePowerUserSessions(workspaceId)` is the ready-made "who is registered in this workspace" query. This is the agent roster — the coordination layer *reads* it, it does not duplicate it.
 
-- **Per-file** (not one shared registry): zero write contention, atomic create+rename, cleanup = delete the file.
-- **Heartbeat**: the OMP `session_start` + `turn_start` hooks refresh `last_heartbeat_ts` automatically.
-- **Staleness**: `last_heartbeat_ts` older than 10 min → treated as dead by readers; cleanup is opportunistic.
-- **`intent`** is the user-facing "what is this agent doing right now" answer. Refreshed on session start, on `plans:set-now`, and on lock acquire (the lock's `intent` rolls up).
+**Liveness layer — the genuinely new part.** `power_user_sessions` is not a heartbeat: `last_seen_at` bumps only on token refresh (~hourly) and there is no session-end write (OMP-bundle brief §6). The coordination system needs *live* state — heartbeat, declared `intent`, `current_plan_slug`, `current_files`, held lock ids. Because power-user agents are **always operator-attached** (they hold a token and an MCP URL), this is a thin companion store keyed on `auth_session_id` — added columns on `power_user_sessions`, or a 1:1 table (`coord_presence`) — written by the OMP hook's `session_start` / `turn_start` handlers and cleared on process exit. It is **not** a `coord/agents/` file store: v1's file design duplicated the durable half of `power_user_sessions`.
+
+`coord:presence` joins the two — the `power_user_sessions` row (identity, workspace, not-revoked) plus the liveness row (work state, freshness).
+
+- **Heartbeat**: the OMP `session_start` + `turn_start` hooks write the liveness `heartbeat_at`.
+- **Staleness**: `heartbeat_at` older than 10 min → the reader treats the session as dead.
+- **`intent`** is the user-facing "what is this agent doing right now" answer — refreshed on session start, on `plans:set-now`, and on lock acquire (the lock's `intent` rolls up).
 
 ### §4.3 L1 tool surface (`coord:*`)
 
@@ -198,7 +187,7 @@ coord:declare-intent  { intent, current_plan_slug?, current_files? } → ok
 
 ### §4.4 What L1 does not do
 
-No long-term agent identity (sessions are ephemeral; the *user* is identified separately via the power-user token). No presence durability (a restart clears `coord/agents/`; correct — stale presence is useless). No auth — identity is for *attribution*; authorization stays in the tier system (superuser / power-user / role-gated).
+No long-term agent identity (sessions are ephemeral; the *user* is identified separately via the power-user token). No live-presence durability — a crash leaves a stale `heartbeat_at`, and readers treat a stale heartbeat as dead (correct — stale liveness is useless); the durable `power_user_sessions` row persists and is reaped by its own `revoked_at`, not by L1. No auth — identity is for *attribution*; authorization stays in the tier system (superuser / power-user / role-gated).
 
 ## §5 L2 — synchronous locks (cross-reference)
 
@@ -217,7 +206,6 @@ All under `coord/` at the **repo root** (`papercup/coord/`). The new tools read/
 
 ```
 coord/
-  agents/<session>.json          ← L1 presence
   messages/<ownerId>.jsonl       ← L3 messages + acks (per-sender outbox)
   subscriptions/<ownerId>.jsonl  ← L3 watches (per-watcher)
   escalations/<ts>-<id>.json     ← L3 escalation-to-human (per-event file)
@@ -352,7 +340,7 @@ Not in v1 of the UI: a subscriptions panel (works via tools), analytics/charts.
 ## §10 Portability — operator-attached vs detached
 
 - **Attached** (operator on `localhost:3055`): full `coord:*` + `plans:*` + `locks:*` tool surface; turn-start injection reads through tools; `/coord` UI live.
-- **Detached** (no operator): the OMP plugin still reads/writes `coord/` directly on the filesystem. Works: reading peers' outboxes, writing own outbox, reading plans, reading/writing own presence, registering subscriptions. Does **not** work: locks (need PG — the L2 hook fails open with a marker), cross-process notify fan-out (needs the operator to scan subscriptions on lock-acquire), the `/coord` UI.
+- **Detached** (no operator): the OMP plugin still reads/writes `coord/` directly on the filesystem. Works: reading peers' outboxes, writing own outbox, reading plans, registering subscriptions. Does **not** work: locks (need PG — the L2 hook fails open with a marker), **presence** (now PG-backed — §4.2 — needs the operator), cross-process notify fan-out (needs the operator to scan subscriptions on lock-acquire), the `/coord` UI.
 - **Mode detection:** the plugin probes the operator at startup and auto-selects. (v1 named `/api/health`; that route does not exist — the plugin must probe a real endpoint, e.g. an existing harness/status route, or one is added. Tracked as a small open item, Q-5.)
 - **Honest caveat:** detached mode means agents can *leave each other notes*; it does not mean they can *prevent stomps*. That needs the operator + PG.
 
@@ -384,7 +372,7 @@ One new `plans:*` verb (name verified free). It is the only genuinely new tool �
 plans:promote {
   slug: 'auth-refactor-2026-05-20',
   features: [
-    { title, body, acceptance, covers: ['SC-041','SC-042'], from_items?: ['#1','#2'], blockedBy?: [<idx>] },
+    { title, body, acceptance, covers: ['SC-041','SC-042'], from_items?: ['P-001','P-002'], blockedBy?: [<idx>] },
     ...
   ],
   spec_update: {
@@ -396,12 +384,18 @@ plans:promote {
 → { features: [{ id: 'F-040', covers: [...] }, ...], spec_version: <int> }
 ```
 
-Effects, in one logical transaction:
-1. **Create features** — POST to the existing `POST /:slug/features/import` (§11.5). Each feature carries `metadata.source_plan = <slug>`, `metadata.source_items`, and `metadata.covers = ['SC-NNN', ...]`.
-2. **Update `SPEC.md`** — PUT to the existing `PUT /:slug/spec`, inserting the `new_criteria` as `[SC-NNN]`-tagged bullets (§11.3) with provenance markers, using optimistic concurrency (§11.4).
-3. **Emit a `plan_event`** of `event: promoted` to `coord/plan-events.jsonl` so the history viewer shows the moment the plan entered the harness.
+`plans:promote` is a `plans:*` **write verb**, so it routes through `withPlanLock` (the shipped acquire-mutate-release helper every write verb uses — plans brief §4.3) and holds the plan-file lock while it marks the promoted items.
 
-Granularity is the agent's call — the agent supplies the feature list and the criteria; `plans:promote` executes the mapping, it does not auto-split. A plan's items are not 1:1 with features.
+Its effects span **four stores and cannot be a single transaction** — the plan must be honest about that. Ordering is chosen so a partial failure degrades safely:
+
+1. **Update `SPEC.md` first** — PUT to `PUT /:slug/spec`, inserting `new_criteria` as `[SC-NNN]`-tagged bullets (§11.3) with provenance markers, under optimistic concurrency (§11.4). A `409` here (a concurrent spec write landed) aborts the whole call having created **nothing** — the caller re-reads `base_version` and retries. Spec-first makes a contention failure clean.
+2. **Create features** — POST to `POST /:slug/features/import` (§11.5). Each feature carries `metadata.source_plan`, `metadata.source_items` (the `P-NNN` ids), `metadata.covers = ['SC-NNN', …]`. The endpoint is idempotent (`ON CONFLICT DO UPDATE`), so a retry after a partial failure re-converges instead of duplicating.
+3. **Mark the plan** — inside the held `withPlanLock`, flip the promoted `P-NNN` items' status and record their `F-NNN` ids.
+4. **Emit a `plan_event`** (`event: promoted`) to `coord/plan-events.jsonl`.
+
+**Partial-failure semantics:** if step 2 fails after step 1 succeeded, `SPEC.md` carries new `[SC-NNN]` criteria with no covering feature — which the autonomous scoper correctly sees as a *gap* and fills. A partial failure degrades to "the scoper finishes the job," not to corruption. That is the reason for spec-first ordering.
+
+Granularity is the agent's call — it supplies the feature list and the criteria; `plans:promote` executes the mapping, it does not auto-split. A plan's items are not 1:1 with features.
 
 ### §11.3 feature → SPEC-coverage via `[SC-NNN]` IDs
 
@@ -480,7 +474,7 @@ One consequence: the dormant **autonomous-expert "writes features directly"** pa
 
 Six phases; each testable on its own. The on-ramp (Phase E) is independent of L3 and may run in parallel once L1 lands.
 
-- **Phase A — L1 identity & presence** (~1 day; prerequisite for all else). The `coordination/identity.ts` resolver; refactor the L2 lock code to consume it; `coord/agents/` presence read/write; `coord:whoami/presence/declare-intent`.
+- **Phase A — L1 identity & presence** (~1 day; prerequisite for all else). The `coordination/identity.ts` resolver; refactor the L2 lock code to consume it; the `coord_presence` liveness store (companion to the shipped `power_user_sessions`); `coord:whoami/presence/declare-intent`.
 - **Phase B — L3 messages + history** (~2 days). `coord/messages/` + `coord:send/inbox/ack/thread`; `coord/plan-events.jsonl` emission bolted onto the `plans:*` write verbs; the `/coord` route with Active-Sessions + Inbox + History panels.
 - **Phase C — L3 escalations + handoffs** (~1.5 days). The two per-event stores + `coord:escalate/escalations/resolve` and `coord:handoff/handoffs`; UI Inbox surfacing.
 - **Phase D — L3 subscriptions + cross-plan propagation** (~1.5 days). `coord/subscriptions/` + `coord:watch/unwatch/watches`; `locks:acquire` notify fan-out; `plans:add-decision` `affects[]`.
@@ -544,6 +538,15 @@ The v1 codebase audit (`agent-coordination-architecture-2026-05-20.md`) found th
 - **G3** "1 PG query" from the turn-start hook → corrected: the hook is in-process to OMP, has no PG access; lock state comes via an operator HTTP call, omitted in detached mode (§7.1).
 - **G4** No graphical plans UI exists → Q-1 stands.
 - **M1–M4** `Chunk.files` is `readonly`; `plans:lint` exists; `agents:list` exists; coord total is ~454 KB not ~150 KB — all corrected inline (§3).
+
+## §18 Corrections from the agent briefs (2026-05-20)
+
+After v2 was first written, two operational briefs landed — `omp-power-user-bundle-brief-2026-05-20.md` and `plans-system-brief-2026-05-20.md`. Each claim in them was verified against code; the corrections folded in:
+
+- **B-1 — tier-aware identity (§4.1).** A power-user agent's id is `auth_session_id`, surfaced as `ctx.uiClientId` (verified `route.ts:225`); `Mcp-Session-Id` is *not* its identity. v1's flat 4-step resolution chain is replaced by a per-tier rule. Added the "never key on `runId`/`spawnId`" rule.
+- **B-2 — presence reuses an existing table (§4.2, §2 diagram, §10, §13).** The shipped `harness_shared.power_user_sessions` is the durable agent record; v2 no longer invents a `coord/agents/` file store (it duplicated that table). Only a thin liveness layer is new. Detached mode loses presence (it is PG-backed) — §10 updated.
+- **B-3 — `plans:promote` honesty (§11.2).** It now routes through `withPlanLock` and the plan states plainly that its effects span four stores and cannot be atomic — spec-first ordering with a defined partial-failure degradation.
+- **B-4 — plan status (`draft`).** `proposed` is not in the parser's `PLAN_STATUSES` enum (`draft | active | shipped | superseded`, `parser.ts:22`); v2's frontmatter is now `draft`.
 
 ---
 
