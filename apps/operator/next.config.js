@@ -172,6 +172,7 @@ const nextConfig = {
     '@papercusp/export-state',
     '@papercusp/plugin-loader',
     '@papercusp/plugin-sdk',
+    '@papercusp/docs-engine',
     '@restart/agent-chat',
     '@restart/db-org',
     '@restart/git-graph',
