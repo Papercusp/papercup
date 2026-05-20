@@ -39,6 +39,19 @@ import operatorCardResponse from './operator/card-response';
 import operatorSilenceNudge from './operator/silence-nudge';
 import operatorRunCancel from './operator/run-cancel';
 import operatorTurnAnswer from './operator/turn-answer';
+import backupsIndex from './backups/index';
+import backupsBrokenList from './backups/broken-list';
+import backupsFailures from './backups/failures';
+import backupsMaintenance from './backups/maintenance';
+import backupsRollback from './backups/rollback';
+import backupsServer from './backups/server';
+import backupsVerify from './backups/verify';
+import backupsDestination from './backups/destination';
+import backupsEvents from './backups/events';
+import backupsHealthcheck from './backups/healthcheck';
+import backupsPromote from './backups/promote';
+import backupsRestore from './backups/restore';
+import backupsSnapshots from './backups/snapshots';
 import devRouteInvocations from './dev/route-invocations';
 import agentConfig from './agent-config/index';
 import agentConfigTest from './agent-config/test';
@@ -169,6 +182,19 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(operatorSilenceNudge as AnyRoute),
   ...flatten(operatorRunCancel as AnyRoute),
   ...flatten(operatorTurnAnswer as AnyRoute),
+  ...flatten(backupsIndex as AnyRoute[]),
+  ...flatten(backupsBrokenList as AnyRoute),
+  ...flatten(backupsFailures as AnyRoute),
+  ...flatten(backupsMaintenance as AnyRoute),
+  ...flatten(backupsRollback as AnyRoute),
+  ...flatten(backupsServer as AnyRoute[]),
+  ...flatten(backupsVerify as AnyRoute),
+  ...flatten(backupsDestination as AnyRoute[]),
+  ...flatten(backupsEvents as AnyRoute),
+  ...flatten(backupsHealthcheck as AnyRoute),
+  ...flatten(backupsPromote as AnyRoute),
+  ...flatten(backupsRestore as AnyRoute),
+  ...flatten(backupsSnapshots as AnyRoute[]),
   ...flatten(devRouteInvocations as AnyRoute),
   ...flatten(agentConfig as AnyRoute[]),
   ...flatten(agentConfigTest as AnyRoute),

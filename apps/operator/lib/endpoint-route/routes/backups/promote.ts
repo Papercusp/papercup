@@ -1,0 +1,34 @@
+/**
+ * POST /api/backups/promote — promote a restored clone to live.
+ *
+ * Ported from app/api/backups/promote/route.ts. `auth: 'public'`.
+ */
+import { z } from 'zod';
+import { workspaceBackupFor, triggerSnapshotEvent } from '@/lib/backup';
+import { activeWorkspaceId } from '@/lib/workspace-registry';
+import { defineRoute } from '../../define-route';
+
+const Schema = z.object({
+  restoredPath: z.string().min(1),
+  liveTarget: z.string().min(1).optional(),
+});
+
+export default defineRoute({
+  method: 'POST',
+  path: '/backups/promote',
+  auth: 'public',
+  async handler(req) {
+    try {
+      const body = await req.json();
+      const args = Schema.parse(body);
+      const ws = activeWorkspaceId();
+      await triggerSnapshotEvent(ws, 'pre_destructive', { op: 'promote_restore', restoredPath: args.restoredPath })
+        .catch(() => { /* non-fatal */ });
+      const wb = workspaceBackupFor(ws);
+      const result = await wb.promoteRestore(args);
+      return Response.json({ result });
+    } catch (err) {
+      return Response.json({ error: String(err instanceof Error ? err.message : err) }, { status: 500 });
+    }
+  },
+});
