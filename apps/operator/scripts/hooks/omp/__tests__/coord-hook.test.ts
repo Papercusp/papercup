@@ -12,6 +12,7 @@ import { join } from 'node:path';
 import {
   formatTurnStartReminder,
   readInboxFs,
+  readPlanEventsFs,
   readWatermarkFs,
   summarisePlanEvents,
   writeWatermarkFs,
@@ -266,12 +267,55 @@ describe('detached filesystem reads (F-H4c)', () => {
     expect(await readInboxFs('me')).toEqual([]);
   });
 
-  it('watermark round-trips through the filesystem', async () => {
-    expect(await readWatermarkFs('me')).toBeUndefined();
-    await writeWatermarkFs('me', '2026-05-20T10:00:00Z');
-    expect(await readWatermarkFs('me')).toBe('2026-05-20T10:00:00Z');
-    // a second write overwrites.
-    await writeWatermarkFs('me', '2026-05-20T11:00:00Z');
-    expect(await readWatermarkFs('me')).toBe('2026-05-20T11:00:00Z');
+  it('watermark round-trips through the filesystem (both pointers)', async () => {
+    expect(await readWatermarkFs('me')).toEqual({});
+    await writeWatermarkFs('me', { messages: '2026-05-20T10:00:00Z' });
+    expect((await readWatermarkFs('me')).messages).toBe('2026-05-20T10:00:00Z');
+    // a second write to messages overwrites; plan_events is independent.
+    await writeWatermarkFs('me', { messages: '2026-05-20T11:00:00Z' });
+    expect((await readWatermarkFs('me')).messages).toBe('2026-05-20T11:00:00Z');
+    // writing only plan_events leaves messages intact (partial merge).
+    await writeWatermarkFs('me', { plan_events: '2026-05-20T12:00:00Z' });
+    const wm = await readWatermarkFs('me');
+    expect(wm.messages).toBe('2026-05-20T11:00:00Z');
+    expect(wm.plan_events).toBe('2026-05-20T12:00:00Z');
+  });
+
+  it('readPlanEventsFs scans plan-events files, honours since_ts (NB-2)', async () => {
+    // legacy un-suffixed file + a monthly file.
+    await fs.writeFile(
+      join(tmp, 'plan-events.jsonl'),
+      JSON.stringify({ ts: '2026-01-01T00:00:00Z', msg_id: 'a', from: 's', kind: 'plan_event', plan_slug: 'p-old', event: 'created' }) + '\n',
+    );
+    await fs.writeFile(
+      join(tmp, 'plan-events-2026-05.jsonl'),
+      [
+        JSON.stringify({ ts: '2026-05-10T00:00:00Z', msg_id: 'b', from: 's', kind: 'plan_event', plan_slug: 'p-may', event: 'now_updated' }),
+        // a non-plan_event line in the same file must be ignored.
+        JSON.stringify({ ts: '2026-05-11T00:00:00Z', msg_id: 'c', from: 's', kind: 'message' }),
+      ].join('\n') + '\n',
+    );
+    const all = await readPlanEventsFs();
+    expect(all.map((e) => e.msg_id)).toEqual(['a', 'b']);
+    expect(all.every((e) => e.kind === 'plan_event')).toBe(true);
+    // since_ts filters out the old event.
+    const recent = await readPlanEventsFs('2026-03-01T00:00:00Z');
+    expect(recent.map((e) => e.plan_slug)).toEqual(['p-may']);
+  });
+
+  it('readPlanEventsFs feeds summarisePlanEvents end to end', async () => {
+    await fs.writeFile(
+      join(tmp, 'plan-events-2026-05.jsonl'),
+      [
+        JSON.stringify({ ts: '2026-05-10T00:00:00Z', msg_id: 'b', from: 's', kind: 'plan_event', plan_slug: 'p1', event: 'created' }),
+        JSON.stringify({ ts: '2026-05-11T00:00:00Z', msg_id: 'c', from: 's', kind: 'plan_event', plan_slug: 'p1', event: 'promoted' }),
+      ].join('\n') + '\n',
+    );
+    const summary = summarisePlanEvents(await readPlanEventsFs());
+    expect(summary).toEqual([{ plan_slug: 'p1', events: ['created', 'promoted'] }]);
+  });
+
+  it('readPlanEventsFs returns [] when no plan-events files exist', async () => {
+    expect(await readPlanEventsFs()).toEqual([]);
   });
 });

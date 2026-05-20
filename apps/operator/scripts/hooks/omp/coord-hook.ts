@@ -1,12 +1,13 @@
 /**
- * Papercusp coordination hook for OMP — one module, three handlers
+ * Papercusp coordination hook for OMP — one module, four handlers
  * (per agent-coordination-architecture-v2 §7.3 + §12.1):
  *
- *   session_start → declare presence (coord:declare-intent over MCP),
- *                   which writePresence side-effects bump heartbeat_at.
- *   turn_start    → touch heartbeat + assemble + inject the
- *                   system-reminder payload (held locks, unread inbox,
- *                   changed plans, firing watches).
+ *   session_start → probe the operator (attached/detached) + declare
+ *                   presence (coord:declare-intent over MCP, attached
+ *                   only — presence is PG-backed).
+ *   turn_start    → assemble + inject the system-reminder payload
+ *                   (held locks, unread inbox, changed plans).
+ *   turn_end      → persist the watermark pointers consumed this turn.
  *   tool_call     → L2 file-lock enforcement — stubbed permissive here.
  *                   The file-locking-improvements plan owns the real
  *                   enforcement (calls locks:acquire and returns
@@ -55,6 +56,8 @@ export interface InboxEntry {
   plan_slug?: string;
   related_msg_id?: string;
   severity?: string;
+  /** Present on plan_event entries — created / promoted / etc. */
+  event?: string;
 }
 
 export interface HeldLock {
@@ -223,6 +226,15 @@ export type CoordMode = 'attached' | 'detached';
  */
 let _mode: CoordMode = 'attached';
 
+/** Epoch ms of the last probe — drives the detached-mode re-probe
+ *  throttle so a recovered operator is picked up without paying a
+ *  probe (a 2s timeout when still down) on every detached turn. */
+let _lastProbeAtMs = 0;
+
+/** How stale a detached-mode probe may get before onTurnStart re-probes
+ *  (audit NB-1 — detached→attached recovery). */
+const DETACHED_REPROBE_MS = 120_000;
+
 /** The operator's base origin from env, or null if none is configured. */
 function operatorBaseUrl(): string | null {
   for (const v of [process.env.PAPERCUSP_BUNDLE_URL, process.env.PAPERCUSP_OPERATOR_URL]) {
@@ -260,9 +272,10 @@ export async function probeOperator(timeoutMs = 2000): Promise<boolean> {
   }
 }
 
-/** Probe and update `_mode`. Returns the resolved mode. */
+/** Probe and update `_mode` + the probe timestamp. Returns the mode. */
 export async function refreshMode(): Promise<CoordMode> {
   _mode = (await probeOperator()) ? 'attached' : 'detached';
+  _lastProbeAtMs = Date.now();
   return _mode;
 }
 
@@ -359,29 +372,43 @@ export async function readInboxFs(
   return out;
 }
 
+/** Last-read pointers the hook tracks — a subset of the operator's
+ *  Watermark (messages + plan-events; escalations/subscriptions are
+ *  not consumed by the turn-start reminder). */
+export interface HookWatermark {
+  messages?: string;
+  plan_events?: string;
+}
+
 /** Detached-mode watermark read: coord/watermarks/<ownerId>.json. */
-export async function readWatermarkFs(ownerId: string): Promise<string | undefined> {
+export async function readWatermarkFs(ownerId: string): Promise<HookWatermark> {
   const file = join(coordDirFs(), 'watermarks', `${sanitiseOwner(ownerId)}.json`);
   try {
     const parsed = JSON.parse(await fsp.readFile(file, 'utf8')) as {
       messages_since_ts?: unknown;
+      plan_events_since_ts?: unknown;
     };
-    return typeof parsed.messages_since_ts === 'string' && parsed.messages_since_ts.length > 0
-      ? parsed.messages_since_ts
-      : undefined;
+    const out: HookWatermark = {};
+    if (typeof parsed.messages_since_ts === 'string' && parsed.messages_since_ts.length > 0) {
+      out.messages = parsed.messages_since_ts;
+    }
+    if (typeof parsed.plan_events_since_ts === 'string' && parsed.plan_events_since_ts.length > 0) {
+      out.plan_events = parsed.plan_events_since_ts;
+    }
+    return out;
   } catch {
-    return undefined;
+    return {};
   }
 }
 
 /**
- * Detached-mode watermark write: merge messages_since_ts into
- * coord/watermarks/<ownerId>.json. Best-effort — a write failure must
- * not break the turn.
+ * Detached-mode watermark write: merge the supplied pointers into
+ * coord/watermarks/<ownerId>.json (other fields preserved). Best-effort
+ * — a write failure must not break the turn.
  */
 export async function writeWatermarkFs(
   ownerId: string,
-  messagesSinceTs: string,
+  patch: HookWatermark,
 ): Promise<void> {
   const dir = join(coordDirFs(), 'watermarks');
   const file = join(dir, `${sanitiseOwner(ownerId)}.json`);
@@ -391,13 +418,52 @@ export async function writeWatermarkFs(
   } catch {
     /* fresh */
   }
-  current.messages_since_ts = messagesSinceTs;
+  if (patch.messages !== undefined) current.messages_since_ts = patch.messages;
+  if (patch.plan_events !== undefined) current.plan_events_since_ts = patch.plan_events;
   try {
     await fsp.mkdir(dir, { recursive: true });
     await fsp.writeFile(file, JSON.stringify(current, null, 2), 'utf8');
   } catch {
     /* best-effort */
   }
+}
+
+/**
+ * Detached-mode plan-events read: scan coord/plan-events-*.jsonl (and
+ * the legacy un-suffixed file) directly, newer than `sinceTs`. Mirrors
+ * the operator's readPlanEvents() so the "plans changed" reminder
+ * section is identical attached vs detached.
+ */
+export async function readPlanEventsFs(sinceTs?: string): Promise<InboxEntry[]> {
+  const dir = coordDirFs();
+  let files: string[];
+  try {
+    files = await fsp.readdir(dir);
+  } catch {
+    return [];
+  }
+  const planEventFiles = files
+    .filter((f) => f === 'plan-events.jsonl' || /^plan-events-\d{4}-\d{2}\.jsonl$/.test(f))
+    .sort(); // legacy 'plan-events.jsonl' sorts before 'plan-events-YYYY-MM'
+  const sinceMs = sinceTs ? Date.parse(sinceTs) : 0;
+  const out: InboxEntry[] = [];
+  for (const f of planEventFiles) {
+    for (const l of await readJsonlFs(join(dir, f))) {
+      if (l.kind !== 'plan_event') continue;
+      const ts = typeof l.ts === 'string' ? l.ts : '';
+      if (sinceMs && ts && Date.parse(ts) <= sinceMs) continue;
+      out.push({
+        ts,
+        msg_id: typeof l.msg_id === 'string' ? l.msg_id : '',
+        from: typeof l.from === 'string' ? l.from : '',
+        kind: 'plan_event',
+        plan_slug: typeof l.plan_slug === 'string' ? l.plan_slug : undefined,
+        event: typeof l.event === 'string' ? l.event : undefined,
+      });
+    }
+  }
+  out.sort((a, b) => a.ts.localeCompare(b.ts) || a.msg_id.localeCompare(b.msg_id));
+  return out;
 }
 
 // ── Handlers ─────────────────────────────────────────────────────────
@@ -414,12 +480,13 @@ export async function onSessionStart(): Promise<void> {
 
 /**
  * Watermark carried between turn_start and turn_end. onTurnStart records
- * the newest inbox ts it surfaced; onTurnEnd persists it via
- * coord:watermark-set. Conservative by design (plan §7.2): an aborted
- * turn never reaches turn_end, so the next turn re-sees the same
- * notifications — a missed notification is worse than a repeated one.
+ * the newest ts it surfaced on each surface (messages + plan-events);
+ * onTurnEnd persists them. Conservative by design (plan §7.2): an
+ * aborted turn never reaches turn_end, so the next turn re-sees the
+ * same notifications — a missed notification is worse than a repeated
+ * one.
  */
-let _pendingMessagesWatermark: string | null = null;
+let _pendingWatermark: HookWatermark = {};
 
 /** Largest ISO ts in a list of inbox entries, or '' if empty. */
 function maxTs(entries: InboxEntry[]): string {
@@ -442,25 +509,38 @@ export interface TurnStartResult {
 
 /** Attached turn-start: assemble the reminder over the MCP tool path. */
 async function onTurnStartAttached(ownerId: string): Promise<TurnStartResult> {
-  // Read the watermark first — its messages_since_ts scopes the inbox.
+  // Read the watermark first — its two pointers scope the inbox and the
+  // plan-events feed respectively.
   const wmResult = await callMcpTool('coord:watermark', {});
-  const sinceTs = (() => {
-    const r = wmResult as { watermark?: { messages_since_ts?: string } } | null;
-    const v = r?.watermark?.messages_since_ts;
-    return typeof v === 'string' && v.length > 0 ? v : undefined;
+  const wm = (() => {
+    const r = wmResult as {
+      watermark?: { messages_since_ts?: string; plan_events_since_ts?: string };
+    } | null;
+    const m = r?.watermark?.messages_since_ts;
+    const p = r?.watermark?.plan_events_since_ts;
+    return {
+      messages: typeof m === 'string' && m.length > 0 ? m : undefined,
+      planEvents: typeof p === 'string' && p.length > 0 ? p : undefined,
+    };
   })();
 
   // The heartbeat (declare-intent) runs concurrently with the inbox
   // fetch — it does not gate the reminder — but is AWAITED as part of
   // the batch. A bare `void callMcpTool(...)` could accumulate unbounded
   // pending promises against a hung operator (audit B4); batching it
-  // bounds the in-flight count to one per turn.
-  const [inboxResult, locksResult] = await Promise.all([
-    callMcpTool('coord:inbox', sinceTs ? { since_ts: sinceTs } : {}),
+  // bounds the in-flight count to one per turn. coord:plan-events is in
+  // the same batch — plan_event lines live in coord/plan-events-*.jsonl,
+  // NOT coord/messages/, so coord:inbox never surfaces them (audit NB-2).
+  const [inboxResult, locksResult, , planEventsResult] = await Promise.all([
+    callMcpTool('coord:inbox', wm.messages ? { since_ts: wm.messages } : {}),
     callMcpTool('locks:queue', { owner: ownerId }).catch(() => null),
     callMcpTool('coord:declare-intent', {
       intent: '(active — see coord:presence for current work)',
     }),
+    callMcpTool(
+      'coord:plan-events',
+      wm.planEvents ? { since_ts: wm.planEvents } : {},
+    ).catch(() => null),
   ]);
 
   // coord:inbox returning null means the operator call FAILED (an empty
@@ -476,13 +556,20 @@ async function onTurnStartAttached(ownerId: string): Promise<TurnStartResult> {
     const r = locksResult as { active_locks?: HeldLock[] } | null;
     return r?.active_locks ?? [];
   })();
-  const changedPlans = summarisePlanEvents(
-    inbox.filter((e) => e.kind === 'plan_event'),
-  );
+  const planEvents: InboxEntry[] = (() => {
+    const r = planEventsResult as { events?: InboxEntry[] } | null;
+    return r?.events ?? [];
+  })();
+  const changedPlans = summarisePlanEvents(planEvents);
 
-  const surfacedMax = maxTs(inbox);
-  _pendingMessagesWatermark =
-    !degraded && surfacedMax.length > 0 ? surfacedMax : null;
+  const inboxMax = maxTs(inbox);
+  const planEventsMax = maxTs(planEvents);
+  _pendingWatermark = degraded
+    ? {}
+    : {
+        ...(inboxMax.length > 0 ? { messages: inboxMax } : {}),
+        ...(planEventsMax.length > 0 ? { plan_events: planEventsMax } : {}),
+      };
 
   return {
     reminder: formatTurnStartReminder({
@@ -499,16 +586,20 @@ async function onTurnStartAttached(ownerId: string): Promise<TurnStartResult> {
 
 /** Detached turn-start: assemble the reminder from coord/ on the
  *  filesystem. No operator — locks + presence are omitted; the inbox,
- *  changed-plans and watermark are all filesystem-backed (plan §10). */
+ *  plan-events, changed-plans and watermark are all filesystem-backed
+ *  (plan §10). */
 async function onTurnStartDetached(ownerId: string): Promise<TurnStartResult> {
-  const sinceTs = await readWatermarkFs(ownerId);
-  const inbox = await readInboxFs(ownerId, sinceTs);
-  const changedPlans = summarisePlanEvents(
-    inbox.filter((e) => e.kind === 'plan_event'),
-  );
+  const wm = await readWatermarkFs(ownerId);
+  const inbox = await readInboxFs(ownerId, wm.messages);
+  const planEvents = await readPlanEventsFs(wm.plan_events);
+  const changedPlans = summarisePlanEvents(planEvents);
 
-  const surfacedMax = maxTs(inbox);
-  _pendingMessagesWatermark = surfacedMax.length > 0 ? surfacedMax : null;
+  const inboxMax = maxTs(inbox);
+  const planEventsMax = maxTs(planEvents);
+  _pendingWatermark = {
+    ...(inboxMax.length > 0 ? { messages: inboxMax } : {}),
+    ...(planEventsMax.length > 0 ? { plan_events: planEventsMax } : {}),
+  };
 
   return {
     reminder: formatTurnStartReminder({
@@ -523,15 +614,25 @@ async function onTurnStartDetached(ownerId: string): Promise<TurnStartResult> {
   };
 }
 
-/** Fired once per turn start. Dispatches by mode; on an attached call
- *  that comes back degraded, re-probes — a mid-session operator outage
- *  flips to detached and the SAME turn still gets a filesystem
- *  reminder rather than nothing. */
+/** Fired once per turn start. Dispatches by mode. Recovery is
+ *  bidirectional (audit NB-1): an attached call that comes back
+ *  degraded re-probes (operator may have gone away); a detached turn
+ *  re-probes on a throttle (operator may have come back). */
 export async function onTurnStart(): Promise<TurnStartResult> {
   const ownerId = process.env.PAPERCUSP_AUTH_SESSION_ID ?? 'unknown';
+
   if (_mode === 'detached') {
-    return onTurnStartDetached(ownerId);
+    // Throttled re-probe — a recovered operator is picked up without
+    // paying a probe (a 2s timeout while still down) every turn.
+    if (Date.now() - _lastProbeAtMs > DETACHED_REPROBE_MS) {
+      await refreshMode();
+    }
+    if (_mode === 'detached') {
+      return onTurnStartDetached(ownerId);
+    }
+    // Operator came back — fall through to the attached path.
   }
+
   const attached = await onTurnStartAttached(ownerId);
   if (!attached.degraded) return attached;
   // Attached call failed — was it a transient blip or did the operator
@@ -544,18 +645,21 @@ export async function onTurnStart(): Promise<TurnStartResult> {
   return attached; // operator is up — a genuine transient failure
 }
 
-/** Fired once per turn end. Persists the watermark staged by
+/** Fired once per turn end. Persists the watermark pointers staged by
  *  onTurnStart — via coord:watermark-set when attached, or directly to
  *  coord/watermarks/ when detached. No-op when nothing was surfaced. */
 export async function onTurnEnd(): Promise<void> {
-  if (_pendingMessagesWatermark == null) return;
-  const ts = _pendingMessagesWatermark;
-  _pendingMessagesWatermark = null;
+  const wm = _pendingWatermark;
+  _pendingWatermark = {};
+  if (wm.messages === undefined && wm.plan_events === undefined) return;
   if (_mode === 'detached') {
     const ownerId = process.env.PAPERCUSP_AUTH_SESSION_ID ?? 'unknown';
-    await writeWatermarkFs(ownerId, ts);
+    await writeWatermarkFs(ownerId, wm);
   } else {
-    await callMcpTool('coord:watermark-set', { messages_since_ts: ts });
+    await callMcpTool('coord:watermark-set', {
+      ...(wm.messages !== undefined ? { messages_since_ts: wm.messages } : {}),
+      ...(wm.plan_events !== undefined ? { plan_events_since_ts: wm.plan_events } : {}),
+    });
   }
 }
 
@@ -657,9 +761,12 @@ export default function register(pi: HookApi): void {
       });
     }
     if (degraded) {
-      // Silent-failure surfacing (plan §7.4). Two markers:
-      //  1. To the model — a reliable sendMessage note so the agent
-      //     knows its coordination context is stale this turn.
+      // Silent-failure surfacing (plan §7.4). `degraded` is the
+      // TRANSIENT case — the operator probe succeeded (it is reachable)
+      // but a specific coordination call errored this turn. A truly
+      // unreachable operator is the separate DETACHED path, whose
+      // header the reminder already carries. Two markers:
+      //  1. To the model — a reliable sendMessage note.
       //  2. To the human — a best-effort OMP TUI notification. The ctx
       //     shape is accessed defensively; if the API differs the
       //     marker simply no-ops (consistent with the hook's
@@ -667,7 +774,7 @@ export default function register(pi: HookApi): void {
       pi.sendMessage({
         customType: 'coord-reminder',
         content:
-          '<system-reminder type="coord">Coordination context unavailable this turn (operator unreachable). Held locks, inbox, and presence may be stale — re-check before relying on them.</system-reminder>',
+          '<system-reminder type="coord">A coordination call failed this turn (operator reachable, but the call errored). Held locks, inbox, and changed-plans may be stale — re-check before relying on them.</system-reminder>',
         display: false,
         attribution: 'agent',
       });
@@ -676,7 +783,7 @@ export default function register(pi: HookApi): void {
         | undefined;
       if (c?.hasUI && typeof c.ui?.notify === 'function') {
         c.ui.notify(
-          'Papercusp coordination unavailable (operator unreachable)',
+          'Papercusp coordination call failed this turn (will retry next turn)',
           'warning',
         );
       }

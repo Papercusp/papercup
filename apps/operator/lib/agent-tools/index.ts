@@ -184,6 +184,7 @@ import './coordination/tools/watches';
 
 import './coordination/tools/watermark';
 import './coordination/tools/watermark-set';
+import './coordination/tools/plan-events';
 // Plan → harness on-ramp (Phase E v0.5 — preview only)
 import './coordination/tools/promote';
 
