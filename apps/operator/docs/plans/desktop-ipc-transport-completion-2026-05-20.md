@@ -301,6 +301,53 @@ consistent across both toolkits.
 
 ---
 
+## Future webapp compatibility — the IPC work must not burn the bridge
+
+The webapp is retired, but this plan is deliberately structured so a
+future webapp is a *deployment* decision, not an architecture rewrite.
+Five disciplines keep that true:
+
+1. **HTTP routes are never removed.** IPC is a transport that
+   *dispatches into* the existing routes (`sys:http` → loopback-fetch or
+   `app.fetch()`), never a replacement. As long as the route handlers
+   exist and answer a `Request`, the webapp's backend exists.
+2. **The transport seam stays feature-detected, never build-time.**
+   Polyfills install only under `isTauri()`. On web, native
+   `fetch`/`EventSource` hit the HTTP server. The *same frontend code*
+   (`fetch('/api/...')`, `new EventSource(...)`) runs on both — the
+   transport swap is invisible to app code.
+3. **New endpoints go in the Hono app, not bespoke Next routes.** A Hono
+   app is a portable `Request → Response` handler — it runs as a Node
+   server, a Bun/Deno server, a Cloudflare Worker, *and* in-process.
+   The more of the API that is Hono, the more trivially the backend
+   re-hosts as a webapp (or anything else).
+4. **Auth enforcement lives in the routes / shared middleware — not in
+   the transport.** IPC's trust model (webview = in-boundary → synthesize
+   operator principal, skip signature check) is an *additional fast
+   path*, not a removal of checks. Route handlers must still enforce
+   auth so the HTTP path stays safe. Then a future webapp's real auth
+   is added in one place and both transports respect it.
+5. **Phase 4 (custom protocol) is desktop-only and additive.** A web
+   deploy just serves Next normally; the `papercusp://` scheme is a
+   desktop page-loading detail with no web-side effect.
+
+**What re-launching a webapp is NOT free of** — and these are unrelated
+to transport, so name them honestly:
+
+- **Auth.** The operator today is loopback-only (no real auth — see
+  `project_operator_auth_loopback`). A public webapp needs real
+  sessions / OAuth. Genuine new work.
+- **Multi-tenancy.** The desktop app is single-user, one workspace on
+  local disk, embedded Postgres. A public webapp is multi-user — the
+  data model (per-workspace embedded PG, files on disk) assumes
+  local single-user. A real multi-tenant cloud webapp is a far bigger
+  lift than transport.
+
+So: a **testing** webapp (the operator redeployed network-reachable) is
+near-free and this plan keeps it that way. A **public multi-tenant**
+webapp is a major separate effort in auth + data model — this plan
+neither helps nor blocks it, it just keeps the door open.
+
 ## Risks
 
 - **Global `fetch`/`EventSource` patching.** Must intercept only
