@@ -12,7 +12,8 @@
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { withPlanLock, bumpUpdatedDate } from './with-plan-lock';
-import { parsePlan } from './parser';
+import { parsePlan, maskFences } from './parser';
+import { emitPlanEventForCaller } from '../coordination/plan-events';
 
 const SU_ROLES = [
   'scoper',
@@ -79,12 +80,16 @@ export function appendDecisionToBody(
     `${decisionBody.trim()}${refsLine}\n`;
 
   // Find the `## Decisions` (tolerant) section. Insert at its end.
+  // Locate against the fence-masked body so a `## Decisions` heading
+  // inside a worked-example fence is skipped; splice the real body by
+  // index (maskFences preserves length, so indices are interchangeable).
+  const masked = maskFences(body);
   const headingRe = /^##\s+(?:\d+(?:\.\d+)?\.\s+)?Decisions\b[^\n]*$/m;
-  const headingMatch = headingRe.exec(body);
+  const headingMatch = headingRe.exec(masked);
   if (headingMatch) {
     // Find the start of the next `## ` heading after this one, or end of file.
     const after = headingMatch.index + headingMatch[0].length;
-    const restAfter = body.slice(after);
+    const restAfter = masked.slice(after);
     const nextHeadingRe = /^##\s/m;
     const nextHeadingMatch = nextHeadingRe.exec(restAfter);
     if (nextHeadingMatch) {
@@ -181,6 +186,14 @@ export default defineTool({
         isError: true,
       };
     }
+
+    const ok = result.value as { decisionId: string };
+    await emitPlanEventForCaller(ctx, {
+      planSlug: args.slug,
+      event: 'decision_added',
+      detail: ok.decisionId,
+      after: args.title,
+    });
 
     return {
       content: [

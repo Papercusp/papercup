@@ -16,6 +16,8 @@
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { withPlanLock, bumpUpdatedDate } from './with-plan-lock';
+import { maskFences } from './parser';
+import { emitPlanEventForCaller } from '../coordination/plan-events';
 
 const SU_ROLES = [
   'scoper',
@@ -56,11 +58,15 @@ export function replaceNowBlock(body: string, state: string, next: string): stri
   // `## ` heading it failed to match at all and got duplicated by the
   // insert branch below.
   const nowRe = /^##\s+(?:\d+(?:\.\d+)?\.\s+)?Now\b[^\n]*\n([\s\S]*?)(?=^##\s|(?![\s\S]))/m;
-  if (nowRe.test(body)) {
-    // Function replacement, not a string: state/next are user-supplied
-    // and may contain dollar-sign substitution sequences that a string
-    // replacement argument would otherwise interpret as patterns.
-    return body.replace(nowRe, () => block + '\n');
+  // Locate against the fence-masked body so a `## Now` heading inside a
+  // worked-example code fence is never matched. m.index / m[0].length
+  // are valid against the real body (maskFences preserves length); the
+  // splice replaces the whole old block, so any fenced content that was
+  // inside it is correctly discarded with it. Index splice rather than
+  // body.replace also keeps user-supplied state/next literal.
+  const m = nowRe.exec(maskFences(body));
+  if (m) {
+    return body.slice(0, m.index) + block + '\n' + body.slice(m.index + m[0].length);
   }
   // No Now block: insert after frontmatter close (or at top if none).
   if (body.startsWith('---')) {
@@ -133,6 +139,13 @@ export default defineTool({
         isError: true,
       };
     }
+
+    await emitPlanEventForCaller(ctx, {
+      planSlug: args.slug,
+      event: 'now_updated',
+      after: args.next,
+      detail: args.state.slice(0, 200),
+    });
 
     return {
       content: [{ type: 'text' as const, text: JSON.stringify({ ok: true, filePath: result.filePath }) }],

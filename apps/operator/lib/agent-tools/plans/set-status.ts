@@ -13,7 +13,8 @@
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { withPlanLock, bumpUpdatedDate } from './with-plan-lock';
-import { ITEM_STATUSES } from './parser';
+import { ITEM_STATUSES, maskFences } from './parser';
+import { emitPlanEventForCaller } from '../coordination/plan-events';
 
 const SU_ROLES = [
   'scoper',
@@ -45,7 +46,11 @@ export function flipStatusInBody(
     String.raw`^(\s*[-*]\s+\*\*\s*` + itemId.replace(/-/g, '\\-') + String.raw`\s*\*\*\s+\x60)([a-z-]+)(\x60\s+.*)$`,
     'm',
   );
-  const m = re.exec(body);
+  // Search the fence-masked body so a `- **P-NNN**` line inside a
+  // worked-example code fence is never targeted. Match index is valid
+  // against the real body (maskFences preserves length); the item line
+  // is outside any fence, so captured groups equal the real text.
+  const m = re.exec(maskFences(body));
   if (!m) return { newBody: body, found: false, oldStatus: null };
 
   const oldStatus = m[2] ?? '';
@@ -55,7 +60,13 @@ export function flipStatusInBody(
     rest = `${rest} (${note.replace(/[()]/g, '')})`;
   }
   const newLine = `${m[1] ?? ''}${newStatus}${rest}`;
-  const newBody = body.replace(re, newLine);
+  // Index-based splice rather than body.replace(re, newLine): a string
+  // replacement argument would interpret dollar-sign substitution
+  // sequences in the item text as patterns, and body.replace would
+  // re-scan the real body and could hit a fenced match first. m.index
+  // and m[0].length come from the masked body but are valid against
+  // the real body since maskFences preserves length.
+  const newBody = body.slice(0, m.index) + newLine + body.slice(m.index + m[0].length);
   return { newBody, found: true, oldStatus };
 }
 
@@ -130,6 +141,15 @@ export default defineTool({
         isError: true,
       };
     }
+
+    const ok = result.value as { oldStatus: string | null };
+    await emitPlanEventForCaller(ctx, {
+      planSlug: args.slug,
+      event: 'item_status_changed',
+      before: ok.oldStatus,
+      after: args.status,
+      detail: args.itemId,
+    });
 
     return {
       content: [

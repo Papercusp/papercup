@@ -15,7 +15,8 @@
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { withPlanLock, bumpUpdatedDate } from './with-plan-lock';
-import { parsePlan } from './parser';
+import { parsePlan, maskFences } from './parser';
+import { emitPlanEventForCaller } from '../coordination/plan-events';
 
 const SU_ROLES = [
   'scoper',
@@ -98,10 +99,15 @@ export function appendItemToBody(
     'm',
   );
 
-  const phaseMatch = phaseRe.exec(body);
+  // Locate headings against the fence-masked body so a `## Phase`
+  // heading inside a worked-example fence is skipped; splice the real
+  // body by index (maskFences preserves length). The backward
+  // whitespace scan below deliberately stays on the real body.
+  const masked = maskFences(body);
+  const phaseMatch = phaseRe.exec(masked);
   if (phaseMatch) {
     const after = phaseMatch.index + phaseMatch[0].length;
-    const restAfter = body.slice(after);
+    const restAfter = masked.slice(after);
     const nextHeadingRe = /^##\s/m;
     const nextHeadingMatch = nextHeadingRe.exec(restAfter);
     const insertAt =
@@ -122,7 +128,7 @@ export function appendItemToBody(
 
   // Phase missing — create the section just before `## Decisions`.
   const decisionsRe = /^##\s+(?:\d+(?:\.\d+)?\.\s+)?Decisions\b[^\n]*$/m;
-  const decisionsMatch = decisionsRe.exec(body);
+  const decisionsMatch = decisionsRe.exec(masked);
   const newSection = `\n## ${phase.trim()}\n\n${itemLine}\n`;
   if (decisionsMatch) {
     return {
@@ -205,6 +211,15 @@ export default defineTool({
         isError: true,
       };
     }
+
+    await emitPlanEventForCaller(ctx, {
+      planSlug: args.slug,
+      event: 'item_added',
+      detail: typeof result.value === 'object' && result.value !== null && 'itemId' in result.value
+        ? String((result.value as { itemId?: unknown }).itemId ?? '')
+        : '',
+      after: args.text.slice(0, 200),
+    });
 
     return {
       content: [
