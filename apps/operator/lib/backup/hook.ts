@@ -19,7 +19,7 @@
  * Never throws — losing a dump is better than losing the snapshot.
  */
 
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { mkdir, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { createWriteStream } from 'node:fs';
@@ -34,6 +34,31 @@ interface HookContext {
 // it to ~/.papercusp/embedded-pg.json (or honors PAPERCUSP_PG_PORT env).
 // Use the discovery helper instead of a hardcoded port.
 import { getHarnessAdminUrlWithSource } from '../embedded-pg-discovery';
+
+/**
+ * gzip args for the PG dump. `--rsyncable` inserts periodic flush
+ * points so an unchanged region of the dump compresses to a stable
+ * byte range — which lets kopia's content-defined chunker dedup it
+ * across the snapshot cadence. Without it, gzip's output shifts
+ * wholesale on any input change and every 5-minute snapshot stores a
+ * fresh full copy of the dump (this was a contributor to repo bloat).
+ *
+ * GNU gzip supports the flag; BSD gzip (macOS) does not — probe once
+ * and cache. On BSD we fall back to plain `-1`; kopia still chunks the
+ * raw gzip stream, just with worse dedup.
+ */
+let _gzipRsyncable: boolean | null = null;
+function gzipArgs(): string[] {
+  if (_gzipRsyncable === null) {
+    try {
+      const probe = spawnSync('gzip', ['--help'], { encoding: 'utf8' });
+      _gzipRsyncable = /--rsyncable/.test(`${probe.stdout ?? ''}${probe.stderr ?? ''}`);
+    } catch {
+      _gzipRsyncable = false;
+    }
+  }
+  return _gzipRsyncable ? ['-1', '--rsyncable'] : ['-1'];
+}
 
 export async function runPreSnapshotHook(ctx: HookContext): Promise<void> {
   const dumpDir = join(ctx.workspaceRoot, 'db-dumps');
@@ -87,7 +112,7 @@ async function dumpPg(opts: {
       '-U', opts.user,
       '-w',
     ], { env, stdio: ['ignore', 'pipe', 'pipe'] });
-    const gz = spawn('gzip', ['-1'], { stdio: ['pipe', 'pipe', 'pipe'] });
+    const gz = spawn('gzip', gzipArgs(), { stdio: ['pipe', 'pipe', 'pipe'] });
     const out = createWriteStream(tmp);
 
     dump.stdout.pipe(gz.stdin);
@@ -96,7 +121,12 @@ async function dumpPg(opts: {
     dump.stderr.on('data', (d) => { stderr += d.toString(); });
     gz.stderr.on('data', (d) => { stderr += d.toString(); });
 
+    const t = setTimeout(() => { dump.kill('SIGKILL'); gz.kill('SIGKILL'); }, 60_000);
+    let settled = false;
     const finalize = async (ok: boolean) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(t);
       out.end();
       if (ok) {
         try {
@@ -116,12 +146,25 @@ async function dumpPg(opts: {
       resolve();
     };
 
-    const t = setTimeout(() => { dump.kill('SIGKILL'); gz.kill('SIGKILL'); }, 60_000);
+    // A missing binary (pg_dumpall / gzip) makes Node emit an 'error'
+    // event on the child; with no listener that crashes the operator
+    // process. Route it through finalize(false) so the snapshot still
+    // proceeds without the dump.
+    dump.on('error', (e) => {
+      stderr += `pg_dumpall spawn failed: ${e.message}\n`;
+      try { gz.kill('SIGKILL'); } catch { /* already gone */ }
+      void finalize(false);
+    });
+    gz.on('error', (e) => {
+      stderr += `gzip spawn failed: ${e.message}\n`;
+      try { dump.kill('SIGKILL'); } catch { /* already gone */ }
+      void finalize(false);
+    });
+
     let closed = 0;
     const onClose = (code: number | null) => {
       closed++;
       if (closed >= 2) {
-        clearTimeout(t);
         void finalize(code === 0);
       }
     };
