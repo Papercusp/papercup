@@ -8,6 +8,7 @@ import {
   allocateNextScIds,
   appendCriteriaToSpec,
   buildSpecMutation,
+  findUnknownFromItems,
   maxScNum,
   parseScIds,
 } from '../promote';
@@ -108,5 +109,31 @@ describe('buildSpecMutation', () => {
     expect(out.criteria[0]?.coveredBy).toBe('F-040');
     expect(out.perFeatureCovers[0]?.feature_id).toBe('F-040');
     expect(out.newSpec).toContain('- [SC-001] x (covered by F-040)');
+  });
+});
+
+describe('findUnknownFromItems (audit B2)', () => {
+  it('returns [] when every from_items id is known', () => {
+    const out = findUnknownFromItems(
+      [{ from_items: ['P-001', 'P-002'] }, { from_items: ['P-003'] }],
+      ['P-001', 'P-002', 'P-003', 'P-004'],
+    );
+    expect(out).toEqual([]);
+  });
+
+  it('returns [] when no feature declares from_items', () => {
+    expect(findUnknownFromItems([{ title: 'a' }, {}], ['P-001'])).toEqual([]);
+  });
+
+  it('surfaces ids absent from the plan, sorted + de-duplicated', () => {
+    const out = findUnknownFromItems(
+      [{ from_items: ['P-009', 'P-001'] }, { from_items: ['P-009', 'P-007'] }],
+      ['P-001', 'P-002'],
+    );
+    expect(out).toEqual(['P-007', 'P-009']);
+  });
+
+  it('treats an empty known set as "everything is unknown"', () => {
+    expect(findUnknownFromItems([{ from_items: ['P-001'] }], [])).toEqual(['P-001']);
   });
 });

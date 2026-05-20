@@ -114,6 +114,28 @@ export interface PromoteFeatureInput {
 }
 
 /**
+ * Collect every `from_items` P-NNN across `features` that is NOT in
+ * `knownItemIds` (the plan's actual item ids). Sorted, de-duplicated.
+ *
+ * A non-empty result means the caller named a plan item that does not
+ * exist — `plans:promote` rejects rather than silently dropping it
+ * during the mark step (audit B2).
+ */
+export function findUnknownFromItems(
+  features: Array<{ from_items?: string[] }>,
+  knownItemIds: Iterable<string>,
+): string[] {
+  const known = new Set(knownItemIds);
+  const unknown = new Set<string>();
+  for (const f of features) {
+    for (const id of f.from_items ?? []) {
+      if (!known.has(id)) unknown.add(id);
+    }
+  }
+  return [...unknown].sort();
+}
+
+/**
  * Pre-compute the SPEC mutation + the per-feature SC coverage list. No
  * I/O. Pure transform that callers can preview before applying.
  */

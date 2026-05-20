@@ -195,6 +195,31 @@ export default defineTool({
     const planTitle =
       (planFile.parsed.frontmatter as { title?: string } | null)?.title ?? args.slug;
 
+    // Validate every from_items P-NNN against the plan's actual items
+    // (audit B2). A typo'd id would otherwise be silently dropped during
+    // the mark step — the caller would believe it covered an item that
+    // does not exist. Fail fast, in both preview and apply mode.
+    const unknownItems = findUnknownFromItems(
+      args.features,
+      (planFile.parsed.items as Array<{ id: string }>).map((i) => i.id),
+    );
+    if (unknownItems.length > 0) {
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: JSON.stringify({
+              ok: false,
+              error: 'unknown_plan_items',
+              detail: `from_items references item id(s) not present in plan ${args.slug}: ${unknownItems.join(', ')}`,
+              unknown_items: unknownItems,
+            }),
+          },
+        ],
+        isError: true,
+      };
+    }
+
     const features: PromoteFeatureInput[] = args.features.map((f) => ({
       title: f.title,
       body: f.body,
