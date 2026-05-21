@@ -31,12 +31,19 @@ import { registerRoute } from './define-route';
 import { ALL_ROUTES } from './routes';
 
 /**
- * A route is "catch-all" if its path carries a wildcard (`*`) or is the
- * single-segment MCP transport route (`/:transport`) — both must yield
- * precedence to literal routes and sub-app routes.
+ * A route is "catch-all" if it cannot resolve to a single literal path
+ * and must yield precedence to literal routes and sub-app routes:
+ *   - a `*` wildcard segment (`/plugins/*`);
+ *   - a greedy regex param — `:name{.+}` / `:name{.*}` — which is a
+ *     wildcard in Hono's `:param{regex}` syntax (`/scratch/:path{.+}`);
+ *   - the single-segment MCP transport route (`/:transport`).
  */
 function isCatchAll(path: string): boolean {
-  return path.includes('*') || path === '/:transport';
+  return (
+    path.includes('*') ||
+    /\{\.[+*]/.test(path) ||
+    path === '/:transport'
+  );
 }
 
 /**

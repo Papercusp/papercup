@@ -16,14 +16,22 @@ import type { RouteDefinition } from './define-route';
 import type { ZodTypeAny } from 'zod';
 import { ALL_ROUTES } from './routes';
 
-/** Hono path → OpenAPI path: `:slug` / `:path{.+}` → `{slug}` / `{path}`. */
+/**
+ * Hono path → OpenAPI path. `:slug` / `:path{.+}` → `{slug}` / `{path}`;
+ * a `*` wildcard segment → `{wildcard}` (a bare `*` is not a legal
+ * OpenAPI path-template token, so catch-all routes need a named param).
+ */
 function honoPathToOpenApi(path: string): string {
-  return path.replace(/:([A-Za-z0-9_]+)(\{[^}]*\})?/g, '{$1}');
+  return path
+    .replace(/:([A-Za-z0-9_]+)(\{[^}]*\})?/g, '{$1}')
+    .replace(/\*/g, '{wildcard}');
 }
 
-/** Path-parameter names declared in a Hono path. */
+/** Path-parameter names declared in a Hono path (incl. the `*` wildcard). */
 function pathParamNames(path: string): string[] {
-  return [...path.matchAll(/:([A-Za-z0-9_]+)(?:\{[^}]*\})?/g)].map((m) => m[1]);
+  const named = [...path.matchAll(/:([A-Za-z0-9_]+)(?:\{[^}]*\})?/g)].map((m) => m[1]);
+  if (path.includes('*')) named.push('wildcard');
+  return named;
 }
 
 /** Stable, unique operationId from method + path. */
