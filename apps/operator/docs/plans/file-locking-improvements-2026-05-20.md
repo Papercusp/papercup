@@ -108,6 +108,26 @@ The OMP hook (see #2) normalizes to canonical repo-relative POSIX paths, so the 
 
 **Risk.** Low. Tighter normalization can only *reject* paths the current code accepts; existing tests should all still pass because they use canonical paths already. The one risk: a real agent has been quietly relying on a non-canonical path string in production. Mitigation: log (not throw) once for a few days before flipping to reject, in a small canary PR.
 
+> **Audit follow-up (2026-05-21).** The `normalizePaths()` tightening
+> shipped, but the audit found the OMP-hook half of #1 — the symlink
+> refusal — had been dropped. It is now implemented in
+> `scripts/hooks/omp/coord-hook.ts`: `detectSymlinkedPaths()`
+> canonicalizes the repo root and each candidate with `realpathSync`
+> and compares repo-relative forms; a not-yet-existent leaf (new file
+> via `write`) resolves through its parent dir so a symlinked
+> directory component is still caught; anything `realpathSync` cannot
+> resolve (broken link, EACCES, a fake root in unit tests) fails open.
+> `onToolCall` calls it before the acquire and returns
+> `{ block: true }` on a hit — a purely local decision, no operator
+> round-trip. The hook REFUSES rather than silently rewriting the
+> claim to the canonical path: rewriting would hide the aliasing from
+> the agent, and #1 deliberately scoped server-side resolution out.
+> Covered by 9 new `coord-hook.test.ts` cases plus the two-agent
+> `scripts/su-locks-omp-smoke.ts` — which also discharges the §14
+> system-level acceptance #1 "two OMP agents, same file, B
+> hard-blocked" check (store-level, embedded PG, OMP-format owner ids;
+> the live-HTTP path stays covered by `su-locks-e2e.sh`).
+
 ---
 
 ### #2 — SU-locks: OMP enforcement hook

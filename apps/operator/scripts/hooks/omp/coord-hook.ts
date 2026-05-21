@@ -43,8 +43,8 @@
  * keep working.
  */
 
-import { promises as fsp, existsSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import { promises as fsp, existsSync, realpathSync } from 'node:fs';
+import { basename, dirname, join, resolve } from 'node:path';
 
 // ── Pure helpers (unit-tested) ───────────────────────────────────────
 
@@ -926,6 +926,97 @@ export function extractPathsFromToolInput(
   return out;
 }
 
+/**
+ * Symlink refusal (file-locking-improvements #1). The lock store keys
+ * on the path STRING — `apps/foo.ts` and a symlink `apps/link.ts`
+ * pointing at it are two different keys, so two agents editing "the
+ * same file" through different names would BOTH acquire. The operator
+ * can't catch this (it doesn't share the agent's filesystem); the hook
+ * runs ON that filesystem, so it can.
+ *
+ * The hook REFUSES rather than silently rewriting the claim to the
+ * canonical path: rewriting would hide the aliasing from the agent,
+ * and the plan (#1) deliberately scoped resolution out — the caller
+ * owns resolving symlinks before it claims.
+ *
+ * Detection: canonicalize both the repo root and each candidate with
+ * realpathSync, then compare repo-relative forms. Equal ⇒ no symlink.
+ * Differ ⇒ a symlink sits somewhere in the path (or it escapes the
+ * repo entirely). A not-yet-existent leaf (a `write` creating a new
+ * file) is not itself a symlink — realpath its PARENT dir instead, so
+ * a symlinked directory component is still caught. Anything realpath
+ * can't resolve at all (broken link, EACCES, missing parent, or a root
+ * that isn't a real dir — e.g. unit tests with PAPERCUSP_REPO_ROOT set
+ * to a fake path) is left to the server: fail-open, consistent with
+ * every other hook failure path.
+ */
+export function detectSymlinkedPaths(
+  relPaths: string[],
+  root: string,
+): Array<{ given: string; real: string }> {
+  let canonRoot: string;
+  try {
+    canonRoot = realpathSync(root);
+  } catch {
+    return []; // root not a real directory — fail open
+  }
+  const hits: Array<{ given: string; real: string }> = [];
+  for (const rel of relPaths) {
+    const abs = join(root, rel);
+    let canon: string | null = null;
+    try {
+      canon = realpathSync(abs);
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code === 'ENOENT') {
+        // Leaf missing (new file via `write`). A symlink can still
+        // hide in a directory component — resolve the parent.
+        try {
+          canon = join(realpathSync(dirname(abs)), basename(abs));
+        } catch {
+          canon = null; // parent unresolvable — leave it to the server
+        }
+      }
+      // EACCES / ELOOP / etc. — canon stays null, fail open.
+    }
+    if (canon === null) continue;
+    const canonRel =
+      canon === canonRoot
+        ? ''
+        : canon.startsWith(canonRoot + '/')
+          ? canon.slice(canonRoot.length + 1)
+          : null;
+    // canonRel === null ⇒ the real path escaped the repo (a symlink
+    // pointing outside): also a refusal — the claim string would look
+    // in-repo while the edit lands elsewhere.
+    if (canonRel !== rel) {
+      hits.push({ given: rel, real: canonRel ?? canon });
+    }
+  }
+  return hits;
+}
+
+/** Format the refusal when a tool targets a symlinked path (#1). */
+export function formatSymlinkRefusal(
+  hits: Array<{ given: string; real: string }>,
+): string {
+  const lines = [
+    'locks: refused — symlinked path(s). Edit the real file directly:',
+  ];
+  for (const h of hits.slice(0, 5)) {
+    lines.push(`  - ${h.given} → ${h.real || '(repo root)'}`);
+  }
+  if (hits.length > 5) lines.push(`  ... and ${hits.length - 5} more`);
+  lines.push('');
+  lines.push(
+    'The lock store keys on the path string, so a symlink and its target',
+  );
+  lines.push(
+    'are two separate claims — editing through the symlink would let',
+  );
+  lines.push('another agent hold the same underlying file at the same time.');
+  return lines.join('\n');
+}
+
 /** Busy-array entry as returned by coord:locks:acquire. */
 interface BusyEntry {
   path: string;
@@ -959,6 +1050,16 @@ export async function onToolCall(
 ): Promise<{ block?: boolean; reason?: string }> {
   const paths = extractPathsFromToolInput(event.toolName, event.input);
   if (paths.length === 0) return {};
+
+  // Symlink refusal (file-locking #1) — runs BEFORE the acquire. The
+  // operator keys locks on the path string and cannot see that two
+  // strings alias one file; the hook, running on the agent's
+  // filesystem, can. A local decision: no operator round-trip, so no
+  // health marker (like the paths.length === 0 short-circuit above).
+  const symlinked = detectSymlinkedPaths(paths, papercupRoot());
+  if (symlinked.length > 0) {
+    return { block: true, reason: formatSymlinkRefusal(symlinked) };
+  }
 
   const result = await callMcpTool('coord:locks:acquire', {
     paths,

@@ -11,8 +11,10 @@ import { join } from 'node:path';
 
 import {
   callMcpTool,
+  detectSymlinkedPaths,
   extractPathsFromToolInput,
   formatBusyRefusal,
+  formatSymlinkRefusal,
   formatTurnStartReminder,
   hookOwnerId,
   onSessionShutdown,
@@ -872,5 +874,111 @@ describe('extractPathsFromToolInput backslash consistency (file-locking #2)', ()
     expect(
       extractPathsFromToolInput('write', { path: '/repo/./apps//foo.ts' }),
     ).toEqual(['apps/foo.ts']);
+  });
+});
+
+describe('detectSymlinkedPaths / formatSymlinkRefusal (file-locking #1)', () => {
+  let root: string;
+
+  beforeEach(async () => {
+    root = await fs.mkdtemp(join(tmpdir(), 'su-symlink-'));
+    await fs.mkdir(join(root, 'apps'), { recursive: true });
+    await fs.writeFile(join(root, 'apps', 'real.ts'), 'x');
+  });
+  afterEach(async () => {
+    await fs.rm(root, { recursive: true, force: true });
+  });
+
+  it('passes a plain non-symlinked path', () => {
+    expect(detectSymlinkedPaths(['apps/real.ts'], root)).toEqual([]);
+  });
+
+  it('passes a not-yet-existent leaf (new file via write)', () => {
+    expect(detectSymlinkedPaths(['apps/brand-new.ts'], root)).toEqual([]);
+  });
+
+  it('flags a symlinked file pointing at a real repo file', async () => {
+    await fs.symlink(
+      join(root, 'apps', 'real.ts'),
+      join(root, 'apps', 'link.ts'),
+    );
+    expect(detectSymlinkedPaths(['apps/link.ts'], root)).toEqual([
+      { given: 'apps/link.ts', real: 'apps/real.ts' },
+    ]);
+  });
+
+  it('flags a path whose directory component is a symlink', async () => {
+    await fs.symlink(join(root, 'apps'), join(root, 'aliasdir'));
+    expect(detectSymlinkedPaths(['aliasdir/real.ts'], root)).toEqual([
+      { given: 'aliasdir/real.ts', real: 'apps/real.ts' },
+    ]);
+  });
+
+  it('flags a symlink that escapes the repo entirely', async () => {
+    const outside = await fs.mkdtemp(join(tmpdir(), 'su-outside-'));
+    await fs.writeFile(join(outside, 'ext.ts'), 'x');
+    await fs.symlink(
+      join(outside, 'ext.ts'),
+      join(root, 'apps', 'escape.ts'),
+    );
+    const hits = detectSymlinkedPaths(['apps/escape.ts'], root);
+    expect(hits).toHaveLength(1);
+    expect(hits[0].given).toBe('apps/escape.ts');
+    await fs.rm(outside, { recursive: true, force: true });
+  });
+
+  it('fails open when the root is not a real directory', () => {
+    expect(
+      detectSymlinkedPaths(['apps/real.ts'], '/no/such/root/here'),
+    ).toEqual([]);
+  });
+
+  it('does not flag paths when the repo root itself is under a symlink', async () => {
+    // A symlinked *root* must not make every path look symlinked —
+    // both root and path canonicalize the same way.
+    const linkRoot = join(tmpdir(), `su-rootlink-${Date.now()}-${process.pid}`);
+    await fs.symlink(root, linkRoot);
+    expect(detectSymlinkedPaths(['apps/real.ts'], linkRoot)).toEqual([]);
+    await fs.rm(linkRoot, { force: true });
+  });
+
+  it('formatSymlinkRefusal names each aliased path and its real target', () => {
+    const msg = formatSymlinkRefusal([
+      { given: 'apps/link.ts', real: 'apps/real.ts' },
+    ]);
+    expect(msg).toMatch(/refused/i);
+    expect(msg).toMatch(/symlink/i);
+    expect(msg).toMatch(/apps\/link\.ts/);
+    expect(msg).toMatch(/apps\/real\.ts/);
+  });
+
+  it('onToolCall blocks a symlinked target before contacting the operator', async () => {
+    await fs.symlink(
+      join(root, 'apps', 'real.ts'),
+      join(root, 'apps', 'link.ts'),
+    );
+    const prevRoot = process.env.PAPERCUSP_REPO_ROOT;
+    process.env.PAPERCUSP_REPO_ROOT = root;
+    const origFetch = global.fetch;
+    let fetched = false;
+    global.fetch = (async () => {
+      fetched = true;
+      throw new Error('should not contact operator on a symlink refusal');
+    }) as unknown as typeof fetch;
+    try {
+      const r = await onToolCall({
+        type: 'tool_call',
+        toolName: 'write',
+        toolCallId: 'sym-1',
+        input: { path: join(root, 'apps', 'link.ts'), content: 'x' },
+      });
+      expect(r.block).toBe(true);
+      expect(r.reason).toMatch(/symlink/i);
+      expect(fetched).toBe(false);
+    } finally {
+      global.fetch = origFetch;
+      if (prevRoot === undefined) delete process.env.PAPERCUSP_REPO_ROOT;
+      else process.env.PAPERCUSP_REPO_ROOT = prevRoot;
+    }
   });
 });
