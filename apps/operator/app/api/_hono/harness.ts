@@ -21,14 +21,10 @@ import { sseResponse } from '@restart/sse';
 import '@/lib/agent-tools/index';
 import { readFileSync, readlinkSync, existsSync, readdirSync, statSync, openSync, readSync, closeSync, constants as fsConstants } from 'node:fs';
 import { getKnownHooks } from '@/lib/known-hooks';
-import {
-  PROJECT_FILES_TO_COPY, STATE_FILES_FOR_RESET,
-  TEMPLATE_DETECT_FILES, SOURCE_FILES_FOR_FORK, SNAPSHOT_FILES,
-} from '@/lib/harness-state-files';
 import { papercuspPath } from '@/lib/papercusp-root';
 import { DECISION_VERBS } from '@papercusp/orchestrator/decision-parse';
-import { readFile, writeFile, appendFile, unlink, mkdir, chmod, rename, access, copyFile } from 'node:fs/promises';
-import { join, resolve, dirname } from 'node:path';
+import { readFile, writeFile, appendFile, unlink, mkdir, chmod, access } from 'node:fs/promises';
+import { join, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { harnessPackageDir, harnessPath } from '@/lib/harness-paths';
 
@@ -58,7 +54,6 @@ import { activeStreams, HARNESS_STREAM_TOTAL_CAP, type StreamToken } from '@/lib
 import {
   countPulsesFromRunLog,
   aggregateCostFromLogDir,
-  resolveProject,
   harnessDir,
   safeRead,
   isHarnessDriverCmdline,
@@ -74,7 +69,6 @@ const dbcFor = (slug: string) => getLegacyClient(slug);
 
 const execFileP = promisify(execFile);
 
-import { papercuspRoot } from '@/lib/papercusp-root';
 import { getHarnessAdminUrl } from '@/lib/embedded-pg-discovery';
 import {
   loadHarnessRegistry,
@@ -283,209 +277,9 @@ harness.delete('/projects/:slug', async (c) => {
 
 
 
-// ─── mission templates (~/autonomous-harness/templates/projects/*) ────
-
-const TEMPLATES_DIR = harnessPath('templates', 'projects');
 
 
 
-harness.post('/:slug/bootstrap-from-template', async (c) => {
-  const project = await resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
-  if (!project) return c.json({ error: 'unknown project' }, 404);
-  const body = await c.req.json().catch(() => ({})) as { templateId?: string; overwrite?: boolean };
-  const tid = (body.templateId ?? '').replace(/[^A-Za-z0-9_-]/g, '');
-  if (!tid) return c.json({ error: 'templateId required' }, 400);
-  const tdir = join(TEMPLATES_DIR, tid);
-  if (!existsSync(tdir)) return c.json({ error: `template not found: ${tid}` }, 404);
-
-  const overwrite = body.overwrite === true;
-  const copied: string[] = [];
-  const skipped: string[] = [];
-  for (const f of PROJECT_FILES_TO_COPY) {
-    const src = join(tdir, f);
-    if (!existsSync(src)) continue;
-    const dest = join(project.path, f);
-    if (existsSync(dest) && !overwrite) { skipped.push(f); continue; }
-    const tmp = `${dest}.tmp.${Date.now()}`;
-    await copyFile(src, tmp);
-    await rename(tmp, dest);
-    copied.push(f);
-  }
-  // config.json goes into .harness/
-  const configSrc = join(tdir, 'config.json');
-  if (existsSync(configSrc)) {
-    await mkdir(harnessDir(project), { recursive: true });
-    const dest = join(harnessDir(project), 'config.json');
-    if (existsSync(dest) && !overwrite) {
-      skipped.push('.harness/config.json');
-    } else {
-      const tmp = `${dest}.tmp.${Date.now()}`;
-      await copyFile(configSrc, tmp);
-      await rename(tmp, dest);
-      copied.push('.harness/config.json');
-    }
-  }
-
-  return c.json({ ok: true, copied, skipped });
-});
-
-
-
-/**
- * POST /:slug/save-as-template — create a reusable template from a running harness.
- *
- * A template is a recipe (manifest + scaffolding files) that can be
- * `papercusp init`'d into a fresh harness. Distinct from a snapshot
- * (which freezes mid-mission state). This endpoint:
- *
- *   1. Reads the harness's .harness/config.json (models, timeouts, phases).
- *   2. Reads ~/.papercusp/.../harnesses/<slug>/enabled-plugins.json for the
- *      plugin recommendations to bake into the template.
- *   3. Copies SPEC.md, AGENTS.md, .harness/validation-contract.md verbatim
- *      to the template's source dir.
- *   4. Synthesizes a papercusp.json manifest with:
- *        - kind: "template"
- *        - name (from body.slug, default <harness-slug>-template)
- *        - version (from body.version, default 0.1.0)
- *        - description, author, license, icon (from body, optional)
- *        - models (lifted from .harness/config.json)
- *        - plugins[] (recommendations from enabled-plugins.json)
- *        - configFiles[] (the standard set: SPEC.md, AGENTS.md,
- *          .harness/config.json, .harness/validation-contract.md)
- *
- * The template lands at ~/.papercusp/templates/<new-slug>/<version>/.
- * Returns the path so callers can navigate to /installed/templates/<slug>/edit
- * (the editor page is a follow-up; for now the user can edit files manually
- * or run `papercusp publish` from the dir).
- */
-harness.post('/:slug/save-as-template', async (c) => {
-  const project = await resolveProject(c.req.param('slug'));
-  if (!project) return c.json({ error: 'unknown project' }, 404);
-
-  const body = (await c.req.json().catch(() => ({}))) as {
-    slug?: string;
-    version?: string;
-    description?: string;
-    author?: string;
-    license?: string;
-    icon?: string;
-  };
-
-  const newSlug = (body.slug ?? `${project.slug}-template`).trim();
-  if (!/^[a-z0-9][a-z0-9._-]*$/.test(newSlug) && !/^@[a-z0-9][a-z0-9._-]+\/[a-z0-9][a-z0-9._-]+$/.test(newSlug)) {
-    return c.json({ error: `invalid slug "${newSlug}" (lowercase alphanumeric + ._- ; or scoped @owner/name)` }, 400);
-  }
-  const version = (body.version ?? '0.1.0').trim();
-  if (!/^\d+\.\d+\.\d+(-[a-z0-9.-]+)?$/.test(version)) {
-    return c.json({ error: `invalid version "${version}" (expected semver, e.g. 0.1.0)` }, 400);
-  }
-
-  const rootDir = papercuspRoot();
-  const templateDir = join(rootDir, 'templates', newSlug, version);
-  if (existsSync(templateDir)) {
-    return c.json({ error: `template already exists at ${templateDir} — bump version or pick a different slug` }, 409);
-  }
-  await mkdir(templateDir, { recursive: true });
-
-  // Source files to copy verbatim (canonical list — see lib/harness-state-files.ts)
-  const sourceFiles = SOURCE_FILES_FOR_FORK;
-  const copied: string[] = [];
-  const skipped: string[] = [];
-  for (const rel of sourceFiles) {
-    const src = join(project.path, rel);
-    if (!existsSync(src)) { skipped.push(rel); continue; }
-    const dst = join(templateDir, rel);
-    await mkdir(dirname(dst), { recursive: true });
-    await copyFile(src, dst);
-    copied.push(rel);
-  }
-
-  // Read .harness/config.json so we can lift its `models` into the manifest.
-  let configModels: Record<string, unknown> | undefined;
-  try {
-    const cfgRaw = await readFile(join(project.path, '.harness', 'config.json'), 'utf8');
-    const cfg = JSON.parse(cfgRaw) as { models?: Record<string, unknown> };
-    if (cfg.models && typeof cfg.models === 'object') configModels = cfg.models;
-  } catch {}
-
-  // Read enabled-plugins.json for plugin recommendations.
-  type EnabledPlugins = { enabled?: Record<string, { version?: string }> };
-  const enabledPath = join(rootDir, 'harnesses', project.slug, 'enabled-plugins.json');
-  let pluginRecs: Array<{ slug: string; autoEnable: boolean; version?: string }> = [];
-  try {
-    if (existsSync(enabledPath)) {
-      const enabled = JSON.parse(await readFile(enabledPath, 'utf8')) as EnabledPlugins;
-      pluginRecs = Object.entries(enabled.enabled ?? {}).map(([slug, info]) => ({
-        slug,
-        autoEnable: true,
-        version: info.version,
-      }));
-    }
-  } catch {}
-
-  // Standard configFiles list — what the operator's Config tab will surface
-  // when the template is instantiated. Mirrors papercup-coding's manifest.
-  const configFiles = [
-    { path: 'SPEC.md', label: 'SPEC.md', language: 'markdown', description: 'What this project should accomplish — read by every role on every iteration.' },
-    { path: 'AGENTS.md', label: 'AGENTS.md', language: 'markdown', description: 'Coding conventions, libraries to prefer, idioms to avoid — applied by the worker.' },
-    { path: '.harness/config.json', label: 'config.json', language: 'json', description: 'Phase, model preferences per role, timeouts, cost cap.' },
-    { path: '.harness/validation-contract.md', label: 'validation-contract.md', language: 'markdown', description: 'What "passing" means — the validator enforces this against every worker proposal.' },
-  ];
-
-  const manifest = {
-    name: newSlug,
-    version,
-    kind: 'template' as const,
-    description: body.description ?? `Template forked from ${project.slug}`,
-    author: body.author,
-    license: body.license ?? 'MIT',
-    icon: body.icon,
-    papercusp: '^0.1.0',
-    ...(configModels ? { models: configModels } : {}),
-    ...(pluginRecs.length > 0 ? { plugins: pluginRecs } : {}),
-    configFiles,
-    forkedFrom: { harness: project.slug, at: new Date().toISOString() },
-  };
-  await writeFile(
-    join(templateDir, 'papercusp.json'),
-    JSON.stringify(manifest, null, 2) + '\n',
-    'utf8',
-  );
-
-  // Scaffold a README so the marketplace page has Overview content from
-  // the moment the template is published. The user can edit it via the
-  // /installed/templates/<slug>/edit page before publishing.
-  const readmePath = join(templateDir, 'README.md');
-  if (!existsSync(readmePath)) {
-    const desc = body.description?.trim() || `Template forked from ${project.slug}.`;
-    const pluginLines = pluginRecs.length > 0
-      ? pluginRecs.map((p) => `- \`${p.slug}\`${p.version ? ` v${p.version}` : ''}${p.autoEnable ? ' (auto-enable)' : ''}`).join('\n')
-      : '_(no plugins bundled)_';
-    const modelLines = configModels && Object.keys(configModels).length > 0
-      ? Object.entries(configModels)
-          .map(([role, conf]) => `- **${role}** — \`${(conf as { preferred?: string })?.preferred ?? '—'}\``)
-          .join('\n')
-      : '_(no role overrides — uses framework defaults)_';
-    const configFileLines = configFiles
-      .map((f) => `- \`${f.path}\` — ${f.description ?? ''}`)
-      .join('\n');
-
-    const readme = `# ${newSlug}\n\n${desc}\n\nForked from harness \`${project.slug}\` on ${new Date().toISOString().slice(0, 10)}.\n\n## Install\n\n\`\`\`\npapercusp install ${newSlug}@${version}\n\`\`\`\n\nOr install via the marketplace site at :3060.\n\n## What's in this template\n\n### Config files\n\nEditable after install (and via the operator's Config tab):\n\n${configFileLines}\n\n### Models\n\n${modelLines}\n\n### Plugins\n\n${pluginLines}\n\n## Customising\n\nEdit \`SPEC.md\` to point at your project's goals, then \`papercusp run\` to start the loop.\n\nSee \`AGENTS.md\` for the conventions every role applies, and \`.harness/validation-contract.md\` for what \"passing\" means in this template.\n`;
-    await writeFile(readmePath, readme, 'utf8');
-    copied.push('README.md');
-  }
-
-  return c.json({
-    ok: true,
-    slug: newSlug,
-    version,
-    path: templateDir,
-    copied,
-    skipped,
-    pluginRecs: pluginRecs.length,
-    editPath: `/installed/templates/${encodeURIComponent(newSlug)}/edit`,
-  });
-});
 
 
 
