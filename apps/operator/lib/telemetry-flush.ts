@@ -131,14 +131,24 @@ export async function flushTelemetry(): Promise<FlushResult> {
     await writeOperatorState('telemetry_reports', { reports: [] });
   }
 
-  // 2. Forward to PostHog. Gate:
-  //      user opted in (telemetry_enabled === true) OR PAPERCUSP_INTERNAL_BUILD=true.
-  //      Internal-build short-circuits opt-in so maintainer test channels
-  //      always emit, without needing every internal user to click opt-in.
+  // 2. Forward to PostHog. Gates — ALL must hold:
+  //      - NODE_ENV === 'production'. Never ship dev events to the
+  //        production PostHog. Mirrors the dev-mode bail in
+  //        /api/desktop/telemetry-config so the browser SDK and this
+  //        server-side worker agree (dev-mode is absolute — it overrides
+  //        even PAPERCUSP_INTERNAL_BUILD, same as telemetry-config).
+  //      - user opted in (telemetry_enabled === true) OR
+  //        PAPERCUSP_INTERNAL_BUILD=true (maintainer channel).
   const config = await resolveTelemetryConfig();
   result.optedIn = config.optedIn;
   result.internalBuild = config.internalBuild;
-  if ((config.optedIn || config.internalBuild) && config.host && config.projectKey) {
+  const isProd = process.env.NODE_ENV === 'production';
+  if (
+    isProd &&
+    (config.optedIn || config.internalBuild) &&
+    config.host &&
+    config.projectKey
+  ) {
     result.posthogConfigured = true;
     const pending = await sql<
       Array<{
