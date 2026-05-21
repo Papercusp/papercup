@@ -1,0 +1,143 @@
+/**
+ * `/internal/docs/*` — the Starlight static site, served by the Hono host.
+ *
+ * Faithful port of `apps/operator/proxy.ts`'s docs concerns:
+ *   1. Loopback-only gate (403 unless 127.0.0.1 / localhost / IPv6 ::1 /
+ *      tauri.localhost OR `PAPERCUSP_INTERNAL_DOCS_BYPASS=1`).
+ *   2. Per-page `Accept: text/markdown` → `<slug>.md` twin
+ *      (emitted by apps/operator-docs/scripts/emit-md-twins.ts).
+ *   3. Bare slug → `<slug>.html` resolution from `public/internal/docs/`.
+ *   4. Unknown slug → serve `404.html` body with HTTP 404 (not 500).
+ *   5. Extension'd paths (e.g. `_astro/foo.css`, `pagefind/*.wasm`) →
+ *      serve the file directly with a sensible Content-Type.
+ *
+ * The docs root is resolved from `__dirname` (robust against cwd), unlike
+ * `proxy.ts` which used `process.cwd()` — the audit-3 finding from the
+ * `docs:*` MCP adapter.
+ */
+import { Hono } from 'hono';
+import { existsSync, readFileSync } from 'node:fs';
+import { extname, join, resolve } from 'node:path';
+
+const PUBLIC_DOCS_ROOT = resolve(__dirname, '..', 'public', 'internal', 'docs');
+
+const LOOPBACK_HOSTS = new Set([
+  'localhost',
+  '127.0.0.1',
+  '::1',
+  '10.0.2.2',
+  'tauri.localhost',
+]);
+
+const EXT_CONTENT_TYPE: Record<string, string> = {
+  '.html': 'text/html; charset=utf-8',
+  '.md': 'text/markdown; charset=utf-8',
+  '.txt': 'text/plain; charset=utf-8',
+  '.xml': 'application/xml; charset=utf-8',
+  '.css': 'text/css; charset=utf-8',
+  '.js': 'text/javascript; charset=utf-8',
+  '.mjs': 'text/javascript; charset=utf-8',
+  '.json': 'application/json; charset=utf-8',
+  '.svg': 'image/svg+xml',
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.webp': 'image/webp',
+  '.gif': 'image/gif',
+  '.woff': 'font/woff',
+  '.woff2': 'font/woff2',
+  '.wasm': 'application/wasm',
+  '.ico': 'image/x-icon',
+};
+
+const TEXT_EXTS = new Set([
+  '.html', '.md', '.txt', '.xml', '.css', '.js', '.mjs', '.json', '.svg',
+]);
+
+const STATIC_ASSET_RE = /\.(md|txt|html|xml|js|mjs|css|json|svg|png|jpe?g|webp|gif|woff2?|wasm|ico)$/i;
+const EXT_RE = /\.[a-z0-9]+$/i;
+
+/** True iff the request's Host header points at a loopback address. */
+function isLoopbackHost(host: string | null): boolean {
+  if (!host) return false;
+  const lower = host.trim().toLowerCase();
+  if (LOOPBACK_HOSTS.has(lower)) return true;
+  let hostname = lower;
+  if (hostname.startsWith('[')) {
+    hostname = hostname.slice(1, hostname.indexOf(']'));
+  } else if (hostname.includes(':')) {
+    hostname = hostname.slice(0, hostname.indexOf(':'));
+  }
+  return LOOPBACK_HOSTS.has(hostname);
+}
+
+function serveFile(absPath: string, status = 200): Response {
+  const ext = extname(absPath).toLowerCase();
+  const contentType = EXT_CONTENT_TYPE[ext] ?? 'application/octet-stream';
+  // Decode text files; pass binaries through as Buffer.
+  const body = TEXT_EXTS.has(ext)
+    ? readFileSync(absPath, 'utf-8')
+    : readFileSync(absPath);
+  // Buffer → Response auto-promotes via Uint8Array view.
+  return new Response(body, {
+    status,
+    headers: { 'content-type': contentType },
+  });
+}
+
+export const docsRoutes = new Hono();
+
+// Loopback gate. Runs before any docs route handler.
+docsRoutes.use('/internal/docs/*', async (c, next) => {
+  const ok = isLoopbackHost(c.req.header('host') ?? null)
+    || process.env.PAPERCUSP_INTERNAL_DOCS_BYPASS === '1';
+  if (!ok) {
+    return new Response(
+      'Internal engineering docs are loopback-only. Reach them on 127.0.0.1 / localhost, or set PAPERCUSP_INTERNAL_DOCS_BYPASS=1 to expose them.',
+      { status: 403, headers: { 'content-type': 'text/plain; charset=utf-8' } },
+    );
+  }
+  await next();
+});
+
+docsRoutes.get('/internal/docs/*', async (c) => {
+  // Hono encodes the path; decode for fs lookup.
+  const pathname = decodeURI(new URL(c.req.url).pathname);
+  const rel = pathname.replace(/^\/internal\/docs\/?/, '');
+
+  // (1) Extension'd path — serve the file directly. `_astro/*`, `pagefind/*`,
+  // `*.html`, `*.md`, etc. Any extension we recognize as a static asset.
+  if (rel && STATIC_ASSET_RE.test(rel)) {
+    const abs = join(PUBLIC_DOCS_ROOT, rel);
+    if (existsSync(abs)) return serveFile(abs, 200);
+    // Asset not found — fall through to 404 below (HTML-shape).
+  }
+
+  // (2) Extensionless `+ Accept: text/markdown` → `.md` twin.
+  const isExtless = !rel || !EXT_RE.test(rel);
+  const accept = c.req.header('accept') ?? '';
+  if (isExtless && accept.includes('text/markdown')) {
+    const slug = rel === '' || rel === '/' ? 'index' : rel.replace(/\/$/, '');
+    const abs = join(PUBLIC_DOCS_ROOT, `${slug}.md`);
+    if (existsSync(abs)) return serveFile(abs, 200);
+    return new Response('Not found', {
+      status: 404,
+      headers: { 'content-type': 'text/plain; charset=utf-8' },
+    });
+  }
+
+  // (3) Extensionless → `<slug>.html`.
+  if (isExtless) {
+    const slug = rel === '' || rel === '/' ? 'index' : rel.replace(/\/$/, '');
+    const abs = join(PUBLIC_DOCS_ROOT, `${slug}.html`);
+    if (existsSync(abs)) return serveFile(abs, 200);
+  }
+
+  // (4) Unknown slug — serve the Starlight 404 body with HTTP 404.
+  const notFoundPath = join(PUBLIC_DOCS_ROOT, '404.html');
+  if (existsSync(notFoundPath)) return serveFile(notFoundPath, 404);
+  return new Response('Not found', {
+    status: 404,
+    headers: { 'content-type': 'text/plain; charset=utf-8' },
+  });
+});

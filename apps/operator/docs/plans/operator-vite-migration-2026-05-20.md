@@ -589,7 +589,7 @@ Already described in [D3](#d3-proxyts-middleware--hono-middleware). The full por
 
 | `proxy.ts` concern | Replication |
 |---|---|
-| `LOCAL_API_CORS_HEADERS` block (exact-origin credentialed CORS for `/api/*`) | Hono `cors()` middleware mounted in `_hono/app.ts`. Origin allowlist is the same `LOCAL_API_ORIGIN_HOSTS` set, same `LOCAL_API_ORIGIN_PROTOCOLS`. |
+| `LOCAL_API_CORS_HEADERS` block (exact-origin credentialed CORS for `/api/*`) | **As-built:** Hono `cors()` middleware mounted in `apps/operator/bin/host-cors.ts`, applied at the host (outer) layer in `host-handler.ts`; `_hono`'s narrower `tauriApiCors` is left untouched. Origin allowlist is the same `LOCAL_API_ORIGIN_HOSTS` set, same `LOCAL_API_ORIGIN_PROTOCOLS`. Reason for the deviation from the original plan (mounting inside `_hono/app.ts`): `_hono/app.ts` is the Phase 0 BOUNDARY-locked module shared with the backend agent — widening its narrow `tauriApiCors` mid-stream would race. Mounting at host level mirrors the Next stack (outer `proxy.ts` + inner `_hono`) and is behaviorally equivalent. |
 | `isLoopbackHost()` + `/internal/docs` gate (loopback-only unless `PAPERCUSP_INTERNAL_DOCS_BYPASS=1`) | Hono middleware on the host (runs before `serveStatic`). Same logic. |
 | Slug → `<slug>.html` resolve via `fs.existsSync` | Hono middleware; uses `node:fs`/`node:path` same as today. |
 | Per-page `Accept: text/markdown` → `<slug>.md` | Same middleware; checks `Accept` header before falling through to `serveStatic` for the `.html`. |
