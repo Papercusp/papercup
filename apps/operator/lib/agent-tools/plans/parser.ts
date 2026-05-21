@@ -80,6 +80,10 @@ export interface ParsedPlan {
   items: PlanItem[];
   decisions: PlanDecision[];
   prose: string;
+  /** Full original markdown source — what `parsePlan` was handed. The
+   *  admin UI's PlanEditor renders this so the canonical bytes stay the
+   *  visible truth (D-001 of plans-admin-ui-2026-05-20). */
+  raw: string;
   isLegacy: boolean;
   parseWarnings: string[];
 }
@@ -443,7 +447,40 @@ export function parsePlan(source: string, opts: ParseOptions = {}): ParsedPlan {
     items,
     decisions,
     prose: body,
+    raw: source,
     isLegacy,
     parseWarnings: warnings,
   };
+}
+
+/**
+ * Return a copy of `body` with every character inside a fenced code
+ * block (``` / ~~~ fences and the fence lines themselves) replaced by
+ * a space. Newlines and total length are preserved byte-for-byte, so a
+ * regex match index computed against the masked string applies
+ * unchanged to the original.
+ *
+ * The write mutators (set-status, set-now, add-decision, add-item)
+ * locate their target heading/item by running a regex over the masked
+ * body, then splice the *real* body at the resulting index — so a
+ * `## Now` or `- **P-001**` line inside a worked-example fence is never
+ * mistaken for the real structural element. This matches the parser,
+ * which already ignores fenced regions.
+ */
+export function maskFences(body: string): string {
+  const lines = body.split('\n');
+  let inFence = false;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i] ?? '';
+    const isFenceLine = /^\s*(?:```|~~~)/.test(line);
+    if (isFenceLine) {
+      inFence = !inFence;
+      lines[i] = ' '.repeat(line.length);
+      continue;
+    }
+    if (inFence) {
+      lines[i] = ' '.repeat(line.length);
+    }
+  }
+  return lines.join('\n');
 }

@@ -12,6 +12,7 @@ import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { readPlanBySlug } from './source';
 import { resolveEffectiveStatus } from './effective-status';
+import { hashPlanContent } from './content-hash';
 
 const ALL_ROLES = [
   'scoper',
@@ -70,6 +71,8 @@ export default defineTool({
               archived,
               legacy: true,
               prose: parsed.prose,
+              raw: parsed.raw,
+              contentHash: hashPlanContent(parsed.raw),
               filename: parsed.filename,
             }),
           },
@@ -94,6 +97,8 @@ export default defineTool({
             missingRefs: resolved.missingRefs,
             cycleMembers: resolved.cycleMembers,
             prose: parsed.prose,
+            raw: parsed.raw,
+            contentHash: hashPlanContent(parsed.raw),
           }),
         },
       ],

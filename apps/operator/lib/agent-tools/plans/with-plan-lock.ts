@@ -23,7 +23,7 @@ import {
 } from '@/lib/agent-tools/locks/su-lock-store';
 import { SuLocksCoordinator } from '@/lib/agent-tools/locks/coordinator';
 import { readIdentity, type IdentityCtx } from '@/lib/agent-tools/locks/identity';
-import { getPlansDir, PLANS_DIR_REL, type PlanSourceOpts } from './source';
+import { getPlansDir, PLANS_DIR_REL, VALID_PLAN_SLUG, type PlanSourceOpts } from './source';
 
 export interface WithPlanLockOpts extends PlanSourceOpts {
   /** Plan slug (filename stem). Resolves to `<plansDir>/<slug>.md`. */
@@ -64,6 +64,17 @@ export async function withPlanLock<T>(
   opts: WithPlanLockOpts,
   mutator: (current: string | null) => Promise<{ newBody: string | null; value: T }>,
 ): Promise<WithPlanLockResult<T>> {
+  // Slug guard — the write-path counterpart of `readPlanBySlug`'s
+  // check. Without it a `slug` containing `/` + `..` escapes
+  // `docs/plans/`: `path.join` normalises the `..` away *before*
+  // the lock store's `validatePath` can see it, so a verb called with
+  // `slug: '../../../CLAUDE'` would write `<repo>/apps/CLAUDE.md`.
+  // Rejecting `/` (VALID_PLAN_SLUG) closes that — a `..` cannot
+  // traverse without a slash. Throw rather than return: an unsafe
+  // slug reaching here is caller abuse/bug, not a normal outcome.
+  if (typeof opts.slug !== 'string' || !VALID_PLAN_SLUG.test(opts.slug)) {
+    throw new Error(`withPlanLock: invalid plan slug ${JSON.stringify(opts.slug)}`);
+  }
   const plansDir = getPlansDir(opts);
   const filePath = path.join(plansDir, opts.slug + '.md');
   // Lock key is the workspace-canonical relative path so the same

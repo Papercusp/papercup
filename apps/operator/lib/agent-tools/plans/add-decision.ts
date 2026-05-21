@@ -131,6 +131,12 @@ export function appendDecisionToBody(
   return withTrailingNL + `\n## Decisions\n${block}`;
 }
 
+/** Explicit result payload so `withPlanLock`'s `T` is fixed by the type
+ *  argument, not inferred from a union-returning mutator. */
+type AddDecisionValue =
+  | { ok: true; decisionId: string; slug: string }
+  | { ok: false; code: 'not_found' | 'legacy_plan' };
+
 export default defineTool({
   name: 'plans:add-decision',
   description:
@@ -148,19 +154,19 @@ export default defineTool({
   modality: ['text'],
   args: argsSchema,
   async handler(args, ctx) {
-    const result = await withPlanLock(
+    const result = await withPlanLock<AddDecisionValue>(
       ctx as never,
       {
         slug: args.slug,
         intent: `plans:add-decision: ${args.title.slice(0, 60)}`,
       },
-      async (current) => {
+      async (current): Promise<{ newBody: string | null; value: AddDecisionValue }> => {
         if (current === null) {
-          return { newBody: null, value: { ok: false as const, code: 'not_found' as const } };
+          return { newBody: null, value: { ok: false, code: 'not_found' } };
         }
         const parsed = parsePlan(current, { filePath: args.slug + '.md' });
         if (parsed.isLegacy) {
-          return { newBody: null, value: { ok: false as const, code: 'legacy_plan' as const } };
+          return { newBody: null, value: { ok: false, code: 'legacy_plan' } };
         }
         const decisionId = allocateNextDecisionId(current);
         const appended = appendDecisionToBody(
@@ -174,7 +180,7 @@ export default defineTool({
         const final = bumpUpdatedDate(appended);
         return {
           newBody: final,
-          value: { ok: true as const, decisionId, slug: args.slug },
+          value: { ok: true, decisionId, slug: args.slug },
         };
       },
     );
@@ -208,11 +214,12 @@ export default defineTool({
       };
     }
 
-    const ok = result.value as { decisionId: string };
+    // `result.value` is narrowed to the ok-variant by the guard above.
+    const decisionId = result.value.decisionId;
     await emitPlanEventForCaller(ctx, {
       planSlug: args.slug,
       event: 'decision_added',
-      detail: ok.decisionId,
+      detail: decisionId,
       after: args.title,
     });
     await fireNotificationsForCaller(
@@ -240,7 +247,7 @@ export default defineTool({
       await emitPlanEventForCaller(ctx, {
         planSlug: affectedSlug,
         event: 'decision_added',
-        detail: `${ok.decisionId} (cross-ref from ${args.slug})`,
+        detail: `${decisionId} (cross-ref from ${args.slug})`,
         after: args.title,
       });
       await fireNotificationsForCaller(
@@ -256,7 +263,6 @@ export default defineTool({
         {
           type: 'text' as const,
           text: JSON.stringify({
-            ok: true,
             ...result.value,
             filePath: result.filePath,
             ...(propagatedTo.length > 0 ? { propagated_to: propagatedTo } : {}),

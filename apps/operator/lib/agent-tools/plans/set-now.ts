@@ -46,6 +46,10 @@ const argsSchema = z.object({
     .describe('One sentence — the single next concrete action and who should do it.'),
 });
 
+/** Explicit result payload so `withPlanLock`'s `T` is fixed by the type
+ *  argument, not inferred from a union-returning mutator. */
+type SetNowValue = { ok: true } | { ok: false; code: 'not_found' };
+
 export function replaceNowBlock(body: string, state: string, next: string): string {
   const block = `## Now\n\n**State:** ${state.trim()}\n\n**Next:** ${next.trim()}\n`;
 
@@ -98,19 +102,19 @@ export default defineTool({
   modality: ['text'],
   args: argsSchema,
   async handler(args, ctx) {
-    const result = await withPlanLock(
+    const result = await withPlanLock<SetNowValue>(
       ctx as never,
       {
         slug: args.slug,
         intent: `plans:set-now`,
       },
-      async (current) => {
+      async (current): Promise<{ newBody: string | null; value: SetNowValue }> => {
         if (current === null) {
-          return { newBody: null, value: { ok: false as const, code: 'not_found' as const } };
+          return { newBody: null, value: { ok: false, code: 'not_found' } };
         }
         const replaced = replaceNowBlock(current, args.state, args.next);
         const final = bumpUpdatedDate(replaced);
-        return { newBody: final, value: { ok: true as const } };
+        return { newBody: final, value: { ok: true } };
       },
     );
 

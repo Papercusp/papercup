@@ -1,0 +1,186 @@
+/**
+ * plans:set-frontmatter — structured frontmatter writer for legacy
+ * plan conversion.
+ *
+ * agent-plan-tracking Phase 5 (D-011 of plans-admin-ui-2026-05-20).
+ *
+ * A legacy plan is legacy because it lacks a valid frontmatter block
+ * (no `slug:` / `status:`, often no `title:` / `created:`). This verb
+ * writes a complete, valid block — converting the plan into a
+ * first-class one — without touching the body. It is the structured,
+ * safe-by-construction counterpart to `plans:set-content`: legacy
+ * conversion is a frontmatter edit, not a whole-document rewrite, so
+ * it does NOT route through `set-content`.
+ *
+ * The name is `set-frontmatter`, not `promote` — `plans:promote` is
+ * already a different, unrelated tool (promote a plan into a harness;
+ * see `coordination/tools/promote.ts`). See D-011's verb-name
+ * correction.
+ *
+ * Refuses a plan that already has valid frontmatter (`already_valid`)
+ * so a real plan's frontmatter — including keys this verb doesn't
+ * model, like `supersedes:` — can never be silently clobbered.
+ *
+ * Writes inside `withPlanLock`.
+ */
+
+import { z } from 'zod';
+import { defineTool } from '@papercusp/agent-mcp';
+import { withPlanLock } from './with-plan-lock';
+import { parsePlan } from './parser';
+
+const SU_ROLES = [
+  'scoper',
+  'architect',
+  'worker',
+  'validator',
+  'reviewer',
+  'debugger',
+  'operator',
+  'documenter',
+  'curator',
+] as const;
+
+const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+const argsSchema = z.object({
+  slug: z.string().min(1).describe('Plan slug (filename stem). Written into the frontmatter.'),
+  title: z
+    .string()
+    .min(1)
+    .max(200)
+    .refine((s) => s.trim().length > 0, 'title cannot be blank')
+    .describe('Human-readable plan title.'),
+  status: z
+    .enum(['draft', 'active', 'shipped', 'superseded'])
+    .describe('Plan-level status.'),
+  created: z
+    .string()
+    .regex(DATE_RE)
+    .optional()
+    .describe('Creation date (YYYY-MM-DD). Defaults to today when omitted.'),
+  owner: z.string().max(200).optional().describe('Plan owner (e.g. an email).'),
+});
+
+/** Collapse internal whitespace + newlines so a value can never break
+ *  out of its single frontmatter line. */
+function oneLine(s: string): string {
+  return s.replace(/\s+/g, ' ').trim();
+}
+
+export function buildFrontmatter(args: z.infer<typeof argsSchema>, today: string): string {
+  const lines = ['---'];
+  lines.push(`title: ${oneLine(args.title)}`);
+  lines.push(`slug: ${args.slug}`);
+  lines.push(`created: ${args.created ?? today}`);
+  lines.push(`updated: ${today}`);
+  lines.push(`status: ${args.status}`);
+  const owner = args.owner ? oneLine(args.owner) : '';
+  if (owner) lines.push(`owner: ${owner}`);
+  lines.push('---');
+  return lines.join('\n');
+}
+
+/**
+ * Splice a frontmatter block onto a plan body: replace an existing
+ * (malformed) leading `---…---` block, or prepend a fresh one when the
+ * file has no frontmatter at all. Exported for unit testing.
+ */
+export function applyFrontmatterBlock(current: string, fmBlock: string): string {
+  if (current.startsWith('---')) {
+    const close = current.indexOf('\n---', 3);
+    if (close !== -1) {
+      const afterClose = current.indexOf('\n', close + 4);
+      const bodyStart = afterClose === -1 ? current.length : afterClose + 1;
+      return fmBlock + '\n' + current.slice(bodyStart);
+    }
+  }
+  return fmBlock + '\n\n' + current;
+}
+
+type SetFrontmatterValue =
+  | { ok: true; slug: string }
+  | { ok: false; code: 'not_found' }
+  | { ok: false; code: 'already_valid' };
+
+export default defineTool({
+  name: 'plans:set-frontmatter',
+  description:
+    'Convert a legacy plan (no valid frontmatter) into a first-class plan by writing a complete `title`/`slug`/`created`/`updated`/`status`/`owner` block. Body untouched. Refuses a plan that already has valid frontmatter.',
+  guidance: {
+    when: 'Promoting a legacy plan — one with no/malformed frontmatter — to a tracked plan, e.g. from the Plans admin tab triage screen.',
+    notWhen:
+      'Editing a plan that already has valid frontmatter — that would clobber keys this verb does not model; use plans:set-content for a deliberate raw edit. Routine status flips on items use plans:set-status.',
+    chaining: 'plans:list (isLegacy: true rows) → plans:set-frontmatter per plan → plans:get to confirm.',
+  },
+  capability: 'plans:write',
+  requirePrincipal: false,
+  roles: [...SU_ROLES],
+  modality: ['text'],
+  args: argsSchema,
+  async handler(args, ctx) {
+    const today = new Date().toISOString().slice(0, 10);
+
+    const result = await withPlanLock<SetFrontmatterValue>(
+      ctx as never,
+      {
+        slug: args.slug,
+        intent: 'plans:set-frontmatter',
+      },
+      async (current): Promise<{ newBody: string | null; value: SetFrontmatterValue }> => {
+        if (current === null) {
+          return { newBody: null, value: { ok: false, code: 'not_found' } };
+        }
+
+        const filePath = `${args.slug}.md`;
+        if (!parsePlan(current, { filePath }).isLegacy) {
+          return { newBody: null, value: { ok: false, code: 'already_valid' } };
+        }
+
+        const body = applyFrontmatterBlock(current, buildFrontmatter(args, today));
+        return { newBody: body, value: { ok: true, slug: args.slug } };
+      },
+    );
+
+    if (result.kind === 'busy') {
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: JSON.stringify({
+              error: 'busy',
+              busy: result.busy.map((b) => ({
+                path: b.path,
+                owner_label: b.owner_label,
+                intent: b.intent,
+                expires_ts: b.expires_ts,
+              })),
+            }),
+          },
+        ],
+        isError: true,
+      };
+    }
+
+    if (!result.value.ok) {
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: JSON.stringify({ error: result.value.code, slug: args.slug }),
+          },
+        ],
+        isError: true,
+      };
+    }
+
+    return {
+      content: [
+        {
+          type: 'text' as const,
+          text: JSON.stringify({ ok: true, slug: result.value.slug, filePath: result.filePath }),
+        },
+      ],
+    };
+  },
+});

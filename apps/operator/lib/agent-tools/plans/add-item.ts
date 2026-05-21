@@ -142,6 +142,12 @@ export function appendItemToBody(
   return { newBody: withTrailingNL + newSection, createdPhase: true };
 }
 
+/** Explicit result payload so `withPlanLock`'s `T` is fixed by the type
+ *  argument, not inferred from a union-returning mutator. */
+type AddItemValue =
+  | { ok: true; itemId: string; createdPhase: boolean; slug: string }
+  | { ok: false; code: 'not_found' | 'legacy_plan' };
+
 export default defineTool({
   name: 'plans:add-item',
   description:
@@ -159,19 +165,19 @@ export default defineTool({
   modality: ['text'],
   args: argsSchema,
   async handler(args, ctx) {
-    const result = await withPlanLock(
+    const result = await withPlanLock<AddItemValue>(
       ctx as never,
       {
         slug: args.slug,
         intent: `plans:add-item to "${args.phase.slice(0, 40)}"`,
       },
-      async (current) => {
+      async (current): Promise<{ newBody: string | null; value: AddItemValue }> => {
         if (current === null) {
-          return { newBody: null, value: { ok: false as const, code: 'not_found' as const } };
+          return { newBody: null, value: { ok: false, code: 'not_found' } };
         }
         const parsed = parsePlan(current, { filePath: args.slug + '.md' });
         if (parsed.isLegacy) {
-          return { newBody: null, value: { ok: false as const, code: 'legacy_plan' as const } };
+          return { newBody: null, value: { ok: false, code: 'legacy_plan' } };
         }
         const itemId = allocateNextItemId(current);
         const itemLine = buildItemLine(itemId, args.text, args.blockedBy ?? []);
@@ -179,7 +185,7 @@ export default defineTool({
         const final = bumpUpdatedDate(newBody);
         return {
           newBody: final,
-          value: { ok: true as const, itemId, createdPhase, slug: args.slug },
+          value: { ok: true, itemId, createdPhase, slug: args.slug },
         };
       },
     );
@@ -213,12 +219,11 @@ export default defineTool({
       };
     }
 
+    // `result.value` is narrowed to the ok-variant by the guard above.
     await emitPlanEventForCaller(ctx, {
       planSlug: args.slug,
       event: 'item_added',
-      detail: typeof result.value === 'object' && result.value !== null && 'itemId' in result.value
-        ? String((result.value as { itemId?: unknown }).itemId ?? '')
-        : '',
+      detail: result.value.itemId,
       after: args.text.slice(0, 200),
     });
     await fireNotificationsForCaller(
@@ -229,7 +234,7 @@ export default defineTool({
 
     return {
       content: [
-        { type: 'text' as const, text: JSON.stringify({ ok: true, ...result.value, filePath: result.filePath }) },
+        { type: 'text' as const, text: JSON.stringify({ ...result.value, filePath: result.filePath }) },
       ],
     };
   },

@@ -25,6 +25,7 @@ import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { listPlanFiles, readPlanBySlug, type PlanSourceOpts } from './source';
 import { resolveEffectiveStatus } from './effective-status';
+import type { ParsedPlan } from './parser';
 import * as fs from 'node:fs/promises';
 
 const ALL_ROLES = [
@@ -68,7 +69,22 @@ export async function lintPlan(
   const result = await readPlanBySlug(slug, opts);
   if (!result) return null;
   const { parsed, archived } = result;
+  return lintParsed(parsed, slug, archived);
+}
 
+/**
+ * Apply the lint rules to an already-parsed plan. Split out of
+ * `lintPlan` so `plans:set-content` can lint a *proposed* document
+ * body in-memory — before writing it — without a disk round-trip.
+ * Behaviour is identical to the on-disk path; the only best-effort
+ * difference is the `updated_lags_mtime` check, which silently skips
+ * when `parsed.filePath` is not a real file (an inline parse).
+ */
+export async function lintParsed(
+  parsed: ParsedPlan,
+  slug: string,
+  archived: boolean,
+): Promise<PlanLintReport> {
   const report: PlanLintReport = {
     slug,
     archived,
@@ -90,14 +106,14 @@ export async function lintPlan(
   }
 
   if (!parsed.now) {
-    // Warning, not error: the parser handles a missing Now block fine
-    // (returns null); the loss is the cold-resume anchor only. Many
-    // legacy plans were converted with minimal frontmatter and no Now
-    // — surface it as something to fix, don't fail CI.
-    report.warnings.push({
-      level: 'warning',
+    // §4.5: `## Now` is required — it is the cold-resume anchor, the
+    // single most-read field of a plan. Every plan was backfilled with
+    // a Now block, so a non-legacy plan missing one is malformed: hard
+    // error, not a warning. (Legacy plans returned early above.)
+    report.errors.push({
+      level: 'error',
       code: 'missing_now_section',
-      message: 'No `## Now` section. Add one to make this plan cold-resumable; use plans:set-now.',
+      message: 'No `## Now` section — every plan needs one (the cold-resume anchor); add it with plans:set-now.',
     });
   }
   if (parsed.decisions.length === 0 && parsed.items.length > 0) {
@@ -113,13 +129,27 @@ export async function lintPlan(
   }
 
   const itemIds = new Set(parsed.items.map((i) => i.id));
+  const itemById = new Map(parsed.items.map((i) => [i.id, i]));
   for (const it of parsed.items) {
     for (const dep of it.blockedBy) {
-      if (!itemIds.has(dep)) {
+      const depItem = itemById.get(dep);
+      if (!depItem) {
         report.errors.push({
           level: 'error',
           code: 'unknown_blocked_by',
           message: `Item ${it.id} has blocked-by: ${dep} that doesn't resolve.`,
+          itemId: it.id,
+        });
+        continue;
+      }
+      // §3.4 / D-005: a `dropped` blocker never completes, so the
+      // resolver treats the dependent as unblocked. Surface it so the
+      // dependency gets re-evaluated rather than silently un-gating.
+      if (depItem.storedStatus === 'dropped') {
+        report.warnings.push({
+          level: 'warning',
+          code: 'blocker_dropped',
+          message: `Item ${it.id} is blocked-by ${dep}, which is dropped — ${dep} will never complete, so ${it.id} is treated as unblocked; re-evaluate the dependency.`,
           itemId: it.id,
         });
       }
@@ -164,12 +194,25 @@ export async function lintPlan(
   }
 
   for (const it of parsed.items) {
-    if (it.storedStatus === 'blocked' && it.blockedBy.length === 0) {
+    // §3.4: the stored `blocked` token is reserved for *external*
+    // blockers (upstream PR, vendor). Internal dependencies use
+    // blocked-by and are computed — so a stored `blocked` that also
+    // carries blocked-by is a contradiction; the token should be `todo`.
+    if (it.storedStatus === 'blocked' && it.blockedBy.length > 0) {
       report.warnings.push({
         level: 'warning',
-        code: 'stored_blocked_no_external',
+        code: 'stored_blocked_with_blocked_by',
         message:
-          `Item ${it.id} stored as 'blocked' without any blocked-by — the literal token is reserved for *external* blockers; describe the external reason in the item text.`,
+          `Item ${it.id} is stored as 'blocked' and also has blocked-by — 'blocked' is for external blockers only; internal deps are computed from blocked-by, so the stored token should be 'todo'.`,
+        itemId: it.id,
+      });
+    }
+    // §3.3: every item lives under a `## Phase` heading.
+    if (it.phase === null) {
+      report.warnings.push({
+        level: 'warning',
+        code: 'unphased_item',
+        message: `Item ${it.id} is not under a '## Phase' heading — §3.3 expects every item to live in a phase section.`,
         itemId: it.id,
       });
     }

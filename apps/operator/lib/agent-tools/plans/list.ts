@@ -47,6 +47,7 @@ type ListRow = {
   title: string | null;
   status: string;
   updated: string | null;
+  owner: string | null;
   archived: boolean;
   isLegacy: boolean;
   itemCounts: Partial<Record<(typeof ITEM_STATUSES)[number] | 'unknown', number>> | null;
@@ -104,6 +105,7 @@ export default defineTool({
         title: parsed.frontmatter.title ?? null,
         status,
         updated: parsed.frontmatter.updated ?? null,
+        owner: parsed.frontmatter.owner ?? null,
         archived,
         isLegacy: parsed.isLegacy,
         itemCounts,

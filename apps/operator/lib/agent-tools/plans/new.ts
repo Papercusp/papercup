@@ -100,6 +100,10 @@ heading with a date line and a body paragraph.)
 `;
 }
 
+/** Explicit result payload so `withPlanLock`'s `T` is fixed by the type
+ *  argument, not inferred from a union-returning mutator. */
+type NewPlanValue = { ok: true; slug: string } | { ok: false; code: 'slug_exists' };
+
 export default defineTool({
   name: 'plans:new',
   description:
@@ -123,16 +127,16 @@ export default defineTool({
     // appends today's date when the caller didn't already include one.
     const slug = ensureDatedSlug(args.slug, date);
 
-    const result = await withPlanLock(
+    const result = await withPlanLock<NewPlanValue>(
       ctx as never,
       {
         slug,
         intent: `plans:new ${slug}`,
       },
-      async (current) => {
+      async (current): Promise<{ newBody: string | null; value: NewPlanValue }> => {
         if (current !== null) {
           // Slug collision — leave existing untouched, signal via value.
-          return { newBody: null, value: { ok: false as const, code: 'slug_exists' as const } };
+          return { newBody: null, value: { ok: false, code: 'slug_exists' } };
         }
         const body = buildTemplate({
           slug,
@@ -141,7 +145,7 @@ export default defineTool({
           owner: args.owner ?? null,
           date,
         });
-        return { newBody: body, value: { ok: true as const, slug } };
+        return { newBody: body, value: { ok: true, slug } };
       },
     );
 

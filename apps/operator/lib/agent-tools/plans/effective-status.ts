@@ -3,10 +3,15 @@
  * blocked-by graph.
  *
  * Per D-005 of agent-plan-tracking-2026-05-20.md: items with
- * `blocked-by: P-NNN` references whose blockers aren't `done` have
- * *effective* status `blocked`, regardless of what their stored token
- * says. As soon as all blockers complete, effective reverts to the
- * stored token (typically `todo`).
+ * `blocked-by: P-NNN` references whose blockers aren't yet *resolved*
+ * have *effective* status `blocked`, regardless of what their stored
+ * token says. A blocker counts as resolved when its stored status is
+ * `done` (it completed) OR `dropped` (it was abandoned and will never
+ * complete — keeping the dependent blocked forever would be the stale-
+ * `blocked` trap D-005 exists to prevent). plans:lint emits a
+ * `blocker_dropped` warning in that case so the dependency still gets
+ * re-evaluated. As soon as all blockers resolve, effective reverts to
+ * the stored token (typically `todo`).
  *
  * The stored `blocked` token is reserved for **external** blockers
  * (upstream PR, vendor response, awaiting release) — things markdown

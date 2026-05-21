@@ -3,7 +3,7 @@ title: Agent plan tracking — a markdown-canonical plan system for SU agents
 slug: agent-plan-tracking-2026-05-20
 status: shipped
 created: 2026-05-20
-updated: 2026-05-20
+updated: 2026-05-21
 owner: pandawamble@gmail.com
 ---
 
@@ -110,9 +110,9 @@ here.
 
 ## Now
 
-**State:** All three phases shipped 2026-05-20. 10 plans:* tools live (5 read + 5 assisted-write), 38/38 vitest passing, 0 TS errors, `npm run lint:plans` CI gate wired into `.github/workflows/test.yml`. Tree consolidated: 18 plan files moved into `docs/plans/`, 10 archived, every plan now has frontmatter (0 legacy remaining). CLAUDE.md and agent-policies §18 updated to point at the `plans:*` surface. Spec published at `/internal/docs/spec/plan-format`.
+**State:** Complete. Phases 0–3 shipped 2026-05-20; Phase 4 (P-401–P-407) fixed the post-ship audit's two write-path bugs + spec drifts; **P-408 verified the audit-fix round and is now `done`**. Phase 5 (P-501–P-504) shipped the two companion-plan verbs the `plans-admin-ui` plan needed — `plans:set-content` (CAS whole-document write) and `plans:set-frontmatter` (legacy→valid conversion) — plus `plans:get`'s `contentHash` and the `lintParsed` split. A 2026-05-21 audit also closed a real path-traversal gap in `withPlanLock` (a `/`-bearing slug escaped `docs/plans/` because `path.join` collapsed the `..` before validation) and fixed the 34 `withPlanLock`-generic-inference tsc errors across the five Phase-2 write verbs.
 
-**Next:** plan is done — all 17 active items closed. Future incremental work: flip individual converted-legacy plans from "minimal frontmatter only" to "with `## Now` block filled in" as agents pick them up; lint warns on 59 plans missing `## Now`. `plans:set-now` takes one call per plan, no rush.
+**Next:** nothing — every phase is `done`. The `plans:*` tool surface is complete: 13 tools (4 read, 5 assisted-write, lint, new, + Phase-5 set-content/set-frontmatter, + the Q3 history/diff pair tracked under the plans-admin-ui plan).
 
 ## 3. Format spec
 
@@ -205,9 +205,14 @@ by lint as "unphased."
 
 **Computed-blocked is not a stored token.** An item with
 `blocked-by: P-NNN` has *effective* status `blocked` iff any
-`P-NNN` referenced isn't `done`. As soon as all blockers are
-`done`, the effective status reverts to whatever the item is
-stored as (typically `todo`) — automatically, no manual flip.
+`P-NNN` referenced is not yet *resolved*. A blocker counts as
+resolved when its stored status is `done` (completed) or `dropped`
+(abandoned — it will never complete, so keeping the dependent
+blocked forever would be a stale state; `plans:lint` emits a
+`blocker_dropped` warning so the dependency still gets
+re-evaluated). As soon as all blockers resolve, the effective
+status reverts to whatever the item is stored as (typically
+`todo`) — automatically, no manual flip.
 
 Why: a stored `blocked` would go stale the moment a blocker
 finishes, and the only way to find the staleness is to remember.
@@ -363,9 +368,9 @@ cancel_wait`, side database `papercusp_su`, Phases 0-3 complete
 2026-05-14) is the concurrency substrate. `plans:*` write verbs **own
 their lock integration**:
 
-- The `PreToolUse` auto-lock hook only fires for `Edit/Write/MultiEdit`
-  — **not** for MCP tool calls. So `plans:set-status` etc. cannot
-  rely on the hook; each write verb must `locks:acquire` itself
+- The OMP `tool_call` auto-lock hook only fires for `edit`/`write`/
+  `multi_edit` — **not** for MCP tool calls. So `plans:set-status` etc.
+  cannot rely on the hook; each write verb must `locks:acquire` itself
   before touching the file.
 - Standard lock shape for every write verb:
   ```
@@ -400,18 +405,27 @@ non-colliding IDs.
 A linter, importable for CI. Read-only. Returns warnings + errors
 per plan.
 
-Checks:
+Checks (error unless noted):
 
 - Frontmatter present + valid; `slug` matches filename stem.
-- Required sections present (`## Now`, `## Decisions`).
-- All item IDs unique; all decision IDs unique; references
-  resolve.
+- `## Now` present — it's the cold-resume anchor, so a non-legacy
+  plan missing one is a hard error. `## Decisions` is recommended,
+  not required: a plan with no decisions yet legitimately lacks the
+  section (warning only, and only when items exist).
+- All item IDs unique; all decision IDs unique; references resolve.
 - Status tokens in vocabulary.
-- `blocked-by` items exist; an item with stored status `blocked`
-  has at least one `blocked-by` *and* at least one unresolved
-  external reason in the item text — pure "blocked" without a
-  source is a smell.
-- `updated:` not behind file's git mtime by more than 7 days.
+- `blocked-by` references resolve to real item IDs. The stored
+  `blocked` token is for **external** blockers only (§3.4) — an item
+  *both* stored `blocked` *and* carrying `blocked-by` is flagged
+  (`stored_blocked_with_blocked_by` warning): internal dependencies
+  are computed, so the stored token should be `todo`.
+- Every item lives under a `## Phase` heading; an unphased item is a
+  warning (`unphased_item`, §3.3).
+- A `blocked-by` pointing at a `dropped` item is a warning
+  (`blocker_dropped`) — the dependency un-gates but should be
+  re-evaluated.
+- `updated:` not behind the file's git mtime by more than 7 days
+  (warning).
 - ASCII-only IDs (`P-NNN`/`D-NNN`); reserved tokens not used as
   free text.
 
@@ -547,16 +561,21 @@ Why: humans and agents hand-typing markdown will reach for ASCII
 (`-`, `,`, `->`). Making parsing depend on `·` is a drift magnet
 and will fail silently on the first hand-typed update.
 
-### D-004 — Format spec lives in `content/internal-docs/spec/`
+### D-004 — Format spec lives in the docs site's `spec/` section
 
 Date: 2026-05-20
-Decision: The plan-format spec is published at
-`apps/operator/content/internal-docs/spec/plan-format.mdx`.
+Decision: The plan-format spec is published in the `spec/` section of
+the engineering docs site, served at `/internal/docs/spec/plan-format`.
 
-Why: `spec/` already exists with a `meta.json`; it's the canonical
-location for format specifications (sibling to other endpoint-system
-and protocol specs). `system/` is for *system* behavior, not on-
-disk formats. `plan-format.mdx` belongs in `spec/`.
+Why: `spec/` is the canonical location for format specifications
+(sibling to other endpoint-system and protocol specs); `system/` is
+for *system* behavior, not on-disk formats.
+
+Note (2026-05-20): the docs site migrated from fumadocs to Astro +
+Starlight the same day. The spec *source file* accordingly lives at
+`apps/operator-docs/src/content/docs/spec/plan-format.mdx`, not the
+pre-migration `apps/operator/content/internal-docs/spec/` path. The
+served URL `/internal/docs/spec/plan-format` is unchanged.
 
 ### D-005 — Computed-blocked, not stored
 
@@ -599,6 +618,25 @@ Both items remain `done` — the consolidation, frontmatter tagging, and
 archiving genuinely shipped — but their item text has been corrected
 to describe what was built. A full multi-fragment collapse, if wanted,
 is a separate piece of work for a future plan.
+
+### D-007 — Post-ship audit produced a fix round, not a redesign
+
+Date: 2026-05-20
+Decision: A code-vs-spec audit (code as the sole source of truth) run
+after the plan shipped found two latent write-path bugs — a dollar-
+substitution mangle in `plans:set-status` and fence-unaware targeting
+in all four write mutators — plus several spec/code drifts: a stale
+spec path, the dropped-blocker rule undocumented, a backwards stored-
+`blocked` lint rule, no unphased-item enforcement, `missing_now` only
+a warning, and §9 items that violated the doc's own one-item-per-line
+rule.
+
+All were fixed in place rather than triggering a redesign — the format
+and tool surface were sound; the gaps were implementation bugs and
+doc-vs-code skew. The fixes are tracked as Phase 4 (P-401–P-408). The
+write mutators are now fence-aware via a shared `maskFences` helper,
+and this plan doc was itself brought into conformance with its own
+spec (every item single-lined, phase headings promoted to level-2).
 
 ## 8. Migration
 
@@ -678,82 +716,70 @@ says "look in `apps/operator/docs/plans/`". Update to: "use
 
 This section uses the format the document specifies.
 
-### Phase 0 — Spec finalized
+## Phase 0 — Spec finalized
 
 - **P-001** `done` Draft this plan doc. → D-001 D-002 D-003 D-004 D-005
-- **P-002** `done` Human review and ratify §12 open questions. Ratified
-  by user on 2026-05-20 ("proceed with the plan implementation").
+- **P-002** `done` Human review and ratify §12 open questions — ratified by the user on 2026-05-20 ("proceed with the plan implementation").
 
-### Phase 1 — Read tools (shippable as Phase 0+1)
+## Phase 1 — Read tools (shippable as Phase 0+1)
 
-- **P-101** `done` Implement parser as a pure function: file bytes →
-  `{ frontmatter, now, phases[], items[], decisions[] }`. 11 unit
-  tests cover ASCII + non-ASCII separators, legacy files, malformed
-  frontmatter, fenced-code-block exclusion, cycles, missing refs.
-- **P-102** `done` Implement computed `effectiveStatus` resolver
-  using `blocked-by:` references. Unit-tested for cycles, missing
-  refs, all-done blockers.
-- **P-103** `done` Implement `plans:list` (filesystem read +
-  per-plan summary).
-- **P-104** `done` Implement `plans:get`.
-- **P-105** `done` Implement `plans:items` (with `actionable`,
-  `needsHuman`).
-- **P-106** `done` Implement `plans:search` (token-scored BM25-ish
-  over selected scopes).
-- **P-107** `done` Register all 5 read tools in
-  `agent-tools/index.ts`; capability tiers `plans:read` (low) and
-  `plans:write` (medium) added to `packages/agent-mcp/src/capability-tiers.ts`.
-- **P-108** `done` Implement `plans:lint` with legacy exemption.
-- **P-109** `done` Add `plans:lint` to CI (read-only check). MUST
-  pass against the legacy tree on day one. blocked-by: P-108, P-301
-- **P-110** `done` **Verify**: Phase 0+1 is a shippable unit.
-  Live-tool smoke against dev :3055 confirms: 43 plans listed (2
-  non-legacy / 41 legacy auto-exempted), 22 actionable items, 2-item
-  human inbox, lint green (0 errors, 0 warnings) across the whole
-  tree.
+- **P-101** `done` Implement the parser as a pure function (file bytes to frontmatter/now/phases/items/decisions); 11 unit tests cover ASCII and non-ASCII separators, legacy files, malformed frontmatter, fenced-code-block exclusion, cycles, missing refs.
+- **P-102** `done` Implement the computed effectiveStatus resolver over blocked-by references; unit-tested for cycles, missing refs, all-done blockers.
+- **P-103** `done` Implement plans:list (filesystem read + per-plan summary).
+- **P-104** `done` Implement plans:get.
+- **P-105** `done` Implement plans:items (with actionable, needsHuman).
+- **P-106** `done` Implement plans:search (token-scored BM25-ish over selected scopes).
+- **P-107** `done` Register all 5 read tools in agent-tools/index.ts; add capability tiers plans:read (low) and plans:write (medium) to packages/agent-mcp/src/capability-tiers.ts.
+- **P-108** `done` Implement plans:lint with legacy exemption.
+- **P-109** `done` Add plans:lint to CI (read-only check); MUST pass against the legacy tree on day one. blocked-by: P-108, P-301
+- **P-110** `done` Verify Phase 0+1 is a shippable unit — live-tool smoke against dev :3055 confirmed 43 plans listed (2 non-legacy / 41 legacy auto-exempted), 22 actionable items, a 2-item human inbox, lint green across the tree.
 
-### Phase 2 — Assisted writes
+## Phase 2 — Assisted writes
 
-- **P-201** `done` Implement `plans:new` (slug uniqueness inside
-  one `locks:acquire`). blocked-by: P-110
-- **P-202** `done` Implement `plans:set-status` (single-item flip
-  with auto-bumped `updated:`). blocked-by: P-110
-- **P-203** `done` Implement `plans:set-now` (atomic Now-block
-  replacement). blocked-by: P-110
-- **P-204** `done` Implement `plans:add-decision` (D-NNN allocation
-  inside the lock — concurrency test required).
-  blocked-by: P-110
-- **P-205** `done` Implement `plans:add-item` (P-NNN allocation
-  inside the lock). blocked-by: P-110
-- **P-206** `done` Concurrency test suite — two parallel
-  `plans:add-decision` calls against the same plan produce
-  sequential non-colliding IDs. blocked-by: P-204
-- **P-207** `done` Lint warning: `updated:` lags git mtime > 7d. (shipped inline with P-108: see lint.ts updated_lags_mtime check)
-  blocked-by: P-108
-- **P-208** `done` **Verify**: an agent can drive a real plan
-  through todo → wip → done entirely via assisted-write verbs,
-  matching the bytes a human would type. blocked-by: P-201, P-202,
-  P-203, P-204, P-205, P-206
+- **P-201** `done` Implement plans:new (slug uniqueness inside one locks:acquire). blocked-by: P-110
+- **P-202** `done` Implement plans:set-status (single-item flip with auto-bumped updated: field). blocked-by: P-110
+- **P-203** `done` Implement plans:set-now (atomic Now-block replacement). blocked-by: P-110
+- **P-204** `done` Implement plans:add-decision (D-NNN allocation inside the lock; concurrency test required). blocked-by: P-110
+- **P-205** `done` Implement plans:add-item (P-NNN allocation inside the lock). blocked-by: P-110
+- **P-206** `done` Concurrency test suite — two parallel plans:add-decision calls against the same plan produce sequential non-colliding IDs. blocked-by: P-204
+- **P-207** `done` Lint warning when updated: lags git mtime by more than 7d (shipped inline with P-108 as the lint.ts updated_lags_mtime check). blocked-by: P-108
+- **P-208** `done` Verify an agent can drive a real plan through todo to wip to done entirely via assisted-write verbs, matching the bytes a human would type. blocked-by: P-201, P-202, P-203, P-204, P-205, P-206
 
-### Phase 3 — Migration
+## Phase 3 — Migration
 
-- **P-301** `done` Inventory step: ran `find` over the repo for
-  plan-shaped files; produced exact counts + a categorized list at
-  `apps/operator/docs/plans/inventory-2026-05-20.md` (37 in canonical,
-  13 dispersed, 4 multi-fragment families).
-- **P-302** `done` Consolidation (§8a) — mechanical file moves +
-  slug renames. One PR. blocked-by: P-301
+- **P-301** `done` Inventory step — ran find over the repo for plan-shaped files; produced exact counts and a categorized list at apps/operator/docs/plans/inventory-2026-05-20.md (37 in canonical, 13 dispersed, 4 multi-fragment families).
+- **P-302** `done` Consolidation (§8a) — mechanical file moves and slug renames, one PR. blocked-by: P-301
 - **P-303** `done` Triage of consolidated plans — folded inline into the P-304 light-touch conversion (superseded fragments identified per family and archived). No standalone triage doc was produced and no discrete human-ratification step occurred; corrected from the original "agent drafts a ratified triage table" scope. See D-006. blocked-by: P-302
 - **P-304** `done` Format conversion (§8b) — light-touch: frontmatter added to every plan, family-leaders given full frontmatter, clearly-superseded fragments moved to `archive/`. Multi-fragment families (`sse-typed-events`, `llm-testing`, `deck-panel-design-audit`) were NOT collapsed to one file each — all fragments remain separate files; full collapse deferred. Corrected from the original "collapse to one file each" scope. See D-006. blocked-by: P-303
-- **P-305** `done` Update `/home/marsh-office/.claude/CLAUDE.md`
-  and `agent-policies.mdx` §17 to point at `plans:list`.
-  blocked-by: P-110
-- **P-306** `done` Publish `plan-format.mdx` to
-  `content/internal-docs/spec/plan-format.mdx` (per D-004); add
-  to `spec/meta.json`. blocked-by: P-110
-- **P-307** `done` **Verify**: every consolidated active plan
-  passes `plans:lint`; legacy plans still parse and list with
-  `status: unknown`. blocked-by: P-304
+- **P-305** `done` Update /home/marsh-office/.claude/CLAUDE.md and agent-policies.mdx §18 to point at plans:list. blocked-by: P-110
+- **P-306** `done` Publish plan-format.mdx to the docs site spec/ section (per D-004); originally written under content/internal-docs/spec/, relocated to apps/operator-docs/src/content/docs/spec/ by the same-day Starlight migration. blocked-by: P-110
+- **P-307** `done` Verify every consolidated active plan passes plans:lint; legacy plans still parse and list with status unknown. blocked-by: P-304
+
+## Phase 4 — Post-ship audit fixes
+
+A code-vs-spec audit after ship found two latent write-path bugs and
+several spec/code drifts. All fixed 2026-05-20; see D-007.
+
+- **P-401** `done` Fix the plans:set-status dollar-substitution bug — flipStatusInBody used body.replace with a string argument, mangling item text that contained substitution sequences; switched to an index-based splice.
+- **P-402** `done` Fix fence-unaware write mutators — set-status, set-now, add-decision and add-item regexed the raw body and could target a heading or item inside a worked-example code fence; added maskFences to parser.ts and routed all four through it.
+- **P-403** `done` Enforce the -YYYY-MM-DD filename suffix in plans:new (§3.1) — appended automatically when the caller omits it.
+- **P-404** `done` Reconcile effectiveStatus with the spec — a dropped blocker counts as resolved (the code was already correct); §3.4 and D-005 text updated and a blocker_dropped lint warning added.
+- **P-405** `done` Fix the stored-blocked lint rule — replaced stored_blocked_no_external with stored_blocked_with_blocked_by to match §3.4; §4.5 text corrected.
+- **P-406** `done` Add the unphased_item lint warning (§3.3) and promote missing_now_section from warning to error (§4.5).
+- **P-407** `done` Bring this plan doc into conformance with its own spec — single-lined every §9 item, promoted phase headings to level-2, fixed the stale content/internal-docs/spec/ path references.
+- **P-408** `done` Verified the audit-fix round (2026-05-21). vitest: 86 tests pass across the 7 `plans:*` tool suites (parser, write-mutators, e2e, concurrency, phase5-mutators, git-history, with-plan-lock-slug). tsc: every `plans:*` tool + `with-plan-lock.ts` is clean — the 34 pre-existing `withPlanLock`-generic-inference errors in the five Phase-2 write verbs + `concurrency.test.ts` were fixed by giving `withPlanLock` an explicit `<T>` type argument at each call site (TS could not infer `T` from a union-returning mutator and fell back to `unknown`). plans:lint: clean — this plan is in the clean bucket. Scope note: the 6 lint-issue plans + the residual tree-wide tsc count are other plans' / other agents' in-flight code, outside this plan's surface. blocked-by: P-401, P-402, P-403, P-404, P-405, P-406, P-407
+
+## Phase 5 — Companion-plan write verbs
+
+Two write verbs requested by the `plans-admin-ui-2026-05-20` plan
+(its D-011) and accepted as this plan's Phase 5. They back the Plans
+admin tab's raw-prose Edit mode and legacy-conversion triage screen.
+Shipped 2026-05-21.
+
+- **P-501** `done` `plans:set-content { slug, content, expectedHash }` — whole-document write guarded by a compare-and-swap on `expectedHash`, a legacy-boundary check (a non-legacy plan cannot be silently degraded to legacy), and an in-memory lint gate (errors reject). `lib/agent-tools/plans/set-content.ts`; pure decision exported as `evaluateSetContent`.
+- **P-502** `done` `plans:set-frontmatter { slug, title, status, created?, owner? }` — structured frontmatter writer that converts a legacy plan to a first-class one. Named `set-frontmatter` not `promote` — `plans:promote` is an existing unrelated tool (`coordination/tools/promote.ts`). Refuses an already-valid plan (`already_valid`) so no real frontmatter is clobbered. `lib/agent-tools/plans/set-frontmatter.ts`.
+- **P-503** `done` `plans:get` returns `contentHash` (sha256 of `raw`) — the CAS baseline the editor echoes back as `expectedHash`. Shared `hashPlanContent` in `content-hash.ts` keeps the read and write sides byte-identical. `lintPlan` refactored to expose `lintParsed` so `set-content` can lint a proposed body before writing.
+- **P-504** `done` **Verify** — 18 pure-logic unit tests (`phase5-mutators.test.ts`) + live end-to-end against the Hono host: set-content stale / lint_failed / ok, set-frontmatter legacy→valid + already_valid guard, contentHash round-trip.
 
 ## 10. Verification
 
@@ -782,8 +808,9 @@ a deferred-follow-up, not an item:
 For posterity — the four open questions from the previous draft,
 with the answers that drove the rewrite:
 
-1. **Spec section** — `content/internal-docs/spec/`. Confirmed
-   exists; canonical location for format specs. → D-004
+1. **Spec section** — the docs site's `spec/` section (served at
+   `/internal/docs/spec/plan-format`). Canonical location for format
+   specs. → D-004
 2. **Archive location** — single tree
    `apps/operator/docs/plans/archive/`. → §6
 3. **Recently-completed feed** — out for v1. → §11, D-002

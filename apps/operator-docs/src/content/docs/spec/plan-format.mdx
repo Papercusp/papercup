@@ -152,9 +152,13 @@ Six tokens. One is *computed*.
 ### Computed-blocked
 
 An item with `blocked-by: P-NNN` has *effective* status `blocked`
-iff any `P-NNN` referenced isn't `done`. As soon as all blockers
-are `done`, the effective status reverts to whatever the item is
-stored as (typically `todo`) — automatically, no manual flip.
+iff any `P-NNN` referenced is not yet *resolved*. A blocker is
+resolved when its stored status is `done` (completed) or `dropped`
+(abandoned — it will never complete, so the dependent un-gates;
+`plans:lint` emits `blocker_dropped` so the dependency still gets
+re-evaluated). As soon as all blockers resolve, the effective
+status reverts to whatever the item is stored as (typically
+`todo`) — automatically, no manual flip.
 
 This is the load-bearing reason for the parser/effectiveStatus
 split:
@@ -332,8 +336,14 @@ frontmatter) are exempt entirely.
   section.
 - `unknown_decision_ref` — item references `D-NNN` that doesn't
   exist (allowed; the decision may live in a different plan).
-- `stored_blocked_no_external` — `blocked` token with no
-  `blocked-by` and no obvious external reason in the item text.
+- `stored_blocked_with_blocked_by` — an item is stored `blocked`
+  *and* carries `blocked-by`. The `blocked` token is for external
+  blockers only; internal dependencies are computed, so the stored
+  token should be `todo`.
+- `blocker_dropped` — an item's `blocked-by` points at a `dropped`
+  item. The dependent un-gates (a dropped blocker never completes),
+  but the dependency should be re-evaluated.
+- `unphased_item` — an item is not under a `## Phase` heading.
 - `updated_lags_mtime` — frontmatter `updated:` lags file's git
   mtime by more than 7 days.
 

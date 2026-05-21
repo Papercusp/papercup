@@ -36,6 +36,13 @@ const argsSchema = z.object({
   note: z.string().max(400).optional().describe('Optional trailing comment appended to the item line.'),
 });
 
+/** Result payload — explicit so `withPlanLock`'s `T` is fixed by the
+ *  type argument below rather than inferred from a union-returning
+ *  mutator (which TS narrows to the first branch, leaving `T` unknown). */
+type SetStatusValue =
+  | { ok: true; oldStatus: string | null; newStatus: string; itemId: string }
+  | { ok: false; code: 'not_found' | 'item_not_found' };
+
 export function flipStatusInBody(
   body: string,
   itemId: string,
@@ -87,15 +94,15 @@ export default defineTool({
   modality: ['text'],
   args: argsSchema,
   async handler(args, ctx) {
-    const result = await withPlanLock(
+    const result = await withPlanLock<SetStatusValue>(
       ctx as never,
       {
         slug: args.slug,
         intent: `plans:set-status ${args.itemId} → ${args.status}`,
       },
-      async (current) => {
+      async (current): Promise<{ newBody: string | null; value: SetStatusValue }> => {
         if (current === null) {
-          return { newBody: null, value: { ok: false as const, code: 'not_found' as const } };
+          return { newBody: null, value: { ok: false, code: 'not_found' } };
         }
         const { newBody, found, oldStatus } = flipStatusInBody(
           current,
@@ -104,12 +111,12 @@ export default defineTool({
           args.note,
         );
         if (!found) {
-          return { newBody: null, value: { ok: false as const, code: 'item_not_found' as const } };
+          return { newBody: null, value: { ok: false, code: 'item_not_found' } };
         }
         const finalBody = bumpUpdatedDate(newBody);
         return {
           newBody: finalBody,
-          value: { ok: true as const, oldStatus, newStatus: args.status, itemId: args.itemId },
+          value: { ok: true, oldStatus, newStatus: args.status, itemId: args.itemId },
         };
       },
     );
@@ -143,11 +150,11 @@ export default defineTool({
       };
     }
 
-    const ok = result.value as { oldStatus: string | null };
+    // `result.value` is now narrowed to the ok-variant by the guard above.
     await emitPlanEventForCaller(ctx, {
       planSlug: args.slug,
       event: 'item_status_changed',
-      before: ok.oldStatus,
+      before: result.value.oldStatus,
       after: args.status,
       detail: args.itemId,
     });
@@ -159,7 +166,7 @@ export default defineTool({
 
     return {
       content: [
-        { type: 'text' as const, text: JSON.stringify({ ok: true, ...result.value, filePath: result.filePath }) },
+        { type: 'text' as const, text: JSON.stringify({ ...result.value, filePath: result.filePath }) },
       ],
     };
   },

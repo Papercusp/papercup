@@ -76,12 +76,17 @@ seed body
   await fs.writeFile(fp, body, 'utf8');
 }
 
+/** Result payload for the test mutators — passed as the explicit
+ *  `withPlanLock<T>` type argument so `T` is fixed, not inferred from
+ *  the union-returning mutator (which TS would narrow to one branch). */
+type LockTestValue = { ok: true; id: string } | { ok: false };
+
 describe('plans:* concurrent ID allocation', () => {
   it('two parallel add-decision calls produce sequential non-colliding D-NNN', async () => {
     const slug = `${SUITE}-decisions`;
     await seedPlan(slug);
 
-    const opA = withPlanLock(
+    const opA = withPlanLock<LockTestValue>(
       FAKE_CTX,
       { slug, intent: 'add-decision A', repoRoot: tmpRoot, ttlSec: 30 },
       async (current) => {
@@ -93,7 +98,7 @@ describe('plans:* concurrent ID allocation', () => {
       },
     );
 
-    const opB = withPlanLock(
+    const opB = withPlanLock<LockTestValue>(
       FAKE_CTX,
       { slug, intent: 'add-decision B', repoRoot: tmpRoot, ttlSec: 30 },
       async (current) => {
@@ -130,7 +135,7 @@ describe('plans:* concurrent ID allocation', () => {
     await seedPlan(slug);
 
     const op = (label: string) =>
-      withPlanLock(
+      withPlanLock<LockTestValue>(
         FAKE_CTX,
         { slug, intent: `add-item ${label}`, repoRoot: tmpRoot, ttlSec: 30 },
         async (current) => {
