@@ -55,6 +55,7 @@ import {
 import { activeWorkspaceId } from '@/lib/workspace-registry';
 import { type Phase, phasePath, phasePhaseLabel, ALL_PHASES } from '@/lib/harness-phases';
 import { scanAgentRunsCached, syncAgentRunsToPg } from '@/lib/harness-agent-runs';
+import { activeStreams, HARNESS_STREAM_TOTAL_CAP, type StreamToken } from '@/lib/harness-active-streams';
 
 import {
   countPulsesFromRunLog,
@@ -845,22 +846,6 @@ harness.get('/:slug/agents/:runId/stream', async (c) => {
 
 
 // ─── SSE: tail run.log + push feature-diff heartbeats ───────────────
-
-// SSE connection management (added 2026-04-26 to fix event-loop saturation
-// from accumulating /stream connections that never close cleanly).
-//
-// Rules:
-//  - Per (remote IP, slug) key: only one active stream. New connection
-//    evicts the previous one for that key.
-//  - Total cap across all clients: HARNESS_STREAM_TOTAL_CAP. Beyond cap,
-//    new connections get 503.
-//
-// Diagnostics: GET /api/harness/streams/active returns the live registry.
-type StreamToken = { abort: () => void; createdAt: number; remoteIP: string; slug: string };
-const activeStreams: Map<string, StreamToken> =
-  (globalThis as any).__papercupActiveStreams ?? new Map();
-(globalThis as any).__papercupActiveStreams = activeStreams;
-const HARNESS_STREAM_TOTAL_CAP = Number(process.env.HARNESS_STREAM_TOTAL_CAP ?? '64');
 
 harness.get('/streams/active', (c) => {
   const now = Date.now();
