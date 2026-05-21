@@ -417,7 +417,7 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(backupsPromote as AnyRoute),
   ...flatten(backupsRestore as AnyRoute),
   ...flatten(backupsSnapshots as AnyRoute[]),
-  ...flatten(harnessProjects as AnyRoute),
+  ...flatten(harnessProjects as AnyRoute[]),
   ...flatten(harnessSpec as AnyRoute[]),
   ...flatten(harnessTextViews as AnyRoute[]),
   ...flatten(harnessRuns as AnyRoute[]),

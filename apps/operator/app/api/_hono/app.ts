@@ -15,7 +15,6 @@
 import { Hono } from 'hono';
 import { compress } from 'hono/compress';
 import { cors } from 'hono/cors';
-import { harness } from './harness';
 import { registerRouteLiterals, registerRouteCatchalls } from '../../../lib/endpoint-route/register';
 
 const app = new Hono().basePath('/api');
@@ -76,7 +75,10 @@ app.use('*', compress({ threshold: 1024 }));
 // (registerRouteCatchalls) after the sub-apps. See register.ts.
 registerRouteLiterals(app);
 
-app.route('/harness', harness);
+// Note: the legacy `app.route('/harness', harness)` mount dropped in A4
+// batch 44 (endpoint-hono-elimination-2026-05-21) — `_hono/harness.ts`
+// is now a stub awaiting A6 deletion; every harness route serves via
+// `defineRoute` modules under `lib/endpoint-route/routes/harness/`.
 
 // /api/plugins/* — fully migrated to `defineRoute` (endpoint-hono
 // -elimination-2026-05-21 A3). Static metadata routes register via
