@@ -5,12 +5,18 @@
  *   GET    /api/harness/:slug/skills/:name            — one skill file
  *   PUT    /api/harness/:slug/skills/:name            — write a skill file
  *   DELETE /api/harness/:slug/skills/:name            — remove a skill file
- *   GET    /api/harness/:slug/supervisor-notes        — supervisor-notes.md
- *   PUT    /api/harness/:slug/supervisor-notes        — replace notes
+ *   PUT    /api/harness/:slug/supervisor-notes        — replace supervisor-notes.md
  *   POST   /api/harness/:slug/supervisor-notes/append — append a timestamped block
  *
  * supervisor-notes.md is PG-canonical (text-artifacts); skill files are
  * FS-only under the project's `.claude/skills/`.
+ *
+ * NOTE: `GET /harness/:slug/supervisor-notes` is intentionally NOT here —
+ * `routes/cross-harness/index.ts` already owns that path (it reads the
+ * cross-harness `supervisor_notes` PG table, a different endpoint that
+ * collided on the same URL). The legacy `_hono/harness.ts` GET was
+ * dead-shadowed by it (phase-1 literal out-ranks the harness sub-app)
+ * and is dropped, not migrated — a pre-existing URL collision left as-is.
  *
  * Relocated from `_hono/harness.ts` (endpoint-hono-elimination-2026-05-21
  * A4 batch 16).
@@ -18,7 +24,7 @@
 import { existsSync, readdirSync } from 'node:fs';
 import { mkdir, writeFile, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
-import { resolvePhasedProject, harnessDir, safeRead } from '@/lib/harness-core';
+import { resolvePhasedProject, safeRead } from '@/lib/harness-core';
 import { phasePhaseLabel } from '@/lib/harness-phases';
 import type { ProjectEntry } from '@/lib/harness-registry';
 import { defineRoute } from '../../define-route';
@@ -28,7 +34,6 @@ function phaseFromReq(req: Request) {
 }
 
 const skillsDir = (p: ProjectEntry) => join(p.path, '.claude', 'skills');
-const supervisorPath = (p: ProjectEntry) => join(harnessDir(p), 'supervisor-notes.md');
 
 /** Validate + normalize a skill filename — rejects traversal, forces `.md`. */
 function safeName(name: string): string | null {
@@ -101,20 +106,6 @@ const deleteSkill = defineRoute({
   },
 });
 
-const getSupervisorNotes = defineRoute({
-  method: 'GET',
-  path: '/harness/:slug/supervisor-notes',
-  auth: 'public',
-  async handler(req, ctx) {
-    const slug = ctx.params.slug as string;
-    const project = await resolvePhasedProject(slug, phaseFromReq(req));
-    if (!project) return Response.json({ error: 'unknown project' }, { status: 404 });
-    const { loadTextArtifact } = await import('@/lib/text-artifacts');
-    const fromPg = await loadTextArtifact(slug, 'supervisor-notes.md');
-    return Response.json({ content: fromPg ?? safeRead(supervisorPath(project)) ?? '' });
-  },
-});
-
 const putSupervisorNotes = defineRoute({
   method: 'PUT',
   path: '/harness/:slug/supervisor-notes',
@@ -152,5 +143,5 @@ const appendSupervisorNotes = defineRoute({
 
 export default [
   getSkills, getSkill, putSkill, deleteSkill,
-  getSupervisorNotes, putSupervisorNotes, appendSupervisorNotes,
+  putSupervisorNotes, appendSupervisorNotes,
 ];
