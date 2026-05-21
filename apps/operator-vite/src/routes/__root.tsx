@@ -15,6 +15,7 @@ import { UiPresenceProvider } from '@/app/_components/UiPresenceProvider';
 import DevReloadGate from '@/app/_components/DevReloadGate';
 import PerfObserverProvider from '@/app/admin/testing/_components/PerfObserverProvider';
 import RecorderHost from '@/app/admin/testing/_components/RecorderHost';
+import NotFound from '../components/NotFound';
 import '@/app/globals.css';
 
 /**
@@ -45,7 +46,7 @@ import '@/app/globals.css';
  */
 export const Route = createRootRoute({
   component: RootComponent,
-  notFoundComponent: NotFoundComponent,
+  notFoundComponent: NotFound,
 });
 
 function RootComponent() {
@@ -86,7 +87,4 @@ function RootComponent() {
   );
 }
 
-function NotFoundComponent() {
-  // Phase B-1 replaces this with the translated apps/operator/app/not-found.tsx.
-  return <div className="operator-vite-notfound">Page not found.</div>;
-}
+

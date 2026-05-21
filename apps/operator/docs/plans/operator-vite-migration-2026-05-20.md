@@ -349,6 +349,19 @@ I'll land Phase B in batches by top-level route to keep each PR small and review
 
 Two corrections from the v2 draft, both caught by the Phase-0-style audit: `/settings` is the **largest** surface (20 pages, not the estimated 8) — split into B-4a/B-4b; `/harness` is **6** pages, not the estimated 15. `/drizzle-studio` is *not* in any batch — it has no `page.tsx`, only a `route.ts` (ported to the Hono host in [Phase C](#phase-c--hononode-server-host)). `not-found` is `not-found.tsx`, not a `page.tsx` — it becomes `__root.tsx`'s `notFoundComponent` ([B1](#b1-build-the-route-tree-mechanically)), not a B-1 entry.
 
+**B-1 as-built (2026-05-21).** Shipped 3 of 4 pages + `not-found.tsx`:
+
+| Surface | Status | File |
+|---|---|---|
+| `/` (root) | shipped | `src/routes/index.tsx` — `beforeLoad` fetches `/api/desktop/setup-wizard-state` and redirects to `/setup` (no `finished_at`) or `/harness`. |
+| `/login` | shipped | `src/routes/login.tsx` — full port; `useRouter().replace()` → `useNavigate({ replace: true })`; `useSearchParams()` → `Route.useSearch()`; `validateSearch` typed for `redirect_to`/`switch`/`mode`. |
+| `/signup` | shipped | `src/routes/signup.tsx` — `beforeLoad` throw-redirect to `/login?mode=signup`. |
+| `not-found` | shipped | `src/components/NotFound.tsx` → `__root.tsx`'s `notFoundComponent`. **Deviation:** the three CTAs use TSR `Link` directly instead of `RouteLink` (RouteLink transitively imports `next/navigation` + `@bprogress/next` + `next-transition-router` — its translation is B5/B6 work, ~20 call sites). Animation/transition behavior on the 404 page is a non-issue. |
+| `/setup` | **DEFERRED** | Blocked on B5: `app/_components/SetupWizard/SetupWizard.tsx` imports `useRouter` from `next/navigation`. Translating it in-place would break the live Next operator (the plan's invariant). Will land with B5 or as a B-1 follow-up using a `next/navigation` shim alias. |
+| `loading.tsx` | **DEFERRED** | TSR has no global "loading.tsx" equivalent — pending state is per-route via `pendingComponent`. Each subsequent batch sets `pendingComponent` on routes whose `beforeLoad` is async; `ControlPlaneLoading` remains in `app/_components/` ready to import. |
+
+Acceptance for B-1 (greppable): `cd apps/operator-vite && npm run build` succeeds; `git grep -nE "from ['\"]next/" apps/operator-vite/src` returns zero.
+
 Each batch acceptance: that surface's URLs render the right components and don't console-error, **verified by a strategy proportional to surface-stakes:**
 
 - **Smoke-tested in Playwright (mandatory): 6 highest-stakes surfaces.** `harness/[slug]`, `login`, `settings/*`, `marketplace/installed/[slug]` (the install flow), `editor-demo`, `harness/[slug]` "brainstorm" tab. Each gets one fresh Playwright smoke (~30-50 lines, ~1 day per to write + stabilize). **These tests do not exist today**; writing them is part of the batch's effort, not assumed coverage.
