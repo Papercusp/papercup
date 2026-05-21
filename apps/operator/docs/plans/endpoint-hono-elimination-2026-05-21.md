@@ -12,7 +12,9 @@ companion-to: [endpoint-unification-2026-05-21, endpoint-route-migration-2026-05
 
 **State:** The `endpoint-unification-2026-05-21` arc shipped E1–E6 (the `defineRoute`→`defineTool` collapse + the full mobile flag) plus E7-docs, E10, E11, and E13-partial (`coord` + `su-locks` migrated off `_hono`). Its tail — E8/E9/E12/E13-plugins/E14 — was found to be two genuinely separate projects, too large and too risky to fold into that arc. **This plan is that tail, re-scoped from audit.**
 
-**Next:** A1 — migrate the five small `_hono` routers (`oracle`, `operator-notes`, `dock-layouts`, `cross-harness`, `projects` — ~22 routes) to `defineRoute`.
+**Next:** A2 — migrate the mid routers (`experts` 17, `pty` 10, `agent-chats` ~7). `pty`'s WebSocket upgrade and `agent-chats`'s SSE need the care noted in §A2.
+
+A1 shipped (`c019a0ff`): the five small routers — `operator-notes` (2), `oracle` (3), `dock-layouts` (6), `cross-harness` (5), `projects` (6) — migrated to `defineRoute`; the 5 `_hono` files + their `register*()` calls deleted; `getSpawnableTemplates` relocated to `lib/spawnable-templates.ts`; the oracle-chat test block migrated to `endpoint-route/__tests__/oracle-chat.test.ts`.
 
 # Endpoint follow-ups — finish `_hono` elimination + auth-tightening
 
@@ -61,13 +63,14 @@ E8 (`expose.ipc` for routes) stays **deferred** — the flag is typed but inert 
 
 **Total route surface: ~199 across 10 routers.**
 
-### A1 — Small routers (oracle, operator-notes, dock-layouts, cross-harness, projects) — ~22 routes
+### A1 — Small routers (oracle, operator-notes, dock-layouts, cross-harness, projects) — ~22 routes — ✅ SHIPPED `c019a0ff`
 
-- One `routes/<family>/` module per router (array-export, like `routes/coord/index.ts`).
-- Preserve current auth posture verbatim — `auth: 'public'` + any inline check, exactly as the route-migration rule dictates. Auth tightening is Workstream B.
-- Delete each `_hono/*.ts` + its `register*()` call in `_hono/app.ts`.
-- **Export check:** before deleting a file, `grep` for non-route exports it provides (`oracle.ts` prompt helpers, `cross-harness.ts` helpers imported by `marketplace/spawnable.ts`). Move those to `lib/` first.
-- Acceptance: each migrated route serves identically via `app.request()`; `tsc` clean; route-shadowing test green.
+- ✅ One `routes/<family>/index.ts` module per router (array-export). 22 routes across 5 files.
+- ✅ Auth posture preserved verbatim — all `auth: 'public'` (the legacy routers gated none). The `oracle` FLAGS.ORACLE 404-gate middleware became a per-handler `oracleEnabled()` check (`defineRoute` has no per-prefix middleware).
+- ✅ 5 `_hono/*.ts` deleted + 5 `register*()` calls removed from `_hono/app.ts`.
+- ✅ **Export check done:** `cross-harness.ts`'s `getSpawnableTemplates` (imported by `routes/marketplace/spawnable.ts`) relocated to `lib/spawnable-templates.ts`; importer repointed. `oracle`'s prompt helpers were already in `lib/agent-tools/oracle/prompts.ts` — no move needed.
+- ✅ The `/oracle/chat` test block of `_hono/chat-shim-routes.test.ts` migrated to `endpoint-route/__tests__/oracle-chat.test.ts` (4 tests — round-10 close guard, 400-no-messages, 404-flag-off, UUID-runId).
+- ✅ Verified: tsc clean; route-shadowing + composed-app green; oracle-chat 4/4; chat-shim (trimmed) 3/3.
 
 ### A2 — Mid routers (experts 17, pty 10, agent-chats ~7) — ~34 routes
 
