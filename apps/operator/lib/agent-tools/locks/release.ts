@@ -43,7 +43,7 @@ export default defineTool({
     all_mine: z.boolean().optional(),
   }),
   async handler(args, ctx) {
-    const { ownerId, workspaceId } = readIdentity(ctx);
+    const { ownerId, ownerLabel, workspaceId } = readIdentity(ctx);
 
     if (!args.lock_id && !args.all_mine) {
       return {
@@ -73,7 +73,12 @@ export default defineTool({
       content: [
         {
           type: 'text' as const,
-          text: JSON.stringify({ ok: true, released: result.released }),
+          text: JSON.stringify({
+            ok: true,
+            released: result.released,
+            owner: ownerId,
+            owner_label: ownerLabel,
+          }),
         },
       ],
     };

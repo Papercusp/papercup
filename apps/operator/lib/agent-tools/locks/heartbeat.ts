@@ -42,7 +42,7 @@ export default defineTool({
     ttl_sec: z.number().int().positive().max(MAX_TTL_SEC).optional(),
   }),
   async handler(args, ctx) {
-    const { ownerId, workspaceId } = readIdentity(ctx);
+    const { ownerId, ownerLabel, workspaceId } = readIdentity(ctx);
     const ttlSec = args.ttl_sec ?? DEFAULT_TTL_SEC;
 
     const result = await inWorkspaceTxn(workspaceId, ownerId, async (tx) =>
@@ -57,6 +57,8 @@ export default defineTool({
             ok: true,
             extended: result.extended,
             expires_ts: result.expires_ts?.toISOString() ?? null,
+            owner: ownerId,
+            owner_label: ownerLabel,
           }),
         },
       ],

@@ -74,6 +74,8 @@ const SU_ROLES = [
 
 interface BusyJson {
   path: string;
+  /** Holder's canonical owner id (#5 — unredacted; SU is admin-tier). */
+  owner: string;
   owner_label: string | null;
   intent: string;
   expires_ts: string;
@@ -82,6 +84,7 @@ interface BusyJson {
 function busyToJson(b: AcquireBusy): BusyJson {
   return {
     path: b.path,
+    owner: b.owner,
     owner_label: b.owner_label,
     intent: b.intent,
     expires_ts: b.expires_ts.toISOString(),
@@ -151,7 +154,7 @@ export default defineTool({
       void fireNotificationsForCaller(ctx, first.held, 'lock_acquired').catch(
         () => {},
       );
-      return ok(first.lock_id, first.expires_ts, first.held);
+      return ok(ownerId, ownerLabel, first.lock_id, first.expires_ts, first.held);
     }
 
     if (maxWaitSec === 0) {
@@ -234,7 +237,7 @@ export default defineTool({
           inserted.held,
           'lock_acquired',
         ).catch(() => {});
-        return ok(
+        return ok(ownerId, ownerLabel, 
           inserted.lock_id,
           inserted.expires_ts,
           inserted.held,
@@ -290,7 +293,7 @@ export default defineTool({
       {
         const status = await readWaiterStatus(sqlPool, ticketId);
         if (status.status === 'granted' && status.granted_lock_id) {
-          return ok(
+          return ok(ownerId, ownerLabel, 
             status.granted_lock_id,
             status.granted_expires_ts ?? new Date(Date.now() + ttlSec * 1000),
             status.paths ?? paths,
@@ -339,7 +342,7 @@ export default defineTool({
 
         const status = await readWaiterStatus(sqlPool, ticketId);
         if (status.status === 'granted' && status.granted_lock_id) {
-          return ok(
+          return ok(ownerId, ownerLabel, 
             status.granted_lock_id,
             status.granted_expires_ts ?? new Date(Date.now() + ttlSec * 1000),
             status.paths ?? paths,
@@ -382,7 +385,7 @@ export default defineTool({
           finalBusy.held,
           'lock_acquired',
         ).catch(() => {});
-        return ok(
+        return ok(ownerId, ownerLabel, 
           finalBusy.lockId,
           finalBusy.expires,
           finalBusy.held,
@@ -415,6 +418,8 @@ export default defineTool({
 });
 
 function ok(
+  owner: string,
+  ownerLabel: string,
   lockId: string,
   expires: Date,
   held: string[],
@@ -427,6 +432,10 @@ function ok(
         text: JSON.stringify({
           ok: true,
           lock_id: lockId,
+          // #5 — echo the server-resolved owner so the caller can
+          // verify which identity the lock was taken under.
+          owner,
+          owner_label: ownerLabel,
           expires_ts: expires.toISOString(),
           held,
           ...(waitedSec !== undefined ? { waited_sec: waitedSec } : {}),

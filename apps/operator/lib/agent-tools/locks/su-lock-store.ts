@@ -323,6 +323,8 @@ export interface AcquireParams {
 
 export interface AcquireBusy {
   path: string;
+  /** Canonical owner id of the holder (#5 — unredacted; SU is admin-tier). */
+  owner: string;
   owner_label: string | null;
   intent: string;
   expires_ts: Date;
@@ -514,12 +516,13 @@ async function readBusySnapshot(
   const rows = await tx<
     Array<{
       path: string;
+      owner: string;
       owner_label: string | null;
       intent: string;
       expires_ts: Date;
     }>
   >`
-    SELECT path, owner_label, intent, expires_ts
+    SELECT path, owner, owner_label, intent, expires_ts
       FROM agent_file_locks
      WHERE workspace_id = ${workspaceId}
        AND path = ANY(${paths}::text[])

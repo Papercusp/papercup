@@ -149,7 +149,12 @@ describe('tryAcquire', () => {
     );
     expect(r.ok).toBe(false);
     if (!r.ok) {
-      expect(r.busy.find((b) => b.path === 'contested.ts')?.intent).toBe('A holds');
+      const contested = r.busy.find((b) => b.path === 'contested.ts');
+      expect(contested?.intent).toBe('A holds');
+      // #5 — the busy row carries the holder's canonical owner, not
+      // just the display label.
+      expect(contested?.owner).toBe('a');
+      expect(contested?.owner_label).toBe('A');
     }
     // Verify no partial state — free.ts must NOT be held by B
     const sql = getTxPool();
