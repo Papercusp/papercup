@@ -3,14 +3,10 @@
 import { useCallback, useEffect, type ReactNode } from 'react';
 import { TransitionRouter, useTransitionState } from 'next-transition-router';
 import { gsap } from 'gsap';
-import { ScrambleTextPlugin } from 'gsap/ScrambleTextPlugin';
 import { useEffectiveVisualEffects } from '@/lib/visual-effects';
 
 const REDUCED_MOTION_QUERY = '(prefers-reduced-motion: reduce)';
 const TRANSITION_LABEL_PLACEHOLDER = 'SYSTEM';
-const SCRAMBLE_CHARS = '01█▓▒░<>/{}[]-_=+*';
-
-gsap.registerPlugin(ScrambleTextPlugin);
 
 const JUMP_GATE_INTENT_ATTR = 'data-route-transition-intent';
 const JUMP_GATE_INTENT_VALUE = 'jump-gate';
@@ -87,16 +83,6 @@ function resetRouteTransitionVisualState() {
   if (overlay) gsap.set(overlay, { autoAlpha: 0, pointerEvents: 'none' });
   if (page) gsap.set(page, { clearProps: 'opacity,visibility,scale,filter,transform' });
 }
-function completeOnce(next: () => void) {
-  let complete = false;
-
-  return () => {
-    if (complete) return;
-    complete = true;
-    next();
-  };
-}
-
 function updateRouteLabels(from?: string, to?: string) {
   const fromNode = document.querySelector<HTMLElement>('[data-route-transition-from]');
   const toNode = document.querySelector<HTMLElement>('[data-route-transition-to]');
@@ -207,110 +193,55 @@ export default function RouteTransitionProvider({ children }: { children: ReactN
       return undefined;
     }
 
-    const done = completeOnce(next);
-    let fallbackId: number | undefined;
+    let complete = false;
     const finish = () => {
-      if (fallbackId !== undefined) window.clearTimeout(fallbackId);
-      done();
+      if (complete) return;
+      complete = true;
+      next();
     };
-    gsap.killTweensOf([
-      overlay,
-      page,
-      '.pc-route-transition__blade',
-      '.pc-route-transition__ring',
-      '.pc-route-transition__reticle',
-      '.pc-route-transition__title',
-      '.pc-route-transition__subtitle',
-      '.pc-route-transition__telemetry',
-      '.pc-route-transition__ticks i',
-      '.pc-route-transition__status',
-      '.pc-route-transition__status strong',
-      '.pc-route-transition__checksum',
-      '.pc-route-transition__sweep',
-    ]);
+    gsap.killTweensOf([overlay, page]);
+    gsap.killTweensOf('.pc-route-transition *');
 
+    // Snappy leave: ~140ms total. `next()` fires onComplete (or via the 240ms
+    // fallback) so next-transition-router's `stage` machine sees a normal
+    // "leave finished" → routing → "enter" lifecycle. Calling `next()` at
+    // the START of leave broke that machine (stage stuck at "leaving"); the
+    // big remaining lag (HarnessDashboard mount) is solved instead by the
+    // snap-enter below, which removes the 2+s GSAP enter tween that was
+    // queued behind the React render and only let the page reveal *after*
+    // that whole catch-up backlog finished playing.
     const timeline = gsap.timeline({
-      defaults: { ease: 'power4.inOut' },
+      defaults: { ease: 'power2.out' },
       onComplete: finish,
     });
 
     timeline
       .set(overlay, { autoAlpha: 1, pointerEvents: 'auto' })
-      .set('.pc-route-transition__sweep', { xPercent: -140, autoAlpha: 0 })
-      .fromTo(
-        '.pc-route-transition__blade--top',
-        { yPercent: -112, skewY: -4 },
-        { yPercent: 0, skewY: 0, duration: 0.44 },
-        0,
+      .set(
+        [
+          '.pc-route-transition__ring',
+          '.pc-route-transition__reticle',
+          '.pc-route-transition__title',
+          '.pc-route-transition__subtitle',
+          '.pc-route-transition__telemetry',
+          '.pc-route-transition__ticks i',
+          '.pc-route-transition__status',
+          '.pc-route-transition__checksum',
+        ],
+        { autoAlpha: 1, scale: 1, x: 0, y: 0, rotate: 0, scaleX: 1, scaleY: 1, clearProps: 'filter' },
       )
-      .fromTo(
-        '.pc-route-transition__blade--bottom',
-        { yPercent: 112, skewY: -4 },
-        { yPercent: 0, skewY: 0, duration: 0.44 },
-        0,
-      )
-      .fromTo(
-        '.pc-route-transition__ring',
-        { autoAlpha: 0, scale: 0.46, rotate: -34 },
-        { autoAlpha: 1, scale: 1, rotate: 0, duration: 0.52, stagger: 0.045, ease: 'back.out(1.9)' },
-        0.08,
-      )
-      .fromTo(
-        '.pc-route-transition__reticle',
-        { autoAlpha: 0, scaleX: 0.18, scaleY: 1.7 },
-        { autoAlpha: 1, scaleX: 1, scaleY: 1, duration: 0.34, ease: 'expo.out' },
-        0.12,
-      )
-      .fromTo(
-        '.pc-route-transition__title, .pc-route-transition__subtitle',
-        { autoAlpha: 0, y: 18, filter: 'blur(14px)' },
-        { autoAlpha: 1, y: 0, filter: 'blur(0px)', duration: 0.32, stagger: 0.045 },
-        0.18,
-      )
-      .fromTo(
-        '[data-route-transition-status]',
-        { textContent: 'STANDING BY' },
-        { scrambleText: { text: 'VECTOR LOCKED', chars: SCRAMBLE_CHARS, speed: 0.65 }, duration: 0.54, ease: 'none' },
-        0.14,
-      )
-      .fromTo(
-        '.pc-route-transition__telemetry',
-        { autoAlpha: 0, x: (_index: number, target: Element) => (target.classList.contains('pc-route-transition__telemetry--left') ? -46 : 46) },
-        { autoAlpha: 1, x: 0, duration: 0.36, stagger: 0.04 },
-        0.2,
-      )
-      .fromTo(
-        '.pc-route-transition__status, .pc-route-transition__checksum',
-        { autoAlpha: 0, y: 16, filter: 'blur(10px)' },
-        { autoAlpha: 1, y: 0, filter: 'blur(0px)', duration: 0.34, stagger: 0.045 },
-        0.16,
-      )
-      .fromTo(
-        '.pc-route-transition__ticks i',
-        { autoAlpha: 0, scaleY: 0.2 },
-        { autoAlpha: 1, scaleY: 1, duration: 0.24, stagger: { each: 0.012, from: 'center' } },
-        0.12,
-      )
-      .to(
-        '.pc-route-transition__sweep--a',
-        { autoAlpha: 1, xPercent: 140, duration: 0.48, ease: 'expo.inOut' },
-        0.16,
-      )
-      .to(
-        '.pc-route-transition__sweep--b',
-        { autoAlpha: 0.9, xPercent: 140, duration: 0.58, ease: 'expo.inOut' },
-        0.24,
-      )
-      .to(
-        page,
-        { autoAlpha: 0.22, scale: 0.985, filter: 'blur(10px) saturate(1.55)', duration: 0.34 },
-        0,
-      );
+      .set('[data-route-transition-status]', { textContent: 'VECTOR LOCKED' })
+      .fromTo('.pc-route-transition__blade--top', { yPercent: -100 }, { yPercent: 0, duration: 0.14 }, 0)
+      .fromTo('.pc-route-transition__blade--bottom', { yPercent: 100 }, { yPercent: 0, duration: 0.14 }, 0)
+      .to(page, { autoAlpha: 0.55, duration: 0.12 }, 0);
 
-    fallbackId = window.setTimeout(finish, 900);
+    // Backstop: if rAF gets starved (e.g. heavy route mount blocks the main
+    // thread), `onComplete` may not fire — call next() at 240ms regardless
+    // so navigation proceeds.
+    const fallbackId = window.setTimeout(finish, 240);
 
     return () => {
-      if (fallbackId !== undefined) window.clearTimeout(fallbackId);
+      window.clearTimeout(fallbackId);
       timeline.kill();
     };
   }, [minimalVisualEffects]);
@@ -339,49 +270,28 @@ export default function RouteTransitionProvider({ children }: { children: ReactN
       return undefined;
     }
 
-    const done = completeOnce(next);
-    let fallbackId: number | undefined;
-    const finish = () => {
-      activeTransitionUsesJumpGate = false;
-      if (fallbackId !== undefined) window.clearTimeout(fallbackId);
-      done();
-    };
-    gsap.killTweensOf([
-      overlay,
-      page,
-      '.pc-route-transition__blade',
-      '.pc-route-transition__ring',
-      '.pc-route-transition__telemetry',
-      '.pc-route-transition__status',
-      '.pc-route-transition__status strong',
-      '.pc-route-transition__checksum',
-    ]);
+    activeTransitionUsesJumpGate = false;
+    gsap.killTweensOf([overlay, page]);
+    gsap.killTweensOf('.pc-route-transition *');
 
-    const timeline = gsap.timeline({
-      defaults: { ease: 'power4.inOut' },
-      onComplete: finish,
-    });
+    // Snap enter: no animation. The leave overlay was visible while the new
+    // route mounted; the moment the route commits and `enter()` fires, snap
+    // everything back to base state and call next() immediately. Without
+    // this, GSAP tweens (`.to(page, autoAlpha:1, duration:0.14)`) get
+    // queued behind the main-thread work React just did and stretch out
+    // to multiple seconds — perceived as a long, laggy fade-in even though
+    // the actual page is already ready. The leave overlay does the heavy
+    // lifting of "something is happening"; revealing the page should be
+    // instant.
+    gsap.set(page, { autoAlpha: 1, clearProps: 'scale,filter,transform' });
+    gsap.set('.pc-route-transition__blade--top', { yPercent: -100 });
+    gsap.set('.pc-route-transition__blade--bottom', { yPercent: 100 });
+    gsap.set(overlay, { autoAlpha: 0, pointerEvents: 'none' });
+    const statusNode = document.querySelector<HTMLElement>('[data-route-transition-status]');
+    if (statusNode) statusNode.textContent = 'STANDING BY';
 
-    timeline
-      .set(page, { autoAlpha: 0, scale: 1.018, filter: 'blur(16px) saturate(1.8)' })
-      .to(page, { autoAlpha: 1, scale: 1, filter: 'blur(0px) saturate(1)', duration: 0.46, ease: 'expo.out' }, 0)
-      .to('.pc-route-transition__ring', { scale: 1.45, rotate: 38, autoAlpha: 0, duration: 0.42, stagger: 0.025 }, 0.04)
-      .to('.pc-route-transition__reticle', { scaleX: 2.4, scaleY: 0.36, autoAlpha: 0, duration: 0.34 }, 0.08)
-      .to('.pc-route-transition__title, .pc-route-transition__subtitle', { autoAlpha: 0, y: -20, filter: 'blur(12px)', duration: 0.24 }, 0)
-      .to('.pc-route-transition__telemetry', { autoAlpha: 0, y: 18, duration: 0.22, stagger: 0.02 }, 0)
-      .to('[data-route-transition-status]', { scrambleText: { text: 'HANDOFF COMPLETE', chars: SCRAMBLE_CHARS, speed: 0.7 }, duration: 0.26, ease: 'none' }, 0)
-      .to('.pc-route-transition__status, .pc-route-transition__checksum', { autoAlpha: 0, y: 18, duration: 0.22, stagger: 0.02 }, 0.05)
-      .to('.pc-route-transition__blade--top', { yPercent: -112, skewY: 4, duration: 0.5 }, 0.12)
-      .to('.pc-route-transition__blade--bottom', { yPercent: 112, skewY: 4, duration: 0.5 }, 0.12)
-      .to(overlay, { autoAlpha: 0, pointerEvents: 'none', duration: 0.12 }, 0.55);
-
-    fallbackId = window.setTimeout(finish, 780);
-
-    return () => {
-      if (fallbackId !== undefined) window.clearTimeout(fallbackId);
-      activeTransitionUsesJumpGate = false;
-      timeline.kill();
-    };
+    next();
+    return undefined;
   }, [minimalVisualEffects]);
 
   return (
