@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Drift test for apps/operator/content/docs/agents/finding-context.mdx.
+ * Drift test for apps/operator-docs/src/content/docs/agents/finding-context.mdx.
  *
  * This page is prompt-injected into every spawned agent (orchestrator
  * loads it via Path B in libs/papercusp/packages/orchestrator/src/invoke.ts).
@@ -23,7 +23,10 @@ import { fileURLToPath } from 'node:url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(__dirname, '../..');
-const PAGE_PATH = join(REPO_ROOT, 'content/docs/agents/finding-context.mdx');
+// The page lives in the Starlight docs tree at apps/operator-docs/ now
+// (post fumadocs→Starlight migration, 2026-05-20). REPO_ROOT here is
+// apps/operator/, so we step up one and over to apps/operator-docs/.
+const PAGE_PATH = join(REPO_ROOT, '..', 'operator-docs', 'src', 'content', 'docs', 'agents', 'finding-context.mdx');
 const MAX_LINES = 200;
 
 let failed = false;
