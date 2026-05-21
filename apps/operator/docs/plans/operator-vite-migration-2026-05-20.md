@@ -396,6 +396,24 @@ Acceptance: `npm run build` clean (~6.9s, 1390+ modules incl. harness graph); `g
 
 **Playwright smoke for `/harness/$slug`** (the §B2-mandated highest-stakes test) is **deferred** to a follow-up; the operator-vite dev server is not yet wired into the Tauri launcher (Phase F + A5 — sibling repo). When dev is reachable end-to-end, write `apps/operator-vite/e2e/harness-smoke.spec.ts`.
 
+**B-7 partial + B-1 cleanup (2026-05-21).** 4 of the 5 B-7 surfaces shipped (plus deferred `/setup` from B-1):
+
+| Surface | Status | File |
+|---|---|---|
+| `/setup` (B-1 cleanup) | shipped | `src/routes/setup.tsx` — `<Chromeless/> + <SetupWizard mode="first-run"/>`. SetupWizard's `useRouter` resolves via shim. |
+| `/coord` | shipped | `src/routes/coord.tsx` — `<CoordDashboard/>` (clean import). |
+| `/support` | shipped | `src/routes/support.tsx` — full FAQ port. RouteLink (2 call sites) replaced inline with TSR `Link` — same approach as B-1's NotFound. SupportChatButton + SupportAgentPanel imported clean from `@/app/_components/`. |
+| `/pi` | shipped | `src/routes/pi.tsx` — PiTerminalsDock via `React.lazy`. `validateSearch({harness,lane})` replaces the original's post-mount `URLSearchParams` read (removes the `params === null` first-render flash). `app/pi/layout.tsx` Tooltip wrapper dropped (already mounted at root). |
+| `/wiki/missing` | **DEFERRED** | Server-only: uses `loadHarnessRegistry()` + `readdirSync` to do fuzzy-match suggestions across project paths. Needs a new `/api/wiki/suggest?target=…&harness=…` endpoint (backend agent scope) before the page becomes a thin client renderer. |
+| `/project-docs` | **DEFERRED** | Server-only: walks `<projectPath>/docs/` with `fs.readdir`, reads file content with `fs.readFile`. Needs new `/api/project-docs/list?harness=…` + `/api/project-docs/file?harness=…&path=…` endpoints before the page can be SPA-ported. |
+
+After this batch: 18 of 62 tracked pages shipped (B-1: 4, B-2: 5, B-3: 6, B-7-partial: 3, B-1-cleanup: 1 setup, minus /wiki/missing + /project-docs deferrals).
+
+**New deferred-work item:** API endpoints needed before SPA-porting the two server-only pages:
+- `GET /api/wiki/suggest?target=…&harness=…` — returns up to 12 `{slug, filename, score}` fuzzy matches (port the `listMarkdownFiles` walker + `similarity` ranker from `apps/operator/app/wiki/missing/page.tsx`).
+- `GET /api/project-docs/list?harness=…` — returns the `docs/`-tree listing for a project.
+- `GET /api/project-docs/file?harness=…&path=…` — returns the file content (path traversal must be guarded — original uses `safeJoinUnderRoot`).
+
 Each batch acceptance: that surface's URLs render the right components and don't console-error, **verified by a strategy proportional to surface-stakes:**
 
 - **Smoke-tested in Playwright (mandatory): 6 highest-stakes surfaces.** `harness/[slug]`, `login`, `settings/*`, `marketplace/installed/[slug]` (the install flow), `editor-demo`, `harness/[slug]` "brainstorm" tab. Each gets one fresh Playwright smoke (~30-50 lines, ~1 day per to write + stabilize). **These tests do not exist today**; writing them is part of the batch's effort, not assumed coverage.
