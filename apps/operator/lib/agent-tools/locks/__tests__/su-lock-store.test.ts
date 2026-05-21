@@ -28,8 +28,6 @@ import {
   readQueue,
   readWaiterStatus,
   runBackgroundJanitorOnce,
-  startBackgroundJanitor,
-  stopBackgroundJanitor,
   sweepPathsExpired,
   sweepWorkspaceExpired,
   tryAcquire,
@@ -41,6 +39,13 @@ import {
   _resetForTests,
 } from '../su-lock-store';
 import { inWorkspaceTxn } from '../in-workspace-txn';
+// The background-janitor timer lives in workspace-listener.ts
+// (file-locking #4); runBackgroundJanitorOnce — the sweep work — stays
+// in su-lock-store.ts.
+import {
+  startBackgroundJanitor,
+  stopBackgroundJanitor,
+} from '../workspace-listener';
 
 const SUITE_PREFIX = `vitest-su-locks-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 let suiteIdx = 0;
@@ -61,6 +66,7 @@ afterAll(async () => {
   } catch {
     /* db may have been torn down; ignore */
   }
+  stopBackgroundJanitor(); // defensive — the timer never auto-starts under VITEST
   await _resetForTests();
 });
 
@@ -982,7 +988,7 @@ describe('plan §10.1 + file-locking #4 — background janitor', () => {
   // The plan §10.1 invariant ("stale locks + terminal waiters get
   // swept") is now carried by runBackgroundJanitorOnce(), not by an
   // implicit sweep inside tryAcquire. Under VITEST the timer is NOT
-  // armed (see isTestEnv in su-lock-store.ts); tests drive it
+  // armed (see isTestEnv in in-workspace-txn.ts); tests drive it
   // directly so there's no wall-clock race against fixtures.
 
   it('runBackgroundJanitorOnce sweeps expired locks on paths nobody acquired', async () => {
@@ -1081,6 +1087,46 @@ describe('plan §10.1 + file-locking #4 — background janitor', () => {
     stopBackgroundJanitor();
     stopBackgroundJanitor(); // second stop must be a no-op
   });
+});
+
+describe('file-locking #4 — acquire under concurrent load (plan §4 stress)', () => {
+  it('100 concurrent acquires on one workspace all succeed, none time out', async () => {
+    // Plan §4's flake was the janitor running INSIDE every acquire,
+    // bursting past the 500ms statement_timeout under load. With the
+    // janitor extracted to the background sweep (and out of the hot
+    // path entirely), tryAcquire is a pure read-check + upsert — 100
+    // acquires serialized on the workspace advisory lock must all land
+    // well inside inWorkspaceTxn's 5s lock_timeout / statement_timeout.
+    // Distinct paths → no contention, every acquire returns ok:true.
+    const ws = nextWs();
+    const N = 100;
+    const results = await Promise.all(
+      Array.from({ length: N }, (_, i) =>
+        inWorkspaceTxn(ws, `c${i}`, (tx) =>
+          tryAcquire(tx, {
+            coordinationDomain: ws,
+            owner: `c${i}`,
+            ownerLabel: `C${i}`,
+            paths: [`load/file-${i}.ts`],
+            intent: 'stress',
+            ttlSec: 300,
+          }),
+        ).then(
+          (r) => ({ ok: r.ok, err: null as string | null }),
+          (e: unknown) => ({
+            ok: false,
+            err: e instanceof Error ? e.message : String(e),
+          }),
+        ),
+      ),
+    );
+    const failed = results.filter((r) => !r.ok);
+    // Surface the first failure's message so a regression is debuggable
+    // (a statement_timeout / lock_timeout would land here).
+    expect(failed.map((f) => f.err).filter(Boolean)).toEqual([]);
+    expect(failed).toHaveLength(0);
+    expect(results).toHaveLength(N);
+  }, 30_000);
 });
 
 describe('file-locking #4 — sweepPathsExpired (path-narrow primitive)', () => {

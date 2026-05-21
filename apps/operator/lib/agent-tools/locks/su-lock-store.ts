@@ -99,7 +99,8 @@ export function getListenerPool(): Sql {
  * recycle the connection set between disposable PG instances.
  */
 export async function _resetForTests(): Promise<void> {
-  stopBackgroundJanitor();
+  // The background-janitor timer lives in workspace-listener.ts now
+  // (file-locking #4); its test teardown is _resetListenersForTests().
   if (txPool) {
     await txPool.end({ timeout: 1 });
     txPool = null;
@@ -211,12 +212,10 @@ export async function ensureBootstrap(): Promise<void> {
   });
 
   bootstrapped = true;
-
-  // Arm the background expiry sweep (file-locking #4). Lazy: the first
-  // locks:* call in the process starts it. Skipped under vitest —
-  // tests call runBackgroundJanitorOnce() directly so no wall-clock
-  // timer can race their fixtures.
-  if (!isTestEnv()) startBackgroundJanitor();
+  // The background expiry sweep (file-locking #4) is armed by
+  // inWorkspaceTxn on the first mutating locks:* op — its timer lives
+  // in workspace-listener.ts, the module that owns the locks
+  // subsystem's long-lived background state.
 }
 
 // ───────── Path validation (app-side; trigger is belt-and-suspenders) ─────────
@@ -335,16 +334,15 @@ export async function pokeWorkspace(tx: Sql, coordinationDomain: string): Promis
 }
 
 // ───────── Background janitor (file-locking #4) ─────────
-
-/** Period of the background expiry sweep. */
-const BACKGROUND_JANITOR_INTERVAL_MS = 30_000;
-
-let janitorTimer: ReturnType<typeof setInterval> | null = null;
-let janitorPassInFlight = false;
-
-function isTestEnv(): boolean {
-  return Boolean(process.env.VITEST) || process.env.NODE_ENV === 'test';
-}
+//
+// The 30s timer that drives this lives in workspace-listener.ts — the
+// module that owns the locks subsystem's long-lived background state —
+// and is armed by inWorkspaceTxn on the first mutating op. The sweep
+// WORK stays here: it is storage-layer logic (tx pool, the per-
+// workspace advisory lock, sweepWorkspaceExpired). The janitor uses
+// the tx pool, NOT the LISTEN connection — a postgres-js listen
+// connection is dedicated to LISTEN and cannot run the sweep's
+// transactions; the tx pool is borrowed transiently each pass.
 
 /**
  * One background sweep pass:
@@ -413,38 +411,6 @@ export async function runBackgroundJanitorOnce(): Promise<void> {
     });
   } catch (err) {
     console.error('[su-locks] background janitor: terminal-waiter GC failed', err);
-  }
-}
-
-/**
- * Arm the 30s background janitor. Idempotent. Auto-invoked by
- * ensureBootstrap in non-test processes; tests skip the timer and call
- * runBackgroundJanitorOnce() directly.
- *
- * The interval is unref'd — it never keeps the process alive on its
- * own — and a pass never overlaps itself (janitorPassInFlight guard).
- */
-export function startBackgroundJanitor(): void {
-  if (janitorTimer) return;
-  janitorTimer = setInterval(() => {
-    if (janitorPassInFlight) return;
-    janitorPassInFlight = true;
-    void runBackgroundJanitorOnce()
-      .catch((err) =>
-        console.error('[su-locks] background janitor pass failed', err),
-      )
-      .finally(() => {
-        janitorPassInFlight = false;
-      });
-  }, BACKGROUND_JANITOR_INTERVAL_MS);
-  janitorTimer.unref?.();
-}
-
-/** Stop the background janitor. Idempotent. */
-export function stopBackgroundJanitor(): void {
-  if (janitorTimer) {
-    clearInterval(janitorTimer);
-    janitorTimer = null;
   }
 }
 

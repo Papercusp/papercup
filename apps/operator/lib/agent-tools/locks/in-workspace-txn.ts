@@ -13,6 +13,14 @@
 
 import type { Sql } from 'postgres';
 import { ensureBootstrap, getTxPool, SU_LOCKS_FEATURE_KEY } from './su-lock-store';
+import { startBackgroundJanitor } from './workspace-listener';
+
+/** True under vitest / NODE_ENV=test — the background janitor timer is
+ *  skipped there so no wall-clock tick can race a test's fixtures
+ *  (tests drive runBackgroundJanitorOnce() directly). */
+function isTestEnv(): boolean {
+  return Boolean(process.env.VITEST) || process.env.NODE_ENV === 'test';
+}
 
 export async function inWorkspaceTxn<T>(
   coordinationDomain: string,
@@ -20,6 +28,10 @@ export async function inWorkspaceTxn<T>(
   fn: (tx: Sql) => Promise<T>,
 ): Promise<T> {
   await ensureBootstrap();
+  // Arm the background expiry janitor on the first mutating locks:* op
+  // (file-locking #4). Idempotent + cheap, so calling it every op is
+  // fine; the timer module lives in workspace-listener.ts.
+  if (!isTestEnv()) startBackgroundJanitor();
   const sql = getTxPool();
   // postgres-js's `begin` returns the handler's value but wraps it in
   // UnwrapPromiseArray<T>; for our non-array results the cast is safe.
