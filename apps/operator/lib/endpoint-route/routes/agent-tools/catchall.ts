@@ -46,8 +46,9 @@ const HOST_EXTRAS: HttpToolHostExtras = {
       /* token_index unreachable — fall through to the mobile JWT path */
     }
     // `principalFromMobileJwt` reads the `Authorization` header, so
-    // synthesize one from the bearer string.
-    principal ??= principalFromMobileJwt(
+    // synthesize one from the bearer string. Async — it also runs the
+    // device-revocation check.
+    principal ??= await principalFromMobileJwt(
       new Headers({ authorization: `Bearer ${bearer}` }),
     );
     if (!principal) return null;

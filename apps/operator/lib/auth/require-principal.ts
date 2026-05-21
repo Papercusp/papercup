@@ -64,7 +64,7 @@ export async function requirePrincipal(
 ): Promise<Principal> {
   const principal =
     (await principalFromCookie(headers)) ??
-    principalFromMobileJwt(headers) ??
+    (await principalFromMobileJwt(headers)) ??
     principalFromSuperuserToken(headers) ??
     (await principalFromBearerToken(headers)) ??
     principalFromLoopback(headers);
@@ -109,7 +109,7 @@ export async function requirePrincipal(
 export async function tryResolvePrincipal(headers: Headers): Promise<Principal | null> {
   return (
     (await principalFromCookie(headers)) ??
-    principalFromMobileJwt(headers) ??
+    (await principalFromMobileJwt(headers)) ??
     principalFromSuperuserToken(headers) ??
     (await principalFromBearerToken(headers)) ??
     principalFromLoopback(headers)

@@ -1,0 +1,275 @@
+/**
+ * Mobile pair + device-lifecycle routes — Phase E4 batch M1
+ * (endpoint-unification-2026-05-21). Ported verbatim off
+ * `_hono/mobile.ts`; URLs unchanged (`/api/mobile/*`).
+ *
+ *   POST   /mobile/desktop/mint-pair-token   loopback-only
+ *   POST   /mobile/pair                      unauthenticated (one-time token)
+ *   POST   /mobile/workspace/switch          mobile JWT
+ *   GET    /mobile/devices                   mobile JWT
+ *   DELETE /mobile/devices/:deviceId         mobile JWT
+ *   GET    /mobile/runtime-config            mobile JWT
+ *   GET    /mobile/workspaces                mobile JWT
+ *   POST   /mobile/heartbeat                 mobile JWT
+ */
+import { networkInterfaces } from 'node:os';
+import { z } from 'zod';
+import { defineRoute } from '../../define-route';
+import { MOBILE_AUTH, mobilePrincipal, isLoopbackHost } from './_shared';
+import { signDeviceToken } from '@/lib/mobile-jwt';
+import { getMobileVoicePort } from '@/lib/mobile-voice-ws';
+import { mintPairToken, consumePairToken, newDeviceId } from '@/lib/mobile-pair-store';
+import { readRegistry, workspaceById } from '@/lib/workspace-registry';
+import {
+  insertDevice,
+  listDevices,
+  revokeDevice,
+  touchLastSeen,
+} from '@/lib/mobile-device-store';
+
+/**
+ * First non-internal RFC1918 IPv4 on this host — so the pairing QR
+ * encodes a LAN address the phone can route to (vs `localhost`, which
+ * on the phone resolves to the phone itself).
+ */
+function lanAddress(): string | null {
+  const ifaces = networkInterfaces();
+  for (const list of Object.values(ifaces)) {
+    if (!list) continue;
+    for (const i of list) {
+      if (i.family !== 'IPv4' || i.internal) continue;
+      if (/^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(i.address)) return i.address;
+    }
+  }
+  for (const list of Object.values(ifaces)) {
+    if (!list) continue;
+    for (const i of list) {
+      if (i.family === 'IPv4' && !i.internal) return i.address;
+    }
+  }
+  return null;
+}
+
+/**
+ * POST /mobile/desktop/mint-pair-token — loopback-only. Launched from
+ * the desktop settings UI; the response carries the QR payload the
+ * phone scans. Host-header loopback gate (spoofable by a determined
+ * LAN attacker — see the legacy comment; real exposure needs a 127.0.0.1
+ * bind or a proper auth check).
+ */
+const mintPairTokenRoute = defineRoute({
+  method: 'POST',
+  path: '/mobile/desktop/mint-pair-token',
+  auth: 'public',
+  mobile: true,
+  input: z.object({ workspaceId: z.string().min(1) }),
+  async handler(req, ctx) {
+    if (!isLoopbackHost(req)) {
+      return Response.json({ error: 'loopback_only' }, { status: 403 });
+    }
+    const { workspaceId } = ctx.input;
+    if (!workspaceById(workspaceId)) {
+      return Response.json({ error: 'workspace_not_found' }, { status: 400 });
+    }
+    // The legacy `desktopAuth` middleware set a fixed sessionUser.
+    const sessionUserEmail = 'local@desktop';
+
+    // Phone needs to reach the desktop. Override hierarchy:
+    //   1. MOBILE_DESKTOP_PUBLIC_URL — full URL (phone may not be on LAN)
+    //   2. MOBILE_DESKTOP_HOST       — host:port (mesh DNS)
+    //   3. detected LAN IP + the incoming request's port
+    //   4. request Host (desktop-local browser only)
+    const reqHost = req.headers.get('host') ?? 'localhost:3055';
+    const port = reqHost.includes(':') ? reqHost.split(':')[1] : '3055';
+    const lan = lanAddress();
+    const publicUrl = process.env.MOBILE_DESKTOP_PUBLIC_URL;
+    const desktopHost = publicUrl
+      ? publicUrl.replace(/^https?:\/\//, '').replace(/\/$/, '')
+      : (process.env.MOBILE_DESKTOP_HOST ?? (lan ? `${lan}:${port}` : reqHost));
+    const serverUrl = publicUrl
+      ? publicUrl.replace(/\/$/, '')
+      : `http://${desktopHost}`;
+
+    const { pairToken, expiresAt } = await mintPairToken({
+      workspaceId,
+      desktopHost,
+      userEmail: sessionUserEmail,
+    });
+    return Response.json({
+      qrPayload: { server: serverUrl, pairToken, workspaceId },
+      expiresAt,
+    });
+  },
+});
+
+/**
+ * POST /mobile/pair — phone redeems a one-time pair token for a
+ * long-lived device JWT. Unauthenticated by design.
+ */
+const pairRoute = defineRoute({
+  method: 'POST',
+  path: '/mobile/pair',
+  auth: 'public',
+  mobile: true,
+  input: z.object({ pairToken: z.string().min(1) }),
+  async handler(_req, ctx) {
+    const pending = await consumePairToken(ctx.input.pairToken);
+    if (!pending) {
+      return Response.json({ error: 'invalid_or_expired_token' }, { status: 401 });
+    }
+    const deviceId = newDeviceId();
+    const deviceToken = signDeviceToken({
+      sub: deviceId,
+      workspace_id: pending.workspaceId,
+      device_kind: 'mobile',
+      user_email: pending.userEmail,
+    });
+    await insertDevice({
+      deviceId,
+      userEmail: pending.userEmail ?? 'unknown@local',
+      workspaceId: pending.workspaceId,
+    });
+    const defguardEnrollmentUrl =
+      process.env.DEFGUARD_ENROLLMENT_URL ?? 'https://mesh.papercuspai.com/enroll';
+    return Response.json({
+      deviceToken,
+      deviceId,
+      desktopHost: pending.desktopHost,
+      workspaceId: pending.workspaceId,
+      defguardEnrollmentUrl,
+    });
+  },
+});
+
+/**
+ * POST /mobile/workspace/switch — re-issue the device token bound to a
+ * different workspace. The target must exist in the local registry.
+ */
+const workspaceSwitchRoute = defineRoute({
+  method: 'POST',
+  path: '/mobile/workspace/switch',
+  auth: MOBILE_AUTH,
+  mobile: true,
+  input: z.object({ workspaceId: z.string().min(1) }),
+  async handler(_req, ctx) {
+    const principal = mobilePrincipal(ctx);
+    if (!workspaceById(ctx.input.workspaceId)) {
+      return Response.json({ error: 'workspace_not_found' }, { status: 403 });
+    }
+    const deviceToken = signDeviceToken({
+      sub: principal.slug,
+      workspace_id: ctx.input.workspaceId,
+      device_kind: 'mobile',
+      user_email: principal.label,
+    });
+    return Response.json({ deviceToken, workspaceId: ctx.input.workspaceId });
+  },
+});
+
+/** GET /mobile/devices — paired devices in this device's workspace. */
+const devicesListRoute = defineRoute({
+  method: 'GET',
+  path: '/mobile/devices',
+  auth: MOBILE_AUTH,
+  mobile: true,
+  async handler(_req, ctx) {
+    const principal = mobilePrincipal(ctx);
+    const rows = await listDevices(principal.workspaceId);
+    return Response.json({
+      devices: rows.map((d) => ({
+        device_id: d.device_id,
+        device_label: d.device_label,
+        paired_at: d.paired_at,
+        last_seen: d.last_seen,
+        workspace_id: d.workspace_id,
+      })),
+    });
+  },
+});
+
+/** DELETE /mobile/devices/:deviceId — revoke a paired device. */
+const deviceRevokeRoute = defineRoute({
+  method: 'DELETE',
+  path: '/mobile/devices/:deviceId',
+  auth: MOBILE_AUTH,
+  mobile: true,
+  async handler(_req, ctx) {
+    const principal = mobilePrincipal(ctx);
+    await revokeDevice(ctx.params.deviceId, principal.workspaceId);
+    return Response.json({ ok: true });
+  },
+});
+
+/** GET /mobile/runtime-config — config the phone needs after pairing. */
+const runtimeConfigRoute = defineRoute({
+  method: 'GET',
+  path: '/mobile/runtime-config',
+  auth: MOBILE_AUTH,
+  mobile: true,
+  async handler(_req, ctx) {
+    const principal = mobilePrincipal(ctx);
+    const meshHost =
+      process.env.MOBILE_MESH_HOST ??
+      process.env.MOBILE_DESKTOP_HOST ??
+      'localhost:3055';
+    return Response.json({
+      meshHost,
+      workspaceId: principal.workspaceId,
+      deviceKind: 'mobile' as const,
+      voiceWs: {
+        // null when the voice WS failed to bind — phone shows
+        // "voice unavailable" instead of silently failing to connect.
+        port: getMobileVoicePort(),
+        path: '/api/mobile/voice',
+      },
+    });
+  },
+});
+
+/**
+ * GET /mobile/workspaces — every workspace visible to this device.
+ * A paired phone implicitly belongs to the desktop user, so it sees the
+ * full local registry. Field name `name` matches the Rust client's
+ * `WorkspaceItem` decoder (`label` made the iOS Settings tab fail).
+ */
+const workspacesRoute = defineRoute({
+  method: 'GET',
+  path: '/mobile/workspaces',
+  auth: MOBILE_AUTH,
+  mobile: true,
+  async handler(_req, ctx) {
+    const principal = mobilePrincipal(ctx);
+    const reg = readRegistry();
+    return Response.json({
+      workspaces: reg.workspaces.map((w) => ({
+        id: w.id,
+        name: w.name,
+        current: w.id === principal.workspaceId,
+      })),
+    });
+  },
+});
+
+/** POST /mobile/heartbeat — bump last_seen for the "active 3m ago" badge. */
+const heartbeatRoute = defineRoute({
+  method: 'POST',
+  path: '/mobile/heartbeat',
+  auth: MOBILE_AUTH,
+  mobile: true,
+  async handler(_req, ctx) {
+    const principal = mobilePrincipal(ctx);
+    await touchLastSeen(principal.slug, principal.workspaceId);
+    return Response.json({ ok: true });
+  },
+});
+
+export default [
+  mintPairTokenRoute,
+  pairRoute,
+  workspaceSwitchRoute,
+  devicesListRoute,
+  deviceRevokeRoute,
+  runtimeConfigRoute,
+  workspacesRoute,
+  heartbeatRoute,
+];

@@ -214,6 +214,9 @@ import adminLlmTestsFindingById from './admin/llm-tests-finding-by-id';
 import adminLlmTestsRuns from './admin/llm-tests-runs';
 import adminLlmTestsRunById from './admin/llm-tests-run-by-id';
 import adminLlmTestsScenarios from './admin/llm-tests-scenarios';
+import adminPlans from './admin/plans';
+import adminLocksQueue from './admin/locks-queue';
+import adminPlanGit from './admin/plan-git';
 import adminPruneExecutedActions from './admin/prune-executed-actions';
 import adminRotateToken from './admin/rotate-token';
 import adminRun from './admin/run';
@@ -231,6 +234,11 @@ import elevenlabsWebhook from './elevenlabs/webhook';
 import elevenlabsPostCall from './elevenlabs/post-call';
 import miscScratch from './misc/scratch';
 import mobileQrSvg from './mobile/qr-svg';
+import mobilePair from './mobile/pair';
+import mobileVoice from './mobile/voice';
+import mobileOperator from './mobile/operator';
+import mobileHarnesses from './mobile/harnesses';
+import mobileSync from './mobile/sync';
 import designFeatures from './design/features';
 import designRegressions from './design/regressions';
 import designRegressionFile from './design/regression-file';
@@ -469,6 +477,9 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(adminLlmTestsRuns as AnyRoute),
   ...flatten(adminLlmTestsRunById as AnyRoute),
   ...flatten(adminLlmTestsScenarios as AnyRoute),
+  ...flatten(adminPlans as AnyRoute),
+  ...flatten(adminLocksQueue as AnyRoute),
+  ...flatten(adminPlanGit as AnyRoute),
   ...flatten(adminPruneExecutedActions as AnyRoute),
   ...flatten(adminRotateToken as AnyRoute),
   ...flatten(adminRun as AnyRoute),
@@ -486,6 +497,11 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(elevenlabsPostCall as AnyRoute),
   ...flatten(miscScratch as AnyRoute),
   ...flatten(mobileQrSvg as AnyRoute),
+  ...flatten(mobilePair as AnyRoute[]),
+  ...flatten(mobileVoice as AnyRoute[]),
+  ...flatten(mobileOperator as AnyRoute[]),
+  ...flatten(mobileHarnesses as AnyRoute[]),
+  ...flatten(mobileSync as AnyRoute[]),
   ...flatten(designFeatures as AnyRoute),
   ...flatten(designRegressions as AnyRoute),
   ...flatten(designRegressionFile as AnyRoute),

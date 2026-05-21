@@ -12,9 +12,9 @@ companion-to: [endpoint-route-migration-2026-05-20, phase-4-endpoint-system-2026
 
 **State:** E1 + E2 shipped. E1 (`c567f7ac`) — type-additive `defineTool` fields. E2 — the load-bearing auth fix: the `/api/agent-tools/*` catch-all now resolves a mobile device JWT (composite bearer resolver: `resolveBearer` token_index → mobile JWT), and `requirePrincipal()` gained a `from-bearer-token` resolver so agent `system`/`pi` bearers resolve there too. A paired phone can now call any built-in `defineTool`.
 
-**Next:** E4 — migrate the 33 legacy `_hono/mobile.ts` routes to `defineRoute` (5 family batches; URLs stay `/api/mobile/*`).
+**Next:** E5 — delete `_hono/mobile.ts` + its `app.route('/mobile', …)` mount + the `deviceAuth()` middleware; verify the migrated routes are the only `/api/mobile/*` handlers.
 
-E3 shipped: `mobile: true` flag on `RouteDefinition` — `registerRoute` mounts the shared `mobileCors` middleware (deduped per-app), `defineRoute` folds `'mobile'` into an explicit `auth.kind`. `ensureMobileDevicesTable()` DDL moved to `runBootstrap()`. The `/api/agent-tools/*` catch-all is now `mobile: true` so the phone reaches built-in tools cross-origin.
+E4 shipped: all 33 legacy mobile routes ported to `defineRoute` modules under `routes/mobile/` (5 family files: pair, voice, operator, harnesses, sync). URLs unchanged. The migrated literals register in phase 1 — they shadow the legacy `_hono/mobile.ts` sub-app, which stays in place (dead-but-shadowed) until E5 deletes it. `principalFromMobileJwt` is now async + revocation-aware (parity with the legacy `deviceAuth()` middleware's `isRevoked` check).
 
 **Scope adjustment (E2 review):** the telemetry-table merge (`route_invocations` → `tool_invocations` with a `kind` discriminator) is **moved from E2 to E6**. Rationale: migration 077 separated the tables *by deliberate design* (RFC Q1 — genuinely different column sets, different volume/retention). The merge's benefit only fully materializes once `defineRoute` actually collapses into `defineTool` (E6) and the route/tool distinction disappears at the dispatch level. Forcing a PG migration in E2 would couple the auth fix to schema-migration risk for no near-term gain. E2 ships the auth fix alone.
 
@@ -207,17 +207,24 @@ E14 Delete _hono/* directory (keep only app.ts as host seam)
 - **Note:** the CORS-block deletion from `_hono/mobile.ts` was deferred from E3's bullet to E5 — deleting it while the legacy routes still serve would break mobile clients mid-migration. E3 only *adds* the centralized mechanism.
 - **Implementation note:** done as Hono `app.use` middleware, not a route-stack step. The route-stack runs inside a single matched handler and never sees the OPTIONS preflight; `cors()` middleware does. Same end state (one allowlist, declarative opt-in), correct mechanism.
 
-### Phase E4 — Migrate the 33 legacy mobile routes
+### Phase E4 — Migrate the 33 legacy mobile routes — ✅ SHIPPED
 
-Family batches of ≤8 routes per PR:
+All 33 routes ported to `defineRoute` modules under `routes/mobile/`, grouped into 5 family files:
 
-- **M1 — Pair + device lifecycle (8):** `/pair`, `/heartbeat`, `/devices` GET/DELETE, `/workspaces`, `/workspace/switch`, `/runtime-config`, `/desktop/mint-pair-token`.
-- **M2 — Voice (6):** `/voice-lease` × 4, `/voice-session-init`, `/voice` (WS bootstrap).
-- **M3 — Operator surface (8):** `/operator/pause` × 3, `/operator/cards` × 3, `/operator/standing-candidates` × 2, `/notifications/recent`, `/actions/recent`.
-- **M4 — Harness surface (7):** `/harnesses` × 6, `/running`.
-- **M5 — Sync + freeform (4):** `/sync/sse`, `/rest-query`, `/voice-tool/:name`, `/qr.svg` (already migrated; reshape).
+- **`pair.ts` (8):** `/desktop/mint-pair-token`, `/pair`, `/workspace/switch`, `/devices` GET, `/devices/:deviceId` DELETE, `/runtime-config`, `/workspaces`, `/heartbeat`.
+- **`voice.ts` (6):** `/voice-lease` GET/claim/heartbeat/DELETE, `/voice-session-init`, `/voice`.
+- **`operator.ts` (10):** `/notifications/recent`, `/actions/recent`, `/operator/pause` GET/POST/DELETE, `/operator/cards` GET, `/operator/cards/:id/dispatch`, `/operator/cards/:id/dismiss`, `/operator/standing-candidates` GET, `/operator/standing-candidates/decide`.
+- **`harnesses.ts` (7):** `/harnesses`, `/harnesses/:slug`, `/harnesses/:slug/{replan,smoke-test,cleanup}`, `/harnesses/:slug/log/stream` (SSE), `/running`.
+- **`sync.ts` (2):** `/rest-query` (query-token auth), `/voice-tool/:name`.
 
-URLs stay at `/api/mobile/*` — wire-compat with the mobile client.
+(The brief's M5 `/sync/sse` doesn't exist in the legacy file — the actual count is 33, not 34. `qr.svg` was already a `defineRoute`.)
+
+URLs unchanged (`/api/mobile/*`) — wire-compat with the Rust mobile client. Decisions:
+- **Family files, not 33 single-route files.** Each exports an array of `defineRoute`s — mirrors `agent-tools/catchall.ts` + `admin/plans.ts`. Far less boilerplate.
+- **JWT routes** → `auth: { kind: ['mobile'] }` + `mobile: true`. **`/pair`** → `auth: 'public'`. **`/desktop/mint-pair-token`** → `auth: 'public'` + inline Host loopback gate. **`/rest-query`** → `auth: 'public'` + inline `?token=` verify (its libs/sync polling caller can't set headers).
+- **`principalFromMobileJwt` is now async + revocation-aware** — it runs `isRevoked`, parity with the legacy `deviceAuth()` middleware. Without this, migrating off `deviceAuth` would have silently dropped the revocation check. (`isRevoked` treats an unknown device as revoked, so test JWTs need it mocked.)
+- The migrated literals register phase-1 and **shadow** the still-present `_hono/mobile.ts` sub-app — deleted in E5.
+- Tests: `mobile-routes.test.ts` (handler-direct, 4 tests). Registration coverage via `route-shadowing-invariant.test.ts`.
 
 ### Phase E5 — Delete legacy `_hono/mobile.ts`
 

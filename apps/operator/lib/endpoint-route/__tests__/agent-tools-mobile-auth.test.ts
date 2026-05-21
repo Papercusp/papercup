@@ -13,8 +13,18 @@
  * Capability-gate behavior for the real `mobile:*` surface is covered
  * once those tools land (Phase E4).
  */
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { z } from 'zod';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+// `principalFromMobileJwt` (Phase E4) runs `isRevoked` — which treats a
+// device absent from `mobile_devices` as revoked. The synthetic JWT
+// below is for a device that was never `insertDevice`'d, so without this
+// mock the principal would (correctly) resolve to null. The mock stands
+// it in as a known, non-revoked device.
+vi.mock('@/lib/mobile-device-store', async (orig) => ({
+  ...(await orig<typeof import('@/lib/mobile-device-store')>()),
+  isRevoked: async () => false,
+}));
+
 import {
   registerProjectedTool,
   _resetProjectionRegistryForTests,
@@ -51,7 +61,6 @@ function makePrincipalEchoTool(): ProjectedTool {
     description: 'echoes the resolved principal slug',
     inputSchema: { type: 'object' },
     capabilities: [],
-    args: z.object({}),
     expose: {
       http: { path: '/api/agent-tools/fix/whoami', methods: ['POST'] },
       mcp: { name: 'fix:whoami' },
