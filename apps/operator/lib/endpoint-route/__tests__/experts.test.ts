@@ -8,12 +8,18 @@
  * shape. The chat-open hook (which lives in agent-chats.ts) is covered by
  * its own standalone manual test, since this module has no DB dependency.
  */
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+
+// Route-stack telemetry writes to PG; this is a no-DB filesystem test.
+vi.mock('../telemetry', () => ({ recordRouteInvocation: () => {} }));
+
 import { Hono } from 'hono';
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync, readFileSync, readdirSync } from 'node:fs';
 import { tmpdir, homedir } from 'node:os';
 import { join } from 'node:path';
-import { registerExperts } from './experts';
+import { registerRoute } from '../define-route';
+import type { RouteDefinition } from '../define-route';
+import expertsRoutes from '../routes/experts/index';
 
 let TMP: string;
 let PROJECT_DIR: string;
@@ -51,8 +57,8 @@ beforeEach(async () => {
     'utf8',
   );
 
-  app = new Hono();
-  registerExperts(app);
+  app = new Hono().basePath('/api');
+  for (const def of expertsRoutes as RouteDefinition<undefined>[]) registerRoute(app, def);
 });
 
 afterEach(() => {
@@ -62,7 +68,9 @@ afterEach(() => {
 });
 
 async function call(method: string, url: string, body?: unknown): Promise<{ status: number; data: any }> {
-  const res = await app.fetch(jsonReq(method, `/${SLUG}${url}`, body));
+  // Routes moved to /api/harness/:slug/... (defineRoute) — the test-body
+  // `url`s are still `/experts...`, so prefix the harness path here.
+  const res = await app.fetch(jsonReq(method, `/api/harness/${SLUG}${url}`, body));
   const text = await res.text();
   let data: any = null;
   try { data = JSON.parse(text); } catch { data = text; }

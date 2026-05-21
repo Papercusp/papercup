@@ -22,7 +22,7 @@ import {
   lookupProjectDir,
   readIdentity,
   type Identity,
-} from '../app/api/_hono/experts';
+} from './experts-core';
 import { getKnownRoles } from './known-roles';
 import { activeWorkspaceId } from './workspace-registry';
 
