@@ -129,9 +129,9 @@ async function main() {
     workspaceId: ws2, owner: 'blocker', lockId: blocker.lock_id,
   }));
   // Janitor the rest of the waiters by setting wait_until past + expiring them
-  await sql`UPDATE agent_lock_waiters SET status = 'expired' WHERE workspace_id = ${ws2} AND status = 'waiting'`;
-  await sql`DELETE FROM agent_file_locks WHERE workspace_id = ${ws2}`;
-  await sql`DELETE FROM agent_lock_waiters WHERE workspace_id = ${ws2}`;
+  await sql`UPDATE agent_lock_waiters SET status = 'expired' WHERE coordination_domain = ${ws2} AND status = 'waiting'`;
+  await sql`DELETE FROM agent_file_locks WHERE coordination_domain = ${ws2}`;
+  await sql`DELETE FROM agent_lock_waiters WHERE coordination_domain = ${ws2}`;
 
   console.log('5. Wait timeout — short max_sec, no release...');
   const ws3 = 'timeout-smoke-' + Date.now();

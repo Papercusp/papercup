@@ -93,8 +93,8 @@ async function main() {
   await inWorkspaceTxn(ws, 'holder', (tx) => tryRelease(tx, {
     workspaceId: ws, owner: 'holder', lockId: holder.lock_id,
   }));
-  await sql`DELETE FROM agent_lock_waiters WHERE workspace_id = ${ws}`;
-  await sql`DELETE FROM agent_file_locks WHERE workspace_id = ${ws}`;
+  await sql`DELETE FROM agent_lock_waiters WHERE coordination_domain = ${ws}`;
+  await sql`DELETE FROM agent_file_locks WHERE coordination_domain = ${ws}`;
 
   console.log('\n[OK] PROGRESS PAYLOAD SHAPE VERIFIED');
   await _resetForTests();

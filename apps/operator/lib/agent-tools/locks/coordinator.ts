@@ -169,7 +169,7 @@ export class SuLocksCoordinator implements FileClaimCoordinator {
       const reaped = await (tx as Sql)<Array<{ n: number }>>`
         WITH d AS (
           DELETE FROM agent_file_locks
-           WHERE workspace_id = ${this.workspaceId} AND owner = ${owner}
+           WHERE coordination_domain = ${this.workspaceId} AND owner = ${owner}
           RETURNING lock_id
         )
         SELECT COUNT(DISTINCT lock_id)::int AS n FROM d
@@ -177,7 +177,7 @@ export class SuLocksCoordinator implements FileClaimCoordinator {
       await (tx as Sql)`
         UPDATE agent_lock_waiters
            SET status = 'cancelled'
-         WHERE workspace_id = ${this.workspaceId}
+         WHERE coordination_domain = ${this.workspaceId}
            AND owner = ${owner}
            AND status = 'waiting'
       `;

@@ -306,7 +306,7 @@ export async function sweepWorkspaceExpired(
 ): Promise<boolean> {
   const expiredLocks = await tx<Array<{ path: string }>>`
     DELETE FROM agent_file_locks
-     WHERE workspace_id = ${workspaceId}
+     WHERE coordination_domain = ${workspaceId}
        AND expires_ts <= clock_timestamp()
     RETURNING path
   `;
@@ -317,7 +317,7 @@ export async function sweepWorkspaceExpired(
   const orphanWaiters = await tx<Array<{ ticket_id: string }>>`
     UPDATE agent_lock_waiters
        SET status = 'expired'
-     WHERE workspace_id = ${workspaceId}
+     WHERE coordination_domain = ${workspaceId}
        AND status = 'waiting'
        AND wait_until <= clock_timestamp()
     RETURNING ticket_id
@@ -328,7 +328,7 @@ export async function sweepWorkspaceExpired(
 /**
  * Path-narrow expiry sweep for the acquire hot path (file-locking #4).
  * Sweeps ONLY the rows touching the paths this acquire is contending —
- * an index-perfect (workspace_id, path) delete. The orphaned-waiter
+ * an index-perfect (coordination_domain, path) delete. The orphaned-waiter
  * flip is likewise restricted to waiters whose path set overlaps
  * `paths`.
  *
@@ -347,7 +347,7 @@ export async function sweepPathsExpired(
   if (paths.length === 0) return false;
   const expiredLocks = await tx<Array<{ path: string }>>`
     DELETE FROM agent_file_locks
-     WHERE workspace_id = ${workspaceId}
+     WHERE coordination_domain = ${workspaceId}
        AND path = ANY(${paths}::text[])
        AND expires_ts <= clock_timestamp()
     RETURNING path
@@ -355,7 +355,7 @@ export async function sweepPathsExpired(
   const orphanWaiters = await tx<Array<{ ticket_id: string }>>`
     UPDATE agent_lock_waiters
        SET status = 'expired'
-     WHERE workspace_id = ${workspaceId}
+     WHERE coordination_domain = ${workspaceId}
        AND status = 'waiting'
        AND wait_until <= clock_timestamp()
        AND paths && ${paths}::text[]
@@ -419,15 +419,15 @@ export async function runBackgroundJanitorOnce(): Promise<void> {
   await ensureBootstrap();
   const sql = getTxPool();
 
-  const dirty = await sql<Array<{ workspace_id: string }>>`
-    SELECT workspace_id FROM agent_file_locks
+  const dirty = await sql<Array<{ coordination_domain: string }>>`
+    SELECT coordination_domain FROM agent_file_locks
       WHERE expires_ts <= clock_timestamp()
     UNION
-    SELECT workspace_id FROM agent_lock_waiters
+    SELECT coordination_domain FROM agent_lock_waiters
       WHERE status = 'waiting' AND wait_until <= clock_timestamp()
   `;
 
-  for (const { workspace_id } of dirty) {
+  for (const { coordination_domain } of dirty) {
     try {
       await sql.begin(async (txn) => {
         const tx = txn as unknown as Sql;
@@ -435,18 +435,18 @@ export async function runBackgroundJanitorOnce(): Promise<void> {
         const got = await tx<Array<{ locked: boolean }>>`
           SELECT pg_try_advisory_xact_lock(
             ${SU_LOCKS_FEATURE_KEY}::int,
-            hashtext(${'su:' + workspace_id})
+            hashtext(${'su:' + coordination_domain})
           ) AS locked
         `;
         if (!got[0]?.locked) return; // contended — handled elsewhere
-        const swept = await sweepWorkspaceExpired(tx, workspace_id);
+        const swept = await sweepWorkspaceExpired(tx, coordination_domain);
         if (swept) {
-          await tx`SELECT grant_cascade(${workspace_id}, clock_timestamp())`;
+          await tx`SELECT grant_cascade(${coordination_domain}, clock_timestamp())`;
         }
       });
     } catch (err) {
       console.error(
-        `[su-locks] background janitor: workspace ${workspace_id} sweep failed`,
+        `[su-locks] background janitor: workspace ${coordination_domain} sweep failed`,
         err,
       );
     }
@@ -555,7 +555,7 @@ export async function tryAcquire(
 
   // Step 1: path-narrow expiry sweep (file-locking #4). Only the rows
   // touching the paths THIS acquire contends — an index-perfect
-  // (workspace_id, path) delete, not the former global cross-workspace
+  // (coordination_domain, path) delete, not the former global cross-workspace
   // scan. Fire the cascade if the sweep freed anything so a waiter
   // blocked solely behind a now-swept expired lock wakes immediately
   // rather than on the next background tick. Expired rows on other
@@ -572,7 +572,7 @@ export async function tryAcquire(
   // the owner's currently-held paths from the set we head-waiter-check.
   const ownedRows = await tx<Array<{ path: string; lock_id: string }>>`
     SELECT path, lock_id::text AS lock_id FROM agent_file_locks
-     WHERE workspace_id = ${workspaceId}
+     WHERE coordination_domain = ${workspaceId}
        AND owner = ${owner}
        AND path = ANY(${paths}::text[])
        AND expires_ts > clock_timestamp()
@@ -595,7 +595,7 @@ export async function tryAcquire(
     ? []
     : await tx<Array<{ blocked: true }>>`
         SELECT TRUE AS blocked FROM agent_lock_waiters
-         WHERE workspace_id = ${workspaceId}
+         WHERE coordination_domain = ${workspaceId}
            AND status = 'waiting'
            -- A waiter whose wait_until has elapsed is effectively dead
            -- (crashed agent / timed-out wait) and must not block a new
@@ -619,7 +619,7 @@ export async function tryAcquire(
   if (newPaths.length > 0) {
     const blockedRows = await tx<Array<{ path: string }>>`
       SELECT path FROM agent_file_locks
-       WHERE workspace_id = ${workspaceId}
+       WHERE coordination_domain = ${workspaceId}
          AND path = ANY(${newPaths}::text[])
          AND expires_ts > clock_timestamp()
          AND owner != ${owner}
@@ -652,12 +652,12 @@ export async function tryAcquire(
   const upserted = await tx<Array<{ path: string; lock_id: string }>>`
     WITH wanted AS (SELECT unnest(${paths}::text[]) AS path)
     INSERT INTO agent_file_locks
-      (workspace_id, path, owner, owner_label, intent, lock_id, acquired_ts, expires_ts)
+      (coordination_domain, path, owner, owner_label, intent, lock_id, acquired_ts, expires_ts)
     SELECT
       ${workspaceId}, w.path, ${owner}, ${ownerLabel}, ${intent},
       ${lockId}::uuid, clock_timestamp(), clock_timestamp() + ${ttlText}::interval
     FROM wanted w
-    ON CONFLICT (workspace_id, path) DO UPDATE
+    ON CONFLICT (coordination_domain, path) DO UPDATE
       SET owner       = EXCLUDED.owner,
           owner_label = EXCLUDED.owner_label,
           intent      = EXCLUDED.intent,
@@ -712,7 +712,7 @@ async function readBusySnapshot(
   >`
     SELECT path, owner, owner_label, intent, expires_ts
       FROM agent_file_locks
-     WHERE workspace_id = ${workspaceId}
+     WHERE coordination_domain = ${workspaceId}
        AND path = ANY(${paths}::text[])
        AND expires_ts > clock_timestamp()
        ${ownerFilter}
@@ -749,7 +749,7 @@ export async function tryRelease(
   if (allMine) {
     released = await tx<Array<{ path: string }>>`
       DELETE FROM agent_file_locks
-       WHERE workspace_id = ${workspaceId}
+       WHERE coordination_domain = ${workspaceId}
          AND owner = ${owner}
       RETURNING path
     `;
@@ -760,7 +760,7 @@ export async function tryRelease(
     // another agent to release someone else's lock.
     released = await tx<Array<{ path: string }>>`
       DELETE FROM agent_file_locks
-       WHERE workspace_id = ${workspaceId}
+       WHERE coordination_domain = ${workspaceId}
          AND lock_id = ${lockId}::uuid
          AND owner = ${owner}
          AND path = ANY(${paths}::text[])
@@ -769,7 +769,7 @@ export async function tryRelease(
   } else if (lockId) {
     released = await tx<Array<{ path: string }>>`
       DELETE FROM agent_file_locks
-       WHERE workspace_id = ${workspaceId}
+       WHERE coordination_domain = ${workspaceId}
          AND lock_id = ${lockId}::uuid
          AND owner = ${owner}
       RETURNING path
@@ -811,7 +811,7 @@ export async function tryHeartbeat(
   const rows = await tx<Array<{ expires_ts: Date }>>`
     UPDATE agent_file_locks
        SET expires_ts = clock_timestamp() + ${ttlText}::interval
-     WHERE workspace_id = ${workspaceId}
+     WHERE coordination_domain = ${workspaceId}
        AND lock_id = ${lockId}::uuid
        AND owner = ${owner}
        AND expires_ts > clock_timestamp()
@@ -885,7 +885,7 @@ async function readQueueInner(
   const active = await sql<Array<ActiveLockRow>>`
     SELECT path, owner, owner_label, intent, acquired_ts, expires_ts
       FROM agent_file_locks
-     WHERE workspace_id = ${workspaceId}
+     WHERE coordination_domain = ${workspaceId}
        AND expires_ts > clock_timestamp()
        ${lockFilter}
        ${ownerFilter}
@@ -901,7 +901,7 @@ async function readQueueInner(
            status::text AS status,
            (ROW_NUMBER() OVER (ORDER BY queued_ts ASC, ticket_id ASC) - 1)::int AS ahead_count
       FROM agent_lock_waiters
-     WHERE workspace_id = ${workspaceId}
+     WHERE coordination_domain = ${workspaceId}
        AND status = 'waiting'
        ${pathOverlap}
        ${ownerFilter}
@@ -915,7 +915,7 @@ async function readQueueInner(
       SELECT ticket_id, owner, owner_label, paths, intent, queued_ts, wait_until,
              status::text AS status
         FROM agent_lock_waiters
-       WHERE workspace_id = ${workspaceId}
+       WHERE coordination_domain = ${workspaceId}
          AND status IN ('granted','expired','cancelled')
          AND queued_ts > clock_timestamp() - interval '24 hours'
          ${pathOverlap}
@@ -1009,7 +1009,7 @@ export async function tryInsertWaiter(
   const waitText = `${params.maxWaitSec} seconds`;
   const rows = await tx<Array<{ ticket_id: string; wait_until: Date }>>`
     INSERT INTO agent_lock_waiters
-      (workspace_id, owner, owner_label, paths, intent, ttl_sec, wait_until)
+      (coordination_domain, owner, owner_label, paths, intent, ttl_sec, wait_until)
     VALUES
       (${params.workspaceId}, ${params.owner}, ${params.ownerLabel},
        ${params.paths}, ${params.intent}, ${params.ttlSec},

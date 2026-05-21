@@ -13,7 +13,7 @@
  *      (the locks callers destructure `{ ownerId, ownerLabel,
  *      workspaceId }` and don't need source / userId).
  *   3. Substitutes `'default'` for a null workspaceId — the locks
- *      schema's `workspace_id` column is NOT NULL.
+ *      schema's `coordination_domain` column is NOT NULL.
  *
  * Behaviour notes vs. the historical readIdentity (pre-refactor):
  *
@@ -44,7 +44,7 @@ export type IdentityCtx = ResolveIdentityCtx;
  * Default workspace id for callers whose ctx carries no workspace.
  * Matches the convention used by other operator surfaces
  * (`apps/operator/lib/dock-layouts.ts:getUserIdForLayouts`) and the
- * `workspace_id NOT NULL` constraint on the locks schema.
+ * `coordination_domain NOT NULL` constraint on the locks schema.
  */
 const DEFAULT_WORKSPACE = 'default';
 

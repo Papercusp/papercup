@@ -1,7 +1,7 @@
 /**
  * Refcounted shared LISTEN connection per workspace.
  *
- * One LISTEN subscription per workspace channel `ch_workspace_<wsId>`,
+ * One LISTEN subscription per workspace channel `ch_coord_<wsId>`,
  * shared across every waiter on that workspace. Each subscriber gets
  * every payload and filters by its own ticket_id — the listener is a
  * bare wake-bus, not a router.
@@ -55,7 +55,7 @@ export async function subscribeWorkspace(
       throw new TooManyActiveWorkspacesError();
     }
     const sql = getListenerPool();
-    const channel = `ch_workspace_${workspaceId}`;
+    const channel = `ch_coord_${workspaceId}`;
     const listeners = new Set<Listener>();
 
     const req = sql.listen(channel, (payload) => {

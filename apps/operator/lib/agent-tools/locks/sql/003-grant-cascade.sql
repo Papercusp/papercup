@@ -10,7 +10,7 @@
 -- loop the result set.
 
 CREATE OR REPLACE FUNCTION grant_cascade(
-  p_workspace_id text,
+  p_coordination_domain text,
   p_now          timestamptz
 )
 RETURNS void
@@ -26,13 +26,13 @@ BEGIN
   SELECT COALESCE(array_agg(path), ARRAY[]::text[])
     INTO v_held_paths
     FROM agent_file_locks
-   WHERE workspace_id = p_workspace_id
+   WHERE coordination_domain = p_coordination_domain
      AND expires_ts > p_now;
 
   FOR v_waiter IN
     SELECT w.*
       FROM agent_lock_waiters w
-     WHERE w.workspace_id = p_workspace_id
+     WHERE w.coordination_domain = p_coordination_domain
        AND w.status = 'waiting'
        AND w.wait_until > p_now
      ORDER BY w.queued_ts ASC, w.ticket_id ASC
@@ -47,10 +47,10 @@ BEGIN
       v_expires  := p_now + (v_waiter.ttl_sec || ' seconds')::interval;
 
       INSERT INTO agent_file_locks
-        (workspace_id, path, owner, owner_label, intent,
+        (coordination_domain, path, owner, owner_label, intent,
          lock_id, acquired_ts, expires_ts)
       SELECT
-        p_workspace_id, p, v_waiter.owner, v_waiter.owner_label, v_waiter.intent,
+        p_coordination_domain, p, v_waiter.owner, v_waiter.owner_label, v_waiter.intent,
         v_new_lock, p_now, v_expires
         FROM unnest(v_waiter.paths) AS p
         ON CONFLICT DO NOTHING;
@@ -70,7 +70,7 @@ BEGIN
       -- granted_lock_id. DO NOT expand the payload — PG's 8KB NOTIFY
       -- limit will eventually bite if anyone tries to pack more.
       PERFORM pg_notify(
-        'ch_workspace_' || p_workspace_id,
+        'ch_coord_' || p_coordination_domain,
         v_waiter.ticket_id::text
       );
     EXCEPTION

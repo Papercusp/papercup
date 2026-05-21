@@ -6,7 +6,7 @@
  * su-agent-coordination-v3-2026-05-14.md §7.4 (step 4 dropped per
  * audit 4 #4):
  *
- *   1. subscribeWorkspace (LISTEN ch_workspace_<wsId>) — outside any txn
+ *   1. subscribeWorkspace (LISTEN ch_coord_<wsId>) — outside any txn
  *   2. inWorkspaceTxn → tryAcquire
  *        if granted: unsubscribe; return ok
  *   3. inWorkspaceTxn → cap check + INSERT INTO agent_lock_waiters

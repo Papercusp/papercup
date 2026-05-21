@@ -81,7 +81,7 @@ prevents collision with any future feature using advisory locks.
 
 ## Canonical-path contract
 
-A lock key is `hashtext('su:' || workspace_id || ':' || path)`. Two
+A lock key is `hashtext('su:' || coordination_domain || ':' || path)`. Two
 callers contend **iff** they pass the byte-identical `path` string —
 so every caller MUST pass the same canonical form for the same file,
 or the lock silently provides nothing.

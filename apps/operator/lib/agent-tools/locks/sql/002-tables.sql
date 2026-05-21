@@ -3,7 +3,7 @@
 -- Runs against papercusp_su (the side database). Idempotent.
 
 CREATE EXTENSION IF NOT EXISTS pgcrypto;   -- gen_random_uuid()
-CREATE EXTENSION IF NOT EXISTS btree_gin;  -- composite (workspace_id text, paths text[]) GIN
+CREATE EXTENSION IF NOT EXISTS btree_gin;  -- composite (coordination_domain text, paths text[]) GIN
 -- pg_stat_statements is superuser-only; if you have superuser access,
 -- enable it manually for query-level perf monitoring:
 --   psql -d papercusp_su -c 'CREATE EXTENSION pg_stat_statements'
@@ -26,7 +26,7 @@ $bootstrap$;
 -- Active locks. One row per held path.
 -- ─────────────────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS agent_file_locks (
-  workspace_id  text         NOT NULL,
+  coordination_domain  text         NOT NULL,
   path          text         NOT NULL,
   owner         text         NOT NULL,
   owner_label   text,
@@ -34,7 +34,7 @@ CREATE TABLE IF NOT EXISTS agent_file_locks (
   lock_id       uuid         NOT NULL DEFAULT gen_random_uuid(),
   acquired_ts   timestamptz  NOT NULL DEFAULT clock_timestamp(),
   expires_ts    timestamptz  NOT NULL,
-  PRIMARY KEY (workspace_id, path)
+  PRIMARY KEY (coordination_domain, path)
 );
 CREATE INDEX IF NOT EXISTS idx_locks_owner   ON agent_file_locks (owner);
 CREATE INDEX IF NOT EXISTS idx_locks_expires ON agent_file_locks (expires_ts);
@@ -50,7 +50,7 @@ ALTER TABLE agent_file_locks SET (
 -- ─────────────────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS agent_lock_waiters (
   ticket_id          uuid           PRIMARY KEY DEFAULT gen_random_uuid(),
-  workspace_id       text           NOT NULL,
+  coordination_domain       text           NOT NULL,
   owner              text           NOT NULL,
   owner_label        text,
   paths              text[]         NOT NULL,
@@ -66,14 +66,14 @@ CREATE TABLE IF NOT EXISTS agent_lock_waiters (
 -- Partial indexes — only active waiters are scanned in the FIFO cascade
 -- and head-waiter check.
 CREATE INDEX IF NOT EXISTS idx_waiters_active
-  ON agent_lock_waiters (workspace_id, queued_ts, ticket_id)
+  ON agent_lock_waiters (coordination_domain, queued_ts, ticket_id)
   WHERE status = 'waiting';
 
--- Multicolumn GIN: scalar workspace_id first, then array paths.
+-- Multicolumn GIN: scalar coordination_domain first, then array paths.
 -- Requires btree_gin (loaded above). Lets the head-waiter check
--- (workspace_id = ? AND paths && ?) use the index for both predicates.
+-- (coordination_domain = ? AND paths && ?) use the index for both predicates.
 CREATE INDEX IF NOT EXISTS idx_waiters_paths_gin
-  ON agent_lock_waiters USING GIN (workspace_id, paths)
+  ON agent_lock_waiters USING GIN (coordination_domain, paths)
   WHERE status = 'waiting';
 
 CREATE INDEX IF NOT EXISTS idx_waiters_owner

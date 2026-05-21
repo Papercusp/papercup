@@ -4,7 +4,7 @@
  * Exercises the core store layer (tryAcquire, tryRelease, tryHeartbeat,
  * tryInsertWaiter, tryCancelWait, readQueue, readWaiterStatus,
  * expireWaiter, path validation) against the live embedded PG. Each
- * test uses a unique workspace_id so suites can run in parallel and
+ * test uses a unique coordination_domain so suites can run in parallel and
  * results don't bleed between cases.
  *
  * Prereqs:
@@ -56,8 +56,8 @@ afterAll(async () => {
   // Clean every row we touched. Keep the database itself.
   const sql = getTxPool();
   try {
-    await sql`DELETE FROM agent_file_locks WHERE workspace_id LIKE ${SUITE_PREFIX + '%'}`;
-    await sql`DELETE FROM agent_lock_waiters WHERE workspace_id LIKE ${SUITE_PREFIX + '%'}`;
+    await sql`DELETE FROM agent_file_locks WHERE coordination_domain LIKE ${SUITE_PREFIX + '%'}`;
+    await sql`DELETE FROM agent_lock_waiters WHERE coordination_domain LIKE ${SUITE_PREFIX + '%'}`;
   } catch {
     /* db may have been torn down; ignore */
   }
@@ -200,7 +200,7 @@ describe('tryAcquire', () => {
     // Hand-insert an already-expired lock for owner A
     await sql`
       INSERT INTO agent_file_locks
-        (workspace_id, path, owner, owner_label, intent, expires_ts)
+        (coordination_domain, path, owner, owner_label, intent, expires_ts)
       VALUES
         (${ws}, 'stale.ts', 'a', 'A', 'stale', clock_timestamp() - interval '1 hour')
     `;
@@ -617,7 +617,7 @@ describe('audit regression — single lock_id across mixed acquire', () => {
     const sql = getTxPool();
     const rows = await sql<Array<{ lock_id: string }>>`
       SELECT lock_id::text AS lock_id FROM agent_file_locks
-       WHERE workspace_id = ${ws}
+       WHERE coordination_domain = ${ws}
     `;
     expect(rows).toHaveLength(3);
     expect(new Set(rows.map((r) => r.lock_id)).size).toBe(1);
@@ -653,7 +653,7 @@ describe('audit regression — single lock_id across mixed acquire', () => {
     const sql = getTxPool();
     const rows = await sql<Array<{ lock_id: string }>>`
       SELECT lock_id::text AS lock_id FROM agent_file_locks
-       WHERE workspace_id = ${ws}
+       WHERE coordination_domain = ${ws}
     `;
     expect(rows).toHaveLength(3);
     expect(new Set(rows.map((r) => r.lock_id)).size).toBe(1);
@@ -761,7 +761,7 @@ describe('audit regression — orphaned-waiter cleanup', () => {
     const sql = getTxPool();
     await sql`
       INSERT INTO agent_lock_waiters
-        (workspace_id, owner, owner_label, paths, intent, ttl_sec,
+        (coordination_domain, owner, owner_label, paths, intent, ttl_sec,
          wait_until, status, queued_ts)
       VALUES
         (${ws}, 'crashed', 'crashed', ${['ghost.ts']}, 'crashed', 60,
@@ -796,7 +796,7 @@ describe('audit regression — cross-owner release/heartbeat refused', () => {
     expect(rel.released).toEqual([]);
     const survives = await sql<Array<{ c: number }>>`
       SELECT count(*)::int AS c FROM agent_file_locks
-       WHERE workspace_id = ${ws} AND owner = 'a'
+       WHERE coordination_domain = ${ws} AND owner = 'a'
     `;
     expect(survives[0].c).toBe(1);
   });
@@ -992,7 +992,7 @@ describe('plan §10.1 + file-locking #4 — background janitor', () => {
     // the path-narrow per-acquire sweep would never reach it.
     await sql`
       INSERT INTO agent_file_locks
-        (workspace_id, path, owner, owner_label, intent, expires_ts)
+        (coordination_domain, path, owner, owner_label, intent, expires_ts)
       VALUES
         (${ws}, 'janitor.ts', 'old', 'old', 'old',
          clock_timestamp() - interval '1 hour')
@@ -1000,7 +1000,7 @@ describe('plan §10.1 + file-locking #4 — background janitor', () => {
     await runBackgroundJanitorOnce();
     const left = await sql<Array<{ path: string }>>`
       SELECT path FROM agent_file_locks
-       WHERE workspace_id = ${ws} AND owner = 'old'
+       WHERE coordination_domain = ${ws} AND owner = 'old'
     `;
     expect(left).toHaveLength(0);
   });
@@ -1010,7 +1010,7 @@ describe('plan §10.1 + file-locking #4 — background janitor', () => {
     const sql = getTxPool();
     await sql`
       INSERT INTO agent_lock_waiters
-        (workspace_id, owner, owner_label, paths, intent, ttl_sec,
+        (coordination_domain, owner, owner_label, paths, intent, ttl_sec,
          wait_until, status, queued_ts)
       VALUES
         (${ws}, 'gone', 'gone', ${['x.ts']}, 'old', 60,
@@ -1021,7 +1021,7 @@ describe('plan §10.1 + file-locking #4 — background janitor', () => {
     await runBackgroundJanitorOnce();
     const left = await sql<Array<{ ticket_id: string }>>`
       SELECT ticket_id FROM agent_lock_waiters
-       WHERE workspace_id = ${ws} AND owner = 'gone'
+       WHERE coordination_domain = ${ws} AND owner = 'gone'
     `;
     expect(left).toHaveLength(0);
   });
@@ -1054,7 +1054,7 @@ describe('plan §10.1 + file-locking #4 — background janitor', () => {
       await sql`
         UPDATE agent_file_locks
            SET expires_ts = clock_timestamp() - interval '1 second'
-         WHERE workspace_id = ${ws} AND path = 'bg.ts'
+         WHERE coordination_domain = ${ws} AND path = 'bg.ts'
       `;
       return w.ticket_id;
     }
@@ -1089,7 +1089,7 @@ describe('file-locking #4 — sweepPathsExpired (path-narrow primitive)', () => 
     const sql = getTxPool();
     await sql`
       INSERT INTO agent_file_locks
-        (workspace_id, path, owner, owner_label, intent, expires_ts)
+        (coordination_domain, path, owner, owner_label, intent, expires_ts)
       VALUES
         (${ws}, 'in.ts', 'a', 'A', 'i', clock_timestamp() - interval '1 hour'),
         (${ws}, 'out.ts', 'a', 'A', 'i', clock_timestamp() - interval '1 hour')
@@ -1100,7 +1100,7 @@ describe('file-locking #4 — sweepPathsExpired (path-narrow primitive)', () => 
     expect(moved).toBe(true);
     const rows = await sql<Array<{ path: string }>>`
       SELECT path FROM agent_file_locks
-       WHERE workspace_id = ${ws} ORDER BY path
+       WHERE coordination_domain = ${ws} ORDER BY path
     `;
     expect(rows.map((r) => r.path)).toEqual(['out.ts']);
   });
@@ -1110,7 +1110,7 @@ describe('file-locking #4 — sweepPathsExpired (path-narrow primitive)', () => 
     const sql = getTxPool();
     await sql`
       INSERT INTO agent_lock_waiters
-        (workspace_id, owner, owner_label, paths, intent, ttl_sec,
+        (coordination_domain, owner, owner_label, paths, intent, ttl_sec,
          wait_until, status, queued_ts)
       VALUES
         (${ws}, 'over', 'over', ${['x.ts', 'y.ts']}, 'i', 60,
@@ -1126,7 +1126,7 @@ describe('file-locking #4 — sweepPathsExpired (path-narrow primitive)', () => 
     expect(moved).toBe(true);
     const rows = await sql<Array<{ owner: string; status: string }>>`
       SELECT owner, status::text AS status FROM agent_lock_waiters
-       WHERE workspace_id = ${ws} ORDER BY owner
+       WHERE coordination_domain = ${ws} ORDER BY owner
     `;
     const byOwner = Object.fromEntries(rows.map((r) => [r.owner, r.status]));
     expect(byOwner.over).toBe('expired');
@@ -1158,7 +1158,7 @@ describe('file-locking #4 — sweepWorkspaceExpired (workspace-scoped primitive)
     for (const ws of [wsA, wsB]) {
       await sql`
         INSERT INTO agent_file_locks
-          (workspace_id, path, owner, owner_label, intent, expires_ts)
+          (coordination_domain, path, owner, owner_label, intent, expires_ts)
         VALUES
           (${ws}, 'a.ts', 'o', 'O', 'i', clock_timestamp() - interval '1 hour'),
           (${ws}, 'b.ts', 'o', 'O', 'i', clock_timestamp() - interval '1 hour')
@@ -1168,11 +1168,11 @@ describe('file-locking #4 — sweepWorkspaceExpired (workspace-scoped primitive)
       sweepWorkspaceExpired(tx, wsA),
     );
     expect(moved).toBe(true);
-    const left = await sql<Array<{ workspace_id: string }>>`
-      SELECT workspace_id FROM agent_file_locks
-       WHERE workspace_id IN (${wsA}, ${wsB})
+    const left = await sql<Array<{ coordination_domain: string }>>`
+      SELECT coordination_domain FROM agent_file_locks
+       WHERE coordination_domain IN (${wsA}, ${wsB})
     `;
-    expect(left.map((r) => r.workspace_id).sort()).toEqual([wsB, wsB]);
+    expect(left.map((r) => r.coordination_domain).sort()).toEqual([wsB, wsB]);
   });
 });
 
@@ -1214,7 +1214,7 @@ describe('audit regression — failed multi-path acquire is side-effect free', (
     const sql = getTxPool();
     const rows = await sql<Array<{ intent: string; expires_ts: Date }>>`
       SELECT intent, expires_ts FROM agent_file_locks
-       WHERE workspace_id = ${ws} AND owner = 'a'
+       WHERE coordination_domain = ${ws} AND owner = 'a'
     `;
     expect(rows[0].intent).toBe('original');
     // TTL should NOT have been extended.
