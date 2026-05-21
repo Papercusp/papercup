@@ -84,8 +84,34 @@ describe('path validation', () => {
   it('accepts a normal repo-relative path', () => {
     expect(() => validatePath('apps/operator/lib/foo.ts')).not.toThrow();
   });
+  it('rejects Windows-style backslashes (file-locking #1)', () => {
+    expect(() => validatePath('apps\\operator\\foo.ts')).toThrow(InvalidPathError);
+  });
   it('normalizePaths sorts + dedupes', () => {
     expect(normalizePaths(['b.ts', 'a.ts', 'b.ts'])).toEqual(['a.ts', 'b.ts']);
+  });
+
+  // file-locking #1 — canonicalization. Each non-canonical spelling
+  // must collapse onto the same lock key as the plain form.
+  it('canonicalizes a leading ./', () => {
+    expect(normalizePaths(['./apps/foo.ts'])).toEqual(['apps/foo.ts']);
+  });
+  it('canonicalizes a /./ segment', () => {
+    expect(normalizePaths(['apps/./foo.ts'])).toEqual(['apps/foo.ts']);
+  });
+  it('collapses repeated // separators', () => {
+    expect(normalizePaths(['apps//foo.ts'])).toEqual(['apps/foo.ts']);
+  });
+  it('strips a trailing /', () => {
+    expect(normalizePaths(['apps/foo.ts/'])).toEqual(['apps/foo.ts']);
+  });
+  it('dedupes equivalent-but-non-identical spellings to one key', () => {
+    expect(
+      normalizePaths(['apps/foo.ts', './apps/foo.ts', 'apps//foo.ts', 'apps/foo.ts/']),
+    ).toEqual(['apps/foo.ts']);
+  });
+  it('rejects a path that canonicalizes to empty', () => {
+    expect(() => normalizePaths(['./'])).toThrow(InvalidPathError);
   });
 });
 

@@ -437,6 +437,29 @@ else
   assert_fail "path validation: rejects null byte in path" "resp=$RESP"
 fi
 
+# Backslash (file-locking #1 — POSIX slashes only)
+RESP=$(call_tool "$AGENT_A" "locks:acquire" "{\"paths\":[\"apps\\\\\\\\foo.ts\"],\"intent\":\"x\",\"ttl_sec\":60}" | extract)
+ERR=$(echo "$RESP" | jq -r '.error // empty')
+if echo "$ERR" | grep -q "backslash"; then
+  assert_pass "path validation: rejects Windows backslashes"
+else
+  assert_fail "path validation: rejects Windows backslashes" "resp=$RESP"
+fi
+
+# Equivalent-but-non-identical spellings must collide (file-locking #1).
+# A holds 'apps/canon-test.ts'; B acquires './apps/canon-test.ts' —
+# canonicalization must make B see busy.
+EQP="apps/canon-$-test.ts"
+call_tool "$AGENT_A" "locks:acquire" "{\"paths\":[\"$EQP\"],\"intent\":\"A canon\",\"ttl_sec\":60}" >/dev/null
+RESP=$(call_tool "$AGENT_B" "locks:acquire" "{\"paths\":[\"./$EQP\"],\"intent\":\"B canon\",\"ttl_sec\":60,\"max_wait_sec\":0}" | extract)
+OKV=$(echo "$RESP" | jq -r '.ok // empty')
+if [ "$OKV" = "false" ]; then
+  assert_pass "canonicalization: './x' collides with 'x'"
+else
+  assert_fail "canonicalization: './x' collides with 'x'" "resp=$RESP"
+fi
+call_tool "$AGENT_A" "locks:release" "{\"all_mine\":true}" >/dev/null
+
 # ────────────────────────────────────────────────────────────────────
 # §11. zod input validation
 # ────────────────────────────────────────────────────────────────────

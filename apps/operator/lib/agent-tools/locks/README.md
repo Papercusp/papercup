@@ -79,6 +79,38 @@ The advisory key `101` is reserved for SU locks in
 [`sql/advisory-lock-keys.md`](sql/advisory-lock-keys.md). Two-arg form
 prevents collision with any future feature using advisory locks.
 
+## Canonical-path contract
+
+A lock key is `hashtext('su:' || workspace_id || ':' || path)`. Two
+callers contend **iff** they pass the byte-identical `path` string —
+so every caller MUST pass the same canonical form for the same file,
+or the lock silently provides nothing.
+
+`normalizePaths()` (`su-lock-store.ts`) enforces the contract on every
+`locks:acquire`. It runs `validatePath()` on the **raw** path, then
+`canonicalizePath()`:
+
+| Rule | Example in → out |
+|---|---|
+| Strip leading `./` | `./apps/foo.ts` → `apps/foo.ts` |
+| Collapse repeated `/` | `apps//foo.ts` → `apps/foo.ts` |
+| Drop `/./` segments | `apps/./foo.ts` → `apps/foo.ts` |
+| Strip trailing `/` | `apps/foo.ts/` → `apps/foo.ts` |
+
+Rejected outright (`InvalidPathError`, never normalized):
+
+- **Absolute** paths (`/etc/passwd`) — paths must be repo-relative.
+- **`..` traversal** (`../x`, `a/../b`, bare `..`).
+- **Backslashes** (`apps\foo.ts`) — POSIX forward slashes only.
+- **NULL bytes**, empty, or anything that canonicalizes to empty.
+
+**Symlinks are the caller's responsibility.** The operator does not
+share the agent's working directory, so it cannot `realpath` a
+symlink. A caller that locks a symlink and another that locks its
+target will NOT contend. Resolve symlinks to their real path before
+calling `locks:acquire`. (The OMP enforcement hook refuses to acquire
+on a symlink — see `scripts/hooks/`.)
+
 ## Inspection
 
 ```bash
