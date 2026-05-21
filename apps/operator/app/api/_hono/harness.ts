@@ -1599,54 +1599,6 @@ async function dispatchActionsBlockFromOutput(
   return { count: actions.length, results };
 }
 
-// ─── escalation handshake ────────────────────────────────────────────
-// ─── smoke test (claudecode-orchestrator-inspired service gate) ─────
-
-harness.post('/:slug/smoke-test/run', async (c) => {
-  const project = await resolveProject(c.req.param('slug'));
-  if (!project) return c.json({ error: 'unknown project' }, 404);
-  const { spawn } = await import('node:child_process');
-  const scriptPath = harnessPath('bin', 'service-smoke-test.sh');
-  if (!existsSync(scriptPath)) return c.json({ error: 'smoke-test script not found' }, 500);
-  return new Promise((resolve) => {
-    let stdout = '';
-    const p = spawn('bash', [scriptPath], {
-      env: { ...process.env, PROJECT_DIR: project.path, STATE_DIR: join(project.path, '.harness') },
-    });
-    p.stdout.on('data', (d) => { stdout += d.toString(); });
-    p.stderr.on('data', (d) => { stdout += d.toString(); });
-    p.on('close', (code) => {
-      resolve(c.json({ ok: code === 0, rc: code, output: stdout }) as unknown as void);
-    });
-  });
-});
-
-// SSE pilot: emit a 'change' event whenever any of the smoke-test files
-// change. Client subscribes and refetches /smoke-test on each event,
-// replacing the 5s polling loop. Heartbeat every 30s so proxies don't
-// timeout the connection.
-
-
-
-/**
- * Item 6 + 8: budget + commitment summary for a project.
- * Returns: budget_cents (null = unlimited), committed (open features),
- * spent (terminal features), available (= budget - committed when limited).
- */
-
-/**
- * Item 8: per-project stats. Returns features grouped by status + per-dept
- * breakdown (counts and committed cost), plus the budget summary.
- */
-
-/**
- * Layer A audit: feature change history (compensates for git-history loss
- * when features moved from JSON to SQL). Returns chronological log of
- * mutations to a feature.
- */
-
-
-
 // ─── usage / cost aggregation ─────────────────────────────────────────
 
 harness.get('/:slug/usage', async (c) => {
@@ -1965,43 +1917,6 @@ import {
   saveIssues,
   readPendingIssues,
 } from '@/lib/harness-issues';
-
-
-
-// ─── Architect reviews + chat ────────────────────────────────────────
-
-
-// Accept an Architect-proposed patch — write it to the target file.
-// Body: { target: 'SPEC.md' | 'contract' | 'supervisor-notes', content: string }
-harness.post('/:slug/architect/apply', async (c) => {
-  const project = await resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
-  if (!project) return c.json({ error: 'unknown project' }, 404);
-  const body = await c.req.json() as { target: string; content: string };
-  if (!body.content) return c.json({ error: 'content required' }, 400);
-
-  let path: string;
-  switch (body.target) {
-    case 'SPEC.md': path = join(project.path, 'SPEC.md'); break;
-    case 'contract': path = join(harnessDir(project), 'validation-contract.md'); break;
-    case 'supervisor-notes': {
-      const notesPath = join(harnessDir(project), 'supervisor-notes.md');
-      const block = `\n## architect ${new Date().toISOString()}\n\n${body.content}\n`;
-      const { appendTextArtifact } = await import('@/lib/text-artifacts');
-      await appendTextArtifact(c.req.param('slug'), 'supervisor-notes.md', block);
-      try { await appendFile(notesPath, block, 'utf8'); } catch {}
-      return c.json({ ok: true, appended: 'supervisor-notes.md' });
-    }
-    default: return c.json({ error: 'unknown target' }, 400);
-  }
-
-  const tmp = `${path}.tmp.${Date.now()}`;
-  await writeFile(tmp, body.content, 'utf8');
-  await rename(tmp, path);
-  return c.json({ ok: true, written: path });
-});
-
-// ─── Brainstorm — scratchpad + canvas + chat + promote ──────────────
-
 
 
 
