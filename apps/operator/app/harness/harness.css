@@ -12598,6 +12598,164 @@ body:has(.h-top-collapse-inline) main {
   background: color-mix(in oklab, var(--accent), transparent 91%);
 }
 
+/* Harness-wide list normalization: stronger striping, dark info pills, brighter actions. */
+.h-feature-row,
+.h-issue,
+.h-inbox-row,
+.h-agent-row,
+.h-git-row {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.018), rgba(255, 255, 255, 0.004)),
+    rgba(5, 13, 25, 0.88) !important;
+}
+
+[data-index]:nth-child(even) > .h-feature-row,
+.h-issue:nth-of-type(even),
+.h-inbox-feed .h-inbox-row:nth-child(even),
+.h-agent-row:nth-of-type(even),
+.h-git-row:nth-child(even) {
+  background:
+    linear-gradient(180deg, rgba(125, 211, 252, 0.038), rgba(255, 255, 255, 0.006)),
+    rgba(11, 25, 42, 0.94) !important;
+}
+
+[data-index]:nth-child(odd) > .h-feature-row,
+.h-issue:nth-of-type(odd),
+.h-inbox-feed .h-inbox-row:nth-child(odd),
+.h-agent-row:nth-of-type(odd),
+.h-git-row:nth-child(odd) {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.012), rgba(255, 255, 255, 0.002)),
+    rgba(4, 10, 20, 0.92) !important;
+}
+
+.h-feature-row:hover,
+.h-feature-row:focus-visible,
+.h-issue:hover,
+.h-issue:focus-visible,
+.h-inbox-row:hover,
+.h-inbox-row:focus-visible,
+.h-agent-row:hover,
+.h-agent-row:focus-visible,
+.h-git-row:hover,
+.h-git-row:focus-visible {
+  background:
+    linear-gradient(180deg, rgba(125, 211, 252, 0.105), rgba(255, 255, 255, 0.014)),
+    rgba(10, 25, 45, 0.98) !important;
+}
+
+.h-feature-row-title,
+.h-issue-title,
+.h-inbox-row-title,
+.h-inbox-row-sub,
+.h-git-subject {
+  box-sizing: border-box;
+  border: 1px solid rgba(125, 211, 252, 0.16) !important;
+  border-radius: 999px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.026), rgba(255, 255, 255, 0.006)),
+    rgba(1, 6, 14, 0.88) !important;
+  color: color-mix(in oklab, var(--fg), white 8%) !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.035);
+}
+
+.h-feature-row-title,
+.h-issue-title,
+.h-git-subject {
+  padding: 2px 8px !important;
+}
+
+.h-inbox-row-title,
+.h-inbox-row-sub {
+  padding: 2px 7px !important;
+}
+
+.h-feature-row-id,
+.h-feature-claims-chip,
+.h-feature-attempts-pill,
+.h-issue-source,
+.h-issue-id,
+.h-issue-feat,
+.h-issue-code,
+.h-agent-time-cell,
+.h-agent-runid-pill,
+.h-agent-size-pill,
+.h-inbox-feature,
+.h-inbox-kind,
+.h-inbox-foot-pill,
+.h-git-summary span,
+.h-git-meta span,
+.h-git-meta time,
+.h-git-ref {
+  border-color: rgba(125, 211, 252, 0.17) !important;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.022), rgba(255, 255, 255, 0.004)),
+    rgba(1, 6, 14, 0.84) !important;
+  color: color-mix(in oklab, var(--fg-dim), white 16%) !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
+}
+
+.h-git-meta {
+  gap: 4px;
+}
+
+.h-git-meta span,
+.h-git-meta time {
+  display: inline-flex;
+  align-items: center;
+  min-height: 17px;
+  padding: 1px 6px;
+  border: 1px solid rgba(125, 211, 252, 0.17);
+  border-radius: 999px;
+  line-height: 1;
+}
+
+.h-feature-row-action,
+.h-issue-row-action,
+.h-inbox-action,
+.h-proposal-btn,
+.h-git-actions button {
+  border-color: rgba(56, 189, 248, 0.48) !important;
+  background:
+    linear-gradient(180deg, rgba(56, 189, 248, 0.28), rgba(14, 116, 144, 0.18)),
+    rgba(5, 18, 31, 0.96) !important;
+  color: color-mix(in oklab, #e0f7ff, var(--fg) 20%) !important;
+  box-shadow:
+    0 6px 14px rgba(0, 0, 0, 0.22),
+    inset 0 1px 0 rgba(255, 255, 255, 0.12) !important;
+  text-shadow: 0 1px 0 rgba(0, 0, 0, 0.34);
+}
+
+.h-feature-row-action:hover:not(:disabled),
+.h-issue-row-action:hover:not(:disabled),
+.h-inbox-action:hover:not(:disabled),
+.h-proposal-btn:hover:not(:disabled),
+.h-git-actions button:hover:not(:disabled) {
+  border-color: rgba(125, 211, 252, 0.76) !important;
+  background:
+    linear-gradient(180deg, rgba(125, 211, 252, 0.36), rgba(14, 116, 144, 0.26)),
+    rgba(7, 26, 43, 0.98) !important;
+  color: #ffffff !important;
+}
+
+.h-feature-row-action.danger,
+.h-issue-row-action.danger,
+.h-inbox-action.danger {
+  border-color: rgba(248, 113, 113, 0.52) !important;
+  background:
+    linear-gradient(180deg, rgba(248, 113, 113, 0.26), rgba(127, 29, 29, 0.18)),
+    rgba(28, 9, 14, 0.96) !important;
+  color: #fee2e2 !important;
+}
+
+.h-issue-row-action.success {
+  border-color: rgba(74, 222, 128, 0.50) !important;
+  background:
+    linear-gradient(180deg, rgba(74, 222, 128, 0.23), rgba(22, 101, 52, 0.17)),
+    rgba(5, 25, 16, 0.96) !important;
+  color: #dcfce7 !important;
+}
+
 /* Maximal HUD experiment branch: mirrored harness overlay pass */
 @keyframes h-hud-scanline {
   0% { transform: translate3d(-18%, 0, 0); opacity: 0; }
