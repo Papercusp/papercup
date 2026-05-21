@@ -68,6 +68,7 @@ import {
   tailFile,
   resolvePhasedProject,
   getHarnessStatusFull,
+  rowToFeature,
 } from '@/lib/harness-core';
 const getOrgDbClient = () => getLegacyClient();
 const dbcFor = (slug: string) => getLegacyClient(slug);
@@ -2489,50 +2490,6 @@ harness.post('/:slug/orchestrator/clear-running', async (c) => {
 
 // ─── identity files (Agent-Swarm-inspired cross-mission memory) ─────
 
-harness.get('/identity', async (c) => {
-  // PG-canonical-for-reads (Migration 041). Files at ~/autonomous-harness/
-  // identity/<role>.md remain the source of truth for the orchestrator
-  // subprocess (prompt-build.ts:87 reads them on every role invocation);
-  // the operator-side watcher mirrors them in so the UI doesn't readdir
-  // per request and Zero subscribers wake up on changes.
-  const { ensureIdentityFilesTable } = await import('@/lib/ensure-schema');
-  await ensureIdentityFilesTable();
-  const { db } = (await import('@restart/db-org')).getOrgPg();
-  const { generated } = await import('@restart/db-org');
-  const { asc } = await import('drizzle-orm');
-  const idf = generated.identityFilesInHarnessShared;
-  const rows = await db
-    .select({ role: idf.role, content: idf.content, bytes: idf.bytes, mtime_ms: idf.mtimeMs })
-    .from(idf)
-    .orderBy(asc(idf.role));
-  // FS fallback for the brief window before the watcher's initialSync
-  // populates PG on a fresh install.
-  if (rows.length === 0) {
-    const dir = harnessPath('identity');
-    if (existsSync(dir)) {
-      const out: Array<{ role: string; content: string; bytes: number; mtimeMs: number }> = [];
-      for (const f of readdirSync(dir)) {
-        if (!f.endsWith('.md')) continue;
-        const p = join(dir, f);
-        const role = f.replace(/\.md$/, '');
-        try {
-          const s = statSync(p);
-          out.push({ role, content: readFileSync(p, 'utf8'), bytes: s.size, mtimeMs: s.mtimeMs });
-        } catch {}
-      }
-      out.sort((a, b) => a.role.localeCompare(b.role));
-      return c.json({ identities: out });
-    }
-  }
-  return c.json({
-    identities: rows.map((r) => ({
-      role: r.role,
-      content: r.content,
-      bytes: r.bytes,
-      mtimeMs: Number(r.mtime_ms) || 0,
-    })),
-  });
-});
 
 // ─── checkpoints (Hermes-inspired named human-gated pauses) ──────────
 
@@ -2646,29 +2603,6 @@ harness.get('/:slug/health', async (c) => {
  * Returns features where needs_human_review=true, with their linked project
  * info (so the UI can show budget context for adjustment).
  */
-harness.get('/needs-human-review', async (c) => {
-  try {
-    const dbc = getLegacyClient();
-    const rows = await dbc.prepare(`
-      SELECT f.*, p.name as project_name, p.budget_cents as project_budget_cents
-      FROM all_features f
-      LEFT JOIN projects p ON p.id = f.project_id
-      WHERE f.needs_human_review = true
-      ORDER BY f.created_ts DESC
-    `).all() as any[];
-    return c.json({
-      count: rows.length,
-      features: rows.map((r) => ({
-        ...rowToFeature(r),
-        harness_slug: r.harness_slug,
-        project_name: r.project_name,
-        project_budget_cents: r.project_budget_cents == null ? null : Number(r.project_budget_cents),
-      })),
-    });
-  } catch (e) {
-    return c.json({ error: `query failed: ${(e as Error).message}` }, 500);
-  }
-});
 
 /**
  * Item 0 + 10: human approval action — clears needs_human_review and optionally
@@ -3691,43 +3625,7 @@ function zeroRoleSummary(role: string) {
 
 const TEMPLATES_DIR = harnessPath('templates', 'projects');
 
-harness.get('/templates', (c) => {
-  if (!existsSync(TEMPLATES_DIR)) return c.json({ templates: [] });
-  const entries = readdirSync(TEMPLATES_DIR, { withFileTypes: true })
-    .filter((d) => d.isDirectory());
-  const templates = entries.map((d) => {
-    const dir = join(TEMPLATES_DIR, d.name);
-    let meta: any = { id: d.name, name: d.name };
-    try {
-      const raw = safeRead(join(dir, 'meta.json'));
-      if (raw) meta = { ...meta, ...JSON.parse(raw) };
-    } catch {}
-    const files: string[] = [];
-    for (const f of TEMPLATE_DETECT_FILES) {
-      if (existsSync(join(dir, f))) files.push(f);
-    }
-    return {
-      id: d.name,
-      name: meta.name ?? d.name,
-      description: meta.description ?? '',
-      tags: meta.tags ?? [],
-      files,
-    };
-  });
-  return c.json({ templates });
-});
 
-harness.get('/templates/:id/file', (c) => {
-  const id = c.req.param('id').replace(/[^A-Za-z0-9_-]/g, '');
-  if (!id) return c.json({ error: 'invalid id' }, 400);
-  const name = (c.req.query('name') ?? '').replace(/[^A-Za-z0-9_.-]/g, '');
-  if (!name) return c.json({ error: 'name query required' }, 400);
-  const p = join(TEMPLATES_DIR, id, name);
-  if (!existsSync(p)) return c.json({ error: 'not found' }, 404);
-  const content = safeRead(p);
-  if (content === null) return c.json({ error: 'unreadable' }, 500);
-  return new Response(content, { headers: { 'content-type': 'text/plain; charset=utf-8' } });
-});
 
 harness.post('/:slug/bootstrap-from-template', async (c) => {
   const project = await resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));

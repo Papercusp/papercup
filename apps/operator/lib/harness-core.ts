@@ -271,7 +271,7 @@ export function isProjectAlive(projectPath: string, ttlMs = 2000): boolean {
  * parseFeatures — read harness_features from the per-harness PG schema.
  * ───────────────────────────────────────────────────────────────────── */
 
-function rowToFeature(r: any): any {
+export function rowToFeature(r: any): any {
   return {
     id: r.feature_id,
     title: r.title,
