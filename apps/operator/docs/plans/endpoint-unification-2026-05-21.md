@@ -184,7 +184,9 @@ E13 Migrate coord/plugins/su-locks + orphan triage              ◐ coord+su-loc
 E14 Delete _hono/* directory                                    ⬜ not started
 ```
 
-**Shipped (E1–E6):** the complete mobile arc + the collapse. `defineRoute` is a re-export of the unified `defineTool` primitive; `mobile: true` is the one-line flag; all 33 legacy mobile routes are migrated; `_hono/mobile.ts` is deleted; auth is unified through `requirePrincipal`. E7–E14 remain; E12 (135 routes) warrants its own focused plan.
+**Shipped (E1–E6, E7-docs, E10, E11, E13-partial):** the complete mobile arc + the collapse. `defineRoute` is a re-export of the unified `defineTool` primitive; `mobile: true` is the one-line flag; all 33 legacy mobile routes are migrated; `_hono/mobile.ts`, `_hono/coord.ts`, `_hono/su-locks.ts` are deleted; auth is unified through `requirePrincipal`.
+
+**The tail (E8, E9, E12, E13-plugins, E14) moved to its own plan:** [`endpoint-hono-elimination-2026-05-21`](./endpoint-hono-elimination-2026-05-21.md). Audit found it is two real projects, not a continuation — ~199 `_hono` routes across 10 routers still to migrate (Workstream A), and ~430 routes to auth-tighten (Workstream B; the "~30–50" estimate below was wrong). E8 (`expose.ipc`) deferred — no driver. The phase notes below are kept for history; the new plan is canonical for that work.
 
 ### Phase E1 — Type unification, no behavior change
 
