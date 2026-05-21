@@ -543,6 +543,13 @@ Mount once in `__root.tsx`. **This is real work, not config** — ~30-60 lines i
 
 The operator's own `RouteProgressProvider.tsx` is left unmounted in operator-vite (it stays for the live Next operator). `@bprogress/next` + `next-transition-router` come off `package.json` at Phase H along with the shims. Verified: `npm run build` clean (9108 modules).
 
+**SPA-flags port as-built (2026-05-21).** The `requireFlag` gates dropped during B-4/B-5/B-6 are now restored. Finding: no new runtime was needed — `useFlag` (`apps/operator/lib/flag-hooks.tsx`) already resolves flags client-side via `@papercusp/flags/client`'s `loadFlags()` (a real network fetch, the same path it used in the Next client bundle). The plan A3 `window.__PAPERCUSP_FLAGS__` SSR-injection idea was only ever a first-paint optimisation, not a requirement.
+
+- `apps/operator-vite/src/lib/require-flag.ts` — `requireFlag(key)`: `await loadFlags()`, read `getFlagSnapshot()`, `throw notFound()` when off (falls back to `FLAG_DEFAULTS` — closed gate — if flags are unreachable, matching the Next version). `loadFlags()` is idempotent + cached, so one fetch covers all gated routes.
+- 13 routes gained `beforeLoad: () => requireFlag(FLAGS.<KEY>)`: `/design/$slug` (DESIGN); `/snapshots`, `/snapshots/$id/fork`, `/installed/snapshots` (SNAPSHOTS); `/marketplace` + `/marketplace/{plugins,snapshots,templates,$slug}` (MARKETPLACE); `/installed/templates`, `/installed/templates/$slug/edit` (TEMPLATES); `/settings/oracle` (ORACLE); `/settings/publishing` (CLOUDFLARE_PUBLISH). For `/marketplace/$slug` the gate is a `beforeLoad` alongside the existing `loader` — `beforeLoad` runs first.
+
+This closes the "SPA-flags port" Phase-B follow-up. Verified: `npm run build` clean (9109 modules).
+
 ### B acceptance (greppable)
 
 ```

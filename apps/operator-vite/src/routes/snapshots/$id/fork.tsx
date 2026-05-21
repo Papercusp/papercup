@@ -1,4 +1,6 @@
 import { createFileRoute } from '@tanstack/react-router';
+import { FLAGS } from '@papercusp/flags';
+import { requireFlag } from '../../../lib/require-flag';
 import ForkClient from '@/app/snapshots/[id]/fork/ForkClient';
 
 /**
@@ -11,10 +13,11 @@ import ForkClient from '@/app/snapshots/[id]/fork/ForkClient';
  * so we wrap with `Promise.resolve()` to preserve the existing component
  * signature (avoids editing the shared component).
  *
- * **Deviation:** requireFlag(FLAGS.SNAPSHOTS) gate dropped — same SPA-flags
- * deferral as `/design/$slug`.
+ * The `requireFlag(FLAGS.SNAPSHOTS)` gate is ported to a TSR `beforeLoad`
+ * check — see `lib/require-flag.ts`.
  */
 export const Route = createFileRoute('/snapshots/$id/fork')({
+  beforeLoad: () => requireFlag(FLAGS.SNAPSHOTS),
   component: SnapshotFork,
 });
 

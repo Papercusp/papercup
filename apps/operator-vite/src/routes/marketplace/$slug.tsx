@@ -1,4 +1,6 @@
 import { createFileRoute } from '@tanstack/react-router';
+import { FLAGS } from '@papercusp/flags';
+import { requireFlag } from '../../lib/require-flag';
 import * as Lucide from 'lucide-react';
 import RouteLink from '@/app/_components/RouteLink';
 import { MarkdownPreview } from '@/app/_components/MarkdownEditor';
@@ -12,7 +14,8 @@ import { MarkdownPreview } from '@/app/_components/MarkdownEditor';
  *     then `await loadDetail(slug)` (a server-side `fetch` to
  *     `/api/marketplace/<slug>`). Moved the fetch into a TSR `loader`
  *     (relative URL — no `PAPERCUSP_INTERNAL_BASE` base needed in the SPA).
- *   - `requireFlag(FLAGS.MARKETPLACE)` gate dropped (SPA-flags A3 deferral).
+ *   - `requireFlag(FLAGS.MARKETPLACE)` gate ported to a `beforeLoad` check
+ *     (`lib/require-flag.ts`); `beforeLoad` runs before the `loader`.
  *   - Helper components (`HeaderIcon`, `SnapshotMeta`, `TrustBadges`) and
  *     the `DetailResponse` shape are copied verbatim — this is a leaf page,
  *     so a copy (not a shared-component import) is correct; the original is
@@ -78,6 +81,7 @@ export const Route = createFileRoute('/marketplace/$slug')({
     })();
     return { slug, detail: await loadDetail(slug) };
   },
+  beforeLoad: () => requireFlag(FLAGS.MARKETPLACE),
   component: HarnessDetailPage,
 });
 
