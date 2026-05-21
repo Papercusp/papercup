@@ -4248,13 +4248,16 @@ p {
     height: min(560px, calc(100vh - 156px));
   }
 }
-/* Chromeless mode — for routes embedded in iframes (e.g. /pi loaded by the
-   pi-coding plugin's dashboard tab). Strips global header + floating widgets
-   so the embedded UI fills the viewport. Toggled by app/pi/layout.tsx. */
+/* Chromeless mode — currently used by the first-run /setup wizard (see
+   app/setup/page.tsx + operator-vite/src/routes/setup.tsx). Strips the
+   global header and the support widget so a mid-setup user can't bounce
+   away via nav links, while KEEPING the operator chat sidebar AND the
+   Oracle assistant FAB available — those are exactly the help surfaces a
+   first-run user needs. The CHROMELESS_PATH_PREFIXES mechanism in
+   ChromeShell handles the iframe-route case (/pi, /project-docs) separately
+   by skipping the entire chrome render. */
 body.papercusp-chromeless .pc-header,
-body.papercusp-chromeless #chatwoot_live_chat_widget,
-body.papercusp-chromeless .oracle-dock,
-body.papercusp-chromeless .oracle-fab {
+body.papercusp-chromeless #chatwoot_live_chat_widget {
   display: none !important;
 }
 body.papercusp-chromeless #papercusp-app > main {
