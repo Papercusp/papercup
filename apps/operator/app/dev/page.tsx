@@ -30,6 +30,7 @@ const HarnessesTab = dynamic(() => import('./_components/HarnessesTab'), { ssr: 
 const SessionsTab = dynamic(() => import('./_components/SessionsTab'), { ssr: false });
 const TelemetryTab = dynamic(() => import('./_components/TelemetryTab'), { ssr: false });
 const AuditTab = dynamic(() => import('./_components/AuditTab'), { ssr: false });
+const RoutesTab = dynamic(() => import('./_components/RoutesTab'), { ssr: false });
 const PgTab = dynamic(() => import('./_components/PgTab'), { ssr: false });
 const ProcessesTab = dynamic(() => import('./_components/ProcessesTab'), { ssr: false });
 const StudioTab = dynamic(() => import('./_components/StudioTab'), { ssr: false });
@@ -39,7 +40,7 @@ const BackupsTab = dynamic(() => import('./_components/BackupsTab'), { ssr: fals
 const TerminalTab = dynamic(() => import('./_components/TerminalTab'), { ssr: false });
 const IpcTab = dynamic(() => import('./_components/IpcTab'), { ssr: false });
 
-type TabId = 'harnesses' | 'api' | 'sessions' | 'telemetry' | 'audit' | 'pg' | 'processes' | 'tables' | 'sql' | 'studio' | 'backups' | 'terminal' | 'ipc';
+type TabId = 'harnesses' | 'api' | 'sessions' | 'routes' | 'telemetry' | 'audit' | 'pg' | 'processes' | 'tables' | 'sql' | 'studio' | 'backups' | 'terminal' | 'ipc';
 
 const TAB_GROUPS: Array<{ label: string; tabs: Array<{ id: TabId; label: string; hint: string }> }> = [
   {
@@ -48,6 +49,7 @@ const TAB_GROUPS: Array<{ label: string; tabs: Array<{ id: TabId; label: string;
       { id: 'api', label: 'API', hint: 'invoke tools' },
       { id: 'harnesses', label: 'Harnesses', hint: 'health matrix' },
       { id: 'sessions', label: 'Sessions', hint: 'spawn drilldown' },
+      { id: 'routes', label: 'Routes', hint: 'HTTP traffic' },
       { id: 'telemetry', label: 'Telemetry', hint: 'latency + errors' },
       { id: 'audit', label: 'Audit', hint: 'operator log' },
     ],
@@ -82,7 +84,7 @@ export default function DevPage() {
   const [tab, setTab] = useQueryState(
     'tab',
     parseAsStringEnum<TabId>([
-      'harnesses', 'api', 'sessions', 'telemetry', 'audit',
+      'harnesses', 'api', 'sessions', 'routes', 'telemetry', 'audit',
       'pg', 'processes', 'tables', 'sql', 'studio', 'backups', 'terminal', 'ipc',
     ]).withDefault('api'),
   );
@@ -154,6 +156,7 @@ export default function DevPage() {
           )}
           {tab === 'harnesses' && <HarnessesTab workspaceIds={workspaceIds} />}
           {tab === 'sessions' && <SessionsTab workspaceIds={workspaceIds} onRerun={rerunAndSwitch} />}
+          {tab === 'routes' && <RoutesTab />}
           {tab === 'telemetry' && <TelemetryTab workspaceIds={workspaceIds} onRerun={rerunAndSwitch} />}
           {tab === 'audit' && <AuditTab workspaceIds={workspaceIds} />}
           {tab === 'pg' && <PgTab />}
