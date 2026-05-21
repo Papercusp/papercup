@@ -4595,47 +4595,6 @@ harness.put('/:slug/memory-file', async (c) => {
   return c.json({ ok: true, path: body.path, tier, wroteBytes: body.content.length });
 });
 
-// ─── MCP servers (.mcp.json at project root) ────────────────────────
-
-function mcpPath(project: ProjectEntry): string {
-  return join(project.path, '.mcp.json');
-}
-
-harness.get('/:slug/mcp', async (c) => {
-  const slug = c.req.param('slug');
-  const project = await resolvePhasedProject(slug, phasePhaseLabel(c.req.query('phase')));
-  if (!project) return c.json({ error: 'unknown project' }, 404);
-  // PG-canonical (Phase 0d). Disk fallback for harnesses pre-migration.
-  const { loadTextArtifact } = await import('@/lib/text-artifacts');
-  const fromPg = await loadTextArtifact(slug, 'mcp.json');
-  return c.json({ content: fromPg ?? safeRead(mcpPath(project)) ?? '' });
-});
-
-harness.put('/:slug/mcp', async (c) => {
-  const slug = c.req.param('slug');
-  const project = await resolvePhasedProject(slug, phasePhaseLabel(c.req.query('phase')));
-  if (!project) return c.json({ error: 'unknown project' }, 404);
-  const body = await c.req.json().catch(() => ({}));
-  if (typeof body.content !== 'string') return c.json({ error: 'content required' }, 400);
-  // Validate JSON before writing (empty string → delete file).
-  if (body.content.trim()) {
-    try { JSON.parse(body.content); }
-    catch (e: any) { return c.json({ error: `invalid JSON: ${e.message}` }, 400); }
-  }
-  const path = mcpPath(project);
-  if (!body.content.trim()) {
-    try { await unlink(path); } catch {}
-    // Also clear PG row to keep the two in sync.
-    const { saveTextArtifact } = await import('@/lib/text-artifacts');
-    await saveTextArtifact(slug, 'mcp.json', '', { customDiskPath: path });
-    return c.json({ ok: true, deleted: true });
-  }
-  // PG-canonical with custom mirror — .mcp.json lives at project root,
-  // not under .harness/ (the default text-artifacts mirror location).
-  const { saveTextArtifact } = await import('@/lib/text-artifacts');
-  await saveTextArtifact(slug, 'mcp.json', body.content, { customDiskPath: path });
-  return c.json({ ok: true });
-});
 
 // ─── Skills (.claude/skills/*.md) ────────────────────────────────────
 
@@ -4861,70 +4820,6 @@ harness.delete('/:slug/prompts/:role', async (c) => {
   return c.json({ ok: true });
 });
 
-// ─── Claude settings (.claude/settings.json) ─────────────────────────
-
-function claudeSettingsPath(project: ProjectEntry): string {
-  return join(project.path, '.claude', 'settings.json');
-}
-
-harness.get('/:slug/claude-settings', async (c) => {
-  const slug = c.req.param('slug');
-  const project = await resolvePhasedProject(slug, phasePhaseLabel(c.req.query('phase')));
-  if (!project) return c.json({ error: 'unknown project' }, 404);
-  // PG-canonical (Phase 0d). Disk fallback for harnesses pre-migration.
-  const { loadTextArtifact } = await import('@/lib/text-artifacts');
-  const fromPg = await loadTextArtifact(slug, 'claude-settings.json');
-  return c.json({ content: fromPg ?? safeRead(claudeSettingsPath(project)) ?? '' });
-});
-
-harness.put('/:slug/claude-settings', async (c) => {
-  const slug = c.req.param('slug');
-  const project = await resolvePhasedProject(slug, phasePhaseLabel(c.req.query('phase')));
-  if (!project) return c.json({ error: 'unknown project' }, 404);
-  const body = await c.req.json().catch(() => ({}));
-  if (typeof body.content !== 'string') return c.json({ error: 'content required' }, 400);
-  if (body.content.trim()) {
-    try { JSON.parse(body.content); }
-    catch (e: any) { return c.json({ error: `invalid JSON: ${e.message}` }, 400); }
-  }
-  const path = claudeSettingsPath(project);
-  const { saveTextArtifact } = await import('@/lib/text-artifacts');
-  if (!body.content.trim()) {
-    try { await unlink(path); } catch {}
-    await saveTextArtifact(slug, 'claude-settings.json', '', { customDiskPath: path });
-    return c.json({ ok: true, deleted: true });
-  }
-  // PG-canonical with custom mirror — .claude/settings.json lives at the
-  // project root, not under .harness/.
-  await saveTextArtifact(slug, 'claude-settings.json', body.content, { customDiskPath: path });
-  return c.json({ ok: true });
-});
-
-// ─── .env (read+write, with explicit confirmation header) ────────────
-//
-// Secrets pass through the wire and sit in browser memory when this tab is
-// open. The UI includes a prominent warning. Value masking happens client-side.
-
-function envPath(project: ProjectEntry): string {
-  return join(project.path, '.env');
-}
-
-harness.get('/:slug/env', async (c) => {
-  const project = await resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
-  if (!project) return c.json({ error: 'unknown project' }, 404);
-  return c.json({ content: safeRead(envPath(project)) ?? '' });
-});
-
-harness.put('/:slug/env', async (c) => {
-  const project = await resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
-  if (!project) return c.json({ error: 'unknown project' }, 404);
-  const confirm = c.req.header('x-confirm-secrets');
-  if (confirm !== 'yes') return c.json({ error: 'missing X-Confirm-Secrets: yes header' }, 400);
-  const body = await c.req.json().catch(() => ({}));
-  if (typeof body.content !== 'string') return c.json({ error: 'content required' }, 400);
-  await writeFile(envPath(project), body.content, 'utf8');
-  return c.json({ ok: true });
-});
 
 // ─── Phases + promotion pipeline ─────────────────────────────────────
 
