@@ -54,6 +54,16 @@ const COUNT_ORDER: Array<ItemStatus | 'unknown'> = [
   'unknown',
 ];
 
+const COUNT_LABELS: Record<ItemStatus | 'unknown', string> = {
+  wip: 'wip',
+  'needs-human': 'human',
+  blocked: 'blocked',
+  todo: 'todo',
+  done: 'done',
+  dropped: 'dropped',
+  unknown: 'unknown',
+};
+
 interface Props {
   list: AsyncResult<{ plans: PlanListRow[] }>;
   selectedSlug: string | null;
@@ -203,6 +213,7 @@ function PlanRow({
         className={`pc-plan-row ${active ? 'is-active' : ''}`}
         onClick={onSelect}
         aria-label={`Open plan ${title} (${plan.slug})`}
+        aria-current={active ? 'page' : undefined}
       >
         <div className="pc-plan-row__head">
           <Tooltip label={title}>
@@ -255,8 +266,12 @@ function ItemCounts({
   return (
     <div className="pc-plan-row__counts">
       {present.map((k) => (
-        <span key={k} className={`pc-count pc-count--${k}`}>
-          {counts[k]} {k}
+        <span
+          key={k}
+          className={`pc-count pc-count--${k}`}
+          aria-label={`${counts[k]} ${COUNT_LABELS[k]} items`}
+        >
+          {counts[k]} {COUNT_LABELS[k]}
         </span>
       ))}
     </div>

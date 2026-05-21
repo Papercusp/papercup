@@ -127,14 +127,19 @@ export default function PlanFilters({
   return (
     <div className="pc-filters" aria-label="Plan filters">
       <div className="pc-filters__head">
-        <span className="pc-filters__kicker">Filters</span>
+        <span className="pc-filters__kicker-row">
+          <span className="pc-filters__kicker">Filters</span>
+          {activeCount > 0 ? (
+            <span className="pc-filters__active-count">{activeCount} active</span>
+          ) : null}
+        </span>
         {activeCount > 0 ? (
           <button
             type="button"
             className="pc-filters__clear"
             onClick={clearAll}
           >
-            Clear all
+            Clear
           </button>
         ) : null}
       </div>
@@ -154,7 +159,7 @@ export default function PlanFilters({
           value={status ?? '_all'}
           onChange={(v) => setStatus(v === '_all' ? null : (v as PlanStatus))}
           options={[
-            { value: '_all', label: 'All statuses' },
+            { value: '_all', label: 'Status' },
             ...STATUSES.map((s) => ({ value: s, label: s })),
           ]}
           ariaLabel="Plan status filter"
@@ -166,7 +171,7 @@ export default function PlanFilters({
             value={owner ?? '_all'}
             onChange={(v) => setOwner(v === '_all' ? null : v)}
             options={[
-              { value: '_all', label: 'All owners' },
+              { value: '_all', label: 'Owner' },
               ...owners.map((o) => ({ value: o, label: o })),
             ]}
             ariaLabel="Plan owner filter"

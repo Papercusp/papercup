@@ -22,7 +22,6 @@
  * can see their own reports — it just doesn't forward.
  */
 import { getOrgPg } from '@restart/db-org';
-import { PostHog } from 'posthog-node';
 import { readOperatorState, writeOperatorState } from './operator-state-pg';
 import { activeWorkspaceId } from './workspace-registry';
 import { ensureInstallId } from './setup-wizard-install-id';
@@ -141,55 +140,65 @@ export async function flushTelemetry(): Promise<FlushResult> {
   result.internalBuild = config.internalBuild;
   if ((config.optedIn || config.internalBuild) && config.host && config.projectKey) {
     result.posthogConfigured = true;
-    const ph = new PostHog(config.projectKey, {
-      host: config.host,
-      flushAt: 1, // smaller batches; flush each capture immediately
-      flushInterval: 0,
-    });
-    try {
-      const pending = await sql<
-        Array<{
-          id: string;
-          received_at: Date;
-          kind: string;
-          app_version: string | null;
-          os: string | null;
-          payload: unknown;
-        }>
-      >`
-        SELECT id, received_at, kind, app_version, os, payload
-          FROM harness_shared.telemetry_reports_archive
-         WHERE forwarded_at IS NULL AND workspace_id = ${workspaceId}
-         ORDER BY received_at ASC
-         LIMIT 100
-      `;
-      for (const row of pending) {
-        try {
-          ph.capture({
-            distinctId: config.distinctId,
-            event: `papercusp_${row.kind}`,
-            timestamp: row.received_at,
-            properties: {
-              app_version: row.app_version,
-              os: row.os,
-              payload: row.payload,
-              $set: { app_version: row.app_version, os: row.os },
-              source: 'desktop',
-            },
-          });
-          await sql`
-            UPDATE harness_shared.telemetry_reports_archive
-               SET forwarded_at = now()
-             WHERE id = ${row.id}
-          `;
-          result.forwarded++;
-        } catch {
-          result.forwardFailed++;
+    const pending = await sql<
+      Array<{
+        id: string;
+        received_at: Date;
+        kind: string;
+        app_version: string | null;
+        os: string | null;
+        payload: unknown;
+      }>
+    >`
+      SELECT id, received_at, kind, app_version, os, payload
+        FROM harness_shared.telemetry_reports_archive
+       WHERE forwarded_at IS NULL AND workspace_id = ${workspaceId}
+       ORDER BY received_at ASC
+       LIMIT 100
+    `;
+    if (pending.length > 0) {
+      // Forward as ONE batch via PostHog's /batch/ HTTP endpoint. Unlike
+      // posthog-node's fire-and-forget capture() — which never surfaces a
+      // delivery failure — a direct POST gives a real signal: rows are
+      // marked forwarded ONLY on an HTTP 2xx. On any failure they keep
+      // forwarded_at = NULL and are retried on the next flush, so a
+      // PostHog outage degrades to delay, not silent data loss.
+      const batch = pending.map((row) => ({
+        event: `papercusp_${row.kind}`,
+        distinct_id: config.distinctId,
+        timestamp: row.received_at.toISOString(),
+        properties: {
+          app_version: row.app_version,
+          os: row.os,
+          payload: row.payload,
+          $set: { app_version: row.app_version, os: row.os },
+          source: 'desktop',
+        },
+      }));
+      try {
+        const res = await fetch(`${config.host.replace(/\/+$/, '')}/batch/`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ api_key: config.projectKey, batch }),
+          signal: AbortSignal.timeout(20_000),
+        });
+        if (res.ok) {
+          for (const row of pending) {
+            await sql`
+              UPDATE harness_shared.telemetry_reports_archive
+                 SET forwarded_at = now()
+               WHERE id = ${row.id}
+            `;
+          }
+          result.forwarded = pending.length;
+        } else {
+          result.forwardFailed = pending.length;
+          console.error(`[telemetry-flush] posthog /batch/ rejected: HTTP ${res.status}`);
         }
+      } catch (e) {
+        result.forwardFailed = pending.length;
+        console.error('[telemetry-flush] posthog /batch/ failed:', (e as Error)?.message ?? e);
       }
-      await ph.shutdown();
-    } catch (e) {
-      console.error('[telemetry-flush] posthog batch failed:', (e as Error)?.message ?? e);
     }
   }
 
