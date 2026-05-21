@@ -67,17 +67,41 @@ export async function judgeRun(opts: JudgeOpts, run: RunSummary, violations: Vio
   }
 
   for (let i = 0; i < passModels.length; i++) {
-    const result = await llmCall({
+    const passTemp = i === 0 ? (opts.temperature ?? 0) : 0.4;
+    let result = await llmCall({
       model: passModels[i],
       system,
       messages: [{ role: 'user', content: userPrompt }],
       maxTokens: 4096,
-      temperature: i === 0 ? (opts.temperature ?? 0) : 0.4,
+      temperature: passTemp,
       responseFormat: 'json',
     });
+    costUsd += result.costUsd;
+    // One repair retry when the judge wraps its JSON in prose or fences
+    // that even the brace-span extractor can't recover. Mirrors the
+    // sim-user's strict-JSON retry — cheaper than a wasted judge pass.
+    if (!result.json || typeof result.json !== 'object') {
+      const retry = await llmCall({
+        model: passModels[i],
+        system,
+        messages: [
+          { role: 'user', content: userPrompt },
+          { role: 'assistant', content: result.text },
+          {
+            role: 'user',
+            content:
+              'Your previous response could not be parsed as JSON. Return ONLY the JSON object — no prose, no markdown fences, no commentary before or after.',
+          },
+        ],
+        maxTokens: 4096,
+        temperature: passTemp,
+        responseFormat: 'json',
+      });
+      costUsd += retry.costUsd;
+      if (retry.json && typeof retry.json === 'object') result = retry;
+    }
     const parsed = parseJudgeResponse(result.json, opts.rubric, opts.scenarioId);
     passes.push({ ...parsed, rawText: result.text });
-    costUsd += result.costUsd;
   }
 
   // Merge passes: average scores, union findings (judge sees its own first pass
@@ -143,6 +167,39 @@ export async function judgeRun(opts: JudgeOpts, run: RunSummary, violations: Vio
     notes: passes.map((p) => p.notes).filter(Boolean).join(' / ') || undefined,
     judgeOverruledAssert: overruled,
     costUsd,
+  };
+}
+
+/**
+ * Synthetic judge result for a run the SUT could not service — empty
+ * output, all-error turns, or a transport failure. Running the real
+ * judge on such a run produces confident-sounding axis failures
+ * ("helpfulness: 0, the user received nothing") that describe the
+ * broken environment, not the operator's behavior. The runner calls
+ * this instead of `judgeRun` for inconclusive runs: one clean meta
+ * finding, no wasted judge LLM cost.
+ */
+export function buildInconclusiveJudge(rubric: JudgeRubric, reason: string): JudgeResult {
+  const scores: Record<string, number> = {};
+  for (const axis of rubric.axes) scores[axis.id] = 0;
+  return {
+    scores,
+    findings: [
+      {
+        axis: 'meta',
+        severity: 'error',
+        shape: computeFindingShape('meta', 'sut_no_output'),
+        claim:
+          `Run is inconclusive — the system under test produced no usable output (${reason}). ` +
+          `This is an environment/SUT-health failure, not an operator behavioral finding.`,
+        suggestion:
+          'Verify the SUT endpoint is healthy and re-run. Do not file this as an operator bug.',
+        copyPrompt: '(inconclusive run — no copy prompt)',
+        isNovel: false,
+      },
+    ],
+    judgeOverruledAssert: false,
+    costUsd: 0,
   };
 }
 

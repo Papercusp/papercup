@@ -88,6 +88,23 @@ export interface LlmCallResult {
   raw: unknown;              // the SDK response — for telemetry/debugging
 }
 
+/**
+ * Models known to reject the `temperature` parameter. Opus 4.7 (as of
+ * 2026-05) errors with a 400 "temperature is deprecated for this model"
+ * on any value. Listed models skip the field pre-emptively.
+ */
+const TEMPERATURE_INCOMPATIBLE = /opus/i;
+
+/**
+ * True when an SDK error is the API rejecting `temperature`. Used to
+ * retry-without-temperature so a model that *newly* deprecates the
+ * field self-heals instead of hard-failing the run.
+ */
+export function isTemperatureDeprecatedError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  return /temperature.{0,40}(deprecat|not supported|unsupported|no longer)/i.test(msg);
+}
+
 export async function llmCall(opts: LlmCallOpts): Promise<LlmCallResult> {
   const client = await getClient();
 
@@ -96,17 +113,33 @@ export async function llmCall(opts: LlmCallOpts): Promise<LlmCallResult> {
     content: m.content,
   }));
 
-  // Opus 4.7 deprecated the `temperature` parameter — the API errors
-  // with "temperature is deprecated for this model" on any value.
-  // Other Claude models still accept it. Skip the field for Opus.
-  const isOpus = /opus/i.test(opts.model);
-  const resp = await client.messages.create({
+  const baseParams = {
     model: opts.model,
     max_tokens: opts.maxTokens ?? 1024,
-    ...(isOpus ? {} : { temperature: opts.temperature ?? 0.7 }),
     ...(opts.system ? { system: opts.system } : {}),
     messages,
-  });
+  };
+  const sendsTemperature = !TEMPERATURE_INCOMPATIBLE.test(opts.model);
+
+  let resp;
+  try {
+    resp = await client.messages.create({
+      ...baseParams,
+      ...(sendsTemperature ? { temperature: opts.temperature ?? 0.7 } : {}),
+    });
+  } catch (err) {
+    // Self-heal: a model we believed accepted `temperature` now rejects
+    // it. Retry once without the field rather than failing the run.
+    if (sendsTemperature && isTemperatureDeprecatedError(err)) {
+      console.warn(
+        `[llm-testing] ${opts.model} rejected 'temperature' — retrying without it. ` +
+          `Add it to TEMPERATURE_INCOMPATIBLE in llm-client.ts to skip the failed first call.`,
+      );
+      resp = await client.messages.create(baseParams);
+    } else {
+      throw err;
+    }
+  }
 
   // Extract text from the response content blocks.
   let text = '';
@@ -126,16 +159,29 @@ export async function llmCall(opts: LlmCallOpts): Promise<LlmCallResult> {
   return { text, json, inputTokens, outputTokens, costUsd, raw: resp };
 }
 
-function tryParseJson(text: string): unknown {
-  // Allow either bare JSON or JSON wrapped in ```json fences.
+export function tryParseJson(text: string): unknown {
   const trimmed = text.trim();
+  // 1. Bare JSON, or JSON wrapped in ```json fences.
   const fenced = trimmed.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/);
   const candidate = fenced ? fenced[1] : trimmed;
   try {
     return JSON.parse(candidate);
   } catch {
-    return null;
+    // fall through to brace-span extraction
   }
+  // 2. Prose-wrapped JSON: take the outermost {...} span. Judges and
+  //    sim-users occasionally prepend "Here is the JSON:" or trail a
+  //    sentence after the object.
+  const first = trimmed.indexOf('{');
+  const last = trimmed.lastIndexOf('}');
+  if (first >= 0 && last > first) {
+    try {
+      return JSON.parse(trimmed.slice(first, last + 1));
+    } catch {
+      // unrecoverable
+    }
+  }
+  return null;
 }
 
 /** True when an Anthropic key is resolvable (env or PG credentials). */

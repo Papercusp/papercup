@@ -18,7 +18,7 @@ import { readFileSync } from 'node:fs';
 
 import { evaluateAsserts } from './asserts/index';
 import { computeIdentityHash, computeScenarioHash } from './identity';
-import { judgeRun } from './judge';
+import { judgeRun, buildInconclusiveJudge } from './judge';
 import { resolveJudgeModel } from './judges/registry';
 import { lookupBlend } from './personas/blends';
 import { resolvePersona } from './personas/traits';
@@ -28,6 +28,7 @@ import { pullToolInvocations, pullContinueChainRows } from './telemetry';
 import type {
   CardEvent,
   ChatSession,
+  JudgeResult,
   Persona,
   RunSummary,
   Scenario,
@@ -383,22 +384,32 @@ async function runOnce(args: OnceArgs): Promise<SingleRunReport> {
   // Deterministic asserts.
   const violations = evaluateAsserts(scenario.asserts, summary);
 
-  // Judge.
-  const personaSummary = describePersona(persona);
-  const goalSummary = describeGoal(scenario.goal);
-  const judge = await judgeRun(
-    {
-      model: judgeModel,
-      sutModel,
-      rubric: scenario.rubric,
-      scenarioId: scenario.id,
-      scenarioDescription: scenario.description,
-      personaSummary,
-      goalSummary,
-    },
-    summary,
-    violations,
-  );
+  // SUT-health gate: when the SUT produced no usable output (a turn
+  // errored, or every turn came back empty), the judge would only
+  // describe the broken environment — confident axis failures that
+  // aren't operator findings. Skip it, emit one clean meta finding,
+  // and save the judge LLM cost.
+  const inconclusive = inconclusiveReason(turns, finishReason);
+  let judge: JudgeResult;
+  if (inconclusive) {
+    judge = buildInconclusiveJudge(scenario.rubric, inconclusive);
+  } else {
+    const personaSummary = describePersona(persona);
+    const goalSummary = describeGoal(scenario.goal);
+    judge = await judgeRun(
+      {
+        model: judgeModel,
+        sutModel,
+        rubric: scenario.rubric,
+        scenarioId: scenario.id,
+        scenarioDescription: scenario.description,
+        personaSummary,
+        goalSummary,
+      },
+      summary,
+      violations,
+    );
+  }
 
   // Roll sim-user + judge cost into the summary so PG sees the
   // honest envelope, not just the SUT-side cost (which is currently
@@ -408,7 +419,9 @@ async function runOnce(args: OnceArgs): Promise<SingleRunReport> {
   const hasErrorViolation = violations.some((v) => v.severity === 'error');
   const hasErrorFinding = judge.findings.some((f) => f.severity === 'error');
   let status: SingleRunReport['status'] = 'passed';
-  if (finishReason === 'errored') status = 'errored';
+  // An inconclusive run is `errored`, not `failed` — the SUT/environment
+  // broke, the operator did not behaviorally fail.
+  if (finishReason === 'errored' || inconclusive) status = 'errored';
   else if (hasErrorViolation || hasErrorFinding) status = 'failed';
 
   if (claimKey) {
@@ -421,6 +434,31 @@ async function runOnce(args: OnceArgs): Promise<SingleRunReport> {
   }
 
   return { summary, violations, judge, status };
+}
+
+/**
+ * Returns a human-readable reason when a run is inconclusive — the SUT
+ * never produced usable output — or null when the run is judgeable.
+ *
+ *  - finishReason 'errored': a turn ended in a transport/SUT error.
+ *  - no turns at all: the loop never ran.
+ *  - every turn empty: no assistant text AND no tool calls anywhere
+ *    (tool calls count as output even when text is empty).
+ */
+export function inconclusiveReason(
+  turns: TurnResult[],
+  finishReason: RunSummary['finishReason'],
+): string | null {
+  if (finishReason === 'errored') {
+    const errTurn = turns.find((t) => t.finishReason === 'error');
+    return `SUT turn ended in error: ${errTurn?.error ?? 'unknown error'}`;
+  }
+  if (turns.length === 0) return 'no turns were produced';
+  const allEmpty = turns.every(
+    (t) => t.assistantText.trim() === '' && t.toolCalls.length === 0,
+  );
+  if (allEmpty) return `all ${turns.length} turn(s) produced empty output`;
+  return null;
 }
 
 // =============================================================================
