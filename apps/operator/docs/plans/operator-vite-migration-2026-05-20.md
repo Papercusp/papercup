@@ -536,6 +536,13 @@ export function NavigationProgress() {
 
 Mount once in `__root.tsx`. **This is real work, not config** — ~30-60 lines including the CSS port. Drop `@bprogress/next` from `package.json` at Phase H.
 
+**B6 as-built (2026-05-21).** Shipped:
+- `apps/operator-vite/shims/bprogress.tsx` — no longer a no-op. Re-exports the real `ProgressProvider` + `useProgress` from `@bprogress/react` (the framework-agnostic core that `@bprogress/next` wraps). So the `@bprogress/next` / `@bprogress/next/app` aliases now hand shared components (`RouteLink`, `WorkspaceSwitcher`, `MarketplaceList`) a *live* controller — their `.start()/.stop()/.set()` calls drive the real bar.
+- `apps/operator-vite/src/components/NavigationProgress.tsx` — headless driver. Bridges TSR `useRouterState({ select: s => s.status })` (`'pending'` while a route's `beforeLoad`/`loader` is in flight) to `useProgress().start()/stop()`. Renders nothing.
+- `__root.tsx` — `<ProgressProvider>` (height 3px, color `#57d7ff`, delay 80 / stopDelay 120 / startPosition 0.08, `disableSameURL`, `showSpinner: false` — mirroring the Next operator's `RouteProgressProvider`) wraps the app tree; `<NavigationProgress/>` mounted inside it.
+
+The operator's own `RouteProgressProvider.tsx` is left unmounted in operator-vite (it stays for the live Next operator). `@bprogress/next` + `next-transition-router` come off `package.json` at Phase H along with the shims. Verified: `npm run build` clean (9108 modules).
+
 ### B acceptance (greppable)
 
 ```

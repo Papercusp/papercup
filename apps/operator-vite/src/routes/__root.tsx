@@ -15,7 +15,9 @@ import { UiPresenceProvider } from '@/app/_components/UiPresenceProvider';
 import DevReloadGate from '@/app/_components/DevReloadGate';
 import PerfObserverProvider from '@/app/admin/testing/_components/PerfObserverProvider';
 import RecorderHost from '@/app/admin/testing/_components/RecorderHost';
+import { ProgressProvider } from '@bprogress/react';
 import NotFound from '../components/NotFound';
+import { NavigationProgress } from '../components/NavigationProgress';
 import '@/app/globals.css';
 
 /**
@@ -54,34 +56,50 @@ function RootComponent() {
     <Tooltip.Provider delayDuration={150} skipDelayDuration={300}>
       <RootSyncProvider>
         <GlobalShortcutDispatcher />
-        <Suspense fallback={null}>
-          <NuqsAdapter>
-            <UiPresenceProvider />
-            <RouteTransitionProvider>
-              <WslOnboardingGate>
-                <OperatorConversationProvider>
-                  <PostHogProvider>
-                    <main data-route-transition-page="true">
-                      <Outlet />
-                    </main>
-                  </PostHogProvider>
-                </OperatorConversationProvider>
-              </WslOnboardingGate>
-            </RouteTransitionProvider>
-            <Toaster
-              theme="dark"
-              position="top-right"
-              richColors
-              closeButton
-              style={{ zIndex: 2147483646 }}
-            />
-            <ToasterSelectionFix />
-            <ToastHistoryRecorder />
-            <PerfObserverProvider />
-            <RecorderHost />
-            <DevReloadGate />
-          </NuqsAdapter>
-        </Suspense>
+        {/* B6 — navigation progress bar. ProgressProvider renders the bar
+            DOM + supplies the useProgress context (shared with RouteLink
+            et al. via the @bprogress/next alias shim); NavigationProgress
+            drives it from TanStack Router's status. Settings mirror the
+            Next operator's RouteProgressProvider. */}
+        <ProgressProvider
+          height="3px"
+          color="#57d7ff"
+          delay={80}
+          stopDelay={120}
+          startPosition={0.08}
+          disableSameURL
+          options={{ showSpinner: false }}
+        >
+          <NavigationProgress />
+          <Suspense fallback={null}>
+            <NuqsAdapter>
+              <UiPresenceProvider />
+              <RouteTransitionProvider>
+                <WslOnboardingGate>
+                  <OperatorConversationProvider>
+                    <PostHogProvider>
+                      <main data-route-transition-page="true">
+                        <Outlet />
+                      </main>
+                    </PostHogProvider>
+                  </OperatorConversationProvider>
+                </WslOnboardingGate>
+              </RouteTransitionProvider>
+              <Toaster
+                theme="dark"
+                position="top-right"
+                richColors
+                closeButton
+                style={{ zIndex: 2147483646 }}
+              />
+              <ToasterSelectionFix />
+              <ToastHistoryRecorder />
+              <PerfObserverProvider />
+              <RecorderHost />
+              <DevReloadGate />
+            </NuqsAdapter>
+          </Suspense>
+        </ProgressProvider>
       </RootSyncProvider>
     </Tooltip.Provider>
   );
