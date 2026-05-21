@@ -2659,92 +2659,11 @@ harness.post('/:slug/features/:id/approve-human', async (c) => {
  * Returns: budget_cents (null = unlimited), committed (open features),
  * spent (terminal features), available (= budget - committed when limited).
  */
-harness.get('/projects/:id/budget', async (c) => {
-  const projectId = c.req.param('id');
-  try {
-    const dbc = getLegacyClient();
-    const project = await dbc.prepare('SELECT id, name, budget_cents FROM projects WHERE id = ?').get(projectId) as any;
-    if (!project) return c.json({ error: 'project not found' }, 404);
-    const budget = project.budget_cents == null ? null : Number(project.budget_cents);
-
-    const committed = Number(((await dbc.prepare(`
-      SELECT COALESCE(SUM(expected_cost_cents), 0) as total
-      FROM all_features
-      WHERE project_id = ? AND status NOT IN ('cancelled', 'launched', 'passed')
-    `).get(projectId)) as any).total ?? 0);
-    const spent = Number(((await dbc.prepare(`
-      SELECT COALESCE(SUM(expected_cost_cents), 0) as total
-      FROM all_features
-      WHERE project_id = ? AND status = 'launched'
-    `).get(projectId)) as any).total ?? 0);
-
-    return c.json({
-      project_id: project.id,
-      name: project.name,
-      budget_cents: budget,
-      unlimited: budget === null,
-      committed_cents: committed,
-      spent_cents: spent,
-      available_cents: budget === null ? null : budget - committed,
-    });
-  } catch (e) {
-    return c.json({ error: `budget query failed: ${(e as Error).message}` }, 500);
-  }
-});
 
 /**
  * Item 8: per-project stats. Returns features grouped by status + per-dept
  * breakdown (counts and committed cost), plus the budget summary.
  */
-harness.get('/projects/:id/stats', async (c) => {
-  const projectId = c.req.param('id');
-  try {
-    const dbc = getLegacyClient();
-    const project = await dbc.prepare('SELECT * FROM projects WHERE id = ?').get(projectId) as any;
-    if (!project) return c.json({ error: 'project not found' }, 404);
-    const budget = project.budget_cents == null ? null : Number(project.budget_cents);
-
-    const featureCounts = (await dbc.prepare(`
-      SELECT status, COUNT(*)::int as n, COALESCE(SUM(expected_cost_cents), 0)::bigint as total_cost
-      FROM all_features WHERE project_id = ? GROUP BY status
-    `).all(projectId) as any[]).map((r) => ({ status: r.status, n: Number(r.n), total_cost: Number(r.total_cost) }));
-
-    const perHarness = (await dbc.prepare(`
-      SELECT harness_slug, COUNT(*)::int as features, COALESCE(SUM(expected_cost_cents), 0)::bigint as total_cost
-      FROM all_features WHERE project_id = ? GROUP BY harness_slug ORDER BY harness_slug
-    `).all(projectId) as any[]).map((r) => ({ harness_slug: r.harness_slug, features: Number(r.features), total_cost: Number(r.total_cost) }));
-
-    const committed = Number(((await dbc.prepare(`
-      SELECT COALESCE(SUM(expected_cost_cents), 0) as total FROM all_features
-      WHERE project_id = ? AND status NOT IN ('cancelled', 'launched', 'passed')
-    `).get(projectId)) as any).total ?? 0);
-    const spent = Number(((await dbc.prepare(`
-      SELECT COALESCE(SUM(expected_cost_cents), 0) as total FROM all_features
-      WHERE project_id = ? AND status = 'launched'
-    `).get(projectId)) as any).total ?? 0);
-
-    return c.json({
-      project: {
-        id: project.id, name: project.name, status: project.status,
-        budget_cents: budget,
-        unlimited: budget === null,
-        owning_dept: project.owning_dept,
-        vertical: project.vertical,
-      },
-      budget: {
-        budget_cents: budget,
-        committed_cents: committed,
-        spent_cents: spent,
-        available_cents: budget === null ? null : budget - committed,
-        utilization: budget === null ? null : Math.round(100 * committed / budget),
-      },
-      featureCounts,
-      perHarness,
-    });
-  } catch (e) {
-    return c.json({ error: `stats query failed: ${(e as Error).message}` }, 500);
-  }
-});
 
 /**
  * Layer A audit: feature change history (compensates for git-history loss
