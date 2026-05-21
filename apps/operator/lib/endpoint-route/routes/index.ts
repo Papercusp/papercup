@@ -53,6 +53,7 @@ import backupsPromote from './backups/promote';
 import backupsRestore from './backups/restore';
 import backupsSnapshots from './backups/snapshots';
 import harnessProjects from './harness/projects';
+import harnessSpec from './harness/spec';
 import harnessAllKpis from './harness/all-kpis';
 import harnessSearch from './harness/search';
 import harnessFile from './harness/file';
@@ -379,6 +380,7 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(backupsRestore as AnyRoute),
   ...flatten(backupsSnapshots as AnyRoute[]),
   ...flatten(harnessProjects as AnyRoute),
+  ...flatten(harnessSpec as AnyRoute[]),
   ...flatten(harnessAllKpis as AnyRoute),
   ...flatten(harnessSearch as AnyRoute),
   ...flatten(harnessFile as AnyRoute[]),
