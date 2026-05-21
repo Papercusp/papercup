@@ -10,7 +10,7 @@ import { describe, expect, it } from 'vitest';
 import { readIdentity } from '../identity';
 
 describe('locks readIdentity adapter', () => {
-  it('projects the principal branch and preserves workspaceId', () => {
+  it('projects the principal branch and preserves coordinationDomain', () => {
     const id = readIdentity({
       principal: {
         kind: 'harness',
@@ -20,16 +20,16 @@ describe('locks readIdentity adapter', () => {
     });
     expect(id.ownerId).toBe('restart');
     expect(id.ownerLabel).toBe('harness · restart');
-    expect(id.workspaceId).toBe('ws-7');
+    expect(id.coordinationDomain).toBe('ws-7');
   });
 
-  it('substitutes "default" workspaceId for a null coordination result', () => {
+  it('substitutes "default" coordinationDomain for a null coordination result', () => {
     const id = readIdentity({
       isSuperuser: true,
       uiClientId: 'sess-abc12345',
     });
     expect(id.ownerId).toBe('sess-abc12345');
-    expect(id.workspaceId).toBe('default');
+    expect(id.coordinationDomain).toBe('default');
   });
 
   it('inherits the power-user branch from resolveAgentIdentity', () => {
@@ -44,7 +44,7 @@ describe('locks readIdentity adapter', () => {
     });
     expect(id.ownerId).toBe('pus-1a2b3c4d-5e6f-7a8b-9c0d-1e2f3a4b5c6d');
     expect(id.ownerLabel.startsWith('omp · pus-')).toBe(true);
-    expect(id.workspaceId).toBe('ws-42');
+    expect(id.coordinationDomain).toBe('ws-42');
   });
 
   it('propagates resolveAgentIdentity errors', () => {

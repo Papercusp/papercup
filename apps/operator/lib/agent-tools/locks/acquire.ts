@@ -120,7 +120,7 @@ export default defineTool({
       .optional(),
   }),
   async handler(args, ctx) {
-    const { ownerId, ownerLabel, workspaceId } = readIdentity(ctx);
+    const { ownerId, ownerLabel, coordinationDomain } = readIdentity(ctx);
 
     let paths: string[];
     try {
@@ -139,9 +139,9 @@ export default defineTool({
     const startedAt = Date.now();
 
     // ── Fast path: try once, no wait ─────────────────────────────────
-    const first = await inWorkspaceTxn(workspaceId, ownerId, async (tx) =>
+    const first = await inWorkspaceTxn(coordinationDomain, ownerId, async (tx) =>
       tryAcquire(tx, {
-        workspaceId,
+        coordinationDomain,
         owner: ownerId,
         ownerLabel,
         paths,
@@ -184,7 +184,7 @@ export default defineTool({
 
     try {
       try {
-        unsubscribe = await subscribeWorkspace(workspaceId, (tid /* ignored kind */) => {
+        unsubscribe = await subscribeWorkspace(coordinationDomain, (tid /* ignored kind */) => {
           if (ticketId && tid === ticketId) {
             pendingWake = true;
             if (wakeResolve) {
@@ -205,9 +205,9 @@ export default defineTool({
       // so proceed to INSERT.
 
       // Step 3: INSERT INTO agent_lock_waiters.
-      const inserted = await inWorkspaceTxn(workspaceId, ownerId, async (tx) =>
+      const inserted = await inWorkspaceTxn(coordinationDomain, ownerId, async (tx) =>
         tryInsertWaiter(tx, {
-          workspaceId,
+          coordinationDomain,
           owner: ownerId,
           ownerLabel,
           paths,
@@ -254,7 +254,7 @@ export default defineTool({
       const emitProgressTick = async () => {
         try {
           const sql = getTxPool();
-          const q = await readQueue(sql, { workspaceId, paths });
+          const q = await readQueue(sql, { coordinationDomain, paths });
           const mine = ticketId
             ? q.waiting.find((w) => w.ticket_id === ticketId)
             : undefined;
@@ -336,8 +336,8 @@ export default defineTool({
         // lapse), nothing else in PG fires the cascade. The poke runs
         // the janitor + cascade for our workspace; if we should now
         // be granted, the status read below picks that up.
-        await inWorkspaceTxn(workspaceId, ownerId, (tx) =>
-          pokeWorkspace(tx, workspaceId),
+        await inWorkspaceTxn(coordinationDomain, ownerId, (tx) =>
+          pokeWorkspace(tx, coordinationDomain),
         );
 
         const status = await readWaiterStatus(sqlPool, ticketId);
@@ -357,15 +357,15 @@ export default defineTool({
       }
 
       // Step 6: timeout — mark expired and return busy snapshot.
-      await inWorkspaceTxn(workspaceId, ownerId, async (tx) => {
+      await inWorkspaceTxn(coordinationDomain, ownerId, async (tx) => {
         if (ticketId) await expireWaiter(tx, ticketId);
       });
 
       // Re-read the current busy snapshot (may differ from the initial
       // first.busy if some paths freed but others didn't).
-      const finalBusy = await inWorkspaceTxn(workspaceId, ownerId, async (tx) => {
+      const finalBusy = await inWorkspaceTxn(coordinationDomain, ownerId, async (tx) => {
         const r = await tryAcquire(tx, {
-          workspaceId,
+          coordinationDomain,
           owner: ownerId,
           ownerLabel,
           paths,

@@ -55,14 +55,14 @@ import type { Sql } from 'postgres';
 const DEFAULT_TTL_SEC = 1200;
 
 export interface SuLocksCoordinatorOptions {
-  workspaceId: string;
+  coordinationDomain: string;
 }
 
 export class SuLocksCoordinator implements FileClaimCoordinator {
-  private readonly workspaceId: string;
+  private readonly coordinationDomain: string;
 
   constructor(opts: SuLocksCoordinatorOptions) {
-    this.workspaceId = opts.workspaceId;
+    this.coordinationDomain = opts.coordinationDomain;
   }
 
   async acquire(
@@ -73,9 +73,9 @@ export class SuLocksCoordinator implements FileClaimCoordinator {
     const ttlSec = options.ttlMs
       ? Math.max(1, Math.round(options.ttlMs / 1000))
       : DEFAULT_TTL_SEC;
-    return inWorkspaceTxn(this.workspaceId, owner, async (tx) => {
+    return inWorkspaceTxn(this.coordinationDomain, owner, async (tx) => {
       const r = await tryAcquire(tx, {
-        workspaceId: this.workspaceId,
+        coordinationDomain: this.coordinationDomain,
         owner,
         ownerLabel: options.ownerLabel ?? null,
         paths: [...paths],
@@ -98,9 +98,9 @@ export class SuLocksCoordinator implements FileClaimCoordinator {
   }
 
   async release(claim: FileClaim): Promise<void> {
-    await inWorkspaceTxn(this.workspaceId, claim.owner, async (tx) => {
+    await inWorkspaceTxn(this.coordinationDomain, claim.owner, async (tx) => {
       await tryRelease(tx, {
-        workspaceId: this.workspaceId,
+        coordinationDomain: this.coordinationDomain,
         owner: claim.owner,
         lockId: claim.claimId,
       });
@@ -113,9 +113,9 @@ export class SuLocksCoordinator implements FileClaimCoordinator {
       ? Math.max(1, Math.round(options.ttlMs / 1000))
       : DEFAULT_TTL_SEC;
     const union = Array.from(new Set([...claim.paths, ...adds]));
-    return inWorkspaceTxn(this.workspaceId, claim.owner, async (tx) => {
+    return inWorkspaceTxn(this.coordinationDomain, claim.owner, async (tx) => {
       const r = await tryAcquire(tx, {
-        workspaceId: this.workspaceId,
+        coordinationDomain: this.coordinationDomain,
         owner: claim.owner,
         ownerLabel: null,
         paths: union,
@@ -142,9 +142,9 @@ export class SuLocksCoordinator implements FileClaimCoordinator {
 
   async heartbeat(claim: FileClaim, ttlMs?: number): Promise<HeartbeatResult> {
     const ttlSec = ttlMs ? Math.max(1, Math.round(ttlMs / 1000)) : DEFAULT_TTL_SEC;
-    return inWorkspaceTxn(this.workspaceId, claim.owner, async (tx) => {
+    return inWorkspaceTxn(this.coordinationDomain, claim.owner, async (tx) => {
       const r = await tryHeartbeat(tx, {
-        workspaceId: this.workspaceId,
+        coordinationDomain: this.coordinationDomain,
         owner: claim.owner,
         lockId: claim.claimId,
         ttlSec,
@@ -165,11 +165,11 @@ export class SuLocksCoordinator implements FileClaimCoordinator {
   }
 
   async reap(owner: string): Promise<number> {
-    return inWorkspaceTxn(this.workspaceId, owner, async (tx) => {
+    return inWorkspaceTxn(this.coordinationDomain, owner, async (tx) => {
       const reaped = await (tx as Sql)<Array<{ n: number }>>`
         WITH d AS (
           DELETE FROM agent_file_locks
-           WHERE coordination_domain = ${this.workspaceId} AND owner = ${owner}
+           WHERE coordination_domain = ${this.coordinationDomain} AND owner = ${owner}
           RETURNING lock_id
         )
         SELECT COUNT(DISTINCT lock_id)::int AS n FROM d
@@ -177,13 +177,13 @@ export class SuLocksCoordinator implements FileClaimCoordinator {
       await (tx as Sql)`
         UPDATE agent_lock_waiters
            SET status = 'cancelled'
-         WHERE coordination_domain = ${this.workspaceId}
+         WHERE coordination_domain = ${this.coordinationDomain}
            AND owner = ${owner}
            AND status = 'waiting'
       `;
       const n = reaped[0]?.n ?? 0;
       if (n > 0) {
-        await (tx as Sql)`SELECT grant_cascade(${this.workspaceId}, clock_timestamp())`;
+        await (tx as Sql)`SELECT grant_cascade(${this.coordinationDomain}, clock_timestamp())`;
       }
       return n;
     });

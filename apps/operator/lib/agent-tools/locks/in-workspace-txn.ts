@@ -15,7 +15,7 @@ import type { Sql } from 'postgres';
 import { ensureBootstrap, getTxPool, SU_LOCKS_FEATURE_KEY } from './su-lock-store';
 
 export async function inWorkspaceTxn<T>(
-  workspaceId: string,
+  coordinationDomain: string,
   ownerId: string,
   fn: (tx: Sql) => Promise<T>,
 ): Promise<T> {
@@ -33,7 +33,7 @@ export async function inWorkspaceTxn<T>(
     // with future features that pick a different feature_key.
     await tx`SELECT pg_advisory_xact_lock(
       ${SU_LOCKS_FEATURE_KEY}::int,
-      hashtext(${'su:' + workspaceId})
+      hashtext(${'su:' + coordinationDomain})
     )`;
     // TransactionSql has the same tagged-template surface as Sql for our
     // purposes; the cast lets store helpers take a single `Sql` type

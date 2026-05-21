@@ -3,9 +3,9 @@
  *
  * Per agent-plan-tracking-2026-05-20.md §4.4: every assisted-write verb
  * must serialize its read-modify-write through the SU lock system. The
- * `PreToolUse` hook only fires for `Edit/Write/MultiEdit`, so MCP tool
- * calls don't get auto-locked — each write verb owns its acquire/
- * release.
+ * OMP `tool_call` auto-lock hook only fires for `edit`/`write`/
+ * `multi_edit`, so MCP tool calls don't get auto-locked — each write
+ * verb owns its acquire/release.
  *
  * Critical invariant: ID allocation (D-NNN, P-NNN, slug uniqueness)
  * MUST happen *inside* the lock's mutator callback. The lock is held
@@ -78,11 +78,11 @@ export async function withPlanLock<T>(
   const ttl = opts.ttlSec ?? 60;
 
   const acquireResult = await inWorkspaceTxn(
-    identity.workspaceId,
+    identity.coordinationDomain,
     identity.ownerId,
     (tx) =>
       tryAcquire(tx, {
-        workspaceId: identity.workspaceId,
+        coordinationDomain: identity.coordinationDomain,
         owner: identity.ownerId,
         ownerLabel: identity.ownerLabel,
         paths,
@@ -114,9 +114,9 @@ export async function withPlanLock<T>(
 
     return { kind: 'applied', value, filePath };
   } finally {
-    await inWorkspaceTxn(identity.workspaceId, identity.ownerId, (tx) =>
+    await inWorkspaceTxn(identity.coordinationDomain, identity.ownerId, (tx) =>
       tryRelease(tx, {
-        workspaceId: identity.workspaceId,
+        coordinationDomain: identity.coordinationDomain,
         owner: identity.ownerId,
         lockId,
         paths,

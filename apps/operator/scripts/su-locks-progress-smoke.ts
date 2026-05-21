@@ -34,25 +34,25 @@ async function main() {
 
   console.log('1. Hold a path so a waiter queues...');
   const holder = await inWorkspaceTxn(ws, 'holder', (tx) => tryAcquire(tx, {
-    workspaceId: ws, owner: 'holder', ownerLabel: 'H',
+    coordinationDomain: ws, owner: 'holder', ownerLabel: 'H',
     paths: ['progress.ts'], intent: 'hold', ttlSec: 60,
   }));
   if (!holder.ok) fail('holder acquire');
 
   console.log('2. Queue 2 waiters; second one should see ahead_count = 1...');
   const w1 = await inWorkspaceTxn(ws, 'a', (tx) => tryInsertWaiter(tx, {
-    workspaceId: ws, owner: 'a', ownerLabel: 'A',
+    coordinationDomain: ws, owner: 'a', ownerLabel: 'A',
     paths: ['progress.ts'], intent: 'first', ttlSec: 60, maxWaitSec: 60,
   }));
   await new Promise((r) => setTimeout(r, 50));
   const w2 = await inWorkspaceTxn(ws, 'b', (tx) => tryInsertWaiter(tx, {
-    workspaceId: ws, owner: 'b', ownerLabel: 'B',
+    coordinationDomain: ws, owner: 'b', ownerLabel: 'B',
     paths: ['progress.ts'], intent: 'second', ttlSec: 60, maxWaitSec: 60,
   }));
   if (!w1.ok || !w2.ok) fail('waiter inserts');
 
   console.log('3. Read the snapshot the progress event would carry...');
-  const q = await readQueue(sql, { workspaceId: ws, paths: ['progress.ts'] });
+  const q = await readQueue(sql, { coordinationDomain: ws, paths: ['progress.ts'] });
   const mineW2 = q.waiting.find((w) => w.ticket_id === w2.ticket_id);
   console.log('   ahead_count for w2:', mineW2?.ahead_count);
   if (mineW2?.ahead_count !== 1) fail('expected ahead_count=1 for second waiter');
@@ -91,7 +91,7 @@ async function main() {
 
   console.log('5. Cleanup...');
   await inWorkspaceTxn(ws, 'holder', (tx) => tryRelease(tx, {
-    workspaceId: ws, owner: 'holder', lockId: holder.lock_id,
+    coordinationDomain: ws, owner: 'holder', lockId: holder.lock_id,
   }));
   await sql`DELETE FROM agent_lock_waiters WHERE coordination_domain = ${ws}`;
   await sql`DELETE FROM agent_file_locks WHERE coordination_domain = ${ws}`;

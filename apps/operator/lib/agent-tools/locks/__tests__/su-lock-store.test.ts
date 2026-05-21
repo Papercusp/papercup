@@ -125,7 +125,7 @@ describe('tryAcquire', () => {
     const ws = nextWs();
     const r = await inWorkspaceTxn(ws, 'a', (tx) =>
       tryAcquire(tx, {
-        workspaceId: ws,
+        coordinationDomain: ws,
         owner: 'a',
         ownerLabel: 'A',
         paths: ['foo.ts'],
@@ -144,7 +144,7 @@ describe('tryAcquire', () => {
     const ws = nextWs();
     const r = await inWorkspaceTxn(ws, 'a', (tx) =>
       tryAcquire(tx, {
-        workspaceId: ws,
+        coordinationDomain: ws,
         owner: 'a',
         ownerLabel: 'A',
         paths: normalizePaths(['c.ts', 'a.ts', 'b.ts']),
@@ -160,7 +160,7 @@ describe('tryAcquire', () => {
     const ws = nextWs();
     await inWorkspaceTxn(ws, 'a', (tx) =>
       tryAcquire(tx, {
-        workspaceId: ws,
+        coordinationDomain: ws,
         owner: 'a',
         ownerLabel: 'A',
         paths: ['contested.ts'],
@@ -170,7 +170,7 @@ describe('tryAcquire', () => {
     );
     const r = await inWorkspaceTxn(ws, 'b', (tx) =>
       tryAcquire(tx, {
-        workspaceId: ws,
+        coordinationDomain: ws,
         owner: 'b',
         ownerLabel: 'B',
         paths: ['contested.ts', 'free.ts'],
@@ -189,7 +189,7 @@ describe('tryAcquire', () => {
     }
     // Verify no partial state — free.ts must NOT be held by B
     const sql = getTxPool();
-    const q = await readQueue(sql, { workspaceId: ws });
+    const q = await readQueue(sql, { coordinationDomain: ws });
     const free = q.active_locks.find((l) => l.path === 'free.ts');
     expect(free).toBeUndefined();
   });
@@ -206,7 +206,7 @@ describe('tryAcquire', () => {
     `;
     const r = await inWorkspaceTxn(ws, 'b', (tx) =>
       tryAcquire(tx, {
-        workspaceId: ws,
+        coordinationDomain: ws,
         owner: 'b',
         ownerLabel: 'B',
         paths: ['stale.ts'],
@@ -231,7 +231,7 @@ describe('tryRelease + grant cascade', () => {
     const ws = nextWs();
     const r = await inWorkspaceTxn(ws, 'a', (tx) =>
       tryAcquire(tx, {
-        workspaceId: ws,
+        coordinationDomain: ws,
         owner: 'a',
         ownerLabel: 'A',
         paths: ['rel.ts'],
@@ -241,7 +241,7 @@ describe('tryRelease + grant cascade', () => {
     );
     if (!r.ok) throw new Error('acquire should succeed');
     const rel = await inWorkspaceTxn(ws, 'a', (tx) =>
-      tryRelease(tx, { workspaceId: ws, owner: 'a', lockId: r.lock_id }),
+      tryRelease(tx, { coordinationDomain: ws, owner: 'a', lockId: r.lock_id }),
     );
     expect(rel.released).toEqual(['rel.ts']);
   });
@@ -250,7 +250,7 @@ describe('tryRelease + grant cascade', () => {
     const ws = nextWs();
     await inWorkspaceTxn(ws, 'a', (tx) =>
       tryAcquire(tx, {
-        workspaceId: ws,
+        coordinationDomain: ws,
         owner: 'a',
         ownerLabel: 'A',
         paths: ['x.ts', 'y.ts'],
@@ -259,7 +259,7 @@ describe('tryRelease + grant cascade', () => {
       }),
     );
     const rel = await inWorkspaceTxn(ws, 'a', (tx) =>
-      tryRelease(tx, { workspaceId: ws, owner: 'a', allMine: true }),
+      tryRelease(tx, { coordinationDomain: ws, owner: 'a', allMine: true }),
     );
     expect(rel.released.sort()).toEqual(['x.ts', 'y.ts']);
   });
@@ -270,7 +270,7 @@ describe('tryRelease + grant cascade', () => {
 
     const a = await inWorkspaceTxn(ws, 'a', (tx) =>
       tryAcquire(tx, {
-        workspaceId: ws,
+        coordinationDomain: ws,
         owner: 'a',
         ownerLabel: 'A',
         paths: ['cascade.ts'],
@@ -282,7 +282,7 @@ describe('tryRelease + grant cascade', () => {
 
     const w = await inWorkspaceTxn(ws, 'b', (tx) =>
       tryInsertWaiter(tx, {
-        workspaceId: ws,
+        coordinationDomain: ws,
         owner: 'b',
         ownerLabel: 'B',
         paths: ['cascade.ts'],
@@ -295,7 +295,7 @@ describe('tryRelease + grant cascade', () => {
     if ('self_granted' in w) throw new Error('unexpected self-grant in w');
 
     await inWorkspaceTxn(ws, 'a', (tx) =>
-      tryRelease(tx, { workspaceId: ws, owner: 'a', lockId: a.lock_id }),
+      tryRelease(tx, { coordinationDomain: ws, owner: 'a', lockId: a.lock_id }),
     );
 
     const status = await readWaiterStatus(sql, w.ticket_id);
@@ -311,7 +311,7 @@ describe('tryRelease + grant cascade', () => {
     // grant a waiter requesting both — only the single-path waiter.
     const a = await inWorkspaceTxn(ws, 'a', (tx) =>
       tryAcquire(tx, {
-        workspaceId: ws,
+        coordinationDomain: ws,
         owner: 'a',
         ownerLabel: 'A',
         paths: ['p1.ts'],
@@ -321,7 +321,7 @@ describe('tryRelease + grant cascade', () => {
     );
     const c = await inWorkspaceTxn(ws, 'c', (tx) =>
       tryAcquire(tx, {
-        workspaceId: ws,
+        coordinationDomain: ws,
         owner: 'c',
         ownerLabel: 'C',
         paths: ['p2.ts'],
@@ -336,7 +336,7 @@ describe('tryRelease + grant cascade', () => {
     // testing the cascade itself.
     const wBoth = await inWorkspaceTxn(ws, 'b', (tx) =>
       tryInsertWaiter(tx, {
-        workspaceId: ws,
+        coordinationDomain: ws,
         owner: 'b',
         ownerLabel: 'B',
         paths: ['p1.ts', 'p2.ts'],
@@ -350,14 +350,14 @@ describe('tryRelease + grant cascade', () => {
 
     // Release A. p2 is still held → B-both still waiting.
     await inWorkspaceTxn(ws, 'a', (tx) =>
-      tryRelease(tx, { workspaceId: ws, owner: 'a', lockId: a.lock_id }),
+      tryRelease(tx, { coordinationDomain: ws, owner: 'a', lockId: a.lock_id }),
     );
     const stillWaiting = await readWaiterStatus(sql, wBoth.ticket_id);
     expect(stillWaiting.status).toBe('waiting');
 
     // Now release C; cascade can grant B-both.
     await inWorkspaceTxn(ws, 'c', (tx) =>
-      tryRelease(tx, { workspaceId: ws, owner: 'c', lockId: c.lock_id }),
+      tryRelease(tx, { coordinationDomain: ws, owner: 'c', lockId: c.lock_id }),
     );
     const granted = await readWaiterStatus(sql, wBoth.ticket_id);
     expect(granted.status).toBe('granted');
@@ -369,7 +369,7 @@ describe('tryHeartbeat', () => {
     const ws = nextWs();
     const r = await inWorkspaceTxn(ws, 'a', (tx) =>
       tryAcquire(tx, {
-        workspaceId: ws,
+        coordinationDomain: ws,
         owner: 'a',
         ownerLabel: 'A',
         paths: ['hb.ts'],
@@ -404,7 +404,7 @@ describe('tryInsertWaiter + cap', () => {
     // Hold the file so waiters actually queue.
     await inWorkspaceTxn(ws, 'holder', (tx) =>
       tryAcquire(tx, {
-        workspaceId: ws,
+        coordinationDomain: ws,
         owner: 'holder',
         ownerLabel: 'H',
         paths: ['capped.ts'],
@@ -418,7 +418,7 @@ describe('tryInsertWaiter + cap', () => {
     for (let i = 0; i < MAX_WAITERS_PER_OWNER + 1; i++) {
       last = await inWorkspaceTxn(ws, owner, (tx) =>
         tryInsertWaiter(tx, {
-          workspaceId: ws,
+          coordinationDomain: ws,
           owner,
           ownerLabel: 'capped',
           paths: ['capped.ts'],
@@ -438,13 +438,13 @@ describe('expireWaiter + tryCancelWait', () => {
     const ws = nextWs();
     await inWorkspaceTxn(ws, 'h', (tx) =>
       tryAcquire(tx, {
-        workspaceId: ws, owner: 'h', ownerLabel: 'H',
+        coordinationDomain: ws, owner: 'h', ownerLabel: 'H',
         paths: ['exp.ts'], intent: 'h', ttlSec: 60,
       }),
     );
     const w = await inWorkspaceTxn(ws, 'b', (tx) =>
       tryInsertWaiter(tx, {
-        workspaceId: ws, owner: 'b', ownerLabel: 'B',
+        coordinationDomain: ws, owner: 'b', ownerLabel: 'B',
         paths: ['exp.ts'], intent: 'b', ttlSec: 60, maxWaitSec: 60,
       }),
     );
@@ -459,13 +459,13 @@ describe('expireWaiter + tryCancelWait', () => {
     const ws = nextWs();
     await inWorkspaceTxn(ws, 'h', (tx) =>
       tryAcquire(tx, {
-        workspaceId: ws, owner: 'h', ownerLabel: 'H',
+        coordinationDomain: ws, owner: 'h', ownerLabel: 'H',
         paths: ['cancel.ts'], intent: 'h', ttlSec: 60,
       }),
     );
     const w = await inWorkspaceTxn(ws, 'b', (tx) =>
       tryInsertWaiter(tx, {
-        workspaceId: ws, owner: 'b', ownerLabel: 'B',
+        coordinationDomain: ws, owner: 'b', ownerLabel: 'B',
         paths: ['cancel.ts'], intent: 'b', ttlSec: 60, maxWaitSec: 60,
       }),
     );
@@ -491,13 +491,13 @@ describe('expireWaiter + tryCancelWait', () => {
     const ws = nextWs();
     await inWorkspaceTxn(ws, 'h', (tx) =>
       tryAcquire(tx, {
-        workspaceId: ws, owner: 'h', ownerLabel: 'H',
+        coordinationDomain: ws, owner: 'h', ownerLabel: 'H',
         paths: ['xowner.ts'], intent: 'h', ttlSec: 60,
       }),
     );
     const w = await inWorkspaceTxn(ws, 'b', (tx) =>
       tryInsertWaiter(tx, {
-        workspaceId: ws, owner: 'b', ownerLabel: 'B',
+        coordinationDomain: ws, owner: 'b', ownerLabel: 'B',
         paths: ['xowner.ts'], intent: 'b', ttlSec: 60, maxWaitSec: 60,
       }),
     );
@@ -518,13 +518,13 @@ describe('readQueue', () => {
     // Hold a path so waiters queue.
     await inWorkspaceTxn(ws, 'h', (tx) =>
       tryAcquire(tx, {
-        workspaceId: ws, owner: 'h', ownerLabel: 'H',
+        coordinationDomain: ws, owner: 'h', ownerLabel: 'H',
         paths: ['q.ts'], intent: 'h', ttlSec: 60,
       }),
     );
     const w1 = await inWorkspaceTxn(ws, 'first', (tx) =>
       tryInsertWaiter(tx, {
-        workspaceId: ws, owner: 'first', ownerLabel: 'F',
+        coordinationDomain: ws, owner: 'first', ownerLabel: 'F',
         paths: ['q.ts'], intent: 'first', ttlSec: 60, maxWaitSec: 60,
       }),
     );
@@ -532,14 +532,14 @@ describe('readQueue', () => {
     await new Promise((r) => setTimeout(r, 30));
     const w2 = await inWorkspaceTxn(ws, 'second', (tx) =>
       tryInsertWaiter(tx, {
-        workspaceId: ws, owner: 'second', ownerLabel: 'S',
+        coordinationDomain: ws, owner: 'second', ownerLabel: 'S',
         paths: ['q.ts'], intent: 'second', ttlSec: 60, maxWaitSec: 60,
       }),
     );
     if (!w1.ok || !w2.ok) throw new Error('inserts should succeed');
     if ('self_granted' in w1 || 'self_granted' in w2) throw new Error('unexpected self-grant in queue test');
 
-    const q = await readQueue(getTxPool(), { workspaceId: ws });
+    const q = await readQueue(getTxPool(), { coordinationDomain: ws });
     expect(q.active_locks).toHaveLength(1);
     expect(q.active_locks[0].path).toBe('q.ts');
     expect(q.waiting).toHaveLength(2);
@@ -557,7 +557,7 @@ describe('head-waiter blocks new acquires (anti-starvation)', () => {
     // because B is ahead of C in line even though C didn't queue.
     const a = await inWorkspaceTxn(ws, 'a', (tx) =>
       tryAcquire(tx, {
-        workspaceId: ws, owner: 'a', ownerLabel: 'A',
+        coordinationDomain: ws, owner: 'a', ownerLabel: 'A',
         paths: ['hot.ts'], intent: 'a', ttlSec: 60,
       }),
     );
@@ -565,20 +565,20 @@ describe('head-waiter blocks new acquires (anti-starvation)', () => {
 
     await inWorkspaceTxn(ws, 'b', (tx) =>
       tryInsertWaiter(tx, {
-        workspaceId: ws, owner: 'b', ownerLabel: 'B',
+        coordinationDomain: ws, owner: 'b', ownerLabel: 'B',
         paths: ['hot.ts'], intent: 'b', ttlSec: 60, maxWaitSec: 60,
       }),
     );
 
     // Release A.
     await inWorkspaceTxn(ws, 'a', (tx) =>
-      tryRelease(tx, { workspaceId: ws, owner: 'a', lockId: a.lock_id }),
+      tryRelease(tx, { coordinationDomain: ws, owner: 'a', lockId: a.lock_id }),
     );
 
     // C tries to acquire — should be busy because B got the cascade.
     const c = await inWorkspaceTxn(ws, 'c', (tx) =>
       tryAcquire(tx, {
-        workspaceId: ws, owner: 'c', ownerLabel: 'C',
+        coordinationDomain: ws, owner: 'c', ownerLabel: 'C',
         paths: ['hot.ts'], intent: 'c', ttlSec: 60,
       }),
     );
@@ -591,13 +591,13 @@ describe('audit regression — single lock_id across mixed acquire', () => {
     const ws = nextWs();
     const r1 = await inWorkspaceTxn(ws, 'a', (tx) =>
       tryAcquire(tx, {
-        workspaceId: ws, owner: 'a', ownerLabel: 'A',
+        coordinationDomain: ws, owner: 'a', ownerLabel: 'A',
         paths: ['u1.ts'], intent: 'first', ttlSec: 60,
       }),
     );
     const r2 = await inWorkspaceTxn(ws, 'a', (tx) =>
       tryAcquire(tx, {
-        workspaceId: ws, owner: 'a', ownerLabel: 'A',
+        coordinationDomain: ws, owner: 'a', ownerLabel: 'A',
         paths: ['u2.ts'], intent: 'second', ttlSec: 60,
       }),
     );
@@ -607,7 +607,7 @@ describe('audit regression — single lock_id across mixed acquire', () => {
     // Extending across the two prior lock_ids must unify them.
     const r3 = await inWorkspaceTxn(ws, 'a', (tx) =>
       tryAcquire(tx, {
-        workspaceId: ws, owner: 'a', ownerLabel: 'A',
+        coordinationDomain: ws, owner: 'a', ownerLabel: 'A',
         paths: ['u1.ts', 'u2.ts', 'u3.ts'], intent: 'extend', ttlSec: 60,
       }),
     );
@@ -623,7 +623,7 @@ describe('audit regression — single lock_id across mixed acquire', () => {
     expect(new Set(rows.map((r) => r.lock_id)).size).toBe(1);
 
     const rel = await inWorkspaceTxn(ws, 'a', (tx) =>
-      tryRelease(tx, { workspaceId: ws, owner: 'a', lockId: r3.lock_id }),
+      tryRelease(tx, { coordinationDomain: ws, owner: 'a', lockId: r3.lock_id }),
     );
     expect(rel.released.sort()).toEqual(['u1.ts', 'u2.ts', 'u3.ts']);
   });
@@ -632,7 +632,7 @@ describe('audit regression — single lock_id across mixed acquire', () => {
     const ws = nextWs();
     const r1 = await inWorkspaceTxn(ws, 'a', (tx) =>
       tryAcquire(tx, {
-        workspaceId: ws, owner: 'a', ownerLabel: 'A',
+        coordinationDomain: ws, owner: 'a', ownerLabel: 'A',
         paths: ['m1.ts', 'm2.ts'], intent: 'first', ttlSec: 60,
       }),
     );
@@ -640,7 +640,7 @@ describe('audit regression — single lock_id across mixed acquire', () => {
 
     const r2 = await inWorkspaceTxn(ws, 'a', (tx) =>
       tryAcquire(tx, {
-        workspaceId: ws, owner: 'a', ownerLabel: 'A',
+        coordinationDomain: ws, owner: 'a', ownerLabel: 'A',
         paths: ['m1.ts', 'm2.ts', 'm3.ts'], intent: 'extend', ttlSec: 60,
       }),
     );
@@ -660,7 +660,7 @@ describe('audit regression — single lock_id across mixed acquire', () => {
 
     // release(lock_id) must free all 3.
     const rel = await inWorkspaceTxn(ws, 'a', (tx) =>
-      tryRelease(tx, { workspaceId: ws, owner: 'a', lockId: r2.lock_id }),
+      tryRelease(tx, { coordinationDomain: ws, owner: 'a', lockId: r2.lock_id }),
     );
     expect(rel.released.sort()).toEqual(['m1.ts', 'm2.ts', 'm3.ts']);
   });
@@ -672,7 +672,7 @@ describe('audit regression — insert-race self-grant', () => {
     // Holder A.
     const a = await inWorkspaceTxn(ws, 'a', (tx) =>
       tryAcquire(tx, {
-        workspaceId: ws, owner: 'a', ownerLabel: 'A',
+        coordinationDomain: ws, owner: 'a', ownerLabel: 'A',
         paths: ['ir.ts'], intent: 'A', ttlSec: 60,
       }),
     );
@@ -681,11 +681,11 @@ describe('audit regression — insert-race self-grant', () => {
     // B's first tryAcquire would have returned busy (we skip simulating
     // that step; the bug is in INSERT).
     await inWorkspaceTxn(ws, 'a', (tx) =>
-      tryRelease(tx, { workspaceId: ws, owner: 'a', lockId: a.lock_id }),
+      tryRelease(tx, { coordinationDomain: ws, owner: 'a', lockId: a.lock_id }),
     );
     const w = await inWorkspaceTxn(ws, 'b', (tx) =>
       tryInsertWaiter(tx, {
-        workspaceId: ws, owner: 'b', ownerLabel: 'B',
+        coordinationDomain: ws, owner: 'b', ownerLabel: 'B',
         paths: ['ir.ts'], intent: 'B', ttlSec: 60, maxWaitSec: 60,
       }),
     );
@@ -712,7 +712,7 @@ describe('audit regression — orphaned-waiter cleanup', () => {
     const sql = getTxPool();
     const h = await inWorkspaceTxn(ws, 'h', (tx) =>
       tryAcquire(tx, {
-        workspaceId: ws, owner: 'h', ownerLabel: 'H',
+        coordinationDomain: ws, owner: 'h', ownerLabel: 'H',
         paths: ['orphan.ts'], intent: 'H', ttlSec: 60,
       }),
     );
@@ -722,7 +722,7 @@ describe('audit regression — orphaned-waiter cleanup', () => {
     // calling pokeWorkspace.
     const w = await inWorkspaceTxn(ws, 'b', (tx) =>
       tryInsertWaiter(tx, {
-        workspaceId: ws, owner: 'b', ownerLabel: 'B',
+        coordinationDomain: ws, owner: 'b', ownerLabel: 'B',
         paths: ['orphan.ts'], intent: 'B', ttlSec: 60, maxWaitSec: 1,
       }),
     );
@@ -735,7 +735,7 @@ describe('audit regression — orphaned-waiter cleanup', () => {
     // Should be 'busy' (H still holds), not blocked by the orphan.
     const probe = await inWorkspaceTxn(ws, 'probe', (tx) =>
       tryAcquire(tx, {
-        workspaceId: ws, owner: 'probe', ownerLabel: 'P',
+        coordinationDomain: ws, owner: 'probe', ownerLabel: 'P',
         paths: ['orphan.ts'], intent: 'probe', ttlSec: 60,
       }),
     );
@@ -771,7 +771,7 @@ describe('audit regression — orphaned-waiter cleanup', () => {
     `;
     const r = await inWorkspaceTxn(ws, 'fresh', (tx) =>
       tryAcquire(tx, {
-        workspaceId: ws, owner: 'fresh', ownerLabel: 'F',
+        coordinationDomain: ws, owner: 'fresh', ownerLabel: 'F',
         paths: ['ghost.ts'], intent: 'F', ttlSec: 60,
       }),
     );
@@ -785,13 +785,13 @@ describe('audit regression — cross-owner release/heartbeat refused', () => {
     const sql = getTxPool();
     const a = await inWorkspaceTxn(ws, 'a', (tx) =>
       tryAcquire(tx, {
-        workspaceId: ws, owner: 'a', ownerLabel: 'A',
+        coordinationDomain: ws, owner: 'a', ownerLabel: 'A',
         paths: ['secret.ts'], intent: 'A', ttlSec: 60,
       }),
     );
     if (!a.ok) throw new Error('setup');
     const rel = await inWorkspaceTxn(ws, 'b', (tx) =>
-      tryRelease(tx, { workspaceId: ws, owner: 'b', lockId: a.lock_id }),
+      tryRelease(tx, { coordinationDomain: ws, owner: 'b', lockId: a.lock_id }),
     );
     expect(rel.released).toEqual([]);
     const survives = await sql<Array<{ c: number }>>`
@@ -805,7 +805,7 @@ describe('audit regression — cross-owner release/heartbeat refused', () => {
     const ws = nextWs();
     const a = await inWorkspaceTxn(ws, 'a', (tx) =>
       tryAcquire(tx, {
-        workspaceId: ws, owner: 'a', ownerLabel: 'A',
+        coordinationDomain: ws, owner: 'a', ownerLabel: 'A',
         paths: ['secret2.ts'], intent: 'A', ttlSec: 60,
       }),
     );
@@ -824,7 +824,7 @@ describe('audit regression — pokeWorkspace grants waiter after holder TTL expi
     // Holder with 1s TTL
     const holder = await inWorkspaceTxn(ws, 'h', (tx) =>
       tryAcquire(tx, {
-        workspaceId: ws, owner: 'h', ownerLabel: 'H',
+        coordinationDomain: ws, owner: 'h', ownerLabel: 'H',
         paths: ['exp.ts'], intent: 'short', ttlSec: 1,
       }),
     );
@@ -833,7 +833,7 @@ describe('audit regression — pokeWorkspace grants waiter after holder TTL expi
     // Waiter queues while holder is alive
     const w = await inWorkspaceTxn(ws, 'b', (tx) =>
       tryInsertWaiter(tx, {
-        workspaceId: ws, owner: 'b', ownerLabel: 'B',
+        coordinationDomain: ws, owner: 'b', ownerLabel: 'B',
         paths: ['exp.ts'], intent: 'B', ttlSec: 60, maxWaitSec: 60,
       }),
     );
@@ -873,7 +873,7 @@ describe('plan §10.1 — release_with_paths_filter', () => {
     const ws = nextWs();
     const r = await inWorkspaceTxn(ws, 'a', (tx) =>
       tryAcquire(tx, {
-        workspaceId: ws,
+        coordinationDomain: ws,
         owner: 'a',
         ownerLabel: 'A',
         paths: ['p1.ts', 'p2.ts', 'p3.ts'],
@@ -885,7 +885,7 @@ describe('plan §10.1 — release_with_paths_filter', () => {
     // Release only p2.
     const rel = await inWorkspaceTxn(ws, 'a', (tx) =>
       tryRelease(tx, {
-        workspaceId: ws,
+        coordinationDomain: ws,
         owner: 'a',
         lockId: r.lock_id,
         paths: ['p2.ts'],
@@ -893,7 +893,7 @@ describe('plan §10.1 — release_with_paths_filter', () => {
     );
     expect(rel.released).toEqual(['p2.ts']);
     // p1 and p3 still held.
-    const q = await readQueue(getTxPool(), { workspaceId: ws });
+    const q = await readQueue(getTxPool(), { coordinationDomain: ws });
     const held = q.active_locks.map((l) => l.path).sort();
     expect(held).toEqual(['p1.ts', 'p3.ts']);
   });
@@ -905,7 +905,7 @@ describe('plan §10.1 — release_grant_cascade_continues_past_vanished_waiter',
     const sql = getTxPool();
     const a = await inWorkspaceTxn(ws, 'a', (tx) =>
       tryAcquire(tx, {
-        workspaceId: ws, owner: 'a', ownerLabel: 'A',
+        coordinationDomain: ws, owner: 'a', ownerLabel: 'A',
         paths: ['v.ts'], intent: 'A', ttlSec: 60,
       }),
     );
@@ -916,14 +916,14 @@ describe('plan §10.1 — release_grant_cascade_continues_past_vanished_waiter',
     // no_data_found and continues to the next waiter.
     const w1 = await inWorkspaceTxn(ws, 'b1', (tx) =>
       tryInsertWaiter(tx, {
-        workspaceId: ws, owner: 'b1', ownerLabel: 'B1',
+        coordinationDomain: ws, owner: 'b1', ownerLabel: 'B1',
         paths: ['v.ts'], intent: 'b1', ttlSec: 60, maxWaitSec: 60,
       }),
     );
     await new Promise((r) => setTimeout(r, 30));
     const w2 = await inWorkspaceTxn(ws, 'b2', (tx) =>
       tryInsertWaiter(tx, {
-        workspaceId: ws, owner: 'b2', ownerLabel: 'B2',
+        coordinationDomain: ws, owner: 'b2', ownerLabel: 'B2',
         paths: ['v.ts'], intent: 'b2', ttlSec: 60, maxWaitSec: 60,
       }),
     );
@@ -935,7 +935,7 @@ describe('plan §10.1 — release_grant_cascade_continues_past_vanished_waiter',
 
     // Release A — cascade should skip the vanished w1 and grant w2.
     await inWorkspaceTxn(ws, 'a', (tx) =>
-      tryRelease(tx, { workspaceId: ws, owner: 'a', lockId: a.lock_id }),
+      tryRelease(tx, { coordinationDomain: ws, owner: 'a', lockId: a.lock_id }),
     );
     const s2 = await readWaiterStatus(sql, w2.ticket_id);
     expect(s2.status).toBe('granted');
@@ -948,7 +948,7 @@ describe('plan §10.1 — cancel_wait_after_grant', () => {
     const sql = getTxPool();
     const a = await inWorkspaceTxn(ws, 'a', (tx) =>
       tryAcquire(tx, {
-        workspaceId: ws, owner: 'a', ownerLabel: 'A',
+        coordinationDomain: ws, owner: 'a', ownerLabel: 'A',
         paths: ['cg.ts'], intent: 'A', ttlSec: 60,
       }),
     );
@@ -956,7 +956,7 @@ describe('plan §10.1 — cancel_wait_after_grant', () => {
 
     const w = await inWorkspaceTxn(ws, 'b', (tx) =>
       tryInsertWaiter(tx, {
-        workspaceId: ws, owner: 'b', ownerLabel: 'B',
+        coordinationDomain: ws, owner: 'b', ownerLabel: 'B',
         paths: ['cg.ts'], intent: 'B', ttlSec: 60, maxWaitSec: 60,
       }),
     );
@@ -965,7 +965,7 @@ describe('plan §10.1 — cancel_wait_after_grant', () => {
 
     // Cause the grant first.
     await inWorkspaceTxn(ws, 'a', (tx) =>
-      tryRelease(tx, { workspaceId: ws, owner: 'a', lockId: a.lock_id }),
+      tryRelease(tx, { coordinationDomain: ws, owner: 'a', lockId: a.lock_id }),
     );
 
     // Now try to cancel — already granted, should return false.
@@ -1037,14 +1037,14 @@ describe('plan §10.1 + file-locking #4 — background janitor', () => {
     async function armWorkspace(ws: string): Promise<string> {
       const a = await inWorkspaceTxn(ws, 'h', (tx) =>
         tryAcquire(tx, {
-          workspaceId: ws, owner: 'h', ownerLabel: 'H',
+          coordinationDomain: ws, owner: 'h', ownerLabel: 'H',
           paths: ['bg.ts'], intent: 'H', ttlSec: 300,
         }),
       );
       if (!a.ok) throw new Error('arm: holder acquire failed');
       const w = await inWorkspaceTxn(ws, 'b', (tx) =>
         tryInsertWaiter(tx, {
-          workspaceId: ws, owner: 'b', ownerLabel: 'B',
+          coordinationDomain: ws, owner: 'b', ownerLabel: 'B',
           paths: ['bg.ts'], intent: 'B', ttlSec: 60, maxWaitSec: 600,
         }),
       );
@@ -1187,7 +1187,7 @@ describe('audit regression — failed multi-path acquire is side-effect free', (
     const ws = nextWs();
     const original = await inWorkspaceTxn(ws, 'a', (tx) =>
       tryAcquire(tx, {
-        workspaceId: ws, owner: 'a', ownerLabel: 'A',
+        coordinationDomain: ws, owner: 'a', ownerLabel: 'A',
         paths: ['kept.ts'], intent: 'original', ttlSec: 60,
       }),
     );
@@ -1196,7 +1196,7 @@ describe('audit regression — failed multi-path acquire is side-effect free', (
 
     await inWorkspaceTxn(ws, 'b', (tx) =>
       tryAcquire(tx, {
-        workspaceId: ws, owner: 'b', ownerLabel: 'B',
+        coordinationDomain: ws, owner: 'b', ownerLabel: 'B',
         paths: ['blocked.ts'], intent: 'B', ttlSec: 60,
       }),
     );
@@ -1204,7 +1204,7 @@ describe('audit regression — failed multi-path acquire is side-effect free', (
     // A tries to acquire [kept, blocked] with a different intent + 10x TTL.
     const failed = await inWorkspaceTxn(ws, 'a', (tx) =>
       tryAcquire(tx, {
-        workspaceId: ws, owner: 'a', ownerLabel: 'A',
+        coordinationDomain: ws, owner: 'a', ownerLabel: 'A',
         paths: ['kept.ts', 'blocked.ts'], intent: 'A retry', ttlSec: 600,
       }),
     );
@@ -1227,14 +1227,14 @@ describe('audit regression — same-owner re-acquire', () => {
     const ws = nextWs();
     const r1 = await inWorkspaceTxn(ws, 'a', (tx) =>
       tryAcquire(tx, {
-        workspaceId: ws, owner: 'a', ownerLabel: 'A',
+        coordinationDomain: ws, owner: 'a', ownerLabel: 'A',
         paths: ['reacq.ts'], intent: 'first', ttlSec: 60,
       }),
     );
     if (!r1.ok) throw new Error('first acquire');
     const r2 = await inWorkspaceTxn(ws, 'a', (tx) =>
       tryAcquire(tx, {
-        workspaceId: ws, owner: 'a', ownerLabel: 'A',
+        coordinationDomain: ws, owner: 'a', ownerLabel: 'A',
         paths: ['reacq.ts'], intent: 'second', ttlSec: 60,
       }),
     );
@@ -1251,14 +1251,14 @@ describe('audit regression — same-owner re-acquire', () => {
     // The head-waiter rule should ignore A's same-owner refresh.
     const a = await inWorkspaceTxn(ws, 'a', (tx) =>
       tryAcquire(tx, {
-        workspaceId: ws, owner: 'a', ownerLabel: 'A',
+        coordinationDomain: ws, owner: 'a', ownerLabel: 'A',
         paths: ['x.ts'], intent: 'A', ttlSec: 60,
       }),
     );
     if (!a.ok) throw new Error('setup acquire');
     const w = await inWorkspaceTxn(ws, 'b', (tx) =>
       tryInsertWaiter(tx, {
-        workspaceId: ws, owner: 'b', ownerLabel: 'B',
+        coordinationDomain: ws, owner: 'b', ownerLabel: 'B',
         paths: ['x.ts'], intent: 'B waits', ttlSec: 60, maxWaitSec: 60,
       }),
     );
@@ -1267,7 +1267,7 @@ describe('audit regression — same-owner re-acquire', () => {
 
     const refresh = await inWorkspaceTxn(ws, 'a', (tx) =>
       tryAcquire(tx, {
-        workspaceId: ws, owner: 'a', ownerLabel: 'A',
+        coordinationDomain: ws, owner: 'a', ownerLabel: 'A',
         paths: ['x.ts'], intent: 'A refresh', ttlSec: 60,
       }),
     );
@@ -1277,7 +1277,7 @@ describe('audit regression — same-owner re-acquire', () => {
     // A third owner (C) trying to take x.ts MUST still be blocked.
     const c = await inWorkspaceTxn(ws, 'c', (tx) =>
       tryAcquire(tx, {
-        workspaceId: ws, owner: 'c', ownerLabel: 'C',
+        coordinationDomain: ws, owner: 'c', ownerLabel: 'C',
         paths: ['x.ts'], intent: 'C', ttlSec: 60,
       }),
     );
@@ -1289,13 +1289,13 @@ describe('audit regression — same-owner re-acquire', () => {
     // Owner A holds a.ts. Owner B holds b.ts.
     const a = await inWorkspaceTxn(ws, 'a', (tx) =>
       tryAcquire(tx, {
-        workspaceId: ws, owner: 'a', ownerLabel: 'A',
+        coordinationDomain: ws, owner: 'a', ownerLabel: 'A',
         paths: ['a.ts'], intent: 'A', ttlSec: 60,
       }),
     );
     await inWorkspaceTxn(ws, 'b', (tx) =>
       tryAcquire(tx, {
-        workspaceId: ws, owner: 'b', ownerLabel: 'B',
+        coordinationDomain: ws, owner: 'b', ownerLabel: 'B',
         paths: ['b.ts'], intent: 'B', ttlSec: 60,
       }),
     );
@@ -1304,7 +1304,7 @@ describe('audit regression — same-owner re-acquire', () => {
     // A tries to acquire [a.ts, b.ts]. a.ts should refresh; b.ts busy.
     const r = await inWorkspaceTxn(ws, 'a', (tx) =>
       tryAcquire(tx, {
-        workspaceId: ws, owner: 'a', ownerLabel: 'A',
+        coordinationDomain: ws, owner: 'a', ownerLabel: 'A',
         paths: ['a.ts', 'b.ts'], intent: 'A retry', ttlSec: 60,
       }),
     );
@@ -1314,7 +1314,7 @@ describe('audit regression — same-owner re-acquire', () => {
       expect(r.busy.map((x) => x.path)).toEqual(['b.ts']);
     }
     // A's lock on a.ts MUST survive.
-    const q = await readQueue(getTxPool(), { workspaceId: ws });
+    const q = await readQueue(getTxPool(), { coordinationDomain: ws });
     const aLock = q.active_locks.find((l) => l.path === 'a.ts');
     expect(aLock?.owner).toBe('a');
   });

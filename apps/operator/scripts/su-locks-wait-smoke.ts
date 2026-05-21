@@ -44,7 +44,7 @@ async function main() {
 
   console.log('1. Agent A acquires lib/foo.ts...');
   const a = await inWorkspaceTxn(ws, 'agent-a', (tx) => tryAcquire(tx, {
-    workspaceId: ws, owner: 'agent-a', ownerLabel: 'A',
+    coordinationDomain: ws, owner: 'agent-a', ownerLabel: 'A',
     paths: normalizePaths(['lib/foo.ts']),
     intent: 'hold the file', ttlSec: 60,
   }));
@@ -63,7 +63,7 @@ async function main() {
   });
 
   const inserted = await inWorkspaceTxn(ws, 'agent-b', (tx) => tryInsertWaiter(tx, {
-    workspaceId: ws, owner: 'agent-b', ownerLabel: 'B',
+    coordinationDomain: ws, owner: 'agent-b', ownerLabel: 'B',
     paths: ['lib/foo.ts'], intent: 'want it', ttlSec: 60, maxWaitSec: 30,
   }));
   if (!inserted.ok) fail('B should insert waiter');
@@ -82,7 +82,7 @@ async function main() {
   });
 
   await inWorkspaceTxn(ws, 'agent-a', (tx) => tryRelease(tx, {
-    workspaceId: ws, owner: 'agent-a', lockId: a.lock_id,
+    coordinationDomain: ws, owner: 'agent-a', lockId: a.lock_id,
   }));
   console.log('   A released');
 
@@ -97,7 +97,7 @@ async function main() {
 
   // Clean up B's lock
   await inWorkspaceTxn(ws, 'agent-b', (tx) => tryRelease(tx, {
-    workspaceId: ws, owner: 'agent-b', lockId: status.granted_lock_id!,
+    coordinationDomain: ws, owner: 'agent-b', lockId: status.granted_lock_id!,
   }));
   await unsub();
 
@@ -105,7 +105,7 @@ async function main() {
   const ws2 = 'cap-smoke-' + Date.now();
   // First, hold a lock so all waiters actually queue.
   const blocker = await inWorkspaceTxn(ws2, 'blocker', (tx) => tryAcquire(tx, {
-    workspaceId: ws2, owner: 'blocker', ownerLabel: 'blocker',
+    coordinationDomain: ws2, owner: 'blocker', ownerLabel: 'blocker',
     paths: ['cap.ts'], intent: 'block', ttlSec: 120,
   }));
   if (!blocker.ok) fail('blocker should acquire');
@@ -113,7 +113,7 @@ async function main() {
   let lastResult: unknown = null;
   for (let i = 0; i < MAX_WAITERS_PER_OWNER + 1; i++) {
     lastResult = await inWorkspaceTxn(ws2, 'capped-owner', (tx) => tryInsertWaiter(tx, {
-      workspaceId: ws2, owner: 'capped-owner', ownerLabel: 'capped',
+      coordinationDomain: ws2, owner: 'capped-owner', ownerLabel: 'capped',
       paths: ['cap.ts'], intent: `wait #${i}`, ttlSec: 60, maxWaitSec: 60,
     }));
     if (i < MAX_WAITERS_PER_OWNER) {
@@ -126,7 +126,7 @@ async function main() {
 
   // Cleanup: release blocker (this fires the cascade which grants 1 of the 10 waiters)
   await inWorkspaceTxn(ws2, 'blocker', (tx) => tryRelease(tx, {
-    workspaceId: ws2, owner: 'blocker', lockId: blocker.lock_id,
+    coordinationDomain: ws2, owner: 'blocker', lockId: blocker.lock_id,
   }));
   // Janitor the rest of the waiters by setting wait_until past + expiring them
   await sql`UPDATE agent_lock_waiters SET status = 'expired' WHERE coordination_domain = ${ws2} AND status = 'waiting'`;
@@ -136,13 +136,13 @@ async function main() {
   console.log('5. Wait timeout — short max_sec, no release...');
   const ws3 = 'timeout-smoke-' + Date.now();
   const holder = await inWorkspaceTxn(ws3, 'holder', (tx) => tryAcquire(tx, {
-    workspaceId: ws3, owner: 'holder', ownerLabel: 'H',
+    coordinationDomain: ws3, owner: 'holder', ownerLabel: 'H',
     paths: ['timeout.ts'], intent: 'hold', ttlSec: 60,
   }));
   if (!holder.ok) fail('holder should acquire');
 
   const tInsert = await inWorkspaceTxn(ws3, 'waiter', (tx) => tryInsertWaiter(tx, {
-    workspaceId: ws3, owner: 'waiter', ownerLabel: 'W',
+    coordinationDomain: ws3, owner: 'waiter', ownerLabel: 'W',
     paths: ['timeout.ts'], intent: 'wait', ttlSec: 60, maxWaitSec: 1,
   }));
   if (!tInsert.ok) fail('waiter insert should succeed');
@@ -153,7 +153,7 @@ async function main() {
   if (expired.status !== 'expired') fail('waiter should be expired');
 
   await inWorkspaceTxn(ws3, 'holder', (tx) => tryRelease(tx, {
-    workspaceId: ws3, owner: 'holder', lockId: holder.lock_id,
+    coordinationDomain: ws3, owner: 'holder', lockId: holder.lock_id,
   }));
 
   console.log('\n[OK] PHASE 2 SMOKE PASSED — wait subsystem works');

@@ -11,8 +11,8 @@
  *   1. Delegates to `resolveAgentIdentity`.
  *   2. Projects the result into the legacy `SuAgentIdentity` shape
  *      (the locks callers destructure `{ ownerId, ownerLabel,
- *      workspaceId }` and don't need source / userId).
- *   3. Substitutes `'default'` for a null workspaceId — the locks
+ *      coordinationDomain }` and don't need source / userId).
+ *   3. Substitutes `'default'` for a null coordinationDomain — the locks
  *      schema's `coordination_domain` column is NOT NULL.
  *
  * Behaviour notes vs. the historical readIdentity (pre-refactor):
@@ -54,7 +54,7 @@ export interface SuAgentIdentity {
   /** Human-readable label — used as the `owner_label` column. */
   ownerLabel: string;
   /** Workspace scope from the bearer principal / power-user clamp. */
-  workspaceId: string;
+  coordinationDomain: string;
 }
 
 /**
@@ -66,6 +66,10 @@ export function readIdentity(ctx: IdentityCtx): SuAgentIdentity {
   return {
     ownerId: id.ownerId,
     ownerLabel: id.ownerLabel,
-    workspaceId: id.workspaceId ?? DEFAULT_WORKSPACE,
+    // AgentIdentity carries `workspaceId` (the Papercusp workspace
+    // context, when present); the SU-locks substrate maps it onto the
+    // coordination domain (file-locking #12). Keeping the boundary
+    // translation explicit so the two concepts can't drift again.
+    coordinationDomain: id.workspaceId ?? DEFAULT_WORKSPACE,
   };
 }

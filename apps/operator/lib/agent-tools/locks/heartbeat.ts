@@ -42,11 +42,11 @@ export default defineTool({
     ttl_sec: z.number().int().positive().max(MAX_TTL_SEC).optional(),
   }),
   async handler(args, ctx) {
-    const { ownerId, ownerLabel, workspaceId } = readIdentity(ctx);
+    const { ownerId, ownerLabel, coordinationDomain } = readIdentity(ctx);
     const ttlSec = args.ttl_sec ?? DEFAULT_TTL_SEC;
 
-    const result = await inWorkspaceTxn(workspaceId, ownerId, async (tx) =>
-      tryHeartbeat(tx, workspaceId, ownerId, args.lock_id, ttlSec),
+    const result = await inWorkspaceTxn(coordinationDomain, ownerId, async (tx) =>
+      tryHeartbeat(tx, coordinationDomain, ownerId, args.lock_id, ttlSec),
     );
 
     return {

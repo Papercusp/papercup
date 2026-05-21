@@ -15,7 +15,7 @@ async function main() {
 
   console.log('2. acquire 3 paths...');
   const r1 = await inWorkspaceTxn(ws, owner, (tx) => tryAcquire(tx, {
-    workspaceId: ws, owner, ownerLabel: 'smoke:a',
+    coordinationDomain: ws, owner, ownerLabel: 'smoke:a',
     paths: normalizePaths(['libs/foo.ts', 'libs/bar.ts', 'apps/baz.ts']),
     intent: 'smoke test acquire', ttlSec: 60,
   }));
@@ -24,13 +24,13 @@ async function main() {
 
   const sql = getTxPool();
   console.log('3. read queue...');
-  const q1 = await readQueue(sql, { workspaceId: ws });
+  const q1 = await readQueue(sql, { coordinationDomain: ws });
   console.log('   active:', q1.active_locks.length, 'waiting:', q1.waiting.length);
   if (q1.active_locks.length !== 3) { console.error('FAIL'); process.exit(1); }
 
   console.log('4. concurrent acquire (overlapping paths, different owner) — should be busy...');
   const r2 = await inWorkspaceTxn(ws, 'smoke-agent-b', (tx) => tryAcquire(tx, {
-    workspaceId: ws, owner: 'smoke-agent-b', ownerLabel: 'smoke:b',
+    coordinationDomain: ws, owner: 'smoke-agent-b', ownerLabel: 'smoke:b',
     paths: normalizePaths(['libs/foo.ts', 'libs/qux.ts']),
     intent: 'smoke test conflict', ttlSec: 60,
   }));
@@ -44,13 +44,13 @@ async function main() {
 
   console.log('6. release the original...');
   const rel = await inWorkspaceTxn(ws, owner, (tx) => tryRelease(tx, {
-    workspaceId: ws, owner, lockId: r1.lock_id,
+    coordinationDomain: ws, owner, lockId: r1.lock_id,
   }));
   console.log('   released:', rel.released.length, 'paths');
   if (rel.released.length !== 3) { console.error('FAIL'); process.exit(1); }
 
   console.log('7. final queue (should be empty)...');
-  const q2 = await readQueue(sql, { workspaceId: ws });
+  const q2 = await readQueue(sql, { coordinationDomain: ws });
   console.log('   active:', q2.active_locks.length, 'waiting:', q2.waiting.length);
   if (q2.active_locks.length !== 0) { console.error('FAIL'); process.exit(1); }
 

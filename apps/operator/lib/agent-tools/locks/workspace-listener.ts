@@ -45,17 +45,17 @@ export class TooManyActiveWorkspacesError extends Error {
  * wait completes.
  */
 export async function subscribeWorkspace(
-  workspaceId: string,
+  coordinationDomain: string,
   listener: Listener,
 ): Promise<() => Promise<void>> {
-  let state = STATE.get(workspaceId);
+  let state = STATE.get(coordinationDomain);
 
   if (!state) {
     if (STATE.size >= MAX_ACTIVE_WORKSPACES) {
       throw new TooManyActiveWorkspacesError();
     }
     const sql = getListenerPool();
-    const channel = `ch_coord_${workspaceId}`;
+    const channel = `ch_coord_${coordinationDomain}`;
     const listeners = new Set<Listener>();
 
     const req = sql.listen(channel, (payload) => {
@@ -79,17 +79,17 @@ export async function subscribeWorkspace(
     const result = await req;
 
     state = { unlisten: result.unlisten, listeners };
-    STATE.set(workspaceId, state);
+    STATE.set(coordinationDomain, state);
   }
 
   state.listeners.add(listener);
 
   return async () => {
-    const cur = STATE.get(workspaceId);
+    const cur = STATE.get(coordinationDomain);
     if (!cur) return;
     cur.listeners.delete(listener);
     if (cur.listeners.size === 0) {
-      STATE.delete(workspaceId);
+      STATE.delete(coordinationDomain);
       try {
         await cur.unlisten();
       } catch {

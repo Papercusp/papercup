@@ -31,8 +31,8 @@ afterAll(async () => {
 });
 
 describeConformance('SuLocksCoordinator', async () => {
-  const workspaceId = nextWs();
-  const coordinator = new SuLocksCoordinator({ workspaceId });
+  const coordinationDomain = nextWs();
+  const coordinator = new SuLocksCoordinator({ coordinationDomain });
   return {
     coordinator,
     cleanup: async () => {

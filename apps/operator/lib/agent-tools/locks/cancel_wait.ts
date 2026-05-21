@@ -40,8 +40,8 @@ export default defineTool({
     ticket_id: z.string().uuid(),
   }),
   async handler(args, ctx) {
-    const { ownerId, workspaceId } = readIdentity(ctx);
-    const result = await inWorkspaceTxn(workspaceId, ownerId, async (tx) =>
+    const { ownerId, coordinationDomain } = readIdentity(ctx);
+    const result = await inWorkspaceTxn(coordinationDomain, ownerId, async (tx) =>
       tryCancelWait(tx, args.ticket_id, ownerId),
     );
     return {

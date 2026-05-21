@@ -38,12 +38,12 @@ export default defineTool({
     include_completed: z.boolean().optional(),
   }),
   async handler(args, ctx) {
-    const { workspaceId } = readIdentity(ctx);
+    const { coordinationDomain } = readIdentity(ctx);
     await ensureBootstrap();
     const sql = getTxPool();
 
     const result = await readQueue(sql, {
-      workspaceId,
+      coordinationDomain,
       paths: args.paths,
       owner: args.owner,
       includeCompleted: args.include_completed,

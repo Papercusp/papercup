@@ -1,7 +1,7 @@
 /**
  * locks:release — release locks and fire the grant cascade.
  *
- * Inside the same transaction, runs grant_cascade(workspaceId, now())
+ * Inside the same transaction, runs grant_cascade(coordinationDomain, now())
  * which iterates FIFO waiters and grants any whose paths are now free.
  * NOTIFY fires inside the cascade function; the app doesn't need to
  * loop the result.
@@ -43,7 +43,7 @@ export default defineTool({
     all_mine: z.boolean().optional(),
   }),
   async handler(args, ctx) {
-    const { ownerId, ownerLabel, workspaceId } = readIdentity(ctx);
+    const { ownerId, ownerLabel, coordinationDomain } = readIdentity(ctx);
 
     if (!args.lock_id && !args.all_mine) {
       return {
@@ -59,9 +59,9 @@ export default defineTool({
       };
     }
 
-    const result = await inWorkspaceTxn(workspaceId, ownerId, async (tx) =>
+    const result = await inWorkspaceTxn(coordinationDomain, ownerId, async (tx) =>
       tryRelease(tx, {
-        workspaceId,
+        coordinationDomain,
         owner: ownerId,
         lockId: args.lock_id,
         paths: args.paths,
