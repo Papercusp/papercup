@@ -1,7 +1,7 @@
 /**
  * executeAction core — auth + dispatch + idempotency.
  *
- * Wire contract: apps/operator/app/api/_hono/execute-action.contract.md
+ * Wire contract: apps/operator/docs/host/execute-action.contract.md
  * Plan: apps/operator/content/internal-docs/implementation/multi-harness-spawning.mdx
  *
  * Responsibilities:

@@ -25,9 +25,10 @@
  */
 import { Hono } from 'hono';
 import { compress } from 'hono/compress';
-import { app } from '../app/api/_hono/app';
+import { app } from './host-app';
 import { apiCors } from './host-cors';
 import { docsRoutes } from './host-docs';
+import { publicDocsRoutes } from './host-docs-public';
 import { pageRoutes } from './page-routes';
 import { crossAppRewrites, rustOptIn } from './host-proxies';
 import { spaRoutes } from './host-spa';
@@ -53,8 +54,10 @@ host.use('/api/*', rustOptIn);
 //    so order is unambiguous.
 host.route('/', crossAppRewrites);
 
-// 5. Docs surface (`/internal/docs/*`).
+// 5. Docs surfaces. `/internal/docs/*` is loopback-only engineering docs;
+//    `/docs/*` is the public Papercusp docs (Starlight at apps/papercusp-docs).
 host.route('/', docsRoutes);
+host.route('/', publicDocsRoutes);
 
 // 6. Page-namespace routes (`/wiki`, `/drizzle-studio`).
 host.route('/', pageRoutes);

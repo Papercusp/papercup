@@ -15,15 +15,15 @@
  * idempotent (per their existing comments about Next dev module re-eval),
  * so even an accidental double-call from a different bootstrap path is safe.
  */
-import { mountPluginApiRoutes } from '../../../lib/plugin-api-mount';
-import { startAutoLoopOnce } from '../../../lib/autoloop';
-import { ensureHarnessFsWatcher } from '../../../lib/harness-fs-watcher';
-import { ensureHarnessStatusSweep } from '../../../lib/harness-status-sweep';
-import { registerAllExpirables } from '../../../lib/expirable-registrations';
-import { startMobileVoiceWs } from '../../../lib/mobile-voice-ws';
-import { startPushCredentialRefresher } from '../../../lib/mobile-push-credentials';
-import { startMobileInterventionWatcher } from '../../../lib/mobile-intervention-watcher';
-import { ensureMobileDevicesTable } from '../../../lib/ensure-schema';
+import { mountPluginApiRoutes } from '../lib/plugin-api-mount';
+import { startAutoLoopOnce } from '../lib/autoloop';
+import { ensureHarnessFsWatcher } from '../lib/harness-fs-watcher';
+import { ensureHarnessStatusSweep } from '../lib/harness-status-sweep';
+import { registerAllExpirables } from '../lib/expirable-registrations';
+import { startMobileVoiceWs } from '../lib/mobile-voice-ws';
+import { startPushCredentialRefresher } from '../lib/mobile-push-credentials';
+import { startMobileInterventionWatcher } from '../lib/mobile-intervention-watcher';
+import { ensureMobileDevicesTable } from '../lib/ensure-schema';
 
 const GUARD_KEY = '__papercuspBootstrapRan__';
 
@@ -105,7 +105,7 @@ export function runBootstrap(): void {
   if (process.env.PAPERCUSP_DEV_PLUGIN_WATCH === '1') {
     // Lazy import so the watcher's fs.watch handle isn't held in tests
     // that don't import this module's bootstrap code.
-    import('../../../lib/plugin-host-runtime')
+    import('../lib/plugin-host-runtime')
       .then(({ watchPluginsForReload }) => watchPluginsForReload())
       .catch((e) => console.warn('[plugin-host-watch] failed to arm:', e));
   }

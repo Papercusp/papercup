@@ -15,7 +15,7 @@
 import { Hono } from 'hono';
 import { compress } from 'hono/compress';
 import { cors } from 'hono/cors';
-import { registerRouteLiterals, registerRouteCatchalls } from '../../../lib/endpoint-route/register';
+import { registerRouteLiterals, registerRouteCatchalls } from '../lib/endpoint-route/register';
 
 const app = new Hono().basePath('/api');
 

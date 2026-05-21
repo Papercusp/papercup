@@ -15,7 +15,7 @@
  * relocates there. See operator-vite-migration-2026-05-20.md (Phase C/H).
  */
 import { serve } from '@hono/node-server';
-import { runBootstrap } from '../app/api/_hono/bootstrap';
+import { runBootstrap } from './host-bootstrap';
 import { handler } from './host-handler';
 
 runBootstrap();

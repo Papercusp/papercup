@@ -3,7 +3,7 @@
  *
  * Ported from app/api/admin/execute-action/route.ts. `auth: 'public'` —
  * the route does its own Bearer-token auth via `deriveCallerFromBearer`.
- * Wire contract: app/api/_hono/execute-action.contract.md.
+ * Wire contract: docs/host/execute-action.contract.md.
  */
 import {
   deriveCallerFromBearer,

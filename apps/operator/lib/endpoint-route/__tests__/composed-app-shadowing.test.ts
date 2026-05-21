@@ -120,8 +120,8 @@ describe('composed-app route shadowing — REAL _hono/app.ts wiring', () => {
   let app: HonoType;
 
   beforeAll(async () => {
-    // ~6s — imports the full _hono app graph. Cached after first import.
-    const mod = await import('@/app/api/_hono/app');
+    // ~6s — imports the full host app graph. Cached after first import.
+    const mod = await import('@/bin/host-app');
     app = mod.app as unknown as HonoType;
   }, 120_000);
 

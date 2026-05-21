@@ -11,8 +11,8 @@
  * though Next dev re-evaluates this file on HMR.
  */
 import { handle } from 'hono/vercel';
-import { app } from '../_hono/app';
-import { runBootstrap } from '../_hono/bootstrap';
+import { app } from '../../../bin/host-app';
+import { runBootstrap } from '../../../bin/host-bootstrap';
 
 export const dynamic = 'force-dynamic';
 
