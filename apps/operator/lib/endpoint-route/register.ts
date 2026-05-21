@@ -68,10 +68,18 @@ function specificityKey(path: string): number[] {
 /**
  * Order comparator: the more specific route registers first. Compares the
  * per-segment rank vectors lexicographically — a literal segment out-ranks
- * a `:param` at the same position. Returns `0` for routes that don't
- * resolve against each other (different prefixes / arities); a *stable*
- * sort then preserves their `ALL_ROUTES` order, which is irrelevant for
- * correctness since non-overlapping routes never both match a request.
+ * a `:param` at the same position.
+ *
+ * This MUST be a strict weak ordering (transitive, consistent) or
+ * `Array.prototype.sort` is free to produce a garbage permutation. A
+ * naive "return 0 when the common prefix matches" is NOT — it would make
+ * `[0]` compare equal to both `[0,0]` and `[0,1]` while `[0,0] < [0,1]`,
+ * an intransitive equivalence. So when the common prefix ties, the
+ * shorter rank vector sorts first (`ka.length - kb.length`); that is a
+ * total order. Truly-identical vectors return `0` and the stable sort
+ * keeps their `ALL_ROUTES` order. Routes of different arity never both
+ * match one request, so their relative order is correctness-irrelevant —
+ * the length tie-break only exists to keep the comparator valid.
  */
 function bySpecificity(
   a: { path: string },
@@ -83,7 +91,7 @@ function bySpecificity(
   for (let i = 0; i < n; i++) {
     if (ka[i] !== kb[i]) return ka[i] - kb[i];
   }
-  return 0;
+  return ka.length - kb.length;
 }
 
 /**
