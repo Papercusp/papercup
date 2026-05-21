@@ -8,8 +8,7 @@
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { readIdentity } from './identity';
-import { inWorkspaceTxn } from './in-workspace-txn';
-import { tryHeartbeat } from './su-lock-store';
+import { SuLocksCoordinator } from './coordinator';
 
 const DEFAULT_TTL_SEC = 1200;
 const MAX_TTL_SEC = 3600;
@@ -45,8 +44,16 @@ export default defineTool({
     const { ownerId, ownerLabel, coordinationDomain } = readIdentity(ctx);
     const ttlSec = args.ttl_sec ?? DEFAULT_TTL_SEC;
 
-    const result = await inWorkspaceTxn(coordinationDomain, ownerId, async (tx) =>
-      tryHeartbeat(tx, coordinationDomain, ownerId, args.lock_id, ttlSec),
+    // Dispatch through the shared FileClaimCoordinator interface
+    // (file-locking #11). heartbeat is the one locks:* tool whose
+    // contract maps 1:1 onto the cross-backend interface — see the
+    // file-locking plan §11 for why acquire/release/cancel_wait do
+    // not. SuLocksCoordinator.heartbeat reads only claim.claimId +
+    // claim.owner, so a minimal claim suffices.
+    const coordinator = new SuLocksCoordinator({ coordinationDomain });
+    const result = await coordinator.heartbeat(
+      { claimId: args.lock_id, owner: ownerId, paths: [], expiresAt: null },
+      ttlSec * 1000,
     );
 
     return {
@@ -55,8 +62,10 @@ export default defineTool({
           type: 'text' as const,
           text: JSON.stringify({
             ok: true,
-            extended: result.extended,
-            expires_ts: result.expires_ts?.toISOString() ?? null,
+            extended: result.ok,
+            expires_ts: result.ok
+              ? (result.claim.expiresAt?.toISOString() ?? null)
+              : null,
             owner: ownerId,
             owner_label: ownerLabel,
           }),

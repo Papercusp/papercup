@@ -419,7 +419,10 @@ export async function runBackgroundJanitorOnce(): Promise<void> {
 export interface AcquireParams {
   coordinationDomain: string;
   owner: string;
-  ownerLabel: string;
+  /** Diagnostic label for the holder. `null` when the caller has no
+   *  label (e.g. the FileClaimCoordinator adapter) — the owner_label
+   *  column is nullable. */
+  ownerLabel: string | null;
   paths: string[]; // already normalized
   intent: string;
   ttlSec: number;

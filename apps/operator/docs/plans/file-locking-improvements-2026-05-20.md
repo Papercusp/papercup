@@ -398,6 +398,30 @@ Same conceptual API, different names, different argument shapes, different deadl
 
 3. **Refactor** SU-locks `acquire.ts` / `release.ts` / `heartbeat.ts` to be thin tool-wrappers around `SuLocksCoordinator implements FileClaimCoordinator`. The PG store stays where it is; the *user-facing tool surface* (the MCP `locks:*` tools) thin out to dispatch into the coordinator. Tools still take their existing argument shapes (don't break the wire); they translate to interface calls internally.
 
+   > **Audit follow-up (2026-05-21).** Step 3 is only partially
+   > achievable, and the audit pass proved why. `FileClaimCoordinator`
+   > is a deliberately minimal cross-backend contract: `release`
+   > returns `void`, `reap` returns a count, and there is no
+   > `cancelWait` / `queue` / server-side-`wait` surface. The MCP
+   > `locks:*` tools are a richer SU-locks-native surface — `release`
+   > returns the `released[]` path list, `acquire` carries a 250-line
+   > LISTEN/INSERT/ticket/progress wait subsystem, `cancel_wait` and
+   > `queue` operate purely on the waiter queue. Routing those through
+   > the coordinator would either **break the MCP wire** (`release`/
+   > `reap` cannot return `released[]`) or **bloat the interface** into
+   > a SU-locks-shaped thing, defeating its cross-backend purpose.
+   > Resolution: **`heartbeat.ts` migrated** (the one tool whose
+   > contract maps 1:1 — it is now a typed `SuLocksCoordinator`
+   > consumer); `acquire`/`release`/`cancel_wait`/`queue` stay on the
+   > store by design. The interface's real typed consumers are
+   > `with-plan-lock.ts`, `heartbeat.ts`, the conformance suite (both
+   > backends), and `worker-chunk-loop.ts` (FileLockQueue side). The
+   > audit also found `SuLocksCoordinator.heartbeat` was latently
+   > broken (called `tryHeartbeat` with the wrong arg shape, read a
+   > nonexistent `.ok`) — fixed, with regression coverage added in
+   > `coordinator.test.ts` (the conformance suite never exercised
+   > `heartbeat`).
+
 4. **One conformance test file** — `libs/papercusp/packages/coordination/__tests__/conformance.test.ts`. Parameterized over `[FileLockQueueCoordinator, SuLocksCoordinator]`. Asserts:
    - Multi-path atomicity (no partial holds).
    - FIFO waiter order.

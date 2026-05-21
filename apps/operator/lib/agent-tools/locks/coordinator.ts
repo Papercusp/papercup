@@ -143,13 +143,18 @@ export class SuLocksCoordinator implements FileClaimCoordinator {
   async heartbeat(claim: FileClaim, ttlMs?: number): Promise<HeartbeatResult> {
     const ttlSec = ttlMs ? Math.max(1, Math.round(ttlMs / 1000)) : DEFAULT_TTL_SEC;
     return inWorkspaceTxn(this.coordinationDomain, claim.owner, async (tx) => {
-      const r = await tryHeartbeat(tx, {
-        coordinationDomain: this.coordinationDomain,
-        owner: claim.owner,
-        lockId: claim.claimId,
+      // tryHeartbeat takes positional args (tx, domain, owner, lockId,
+      // ttlSec) and returns { expires_ts, extended } — NOT an object
+      // param / { ok } result. (file-locking #11 audit — this call was
+      // built against a signature tryHeartbeat never had.)
+      const r = await tryHeartbeat(
+        tx,
+        this.coordinationDomain,
+        claim.owner,
+        claim.claimId,
         ttlSec,
-      });
-      if (r.ok) {
+      );
+      if (r.extended) {
         return {
           ok: true,
           claim: {

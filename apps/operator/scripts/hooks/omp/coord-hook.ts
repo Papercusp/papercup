@@ -708,8 +708,13 @@ export async function onTurnStart(): Promise<TurnStartResult> {
   // Attached call failed — was it a transient blip or did the operator
   // go away? Re-probe; if it is truly gone, fall through to detached so
   // this turn is still useful.
-  await refreshMode();
-  if (_mode === 'detached') {
+  // Use refreshMode()'s return value, not the module-level `_mode`:
+  // TS's control-flow analysis over-narrows `_mode` to 'attached' here
+  // (it was narrowed by the block above and TS doesn't track that
+  // refreshMode() reassigns it), which makes `_mode === 'detached'`
+  // look like dead code. The returned value is correctly typed.
+  const reprobed = await refreshMode();
+  if (reprobed === 'detached') {
     return onTurnStartDetached(ownerId);
   }
   return attached; // operator is up — a genuine transient failure

@@ -17,7 +17,7 @@
     "incremental": true,
     "noEmit": true,
     "allowJs": false,
-    "ignoreDeprecations": "5.0",
+    "ignoreDeprecations": "6.0",
     "baseUrl": ".",
     "paths": {
       "@/*": [
