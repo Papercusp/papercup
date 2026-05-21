@@ -12,6 +12,13 @@ import { resolve } from 'node:path';
 const operatorRoot = resolve(import.meta.dirname, '../operator');
 
 export default defineConfig({
+  // Static assets (wordmark.svg, mascot.svg, the Oracle/header icons,
+  // onnx/wasm voice models, …) live in the operator's own `public/`.
+  // operator-vite has no `public/` of its own, so point Vite's
+  // publicDir there — otherwise `/wordmark.svg` & co. fall through to
+  // the SPA-fallback index.html and render as broken images.
+  publicDir: resolve(operatorRoot, 'public'),
+
   // During the migration the Vite app imports operator components
   // in place (Phase H physically relocates them). The operator's
   // `@/*` tsconfig path maps to `apps/operator/*`; mirror it here.
