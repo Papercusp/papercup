@@ -267,9 +267,9 @@ test -f apps/operator-vite/vite.config.ts
 test -f apps/operator-vite/src/routes/__root.tsx
 test -f apps/operator-vite/src/routes/index.tsx
 (cd apps/operator-vite && npm run build) && test -f apps/operator-vite/dist/index.html
-# Live: Vite on :3055 serves the hello page; /api/healthz proxies to the Hono host on :3070 and returns 200.
+# Live: Vite on :3055 serves the hello page; /api/health proxies to the Hono host on :3070 and returns 200.
 curl -sf http://127.0.0.1:3055/ | grep -q 'operator-vite'
-curl -sf http://127.0.0.1:3055/api/healthz   # 200
+curl -sf http://127.0.0.1:3055/api/health   # 200
 ```
 
 ### A NOT shipping
@@ -416,26 +416,36 @@ Per-batch revert. Each batch is one PR; reverting it leaves the other batches in
 
 ### C1. Host process
 
-**Dependency prerequisite (Gap E):** before writing the host, confirm `hono` and `@hono/node-server` are **declared** in `apps/operator-vite/package.json` — they were added in [A1](#a1-scaffold). Neither is currently a declared dependency anywhere `apps/operator` could rely on (`hono` resolves only via hoisting from `apps/papercusp-publish`; `@hono/node-server` is a pure transitive dep). The host must not be built on an undeclared dep.
+**Dependency prerequisite (Gap E) — as built:** the host lives in `apps/operator/bin/` and runs in `apps/operator`'s **CJS** module-resolution context — it imports `_hono/app.ts` and `@/`-aliased operator code, and importing that from `operator-vite`'s `type: module` package hits an ESM/CJS named-export boundary. So `hono` and `@hono/node-server` are declared in **`apps/operator/package.json`** (not `operator-vite`) — both were previously only hoisted (`hono` from `apps/papercusp-publish`) or purely transitive (`@hono/node-server`). The host must not be built on an undeclared dep.
 
-Create `apps/operator/bin/hono-host.ts` (or `apps/operator-vite/server/host.ts` — see [Phase G](#phase-g--production-host) for the final home):
+As built, the host is **two files** — an entrypoint plus a side-effect-free handler, so tests / the C1 smoke can import the composed handler without booting a server or running `runBootstrap()`:
 
 ```ts
-// hono-host.ts (illustrative)
-import { serve } from '@hono/node-server';
+// bin/host-handler.ts — side-effect-free composed handler.
 import { app } from '../app/api/_hono/app';
+import { pageRoutes } from './page-routes';
+
+export async function handler(req: Request): Promise<Response> {
+  const { pathname } = new URL(req.url);
+  if (pathname === '/wiki' || pathname === '/drizzle-studio' ||
+      pathname.startsWith('/drizzle-studio/')) {
+    return pageRoutes.fetch(req);   // page-namespace handlers (C2)
+  }
+  return app.fetch(req);            // everything else → the /api/* app
+}
+
+// bin/hono-host.ts — entrypoint: bootstrap + serve.
+import { serve } from '@hono/node-server';
 import { runBootstrap } from '../app/api/_hono/bootstrap';
+import { handler } from './host-handler';
 
-runBootstrap(); // idempotent — safe in HMR + standalone
-const port = Number(process.env.PAPERCUSP_HONO_PORT ?? 3070);
-const host = process.env.PAPERCUSP_BIND_HOST ?? '127.0.0.1';
-
-serve({ fetch: app.fetch, port, hostname: host }, (info) => {
-  console.log(`[hono-host] listening on http://${info.address}:${info.port}`);
-});
+runBootstrap();                     // idempotent — globalThis guard
+serve({ fetch: handler,
+        port: Number(process.env.PAPERCUSP_HONO_PORT ?? 3070),
+        hostname: process.env.PAPERCUSP_BIND_HOST ?? '127.0.0.1' });
 ```
 
-This is ~15 lines. It works **today** — every operator API route is already mounted in `_hono/app.ts` (the backend stream shipped). The Hono host serves 100% of `/api/*` the moment it boots; there is no split, no per-prefix proxy, no Next process. The Vite dev-proxy is the static one-liner from [A2](#a2-dev-server-proxy-static--single-target).
+It works **today** — every operator API route is already mounted in `_hono/app.ts` (the backend stream shipped). The Hono host serves 100% of `/api/*` the moment it boots; there is no split, no per-prefix proxy, no Next process. The Vite dev-proxy is the static one-liner from [A2](#a2-dev-server-proxy-static--single-target).
 
 ### C2. The two page-namespace route handlers (`/wiki`, `/drizzle-studio`)
 
@@ -462,11 +472,11 @@ Update the dev-launcher (`bin/dev-vite.sh` from Phase A, or whichever orchestrat
 # The Hono host boots and serves the whole API surface.
 PAPERCUSP_HONO_PORT=3070 tsx apps/operator/bin/hono-host.ts &
 sleep 2
-curl -sf http://127.0.0.1:3070/api/healthz       # 200
+curl -sf http://127.0.0.1:3070/api/health       # 200
 curl -sI http://127.0.0.1:3070/wiki?target=x | head -1   # 302
 curl -sf http://127.0.0.1:3070/drizzle-studio | grep -q '<base href="/drizzle-studio/"'
 # The Vite proxy routes API calls correctly.
-curl -sf http://127.0.0.1:3055/api/healthz       # 200, same body as direct
+curl -sf http://127.0.0.1:3055/api/health       # 200, same body as direct
 # Exactly two processes — Vite + Hono host, no Next.
 ss -tnpl | grep -E ':3055|:3070' | wc -l         # → 2
 pgrep -af 'next dev' | wc -l                     # → 0
@@ -663,7 +673,7 @@ No `next build`, no Next standalone tracer, no `.next-prod` directory. The relea
 PAPERCUSP_HONO_PORT=3070 ./bin/hono-host &
 sleep 2
 curl -sf http://127.0.0.1:3070/ | grep -q 'operator-vite'   # static SPA shell
-curl -sf http://127.0.0.1:3070/api/healthz                  # 200
+curl -sf http://127.0.0.1:3070/api/health                  # 200
 curl -sf http://127.0.0.1:3070/internal/docs/agent-policies # 200
 ```
 
@@ -740,7 +750,7 @@ pgrep -af 'next dev'   | wc -l                               # → 0  (dev too, 
 # Every URL bucket works.
 curl -sf http://127.0.0.1:3070/                              # SPA → 200
 curl -sf http://127.0.0.1:3070/login                         # SPA → 200 (client routes)
-curl -sf http://127.0.0.1:3070/api/healthz                   # API → 200
+curl -sf http://127.0.0.1:3070/api/health                   # API → 200
 curl -sf http://127.0.0.1:3070/internal/docs/agent-policies  # Docs → 200
 curl -sI http://127.0.0.1:3070/nonexistent | head -1         # 200 (SPA shell — client router handles 404)
 ```
