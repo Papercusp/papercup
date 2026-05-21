@@ -1,7 +1,7 @@
 ---
 title: Harness finish-line — last 20 routes, _hono/ delete, no-raw-routes lint
 slug: harness-finish-line-2026-05-21
-status: active
+status: done
 created: 2026-05-21
 updated: 2026-05-21
 owner: pandawamble@gmail.com
@@ -10,9 +10,9 @@ companion-to: [endpoint-hono-elimination-2026-05-21]
 
 ## Now
 
-**State.** `_hono/harness.ts` is at 1956 LOC with **20 routes** left (down from 138 / 7418 LOC; ~85% done). The endpoint-hono-elimination plan's tail. Two shared-state singletons still live in this file and gate the remaining batches: `activeStreams` Map (used by 4 SSE routes) and `launchRun` helper (used by 3 spawn routes).
+**Done 2026-05-21.** A4 batches 36–44 shipped (9 batches; 20 routes off harness.ts + 2 helper carve-outs). `_hono/` directory deleted (A6, `09688a6b`) — host seam relocated to `bin/host-app.ts` + `bin/host-bootstrap.ts`. `no-raw-route-handlers` ESLint rule live (A7, `f019c2df`) with 0 violations across the operator + agent-mcp source trees.
 
-**Next.** Batch 36 (Na) — carve `activeStreams` + `HARNESS_STREAM_TOTAL_CAP` into `lib/harness-active-streams.ts`. Routes keep working via re-import; unblocks batches 37 + 38.
+Acceptance: `composed-app-shadowing` 6/6 throughout; rule unit-test passes; no live `_hono` imports remaining.
 
 ## Scope
 
@@ -173,14 +173,14 @@ Each batch: one commit, explicit `--only` pathspecs, plan-doc marker amended in 
 
 ## Items
 
-- P-001 — `[ ]` Batch 36 (Na): carve `activeStreams` + `HARNESS_STREAM_TOTAL_CAP` to `lib/harness-active-streams.ts`. Acceptance: composed-app-shadowing 6/6.
-- P-002 — `[ ]` Batch 37: migrate `GET /:slug/agents`, `GET /:slug/agents/:runId`, `GET /streams/active`.
-- P-003 — `[ ]` Batch 38: migrate the 3 SSE streams. Per-route EventSource smoke required.
-- P-004 — `[ ]` Batch 39: migrate `GET /:slug/status` + `GET /:slug/log/history`.
-- P-005 — `[ ]` Batch 40 (Na): carve `launchRun` + private helpers to `lib/harness-launch.ts`.
-- P-006 — `[ ]` Batch 41: migrate `POST /:slug/{launch,invoke,resume}`. Post-batch `pgrep` smoke.
-- P-007 — `[ ]` Batch 42: migrate `POST /:slug/{bootstrap-from-template,save-as-template}`. On-disk smoke.
-- P-008 — `[ ]` Batch 43: migrate `POST /:slug/{promote,promote/:id/confirm,rollback}`. Real promote smoke.
-- P-009 — `[ ]` Batch 44: migrate top-level `/projects/*` cluster (4 routes).
-- P-010 — `[ ]` A6: relocate `_hono/app.ts` → `bin/host-app.ts`, `_hono/bootstrap.ts` → `bin/` or `lib/`, repoint imports, `rm -rf _hono/`.
-- P-011 — `[ ]` A7: implement `no-raw-route-handlers` ESLint rule + fixture.
+- P-001 — `[x]` Batch 36 (Na): `activeStreams` → `lib/harness-active-streams.ts` (`c42a6dfd`).
+- P-002 — `[x]` Batch 37: agents reads + `/streams/active` (`d1aae41b`).
+- P-003 — `[x]` Batch 38: SSE streams cluster (`89a90c31`).
+- P-004 — `[x]` Batch 39: status + log/history (`6c3b7a5a`).
+- P-005 — `[x]` Batch 40 (Na): `launchRun` → `lib/harness-launch.ts` (`a417be6f`).
+- P-006 — `[x]` Batch 41: spawn cluster — launch/invoke/resume (`03dfd040`).
+- P-007 — `[x]` Batch 42: bootstrap-from-template + drop save-as-template shadow (`391e464c`).
+- P-008 — `[x]` Batch 43: promote/confirm/rollback (`202ee289`).
+- P-009 — `[x]` Batch 44: top-level `/projects/*` cluster + drop `app.route('/harness', harness)` mount (`52440c98`).
+- P-010 — `[x]` A6: relocated host seam to `bin/host-app.ts` + `bin/host-bootstrap.ts`; auxiliary files to `docs/host/` + `lib/endpoint-route/__tests__/`; `_hono/` deleted (`09688a6b`).
+- P-011 — `[x]` A7: `no-raw-route-handlers` ESLint rule + unit test + fixture (`f019c2df`).
