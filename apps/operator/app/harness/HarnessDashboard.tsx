@@ -4897,7 +4897,7 @@ function RecentAgentsTable({
     {
       key: 'when',
       header: 'when',
-      width: 1.1,
+      width: '88px',
       render: ({ row }) => (
         <span className="h-agent-time-cell nowrap" style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
           <span className="h-agent-dot" aria-hidden="true" />
@@ -4908,7 +4908,7 @@ function RecentAgentsTable({
     {
       key: 'role',
       header: 'role',
-      width: 1.0,
+      width: '118px',
       render: ({ row }) => {
         const cls = roleClass(row.role);
         return <span className={`h-agent-role ${cls}`}>{row.role}</span>;
@@ -4917,9 +4917,9 @@ function RecentAgentsTable({
     {
       key: 'runId',
       header: 'run id',
-      width: 1.5,
+      width: '132px',
       render: ({ row }) => (
-        <span className="mono runid" title={row.runId} style={{ fontFamily: 'ui-monospace, monospace', fontSize: 11.5 }}>
+        <span className="h-agent-runid-pill mono runid" title={row.runId} style={{ fontFamily: 'ui-monospace, monospace', fontSize: 11.5 }}>
           {row.runId.slice(0, 14)}…
         </span>
       ),
@@ -4927,10 +4927,10 @@ function RecentAgentsTable({
     {
       key: 'size',
       header: 'size',
-      width: 0.6,
+      width: '72px',
       align: 'right',
       render: ({ row }) => (
-        <span className="muted mono" style={{ fontFamily: 'ui-monospace, monospace', fontSize: 11 }}>
+        <span className="h-agent-size-pill muted mono" style={{ fontFamily: 'ui-monospace, monospace', fontSize: 11 }}>
           {fmtBytes(row.sizeBytes)}
         </span>
       ),

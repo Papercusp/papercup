@@ -547,8 +547,8 @@ function ReviewRow({ review, onClick }: { review: PendingReview; onClick: () => 
       <span className="h-inbox-row-title">{reviewText(review)}</span>
       <span className="h-inbox-row-sub">{reviewSubtext(review)}</span>
       <span className="h-inbox-row-foot">
-        <span>{fmtAgo(review.ts)} ago</span>
-        <span>open chat →</span>
+        <span className="h-inbox-foot-pill">{fmtAgo(review.ts)} ago</span>
+        <span className="h-inbox-foot-pill action">open chat →</span>
       </span>
     </button>
   );
@@ -569,8 +569,8 @@ function ThreadRow({ thread, onClick, onPin, onDelete }: { thread: Thread; onCli
       <span className="h-inbox-row-title">{thread.title}</span>
       <span className="h-inbox-row-sub">Open an Architect conversation about this idea.</span>
       <span className="h-inbox-row-foot">
-        <span>{fmtAgo(thread.createdAt)} ago</span>
-        <span>resume →</span>
+        <span className="h-inbox-foot-pill">{fmtAgo(thread.createdAt)} ago</span>
+        <span className="h-inbox-foot-pill action">resume →</span>
       </span>
       <button
         type="button"

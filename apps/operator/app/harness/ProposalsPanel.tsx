@@ -607,7 +607,7 @@ function ProposalsPanelInner({ slug, architectInbox }: Props) {
       {
         key: 'check',
         header: '',
-        width: 0.18,
+        width: '32px',
         align: 'center',
         render: ({ row }) => {
           const isPending = row.status === 'pending';
@@ -628,7 +628,7 @@ function ProposalsPanelInner({ slug, architectInbox }: Props) {
       {
         key: 'pin',
         header: '',
-        width: 0.18,
+        width: '32px',
         align: 'center',
         render: ({ row }) => {
           const isShort = shortlisted.has(row.id);
@@ -648,7 +648,7 @@ function ProposalsPanelInner({ slug, architectInbox }: Props) {
       {
         key: 'main',
         header: 'proposal',
-        width: 5,
+        width: 'minmax(0, 1fr)',
         render: ({ row }) => {
           const rowTitle = decorateProposalTitle(row.title ?? humanizeId(row.id), row.proposalCount);
           const rowReviewLabel = reviewBadgeLabel(row, true);

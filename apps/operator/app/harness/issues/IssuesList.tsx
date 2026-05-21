@@ -199,7 +199,7 @@ function IssuesListInner({ slug, onCount }: { slug: string; onCount?: (n: number
       {
         key: 'sev',
         header: 'sev',
-        width: 0.9,
+        width: '82px',
         render: ({ row }) => {
           const SevIcon = SEVERITY_ICON[row.severity] ?? Circle;
           return (
@@ -213,16 +213,16 @@ function IssuesListInner({ slug, onCount }: { slug: string; onCount?: (n: number
       {
         key: 'body',
         header: 'issue',
-        width: 5.6,
+        width: 'minmax(0, 1fr)',
         sortKey: 'title',
         render: ({ row }) => {
           const SrcIcon = SOURCE_ICON[row.source] ?? Circle;
           return (
-            <div className="h-issue-body">
+            <div className="h-issue-body h-issue-body--inline">
               <div className="h-issue-title" title={row.title}>
                 {row.title}
               </div>
-              <div className="h-issue-meta">
+              <div className="h-issue-meta h-issue-meta--inline">
                 <span className="h-issue-source"><SrcIcon size={10} /> {row.source}</span>
                 <span className="h-issue-id">{row.id}</span>
                 {row.foundDuring && <span className="h-issue-feat">found in {row.foundDuring}</span>}
@@ -231,32 +231,40 @@ function IssuesListInner({ slug, onCount }: { slug: string; onCount?: (n: number
                     <FileCode size={10} /> {row.codePointer}
                   </span>
                 )}
+                {row.linkedFeatureId && (
+                  <span className="h-issue-linked" title={`Fix in progress: ${row.linkedFeatureId}`}>
+                    <ArrowUpRight size={10} /> {row.linkedFeatureId}
+                  </span>
+                )}
               </div>
             </div>
           );
         },
       },
       {
-        key: 'right',
-        header: '',
-        width: 2.45,
+        key: 'status',
+        header: 'status',
+        width: '88px',
         align: 'right',
         render: ({ row }) => {
           const StatusIcon = STATUS_ICON[row.status] ?? Circle;
+          return (
+            <span className={`h-issue-status st-${row.status}`}>
+              <StatusIcon size={10} className={row.status === 'fixing' ? 'h-spin' : ''} />
+              {row.status}
+            </span>
+          );
+        },
+      },
+      {
+        key: 'actions',
+        header: '',
+        width: '186px',
+        align: 'right',
+        render: ({ row }) => {
           const isBusy = (action: string) => busyAction === `${row.id}:${action}`;
           return (
             <div className="h-issue-right" onClick={(e) => e.stopPropagation()}>
-              <div className="h-issue-right-top">
-                {row.linkedFeatureId && (
-                  <span className="h-issue-linked" title={`Fix in progress: ${row.linkedFeatureId}`}>
-                    <ArrowUpRight size={10} /> {row.linkedFeatureId}
-                  </span>
-                )}
-                <span className={`h-issue-status st-${row.status}`}>
-                  <StatusIcon size={10} className={row.status === 'fixing' ? 'h-spin' : ''} />
-                  {row.status}
-                </span>
-              </div>
               <div className="h-issue-row-actions">
                 {!row.linkedFeatureId && row.status !== 'closed' && row.status !== 'wontfix' && (
                   <Tooltip label="Promote this issue into a feature fix">
@@ -278,7 +286,7 @@ function IssuesListInner({ slug, onCount }: { slug: string; onCount?: (n: number
                     <button type="button" className="h-issue-row-action danger" disabled={isBusy('wontfix')} onClick={() => void runIssueAction(row, 'wontfix')}>won't fix</button>
                   </Tooltip>
                 )}
-              </div>
+            </div>
             </div>
           );
         },
@@ -366,7 +374,7 @@ function IssuesListInner({ slug, onCount }: { slug: string; onCount?: (n: number
           onRowClick={(i) => setSelectedId(i.id)}
           rowProps={richRowProps}
           inline
-          rowMinHeight={58}
+          rowMinHeight={36}
         />
       )}
       {/* Mount unconditionally so the vaul drawer is set up once and just

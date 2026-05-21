@@ -459,7 +459,7 @@ function ListView({
       {
         key: 'select',
         header: '',
-        width: 0.18,
+        width: '30px',
         align: 'center',
         render: ({ row }) => (
           <span onClick={(e) => e.stopPropagation()} style={{ display: 'inline-flex' }}>
@@ -476,28 +476,27 @@ function ListView({
       cols.push({
         key: 'statusDot',
         header: '',
-        width: 0.18,
+        width: '26px',
         align: 'center',
-        render: ({ row }) => <StatusPill status={row.status} showLabel={false} size="xs" />,
+        render: ({ row }) => (
+          <span className={`h-feature-row-mini-status status-${row.status}`}>
+            <StatusPill status={row.status} showLabel={false} size="xs" />
+          </span>
+        ),
       });
       cols.push({
         key: 'id',
         header: 'ID',
-        width: 0.7,
+        width: '66px',
         render: ({ row }) => (
-          <span style={{
-            fontFamily: FONTS.mono,
-            fontSize: SIZES.xs,
-            color: COLORS.textMuted,
-            letterSpacing: '0.02em',
-          }}>{row.id}</span>
+          <span className="h-feature-row-id" title={row.id}>{row.id}</span>
         ),
       });
     }
     cols.push({
       key: 'title',
       header: compact ? 'Feature' : 'Title',
-      width: compact ? 4 : 3.15,
+      width: compact ? 'minmax(0, 1fr)' : 'minmax(130px, 1fr)',
       render: ({ row }) => {
         const claimsCount = row.claims?.length ?? 0;
         if (compact) {
@@ -509,15 +508,13 @@ function ListView({
                 overflow: 'hidden',
               }}>{row.summary || row.title}</span>
               <span className="h-feature-row-meta" style={{ display: 'flex', alignItems: 'center', gap: 7, color: COLORS.textDim, fontSize: SIZES.xs }}>
-                <StatusPill status={row.status} showLabel={false} size="xs" />
-                <span className="h-feature-row-id" style={{ fontFamily: FONTS.mono, color: COLORS.textMuted }}>{row.id}</span>
-                {claimsCount > 0 && <span>{claimsCount} claims</span>}
+                <span className={`h-feature-row-mini-status status-${row.status}`}>
+                  <StatusPill status={row.status} showLabel={false} size="xs" />
+                </span>
+                <span className="h-feature-row-id" title={row.id}>{row.id}</span>
+                {claimsCount > 0 && <span className="h-feature-claims-chip">{claimsCount} claims</span>}
                 {row.attempts > 0 && (
-                  <span style={{
-                    marginLeft: 'auto',
-                    fontFamily: FONTS.mono,
-                    color: row.attempts >= 3 ? STATUS.blocked.text : COLORS.textDim,
-                  }}>×{row.attempts}</span>
+                  <span className={`h-feature-attempts-pill${row.attempts >= 3 ? ' warn' : ''}`}>×{row.attempts}</span>
                 )}
               </span>
             </div>
@@ -531,11 +528,7 @@ function ListView({
               overflow: 'hidden',
             }}>{row.summary || row.title}</span>
             {claimsCount > 0 && (
-              <span className="h-feature-claims-chip" style={{
-                fontSize: '0.65rem', color: COLORS.textDim, background: COLORS.bg,
-                padding: '1px 6px', borderRadius: RADIUS.sm,
-                border: `1px solid ${COLORS.borderSubtle}`, flexShrink: 0,
-              }}>{claimsCount} claims</span>
+              <span className="h-feature-claims-chip">{claimsCount} claims</span>
             )}
           </span>
         );
@@ -545,31 +538,31 @@ function ListView({
       cols.push({
         key: 'attempts',
         header: 'Try',
-        width: 0.4,
+        width: '38px',
         align: 'right',
         render: ({ row }) => (
-          <span style={{
-            fontFamily: FONTS.mono,
-            fontSize: SIZES.xs,
-            color: row.attempts >= 3 ? STATUS.blocked.text : COLORS.textDim,
-          }}>{row.attempts}</span>
+          <span className={`h-feature-attempts-pill${row.attempts >= 3 ? ' warn' : ''}`}>
+            {row.attempts}
+          </span>
         ),
       });
     }
     cols.push({
       key: 'status',
       header: 'Status',
-      width: compact ? 0.7 : 0.78,
+      width: compact ? '82px' : '96px',
       align: 'right',
       render: ({ row }) => (
-        <span className="h-feature-status-text">{getStatusMeta(row.status).label}</span>
+        <span className={`h-feature-status-pill status-${row.status}`}>
+          <StatusPill status={row.status} size="xs" />
+        </span>
       ),
     });
     if (!compact) {
       cols.push({
         key: 'actions',
         header: '',
-        width: 2.08,
+        width: '152px',
         align: 'right',
         render: ({ row }) => {
           const noteOpen = noteFeatureId === row.id;
