@@ -19,6 +19,9 @@
  *   docsRoutes  — `/internal/docs/*` loopback gate + slug→html + Accept→md.
  *   pageRoutes  — `/wiki`, `/drizzle-studio`.
  *   app.fetch   — local API fallthrough (`/api/*`).
+ *   spaRoutes   — Phase G3: built Vite SPA (`operator-vite/dist/`) for every
+ *                 remaining path. Static assets by extension; the index
+ *                 shell for client routes.
  */
 import { Hono } from 'hono';
 import { compress } from 'hono/compress';
@@ -27,6 +30,7 @@ import { apiCors } from './host-cors';
 import { docsRoutes } from './host-docs';
 import { pageRoutes } from './page-routes';
 import { crossAppRewrites, rustOptIn } from './host-proxies';
+import { spaRoutes } from './host-spa';
 
 const host = new Hono();
 
@@ -59,7 +63,16 @@ host.route('/', pageRoutes);
 //    inner Hono app. Calling `app.fetch(c.req.raw)` (not `c.req`) preserves
 //    the original Web `Request` object — `_hono/app.ts` handlers index off
 //    `c.req.raw` for things like `request.signal` (abort propagation).
+//
+//    `/api/*` terminates here: an unknown API path returns the inner app's
+//    real (JSON) 404, NOT the SPA shell — so the SPA fallback below never
+//    sees an `/api/*` request.
 host.all('/api/*', (c) => app.fetch(c.req.raw));
+
+// 8. SPA fallback (Phase G3) — the built Vite app for everything the API,
+//    docs, page-namespace, and cross-app routes above did not claim.
+//    Registered last so it only catches client routes + static assets.
+host.route('/', spaRoutes);
 
 export async function handler(req: Request): Promise<Response> {
   return host.fetch(req);

@@ -909,6 +909,23 @@ curl -sf http://127.0.0.1:3070/internal/docs/agent-policies  # Docs → 200
 curl -sI http://127.0.0.1:3070/nonexistent | head -1         # 200 (SPA shell — client router handles 404)
 ```
 
+**G3 as-built (2026-05-21).** SPA fallback shipped as `apps/operator/bin/host-spa.ts`
+(NOT the plan's illustrative inline `serveStatic` — `@hono/node-server`'s `serveStatic`
+`root` is `process.cwd()`-relative, which the audit-3 gotcha forbids). `host-spa.ts`
+mirrors `host-docs.ts`: resolves `operator-vite/dist/` from `__dirname`, serves
+extension'd paths as static assets (miss → real 404, never shell a missing `.js`),
+extensionless paths as the `index.html` shell (always 200 — TSR owns not-found).
+Wired as step 8 (final fallback) in `host-handler.ts`, after the `/api/*` terminator —
+so an unknown `/api/*` path keeps returning the inner app's JSON 404, not the SPA HTML.
+
+Verified by a 10-test handler-direct smoke (no `runBootstrap`, same pattern as Phase E):
+`/`, `/login`, `/nonexistent` → 200 shell; real asset → 200 with `text/javascript`;
+missing asset → 404; `/api/health` → 200; `/api/unknown` → 404 (not HTML);
+`/internal/docs/agent-policies` (loopback) → 200. 10/10 pass.
+
+**G4 (drop `next start` from the desktop sidecar launcher)** is a `papercusp-desktop/`
+change — bundled with Phase F (same repo boundary). Tracked there, not in this commit.
+
 ### G NOT shipping
 
 - No deletion of `apps/operator/app/` yet.
