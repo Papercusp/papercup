@@ -1743,20 +1743,175 @@
 
 .pc-git-diff__body {
   margin: 0;
-  padding: 12px 18px;
+  padding: 14px 16px 18px;
   flex: 1;
   min-height: 0;
   overflow: auto;
+  display: grid;
+  gap: 12px;
+  background: linear-gradient(180deg, #08131f 0%, #0a1522 100%);
+}
+
+.pc-git-diff__parse-warning,
+.pc-git-diff__empty,
+.pc-git-diff__raw {
+  margin: 0;
+  padding: 14px 16px;
+  border: 1px solid rgba(125, 211, 252, 0.14);
+  border-radius: 12px;
+  background: #0b1624;
+  color: #d7e6f3;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 12px;
-  line-height: 1.55;
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.pc-git-diff__parse-warning {
+  color: #fcd34d;
+  background: rgba(120, 53, 15, 0.22);
+  border-color: rgba(251, 191, 36, 0.22);
+}
+
+.pc-git-diff__raw {
+  overflow: auto;
   white-space: pre;
 }
-.pc-diff-line { display: block; }
-.pc-diff-line--file { color: #cbd5e1; font-weight: 700; }
-.pc-diff-line--hunk { color: #93c5fd; }
-.pc-diff-line--add  { color: #bbf7d0; background: rgba(34, 197, 94, 0.08); }
-.pc-diff-line--del  { color: #fecaca; background: rgba(248, 113, 113, 0.08); }
+
+.pc-git-diff-file {
+  border: 1px solid rgba(125, 211, 252, 0.12);
+  border-radius: 12px;
+  background: #0c1726;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.02);
+  overflow: hidden;
+}
+
+.pc-git-diff-file__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 14px;
+  border-bottom: 1px solid rgba(125, 211, 252, 0.10);
+  background:
+    linear-gradient(180deg, rgba(15, 23, 42, 0.92), rgba(10, 18, 30, 0.88)),
+    #0b1522;
+}
+
+.pc-git-diff-file__path {
+  min-width: 0;
+  overflow: hidden;
+}
+
+.pc-git-diff-file__path code {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  color: #d9e8f4;
+}
+
+.pc-git-diff-file__meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+
+.pc-git-diff-file__type,
+.pc-git-diff-file__stat {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 22px;
+  padding: 0 8px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.pc-git-diff-file__type {
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  background: rgba(15, 23, 42, 0.9);
+  color: #d9e8f4;
+}
+
+.pc-git-diff-file__type--modify { border-color: rgba(125, 211, 252, 0.24); color: #bae6fd; }
+.pc-git-diff-file__type--add { border-color: rgba(74, 222, 128, 0.24); color: #bbf7d0; }
+.pc-git-diff-file__type--delete { border-color: rgba(248, 113, 113, 0.24); color: #fecaca; }
+.pc-git-diff-file__type--rename,
+.pc-git-diff-file__type--copy { border-color: rgba(251, 191, 36, 0.22); color: #fde68a; }
+
+.pc-git-diff-file__stat {
+  border: 1px solid transparent;
+}
+
+.pc-git-diff-file__stat--add {
+  background: rgba(22, 101, 52, 0.28);
+  color: #bbf7d0;
+}
+
+.pc-git-diff-file__stat--del {
+  background: rgba(127, 29, 29, 0.28);
+  color: #fecaca;
+}
+
+.pc-git-diff-file__table {
+  overflow: auto;
+  background: #09111b;
+  --diff-background-color: transparent;
+  --diff-text-color: #d9e8f4;
+  --diff-font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  --diff-selection-background-color: rgba(125, 211, 252, 0.26);
+  --diff-selection-text-color: #f8fbff;
+  --diff-gutter-insert-background-color: rgba(20, 83, 45, 0.50);
+  --diff-gutter-insert-text-color: #bbf7d0;
+  --diff-gutter-delete-background-color: rgba(127, 29, 29, 0.50);
+  --diff-gutter-delete-text-color: #fecaca;
+  --diff-gutter-selected-background-color: rgba(30, 41, 59, 0.94);
+  --diff-gutter-selected-text-color: #f8fbff;
+  --diff-code-insert-background-color: rgba(20, 83, 45, 0.24);
+  --diff-code-insert-text-color: #dff7e7;
+  --diff-code-delete-background-color: rgba(127, 29, 29, 0.24);
+  --diff-code-delete-text-color: #fee2e2;
+  --diff-code-insert-edit-background-color: rgba(74, 222, 128, 0.24);
+  --diff-code-insert-edit-text-color: #f0fdf4;
+  --diff-code-delete-edit-background-color: rgba(248, 113, 113, 0.24);
+  --diff-code-delete-edit-text-color: #fff1f2;
+  --diff-code-selected-background-color: rgba(30, 41, 59, 0.94);
+  --diff-code-selected-text-color: #f8fbff;
+  --diff-omit-gutter-line-color: rgba(125, 211, 252, 0.46);
+}
+
+.pc-git-diff-table {
+  min-width: 100%;
+}
+
+.pc-git-diff-hunk + .pc-git-diff-hunk {
+  border-top: 1px solid rgba(125, 211, 252, 0.08);
+}
+
+.pc-git-diff-line {
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.pc-git-diff-gutter {
+  min-width: 5ch;
+  padding: 0 10px 0 8px;
+  color: #7f95ab;
+}
+
+.pc-git-diff-code {
+  padding: 0 14px 0 12px;
+  white-space: pre;
+  word-break: normal;
+  word-wrap: normal;
+  overflow-wrap: normal;
+}
 
 /* ── Lint banner (P-206) ──────────────────────────────────────────── */
 .pc-lint-banner {

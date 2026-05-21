@@ -51,6 +51,14 @@ export interface MarkdownEditorProps {
   /** Inline style on the outer wrapper. */
   style?: React.CSSProperties;
   placeholder?: string;
+  /**
+   * Fires once after the editor is fully constructed and the initial value
+   * has been set. Receives the live Vditor instance. Use for surfaces that
+   * need to register Lute renderers (`vditor.lute.SetJSRenderers(...)`) or
+   * attach delegated event handlers to the editor element. Called with
+   * `null` on unmount/destroy.
+   */
+  onInstance?: (instance: any | null) => void;
 }
 
 /**
@@ -93,14 +101,35 @@ export function MarkdownPreview({
   outline = false,
   className,
   style,
+  renderers,
+  onParsed,
 }: {
   value: string;
   outline?: boolean | 'left' | 'right';
   className?: string;
   style?: React.CSSProperties;
+  /**
+   * Lute custom renderers, passed straight through to Vditor.preview's
+   * documented `renderers: ILuteRender` option (per-construct overrides
+   * like renderCodeSpan / renderListItem / renderText). Typed loosely
+   * because vditor does not publish ILuteRender in its public types.
+   * Read via ref so callers don't need to memoize.
+   */
+  renderers?: Record<string, unknown>;
+  /**
+   * Fired once with the rendered DOM after each Vditor.preview() call.
+   * Used by post-render decorators (Plans admin, P-106) for DOM-walking
+   * passes that don't fit the renderer protocol. Read via ref so
+   * callers don't need to memoize.
+   */
+  onParsed?: (root: HTMLElement) => void;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const outlineRef = useRef<HTMLDivElement>(null);
+  const renderersRef = useRef(renderers);
+  renderersRef.current = renderers;
+  const onParsedRef = useRef(onParsed);
+  onParsedRef.current = onParsed;
   useEffect(() => {
     if (!ref.current) return;
     let cancelled = false;
@@ -108,13 +137,17 @@ export function MarkdownPreview({
       await loadVditorCss();
       const Vditor = (await import('vditor')).default;
       if (cancelled || !ref.current) return;
-      await Vditor.preview(ref.current, expandWikiLinks(value ?? ''), {
+      const previewOpts: Record<string, unknown> = {
         mode: 'dark',
         theme: { current: 'dark' },
         math: { engine: 'KaTeX' },
         anchor: 1,
         lang: 'en_US',
-      });
+      };
+      if (renderersRef.current) previewOpts.renderers = renderersRef.current;
+      await Vditor.preview(ref.current, expandWikiLinks(value ?? ''), previewOpts as never);
+      if (cancelled || !ref.current) return;
+      try { onParsedRef.current?.(ref.current); } catch { /* decorator errors don't fail render */ }
       if (outline && outlineRef.current && ref.current) {
         outlineRef.current.innerHTML = '';
         Vditor.outlineRender(ref.current, outlineRef.current);
@@ -215,11 +248,14 @@ export function MarkdownEditor({
   className,
   style,
   placeholder,
+  onInstance,
 }: MarkdownEditorProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const editorRef = useRef<any>(null);
   const onChangeRef = useRef(onChange);
   onChangeRef.current = onChange;
+  const onInstanceRef = useRef(onInstance);
+  onInstanceRef.current = onInstance;
   const initialValueRef = useRef(value);
   const [ready, setReady] = useState(false);
 
@@ -289,11 +325,13 @@ export function MarkdownEditor({
             setTimeout(wireOutline, 400);
           }
           setReady(true);
+          try { onInstanceRef.current?.(inst); } catch { /* consumer error shouldn't abort mount */ }
         },
       });
     })();
     return () => {
       cancelled = true;
+      try { onInstanceRef.current?.(null); } catch { /* ignore */ }
       try { editorRef.current?.destroy(); } catch { /* destroy after unmount race */ }
       editorRef.current = null;
       setReady(false);
