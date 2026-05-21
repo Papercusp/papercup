@@ -78,6 +78,7 @@ const MOCKED_MODULES = [
   '@/lib/agent-chats-data',
   '@/lib/operator-notes',
   '@/lib/sync-sse',
+  '@papercusp/agent-mcp',
 ];
 
 beforeEach(() => {
@@ -156,6 +157,46 @@ describe('POST /oracle/chat — registerOracle shim route', () => {
       postReq('/oracle/chat', { messages: [{ role: 'user', content: 'hi' }] }),
     );
     expect(res.status).toBe(404);
+  });
+
+  // Phase-4 T2.2 audit follow-up — `_hono/oracle.ts` was previously
+  // setting `runId: \`oracle-${Date.now()}\`` and missed the
+  // d460b747 sweep that migrated every other MCP-spawn site to
+  // `globalThis.crypto.randomUUID()`. Two concurrent oracle:chat calls
+  // in the same workspace within the same millisecond would have
+  // shared a replay buffer; a reconnecting client could replay events
+  // from the OTHER call.
+  it('runId is UUID-shaped and unique per request (regression for Bug #1)', async () => {
+    const seenRunIds: string[] = [];
+    vi.doMock('@papercusp/agent-mcp', async (orig) => {
+      const real = (await orig()) as Record<string, unknown>;
+      return {
+        ...real,
+        dispatchProjectedToolStream: async function* (
+          _tool: unknown,
+          _name: string,
+          _input: unknown,
+          ctx: { runId: string },
+        ) {
+          seenRunIds.push(ctx.runId);
+          // Yield a minimal terminal event so the route closes cleanly.
+          yield { kind: 'done' as const, result: { content: [] } };
+        },
+      };
+    });
+
+    const app = await mountOracle([]);
+    await app.fetch(postReq('/oracle/chat', { messages: [{ role: 'user', content: 'hi' }] }));
+    await app.fetch(postReq('/oracle/chat', { messages: [{ role: 'user', content: 'hi' }] }));
+
+    expect(seenRunIds).toHaveLength(2);
+    const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    expect(seenRunIds[0]).toMatch(UUID_RE);
+    expect(seenRunIds[1]).toMatch(UUID_RE);
+    expect(seenRunIds[0], 'runIds must differ per request').not.toBe(seenRunIds[1]);
+    // And the OLD pattern must not reappear under any code path.
+    expect(seenRunIds[0]).not.toMatch(/^oracle-\d+$/);
+    expect(seenRunIds[1]).not.toMatch(/^oracle-\d+$/);
   });
 });
 

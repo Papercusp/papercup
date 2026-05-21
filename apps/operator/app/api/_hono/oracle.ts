@@ -93,7 +93,7 @@ export function registerOracle(app: Hono) {
           workspaceId: activeWorkspaceId(),
           harnessSlug: undefined,
           role: 'operator' as const,
-          runId: `oracle-${Date.now()}`,
+          runId: globalThis.crypto.randomUUID(),
           spawnId: 'oracle-shim',
           log: () => { /* */ },
           progress: () => { /* */ },
