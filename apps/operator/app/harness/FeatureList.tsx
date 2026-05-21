@@ -459,7 +459,7 @@ function ListView({
       {
         key: 'select',
         header: '',
-        width: '30px',
+        width: '28px',
         align: 'center',
         render: ({ row }) => (
           <span onClick={(e) => e.stopPropagation()} style={{ display: 'inline-flex' }}>
@@ -474,20 +474,9 @@ function ListView({
     ];
     if (!compact) {
       cols.push({
-        key: 'statusDot',
-        header: '',
-        width: '26px',
-        align: 'center',
-        render: ({ row }) => (
-          <span className={`h-feature-row-mini-status status-${row.status}`}>
-            <StatusPill status={row.status} showLabel={false} size="xs" />
-          </span>
-        ),
-      });
-      cols.push({
         key: 'id',
         header: 'ID',
-        width: '66px',
+        width: '78px',
         render: ({ row }) => (
           <span className="h-feature-row-id" title={row.id}>{row.id}</span>
         ),
@@ -512,7 +501,7 @@ function ListView({
                   <StatusPill status={row.status} showLabel={false} size="xs" />
                 </span>
                 <span className="h-feature-row-id" title={row.id}>{row.id}</span>
-                {claimsCount > 0 && <span className="h-feature-claims-chip">{claimsCount} claims</span>}
+                {claimsCount > 0 && <span className="h-feature-claims-chip">{claimsCount} claim{claimsCount === 1 ? '' : 's'}</span>}
                 {row.attempts > 0 && (
                   <span className={`h-feature-attempts-pill${row.attempts >= 3 ? ' warn' : ''}`}>×{row.attempts}</span>
                 )}
@@ -528,7 +517,7 @@ function ListView({
               overflow: 'hidden',
             }}>{row.summary || row.title}</span>
             {claimsCount > 0 && (
-              <span className="h-feature-claims-chip">{claimsCount} claims</span>
+              <span className="h-feature-claims-chip">{claimsCount} claim{claimsCount === 1 ? '' : 's'}</span>
             )}
           </span>
         );
@@ -550,7 +539,7 @@ function ListView({
     cols.push({
       key: 'status',
       header: 'Status',
-      width: compact ? '82px' : '96px',
+      width: compact ? '82px' : '92px',
       align: 'right',
       render: ({ row }) => (
         <span className={`h-feature-status-pill status-${row.status}`}>
@@ -562,7 +551,7 @@ function ListView({
       cols.push({
         key: 'actions',
         header: '',
-        width: '152px',
+        width: '168px',
         align: 'right',
         render: ({ row }) => {
           const noteOpen = noteFeatureId === row.id;

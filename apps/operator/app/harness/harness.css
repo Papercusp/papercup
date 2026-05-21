@@ -12361,8 +12361,8 @@ body:has(.h-top-collapse-inline) main {
 }
 
 .h-feature-row-id {
-  min-inline-size: 56px;
-  max-inline-size: 70px;
+  min-inline-size: 66px;
+  max-inline-size: 76px;
   overflow: hidden;
   text-overflow: ellipsis;
 }
@@ -12442,6 +12442,45 @@ body:has(.h-top-collapse-inline) main {
 .h-feature-status-pill > span {
   justify-content: center;
   inline-size: 100%;
+}
+
+.h-feature-row > div {
+  align-items: center !important;
+}
+
+.h-feature-row > div > div {
+  align-items: center !important;
+  padding-inline: 4px !important;
+}
+
+.h-feature-row-main,
+.h-feature-row-main .h-feature-row-title {
+  min-width: 0;
+}
+
+.h-feature-row-main .h-feature-row-title {
+  flex: 1 1 auto;
+  inline-size: 100%;
+}
+
+.h-feature-row-actions {
+  inline-size: 100%;
+  flex-wrap: nowrap !important;
+  justify-content: center !important;
+  gap: 3px !important;
+}
+
+.h-feature-row-action {
+  box-sizing: border-box;
+  flex: 0 0 auto;
+  min-width: 34px;
+  min-height: 20px !important;
+  padding-inline: 5px !important;
+  line-height: 1 !important;
+}
+
+.h-feature-row-action.danger {
+  min-width: 38px;
 }
 
 .h-issue-meta {
