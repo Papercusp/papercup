@@ -174,7 +174,7 @@ E3  mobile flag + centralized CORS                              ✅ SHIPPED  17a
 E4  Migrate 33 mobile routes (/api/mobile/* wire-compat)        ✅ SHIPPED  9fa447d4
 E5  Delete _hono/mobile.ts                                      ✅ SHIPPED  9bc35e3c
 E6  Collapse defineRoute → defineTool                           ✅ SHIPPED — see §E6
-E7  ESLint enforcement + docs                                   ⬜ not started
+E7  ESLint enforcement + docs                                   ◐ docs shipped; lint rule gated on E12/E13
 E8  IPC transport for unified handlers                          ⬜ not started
 E9  Auth-tightening pass (~30–50 routes)                        ⬜ not started
 E10 OpenAPI mobile-tag rendering                                ✅ SHIPPED
@@ -264,11 +264,11 @@ Key fixes during implementation:
 
 E10 + E11 shipped. Remaining: E7 (lint + docs — the `no-raw-route-handlers` rule is gated on E12/E13 migrating the last `_hono/*` routers), E8 (IPC transport), E9 (auth-tightening ~30–50 routes), E12 (migrate `_hono/harness.ts`, 135 routes), E13 (`coord`/`plugins`/`su-locks`, 16 routes + orphan triage), E14 (delete `_hono/`). E12 in particular is the single largest phase (135 route migrations) and warrants its own focused plan + review rather than a rushed pass. The `mobile: true` flag and the unified `requirePrincipal` auth from E1–E5 make every one of those migrations mechanical when they happen.
 
-### Phase E7 — Lint enforcement + docs
+### Phase E7 — Lint enforcement + docs — ◐ DOCS SHIPPED, lint rule deferred
 
-- ESLint rule `no-raw-route-handlers`: reject `app.get/.post` in `_hono/*` outside `app.route(...)` or `registerAllRoutes(app)`.
-- Doc updates: `/internal/docs/endpoint-system/overview` reflects single primitive; dedicated `defineRoute` page deletes; `expose.mobile` gets a section under `Mobile`.
-- Agent insight: `agent-insights/unified-define-tool-2026-05-21.mdx`.
+- ✅ `endpoint-system/overview.mdx` gained a "The route projection" section — `defineTool` route-shaped input, `defineRoute` as a re-export, the `mobile: true` flag.
+- ✅ Agent insight already shipped in E5: `agent-insights/mobile-endpoint-unification.mdx`.
+- ⬜ **ESLint rule `no-raw-route-handlers`** (reject raw `app.get/.post` in `_hono/*`) — **deferred**, and necessarily so: `_hono/harness.ts` (135 routes), `coord.ts`, `plugins.ts`, `su-locks.ts` still use raw `app.get/.post`. Landing the rule now would fail lint across the whole `_hono/` dir. It must follow E12/E13.
 
 ### Phase E8 — IPC transport for unified handlers
 
