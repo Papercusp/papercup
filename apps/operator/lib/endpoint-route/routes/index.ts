@@ -76,6 +76,7 @@ import harnessProcessControl from './harness/process-control';
 import harnessReviews from './harness/reviews';
 import harnessMemory from './harness/memory';
 import harnessPhases from './harness/phases';
+import harnessIssues from './harness/issues';
 import harnessAllKpis from './harness/all-kpis';
 import harnessSearch from './harness/search';
 import harnessFile from './harness/file';
@@ -425,6 +426,7 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(harnessReviews as AnyRoute[]),
   ...flatten(harnessMemory as AnyRoute[]),
   ...flatten(harnessPhases as AnyRoute[]),
+  ...flatten(harnessIssues as AnyRoute[]),
   ...flatten(harnessAllKpis as AnyRoute),
   ...flatten(harnessSearch as AnyRoute),
   ...flatten(harnessFile as AnyRoute[]),
