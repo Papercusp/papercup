@@ -10,9 +10,9 @@
  *      `packages/agent-mcp/src/dispatch-projected.test.ts` (search for
  *      "metadata_json auto-fill"). They're the foundation.
  *
- *   2. **Operator route plumbing** — `apps/operator/app/api/agent-mcp/
- *      operator-converse/route.ts` must put `body.uiClientId` into the
- *      `UnifiedToolContext.uiClientId` field so the dispatcher's
+ *   2. **Operator route plumbing** — `apps/operator/lib/endpoint-route/
+ *      routes/agent-mcp/operator-converse.ts` must put `body.uiClientId`
+ *      into the `UnifiedToolContext.uiClientId` field so the dispatcher's
  *      auto-fill has something to fill in. This file's static-source
  *      check guards that plumbing — regressing the route's ctxBase
  *      drops the tag silently and breaks scenario isolation.
@@ -37,9 +37,12 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
+// The operator-converse route moved from app/api/ (Next.js) to the
+// endpoint-route system in the 2026-05-20 Vite migration. Same handler,
+// same ctxBase plumbing — only the file location changed.
 const ROUTE_PATH = resolve(
   __dirname,
-  '../../../app/api/agent-mcp/operator-converse/route.ts',
+  '../../endpoint-route/routes/agent-mcp/operator-converse.ts',
 );
 
 describe('telemetry-tagging audit (plan §5.4)', () => {
@@ -55,7 +58,7 @@ describe('telemetry-tagging audit (plan §5.4)', () => {
       // `uiClientId: body.uiClientId` (with optional ?? null) somewhere
       // inside the ctxBase block.
       const ctxBaseBlock = extractBlock(source, /const ctxBase: UnifiedToolContext = \{/);
-      expect(ctxBaseBlock, 'ctxBase block not found in route.ts').toBeTruthy();
+      expect(ctxBaseBlock, 'ctxBase block not found in operator-converse.ts').toBeTruthy();
       expect(ctxBaseBlock!).toMatch(/uiClientId:\s*body\.uiClientId(\s*\?\?\s*null)?/);
     });
   });

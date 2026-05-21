@@ -51,7 +51,13 @@ export class OperatorTarget implements ChatTarget {
   }
 
   async open(opts: SessionOptions): Promise<ChatSession> {
-    const baseUrl = this.opts.baseUrl ?? process.env.PAPERCUSP_OPERATOR_URL ?? 'http://127.0.0.1:3055';
+    // Post-Vite-migration topology (2026-05-20): :3055 is the Vite SPA
+    // dev server (frontend only); the API backend — including
+    // /api/agent-mcp/operator-converse — is the Hono host on :3070
+    // (bin/hono-host.ts). The framework is an HTTP client of the
+    // backend, so it targets the Hono host directly, not the frontend
+    // dev server's proxy. Override with PAPERCUSP_OPERATOR_URL.
+    const baseUrl = this.opts.baseUrl ?? process.env.PAPERCUSP_OPERATOR_URL ?? 'http://127.0.0.1:3070';
     if (opts.transport === 'http-sse' && opts.dispatchOverride) {
       registerOverride(opts.runId, opts.dispatchOverride);
     }
