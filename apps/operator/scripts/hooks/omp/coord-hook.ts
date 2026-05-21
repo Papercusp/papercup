@@ -775,56 +775,52 @@ const acquiredLocks = new Map<string, string>();
 // ── Fail-open health marker (file-locking #3) ────────────────────────
 
 /**
- * Path the hook writes its health marker to. Operator reads it via
- * GET /api/su-locks/hook-health so the /coord UI can surface
- * "enforcement is offline" when this file's most recent entry is an
- * unreachable error. Located OUTSIDE the repo so multiple checkouts
- * share one marker per host user.
+ * Directory the hook writes its two health markers into. Operator
+ * reads them via GET /api/su-locks/hook-health so the /coord UI can
+ * surface "enforcement is offline" when the last error is newer than
+ * the last success. Located OUTSIDE the repo so multiple checkouts
+ * share one marker set per host user.
+ *
+ * Two files, per the plan contract:
+ *   - last-error.json   — written ONLY on a hook error (fail-open)
+ *   - last-success.json — written on every successful hook call
  */
-function hookHealthPath(): string {
-  const override = process.env.PAPERCUSP_HOOK_HEALTH_PATH;
+function locksCacheDir(): string {
+  const override = process.env.PAPERCUSP_LOCKS_CACHE_DIR;
   if (override) return override;
   const home = process.env.HOME ?? '/tmp';
-  return resolve(home, '.papercusp/locks-cache/hook-health.json');
+  return resolve(home, '.papercusp/locks-cache');
 }
 
-export interface HookHealthRecord {
-  /** ISO timestamp of the most recent successful coord:locks:* call. */
-  last_ok_ts?: string;
-  /** ISO timestamp of the most recent failure. */
-  last_error_ts?: string;
-  /** Stable taxonomy. */
-  last_error_kind?: 'operator_unreachable' | 'mcp_error';
-  /** One-line human-readable error context. */
-  last_error_message?: string;
-  /** ISO timestamp of the most recent block decision (a successful
-   *  block — operator said "busy"). Useful for UI sanity. */
-  last_block_ts?: string;
+/** Error record — shape per file-locking plan §3 step 1. */
+export interface HookErrorRecord {
+  /** ISO timestamp of the failure. */
+  ts: string;
+  /** Which hook handler hit the error. */
+  handler: 'tool_call' | 'tool_result';
+  /** Coarse phase of the failure. */
+  phase: 'connect' | 'http' | 'parse';
+  /** One-line human-readable context. */
+  detail: string;
+  /** Operator URL the hook was trying to reach. */
+  operator_url: string;
+}
+
+/** Success record — the "track this similarly" half of plan §3 step 2. */
+export interface HookSuccessRecord {
+  ts: string;
 }
 
 /**
- * Atomic-ish marker write — read the current JSON, merge, write to
- * a sibling temp, rename over the target. The hook never throws on
- * marker write failure (filesystem error must not crash the agent's
- * tool call); errors are silently swallowed.
+ * Atomic-ish JSON write — temp file + rename. The hook never throws
+ * on marker write failure (a filesystem error must not crash the
+ * agent's tool call); errors are silently swallowed.
  */
-export async function recordHookHealth(
-  patch: Partial<HookHealthRecord>,
-): Promise<void> {
-  const path = hookHealthPath();
+async function writeMarker(path: string, value: unknown): Promise<void> {
   try {
     await fsp.mkdir(dirname(path), { recursive: true, mode: 0o700 });
-    let existing: HookHealthRecord = {};
-    try {
-      const raw = await fsp.readFile(path, 'utf8');
-      const parsed = JSON.parse(raw);
-      if (parsed && typeof parsed === 'object') existing = parsed;
-    } catch {
-      // Missing or malformed — start fresh.
-    }
-    const merged: HookHealthRecord = { ...existing, ...patch };
     const tmp = path + '.tmp-' + process.pid;
-    await fsp.writeFile(tmp, JSON.stringify(merged, null, 2), {
+    await fsp.writeFile(tmp, JSON.stringify(value, null, 2), {
       encoding: 'utf8',
       mode: 0o600,
     });
@@ -832,6 +828,29 @@ export async function recordHookHealth(
   } catch {
     // Best-effort. A failed marker write must never break the hook.
   }
+}
+
+/** Record a successful hook call (operator reachable + answered). */
+export async function recordHookSuccess(): Promise<void> {
+  const rec: HookSuccessRecord = { ts: new Date().toISOString() };
+  await writeMarker(resolve(locksCacheDir(), 'last-success.json'), rec);
+}
+
+/** Record a hook error (fail-open path). */
+export async function recordHookError(
+  input: { handler: HookErrorRecord['handler']; phase: HookErrorRecord['phase']; detail: string },
+): Promise<void> {
+  const rec: HookErrorRecord = {
+    ts: new Date().toISOString(),
+    handler: input.handler,
+    phase: input.phase,
+    detail: input.detail,
+    operator_url:
+      process.env.PAPERCUSP_BUNDLE_URL ??
+      process.env.PAPERCUSP_OPERATOR_URL ??
+      '(unset)',
+  };
+  await writeMarker(resolve(locksCacheDir(), 'last-error.json'), rec);
 }
 
 /** Repo root the hook restricts itself to. Override with
@@ -951,10 +970,10 @@ export async function onToolCall(
     console.error(
       '[su-locks] coord:locks:acquire unreachable; allowing tool_call (fail-open)',
     );
-    await recordHookHealth({
-      last_error_ts: new Date().toISOString(),
-      last_error_kind: 'operator_unreachable',
-      last_error_message: 'coord:locks:acquire returned null',
+    await recordHookError({
+      handler: 'tool_call',
+      phase: 'connect',
+      detail: 'coord:locks:acquire returned null (operator unreachable)',
     });
     return {};
   }
@@ -965,13 +984,14 @@ export async function onToolCall(
     busy?: BusyEntry[];
     reason?: string;
   };
-  const now = new Date().toISOString();
+  // Reaching here means the operator answered — a successful hook
+  // call, whether the answer was ok or busy.
   if (r.ok === true && typeof r.lock_id === 'string') {
     acquiredLocks.set(event.toolCallId, r.lock_id);
-    await recordHookHealth({ last_ok_ts: now });
+    await recordHookSuccess();
     return {};
   }
-  await recordHookHealth({ last_ok_ts: now, last_block_ts: now });
+  await recordHookSuccess();
   const reason =
     r.busy && r.busy.length > 0
       ? formatBusyRefusal(r.busy)

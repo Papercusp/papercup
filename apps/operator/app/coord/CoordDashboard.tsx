@@ -73,29 +73,30 @@ export default function CoordDashboard() {
 
 // ── Hook-health banner (file-locking #3) ─────────────────────────────
 
-interface HookHealthRecord {
-  last_ok_ts?: string;
-  last_error_ts?: string;
-  last_error_kind?: 'operator_unreachable' | 'mcp_error';
-  last_error_message?: string;
-  last_block_ts?: string;
+interface HookErrorRecord {
+  ts: string;
+  handler: 'tool_call' | 'tool_result';
+  phase: 'connect' | 'http' | 'parse';
+  detail: string;
+  operator_url: string;
 }
 interface HookHealthResponse {
-  ok: boolean;
-  record: HookHealthRecord | null;
+  healthy: boolean;
+  last_success_ts: string | null;
+  last_error: HookErrorRecord | null;
 }
 
 const STALE_WINDOW_MS = 5 * 60_000;
 
 /**
  * Renders a banner ONLY when the OMP tool_call hook is currently
- * failing open (the most recent recorded outcome is an error AND it
- * happened within the last 5 minutes). Silent otherwise — no banner
- * spam during normal operation.
+ * failing open (unhealthy AND the error happened within the last
+ * 5 minutes). Silent otherwise — no banner spam during normal
+ * operation.
  *
  * Polls /api/su-locks/hook-health every 15s; cheap (small JSON, no
- * DB query — the route just stats + reads ~/.papercusp/locks-cache/
- * hook-health.json).
+ * DB query — the route reads ~/.papercusp/locks-cache/last-error.json
+ * + last-success.json).
  */
 function HookHealthBanner() {
   const [data, setData] = useState<HookHealthResponse | null>(null);
@@ -122,17 +123,15 @@ function HookHealthBanner() {
     };
   }, []);
 
-  if (!data || data.ok || !data.record) return null;
-  const errTs = data.record.last_error_ts;
-  if (!errTs) return null;
-  const ageMs = Date.now() - Date.parse(errTs);
+  if (!data || data.healthy || !data.last_error) return null;
+  const ageMs = Date.now() - Date.parse(data.last_error.ts);
   if (!Number.isFinite(ageMs) || ageMs > STALE_WINDOW_MS) return null;
 
-  const kind = data.record.last_error_kind ?? 'unknown';
+  const phase = data.last_error.phase;
   const label =
-    kind === 'operator_unreachable'
+    phase === 'connect'
       ? 'operator unreachable from an OMP session'
-      : kind;
+      : `hook ${data.last_error.handler} error (${phase})`;
   const minutes = Math.max(1, Math.round(ageMs / 60_000));
   return (
     <div
