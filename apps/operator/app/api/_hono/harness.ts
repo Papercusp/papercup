@@ -592,33 +592,6 @@ harness.get('/:slug/status', async (c) => {
 // ─── read-only content views ──────────────────────────────────────────
 
 
-harness.get('/:slug/issues', async (c) => {
-  const slug = c.req.param('slug');
-  const project = await resolvePhasedProject(slug, phasePhaseLabel(c.req.query('phase')));
-  if (!project) return c.json({ error: 'unknown project' }, 404);
-  // PG canonical (Migration 035) with FS fallback for harnesses pre-035.
-  const { loadTextArtifact } = await import('@/lib/text-artifacts');
-  const pg = await loadTextArtifact(slug, 'issues.md');
-  return c.json({ issues: pg ?? safeRead(join(harnessDir(project), 'issues.md')) });
-});
-
-harness.get('/:slug/summary', async (c) => {
-  const slug = c.req.param('slug');
-  const project = await resolvePhasedProject(slug, phasePhaseLabel(c.req.query('phase')));
-  if (!project) return c.json({ error: 'unknown project' }, 404);
-  // PG canonical (Migration 035) with FS fallback for harnesses pre-035.
-  const { loadTextArtifact } = await import('@/lib/text-artifacts');
-  const pg = await loadTextArtifact(slug, 'summary.md');
-  return c.json({ summary: pg ?? safeRead(join(harnessDir(project), 'summary.md')) });
-});
-
-harness.get('/:slug/logs/run', async (c) => {
-  const project = await resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
-  if (!project) return c.json({ error: 'unknown project' }, 404);
-  const tail = tailFile(join(harnessDir(project), 'logs', 'run.log'), 128 * 1024);
-  return c.json({ log: tail });
-});
-
 // ─── agent runs (per-invocation I/O) ─────────────────────────────────
 
 // A run is "live" when its jsonl has no terminal `{type:"result"}` line AND its
