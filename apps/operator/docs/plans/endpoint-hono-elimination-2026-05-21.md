@@ -12,9 +12,11 @@ companion-to: [endpoint-unification-2026-05-21, endpoint-route-migration-2026-05
 
 **State:** The `endpoint-unification-2026-05-21` arc shipped E1–E6 (the `defineRoute`→`defineTool` collapse + the full mobile flag) plus E7-docs, E10, E11, and E13-partial (`coord` + `su-locks` migrated off `_hono`). Its tail — E8/E9/E12/E13-plugins/E14 — was found to be two genuinely separate projects, too large and too risky to fold into that arc. **This plan is that tail, re-scoped from audit.**
 
-**Next:** A3 — migrate `plugins.ts` (7 routes) + relocate `installPluginApiDispatcher` (the runtime-mutated plugin-API catch-all). Then A4 (`harness.ts`, 138 routes — the largest phase), A5–A7.
+**Next:** A4 batches 2…N — migrate the 138 routes in `_hono/harness.ts` to `defineRoute` in family-grouped batches of ≤8. Helpers already relocated (batch 1 shipped). Then A6 (delete `_hono/`) and A7 (no-raw-route-handlers ESLint rule).
 
-A1 shipped (`c019a0ff`): 5 small routers. **A2 complete** — `pty` (10, `7be65218`), `agent-chats` (5, `24c532fa`), `experts` (17, `e9b82847`). **8 of 10 `_hono` routers + 54 routes migrated off Hono** this arc. Remaining `_hono` routers: `plugins.ts` (A3) and `harness.ts` (A4).
+A1 shipped (`c019a0ff`): 5 small routers. **A2 complete** — `pty` (10, `7be65218`), `agent-chats` (5, `24c532fa`), `experts` (17, `e9b82847`). **A3 complete** (`d336a44e`): 5 still-live `_hono/plugins.ts` routes + dispatcher relocation merged into `routes/plugins/catchall.ts`. **A5 complete** (`b3499031`): `harness-paths.ts` → `lib/`. **A4 batch 1 complete** (`92857349`): 11 non-route helpers + 3 private deps → `lib/harness-core.ts` (–423 LOC from `_hono/harness.ts`), 3 external importers repointed.
+
+**9 of 10 `_hono` routers fully off Hono** as of this arc. Remaining: `harness.ts` (A4 routes, ~138 routes across ~17 batches).
 
 # Endpoint follow-ups — finish `_hono` elimination + auth-tightening
 
@@ -80,27 +82,28 @@ E8 (`expose.ipc` for routes) stays **deferred** — the flag is typed but inert 
 
 **A2 complete — 8 of 10 `_hono` routers migrated.**
 
-### A3 — `plugins.ts` (7 routes) + relocate the plugin-API dispatcher
+### A3 — `plugins.ts` (7 routes) + relocate the plugin-API dispatcher — ✅ SHIPPED `d336a44e`
 
-- `plugins.ts` is **not** a plain bundle: `installPluginApiDispatcher(plugins)` mutates the `plugins` Hono sub-app at boot to add a **dynamic, runtime-populated** catch-all for plugin-supplied API routes.
-- Step 1 — relocate the dispatcher: the dynamic plugin-API catch-all becomes its own `defineRoute` catch-all (`/plugins/*`, phase-2 registration) that consults the same in-memory plugin-route registry. This is the real work of A3.
-- Step 2 — migrate the 7 static `plugins.*` routes to `defineRoute`.
-- Step 3 — delete `plugins.ts` + `app.route('/plugins', plugins)`.
-- Acceptance: a plugin-supplied API route still resolves through the relocated catch-all; the 7 static routes serve identically.
+- Audit found `routes/plugins/global.ts` + `contributions.ts` had already shadowed 2 of the 7 legacy routes as phase-1 literals — dead code, dropped without re-migration.
+- Dispatcher relocation: `installPluginApiDispatcher(plugins): void` (Hono-sub-app mutation) → `dispatchPluginApiRoute(req): Promise<Response|null>` (pure function). `defineRoute` handlers cannot yield via `next()`; the registry-miss path is expressed as a `null` return that `routes/plugins/catchall.ts` checks before falling through to projected-tool dispatch. The two `/plugins/*` paths (apiRoutes registry + projected-tool) merged into a single defineRoute — `register.ts` errors on duplicate `(method, path)` so they couldn't be separate routes.
+- 5 still-live legacy routes migrated to `routes/plugins/{list,installed,runtime-status,runtime-invoke-action,runtime-fire-event}.ts`.
+- Helpers + their tests relocated: `lib/plugin-catalog.ts` (`listPluginsIn`, `resolveProjectPath`, `HARNESSES_DIR`, `GLOBAL_PLUGINS_DIR`, `PluginManifest` type) — was Avi @ endpoints-migration agent's prior WIP, completed in this commit.
+- Fixed a latent `operationId()` bug in `lib/endpoint-route/openapi.ts`: `/plugins` and `/plugins/*` both reduced to `route_GET_plugins` because the trailing-underscore strip ate the wildcard delimiter. Mapped `*` → `wildcard` before the generic non-alphanumeric collapse. Surfaced when this arc added the bare `/plugins` route.
+- Deleted `_hono/plugins.ts` (576 LOC) + `_hono/plugins.test.ts`; dropped `app.route('/plugins', plugins)` from `_hono/app.ts`.
 
 ### A4 — `harness.ts` (138 routes) — the big one
 
-- ~18 batches of ≤8 routes. Each batch: one commit, explicit pathspecs, per-batch `app.request()` parity check.
-- Group batches by URL family (`/harness/:slug/status`, `/harness/:slug/phases/*`, `/harness/:slug/log/*`, …) so a reviewer sees coherent diffs.
-- **`harness.ts` exports ~a dozen non-route helpers** (`getHarnessStatusFull`, `resolvePhasedProject`, `harnessDir`, `phasePhaseLabel`-adjacent, …) imported across the app — including by the already-migrated `routes/mobile/harnesses.ts`. These **must survive**: move them to `lib/harness-core.ts` (or similar) as the first batch of A4, repoint importers, *then* migrate routes. `harness.ts` is only deleted once both its routes and its helpers are gone.
+- **Batch 1 ✅ SHIPPED `92857349`** — 11 non-route helpers + 3 private deps relocated to `lib/harness-core.ts`. `harness.ts` itself re-imports them; 3 external importers (`architect/prompts.ts`, `harness-readers.ts`, `mobile/harnesses.ts`) repointed. Layering violation (`lib/* → _hono/*`) eliminated. –423 LOC from `_hono/harness.ts`. tsc clean; composed-app-shadowing 6/6.
+- **Batches 2…N** — ~17 batches of ≤8 routes. Each batch: one commit, explicit pathspecs, per-batch `app.request()` parity check. Group batches by URL family (`/harness/:slug/status`, `/harness/:slug/phases/*`, `/harness/:slug/log/*`, …) so a reviewer sees coherent diffs.
 - Auth posture preserved verbatim per batch.
 - Acceptance: per batch — routes serve identically, `tsc` clean, endpoint-route suite green; the `harness` UI smoke-tested at the end of A4.
+- `harness.ts` is deleted only once its 138 routes are all gone; the `harness` Hono sub-app declaration drops out of `_hono/app.ts` at the same time.
 
-### A5 — Orphan triage
+### A5 — Orphan triage — ✅ SHIPPED `b3499031`
 
-- `bootstrap.ts` — 0 routes, the host startup hook (`runBootstrap`). **Keep.** Optionally move to `bin/` since it's host-layer, not API-layer.
-- `harness-paths.ts` — 0 routes, a path helper imported by `role-registry`/`expert-dispatcher`/etc. **Keep**; move to `lib/` (it is not `_hono`-specific).
-- Confirm no other `_hono/*.ts` file has un-migrated routes after A1–A4.
+- `harness-paths.ts` → `lib/harness-paths.ts` via `git mv`. 4 importer repoints + 3 test-mock-path repoints. 40/40 affected tests green.
+- `bootstrap.ts` deferred to A6 (it's the host startup hook — moves with `app.ts` when the host seam is relocated).
+- `dock-layouts.integration.test.ts` + `BOUNDARY.md` + `execute-action.contract.md` similarly deferred to A6.
 
 ### A6 — Delete `_hono/`
 
