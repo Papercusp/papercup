@@ -27,6 +27,11 @@ import {
   pokeWorkspace,
   readQueue,
   readWaiterStatus,
+  runBackgroundJanitorOnce,
+  startBackgroundJanitor,
+  stopBackgroundJanitor,
+  sweepPathsExpired,
+  sweepWorkspaceExpired,
   tryAcquire,
   tryCancelWait,
   tryHeartbeat,
@@ -698,10 +703,13 @@ describe('audit regression — insert-race self-grant', () => {
 });
 
 describe('audit regression — orphaned-waiter cleanup', () => {
-  it('janitor sweeps a waiter whose wait_until has passed but no one marked it expired', async () => {
+  it('path-narrow sweep flips a waiter whose wait_until has passed but no one marked it expired', async () => {
+    // file-locking #4: the per-acquire sweep is now path-scoped, so
+    // the contender's acquire on the orphan's path is what triggers
+    // the cleanup. (Orphans on paths the agent doesn't touch are
+    // cleaned by the background janitor — see its own describe block.)
     const ws = nextWs();
     const sql = getTxPool();
-    // Holder
     const h = await inWorkspaceTxn(ws, 'h', (tx) =>
       tryAcquire(tx, {
         workspaceId: ws, owner: 'h', ownerLabel: 'H',
@@ -710,8 +718,8 @@ describe('audit regression — orphaned-waiter cleanup', () => {
     );
     if (!h.ok) throw new Error('setup');
 
-    // Waiter with very short wait_until (1s). Simulate the agent
-    // crashing by NOT calling pokeWorkspace.
+    // Waiter with a 1s ceiling. Simulate the agent crashing by NOT
+    // calling pokeWorkspace.
     const w = await inWorkspaceTxn(ws, 'b', (tx) =>
       tryInsertWaiter(tx, {
         workspaceId: ws, owner: 'b', ownerLabel: 'B',
@@ -723,25 +731,51 @@ describe('audit regression — orphaned-waiter cleanup', () => {
     // Sleep past wait_until.
     await new Promise((r) => setTimeout(r, 1500));
 
-    // Any subsequent acquire fires the janitor.
-    await inWorkspaceTxn(ws, 'probe', (tx) =>
+    // A contender on the SAME path triggers the path-narrow sweep.
+    // Should be 'busy' (H still holds), not blocked by the orphan.
+    const probe = await inWorkspaceTxn(ws, 'probe', (tx) =>
       tryAcquire(tx, {
         workspaceId: ws, owner: 'probe', ownerLabel: 'P',
-        paths: ['unrelated.ts'], intent: 'probe', ttlSec: 60,
+        paths: ['orphan.ts'], intent: 'probe', ttlSec: 60,
       }),
     );
+    expect(probe.ok).toBe(false);
+    if (!probe.ok) {
+      // Blocked by H (the live holder), NOT by the orphan B.
+      expect(probe.busy[0].owner).toBe('h');
+    }
 
-    // The orphaned waiter should now be 'expired'.
     const rows = await sql<Array<{ status: string }>>`
       SELECT status::text AS status FROM agent_lock_waiters
        WHERE ticket_id = ${w.ticket_id}::uuid
     `;
     expect(rows[0].status).toBe('expired');
+  });
 
-    // And the head-waiter rule no longer blocks new acquirers
-    // (the orphan was the only waiter, and now it's not 'waiting').
-    // C still won't get foo.ts because H holds it, but C should be
-    // blocked by H, not by the orphan.
+  it('head-waiter check filters by wait_until so a stale waiter never blocks an acquire', async () => {
+    // Defense-in-depth (file-locking #4): even if the sweep hasn't
+    // run yet, a 'waiting' row whose wait_until has elapsed must not
+    // block. Hand-insert an orphan with no live holder and confirm a
+    // fresh acquire on the same path succeeds.
+    const ws = nextWs();
+    const sql = getTxPool();
+    await sql`
+      INSERT INTO agent_lock_waiters
+        (workspace_id, owner, owner_label, paths, intent, ttl_sec,
+         wait_until, status, queued_ts)
+      VALUES
+        (${ws}, 'crashed', 'crashed', ${['ghost.ts']}, 'crashed', 60,
+         clock_timestamp() - interval '5 seconds',
+         'waiting',
+         clock_timestamp() - interval '1 minute')
+    `;
+    const r = await inWorkspaceTxn(ws, 'fresh', (tx) =>
+      tryAcquire(tx, {
+        workspaceId: ws, owner: 'fresh', ownerLabel: 'F',
+        paths: ['ghost.ts'], intent: 'F', ttlSec: 60,
+      }),
+    );
+    expect(r.ok).toBe(true);
   });
 });
 
@@ -944,49 +978,201 @@ describe('plan §10.1 — cancel_wait_after_grant', () => {
   });
 });
 
-describe('plan §10.1 — janitor_cleans_stale_and_terminal', () => {
-  it('janitor inside acquire deletes expired locks and terminal waiters', async () => {
+describe('plan §10.1 + file-locking #4 — background janitor', () => {
+  // The plan §10.1 invariant ("stale locks + terminal waiters get
+  // swept") is now carried by runBackgroundJanitorOnce(), not by an
+  // implicit sweep inside tryAcquire. Under VITEST the timer is NOT
+  // armed (see isTestEnv in su-lock-store.ts); tests drive it
+  // directly so there's no wall-clock race against fixtures.
+
+  it('runBackgroundJanitorOnce sweeps expired locks on paths nobody acquired', async () => {
     const ws = nextWs();
     const sql = getTxPool();
-
-    // Hand-insert an expired lock and a terminal waiter from yesterday.
+    // Hand-insert an expired lock the tests never otherwise touch —
+    // the path-narrow per-acquire sweep would never reach it.
     await sql`
       INSERT INTO agent_file_locks
         (workspace_id, path, owner, owner_label, intent, expires_ts)
       VALUES
-        (${ws}, 'janitor.ts', 'old', 'old', 'old', clock_timestamp() - interval '1 hour')
+        (${ws}, 'janitor.ts', 'old', 'old', 'old',
+         clock_timestamp() - interval '1 hour')
     `;
+    await runBackgroundJanitorOnce();
+    const left = await sql<Array<{ path: string }>>`
+      SELECT path FROM agent_file_locks
+       WHERE workspace_id = ${ws} AND owner = 'old'
+    `;
+    expect(left).toHaveLength(0);
+  });
+
+  it('runBackgroundJanitorOnce garbage-collects terminal waiters older than 24h', async () => {
+    const ws = nextWs();
+    const sql = getTxPool();
     await sql`
       INSERT INTO agent_lock_waiters
-        (workspace_id, owner, owner_label, paths, intent, ttl_sec, wait_until, status, queued_ts)
+        (workspace_id, owner, owner_label, paths, intent, ttl_sec,
+         wait_until, status, queued_ts)
       VALUES
         (${ws}, 'gone', 'gone', ${['x.ts']}, 'old', 60,
          clock_timestamp() - interval '25 hours',
          'expired',
          clock_timestamp() - interval '25 hours')
     `;
+    await runBackgroundJanitorOnce();
+    const left = await sql<Array<{ ticket_id: string }>>`
+      SELECT ticket_id FROM agent_lock_waiters
+       WHERE workspace_id = ${ws} AND owner = 'gone'
+    `;
+    expect(left).toHaveLength(0);
+  });
 
-    // Acquire triggers the janitor.
-    await inWorkspaceTxn(ws, 'fresh', (tx) =>
-      tryAcquire(tx, {
-        workspaceId: ws, owner: 'fresh', ownerLabel: 'F',
-        paths: ['fresh.ts'], intent: 'fresh', ttlSec: 60,
-      }),
+  it('runBackgroundJanitorOnce grants a waiter behind a now-expired holder, per-workspace', async () => {
+    // The bug the per-workspace advisory lock prevents: a naive global
+    // sweep+single-cascade would only fire grant_cascade for ONE
+    // workspace per pass. Set up two workspaces, both with the same
+    // problem, and assert both waiters end up granted in the same
+    // janitor pass.
+    const sql = getTxPool();
+
+    async function armWorkspace(ws: string): Promise<string> {
+      const a = await inWorkspaceTxn(ws, 'h', (tx) =>
+        tryAcquire(tx, {
+          workspaceId: ws, owner: 'h', ownerLabel: 'H',
+          paths: ['bg.ts'], intent: 'H', ttlSec: 300,
+        }),
+      );
+      if (!a.ok) throw new Error('arm: holder acquire failed');
+      const w = await inWorkspaceTxn(ws, 'b', (tx) =>
+        tryInsertWaiter(tx, {
+          workspaceId: ws, owner: 'b', ownerLabel: 'B',
+          paths: ['bg.ts'], intent: 'B', ttlSec: 60, maxWaitSec: 600,
+        }),
+      );
+      if (!w.ok || 'self_granted' in w) throw new Error('arm: waiter not queued');
+      // Force-expire H so the only thing standing between B and the
+      // grant is the background janitor.
+      await sql`
+        UPDATE agent_file_locks
+           SET expires_ts = clock_timestamp() - interval '1 second'
+         WHERE workspace_id = ${ws} AND path = 'bg.ts'
+      `;
+      return w.ticket_id;
+    }
+
+    const wsA = nextWs();
+    const wsB = nextWs();
+    const tA = await armWorkspace(wsA);
+    const tB = await armWorkspace(wsB);
+
+    await runBackgroundJanitorOnce();
+
+    const sA = await readWaiterStatus(sql, tA);
+    const sB = await readWaiterStatus(sql, tB);
+    expect(sA.status).toBe('granted');
+    expect(sB.status).toBe('granted');
+  });
+
+  it('start/stopBackgroundJanitor is idempotent and does not leak timers', () => {
+    // Smoke test the lifecycle — don't actually let the 30s interval
+    // fire, just verify the handles can be churned without throwing.
+    stopBackgroundJanitor();
+    startBackgroundJanitor();
+    startBackgroundJanitor(); // second call must be a no-op
+    stopBackgroundJanitor();
+    stopBackgroundJanitor(); // second stop must be a no-op
+  });
+});
+
+describe('file-locking #4 — sweepPathsExpired (path-narrow primitive)', () => {
+  it('deletes expired locks only on the requested paths', async () => {
+    const ws = nextWs();
+    const sql = getTxPool();
+    await sql`
+      INSERT INTO agent_file_locks
+        (workspace_id, path, owner, owner_label, intent, expires_ts)
+      VALUES
+        (${ws}, 'in.ts', 'a', 'A', 'i', clock_timestamp() - interval '1 hour'),
+        (${ws}, 'out.ts', 'a', 'A', 'i', clock_timestamp() - interval '1 hour')
+    `;
+    const moved = await inWorkspaceTxn(ws, 'p', (tx) =>
+      sweepPathsExpired(tx, ws, ['in.ts']),
     );
-
-    // Expired lock should be gone (the janitor inside tryAcquire
-    // deletes anything past clock_timestamp).
-    const staleLocks = await sql<Array<{ path: string }>>`
-      SELECT path FROM agent_file_locks WHERE workspace_id = ${ws} AND owner = 'old'
+    expect(moved).toBe(true);
+    const rows = await sql<Array<{ path: string }>>`
+      SELECT path FROM agent_file_locks
+       WHERE workspace_id = ${ws} ORDER BY path
     `;
-    expect(staleLocks).toHaveLength(0);
+    expect(rows.map((r) => r.path)).toEqual(['out.ts']);
+  });
 
-    // Terminal waiter from 25h ago should be gone (janitor sweeps
-    // status IN ('granted','expired','cancelled') older than 24h).
-    const oldWaiters = await sql<Array<{ ticket_id: string }>>`
-      SELECT ticket_id FROM agent_lock_waiters WHERE workspace_id = ${ws} AND owner = 'gone'
+  it('flips orphaned waiters whose paths overlap, leaves disjoint ones alone', async () => {
+    const ws = nextWs();
+    const sql = getTxPool();
+    await sql`
+      INSERT INTO agent_lock_waiters
+        (workspace_id, owner, owner_label, paths, intent, ttl_sec,
+         wait_until, status, queued_ts)
+      VALUES
+        (${ws}, 'over', 'over', ${['x.ts', 'y.ts']}, 'i', 60,
+         clock_timestamp() - interval '5 seconds', 'waiting',
+         clock_timestamp() - interval '1 minute'),
+        (${ws}, 'disj', 'disj', ${['z.ts']}, 'i', 60,
+         clock_timestamp() - interval '5 seconds', 'waiting',
+         clock_timestamp() - interval '1 minute')
     `;
-    expect(oldWaiters).toHaveLength(0);
+    const moved = await inWorkspaceTxn(ws, 'p', (tx) =>
+      sweepPathsExpired(tx, ws, ['x.ts']),
+    );
+    expect(moved).toBe(true);
+    const rows = await sql<Array<{ owner: string; status: string }>>`
+      SELECT owner, status::text AS status FROM agent_lock_waiters
+       WHERE workspace_id = ${ws} ORDER BY owner
+    `;
+    const byOwner = Object.fromEntries(rows.map((r) => [r.owner, r.status]));
+    expect(byOwner.over).toBe('expired');
+    expect(byOwner.disj).toBe('waiting');
+  });
+
+  it('returns false when nothing matches (no-op fast path)', async () => {
+    const ws = nextWs();
+    const moved = await inWorkspaceTxn(ws, 'p', (tx) =>
+      sweepPathsExpired(tx, ws, ['nonexistent.ts']),
+    );
+    expect(moved).toBe(false);
+  });
+
+  it('returns false for an empty path list', async () => {
+    const ws = nextWs();
+    const moved = await inWorkspaceTxn(ws, 'p', (tx) =>
+      sweepPathsExpired(tx, ws, []),
+    );
+    expect(moved).toBe(false);
+  });
+});
+
+describe('file-locking #4 — sweepWorkspaceExpired (workspace-scoped primitive)', () => {
+  it('sweeps all expired rows in its workspace and leaves other workspaces untouched', async () => {
+    const sql = getTxPool();
+    const wsA = nextWs();
+    const wsB = nextWs();
+    for (const ws of [wsA, wsB]) {
+      await sql`
+        INSERT INTO agent_file_locks
+          (workspace_id, path, owner, owner_label, intent, expires_ts)
+        VALUES
+          (${ws}, 'a.ts', 'o', 'O', 'i', clock_timestamp() - interval '1 hour'),
+          (${ws}, 'b.ts', 'o', 'O', 'i', clock_timestamp() - interval '1 hour')
+      `;
+    }
+    const moved = await inWorkspaceTxn(wsA, 'p', (tx) =>
+      sweepWorkspaceExpired(tx, wsA),
+    );
+    expect(moved).toBe(true);
+    const left = await sql<Array<{ workspace_id: string }>>`
+      SELECT workspace_id FROM agent_file_locks
+       WHERE workspace_id IN (${wsA}, ${wsB})
+    `;
+    expect(left.map((r) => r.workspace_id).sort()).toEqual([wsB, wsB]);
   });
 });
 

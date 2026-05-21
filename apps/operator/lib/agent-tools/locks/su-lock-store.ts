@@ -31,6 +31,16 @@ import { getHarnessAdminUrl } from '@/lib/embedded-pg-discovery';
 export type SuSqlTxn = Sql;
 export type SuTransactionSql = TransactionSql<Record<string, unknown>>;
 
+/**
+ * SU-locks feature key in the per-workspace advisory-lock registry
+ * (see `sql/advisory-lock-keys.md`). First arg of the two-arg
+ * `pg_advisory_xact_lock(feature_key, hashtext('su:'||ws))`. Lives in
+ * this lowest-level locks module so both the per-call txn wrapper
+ * (`in-workspace-txn.ts`) and the background janitor share one
+ * definition.
+ */
+export const SU_LOCKS_FEATURE_KEY = 101;
+
 // ───────── Connection pools ─────────
 
 /**
@@ -89,6 +99,7 @@ export function getListenerPool(): Sql {
  * recycle the connection set between disposable PG instances.
  */
 export async function _resetForTests(): Promise<void> {
+  stopBackgroundJanitor();
   if (txPool) {
     await txPool.end({ timeout: 1 });
     txPool = null;
@@ -200,6 +211,12 @@ export async function ensureBootstrap(): Promise<void> {
   });
 
   bootstrapped = true;
+
+  // Arm the background expiry sweep (file-locking #4). Lazy: the first
+  // locks:* call in the process starts it. Skipped under vitest —
+  // tests call runBackgroundJanitorOnce() directly so no wall-clock
+  // timer can race their fixtures.
+  if (!isTestEnv()) startBackgroundJanitor();
 }
 
 // ───────── Path validation (app-side; trigger is belt-and-suspenders) ─────────
@@ -267,82 +284,219 @@ export function normalizePaths(paths: string[]): string[] {
   return Array.from(new Set(canon)).sort();
 }
 
-// ───────── Janitor ─────────
+// ───────── Janitor — expiry sweep ─────────
 
 /**
- * Plan §7.7 janitor: clear expired locks + terminal waiters older
- * than 24h. Returns the workspace_ids that had expired locks swept,
- * so the caller can fire grant_cascade for those workspaces — without
- * this, a waiter queued on a path whose holder lapses (TTL expiry,
- * no explicit release) would silently sit in 'waiting' until its
- * max_sec runs out, even though the path is free.
+ * Workspace-scoped expiry sweep: delete this workspace's expired lock
+ * rows and flip its orphaned 'waiting' waiters (wait_until elapsed, the
+ * agent crashed mid-wait) to 'expired'. Returns true if anything moved,
+ * so the caller can decide whether to run grant_cascade.
  *
- * Cheap; bounded by partial indexes.
+ * file-locking #4: replaces the former global janitor, which ran a
+ * DELETE across EVERY workspace on every acquire/release/heartbeat
+ * call. That global scan now lives only in the 30s background janitor
+ * (runBackgroundJanitorOnce); the per-call hot path sweeps just the
+ * workspace (or paths) it actually touches.
+ *
+ * Timeout-agnostic: inherits the caller's SET LOCAL statement_timeout.
  */
-async function janitorAndCollectExpiredWorkspaces(
-  tx: Sql,
-  hintWorkspaceId: string,
-): Promise<Set<string>> {
-  const swept = await tx<Array<{ workspace_id: string }>>`
-    DELETE FROM agent_file_locks
-     WHERE expires_ts <= clock_timestamp()
-     RETURNING workspace_id
-  `;
-  // Bug-#19: sweep ORPHANED 'waiting' waiters whose wait_until has
-  // passed but no one marked them expired (agent process crashed
-  // mid-wait). Without this, a single crashed waiter permanently
-  // blocks the path via the head-waiter rule.
-  const orphanWaiters = await tx<Array<{ workspace_id: string }>>`
-    UPDATE agent_lock_waiters
-       SET status = 'expired'
-     WHERE status = 'waiting'
-       AND wait_until <= clock_timestamp()
-     RETURNING workspace_id
-  `;
-  await tx`
-    DELETE FROM agent_lock_waiters
-     WHERE status IN ('granted','expired','cancelled')
-       AND queued_ts < clock_timestamp() - interval '24 hours'
-  `;
-  const sweptWorkspaces = new Set<string>();
-  for (const r of swept) sweptWorkspaces.add(r.workspace_id);
-  for (const r of orphanWaiters) sweptWorkspaces.add(r.workspace_id);
-  return sweptWorkspaces;
-}
-
-/**
- * Fire the grant cascade for the calling workspace ONLY IF the
- * janitor swept any expired lock rows for it. Cross-workspace cascade
- * is intentionally NOT fired because each workspace has its own
- * advisory lock — we'd be running cascades against workspaces whose
- * lock we don't hold.
- */
-async function maybeFireCascadeForOwnWorkspace(
+export async function sweepWorkspaceExpired(
   tx: Sql,
   workspaceId: string,
-  swept: Set<string>,
-): Promise<void> {
-  if (swept.has(workspaceId)) {
-    await tx`SELECT grant_cascade(${workspaceId}, clock_timestamp())`;
-  }
+): Promise<boolean> {
+  const expiredLocks = await tx<Array<{ path: string }>>`
+    DELETE FROM agent_file_locks
+     WHERE workspace_id = ${workspaceId}
+       AND expires_ts <= clock_timestamp()
+    RETURNING path
+  `;
+  // Orphaned 'waiting' waiters whose wait_until has passed but no one
+  // marked them expired (bug #19). The head-waiter check now filters
+  // waiters by wait_until so a stale row no longer BLOCKS acquires,
+  // but it still must be cleaned up here / by the background janitor.
+  const orphanWaiters = await tx<Array<{ ticket_id: string }>>`
+    UPDATE agent_lock_waiters
+       SET status = 'expired'
+     WHERE workspace_id = ${workspaceId}
+       AND status = 'waiting'
+       AND wait_until <= clock_timestamp()
+    RETURNING ticket_id
+  `;
+  return expiredLocks.length > 0 || orphanWaiters.length > 0;
 }
 
 /**
- * Reactive nudge: run the janitor + cascade for one workspace.
+ * Path-narrow expiry sweep for the acquire hot path (file-locking #4).
+ * Sweeps ONLY the rows touching the paths this acquire is contending —
+ * an index-perfect (workspace_id, path) delete. The orphaned-waiter
+ * flip is likewise restricted to waiters whose path set overlaps
+ * `paths`.
+ *
+ * Expired rows on paths NOT in this set are intentionally left for the
+ * background janitor — they cannot affect this acquire's outcome (the
+ * upsert steals expired rows on the requested paths; the head-waiter
+ * check filters dead waiters by wait_until).
+ *
+ * Timeout-agnostic: inherits the caller's SET LOCAL statement_timeout.
+ */
+export async function sweepPathsExpired(
+  tx: Sql,
+  workspaceId: string,
+  paths: string[],
+): Promise<boolean> {
+  if (paths.length === 0) return false;
+  const expiredLocks = await tx<Array<{ path: string }>>`
+    DELETE FROM agent_file_locks
+     WHERE workspace_id = ${workspaceId}
+       AND path = ANY(${paths}::text[])
+       AND expires_ts <= clock_timestamp()
+    RETURNING path
+  `;
+  const orphanWaiters = await tx<Array<{ ticket_id: string }>>`
+    UPDATE agent_lock_waiters
+       SET status = 'expired'
+     WHERE workspace_id = ${workspaceId}
+       AND status = 'waiting'
+       AND wait_until <= clock_timestamp()
+       AND paths && ${paths}::text[]
+    RETURNING ticket_id
+  `;
+  return expiredLocks.length > 0 || orphanWaiters.length > 0;
+}
+
+/**
+ * Reactive nudge: sweep this workspace's expired locks + orphaned
+ * waiters and run the cascade if anything moved.
  *
  * Used by the wait loop on each ceiling tick so a waiter on a path
  * whose holder lapsed (TTL expiry, no explicit release) doesn't sit
- * idle forever. Without this nudge, the cascade only fires when
- * SOMEONE explicitly calls release/acquire/heartbeat — if the workspace
- * is quiet, the waiter waits its full max_sec on an already-free path.
+ * idle forever. Workspace-scoped (file-locking #4) — it sweeps only
+ * the caller's own workspace; other workspaces are reached by their
+ * own pokes and the background janitor.
  *
- * Cheap: runs inside inWorkspaceTxn; the janitor's two DELETEs are
+ * Cheap: runs inside inWorkspaceTxn; the sweep's DELETE/UPDATE are
  * bounded by partial indexes (typically 0 rows in the steady state).
  */
 export async function pokeWorkspace(tx: Sql, workspaceId: string): Promise<void> {
   await tx`SET LOCAL statement_timeout = '500ms'`;
-  const swept = await janitorAndCollectExpiredWorkspaces(tx, workspaceId);
-  await maybeFireCascadeForOwnWorkspace(tx, workspaceId, swept);
+  const swept = await sweepWorkspaceExpired(tx, workspaceId);
+  if (swept) {
+    await tx`SELECT grant_cascade(${workspaceId}, clock_timestamp())`;
+  }
+}
+
+// ───────── Background janitor (file-locking #4) ─────────
+
+/** Period of the background expiry sweep. */
+const BACKGROUND_JANITOR_INTERVAL_MS = 30_000;
+
+let janitorTimer: ReturnType<typeof setInterval> | null = null;
+let janitorPassInFlight = false;
+
+function isTestEnv(): boolean {
+  return Boolean(process.env.VITEST) || process.env.NODE_ENV === 'test';
+}
+
+/**
+ * One background sweep pass:
+ *   1. Discover workspaces carrying expired locks or orphaned waiters
+ *      (one index-bounded read).
+ *   2. For each, take that workspace's advisory lock NON-blockingly
+ *      (pg_try_advisory_xact_lock — if a tool txn already holds it,
+ *      that txn sweeps+cascades itself, or we catch it next tick),
+ *      sweep, and grant_cascade if anything moved. The advisory lock
+ *      is required: grant_cascade's in-memory held-paths probe is only
+ *      race-free under it.
+ *   3. GC terminal waiter rows older than 24h (disjoint from every
+ *      reader — readQueue's completed window is queued_ts > now-24h —
+ *      so no advisory lock needed).
+ *
+ * One workspace failing never aborts the rest of the pass. Exported so
+ * tests drive it directly (deterministic) instead of waiting on the
+ * wall-clock interval.
+ */
+export async function runBackgroundJanitorOnce(): Promise<void> {
+  await ensureBootstrap();
+  const sql = getTxPool();
+
+  const dirty = await sql<Array<{ workspace_id: string }>>`
+    SELECT workspace_id FROM agent_file_locks
+      WHERE expires_ts <= clock_timestamp()
+    UNION
+    SELECT workspace_id FROM agent_lock_waiters
+      WHERE status = 'waiting' AND wait_until <= clock_timestamp()
+  `;
+
+  for (const { workspace_id } of dirty) {
+    try {
+      await sql.begin(async (txn) => {
+        const tx = txn as unknown as Sql;
+        await tx`SET LOCAL statement_timeout = '2s'`;
+        const got = await tx<Array<{ locked: boolean }>>`
+          SELECT pg_try_advisory_xact_lock(
+            ${SU_LOCKS_FEATURE_KEY}::int,
+            hashtext(${'su:' + workspace_id})
+          ) AS locked
+        `;
+        if (!got[0]?.locked) return; // contended — handled elsewhere
+        const swept = await sweepWorkspaceExpired(tx, workspace_id);
+        if (swept) {
+          await tx`SELECT grant_cascade(${workspace_id}, clock_timestamp())`;
+        }
+      });
+    } catch (err) {
+      console.error(
+        `[su-locks] background janitor: workspace ${workspace_id} sweep failed`,
+        err,
+      );
+    }
+  }
+
+  try {
+    await sql.begin(async (txn) => {
+      const tx = txn as unknown as Sql;
+      await tx`SET LOCAL statement_timeout = '5s'`;
+      await tx`
+        DELETE FROM agent_lock_waiters
+         WHERE status IN ('granted','expired','cancelled')
+           AND queued_ts < clock_timestamp() - interval '24 hours'
+      `;
+    });
+  } catch (err) {
+    console.error('[su-locks] background janitor: terminal-waiter GC failed', err);
+  }
+}
+
+/**
+ * Arm the 30s background janitor. Idempotent. Auto-invoked by
+ * ensureBootstrap in non-test processes; tests skip the timer and call
+ * runBackgroundJanitorOnce() directly.
+ *
+ * The interval is unref'd — it never keeps the process alive on its
+ * own — and a pass never overlaps itself (janitorPassInFlight guard).
+ */
+export function startBackgroundJanitor(): void {
+  if (janitorTimer) return;
+  janitorTimer = setInterval(() => {
+    if (janitorPassInFlight) return;
+    janitorPassInFlight = true;
+    void runBackgroundJanitorOnce()
+      .catch((err) =>
+        console.error('[su-locks] background janitor pass failed', err),
+      )
+      .finally(() => {
+        janitorPassInFlight = false;
+      });
+  }, BACKGROUND_JANITOR_INTERVAL_MS);
+  janitorTimer.unref?.();
+}
+
+/** Stop the background janitor. Idempotent. */
+export function stopBackgroundJanitor(): void {
+  if (janitorTimer) {
+    clearInterval(janitorTimer);
+    janitorTimer = null;
+  }
 }
 
 // ───────── Acquire (no wait) ─────────
@@ -399,9 +553,18 @@ export async function tryAcquire(
 
   await tx`SET LOCAL statement_timeout = '500ms'`;
 
-  // Step 1: janitor (cheap; bounded by partial indexes)
-  const swept = await janitorAndCollectExpiredWorkspaces(tx, workspaceId);
-  await maybeFireCascadeForOwnWorkspace(tx, workspaceId, swept);
+  // Step 1: path-narrow expiry sweep (file-locking #4). Only the rows
+  // touching the paths THIS acquire contends — an index-perfect
+  // (workspace_id, path) delete, not the former global cross-workspace
+  // scan. Fire the cascade if the sweep freed anything so a waiter
+  // blocked solely behind a now-swept expired lock wakes immediately
+  // rather than on the next background tick. Expired rows on other
+  // paths are left for the background janitor — they cannot affect
+  // this acquire's outcome.
+  const swept = await sweepPathsExpired(tx, workspaceId, paths);
+  if (swept) {
+    await tx`SELECT grant_cascade(${workspaceId}, clock_timestamp())`;
+  }
 
   // Step 2: head-waiter check.
   // Skip paths the calling owner already holds — a same-owner refresh
@@ -434,6 +597,11 @@ export async function tryAcquire(
         SELECT TRUE AS blocked FROM agent_lock_waiters
          WHERE workspace_id = ${workspaceId}
            AND status = 'waiting'
+           -- A waiter whose wait_until has elapsed is effectively dead
+           -- (crashed agent / timed-out wait) and must not block a new
+           -- acquire even if the janitor hasn't swept it yet
+           -- (file-locking #4 — robust regardless of sweep timing).
+           AND wait_until > clock_timestamp()
            AND paths && ${newPaths}::text[]
            AND queued_ts < clock_timestamp()
          LIMIT 1
@@ -585,10 +753,11 @@ export async function tryRelease(
 
   await tx`SET LOCAL statement_timeout = '5s'`;
 
-  // Janitor runs but does NOT fire cascade here — release fires its
-  // own cascade unconditionally at the end of the function, so a
-  // janitor-driven cascade would be redundant.
-  await janitorAndCollectExpiredWorkspaces(tx, workspaceId);
+  // Sweep this workspace's expired locks + orphaned waiters so the
+  // cascade below works from clean state. Release fires its own
+  // unconditional cascade at the end of the function, so we ignore the
+  // swept flag here (a janitor-driven cascade would be redundant).
+  await sweepWorkspaceExpired(tx, workspaceId);
 
   let released: Array<{ path: string }>;
 
@@ -645,9 +814,12 @@ export async function tryHeartbeat(
   ttlSec: number,
 ): Promise<HeartbeatResult> {
   await tx`SET LOCAL statement_timeout = '500ms'`;
-  // Plan §7.7 janitor; fire cascade if expired locks were swept.
-  const swept = await janitorAndCollectExpiredWorkspaces(tx, workspaceId);
-  await maybeFireCascadeForOwnWorkspace(tx, workspaceId, swept);
+  // Sweep this workspace's expired rows; fire the cascade if anything
+  // was freed (a waiter behind a now-swept lock should wake).
+  const swept = await sweepWorkspaceExpired(tx, workspaceId);
+  if (swept) {
+    await tx`SELECT grant_cascade(${workspaceId}, clock_timestamp())`;
+  }
   const ttlText = `${ttlSec} seconds`;
   // Owner check (bug #17): like release, require owner match so a
   // leaked lock_id can't be used to extend someone else's TTL.

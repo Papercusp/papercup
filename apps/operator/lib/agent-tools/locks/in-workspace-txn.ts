@@ -12,10 +12,7 @@
  */
 
 import type { Sql } from 'postgres';
-import { ensureBootstrap, getTxPool } from './su-lock-store';
-
-/** SU-locks feature key in the advisory-lock registry. See sql/advisory-lock-keys.md. */
-const SU_LOCKS_FEATURE_KEY = 101;
+import { ensureBootstrap, getTxPool, SU_LOCKS_FEATURE_KEY } from './su-lock-store';
 
 export async function inWorkspaceTxn<T>(
   workspaceId: string,
