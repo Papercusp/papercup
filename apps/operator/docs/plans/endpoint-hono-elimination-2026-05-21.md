@@ -12,7 +12,7 @@ companion-to: [endpoint-unification-2026-05-21, endpoint-route-migration-2026-05
 
 **State:** The `endpoint-unification-2026-05-21` arc shipped E1–E6 (the `defineRoute`→`defineTool` collapse + the full mobile flag) plus E7-docs, E10, E11, and E13-partial (`coord` + `su-locks` migrated off `_hono`). Its tail — E8/E9/E12/E13-plugins/E14 — was found to be two genuinely separate projects, too large and too risky to fold into that arc. **This plan is that tail, re-scoped from audit.**
 
-**Next:** A4 batches 8…N — continue migrating `_hono/harness.ts` routes to `defineRoute`. ~117 routes remaining (down from 138). Then A6 (delete `_hono/`) and A7 (no-raw-route-handlers ESLint rule).
+**Next:** A4 batches 13…N — continue migrating `_hono/harness.ts` routes to `defineRoute`. **~100 routes remaining** (down from 138). Then A6 (delete `_hono/`) and A7 (no-raw-route-handlers ESLint rule).
 
 A1 shipped (`c019a0ff`): 5 small routers. **A2 complete** — `pty` (10, `7be65218`), `agent-chats` (5, `24c532fa`), `experts` (17, `e9b82847`). **A3 complete** (`d336a44e`): 5 still-live `_hono/plugins.ts` routes + dispatcher relocation merged into `routes/plugins/catchall.ts`. **A5 complete** (`b3499031`): `harness-paths.ts` → `lib/`.
 
@@ -104,8 +104,20 @@ E8 (`expose.ipc` for routes) stays **deferred** — the flag is typed but inert 
 ### A4 — `harness.ts` (138 routes) — the big one
 
 - **Batch 1 ✅ SHIPPED `92857349`** — 11 non-route helpers + 3 private deps relocated to `lib/harness-core.ts`. `harness.ts` itself re-imports them; 3 external importers (`architect/prompts.ts`, `harness-readers.ts`, `mobile/harnesses.ts`) repointed. Layering violation (`lib/* → _hono/*`) eliminated. –423 LOC from `_hono/harness.ts`. tsc clean; composed-app-shadowing 6/6.
-- **Batches 2–7 ✅ SHIPPED** — 20 routes total: spec (2), text-views (3), runs/escalation/competitions (4), standalone identity/templates (4), project-stats (2), state-views (5). Each batch composed-app-shadowing 6/6. Commits: `baf0e2a2`, `7d424f2c`, `9f50cd2f`, `6ceb89d9`, `3c5f1623`, `852b4b94`. Net –553 LOC across these route batches (+ –423 from batch 1).
-- **Batches 8…N** — ~12 batches of ≤8 routes still pending. Each batch: one commit, explicit pathspecs, per-batch `app.request()` parity check. Group batches by URL family (`/harness/:slug/status`, `/harness/:slug/phases/*`, `/harness/:slug/log/*`, …) so a reviewer sees coherent diffs.
+- **Batches 2–12 ✅ SHIPPED** — 37 routes total. Each batch composed-app-shadowing 6/6, one commit, explicit pathspecs:
+  - b2 `baf0e2a2` — `/:slug/spec` GET+PUT (2) + `lib/harness-project-files.ts`
+  - b3 `7d424f2c` — `/:slug/{issues,summary,logs/run}` (3)
+  - b4 `9f50cd2f` — `/:slug/{runs,runs/:name,escalation,competitions}` (4)
+  - b5 `6ceb89d9` — standalone `/{identity,needs-human-review,templates,templates/:id/file}` (4)
+  - b6 `3c5f1623` — `/projects/:id/{budget,stats}` (2)
+  - b7 `852b4b94` — `/:slug/{health,lanes,knowledge,prs}` (5)
+  - b8 `c59a936a` — `/:slug/{scoper-result,debug-notes×2,synthesis-notes,diff/working}` (5)
+  - b9 `0b484d47` — `/:slug/feature(s)/:id/{lineage,audit,timeline,diff}` (4)
+  - b10 `e607a2a1` — `/:slug/orchestrator/adaptive-telemetry` GET+POST+PATCH (3)
+  - b11 `ccf35750` — `/:slug/proposals` GET + GET/:id (2)
+  - b12 `0a688a6d` — `/:slug/screenshots` GET/POST/DELETE (3)
+- **Cumulative: 37 routes off `_hono/harness.ts`; 7418 → 5826 LOC.** New route modules under `lib/endpoint-route/routes/harness/`.
+- **Batches 13…N** — ~100 routes still pending. Each batch: one commit, explicit pathspecs, per-batch `composed-app-shadowing` parity check. The easy read-only families are exhausted; remaining work clusters around shared state (`activeStreams` map, `scanAgentRuns`/`syncAgentRunsToPg`, `scanSnapshots`/`syncSnapshotsToPg`) + process-spawning mutations + the `/:slug/tests/*` sub-router.
 - Auth posture preserved verbatim per batch.
 - Acceptance: per batch — routes serve identically, `tsc` clean, endpoint-route suite green; the `harness` UI smoke-tested at the end of A4.
 - `harness.ts` is deleted only once its 138 routes are all gone; the `harness` Hono sub-app declaration drops out of `_hono/app.ts` at the same time.
