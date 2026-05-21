@@ -23,6 +23,45 @@
 
 import { getMemoryClient } from './mem0-client';
 
+/**
+ * mem0 memory injection is a best-effort enhancement — never
+ * load-bearing — and it must never *hang*. `buildOperatorPrompt`
+ * awaits this helper inline, so a slow/stuck embedder (e.g. the local
+ * BGE ONNX model downloading on first use when no OpenAI key is set)
+ * would otherwise block the entire operator turn — the failure mode
+ * observed 2026-05-21 where operator-converse emitted only SSE
+ * heartbeats and never produced a turn.
+ *
+ * Every mem0 call here is bounded by MEMORY_OP_TIMEOUT_MS. The first
+ * timeout drops the whole process into a degraded mode so later turns
+ * skip mem0 instantly instead of paying the timeout on every turn.
+ * The flag resets on restart; mem0-client's own TTL + poison-cache
+ * handle client-level recovery.
+ */
+const MEMORY_OP_TIMEOUT_MS = 5_000;
+let memoryDegraded = false;
+
+class MemoryTimeoutError extends Error {}
+
+function withTimeout<T>(p: Promise<T>, label: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject(new MemoryTimeoutError(`mem0 ${label} exceeded ${MEMORY_OP_TIMEOUT_MS}ms`));
+    }, MEMORY_OP_TIMEOUT_MS);
+    p.then(
+      (v) => { clearTimeout(timer); resolve(v); },
+      (e) => { clearTimeout(timer); reject(e); },
+    );
+  });
+}
+
+function noteMemoryFailure(err: unknown): void {
+  if (err instanceof MemoryTimeoutError) {
+    memoryDegraded = true;
+    console.warn(`[memory-injection] ${err.message} — mem0 disabled for this process`);
+  }
+}
+
 export interface MemoryInjectionInput {
   /**
    * Per-user memory scope. Omit (or pass null) on workspace-bearer
@@ -43,11 +82,13 @@ export async function buildMemoryContextBlock(
   input: MemoryInjectionInput,
 ): Promise<string | null> {
   if (!input.queryContext.trim()) return null;
+  if (memoryDegraded) return null;
 
   let client;
   try {
-    client = await getMemoryClient();
-  } catch {
+    client = await withTimeout(getMemoryClient(), 'getMemoryClient');
+  } catch (err) {
+    noteMemoryFailure(err);
     return null;
   }
   if (!client) return null;
@@ -76,9 +117,10 @@ export async function buildMemoryContextBlock(
         limit: input.userId ? sharedLimit : userLimit,
       }) as Promise<Hits>,
     );
-    [userHits, sharedHits] = await Promise.all(pulls);
+    [userHits, sharedHits] = await withTimeout(Promise.all(pulls), 'search');
   } catch (err) {
-    if (process.env.NODE_ENV !== 'test') {
+    noteMemoryFailure(err);
+    if (!(err instanceof MemoryTimeoutError) && process.env.NODE_ENV !== 'test') {
       console.warn('[memory-injection] search failed:', (err as Error).message);
     }
     return null;

@@ -37,6 +37,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { defineTool } from '@papercusp/agent-mcp';
 import { runAgentChat } from '@/lib/agent-chat-stream';
+import { selfUrl } from '@/lib/self-url';
 import { checkBudget, recordSpend } from '@/lib/operator-budget';
 import { parseOperatorTurn } from '@/lib/operator-converse-tags';
 import { readSystemPrincipal } from '@/lib/system-principal';
@@ -82,6 +83,20 @@ const ArgsSchema = z.object({
 });
 
 type Args = z.infer<typeof ArgsSchema>;
+
+/**
+ * The operator brain's model is PINNED here, not inherited from the
+ * user's omp `modelRoles.default` (their coding-agent default). As of
+ * 2026-05-21 that default was `openai-codex/gpt-5.5:xhigh`, which
+ * reliably returns `server_error` from OpenAI Codex on the operator's
+ * large (~50KB) converse prompt — every live turn came back empty.
+ * The Anthropic provider handles the same prompt reliably. The brain
+ * is a product feature; it must not break because the user retuned
+ * their coding agent. omp's `--model` needs the explicit
+ * `provider/model` form — a bare id fuzzy-resolves to amazon-bedrock,
+ * which has no key configured here.
+ */
+const OPERATOR_BRAIN_MODEL = 'anthropic/claude-opus-4-7';
 
 function readSuperuserToken(): string {
   try {
@@ -175,7 +190,7 @@ export default defineTool({
     //
     // Plan ref: bespoke-card-improvements-2026-05-13.md §4.4 wire shape.
     const mcpUrl =
-      `http://127.0.0.1:3055/api/mcp?superuser=1&workspace=${encodeURIComponent(workspaceId)}` +
+      `${selfUrl()}/api/mcp?superuser=1&workspace=${encodeURIComponent(workspaceId)}` +
       (uiClientId ? `&client=${encodeURIComponent(uiClientId)}` : '');
     const superuserToken = readSuperuserToken();
     const mcpConfig =
@@ -201,31 +216,75 @@ export default defineTool({
 
     let totalCost = 0;
     let assembled = '';
-    try {
-      for await (const ev of runAgentChat({
-        promptText,
-        mcpConfig,
-        allowedTools: [...allowedTools],
-        permissionMode: 'bypassPermissions',
-        signal: ctx.signal,
-      })) {
-        if (ctx.signal.aborted) break;
-        if (ev.type === 'delta') {
-          ctx.emit('delta', { text: ev.text });
-          assembled += ev.text;
-        } else if (ev.type === 'tool_call') {
-          const name = ev.name.startsWith('mcp__agentmcp__')
-            ? ev.name.replace(/^mcp__agentmcp__/, '')
-            : ev.name;
-          ctx.emit('tool_call', { name, input: ev.input });
-        } else if (ev.type === 'result') {
-          totalCost = ev.costUsd ?? 0;
+    let emittedToolCall = false;
+
+    // The agent backend (omp → codex/anthropic) intermittently produces
+    // an empty turn: a transient upstream model error, or omp exiting 0
+    // with no assistant text. Retry ONCE when an attempt produced
+    // nothing at all — but never after any delta/tool_call has already
+    // streamed to the user, since that output is committed on the wire.
+    // (2026-05-21: operator returned blank turns under codex flakiness.)
+    const MAX_BRAIN_ATTEMPTS = 2;
+    for (let attempt = 1; attempt <= MAX_BRAIN_ATTEMPTS; attempt++) {
+      try {
+        for await (const ev of runAgentChat({
+          promptText,
+          model: OPERATOR_BRAIN_MODEL,
+          mcpConfig,
+          allowedTools: [...allowedTools],
+          permissionMode: 'bypassPermissions',
+          signal: ctx.signal,
+        })) {
+          if (ctx.signal.aborted) break;
+          if (ev.type === 'delta') {
+            ctx.emit('delta', { text: ev.text });
+            assembled += ev.text;
+          } else if (ev.type === 'tool_call') {
+            emittedToolCall = true;
+            const name = ev.name.startsWith('mcp__agentmcp__')
+              ? ev.name.replace(/^mcp__agentmcp__/, '')
+              : ev.name;
+            ctx.emit('tool_call', { name, input: ev.input });
+          } else if (ev.type === 'result') {
+            totalCost += ev.costUsd ?? 0;
+          } else if (ev.type === 'error') {
+            // runAgentChat yields exactly one terminal `error` event
+            // when the agent backend itself failed. Log it (stderr
+            // included) for host-log visibility; fall through to the
+            // empty-output retry check below rather than throwing, so a
+            // transient backend error still gets a second attempt.
+            const detail = ev.stderr
+              ? `${ev.message}\n--- stderr ---\n${ev.stderr}`
+              : ev.message;
+            console.error(
+              '[operator:converse] agent backend error ' +
+                `(attempt ${attempt}/${MAX_BRAIN_ATTEMPTS}): ${detail}`,
+            );
+          }
         }
+      } catch (err) {
+        throw new Error(
+          `operator converse failed: ${err instanceof Error ? err.message : String(err)}`,
+        );
       }
-    } catch (err) {
-      throw new Error(
-        `operator converse failed: ${err instanceof Error ? err.message : String(err)}`,
+
+      // Stop once this attempt committed any output, or on abort.
+      if (assembled.trim() || emittedToolCall || ctx.signal.aborted) break;
+      if (attempt < MAX_BRAIN_ATTEMPTS) {
+        console.error(
+          `[operator:converse] brain produced no output on attempt ${attempt} — retrying.`,
+        );
+      }
+    }
+
+    // Definitive failure: nothing produced across all attempts. Surface
+    // it as an error rather than masquerading a dead brain as an empty
+    // `done` — the route turns a thrown error into `event: error`.
+    if (!assembled.trim() && !emittedToolCall && !ctx.signal.aborted) {
+      console.error(
+        `[operator:converse] agent backend produced no output after ${MAX_BRAIN_ATTEMPTS} attempts.`,
       );
+      throw new Error('operator brain produced no output (agent backend failure)');
     }
 
     // Post-stream side-effects. All fire-and-forget so transient
@@ -273,7 +332,7 @@ export default defineTool({
         if (sp.featureId) fetchBody.featureId = sp.featureId;
         if (sp.chunkId) fetchBody.chunkId = sp.chunkId;
         if (sp.extras.length > 0) fetchBody.extras = sp.extras;
-        void fetch(`http://127.0.0.1:3055/api/plugins/orchestrator/spawn?${params.toString()}`, {
+        void fetch(`${selfUrl()}/api/plugins/orchestrator/spawn?${params.toString()}`, {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify(fetchBody),

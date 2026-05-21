@@ -30,6 +30,13 @@ const port = Number(
 const hostname =
   process.env.PAPERCUSP_BIND_HOST ?? process.env.HOSTNAME ?? '127.0.0.1';
 
+// Export the resolved port so selfUrl() builds correct server-side
+// self-fetch origins inside this host (the operator brain's agentmcp
+// MCP URL, the <spawn> dispatch). Without it selfUrl() falls back to
+// the :3055 dev default — post-Vite-migration :3055 is the frontend
+// SPA, not this API host, so self-fetches would hit the wrong server.
+process.env.PORT = String(port);
+
 serve({ fetch: handler, port, hostname }, (info) => {
   console.log(`[hono-host] listening on http://${hostname}:${info.port}`);
 });
