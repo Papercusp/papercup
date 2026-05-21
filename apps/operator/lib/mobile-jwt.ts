@@ -94,25 +94,10 @@ export function verifyDeviceToken(token: string): DeviceClaims | null {
   return claims;
 }
 
-/**
- * Hono middleware: extracts and verifies bearer; sets c.var.deviceClaims.
- *
- * Also checks the device hasn't been revoked. Lazy import keeps this module
- * dependency-free for the test harness (which uses sign/verify in isolation).
- */
-export function deviceAuth() {
-  return async (c: any, next: any) => {
-    const auth = c.req.header('authorization') ?? '';
-    const token = auth.startsWith('Bearer ') ? auth.slice(7) : '';
-    const claims = token ? verifyDeviceToken(token) : null;
-    if (!claims) {
-      return c.json({ error: 'unauthorized' }, 401);
-    }
-    const { isRevoked } = await import('./mobile-device-store');
-    if (await isRevoked(claims.sub).catch(() => false)) {
-      return c.json({ error: 'revoked' }, 401);
-    }
-    c.set('deviceClaims', claims);
-    await next();
-  };
-}
+// The `deviceAuth()` Hono middleware was deleted in Phase E5
+// (endpoint-unification-2026-05-21) along with `_hono/mobile.ts`. The
+// mobile JWT is now resolved by `requirePrincipal` via the
+// `principalFromMobileJwt` resolver, which carries the same
+// signature-verify + `isRevoked` check the middleware did.
+// `signDeviceToken` / `verifyDeviceToken` above remain — the resolver
+// and the `/mobile/*` `defineRoute`s use them.

@@ -26,7 +26,6 @@ import { registerExperts } from './experts';
 import { registerProjects } from './projects';
 import { registerOracle } from './oracle';
 import { registerCrossHarness } from './cross-harness';
-import { registerMobile } from './mobile';
 import { registerDockLayouts } from './dock-layouts';
 import { installPluginApiDispatcher } from '../../../lib/plugin-api-mount';
 import { registerRouteLiterals, registerRouteCatchalls } from '../../../lib/endpoint-route/register';
@@ -103,8 +102,10 @@ registerDockLayouts(app);
 installPluginApiDispatcher(plugins);
 app.route('/plugins', plugins);
 
-// Mobile API (pair, push, voice, workspaces) — see _hono/mobile.ts
-app.route('/mobile', registerMobile);
+// Mobile API (pair, push, voice, workspaces) — migrated off the legacy
+// `_hono/mobile.ts` Hono router to `defineRoute` modules under
+// `lib/endpoint-route/routes/mobile/` (endpoint-unification-2026-05-21
+// Phase E4/E5). Those register via `registerRouteLiterals` above.
 
 // Coordination history (Phase B remainder — /coord UI viewer) — see _hono/coord.ts
 app.route('/coord', coord);

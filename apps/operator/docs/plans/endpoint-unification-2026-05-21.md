@@ -12,9 +12,9 @@ companion-to: [endpoint-route-migration-2026-05-20, phase-4-endpoint-system-2026
 
 **State:** E1 + E2 shipped. E1 (`c567f7ac`) — type-additive `defineTool` fields. E2 — the load-bearing auth fix: the `/api/agent-tools/*` catch-all now resolves a mobile device JWT (composite bearer resolver: `resolveBearer` token_index → mobile JWT), and `requirePrincipal()` gained a `from-bearer-token` resolver so agent `system`/`pi` bearers resolve there too. A paired phone can now call any built-in `defineTool`.
 
-**Next:** E5 — delete `_hono/mobile.ts` + its `app.route('/mobile', …)` mount + the `deviceAuth()` middleware; verify the migrated routes are the only `/api/mobile/*` handlers.
+**Next:** E6 — codemod `defineRoute(` → `defineTool(` across the ~242 route modules; collapse `defineRoute` to a re-export then delete the symbol.
 
-E4 shipped: all 33 legacy mobile routes ported to `defineRoute` modules under `routes/mobile/` (5 family files: pair, voice, operator, harnesses, sync). URLs unchanged. The migrated literals register in phase 1 — they shadow the legacy `_hono/mobile.ts` sub-app, which stays in place (dead-but-shadowed) until E5 deletes it. `principalFromMobileJwt` is now async + revocation-aware (parity with the legacy `deviceAuth()` middleware's `isRevoked` check).
+E5 shipped: `_hono/mobile.ts` deleted (1009 LOC), `app.route('/mobile', registerMobile)` mount removed, `deviceAuth()` middleware deleted from `mobile-jwt.ts`. The already-dead `mobile-sse-route.test.ts` (tested a `/sync/sse` route removed long ago) deleted too. The migrated `routes/mobile/*` defineRoutes are now the only `/api/mobile/*` handlers.
 
 **Scope adjustment (E2 review):** the telemetry-table merge (`route_invocations` → `tool_invocations` with a `kind` discriminator) is **moved from E2 to E6**. Rationale: migration 077 separated the tables *by deliberate design* (RFC Q1 — genuinely different column sets, different volume/retention). The merge's benefit only fully materializes once `defineRoute` actually collapses into `defineTool` (E6) and the route/tool distinction disappears at the dispatch level. Forcing a PG migration in E2 would couple the auth fix to schema-migration risk for no near-term gain. E2 ships the auth fix alone.
 
@@ -226,12 +226,12 @@ URLs unchanged (`/api/mobile/*`) — wire-compat with the Rust mobile client. De
 - The migrated literals register phase-1 and **shadow** the still-present `_hono/mobile.ts` sub-app — deleted in E5.
 - Tests: `mobile-routes.test.ts` (handler-direct, 4 tests). Registration coverage via `route-shadowing-invariant.test.ts`.
 
-### Phase E5 — Delete legacy `_hono/mobile.ts`
+### Phase E5 — Delete legacy `_hono/mobile.ts` — ✅ SHIPPED
 
-- Remove file + `app.route('/mobile', registerMobile)` mount in `_hono/app.ts`.
-- Delete `deviceAuth()` Hono middleware (its job is now `requirePrincipal()`).
-- Keep `mobile-jwt.ts` core verify/sign helpers (used by principal resolver).
-- Acceptance: mobile client end-to-end smoke test (pair → list devices → SSE sync → tool call) passes through the new dispatcher.
+- ✅ `_hono/mobile.ts` deleted (1009 LOC) + `import { registerMobile }` + `app.route('/mobile', registerMobile)` removed from `_hono/app.ts`.
+- ✅ `deviceAuth()` Hono middleware deleted from `mobile-jwt.ts` — its job (signature verify + `isRevoked`) is now `principalFromMobileJwt` via `requirePrincipal`. `signDeviceToken`/`verifyDeviceToken` kept (the resolver + routes use them).
+- ✅ `mobile-sse-route.test.ts` deleted — it tested a `/sync/sse` route that had already been removed from `mobile.ts` (the test was already failing; its `sync-sse` import in `mobile.ts` was dead).
+- Acceptance: `route-shadowing` + `composed-app-shadowing` + mobile route/auth/CORS suites green (24 tests); no lingering `deviceAuth`/`registerMobile` references.
 
 ### Phase E6 — Delete `defineRoute` symbol
 
