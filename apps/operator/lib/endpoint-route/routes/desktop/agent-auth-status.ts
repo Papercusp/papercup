@@ -6,7 +6,7 @@
  * any resolved principal (the route's prior `requirePrincipal(headers)`
  * with no requirements); the route-stack runs the gate.
  */
-import { claudeSignedIn, ompSignedIn } from '@/lib/agent-auth-detect';
+import { claudeSignedIn, ompSignedIn, githubSignedIn } from '@/lib/agent-auth-detect';
 import { defineRoute } from '../../define-route';
 
 export default defineRoute({
@@ -16,8 +16,10 @@ export default defineRoute({
   handler() {
     let claude = false;
     let omp = false;
+    let github = false;
     try { claude = claudeSignedIn(); } catch { /* fs error → false */ }
     try { omp = ompSignedIn(); } catch { /* fs error → false */ }
-    return Response.json({ claude, omp });
+    try { github = githubSignedIn(); } catch { /* fs error → false */ }
+    return Response.json({ claude, omp, github });
   },
 });

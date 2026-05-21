@@ -3,23 +3,23 @@
  *
  * Moves reports out of the in-app ring buffer (operator-state-pg key
  * 'telemetry_reports') into the long-term local archive
- * (harness_shared.telemetry_reports_archive), and — when ALL of the
- * following are true — emits one PostHog event per archive row that
- * hasn't been forwarded yet:
+ * (harness_shared.telemetry_reports_archive), and emits one PostHog
+ * event per archive row that hasn't been forwarded yet — gated by:
  *
- *   1. PostHog discovery file or env vars are configured AND
- *      testingFeatures === true (shared posthog-config.ts resolver).
- *      This is the privacy moat — shipped binaries are unconfigured by
- *      default so they make ZERO outbound PostHog calls regardless of
- *      what the user does in the Setup Wizard.
- *   2. setup_wizard_state.telemetry_enabled === true (user opted in
- *      via the wizard's Step 12).
+ *   user opted in (setup_wizard_state.telemetry_enabled === true)
+ *   OR PAPERCUSP_INTERNAL_BUILD === 'true'   (maintainer channel)
  *
- * Both must be true. The wizard's opt-in is a no-op unless an admin
- * has bootstrapped the discovery file with testingFeatures: true.
+ * Host + projectKey resolve from (in order):
+ *   1. PAPERCUSP_POSTHOG_HOST + PAPERCUSP_POSTHOG_KEY env (CI / dev)
+ *   2. ~/.papercusp/posthog.json discovery file (admin override)
+ *   3. POSTHOG_PUBLIC_DEFAULTS bundled with the operator
  *
- * When either gate fails this worker still archives locally so the
- * user can see their own reports — it just doesn't forward.
+ * Telemetry forwarding is independent of feature-flag fetches: the
+ * `testingFeatures` switch in posthog-config.ts gates flag fetches
+ * only, NOT telemetry.
+ *
+ * When the gate fails this worker still archives locally so the user
+ * can see their own reports — it just doesn't forward.
  */
 import { getOrgPg } from '@restart/db-org';
 import { PostHog } from 'posthog-node';
@@ -27,6 +27,7 @@ import { readOperatorState, writeOperatorState } from './operator-state-pg';
 import { activeWorkspaceId } from './workspace-registry';
 import { ensureInstallId } from './setup-wizard-install-id';
 import { getPosthogConfigWithSource } from './posthog-config';
+import { POSTHOG_PUBLIC_DEFAULTS } from './posthog-public-defaults';
 
 interface BufferedReport {
   received_at: string;
@@ -46,7 +47,7 @@ export interface FlushResult {
   forwardFailed: number;
   retentionDeleted: number;
   posthogConfigured: boolean;
-  testingFeatures: boolean;
+  internalBuild: boolean;
   optedIn: boolean;
 }
 
@@ -57,25 +58,40 @@ async function resolveTelemetryConfig(): Promise<{
   projectKey?: string;
   distinctId: string;
   optedIn: boolean;
-  testingFeatures: boolean;
+  /** True iff this build is the maintainer-internal channel — telemetry
+   *  forwards regardless of user opt-in. Default: false. */
+  internalBuild: boolean;
 }> {
   const state = await readOperatorState<{ telemetry_enabled?: boolean }>('setup_wizard_state');
   const optedIn = Boolean(state?.telemetry_enabled);
-  // Use the shared resolver — never read PAPERCUSP_POSTHOG_* env vars
-  // directly. testingFeatures is the master privacy switch; if it's
-  // false we don't even pull the host/key, so an opt-in user on an
-  // unconfigured machine still phones home to nothing.
-  const phResolved = getPosthogConfigWithSource();
+  const internalBuild = process.env.PAPERCUSP_INTERNAL_BUILD === 'true';
   const distinctId = await ensureInstallId();
-  if (!phResolved.testingFeatures || !phResolved.config) {
-    return { distinctId, optedIn, testingFeatures: phResolved.testingFeatures };
+
+  // Host/key resolution for capture (write-side keys not required):
+  //   1. PAPERCUSP_POSTHOG_HOST + PAPERCUSP_POSTHOG_KEY env override
+  //   2. ~/.papercusp/posthog.json discovery file (host + projectKey)
+  //   3. POSTHOG_PUBLIC_DEFAULTS bundled with the operator
+  const envHost = process.env.PAPERCUSP_POSTHOG_HOST;
+  const envKey = process.env.PAPERCUSP_POSTHOG_KEY;
+  if (envHost && envKey) {
+    return { host: envHost, projectKey: envKey, distinctId, optedIn, internalBuild };
+  }
+  const phResolved = getPosthogConfigWithSource();
+  if (phResolved.config) {
+    return {
+      host: phResolved.config.host,
+      projectKey: phResolved.config.projectKey,
+      distinctId,
+      optedIn,
+      internalBuild,
+    };
   }
   return {
-    host: phResolved.config.host,
-    projectKey: phResolved.config.projectKey,
+    host: POSTHOG_PUBLIC_DEFAULTS.host,
+    projectKey: POSTHOG_PUBLIC_DEFAULTS.projectKey,
     distinctId,
     optedIn,
-    testingFeatures: true,
+    internalBuild,
   };
 }
 
@@ -88,7 +104,7 @@ export async function flushTelemetry(): Promise<FlushResult> {
     forwardFailed: 0,
     retentionDeleted: 0,
     posthogConfigured: false,
-    testingFeatures: false,
+    internalBuild: false,
     optedIn: false,
   };
 
@@ -116,13 +132,14 @@ export async function flushTelemetry(): Promise<FlushResult> {
     await writeOperatorState('telemetry_reports', { reports: [] });
   }
 
-  // 2. Forward to PostHog. Requires BOTH:
-  //      a) testingFeatures === true (admin opted the machine in)
-  //      b) telemetry_enabled === true (user opted in via wizard Step 12)
+  // 2. Forward to PostHog. Gate:
+  //      user opted in (telemetry_enabled === true) OR PAPERCUSP_INTERNAL_BUILD=true.
+  //      Internal-build short-circuits opt-in so maintainer test channels
+  //      always emit, without needing every internal user to click opt-in.
   const config = await resolveTelemetryConfig();
   result.optedIn = config.optedIn;
-  result.testingFeatures = config.testingFeatures;
-  if (config.optedIn && config.testingFeatures && config.host && config.projectKey) {
+  result.internalBuild = config.internalBuild;
+  if ((config.optedIn || config.internalBuild) && config.host && config.projectKey) {
     result.posthogConfigured = true;
     const ph = new PostHog(config.projectKey, {
       host: config.host,

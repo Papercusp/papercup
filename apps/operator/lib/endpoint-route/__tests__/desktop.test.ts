@@ -24,6 +24,7 @@ vi.mock('../telemetry', () => ({ recordRouteInvocation: vi.fn() }));
 vi.mock('@/lib/agent-auth-detect', () => ({
   claudeSignedIn: vi.fn(() => true),
   ompSignedIn: vi.fn(() => false),
+  githubSignedIn: vi.fn(() => false),
   anyAgentSignedIn: vi.fn(() => true),
 }));
 vi.mock('@/lib/telemetry-flush', () => ({ flushTelemetry: vi.fn(async () => ({ flushed: 3 })) }));
@@ -41,7 +42,11 @@ import desktopAgentAuthStatus from '../routes/desktop/agent-auth-status';
 import desktopAgentLoginEnvelope from '../routes/desktop/agent-login-envelope';
 import desktopGitIdentity from '../routes/desktop/git-identity';
 import desktopPreflight from '../routes/desktop/preflight';
-import desktopSetupPtyCommands, { buildInstallSpec, buildLoginSpec } from '../routes/desktop/setup-pty-commands';
+import desktopSetupPtyCommands, {
+  buildInstallSpec,
+  buildLoginSpec,
+  buildGithubLoginSpec,
+} from '../routes/desktop/setup-pty-commands';
 import desktopSetupWizardState from '../routes/desktop/setup-wizard-state';
 import desktopTelemetryFlush from '../routes/desktop/telemetry-flush';
 import desktopTelemetryReport from '../routes/desktop/telemetry-report';
@@ -109,11 +114,21 @@ describe('buildLoginSpec', () => {
   });
 });
 
+describe('buildGithubLoginSpec', () => {
+  it('spawns `gh auth login` (not /login like claude/omp)', () => {
+    const spec = buildGithubLoginSpec('/home/u');
+    expect(spec.command).toBe('gh');
+    expect(spec.args).toEqual(['auth', 'login']);
+    expect(spec.cwd).toBe('/home/u');
+    expect(spec.env).toEqual({});
+  });
+});
+
 describe('desktop route ports', () => {
   it('GET /desktop/agent-auth-status returns per-provider status', async () => {
     const res = await appWith(desktopAgentAuthStatus as AnyRoute).request('/desktop/agent-auth-status');
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ claude: true, omp: false });
+    expect(await res.json()).toEqual({ claude: true, omp: false, github: false });
   });
 
   it('POST /desktop/agent-login-envelope rejects an unknown provider', async () => {
@@ -135,12 +150,15 @@ describe('desktop route ports', () => {
     expect(typeof (await res.json()).source).toBe('string');
   });
 
-  it('GET /desktop/setup-pty-commands returns the three specs', async () => {
+  it('GET /desktop/setup-pty-commands returns the four specs', async () => {
     const res = await appWith(desktopSetupPtyCommands as AnyRoute).request('/desktop/setup-pty-commands');
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.installRuntime.command).toBeTruthy();
     expect(body.loginClaude.command).toBe('claude');
+    expect(body.loginOmp.command).toBe('omp');
+    expect(body.loginGithub.command).toBe('gh');
+    expect(body.loginGithub.args).toEqual(['auth', 'login']);
   });
 
   it('OPTIONS /desktop/preflight answers the CORS preflight with 204', async () => {

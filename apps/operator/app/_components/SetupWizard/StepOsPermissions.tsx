@@ -104,6 +104,27 @@ export function StepOsPermissions() {
   const [states, setStates] = useState<Record<string, PermState>>({});
   const [wsl, setWsl] = useState<WslStatus | null>(null);
 
+  // The Node server can't read macOS TCC state — only the renderer can
+  // call navigator.permissions / Notification.permission. We PATCH the
+  // aggregate result back into setup_wizard_state so the sidebar badge
+  // (driven by setup-status) flips green when mic + notifications
+  // resolve granted. Accessibility is unprobable; we ignore it for the
+  // aggregate (granting it is encouraged but not required for "ok").
+  const syncToServer = useCallback(async (next: Record<string, PermState>) => {
+    if (typeof navigator === 'undefined' || !/Mac/i.test(navigator.platform)) return;
+    const required: Array<PermDef['id']> = ['microphone', 'notifications'];
+    const ok = required.every((id) => next[id] === 'granted');
+    try {
+      await fetch('/api/desktop/setup-wizard-state', {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ os_permissions_ok: ok }),
+      });
+    } catch {
+      // best effort; sidebar will retry on next probe
+    }
+  }, []);
+
   const probeAll = useCallback(async () => {
     const next: Record<string, PermState> = {};
     await Promise.all(
@@ -112,6 +133,7 @@ export function StepOsPermissions() {
       }),
     );
     setStates(next);
+    void syncToServer(next);
     // WSL probe — only meaningful inside the Tauri shell. The
     // WslOnboardingGate in the root layout owns the install flow; we
     // just surface the resolved state for visibility.
@@ -121,7 +143,7 @@ export function StepOsPermissions() {
         if (s) setWsl(s);
       } catch { /* leave null */ }
     }
-  }, []);
+  }, [syncToServer]);
 
   useEffect(() => {
     void probeAll();
@@ -129,7 +151,11 @@ export function StepOsPermissions() {
 
   const onRequest = async (p: PermDef) => {
     const result = await p.request();
-    setStates((prev) => ({ ...prev, [p.id]: result }));
+    setStates((prev) => {
+      const next = { ...prev, [p.id]: result };
+      void syncToServer(next);
+      return next;
+    });
   };
 
   return (

@@ -73,6 +73,11 @@ export function buildLoginSpec(provider: 'claude' | 'omp', home: string): SpawnS
   return { command: provider, args: ['/login'], cwd: home, env: {} };
 }
 
+/** GitHub CLI uses `gh auth login` (different arg shape from claude/omp). */
+export function buildGithubLoginSpec(home: string): SpawnSpec {
+  return { command: 'gh', args: ['auth', 'login'], cwd: home, env: {} };
+}
+
 export default defineRoute({
   method: 'GET',
   path: '/desktop/setup-pty-commands',
@@ -84,6 +89,7 @@ export default defineRoute({
       installRuntime: buildInstallSpec(os, home),
       loginClaude: buildLoginSpec('claude', home),
       loginOmp: buildLoginSpec('omp', home),
+      loginGithub: buildGithubLoginSpec(home),
     });
   },
 });

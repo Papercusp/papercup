@@ -136,6 +136,7 @@ export default defineRoute({
           voice_intent?: boolean;
           update_channel?: string;
           telemetry_enabled?: boolean | null;
+          os_permissions_ok?: boolean;
         }>('setup_wizard_state'),
         null,
       ),
@@ -144,10 +145,16 @@ export default defineRoute({
       safe(gitIdentityConfigured(), false),
     ]);
 
-    // os-permissions: macOS has system-level grants we can't probe from
-    // the server. On Linux/Windows the step isn't install-gated → 'ok'.
+    // os-permissions: Linux/Windows aren't install-gated → 'ok'. macOS
+    // has system-level grants the Node server can't read, so we trust
+    // the client-side StepOsPermissions probes that PATCH
+    // os_permissions_ok back into operator state.
     const osPermissionsStatus: StepStatus =
-      process.platform === 'darwin' ? 'unknown' : 'ok';
+      process.platform === 'darwin'
+        ? wizardState?.os_permissions_ok === true
+          ? 'ok'
+          : 'needs-attention'
+        : 'ok';
 
     // workspace: registry has at least one entry.
     const workspaceOk = readRegistry().workspaces.length > 0;

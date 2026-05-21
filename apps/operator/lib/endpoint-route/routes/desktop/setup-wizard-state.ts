@@ -22,6 +22,11 @@ export interface SetupWizardState {
   telemetry_enabled?: boolean;
   install_id?: string;
   voice_intent?: boolean;
+  /** macOS-only client-side probe result. The server can't read TCC
+   *  from Node, so StepOsPermissions PATCHes this when its
+   *  navigator.permissions probes return granted. Read by setup-status
+   *  to drive the sidebar's os-permissions badge on darwin. */
+  os_permissions_ok?: boolean;
   updated_at?: string;
 }
 
@@ -73,6 +78,9 @@ const patch = defineRoute({
     }
     if (typeof body.voice_intent === 'boolean') {
       next.voice_intent = body.voice_intent;
+    }
+    if (typeof body.os_permissions_ok === 'boolean') {
+      next.os_permissions_ok = body.os_permissions_ok;
     }
     if (body.step_status && typeof body.step_status === 'object') {
       const merged = { ...current.step_status };

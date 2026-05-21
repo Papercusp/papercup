@@ -1,8 +1,8 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { commands } from '@/lib/tauri-bindings';
-import { isTauri } from './tauri-detect';
+import { isTauriNative } from '@/lib/pty-tauri';
+import { InlinePtyTerminal } from './InlinePtyTerminal';
 
 interface GitIdentity {
   name?: string;
@@ -10,21 +10,49 @@ interface GitIdentity {
   source?: 'global' | 'system' | 'none';
 }
 
+interface SpawnSpec {
+  command: string;
+  args: string[];
+  cwd: string;
+  env: Record<string, string>;
+}
+
+interface PtyCommands {
+  loginGithub?: SpawnSpec;
+}
+
+interface AuthStatus {
+  claude?: boolean;
+  omp?: boolean;
+  github?: boolean;
+}
+
 export function StepGit() {
   const [identity, setIdentity] = useState<GitIdentity | null>(null);
   const [loading, setLoading] = useState(true);
   const [tauri, setTauri] = useState(false);
-  const [signingIn, setSigningIn] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const [ghInstalled, setGhInstalled] = useState<boolean | null>(null);
+  const [spec, setSpec] = useState<SpawnSpec | null>(null);
+  const [authStatus, setAuthStatus] = useState<AuthStatus>({});
+  const [active, setActive] = useState(false);
+  const [exited, setExited] = useState(false);
+  const [attempt, setAttempt] = useState(0);
+
+  const refreshAuth = async () => {
+    try {
+      const r = await fetch('/api/desktop/agent-auth-status', { cache: 'no-store' });
+      if (r.ok) setAuthStatus((await r.json()) as AuthStatus);
+    } catch { /* leave previous */ }
+  };
 
   useEffect(() => {
-    setTauri(isTauri());
+    setTauri(isTauriNative());
     void (async () => {
       try {
-        const [identRes, pfRes] = await Promise.all([
+        const [identRes, pfRes, specsRes] = await Promise.all([
           fetch('/api/desktop/git-identity', { cache: 'no-store' }),
           fetch('/api/desktop/preflight', { cache: 'no-store' }),
+          fetch('/api/desktop/setup-pty-commands', { cache: 'no-store' }),
         ]);
         if (identRes.ok) {
           const j = (await identRes.json()) as GitIdentity;
@@ -37,35 +65,39 @@ export function StepGit() {
           const gh = pf.checks?.find((c) => c.name === 'gh');
           setGhInstalled(gh?.status === 'ok');
         }
+        if (specsRes.ok) {
+          const j = (await specsRes.json()) as PtyCommands;
+          if (j.loginGithub) setSpec(j.loginGithub);
+        }
       } catch {
         setIdentity({ source: 'none' });
       } finally {
         setLoading(false);
       }
     })();
+    void refreshAuth();
+    const id = setInterval(() => void refreshAuth(), 5000);
+    return () => clearInterval(id);
   }, []);
 
-  const signInGitHub = async () => {
-    setSigningIn(true);
-    setError(null);
-    try {
-      const envelopeRes = await fetch('/api/desktop/agent-login-envelope', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ provider: 'github' }),
-      });
-      if (!envelopeRes.ok) throw new Error(`envelope: ${envelopeRes.status}`);
-      const envelope = await envelopeRes.json();
-      const result = await commands.consoleLaunch(envelope);
-      if (result.status === 'err') throw new Error(result.error);
-    } catch (e: any) {
-      setError(e?.message ?? String(e));
-    } finally {
-      setSigningIn(false);
-    }
+  const configured = Boolean(identity?.name && identity?.email);
+  const ghSignedIn = authStatus.github === true;
+
+  const startGithubLogin = () => {
+    setExited(false);
+    setAttempt((n) => n + 1);
+    setActive(true);
   };
 
-  const configured = Boolean(identity?.name && identity?.email);
+  const handleExit = () => {
+    setExited(true);
+    setActive(false);
+    void refreshAuth();
+  };
+
+  const dismiss = () => {
+    setExited(false);
+  };
 
   return (
     <div className="pc-step">
@@ -101,40 +133,67 @@ git config --global user.email "you@example.com"`}</pre>
 
       <div className="pc-divider" />
 
-      <h3 className="pc-consent__heading">GitHub (optional)</h3>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+        <h3 className="pc-consent__heading" style={{ margin: 0 }}>GitHub (optional)</h3>
+        {ghSignedIn && (
+          <span
+            className="pc-provider-card__badge"
+            data-status="ok"
+            style={{ fontSize: 12, color: 'var(--pc-color-success, #2a8)' }}
+          >
+            ✓ Signed in
+          </span>
+        )}
+      </div>
       <p className="pc-step__hint">
         Pushing to private repos + opening PRs needs a GitHub auth. The simplest path is the
         GitHub CLI — <code>gh auth login</code> stores a token in your system keychain that{' '}
         <code>git</code> picks up automatically.
       </p>
-      {tauri ? (
+      {tauri && spec ? (
         <div className="pc-step__actions">
           <button
             type="button"
             className="pc-btn pc-btn--primary"
-            onClick={() => void signInGitHub()}
-            disabled={signingIn || ghInstalled === false}
+            onClick={startGithubLogin}
+            disabled={active || ghInstalled === false}
             title={ghInstalled === false ? 'Install the GitHub CLI first (see hint below)' : undefined}
           >
-            {signingIn ? 'Opening terminal…' : 'Sign in to GitHub'}
+            {active
+              ? 'Running…'
+              : ghSignedIn
+                ? 'Re-sign in to GitHub'
+                : 'Sign in to GitHub'}
           </button>
           {ghInstalled === false && (
             <span className="pc-field__hint pc-field__hint--err" style={{ marginLeft: 8 }}>
-              ⚠ GitHub CLI not detected. Install it first: <a href="https://cli.github.com/" target="_blank" rel="noreferrer">cli.github.com</a>
+              ⚠ GitHub CLI not detected. Install it first:{' '}
+              <a href="https://cli.github.com/" target="_blank" rel="noreferrer">cli.github.com</a>
             </span>
           )}
         </div>
       ) : (
         <pre className="pc-code">gh auth login</pre>
       )}
-      {error && (
-        <div className="pc-step__progress" data-status="error" style={{ marginTop: 8 }}>
-          <div className="pc-step__progress-dot" />
-          <div className="pc-step__progress-text">
-            <strong>Couldn't open terminal.</strong>
-            <span>{error}</span>
-          </div>
-        </div>
+      {(active || exited) && spec && (
+        <>
+          <InlinePtyTerminal
+            key={`github-${attempt}`}
+            command={spec.command}
+            args={spec.args}
+            cwd={spec.cwd}
+            env={spec.env}
+            rows={14}
+            onExit={handleExit}
+          />
+          {exited && (
+            <div className="pc-step__actions" style={{ marginTop: 8 }}>
+              <button type="button" className="pc-btn" onClick={dismiss}>
+                Done
+              </button>
+            </div>
+          )}
+        </>
       )}
     </div>
   );
