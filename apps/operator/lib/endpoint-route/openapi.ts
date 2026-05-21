@@ -72,6 +72,7 @@ export function routeToOpenApiFragment(
   const schemas: Record<string, Record<string, unknown>> = {};
   const operation: Record<string, unknown> = {
     operationId: operationId(def.method, def.path),
+    summary: `${def.method} ${def.path}`,
     description: `${def.method} ${def.path}`,
     'x-papercusp-projection': 'route',
     // 'public' routes opt out of principal auth (own-auth or unauthenticated);

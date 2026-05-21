@@ -22,6 +22,13 @@
 import { z } from 'zod';
 import type { ProjectedTool } from './tool-projection';
 
+// componentKey: sanitize tool names for OpenAPI 3.1 component-schema map keys
+// (regex ^[A-Za-z0-9._-]+$). Tool names use ":" as namespace separator (legal
+// in paths per Q3, illegal in component keys). Swap any disallowed char to "_".
+export function componentKey(name: string): string {
+  return name.replace(/[^A-Za-z0-9._-]/g, '_');
+}
+
 /* ─── Public surface ─────────────────────────────────────────────────── */
 
 export interface OpenApiFragment {
@@ -62,9 +69,10 @@ export function toolToOpenApiFragment(
   const pathPrefix = opts.pathPrefix ?? '/api';
   const securitySchemeName = opts.securitySchemeName ?? 'bearerAuth';
   const path = `${pathPrefix}/${toolName}`;
+  const keyName = componentKey(toolName);
 
   const schemas: Record<string, Record<string, unknown>> = {};
-  const safeName = (suffix: string) => `${toolName}.${suffix}`;
+  const safeName = (suffix: string) => `${keyName}.${suffix}`;
 
   /* Input schema */
   schemas[safeName('Input')] = stripJsonSchemaMeta(tool.inputSchema);
@@ -136,6 +144,7 @@ export function toolToOpenApiFragment(
 
   const operation: Record<string, unknown> = {
     operationId: toolName,
+    summary: toolName,
     description: tool.description,
     security,
     requestBody: {

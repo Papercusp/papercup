@@ -166,6 +166,7 @@ export {
 
 export {
   toolToOpenApiFragment,
+  componentKey,
   standardResponseComponents,
   type OpenApiFragment,
 } from './openapi-fragments';

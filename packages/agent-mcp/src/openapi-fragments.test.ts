@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
 import {
+  componentKey,
   standardResponseComponents,
   toolToOpenApiFragment,
 } from './openapi-fragments';
@@ -31,6 +32,11 @@ describe('toolToOpenApiFragment — path + operation', () => {
     const frag = toolToOpenApiFragment('hi.tool', makeTool({ description: 'hi desc' }));
     expect(frag.operation.operationId).toBe('hi.tool');
     expect(frag.operation.description).toBe('hi desc');
+  });
+
+  it('emits summary = toolName (redocly recommended ruleset requires it)', () => {
+    const frag = toolToOpenApiFragment('agent_chats:archive', makeTool());
+    expect(frag.operation.summary).toBe('agent_chats:archive');
   });
 
   it('emits requestBody pointing at #/components/schemas/<tool>.Input', () => {
@@ -176,5 +182,62 @@ describe('standardResponseComponents', () => {
         required: ['error'],
       });
     }
+  });
+});
+
+describe('componentKey — schema-key sanitization', () => {
+  it('preserves alphanumerics, dot, hyphen, underscore', () => {
+    expect(componentKey('a.b-c_d_0')).toBe('a.b-c_d_0');
+  });
+
+  it("rewrites ':' to '_' (the actual tool-namespace separator)", () => {
+    expect(componentKey('agent_chats:archive')).toBe('agent_chats_archive');
+  });
+
+  it('rewrites every other disallowed character to _', () => {
+    expect(componentKey('a:b/c d')).toBe('a_b_c_d');
+  });
+});
+
+describe("toolToOpenApiFragment — ':' in tool names (component-key sanitization)", () => {
+  it('keeps the path colon (Q3 design) but sanitizes the schema-key', () => {
+    const frag = toolToOpenApiFragment('agent_chats:archive', makeTool());
+    expect(frag.path).toBe('/api/agent_chats:archive');
+    expect(frag.schemas['agent_chats_archive.Input']).toBeDefined();
+    expect(frag.schemas['agent_chats:archive.Input']).toBeUndefined();
+  });
+
+  it('rewires every $ref to the sanitized key', () => {
+    const frag = toolToOpenApiFragment('agent_chats:archive', makeTool());
+    const rb = frag.operation.requestBody as {
+      content: { 'application/json': { schema: { $ref: string } } };
+    };
+    expect(rb.content['application/json'].schema.$ref).toBe(
+      '#/components/schemas/agent_chats_archive.Input',
+    );
+    const okJson = (
+      frag.operation.responses as Record<string, {
+        content: { 'application/json': { schema: { $ref: string } } };
+      }>
+    )['200'].content['application/json'].schema.$ref;
+    expect(okJson).toBe('#/components/schemas/agent_chats_archive.ToolResult');
+  });
+
+  it('rewires the SSE oneOf + discriminator mapping to sanitized keys', () => {
+    const frag = toolToOpenApiFragment('a:b', makeTool({
+      events: { tick: z.object({ n: z.number() }) },
+    }));
+    expect(frag.schemas['a_b.Event.tick']).toBeDefined();
+    const sse = (
+      frag.operation.responses as Record<string, {
+        content: { 'text/event-stream': { schema: {
+          oneOf: Array<{ $ref: string }>;
+          discriminator: { mapping: Record<string, string> };
+        } } };
+      }>
+    )['200'].content['text/event-stream'].schema;
+    for (const r of sse.oneOf) expect(r.$ref.startsWith('#/components/schemas/a_b.')).toBe(true);
+    expect(sse.discriminator.mapping.tick).toBe('#/components/schemas/a_b.Event.tick');
+    expect(sse.discriminator.mapping.done).toBe('#/components/schemas/a_b.Event.done');
   });
 });
