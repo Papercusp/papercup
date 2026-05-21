@@ -1,6 +1,6 @@
 ---
 title: File-locking improvements — SU-locks + FileLockQueue
-status: Awaiting review
+status: shipped
 date: 2026-05-20
 supersedes: none
 related:
@@ -11,9 +11,9 @@ updated: 2026-05-20
 
 ## Now
 
-**State:** Papercusp has two file-locking systems:
+**State:** **Shipped.** All 12 items implemented and committed. A 2026-05-21 item-by-item audit found gaps in #1/#2/#3/#4/#7/#11; all were closed in follow-up batches A–F (per-process OMP owner-id minting + `session_shutdown` handler, shared `path-normalize.ts`, the #3 marker/route contract reshape, janitor relocation to `workspace-listener.ts`, MCP `heartbeat` dispatch through `SuLocksCoordinator`, symlink refusal in the OMP hook, and the two-OMP `su-locks-omp-smoke.ts`). All items + audit follow-ups verified green.
 
-**Next:** Owner: review current state and replace this auto-generated Now block (backfilled 2026-05-20).
+**Next:** none — plan complete.
 
 
 # File-locking improvements — SU-locks + FileLockQueue

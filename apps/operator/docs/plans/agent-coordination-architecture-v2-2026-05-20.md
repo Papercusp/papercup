@@ -1,7 +1,7 @@
 ---
 title: Agent coordination architecture v2 — identity, locks, channels, and the harness on-ramp
 slug: agent-coordination-architecture-v2-2026-05-20
-status: draft
+status: shipped
 created: 2026-05-20
 updated: 2026-05-20
 owner: pandawamble@gmail.com
@@ -18,9 +18,9 @@ How OMP-based engineer-collaborator agents and the engineer share state, coordin
 
 ## Now
 
-**State:** Phase A core shipped at `5c7ef757` + `cc8be513` — L1 identity primitive (`resolveAgentIdentity`, 9 unit tests green) and L1 presence (`coord_presence` table + `coord:whoami / coord:presence / coord:declare-intent` tools). All new files typecheck clean. Deferred within Phase A: the `locks/identity.ts` refactor (needs the PG-backed locks suite green) and the OMP hook (cross-phase — also carries L2 + L3 handlers, build with L3).
+**State:** **Shipped.** Phases A–F all complete — L1 identity/presence, L2 file locking, L3 channels (`coord:send/inbox/ack/thread`), `coord/plan-events` on the `plans:*` write verbs, the `plans:promote` on-ramp, the OMP turn-start hook, and the `/coord` UI. Three skeptical audits run; every finding fixed.
 
-**Next:** Phase B — `coord:send / inbox / ack / thread` message substrate + `coord/plan-events.jsonl` bolted onto the `plans:*` write verbs + the working-memory history view.
+**Next:** none — plan complete (the plan body ends at §18, "ready for review").
 
 ## §0 What this plan is, and what changed since v1
 

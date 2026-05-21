@@ -23,10 +23,10 @@ against a live operator dev server (2026-05-20). All
 plan-author-owned work is complete. Remaining before `shipped` is
 entirely cross-plan or a deploy step:
 
-- **(cross-plan)** Land the file-locking plan's L1/L2/L3 OMP hook
-  into `apps/operator/scripts/hooks/omp/` so the bundle's `hooks[]`
-  is non-empty (§4.3.1, D-008a). The directory + its contract
-  README exist; the hook module itself is the locks plan's.
+- **(done)** The file-locking plan's OMP hook landed at
+  `apps/operator/scripts/hooks/omp/coord-hook.ts` (6 handlers,
+  incl. `onToolCall` lock enforcement) — the bundle's `hooks[]`
+  is now non-empty (§4.3.1, D-008a).
 - **(cross-plan)** Audience-neutral rewrite of `papercusp-su.tools.md`
   (D-008b, locks plan owner).
 - **(deploy)** Rebuild the desktop operator sidecar so the new
