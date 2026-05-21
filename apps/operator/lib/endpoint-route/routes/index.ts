@@ -245,6 +245,7 @@ import oracleRoutes from './oracle/index';
 import dockLayoutsRoutes from './dock-layouts/index';
 import crossHarnessRoutes from './cross-harness/index';
 import projectsRoutes from './projects/index';
+import ptyRoutes from './pty/index';
 import designFeatures from './design/features';
 import designRegressions from './design/regressions';
 import designRegressionFile from './design/regression-file';
@@ -514,6 +515,7 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(dockLayoutsRoutes as AnyRoute[]),
   ...flatten(crossHarnessRoutes as AnyRoute[]),
   ...flatten(projectsRoutes as AnyRoute[]),
+  ...flatten(ptyRoutes as AnyRoute[]),
   ...flatten(designFeatures as AnyRoute),
   ...flatten(designRegressions as AnyRoute),
   ...flatten(designRegressionFile as AnyRoute),

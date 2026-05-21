@@ -17,7 +17,6 @@ import { compress } from 'hono/compress';
 import { cors } from 'hono/cors';
 import { harness } from './harness';
 import { plugins } from './plugins';
-import { registerPty } from './pty';
 import { registerAgentChats } from './agent-chats';
 import { registerExperts } from './experts';
 import { installPluginApiDispatcher } from '../../../lib/plugin-api-mount';
@@ -67,10 +66,9 @@ app.use('/harness-phase-last-used/*', tauriApiCors);
 
 app.use('*', compress({ threshold: 1024 }));
 
-registerPty(harness);
 registerAgentChats(harness);
 registerExperts(harness);
-// operator-notes, projects, cross-harness, oracle, dock-layouts migrated
+// pty, operator-notes, projects, cross-harness, oracle, dock-layouts migrated
 // to `defineRoute` (endpoint-hono-elimination-2026-05-21 Phase A1) — they
 // register via `registerRouteLiterals` below.
 
