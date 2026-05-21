@@ -180,61 +180,11 @@ else
   echo "! Expected coord extension at $COORD_EXT_SRC; skipping (coordination turn-start injection will be inactive)"
 fi
 
-# 4b. Register Claude Code hooks (PreToolUse/PostToolUse) for SU file-lock
-# enforcement. The cooperative `locks:*` tool surface is universal; the
-# hooks turn it into enforced coordination for Claude Code specifically.
-# OMP/Codex/Gemini equivalents are TODO recipes in
-# scripts/hooks/README.md.
-HOOK_DIR="${SCRIPT_DIR}/hooks"
-PRE_HOOK="${HOOK_DIR}/pretooluse-locks-acquire.sh"
-POST_HOOK="${HOOK_DIR}/posttooluse-locks-release.sh"
-CLAUDE_SETTINGS="${HOME}/.claude/settings.json"
-
-if [ -f "$PRE_HOOK" ] && [ -f "$POST_HOOK" ] && [ -d "${HOME}/.claude" ]; then
-  chmod +x "$PRE_HOOK" "$POST_HOOK" 2>/dev/null || true
-  python3 - "$CLAUDE_SETTINGS" "$PRE_HOOK" "$POST_HOOK" <<'PYEOF'
-import json, os, sys
-settings_path, pre_hook, post_hook = sys.argv[1:4]
-
-try:
-    with open(settings_path) as f:
-        cfg = json.load(f)
-except FileNotFoundError:
-    cfg = {}
-except json.JSONDecodeError:
-    print(f"! existing {settings_path} is invalid JSON; backing up and starting fresh", file=sys.stderr)
-    os.rename(settings_path, settings_path + ".bak." + str(int(__import__('time').time())))
-    cfg = {}
-
-cfg.setdefault('hooks', {})
-
-def upsert_hook(kind, command):
-    """Idempotent: keep one hook entry per (matcher='Edit|Write|MultiEdit', command)."""
-    entries = cfg['hooks'].setdefault(kind, [])
-    target_matcher = 'Edit|Write|MultiEdit'
-    # Find existing matcher block; create if missing.
-    block = None
-    for e in entries:
-        if e.get('matcher') == target_matcher:
-            block = e
-            break
-    if block is None:
-        block = {'matcher': target_matcher, 'hooks': []}
-        entries.append(block)
-    # Remove any prior entry pointing at OUR command, then re-add.
-    block['hooks'] = [h for h in block.get('hooks', []) if h.get('command') != command]
-    block['hooks'].append({'type': 'command', 'command': command})
-
-upsert_hook('PreToolUse', pre_hook)
-upsert_hook('PostToolUse', post_hook)
-
-with open(settings_path, 'w') as f:
-    json.dump(cfg, f, indent=2)
-PYEOF
-  echo "✓ Registered SU-locks hooks in $CLAUDE_SETTINGS"
-else
-  echo "→ Skipping Claude Code hook install (~/.claude not present or hook scripts missing)"
-fi
+# 4b. (removed) Claude Code PreToolUse/PostToolUse hook injection was
+# deleted in file-locking-improvements #2. Enforcement now lives
+# entirely in the OMP extension's tool_call/tool_result handlers
+# (apps/operator/scripts/hooks/omp/coord-hook.ts) — Claude Code, Codex
+# and Gemini are unsupported (see project_claude_code_unsupported).
 
 # 5. Verify the endpoint accepts the token.
 echo

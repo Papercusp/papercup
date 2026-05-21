@@ -10,12 +10,17 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import {
+  extractPathsFromToolInput,
+  formatBusyRefusal,
   formatTurnStartReminder,
+  onToolCall,
+  onToolResult,
   readInboxFs,
   readPlanEventsFs,
   readWatermarkFs,
   summarisePlanEvents,
   writeWatermarkFs,
+  _resetToolCallCacheForTests,
   type InboxEntry,
 } from '../coord-hook';
 
@@ -116,10 +121,13 @@ describe('register (OMP adapter)', () => {
     expect([...subs.keys()].sort()).toEqual([
       'session_start',
       'tool_call',
+      'tool_result',
       'turn_end',
       'turn_start',
     ]);
-    // tool_call handler permits all by default (stub).
+    // tool_call handler permits an empty edit (no path → nothing to
+    // claim → fall through). file-locking #2 covers the real busy /
+    // unreachable / release paths in their own describe blocks.
     const block = await subs.get('tool_call')!(
       { type: 'tool_call', toolName: 'edit', toolCallId: 't1', input: {} },
       {},
@@ -317,5 +325,260 @@ describe('detached filesystem reads (F-H4c)', () => {
 
   it('readPlanEventsFs returns [] when no plan-events files exist', async () => {
     expect(await readPlanEventsFs()).toEqual([]);
+  });
+});
+
+// ────────────────────────────────────────────────────────────────────
+// file-locking-improvements #2 — onToolCall / onToolResult enforcement
+// ────────────────────────────────────────────────────────────────────
+
+describe('extractPathsFromToolInput (file-locking #2)', () => {
+  const prevRoot = process.env.PAPERCUSP_REPO_ROOT;
+  beforeEach(() => {
+    process.env.PAPERCUSP_REPO_ROOT = '/repo';
+  });
+  afterEach(() => {
+    if (prevRoot === undefined) delete process.env.PAPERCUSP_REPO_ROOT;
+    else process.env.PAPERCUSP_REPO_ROOT = prevRoot;
+  });
+
+  it('claims `path` from a write tool input', () => {
+    expect(extractPathsFromToolInput('write', { path: '/repo/a.ts' })).toEqual([
+      'a.ts',
+    ]);
+  });
+
+  it('accepts path | file_path | filePath for edit', () => {
+    expect(
+      extractPathsFromToolInput('edit', { path: '/repo/a.ts' }),
+    ).toEqual(['a.ts']);
+    expect(
+      extractPathsFromToolInput('edit', { file_path: '/repo/b.ts' }),
+    ).toEqual(['b.ts']);
+    expect(
+      extractPathsFromToolInput('edit', { filePath: '/repo/c.ts' }),
+    ).toEqual(['c.ts']);
+  });
+
+  it('claims every literal path from ast_edit, drops globs', () => {
+    expect(
+      extractPathsFromToolInput('ast_edit', {
+        paths: ['/repo/a.ts', '/repo/dir/*.ts', '/repo/b.ts', '/repo/x?.ts'],
+        ops: [],
+      }),
+    ).toEqual(['a.ts', 'b.ts']);
+  });
+
+  it('drops paths outside the repo root', () => {
+    expect(
+      extractPathsFromToolInput('write', { path: '/etc/passwd' }),
+    ).toEqual([]);
+    expect(
+      extractPathsFromToolInput('write', { path: '/repo' }),
+    ).toEqual([]);
+  });
+
+  it('returns [] for non-file-editing tools', () => {
+    expect(extractPathsFromToolInput('bash', { command: 'ls' })).toEqual([]);
+    expect(extractPathsFromToolInput('read', { path: '/repo/a.ts' })).toEqual([]);
+  });
+
+  it('returns [] for malformed input (non-string path)', () => {
+    expect(extractPathsFromToolInput('write', { path: 42 })).toEqual([]);
+    expect(extractPathsFromToolInput('write', {})).toEqual([]);
+    expect(
+      extractPathsFromToolInput('ast_edit', { paths: [null, 7, ''] }),
+    ).toEqual([]);
+  });
+});
+
+describe('formatBusyRefusal (file-locking #2)', () => {
+  it('renders the holder line + three retry options', () => {
+    const out = formatBusyRefusal([
+      {
+        path: 'a.ts',
+        owner: 'pus-1',
+        owner_label: 'A',
+        intent: 'editing',
+        expires_ts: '2026-05-20T10:00:00Z',
+      },
+    ]);
+    expect(out).toContain('a.ts');
+    expect(out).toContain('A');
+    expect(out).toContain('"editing"');
+    expect(out).toContain('2026-05-20T10:00:00Z');
+    expect(out).toMatch(/Options.*\(1\).*\(2\).*\(3\)/s);
+  });
+
+  it('truncates after 5 entries with a "... and N more" line', () => {
+    const busy = Array.from({ length: 8 }, (_, i) => ({
+      path: `p${i}.ts`,
+      owner_label: 'X',
+      intent: 'i',
+      expires_ts: 't',
+    }));
+    const out = formatBusyRefusal(busy);
+    expect(out).toContain('... and 3 more');
+    expect(out).toContain('p4.ts');
+    expect(out).not.toContain('p5.ts');
+  });
+});
+
+describe('onToolCall / onToolResult (file-locking #2)', () => {
+  const originalFetch = global.fetch;
+  const prevRoot = process.env.PAPERCUSP_REPO_ROOT;
+  const prevBundle = process.env.PAPERCUSP_BUNDLE_URL;
+  const prevToken = process.env.PAPERCUSP_BUNDLE_ACCESS_TOKEN;
+  const prevSid = process.env.PAPERCUSP_AUTH_SESSION_ID;
+
+  beforeEach(() => {
+    process.env.PAPERCUSP_REPO_ROOT = '/repo';
+    process.env.PAPERCUSP_BUNDLE_URL = 'http://operator.test';
+    process.env.PAPERCUSP_BUNDLE_ACCESS_TOKEN = 't';
+    process.env.PAPERCUSP_AUTH_SESSION_ID = 'pus-test';
+    _resetToolCallCacheForTests();
+  });
+  afterEach(() => {
+    global.fetch = originalFetch;
+    if (prevRoot === undefined) delete process.env.PAPERCUSP_REPO_ROOT;
+    else process.env.PAPERCUSP_REPO_ROOT = prevRoot;
+    if (prevBundle === undefined) delete process.env.PAPERCUSP_BUNDLE_URL;
+    else process.env.PAPERCUSP_BUNDLE_URL = prevBundle;
+    if (prevToken === undefined) delete process.env.PAPERCUSP_BUNDLE_ACCESS_TOKEN;
+    else process.env.PAPERCUSP_BUNDLE_ACCESS_TOKEN = prevToken;
+    if (prevSid === undefined) delete process.env.PAPERCUSP_AUTH_SESSION_ID;
+    else process.env.PAPERCUSP_AUTH_SESSION_ID = prevSid;
+  });
+
+  function mockMcpResponse(payload: unknown): typeof fetch {
+    return (async () => ({
+      ok: true,
+      text: async () =>
+        JSON.stringify({
+          jsonrpc: '2.0',
+          id: 1,
+          result: {
+            content: [{ type: 'text', text: JSON.stringify(payload) }],
+          },
+        }),
+    })) as unknown as typeof fetch;
+  }
+
+  it('returns {} when the tool has no claimable path', async () => {
+    let called = false;
+    global.fetch = (async () => {
+      called = true;
+      throw new Error('should not call');
+    }) as unknown as typeof fetch;
+    const r = await onToolCall({
+      type: 'tool_call',
+      toolName: 'bash',
+      toolCallId: 't1',
+      input: { command: 'ls' },
+    });
+    expect(r).toEqual({});
+    expect(called).toBe(false);
+  });
+
+  it('caches lock_id on ok and releases on tool_result', async () => {
+    const calls: Array<{ name: string; args: unknown }> = [];
+    global.fetch = (async (_url: unknown, init: { body: string }) => {
+      const body = JSON.parse(init.body) as {
+        params: { name: string; arguments: unknown };
+      };
+      calls.push({ name: body.params.name, args: body.params.arguments });
+      const payload =
+        body.params.name === 'coord:locks:acquire'
+          ? { ok: true, lock_id: 'L-1', expires_ts: 't', held: ['a.ts'] }
+          : { ok: true };
+      return {
+        ok: true,
+        text: async () =>
+          JSON.stringify({
+            jsonrpc: '2.0',
+            id: 1,
+            result: {
+              content: [{ type: 'text', text: JSON.stringify(payload) }],
+            },
+          }),
+      };
+    }) as unknown as typeof fetch;
+
+    const r = await onToolCall({
+      type: 'tool_call',
+      toolName: 'write',
+      toolCallId: 'tc-1',
+      input: { path: '/repo/a.ts', content: 'x' },
+    });
+    expect(r).toEqual({});
+    expect(calls).toHaveLength(1);
+    expect(calls[0].name).toBe('coord:locks:acquire');
+
+    await onToolResult({ type: 'tool_result', toolCallId: 'tc-1' });
+    expect(calls).toHaveLength(2);
+    expect(calls[1].name).toBe('coord:locks:release');
+    expect((calls[1].args as { lock_id: string }).lock_id).toBe('L-1');
+
+    // Second release on the same toolCallId is a no-op (cache cleared).
+    await onToolResult({ type: 'tool_result', toolCallId: 'tc-1' });
+    expect(calls).toHaveLength(2);
+  });
+
+  it('blocks with a formatted reason on busy', async () => {
+    global.fetch = mockMcpResponse({
+      ok: false,
+      busy: [
+        {
+          path: 'a.ts',
+          owner: 'pus-other',
+          owner_label: 'OTHER',
+          intent: 'editing',
+          expires_ts: '2026-05-20T10:00:00Z',
+        },
+      ],
+    });
+    const r = await onToolCall({
+      type: 'tool_call',
+      toolName: 'write',
+      toolCallId: 'tc-2',
+      input: { path: '/repo/a.ts', content: 'x' },
+    });
+    expect(r.block).toBe(true);
+    expect(r.reason).toMatch(/a\.ts/);
+    expect(r.reason).toMatch(/OTHER/);
+    expect(r.reason).toMatch(/Options/);
+  });
+
+  it('fails open when the operator is unreachable', async () => {
+    global.fetch = (async () => {
+      throw new Error('ECONNREFUSED');
+    }) as unknown as typeof fetch;
+    const errs: unknown[] = [];
+    const origErr = console.error;
+    console.error = (...a: unknown[]) => {
+      errs.push(a);
+    };
+    try {
+      const r = await onToolCall({
+        type: 'tool_call',
+        toolName: 'write',
+        toolCallId: 'tc-3',
+        input: { path: '/repo/a.ts', content: 'x' },
+      });
+      expect(r).toEqual({}); // fail open
+      expect(errs.some((e) => String(e).includes('fail-open'))).toBe(true);
+    } finally {
+      console.error = origErr;
+    }
+  });
+
+  it('onToolResult is a no-op for a toolCallId we never acquired', async () => {
+    let called = false;
+    global.fetch = (async () => {
+      called = true;
+      return { ok: true, text: async () => '{}' };
+    }) as unknown as typeof fetch;
+    await onToolResult({ type: 'tool_result', toolCallId: 'never' });
+    expect(called).toBe(false);
   });
 });

@@ -664,14 +664,22 @@ export async function onTurnEnd(): Promise<void> {
 }
 
 /**
- * Tool-call enforcement stub. Real lock enforcement (block on busy,
- * release on tool_result) is owned by `file-locking-improvements`
- * plan #2. Until that ships, this stub permits every call.
+ * Tool-call enforcement (file-locking-improvements #2). Matches OMP's
+ * `ToolCallEvent` from @oh-my-pi/pi-coding-agent/src/extensibility/
+ * hooks/types.ts: discriminated `type: "tool_call"` envelope with
+ * toolName / toolCallId / input. Return shape matches
+ * `ToolCallEventResult` ({ block?, reason? }).
  *
- * Matches OMP's `ToolCallEvent` from
- * @oh-my-pi/pi-coding-agent/src/extensibility/types.ts: discriminated
- * `type: "tool_call"` envelope with toolName / toolCallId / input.
- * Return shape matches `ToolCallEventResult` ({ block?, reason? }).
+ * Strategy (mirrors the now-deleted Claude Code PreToolUse/PostToolUse
+ * shell hooks, with the same fail-open precedent):
+ *   1. Extract repo-relative paths from the tool input (skip if the
+ *      tool isn't a file-edit, or the path is outside the repo).
+ *   2. Call coord:locks:acquire with wait={max_sec:0} (no queueing on
+ *      the hook — block immediately so the agent can replan).
+ *   3. On ok → cache lock_id by toolCallId for onToolResult to release.
+ *   4. On busy → return { block: true, reason: <formatted refusal> }.
+ *   5. On operator-unreachable → log + return {} (fail open;
+ *      cooperative discipline only works when the system is up).
  */
 export interface ToolCallEvent {
   type: 'tool_call';
@@ -679,10 +687,154 @@ export interface ToolCallEvent {
   toolCallId: string;
   input: Record<string, unknown>;
 }
-export async function onToolCall(_event: ToolCallEvent): Promise<{ block?: boolean; reason?: string }> {
-  // TODO(file-locking-improvements #2): inspect tool + path; call
-  //   locks:acquire; return { block: true, reason } on busy.
-  return {};
+
+export interface ToolResultEvent {
+  type: 'tool_result';
+  toolCallId: string;
+  toolName?: string;
+}
+
+/**
+ * In-process toolCallId → lock_id cache. Same OMP process handles
+ * both tool_call and tool_result, so an in-memory Map is sufficient
+ * — no FS cache (the CC hooks needed one because each Pre/Post fired
+ * as a separate subprocess). Cleared on tool_result.
+ */
+const acquiredLocks = new Map<string, string>();
+
+/** Repo root the hook restricts itself to. Override with
+ *  PAPERCUSP_REPO_ROOT for non-standard layouts. */
+function papercupRoot(): string {
+  return (
+    process.env.PAPERCUSP_REPO_ROOT ??
+    resolve(process.env.HOME ?? '/tmp', 'papercupai-workspace/papercup')
+  );
+}
+
+/**
+ * Pull file paths to claim out of a tool's input. Repo-relative;
+ * anything outside the repo, or any wildcard/glob, is silently
+ * dropped (the lock store is workspace-scoped; non-repo paths are not
+ * coordinated, globs would over-claim).
+ *
+ * Tool-name coverage matches OMP's file-edit surface:
+ *   - write       → input.path
+ *   - edit        → input.path | file_path | filePath  (extension)
+ *   - ast_edit    → input.paths[]  (skip entries containing * ? [ )
+ *   - multi_edit  → input.paths[]  (legacy / future)
+ */
+export function extractPathsFromToolInput(
+  toolName: string,
+  input: Record<string, unknown>,
+): string[] {
+  const raw: string[] = [];
+  if (toolName === 'write' || toolName === 'edit') {
+    for (const k of ['path', 'file_path', 'filePath'] as const) {
+      const v = input[k];
+      if (typeof v === 'string' && v.length > 0) raw.push(v);
+    }
+  } else if (toolName === 'ast_edit' || toolName === 'multi_edit') {
+    const ps = input.paths;
+    if (Array.isArray(ps)) {
+      for (const p of ps) {
+        if (typeof p === 'string' && p.length > 0 && !/[*?[\]]/.test(p)) {
+          raw.push(p);
+        }
+      }
+    }
+  }
+  const root = papercupRoot();
+  const prefix = root.endsWith('/') ? root : root + '/';
+  const out: string[] = [];
+  for (const p of raw) {
+    const abs = resolve(p);
+    if (abs === root) continue; // never claim the repo root itself
+    if (abs.startsWith(prefix)) out.push(abs.slice(prefix.length));
+  }
+  return out;
+}
+
+/** Busy-array entry as returned by coord:locks:acquire. */
+interface BusyEntry {
+  path: string;
+  owner?: string;
+  owner_label?: string | null;
+  intent?: string;
+  expires_ts?: string;
+}
+
+/** Format the human/agent-readable refusal when paths are contested. */
+export function formatBusyRefusal(busy: BusyEntry[]): string {
+  const lines: string[] = [
+    'locks: refused — file(s) held by another SU agent:',
+  ];
+  for (const b of busy.slice(0, 5)) {
+    const who = b.owner_label || b.owner || 'unknown';
+    const intent = b.intent ? JSON.stringify(b.intent) : "'unknown'";
+    lines.push(
+      `  - ${b.path}: held by ${who} for ${intent} (expires ${b.expires_ts ?? '?'})`,
+    );
+  }
+  if (busy.length > 5) lines.push(`  ... and ${busy.length - 5} more`);
+  lines.push('');
+  lines.push('Options: (1) wait and retry, (2) work on something else,');
+  lines.push('(3) call locks:acquire with wait={max_sec:300} to queue.');
+  return lines.join('\n');
+}
+
+export async function onToolCall(
+  event: ToolCallEvent,
+): Promise<{ block?: boolean; reason?: string }> {
+  const paths = extractPathsFromToolInput(event.toolName, event.input);
+  if (paths.length === 0) return {};
+
+  const result = await callMcpTool('coord:locks:acquire', {
+    paths,
+    intent: `tool_call:${event.toolName}`,
+    ttl_sec: 1200,
+    wait: { max_sec: 0 },
+  });
+
+  if (result == null) {
+    // Operator unreachable or call errored — fail open. Cooperative
+    // discipline only works when the system is up; blocking edits
+    // would wedge the agent. file-locking #3 will persist a marker
+    // so the operator UI can surface that enforcement is offline.
+    console.error(
+      '[su-locks] coord:locks:acquire unreachable; allowing tool_call (fail-open)',
+    );
+    return {};
+  }
+
+  const r = result as {
+    ok?: boolean;
+    lock_id?: string;
+    busy?: BusyEntry[];
+    reason?: string;
+  };
+  if (r.ok === true && typeof r.lock_id === 'string') {
+    acquiredLocks.set(event.toolCallId, r.lock_id);
+    return {};
+  }
+  const reason =
+    r.busy && r.busy.length > 0
+      ? formatBusyRefusal(r.busy)
+      : r.reason ?? 'locks: refused (unknown reason)';
+  return { block: true, reason };
+}
+
+export async function onToolResult(event: ToolResultEvent): Promise<void> {
+  const lockId = acquiredLocks.get(event.toolCallId);
+  if (lockId === undefined) return;
+  acquiredLocks.delete(event.toolCallId);
+  // Best-effort release. Missed releases are covered by the lock's
+  // TTL (1200s) so a network blip does NOT leak a lock permanently.
+  await callMcpTool('coord:locks:release', { lock_id: lockId });
+}
+
+/** Test-only: reset the in-memory lock cache between cases. */
+export function _resetToolCallCacheForTests(): void {
+  acquiredLocks.clear();
 }
 
 // ── OMP adapter (registration) ───────────────────────────────────────
@@ -719,12 +871,17 @@ type ToolCallHandler = (
   event: ToolCallEvent,
   ctx: unknown,
 ) => Promise<{ block?: boolean; reason?: string } | void> | { block?: boolean; reason?: string } | void;
+type ToolResultHandler = (
+  event: ToolResultEvent,
+  ctx: unknown,
+) => Promise<void> | void;
 
 interface HookApi {
   on(event: 'session_start', handler: SessionStartHandler): void;
   on(event: 'turn_start', handler: TurnStartHandler): void;
   on(event: 'turn_end', handler: TurnEndHandler): void;
   on(event: 'tool_call', handler: ToolCallHandler): void;
+  on(event: 'tool_result', handler: ToolResultHandler): void;
   sendMessage(
     message: {
       customType: string;
@@ -796,5 +953,9 @@ export default function register(pi: HookApi): void {
 
   pi.on('tool_call', async (event) => {
     return safe(() => onToolCall(event), {});
+  });
+
+  pi.on('tool_result', async (event) => {
+    await safe(() => onToolResult(event), undefined);
   });
 }
