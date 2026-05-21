@@ -178,7 +178,7 @@ E7  ESLint enforcement + docs                                   ⬜ not started
 E8  IPC transport for unified handlers                          ⬜ not started
 E9  Auth-tightening pass (~30–50 routes)                        ⬜ not started
 E10 OpenAPI mobile-tag rendering                                ✅ SHIPPED
-E11 Hono replacement assessment                                 ⬜ not started
+E11 Hono replacement assessment                                 ✅ SHIPPED — verdict: stay on Hono
 E12 Migrate _hono/harness.ts (135 routes)                       ⬜ not started — own plan
 E13 Migrate coord/plugins/su-locks (16 routes) + orphan triage  ⬜ not started
 E14 Delete _hono/* directory                                    ⬜ not started
@@ -262,7 +262,7 @@ Key fixes during implementation:
 
 ### Phases E7–E14 — status
 
-Not started. E7 (lint + docs), E8 (IPC), E9 (auth-tightening ~30–50 routes), E10 (OpenAPI mobile tag), E11 (Hono assessment), E12 (migrate `_hono/harness.ts`, 135 routes), E13 (`coord`/`plugins`/`su-locks`, 16 routes + orphan triage), E14 (delete `_hono/`). E12 in particular is the single largest phase (135 route migrations) and, like E6a, warrants its own focused plan + review rather than a rushed pass. The `mobile: true` flag and the unified `requirePrincipal` auth from E1–E5 make every one of those migrations mechanical when they happen.
+E10 + E11 shipped. Remaining: E7 (lint + docs — the `no-raw-route-handlers` rule is gated on E12/E13 migrating the last `_hono/*` routers), E8 (IPC transport), E9 (auth-tightening ~30–50 routes), E12 (migrate `_hono/harness.ts`, 135 routes), E13 (`coord`/`plugins`/`su-locks`, 16 routes + orphan triage), E14 (delete `_hono/`). E12 in particular is the single largest phase (135 route migrations) and warrants its own focused plan + review rather than a rushed pass. The `mobile: true` flag and the unified `requirePrincipal` auth from E1–E5 make every one of those migrations mechanical when they happen.
 
 ### Phase E7 — Lint enforcement + docs
 
@@ -288,10 +288,23 @@ Not started. E7 (lint + docs), E8 (IPC), E9 (auth-tightening ~30–50 routes), E
 - ✅ Tests in `openapi.test.ts` (3) — tag present on `mobile: true`, absent otherwise, present on every migrated `/api/mobile/*` route (`qr.svg` excepted — it is loopback-only by design, not a cross-origin phone route).
 - **Not done:** the `/dev → Endpoints` panel tag *filter* — a UI nicety; the substantive part (the tag in `openapi.json`) is shipped. Optional follow-up.
 
-### Phase E11 — Hono router replacement assessment
+### Phase E11 — Hono router replacement assessment — ✅ SHIPPED (verdict: stay on Hono)
 
-- Written cost/benefit assessment, NOT a port. Unified primitive doesn't care what router serves it.
-- Output: a follow-up plan doc (or a "stay on Hono" memo) — decide whether to execute after E1–E10 ship.
+**Question:** now that the endpoint system is unified, should Papercusp replace Hono with something else (raw `@hono/node-server` routing, Node `http`/`http2`, or another framework)?
+
+**Verdict: stay on Hono. Do not replace it.**
+
+**How coupled is the codebase to Hono, really?**
+- The unified primitive (`defineTool` route branch) is **router-agnostic** — it produces a plain `RouteDefinition` (`{ method, path, auth, handler }`) with Web-standard `Request`/`Response`. Nothing Hono-specific.
+- `route-stack.ts` — the dispatch pipeline — touches Hono only through one field: `exec.hono` (the `Context`), and only to read `req.raw` and `req.param()`. Trivially abstractable.
+- `registerRoute` (~40 lines) is the **single** Hono-coupled mount point for the ~250 unified routes: `app.on(method, path, …)` + `app.use(path, mobileCors)`.
+- The legacy `_hono/*` sub-apps (`harness.ts`, `coord.ts`, `plugins.ts`, `su-locks.ts`) DO use Hono pervasively (`new Hono()`, `app.route`, `c.json`) — but those are exactly what E12/E13 migrate *off* Hono-router-style and onto `defineRoute`. After E12–E14, the only Hono surface left is `_hono/app.ts` (the app instance + `cors`/`compress` middleware) and `registerRoute`.
+
+**Cost of replacing Hono:** rewrite `_hono/app.ts`, `registerRoute`, the `route-stack`'s `Context` coupling, the `cors`/`compress` middleware integration, and re-validate all ~250 routes + the host (`@hono/node-server`). Weeks. Regression surface: the entire HTTP API.
+
+**Benefit of replacing Hono:** approximately none. Hono is mature, fast, zero-dependency, Web-standard (`Request`/`Response` native — which is *why* the endpoint system is host-neutral), and already integrated with `@hono/node-server`. No performance ceiling, licensing issue, or missing capability has been identified. The endpoint-system abstraction already delivers the only real benefit a swap could offer — insulation from the router — so the router choice is a settled, low-risk detail.
+
+**If a future driver appears** (e.g. the `operator-vite` host migration wanting a different server, per `host-architecture-2026-05-20-v2`), the swap is localized to `registerRoute` + `_hono/app.ts` + the `route-stack` `Context` read — a bounded change precisely *because* the endpoint system was unified. Revisit then, with a concrete driver. Not now.
 
 ### Phase E12 — Migrate `_hono/harness.ts` (135 routes)
 
