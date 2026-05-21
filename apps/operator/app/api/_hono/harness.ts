@@ -2879,68 +2879,6 @@ harness.post('/:slug/resume', async (c) => {
 
 
 
-// Find all PIDs of run.sh running for this project + their descendants.
-function findHarnessPids(projectPath: string): number[] {
-  const pids: number[] = [];
-  try {
-    for (const pid of readdirSync('/proc').filter((d) => /^\d+$/.test(d))) {
-      try {
-        const cwd = readlinkSync(`/proc/${pid}/cwd`);
-        if (!cwd.startsWith(projectPath)) continue;
-        const cmdline = readFileSync(`/proc/${pid}/cmdline`, 'utf8');
-        if (isHarnessDriverCmdline(cmdline) || cmdline.includes('claude') || cmdline.includes('python3')) {
-          pids.push(Number(pid));
-        }
-      } catch {}
-    }
-  } catch {}
-  return pids;
-}
-
-harness.post('/:slug/pause', async (c) => {
-  const project = await resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
-  if (!project) return c.json({ error: 'unknown project' }, 404);
-  const pids = findHarnessPids(project.path);
-  const paused: number[] = [];
-  for (const pid of pids) {
-    try { process.kill(pid, 'SIGSTOP'); paused.push(pid); } catch {}
-  }
-  return c.json({ ok: true, paused });
-});
-
-harness.post('/:slug/unpause', async (c) => {
-  const project = await resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
-  if (!project) return c.json({ error: 'unknown project' }, 404);
-  const pids = findHarnessPids(project.path);
-  const resumed: number[] = [];
-  for (const pid of pids) {
-    try { process.kill(pid, 'SIGCONT'); resumed.push(pid); } catch {}
-  }
-  return c.json({ ok: true, resumed });
-});
-
-harness.post('/:slug/stop', async (c) => {
-  const project = await resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
-  if (!project) return c.json({ error: 'unknown project' }, 404);
-  try {
-    const procs = readdirSync('/proc').filter((d) => /^\d+$/.test(d));
-    const killed: number[] = [];
-    for (const pid of procs) {
-      try {
-        const cwd = readlinkSync(`/proc/${pid}/cwd`);
-        if (!cwd.startsWith(project.path)) continue;
-        const cmdline = readFileSync(`/proc/${pid}/cmdline`, 'utf8');
-        if (isHarnessDriverCmdline(cmdline)) {
-          process.kill(Number(pid), 'SIGTERM');
-          killed.push(Number(pid));
-        }
-      } catch {}
-    }
-    return c.json({ ok: true, killed });
-  } catch (err) {
-    return c.json({ error: String(err) }, 500);
-  }
-});
 
 // ─── Issues tracker (structured) ─────────────────────────────────────
 // `.harness/issues.json` is the structured companion to issues.md.

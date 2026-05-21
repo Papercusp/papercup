@@ -72,6 +72,7 @@ import harnessPrompts from './harness/prompts';
 import harnessBrainstorm from './harness/brainstorm';
 import harnessOrchestratorCheckpoint from './harness/orchestrator-checkpoint';
 import harnessGit from './harness/git';
+import harnessProcessControl from './harness/process-control';
 import harnessAllKpis from './harness/all-kpis';
 import harnessSearch from './harness/search';
 import harnessFile from './harness/file';
@@ -417,6 +418,7 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(harnessBrainstorm as AnyRoute[]),
   ...flatten(harnessOrchestratorCheckpoint as AnyRoute[]),
   ...flatten(harnessGit as AnyRoute[]),
+  ...flatten(harnessProcessControl as AnyRoute[]),
   ...flatten(harnessAllKpis as AnyRoute),
   ...flatten(harnessSearch as AnyRoute),
   ...flatten(harnessFile as AnyRoute[]),
