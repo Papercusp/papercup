@@ -61,6 +61,7 @@ import harnessProjectStats from './harness/project-stats';
 import harnessStateViews from './harness/state-views';
 import harnessNotesDiff from './harness/notes-diff';
 import harnessFeatureViews from './harness/feature-views';
+import harnessAdaptiveTelemetry from './harness/adaptive-telemetry';
 import harnessAllKpis from './harness/all-kpis';
 import harnessSearch from './harness/search';
 import harnessFile from './harness/file';
@@ -395,6 +396,7 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(harnessStateViews as AnyRoute[]),
   ...flatten(harnessNotesDiff as AnyRoute[]),
   ...flatten(harnessFeatureViews as AnyRoute[]),
+  ...flatten(harnessAdaptiveTelemetry as AnyRoute[]),
   ...flatten(harnessAllKpis as AnyRoute),
   ...flatten(harnessSearch as AnyRoute),
   ...flatten(harnessFile as AnyRoute[]),
