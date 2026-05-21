@@ -7,7 +7,7 @@ import { onPendingEventInserted } from '@/lib/pending-events-listener';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
 import { defineRoute } from '../../define-route';
 
-interface Events {
+type Events = {
   hello: { workspaceId: string };
   pending_event: Record<string, unknown>;
 }

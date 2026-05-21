@@ -13,7 +13,7 @@ import { isBranch, runLogPath } from '@/lib/branch-actions';
 import { subscribe as subscribeAction } from '@/lib/branch-action-bus';
 import { defineRoute } from '../../define-route';
 
-interface Events {
+type Events = {
   attached: { runId: string; slug: string; branch: string; name: string };
   'action-started': Record<string, unknown>;
   'action-completed': Record<string, unknown>;

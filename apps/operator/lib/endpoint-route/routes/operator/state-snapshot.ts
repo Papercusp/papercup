@@ -17,7 +17,7 @@ import { getSessionUser } from '@/lib/auth';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
 import { defineRoute } from '../../define-route';
 
-interface StateSnapshotVocabulary {
+type StateSnapshotVocabulary = {
   snapshot: VersionedSnapshot;
 }
 

@@ -247,8 +247,11 @@ async function tryBuildSpawnContext(extra: unknown): Promise<TrySpawnContextResu
   const hasExp = url.searchParams.has('exp');
   const requireSig = process.env.PAPERCUSP_REQUIRE_SPAWN_SIG === '1';
   const headers = headersFromExtra(extra);
-  const remoteAddr = pickHeader(headers, 'x-forwarded-for') ?? null;
-  const userAgent = pickHeader(headers, 'user-agent') ?? null;
+  // `headers` is a Headers — use .get() (case-insensitive). The old
+  // pickHeader() took a plain record and bracket-indexed it; on a
+  // Headers instance that silently returned undefined every time.
+  const remoteAddr = headers.get('x-forwarded-for');
+  const userAgent = headers.get('user-agent');
 
   // A URL "claims a spawn context" if it carries any of the load-bearing
   // params an attacker would need to escalate (role/spawn/workspace).
@@ -327,16 +330,6 @@ async function tryBuildSpawnContext(extra: unknown): Promise<TrySpawnContextResu
     if (err instanceof InvalidRequestContextError) return { kind: 'none' };
     throw err;
   }
-}
-
-function pickHeader(
-  headers: Record<string, string | string[] | undefined> | null,
-  name: string,
-): string | null {
-  if (!headers) return null;
-  const v = headers[name] ?? headers[name.toLowerCase()];
-  if (Array.isArray(v)) return v[0] ?? null;
-  return v ?? null;
 }
 
 function builtinInputSchema(tool: ReturnType<typeof getCatalog>[number]): Record<string, unknown> {

@@ -14,7 +14,7 @@ import { defineRoute } from '../../define-route';
 
 const POLL_MS = 250;
 
-interface Events {
+type Events = {
   message: { id: number; intent: string; args: Record<string, unknown> };
 }
 

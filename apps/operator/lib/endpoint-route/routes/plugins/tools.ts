@@ -2,7 +2,7 @@
  * GET /api/plugins/tools — list registered projected tools.
  * Ported from app/api/plugins/tools/route.ts. `auth: 'public'`.
  */
-import { listAllProjectedTools } from '@papercusp/agent-mcp';
+import { listAllProjectedTools, type ProjectedTool } from '@papercusp/agent-mcp';
 import { getPluginHost } from '@/lib/plugin-host-runtime';
 import { getOrgPg } from '@restart/db-org';
 import { defineRoute } from '../../define-route';
@@ -11,9 +11,13 @@ interface SerializedTool {
   name: string;
   pluginName: string;
   description: string;
-  capabilities: string[];
-  roles?: string[];
-  rolesQuota?: Record<string, { perChunk?: number; perRun?: number; perDay?: number }>;
+  // Mirror the source field types (Capability[] / AgentRole[] / quota
+  // map) via indexed access — a plain `string[]` is nominally
+  // incompatible with the branded source types and the quota map has
+  // no string index signature.
+  capabilities: ProjectedTool['capabilities'];
+  roles?: ProjectedTool['roles'];
+  rolesQuota?: ProjectedTool['rolesQuota'];
   timeoutSec?: number;
   inputSchema: Record<string, unknown>;
   expose: {
@@ -69,7 +73,7 @@ export default defineRoute({
             GROUP BY tool_name`,
         );
         const byName = new Map<string, { ok: number; err: number }>();
-        for (const row of rows as Array<{ tool_name: string; ok_count: number; err_count: number }>) {
+        for (const row of rows as unknown as Array<{ tool_name: string; ok_count: number; err_count: number }>) {
           byName.set(row.tool_name, { ok: row.ok_count, err: row.err_count });
         }
         for (const t of serialized) {

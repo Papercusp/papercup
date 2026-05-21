@@ -14,7 +14,7 @@ const PostSchema = z.object({
     'manual', 'interval', 'pre_destructive', 'post_run',
     'plugin_install', 'secret_change', 'startup',
   ]).default('manual'),
-  context: z.record(z.unknown()).optional(),
+  context: z.record(z.string(), z.unknown()).optional(),
 });
 
 const get = defineRoute({

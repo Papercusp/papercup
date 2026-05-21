@@ -48,8 +48,6 @@ function makeStreamingTool(): ProjectedTool {
     description: 'streaming fixture',
     inputSchema: { type: 'object' },
     capabilities: [],
-    requiresPrincipal: false,
-    args: z.object({}),
     events: { delta: z.object({ text: z.string() }) },
     eventWireKinds: { delta: 'json' },
     expose: {
@@ -69,8 +67,6 @@ function makeNonStreamingTool(): ProjectedTool {
     description: 'plain JSON fixture',
     inputSchema: { type: 'object' },
     capabilities: [],
-    requiresPrincipal: false,
-    args: z.object({}),
     expose: {
       http: { path: '/api/agent-tools/fix/plain', methods: ['GET', 'POST'] },
       mcp: { name: 'fix:plain' },
@@ -85,8 +81,6 @@ function makeStateShapedTool(): ProjectedTool {
     description: 'state-shaped fixture',
     inputSchema: { type: 'object' },
     capabilities: [],
-    requiresPrincipal: false,
-    args: z.object({}),
     state: z.object({ n: z.number() }),
     expose: {
       http: { path: '/api/agent-tools/fix/state_only', methods: ['POST'] },

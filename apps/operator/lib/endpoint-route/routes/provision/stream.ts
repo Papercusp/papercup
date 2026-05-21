@@ -28,8 +28,10 @@ const TERMINAL_KINDS = new Set([
 
 interface Events {
   // Concrete event names are per-AuditEntry.kind — too dynamic for an
-  // exact generic. Record-shaped keeps the API flexible.
-  [eventName: string]: AuditEntry | { reason: string; kind?: string; harness?: string; plugin?: string; runId?: string };
+  // exact generic. The payload is an AuditEntry OR a small synthetic
+  // record (`attached`, `done`); `unknown` covers both without forcing
+  // every emit site to widen. Record-shaped keeps the API flexible.
+  [eventName: string]: unknown;
 }
 
 export default defineRoute({

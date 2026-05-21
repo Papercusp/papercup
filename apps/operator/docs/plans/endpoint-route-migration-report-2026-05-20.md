@@ -19,6 +19,18 @@ companion-to: [endpoint-route-migration-2026-05-20]
 >
 > **Fix (commit `396da6b3`):** (1) `register.ts` split into `registerRouteLiterals` (phase 1, mounts before the sub-apps so literals out-rank a sub-app's parametric routes) + `registerRouteCatchalls` (phase 2, after the sub-apps); `_hono/app.ts` calls the two phases around the sub-app mounts. (2) `plugin-api-mount.ts` — the dispatcher's registry-miss path returns `next()` instead of `c.notFound()`, so it yields to literal/catch-all routes instead of shadowing them. New regression test `composed-app-shadowing.test.ts` reproduces the real mount order and is verified to have teeth. 269/269 tests, `tsc` clean. **The `_hono/app.ts` two-phase ordering is now load-bearing — see the Coordination note for the Next-removal/Vite agent.**
 
+> **Audit correction (2026-05-21).** Every "`tsc` clean" in this report
+> (the §2 Verification line and the post-migration-audit note above)
+> was **unverified** — the operator typecheck was non-functional
+> (`tsconfig.json` `ignoreDeprecations: "5.0"` aborted `tsc` on TS5101
+> before it checked any file). A 2026-05-21 code-only re-audit, run after
+> the tsconfig was repaired, found ~13 real type errors in the migrated
+> route layer (notably a dead `plugins/host-query.ts` — `getOrgPg().query`
+> is not a method — and `_mcp-handler.ts` bracket-indexing a `Headers`
+> object). All were fixed 2026-05-21; the migrated `lib/endpoint-route/`
+> layer is now genuinely `tsc`-clean. See the matching note in
+> `endpoint-route-migration-2026-05-20.md`.
+
 The user authorized executing R2–R6 without check-ins, deciding freely, and recording questionable calls here. This is that record.
 
 ---

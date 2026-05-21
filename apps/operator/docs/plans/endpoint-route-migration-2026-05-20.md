@@ -11,8 +11,27 @@ companion-to: [host-architecture-2026-05-20-v2, route-audit-2026-05-20, next-rem
 # Endpoint route migration — porting all 243 endpoints off Next.js
 
 **Date:** 2026-05-20
-**Status:** **SHIPPED** — R1–R5 complete. All 243 endpoints migrated; 0 raw `route.ts` remain except the `[[...route]]` host-seam catch-all (the Next-removal agent deletes that at their Phase H cutover). `endpoint-route-progress.mjs --check` passes (exit 0). 242 `defineRoute` modules; 264/264 `endpoint-route` tests green; `tsc` clean. R6 (ESLint enforcement rule) is the only remaining item — see Phase R6.
+**Status:** **SHIPPED** — R1–R5 complete. All 243 endpoints migrated; 0 raw `route.ts` remain except the `[[...route]]` host-seam catch-all (the Next-removal agent deletes that at their Phase H cutover). `endpoint-route-progress.mjs --check` passes (exit 0). 246 `defineRoute` modules. R6 (ESLint enforcement rule) is the only remaining item — see Phase R6.
 **Owner of this slice:** me (endpoint porting). The Next-removal agent owns the host: app shell, router, build, `@hono/node-server`.
+
+> **Audit correction (2026-05-21).** The original status line above claimed
+> "264/264 tests green; `tsc` clean." Both were **unverified at the time**:
+> the operator typecheck was silently non-functional — `apps/operator/tsconfig.json`
+> had `ignoreDeprecations: "5.0"`, too old for TypeScript 6.0.3, so `tsc`
+> aborted on TS5101 (`baseUrl` deprecated) **before checking a single file**.
+> Every "`tsc` clean" in this plan and its R2–R6 report verified nothing.
+> A code-only audit on 2026-05-21 (after the tsconfig was fixed to `"6.0"`)
+> found ~13 type errors in the migrated route layer — including a real
+> runtime bug in `routes/plugins/host-query.ts` (`pg.query` is not a
+> method of `getOrgPg()`'s postgres-js handle; faithfully ported from an
+> already-broken Next route) and `routes/transport/_mcp-handler.ts`
+> reading request headers off a `Headers` object via plain bracket
+> indexing (always `undefined`). All migration-scope errors were fixed
+> 2026-05-21; the `lib/endpoint-route/` layer is now genuinely `tsc`-clean
+> (the one remaining `routes/index.ts` error belongs to in-flight
+> `plans-admin-ui` work, not this migration). The `endpoint-route` test
+> suite has since grown past 264 and currently has one unrelated failure,
+> also from the `plans-admin-ui` WIP.
 
 > **Completion note (2026-05-20).** R5 ran as 24 family batches (R5 b1–b24): agent-config, credentials, agent-tokens, oauth, singletons, auth, provision, desktop, design, user, dev, templates, marketplace, flags, snapshots, operator, backups, harness, ui, zero-harness, the three catch-alls (agent-tools / plugin-runtime / `:transport` MCP), internal, plugins, agent-mcp, and `openapi.json`. R4 (substrate rebind) folded into R5 — the substrate-vs-plumbing distinction didn't change the per-route mechanic. Every route preserves its **current** auth posture (`auth: 'public'` with inline session/principal/loopback checks where the original had them); auth-tightening of credential/admin/desktop-secret routes remains a deliberate **separate follow-up pass**, not smuggled into a mechanical port. Colocated `route.test.ts` files were ported to `lib/endpoint-route/__tests__/` driven by Hono in-process `app.request()`.
 

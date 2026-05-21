@@ -12,7 +12,7 @@ import { sseResponse } from '@restart/sse';
 import { readCredentials } from '@/lib/credentials';
 import { defineRoute } from '../../define-route';
 
-interface AiExploreVocab extends Record<string, unknown> {
+type AiExploreVocab = {
   start: { goal: string; model: string; startUrl: string };
   step: { n: number; action: string; ok: boolean; durationMs: number; result?: string | null };
   log: { level: string; line: string };
