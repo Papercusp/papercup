@@ -1,0 +1,538 @@
+/**
+ * Feature-mutation routes:
+ *
+ *   POST   /api/harness/:slug/features                       — create
+ *   POST   /api/harness/:slug/features/import                — bulk-import
+ *   PATCH  /api/harness/:slug/features/:id                   — update
+ *   DELETE /api/harness/:slug/features/:id                   — delete
+ *   POST   /api/harness/:slug/features/:id/reset             — reset to todo
+ *   POST   /api/harness/:slug/features/:id/approve-human     — clear needs_human_review (+ optional project create/budget adjust)
+ *
+ * Relocated from `_hono/harness.ts` (endpoint-hono-elimination-2026-05-21
+ * A4 batch 28). Helper `auditFeatureChange` lives in `lib/feature-audit.ts`
+ * (carve-out from batch 26a).
+ */
+import { existsSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { getLegacyClient, withWorkspaceLegacy } from '@restart/db-org';
+import { resolveProject, resolvePhasedProject, harnessDir, rowToFeature } from '@/lib/harness-core';
+import { phasePhaseLabel } from '@/lib/harness-phases';
+import { activeWorkspaceId } from '@/lib/workspace-registry';
+import { auditFeatureChange } from '@/lib/feature-audit';
+import { firePluginLifecycle, firePluginEvent } from '@/lib/plugin-host-runtime';
+import { defineRoute } from '../../define-route';
+
+// F-001, PROJ-sheets, DIR-D-001 — verbatim from legacy.
+const FEATURE_ID_RE = /^[A-Z][A-Z0-9-]+(-[A-Z0-9-]+)?$/;
+
+const dbcFor = (slug: string) => getLegacyClient(slug);
+
+// ── POST /:slug/features/:id/reset ─────────────────────────────────────
+
+const resetFeature = defineRoute({
+  method: 'POST',
+  path: '/harness/:slug/features/:id/reset',
+  auth: 'public',
+  async handler(req, ctx) {
+    const url = new URL(req.url);
+    const project = await resolvePhasedProject(
+      ctx.params.slug as string,
+      phasePhaseLabel(url.searchParams.get('phase') ?? undefined),
+    );
+    if (!project) return Response.json({ error: 'unknown project' }, { status: 404 });
+    const id = ctx.params.id as string;
+    const dbc = dbcFor(project.slug);
+    const existing = await dbc.prepare(
+      'SELECT * FROM harness_features WHERE harness_slug = ? AND feature_id = ?',
+    ).get(project.slug, id) as any;
+    if (!existing) return Response.json({ error: 'feature not found' }, { status: 404 });
+    await dbc.transaction(async (tx: any) => {
+      await tx.prepare(
+        'UPDATE harness_features SET status = ?, attempts = ?, updated_ts = ? WHERE harness_slug = ? AND feature_id = ?',
+      ).run('todo', 0, Date.now(), project.slug, id);
+      auditFeatureChange(project.slug, id, 'status', existing.status, 'todo', 'api:reset');
+      auditFeatureChange(project.slug, id, 'attempts', existing.attempts, 0, 'api:reset');
+    });
+    const feat = rowToFeature(
+      await dbc.prepare('SELECT * FROM harness_features WHERE harness_slug = ? AND feature_id = ?').get(project.slug, id),
+    );
+
+    // If worktree isolation is active and this feature has a stale worktree,
+    // remove it so the next worker starts from a clean baseBranch.
+    const hd = harnessDir(project);
+    const wtPath = join(hd, 'worktrees', id);
+    let worktreeRemoved = false;
+    try {
+      const cfg = JSON.parse(readFileSync(join(hd, 'config.json'), 'utf8'));
+      const useWorktrees = cfg?.branchIsolation?.useWorktrees === true && cfg?.branchIsolation?.enabled === true;
+      if (useWorktrees && existsSync(wtPath)) {
+        const { spawnSync } = await import('node:child_process');
+        spawnSync('git', ['worktree', 'remove', '--force', wtPath], { cwd: project.path });
+        spawnSync('git', ['branch', '-D', `harness/${id}`], { cwd: project.path });
+        worktreeRemoved = true;
+      }
+    } catch {}
+
+    return Response.json({ ok: true, feature: feat, worktreeRemoved });
+  },
+});
+
+// ── PATCH /:slug/features/:id ──────────────────────────────────────────
+
+const updateFeature = defineRoute({
+  method: 'PATCH',
+  path: '/harness/:slug/features/:id',
+  auth: 'public',
+  async handler(req, ctx) {
+    const url = new URL(req.url);
+    const project = await resolvePhasedProject(
+      ctx.params.slug as string,
+      phasePhaseLabel(url.searchParams.get('phase') ?? undefined),
+    );
+    if (!project) return Response.json({ error: 'unknown project' }, { status: 404 });
+    const id = ctx.params.id as string;
+    const body = (await req.json()) as {
+      title?: string;
+      summary?: string;
+      claims?: string[];
+      status?: string;
+      attempts?: number;
+      project_id?: string;
+      expected_cost_cents?: number;
+      tags?: string[];
+      needs_human_review?: boolean;
+      metadata?: any;
+      notes?: string;
+      deprecation_reason?: string;
+    };
+    const actor = req.headers.get('x-actor') ?? 'api';
+
+    const dbc = dbcFor(project.slug);
+    const existing = await dbc.prepare(
+      'SELECT * FROM harness_features WHERE harness_slug = ? AND feature_id = ?',
+    ).get(project.slug, id) as any;
+    if (!existing) return Response.json({ error: 'feature not found' }, { status: 404 });
+
+    const updates: Record<string, any> = {};
+    if (body.status !== undefined) {
+      if (typeof body.status !== 'string' || !body.status) return Response.json({ error: 'invalid status' }, { status: 400 });
+      updates.status = body.status;
+    }
+    if (body.title !== undefined) {
+      if (typeof body.title !== 'string' || body.title.trim() === '') return Response.json({ error: 'title must be a non-empty string' }, { status: 400 });
+      updates.title = body.title.trim();
+    }
+    if (body.claims !== undefined) {
+      if (!Array.isArray(body.claims) || body.claims.some((v) => typeof v !== 'string')) return Response.json({ error: 'claims must be string[]' }, { status: 400 });
+      updates.claims = JSON.stringify(body.claims.map((s) => s.trim()).filter(Boolean));
+    }
+    if (body.attempts !== undefined) {
+      if (typeof body.attempts !== 'number' || body.attempts < 0 || !Number.isInteger(body.attempts)) return Response.json({ error: 'attempts must be a non-negative integer' }, { status: 400 });
+      updates.attempts = body.attempts;
+    }
+    if (body.project_id !== undefined) updates.project_id = body.project_id || null;
+    if (body.expected_cost_cents !== undefined) updates.expected_cost_cents = body.expected_cost_cents;
+    if (body.tags !== undefined) updates.tags = body.tags == null ? null : JSON.stringify(body.tags);
+    if (body.needs_human_review !== undefined) updates.needs_human_review = !!body.needs_human_review;
+    if (body.metadata !== undefined) updates.metadata = body.metadata == null ? null : JSON.stringify(body.metadata);
+    if (body.summary !== undefined) {
+      if (body.summary !== null && typeof body.summary !== 'string') return Response.json({ error: 'summary must be a string or null' }, { status: 400 });
+      updates.summary = body.summary;
+    }
+    if (body.notes !== undefined) {
+      if (body.notes !== null && typeof body.notes !== 'string') return Response.json({ error: 'notes must be a string or null' }, { status: 400 });
+      updates.notes = body.notes;
+    }
+    if (body.deprecation_reason !== undefined) {
+      if (body.deprecation_reason !== null && typeof body.deprecation_reason !== 'string') return Response.json({ error: 'deprecation_reason must be a string or null' }, { status: 400 });
+      updates.deprecation_reason = body.deprecation_reason;
+    }
+    if (updates.status === 'deprecated' && updates.deprecation_reason === undefined && !existing.deprecation_reason) {
+      return Response.json({ error: 'deprecation_reason required when transitioning to status=deprecated' }, { status: 400 });
+    }
+    if (updates.status !== undefined && updates.status !== 'deprecated' && existing.deprecation_reason && updates.deprecation_reason === undefined) {
+      updates.deprecation_reason = null;
+    }
+
+    if (Object.keys(updates).length === 0) return Response.json({ ok: true, feature: rowToFeature(existing), changes: 0 });
+
+    await dbc.transaction(async (tx: any) => {
+      const setClauses = Object.keys(updates).map((k) => `${k} = @${k}`).join(', ');
+      await tx.prepare(
+        `UPDATE harness_features SET ${setClauses}, updated_ts = @updated_ts WHERE harness_slug = @hslug AND feature_id = @fid`,
+      ).run({ ...updates, updated_ts: Date.now(), hslug: project.slug, fid: id });
+      for (const [field, newVal] of Object.entries(updates)) {
+        const oldVal = existing[field];
+        auditFeatureChange(project.slug, id, field, oldVal, newVal, actor);
+      }
+    });
+
+    // Phase B+ — Project Manager hook. Transitions INTO 'passed' enqueue a
+    // pm_due pending_events row scoped to the active workspace.
+    const transitionedToPassed = updates.status === 'passed' && existing.status !== 'passed';
+    const projectIdForPm = (updates.project_id ?? existing.project_id) as string | null | undefined;
+    if (transitionedToPassed && projectIdForPm) {
+      try {
+        const eventId = `pm-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+        await withWorkspaceLegacy(project.slug, activeWorkspaceId(), async (db) => {
+          await db.prepare(`
+            INSERT INTO harness_shared.pending_events
+              (id, install_slug, kind, target_role, payload, due_at, workspace_id)
+            VALUES (?, ?, 'pm_due', 'project_manager', ?::jsonb, now(), ?)
+          `).run(eventId, project.slug, JSON.stringify({ project_id: projectIdForPm, feature_id: id, source: 'feature_passed' }), activeWorkspaceId());
+        });
+      } catch {
+        // best-effort; do not fail the PATCH over PM scheduling
+      }
+    }
+
+    if (transitionedToPassed) {
+      void firePluginLifecycle('onFeaturePassed', {
+        installSlug: project.slug,
+        projectDir: project.path,
+        stateDir: harnessDir(project),
+      }, id);
+      void firePluginEvent('task.passed', { taskId: id, installSlug: project.slug });
+      void firePluginEvent('feature.completed', { featureId: id, installSlug: project.slug });
+    }
+
+    const updated = await dbc.prepare(
+      'SELECT * FROM harness_features WHERE harness_slug = ? AND feature_id = ?',
+    ).get(project.slug, id) as any;
+    return Response.json({ ok: true, feature: rowToFeature(updated) });
+  },
+});
+
+// ── POST /:slug/features/import — bulk import (scoper) ────────────────
+
+const importFeatures = defineRoute({
+  method: 'POST',
+  path: '/harness/:slug/features/import',
+  auth: 'public',
+  async handler(req, ctx) {
+    const url = new URL(req.url);
+    const project = await resolvePhasedProject(
+      ctx.params.slug as string,
+      phasePhaseLabel(url.searchParams.get('phase') ?? undefined),
+    );
+    if (!project) return Response.json({ error: 'unknown project' }, { status: 404 });
+    const body = (await req.json().catch(() => null)) as null | {
+      features?: Array<{
+        id?: string;
+        title: string;
+        summary?: string;
+        status?: string;
+        attempts?: number;
+        claims?: string[] | null;
+        notes?: string | null;
+        metadata?: Record<string, unknown> | null;
+        kind?: string | null;
+        project_id?: string | null;
+        expected_cost_cents?: number | null;
+        tags?: string[] | null;
+        needs_human_review?: boolean;
+        ts?: number | null;
+      }>;
+    };
+    if (!body?.features || !Array.isArray(body.features) || body.features.length === 0) {
+      return Response.json({ error: 'features array required' }, { status: 400 });
+    }
+    const allocatedIds: string[] = [];
+    const features = body.features.map((raw) => {
+      if (raw.id && raw.id.length > 0) {
+        allocatedIds.push(raw.id);
+        return raw as typeof raw & { id: string };
+      }
+      const ts = Date.now().toString(36).toUpperCase();
+      const rand = Math.random().toString(36).slice(2, 6).toUpperCase();
+      const id = `F-AUTO-${ts}${rand}`;
+      allocatedIds.push(id);
+      return { ...raw, id };
+    });
+    const invalid = features.find((f) => !FEATURE_ID_RE.test(f.id) || !f.title);
+    if (invalid) {
+      return Response.json({
+        error: `every feature requires a valid id (matching ${FEATURE_ID_RE.source}) and title; offender: ${JSON.stringify(invalid).slice(0, 200)}`,
+      }, { status: 400 });
+    }
+
+    const dbc = dbcFor(project.slug);
+    const now = Date.now();
+    let inserted = 0;
+    let updated = 0;
+    let skippedKindMismatch = 0;
+    await dbc.transaction(async (tx: any) => {
+      for (const f of features) {
+        const existing = await tx.prepare(
+          'SELECT kind FROM harness_features WHERE harness_slug = ? AND feature_id = ?',
+        ).get(project.slug, f.id) as { kind: string | null } | undefined;
+        if (existing) {
+          const existingKind = existing.kind ?? 'product';
+          const incomingKind = f.kind ?? 'product';
+          if (existingKind !== 'product' && existingKind !== incomingKind) {
+            skippedKindMismatch++;
+            continue;
+          }
+          await tx.prepare(`
+            UPDATE harness_features SET
+              title = ?,
+              summary = ?,
+              status = ?,
+              updated_ts = ?
+            WHERE harness_slug = ? AND feature_id = ?
+          `).run(f.title, f.summary ?? null, f.status ?? 'todo', now, project.slug, f.id);
+          updated++;
+        } else {
+          await tx.prepare(`
+            INSERT INTO harness_features
+              (harness_slug, feature_id, title, summary, status, attempts, claims, notes, metadata,
+               kind, project_id, expected_cost_cents, tags, needs_human_review,
+               ts, created_ts, updated_ts)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          `).run(
+            project.slug, f.id, f.title, f.summary ?? null, f.status ?? 'todo',
+            f.attempts ?? 0,
+            f.claims && f.claims.length > 0 ? JSON.stringify(f.claims) : null,
+            f.notes ?? null,
+            f.metadata ? JSON.stringify(f.metadata) : null,
+            f.kind ?? null,
+            f.project_id ?? null,
+            f.expected_cost_cents ?? null,
+            f.tags && f.tags.length > 0 ? JSON.stringify(f.tags) : null,
+            Boolean(f.needs_human_review),
+            f.ts ?? now, now, now,
+          );
+          inserted++;
+        }
+      }
+    });
+    return Response.json({
+      ok: true,
+      inserted,
+      updated,
+      total: features.length,
+      skippedKindMismatch,
+      ids: allocatedIds,
+    });
+  },
+});
+
+// ── POST /:slug/features — create one ──────────────────────────────────
+
+const createFeature = defineRoute({
+  method: 'POST',
+  path: '/harness/:slug/features',
+  auth: 'public',
+  async handler(req, ctx) {
+    const url = new URL(req.url);
+    const project = await resolvePhasedProject(
+      ctx.params.slug as string,
+      phasePhaseLabel(url.searchParams.get('phase') ?? undefined),
+    );
+    if (!project) return Response.json({ error: 'unknown project' }, { status: 404 });
+    const body = (await req.json()) as {
+      id?: string;
+      title?: string;
+      claims?: string[];
+      status?: string;
+      summary?: string;
+      kind?: string;
+      project_id?: string;
+      expected_cost_cents?: number;
+      tags?: string[];
+      needs_human_review?: boolean;
+      metadata?: any;
+    };
+    const actor = req.headers.get('x-actor') ?? 'api';
+
+    const id = (body.id ?? '').trim();
+    const title = (body.title ?? '').trim();
+    if (!FEATURE_ID_RE.test(id)) {
+      return Response.json({ error: `id must match ${FEATURE_ID_RE.source}` }, { status: 400 });
+    }
+    if (!title) return Response.json({ error: 'title required' }, { status: 400 });
+
+    const dbc = dbcFor(project.slug);
+    const exists = await dbc.prepare(
+      'SELECT 1 AS x FROM harness_features WHERE harness_slug = ? AND feature_id = ?',
+    ).get(project.slug, id);
+    if (exists) return Response.json({ error: `id already exists: ${id}` }, { status: 409 });
+
+    // Budget enforcement at proposal-add time: if project_id + budget +
+    // expected_cost_cents would push committed-spend over budget → reject.
+    if (body.project_id && typeof body.expected_cost_cents === 'number' && body.expected_cost_cents > 0) {
+      const project_row = await dbc.prepare(
+        'SELECT id, name, budget_cents FROM projects WHERE id = ?',
+      ).get(body.project_id) as any;
+      if (project_row && project_row.budget_cents !== null) {
+        const adminC = getLegacyClient();
+        const committed = Number(((await adminC.prepare(`
+          SELECT COALESCE(SUM(expected_cost_cents), 0) as total
+          FROM all_features
+          WHERE project_id = ? AND status NOT IN ('cancelled', 'launched', 'passed')
+        `).get(body.project_id)) as any).total ?? 0);
+        const proposed_total = committed + body.expected_cost_cents;
+        if (proposed_total > Number(project_row.budget_cents)) {
+          const now = Date.now();
+          await dbc.prepare(`INSERT INTO harness_features
+            (harness_slug, feature_id, title, summary, status, attempts, claims, notes, metadata, kind,
+             project_id, expected_cost_cents, tags, needs_human_review, ts, created_ts, updated_ts)
+            VALUES (?, ?, ?, ?, 'out_of_budget', 0, NULL, ?, NULL, ?, ?, ?, NULL, false, ?, ?, ?)`).run(
+              project.slug, id, title,
+              body.summary ?? `Auto-rejected: would push ${project_row.name} over budget. Committed: ${committed}, proposed cost: ${body.expected_cost_cents}, budget: ${project_row.budget_cents}`,
+              `Budget exceeded: requested ${body.expected_cost_cents} cents on top of ${committed} already committed (cap ${project_row.budget_cents}).`,
+              body.kind ?? null, body.project_id, body.expected_cost_cents,
+              now, now, now,
+            );
+          auditFeatureChange(project.slug, id, '__rejected_budget', null, { project: project_row.id, budget: Number(project_row.budget_cents), committed, proposed: body.expected_cost_cents }, actor);
+          return Response.json({
+            ok: false,
+            error: 'out_of_budget',
+            rejected: true,
+            project_id: project_row.id,
+            project_name: project_row.name,
+            project_budget_cents: Number(project_row.budget_cents),
+            already_committed_cents: committed,
+            proposed_cost_cents: body.expected_cost_cents,
+            would_total_cents: proposed_total,
+          }, { status: 409 });
+        }
+      }
+    }
+
+    const status = body.status || 'todo';
+    const claims = Array.isArray(body.claims) ? body.claims.map((s) => String(s).trim()).filter(Boolean) : [];
+    const now = Date.now();
+
+    await dbc.transaction(async (tx: any) => {
+      await tx.prepare(`INSERT INTO harness_features
+        (harness_slug, feature_id, title, summary, status, attempts, claims, notes, metadata, kind,
+         project_id, expected_cost_cents, tags, needs_human_review, ts, created_ts, updated_ts)
+        VALUES (?, ?, ?, ?, ?, 0, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+          project.slug, id, title, body.summary ?? null, status,
+          claims.length ? JSON.stringify(claims) : null,
+          body.metadata == null ? null : JSON.stringify(body.metadata),
+          body.kind ?? null,
+          body.project_id ?? null,
+          typeof body.expected_cost_cents === 'number' ? body.expected_cost_cents : null,
+          Array.isArray(body.tags) ? JSON.stringify(body.tags) : null,
+          !!body.needs_human_review,
+          now, now, now,
+        );
+      auditFeatureChange(project.slug, id, '__created', null, { id, title, status }, actor);
+    });
+
+    const created = rowToFeature(
+      await dbc.prepare('SELECT * FROM harness_features WHERE harness_slug = ? AND feature_id = ?').get(project.slug, id),
+    );
+    return Response.json({ ok: true, feature: created });
+  },
+});
+
+// ── DELETE /:slug/features/:id ─────────────────────────────────────────
+
+const deleteFeature = defineRoute({
+  method: 'DELETE',
+  path: '/harness/:slug/features/:id',
+  auth: 'public',
+  async handler(req, ctx) {
+    const url = new URL(req.url);
+    const project = await resolvePhasedProject(
+      ctx.params.slug as string,
+      phasePhaseLabel(url.searchParams.get('phase') ?? undefined),
+    );
+    if (!project) return Response.json({ error: 'unknown project' }, { status: 404 });
+    const id = ctx.params.id as string;
+    const actor = req.headers.get('x-actor') ?? 'api';
+    const dbc = dbcFor(project.slug);
+    const existing = await dbc.prepare(
+      'SELECT * FROM harness_features WHERE harness_slug = ? AND feature_id = ?',
+    ).get(project.slug, id) as any;
+    if (!existing) return Response.json({ error: 'feature not found' }, { status: 404 });
+    await dbc.transaction(async (tx: any) => {
+      await tx.prepare(
+        'DELETE FROM harness_features WHERE harness_slug = ? AND feature_id = ?',
+      ).run(project.slug, id);
+      auditFeatureChange(project.slug, id, '__deleted', rowToFeature(existing), null, actor);
+    });
+    return Response.json({ ok: true, deleted: id });
+  },
+});
+
+// ── POST /:slug/features/:id/approve-human ─────────────────────────────
+
+const approveHumanReview = defineRoute({
+  method: 'POST',
+  path: '/harness/:slug/features/:id/approve-human',
+  auth: 'public',
+  async handler(req, ctx) {
+    const project = await resolveProject(ctx.params.slug as string);
+    if (!project) return Response.json({ error: 'unknown project' }, { status: 404 });
+    const id = ctx.params.id as string;
+    const body = (await req.json().catch(() => ({}))) as {
+      adjust_budget_cents?: number;
+      create_project?: boolean;
+      project_id?: string;
+    };
+    const actor = req.headers.get('x-actor') ?? 'human';
+
+    const dbc = dbcFor(project.slug);
+    const existing = await dbc.prepare(
+      'SELECT * FROM harness_features WHERE harness_slug = ? AND feature_id = ?',
+    ).get(project.slug, id) as any;
+    if (!existing) return Response.json({ error: 'feature not found' }, { status: 404 });
+    if (!existing.needs_human_review) return Response.json({ error: 'feature does not need human review' }, { status: 400 });
+
+    await dbc.transaction(async (tx: any) => {
+      let createdProject: any = null;
+      if (body.create_project) {
+        const projectId = body.project_id ?? `PROJ-${id.replace(/^[A-Z]+-/, '').toLowerCase()}`;
+        const now = Date.now();
+        await tx.prepare(
+          `INSERT INTO projects (id, name, status, budget_cents, created_ts, updated_ts) VALUES (?, ?, ?, ?, ?, ?)`,
+        ).run(
+          projectId, existing.title, 'in_progress',
+          typeof body.adjust_budget_cents === 'number' ? body.adjust_budget_cents : null,
+          now, now,
+        );
+        createdProject = { id: projectId, budget_cents: body.adjust_budget_cents ?? null };
+        auditFeatureChange(project.slug, id, '__project_created', null, createdProject, actor);
+        await tx.prepare(
+          'UPDATE harness_features SET project_id = ?, updated_ts = ? WHERE harness_slug = ? AND feature_id = ?',
+        ).run(projectId, now, project.slug, id);
+        auditFeatureChange(project.slug, id, 'project_id', existing.project_id, projectId, actor);
+      } else if (typeof body.adjust_budget_cents === 'number' && existing.project_id) {
+        const oldProj = await tx.prepare(
+          'SELECT budget_cents FROM projects WHERE id = ?',
+        ).get(existing.project_id) as any;
+        await tx.prepare(
+          'UPDATE projects SET budget_cents = ?, updated_ts = ? WHERE id = ?',
+        ).run(body.adjust_budget_cents, Date.now(), existing.project_id);
+        auditFeatureChange(
+          project.slug, id, '__project_budget_adjusted',
+          oldProj?.budget_cents == null ? null : Number(oldProj.budget_cents),
+          body.adjust_budget_cents, actor,
+        );
+      }
+
+      await tx.prepare(
+        'UPDATE harness_features SET needs_human_review = false, updated_ts = ? WHERE harness_slug = ? AND feature_id = ?',
+      ).run(Date.now(), project.slug, id);
+      auditFeatureChange(project.slug, id, 'needs_human_review', true, false, actor);
+    });
+
+    const updated = rowToFeature(
+      await dbc.prepare('SELECT * FROM harness_features WHERE harness_slug = ? AND feature_id = ?').get(project.slug, id),
+    );
+    return Response.json({ ok: true, feature: updated, approvedBy: actor });
+  },
+});
+
+export default [
+  resetFeature,
+  updateFeature,
+  importFeatures,
+  createFeature,
+  deleteFeature,
+  approveHumanReview,
+];
