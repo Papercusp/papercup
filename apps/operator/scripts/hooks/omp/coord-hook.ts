@@ -702,6 +702,68 @@ export interface ToolResultEvent {
  */
 const acquiredLocks = new Map<string, string>();
 
+// ── Fail-open health marker (file-locking #3) ────────────────────────
+
+/**
+ * Path the hook writes its health marker to. Operator reads it via
+ * GET /api/su-locks/hook-health so the /coord UI can surface
+ * "enforcement is offline" when this file's most recent entry is an
+ * unreachable error. Located OUTSIDE the repo so multiple checkouts
+ * share one marker per host user.
+ */
+function hookHealthPath(): string {
+  const override = process.env.PAPERCUSP_HOOK_HEALTH_PATH;
+  if (override) return override;
+  const home = process.env.HOME ?? '/tmp';
+  return resolve(home, '.papercusp/locks-cache/hook-health.json');
+}
+
+export interface HookHealthRecord {
+  /** ISO timestamp of the most recent successful coord:locks:* call. */
+  last_ok_ts?: string;
+  /** ISO timestamp of the most recent failure. */
+  last_error_ts?: string;
+  /** Stable taxonomy. */
+  last_error_kind?: 'operator_unreachable' | 'mcp_error';
+  /** One-line human-readable error context. */
+  last_error_message?: string;
+  /** ISO timestamp of the most recent block decision (a successful
+   *  block — operator said "busy"). Useful for UI sanity. */
+  last_block_ts?: string;
+}
+
+/**
+ * Atomic-ish marker write — read the current JSON, merge, write to
+ * a sibling temp, rename over the target. The hook never throws on
+ * marker write failure (filesystem error must not crash the agent's
+ * tool call); errors are silently swallowed.
+ */
+export async function recordHookHealth(
+  patch: Partial<HookHealthRecord>,
+): Promise<void> {
+  const path = hookHealthPath();
+  try {
+    await fsp.mkdir(dirname(path), { recursive: true, mode: 0o700 });
+    let existing: HookHealthRecord = {};
+    try {
+      const raw = await fsp.readFile(path, 'utf8');
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === 'object') existing = parsed;
+    } catch {
+      // Missing or malformed — start fresh.
+    }
+    const merged: HookHealthRecord = { ...existing, ...patch };
+    const tmp = path + '.tmp-' + process.pid;
+    await fsp.writeFile(tmp, JSON.stringify(merged, null, 2), {
+      encoding: 'utf8',
+      mode: 0o600,
+    });
+    await fsp.rename(tmp, path);
+  } catch {
+    // Best-effort. A failed marker write must never break the hook.
+  }
+}
+
 /** Repo root the hook restricts itself to. Override with
  *  PAPERCUSP_REPO_ROOT for non-standard layouts. */
 function papercupRoot(): string {
@@ -798,11 +860,16 @@ export async function onToolCall(
   if (result == null) {
     // Operator unreachable or call errored — fail open. Cooperative
     // discipline only works when the system is up; blocking edits
-    // would wedge the agent. file-locking #3 will persist a marker
-    // so the operator UI can surface that enforcement is offline.
+    // would wedge the agent. The persisted marker (file-locking #3)
+    // lets the operator UI surface "enforcement offline."
     console.error(
       '[su-locks] coord:locks:acquire unreachable; allowing tool_call (fail-open)',
     );
+    await recordHookHealth({
+      last_error_ts: new Date().toISOString(),
+      last_error_kind: 'operator_unreachable',
+      last_error_message: 'coord:locks:acquire returned null',
+    });
     return {};
   }
 
@@ -812,10 +879,13 @@ export async function onToolCall(
     busy?: BusyEntry[];
     reason?: string;
   };
+  const now = new Date().toISOString();
   if (r.ok === true && typeof r.lock_id === 'string') {
     acquiredLocks.set(event.toolCallId, r.lock_id);
+    await recordHookHealth({ last_ok_ts: now });
     return {};
   }
+  await recordHookHealth({ last_ok_ts: now, last_block_ts: now });
   const reason =
     r.busy && r.busy.length > 0
       ? formatBusyRefusal(r.busy)

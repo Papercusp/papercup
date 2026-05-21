@@ -582,3 +582,141 @@ describe('onToolCall / onToolResult (file-locking #2)', () => {
     expect(called).toBe(false);
   });
 });
+
+// ────────────────────────────────────────────────────────────────────
+// file-locking-improvements #3 — fail-open health marker
+// ────────────────────────────────────────────────────────────────────
+
+describe('recordHookHealth (file-locking #3)', () => {
+  const prevPath = process.env.PAPERCUSP_HOOK_HEALTH_PATH;
+  let dir: string;
+  let path: string;
+
+  beforeEach(async () => {
+    dir = await fs.mkdtemp(join(tmpdir(), 'su-hook-health-'));
+    path = join(dir, 'hook-health.json');
+    process.env.PAPERCUSP_HOOK_HEALTH_PATH = path;
+  });
+  afterEach(async () => {
+    if (prevPath === undefined) delete process.env.PAPERCUSP_HOOK_HEALTH_PATH;
+    else process.env.PAPERCUSP_HOOK_HEALTH_PATH = prevPath;
+    await fs.rm(dir, { recursive: true, force: true });
+  });
+
+  it('writes a JSON marker and merges with existing fields', async () => {
+    const { recordHookHealth } = await import('../coord-hook');
+    await recordHookHealth({ last_ok_ts: '2026-05-20T10:00:00Z' });
+    let raw = await fs.readFile(path, 'utf8');
+    expect(JSON.parse(raw)).toEqual({ last_ok_ts: '2026-05-20T10:00:00Z' });
+    await recordHookHealth({
+      last_error_ts: '2026-05-20T10:01:00Z',
+      last_error_kind: 'operator_unreachable',
+      last_error_message: 'down',
+    });
+    raw = await fs.readFile(path, 'utf8');
+    expect(JSON.parse(raw)).toEqual({
+      last_ok_ts: '2026-05-20T10:00:00Z',
+      last_error_ts: '2026-05-20T10:01:00Z',
+      last_error_kind: 'operator_unreachable',
+      last_error_message: 'down',
+    });
+  });
+
+  it('creates the parent directory if missing', async () => {
+    const nested = join(dir, 'deep', 'nested', 'hook-health.json');
+    process.env.PAPERCUSP_HOOK_HEALTH_PATH = nested;
+    const { recordHookHealth } = await import('../coord-hook');
+    await recordHookHealth({ last_ok_ts: 't' });
+    expect(JSON.parse(await fs.readFile(nested, 'utf8'))).toEqual({
+      last_ok_ts: 't',
+    });
+  });
+
+  it('does not throw when the path is unwritable', async () => {
+    process.env.PAPERCUSP_HOOK_HEALTH_PATH = '/proc/1/cannot-write.json';
+    const { recordHookHealth } = await import('../coord-hook');
+    await expect(recordHookHealth({ last_ok_ts: 't' })).resolves.toBeUndefined();
+  });
+});
+
+describe('onToolCall writes the health marker (file-locking #3)', () => {
+  const originalFetch = global.fetch;
+  const prevRoot = process.env.PAPERCUSP_REPO_ROOT;
+  const prevBundle = process.env.PAPERCUSP_BUNDLE_URL;
+  const prevHealth = process.env.PAPERCUSP_HOOK_HEALTH_PATH;
+  let dir: string;
+  let healthPath: string;
+
+  beforeEach(async () => {
+    process.env.PAPERCUSP_REPO_ROOT = '/repo';
+    process.env.PAPERCUSP_BUNDLE_URL = 'http://operator.test';
+    dir = await fs.mkdtemp(join(tmpdir(), 'su-hook-health-flow-'));
+    healthPath = join(dir, 'hook-health.json');
+    process.env.PAPERCUSP_HOOK_HEALTH_PATH = healthPath;
+    _resetToolCallCacheForTests();
+  });
+  afterEach(async () => {
+    global.fetch = originalFetch;
+    if (prevRoot === undefined) delete process.env.PAPERCUSP_REPO_ROOT;
+    else process.env.PAPERCUSP_REPO_ROOT = prevRoot;
+    if (prevBundle === undefined) delete process.env.PAPERCUSP_BUNDLE_URL;
+    else process.env.PAPERCUSP_BUNDLE_URL = prevBundle;
+    if (prevHealth === undefined) delete process.env.PAPERCUSP_HOOK_HEALTH_PATH;
+    else process.env.PAPERCUSP_HOOK_HEALTH_PATH = prevHealth;
+    await fs.rm(dir, { recursive: true, force: true });
+  });
+
+  it('records last_ok_ts on a successful acquire', async () => {
+    global.fetch = (async () => ({
+      ok: true,
+      text: async () =>
+        JSON.stringify({
+          jsonrpc: '2.0',
+          id: 1,
+          result: {
+            content: [
+              {
+                type: 'text',
+                text: JSON.stringify({
+                  ok: true,
+                  lock_id: 'L-ok',
+                  expires_ts: 't',
+                  held: ['a.ts'],
+                }),
+              },
+            ],
+          },
+        }),
+    })) as unknown as typeof fetch;
+    await onToolCall({
+      type: 'tool_call',
+      toolName: 'write',
+      toolCallId: 'tc-ok',
+      input: { path: '/repo/a.ts', content: 'x' },
+    });
+    const rec = JSON.parse(await fs.readFile(healthPath, 'utf8'));
+    expect(typeof rec.last_ok_ts).toBe('string');
+    expect(rec.last_error_ts).toBeUndefined();
+  });
+
+  it('records last_error_ts when the operator is unreachable', async () => {
+    global.fetch = (async () => {
+      throw new Error('ECONNREFUSED');
+    }) as unknown as typeof fetch;
+    const origErr = console.error;
+    console.error = () => {};
+    try {
+      await onToolCall({
+        type: 'tool_call',
+        toolName: 'write',
+        toolCallId: 'tc-err',
+        input: { path: '/repo/a.ts', content: 'x' },
+      });
+    } finally {
+      console.error = origErr;
+    }
+    const rec = JSON.parse(await fs.readFile(healthPath, 'utf8'));
+    expect(typeof rec.last_error_ts).toBe('string');
+    expect(rec.last_error_kind).toBe('operator_unreachable');
+  });
+});

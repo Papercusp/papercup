@@ -44,6 +44,8 @@ export default function CoordDashboard() {
         </p>
       </header>
 
+      <HookHealthBanner />
+
       <nav className="mb-5 flex gap-1 border-b border-slate-700">
         {PANELS.map((p) => (
           <button
@@ -65,6 +67,82 @@ export default function CoordDashboard() {
       {panel === 'inbox' && <InboxPanel />}
       {panel === 'plans' && <PlansPanel />}
       {panel === 'history' && <CoordHistory />}
+    </div>
+  );
+}
+
+// ── Hook-health banner (file-locking #3) ─────────────────────────────
+
+interface HookHealthRecord {
+  last_ok_ts?: string;
+  last_error_ts?: string;
+  last_error_kind?: 'operator_unreachable' | 'mcp_error';
+  last_error_message?: string;
+  last_block_ts?: string;
+}
+interface HookHealthResponse {
+  ok: boolean;
+  record: HookHealthRecord | null;
+}
+
+const STALE_WINDOW_MS = 5 * 60_000;
+
+/**
+ * Renders a banner ONLY when the OMP tool_call hook is currently
+ * failing open (the most recent recorded outcome is an error AND it
+ * happened within the last 5 minutes). Silent otherwise — no banner
+ * spam during normal operation.
+ *
+ * Polls /api/su-locks/hook-health every 15s; cheap (small JSON, no
+ * DB query — the route just stats + reads ~/.papercusp/locks-cache/
+ * hook-health.json).
+ */
+function HookHealthBanner() {
+  const [data, setData] = useState<HookHealthResponse | null>(null);
+
+  useEffect(() => {
+    let live = true;
+    async function tick() {
+      try {
+        const res = await fetch('/api/su-locks/hook-health', {
+          cache: 'no-store',
+        });
+        if (!res.ok) return;
+        const json = (await res.json()) as HookHealthResponse;
+        if (live) setData(json);
+      } catch {
+        // Network errors are silent — the banner is itself best-effort.
+      }
+    }
+    tick();
+    const id = setInterval(tick, 15_000);
+    return () => {
+      live = false;
+      clearInterval(id);
+    };
+  }, []);
+
+  if (!data || data.ok || !data.record) return null;
+  const errTs = data.record.last_error_ts;
+  if (!errTs) return null;
+  const ageMs = Date.now() - Date.parse(errTs);
+  if (!Number.isFinite(ageMs) || ageMs > STALE_WINDOW_MS) return null;
+
+  const kind = data.record.last_error_kind ?? 'unknown';
+  const label =
+    kind === 'operator_unreachable'
+      ? 'operator unreachable from an OMP session'
+      : kind;
+  const minutes = Math.max(1, Math.round(ageMs / 60_000));
+  return (
+    <div
+      role="alert"
+      className="mb-4 rounded border border-amber-500 bg-amber-950/40 px-4 py-2 text-sm text-amber-100"
+    >
+      <strong className="font-semibold">File-lock enforcement is offline.</strong>{' '}
+      {label} ({minutes}m ago). Edits are being allowed without claim;
+      coordination relies on cooperative <code>locks:*</code> calls until the
+      hook recovers.
     </div>
   );
 }

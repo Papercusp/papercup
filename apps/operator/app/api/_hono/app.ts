@@ -18,6 +18,7 @@ import { cors } from 'hono/cors';
 import { harness } from './harness';
 import { plugins } from './plugins';
 import { coord } from './coord';
+import { suLocks } from './su-locks';
 import { registerPty } from './pty';
 import { registerOperatorNotes } from './operator-notes';
 import { registerAgentChats } from './agent-chats';
@@ -107,6 +108,9 @@ app.route('/mobile', registerMobile);
 
 // Coordination history (Phase B remainder — /coord UI viewer) — see _hono/coord.ts
 app.route('/coord', coord);
+
+// SU-locks hook health (file-locking #3) — see _hono/su-locks.ts
+app.route('/su-locks', suLocks);
 
 // defineRoute endpoints — the endpoint-system's second projection.
 // Every `defineRoute` (lib/endpoint-route/routes/**) mounts here and is
