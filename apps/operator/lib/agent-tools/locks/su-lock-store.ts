@@ -640,12 +640,16 @@ export async function tryAcquire(
   const lockId = reusableLockId ?? crypto.randomUUID();
   const ttlText = `${ttlSec} seconds`;
 
-  // `xmax = 0` distinguishes freshly-INSERTed rows (xmax is zero) from
-  // ON-CONFLICT-UPDATE rows (xmax is the current xid). We track which
-  // are new so that on partial failure we can roll back ONLY new
-  // inserts — not pre-existing same-owner refreshes that the caller
-  // already owned.
-  const upserted = await tx<Array<{ path: string; lock_id: string; is_new: boolean }>>`
+  // Step 2b above already excludes the "another live owner holds one
+  // of our paths" case, so by the time we reach the upsert every path
+  // is either free or already-ours. The ON CONFLICT branch refreshes
+  // OUR rows (or steals expired ones); the INSERT branch covers the
+  // never-existed rows. The upsert ALWAYS takes every requested path
+  // — file-locking #6 removes the former `(xmax = 0) AS is_new`
+  // partial-rollback machinery that became dead code when Step 2b
+  // landed. (xmax is PG-internal and not part of the documented
+  // stable API; the new shape avoids depending on it.)
+  const upserted = await tx<Array<{ path: string; lock_id: string }>>`
     WITH wanted AS (SELECT unnest(${paths}::text[]) AS path)
     INSERT INTO agent_file_locks
       (workspace_id, path, owner, owner_label, intent, lock_id, acquired_ts, expires_ts)
@@ -657,54 +661,35 @@ export async function tryAcquire(
       SET owner       = EXCLUDED.owner,
           owner_label = EXCLUDED.owner_label,
           intent      = EXCLUDED.intent,
-          -- Always take EXCLUDED.lock_id. The call's lockId already
-          -- equals the reusable lock_id when the caller has any
-          -- existing same-owner row, so every row this call touches
-          -- ends up sharing one lock_id, and the returned lock_id
-          -- covers all of them on release.
           lock_id     = EXCLUDED.lock_id,
           acquired_ts = clock_timestamp(),
           expires_ts  = EXCLUDED.expires_ts
       -- Refresh on two conditions:
       --   1. Expired locks (anyone can steal a stale row).
-      --   2. Same-owner re-acquire (Claude Code hooks fire Pre on
-      --      every Edit; consecutive edits to the same file must not
-      --      lock the agent out of itself).
+      --   2. Same-owner re-acquire (consecutive edits to the same
+      --      file must not lock the agent out of itself).
       WHERE agent_file_locks.expires_ts <= clock_timestamp()
          OR agent_file_locks.owner = EXCLUDED.owner
-    RETURNING path, lock_id, (xmax = 0) AS is_new
+    RETURNING path, lock_id
   `;
 
-  if (upserted.length === paths.length) {
-    // All paths held by us. The effective lock_id may differ from the
-    // one we generated if this was a same-owner re-acquire (CASE
-    // expression in the upsert preserves the prior lock_id to keep
-    // hook caches valid). All rows for one call share the same id;
-    // pick from the first returned row.
-    const effectiveLockId = upserted[0].lock_id;
-    return {
-      ok: true,
-      lock_id: effectiveLockId,
-      expires_ts: new Date(Date.now() + ttlSec * 1000),
-      held: paths,
-    };
+  // Defense in depth: if the upsert returned fewer rows than requested
+  // a race slipped past Step 2b (e.g. another tx inserted between our
+  // pre-check and the upsert). Surface as busy with no partial state
+  // — the upsert never partially commits because we run inside a
+  // single transaction.
+  if (upserted.length !== paths.length) {
+    const busy = await readBusySnapshot(tx, workspaceId, paths, owner);
+    return { ok: false, busy };
   }
 
-  // Some paths weren't taken (held by someone else with a live lock).
-  // Roll back ONLY rows we freshly INSERTed (xmax=0). Refreshes of
-  // pre-existing same-owner locks must NOT be deleted — the caller
-  // already owned them before this call.
-  const newPathsTaken = upserted.filter((r) => r.is_new).map((r) => r.path);
-  if (newPathsTaken.length > 0) {
-    await tx`
-      DELETE FROM agent_file_locks
-       WHERE workspace_id = ${workspaceId}
-         AND path = ANY(${newPathsTaken}::text[])
-    `;
-  }
-
-  const busy = await readBusySnapshot(tx, workspaceId, paths, owner);
-  return { ok: false, busy };
+  const effectiveLockId = upserted[0].lock_id;
+  return {
+    ok: true,
+    lock_id: effectiveLockId,
+    expires_ts: new Date(Date.now() + ttlSec * 1000),
+    held: paths,
+  };
 }
 
 async function readBusySnapshot(
