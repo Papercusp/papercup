@@ -435,6 +435,30 @@ After this batch: 18 of 62 tracked pages shipped (B-1: 4, B-2: 5, B-3: 6, B-7-pa
 
 Cumulative: **27 of 62 tracked pages** shipped (B-1: 3, B-2: 5, B-3: 6, B-7-partial: 3, B-1-cleanup: 1 setup, B-6: 9). Deferred: 3 server-only (`/wiki/missing`, `/project-docs`, `/design` index) pending API endpoint ports.
 
+**B-5 as-built (2026-05-21).** All 12 tracked pages + the marketplace layout shipped:
+
+| Surface | Status | File |
+|---|---|---|
+| `/marketplace` (layout) | shipped | `src/routes/marketplace.tsx` — `<MarketplaceLayout><Outlet/></MarketplaceLayout>`. |
+| `/marketplace` (index) | shipped | `src/routes/marketplace/index.tsx` — `MarketplaceHomeClient`; requireFlag dropped. |
+| `/marketplace/plugins` | shipped | `src/routes/marketplace/plugins.tsx` — `MarketplacePluginsClient`; flag dropped. |
+| `/marketplace/snapshots` | shipped | `src/routes/marketplace/snapshots.tsx` — `MarketplaceSnapshotsClient`; flag dropped. |
+| `/marketplace/templates` | shipped | `src/routes/marketplace/templates.tsx` — `MarketplaceTemplatesClient`; flag dropped. |
+| `/marketplace/$slug` | shipped | `src/routes/marketplace/$slug.tsx` — server component → TSR `loader` (the `loadDetail` fetch); 272-line page copied (leaf page, copy is correct). `requireFlag` dropped. |
+| `/installed/harnesses` | shipped | `src/routes/installed/harnesses.tsx` — page-import. |
+| `/installed/kpis` | shipped | `src/routes/installed/kpis.tsx` — page-import. |
+| `/installed/plugins` | shipped | `src/routes/installed/plugins/index.tsx` — page-import. |
+| `/installed/plugins/$slug/permissions` | shipped | `src/routes/installed/plugins/$slug/permissions.tsx` — wraps the page with `params={Promise.resolve({slug})}`. |
+| `/installed/snapshots` | shipped | `src/routes/installed/snapshots.tsx` — `InstalledSnapshotsClient`; flag dropped. |
+| `/installed/templates` | shipped | `src/routes/installed/templates/index.tsx` — `InstalledTemplatesClient`; flag dropped. |
+| `/installed/templates/$slug/edit` | shipped | `src/routes/installed/templates/$slug/edit.tsx` — `EditTemplateClient`; flag dropped. |
+
+**New shim:** `shims/bprogress.tsx` — no-op `useProgress` + passthrough `ProgressProvider`, aliased for both `@bprogress/next` and `@bprogress/next/app`. Needed because `RouteLink`/`WorkspaceSwitcher`/`MarketplaceList` call `useProgress()` and `RouteProgressProvider` (which would provide the context) is deferred to B6. Progress bar is inert until B6 ships the TSR-native adapter.
+
+`next-transition-router` is **not** shimmed — it's already proven in the build graph via `RouteTransitionProvider` (mounted in `__root.tsx` since A3).
+
+Cumulative: **40 of 62 tracked pages** shipped. Deferred: 3 server-only pages. Remaining: B-4a + B-4b (`/settings`, 20 pages) + the `/settings` layout.
+
 Each batch acceptance: that surface's URLs render the right components and don't console-error, **verified by a strategy proportional to surface-stakes:**
 
 - **Smoke-tested in Playwright (mandatory): 6 highest-stakes surfaces.** `harness/[slug]`, `login`, `settings/*`, `marketplace/installed/[slug]` (the install flow), `editor-demo`, `harness/[slug]` "brainstorm" tab. Each gets one fresh Playwright smoke (~30-50 lines, ~1 day per to write + stabilize). **These tests do not exist today**; writing them is part of the batch's effort, not assumed coverage.

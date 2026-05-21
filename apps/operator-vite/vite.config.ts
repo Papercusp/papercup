@@ -40,6 +40,17 @@ export default defineConfig({
         find: /^next\/dynamic$/,
         replacement: resolve(import.meta.dirname, 'shims/next-dynamic.tsx'),
       },
+      // `@bprogress/next` (+ its `/app` subpath) — the top-of-page
+      // progress bar. No-op shim until plan B6 ships the TSR-native
+      // adapter; see `shims/bprogress.tsx`.
+      {
+        find: /^@bprogress\/next$/,
+        replacement: resolve(import.meta.dirname, 'shims/bprogress.tsx'),
+      },
+      {
+        find: /^@bprogress\/next\/app$/,
+        replacement: resolve(import.meta.dirname, 'shims/bprogress.tsx'),
+      },
     ],
     // Operator components and the Vite shell must share ONE React
     // instance — two copies would break hooks ("invalid hook call").
