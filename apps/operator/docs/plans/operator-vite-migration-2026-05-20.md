@@ -241,6 +241,14 @@ Tooltip.Provider (delayDuration 150)
 
 **The IPC polyfill mount point matters.** Host-architecture Phase 1 installs `window.EventSource = IpcEventSource` / `window.fetch = ipcFetch` before any data-layer code mounts. That must remain the first thing rendered — before `RootSyncProvider`. In TSR, that's the body of `__root.tsx`'s component before the provider tree. I document this as an invariant in the file's top comment so future edits don't reorder.
 
+**A3 — as built (2026-05-20).** `vite.config.ts` gained `resolve.alias` (`@` → `apps/operator`, mirroring the operator's tsconfig path) and `resolve.dedupe: ['react','react-dom']` (operator components and the Vite shell must share one React instance or hooks break). `NuqsAdapter` resolved to **`nuqs/adapters/tanstack-router`** — nuqs 2.8.9 ships a TSR adapter, so no shim is needed. `__root.tsx` wires **12 of the 14** layout-level components unchanged; the two deferred are `ChromeShell` and `RouteProgressProvider` — the *only* two that import `next/*` (`next/navigation`). They land with Phase D's `next/navigation` → TSR translation; until then `__root.tsx` renders `<main><Outlet/></main>` directly.
+
+**Keystone verified:** `npm run build` transforms **1204 modules**, exit 0 — operator's React component graph (RootSyncProvider, OperatorConversationProvider, PostHogProvider, the sync layer, …) *does* build under Vite. The core data layer (`RootSyncProvider` → `HarnessZeroProvider` → `@restart/sync`) is leak-free.
+
+**Finding — server code leaks into the client bundle.** The build externalizes `node:*` builtins (`fs`/`net`/`tls`/`crypto`/`os`/`perf_hooks`) because a *peripheral* provider transitively imports server DB code (`postgres`, `libs/db/connection.ts`). The build still succeeds — Vite stubs the builtins — so the leak is **silent**: it bloats the client bundle and risks a runtime crash if the leaked path ever executes. The backend stream's removal of `import 'server-only'` deleted the build-time guard that used to make this a hard error. **Mitigation — new Phase B quality gate: add a Vite plugin that fails the build on any `node:*` externalization** (the `server-only` replacement), then trace + fix the leaking provider's import specificity during [B5](#b5-translate-appcomponents). Not an A3 blocker — A3's shell builds and the un-deferrable core is clean.
+
+**Not yet ported (Phase D/E):** the `await getAllFlags()` SSR flag resolution (→ `window.__PAPERCUSP_FLAGS__`; flag-gated UI falls back to defaults until then), and the `<head>` inline bootstrap scripts (visual-effects mode, op-chat width → move to `index.html`).
+
 ### A4. Hello-world page
 
 `src/routes/index.tsx` renders a placeholder "operator-vite scaffold" page so we can verify the proxy + IPC polyfill + Query + Zero all initialize against the live `apps/operator` backend.
