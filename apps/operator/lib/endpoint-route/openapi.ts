@@ -71,6 +71,10 @@ export function routeToOpenApiFragment(
     // 'public' routes opt out of principal auth (own-auth or unauthenticated);
     // gated routes advertise the bearer scheme.
     security: def.auth === 'public' ? [] : [{ [securitySchemeName]: [] }],
+    // `mobile: true` routes are tagged so the OpenAPI consumer (and the
+    // /dev → Endpoints panel) can filter the paired-phone surface.
+    // Phase E10 (endpoint-unification-2026-05-21).
+    ...(def.mobile ? { tags: ['papercusp:mobile'] } : {}),
   };
 
   // Path parameters.

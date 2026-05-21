@@ -93,3 +93,41 @@ describe('allRouteFragments', () => {
     expect(new Set(ids).size).toBe(ids.length);
   });
 });
+
+describe('mobile tagging (E10)', () => {
+  it('tags a mobile:true route with papercusp:mobile', () => {
+    const f = routeToOpenApiFragment(
+      defineRoute({
+        method: 'GET',
+        path: '/mobile/thing',
+        auth: 'public',
+        mobile: true,
+        handler: () => new Response(),
+      }),
+    );
+    expect(f.operation.tags).toEqual(['papercusp:mobile']);
+  });
+
+  it('omits tags on a non-mobile route', () => {
+    const f = routeToOpenApiFragment(
+      defineRoute({ method: 'GET', path: '/desktop/thing', auth: 'public', handler: () => new Response() }),
+    );
+    expect(f.operation.tags).toBeUndefined();
+  });
+
+  it('the migrated /api/mobile/* routes carry the mobile tag', () => {
+    // `/api/mobile/qr.svg` is the exception — it is loopback-only
+    // (Host-gated, rendered for the desktop's own browser), not a
+    // cross-origin phone route, so it is deliberately not `mobile: true`.
+    const mobileFrags = allRouteFragments().filter(
+      (f) => f.path.startsWith('/api/mobile/') && f.path !== '/api/mobile/qr.svg',
+    );
+    expect(mobileFrags.length).toBeGreaterThan(0);
+    for (const f of mobileFrags) {
+      expect(
+        (f.operation.tags as string[] | undefined) ?? [],
+        `${f.httpMethod} ${f.path} should be tagged papercusp:mobile`,
+      ).toContain('papercusp:mobile');
+    }
+  });
+});

@@ -177,7 +177,7 @@ E6  Collapse defineRoute → defineTool                           ✅ SHIPPED �
 E7  ESLint enforcement + docs                                   ⬜ not started
 E8  IPC transport for unified handlers                          ⬜ not started
 E9  Auth-tightening pass (~30–50 routes)                        ⬜ not started
-E10 OpenAPI mobile-tag rendering                                ⬜ not started
+E10 OpenAPI mobile-tag rendering                                ✅ SHIPPED
 E11 Hono replacement assessment                                 ⬜ not started
 E12 Migrate _hono/harness.ts (135 routes)                       ⬜ not started — own plan
 E13 Migrate coord/plugins/su-locks (16 routes) + orphan triage  ⬜ not started
@@ -282,11 +282,11 @@ Not started. E7 (lint + docs), E8 (IPC), E9 (auth-tightening ~30–50 routes), E
 - Target ~30–50 routes (the carve-outs from R5). Per-route audit; family batches of ~10.
 - Acceptance: `git grep "auth: 'public'"` returns only routes that genuinely don't need auth; `auth-posture.test.ts` enumerates every public route with a rationale.
 
-### Phase E10 — OpenAPI mobile-tag rendering
+### Phase E10 — OpenAPI mobile-tag rendering — ✅ SHIPPED
 
-- `openapi.json` assembler reads `expose.mobile`; adds `papercusp:mobile` tag.
-- `/dev → Endpoints` panel filters by tag.
-- Small — ½ day. May ride along with E3.
+- ✅ `routeToOpenApiFragment` emits `tags: ['papercusp:mobile']` for any `mobile: true` route, so an OpenAPI consumer (or the mobile client reading `openapi.json`) can filter the paired-phone surface.
+- ✅ Tests in `openapi.test.ts` (3) — tag present on `mobile: true`, absent otherwise, present on every migrated `/api/mobile/*` route (`qr.svg` excepted — it is loopback-only by design, not a cross-origin phone route).
+- **Not done:** the `/dev → Endpoints` panel tag *filter* — a UI nicety; the substantive part (the tag in `openapi.json`) is shipped. Optional follow-up.
 
 ### Phase E11 — Hono router replacement assessment
 
