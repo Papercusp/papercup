@@ -789,6 +789,20 @@ Each setting's port is independently reversible (kill the middleware / proxy ent
 
 > **Repo-boundary note.** Everything in Phase F lives in **`papercusp-desktop/` — a sibling repo, not `papercup/`.** Verified: `tauri.conf.json` is at `papercupai-workspace/papercusp-desktop/src-tauri/tauri.conf.json`, and `papercusp-desktop/` sits *alongside* `papercup/`, not inside it. So Phase F's edits (`tauri.conf.json`, the desktop dev launcher, `bin/release-local.sh`) are commits in a **different git repo** — the "stage only my `papercup/` paths" discipline doesn't apply there; they're staged and committed in `papercusp-desktop/` separately. If a desktop-owning agent exists, coordinate via that repo's channel. Phases A–E and G–H are entirely within `papercup/`; only F crosses the boundary.
 
+### F as-built (2026-05-21) — partial: config shipped, sidecar rebuild specced
+
+**Shipped (config layer, both correct + reversible + forward-compatible):**
+- `papercup/package.json` — `dev:operator` and `build:operator` repointed from `@papercusp/web` (Next) to `@papercusp/operator-vite`. The desktop dev orchestrator `bin/dev-operator-ifneeded.sh` calls `npm --prefix ../papercup run dev:operator` unchanged — it now launches Vite. Verified: `@papercusp/operator-vite` is a real workspace with a `dev`/`build` script.
+- `papercusp-desktop/src-tauri/tauri.conf.json` — `frontendDist: ../web` → `http://127.0.0.1:3070` (F2 option b). Forward-compatible: today's Next sidecar already answers `/` on `:3070`, and so will the Phase-G Hono host.
+
+**NOT shipped — `bin/build-desktop-sidecar.sh` rewrite + `src-tauri/src/main.rs` sidecar entry (F3 + G4).** Blocked on a real desktop build, not on indecision. The hard problem: the current script relies on `next build`'s **standalone tracer** to produce a minimal, correct `node_modules` — the monorepo hoists most deps to the repo-root `node_modules`, so a naive `cp apps/operator/node_modules` into the sidecar misses every hoisted package. Replacing the tracer needs one of:
+  1. **esbuild-bundle** `bin/hono-host.ts` → one CJS file with a hand-curated `--external` list (native deps: `postgres`, `@lydell/node-pty-*`, anything with `.node` bindings). The external list is unknowable without iterating against real bundle-then-run failures.
+  2. **Ship operator source + a correctly-assembled `node_modules`** and run via `tsx`. Correct node_modules assembly means resolving the hoist — e.g. `npm install --workspaces=false --prefix <sidecar>/apps/operator` against a copied `package.json`, or `npm pack`-style tracing.
+
+  Either path is "build, observe the failure, fix, repeat" — the plan's own F estimate ("2 days, most of it verifying the release path end-to-end against a real desktop install") reflects this. Recommendation: do F3+G4 in a session with `tauri build` in the loop.
+
+  `main.rs` G4 change (also pending): `spawn_sidecar` currently builds `server_js = sidecar/apps/operator/server.js` (Next standalone entry) and spawns it. After F3 it spawns the Hono host entry (e.g. `tsx apps/operator/bin/hono-host.ts`, cwd `sidecar/`). The exact path depends on the F3 layout decision above, so the two land together.
+
 ### F1. Dev URL
 
 Tauri's `tauri.conf.json` has a `build.devUrl` (or older `build.devPath`) pointing at the operator's dev server. Currently `http://127.0.0.1:3055` (Next). Vite is on the same port → **no Tauri-side change** for dev once Phase A's Vite server owns `:3055`.
