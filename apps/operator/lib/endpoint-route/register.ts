@@ -39,11 +39,66 @@ function isCatchAll(path: string): boolean {
   return path.includes('*') || path === '/:transport';
 }
 
+/**
+ * Per-segment specificity rank: a literal segment (`0`) is more specific
+ * than a `:param` (`1`), which is more specific than a `*` wildcard (`2`).
+ *
+ * **Why this matters.** Hono resolves overlapping routes purely by
+ * *registration order* — it has NO static-over-dynamic precedence (unlike
+ * Next.js file routing, where `marketplace/spawnable/route.ts` always beat
+ * `marketplace/[slug]/route.ts`). A `defineRoute` handler never calls
+ * `next()`, so whichever of two overlapping routes registers first wins
+ * outright. Without ordering, `/marketplace/:slug` registered before
+ * `/marketplace/spawnable` swallows `GET /api/marketplace/spawnable`.
+ */
+function specificityKey(path: string): number[] {
+  return path
+    .split('/')
+    .filter(Boolean)
+    .map((seg) => (seg.includes('*') ? 2 : seg.startsWith(':') ? 1 : 0));
+}
+
+/**
+ * Order comparator: the more specific route registers first. Compares the
+ * per-segment rank vectors lexicographically — a literal segment out-ranks
+ * a `:param` at the same position. Returns `0` for routes that don't
+ * resolve against each other (different prefixes / arities); a *stable*
+ * sort then preserves their `ALL_ROUTES` order, which is irrelevant for
+ * correctness since non-overlapping routes never both match a request.
+ */
+function bySpecificity(
+  a: { path: string },
+  b: { path: string },
+): number {
+  const ka = specificityKey(a.path);
+  const kb = specificityKey(b.path);
+  const n = Math.min(ka.length, kb.length);
+  for (let i = 0; i < n; i++) {
+    if (ka[i] !== kb[i]) return ka[i] - kb[i];
+  }
+  return 0;
+}
+
+/**
+ * The subset of `ALL_ROUTES` for one phase, ordered for registration:
+ * literal-before-param so a static path out-ranks a parametric sibling.
+ * `Array.prototype.sort` is stable (V8 / Node 11+), so routes with an
+ * equal rank vector keep their `ALL_ROUTES` order.
+ *
+ * The single source of truth for registration order — `registerSubset`
+ * mounts exactly this, and `routeRegistrationOrder` (used by the
+ * shadowing regression test) reports exactly this.
+ */
+function orderedSubset(wantCatchAll: boolean) {
+  return ALL_ROUTES.filter((def) => isCatchAll(def.path) === wantCatchAll)
+    .slice()
+    .sort(bySpecificity);
+}
+
 /** Mount the subset of `ALL_ROUTES` matching `wantCatchAll`. */
 function registerSubset(app: Hono, wantCatchAll: boolean): void {
   const seen = new Set<string>();
-  for (const def of ALL_ROUTES) {
-    if (isCatchAll(def.path) !== wantCatchAll) continue;
+  for (const def of orderedSubset(wantCatchAll)) {
     const key = `${def.method} ${def.path}`;
     if (seen.has(key)) {
       throw new Error(
@@ -53,6 +108,19 @@ function registerSubset(app: Hono, wantCatchAll: boolean): void {
     seen.add(key);
     registerRoute(app, def);
   }
+}
+
+/**
+ * The exact `(method, path)` registration order the app mounts —
+ * phase 1 (literals) then phase 2 (catch-alls). Exported for the
+ * shadowing regression test, which asserts no parametric route is
+ * registered before a literal sibling it would swallow.
+ */
+export function routeRegistrationOrder(): ReadonlyArray<{ method: string; path: string }> {
+  return [...orderedSubset(false), ...orderedSubset(true)].map((d) => ({
+    method: d.method,
+    path: d.path,
+  }));
 }
 
 /**
