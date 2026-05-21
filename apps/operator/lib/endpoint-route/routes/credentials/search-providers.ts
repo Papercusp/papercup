@@ -14,7 +14,7 @@ export default [
   defineRoute({
     method: 'GET',
     path: '/credentials/search-providers',
-    auth: 'public',
+    auth: { trust: ['verified', 'trusted'] },
     async handler() {
       return Response.json(await readMaskedView());
     },
@@ -22,7 +22,7 @@ export default [
   defineRoute({
     method: 'POST',
     path: '/credentials/search-providers',
-    auth: 'public',
+    auth: { trust: ['verified', 'trusted'] },
     async handler(req) {
       let body: unknown;
       try {

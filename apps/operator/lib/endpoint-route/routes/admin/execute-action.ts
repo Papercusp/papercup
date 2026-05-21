@@ -16,7 +16,7 @@ import { defineRoute } from '../../define-route';
 export default defineRoute({
   method: 'POST',
   path: '/admin/execute-action',
-  auth: 'public',
+  auth: { trust: ['verified', 'trusted'] },
   async handler(req) {
     // 1. Auth: derive caller slug from Bearer token.
     const auth = await deriveCallerFromBearer(req.headers.get('authorization'));

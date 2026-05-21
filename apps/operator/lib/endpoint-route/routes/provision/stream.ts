@@ -35,7 +35,7 @@ interface Events {
 export default defineRoute({
   method: 'GET',
   path: '/provision/stream',
-  auth: 'public',
+  auth: { trust: ['verified', 'trusted'] },
   sampleRate: 0,
   handler(req) {
     const url = new URL(req.url);

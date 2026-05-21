@@ -17,7 +17,7 @@ import { defineRoute } from '../../define-route';
 export default defineRoute({
   method: 'POST',
   path: '/agent-tokens/power-user',
-  auth: {},
+  auth: { trust: ['verified', 'trusted'] },
   async handler(req) {
     const body = (await req.json().catch(() => ({}))) as { workspace?: string };
     try {

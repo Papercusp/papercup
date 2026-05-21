@@ -17,7 +17,7 @@ function db() {
 export default defineRoute({
   method: 'GET',
   path: '/admin/llm-tests/runs',
-  auth: 'public',
+  auth: { trust: ['verified', 'trusted'] },
   async handler(req) {
     const url = new URL(req.url);
     // Empty strings come from the UI's "any" sentinel; treat as undefined.

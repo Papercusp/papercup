@@ -22,7 +22,7 @@ interface AdminRunVocab extends Record<string, unknown> {
 export default defineRoute({
   method: 'GET',
   path: '/admin/run',
-  auth: 'public',
+  auth: { trust: ['verified', 'trusted'] },
   sampleRate: 0,
   handler(req): Response {
     const url = new URL(req.url);

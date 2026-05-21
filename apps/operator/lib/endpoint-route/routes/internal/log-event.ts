@@ -23,7 +23,7 @@ interface RequestBody {
 export default defineRoute({
   method: 'POST',
   path: '/internal/log-event',
-  auth: 'public',
+  auth: {},
   async handler(req) {
     const authHeader = req.headers.get('authorization') ?? '';
     const m = authHeader.match(/^Bearer\s+(\S+)$/i);

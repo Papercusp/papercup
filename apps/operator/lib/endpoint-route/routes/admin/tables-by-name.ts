@@ -48,7 +48,7 @@ function resolvePk(table: PgTable): string[] {
 const get = defineRoute({
   method: 'GET',
   path: '/admin/tables/:exportName',
-  auth: 'public',
+  auth: { trust: ['verified', 'trusted'] },
   async handler(req, ctx) {
     const { exportName } = ctx.params;
     const entry = getAdminTable(exportName);
@@ -70,7 +70,7 @@ const get = defineRoute({
 const post = defineRoute({
   method: 'POST',
   path: '/admin/tables/:exportName',
-  auth: 'public',
+  auth: { trust: ['verified', 'trusted'] },
   async handler(req, ctx) {
     const { exportName } = ctx.params;
     const entry = getAdminTable(exportName);
@@ -101,7 +101,7 @@ const post = defineRoute({
 const patch = defineRoute({
   method: 'PATCH',
   path: '/admin/tables/:exportName',
-  auth: 'public',
+  auth: { trust: ['verified', 'trusted'] },
   async handler(req, ctx) {
     const { exportName } = ctx.params;
     const entry = getAdminTable(exportName);
@@ -139,7 +139,7 @@ const patch = defineRoute({
 const del = defineRoute({
   method: 'DELETE',
   path: '/admin/tables/:exportName',
-  auth: 'public',
+  auth: { trust: ['verified', 'trusted'] },
   async handler(req, ctx) {
     const { exportName } = ctx.params;
     const entry = getAdminTable(exportName);

@@ -35,7 +35,7 @@ interface ColumnSummary {
 export default defineRoute({
   method: 'GET',
   path: '/dev/tables/:exportName',
-  auth: 'public',
+  auth: { trust: ['verified', 'trusted'] },
   async handler(_req, ctx) {
     const { exportName } = ctx.params;
     const table = tableByExportName(exportName);

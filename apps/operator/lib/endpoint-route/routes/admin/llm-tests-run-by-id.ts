@@ -18,7 +18,7 @@ function db() {
 export default defineRoute({
   method: 'GET',
   path: '/admin/llm-tests/runs/:id',
-  auth: 'public',
+  auth: { trust: ['verified', 'trusted'] },
   async handler(_req, ctx) {
     const { id } = ctx.params;
     const sql = db();

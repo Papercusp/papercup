@@ -21,7 +21,7 @@ const BodySchema = z.object({
 export default defineRoute({
   method: 'POST',
   path: '/internal/feature-debug-note-event',
-  auth: 'public',
+  auth: {},
   async handler(req) {
     const authHeader = req.headers.get('authorization') ?? '';
     const m = authHeader.match(/^Bearer\s+(\S+)$/i);

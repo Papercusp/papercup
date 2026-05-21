@@ -17,7 +17,7 @@ import { defineRoute } from '../../define-route';
 export default defineRoute({
   method: 'GET',
   path: '/dev/route-invocations',
-  auth: 'public', // /dev surface — loopback-gated by the operator bind host
+  auth: { trust: ['verified', 'trusted'] }, // /dev surface — loopback-gated by the operator bind host
   input: z.object({ limit: z.coerce.number().int().positive().max(500).default(100) }),
   async handler(_req, ctx) {
     const workspaceId = activeWorkspaceId();

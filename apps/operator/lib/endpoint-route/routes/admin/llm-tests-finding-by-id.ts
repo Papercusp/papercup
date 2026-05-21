@@ -18,7 +18,7 @@ function db() {
 export default defineRoute({
   method: 'PATCH',
   path: '/admin/llm-tests/findings/:id',
-  auth: 'public',
+  auth: { trust: ['verified', 'trusted'] },
   async handler(req, ctx) {
     const { id } = ctx.params;
     let body: { acknowledged?: boolean; acknowledgedBy?: string } = {};

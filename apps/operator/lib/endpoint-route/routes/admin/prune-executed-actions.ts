@@ -12,7 +12,7 @@ import { defineRoute } from '../../define-route';
 export default defineRoute({
   method: 'POST',
   path: '/admin/prune-executed-actions',
-  auth: 'public',
+  auth: { trust: ['verified', 'trusted'] },
   async handler(req) {
     const auth = await deriveCallerFromBearer(req.headers.get('authorization'));
     if (!auth.ok) {

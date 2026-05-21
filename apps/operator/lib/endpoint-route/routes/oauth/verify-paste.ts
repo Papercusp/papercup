@@ -34,7 +34,7 @@ interface Body {
 export default defineRoute({
   method: 'POST',
   path: '/oauth/verify-paste',
-  auth: 'public',
+  auth: { trust: ['verified', 'trusted'] },
   async handler(req) {
     await ensureProvidersLoaded();
     let body: Body;

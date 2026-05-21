@@ -14,7 +14,7 @@ import { defineRoute } from '../../define-route';
 export default defineRoute({
   method: 'GET',
   path: '/provision/state',
-  auth: 'public',
+  auth: { trust: ['verified', 'trusted'] },
   async handler(req) {
     const url = new URL(req.url);
     const harness = url.searchParams.get('harness') ?? '';

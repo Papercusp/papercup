@@ -109,7 +109,7 @@ function status() {
 const get = defineRoute({
   method: 'GET',
   path: '/dev/drizzle-studio',
-  auth: 'public',
+  auth: { trust: ['verified', 'trusted'] },
   async handler() {
     return Response.json(status());
   },
@@ -118,7 +118,7 @@ const get = defineRoute({
 const post = defineRoute({
   method: 'POST',
   path: '/dev/drizzle-studio',
-  auth: 'public',
+  auth: { trust: ['verified', 'trusted'] },
   async handler() {
     const cur = status();
     if (cur.running) return Response.json({ ...cur, started: false });
@@ -166,7 +166,7 @@ const post = defineRoute({
 const del = defineRoute({
   method: 'DELETE',
   path: '/dev/drizzle-studio',
-  auth: 'public',
+  auth: { trust: ['verified', 'trusted'] },
   async handler() {
     const p = STATE.proc;
     if (!p) return Response.json({ running: false, stopped: false });

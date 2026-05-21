@@ -19,7 +19,7 @@ interface RequestBody { files?: FileEntry[]; phase?: string }
 export default defineRoute({
   method: 'POST',
   path: '/internal/test-snapshot',
-  auth: 'public',
+  auth: {},
   async handler(req) {
     const authHeader = req.headers.get('authorization') ?? '';
     const m = authHeader.match(/^Bearer\s+(\S+)$/i);

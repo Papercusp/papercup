@@ -51,7 +51,7 @@ function parseConfig(body: unknown): { ok: true; cfg: ParsedConfig } | { ok: fal
 export default defineRoute({
   method: 'POST',
   path: '/admin/testing/ai-explore',
-  auth: 'public',
+  auth: { trust: ['verified', 'trusted'] },
   sampleRate: 0,
   async handler(req): Promise<Response> {
     const body = await req.json().catch(() => null);

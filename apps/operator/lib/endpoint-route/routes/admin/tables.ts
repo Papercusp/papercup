@@ -11,7 +11,7 @@ import { defineRoute } from '../../define-route';
 export default defineRoute({
   method: 'GET',
   path: '/admin/tables',
-  auth: 'public',
+  auth: { trust: ['verified', 'trusted'] },
   handler() {
     const out = listAdminTables().map((e) => {
       const cfg = getTableConfig(e.table as unknown as PgTable);

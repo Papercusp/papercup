@@ -17,7 +17,7 @@ import { defineRoute } from '../../define-route';
 const get = defineRoute({
   method: 'GET',
   path: '/provision/host-check',
-  auth: 'public',
+  auth: { trust: ['verified', 'trusted'] },
   async handler(req) {
     const url = new URL(req.url);
     if (url.searchParams.get('smokeTest') === '1') {
@@ -32,7 +32,7 @@ const get = defineRoute({
 const post = defineRoute({
   method: 'POST',
   path: '/provision/host-check',
-  auth: 'public',
+  auth: { trust: ['verified', 'trusted'] },
   async handler(req) {
     let body: { acknowledge?: boolean };
     try {

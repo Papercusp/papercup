@@ -18,7 +18,7 @@ const MAX_BODY = 256 * 1024;
 export default defineRoute({
   method: 'POST',
   path: '/internal/plan-review-event',
-  auth: 'public',
+  auth: {},
   async handler(req) {
     const authHeader = req.headers.get('authorization') ?? '';
     const m = authHeader.match(/^Bearer\s+(\S+)$/i);

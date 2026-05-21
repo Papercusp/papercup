@@ -17,7 +17,7 @@ function db() {
 export default defineRoute({
   method: 'GET',
   path: '/admin/llm-tests/findings',
-  auth: 'public',
+  auth: { trust: ['verified', 'trusted'] },
   async handler(req) {
     const url = new URL(req.url);
     const severity = url.searchParams.get('severity') ?? undefined;

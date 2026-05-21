@@ -17,7 +17,7 @@ export default [
   defineRoute({
     method: 'GET',
     path: '/credentials',
-    auth: 'public',
+    auth: { trust: ['verified', 'trusted'] },
     async handler() {
       return Response.json(maskCredentials(await readCredentials()));
     },
@@ -25,7 +25,7 @@ export default [
   defineRoute({
     method: 'POST',
     path: '/credentials',
-    auth: 'public',
+    auth: { trust: ['verified', 'trusted'] },
     async handler(req) {
       const body = await req.json().catch(() => null);
       if (!body || typeof body !== 'object') {

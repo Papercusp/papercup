@@ -21,7 +21,7 @@ export default [
   defineRoute({
     method: 'GET',
     path: '/publish-credentials',
-    auth: 'public',
+    auth: { trust: ['verified', 'trusted'] },
     async handler(req) {
       const blocked = await gateApiRoute(req, FLAGS.CLOUDFLARE_PUBLISH);
       if (blocked) return blocked;
@@ -31,7 +31,7 @@ export default [
   defineRoute({
     method: 'DELETE',
     path: '/publish-credentials',
-    auth: 'public',
+    auth: { trust: ['verified', 'trusted'] },
     async handler(req) {
       const blocked = await gateApiRoute(req, FLAGS.CLOUDFLARE_PUBLISH);
       if (blocked) return blocked;

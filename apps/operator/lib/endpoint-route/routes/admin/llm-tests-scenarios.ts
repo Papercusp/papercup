@@ -10,7 +10,7 @@ import { defineRoute } from '../../define-route';
 export default defineRoute({
   method: 'GET',
   path: '/admin/llm-tests/scenarios',
-  auth: 'public',
+  auth: { trust: ['verified', 'trusted'] },
   handler() {
     const scenarios = SCENARIOS.map((s) => ({
       id: s.id,

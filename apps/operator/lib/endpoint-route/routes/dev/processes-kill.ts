@@ -17,7 +17,7 @@ import { defineRoute } from '../../define-route';
 export default defineRoute({
   method: 'POST',
   path: '/dev/processes/kill',
-  auth: {},
+  auth: { trust: ['verified', 'trusted'] },
   async handler(req) {
     let body: { pid?: number; signal?: 'SIGTERM' | 'SIGKILL' };
     try {

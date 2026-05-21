@@ -47,7 +47,7 @@ function listDrizzleTables(): TableEntry[] {
 export default defineRoute({
   method: 'GET',
   path: '/dev/tables',
-  auth: 'public',
+  auth: { trust: ['verified', 'trusted'] },
   async handler() {
     return Response.json({ tables: listDrizzleTables() });
   },

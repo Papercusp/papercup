@@ -20,7 +20,7 @@ function bearerFrom(req: Request): string | null {
 export default defineRoute({
   method: 'POST',
   path: '/agent-tokens/power-user/refresh',
-  auth: {},
+  auth: { trust: ['verified', 'trusted'] },
   async handler(req) {
     const refreshToken = bearerFrom(req);
     const claims = await verifyRefreshToken(refreshToken);

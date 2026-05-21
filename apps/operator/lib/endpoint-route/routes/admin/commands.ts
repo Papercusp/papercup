@@ -12,7 +12,7 @@ import { defineRoute } from '../../define-route';
 export default defineRoute({
   method: 'GET',
   path: '/admin/commands',
-  auth: 'public',
+  auth: { trust: ['verified', 'trusted'] },
   handler() {
     return Response.json({ commands: listCommands() });
   },

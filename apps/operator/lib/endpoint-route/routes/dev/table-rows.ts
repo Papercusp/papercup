@@ -104,7 +104,7 @@ function buildPredicate(
 export default defineRoute({
   method: 'GET',
   path: '/dev/tables/:exportName/rows',
-  auth: 'public',
+  auth: { trust: ['verified', 'trusted'] },
   async handler(req, ctx) {
     const { exportName } = ctx.params;
     const table = tableByExportName(exportName);

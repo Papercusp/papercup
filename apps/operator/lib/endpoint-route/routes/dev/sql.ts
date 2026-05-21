@@ -102,7 +102,7 @@ class ReadOnlyRollback extends Error {
 export default defineRoute({
   method: 'POST',
   path: '/dev/sql',
-  auth: 'public',
+  auth: { trust: ['verified', 'trusted'] },
   async handler(req) {
     let raw: unknown;
     try { raw = await req.json(); }

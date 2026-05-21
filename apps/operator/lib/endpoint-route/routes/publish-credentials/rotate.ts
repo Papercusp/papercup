@@ -26,7 +26,7 @@ import { defineRoute } from '../../define-route';
 export default defineRoute({
   method: 'POST',
   path: '/publish-credentials/rotate',
-  auth: 'public',
+  auth: { trust: ['verified', 'trusted'] },
   async handler(req) {
     const blocked = await gateApiRoute(req, FLAGS.CLOUDFLARE_PUBLISH);
     if (blocked) return blocked;

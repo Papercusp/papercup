@@ -52,7 +52,7 @@ async function readJson<T>(path: string): Promise<T | null> {
 export default defineRoute({
   method: 'POST',
   path: '/provision/run',
-  auth: 'public',
+  auth: { trust: ['verified', 'trusted'] },
   timeoutSec: 900,
   async handler(req) {
     let body: Body;

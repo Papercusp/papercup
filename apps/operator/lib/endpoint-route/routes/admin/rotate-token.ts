@@ -27,7 +27,7 @@ function base64url(buf: Buffer): string {
 export default defineRoute({
   method: 'POST',
   path: '/admin/rotate-token',
-  auth: 'public',
+  auth: { trust: ['verified', 'trusted'] },
   async handler(req) {
     const auth = await deriveCallerFromBearer(req.headers.get('authorization'));
     if (!auth.ok) {

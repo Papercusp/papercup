@@ -10,6 +10,19 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 
+// Provision routes are now `{trust:['verified','trusted']}` (D3 pass);
+// stub the principal resolver so these handler-logic tests don't 403.
+vi.mock('@/lib/auth/require-principal', () => ({
+  requirePrincipal: vi.fn(async () => ({
+    kind: 'user', slug: 'user:test', workspaceId: 'ws',
+    authMethod: 'cookie-session', trust: 'verified',
+    capabilities: new Set<string>(['*']), label: 'test',
+  })),
+  PrincipalCheckError: class PrincipalCheckError extends Error {
+    constructor(public status: number, public reason: string) { super(reason); }
+  },
+}));
+
 vi.mock('@/lib/provision/trust-store', () => ({
   checkTrust: vi.fn(async () => ({ trusted: true })),
   recordTrust: vi.fn(async () => {}),

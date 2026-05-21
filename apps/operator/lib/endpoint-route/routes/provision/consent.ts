@@ -25,7 +25,7 @@ interface PostBody {
 const post = defineRoute({
   method: 'POST',
   path: '/provision/consent',
-  auth: 'public',
+  auth: { trust: ['verified', 'trusted'] },
   async handler(req) {
     let body: PostBody;
     try {
@@ -60,7 +60,7 @@ const post = defineRoute({
 const get = defineRoute({
   method: 'GET',
   path: '/provision/consent',
-  auth: 'public',
+  auth: { trust: ['verified', 'trusted'] },
   async handler(req) {
     const url = new URL(req.url);
     const publisher = url.searchParams.get('publisher') ?? '';
