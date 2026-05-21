@@ -12769,30 +12769,28 @@ body:has(.h-top-collapse-inline) main {
   justify-self: end;
 }
 
-/* Feature queue refinement: brighter row bands and one-line centered pills. */
+/* Feature queue refinement: stable flat row bands and one-line centered pills. */
 [data-index] > .h-feature-row {
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.035), rgba(255, 255, 255, 0.009)),
-    rgba(10, 22, 38, 0.98) !important;
+  border: 0 !important;
+  border-bottom: 0 !important;
+  outline: 0 !important;
+  box-shadow: none !important;
+  background: rgba(7, 15, 28, 0.96) !important;
 }
 
-[data-index]:nth-child(odd) > .h-feature-row {
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.034), rgba(255, 255, 255, 0.008)),
-    rgba(9, 20, 36, 0.98) !important;
+[data-index] > .h-feature-row.h-row-odd {
+  background: rgba(7, 15, 28, 0.96) !important;
 }
 
-[data-index]:nth-child(even) > .h-feature-row {
-  background:
-    linear-gradient(180deg, rgba(125, 211, 252, 0.066), rgba(255, 255, 255, 0.012)),
-    rgba(18, 40, 64, 0.99) !important;
+[data-index] > .h-feature-row.h-row-even {
+  background: rgba(15, 32, 53, 0.97) !important;
 }
 
 [data-index] > .h-feature-row:hover,
 [data-index] > .h-feature-row:focus-visible {
-  background:
-    linear-gradient(180deg, rgba(125, 211, 252, 0.135), rgba(255, 255, 255, 0.02)),
-    rgba(20, 48, 76, 1) !important;
+  background: rgba(16, 39, 63, 0.99) !important;
+  border: 0 !important;
+  box-shadow: none !important;
 }
 
 .h-feature-row > div {
@@ -12822,6 +12820,47 @@ body:has(.h-top-collapse-inline) main {
   text-overflow: ellipsis !important;
   white-space: nowrap !important;
   line-height: 1.2 !important;
+}
+
+/* Stable row bands: parity is row-data based, flat, and borderless. */
+.h-feature-row,
+.h-issue {
+  border: 0 !important;
+  border-bottom: 0 !important;
+  outline: 0 !important;
+  box-shadow: none !important;
+  background: rgba(7, 15, 28, 0.96) !important;
+}
+
+.h-feature-row > div,
+.h-issue > div {
+  background: transparent !important;
+}
+
+.h-feature-row.h-row-odd,
+.h-issue.h-row-odd {
+  background: rgba(7, 15, 28, 0.96) !important;
+}
+
+.h-feature-row.h-row-even,
+.h-issue.h-row-even {
+  background: rgba(15, 32, 53, 0.97) !important;
+}
+
+.h-feature-row:hover,
+.h-feature-row:focus-visible,
+.h-issue:hover,
+.h-issue:focus-visible {
+  background: rgba(16, 39, 63, 0.99) !important;
+  border: 0 !important;
+  box-shadow: none !important;
+}
+
+.h-feature-row.is-focused,
+.h-feature-row.is-active,
+.h-feature-row.is-selected {
+  outline: 0 !important;
+  box-shadow: none !important;
 }
 
 .h-feature-row-action,

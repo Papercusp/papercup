@@ -609,6 +609,7 @@ function ListView({
       const isNoteOpen = f.id === noteFeatureId;
       const cls =
         `h-feature-row status-${f.status}` +
+        (i % 2 === 0 ? ' h-row-odd' : ' h-row-even') +
         (compact ? ' compact' : '') +
         (isFocus ? ' is-focused' : '') +
         (isActive ? ' is-active' : '') +

@@ -296,15 +296,16 @@ function IssuesListInner({ slug, onCount }: { slug: string; onCount?: (n: number
   );
 
   // Preserve the legacy h-issue / h-issue-{severity} / h-issue-{status} row classes
-  // so existing CSS (severity-tinted left border, status fade, hover bg) keeps applying.
+  // so existing CSS (severity accent, status affordances, hover state) keeps applying.
+  // Add stable parity classes from rowIndex instead of CSS nth-child; otherwise
+  // virtualized/sorted list windows can repaint row bands as the user scrolls.
   // The legacy .h-issue rule sets `display: grid` with its own auto/1fr/auto
   // column template, which fights RichGrid's inner CSS-grid cell layout
   // (and squashed the title+meta into column 1's auto width). Override with
-  // `display: block` here so the inner grid fills full row width. The visual
-  // styling (border, ::before accent bar, hover gradient) still applies.
+  // `display: block` here so the inner grid fills full row width.
   const richRowProps = useMemo(
-    () => (ctx: { row: Issue }) => ({
-      className: `h-issue h-issue-${ctx.row.severity} h-issue-${ctx.row.status}`,
+    () => (ctx: { row: Issue; rowIndex: number }) => ({
+      className: `h-issue h-issue-${ctx.row.severity} h-issue-${ctx.row.status} ${ctx.rowIndex % 2 === 0 ? 'h-row-odd' : 'h-row-even'}`,
       tabIndex: 0,
       'aria-label': `Open ${ctx.row.severity} ${ctx.row.status} issue ${ctx.row.id}: ${ctx.row.title}`,
       style: { display: 'block' } as const,
