@@ -175,8 +175,8 @@ E4  Migrate 33 mobile routes (/api/mobile/* wire-compat)        ✅ SHIPPED  9fa
 E5  Delete _hono/mobile.ts                                      ✅ SHIPPED  9bc35e3c
 E6  Collapse defineRoute → defineTool                           ✅ SHIPPED — see §E6
 E7  ESLint enforcement + docs                                   ◐ docs shipped; lint rule gated on E12/E13
-E8  IPC transport for unified handlers                          ⬜ not started
-E9  Auth-tightening pass (~30–50 routes)                        ⬜ not started
+E8  IPC transport for unified handlers                          ⬜ deferred — no driver (see §E8)
+E9  Auth-tightening pass (229 routes — not 30–50)               ⬜ own plan (see §E9)
 E10 OpenAPI mobile-tag rendering                                ✅ SHIPPED
 E11 Hono replacement assessment                                 ✅ SHIPPED — verdict: stay on Hono
 E12 Migrate _hono/harness.ts (135 routes)                       ⬜ not started — own plan
@@ -270,17 +270,25 @@ E10 + E11 shipped. Remaining: E7 (lint + docs — the `no-raw-route-handlers` ru
 - ✅ Agent insight already shipped in E5: `agent-insights/mobile-endpoint-unification.mdx`.
 - ⬜ **ESLint rule `no-raw-route-handlers`** (reject raw `app.get/.post` in `_hono/*`) — **deferred**, and necessarily so: `_hono/harness.ts` (135 routes), `coord.ts`, `plugins.ts`, `su-locks.ts` still use raw `app.get/.post`. Landing the rule now would fail lint across the whole `_hono/` dir. It must follow E12/E13.
 
-### Phase E8 — IPC transport for unified handlers
+### Phase E8 — IPC transport for unified handlers — ⬜ NOT STARTED (no driver; recommend deferral)
 
-- Extend the existing endpoint-IPC adapter (Phase 4 plan) to recognize route-shaped handlers returning raw `Response`; stream body bytes over UDS frame.
-- New `expose.ipc?: true` flag. Default `false`.
-- Acceptance: a `defineTool` with `expose: { ipc: true, http: {...} }` is callable from a Rust client over UDS framing.
+- The `expose.ipc?: true` flag is typed (E1) but inert. The plan was to extend the endpoint-IPC adapter to carry route-shaped (`Response`-returning) handlers over the UDS frame.
+- **No consumer exists.** Routes are HTTP plumbing called by the browser / desktop shell; the IPC fast-path serves *agent tool* dispatch (the Rust client). A route-over-IPC has no identified caller. Building the adapter now is speculative machinery.
+- **Recommendation:** keep `expose.ipc` as a reserved flag; implement E8 only when a concrete route-over-IPC need appears (e.g. the Rust mobile-server wanting to invoke a plumbing route in-process). Deferred, not dropped.
 
-### Phase E9 — Auth-tightening pass
+### Phase E9 — Auth-tightening pass — ⬜ NOT STARTED (scope corrected — needs its own plan)
 
-- Walk every endpoint that landed as `auth: 'public'` with an inline check; convert to proper `PrincipalRequirements` gate.
-- Target ~30–50 routes (the carve-outs from R5). Per-route audit; family batches of ~10.
-- Acceptance: `git grep "auth: 'public'"` returns only routes that genuinely don't need auth; `auth-posture.test.ts` enumerates every public route with a rationale.
+**Audit finding (2026-05-21): the scope is 229 routes, not "~30–50".** The endpoint-route migration landed *every* route as `auth: 'public'` — it preserved behavior by deferring all auth-tightening. Of the 229:
+
+- **29** carry an **inline** auth check (`requirePrincipal`, `isLoopbackRequest`, `getSessionUser`, `readIdentity`, …) — `auth: 'public'` is a lie; the real gate is in the handler. These should become declarative `PrincipalRequirements`.
+- **200** carry **no auth check at all** — they are genuinely fail-open at the type level, protected today only by the operator's loopback bind.
+
+This is a real security pass, not a mechanical cleanup, and it **cannot be done blind**:
+- A uniform "convert all 200 to `{ trust: ['trusted','verified','unverified-loopback'] }`" would be behavior-preserving for loopback-bound traffic (every legit caller resolves ≥ a loopback principal) — *but* it would break the genuinely-public routes (OAuth callbacks under `oauth/*`, `flags/webhook`, `mobile/pair`, `mobile/desktop/mint-pair-token`, `mobile/rest-query`, `mobile/qr.svg`) that are called with no principal by design.
+- So each of the 229 needs a per-route decision: genuinely public, loopback-tier, verified-user, or trusted-only.
+- 229 auth-posture changes cannot be verified in a single pass — getting one wrong is either a fail-open security hole or a broken caller.
+
+**Recommendation:** E9 is its own focused plan (`endpoint-auth-tightening-<date>`), sized like the route-migration itself — family batches, per-batch review, the `auth-posture.test.ts` rationale catalog as the acceptance gate. Not foldable into the unification arc.
 
 ### Phase E10 — OpenAPI mobile-tag rendering — ✅ SHIPPED
 
