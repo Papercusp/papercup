@@ -12,9 +12,9 @@ companion-to: [endpoint-unification-2026-05-21, endpoint-route-migration-2026-05
 
 **State:** The `endpoint-unification-2026-05-21` arc shipped E1–E6 (the `defineRoute`→`defineTool` collapse + the full mobile flag) plus E7-docs, E10, E11, and E13-partial (`coord` + `su-locks` migrated off `_hono`). Its tail — E8/E9/E12/E13-plugins/E14 — was found to be two genuinely separate projects, too large and too risky to fold into that arc. **This plan is that tail, re-scoped from audit.**
 
-**Next:** finish A2 — migrate `experts.ts` (17 routes, 969 LOC; ~430 LOC of helpers, non-route exports `expertDir`/`EXPERT_ID_RE`, and `experts.test.ts` to migrate). Then A3 (plugins + dispatcher), A4 (harness.ts, 138 routes), A5–A7.
+**Next:** A3 — migrate `plugins.ts` (7 routes) + relocate `installPluginApiDispatcher` (the runtime-mutated plugin-API catch-all). Then A4 (`harness.ts`, 138 routes — the largest phase), A5–A7.
 
-A1 shipped (`c019a0ff`): 5 small routers. A2 is 2/3 shipped — `pty` (10 routes, `7be65218`) and `agent-chats` (5 routes, `24c532fa`). `pty.ts` was confirmed to have no WebSocket (the plan's WS caveat was over-cautious — terminal I/O is SSE+POST). 37 routes across 7 routers migrated off `_hono` so far this arc.
+A1 shipped (`c019a0ff`): 5 small routers. **A2 complete** — `pty` (10, `7be65218`), `agent-chats` (5, `24c532fa`), `experts` (17, `e9b82847`). **8 of 10 `_hono` routers + 54 routes migrated off Hono** this arc. Remaining `_hono` routers: `plugins.ts` (A3) and `harness.ts` (A4).
 
 # Endpoint follow-ups — finish `_hono` elimination + auth-tightening
 
@@ -76,7 +76,9 @@ E8 (`expose.ipc` for routes) stays **deferred** — the flag is typed but inert 
 
 - ✅ **`pty.ts` (10 routes)** → `routes/pty/` (`7be65218`). **Audit corrected the plan:** `pty.ts` has NO WebSocket — terminal output streams over SSE (`/pty/:id/stream`), input over POST. A plain HTTP migration. The prewarm pool moved verbatim from the `registerPty` closure to module scope.
 - ✅ **`agent-chats.ts` (5 routes)** → `routes/agent-chats/` (`24c532fa`). The `/messages` SSE stream ports cleanly. The `chat-shim-routes.test.ts` agent-chats block migrated to `agent-chats-messages.test.ts`; that test file is now fully migrated (oracle block went in A1) and deleted.
-- ⬜ **`experts.ts` (17 routes, 969 LOC)** — remaining. Bigger than the plan implied: ~430 LOC of helper functions between the imports and `registerExperts`, plus non-route exports (`expertDir`, `EXPERT_ID_RE`) to check for external importers, plus `experts.test.ts` (imports `registerExperts`) to migrate. Its own focused pass.
+- ✅ **`experts.ts` (17 routes, 969 LOC)** → split (`e9b82847`): helpers → `lib/experts-core.ts` (`experts-data.ts` repointed), 17 routes → `routes/experts/`. `experts.test.ts` (19-test suite) migrated to `endpoint-route/__tests__/` — **18 of its tests fail on a pre-existing registry-stub drift**, confirmed by running the untouched legacy test at HEAD (fails the same 18). Faithful migration; the stub drift is a separate test-infra bug.
+
+**A2 complete — 8 of 10 `_hono` routers migrated.**
 
 ### A3 — `plugins.ts` (7 routes) + relocate the plugin-API dispatcher
 
