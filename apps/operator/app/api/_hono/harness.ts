@@ -2591,12 +2591,6 @@ harness.post('/:slug/checkpoint/:name/grant', async (c) => {
   });
 });
 
-harness.get('/:slug/health', async (c) => {
-  const { getHealth } = await import('@/lib/harness-readers');
-  const result = await getHealth(c.req.param('slug'));
-  if (!result.ok) return c.json({ error: result.error }, result.status);
-  return c.json(result.data);
-});
 
 /**
  * Item 0 + 10: list features awaiting human review across all harnesses.
@@ -2817,30 +2811,6 @@ harness.get('/:slug/features/:id/timeline', async (c) => {
 // SSE: emit 'change' on logs/run.log mtime/size shifts (decisions are
 // derived from the tail of run.log).
 
-harness.get('/:slug/lanes', async (c) => {
-  const project = await resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
-  if (!project) return c.json({ error: 'unknown project' }, 404);
-  const p = join(harnessDir(project), 'lanes.json');
-  if (!existsSync(p)) return c.json({ lanes: [], max: 1 });
-  let raw: any;
-  try { raw = JSON.parse(readFileSync(p, 'utf8')); } catch { return c.json({ lanes: [], max: 1 }); }
-  const nowMs = Date.now();
-  const lanes: Array<{ pid: number; featureId: string; startedAt: number; elapsedSeconds: number; alive: boolean }> = [];
-  for (const l of raw.lanes ?? []) {
-    if (typeof l.pid !== 'number' || typeof l.feature_id !== 'string') continue;
-    let alive = false;
-    try { process.kill(l.pid, 0); alive = true; } catch {}
-    const ts = typeof l.started_at === 'number' ? l.started_at * 1000 : nowMs;
-    lanes.push({ pid: l.pid, featureId: l.feature_id, startedAt: ts, elapsedSeconds: Math.max(0, Math.floor((nowMs - ts) / 1000)), alive });
-  }
-  // Read max from config.json
-  let max = 1;
-  try {
-    const cfg = JSON.parse(readFileSync(join(harnessDir(project), 'config.json'), 'utf8'));
-    if (cfg?.parallelWorkers?.max && typeof cfg.parallelWorkers.max === 'number') max = cfg.parallelWorkers.max;
-  } catch {}
-  return c.json({ lanes, max });
-});
 
 harness.get('/:slug/features/:id/diff', async (c) => {
   const project = await resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
@@ -3274,30 +3244,6 @@ harness.get('/:slug/debug-notes', async (c) => {
   return c.json({ notes });
 });
 
-harness.get('/:slug/knowledge', async (c) => {
-  const slug = c.req.param('slug');
-  const project = await resolvePhasedProject(slug, phasePhaseLabel(c.req.query('phase')));
-  if (!project) return c.json({ error: 'unknown project' }, 404);
-  // PG-canonical (Phase 0d). Disk fallback for harnesses pre-migration.
-  const { loadTextArtifact } = await import('@/lib/text-artifacts');
-  const p = join(harnessDir(project), 'knowledge.md');
-  const fromPg = await loadTextArtifact(slug, 'knowledge.md');
-  let mtimeMs: number | null = null;
-  try { mtimeMs = statSync(p).mtimeMs; } catch {}
-  return c.json({ content: fromPg ?? safeRead(p), mtimeMs });
-});
-
-harness.put('/:slug/knowledge', async (c) => {
-  const slug = c.req.param('slug');
-  const project = await resolvePhasedProject(slug, phasePhaseLabel(c.req.query('phase')));
-  if (!project) return c.json({ error: 'unknown project' }, 404);
-  const body = await c.req.json().catch(() => ({})) as { content?: string };
-  if (typeof body.content !== 'string') return c.json({ error: 'content required' }, 400);
-  // PG-canonical via text-artifacts; helper handles disk mirror.
-  const { saveTextArtifact } = await import('@/lib/text-artifacts');
-  await saveTextArtifact(slug, 'knowledge.md', body.content);
-  return c.json({ ok: true });
-});
 
 harness.get('/:slug/diff/working', async (c) => {
   const project = await resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
@@ -3441,18 +3387,6 @@ harness.post('/:slug/supervisor', async (c) => {
   }) as Promise<Response>;
 });
 
-harness.get('/:slug/prs', async (c) => {
-  const project = await resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
-  if (!project) return c.json({ error: 'unknown project' }, 404);
-  const p = join(harnessDir(project), 'prs.json');
-  if (!existsSync(p)) return c.json({ prs: {} });
-  try {
-    const raw = JSON.parse(readFileSync(p, 'utf8'));
-    return c.json({ prs: raw.prs ?? {} });
-  } catch {
-    return c.json({ prs: {} });
-  }
-});
 
 // SSE: emit 'change' on supervisor-notes.md mtime/size shifts.
 
