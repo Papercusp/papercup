@@ -1646,27 +1646,6 @@ harness.post('/:slug/smoke-test/run', async (c) => {
  */
 
 
-harness.post('/:slug/supervisor', async (c) => {
-  const project = await resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
-  if (!project) return c.json({ error: 'unknown project' }, 404);
-  const script = harnessPath('bin', 'supervisor.sh');
-  if (!existsSync(script)) return c.json({ error: 'supervisor.sh not found' }, 500);
-  return new Promise((resolve) => {
-    const { execFile } = require('node:child_process');
-    execFile('bash', [script], { cwd: project.path, maxBuffer: 4 * 1024 * 1024, env: { ...process.env, CLAUDE: process.env.AGENT_CMD ?? process.env.CLAUDE ?? 'omp -p' } }, (err: any, stdout: string, stderr: string) => {
-      if (err) {
-        resolve(c.json({ ok: false, error: String(err.message || err), stderr: stderr ?? '', stdout: stdout ?? '' }, 500));
-        return;
-      }
-      // Extract the decision line "SUPERVISOR: <outcome>" from stdout
-      const last = (stdout ?? '').trim().split('\n').reverse().find((l) => l.startsWith('SUPERVISOR:')) ?? '';
-      resolve(c.json({ ok: true, outcome: last, stdout, stderr }));
-    });
-  }) as Promise<Response>;
-});
-
-
-// SSE: emit 'change' on supervisor-notes.md mtime/size shifts.
 
 // ─── usage / cost aggregation ─────────────────────────────────────────
 
@@ -1957,34 +1936,6 @@ harness.post('/:slug/save-as-template', async (c) => {
 });
 
 
-harness.post('/:slug/escalation/resolve', async (c) => {
-  const project = await resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
-  if (!project) return c.json({ error: 'unknown project' }, 404);
-  const body = await c.req.json().catch(() => ({}));
-  const response = typeof body.response === 'string' ? body.response.trim() : '';
-  const action = body.action === 'clear' ? 'clear' : 'keep';
-
-  const slug = c.req.param('slug');
-  const supervisorNotesPath = join(harnessDir(project), 'supervisor-notes.md');
-  const { appendTextArtifact, loadTextArtifact, deleteTextArtifact } = await import('@/lib/text-artifacts');
-  if (response) {
-    const block = `\n## Human response ${new Date().toISOString()}\n\n${response}\n`;
-    await appendTextArtifact(slug, 'supervisor-notes.md', block);
-    try { await appendFile(supervisorNotesPath, block, 'utf8'); } catch {}
-  }
-
-  if (action === 'clear') {
-    await deleteTextArtifact(slug, 'escalation.md');
-    try { await unlink(join(harnessDir(project), 'escalation.md')); } catch {}
-  }
-
-  const pgNotes = await loadTextArtifact(slug, 'supervisor-notes.md');
-  return c.json({
-    ok: true,
-    supervisorNotes: pgNotes ?? safeRead(supervisorNotesPath),
-    cleared: action === 'clear',
-  });
-});
 
 harness.post('/:slug/resume', async (c) => {
   const project = await resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
