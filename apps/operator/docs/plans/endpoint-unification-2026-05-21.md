@@ -12,7 +12,9 @@ companion-to: [endpoint-route-migration-2026-05-20, phase-4-endpoint-system-2026
 
 **State:** E1 + E2 shipped. E1 (`c567f7ac`) — type-additive `defineTool` fields. E2 — the load-bearing auth fix: the `/api/agent-tools/*` catch-all now resolves a mobile device JWT (composite bearer resolver: `resolveBearer` token_index → mobile JWT), and `requirePrincipal()` gained a `from-bearer-token` resolver so agent `system`/`pi` bearers resolve there too. A paired phone can now call any built-in `defineTool`.
 
-**Next:** E3 — `expose.mobile` flag wiring + centralized CORS step in route-stack; move `ensureMobileDevicesTable()` DDL to host startup.
+**Next:** E4 — migrate the 33 legacy `_hono/mobile.ts` routes to `defineRoute` (5 family batches; URLs stay `/api/mobile/*`).
+
+E3 shipped: `mobile: true` flag on `RouteDefinition` — `registerRoute` mounts the shared `mobileCors` middleware (deduped per-app), `defineRoute` folds `'mobile'` into an explicit `auth.kind`. `ensureMobileDevicesTable()` DDL moved to `runBootstrap()`. The `/api/agent-tools/*` catch-all is now `mobile: true` so the phone reaches built-in tools cross-origin.
 
 **Scope adjustment (E2 review):** the telemetry-table merge (`route_invocations` → `tool_invocations` with a `kind` discriminator) is **moved from E2 to E6**. Rationale: migration 077 separated the tables *by deliberate design* (RFC Q1 — genuinely different column sets, different volume/retention). The merge's benefit only fully materializes once `defineRoute` actually collapses into `defineTool` (E6) and the route/tool distinction disappears at the dispatch level. Forcing a PG migration in E2 would couple the auth fix to schema-migration risk for no near-term gain. E2 ships the auth fix alone.
 
@@ -195,13 +197,15 @@ E14 Delete _hono/* directory (keep only app.ts as host seam)
 - **Deferred:** the "merge route-stack + projected-tool dispatch into one driver" cleanup and the telemetry-table merge → both fold into E6 when `defineRoute` actually collapses. Keeping two dispatch stacks is fine as long as both share `requirePrincipal`-class auth — which they now do.
 - Acceptance met: endpoint-route suite green except 2 pre-existing unrelated failures (`auth-posture` — another agent's untracked admin routes; `design.test.ts` — `@restart/db-org` mock drift).
 
-### Phase E3 — `expose.mobile` flag + centralized CORS (fixes G2)
+### Phase E3 — `mobile` flag + centralized CORS (fixes G2) — ✅ SHIPPED
 
-- Add `cors` step to route-stack reading from mobile-eligible path registry.
-- `expose.mobile: true` registers the path + extends `auth.kind` to include `'mobile'` (idempotent).
-- Move `ensureMobileDevicesTable()` from per-request lazy DDL to `hono-host.ts` startup.
-- Delete CORS block from `_hono/mobile.ts`.
-- Acceptance: a `defineTool({ expose: { mobile: true, http: {...}, mcp: {...} } })` is callable from a Tauri WebView (CORS preflight passes) AND from the paired phone (JWT auth + kind passes).
+- ✅ `mobile?: boolean` on `RouteDefinition`. `registerRoute` mounts the shared `mobileCors` middleware (`lib/endpoint-route/cors.ts`) for `mobile: true` routes — deduped per-app via a `Symbol`-keyed Set so the agent-tools catch-all's 5 same-path defineRoutes don't stack the middleware 5×.
+- ✅ `defineRoute` folds `'mobile'` into an explicit `auth.kind` allowlist (idempotent; `auth: 'public'` and kind-unrestricted gates left untouched).
+- ✅ `ensureMobileDevicesTable()` DDL moved to `runBootstrap()` (host startup) — the legacy per-request lazy call stays as a safety net until `_hono/mobile.ts` is deleted in E5.
+- ✅ `/api/agent-tools/*` catch-all marked `mobile: true` — combined with E2's composite bearer resolver, the phone can now call built-in tools cross-origin.
+- ✅ Tests: `mobile-cors.test.ts` (9 tests) — kind-folding, origin allowlist, OPTIONS preflight, no-CORS-on-non-mobile.
+- **Note:** the CORS-block deletion from `_hono/mobile.ts` was deferred from E3's bullet to E5 — deleting it while the legacy routes still serve would break mobile clients mid-migration. E3 only *adds* the centralized mechanism.
+- **Implementation note:** done as Hono `app.use` middleware, not a route-stack step. The route-stack runs inside a single matched handler and never sees the OPTIONS preflight; `cors()` middleware does. Same end state (one allowlist, declarative opt-in), correct mechanism.
 
 ### Phase E4 — Migrate the 33 legacy mobile routes
 

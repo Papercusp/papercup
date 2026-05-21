@@ -144,6 +144,12 @@ export default methods.map((method) =>
     method,
     path: PATH,
     auth: 'public',
+    // Phase E3 — the phone calls built-in tools cross-origin
+    // (api.papercuspai.com → this host). `mobile: true` mounts the
+    // shared mobileCors middleware so the preflight + Authorization
+    // header are accepted. Auth itself is the composite bearer resolver
+    // wired in E2 (`HOST_EXTRAS.resolvePrincipalAndTx`).
+    mobile: true,
     handler: dispatchHttp,
   }),
 );

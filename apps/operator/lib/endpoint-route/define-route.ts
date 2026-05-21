@@ -27,6 +27,7 @@ import type { ZodTypeAny, z } from 'zod';
 import type { Principal } from '@papercusp/agent-mcp';
 import type { PrincipalRequirements } from '@/lib/auth/require-principal';
 import { runRouteStack } from './route-stack';
+import { mobileCors } from './cors';
 
 /* ─── Types ──────────────────────────────────────────────────────────── */
 
@@ -87,6 +88,24 @@ export interface RouteDefinition<TInputSchema extends ZodTypeAny | undefined = u
    * flood. 0 = never record (pure transport routes).
    */
   sampleRate?: number;
+  /**
+   * Mark this route mobile-eligible — the one-line "make it reachable
+   * from the paired phone" flag (Phase E3, endpoint-unification-2026-05-21).
+   *
+   * `mobile: true` does two things:
+   *   1. `registerRoute` applies the shared `mobileCors` middleware
+   *      (origin allowlist: tauri.localhost, localhost:*, 127.0.0.1:*,
+   *      10.0.2.2:*) so the cross-origin phone client + OPTIONS preflight
+   *      work without a per-route CORS block.
+   *   2. `defineRoute` extends `auth.kind` to include `'mobile'` when an
+   *      explicit `kind` allowlist is present — so a route that gates on
+   *      `kind: ['user']` also admits the device-JWT principal. Routes
+   *      with `auth: 'public'` or no `kind` restriction need no change.
+   *
+   * This is the `defineRoute` counterpart of `defineTool`'s
+   * `expose.mobile`; Phase E6 collapses the two onto one field.
+   */
+  mobile?: boolean;
   /** The handler. Web-standard in, Web-standard out. */
   handler: (
     req: Request,
@@ -102,14 +121,48 @@ export interface RouteDefinition<TInputSchema extends ZodTypeAny | undefined = u
 export function defineRoute<TInputSchema extends ZodTypeAny | undefined = undefined>(
   def: RouteDefinition<TInputSchema>,
 ): RouteDefinition<TInputSchema> {
+  // `mobile: true` sugar — when the route gates on an explicit `kind`
+  // allowlist, fold `'mobile'` in so the device-JWT principal is admitted.
+  // `auth: 'public'` and kind-unrestricted gates need no change.
+  if (def.mobile === true && typeof def.auth === 'object' && def.auth !== null) {
+    const auth = def.auth;
+    if (Array.isArray(auth.kind) && !auth.kind.includes('mobile')) {
+      return { ...def, auth: { ...auth, kind: [...auth.kind, 'mobile'] } };
+    }
+  }
   return def;
 }
+
+/**
+ * Per-app set of paths that already have `mobileCors` mounted. Keyed on
+ * the Hono app instance (each test builds a fresh app) so a module-level
+ * Set can't wrongly skip CORS on a second app. Deduped because the
+ * agent-tools catch-all is an array of 5 same-path defineRoutes — without
+ * this, `app.use` would stack the middleware 5×.
+ */
+const MOBILE_CORS_PATHS = Symbol.for('papercusp.endpoint-route.mobileCorsPaths');
 
 /**
  * Mount one route definition onto a Hono app. The Hono handler runs the
  * route through the route-stack (`route-stack.ts`) — auth, input
  * validation, timeout, invoke, telemetry.
+ *
+ * For `mobile: true` routes, the shared `mobileCors` middleware is
+ * mounted (once per path) ahead of the handler so the cross-origin
+ * phone client + its OPTIONS preflight are handled centrally.
  */
 export function registerRoute(app: Hono, def: RouteDefinition<ZodTypeAny | undefined>): void {
+  if (def.mobile) {
+    const reg = app as unknown as Record<symbol, Set<string> | undefined>;
+    let paths = reg[MOBILE_CORS_PATHS];
+    if (!paths) {
+      paths = new Set<string>();
+      reg[MOBILE_CORS_PATHS] = paths;
+    }
+    if (!paths.has(def.path)) {
+      paths.add(def.path);
+      app.use(def.path, mobileCors);
+    }
+  }
   app.on(def.method, def.path, (c) => runRouteStack(def, c));
 }
