@@ -31,6 +31,14 @@ companion-to: [endpoint-route-migration-2026-05-20]
 > layer is now genuinely `tsc`-clean. See the matching note in
 > `endpoint-route-migration-2026-05-20.md`.
 
+> **R3 lint closeout (2026-05-21).** R3's stated acceptance — "`@redocly/cli
+> lint` clean" — was also unverified. The 2026-05-21 audit ran it: **1340
+> errors** (795 `:`-in-component-key + 544 missing `operation-summary`), a
+> pre-existing tool-emitter defect the migration inherited rather than caused.
+> Fixed in `fa0f69c5`; the served document now lints **0 errors** (3 cosmetic
+> warnings). See the matching closeout note in the R3 phase of
+> `endpoint-route-migration-2026-05-20.md`.
+
 The user authorized executing R2–R6 without check-ins, deciding freely, and recording questionable calls here. This is that record.
 
 ---

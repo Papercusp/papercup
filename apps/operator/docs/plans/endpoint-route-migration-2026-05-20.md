@@ -127,6 +127,21 @@ Coordination: `coord/` channel; `locks:acquire` per batch; I never touch the Vit
 - **Acceptance:** `openapi.json` covers substrate tools + every migrated route; `@redocly/cli lint` clean.
 - **Rollback:** revert the assembler change.
 
+> **Audit closeout (2026-05-21).** The `@redocly/cli lint` clean acceptance
+> criterion was **never verified** at ship time. A 2026-05-21 code-only audit
+> regenerated the document and ran the lint: **1340 errors** — 795
+> `spec-components-invalid-map-name` (tool operationIds use `:`, illegal in
+> OpenAPI 3.1 §4.8.7 component-map keys) + 544 `operation-summary` (no
+> operation declared a `summary`). Root cause was the tool→OpenAPI emitter
+> and is **pre-existing** — the migration only *added* route fragments to an
+> already-non-conformant document. Fixed in `fa0f69c5` (`componentKey()`
+> sanitizes `:`→`_` for schema keys and their `$ref`s; `summary:` added to
+> every tool and route operation). Re-verified against committed code: the
+> served `/api/openapi.json` document (584 paths, 820 schema keys, 0
+> containing `:`) now lints **0 errors** — 3 cosmetic warnings only
+> (`info-license`, an unused `UnknownTool` response, a loopback-host
+> `servers` URL; none blocking). R3's acceptance criterion is now met.
+
 ### Phase R4 — substrate rebind (14 routes)
 
 - **Scope:** the 14 already-`defineTool` endpoints — move their HTTP-path binding off the Next `route.ts` shim onto the Hono `app` (a `registerRoute`-style binding that dispatches the existing tool). Delete the 14 shims.
