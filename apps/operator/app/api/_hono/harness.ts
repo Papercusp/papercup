@@ -2878,9 +2878,6 @@ harness.post('/:slug/resume', async (c) => {
 });
 
 
-/**
- * Path patterns excluded from /git/show patches by default. These are
- * generated/agent-written files that produce massive diffs (the sheets
 
 // Find all PIDs of run.sh running for this project + their descendants.
 function findHarnessPids(projectPath: string): number[] {
