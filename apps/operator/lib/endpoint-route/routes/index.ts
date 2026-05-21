@@ -69,6 +69,7 @@ import harnessHooks from './harness/hooks';
 import harnessConfigFiles from './harness/config-files';
 import harnessSkillsNotes from './harness/skills-notes';
 import harnessPrompts from './harness/prompts';
+import harnessBrainstorm from './harness/brainstorm';
 import harnessAllKpis from './harness/all-kpis';
 import harnessSearch from './harness/search';
 import harnessFile from './harness/file';
@@ -411,6 +412,7 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(harnessConfigFiles as AnyRoute[]),
   ...flatten(harnessSkillsNotes as AnyRoute[]),
   ...flatten(harnessPrompts as AnyRoute[]),
+  ...flatten(harnessBrainstorm as AnyRoute[]),
   ...flatten(harnessAllKpis as AnyRoute),
   ...flatten(harnessSearch as AnyRoute),
   ...flatten(harnessFile as AnyRoute[]),
