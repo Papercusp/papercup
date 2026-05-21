@@ -107,6 +107,11 @@ import pluginsHostRefresh from './plugins/host-refresh';
 import pluginsContributions from './plugins/contributions';
 import pluginsIframeEntry from './plugins/iframe-entry';
 import pluginsUpdates from './plugins/updates';
+import pluginsList from './plugins/list';
+import pluginsInstalled from './plugins/installed';
+import pluginsRuntimeStatus from './plugins/runtime-status';
+import pluginsRuntimeInvokeAction from './plugins/runtime-invoke-action';
+import pluginsRuntimeFireEvent from './plugins/runtime-fire-event';
 import pluginsCatchall from './plugins/catchall';
 import agentMcp_agents from './agent-mcp/agents';
 import agentMcp_consoleLaunch from './agent-mcp/console-launch';
@@ -428,7 +433,13 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(pluginsContributions as AnyRoute),
   ...flatten(pluginsIframeEntry as AnyRoute),
   ...flatten(pluginsUpdates as AnyRoute),
-  // Plugins catch-all after literals — projected-tool dispatch.
+  // Relocated from _hono/plugins.ts (A3, 2026-05-21).
+  ...flatten(pluginsList as AnyRoute),
+  ...flatten(pluginsInstalled as AnyRoute),
+  ...flatten(pluginsRuntimeStatus as AnyRoute),
+  ...flatten(pluginsRuntimeInvokeAction as AnyRoute),
+  ...flatten(pluginsRuntimeFireEvent as AnyRoute),
+  // Plugins catch-all after literals — plugin-apiRoutes registry, then projected-tool dispatch.
   ...flatten(pluginsCatchall as AnyRoute[]),
   // Transport last — single-segment :transport must not shadow literal paths.
   ...flatten(transport as AnyRoute[]),

@@ -1,15 +1,17 @@
 /**
  * Unit tests for the apiRoutes dispatcher + lazy registry rebuild.
  *
- * Covers the routing-rewrite that landed 2026-04-30: instead of static
+ * Covers the routing rewrite that landed 2026-04-30: instead of static
  * `app.mount('/plugins/<name>', ...)` (which Hono.app.route silently
- * shadows), the host registers one catch-all on the plugins sub-app and
- * dispatches by safe-name from an in-memory registry.
+ * shadows), the host keys an in-memory registry by safe-name and
+ * forwards via `dispatchPluginApiRoute(req)`. The Hono-sub-app
+ * `installPluginApiDispatcher` wrapper was deleted in the endpoint-hono
+ * -elimination 2026-05-21 A3 migration; dispatch is now driven directly
+ * from `routes/plugins/catchall.ts`.
  */
 import { describe, it, expect, beforeEach } from 'vitest';
-import { Hono } from 'hono';
 import {
-  installPluginApiDispatcher,
+  dispatchPluginApiRoute,
   mountPluginApiRoutes,
   pluginApiRegistryNames,
   pluginApiRoutesStatus,
@@ -20,77 +22,70 @@ beforeEach(() => {
   _resetPluginApiRoutesForTests();
 });
 
-function buildHostApp(): { app: Hono; plugins: Hono } {
-  const app = new Hono().basePath('/api');
-  const plugins = new Hono();
-  plugins.get('/runtime/status', (c) => c.json({ ok: 'plugins-handler' }));
-  installPluginApiDispatcher(plugins);
-  app.route('/plugins', plugins);
-  return { app, plugins };
-}
-
-describe('installPluginApiDispatcher', () => {
-  it('returns 404 from sub-app when no plugins registered', async () => {
-    const { app } = buildHostApp();
-    // The dispatcher will lazy-rebuild on first dispatch via filesystem
-    // discovery (PAPERCUSP_GLOBAL_PLUGINS_DIR is unset → empty registry).
-    const r = await app.fetch(new Request('http://x/api/plugins/_papercupai_nope/ping'));
-    expect(r.status).toBe(404);
+describe('dispatchPluginApiRoute', () => {
+  it('returns null when the requested plugin is not registered', async () => {
+    // Empty registry — first dispatch triggers a lazy rebuild with no
+    // discovery sources, so the registry stays empty.
+    const r = await dispatchPluginApiRoute(
+      new Request('http://x/api/plugins/_papercupai_nope/ping'),
+    );
+    expect(r).toBeNull();
   });
 
-  it('does not shadow the plugins sub-app routes', async () => {
-    const { app } = buildHostApp();
-    const r = await app.fetch(new Request('http://x/api/plugins/runtime/status'));
-    expect(r.status).toBe(200);
-    expect(await r.json()).toEqual({ ok: 'plugins-handler' });
+  it('returns null when the path does not match /plugins/<name>', async () => {
+    // Defensive — catch-all is /plugins/*, but Hono's host basePath
+    // strip may hand the dispatcher unexpected shapes. A non-matching
+    // path yields null (no forwarding).
+    const r = await dispatchPluginApiRoute(
+      new Request('http://x/api/something-else/here'),
+    );
+    expect(r).toBeNull();
   });
 
-  it('dispatches to a plugin registered after app.route(...)', async () => {
+  it('dispatches to a plugin registered after the catch-all is mounted', async () => {
     // Demonstrates the Hono.route-snapshot footgun is resolved: registry
-    // mutations after `app.route()` are visible to subsequent requests.
-    const { app, plugins } = buildHostApp();
-    expect(plugins).toBeDefined();
+    // mutations after route registration are visible to subsequent
+    // requests, because dispatch is per-request through `__cache`.
     const fakePlugin = {
       async fetch(req: Request) {
         const u = new URL(req.url);
         return Response.json({ ok: true, path: u.pathname });
       },
     };
-    // Inject directly into the registry by re-using mountPluginApiRoutes's
-    // exposed names (we drive it through a fixture dir below). For this
-    // test, exercise the `_unsafe` injection path: we rebuild via the
-    // public function but with no fixture, then push into the registry
-    // through pluginApiRegistryNames's underlying state by mounting a
-    // minimal fixture plugin.
     const tmp = await makeTempPlugin('test-plugin', fakePlugin);
-    await mountPluginApiRoutes(null as any, { globalPluginsDir: tmp.dir, harnessSlugs: [] });
+    await mountPluginApiRoutes({ globalPluginsDir: tmp.dir, harnessSlugs: [] });
     expect(pluginApiRegistryNames()).toContain('test-plugin');
 
-    const r = await app.fetch(new Request('http://x/api/plugins/test-plugin/some/deep/path?q=1'));
-    expect(r.status).toBe(200);
-    const body = await r.json();
+    const r = await dispatchPluginApiRoute(
+      new Request('http://x/api/plugins/test-plugin/some/deep/path?q=1'),
+    );
+    expect(r).not.toBeNull();
+    expect(r!.status).toBe(200);
+    const body = await r!.json();
     expect(body.ok).toBe(true);
     expect(body.path).toBe('/some/deep/path');
   });
 
-  it('handles bare plugin path (no trailing segment)', async () => {
+  it('handles a bare plugin path (no trailing segment)', async () => {
     const fakePlugin = {
       async fetch(req: Request) {
         return Response.json({ ok: true, url: new URL(req.url).pathname });
       },
     };
     const tmp = await makeTempPlugin('bare', fakePlugin);
-    await mountPluginApiRoutes(null as any, { globalPluginsDir: tmp.dir, harnessSlugs: [] });
-    const { app } = buildHostApp();
-    const r = await app.fetch(new Request('http://x/api/plugins/bare'));
-    expect(r.status).toBe(200);
-    expect((await r.json()).ok).toBe(true);
+    await mountPluginApiRoutes({ globalPluginsDir: tmp.dir, harnessSlugs: [] });
+    const r = await dispatchPluginApiRoute(
+      new Request('http://x/api/plugins/bare'),
+    );
+    expect(r).not.toBeNull();
+    expect(r!.status).toBe(200);
+    expect((await r!.json()).ok).toBe(true);
   });
 
-  it('clears the registry on reset and re-populates on next mount call', async () => {
+  it('clears the registry on reset and re-populates on the next mount call', async () => {
     const fakePlugin = { async fetch() { return Response.json({ alive: true }); } };
     const tmp = await makeTempPlugin('reborn', fakePlugin);
-    await mountPluginApiRoutes(null as any, { globalPluginsDir: tmp.dir, harnessSlugs: [] });
+    await mountPluginApiRoutes({ globalPluginsDir: tmp.dir, harnessSlugs: [] });
     expect(pluginApiRegistryNames()).toContain('reborn');
 
     _resetPluginApiRoutesForTests();
@@ -99,14 +94,14 @@ describe('installPluginApiDispatcher', () => {
     // Calling mount again with the same fixture rebuilds the registry —
     // this is the path that install-plugin / uninstall / status?reset=1
     // exercise after a reset.
-    await mountPluginApiRoutes(null as any, { globalPluginsDir: tmp.dir, harnessSlugs: [] });
+    await mountPluginApiRoutes({ globalPluginsDir: tmp.dir, harnessSlugs: [] });
     expect(pluginApiRegistryNames()).toContain('reborn');
   });
 
   it('records mount counts via pluginApiRoutesStatus', async () => {
     const fakePlugin = { async fetch() { return new Response('ok'); } };
     const tmp = await makeTempPlugin('counted', fakePlugin);
-    const r = await mountPluginApiRoutes(null as any, { globalPluginsDir: tmp.dir, harnessSlugs: [] });
+    const r = await mountPluginApiRoutes({ globalPluginsDir: tmp.dir, harnessSlugs: [] });
     expect(r.mounted).toBe(1);
     expect(pluginApiRoutesStatus()).toEqual(r);
   });

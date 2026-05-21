@@ -5,7 +5,7 @@
 import { promises as fs } from 'node:fs';
 import { join, basename, dirname } from 'node:path';
 import { papercuspRoot } from '@/lib/papercusp-root';
-import { listPluginsIn } from '@/app/api/_hono/plugins';
+import { listPluginsIn } from '@/lib/plugin-catalog';
 import { defineRoute } from '../../define-route';
 
 const HARNESS_SLUG = /^[a-z0-9][a-z0-9._-]{0,63}$/i;

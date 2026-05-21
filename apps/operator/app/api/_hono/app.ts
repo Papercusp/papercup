@@ -16,8 +16,6 @@ import { Hono } from 'hono';
 import { compress } from 'hono/compress';
 import { cors } from 'hono/cors';
 import { harness } from './harness';
-import { plugins } from './plugins';
-import { installPluginApiDispatcher } from '../../../lib/plugin-api-mount';
 import { registerRouteLiterals, registerRouteCatchalls } from '../../../lib/endpoint-route/register';
 
 const app = new Hono().basePath('/api');
@@ -80,14 +78,12 @@ registerRouteLiterals(app);
 
 app.route('/harness', harness);
 
-// Plugin apiRoutes — installPluginApiDispatcher mutates `plugins` to add a
-// single catch-all that consults the in-memory apiRoutes registry per
-// request. This is structural to the app instance (must happen before
-// `app.route('/plugins', plugins)`), so it lives here rather than in
-// bootstrap. The async mountPluginApiRoutes() call that *populates* the
-// registry from disk lives in bootstrap.ts.
-installPluginApiDispatcher(plugins);
-app.route('/plugins', plugins);
+// /api/plugins/* — fully migrated to `defineRoute` (endpoint-hono
+// -elimination-2026-05-21 A3). Static metadata routes register via
+// `registerRouteLiterals(app)` above; the `/plugins/*` catch-all
+// (`routes/plugins/catchall.ts`) registers via `registerRouteCatchalls`
+// below and handles both plugin-`apiRoutes` dispatch (registry-keyed,
+// via `dispatchPluginApiRoute`) and projected-tool dispatch.
 
 // Mobile API (pair, push, voice, workspaces) — migrated off the legacy
 // `_hono/mobile.ts` Hono router to `defineRoute` modules under

@@ -8,7 +8,7 @@ import { join, dirname } from 'node:path';
 import { createHash } from 'node:crypto';
 import { mirrorHarness } from '@/lib/plugin-enables-pg';
 import { mirrorPluginConfig } from '@/lib/plugin-configs-pg';
-import { listPluginsIn } from '@/app/api/_hono/plugins';
+import { listPluginsIn } from '@/lib/plugin-catalog';
 import { papercuspRoot } from '@/lib/papercusp-root';
 import { defineRoute } from '../../define-route';
 

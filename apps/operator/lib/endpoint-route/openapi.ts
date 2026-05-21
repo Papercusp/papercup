@@ -36,7 +36,13 @@ function pathParamNames(path: string): string[] {
 
 /** Stable, unique operationId from method + path. */
 function operationId(method: string, path: string): string {
-  return `route.${method}.${path}`.replace(/[^A-Za-z0-9]+/g, '_').replace(/_+$/g, '');
+  // Map wildcard segments to a stable token before the generic non-
+  // alphanumeric collapse — otherwise `/plugins` and `/plugins/*` both
+  // reduce to `route_GET_plugins` (the trailing-underscore strip eats
+  // the segment delimiter). Surfaced when /plugins was migrated off
+  // _hono in endpoint-hono-elimination-2026-05-21 A3.
+  const tokens = path.replace(/\*/g, 'wildcard');
+  return `route.${method}.${tokens}`.replace(/[^A-Za-z0-9]+/g, '_').replace(/_+$/g, '');
 }
 
 function zodToJsonSchemaSafe(schema: unknown): Record<string, unknown> {

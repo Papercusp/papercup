@@ -16,7 +16,6 @@
  * so even an accidental double-call from a different bootstrap path is safe.
  */
 import { mountPluginApiRoutes } from '../../../lib/plugin-api-mount';
-import { plugins } from './plugins';
 import { startAutoLoopOnce } from '../../../lib/autoloop';
 import { ensureHarnessFsWatcher } from '../../../lib/harness-fs-watcher';
 import { ensureHarnessStatusSweep } from '../../../lib/harness-status-sweep';
@@ -36,14 +35,15 @@ export function runBootstrap(): void {
   g[GUARD_KEY] = true;
 
   // Plugin apiRoutes — populate the in-memory registry from disk. The
-  // catch-all dispatcher on `plugins` (installed in app.ts) consults this
-  // registry per request, so hot-reload + post-boot symlinks work without
-  // the Hono-route-snapshot footgun.
+  // `/plugins/*` defineRoute catch-all (routes/plugins/catchall.ts)
+  // consults this registry per request via `dispatchPluginApiRoute`,
+  // so hot-reload + post-boot symlinks work without the
+  // Hono-route-snapshot footgun.
   //
   // KNOWN LIMITATION: Next.js's runtime cannot dynamic-import `.ts` plugin
   // files (works under tsx but not Next's bundler). Plugins must ship a
   // pre-compiled `.js` entry point to be reachable in-process.
-  mountPluginApiRoutes(plugins)
+  mountPluginApiRoutes()
     .then((r) => {
       console.log(`[plugin-mount] mounted=${r.mounted} skipped=${r.skipped} errors=${r.errors.length}`);
       for (const e of r.errors) {

@@ -7,12 +7,15 @@
  * `listPluginsIn` did a single-level directory walk and missed scoped
  * plugins. The marketplace UI's "installed" detection is backed by this
  * function, so plugins were silently invisible after install.
+ *
+ * Relocated from `app/api/_hono/plugins.test.ts` (endpoint-hono
+ * -elimination-2026-05-21 A3) alongside `listPluginsIn`.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { listPluginsIn } from './plugins';
+import { listPluginsIn } from './plugin-catalog';
 
 let ROOT: string;
 

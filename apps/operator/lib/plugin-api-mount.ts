@@ -5,19 +5,21 @@
  * `apiRoutes` (a Hono app or any object with a `fetch(req)` method)
  * into an in-memory registry keyed by safe-name.
  *
- * `installPluginApiDispatcher(plugins)` adds ONE catch-all route on the
- * supplied Hono router that looks up the requested plugin and forwards
- * the request to its handler. We use runtime dispatch instead of
- * `Hono.mount(...)` because Hono's `app.route(prefix, sub)` snapshots the
- * sub-app's routes at registration time — late mounts (after server boot
- * or after a hot-reload reset) silently no-op.
+ * `dispatchPluginApiRoute(req)` resolves the requested plugin by the
+ * first `/api/plugins/<name>/…` path segment and forwards the request to
+ * that plugin's `apiRoutes` handler. It returns `null` when the segment
+ * is not a registered plugin, so the `/plugins/*` `defineRoute` catch-all
+ * (`routes/plugins/catchall.ts`) can fall through to projected-tool
+ * dispatch. We use runtime dispatch instead of `Hono.mount(...)` because
+ * Hono's `app.route(prefix, sub)` snapshots the sub-app's routes at
+ * registration time — late mounts (after server boot or after a
+ * hot-reload reset) silently no-op.
  *
  * Plugin authors expose `apiRoutes` in their manifest as a Hono app. The
  * SDK types this as `unknown` (to keep the SDK Hono-version-agnostic);
  * we duck-type at registration time and skip plugins that don't expose
  * a Hono-shaped `fetch` handler.
  */
-import type { Hono } from 'hono';
 import { loadPlugins, type LoadedPlugin } from '@papercusp/plugin-loader';
 import { existsSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
@@ -60,24 +62,14 @@ export interface MountPluginApiRoutesOptions {
   globalPluginsDir?: string;
   /** Override the harness-slug list (tests). Defaults to scanning ~/.papercusp/harnesses. */
   harnessSlugs?: string[];
-  /**
-   * Compatibility shim — ignored (the runtime now uses an in-router
-   * dispatcher rather than path mounts). Accepted so existing callers
-   * don't break.
-   */
-  mountPrefix?: string;
 }
 
 /**
  * Build / refresh the in-memory plugin-apiRoutes registry. Idempotent
  * after first call until `_resetPluginApiRoutesForTests()` is invoked.
- *
- * The `parent` argument is accepted for back-compat with the old mount
- * API but is no longer used — dispatch happens via
- * `installPluginApiDispatcher(plugins)` which registers a single
- * catch-all route on the plugins sub-app.
+ * Dispatch into the registry happens via `dispatchPluginApiRoute`.
  */
-export function mountPluginApiRoutes(_parent: Hono<any, any, any>, opts: MountPluginApiRoutesOptions = {}): Promise<{ mounted: number; skipped: number; errors: string[] }> {
+export function mountPluginApiRoutes(opts: MountPluginApiRoutesOptions = {}): Promise<{ mounted: number; skipped: number; errors: string[] }> {
   if (__cache.promise) return __cache.promise;
 
   __cache.promise = (async () => {
@@ -149,46 +141,38 @@ async function ensureRegistryBuilt(): Promise<void> {
   }
   // Lazy rebuild: install/uninstall reset paths clear the cache and don't
   // re-call mountPluginApiRoutes themselves. We rehydrate on first dispatch.
-  await mountPluginApiRoutes(null as any);
+  await mountPluginApiRoutes();
 }
 
 /**
- * Register a single catch-all route on the given Hono router that
- * forwards `/<safe-name>/...` requests to the corresponding plugin's
- * apiRoutes handler. Safe to call once at module init — the underlying
- * registry is hot-swappable without re-registering this route.
+ * Resolve a `/api/plugins/<name>/…` request to a registered plugin's
+ * `apiRoutes` handler and forward to it. Returns the plugin's `Response`,
+ * or `null` when the first path segment is not a registered plugin — the
+ * `/plugins/*` `defineRoute` catch-all then falls through to projected-
+ * tool dispatch.
+ *
+ * Relocated from the Hono-sub-app `installPluginApiDispatcher` mutation
+ * (endpoint-hono-elimination-2026-05-21 A3). The old dispatcher yielded
+ * via Hono `next()`; a `defineRoute` handler cannot yield, so the
+ * fall-through is expressed as a `null` return the catch-all checks.
  */
-export function installPluginApiDispatcher(router: Hono<any, any, any>): void {
-  router.all('/:pluginName/*', async (c, next) => {
-    await ensureRegistryBuilt();
-    const name = c.req.param('pluginName');
-    const handle = __cache.registry.get(name);
-    // Registry miss → this isn't a plugin-contributed apiRoute. YIELD
-    // (`next()`), don't terminate: a literal `/plugins/<x>` defineRoute
-    // or the projected-tool `/plugins/*` catch-all may still handle it.
-    // Returning c.notFound() here would shadow every such route. See
-    // endpoint-route-migration-2026-05-20.md audit + register.ts.
-    if (!handle) return next();
-    // Hand the inner handler a Request stripped of the `/<plugin-name>` prefix
-    // and the parent's basePath so its own internal routing matches the way
-    // it does in standalone tests.
-    const url = new URL(c.req.url);
-    const stripped = url.pathname.replace(new RegExp(`^.*/plugins/${name}`), '') || '/';
-    const innerUrl = url.origin + stripped + url.search;
-    const innerReq = new Request(innerUrl, c.req.raw);
-    return handle.fetch(innerReq);
-  });
-  router.all('/:pluginName', async (c, next) => {
-    await ensureRegistryBuilt();
-    const name = c.req.param('pluginName');
-    const handle = __cache.registry.get(name);
-    // Registry miss → yield (see the '/:pluginName/*' handler above).
-    if (!handle) return next();
-    const url = new URL(c.req.url);
-    const innerUrl = url.origin + '/' + url.search;
-    const innerReq = new Request(innerUrl, c.req.raw);
-    return handle.fetch(innerReq);
-  });
+export async function dispatchPluginApiRoute(req: Request): Promise<Response | null> {
+  const url = new URL(req.url);
+  // pathname is `/api/plugins/<name>` or `/api/plugins/<name>/<rest>`.
+  const m = url.pathname.match(/\/plugins\/([^/]+)(\/.*)?$/);
+  if (!m) return null;
+  const name = decodeURIComponent(m[1]);
+  await ensureRegistryBuilt();
+  const handle = __cache.registry.get(name);
+  // Registry miss → not a plugin-contributed apiRoute. Return null so the
+  // caller falls through to literal routes / projected-tool dispatch.
+  if (!handle) return null;
+  // Hand the inner handler a Request stripped of the `/api/plugins/<name>`
+  // prefix so its own internal routing matches the way it does in
+  // standalone tests.
+  const rest = m[2] ?? '/';
+  const innerReq = new Request(url.origin + rest + url.search, req);
+  return handle.fetch(innerReq);
 }
 
 /** Inspector for tests / health endpoints — null until first mount completes. */

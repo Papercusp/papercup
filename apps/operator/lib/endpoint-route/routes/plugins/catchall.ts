@@ -1,8 +1,17 @@
 /**
- * GET/POST/PUT/PATCH/DELETE /api/plugins/* — projected-tool catch-all.
- * Every plugin tool with expose.http.path starting with /api/plugins/
- * is served by this single route.
- * Ported from app/api/plugins/[...path]/route.ts. `auth: 'public'`.
+ * GET/POST/PUT/PATCH/DELETE /api/plugins/* — two-step catch-all.
+ *
+ * 1. First try the in-memory plugin-`apiRoutes` registry: if the first
+ *    path segment after `/plugins/` is a registered plugin's safe-name,
+ *    forward the request to that plugin's handler (relocated from the
+ *    Hono-sub-app `installPluginApiDispatcher`, endpoint-hono-elimination
+ *    -2026-05-21 A3).
+ * 2. Otherwise, fall through to projected-tool dispatch — every plugin
+ *    tool with `expose.http.path` starting with `/api/plugins/` is served
+ *    here.
+ *
+ * `auth: 'public'` — gates live inside the tool definition / plugin
+ * handler, not at the route level.
  */
 import {
   handleHttpToolRequest,
@@ -11,6 +20,7 @@ import {
   type HttpToolHostExtras,
 } from '@papercusp/agent-mcp';
 import { sseResponse } from '@restart/sse';
+import { dispatchPluginApiRoute } from '@/lib/plugin-api-mount';
 import { pluginSpawnImpl, secretImpl } from '@/lib/plugin-spawn-impl';
 import { resolveHarnessPaths } from '@/lib/resolve-harness-paths';
 import { isLoopbackRequest, isValidSuperuserBearer } from '@/lib/superuser-token';
@@ -39,6 +49,11 @@ const HOST_EXTRAS: HttpToolHostExtras = {
 };
 
 async function dispatchHttp(req: Request): Promise<Response> {
+  // Step 1: plugin-`apiRoutes` registry. Returns the plugin's Response,
+  // or null on registry miss — fall through to projected-tool dispatch.
+  const pluginResponse = await dispatchPluginApiRoute(req);
+  if (pluginResponse) return pluginResponse;
+
   const url = new URL(req.url);
 
   let body: unknown = {};

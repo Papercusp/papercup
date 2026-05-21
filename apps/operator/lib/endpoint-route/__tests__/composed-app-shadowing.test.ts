@@ -1,19 +1,22 @@
 /**
  * Regression test for the endpoint-route audit (2026-05-20).
  *
- * The bug: every other endpoint-route test builds a BARE `new Hono()` +
- * `registerAllRoutes` — it never reproduces the real `_hono/app.ts`,
- * which mounts sub-apps (`app.route('/harness', …)`, `app.route('/plugins',
- * …)`). The `plugins` sub-app carries a parametric catch-all
- * (`installPluginApiDispatcher`). When `registerAllRoutes` ran AFTER
- * those mounts, the catch-all shadowed every literal `/plugins/*`
- * defineRoute — 17 of them returned 404 in production while 264 tests
- * stayed green.
+ * The original bug: every other endpoint-route test built a BARE
+ * `new Hono()` + `registerAllRoutes` — never reproducing the real
+ * `_hono/app.ts`, which mounts sub-apps (`app.route('/harness', …)`,
+ * historically `app.route('/plugins', …)`). The `plugins` sub-app
+ * carried a parametric catch-all (`installPluginApiDispatcher`).
+ * When `registerAllRoutes` ran AFTER those mounts, the catch-all
+ * shadowed every literal `/plugins/*` defineRoute — 17 of them
+ * returned 404 in production while 264 tests stayed green.
  *
- * This test reproduces the real mount ORDER and asserts the literals
- * are reachable. It fails if anyone reverts the two-phase split in
- * `register.ts` / `_hono/app.ts` or the dispatcher's yield in
- * `plugin-api-mount.ts`.
+ * The endpoint-hono-elimination 2026-05-21 A3 migration **deleted**
+ * the `plugins` Hono sub-app entirely — `/plugins/*` is now served
+ * exclusively by `defineRoute` modules (literals via phase 1, the
+ * apiRoutes-then-projected-tool catch-all via phase 2). This test
+ * still guards the two-phase split itself: the `harness` sub-app
+ * remains, and any future sub-app added the same way must not
+ * shadow phase-1 literals.
  */
 import { describe, it, expect, beforeAll, vi } from 'vitest';
 import type { Hono as HonoType } from 'hono';
@@ -26,14 +29,13 @@ vi.mock('@/lib/endpoint-route/telemetry', () => ({
 vi.mock('server-only', () => ({}));
 
 import { Hono } from 'hono';
-import { installPluginApiDispatcher } from '@/lib/plugin-api-mount';
 import { registerRouteLiterals, registerRouteCatchalls } from '../register';
 
 /**
  * Reproduce the `_hono/app.ts` mount order exactly:
- *   phase 1 literals → sub-apps (harness, plugins+dispatcher) → phase 2 catch-alls.
- * The harness/plugins sub-apps here are minimal stand-ins — only their
- * SHADOWING shape (a colliding route / the dispatcher catch-all) matters.
+ *   phase 1 literals → sub-apps (harness) → phase 2 catch-alls.
+ * The `harness` sub-app here is a minimal stand-in — only its
+ * SHADOWING shape (a colliding route) matters.
  */
 function composedApp(): Hono {
   const app = new Hono().basePath('/api');
@@ -49,10 +51,6 @@ function composedApp(): Hono {
   harness.post('/:slug/save-as-template', (c) => c.json({ from: 'fake-hono-harness' }));
   app.route('/harness', harness);
 
-  const plugins = new Hono();
-  installPluginApiDispatcher(plugins); // the parametric catch-all that caused the bug
-  app.route('/plugins', plugins);
-
   // ── phase 2: catch-all defineRoutes ──
   registerRouteCatchalls(app);
 
@@ -62,26 +60,28 @@ function composedApp(): Hono {
 describe('composed-app route shadowing (endpoint-route audit regression)', () => {
   it('literal /plugins/* routes reach their defineRoute, not the dispatcher 404', async () => {
     const app = composedApp();
-    // Each of these is a literal defineRoute. Before the fix, the
-    // plugin dispatcher (registered via app.route('/plugins', …)) ran
-    // first and returned 404. All must now be reached — the exact
-    // non-404 status (400/500/200) depends on test-env deps and is
-    // irrelevant; reaching the handler at all is the contract.
+    // Each of these is a literal defineRoute. Before the original
+    // (now-removed) dispatcher fix, the plugin Hono sub-app shadowed
+    // these and returned 404. They must still all be reached even
+    // though the sub-app is gone — the phase-2 `/plugins/*` catch-all
+    // (apiRoutes-then-projected-tool) must not shadow phase-1 literals
+    // either. The exact non-404 status depends on test-env deps and is
+    // irrelevant; reaching the handler is the contract.
     for (const p of [
       '/api/plugins/enabled',
       '/api/plugins/manifest',
       '/api/plugins/grants',
     ]) {
       const res = await app.request(p);
-      expect(res.status, `${p} must reach its defineRoute, not the dispatcher 404`).not.toBe(404);
+      expect(res.status, `${p} must reach its defineRoute, not the catch-all 404`).not.toBe(404);
     }
   });
 
-  it('a 2-segment literal (/plugins/host/*) is not eaten by the /:pluginName/* dispatcher', async () => {
+  it('a 2-segment literal (/plugins/host/*) is not eaten by the /plugins/* catch-all', async () => {
     const app = composedApp();
-    // /plugins/host/query matches the dispatcher's `/:pluginName/*`
-    // (pluginName=host). Empty body → the handler's own 400. Before the
-    // fix this was a dispatcher 404.
+    // /plugins/host/query is a phase-1 literal. The phase-2 /plugins/*
+    // catch-all (the apiRoutes-then-projected-tool dispatcher) must not
+    // shadow it. Empty body → the handler's own 400.
     const res = await app.request('/api/plugins/host/query', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -102,18 +102,17 @@ describe('composed-app route shadowing (endpoint-route audit regression)', () =>
 });
 
 /**
- * The block above guards the MECHANISM (register.ts two-phase + the
- * dispatcher yield) against a stand-in app. This block guards the actual
- * WIRING by importing the real `_hono/app.ts`:
+ * The block above guards the MECHANISM (two-phase registration) against
+ * a stand-in app. This block guards the actual WIRING by importing the
+ * real `_hono/app.ts`:
  *
- *  - `/plugins/*` reachability — a composed-app smoke test. (Note: the
- *    `plugin-api-mount.ts` `next()` yield alone keeps these reachable
- *    regardless of literal-vs-dispatcher registration order, so this
- *    assertion catches a *both-parts* revert, not a lone reorder.)
- *  - `/harness/projects` returns exactly 200 — this DOES catch a
- *    two-phase reorder. The ported defineRoute is a pure-FS handler that
- *    always 200s; the colliding `_hono` `harness.get('/projects')` opens
- *    per-slug PG pools and fails without a DB. If `registerRouteLiterals`
+ *  - `/plugins/*` reachability — a composed-app smoke test against the
+ *    real wiring (phase-1 literals + phase-2 catch-all + the `harness`
+ *    sub-app).
+ *  - `/harness/projects` returns exactly 200 — catches a two-phase
+ *    reorder. The ported defineRoute is a pure-FS handler that always
+ *    200s; the colliding `_hono` `harness.get('/projects')` opens per-
+ *    slug PG pools and fails without a DB. If `registerRouteLiterals`
  *    is moved after `app.route('/harness', …)`, the `_hono` route wins
  *    and the status flips off 200.
  */
@@ -126,14 +125,14 @@ describe('composed-app route shadowing — REAL _hono/app.ts wiring', () => {
     app = mod.app as unknown as HonoType;
   }, 120_000);
 
-  it('literal /plugins/* routes are not shadowed by the plugin dispatcher', async () => {
+  it('literal /plugins/* routes are not shadowed by the /plugins/* catch-all', async () => {
     for (const p of ['/api/plugins/enabled', '/api/plugins/manifest', '/api/plugins/grants']) {
       const res = await app.request(p);
-      expect(res.status, `${p} must reach its defineRoute, not the dispatcher 404`).not.toBe(404);
+      expect(res.status, `${p} must reach its defineRoute, not the catch-all 404`).not.toBe(404);
     }
   });
 
-  it('2-segment literal /plugins/host/query is not eaten by /:pluginName/*', async () => {
+  it('2-segment literal /plugins/host/query is not eaten by /plugins/*', async () => {
     const res = await app.request('/api/plugins/host/query', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
