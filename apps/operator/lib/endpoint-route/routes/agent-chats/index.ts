@@ -1,47 +1,40 @@
 /**
- * /api/harness/:slug/agent-chats — multi-turn conversational sessions with
- * role-scoped agents.
+ * /api/harness/:slug/agent-chats — multi-turn conversational sessions
+ * with role-scoped agents. Phase A2 (endpoint-hono-elimination-2026-05-21).
+ * Ported off `_hono/agent-chats.ts` (mounted via `registerAgentChats`).
+ * URLs unchanged.
  *
- * Phase B "Pair" primitive. Each chat is a transcript stored in the
- * per-harness `agent_chats` table; on each user message the server
- * assembles the role's full prompt (same as autonomous dispatches via
- * `assembleRolePrompt`) plus the prior transcript, spawns the agent CLI
- * via `runAgentChat` (backend-aware: omp -p by default, claude -p when
- * AGENT_BACKEND=claude-code), and streams the response back via SSE.
+ *   GET    /api/harness/:slug/agent-chats
+ *   POST   /api/harness/:slug/agent-chats
+ *   GET    /api/harness/:slug/agent-chats/:chatId
+ *   DELETE /api/harness/:slug/agent-chats/:chatId
+ *   POST   /api/harness/:slug/agent-chats/:chatId/messages   → SSE stream
  *
- * Side-channel design: chat agents read state and may write supervisor
- * notes, but do NOT mutate the worktree or feature rows directly. The
- * autonomous loop remains authoritative — chats inform it via notes.
- *
- * Endpoints:
- *   GET    /:slug/agent-chats                       → list (excludes archived)
- *   POST   /:slug/agent-chats                       body: { role, feature_id?, title? }
- *   GET    /:slug/agent-chats/:chatId               → { id, role, transcript, ... }
- *   POST   /:slug/agent-chats/:chatId/messages      body: { content } → SSE stream
- *   DELETE /:slug/agent-chats/:chatId               → archive (sets archived_at)
+ * `auth: 'public'` — the legacy `harness` sub-app gated none of these.
  */
-import type { Hono } from 'hono';
+import { existsSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { sseResponse } from '@restart/sse';
 import { dispatchProjectedToolStream, lookupByMcpName } from '@papercusp/agent-mcp';
-import { existsSync, readFileSync } from 'node:fs';
-import { notifySyncInvalidate } from '@/lib/sync-sse';
-import { join } from 'node:path';
 import { getLegacyClient } from '@restart/db-org';
 import { assembleRolePrompt } from '@papercusp/orchestrator/role-prompt';
+import { defineRoute } from '../../define-route';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
 import { buildMemoryContextBlock } from '@/lib/memory/injection';
-import '@/lib/agent-tools/index';
+import { projectDirForSlug } from '@/lib/operator-notes';
 import {
   readFeatureLockState,
   rowToChat,
   type ChatRow,
   type TranscriptTurn,
 } from '@/lib/agent-chats-data';
-import { projectDirForSlug } from '../../../lib/operator-notes';
+import '@/lib/agent-tools/index';
+
+/* eslint-disable @typescript-eslint/no-explicit-any */
 
 /**
  * Per-chat in-memory lock. A second message POST while a prior one is
- * streaming returns 409. Prevents duplicate spawn-and-append races.
+ * streaming returns 409 — prevents duplicate spawn-and-append races.
  */
 const activeChats = new Map<string, { startedAt: number }>();
 
@@ -49,13 +42,7 @@ function dbForSlug(slug: string) {
   return getLegacyClient(slug);
 }
 
-/**
- * Flip the userEngaged flag (and corresponding awaiting_user / gathering_feedback
-/**
- * Read the per-harness chat cost cap from `.harness/config.json`. Two keys
- * supported: `maxChatCostUsd` (per-chat) and `maxAggregateChatCostUsd`
- * (across all chats in the harness). Both default to undefined = uncapped.
- */
+/** Per-harness chat cost cap from `.harness/config.json`. */
 async function readChatCostCap(slug: string): Promise<{ perChatUsd?: number; aggregateUsd?: number }> {
   try {
     const { loadHarnessRegistry } = require('@/lib/harness-registry') as typeof import('@/lib/harness-registry');
@@ -66,19 +53,16 @@ async function readChatCostCap(slug: string): Promise<{ perChatUsd?: number; agg
     const cfg = JSON.parse(readFileSync(cfgPath, 'utf8')) as Record<string, unknown>;
     const out: { perChatUsd?: number; aggregateUsd?: number } = {};
     if (typeof cfg.maxChatCostUsd === 'number' && cfg.maxChatCostUsd > 0) out.perChatUsd = cfg.maxChatCostUsd;
-    if (typeof cfg.maxAggregateChatCostUsd === 'number' && cfg.maxAggregateChatCostUsd > 0) out.aggregateUsd = cfg.maxAggregateChatCostUsd;
+    if (typeof cfg.maxAggregateChatCostUsd === 'number' && cfg.maxAggregateChatCostUsd > 0) {
+      out.aggregateUsd = cfg.maxAggregateChatCostUsd;
+    }
     return out;
   } catch {
     return {};
   }
 }
 
-/**
- * Read the strict-mode lock policy for chat. Default false (soft-warn).
- * Set `parallelChat.respectFeatureLocks: true` in `.harness/config.json` to
- * make chat refuse messages when the targeted feature is currently locked
- * by the autonomous worker.
- */
+/** Strict-mode lock policy — default false (soft-warn). */
 async function readChatLockPolicy(slug: string): Promise<boolean> {
   try {
     const { loadHarnessRegistry } = require('@/lib/harness-registry') as typeof import('@/lib/harness-registry');
@@ -94,7 +78,7 @@ async function readChatLockPolicy(slug: string): Promise<boolean> {
   }
 }
 
-/** Sum of cents across all (non-archived) chats in this harness. */
+/** Sum of cents across all non-archived chats in this harness. */
 async function aggregateChatCostCents(slug: string): Promise<number> {
   try {
     const db = dbForSlug(slug);
@@ -107,154 +91,143 @@ async function aggregateChatCostCents(slug: string): Promise<number> {
   }
 }
 
-export function registerAgentChats(harness: Hono): void {
-  // ── List chats (active by default; ?include=archived to see all) ─────
-  harness.get('/:slug/agent-chats', async (c) => {
+const listChatsRoute = defineRoute({
+  method: 'GET',
+  path: '/harness/:slug/agent-chats',
+  auth: 'public',
+  async handler(req, ctx) {
     const { listChats } = await import('@/lib/agent-chats-data');
     const result = await listChats({
-      slug: c.req.param('slug'),
-      includeArchived: c.req.query('include') === 'archived',
+      slug: ctx.params.slug,
+      includeArchived: new URL(req.url).searchParams.get('include') === 'archived',
     });
-    if (!result.ok) return c.json({ error: result.error }, result.status as 500);
-    return c.json(result.data);
-  });
+    if (!result.ok) return Response.json({ error: result.error }, { status: result.status });
+    return Response.json(result.data);
+  },
+});
 
-  // ── Create chat ──────────────────────────────────────────────────────
-  harness.post('/:slug/agent-chats', async (c) => {
+const createChatRoute = defineRoute({
+  method: 'POST',
+  path: '/harness/:slug/agent-chats',
+  auth: 'public',
+  async handler(req, ctx) {
     const { createChat } = await import('@/lib/agent-chats-data');
     let body: { role?: string; feature_id?: string; title?: string };
-    try {
-      body = await c.req.json();
-    } catch {
-      return c.json({ error: 'invalid JSON body' }, 400);
-    }
+    try { body = await req.json(); } catch { return Response.json({ error: 'invalid JSON body' }, { status: 400 }); }
     const result = await createChat({
-      slug: c.req.param('slug'),
+      slug: ctx.params.slug,
       role: body.role ?? '',
       feature_id: body.feature_id,
       title: body.title,
     });
-    if (!result.ok) return c.json({ error: result.error }, result.status as 400);
-    return c.json(result.data, 201);
-  });
+    if (!result.ok) return Response.json({ error: result.error }, { status: result.status });
+    return Response.json(result.data, { status: 201 });
+  },
+});
 
-  // ── Get chat ─────────────────────────────────────────────────────────
-  harness.get('/:slug/agent-chats/:chatId', async (c) => {
+const getChatRoute = defineRoute({
+  method: 'GET',
+  path: '/harness/:slug/agent-chats/:chatId',
+  auth: 'public',
+  async handler(_req, ctx) {
     const { getChat } = await import('@/lib/agent-chats-data');
-    const result = await getChat({
-      slug: c.req.param('slug'),
-      chatId: c.req.param('chatId'),
-    });
-    if (!result.ok) return c.json({ error: result.error }, result.status as 404);
-    return c.json(result.data);
-  });
+    const result = await getChat({ slug: ctx.params.slug, chatId: ctx.params.chatId });
+    if (!result.ok) return Response.json({ error: result.error }, { status: result.status });
+    return Response.json(result.data);
+  },
+});
 
-  // ── Archive chat ─────────────────────────────────────────────────────
-  harness.delete('/:slug/agent-chats/:chatId', async (c) => {
+const archiveChatRoute = defineRoute({
+  method: 'DELETE',
+  path: '/harness/:slug/agent-chats/:chatId',
+  auth: 'public',
+  async handler(_req, ctx) {
     const { archiveChat } = await import('@/lib/agent-chats-data');
-    const result = await archiveChat({
-      slug: c.req.param('slug'),
-      chatId: c.req.param('chatId'),
-    });
-    if (!result.ok) return c.json({ error: result.error }, result.status as 500);
-    return c.json(result.data);
-  });
+    const result = await archiveChat({ slug: ctx.params.slug, chatId: ctx.params.chatId });
+    if (!result.ok) return Response.json({ error: result.error }, { status: result.status });
+    return Response.json(result.data);
+  },
+});
 
-  // ── Append user message + stream assistant reply via SSE ─────────────
-  harness.post('/:slug/agent-chats/:chatId/messages', async (c) => {
-    const slug = c.req.param('slug');
-    const chatId = c.req.param('chatId');
+const messagesRoute = defineRoute({
+  method: 'POST',
+  path: '/harness/:slug/agent-chats/:chatId/messages',
+  auth: 'public',
+  // Pure SSE transport — don't flood route_invocations per chat turn.
+  sampleRate: 0,
+  async handler(req, ctx) {
+    const slug = ctx.params.slug;
+    const chatId = ctx.params.chatId;
     let body: { content?: string };
-    try {
-      body = await c.req.json();
-    } catch {
-      return c.json({ error: 'invalid JSON body' }, 400);
-    }
+    try { body = await req.json(); } catch { return Response.json({ error: 'invalid JSON body' }, { status: 400 }); }
     const userContent = (body.content ?? '').trim();
-    if (!userContent) return c.json({ error: 'content is required' }, 400);
+    if (!userContent) return Response.json({ error: 'content is required' }, { status: 400 });
 
     if (activeChats.has(chatId)) {
-      return c.json({ error: 'chat already has an in-flight assistant response' }, 409);
+      return Response.json({ error: 'chat already has an in-flight assistant response' }, { status: 409 });
     }
 
     let chat: ChatRow;
     try {
       const db = dbForSlug(slug);
       const row = (await db.prepare('SELECT * FROM agent_chats WHERE id = ?').get(chatId)) as any;
-      if (!row) return c.json({ error: 'chat not found' }, 404);
+      if (!row) return Response.json({ error: 'chat not found' }, { status: 404 });
       chat = rowToChat(row);
-      if (chat.archived_at) return c.json({ error: 'chat is archived' }, 410);
+      if (chat.archived_at) return Response.json({ error: 'chat is archived' }, { status: 410 });
     } catch (e) {
-      return c.json({ error: `failed to load chat: ${(e as Error).message}` }, 500);
+      return Response.json({ error: `failed to load chat: ${(e as Error).message}` }, { status: 500 });
     }
 
-    // Cost-cap check. Per-chat cap is checked against this chat's own
-    // accumulated cents; aggregate cap sums all non-archived chats in
-    // this harness. Either being exceeded refuses the spawn — operator
-    // must archive a chat or raise the cap before continuing.
+    // Cost-cap checks — per-chat + aggregate.
     const cap = await readChatCostCap(slug);
     if (cap.perChatUsd !== undefined && chat.total_cost_usd_cents >= cap.perChatUsd * 100) {
-      return c.json({
+      return Response.json({
         error: 'per-chat cost cap reached',
         chat_cost_usd: chat.total_cost_usd_cents / 100,
         cap_usd: cap.perChatUsd,
         hint: 'increase config.json `maxChatCostUsd` or archive this chat',
-      }, 402);
+      }, { status: 402 });
     }
     if (cap.aggregateUsd !== undefined) {
       const aggCents = await aggregateChatCostCents(slug);
       if (aggCents >= cap.aggregateUsd * 100) {
-        return c.json({
+        return Response.json({
           error: 'aggregate chat cost cap reached for this harness',
           aggregate_cost_usd: aggCents / 100,
           cap_usd: cap.aggregateUsd,
           hint: 'increase config.json `maxAggregateChatCostUsd` or archive other chats',
-        }, 402);
+        }, { status: 402 });
       }
     }
 
-    // Concurrency awareness. If the chat is feature-scoped AND that
-    // feature is currently locked by an autonomous worker, prepend a
-    // notice to the assembled prompt so the chat agent gives the user
-    // an honest "another instance of me is on this right now" answer
-    // instead of pretending exclusive ownership.
+    // Concurrency awareness — feature-lock state for the prompt notice / strict gate.
     const featureLock = chat.feature_id ? await readFeatureLockState(slug, chat.feature_id) : null;
-
-    // Belt-and-braces strict mode: if config.json sets
-    // `parallelChat.respectFeatureLocks: true`, refuse chat messages on a
-    // feature that's currently locked by an autonomous worker. Default is
-    // false — keeps the historical soft-warn behavior (proceed but inject
-    // a "concurrent run" notice into the prompt). Strict mode is for
-    // operators who want hard substrate-level guarantees that no two
-    // claude -p processes can fire against the same feature concurrently.
     if (featureLock?.active) {
       const respectLocks = await readChatLockPolicy(slug);
       if (respectLocks) {
-        return c.json({
+        return Response.json({
           error: 'feature_locked',
           feature_id: chat.feature_id,
           taken_by: featureLock.taken_by,
           taken_at: featureLock.taken_at,
           expires_at: featureLock.expires_at,
           hint: `Feature is currently being worked on autonomously by ${featureLock.taken_by}. Wait for the lock to release, or drop a note via POST /api/harness/${slug}/features/${chat.feature_id}/notes if you want guidance picked up on the next worker tick. Disable strict mode by removing parallelChat.respectFeatureLocks from .harness/config.json.`,
-        }, 409);
+        }, { status: 409 });
       }
     }
 
-    // Append user turn before streaming so a client reload sees it.
+    // Append the user turn before streaming so a client reload sees it.
     const userTurn: TranscriptTurn = { role: 'user', content: userContent, ts: new Date().toISOString() };
     const baseTranscript = [...chat.transcript, userTurn];
     try {
       const db = dbForSlug(slug);
-      await db.prepare(
-        `UPDATE agent_chats SET transcript = ?::jsonb, updated_at = now() WHERE id = ?`,
-      ).run(JSON.stringify(baseTranscript), chatId);
+      await db.prepare(`UPDATE agent_chats SET transcript = ?::jsonb, updated_at = now() WHERE id = ?`)
+        .run(JSON.stringify(baseTranscript), chatId);
     } catch (e) {
-      return c.json({ error: `failed to persist user turn: ${(e as Error).message}` }, 500);
+      return Response.json({ error: `failed to persist user turn: ${(e as Error).message}` }, { status: 500 });
     }
 
-    // Assemble the role's prompt + prior transcript history into a single
-    // string fed to claude on stdin.
+    // Assemble the role prompt + transcript history.
     let assembled: { text: string; runId: string };
     try {
       const r = assembleRolePrompt({
@@ -271,11 +244,6 @@ export function registerAgentChats(harness: Hono): void {
           baseTranscript.slice(0, -1).map((t) => `${t.role === 'user' ? 'User' : 'You (assistant)'}: ${t.content}`).join('\n\n') +
           '\n'
         : '';
-
-      // mem0 workspace-scope memory injection. The role is folded into
-      // `queryContext` so retrievals favor role-relevant memories without
-      // requiring a helper-level role parameter. Failure modes (no client
-      // or search throws) degrade silently — chat still runs.
       const memBlock = await buildMemoryContextBlock({
         userId: null,
         workspaceId: activeWorkspaceId(),
@@ -283,29 +251,23 @@ export function registerAgentChats(harness: Hono): void {
         heading: 'Agent memory (relevant entries)',
       }).catch(() => null);
       const memorySection = memBlock ? `\n---\n\n${memBlock}\n` : '';
-
       const promptText = `${r.text}${lockNotice}${memorySection}${historyBlock}\n---\n\n## User\n\n${userContent}\n`;
       assembled = { text: promptText, runId: r.meta.runId };
     } catch (e) {
-      return c.json({ error: `failed to assemble prompt: ${(e as Error).message}` }, 500);
+      return Response.json({ error: `failed to assemble prompt: ${(e as Error).message}` }, { status: 500 });
     }
 
     activeChats.set(chatId, { startedAt: Date.now() });
-
-    // Spawn claude with cwd set to the harness project directory so its
-    // session-scoped path restriction allows reading harness state and
-    // feature docs. Without this, claude is locked to the dev-server's
-    // cwd and cannot read any of the inputs the role prompt references.
     const projectDir = await projectDirForSlug(slug);
 
     const tool = lookupByMcpName('agent_chats:chat');
     if (!tool) {
       activeChats.delete(chatId);
-      return c.json({ error: 'agent_chats:chat tool not registered' }, 500);
+      return Response.json({ error: 'agent_chats:chat tool not registered' }, { status: 500 });
     }
 
     return sseResponse({
-      signal: c.req.raw.signal,
+      signal: req.signal,
       setup: async (sink) => {
         let assistantText = '';
         let tokensIn = 0;
@@ -316,7 +278,7 @@ export function registerAgentChats(harness: Hono): void {
         let toolError: { code: string; message: string } | null = null;
 
         try {
-          const ctx = {
+          const dispatchCtx = {
             workspaceId: activeWorkspaceId(),
             harnessSlug: slug,
             role: 'operator' as const,
@@ -325,7 +287,7 @@ export function registerAgentChats(harness: Hono): void {
             log: () => { /* */ },
             progress: () => { /* */ },
             emit: () => { /* overridden by dispatcher */ },
-            signal: c.req.raw.signal,
+            signal: req.signal,
             spawn: async () => { throw new Error('spawn not available in agent_chats shim'); },
             secret: async () => null,
             projectDir: projectDir ?? '',
@@ -336,11 +298,7 @@ export function registerAgentChats(harness: Hono): void {
             tool,
             'agent_chats:chat',
             { promptText: assembled.text, cwd: projectDir ?? undefined },
-            ctx as never,
-            // DispatchProjectedDeps — all fields optional; {} = no
-            // telemetry/quota recording (matches the operator-scan shim).
-            // `undefined` here crashes the dispatcher (deps.recordInvocation
-            // is read with no null-guard on `deps`).
+            dispatchCtx as never,
             {},
           )) {
             if (ev.kind === 'event') {
@@ -354,15 +312,11 @@ export function registerAgentChats(harness: Hono): void {
                 lastErrorStderr = d.stderr;
               }
             } else if (ev.kind === 'done') {
-              // ToolResult.content carries the rollup the route needs to persist.
               try {
                 const blob = ev.result?.content?.[0];
                 if (blob && 'text' in blob && typeof blob.text === 'string') {
                   const parsed = JSON.parse(blob.text) as {
-                    finalText?: string;
-                    tokensIn?: number;
-                    tokensOut?: number;
-                    costUsd?: number;
+                    finalText?: string; tokensIn?: number; tokensOut?: number; costUsd?: number;
                   };
                   if (parsed.finalText && parsed.finalText.length > assistantText.length) {
                     assistantText = parsed.finalText;
@@ -371,7 +325,7 @@ export function registerAgentChats(harness: Hono): void {
                   tokensOut = parsed.tokensOut ?? 0;
                   costUsd = parsed.costUsd ?? 0;
                 }
-              } catch { /* malformed tool result; fall through to whatever we accumulated */ }
+              } catch { /* malformed tool result — keep what we accumulated */ }
             } else if (ev.kind === 'error') {
               toolError = ev.error;
             }
@@ -433,5 +387,7 @@ export function registerAgentChats(harness: Hono): void {
         sink.close();
       },
     });
-  });
-}
+  },
+});
+
+export default [listChatsRoute, createChatRoute, getChatRoute, archiveChatRoute, messagesRoute];

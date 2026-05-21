@@ -246,6 +246,7 @@ import dockLayoutsRoutes from './dock-layouts/index';
 import crossHarnessRoutes from './cross-harness/index';
 import projectsRoutes from './projects/index';
 import ptyRoutes from './pty/index';
+import agentChatsRoutes from './agent-chats/index';
 import designFeatures from './design/features';
 import designRegressions from './design/regressions';
 import designRegressionFile from './design/regression-file';
@@ -516,6 +517,7 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(crossHarnessRoutes as AnyRoute[]),
   ...flatten(projectsRoutes as AnyRoute[]),
   ...flatten(ptyRoutes as AnyRoute[]),
+  ...flatten(agentChatsRoutes as AnyRoute[]),
   ...flatten(designFeatures as AnyRoute),
   ...flatten(designRegressions as AnyRoute),
   ...flatten(designRegressionFile as AnyRoute),
