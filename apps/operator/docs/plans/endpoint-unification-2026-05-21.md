@@ -180,7 +180,7 @@ E9  Auth-tightening pass (~30–50 routes)                        ⬜ not starte
 E10 OpenAPI mobile-tag rendering                                ✅ SHIPPED
 E11 Hono replacement assessment                                 ✅ SHIPPED — verdict: stay on Hono
 E12 Migrate _hono/harness.ts (135 routes)                       ⬜ not started — own plan
-E13 Migrate coord/plugins/su-locks (16 routes) + orphan triage  ⬜ not started
+E13 Migrate coord/plugins/su-locks + orphan triage              ◐ coord+su-locks done; plugins deferred
 E14 Delete _hono/* directory                                    ⬜ not started
 ```
 
@@ -312,11 +312,12 @@ E10 + E11 shipped. Remaining: E7 (lint + docs — the `no-raw-route-handlers` ru
 - URLs stay at `/api/harness/*` — wire-compat with desktop UI.
 - Biggest single phase; will dominate the timeline.
 
-### Phase E13 — Migrate `coord` / `plugins` / `su-locks` (16 routes) + orphan triage
+### Phase E13 — Migrate `coord` / `plugins` / `su-locks` + orphan triage — ◐ coord+su-locks SHIPPED
 
-- `coord.ts` (8), `plugins.ts` (7), `su-locks.ts` (1).
-- Delete `app.route(...)` mounts in `_hono/app.ts`.
-- Triage 9 unmounted `_hono/*.ts` files: load-bearing vs dead vs helper. Move helpers to `lib/`.
+- ✅ **`coord.ts` (8 routes)** → `routes/coord/index.ts`. All `auth: 'public'` — the legacy `coord` sub-app had no auth middleware; posture preserved. File + `app.route('/coord', …)` mount deleted.
+- ✅ **`su-locks.ts` (1 route)** → `routes/su-locks/hook-health.ts`. File + mount deleted. Its 6-case test migrated to `endpoint-route/__tests__/su-locks.test.ts` (handler-direct).
+- ⬜ **`plugins.ts` (7 routes)** — **deferred.** `plugins.ts` is not a plain route bundle: `installPluginApiDispatcher(plugins)` *mutates* the `plugins` Hono sub-app to add the dynamic plugin-API catch-all, and `_hono/app.ts` mounts that sub-app. Migrating the 7 static routes to `defineRoute` while the sub-app must survive for the dispatcher = churn without the delete-win. It needs a focused pass that relocates the dispatcher first. Documented for a follow-up.
+- ⬜ Orphan triage of the 9 unmounted `_hono/*.ts` files — deferred with `plugins.ts`.
 
 ### Phase E14 — Delete `_hono/` directory
 

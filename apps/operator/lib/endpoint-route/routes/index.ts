@@ -239,6 +239,8 @@ import mobileVoice from './mobile/voice';
 import mobileOperator from './mobile/operator';
 import mobileHarnesses from './mobile/harnesses';
 import mobileSync from './mobile/sync';
+import coordRoutes from './coord/index';
+import suLocksHookHealth from './su-locks/hook-health';
 import designFeatures from './design/features';
 import designRegressions from './design/regressions';
 import designRegressionFile from './design/regression-file';
@@ -502,6 +504,8 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(mobileOperator as AnyRoute[]),
   ...flatten(mobileHarnesses as AnyRoute[]),
   ...flatten(mobileSync as AnyRoute[]),
+  ...flatten(coordRoutes as AnyRoute[]),
+  ...flatten(suLocksHookHealth as AnyRoute),
   ...flatten(designFeatures as AnyRoute),
   ...flatten(designRegressions as AnyRoute),
   ...flatten(designRegressionFile as AnyRoute),

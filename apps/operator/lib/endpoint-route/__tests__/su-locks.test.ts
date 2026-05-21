@@ -1,27 +1,27 @@
 /**
- * Unit tests for the /api/su-locks/hook-health route (file-locking #3).
- * Mounts the router on a fresh Hono app and drives it with synthetic
- * requests — no operator boot, no real HTTP. The route reads the two
- * markers from PAPERCUSP_LOCKS_CACHE_DIR (last-error.json +
- * last-success.json) and derives `healthy` from their ordering.
+ * Unit tests for GET /api/su-locks/hook-health (file-locking #3).
+ *
+ * Migrated from `app/api/_hono/su-locks.test.ts` when the route moved
+ * off the legacy Hono sub-app onto `defineRoute` (Phase E13,
+ * endpoint-unification-2026-05-21). Drives the route handler directly
+ * with a hand-built `RouteContext` — no Hono app, no route-stack. The
+ * route reads `last-error.json` / `last-success.json` from
+ * `PAPERCUSP_LOCKS_CACHE_DIR` and derives `healthy` from their ordering.
  */
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { Hono } from 'hono';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { suLocks } from './su-locks';
+import type { RouteContext } from '../define-route';
+import hookHealth from '../routes/su-locks/hook-health';
 
 let TMP: string;
-let app: Hono;
 let prev: string | undefined;
 
 beforeEach(() => {
   TMP = mkdtempSync(join(tmpdir(), 'su-locks-route-'));
   prev = process.env.PAPERCUSP_LOCKS_CACHE_DIR;
   process.env.PAPERCUSP_LOCKS_CACHE_DIR = TMP;
-  app = new Hono();
-  app.route('/su-locks', suLocks);
 });
 
 afterEach(() => {
@@ -29,6 +29,14 @@ afterEach(() => {
   else process.env.PAPERCUSP_LOCKS_CACHE_DIR = prev;
   rmSync(TMP, { recursive: true, force: true });
 });
+
+const CTX: RouteContext = {
+  principal: null,
+  input: undefined,
+  params: {},
+  log: () => {},
+  signal: new AbortController().signal,
+};
 
 function writeError(ts: string): void {
   writeFileSync(
@@ -54,7 +62,9 @@ async function getHealth(): Promise<{
     last_error: Record<string, unknown> | null;
   };
 }> {
-  const res = await app.fetch(new Request('http://x/su-locks/hook-health'));
+  const res = await Promise.resolve(
+    hookHealth.handler(new Request('http://x/api/su-locks/hook-health'), CTX),
+  );
   return { status: res.status, body: await res.json() };
 }
 
@@ -62,11 +72,7 @@ describe('GET /api/su-locks/hook-health', () => {
   it('healthy=true, both null when no markers exist', async () => {
     const { status, body } = await getHealth();
     expect(status).toBe(200);
-    expect(body).toEqual({
-      healthy: true,
-      last_success_ts: null,
-      last_error: null,
-    });
+    expect(body).toEqual({ healthy: true, last_success_ts: null, last_error: null });
   });
 
   it('healthy=true when only a success marker exists', async () => {
@@ -81,10 +87,7 @@ describe('GET /api/su-locks/hook-health', () => {
     writeError('2026-05-20T10:00:00Z');
     const { body } = await getHealth();
     expect(body.healthy).toBe(false);
-    expect(body.last_error).toMatchObject({
-      handler: 'tool_call',
-      phase: 'connect',
-    });
+    expect(body.last_error).toMatchObject({ handler: 'tool_call', phase: 'connect' });
   });
 
   it('healthy=false when the error is newer than the last success', async () => {
@@ -105,10 +108,6 @@ describe('GET /api/su-locks/hook-health', () => {
     writeFileSync(join(TMP, 'last-error.json'), 'not-json');
     writeFileSync(join(TMP, 'last-success.json'), '{bad');
     const { body } = await getHealth();
-    expect(body).toEqual({
-      healthy: true,
-      last_success_ts: null,
-      last_error: null,
-    });
+    expect(body).toEqual({ healthy: true, last_success_ts: null, last_error: null });
   });
 });

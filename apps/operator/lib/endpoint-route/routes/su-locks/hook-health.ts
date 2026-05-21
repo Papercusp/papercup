@@ -1,0 +1,72 @@
+/**
+ * GET /api/su-locks/hook-health — Phase E13 (endpoint-unification-2026-05-21).
+ * Ported off the legacy `_hono/su-locks.ts` Hono sub-app onto `defineRoute`.
+ *
+ * Surfaces the OMP `tool_call` hook's persisted health markers so the
+ * `/coord` UI can show "enforcement offline" when the hook is failing
+ * open. The hook writes `last-error.json` / `last-success.json` into
+ * `~/.papercusp/locks-cache/` (override: `PAPERCUSP_LOCKS_CACHE_DIR`).
+ *
+ * `auth: 'public'` — the legacy sub-app carried no auth middleware; the
+ * UI fetches it unauthenticated and it is loopback-protected by the host
+ * bind. Posture preserved verbatim.
+ */
+import { promises as fsp } from 'node:fs';
+import { resolve } from 'node:path';
+import { defineRoute } from '../../define-route';
+
+interface HookErrorRecord {
+  ts: string;
+  handler: 'tool_call' | 'tool_result';
+  phase: 'connect' | 'http' | 'parse';
+  detail: string;
+  operator_url: string;
+}
+
+function locksCacheDir(): string {
+  const override = process.env.PAPERCUSP_LOCKS_CACHE_DIR;
+  if (override) return override;
+  const home = process.env.HOME ?? '/tmp';
+  return resolve(home, '.papercusp/locks-cache');
+}
+
+async function readJsonFile(path: string): Promise<Record<string, unknown> | null> {
+  try {
+    const raw = await fsp.readFile(path, 'utf8');
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' ? parsed : null;
+  } catch {
+    return null; // missing or malformed
+  }
+}
+
+export default defineRoute({
+  method: 'GET',
+  path: '/su-locks/hook-health',
+  auth: 'public',
+  async handler() {
+    const dir = locksCacheDir();
+    const errorRec = (await readJsonFile(resolve(dir, 'last-error.json'))) as HookErrorRecord | null;
+    const successRec = await readJsonFile(resolve(dir, 'last-success.json'));
+
+    const lastSuccessTs =
+      successRec && typeof successRec.ts === 'string' ? successRec.ts : null;
+    const lastError =
+      errorRec && typeof errorRec.ts === 'string' ? errorRec : null;
+
+    // `healthy` is true iff there is no error more recent than the last
+    // success — no error ever recorded, or a success since the last error.
+    let healthy = true;
+    if (lastError) {
+      const errMs = Date.parse(lastError.ts);
+      const okMs = lastSuccessTs ? Date.parse(lastSuccessTs) : NaN;
+      healthy = Number.isFinite(okMs) && okMs >= errMs;
+    }
+
+    return Response.json({
+      healthy,
+      last_success_ts: lastSuccessTs,
+      last_error: lastError,
+    });
+  },
+});

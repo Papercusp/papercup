@@ -17,8 +17,6 @@ import { compress } from 'hono/compress';
 import { cors } from 'hono/cors';
 import { harness } from './harness';
 import { plugins } from './plugins';
-import { coord } from './coord';
-import { suLocks } from './su-locks';
 import { registerPty } from './pty';
 import { registerOperatorNotes } from './operator-notes';
 import { registerAgentChats } from './agent-chats';
@@ -107,11 +105,9 @@ app.route('/plugins', plugins);
 // `lib/endpoint-route/routes/mobile/` (endpoint-unification-2026-05-21
 // Phase E4/E5). Those register via `registerRouteLiterals` above.
 
-// Coordination history (Phase B remainder — /coord UI viewer) — see _hono/coord.ts
-app.route('/coord', coord);
-
-// SU-locks hook health (file-locking #3) — see _hono/su-locks.ts
-app.route('/su-locks', suLocks);
+// /api/coord/* and /api/su-locks/* — migrated off their legacy Hono
+// sub-apps onto `defineRoute` modules (endpoint-unification-2026-05-21
+// Phase E13). They register via `registerRouteLiterals` above.
 
 // defineRoute endpoints — the endpoint-system's second projection.
 // Every `defineRoute` (lib/endpoint-route/routes/**) mounts here and is
