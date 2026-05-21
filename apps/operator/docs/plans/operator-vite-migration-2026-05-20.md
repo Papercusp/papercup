@@ -459,6 +459,22 @@ Cumulative: **27 of 62 tracked pages** shipped (B-1: 3, B-2: 5, B-3: 6, B-7-part
 
 Cumulative: **40 of 62 tracked pages** shipped. Deferred: 3 server-only pages. Remaining: B-4a + B-4b (`/settings`, 20 pages) + the `/settings` layout.
 
+**B-4 as-built (2026-05-21).** All 20 `/settings` pages + the `/settings` layout shipped — **Phase B page translation is now complete** (59/62; the 3 deferrals are server-only):
+
+| Approach | Count | Surfaces |
+|---|---|---|
+| Page-import (clean `'use client'`) | 16 | `agent`, `api-keys`, `backups`, `meridian`, `mobile`, `omp`, `operator`, `personalization`, `profile`, `shortcuts`, `voice`, `plugins`, `plugins/tools`, `user`, `user/memory`, `user/search` |
+| Render client + drop `requireFlag` | 2 | `oracle` (`OracleClient`), `publishing` (`PublishingClient`) |
+| Server component → TSR `loader` | 1 | `plugin-runtime` — `loadStatus()` fetch → `loader`; wrapper markup copied. |
+| Direct component render | 1 | `setup-wizard` — `<SetupWizard mode="settings"/>`. |
+| Layout | 1 | `src/routes/settings.tsx` — `<SettingsLayout><Outlet/></SettingsLayout>`. SettingsLayout is a `'use client'` component using `usePathname` (shim) + `useTransitionRouter` (proven via RouteTransitionProvider). |
+
+Cumulative: **59 of 62 tracked pages** shipped. The 3 remaining are server-only and deferred pending backend API endpoints (`/wiki/missing`, `/project-docs`, `/design` index).
+
+### B status — DONE (page translation)
+
+All 62 `page.tsx` accounted for: 59 translated to TSR routes, 3 deferred behind new API endpoints (tracked in the deferred-work list above). 6 `layout.tsx` handled: root (A3), `/dev`, `/marketplace`, `/settings` translated to TSR layout routes; `/harness` + `/pi` layouts intentionally dropped (Tooltip-only wrappers, already global at root). Remaining Phase B follow-ups: B6 (the `@bprogress/next` → TSR-native progress adapter — currently a no-op shim), the SPA-flags port (so dropped `requireFlag` gates become real client-side checks), and the §B2 Playwright smokes (gated on the Phase F dev-launcher wireup).
+
 Each batch acceptance: that surface's URLs render the right components and don't console-error, **verified by a strategy proportional to surface-stakes:**
 
 - **Smoke-tested in Playwright (mandatory): 6 highest-stakes surfaces.** `harness/[slug]`, `login`, `settings/*`, `marketplace/installed/[slug]` (the install flow), `editor-demo`, `harness/[slug]` "brainstorm" tab. Each gets one fresh Playwright smoke (~30-50 lines, ~1 day per to write + stabilize). **These tests do not exist today**; writing them is part of the batch's effort, not assumed coverage.
