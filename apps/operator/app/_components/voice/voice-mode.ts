@@ -19,6 +19,10 @@
 import { stripWakeWordAndPrefix } from '../../../lib/wake-word';
 import { createOperatorVoiceTagObserver } from '../../../lib/operator-converse-voice';
 import { persistOperatorVoiceTurn } from '../../../lib/operator-conversation-client';
+// Statically imported — neither sibling imports voice-mode, so there is no
+// cycle. (Were CJS require()s, which are undefined in the Vite browser bundle.)
+import { loadVoicePrefsClient } from './voice-prefs-client';
+import { requestVoiceLead, getVoiceLeaderState } from './voice-leader';
 
 /**
  * Emit the voice-engagement signal the OperatorConversationProvider
@@ -370,10 +374,6 @@ export function initVoiceMode(): void {
     // Handoff cue — gated by pref. Spoken via the standard speak()
     // queue so it lands cleanly even mid-TTS.
     try {
-      // Lazy-load voice-prefs to keep this file's import surface stable.
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
-      const { loadVoicePrefsClient } = require('./voice-prefs-client') as
-        typeof import('./voice-prefs-client');
       const prefs = loadVoicePrefsClient();
       if (prefs.speakSessionHandoff !== false && wakeword) {
         const msg = `Going to wake-word listening. Say ${wakeword} when you're ready.`;
@@ -570,7 +570,6 @@ export function setVoiceMode(mode: VoiceMode): void {
   // No-op if we're already leader, or if BroadcastChannel is unavailable
   // (Safari private windows / WebViews — single-tab fallback handles it).
   try {
-    const { requestVoiceLead, getVoiceLeaderState } = require('./voice-leader') as typeof import('./voice-leader');
     const ls = getVoiceLeaderState();
     if (ls.available && !ls.isLeader) {
       requestVoiceLead(`user-set-mode-${mode}`);
@@ -586,7 +585,6 @@ export function setVoiceMode(mode: VoiceMode): void {
 
 function maybeIsLeader(): boolean {
   try {
-    const { getVoiceLeaderState } = require('./voice-leader') as typeof import('./voice-leader');
     const ls = getVoiceLeaderState();
     // If leader-election hasn't booted yet, treat us as leader so a
     // single-tab user isn't blocked from STT during initial load.
@@ -1853,7 +1851,6 @@ export function speak(
   // Followers are silent; aria-live still publishes so screen-readers in any
   // tab see the text.
   try {
-    const { getVoiceLeaderState } = require('./voice-leader') as typeof import('./voice-leader');
     const leader = getVoiceLeaderState();
     if (leader.available && !leader.isLeader && !options.force) return;
   } catch { /* leader module not yet loaded — fall through and speak */ }

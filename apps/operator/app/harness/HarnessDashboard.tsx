@@ -126,6 +126,7 @@ const ProposalsPanel = dynamic(() => import('./ProposalsPanel'), { ssr: false })
 import HarnessHudOverlay from './HarnessHudOverlay';
 import { FLAGS } from '@papercusp/flags';
 import { useFlag } from '@/lib/flag-hooks';
+import { buildRegistryPaletteItems } from '@/lib/commands/shims/palette-shim';
 
 /**
  * Wrap a `dynamic()` import with retry + visible loading state so that a
@@ -3841,9 +3842,9 @@ export default function HarnessDashboard() {
       const tabId = typeof window !== 'undefined'
         ? (window.sessionStorage.getItem('pc-voice-tab-id') ?? undefined)
         : undefined;
-      // Synchronously require the palette-shim — it's a thin layer over
-      // the registry which is already loaded if the dashboard is open.
-      const { buildRegistryPaletteItems } = require('@/lib/commands/shims/palette-shim') as typeof import('@/lib/commands/shims/palette-shim');
+      // palette-shim is statically imported — it's a thin layer over the
+      // registry, already loaded when the dashboard is open. (Was a CJS
+      // require(), which is undefined in the Vite browser bundle.)
       const registryItems = buildRegistryPaletteItems({ workspace: ws, sessionId: tabId });
       cs.push(...registryItems);
     } catch (err) {
