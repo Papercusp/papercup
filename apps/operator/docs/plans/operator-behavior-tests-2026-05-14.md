@@ -9,9 +9,9 @@ owner: pandawamble@gmail.com
 
 ## Now
 
-**State:** P1–P4 shipped. P5 attempted 2026-05-20: a first triage pass ran and surfaced framework-robustness bugs (since fixed — see §13). The P5 *clean* live run is BLOCKED on the Next.js→Vite migration, which has removed `app/api/agent-mcp/operator-converse/route.ts` — the SUT endpoint the framework drives.
+**State:** P1–P4 shipped. Framework retargeted for the post-Vite topology (`75215108` — see §13, 2026-05-21). P5 *clean* live run is STILL BLOCKED — not on the framework, but on a server-side operator defect: `operator-converse` on the Hono host (`:3070`) hangs before producing any turn output (no brain subprocess spawns; 0 deltas in 40s+; SSE heartbeats only). Root-caused as far as is safe without editing hot migration-zone operator code — see §13, 2026-05-21.
 
-**Next:** When the operator endpoint is stable post-migration, run the §12 procedure for the full triage. See §13 for the resumption checklist.
+**Next:** P5 resumes the moment `operator-converse` produces a real turn. The framework side is ready (points at `:3070`, 160/160 tests pass). The blocker is for the operator / Vite-migration owners — see §13 hand-off.
 
 
 # Operator behavior tests — 2026-05-14 (v3, implemented)
@@ -114,7 +114,7 @@ scenarios together (S + M): ~$48/full pass. Nightly: ~$1,440/month.
 | P2 M1–M5 | ✅ shipped |
 | P3 M6–M9 | ✅ shipped |
 | P4 M10–M12 + rubric axis | ✅ shipped |
-| P5 full live run + triage | attempted 2026-05-20 — framework bugs found & fixed (§13); clean run BLOCKED on Vite migration |
+| P5 full live run + triage | BLOCKED — framework retargeted to `:3070` (`75215108`); operator-converse SUT hangs before any output (§13, 2026-05-21). Blocker is operator-side, not framework-side. |
 
 ## 8. Guard-rail vs positive-signal
 
@@ -215,15 +215,79 @@ Full llm-testing suite 122 pass. `telemetry-tagging-audit.test.ts`
 fails — migration casualty (reads the removed `operator-converse/route.ts`),
 not in scope here.
 
-### Resumption checklist (when the operator endpoint is stable)
+### 2026-05-21 — post-Vite-migration audit + framework retarget
 
-1. Confirm the post-migration operator-converse endpoint URL/port and
-   update `OperatorTarget` `baseUrl` default in `targets/operator.ts`
-   (currently `http://127.0.0.1:3055`) — or set `PAPERCUSP_OPERATOR_URL`.
+**Topology changed.** The Next.js→Vite migration split the operator
+into two processes:
+
+- `:3055` — Vite dev server (`apps/operator-vite`), the SPA frontend
+  *only*. Proxies `/api` → `:3070`.
+- `:3070` — `bin/hono-host.ts`, the API backend. Serves the
+  endpoint-route system, including `/api/agent-mcp/operator-converse`
+  (moved from `app/api/.../route.ts` to
+  `lib/endpoint-route/routes/agent-mcp/operator-converse.ts`).
+
+**Framework retargeted — `75215108`:**
+
+- `OperatorTarget` default `baseUrl` `:3055` → `:3070` (the framework
+  is an HTTP client of the *backend*; it must not bounce through the
+  frontend dev-server proxy). `PAPERCUSP_OPERATOR_URL` still overrides.
+- `telemetry-tagging-audit.test.ts` `ROUTE_PATH` repointed to the
+  endpoint-route location. Same `ctxBase` + `uiClientId` plumbing —
+  only the file moved. Full llm-testing suite now **160/160 pass**
+  (was 156 + 1 failed-to-load suite).
+
+**P5 still blocked — operator-side, not framework-side.** With the
+framework correctly pointed at `:3070`, `operator-converse` was probed
+directly (bypassing the framework, plain `curl`):
+
+- The endpoint is reachable and emits SSE `heartbeat` frames.
+- **It produces zero turn output** — no `delta`, no `tool_call`, no
+  `done` — across 90s+ probes.
+- A process-watch during a live converse showed **no brain subprocess
+  ever spawns** (`claude` / `omp` / `mcp-remote` / `agent-chat` — none
+  appear as descendants of the host in 40s). The hang is *upstream* of
+  the brain spawn — somewhere in the `operator:converse` handler before
+  `runAgentChat` yields its first event (candidates, unconfirmed:
+  `buildOperatorPrompt`'s mem0 search, `checkBudget`,
+  `readSystemPrincipal`, or `runAgentChat` startup).
+
+**Related migration casualty found in the audit (NOT fixed here —
+hot migration zone, owned by the migration agents):** the operator
+backend hardcodes the pre-migration `:3055` for its own self-fetches:
+
+- `lib/agent-tools/operator/converse.ts:178` — operator brain's MCP
+  server URL (`mcp-remote` → `:3055/api/mcp`).
+- `lib/agent-tools/operator/converse.ts:276` — `<spawn>` dispatch.
+- `lib/agent-tools/operator/scan.ts:197` — same MCP URL pattern.
+- `lib/self-url.ts` `selfUrl()` falls back to `:3055` when `PORT` is
+  unset — and `bin/hono-host.ts` resolves its port from
+  `PAPERCUSP_HONO_PORT`/`PORT` but never *exports* `PORT` or
+  `PAPERCUSP_SELF_URL`, so `selfUrl()` mis-resolves on the host.
+
+This isn't necessarily *the* stall cause (the brain never spawns, so
+its MCP URL is downstream of the hang) — but it is a definite
+post-migration defect and a strong candidate for the next failure once
+the spawn-stall is cleared.
+
+**Hand-off to operator / migration owners (precise):** P5 cannot run a
+real triage until `operator-converse` produces a turn. To unblock:
+(1) instrument the `operator:converse` handler to find where it stalls
+before `runAgentChat`; (2) de-strand the `:3055` hardcodes above
+(route them through `selfUrl()`, and have `bin/hono-host.ts` export
+`PAPERCUSP_SELF_URL`/`PORT` so `selfUrl()` resolves to `:3070` in dev
+and the dynamic sidecar port in the desktop app). The framework's
+SUT-health gate (`676746e7`) already classifies this correctly as
+`errored` + `meta/sut_no_output`, so a half-fixed SUT won't masquerade
+as operator behavioral findings.
+
+### Resumption checklist (when operator-converse produces a real turn)
+
+1. ✅ Done (`75215108`) — `OperatorTarget` points at `:3070`.
 2. Smoke one scenario: `npx tsx bin/llm-test.ts run --scenario op-S01-status-quick --no-matrix`.
-   Expect a real transcript, not `finishReason=error`.
+   Expect a real transcript, not `finishReason=error` / `sut_no_output`.
 3. Run the §12 procedure (`--target operator --parallel 2`).
-4. Triage per §12. The SUT-health gate now means a genuinely broken
-   SUT yields `errored` + `meta/sut_no_output` — distinguishable at a
+4. Triage per §12. The SUT-health gate means a genuinely broken SUT
+   yields `errored` + `meta/sut_no_output` — distinguishable at a
    glance from real operator `failed` verdicts.
 5. Update §7 P5 row + this log with the classified results.
