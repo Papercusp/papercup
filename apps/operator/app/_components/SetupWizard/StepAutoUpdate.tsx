@@ -52,7 +52,7 @@ export function StepAutoUpdate() {
     setUpdate({ status: 'checking' });
     try {
       const result = await commands.checkForUpdate();
-      if (result.status === 'err') {
+      if (result.status === 'error') {
         setUpdate({ status: 'error', error: result.error });
         return;
       }
@@ -77,7 +77,7 @@ export function StepAutoUpdate() {
     setUpdate({ ...update, status: 'installing' });
     try {
       const result = await commands.installUpdate();
-      if (result.status === 'err') {
+      if (result.status === 'error') {
         setUpdate({ ...update, status: 'error', error: result.error });
       }
       // success: app will restart, this code unreachable
@@ -118,7 +118,7 @@ export function StepAutoUpdate() {
           >
             {update.status === 'checking' ? 'Checking…' : 'Check for updates'}
           </button>
-          {update.status === 'available' && (
+          {(update.status === 'available' || update.status === 'installing') && (
             <button
               type="button"
               className="pc-btn"
