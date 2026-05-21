@@ -203,7 +203,6 @@ import desktopSetupWizardState from './desktop/setup-wizard-state';
 import desktopTelemetryConfig from './desktop/telemetry-config';
 import desktopTelemetryFlush from './desktop/telemetry-flush';
 import desktopTelemetryReport from './desktop/telemetry-report';
-import desktopVoiceConfigured from './desktop/voice-configured';
 import desktopWorkspaceValidate from './desktop/workspace-validate';
 import adminBackupOrphanCleanup from './admin/backup-orphan-cleanup';
 import adminCommands from './admin/commands';
@@ -468,7 +467,6 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(desktopTelemetryConfig as AnyRoute),
   ...flatten(desktopTelemetryFlush as AnyRoute),
   ...flatten(desktopTelemetryReport as AnyRoute[]),
-  ...flatten(desktopVoiceConfigured as AnyRoute),
   ...flatten(desktopWorkspaceValidate as AnyRoute),
   ...flatten(adminBackupOrphanCleanup as AnyRoute),
   ...flatten(adminCommands as AnyRoute),

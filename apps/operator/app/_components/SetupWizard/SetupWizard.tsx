@@ -16,7 +16,6 @@ import { StepMobilePairing } from './StepMobilePairing';
 import { StepOsPermissions } from './StepOsPermissions';
 import { StepPlaceholder } from './StepPlaceholder';
 import { StepTelemetry } from './StepTelemetry';
-import { StepVoiceDevices } from './StepVoiceDevices';
 import { StepWelcome } from './StepWelcome';
 import { StepWorkspace } from './StepWorkspace';
 import { useWizardStatuses } from './useWizardStatuses';
@@ -27,7 +26,7 @@ interface Props {
 
 export function SetupWizard({ mode }: Props) {
   const router = useRouter();
-  const { statuses, persisted, voiceConfigured, refreshAll, setLastVisitedStep } =
+  const { statuses, persisted, refreshAll, setLastVisitedStep } =
     useWizardStatuses();
   const [stepId, setStepId] = useQueryState('step');
   const [finishing, setFinishing] = useState(false);
@@ -63,30 +62,11 @@ export function SetupWizard({ mode }: Props) {
   const currentStepNumber = Math.max(idx, 0) + 1;
   const progressPct = Math.round((currentStepNumber / stepCount) * 100);
   const hasNextStep = idx < SETUP_STEPS.length - 1;
-  // Step 8 (voice-devices) is only useful when the user actually
-  // plans to use voice. We treat "ElevenLabs key is set" as the proxy
-  // for that — the Next button skips voice-devices when not
-  // configured (it stays reachable from the sidebar). Settings-mode
-  // never auto-skips.
-  const shouldSkip = (id: string): boolean =>
-    mode === 'first-run' && id === 'voice-devices' && !voiceConfigured;
   const goNext = () => {
-    for (let i = idx + 1; i < SETUP_STEPS.length; i++) {
-      const next = SETUP_STEPS[i];
-      if (!shouldSkip(next.id)) {
-        setStepId(next.id);
-        return;
-      }
-    }
+    if (idx + 1 < SETUP_STEPS.length) setStepId(SETUP_STEPS[idx + 1].id);
   };
   const goPrev = () => {
-    for (let i = idx - 1; i >= 0; i--) {
-      const prev = SETUP_STEPS[i];
-      if (!shouldSkip(prev.id)) {
-        setStepId(prev.id);
-        return;
-      }
-    }
+    if (idx - 1 >= 0) setStepId(SETUP_STEPS[idx - 1].id);
   };
 
   const finishWizard = async () => {
@@ -282,8 +262,6 @@ function renderStep(id: string) {
       return <StepKeys />;
     case 'git':
       return <StepGit />;
-    case 'voice-devices':
-      return <StepVoiceDevices />;
     case 'mobile-pairing':
       return <StepMobilePairing />;
     case 'backups':

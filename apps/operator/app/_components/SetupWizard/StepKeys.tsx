@@ -4,7 +4,6 @@ import { useEffect, useState } from 'react';
 import RouteLink from '../RouteLink';
 
 export function StepKeys() {
-  const [voiceIntent, setVoiceIntent] = useState(false);
   const [loaded, setLoaded] = useState(false);
   const [openaiMasked, setOpenaiMasked] = useState<string | null>(null);
   const [openaiInput, setOpenaiInput] = useState('');
@@ -14,14 +13,7 @@ export function StepKeys() {
   useEffect(() => {
     void (async () => {
       try {
-        const [wizardRes, credsRes] = await Promise.all([
-          fetch('/api/desktop/setup-wizard-state', { cache: 'no-store' }),
-          fetch('/api/credentials', { cache: 'no-store' }),
-        ]);
-        if (wizardRes.ok) {
-          const j = (await wizardRes.json()) as { voice_intent?: boolean };
-          setVoiceIntent(Boolean(j.voice_intent));
-        }
+        const credsRes = await fetch('/api/credentials', { cache: 'no-store' });
         if (credsRes.ok) {
           const j = (await credsRes.json()) as { openai_api_key?: string | null };
           setOpenaiMasked(j.openai_api_key ?? null);
@@ -31,15 +23,6 @@ export function StepKeys() {
       }
     })();
   }, []);
-
-  const updateVoiceIntent = async (next: boolean) => {
-    setVoiceIntent(next);
-    await fetch('/api/desktop/setup-wizard-state', {
-      method: 'PATCH',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ voice_intent: next }),
-    });
-  };
 
   const saveOpenaiKey = async () => {
     const v = openaiInput.trim();
@@ -170,19 +153,6 @@ export function StepKeys() {
           </p>
         </div>
       </KeyCard>
-
-      <label className="pc-consent__toggle" style={{ marginTop: 16 }}>
-        <input
-          type="checkbox"
-          checked={voiceIntent}
-          disabled={!loaded}
-          onChange={(e) => void updateVoiceIntent(e.target.checked)}
-        />
-        <span>
-          I plan to use voice. <em style={{ opacity: 0.7 }}>(Adds the Voice devices step to your setup
-          path — even if you haven't pasted the ElevenLabs key yet.)</em>
-        </span>
-      </label>
 
       <KeyCard
         title="ElevenLabs — voice (optional)"

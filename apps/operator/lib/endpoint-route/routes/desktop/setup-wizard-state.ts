@@ -21,7 +21,6 @@ export interface SetupWizardState {
   update_channel?: UpdateChannel;
   telemetry_enabled?: boolean;
   install_id?: string;
-  voice_intent?: boolean;
   /** macOS-only client-side probe result. The server can't read TCC
    *  from Node, so StepOsPermissions PATCHes this when its
    *  navigator.permissions probes return granted. Read by setup-status
@@ -75,9 +74,6 @@ const patch = defineRoute({
     }
     if (typeof body.telemetry_enabled === 'boolean') {
       next.telemetry_enabled = body.telemetry_enabled;
-    }
-    if (typeof body.voice_intent === 'boolean') {
-      next.voice_intent = body.voice_intent;
     }
     if (typeof body.os_permissions_ok === 'boolean') {
       next.os_permissions_ok = body.os_permissions_ok;

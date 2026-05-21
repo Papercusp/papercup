@@ -1,7 +1,8 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { isTauri, wslStatus, type WslStatus } from '@/lib/wsl-tauri';
+import { Select } from '@/app/harness/Select';
 
 type PermState = 'unknown' | 'granted' | 'denied' | 'prompt' | 'unsupported';
 
@@ -104,6 +105,29 @@ export function StepOsPermissions() {
   const [states, setStates] = useState<Record<string, PermState>>({});
   const [wsl, setWsl] = useState<WslStatus | null>(null);
 
+  // ── Voice device section state (merged in from the former
+  //    standalone Voice-devices step) ───────────────────────────────
+  const [inputs, setInputs] = useState<MediaDeviceInfo[]>([]);
+  const [outputs, setOutputs] = useState<MediaDeviceInfo[]>([]);
+  const [selectedInput, setSelectedInput] = useState<string>('');
+  const [selectedOutput, setSelectedOutput] = useState<string>('');
+  const [level, setLevel] = useState(0);
+  const [recordings, setRecordings] = useState<{ url: string; createdAt: number }[]>([]);
+  const [recording, setRecording] = useState(false);
+  const [tonePlaying, setTonePlaying] = useState(false);
+  const [sinkIdSupported, setSinkIdSupported] = useState(true);
+
+  const streamRef = useRef<MediaStream | null>(null);
+  const audioCtxRef = useRef<AudioContext | null>(null);
+  const analyserRef = useRef<AnalyserNode | null>(null);
+  const rafRef = useRef<number | null>(null);
+  const recorderRef = useRef<MediaRecorder | null>(null);
+  const chunksRef = useRef<BlobPart[]>([]);
+  const toneCtxRef = useRef<AudioContext | null>(null);
+  const audioElsRef = useRef<HTMLAudioElement[]>([]);
+
+  const micGranted = states['microphone'] === 'granted';
+
   // The Node server can't read macOS TCC state — only the renderer can
   // call navigator.permissions / Notification.permission. We PATCH the
   // aggregate result back into setup_wizard_state so the sidebar badge
@@ -158,11 +182,160 @@ export function StepOsPermissions() {
     });
   };
 
+  // ── Voice device logic ──────────────────────────────────────────
+  const enumerate = useCallback(async () => {
+    if (typeof navigator === 'undefined' || !navigator.mediaDevices) return;
+    const all = await navigator.mediaDevices.enumerateDevices();
+    const ins = all.filter((d) => d.kind === 'audioinput');
+    const outs = all.filter((d) => d.kind === 'audiooutput');
+    setInputs(ins);
+    setOutputs(outs);
+    setSelectedInput((cur) => cur || ins[0]?.deviceId || '');
+    setSelectedOutput((cur) => cur || outs[0]?.deviceId || 'default');
+  }, []);
+
+  useEffect(() => {
+    void enumerate();
+    if (typeof HTMLAudioElement !== 'undefined') {
+      setSinkIdSupported(typeof HTMLAudioElement.prototype.setSinkId === 'function');
+    }
+  }, [enumerate]);
+
+  // Re-enumerate once mic is granted — labels are empty until then.
+  useEffect(() => {
+    if (micGranted) void enumerate();
+  }, [micGranted, enumerate]);
+
+  const stopMonitor = useCallback(() => {
+    if (rafRef.current) cancelAnimationFrame(rafRef.current);
+    rafRef.current = null;
+    streamRef.current?.getTracks().forEach((t) => t.stop());
+    streamRef.current = null;
+    void audioCtxRef.current?.close();
+    audioCtxRef.current = null;
+    analyserRef.current = null;
+    setLevel(0);
+  }, []);
+
+  const startMonitor = useCallback(async (deviceId: string) => {
+    stopMonitor();
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: deviceId ? { deviceId: { exact: deviceId } } : true,
+      });
+      streamRef.current = stream;
+      const Ctx = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+      const ctx = new Ctx();
+      audioCtxRef.current = ctx;
+      const src = ctx.createMediaStreamSource(stream);
+      const analyser = ctx.createAnalyser();
+      analyser.fftSize = 1024;
+      src.connect(analyser);
+      analyserRef.current = analyser;
+      const buf = new Uint8Array(analyser.fftSize);
+      const tick = () => {
+        analyser.getByteTimeDomainData(buf);
+        let sum = 0;
+        for (let i = 0; i < buf.length; i++) {
+          const v = (buf[i] - 128) / 128;
+          sum += v * v;
+        }
+        const rms = Math.sqrt(sum / buf.length);
+        setLevel(Math.min(1, rms * 3));
+        rafRef.current = requestAnimationFrame(tick);
+      };
+      rafRef.current = requestAnimationFrame(tick);
+      void enumerate();
+    } catch {
+      // mic was revoked between grant and monitor — reflect it
+      setStates((prev) => ({ ...prev, microphone: 'denied' }));
+    }
+  }, [enumerate, stopMonitor]);
+
+  useEffect(() => () => stopMonitor(), [stopMonitor]);
+
+  useEffect(() => {
+    if (micGranted && selectedInput) void startMonitor(selectedInput);
+  }, [selectedInput, micGranted, startMonitor]);
+
+  // Apply sinkId to all rendered audio elements when the output changes.
+  useEffect(() => {
+    if (!sinkIdSupported || !selectedOutput) return;
+    audioElsRef.current.forEach((el) => {
+      if (el && typeof el.setSinkId === 'function') {
+        el.setSinkId(selectedOutput).catch(() => {/* device gone — ignore */});
+      }
+    });
+  }, [selectedOutput, sinkIdSupported, recordings]);
+
+  const startRecording = () => {
+    if (!streamRef.current) return;
+    chunksRef.current = [];
+    const recorder = new MediaRecorder(streamRef.current);
+    recorder.ondataavailable = (e) => {
+      if (e.data.size > 0) chunksRef.current.push(e.data);
+    };
+    recorder.onstop = () => {
+      const blob = new Blob(chunksRef.current, { type: recorder.mimeType });
+      const url = URL.createObjectURL(blob);
+      setRecordings((prev) => [{ url, createdAt: Date.now() }, ...prev].slice(0, 3));
+    };
+    recorderRef.current = recorder;
+    recorder.start();
+    setRecording(true);
+    setTimeout(() => stopRecording(), 5000);
+  };
+
+  const stopRecording = () => {
+    recorderRef.current?.stop();
+    recorderRef.current = null;
+    setRecording(false);
+  };
+
+  // 1-second 440Hz tone via Web Audio, routed through an AudioElement
+  // so setSinkId controls which speaker it lands on.
+  const playTestTone = async () => {
+    if (tonePlaying) return;
+    setTonePlaying(true);
+    try {
+      const Ctx = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+      const ctx: AudioContext = new Ctx();
+      toneCtxRef.current = ctx;
+      const dest = ctx.createMediaStreamDestination();
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.frequency.value = 440;
+      gain.gain.value = 0.12;
+      osc.connect(gain).connect(dest);
+      osc.start();
+
+      const audio = new Audio();
+      audio.srcObject = dest.stream;
+      if (selectedOutput && typeof audio.setSinkId === 'function') {
+        try {
+          await audio.setSinkId(selectedOutput);
+        } catch {
+          // Fall back to default speaker if sink isn't reachable.
+        }
+      }
+      await audio.play();
+      setTimeout(() => {
+        osc.stop();
+        audio.pause();
+        audio.srcObject = null;
+        void ctx.close();
+        setTonePlaying(false);
+      }, 1000);
+    } catch {
+      setTonePlaying(false);
+    }
+  };
+
   return (
     <div className="pc-step">
       <p className="pc-step__lead">
-        Papercusp asks your operating system for these on first use. You can grant any of them now
-        or skip and grant later.
+        Papercusp asks your operating system for these on first use. Grant them now or later — and
+        pick the microphone and speaker it should use.
       </p>
       {wsl && wsl.state.kind !== 'NotSupported' && (
         <div className="pc-perm" data-state={wsl.state.kind === 'Ready' ? 'granted' : 'denied'}>
@@ -225,6 +398,103 @@ export function StepOsPermissions() {
           );
         })}
       </div>
+
+      <div className="pc-divider" />
+
+      <h3 className="pc-consent__heading">Microphone &amp; speaker</h3>
+      <p className="pc-step__hint">
+        The mic that "works" in your system settings often isn't the one a desktop app picks by
+        default — pick it here and watch the meter move while you talk.
+      </p>
+
+      {!micGranted ? (
+        <p className="pc-perm__hint">
+          Grant <strong>Microphone</strong> access above to pick and test your audio devices.
+        </p>
+      ) : (
+        <>
+          <label className="pc-field">
+            <span className="pc-field__label">Input (microphone)</span>
+            <Select
+              value={selectedInput}
+              onChange={setSelectedInput}
+              options={inputs.map((d) => ({
+                value: d.deviceId,
+                label: d.label || `Microphone (${d.deviceId.slice(0, 6)}…)`,
+              }))}
+              ariaLabel="Input microphone"
+            />
+          </label>
+
+          <div className="pc-vu">
+            <div className="pc-vu__label">Live level</div>
+            <div className="pc-vu__bar">
+              <div className="pc-vu__fill" style={{ width: `${Math.round(level * 100)}%` }} />
+            </div>
+            <div className="pc-vu__hint">
+              {level < 0.02
+                ? 'Say something — the bar should move.'
+                : level < 0.4
+                  ? 'Good — speak normally.'
+                  : 'Clipping. Move farther from the mic.'}
+            </div>
+          </div>
+
+          <label className="pc-field">
+            <span className="pc-field__label">Output (speaker)</span>
+            <Select
+              value={selectedOutput}
+              onChange={setSelectedOutput}
+              options={outputs.map((d) => ({
+                value: d.deviceId,
+                label: d.label || `Speaker (${d.deviceId.slice(0, 6)}…)`,
+              }))}
+              ariaLabel="Output speaker"
+            />
+            {!sinkIdSupported && (
+              <span className="pc-field__hint">
+                This platform doesn't support per-element output routing — playback uses the
+                system default speaker regardless of selection.
+              </span>
+            )}
+          </label>
+
+          <div className="pc-step__actions">
+            <button
+              type="button"
+              className="pc-btn"
+              onClick={() => void playTestTone()}
+              disabled={tonePlaying}
+            >
+              {tonePlaying ? 'Playing…' : 'Test speaker (1 sec tone)'}
+            </button>
+            {!recording ? (
+              <button type="button" className="pc-btn pc-btn--primary" onClick={startRecording}>
+                Record 5-second test
+              </button>
+            ) : (
+              <button type="button" className="pc-btn" onClick={stopRecording}>
+                Stop
+              </button>
+            )}
+          </div>
+
+          {recordings.length > 0 && (
+            <div className="pc-rec-list">
+              {recordings.map((r, i) => (
+                <audio
+                  key={r.createdAt}
+                  ref={(el) => {
+                    if (el) audioElsRef.current[i] = el;
+                  }}
+                  controls
+                  src={r.url}
+                />
+              ))}
+            </div>
+          )}
+        </>
+      )}
     </div>
   );
 }

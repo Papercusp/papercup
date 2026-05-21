@@ -6,7 +6,6 @@ import type { StepStatus } from './types';
 interface PersistentState {
   last_visited_step?: string;
   finished_at?: string;
-  voice_intent?: boolean;
 }
 
 interface SetupStatusResponse {
@@ -16,14 +15,12 @@ interface SetupStatusResponse {
 export function useWizardStatuses() {
   const [statuses, setStatuses] = useState<Record<string, StepStatus>>({});
   const [persisted, setPersisted] = useState<PersistentState>({});
-  const [voiceConfigured, setVoiceConfigured] = useState(false);
 
   const refreshAll = useCallback(async () => {
     try {
-      const [statusRes, persistedRes, voiceRes] = await Promise.all([
+      const [statusRes, persistedRes] = await Promise.all([
         fetch('/api/desktop/setup-status', { cache: 'no-store' }),
         fetch('/api/desktop/setup-wizard-state', { cache: 'no-store' }),
-        fetch('/api/desktop/voice-configured', { cache: 'no-store' }),
       ]);
       if (statusRes.ok) {
         const j = (await statusRes.json()) as SetupStatusResponse;
@@ -31,10 +28,6 @@ export function useWizardStatuses() {
       }
       if (persistedRes.ok) {
         setPersisted((await persistedRes.json()) as PersistentState);
-      }
-      if (voiceRes.ok) {
-        const j = (await voiceRes.json()) as { configured?: boolean; intent?: boolean };
-        setVoiceConfigured(Boolean(j.configured) || Boolean(j.intent));
       }
     } catch {
       // network failures leave statuses unchanged
@@ -58,5 +51,5 @@ export function useWizardStatuses() {
     return () => clearInterval(id);
   }, [refreshAll]);
 
-  return { statuses, persisted, voiceConfigured, refreshAll, setLastVisitedStep };
+  return { statuses, persisted, refreshAll, setLastVisitedStep };
 }

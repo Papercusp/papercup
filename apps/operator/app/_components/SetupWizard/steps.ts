@@ -3,8 +3,8 @@ import type { StepDef } from './types';
 export const SETUP_STEPS: readonly StepDef[] = [
   {
     id: 'os-permissions',
-    title: 'OS permissions',
-    summary: 'Microphone, notifications, and (macOS) accessibility access.',
+    title: 'Permissions & devices',
+    summary: 'Microphone, notifications, accessibility — and pick your audio devices.',
     required: false,
   },
   {
@@ -41,12 +41,6 @@ export const SETUP_STEPS: readonly StepDef[] = [
     id: 'git',
     title: 'Git identity',
     summary: 'Name + email for commits, and optional GitHub sign-in.',
-    required: false,
-  },
-  {
-    id: 'voice-devices',
-    title: 'Voice devices',
-    summary: 'Pick a microphone and speaker, then test them.',
     required: false,
   },
   {

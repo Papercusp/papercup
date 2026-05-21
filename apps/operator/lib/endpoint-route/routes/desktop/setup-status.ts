@@ -12,7 +12,6 @@ import net from 'node:net';
 
 import { readOperatorState } from '@/lib/operator-state-pg';
 import { readCredentials } from '@/lib/credentials';
-import { readElevenLabsKey } from '@/lib/voice-credentials';
 import { listDevices } from '@/lib/mobile-device-store';
 import { activeWorkspaceId, readRegistry } from '@/lib/workspace-registry';
 import { workspaceBackupFor } from '@/lib/backup';
@@ -29,7 +28,6 @@ type StepId =
   | 'logins'
   | 'keys'
   | 'git'
-  | 'voice-devices'
   | 'mobile-pairing'
   | 'backups'
   | 'auto-update'
@@ -119,7 +117,6 @@ export default defineRoute({
       ompOk,
       meridianOk,
       creds,
-      elevenKey,
       wizardState,
       devices,
       backupSettings,
@@ -130,10 +127,8 @@ export default defineRoute({
       safe(detectOmp(), false),
       safe(Promise.resolve(detectMeridianInstalled()), false),
       safe(readCredentials(), {} as Awaited<ReturnType<typeof readCredentials>>),
-      safe(readElevenLabsKey(), null),
       safe(
         readOperatorState<{
-          voice_intent?: boolean;
           update_channel?: string;
           telemetry_enabled?: boolean | null;
           os_permissions_ok?: boolean;
@@ -167,9 +162,6 @@ export default defineRoute({
       creds.openai_api_key || creds.anthropic_api_key || creds.github_pat,
     );
 
-    // voice-devices: configured if key is set OR user opted out.
-    const voiceOk = Boolean(elevenKey) || wizardState?.voice_intent === false;
-
     const statuses: Record<StepId, StepStatus> = {
       'os-permissions': osPermissionsStatus,
       'embedded-pg': boolToStatus(pgOk),
@@ -178,7 +170,6 @@ export default defineRoute({
       logins: boolToStatus(anyAgentSignedIn()),
       keys: boolToStatus(keysOk),
       git: boolToStatus(gitOk),
-      'voice-devices': voiceOk ? 'ok' : 'needs-attention',
       'mobile-pairing': boolToStatus(devices.length > 0),
       backups: boolToStatus(Boolean(backupSettings?.enabled)),
       'auto-update': boolToStatus(

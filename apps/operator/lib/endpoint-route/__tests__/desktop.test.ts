@@ -50,7 +50,6 @@ import desktopSetupPtyCommands, {
 import desktopSetupWizardState from '../routes/desktop/setup-wizard-state';
 import desktopTelemetryFlush from '../routes/desktop/telemetry-flush';
 import desktopTelemetryReport from '../routes/desktop/telemetry-report';
-import desktopVoiceConfigured from '../routes/desktop/voice-configured';
 import desktopWorkspaceValidate from '../routes/desktop/workspace-validate';
 import { writeOperatorState, readOperatorState } from '@/lib/operator-state-pg';
 
@@ -190,12 +189,6 @@ describe('desktop route ports', () => {
     const res = await appWith(desktopTelemetryReport as AnyRoute[])
       .request('/desktop/telemetry-report', json({ kind: 'crash' }));
     expect(res.status).toBe(403);
-  });
-
-  it('GET /desktop/voice-configured returns configured + intent', async () => {
-    const res = await appWith(desktopVoiceConfigured as AnyRoute).request('/desktop/voice-configured');
-    expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ configured: false, intent: false });
   });
 
   it('POST /desktop/workspace-validate rejects an invalid body with 400', async () => {
