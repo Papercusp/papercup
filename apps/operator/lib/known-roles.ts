@@ -1,6 +1,6 @@
 import { existsSync, readdirSync, type Dirent } from 'node:fs';
 import { join } from 'node:path';
-import { harnessPath } from '@/app/api/_hono/harness-paths';
+import { harnessPath } from '@/lib/harness-paths';
 
 let _cache: { value: string[]; expires: number } | null = null;
 const TTL_MS = 30_000;

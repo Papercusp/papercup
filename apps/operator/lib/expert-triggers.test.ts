@@ -13,7 +13,7 @@ import { join } from 'node:path';
 let papercuspRoot: string;
 let harnessRoot: string;
 
-vi.mock('../app/api/_hono/harness-paths', () => ({
+vi.mock('./harness-paths', () => ({
   harnessPackageDir: () => harnessRoot,
 }));
 vi.mock('./papercusp-root', () => ({

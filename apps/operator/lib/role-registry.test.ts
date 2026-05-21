@@ -10,7 +10,7 @@ let harnessRoot: string;
 let promptsDir: string;
 let papercuspRoot: string;
 
-vi.mock('../app/api/_hono/harness-paths', () => ({
+vi.mock('./harness-paths', () => ({
   harnessPackageDir: () => harnessRoot,
 }));
 vi.mock('./papercusp-root', () => ({

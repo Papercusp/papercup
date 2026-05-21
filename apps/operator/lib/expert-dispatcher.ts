@@ -23,7 +23,7 @@ import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { recordUserAction, updateUserAction } from './user-actions';
-import { harnessPackageDir } from '../app/api/_hono/harness-paths';
+import { harnessPackageDir } from './harness-paths';
 import { getRole } from './role-registry';
 
 const LOCK_TTL_MS = 5 * 60 * 1000;

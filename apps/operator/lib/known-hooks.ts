@@ -1,5 +1,5 @@
 import { existsSync, readFileSync } from 'node:fs';
-import { harnessPath } from '@/app/api/_hono/harness-paths';
+import { harnessPath } from '@/lib/harness-paths';
 
 /**
  * Hook names are derived at runtime from the harness's `run.sh` script

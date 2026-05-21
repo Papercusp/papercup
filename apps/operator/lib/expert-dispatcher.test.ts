@@ -37,7 +37,7 @@ vi.mock('./user-actions', () => ({
 // Mock harness-paths to use a fake harness dir. We never actually run
 // `invoke` in tests — the spawned bash exits quickly because it can't
 // find the harness's run.sh in the temp dir.
-vi.mock('../app/api/_hono/harness-paths', () => ({
+vi.mock('./harness-paths', () => ({
   harnessPackageDir: () => '/tmp/nonexistent-harness-dir',
 }));
 

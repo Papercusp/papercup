@@ -48,7 +48,7 @@
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
 
-import { harnessPackageDir } from '../app/api/_hono/harness-paths';
+import { harnessPackageDir } from './harness-paths';
 import { papercuspPath } from './papercusp-root';
 
 export type RoleSource =

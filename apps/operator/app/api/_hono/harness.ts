@@ -32,7 +32,7 @@ import { DECISION_VERBS } from '@papercusp/orchestrator/decision-parse';
 import { readFile, writeFile, appendFile, unlink, mkdir, chmod, rename, access, copyFile } from 'node:fs/promises';
 import { join, resolve, dirname } from 'node:path';
 import { homedir } from 'node:os';
-import { harnessPackageDir, harnessPath, orchestratorRunBin, tsxBin } from './harness-paths';
+import { harnessPackageDir, harnessPath, orchestratorRunBin, tsxBin } from '@/lib/harness-paths';
 import { firePluginLifecycle, firePluginEvent } from '../../../lib/plugin-host-runtime';
 import { spawn, execFile } from 'node:child_process';
 import { runAgentChat } from '@/lib/agent-chat-stream';
