@@ -15,10 +15,32 @@ export default defineConfig({
   // During the migration the Vite app imports operator components
   // in place (Phase H physically relocates them). The operator's
   // `@/*` tsconfig path maps to `apps/operator/*`; mirror it here.
+  //
+  // `next/{navigation,link,dynamic}` shims (see `shims/`): shared
+  // components under `apps/operator/app/` still `import { useRouter }
+  // from 'next/navigation'`, but in the Vite bundle those resolve to
+  // small TSR-backed wrappers. The live Next operator (still on
+  // `next dev` during the migration window) resolves the same imports
+  // via `node_modules/next/` and is unaffected. Decommission this
+  // alias block + delete `shims/` when `apps/operator/app/` is removed
+  // in Phase H. Exact-match (RegExp) so deep imports like
+  // `next/navigation/types` aren't rewritten.
   resolve: {
-    alias: {
-      '@': operatorRoot,
-    },
+    alias: [
+      { find: '@', replacement: operatorRoot },
+      {
+        find: /^next\/navigation$/,
+        replacement: resolve(import.meta.dirname, 'shims/next-navigation.tsx'),
+      },
+      {
+        find: /^next\/link$/,
+        replacement: resolve(import.meta.dirname, 'shims/next-link.tsx'),
+      },
+      {
+        find: /^next\/dynamic$/,
+        replacement: resolve(import.meta.dirname, 'shims/next-dynamic.tsx'),
+      },
+    ],
     // Operator components and the Vite shell must share ONE React
     // instance — two copies would break hooks ("invalid hook call").
     dedupe: ['react', 'react-dom'],

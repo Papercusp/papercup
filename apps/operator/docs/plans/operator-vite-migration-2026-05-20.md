@@ -398,7 +398,27 @@ So: **per-file audit during translation, not a single sed pass at the end.** For
 
 ### B5. Translate `app/_components/*`
 
-`apps/operator/app/_components/` is shared component code (not routes). Where TSR or Vite-specific changes are needed (e.g. `next/link` → TSR `Link`), edit in place inside `apps/operator/app/_components/` so both apps import the same components during the migration window. This works because the Vite app imports from `../operator/app/_components/*` via workspace path. After cutover, those files migrate to `apps/operator-vite/src/components/` in one move-only PR.
+**Revised 2026-05-21 (B-3 prep).** The original B5 plan was "edit in place" so both bundlers share one component source. That doesn't scale past trivial files — `HarnessDashboard` is 5167 lines and imports `useParams`/`useSearchParams`/`dynamic` from `next/*`; rewriting it to TSR in place breaks the live Next operator. Parallel-copy under `apps/operator-vite/src/components/` (the B-1/B-2 fallback for `AdminShell`/`TestingClient`) also doesn't scale to 5K-line files.
+
+**Strategy now: Vite alias shims at `apps/operator-vite/shims/`.** Three small wrappers + `resolve.alias` entries in `vite.config.ts` rewrite `next/{navigation,link,dynamic}` imports inside the operator-vite bundle to TSR-backed equivalents. The live Next operator resolves the same imports via `node_modules/next/` and is unchanged. Concretely:
+
+| Next import | Shim file | Behavior under Vite |
+|---|---|---|
+| `useRouter()` | `shims/next-navigation.tsx` | Adapter around TSR `useNavigate()` exposing `.push`/`.replace`/`.back`/`.forward`/`.refresh`/`.prefetch`. |
+| `usePathname()` | same | `useRouterState({ select: s => s.location.pathname })`. |
+| `useSearchParams()` | same | Memoized `URLSearchParams` from TSR `location.searchStr`. |
+| `useParams<T>()` | same | TSR `useParams({ strict: false }) as T`. |
+| `redirect(href)` | same | `throw tsrRedirect({ to: href })`. |
+| `notFound()` | same | `throw tsrNotFound()`. |
+| `useSelectedLayoutSegment()` | same | Last non-empty pathname segment. |
+| `<Link href=…>` (next/link) | `shims/next-link.tsx` | TSR `<Link to={href}>` wrapper, dropping Next-only props (`prefetch`/`legacyBehavior`/`passHref`/`as`). |
+| `dynamic(loader, opts)` (next/dynamic) | `shims/next-dynamic.tsx` | `React.lazy(loader)` wrapped in `Suspense` with `opts.loading` as fallback; `ssr:false` collapses to a no-op. |
+
+Why not "use the shim everywhere forever": this is a **migration enabler**, not a permanent compat layer. Decommission step is in Phase H: delete `shims/`, delete the four `resolve.alias` entries, by then `apps/operator/app/` (the consumers) is gone too.
+
+B-1's `NotFound.tsx` and B-2's `AdminShell.tsx`/`TestingClient.tsx` were ported as parallel copies before the shim existed; they stay. New shared-component translations from B-3 onward use the shim instead of parallel-copying.
+
+`apps/operator/app/_components/` itself: still shared. The Vite app imports from it via the `@` workspace path. After cutover, those files migrate to `apps/operator-vite/src/components/` in one move-only PR.
 
 ### B6. `@bprogress/next` → TSR adapter (~30-60 LOC)
 
