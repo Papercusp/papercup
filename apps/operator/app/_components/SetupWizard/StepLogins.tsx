@@ -8,7 +8,6 @@ interface Provider {
   readonly id: 'claude' | 'omp';
   readonly title: string;
   readonly summary: string;
-  readonly cmd: string;
 }
 
 const PROVIDERS: readonly Provider[] = [
@@ -17,14 +16,12 @@ const PROVIDERS: readonly Provider[] = [
     title: 'Claude account',
     summary:
       "If you have a Claude Pro or Max plan, sign in once and your subscription covers Claude Code usage — no per-token API charges. Meridian routes the traffic so you don't need to configure anything else.",
-    cmd: 'claude /login',
   },
   {
     id: 'omp',
     title: 'oh-my-pi account',
     summary:
       'Sign in to your oh-my-pi account. Required for omp-driven agent runs.',
-    cmd: 'omp /login',
   },
 ];
 
@@ -55,6 +52,9 @@ export function StepLogins() {
   // Without this, re-sign-in reuses the same spec object → the pty's
   // useEffect deps are unchanged → no respawn.
   const [attempt, setAttempt] = useState(0);
+  // Non-Tauri (browser-dev) only: which card showed the "use the
+  // desktop app" note. Never set inside the real desktop app.
+  const [deskNote, setDeskNote] = useState<Provider['id'] | null>(null);
 
   const refreshAuth = useCallback(async () => {
     try {
@@ -72,7 +72,7 @@ export function StepLogins() {
         const r = await fetch('/api/desktop/setup-pty-commands', { cache: 'no-store' });
         if (r.ok) setSpecs((await r.json()) as PtyCommands);
       } catch {
-        /* fallback to copy-paste below */
+        /* button stays disabled until specs resolve */
       }
     })();
     void refreshAuth();
@@ -87,6 +87,12 @@ export function StepLogins() {
     id === 'claude' ? authStatus.claude : authStatus.omp;
 
   const startLogin = (id: Provider['id']) => {
+    if (!tauri) {
+      // Browser-dev: no native pty. Surface a note rather than a
+      // stuck "Running…" button. The desktop app never hits this.
+      setDeskNote(id);
+      return;
+    }
     setExited(null);
     setAttempt((n) => n + 1);
     setActive(id);
@@ -106,15 +112,16 @@ export function StepLogins() {
   return (
     <div className="pc-step">
       <p className="pc-step__lead">
-        Sign in to your accounts. Each provider opens an OAuth flow in a real terminal here in the
-        wizard — paste the link the CLI prints into your browser, sign in, and the CLI captures
-        the token.
+        Sign in to your accounts. Clicking a button opens that provider's OAuth flow in a terminal
+        right here — the CLI prints a link, you sign in in your browser, and it captures the token
+        automatically.
       </p>
       <div className="pc-provider-grid">
         {PROVIDERS.map((p) => {
           const isActive = active === p.id;
           const isExited = exited === p.id;
           const done = signedIn(p.id);
+          const label = p.title.replace(' account', '');
           return (
             <div key={p.id} className="pc-provider-card">
               <div
@@ -132,29 +139,24 @@ export function StepLogins() {
                 )}
               </div>
               <p className="pc-provider-card__summary">{p.summary}</p>
-              {tauri && specs ? (
-                <button
-                  type="button"
-                  className="pc-btn pc-btn--primary"
-                  disabled={active !== null}
-                  onClick={() => startLogin(p.id)}
-                >
-                  {isActive
-                    ? 'Running…'
-                    : done
-                      ? `Re-sign in to ${p.title.replace(' account', '')}`
-                      : `Sign in to ${p.title.replace(' account', '')}`}
-                </button>
-              ) : (
-                <>
-                  <p className="pc-provider-card__instructions">
-                    Run this in a terminal — the CLI opens a browser tab for OAuth and captures the
-                    token automatically.
-                  </p>
-                  <pre className="pc-code">{p.cmd}</pre>
-                </>
+              <button
+                type="button"
+                className="pc-btn pc-btn--primary"
+                disabled={active !== null || !specs}
+                onClick={() => startLogin(p.id)}
+              >
+                {isActive
+                  ? 'Running…'
+                  : done
+                    ? `Re-sign in to ${label}`
+                    : `Sign in to ${label}`}
+              </button>
+              {deskNote === p.id && !tauri && (
+                <p className="pc-provider-card__instructions">
+                  Terminal sign-in runs inside the Papercusp desktop app.
+                </p>
               )}
-              {(isActive || isExited) && specFor(p.id) && (
+              {(isActive || isExited) && tauri && specFor(p.id) && (
                 <>
                   <InlinePtyTerminal
                     key={`${p.id}-${attempt}`}
