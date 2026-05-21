@@ -15,14 +15,13 @@
 
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
+import type { BusyEntry } from '@papercusp/file-claim';
 import {
   ensureBootstrap,
   normalizePaths,
-  tryAcquire,
-  tryRelease,
   type AcquireBusy,
 } from '@/lib/agent-tools/locks/su-lock-store';
-import { inWorkspaceTxn } from '@/lib/agent-tools/locks/in-workspace-txn';
+import { SuLocksCoordinator } from '@/lib/agent-tools/locks/coordinator';
 import { readIdentity, type IdentityCtx } from '@/lib/agent-tools/locks/identity';
 import { getPlansDir, PLANS_DIR_REL, type PlanSourceOpts } from './source';
 
@@ -77,25 +76,27 @@ export async function withPlanLock<T>(
   const identity = readIdentity(ctx);
   const ttl = opts.ttlSec ?? 60;
 
-  const acquireResult = await inWorkspaceTxn(
-    identity.coordinationDomain,
-    identity.ownerId,
-    (tx) =>
-      tryAcquire(tx, {
-        coordinationDomain: identity.coordinationDomain,
-        owner: identity.ownerId,
-        ownerLabel: identity.ownerLabel,
-        paths,
-        intent: opts.intent,
-        ttlSec: ttl,
-      }),
-  );
+  // file-locking #11 dogfood: drive the SU-locks backend through the
+  // shared FileClaimCoordinator interface rather than the underlying
+  // tryAcquire / tryRelease primitives. Proves the alignment at a
+  // real consumer site; the BusyError shape on the WAY OUT (snake_
+  // case AcquireBusy) is preserved by translating BusyEntry at the
+  // API boundary so MCP-tool callers' wire schema is unchanged.
+  const coordinator = new SuLocksCoordinator({
+    coordinationDomain: identity.coordinationDomain,
+  });
+
+  const acquireResult = await coordinator.acquire(identity.ownerId, paths, {
+    ownerLabel: identity.ownerLabel,
+    intent: opts.intent,
+    ttlMs: ttl * 1000,
+  });
 
   if (!acquireResult.ok) {
-    return { kind: 'busy', busy: acquireResult.busy };
+    return { kind: 'busy', busy: acquireResult.busy.map(toAcquireBusy) };
   }
 
-  const lockId = acquireResult.lock_id;
+  const claim = acquireResult.claim;
 
   try {
     let current: string | null = null;
@@ -114,15 +115,22 @@ export async function withPlanLock<T>(
 
     return { kind: 'applied', value, filePath };
   } finally {
-    await inWorkspaceTxn(identity.coordinationDomain, identity.ownerId, (tx) =>
-      tryRelease(tx, {
-        coordinationDomain: identity.coordinationDomain,
-        owner: identity.ownerId,
-        lockId,
-        paths,
-      }),
-    );
+    await coordinator.release(claim);
   }
+}
+
+/** Translate the cross-backend BusyEntry shape back to the snake_
+ *  case AcquireBusy that MCP-tool callers serialize over the wire.
+ *  Keeps the boundary honest in both directions: in-process code uses
+ *  the unified interface, JSON consumers see the stable JSON schema. */
+function toAcquireBusy(b: BusyEntry): AcquireBusy {
+  return {
+    path: b.path,
+    owner: b.owner,
+    owner_label: b.ownerLabel ?? null,
+    intent: b.intent ?? '',
+    expires_ts: b.expiresAt ?? new Date(0),
+  };
 }
 
 /**
