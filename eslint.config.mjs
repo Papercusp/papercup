@@ -36,4 +36,22 @@ export default [
       'papercusp/no-bare-db-in-tx': 'error',
     },
   },
+  {
+    // Regression guard for `endpoint-hono-elimination-2026-05-21` —
+    // every application route must use `defineRoute`. Raw Hono
+    // (`app.get/post/use/route/...`, `new Hono()`) is restricted to
+    // `bin/host-*.ts` (the host seam). See
+    // `tools/eslint-rules/no-raw-route-handlers.js`.
+    files: [
+      'apps/operator/**/*.ts',
+      'apps/operator/**/*.tsx',
+      'packages/agent-mcp/**/*.ts',
+    ],
+    plugins: {
+      papercusp: papercuspRules,
+    },
+    rules: {
+      'papercusp/no-raw-route-handlers': 'error',
+    },
+  },
 ];
