@@ -10,9 +10,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import {
+  callMcpTool,
   extractPathsFromToolInput,
   formatBusyRefusal,
   formatTurnStartReminder,
+  hookOwnerId,
+  onSessionShutdown,
   onToolCall,
   onToolResult,
   readInboxFs,
@@ -20,6 +23,7 @@ import {
   readWatermarkFs,
   summarisePlanEvents,
   writeWatermarkFs,
+  _resetHookOwnerIdForTests,
   _resetToolCallCacheForTests,
   type InboxEntry,
 } from '../coord-hook';
@@ -119,6 +123,7 @@ describe('register (OMP adapter)', () => {
     const { default: register } = await import('../coord-hook');
     register(pi as never);
     expect([...subs.keys()].sort()).toEqual([
+      'session_shutdown',
       'session_start',
       'tool_call',
       'tool_result',
@@ -718,5 +723,129 @@ describe('onToolCall writes the health marker (file-locking #3)', () => {
     const rec = JSON.parse(await fs.readFile(healthPath, 'utf8'));
     expect(typeof rec.last_error_ts).toBe('string');
     expect(rec.last_error_kind).toBe('operator_unreachable');
+  });
+});
+
+// ────────────────────────────────────────────────────────────────────
+// file-locking #2 audit fixes — per-process owner id, session_shutdown
+// ────────────────────────────────────────────────────────────────────
+
+describe('hookOwnerId — per-process coordination owner (file-locking #2)', () => {
+  const prevSid = process.env.PAPERCUSP_AUTH_SESSION_ID;
+  afterEach(() => {
+    if (prevSid === undefined) delete process.env.PAPERCUSP_AUTH_SESSION_ID;
+    else process.env.PAPERCUSP_AUTH_SESSION_ID = prevSid;
+    _resetHookOwnerIdForTests();
+  });
+
+  it('mints omp-<session>-<pid> from PAPERCUSP_AUTH_SESSION_ID', () => {
+    process.env.PAPERCUSP_AUTH_SESSION_ID = 'pus-abc';
+    _resetHookOwnerIdForTests();
+    expect(hookOwnerId()).toBe(`omp-pus-abc-${process.pid}`);
+  });
+
+  it('falls back to a random session part when no env session id', () => {
+    delete process.env.PAPERCUSP_AUTH_SESSION_ID;
+    _resetHookOwnerIdForTests();
+    const id = hookOwnerId();
+    expect(id).toMatch(new RegExp(`^omp-[a-z0-9]+-${process.pid}$`));
+  });
+
+  it('is stable across calls within the process', () => {
+    _resetHookOwnerIdForTests();
+    expect(hookOwnerId()).toBe(hookOwnerId());
+  });
+
+  it('always ends with the real pid (distinguishes sibling shells)', () => {
+    _resetHookOwnerIdForTests();
+    expect(hookOwnerId().endsWith(`-${process.pid}`)).toBe(true);
+  });
+});
+
+describe('callMcpTool passes ?client=<owner> (file-locking #2)', () => {
+  const originalFetch = global.fetch;
+  const prevBundle = process.env.PAPERCUSP_BUNDLE_URL;
+  const prevSid = process.env.PAPERCUSP_AUTH_SESSION_ID;
+  afterEach(() => {
+    global.fetch = originalFetch;
+    if (prevBundle === undefined) delete process.env.PAPERCUSP_BUNDLE_URL;
+    else process.env.PAPERCUSP_BUNDLE_URL = prevBundle;
+    if (prevSid === undefined) delete process.env.PAPERCUSP_AUTH_SESSION_ID;
+    else process.env.PAPERCUSP_AUTH_SESSION_ID = prevSid;
+    _resetHookOwnerIdForTests();
+  });
+
+  it('appends the minted owner as a client query param', async () => {
+    process.env.PAPERCUSP_BUNDLE_URL = 'http://operator.test';
+    process.env.PAPERCUSP_AUTH_SESSION_ID = 'pus-xyz';
+    _resetHookOwnerIdForTests();
+    let seenUrl = '';
+    global.fetch = (async (url: unknown) => {
+      seenUrl = String(url);
+      return { ok: true, text: async () => '{}' };
+    }) as unknown as typeof fetch;
+    await callMcpTool('coord:declare-intent', { intent: 'x' });
+    expect(seenUrl).toContain('power_user=1');
+    expect(seenUrl).toContain(
+      `client=${encodeURIComponent(`omp-pus-xyz-${process.pid}`)}`,
+    );
+  });
+});
+
+describe('onSessionShutdown — defensive lock release (file-locking #2)', () => {
+  const originalFetch = global.fetch;
+  const prevBundle = process.env.PAPERCUSP_BUNDLE_URL;
+  afterEach(() => {
+    global.fetch = originalFetch;
+    if (prevBundle === undefined) delete process.env.PAPERCUSP_BUNDLE_URL;
+    else process.env.PAPERCUSP_BUNDLE_URL = prevBundle;
+    _resetToolCallCacheForTests();
+  });
+
+  it('calls coord:locks:release with all_mine:true', async () => {
+    process.env.PAPERCUSP_BUNDLE_URL = 'http://operator.test';
+    const calls: Array<{ name: string; args: unknown }> = [];
+    global.fetch = (async (_url: unknown, init: { body: string }) => {
+      const body = JSON.parse(init.body) as {
+        params: { name: string; arguments: unknown };
+      };
+      calls.push({ name: body.params.name, args: body.params.arguments });
+      return {
+        ok: true,
+        text: async () =>
+          JSON.stringify({
+            jsonrpc: '2.0',
+            id: 1,
+            result: { content: [{ type: 'text', text: '{"ok":true}' }] },
+          }),
+      };
+    }) as unknown as typeof fetch;
+    await onSessionShutdown();
+    expect(calls).toHaveLength(1);
+    expect(calls[0].name).toBe('coord:locks:release');
+    expect(calls[0].args).toEqual({ all_mine: true });
+  });
+});
+
+describe('extractPathsFromToolInput backslash consistency (file-locking #2)', () => {
+  const prevRoot = process.env.PAPERCUSP_REPO_ROOT;
+  beforeEach(() => {
+    process.env.PAPERCUSP_REPO_ROOT = '/repo';
+  });
+  afterEach(() => {
+    if (prevRoot === undefined) delete process.env.PAPERCUSP_REPO_ROOT;
+    else process.env.PAPERCUSP_REPO_ROOT = prevRoot;
+  });
+
+  it('skips backslash paths (the server rejects them — path-normalize.ts)', () => {
+    expect(
+      extractPathsFromToolInput('write', { path: '/repo/apps\\foo.ts' }),
+    ).toEqual([]);
+  });
+
+  it('still canonicalizes ./ // and trailing slash via resolve()', () => {
+    expect(
+      extractPathsFromToolInput('write', { path: '/repo/./apps//foo.ts' }),
+    ).toEqual(['apps/foo.ts']);
   });
 });

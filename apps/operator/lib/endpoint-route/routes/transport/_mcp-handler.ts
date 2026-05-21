@@ -203,6 +203,7 @@ async function tryBuildSpawnContext(extra: unknown): Promise<TrySpawnContextResu
       return { kind: 'failed', reason: 'power_user_invalid_token' };
     }
     const harnessParam = (url.searchParams.get('harness') ?? '').trim();
+    const clientParam = (url.searchParams.get('client') ?? '').trim();
     const buf = new Uint8Array(8);
     globalThis.crypto.getRandomValues(buf);
     return {
@@ -220,9 +221,18 @@ async function tryBuildSpawnContext(extra: unknown): Promise<TrySpawnContextResu
         runId: globalThis.crypto.randomUUID(),
         spawnId: `poweruser-${Array.from(buf).map((b) => b.toString(16).padStart(2, '0')).join('')}`,
         parentSpawnId: null,
-        // The auth_session_id is a stable per-OMP-session identity —
-        // exactly one lock owner per power-user session.
-        uiClientId: claims.authSessionId,
+        // Coordination owner identity (file-locking #2). Default: the
+        // token's auth_session_id — stable per power-user session. But
+        // the OMP coord hook mints a per-PROCESS owner and passes it
+        // via `?client=`; when present we honor it so per-process lock
+        // identity is UNCONDITIONAL — not contingent on the bundle
+        // token being minted fresh per OMP launch. `uiClientId` is the
+        // coordination owner LABEL only (locks / presence / messages);
+        // it is NOT a security boundary — the workspace clamp above
+        // (from the verified token) is. So an explicit `?client=` is
+        // safe to honor: it relabels the owner, it cannot escalate.
+        uiClientId:
+          clientParam.length > 0 ? clientParam : claims.authSessionId,
         // Dispatch-layer parity with superuser (operator-tier catalog
         // + synthesized system principal + workspace tx). The clamp
         // above is the security boundary that distinguishes the tiers.

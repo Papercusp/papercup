@@ -221,68 +221,17 @@ export async function ensureBootstrap(): Promise<void> {
 
 // ───────── Path validation (app-side; trigger is belt-and-suspenders) ─────────
 
-export class InvalidPathError extends Error {
-  constructor(p: string, reason: string) {
-    super(`InvalidPathError: ${reason}: ${p}`);
-    this.name = 'InvalidPathError';
-  }
-}
-
-const MAX_PATH_LEN = 4096;
-
-export function validatePath(p: string): void {
-  if (!p || p === '') throw new InvalidPathError(p, 'empty');
-  if (p.startsWith('/')) throw new InvalidPathError(p, 'absolute');
-  if (p === '..' || p.startsWith('../') || p.endsWith('/..') || p.includes('/../')) {
-    throw new InvalidPathError(p, 'traversal');
-  }
-  // POSIX forward slashes only — a backslash is either a Windows path
-  // separator (wrong repo-relative form) or a literal in a filename we
-  // refuse to reason about. Reject rather than guess (file-locking #1).
-  if (p.includes('\\')) throw new InvalidPathError(p, 'backslash');
-  if (p.length > MAX_PATH_LEN) throw new InvalidPathError(p, 'too long');
-  // PG's text type rejects NULL bytes; catch them client-side so the
-  // caller gets a clean InvalidPathError instead of a raw
-  // PostgresError on insert (bug #15).
-  if (p.includes('\0')) throw new InvalidPathError(p, 'null byte');
-}
-
-/**
- * Canonicalize a path to the repo-relative POSIX form the lock key
- * hashes on (file-locking #1). Splitting on '/' and dropping empty +
- * '.' segments collapses every accepted non-canonical spelling —
- * `./apps/foo`, `apps//foo`, `apps/./foo`, `apps/foo/` — onto one
- * string, so two agents naming the same file the same way always
- * contend. '..' segments are NOT dropped: they survive so the raw-path
- * validatePath check rejects them.
- *
- * Canonicalization runs AFTER validatePath, on the already-validated
- * raw path — so it can never rewrite an absolute path into a relative
- * one and thereby slip past the absolute-path rejection.
- */
-export function canonicalizePath(p: string): string {
-  return p
-    .split('/')
-    .filter((seg) => seg !== '' && seg !== '.')
-    .join('/');
-}
-
-export function normalizePaths(paths: string[]): string[] {
-  // Validate the RAW path first — absolute / '..' / backslash / null
-  // byte must be caught before canonicalization could mask them.
-  for (const p of paths) validatePath(p);
-  const canon = paths.map((p, i) => {
-    const c = canonicalizePath(p);
-    // A path that canonicalizes to nothing ('.', './', '/') was never
-    // a real repo-relative file path.
-    if (c === '') throw new InvalidPathError(paths[i], 'empty after canonicalization');
-    return c;
-  });
-  // Sort + dedupe. Sort is for FIFO determinism and stable indexing;
-  // dedupe now also collapses paths that were distinct strings but
-  // canonicalize to the same key.
-  return Array.from(new Set(canon)).sort();
-}
+// Path validation + canonicalization moved to ./path-normalize.ts
+// (file-locking #2 follow-up — one named module owns the rules).
+// Re-exported here so existing `from '../su-lock-store'` importers
+// keep resolving.
+export {
+  InvalidPathError,
+  MAX_PATH_LEN,
+  validatePath,
+  canonicalizePath,
+  normalizePaths,
+} from './path-normalize';
 
 // ───────── Janitor — expiry sweep ─────────
 

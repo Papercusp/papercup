@@ -1,18 +1,19 @@
 /**
- * Papercusp coordination hook for OMP — one module, four handlers
- * (per agent-coordination-architecture-v2 §7.3 + §12.1):
+ * Papercusp coordination hook for OMP — one module, six handlers
+ * (per agent-coordination-architecture-v2 §7.3 + §12.1 +
+ * file-locking-improvements #2):
  *
- *   session_start → probe the operator (attached/detached) + declare
- *                   presence (coord:declare-intent over MCP, attached
- *                   only — presence is PG-backed).
- *   turn_start    → assemble + inject the system-reminder payload
- *                   (held locks, unread inbox, changed plans).
- *   turn_end      → persist the watermark pointers consumed this turn.
- *   tool_call     → L2 file-lock enforcement — stubbed permissive here.
- *                   The file-locking-improvements plan owns the real
- *                   enforcement (calls locks:acquire and returns
- *                   { block: true, reason } on busy). When that ships,
- *                   the stub below becomes the real call site.
+ *   session_start    → mint the per-process coordination owner id;
+ *                      probe the operator (attached/detached) +
+ *                      declare presence (coord:declare-intent over
+ *                      MCP, attached only — presence is PG-backed).
+ *   turn_start       → assemble + inject the system-reminder payload
+ *                      (held locks, unread inbox, changed plans).
+ *   turn_end         → persist the watermark pointers consumed.
+ *   tool_call        → L2 file-lock enforcement — extract paths,
+ *                      coord:locks:acquire, block on busy.
+ *   tool_result      → release the lock acquired for that toolCallId.
+ *   session_shutdown → defensive release of any locks still held.
  *
  * Runtime: the hook is loaded BY OMP, inside the OMP child process,
  * NOT in the operator. It MUST be self-contained (no operator imports)
@@ -167,17 +168,63 @@ interface JsonRpcResp {
  * tool's text content (the coord:* tools all JSON-stringify into a
  * single text element). Returns null on any failure — best-effort.
  */
+/**
+ * Per-PROCESS coordination owner id (file-locking #2). Minted once,
+ * cached for the process lifetime.
+ *
+ * This is the structural fix for OMP per-session identity: the hook
+ * OWNS its identity rather than inheriting it from whatever the MCP
+ * transport's `Mcp-Session-Id` / bundle token happens to carry. Two
+ * OMP shells on one machine ALWAYS get distinct owners because
+ * `process.pid` differs — the lock store can never collapse them.
+ *
+ * Format `omp-<session>-<pid>`: the session part is
+ * PAPERCUSP_AUTH_SESSION_ID when the bundle env supplies it (already
+ * unique per desktop launch), else a random hex (covers the
+ * standalone-install path where no bundle session id exists). The
+ * `<pid>` makes it unconditional regardless. callMcpTool passes this
+ * via `?client=` — the operator's power-user route branch honors it
+ * (see _mcp-handler.ts).
+ */
+let _hookOwnerId: string | null = null;
+export function hookOwnerId(): string {
+  if (_hookOwnerId === null) {
+    const session =
+      process.env.PAPERCUSP_AUTH_SESSION_ID &&
+      process.env.PAPERCUSP_AUTH_SESSION_ID.length > 0
+        ? process.env.PAPERCUSP_AUTH_SESSION_ID
+        : Math.random().toString(36).slice(2, 10);
+    _hookOwnerId = `omp-${session}-${process.pid}`;
+  }
+  return _hookOwnerId;
+}
+
+/** Test-only: reset the memoised owner id between cases. */
+export function _resetHookOwnerIdForTests(): void {
+  _hookOwnerId = null;
+}
+
 export async function callMcpTool(
   toolName: string,
   args: Record<string, unknown>,
   env: { mcpUrl?: string; bearer?: string; sessionId?: string } = {},
 ): Promise<unknown | null> {
+  // Append the per-process coordination owner as `?client=` so the
+  // operator attributes every coord/locks call to THIS process, not
+  // to a shared bundle-token identity (file-locking #2).
+  const clientParam = `client=${encodeURIComponent(hookOwnerId())}`;
+  const withClient = (base: string): string =>
+    base.includes('?') ? `${base}&${clientParam}` : `${base}?${clientParam}`;
   const mcpUrl =
     env.mcpUrl ??
     (process.env.PAPERCUSP_BUNDLE_URL
-      ? new URL('/api/mcp?power_user=1', process.env.PAPERCUSP_BUNDLE_URL).toString()
+      ? withClient(
+          new URL('/api/mcp?power_user=1', process.env.PAPERCUSP_BUNDLE_URL).toString(),
+        )
       : process.env.PAPERCUSP_OPERATOR_URL
-      ? new URL('/api/mcp?power_user=1', process.env.PAPERCUSP_OPERATOR_URL).toString()
+      ? withClient(
+          new URL('/api/mcp?power_user=1', process.env.PAPERCUSP_OPERATOR_URL).toString(),
+        )
       : null);
   if (!mcpUrl) return null;
   const bearer = env.bearer ?? process.env.PAPERCUSP_BUNDLE_ACCESS_TOKEN ?? '';
@@ -472,10 +519,33 @@ export async function readPlanEventsFs(sinceTs?: string): Promise<InboxEntry[]> 
  *  attached/detached mode, then declares presence (attached only —
  *  presence is PG-backed and unavailable detached). */
 export async function onSessionStart(): Promise<void> {
+  // Mint the per-process coordination owner id up front (file-locking
+  // #2). Every subsequent callMcpTool carries it via `?client=`, so a
+  // lock or coordination message authored by this process is always
+  // attributed to THIS process — never collapsed with a sibling OMP
+  // shell that happens to share a bundle token.
+  hookOwnerId();
   await refreshMode();
   if (_mode === 'attached') {
     await callMcpTool('coord:declare-intent', { intent: 'OMP session started' });
   }
+}
+
+/**
+ * Fired on process exit (SIGINT/SIGTERM). Defensive lock cleanup
+ * (file-locking #2 step 4): release every lock this owner still
+ * holds. In the normal path onToolResult already released each lock
+ * as its tool finished, so this is a backstop for a session that
+ * ends mid-edit (turn aborted between tool_call and tool_result).
+ *
+ * Uses `all_mine: true` — one call that releases everything the
+ * `?client=` owner holds, rather than iterating the local cache
+ * (which could be stale if a tool_result was missed). Best-effort:
+ * a failure here is covered by the lock TTL.
+ */
+export async function onSessionShutdown(): Promise<void> {
+  acquiredLocks.clear();
+  await callMcpTool('coord:locks:release', { all_mine: true });
 }
 
 /**
@@ -784,6 +854,18 @@ function papercupRoot(): string {
  *   - edit        → input.path | file_path | filePath  (extension)
  *   - ast_edit    → input.paths[]  (skip entries containing * ? [ )
  *   - multi_edit  → input.paths[]  (legacy / future)
+ *
+ * Path normalization mirrors the server's rules in
+ * `apps/operator/lib/agent-tools/locks/path-normalize.ts` — that file
+ * is the source of truth. The hook MUST duplicate them rather than
+ * import the module because it ships as a single self-contained file
+ * copied into `~/.omp/agent/extensions/`. `node:path.resolve()`
+ * already collapses `.`, `..`, `//` and trailing `/` and the
+ * repo-prefix slice drops absolute / outside-repo paths; the explicit
+ * backslash skip below covers the one rule resolve() does NOT enforce
+ * on POSIX (a `\` is a literal filename char there, but the server
+ * rejects it). `coord-hook.test.ts` asserts this stays consistent
+ * with `normalizePaths()`.
  */
 export function extractPathsFromToolInput(
   toolName: string,
@@ -809,6 +891,10 @@ export function extractPathsFromToolInput(
   const prefix = root.endsWith('/') ? root : root + '/';
   const out: string[] = [];
   for (const p of raw) {
+    // Backslash: the server's validatePath rejects it outright. Skip
+    // here so the hook never asks the operator to claim a path the
+    // operator would refuse (consistency with path-normalize.ts).
+    if (p.includes('\\')) continue;
     const abs = resolve(p);
     if (abs === root) continue; // never claim the repo root itself
     if (abs.startsWith(prefix)) out.push(abs.slice(prefix.length));
@@ -935,6 +1021,7 @@ async function safe<T>(fn: () => Promise<T>, fallback: T): Promise<T> {
  * values are also discarded.
  */
 type SessionStartHandler = (event: { type: 'session_start' }, ctx: unknown) => unknown;
+type SessionShutdownHandler = (event: { type: 'session_shutdown' }, ctx: unknown) => unknown;
 type TurnStartHandler = (event: { type: 'turn_start'; turnIndex: number; timestamp: number }, ctx: unknown) => unknown;
 type TurnEndHandler = (event: { type: 'turn_end' }, ctx: unknown) => unknown;
 type ToolCallHandler = (
@@ -948,6 +1035,7 @@ type ToolResultHandler = (
 
 interface HookApi {
   on(event: 'session_start', handler: SessionStartHandler): void;
+  on(event: 'session_shutdown', handler: SessionShutdownHandler): void;
   on(event: 'turn_start', handler: TurnStartHandler): void;
   on(event: 'turn_end', handler: TurnEndHandler): void;
   on(event: 'tool_call', handler: ToolCallHandler): void;
@@ -1027,5 +1115,9 @@ export default function register(pi: HookApi): void {
 
   pi.on('tool_result', async (event) => {
     await safe(() => onToolResult(event), undefined);
+  });
+
+  pi.on('session_shutdown', async () => {
+    await safe(() => onSessionShutdown(), undefined);
   });
 }
