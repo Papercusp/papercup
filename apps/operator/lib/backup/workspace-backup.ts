@@ -414,6 +414,21 @@ export class WorkspaceBackup {
         excluded_paths_json   = EXCLUDED.excluded_paths_json,
         updated_at            = now()
     `;
+    // Push the new retention/excludedPaths to kopia now instead of
+    // waiting for the next snapshot's ensureRepo — e.g. a manual
+    // `maintenance run` triggered right after a retention change
+    // should prune against the fresh values. ensureRepo re-applies the
+    // global policy on every path. Fire-and-forget + best-effort: the
+    // PG write above is the source of truth and the next snapshot
+    // re-applies the policy anyway, so a kopia hiccup here is harmless.
+    // Skipped when backups are disabled — no need to create/touch a
+    // repo for a workspace that isn't backing up.
+    if (next.enabled) {
+      void this.ensureRepo().catch((err) => {
+        // eslint-disable-next-line no-console
+        console.warn(`[backup] updateSettings: kopia policy refresh for ${this.workspaceId} failed:`, err);
+      });
+    }
     return next;
   }
 
