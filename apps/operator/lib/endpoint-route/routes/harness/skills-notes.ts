@@ -1,0 +1,156 @@
+/**
+ * Per-harness skill files + supervisor notes:
+ *
+ *   GET    /api/harness/:slug/skills                  — list .claude/skills/*.md
+ *   GET    /api/harness/:slug/skills/:name            — one skill file
+ *   PUT    /api/harness/:slug/skills/:name            — write a skill file
+ *   DELETE /api/harness/:slug/skills/:name            — remove a skill file
+ *   GET    /api/harness/:slug/supervisor-notes        — supervisor-notes.md
+ *   PUT    /api/harness/:slug/supervisor-notes        — replace notes
+ *   POST   /api/harness/:slug/supervisor-notes/append — append a timestamped block
+ *
+ * supervisor-notes.md is PG-canonical (text-artifacts); skill files are
+ * FS-only under the project's `.claude/skills/`.
+ *
+ * Relocated from `_hono/harness.ts` (endpoint-hono-elimination-2026-05-21
+ * A4 batch 16).
+ */
+import { existsSync, readdirSync } from 'node:fs';
+import { mkdir, writeFile, unlink } from 'node:fs/promises';
+import { join } from 'node:path';
+import { resolvePhasedProject, harnessDir, safeRead } from '@/lib/harness-core';
+import { phasePhaseLabel } from '@/lib/harness-phases';
+import type { ProjectEntry } from '@/lib/harness-registry';
+import { defineRoute } from '../../define-route';
+
+function phaseFromReq(req: Request) {
+  return phasePhaseLabel(new URL(req.url).searchParams.get('phase') ?? undefined);
+}
+
+const skillsDir = (p: ProjectEntry) => join(p.path, '.claude', 'skills');
+const supervisorPath = (p: ProjectEntry) => join(harnessDir(p), 'supervisor-notes.md');
+
+/** Validate + normalize a skill filename — rejects traversal, forces `.md`. */
+function safeName(name: string): string | null {
+  if (!/^[A-Za-z0-9_.-]+$/.test(name)) return null;
+  if (name.includes('..') || name.startsWith('.')) return null;
+  return name.replace(/\.md$/i, '') + '.md';
+}
+
+const getSkills = defineRoute({
+  method: 'GET',
+  path: '/harness/:slug/skills',
+  auth: 'public',
+  async handler(req, ctx) {
+    const project = await resolvePhasedProject(ctx.params.slug as string, phaseFromReq(req));
+    if (!project) return Response.json({ error: 'unknown project' }, { status: 404 });
+    const dir = skillsDir(project);
+    let files: string[] = [];
+    try {
+      if (existsSync(dir)) {
+        files = readdirSync(dir).filter((f) => f.endsWith('.md')).sort();
+      }
+    } catch {}
+    return Response.json({ skills: files });
+  },
+});
+
+const getSkill = defineRoute({
+  method: 'GET',
+  path: '/harness/:slug/skills/:name',
+  auth: 'public',
+  async handler(req, ctx) {
+    const project = await resolvePhasedProject(ctx.params.slug as string, phaseFromReq(req));
+    if (!project) return Response.json({ error: 'unknown project' }, { status: 404 });
+    const name = safeName(ctx.params.name as string);
+    if (!name) return Response.json({ error: 'bad name' }, { status: 400 });
+    const content = safeRead(join(skillsDir(project), name)) ?? '';
+    return Response.json({ name, content });
+  },
+});
+
+const putSkill = defineRoute({
+  method: 'PUT',
+  path: '/harness/:slug/skills/:name',
+  auth: 'public',
+  async handler(req, ctx) {
+    const project = await resolvePhasedProject(ctx.params.slug as string, phaseFromReq(req));
+    if (!project) return Response.json({ error: 'unknown project' }, { status: 404 });
+    const name = safeName(ctx.params.name as string);
+    if (!name) return Response.json({ error: 'bad name' }, { status: 400 });
+    const body = await req.json().catch(() => ({} as any));
+    if (typeof body.content !== 'string') return Response.json({ error: 'content required' }, { status: 400 });
+    const dir = skillsDir(project);
+    if (!existsSync(dir)) await mkdir(dir, { recursive: true });
+    await writeFile(join(dir, name), body.content, 'utf8');
+    return Response.json({ ok: true, name });
+  },
+});
+
+const deleteSkill = defineRoute({
+  method: 'DELETE',
+  path: '/harness/:slug/skills/:name',
+  auth: 'public',
+  async handler(req, ctx) {
+    const project = await resolvePhasedProject(ctx.params.slug as string, phaseFromReq(req));
+    if (!project) return Response.json({ error: 'unknown project' }, { status: 404 });
+    const name = safeName(ctx.params.name as string);
+    if (!name) return Response.json({ error: 'bad name' }, { status: 400 });
+    try { await unlink(join(skillsDir(project), name)); } catch {}
+    return Response.json({ ok: true });
+  },
+});
+
+const getSupervisorNotes = defineRoute({
+  method: 'GET',
+  path: '/harness/:slug/supervisor-notes',
+  auth: 'public',
+  async handler(req, ctx) {
+    const slug = ctx.params.slug as string;
+    const project = await resolvePhasedProject(slug, phaseFromReq(req));
+    if (!project) return Response.json({ error: 'unknown project' }, { status: 404 });
+    const { loadTextArtifact } = await import('@/lib/text-artifacts');
+    const fromPg = await loadTextArtifact(slug, 'supervisor-notes.md');
+    return Response.json({ content: fromPg ?? safeRead(supervisorPath(project)) ?? '' });
+  },
+});
+
+const putSupervisorNotes = defineRoute({
+  method: 'PUT',
+  path: '/harness/:slug/supervisor-notes',
+  auth: 'public',
+  async handler(req, ctx) {
+    const slug = ctx.params.slug as string;
+    const project = await resolvePhasedProject(slug, phaseFromReq(req));
+    if (!project) return Response.json({ error: 'unknown project' }, { status: 404 });
+    const body = await req.json().catch(() => ({} as any));
+    if (typeof body.content !== 'string') return Response.json({ error: 'content required' }, { status: 400 });
+    const { saveTextArtifact } = await import('@/lib/text-artifacts');
+    await saveTextArtifact(slug, 'supervisor-notes.md', body.content);
+    return Response.json({ ok: true });
+  },
+});
+
+const appendSupervisorNotes = defineRoute({
+  method: 'POST',
+  path: '/harness/:slug/supervisor-notes/append',
+  auth: 'public',
+  async handler(req, ctx) {
+    const slug = ctx.params.slug as string;
+    const project = await resolvePhasedProject(slug, phaseFromReq(req));
+    if (!project) return Response.json({ error: 'unknown project' }, { status: 404 });
+    const body = await req.json().catch(() => ({} as any));
+    const text = typeof body.text === 'string' ? body.text.trim() : '';
+    if (!text) return Response.json({ error: 'text required' }, { status: 400 });
+    const speaker = typeof body.by === 'string' && body.by.trim() ? body.by.trim() : 'human';
+    const block = `\n## ${speaker} ${new Date().toISOString()}\n\n${text}\n`;
+    const { appendTextArtifact } = await import('@/lib/text-artifacts');
+    await appendTextArtifact(slug, 'supervisor-notes.md', block);
+    return Response.json({ ok: true });
+  },
+});
+
+export default [
+  getSkills, getSkill, putSkill, deleteSkill,
+  getSupervisorNotes, putSupervisorNotes, appendSupervisorNotes,
+];
