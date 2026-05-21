@@ -166,7 +166,10 @@ export async function flushTelemetry(): Promise<FlushResult> {
       const batch = pending.map((row) => ({
         event: `papercusp_${row.kind}`,
         distinct_id: config.distinctId,
-        timestamp: row.received_at.toISOString(),
+        // `received_at: Date` is the TS shape but the postgres driver
+        // hands it back as an ISO string at runtime — wrap in Date()
+        // so we accept both forms.
+        timestamp: new Date(row.received_at).toISOString(),
         properties: {
           app_version: row.app_version,
           os: row.os,
