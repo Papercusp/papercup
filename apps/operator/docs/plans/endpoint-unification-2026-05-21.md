@@ -8,13 +8,20 @@ owner: pandawamble@gmail.com
 companion-to: [endpoint-route-migration-2026-05-20, phase-4-endpoint-system-2026-05-12, principal-rfc-2026-05-20, host-architecture-2026-05-20-v2]
 ---
 
+<!--
+STATUS 2026-05-21: E1–E5 SHIPPED (mobile arc complete). E6 re-scoped —
+the literal defineRoute→defineTool function-merge is blocked on a
+package/app architecture prerequisite (E6a); see §E6. E7–E14 not started.
+-->
+
+
 ## Now
 
 **State:** E1 + E2 shipped. E1 (`c567f7ac`) — type-additive `defineTool` fields. E2 — the load-bearing auth fix: the `/api/agent-tools/*` catch-all now resolves a mobile device JWT (composite bearer resolver: `resolveBearer` token_index → mobile JWT), and `requirePrincipal()` gained a `from-bearer-token` resolver so agent `system`/`pi` bearers resolve there too. A paired phone can now call any built-in `defineTool`.
 
-**Next:** E6 — codemod `defineRoute(` → `defineTool(` across the ~242 route modules; collapse `defineRoute` to a re-export then delete the symbol.
+**Next (E6 — BLOCKED, re-scoping required):** the literal "codemod `defineRoute(` → `defineTool(` + delete the symbol" was found **unsafe and architecturally infeasible as written** — see the revised E6 section below. The interface/auth/mobile unification the user actually asked for is **already shipped** (E1–E5). The remaining literal single-function merge needs a prerequisite architectural move (route infrastructure → `packages/agent-mcp`, or the auth-resolver chain → a shared package). That is a real project, not a rename, and it is recorded honestly below rather than executed blind.
 
-E5 shipped: `_hono/mobile.ts` deleted (1009 LOC), `app.route('/mobile', registerMobile)` mount removed, `deviceAuth()` middleware deleted from `mobile-jwt.ts`. The already-dead `mobile-sse-route.test.ts` (tested a `/sync/sse` route removed long ago) deleted too. The migrated `routes/mobile/*` defineRoutes are now the only `/api/mobile/*` handlers.
+E1–E5 shipped (5 commits, `c567f7ac` → `9bc35e3c`): the full mobile arc. `defineTool` interface is now a superset of `defineRoute`'s (E1); auth is unified through `requirePrincipal` with mobile JWT + agent bearer both resolving (E2); `mobile: true` is a one-line flag that wires CORS + `auth.kind` (E3); all 33 legacy mobile routes are `defineRoute` modules (E4); `_hono/mobile.ts` is deleted (E5).
 
 **Scope adjustment (E2 review):** the telemetry-table merge (`route_invocations` → `tool_invocations` with a `kind` discriminator) is **moved from E2 to E6**. Rationale: migration 077 separated the tables *by deliberate design* (RFC Q1 — genuinely different column sets, different volume/retention). The merge's benefit only fully materializes once `defineRoute` actually collapses into `defineTool` (E6) and the route/tool distinction disappears at the dispatch level. Forcing a PG migration in E2 would couple the auth fix to schema-migration risk for no near-term gain. E2 ships the auth fix alone.
 
@@ -159,26 +166,26 @@ Risk: the projected-tool catchall serves ~96 tools today. The auth swap must be 
 | 8 | Formerly-deferred items | All pulled into scope (E8–E11) |
 | 9 | Legacy `_hono/*` cleanup on desktop side | Yes — confirmed 184 legacy routes across 5 mounted sub-apps; added E12–E14 |
 
-## 6. Phases — final arc
+## 6. Phases — status
 
 ```
-E1  Type unification (no behavior change)
-E2  Dispatch + telemetry merge (fixes G1, mobile JWT reaches built-in tools)
-E3  expose.mobile + centralized CORS (fixes G2)
-E4  Migrate 33 mobile routes (5 batches, /api/mobile/* wire-compat)
-E5  Delete _hono/mobile.ts
-E6  Codemod defineRoute → defineTool, delete defineRoute symbol
-E7  ESLint enforcement + docs
-E8  IPC transport for unified handlers
-E9  Auth-tightening pass (~30–50 routes)
-E10 OpenAPI mobile-tag rendering
-E11 Hono replacement assessment (written, not executed)
-E12 Migrate _hono/harness.ts (135 routes, ~17 batches)
-E13 Migrate coord/plugins/su-locks (16 routes) + triage 9 orphan files
-E14 Delete _hono/* directory (keep only app.ts as host seam)
+E1  Type unification (no behavior change)                       ✅ SHIPPED  c567f7ac
+E2  Auth unification — mobile JWT reaches built-in tools        ✅ SHIPPED  1cccc53f
+E3  mobile flag + centralized CORS                              ✅ SHIPPED  17aa7729
+E4  Migrate 33 mobile routes (/api/mobile/* wire-compat)        ✅ SHIPPED  9fa447d4
+E5  Delete _hono/mobile.ts                                      ✅ SHIPPED  9bc35e3c
+E6  Collapse defineRoute → defineTool                           ⚠️ RE-SCOPED — see §E6
+E7  ESLint enforcement + docs                                   ⬜ not started
+E8  IPC transport for unified handlers                          ⬜ not started
+E9  Auth-tightening pass (~30–50 routes)                        ⬜ not started
+E10 OpenAPI mobile-tag rendering                                ⬜ not started
+E11 Hono replacement assessment                                 ⬜ not started
+E12 Migrate _hono/harness.ts (135 routes)                       ⬜ not started — own plan
+E13 Migrate coord/plugins/su-locks (16 routes) + orphan triage  ⬜ not started
+E14 Delete _hono/* directory                                    ⬜ not started
 ```
 
-**Total surface migrated:** mobile 33 + harness 135 + others 16 = **184 legacy routes** on top of the 242 already-`defineRoute` modules.
+**Shipped:** the complete mobile arc — `defineTool`'s interface is a superset of `defineRoute`'s, auth is unified through `requirePrincipal`, `mobile: true` is the one-line flag the user asked for, all 33 legacy mobile routes are migrated, `_hono/mobile.ts` is deleted. **E6's literal function-merge is blocked on a package/app architecture prerequisite (E6a) — documented, not executed.** E7–E14 remain; E12 (135 routes) warrants its own focused plan.
 
 ### Phase E1 — Type unification, no behavior change
 
@@ -233,13 +240,30 @@ URLs unchanged (`/api/mobile/*`) — wire-compat with the Rust mobile client. De
 - ✅ `mobile-sse-route.test.ts` deleted — it tested a `/sync/sse` route that had already been removed from `mobile.ts` (the test was already failing; its `sync-sse` import in `mobile.ts` was dead).
 - Acceptance: `route-shadowing` + `composed-app-shadowing` + mobile route/auth/CORS suites green (24 tests); no lingering `deviceAuth`/`registerMobile` references.
 
-### Phase E6 — Delete `defineRoute` symbol
+### Phase E6 — Collapse `defineRoute` into `defineTool` — ⚠️ RE-SCOPED (blocked on a prerequisite)
 
-- `defineRoute` becomes `export { defineTool as defineRoute }` for one PR cycle.
-- Codemod 242 callsites: `s/defineRoute(/defineTool(/g` + manual review of `expose.http` shape differences.
-- Delete `apps/operator/lib/endpoint-route/define-route.ts`.
-- Move route-stack to `packages/agent-mcp/src/route-stack.ts`.
-- Rename `endpoint-route/` → `endpoint/`.
+**The literal plan (`s/defineRoute(/defineTool(/` + delete the symbol) is wrong and was not executed.** Investigation (2026-05-21):
+
+- **252 `defineRoute` callsites.** Every handler returns a Web `Response`. `defineTool` handlers return `ToolResponse`/`ToolResult`. The contracts are incompatible — a blind rename breaks all 252.
+- **`defineTool` lives in `packages/agent-mcp`; `defineRoute` + route-stack + the route registry live in `apps/operator`.** The package cannot import the app. So `defineTool` literally cannot produce a `RouteDefinition`, cannot mount a Hono route, and cannot call `route-stack` → `requirePrincipal`.
+- **`route-stack.ts` → `requirePrincipal` → the app-side resolver chain** (`from-cookie` does a PG session lookup, `from-superuser-token` reads `~/.papercusp/superuser-token`, `from-mobile-jwt`, `from-bearer-token`, `from-loopback`). Moving route-stack into the package drags that entire chain across the boundary.
+
+**What "collapse" actually required, and what was delivered.** The user's stated grievance was "duplicate functionality in the `defineTool` and `defineRoute` *interfaces*." That duplication is **gone**:
+
+| Concern | Before | After (E1–E5) |
+|---|---|---|
+| Auth gate type | `defineTool: capability`; `defineRoute: PrincipalRequirements` | One `PrincipalRequirements`/`RouteAuth`, canonical in `@papercusp/agent-mcp`; `defineTool` accepts it |
+| Auth resolution | catchall `resolveBearer`; route-stack `requirePrincipal` | both reach mobile JWT + agent bearer; `requirePrincipal` is the one model |
+| Mobile reachability | bespoke `_hono/mobile.ts` router | `mobile: true` flag (CORS + `auth.kind`) |
+| Input schema | `args` (tool) / `input` (route) | `input` accepted on both; `expose` on both |
+
+**The one thing not collapsed: the function *name*.** Making it literally one function needs a **prerequisite phase E6a**: extract the route primitive + route-stack + auth-resolver chain into a shared location both `packages/agent-mcp` and `apps/operator` can import (either route infra moves up into `agent-mcp`, or the auth resolvers move into a new `@papercusp/endpoint-host` package). Only then can a single `defineTool` — with `expose`-driven projection and a `Response | ToolResult | ToolResponse` handler union — serve both. That is a real, scoped project; doing it blind across 252 routes + 96 tools risks the entire HTTP + tool surface. **Recommendation:** schedule E6a as its own plan with its own review, *or* accept the two-projection design (which the route-audit plan deliberately chose: "plumbing in the agent catalog is a category error") and treat E1–E5's interface convergence as the achieved goal.
+
+**Telemetry note:** the E2-deferred `route_invocations` → `tool_invocations` merge is also **not recommended** — migration 077 separated the tables by deliberate design (RFC Q1: genuinely different column sets, different volume/retention). Folding them undoes a good decision. Dropped from scope.
+
+### Phases E7–E14 — status
+
+Not started. E7 (lint + docs), E8 (IPC), E9 (auth-tightening ~30–50 routes), E10 (OpenAPI mobile tag), E11 (Hono assessment), E12 (migrate `_hono/harness.ts`, 135 routes), E13 (`coord`/`plugins`/`su-locks`, 16 routes + orphan triage), E14 (delete `_hono/`). E12 in particular is the single largest phase (135 route migrations) and, like E6a, warrants its own focused plan + review rather than a rushed pass. The `mobile: true` flag and the unified `requirePrincipal` auth from E1–E5 make every one of those migrations mechanical when they happen.
 
 ### Phase E7 — Lint enforcement + docs
 
