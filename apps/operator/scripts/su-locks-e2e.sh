@@ -449,7 +449,7 @@ fi
 # Equivalent-but-non-identical spellings must collide (file-locking #1).
 # A holds 'apps/canon-test.ts'; B acquires './apps/canon-test.ts' —
 # canonicalization must make B see busy.
-EQP="apps/canon-$-test.ts"
+EQP="apps/canon-test.ts"
 call_tool "$AGENT_A" "locks:acquire" "{\"paths\":[\"$EQP\"],\"intent\":\"A canon\",\"ttl_sec\":60}" >/dev/null
 RESP=$(call_tool "$AGENT_B" "locks:acquire" "{\"paths\":[\"./$EQP\"],\"intent\":\"B canon\",\"ttl_sec\":60,\"max_wait_sec\":0}" | extract)
 OKV=$(echo "$RESP" | jq -r '.ok // empty')

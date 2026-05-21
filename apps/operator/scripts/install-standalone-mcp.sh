@@ -99,13 +99,18 @@ PYEOF
 chmod 600 "$OMP_CONFIG_PATH"
 echo "✓ Merged 'papercusp-su' into $OMP_CONFIG_PATH (mode 0600)"
 
-# 4. Inject the engineer-collaborator playbook into each host agent's
-# always-loaded context file. Idempotent: re-runs replace the block
-# between the BEGIN/END markers, leaving everything else untouched.
+# 4. Inject the engineer-collaborator playbook into OMP's always-loaded
+# context file. Idempotent: re-runs replace the block between the
+# BEGIN/END markers, leaving everything else untouched.
 #
-# We only target an agent's context file if the agent's parent dir
-# already exists — no point creating ~/.codex/ on a machine that
-# doesn't have Codex installed.
+# OMP-ONLY (file-locking #2): the project dropped Claude Code / Codex /
+# Gemini support (see project_claude_code_unsupported). The playbook is
+# injected into ~/.omp/agent/CLAUDE.md only — the ~/.claude, ~/.codex
+# and ~/.gemini injections were removed alongside the CC PreToolUse/
+# PostToolUse hook injection.
+#
+# The dir-exists guard stays so a machine without OMP installed is left
+# untouched.
 
 if [ ! -f "$PLAYBOOK_PATH" ]; then
   echo "! Expected playbook at $PLAYBOOK_PATH; skipping context injection"
@@ -148,15 +153,9 @@ PYEOF
     echo "✓ Injected papercusp-su playbook into $target_path"
   }
 
-  while IFS=':' read -r target parent; do
-    [ -z "$target" ] && continue
-    inject_block "$target" "$parent"
-  done <<EOF
-${HOME}/.claude/CLAUDE.md:${HOME}/.claude
-${HOME}/.codex/AGENTS.md:${HOME}/.codex
-${HOME}/.gemini/GEMINI.md:${HOME}/.gemini
-${HOME}/.omp/agent/CLAUDE.md:${HOME}/.omp/agent
-EOF
+  # OMP-only — the Claude Code / Codex / Gemini targets were removed
+  # in file-locking #2 (OMP is the only supported host CLI).
+  inject_block "${HOME}/.omp/agent/CLAUDE.md" "${HOME}/.omp/agent"
 fi
 
 # 4c. Install the coordination extension into OMP.

@@ -184,6 +184,37 @@ I recommend **Option A**. The lane pool already supervises lane lifecycle for bu
 
 **Risk.** Low. `reap()` itself is implemented and tested; wiring is the only delta.
 
+**Implementation status (2026-05-20, post-audit).** PARTIAL — the
+`reap()` primitive was hardened (commits `23ce70d` + `f08bbd1`: it now
+also drops queued waiters, not just held locks, so a complete reap
+clears holds AND pending claims) but **the Option-A wiring was NOT
+done.** The plan's "~10 lines in `main-loop.ts`" estimate assumed a
+lane-supervisor termination path already exists. It does not:
+
+- `LanePool` (`lanes.ts`) is a pure slot counter — `acquire` /
+  `release` / `waitAll` / `count`. It has no per-lane identity, no
+  termination hook, and no kill path.
+- `runChunkLoop` takes no `AbortSignal`; there is no force-cancel
+  entry point to hang a `reap` call off.
+- The lock owner is the per-chunk `${feature.id}:${chunk.id}`, which
+  `LanePool` does not track — so even a termination hook could not
+  name the owner to reap.
+
+Wiring `reap()` correctly therefore requires **building lane
+cancellation first**: a per-lane `AbortController`, the signal
+threaded through `dispatchDecision` → chunk-loop → `runChunkLoop` →
+`FileLockQueue.acquire`, a supervisor kill path, and per-lane owner
+tracking. That is a multi-day feature, not this item's ~1-hour scope.
+
+**Decision: DEFERRED.** `reap()` is kept as a correct, tested
+primitive (exercised by the #11 conformance suite) and is ready the
+day lane cancellation is built. Until then the leak it guards against
+is bounded: `FileLockQueue` is an in-process `Map` with no
+persistence, so a wedged lane's leaked locks clear on the next
+orchestrator restart — the same argument Option B made. The
+`file-lock-queue.ts` header records this with a `NO PRODUCTION CALLER
+yet` note. Re-open this item when lane cancellation lands.
+
 ---
 
 ### Tier 2 — should do (observability + reliability)

@@ -94,7 +94,7 @@ function busyToJson(b: AcquireBusy): BusyJson {
 export default defineTool({
   name: 'locks:acquire',
   description:
-    'Claim a set of files for exclusive editing. Returns ok+lock_id on success, or busy+contention details on failure. Set wait={max_sec:N} (≤300) to queue server-side until the locks free.',
+    'Claim a set of files for exclusive editing. Returns ok+lock_id on success, or busy+contention details on failure. Set wait={max_sec:N} (≤300) to queue server-side until the locks free. Paths MUST be repo-relative POSIX (no leading ./, no //, no trailing /, no .., no backslashes, no absolute paths) — the server canonicalizes equivalent spellings to one lock key but rejects malformed ones; resolve symlinks caller-side before claiming.',
   guidance: {
     when: 'Before any Edit/Write/MultiEdit of files in the operator codebase. Call once per logical edit set; release when done.',
     notWhen:
