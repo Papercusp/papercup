@@ -12,9 +12,9 @@ companion-to: [endpoint-unification-2026-05-21, endpoint-route-migration-2026-05
 
 **State:** The `endpoint-unification-2026-05-21` arc shipped E1–E6 (the `defineRoute`→`defineTool` collapse + the full mobile flag) plus E7-docs, E10, E11, and E13-partial (`coord` + `su-locks` migrated off `_hono`). Its tail — E8/E9/E12/E13-plugins/E14 — was found to be two genuinely separate projects, too large and too risky to fold into that arc. **This plan is that tail, re-scoped from audit.**
 
-**Next:** A2 — migrate the mid routers (`experts` 17, `pty` 10, `agent-chats` ~7). `pty`'s WebSocket upgrade and `agent-chats`'s SSE need the care noted in §A2.
+**Next:** finish A2 — migrate `experts.ts` (17 routes, 969 LOC; ~430 LOC of helpers, non-route exports `expertDir`/`EXPERT_ID_RE`, and `experts.test.ts` to migrate). Then A3 (plugins + dispatcher), A4 (harness.ts, 138 routes), A5–A7.
 
-A1 shipped (`c019a0ff`): the five small routers — `operator-notes` (2), `oracle` (3), `dock-layouts` (6), `cross-harness` (5), `projects` (6) — migrated to `defineRoute`; the 5 `_hono` files + their `register*()` calls deleted; `getSpawnableTemplates` relocated to `lib/spawnable-templates.ts`; the oracle-chat test block migrated to `endpoint-route/__tests__/oracle-chat.test.ts`.
+A1 shipped (`c019a0ff`): 5 small routers. A2 is 2/3 shipped — `pty` (10 routes, `7be65218`) and `agent-chats` (5 routes, `24c532fa`). `pty.ts` was confirmed to have no WebSocket (the plan's WS caveat was over-cautious — terminal I/O is SSE+POST). 37 routes across 7 routers migrated off `_hono` so far this arc.
 
 # Endpoint follow-ups — finish `_hono` elimination + auth-tightening
 
@@ -72,12 +72,11 @@ E8 (`expose.ipc` for routes) stays **deferred** — the flag is typed but inert 
 - ✅ The `/oracle/chat` test block of `_hono/chat-shim-routes.test.ts` migrated to `endpoint-route/__tests__/oracle-chat.test.ts` (4 tests — round-10 close guard, 400-no-messages, 404-flag-off, UUID-runId).
 - ✅ Verified: tsc clean; route-shadowing + composed-app green; oracle-chat 4/4; chat-shim (trimmed) 3/3.
 
-### A2 — Mid routers (experts 17, pty 10, agent-chats ~7) — ~34 routes
+### A2 — Mid routers (experts, pty, agent-chats) — ◐ 2/3 SHIPPED
 
-- `experts.ts` — straightforward HTTP; keep `experts-data` exports.
-- **`agent-chats.ts`** — SSE chat streaming. SSE is fine as a `defineRoute` (the handler returns a streaming `Response`; the mobile log-stream route already proves this). Port directly.
-- **`pty.ts` caveat** — the terminal **WebSocket upgrade** is NOT a `defineRoute` (defineRoute is request→response + SSE, not WS). `pty.ts` is mounted by `registerPty` and the WS upgrade is bound by a separate `ws` server. Only `pty.ts`'s **HTTP control routes** (session list, resize, etc.) migrate to `defineRoute`; the WS upgrade handler stays on its own seam (document where). Audit `pty.ts` first to split control-routes from the WS handler.
-- Acceptance: as A1, plus an SSE smoke test for `agent-chats` and a WS-still-connects check for pty.
+- ✅ **`pty.ts` (10 routes)** → `routes/pty/` (`7be65218`). **Audit corrected the plan:** `pty.ts` has NO WebSocket — terminal output streams over SSE (`/pty/:id/stream`), input over POST. A plain HTTP migration. The prewarm pool moved verbatim from the `registerPty` closure to module scope.
+- ✅ **`agent-chats.ts` (5 routes)** → `routes/agent-chats/` (`24c532fa`). The `/messages` SSE stream ports cleanly. The `chat-shim-routes.test.ts` agent-chats block migrated to `agent-chats-messages.test.ts`; that test file is now fully migrated (oracle block went in A1) and deleted.
+- ⬜ **`experts.ts` (17 routes, 969 LOC)** — remaining. Bigger than the plan implied: ~430 LOC of helper functions between the imports and `registerExperts`, plus non-route exports (`expertDir`, `EXPERT_ID_RE`) to check for external importers, plus `experts.test.ts` (imports `registerExperts`) to migrate. Its own focused pass.
 
 ### A3 — `plugins.ts` (7 routes) + relocate the plugin-API dispatcher
 
