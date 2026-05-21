@@ -58,6 +58,29 @@ function isSameOriginApiPath(url: string | URL): boolean {
   }
 }
 
+/**
+ * True when an `ipcFetch` rejection means the IPC backend isn't there to
+ * answer — as opposed to a genuine HTTP-level failure from the operator.
+ *
+ * `invoke_failed` is the code `ipc-stream.ts` emits when the Tauri
+ * command itself couldn't run. The two ways that happens:
+ *  - **dev mode** — `tauri dev` skips the sidecar spawn (the operator is
+ *    served externally on :3055), so `endpoint_invoke`'s `IpcClient`
+ *    state is never `.manage()`'d — the command errors with
+ *    "state not managed".
+ *  - **prod startup window** — between webview mount and the sidecar's
+ *    `PAPERCUSP_IPC_READY` handshake (up to 30s), the client isn't
+ *    connected yet.
+ *
+ * In both cases the right move is exactly what main.rs's handshake
+ * comment says: fall back to HTTP. `upstream_error` / `aborted` / etc.
+ * mean IPC *did* run, so those are real and must NOT be retried.
+ */
+function isIpcUnavailable(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  return msg.includes('invoke_failed') || msg.includes('state not managed');
+}
+
 export function installDesktopIpcPolyfills(): InstallHandle | null {
   if (typeof window === 'undefined') return null;
   if (installed) return null;
@@ -79,7 +102,16 @@ export function installDesktopIpcPolyfills(): InstallHandle | null {
   const patchedFetch: typeof window.fetch = (input, init) => {
     if (typeof input === 'string' || input instanceof URL) {
       if (isSameOriginApiPath(input)) {
-        return ipcFetch(input, init ?? {});
+        // Try IPC; if the IPC backend isn't available (dev mode has no
+        // sidecar; prod has a startup window before the handshake),
+        // fall back to a direct HTTP fetch. ipcFetch only accepts
+        // string bodies, so `init` is always safe to replay.
+        return ipcFetch(input, init ?? {}).catch((err: unknown) => {
+          if (isIpcUnavailable(err)) {
+            return originalFetchBound(input as RequestInfo, init);
+          }
+          throw err;
+        });
       }
     }
     return originalFetchBound(input as RequestInfo, init);
