@@ -66,6 +66,7 @@ import harnessAdaptiveTelemetry from './harness/adaptive-telemetry';
 import harnessProposalsViews from './harness/proposals-views';
 import harnessProposals from './harness/proposals';
 import harnessScoperActions from './harness/scoper-actions';
+import harnessArchives from './harness/archives';
 import harnessScreenshots from './harness/screenshots';
 import harnessSnapshots from './harness/snapshots';
 import harnessHooks from './harness/hooks';
@@ -419,6 +420,7 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(harnessProposalsViews as AnyRoute[]),
   ...flatten(harnessProposals as AnyRoute[]),
   ...flatten(harnessScoperActions as AnyRoute[]),
+  ...flatten(harnessArchives as AnyRoute[]),
   ...flatten(harnessScreenshots as AnyRoute[]),
   ...flatten(harnessSnapshots as AnyRoute[]),
   ...flatten(harnessHooks as AnyRoute[]),
