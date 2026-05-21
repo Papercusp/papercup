@@ -15,6 +15,7 @@ import { UiPresenceProvider } from '@/app/_components/UiPresenceProvider';
 import DevReloadGate from '@/app/_components/DevReloadGate';
 import PerfObserverProvider from '@/app/admin/testing/_components/PerfObserverProvider';
 import RecorderHost from '@/app/admin/testing/_components/RecorderHost';
+import ChromeShell from '@/app/_components/ChromeShell';
 import { ProgressProvider } from '@bprogress/react';
 import NotFound from '../components/NotFound';
 import { NavigationProgress } from '../components/NavigationProgress';
@@ -78,6 +79,12 @@ function RootComponent() {
                 <WslOnboardingGate>
                   <OperatorConversationProvider>
                     <PostHogProvider>
+                      {/* Global chrome — header/navbar, left operator-chat
+                          sidebar, Oracle dock. Renders before <main>,
+                          mirroring the Next operator's layout.tsx.
+                          (Deferred in A3 because it imports next/navigation;
+                          the alias shim now resolves that.) */}
+                      <ChromeShell />
                       <main data-route-transition-page="true">
                         <Outlet />
                       </main>
