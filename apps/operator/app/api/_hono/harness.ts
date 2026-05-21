@@ -55,6 +55,7 @@ import {
 } from '@/lib/ensure-schema';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
 import { type Phase, phasePath, phasePhaseLabel, ALL_PHASES } from '@/lib/harness-phases';
+import { invokeScoperBackground } from '@/lib/harness-scoper';
 import {
   countPulsesFromRunLog,
   aggregateCostFromLogDir,
@@ -91,49 +92,6 @@ const saveRegistry = saveHarnessRegistry;
 
 
 
-
-
-
-/**
- * Background-invoke a single scoper mode (proposal | replan) without
- * going through run.sh's full pre-loop. Used by /product-review (manual
- * "Propose now" — runs scoper MODE=proposal; legacy URL kept for
- * external compat) and the accept handler's replanOnAccept path.
- *
- * Sources only the helper functions from run.sh — does NOT enter the
- * orchestrator loop or run plan-review. So it can't accidentally exit 7
- * mid-replan, and it never respawns experts. Detached background spawn;
- * caller does not block on the agent invocation.
- */
-function invokeScoperBackground(
-  project: ProjectEntry,
-  mode: 'proposal' | 'replan' | 'cleanup',
-): { invocationId: string } {
-  const { spawn } = require('node:child_process');
-  const invocationId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-  const resultsDir = join(harnessDir(project), 'scoper-results');
-  const resultPath = join(resultsDir, `${mode}-${invocationId}.log`);
-  const wrapper = `
-    set -e
-    export PROJECT_DIR="${project.path}"
-    export STATE_DIR="${project.path}/.harness"
-    export HARNESS_DIR="${harnessPackageDir()}"
-    export LOG_DIR="$STATE_DIR/logs"
-    export SCOPER_INVOCATION_ID="${invocationId}"
-    mkdir -p "$STATE_DIR/proposals" "$LOG_DIR" "${resultsDir}"
-    source <(awk '/^(log|config_get|invoke|run_hook|snapshot_state|notify_event|harness_slug|fire_plugin_hook|auto_screenshot_post_worker|check_cost_cap|prune_logs)\\(\\)/,/^}/' "$HARNESS_DIR/run.sh")
-    invoke scoper "MODE=${mode}" 2>&1 | tee "${resultPath}"
-    echo "__INVOCATION_DONE__" >> "${resultPath}"
-  `;
-  const child = spawn('bash', ['-c', wrapper], {
-    cwd: project.path,
-    env: { ...process.env, CLAUDE: process.env.AGENT_CMD ?? process.env.CLAUDE ?? 'omp -p' },
-    detached: true,
-    stdio: ['ignore', 'ignore', 'ignore'],
-  });
-  child.unref();
-  return { invocationId };
-}
 
 async function launchRun(project: ProjectEntry, extra?: string): Promise<{ ok: true; logPath: string } | { ok: false; error: string }> {
   // Canonical path: spawn the TS orchestrator entry. The bash run.sh
@@ -1689,91 +1647,6 @@ harness.post('/:slug/smoke-test/run', async (c) => {
  */
 
 
-// SSE: emit 'change' on logs/run.log mtime/size shifts (decisions are
-// derived from the tail of run.log).
-
-
-
-// ─── product proposals ─────────────────────────────────────────────────
-
-
-harness.post('/:slug/proposals/:id/accept', async (c) => {
-  const project = await resolveProject(c.req.param('slug'));
-  if (!project) return c.json({ error: 'unknown project' }, 404);
-  const id = c.req.param('id').replace(/[^A-Za-z0-9_.-]/g, '');
-  if (!id || !id.endsWith('.md')) return c.json({ error: 'invalid id' }, 400);
-  const proposalPath = join(harnessDir(project), 'proposals', id);
-  if (!existsSync(proposalPath)) return c.json({ error: 'not found' }, 404);
-
-  const body = safeRead(proposalPath) ?? '';
-  // Extract acceptance bullets (same heuristic as run.sh product_auto_apply_latest)
-  const bullets: string[] = [];
-  const lines = body.split('\n');
-  let inBar = false;
-  for (const ln of lines) {
-    if (/(\*\*Acceptance bar\*\*|Acceptance bar.*\*\*)/.test(ln)) { inBar = true; continue; }
-    if (inBar) {
-      if (ln.startsWith('- ') || ln.startsWith('  - ')) bullets.push(ln.replace(/^\s*-\s*/, '- '));
-      else if (ln.startsWith('**') || ln.startsWith('#')) inBar = false;
-    }
-  }
-  const specPath = join(project.path, 'SPEC.md');
-  if (!existsSync(specPath)) return c.json({ error: 'SPEC.md not found' }, 404);
-  if (bullets.length === 0) return c.json({ ok: false, error: 'no acceptance bullets found in proposal' }, 400);
-
-  const append = `\n<!-- accepted from proposals/${id} at ${new Date().toISOString()} -->\n${bullets.join('\n')}\n`;
-  await appendFile(specPath, append, 'utf8');
-  // Stamp the proposal — file is the source-of-truth invariant. The
-  // harness FS watcher mirrors this change into harness_proposals_shared
-  // (which ProposalsPanel reads) automatically; no explicit PG write
-  // needed. Per-schema harness_proposals dual-write removed in Item 1.
-  await appendFile(proposalPath, `\n---\napplied: true\nappliedAt: ${new Date().toISOString()}\n`, 'utf8');
-
-  // Phase 6b — plugin lifecycle: fire `onProposalAccepted` (typed) +
-  // `proposal.accepted` (free-form). Best-effort.
-  void firePluginLifecycle('onProposalAccepted', {
-    installSlug: project.slug,
-    projectDir: project.path,
-    stateDir: harnessDir(project),
-  }, `proposals/${id}`);
-  void firePluginEvent('proposal.accepted', { proposalId: id, installSlug: project.slug });
-
-  // Optional auto-replan: if config.reviewer.replanOnAccept is true,
-  // delta-merge the new bullets via scoper MODE=replan. Fire-and-forget;
-  // the API does NOT block on replan (it's a multi-minute agent invocation).
-  let replanFired = false;
-  try {
-    const cfg = JSON.parse(readFileSync(join(harnessDir(project), 'config.json'), 'utf8'));
-    // Default true: accept means accept. The legacy false default existed
-    // when replan was destructive (forced MODE=initial, respawned experts);
-    // the unified MODE=replan path is non-destructive, so there's no reason
-    // to gate it. Set explicitly to false to opt out.
-    const wantReplan = cfg?.reviewer?.replanOnAccept !== false;
-    if (wantReplan) {
-      // Non-destructive: invoke scoper MODE=replan to delta-merge the new
-      // SPEC.md bullets into the existing harness_features queue without
-      // disturbing in-flight features. Matches run.sh's review_pending_
-      // proposals replan path; replaces the prior MAX_ITERATIONS=0 hack
-      // that respawned experts.
-      invokeScoperBackground(project, 'replan');
-      replanFired = true;
-    }
-  } catch {}
-
-  return c.json({ ok: true, bulletsAdded: bullets.length, replanFired });
-});
-
-harness.post('/:slug/proposals/:id/reject', async (c) => {
-  const project = await resolveProject(c.req.param('slug'));
-  if (!project) return c.json({ error: 'unknown project' }, 404);
-  const id = c.req.param('id').replace(/[^A-Za-z0-9_.-]/g, '');
-  if (!id || !id.endsWith('.md')) return c.json({ error: 'invalid id' }, 400);
-  const proposalPath = join(harnessDir(project), 'proposals', id);
-  if (!existsSync(proposalPath)) return c.json({ error: 'not found' }, 404);
-  // File is the source-of-truth invariant — watcher mirrors to PG.
-  await appendFile(proposalPath, `\n---\nrejected: true\nrejectedAt: ${new Date().toISOString()}\n`, 'utf8');
-  return c.json({ ok: true });
-});
 
 harness.post('/:slug/product-review', async (c) => {
   const project = await resolveProject(c.req.param('slug'));
