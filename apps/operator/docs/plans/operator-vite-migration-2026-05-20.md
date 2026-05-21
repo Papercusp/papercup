@@ -362,6 +362,23 @@ Two corrections from the v2 draft, both caught by the Phase-0-style audit: `/set
 
 Acceptance for B-1 (greppable): `cd apps/operator-vite && npm run build` succeeds; `git grep -nE "from ['\"]next/" apps/operator-vite/src` returns zero.
 
+**B-2 as-built (2026-05-21).** All 5 tracked pages shipped:
+
+| Surface | Status | File |
+|---|---|---|
+| `/admin` | shipped | `src/routes/admin/index.tsx` — `beforeLoad` throw-redirect to `/admin/run`. |
+| `/admin/tables` | shipped | `src/routes/admin/tables.tsx` — renders the shared `TableAdmin` (clean import via `@` alias). |
+| `/admin/features` | shipped | `src/routes/admin/features.tsx` — `<AdminShell title="Features"><FeaturesAdmin /></AdminShell>`. |
+| `/admin/run` | shipped | `src/routes/admin/run.tsx` — `<AdminShell title="Run"><AdminOps /></AdminShell>`. |
+| `/admin/testing` | shipped | `src/routes/admin/testing.tsx` — `<AdminShell title="Testing"><TestingClient /></AdminShell>` + `testing.css` import. |
+
+**Deviations:**
+- `AdminShell` ported as a parallel copy at `src/components/admin/AdminShell.tsx` (TSR `Link` + `useRouterState`). Original `app/admin/_components/AdminShell.tsx` keeps next/* imports so the live operator continues to work — same B-1 strategy. After Phase H the Vite copy becomes canonical.
+- `TestingClient` ported as a parallel copy at `src/components/admin/TestingClient.tsx`, swapping `next/dynamic` for React `lazy`. `ssr: false` dropped (no-op under Vite). Children imported from `@/app/admin/testing/_components/` (clean).
+- Pre-existing untracked WIP `app/admin/plans/page.tsx` (another agent) not in this batch's scope — pick up when it lands upstream.
+
+Acceptance: build clean; `LlmTab-*.js` and other testing-tab chunks confirm React.lazy splitting fires; `git grep -nE "from ['\"]next/" apps/operator-vite/src` returns zero.
+
 Each batch acceptance: that surface's URLs render the right components and don't console-error, **verified by a strategy proportional to surface-stakes:**
 
 - **Smoke-tested in Playwright (mandatory): 6 highest-stakes surfaces.** `harness/[slug]`, `login`, `settings/*`, `marketplace/installed/[slug]` (the install flow), `editor-demo`, `harness/[slug]` "brainstorm" tab. Each gets one fresh Playwright smoke (~30-50 lines, ~1 day per to write + stabilize). **These tests do not exist today**; writing them is part of the batch's effort, not assumed coverage.
