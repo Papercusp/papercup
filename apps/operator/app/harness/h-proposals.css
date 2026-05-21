@@ -3044,6 +3044,20 @@
   color: color-mix(in oklab, var(--fg-dim), white 16%) !important;
 }
 
+.h-proposals-panel .h-proposal-row-title,
+.h-proposals-panel .h-proposal-row-subtitle,
+.h-proposals-panel .h-proposal-row-age {
+  display: block;
+  inline-size: auto !important;
+  width: fit-content !important;
+  max-inline-size: 100% !important;
+  justify-self: start;
+}
+
+.h-proposals-panel .h-proposal-row-age {
+  justify-self: end;
+}
+
 .h-proposals-panel .h-proposal-btn {
   border-color: rgba(56, 189, 248, 0.48) !important;
   background:

@@ -12710,6 +12710,65 @@ body:has(.h-top-collapse-inline) main {
   line-height: 1;
 }
 
+/* Fixed columns keep layout stable; pill chrome should hug the text. */
+.h-feature-row-title,
+.h-issue-title,
+.h-inbox-row-title,
+.h-inbox-row-sub,
+.h-git-subject,
+.h-feature-row-id,
+.h-feature-claims-chip,
+.h-feature-attempts-pill,
+.h-issue-source,
+.h-issue-id,
+.h-issue-feat,
+.h-issue-code,
+.h-agent-time-cell,
+.h-agent-runid-pill,
+.h-agent-size-pill,
+.h-inbox-feature,
+.h-inbox-kind,
+.h-inbox-foot-pill,
+.h-git-meta span,
+.h-git-meta time,
+.h-git-ref,
+.h-feature-status-pill,
+.h-feature-row-mini-status,
+.h-issue-status,
+.h-agent-role {
+  inline-size: auto !important;
+  width: fit-content !important;
+  max-inline-size: 100% !important;
+  justify-self: start;
+}
+
+.h-feature-row-main .h-feature-row-title {
+  flex: 0 1 auto !important;
+  inline-size: auto !important;
+  width: fit-content !important;
+  max-inline-size: 100% !important;
+}
+
+.h-issue-body--inline .h-issue-title {
+  flex: 0 1 auto !important;
+}
+
+.h-feature-status-pill,
+.h-issue-status {
+  justify-self: end;
+}
+
+.h-agent-role,
+.h-agent-time-cell,
+.h-agent-runid-pill,
+.h-agent-size-pill {
+  justify-self: center;
+}
+
+.h-inbox-kind {
+  justify-self: end;
+}
+
 .h-feature-row-action,
 .h-issue-row-action,
 .h-inbox-action,
