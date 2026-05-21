@@ -13,8 +13,8 @@
  *   - owner:           pOwner        — frontmatter owner
  *   - has-needs-human: pInbox        — at least one needs-human item
  *   - has-actionable:  pActionable   — at least one effective-todo item
- *   - archived:        pArchived     — show archived plans
- *   - hide-legacy:     pHideLegacy   — drop frontmatter-less plans
+ *   - archived:        pArchived     — archived-only rail filter
+ *   - legacy:          pLegacy       — legacy-only rail filter
  *
  * The owner dropdown is populated from the plan list that PlansClient
  * already fetches for the rail and overview metrics. Keeping a single
@@ -22,7 +22,7 @@
  * client-side and instant.
  */
 
-import { useMemo } from 'react';
+import { useMemo, type RefObject } from 'react';
 import { useQueryState, parseAsBoolean, parseAsString, parseAsStringEnum } from 'nuqs';
 import { type AsyncResult, type PlanListRow, type PlanStatus } from './plans-api';
 import { Select } from '@/app/harness/Select';
@@ -47,7 +47,19 @@ function dateWindowLabel(window: DateWindow): string {
   return DATE_WINDOWS.find((d) => d.id === window)?.label ?? window;
 }
 
-export default function PlanFilters({ list }: { list: AsyncResult<{ plans: PlanListRow[] }> }) {
+interface PlanFiltersProps {
+  list: AsyncResult<{ plans: PlanListRow[] }>;
+  query: string;
+  onQueryChange: (query: string | null) => unknown;
+  searchRef: RefObject<HTMLInputElement | null>;
+}
+
+export default function PlanFilters({
+  list,
+  query,
+  onQueryChange,
+  searchRef,
+}: PlanFiltersProps) {
   const [status, setStatus] = useQueryState(
     'pStatus',
     parseAsStringEnum<PlanStatus>(STATUSES),
@@ -57,12 +69,12 @@ export default function PlanFilters({ list }: { list: AsyncResult<{ plans: PlanL
     parseAsStringEnum<DateWindow>(['today', '7d', '30d']),
   );
   const [owner, setOwner] = useQueryState('pOwner', parseAsString);
-  const [archived, setArchived] = useQueryState(
+  const [archivedOnly, setArchivedOnly] = useQueryState(
     'pArchived',
     parseAsBoolean.withDefault(false),
   );
-  const [hideLegacy, setHideLegacy] = useQueryState(
-    'pHideLegacy',
+  const [legacyOnly, setLegacyOnly] = useQueryState(
+    'pLegacy',
     parseAsBoolean.withDefault(false),
   );
   const [inbox, setInbox] = useQueryState(
@@ -87,8 +99,8 @@ export default function PlanFilters({ list }: { list: AsyncResult<{ plans: PlanL
     (status ? 1 : 0) +
     (dateWindow ? 1 : 0) +
     (owner ? 1 : 0) +
-    (archived ? 1 : 0) +
-    (hideLegacy ? 1 : 0) +
+    (archivedOnly ? 1 : 0) +
+    (legacyOnly ? 1 : 0) +
     (inbox ? 1 : 0) +
     (actionable ? 1 : 0);
 
@@ -98,16 +110,16 @@ export default function PlanFilters({ list }: { list: AsyncResult<{ plans: PlanL
     owner ? { key: 'owner', label: `owner: ${owner}`, clear: () => setOwner(null) } : null,
     inbox ? { key: 'needs-human', label: 'has needs-human', clear: () => setInbox(false) } : null,
     actionable ? { key: 'actionable', label: 'has actionable', clear: () => setActionable(false) } : null,
-    archived ? { key: 'archived', label: 'show archived', clear: () => setArchived(false) } : null,
-    hideLegacy ? { key: 'hide-legacy', label: 'hide legacy', clear: () => setHideLegacy(false) } : null,
+    archivedOnly ? { key: 'archived', label: 'archived', clear: () => setArchivedOnly(false) } : null,
+    legacyOnly ? { key: 'legacy', label: 'legacy', clear: () => setLegacyOnly(false) } : null,
   ].flatMap((token) => (token ? [token] : []));
 
   const clearAll = () => {
     setStatus(null);
     setDateWindow(null);
     setOwner(null);
-    setArchived(false);
-    setHideLegacy(false);
+    setArchivedOnly(false);
+    setLegacyOnly(false);
     setInbox(false);
     setActionable(false);
   };
@@ -115,10 +127,7 @@ export default function PlanFilters({ list }: { list: AsyncResult<{ plans: PlanL
   return (
     <div className="pc-filters" aria-label="Plan filters">
       <div className="pc-filters__head">
-        <div>
-          <span className="pc-filters__kicker">Filters</span>
-          <p>Compose search with status, owner, recency, and queue signals.</p>
-        </div>
+        <span className="pc-filters__kicker">Filters</span>
         {activeCount > 0 ? (
           <button
             type="button"
@@ -130,7 +139,17 @@ export default function PlanFilters({ list }: { list: AsyncResult<{ plans: PlanL
         ) : null}
       </div>
 
-      <div className="pc-filters__selects">
+      <div className={`pc-filters__primary ${owners.length > 1 ? 'has-owner' : ''}`}>
+        <input
+          ref={searchRef}
+          type="search"
+          className="pc-plans__search-input"
+          placeholder="Search plans…"
+          value={query}
+          onChange={(e) => onQueryChange(e.target.value || null)}
+          aria-label="Search plans"
+        />
+
         <Select
           value={status ?? '_all'}
           onChange={(v) => setStatus(v === '_all' ? null : (v as PlanStatus))}
@@ -156,7 +175,7 @@ export default function PlanFilters({ list }: { list: AsyncResult<{ plans: PlanL
         ) : null}
       </div>
 
-      <div className="pc-filters__dates" role="group" aria-label="Updated within">
+      <div className="pc-filters__quick" role="group" aria-label="Quick plan filters">
         {DATE_WINDOWS.map((d) => (
           <button
             key={d.id}
@@ -168,13 +187,11 @@ export default function PlanFilters({ list }: { list: AsyncResult<{ plans: PlanL
             {d.label}
           </button>
         ))}
-      </div>
-
-      <div className="pc-filters__toggles">
+        <Toggle on={status === 'blocked'} onChange={(on) => setStatus(on ? 'blocked' : null)} label="blocked" />
         <Toggle on={inbox} onChange={setInbox} label="needs human" />
         <Toggle on={actionable} onChange={setActionable} label="actionable" />
-        <Toggle on={archived} onChange={setArchived} label="archived" />
-        <Toggle on={hideLegacy} onChange={setHideLegacy} label="hide legacy" />
+        <Toggle on={legacyOnly} onChange={setLegacyOnly} label="legacy" />
+        <Toggle on={archivedOnly} onChange={setArchivedOnly} label="archived" />
       </div>
 
       {activeTokens.length > 0 ? (

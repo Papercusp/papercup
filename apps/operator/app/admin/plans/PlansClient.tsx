@@ -29,19 +29,16 @@ import { usePlanList, type PlanListRow } from './plans-api';
 type PlansView = 'list' | 'inbox' | 'actionable' | 'triage';
 type PaneMode = 'read' | 'edit';
 
-const VIEWS: Array<{ id: PlansView; label: string; hint: string }> = [
-  { id: 'list', label: 'Browse', hint: 'All plan files' },
-  { id: 'inbox', label: 'Inbox', hint: 'Needs human' },
-  { id: 'actionable', label: 'Actionable', hint: 'Ready to pick up' },
-  { id: 'triage', label: 'Triage', hint: 'Legacy conversion' },
+const VIEWS: Array<{ id: PlansView; label: string }> = [
+  { id: 'list', label: 'Browse' },
+  { id: 'inbox', label: 'Inbox' },
+  { id: 'actionable', label: 'Actionable' },
+  { id: 'triage', label: 'Triage' },
 ];
 
 interface PlanStats {
   total: number;
   visible: number;
-  active: number;
-  blocked: number;
-  archived: number;
   legacy: number;
   needsHuman: number;
   actionable: number;
@@ -127,33 +124,18 @@ export default function PlansClient() {
               onClick={() => navView(v.id)}
               aria-current={view === v.id ? 'page' : undefined}
             >
-              <span className="pc-plans__view-copy">
-                <span className="pc-plans__view-label">{v.label}</span>
-                <span className="pc-plans__view-hint">{v.hint}</span>
-              </span>
+              <span className="pc-plans__view-label">{v.label}</span>
               <span className="pc-plans__view-count">{viewCount(v.id, stats, planList.loading)}</span>
             </button>
           ))}
         </nav>
 
-        <div className="pc-plans__search">
-          <label className="pc-plans__search-label" htmlFor="pc-plans-search">
-            Search
-          </label>
-          <input
-            id="pc-plans-search"
-            ref={searchRef}
-            type="search"
-            className="pc-plans__search-input"
-            placeholder="Title, slug, or plan text…"
-            value={q}
-            onChange={(e) => setQ(e.target.value || null)}
-            aria-label="Search plans"
-          />
-          <span className="pc-plans__search-hint">Press / anywhere to focus.</span>
-        </div>
-
-        <PlanFilters list={planList} />
+        <PlanFilters
+          list={planList}
+          query={q}
+          onQueryChange={setQ}
+          searchRef={searchRef}
+        />
 
         <div className="pc-plans__list" aria-label="Plan list">
           <PlanRail
@@ -224,9 +206,6 @@ function buildPlanStats(plans: PlanListRow[]): PlanStats {
       const counts = plan.itemCounts ?? {};
       acc.total += 1;
       if (!plan.archived) acc.visible += 1;
-      if (plan.status === 'active') acc.active += 1;
-      if (plan.status === 'blocked') acc.blocked += 1;
-      if (plan.archived) acc.archived += 1;
       if (plan.isLegacy) acc.legacy += 1;
       acc.needsHuman += counts['needs-human'] ?? 0;
       acc.actionable += counts.todo ?? 0;
@@ -235,9 +214,6 @@ function buildPlanStats(plans: PlanListRow[]): PlanStats {
     {
       total: 0,
       visible: 0,
-      active: 0,
-      blocked: 0,
-      archived: 0,
       legacy: 0,
       needsHuman: 0,
       actionable: 0,
@@ -262,34 +238,7 @@ function PlansOverview({ stats, loading }: { stats: PlanStats; loading: boolean 
         <strong>{total}</strong>
         <span>current plans</span>
       </div>
-      <div className="pc-plans__overview-sub">
-        {loading
-          ? 'Loading plan inventory…'
-          : `${stats.active} active · ${stats.needsHuman} needs human · ${stats.actionable} actionable`}
-      </div>
-      <div className="pc-plans__overview-grid" aria-label="Plan inventory summary">
-        <Metric label="Blocked" value={loading ? '…' : stats.blocked} tone="bad" />
-        <Metric label="Legacy" value={loading ? '…' : stats.legacy} tone="warn" />
-        <Metric label="Archived" value={loading ? '…' : stats.archived} tone="muted" />
-      </div>
     </section>
-  );
-}
-
-function Metric({
-  label,
-  value,
-  tone,
-}: {
-  label: string;
-  value: number | string;
-  tone: 'bad' | 'warn' | 'muted';
-}) {
-  return (
-    <span className={`pc-plans__metric pc-plans__metric--${tone}`}>
-      <strong>{value}</strong>
-      <span>{label}</span>
-    </span>
   );
 }
 

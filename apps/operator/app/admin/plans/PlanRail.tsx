@@ -78,7 +78,7 @@ const PlanRail = forwardRef<PlanRailHandle, Props>(function PlanRail(
   );
   const [fOwner] = useQueryState('pOwner', parseAsString);
   const [fArchived] = useQueryState('pArchived', parseAsBoolean.withDefault(false));
-  const [fHideLegacy] = useQueryState('pHideLegacy', parseAsBoolean.withDefault(false));
+  const [fLegacy] = useQueryState('pLegacy', parseAsBoolean.withDefault(false));
   const [fInbox] = useQueryState('pInbox', parseAsBoolean.withDefault(false));
   const [fActionable] = useQueryState('pActionable', parseAsBoolean.withDefault(false));
 
@@ -91,8 +91,8 @@ const PlanRail = forwardRef<PlanRailHandle, Props>(function PlanRail(
     if (fStatus) working = working.filter((p) => p.status === fStatus);
     if (fOwner) working = working.filter((p) => p.owner === fOwner);
     if (fDate) working = working.filter((p) => withinDateWindow(p.updated, fDate));
-    if (!fArchived) working = working.filter((p) => !p.archived);
-    if (fHideLegacy) working = working.filter((p) => !p.isLegacy);
+    working = working.filter((p) => (fArchived ? p.archived : !p.archived));
+    if (fLegacy) working = working.filter((p) => p.isLegacy);
     if (fInbox) {
       working = working.filter(
         (p) => ((p.itemCounts ?? {})['needs-human'] ?? 0) > 0,
@@ -115,7 +115,7 @@ const PlanRail = forwardRef<PlanRailHandle, Props>(function PlanRail(
       if (sa !== sb) return sa - sb;
       return (b.updated ?? '').localeCompare(a.updated ?? '');
     });
-  }, [plans, fStatus, fOwner, fDate, fArchived, fHideLegacy, fInbox, fActionable, query]);
+  }, [plans, fStatus, fOwner, fDate, fArchived, fLegacy, fInbox, fActionable, query]);
 
   useImperativeHandle(
     ref,
@@ -158,12 +158,10 @@ const PlanRail = forwardRef<PlanRailHandle, Props>(function PlanRail(
 
   if (!sorted.length) {
     // Distinguish a search miss from a filter miss — `query` is the
-    // search box, the rest are the PlanFilters keys. (`fArchived` is
-    // excluded: its default hides archived plans but that's the
-    // baseline, not a user-applied narrowing filter.)
+    // search box, the rest are the PlanFilters keys.
     const q = query.trim();
     const filtersActive =
-      !!fStatus || !!fOwner || !!fDate || fHideLegacy || fInbox || fActionable;
+      !!fStatus || !!fOwner || !!fDate || fArchived || fLegacy || fInbox || fActionable;
     const msg = q
       ? `No plans match “${q}”.`
       : filtersActive
