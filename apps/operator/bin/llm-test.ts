@@ -6,6 +6,7 @@
  *   pnpm llm-test --scenario <id>             run one scenario
  *   pnpm llm-test --target operator           run all scenarios for one target
  *   pnpm llm-test --list                      list scenarios + behaviors
+ *   pnpm llm-test lint                        static scenario-registry validator
  *   pnpm llm-test --no-matrix                 force N=1 even when scenario declares more
  *   pnpm llm-test replay --fixture <id>       (Phase 1.5) re-evaluate stored fixture
  *   pnpm llm-test promote-candidates          (Phase 1.5) list novel_failure shapes ≥3×
@@ -28,7 +29,7 @@ import { findPromotionCandidates, formatCandidatesReport } from '../lib/llm-test
 import { promoteShape } from '../lib/llm-testing/promotion/promote';
 import { replayFixture, reEvaluateRun } from '../lib/llm-testing/replay';
 
-type Verb = 'run' | 'promote-candidates' | 'promote' | 'replay' | 'export-fixture';
+type Verb = 'run' | 'promote-candidates' | 'promote' | 'replay' | 'export-fixture' | 'lint';
 
 interface Args {
   verb: Verb;
@@ -63,6 +64,7 @@ function parseArgs(argv: string[]): Args {
     || argv[0] === 'promote'
     || argv[0] === 'replay'
     || argv[0] === 'export-fixture'
+    || argv[0] === 'lint'
   ) {
     args.verb = argv[0] as Verb;
     argv = argv.slice(1);
@@ -112,6 +114,15 @@ Usage:
                                       groups of size N. Bounded by SUT
                                       single-flight per conversationId.
 
+  llm-test lint                       Static scenario-registry validator —
+                                      assert kinds, persona refs, rubric
+                                      shape, trigger values, scripted-
+                                      trigger params vs caps, fixture
+                                      paths, etc. No LLM calls. Exits
+                                      non-zero on any error.
+  llm-test lint --scenario <id>       Lint one scenario.
+  llm-test lint --target <id>         Lint every scenario for a target.
+
   llm-test promote-candidates         List novel_failure shapes seen
                                       in ≥3 scenarios over the last 14d
   llm-test promote --shape <hash>     Scaffold an asserts/<id>.ts stub
@@ -154,6 +165,23 @@ Plan: apps/operator/docs/plans/llm-testing-framework-2026-05-14.md
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
   if (args.help) { usage(); return; }
+
+  if (args.verb === 'lint') {
+    const { lintScenarios, formatViolations } = await import('../lib/llm-testing/lint');
+    const { existsSync } = await import('node:fs');
+    const { resolve } = await import('node:path');
+    const scope = args.scenarioId
+      ? [getScenario(args.scenarioId)]
+      : args.targetId
+        ? SCENARIOS.filter((s) => s.target === args.targetId)
+        : [...SCENARIOS];
+    const violations = lintScenarios(scope, {
+      fileExists: (p) => existsSync(p),
+      fixtureRoot: resolve(__dirname, '../lib/llm-testing'),
+    });
+    console.log(formatViolations(violations));
+    process.exit(violations.some((v) => v.severity === 'error') ? 1 : 0);
+  }
 
   if (args.verb === 'promote-candidates') {
     const cs = await findPromotionCandidates();
