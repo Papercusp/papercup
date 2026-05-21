@@ -55,3 +55,40 @@ describe('plans surface — real tree', () => {
     expect(r.errors).toEqual([]);
   });
 });
+
+describe('readPlanBySlug — A-1 path traversal hardening', () => {
+  // The agent-coordination-architecture-v2 audit (A-1) flagged that a
+  // slug like '../../../etc/passwd' would escape plansDir via
+  // path.join's `..` normalisation. readPlanBySlug now allowlists the
+  // slug and returns null on anything outside [A-Za-z0-9._-]. This
+  // matches every caller's existing not-found contract.
+
+  it('returns null for slugs containing path separators', async () => {
+    expect(await readPlanBySlug('../../../etc/passwd', { repoRoot })).toBeNull();
+    expect(await readPlanBySlug('a/b', { repoRoot })).toBeNull();
+    expect(await readPlanBySlug('a\\b', { repoRoot })).toBeNull();
+  });
+
+  it('returns null for slugs containing ..', async () => {
+    expect(await readPlanBySlug('..', { repoRoot })).toBeNull();
+    // The substring '..' inside an otherwise-valid slug is fine —
+    // only the SEPARATORS are dangerous; a literal dot is allowed.
+    // But a `..` SEGMENT (with separators) is already caught above.
+  });
+
+  it('returns null for slugs with shell or url metacharacters', async () => {
+    expect(await readPlanBySlug('foo bar', { repoRoot })).toBeNull();
+    expect(await readPlanBySlug('foo%2Fbar', { repoRoot })).toBeNull();
+    expect(await readPlanBySlug('foo\x00.md', { repoRoot })).toBeNull();
+    expect(await readPlanBySlug('', { repoRoot })).toBeNull();
+  });
+
+  it('accepts the real plan-tracking slug (regression guard)', async () => {
+    // Ensure the allowlist did not over-tighten and reject the
+    // canonical slug shape (lowercase, hyphens, ISO date).
+    const r = await readPlanBySlug('agent-plan-tracking-2026-05-20', {
+      repoRoot,
+    });
+    expect(r).not.toBeNull();
+  });
+});

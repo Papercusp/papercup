@@ -111,10 +111,24 @@ async function collect(dir: string, archived: boolean, out: ListEntry[]): Promis
   }
 }
 
+/**
+ * Whitelist of characters legal in a plan slug. Anything outside this
+ * set — `/`, `..`, URL-decoded escapes, NULs, whitespace — is rejected
+ * before the slug is joined with the plans dir. Closes A-1 from the
+ * agent-coordination-architecture-v2 audit: without this check,
+ * `readPlanBySlug` would happily read `../../../etc/passwd.md` via
+ * `path.join`'s `..` normalisation. Loopback-only + markdown-only
+ * bounds the impact, but the right fix is a guarded slug at the
+ * lowest layer so every caller (`/api/coord/plans/:slug` route,
+ * `plans:*` MCP tools, list/lint/items helpers) inherits it.
+ */
+const VALID_PLAN_SLUG = /^[A-Za-z0-9._-]+$/;
+
 export async function readPlanBySlug(
   slug: string,
   opts: PlanSourceOpts = {},
 ): Promise<{ parsed: ParsedPlan; archived: boolean } | null> {
+  if (typeof slug !== 'string' || !VALID_PLAN_SLUG.test(slug)) return null;
   const plansDir = getPlansDir(opts);
   const archiveDir = getArchiveDir(opts);
 
