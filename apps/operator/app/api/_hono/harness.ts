@@ -3149,39 +3149,6 @@ harness.post('/:slug/replan', async (c) => {
  *     verdict). counts is best-effort parse of "added: N deprecated: M"
  *     style markers if the scoper emits them.
  */
-harness.get('/:slug/scoper-result/:invocationId', async (c) => {
-  const slug = c.req.param('slug');
-  const invocationId = c.req.param('invocationId');
-  const project = await resolveProject(slug);
-  if (!project) return c.json({ error: 'unknown project' }, 404);
-  const dir = join(harnessDir(project), 'scoper-results');
-  // The mode prefix isn't passed in the path; scan for the matching file.
-  // Files are <mode>-<id>.log and ids are unique per millisecond+rand.
-  const fs = await import('node:fs/promises');
-  let logPath: string | null = null;
-  try {
-    const entries = await fs.readdir(dir);
-    const match = entries.find((e) => e.endsWith(`-${invocationId}.log`));
-    if (match) logPath = join(dir, match);
-  } catch { /* dir missing → 404 below */ }
-  if (!logPath) return c.json({ done: false }, 404);
-  const text = await fs.readFile(logPath, 'utf8').catch(() => '');
-  const done = text.includes('__INVOCATION_DONE__');
-  if (!done) return c.json({ done: false });
-  // Trim the sentinel + take last ~20 lines as the summary.
-  const lines = text.replace(/__INVOCATION_DONE__\s*$/m, '').trim().split(/\r?\n/);
-  const tail = lines.slice(-20).join('\n');
-  // Best-effort counts parse — the scoper sometimes emits "Added: 3" style.
-  const counts: Record<string, number> = {};
-  for (const m of tail.matchAll(/\b(added|deprecated|modified|consolidated|skipped)\s*:\s*(\d+)/gi)) {
-    counts[m[1].toLowerCase()] = parseInt(m[2], 10);
-  }
-  return c.json({
-    done: true,
-    summary: tail.slice(0, 1200),
-    counts: Object.keys(counts).length ? counts : undefined,
-  });
-});
 
 harness.post('/:slug/cleanup', async (c) => {
   const slug = c.req.param('slug');
@@ -3205,68 +3172,10 @@ harness.post('/:slug/cleanup', async (c) => {
 
 // SSE: emit 'change' on plan-review.md mtime/size shifts.
 
-harness.get('/:slug/debug-notes/:id', async (c) => {
-  const project = await resolveProject(c.req.param('slug'));
-  if (!project) return c.json({ error: 'unknown project' }, 404);
-  const id = c.req.param('id').replace(/[^A-Za-z0-9_-]/g, '');
-  if (!id) return c.json({ error: 'invalid feature id' }, 400);
-  const p = join(harnessDir(project), 'debug', `${id}.md`);
-  let mtimeMs: number | null = null;
-  try { mtimeMs = statSync(p).mtimeMs; } catch {}
-  return c.json({ content: safeRead(p), mtimeMs });
-});
-
-harness.get('/:slug/synthesis-notes/:id', async (c) => {
-  const project = await resolveProject(c.req.param('slug'));
-  if (!project) return c.json({ error: 'unknown project' }, 404);
-  const id = c.req.param('id').replace(/[^A-Za-z0-9_-]/g, '');
-  if (!id) return c.json({ error: 'invalid feature id' }, 400);
-  const p = join(harnessDir(project), 'synthesis-notes', `${id}.md`);
-  let mtimeMs: number | null = null;
-  try { mtimeMs = statSync(p).mtimeMs; } catch {}
-  return c.json({ content: safeRead(p), mtimeMs });
-});
-
-harness.get('/:slug/debug-notes', async (c) => {
-  const project = await resolveProject(c.req.param('slug'));
-  if (!project) return c.json({ error: 'unknown project' }, 404);
-  const dir = join(harnessDir(project), 'debug');
-  if (!existsSync(dir)) return c.json({ notes: [] });
-  const notes = readdirSync(dir)
-    .filter((f) => f.endsWith('.md'))
-    .map((f) => {
-      const full = join(dir, f);
-      let size = 0, ts = 0;
-      try { const s = statSync(full); size = s.size; ts = s.mtimeMs; } catch {}
-      return { featureId: f.replace(/\.md$/, ''), sizeBytes: size, ts };
-    })
-    .sort((a, b) => b.ts - a.ts);
-  return c.json({ notes });
-});
 
 
-harness.get('/:slug/diff/working', async (c) => {
-  const project = await resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
-  if (!project) return c.json({ error: 'unknown project' }, 404);
-  return new Promise((resolve) => {
-    const { execFile } = require('node:child_process');
-    execFile('git', ['diff', '--stat=200', 'HEAD'], { cwd: project.path, maxBuffer: 4 * 1024 * 1024 }, (err: any, stat: string) => {
-      if (err) {
-        resolve(c.json({ error: `git error: ${String(err.message || err).slice(0, 200)}` }, 500));
-        return;
-      }
-      execFile('git', ['diff', 'HEAD'], { cwd: project.path, maxBuffer: 8 * 1024 * 1024 }, (err2: any, diff: string) => {
-        if (err2) {
-          resolve(c.json({ stat, diff: '', error: 'diff too large' }, 200));
-          return;
-        }
-        execFile('git', ['status', '--porcelain'], { cwd: project.path, maxBuffer: 1024 * 1024 }, (err3: any, status: string) => {
-          resolve(c.json({ stat, diff, status: err3 ? '' : status, branch: '' }));
-        });
-      });
-    });
-  }) as Promise<Response>;
-});
+
+
 
 // SSE: emit 'change' on archives/*.tar.gz add/remove/grow.
 
