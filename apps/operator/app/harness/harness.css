@@ -12207,12 +12207,15 @@ body:has(.h-top-collapse-inline) main {
 }
 
 .h-inbox-feed,
+.h-issues,
 .h-git-list {
   background: linear-gradient(180deg, rgba(255, 255, 255, 0.012), rgba(255, 255, 255, 0.004)) !important;
 }
 
 .h-feature-row,
+.h-issue,
 .h-inbox-row,
+.h-agent-row,
 .h-git-row {
   border-color: rgba(125, 211, 252, 0.16) !important;
   background:
@@ -12223,8 +12226,12 @@ body:has(.h-top-collapse-inline) main {
 
 .h-feature-row:hover,
 .h-feature-row:focus-visible,
+.h-issue:hover,
+.h-issue:focus-visible,
 .h-inbox-row:hover,
 .h-inbox-row:focus-visible,
+.h-agent-row:hover,
+.h-agent-row:focus-visible,
 .h-git-row:hover,
 .h-git-row:focus-visible {
   border-color: rgba(125, 211, 252, 0.30) !important;
@@ -12244,6 +12251,73 @@ body:has(.h-top-collapse-inline) main {
 
 .h-inbox-section-title {
   background: linear-gradient(180deg, rgba(8, 20, 34, 0.98), rgba(8, 20, 34, 0.90)) !important;
+}
+
+/* Compact list readability pass: consistent card contrast without adding height. */
+.h-feature-row {
+  margin-block: 1px !important;
+}
+
+.h-feature-row.compact {
+  margin-block: 2px !important;
+}
+
+.h-feature-row-title,
+.h-issue-title,
+.h-inbox-row-title {
+  color: color-mix(in oklab, var(--fg), white 6%) !important;
+  letter-spacing: -0.01em;
+  text-shadow: 0 1px 0 rgba(0, 0, 0, 0.22);
+}
+
+.h-feature-row-meta,
+.h-issue-meta,
+.h-inbox-row-sub,
+.h-inbox-row-foot {
+  color: color-mix(in oklab, var(--fg-dim), white 8%) !important;
+}
+
+.h-issue {
+  min-height: 62px !important;
+  padding-block: 8px !important;
+}
+
+.h-issue-title {
+  font-size: 12.4px !important;
+  font-weight: 720 !important;
+  line-height: 1.22 !important;
+}
+
+.h-issue-meta {
+  gap: 5px !important;
+  font-size: 10px !important;
+  line-height: 1.2 !important;
+}
+
+.h-issue-sev,
+.h-issue-status,
+.h-issue-linked {
+  min-height: 18px !important;
+  padding-block: 1px !important;
+}
+
+.h-agent-row {
+  border-radius: 9px;
+  outline-offset: -1px;
+}
+
+.h-agent-row > div {
+  min-height: 32px !important;
+}
+
+.h-agent-row > div > div {
+  padding-inline: 8px !important;
+  font-size: 12.5px !important;
+}
+
+.h-agent-role {
+  min-height: 18px;
+  padding-block: 1px;
 }
 
 /* Maximal HUD experiment branch: mirrored harness overlay pass */

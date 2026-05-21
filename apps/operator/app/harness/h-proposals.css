@@ -2783,6 +2783,32 @@
   }
 }
 
+.h-proposals-panel .h-proposal-item {
+  border-color: rgba(125, 211, 252, 0.12) !important;
+}
+
+.h-proposals-panel .h-proposal-list .h-proposal-item {
+  margin-bottom: 2px !important;
+  border-radius: 8px !important;
+}
+
+.h-proposals-panel .h-proposal-row-button {
+  min-height: 26px;
+}
+
+.h-proposals-panel .h-proposal-row-title {
+  color: color-mix(in oklab, var(--fg), white 7%) !important;
+  letter-spacing: -0.01em;
+}
+
+.h-proposals-panel .h-proposal-row-subtitle {
+  color: color-mix(in oklab, var(--fg-dim), white 12%) !important;
+}
+
+.h-proposals-panel .h-proposal-row-age {
+  color: color-mix(in oklab, var(--fg-faint), white 18%) !important;
+}
+
 /* Detail-header simplification: keep only title + primary actions. */
 .h-proposals-panel .h-proposal-detail-head {
   grid-template-areas: "title actions" !important;
