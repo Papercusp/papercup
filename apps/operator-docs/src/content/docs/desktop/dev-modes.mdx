@@ -125,3 +125,24 @@ unit), so that needs to be running.
 Note: `vite preview` is a static server, not a watcher. To pick up
 edits, re-run `npm run build` and reload the Tauri webview
 (Ctrl-R / Cmd-R).
+
+## Next.js is retired
+
+The operator frontend is Vite-only. `next dev` and `next start` are
+**blocked** — a guard at the top of `apps/operator/next.config.js`
+throws if either subcommand is detected, so an accidental `npm run`,
+an `npx next dev`, or stale muscle memory can't bind `:3055` or
+`:3070` and shadow the real servers.
+
+The `apps/operator` npm scripts are Vite equivalents:
+
+| `apps/operator` script | Runs |
+|---|---|
+| `npm run dev` | `vite` — the operator-vite dev server (`:3055`) |
+| `npm run build` | Starlight docs build + `vite build` |
+| `npm run start` | `tsx bin/hono-host.ts` — the Hono host (`:3070`) |
+
+`bin/dev` runs the dev server as a systemd unit; `bin/prod` builds the
+operator and runs the Hono host. Neither invokes `next`. `next build`
+is still allowed (it binds no port) for reference tooling — it is
+removed outright in Phase H.

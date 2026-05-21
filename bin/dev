@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Run the operator dev server (Turbopack/HMR) as a systemd --user transient unit
-# so it survives shell exits / sandboxed agent turns. Tails the log.
+# Run the operator Vite dev server (`npm run dev:operator`) as a systemd --user
+# transient unit so it survives shell exits / sandboxed agent turns. Tails the
+# log. Next.js is retired — see next.config.js for the guard blocking it.
 #
 # Usage: bin/dev                         (defaults: PORT=3055 PTY=3056)
 #        PORT=3155 PTY=3156 bin/dev      (override ports)
@@ -22,10 +23,7 @@ fuser -k "$PORT/tcp" 2>/dev/null
 fuser -k "$PTY/tcp"  2>/dev/null
 sleep 2
 
-echo "==> clearing Turbopack persistent cache"
-rm -rf "$REPO/apps/operator/.next/cache" "$REPO/apps/operator/.next/dev"
-
-echo "==> starting $UNIT on :$PORT (pty-ws :$PTY)"
+echo "==> starting $UNIT on :$PORT (pty-ws :$PTY) — Vite dev server"
 : > "$LOG"
 systemd-run --user \
   --unit="$UNIT" \

@@ -1,5 +1,3 @@
-import 'server-only';
-
 /**
  * Server-side allowlist for /admin ops dashboard.
  *
@@ -80,9 +78,9 @@ echo "=== win build + audit complete"`,
   },
   {
     id: 'rebuild-3070',
-    label: 'Rebuild 3070 webapp',
+    label: 'Rebuild 3070 host',
     section: 'building',
-    description: 'Runs bin/prod: builds @papercusp/web (prod target) + restarts the standalone server on :3070. Survives this stream — server keeps running after you Stop.',
+    description: 'Runs bin/prod: builds the operator (Starlight docs + Vite SPA) and restarts the Hono host on :3070. Survives this stream — server keeps running after you Stop.',
     command: 'bin/prod 2>&1',
     cwd: PAPERCUP_REPO,
   },

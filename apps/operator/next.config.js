@@ -1,3 +1,36 @@
+// ───────────────────────────────────────────────────────────────────────────
+// Next.js is RETIRED for the operator — the app runs on Vite.
+//
+// `next dev` and `next start` are blocked here so an accidental invocation
+// (a stray `npm run` in a sub-package, an `npx next dev`, muscle memory, an
+// agent) can never bind :3055 or :3070 and shadow the Vite dev server / Hono
+// host. The `next` CLI always loads this file before doing anything, so the
+// guard fires regardless of how next was launched. `next build` is left
+// working (it binds no port, so it cannot collide) for reference tooling.
+//
+//   • Vite dev server  →  npm run dev:operator   (:3055)
+//   • Hono prod host   →  bin/prod               (:3070)
+//
+// Remove this guard in Phase H when the Next app is deleted outright.
+// ───────────────────────────────────────────────────────────────────────────
+{
+  const nextSubcommand = process.argv[2];
+  if (nextSubcommand === 'dev' || nextSubcommand === 'start') {
+    throw new Error(
+      [
+        '',
+        `  ✗ Next.js \`next ${nextSubcommand}\` is retired for the operator.`,
+        '    The operator frontend runs on Vite; this command would shadow it',
+        '    on :3055 / :3070. Use instead:',
+        '',
+        '      npm run dev:operator      Vite dev server   (:3055)',
+        '      bin/prod                  Hono prod host    (:3070)',
+        '',
+      ].join('\n'),
+    );
+  }
+}
+
 const path = require('path');
 const fs = require('fs');
 
