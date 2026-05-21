@@ -458,7 +458,7 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(provisionStream as AnyRoute),
   ...flatten(desktopAgentAuthStatus as AnyRoute),
   ...flatten(desktopAgentLoginEnvelope as AnyRoute),
-  ...flatten(desktopGitIdentity as AnyRoute),
+  ...flatten(desktopGitIdentity as AnyRoute[]),
   ...flatten(desktopPreflight as AnyRoute[]),
   ...flatten(desktopSetupPtyCommands as AnyRoute),
   ...flatten(desktopSetupStatus as AnyRoute),

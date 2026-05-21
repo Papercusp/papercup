@@ -37,6 +37,11 @@ export function StepGit() {
   const [active, setActive] = useState(false);
   const [exited, setExited] = useState(false);
   const [attempt, setAttempt] = useState(0);
+  // Git-identity form draft (useState, not nuqs — mid-edit form state).
+  const [nameDraft, setNameDraft] = useState('');
+  const [emailDraft, setEmailDraft] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
 
   const refreshAuth = async () => {
     try {
@@ -57,6 +62,8 @@ export function StepGit() {
         if (identRes.ok) {
           const j = (await identRes.json()) as GitIdentity;
           setIdentity(j);
+          if (j.name) setNameDraft(j.name);
+          if (j.email) setEmailDraft(j.email);
         } else {
           setIdentity({ source: 'none' });
         }
@@ -82,6 +89,25 @@ export function StepGit() {
 
   const configured = Boolean(identity?.name && identity?.email);
   const ghSignedIn = authStatus.github === true;
+
+  const saveIdentity = async () => {
+    setSaving(true);
+    setSaveError(null);
+    try {
+      const r = await fetch('/api/desktop/git-identity', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ name: nameDraft.trim(), email: emailDraft.trim() }),
+      });
+      const j = (await r.json().catch(() => ({}))) as GitIdentity & { error?: string };
+      if (!r.ok) throw new Error(j.error ?? `HTTP ${r.status}`);
+      setIdentity({ name: j.name, email: j.email, source: 'global' });
+    } catch (e: any) {
+      setSaveError(e?.message ?? String(e));
+    } finally {
+      setSaving(false);
+    }
+  };
 
   const startGithubLogin = () => {
     setExited(false);
@@ -121,14 +147,50 @@ export function StepGit() {
           {!loading && !configured && (
             <>
               <strong>Not configured.</strong>
-              <span>Run the commands below in a terminal.</span>
+              <span>Fill in your name and email below.</span>
             </>
           )}
         </div>
       </div>
-      {!configured && !loading && (
-        <pre className="pc-code">{`git config --global user.name "Your Name"
-git config --global user.email "you@example.com"`}</pre>
+      {!loading && (
+        <div style={{ marginTop: 12, maxWidth: 420 }}>
+          <label className="pc-field">
+            <span className="pc-field__label">Name</span>
+            <input
+              type="text"
+              className="pc-input"
+              value={nameDraft}
+              placeholder="Your Name"
+              disabled={saving}
+              onChange={(e) => setNameDraft(e.target.value)}
+            />
+          </label>
+          <label className="pc-field" style={{ marginTop: 10 }}>
+            <span className="pc-field__label">Email</span>
+            <input
+              type="email"
+              className="pc-input"
+              value={emailDraft}
+              placeholder="you@example.com"
+              disabled={saving}
+              onChange={(e) => setEmailDraft(e.target.value)}
+            />
+          </label>
+          <div className="pc-step__actions" style={{ marginTop: 12 }}>
+            <button
+              type="button"
+              className="pc-btn pc-btn--primary"
+              onClick={() => void saveIdentity()}
+              disabled={saving || !nameDraft.trim() || !emailDraft.trim()}
+            >
+              {saving ? 'Saving…' : configured ? 'Update git identity' : 'Save git identity'}
+            </button>
+            {configured && !saving && <span className="pc-step__saved">Saved.</span>}
+          </div>
+          {saveError && (
+            <span className="pc-field__hint pc-field__hint--err">{saveError}</span>
+          )}
+        </div>
       )}
 
       <div className="pc-divider" />

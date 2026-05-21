@@ -145,9 +145,21 @@ describe('desktop route ports', () => {
   });
 
   it('GET /desktop/git-identity returns a source field', async () => {
-    const res = await appWith(desktopGitIdentity as AnyRoute).request('/desktop/git-identity');
+    const res = await appWith(desktopGitIdentity as AnyRoute[]).request('/desktop/git-identity');
     expect(res.status).toBe(200);
     expect(typeof (await res.json()).source).toBe('string');
+  });
+
+  it('POST /desktop/git-identity rejects a missing name (400)', async () => {
+    const res = await appWith(desktopGitIdentity as AnyRoute[])
+      .request('/desktop/git-identity', json({ email: 'a@b.com' }));
+    expect(res.status).toBe(400);
+  });
+
+  it('POST /desktop/git-identity rejects a malformed email (400)', async () => {
+    const res = await appWith(desktopGitIdentity as AnyRoute[])
+      .request('/desktop/git-identity', json({ name: 'Ada', email: 'not-an-email' }));
+    expect(res.status).toBe(400);
   });
 
   it('GET /desktop/setup-pty-commands returns the four specs', async () => {
