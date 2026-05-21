@@ -2,16 +2,15 @@
  * Mobile sync + voice-tool-proxy routes — Phase E4 batch M5
  * (endpoint-unification-2026-05-21). Ported off `_hono/mobile.ts`.
  *
- *   GET  /mobile/rest-query        public (auth via ?token= query param)
- *   POST /mobile/voice-tool/:name  mobile JWT
+ *   GET  /mobile/rest-query        device JWT (via ?token= — see tokenIn)
+ *   POST /mobile/voice-tool/:name  device JWT
  *
- * `/rest-query` keeps `?token=` auth (not the Authorization header)
- * because libs/sync's polling fetcher uses a bare `fetch()` and can't
- * set headers — same reason the SSE handshake used a query param.
+ * `/rest-query` reads the device JWT from `?token=` (`auth.tokenIn`)
+ * because libs/sync's polling fetcher uses a bare `fetch()` and cannot
+ * set an `Authorization` header.
  */
 import { defineTool } from '@papercusp/agent-mcp';
-import { MOBILE_AUTH, mobilePrincipal } from './_shared';
-import { verifyDeviceToken } from '@/lib/mobile-jwt';
+import { DEVICE_AUTH, devicePrincipal } from './_shared';
 import { recentToasts, recentAuditEntries, currentlyRunning } from '@/lib/mobile-feeds';
 import { listHarnessesFor, harnessStatusFor } from '@/lib/mobile-harnesses';
 import { readCandidates, refreshCandidates } from '@/lib/operator-standing-candidates';
@@ -20,19 +19,19 @@ import { readCandidates, refreshCandidates } from '@/lib/operator-standing-candi
  * GET /mobile/rest-query — REST query endpoint for libs/sync's polling
  * fetcher. `?token=<jwt>&name=<queryName>&args=<json>` →
  * `{ rows, version }` (the shape libs/sync expects).
+ *
+ * Auth is the device JWT, read from `?token=` via `auth.tokenIn` — the
+ * route-stack lifts it into the standard bearer path, so the handler
+ * just reads `ctx.principal`.
  */
 const restQuery = defineTool({
   method: 'GET',
   path: '/mobile/rest-query',
-  auth: 'public',
-  mobile: true,
-  async handler(req) {
+  auth: { kind: ['device'], tokenIn: ['query'] },
+  cors: true,
+  async handler(req, ctx) {
+    const workspaceId = devicePrincipal(ctx).workspaceId;
     const url = new URL(req.url);
-    const token = url.searchParams.get('token');
-    if (!token) return Response.json({ error: 'token_required' }, { status: 401 });
-    const claims = verifyDeviceToken(token);
-    if (!claims) return Response.json({ error: 'invalid_token' }, { status: 401 });
-
     const name = url.searchParams.get('name');
     if (!name) return Response.json({ error: 'missing name' }, { status: 400 });
     const argsJson = url.searchParams.get('args') ?? '{}';
@@ -47,28 +46,28 @@ const restQuery = defineTool({
       switch (name) {
         case 'toastLog.recent': {
           const limit = Math.min(Number(args.limit) || 50, 200);
-          const rows = await recentToasts(claims.workspace_id, limit);
+          const rows = await recentToasts(workspaceId, limit);
           return Response.json({ rows, version: String(Date.now()) });
         }
         case 'auditLog.recent': {
           const limit = Math.min(Number(args.limit) || 50, 200);
-          const rows = await recentAuditEntries(claims.workspace_id, limit);
+          const rows = await recentAuditEntries(workspaceId, limit);
           return Response.json({ rows, version: String(Date.now()) });
         }
         case 'operatorScans.running': {
-          const snap = await currentlyRunning(claims.workspace_id);
+          const snap = await currentlyRunning(workspaceId);
           // The polling fetcher expects {rows: T[]}; wrap single-value
           // queries in a one-element array (the screen unwraps via data[0]).
           return Response.json({ rows: [snap], version: String(Date.now()) });
         }
         case 'harnessStatus.list': {
-          const rows = await listHarnessesFor(claims.workspace_id);
+          const rows = await listHarnessesFor(workspaceId);
           return Response.json({ rows, version: String(Date.now()) });
         }
         case 'harnessStatus.byHarness': {
           const slug = String(args.harnessSlug ?? '');
           if (!slug) return Response.json({ error: 'missing harnessSlug' }, { status: 400 });
-          const status = await harnessStatusFor(claims.workspace_id, slug);
+          const status = await harnessStatusFor(workspaceId, slug);
           return Response.json({ rows: status ? [status] : [], version: String(Date.now()) });
         }
         case 'standingCandidates.list': {
@@ -101,10 +100,10 @@ const restQuery = defineTool({
 const voiceToolProxy = defineTool({
   method: 'POST',
   path: '/mobile/voice-tool/:name',
-  auth: MOBILE_AUTH,
-  mobile: true,
+  auth: DEVICE_AUTH,
+  cors: true,
   async handler(req, ctx) {
-    const principal = mobilePrincipal(ctx);
+    const principal = devicePrincipal(ctx);
     const elName = ctx.params.name;
     if (!elName) return Response.json({ error: 'missing tool name' }, { status: 400 });
     const body = await req.json().catch(() => ({}));

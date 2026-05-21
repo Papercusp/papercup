@@ -1,83 +1,36 @@
 /**
- * E3 tests (endpoint-unification-2026-05-21) — the `mobile: true` flag.
+ * CORS tests (endpoint-unification-2026-05-21) — the general `cors` route
+ * field.
  *
- * Covers the two things the flag does:
- *   1. `registerRoute` mounts the shared `mobileCors` middleware, so the
- *      cross-origin phone client + its OPTIONS preflight are handled
- *      without a per-route CORS block.
- *   2. `defineTool` folds `'mobile'` into an explicit `auth.kind`
- *      allowlist so the device-JWT principal is admitted.
+ * `registerRoute` mounts the shared CORS middleware for `cors`-enabled
+ * routes, so the cross-origin client + its OPTIONS preflight are handled
+ * without a per-route CORS block. `cors` is orthogonal to auth — a route
+ * declares its own `auth` separately.
  */
 import { describe, expect, it } from 'vitest';
 import { Hono } from 'hono';
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { registerRoute } from '../define-route';
-import { mobileOrigin } from '../cors';
+import { defaultCorsOrigin } from '../cors';
 
-describe('mobile: true — auth.kind folding (E3)', () => {
-  it('adds "mobile" to an explicit kind allowlist', () => {
-    const def = defineTool({
-      method: 'GET',
-      path: '/mobile/fixture-a',
-      auth: { kind: ['user'] },
-      mobile: true,
-      handler: () => new Response('ok'),
-    });
-    expect(def.auth).toEqual({ kind: ['user', 'mobile'] });
-  });
-
-  it('is idempotent — does not double-add when "mobile" already present', () => {
-    const def = defineTool({
-      method: 'GET',
-      path: '/mobile/fixture-b',
-      auth: { kind: ['mobile', 'user'] },
-      mobile: true,
-      handler: () => new Response('ok'),
-    });
-    expect((def.auth as { kind: string[] }).kind).toEqual(['mobile', 'user']);
-  });
-
-  it('leaves auth:"public" untouched (CORS-only opt-in)', () => {
-    const def = defineTool({
-      method: 'GET',
-      path: '/mobile/fixture-c',
-      auth: 'public',
-      mobile: true,
-      handler: () => new Response('ok'),
-    });
-    expect(def.auth).toBe('public');
-  });
-
-  it('leaves a kind-unrestricted gate untouched (mobile already allowed)', () => {
-    const def = defineTool({
-      method: 'GET',
-      path: '/mobile/fixture-d',
-      auth: { trust: ['verified'] },
-      mobile: true,
-      handler: () => new Response('ok'),
-    });
-    expect(def.auth).toEqual({ trust: ['verified'] });
-  });
-});
-
-describe('mobileOrigin allowlist (E3)', () => {
+describe('defaultCorsOrigin allowlist', () => {
   it('admits the desktop WebView + dev origins', () => {
-    expect(mobileOrigin('http://tauri.localhost')).toBe('http://tauri.localhost');
-    expect(mobileOrigin('https://tauri.localhost')).toBe('https://tauri.localhost');
-    expect(mobileOrigin('http://localhost:1420')).toBe('http://localhost:1420');
-    expect(mobileOrigin('http://127.0.0.1:9999')).toBe('http://127.0.0.1:9999');
-    expect(mobileOrigin('http://10.0.2.2:3070')).toBe('http://10.0.2.2:3070');
+    expect(defaultCorsOrigin('http://tauri.localhost')).toBe('http://tauri.localhost');
+    expect(defaultCorsOrigin('https://tauri.localhost')).toBe('https://tauri.localhost');
+    expect(defaultCorsOrigin('http://localhost:1420')).toBe('http://localhost:1420');
+    expect(defaultCorsOrigin('http://127.0.0.1:9999')).toBe('http://127.0.0.1:9999');
+    expect(defaultCorsOrigin('http://10.0.2.2:3070')).toBe('http://10.0.2.2:3070');
   });
 
   it('refuses an unknown origin', () => {
-    expect(mobileOrigin('https://evil.example.com')).toBe('');
-    expect(mobileOrigin('http://papercuspai.com')).toBe('');
+    expect(defaultCorsOrigin('https://evil.example.com')).toBe('');
+    expect(defaultCorsOrigin('http://papercuspai.com')).toBe('');
   });
 });
 
-describe('registerRoute — mobileCors middleware (E3)', () => {
-  it('answers an OPTIONS preflight with CORS headers for a mobile route', async () => {
+describe('registerRoute — CORS middleware', () => {
+  it('answers an OPTIONS preflight with CORS headers for a cors route', async () => {
     const app = new Hono().basePath('/api');
     registerRoute(
       app,
@@ -85,10 +38,10 @@ describe('registerRoute — mobileCors middleware (E3)', () => {
         method: 'POST',
         path: '/mobile/ping',
         auth: 'public',
-        mobile: true,
+        cors: true,
         input: z.object({}),
-        // sampleRate 0 — this is a CORS unit test with no DB; skip the
-        // route-stack telemetry write (which would warn on a failed insert).
+        // sampleRate 0 — CORS unit test with no DB; skip the route-stack
+        // telemetry write (which would warn on a failed insert).
         sampleRate: 0,
         handler: () => Response.json({ ok: true }),
       }),
@@ -104,7 +57,7 @@ describe('registerRoute — mobileCors middleware (E3)', () => {
     expect(res.headers.get('access-control-allow-credentials')).toBe('true');
   });
 
-  it('echoes the allowed origin on a real mobile request', async () => {
+  it('echoes the allowed origin on a real cross-origin request', async () => {
     const app = new Hono().basePath('/api');
     registerRoute(
       app,
@@ -112,7 +65,7 @@ describe('registerRoute — mobileCors middleware (E3)', () => {
         method: 'GET',
         path: '/mobile/echo',
         auth: 'public',
-        mobile: true,
+        cors: true,
         sampleRate: 0,
         handler: () => Response.json({ ok: true }),
       }),
@@ -126,7 +79,7 @@ describe('registerRoute — mobileCors middleware (E3)', () => {
     expect(res.headers.get('access-control-allow-origin')).toBe('http://10.0.2.2:3070');
   });
 
-  it('does NOT attach CORS to a non-mobile route', async () => {
+  it('does NOT attach CORS to a route without `cors`', async () => {
     const app = new Hono().basePath('/api');
     registerRoute(
       app,
@@ -145,5 +98,31 @@ describe('registerRoute — mobileCors middleware (E3)', () => {
     });
     expect(res.status).toBe(200);
     expect(res.headers.get('access-control-allow-origin')).toBeNull();
+  });
+
+  it('honours an explicit `cors: { origins }` override', async () => {
+    const app = new Hono().basePath('/api');
+    registerRoute(
+      app,
+      defineTool({
+        method: 'GET',
+        path: '/mobile/custom-origin',
+        auth: 'public',
+        cors: { origins: ['https://allowed.example.com'] },
+        sampleRate: 0,
+        handler: () => Response.json({ ok: true }),
+      }),
+    );
+
+    const ok = await app.request('http://x.test/api/mobile/custom-origin', {
+      headers: { Origin: 'https://allowed.example.com' },
+    });
+    expect(ok.headers.get('access-control-allow-origin')).toBe('https://allowed.example.com');
+
+    const denied = await app.request('http://x.test/api/mobile/custom-origin', {
+      headers: { Origin: 'http://tauri.localhost' },
+    });
+    // tauri.localhost is in the *default* allowlist but not this route's override.
+    expect(denied.headers.get('access-control-allow-origin')).toBeNull();
   });
 });

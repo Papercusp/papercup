@@ -144,11 +144,10 @@ export function defineTool(
 }
 
 /**
- * Route-shaped `defineTool`. Pure — returns the definition (mounting
- * happens host-side via `registerRoute`). The only transform is the
- * `mobile: true` sugar: when the route gates on an explicit `kind`
- * allowlist, fold `'mobile'` in so the device-JWT principal is admitted.
- * `auth: 'public'` and kind-unrestricted gates need no change.
+ * Route-shaped `defineTool`. Pure — returns the definition unchanged;
+ * mounting happens host-side via `registerRoute`. A route declares its
+ * own `auth` (incl. `kind: ['device']` if it admits paired devices) and
+ * `cors` — there is no implicit folding.
  *
  * A route is deliberately NOT registered into the projection registry —
  * plumbing must not appear in the agent tool catalog.
@@ -156,12 +155,6 @@ export function defineTool(
 function defineRouteShaped<TInputSchema extends ZodTypeAny | undefined>(
   def: RouteDefinition<TInputSchema>,
 ): RouteDefinition<TInputSchema> {
-  if (def.mobile === true && typeof def.auth === 'object' && def.auth !== null) {
-    const auth = def.auth;
-    if (Array.isArray(auth.kind) && !auth.kind.includes('mobile')) {
-      return { ...def, auth: { ...auth, kind: [...auth.kind, 'mobile'] } };
-    }
-  }
   return def;
 }
 

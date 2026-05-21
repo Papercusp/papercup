@@ -10,7 +10,7 @@
  *   GET    /mobile/voice                  mobile JWT (HTTP stub — real path is WS)
  */
 import { defineTool } from '@papercusp/agent-mcp';
-import { MOBILE_AUTH, mobilePrincipal } from './_shared';
+import { DEVICE_AUTH, devicePrincipal } from './_shared';
 import { claimVoiceLease, releaseVoiceLease, readVoiceLease } from '@/lib/voice-lease';
 
 /* ─── Voice lease — single-listener election across desktop + phone ──── */
@@ -18,10 +18,10 @@ import { claimVoiceLease, releaseVoiceLease, readVoiceLease } from '@/lib/voice-
 const voiceLeaseGet = defineTool({
   method: 'GET',
   path: '/mobile/voice-lease',
-  auth: MOBILE_AUTH,
-  mobile: true,
+  auth: DEVICE_AUTH,
+  cors: true,
   async handler(_req, ctx) {
-    const lease = await readVoiceLease(mobilePrincipal(ctx).workspaceId);
+    const lease = await readVoiceLease(devicePrincipal(ctx).workspaceId);
     return Response.json({ lease });
   },
 });
@@ -29,10 +29,10 @@ const voiceLeaseGet = defineTool({
 const voiceLeaseClaim = defineTool({
   method: 'POST',
   path: '/mobile/voice-lease/claim',
-  auth: MOBILE_AUTH,
-  mobile: true,
+  auth: DEVICE_AUTH,
+  cors: true,
   async handler(_req, ctx) {
-    const principal = mobilePrincipal(ctx);
+    const principal = devicePrincipal(ctx);
     await claimVoiceLease({
       workspaceId: principal.workspaceId,
       ownerKind: 'mobile',
@@ -45,10 +45,10 @@ const voiceLeaseClaim = defineTool({
 const voiceLeaseHeartbeat = defineTool({
   method: 'POST',
   path: '/mobile/voice-lease/heartbeat',
-  auth: MOBILE_AUTH,
-  mobile: true,
+  auth: DEVICE_AUTH,
+  cors: true,
   async handler(_req, ctx) {
-    const principal = mobilePrincipal(ctx);
+    const principal = devicePrincipal(ctx);
     await claimVoiceLease({
       workspaceId: principal.workspaceId,
       ownerKind: 'mobile',
@@ -61,10 +61,10 @@ const voiceLeaseHeartbeat = defineTool({
 const voiceLeaseRelease = defineTool({
   method: 'DELETE',
   path: '/mobile/voice-lease',
-  auth: MOBILE_AUTH,
-  mobile: true,
+  auth: DEVICE_AUTH,
+  cors: true,
   async handler(_req, ctx) {
-    const principal = mobilePrincipal(ctx);
+    const principal = devicePrincipal(ctx);
     await releaseVoiceLease({
       workspaceId: principal.workspaceId,
       ownerId: principal.slug,
@@ -122,10 +122,10 @@ async function mintMobileElToken(
 const voiceSessionInit = defineTool({
   method: 'GET',
   path: '/mobile/voice-session-init',
-  auth: MOBILE_AUTH,
-  mobile: true,
+  auth: DEVICE_AUTH,
+  cors: true,
   async handler(req, ctx) {
-    const principal = mobilePrincipal(ctx);
+    const principal = devicePrincipal(ctx);
     const url = new URL(req.url);
     const q = (k: string) => url.searchParams.get(k) ?? undefined;
 
@@ -243,8 +243,8 @@ const voiceSessionInit = defineTool({
 const voiceStub = defineTool({
   method: 'GET',
   path: '/mobile/voice',
-  auth: MOBILE_AUTH,
-  mobile: true,
+  auth: DEVICE_AUTH,
+  cors: true,
   handler() {
     return Response.json(
       { error: 'use_websocket', upgrade: 'wss://<host>/api/mobile/voice?token=...' },

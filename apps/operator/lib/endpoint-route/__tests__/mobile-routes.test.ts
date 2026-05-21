@@ -20,12 +20,12 @@ import mobilePair from '../routes/mobile/pair';
 
 /** A resolved mobile principal, as `requirePrincipal` would produce. */
 const MOBILE_PRINCIPAL: Principal = {
-  kind: 'mobile',
+  kind: 'device',
   slug: 'device-e4',
   workspaceId: 'ws-e4',
   authMethod: 'jwt',
   trust: 'verified',
-  capabilities: new Set(['mobile:*', 'voice:*', 'harness:read']),
+  capabilities: new Set(['device:*', 'voice:*', 'harness:read']),
   label: 'avi@storewolf.com',
 };
 
@@ -75,18 +75,22 @@ describe('migrated /api/mobile/* routes — handler behavior (E4)', () => {
     expect(body.voiceWs.path).toBe('/api/mobile/voice');
   });
 
-  it('every migrated mobile route is mobile-eligible + carries an auth stance', () => {
+  it('every migrated mobile route carries an auth stance; cross-origin ones declare cors', () => {
     const all = [
       ...(mobileVoice as RouteDefinition<never>[]),
       ...(mobilePair as RouteDefinition<never>[]),
     ];
     for (const def of all) {
-      expect(def.mobile, `${def.method} ${def.path} should be mobile:true`).toBe(true);
       expect(def.auth, `${def.method} ${def.path} must declare auth`).toBeDefined();
+      // mint-pair-token is loopback-only (desktop, same-origin) — no cors.
+      // Every other route the phone reaches cross-origin → cors: true.
+      if (def.path !== '/mobile/desktop/mint-pair-token') {
+        expect(def.cors, `${def.method} ${def.path} should be cors:true`).toBe(true);
+      }
     }
   });
 
-  it('JWT-gated routes resolve to kind:["mobile"]; pair/mint stay public', () => {
+  it('JWT-gated routes resolve to kind:["device"]; pair/mint stay public', () => {
     const pairRoutes = mobilePair as RouteDefinition<never>[];
     const pub = pairRoutes.filter((r) => r.auth === 'public').map((r) => r.path).sort();
     // /pair (one-time token) and /desktop/mint-pair-token (loopback) are
@@ -95,7 +99,7 @@ describe('migrated /api/mobile/* routes — handler behavior (E4)', () => {
 
     const jwtGated = pairRoutes.filter((r) => r.auth !== 'public');
     for (const def of jwtGated) {
-      expect((def.auth as { kind: string[] }).kind).toContain('mobile');
+      expect((def.auth as { kind: string[] }).kind).toContain("device");
     }
   });
 });

@@ -30,7 +30,7 @@ import { getOrgPg } from '@restart/db-org';
 // Side-effect: register operator-side first-party tools (defineTool calls).
 import '@/lib/agent-tools/index';
 import { PROJECTED_DEPS } from '@/lib/projected-tool-deps';
-import { principalFromMobileJwt } from '@/lib/auth/principal/from-mobile-jwt';
+import { principalFromDeviceJwt } from '@/lib/auth/principal/from-device-jwt';
 import { defineTool } from '@papercusp/agent-mcp';
 
 const HOST_EXTRAS: HttpToolHostExtras = {
@@ -45,10 +45,10 @@ const HOST_EXTRAS: HttpToolHostExtras = {
     } catch {
       /* token_index unreachable — fall through to the mobile JWT path */
     }
-    // `principalFromMobileJwt` reads the `Authorization` header, so
+    // `principalFromDeviceJwt` reads the `Authorization` header, so
     // synthesize one from the bearer string. Async — it also runs the
     // device-revocation check.
-    principal ??= await principalFromMobileJwt(
+    principal ??= await principalFromDeviceJwt(
       new Headers({ authorization: `Bearer ${bearer}` }),
     );
     if (!principal) return null;
@@ -146,11 +146,11 @@ export default methods.map((method) =>
     path: PATH,
     auth: 'public',
     // Phase E3 — the phone calls built-in tools cross-origin
-    // (api.papercuspai.com → this host). `mobile: true` mounts the
-    // shared mobileCors middleware so the preflight + Authorization
+    // (api.papercuspai.com → this host). `cors: true` mounts the
+    // shared CORS middleware so the preflight + Authorization
     // header are accepted. Auth itself is the composite bearer resolver
     // wired in E2 (`HOST_EXTRAS.resolvePrincipalAndTx`).
-    mobile: true,
+    cors: true,
     handler: dispatchHttp,
   }),
 );

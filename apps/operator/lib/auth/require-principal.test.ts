@@ -73,7 +73,7 @@ describe('requirePrincipal — resolver order', () => {
     vi.mocked(isLoopbackRequest).mockReturnValue(true);
     vi.mocked(isValidSuperuserBearer).mockReturnValue(true);
     const p = await requirePrincipal(h({ authorization: 'Bearer mobile_token' }));
-    expect(p.kind).toBe('mobile');
+    expect(p.kind).toBe('device');
     expect(p.slug).toBe('device_2');
   });
 
@@ -124,7 +124,7 @@ describe('requirePrincipal — requirements', () => {
   });
 
   it('kind allowlist rejects non-matching with 403', async () => {
-    await expect(requirePrincipal(h(), { kind: ['user', 'mobile'] })).rejects.toMatchObject({
+    await expect(requirePrincipal(h(), { kind: ['user', 'device'] })).rejects.toMatchObject({
       status: 403,
       reason: expect.stringMatching(/kind.*not in allowlist/),
     });
@@ -136,7 +136,7 @@ describe('requirePrincipal — requirements', () => {
   });
 
   it('capabilities check rejects when missing required cap (no wildcard)', async () => {
-    // Make a more restricted principal — mobile gets ['mobile:*', 'voice:*', 'harness:read'].
+    // Make a more restricted principal — device gets ['device:*', 'voice:*', 'harness:read'].
     vi.mocked(isLoopbackRequest).mockReturnValue(false);
     vi.mocked(verifyDeviceToken).mockReturnValue({
       sub: 'device_3',

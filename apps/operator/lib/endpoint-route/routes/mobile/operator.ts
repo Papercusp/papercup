@@ -15,7 +15,7 @@
  */
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
-import { MOBILE_AUTH, mobilePrincipal } from './_shared';
+import { DEVICE_AUTH, devicePrincipal } from './_shared';
 import { recentToasts, recentAuditEntries } from '@/lib/mobile-feeds';
 import {
   listPendingCards,
@@ -39,10 +39,10 @@ function limitParam(req: Request): number {
 const notificationsRecent = defineTool({
   method: 'GET',
   path: '/mobile/notifications/recent',
-  auth: MOBILE_AUTH,
-  mobile: true,
+  auth: DEVICE_AUTH,
+  cors: true,
   async handler(req, ctx) {
-    const rows = await recentToasts(mobilePrincipal(ctx).workspaceId, limitParam(req));
+    const rows = await recentToasts(devicePrincipal(ctx).workspaceId, limitParam(req));
     return Response.json({ toasts: rows });
   },
 });
@@ -50,10 +50,10 @@ const notificationsRecent = defineTool({
 const actionsRecent = defineTool({
   method: 'GET',
   path: '/mobile/actions/recent',
-  auth: MOBILE_AUTH,
-  mobile: true,
+  auth: DEVICE_AUTH,
+  cors: true,
   async handler(req, ctx) {
-    const rows = await recentAuditEntries(mobilePrincipal(ctx).workspaceId, limitParam(req));
+    const rows = await recentAuditEntries(devicePrincipal(ctx).workspaceId, limitParam(req));
     return Response.json({ entries: rows });
   },
 });
@@ -63,8 +63,8 @@ const actionsRecent = defineTool({
 const pauseGet = defineTool({
   method: 'GET',
   path: '/mobile/operator/pause',
-  auth: MOBILE_AUTH,
-  mobile: true,
+  auth: DEVICE_AUTH,
+  cors: true,
   async handler() {
     return Response.json(await getPauseInfo());
   },
@@ -73,10 +73,10 @@ const pauseGet = defineTool({
 const pauseSet = defineTool({
   method: 'POST',
   path: '/mobile/operator/pause',
-  auth: MOBILE_AUTH,
-  mobile: true,
+  auth: DEVICE_AUTH,
+  cors: true,
   async handler(_req, ctx) {
-    await setPaused(mobilePrincipal(ctx).label ?? 'mobile');
+    await setPaused(devicePrincipal(ctx).label ?? 'mobile');
     return Response.json(await getPauseInfo());
   },
 });
@@ -84,8 +84,8 @@ const pauseSet = defineTool({
 const pauseClear = defineTool({
   method: 'DELETE',
   path: '/mobile/operator/pause',
-  auth: MOBILE_AUTH,
-  mobile: true,
+  auth: DEVICE_AUTH,
+  cors: true,
   async handler() {
     await setResumed();
     return Response.json(await getPauseInfo());
@@ -97,8 +97,8 @@ const pauseClear = defineTool({
 const cardsList = defineTool({
   method: 'GET',
   path: '/mobile/operator/cards',
-  auth: MOBILE_AUTH,
-  mobile: true,
+  auth: DEVICE_AUTH,
+  cors: true,
   async handler() {
     return Response.json({ cards: await listPendingCards() });
   },
@@ -107,8 +107,8 @@ const cardsList = defineTool({
 const cardDispatch = defineTool({
   method: 'POST',
   path: '/mobile/operator/cards/:id/dispatch',
-  auth: MOBILE_AUTH,
-  mobile: true,
+  auth: DEVICE_AUTH,
+  cors: true,
   async handler(_req, ctx) {
     const cards = await listPendingCards();
     const card = cards.find((x) => x.id === ctx.params.id);
@@ -121,8 +121,8 @@ const cardDispatch = defineTool({
 const cardDismiss = defineTool({
   method: 'POST',
   path: '/mobile/operator/cards/:id/dismiss',
-  auth: MOBILE_AUTH,
-  mobile: true,
+  auth: DEVICE_AUTH,
+  cors: true,
   async handler(_req, ctx) {
     const cards = await listPendingCards();
     const card = cards.find((x) => x.id === ctx.params.id);
@@ -137,8 +137,8 @@ const cardDismiss = defineTool({
 const standingCandidatesList = defineTool({
   method: 'GET',
   path: '/mobile/operator/standing-candidates',
-  auth: MOBILE_AUTH,
-  mobile: true,
+  auth: DEVICE_AUTH,
+  cors: true,
   async handler() {
     const candidates = await refreshCandidates().catch(() => readCandidates());
     return Response.json({ candidates });
@@ -148,8 +148,8 @@ const standingCandidatesList = defineTool({
 const standingCandidatesDecide = defineTool({
   method: 'POST',
   path: '/mobile/operator/standing-candidates/decide',
-  auth: MOBILE_AUTH,
-  mobile: true,
+  auth: DEVICE_AUTH,
+  cors: true,
   input: z.object({
     capability: z.string().min(1),
     targetHarness: z.string().min(1),

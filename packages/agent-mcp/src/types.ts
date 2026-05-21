@@ -23,7 +23,7 @@ export type PrincipalKind =
   | 'system'    // operator self-issued (e.g. background sweepers, superuser shell)
   | 'pi'        // shell-launched agent, bearer file
   | 'user'      // cookie-bearing browser session
-  | 'mobile'    // JWT-bearing mobile client
+  | 'device'    // JWT-bearing paired device (phone, CLI, kiosk, …)
   | 'service'   // bearer-token external integration (future webapp services)
   | 'loopback'; // host header is local; no token (legacy desktop-only gate)
 
@@ -94,6 +94,15 @@ export interface PrincipalRequirements {
   kind?: ReadonlyArray<PrincipalKind>;
   /** Required capabilities. The principal needs all of them (or '*'). */
   capabilities?: ReadonlyArray<string>;
+  /**
+   * Where a bearer-style credential may be read from. Default `['header']`
+   * (`Authorization: Bearer`). A route whose caller cannot set headers —
+   * e.g. a polling fetcher — opts into `['query']` to also accept the
+   * token from `?token=`. General: applies to any kind, not device-only.
+   * Query-string tokens leak into access logs, so this is opt-in per
+   * route and never a silent global fallback.
+   */
+  tokenIn?: ReadonlyArray<'header' | 'query'>;
 }
 
 /**
@@ -168,11 +177,14 @@ export interface RouteDefinition<TInputSchema extends ZodTypeAny | undefined = u
    */
   sampleRate?: number;
   /**
-   * Mark the route mobile-eligible — the one-line "reachable from the
-   * paired phone" flag. `registerRoute` mounts `mobileCors`; `defineTool`
-   * folds `'mobile'` into an explicit `auth.kind` allowlist.
+   * Cross-origin reachability. `registerRoute` mounts the CORS middleware
+   * (OPTIONS preflight + headers) for `cors`-enabled routes. Orthogonal
+   * to auth — a cross-origin route still declares its own `auth` (and, if
+   * it admits paired devices, `kind: ['device']`). `true` uses the default
+   * cross-origin allowlist (paired-device + tauri + localhost origins);
+   * pass `{ origins }` to override.
    */
-  mobile?: boolean;
+  cors?: boolean | { origins: readonly string[] };
   /** The handler. Web-standard in, Web-standard out. */
   handler: (
     req: Request,

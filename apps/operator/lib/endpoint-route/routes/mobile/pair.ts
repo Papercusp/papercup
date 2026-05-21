@@ -15,7 +15,7 @@
 import { networkInterfaces } from 'node:os';
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
-import { MOBILE_AUTH, mobilePrincipal, isLoopbackHost } from './_shared';
+import { DEVICE_AUTH, devicePrincipal, isLoopbackHost } from './_shared';
 import { signDeviceToken } from '@/lib/mobile-jwt';
 import { getMobileVoicePort } from '@/lib/mobile-voice-ws';
 import { mintPairToken, consumePairToken, newDeviceId } from '@/lib/mobile-pair-store';
@@ -61,7 +61,8 @@ const mintPairTokenRoute = defineTool({
   method: 'POST',
   path: '/mobile/desktop/mint-pair-token',
   auth: 'public',
-  mobile: true,
+  // No `cors` — loopback-only (Host-gated), called same-origin by the
+  // desktop operator UI; nothing reaches it cross-origin.
   input: z.object({ workspaceId: z.string().min(1) }),
   async handler(req, ctx) {
     if (!isLoopbackHost(req)) {
@@ -110,7 +111,7 @@ const pairRoute = defineTool({
   method: 'POST',
   path: '/mobile/pair',
   auth: 'public',
-  mobile: true,
+  cors: true,
   input: z.object({ pairToken: z.string().min(1) }),
   async handler(_req, ctx) {
     const pending = await consumePairToken(ctx.input.pairToken);
@@ -148,11 +149,11 @@ const pairRoute = defineTool({
 const workspaceSwitchRoute = defineTool({
   method: 'POST',
   path: '/mobile/workspace/switch',
-  auth: MOBILE_AUTH,
-  mobile: true,
+  auth: DEVICE_AUTH,
+  cors: true,
   input: z.object({ workspaceId: z.string().min(1) }),
   async handler(_req, ctx) {
-    const principal = mobilePrincipal(ctx);
+    const principal = devicePrincipal(ctx);
     if (!workspaceById(ctx.input.workspaceId)) {
       return Response.json({ error: 'workspace_not_found' }, { status: 403 });
     }
@@ -170,10 +171,10 @@ const workspaceSwitchRoute = defineTool({
 const devicesListRoute = defineTool({
   method: 'GET',
   path: '/mobile/devices',
-  auth: MOBILE_AUTH,
-  mobile: true,
+  auth: DEVICE_AUTH,
+  cors: true,
   async handler(_req, ctx) {
-    const principal = mobilePrincipal(ctx);
+    const principal = devicePrincipal(ctx);
     const rows = await listDevices(principal.workspaceId);
     return Response.json({
       devices: rows.map((d) => ({
@@ -191,10 +192,10 @@ const devicesListRoute = defineTool({
 const deviceRevokeRoute = defineTool({
   method: 'DELETE',
   path: '/mobile/devices/:deviceId',
-  auth: MOBILE_AUTH,
-  mobile: true,
+  auth: DEVICE_AUTH,
+  cors: true,
   async handler(_req, ctx) {
-    const principal = mobilePrincipal(ctx);
+    const principal = devicePrincipal(ctx);
     await revokeDevice(ctx.params.deviceId, principal.workspaceId);
     return Response.json({ ok: true });
   },
@@ -204,10 +205,10 @@ const deviceRevokeRoute = defineTool({
 const runtimeConfigRoute = defineTool({
   method: 'GET',
   path: '/mobile/runtime-config',
-  auth: MOBILE_AUTH,
-  mobile: true,
+  auth: DEVICE_AUTH,
+  cors: true,
   async handler(_req, ctx) {
-    const principal = mobilePrincipal(ctx);
+    const principal = devicePrincipal(ctx);
     const meshHost =
       process.env.MOBILE_MESH_HOST ??
       process.env.MOBILE_DESKTOP_HOST ??
@@ -235,10 +236,10 @@ const runtimeConfigRoute = defineTool({
 const workspacesRoute = defineTool({
   method: 'GET',
   path: '/mobile/workspaces',
-  auth: MOBILE_AUTH,
-  mobile: true,
+  auth: DEVICE_AUTH,
+  cors: true,
   async handler(_req, ctx) {
-    const principal = mobilePrincipal(ctx);
+    const principal = devicePrincipal(ctx);
     const reg = readRegistry();
     return Response.json({
       workspaces: reg.workspaces.map((w) => ({
@@ -254,10 +255,10 @@ const workspacesRoute = defineTool({
 const heartbeatRoute = defineTool({
   method: 'POST',
   path: '/mobile/heartbeat',
-  auth: MOBILE_AUTH,
-  mobile: true,
+  auth: DEVICE_AUTH,
+  cors: true,
   async handler(_req, ctx) {
-    const principal = mobilePrincipal(ctx);
+    const principal = devicePrincipal(ctx);
     await touchLastSeen(principal.slug, principal.workspaceId);
     return Response.json({ ok: true });
   },

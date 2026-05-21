@@ -69,6 +69,31 @@ function errorResponse(status: number, code: string, message: string): Response 
 
 /* ─── Steps ──────────────────────────────────────────────────────────── */
 
+/**
+ * The headers `requirePrincipal` resolves against. Normally the request's
+ * own headers; when the route's `auth.tokenIn` admits `'query'` and no
+ * `Authorization` header is present, the `?token=` query param is lifted
+ * into a synthetic `Authorization: Bearer` so the standard bearer
+ * resolvers see it unchanged. Opt-in per route — query tokens leak into
+ * access logs (see `PrincipalRequirements.tokenIn`).
+ */
+function authHeaders(exec: RouteExecution): Headers {
+  const auth = exec.def.auth;
+  if (
+    typeof auth === 'object' &&
+    auth.tokenIn?.includes('query') &&
+    !exec.req.headers.get('authorization')
+  ) {
+    const qToken = new URL(exec.req.url).searchParams.get('token');
+    if (qToken) {
+      const h = new Headers(exec.req.headers);
+      h.set('authorization', `Bearer ${qToken}`);
+      return h;
+    }
+  }
+  return exec.req.headers;
+}
+
 const authStep: RouteStep = {
   name: 'auth',
   async run(exec) {
@@ -77,7 +102,7 @@ const authStep: RouteStep = {
       return null;
     }
     try {
-      exec.principal = await requirePrincipal(exec.req.headers, exec.def.auth);
+      exec.principal = await requirePrincipal(authHeaders(exec), exec.def.auth);
       return null;
     } catch (err) {
       if (err instanceof PrincipalCheckError) {

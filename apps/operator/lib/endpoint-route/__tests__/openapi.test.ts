@@ -94,40 +94,39 @@ describe('allRouteFragments', () => {
   });
 });
 
-describe('mobile tagging (E10)', () => {
-  it('tags a mobile:true route with papercusp:mobile', () => {
+describe('device tagging (E10)', () => {
+  it('tags a device-authed route with papercusp:device', () => {
     const f = routeToOpenApiFragment(
       defineTool({
         method: 'GET',
         path: '/mobile/thing',
-        auth: 'public',
-        mobile: true,
+        auth: { kind: ['device'] },
         handler: () => new Response(),
       }),
     );
-    expect(f.operation.tags).toEqual(['papercusp:mobile']);
+    expect(f.operation.tags).toEqual(['papercusp:device']);
   });
 
-  it('omits tags on a non-mobile route', () => {
+  it('omits the tag on a route that admits no device principal', () => {
     const f = routeToOpenApiFragment(
       defineTool({ method: 'GET', path: '/desktop/thing', auth: 'public', handler: () => new Response() }),
     );
     expect(f.operation.tags).toBeUndefined();
   });
 
-  it('the migrated /api/mobile/* routes carry the mobile tag', () => {
-    // `/api/mobile/qr.svg` is the exception — it is loopback-only
-    // (Host-gated, rendered for the desktop's own browser), not a
-    // cross-origin phone route, so it is deliberately not `mobile: true`.
-    const mobileFrags = allRouteFragments().filter(
-      (f) => f.path.startsWith('/api/mobile/') && f.path !== '/api/mobile/qr.svg',
+  it('the device-authed /api/mobile/* routes carry papercusp:device', () => {
+    // The device-JWT routes gate on `auth: { kind: ['device'] }` and are
+    // tagged. Public handshakes (`/pair`, `/desktop/mint-pair-token`) and
+    // the loopback `/qr.svg` admit no device principal, so they are
+    // deliberately untagged — the tag marks the device-authed surface,
+    // not "about mobile".
+    const mobileFrags = allRouteFragments().filter((f) => f.path.startsWith('/api/mobile/'));
+    const tagged = mobileFrags.filter((f) =>
+      ((f.operation.tags as string[] | undefined) ?? []).includes('papercusp:device'),
     );
-    expect(mobileFrags.length).toBeGreaterThan(0);
-    for (const f of mobileFrags) {
-      expect(
-        (f.operation.tags as string[] | undefined) ?? [],
-        `${f.httpMethod} ${f.path} should be tagged papercusp:mobile`,
-      ).toContain('papercusp:mobile');
-    }
+    expect(tagged.length).toBeGreaterThan(10);
+    const pair = mobileFrags.find((f) => f.path === '/api/mobile/pair');
+    expect(pair, '/api/mobile/pair fragment exists').toBeTruthy();
+    expect((pair!.operation.tags as string[] | undefined) ?? []).not.toContain('papercusp:device');
   });
 });

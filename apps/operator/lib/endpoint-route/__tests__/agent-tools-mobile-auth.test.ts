@@ -15,7 +15,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-// `principalFromMobileJwt` (Phase E4) runs `isRevoked` — which treats a
+// `principalFromDeviceJwt` (Phase E4) runs `isRevoked` — which treats a
 // device absent from `mobile_devices` as revoked. The synthetic JWT
 // below is for a device that was never `insertDevice`'d, so without this
 // mock the principal would (correctly) resolve to null. The mock stands

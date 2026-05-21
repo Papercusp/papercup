@@ -14,7 +14,7 @@ import { join } from 'node:path';
 import { openSync, readSync, closeSync, statSync } from 'node:fs';
 import { sseResponse } from '@restart/sse';
 import { defineTool } from '@papercusp/agent-mcp';
-import { MOBILE_AUTH, mobilePrincipal } from './_shared';
+import { DEVICE_AUTH, devicePrincipal } from './_shared';
 import { listHarnessesFor, harnessExistsInWorkspace } from '@/lib/mobile-harnesses';
 import { currentlyRunning } from '@/lib/mobile-feeds';
 import { phasePhaseLabel } from '@/lib/harness-phases';
@@ -53,10 +53,10 @@ async function shimHarnessAction(
 const harnessesList = defineTool({
   method: 'GET',
   path: '/mobile/harnesses',
-  auth: MOBILE_AUTH,
-  mobile: true,
+  auth: DEVICE_AUTH,
+  cors: true,
   async handler(_req, ctx) {
-    const harnesses = await listHarnessesFor(mobilePrincipal(ctx).workspaceId);
+    const harnesses = await listHarnessesFor(devicePrincipal(ctx).workspaceId);
     return Response.json({ harnesses });
   },
 });
@@ -69,10 +69,10 @@ const harnessesList = defineTool({
 const harnessDetail = defineTool({
   method: 'GET',
   path: '/mobile/harnesses/:slug',
-  auth: MOBILE_AUTH,
-  mobile: true,
+  auth: DEVICE_AUTH,
+  cors: true,
   async handler(_req, ctx) {
-    const principal = mobilePrincipal(ctx);
+    const principal = devicePrincipal(ctx);
     const slug = ctx.params.slug;
     if (!(await harnessExistsInWorkspace(principal.workspaceId, slug))) {
       return Response.json({ error: 'harness_not_in_workspace' }, { status: 404 });
@@ -87,31 +87,31 @@ const harnessDetail = defineTool({
 const harnessReplan = defineTool({
   method: 'POST',
   path: '/mobile/harnesses/:slug/replan',
-  auth: MOBILE_AUTH,
-  mobile: true,
+  auth: DEVICE_AUTH,
+  cors: true,
   async handler(req, ctx) {
     const body = await req.json().catch(() => ({}));
-    return shimHarnessAction(mobilePrincipal(ctx).workspaceId, ctx.params.slug, '/replan', body);
+    return shimHarnessAction(devicePrincipal(ctx).workspaceId, ctx.params.slug, '/replan', body);
   },
 });
 
 const harnessSmokeTest = defineTool({
   method: 'POST',
   path: '/mobile/harnesses/:slug/smoke-test',
-  auth: MOBILE_AUTH,
-  mobile: true,
+  auth: DEVICE_AUTH,
+  cors: true,
   async handler(_req, ctx) {
-    return shimHarnessAction(mobilePrincipal(ctx).workspaceId, ctx.params.slug, '/smoke-test/run');
+    return shimHarnessAction(devicePrincipal(ctx).workspaceId, ctx.params.slug, '/smoke-test/run');
   },
 });
 
 const harnessCleanup = defineTool({
   method: 'POST',
   path: '/mobile/harnesses/:slug/cleanup',
-  auth: MOBILE_AUTH,
-  mobile: true,
+  auth: DEVICE_AUTH,
+  cors: true,
   async handler(_req, ctx) {
-    return shimHarnessAction(mobilePrincipal(ctx).workspaceId, ctx.params.slug, '/cleanup');
+    return shimHarnessAction(devicePrincipal(ctx).workspaceId, ctx.params.slug, '/cleanup');
   },
 });
 
@@ -123,13 +123,13 @@ const harnessCleanup = defineTool({
 const harnessLogStream = defineTool({
   method: 'GET',
   path: '/mobile/harnesses/:slug/log/stream',
-  auth: MOBILE_AUTH,
-  mobile: true,
+  auth: DEVICE_AUTH,
+  cors: true,
   // Pure transport — don't flood route_invocations with one row per
   // long-lived SSE connection.
   sampleRate: 0,
   async handler(req, ctx) {
-    const principal = mobilePrincipal(ctx);
+    const principal = devicePrincipal(ctx);
     const slug = ctx.params.slug;
     if (!(await harnessExistsInWorkspace(principal.workspaceId, slug))) {
       return Response.json({ error: 'harness_not_in_workspace' }, { status: 404 });
@@ -198,10 +198,10 @@ const harnessLogStream = defineTool({
 const running = defineTool({
   method: 'GET',
   path: '/mobile/running',
-  auth: MOBILE_AUTH,
-  mobile: true,
+  auth: DEVICE_AUTH,
+  cors: true,
   async handler(_req, ctx) {
-    return Response.json(await currentlyRunning(mobilePrincipal(ctx).workspaceId));
+    return Response.json(await currentlyRunning(devicePrincipal(ctx).workspaceId));
   },
 });
 

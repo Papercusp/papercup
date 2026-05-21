@@ -8,7 +8,7 @@
  * yields a `ToolDefinition`. There is one primitive.
  *
  * What stays HOST-side (here): `registerRoute` — the Hono mounting +
- * `mobileCors` middleware — plus the route-type re-exports for callsite
+ * `corsFor` middleware — plus the route-type re-exports for callsite
  * convenience. A route is *declared* with the package primitive and
  * *mounted* by the host; the host owns Hono and the `requirePrincipal`
  * auth chain, the package must not.
@@ -20,7 +20,7 @@ import type { Hono } from 'hono';
 import type { ZodTypeAny } from 'zod';
 import type { RouteDefinition } from '@papercusp/agent-mcp';
 import { runRouteStack } from './route-stack';
-import { mobileCors } from './cors';
+import { corsFor } from './cors';
 
 /* ─── The route types — canonical home is now @papercusp/agent-mcp ────── */
 export type {
@@ -31,34 +31,35 @@ export type {
 } from '@papercusp/agent-mcp';
 
 /**
- * Per-app set of paths that already have `mobileCors` mounted. Keyed on
- * the Hono app instance (each test builds a fresh app) so a module-level
- * Set can't wrongly skip CORS on a second app. Deduped because the
- * agent-tools catch-all is an array of 5 same-path defineRoutes — without
- * this, `app.use` would stack the middleware 5×.
+ * Per-app set of paths that already have CORS middleware mounted. Keyed
+ * on the Hono app instance (each test builds a fresh app) so a
+ * module-level Set can't wrongly skip CORS on a second app. Deduped
+ * because the agent-tools catch-all is an array of 5 same-path routes —
+ * without this, `app.use` would stack the middleware 5×.
  */
-const MOBILE_CORS_PATHS = Symbol.for('papercusp.endpoint-route.mobileCorsPaths');
+const CORS_PATHS = Symbol.for('papercusp.endpoint-route.corsPaths');
 
 /**
  * Mount one route definition onto a Hono app. The Hono handler runs the
  * route through the route-stack (`route-stack.ts`) — auth, input
  * validation, timeout, invoke, telemetry.
  *
- * For `mobile: true` routes, the shared `mobileCors` middleware is
- * mounted (once per path) ahead of the handler so the cross-origin
- * phone client + its OPTIONS preflight are handled centrally.
+ * For `cors`-enabled routes, the shared CORS middleware is mounted (once
+ * per path) ahead of the handler so the cross-origin client + its OPTIONS
+ * preflight are handled centrally.
  */
 export function registerRoute(app: Hono, def: RouteDefinition<ZodTypeAny | undefined>): void {
-  if (def.mobile) {
+  if (def.cors) {
     const reg = app as unknown as Record<symbol, Set<string> | undefined>;
-    let paths = reg[MOBILE_CORS_PATHS];
+    let paths = reg[CORS_PATHS];
     if (!paths) {
       paths = new Set<string>();
-      reg[MOBILE_CORS_PATHS] = paths;
+      reg[CORS_PATHS] = paths;
     }
     if (!paths.has(def.path)) {
       paths.add(def.path);
-      app.use(def.path, mobileCors);
+      const origins = typeof def.cors === 'object' ? def.cors.origins : undefined;
+      app.use(def.path, corsFor(origins));
     }
   }
   app.on(def.method, def.path, (c) => runRouteStack(def, c));

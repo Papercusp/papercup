@@ -4,7 +4,7 @@
  *
  * Resolution order (first non-null wins):
  *   1. cookie session   — `kind: 'user'`,    `trust: 'verified'`
- *   2. mobile JWT       — `kind: 'mobile'`,  `trust: 'verified'`
+ *   2. device JWT       — `kind: 'device'`,  `trust: 'verified'`
  *   3. superuser bearer — `kind: 'system'`,  `trust: 'trusted'`
  *   4. agent bearer     — `kind: 'system'|'pi'`, `trust: 'trusted'` (token_index)
  *   5. loopback         — `kind: 'loopback'`,`trust: 'unverified-loopback'`
@@ -26,7 +26,7 @@
 
 import type { Principal, PrincipalKind, PrincipalTrust, PrincipalRequirements } from '@papercusp/agent-mcp';
 import { principalFromCookie } from './principal/from-cookie';
-import { principalFromMobileJwt } from './principal/from-mobile-jwt';
+import { principalFromDeviceJwt } from './principal/from-device-jwt';
 import { principalFromSuperuserToken } from './principal/from-superuser-token';
 import { principalFromBearerToken } from './principal/from-bearer-token';
 import { principalFromLoopback } from './principal/from-loopback';
@@ -64,7 +64,7 @@ export async function requirePrincipal(
 ): Promise<Principal> {
   const principal =
     (await principalFromCookie(headers)) ??
-    (await principalFromMobileJwt(headers)) ??
+    (await principalFromDeviceJwt(headers)) ??
     principalFromSuperuserToken(headers) ??
     (await principalFromBearerToken(headers)) ??
     principalFromLoopback(headers);
@@ -109,7 +109,7 @@ export async function requirePrincipal(
 export async function tryResolvePrincipal(headers: Headers): Promise<Principal | null> {
   return (
     (await principalFromCookie(headers)) ??
-    (await principalFromMobileJwt(headers)) ??
+    (await principalFromDeviceJwt(headers)) ??
     principalFromSuperuserToken(headers) ??
     (await principalFromBearerToken(headers)) ??
     principalFromLoopback(headers)
