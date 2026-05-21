@@ -5,8 +5,8 @@
  * placed in `src/tools/<group>/<verb>.ts`. The helper:
  *   - Derives the tool name from the file path: `tools/tasks/list.ts` →
  *     `tasks:list`. Override via `name` if needed.
- *   - Pulls the description from the caller-file's leading TSDoc block
- *     when not passed explicitly.
+ *   - Composes the description from `guidance` (when/notWhen/chaining)
+ *     when not passed explicitly — see `describeFromGuidance`.
  *   - Looks up the tier from the capability per §10.6.1.
  *   - Self-registers into the runtime catalog (`registry.ts`).
  *
@@ -27,6 +27,7 @@ import type {
   ToolContext,
   ToolDefinition,
   ToolDefinitionInput,
+  ToolGuidance,
   ToolResponse,
 } from './types';
 import type { ToolResult } from '@papercusp/plugin-sdk';
@@ -68,12 +69,26 @@ function deriveNameFromCallSite(): string | null {
   }
 }
 
-function deriveDescriptionFromCallSite(): string | null {
-  // Attempting build-time TSDoc parsing at runtime is brittle; instead we
-  // require the caller to pass `description` explicitly OR rely on the
-  // generator step that runs at build time to populate it. For runtime
-  // usage without that step, return a sensible default.
-  return null;
+/**
+ * Compose a model-facing description from `guidance` for tools that omit
+ * an explicit `description`. Nearly every first-party tool carries rich
+ * when/notWhen/chaining guidance but no `description` — and the old
+ * fallback was a useless `Tool <name>` placeholder. A model handed 200+
+ * tools all described as "Tool X" cannot tell them apart: the operator
+ * brain confabulated harness state rather than call tools it could not
+ * distinguish (2026-05-21 P5 root cause; verified with a model-API proxy
+ * — the brain received all 228 agentmcp tools but every description was
+ * the placeholder). The `guidance` object stays separately available for
+ * role system-prompt assembly — this only fills the `description` slot,
+ * which is the only field the MCP `tools/list` wire actually carries.
+ */
+function describeFromGuidance(guidance: ToolGuidance | undefined): string | null {
+  if (!guidance) return null;
+  const parts: string[] = [];
+  if (guidance.when) parts.push(`When to use: ${guidance.when}`);
+  if (guidance.notWhen) parts.push(`When NOT to use: ${guidance.notWhen}`);
+  if (guidance.chaining) parts.push(`Chaining: ${guidance.chaining}`);
+  return parts.length > 0 ? parts.join('\n\n') : null;
 }
 
 /**
@@ -162,7 +177,7 @@ function definePrincipalGatedTool<TArgs extends ZodTypeAny>(
   }
   const description =
     input.description ??
-    deriveDescriptionFromCallSite() ??
+    describeFromGuidance(input.guidance) ??
     `Tool ${name}`;
   const tier = tierFor(input.capability);
 
@@ -204,7 +219,7 @@ function defineRoleGatedTool<TArgs extends ZodTypeAny>(
   }
   const description =
     input.description ??
-    deriveDescriptionFromCallSite() ??
+    describeFromGuidance(input.guidance) ??
     `Tool ${name}`;
   const tier = tierFor(input.capability);
 
