@@ -500,6 +500,24 @@ main {
   overflow-x: clip;
 }
 
+/* App shell fills the viewport so <main>'s short-content pages
+   (setup wizard, login, marketplace-empty) don't leak the body's
+   dark gradient-tail as a "black bar" at the bottom when the window
+   is taller than the content. #root is a flex column; sticky <header>
+   takes its natural height, <main> grows to fill the rest. Fixed-
+   position siblings (op-chat-sidebar, pc-route-transition overlay,
+   bottom-anchored portals) ignore flex layout so their positioning
+   is unaffected. */
+#root {
+  min-height: 100vh;
+  min-height: 100dvh;
+  display: flex;
+  flex-direction: column;
+}
+#root > main[data-route-transition-page="true"] {
+  flex: 1 1 auto;
+}
+
 a {
   color: var(--accent-strong);
   text-decoration: none;
