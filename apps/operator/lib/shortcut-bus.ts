@@ -29,7 +29,7 @@
  * shortcut and the child shadows). In practice almost no one needs
  * stacking — every ID is registered by exactly one component.
  */
-import { effectiveCombo, getShortcutDef } from './shortcut-registry';
+import { SHORTCUTS, effectiveCombo, getShortcutDef } from './shortcut-registry';
 import { parseCombo, tryMatch, type ParsedCombo } from './shortcut-match';
 
 export interface ActionOptions {
@@ -88,11 +88,14 @@ interface ResolvedEntry {
 let resolvedKeymap: ResolvedEntry[] = [];
 
 export function refreshKeymap(overrides: Record<string, string>): void {
-  // Lazy-load registry to avoid a circular import.
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const reg = require('./shortcut-registry');
+  // `SHORTCUTS` is statically imported above. It's only read here, at
+  // call time (a React effect) — long after every module has evaluated —
+  // so the ESM live binding is safe even if `shortcut-registry` and this
+  // module form an import cycle. (Was a CommonJS `require()` for "lazy"
+  // cycle-avoidance; that left a bare `require` in the browser bundle,
+  // which crashes under Vite — `require` is not a browser global.)
   const list: ResolvedEntry[] = [];
-  for (const def of reg.SHORTCUTS as { id: string }[]) {
+  for (const def of SHORTCUTS as ReadonlyArray<{ id: string }>) {
     const raw = effectiveCombo(def.id, overrides);
     if (!raw) continue;
     list.push({ id: def.id, combo: parseCombo(raw) });
