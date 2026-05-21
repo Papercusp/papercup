@@ -379,6 +379,23 @@ Acceptance for B-1 (greppable): `cd apps/operator-vite && npm run build` succeed
 
 Acceptance: build clean; `LlmTab-*.js` and other testing-tab chunks confirm React.lazy splitting fires; `git grep -nE "from ['\"]next/" apps/operator-vite/src` returns zero.
 
+**B-3 as-built (2026-05-21).** All 6 tracked pages shipped using the alias-shim strategy (committed first as `feat(operator-vite): next/\* alias shims (unblocks B-3 onwards)`):
+
+| Surface | Status | File |
+|---|---|---|
+| `/harness` | shipped | `src/routes/harness/index.tsx` — renders shared `HarnessDashboard` (5167 lines, 3 next/* imports, all resolved through the shim). |
+| `/harness/$slug` | shipped | `src/routes/harness/$slug/index.tsx` — TSR `loader` ports the original async server fetch of `/api/harness/projects/lite`; `searchParams.dock === '1'` → typed `validateSearch`; branches between `HarnessDockShell`, `DepartmentHarnessDashboard`, `HarnessDashboard`. |
+| `/harness/$slug/projects` | shipped | `src/routes/harness/$slug/projects/index.tsx` — renders shared `ProjectsList`. |
+| `/harness/$slug/projects/$id` | shipped | `src/routes/harness/$slug/projects/$id.tsx` — renders shared `ProjectDetail`. |
+| `/harness/$slug/spec` | shipped | `src/routes/harness/$slug/spec.tsx` — `beforeLoad` throw-redirect to `/harness/$slug?panel=config&specTab=spec`; hash carries through History API. |
+| `/harness/$slug/dock-preview` | shipped | `src/routes/harness/$slug/dock-preview.tsx` — full port of the dock-preview client page; `useParams<{slug}>()` → `Route.useParams()` (TSR-native; the shim would have worked identically). |
+
+Layout note: `apps/operator/app/harness/layout.tsx` only added Radix `Tooltip.Provider`, which `__root.tsx` already mounts globally — the wrapper would double-mount and is omitted on the Vite side.
+
+Acceptance: `npm run build` clean (~6.9s, 1390+ modules incl. harness graph); `git grep -nE "^import.*from ['\"]next/" apps/operator-vite/src` returns zero.
+
+**Playwright smoke for `/harness/$slug`** (the §B2-mandated highest-stakes test) is **deferred** to a follow-up; the operator-vite dev server is not yet wired into the Tauri launcher (Phase F + A5 — sibling repo). When dev is reachable end-to-end, write `apps/operator-vite/e2e/harness-smoke.spec.ts`.
+
 Each batch acceptance: that surface's URLs render the right components and don't console-error, **verified by a strategy proportional to surface-stakes:**
 
 - **Smoke-tested in Playwright (mandatory): 6 highest-stakes surfaces.** `harness/[slug]`, `login`, `settings/*`, `marketplace/installed/[slug]` (the install flow), `editor-demo`, `harness/[slug]` "brainstorm" tab. Each gets one fresh Playwright smoke (~30-50 lines, ~1 day per to write + stabilize). **These tests do not exist today**; writing them is part of the batch's effort, not assumed coverage.
