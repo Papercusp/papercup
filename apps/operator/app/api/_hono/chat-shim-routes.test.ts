@@ -1,12 +1,15 @@
 /**
- * Route-level tests for the two LLM-streaming Hono shims that wrap
- * projected tools:
- *   - POST /oracle/chat                          (registerOracle)
- *   - POST /:slug/agent-chats/:chatId/messages   (registerAgentChats)
+ * Route-level test for the `registerAgentChats` LLM-streaming Hono shim:
+ *   - POST /:slug/agent-chats/:chatId/messages
+ *
+ * (The `/oracle/chat` block moved to
+ * `lib/endpoint-route/__tests__/oracle-chat.test.ts` when the oracle
+ * router migrated off Hono — endpoint-hono-elimination-2026-05-21 A1.
+ * `agent-chats` migrates in A2; this file goes with it.)
  *
  * Unlike hono-shim-dispatch.test.ts — which exercises a *replica*
- * forwarder helper — these mount the REAL route handlers on a Hono app
- * and drain the live SSE Response body.
+ * forwarder helper — this mounts the REAL route handler on a Hono app
+ * and drains the live SSE Response body.
  *
  * The load-bearing assertion is `closed === true`: the SSE stream must
  * TERMINATE on its own after the turn. A shim whose setup() resolves
@@ -87,117 +90,6 @@ beforeEach(() => {
 
 afterEach(() => {
   for (const m of MOCKED_MODULES) vi.doUnmock(m);
-});
-
-describe('POST /oracle/chat — registerOracle shim route', () => {
-  async function mountOracle(
-    chatEvents: Array<Record<string, unknown>>,
-    opts: { flagOn?: boolean } = {},
-  ): Promise<Hono> {
-    vi.doMock('@/lib/agent-chat-stream', () => ({
-      runAgentChat: () => gen(chatEvents),
-    }));
-    vi.doMock('@/lib/agent-tools/oracle/prompts', () => ({
-      composeOraclePrompt: vi.fn(async () => ({
-        promptText: 'SYSTEM PROMPT',
-        tutorialIsFinalStep: false,
-      })),
-      buildOracleMcpConfig: vi.fn(async () => ({ mcpServers: {} })),
-      oracleToolEventFilter: () => null,
-      ORACLE_ALLOWED_TOOLS: [] as string[],
-      readOracleConfig: vi.fn(async () => ({
-        prompt: '', memory: '', prompt_path: '', memory_path: '',
-      })),
-      writeOracleConfig: vi.fn(async () => {}),
-    }));
-    vi.doMock('@/lib/agent-tools/index', () => ({}));
-    vi.doMock('@/lib/workspace-registry', () => ({ activeWorkspaceId: () => 'default' }));
-    vi.doMock('@/lib/auth', () => ({
-      getSessionUserOrDefault: vi.fn(async () => ({ id: 'user-1' })),
-    }));
-    vi.doMock('@papercusp/flags/server', () => ({
-      getFlag: vi.fn(async () => opts.flagOn !== false),
-    }));
-    vi.doMock('@papercusp/flags', () => ({ FLAGS: { ORACLE: 'oracle' } }));
-
-    // Register the real oracle:chat tool against the mocked prompt/stream deps.
-    await import('@/lib/agent-tools/oracle/chat');
-    const { registerOracle } = await import('./oracle');
-    const app = new Hono();
-    registerOracle(app);
-    return app;
-  }
-
-  it('streams delta + terminal done and CLOSES the stream (round-10 guard)', async () => {
-    const app = await mountOracle([
-      { type: 'delta', text: 'Hello ' },
-      { type: 'delta', text: 'world' },
-      { type: 'result', costUsd: 0.012 },
-    ]);
-    const res = await app.fetch(
-      postReq('/oracle/chat', { messages: [{ role: 'user', content: 'hi' }] }),
-    );
-    expect(res.status).toBe(200);
-    const { text, closed } = await drainSse(res.body, 5000);
-    expect(closed, 'oracle SSE stream must close after the turn, not hang on heartbeats').toBe(true);
-    expect(text).toContain('event: delta');
-    expect(text).toContain('Hello ');
-    expect(text).toContain('event: done');
-  });
-
-  it('rejects a body with no messages[] array (the VoiceAppBridge bug shape) with 400', async () => {
-    const app = await mountOracle([]);
-    const res = await app.fetch(postReq('/oracle/chat', { message: 'hi' }));
-    expect(res.status).toBe(400);
-  });
-
-  it('404s when the ORACLE flag is off', async () => {
-    const app = await mountOracle([], { flagOn: false });
-    const res = await app.fetch(
-      postReq('/oracle/chat', { messages: [{ role: 'user', content: 'hi' }] }),
-    );
-    expect(res.status).toBe(404);
-  });
-
-  // Phase-4 T2.2 audit follow-up — `_hono/oracle.ts` was previously
-  // setting `runId: \`oracle-${Date.now()}\`` and missed the
-  // d460b747 sweep that migrated every other MCP-spawn site to
-  // `globalThis.crypto.randomUUID()`. Two concurrent oracle:chat calls
-  // in the same workspace within the same millisecond would have
-  // shared a replay buffer; a reconnecting client could replay events
-  // from the OTHER call.
-  it('runId is UUID-shaped and unique per request (regression for Bug #1)', async () => {
-    const seenRunIds: string[] = [];
-    vi.doMock('@papercusp/agent-mcp', async (orig) => {
-      const real = (await orig()) as Record<string, unknown>;
-      return {
-        ...real,
-        dispatchProjectedToolStream: async function* (
-          _tool: unknown,
-          _name: string,
-          _input: unknown,
-          ctx: { runId: string },
-        ) {
-          seenRunIds.push(ctx.runId);
-          // Yield a minimal terminal event so the route closes cleanly.
-          yield { kind: 'done' as const, result: { content: [] } };
-        },
-      };
-    });
-
-    const app = await mountOracle([]);
-    await app.fetch(postReq('/oracle/chat', { messages: [{ role: 'user', content: 'hi' }] }));
-    await app.fetch(postReq('/oracle/chat', { messages: [{ role: 'user', content: 'hi' }] }));
-
-    expect(seenRunIds).toHaveLength(2);
-    const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-    expect(seenRunIds[0]).toMatch(UUID_RE);
-    expect(seenRunIds[1]).toMatch(UUID_RE);
-    expect(seenRunIds[0], 'runIds must differ per request').not.toBe(seenRunIds[1]);
-    // And the OLD pattern must not reappear under any code path.
-    expect(seenRunIds[0]).not.toMatch(/^oracle-\d+$/);
-    expect(seenRunIds[1]).not.toMatch(/^oracle-\d+$/);
-  });
 });
 
 describe('POST /:slug/agent-chats/:chatId/messages — registerAgentChats shim route', () => {

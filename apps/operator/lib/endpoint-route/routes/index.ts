@@ -240,6 +240,11 @@ import mobileHarnesses from './mobile/harnesses';
 import mobileSync from './mobile/sync';
 import coordRoutes from './coord/index';
 import suLocksHookHealth from './su-locks/hook-health';
+import operatorNotesRoutes from './operator-notes/index';
+import oracleRoutes from './oracle/index';
+import dockLayoutsRoutes from './dock-layouts/index';
+import crossHarnessRoutes from './cross-harness/index';
+import projectsRoutes from './projects/index';
 import designFeatures from './design/features';
 import designRegressions from './design/regressions';
 import designRegressionFile from './design/regression-file';
@@ -504,6 +509,11 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(mobileSync as AnyRoute[]),
   ...flatten(coordRoutes as AnyRoute[]),
   ...flatten(suLocksHookHealth as AnyRoute),
+  ...flatten(operatorNotesRoutes as AnyRoute[]),
+  ...flatten(oracleRoutes as AnyRoute[]),
+  ...flatten(dockLayoutsRoutes as AnyRoute[]),
+  ...flatten(crossHarnessRoutes as AnyRoute[]),
+  ...flatten(projectsRoutes as AnyRoute[]),
   ...flatten(designFeatures as AnyRoute),
   ...flatten(designRegressions as AnyRoute),
   ...flatten(designRegressionFile as AnyRoute),

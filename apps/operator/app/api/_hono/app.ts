@@ -18,13 +18,8 @@ import { cors } from 'hono/cors';
 import { harness } from './harness';
 import { plugins } from './plugins';
 import { registerPty } from './pty';
-import { registerOperatorNotes } from './operator-notes';
 import { registerAgentChats } from './agent-chats';
 import { registerExperts } from './experts';
-import { registerProjects } from './projects';
-import { registerOracle } from './oracle';
-import { registerCrossHarness } from './cross-harness';
-import { registerDockLayouts } from './dock-layouts';
 import { installPluginApiDispatcher } from '../../../lib/plugin-api-mount';
 import { registerRouteLiterals, registerRouteCatchalls } from '../../../lib/endpoint-route/register';
 
@@ -73,11 +68,11 @@ app.use('/harness-phase-last-used/*', tauriApiCors);
 app.use('*', compress({ threshold: 1024 }));
 
 registerPty(harness);
-registerOperatorNotes(harness);
 registerAgentChats(harness);
 registerExperts(harness);
-registerProjects(harness);
-registerCrossHarness(harness);
+// operator-notes, projects, cross-harness, oracle, dock-layouts migrated
+// to `defineRoute` (endpoint-hono-elimination-2026-05-21 Phase A1) — they
+// register via `registerRouteLiterals` below.
 
 // defineRoute LITERALS — phase 1. MUST register before the sub-apps
 // below (`app.route('/harness', …)`, `app.route('/plugins', …)`):
@@ -88,8 +83,6 @@ registerCrossHarness(harness);
 registerRouteLiterals(app);
 
 app.route('/harness', harness);
-registerOracle(app);
-registerDockLayouts(app);
 
 // Plugin apiRoutes — installPluginApiDispatcher mutates `plugins` to add a
 // single catch-all that consults the in-memory apiRoutes registry per

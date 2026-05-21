@@ -10,7 +10,7 @@
  */
 import { FLAGS } from '@papercusp/flags';
 import { gateApiRoute } from '@/lib/require-flag';
-import { getSpawnableTemplates } from '@/app/api/_hono/cross-harness';
+import { getSpawnableTemplates } from '@/lib/spawnable-templates';
 import { defineRoute } from '../../define-route';
 
 export default defineRoute({
