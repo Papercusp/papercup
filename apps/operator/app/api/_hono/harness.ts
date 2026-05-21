@@ -22,10 +22,9 @@ import '@/lib/agent-tools/index';
 import { readFileSync, readlinkSync, existsSync, readdirSync, statSync, openSync, readSync, closeSync, constants as fsConstants } from 'node:fs';
 import { getKnownHooks } from '@/lib/known-hooks';
 import {
-  PROJECT_FILES_TO_COPY, STATE_FILES_FOR_RESET, STATE_FILES_FOR_BACKUP,
+  PROJECT_FILES_TO_COPY, STATE_FILES_FOR_RESET,
   TEMPLATE_DETECT_FILES, SOURCE_FILES_FOR_FORK, SNAPSHOT_FILES,
 } from '@/lib/harness-state-files';
-import { recordUserAction } from '@/lib/user-actions';
 import { papercuspPath } from '@/lib/papercusp-root';
 import { DECISION_VERBS } from '@papercusp/orchestrator/decision-parse';
 import { readFile, writeFile, appendFile, unlink, mkdir, chmod, rename, access, copyFile } from 'node:fs/promises';
@@ -55,7 +54,7 @@ import {
 } from '@/lib/ensure-schema';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
 import { type Phase, phasePath, phasePhaseLabel, ALL_PHASES } from '@/lib/harness-phases';
-import { invokeScoperBackground } from '@/lib/harness-scoper';
+
 import {
   countPulsesFromRunLog,
   aggregateCostFromLogDir,
@@ -1645,168 +1644,6 @@ harness.post('/:slug/smoke-test/run', async (c) => {
  * when features moved from JSON to SQL). Returns chronological log of
  * mutations to a feature.
  */
-
-
-
-harness.post('/:slug/product-review', async (c) => {
-  const project = await resolveProject(c.req.param('slug'));
-  if (!project) return c.json({ error: 'unknown project' }, 404);
-  const specPath = join(project.path, 'SPEC.md');
-  if (!existsSync(specPath)) {
-    return c.json({ error: 'SPEC.md not found in project root' }, 400);
-  }
-
-  const { invocationId } = invokeScoperBackground(project, 'proposal');
-  return c.json({ ok: true, invocationId, mode: 'proposal' });
-});
-
-/**
- * Manual scope-replan trigger. Invokes scoper MODE=replan in the
- * background to delta-merge any new SPEC.md bullets into the work queue
- * without restarting the harness. Useful when the user has hand-edited
- * SPEC.md and wants the queue updated without waiting for the next
- * orchestrator tick.
- */
-harness.post('/:slug/replan', async (c) => {
-  const slug = c.req.param('slug');
-  const project = await resolveProject(slug);
-  if (!project) return c.json({ error: 'unknown project' }, 404);
-  // Two modes, distinguished by `{overwrite: true}` in the body:
-  //   default — non-destructive: scoper MODE=replan as a background
-  //     invocation. Delta-merges new SPEC.md bullets into the existing
-  //     queue. Completion observable via /scoper-result/<invocationId>.
-  //   overwrite — destructive: wipe features (PG) + validation-contract.md
-  //     (file), then invoke scoper MODE=initial inline. Used by the
-  //     proposals "Replan now" flow after the user accepts bullets that
-  //     materially reshape the spec.
-  const body = await c.req.json().catch(() => ({})) as { overwrite?: boolean };
-  if (!body.overwrite) {
-    // Logged in harness_shared.user_actions; surfaced via /api/user-actions/<slug>
-    // and the OperatorActionLog component. The action represents the *kickoff*;
-    // the replan's completion is observable via /scoper-result/<invocationId>.
-    const invocationId = await recordUserAction(slug, 'replan', async () => {
-      const r = invokeScoperBackground(project, 'replan');
-      return {
-        summary: `Replan kicked off (invocation ${r.invocationId})`,
-        invocationId: r.invocationId,
-        result: r.invocationId,
-      };
-    });
-    return c.json({ ok: true, invocationId, mode: 'replan' });
-  }
-
-  // Destructive path: wipe features in PG (with snapshot), move
-  // validation-contract.md to a backup dir, then invoke scoper
-  // MODE=initial inline (MAX_ITERATIONS=0 skips the orchestration loop).
-  const specPath = join(project.path, 'SPEC.md');
-  if (!existsSync(specPath)) return c.json({ error: 'SPEC.md not found' }, 400);
-  const contractPath = join(harnessDir(project), 'validation-contract.md');
-
-  await mkdir(harnessDir(project), { recursive: true });
-  const backupDir = join(harnessDir(project), `.replan-backup-${Date.now()}`);
-  await mkdir(backupDir, { recursive: true });
-  for (const f of STATE_FILES_FOR_BACKUP) {
-    const p = join(harnessDir(project), f);
-    if (existsSync(p)) {
-      const { rename } = await import('node:fs/promises');
-      await rename(p, join(backupDir, f));
-    }
-  }
-  try {
-    const prior = await parseFeatures(project);
-    if (prior.length > 0) {
-      const { writeFile } = await import('node:fs/promises');
-      await writeFile(join(backupDir, 'features.pg.json'), JSON.stringify(prior, null, 2));
-      const dbc = dbcFor(project.slug);
-      await dbc.prepare('DELETE FROM harness_features WHERE harness_slug = ?').run(project.slug);
-    }
-  } catch (e: any) {
-    console.warn('[replan] PG feature clear failed:', e?.message ?? e);
-  }
-
-  const orchBin = orchestratorRunBin();
-  const logPath = `/tmp/harness-replan-${project.slug}.log`;
-  return new Promise((resolve) => {
-    const { execFile } = require('node:child_process');
-    execFile('bash', ['-c', `MAX_ITERATIONS=0 node ${tsxBin()} ${orchBin} >> ${logPath} 2>&1; echo "DONE rc=$?"`], {
-      cwd: project.path,
-      env: {
-        ...process.env,
-        AGENT_CMD: process.env.AGENT_CMD ?? process.env.CLAUDE ?? 'omp -p',
-        CLAUDE: process.env.AGENT_CMD ?? process.env.CLAUDE ?? 'omp -p',
-        HARNESS_DIR: harnessPackageDir(),
-        PROJECT_DIR: project.path,
-        HARNESS_SLUG: project.slug,
-      },
-      maxBuffer: 1024 * 1024,
-      timeout: 5 * 60_000,
-    }, async (err: any, stdout: string, stderr: string) => {
-      const produced = (await parseFeatures(project)).length > 0 && existsSync(contractPath);
-      if (err && !produced) {
-        resolve(c.json({ ok: false, error: String(err.message || err).slice(0, 400), stderr, logPath }, 500));
-        return;
-      }
-      resolve(c.json({ ok: true, mode: 'initial', produced, logPath, stdout: stdout.slice(-2048), stderr: stderr.slice(-1024), backupDir }));
-    });
-  }) as Promise<Response>;
-});
-
-/**
- * Cleanup pass — the inverse of replan. Reads SPEC.md and the existing
- * work queue, then PATCHes features to better match the spec:
- *   - features whose claims have no SPEC support → status='deprecated'
- *     with a deprecation_reason
- *   - features whose claims partially match → modified (title/claims/notes)
- *     to align with the SPEC; status preserved
- *   - features that match cleanly → left alone
- * Never adds features (that's /replan's job). Code is not auto-removed;
- * deprecation is metadata-only.
- */
-/**
- * GET /:slug/scoper-result/:invocationId
- *
- * Polled by the operator panel to detect when a replan / cleanup /
- * proposal scoper run has finished. The wrapper script
- * tees stdout to scoper-results/<mode>-<id>.log and appends the
- * sentinel "__INVOCATION_DONE__" on the last line.
- *
- * Returns:
- *   - 404 if the file doesn't exist yet (caller keeps polling)
- *   - { done: false } if the sentinel hasn't appeared
- *   - { done: true, summary, counts? } once the sentinel is present.
- *     summary is the last few lines of the log (the scoper's own
- *     verdict). counts is best-effort parse of "added: N deprecated: M"
- *     style markers if the scoper emits them.
- */
-
-harness.post('/:slug/cleanup', async (c) => {
-  const slug = c.req.param('slug');
-  const project = await resolveProject(slug);
-  if (!project) return c.json({ error: 'unknown project' }, 404);
-  const invocationId = await recordUserAction(slug, 'cleanup', async () => {
-    const r = invokeScoperBackground(project, 'cleanup');
-    return {
-      summary: `Cleanup kicked off (invocation ${r.invocationId})`,
-      invocationId: r.invocationId,
-      result: r.invocationId,
-    };
-  });
-  return c.json({ ok: true, invocationId, mode: 'cleanup' });
-});
-
-// (Removed POST /:slug/consolidate — scoper has no MODE=consolidate prompt
-// section, so the route invoked the agent with no mode-specific instructions.
-// `cleanup` covers the same intent (PATCH-only queue tidying) with an actual
-// prompt section behind it. Use POST /:slug/cleanup instead.)
-
-// SSE: emit 'change' on plan-review.md mtime/size shifts.
-
-
-
-
-
-
-// SSE: emit 'change' on archives/*.tar.gz add/remove/grow.
 
 harness.post('/:slug/archives/:id/restore', async (c) => {
   const project = await resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
