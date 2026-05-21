@@ -10,9 +10,9 @@
  * handler wants its own clean "timed out — likely waiting on auth" msg).
  */
 import { runAgentChat } from '@/lib/agent-chat-stream';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
-export default defineRoute({
+export default defineTool({
   method: 'POST',
   path: '/agent-config/test',
   auth: 'public',

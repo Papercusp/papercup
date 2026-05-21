@@ -7,7 +7,7 @@
 import { getOrgPg, generated } from '@restart/db-org';
 import { eq } from 'drizzle-orm';
 import { publish } from '@/lib/harness-log-bus';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 const ti = generated.tokenIndexInHarnessShared;
 const KIND_RE = /^(log|raw)$/;
@@ -20,7 +20,7 @@ interface RequestBody {
   log?: string;
 }
 
-export default defineRoute({
+export default defineTool({
   method: 'POST',
   path: '/internal/log-event',
   auth: {},

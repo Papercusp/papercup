@@ -13,11 +13,11 @@ import {
 } from '@/lib/operator-conversations';
 import { ensureOperatorConversationsTable } from '@/lib/ensure-schema';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 const oc = generated.operatorConversationsInHarnessShared;
 
-const get = defineRoute({
+const get = defineTool({
   method: 'GET',
   path: '/operator/conversations',
   auth: 'public',
@@ -40,7 +40,7 @@ const get = defineRoute({
   },
 });
 
-const post = defineRoute({
+const post = defineTool({
   method: 'POST',
   path: '/operator/conversations',
   auth: 'public',

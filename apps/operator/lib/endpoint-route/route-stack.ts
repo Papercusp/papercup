@@ -1,5 +1,5 @@
 /**
- * The route-stack — the dispatch pipeline for `defineRoute` endpoints.
+ * The route-stack — the dispatch pipeline for `defineTool` endpoints.
  *
  * Mirrors the Phase 3a tool dispatch-stack (`packages/agent-mcp/src/
  * dispatch-stack.ts`): named, ordered steps; a mutable per-call

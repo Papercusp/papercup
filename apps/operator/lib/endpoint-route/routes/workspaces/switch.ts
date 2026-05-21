@@ -12,7 +12,7 @@ import { existsSync, promises as fs } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { dispatchWorkspaceSwitch } from '@papercusp/agent-mcp';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 const REGISTRY_PATH = join(homedir(), '.papercusp-workspaces', 'registry.json');
 
@@ -21,7 +21,7 @@ interface Registry {
   workspaces: { id: string; name: string; createdAt: number }[];
 }
 
-export default defineRoute({
+export default defineTool({
   method: 'POST',
   path: '/workspaces/switch',
   auth: 'public',

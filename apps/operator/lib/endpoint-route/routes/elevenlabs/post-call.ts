@@ -8,7 +8,7 @@ import { getOrgPg, generated } from '@restart/db-org';
 import { eq } from 'drizzle-orm';
 import { ensureOperatorConversationsTable } from '@/lib/ensure-schema';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 const ot = generated.operatorTurnsInHarnessShared;
 const oc = generated.operatorConversationsInHarnessShared;
@@ -46,7 +46,7 @@ interface TranscriptionPayload {
 }
 type WebhookEvent = TranscriptionPayload | { type: string; data?: { conversation_id?: string } };
 
-export default defineRoute({
+export default defineTool({
   method: 'POST',
   path: '/elevenlabs/post-call',
   auth: 'public',

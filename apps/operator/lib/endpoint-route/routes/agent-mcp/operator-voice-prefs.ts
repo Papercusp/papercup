@@ -3,9 +3,9 @@
  * Ported from app/api/agent-mcp/operator-voice-prefs/route.ts. `auth: 'public'`.
  */
 import { loadVoicePrefs, loadWorkspaceVoicePrefs, saveVoicePrefs } from '@/lib/voice-prefs';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
-const get = defineRoute({
+const get = defineTool({
   method: 'GET',
   path: '/agent-mcp/operator-voice-prefs',
   auth: 'public',
@@ -18,7 +18,7 @@ const get = defineRoute({
   },
 });
 
-const put = defineRoute({
+const put = defineTool({
   method: 'PUT',
   path: '/agent-mcp/operator-voice-prefs',
   auth: 'public',

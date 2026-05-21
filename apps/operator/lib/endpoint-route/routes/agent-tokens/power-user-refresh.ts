@@ -9,7 +9,7 @@
  */
 import { verifyRefreshToken, mintAccessToken } from '@/lib/power-user-token';
 import { getActivePowerUserSession } from '@/lib/power-user-sessions';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 function bearerFrom(req: Request): string | null {
   const raw = req.headers.get('authorization') ?? '';
@@ -17,7 +17,7 @@ function bearerFrom(req: Request): string | null {
   return raw.startsWith('Bearer ') ? raw.slice(7) : raw;
 }
 
-export default defineRoute({
+export default defineTool({
   method: 'POST',
   path: '/agent-tokens/power-user/refresh',
   auth: { trust: ['verified', 'trusted'] },

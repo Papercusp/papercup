@@ -1,7 +1,7 @@
 /**
  * /api/coord/* — read-only history routes for the agent-coordination
  * substrate. Phase E13 (endpoint-unification-2026-05-21): ported off the
- * legacy `_hono/coord.ts` Hono sub-app onto `defineRoute`. URLs unchanged.
+ * legacy `_hono/coord.ts` Hono sub-app onto `defineTool`. URLs unchanged.
  *
  * All routes are `auth: 'public'` — the legacy `coord` sub-app carried
  * no auth middleware; the `/coord` UI fetches these unauthenticated and
@@ -20,7 +20,7 @@
  */
 import { promises as fs } from 'node:fs';
 import { join } from 'node:path';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 import { readPlanEvents } from '@/lib/agent-tools/coordination/plan-events';
 import { listEscalations } from '@/lib/agent-tools/coordination/escalations';
 import { listHandoffs } from '@/lib/agent-tools/coordination/handoffs';
@@ -88,7 +88,7 @@ function toHistoryItem(source: HistoryItem['source'], e: CoordEnvelope): History
   };
 }
 
-const history = defineRoute({
+const history = defineTool({
   method: 'GET',
   path: '/coord/history',
   auth: 'public',
@@ -141,7 +141,7 @@ const history = defineRoute({
   },
 });
 
-const presence = defineRoute({
+const presence = defineTool({
   method: 'GET',
   path: '/coord/presence',
   auth: 'public',
@@ -156,7 +156,7 @@ const presence = defineRoute({
   },
 });
 
-const inbox = defineRoute({
+const inbox = defineTool({
   method: 'GET',
   path: '/coord/inbox',
   auth: 'public',
@@ -182,7 +182,7 @@ const inbox = defineRoute({
   },
 });
 
-const plans = defineRoute({
+const plans = defineTool({
   method: 'GET',
   path: '/coord/plans',
   auth: 'public',
@@ -205,7 +205,7 @@ const plans = defineRoute({
   },
 });
 
-const planBySlug = defineRoute({
+const planBySlug = defineTool({
   method: 'GET',
   path: '/coord/plans/:slug',
   auth: 'public',
@@ -231,7 +231,7 @@ const planBySlug = defineRoute({
   },
 });
 
-const escalations = defineRoute({
+const escalations = defineTool({
   method: 'GET',
   path: '/coord/escalations',
   auth: 'public',
@@ -243,7 +243,7 @@ const escalations = defineRoute({
   },
 });
 
-const handoffs = defineRoute({
+const handoffs = defineTool({
   method: 'GET',
   path: '/coord/handoffs',
   auth: 'public',
@@ -255,7 +255,7 @@ const handoffs = defineRoute({
   },
 });
 
-const planEvents = defineRoute({
+const planEvents = defineTool({
   method: 'GET',
   path: '/coord/plan-events',
   auth: 'public',

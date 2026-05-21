@@ -6,9 +6,9 @@
  */
 import { getSessionUser } from '@/lib/auth';
 import { setPaused, setResumed, isPaused } from '@/lib/mobile-operator-actions';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
-const get = defineRoute({
+const get = defineTool({
   method: 'GET',
   path: '/agent-mcp/operator-pause-flag',
   auth: 'public',
@@ -17,7 +17,7 @@ const get = defineRoute({
   },
 });
 
-const post = defineRoute({
+const post = defineTool({
   method: 'POST',
   path: '/agent-mcp/operator-pause-flag',
   auth: 'public',
@@ -31,7 +31,7 @@ const post = defineRoute({
   },
 });
 
-const del = defineRoute({
+const del = defineTool({
   method: 'DELETE',
   path: '/agent-mcp/operator-pause-flag',
   auth: 'public',

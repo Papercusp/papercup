@@ -4,11 +4,11 @@
  */
 import { readOpenAiKey } from '@/lib/voice-credentials';
 import { loadVoicePrefs } from '@/lib/voice-prefs';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 const REALTIME_MODEL = 'gpt-realtime-1.5';
 
-export default defineRoute({
+export default defineTool({
   method: 'GET',
   path: '/agent-mcp/operator-realtime-bootstrap',
   auth: 'public',

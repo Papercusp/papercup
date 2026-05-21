@@ -16,10 +16,10 @@ import {
   resetHardPerUser,
 } from '@/lib/auth-rate-limit';
 import { recordAuthEvent } from '@/lib/auth-audit';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 import { serializeSetCookie } from '../../cookies';
 
-export default defineRoute({
+export default defineTool({
   method: 'POST',
   path: '/auth/login',
   auth: 'public',

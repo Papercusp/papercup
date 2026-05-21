@@ -14,9 +14,9 @@ import { resolvePhasedProject, harnessDir, safeRead } from '@/lib/harness-core';
 import { phasePhaseLabel } from '@/lib/harness-phases';
 import { scanAgentRunsCached, syncAgentRunsToPg } from '@/lib/harness-agent-runs';
 import { activeStreams, HARNESS_STREAM_TOTAL_CAP } from '@/lib/harness-active-streams';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
-const listAgents = defineRoute({
+const listAgents = defineTool({
   method: 'GET',
   path: '/harness/:slug/agents',
   auth: 'public',
@@ -44,7 +44,7 @@ const listAgents = defineRoute({
   },
 });
 
-const getAgentRun = defineRoute({
+const getAgentRun = defineTool({
   method: 'GET',
   path: '/harness/:slug/agents/:runId',
   auth: 'public',
@@ -166,7 +166,7 @@ const getAgentRun = defineRoute({
   },
 });
 
-const activeStreamsList = defineRoute({
+const activeStreamsList = defineTool({
   method: 'GET',
   path: '/harness/streams/active',
   auth: 'public',

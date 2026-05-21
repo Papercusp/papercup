@@ -11,7 +11,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { loadHarnessRegistry } from '@/lib/harness-registry';
 import { isBranch, runAction } from '@/lib/branch-actions';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 function resolvePhasePath(stagingPath: string, branch: 'staging' | 'testing' | 'production'): string {
   if (branch === 'staging') return stagingPath;
@@ -26,7 +26,7 @@ function resolvePhasePath(stagingPath: string, branch: 'staging' | 'testing' | '
   return `${stagingPath}--${branch}`;
 }
 
-export default defineRoute({
+export default defineTool({
   method: 'POST',
   path: '/harness/:slug/branch/:branch/action/:name/run',
   auth: 'public',

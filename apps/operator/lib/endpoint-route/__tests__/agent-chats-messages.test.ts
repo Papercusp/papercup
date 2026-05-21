@@ -2,7 +2,7 @@
  * Route-level tests for `POST /api/harness/:slug/agent-chats/:chatId/messages`
  * — Phase A2 (endpoint-hono-elimination-2026-05-21). Migrated from the
  * `registerAgentChats` block of `_hono/chat-shim-routes.test.ts` when the
- * agent-chats router moved off Hono onto `defineRoute`
+ * agent-chats router moved off Hono onto `defineTool`
  * (`routes/agent-chats/index.ts`).
  *
  * The load-bearing assertion is `closed === true`: the SSE stream must

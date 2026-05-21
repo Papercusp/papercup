@@ -25,7 +25,7 @@ import { pluginSpawnImpl, secretImpl } from '@/lib/plugin-spawn-impl';
 import { resolveHarnessPaths } from '@/lib/resolve-harness-paths';
 import { isLoopbackRequest, isValidSuperuserBearer } from '@/lib/superuser-token';
 import { PROJECTED_DEPS } from '@/lib/projected-tool-deps';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 const HOST_EXTRAS: HttpToolHostExtras = {
   deps: PROJECTED_DEPS,
@@ -113,7 +113,7 @@ const PATH = '/plugins/*';
 const methods = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'] as const;
 
 export default methods.map((method) =>
-  defineRoute({
+  defineTool({
     method,
     path: PATH,
     auth: 'public',

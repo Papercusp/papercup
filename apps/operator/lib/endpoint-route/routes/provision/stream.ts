@@ -16,7 +16,7 @@
 import { sseResponse } from '@restart/sse';
 import { readAudit, type AuditEntry } from '@/lib/provision/audit-log';
 import { subscribe as subscribeAudit } from '@/lib/provision-audit-bus';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 const DEFAULT_BACKFILL = 200;
 
@@ -34,7 +34,7 @@ interface Events {
   [eventName: string]: unknown;
 }
 
-export default defineRoute({
+export default defineTool({
   method: 'GET',
   path: '/provision/stream',
   auth: { trust: ['verified', 'trusted'] },

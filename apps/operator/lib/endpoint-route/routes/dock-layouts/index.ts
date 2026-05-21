@@ -13,7 +13,7 @@
  * `auth: 'public'` — the legacy router gated none of these; the handler
  * resolves a per-user scoping id via `getUserIdForLayouts(req)`.
  */
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 import {
   getLayout,
   saveLayout,
@@ -28,7 +28,7 @@ import {
   type LayoutDoc,
 } from '@/lib/dock-layouts';
 
-const list = defineRoute({
+const list = defineTool({
   method: 'GET',
   path: '/dock-layouts/_list',
   auth: 'public',
@@ -38,7 +38,7 @@ const list = defineRoute({
   },
 });
 
-const get = defineRoute({
+const get = defineTool({
   method: 'GET',
   path: '/dock-layouts/:name',
   auth: 'public',
@@ -52,7 +52,7 @@ const get = defineRoute({
   },
 });
 
-const put = defineRoute({
+const put = defineTool({
   method: 'PUT',
   path: '/dock-layouts/:name',
   auth: 'public',
@@ -96,7 +96,7 @@ const put = defineRoute({
   },
 });
 
-const del = defineRoute({
+const del = defineTool({
   method: 'DELETE',
   path: '/dock-layouts/:name',
   auth: 'public',
@@ -107,7 +107,7 @@ const del = defineRoute({
   },
 });
 
-const phaseGet = defineRoute({
+const phaseGet = defineTool({
   method: 'GET',
   path: '/harness-phase-last-used/:slug',
   auth: 'public',
@@ -118,7 +118,7 @@ const phaseGet = defineRoute({
   },
 });
 
-const phasePut = defineRoute({
+const phasePut = defineTool({
   method: 'PUT',
   path: '/harness-phase-last-used/:slug',
   auth: 'public',

@@ -8,7 +8,7 @@
 import { z } from 'zod';
 import { workspaceBackupFor } from '@/lib/backup';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 const S3Schema = z.object({
   bucket: z.string().min(1),
@@ -32,7 +32,7 @@ const Body = z.object({
   config: z.union([S3Schema, B2Schema, RcloneSchema, z.null()]).optional(),
 });
 
-const put = defineRoute({
+const put = defineTool({
   method: 'PUT',
   path: '/backups/destination',
   auth: 'public',
@@ -49,7 +49,7 @@ const put = defineRoute({
   },
 });
 
-const test = defineRoute({
+const test = defineTool({
   method: 'POST',
   path: '/backups/destination/test',
   auth: 'public',

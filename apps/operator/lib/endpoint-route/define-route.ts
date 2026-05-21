@@ -1,30 +1,23 @@
 /**
- * `defineRoute` — the route projection of the endpoint system.
+ * `registerRoute` — the host-side mount seam for the endpoint system.
  *
- * **Phase E6 (endpoint-unification-2026-05-21): `defineRoute` collapsed
- * into `defineTool`.** `defineRoute` is now a re-export of the unified
- * `defineTool` primitive from `@papercusp/agent-mcp`. `defineTool`
- * discriminates structurally — a route-shaped input (`{ method, path,
+ * **Phase E6 (endpoint-unification-2026-05-21) is complete: `defineRoute`
+ * is gone.** Routes are declared with the unified `defineTool` primitive
+ * from `@papercusp/agent-mcp` — a route-shaped input (`{ method, path,
  * auth, handler }`) yields a `RouteDefinition`; a tool-shaped input
  * yields a `ToolDefinition`. There is one primitive.
  *
- * The name `defineRoute` survives as an alias because it is a useful
- * ergonomic signal at the ~250 callsites — "this is plumbing, not an
- * agent tool" — and because the route TYPES (`RouteDefinition` etc.)
- * are what those files import alongside it. Authors may equally call
- * `defineTool` directly for a route; both resolve to the same function.
- *
  * What stays HOST-side (here): `registerRoute` — the Hono mounting +
- * `mobileCors` middleware. A route is *declared* with the package
- * primitive and *mounted* by the host; the host owns Hono and the
- * `requirePrincipal` auth chain, the package must not.
+ * `mobileCors` middleware — plus the route-type re-exports for callsite
+ * convenience. A route is *declared* with the package primitive and
+ * *mounted* by the host; the host owns Hono and the `requirePrincipal`
+ * auth chain, the package must not.
  *
  * Plan: apps/operator/docs/plans/endpoint-unification-2026-05-21.md
  */
 
 import type { Hono } from 'hono';
 import type { ZodTypeAny } from 'zod';
-import { defineTool } from '@papercusp/agent-mcp';
 import type { RouteDefinition } from '@papercusp/agent-mcp';
 import { runRouteStack } from './route-stack';
 import { mobileCors } from './cors';
@@ -36,14 +29,6 @@ export type {
   RouteMethod,
   RouteAuth,
 } from '@papercusp/agent-mcp';
-
-/**
- * Declare a route. `defineRoute` IS `defineTool` (Phase E6) — the
- * `defineTool` overload set resolves a route-shaped input to a
- * `RouteDefinition`. Mounting happens via `registerRoute` /
- * `registerAllRoutes`.
- */
-export const defineRoute = defineTool;
 
 /**
  * Per-app set of paths that already have `mobileCors` mounted. Keyed on

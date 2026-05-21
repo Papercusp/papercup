@@ -27,7 +27,7 @@ import { handleHttpToolRequest, type HttpToolHostExtras } from '@papercusp/agent
 // catch-all uses.
 import '@/lib/agent-tools/index';
 import { PROJECTED_DEPS } from '@/lib/projected-tool-deps';
-import { defineRoute, type RouteContext } from '../../define-route';
+import { defineTool, type RouteContext } from '@papercusp/agent-mcp';
 import { bodyFromSearchParams } from './_plans-args';
 
 const READ_VERBS = new Set(['list', 'get', 'items', 'search', 'lint']);
@@ -161,14 +161,14 @@ async function dispatchWrite(req: Request, ctx: RouteContext): Promise<Response>
   return unwrap(result);
 }
 
-const readRoute = defineRoute({
+const readRoute = defineTool({
   method: 'GET',
   path: '/admin/plans/:verb',
   auth: 'public',
   handler: dispatchRead,
 });
 
-const writeRoute = defineRoute({
+const writeRoute = defineTool({
   method: 'POST',
   path: '/admin/plans/:verb',
   auth: 'public',

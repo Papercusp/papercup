@@ -13,7 +13,7 @@ import { join } from 'node:path';
 import { buildPluginRuntime } from '@/lib/plugin-host';
 import type { Capability, Plugin } from '@papercusp/plugin-sdk';
 import { papercuspRoot } from '@/lib/papercusp-root';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 interface ManifestShape {
   name: string;
@@ -43,7 +43,7 @@ const ALLOWED_SERVICES = new Set([
   'secrets', 'fetch', 'storage', 'db',
 ]);
 
-export default defineRoute({
+export default defineTool({
   method: 'POST',
   path: '/plugin-runtime/:slug/:plugin/*',
   auth: 'public',

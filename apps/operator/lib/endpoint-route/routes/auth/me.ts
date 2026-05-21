@@ -16,10 +16,10 @@ import {
   SESSION_COOKIE,
   DEFAULT_SESSION_TTL_MS,
 } from '@/lib/auth';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 import { serializeSetCookie } from '../../cookies';
 
-const get = defineRoute({
+const get = defineTool({
   method: 'GET',
   path: '/auth/me',
   auth: 'public',
@@ -96,7 +96,7 @@ const get = defineRoute({
   },
 });
 
-const patch = defineRoute({
+const patch = defineTool({
   method: 'PATCH',
   path: '/auth/me',
   auth: 'public',

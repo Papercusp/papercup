@@ -15,9 +15,9 @@ import {
   GLOBAL_PLUGINS_DIR,
   type PluginManifest,
 } from '@/lib/plugin-catalog';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
-export default defineRoute({
+export default defineTool({
   method: 'GET',
   path: '/plugins/:slug/installed',
   auth: 'public',

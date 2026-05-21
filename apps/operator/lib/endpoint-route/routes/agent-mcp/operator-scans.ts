@@ -4,9 +4,9 @@
  */
 import { activeWorkspaceId } from '@/lib/workspace-registry';
 import { getOperatorScan, listOperatorScans, searchOperatorScans } from '@/lib/operator-scans';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
-export default defineRoute({
+export default defineTool({
   method: 'GET',
   path: '/agent-mcp/operator-scans',
   auth: 'public',

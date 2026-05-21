@@ -4,14 +4,14 @@
  */
 import { resolveRequest } from '@/lib/commands/session-registry';
 import type { CommandResult } from '@/lib/commands/types';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 interface Body {
   requestId?: string;
   result?: CommandResult;
 }
 
-export default defineRoute({
+export default defineTool({
   method: 'POST',
   path: '/agent-mcp/run-command/result',
   auth: 'public',

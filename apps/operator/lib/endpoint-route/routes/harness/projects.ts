@@ -19,7 +19,7 @@ import {
   saveHarnessRegistry,
 } from '@/lib/harness-registry';
 import { harnessDir } from '@/lib/harness-core';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 // SSR self-fetch site for /harness/<slug>/page.tsx — every page render
 // fans through here. On dev, Turbopack's per-request route re-eval flaps
@@ -33,7 +33,7 @@ const __liteKey = Symbol.for('papercusp.harnessProjectsLiteCache');
 type LiteGlobals = typeof globalThis & { [__liteKey]?: LiteCacheEntry };
 const LITE_TTL_MS = 1000;
 
-const lite = defineRoute({
+const lite = defineTool({
   method: 'GET',
   path: '/harness/projects/lite',
   auth: 'public',
@@ -86,7 +86,7 @@ const __projectsCache: ProjectsCacheEntry = (() => {
   return g[__projectsCacheKey]!;
 })();
 
-const list = defineRoute({
+const list = defineTool({
   method: 'GET',
   path: '/harness/projects',
   auth: 'public',
@@ -155,7 +155,7 @@ const list = defineRoute({
   },
 });
 
-const create = defineRoute({
+const create = defineTool({
   method: 'POST',
   path: '/harness/projects',
   auth: 'public',
@@ -186,7 +186,7 @@ const create = defineRoute({
   },
 });
 
-const remove = defineRoute({
+const remove = defineTool({
   method: 'DELETE',
   path: '/harness/projects/:slug',
   auth: 'public',

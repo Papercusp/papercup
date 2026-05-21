@@ -9,7 +9,7 @@ import { FLAGS } from '@papercusp/flags';
 import { gateApiRoute } from '@/lib/require-flag';
 import { findSnapshot } from '@/lib/snapshot-discovery';
 import { readFirstServiceToken } from '@/lib/marketplace-token';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 const MARKETPLACE_URL = process.env.PAPERCUSP_MARKETPLACE_URL ?? 'http://localhost:3057';
 const VALID_ACTIONS = ['deprecate', 'undeprecate', 'withdraw', 'unwithdraw', 'yank'] as const;
@@ -23,7 +23,7 @@ interface Body {
   reason?: string;
 }
 
-export default defineRoute({
+export default defineTool({
   method: 'POST',
   path: '/snapshots/:id/retract',
   auth: 'public',

@@ -20,7 +20,7 @@ import {
   HARNESS_STREAM_TOTAL_CAP,
   type StreamToken,
 } from '@/lib/harness-active-streams';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 function remoteIpFrom(req: Request): string {
   return (
@@ -40,7 +40,7 @@ function remoteIpFrom(req: Request): string {
  * then appends new events from the run-chunk bus. Closes when the
  * agent emits its `result` event or the client disconnects.
  */
-const agentRunStream = defineRoute({
+const agentRunStream = defineTool({
   method: 'GET',
   path: '/harness/:slug/agents/:runId/stream',
   auth: 'public',
@@ -284,7 +284,7 @@ const agentRunStream = defineRoute({
  * SSE: tail run.log + push feature-diff heartbeats. Legacy text-log
  * stream consumed by the harness Run-view.
  */
-const slugStream = defineRoute({
+const slugStream = defineTool({
   method: 'GET',
   path: '/harness/:slug/stream',
   auth: 'public',
@@ -371,7 +371,7 @@ const slugStream = defineRoute({
  * emits one SSE event per JSON line. On connect, backfills the last
  * `tail` events.
  */
-const logStream = defineRoute({
+const logStream = defineTool({
   method: 'GET',
   path: '/harness/:slug/log/stream',
   auth: 'public',

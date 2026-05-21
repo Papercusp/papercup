@@ -20,7 +20,7 @@ import { phasePhaseLabel } from '@/lib/harness-phases';
 import { harnessPath } from '@/lib/harness-paths';
 import { getKnownRoles } from '@/lib/known-roles';
 import type { ProjectEntry } from '@/lib/harness-registry';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 function phaseFromReq(req: Request) {
   return phasePhaseLabel(new URL(req.url).searchParams.get('phase') ?? undefined);
@@ -33,7 +33,7 @@ function safeRole(role: string): string | null {
   return role;
 }
 
-const getPrompts = defineRoute({
+const getPrompts = defineTool({
   method: 'GET',
   path: '/harness/:slug/prompts',
   auth: 'public',
@@ -55,7 +55,7 @@ const getPrompts = defineRoute({
   },
 });
 
-const getPromptByRole = defineRoute({
+const getPromptByRole = defineTool({
   method: 'GET',
   path: '/harness/:slug/prompts/:role',
   auth: 'public',
@@ -75,7 +75,7 @@ const getPromptByRole = defineRoute({
   },
 });
 
-const putPrompt = defineRoute({
+const putPrompt = defineTool({
   method: 'PUT',
   path: '/harness/:slug/prompts/:role',
   auth: 'public',
@@ -105,7 +105,7 @@ const putPrompt = defineRoute({
   },
 });
 
-const deletePrompt = defineRoute({
+const deletePrompt = defineTool({
   method: 'DELETE',
   path: '/harness/:slug/prompts/:role',
   auth: 'public',

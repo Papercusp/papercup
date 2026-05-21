@@ -9,9 +9,9 @@
  * Relocated from app/api/_hono/plugins.ts (endpoint-hono-elimination
  * -2026-05-21 A3).
  */
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
-export default defineRoute({
+export default defineTool({
   method: 'POST',
   path: '/plugins/runtime/invoke-action',
   auth: 'public',

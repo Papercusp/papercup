@@ -14,7 +14,7 @@ import { schemaOf, getOrgPg } from '@restart/db-org';
 import { getTableConfig, type PgTable } from 'drizzle-orm/pg-core';
 import { and, eq, sql as dsql } from 'drizzle-orm';
 import { getAdminTable } from '@/lib/admin-tables';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 function pickEditable<T extends Record<string, unknown>>(
   obj: T,
@@ -45,7 +45,7 @@ function resolvePk(table: PgTable): string[] {
   return cfg.primaryKeys.flatMap((pk) => pk.columns.map((c) => c.name));
 }
 
-const get = defineRoute({
+const get = defineTool({
   method: 'GET',
   path: '/admin/tables/:exportName',
   auth: { trust: ['verified', 'trusted'] },
@@ -67,7 +67,7 @@ const get = defineRoute({
   },
 });
 
-const post = defineRoute({
+const post = defineTool({
   method: 'POST',
   path: '/admin/tables/:exportName',
   auth: { trust: ['verified', 'trusted'] },
@@ -98,7 +98,7 @@ const post = defineRoute({
   },
 });
 
-const patch = defineRoute({
+const patch = defineTool({
   method: 'PATCH',
   path: '/admin/tables/:exportName',
   auth: { trust: ['verified', 'trusted'] },
@@ -136,7 +136,7 @@ const patch = defineRoute({
   },
 });
 
-const del = defineRoute({
+const del = defineTool({
   method: 'DELETE',
   path: '/admin/tables/:exportName',
   auth: { trust: ['verified', 'trusted'] },

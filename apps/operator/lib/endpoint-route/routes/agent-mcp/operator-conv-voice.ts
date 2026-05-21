@@ -3,9 +3,9 @@
  * Ported from app/api/agent-mcp/operator-conv-voice/route.ts. `auth: 'public'`.
  */
 import { readConvVoice, setConvVoice } from '@/lib/conv-voice';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
-const get = defineRoute({
+const get = defineTool({
   method: 'GET',
   path: '/agent-mcp/operator-conv-voice',
   auth: 'public',
@@ -17,7 +17,7 @@ const get = defineRoute({
   },
 });
 
-const post = defineRoute({
+const post = defineTool({
   method: 'POST',
   path: '/agent-mcp/operator-conv-voice',
   auth: 'public',

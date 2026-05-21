@@ -3,11 +3,11 @@
  * Ported from app/api/agent-mcp/operator-tts-preview/route.ts. `auth: 'public'`.
  */
 import { readElevenLabsKey, readOpenAiKey, readCartesiaKey } from '@/lib/voice-credentials';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 const SAMPLE_TEXT = 'This is a sample of the operator voice.';
 
-export default defineRoute({
+export default defineTool({
   method: 'POST',
   path: '/agent-mcp/operator-tts-preview',
   auth: 'public',

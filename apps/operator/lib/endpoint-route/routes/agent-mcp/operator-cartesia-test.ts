@@ -4,9 +4,9 @@
  */
 import { readCartesiaKey } from '@/lib/voice-credentials';
 import { testCartesiaConnection } from '@/lib/voice-engines/cartesia';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
-export default defineRoute({
+export default defineTool({
   method: 'POST',
   path: '/agent-mcp/operator-cartesia-test',
   auth: 'public',

@@ -7,12 +7,12 @@
  * historically `app.route('/plugins', …)`). The `plugins` sub-app
  * carried a parametric catch-all (`installPluginApiDispatcher`).
  * When `registerAllRoutes` ran AFTER those mounts, the catch-all
- * shadowed every literal `/plugins/*` defineRoute — 17 of them
+ * shadowed every literal `/plugins/*` defineTool — 17 of them
  * returned 404 in production while 264 tests stayed green.
  *
  * The endpoint-hono-elimination 2026-05-21 A3 migration **deleted**
  * the `plugins` Hono sub-app entirely — `/plugins/*` is now served
- * exclusively by `defineRoute` modules (literals via phase 1, the
+ * exclusively by `defineTool` modules (literals via phase 1, the
  * apiRoutes-then-projected-tool catch-all via phase 2). This test
  * still guards the two-phase split itself: the `harness` sub-app
  * remains, and any future sub-app added the same way must not
@@ -58,9 +58,9 @@ function composedApp(): Hono {
 }
 
 describe('composed-app route shadowing (endpoint-route audit regression)', () => {
-  it('literal /plugins/* routes reach their defineRoute, not the dispatcher 404', async () => {
+  it('literal /plugins/* routes reach their defineTool, not the dispatcher 404', async () => {
     const app = composedApp();
-    // Each of these is a literal defineRoute. Before the original
+    // Each of these is a literal defineTool. Before the original
     // (now-removed) dispatcher fix, the plugin Hono sub-app shadowed
     // these and returned 404. They must still all be reached even
     // though the sub-app is gone — the phase-2 `/plugins/*` catch-all
@@ -73,7 +73,7 @@ describe('composed-app route shadowing (endpoint-route audit regression)', () =>
       '/api/plugins/grants',
     ]) {
       const res = await app.request(p);
-      expect(res.status, `${p} must reach its defineRoute, not the catch-all 404`).not.toBe(404);
+      expect(res.status, `${p} must reach its defineTool, not the catch-all 404`).not.toBe(404);
     }
   });
 
@@ -95,7 +95,7 @@ describe('composed-app route shadowing (endpoint-route audit regression)', () =>
     const res = await app.request('/api/harness/projects');
     expect(res.status).not.toBe(404);
     const body = await res.text();
-    expect(body, 'the ported defineRoute must answer, not the _hono sub-app').not.toContain(
+    expect(body, 'the ported defineTool must answer, not the _hono sub-app').not.toContain(
       'fake-hono-harness',
     );
   });
@@ -110,7 +110,7 @@ describe('composed-app route shadowing (endpoint-route audit regression)', () =>
  *    real wiring (phase-1 literals + phase-2 catch-all + the `harness`
  *    sub-app).
  *  - `/harness/projects` returns exactly 200 — catches a two-phase
- *    reorder. The ported defineRoute is a pure-FS handler that always
+ *    reorder. The ported defineTool is a pure-FS handler that always
  *    200s; the colliding `_hono` `harness.get('/projects')` opens per-
  *    slug PG pools and fails without a DB. If `registerRouteLiterals`
  *    is moved after `app.route('/harness', …)`, the `_hono` route wins
@@ -128,7 +128,7 @@ describe('composed-app route shadowing — REAL _hono/app.ts wiring', () => {
   it('literal /plugins/* routes are not shadowed by the /plugins/* catch-all', async () => {
     for (const p of ['/api/plugins/enabled', '/api/plugins/manifest', '/api/plugins/grants']) {
       const res = await app.request(p);
-      expect(res.status, `${p} must reach its defineRoute, not the catch-all 404`).not.toBe(404);
+      expect(res.status, `${p} must reach its defineTool, not the catch-all 404`).not.toBe(404);
     }
   });
 
@@ -141,15 +141,15 @@ describe('composed-app route shadowing — REAL _hono/app.ts wiring', () => {
     expect(res.status).not.toBe(404);
   });
 
-  it('literal /harness/projects defineRoute wins over the _hono harness sub-app', async () => {
-    // The ported defineRoute is pure-FS and always 200s; the _hono
+  it('literal /harness/projects defineTool wins over the _hono harness sub-app', async () => {
+    // The ported defineTool is pure-FS and always 200s; the _hono
     // harness sub-app's /projects opens PG pools and won't 200 here.
     // 200 ⇒ the phase-1 literal out-ranked the sub-app (correct wiring).
     const res = await app.request('/api/harness/projects');
-    expect(res.status, '/harness/projects must hit the defineRoute, not the _hono sub-app').toBe(
+    expect(res.status, '/harness/projects must hit the defineTool, not the _hono sub-app').toBe(
       200,
     );
     const body = (await res.json()) as { projects?: unknown };
-    expect(Array.isArray(body.projects), 'defineRoute response shape').toBe(true);
+    expect(Array.isArray(body.projects), 'defineTool response shape').toBe(true);
   });
 });

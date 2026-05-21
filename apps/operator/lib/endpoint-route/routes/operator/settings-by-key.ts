@@ -6,11 +6,11 @@
  */
 import { getOrgPg, generated } from '@restart/db-org';
 import { eq } from 'drizzle-orm';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 const os = generated.operatorSettingsInHarnessShared;
 
-export default defineRoute({
+export default defineTool({
   method: 'GET',
   path: '/operator/settings/:key',
   auth: 'public',

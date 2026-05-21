@@ -6,9 +6,9 @@
  * `requirePrincipal({ trust: ['trusted'] })`; loopback alone is rejected.
  */
 import { sweepOrphanSnapshots } from '@/lib/backup/orphan-cleanup';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
-export default defineRoute({
+export default defineTool({
   method: 'POST',
   path: '/admin/backup-orphan-cleanup',
   auth: { trust: ['trusted'] },

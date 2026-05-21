@@ -14,7 +14,7 @@
 import { getOrgPg } from '@restart/db-org';
 import { FLAGS } from '@papercusp/flags';
 import { gateApiRoute } from '@/lib/require-flag';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 interface SketchPayload {
   png: string;
@@ -23,7 +23,7 @@ interface SketchPayload {
 
 const MAX_PNG_BYTES = 5 * 1024 * 1024;
 
-const list = defineRoute({
+const list = defineTool({
   method: 'GET',
   path: '/design/sketches',
   auth: 'public',
@@ -73,7 +73,7 @@ const list = defineRoute({
   },
 });
 
-const create = defineRoute({
+const create = defineTool({
   method: 'POST',
   path: '/design/sketches',
   auth: 'public',

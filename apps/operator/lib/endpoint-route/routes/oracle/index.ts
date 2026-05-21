@@ -8,7 +8,7 @@
  *   POST /api/oracle/chat     body: { messages: [...] }  → SSE stream
  *
  * The legacy router gated `/oracle/*` with a Hono middleware that 404s
- * when `FLAGS.ORACLE` is off (V1 ship-state gate). `defineRoute` has no
+ * when `FLAGS.ORACLE` is off (V1 ship-state gate). `defineTool` has no
  * per-prefix middleware, so each handler runs `oracleEnabled()` first —
  * same behavior, no shared middleware.
  *
@@ -16,7 +16,7 @@
  */
 import { sseResponse } from '@restart/sse';
 import { dispatchProjectedToolStream, lookupByMcpName } from '@papercusp/agent-mcp';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
 import { readOracleConfig, writeOracleConfig } from '@/lib/agent-tools/oracle/prompts';
 import { getSessionUserOrDefault } from '@/lib/auth';
@@ -31,7 +31,7 @@ async function oracleEnabled(): Promise<boolean> {
 
 const NOT_FOUND = () => new Response(null, { status: 404 });
 
-const configGet = defineRoute({
+const configGet = defineTool({
   method: 'GET',
   path: '/oracle/config',
   auth: 'public',
@@ -41,7 +41,7 @@ const configGet = defineRoute({
   },
 });
 
-const configPut = defineRoute({
+const configPut = defineTool({
   method: 'PUT',
   path: '/oracle/config',
   auth: 'public',
@@ -58,7 +58,7 @@ const configPut = defineRoute({
   },
 });
 
-const chat = defineRoute({
+const chat = defineTool({
   method: 'POST',
   path: '/oracle/chat',
   auth: 'public',

@@ -5,9 +5,9 @@
  * Ported from app/api/admin/llm-tests/scenarios/route.ts. `auth: 'public'`.
  */
 import { SCENARIOS } from '@/lib/llm-testing/scenarios';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
-export default defineRoute({
+export default defineTool({
   method: 'GET',
   path: '/admin/llm-tests/scenarios',
   auth: { trust: ['verified', 'trusted'] },

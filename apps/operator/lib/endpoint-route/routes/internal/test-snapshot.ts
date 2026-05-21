@@ -6,7 +6,7 @@ import { getOrgPg, generated } from '@restart/db-org';
 import { and, eq, notInArray, sql as dsql } from 'drizzle-orm';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
 import { notifySyncInvalidate } from '@/lib/sync-sse';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 const ti = generated.tokenIndexInHarnessShared;
 const ht = generated.harnessTestsInHarnessShared;
@@ -16,7 +16,7 @@ const VALID_PHASES = new Set(['staging', 'testing', 'production']);
 interface FileEntry { testId?: string; payload?: Record<string, unknown> }
 interface RequestBody { files?: FileEntry[]; phase?: string }
 
-export default defineRoute({
+export default defineTool({
   method: 'POST',
   path: '/internal/test-snapshot',
   auth: {},

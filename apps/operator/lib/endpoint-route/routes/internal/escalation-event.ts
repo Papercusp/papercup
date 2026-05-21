@@ -8,7 +8,7 @@ import { getOrgPg, generated } from '@restart/db-org';
 import { eq, sql as dsql } from 'drizzle-orm';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
 import { notifySyncInvalidate } from '@/lib/sync-sse';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 const ti = generated.tokenIndexInHarnessShared;
 const he = generated.harnessEscalationsInHarnessShared;
@@ -25,7 +25,7 @@ const BodySchema = z
 
 const MAX_BODY = 256 * 1024;
 
-export default defineRoute({
+export default defineTool({
   method: 'POST',
   path: '/internal/escalation-event',
   auth: {},

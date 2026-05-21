@@ -8,7 +8,7 @@
  * `dispatchPluginApiRoute(req)` resolves the requested plugin by the
  * first `/api/plugins/<name>/…` path segment and forwards the request to
  * that plugin's `apiRoutes` handler. It returns `null` when the segment
- * is not a registered plugin, so the `/plugins/*` `defineRoute` catch-all
+ * is not a registered plugin, so the `/plugins/*` `defineTool` catch-all
  * (`routes/plugins/catchall.ts`) can fall through to projected-tool
  * dispatch. We use runtime dispatch instead of `Hono.mount(...)` because
  * Hono's `app.route(prefix, sub)` snapshots the sub-app's routes at
@@ -148,12 +148,12 @@ async function ensureRegistryBuilt(): Promise<void> {
  * Resolve a `/api/plugins/<name>/…` request to a registered plugin's
  * `apiRoutes` handler and forward to it. Returns the plugin's `Response`,
  * or `null` when the first path segment is not a registered plugin — the
- * `/plugins/*` `defineRoute` catch-all then falls through to projected-
+ * `/plugins/*` `defineTool` catch-all then falls through to projected-
  * tool dispatch.
  *
  * Relocated from the Hono-sub-app `installPluginApiDispatcher` mutation
  * (endpoint-hono-elimination-2026-05-21 A3). The old dispatcher yielded
- * via Hono `next()`; a `defineRoute` handler cannot yield, so the
+ * via Hono `next()`; a `defineTool` handler cannot yield, so the
  * fall-through is expressed as a `null` return the catch-all checks.
  */
 export async function dispatchPluginApiRoute(req: Request): Promise<Response | null> {

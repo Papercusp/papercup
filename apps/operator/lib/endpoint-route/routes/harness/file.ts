@@ -10,7 +10,7 @@ import { promises as fs, existsSync } from 'node:fs';
 import { join, normalize, relative, dirname } from 'node:path';
 import { papercuspPath } from '@/lib/papercusp-root';
 import { loadHarnessRegistry } from '@/lib/harness-registry';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 interface ConfigFile { path: string; language?: string; label?: string }
 
@@ -63,7 +63,7 @@ async function authorize(slug: string, rel: string): Promise<{ ok: true; abs: st
   return { ok: true, abs };
 }
 
-const get = defineRoute({
+const get = defineTool({
   method: 'GET',
   path: '/harness/:slug/file',
   auth: 'public',
@@ -82,7 +82,7 @@ const get = defineRoute({
   },
 });
 
-const put = defineRoute({
+const put = defineTool({
   method: 'PUT',
   path: '/harness/:slug/file',
   auth: 'public',

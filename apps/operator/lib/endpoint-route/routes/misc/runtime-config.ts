@@ -3,9 +3,9 @@
  * browser (the desktop picks zero-cache's port at runtime).
  * Ported from app/api/runtime-config/route.ts.
  */
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
-export default defineRoute({
+export default defineTool({
   method: 'GET',
   path: '/runtime-config',
   auth: 'public',

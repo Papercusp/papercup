@@ -14,7 +14,7 @@
 import { readdirSync, readlinkSync, readFileSync } from 'node:fs';
 import { resolvePhasedProject, isHarnessDriverCmdline } from '@/lib/harness-core';
 import { phasePhaseLabel } from '@/lib/harness-phases';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 function phaseFromReq(req: Request) {
   return phasePhaseLabel(new URL(req.url).searchParams.get('phase') ?? undefined);
@@ -42,7 +42,7 @@ function findHarnessPids(projectPath: string): number[] {
   return pids;
 }
 
-const pause = defineRoute({
+const pause = defineTool({
   method: 'POST',
   path: '/harness/:slug/pause',
   auth: 'public',
@@ -58,7 +58,7 @@ const pause = defineRoute({
   },
 });
 
-const unpause = defineRoute({
+const unpause = defineTool({
   method: 'POST',
   path: '/harness/:slug/unpause',
   auth: 'public',
@@ -74,7 +74,7 @@ const unpause = defineRoute({
   },
 });
 
-const stop = defineRoute({
+const stop = defineTool({
   method: 'POST',
   path: '/harness/:slug/stop',
   auth: 'public',

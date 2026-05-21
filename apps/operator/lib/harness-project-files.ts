@@ -9,7 +9,7 @@
  *
  * Relocated from `_hono/harness.ts` (endpoint-hono-elimination-2026-05-21
  * A4 batch 2) so the `/api/harness/:slug/spec` routes can migrate to
- * `defineRoute` without dragging the route file back through `_hono/`.
+ * `defineTool` without dragging the route file back through `_hono/`.
  */
 
 export interface ProjectFiles {

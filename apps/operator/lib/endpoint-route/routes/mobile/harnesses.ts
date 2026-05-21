@@ -13,7 +13,7 @@
 import { join } from 'node:path';
 import { openSync, readSync, closeSync, statSync } from 'node:fs';
 import { sseResponse } from '@restart/sse';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 import { MOBILE_AUTH, mobilePrincipal } from './_shared';
 import { listHarnessesFor, harnessExistsInWorkspace } from '@/lib/mobile-harnesses';
 import { currentlyRunning } from '@/lib/mobile-feeds';
@@ -50,7 +50,7 @@ async function shimHarnessAction(
 }
 
 /** GET /mobile/harnesses — every harness in the device's workspace. */
-const harnessesList = defineRoute({
+const harnessesList = defineTool({
   method: 'GET',
   path: '/mobile/harnesses',
   auth: MOBILE_AUTH,
@@ -66,7 +66,7 @@ const harnessesList = defineRoute({
  * desktop `/api/harness/:slug/status` so the Rust client + desktop see
  * identical fields.
  */
-const harnessDetail = defineRoute({
+const harnessDetail = defineTool({
   method: 'GET',
   path: '/mobile/harnesses/:slug',
   auth: MOBILE_AUTH,
@@ -84,7 +84,7 @@ const harnessDetail = defineRoute({
   },
 });
 
-const harnessReplan = defineRoute({
+const harnessReplan = defineTool({
   method: 'POST',
   path: '/mobile/harnesses/:slug/replan',
   auth: MOBILE_AUTH,
@@ -95,7 +95,7 @@ const harnessReplan = defineRoute({
   },
 });
 
-const harnessSmokeTest = defineRoute({
+const harnessSmokeTest = defineTool({
   method: 'POST',
   path: '/mobile/harnesses/:slug/smoke-test',
   auth: MOBILE_AUTH,
@@ -105,7 +105,7 @@ const harnessSmokeTest = defineRoute({
   },
 });
 
-const harnessCleanup = defineRoute({
+const harnessCleanup = defineTool({
   method: 'POST',
   path: '/mobile/harnesses/:slug/cleanup',
   auth: MOBILE_AUTH,
@@ -120,7 +120,7 @@ const harnessCleanup = defineRoute({
  * `/api/harness/:slug/log/stream` (events: log / backfill-done) but
  * gated on the mobile JWT. Workspace check enforced; `?phase=` override.
  */
-const harnessLogStream = defineRoute({
+const harnessLogStream = defineTool({
   method: 'GET',
   path: '/mobile/harnesses/:slug/log/stream',
   auth: MOBILE_AUTH,
@@ -195,7 +195,7 @@ const harnessLogStream = defineRoute({
 });
 
 /** GET /mobile/running — active operator scan + active harness phases. */
-const running = defineRoute({
+const running = defineTool({
   method: 'GET',
   path: '/mobile/running',
   auth: MOBILE_AUTH,

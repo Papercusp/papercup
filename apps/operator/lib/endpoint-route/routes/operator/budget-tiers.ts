@@ -8,11 +8,11 @@
  */
 import { getOrgPg, generated } from '@restart/db-org';
 import { asc } from 'drizzle-orm';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 const bt = generated.operatorBudgetTiersInHarnessShared;
 
-export default defineRoute({
+export default defineTool({
   method: 'GET',
   path: '/operator/budget-tiers',
   auth: 'public',

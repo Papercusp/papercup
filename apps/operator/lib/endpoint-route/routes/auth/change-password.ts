@@ -8,10 +8,10 @@
  */
 import { getSessionUser, changePassword, login, SESSION_COOKIE } from '@/lib/auth';
 import { recordAuthEvent } from '@/lib/auth-audit';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 import { serializeSetCookie } from '../../cookies';
 
-export default defineRoute({
+export default defineTool({
   method: 'POST',
   path: '/auth/change-password',
   auth: 'public',

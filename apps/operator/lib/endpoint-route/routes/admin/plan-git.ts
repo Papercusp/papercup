@@ -9,7 +9,7 @@
  * git argv, and the `--follow` history parse live there.
  */
 
-import { defineRoute, type RouteContext } from '../../define-route';
+import { defineTool, type RouteContext } from '@papercusp/agent-mcp';
 import {
   readPlanHistory,
   readPlanDiff,
@@ -57,7 +57,7 @@ async function handler(req: Request, ctx: RouteContext): Promise<Response> {
   );
 }
 
-export default defineRoute({
+export default defineTool({
   method: 'GET',
   path: '/admin/plans/git/:op',
   auth: 'public',

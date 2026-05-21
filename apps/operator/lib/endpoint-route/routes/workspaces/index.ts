@@ -6,7 +6,7 @@
 import { existsSync, promises as fs } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 const REGISTRY_PATH = join(homedir(), '.papercusp-workspaces', 'registry.json');
 
@@ -45,7 +45,7 @@ function slugify(name: string): string {
 }
 
 export default [
-  defineRoute({
+  defineTool({
     method: 'GET',
     path: '/workspaces',
     auth: 'public',
@@ -53,7 +53,7 @@ export default [
       return Response.json(await readRegistry());
     },
   }),
-  defineRoute({
+  defineTool({
     method: 'POST',
     path: '/workspaces',
     auth: 'public',

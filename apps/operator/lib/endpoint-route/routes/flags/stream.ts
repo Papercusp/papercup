@@ -9,13 +9,13 @@
 import { bridgeChannel, parseLastEventId, sseResponse } from '@restart/sse';
 
 import { getFlagBus, type FlagChangeEnvelope } from '@/lib/flag-bus';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 type FlagStreamVocabulary = {
   flag_changed: FlagChangeEnvelope;
 };
 
-export default defineRoute({
+export default defineTool({
   method: 'GET',
   path: '/flags/stream',
   auth: 'public',

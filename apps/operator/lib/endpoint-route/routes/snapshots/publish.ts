@@ -13,7 +13,7 @@ import { recordUserAction } from '@/lib/user-actions';
 import { FLAGS } from '@papercusp/flags';
 import { gateApiRoute } from '@/lib/require-flag';
 import { readFirstServiceToken } from '@/lib/marketplace-token';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 const MARKETPLACE_URL = process.env.PAPERCUSP_MARKETPLACE_URL ?? 'http://localhost:3057';
 
@@ -22,7 +22,7 @@ interface Body {
   marketplaceVersion?: string;
 }
 
-export default defineRoute({
+export default defineTool({
   method: 'POST',
   path: '/snapshots/:id/publish',
   auth: 'public',

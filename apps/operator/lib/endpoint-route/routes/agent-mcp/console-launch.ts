@@ -13,7 +13,7 @@ import { join } from 'node:path';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
 import { buildConsoleEnvelope } from '@/lib/console-launcher';
 import { PrincipalCheckError, requirePrincipal } from '@/lib/auth/require-principal';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 const DEBUG_LOG = '/tmp/console-launch.log';
 function dlog(line: string): void {
@@ -137,7 +137,7 @@ async function doSpawn(opts: { slug: string | null; operatorBaseUrl: string }): 
   dlog(`doSpawn launched ${term.bin} pid=${child.pid}`);
 }
 
-const options = defineRoute({
+const options = defineTool({
   method: 'OPTIONS',
   path: '/agent-mcp/console/launch',
   auth: 'public',
@@ -146,7 +146,7 @@ const options = defineRoute({
   },
 });
 
-const get = defineRoute({
+const get = defineTool({
   method: 'GET',
   path: '/agent-mcp/console/launch',
   auth: 'public',
@@ -184,7 +184,7 @@ const get = defineRoute({
   },
 });
 
-const post = defineRoute({
+const post = defineTool({
   method: 'POST',
   path: '/agent-mcp/console/launch',
   auth: 'public',

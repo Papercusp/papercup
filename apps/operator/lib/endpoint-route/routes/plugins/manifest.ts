@@ -5,7 +5,7 @@
 import { promises as fs, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { papercuspRoot } from '@/lib/papercusp-root';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 interface PluginManifest {
   name: string;
@@ -44,7 +44,7 @@ async function findManifest(slug: string): Promise<{ manifest: PluginManifest; p
   return null;
 }
 
-export default defineRoute({
+export default defineTool({
   method: 'GET',
   path: '/plugins/manifest',
   auth: 'public',

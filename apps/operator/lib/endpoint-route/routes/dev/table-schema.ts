@@ -11,7 +11,7 @@
 import { getTableConfig, type PgTable } from 'drizzle-orm/pg-core';
 import { is, Table } from 'drizzle-orm';
 import { generated } from '@restart/db-org';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 function tableByExportName(exportName: string): PgTable | null {
   const value = (generated as Record<string, unknown>)[exportName];
@@ -32,7 +32,7 @@ interface ColumnSummary {
   generated: boolean;
 }
 
-export default defineRoute({
+export default defineTool({
   method: 'GET',
   path: '/dev/tables/:exportName',
   auth: { trust: ['verified', 'trusted'] },

@@ -4,9 +4,9 @@
  */
 import { sseResponse } from '@restart/sse';
 import { getPluginHost } from '@/lib/plugin-host-runtime';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
-export default defineRoute({
+export default defineTool({
   method: 'GET',
   path: '/plugins/host/events',
   auth: 'public',

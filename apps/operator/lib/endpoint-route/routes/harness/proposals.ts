@@ -17,9 +17,9 @@ import { join } from 'node:path';
 import { resolveProject, harnessDir, safeRead } from '@/lib/harness-core';
 import { invokeScoperBackground } from '@/lib/harness-scoper';
 import { firePluginLifecycle, firePluginEvent } from '@/lib/plugin-host-runtime';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
-const acceptProposal = defineRoute({
+const acceptProposal = defineTool({
   method: 'POST',
   path: '/harness/:slug/proposals/:id/accept',
   auth: 'public',
@@ -76,7 +76,7 @@ const acceptProposal = defineRoute({
   },
 });
 
-const rejectProposal = defineRoute({
+const rejectProposal = defineTool({
   method: 'POST',
   path: '/harness/:slug/proposals/:id/reject',
   auth: 'public',

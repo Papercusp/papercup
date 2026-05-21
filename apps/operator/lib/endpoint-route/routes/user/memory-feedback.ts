@@ -9,9 +9,9 @@
 import { getSessionUser } from '@/lib/auth';
 import { loadFeedbackStats } from '@/lib/memory/feedback';
 import { buildLearningInstructions } from '@/lib/memory/learning';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
-export default defineRoute({
+export default defineTool({
   method: 'GET',
   path: '/user/memory/feedback',
   auth: 'public',

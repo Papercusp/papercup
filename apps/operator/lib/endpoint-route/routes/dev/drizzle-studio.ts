@@ -17,7 +17,7 @@ import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { createServer } from 'node:net';
 import { getHarnessAdminUrl } from '@/lib/embedded-pg-discovery';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 interface StudioProc {
   child: ChildProcessByStdio<null, Readable, Readable>;
@@ -106,7 +106,7 @@ function status() {
   return { running: true, pid: p.child.pid, port: p.port, since: p.since };
 }
 
-const get = defineRoute({
+const get = defineTool({
   method: 'GET',
   path: '/dev/drizzle-studio',
   auth: { trust: ['verified', 'trusted'] },
@@ -115,7 +115,7 @@ const get = defineRoute({
   },
 });
 
-const post = defineRoute({
+const post = defineTool({
   method: 'POST',
   path: '/dev/drizzle-studio',
   auth: { trust: ['verified', 'trusted'] },
@@ -163,7 +163,7 @@ const post = defineRoute({
   },
 });
 
-const del = defineRoute({
+const del = defineTool({
   method: 'DELETE',
   path: '/dev/drizzle-studio',
   auth: { trust: ['verified', 'trusted'] },

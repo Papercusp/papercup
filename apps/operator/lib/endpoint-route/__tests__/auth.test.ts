@@ -1,7 +1,7 @@
 /**
  * Verification for the ported `auth` family — login / logout / signup /
  * change-password / me — mounted on a throwaway Hono app and exercised
- * via `app.request()`. Proves the `defineRoute` ports serve identically
+ * via `app.request()`. Proves the `defineTool` ports serve identically
  * to the deleted Next `route.ts` files: status codes, JSON bodies, and
  * `Set-Cookie` headers (the cookie-jar replacement).
  *

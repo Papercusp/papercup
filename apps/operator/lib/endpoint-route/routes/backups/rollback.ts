@@ -6,11 +6,11 @@
 import { z } from 'zod';
 import { workspaceBackupFor } from '@/lib/backup';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 const Schema = z.object({ brokenPath: z.string().min(1) });
 
-export default defineRoute({
+export default defineTool({
   method: 'POST',
   path: '/backups/rollback',
   auth: 'public',

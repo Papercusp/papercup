@@ -8,10 +8,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 
-// Spread the real module — `define-route.ts` now imports `defineTool`
-// from here (Phase E6: defineRoute collapsed into defineTool), so a
-// full-replacement mock would leave `defineRoute` undefined. Override
-// only `dispatchWorkspaceSwitch`.
+// Spread the real module — route files import `defineTool` from here
+// (the unified endpoint primitive), so a full-replacement mock would
+// leave `defineTool` undefined. Override only `dispatchWorkspaceSwitch`.
 vi.mock('@papercusp/agent-mcp', async (orig) => ({
   ...(await orig<typeof import('@papercusp/agent-mcp')>()),
   dispatchWorkspaceSwitch: vi.fn(async () => {}),

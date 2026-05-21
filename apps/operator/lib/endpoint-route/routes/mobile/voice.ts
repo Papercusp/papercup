@@ -9,13 +9,13 @@
  *   GET    /mobile/voice-session-init     mobile JWT
  *   GET    /mobile/voice                  mobile JWT (HTTP stub — real path is WS)
  */
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 import { MOBILE_AUTH, mobilePrincipal } from './_shared';
 import { claimVoiceLease, releaseVoiceLease, readVoiceLease } from '@/lib/voice-lease';
 
 /* ─── Voice lease — single-listener election across desktop + phone ──── */
 
-const voiceLeaseGet = defineRoute({
+const voiceLeaseGet = defineTool({
   method: 'GET',
   path: '/mobile/voice-lease',
   auth: MOBILE_AUTH,
@@ -26,7 +26,7 @@ const voiceLeaseGet = defineRoute({
   },
 });
 
-const voiceLeaseClaim = defineRoute({
+const voiceLeaseClaim = defineTool({
   method: 'POST',
   path: '/mobile/voice-lease/claim',
   auth: MOBILE_AUTH,
@@ -42,7 +42,7 @@ const voiceLeaseClaim = defineRoute({
   },
 });
 
-const voiceLeaseHeartbeat = defineRoute({
+const voiceLeaseHeartbeat = defineTool({
   method: 'POST',
   path: '/mobile/voice-lease/heartbeat',
   auth: MOBILE_AUTH,
@@ -58,7 +58,7 @@ const voiceLeaseHeartbeat = defineRoute({
   },
 });
 
-const voiceLeaseRelease = defineRoute({
+const voiceLeaseRelease = defineTool({
   method: 'DELETE',
   path: '/mobile/voice-lease',
   auth: MOBILE_AUTH,
@@ -119,7 +119,7 @@ async function mintMobileElToken(
   return { token };
 }
 
-const voiceSessionInit = defineRoute({
+const voiceSessionInit = defineTool({
   method: 'GET',
   path: '/mobile/voice-session-init',
   auth: MOBILE_AUTH,
@@ -240,7 +240,7 @@ const voiceSessionInit = defineRoute({
  * upgrade handled by the `ws` server (see `mobile-voice-ws.ts`); a plain
  * GET here just tells a confused client to use the WS endpoint.
  */
-const voiceStub = defineRoute({
+const voiceStub = defineTool({
   method: 'GET',
   path: '/mobile/voice',
   auth: MOBILE_AUTH,

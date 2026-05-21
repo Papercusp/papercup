@@ -6,9 +6,9 @@
  */
 import { startKopiaServer, stopKopiaServer, kopiaServerStatus } from '@/lib/backup';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
-const get = defineRoute({
+const get = defineTool({
   method: 'GET',
   path: '/backups/server',
   auth: 'public',
@@ -24,7 +24,7 @@ const get = defineRoute({
   },
 });
 
-const del = defineRoute({
+const del = defineTool({
   method: 'DELETE',
   path: '/backups/server',
   auth: 'public',

@@ -12,7 +12,7 @@ import { promises as fs, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { papercuspPath } from '@/lib/papercusp-root';
 import { loadHarnessRegistry } from '@/lib/harness-registry';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 interface RegistryShape {
   projects: Array<{ slug: string; path: string; harnessKind?: string; addedAt?: string }>;
@@ -89,7 +89,7 @@ async function compute(): Promise<Payload> {
   return { projects: annotated, staleCount, harnesses };
 }
 
-export default defineRoute({
+export default defineTool({
   method: 'GET',
   path: '/installed',
   auth: 'public',

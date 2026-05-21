@@ -6,7 +6,7 @@
  *
  * Ported from app/api/zero-harness-query/route.ts. `auth: 'public'`.
  */
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { handleQueryRequest } = require('@rocicorp/zero/server') as {
@@ -24,7 +24,7 @@ const { mustGetQuery } = require('@rocicorp/zero') as {
 
 import { schema, queries } from '@restart/zero-harness';
 
-export default defineRoute({
+export default defineTool({
   method: 'POST',
   path: '/zero-harness-query',
   auth: 'public',

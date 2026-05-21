@@ -13,7 +13,7 @@ import { promises as fs } from 'node:fs';
 import { join } from 'node:path';
 import { papercuspPath } from '@/lib/papercusp-root';
 import { runPhase, type ProvisionPhase } from '@/lib/provision/runner';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 function HARNESSES_DIR() { return papercuspPath('harnesses'); }
 function GLOBAL_PLUGINS_DIR() { return papercuspPath('global-plugins'); }
@@ -49,7 +49,7 @@ async function readJson<T>(path: string): Promise<T | null> {
   }
 }
 
-export default defineRoute({
+export default defineTool({
   method: 'POST',
   path: '/provision/run',
   auth: { trust: ['verified', 'trusted'] },

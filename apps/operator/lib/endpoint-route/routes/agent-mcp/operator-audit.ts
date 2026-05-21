@@ -3,7 +3,7 @@
  * Ported from app/api/agent-mcp/operator-audit/route.ts. `auth: 'public'`.
  */
 import { writeOperatorAudit, type OperatorAuditKind, type ActorMethod } from '@/lib/operator-audit';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 const ALLOWED: ReadonlySet<OperatorAuditKind> = new Set<OperatorAuditKind>([
   'accepted', 'ignored', 'accept_failed', 'undo_cancel',
@@ -13,7 +13,7 @@ const ALLOWED: ReadonlySet<OperatorAuditKind> = new Set<OperatorAuditKind>([
 
 const ALLOWED_METHODS: ReadonlySet<NonNullable<ActorMethod>> = new Set(['voice', 'click', 'api']);
 
-export default defineRoute({
+export default defineTool({
   method: 'POST',
   path: '/agent-mcp/operator-audit',
   auth: 'public',

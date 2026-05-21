@@ -7,9 +7,9 @@ import {
   clearVoiceDebugEvents,
   readVoiceDebugEvents,
 } from '@/lib/voice-debug-ring';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
-const post = defineRoute({
+const post = defineTool({
   method: 'POST',
   path: '/agent-mcp/voice-debug',
   auth: 'public',
@@ -21,7 +21,7 @@ const post = defineRoute({
   },
 });
 
-const get = defineRoute({
+const get = defineTool({
   method: 'GET',
   path: '/agent-mcp/voice-debug',
   auth: 'public',
@@ -36,7 +36,7 @@ const get = defineRoute({
   },
 });
 
-const del = defineRoute({
+const del = defineTool({
   method: 'DELETE',
   path: '/agent-mcp/voice-debug',
   auth: 'public',

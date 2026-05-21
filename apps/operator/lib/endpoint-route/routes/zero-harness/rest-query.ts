@@ -7,9 +7,9 @@
  */
 import { gzipSync } from 'node:zlib';
 import { resolveNamedQuery } from '@/lib/zero-harness-resolver';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
-export default defineRoute({
+export default defineTool({
   method: 'GET',
   path: '/zero-harness/rest-query',
   auth: 'public',

@@ -5,14 +5,14 @@
 import { sseResponse } from '@restart/sse';
 import { onPendingEventInserted } from '@/lib/pending-events-listener';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 type Events = {
   hello: { workspaceId: string };
   pending_event: Record<string, unknown>;
 }
 
-export default defineRoute({
+export default defineTool({
   method: 'GET',
   path: '/agent-mcp/events',
   auth: 'public',

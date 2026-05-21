@@ -5,9 +5,9 @@
  */
 import { activeWorkspaceId } from '@/lib/workspace-registry';
 import { archiveDelegate, getDelegate, listDelegates, searchDelegates } from '@/lib/delegates';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
-const get = defineRoute({
+const get = defineTool({
   method: 'GET',
   path: '/agent-mcp/delegates',
   auth: 'public',
@@ -38,7 +38,7 @@ const get = defineRoute({
   },
 });
 
-const del = defineRoute({
+const del = defineTool({
   method: 'DELETE',
   path: '/agent-mcp/delegates',
   auth: 'public',

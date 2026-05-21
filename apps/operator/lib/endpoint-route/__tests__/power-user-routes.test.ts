@@ -6,7 +6,7 @@
  *   GET  /api/agent-bundle                       — fetch persona+tools.md+...
  *
  * These ports were done by the R5 endpoint-route migration (320220c1 +
- * 58de9cb0). The tests drive the actual `defineRoute` handlers through
+ * 58de9cb0). The tests drive the actual `defineTool` handlers through
  * a Hono app — same code path as the production catch-all. PG and FS
  * are mocked; HMAC token logic runs for real.
  *

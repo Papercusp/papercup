@@ -11,7 +11,7 @@
  */
 import { join } from 'node:path';
 import { mkdir, writeFile } from 'node:fs/promises';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
 import { notifySyncInvalidate } from '@/lib/sync-sse';
 import {
@@ -35,7 +35,7 @@ import {
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
-const listExperts = defineRoute({
+const listExperts = defineTool({
   method: 'GET',
   path: '/harness/:slug/experts',
   auth: 'public',
@@ -47,7 +47,7 @@ const listExperts = defineRoute({
   },
 });
 
-const createExpert = defineRoute({
+const createExpert = defineTool({
   method: 'POST',
   path: '/harness/:slug/experts',
   auth: 'public',
@@ -99,7 +99,7 @@ const createExpert = defineRoute({
   },
 });
 
-const expertRoles = defineRoute({
+const expertRoles = defineTool({
   method: 'GET',
   path: '/harness/:slug/expert-roles',
   auth: 'public',
@@ -111,7 +111,7 @@ const expertRoles = defineRoute({
   },
 });
 
-const dispatch = defineRoute({
+const dispatch = defineTool({
   method: 'POST',
   path: '/harness/:slug/experts/dispatch',
   auth: 'public',
@@ -145,7 +145,7 @@ const dispatch = defineRoute({
   },
 });
 
-const getExpert = defineRoute({
+const getExpert = defineTool({
   method: 'GET',
   path: '/harness/:slug/experts/:expertId',
   auth: 'public',
@@ -157,7 +157,7 @@ const getExpert = defineRoute({
   },
 });
 
-const patchExpert = defineRoute({
+const patchExpert = defineTool({
   method: 'PATCH',
   path: '/harness/:slug/experts/:expertId',
   auth: 'public',
@@ -190,7 +190,7 @@ const patchExpert = defineRoute({
   },
 });
 
-const openFeedback = defineRoute({
+const openFeedback = defineTool({
   method: 'POST',
   path: '/harness/:slug/experts/:expertId/feedback',
   auth: 'public',
@@ -240,7 +240,7 @@ const openFeedback = defineRoute({
   },
 });
 
-const appendTurn = defineRoute({
+const appendTurn = defineTool({
   method: 'POST',
   path: '/harness/:slug/experts/:expertId/feedback/:fbId/turn',
   auth: 'public',
@@ -295,7 +295,7 @@ const appendTurn = defineRoute({
   },
 });
 
-const endFeedback = defineRoute({
+const endFeedback = defineTool({
   method: 'POST',
   path: '/harness/:slug/experts/:expertId/feedback/:fbId/end',
   auth: 'public',
@@ -382,7 +382,7 @@ const endFeedback = defineRoute({
   },
 });
 
-const fork = defineRoute({
+const fork = defineTool({
   method: 'POST',
   path: '/harness/:slug/experts/:expertId/fork',
   auth: 'public',
@@ -444,7 +444,7 @@ const fork = defineRoute({
   },
 });
 
-const cancel = defineRoute({
+const cancel = defineTool({
   method: 'POST',
   path: '/harness/:slug/experts/:expertId/cancel',
   auth: 'public',
@@ -462,7 +462,7 @@ const cancel = defineRoute({
   },
 });
 
-const getSpec = defineRoute({
+const getSpec = defineTool({
   method: 'GET',
   path: '/harness/:slug/experts/:expertId/spec',
   auth: 'public',
@@ -474,7 +474,7 @@ const getSpec = defineRoute({
   },
 });
 
-const putSpec = defineRoute({
+const putSpec = defineTool({
   method: 'PUT',
   path: '/harness/:slug/experts/:expertId/spec',
   auth: 'public',
@@ -500,7 +500,7 @@ const putSpec = defineRoute({
   },
 });
 
-const getAssertions = defineRoute({
+const getAssertions = defineTool({
   method: 'GET',
   path: '/harness/:slug/experts/:expertId/assertions',
   auth: 'public',
@@ -512,7 +512,7 @@ const getAssertions = defineRoute({
   },
 });
 
-const putAssertions = defineRoute({
+const putAssertions = defineTool({
   method: 'PUT',
   path: '/harness/:slug/experts/:expertId/assertions',
   auth: 'public',
@@ -538,7 +538,7 @@ const putAssertions = defineRoute({
   },
 });
 
-const listFeedback = defineRoute({
+const listFeedback = defineTool({
   method: 'GET',
   path: '/harness/:slug/experts/:expertId/feedback',
   auth: 'public',
@@ -550,7 +550,7 @@ const listFeedback = defineRoute({
   },
 });
 
-const chatAgents = defineRoute({
+const chatAgents = defineTool({
   method: 'GET',
   path: '/harness/:slug/chat-agents',
   auth: 'public',

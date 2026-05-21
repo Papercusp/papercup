@@ -12,7 +12,7 @@ import { FLAGS } from '@papercusp/flags';
 import { gateApiRoute } from '@/lib/require-flag';
 import { getOrgPg, generated } from '@restart/db-org';
 import FALLBACK_CATALOG from './fallback-catalog.json';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 const hp = generated.hiddenPluginsInHarnessShared;
 
@@ -66,7 +66,7 @@ async function fetchPopularity(base: string): Promise<Map<string, number>> {
   }
 }
 
-export default defineRoute({
+export default defineTool({
   method: 'GET',
   path: '/marketplace/catalog',
   auth: 'public',

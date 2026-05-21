@@ -4,9 +4,9 @@
  */
 import { readDeepgramKey } from '@/lib/voice-credentials';
 import { loadVoicePrefs } from '@/lib/voice-prefs';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
-export default defineRoute({
+export default defineTool({
   method: 'GET',
   path: '/agent-mcp/operator-stt-bootstrap',
   auth: 'public',

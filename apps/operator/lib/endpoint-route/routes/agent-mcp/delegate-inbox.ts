@@ -6,9 +6,9 @@
  */
 import { activeWorkspaceId } from '@/lib/workspace-registry';
 import { drainDelegateInbox, peekDelegateInbox, pushDelegateInbox } from '@/lib/delegate-inbox';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
-const get = defineRoute({
+const get = defineTool({
   method: 'GET',
   path: '/agent-mcp/delegate-inbox',
   auth: 'public',
@@ -32,7 +32,7 @@ const get = defineRoute({
   },
 });
 
-const post = defineRoute({
+const post = defineTool({
   method: 'POST',
   path: '/agent-mcp/delegate-inbox',
   auth: 'public',

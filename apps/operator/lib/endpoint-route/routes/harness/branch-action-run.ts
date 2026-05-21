@@ -14,7 +14,7 @@ import { loadHarnessRegistry } from '@/lib/harness-registry';
 import { papercuspPath } from '@/lib/papercusp-root';
 import { isBranch, runAction, MissingEnvError } from '@/lib/branch-actions';
 import { recordUserAction, updateUserAction } from '@/lib/user-actions';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 function resolvePhasePath(stagingPath: string, branch: 'staging' | 'testing' | 'production'): string {
   if (branch === 'staging') return stagingPath;
@@ -29,7 +29,7 @@ function resolvePhasePath(stagingPath: string, branch: 'staging' | 'testing' | '
   return `${stagingPath}--${branch}`;
 }
 
-export default defineRoute({
+export default defineTool({
   method: 'POST',
   path: '/harness/:slug/branch/:branch/action-run',
   auth: 'public',

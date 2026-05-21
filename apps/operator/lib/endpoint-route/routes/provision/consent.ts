@@ -10,7 +10,7 @@
  * /docs/snapshots/build-scripts#trust-lifecycle.
  */
 import { checkTrust, recordTrust, revokeTrust } from '@/lib/provision/trust-store';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 interface PostBody {
   publisher?: string;
@@ -22,7 +22,7 @@ interface PostBody {
   revoke?: boolean;
 }
 
-const post = defineRoute({
+const post = defineTool({
   method: 'POST',
   path: '/provision/consent',
   auth: { trust: ['verified', 'trusted'] },
@@ -57,7 +57,7 @@ const post = defineRoute({
   },
 });
 
-const get = defineRoute({
+const get = defineTool({
   method: 'GET',
   path: '/provision/consent',
   auth: { trust: ['verified', 'trusted'] },

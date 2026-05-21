@@ -27,7 +27,7 @@ import { join } from 'node:path';
 import { resolvePhasedProject, safeRead } from '@/lib/harness-core';
 import { phasePhaseLabel } from '@/lib/harness-phases';
 import type { ProjectEntry } from '@/lib/harness-registry';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 function phaseFromReq(req: Request) {
   return phasePhaseLabel(new URL(req.url).searchParams.get('phase') ?? undefined);
@@ -42,7 +42,7 @@ function safeName(name: string): string | null {
   return name.replace(/\.md$/i, '') + '.md';
 }
 
-const getSkills = defineRoute({
+const getSkills = defineTool({
   method: 'GET',
   path: '/harness/:slug/skills',
   auth: 'public',
@@ -60,7 +60,7 @@ const getSkills = defineRoute({
   },
 });
 
-const getSkill = defineRoute({
+const getSkill = defineTool({
   method: 'GET',
   path: '/harness/:slug/skills/:name',
   auth: 'public',
@@ -74,7 +74,7 @@ const getSkill = defineRoute({
   },
 });
 
-const putSkill = defineRoute({
+const putSkill = defineTool({
   method: 'PUT',
   path: '/harness/:slug/skills/:name',
   auth: 'public',
@@ -92,7 +92,7 @@ const putSkill = defineRoute({
   },
 });
 
-const deleteSkill = defineRoute({
+const deleteSkill = defineTool({
   method: 'DELETE',
   path: '/harness/:slug/skills/:name',
   auth: 'public',
@@ -106,7 +106,7 @@ const deleteSkill = defineRoute({
   },
 });
 
-const putSupervisorNotes = defineRoute({
+const putSupervisorNotes = defineTool({
   method: 'PUT',
   path: '/harness/:slug/supervisor-notes',
   auth: 'public',
@@ -122,7 +122,7 @@ const putSupervisorNotes = defineRoute({
   },
 });
 
-const appendSupervisorNotes = defineRoute({
+const appendSupervisorNotes = defineTool({
   method: 'POST',
   path: '/harness/:slug/supervisor-notes/append',
   auth: 'public',

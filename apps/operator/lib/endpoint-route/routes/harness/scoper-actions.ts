@@ -23,13 +23,13 @@ import { harnessPackageDir, orchestratorRunBin, tsxBin } from '@/lib/harness-pat
 import { STATE_FILES_FOR_BACKUP } from '@/lib/harness-state-files';
 import { invokeScoperBackground } from '@/lib/harness-scoper';
 import { recordUserAction } from '@/lib/user-actions';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 const dbcFor = (slug: string) => getLegacyClient(slug);
 
 // ── POST /:slug/product-review ─────────────────────────────────────────
 
-const productReview = defineRoute({
+const productReview = defineTool({
   method: 'POST',
   path: '/harness/:slug/product-review',
   auth: 'public',
@@ -47,7 +47,7 @@ const productReview = defineRoute({
 
 // ── POST /:slug/replan — two modes (delta-merge default, destructive overwrite) ──
 
-const replan = defineRoute({
+const replan = defineTool({
   method: 'POST',
   path: '/harness/:slug/replan',
   auth: 'public',
@@ -134,7 +134,7 @@ const replan = defineRoute({
 
 // ── POST /:slug/cleanup ────────────────────────────────────────────────
 
-const cleanup = defineRoute({
+const cleanup = defineTool({
   method: 'POST',
   path: '/harness/:slug/cleanup',
   auth: 'public',

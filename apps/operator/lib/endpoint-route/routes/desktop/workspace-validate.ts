@@ -8,7 +8,7 @@ import { promises as fs } from 'node:fs';
 import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, resolve, dirname } from 'node:path';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 function expand(raw: string): string {
   const trimmed = raw.trim();
@@ -28,7 +28,7 @@ async function isWritableDir(path: string): Promise<boolean> {
   }
 }
 
-export default defineRoute({
+export default defineTool({
   method: 'POST',
   path: '/desktop/workspace-validate',
   auth: {},

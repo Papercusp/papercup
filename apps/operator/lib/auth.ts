@@ -55,7 +55,7 @@ function parseCookieHeader(header: string | null | undefined): Map<string, strin
 
 /**
  * Resolve the session token. The Next-free path: pass the request's
- * `Headers` (every `defineRoute` handler does — `req.headers`) and the
+ * `Headers` (every `defineTool` handler does — `req.headers`) and the
  * token is read from the `Cookie` header. The legacy path: omit `headers`
  * and the token comes from Next's ambient `cookies()` — used only by
  * `route.ts` handlers still served by Next during the endpoint migration.
@@ -81,7 +81,7 @@ async function resolveSessionToken(headers?: Headers): Promise<string | undefine
  * Look up the current session user from the request cookie. Returns null
  * if no session, expired, or user inactive. Updates last_seen_at on hit.
  *
- * Pass `headers` from a `defineRoute` handler (`req.headers`); omit it
+ * Pass `headers` from a `defineTool` handler (`req.headers`); omit it
  * only from legacy Next `route.ts` handlers (ambient-cookie fallback).
  */
 export async function getSessionUser(headers?: Headers): Promise<User | null> {

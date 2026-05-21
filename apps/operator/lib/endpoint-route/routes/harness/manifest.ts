@@ -7,9 +7,9 @@ import { promises as fs, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { papercuspPath } from '@/lib/papercusp-root';
 import { loadHarnessRegistry } from '@/lib/harness-registry';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
-export default defineRoute({
+export default defineTool({
   method: 'GET',
   path: '/harness/:slug/manifest',
   auth: 'public',

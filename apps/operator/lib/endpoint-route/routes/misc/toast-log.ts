@@ -7,7 +7,7 @@ import { desc, inArray } from 'drizzle-orm';
 import { ensureToastLogTable } from '@/lib/ensure-schema';
 import { notifySyncInvalidate } from '@/lib/sync-sse';
 import { listToasts } from '@/lib/toast-log-data';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 const tl = generated.toastLogInHarnessShared;
 
@@ -17,7 +17,7 @@ const RING_BUFFER_SIZE = 2000;
 const VALID_LEVELS = new Set(['default', 'info', 'success', 'warning', 'error', 'loading']);
 
 export default [
-  defineRoute({
+  defineTool({
     method: 'POST',
     path: '/toast-log',
     auth: 'public',
@@ -78,7 +78,7 @@ export default [
       return Response.json({ id: Number(row.id), createdAt });
     },
   }),
-  defineRoute({
+  defineTool({
     method: 'GET',
     path: '/toast-log',
     auth: 'public',
@@ -90,7 +90,7 @@ export default [
       return Response.json(await listToasts({ limit, since, slug }));
     },
   }),
-  defineRoute({
+  defineTool({
     method: 'DELETE',
     path: '/toast-log',
     auth: 'public',

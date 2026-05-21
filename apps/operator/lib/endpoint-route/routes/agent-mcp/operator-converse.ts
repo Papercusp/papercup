@@ -15,7 +15,7 @@ import {
 import '@/lib/agent-tools/index';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
 import { checkBudget } from '@/lib/operator-budget';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 interface ConverseRequestBody {
   messages?: Array<{ role: 'user' | 'assistant' | 'system'; content: string }>;
@@ -28,7 +28,7 @@ interface ConverseRequestBody {
   isAutoFire?: boolean;
 }
 
-export default defineRoute({
+export default defineTool({
   method: 'POST',
   path: '/agent-mcp/operator-converse',
   auth: 'public',

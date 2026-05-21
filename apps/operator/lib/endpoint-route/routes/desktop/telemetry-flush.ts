@@ -4,9 +4,9 @@
  * Ported from app/api/desktop/telemetry-flush/route.ts. `auth: {}`.
  */
 import { flushTelemetry } from '@/lib/telemetry-flush';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
-export default defineRoute({
+export default defineTool({
   method: 'POST',
   path: '/desktop/telemetry-flush',
   auth: {},

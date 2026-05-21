@@ -12,7 +12,7 @@ import { promises as fs } from 'node:fs';
 import { join } from 'node:path';
 import { FLAGS } from '@papercusp/flags';
 import { gateApiRoute } from '@/lib/require-flag';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 const ROOTS = {
   baseline: 'lostpixel-baseline',
@@ -36,7 +36,7 @@ async function listDir(absDir: string) {
   }
 }
 
-export default defineRoute({
+export default defineTool({
   method: 'GET',
   path: '/design/regressions',
   auth: 'public',

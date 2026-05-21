@@ -17,9 +17,9 @@ import { join } from 'node:path';
 import { resolveProject, resolvePhasedProject, harnessDir } from '@/lib/harness-core';
 import { phasePhaseLabel } from '@/lib/harness-phases';
 import { harnessPath } from '@/lib/harness-paths';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
-const runSmokeTest = defineRoute({
+const runSmokeTest = defineTool({
   method: 'POST',
   path: '/harness/:slug/smoke-test/run',
   auth: 'public',
@@ -42,7 +42,7 @@ const runSmokeTest = defineRoute({
   },
 });
 
-const architectApply = defineRoute({
+const architectApply = defineTool({
   method: 'POST',
   path: '/harness/:slug/architect/apply',
   auth: 'public',

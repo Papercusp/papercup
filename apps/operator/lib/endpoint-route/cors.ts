@@ -3,7 +3,7 @@
  *
  * The legacy `_hono/mobile.ts` router carried its own `cors()` block
  * (apps/operator/app/api/_hono/mobile.ts). As the 33 mobile routes
- * migrate to `defineRoute` (Phase E4), each one would otherwise have to
+ * migrate to `defineTool` (Phase E4), each one would otherwise have to
  * re-declare CORS. Instead a route opts in with `mobile: true` and
  * `registerRoute` applies this middleware for it — one allowlist, one
  * place.
@@ -36,7 +36,7 @@ export function mobileOrigin(origin: string | undefined | null): string {
 
 /**
  * The shared mobile CORS middleware. Applied by `registerRoute` to any
- * `defineRoute` declaring `mobile: true`. Handles the OPTIONS preflight
+ * `defineTool` declaring `mobile: true`. Handles the OPTIONS preflight
  * itself (204 + headers) so the route file never needs an OPTIONS
  * handler.
  */

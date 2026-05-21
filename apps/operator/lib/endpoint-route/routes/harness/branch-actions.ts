@@ -11,7 +11,7 @@ import { loadHarnessRegistry } from '@/lib/harness-registry';
 import { papercuspPath } from '@/lib/papercusp-root';
 import { isBranch, listActions, listRuns } from '@/lib/branch-actions';
 import { resolveEnv } from '@/lib/branch-action-manifest';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 type Payload = { branch: string; actions: unknown[] };
 const ACTIONS_CACHE_TTL_MS = 1000;
@@ -63,7 +63,7 @@ async function compute(slug: string, branch: string): Promise<Payload | { error:
   return { branch, actions: enriched };
 }
 
-export default defineRoute({
+export default defineTool({
   method: 'GET',
   path: '/harness/:slug/branch/:branch/actions',
   auth: 'public',

@@ -7,9 +7,9 @@
  */
 import { getOrgPg } from '@restart/db-org';
 import { deriveCallerFromBearer } from '@/lib/execute-action';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
-export default defineRoute({
+export default defineTool({
   method: 'POST',
   path: '/admin/prune-executed-actions',
   auth: { trust: ['verified', 'trusted'] },

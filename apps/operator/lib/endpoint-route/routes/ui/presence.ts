@@ -8,7 +8,7 @@ import { z } from 'zod';
 import { getOrgPg } from '@restart/db-org';
 import { isLoopbackRequest } from '@/lib/superuser-token';
 import { ensureUiClientsTable } from '@/lib/ensure-schema';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 const BodySchema = z.object({
   client_id: z.string().min(8).max(128),
@@ -18,7 +18,7 @@ const BodySchema = z.object({
   viewport: z.record(z.string(), z.unknown()).nullable().optional(),
 });
 
-export default defineRoute({
+export default defineTool({
   method: 'POST',
   path: '/ui/presence',
   auth: 'public',

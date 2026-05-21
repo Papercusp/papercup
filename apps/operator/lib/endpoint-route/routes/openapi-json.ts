@@ -2,16 +2,16 @@
  * GET /api/openapi.json — runtime-assembled OpenAPI 3.1 document.
  *
  * Walks the live projection registry (`listAllProjectedTools()`) +
- * the defineRoute fragments and emits one path per operation.
+ * the defineTool fragments and emits one path per operation.
  *
  * Ported from app/api/openapi.json/route.ts. `auth: 'public'`.
  */
 import { assembleOpenApiDocument, listAllProjectedTools } from '@papercusp/agent-mcp';
 import { allRouteFragments } from '../openapi';
 import '@/lib/agent-tools/index';
-import { defineRoute } from '../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
-export default defineRoute({
+export default defineTool({
   method: 'GET',
   path: '/openapi.json',
   auth: 'public',
@@ -29,7 +29,7 @@ export default defineRoute({
       description:
         'The full Papercusp API surface. `defineTool` operations are agent ' +
         'tools (POST, with a typed event channel under text/event-stream). ' +
-        '`defineRoute` operations (x-papercusp-projection: route) are HTTP ' +
+        '`defineTool` operations (x-papercusp-projection: route) are HTTP ' +
         'plumbing endpoints — UI data, webhooks, transports.',
       ...(origin ? { servers: [{ url: origin, description: 'this operator' }] } : {}),
       extraFragments: allRouteFragments(),

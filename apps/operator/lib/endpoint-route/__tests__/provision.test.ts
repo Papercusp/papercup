@@ -1,7 +1,7 @@
 /**
  * Verification for the ported `provision` family — consent / host-check /
  * state / run / stream — mounted on a throwaway Hono app. Proves the
- * `defineRoute` ports preserve status codes, JSON bodies, validation
+ * `defineTool` ports preserve status codes, JSON bodies, validation
  * branches, and (for `stream`) the SSE response shape.
  *
  * Provision libs are mocked — this tests the route ports, not the

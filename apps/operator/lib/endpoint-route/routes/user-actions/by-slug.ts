@@ -3,9 +3,9 @@
  * Ported from app/api/user-actions/[slug]/route.ts. `auth: 'public'`.
  */
 import { InvalidSlugError, listUserActions } from '@/lib/user-actions-data';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
-export default defineRoute({
+export default defineTool({
   method: 'GET',
   path: '/user-actions/:slug',
   auth: 'public',

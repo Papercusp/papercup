@@ -14,7 +14,7 @@
  *   POST   /mobile/operator/standing-candidates/decide  mobile JWT
  */
 import { z } from 'zod';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 import { MOBILE_AUTH, mobilePrincipal } from './_shared';
 import { recentToasts, recentAuditEntries } from '@/lib/mobile-feeds';
 import {
@@ -36,7 +36,7 @@ function limitParam(req: Request): number {
 
 /* ─── Activity feeds ─────────────────────────────────────────────────── */
 
-const notificationsRecent = defineRoute({
+const notificationsRecent = defineTool({
   method: 'GET',
   path: '/mobile/notifications/recent',
   auth: MOBILE_AUTH,
@@ -47,7 +47,7 @@ const notificationsRecent = defineRoute({
   },
 });
 
-const actionsRecent = defineRoute({
+const actionsRecent = defineTool({
   method: 'GET',
   path: '/mobile/actions/recent',
   auth: MOBILE_AUTH,
@@ -60,7 +60,7 @@ const actionsRecent = defineRoute({
 
 /* ─── Global pause flag ──────────────────────────────────────────────── */
 
-const pauseGet = defineRoute({
+const pauseGet = defineTool({
   method: 'GET',
   path: '/mobile/operator/pause',
   auth: MOBILE_AUTH,
@@ -70,7 +70,7 @@ const pauseGet = defineRoute({
   },
 });
 
-const pauseSet = defineRoute({
+const pauseSet = defineTool({
   method: 'POST',
   path: '/mobile/operator/pause',
   auth: MOBILE_AUTH,
@@ -81,7 +81,7 @@ const pauseSet = defineRoute({
   },
 });
 
-const pauseClear = defineRoute({
+const pauseClear = defineTool({
   method: 'DELETE',
   path: '/mobile/operator/pause',
   auth: MOBILE_AUTH,
@@ -94,7 +94,7 @@ const pauseClear = defineRoute({
 
 /* ─── Operator cards ─────────────────────────────────────────────────── */
 
-const cardsList = defineRoute({
+const cardsList = defineTool({
   method: 'GET',
   path: '/mobile/operator/cards',
   auth: MOBILE_AUTH,
@@ -104,7 +104,7 @@ const cardsList = defineRoute({
   },
 });
 
-const cardDispatch = defineRoute({
+const cardDispatch = defineTool({
   method: 'POST',
   path: '/mobile/operator/cards/:id/dispatch',
   auth: MOBILE_AUTH,
@@ -118,7 +118,7 @@ const cardDispatch = defineRoute({
   },
 });
 
-const cardDismiss = defineRoute({
+const cardDismiss = defineTool({
   method: 'POST',
   path: '/mobile/operator/cards/:id/dismiss',
   auth: MOBILE_AUTH,
@@ -134,7 +134,7 @@ const cardDismiss = defineRoute({
 
 /* ─── Standing-approval candidates ───────────────────────────────────── */
 
-const standingCandidatesList = defineRoute({
+const standingCandidatesList = defineTool({
   method: 'GET',
   path: '/mobile/operator/standing-candidates',
   auth: MOBILE_AUTH,
@@ -145,7 +145,7 @@ const standingCandidatesList = defineRoute({
   },
 });
 
-const standingCandidatesDecide = defineRoute({
+const standingCandidatesDecide = defineTool({
   method: 'POST',
   path: '/mobile/operator/standing-candidates/decide',
   auth: MOBILE_AUTH,

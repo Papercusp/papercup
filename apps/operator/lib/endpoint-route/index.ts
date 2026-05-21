@@ -1,16 +1,16 @@
 /**
- * @module endpoint-route — the `defineRoute` projection.
+ * @module endpoint-route — the HTTP route projection.
  *
- * The endpoint-system's second projection (sibling to `defineTool`):
- * HTTP-native plumbing endpoints, mounted on the Hono app, with the
- * cross-cutting machinery (auth, input validation, timeout, telemetry,
- * uniform errors) — but deliberately NOT in the agent tool catalog.
+ * The endpoint-system's route projection: HTTP-native plumbing endpoints
+ * declared with `defineTool` (route-shaped input), mounted on the Hono
+ * app via `registerRoute`, with the cross-cutting machinery (auth, input
+ * validation, timeout, telemetry, uniform errors) — but deliberately NOT
+ * in the agent tool catalog.
  *
  * Plan: apps/operator/docs/plans/endpoint-route-migration-2026-05-20.md
  */
 
 export {
-  defineRoute,
   registerRoute,
   type RouteDefinition,
   type RouteContext,

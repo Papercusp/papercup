@@ -12,7 +12,7 @@ import type { CommandContext, CommandResult } from '@/lib/commands/types';
 import { verifyElevenLabsSignature } from '@/lib/elevenlabs-webhook-auth';
 import '@/lib/commands/audit-server';
 import '@/lib/commands/defs';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 interface ElevenLabsWebhookPayload {
   tool_name?: string;
@@ -29,7 +29,7 @@ interface ElevenLabsWebhookPayload {
   data?: { tool_name?: string; parameters?: unknown };
 }
 
-export default defineRoute({
+export default defineTool({
   method: 'POST',
   path: '/elevenlabs/webhook',
   auth: 'public',

@@ -11,9 +11,9 @@ import {
   executeAction,
   type ExecuteActionRequest,
 } from '@/lib/execute-action';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
-export default defineRoute({
+export default defineTool({
   method: 'POST',
   path: '/admin/execute-action',
   auth: { trust: ['verified', 'trusted'] },

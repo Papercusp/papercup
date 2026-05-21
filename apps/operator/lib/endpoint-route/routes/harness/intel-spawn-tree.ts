@@ -5,11 +5,11 @@
  */
 import { getOrgPg } from '@restart/db-org';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 const ALLOWED_STATUS = new Set(['ok', 'error', 'timeout', 'quota-exceeded', 'role-not-allowed']);
 
-export default defineRoute({
+export default defineTool({
   method: 'GET',
   path: '/harness/:slug/intel/spawn-tree',
   auth: 'public',

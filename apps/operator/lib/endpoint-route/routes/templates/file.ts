@@ -13,7 +13,7 @@ import { join, normalize, relative, dirname } from 'node:path';
 import { papercuspPath } from '@/lib/papercusp-root';
 import { FLAGS } from '@papercusp/flags';
 import { gateApiRoute } from '@/lib/require-flag';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 const SLUG_RE = /^[a-z0-9][a-z0-9._-]{0,63}$/i;
 
@@ -57,7 +57,7 @@ async function authorize(slug: string, version: string, rel: string) {
   return { ok: true as const, abs };
 }
 
-const get = defineRoute({
+const get = defineTool({
   method: 'GET',
   path: '/templates/:slug/:version/file',
   auth: 'public',
@@ -78,7 +78,7 @@ const get = defineRoute({
   },
 });
 
-const put = defineRoute({
+const put = defineTool({
   method: 'PUT',
   path: '/templates/:slug/:version/file',
   auth: 'public',

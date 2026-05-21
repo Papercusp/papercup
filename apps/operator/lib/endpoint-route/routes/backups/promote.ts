@@ -6,14 +6,14 @@
 import { z } from 'zod';
 import { workspaceBackupFor, triggerSnapshotEvent } from '@/lib/backup';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 const Schema = z.object({
   restoredPath: z.string().min(1),
   liveTarget: z.string().min(1).optional(),
 });
 
-export default defineRoute({
+export default defineTool({
   method: 'POST',
   path: '/backups/promote',
   auth: 'public',

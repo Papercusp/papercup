@@ -6,7 +6,7 @@
  * Ported from app/api/desktop/telemetry-report/route.ts. `auth: {}`.
  */
 import { readOperatorState, writeOperatorState } from '@/lib/operator-state-pg';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 const REPORTS_KEY = 'telemetry_reports';
 const WIZARD_KEY = 'setup_wizard_state';
@@ -28,7 +28,7 @@ function defaults(): ReportsState {
   return { reports: [] };
 }
 
-const get = defineRoute({
+const get = defineTool({
   method: 'GET',
   path: '/desktop/telemetry-report',
   auth: {},
@@ -38,7 +38,7 @@ const get = defineRoute({
   },
 });
 
-const post = defineRoute({
+const post = defineTool({
   method: 'POST',
   path: '/desktop/telemetry-report',
   auth: {},

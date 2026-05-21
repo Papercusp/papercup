@@ -15,7 +15,7 @@
  * Added in Phase E2 (endpoint-unification-2026-05-21) so `requirePrincipal`
  * covers the agent-bearer path. Before this, agent bearers only resolved
  * through the projected-tool HTTP catchall's bespoke `resolveBearer`
- * call — `requirePrincipal()` (and therefore every `defineRoute`) was
+ * call — `requirePrincipal()` (and therefore every `defineTool`) was
  * blind to them.
  */
 

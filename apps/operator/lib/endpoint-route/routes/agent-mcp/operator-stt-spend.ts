@@ -9,9 +9,9 @@ import {
   DEFAULT_STT_SPEND_STATE,
   type SttSpendState,
 } from '@/lib/stt-spend';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
-const get = defineRoute({
+const get = defineTool({
   method: 'GET',
   path: '/agent-mcp/operator-stt-spend',
   auth: 'public',
@@ -20,7 +20,7 @@ const get = defineRoute({
   },
 });
 
-const post = defineRoute({
+const post = defineTool({
   method: 'POST',
   path: '/agent-mcp/operator-stt-spend',
   auth: 'public',
@@ -44,7 +44,7 @@ const post = defineRoute({
   },
 });
 
-const put = defineRoute({
+const put = defineTool({
   method: 'PUT',
   path: '/agent-mcp/operator-stt-spend',
   auth: 'public',

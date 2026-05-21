@@ -7,11 +7,11 @@
  */
 import { gzipSync } from 'node:zlib';
 import { resolveNamedQuery } from '@/lib/zero-harness-resolver';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 interface BatchQuery { name: string; args?: unknown }
 
-export default defineRoute({
+export default defineTool({
   method: 'POST',
   path: '/zero-harness/rest-query-batch',
   auth: 'public',

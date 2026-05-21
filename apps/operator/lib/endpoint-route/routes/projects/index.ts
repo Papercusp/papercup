@@ -14,14 +14,14 @@
  */
 import { randomUUID } from 'node:crypto';
 import { withWorkspaceLegacy } from '@restart/db-org';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
 import { getProjectDetail, listProjectsForHarness } from '@/lib/projects-data';
 import { runProjectManager } from '@/lib/pm-dispatch';
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
-const listProjects = defineRoute({
+const listProjects = defineTool({
   method: 'GET',
   path: '/harness/:slug/projects',
   auth: 'public',
@@ -34,7 +34,7 @@ const listProjects = defineRoute({
   },
 });
 
-const projectDetail = defineRoute({
+const projectDetail = defineTool({
   method: 'GET',
   path: '/harness/:slug/projects/:id',
   auth: 'public',
@@ -49,7 +49,7 @@ const projectDetail = defineRoute({
   },
 });
 
-const specRevisions = defineRoute({
+const specRevisions = defineTool({
   method: 'GET',
   path: '/harness/:slug/projects/:id/spec/revisions',
   auth: 'public',
@@ -86,7 +86,7 @@ const specRevisions = defineRoute({
   },
 });
 
-const specRevision = defineRoute({
+const specRevision = defineTool({
   method: 'GET',
   path: '/harness/:slug/projects/:id/spec/revisions/:revId',
   auth: 'public',
@@ -116,7 +116,7 @@ const specRevision = defineRoute({
   },
 });
 
-const putSpec = defineRoute({
+const putSpec = defineTool({
   method: 'PUT',
   path: '/harness/:slug/projects/:id/spec',
   auth: 'public',
@@ -151,7 +151,7 @@ const putSpec = defineRoute({
   },
 });
 
-const regenerateSpec = defineRoute({
+const regenerateSpec = defineTool({
   method: 'POST',
   path: '/harness/:slug/projects/:id/regenerate-spec',
   auth: 'public',

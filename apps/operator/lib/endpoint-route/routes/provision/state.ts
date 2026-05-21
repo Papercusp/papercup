@@ -9,9 +9,9 @@
  */
 import { readState } from '@/lib/provision/state-store';
 import { readAudit } from '@/lib/provision/audit-log';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
-export default defineRoute({
+export default defineTool({
   method: 'GET',
   path: '/provision/state',
   auth: { trust: ['verified', 'trusted'] },

@@ -6,9 +6,9 @@
  */
 import { listAdminTables } from '@/lib/admin-tables';
 import { getTableConfig, type PgTable } from 'drizzle-orm/pg-core';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
-export default defineRoute({
+export default defineTool({
   method: 'GET',
   path: '/admin/tables',
   auth: { trust: ['verified', 'trusted'] },

@@ -17,7 +17,7 @@ import {
 import { drizzle } from 'drizzle-orm/postgres-js';
 import { getOrgPg, generated, withWorkspaceQuery } from '@restart/db-org';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 type Op =
   | 'eq' | 'ne' | 'gt' | 'lt' | 'gte' | 'lte'
@@ -101,7 +101,7 @@ function buildPredicate(
   return preds.length === 1 ? preds[0] : and(...preds);
 }
 
-export default defineRoute({
+export default defineTool({
   method: 'GET',
   path: '/dev/tables/:exportName/rows',
   auth: { trust: ['verified', 'trusted'] },

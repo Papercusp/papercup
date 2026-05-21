@@ -3,13 +3,13 @@
  *
  * Ported from app/api/admin/commands/route.ts. `auth: 'public'` —
  * faithful (no prior auth check). The Next `import 'server-only'`
- * poison-pill is dropped: a `defineRoute` module is server-only by
+ * poison-pill is dropped: a `defineTool` module is server-only by
  * construction (only the route registry imports it).
  */
 import { listCommands } from '@/lib/admin-commands';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
-export default defineRoute({
+export default defineTool({
   method: 'GET',
   path: '/admin/commands',
   auth: { trust: ['verified', 'trusted'] },

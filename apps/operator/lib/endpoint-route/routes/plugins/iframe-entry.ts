@@ -6,9 +6,9 @@
 import { readFile } from 'node:fs/promises';
 import { normalize, resolve } from 'node:path';
 import { getPluginHost } from '@/lib/plugin-host-runtime';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
-export default defineRoute({
+export default defineTool({
   method: 'GET',
   path: '/plugins/:slug/iframe/:entry',
   auth: 'public',

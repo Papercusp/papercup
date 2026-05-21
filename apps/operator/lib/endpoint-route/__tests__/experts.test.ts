@@ -68,7 +68,7 @@ afterEach(() => {
 });
 
 async function call(method: string, url: string, body?: unknown): Promise<{ status: number; data: any }> {
-  // Routes moved to /api/harness/:slug/... (defineRoute) — the test-body
+  // Routes moved to /api/harness/:slug/... (defineTool) — the test-body
   // `url`s are still `/experts...`, so prefix the harness path here.
   const res = await app.fetch(jsonReq(method, `/api/harness/${SLUG}${url}`, body));
   const text = await res.text();

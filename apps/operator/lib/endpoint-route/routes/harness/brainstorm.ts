@@ -22,7 +22,7 @@ import { phasePhaseLabel } from '@/lib/harness-phases';
 import { loadIssuesOrSeed, saveIssues } from '@/lib/harness-issues';
 import { auditFeatureChange } from '@/lib/feature-audit';
 import type { ProjectEntry } from '@/lib/harness-registry';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 function phaseFromReq(req: Request) {
   return phasePhaseLabel(new URL(req.url).searchParams.get('phase') ?? undefined);
@@ -83,7 +83,7 @@ async function saveBrainstorm(slug: string, patch: { content?: string; canvas?: 
   await notifySyncInvalidate('harnessBrainstorm.byHarness', { harnessSlug: slug });
 }
 
-const getBrainstorm = defineRoute({
+const getBrainstorm = defineTool({
   method: 'GET',
   path: '/harness/:slug/brainstorm',
   auth: 'public',
@@ -97,7 +97,7 @@ const getBrainstorm = defineRoute({
   },
 });
 
-const putBrainstorm = defineRoute({
+const putBrainstorm = defineTool({
   method: 'PUT',
   path: '/harness/:slug/brainstorm',
   auth: 'public',
@@ -113,7 +113,7 @@ const putBrainstorm = defineRoute({
   },
 });
 
-const getCanvas = defineRoute({
+const getCanvas = defineTool({
   method: 'GET',
   path: '/harness/:slug/brainstorm-canvas',
   auth: 'public',
@@ -130,7 +130,7 @@ const getCanvas = defineRoute({
   },
 });
 
-const putCanvas = defineRoute({
+const putCanvas = defineTool({
   method: 'PUT',
   path: '/harness/:slug/brainstorm-canvas',
   auth: 'public',
@@ -146,7 +146,7 @@ const putCanvas = defineRoute({
   },
 });
 
-const getMindmap = defineRoute({
+const getMindmap = defineTool({
   method: 'GET',
   path: '/harness/:slug/brainstorm-mindmap',
   auth: 'public',
@@ -163,7 +163,7 @@ const getMindmap = defineRoute({
   },
 });
 
-const putMindmap = defineRoute({
+const putMindmap = defineTool({
   method: 'PUT',
   path: '/harness/:slug/brainstorm-mindmap',
   auth: 'public',
@@ -187,7 +187,7 @@ const putMindmap = defineRoute({
  * that still lived in harness.ts; ships now that 25a + 26a relocated
  * those helpers to lib/.
  */
-const promote = defineRoute({
+const promote = defineTool({
   method: 'POST',
   path: '/harness/:slug/brainstorm/promote',
   auth: 'public',

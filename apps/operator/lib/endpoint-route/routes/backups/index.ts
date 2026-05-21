@@ -7,7 +7,7 @@
 import { z } from 'zod';
 import { workspaceBackupFor } from '@/lib/backup';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 const RetentionSchema = z.object({
   keepLatest: z.number().int().min(1),
@@ -30,7 +30,7 @@ const SettingsSchema = z.object({
   excludedPaths: z.array(z.string()),
 });
 
-const get = defineRoute({
+const get = defineTool({
   method: 'GET',
   path: '/backups',
   auth: 'public',
@@ -57,7 +57,7 @@ const get = defineRoute({
   },
 });
 
-const put = defineRoute({
+const put = defineTool({
   method: 'PUT',
   path: '/backups',
   auth: 'public',

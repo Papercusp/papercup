@@ -10,7 +10,7 @@ import { sseResponse } from '@restart/sse';
 import { getOrgPg } from '@restart/db-org';
 import { isLoopbackRequest } from '@/lib/superuser-token';
 import { ensureUiIntentsTable } from '@/lib/ensure-schema';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 const POLL_MS = 250;
 
@@ -18,7 +18,7 @@ type Events = {
   message: { id: number; intent: string; args: Record<string, unknown> };
 }
 
-export default defineRoute({
+export default defineTool({
   method: 'GET',
   path: '/ui/intents/stream',
   auth: 'public',

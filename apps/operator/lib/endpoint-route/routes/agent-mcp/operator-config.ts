@@ -5,7 +5,7 @@
  */
 import { OPERATOR_SUBSTRATE_PROMPT } from '@/lib/operator-prompt-system';
 import { readOperatorState, writeOperatorState } from '@/lib/operator-state-pg';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 const DEFAULT_PROMPT_USER = `# Operator voice + free-form preferences
 
@@ -45,7 +45,7 @@ async function buildPayload() {
   };
 }
 
-const get = defineRoute({
+const get = defineTool({
   method: 'GET',
   path: '/agent-mcp/operator-config',
   auth: 'public',
@@ -54,7 +54,7 @@ const get = defineRoute({
   },
 });
 
-const put = defineRoute({
+const put = defineTool({
   method: 'PUT',
   path: '/agent-mcp/operator-config',
   auth: 'public',

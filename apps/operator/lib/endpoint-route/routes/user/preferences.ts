@@ -9,9 +9,9 @@
  */
 import { getSessionUser } from '@/lib/auth';
 import { loadUserPreferences, saveUserPreferences, clearUserPreferenceKey } from '@/lib/user-preferences';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
-const get = defineRoute({
+const get = defineTool({
   method: 'GET',
   path: '/user/preferences',
   auth: 'public',
@@ -23,7 +23,7 @@ const get = defineRoute({
   },
 });
 
-const patch = defineRoute({
+const patch = defineTool({
   method: 'PATCH',
   path: '/user/preferences',
   auth: 'public',
@@ -39,7 +39,7 @@ const patch = defineRoute({
   },
 });
 
-const del = defineRoute({
+const del = defineTool({
   method: 'DELETE',
   path: '/user/preferences',
   auth: 'public',

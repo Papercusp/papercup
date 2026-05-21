@@ -3,9 +3,9 @@
  * Ported from app/api/agent-mcp/operator-tts-spend/route.ts. `auth: 'public'`.
  */
 import { loadSpend, saveSpend } from '@/lib/tts-spend';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
-const get = defineRoute({
+const get = defineTool({
   method: 'GET',
   path: '/agent-mcp/operator-tts-spend',
   auth: 'public',
@@ -14,7 +14,7 @@ const get = defineRoute({
   },
 });
 
-const put = defineRoute({
+const put = defineTool({
   method: 'PUT',
   path: '/agent-mcp/operator-tts-spend',
   auth: 'public',

@@ -7,7 +7,7 @@
 import { z } from 'zod';
 import { workspaceBackupFor } from '@/lib/backup';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 const PostSchema = z.object({
   reason: z.enum([
@@ -17,7 +17,7 @@ const PostSchema = z.object({
   context: z.record(z.string(), z.unknown()).optional(),
 });
 
-const get = defineRoute({
+const get = defineTool({
   method: 'GET',
   path: '/backups/snapshots',
   auth: 'public',
@@ -34,7 +34,7 @@ const get = defineRoute({
   },
 });
 
-const post = defineRoute({
+const post = defineTool({
   method: 'POST',
   path: '/backups/snapshots',
   auth: 'public',

@@ -82,8 +82,8 @@ function deriveDescriptionFromCallSite(): string | null {
  * `defineTool` accepts THREE shapes, discriminated structurally:
  *   - **route-shaped** (`{ method, path, auth, handler }`) → returns a
  *     `RouteDefinition`. A plain Hono route; NOT in the agent catalog.
- *     The host mounts it via `registerRoute`. This is the collapsed-in
- *     `defineRoute` — the app re-exports `defineTool` under that name.
+ *     The host mounts it via `registerRoute`. Authors call `defineTool`
+ *     directly for routes (the former `defineRoute` alias is removed).
  *   - **role-gated tool** (`{ requirePrincipal: false, … }`) → a
  *     `RoleToolDefinition`, projected to MCP + the HTTP catch-all.
  *   - **principal-gated tool** (the default) → a `ToolDefinition`.

@@ -9,7 +9,7 @@
  */
 import { readdirSync, readFileSync, existsSync, statSync } from 'node:fs';
 import { join, basename } from 'node:path';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 interface DocCandidate {
   slug: string;
@@ -114,7 +114,7 @@ function score(query: Set<string>, doc: DocCandidate): number {
   return s;
 }
 
-export default defineRoute({
+export default defineTool({
   method: 'GET',
   path: '/harness/:slug/experts/:expertId/related-docs',
   auth: 'public',

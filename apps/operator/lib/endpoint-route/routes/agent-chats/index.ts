@@ -18,7 +18,7 @@ import { sseResponse } from '@restart/sse';
 import { dispatchProjectedToolStream, lookupByMcpName } from '@papercusp/agent-mcp';
 import { getLegacyClient } from '@restart/db-org';
 import { assembleRolePrompt } from '@papercusp/orchestrator/role-prompt';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
 import { buildMemoryContextBlock } from '@/lib/memory/injection';
 import { projectDirForSlug } from '@/lib/operator-notes';
@@ -91,7 +91,7 @@ async function aggregateChatCostCents(slug: string): Promise<number> {
   }
 }
 
-const listChatsRoute = defineRoute({
+const listChatsRoute = defineTool({
   method: 'GET',
   path: '/harness/:slug/agent-chats',
   auth: 'public',
@@ -106,7 +106,7 @@ const listChatsRoute = defineRoute({
   },
 });
 
-const createChatRoute = defineRoute({
+const createChatRoute = defineTool({
   method: 'POST',
   path: '/harness/:slug/agent-chats',
   auth: 'public',
@@ -125,7 +125,7 @@ const createChatRoute = defineRoute({
   },
 });
 
-const getChatRoute = defineRoute({
+const getChatRoute = defineTool({
   method: 'GET',
   path: '/harness/:slug/agent-chats/:chatId',
   auth: 'public',
@@ -137,7 +137,7 @@ const getChatRoute = defineRoute({
   },
 });
 
-const archiveChatRoute = defineRoute({
+const archiveChatRoute = defineTool({
   method: 'DELETE',
   path: '/harness/:slug/agent-chats/:chatId',
   auth: 'public',
@@ -149,7 +149,7 @@ const archiveChatRoute = defineRoute({
   },
 });
 
-const messagesRoute = defineRoute({
+const messagesRoute = defineTool({
   method: 'POST',
   path: '/harness/:slug/agent-chats/:chatId/messages',
   auth: 'public',

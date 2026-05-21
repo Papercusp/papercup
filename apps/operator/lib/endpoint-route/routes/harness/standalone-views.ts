@@ -15,11 +15,11 @@ import { getLegacyClient } from '@restart/db-org';
 import { harnessPath } from '@/lib/harness-paths';
 import { rowToFeature, safeRead } from '@/lib/harness-core';
 import { TEMPLATE_DETECT_FILES } from '@/lib/harness-state-files';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 const TEMPLATES_DIR = () => harnessPath('templates', 'projects');
 
-const getIdentity = defineRoute({
+const getIdentity = defineTool({
   method: 'GET',
   path: '/harness/identity',
   auth: 'public',
@@ -68,7 +68,7 @@ const getIdentity = defineRoute({
   },
 });
 
-const getNeedsHumanReview = defineRoute({
+const getNeedsHumanReview = defineTool({
   method: 'GET',
   path: '/harness/needs-human-review',
   auth: 'public',
@@ -97,7 +97,7 @@ const getNeedsHumanReview = defineRoute({
   },
 });
 
-const getTemplates = defineRoute({
+const getTemplates = defineTool({
   method: 'GET',
   path: '/harness/templates',
   auth: 'public',
@@ -129,7 +129,7 @@ const getTemplates = defineRoute({
   },
 });
 
-const getTemplateFile = defineRoute({
+const getTemplateFile = defineTool({
   method: 'GET',
   path: '/harness/templates/:id/file',
   auth: 'public',

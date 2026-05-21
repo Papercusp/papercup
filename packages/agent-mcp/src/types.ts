@@ -80,7 +80,7 @@ export interface Principal {
 /**
  * Auth-gate requirements applied to a resolved `Principal`. Used by both
  * `requirePrincipal()` (the host-side resolver) and `defineTool`/
- * `defineRoute` (the endpoint primitive's `auth` field).
+ * `defineTool` (the endpoint primitive's `auth` field).
  *
  * Lives in `@papercusp/agent-mcp` rather than `apps/operator/lib/auth` so
  * the endpoint primitive can reference it without creating an
@@ -325,7 +325,7 @@ export interface ToolDefinitionInput<TArgs extends ZodTypeAny = ZodTypeAny> {
   /** See `ToolGuidance`. */
   guidance?: ToolGuidance;
   /* ─── Unified-primitive forward-compat fields (Phase E1, no behavior change) ─────
-   * These accept the future `defineRoute`-collapsed shape without changing
+   * These accept the future `defineTool`-collapsed shape without changing
    * runtime behavior. Phase E2 wires them into dispatch. Phase E1 just makes
    * sure callsites adopting the new shape compile.
    *
@@ -340,7 +340,7 @@ export interface ToolDefinitionInput<TArgs extends ZodTypeAny = ZodTypeAny> {
   auth?: RouteAuth;
   /**
    * Alias for `args`. The unified primitive prefers `input` (matches
-   * `defineRoute`'s field name + the body/query duality). When both are
+   * `defineTool`'s field name + the body/query duality). When both are
    * set, `args` wins (back-compat). New callsites should use `input`.
    */
   input?: TArgs;

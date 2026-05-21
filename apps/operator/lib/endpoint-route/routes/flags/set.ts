@@ -12,11 +12,11 @@ import { ALL_FLAG_KEYS, type FlagKey } from '@papercusp/flags';
 import { setFlag } from '@papercusp/flags/server';
 import { publishFlagChange } from '@/lib/flag-bus';
 import '@/lib/flag-bus';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 const Body = z.object({ key: z.string(), enabled: z.boolean() });
 
-export default defineRoute({
+export default defineTool({
   method: 'POST',
   path: '/flags/set',
   auth: 'public',

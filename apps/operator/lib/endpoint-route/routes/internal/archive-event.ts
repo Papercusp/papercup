@@ -7,7 +7,7 @@ import { getOrgPg, generated, schemaOf } from '@restart/db-org';
 import { eq, sql as dsql } from 'drizzle-orm';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
 import { notifySyncInvalidate } from '@/lib/sync-sse';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 const ti = generated.tokenIndexInHarnessShared;
 const ha = generated.harnessArchivesInHarnessShared;
@@ -20,7 +20,7 @@ const BodySchema = z.object({
 });
 void schemaOf(ha).insert;
 
-export default defineRoute({
+export default defineTool({
   method: 'POST',
   path: '/internal/archive-event',
   auth: {},

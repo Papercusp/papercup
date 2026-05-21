@@ -11,7 +11,7 @@ import {
   type CatalogClient,
   type MarketplaceCatalogEntry,
 } from '@/lib/security-advisories';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 const MARKETPLACE_URL = process.env.PAPERCUSP_MARKETPLACE_URL ?? 'http://localhost:3057';
 
@@ -46,7 +46,7 @@ interface Body {
   minSeverity?: AdvisorySeverity;
 }
 
-export default defineRoute({
+export default defineTool({
   method: 'POST',
   path: '/security-advisories/check',
   auth: 'public',

@@ -12,7 +12,7 @@ import { activeWorkspaceId } from '@/lib/workspace-registry';
 import { ensureInstallId } from '@/lib/setup-wizard-install-id';
 import { getPosthogConfigWithSource } from '@/lib/posthog-config';
 import { POSTHOG_PUBLIC_DEFAULTS } from '@/lib/posthog-public-defaults';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 function resolveHostKey(): { host: string; projectKey: string } {
   const envHost = process.env.PAPERCUSP_POSTHOG_HOST;
@@ -25,7 +25,7 @@ function resolveHostKey(): { host: string; projectKey: string } {
   return { host: POSTHOG_PUBLIC_DEFAULTS.host, projectKey: POSTHOG_PUBLIC_DEFAULTS.projectKey };
 }
 
-export default defineRoute({
+export default defineTool({
   method: 'GET',
   path: '/desktop/telemetry-config',
   auth: {},

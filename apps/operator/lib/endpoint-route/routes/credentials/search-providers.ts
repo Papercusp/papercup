@@ -8,10 +8,10 @@
  * `auth: 'public'` preserves original behavior.
  */
 import { readMaskedView, writeSearchProviderCredentials } from '@/lib/search-provider-credentials';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 export default [
-  defineRoute({
+  defineTool({
     method: 'GET',
     path: '/credentials/search-providers',
     auth: { trust: ['verified', 'trusted'] },
@@ -19,7 +19,7 @@ export default [
       return Response.json(await readMaskedView());
     },
   }),
-  defineRoute({
+  defineTool({
     method: 'POST',
     path: '/credentials/search-providers',
     auth: { trust: ['verified', 'trusted'] },

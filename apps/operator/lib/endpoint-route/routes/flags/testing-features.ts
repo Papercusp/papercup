@@ -14,12 +14,12 @@ import {
   getPosthogConfigWithSource,
   resetPosthogConfigForTest,
 } from '@/lib/posthog-config';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 const CONFIG_PATH = path.join(os.homedir(), '.papercusp', 'posthog.json');
 const Body = z.object({ enabled: z.boolean() });
 
-const get = defineRoute({
+const get = defineTool({
   method: 'GET',
   path: '/flags/testing-features',
   auth: 'public',
@@ -29,7 +29,7 @@ const get = defineRoute({
   },
 });
 
-const post = defineRoute({
+const post = defineTool({
   method: 'POST',
   path: '/flags/testing-features',
   auth: 'public',

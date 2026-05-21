@@ -7,7 +7,7 @@
  * `_hono/app.ts` mounts sub-apps — `app.route('/harness', harness)`,
  * `app.route('/plugins', plugins)` — and the `plugins` sub-app carries
  * a parametric catch-all (`installPluginApiDispatcher`). If a literal
- * `defineRoute` like `/plugins/enabled` registers *after* that
+ * `defineTool` like `/plugins/enabled` registers *after* that
  * catch-all, the catch-all shadows it and the literal 404s.
  *
  * So registration is split:
@@ -53,7 +53,7 @@ function isCatchAll(path: string): boolean {
  * **Why this matters.** Hono resolves overlapping routes purely by
  * *registration order* — it has NO static-over-dynamic precedence (unlike
  * Next.js file routing, where `marketplace/spawnable/route.ts` always beat
- * `marketplace/[slug]/route.ts`). A `defineRoute` handler never calls
+ * `marketplace/[slug]/route.ts`). A `defineTool` handler never calls
  * `next()`, so whichever of two overlapping routes registers first wins
  * outright. Without ordering, `/marketplace/:slug` registered before
  * `/marketplace/spawnable` swallows `GET /api/marketplace/spawnable`.

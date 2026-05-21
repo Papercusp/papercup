@@ -3,9 +3,9 @@
  * Ported from app/api/agent-mcp/agents/route.ts. `auth: 'public'`.
  */
 import { listAgentsAcrossWorkspace } from '@/lib/agents-list';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
-export default defineRoute({
+export default defineTool({
   method: 'GET',
   path: '/agent-mcp/agents',
   auth: 'public',

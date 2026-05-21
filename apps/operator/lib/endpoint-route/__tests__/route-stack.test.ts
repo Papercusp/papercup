@@ -20,7 +20,8 @@ vi.mock('@/lib/auth/require-principal', async () => {
 // Telemetry writes to PG — out of scope for route-stack mechanics tests.
 vi.mock('../telemetry', () => ({ recordRouteInvocation: vi.fn() }));
 
-import { defineRoute, registerRoute } from '../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
+import { registerRoute } from '../define-route';
 import { DEFAULT_ROUTE_STACK } from '../route-stack';
 import { registerAllRoutes } from '../register';
 import { requirePrincipal, PrincipalCheckError } from '@/lib/auth/require-principal';
@@ -50,7 +51,7 @@ describe('route-stack — step order', () => {
 describe('auth step', () => {
   it('public route skips requirePrincipal and runs the handler', async () => {
     const app = freshApp();
-    registerRoute(app, defineRoute({
+    registerRoute(app, defineTool({
       method: 'GET', path: '/pub', auth: 'public',
       handler: () => Response.json({ ok: true }),
     }));
@@ -66,7 +67,7 @@ describe('auth step', () => {
       authMethod: 'process-internal', trust: 'trusted', capabilities: new Set(),
     });
     const app = freshApp();
-    registerRoute(app, defineRoute({
+    registerRoute(app, defineTool({
       method: 'GET', path: '/gated', auth: { trust: ['trusted'] },
       handler: (_req, ctx) => Response.json({ kind: ctx.principal?.kind }),
     }));
@@ -79,7 +80,7 @@ describe('auth step', () => {
     vi.mocked(requirePrincipal).mockRejectedValue(new PrincipalCheckError(403, 'trust denied'));
     const app = freshApp();
     let handlerRan = false;
-    registerRoute(app, defineRoute({
+    registerRoute(app, defineTool({
       method: 'GET', path: '/gated', auth: { trust: ['trusted'] },
       handler: () => { handlerRan = true; return Response.json({}); },
     }));
@@ -93,7 +94,7 @@ describe('auth step', () => {
 describe('input step', () => {
   it('parses a valid POST body', async () => {
     const app = freshApp();
-    registerRoute(app, defineRoute({
+    registerRoute(app, defineTool({
       method: 'POST', path: '/echo', auth: 'public',
       input: z.object({ n: z.number() }),
       handler: (_req, ctx) => Response.json({ doubled: ctx.input.n * 2 }),
@@ -108,7 +109,7 @@ describe('input step', () => {
 
   it('rejects an invalid POST body with 400', async () => {
     const app = freshApp();
-    registerRoute(app, defineRoute({
+    registerRoute(app, defineTool({
       method: 'POST', path: '/echo', auth: 'public',
       input: z.object({ n: z.number() }),
       handler: () => Response.json({}),
@@ -123,7 +124,7 @@ describe('input step', () => {
 
   it('rejects non-JSON body with 400', async () => {
     const app = freshApp();
-    registerRoute(app, defineRoute({
+    registerRoute(app, defineTool({
       method: 'POST', path: '/echo', auth: 'public',
       input: z.object({ n: z.number() }),
       handler: () => Response.json({}),
@@ -136,7 +137,7 @@ describe('input step', () => {
 
   it('parses GET input from the query string', async () => {
     const app = freshApp();
-    registerRoute(app, defineRoute({
+    registerRoute(app, defineTool({
       method: 'GET', path: '/q', auth: 'public',
       input: z.object({ limit: z.coerce.number() }),
       handler: (_req, ctx) => Response.json({ limit: ctx.input.limit }),
@@ -147,7 +148,7 @@ describe('input step', () => {
 
   it('handler gets undefined input when no schema declared', async () => {
     const app = freshApp();
-    registerRoute(app, defineRoute({
+    registerRoute(app, defineTool({
       method: 'POST', path: '/raw', auth: 'public',
       handler: (_req, ctx) => Response.json({ input: ctx.input ?? 'undefined' }),
     }));
@@ -159,7 +160,7 @@ describe('input step', () => {
 describe('invoke step', () => {
   it('a thrown handler error becomes a 500 envelope', async () => {
     const app = freshApp();
-    registerRoute(app, defineRoute({
+    registerRoute(app, defineTool({
       method: 'GET', path: '/boom', auth: 'public',
       handler: () => { throw new Error('kaboom'); },
     }));
@@ -172,7 +173,7 @@ describe('invoke step', () => {
 
   it('a handler exceeding timeoutSec becomes a 408', async () => {
     const app = freshApp();
-    registerRoute(app, defineRoute({
+    registerRoute(app, defineTool({
       method: 'GET', path: '/slow', auth: 'public',
       timeoutSec: 0.1,
       handler: (_req, ctx) => new Promise<Response>((resolve) => {
@@ -188,7 +189,7 @@ describe('invoke step', () => {
 
   it('passes path params through ctx.params', async () => {
     const app = freshApp();
-    registerRoute(app, defineRoute({
+    registerRoute(app, defineTool({
       method: 'GET', path: '/harness/:slug', auth: 'public',
       handler: (_req, ctx) => Response.json({ slug: ctx.params.slug }),
     }));
@@ -202,7 +203,7 @@ describe('registerAllRoutes — duplicate guard', () => {
     // registerAllRoutes reads the real ALL_ROUTES; here we only assert
     // the guard logic via a direct collision in a hand-built app.
     const app = freshApp();
-    const a = defineRoute({ method: 'GET', path: '/x', auth: 'public', handler: () => Response.json({}) });
+    const a = defineTool({ method: 'GET', path: '/x', auth: 'public', handler: () => Response.json({}) });
     registerRoute(app, a);
     // Re-registering the same path on Hono is allowed by Hono itself;
     // the duplicate *guard* lives in registerAllRoutes. Smoke-check that

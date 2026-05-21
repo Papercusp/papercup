@@ -12,7 +12,7 @@ import {
   resolveTemplateKind,
 } from '@/lib/template-kind';
 import { papercuspPath } from '@/lib/papercusp-root';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 const PAPERCUSP_BIN = process.env.PAPERCUSP_CLI ?? 'papercusp';
 
@@ -37,7 +37,7 @@ function isValidHarnessSlug(s: string): boolean {
 
 function GLOBAL_PLUGINS_DIR() { return papercuspPath('global-plugins'); }
 
-export default defineRoute({
+export default defineTool({
   method: 'POST',
   path: '/plugins/enable',
   auth: 'public',

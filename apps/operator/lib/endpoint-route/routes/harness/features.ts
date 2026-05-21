@@ -20,7 +20,7 @@ import { phasePhaseLabel } from '@/lib/harness-phases';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
 import { auditFeatureChange } from '@/lib/feature-audit';
 import { firePluginLifecycle, firePluginEvent } from '@/lib/plugin-host-runtime';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 // F-001, PROJ-sheets, DIR-D-001 — verbatim from legacy.
 const FEATURE_ID_RE = /^[A-Z][A-Z0-9-]+(-[A-Z0-9-]+)?$/;
@@ -29,7 +29,7 @@ const dbcFor = (slug: string) => getLegacyClient(slug);
 
 // ── POST /:slug/features/:id/reset ─────────────────────────────────────
 
-const resetFeature = defineRoute({
+const resetFeature = defineTool({
   method: 'POST',
   path: '/harness/:slug/features/:id/reset',
   auth: 'public',
@@ -79,7 +79,7 @@ const resetFeature = defineRoute({
 
 // ── PATCH /:slug/features/:id ──────────────────────────────────────────
 
-const updateFeature = defineRoute({
+const updateFeature = defineTool({
   method: 'PATCH',
   path: '/harness/:slug/features/:id',
   auth: 'public',
@@ -205,7 +205,7 @@ const updateFeature = defineRoute({
 
 // ── POST /:slug/features/import — bulk import (scoper) ────────────────
 
-const importFeatures = defineRoute({
+const importFeatures = defineTool({
   method: 'POST',
   path: '/harness/:slug/features/import',
   auth: 'public',
@@ -319,7 +319,7 @@ const importFeatures = defineRoute({
 
 // ── POST /:slug/features — create one ──────────────────────────────────
 
-const createFeature = defineRoute({
+const createFeature = defineTool({
   method: 'POST',
   path: '/harness/:slug/features',
   auth: 'public',
@@ -431,7 +431,7 @@ const createFeature = defineRoute({
 
 // ── DELETE /:slug/features/:id ─────────────────────────────────────────
 
-const deleteFeature = defineRoute({
+const deleteFeature = defineTool({
   method: 'DELETE',
   path: '/harness/:slug/features/:id',
   auth: 'public',
@@ -461,7 +461,7 @@ const deleteFeature = defineRoute({
 
 // ── POST /:slug/features/:id/approve-human ─────────────────────────────
 
-const approveHumanReview = defineRoute({
+const approveHumanReview = defineTool({
   method: 'POST',
   path: '/harness/:slug/features/:id/approve-human',
   auth: 'public',

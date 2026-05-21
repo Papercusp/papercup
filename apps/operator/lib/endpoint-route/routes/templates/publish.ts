@@ -17,7 +17,7 @@ import { papercuspPath } from '@/lib/papercusp-root';
 import { FLAGS } from '@papercusp/flags';
 import { gateApiRoute } from '@/lib/require-flag';
 import { readFirstServiceToken } from '@/lib/marketplace-token';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 const MARKETPLACE_URL = process.env.PAPERCUSP_MARKETPLACE_URL ?? 'http://localhost:3057';
 const MARKETPLACE_SITE_URL = process.env.PAPERCUSP_MARKETPLACE_SITE_URL ?? 'http://localhost:3060';
@@ -63,7 +63,7 @@ async function recordPublish(dir: string, rec: PublishRecord): Promise<void> {
   await fs.writeFile(sidecar, JSON.stringify(next, null, 2), 'utf8');
 }
 
-export default defineRoute({
+export default defineTool({
   method: 'POST',
   path: '/templates/:slug/:version/publish',
   auth: 'public',

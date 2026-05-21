@@ -9,9 +9,9 @@ import { activeWorkspaceId } from '@/lib/workspace-registry';
 import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
-export default defineRoute({
+export default defineTool({
   method: 'POST',
   path: '/agent-mcp/spawn-pi',
   auth: 'public',

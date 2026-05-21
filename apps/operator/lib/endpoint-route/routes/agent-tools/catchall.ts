@@ -31,7 +31,7 @@ import { getOrgPg } from '@restart/db-org';
 import '@/lib/agent-tools/index';
 import { PROJECTED_DEPS } from '@/lib/projected-tool-deps';
 import { principalFromMobileJwt } from '@/lib/auth/principal/from-mobile-jwt';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 const HOST_EXTRAS: HttpToolHostExtras = {
   resolvePrincipalAndTx: async (bearer) => {
@@ -141,7 +141,7 @@ const PATH = '/agent-tools/*';
 const methods = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'] as const;
 
 export default methods.map((method) =>
-  defineRoute({
+  defineTool({
     method,
     path: PATH,
     auth: 'public',

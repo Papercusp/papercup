@@ -1,5 +1,5 @@
 /**
- * OpenAPI fragment emitter for `defineRoute` endpoints — R3.
+ * OpenAPI fragment emitter for `defineTool` endpoints — R3.
  *
  * Produces one `OpenApiFragment` per route, which the host passes to
  * `assembleOpenApiDocument` as an `extraFragment`. A route is a plain

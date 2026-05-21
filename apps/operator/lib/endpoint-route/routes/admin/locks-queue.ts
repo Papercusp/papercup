@@ -15,7 +15,7 @@
 import { handleHttpToolRequest, type HttpToolHostExtras } from '@papercusp/agent-mcp';
 import '@/lib/agent-tools/index';
 import { PROJECTED_DEPS } from '@/lib/projected-tool-deps';
-import { defineRoute, type RouteContext } from '../../define-route';
+import { defineTool, type RouteContext } from '@papercusp/agent-mcp';
 
 // Admin proxy identity: locks:queue calls readIdentity(ctx) for
 // attribution, which requires power-user / superuser / principal.
@@ -75,7 +75,7 @@ async function handler(req: Request, _ctx: RouteContext): Promise<Response> {
   return Response.json(result.body, { status: result.status });
 }
 
-export default defineRoute({
+export default defineTool({
   method: 'GET',
   path: '/admin/locks/queue',
   auth: 'public',

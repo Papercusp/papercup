@@ -4,7 +4,7 @@
  *
  * Extracted from `app/api/_hono/cross-harness.ts` in Phase A1
  * (endpoint-hono-elimination-2026-05-21) so the helper survives that
- * router's migration to `defineRoute`. Consumed by
+ * router's migration to `defineTool`. Consumed by
  * `routes/marketplace/spawnable.ts` (the `/api/marketplace/spawnable`
  * route) and the `scaffold_harness` prompt-builder validation.
  *

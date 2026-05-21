@@ -40,7 +40,7 @@ export interface OpenApiFragment {
   /**
    * HTTP method this fragment's operation is keyed under in
    * `paths[path]`. Omitted → `'post'` (every projected tool is POST).
-   * `defineRoute` fragments set it to the route's actual method, and
+   * `defineTool` fragments set it to the route's actual method, and
    * the assembler merges multiple methods onto one path.
    */
   httpMethod?: 'get' | 'post' | 'put' | 'patch' | 'delete' | 'options';

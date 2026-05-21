@@ -7,7 +7,7 @@
 import { promises as fs, existsSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { papercuspRoot } from '@/lib/papercusp-root';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 function HARNESSES_DIR() { return join(papercuspRoot(), 'harnesses'); }
 function GLOBAL_PLUGINS_DIR() { return join(papercuspRoot(), 'global-plugins'); }
@@ -120,7 +120,7 @@ async function resolveIframeUrl(
   return url;
 }
 
-export default defineRoute({
+export default defineTool({
   method: 'GET',
   path: '/plugins/:slug/contributions',
   auth: 'public',

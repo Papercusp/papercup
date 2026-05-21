@@ -4,7 +4,7 @@
  * Ported from app/api/plugins/host/query/route.ts. `auth: 'public'`.
  */
 import { getOrgPg } from '@restart/db-org';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 interface ReqBody {
   pluginName: string;
@@ -14,7 +14,7 @@ interface ReqBody {
 
 const SELECT_ONLY = /^\s*select\b/i;
 
-export default defineRoute({
+export default defineTool({
   method: 'POST',
   path: '/plugins/host/query',
   auth: 'public',

@@ -12,7 +12,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import net from 'node:net';
 import { harnessRoot, harnessPath } from '@papercusp/harness/paths';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 const MERIDIAN_BASE = process.env.MERIDIAN_BASE_URL ?? 'http://127.0.0.1:3456';
 
@@ -242,7 +242,7 @@ async function checkSoftPrereq(name: string, hint: string): Promise<Check> {
   return { ...probe, hint, optional: true };
 }
 
-const options = defineRoute({
+const options = defineTool({
   method: 'OPTIONS',
   path: '/desktop/preflight',
   auth: 'public',
@@ -251,7 +251,7 @@ const options = defineRoute({
   },
 });
 
-const get = defineRoute({
+const get = defineTool({
   method: 'GET',
   path: '/desktop/preflight',
   auth: 'public',

@@ -1,7 +1,7 @@
 /**
- * Cookie helpers for `defineRoute` handlers.
+ * Cookie helpers for `defineTool` handlers.
  *
- * A `defineRoute` handler returns a Web-standard `Response` — there is
+ * A `defineTool` handler returns a Web-standard `Response` — there is
  * no Next `cookies()` jar to `.set()`/`.delete()`. Cookie writes are
  * `Set-Cookie` response headers; cookie reads parse the `Cookie` request
  * header. These helpers are the route-side inverse of the `Cookie`-header

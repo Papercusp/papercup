@@ -6,7 +6,7 @@ import { promises as fs } from 'node:fs';
 import { join, basename, dirname } from 'node:path';
 import { papercuspRoot } from '@/lib/papercusp-root';
 import { listPluginsIn } from '@/lib/plugin-catalog';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 const HARNESS_SLUG = /^[a-z0-9][a-z0-9._-]{0,63}$/i;
 const PLUGIN_DIR_SLUG = /^@?[a-z0-9][a-z0-9@._/-]{0,127}$/i;
@@ -56,7 +56,7 @@ async function resolveCanonicalSlugs(
   return out;
 }
 
-export default defineRoute({
+export default defineTool({
   method: 'GET',
   path: '/plugins/configs',
   auth: 'public',

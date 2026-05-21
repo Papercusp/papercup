@@ -9,9 +9,9 @@ import {
   getPluginHost,
   pluginHostStatus,
 } from '@/lib/plugin-host-runtime';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
-const get = defineRoute({
+const get = defineTool({
   method: 'GET',
   path: '/plugins/host/refresh',
   auth: 'public',
@@ -21,7 +21,7 @@ const get = defineRoute({
   },
 });
 
-const post = defineRoute({
+const post = defineTool({
   method: 'POST',
   path: '/plugins/host/refresh',
   auth: 'public',

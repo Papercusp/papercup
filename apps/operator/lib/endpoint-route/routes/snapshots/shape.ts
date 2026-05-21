@@ -14,7 +14,7 @@ import {
   type SnapshotVersionPin,
 } from '@papercusp/export-state';
 import { findSnapshot } from '@/lib/snapshot-discovery';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 interface PluginManifestEntry {
   name: string;
@@ -26,7 +26,7 @@ interface PluginManifestEntry {
   versionPin?: SnapshotVersionPin;
 }
 
-export default defineRoute({
+export default defineTool({
   method: 'GET',
   path: '/snapshots/:id/shape',
   auth: 'public',

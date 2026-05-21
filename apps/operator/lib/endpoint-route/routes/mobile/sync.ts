@@ -9,7 +9,7 @@
  * because libs/sync's polling fetcher uses a bare `fetch()` and can't
  * set headers — same reason the SSE handshake used a query param.
  */
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 import { MOBILE_AUTH, mobilePrincipal } from './_shared';
 import { verifyDeviceToken } from '@/lib/mobile-jwt';
 import { recentToasts, recentAuditEntries, currentlyRunning } from '@/lib/mobile-feeds';
@@ -21,7 +21,7 @@ import { readCandidates, refreshCandidates } from '@/lib/operator-standing-candi
  * fetcher. `?token=<jwt>&name=<queryName>&args=<json>` →
  * `{ rows, version }` (the shape libs/sync expects).
  */
-const restQuery = defineRoute({
+const restQuery = defineTool({
   method: 'GET',
   path: '/mobile/rest-query',
   auth: 'public',
@@ -98,7 +98,7 @@ const restQuery = defineRoute({
  * Body: `{ parameters: {...} }`. Returns the tool result, or
  * `{ ok: false, error }` on failure.
  */
-const voiceToolProxy = defineRoute({
+const voiceToolProxy = defineTool({
   method: 'POST',
   path: '/mobile/voice-tool/:name',
   auth: MOBILE_AUTH,

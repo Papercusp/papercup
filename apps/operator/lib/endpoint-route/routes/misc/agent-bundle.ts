@@ -12,7 +12,7 @@ import { getOrgPg } from '@restart/db-org';
 import { verifyAccessToken } from '@/lib/power-user-token';
 import { getActivePowerUserSession } from '@/lib/power-user-sessions';
 import { workspaceById } from '@/lib/workspace-registry';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 interface BundleFile {
   name: string;
@@ -83,7 +83,7 @@ async function lookupUser(
   return { id: userId, username: userId, displayName: userId };
 }
 
-export default defineRoute({
+export default defineTool({
   method: 'GET',
   path: '/agent-bundle',
   auth: 'public',

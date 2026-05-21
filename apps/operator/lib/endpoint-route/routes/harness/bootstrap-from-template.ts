@@ -17,11 +17,11 @@ import { resolvePhasedProject, harnessDir } from '@/lib/harness-core';
 import { phasePhaseLabel } from '@/lib/harness-phases';
 import { harnessPath } from '@/lib/harness-paths';
 import { PROJECT_FILES_TO_COPY } from '@/lib/harness-state-files';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 const TEMPLATES_DIR = harnessPath('templates', 'projects');
 
-export default defineRoute({
+export default defineTool({
   method: 'POST',
   path: '/harness/:slug/bootstrap-from-template',
   auth: 'public',

@@ -35,7 +35,7 @@ export function runBootstrap(): void {
   g[GUARD_KEY] = true;
 
   // Plugin apiRoutes — populate the in-memory registry from disk. The
-  // `/plugins/*` defineRoute catch-all (routes/plugins/catchall.ts)
+  // `/plugins/*` defineTool catch-all (routes/plugins/catchall.ts)
   // consults this registry per request via `dispatchPluginApiRoute`,
   // so hot-reload + post-boot symlinks work without the
   // Hono-route-snapshot footgun.
@@ -62,7 +62,7 @@ export function runBootstrap(): void {
 
   // Mobile DDL at host startup (Phase E3, endpoint-unification-2026-05-21).
   // Previously ran lazily on the first `/api/mobile/*` request inside the
-  // legacy `_hono/mobile.ts` router; moved here so a mobile `defineRoute`
+  // legacy `_hono/mobile.ts` router; moved here so a mobile `defineTool`
   // (which never touches that router) finds the tables already present.
   // `ensureMobileDevicesTable` is globalThis-guarded + `CREATE … IF NOT
   // EXISTS`, so this is idempotent and safe alongside the legacy lazy call

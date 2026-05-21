@@ -8,9 +8,9 @@
 import { FLAGS } from '@papercusp/flags';
 import { gateApiRoute } from '@/lib/require-flag';
 import { listAllSnapshots } from '@/lib/snapshot-discovery';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
-export default defineRoute({
+export default defineTool({
   method: 'GET',
   path: '/snapshots',
   auth: 'public',

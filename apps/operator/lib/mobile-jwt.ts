@@ -100,4 +100,4 @@ export function verifyDeviceToken(token: string): DeviceClaims | null {
 // `principalFromMobileJwt` resolver, which carries the same
 // signature-verify + `isRevoked` check the middleware did.
 // `signDeviceToken` / `verifyDeviceToken` above remain — the resolver
-// and the `/mobile/*` `defineRoute`s use them.
+// and the `/mobile/*` `defineTool`s use them.

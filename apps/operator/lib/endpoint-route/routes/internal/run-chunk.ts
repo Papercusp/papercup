@@ -7,7 +7,7 @@ import { z } from 'zod';
 import { getOrgPg, generated } from '@restart/db-org';
 import { eq } from 'drizzle-orm';
 import { publish, closeChannel } from '@/lib/run-chunk-bus';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 const ti = generated.tokenIndexInHarnessShared;
 const RUN_ID_RE = /^[A-Za-z0-9_.-]{1,128}$/;
@@ -20,7 +20,7 @@ const BodySchema = z.object({
   done: z.boolean().optional().default(false),
 });
 
-export default defineRoute({
+export default defineTool({
   method: 'POST',
   path: '/internal/run-chunk',
   auth: {},

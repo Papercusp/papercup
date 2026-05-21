@@ -13,14 +13,14 @@ import {
 } from '@papercusp/agent-mcp';
 import { getSessionUser } from '@/lib/auth';
 import { cardResponseRateAllow } from '@/lib/card-response-rate-limit';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 interface Body {
   runId: string;
   workspaceId: string;
 }
 
-export default defineRoute({
+export default defineTool({
   method: 'POST',
   path: '/operator/conversations/:id/run-cancel',
   auth: 'public',

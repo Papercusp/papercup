@@ -16,7 +16,7 @@ import { setFlag } from '@papercusp/flags/server';
 import { publishFlagChange, reinitFlagBackend } from '@/lib/flag-bus';
 import { resetPosthogConfigForTest } from '@/lib/posthog-config';
 import '@/lib/flag-bus';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 const CONFIG_PATH = path.join(os.homedir(), '.papercusp', 'posthog.json');
 const Body = z.object({ name: z.enum(['production', 'testing']) });
@@ -34,7 +34,7 @@ function writeConfig(cfg: Record<string, unknown>): void {
   fs.writeFileSync(CONFIG_PATH, JSON.stringify(cfg, null, 2) + '\n', { mode: 0o600 });
 }
 
-export default defineRoute({
+export default defineTool({
   method: 'POST',
   path: '/flags/preset',
   auth: 'public',

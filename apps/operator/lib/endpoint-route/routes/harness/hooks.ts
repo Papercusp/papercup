@@ -16,7 +16,7 @@ import { resolvePhasedProject, harnessDir, safeRead } from '@/lib/harness-core';
 import { phasePhaseLabel } from '@/lib/harness-phases';
 import { getKnownHooks } from '@/lib/known-hooks';
 import type { ProjectEntry } from '@/lib/harness-registry';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 function phaseFromReq(req: Request) {
   return phasePhaseLabel(new URL(req.url).searchParams.get('phase') ?? undefined);
@@ -26,7 +26,7 @@ function hookPath(project: ProjectEntry, name: string): string {
   return join(harnessDir(project), 'hooks', `${name}.sh`);
 }
 
-const getHooks = defineRoute({
+const getHooks = defineTool({
   method: 'GET',
   path: '/harness/:slug/hooks',
   auth: 'public',
@@ -50,7 +50,7 @@ const getHooks = defineRoute({
   },
 });
 
-const putHook = defineRoute({
+const putHook = defineTool({
   method: 'PUT',
   path: '/harness/:slug/hooks/:name',
   auth: 'public',
@@ -76,7 +76,7 @@ const putHook = defineRoute({
   },
 });
 
-const deleteHook = defineRoute({
+const deleteHook = defineTool({
   method: 'DELETE',
   path: '/harness/:slug/hooks/:name',
   auth: 'public',
@@ -97,7 +97,7 @@ const deleteHook = defineRoute({
   },
 });
 
-const getHookLog = defineRoute({
+const getHookLog = defineTool({
   method: 'GET',
   path: '/harness/:slug/hook-logs/:logId',
   auth: 'public',

@@ -6,9 +6,9 @@
  * route's `maxDuration = 600` (the sweep can take tens of seconds).
  */
 import { runBackfillSweep } from '@/lib/search/embed-backfill';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
-export default defineRoute({
+export default defineTool({
   method: 'POST',
   path: '/admin/embed-backfill',
   auth: { trust: ['trusted'] },

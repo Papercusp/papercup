@@ -13,9 +13,9 @@ import { existsSync, readdirSync, statSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { resolveProject, harnessDir, safeRead } from '@/lib/harness-core';
 import { phasePhaseLabel } from '@/lib/harness-phases';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
-const getRuns = defineRoute({
+const getRuns = defineTool({
   method: 'GET',
   path: '/harness/:slug/runs',
   auth: 'public',
@@ -56,7 +56,7 @@ const getRuns = defineRoute({
   },
 });
 
-const getRunByName = defineRoute({
+const getRunByName = defineTool({
   method: 'GET',
   path: '/harness/:slug/runs/:name',
   auth: 'public',
@@ -74,7 +74,7 @@ const getRunByName = defineRoute({
   },
 });
 
-const getEscalation = defineRoute({
+const getEscalation = defineTool({
   method: 'GET',
   path: '/harness/:slug/escalation',
   auth: 'public',
@@ -88,7 +88,7 @@ const getEscalation = defineRoute({
   },
 });
 
-const getCompetitions = defineRoute({
+const getCompetitions = defineTool({
   method: 'GET',
   path: '/harness/:slug/competitions',
   auth: 'public',

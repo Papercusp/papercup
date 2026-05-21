@@ -17,9 +17,9 @@ import { getOrgPg, getHarnessPg } from '@restart/db-org';
 import { resolveProject, harnessDir } from '@/lib/harness-core';
 import { ensureHarnessStatusTable, ensureHarnessLanesTable } from '@/lib/ensure-schema';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
-const orchestratorStatus = defineRoute({
+const orchestratorStatus = defineTool({
   method: 'POST',
   path: '/harness/:slug/orchestrator/status',
   auth: 'public',
@@ -88,7 +88,7 @@ const orchestratorStatus = defineRoute({
   },
 });
 
-const orchestratorLane = defineRoute({
+const orchestratorLane = defineTool({
   method: 'POST',
   path: '/harness/:slug/orchestrator/lane',
   auth: 'public',
@@ -135,7 +135,7 @@ const orchestratorLane = defineRoute({
   },
 });
 
-const orchestratorLanesDelete = defineRoute({
+const orchestratorLanesDelete = defineTool({
   method: 'DELETE',
   path: '/harness/:slug/orchestrator/lanes',
   auth: 'public',
@@ -154,7 +154,7 @@ const orchestratorLanesDelete = defineRoute({
   },
 });
 
-const orchestratorClearRunning = defineRoute({
+const orchestratorClearRunning = defineTool({
   method: 'POST',
   path: '/harness/:slug/orchestrator/clear-running',
   auth: 'public',
@@ -168,7 +168,7 @@ const orchestratorClearRunning = defineRoute({
   },
 });
 
-const checkpointRequest = defineRoute({
+const checkpointRequest = defineTool({
   method: 'POST',
   path: '/harness/:slug/checkpoint/:name/request',
   auth: 'public',
@@ -198,7 +198,7 @@ ${body.message ?? ''}
   },
 });
 
-const checkpointGrant = defineRoute({
+const checkpointGrant = defineTool({
   method: 'POST',
   path: '/harness/:slug/checkpoint/:name/grant',
   auth: 'public',

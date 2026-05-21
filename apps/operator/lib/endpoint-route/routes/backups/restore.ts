@@ -6,7 +6,7 @@
 import { z } from 'zod';
 import { workspaceBackupFor } from '@/lib/backup';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 const Schema = z.object({
   kopiaSnapshotId: z.string().min(1),
@@ -15,7 +15,7 @@ const Schema = z.object({
   mode: z.enum(['clone', 'in_place']).default('clone'),
 });
 
-export default defineRoute({
+export default defineTool({
   method: 'POST',
   path: '/backups/restore',
   auth: 'public',

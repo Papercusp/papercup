@@ -3,7 +3,7 @@
  * Ported from app/api/agent-mcp/operator-el-subscription/route.ts. `auth: 'public'`.
  */
 import { readElevenLabsKey } from '@/lib/voice-credentials';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 interface SubCacheEntry {
   body: Record<string, unknown>;
@@ -66,7 +66,7 @@ function emptyBody(source: 'no-key' | 'error', errorDetail: string | null) {
   };
 }
 
-export default defineRoute({
+export default defineTool({
   method: 'GET',
   path: '/agent-mcp/operator-el-subscription',
   auth: 'public',

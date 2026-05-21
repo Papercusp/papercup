@@ -3,7 +3,7 @@
  * Ported from app/api/profile/route.ts. `auth: 'public'`.
  */
 import { readProfile, writeProfile } from '@/lib/session';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 const ALLOWED = [
   'email',
@@ -17,7 +17,7 @@ const ALLOWED = [
 ];
 
 export default [
-  defineRoute({
+  defineTool({
     method: 'GET',
     path: '/profile',
     auth: 'public',
@@ -25,7 +25,7 @@ export default [
       return Response.json(await readProfile());
     },
   }),
-  defineRoute({
+  defineTool({
     method: 'POST',
     path: '/profile',
     auth: 'public',

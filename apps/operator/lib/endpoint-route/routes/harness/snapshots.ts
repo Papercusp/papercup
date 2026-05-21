@@ -21,7 +21,7 @@ import { phasePhaseLabel } from '@/lib/harness-phases';
 import { ensureSnapshotFeaturesTable } from '@/lib/ensure-schema';
 import { SNAPSHOT_FILES } from '@/lib/harness-state-files';
 import type { ProjectEntry } from '@/lib/harness-registry';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 function phaseFromReq(req: Request) {
   return phasePhaseLabel(new URL(req.url).searchParams.get('phase') ?? undefined);
@@ -114,7 +114,7 @@ async function syncSnapshotsToPg(project: ProjectEntry, snaps: SnapshotMeta[]): 
   }
 }
 
-const getSnapshots = defineRoute({
+const getSnapshots = defineTool({
   method: 'GET',
   path: '/harness/:slug/snapshots',
   auth: 'public',
@@ -129,7 +129,7 @@ const getSnapshots = defineRoute({
   },
 });
 
-const recordPgState = defineRoute({
+const recordPgState = defineTool({
   method: 'POST',
   path: '/harness/:slug/snapshots/:id/record-pg-state',
   auth: 'public',
@@ -168,7 +168,7 @@ const recordPgState = defineRoute({
   },
 });
 
-const restoreSnapshot = defineRoute({
+const restoreSnapshot = defineTool({
   method: 'POST',
   path: '/harness/:slug/snapshots/:id/restore',
   auth: 'public',
@@ -248,7 +248,7 @@ const restoreSnapshot = defineRoute({
   },
 });
 
-const deleteSnapshot = defineRoute({
+const deleteSnapshot = defineTool({
   method: 'DELETE',
   path: '/harness/:slug/snapshots/:id',
   auth: 'public',

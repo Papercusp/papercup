@@ -5,16 +5,16 @@
  * route-traffic counterpart to the tool-invocation telemetry the /dev
  * Sessions panel already shows. R2 of the endpoint route migration.
  *
- * This route is itself a `defineRoute` — dogfooding the primitive. The
+ * This route is itself a `defineTool` — dogfooding the primitive. The
  * /dev React panel that consumes this is a follow-up (see the R2-R6
  * report); the data + this read endpoint are what R2 commits to.
  */
 import { z } from 'zod';
 import { getOrgPg } from '@restart/db-org';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
-export default defineRoute({
+export default defineTool({
   method: 'GET',
   path: '/dev/route-invocations',
   auth: { trust: ['verified', 'trusted'] }, // /dev surface — loopback-gated by the operator bind host

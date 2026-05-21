@@ -11,7 +11,7 @@
  */
 import { spawnSync } from 'node:child_process';
 import { readAgentConfig, writeAgentConfig, type AgentConfig } from '@/lib/agent-config';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 interface DetectedBinaries {
   claude: string | null;
@@ -37,7 +37,7 @@ function effectiveBackend(cfg: AgentConfig): 'claude-code' | 'omp' {
 }
 
 export default [
-  defineRoute({
+  defineTool({
     method: 'GET',
     path: '/agent-config',
     auth: 'public',
@@ -55,7 +55,7 @@ export default [
       });
     },
   }),
-  defineRoute({
+  defineTool({
     method: 'POST',
     path: '/agent-config',
     auth: 'public',

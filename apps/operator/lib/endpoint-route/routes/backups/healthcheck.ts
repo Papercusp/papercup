@@ -10,12 +10,12 @@ import { homedir } from 'node:os';
 import { workspaceBackupFor } from '@/lib/backup';
 import { getKopiaDetection } from '@/lib/backup/scheduler';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 const statfsP = promisify(statfs);
 const STALE_THRESHOLD_SEC = 30 * 60;
 
-export default defineRoute({
+export default defineTool({
   method: 'GET',
   path: '/backups/healthcheck',
   auth: 'public',

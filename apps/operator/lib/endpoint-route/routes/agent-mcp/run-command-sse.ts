@@ -8,14 +8,14 @@ import {
   unregisterSession,
   heartbeatSession,
 } from '@/lib/commands/session-registry';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 type Events = {
   hello: { workspace: string; sessionId: string };
   command: { requestId: string; command: unknown };
 };
 
-export default defineRoute({
+export default defineTool({
   method: 'GET',
   path: '/agent-mcp/run-command/sse',
   auth: 'public',

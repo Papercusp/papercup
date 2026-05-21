@@ -19,7 +19,7 @@ import { promises as fs, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { getOrgPg, withWorkspace } from '@restart/db-org';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
 import { readRecentActivity } from '@/lib/cross-harness-data';
 
@@ -35,7 +35,7 @@ function clampLimit(raw: string | null | undefined, fallback: number, max: numbe
   return Math.min(Math.floor(n), max);
 }
 
-const inbox = defineRoute({
+const inbox = defineTool({
   method: 'GET',
   path: '/harness/:slug/inbox',
   auth: 'public',
@@ -76,7 +76,7 @@ const inbox = defineRoute({
   },
 });
 
-const outbox = defineRoute({
+const outbox = defineTool({
   method: 'GET',
   path: '/harness/:slug/outbox',
   auth: 'public',
@@ -111,7 +111,7 @@ const outbox = defineRoute({
   },
 });
 
-const supervisorNotes = defineRoute({
+const supervisorNotes = defineTool({
   method: 'GET',
   path: '/harness/:slug/supervisor-notes',
   auth: 'public',
@@ -135,7 +135,7 @@ const supervisorNotes = defineRoute({
   },
 });
 
-const messages = defineRoute({
+const messages = defineTool({
   method: 'POST',
   path: '/harness/:slug/messages',
   auth: 'public',
@@ -182,7 +182,7 @@ const messages = defineRoute({
   },
 });
 
-const recentActivity = defineRoute({
+const recentActivity = defineTool({
   method: 'GET',
   path: '/harness/all/recent-activity',
   auth: 'public',

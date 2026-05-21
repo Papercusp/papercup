@@ -7,7 +7,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
 import { readSystemPrincipal } from '@/lib/system-principal';
 import { getSessionUser } from '@/lib/auth';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 interface SystemPrincipalConfig {
   bearer: string;
@@ -26,7 +26,7 @@ async function loadOperatorBearer(): Promise<SystemPrincipalConfig | null> {
   return p ? { bearer: p.bearer, name: p.name, workspaceId: p.workspaceId, capabilities: p.capabilities } : null;
 }
 
-export default defineRoute({
+export default defineTool({
   method: 'POST',
   path: '/agent-mcp/operator-dispatch',
   auth: 'public',

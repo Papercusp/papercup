@@ -3,7 +3,7 @@
  * Ported from app/api/plugins/host/runtime-status/route.ts. `auth: 'public'`.
  */
 import { getPluginHost } from '@/lib/plugin-host-runtime';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 interface RuntimeStatusRow {
   plugin: string;
@@ -14,7 +14,7 @@ interface RuntimeStatusRow {
   loadedFor: string[];
 }
 
-export default defineRoute({
+export default defineTool({
   method: 'GET',
   path: '/plugins/host/runtime-status',
   auth: 'public',

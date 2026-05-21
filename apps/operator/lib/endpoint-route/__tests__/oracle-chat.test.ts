@@ -2,7 +2,7 @@
  * Route-level tests for the `/oracle/*` routes — Phase A1
  * (endpoint-hono-elimination-2026-05-21). Migrated from the
  * `registerOracle` block of `_hono/chat-shim-routes.test.ts` when the
- * oracle router moved off Hono onto `defineRoute`
+ * oracle router moved off Hono onto `defineTool`
  * (`routes/oracle/index.ts`).
  *
  * The load-bearing assertion is `closed === true`: the `/oracle/chat`

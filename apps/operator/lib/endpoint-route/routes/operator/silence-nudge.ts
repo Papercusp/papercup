@@ -11,7 +11,7 @@ import { z } from 'zod';
 import { openRun, registerCard } from '@papercusp/agent-mcp';
 import { getSessionUser } from '@/lib/auth';
 import { cardResponseRateAllow } from '@/lib/card-response-rate-limit';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 interface Body {
   workspaceId: string;
@@ -27,7 +27,7 @@ function buildFallbackText(voiceActive: boolean, wakeword: string | undefined): 
   return `When you're ready, click Ready or say ${phrase}.`;
 }
 
-export default defineRoute({
+export default defineTool({
   method: 'POST',
   path: '/operator/conversations/:id/silence-nudge',
   auth: 'public',

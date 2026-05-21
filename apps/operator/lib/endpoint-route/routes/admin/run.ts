@@ -4,13 +4,13 @@
  *
  * Ported from app/api/admin/run/route.ts. `auth: 'public'`,
  * `sampleRate: 0` (SSE). The Next `import 'server-only'` is dropped —
- * a defineRoute module is server-only by construction.
+ * a defineTool module is server-only by construction.
  */
 import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { sseResponse } from '@restart/sse';
 import { getCommand } from '@/lib/admin-commands';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 interface AdminRunVocab extends Record<string, unknown> {
   meta: { commandId: string; label: string; command: string; cwd?: string; pid: number; startedAt: number };
@@ -19,7 +19,7 @@ interface AdminRunVocab extends Record<string, unknown> {
   error: { message: string };
 }
 
-export default defineRoute({
+export default defineTool({
   method: 'GET',
   path: '/admin/run',
   auth: { trust: ['verified', 'trusted'] },

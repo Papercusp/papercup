@@ -10,9 +10,9 @@ import { getSessionUser } from '@/lib/auth';
 import { getMemoryClient, invalidateMemoryClient } from '@/lib/memory/mem0-client';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
 import { recordFeedback } from '@/lib/memory/feedback';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
-const list = defineRoute({
+const list = defineTool({
   method: 'GET',
   path: '/user/memory',
   auth: 'public',
@@ -41,7 +41,7 @@ const list = defineRoute({
   },
 });
 
-const del = defineRoute({
+const del = defineTool({
   method: 'DELETE',
   path: '/user/memory',
   auth: 'public',
@@ -88,7 +88,7 @@ const del = defineRoute({
   },
 });
 
-const patch = defineRoute({
+const patch = defineTool({
   method: 'PATCH',
   path: '/user/memory',
   auth: 'public',

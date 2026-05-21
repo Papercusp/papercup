@@ -13,7 +13,7 @@ import { papercuspPath } from '@/lib/papercusp-root';
 import { FLAGS } from '@papercusp/flags';
 import { gateApiRoute } from '@/lib/require-flag';
 import { loadHarnessRegistry } from '@/lib/harness-registry';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 export const SLUG_RE = /^[a-z0-9][a-z0-9._-]{0,63}$/i;
 export const SEMVER_RE = /^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
@@ -77,7 +77,7 @@ async function readEnabledPlugins(harnessSlug: string): Promise<{ slug: string; 
   }
 }
 
-export default defineRoute({
+export default defineTool({
   method: 'POST',
   path: '/harness/:slug/save-as-template',
   auth: 'public',

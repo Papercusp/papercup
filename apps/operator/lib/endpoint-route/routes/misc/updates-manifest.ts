@@ -7,7 +7,7 @@
  * new URL(req.url); NextResponse(null,{status:204}) → Response.
  */
 import { readOperatorState } from '@/lib/operator-state-pg';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 const GITHUB_REPO = process.env.GITHUB_DESKTOP_REPO ?? 'papercupai/papercusp-desktop';
 
@@ -102,7 +102,7 @@ function resolveChannel(params: URLSearchParams, override?: string): Channel {
   return 'stable';
 }
 
-export default defineRoute({
+export default defineTool({
   method: 'GET',
   path: '/updates/manifest',
   auth: 'public',

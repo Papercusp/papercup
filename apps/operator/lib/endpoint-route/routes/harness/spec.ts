@@ -18,9 +18,9 @@ import {
   saveProjectFiles,
   ProjectFilesVersionConflict,
 } from '@/lib/harness-project-files';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
-const getSpec = defineRoute({
+const getSpec = defineTool({
   method: 'GET',
   path: '/harness/:slug/spec',
   auth: 'public',
@@ -40,7 +40,7 @@ const getSpec = defineRoute({
   },
 });
 
-const putSpec = defineRoute({
+const putSpec = defineTool({
   method: 'PUT',
   path: '/harness/:slug/spec',
   auth: 'public',

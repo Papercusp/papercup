@@ -21,7 +21,7 @@ import { papercuspPath } from '@/lib/papercusp-root';
 import { recordUserAction } from '@/lib/user-actions';
 import { FLAGS } from '@papercusp/flags';
 import { gateApiRoute } from '@/lib/require-flag';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 interface CreateBody {
   slug: string;
@@ -38,7 +38,7 @@ interface CreateBody {
 
 function HARNESSES_DIR() { return papercuspPath('harnesses'); }
 
-export default defineRoute({
+export default defineTool({
   method: 'POST',
   path: '/snapshots/create',
   auth: 'public',

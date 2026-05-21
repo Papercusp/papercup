@@ -5,7 +5,7 @@
 import { promises as fs, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { papercuspRoot } from '@/lib/papercusp-root';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 const HIDDEN_PLUGIN_BASENAMES = new Set([
   'notion-export', 'slack-notifier', 'vscode-server', 'jira-sync',
@@ -32,7 +32,7 @@ async function readJson<T>(path: string): Promise<T | null> {
   try { return JSON.parse(await fs.readFile(path, 'utf8')) as T; } catch { return null; }
 }
 
-export default defineRoute({
+export default defineTool({
   method: 'GET',
   path: '/plugins/global',
   auth: 'public',

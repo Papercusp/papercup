@@ -5,7 +5,7 @@
 import { readElevenLabsKey } from '@/lib/voice-credentials';
 import { loadVoicePrefs } from '@/lib/voice-prefs';
 import { readCooldownMark, writeCooldownMark } from '@/lib/cooldown-marks';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 const inFlight = new Map<string, Promise<{ token: string } | { error: string; status: number; detail: string }>>();
 const COOLDOWN_MS = 8_000;
@@ -45,7 +45,7 @@ async function mintFromEL(
   return { token };
 }
 
-export default defineRoute({
+export default defineTool({
   method: 'GET',
   path: '/agent-mcp/operator-elevenlabs-bootstrap',
   auth: 'public',

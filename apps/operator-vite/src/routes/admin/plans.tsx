@@ -17,7 +17,7 @@ import '@/app/admin/plans/plans.css';
  *
  * The data layer is unaffected by the framework move: PlansClient
  * fetches the `/api/admin/plans/*` route handlers, which are
- * `defineRoute`s mounted on the shared Hono app — same backend for the
+ * `defineTool`s mounted on the shared Hono app — same backend for the
  * Next operator and the Vite operator.
  *
  * AdminShell already lists the Plans tab; without this route file the

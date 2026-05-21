@@ -458,7 +458,7 @@ export interface ToolExposureHttp {
   /**
    * Single-method sugar. Equivalent to `methods: [method]`. Accepted alongside
    * `methods` for ergonomics — the route-shaped callsites prefer the singular
-   * form (mirrors the now-collapsed `defineRoute({ method })` shape). When both
+   * form (mirrors the now-collapsed `defineTool({ method })` shape). When both
    * are set, `methods` wins.
    *
    * Phase E1 (endpoint-unification-2026-05-21).

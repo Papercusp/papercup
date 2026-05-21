@@ -12,9 +12,9 @@ import { getAllFlags, isBackendConfigured } from '@papercusp/flags/server';
 import { resolveDistinctId } from '@/lib/flag-distinct-id';
 import { reinitFlagBackend } from '@/lib/flag-bus';
 import { isTestingFeaturesEnabled } from '@/lib/posthog-config';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
-export default defineRoute({
+export default defineTool({
   method: 'GET',
   path: '/flags/bootstrap',
   auth: 'public',

@@ -5,7 +5,7 @@
 import { provisionSystemPrincipal } from '@papercusp/agent-mcp/provisioning';
 import { papercuspRoot } from '@/lib/papercusp-root';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 const ORACLE_CAPS = [
   'tasks:read',
@@ -29,7 +29,7 @@ const OPERATOR_CAPS = [
   'chat:write',
 ];
 
-export default defineRoute({
+export default defineTool({
   method: 'POST',
   path: '/agent-mcp/provision',
   auth: 'public',

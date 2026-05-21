@@ -5,18 +5,19 @@
  *   1. `registerRoute` mounts the shared `mobileCors` middleware, so the
  *      cross-origin phone client + its OPTIONS preflight are handled
  *      without a per-route CORS block.
- *   2. `defineRoute` folds `'mobile'` into an explicit `auth.kind`
+ *   2. `defineTool` folds `'mobile'` into an explicit `auth.kind`
  *      allowlist so the device-JWT principal is admitted.
  */
 import { describe, expect, it } from 'vitest';
 import { Hono } from 'hono';
 import { z } from 'zod';
-import { defineRoute, registerRoute } from '../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
+import { registerRoute } from '../define-route';
 import { mobileOrigin } from '../cors';
 
 describe('mobile: true — auth.kind folding (E3)', () => {
   it('adds "mobile" to an explicit kind allowlist', () => {
-    const def = defineRoute({
+    const def = defineTool({
       method: 'GET',
       path: '/mobile/fixture-a',
       auth: { kind: ['user'] },
@@ -27,7 +28,7 @@ describe('mobile: true — auth.kind folding (E3)', () => {
   });
 
   it('is idempotent — does not double-add when "mobile" already present', () => {
-    const def = defineRoute({
+    const def = defineTool({
       method: 'GET',
       path: '/mobile/fixture-b',
       auth: { kind: ['mobile', 'user'] },
@@ -38,7 +39,7 @@ describe('mobile: true — auth.kind folding (E3)', () => {
   });
 
   it('leaves auth:"public" untouched (CORS-only opt-in)', () => {
-    const def = defineRoute({
+    const def = defineTool({
       method: 'GET',
       path: '/mobile/fixture-c',
       auth: 'public',
@@ -49,7 +50,7 @@ describe('mobile: true — auth.kind folding (E3)', () => {
   });
 
   it('leaves a kind-unrestricted gate untouched (mobile already allowed)', () => {
-    const def = defineRoute({
+    const def = defineTool({
       method: 'GET',
       path: '/mobile/fixture-d',
       auth: { trust: ['verified'] },
@@ -80,7 +81,7 @@ describe('registerRoute — mobileCors middleware (E3)', () => {
     const app = new Hono().basePath('/api');
     registerRoute(
       app,
-      defineRoute({
+      defineTool({
         method: 'POST',
         path: '/mobile/ping',
         auth: 'public',
@@ -107,7 +108,7 @@ describe('registerRoute — mobileCors middleware (E3)', () => {
     const app = new Hono().basePath('/api');
     registerRoute(
       app,
-      defineRoute({
+      defineTool({
         method: 'GET',
         path: '/mobile/echo',
         auth: 'public',
@@ -129,7 +130,7 @@ describe('registerRoute — mobileCors middleware (E3)', () => {
     const app = new Hono().basePath('/api');
     registerRoute(
       app,
-      defineRoute({
+      defineTool({
         method: 'GET',
         path: '/desktop/plain',
         auth: 'public',

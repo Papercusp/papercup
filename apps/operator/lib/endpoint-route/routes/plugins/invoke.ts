@@ -6,7 +6,7 @@ import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { invokePluginAction } from '@/lib/plugin-host-runtime';
 import { papercuspPath } from '@/lib/papercusp-root';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 const PLUGIN_SLUG = /^@?[a-z0-9][a-z0-9._/-]{0,127}$/i;
 const HARNESS_SLUG = /^[a-z0-9][a-z0-9._-]{0,63}$/i;
@@ -17,7 +17,7 @@ async function resolveProjectPath(slug: string): Promise<string | null> {
   return (await loadHarnessRegistry()).projects.find((p) => p.slug === slug)?.path ?? null;
 }
 
-export default defineRoute({
+export default defineTool({
   method: 'POST',
   path: '/plugins/invoke',
   auth: 'public',

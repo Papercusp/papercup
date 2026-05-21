@@ -18,7 +18,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { ALL_FLAG_KEYS, type FlagKey } from '@papercusp/flags';
 import { publishFlagChange } from '@/lib/flag-bus';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 function expectedSecret(): string | null {
   const envSecret = process.env.PAPERCUSP_POSTHOG_WEBHOOK_SECRET;
@@ -55,7 +55,7 @@ function extractFlagKey(body: unknown): FlagKey | null {
   return null;
 }
 
-export default defineRoute({
+export default defineTool({
   method: 'POST',
   path: '/flags/webhook',
   auth: 'public',

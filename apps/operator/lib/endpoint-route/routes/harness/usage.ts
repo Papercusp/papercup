@@ -15,7 +15,7 @@
 import { resolvePhasedProject } from '@/lib/harness-core';
 import { phasePhaseLabel } from '@/lib/harness-phases';
 import { scanAgentRuns, syncAgentRunsToPg } from '@/lib/harness-agent-runs';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 function zeroUsage() {
   return { runs: 0, costUsd: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, durationMs: 0 };
@@ -24,7 +24,7 @@ function zeroRoleSummary(role: string) {
   return { role, runs: 0, costUsd: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, durationMs: 0 };
 }
 
-const usage = defineRoute({
+const usage = defineTool({
   method: 'GET',
   path: '/harness/:slug/usage',
   auth: 'public',

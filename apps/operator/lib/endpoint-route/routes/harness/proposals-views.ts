@@ -16,7 +16,7 @@ import { existsSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { resolveProject, harnessDir, safeRead } from '@/lib/harness-core';
 import type { ProjectEntry } from '@/lib/harness-registry';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 interface ProposalListEntry {
   id: string;
@@ -79,7 +79,7 @@ function scanProposalsDir(project: ProjectEntry): ProposalListEntry[] {
     .sort((a, b) => b.ts - a.ts);
 }
 
-const getProposals = defineRoute({
+const getProposals = defineTool({
   method: 'GET',
   path: '/harness/:slug/proposals',
   auth: 'public',
@@ -104,7 +104,7 @@ const getProposals = defineRoute({
   },
 });
 
-const getProposalById = defineRoute({
+const getProposalById = defineTool({
   method: 'GET',
   path: '/harness/:slug/proposals/:id',
   auth: 'public',

@@ -6,9 +6,9 @@
  * Ported from app/api/flags/dashboard-url/route.ts. `auth: 'public'`.
  */
 import { getPosthogConfig } from '@/lib/posthog-config';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
-export default defineRoute({
+export default defineTool({
   method: 'GET',
   path: '/flags/dashboard-url',
   auth: 'public',

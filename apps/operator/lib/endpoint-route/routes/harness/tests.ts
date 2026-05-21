@@ -17,7 +17,7 @@ import { join } from 'node:path';
 import { resolvePhasedProject, safeRead } from '@/lib/harness-core';
 import { type ProjectEntry } from '@/lib/harness-registry';
 import { type Phase, phasePhaseLabel, phasePath } from '@/lib/harness-phases';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 interface TestItem {
   id: string;
@@ -59,7 +59,7 @@ async function phasesEnabled(): Promise<boolean> {
   return getFlag(FLAGS.HARNESS_PHASES, 'system');
 }
 
-const listTests = defineRoute({
+const listTests = defineTool({
   method: 'GET',
   path: '/harness/:slug/tests',
   auth: 'public',
@@ -73,7 +73,7 @@ const listTests = defineRoute({
   },
 });
 
-const runTest = defineRoute({
+const runTest = defineTool({
   method: 'POST',
   path: '/harness/:slug/tests/:id/run',
   auth: 'public',

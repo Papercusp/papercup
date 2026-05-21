@@ -8,11 +8,11 @@
 import { getOrgPg, generated } from '@restart/db-org';
 import { and, count, desc, eq, gt, sql as dsql } from 'drizzle-orm';
 import { ensureSpawnSigVerificationFailuresTable } from '@/lib/ensure-schema';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 const sf = generated.spawnSigVerificationFailuresInHarnessShared;
 
-export default defineRoute({
+export default defineTool({
   method: 'GET',
   path: '/admin/spawn-signing/failures',
   auth: { trust: ['trusted'] },

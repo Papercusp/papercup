@@ -9,10 +9,10 @@
  * `auth: 'public'` — the legacy `harness` sub-app gated none of these.
  */
 import { z } from 'zod';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 import { appendOperatorNote, readOperatorNotes } from '@/lib/operator-notes';
 
-const getNotes = defineRoute({
+const getNotes = defineTool({
   method: 'GET',
   path: '/harness/:slug/features/:featureId/notes',
   auth: 'public',
@@ -23,7 +23,7 @@ const getNotes = defineRoute({
   },
 });
 
-const postNote = defineRoute({
+const postNote = defineTool({
   method: 'POST',
   path: '/harness/:slug/features/:featureId/notes',
   auth: 'public',

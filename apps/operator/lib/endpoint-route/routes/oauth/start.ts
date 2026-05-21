@@ -10,7 +10,7 @@
  */
 import { getProvider, loadAndRegisterProvidersFromDisk } from '@/lib/oauth/providers';
 import { signState } from '@/lib/oauth/state';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 let providersLoaded = false;
 async function ensureProvidersLoaded(): Promise<void> {
@@ -19,7 +19,7 @@ async function ensureProvidersLoaded(): Promise<void> {
   providersLoaded = true;
 }
 
-export default defineRoute({
+export default defineTool({
   method: 'GET',
   path: '/oauth/start',
   auth: 'public',

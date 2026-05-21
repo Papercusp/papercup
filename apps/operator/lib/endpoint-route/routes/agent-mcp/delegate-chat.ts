@@ -12,9 +12,9 @@ import {
 import '@/lib/agent-tools/index';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
 import { resolveDelegateSession } from '@/lib/agent-tools/operator/delegate-session';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
-export default defineRoute({
+export default defineTool({
   method: 'GET',
   path: '/agent-mcp/delegate-chat',
   auth: 'public',

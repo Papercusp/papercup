@@ -18,7 +18,7 @@ import {
   SCRATCH_SCHEME,
 } from '@/lib/scratch-uri';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 function json400(message: string): Response {
   return new Response(JSON.stringify({ error: { code: 'bad_request', message } }), {
@@ -49,7 +49,7 @@ function guessContentType(basename: string): string {
   }
 }
 
-export default defineRoute({
+export default defineTool({
   method: 'GET',
   path: '/scratch/:path{.+}',
   auth: 'public',

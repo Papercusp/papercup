@@ -2,7 +2,7 @@
  * E4 tests (endpoint-unification-2026-05-21) — the migrated `/api/mobile/*`
  * routes.
  *
- * The 33 legacy `_hono/mobile.ts` routes were ported to `defineRoute`
+ * The 33 legacy `_hono/mobile.ts` routes were ported to `defineTool`
  * modules under `routes/mobile/`. Registration (no path collisions, the
  * literal-before-sub-app shadowing) is covered by
  * `route-shadowing-invariant.test.ts`; mobile auth + CORS are covered by

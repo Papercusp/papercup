@@ -19,7 +19,7 @@ import { copyGrantsToNewHarness } from '@/lib/plugin-grants';
 import { papercuspPath } from '@/lib/papercusp-root';
 import { FLAGS } from '@papercusp/flags';
 import { gateApiRoute } from '@/lib/require-flag';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 function PROJECTS_DIR() { return papercuspPath('projects'); }
 function REGISTRY_PATH() { return papercuspPath('registry.json'); }
@@ -33,7 +33,7 @@ interface Body {
   pluginConfigOverrides?: Record<string, Record<string, unknown>>;
 }
 
-export default defineRoute({
+export default defineTool({
   method: 'POST',
   path: '/snapshots/:id/instantiate',
   auth: 'public',

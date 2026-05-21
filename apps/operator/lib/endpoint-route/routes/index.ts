@@ -1,7 +1,7 @@
 /**
  * Route registry barrel.
  *
- * Every `defineRoute` module is side-effect-free and `export default`s
+ * Every `defineTool` module is side-effect-free and `export default`s
  * either one `RouteDefinition` or an array of them (a route file that
  * serves multiple methods on one path — e.g. GET + OPTIONS). This barrel
  * imports them all and flattens into `ALL_ROUTES`.

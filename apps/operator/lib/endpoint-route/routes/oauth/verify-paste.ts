@@ -13,7 +13,7 @@ import {
   loadAndRegisterProvidersFromDisk,
 } from '@/lib/oauth/providers';
 import { fsTokenStorage } from '@/lib/oauth/storage-fs';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 let providersLoaded = false;
 async function ensureProvidersLoaded(): Promise<void> {
@@ -31,7 +31,7 @@ interface Body {
   requiredScopes?: string[];
 }
 
-export default defineRoute({
+export default defineTool({
   method: 'POST',
   path: '/oauth/verify-paste',
   auth: { trust: ['verified', 'trusted'] },

@@ -9,7 +9,7 @@
  */
 import { existsSync } from 'node:fs';
 import { loadHarnessRegistry, saveHarnessRegistry } from '@/lib/harness-registry';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 interface RegistryShape {
   projects: Array<{ slug: string; path: string; harnessKind?: string; addedAt?: string }>;
@@ -47,7 +47,7 @@ export function pruneRegistry(
   return { removed, kept };
 }
 
-export default defineRoute({
+export default defineTool({
   method: 'POST',
   path: '/installed/prune',
   auth: 'public',

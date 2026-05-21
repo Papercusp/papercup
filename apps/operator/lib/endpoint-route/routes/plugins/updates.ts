@@ -5,7 +5,7 @@
 import { promises as fs, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { papercuspRoot } from '@/lib/papercusp-root';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 interface InstalledManifest {
   name: string;
@@ -103,7 +103,7 @@ export function computeCapChange(from: string[] = [], to: string[] = []): CapCha
   return { added: added.sort(), removed: removed.sort(), unchanged: unchanged.sort() };
 }
 
-export default defineRoute({
+export default defineTool({
   method: 'GET',
   path: '/plugins/updates',
   auth: 'public',

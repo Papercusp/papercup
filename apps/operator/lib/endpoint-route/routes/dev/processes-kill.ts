@@ -12,9 +12,9 @@
  */
 import { activeWorkspaceId } from '@/lib/workspace-registry';
 import { killProcess } from '@/lib/process-kill';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
-export default defineRoute({
+export default defineTool({
   method: 'POST',
   path: '/dev/processes/kill',
   auth: { trust: ['verified', 'trusted'] },

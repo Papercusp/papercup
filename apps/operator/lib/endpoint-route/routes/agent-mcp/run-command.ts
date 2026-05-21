@@ -10,7 +10,7 @@ import type { AgentId, CommandContext, CommandResult } from '@/lib/commands/type
 import { audit } from '@/lib/commands/audit';
 import '@/lib/commands/audit-server';
 import '@/lib/commands/defs';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 interface Body {
   id?: string;
@@ -32,7 +32,7 @@ function errorResponse(
   );
 }
 
-export default defineRoute({
+export default defineTool({
   method: 'POST',
   path: '/agent-mcp/run-command',
   auth: 'public',

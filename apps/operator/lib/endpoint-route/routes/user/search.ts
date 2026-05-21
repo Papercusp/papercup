@@ -10,7 +10,7 @@
 import { getSessionUser } from '@/lib/auth';
 import { getMemoryClient } from '@/lib/memory/mem0-client';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 const HEADLINE_OPTS =
   'StartSel=<mark>, StopSel=</mark>, MaxFragments=2, FragmentDelimiter=" … ", MaxWords=18, MinWords=5, ShortWord=2';
@@ -247,7 +247,7 @@ async function searchProse(q: string, limit: number): Promise<ProseHit[]> {
   }
 }
 
-export default defineRoute({
+export default defineTool({
   method: 'GET',
   path: '/user/search',
   auth: 'public',

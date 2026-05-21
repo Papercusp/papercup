@@ -7,9 +7,9 @@ import {
   setCompanyId,
   companyIdFor,
 } from '@/lib/workspace-registry';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
-const get = defineRoute({
+const get = defineTool({
   method: 'GET',
   path: '/agent-mcp/workspace/company-id',
   auth: 'public',
@@ -22,7 +22,7 @@ const get = defineRoute({
   },
 });
 
-const put = defineRoute({
+const put = defineTool({
   method: 'PUT',
   path: '/agent-mcp/workspace/company-id',
   auth: 'public',

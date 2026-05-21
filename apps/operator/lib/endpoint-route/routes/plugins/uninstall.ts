@@ -5,7 +5,7 @@
 import { spawn } from 'node:child_process';
 import { triggerSnapshotEvent } from '@/lib/backup';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 const PAPERCUSP_BIN = process.env.PAPERCUSP_CLI ?? 'papercusp';
 
@@ -24,7 +24,7 @@ function isValidSlug(s: string): boolean {
   return /^@?[a-z0-9][a-z0-9._/-]{0,127}$/i.test(s);
 }
 
-export default defineRoute({
+export default defineTool({
   method: 'POST',
   path: '/plugins/uninstall',
   auth: 'public',

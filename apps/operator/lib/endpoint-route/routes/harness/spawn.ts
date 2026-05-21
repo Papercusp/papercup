@@ -32,9 +32,9 @@ import { phasePhaseLabel } from '@/lib/harness-phases';
 import { harnessPath, harnessPackageDir } from '@/lib/harness-paths';
 import { launchRun } from '@/lib/harness-launch';
 import { firePluginLifecycle, firePluginEvent } from '@/lib/plugin-host-runtime';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
-const launch = defineRoute({
+const launch = defineTool({
   method: 'POST',
   path: '/harness/:slug/launch',
   auth: 'public',
@@ -160,7 +160,7 @@ async function dispatchActionsBlockFromOutput(
  * harness's coordinator. Synchronously runs `bash run.sh invoke <role>` in
  * the child harness's project dir and returns the captured stdout.
  */
-const invoke = defineRoute({
+const invoke = defineTool({
   method: 'POST',
   path: '/harness/:slug/invoke',
   auth: 'public',
@@ -283,7 +283,7 @@ except Exception:
   },
 });
 
-const resume = defineRoute({
+const resume = defineTool({
   method: 'POST',
   path: '/harness/:slug/resume',
   auth: 'public',

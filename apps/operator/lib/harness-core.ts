@@ -4,7 +4,7 @@
  *
  * Relocated from `app/api/_hono/harness.ts` (endpoint-hono-elimination
  * -2026-05-21 A4 first batch). Routes still live in the legacy file for
- * now; subsequent A4 batches migrate them to `defineRoute` modules. This
+ * now; subsequent A4 batches migrate them to `defineTool` modules. This
  * carve-out lets `lib/*` callers stop importing from `app/api/_hono/*`,
  * breaking the layering violation.
  *

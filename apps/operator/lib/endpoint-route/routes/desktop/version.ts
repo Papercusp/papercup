@@ -13,7 +13,7 @@
 import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 const startedAtMs = Date.now();
 
@@ -62,7 +62,7 @@ const CORS_HEADERS: Record<string, string> = {
 };
 
 export default [
-  defineRoute({
+  defineTool({
     method: 'GET',
     path: '/desktop/version',
     auth: 'public',
@@ -79,7 +79,7 @@ export default [
       );
     },
   }),
-  defineRoute({
+  defineTool({
     method: 'OPTIONS',
     path: '/desktop/version',
     auth: 'public',

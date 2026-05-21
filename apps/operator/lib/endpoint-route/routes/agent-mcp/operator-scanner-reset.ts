@@ -3,9 +3,9 @@
  * Ported from app/api/agent-mcp/operator-scanner-reset/route.ts. `auth: 'public'`.
  */
 import { resetScannerSession, isScannerResumeEnabled } from '@/lib/operator-scanner-session';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
-export default defineRoute({
+export default defineTool({
   method: 'POST',
   path: '/agent-mcp/operator-scanner-reset',
   auth: 'public',

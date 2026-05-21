@@ -3,7 +3,7 @@
  *
  * The bug: Hono resolves overlapping routes by *registration order* — it
  * has no static-over-dynamic precedence (Next.js file routing did). A
- * `defineRoute` handler never calls `next()`, so a parametric route
+ * `defineTool` handler never calls `next()`, so a parametric route
  * registered before a literal sibling swallows it outright. The audit
  * found `GET /api/marketplace/:slug` (registered first) shadowing
  * `GET /api/marketplace/spawnable` — the latter 404'd in the real app.

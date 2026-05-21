@@ -18,7 +18,7 @@ import { getOrgPg } from '@restart/db-org';
 import { resolvePhasedProject, harnessDir } from '@/lib/harness-core';
 import { phasePhaseLabel } from '@/lib/harness-phases';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 const SCREENSHOT_EXTS = ['.png', '.jpg', '.jpeg', '.gif', '.webp'] as const;
 
@@ -26,7 +26,7 @@ function phaseFromReq(req: Request) {
   return phasePhaseLabel(new URL(req.url).searchParams.get('phase') ?? undefined);
 }
 
-const getScreenshot = defineRoute({
+const getScreenshot = defineTool({
   method: 'GET',
   path: '/harness/:slug/screenshots/:id',
   auth: 'public',
@@ -50,7 +50,7 @@ const getScreenshot = defineRoute({
   },
 });
 
-const postScreenshot = defineRoute({
+const postScreenshot = defineTool({
   method: 'POST',
   path: '/harness/:slug/screenshots',
   auth: 'public',
@@ -110,7 +110,7 @@ const postScreenshot = defineRoute({
   },
 });
 
-const deleteScreenshot = defineRoute({
+const deleteScreenshot = defineTool({
   method: 'DELETE',
   path: '/harness/:slug/screenshots/:id',
   auth: 'public',

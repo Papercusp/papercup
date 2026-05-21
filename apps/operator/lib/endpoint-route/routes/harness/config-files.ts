@@ -18,7 +18,7 @@ import { join } from 'node:path';
 import { resolvePhasedProject, safeRead } from '@/lib/harness-core';
 import { phasePhaseLabel } from '@/lib/harness-phases';
 import type { ProjectEntry } from '@/lib/harness-registry';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 function phaseFromReq(req: Request) {
   return phasePhaseLabel(new URL(req.url).searchParams.get('phase') ?? undefined);
@@ -38,7 +38,7 @@ function jsonConfigRoutes(opts: {
   artifactKey: string;
   diskPath: (p: ProjectEntry) => string;
 }) {
-  const get = defineRoute({
+  const get = defineTool({
     method: 'GET',
     path: opts.routePath,
     auth: 'public',
@@ -51,7 +51,7 @@ function jsonConfigRoutes(opts: {
       return Response.json({ content: fromPg ?? safeRead(opts.diskPath(project)) ?? '' });
     },
   });
-  const put = defineRoute({
+  const put = defineTool({
     method: 'PUT',
     path: opts.routePath,
     auth: 'public',
@@ -93,7 +93,7 @@ const [getClaudeSettings, putClaudeSettings] = jsonConfigRoutes({
   diskPath: claudeSettingsPath,
 });
 
-const getEnv = defineRoute({
+const getEnv = defineTool({
   method: 'GET',
   path: '/harness/:slug/env',
   auth: 'public',
@@ -104,7 +104,7 @@ const getEnv = defineRoute({
   },
 });
 
-const putEnv = defineRoute({
+const putEnv = defineTool({
   method: 'PUT',
   path: '/harness/:slug/env',
   auth: 'public',

@@ -12,9 +12,9 @@
  */
 import { decideGate, detectSharedHost, writeAcknowledgement } from '@/lib/provision/single-user';
 import { smokeTestSandbox } from '@/lib/provision/sandbox';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
-const get = defineRoute({
+const get = defineTool({
   method: 'GET',
   path: '/provision/host-check',
   auth: { trust: ['verified', 'trusted'] },
@@ -29,7 +29,7 @@ const get = defineRoute({
   },
 });
 
-const post = defineRoute({
+const post = defineTool({
   method: 'POST',
   path: '/provision/host-check',
   auth: { trust: ['verified', 'trusted'] },

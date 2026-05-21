@@ -35,7 +35,7 @@ export interface OpenApiDocumentOptions {
   servers?: Array<{ url: string; description?: string }>;
   /**
    * Extra pre-built fragments to merge alongside the tool fragments —
-   * `defineRoute` operations (endpoint route migration R3). Each carries
+   * `defineTool` operations (endpoint route migration R3). Each carries
    * its own `httpMethod`; multiple methods on one path merge. The host
    * (apps/operator) builds these from its route registry and passes them
    * in — keeps this package free of an apps/operator dependency.
@@ -105,7 +105,7 @@ export function assembleOpenApiDocument(
     mergeFragment(toolToOpenApiFragment(name, tool, { pathPrefix, securitySchemeName }));
   }
 
-  // defineRoute fragments (R3) — already pathPrefix-resolved by the host.
+  // defineTool fragments (R3) — already pathPrefix-resolved by the host.
   for (const frag of opts.extraFragments ?? []) {
     mergeFragment(frag);
   }

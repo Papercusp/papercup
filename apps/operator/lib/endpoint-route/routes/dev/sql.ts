@@ -15,7 +15,7 @@
 import { z } from 'zod';
 import { getOrgPg, withWorkspace } from '@restart/db-org';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 const BodySchema = z.object({
   sql: z.string().min(1).max(64 * 1024),
@@ -99,7 +99,7 @@ class ReadOnlyRollback extends Error {
   constructor() { super('__readonly_rollback'); this.name = 'ReadOnlyRollback'; }
 }
 
-export default defineRoute({
+export default defineTool({
   method: 'POST',
   path: '/dev/sql',
   auth: { trust: ['verified', 'trusted'] },

@@ -10,7 +10,7 @@ import { createInterface } from 'node:readline';
 import path from 'node:path';
 import { sseResponse } from '@restart/sse';
 import { readCredentials } from '@/lib/credentials';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 type AiExploreVocab = {
   start: { goal: string; model: string; startUrl: string };
@@ -48,7 +48,7 @@ function parseConfig(body: unknown): { ok: true; cfg: ParsedConfig } | { ok: fal
   };
 }
 
-export default defineRoute({
+export default defineTool({
   method: 'POST',
   path: '/admin/testing/ai-explore',
   auth: { trust: ['verified', 'trusted'] },

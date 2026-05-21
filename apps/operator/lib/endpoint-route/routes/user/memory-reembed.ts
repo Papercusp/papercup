@@ -12,7 +12,7 @@
  */
 import { getSessionUser } from '@/lib/auth';
 import { reembedMemories } from '@/lib/memory/reembed';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 const VALID_MODES = ['openai', 'local'] as const;
 type Mode = (typeof VALID_MODES)[number];
@@ -21,7 +21,7 @@ function isMode(v: unknown): v is Mode {
   return typeof v === 'string' && (VALID_MODES as readonly string[]).includes(v);
 }
 
-export default defineRoute({
+export default defineTool({
   method: 'POST',
   path: '/user/memory/reembed',
   auth: 'public',

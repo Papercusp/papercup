@@ -3,9 +3,9 @@
  * Ported from app/api/agent-mcp/voice-utterance-log/route.ts. `auth: 'public'`.
  */
 import { logVoiceUtterance, type VoiceUtteranceLogInput } from '@/lib/voice-utterance-log';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
-export default defineRoute({
+export default defineTool({
   method: 'POST',
   path: '/agent-mcp/voice-utterance-log',
   auth: 'public',

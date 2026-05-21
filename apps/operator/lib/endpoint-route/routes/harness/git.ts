@@ -14,7 +14,7 @@ import { promisify } from 'node:util';
 import { join } from 'node:path';
 import { resolvePhasedProject } from '@/lib/harness-core';
 import { phasePhaseLabel } from '@/lib/harness-phases';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 const execFileP = promisify(execFile);
 
@@ -219,7 +219,7 @@ function parseWorktreePorcelain(stdout: string): WorktreeEntry[] {
 
 /* ─── routes ────────────────────────────────────────────────────────── */
 
-const gitShow = defineRoute({
+const gitShow = defineTool({
   method: 'GET',
   path: '/harness/:slug/git/show/:sha',
   auth: 'public',
@@ -259,7 +259,7 @@ const gitShow = defineRoute({
   },
 });
 
-const gitWorktrees = defineRoute({
+const gitWorktrees = defineTool({
   method: 'GET',
   path: '/harness/:slug/git/worktrees',
   auth: 'public',
@@ -299,7 +299,7 @@ const gitWorktrees = defineRoute({
   },
 });
 
-const gitLog = defineRoute({
+const gitLog = defineTool({
   method: 'GET',
   path: '/harness/:slug/git/log',
   auth: 'public',

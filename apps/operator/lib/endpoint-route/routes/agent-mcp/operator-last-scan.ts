@@ -4,9 +4,9 @@
  */
 import { reconstructCards } from '@/lib/operator-card-reconstruction';
 import { readLastScan } from '@/lib/operator-last-scan';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
-export default defineRoute({
+export default defineTool({
   method: 'GET',
   path: '/agent-mcp/operator-last-scan',
   auth: 'public',

@@ -14,13 +14,13 @@ import { existsSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { resolvePhasedProject, harnessDir, safeRead } from '@/lib/harness-core';
 import { phasePhaseLabel } from '@/lib/harness-phases';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 function phaseFromReq(req: Request) {
   return phasePhaseLabel(new URL(req.url).searchParams.get('phase') ?? undefined);
 }
 
-const getHealth = defineRoute({
+const getHealth = defineTool({
   method: 'GET',
   path: '/harness/:slug/health',
   auth: 'public',
@@ -33,7 +33,7 @@ const getHealth = defineRoute({
   },
 });
 
-const getLanes = defineRoute({
+const getLanes = defineTool({
   method: 'GET',
   path: '/harness/:slug/lanes',
   auth: 'public',
@@ -70,7 +70,7 @@ const getLanes = defineRoute({
   },
 });
 
-const getKnowledge = defineRoute({
+const getKnowledge = defineTool({
   method: 'GET',
   path: '/harness/:slug/knowledge',
   auth: 'public',
@@ -87,7 +87,7 @@ const getKnowledge = defineRoute({
   },
 });
 
-const putKnowledge = defineRoute({
+const putKnowledge = defineTool({
   method: 'PUT',
   path: '/harness/:slug/knowledge',
   auth: 'public',
@@ -105,7 +105,7 @@ const putKnowledge = defineRoute({
   },
 });
 
-const getPrs = defineRoute({
+const getPrs = defineTool({
   method: 'GET',
   path: '/harness/:slug/prs',
   auth: 'public',

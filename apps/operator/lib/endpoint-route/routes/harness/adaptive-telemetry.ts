@@ -18,9 +18,9 @@ import { getOrgPg } from '@restart/db-org';
 import { resolveProject } from '@/lib/harness-core';
 import { ensureAdaptiveTelemetryTable } from '@/lib/ensure-schema';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
-const getTelemetry = defineRoute({
+const getTelemetry = defineTool({
   method: 'GET',
   path: '/harness/:slug/orchestrator/adaptive-telemetry',
   auth: 'public',
@@ -58,7 +58,7 @@ const getTelemetry = defineRoute({
   },
 });
 
-const postTelemetry = defineRoute({
+const postTelemetry = defineTool({
   method: 'POST',
   path: '/harness/:slug/orchestrator/adaptive-telemetry',
   auth: 'public',
@@ -109,7 +109,7 @@ const postTelemetry = defineRoute({
   },
 });
 
-const patchTelemetry = defineRoute({
+const patchTelemetry = defineTool({
   method: 'PATCH',
   path: '/harness/:slug/orchestrator/adaptive-telemetry/:id',
   auth: 'public',

@@ -34,7 +34,7 @@ import {
 } from '@/lib/pty-bridge';
 import { papercuspPath } from '@/lib/papercusp-root';
 import { resolveProjectDir, resolveStateDir, resolveSpawnCwd, resolveContextEnv } from '@/lib/spawn-config';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 interface SpawnBody {
   command?: string;
@@ -317,7 +317,7 @@ function attachAuditExport(handle: ReturnType<typeof spawnPty>, sd: string | nul
 
 /* ─── Routes ─────────────────────────────────────────────────────────── */
 
-const spawn = defineRoute({
+const spawn = defineTool({
   method: 'POST',
   path: '/harness/:slug/pty/spawn',
   auth: 'public',
@@ -402,7 +402,7 @@ const spawn = defineRoute({
   },
 });
 
-const resolve = defineRoute({
+const resolve = defineTool({
   method: 'POST',
   path: '/harness/:slug/pty/resolve',
   auth: 'public',
@@ -418,7 +418,7 @@ const resolve = defineRoute({
   },
 });
 
-const prewarm = defineRoute({
+const prewarm = defineTool({
   method: 'POST',
   path: '/harness/:slug/pty/prewarm',
   auth: 'public',
@@ -451,7 +451,7 @@ const prewarm = defineRoute({
   },
 });
 
-const stream = defineRoute({
+const stream = defineTool({
   method: 'GET',
   path: '/harness/:slug/pty/:id/stream',
   auth: 'public',
@@ -510,7 +510,7 @@ const stream = defineRoute({
   },
 });
 
-const input = defineRoute({
+const input = defineTool({
   method: 'POST',
   path: '/harness/:slug/pty/:id/input',
   auth: 'public',
@@ -525,7 +525,7 @@ const input = defineRoute({
   },
 });
 
-const resize = defineRoute({
+const resize = defineTool({
   method: 'POST',
   path: '/harness/:slug/pty/:id/resize',
   auth: 'public',
@@ -541,7 +541,7 @@ const resize = defineRoute({
   },
 });
 
-const kill = defineRoute({
+const kill = defineTool({
   method: 'POST',
   path: '/harness/:slug/pty/:id/kill',
   auth: 'public',
@@ -552,7 +552,7 @@ const kill = defineRoute({
   },
 });
 
-const auditList = defineRoute({
+const auditList = defineTool({
   method: 'GET',
   path: '/harness/:slug/pi-sessions/audit',
   auth: 'public',
@@ -592,7 +592,7 @@ const auditList = defineRoute({
   },
 });
 
-const auditFile = defineRoute({
+const auditFile = defineTool({
   method: 'GET',
   path: '/harness/:slug/pi-sessions/audit/:filename',
   auth: 'public',
@@ -621,7 +621,7 @@ const auditFile = defineRoute({
   },
 });
 
-const tools = defineRoute({
+const tools = defineTool({
   method: 'GET',
   path: '/harness/:slug/pty/tools',
   auth: 'public',

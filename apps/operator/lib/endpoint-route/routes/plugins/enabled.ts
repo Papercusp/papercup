@@ -3,9 +3,9 @@
  * Ported from app/api/plugins/enabled/route.ts. `auth: 'public'`.
  */
 import { listEnabledByHarness } from '@/lib/plugin-enables-pg';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
-export default defineRoute({
+export default defineTool({
   method: 'GET',
   path: '/plugins/enabled',
   auth: 'public',

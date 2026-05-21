@@ -17,7 +17,7 @@ import { activeWorkspaceId, readRegistry } from '@/lib/workspace-registry';
 import { workspaceBackupFor } from '@/lib/backup';
 import { anyAgentSignedIn } from '@/lib/agent-auth-detect';
 import { detectClaude, detectOmp, detectMeridianInstalled } from '@/lib/preflight-binaries';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 type StepStatus = 'ok' | 'needs-attention' | 'unknown';
 type StepId =
@@ -104,7 +104,7 @@ function boolToStatus(ok: boolean): StepStatus {
   return ok ? 'ok' : 'needs-attention';
 }
 
-export default defineRoute({
+export default defineTool({
   method: 'GET',
   path: '/desktop/setup-status',
   auth: {},

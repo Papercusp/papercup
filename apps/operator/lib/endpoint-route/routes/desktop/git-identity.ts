@@ -9,7 +9,7 @@
  */
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 const exec = promisify(execFile);
 
@@ -23,7 +23,7 @@ async function readConfig(scope: 'global' | 'system', key: string): Promise<stri
   }
 }
 
-const get = defineRoute({
+const get = defineTool({
   method: 'GET',
   path: '/desktop/git-identity',
   auth: {},
@@ -45,7 +45,7 @@ const get = defineRoute({
   },
 });
 
-const post = defineRoute({
+const post = defineTool({
   method: 'POST',
   path: '/desktop/git-identity',
   auth: {},

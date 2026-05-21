@@ -1,7 +1,7 @@
 /**
  * R1 pilot verification — the 3 real ported routes mounted on a
  * throwaway Hono app, exercised via `app.request()`. This is the proof
- * that `defineRoute` serves the real endpoints identically to the Next
+ * that `defineTool` serves the real endpoints identically to the Next
  * `route.ts` files they replaced — without a running operator.
  *
  *   GET  /desktop/version            — the GET + OPTIONS + CORS case

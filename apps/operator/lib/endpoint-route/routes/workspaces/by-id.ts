@@ -5,7 +5,7 @@
 import { existsSync, promises as fs } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 const REGISTRY_PATH = join(homedir(), '.papercusp-workspaces', 'registry.json');
 
@@ -31,7 +31,7 @@ function validId(id: string): boolean {
 }
 
 export default [
-  defineRoute({
+  defineTool({
     method: 'PATCH',
     path: '/workspaces/:id',
     auth: 'public',
@@ -54,7 +54,7 @@ export default [
       return Response.json({ ok: true, workspace: ws });
     },
   }),
-  defineRoute({
+  defineTool({
     method: 'DELETE',
     path: '/workspaces/:id',
     auth: 'public',

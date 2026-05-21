@@ -8,9 +8,9 @@
  */
 import { getOrgPg } from '@restart/db-org';
 import { routeWithWorkspace } from '@/lib/route-workspace';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
-export default defineRoute({
+export default defineTool({
   method: 'GET',
   path: '/harness/all/kpis',
   auth: 'public',

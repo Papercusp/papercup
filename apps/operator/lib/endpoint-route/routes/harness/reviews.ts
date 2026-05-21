@@ -19,7 +19,7 @@ import { getOrgPg, getLegacyClient } from '@restart/db-org';
 import { resolvePhasedProject, harnessDir } from '@/lib/harness-core';
 import { phasePhaseLabel } from '@/lib/harness-phases';
 import type { ProjectEntry } from '@/lib/harness-registry';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 function phaseFromReq(req: Request) {
   return phasePhaseLabel(new URL(req.url).searchParams.get('phase') ?? undefined);
@@ -41,7 +41,7 @@ interface PendingReview {
 
 const reviewsDir = (p: ProjectEntry) => join(harnessDir(p), 'pending-reviews');
 
-const listReviews = defineRoute({
+const listReviews = defineTool({
   method: 'GET',
   path: '/harness/:slug/reviews',
   auth: 'public',
@@ -52,7 +52,7 @@ const listReviews = defineRoute({
   },
 });
 
-const getReview = defineRoute({
+const getReview = defineTool({
   method: 'GET',
   path: '/harness/:slug/reviews/:id',
   auth: 'public',
@@ -75,7 +75,7 @@ const getReview = defineRoute({
   },
 });
 
-const resolveReview = defineRoute({
+const resolveReview = defineTool({
   method: 'POST',
   path: '/harness/:slug/reviews/:id/resolve',
   auth: 'public',

@@ -6,7 +6,7 @@
 import { invokePluginAction, callWasmAction } from '@/lib/plugin-host-runtime';
 import { papercuspRoot } from '@/lib/papercusp-root';
 import { join } from 'node:path';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 interface ReqBody {
   pluginName: string;
@@ -16,7 +16,7 @@ interface ReqBody {
   surface?: 'iframe' | 'react' | 'core';
 }
 
-export default defineRoute({
+export default defineTool({
   method: 'POST',
   path: '/plugins/host/invoke',
   auth: 'public',

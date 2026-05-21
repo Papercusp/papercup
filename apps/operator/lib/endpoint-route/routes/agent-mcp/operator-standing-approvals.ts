@@ -7,9 +7,9 @@ import {
   readCandidates,
   refreshCandidates,
 } from '@/lib/operator-standing-candidates';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
-const get = defineRoute({
+const get = defineTool({
   method: 'GET',
   path: '/agent-mcp/operator-standing-approvals',
   auth: 'public',
@@ -19,7 +19,7 @@ const get = defineRoute({
   },
 });
 
-const post = defineRoute({
+const post = defineTool({
   method: 'POST',
   path: '/agent-mcp/operator-standing-approvals',
   auth: 'public',

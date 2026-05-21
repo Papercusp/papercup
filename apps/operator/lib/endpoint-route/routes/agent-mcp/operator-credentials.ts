@@ -17,7 +17,7 @@ import {
   writeGoogleKey,
   maskKey,
 } from '@/lib/voice-credentials';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 async function snapshot() {
   const e = await readElevenLabsKey();
@@ -36,7 +36,7 @@ async function snapshot() {
   };
 }
 
-const get = defineRoute({
+const get = defineTool({
   method: 'GET',
   path: '/agent-mcp/operator-credentials',
   auth: 'public',
@@ -45,7 +45,7 @@ const get = defineRoute({
   },
 });
 
-const put = defineRoute({
+const put = defineTool({
   method: 'PUT',
   path: '/agent-mcp/operator-credentials',
   auth: 'public',

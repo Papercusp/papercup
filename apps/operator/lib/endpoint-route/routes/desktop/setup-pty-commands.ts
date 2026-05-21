@@ -5,7 +5,7 @@
  * Ported from app/api/desktop/setup-pty-commands/route.ts. `auth: {}`.
  */
 import { platform, homedir } from 'node:os';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 const MERIDIAN_VERSION = '1.42.1';
 const OMP_PACKAGE = '@oh-my-pi/cli';
@@ -78,7 +78,7 @@ export function buildGithubLoginSpec(home: string): SpawnSpec {
   return { command: 'gh', args: ['auth', 'login'], cwd: home, env: {} };
 }
 
-export default defineRoute({
+export default defineTool({
   method: 'GET',
   path: '/desktop/setup-pty-commands',
   auth: {},

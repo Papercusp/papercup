@@ -8,14 +8,14 @@ import { z } from 'zod';
 import { getOrgPg } from '@restart/db-org';
 import { isLoopbackRequest } from '@/lib/superuser-token';
 import { ensureUiIntentsTable } from '@/lib/ensure-schema';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 const BodySchema = z.object({
   result: z.unknown().optional(),
   error: z.string().nullable().optional(),
 });
 
-export default defineRoute({
+export default defineTool({
   method: 'POST',
   path: '/ui/intents/:id/result',
   auth: 'public',

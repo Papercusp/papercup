@@ -8,7 +8,7 @@
  */
 import { sseResponse, parseLastEventId, type SyncSseEventVocabulary } from '@restart/sse';
 import { subscribe, backfillSince, type SyncEvent } from '@/lib/sync-sse';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 function payloadFor(ev: SyncEvent): { name: string; args?: unknown; data?: unknown[] } {
   const out: { name: string; args?: unknown; data?: unknown[] } = { name: ev.name };
@@ -17,7 +17,7 @@ function payloadFor(ev: SyncEvent): { name: string; args?: unknown; data?: unkno
   return out;
 }
 
-export default defineRoute({
+export default defineTool({
   method: 'GET',
   path: '/zero-harness/sse',
   auth: 'public',

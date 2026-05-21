@@ -4,9 +4,9 @@
  */
 import { activeWorkspaceId } from '@/lib/workspace-registry';
 import { readMultiWorkspaceSnapshot } from '@/lib/operator-multi-workspace';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
-export default defineRoute({
+export default defineTool({
   method: 'GET',
   path: '/agent-mcp/operator-multi-workspace',
   auth: 'public',

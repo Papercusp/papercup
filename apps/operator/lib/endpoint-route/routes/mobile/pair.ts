@@ -14,7 +14,7 @@
  */
 import { networkInterfaces } from 'node:os';
 import { z } from 'zod';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 import { MOBILE_AUTH, mobilePrincipal, isLoopbackHost } from './_shared';
 import { signDeviceToken } from '@/lib/mobile-jwt';
 import { getMobileVoicePort } from '@/lib/mobile-voice-ws';
@@ -57,7 +57,7 @@ function lanAddress(): string | null {
  * LAN attacker — see the legacy comment; real exposure needs a 127.0.0.1
  * bind or a proper auth check).
  */
-const mintPairTokenRoute = defineRoute({
+const mintPairTokenRoute = defineTool({
   method: 'POST',
   path: '/mobile/desktop/mint-pair-token',
   auth: 'public',
@@ -106,7 +106,7 @@ const mintPairTokenRoute = defineRoute({
  * POST /mobile/pair — phone redeems a one-time pair token for a
  * long-lived device JWT. Unauthenticated by design.
  */
-const pairRoute = defineRoute({
+const pairRoute = defineTool({
   method: 'POST',
   path: '/mobile/pair',
   auth: 'public',
@@ -145,7 +145,7 @@ const pairRoute = defineRoute({
  * POST /mobile/workspace/switch — re-issue the device token bound to a
  * different workspace. The target must exist in the local registry.
  */
-const workspaceSwitchRoute = defineRoute({
+const workspaceSwitchRoute = defineTool({
   method: 'POST',
   path: '/mobile/workspace/switch',
   auth: MOBILE_AUTH,
@@ -167,7 +167,7 @@ const workspaceSwitchRoute = defineRoute({
 });
 
 /** GET /mobile/devices — paired devices in this device's workspace. */
-const devicesListRoute = defineRoute({
+const devicesListRoute = defineTool({
   method: 'GET',
   path: '/mobile/devices',
   auth: MOBILE_AUTH,
@@ -188,7 +188,7 @@ const devicesListRoute = defineRoute({
 });
 
 /** DELETE /mobile/devices/:deviceId — revoke a paired device. */
-const deviceRevokeRoute = defineRoute({
+const deviceRevokeRoute = defineTool({
   method: 'DELETE',
   path: '/mobile/devices/:deviceId',
   auth: MOBILE_AUTH,
@@ -201,7 +201,7 @@ const deviceRevokeRoute = defineRoute({
 });
 
 /** GET /mobile/runtime-config — config the phone needs after pairing. */
-const runtimeConfigRoute = defineRoute({
+const runtimeConfigRoute = defineTool({
   method: 'GET',
   path: '/mobile/runtime-config',
   auth: MOBILE_AUTH,
@@ -232,7 +232,7 @@ const runtimeConfigRoute = defineRoute({
  * full local registry. Field name `name` matches the Rust client's
  * `WorkspaceItem` decoder (`label` made the iOS Settings tab fail).
  */
-const workspacesRoute = defineRoute({
+const workspacesRoute = defineTool({
   method: 'GET',
   path: '/mobile/workspaces',
   auth: MOBILE_AUTH,
@@ -251,7 +251,7 @@ const workspacesRoute = defineRoute({
 });
 
 /** POST /mobile/heartbeat — bump last_seen for the "active 3m ago" badge. */
-const heartbeatRoute = defineRoute({
+const heartbeatRoute = defineTool({
   method: 'POST',
   path: '/mobile/heartbeat',
   auth: MOBILE_AUTH,

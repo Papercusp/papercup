@@ -11,12 +11,12 @@ import { getOrgPg, generated } from '@restart/db-org';
 import { and, eq } from 'drizzle-orm';
 import { ensureUserActionsTable } from '@/lib/ensure-schema';
 import { loadHarnessRegistry } from '@/lib/harness-registry';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 const ua = generated.userActionsInHarnessShared;
 const MAX_BYTES = 2 * 1024 * 1024;
 
-export default defineRoute({
+export default defineTool({
   method: 'GET',
   path: '/user-actions/:slug/:id/log',
   auth: 'public',

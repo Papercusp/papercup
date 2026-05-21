@@ -17,9 +17,9 @@ import { join } from 'node:path';
 import { resolvePhasedProject, harnessDir, safeRead } from '@/lib/harness-core';
 import { phasePhaseLabel } from '@/lib/harness-phases';
 import { harnessPath } from '@/lib/harness-paths';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
-const supervisor = defineRoute({
+const supervisor = defineTool({
   method: 'POST',
   path: '/harness/:slug/supervisor',
   auth: 'public',
@@ -49,7 +49,7 @@ const supervisor = defineRoute({
   },
 });
 
-const resolveEscalation = defineRoute({
+const resolveEscalation = defineTool({
   method: 'POST',
   path: '/harness/:slug/escalation/resolve',
   auth: 'public',

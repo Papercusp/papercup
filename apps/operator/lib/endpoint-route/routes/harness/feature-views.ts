@@ -25,11 +25,11 @@ import {
 } from '@restart/db-org';
 import { resolveProject, resolvePhasedProject, harnessDir } from '@/lib/harness-core';
 import { phasePhaseLabel } from '@/lib/harness-phases';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 const execFileP = promisify(execFile);
 
-const getLineage = defineRoute({
+const getLineage = defineTool({
   method: 'GET',
   path: '/harness/:slug/feature/:id/lineage',
   auth: 'public',
@@ -58,7 +58,7 @@ const getLineage = defineRoute({
   },
 });
 
-const getAudit = defineRoute({
+const getAudit = defineTool({
   method: 'GET',
   path: '/harness/:slug/features/:id/audit',
   auth: 'public',
@@ -115,7 +115,7 @@ const getAudit = defineRoute({
   },
 });
 
-const getTimeline = defineRoute({
+const getTimeline = defineTool({
   method: 'GET',
   path: '/harness/:slug/features/:id/timeline',
   auth: 'public',
@@ -211,7 +211,7 @@ const getTimeline = defineRoute({
   },
 });
 
-const getDiff = defineRoute({
+const getDiff = defineTool({
   method: 'GET',
   path: '/harness/:slug/features/:id/diff',
   auth: 'public',

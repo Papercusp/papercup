@@ -17,11 +17,11 @@ import { promisify } from 'node:util';
 import { join } from 'node:path';
 import { resolveProject, resolvePhasedProject, harnessDir, safeRead } from '@/lib/harness-core';
 import { phasePhaseLabel } from '@/lib/harness-phases';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 const execFileP = promisify(execFile);
 
-const getScoperResult = defineRoute({
+const getScoperResult = defineTool({
   method: 'GET',
   path: '/harness/:slug/scoper-result/:invocationId',
   auth: 'public',
@@ -58,7 +58,7 @@ const getScoperResult = defineRoute({
 });
 
 function noteByIdRoute(routePath: string, subdir: string) {
-  return defineRoute({
+  return defineTool({
     method: 'GET',
     path: routePath,
     auth: 'public',
@@ -78,7 +78,7 @@ function noteByIdRoute(routePath: string, subdir: string) {
 const getDebugNote = noteByIdRoute('/harness/:slug/debug-notes/:id', 'debug');
 const getSynthesisNote = noteByIdRoute('/harness/:slug/synthesis-notes/:id', 'synthesis-notes');
 
-const getDebugNotes = defineRoute({
+const getDebugNotes = defineTool({
   method: 'GET',
   path: '/harness/:slug/debug-notes',
   auth: 'public',
@@ -100,7 +100,7 @@ const getDebugNotes = defineRoute({
   },
 });
 
-const getDiffWorking = defineRoute({
+const getDiffWorking = defineTool({
   method: 'GET',
   path: '/harness/:slug/diff/working',
   auth: 'public',

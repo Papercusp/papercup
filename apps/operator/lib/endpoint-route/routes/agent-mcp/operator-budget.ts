@@ -4,9 +4,9 @@
  * Ported from app/api/agent-mcp/operator-budget/route.ts. `auth: 'public'`.
  */
 import { checkBudget, setBudget } from '@/lib/operator-budget';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
-const get = defineRoute({
+const get = defineTool({
   method: 'GET',
   path: '/agent-mcp/operator-budget',
   auth: 'public',
@@ -22,7 +22,7 @@ const get = defineRoute({
   },
 });
 
-const put = defineRoute({
+const put = defineTool({
   method: 'PUT',
   path: '/agent-mcp/operator-budget',
   auth: 'public',

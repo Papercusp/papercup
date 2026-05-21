@@ -20,7 +20,7 @@ import {
 import { phasePhaseLabel, phasePath, ALL_PHASES, type Phase } from '@/lib/harness-phases';
 import { harnessPath } from '@/lib/harness-paths';
 import type { ProjectEntry } from '@/lib/harness-registry';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 interface PhaseInfo {
   phase: Phase;
@@ -129,7 +129,7 @@ async function computePhaseInfo(
   return { phase, path, branch, port, publicUrl, exists, alive, passed, total, cost, iteration, promotionInFlight };
 }
 
-const getPhases = defineRoute({
+const getPhases = defineTool({
   method: 'GET',
   path: '/harness/:slug/phases',
   auth: 'public',
@@ -150,7 +150,7 @@ const getPhases = defineRoute({
   },
 });
 
-const setupPhases = defineRoute({
+const setupPhases = defineTool({
   method: 'POST',
   path: '/harness/:slug/phases/setup',
   auth: 'public',

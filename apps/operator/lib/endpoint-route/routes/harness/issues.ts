@@ -33,13 +33,13 @@ import {
 import { activeWorkspaceId } from '@/lib/workspace-registry';
 import { notifySyncInvalidate } from '@/lib/sync-sse';
 import type { Issue, IssueSeverity, IssueStatus } from '@/app/harness/issues/types';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 function phaseFromReq(req: Request) {
   return phasePhaseLabel(new URL(req.url).searchParams.get('phase') ?? undefined);
 }
 
-const issuesList = defineRoute({
+const issuesList = defineTool({
   method: 'GET',
   path: '/harness/:slug/issues-list',
   auth: 'public',
@@ -52,7 +52,7 @@ const issuesList = defineRoute({
   },
 });
 
-const createIssue = defineRoute({
+const createIssue = defineTool({
   method: 'POST',
   path: '/harness/:slug/issues',
   auth: 'public',
@@ -94,7 +94,7 @@ const createIssue = defineRoute({
  * fs-watcher mirrors disk writes to). The next /triage call merges into
  * issues.json + harness_issues using the curator's dedup pass.
  */
-const appendPendingIssue = defineRoute({
+const appendPendingIssue = defineTool({
   method: 'POST',
   path: '/harness/:slug/issues/append-pending',
   auth: 'public',
@@ -157,7 +157,7 @@ const appendPendingIssue = defineRoute({
   },
 });
 
-const updateIssue = defineRoute({
+const updateIssue = defineTool({
   method: 'POST',
   path: '/harness/:slug/issues/:id/update',
   auth: 'public',
@@ -190,7 +190,7 @@ const updateIssue = defineRoute({
  * a human wants to surface fresh findings without waiting for the next
  * DONE/ESCALATE.
  */
-const triage = defineRoute({
+const triage = defineTool({
   method: 'POST',
   path: '/harness/:slug/triage',
   auth: 'public',
@@ -274,7 +274,7 @@ const triage = defineRoute({
  * which still lived in harness.ts at the time; now that 26a relocated
  * that helper to `@/lib/feature-audit`, this route can ship.
  */
-const promoteIssue = defineRoute({
+const promoteIssue = defineTool({
   method: 'POST',
   path: '/harness/:slug/issues/:id/promote',
   auth: 'public',

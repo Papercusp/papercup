@@ -15,7 +15,7 @@ import { join, resolve } from 'node:path';
 import { papercuspPath } from '@/lib/papercusp-root';
 import { FLAGS } from '@papercusp/flags';
 import { gateApiRoute } from '@/lib/require-flag';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 interface Body {
   projectSlug?: string;
@@ -45,7 +45,7 @@ async function copyDir(src: string, dst: string): Promise<string[]> {
   return copied;
 }
 
-export default defineRoute({
+export default defineTool({
   method: 'POST',
   path: '/templates/:slug/:version/install',
   auth: 'public',

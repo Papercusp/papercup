@@ -6,7 +6,7 @@ import { withWorkspace } from '@restart/db-org';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
 import { loadVoicePrefs } from '@/lib/voice-prefs';
 import { readElevenLabsKey } from '@/lib/voice-credentials';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 interface SpendCacheEntry {
   secsUsed: number;
@@ -94,7 +94,7 @@ async function fetchPgFallbackSecs(workspace: string, ym: string): Promise<numbe
   }
 }
 
-export default defineRoute({
+export default defineTool({
   method: 'GET',
   path: '/agent-mcp/operator-el-spend',
   auth: 'public',

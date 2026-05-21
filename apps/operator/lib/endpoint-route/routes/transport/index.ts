@@ -8,13 +8,13 @@
  * Ported from app/api/[transport]/route.ts. `auth: 'public'`.
  */
 import { mcpHandler } from './_mcp-handler';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 const PATH = '/:transport';
 const methods = ['GET', 'POST', 'DELETE'] as const;
 
 export default methods.map((method) =>
-  defineRoute({
+  defineTool({
     method,
     path: PATH,
     auth: 'public',

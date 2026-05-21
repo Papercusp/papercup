@@ -62,12 +62,12 @@ app.use('/harness-phase-last-used/*', tauriApiCors);
 app.use('*', compress({ threshold: 1024 }));
 
 // experts, pty, agent-chats, operator-notes, projects, cross-harness,
-// oracle, dock-layouts migrated to defineRoute (endpoint-hono-elimination
+// oracle, dock-layouts migrated to defineTool (endpoint-hono-elimination
 // -2026-05-21 A1/A2) — they register via `registerRouteLiterals`.
-// to `defineRoute` (endpoint-hono-elimination-2026-05-21 Phase A1) — they
+// to `defineTool` (endpoint-hono-elimination-2026-05-21 Phase A1) — they
 // register via `registerRouteLiterals` below.
 
-// defineRoute LITERALS — phase 1. MUST register before the sub-apps
+// defineTool LITERALS — phase 1. MUST register before the sub-apps
 // below (`app.route('/harness', …)`, `app.route('/plugins', …)`):
 // Hono runs overlapping handlers in registration order, so a literal
 // like `/plugins/enabled` must out-rank the `plugins` sub-app's
@@ -78,9 +78,9 @@ registerRouteLiterals(app);
 // Note: the legacy `app.route('/harness', harness)` mount dropped in A4
 // batch 44 (endpoint-hono-elimination-2026-05-21) — `_hono/harness.ts`
 // is now a stub awaiting A6 deletion; every harness route serves via
-// `defineRoute` modules under `lib/endpoint-route/routes/harness/`.
+// `defineTool` modules under `lib/endpoint-route/routes/harness/`.
 
-// /api/plugins/* — fully migrated to `defineRoute` (endpoint-hono
+// /api/plugins/* — fully migrated to `defineTool` (endpoint-hono
 // -elimination-2026-05-21 A3). Static metadata routes register via
 // `registerRouteLiterals(app)` above; the `/plugins/*` catch-all
 // (`routes/plugins/catchall.ts`) registers via `registerRouteCatchalls`
@@ -88,19 +88,19 @@ registerRouteLiterals(app);
 // via `dispatchPluginApiRoute`) and projected-tool dispatch.
 
 // Mobile API (pair, push, voice, workspaces) — migrated off the legacy
-// `_hono/mobile.ts` Hono router to `defineRoute` modules under
+// `_hono/mobile.ts` Hono router to `defineTool` modules under
 // `lib/endpoint-route/routes/mobile/` (endpoint-unification-2026-05-21
 // Phase E4/E5). Those register via `registerRouteLiterals` above.
 
 // /api/coord/* and /api/su-locks/* — migrated off their legacy Hono
-// sub-apps onto `defineRoute` modules (endpoint-unification-2026-05-21
+// sub-apps onto `defineTool` modules (endpoint-unification-2026-05-21
 // Phase E13). They register via `registerRouteLiterals` above.
 
-// defineRoute endpoints — the endpoint-system's second projection.
-// Every `defineRoute` (lib/endpoint-route/routes/**) mounts here and is
+// defineTool endpoints — the endpoint-system's second projection.
+// Every `defineTool` (lib/endpoint-route/routes/**) mounts here and is
 // served by the [[...route]] catch-all, same as the routers above.
 //
-// defineRoute CATCH-ALLS — phase 2. `/plugins/*`, `/agent-tools/*`,
+// defineTool CATCH-ALLS — phase 2. `/plugins/*`, `/agent-tools/*`,
 // `/plugin-runtime/.../*`, `/:transport`. Registered AFTER the sub-apps
 // so a plugin's own apiRoutes (the `plugins` dispatcher) still gets
 // first refusal before our projected-tool catch-all. Phase 1 literals

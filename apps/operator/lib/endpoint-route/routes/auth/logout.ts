@@ -6,10 +6,10 @@
  */
 import { logout, SESSION_COOKIE, getSessionUser } from '@/lib/auth';
 import { recordAuthEvent } from '@/lib/auth-audit';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 import { readCookie, serializeDeleteCookie } from '../../cookies';
 
-export default defineRoute({
+export default defineTool({
   method: 'POST',
   path: '/auth/logout',
   auth: 'public',

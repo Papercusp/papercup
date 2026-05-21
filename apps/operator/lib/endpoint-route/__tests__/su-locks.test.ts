@@ -2,7 +2,7 @@
  * Unit tests for GET /api/su-locks/hook-health (file-locking #3).
  *
  * Migrated from `app/api/_hono/su-locks.test.ts` when the route moved
- * off the legacy Hono sub-app onto `defineRoute` (Phase E13,
+ * off the legacy Hono sub-app onto `defineTool` (Phase E13,
  * endpoint-unification-2026-05-21). Drives the route handler directly
  * with a hand-built `RouteContext` — no Hono app, no route-stack. The
  * route reads `last-error.json` / `last-success.json` from

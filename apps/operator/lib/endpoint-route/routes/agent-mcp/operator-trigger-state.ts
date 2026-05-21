@@ -4,14 +4,14 @@
  * Ported from app/api/agent-mcp/operator-trigger-state/route.ts. `auth: 'public'`.
  */
 import { fingerprint, readTriggerState, type TriggerState } from '@/lib/operator-trigger-state';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 interface CacheEntry { ts: number; payload: { fingerprint: string; state: TriggerState } }
 const CACHE_KEY = '__papercuspTriggerStateCache';
 type CacheGlobals = { [CACHE_KEY]?: CacheEntry | null };
 const CACHE_TTL_MS = 1000;
 
-export default defineRoute({
+export default defineTool({
   method: 'GET',
   path: '/agent-mcp/operator-trigger-state',
   auth: 'public',

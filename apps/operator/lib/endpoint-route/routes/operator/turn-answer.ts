@@ -10,7 +10,7 @@
 import { getOrgPg } from '@restart/db-org';
 import { ensureOperatorConversationsTable } from '@/lib/ensure-schema';
 import { notifySyncInvalidate } from '@/lib/sync-sse';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 interface Body {
   assistantSeq: number;
@@ -18,7 +18,7 @@ interface Body {
   picks: Array<{ option_id: string; label: string }>;
 }
 
-export default defineRoute({
+export default defineTool({
   method: 'POST',
   path: '/operator/conversations/:id/turn-answer',
   auth: 'public',

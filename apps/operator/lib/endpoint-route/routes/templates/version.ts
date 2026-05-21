@@ -12,11 +12,11 @@ import { join } from 'node:path';
 import { papercuspPath } from '@/lib/papercusp-root';
 import { FLAGS } from '@papercusp/flags';
 import { gateApiRoute } from '@/lib/require-flag';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 const SLUG_RE = /^[a-z0-9][a-z0-9._-]{0,63}$/i;
 
-const get = defineRoute({
+const get = defineTool({
   method: 'GET',
   path: '/templates/:slug/:version',
   auth: 'public',
@@ -48,7 +48,7 @@ const get = defineRoute({
   },
 });
 
-const del = defineRoute({
+const del = defineTool({
   method: 'DELETE',
   path: '/templates/:slug/:version',
   auth: 'public',

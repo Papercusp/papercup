@@ -13,7 +13,7 @@ import { join } from 'node:path';
 import { papercuspPath } from '@/lib/papercusp-root';
 import { FLAGS } from '@papercusp/flags';
 import { gateApiRoute } from '@/lib/require-flag';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 interface TemplateVersion {
   slug: string;
@@ -27,7 +27,7 @@ interface TemplateRow extends TemplateVersion {
   versions: { version: string; savedAtMs: number; publishedSlugs: TemplateVersion['publishedSlugs'] }[];
 }
 
-export default defineRoute({
+export default defineTool({
   method: 'GET',
   path: '/templates',
   auth: 'public',

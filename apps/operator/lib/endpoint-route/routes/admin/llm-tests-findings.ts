@@ -6,7 +6,7 @@
  */
 import postgres from 'postgres';
 import { getHarnessAdminUrl } from '@/lib/embedded-pg-discovery';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 let pool: ReturnType<typeof postgres> | null = null;
 function db() {
@@ -14,7 +14,7 @@ function db() {
   return pool;
 }
 
-export default defineRoute({
+export default defineTool({
   method: 'GET',
   path: '/admin/llm-tests/findings',
   auth: { trust: ['verified', 'trusted'] },

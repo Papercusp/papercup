@@ -12,7 +12,7 @@ import { promises as fs, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { deriveCallerFromBearer } from '@/lib/execute-action';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 const ti = generated.tokenIndexInHarnessShared;
 
@@ -24,7 +24,7 @@ function base64url(buf: Buffer): string {
   return buf.toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
 }
 
-export default defineRoute({
+export default defineTool({
   method: 'POST',
   path: '/admin/rotate-token',
   auth: { trust: ['verified', 'trusted'] },

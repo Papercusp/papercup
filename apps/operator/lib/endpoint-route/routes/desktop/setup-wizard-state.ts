@@ -8,7 +8,7 @@
  */
 import { readOperatorState, writeOperatorState } from '@/lib/operator-state-pg';
 import { ensureInstallId } from '@/lib/setup-wizard-install-id';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 const KEY = 'setup_wizard_state';
 
@@ -36,7 +36,7 @@ function defaults(): SetupWizardState {
   return { step_status: {} };
 }
 
-const get = defineRoute({
+const get = defineTool({
   method: 'GET',
   path: '/desktop/setup-wizard-state',
   auth: {},
@@ -49,7 +49,7 @@ const get = defineRoute({
   },
 });
 
-const patch = defineRoute({
+const patch = defineTool({
   method: 'PATCH',
   path: '/desktop/setup-wizard-state',
   auth: {},

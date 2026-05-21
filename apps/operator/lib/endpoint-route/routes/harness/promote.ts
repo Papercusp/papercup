@@ -27,11 +27,11 @@ import { getLegacyClient } from '@restart/db-org';
 import { papercuspPath } from '@/lib/papercusp-root';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
 import { notifySyncInvalidate } from '@/lib/sync-sse';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 const PHASE_ORDER: Phase[] = [...ALL_PHASES];
 
-const promote = defineRoute({
+const promote = defineTool({
   method: 'POST',
   path: '/harness/:slug/promote',
   auth: 'public',
@@ -124,7 +124,7 @@ const promote = defineRoute({
   },
 });
 
-const confirmPromotion = defineRoute({
+const confirmPromotion = defineTool({
   method: 'POST',
   path: '/harness/:slug/promote/:id/confirm',
   auth: 'public',
@@ -293,7 +293,7 @@ const confirmPromotion = defineRoute({
   },
 });
 
-const rollback = defineRoute({
+const rollback = defineTool({
   method: 'POST',
   path: '/harness/:slug/rollback',
   auth: 'public',

@@ -11,9 +11,9 @@
  * A4 batch 6).
  */
 import { getLegacyClient } from '@restart/db-org';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
-const getBudget = defineRoute({
+const getBudget = defineTool({
   method: 'GET',
   path: '/harness/projects/:id/budget',
   auth: 'public',
@@ -51,7 +51,7 @@ const getBudget = defineRoute({
   },
 });
 
-const getStats = defineRoute({
+const getStats = defineTool({
   method: 'GET',
   path: '/harness/projects/:id/stats',
   auth: 'public',

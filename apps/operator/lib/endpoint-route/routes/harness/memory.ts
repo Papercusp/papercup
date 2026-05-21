@@ -26,13 +26,13 @@ import {
   detectTier,
   isHarnessAlive,
 } from '@/lib/harness-memory-map';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 function phaseFromReq(req: Request) {
   return phasePhaseLabel(new URL(req.url).searchParams.get('phase') ?? undefined);
 }
 
-const getMemory = defineRoute({
+const getMemory = defineTool({
   method: 'GET',
   path: '/harness/:slug/memory',
   auth: 'public',
@@ -94,7 +94,7 @@ const getMemory = defineRoute({
   },
 });
 
-const getMemoryFile = defineRoute({
+const getMemoryFile = defineTool({
   method: 'GET',
   path: '/harness/:slug/memory-file',
   auth: 'public',
@@ -135,7 +135,7 @@ const getMemoryFile = defineRoute({
   },
 });
 
-const putMemoryFile = defineRoute({
+const putMemoryFile = defineTool({
   method: 'PUT',
   path: '/harness/:slug/memory-file',
   auth: 'public',

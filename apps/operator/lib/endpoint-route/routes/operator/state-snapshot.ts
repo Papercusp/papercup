@@ -15,13 +15,13 @@ import {
 } from '@papercusp/agent-mcp';
 import { getSessionUser } from '@/lib/auth';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 type StateSnapshotVocabulary = {
   snapshot: VersionedSnapshot;
 }
 
-export default defineRoute({
+export default defineTool({
   method: 'GET',
   path: '/operator/state-snapshot',
   auth: 'public',

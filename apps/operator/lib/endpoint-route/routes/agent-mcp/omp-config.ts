@@ -4,9 +4,9 @@
  * Ported from app/api/agent-mcp/omp-config/route.ts. `auth: 'public'`.
  */
 import { readOmpConfig, setOmpConfig, unsetOmpConfig } from '@/lib/omp-config';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
-const get = defineRoute({
+const get = defineTool({
   method: 'GET',
   path: '/agent-mcp/omp-config',
   auth: 'public',
@@ -23,7 +23,7 @@ const get = defineRoute({
   },
 });
 
-const post = defineRoute({
+const post = defineTool({
   method: 'POST',
   path: '/agent-mcp/omp-config',
   auth: 'public',

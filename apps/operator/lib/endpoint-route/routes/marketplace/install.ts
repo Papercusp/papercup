@@ -16,7 +16,7 @@ import { dirname, join } from 'node:path';
 import { papercuspPath } from '@/lib/papercusp-root';
 import { FLAGS } from '@papercusp/flags';
 import { gateApiRoute } from '@/lib/require-flag';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 const ALLOWED_ORIGINS = new Set([
   'http://localhost:3060',
@@ -177,7 +177,7 @@ async function installSubagentPack(
   return { ok: true, targetDir, copied };
 }
 
-const post = defineRoute({
+const post = defineTool({
   method: 'POST',
   path: '/marketplace/install',
   auth: 'public',
@@ -367,7 +367,7 @@ const post = defineRoute({
   },
 });
 
-const options = defineRoute({
+const options = defineTool({
   method: 'OPTIONS',
   path: '/marketplace/install',
   auth: 'public',

@@ -3,11 +3,11 @@
  * Ported from app/api/agent-mcp/operator-nudge/route.ts. `auth: 'public'`.
  */
 import { maybeFireNudge, type NudgeKind } from '@/lib/voice-nudges';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 const ALLOWED: ReadonlySet<NudgeKind> = new Set(['budget', 'breaker', 'pause']);
 
-export default defineRoute({
+export default defineTool({
   method: 'POST',
   path: '/agent-mcp/operator-nudge',
   auth: 'public',

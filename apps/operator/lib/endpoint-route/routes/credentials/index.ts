@@ -11,10 +11,10 @@
  * recommended follow-up, deliberately not folded into the mechanical port.
  */
 import { readCredentials, writeCredentials, maskCredentials } from '@/lib/credentials';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 export default [
-  defineRoute({
+  defineTool({
     method: 'GET',
     path: '/credentials',
     auth: { trust: ['verified', 'trusted'] },
@@ -22,7 +22,7 @@ export default [
       return Response.json(maskCredentials(await readCredentials()));
     },
   }),
-  defineRoute({
+  defineTool({
     method: 'POST',
     path: '/credentials',
     auth: { trust: ['verified', 'trusted'] },

@@ -1,7 +1,7 @@
 /**
  * Route-invocation telemetry — R2.
  *
- * Writes one `harness_shared.route_invocations` row per `defineRoute`
+ * Writes one `harness_shared.route_invocations` row per `defineTool`
  * call (migration 077). Best-effort + fire-and-forget: the route-stack
  * calls `recordRouteInvocation` from its `finally` and does not await —
  * a telemetry failure must never affect the response.

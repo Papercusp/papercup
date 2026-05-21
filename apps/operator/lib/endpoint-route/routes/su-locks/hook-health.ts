@@ -1,6 +1,6 @@
 /**
  * GET /api/su-locks/hook-health — Phase E13 (endpoint-unification-2026-05-21).
- * Ported off the legacy `_hono/su-locks.ts` Hono sub-app onto `defineRoute`.
+ * Ported off the legacy `_hono/su-locks.ts` Hono sub-app onto `defineTool`.
  *
  * Surfaces the OMP `tool_call` hook's persisted health markers so the
  * `/coord` UI can show "enforcement offline" when the hook is failing
@@ -13,7 +13,7 @@
  */
 import { promises as fsp } from 'node:fs';
 import { resolve } from 'node:path';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 interface HookErrorRecord {
   ts: string;
@@ -40,7 +40,7 @@ async function readJsonFile(path: string): Promise<Record<string, unknown> | nul
   }
 }
 
-export default defineRoute({
+export default defineTool({
   method: 'GET',
   path: '/su-locks/hook-health',
   auth: 'public',

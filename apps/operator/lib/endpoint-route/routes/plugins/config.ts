@@ -10,7 +10,7 @@ import { mirrorHarness } from '@/lib/plugin-enables-pg';
 import { mirrorPluginConfig } from '@/lib/plugin-configs-pg';
 import { listPluginsIn } from '@/lib/plugin-catalog';
 import { papercuspRoot } from '@/lib/papercusp-root';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 function HARNESSES_DIR() { return join(papercuspRoot(), 'harnesses'); }
 function GLOBAL_PLUGINS_DIR() { return join(papercuspRoot(), 'global-plugins'); }
@@ -82,7 +82,7 @@ async function writeJson(path: string, value: unknown): Promise<void> {
   await fs.writeFile(path, JSON.stringify(value, null, 2), 'utf8');
 }
 
-const get = defineRoute({
+const get = defineTool({
   method: 'GET',
   path: '/plugins/config',
   auth: 'public',
@@ -104,7 +104,7 @@ const get = defineRoute({
   },
 });
 
-const put = defineRoute({
+const put = defineTool({
   method: 'PUT',
   path: '/plugins/config',
   auth: 'public',

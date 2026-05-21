@@ -8,9 +8,9 @@ import {
   grantCapabilities,
   revokeCapabilities,
 } from '@/lib/plugin-grants';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
-const get = defineRoute({
+const get = defineTool({
   method: 'GET',
   path: '/plugins/grants',
   auth: 'public',
@@ -36,7 +36,7 @@ interface PostBody {
   reason?: string;
 }
 
-const post = defineRoute({
+const post = defineTool({
   method: 'POST',
   path: '/plugins/grants',
   auth: 'public',

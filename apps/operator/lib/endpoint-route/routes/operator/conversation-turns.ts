@@ -11,7 +11,7 @@ import {
   type TurnSource,
 } from '@/lib/operator-conversations';
 import { notifySyncInvalidate } from '@/lib/sync-sse';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 interface Body {
   role: TurnRole;
@@ -21,7 +21,7 @@ interface Body {
   tools?: Array<{ name: string; input?: unknown; answered?: unknown }>;
 }
 
-const get = defineRoute({
+const get = defineTool({
   method: 'GET',
   path: '/operator/conversations/:id/turns',
   auth: 'public',
@@ -40,7 +40,7 @@ const get = defineRoute({
   },
 });
 
-const post = defineRoute({
+const post = defineTool({
   method: 'POST',
   path: '/operator/conversations/:id/turns',
   auth: 'public',

@@ -5,7 +5,7 @@
  * Ported from app/api/desktop/agent-login-envelope/route.ts. `auth: {}`.
  */
 import { homedir } from 'node:os';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 const PROVIDER_COMMANDS: Record<string, string> = {
   claude: 'claude /login',
@@ -14,7 +14,7 @@ const PROVIDER_COMMANDS: Record<string, string> = {
   github: 'gh auth login',
 };
 
-export default defineRoute({
+export default defineTool({
   method: 'POST',
   path: '/desktop/agent-login-envelope',
   auth: {},

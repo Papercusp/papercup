@@ -8,11 +8,11 @@
  */
 import { FLAGS } from '@papercusp/flags';
 import { gateApiRoute } from '@/lib/require-flag';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 const SLUG_RE = /^@?[a-z0-9][a-z0-9._-]{0,63}(\/[a-z0-9][a-z0-9._-]{0,63})?$/i;
 
-export default defineRoute({
+export default defineTool({
   method: 'GET',
   path: '/marketplace/:slug',
   auth: 'public',

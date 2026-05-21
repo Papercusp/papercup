@@ -7,9 +7,9 @@
  * with no requirements); the route-stack runs the gate.
  */
 import { claudeSignedIn, ompSignedIn, githubSignedIn } from '@/lib/agent-auth-detect';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
-export default defineRoute({
+export default defineTool({
   method: 'GET',
   path: '/desktop/agent-auth-status',
   auth: {},

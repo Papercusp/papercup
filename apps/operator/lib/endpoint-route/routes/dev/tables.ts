@@ -11,7 +11,7 @@
 import { getTableConfig, type PgTable } from 'drizzle-orm/pg-core';
 import { is, Table } from 'drizzle-orm';
 import { generated } from '@restart/db-org';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 interface TableEntry {
   exportName: string;
@@ -44,7 +44,7 @@ function listDrizzleTables(): TableEntry[] {
   return out;
 }
 
-export default defineRoute({
+export default defineTool({
   method: 'GET',
   path: '/dev/tables',
   auth: { trust: ['verified', 'trusted'] },

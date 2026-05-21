@@ -11,7 +11,7 @@
  *   3. ~/.papercusp/global-plugins/<name>/papercusp.json
  *
  * Relocated from `app/api/_hono/plugins.ts` (endpoint-hono-elimination
- * -2026-05-21 A3) when that Hono router was migrated to `defineRoute`.
+ * -2026-05-21 A3) when that Hono router was migrated to `defineTool`.
  * `listPluginsIn` is consumed by the `plugins/*` route modules and by
  * `plugin-configs-pg` / `plugin-enables-pg` mirroring.
  */

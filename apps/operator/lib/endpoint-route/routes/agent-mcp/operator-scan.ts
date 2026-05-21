@@ -17,7 +17,7 @@ import { getSessionUser } from '@/lib/auth';
 import { checkRate } from '@/lib/operator-rate-limit';
 import { canShortCircuit } from '@/lib/operator-idle-snapshot';
 import { fingerprint, readTriggerState } from '@/lib/operator-trigger-state';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 interface SystemPrincipalConfig {
   bearer: string;
@@ -50,7 +50,7 @@ function readSuperuserToken(): string | null {
   }
 }
 
-export default defineRoute({
+export default defineTool({
   method: 'GET',
   path: '/agent-mcp/operator-scan',
   auth: 'public',

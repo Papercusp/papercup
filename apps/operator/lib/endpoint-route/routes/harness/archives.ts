@@ -20,11 +20,11 @@ import { getLegacyClient } from '@restart/db-org';
 import { resolvePhasedProject, harnessDir } from '@/lib/harness-core';
 import { phasePhaseLabel } from '@/lib/harness-phases';
 import { STATE_FILES_FOR_RESET } from '@/lib/harness-state-files';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 const dbcFor = (slug: string) => getLegacyClient(slug);
 
-const archiveOnly = defineRoute({
+const archiveOnly = defineTool({
   method: 'POST',
   path: '/harness/:slug/archive',
   auth: 'public',
@@ -82,7 +82,7 @@ const archiveOnly = defineRoute({
   },
 });
 
-const restoreArchive = defineRoute({
+const restoreArchive = defineTool({
   method: 'POST',
   path: '/harness/:slug/archives/:id/restore',
   auth: 'public',

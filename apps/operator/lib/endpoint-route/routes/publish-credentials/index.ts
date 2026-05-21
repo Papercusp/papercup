@@ -15,10 +15,10 @@ import {
   maskPublishCredentials,
   readPublishCredentials,
 } from '@/lib/publish-credentials';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 export default [
-  defineRoute({
+  defineTool({
     method: 'GET',
     path: '/publish-credentials',
     auth: { trust: ['verified', 'trusted'] },
@@ -28,7 +28,7 @@ export default [
       return Response.json(maskPublishCredentials(await readPublishCredentials()));
     },
   }),
-  defineRoute({
+  defineTool({
     method: 'DELETE',
     path: '/publish-credentials',
     auth: { trust: ['verified', 'trusted'] },

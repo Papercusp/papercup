@@ -11,7 +11,7 @@ import { promises as fs } from 'node:fs';
 import { resolve } from 'node:path';
 import { FLAGS } from '@papercusp/flags';
 import { gateApiRoute } from '@/lib/require-flag';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 const ROOTS: Record<string, string> = {
   baseline: 'lostpixel-baseline',
@@ -20,7 +20,7 @@ const ROOTS: Record<string, string> = {
 };
 const FILENAME_RE = /^[a-z0-9][a-z0-9-]*\.png$/i;
 
-export default defineRoute({
+export default defineTool({
   method: 'GET',
   path: '/design/regressions/:bucket/:file',
   auth: 'public',

@@ -3,9 +3,9 @@
  * Ported from app/api/agent-mcp/operator-message-status/route.ts. `auth: 'public'`.
  */
 import { readMessageStatuses } from '@/lib/operator-message-status';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
-export default defineRoute({
+export default defineTool({
   method: 'GET',
   path: '/agent-mcp/operator-message-status',
   auth: 'public',

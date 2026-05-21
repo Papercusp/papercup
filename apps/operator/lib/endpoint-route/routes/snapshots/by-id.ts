@@ -9,9 +9,9 @@ import { FLAGS } from '@papercusp/flags';
 import { gateApiRoute } from '@/lib/require-flag';
 import { findSnapshot } from '@/lib/snapshot-discovery';
 import { withSnapshotLock } from '@/lib/snapshot-locks';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
-const get = defineRoute({
+const get = defineTool({
   method: 'GET',
   path: '/snapshots/:id',
   auth: 'public',
@@ -45,7 +45,7 @@ const get = defineRoute({
   },
 });
 
-const del = defineRoute({
+const del = defineTool({
   method: 'DELETE',
   path: '/snapshots/:id',
   auth: 'public',

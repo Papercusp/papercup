@@ -11,7 +11,7 @@ import { sseResponse } from '@restart/sse';
 import { loadHarnessRegistry } from '@/lib/harness-registry';
 import { isBranch, runLogPath } from '@/lib/branch-actions';
 import { subscribe as subscribeAction } from '@/lib/branch-action-bus';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 type Events = {
   attached: { runId: string; slug: string; branch: string; name: string };
@@ -23,7 +23,7 @@ type Events = {
   done: { reason: string; kind: string };
 }
 
-export default defineRoute({
+export default defineTool({
   method: 'GET',
   path: '/harness/:slug/branch/:branch/action-stream',
   auth: 'public',

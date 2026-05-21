@@ -19,13 +19,13 @@ import {
   tailFile,
 } from '@/lib/harness-core';
 import { phasePhaseLabel } from '@/lib/harness-phases';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 function phaseFromReq(req: Request) {
   return phasePhaseLabel(new URL(req.url).searchParams.get('phase') ?? undefined);
 }
 
-const getIssues = defineRoute({
+const getIssues = defineTool({
   method: 'GET',
   path: '/harness/:slug/issues',
   auth: 'public',
@@ -39,7 +39,7 @@ const getIssues = defineRoute({
   },
 });
 
-const getSummary = defineRoute({
+const getSummary = defineTool({
   method: 'GET',
   path: '/harness/:slug/summary',
   auth: 'public',
@@ -53,7 +53,7 @@ const getSummary = defineRoute({
   },
 });
 
-const getLogsRun = defineRoute({
+const getLogsRun = defineTool({
   method: 'GET',
   path: '/harness/:slug/logs/run',
   auth: 'public',

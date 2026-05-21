@@ -5,11 +5,11 @@
  * one-time 5-min pairToken).
  */
 import { toString as qrToString } from 'qrcode';
-import { defineRoute } from '../../define-route';
+import { defineTool } from '@papercusp/agent-mcp';
 
 const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '::1', '[::1]']);
 
-export default defineRoute({
+export default defineTool({
   method: 'GET',
   path: '/mobile/qr.svg',
   auth: 'public',
