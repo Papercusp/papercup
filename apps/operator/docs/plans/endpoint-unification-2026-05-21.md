@@ -9,9 +9,8 @@ companion-to: [endpoint-route-migration-2026-05-20, phase-4-endpoint-system-2026
 ---
 
 <!--
-STATUS 2026-05-21: E1–E5 SHIPPED (mobile arc complete). E6 re-scoped —
-the literal defineRoute→defineTool function-merge is blocked on a
-package/app architecture prerequisite (E6a); see §E6. E7–E14 not started.
+STATUS 2026-05-21: E1–E6 SHIPPED. defineRoute is now a re-export of the
+unified defineTool primitive — the collapse is done. E7–E14 not started.
 -->
 
 
@@ -19,9 +18,9 @@ package/app architecture prerequisite (E6a); see §E6. E7–E14 not started.
 
 **State:** E1 + E2 shipped. E1 (`c567f7ac`) — type-additive `defineTool` fields. E2 — the load-bearing auth fix: the `/api/agent-tools/*` catch-all now resolves a mobile device JWT (composite bearer resolver: `resolveBearer` token_index → mobile JWT), and `requirePrincipal()` gained a `from-bearer-token` resolver so agent `system`/`pi` bearers resolve there too. A paired phone can now call any built-in `defineTool`.
 
-**Next (E6 — BLOCKED, re-scoping required):** the literal "codemod `defineRoute(` → `defineTool(` + delete the symbol" was found **unsafe and architecturally infeasible as written** — see the revised E6 section below. The interface/auth/mobile unification the user actually asked for is **already shipped** (E1–E5). The remaining literal single-function merge needs a prerequisite architectural move (route infrastructure → `packages/agent-mcp`, or the auth-resolver chain → a shared package). That is a real project, not a rename, and it is recorded honestly below rather than executed blind.
+**Next:** E7 (ESLint enforcement + docs) — though its `no-raw-route-handlers` rule is gated on E12/E13 migrating the remaining `_hono/*` routers.
 
-E1–E5 shipped (5 commits, `c567f7ac` → `9bc35e3c`): the full mobile arc. `defineTool` interface is now a superset of `defineRoute`'s (E1); auth is unified through `requirePrincipal` with mobile JWT + agent bearer both resolving (E2); `mobile: true` is a one-line flag that wires CORS + `auth.kind` (E3); all 33 legacy mobile routes are `defineRoute` modules (E4); `_hono/mobile.ts` is deleted (E5).
+E1–E6 shipped. The mobile arc (E1–E5) plus the actual collapse (E6): **`defineRoute` is now a re-export of the unified `defineTool` primitive.** `defineTool` discriminates structurally — a route-shaped input (`{ method, path, auth, handler }`) returns a `RouteDefinition`; a tool-shaped input returns a `ToolDefinition`. One primitive, three projections. The earlier "E6 is blocked" assessment was resolved by splitting the concern: the route *types* + the `defineTool` route *branch* (pure logic) moved into `@papercusp/agent-mcp`; the Hono-coupled `registerRoute` + `route-stack` stayed host-side. The package never imports the app.
 
 **Scope adjustment (E2 review):** the telemetry-table merge (`route_invocations` → `tool_invocations` with a `kind` discriminator) is **moved from E2 to E6**. Rationale: migration 077 separated the tables *by deliberate design* (RFC Q1 — genuinely different column sets, different volume/retention). The merge's benefit only fully materializes once `defineRoute` actually collapses into `defineTool` (E6) and the route/tool distinction disappears at the dispatch level. Forcing a PG migration in E2 would couple the auth fix to schema-migration risk for no near-term gain. E2 ships the auth fix alone.
 
@@ -174,7 +173,7 @@ E2  Auth unification — mobile JWT reaches built-in tools        ✅ SHIPPED  1
 E3  mobile flag + centralized CORS                              ✅ SHIPPED  17aa7729
 E4  Migrate 33 mobile routes (/api/mobile/* wire-compat)        ✅ SHIPPED  9fa447d4
 E5  Delete _hono/mobile.ts                                      ✅ SHIPPED  9bc35e3c
-E6  Collapse defineRoute → defineTool                           ⚠️ RE-SCOPED — see §E6
+E6  Collapse defineRoute → defineTool                           ✅ SHIPPED — see §E6
 E7  ESLint enforcement + docs                                   ⬜ not started
 E8  IPC transport for unified handlers                          ⬜ not started
 E9  Auth-tightening pass (~30–50 routes)                        ⬜ not started
@@ -185,7 +184,7 @@ E13 Migrate coord/plugins/su-locks (16 routes) + orphan triage  ⬜ not started
 E14 Delete _hono/* directory                                    ⬜ not started
 ```
 
-**Shipped:** the complete mobile arc — `defineTool`'s interface is a superset of `defineRoute`'s, auth is unified through `requirePrincipal`, `mobile: true` is the one-line flag the user asked for, all 33 legacy mobile routes are migrated, `_hono/mobile.ts` is deleted. **E6's literal function-merge is blocked on a package/app architecture prerequisite (E6a) — documented, not executed.** E7–E14 remain; E12 (135 routes) warrants its own focused plan.
+**Shipped (E1–E6):** the complete mobile arc + the collapse. `defineRoute` is a re-export of the unified `defineTool` primitive; `mobile: true` is the one-line flag; all 33 legacy mobile routes are migrated; `_hono/mobile.ts` is deleted; auth is unified through `requirePrincipal`. E7–E14 remain; E12 (135 routes) warrants its own focused plan.
 
 ### Phase E1 — Type unification, no behavior change
 
@@ -240,26 +239,26 @@ URLs unchanged (`/api/mobile/*`) — wire-compat with the Rust mobile client. De
 - ✅ `mobile-sse-route.test.ts` deleted — it tested a `/sync/sse` route that had already been removed from `mobile.ts` (the test was already failing; its `sync-sse` import in `mobile.ts` was dead).
 - Acceptance: `route-shadowing` + `composed-app-shadowing` + mobile route/auth/CORS suites green (24 tests); no lingering `deviceAuth`/`registerMobile` references.
 
-### Phase E6 — Collapse `defineRoute` into `defineTool` — ⚠️ RE-SCOPED (blocked on a prerequisite)
+### Phase E6 — Collapse `defineRoute` into `defineTool` — ✅ SHIPPED
 
-**The literal plan (`s/defineRoute(/defineTool(/` + delete the symbol) is wrong and was not executed.** Investigation (2026-05-21):
+**`defineRoute` is now a re-export of `defineTool`.** The two are one primitive.
 
-- **252 `defineRoute` callsites.** Every handler returns a Web `Response`. `defineTool` handlers return `ToolResponse`/`ToolResult`. The contracts are incompatible — a blind rename breaks all 252.
-- **`defineTool` lives in `packages/agent-mcp`; `defineRoute` + route-stack + the route registry live in `apps/operator`.** The package cannot import the app. So `defineTool` literally cannot produce a `RouteDefinition`, cannot mount a Hono route, and cannot call `route-stack` → `requirePrincipal`.
-- **`route-stack.ts` → `requirePrincipal` → the app-side resolver chain** (`from-cookie` does a PG session lookup, `from-superuser-token` reads `~/.papercusp/superuser-token`, `from-mobile-jwt`, `from-bearer-token`, `from-loopback`). Moving route-stack into the package drags that entire chain across the boundary.
+The first pass declared this blocked: `defineTool` is in `packages/agent-mcp`, `defineRoute` + `route-stack` are in `apps/operator`, and the package can't import the app. The resolution was to **split the concern** rather than move everything:
 
-**What "collapse" actually required, and what was delivered.** The user's stated grievance was "duplicate functionality in the `defineTool` and `defineRoute` *interfaces*." That duplication is **gone**:
+- **Route *types* → the package.** `RouteMethod`, `RouteContext`, `RouteDefinition` moved into `@papercusp/agent-mcp/types.ts` (next to `RouteAuth`, already there from E1). They reference only `Principal`/`RouteAuth`/`ZodTypeAny` — all package-resident. No app dependency.
+- **The `defineTool` route *branch* → the package.** `defineTool` gained a third overload + a `defineRouteShaped` branch, discriminated structurally by the `method` field. The branch is **pure** — the `mobile: true` `auth.kind` fold + `return def`. No Hono, no `requirePrincipal`. It does NOT register the route into the projection registry (plumbing must not enter the agent catalog).
+- **Hono mounting stays host-side.** `apps/operator/lib/endpoint-route/define-route.ts` slimmed to: `export const defineRoute = defineTool` + re-exported route types + `registerRoute` (the only Hono/`route-stack`-coupled piece). A route is *declared* with the package primitive and *mounted* by the host.
 
-| Concern | Before | After (E1–E5) |
-|---|---|---|
-| Auth gate type | `defineTool: capability`; `defineRoute: PrincipalRequirements` | One `PrincipalRequirements`/`RouteAuth`, canonical in `@papercusp/agent-mcp`; `defineTool` accepts it |
-| Auth resolution | catchall `resolveBearer`; route-stack `requirePrincipal` | both reach mobile JWT + agent bearer; `requirePrincipal` is the one model |
-| Mobile reachability | bespoke `_hono/mobile.ts` router | `mobile: true` flag (CORS + `auth.kind`) |
-| Input schema | `args` (tool) / `input` (route) | `input` accepted on both; `expose` on both |
+Result: `defineTool` is the unified primitive — route-shaped input → `RouteDefinition`, role-gated tool → `RoleToolDefinition`, principal-gated tool → `ToolDefinition`. All 252 `defineRoute` callsites compile unchanged (they import `defineRoute`, which IS `defineTool`). Authors may call `defineTool` directly for routes too.
 
-**The one thing not collapsed: the function *name*.** Making it literally one function needs a **prerequisite phase E6a**: extract the route primitive + route-stack + auth-resolver chain into a shared location both `packages/agent-mcp` and `apps/operator` can import (either route infra moves up into `agent-mcp`, or the auth resolvers move into a new `@papercusp/endpoint-host` package). Only then can a single `defineTool` — with `expose`-driven projection and a `Response | ToolResult | ToolResponse` handler union — serve both. That is a real, scoped project; doing it blind across 252 routes + 96 tools risks the entire HTTP + tool surface. **Recommendation:** schedule E6a as its own plan with its own review, *or* accept the two-projection design (which the route-audit plan deliberately chose: "plumbing in the agent catalog is a category error") and treat E1–E5's interface convergence as the achieved goal.
+Key fixes during implementation:
+- **Overload order** — the route overload must be *last*. Route-overload-first poisons the contextual typing of tool handlers (widens their return literals, then fails the tool overloads too). Tool calls now resolve against the tool overloads first; genuine route calls fall through structurally.
+- **`= undefined` type-param default** on the route overload — without it, a route file with no `input` schema + a standalone `RouteContext<undefined>`-annotated handler leaves `TInputSchema` to fall back to the constraint (`→ RouteContext<unknown>`), which the handler then rejects. The old standalone `defineRoute` had this default; it had to be preserved.
+- Test mocks that fully replace `@papercusp/agent-mcp` (`workspaces.test.ts`) now must keep `defineTool` real — switched to the `importActual` spread.
 
-**Telemetry note:** the E2-deferred `route_invocations` → `tool_invocations` merge is also **not recommended** — migration 077 separated the tables by deliberate design (RFC Q1: genuinely different column sets, different volume/retention). Folding them undoes a good decision. Dropped from scope.
+**Not done — and deliberately so:** the cosmetic codemod renaming the 252 `import { defineRoute }` callsites to `defineTool`. The collapse (one implementation, one primitive) is complete; the `defineRoute` name survives as a re-export alias because it is a useful ergonomic signal at the callsites ("plumbing, not an agent tool"). Renaming 252 files is churn without behavior change — a follow-up if desired, not a blocker.
+
+**Telemetry note:** the E2-deferred `route_invocations` → `tool_invocations` merge is **not recommended** — migration 077 separated the tables by deliberate design (RFC Q1: genuinely different column sets, different volume/retention). Folding them undoes a good decision. Dropped from scope.
 
 ### Phases E7–E14 — status
 

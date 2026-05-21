@@ -23,6 +23,7 @@ import { UnauthorizedToolError } from './dispatch-projected';
 import type {
   RoleToolDefinition,
   RoleToolDefinitionInput,
+  RouteDefinition,
   ToolContext,
   ToolDefinition,
   ToolDefinitionInput,
@@ -75,19 +76,78 @@ function deriveDescriptionFromCallSite(): string | null {
   return null;
 }
 
+/**
+ * The unified endpoint primitive (Phase E6, endpoint-unification-2026-05-21).
+ *
+ * `defineTool` accepts THREE shapes, discriminated structurally:
+ *   - **route-shaped** (`{ method, path, auth, handler }`) → returns a
+ *     `RouteDefinition`. A plain Hono route; NOT in the agent catalog.
+ *     The host mounts it via `registerRoute`. This is the collapsed-in
+ *     `defineRoute` — the app re-exports `defineTool` under that name.
+ *   - **role-gated tool** (`{ requirePrincipal: false, … }`) → a
+ *     `RoleToolDefinition`, projected to MCP + the HTTP catch-all.
+ *   - **principal-gated tool** (the default) → a `ToolDefinition`.
+ *
+ * One primitive, three projections — the route/tool duplication the
+ * endpoint-unification plan set out to remove.
+ */
 export function defineTool<TArgs extends ZodTypeAny>(
   input: RoleToolDefinitionInput<TArgs>,
 ): RoleToolDefinition<TArgs>;
 export function defineTool<TArgs extends ZodTypeAny>(
   input: ToolDefinitionInput<TArgs>,
 ): ToolDefinition<TArgs>;
-export function defineTool<TArgs extends ZodTypeAny>(
-  input: ToolDefinitionInput<TArgs> | RoleToolDefinitionInput<TArgs>,
-): ToolDefinition<TArgs> | RoleToolDefinition<TArgs> {
-  if ((input as RoleToolDefinitionInput<TArgs>).requirePrincipal === false) {
-    return defineRoleGatedTool(input as RoleToolDefinitionInput<TArgs>);
+// Route overload LAST: a tool-shaped call must resolve against the tool
+// overloads first so its handler is contextually typed against the tool
+// handler signature (a route-overload-first ordering widens the handler's
+// return literals and then fails the tool overloads too). A genuine
+// route-shaped call lacks `capability`/`args`/`requirePrincipal`, fails
+// the two tool overloads structurally, and lands here.
+// The `= undefined` default is load-bearing: a route file that declares
+// no `input` schema and passes a standalone `handler` annotated
+// `RouteContext<undefined>` gives TS nothing to infer `TInputSchema`
+// from. Without the default it falls back to the constraint
+// (`ZodTypeAny | undefined`) → `RouteContext<unknown>`, which the
+// handler's `RouteContext<undefined>` param then rejects.
+export function defineTool<TInputSchema extends ZodTypeAny | undefined = undefined>(
+  input: RouteDefinition<TInputSchema>,
+): RouteDefinition<TInputSchema>;
+export function defineTool(
+  input:
+    | ToolDefinitionInput<ZodTypeAny>
+    | RoleToolDefinitionInput<ZodTypeAny>
+    | RouteDefinition<ZodTypeAny | undefined>,
+): ToolDefinition<ZodTypeAny> | RoleToolDefinition<ZodTypeAny> | RouteDefinition<ZodTypeAny | undefined> {
+  // Route-shaped — discriminated by `method` (tool inputs never carry it).
+  if ('method' in input && 'path' in input) {
+    return defineRouteShaped(input as RouteDefinition<ZodTypeAny | undefined>);
   }
-  return definePrincipalGatedTool(input as ToolDefinitionInput<TArgs>);
+  if ((input as RoleToolDefinitionInput<ZodTypeAny>).requirePrincipal === false) {
+    return defineRoleGatedTool(input as RoleToolDefinitionInput<ZodTypeAny>);
+  }
+  return definePrincipalGatedTool(input as ToolDefinitionInput<ZodTypeAny>);
+}
+
+/**
+ * Route-shaped `defineTool`. Pure — returns the definition (mounting
+ * happens host-side via `registerRoute`). The only transform is the
+ * `mobile: true` sugar: when the route gates on an explicit `kind`
+ * allowlist, fold `'mobile'` in so the device-JWT principal is admitted.
+ * `auth: 'public'` and kind-unrestricted gates need no change.
+ *
+ * A route is deliberately NOT registered into the projection registry —
+ * plumbing must not appear in the agent tool catalog.
+ */
+function defineRouteShaped<TInputSchema extends ZodTypeAny | undefined>(
+  def: RouteDefinition<TInputSchema>,
+): RouteDefinition<TInputSchema> {
+  if (def.mobile === true && typeof def.auth === 'object' && def.auth !== null) {
+    const auth = def.auth;
+    if (Array.isArray(auth.kind) && !auth.kind.includes('mobile')) {
+      return { ...def, auth: { ...auth, kind: [...auth.kind, 'mobile'] } };
+    }
+  }
+  return def;
 }
 
 function definePrincipalGatedTool<TArgs extends ZodTypeAny>(

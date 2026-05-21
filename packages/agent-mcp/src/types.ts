@@ -103,6 +103,83 @@ export interface PrincipalRequirements {
  */
 export type RouteAuth = 'public' | PrincipalRequirements;
 
+/* ─── Route projection (Phase E6, endpoint-unification-2026-05-21) ─────
+ *
+ * The route-shaped projection of the endpoint system. `defineTool`
+ * (below / in `define-tool.ts`) accepts EITHER a tool-shaped definition
+ * (→ MCP agent catalog + HTTP catch-all) OR a route-shaped one (→ a
+ * plain Hono route, NOT in the agent catalog). These types describe the
+ * route shape.
+ *
+ * They live here, in `@papercusp/agent-mcp`, so the package's
+ * `defineTool` can accept a route without an app→package dependency
+ * inversion. The Hono-coupled mounting (`registerRoute`, `route-stack`)
+ * stays in `apps/operator/lib/endpoint-route/` — a route is *declared*
+ * with the package primitive and *mounted* by the host.
+ */
+
+export type RouteMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE' | 'OPTIONS';
+
+/**
+ * Per-call context handed to a route handler. Host-neutral: `req` and
+ * the return value are Web-standard `Request`/`Response`. `params`
+ * carries the path parameters (`:slug`) that aren't in the URL.
+ */
+export interface RouteContext<TInput = undefined> {
+  /** Resolved principal, or null when `auth: 'public'`. */
+  principal: Principal | null;
+  /** Parsed + validated input when an `input` schema was declared; else undefined. */
+  input: TInput;
+  /** Path parameters (`/harness/:slug` → `{ slug }`). */
+  params: Record<string, string>;
+  /** Telemetry-bound logger. */
+  log: (level: 'info' | 'warn' | 'error', msg: string, meta?: Record<string, unknown>) => void;
+  /** Abort signal — fires at `timeoutSec`. Handlers racing I/O should pass it through. */
+  signal: AbortSignal;
+}
+
+/**
+ * A route-shaped endpoint definition. Produced by `defineTool` when it
+ * is handed a route-shaped input (discriminated by the `method` field);
+ * mounted onto the Hono app by `registerRoute` in the host.
+ */
+export interface RouteDefinition<TInputSchema extends ZodTypeAny | undefined = undefined> {
+  method: RouteMethod;
+  /**
+   * Hono path. The Hono app's `.basePath('/api')` is implicit, so
+   * `'/desktop/version'` serves at `/api/desktop/version`. Dynamic
+   * segments use Hono syntax: `:slug`, `:path{.+}`.
+   */
+  path: string;
+  /** Auth stance — required, see `RouteAuth`. */
+  auth: RouteAuth;
+  /**
+   * Optional Zod input schema. POST/PUT/PATCH parse from the JSON body;
+   * GET/DELETE parse from the query string. Absent → the handler gets
+   * `ctx.input === undefined` and reads `req` directly (freeform routes:
+   * file-serving, SSE).
+   */
+  input?: TInputSchema;
+  /** Wall-clock timeout. Default 30s. A wedged handler aborts. */
+  timeoutSec?: number;
+  /**
+   * Telemetry sample rate, 0..1. Default 1 (record every call). High-
+   * frequency polled routes set this < 1; 0 = never record.
+   */
+  sampleRate?: number;
+  /**
+   * Mark the route mobile-eligible — the one-line "reachable from the
+   * paired phone" flag. `registerRoute` mounts `mobileCors`; `defineTool`
+   * folds `'mobile'` into an explicit `auth.kind` allowlist.
+   */
+  mobile?: boolean;
+  /** The handler. Web-standard in, Web-standard out. */
+  handler: (
+    req: Request,
+    ctx: RouteContext<TInputSchema extends ZodTypeAny ? z.infer<TInputSchema> : undefined>,
+  ) => Response | Promise<Response>;
+}
+
 /** Per-call request context. */
 export interface ToolContext {
   principal: Principal;
