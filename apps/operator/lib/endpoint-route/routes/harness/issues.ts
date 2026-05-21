@@ -21,8 +21,9 @@
 import { existsSync } from 'node:fs';
 import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { getOrgPg } from '@restart/db-org';
+import { getOrgPg, getLegacyClient } from '@restart/db-org';
 import { resolvePhasedProject, harnessDir } from '@/lib/harness-core';
+import { auditFeatureChange } from '@/lib/feature-audit';
 import { phasePhaseLabel } from '@/lib/harness-phases';
 import {
   loadIssuesOrSeed,
@@ -265,9 +266,90 @@ const triage = defineRoute({
   },
 });
 
+/**
+ * Promote an issue into a feature — appends an F-FIX-### entry to
+ * harness_features, links the issue to it, sets status='fixing'.
+ *
+ * Was deferred in batch 25b because it called `auditFeatureChange`,
+ * which still lived in harness.ts at the time; now that 26a relocated
+ * that helper to `@/lib/feature-audit`, this route can ship.
+ */
+const promoteIssue = defineRoute({
+  method: 'POST',
+  path: '/harness/:slug/issues/:id/promote',
+  auth: 'public',
+  async handler(req, ctx) {
+    const project = await resolvePhasedProject(ctx.params.slug as string, phaseFromReq(req));
+    if (!project) return Response.json({ error: 'unknown project' }, { status: 404 });
+    const id = ctx.params.id as string;
+    const file = loadIssuesOrSeed(project);
+    const issue = file.issues.find((i) => i.id === id);
+    if (!issue) return Response.json({ error: 'issue not found' }, { status: 404 });
+    if (issue.linkedFeatureId) {
+      return Response.json({ error: 'already linked to ' + issue.linkedFeatureId }, { status: 400 });
+    }
+
+    // Append a F-FIX-### entry to harness_features (PG).
+    const dbc = getLegacyClient(project.slug);
+    const fixRows = await dbc.prepare(`
+      SELECT feature_id FROM harness_features
+       WHERE harness_slug = ? AND feature_id LIKE 'F-FIX-%'
+    `).all(project.slug) as Array<{ feature_id: string }>;
+    const existingFixIds = fixRows
+      .map((r) => Number(r.feature_id.slice(6)))
+      .filter((n) => Number.isFinite(n));
+    const nextFixId = (existingFixIds.length ? Math.max(...existingFixIds) : 0) + 1;
+    const featureId = `F-FIX-${String(nextFixId).padStart(3, '0')}`;
+    const claims = issue.codePointer ? [`VAL-FIX-${nextFixId} @ ${issue.codePointer}`] : [];
+    const featureNotes = [
+      issue.evidence ?? '',
+      issue.suggestedFix ? `Suggested fix: ${issue.suggestedFix}` : '',
+    ].filter(Boolean).join('\n\n');
+    const featureTs = Date.now();
+    await dbc.prepare(`
+      INSERT INTO harness_features
+        (harness_slug, feature_id, title, summary, status, attempts, claims, notes, metadata,
+         kind, project_id, expected_cost_cents, tags, needs_human_review,
+         ts, created_ts, updated_ts)
+      VALUES (?, ?, ?, NULL, 'todo', 0, ?, ?, ?, NULL, NULL, NULL, NULL, false, ?, ?, ?)
+    `).run(
+      project.slug, featureId, issue.title,
+      claims.length ? JSON.stringify(claims) : null,
+      featureNotes || null,
+      JSON.stringify({ sourceIssueId: issue.id }),
+      featureTs, featureTs, featureTs,
+    );
+    auditFeatureChange(
+      project.slug, featureId, '__created', null,
+      { id: featureId, title: issue.title, sourceIssueId: issue.id },
+      req.headers.get('x-actor') ?? 'issue-promote',
+    );
+    const newFeature = {
+      id: featureId,
+      title: issue.title,
+      claims,
+      status: 'todo',
+      attempts: 0,
+      sourceIssueId: issue.id,
+      notes: featureNotes,
+    };
+
+    issue.linkedFeatureId = featureId;
+    issue.status = 'fixing';
+    issue.notes.push({
+      ts: new Date().toISOString(),
+      by: 'human',
+      text: `Promoted to ${featureId}`,
+    });
+    await saveIssues(project, file);
+
+    return Response.json({ ok: true, issue, feature: newFeature });
+  },
+});
+
 // Silence unused-import warning — `getOrgPg` survives at the top so the
 // dynamic imports inside append-pending / triage still type-check against
 // the same @restart/db-org module surface.
 void getOrgPg;
 
-export default [issuesList, createIssue, appendPendingIssue, updateIssue, triage];
+export default [issuesList, createIssue, appendPendingIssue, updateIssue, triage, promoteIssue];

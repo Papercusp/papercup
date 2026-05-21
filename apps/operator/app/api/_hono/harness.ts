@@ -2841,69 +2841,6 @@ import {
 import { auditFeatureChange } from '@/lib/feature-audit';
 
 
-harness.post('/:slug/issues/:id/promote', async (c) => {
-  const project = await resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
-  if (!project) return c.json({ error: 'unknown project' }, 404);
-  const id = c.req.param('id');
-  const file = loadIssuesOrSeed(project);
-  const issue = file.issues.find((i) => i.id === id);
-  if (!issue) return c.json({ error: 'issue not found' }, 404);
-  if (issue.linkedFeatureId) return c.json({ error: 'already linked to ' + issue.linkedFeatureId }, 400);
-
-  // Append a F-FIX-### entry to harness_features (PG). Other feature
-  // endpoints (POST /:slug/features, bulk upsert, etc) already use the
-  // table; this promotion path was the last operator endpoint still
-  // doing a direct features.json read-modify-write.
-  const dbc = dbcFor(project.slug);
-  const fixRows = await dbc.prepare(`
-    SELECT feature_id FROM harness_features
-     WHERE harness_slug = ? AND feature_id LIKE 'F-FIX-%'
-  `).all(project.slug) as Array<{ feature_id: string }>;
-  const existingFixIds = fixRows
-    .map((r) => Number(r.feature_id.slice(6)))
-    .filter((n) => Number.isFinite(n));
-  const nextFixId = (existingFixIds.length ? Math.max(...existingFixIds) : 0) + 1;
-  const featureId = `F-FIX-${String(nextFixId).padStart(3, '0')}`;
-  const claims = issue.codePointer ? [`VAL-FIX-${nextFixId} @ ${issue.codePointer}`] : [];
-  const featureNotes = [issue.evidence ?? '', issue.suggestedFix ? `Suggested fix: ${issue.suggestedFix}` : '']
-    .filter(Boolean)
-    .join('\n\n');
-  const featureTs = Date.now();
-  await dbc.prepare(`
-    INSERT INTO harness_features
-      (harness_slug, feature_id, title, summary, status, attempts, claims, notes, metadata,
-       kind, project_id, expected_cost_cents, tags, needs_human_review,
-       ts, created_ts, updated_ts)
-    VALUES (?, ?, ?, NULL, 'todo', 0, ?, ?, ?, NULL, NULL, NULL, NULL, false, ?, ?, ?)
-  `).run(
-    project.slug, featureId, issue.title,
-    claims.length ? JSON.stringify(claims) : null,
-    featureNotes || null,
-    JSON.stringify({ sourceIssueId: issue.id }),
-    featureTs, featureTs, featureTs,
-  );
-  auditFeatureChange(project.slug, featureId, '__created', null, { id: featureId, title: issue.title, sourceIssueId: issue.id }, c.req.header('x-actor') ?? 'issue-promote');
-  const newFeature = {
-    id: featureId,
-    title: issue.title,
-    claims,
-    status: 'todo',
-    attempts: 0,
-    sourceIssueId: issue.id,
-    notes: featureNotes,
-  };
-
-  issue.linkedFeatureId = featureId;
-  issue.status = 'fixing';
-  issue.notes.push({
-    ts: new Date().toISOString(),
-    by: 'human',
-    text: `Promoted to ${featureId}`,
-  });
-  await saveIssues(project, file);
-
-  return c.json({ ok: true, issue, feature: newFeature });
-});
 
 // ─── Architect reviews + chat ────────────────────────────────────────
 
