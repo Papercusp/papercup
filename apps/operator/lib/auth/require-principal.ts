@@ -6,7 +6,8 @@
  *   1. cookie session   — `kind: 'user'`,    `trust: 'verified'`
  *   2. mobile JWT       — `kind: 'mobile'`,  `trust: 'verified'`
  *   3. superuser bearer — `kind: 'system'`,  `trust: 'trusted'`
- *   4. loopback         — `kind: 'loopback'`,`trust: 'unverified-loopback'`
+ *   4. agent bearer     — `kind: 'system'|'pi'`, `trust: 'trusted'` (token_index)
+ *   5. loopback         — `kind: 'loopback'`,`trust: 'unverified-loopback'`
  *
  * Order matters: a request with both a session cookie AND a superuser
  * bearer presents as a user session (cookies are first-class; the
@@ -27,6 +28,7 @@ import type { Principal, PrincipalKind, PrincipalTrust, PrincipalRequirements } 
 import { principalFromCookie } from './principal/from-cookie';
 import { principalFromMobileJwt } from './principal/from-mobile-jwt';
 import { principalFromSuperuserToken } from './principal/from-superuser-token';
+import { principalFromBearerToken } from './principal/from-bearer-token';
 import { principalFromLoopback } from './principal/from-loopback';
 
 // Re-export so existing app-side imports (`import { PrincipalRequirements } from '@/lib/auth/require-principal'`)
@@ -64,6 +66,7 @@ export async function requirePrincipal(
     (await principalFromCookie(headers)) ??
     principalFromMobileJwt(headers) ??
     principalFromSuperuserToken(headers) ??
+    (await principalFromBearerToken(headers)) ??
     principalFromLoopback(headers);
 
   if (!principal) {
@@ -108,6 +111,7 @@ export async function tryResolvePrincipal(headers: Headers): Promise<Principal |
     (await principalFromCookie(headers)) ??
     principalFromMobileJwt(headers) ??
     principalFromSuperuserToken(headers) ??
+    (await principalFromBearerToken(headers)) ??
     principalFromLoopback(headers)
   );
 }

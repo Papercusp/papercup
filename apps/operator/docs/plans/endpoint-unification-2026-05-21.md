@@ -10,9 +10,11 @@ companion-to: [endpoint-route-migration-2026-05-20, phase-4-endpoint-system-2026
 
 ## Now
 
-**State:** Plan accepted. Phase E1 starting — type-additive changes to `defineTool` so the route-shaped fields are accepted, no behavior change yet. The mobile-agent's hand-off brief was partially stale: `kind: 'mobile'` already exists in `PrincipalKind` and is wired into `requirePrincipal()` as resolver #2 (via `from-mobile-jwt.ts`). The principal-unblock is already shipped; the real gap is dispatch-path divergence between projected-tool catchall (uses `resolveBearer`) and route-stack (uses `requirePrincipal`).
+**State:** E1 + E2 shipped. E1 (`c567f7ac`) — type-additive `defineTool` fields. E2 — the load-bearing auth fix: the `/api/agent-tools/*` catch-all now resolves a mobile device JWT (composite bearer resolver: `resolveBearer` token_index → mobile JWT), and `requirePrincipal()` gained a `from-bearer-token` resolver so agent `system`/`pi` bearers resolve there too. A paired phone can now call any built-in `defineTool`.
 
-**Next:** E1 — extend `ToolDefinitionInput` types with `auth`, `input` (alias for `args`), `expose.mobile`, `sampleRate`, arbitrary `expose.http.path`; make `defineRoute` a thin wrapper. tsc + 264-test suite green.
+**Next:** E3 — `expose.mobile` flag wiring + centralized CORS step in route-stack; move `ensureMobileDevicesTable()` DDL to host startup.
+
+**Scope adjustment (E2 review):** the telemetry-table merge (`route_invocations` → `tool_invocations` with a `kind` discriminator) is **moved from E2 to E6**. Rationale: migration 077 separated the tables *by deliberate design* (RFC Q1 — genuinely different column sets, different volume/retention). The merge's benefit only fully materializes once `defineRoute` actually collapses into `defineTool` (E6) and the route/tool distinction disappears at the dispatch level. Forcing a PG migration in E2 would couple the auth fix to schema-migration risk for no near-term gain. E2 ships the auth fix alone.
 
 
 # Endpoint unification — collapse defineRoute into defineTool, add expose.mobile
@@ -183,12 +185,15 @@ E14 Delete _hono/* directory (keep only app.ts as host seam)
 - `tsc` clean across both packages.
 - Acceptance: every existing `defineTool` and `defineRoute` callsite compiles unchanged; 264 endpoint-route tests + agent-mcp tool tests green.
 
-### Phase E2 — Dispatch unification (fixes G1)
+### Phase E2 — Auth unification (fixes G1) — ✅ SHIPPED
 
-- Swap `agent-tools/catchall.ts` auth from `resolveBearer` to `requirePrincipal()`.
-- Merge route-stack and projected-tool dispatch into one driver. `registerProjectedTool` populates the same Hono mount points the route registry uses.
-- Telemetry migration: add `kind` column to `tool_invocations`; backfill from `route_invocations`; drop route-only table.
-- Acceptance: 264 endpoint-route tests green; tool-dispatch tests green; new test asserts mobile JWT calls a built-in `defineTool` and gets through.
+- ✅ `agent-tools/catchall.ts` `resolvePrincipalAndTx` is now a composite: `resolveBearer` (token_index → agent `system`/`pi`) first, then mobile device JWT. Both arrive as `Authorization: Bearer`, so one hook reaches both. `resolveBearer`'s PG errors are caught so a transient DB failure can't block the self-contained mobile path.
+- ✅ `from-bearer-token.ts` resolver added to `requirePrincipal()` + `tryResolvePrincipal()` chains (order: cookie → mobile JWT → superuser → agent bearer → loopback) so a `defineRoute` with `auth: { kind: ['pi','system'] }` resolves agent bearers. Closes the asymmetry where agent bearers only resolved through the catchall's bespoke path.
+- ✅ `PrincipalRequirements` + `RouteAuth` exported from `@papercusp/agent-mcp` index (E1 added them to `types.ts` but missed the barrel).
+- ✅ Fixed the pre-existing `ReadonlySet`/`Set` mismatch in the catchall (`new Set(principal.capabilities)`).
+- ✅ Proving test `agent-tools-mobile-auth.test.ts` — device JWT → principal → built-in tool fn; garbage bearer → anonymous.
+- **Deferred:** the "merge route-stack + projected-tool dispatch into one driver" cleanup and the telemetry-table merge → both fold into E6 when `defineRoute` actually collapses. Keeping two dispatch stacks is fine as long as both share `requirePrincipal`-class auth — which they now do.
+- Acceptance met: endpoint-route suite green except 2 pre-existing unrelated failures (`auth-posture` — another agent's untracked admin routes; `design.test.ts` — `@restart/db-org` mock drift).
 
 ### Phase E3 — `expose.mobile` flag + centralized CORS (fixes G2)
 

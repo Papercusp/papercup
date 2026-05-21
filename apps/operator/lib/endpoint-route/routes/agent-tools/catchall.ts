@@ -2,8 +2,16 @@
  * GET/POST/PUT/PATCH/DELETE /api/agent-tools/<group>/<verb>
  *
  * Catch-all HTTP route for the 27+ built-in agent-mcp tools via
- * defineTool's auto-mounted projection. Resolves principal+tx via
- * resolveBearer + the workspace pg pool. Honors SSE for streamable tools.
+ * defineTool's auto-mounted projection. Honors SSE for streamable tools.
+ *
+ * Auth (Phase E2, endpoint-unification-2026-05-21): the bearer is
+ * resolved by a COMPOSITE — `resolveBearer` (token_index: agent
+ * `system`/`pi` principals) first, then a mobile device JWT. Both
+ * arrive as `Authorization: Bearer <token>`, so one hook reaches both.
+ * This is the load-bearing fix that lets a paired phone call a
+ * built-in `defineTool` directly (gaining capability gates + quotas +
+ * audit for free) instead of going through the legacy `_hono/mobile.ts`
+ * `/voice-tool/:name` proxy.
  *
  * Ported from app/api/agent-tools/[...path]/route.ts. `auth: 'public'`.
  */
@@ -13,6 +21,7 @@ import {
   lookupByHttpPath,
   resolveBearer,
   type HttpToolHostExtras,
+  type Principal,
   type UnifiedToolContext,
 } from '@papercusp/agent-mcp';
 import { sseResponse } from '@restart/sse';
@@ -21,18 +30,35 @@ import { getOrgPg } from '@restart/db-org';
 // Side-effect: register operator-side first-party tools (defineTool calls).
 import '@/lib/agent-tools/index';
 import { PROJECTED_DEPS } from '@/lib/projected-tool-deps';
+import { principalFromMobileJwt } from '@/lib/auth/principal/from-mobile-jwt';
 import { defineRoute } from '../../define-route';
 
 const HOST_EXTRAS: HttpToolHostExtras = {
   resolvePrincipalAndTx: async (bearer) => {
-    const principal = await resolveBearer(bearer);
+    // Composite resolution: agent bearer (token_index → system/pi) first,
+    // then the mobile device JWT. `resolveBearer` hits PG; a transient PG
+    // failure must not block the self-contained (HMAC-verified) mobile
+    // path, so its errors fall through rather than propagate.
+    let principal: Principal | null = null;
+    try {
+      principal = await resolveBearer(bearer);
+    } catch {
+      /* token_index unreachable — fall through to the mobile JWT path */
+    }
+    // `principalFromMobileJwt` reads the `Authorization` header, so
+    // synthesize one from the bearer string.
+    principal ??= principalFromMobileJwt(
+      new Headers({ authorization: `Bearer ${bearer}` }),
+    );
     if (!principal) return null;
     const { sql } = getOrgPg();
     return {
       principal: {
         slug: principal.slug,
         workspaceId: principal.workspaceId,
-        capabilities: principal.capabilities,
+        // Principal.capabilities is ReadonlySet; the unified ctx wants a
+        // mutable Set — copy so the type lines up without a cast.
+        capabilities: new Set(principal.capabilities),
       },
       tx: sql,
     };

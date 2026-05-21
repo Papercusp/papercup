@@ -124,6 +124,8 @@ export type {
   PrincipalKind,
   PrincipalAuthMethod,
   PrincipalTrust,
+  PrincipalRequirements,
+  RouteAuth,
   CapabilityTier,
   ToolContext,
   ToolDefinition,
