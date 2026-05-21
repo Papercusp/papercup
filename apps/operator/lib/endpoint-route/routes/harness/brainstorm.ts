@@ -16,8 +16,11 @@
  */
 import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { getLegacyClient } from '@restart/db-org';
 import { resolvePhasedProject, harnessDir, safeRead } from '@/lib/harness-core';
 import { phasePhaseLabel } from '@/lib/harness-phases';
+import { loadIssuesOrSeed, saveIssues } from '@/lib/harness-issues';
+import { auditFeatureChange } from '@/lib/feature-audit';
 import type { ProjectEntry } from '@/lib/harness-registry';
 import { defineRoute } from '../../define-route';
 
@@ -176,4 +179,106 @@ const putMindmap = defineRoute({
   },
 });
 
-export default [getBrainstorm, putBrainstorm, getCanvas, putCanvas, getMindmap, putMindmap];
+/**
+ * Brainstorm promote — routes brainstorm content into features.json
+ * (F-IDEA-### entry), SPEC.md (under `## Brainstormed`), or
+ * issues.json (new I-#### row). Was deferred in batch 18 because it
+ * depended on `auditFeatureChange` + `loadIssuesOrSeed` + `saveIssues`
+ * that still lived in harness.ts; ships now that 25a + 26a relocated
+ * those helpers to lib/.
+ */
+const promote = defineRoute({
+  method: 'POST',
+  path: '/harness/:slug/brainstorm/promote',
+  auth: 'public',
+  async handler(req, ctx) {
+    const project = await resolvePhasedProject(ctx.params.slug as string, phaseFromReq(req));
+    if (!project) return Response.json({ error: 'unknown project' }, { status: 404 });
+    const body = await req.json().catch(() => ({} as any));
+    const target = body.target as 'feature' | 'spec' | 'issue';
+    const content = typeof body.content === 'string' ? body.content : '';
+    if (!target || !content.trim()) {
+      return Response.json({ error: 'target + content required' }, { status: 400 });
+    }
+
+    if (target === 'feature') {
+      // PG-canonical: F-IDEA-### entry in harness_features (same shape as
+      // the issue-promote path).
+      const dbc = getLegacyClient(project.slug);
+      const ideaRows = await dbc.prepare(`
+        SELECT feature_id FROM harness_features
+         WHERE harness_slug = ? AND feature_id LIKE 'F-IDEA-%'
+      `).all(project.slug) as Array<{ feature_id: string }>;
+      const existingIdeaIds = ideaRows
+        .map((r) => Number(r.feature_id.slice(7)))
+        .filter((n) => Number.isFinite(n));
+      const n = (existingIdeaIds.length ? Math.max(...existingIdeaIds) : 0) + 1;
+      const id = `F-IDEA-${String(n).padStart(3, '0')}`;
+      const [firstLine, ...rest] = content.trim().split('\n');
+      const title = firstLine.trim().slice(0, 200);
+      const notes = rest.join('\n').trim() || null;
+      const ts = Date.now();
+      await dbc.prepare(`
+        INSERT INTO harness_features
+          (harness_slug, feature_id, title, summary, status, attempts, claims, notes, metadata,
+           kind, project_id, expected_cost_cents, tags, needs_human_review,
+           ts, created_ts, updated_ts)
+        VALUES (?, ?, ?, NULL, 'todo', 0, NULL, ?, ?, NULL, NULL, NULL, NULL, false, ?, ?, ?)
+      `).run(
+        project.slug, id, title,
+        notes,
+        JSON.stringify({ source: 'brainstorm' }),
+        ts, ts, ts,
+      );
+      auditFeatureChange(
+        project.slug, id, '__created', null,
+        { id, title, source: 'brainstorm' },
+        req.headers.get('x-actor') ?? 'brainstorm-promote',
+      );
+      return Response.json({ ok: true, id, target });
+    }
+
+    if (target === 'spec') {
+      const specPath = join(project.path, 'SPEC.md');
+      const existing = safeRead(specPath) ?? '';
+      const SECTION = '## Brainstormed';
+      const stamp = new Date().toISOString();
+      const block = `\n\n### ${stamp}\n\n${content.trim()}\n`;
+      let next: string;
+      if (existing.includes(SECTION)) {
+        const idx = existing.indexOf(SECTION);
+        const nextSectionIdx = existing.indexOf('\n## ', idx + SECTION.length);
+        const insertAt = nextSectionIdx === -1 ? existing.length : nextSectionIdx;
+        next = existing.slice(0, insertAt) + block + existing.slice(insertAt);
+      } else {
+        next = existing.replace(/\s*$/, '') + `\n\n${SECTION}\n${block}`;
+      }
+      await writeFile(specPath, next, 'utf8');
+      return Response.json({ ok: true, target, sectionAdded: !existing.includes(SECTION) });
+    }
+
+    if (target === 'issue') {
+      const file = loadIssuesOrSeed(project);
+      const id = `I-${String(file.nextId).padStart(4, '0')}`;
+      const [firstLine, ...rest] = content.trim().split('\n');
+      file.issues.unshift({
+        id,
+        title: firstLine.trim().slice(0, 200),
+        severity: 'minor',
+        source: 'human',
+        foundAt: new Date().toISOString(),
+        status: 'open',
+        evidence: rest.join('\n').trim(),
+        attempts: 0,
+        notes: [],
+      });
+      file.nextId += 1;
+      await saveIssues(project, file);
+      return Response.json({ ok: true, id, target });
+    }
+
+    return Response.json({ error: 'unknown target' }, { status: 400 });
+  },
+});
+
+export default [getBrainstorm, putBrainstorm, getCanvas, putCanvas, getMindmap, putMindmap, promote];
