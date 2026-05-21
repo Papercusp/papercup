@@ -12,7 +12,9 @@ companion-to: [endpoint-unification-2026-05-21, endpoint-route-migration-2026-05
 
 **State:** The `endpoint-unification-2026-05-21` arc shipped E1–E6 (the `defineRoute`→`defineTool` collapse + the full mobile flag) plus E7-docs, E10, E11, and E13-partial (`coord` + `su-locks` migrated off `_hono`). Its tail — E8/E9/E12/E13-plugins/E14 — was found to be two genuinely separate projects, too large and too risky to fold into that arc. **This plan is that tail, re-scoped from audit.**
 
-**Next:** A4 batches 13…N — continue migrating `_hono/harness.ts` routes to `defineRoute`. **~100 routes remaining** (down from 138). Then A6 (delete `_hono/`) and A7 (no-raw-route-handlers ESLint rule).
+**Next:** A4 batches 17…N — continue migrating `_hono/harness.ts` routes to `defineRoute`. **~79 routes remaining** (down from 138). Then A6 (delete `_hono/`) and A7 (no-raw-route-handlers ESLint rule).
+
+⚠️ **Before each batch:** `grep -rn "path: '/harness/…'" lib/endpoint-route/routes/` — A1's `cross-harness` migration already claimed `/harness/:slug/{supervisor-notes,inbox,outbox,messages}` + `/harness/all/recent-activity`, and other A1/A2 routers (`projects`, `pty`, `agent-chats`, `experts`) hold `/harness/`-prefixed paths. A legacy route shadowed by an already-migrated literal must be **dropped as dead code, not re-migrated** (`register.ts` throws on duplicate `(method, path)`; `composed-app-shadowing` is the gate).
 
 A1 shipped (`c019a0ff`): 5 small routers. **A2 complete** — `pty` (10, `7be65218`), `agent-chats` (5, `24c532fa`), `experts` (17, `e9b82847`). **A3 complete** (`d336a44e`): 5 still-live `_hono/plugins.ts` routes + dispatcher relocation merged into `routes/plugins/catchall.ts`. **A5 complete** (`b3499031`): `harness-paths.ts` → `lib/`.
 
@@ -117,7 +119,9 @@ E8 (`expose.ipc` for routes) stays **deferred** — the flag is typed but inert 
   - b11 `ccf35750` — `/:slug/proposals` GET + GET/:id (2)
   - b12 `0a688a6d` — `/:slug/screenshots` GET/POST/DELETE (3)
 - **Cumulative: 37 routes off `_hono/harness.ts`; 7418 → 5826 LOC.** New route modules under `lib/endpoint-route/routes/harness/`.
-- **Batches 13…N** — ~100 routes still pending. Each batch: one commit, explicit pathspecs, per-batch `composed-app-shadowing` parity check. The easy read-only families are exhausted; remaining work clusters around shared state (`activeStreams` map, `scanAgentRuns`/`syncAgentRunsToPg`, `scanSnapshots`/`syncSnapshotsToPg`) + process-spawning mutations + the `/:slug/tests/*` sub-router.
+- **Batches 13–16 ✅ SHIPPED** — 23 routes total. Commits: `77620028` (snapshots ×4), `f5913b88` (hooks ×4), `d44865b5` (config-files mcp/claude-settings/env ×6), `bab19fcc`+`d8002408` (skills ×4 + supervisor-notes PUT/append ×2; the duplicate GET was dropped — see warning above). New `lib/harness-project-files.ts` no longer the only carve-out — `scanSnapshots`/`syncSnapshotsToPg` now live in their route file.
+- **Cumulative: 60 routes off `_hono/harness.ts`; 7418 → 5294 LOC.**
+- **Batches 17…N** — ~79 routes still pending. Each batch: one commit, explicit pathspecs, per-batch `composed-app-shadowing` parity check (read the result BEFORE committing). Remaining work clusters around shared state (`activeStreams` map, `scanAgentRuns`/`syncAgentRunsToPg`) + process-spawning mutations (`launch`/`invoke`/`pause`/`stop`/…) + orchestrator mutations + features mutations + brainstorm + prompts + phases/promote/rollback + the `/:slug/tests/*` sub-router.
 - Auth posture preserved verbatim per batch.
 - Acceptance: per batch — routes serve identically, `tsc` clean, endpoint-route suite green; the `harness` UI smoke-tested at the end of A4.
 - `harness.ts` is deleted only once its 138 routes are all gone; the `harness` Hono sub-app declaration drops out of `_hono/app.ts` at the same time.
