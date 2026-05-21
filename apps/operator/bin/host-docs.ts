@@ -19,7 +19,15 @@ import { Hono } from 'hono';
 import { existsSync, readFileSync } from 'node:fs';
 import { extname, join, resolve } from 'node:path';
 
-const PUBLIC_DOCS_ROOT = resolve(__dirname, '..', 'public', 'internal', 'docs');
+/**
+ * Starlight docs root. `__dirname`-relative in dev (host run via `tsx`);
+ * the packaged desktop esbuild-bundles the host into a single file, so the
+ * build sets `PAPERCUSP_DOCS_ROOT` to the bundled docs location explicitly
+ * (a bundled file's `__dirname` is the sidecar root, not `bin/`).
+ */
+const PUBLIC_DOCS_ROOT = process.env.PAPERCUSP_DOCS_ROOT
+  ? resolve(process.env.PAPERCUSP_DOCS_ROOT)
+  : resolve(__dirname, '..', 'public', 'internal', 'docs');
 
 const LOOPBACK_HOSTS = new Set([
   'localhost',

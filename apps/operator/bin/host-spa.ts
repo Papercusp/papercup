@@ -24,7 +24,16 @@ import { Hono } from 'hono';
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { extname, join, resolve, sep } from 'node:path';
 
-const SPA_DIST_ROOT = resolve(__dirname, '..', '..', 'operator-vite', 'dist');
+/**
+ * Vite SPA `dist/` root. In dev (host run via `tsx` from source) this
+ * resolves `__dirname`-relative — `bin/` → sibling `apps/operator-vite/dist`.
+ * In the packaged desktop the host is esbuild-bundled into a single file
+ * whose `__dirname` is the sidecar root, so the build sets
+ * `PAPERCUSP_SPA_DIST` to the bundled `dist/` location explicitly.
+ */
+const SPA_DIST_ROOT = process.env.PAPERCUSP_SPA_DIST
+  ? resolve(process.env.PAPERCUSP_SPA_DIST)
+  : resolve(__dirname, '..', '..', 'operator-vite', 'dist');
 
 const EXT_CONTENT_TYPE: Record<string, string> = {
   '.html': 'text/html; charset=utf-8',

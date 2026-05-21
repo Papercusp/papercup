@@ -20,8 +20,15 @@ import { handler } from './host-handler';
 
 runBootstrap();
 
-const port = Number(process.env.PAPERCUSP_HONO_PORT ?? 3070);
-const hostname = process.env.PAPERCUSP_BIND_HOST ?? '127.0.0.1';
+// Port/host: `PAPERCUSP_HONO_PORT`/`PAPERCUSP_BIND_HOST` are the explicit
+// knobs (dev). The packaged desktop's Tauri main spawns the sidecar with
+// the generic `PORT`/`HOSTNAME` it already sets for every sidecar — accept
+// those as fallbacks so G4 needs no extra env wiring.
+const port = Number(
+  process.env.PAPERCUSP_HONO_PORT ?? process.env.PORT ?? 3070,
+);
+const hostname =
+  process.env.PAPERCUSP_BIND_HOST ?? process.env.HOSTNAME ?? '127.0.0.1';
 
 serve({ fetch: handler, port, hostname }, (info) => {
   console.log(`[hono-host] listening on http://${hostname}:${info.port}`);
