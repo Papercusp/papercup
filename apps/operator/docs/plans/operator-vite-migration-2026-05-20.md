@@ -413,6 +413,27 @@ After this batch: 18 of 62 tracked pages shipped (B-1: 4, B-2: 5, B-3: 6, B-7-pa
 - `GET /api/wiki/suggest?target=…&harness=…` — returns up to 12 `{slug, filename, score}` fuzzy matches (port the `listMarkdownFiles` walker + `similarity` ranker from `apps/operator/app/wiki/missing/page.tsx`).
 - `GET /api/project-docs/list?harness=…` — returns the `docs/`-tree listing for a project.
 - `GET /api/project-docs/file?harness=…&path=…` — returns the file content (path traversal must be guarded — original uses `safeJoinUnderRoot`).
+- `GET /api/design/harnesses-with-needs-design` — returns the `harness_features_consolidated` aggregate (needs_design / pending / accepted / ignored / total per `harness_slug`) so `/design` index can render client-side. Port the SQL from `apps/operator/app/design/page.tsx`.
+
+**B-6 as-built (2026-05-21).** 9 of 10 tracked B-6 pages shipped + the dev layout:
+
+| Surface | Status | File |
+|---|---|---|
+| `/dev` (layout) | shipped | `src/routes/dev.tsx` — imports `@/app/dev/dev.css` + `<Outlet/>`. |
+| `/dev` (index) | shipped | `src/routes/dev/index.tsx` — re-exports `@/app/dev/page` default; next/dynamic in the source resolves via shim. |
+| `/dev/operator-logo` | shipped | `src/routes/dev/operator-logo.tsx` — re-exports `@/app/dev/operator-logo/page` default. |
+| `/dev/tokens` | shipped | `src/routes/dev/tokens.tsx` — re-exports `@/app/dev/tokens/page` default. |
+| `/editor-demo` | shipped | `src/routes/editor-demo.tsx` — re-exports; 11 `next/dynamic` editor panes resolve via shim (`loading:` → Suspense fallback). |
+| `/el-min` | shipped | `src/routes/el-min.tsx` — re-exports. |
+| `/operator-mock` | shipped | `src/routes/operator-mock.tsx` — re-exports 1385-line visual mock. |
+| `/design/$slug` | shipped | `src/routes/design/$slug.tsx` — renders `DesignDashboard` directly; `requireFlag(FLAGS.DESIGN)` gate dropped (SPA-flags deferral). |
+| `/snapshots` | shipped | `src/routes/snapshots/index.tsx` — renders `SnapshotsClient` directly; `requireFlag(FLAGS.SNAPSHOTS)` gate dropped. |
+| `/snapshots/$id/fork` | shipped | `src/routes/snapshots/$id/fork.tsx` — wraps `ForkClient` with `params={Promise.resolve({id})}` (preserves the Next-15-async-route signature without editing the shared component). Gate dropped. |
+| `/design` (index) | **DEFERRED** | Server-only: raw SQL via `getOrgPg()`. Same API-endpoint port pattern as `/wiki/missing` + `/project-docs`. |
+
+**New "page-import" pattern.** For pages whose default export is a clean React component, route files just `import Page from '@/app/foo/page'` and pass it as `component:`. Avoids parallel-copying. The Next-only exports (`export const dynamic`, `export const metadata`) are dead but harmless under Vite.
+
+Cumulative: **27 of 62 tracked pages** shipped (B-1: 3, B-2: 5, B-3: 6, B-7-partial: 3, B-1-cleanup: 1 setup, B-6: 9). Deferred: 3 server-only (`/wiki/missing`, `/project-docs`, `/design` index) pending API endpoint ports.
 
 Each batch acceptance: that surface's URLs render the right components and don't console-error, **verified by a strategy proportional to surface-stakes:**
 
