@@ -30,7 +30,8 @@ import { DECISION_VERBS } from '@papercusp/orchestrator/decision-parse';
 import { readFile, writeFile, appendFile, unlink, mkdir, chmod, rename, access, copyFile } from 'node:fs/promises';
 import { join, resolve, dirname } from 'node:path';
 import { homedir } from 'node:os';
-import { harnessPackageDir, harnessPath, orchestratorRunBin, tsxBin } from '@/lib/harness-paths';
+import { harnessPackageDir, harnessPath } from '@/lib/harness-paths';
+import { launchRun } from '@/lib/harness-launch';
 import { firePluginLifecycle, firePluginEvent } from '../../../lib/plugin-host-runtime';
 import { spawn, execFile } from 'node:child_process';
 import { runAgentChat } from '@/lib/agent-chat-stream';
@@ -82,7 +83,6 @@ import {
   loadHarnessRegistry,
   saveHarnessRegistry,
   type HarnessRegistry as RegistryFile,
-  type ProjectEntry,
 } from '@/lib/harness-registry';
 
 
@@ -94,64 +94,6 @@ const saveRegistry = saveHarnessRegistry;
 
 
 
-async function launchRun(project: ProjectEntry, extra?: string): Promise<{ ok: true; logPath: string } | { ok: false; error: string }> {
-  // Canonical path: spawn the TS orchestrator entry. The bash run.sh
-  // remains on disk as a function library for legacy sourcing call
-  // sites (invokeScoperBackground etc.) but is no longer the iteration
-  // driver. The previous `bash run.sh` invocation is preserved under
-  // `PAPERCUSP_USE_TS_ORCHESTRATOR=0` for emergency rollback only.
-  const orchBin = orchestratorRunBin();
-  if (!existsSync(orchBin)) return { ok: false, error: 'orchestrator bin missing' };
-  const logPath = `/tmp/harness-${project.slug}.log`;
-  const cmd = `nohup node ${tsxBin()} ${orchBin} >> ${logPath} 2>&1 &`;
-
-  // Decrypt search-provider keys from PG (Migration 047) and pass them
-  // through as env vars so OMP's web_search providers can see them.
-  // Each spawned worker/validator/etc. inherits these from the
-  // orchestrator's env. Best-effort: if PG is down or no keys are
-  // configured, the orchestrator simply runs without them.
-  let searchProviderEnv: Record<string, string> = {};
-  try {
-    const { buildSpawnEnv } = await import('@/lib/search-provider-credentials');
-    searchProviderEnv = await buildSpawnEnv();
-  } catch {
-    // PG unavailable / encryption key missing — proceed with no keys.
-  }
-
-  const child = spawn('bash', ['-c', cmd], {
-    cwd: project.path,
-    env: {
-      ...process.env,
-      AGENT_CMD: process.env.AGENT_CMD ?? process.env.CLAUDE ?? 'omp -p',
-      // Legacy CLAUDE alias kept for any hooks that read it.
-      CLAUDE: process.env.AGENT_CMD ?? process.env.CLAUDE ?? 'omp -p',
-      HARNESS_DIR: harnessPackageDir(),
-      PROJECT_DIR: project.path,
-      HARNESS_SLUG: project.slug,
-      // PG is the canonical feature store. Without this, the
-      // orchestrator's in-memory fallback (designed for tests) yields
-      // an empty store, pre-loop's featuresExist() returns false, and
-      // the scoper-gate fails on every launch even though PG has the
-      // feature queue.
-      PAPERCUSP_USE_PG_STATE: '1',
-      // spawn-mcp reads DATABASE_URL (or PAPERCUSP_PG_DSN) to load its
-      // signing key from harness_shared.operator_secrets. Without it,
-      // every tool invocation hits "no PG DSN in env" and the
-      // orchestrator hits no-tools, decides it can't do anything, and
-      // immediately escalates. We use the operator's own resolved
-      // admin URL (env → discovery file → native fallback) so the
-      // spawned orchestrator hits the exact same Postgres the operator
-      // uses, not a stale hardcoded default.
-      DATABASE_URL: getHarnessAdminUrl(),
-      ...searchProviderEnv,
-      ...(extra ? Object.fromEntries(extra.split(/\s+/).filter(Boolean).map((kv: string) => kv.split('='))) : {}),
-    },
-    detached: true,
-    stdio: 'ignore',
-  });
-  child.unref();
-  return { ok: true, logPath };
-}
 
 export const harness = new Hono();
 
