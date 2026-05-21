@@ -137,7 +137,14 @@ export default defineTool({
     // is healthy (search hits one or two times). Failures inside
     // buildOperatorPrompt are swallowed best-effort already; an
     // outer throw here would be a real config error worth surfacing.
-    const promptText = await buildOperatorPrompt(
+    //
+    // Returns BOTH a system prompt (persona + tools + memory — the
+    // stable spec) AND a user prompt (history + trigger + modality —
+    // this turn's context). The agent backend (omp) is invoked with
+    // `--system-prompt @file` for the system part so the brain
+    // assumes the Operator identity instead of meta-commenting on
+    // the persona as a document handed to it (2026-05-21 root cause).
+    const { systemPromptText, userPromptText } = await buildOperatorPrompt(
       {
         messages: input.messages,
         trigger: input.trigger,
@@ -197,16 +204,18 @@ export default defineTool({
       principalOk && superuserToken
         ? {
             mcpServers: {
+              // Direct HTTP MCP — omp connects to the host's /api/mcp
+              // natively, the same shape the user's papercusp-su server
+              // uses. The old `npx mcp-remote@latest` stdio bridge added
+              // a cold npm-resolve + a proxy subprocess on every turn and
+              // was the flaky empty-turn culprit (2026-05-21): the brain
+              // would intermittently produce no output because its tool
+              // transport never came up in time. omp speaks HTTP MCP
+              // natively, so the bridge is pure overhead.
               agentmcp: {
-                type: 'stdio',
-                command: 'npx',
-                args: [
-                  '-y',
-                  'mcp-remote@latest',
-                  mcpUrl,
-                  '--header',
-                  `Authorization:Bearer ${superuserToken}`,
-                ],
+                type: 'http',
+                url: mcpUrl,
+                headers: { Authorization: `Bearer ${superuserToken}` },
               },
             },
           }
@@ -228,7 +237,8 @@ export default defineTool({
     for (let attempt = 1; attempt <= MAX_BRAIN_ATTEMPTS; attempt++) {
       try {
         for await (const ev of runAgentChat({
-          promptText,
+          promptText: userPromptText,
+          systemPromptText,
           model: OPERATOR_BRAIN_MODEL,
           mcpConfig,
           allowedTools: [...allowedTools],

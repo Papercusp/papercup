@@ -40,10 +40,21 @@ export interface ConverseSessionUser {
   has_password: boolean;
 }
 
+export interface BuiltOperatorPrompt {
+  /** Persona + tool catalog + tool playbook + memory. The stable spec
+      sent as omp's --system-prompt so the model assumes the Operator
+      identity rather than meta-commenting on it. */
+  systemPromptText: string;
+  /** This turn's context: conversation history + modality + trigger
+      + may_ask_active hint. Sent as the positional user message so
+      omp's chat loop sees it as the user's turn. */
+  userPromptText: string;
+}
+
 export async function buildOperatorPrompt(
   input: ConverseInput,
   sessionUser: ConverseSessionUser | null,
-): Promise<string> {
+): Promise<BuiltOperatorPrompt> {
   const prefs = await loadVoicePrefs().catch(() => null);
   const budget = prefs?.operatorHistoryTokenBudget ?? 40000;
   const messages = selectHistoryWithinBudget(
@@ -56,9 +67,10 @@ export async function buildOperatorPrompt(
   const trigger = input.trigger ?? 'user_message';
   const mayAskActive = !!input.mayAskActive;
 
-  const sections: string[] = [];
-  sections.push(loadRoleConverse('operator'));
-  sections.push(loadRolePersona('operator'));
+  // SYSTEM sections (stable persona spec — set as omp --system-prompt)
+  const systemSections: string[] = [];
+  systemSections.push(loadRoleConverse('operator'));
+  systemSections.push(loadRolePersona('operator'));
 
   const operatorToolNames: string[] = [];
   for (const fullName of ALL_AGENT_MCP_TOOLS) {
@@ -75,10 +87,10 @@ export async function buildOperatorPrompt(
   // and gets dropped from the voice catalog automatically (replaces
   // the manual NOTE in the trigger sections below).
   const catalog = renderToolsCatalog('operator', operatorToolNames, modality);
-  if (catalog) sections.push(catalog);
+  if (catalog) systemSections.push(catalog);
 
   const playbook = loadRoleToolsMd('operator');
-  if (playbook) sections.push(playbook);
+  if (playbook) systemSections.push(playbook);
 
   // Operator memory pre-turn injection — best-effort, via the shared
   // helper. Same source of truth as architect/brainstorm prompts +
@@ -89,13 +101,16 @@ export async function buildOperatorPrompt(
     workspaceId: activeWorkspaceId(),
     queryContext: lastUserContext(messages, 3),
   });
-  if (memBlock) sections.push(memBlock);
+  if (memBlock) systemSections.push(memBlock);
+
+  // USER sections (this turn's context — sent as the positional message)
+  const userSections: string[] = [];
 
   if (messages.length > 0) {
     const transcript = messages
       .map((m) => `[${m.role}]\n${m.content}`)
       .join('\n\n');
-    sections.push(`## Conversation history (oldest first; last ${messages.length} turns)\n\n${transcript}`);
+    userSections.push(`## Conversation history (oldest first; last ${messages.length} turns)\n\n${transcript}`);
   }
 
   const triggerLines: Record<NonNullable<ConverseInput['trigger']>, string> = {
@@ -172,20 +187,26 @@ NEVER say "Hi, what can I help with" or any generic greeting — always anchor o
 NOTE: chat:ask_choice works in both text and voice. Voice users hear the question + option labels as a spoken list and click on screen.`,
   };
 
-  sections.push(
+  userSections.push(
     `## Modality\n\nOutput surface: **${modality}**.\n\n` +
       (modality === 'voice'
         ? 'You are speaking to a voice user. Wrap spoken text in <say>…</say>. You MAY still emit chat:ask_choice for closed questions with ≤6 short options — voice users hear the question and option labels as a spoken list, then either click on the chat surface or, when the call site sets voiceAnswerable:true, speak their pick.'
         : 'You are talking to a user reading the chat sidebar. When you have 2-3 distinct, comparable options, emit chat:ask_choice to render clickable buttons. Otherwise use plain <say> text.'),
   );
 
-  sections.push(`## Trigger\n\n${triggerLines[trigger]}`);
+  userSections.push(`## Trigger\n\n${triggerLines[trigger]}`);
 
   if (mayAskActive) {
-    sections.push(`## [may_ask_active]\n\nThe runtime allows you to ask "Do you want me to go back into active mode?" at the end of your reply this turn — turns_in_last_2_min ≥ 3 AND sleep timer expired. Use only if it fits.`);
+    userSections.push(`## [may_ask_active]\n\nThe runtime allows you to ask "Do you want me to go back into active mode?" at the end of your reply this turn — turns_in_last_2_min ≥ 3 AND sleep timer expired. Use only if it fits.`);
   }
 
-  return sections.join('\n\n---\n\n');
+  // Closing nudge so the model knows the spec ends and it should act now.
+  userSections.push('Respond now per your operator instructions and trigger above.');
+
+  return {
+    systemPromptText: systemSections.join('\n\n---\n\n'),
+    userPromptText: userSections.join('\n\n---\n\n'),
+  };
 }
 
 export type { ConverseInput as OperatorConverseInput };
