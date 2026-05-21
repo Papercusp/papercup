@@ -19,6 +19,9 @@ export default defineRoute({
   method: 'GET',
   path: '/flags/stream',
   auth: 'public',
+  // SSE — one route-stack run per long-lived connection; a route_invocations
+  // row per connect carries little signal (RFC Q7). Don't record it.
+  sampleRate: 0,
   handler(req) {
     const lastEventId = parseLastEventId(req);
     const bus = getFlagBus();
