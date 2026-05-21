@@ -9,9 +9,9 @@ owner: pandawamble@gmail.com
 
 ## Now
 
-**State:** **Status:** Implementation in flight. Framework extensions (P1) + all 12 M-scenarios (P2–P4) shipped; P5 live triage run pending an ANTHROPIC_API_KEY-backed full-pass invocation.
+**State:** P1–P4 shipped. P5 attempted 2026-05-20: a first triage pass ran and surfaced framework-robustness bugs (since fixed — see §13). The P5 *clean* live run is BLOCKED on the Next.js→Vite migration, which has removed `app/api/agent-mcp/operator-converse/route.ts` — the SUT endpoint the framework drives.
 
-**Next:** Owner: review current state and replace this auto-generated Now block (backfilled 2026-05-20).
+**Next:** When the operator endpoint is stable post-migration, run the §12 procedure for the full triage. See §13 for the resumption checklist.
 
 
 # Operator behavior tests — 2026-05-14 (v3, implemented)
@@ -114,7 +114,7 @@ scenarios together (S + M): ~$48/full pass. Nightly: ~$1,440/month.
 | P2 M1–M5 | ✅ shipped |
 | P3 M6–M9 | ✅ shipped |
 | P4 M10–M12 + rubric axis | ✅ shipped |
-| P5 full live run + triage | pending — needs API key + dev server |
+| P5 full live run + triage | attempted 2026-05-20 — framework bugs found & fixed (§13); clean run BLOCKED on Vite migration |
 
 ## 8. Guard-rail vs positive-signal
 
@@ -188,3 +188,42 @@ Triage each non-pass run:
 Past 7 audit rounds during the framework build-out: most "operator
 failures" turned out to be framework or scenario bugs on first
 attempt. Stay disciplined.
+
+## 13. P5 progress log
+
+### 2026-05-20 — first triage pass + framework hardening
+
+A first P5 pass ran the 12 M-scenarios (`--all --no-matrix`) against
+the dev operator. **The run is not trustworthy as operator signal** —
+the dev server (`:3055`) was flapping and the operator-converse route
+was mid-teardown for the Next.js→Vite migration. Evidence the SUT was
+contaminated: M8/M9 showed the "operator" firing `find`, `bash`,
+`psql`, `papercusp workspace list` — none are operator tools. The SUT
+was not running as the operator.
+
+What the pass *did* legitimately surface — framework-robustness bugs,
+independent of the SUT, all fixed in commit `676746e7`:
+
+| Bug | Symptom | Fix |
+|---|---|---|
+| `temperature` 400 | Calls intermittently 400'd with "temperature is deprecated" | `llmCall` retries-without-temperature on that error class (`isTemperatureDeprecatedError`); self-heals any model that newly deprecates the field |
+| Judge non-JSON | M6 → `judge[meta]` "Judge response was not valid JSON" on first miss | `tryParseJson` gains brace-span extraction; `judgeRun` does one strict-JSON repair retry before the parse-failed finding |
+| Judge scores broken SUT | M11/M12 empty SUT turns → judge produced confident axis failures describing the dead environment | SUT-health gate: `inconclusiveReason` detects errored/all-empty runs; runner skips the judge and emits one clean `meta/sut_no_output` finding via `buildInconclusiveJudge`. Such runs are `status=errored`, not `failed`. |
+
+Tests: +28 unit (`llm-client.test.ts`, `runner-inconclusive.test.ts`).
+Full llm-testing suite 122 pass. `telemetry-tagging-audit.test.ts`
+fails — migration casualty (reads the removed `operator-converse/route.ts`),
+not in scope here.
+
+### Resumption checklist (when the operator endpoint is stable)
+
+1. Confirm the post-migration operator-converse endpoint URL/port and
+   update `OperatorTarget` `baseUrl` default in `targets/operator.ts`
+   (currently `http://127.0.0.1:3055`) — or set `PAPERCUSP_OPERATOR_URL`.
+2. Smoke one scenario: `npx tsx bin/llm-test.ts run --scenario op-S01-status-quick --no-matrix`.
+   Expect a real transcript, not `finishReason=error`.
+3. Run the §12 procedure (`--target operator --parallel 2`).
+4. Triage per §12. The SUT-health gate now means a genuinely broken
+   SUT yields `errored` + `meta/sut_no_output` — distinguishable at a
+   glance from real operator `failed` verdicts.
+5. Update §7 P5 row + this log with the classified results.
