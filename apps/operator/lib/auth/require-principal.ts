@@ -23,20 +23,17 @@
  * Phase 3b step 2 (principal-rfc-2026-05-20.md §5f).
  */
 
-import type { Principal, PrincipalKind, PrincipalTrust } from '@papercusp/agent-mcp';
+import type { Principal, PrincipalKind, PrincipalTrust, PrincipalRequirements } from '@papercusp/agent-mcp';
 import { principalFromCookie } from './principal/from-cookie';
 import { principalFromMobileJwt } from './principal/from-mobile-jwt';
 import { principalFromSuperuserToken } from './principal/from-superuser-token';
 import { principalFromLoopback } from './principal/from-loopback';
 
-export interface PrincipalRequirements {
-  /** Allowed trust levels. Empty/undefined = any. */
-  trust?: ReadonlyArray<PrincipalTrust>;
-  /** Allowed kinds. Empty/undefined = any. */
-  kind?: ReadonlyArray<PrincipalKind>;
-  /** Required capabilities. The principal needs all of them (or '*'). */
-  capabilities?: ReadonlyArray<string>;
-}
+// Re-export so existing app-side imports (`import { PrincipalRequirements } from '@/lib/auth/require-principal'`)
+// keep working. Canonical home is `@papercusp/agent-mcp` so the endpoint primitive
+// can reference it without the app→package inversion. Phase E1
+// (endpoint-unification-2026-05-21).
+export type { PrincipalRequirements };
 
 export class PrincipalCheckError extends Error {
   override readonly name = 'PrincipalCheckError';

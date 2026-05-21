@@ -454,7 +454,16 @@ export interface ToolExposureHttp {
   /** Path the catch-all HTTP route serves; e.g. '/api/plugins/repomix/pack'. */
   path: string;
   /** Allowed methods. Default: ['POST']. */
-  methods?: ReadonlyArray<'POST' | 'GET' | 'PUT' | 'PATCH' | 'DELETE'>;
+  methods?: ReadonlyArray<'POST' | 'GET' | 'PUT' | 'PATCH' | 'DELETE' | 'OPTIONS'>;
+  /**
+   * Single-method sugar. Equivalent to `methods: [method]`. Accepted alongside
+   * `methods` for ergonomics — the route-shaped callsites prefer the singular
+   * form (mirrors the now-collapsed `defineRoute({ method })` shape). When both
+   * are set, `methods` wins.
+   *
+   * Phase E1 (endpoint-unification-2026-05-21).
+   */
+  method?: 'POST' | 'GET' | 'PUT' | 'PATCH' | 'DELETE' | 'OPTIONS';
 }
 
 export interface ToolExposureMcp {
@@ -474,10 +483,50 @@ export interface ToolExposureMcp {
   largeOutput?: boolean;
 }
 
-/** Per-tool exposure config — at least one of `http`/`mcp` must be set. */
+/**
+ * Mobile exposure config — sugar for "this endpoint is callable from the
+ * paired phone." When set, three things happen on the dispatcher side:
+ *
+ *   1. `'mobile'` is added to the route's allowed `auth.kind` (so the
+ *      JWT-resolved Principal isn't rejected).
+ *   2. The route is added to the centralized CORS allowlist (tauri.localhost,
+ *      localhost:*, 127.0.0.1:*, 10.0.2.2:*).
+ *   3. The route is tagged `papercusp:mobile` in the openapi.json output.
+ *
+ * Phase E3 (endpoint-unification-2026-05-21) wires the runtime behavior;
+ * E1 accepts the field without behavior change.
+ */
+export interface ToolExposureMobile {
+  /**
+   * Required capabilities on the resolved mobile Principal beyond the
+   * baseline `mobile:*` it carries. Absent → no additional requirement.
+   */
+  capabilities?: ReadonlyArray<string>;
+  /**
+   * CORS origin override. Absent → use the default mobile allowlist.
+   * Set to `false` to disable CORS entirely (loopback-only mobile
+   * routes, e.g. desktop-initiated pair flows).
+   */
+  cors?: false | ReadonlyArray<string>;
+}
+
+/** Per-tool exposure config — at least one of `http`/`mcp`/`ipc` must be set. */
 export interface ToolExposure {
   http?: ToolExposureHttp;
   mcp?: ToolExposureMcp;
+  /**
+   * Mark this endpoint as mobile-eligible. `true` opts into the default
+   * mobile policy (mobile JWT principal accepted, default CORS allowlist).
+   * An object form lets the route narrow the capability / CORS posture.
+   * Phase E3.
+   */
+  mobile?: true | ToolExposureMobile;
+  /**
+   * Mark this endpoint as IPC-eligible. When `true`, the endpoint-IPC
+   * adapter exposes it over the UDS framing (in-process + Rust callers).
+   * Default false — IPC opt-in mirrors HTTP/MCP opt-in. Phase E8.
+   */
+  ipc?: true;
 }
 
 /**

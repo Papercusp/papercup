@@ -77,6 +77,32 @@ export interface Principal {
   label?: string;
 }
 
+/**
+ * Auth-gate requirements applied to a resolved `Principal`. Used by both
+ * `requirePrincipal()` (the host-side resolver) and `defineTool`/
+ * `defineRoute` (the endpoint primitive's `auth` field).
+ *
+ * Lives in `@papercusp/agent-mcp` rather than `apps/operator/lib/auth` so
+ * the endpoint primitive can reference it without creating an
+ * app→package dependency inversion. `apps/operator/lib/auth/require-
+ * principal.ts` re-exports.
+ */
+export interface PrincipalRequirements {
+  /** Allowed trust levels. Empty/undefined = any. */
+  trust?: ReadonlyArray<PrincipalTrust>;
+  /** Allowed kinds. Empty/undefined = any. */
+  kind?: ReadonlyArray<PrincipalKind>;
+  /** Required capabilities. The principal needs all of them (or '*'). */
+  capabilities?: ReadonlyArray<string>;
+}
+
+/**
+ * Endpoint auth stance. `'public'` opts out of `requirePrincipal()`
+ * (used for webhooks, OAuth callbacks, pair endpoints). Otherwise a
+ * `PrincipalRequirements` object gates the call.
+ */
+export type RouteAuth = 'public' | PrincipalRequirements;
+
 /** Per-call request context. */
 export interface ToolContext {
   principal: Principal;
@@ -221,6 +247,39 @@ export interface ToolDefinitionInput<TArgs extends ZodTypeAny = ZodTypeAny> {
   handler: (args: z.infer<TArgs>, ctx: ToolContext) => Promise<ToolResponse>;
   /** See `ToolGuidance`. */
   guidance?: ToolGuidance;
+  /* ─── Unified-primitive forward-compat fields (Phase E1, no behavior change) ─────
+   * These accept the future `defineRoute`-collapsed shape without changing
+   * runtime behavior. Phase E2 wires them into dispatch. Phase E1 just makes
+   * sure callsites adopting the new shape compile.
+   *
+   * Plan: apps/operator/docs/plans/endpoint-unification-2026-05-21.md
+   */
+  /**
+   * Auth gate. When set, overrides the legacy single-capability gate
+   * (`capability`) with a full `PrincipalRequirements`. `'public'` opts
+   * out of `requirePrincipal()`. Phase E2 makes this load-bearing; in
+   * E1 it is accepted but not yet read by the dispatcher.
+   */
+  auth?: RouteAuth;
+  /**
+   * Alias for `args`. The unified primitive prefers `input` (matches
+   * `defineRoute`'s field name + the body/query duality). When both are
+   * set, `args` wins (back-compat). New callsites should use `input`.
+   */
+  input?: TArgs;
+  /**
+   * Telemetry sample rate, 0..1. Default 1 (record every call). High-
+   * frequency tools set this < 1 so `tool_invocations` doesn't flood.
+   * Phase E2 wires this into the telemetry sink.
+   */
+  sampleRate?: number;
+  /**
+   * Explicit exposure override. When absent, `defineTool` auto-derives
+   * MCP name from filename + HTTP path `/api/agent-tools/<group>/<verb>`.
+   * Setting `expose` here lets a tool declare arbitrary path/methods,
+   * mark itself mobile-eligible, or expose itself over IPC.
+   */
+  expose?: import('./tool-projection').ToolExposure;
 }
 
 /**
@@ -335,6 +394,15 @@ export interface RoleToolDefinitionInput<
   ) => Promise<ToolResult | ToolResponse>;
   /** See `ToolGuidance`. */
   guidance?: ToolGuidance;
+  /* ─── Unified-primitive forward-compat fields (Phase E1) — see ToolDefinitionInput. */
+  /** See `ToolDefinitionInput.auth`. Phase E2 wiring. */
+  auth?: RouteAuth;
+  /** Alias for `args`. New callsites prefer `input`. */
+  input?: TArgs;
+  /** Telemetry sample rate, 0..1. */
+  sampleRate?: number;
+  /** Explicit exposure override. See `ToolDefinitionInput.expose`. */
+  expose?: import('./tool-projection').ToolExposure;
 }
 
 // ──────────────────────────────────────────────────────────────────────
