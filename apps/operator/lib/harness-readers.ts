@@ -22,7 +22,7 @@ import {
   resolvePhasedProject,
   safeRead,
   tailFile,
-} from '../app/api/_hono/harness';
+} from './harness-core';
 import type { Phase } from './harness-phases';
 import type { ProjectEntry } from './harness-registry';
 

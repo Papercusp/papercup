@@ -56,6 +56,19 @@ import {
 } from '@/lib/ensure-schema';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
 import { type Phase, phasePath, phasePhaseLabel, ALL_PHASES } from '@/lib/harness-phases';
+import {
+  countPulsesFromRunLog,
+  aggregateCostFromLogDir,
+  resolveProject,
+  harnessDir,
+  safeRead,
+  isHarnessDriverCmdline,
+  isProjectAlive,
+  parseFeatures,
+  tailFile,
+  resolvePhasedProject,
+  getHarnessStatusFull,
+} from '@/lib/harness-core';
 const getOrgDbClient = () => getLegacyClient();
 const dbcFor = (slug: string) => getLegacyClient(slug);
 
@@ -72,197 +85,8 @@ import {
 
 /* ─────────────────────────────────────────────────────────────────────
  * Performance helpers (added 2026-05-01).
- *
- * `/api/harness/<slug>/{status,phases,git/log}` were the three slowest
- * endpoints in the harness UI; together they accounted for ~3s mean
- * response time per dashboard render. Three changes:
- *
- *   1. tailLastResultLine() reads the last ~8KB of a .jsonl file instead
- *      of the whole file. Cost-aggregation is O(file count) instead of
- *      O(total bytes).
- *   2. aggregateCostFromLogDir() caches the aggregated cost / token
- *      counts per logDir for ttlMs (default 5s), invalidated by the
- *      directory's mtime. Both /status and /phases share the cache.
- *   3. cachedGitLog() caches `git log --format=...` output keyed on
- *      project path + HEAD sha + limit, TTL 3s. Skips the subprocess
- *      spawn when HEAD hasn't moved.
- * ───────────────────────────────────────────────────────────────────── */
 
-function tailLastResultLine(filePath: string, lookbackBytes = 8 * 1024): { obj: Record<string, unknown> | null } {
-  let fd = -1;
-  try {
-    const st = statSync(filePath);
-    if (st.size === 0) return { obj: null };
-    const start = Math.max(0, st.size - lookbackBytes);
-    const len = st.size - start;
-    fd = openSync(filePath, 'r');
-    const buf = Buffer.alloc(len);
-    readSync(fd, buf, 0, len, start);
-    const text = buf.toString('utf8');
-    // Walk lines backwards to find the last `"type":"result"` JSON object.
-    const lines = text.split('\n');
-    for (let i = lines.length - 1; i >= 0; i--) {
-      const line = lines[i].trim();
-      if (!line.startsWith('{')) continue;
-      try {
-        const obj = JSON.parse(line) as Record<string, unknown>;
-        if (obj.type === 'result') return { obj };
-      } catch { /* partial line at the start of the window — skip */ }
-    }
-    return { obj: null };
-  } catch {
-    return { obj: null };
-  } finally {
-    if (fd >= 0) try { closeSync(fd); } catch {}
-  }
-}
 
-// Pulse counter — total `── iteration N ──` lines across the entire run.log.
-// `── iteration N ──` resets to 1 on every bin/run.sh invocation, so the
-// last-match-in-tail pattern undercounts lifetime pulses. We count
-// incrementally: cache (mtimeMs, size, count) and only re-scan the bytes
-// appended since the last cache hit. Eviction happens implicitly when
-// mtime moves backwards (log rotation / harness rescaffold) by re-counting
-// from byte 0.
-type PulseCacheEntry = { mtimeMs: number; size: number; count: number };
-const __pulseCacheKey = '__papercuspPulseCache';
-type PulseGlobals = { [__pulseCacheKey]?: Map<string, PulseCacheEntry> };
-const __pulseCache: Map<string, PulseCacheEntry> = (() => {
-  const g = globalThis as PulseGlobals;
-  if (!g[__pulseCacheKey]) g[__pulseCacheKey] = new Map();
-  return g[__pulseCacheKey]!;
-})();
-const PULSE_RE = /── iteration \d+ ──/g;
-
-export function countPulsesFromRunLog(path: string): number {
-  if (!existsSync(path)) return 0;
-  let st: { mtimeMs: number; size: number };
-  try { st = statSync(path); } catch { return 0; }
-  if (st.size === 0) return 0;
-
-  const cached = __pulseCache.get(path);
-  // Reuse: file is unchanged, or grew without truncation.
-  if (cached && cached.mtimeMs === st.mtimeMs && cached.size === st.size) {
-    return cached.count;
-  }
-
-  // Truncation / rewrite: rescan from the start.
-  const startOffset =
-    cached && cached.mtimeMs <= st.mtimeMs && cached.size <= st.size
-      ? cached.size
-      : 0;
-
-  let fd = -1;
-  let count = startOffset === 0 ? 0 : cached!.count;
-  try {
-    fd = openSync(path, 'r');
-    const CHUNK = 64 * 1024;
-    const buf = Buffer.alloc(CHUNK);
-    let leftover = '';
-    let pos = startOffset;
-    while (pos < st.size) {
-      const len = Math.min(CHUNK, st.size - pos);
-      readSync(fd, buf, 0, len, pos);
-      const text = leftover + buf.subarray(0, len).toString('utf8');
-      const nl = text.lastIndexOf('\n');
-      const scan = nl >= 0 ? text.slice(0, nl) : '';
-      leftover = nl >= 0 ? text.slice(nl + 1) : text;
-      const m = scan.match(PULSE_RE);
-      if (m) count += m.length;
-      pos += len;
-    }
-    const tail = leftover.match(PULSE_RE);
-    if (tail) count += tail.length;
-  } catch { /* ignore */ } finally {
-    if (fd >= 0) try { closeSync(fd); } catch {}
-  }
-
-  __pulseCache.set(path, { mtimeMs: st.mtimeMs, size: st.size, count });
-  return count;
-}
-
-interface CostAggregate { cost: number; inputTokens: number; outputTokens: number }
-
-// Pinned to globalThis (see __costPerFileCache below for rationale).
-type CostCacheEntry = { sig: string; expires: number; value: CostAggregate };
-const __costCacheKey = '__papercuspCostCache';
-type CostCacheGlobals = { [__costCacheKey]?: Map<string, CostCacheEntry> };
-const __costCache: Map<string, CostCacheEntry> = (() => {
-  const g = globalThis as CostCacheGlobals;
-  if (!g[__costCacheKey]) g[__costCacheKey] = new Map();
-  return g[__costCacheKey]!;
-})();
-
-// Per-file mtime-keyed cache. Old log files NEVER change after the run
-// finishes — re-tailing them on every request is pure waste. We tail
-// each file ONCE per mtime; only files newer than the cached mtime get
-// re-read. With 220 jsonl files across a 178 MiB log dir, this turns
-// a 5-10 second per-call cost into "tail only the actively-running runs."
-//
-// Pinned to `globalThis` because Next.js dev re-evaluates the catch-all
-// route module across requests (visible in the dev log as repeated
-// [plugin-mount] lines), which would otherwise reset module-local caches
-// every request. See /docs/performance #A5.
-type CostPerFileEntry = { mtimeMs: number; size: number; cost: number; inputTokens: number; outputTokens: number };
-const __costPerFileCacheKey = '__papercuspCostPerFileCache';
-type CostGlobals = { [__costPerFileCacheKey]?: Map<string, CostPerFileEntry> };
-const __costPerFileCache: Map<string, CostPerFileEntry> = (() => {
-  const g = globalThis as CostGlobals;
-  if (!g[__costPerFileCacheKey]) g[__costPerFileCacheKey] = new Map();
-  return g[__costPerFileCacheKey]!;
-})();
-
-export function aggregateCostFromLogDir(logDir: string, ttlMs = 5000): CostAggregate {
-  const now = Date.now();
-  let sig = 'no-dir';
-  try {
-    if (existsSync(logDir)) {
-      const st = statSync(logDir);
-      sig = `${st.mtimeMs}:${st.size}`;
-    }
-  } catch {}
-  const cached = __costCache.get(logDir);
-  if (cached && cached.sig === sig && cached.expires > now) return cached.value;
-
-  const out: CostAggregate = { cost: 0, inputTokens: 0, outputTokens: 0 };
-  try {
-    if (existsSync(logDir)) {
-      for (const f of readdirSync(logDir)) {
-        if (!f.endsWith('.jsonl')) continue;
-        const fp = join(logDir, f);
-        let st: { mtimeMs: number; size: number };
-        try { st = statSync(fp); } catch { continue; }
-        const perFile = __costPerFileCache.get(fp);
-        let row: { cost: number; inputTokens: number; outputTokens: number };
-        if (perFile && perFile.mtimeMs === st.mtimeMs && perFile.size === st.size) {
-          // File hasn't changed since we last tailed it; reuse the
-          // cached aggregate row instead of re-reading 8 KiB of tail.
-          row = perFile;
-        } else {
-          const { obj } = tailLastResultLine(fp);
-          row = {
-            cost: obj ? (Number(obj.total_cost_usd ?? 0) || 0) : 0,
-            inputTokens: 0,
-            outputTokens: 0,
-          };
-          if (obj) {
-            const usage = obj.usage as { input_tokens?: number; output_tokens?: number } | undefined;
-            if (usage) {
-              row.inputTokens = Number(usage.input_tokens ?? 0) || 0;
-              row.outputTokens = Number(usage.output_tokens ?? 0) || 0;
-            }
-          }
-          __costPerFileCache.set(fp, { mtimeMs: st.mtimeMs, size: st.size, ...row });
-        }
-        out.cost += row.cost;
-        out.inputTokens += row.inputTokens;
-        out.outputTokens += row.outputTokens;
-      }
-    }
-  } catch {}
-  __costCache.set(logDir, { sig, expires: now + ttlMs, value: out });
-  return out;
-}
 
 interface GitCommit {
   sha: string; parents: string[]; subject: string; author: string; ts: number; refs: string[];
@@ -335,130 +159,8 @@ async function cachedGitLog(
 const loadRegistry = loadHarnessRegistry;
 const saveRegistry = saveHarnessRegistry;
 
-export async function resolveProject(slug: string): Promise<ProjectEntry | null> {
-  const reg = await loadRegistry();
-  return reg.projects.find((p) => p.slug === slug) ?? null;
-}
 
-export function harnessDir(project: ProjectEntry): string {
-  return join(project.path, '.harness');
-}
 
-export function safeRead(path: string): string | null {
-  try { return readFileSync(path, 'utf8'); } catch { return null; }
-}
-
-/**
- * Check whether any run.sh process is alive for the given project path.
- *
- * Walks /proc to find a process whose cwd starts with `projectPath` and
- * whose cmdline references run.sh. /proc/<pid>/cwd is a symlink — must
- * use readlinkSync, not readFileSync (which throws EISDIR and gets
- * silently swallowed).
- *
- * Cached for 2 s with a single shared map keyed on project path. The
- * dashboard polls /status every 3 s and frequently fans out across
- * multiple panels at once; under c=10 contention the un-cached version
- * went from 75 ms p50 (c=1) to 581 ms p50 (c=10) because each request
- * walked /proc independently. With the cache, concurrent requests share
- * one walk and per-request cost drops to ~0 ms on a hit.
- */
-const __aliveCacheKey = Symbol.for('papercusp.harnessAliveCache');
-type AliveCacheGlobals = typeof globalThis & {
-  [__aliveCacheKey]?: Map<string, { value: boolean; expires: number; pending: Promise<boolean> | null }>;
-};
-const __aliveCache: Map<string, { value: boolean; expires: number; pending: Promise<boolean> | null }> = (() => {
-  const g = globalThis as AliveCacheGlobals;
-  if (!g[__aliveCacheKey]) g[__aliveCacheKey] = new Map();
-  return g[__aliveCacheKey]!;
-})();
-
-/**
- * Single source of truth for "is this cmdline a harness driver process?".
- *
- * Matches:
- *   - Legacy bash driver: `autonomous-harness/run.sh` or `/harness/run.sh`
- *   - TS orchestrator (canonical since PAPERCUSP_USE_TS_ORCHESTRATOR
- *     became default): cmdline contains `orchestrator/bin/run.ts` when
- *     launched via `npx tsx .../orchestrator/bin/run.ts`.
- *
- * Used by liveness probes (/status), stop/pause/resume handlers, the
- * status-sweep, and isHarnessAlive. When a new driver entry-point is
- * added, update this predicate and every caller picks it up.
- */
-export function isHarnessDriverCmdline(cmdline: string): boolean {
-  return (
-    cmdline.includes('autonomous-harness/run.sh') ||
-    cmdline.includes('/harness/run.sh') ||
-    cmdline.includes('orchestrator/bin/run.ts')
-  );
-}
-
-function scanForRunShCwd(projectPath: string): boolean {
-  try {
-    const procs = readdirSync('/proc');
-    for (const pid of procs) {
-      if (!/^\d+$/.test(pid)) continue;
-      try {
-        const cwd = readlinkSync(`/proc/${pid}/cwd`);
-        if (!cwd.startsWith(projectPath)) continue;
-        const cmdline = readFileSync(`/proc/${pid}/cmdline`, 'utf8');
-        if (isHarnessDriverCmdline(cmdline)) return true;
-      } catch { /* perm-denied PID — skip */ }
-    }
-  } catch { /* /proc unreadable — fall through */ }
-  return false;
-}
-
-export function isProjectAlive(projectPath: string, ttlMs = 2000): boolean {
-  const now = Date.now();
-  const cached = __aliveCache.get(projectPath);
-  if (cached && cached.expires > now) return cached.value;
-  // Cache miss — synchronous scan, then memoize.
-  const value = scanForRunShCwd(projectPath);
-  __aliveCache.set(projectPath, { value, expires: now + ttlMs, pending: null });
-  return value;
-}
-
-/**
- * Layer A/B (2026-04-26): features now live in SQLite, not features.json.
- * This helper queries the harness_features table for a given project.
- * Returns the same shape callers expect: array of {id, title, status, attempts, claims, ...}.
- */
-export async function parseFeatures(project: ProjectEntry): Promise<any[]> {
-  try {
-    const c = dbcFor(project.slug);
-    const rows = await c.prepare(`
-      SELECT * FROM harness_features WHERE harness_slug = ? ORDER BY feature_id
-    `).all(project.slug) as any[];
-    return rows.map(rowToFeature);
-  } catch {
-    return [];
-  }
-}
-
-function rowToFeature(r: any): any {
-  // metadata and tags are now jsonb (auto-parsed by postgres-js).
-  // claims and notes remain text — keep JSON.parse for claims when present.
-  // attempts is now bigint — postgres-js returns it as a JS number when small.
-  return {
-    id: r.feature_id,
-    title: r.title,
-    summary: r.summary ?? undefined,
-    status: r.status,
-    attempts: typeof r.attempts === 'bigint' ? Number(r.attempts) : r.attempts,
-    claims: r.claims ? (typeof r.claims === 'string' ? JSON.parse(r.claims) : r.claims) : undefined,
-    notes: r.notes ?? undefined,
-    metadata: r.metadata ?? undefined,
-    kind: r.kind ?? undefined,
-    project_id: r.project_id ?? undefined,
-    expected_cost_cents: r.expected_cost_cents == null ? undefined : (typeof r.expected_cost_cents === 'bigint' ? Number(r.expected_cost_cents) : r.expected_cost_cents),
-    tags: r.tags ?? undefined,
-    needs_human_review: !!r.needs_human_review,
-    ts: r.ts == null ? undefined : (typeof r.ts === 'bigint' ? Number(r.ts) : r.ts),
-    deprecation_reason: r.deprecation_reason ?? undefined,
-  };
-}
 
 /** Append an audit row for a feature mutation. Fire-and-forget.
  *  Writes directly to harness_shared.feature_audit_consolidated
@@ -518,30 +220,6 @@ function auditFeatureChange(harnessSlug: string, featureId: string, field: strin
   })();
 }
 
-export function tailFile(path: string, maxBytes = 64 * 1024): string {
-  // Read only the last `maxBytes` of the file via openSync+readSync(offset).
-  // Previously did `readFileSync(path).slice(...)` which read the WHOLE file
-  // then sliced the tail in memory — on a 12 MB run.log that's 12 MB of
-  // alloc per call, called 3× per /phases request × multiple harnesses on
-  // the dashboard. Same pattern as the /log/stream fix (see /docs/performance
-  // — A1 family + the streaming-log discussion).
-  let fd = -1;
-  try {
-    const stat = statSync(path);
-    if (stat.size === 0) return '';
-    if (stat.size <= maxBytes) return readFileSync(path, 'utf8');
-    const len = maxBytes;
-    const start = stat.size - len;
-    fd = openSync(path, 'r');
-    const buf = Buffer.alloc(len);
-    readSync(fd, buf, 0, len, start);
-    return buf.toString('utf8');
-  } catch {
-    return '';
-  } finally {
-    if (fd >= 0) try { closeSync(fd); } catch {}
-  }
-}
 
 /**
  * Background-invoke a single scoper mode (proposal | replan) without
@@ -829,70 +507,6 @@ harness.delete('/projects/:slug', async (c) => {
 
 // ─── per-project status ──────────────────────────────────────────────
 
-/**
- * Compute the rich harness status payload (project + features + cost +
- * liveness + checkpoints + escalation). Shared between the desktop
- * /api/harness/:slug/status route and the mobile-JWT-authed
- * /api/mobile/harnesses/:slug route so both surfaces see the same
- * shape (no schema drift to keep in sync). Returns null when the slug
- * resolves to nothing.
- */
-export async function getHarnessStatusFull(
-  slug: string,
-  phaseOverride?: Phase,
-): Promise<Record<string, unknown> | null> {
-  const project = await resolvePhasedProject(slug, phaseOverride);
-  if (!project) return null;
-
-  const features = await parseFeatures(project);
-  const counts = features.reduce((acc, f) => {
-    acc[f.status] = (acc[f.status] ?? 0) + 1;
-    return acc;
-  }, {} as Record<string, number>);
-
-  const runLogPath = join(harnessDir(project), 'logs', 'run.log');
-  const runLog = tailFile(runLogPath, 16 * 1024);
-  const decisionMatch = [...runLog.matchAll(/ORCH decision: (\S[^\n]*)/g)];
-  const lastDecision = decisionMatch.length ? decisionMatch[decisionMatch.length - 1][1] : null;
-  const iteration = countPulsesFromRunLog(runLogPath);
-  const escalation = safeRead(join(harnessDir(project), 'escalation.md'));
-  const __agg = aggregateCostFromLogDir(join(harnessDir(project), 'logs'));
-  const alive = isProjectAlive(project.path);
-
-  let pendingCheckpoints = 0;
-  let activeCompetitions = 0;
-  let smokeFail = false;
-  try {
-    const hd = harnessDir(project);
-    if (existsSync(hd)) {
-      for (const f of readdirSync(hd)) {
-        if (/^checkpoint-[A-Za-z0-9_.-]+\.md$/.test(f) && !existsSync(join(hd, `${f}.granted`))) {
-          pendingCheckpoints += 1;
-        }
-        if (/^competition-[A-Za-z0-9_.-]+\.json$/.test(f)) {
-          activeCompetitions += 1;
-        }
-      }
-      smokeFail = existsSync(join(hd, 'smoke-failure.md'));
-    }
-  } catch {}
-
-  return {
-    project: { slug: project.slug, path: project.path },
-    features,
-    counts,
-    iteration,
-    lastDecision,
-    alive,
-    escalated: escalation != null,
-    pendingCheckpoints,
-    activeCompetitions,
-    smokeFail,
-    missionCostUsd: __agg.cost,
-    missionInputTokens: __agg.inputTokens,
-    missionOutputTokens: __agg.outputTokens,
-  };
-}
 
 harness.get('/:slug/status', async (c) => {
   const project = await resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
@@ -6842,30 +6456,6 @@ interface PhaseInfo {
   promotionInFlight: string | null;
 }
 
-// phasePath, phasePhaseLabel, Phase moved to @/lib/harness-phases so the
-// FS watcher can share the resolution logic. See import at top of file.
-
-// Override existing resolveProject fetches so ?phase= can route to a sibling
-// worktree. The cleanest backwards-compatible path is a helper that returns
-// a "virtual project" pointing at the right worktree.
-export async function resolvePhasedProject(slug: string, phase: Phase | undefined): Promise<ProjectEntry | null> {
-  const base = await resolveProject(slug);
-  if (!base) return null;
-  if (!phase || phase === 'staging') return base;
-  // When the harness-phases flag is OFF, treat every phase as the
-  // base project. The phase-suffixed worktrees (sheets-clone--production
-  // etc.) only exist for users who explicitly opted into phases — for
-  // everyone else, "production" is just a UI label, not a separate
-  // worktree. Without this guard, the UI's coerced activePhase='production'
-  // points API calls at a stale or non-existent worktree, breaking
-  // launches against the user's actual work.
-  const { getFlag } = await import('@papercusp/flags/server');
-  const { FLAGS } = await import('@papercusp/flags');
-  const phasesEnabled = await getFlag(FLAGS.HARNESS_PHASES, 'system');
-  if (!phasesEnabled) return base;
-  const p = phasePath(base, phase);
-  return { ...base, path: p };
-}
 
 /**
  * One-shot scan of /proc for run.sh harness processes. Returns an array

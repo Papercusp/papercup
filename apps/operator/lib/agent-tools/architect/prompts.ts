@@ -15,13 +15,13 @@
  */
 
 import { join } from 'node:path';
+import { type ProjectEntry } from '@/lib/harness-registry';
 import {
-  type ProjectEntry,
   harnessDir,
   safeRead,
   parseFeatures,
   resolvePhasedProject,
-} from '@/app/api/_hono/harness';
+} from '@/lib/harness-core';
 import { type Phase, phasePhaseLabel } from '@/lib/harness-phases';
 import { buildMemoryContextBlock } from '@/lib/memory/injection';
 import { activeWorkspaceId } from '@/lib/workspace-registry';

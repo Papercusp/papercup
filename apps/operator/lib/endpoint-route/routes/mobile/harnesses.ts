@@ -18,7 +18,7 @@ import { MOBILE_AUTH, mobilePrincipal } from './_shared';
 import { listHarnessesFor, harnessExistsInWorkspace } from '@/lib/mobile-harnesses';
 import { currentlyRunning } from '@/lib/mobile-feeds';
 import { phasePhaseLabel } from '@/lib/harness-phases';
-import { resolvePhasedProject, harnessDir } from '@/app/api/_hono/harness';
+import { resolvePhasedProject, harnessDir } from '@/lib/harness-core';
 
 /**
  * Proxy a mobile harness mutation to the desktop's own
@@ -77,7 +77,7 @@ const harnessDetail = defineRoute({
     if (!(await harnessExistsInWorkspace(principal.workspaceId, slug))) {
       return Response.json({ error: 'harness_not_in_workspace' }, { status: 404 });
     }
-    const { getHarnessStatusFull } = await import('@/app/api/_hono/harness');
+    const { getHarnessStatusFull } = await import('@/lib/harness-core');
     const status = await getHarnessStatusFull(slug, undefined);
     if (!status) return Response.json({ error: 'harness_not_found' }, { status: 404 });
     return Response.json(status);
