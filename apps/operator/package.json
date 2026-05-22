@@ -166,6 +166,7 @@
     "posthog-js": "^1.219.0",
     "posthog-node": "^5.34.1",
     "qrcode": "^1.5.4",
+    "diff": "^8.0.2",
     "react": "^19.2.0",
     "react-diff-view": "^3.3.3",
     "react-dom": "^19.2.0",

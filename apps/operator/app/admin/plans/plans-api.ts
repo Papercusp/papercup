@@ -643,6 +643,22 @@ export function usePlanRevisions(slug: string | null): AsyncResult<PlanRevision[
   );
 }
 
+/** plans:revision-diff result envelope (P-018). `error: 'unknown_revision'`
+ *  on a bad id; `error: 'revision_diff_unavailable'` on a DB failure. */
+export interface PlanRevisionDiffResult {
+  diff: string;
+  slug: string;
+  seq: number;
+  /** null when seq === 1 (creation diff against empty). */
+  priorSeq: number | null;
+}
+
+export async function fetchPlanRevisionDiff(revisionId: number): Promise<PlanRevisionDiffResult> {
+  return getJson<PlanRevisionDiffResult>('revision-diff', {
+    revisionId: String(revisionId),
+  });
+}
+
 /* ── Lint hook (P-206) ─────────────────────────────────────────────── */
 
 /**

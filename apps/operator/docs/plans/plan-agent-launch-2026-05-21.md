@@ -16,8 +16,8 @@ owner: avi@storewolf.com
 **Phase 2 (conversation linkage) is complete — P-006 … P-009 all
 done.** **Phase 3 (agent launch) is complete — P-010…P-016 all
 done.** The entire `plans:*` backend is built. **Phase 4 (Revisions
-UI) is in flight — P-017 done.** Only Phase 5 (Agents tab) and
-Phase 6 (verification) remain.
+UI) is in flight — P-017 + P-018 done (2/4).** Only Phase 5
+(Agents tab) and Phase 6 (verification) remain.
 
 Phase 1: P-001 (`plan_revisions` schema); P-002 + P-003 (`rationale`
 + revision capture on all seven `plans:*` write verbs via the shared
@@ -93,11 +93,11 @@ pure logic is verified now (127 tests, incl. real-git
 `buildPlanAgentMcpUrl` / tool-surface constants, and the launch
 prompt/title derivations).
 
-**Next:** the rest of Phase 4 — **P-018** (per-revision diff modal,
-sourced from the snapshot pair instead of `git diff`), **P-019**
-(per-revision drill-down — "open conversation" affordance gated on
-`session_id`), **P-020** (nuqs URL state — `?tab=revisions`,
-`?rev=<id>`). Then Phase 5 (Agents tab) and Phase 6 verification.
+**Next:** the rest of Phase 4 — **P-019** (per-revision drill-down
+— "open conversation" affordance gated on `session_id`), **P-020**
+(nuqs URL state — `?tab=revisions` panel-level; `?rev=<id>` already
+shipped with P-018). Then Phase 5 (Agents tab) and Phase 6
+verification.
 
 ## Background
 
@@ -408,7 +408,7 @@ Rebuild the git strip as a first-class, conversation-linked revision
 timeline.
 
 - **P-017** `done` `GitHistoryStrip` deleted; **`RevisionsPanel.tsx`** consumes `plans:revisions` via a new `usePlanRevisions` hook + `PlanRevision` wire type in `plans-api.ts`. Rows: `#seq`, author label (`formatAuthor` — email local-part for humans, first two dash-chunks for agents), age-bucketed timestamp (`formatTimestamp`), `+N −N` diff-stat, **rationale always inline** (D-002) with a typed placeholder per `sessionKind` (`formatRationale` — `git_backfill` / `plan_run` / direct-edit). Collapsed-by-default at 5 rows, expand toggle is nuqs-backed (`?revOpen=`). Wired into `PlanDetail.tsx`; `/api/admin/plans/revisions` already registered (P-004); CSS shipped (`pc-revisions-panel*`). 13 unit tests on the pure formatters. → D-002, D-003 blocked-by: P-004
-- **P-018** `todo` Per-revision diff modal — keep the `react-diff-view` modal; source the patch from the snapshot pair instead of `git diff`.
+- **P-018** `done` Per-revision diff modal — new `plans:revision-diff { revisionId }` verb (`revision-diff.ts`) sources the patch from the `plan_revisions` snapshot pair via `getPlanRevisionPairById` (a one-query DAL that fetches the target + its immediate predecessor) and serialises a unified diff with `diff`'s `createPatch`. `RevisionDiffModal.tsx` reuses the deleted `GitDiffModal`'s `parseDiff` + `react-diff-view` rendering and raw-patch fallback; a row click in `RevisionsPanel` opens it via the nuqs-backed `?rev=<id>` state — the row head is now a `<button>` with `--button` CSS (no native chrome, hover + focus-visible affordance). Seq 1 diffs against an empty string (creation diff). `diff` declared as a direct dep on `apps/operator` (it was only transitively hoisted before). 5 unit tests on `buildRevisionDiffText`. → D-003 blocked-by: P-017
 - **P-019** `todo` Per-revision drill-down — "open conversation" affordance shown only when `session_id` is present; a no-session revision shows a "direct edit" tag and its inline rationale only. blocked-by: P-008
 - **P-020** `todo` nuqs URL state for the Revisions panel (`?tab=revisions`, `?rev=<id>`).
 

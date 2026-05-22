@@ -408,6 +408,74 @@ export async function getPlanRevisionById(
 }
 
 /**
+ * Fetch the snapshot pair around one revision — the revision itself
+ * (`newer`) and its immediate predecessor (`older`, or `null` for seq 1)
+ * — in one query. Used by `plans:revision-diff` (P-018) to render a
+ * unified diff without an additional round-trip. Throws on a genuine
+ * DB failure; returns `null` when the revision id is unknown.
+ */
+export interface PlanRevisionPair {
+  newer: {
+    id: number;
+    planSlug: string;
+    seq: number;
+    contentSnapshot: string;
+    createdAt: number;
+  };
+  /** Null when `newer.seq === 1`. */
+  older: { seq: number; contentSnapshot: string; createdAt: number } | null;
+}
+
+export async function getPlanRevisionPairById(
+  revisionId: number,
+): Promise<PlanRevisionPair | null> {
+  await ensurePlanRevisionsTable();
+  return withWorkspace(DEFAULT_WORKSPACE_ID, async (tx) => {
+    const rows = await tx<
+      {
+        id: number | string;
+        plan_slug: string;
+        seq: number;
+        content_snapshot: string;
+        created_at: string | number;
+        is_target: boolean;
+      }[]
+    >`
+      WITH target AS (
+        SELECT plan_slug, seq
+        FROM harness_shared.plan_revisions
+        WHERE id = ${revisionId}
+      )
+      SELECT r.id, r.plan_slug, r.seq, r.content_snapshot, r.created_at,
+             (r.seq = (SELECT seq FROM target)) AS is_target
+      FROM harness_shared.plan_revisions r, target t
+      WHERE r.plan_slug = t.plan_slug
+        AND r.seq IN (t.seq, t.seq - 1)
+      ORDER BY r.seq DESC
+    `;
+    const newerRow = rows.find((r) => r.is_target);
+    if (!newerRow) return null;
+    const olderRow = rows.find((r) => !r.is_target);
+    return {
+      newer: {
+        id: Number(newerRow.id),
+        planSlug: newerRow.plan_slug,
+        seq: Number(newerRow.seq),
+        contentSnapshot: newerRow.content_snapshot,
+        createdAt: Number(newerRow.created_at),
+      },
+      older: olderRow
+        ? {
+            seq: Number(olderRow.seq),
+            contentSnapshot: olderRow.content_snapshot,
+            createdAt: Number(olderRow.created_at),
+          }
+        : null,
+    };
+  });
+}
+
+/**
  * Fill in a revision's `rationale` — used by P-007's auto-summary to
  * cache a generated rationale back onto the row. The `rationale IS NULL`
  * guard means an authored rationale (or a concurrent fill) is never

@@ -15,8 +15,9 @@
  * on `session_id` is P-019.
  */
 
-import { parseAsBoolean, useQueryState } from 'nuqs';
+import { parseAsBoolean, parseAsInteger, useQueryState } from 'nuqs';
 import { usePlanRevisions, type PlanRevision } from './plans-api';
+import RevisionDiffModal from './RevisionDiffModal';
 
 interface Props {
   slug: string;
@@ -30,6 +31,9 @@ export default function RevisionsPanel({ slug }: Props) {
     'revOpen',
     parseAsBoolean.withDefault(false),
   );
+  // P-018: revision currently shown in the diff modal. `?rev=<id>`,
+  // null when closed. URL-backed so a diff link is shareable.
+  const [openRev, setOpenRev] = useQueryState('rev', parseAsInteger);
 
   const revisions = data ?? [];
   const visible = expanded ? revisions : revisions.slice(0, COLLAPSED_COUNT);
@@ -84,21 +88,40 @@ export default function RevisionsPanel({ slug }: Props) {
       </header>
       <ul className="pc-revisions-panel__list">
         {visible.map((r) => (
-          <RevisionRow key={r.id} revision={r} />
+          <RevisionRow
+            key={r.id}
+            revision={r}
+            onOpenDiff={() => setOpenRev(r.id)}
+          />
         ))}
       </ul>
+      <RevisionDiffModal
+        revisionId={openRev}
+        onClose={() => setOpenRev(null)}
+      />
     </div>
   );
 }
 
-function RevisionRow({ revision }: { revision: PlanRevision }) {
+function RevisionRow({
+  revision,
+  onOpenDiff,
+}: {
+  revision: PlanRevision;
+  onOpenDiff: () => void;
+}) {
   return (
     <li
       className="pc-revision-row"
       data-session-kind={revision.sessionKind ?? 'none'}
       data-author-kind={revision.authorKind}
     >
-      <div className="pc-revision-row__head">
+      <button
+        type="button"
+        className="pc-revision-row__head pc-revision-row__head--button"
+        onClick={onOpenDiff}
+        aria-label={`Show diff for revision #${revision.seq}`}
+      >
         <span className="pc-revision-row__seq" title={`Revision #${revision.seq}`}>
           #{revision.seq}
         </span>
@@ -117,7 +140,7 @@ function RevisionRow({ revision }: { revision: PlanRevision }) {
             −{revision.diffStat.removed}
           </span>
         </span>
-      </div>
+      </button>
       <div className="pc-revision-row__rationale">
         {formatRationale(revision)}
       </div>

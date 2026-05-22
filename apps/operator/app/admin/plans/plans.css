@@ -1671,6 +1671,32 @@
   font-size: 11px;
 }
 
+/* P-018: the head is a button so a row click opens the diff modal —
+ * strip the native chrome and keep the row visually identical, but
+ * give it a hover/focus affordance to make the click target obvious. */
+.pc-revision-row__head--button {
+  width: 100%;
+  background: none;
+  border: none;
+  padding: 0;
+  margin: 0;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  border-radius: 4px;
+  transition: background-color 80ms ease;
+}
+
+.pc-revision-row__head--button:hover {
+  background: rgba(165, 233, 247, 0.06);
+}
+
+.pc-revision-row__head--button:focus-visible {
+  outline: 2px solid rgba(165, 233, 247, 0.6);
+  outline-offset: 1px;
+}
+
 .pc-revision-row__seq {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 10.5px;

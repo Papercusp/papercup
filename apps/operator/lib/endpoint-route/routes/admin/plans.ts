@@ -30,7 +30,17 @@ import { PROJECTED_DEPS } from '@/lib/projected-tool-deps';
 import { defineTool, type RouteContext } from '@papercusp/agent-mcp';
 import { bodyFromSearchParams } from './_plans-args';
 
-const READ_VERBS = new Set(['list', 'get', 'items', 'search', 'lint']);
+const READ_VERBS = new Set([
+  'list',
+  'get',
+  'items',
+  'search',
+  'lint',
+  // plan-agent-launch P-017: the Revisions panel reads through here.
+  'revisions',
+  // plan-agent-launch P-018: the per-revision diff modal.
+  'revision-diff',
+]);
 // `set-content` and `set-frontmatter` land in agent-plan-tracking
 // Phase 5 (D-011 of plans-admin-ui-2026-05-20). Listing them now means
 // the route is ready the instant the tools register — until then a
