@@ -380,3 +380,31 @@ agentmcp handler bug, separate from bug #5 — file it on its own.
 Restart the host so the fix loads, then re-run the 12 op-M scenarios.
 The brain now calls real tools, so the suite gate can finally be
 evaluated (modulo the harness:list/issues:list handler bug above).
+
+## Follow-up bug, precisely characterized — harness:list / issues:list crash
+
+Separate from P5 bug #5 (which is fixed). Every agent-mcp tool whose
+handler does `drizzle(ctx.tx)` currently crashes:
+
+  handler_error: Cannot read properties of undefined (reading 'parsers')
+
+Trace:
+- `harness:list` (packages/agent-mcp/src/tools/harness/list.ts) does
+  `const txDb = drizzle(ctx.tx)` — drizzle-orm/postgres-js.
+- `ctx.tx` is set by `resolvePrincipalAndTx` in
+  `apps/operator/lib/endpoint-route/routes/agent-tools/catchall.ts`,
+  which returns `tx: getOrgPg().sql`.
+- `drizzle(client)` reads `client.options.parsers`; the crash means
+  `getOrgPg().sql.options` is `undefined` — the value is truthy (passes
+  define-tool.ts:344's `!ctx.tx` guard) but is not a postgres-js `Sql`
+  client with the expected `.options`.
+
+Likely a drizzle-orm or postgres-js version bump, or a change to what
+`getOrgPg()` (@restart/db-org) exposes as `.sql`. Affects ALL superuser
+MCP `harness:*` / `issues:*` calls (reproduced with a direct curl, not
+operator-specific). NOT fixed here — it is its own regression in the
+agent-mcp ↔ drizzle integration and needs a focused fix (verify
+drizzle-orm/postgres versions, confirm getOrgPg().sql shape, or have
+the handlers consume a ready drizzle instance instead of building one
+from ctx.tx). Until it is fixed the op-M suite cannot fully pass even
+though the operator brain now calls tools correctly.
