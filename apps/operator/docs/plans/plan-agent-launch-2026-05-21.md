@@ -12,14 +12,14 @@ owner: avi@storewolf.com
 ## Now
 
 **State:** v3, ratified — implementation in flight (started
-2026-05-21). Phase 1 (revision spine): P-001, P-002 and P-003 are
-`done` — every `plans:*` write verb (`set-content`, `set-now`,
-`set-status`, `add-item`, `add-decision`, `new`, `set-frontmatter`)
-now appends a `plan_revisions` row via the shared
-`planRevisionCapture` / `withPlanLock` `afterWrite` hook, and takes
-an optional `rationale`. tsc-clean (0 new errors), 89 plans tests
-green. New tables use the `ensure-schema.ts` runtime-ensure pattern,
-not a `.sql` migration — see D-013. 14 decisions, no open questions.
+2026-05-21). Phase 1 (revision spine) is 4/5 done: P-001
+(`plan_revisions` schema); P-002 + P-003 (`rationale` + revision
+capture on all seven `plans:*` write verbs via the shared
+`planRevisionCapture` / `withPlanLock` `afterWrite` hook); P-004
+(`plans:revisions` read verb — the chain newest-first with a
+line-LCS diff-stat). tsc-clean (0 new errors), 93 plans tests green.
+New tables use the `ensure-schema.ts` runtime-ensure pattern, not a
+`.sql` migration — see D-013. 14 decisions, no open questions.
 
 **Verification debt:** the live `plan_revisions` INSERT path
 (`ensurePlanRevisionsTable` + `recordPlanRevision`) is exercised on
@@ -28,10 +28,10 @@ in P-027 — the working shell cannot reach the auth-gated embedded PG
 directly. All unit-level logic (`classifyAuthor`, the no-identity
 no-op, the CAS / lint regression) is verified now.
 
-**Next:** P-004 — `plans:revisions { slug }`, the read verb
-returning the revision chain newest-first (seq, author, rationale,
-session ref, diff-stat). Then P-005 — git-history backfill (now
-unblocked, P-001 done).
+**Next:** P-005 — the last Phase 1 item: backfill `plan_revisions`
+from existing git history (one synthetic revision per past commit,
+the commit message as a weak `rationale`, `session_id` NULL). Then
+Phase 2 — conversation linkage.
 
 ## Background
 
@@ -310,7 +310,7 @@ plan history — before any launch capability exists.
 - **P-001** `done` Add `ensurePlanRevisionsTable()` to `ensure-schema.ts` — `CREATE TABLE IF NOT EXISTS harness_shared.plan_revisions` (full snapshot) + grants, flag-guarded, wired into the `instrumentation-node.ts` prewarm. → D-003, D-011, D-012, D-013
 - **P-002** `done` Add an optional `rationale` parameter to `plans:set-content`; inside its existing write lock, after the CAS write, append a `plan_revisions` row — content snapshot + hash + identity + session ref + rationale; `seq` allocated max+1 in-lock. The append goes through a new `recordPlanRevision` helper (`revisions.ts`) called from a new `withPlanLock` `afterWrite` hook; recording is best-effort (D-014). → D-009, D-014
 - **P-003** `done` Add the same optional `rationale` + revision-append to the other mutating verbs (`set-now`, `set-status`, `add-item`, `add-decision`, `new`, `set-frontmatter`). Done via a shared `planRevisionCapture` helper (`revisions.ts`) wired into each verb's `withPlanLock` `afterWrite`; `set-content` refactored onto the same helper. blocked-by: P-002
-- **P-004** `todo` `plans:revisions { slug }` read verb — the revision chain newest-first: seq, author, rationale, session ref, diff-stat (computed from the snapshot pair). → D-003
+- **P-004** `done` `plans:revisions { slug }` read verb — the revision chain newest-first: seq, author, rationale, session ref, diff-stat (a self-contained line-LCS over the adjacent snapshot pair — no npm `diff` dependency). Snapshots themselves are not returned; an empty chain (no recorded revisions) is not an error. → D-003
 - **P-005** `todo` Backfill `plan_revisions` from existing git history — one synthetic revision per past commit, the commit message as a weak `rationale`, `session_id` NULL. blocked-by: P-001
 
 ## Phase 2 — Conversation linkage

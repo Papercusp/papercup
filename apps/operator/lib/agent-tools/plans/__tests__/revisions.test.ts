@@ -10,7 +10,7 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { classifyAuthor, planRevisionCapture } from '../revisions';
+import { classifyAuthor, planRevisionCapture, revisionDiffStat } from '../revisions';
 import type { AgentIdentity, IdentitySource } from '../../coordination/identity';
 
 function identity(source: IdentitySource): AgentIdentity {
@@ -51,5 +51,25 @@ describe('planRevisionCapture', () => {
     expect(cap.recorded.current).toBeNull();
     await expect(cap.afterWrite('# plan body')).resolves.toBeUndefined();
     expect(cap.recorded.current).toBeNull();
+  });
+});
+
+describe('revisionDiffStat', () => {
+  it('counts the whole plan as added for the first revision (empty before)', () => {
+    expect(revisionDiffStat('', 'a\nb\nc')).toEqual({ added: 3, removed: 0 });
+  });
+
+  it('reports no change for identical snapshots', () => {
+    expect(revisionDiffStat('a\nb', 'a\nb')).toEqual({ added: 0, removed: 0 });
+    expect(revisionDiffStat('', '')).toEqual({ added: 0, removed: 0 });
+  });
+
+  it('reports a changed line as one added and one removed', () => {
+    expect(revisionDiffStat('a\nb\nc', 'a\nX\nc')).toEqual({ added: 1, removed: 1 });
+  });
+
+  it('reports a pure append and a pure deletion asymmetrically', () => {
+    expect(revisionDiffStat('a\nb', 'a\nb\nc')).toEqual({ added: 1, removed: 0 });
+    expect(revisionDiffStat('a\nb\nc', 'a\nc')).toEqual({ added: 0, removed: 1 });
   });
 });

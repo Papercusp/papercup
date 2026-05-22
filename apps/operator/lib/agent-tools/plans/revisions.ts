@@ -190,3 +190,112 @@ export function planRevisionCapture(
 
   return { afterWrite, recorded };
 }
+
+// ── Reading the revision chain (P-004) ─────────────────────────────
+
+/** Longest-common-subsequence length over two line arrays. Rolling
+ *  1-D DP — O(min·max) time, O(n) space; the length is all the
+ *  diff-stat needs. Plans are small, so this is effectively instant. */
+function lcsLength(a: string[], b: string[]): number {
+  const m = a.length;
+  const n = b.length;
+  if (m === 0 || n === 0) return 0;
+  let prev = new Array<number>(n + 1).fill(0);
+  for (let i = 1; i <= m; i++) {
+    const cur = new Array<number>(n + 1).fill(0);
+    for (let j = 1; j <= n; j++) {
+      cur[j] =
+        a[i - 1] === b[j - 1]
+          ? (prev[j - 1] ?? 0) + 1
+          : Math.max(prev[j] ?? 0, cur[j - 1] ?? 0);
+    }
+    prev = cur;
+  }
+  return prev[n] ?? 0;
+}
+
+/**
+ * Line-level add/remove counts between two plan snapshots — the
+ * `+N/-N` shown per row in the Revisions panel. `removed`/`added` are
+ * the lines of `before`/`after` not on the longest common
+ * subsequence. For the first revision `before` is empty, so the stat
+ * is the whole plan added.
+ */
+export function revisionDiffStat(
+  before: string,
+  after: string,
+): { added: number; removed: number } {
+  const a = before.length > 0 ? before.split('\n') : [];
+  const b = after.length > 0 ? after.split('\n') : [];
+  const lcs = lcsLength(a, b);
+  return { added: b.length - lcs, removed: a.length - lcs };
+}
+
+/** One row of the revision chain as returned by `plans:revisions` —
+ *  metadata + diff-stat, never the (heavy) content snapshot itself. */
+export interface PlanRevisionRow {
+  seq: number;
+  contentHash: string;
+  rationale: string | null;
+  authorKind: PlanRevisionAuthorKind;
+  authorId: string;
+  sessionId: string | null;
+  sessionKind: PlanRevisionSessionKind | null;
+  createdAt: number;
+  /** Lines changed vs the previous revision (vs empty for seq 1). */
+  diffStat: { added: number; removed: number };
+}
+
+interface PlanRevisionDbRow {
+  seq: number;
+  content_hash: string;
+  content_snapshot: string;
+  rationale: string | null;
+  author_kind: string;
+  author_id: string;
+  session_id: string | null;
+  session_kind: string | null;
+  created_at: string;
+}
+
+/**
+ * The full revision chain for a plan, newest-first. Diff-stats are
+ * computed server-side from adjacent snapshot pairs; the snapshots
+ * themselves are not returned (a single revision's body is fetched
+ * on demand). A plan with no recorded revisions returns `[]` — not
+ * an error. Throws on a genuine DB failure so the caller can surface
+ * "revisions unavailable" rather than a misleading empty chain.
+ */
+export async function listPlanRevisions(planSlug: string): Promise<PlanRevisionRow[]> {
+  await ensurePlanRevisionsTable();
+  const rows = await withWorkspace(DEFAULT_WORKSPACE_ID, async (tx) => {
+    return tx<PlanRevisionDbRow[]>`
+      SELECT seq, content_hash, content_snapshot, rationale,
+             author_kind, author_id, session_id, session_kind, created_at
+      FROM harness_shared.plan_revisions
+      WHERE plan_slug = ${planSlug}
+      ORDER BY seq ASC
+    `;
+  });
+
+  // Walk oldest→newest so each row diffs against its predecessor,
+  // then reverse for the newest-first contract.
+  const chain: PlanRevisionRow[] = [];
+  let prevSnapshot = '';
+  for (const r of rows) {
+    chain.push({
+      seq: Number(r.seq),
+      contentHash: r.content_hash,
+      rationale: r.rationale,
+      authorKind: r.author_kind as PlanRevisionAuthorKind,
+      authorId: r.author_id,
+      sessionId: r.session_id,
+      sessionKind: r.session_kind as PlanRevisionSessionKind | null,
+      createdAt: Number(r.created_at),
+      diffStat: revisionDiffStat(prevSnapshot, r.content_snapshot),
+    });
+    prevSnapshot = r.content_snapshot;
+  }
+  chain.reverse();
+  return chain;
+}

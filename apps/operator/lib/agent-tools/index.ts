@@ -205,3 +205,4 @@ import './plans/set-frontmatter';
 // Q3 — git history surface promoted to plans:* tools so agents read it too.
 import './plans/history';
 import './plans/diff';
+import './plans/revisions-list';
