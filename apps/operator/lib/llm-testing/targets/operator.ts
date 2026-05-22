@@ -140,8 +140,18 @@ class OperatorSession implements ChatSession {
 
     const startMs = Date.now();
     const ctrl = new AbortController();
-    const timeoutMs = 120_000;
-    const killer = setTimeout(() => ctrl.abort(), timeoutMs);
+    // The 120s flat cap that lived here through 2026-05-21 aborted real
+    // operator turns mid-stream: cold first turns can take 90-150s
+    // before deltas, and well-behaved long turns can stream for several
+    // minutes. Switch to inactivity-based: brain has up to 90s before
+    // the FIRST event arrives; after the stream starts, the timer
+    // becomes a 45s inter-event idle (heartbeats are 15s, so 45s of
+    // silence = dead connection). A 600s wall-clock safety cap prevents
+    // genuine runaways — scenario-level caps.maxSecs is the budget knob.
+    const INITIAL_TIMEOUT_MS = 90_000;
+    const IDLE_TIMEOUT_MS = 45_000;
+    const TOTAL_CAP_MS = 600_000;
+    let killer = setTimeout(() => ctrl.abort(), INITIAL_TIMEOUT_MS);
 
     let resp: Response;
     try {
@@ -175,6 +185,14 @@ class OperatorSession implements ChatSession {
 
     try {
       for await (const ev of readSse(resp.body, startMs)) {
+        // Reset idle timer on each event; enforce total cap.
+        clearTimeout(killer);
+        if (Date.now() - startMs >= TOTAL_CAP_MS) {
+          ctrl.abort();
+          break;
+        }
+        killer = setTimeout(() => ctrl.abort(), IDLE_TIMEOUT_MS);
+
         result.rawSseTape.push(ev);
         applyEvent(ev, result);
         if (ev.name === 'done' || ev.name === 'error') break;
