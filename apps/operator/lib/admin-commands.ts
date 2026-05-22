@@ -9,7 +9,7 @@
 export interface AdminCommand {
   id: string;
   label: string;
-  section: 'building' | 'running' | 'simulators';
+  section: 'building' | 'running' | 'simulators' | 'packaged-build';
   description?: string;
   command: string;
   cwd?: string;
@@ -150,6 +150,31 @@ ${PAPERCUSP_DESKTOP}/bin/audit-bundle.sh "\${ARTIFACTS[@]}"`,
   },
 
   // ── Simulators ───────────────────────────────────────────
+  // ── Packaged build (wdio + tauri-driver against the shipped binary) ──
+  {
+    id: 'wdio-install',
+    label: 'Install wdio deps (one-time)',
+    section: 'packaged-build',
+    description: 'Runs `npm install` in tools/perf-test/wdio. Kept out of the pnpm workspace on purpose — wdio postinstall doesn\'t play nicely with hoisting.',
+    command: 'npm install 2>&1',
+    cwd: `${PAPERCUP_REPO}/tools/perf-test/wdio`,
+  },
+  {
+    id: 'wdio-test',
+    label: 'Run wdio test against packaged binary',
+    section: 'packaged-build',
+    description: 'Spawns tauri-driver on :4445 and drives the latest packaged Tauri binary via WebDriver. Runs `specs/*.spec.ts`. Prereqs: `Linux Prod Build` produced an artifact, `webkit2gtk-driver` is installed (sudo apt), and `Install wdio deps` was run once.',
+    command: 'npm test 2>&1',
+    cwd: `${PAPERCUP_REPO}/tools/perf-test/wdio`,
+  },
+  {
+    id: 'wdio-webkit-driver-check',
+    label: 'Check webkit2gtk-driver',
+    section: 'packaged-build',
+    description: 'Reports whether `WebKitWebDriver` is on PATH (required for tauri-driver on Linux). If missing: `sudo apt install webkit2gtk-driver`.',
+    command: `if command -v WebKitWebDriver >/dev/null 2>&1; then echo "WebKitWebDriver: $(WebKitWebDriver --version 2>&1 | head -1) at $(command -v WebKitWebDriver)"; else echo "WebKitWebDriver: MISSING — install with: sudo apt install webkit2gtk-driver"; exit 1; fi`,
+  },
+
   {
     id: 'launch-android-emulator',
     label: 'Launch Android emulator',

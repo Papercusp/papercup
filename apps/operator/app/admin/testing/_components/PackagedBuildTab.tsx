@@ -1,42 +1,86 @@
 'use client';
 
+import { useEffect, useState } from 'react';
+import CommandCard, { type CommandSpec } from '../../_components/CommandCard';
+import '../../admin-ops.css';
+
+interface CommandsResponse {
+  commands: CommandSpec[];
+}
+
+const WDIO_IDS = new Set([
+  'wdio-webkit-driver-check',
+  'wdio-install',
+  'build-linux-prod',
+  'wdio-test',
+]);
+
 export default function PackagedBuildTab() {
+  const [commands, setCommands] = useState<CommandSpec[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch('/api/admin/commands')
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
+      .then((j: CommandsResponse) => {
+        if (cancelled) return;
+        // Order matches the install→build→test pipeline.
+        const ordered = [...WDIO_IDS].flatMap((id) => j.commands.find((c) => c.id === id) ?? []);
+        setCommands(ordered);
+      })
+      .catch((e) => {
+        if (!cancelled) setError(String(e?.message ?? e));
+      });
+    return () => { cancelled = true; };
+  }, []);
+
   return (
     <>
       <header className="pc-test-tab-header">
         <div>
           <h1 className="pc-test-tab-title">Packaged build</h1>
           <p className="pc-test-tab-intro">
-            WebdriverIO + tauri-driver runner that drives the shipped Tauri binary (not the dev
-            webapp). The only path that catches IPC latency, window-creation cost, and asset-protocol
-            load times in the real binary. CI-shaped — run before each release.
+            WebdriverIO + tauri-driver runner that drives the shipped Tauri binary. The only path
+            that catches IPC latency, window-creation cost, and asset-protocol load times in the
+            real binary. With the webapp retired, this is the canonical pre-release check.
           </p>
         </div>
       </header>
 
       <div className="pc-test-card">
-        <h2 className="pc-test-card-title">Setup (one-time)</h2>
-        <ol style={{ margin: 0, paddingLeft: 20, lineHeight: 1.7 }}>
-          <li><code>cargo install tauri-driver</code> — installed ✓</li>
-          <li>Linux only: <code>sudo apt install webkit2gtk-driver</code></li>
-          <li>From <code>tools/perf-test/wdio/</code>: <code>npm install</code></li>
-        </ol>
+        <h2 className="pc-test-card-title">Pipeline</h2>
+        <p style={{ fontSize: 12, color: 'var(--fg-mute)', margin: '0 0 8px' }}>
+          Run top-to-bottom on a fresh checkout. The webkit driver check and wdio install are
+          one-time. The Linux prod build takes ~3–5 min. The wdio test boots <code>tauri-driver</code> on
+          :4445, drives the binary, injects <code>web-vitals</code>, and reports INP/LCP/CLS.
+        </p>
+        {error && <div className="pc-ops-error">Failed to load commands: {error}</div>}
+        {commands === null && !error && <div className="pc-ops-empty">loading…</div>}
+        {commands && (
+          <div className="pc-ops-grid">
+            {commands.map((c) => <CommandCard key={c.id} spec={c} />)}
+          </div>
+        )}
       </div>
 
       <div className="pc-test-card">
-        <h2 className="pc-test-card-title">Run</h2>
+        <h2 className="pc-test-card-title">Manual reference</h2>
         <pre style={{ fontSize: 12, lineHeight: 1.5, background: 'var(--bg-3)', padding: 12, borderRadius: 4, margin: 0 }}>
-{`# 1. Build the packaged desktop binary
-pnpm --filter @papercusp/desktop build
+{`# Linux WebDriver (one-time, requires sudo):
+sudo apt install webkit2gtk-driver
 
-# 2. Run wdio against the binary
-cd tools/perf-test/wdio
-npm test`}
+# wdio deps (one-time):
+cd tools/perf-test/wdio && npm install
+
+# Build + test:
+cd papercusp-desktop && npm run build
+cd tools/perf-test/wdio && npm test`}
         </pre>
         <p style={{ fontSize: 12, color: 'var(--fg-mute)', marginTop: 8 }}>
-          See <code>tools/perf-test/wdio/README.md</code> for full details. UI-driven runs from
-          this tab are deferred — invoking <code>npm test</code> from the browser needs an exec
-          endpoint we haven't wired yet.
+          See <code>tools/perf-test/wdio/README.md</code> for the full architecture vs. the
+          in-process <code>/admin/testing</code> tabs. <code>tauri-driver</code> is already
+          installed via cargo.
         </p>
       </div>
     </>
