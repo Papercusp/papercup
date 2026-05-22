@@ -3,11 +3,11 @@
 export function StepWelcome({ onStart }: { onStart: () => void }) {
   return (
     <div className="pc-welcome">
-      <h2 className="pc-welcome__hello">Set up Papercusp.</h2>
+      <h2 className="pc-welcome__hello">Welcome. We’ll set this up together.</h2>
       <p className="pc-welcome__lead">
-        Start with the three things Papercusp needs to build locally: a database, a
-        project folder, and one coding agent. Optional accounts, voice, backups,
-        and telemetry can wait.
+        Papercusp works best with a local database, a project folder, and one coding agent.
+        This guide checks those gently, explains why each item matters, and lets optional
+        steps wait until you are ready.
       </p>
 
       <ul className="pc-welcome__checklist" aria-label="Setup essentials">
@@ -34,11 +34,17 @@ export function StepWelcome({ onStart }: { onStart: () => void }) {
         </li>
       </ul>
 
+      <ul className="pc-welcome__comfort" aria-label="Setup reassurance">
+        <li>Nothing leaves your machine unless you choose it.</li>
+        <li>Required steps are clearly marked.</li>
+        <li>You can come back from Settings at any time.</li>
+      </ul>
+
       <div className="pc-welcome__actions">
         <button type="button" className="pc-btn pc-btn--primary pc-btn--large" onClick={onStart}>
           Start setup →
         </button>
-        <span className="pc-welcome__action-note">Takes a few minutes. Skip optional steps anytime.</span>
+        <span className="pc-welcome__action-note">Start with the essentials. Optional polish can wait.</span>
       </div>
     </div>
   );

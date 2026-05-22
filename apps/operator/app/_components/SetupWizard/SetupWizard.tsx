@@ -71,53 +71,64 @@ export function SetupWizard({ mode }: Props) {
 
   const finishWizard = async () => {
     setFinishing(true);
-    try {
-      await fetch('/api/desktop/setup-wizard-state', {
-        method: 'PATCH',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ finished_at: new Date().toISOString() }),
-      });
-      if (mode === 'first-run') {
-        // Land on /marketplace when the workspace is empty — landing on
-        // /harness with no harnesses is a confusing dead-end. Once at
-        // least one template is installed, /harness is the right home.
-        let dest = '/harness';
+    const markFinished = fetch('/api/desktop/setup-wizard-state', {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ finished_at: new Date().toISOString() }),
+    }).catch(() => null);
+
+    if (mode === 'first-run') {
+      // Land on /marketplace when the workspace is empty — landing on
+      // /harness with no harnesses is a confusing dead-end. Once at
+      // least one template is installed, /harness is the right home.
+      let dest = '/harness';
+      try {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 1500);
         try {
-          const r = await fetch('/api/installed', { cache: 'no-store' });
+          const r = await fetch('/api/installed', {
+            cache: 'no-store',
+            signal: controller.signal,
+          });
           if (r.ok) {
             const j = (await r.json()) as { projects?: unknown[] };
             const count = Array.isArray(j.projects) ? j.projects.length : 0;
             if (count === 0) dest = '/marketplace';
           }
-        } catch {
-          // Network failure → fall through to /harness.
+        } finally {
+          clearTimeout(timeout);
         }
-        // Show a recap card before redirecting so the user sees a
-        // confirmation of what just got set up. The card's CTA is what
-        // actually does the router.push.
-        setRecap({ dest });
-        setFinishing(false);
-      } else {
-        setFinishing(false);
+      } catch {
+        // Timeout/network failure → fall through to /harness.
       }
-    } catch {
+      // Show the recap immediately; saving completion can finish in the background.
+      setRecap({ dest });
       setFinishing(false);
+      void markFinished;
+      return;
     }
+
+    await markFinished;
+    setFinishing(false);
   };
 
   if (recap) {
     const completed = SETUP_STEPS.filter((s) => statuses[s.id] === 'ok');
     return (
-      <div className="pc-setup-wizard pc-setup-wizard--recap" data-mode={mode}>
-        <div className="pc-step pc-step--recap">
-          <h2 className="pc-step__lead" style={{ fontSize: 24, marginBottom: 8 }}>
-            You're all set.
-          </h2>
-          <p className="pc-step__lead">
-            Setup finished — {completed.length} of {SETUP_STEPS.length} steps detected ready.
-            Anything still pending can be revisited any time from Settings → Setup Wizard.
-          </p>
-          <ul className="pc-bullets">
+      <div className="pc-setup-wizard pc-setup-wizard--recap pc-setup-wizard--friendly" data-mode={mode}>
+        <div className="pc-step pc-step--recap pc-setup-recap-card">
+          <CelebrationPapercup />
+          <div className="pc-setup-recap-copy">
+            <p className="pc-setup-recap-kicker">Ready for launch</p>
+            <h2 className="pc-step__lead">
+              You're all set. Nice work.
+            </h2>
+            <p className="pc-step__lead">
+              Papercusp has the essentials it needs. {completed.length} of {SETUP_STEPS.length} setup
+              checks are ready, and anything still pending can wait until later in Settings → Setup Wizard.
+            </p>
+          </div>
+          <ul className="pc-bullets pc-setup-recap-list">
             {completed.slice(0, 6).map((s) => (
               <li key={s.id}>{s.title}</li>
             ))}
@@ -139,14 +150,14 @@ export function SetupWizard({ mode }: Props) {
   }
 
   return (
-    <div className="pc-setup-wizard" data-mode={mode} data-view={showWelcome ? 'welcome' : 'step'}>
+    <div className="pc-setup-wizard pc-setup-wizard--friendly" data-mode={mode} data-view={showWelcome ? 'welcome' : 'step'}>
       {!showWelcome && (
         <aside className="pc-setup-wizard__sidebar">
-          <h2 className="pc-setup-wizard__title">Setup Wizard</h2>
+          <h2 className="pc-setup-wizard__title">Setup guide</h2>
           <p className="pc-setup-wizard__subtitle">
             {mode === 'first-run'
-              ? 'Welcome to Papercusp. Run through these steps to get set up.'
-              : 'Configure or revisit any step. Detection runs automatically.'}
+              ? "A calm checklist for getting Papercusp ready. Finish the essentials now; everything else can wait."
+              : 'Tune your setup at your own pace. We re-check each item automatically.'}
           </p>
           <ol className="pc-setup-wizard__steps">
             {SETUP_STEPS.map((s, i) => {
@@ -180,8 +191,8 @@ export function SetupWizard({ mode }: Props) {
               <span className="pc-setup-wizard__min-dot" />
               <span>
                 {minimumMet
-                  ? 'Minimum setup complete — you can finish any time.'
-                  : 'Required: ≥1 coding agent + local database ready.'}
+                  ? 'Essentials are ready — you can finish now.'
+                  : 'To finish today: local database + one coding agent.'}
               </span>
             </div>
           </div>
@@ -202,6 +213,14 @@ export function SetupWizard({ mode }: Props) {
               <p>{active.summary}</p>
               <div className="pc-setup-wizard__progress" aria-hidden="true">
                 <span style={{ width: `${progressPct}%` }} />
+              </div>
+              <div className="pc-setup-helper-card">
+                <strong>{active.required ? 'Helpful checkpoint' : 'Optional comfort step'}</strong>
+                <span>
+                  {active.required
+                    ? 'This is one of the few things Papercusp needs to work locally. We’ll keep the steps small.'
+                    : 'Skip this if you want. You can come back after you have explored the app.'}
+                </span>
               </div>
             </header>
             <section className="pc-setup-wizard__main-body">{renderStep(active.id)}</section>
@@ -242,6 +261,21 @@ export function SetupWizard({ mode }: Props) {
           </>
         )}
       </main>
+    </div>
+  );
+}
+
+function CelebrationPapercup() {
+  return (
+    <div className="pc-setup-celebration" aria-hidden="true">
+      <span className="pc-setup-celebration__confetti pc-setup-celebration__confetti--one" />
+      <span className="pc-setup-celebration__confetti pc-setup-celebration__confetti--two" />
+      <span className="pc-setup-celebration__confetti pc-setup-celebration__confetti--three" />
+      <span className="pc-setup-celebration__confetti pc-setup-celebration__confetti--four" />
+      <span className="pc-setup-celebration__spark pc-setup-celebration__spark--one" />
+      <span className="pc-setup-celebration__spark pc-setup-celebration__spark--two" />
+      <div className="pc-setup-celebration__halo" />
+      <img className="pc-setup-celebration__mascot" src="/mascot.svg" alt="" />
     </div>
   );
 }
