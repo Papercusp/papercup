@@ -378,6 +378,10 @@ export interface ReadPlanRunTranscriptOpts {
   cursor?: number | null;
   /** Page size — clamped via `clampTranscriptLimit`. */
   limit?: number | null;
+  /** Upper-bound turns to `created_at <= beforeTs` — P-007 scopes a
+   *  revision's rationale summary to the conversation up to that
+   *  revision, not the run's whole later history. */
+  beforeTs?: number | null;
 }
 
 /**
@@ -412,6 +416,10 @@ export async function readPlanRunTranscript(
     const queryFilter = query
       ? tx`AND content ILIKE ${'%' + escapeLikePattern(query) + '%'} ESCAPE '\\'`
       : tx``;
+    const beforeFilter =
+      typeof opts.beforeTs === 'number' && Number.isFinite(opts.beforeTs)
+        ? tx`AND created_at <= ${Math.floor(opts.beforeTs)}`
+        : tx``;
     const rows = await tx<
       {
         seq: number;
@@ -422,7 +430,8 @@ export async function readPlanRunTranscript(
     >`
       SELECT seq, role, content, created_at
       FROM harness_shared.plan_run_turns
-      WHERE plan_run_id = ${run.id} AND seq > ${cursor} ${queryFilter}
+      WHERE plan_run_id = ${run.id} AND seq > ${cursor}
+        ${queryFilter} ${beforeFilter}
       ORDER BY seq ASC
       LIMIT ${limit + 1}
     `;

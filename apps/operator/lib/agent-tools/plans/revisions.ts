@@ -354,22 +354,24 @@ export async function listPlanRevisions(planSlug: string): Promise<PlanRevisionR
   return chain;
 }
 
-/** A revision identified for transcript routing — what
- *  `plans:revision-transcript` (P-008) needs to find the conversation
- *  behind a revision. */
+/** A revision identified for transcript routing + rationale work —
+ *  what `plans:revision-transcript` (P-008) and the rationale
+ *  auto-summary (P-007) need about a single revision. */
 export interface PlanRevisionRef {
   id: number;
   planSlug: string;
   seq: number;
+  rationale: string | null;
   sessionId: string | null;
   sessionKind: PlanRevisionSessionKind | null;
+  createdAt: number;
 }
 
 /**
  * Fetch one revision by its global `plan_revisions` id — or `null`
  * when no such revision exists. Used by `plans:revision-transcript`
- * (P-008) to route to the right transcript store. Throws on a genuine
- * DB failure.
+ * (P-008) to route to the right transcript store, and by P-007's
+ * rationale auto-summary. Throws on a genuine DB failure.
  */
 export async function getPlanRevisionById(
   revisionId: number,
@@ -381,11 +383,13 @@ export async function getPlanRevisionById(
         id: number | string;
         plan_slug: string;
         seq: number;
+        rationale: string | null;
         session_id: string | null;
         session_kind: string | null;
+        created_at: string | number;
       }[]
     >`
-      SELECT id, plan_slug, seq, session_id, session_kind
+      SELECT id, plan_slug, seq, rationale, session_id, session_kind, created_at
       FROM harness_shared.plan_revisions
       WHERE id = ${revisionId}
     `;
@@ -395,9 +399,33 @@ export async function getPlanRevisionById(
       id: Number(r.id),
       planSlug: r.plan_slug,
       seq: Number(r.seq),
+      rationale: r.rationale,
       sessionId: r.session_id,
       sessionKind: r.session_kind as PlanRevisionSessionKind | null,
+      createdAt: Number(r.created_at),
     };
+  });
+}
+
+/**
+ * Fill in a revision's `rationale` — used by P-007's auto-summary to
+ * cache a generated rationale back onto the row. The `rationale IS NULL`
+ * guard means an authored rationale (or a concurrent fill) is never
+ * clobbered. Returns whether a row was actually updated.
+ */
+export async function setPlanRevisionRationale(
+  revisionId: number,
+  rationale: string,
+): Promise<boolean> {
+  await ensurePlanRevisionsTable();
+  return withWorkspace(DEFAULT_WORKSPACE_ID, async (tx) => {
+    const rows = await tx<{ id: number }[]>`
+      UPDATE harness_shared.plan_revisions
+      SET rationale = ${rationale}
+      WHERE id = ${revisionId} AND rationale IS NULL
+      RETURNING id
+    `;
+    return rows.length > 0;
   });
 }
 

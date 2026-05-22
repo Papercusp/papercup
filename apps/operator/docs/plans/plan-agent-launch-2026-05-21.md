@@ -13,9 +13,10 @@ owner: avi@storewolf.com
 
 **State:** v3, ratified — implementation in flight (started
 2026-05-21). **Phase 1 (revision spine) is complete — 5/5.**
-**Phase 2 (conversation linkage): P-006 + P-008 + P-009 done; only
-P-007 (rationale auto-summary) remains.** **Phase 3 (agent launch)
-is complete — P-010…P-016 all done.**
+**Phase 2 (conversation linkage) is complete — P-006 … P-009 all
+done.** **Phase 3 (agent launch) is complete — P-010…P-016 all
+done.** The entire `plans:*` backend is built; only the UI
+(Phases 4–5) and verification (Phase 6) remain.
 
 Phase 1: P-001 (`plan_revisions` schema); P-002 + P-003 (`rationale`
 + revision capture on all seven `plans:*` write verbs via the shared
@@ -33,10 +34,12 @@ inlined). P-008 `done` — `plans:revision-transcript`
 never a whole dump — D-002) transcript-retrieval verb;
 `readPlanRunTranscript` reads `plan_run_turns`, `getPlanRevisionById`
 routes by `session_kind` (D-020 — `plan_run` only in v1). P-007
-(rationale auto-summary) was deferred behind P-008 deliberately:
-P-008 establishes the `plan_run_turns` read surface P-007's
-summariser consumes — there is no `blocked-by` edge, just a cleaner
-build order. P-007 is the last Phase-2 item.
+`done` — `plans:summarize-revision` (`revision-summary.ts`): a
+`plan_run` revision with no rationale is filled best-effort by
+summarising the transcript-up-to-that-revision (`readPlanRunTranscript`
+with `beforeTs`) on the haiku model, cached onto the row. On-demand,
+not hot-path-wired (D-021); `runHaiku` extracted to `lib/haiku.ts`
+so plan code reuses it without delegate coupling (D-004).
 
 Phase 3: P-010 `done` — `ensurePlanRunsTable()` +
 `ensurePlanRunTurnsTable()` in `ensure-schema.ts`, the
@@ -73,8 +76,8 @@ stale `idle` → `archived` at 7 days) runs best-effort from the
 rejecting a `running` run. **Phase 3 is complete.**
 
 tsc-clean (0 errors in touched files; tree 551 is other agents'
-churn), 145 plans + plan-events tests + 8 transport tests green.
-20 decisions, no open questions.
+churn), 153 plans + plan-events tests + 8 transport tests green.
+21 decisions, no open questions.
 
 **Verification debt:** the live PG paths (`plan_revisions` /
 `plan_runs` / `plan_run_turns` DDL + INSERT/SELECT, the backfill's
@@ -89,14 +92,15 @@ pure logic is verified now (127 tests, incl. real-git
 `buildPlanAgentMcpUrl` / tool-surface constants, and the launch
 prompt/title derivations).
 
-**Next:** Phases 1 + 3 are complete and Phase 2 is one item from
-done — the whole `plans:*` backend (revision spine, context bundle,
+**Next:** Phases 1, 2, 3 are all complete — the entire `plans:*`
+backend (revision spine, conversation linkage, context bundle,
 runner, launch/resume, run history + lifecycle, scoped transcript
-read) is built. What remains: **P-007** (the last Phase-2 item —
-fallback rationale auto-summary), then **Phase 4 + 5** (the
-Revisions panel and Agents tab UI), then **Phase 6** (P-027 / P-028
-verification — including the live PG-path debt below). P-007 is the
-next pickup.
+read, rationale auto-summary) is built and unit-verified. What
+remains is **Phase 4 + 5** — the UI: the Revisions panel (P-017…
+P-020) and the Agents tab (P-021…P-026) in `/admin/plans` — then
+**Phase 6** (P-027 / P-028 verification, including the live PG-path
+debt below). **P-017** (rebuild `GitHistoryStrip` as a
+`plan_revisions`-backed Revisions panel) is the next pickup.
 
 ## Background
 
@@ -384,7 +388,7 @@ Make each revision openable to the conversation that produced it,
 and define the launch seed.
 
 - **P-006** `done` Investigated: the MCP call ctx carries no conversation/run session id — `runId`/`spawnId` regenerate per-call (forbidden as identity), `uiClientId` is the stable agent id. Threaded the `plan_run` session through: `?plan_run=<uuid>` on the MCP URL → `ctx.planRunSessionId` (new optional `UnifiedToolContext` field) → `resolvePlanSessionRef` → all seven write verbs' `plan_revisions` rows. → D-016
-- **P-007** `todo` Fallback rationale auto-summary — for revisions with a session but no supplied rationale, best-effort summarize the transcript into `rationale`. Needs a persisted transcript to summarize, so it cannot land before Phase 3 builds `plan_run_turns` and a run persists turns. → D-009 blocked-by: P-010, P-012
+- **P-007** `done` Fallback rationale auto-summary — `plans:summarize-revision` (`revision-summary.ts`): for a `plan_run` revision with no supplied rationale, best-effort summarize the transcript-up-to-that-revision (`readPlanRunTranscript` with `beforeTs`) on the haiku model into a one-line `rationale`, cached onto the row (`setPlanRevisionRationale`, `rationale IS NULL` guard). On-demand, not hot-path-wired (D-021); idempotent. `runHaiku` extracted to `lib/haiku.ts` (no delegate coupling — D-004). → D-009, D-021 blocked-by: P-010, P-012
 - **P-008** `done` `plans:revision-transcript { revisionId, query?, cursor?, limit? }` (`revision-transcript.ts`) — *scoped* transcript retrieval: `seq`-paginated by `cursor`, narrowable by a literal-substring `query`, page size clamped 1–100 (default 20) — never a whole-transcript dump (D-002). Routes by the revision's `session_kind`: `plan_run` → `readPlanRunTranscript` over `plan_run_turns`; `null`/`git_backfill`/(`operator_chat`|`agent_chat`) → `available: false` (D-020). `listPlanRevisions` now also returns the global `id` (the address P-008 takes); `getPlanRevisionById` is the new revision-by-id DAL. → D-002, D-020 blocked-by: P-006, P-010, P-012
 - **P-009** `done` `buildPlanContextBundle(slug)` helper (`context-bundle.ts`) — assembles the invariant launch seed: a framing preamble + the plan doc verbatim (parser `raw`) + the per-revision rationale digest (one entry per revision that recorded a `rationale`, newest-first; rationale-less revisions omitted). Transcripts are never inlined (D-002/D-005). Pure assembler `assemblePlanContextBundleText` split out for unit test; the revision read is best-effort so a `plan_revisions` outage cannot block a launch. Returns the seed text + `contentHash` (byte-identical to `plans:get`) for P-012 to stamp on the run. → D-002
 
@@ -730,3 +734,32 @@ conversation), `session_kind_unsupported` (`operator_chat` /
 item adds the matching reader. `available: false` is a normal
 result, not an error — P-019's UI shows a "direct edit" tag for it.
 (Decided at P-008.)
+
+### D-021 — Rationale auto-summary is an on-demand verb, not a hot-path step
+Date: 2026-05-21
+P-007's `plans:summarize-revision` is invoked deliberately — by an
+agent, the Revisions UI, or a future sweep — never auto-run inside a
+plan write, a launch, or `plans:revisions`. Reasons:
+
+- **The write path must not block (D-014).** An LLM call inside
+  `recordPlanRevision`'s `afterWrite` hook would couple a plan write
+  to haiku latency — exactly what best-effort recording forbids.
+- **The launch / list path must not stall.** Summarising N
+  rationale-less revisions synchronously inside `buildPlanContextBundle`
+  or `plans:revisions` would add N haiku calls to a hot read.
+- **The gap is small.** The launch preamble already tells agents to
+  record a rationale per write; and only `plan_run` revisions can be
+  summarised at all (D-020). So the fallback is for occasional gaps,
+  which an on-demand verb covers proportionately.
+
+The verb is best-effort and idempotent: a revision with a rationale
+(authored or already summarised) is a no-op; the haiku call is the
+shared `runHaiku` primitive (extracted from `delegate-summary.ts`
+into `lib/haiku.ts` so plan code reuses it without importing the
+delegate surface — D-004); the result is cached onto
+`plan_revisions.rationale` under a `rationale IS NULL` guard. Stored
+plain — no auto-vs-authored marker column; if the UI later needs to
+distinguish them, that is a P-019 follow-up, not v1 schema churn.
+Auto-invocation (a post-turn hook, a background sweep) is a possible
+follow-up, deliberately not v1.
+(Decided at P-007.)

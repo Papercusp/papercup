@@ -10,47 +10,8 @@
  * (haiku ~$0.001 per regen, ~$0.035/day for typical use).
  */
 
-import { runAgentChat } from './agent-chat-stream';
+import { runHaiku } from './haiku';
 import { setDelegateSummary, setDelegateTitle } from './delegates';
-
-const HAIKU_MODEL = process.env.PAPERCUSP_HAIKU_MODEL ?? 'claude-haiku-4-5';
-
-/**
- * Run a haiku model (claude-code or omp, per AGENT_BACKEND) to summarize
- * a transcript. Returns the text or null on any failure — title/summary
- * generation is best-effort and never throws.
- *
- * `maxTokens` is informational; chat-stream doesn't expose a per-spawn
- * cap (the prompt itself bounds the output).
- */
-async function runHaiku(prompt: string, _maxTokens = 200): Promise<string | null> {
-  const ac = new AbortController();
-  // Bound runtime — title gen should be sub-2s.
-  const killer = setTimeout(() => ac.abort(), 5000);
-  let out = '';
-  let failed = false;
-  try {
-    for await (const ev of runAgentChat({
-      promptText: prompt,
-      model: HAIKU_MODEL,
-      signal: ac.signal,
-    })) {
-      if (ev.type === 'delta') out += ev.text;
-      else if (ev.type === 'result') out = ev.finalText || out;
-      else if (ev.type === 'error') {
-        failed = true;
-        console.warn(`[delegate-summary] haiku failed:`, (ev.stderr ?? ev.message).slice(0, 300));
-      }
-    }
-  } catch (err) {
-    console.warn('[delegate-summary] haiku threw:', (err as Error).message);
-    return null;
-  } finally {
-    clearTimeout(killer);
-  }
-  if (failed) return null;
-  return out.trim() || null;
-}
 
 export async function generateSessionTitle(opts: {
   workspace: string;
