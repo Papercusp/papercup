@@ -123,12 +123,15 @@ function isTransientApiError(err: unknown): boolean {
   );
 }
 
-const TRANSIENT_RETRY_MAX = 5;
+const TRANSIENT_RETRY_MAX = 8;
+const TRANSIENT_BACKOFF_CAP_MS = 60_000;
 
 /**
  * `client.messages.create` with a patient outer retry for transient
- * API errors. Exponential backoff (2s/4s/8s/16s, capped 30s) on top
- * of the SDK's own retries — outlasts a ~1–2 min overload window.
+ * API errors. Exponential backoff (2/4/8/16/32/60/60/60s, capped 60s)
+ * on top of the SDK's own retries — out-waits multi-minute Anthropic
+ * overload windows (bumped from 5×/30s on 2026-05-22 after a sustained
+ * 529 storm exhausted the 5-retry budget on every op-M attempt).
  */
 async function createWithTransientRetry(
   client: Anthropic,
@@ -141,7 +144,7 @@ async function createWithTransientRetry(
     } catch (err) {
       lastErr = err;
       if (!isTransientApiError(err) || attempt === TRANSIENT_RETRY_MAX) throw err;
-      const backoffMs = Math.min(30_000, 1000 * 2 ** attempt) + Math.random() * 500;
+      const backoffMs = Math.min(TRANSIENT_BACKOFF_CAP_MS, 1000 * 2 ** attempt) + Math.random() * 500;
       console.warn(
         `[llm-testing] transient API error (attempt ${attempt}/${TRANSIENT_RETRY_MAX}), ` +
           `retrying in ${Math.round(backoffMs)}ms: ` +
