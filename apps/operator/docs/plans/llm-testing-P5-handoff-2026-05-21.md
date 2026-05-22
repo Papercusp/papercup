@@ -408,3 +408,43 @@ drizzle-orm/postgres versions, confirm getOrgPg().sql shape, or have
 the handlers consume a ready drizzle instance instead of building one
 from ctx.tx). Until it is fixed the op-M suite cannot fully pass even
 though the operator brain now calls tools correctly.
+
+# Session 3 continued — the harness:list "parsers" regression RESOLVED
+
+The follow-up bug above is fixed.
+
+## Root cause
+
+`withWorkspace(workspaceId, fn)` (libs/papercusp/libs/db/src/
+workspace-context.ts) runs `fn` inside `sql.begin(async (tx) => …)`.
+postgres-js's `tx` is a **`TransactionSql` — a subset of `Sql` that
+omits `.options`** (the parsers/serializers config). drizzle-orm
+0.45.2's `drizzle(client)` constructor does
+`client.options.parsers[type] = …`, so every `drizzle(tx)` inside a
+withWorkspace callback threw `Cannot read properties of undefined
+(reading 'parsers')`. That broke `harness:list`, `harness:status`/
+`get`, the tasks/features/goals/messages read tools, and the operator
+scan-lock — i.e. all 10 `drizzle(ctx.tx)` agent-mcp tools. (A bare-
+client `drizzle(getOrgPg().sql)` works fine — the raw `Sql` has
+`.options`; only the transaction subset doesn't.)
+
+## Fix — committed (papercusp 0418c70, superproject 593c74d9)
+
+In `withWorkspace`, point the TransactionSql at the parent connection's
+`.options` (`txSql.options ??= sql.options`). parsers/serializers are
+connection-scoped, so this is correct; it's a no-op for raw `tx`...``
+queries (getOrgPgApp() already drizzle-mutated the parent's parsers).
+One fix at the withWorkspace chokepoint covers every `drizzle(tx)`
+callsite.
+
+## Verified
+
+`harness:list` → 5 real harnesses, `harness:status` → real data, no
+`handler_error`. Reproduced and fixed with an isolated probe:
+`drizzle(tx)` FAIL → `drizzle(tx + parent.options)` OK.
+
+## P5 status
+
+Both blockers cleared: the operator brain calls real tools (bug #5
+Meridian fix) AND those tools now return real data (this fix). P5's
+12 op-M scenarios can now be run for real.
