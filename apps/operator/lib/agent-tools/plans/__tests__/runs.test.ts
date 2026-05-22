@@ -8,7 +8,14 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { mapPlanRunRow, type RawPlanRunRow } from '../runs';
+import {
+  canManuallyRestatusRun,
+  mapPlanRunRow,
+  PLAN_RUN_IDLE_ARCHIVE_MS,
+  PLAN_RUN_ORPHAN_FAIL_MS,
+  type PlanRunStatus,
+  type RawPlanRunRow,
+} from '../runs';
 
 const rawRow: RawPlanRunRow = {
   id: 7,
@@ -59,5 +66,34 @@ describe('mapPlanRunRow', () => {
     const row = mapPlanRunRow({ ...rawRow, note: null, title: null });
     expect(row.note).toBeNull();
     expect(row.title).toBeNull();
+  });
+});
+
+describe('canManuallyRestatusRun (P-016)', () => {
+  it('rejects a manual restatus of a running run', () => {
+    // A running run is mid-turn — restatus would race the turn settle.
+    expect(canManuallyRestatusRun('running')).toBe(false);
+  });
+
+  it('allows a manual restatus of every settled status', () => {
+    const settled: PlanRunStatus[] = ['idle', 'archived', 'done', 'failed'];
+    for (const s of settled) {
+      expect(canManuallyRestatusRun(s)).toBe(true);
+    }
+  });
+});
+
+describe('run-status sweep thresholds (P-016)', () => {
+  it('fails an orphan well before it would be archived', () => {
+    // The orphan-fail window must be far shorter than the idle-archive
+    // window — a crashed run should heal to `failed` long before any
+    // idle run is decluttered.
+    expect(PLAN_RUN_ORPHAN_FAIL_MS).toBeLessThan(PLAN_RUN_IDLE_ARCHIVE_MS);
+  });
+
+  it('keeps the orphan window clear of the ~10-min turn timeout', () => {
+    // A legitimate turn caps at the tool's 600s timeout; the orphan
+    // window must sit comfortably beyond it to avoid false positives.
+    expect(PLAN_RUN_ORPHAN_FAIL_MS).toBeGreaterThan(15 * 60_000);
   });
 });

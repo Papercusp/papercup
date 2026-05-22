@@ -22,10 +22,37 @@ import {
 } from '../../ensure-schema';
 import { DEFAULT_WORKSPACE_ID } from '../../workspace-registry';
 
-/** A run's lifecycle status. `running` while a turn streams; `idle`
- *  when a turn finished and the run can be resumed (D-010); `failed`
- *  when the agent backend errored. `archived` / `done` are P-016. */
+/**
+ * A run's lifecycle status (P-016):
+ *   - `running`  — a turn is streaming;
+ *   - `idle`     — a turn finished, the run is resumable (D-010);
+ *   - `failed`   — the agent backend errored on the turn;
+ *   - `archived` — set aside (auto, via the idle sweep, or manually);
+ *                  still resumable — resuming reactivates it;
+ *   - `done`     — deliberately concluded (manual only).
+ * `running` / `idle` / `failed` are machine-set (launch, resume, the
+ * turn settle, the orphan sweep); `archived` / `done` are reachable
+ * manually via `plans:set-run-status`, and `archived` also via the
+ * poll-based sweep (`sweepPlanRuns`).
+ */
 export type PlanRunStatus = 'running' | 'idle' | 'archived' | 'done' | 'failed';
+
+/** The statuses a human/agent may set directly via
+ *  `plans:set-run-status` — machine-only `running`/`failed` excluded. */
+export type ManualPlanRunStatus = 'archived' | 'done' | 'idle';
+
+/**
+ * Whether a run in `from` may be manually restatused (P-016). A
+ * `running` run is mid-turn: a manual restatus would race the turn's
+ * own settle (`executePlanAgentTurn` writes `idle`/`failed` at the
+ * end), so it is rejected — wait, or let the orphan sweep handle a
+ * genuinely stuck run. Every settled status accepts any manual target
+ * (`archived`/`done`/`idle` — `idle` un-archives or reopens a run).
+ * Pure + exported for unit test.
+ */
+export function canManuallyRestatusRun(from: PlanRunStatus): boolean {
+  return from !== 'running';
+}
 
 /** Transcript turn author. */
 export type PlanRunTurnRole = 'user' | 'assistant';
@@ -80,6 +107,58 @@ export async function setPlanRunStatus(
       SET status = ${status}, updated_at = ${Date.now()}
       WHERE id = ${runId}
     `;
+  });
+}
+
+/** A `running` run untouched this long is orphaned — the process that
+ *  owned its turn is gone (no live turn outlives the ~10-min tool
+ *  timeout). The sweep transitions it to `failed`. */
+export const PLAN_RUN_ORPHAN_FAIL_MS = 30 * 60_000; // 30 min
+
+/** An `idle` run untouched this long is auto-archived — to declutter
+ *  the active list. Non-destructive: resuming reactivates it (D-010). */
+export const PLAN_RUN_IDLE_ARCHIVE_MS = 7 * 24 * 60 * 60_000; // 7 days
+
+export interface SweepPlanRunsResult {
+  /** Orphaned `running` rows transitioned to `failed`. */
+  failed: number;
+  /** Stale `idle` rows transitioned to `archived`. */
+  archived: number;
+}
+
+/**
+ * The poll-based run-status sweep (P-016). Two automatic transitions
+ * that no in-process turn settle can make:
+ *
+ *   - orphaned `running` → `failed` — the process that owned the turn
+ *     died before it could settle the status;
+ *   - stale `idle` → `archived` — declutter; the run stays resumable
+ *     (D-010), so this is non-destructive.
+ *
+ * Idempotent and cheap (two indexed bulk UPDATEs); the `plans:runs`
+ * read calls it before every list — that read *is* the v1 poll, so no
+ * background timer is needed. `now` is injectable for tests.
+ */
+export async function sweepPlanRuns(
+  now: number = Date.now(),
+): Promise<SweepPlanRunsResult> {
+  await ensurePlanRunsTable();
+  return withWorkspace(DEFAULT_WORKSPACE_ID, async (tx) => {
+    const failedRows = await tx<{ id: number }[]>`
+      UPDATE harness_shared.plan_runs
+      SET status = 'failed', updated_at = ${now}
+      WHERE status = 'running'
+        AND updated_at < ${now - PLAN_RUN_ORPHAN_FAIL_MS}
+      RETURNING id
+    `;
+    const archivedRows = await tx<{ id: number }[]>`
+      UPDATE harness_shared.plan_runs
+      SET status = 'archived', updated_at = ${now}
+      WHERE status = 'idle'
+        AND updated_at < ${now - PLAN_RUN_IDLE_ARCHIVE_MS}
+      RETURNING id
+    `;
+    return { failed: failedRows.length, archived: archivedRows.length };
   });
 }
 

@@ -13,11 +13,15 @@
  * A plan with no runs returns an empty list, not an error (matches
  * `plans:revisions`). A genuine DB failure is reported as
  * `runs_unavailable` rather than a misleading empty list.
+ *
+ * Each read first runs the poll-based run-status sweep (P-016) —
+ * orphaned `running` → `failed`, stale `idle` → `archived` — so this
+ * read *is* the v1 lifecycle poll. The sweep is best-effort.
  */
 
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
-import { listPlanRuns } from './runs';
+import { listPlanRuns, sweepPlanRuns } from './runs';
 
 const ALL_ROLES = [
   'scoper',
@@ -57,6 +61,16 @@ export default defineTool({
   async handler(args, ctx) {
     const ctxAny = ctx as { metadata?: (d: Record<string, unknown>) => void };
     try {
+      // Poll-based run-status lifecycle (P-016): each runs read first
+      // sweeps orphaned `running` → `failed` and stale `idle` →
+      // `archived`. Best-effort — a sweep failure must not break the
+      // list read.
+      await sweepPlanRuns().catch((e) => {
+        console.warn(
+          `[plans:runs] run-status sweep failed: ` +
+            (e instanceof Error ? e.message : String(e)),
+        );
+      });
       const runs = await listPlanRuns(args.slug);
       ctxAny.metadata?.({ slug: args.slug, runCount: runs.length });
       return {

@@ -15,7 +15,7 @@ owner: avi@storewolf.com
 2026-05-21). **Phase 1 (revision spine) is complete — 5/5.**
 **Phase 2 (conversation linkage): P-006 + P-009 built; P-007 +
 P-008 now unblocked (P-012 shipped).** **Phase 3 (agent launch)
-is in flight — P-010…P-015 done; P-016 is the last item.**
+is complete — P-010…P-016 all done.**
 
 Phase 1: P-001 (`plan_revisions` schema); P-002 + P-003 (`rationale`
 + revision capture on all seven `plans:*` write verbs via the shared
@@ -60,11 +60,16 @@ activity feed records every launch. A resume emits no plan-event
 (run-internal). P-015 `done` — `plans:runs` (`runs-list.ts`), the
 launch history read verb: `listPlanRuns` returns each run + its
 transcript turn count, newest-first; `getPlanRun`/`listPlanRuns`
-share a pure `mapPlanRunRow`.
+share a pure `mapPlanRunRow`. P-016 `done` — run-status lifecycle
+(D-019): `sweepPlanRuns` (orphaned `running` → `failed` at 30 min,
+stale `idle` → `archived` at 7 days) runs best-effort from the
+`plans:runs` read (the v1 poll); `plans:set-run-status`
+(`run-status.ts`) is the manual `archived`/`done`/`idle` verb,
+rejecting a `running` run. **Phase 3 is complete.**
 
 tsc-clean (0 errors in touched files; tree 551 is other agents'
-churn), 134 plans + plan-events tests + 8 transport tests green.
-18 decisions, no open questions.
+churn), 138 plans + plan-events tests + 8 transport tests green.
+19 decisions, no open questions.
 
 **Verification debt:** the live PG paths (`plan_revisions` /
 `plan_runs` / `plan_run_turns` DDL + INSERT/SELECT, the backfill's
@@ -79,9 +84,14 @@ pure logic is verified now (127 tests, incl. real-git
 `buildPlanAgentMcpUrl` / tool-surface constants, and the launch
 prompt/title derivations).
 
-**Next:** P-016 (run-status lifecycle) closes Phase 3. P-007 +
-P-008 are also now actionable (the `plan_run_turns` transcript they
-consume exists once a run persists turns).
+**Next:** Phases 1 + 3 are complete; the `plans:*` tool +
+revision-spine + run-launch backend is fully built. What remains:
+**P-007 + P-008** (Phase 2 — fallback rationale auto-summary +
+`plans:revision-transcript`; both now unblocked, the `plan_run_turns`
+transcript they consume exists), then **Phase 4 + 5** (the
+Revisions panel and Agents tab UI), then **Phase 6** (P-027 / P-028
+verification — including the live PG-path debt below). P-007 is the
+natural next pickup.
 
 ## Background
 
@@ -384,7 +394,7 @@ wire the launch and its history on top.
 - **P-013** `done` Resume — `plans:resume` (`resume.ts`) re-invokes the runner with the run's existing `session_id`; new turns append to `plan_run_turns`. Re-seeds with the current plan + re-stamps `plan_content_hash` (D-018); the launch/resume turn core is shared (`turn.ts` `executePlanAgentTurn`). → D-010 D-018 blocked-by: P-012
 - **P-014** `done` Added `agent_launched` to `PlanEventType` in `coordination/plan-events.ts` *with* its emitter — `plans:launch` emits it (best-effort) right after the `plan_runs` row is inserted (`after` = runId, `detail` = run title). A *resume* is run-internal and emits no plan-event: the launch is the plan-level fact; continuations live in the run's own transcript.
 - **P-015** `done` `plans:runs { slug }` read verb (`runs-list.ts`) — the launch history for the Agents tab, newest-first. Each row is a `PlanRunSummary` (the `plan_runs` row + a `turnCount` via a correlated subquery, so the list view needs no follow-up query). Empty list (not an error) when the plan has never been launched; DB failure → `runs_unavailable`. The `getPlanRun`/`listPlanRuns` row mapping is a shared pure `mapPlanRunRow` (unit-tested).
-- **P-016** `todo` Run-status lifecycle — maintain `plan_runs.status` (running/idle/archived/done/failed) across launch, continue, and idle (poll-based for v1).
+- **P-016** `done` Run-status lifecycle (D-019) — two parts. (1) `sweepPlanRuns` (`runs.ts`): the poll-based sweep — orphaned `running` → `failed` (30 min), stale `idle` → `archived` (7 days); run best-effort from the `plans:runs` read (that read *is* the v1 poll). (2) `plans:set-run-status` (`run-status.ts`): the manual verb — `archived`/`done`/`idle`; rejects a `running` run (`run_busy`). `canManuallyRestatusRun` + the sweep thresholds are unit-tested. → D-019
 
 ## Phase 4 — UI: Revisions panel
 
@@ -669,3 +679,28 @@ edit and the next resume, never falsely after a resume has already
 re-seeded the current content). The launch/resume turn machinery is
 shared (`turn.ts` `executePlanAgentTurn`) so the two cannot drift.
 (Decided at P-013.)
+
+### D-019 — P-016 is the sweep *and* a manual run-status verb
+Date: 2026-05-21
+P-016 ("maintain `plan_runs.status` … across launch, continue, and
+idle, poll-based for v1") delivers two things, not one:
+
+- **The poll-based sweep** (`sweepPlanRuns`) — the explicit
+  "poll-based" content. Two automatic transitions no in-process turn
+  settle can make: an orphaned `running` run (the owning process
+  died mid-turn) → `failed` after 30 min; a stale `idle` run →
+  `archived` after 7 days (non-destructive — still resumable). It is
+  run from the `plans:runs` read — that read *is* the v1 poll, so no
+  background timer. Best-effort: a sweep failure never breaks the
+  list.
+- **A manual verb** (`plans:set-run-status`) — `archived` / `done` /
+  `idle`. Without it `done` is unreachable (no automatic path
+  produces it) and `archived` is only ever automatic; the plan item
+  enumerates `done` among the statuses to "maintain", so a
+  Phase-3-closing item must leave the enum fully reachable. The verb
+  is backend (a `plans:*` tool), so it belongs here, not in the UI
+  phases — Phase 4/5 just wire buttons to it. A `running` run is
+  rejected (`run_busy`): a manual restatus would race the turn's own
+  settle. `running` / `failed` stay machine-only.
+(Decided at P-016. The plan item under-specified the manual verb;
+recorded here so the scope expansion is visible in review.)
