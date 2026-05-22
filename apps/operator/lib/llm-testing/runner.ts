@@ -16,6 +16,7 @@
 import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 
+import { readAgentConfig } from '../agent-config';
 import { evaluateAsserts } from './asserts/index';
 import { computeIdentityHash, computeScenarioHash } from './identity';
 import { judgeRun, buildInconclusiveJudge } from './judge';
@@ -73,24 +74,64 @@ export interface SingleRunReport {
 }
 
 const DEFAULT_SUT_MODEL = process.env.LLM_TEST_SUT_MODEL ?? 'claude-sonnet-4-6';
-const DEFAULTS = {
-  sutModel:   DEFAULT_SUT_MODEL,
-  /**
-   * Plan §13 Q2 + §9 cost model: judge defaults to the SUT family
-   * for cost. Self-grading bias mitigation comes from
-   * criticality='high' rubrics adding a second-opinion pass at the
-   * registry's secondOpinion model (typically Opus). The registry's
-   * `judge` field is still consulted so non-Sonnet SUTs (Haiku) get
-   * a sensible step-up.
-   */
-  judgeModel: process.env.LLM_TEST_JUDGE_MODEL ?? resolveJudgeModel(DEFAULT_SUT_MODEL).judge,
-  simModel:   process.env.LLM_TEST_SIM_MODEL   ?? 'claude-haiku-4-5',
-};
+const HAIKU_SIM_DEFAULT = 'claude-haiku-4-5';
+
+/**
+ * Resolve the judge model when the caller doesn't pass one explicitly.
+ *
+ * Priority (highest wins):
+ *   1. `LLM_TEST_JUDGE_MODEL` env — CI matrices + ad-hoc local override.
+ *   2. `models['llm-testing-judge']` in the operator agent-config —
+ *      per-workspace user preference set via /settings/agent.
+ *   3. `resolveJudgeModel(sutModel).judge` — SUT-aware default from
+ *      the registry (Plan §13 Q2 + §9 cost model).
+ *
+ * NB: We intentionally do NOT consult omp's `modelRoles.default` as
+ * a fallback — the user's coding-agent default is typically opus,
+ * which would blow §9's judge-cost envelope. Setting
+ * `models['llm-testing-judge']` in the UI is the supported escape
+ * hatch.
+ */
+async function resolveJudgeDefault(sutModel: string): Promise<string> {
+  if (process.env.LLM_TEST_JUDGE_MODEL) return process.env.LLM_TEST_JUDGE_MODEL;
+  try {
+    const cfg = await readAgentConfig();
+    const v = cfg.models['llm-testing-judge'];
+    if (v && v.trim()) return v.trim();
+  } catch {
+    /* PG unreachable — fall through to registry */
+  }
+  return resolveJudgeModel(sutModel).judge;
+}
+
+/**
+ * Resolve the sim-user model when the caller doesn't pass one
+ * explicitly.
+ *
+ * Priority (highest wins):
+ *   1. `LLM_TEST_SIM_MODEL` env.
+ *   2. `models['llm-testing-sim-user']` in the operator agent-config.
+ *   3. `claude-haiku-4-5` — plan §9 cost envelope (sim-user is the
+ *      chattiest role; haiku keeps the matrix affordable).
+ *
+ * Same omp-`modelRoles.default` caveat as the judge resolver.
+ */
+async function resolveSimDefault(): Promise<string> {
+  if (process.env.LLM_TEST_SIM_MODEL) return process.env.LLM_TEST_SIM_MODEL;
+  try {
+    const cfg = await readAgentConfig();
+    const v = cfg.models['llm-testing-sim-user'];
+    if (v && v.trim()) return v.trim();
+  } catch {
+    /* PG unreachable — fall through */
+  }
+  return HAIKU_SIM_DEFAULT;
+}
 
 export async function runScenario(scenario: Scenario, opts: RunnerOpts = {}): Promise<RunReport> {
-  const sutModel = opts.sutModel ?? DEFAULTS.sutModel;
-  const judgeModel = opts.judgeModel ?? DEFAULTS.judgeModel;
-  const simModel = opts.simModel ?? DEFAULTS.simModel;
+  const sutModel = opts.sutModel ?? DEFAULT_SUT_MODEL;
+  const judgeModel = opts.judgeModel ?? (await resolveJudgeDefault(sutModel));
+  const simModel = opts.simModel ?? (await resolveSimDefault());
 
   if (sutModel === judgeModel) {
     console.warn(
