@@ -26089,9 +26089,17 @@ body:has(.operator-panel) {
   border-radius: 999px;
   font-weight: 700;
 }
+.pc-shell.pc-setup-shell:has(.pc-setup-wizard--recap) {
+  display: grid;
+  place-items: center;
+  min-height: 100dvh;
+  padding: 0;
+}
+
 
 .pc-setup-wizard--recap.pc-setup-wizard--friendly {
-  max-width: min(100%, 780px);
+  grid-template-columns: minmax(0, 1fr);
+  width: min(100%, 780px);
   padding: 24px;
 }
 
