@@ -746,6 +746,36 @@ export function usePlanRuns(slug: string | null): AsyncResult<PlanRun[]> {
   );
 }
 
+/* ── plans:launch (P-022) ──────────────────────────────────────────── */
+
+export interface LaunchPlanAgentArgs {
+  slug: string;
+  /** Optional free-text instruction. Absent → default kickoff. */
+  note?: string;
+}
+
+/** Success envelope from `plans:launch` in background mode (the admin
+ *  UI path). The agent turn continues running after this resolves;
+ *  status flips from 'running' → 'idle'/'failed' asynchronously, and
+ *  the UI polls `plans:runs` to observe the change. */
+export interface LaunchPlanAgentResult {
+  runId: number;
+  sessionId: string;
+  status: 'running';
+  planSlug: string;
+  mode: 'background';
+}
+
+export function launchPlanAgent(args: LaunchPlanAgentArgs) {
+  return postJson<WriteResult<LaunchPlanAgentResult>>('launch', {
+    slug: args.slug,
+    note: args.note,
+    // Admin route always runs the turn in background — the POST
+    // can't stream, and a long block would hang the UI.
+    await: false,
+  });
+}
+
 /* ── Lint hook (P-206) ─────────────────────────────────────────────── */
 
 /**

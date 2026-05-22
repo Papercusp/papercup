@@ -17,8 +17,8 @@ owner: avi@storewolf.com
 done.** **Phase 3 (agent launch) is complete — P-010…P-016 all
 done.** The entire `plans:*` backend is built. **Phase 4 (Revisions
 UI) is complete — P-017–P-020 all done (4/4).** **Phase 5 (Agents
-tab) is in flight — P-021 done (1/6).** Phase 6 (verification)
-remains.
+tab) is in flight — P-021 + P-022 done (2/6).** Phase 6
+(verification) remains.
 
 Phase 1: P-001 (`plan_revisions` schema); P-002 + P-003 (`rationale`
 + revision capture on all seven `plans:*` write verbs via the shared
@@ -94,13 +94,13 @@ pure logic is verified now (127 tests, incl. real-git
 `buildPlanAgentMcpUrl` / tool-surface constants, and the launch
 prompt/title derivations).
 
-**Next:** the rest of Phase 5 — **P-022** (Launch agent button —
-fires `plans:launch` with an optional free-text note), **P-023**
-(resumable run-detail view — interactive chat over `plan_run_turns`
-+ stale-version badge), **P-024** (route handlers — `launch`,
-`runs/:id/continue`), **P-025** (PlanEditor Save → "what changed &
-why" rationale field), **P-026** (`?run=<id>` nuqs key). Then
-Phase 6 verification (P-027 + P-028).
+**Next:** the rest of Phase 5 — **P-023** (resumable run-detail view —
+interactive chat over `plan_run_turns` + stale-version badge — the
+substantive item; this is where streaming finally lands UI-side, see
+D-022), **P-024** (the `runs/:id/continue` route — `launch` already
+shipped with P-022), **P-025** (PlanEditor Save → "what changed &
+why" rationale field), **P-026** (`?run=<id>` nuqs key). Then Phase 6
+verification (P-027 + P-028).
 
 ## Background
 
@@ -420,7 +420,7 @@ timeline.
 The launch surface and the resumable run history.
 
 - **P-021** `done` New **`AgentsPanel.tsx`** under `tab === 'agents'`: an **Origin card** sourced from `plan_revisions` seq 1 (D-006) via `usePlanRevisions` + a pure `pickOriginRevision` that walks newest-first → seq 1, with the "View authoring conversation" affordance routed through the same `?convo=<id>` nuqs key the Revisions tab uses; and the **Past-runs list** sourced from a new `plans:runs` admin-route entry + new `usePlanRuns` / `PlanRun` API surface — each row carries title, status pill (5 colours by `PlanRunStatus`), launched-by + when + turnCount, optional note, and a ⚠ stale badge when `pickStale` (`isStaleAgainst`) detects the run was seeded against an older `plan_content_hash` (D-018). `'agents'` added to the `?tab=` enum + the `PlanTabStrip`; the Launch button is rendered disabled (lands in P-022) so the layout settles. 14 unit tests across `pickOriginRevision` (4), `isStaleAgainst` (4), `formatOriginAuthor` (2), `formatRunLaunchedBy` (3), `describeRunStatus` (1). → D-006, D-018 blocked-by: P-015
-- **P-022** `todo` "Launch agent" — a single button plus an optional free-text note field; no pickers. → D-007 blocked-by: P-012
+- **P-022** `done` Launch button + free-text note compose form in `AgentsPanel`. "Launch agent" toggles a small `<LaunchCompose>` (3-row textarea, Cancel/Launch); submitting calls a new `launchPlanAgent` fetcher → `plans:launch` via a new `'launch'` admin-route `WRITE_VERBS` entry; on success the form closes and `runs.refresh()` makes the new 'running' row appear immediately. `launchErrorLabel` (pure, 6 tests) renders `not_found`/`busy {holder, intent}`/generic codes. **Required adding a `await: boolean` flag to `plans:launch`** (D-022 — see decision): the admin POST can't stream, so it sends `await: false`; the handler returns as soon as the `plan_runs` row exists and runs `executePlanAgentTurn` fire-and-forget (`status` settles to `idle`/`failed` async — UI polls). Default stays `true` so the streaming MCP path is unchanged. → D-007, D-022 blocked-by: P-012
 - **P-023** `todo` Run detail view — an interactive, *resumable* chat over `plan_run_turns` (not a static transcript) + a plan-version badge (⚠ when `plan_content_hash` ≠ the plan's current hash). → D-010 blocked-by: P-013
 - **P-024** `todo` Route handlers — `POST …/launch`, `POST …/runs/:id/continue`, `GET …/runs`, `GET …/revisions` — the in-process tool-proxy route pattern from `plans-admin-ui-2026-05-20`.
 - **P-025** `todo` PlanEditor Save — add an optional "what changed & why" field that supplies `rationale` to `plans:set-content`. → D-009 blocked-by: P-002
@@ -734,6 +734,55 @@ conversation), `session_kind_unsupported` (`operator_chat` /
 item adds the matching reader. `available: false` is a normal
 result, not an error — P-019's UI shows a "direct edit" tag for it.
 (Decided at P-008.)
+
+### D-022 — `plans:launch` gains an `await: boolean` flag for non-streaming callers
+Date: 2026-05-22
+`plans:launch` was built as a streaming `defineTool` (P-012): the MCP
+client wires SSE / WSS, receives `delta` / `tool_call` / `cost` /
+`run_started` events as the first turn runs, and gets a final JSON
+payload with the settled status when `executePlanAgentTurn`
+resolves — typically tens of seconds to several minutes.
+
+The `/admin/plans` UI (P-022) has no such transport. Its POST is a
+plain `handleHttpToolRequest` round-trip; an HTTP response can't be
+held open for a multi-minute turn without blocking the UI thread,
+and `ctx.emit` calls land in a no-op host so nothing useful streams
+back even if it did.
+
+Two ways to bridge:
+
+- **Make the admin route SSE-aware** for streaming tools. A real
+  improvement but a substantial detour from this plan's scope —
+  needs new transport plumbing, an SSE client, reconnect/resume on
+  the UI side. Right answer for *generally* surfacing streaming
+  tools to admin pages; wrong shape for the v1 Launch button.
+- **Add a fire-and-forget mode to the verb.** Optional `await:
+  boolean` arg; when `false`, the handler returns immediately after
+  the `plan_runs` row is inserted, and the agent turn runs in the
+  background via a non-awaited `executePlanAgentTurn(...)` whose
+  `.catch()` is intentionally empty — the turn already settles
+  `plan_runs.status` to `failed` internally, and that row is the
+  canonical signal. The UI polls `plans:runs` to observe the
+  `running → idle/failed` transition.
+
+We went with the second. Reasons:
+- It is the smaller, more localized change — the verb gains one
+  optional flag; the admin route passes `await: false`; everything
+  else is unchanged.
+- It is genuinely useful beyond the admin route: any non-streaming
+  caller (a script, a future cron, a webhook) wants this shape.
+- The polling cost is small — the Agents tab already needs
+  `plans:runs` for its list; the existing read *is* the v1 status
+  poll (D-019's sweep already runs from it).
+- Default `true` preserves the streaming MCP path verbatim — no
+  behaviour change for the agent surface.
+
+Trade-off: the UI sees no progress until the turn settles. P-023's
+resumable run-detail view is the place that earns true streaming;
+when it lands, the same `?run=<id>` deep-link will open the run
+already in progress and stream the rest of its turn (via the
+detail's own SSE/WSS path, not this verb).
+(Decided at P-022.)
 
 ### D-021 — Rationale auto-summary is an on-demand verb, not a hot-path step
 Date: 2026-05-21

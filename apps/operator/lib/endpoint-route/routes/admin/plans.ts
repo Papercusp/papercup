@@ -59,6 +59,11 @@ const READ_VERBS = new Set([
 const WRITE_VERBS = new Set([
   'set-status', 'set-now', 'add-decision', 'add-item', 'new',
   'set-content', 'set-frontmatter',
+  // plan-agent-launch P-022: the Agents-tab Launch button — admin
+  // calls it with `await: false` so the POST returns immediately
+  // and the turn runs fire-and-forget (UI polls `plans:runs` for
+  // status updates).
+  'launch',
 ]);
 
 // Admin proxy identity: the writes (set-status/set-now/add-decision/

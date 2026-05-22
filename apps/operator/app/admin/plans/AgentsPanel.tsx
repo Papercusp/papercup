@@ -23,8 +23,9 @@
  */
 
 import { useQueryState, parseAsInteger } from 'nuqs';
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import {
+  launchPlanAgent,
   usePlanRevisions,
   usePlanRuns,
   type PlanRevision,
@@ -48,7 +49,42 @@ export default function AgentsPanel({ slug, currentContentHash }: Props) {
   // renders the modal regardless of which tab is showing).
   const [, setOpenConvo] = useQueryState('convo', parseAsInteger);
 
+  // P-022 launch form state.
+  const [launching, setLaunching] = useState(false);
+  const [launchError, setLaunchError] = useState<string | null>(null);
+  const [composeOpen, setComposeOpen] = useState(false);
+  const [note, setNote] = useState('');
+
   const origin = useMemo(() => pickOriginRevision(revisions.data ?? []), [revisions.data]);
+
+  const onLaunch = async () => {
+    if (launching) return;
+    setLaunching(true);
+    setLaunchError(null);
+    try {
+      const res = await launchPlanAgent({ slug, note: note.trim() || undefined });
+      if ('ok' in res && res.ok) {
+        // Reset compose state and refresh the list so the new
+        // 'running' row appears immediately.
+        setComposeOpen(false);
+        setNote('');
+        runs.refresh();
+      } else {
+        // WriteResult's failure branch has `[k: string]: unknown`, so
+        // `'ok' in res` doesn't narrow it cleanly — cast to the
+        // failure shape for launchErrorLabel.
+        setLaunchError(
+          launchErrorLabel(
+            res as { error?: string; busy?: Array<{ owner_label?: string; intent?: string }> },
+          ),
+        );
+      }
+    } catch (e) {
+      setLaunchError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setLaunching(false);
+    }
+  };
 
   return (
     <div className="pc-agents-panel" aria-label="Agents">
@@ -58,11 +94,33 @@ export default function AgentsPanel({ slug, currentContentHash }: Props) {
         origin={origin}
         onOpenConvo={(id) => setOpenConvo(id)}
       />
-      <RunsHeader runs={runs.data ?? []} loading={runs.loading} />
+      <RunsHeader
+        runs={runs.data ?? []}
+        loading={runs.loading}
+        composeOpen={composeOpen}
+        launching={launching}
+        onToggleCompose={() => {
+          setComposeOpen((v) => !v);
+          setLaunchError(null);
+        }}
+      />
+      {composeOpen ? (
+        <LaunchCompose
+          note={note}
+          launching={launching}
+          error={launchError}
+          onNoteChange={setNote}
+          onSubmit={onLaunch}
+          onCancel={() => {
+            setComposeOpen(false);
+            setLaunchError(null);
+          }}
+        />
+      ) : null}
       {runs.error ? (
         <div className="pc-agents-panel__error">{runs.error}</div>
       ) : null}
-      {runs.data && runs.data.length === 0 && !runs.loading ? (
+      {runs.data && runs.data.length === 0 && !runs.loading && !composeOpen ? (
         <div className="pc-agents-panel__empty">
           No agents have been launched from this plan yet.
         </div>
@@ -79,6 +137,57 @@ export default function AgentsPanel({ slug, currentContentHash }: Props) {
         </ul>
       ) : null}
     </div>
+  );
+}
+
+function LaunchCompose({
+  note,
+  launching,
+  error,
+  onNoteChange,
+  onSubmit,
+  onCancel,
+}: {
+  note: string;
+  launching: boolean;
+  error: string | null;
+  onNoteChange: (v: string) => void;
+  onSubmit: () => void;
+  onCancel: () => void;
+}) {
+  return (
+    <section className="pc-agents-compose" aria-label="Launch an agent">
+      <textarea
+        className="pc-agents-compose__note"
+        placeholder={
+          'Optional: what should this agent focus on?\nLeave blank for the default ' +
+          '"pick up the next actionable item" kickoff.'
+        }
+        value={note}
+        onChange={(e) => onNoteChange(e.target.value)}
+        rows={3}
+        disabled={launching}
+      />
+      {error ? <div className="pc-agents-compose__error">{error}</div> : null}
+      <div className="pc-agents-compose__row">
+        <button
+          type="button"
+          className="pc-agents-compose__cancel"
+          onClick={onCancel}
+          disabled={launching}
+        >
+          Cancel
+        </button>
+        <button
+          type="button"
+          className="pc-agents-compose__submit"
+          onClick={onSubmit}
+          disabled={launching}
+        >
+          {launching ? 'Launching…' : 'Launch'}
+        </button>
+      </div>
+    </section>
   );
 }
 
@@ -138,7 +247,19 @@ function OriginCard({
   );
 }
 
-function RunsHeader({ runs, loading }: { runs: PlanRun[]; loading: boolean }) {
+function RunsHeader({
+  runs,
+  loading,
+  composeOpen,
+  launching,
+  onToggleCompose,
+}: {
+  runs: PlanRun[];
+  loading: boolean;
+  composeOpen: boolean;
+  launching: boolean;
+  onToggleCompose: () => void;
+}) {
   return (
     <header className="pc-agents-panel__head">
       <h3 className="pc-agents-panel__title">Past agents</h3>
@@ -147,11 +268,11 @@ function RunsHeader({ runs, loading }: { runs: PlanRun[]; loading: boolean }) {
       </span>
       <button
         type="button"
-        className="pc-agents-panel__launch"
-        disabled
-        title="Launch button lands in P-022"
+        className={`pc-agents-panel__launch${composeOpen ? ' is-open' : ''}`}
+        onClick={onToggleCompose}
+        disabled={launching}
       >
-        Launch agent
+        {composeOpen ? 'Close' : 'Launch agent'}
       </button>
     </header>
   );
@@ -237,6 +358,26 @@ export function formatOriginWhen(ms: number): string {
   if (!Number.isFinite(ms) || ms <= 0) return '';
   const d = new Date(ms);
   return d.toLocaleString();
+}
+
+/** Pure: extract a readable error message from a launch result that
+ *  came back with `error` instead of `ok: true`. The verb returns:
+ *    - { error: 'not_found', slug } when the plan doesn't exist
+ *    - { error: 'busy', busy: [...] } on a lock conflict
+ *    - { error: '<code>', ... } for anything else
+ *  We surface the code (and the holder for `busy`) since the admin
+ *  UI is engineer-facing. Exported for testing. */
+export function launchErrorLabel(
+  res: { error?: string; busy?: Array<{ owner_label?: string; intent?: string }>; [k: string]: unknown },
+): string {
+  const code = typeof res.error === 'string' ? res.error : 'launch_failed';
+  if (code === 'busy' && Array.isArray(res.busy) && res.busy.length > 0) {
+    const holder = res.busy[0]!.owner_label ?? 'another shell';
+    const intent = res.busy[0]!.intent ?? '';
+    return intent ? `Plan busy — ${holder} (${intent})` : `Plan busy — ${holder}`;
+  }
+  if (code === 'not_found') return 'Plan not found.';
+  return `Launch failed: ${code}`;
 }
 
 /** Pure: human label for a `PlanRunStatus` — used by the dot/pill

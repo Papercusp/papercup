@@ -13,6 +13,7 @@ import {
   formatOriginAuthor,
   formatRunLaunchedBy,
   isStaleAgainst,
+  launchErrorLabel,
   pickOriginRevision,
 } from './AgentsPanel';
 import type { PlanRevision, PlanRun } from './plans-api';
@@ -120,5 +121,38 @@ describe('describeRunStatus', () => {
     const all = ['running', 'idle', 'done', 'archived', 'failed'] as const;
     const phrases = all.map(describeRunStatus);
     expect(new Set(phrases).size).toBe(all.length);
+  });
+});
+
+describe('launchErrorLabel', () => {
+  it('not_found → plan-not-found phrasing', () => {
+    expect(launchErrorLabel({ error: 'not_found' })).toMatch(/not found/i);
+  });
+
+  it('busy + holder → names the holder + intent', () => {
+    expect(
+      launchErrorLabel({
+        error: 'busy',
+        busy: [{ owner_label: 'OMP/Codex', intent: 'fixing typo' }],
+      }),
+    ).toBe('Plan busy — OMP/Codex (fixing typo)');
+  });
+
+  it('busy without intent → holder only', () => {
+    expect(
+      launchErrorLabel({ error: 'busy', busy: [{ owner_label: 'OMP/Codex' }] }),
+    ).toBe('Plan busy — OMP/Codex');
+  });
+
+  it('busy without holder array → generic fallback', () => {
+    expect(launchErrorLabel({ error: 'busy' })).toMatch(/launch failed: busy/i);
+  });
+
+  it('unknown error code → "Launch failed: <code>"', () => {
+    expect(launchErrorLabel({ error: 'wat' })).toBe('Launch failed: wat');
+  });
+
+  it('missing error key → generic', () => {
+    expect(launchErrorLabel({})).toBe('Launch failed: launch_failed');
   });
 });
