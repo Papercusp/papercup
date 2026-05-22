@@ -361,6 +361,22 @@ export interface UnifiedToolContext {
    */
   uiClientId?: string | null;
 
+  /**
+   * The plan-run conversation that this call belongs to, when the
+   * caller is an agent launched from a plan (`plans:launch` —
+   * plan-agent-launch-2026-05-21). It is the `runAgentChat` session id
+   * minted by the plan-agent runner and carried on the MCP endpoint
+   * URL as `?plan_run=<uuid>`; the MCP transport folds that param
+   * here. `plans:*` write verbs read it (via `resolvePlanSessionRef`)
+   * so a revision made by a launched agent is attributed to its run.
+   *
+   * Null/undefined for every other caller — an SU engineer session, a
+   * browser `/admin/plans` edit, an orchestrator spawn. It is a
+   * provenance label only, never a security boundary (like
+   * `uiClientId`).
+   */
+  planRunSessionId?: string | null;
+
   /* ── Capability-gated helpers ─────────────────────────────────────── */
   spawn?: PluginSpawn;
   secret?: (name: string) => Promise<string | null>;

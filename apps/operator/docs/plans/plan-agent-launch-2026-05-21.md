@@ -12,27 +12,32 @@ owner: avi@storewolf.com
 ## Now
 
 **State:** v3, ratified — implementation in flight (started
-2026-05-21). **Phase 1 (revision spine) is complete — 5/5.** P-001
-(`plan_revisions` schema); P-002 + P-003 (`rationale` + revision
-capture on all seven `plans:*` write verbs via the shared
+2026-05-21). **Phase 1 (revision spine) is complete — 5/5.**
+**Phase 2 (conversation linkage) is in flight — 1/4.**
+
+Phase 1: P-001 (`plan_revisions` schema); P-002 + P-003 (`rationale`
++ revision capture on all seven `plans:*` write verbs via the shared
 `planRevisionCapture` / `withPlanLock` `afterWrite` hook); P-004
-(`plans:revisions` read verb — chain newest-first, line-LCS
-diff-stat); P-005 (`plans:backfill-revisions` — idempotent
-git-history backfill). tsc-clean (tree total 550, 0 new errors),
-101 plans tests green. 15 decisions, no open questions.
+(`plans:revisions` read verb); P-005 (`plans:backfill-revisions`).
+
+Phase 2: P-006 `done` — the call ctx carries no conversation session
+id, so the `plan_run` session is threaded via `?plan_run=` on the
+MCP URL → `ctx.planRunSessionId` → `resolvePlanSessionRef` → the
+write verbs' `plan_revisions` rows (D-016). tsc-clean (0 new errors
+in touched files; the additive `UnifiedToolContext` field is
+assignability-neutral), 104 plans tests + 8 transport tests green.
+16 decisions, no open questions.
 
 **Verification debt:** the live PG paths (`plan_revisions`
 INSERT/SELECT, the backfill's idempotency check) run on first
 operator boot / first invocation and are formally re-verified in
 P-027 — the working shell cannot reach the auth-gated embedded PG
-directly. All git + pure logic is verified now (101 tests, incl.
-real-git `readPlanFileAtCommit` integration).
+directly. All git + pure logic is verified now (104 tests, incl.
+real-git `readPlanFileAtCommit` integration + `resolvePlanSessionRef`).
 
-**Next:** Phase 2 — conversation linkage. P-006 (thread the
-run/session id onto the call ctx so write verbs record `session_id`),
-P-007 (fallback rationale auto-summary), P-008
-(`plans:revision-transcript`, scoped), P-009
-(`buildPlanContextBundle`).
+**Next:** P-007 (fallback rationale auto-summary), P-008
+(`plans:revision-transcript`, scoped — now unblocked by P-006),
+P-009 (`buildPlanContextBundle`).
 
 ## Background
 
@@ -319,7 +324,7 @@ plan history — before any launch capability exists.
 Make each revision openable to the conversation that produced it,
 and define the launch seed.
 
-- **P-006** `todo` Confirm `coordination/identity.ts` carries a run/session id on the call ctx; if not, thread it through so write verbs can record `session_id` + `session_kind`. → D-001
+- **P-006** `done` Investigated: the MCP call ctx carries no conversation/run session id — `runId`/`spawnId` regenerate per-call (forbidden as identity), `uiClientId` is the stable agent id. Threaded the `plan_run` session through: `?plan_run=<uuid>` on the MCP URL → `ctx.planRunSessionId` (new optional `UnifiedToolContext` field) → `resolvePlanSessionRef` → all seven write verbs' `plan_revisions` rows. → D-016
 - **P-007** `todo` Fallback rationale auto-summary — for revisions with a session but no supplied rationale, best-effort summarize the transcript into `rationale`. → D-009
 - **P-008** `todo` `plans:revision-transcript { revisionId, query?, cursor?, limit? }` — *scoped* transcript retrieval (search / paginate), never a whole-transcript dump; reads `plan_run_turns` for a plan-run session, the operator/agent-chat store otherwise. blocked-by: P-006
 - **P-009** `todo` `buildPlanContextBundle(slug)` helper — assembles the invariant seed: a framing preamble ("you are launched to advance this plan; read `## Now`; pick up the next actionable item") + the plan doc (parser `raw` field) + the per-revision rationale summaries. → D-002
@@ -543,3 +548,37 @@ the content snapshot reconstructed via `git show`. Design choices:
   is reachable; a bare `tsx` script is not. Archived plans are out
   of scope for the v1 backfill.
 (Decided at P-005.)
+
+### D-016 — The plan-run session is threaded via `?plan_run=` on the MCP URL
+Date: 2026-05-21
+P-006 investigated whether the MCP call ctx already identifies the
+conversation a plan write belongs to. It does not: `runId`/`spawnId`
+regenerate on every MCP call (`coordination/identity.ts` forbids
+deriving identity from them), and `uiClientId` is the stable
+per-agent id (for a superuser it is the transport's `Mcp-Session-Id`
+handshake) — none of these is "the conversation that produced this
+write".
+
+So the plan-run session is threaded explicitly:
+
+- The plan-agent runner (P-011) mints the run's `runAgentChat`
+  session id and carries it on the MCP endpoint URL it hands the
+  launched agent as `?plan_run=<uuid>`.
+- The MCP transport (`_mcp-handler.ts` `tryBuildSpawnContext`) reads
+  `?plan_run=` and folds it onto a new optional `UnifiedToolContext`
+  field, `planRunSessionId`. It is set on all three authed ctx
+  branches (superuser / power-user / per-spawn) so whichever tier
+  P-011 picks, it works.
+- `plans:*` write verbs resolve it via `resolvePlanSessionRef(ctx)` →
+  `{ sessionId, sessionKind: 'plan_run' }`, recorded on the
+  `plan_revisions` row. Every non-plan-run caller (SU engineer
+  session, browser `/admin/plans` save) resolves to `{ null, null }`
+  — a "direct edit" (P-019).
+
+`planRunSessionId` is a provenance label only, never a security
+boundary — same status as `uiClientId`. Only the `plan_run` session
+kind is threaded; `operator_chat` / `agent_chat` linkage would each
+need their own surface to thread a session id and is out of P-006's
+scope. **P-011 is bound to the `?plan_run=` param name by this
+decision.**
+(Decided at P-006.)

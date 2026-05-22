@@ -19,8 +19,7 @@ import { withPlanLock } from './with-plan-lock';
 import { PLAN_STATUSES } from './parser';
 import { emitPlanEventForCaller } from '../coordination/plan-events';
 import { fireNotificationsForCaller } from '../coordination/subscriptions';
-import { planRevisionCapture } from './revisions';
-import type { ResolveIdentityCtx } from '../coordination/identity';
+import { planRevisionCapture, type PlanRevisionCtx } from './revisions';
 
 const SU_ROLES = [
   'scoper',
@@ -135,7 +134,7 @@ export default defineTool({
     // appends today's date when the caller didn't already include one.
     const slug = ensureDatedSlug(args.slug, date);
 
-    const rev = planRevisionCapture(ctx as ResolveIdentityCtx, slug, args.rationale);
+    const rev = planRevisionCapture(ctx as PlanRevisionCtx, slug, args.rationale);
     const result = await withPlanLock<NewPlanValue>(
       ctx as never,
       {

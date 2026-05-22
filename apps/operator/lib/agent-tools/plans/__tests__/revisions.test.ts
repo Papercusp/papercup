@@ -1,16 +1,22 @@
 /**
- * Unit coverage for the plan revision spine's author classification
- * (plan-agent-launch-2026-05-21, P-002 / D-009).
+ * Unit coverage for the plan revision spine's pure helpers
+ * (plan-agent-launch-2026-05-21, P-002 / P-006 / D-009).
  *
- * `classifyAuthor` is pure and DB-free — it maps a resolved
- * `AgentIdentity` onto `agent` | `human`. The DB-backed `seq`
- * allocation in `recordPlanRevision` is covered by the live
- * round-trip in P-027 / P-028 (it needs the embedded `harness_shared`
- * schema, out of reach of a pure unit run).
+ * `classifyAuthor` and `resolvePlanSessionRef` are pure and DB-free —
+ * they map a resolved `AgentIdentity` / a call ctx onto the revision's
+ * author and session columns. The DB-backed `seq` allocation in
+ * `recordPlanRevision` is covered by the live round-trip in
+ * P-027 / P-028 (it needs the embedded `harness_shared` schema, out of
+ * reach of a pure unit run).
  */
 
 import { describe, expect, it } from 'vitest';
-import { classifyAuthor, planRevisionCapture, revisionDiffStat } from '../revisions';
+import {
+  classifyAuthor,
+  planRevisionCapture,
+  resolvePlanSessionRef,
+  revisionDiffStat,
+} from '../revisions';
 import type { AgentIdentity, IdentitySource } from '../../coordination/identity';
 
 function identity(source: IdentitySource): AgentIdentity {
@@ -51,6 +57,35 @@ describe('planRevisionCapture', () => {
     expect(cap.recorded.current).toBeNull();
     await expect(cap.afterWrite('# plan body')).resolves.toBeUndefined();
     expect(cap.recorded.current).toBeNull();
+  });
+});
+
+describe('resolvePlanSessionRef', () => {
+  it('resolves a threaded plan-run id to the plan_run session kind', () => {
+    // The MCP transport folds `?plan_run=<uuid>` onto `planRunSessionId`
+    // (P-006); a launched agent's writes are attributed to its run.
+    expect(resolvePlanSessionRef({ planRunSessionId: 'run-abc' })).toEqual({
+      sessionId: 'run-abc',
+      sessionKind: 'plan_run',
+    });
+  });
+
+  it('returns a null session for a caller with no threaded plan-run', () => {
+    // An SU engineer session, a browser /admin/plans save — no
+    // conversation is threaded, the revision is a "direct edit".
+    expect(resolvePlanSessionRef({})).toEqual({ sessionId: null, sessionKind: null });
+    expect(resolvePlanSessionRef({ planRunSessionId: null })).toEqual({
+      sessionId: null,
+      sessionKind: null,
+    });
+  });
+
+  it('treats an empty-string plan-run id as no session', () => {
+    // `?plan_run=` with an empty value must not record a blank session.
+    expect(resolvePlanSessionRef({ planRunSessionId: '' })).toEqual({
+      sessionId: null,
+      sessionKind: null,
+    });
   });
 });
 

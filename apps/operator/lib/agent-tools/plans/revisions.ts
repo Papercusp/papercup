@@ -149,24 +149,66 @@ export interface PlanRevisionCapture {
 }
 
 /**
+ * Loose structural ctx subset carrying the plan-run provenance — the
+ * one field `resolvePlanSessionRef` reads. Defined locally (mirrors
+ * `ResolveIdentityCtx`) so the write verbs stay free of the
+ * cross-package `UnifiedToolContext` type bridge; the real MCP ctx
+ * carries `planRunSessionId` as an optional field.
+ */
+export interface PlanSessionCtx {
+  /** `runAgentChat` session id of the plan-run this call belongs to,
+   *  threaded by the MCP transport from `?plan_run=`. Null for every
+   *  non-plan-run caller (P-006). */
+  planRunSessionId?: string | null;
+}
+
+/** Ctx subset a `plans:*` write verb hands to `planRevisionCapture` —
+ *  identity (who) + plan-run provenance (which conversation). The real
+ *  `UnifiedToolContext` satisfies it structurally. */
+export type PlanRevisionCtx = ResolveIdentityCtx & PlanSessionCtx;
+
+/** Resolved conversation a plan write belongs to. */
+export interface PlanSessionRef {
+  sessionId: string | null;
+  sessionKind: PlanRevisionSessionKind | null;
+}
+
+/**
+ * Resolve the conversation a plan write belongs to from the call ctx.
+ * Only the `plan_run` kind is threaded (P-006): a plan-run agent's MCP
+ * calls carry `planRunSessionId` via `?plan_run=` on the MCP URL.
+ * Every other write — an SU engineer session, a browser `/admin/plans`
+ * save, a git backfill — has no threaded conversation, so this returns
+ * `{ null, null }` and the revision's session columns stay null (the
+ * "direct edit" case, P-019). `operator_chat` / `agent_chat` linkage
+ * would each need their own surface to thread a session id and is not
+ * in P-006's scope.
+ */
+export function resolvePlanSessionRef(ctx: PlanSessionCtx): PlanSessionRef {
+  const planRun = ctx.planRunSessionId;
+  if (typeof planRun === 'string' && planRun.length > 0) {
+    return { sessionId: planRun, sessionKind: 'plan_run' };
+  }
+  return { sessionId: null, sessionKind: null };
+}
+
+/**
  * Build the revision-capture hook for a `plans:*` write verb: resolve
- * the caller identity once, and return an `afterWrite` that appends
- * one `plan_revisions` row per write plus a `recorded` cell to read
- * the result from. Every write verb wires revision capture through
- * this one helper so the behaviour is identical (P-002 / P-003).
+ * the caller identity and the plan-run conversation once, and return
+ * an `afterWrite` that appends one `plan_revisions` row per write plus
+ * a `recorded` cell to read the result from. Every write verb wires
+ * revision capture through this one helper so the behaviour is
+ * identical (P-002 / P-003).
  *
- * `sessionRef` is the conversation that produced the write — Phase 2
- * (P-006) threads it through the call ctx; until then verbs pass
- * nothing and the revision's session columns stay `null`.
+ * The conversation a write belongs to is resolved from the call ctx
+ * itself (`resolvePlanSessionRef`, P-006) — the verb does not pass it.
+ * A launched plan-run agent's writes carry `session_kind = 'plan_run'`
+ * + its run id; every other writer records null session columns.
  */
 export function planRevisionCapture(
-  ctx: ResolveIdentityCtx,
+  ctx: PlanRevisionCtx,
   slug: string,
   rationale: string | null | undefined,
-  sessionRef?: {
-    sessionId?: string | null;
-    sessionKind?: PlanRevisionSessionKind | null;
-  },
 ): PlanRevisionCapture {
   let identity: AgentIdentity | null = null;
   try {
@@ -177,6 +219,7 @@ export function planRevisionCapture(
     identity = null;
   }
   const id = identity;
+  const sessionRef = resolvePlanSessionRef(ctx);
   const recorded: { current: RecordedRevision | null } = { current: null };
 
   const afterWrite = id
@@ -186,8 +229,8 @@ export function planRevisionCapture(
           content: writtenBody,
           rationale: rationale ?? null,
           identity: id,
-          sessionId: sessionRef?.sessionId ?? null,
-          sessionKind: sessionRef?.sessionKind ?? null,
+          sessionId: sessionRef.sessionId,
+          sessionKind: sessionRef.sessionKind,
         });
       }
     : async (): Promise<void> => {

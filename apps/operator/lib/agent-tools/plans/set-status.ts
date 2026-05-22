@@ -16,8 +16,7 @@ import { withPlanLock, bumpUpdatedDate } from './with-plan-lock';
 import { ITEM_STATUSES, maskFences } from './parser';
 import { emitPlanEventForCaller } from '../coordination/plan-events';
 import { fireNotificationsForCaller } from '../coordination/subscriptions';
-import { planRevisionCapture } from './revisions';
-import type { ResolveIdentityCtx } from '../coordination/identity';
+import { planRevisionCapture, type PlanRevisionCtx } from './revisions';
 
 const SU_ROLES = [
   'scoper',
@@ -102,7 +101,7 @@ export default defineTool({
   modality: ['text'],
   args: argsSchema,
   async handler(args, ctx) {
-    const rev = planRevisionCapture(ctx as ResolveIdentityCtx, args.slug, args.rationale);
+    const rev = planRevisionCapture(ctx as PlanRevisionCtx, args.slug, args.rationale);
     const result = await withPlanLock<SetStatusValue>(
       ctx as never,
       {

@@ -28,8 +28,7 @@ import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { withPlanLock } from './with-plan-lock';
 import { parsePlan } from './parser';
-import { planRevisionCapture } from './revisions';
-import type { ResolveIdentityCtx } from '../coordination/identity';
+import { planRevisionCapture, type PlanRevisionCtx } from './revisions';
 
 const SU_ROLES = [
   'scoper',
@@ -129,7 +128,7 @@ export default defineTool({
   async handler(args, ctx) {
     const today = new Date().toISOString().slice(0, 10);
 
-    const rev = planRevisionCapture(ctx as ResolveIdentityCtx, args.slug, args.rationale);
+    const rev = planRevisionCapture(ctx as PlanRevisionCtx, args.slug, args.rationale);
     const result = await withPlanLock<SetFrontmatterValue>(
       ctx as never,
       {

@@ -38,8 +38,7 @@ import { withPlanLock } from './with-plan-lock';
 import { parsePlan } from './parser';
 import { lintParsed, type LintFinding } from './lint';
 import { hashPlanContent } from './content-hash';
-import { planRevisionCapture } from './revisions';
-import type { ResolveIdentityCtx } from '../coordination/identity';
+import { planRevisionCapture, type PlanRevisionCtx } from './revisions';
 
 const SU_ROLES = [
   'scoper',
@@ -151,7 +150,7 @@ export default defineTool({
   async handler(args, ctx) {
     // Append a plan_revisions row after the write, while the lock is
     // still held — so `seq` allocation is race-free (P-002 / D-003).
-    const rev = planRevisionCapture(ctx as ResolveIdentityCtx, args.slug, args.rationale);
+    const rev = planRevisionCapture(ctx as PlanRevisionCtx, args.slug, args.rationale);
     const result = await withPlanLock<SetContentValue>(
       ctx as never,
       {

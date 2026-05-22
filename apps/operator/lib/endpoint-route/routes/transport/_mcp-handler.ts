@@ -99,6 +99,13 @@ export interface BuiltSpawnContext {
   spawnId: string;
   parentSpawnId: string | null;
   uiClientId: string | null;
+  /**
+   * Plan-run conversation id, from `?plan_run=<uuid>` on the MCP URL.
+   * Set by the plan-agent runner (plan-agent-launch-2026-05-21, P-011)
+   * so `plans:*` write verbs attribute revisions to the launched run.
+   * Null for every non-plan-run caller. Provenance label only.
+   */
+  planRunSessionId?: string | null;
   isSuperuser?: boolean;
   /**
    * True for the `workspace-power-user` tier (`?power_user=1`). These
@@ -145,6 +152,12 @@ async function tryBuildSpawnContext(extra: unknown): Promise<TrySpawnContextResu
   const url = urlFromExtra(extra);
   if (!url) return { kind: 'none' };
 
+  // Plan-run provenance (plan-agent-launch-2026-05-21, P-006). Folded
+  // onto every built ctx below; the plan-agent runner (P-011) sets it,
+  // it is null for all other callers. A provenance label for plan
+  // revisions, never a gate — read anywhere is safe.
+  const planRunSessionId = (url.searchParams.get('plan_run') ?? '').trim() || null;
+
   // ── (1) Superuser ───────────────────────────────────────────────
   if (url.searchParams.get('superuser') === '1') {
     const headers = headersFromExtra(extra);
@@ -183,6 +196,7 @@ async function tryBuildSpawnContext(extra: unknown): Promise<TrySpawnContextResu
         spawnId: `ephemeral-${Array.from(buf).map((b) => b.toString(16).padStart(2, '0')).join('')}`,
         parentSpawnId: null,
         uiClientId: suIdentity.length > 0 ? suIdentity : null,
+        planRunSessionId,
         isSuperuser: true,
       },
     };
@@ -233,6 +247,7 @@ async function tryBuildSpawnContext(extra: unknown): Promise<TrySpawnContextResu
         // safe to honor: it relabels the owner, it cannot escalate.
         uiClientId:
           clientParam.length > 0 ? clientParam : claims.authSessionId,
+        planRunSessionId,
         // Dispatch-layer parity with superuser (operator-tier catalog
         // + synthesized system principal + workspace tx). The clamp
         // above is the security boundary that distinguishes the tiers.
@@ -324,6 +339,7 @@ async function tryBuildSpawnContext(extra: unknown): Promise<TrySpawnContextResu
         spawnId: parsed.spawnId,
         parentSpawnId: parsed.parentSpawnId,
         uiClientId: parsed.uiClientId,
+        planRunSessionId,
       },
     };
   } catch (err) {
@@ -455,6 +471,7 @@ async function buildMcpToolContext(
     spawnId: spawn.spawnId,
     parentSpawnId: spawn.parentSpawnId,
     uiClientId: spawn.uiClientId,
+    planRunSessionId: spawn.planRunSessionId ?? null,
     isSuperuser: spawn.isSuperuser ?? false,
     isPowerUser: spawn.isPowerUser ?? false,
     log: (msg) => {
