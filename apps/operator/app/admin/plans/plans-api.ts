@@ -710,6 +710,42 @@ export function fetchPlanRevisionTranscript(
   });
 }
 
+/* ── plan_runs (plan-agent-launch P-015 / P-021) ───────────────────── */
+
+export type PlanRunStatus =
+  | 'running'
+  | 'idle'
+  | 'archived'
+  | 'done'
+  | 'failed';
+
+export interface PlanRun {
+  id: number;
+  planSlug: string;
+  planContentHash: string;
+  sessionId: string;
+  note: string | null;
+  launchedBy: string;
+  launchedAt: number;
+  status: PlanRunStatus;
+  title: string | null;
+  updatedAt: number;
+  turnCount: number;
+}
+
+export function fetchPlanRuns(slug: string) {
+  return getJson<{ runs: PlanRun[] }>('runs', { slug });
+}
+
+/** Agents-tab past-runs hook (P-021). Empty list when the plan has
+ *  never been launched. */
+export function usePlanRuns(slug: string | null): AsyncResult<PlanRun[]> {
+  return useAsyncJson<PlanRun[]>(
+    () => (slug ? fetchPlanRuns(slug).then((r) => r.runs) : Promise.resolve([])),
+    [slug],
+  );
+}
+
 /* ── Lint hook (P-206) ─────────────────────────────────────────────── */
 
 /**

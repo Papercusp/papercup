@@ -16,8 +16,9 @@ owner: avi@storewolf.com
 **Phase 2 (conversation linkage) is complete — P-006 … P-009 all
 done.** **Phase 3 (agent launch) is complete — P-010…P-016 all
 done.** The entire `plans:*` backend is built. **Phase 4 (Revisions
-UI) is complete — P-017, P-018, P-019, P-020 all done (4/4).**
-Only Phase 5 (Agents tab) and Phase 6 (verification) remain.
+UI) is complete — P-017–P-020 all done (4/4).** **Phase 5 (Agents
+tab) is in flight — P-021 done (1/6).** Phase 6 (verification)
+remains.
 
 Phase 1: P-001 (`plan_revisions` schema); P-002 + P-003 (`rationale`
 + revision capture on all seven `plans:*` write verbs via the shared
@@ -93,13 +94,13 @@ pure logic is verified now (127 tests, incl. real-git
 `buildPlanAgentMcpUrl` / tool-surface constants, and the launch
 prompt/title derivations).
 
-**Next:** **Phase 5 — the Agents tab.** **P-021** opens the phase:
-add `'agents'` as the third value of the `?tab=` enum, render an
-origin card (sourced from `plan_revisions` seq 1) + the past-runs
-list (`plans:runs`). Then P-022 (launch button + free-text note),
-P-023 (resumable run-detail view), P-024 (route handlers — extra
-verbs to wire), P-025 (PlanEditor Save "what changed & why"), P-026
-(nuqs `?run=<id>`). Then Phase 6 verification.
+**Next:** the rest of Phase 5 — **P-022** (Launch agent button —
+fires `plans:launch` with an optional free-text note), **P-023**
+(resumable run-detail view — interactive chat over `plan_run_turns`
++ stale-version badge), **P-024** (route handlers — `launch`,
+`runs/:id/continue`), **P-025** (PlanEditor Save → "what changed &
+why" rationale field), **P-026** (`?run=<id>` nuqs key). Then
+Phase 6 verification (P-027 + P-028).
 
 ## Background
 
@@ -418,7 +419,7 @@ timeline.
 
 The launch surface and the resumable run history.
 
-- **P-021** `todo` Agents tab in `PlanDetail` — origin card (author sourced from `plan_revisions` seq 1) + the past-runs list. blocked-by: P-015
+- **P-021** `done` New **`AgentsPanel.tsx`** under `tab === 'agents'`: an **Origin card** sourced from `plan_revisions` seq 1 (D-006) via `usePlanRevisions` + a pure `pickOriginRevision` that walks newest-first → seq 1, with the "View authoring conversation" affordance routed through the same `?convo=<id>` nuqs key the Revisions tab uses; and the **Past-runs list** sourced from a new `plans:runs` admin-route entry + new `usePlanRuns` / `PlanRun` API surface — each row carries title, status pill (5 colours by `PlanRunStatus`), launched-by + when + turnCount, optional note, and a ⚠ stale badge when `pickStale` (`isStaleAgainst`) detects the run was seeded against an older `plan_content_hash` (D-018). `'agents'` added to the `?tab=` enum + the `PlanTabStrip`; the Launch button is rendered disabled (lands in P-022) so the layout settles. 14 unit tests across `pickOriginRevision` (4), `isStaleAgainst` (4), `formatOriginAuthor` (2), `formatRunLaunchedBy` (3), `describeRunStatus` (1). → D-006, D-018 blocked-by: P-015
 - **P-022** `todo` "Launch agent" — a single button plus an optional free-text note field; no pickers. → D-007 blocked-by: P-012
 - **P-023** `todo` Run detail view — an interactive, *resumable* chat over `plan_run_turns` (not a static transcript) + a plan-version badge (⚠ when `plan_content_hash` ≠ the plan's current hash). → D-010 blocked-by: P-013
 - **P-024** `todo` Route handlers — `POST …/launch`, `POST …/runs/:id/continue`, `GET …/runs`, `GET …/revisions` — the in-process tool-proxy route pattern from `plans-admin-ui-2026-05-20`.

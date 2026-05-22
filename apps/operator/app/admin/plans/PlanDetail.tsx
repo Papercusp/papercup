@@ -31,6 +31,7 @@ import PlanActions from './PlanActions';
 import RevisionsPanel from './RevisionsPanel';
 import RevisionDiffModal from './RevisionDiffModal';
 import RevisionConversationModal from './RevisionConversationModal';
+import AgentsPanel from './AgentsPanel';
 import PlanConflictModal from './PlanConflictModal';
 import PlanStatusPopover, {
   resolveItemId,
@@ -59,13 +60,13 @@ export default function PlanDetail({ slug, onClose, onDirtyChange }: Props) {
     'pane',
     parseAsStringEnum(['read', 'edit']).withDefault('read'),
   );
-  // plan-agent-launch P-020: which view of the plan is active.
+  // plan-agent-launch P-020/P-021: which view of the plan is active.
   // 'editor' = the markdown editor; 'revisions' = the Revisions
-  // panel (P-017). 'agents' will join in P-021. nuqs-backed so a
-  // tab + a deep-link (?rev= / ?convo=) survive reload.
+  // panel (P-017); 'agents' = the Agents tab (P-021). nuqs-backed so
+  // a tab + a deep-link (?rev= / ?convo= / ?run=) survive reload.
   const [tab, setTab] = useQueryState(
     'tab',
-    parseAsStringEnum(['editor', 'revisions']).withDefault('editor'),
+    parseAsStringEnum(['editor', 'revisions', 'agents']).withDefault('editor'),
   );
   // P-018/P-019 modals — lifted from RevisionsPanel so a deep link
   // `?tab=editor&rev=42` still shows the modal even when the panel
@@ -288,6 +289,12 @@ export default function PlanDetail({ slug, onClose, onDirtyChange }: Props) {
         </>
       ) : null}
       {tab === 'revisions' ? <RevisionsPanel slug={data.slug} /> : null}
+      {tab === 'agents' ? (
+        <AgentsPanel
+          slug={data.slug}
+          currentContentHash={data.contentHash}
+        />
+      ) : null}
       <PlanConflictModal
         open={conflict !== null}
         currentContent={conflict ?? ''}
@@ -429,17 +436,13 @@ function DetailShell({
   );
 }
 
-type PlanDetailTab = 'editor' | 'revisions';
+type PlanDetailTab = 'editor' | 'revisions' | 'agents';
 
 /**
- * Top-level tab strip — P-020. Switches the main content area between
- * the editor and the Revisions panel (the Agents tab joins in P-021).
- * The active tab is `?tab=` (nuqs). The strip is a `tablist` with
- * `tabpanel` roles for AT consumers.
- *
- * The `editing` flag is reflected as `aria-disabled` rather than
- * blocking the switch — the parent's `onTab` already gates it with a
- * dirty-confirm.
+ * Top-level tab strip — P-020/P-021. Switches between the editor, the
+ * Revisions panel, and the Agents tab. The active tab is `?tab=`
+ * (nuqs). The strip is a `tablist`; the `editing` hint shows a
+ * "unsaved edits" affordance on the non-editor tabs.
  */
 function PlanTabStrip({
   tab,
@@ -458,6 +461,13 @@ function PlanTabStrip({
         active={tab}
         onTab={onTab}
         label="Revisions"
+        hint={editing ? 'unsaved edits' : undefined}
+      />
+      <TabButton
+        tab="agents"
+        active={tab}
+        onTab={onTab}
+        label="Agents"
         hint={editing ? 'unsaved edits' : undefined}
       />
     </div>

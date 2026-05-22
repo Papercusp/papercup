@@ -2615,3 +2615,225 @@
     padding: 28px;
   }
 }
+
+/* ── Agents panel (plan-agent-launch P-021) ───────────────────────── */
+
+.pc-agents-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin: 12px 18px 20px;
+}
+
+.pc-agents-panel__error,
+.pc-agents-panel__empty {
+  padding: 14px;
+  font-size: 12px;
+  color: rgba(214, 236, 248, 0.7);
+}
+
+.pc-agents-panel__error {
+  color: #fca5a5;
+}
+
+.pc-agents-panel__head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 0 2px 6px;
+  border-bottom: 1px solid rgba(165, 233, 247, 0.1);
+}
+
+.pc-agents-panel__title {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 500;
+  color: #a5e9f7;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.pc-agents-panel__count {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10.5px;
+  color: rgba(186, 230, 253, 0.55);
+}
+
+.pc-agents-panel__launch {
+  margin-left: auto;
+  background: none;
+  border: 1px solid rgba(165, 233, 247, 0.35);
+  color: #a5e9f7;
+  padding: 3px 12px;
+  border-radius: 999px;
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+  transition: background-color 80ms ease, border-color 80ms ease;
+}
+
+.pc-agents-panel__launch:hover:not([disabled]) {
+  background: rgba(165, 233, 247, 0.08);
+}
+
+.pc-agents-panel__launch[disabled] {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.pc-agents-panel__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+/* Origin card */
+
+.pc-agents-origin {
+  padding: 12px 14px;
+  border: 1px solid rgba(103, 232, 249, 0.22);
+  border-radius: 10px;
+  background: rgba(165, 233, 247, 0.04);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.pc-agents-origin--error {
+  border-color: rgba(252, 165, 165, 0.45);
+  color: #fca5a5;
+}
+
+.pc-agents-origin--empty {
+  color: rgba(214, 236, 248, 0.55);
+  font-style: italic;
+}
+
+.pc-agents-origin__head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  font-size: 11px;
+}
+
+.pc-agents-origin__kicker {
+  color: #a5e9f7;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-size: 10.5px;
+}
+
+.pc-agents-origin__author {
+  font-weight: 500;
+  color: #d6ecf8;
+}
+
+.pc-agents-origin__when {
+  color: rgba(186, 230, 253, 0.55);
+  margin-left: auto;
+  font-size: 10.5px;
+}
+
+.pc-agents-origin__rationale {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: rgba(214, 236, 248, 0.92);
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+}
+
+.pc-agents-origin__foot {
+  display: flex;
+  font-size: 10.5px;
+}
+
+.pc-agents-origin__convo {
+  background: none;
+  border: 1px solid rgba(165, 233, 247, 0.25);
+  color: rgba(214, 236, 248, 0.85);
+  padding: 1px 10px;
+  border-radius: 999px;
+  font: inherit;
+  font-size: 10.5px;
+  cursor: pointer;
+  transition: background-color 80ms ease, border-color 80ms ease;
+}
+
+.pc-agents-origin__convo:hover {
+  background: rgba(165, 233, 247, 0.08);
+  border-color: rgba(165, 233, 247, 0.55);
+}
+
+.pc-agents-origin__tag {
+  color: rgba(186, 230, 253, 0.5);
+  font-style: italic;
+}
+
+/* Past-run rows */
+
+.pc-agent-row {
+  padding: 10px 12px;
+  border: 1px solid rgba(165, 233, 247, 0.12);
+  border-radius: 8px;
+  background: rgba(8, 18, 26, 0.55);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.pc-agent-row__head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  font-size: 12px;
+}
+
+.pc-agent-row__title {
+  font-weight: 500;
+  color: #d6ecf8;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+  min-width: 0;
+}
+
+.pc-agent-row__status {
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 1px 8px;
+  border-radius: 999px;
+  border: 1px solid currentColor;
+}
+
+.pc-agent-row__status--running  { color: #67e8f9; }
+.pc-agent-row__status--idle     { color: rgba(186, 230, 253, 0.7); }
+.pc-agent-row__status--done     { color: #86efac; }
+.pc-agent-row__status--archived { color: rgba(186, 230, 253, 0.4); }
+.pc-agent-row__status--failed   { color: #fca5a5; }
+
+.pc-agent-row__stale {
+  color: #fbbf24;
+  font-size: 10.5px;
+  font-style: italic;
+}
+
+.pc-agent-row__meta {
+  display: flex;
+  gap: 6px;
+  font-size: 10.5px;
+  color: rgba(186, 230, 253, 0.55);
+}
+
+.pc-agent-row__note {
+  margin: 4px 0 0;
+  font-size: 11.5px;
+  color: rgba(214, 236, 248, 0.78);
+  white-space: pre-wrap;
+}
