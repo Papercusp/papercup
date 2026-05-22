@@ -493,3 +493,21 @@ for each of the 12 op-M scenarios (or loop them). Results persist to
 so a killed runner doesn't lose a completed run. Clear any stale
 `harness_shared.llm_test_claims` row first if a prior run died holding
 one.
+
+## Final: full retry chain captured — API sustained-overloaded
+
+A detached op-M3 run after the retry fix logged the complete chain:
+
+```
+attempt 1/5 retry 2.3s → 529 Overloaded
+attempt 2/5 retry 4.2s → 529 Overloaded
+attempt 3/5 retry 8.4s → 529 Overloaded
+attempt 4/5 retry 16.0s → 529 Overloaded
+✗ runner error: 529 Overloaded
+```
+
+5 outer retries × SDK's own retries ≈ 15 API hits over ~31s, all 529.
+Same overload was aborting agent turns all session
+("Anthropic stream stalled"). Retry mechanism verified correct; the
+overload simply outlasts any reasonable per-run budget. No further
+test-runner change would help right now — wait for capacity.
