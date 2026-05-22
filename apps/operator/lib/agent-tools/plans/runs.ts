@@ -83,6 +83,85 @@ export async function setPlanRunStatus(
   });
 }
 
+/** A `plan_runs` row, camelCased. Returned by `getPlanRun`. */
+export interface PlanRunRow {
+  id: number;
+  planSlug: string;
+  planContentHash: string;
+  sessionId: string;
+  note: string | null;
+  launchedBy: string;
+  launchedAt: number;
+  status: PlanRunStatus;
+  title: string | null;
+  updatedAt: number;
+}
+
+/** Fetch a single run by id, or `null` when no such run exists. Used
+ *  by resume (P-013) to recover a run's `session_id` + `plan_slug`. */
+export async function getPlanRun(runId: number): Promise<PlanRunRow | null> {
+  await ensurePlanRunsTable();
+  return withWorkspace(DEFAULT_WORKSPACE_ID, async (tx) => {
+    const rows = await tx<
+      {
+        id: number;
+        plan_slug: string;
+        plan_content_hash: string;
+        session_id: string;
+        note: string | null;
+        launched_by: string;
+        launched_at: number;
+        status: PlanRunStatus;
+        title: string | null;
+        updated_at: number;
+      }[]
+    >`
+      SELECT id, plan_slug, plan_content_hash, session_id, note,
+             launched_by, launched_at, status, title, updated_at
+      FROM harness_shared.plan_runs
+      WHERE id = ${runId}
+    `;
+    const r = rows[0];
+    if (!r) return null;
+    return {
+      id: Number(r.id),
+      planSlug: r.plan_slug,
+      planContentHash: r.plan_content_hash,
+      sessionId: r.session_id,
+      note: r.note,
+      launchedBy: r.launched_by,
+      launchedAt: Number(r.launched_at),
+      status: r.status,
+      title: r.title,
+      updatedAt: Number(r.updated_at),
+    };
+  });
+}
+
+/**
+ * Mark a run `running` and re-stamp its `plan_content_hash` — called
+ * by resume (P-013) at the start of a continuation. The hash is
+ * updated because the resumed turn is re-seeded with the *current*
+ * plan (the bundle is re-sent as the system prompt every spawn), so
+ * `plan_content_hash` always means "the plan as the run last saw it" —
+ * which keeps P-023's stale-version badge honest.
+ */
+export async function markPlanRunResumed(
+  runId: number,
+  planContentHash: string,
+): Promise<void> {
+  await ensurePlanRunsTable();
+  await withWorkspace(DEFAULT_WORKSPACE_ID, async (tx) => {
+    await tx`
+      UPDATE harness_shared.plan_runs
+      SET status = 'running',
+          plan_content_hash = ${planContentHash},
+          updated_at = ${Date.now()}
+      WHERE id = ${runId}
+    `;
+  });
+}
+
 export interface AppendPlanRunTurnArgs {
   planRunId: number;
   role: PlanRunTurnRole;

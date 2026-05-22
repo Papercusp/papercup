@@ -15,7 +15,7 @@ owner: avi@storewolf.com
 2026-05-21). **Phase 1 (revision spine) is complete — 5/5.**
 **Phase 2 (conversation linkage): P-006 + P-009 built; P-007 +
 P-008 now unblocked (P-012 shipped).** **Phase 3 (agent launch)
-is in flight — P-010 + P-011 + P-012 done.**
+is in flight — P-010 + P-011 + P-012 + P-013 done.**
 
 Phase 1: P-001 (`plan_revisions` schema); P-002 + P-003 (`rationale`
 + revision capture on all seven `plans:*` write verbs via the shared
@@ -47,9 +47,16 @@ coding tools + the operator world-model + `plans:*` (D-017). No
 (`launch.ts`), the streaming tool that assembles the bundle, inserts
 the `plan_runs` row, runs the agent, streams it, and persists the
 user + assistant turns to `plan_run_turns` (`runs.ts` is the DAL).
+P-013 `done` — `plans:resume` (`resume.ts`), the "continue" half of
+D-010: it recovers a run by id (`getPlanRun`), re-seeds it with the
+current plan, and re-invokes the runner on the run's existing
+`session_id`. The launch/resume turn core — persist user turn,
+stream, persist assistant turn, settle status — is shared in
+`turn.ts` (`executePlanAgentTurn`) so the two tools cannot drift;
+resume re-stamps `plan_content_hash` (D-018).
 
 tsc-clean (0 errors in touched files; tree 551 is other agents'
-churn), 127 plans tests + 8 transport tests green. 17 decisions, no
+churn), 131 plans tests + 8 transport tests green. 18 decisions, no
 open questions.
 
 **Verification debt:** the live PG paths (`plan_revisions` /
@@ -65,12 +72,10 @@ pure logic is verified now (127 tests, incl. real-git
 `buildPlanAgentMcpUrl` / tool-surface constants, and the launch
 prompt/title derivations).
 
-**Next:** the rest of Phase 3 — P-013 (resume — re-invoke the runner
-on an existing run's `session_id`, append turns), P-014
-(`agent_launched` plan-event), P-015 (`plans:runs` read verb), P-016
-(run-status lifecycle). P-007 + P-008 are also now actionable (the
-`plan_run_turns` transcript they consume exists once a run persists
-turns).
+**Next:** the rest of Phase 3 — P-014 (`agent_launched` plan-event),
+P-015 (`plans:runs` read verb), P-016 (run-status lifecycle). P-007
++ P-008 are also now actionable (the `plan_run_turns` transcript
+they consume exists once a run persists turns).
 
 ## Background
 
@@ -370,7 +375,7 @@ wire the launch and its history on top.
 - **P-010** `done` `ensurePlanRunsTable()` + `ensurePlanRunTurnsTable()` in `ensure-schema.ts` — `CREATE TABLE IF NOT EXISTS` for `harness_shared.plan_runs` (launches-only, indexed on `plan_slug` for the `plans:runs` history query) and `harness_shared.plan_run_turns` (FK → `plan_runs.id`, `UNIQUE(plan_run_id, seq)`); flag-guarded, grants best-effort, wired into the `instrumentation-node.ts` prewarm. `ensurePlanRunTurnsTable` ensures `plan_runs` first so the FK resolves regardless of call order. → D-006, D-012, D-013
 - **P-011** `done` Plan-agent runner (`runner.ts`) — `runPlanAgent`, a `runAgentChat` wrapper in the mould of `operator/converse.ts`: the P-009 bundle is the `systemPromptText`, the launch note is the `promptText`, `sessionMode: 'force'` makes it create-or-resume (D-010). `buildPlanAgentMcpConfig` builds the `agentmcp` direct-HTTP MCP config with `?plan_run=<sessionId>` (the D-016 consumer); `PLAN_AGENT_ALLOWED_TOOLS` = native coding tools + the operator world-model surface + `plans:*` (D-017). No `lib/delegates` / `operator:delegate` import. → D-004, D-016, D-017
 - **P-012** `done` `plans:launch { slug, note? }` (`launch.ts`) — a streaming tool: assembles the P-009 bundle, mints a `session_id`, inserts the `plan_runs` row (status `running`), runs the P-011 runner, streams `delta`/`tool_call`/`cost`, persists the user + assistant turns to `plan_run_turns`, settles status to `idle`/`failed`, returns `{ runId, sessionId }`. Emits a `warning` when the plan is `superseded`. The `plan_runs`/`plan_run_turns` DAL is `runs.ts` (`insertPlanRun`/`appendPlanRunTurn`/`setPlanRunStatus`). blocked-by: P-011, P-009, P-010
-- **P-013** `todo` Resume — a "continue" call re-invokes the runner with the run's existing `session_id`; new turns append to `plan_run_turns`. → D-010 blocked-by: P-012
+- **P-013** `done` Resume — `plans:resume` (`resume.ts`) re-invokes the runner with the run's existing `session_id`; new turns append to `plan_run_turns`. Re-seeds with the current plan + re-stamps `plan_content_hash` (D-018); the launch/resume turn core is shared (`turn.ts` `executePlanAgentTurn`). → D-010 D-018 blocked-by: P-012
 - **P-014** `todo` Add `agent_launched` to `PlanEventType` in `coordination/plan-events.ts` *with* its emitter (the type is exhaustive over emitters).
 - **P-015** `todo` `plans:runs { slug }` read verb — the launch history for the Agents tab.
 - **P-016** `todo` Run-status lifecycle — maintain `plan_runs.status` (running/idle/archived/done/failed) across launch, continue, and idle (poll-based for v1).
@@ -640,3 +645,21 @@ mid-run responder — it is resumed asynchronously, D-010), plus
 `plans:*`. The MCP *server* stays scoped to `agentmcp` (D-004) — the
 breadth is in the tool allowlist, not a new server.
 (Decided at P-011.)
+
+### D-018 — Resume re-seeds with the current plan and re-stamps the content hash
+Date: 2026-05-21
+`plans:resume` (P-013) re-assembles the P-009 context bundle fresh
+from the plan's *current* state and re-sends it as the system
+prompt. This is not a choice the runner could avoid — the agent
+backend applies `systemPromptText` per spawn (`--append-system-prompt`),
+so every resumed turn is necessarily re-seeded; the only decision is
+whether to pretend otherwise. We do not: a resumed run picks up the
+current plan doc + the current rationale digest, layered over its
+prior conversation. Consequently `plan_runs.plan_content_hash` is
+re-stamped on every resume (`markPlanRunResumed`) so the column
+always means "the plan as the run last saw it" — which keeps
+P-023's stale-version badge honest (it warns only between a plan
+edit and the next resume, never falsely after a resume has already
+re-seeded the current content). The launch/resume turn machinery is
+shared (`turn.ts` `executePlanAgentTurn`) so the two cannot drift.
+(Decided at P-013.)

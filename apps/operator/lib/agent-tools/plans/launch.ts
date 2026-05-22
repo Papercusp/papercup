@@ -26,15 +26,9 @@
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { buildPlanContextBundle } from './context-bundle';
-import { runPlanAgent } from './runner';
 import { getRepoRoot } from './source';
-import {
-  appendPlanRunTurn,
-  insertPlanRun,
-  setPlanRunStatus,
-  type PlanRunStatus,
-  type PlanRunTurnRole,
-} from './runs';
+import { insertPlanRun } from './runs';
+import { executePlanAgentTurn } from './turn';
 import { resolveAgentIdentity, type ResolveIdentityCtx } from '../coordination/identity';
 
 const SU_ROLES = [
@@ -107,29 +101,6 @@ type LaunchCtx = ResolveIdentityCtx & {
   signal?: AbortSignal;
 };
 
-/** Append a transcript turn, best-effort — the run has already streamed
- *  to the caller, so a lost `plan_run_turns` row must not fail the
- *  tool. The DAL throws on DB failure; this swallows + logs it. */
-async function persistTurn(
-  runId: number,
-  turn: {
-    role: PlanRunTurnRole;
-    content: string;
-    tokensIn?: number;
-    tokensOut?: number;
-    costUsd?: number;
-  },
-): Promise<void> {
-  try {
-    await appendPlanRunTurn({ planRunId: runId, ...turn });
-  } catch (err) {
-    console.warn(
-      `[plans:launch] failed to persist ${turn.role} turn for run ${runId}: ` +
-        (err instanceof Error ? err.message : String(err)),
-    );
-  }
-}
-
 async function launchHandler(input: LaunchArgs, ctx: LaunchCtx) {
   // 1. Assemble the launch seed (plan doc + rationale digest — P-009).
   const bundle = await buildPlanContextBundle(input.slug);
@@ -179,71 +150,18 @@ async function launchHandler(input: LaunchArgs, ctx: LaunchCtx) {
   });
   ctx.emit('run_started', { runId, sessionId });
 
-  // 5. Persist the user turn (the kickoff / note) as transcript seq 1.
-  await persistTurn(runId, { role: 'user', content: promptText });
-
-  // 6. Run the agent, streaming events and accumulating the reply.
-  let finalText = '';
-  let costUsd = 0;
-  let tokensIn = 0;
-  let tokensOut = 0;
-  let status: PlanRunStatus = 'idle';
-  try {
-    for await (const ev of runPlanAgent({
-      sessionId,
-      systemPromptText: bundle.text,
-      promptText,
-      cwd: getRepoRoot(),
-      uiClientId: ctx.uiClientId ?? null,
-      signal: ctx.signal,
-    })) {
-      if (ev.type === 'delta') {
-        ctx.emit('delta', { text: ev.text });
-        finalText += ev.text;
-      } else if (ev.type === 'tool_call') {
-        ctx.emit('tool_call', { name: ev.name, input: ev.input });
-      } else if (ev.type === 'result') {
-        costUsd = ev.costUsd;
-        tokensIn = ev.tokensIn;
-        tokensOut = ev.tokensOut;
-        // runAgentChat's terminal result.finalText can be more complete
-        // than the streamed accumulation — prefer the longer.
-        if (ev.finalText.length > finalText.length) finalText = ev.finalText;
-        ctx.emit('cost', { usd: ev.costUsd });
-      } else if (ev.type === 'error') {
-        status = 'failed';
-        ctx.emit('error', {
-          message: ev.stderr
-            ? `${ev.message}: ${ev.stderr.slice(0, 400)}`
-            : ev.message,
-        });
-      }
-    }
-  } catch (err) {
-    status = 'failed';
-    ctx.emit('error', {
-      message: err instanceof Error ? err.message : String(err),
-    });
-  }
-
-  // 7. Persist the assistant turn (transcript seq 2).
-  await persistTurn(runId, {
-    role: 'assistant',
-    content: finalText,
-    tokensIn,
-    tokensOut,
-    costUsd,
+  // 5. Run the agent's first turn — stream + persist turns + settle
+  //    status. Shared with resume (P-013); see turn.ts.
+  const { status, costUsd } = await executePlanAgentTurn({
+    runId,
+    sessionId,
+    systemPromptText: bundle.text,
+    promptText,
+    cwd: getRepoRoot(),
+    uiClientId: ctx.uiClientId ?? null,
+    signal: ctx.signal,
+    emit: ctx.emit,
   });
-
-  // 8. Settle the run status: idle (resumable — D-010) or failed.
-  try {
-    await setPlanRunStatus(runId, status);
-  } catch (err) {
-    console.warn(
-      `[plans:launch] failed to set final status for run ${runId}: ` +
-        (err instanceof Error ? err.message : String(err)),
-    );
-  }
 
   return {
     content: [
