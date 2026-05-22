@@ -36,7 +36,7 @@ describe('registerRoute — CORS middleware', () => {
       app,
       defineTool({
         method: 'POST',
-        path: '/mobile/ping',
+        path: '/device/ping',
         auth: 'public',
         cors: true,
         input: z.object({}),
@@ -47,7 +47,7 @@ describe('registerRoute — CORS middleware', () => {
       }),
     );
 
-    const res = await app.request('http://x.test/api/mobile/ping', {
+    const res = await app.request('http://x.test/api/device/ping', {
       method: 'OPTIONS',
       headers: { Origin: 'http://tauri.localhost', 'Access-Control-Request-Method': 'POST' },
     });
@@ -63,7 +63,7 @@ describe('registerRoute — CORS middleware', () => {
       app,
       defineTool({
         method: 'GET',
-        path: '/mobile/echo',
+        path: '/device/echo',
         auth: 'public',
         cors: true,
         sampleRate: 0,
@@ -71,7 +71,7 @@ describe('registerRoute — CORS middleware', () => {
       }),
     );
 
-    const res = await app.request('http://x.test/api/mobile/echo', {
+    const res = await app.request('http://x.test/api/device/echo', {
       method: 'GET',
       headers: { Origin: 'http://10.0.2.2:3070' },
     });
@@ -106,7 +106,7 @@ describe('registerRoute — CORS middleware', () => {
       app,
       defineTool({
         method: 'GET',
-        path: '/mobile/custom-origin',
+        path: '/device/custom-origin',
         auth: 'public',
         cors: { origins: ['https://allowed.example.com'] },
         sampleRate: 0,
@@ -114,12 +114,12 @@ describe('registerRoute — CORS middleware', () => {
       }),
     );
 
-    const ok = await app.request('http://x.test/api/mobile/custom-origin', {
+    const ok = await app.request('http://x.test/api/device/custom-origin', {
       headers: { Origin: 'https://allowed.example.com' },
     });
     expect(ok.headers.get('access-control-allow-origin')).toBe('https://allowed.example.com');
 
-    const denied = await app.request('http://x.test/api/mobile/custom-origin', {
+    const denied = await app.request('http://x.test/api/device/custom-origin', {
       headers: { Origin: 'http://tauri.localhost' },
     });
     // tauri.localhost is in the *default* allowlist but not this route's override.

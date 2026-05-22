@@ -99,7 +99,7 @@ describe('device tagging (E10)', () => {
     const f = routeToOpenApiFragment(
       defineTool({
         method: 'GET',
-        path: '/mobile/thing',
+        path: '/device/thing',
         auth: { kind: ['device'] },
         handler: () => new Response(),
       }),
@@ -114,19 +114,19 @@ describe('device tagging (E10)', () => {
     expect(f.operation.tags).toBeUndefined();
   });
 
-  it('the device-authed /api/mobile/* routes carry papercusp:device', () => {
+  it('the device-authed /api/device/* routes carry papercusp:device', () => {
     // The device-JWT routes gate on `auth: { kind: ['device'] }` and are
     // tagged. Public handshakes (`/pair`, `/desktop/mint-pair-token`) and
     // the loopback `/qr.svg` admit no device principal, so they are
     // deliberately untagged — the tag marks the device-authed surface,
     // not "about mobile".
-    const mobileFrags = allRouteFragments().filter((f) => f.path.startsWith('/api/mobile/'));
+    const mobileFrags = allRouteFragments().filter((f) => f.path.startsWith('/api/device/'));
     const tagged = mobileFrags.filter((f) =>
       ((f.operation.tags as string[] | undefined) ?? []).includes('papercusp:device'),
     );
     expect(tagged.length).toBeGreaterThan(10);
-    const pair = mobileFrags.find((f) => f.path === '/api/mobile/pair');
-    expect(pair, '/api/mobile/pair fragment exists').toBeTruthy();
+    const pair = mobileFrags.find((f) => f.path === '/api/device/pair');
+    expect(pair, '/api/device/pair fragment exists').toBeTruthy();
     expect((pair!.operation.tags as string[] | undefined) ?? []).not.toContain('papercusp:device');
   });
 });

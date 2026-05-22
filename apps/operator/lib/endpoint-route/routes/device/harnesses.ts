@@ -2,13 +2,13 @@
  * Mobile harness routes — Phase E4 batch M4 (endpoint-unification-2026-05-21).
  * Ported off `_hono/mobile.ts`.
  *
- *   GET  /mobile/harnesses                      mobile JWT
- *   GET  /mobile/harnesses/:slug                mobile JWT
- *   POST /mobile/harnesses/:slug/replan         mobile JWT
- *   POST /mobile/harnesses/:slug/smoke-test     mobile JWT
- *   POST /mobile/harnesses/:slug/cleanup        mobile JWT
- *   GET  /mobile/harnesses/:slug/log/stream     mobile JWT (SSE)
- *   GET  /mobile/running                        mobile JWT
+ *   GET  /device/harnesses                      mobile JWT
+ *   GET  /device/harnesses/:slug                mobile JWT
+ *   POST /device/harnesses/:slug/replan         mobile JWT
+ *   POST /device/harnesses/:slug/smoke-test     mobile JWT
+ *   POST /device/harnesses/:slug/cleanup        mobile JWT
+ *   GET  /device/harnesses/:slug/log/stream     mobile JWT (SSE)
+ *   GET  /device/running                        mobile JWT
  */
 import { join } from 'node:path';
 import { openSync, readSync, closeSync, statSync } from 'node:fs';
@@ -49,10 +49,10 @@ async function shimHarnessAction(
   });
 }
 
-/** GET /mobile/harnesses — every harness in the device's workspace. */
+/** GET /device/harnesses — every harness in the device's workspace. */
 const harnessesList = defineTool({
   method: 'GET',
-  path: '/mobile/harnesses',
+  path: '/device/harnesses',
   auth: DEVICE_AUTH,
   cors: true,
   async handler(_req, ctx) {
@@ -62,13 +62,13 @@ const harnessesList = defineTool({
 });
 
 /**
- * GET /mobile/harnesses/:slug — per-harness status. Same shape as the
+ * GET /device/harnesses/:slug — per-harness status. Same shape as the
  * desktop `/api/harness/:slug/status` so the Rust client + desktop see
  * identical fields.
  */
 const harnessDetail = defineTool({
   method: 'GET',
-  path: '/mobile/harnesses/:slug',
+  path: '/device/harnesses/:slug',
   auth: DEVICE_AUTH,
   cors: true,
   async handler(_req, ctx) {
@@ -86,7 +86,7 @@ const harnessDetail = defineTool({
 
 const harnessReplan = defineTool({
   method: 'POST',
-  path: '/mobile/harnesses/:slug/replan',
+  path: '/device/harnesses/:slug/replan',
   auth: DEVICE_AUTH,
   cors: true,
   async handler(req, ctx) {
@@ -97,7 +97,7 @@ const harnessReplan = defineTool({
 
 const harnessSmokeTest = defineTool({
   method: 'POST',
-  path: '/mobile/harnesses/:slug/smoke-test',
+  path: '/device/harnesses/:slug/smoke-test',
   auth: DEVICE_AUTH,
   cors: true,
   async handler(_req, ctx) {
@@ -107,7 +107,7 @@ const harnessSmokeTest = defineTool({
 
 const harnessCleanup = defineTool({
   method: 'POST',
-  path: '/mobile/harnesses/:slug/cleanup',
+  path: '/device/harnesses/:slug/cleanup',
   auth: DEVICE_AUTH,
   cors: true,
   async handler(_req, ctx) {
@@ -116,13 +116,13 @@ const harnessCleanup = defineTool({
 });
 
 /**
- * GET /mobile/harnesses/:slug/log/stream — SSE. Mirrors the desktop
+ * GET /device/harnesses/:slug/log/stream — SSE. Mirrors the desktop
  * `/api/harness/:slug/log/stream` (events: log / backfill-done) but
  * gated on the mobile JWT. Workspace check enforced; `?phase=` override.
  */
 const harnessLogStream = defineTool({
   method: 'GET',
-  path: '/mobile/harnesses/:slug/log/stream',
+  path: '/device/harnesses/:slug/log/stream',
   auth: DEVICE_AUTH,
   cors: true,
   // Pure transport — don't flood route_invocations with one row per
@@ -194,10 +194,10 @@ const harnessLogStream = defineTool({
   },
 });
 
-/** GET /mobile/running — active operator scan + active harness phases. */
+/** GET /device/running — active operator scan + active harness phases. */
 const running = defineTool({
   method: 'GET',
-  path: '/mobile/running',
+  path: '/device/running',
   auth: DEVICE_AUTH,
   cors: true,
   async handler(_req, ctx) {

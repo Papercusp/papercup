@@ -1,5 +1,5 @@
 /**
- * E4 tests (endpoint-unification-2026-05-21) — the migrated `/api/mobile/*`
+ * E4 tests (endpoint-unification-2026-05-21) — the migrated `/api/device/*`
  * routes.
  *
  * The 33 legacy `_hono/mobile.ts` routes were ported to `defineTool`
@@ -50,19 +50,19 @@ function routeByPath(
   return def;
 }
 
-describe('migrated /api/mobile/* routes — handler behavior (E4)', () => {
-  it('GET /mobile/voice returns the 426 "use a websocket" stub', async () => {
-    const def = routeByPath(mobileVoice as RouteDefinition<never>[], 'GET', '/mobile/voice');
-    const res = await def.handler(new Request('http://x.test/api/mobile/voice'), ctx());
+describe('migrated /api/device/* routes — handler behavior (E4)', () => {
+  it('GET /device/voice returns the 426 "use a websocket" stub', async () => {
+    const def = routeByPath(mobileVoice as RouteDefinition<never>[], 'GET', '/device/voice');
+    const res = await def.handler(new Request('http://x.test/api/device/voice'), ctx());
     expect(res.status).toBe(426);
     const body = (await res.json()) as { error: string; upgrade: string };
     expect(body.error).toBe('use_websocket');
     expect(body.upgrade).toContain('wss://');
   });
 
-  it('GET /mobile/runtime-config maps the principal onto the config payload', async () => {
-    const def = routeByPath(mobilePair as RouteDefinition<never>[], 'GET', '/mobile/runtime-config');
-    const res = await def.handler(new Request('http://x.test/api/mobile/runtime-config'), ctx());
+  it('GET /device/runtime-config maps the principal onto the config payload', async () => {
+    const def = routeByPath(mobilePair as RouteDefinition<never>[], 'GET', '/device/runtime-config');
+    const res = await def.handler(new Request('http://x.test/api/device/runtime-config'), ctx());
     expect(res.status).toBe(200);
     const body = (await res.json()) as {
       workspaceId: string;
@@ -72,7 +72,7 @@ describe('migrated /api/mobile/* routes — handler behavior (E4)', () => {
     // claims.workspace_id → principal.workspaceId on the migrated route.
     expect(body.workspaceId).toBe('ws-e4');
     expect(body.deviceKind).toBe('mobile');
-    expect(body.voiceWs.path).toBe('/api/mobile/voice');
+    expect(body.voiceWs.path).toBe('/api/device/voice');
   });
 
   it('every migrated mobile route carries an auth stance; cross-origin ones declare cors', () => {
@@ -84,7 +84,7 @@ describe('migrated /api/mobile/* routes — handler behavior (E4)', () => {
       expect(def.auth, `${def.method} ${def.path} must declare auth`).toBeDefined();
       // mint-pair-token is loopback-only (desktop, same-origin) — no cors.
       // Every other route the phone reaches cross-origin → cors: true.
-      if (def.path !== '/mobile/desktop/mint-pair-token') {
+      if (def.path !== '/device/desktop/mint-pair-token') {
         expect(def.cors, `${def.method} ${def.path} should be cors:true`).toBe(true);
       }
     }
@@ -95,7 +95,7 @@ describe('migrated /api/mobile/* routes — handler behavior (E4)', () => {
     const pub = pairRoutes.filter((r) => r.auth === 'public').map((r) => r.path).sort();
     // /pair (one-time token) and /desktop/mint-pair-token (loopback) are
     // the only non-JWT routes in the pair family.
-    expect(pub).toEqual(['/mobile/desktop/mint-pair-token', '/mobile/pair']);
+    expect(pub).toEqual(['/device/desktop/mint-pair-token', '/device/pair']);
 
     const jwtGated = pairRoutes.filter((r) => r.auth !== 'public');
     for (const def of jwtGated) {

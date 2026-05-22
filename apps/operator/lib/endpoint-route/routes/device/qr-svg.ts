@@ -1,6 +1,6 @@
 /**
- * GET /api/mobile/qr.svg?payload=<json> — server-rendered pairing QR.
- * Ported from app/api/mobile/qr.svg/route.ts. `auth: 'public'` — the
+ * GET /api/device/qr.svg?payload=<json> — server-rendered pairing QR.
+ * Ported from app/api/device/qr.svg/route.ts. `auth: 'public'` — the
  * route keeps its own loopback Host-header gate (the payload carries a
  * one-time 5-min pairToken).
  */
@@ -11,7 +11,7 @@ const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '::1', '[::1]']);
 
 export default defineTool({
   method: 'GET',
-  path: '/mobile/qr.svg',
+  path: '/device/qr.svg',
   auth: 'public',
   async handler(req) {
     const host = (req.headers.get('host') ?? '').split(':')[0].toLowerCase();

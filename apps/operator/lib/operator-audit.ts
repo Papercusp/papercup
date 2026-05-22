@@ -91,7 +91,7 @@ export async function writeOperatorAudit(ev: OperatorAuditEvent): Promise<void> 
         workspaceId: workspaceId,
       });
     });
-    // Mobile sync: phone refetches /api/mobile/actions/recent.
+    // Mobile sync: phone refetches /api/device/actions/recent.
     void notifySyncInvalidate('auditLog.recent').catch(() => {});
   } catch (err) {
     // Best-effort; never block the panel on a missing audit row.

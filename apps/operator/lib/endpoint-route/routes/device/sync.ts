@@ -2,8 +2,8 @@
  * Mobile sync + voice-tool-proxy routes — Phase E4 batch M5
  * (endpoint-unification-2026-05-21). Ported off `_hono/mobile.ts`.
  *
- *   GET  /mobile/rest-query        device JWT (via ?token= — see tokenIn)
- *   POST /mobile/voice-tool/:name  device JWT
+ *   GET  /device/rest-query        device JWT (via ?token= — see tokenIn)
+ *   POST /device/voice-tool/:name  device JWT
  *
  * `/rest-query` reads the device JWT from `?token=` (`auth.tokenIn`)
  * because libs/sync's polling fetcher uses a bare `fetch()` and cannot
@@ -16,7 +16,7 @@ import { listHarnessesFor, harnessStatusFor } from '@/lib/mobile-harnesses';
 import { readCandidates, refreshCandidates } from '@/lib/operator-standing-candidates';
 
 /**
- * GET /mobile/rest-query — REST query endpoint for libs/sync's polling
+ * GET /device/rest-query — REST query endpoint for libs/sync's polling
  * fetcher. `?token=<jwt>&name=<queryName>&args=<json>` →
  * `{ rows, version }` (the shape libs/sync expects).
  *
@@ -26,7 +26,7 @@ import { readCandidates, refreshCandidates } from '@/lib/operator-standing-candi
  */
 const restQuery = defineTool({
   method: 'GET',
-  path: '/mobile/rest-query',
+  path: '/device/rest-query',
   auth: { kind: ['device'], tokenIn: ['query'] },
   cors: true,
   async handler(req, ctx) {
@@ -78,7 +78,7 @@ const restQuery = defineTool({
           return Response.json({ error: `unknown query: ${name}` }, { status: 400 });
       }
     } catch (e) {
-      console.error('[/mobile/rest-query]', name, e);
+      console.error('[/device/rest-query]', name, e);
       return Response.json(
         { error: e instanceof Error ? e.message : String(e) },
         { status: 500 },
@@ -88,7 +88,7 @@ const restQuery = defineTool({
 });
 
 /**
- * POST /mobile/voice-tool/:name — server-side proxy for phone-side EL
+ * POST /device/voice-tool/:name — server-side proxy for phone-side EL
  * voice tools that don't touch the phone UI. The Rust client's
  * VoiceManager dispatcher falls through to here for ~30 of the 37 tools
  * the EL agent has configured. EL normalizes registry ids to underscore
@@ -99,7 +99,7 @@ const restQuery = defineTool({
  */
 const voiceToolProxy = defineTool({
   method: 'POST',
-  path: '/mobile/voice-tool/:name',
+  path: '/device/voice-tool/:name',
   auth: DEVICE_AUTH,
   cors: true,
   async handler(req, ctx) {

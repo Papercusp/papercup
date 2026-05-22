@@ -1,13 +1,13 @@
 /**
- * Mobile voice routes — Phase E4 batch M2 (endpoint-unification-2026-05-21).
- * Ported off `_hono/mobile.ts`; URLs unchanged.
+ * Device voice routes — Phase E4 batch M2 (endpoint-unification-2026-05-21).
+ * Ported off `_hono/mobile.ts`; URLs renamed to `/api/device/*` (P2b).
  *
- *   GET    /mobile/voice-lease            mobile JWT
- *   POST   /mobile/voice-lease/claim      mobile JWT
- *   POST   /mobile/voice-lease/heartbeat  mobile JWT
- *   DELETE /mobile/voice-lease            mobile JWT
- *   GET    /mobile/voice-session-init     mobile JWT
- *   GET    /mobile/voice                  mobile JWT (HTTP stub — real path is WS)
+ *   GET    /device/voice-lease            mobile JWT
+ *   POST   /device/voice-lease/claim      mobile JWT
+ *   POST   /device/voice-lease/heartbeat  mobile JWT
+ *   DELETE /device/voice-lease            mobile JWT
+ *   GET    /device/voice-session-init     mobile JWT
+ *   GET    /device/voice                  mobile JWT (HTTP stub — real path is WS)
  */
 import { defineTool } from '@papercusp/agent-mcp';
 import { DEVICE_AUTH, devicePrincipal } from './_shared';
@@ -17,7 +17,7 @@ import { claimVoiceLease, releaseVoiceLease, readVoiceLease } from '@/lib/voice-
 
 const voiceLeaseGet = defineTool({
   method: 'GET',
-  path: '/mobile/voice-lease',
+  path: '/device/voice-lease',
   auth: DEVICE_AUTH,
   cors: true,
   async handler(_req, ctx) {
@@ -28,7 +28,7 @@ const voiceLeaseGet = defineTool({
 
 const voiceLeaseClaim = defineTool({
   method: 'POST',
-  path: '/mobile/voice-lease/claim',
+  path: '/device/voice-lease/claim',
   auth: DEVICE_AUTH,
   cors: true,
   async handler(_req, ctx) {
@@ -44,7 +44,7 @@ const voiceLeaseClaim = defineTool({
 
 const voiceLeaseHeartbeat = defineTool({
   method: 'POST',
-  path: '/mobile/voice-lease/heartbeat',
+  path: '/device/voice-lease/heartbeat',
   auth: DEVICE_AUTH,
   cors: true,
   async handler(_req, ctx) {
@@ -60,7 +60,7 @@ const voiceLeaseHeartbeat = defineTool({
 
 const voiceLeaseRelease = defineTool({
   method: 'DELETE',
-  path: '/mobile/voice-lease',
+  path: '/device/voice-lease',
   auth: DEVICE_AUTH,
   cors: true,
   async handler(_req, ctx) {
@@ -121,7 +121,7 @@ async function mintMobileElToken(
 
 const voiceSessionInit = defineTool({
   method: 'GET',
-  path: '/mobile/voice-session-init',
+  path: '/device/voice-session-init',
   auth: DEVICE_AUTH,
   cors: true,
   async handler(req, ctx) {
@@ -236,18 +236,18 @@ const voiceSessionInit = defineTool({
 });
 
 /**
- * GET /mobile/voice — HTTP stub. The real voice channel is a WebSocket
+ * GET /device/voice — HTTP stub. The real voice channel is a WebSocket
  * upgrade handled by the `ws` server (see `mobile-voice-ws.ts`); a plain
  * GET here just tells a confused client to use the WS endpoint.
  */
 const voiceStub = defineTool({
   method: 'GET',
-  path: '/mobile/voice',
+  path: '/device/voice',
   auth: DEVICE_AUTH,
   cors: true,
   handler() {
     return Response.json(
-      { error: 'use_websocket', upgrade: 'wss://<host>/api/mobile/voice?token=...' },
+      { error: 'use_websocket', upgrade: 'wss://<host>/api/device/voice?token=...' },
       { status: 426 },
     );
   },

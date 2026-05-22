@@ -1,5 +1,5 @@
 /**
- * WS transport for /api/mobile/voice. Pure pipe: validate JWT, forward
+ * WS transport for /api/device/voice. Pure pipe: validate JWT, forward
  * transcripts to the dispatcher, write back any frames the dispatcher
  * emits. All logic lives in `mobile-voice-dispatch.ts` (and is unit-tested).
  *
@@ -17,7 +17,7 @@
  *
  * Port handling: tries `MOBILE_VOICE_WS_PORT` (default 3068), falls back
  * through the next 8 ports on EADDRINUSE. The chosen port is exported via
- * `getMobileVoicePort()` and surfaced through `/api/mobile/runtime-config`
+ * `getMobileVoicePort()` and surfaced through `/api/device/runtime-config`
  * so the phone connects deterministically. If all ports fail, logs loudly
  * — silent failure on this path leaves voice mysteriously dead.
  *
@@ -60,7 +60,7 @@ export function startMobileVoiceWs(): void {
 async function tryListen(port: number, attempt: number): Promise<void> {
   const wss = new WebSocketServer({
     port,
-    path: '/api/mobile/voice',
+    path: '/api/device/voice',
     // Accept any `papercusp.bearer.*` subprotocol the client offers
     // (header-auth path). Clients on the legacy `?token=` path send no
     // subprotocol and `handleProtocols` is not invoked, so the connection
@@ -78,7 +78,7 @@ async function tryListen(port: number, attempt: number): Promise<void> {
 
   wss.on('listening', () => {
     mvState.chosenPort = port;
-    console.log(`[mobile-voice] listening on :${port}/api/mobile/voice`);
+    console.log(`[mobile-voice] listening on :${port}/api/device/voice`);
   });
 
   wss.on('error', (e) => {

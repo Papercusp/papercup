@@ -61,7 +61,7 @@ export function runBootstrap(): void {
   startMobileInterventionWatcher();
 
   // Mobile DDL at host startup (Phase E3, endpoint-unification-2026-05-21).
-  // Previously ran lazily on the first `/api/mobile/*` request inside the
+  // Previously ran lazily on the first `/api/device/*` request inside the
   // legacy `_hono/mobile.ts` router; moved here so a mobile `defineTool`
   // (which never touches that router) finds the tables already present.
   // `ensureMobileDevicesTable` is globalThis-guarded + `CREATE … IF NOT

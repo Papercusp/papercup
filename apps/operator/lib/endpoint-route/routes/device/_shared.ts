@@ -1,5 +1,5 @@
 /**
- * Shared helpers for the device-facing `/api/mobile/*` routes.
+ * Shared helpers for the device-facing `/api/device/*` routes.
  *
  * Ported off the legacy `_hono/mobile.ts` Hono router (Phase E4,
  * endpoint-unification-2026-05-21). The route-stack's auth step resolves

@@ -1,16 +1,16 @@
 /**
- * Mobile pair + device-lifecycle routes — Phase E4 batch M1
- * (endpoint-unification-2026-05-21). Ported verbatim off
- * `_hono/mobile.ts`; URLs unchanged (`/api/mobile/*`).
+ * Device pairing + lifecycle routes — Phase E4 batch M1
+ * (endpoint-unification-2026-05-21). Ported off `_hono/mobile.ts`;
+ * URLs renamed `/api/mobile/*` → `/api/device/*` (P2b).
  *
- *   POST   /mobile/desktop/mint-pair-token   loopback-only
- *   POST   /mobile/pair                      unauthenticated (one-time token)
- *   POST   /mobile/workspace/switch          mobile JWT
- *   GET    /mobile/devices                   mobile JWT
- *   DELETE /mobile/devices/:deviceId         mobile JWT
- *   GET    /mobile/runtime-config            mobile JWT
- *   GET    /mobile/workspaces                mobile JWT
- *   POST   /mobile/heartbeat                 mobile JWT
+ *   POST   /device/desktop/mint-pair-token   loopback-only
+ *   POST   /device/pair                      unauthenticated (one-time token)
+ *   POST   /device/workspace/switch          mobile JWT
+ *   GET    /device/devices                   mobile JWT
+ *   DELETE /device/devices/:deviceId         mobile JWT
+ *   GET    /device/runtime-config            mobile JWT
+ *   GET    /device/workspaces                mobile JWT
+ *   POST   /device/heartbeat                 mobile JWT
  */
 import { networkInterfaces } from 'node:os';
 import { z } from 'zod';
@@ -51,7 +51,7 @@ function lanAddress(): string | null {
 }
 
 /**
- * POST /mobile/desktop/mint-pair-token — loopback-only. Launched from
+ * POST /device/desktop/mint-pair-token — loopback-only. Launched from
  * the desktop settings UI; the response carries the QR payload the
  * phone scans. Host-header loopback gate (spoofable by a determined
  * LAN attacker — see the legacy comment; real exposure needs a 127.0.0.1
@@ -59,7 +59,7 @@ function lanAddress(): string | null {
  */
 const mintPairTokenRoute = defineTool({
   method: 'POST',
-  path: '/mobile/desktop/mint-pair-token',
+  path: '/device/desktop/mint-pair-token',
   auth: 'public',
   // No `cors` — loopback-only (Host-gated), called same-origin by the
   // desktop operator UI; nothing reaches it cross-origin.
@@ -104,12 +104,12 @@ const mintPairTokenRoute = defineTool({
 });
 
 /**
- * POST /mobile/pair — phone redeems a one-time pair token for a
+ * POST /device/pair — phone redeems a one-time pair token for a
  * long-lived device JWT. Unauthenticated by design.
  */
 const pairRoute = defineTool({
   method: 'POST',
-  path: '/mobile/pair',
+  path: '/device/pair',
   auth: 'public',
   cors: true,
   input: z.object({ pairToken: z.string().min(1) }),
@@ -143,12 +143,12 @@ const pairRoute = defineTool({
 });
 
 /**
- * POST /mobile/workspace/switch — re-issue the device token bound to a
+ * POST /device/workspace/switch — re-issue the device token bound to a
  * different workspace. The target must exist in the local registry.
  */
 const workspaceSwitchRoute = defineTool({
   method: 'POST',
-  path: '/mobile/workspace/switch',
+  path: '/device/workspace/switch',
   auth: DEVICE_AUTH,
   cors: true,
   input: z.object({ workspaceId: z.string().min(1) }),
@@ -167,10 +167,10 @@ const workspaceSwitchRoute = defineTool({
   },
 });
 
-/** GET /mobile/devices — paired devices in this device's workspace. */
+/** GET /device/devices — paired devices in this device's workspace. */
 const devicesListRoute = defineTool({
   method: 'GET',
-  path: '/mobile/devices',
+  path: '/device/devices',
   auth: DEVICE_AUTH,
   cors: true,
   async handler(_req, ctx) {
@@ -188,10 +188,10 @@ const devicesListRoute = defineTool({
   },
 });
 
-/** DELETE /mobile/devices/:deviceId — revoke a paired device. */
+/** DELETE /device/devices/:deviceId — revoke a paired device. */
 const deviceRevokeRoute = defineTool({
   method: 'DELETE',
-  path: '/mobile/devices/:deviceId',
+  path: '/device/devices/:deviceId',
   auth: DEVICE_AUTH,
   cors: true,
   async handler(_req, ctx) {
@@ -201,10 +201,10 @@ const deviceRevokeRoute = defineTool({
   },
 });
 
-/** GET /mobile/runtime-config — config the phone needs after pairing. */
+/** GET /device/runtime-config — config the phone needs after pairing. */
 const runtimeConfigRoute = defineTool({
   method: 'GET',
-  path: '/mobile/runtime-config',
+  path: '/device/runtime-config',
   auth: DEVICE_AUTH,
   cors: true,
   async handler(_req, ctx) {
@@ -221,21 +221,21 @@ const runtimeConfigRoute = defineTool({
         // null when the voice WS failed to bind — phone shows
         // "voice unavailable" instead of silently failing to connect.
         port: getMobileVoicePort(),
-        path: '/api/mobile/voice',
+        path: '/api/device/voice',
       },
     });
   },
 });
 
 /**
- * GET /mobile/workspaces — every workspace visible to this device.
+ * GET /device/workspaces — every workspace visible to this device.
  * A paired phone implicitly belongs to the desktop user, so it sees the
  * full local registry. Field name `name` matches the Rust client's
  * `WorkspaceItem` decoder (`label` made the iOS Settings tab fail).
  */
 const workspacesRoute = defineTool({
   method: 'GET',
-  path: '/mobile/workspaces',
+  path: '/device/workspaces',
   auth: DEVICE_AUTH,
   cors: true,
   async handler(_req, ctx) {
@@ -251,10 +251,10 @@ const workspacesRoute = defineTool({
   },
 });
 
-/** POST /mobile/heartbeat — bump last_seen for the "active 3m ago" badge. */
+/** POST /device/heartbeat — bump last_seen for the "active 3m ago" badge. */
 const heartbeatRoute = defineTool({
   method: 'POST',
-  path: '/mobile/heartbeat',
+  path: '/device/heartbeat',
   auth: DEVICE_AUTH,
   cors: true,
   async handler(_req, ctx) {

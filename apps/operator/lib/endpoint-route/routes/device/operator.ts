@@ -2,16 +2,16 @@
  * Mobile operator-surface routes — Phase E4 batch M3
  * (endpoint-unification-2026-05-21). Ported off `_hono/mobile.ts`.
  *
- *   GET    /mobile/notifications/recent             mobile JWT
- *   GET    /mobile/actions/recent                   mobile JWT
- *   GET    /mobile/operator/pause                   mobile JWT
- *   POST   /mobile/operator/pause                   mobile JWT
- *   DELETE /mobile/operator/pause                   mobile JWT
- *   GET    /mobile/operator/cards                   mobile JWT
- *   POST   /mobile/operator/cards/:id/dispatch      mobile JWT
- *   POST   /mobile/operator/cards/:id/dismiss       mobile JWT
- *   GET    /mobile/operator/standing-candidates     mobile JWT
- *   POST   /mobile/operator/standing-candidates/decide  mobile JWT
+ *   GET    /device/notifications/recent             mobile JWT
+ *   GET    /device/actions/recent                   mobile JWT
+ *   GET    /device/operator/pause                   mobile JWT
+ *   POST   /device/operator/pause                   mobile JWT
+ *   DELETE /device/operator/pause                   mobile JWT
+ *   GET    /device/operator/cards                   mobile JWT
+ *   POST   /device/operator/cards/:id/dispatch      mobile JWT
+ *   POST   /device/operator/cards/:id/dismiss       mobile JWT
+ *   GET    /device/operator/standing-candidates     mobile JWT
+ *   POST   /device/operator/standing-candidates/decide  mobile JWT
  */
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
@@ -38,7 +38,7 @@ function limitParam(req: Request): number {
 
 const notificationsRecent = defineTool({
   method: 'GET',
-  path: '/mobile/notifications/recent',
+  path: '/device/notifications/recent',
   auth: DEVICE_AUTH,
   cors: true,
   async handler(req, ctx) {
@@ -49,7 +49,7 @@ const notificationsRecent = defineTool({
 
 const actionsRecent = defineTool({
   method: 'GET',
-  path: '/mobile/actions/recent',
+  path: '/device/actions/recent',
   auth: DEVICE_AUTH,
   cors: true,
   async handler(req, ctx) {
@@ -62,7 +62,7 @@ const actionsRecent = defineTool({
 
 const pauseGet = defineTool({
   method: 'GET',
-  path: '/mobile/operator/pause',
+  path: '/device/operator/pause',
   auth: DEVICE_AUTH,
   cors: true,
   async handler() {
@@ -72,7 +72,7 @@ const pauseGet = defineTool({
 
 const pauseSet = defineTool({
   method: 'POST',
-  path: '/mobile/operator/pause',
+  path: '/device/operator/pause',
   auth: DEVICE_AUTH,
   cors: true,
   async handler(_req, ctx) {
@@ -83,7 +83,7 @@ const pauseSet = defineTool({
 
 const pauseClear = defineTool({
   method: 'DELETE',
-  path: '/mobile/operator/pause',
+  path: '/device/operator/pause',
   auth: DEVICE_AUTH,
   cors: true,
   async handler() {
@@ -96,7 +96,7 @@ const pauseClear = defineTool({
 
 const cardsList = defineTool({
   method: 'GET',
-  path: '/mobile/operator/cards',
+  path: '/device/operator/cards',
   auth: DEVICE_AUTH,
   cors: true,
   async handler() {
@@ -106,7 +106,7 @@ const cardsList = defineTool({
 
 const cardDispatch = defineTool({
   method: 'POST',
-  path: '/mobile/operator/cards/:id/dispatch',
+  path: '/device/operator/cards/:id/dispatch',
   auth: DEVICE_AUTH,
   cors: true,
   async handler(_req, ctx) {
@@ -120,7 +120,7 @@ const cardDispatch = defineTool({
 
 const cardDismiss = defineTool({
   method: 'POST',
-  path: '/mobile/operator/cards/:id/dismiss',
+  path: '/device/operator/cards/:id/dismiss',
   auth: DEVICE_AUTH,
   cors: true,
   async handler(_req, ctx) {
@@ -136,7 +136,7 @@ const cardDismiss = defineTool({
 
 const standingCandidatesList = defineTool({
   method: 'GET',
-  path: '/mobile/operator/standing-candidates',
+  path: '/device/operator/standing-candidates',
   auth: DEVICE_AUTH,
   cors: true,
   async handler() {
@@ -147,7 +147,7 @@ const standingCandidatesList = defineTool({
 
 const standingCandidatesDecide = defineTool({
   method: 'POST',
-  path: '/mobile/operator/standing-candidates/decide',
+  path: '/device/operator/standing-candidates/decide',
   auth: DEVICE_AUTH,
   cors: true,
   input: z.object({
