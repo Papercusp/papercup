@@ -90,6 +90,22 @@ describe('plan-events', () => {
     expect(onlyCreated.map((e) => e.plan_slug)).toEqual(['a', 'b']);
   });
 
+  it('round-trips an agent_launched event (plan-agent-launch P-014)', async () => {
+    await emitPlanEvent({
+      planSlug: 'launchable-plan',
+      event: 'agent_launched',
+      after: 42,
+      detail: 'advance phase 3',
+      identity: null,
+    });
+    const launched = await readPlanEvents({ events: ['agent_launched'] });
+    expect(launched).toHaveLength(1);
+    expect(launched[0]?.plan_slug).toBe('launchable-plan');
+    expect(launched[0]?.event).toBe('agent_launched');
+    expect(launched[0]?.after).toBe(42);
+    expect(launched[0]?.detail).toBe('advance phase 3');
+  });
+
   it('emitPlanEventForCaller never throws — even with a bad coord dir', async () => {
     // Point coord dir at a path we cannot write (a regular file).
     const sentinel = join(tmp, 'sentinel');

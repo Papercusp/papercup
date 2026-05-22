@@ -30,6 +30,7 @@ import { getRepoRoot } from './source';
 import { insertPlanRun } from './runs';
 import { executePlanAgentTurn } from './turn';
 import { resolveAgentIdentity, type ResolveIdentityCtx } from '../coordination/identity';
+import { emitPlanEventForCaller } from '../coordination/plan-events';
 
 const SU_ROLES = [
   'scoper',
@@ -150,7 +151,16 @@ async function launchHandler(input: LaunchArgs, ctx: LaunchCtx) {
   });
   ctx.emit('run_started', { runId, sessionId });
 
-  // 5. Run the agent's first turn — stream + persist turns + settle
+  // 5. Emit the plan-event — `agent_launched` is plan-scoped activity
+  //    the feed surfaces (P-014). Best-effort; never blocks the run.
+  await emitPlanEventForCaller(ctx, {
+    planSlug: input.slug,
+    event: 'agent_launched',
+    after: runId,
+    detail: title,
+  });
+
+  // 6. Run the agent's first turn — stream + persist turns + settle
   //    status. Shared with resume (P-013); see turn.ts.
   const { status, costUsd } = await executePlanAgentTurn({
     runId,

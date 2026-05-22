@@ -27,12 +27,18 @@ import {
 } from './identity';
 
 /**
- * The plan-event kinds that an actual `plans:*` write verb emits. This
- * is deliberately exhaustive over emitters — every member here has a
- * call site (audit F-M3). When a plan-level status verb is added
+ * The plan-event kinds that an actual `plans:*` verb emits. This is
+ * deliberately exhaustive over emitters — every member here has a call
+ * site (audit F-M3). When a plan-level status verb is added
  * (draft→active→shipped on the frontmatter), reintroduce a
  * `status_changed` / `completed` member here *together with* its
  * emitter — not before.
+ *
+ * `agent_launched` is emitted by `plans:launch` (plan-agent-launch
+ * P-014) — not a document write, but a plan-scoped event the activity
+ * feed surfaces. A *resume* is run-internal and emits no plan-event:
+ * the launch is the plan-level fact; continuations live in the run's
+ * own transcript.
  */
 export type PlanEventType =
   | 'created'
@@ -40,7 +46,8 @@ export type PlanEventType =
   | 'decision_added'
   | 'item_added'
   | 'item_status_changed'
-  | 'promoted';
+  | 'promoted'
+  | 'agent_launched';
 
 export interface EmitPlanEventOpts {
   planSlug: string;
