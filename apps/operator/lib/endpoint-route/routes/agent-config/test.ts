@@ -1,16 +1,22 @@
 /**
  * POST /api/agent-config/test
  *
- * Fires a one-shot prompt at the active backend to verify the CLI works.
- * Returns { ok, finalText, durationMs, costUsd, error? }.
+ * Fires a one-shot PONG prompt at the Meridian router to verify the
+ * stateless LLM path works (auth token + reachability). Returns
+ * { ok, finalText, durationMs, costUsd, error? }.
  *
- * Ported from app/api/agent-config/test/route.ts. `auth: 'public'` —
- * preserves the original behavior. The 30s in-handler kill timer is kept
- * as-is (the route-stack's own timeout would also catch it, but the
- * handler wants its own clean "timed out — likely waiting on auth" msg).
+ * NOTE: this probes the **meridian** backend specifically, not the
+ * user-configured omp/claude-code CLI subprocess. Meridian is what
+ * llm-testing + haiku + most non-MCP-bearing callers go through; the
+ * subprocess CLIs are still used for agent-loop turns (operator brain,
+ * oracle, delegate, scan, plans), and those validate themselves the
+ * first time they run. A "Meridian unreachable" failure here means the
+ * background summary path is broken; the brain may still work.
  */
 import { runAgentChat } from '@/lib/agent-chat-stream';
 import { defineTool } from '@papercusp/agent-mcp';
+
+const TEST_MODEL = process.env.PAPERCUSP_AGENT_TEST_MODEL ?? 'claude-haiku-4-5';
 
 export default defineTool({
   method: 'POST',
@@ -32,10 +38,13 @@ export default defineTool({
       }, 30_000);
       try {
         for await (const ev of runAgentChat({
+          backend: 'meridian',
+          model: TEST_MODEL,
           promptText: 'Reply with exactly the four characters: PONG',
+          maxTokens: 16,
           signal: ac.signal,
         })) {
-          if (ev.type === 'delta') finalText += ev.text;
+          if (ev.type === 'delta') finalText = ev.text;
           else if (ev.type === 'result') {
             if (ev.finalText) finalText = ev.finalText;
             costUsd = ev.costUsd;
@@ -51,11 +60,11 @@ export default defineTool({
     }
     if (timedOut && !errorMsg) {
       errorMsg =
-        'timed out after 30s — backend likely waiting on auth (run `claude /login` or `omp /login`, or set ANTHROPIC_API_KEY)';
+        'timed out after 30s — Meridian likely unreachable or unauthenticated (run `omp` once, or check ~/.omp/agent/auth.json)';
     }
     if (!errorMsg && finalText.trim().length === 0) {
       errorMsg =
-        'backend exited cleanly but produced no output — check that the prompt reached the model (and that it has API access)';
+        'meridian returned cleanly but produced no output — check that the model is available in Meridian routing';
     }
 
     const trimmed = finalText.trim();

@@ -11,9 +11,10 @@
  *   - plan-revision rationale auto-summary (`plans/revision-summary.ts`,
  *     plan-agent-launch P-007).
  *
- * Extracted from `delegate-summary.ts` so plan code can reuse it
- * without importing the delegate/voice surface (plan-agent-launch
- * D-004 keeps plan tooling free of `lib/delegates` coupling).
+ * Routes through `runAgentChat` with `backend: 'meridian'` — stateless
+ * HTTP to the local Meridian router, no omp/claude-code subprocess.
+ * Background summaries never need the agent loop (no MCP, no tools),
+ * so the subprocess spawn is pure overhead.
  */
 
 import { runAgentChat } from './agent-chat-stream';
@@ -21,29 +22,36 @@ import { runAgentChat } from './agent-chat-stream';
 const HAIKU_MODEL = process.env.PAPERCUSP_HAIKU_MODEL ?? 'claude-haiku-4-5';
 
 /**
- * Run the haiku model (claude-code or omp, per AGENT_BACKEND) on a
- * single prompt. Returns the trimmed text, or `null` on any failure —
- * this is best-effort and never throws. Bounded to ~5s: the callers
- * are background summarisers, not interactive turns.
+ * Run the haiku model on a single prompt via Meridian. Returns the
+ * trimmed text, or `null` on any failure — this is best-effort and
+ * never throws. Bounded to ~15s: the callers are background
+ * summarisers, not interactive turns. The bound is wide enough to
+ * absorb the cold-cache first-call cost (~6-7s) plus one 529 retry
+ * (2s backoff) without surfacing failure to callers.
  *
- * `maxTokens` is informational; chat-stream exposes no per-spawn cap
- * (the prompt itself bounds the output).
+ * `maxTokens` flows through to the meridian backend as `max_tokens`
+ * (omp/claude-code ignored it; meridian honors it).
  */
 export async function runHaiku(
   prompt: string,
-  _maxTokens = 200,
+  maxTokens = 200,
 ): Promise<string | null> {
   const ac = new AbortController();
-  const killer = setTimeout(() => ac.abort(), 5000);
+  const killer = setTimeout(() => ac.abort(), 15_000);
   let out = '';
   let failed = false;
   try {
     for await (const ev of runAgentChat({
+      backend: 'meridian',
       promptText: prompt,
       model: HAIKU_MODEL,
+      maxTokens,
       signal: ac.signal,
     })) {
-      if (ev.type === 'delta') out += ev.text;
+      // meridian backend emits a single `delta` with the full final
+      // text (non-streaming round-trip), then a `result` with the
+      // same text. Overwrite — don't accumulate, or you'll double it.
+      if (ev.type === 'delta') out = ev.text;
       else if (ev.type === 'result') out = ev.finalText || out;
       else if (ev.type === 'error') {
         failed = true;
