@@ -15,7 +15,7 @@ owner: avi@storewolf.com
 2026-05-21). **Phase 1 (revision spine) is complete — 5/5.**
 **Phase 2 (conversation linkage): P-006 + P-009 built; P-007 +
 P-008 corrected to depend on Phase 3.** **Phase 3 (agent launch)
-is in flight — P-010 done.**
+is in flight — P-010 + P-011 done.**
 
 Phase 1: P-001 (`plan_revisions` schema); P-002 + P-003 (`rationale`
 + revision capture on all seven `plans:*` write verbs via the shared
@@ -39,22 +39,31 @@ Phase 3: P-010 `done` — `ensurePlanRunsTable()` +
 `harness_shared.plan_runs` (launches-only) + `harness_shared.plan_run_turns`
 (transcript, FK → `plan_runs`) tables, flag-guarded and wired into
 the `instrumentation-node.ts` prewarm — same pattern as P-001.
+P-011 `done` — the plan-agent runner (`runner.ts`): `runPlanAgent`,
+a `runAgentChat` wrapper (P-009 bundle as `systemPromptText`,
+`sessionMode: 'force'` for create-or-resume); `buildPlanAgentMcpConfig`
+emits the `?plan_run=` MCP URL (D-016); the tool surface is native
+coding tools + the operator world-model + `plans:*` (D-017). No
+`lib/delegates` coupling.
 
-tsc-clean (549, 0 new errors), 110 plans tests + 8 transport tests
-green. 16 decisions, no open questions.
+tsc-clean (0 errors in touched files; tree 551 is other agents'
+churn), 120 plans tests + 8 transport tests green. 17 decisions, no
+open questions.
 
 **Verification debt:** the live PG paths (`plan_revisions` /
 `plan_runs` / `plan_run_turns` DDL + INSERT/SELECT, the backfill's
 idempotency check) run on first operator boot / first invocation and
 are formally re-verified in P-027 — the working shell cannot reach
-the auth-gated embedded PG directly. All git + pure logic is verified
-now (110 tests, incl. real-git `readPlanFileAtCommit` integration,
-`resolvePlanSessionRef`, and the `buildPlanContextBundle` seed
-assembler).
+the auth-gated embedded PG directly. `runPlanAgent` itself spawns an
+agent process; its live behaviour is verified when P-012 exercises
+it. All git + pure logic is verified now (120 tests, incl. real-git
+`readPlanFileAtCommit` integration, `resolvePlanSessionRef`, the
+`buildPlanContextBundle` seed assembler, and the runner's
+`buildPlanAgentMcpUrl` / tool-surface constants).
 
-**Next:** P-011 — the plan-agent runner, a `runAgentChat` sibling
-surface (plan-execution persona + `buildPlanAgentMcpConfig`, no
-`lib/delegates` dependency), then P-012 (`plans:launch`). P-007 and
+**Next:** P-012 — `plans:launch { slug, note? }`: assemble the
+P-009 bundle, mint a `session_id`, run via the P-011 runner, insert
+the `plan_runs` row, persist turns to `plan_run_turns`. P-007 and
 P-008 unblock once P-012 lands.
 
 ## Background
@@ -353,7 +362,7 @@ Build the plan-agent runner as a `runAgentChat` sibling surface, then
 wire the launch and its history on top.
 
 - **P-010** `done` `ensurePlanRunsTable()` + `ensurePlanRunTurnsTable()` in `ensure-schema.ts` — `CREATE TABLE IF NOT EXISTS` for `harness_shared.plan_runs` (launches-only, indexed on `plan_slug` for the `plans:runs` history query) and `harness_shared.plan_run_turns` (FK → `plan_runs.id`, `UNIQUE(plan_run_id, seq)`); flag-guarded, grants best-effort, wired into the `instrumentation-node.ts` prewarm. `ensurePlanRunTurnsTable` ensures `plan_runs` first so the FK resolves regardless of call order. → D-006, D-012, D-013
-- **P-011** `todo` Build the plan-agent runner — a module wrapping `runAgentChat` with a plan-execution persona (`systemPromptText`) + `buildPlanAgentMcpConfig` (the `agentmcp` tool surface), in the mould of `oracle/chat.ts`; no dependency on `lib/delegates` or `operator:delegate`. → D-004
+- **P-011** `done` Plan-agent runner (`runner.ts`) — `runPlanAgent`, a `runAgentChat` wrapper in the mould of `operator/converse.ts`: the P-009 bundle is the `systemPromptText`, the launch note is the `promptText`, `sessionMode: 'force'` makes it create-or-resume (D-010). `buildPlanAgentMcpConfig` builds the `agentmcp` direct-HTTP MCP config with `?plan_run=<sessionId>` (the D-016 consumer); `PLAN_AGENT_ALLOWED_TOOLS` = native coding tools + the operator world-model surface + `plans:*` (D-017). No `lib/delegates` / `operator:delegate` import. → D-004, D-016, D-017
 - **P-012** `todo` `plans:launch { slug, note? }` — assemble the bundle (P-009), mint a `session_id`, start the run via the P-011 runner (`runAgentChat`, `sessionMode: 'force'`), insert the `plan_runs` row, persist turns to `plan_run_turns`, return the run id; warn when the plan is `superseded`. blocked-by: P-011, P-009, P-010
 - **P-013** `todo` Resume — a "continue" call re-invokes the runner with the run's existing `session_id`; new turns append to `plan_run_turns`. → D-010 blocked-by: P-012
 - **P-014** `todo` Add `agent_launched` to `PlanEventType` in `coordination/plan-events.ts` *with* its emitter (the type is exhaustive over emitters).
@@ -600,3 +609,28 @@ need their own surface to thread a session id and is out of P-006's
 scope. **P-011 is bound to the `?plan_run=` param name by this
 decision.**
 (Decided at P-006.)
+
+### D-017 — A launched plan agent gets the operator world-model surface, not a plans-only allowlist
+Date: 2026-05-21
+P-011's runner gives the launched agent three tool layers:
+
+- **native coding tools** (`Read` / `Write` / `Edit` / `Bash` /
+  `Glob` / `Grep` / …) — a plan agent does real engineering work, so
+  unlike the chat brains it needs the agent's own file/shell tools;
+- **the operator world-model surface** — `NON_INTERACTIVE_AGENT_MCP_TOOLS`
+  (`harness:*`, `search:*`, `messages:*`, `goals:*`, `issues:*`,
+  `memory:*`, `orchestrator_*`, `ui:*`);
+- **the `plans:*` surface** — to advance the plan it was launched on
+  (`plans:backfill-revisions` excluded — a one-time migration tool).
+
+P-011's draft text named only "(`plans:*`, files, search)". That was
+illustrative: a plan is usually *about* harness work, and a
+plans-only agent could not read harness state, search the tree, or
+message other agents — it would be unable to actually do most plans.
+The established full-agent pattern (`operator:converse`) uses the
+whole `ALL_AGENT_MCP_TOOLS` surface; the plan agent mirrors it, minus
+the interactive `chat:ask_choice` (a launched run has no live
+mid-run responder — it is resumed asynchronously, D-010), plus
+`plans:*`. The MCP *server* stays scoped to `agentmcp` (D-004) — the
+breadth is in the tool allowlist, not a new server.
+(Decided at P-011.)
