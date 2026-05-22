@@ -84,6 +84,8 @@ type _G = {
     powerUserSessions: boolean;
     coordPresence: boolean;
     planRevisions: boolean;
+    planRuns: boolean;
+    planRunTurns: boolean;
   };
 };
 const _g = globalThis as unknown as _G;
@@ -147,6 +149,8 @@ const flags = _g.__ensureSchemaFlags ?? (_g.__ensureSchemaFlags = {
   powerUserSessions: false,
   coordPresence: false,
   planRevisions: false,
+  planRuns: false,
+  planRunTurns: false,
 });
 
 /**
@@ -332,6 +336,78 @@ export async function ensurePlanRevisionsTable(): Promise<void> {
     await sql.unsafe(`GRANT USAGE, SELECT ON SEQUENCE harness_shared.plan_revisions_id_seq TO harness_app, harness_admin`);
   } catch { /* not all roles can grant; fine on read replicas */ }
   flags.planRevisions = true;
+}
+
+/**
+ * Creates harness_shared.plan_runs — one row per agent launched from a
+ * plan (plan-agent-launch-2026-05-21, P-010 / D-006). The plan's
+ * author/origin is NOT a row here (that is plan_revisions seq 1);
+ * plan_runs is launches-only. `plan_content_hash` records which
+ * revision of the plan seeded the launch (P-023's stale-version
+ * badge); `session_id` is the runAgentChat session uuid (resumable —
+ * D-010). Indexed on plan_slug for the `plans:runs { slug }` history
+ * query — there is no UNIQUE on plan_slug (a plan has many launches).
+ */
+export async function ensurePlanRunsTable(): Promise<void> {
+  if (flags.planRuns) return;
+  const { sql } = getOrgPg();
+  await sql.unsafe(`
+    CREATE TABLE IF NOT EXISTS harness_shared.plan_runs (
+      id                BIGSERIAL PRIMARY KEY,
+      plan_slug         TEXT NOT NULL,
+      plan_content_hash TEXT NOT NULL,
+      session_id        TEXT NOT NULL,
+      note              TEXT,
+      launched_by       TEXT NOT NULL,
+      launched_at       BIGINT NOT NULL,
+      status            TEXT NOT NULL,
+      title             TEXT,
+      updated_at        BIGINT NOT NULL
+    );
+  `);
+  await sql.unsafe(`
+    CREATE INDEX IF NOT EXISTS plan_runs_plan_slug_idx
+      ON harness_shared.plan_runs (plan_slug)
+  `);
+  try {
+    await sql.unsafe(`GRANT SELECT, INSERT, UPDATE ON harness_shared.plan_runs TO harness_app, harness_admin`);
+    await sql.unsafe(`GRANT USAGE, SELECT ON SEQUENCE harness_shared.plan_runs_id_seq TO harness_app, harness_admin`);
+  } catch { /* not all roles can grant; fine on read replicas */ }
+  flags.planRuns = true;
+}
+
+/**
+ * Creates harness_shared.plan_run_turns — the transcript of a plan
+ * run, one row per turn (plan-agent-launch-2026-05-21, P-010 / D-006).
+ * `seq` is 1-based per run; `UNIQUE (plan_run_id, seq)` doubles as the
+ * plan_run_id lookup index used by `plans:revision-transcript` (P-008)
+ * and the run detail view (P-023). The plan_run_id FK references
+ * plan_runs(id), so that table must exist first — ensured here
+ * regardless of prewarm / caller order.
+ */
+export async function ensurePlanRunTurnsTable(): Promise<void> {
+  if (flags.planRunTurns) return;
+  await ensurePlanRunsTable();
+  const { sql } = getOrgPg();
+  await sql.unsafe(`
+    CREATE TABLE IF NOT EXISTS harness_shared.plan_run_turns (
+      id          BIGSERIAL PRIMARY KEY,
+      plan_run_id BIGINT NOT NULL REFERENCES harness_shared.plan_runs(id),
+      seq         INT NOT NULL,
+      role        TEXT NOT NULL,
+      content     TEXT NOT NULL,
+      tokens_in   INT,
+      tokens_out  INT,
+      cost_usd    NUMERIC,
+      created_at  BIGINT NOT NULL,
+      UNIQUE (plan_run_id, seq)
+    );
+  `);
+  try {
+    await sql.unsafe(`GRANT SELECT, INSERT, UPDATE ON harness_shared.plan_run_turns TO harness_app, harness_admin`);
+    await sql.unsafe(`GRANT USAGE, SELECT ON SEQUENCE harness_shared.plan_run_turns_id_seq TO harness_app, harness_admin`);
+  } catch { /* not all roles can grant; fine on read replicas */ }
+  flags.planRunTurns = true;
 }
 
 

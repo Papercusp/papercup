@@ -14,7 +14,8 @@ owner: avi@storewolf.com
 **State:** v3, ratified — implementation in flight (started
 2026-05-21). **Phase 1 (revision spine) is complete — 5/5.**
 **Phase 2 (conversation linkage): P-006 + P-009 built; P-007 +
-P-008 corrected to depend on Phase 3.**
+P-008 corrected to depend on Phase 3.** **Phase 3 (agent launch)
+is in flight — P-010 done.**
 
 Phase 1: P-001 (`plan_revisions` schema); P-002 + P-003 (`rationale`
 + revision capture on all seven `plans:*` write verbs via the shared
@@ -31,21 +32,30 @@ inlined). P-007 + P-008 both need a persisted transcript
 (`plan_run_turns`), which Phase 3 builds — their `blocked-by` was
 corrected to P-010 + P-012 (the plan v3 had mis-scoped them as
 buildable in Phase 2), so they execute alongside Phase 3, not before
-it. tsc-clean (549, 0 new errors), 110 plans tests + 8 transport
-tests green. 16 decisions, no open questions.
+it.
 
-**Verification debt:** the live PG paths (`plan_revisions`
-INSERT/SELECT, the backfill's idempotency check) run on first
-operator boot / first invocation and are formally re-verified in
-P-027 — the working shell cannot reach the auth-gated embedded PG
-directly. All git + pure logic is verified now (110 tests, incl.
-real-git `readPlanFileAtCommit` integration, `resolvePlanSessionRef`,
-and the `buildPlanContextBundle` seed assembler).
+Phase 3: P-010 `done` — `ensurePlanRunsTable()` +
+`ensurePlanRunTurnsTable()` in `ensure-schema.ts`, the
+`harness_shared.plan_runs` (launches-only) + `harness_shared.plan_run_turns`
+(transcript, FK → `plan_runs`) tables, flag-guarded and wired into
+the `instrumentation-node.ts` prewarm — same pattern as P-001.
 
-**Next:** Phase 3 — P-010 (`ensurePlanRunsTable` +
-`ensurePlanRunTurnsTable`), then P-011 (the plan-agent runner, a
-`runAgentChat` sibling) and P-012 (`plans:launch`). P-007 and P-008
-unblock once P-010 + P-012 land.
+tsc-clean (549, 0 new errors), 110 plans tests + 8 transport tests
+green. 16 decisions, no open questions.
+
+**Verification debt:** the live PG paths (`plan_revisions` /
+`plan_runs` / `plan_run_turns` DDL + INSERT/SELECT, the backfill's
+idempotency check) run on first operator boot / first invocation and
+are formally re-verified in P-027 — the working shell cannot reach
+the auth-gated embedded PG directly. All git + pure logic is verified
+now (110 tests, incl. real-git `readPlanFileAtCommit` integration,
+`resolvePlanSessionRef`, and the `buildPlanContextBundle` seed
+assembler).
+
+**Next:** P-011 — the plan-agent runner, a `runAgentChat` sibling
+surface (plan-execution persona + `buildPlanAgentMcpConfig`, no
+`lib/delegates` dependency), then P-012 (`plans:launch`). P-007 and
+P-008 unblock once P-012 lands.
 
 ## Background
 
@@ -342,7 +352,7 @@ and define the launch seed.
 Build the plan-agent runner as a `runAgentChat` sibling surface, then
 wire the launch and its history on top.
 
-- **P-010** `todo` Add `ensurePlanRunsTable()` + `ensurePlanRunTurnsTable()` to `ensure-schema.ts` (same pattern as P-001). → D-006, D-012, D-013
+- **P-010** `done` `ensurePlanRunsTable()` + `ensurePlanRunTurnsTable()` in `ensure-schema.ts` — `CREATE TABLE IF NOT EXISTS` for `harness_shared.plan_runs` (launches-only, indexed on `plan_slug` for the `plans:runs` history query) and `harness_shared.plan_run_turns` (FK → `plan_runs.id`, `UNIQUE(plan_run_id, seq)`); flag-guarded, grants best-effort, wired into the `instrumentation-node.ts` prewarm. `ensurePlanRunTurnsTable` ensures `plan_runs` first so the FK resolves regardless of call order. → D-006, D-012, D-013
 - **P-011** `todo` Build the plan-agent runner — a module wrapping `runAgentChat` with a plan-execution persona (`systemPromptText`) + `buildPlanAgentMcpConfig` (the `agentmcp` tool surface), in the mould of `oracle/chat.ts`; no dependency on `lib/delegates` or `operator:delegate`. → D-004
 - **P-012** `todo` `plans:launch { slug, note? }` — assemble the bundle (P-009), mint a `session_id`, start the run via the P-011 runner (`runAgentChat`, `sessionMode: 'force'`), insert the `plan_runs` row, persist turns to `plan_run_turns`, return the run id; warn when the plan is `superseded`. blocked-by: P-011, P-009, P-010
 - **P-013** `todo` Resume — a "continue" call re-invokes the runner with the run's existing `session_id`; new turns append to `plan_run_turns`. → D-010 blocked-by: P-012
