@@ -51,15 +51,6 @@ function routeByPath(
 }
 
 describe('migrated /api/device/* routes — handler behavior (E4)', () => {
-  it('GET /device/voice returns the 426 "use a websocket" stub', async () => {
-    const def = routeByPath(mobileVoice as RouteDefinition<never>[], 'GET', '/device/voice');
-    const res = await def.handler(new Request('http://x.test/api/device/voice'), ctx());
-    expect(res.status).toBe(426);
-    const body = (await res.json()) as { error: string; upgrade: string };
-    expect(body.error).toBe('use_websocket');
-    expect(body.upgrade).toContain('wss://');
-  });
-
   it('GET /device/runtime-config maps the principal onto the config payload', async () => {
     const def = routeByPath(mobilePair as RouteDefinition<never>[], 'GET', '/device/runtime-config');
     const res = await def.handler(new Request('http://x.test/api/device/runtime-config'), ctx());

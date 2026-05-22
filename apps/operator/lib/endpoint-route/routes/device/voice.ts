@@ -2,12 +2,11 @@
  * Device voice routes — Phase E4 batch M2 (endpoint-unification-2026-05-21).
  * Ported off `_hono/mobile.ts`; URLs renamed to `/api/device/*` (P2b).
  *
- *   GET    /device/voice-lease            mobile JWT
- *   POST   /device/voice-lease/claim      mobile JWT
- *   POST   /device/voice-lease/heartbeat  mobile JWT
- *   DELETE /device/voice-lease            mobile JWT
- *   GET    /device/voice-session-init     mobile JWT
- *   GET    /device/voice                  mobile JWT (HTTP stub — real path is WS)
+ *   GET    /device/voice-lease            device JWT
+ *   POST   /device/voice-lease/claim      device JWT
+ *   POST   /device/voice-lease/heartbeat  device JWT
+ *   DELETE /device/voice-lease            device JWT
+ *   GET    /device/voice-session-init     device JWT
  */
 import { defineTool } from '@papercusp/agent-mcp';
 import { DEVICE_AUTH, devicePrincipal } from './_shared';
@@ -235,29 +234,10 @@ const voiceSessionInit = defineTool({
   },
 });
 
-/**
- * GET /device/voice — HTTP stub. The real voice channel is a WebSocket
- * upgrade handled by the `ws` server (see `mobile-voice-ws.ts`); a plain
- * GET here just tells a confused client to use the WS endpoint.
- */
-const voiceStub = defineTool({
-  method: 'GET',
-  path: '/device/voice',
-  auth: DEVICE_AUTH,
-  cors: true,
-  handler() {
-    return Response.json(
-      { error: 'use_websocket', upgrade: 'wss://<host>/api/device/voice?token=...' },
-      { status: 426 },
-    );
-  },
-});
-
 export default [
   voiceLeaseGet,
   voiceLeaseClaim,
   voiceLeaseHeartbeat,
   voiceLeaseRelease,
   voiceSessionInit,
-  voiceStub,
 ];
