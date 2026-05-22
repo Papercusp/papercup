@@ -33,8 +33,14 @@ import {
 export type PlanRevisionAuthorKind = 'agent' | 'human';
 
 /** Which kind of session produced a revision — recorded so
- *  `plans:revision-transcript` (P-008) knows which store to read. */
-export type PlanRevisionSessionKind = 'plan_run' | 'operator_chat' | 'agent_chat';
+ *  `plans:revision-transcript` (P-008) knows which store to read.
+ *  `git_backfill` is the one value with no live session: a revision
+ *  reconstructed from a past git commit (P-005). */
+export type PlanRevisionSessionKind =
+  | 'plan_run'
+  | 'operator_chat'
+  | 'agent_chat'
+  | 'git_backfill';
 
 export interface RecordPlanRevisionArgs {
   /** The plan whose write this revision records. */
@@ -298,4 +304,77 @@ export async function listPlanRevisions(planSlug: string): Promise<PlanRevisionR
   }
   chain.reverse();
   return chain;
+}
+
+// ── Git-history backfill (P-005) ───────────────────────────────────
+
+/**
+ * Count of recorded revisions for a plan. The backfill (P-005) uses
+ * this for idempotency — a plan with any rows is left untouched, so
+ * the backfill never collides with or renumbers live revisions.
+ */
+export async function countPlanRevisions(planSlug: string): Promise<number> {
+  await ensurePlanRevisionsTable();
+  return withWorkspace(DEFAULT_WORKSPACE_ID, async (tx) => {
+    const rows = await tx<{ n: number }[]>`
+      SELECT COUNT(*)::int AS n
+      FROM harness_shared.plan_revisions
+      WHERE plan_slug = ${planSlug}
+    `;
+    return Number(rows[0]?.n ?? 0);
+  });
+}
+
+/** One synthetic revision built from a past git commit (P-005). */
+export interface BackfillRevisionInput {
+  /** `hashPlanContent()` of the snapshot. */
+  contentHash: string;
+  /** The plan markdown at that commit. */
+  content: string;
+  /** The commit subject — a weak rationale (D-015). `null` when the
+   *  commit had an empty subject. */
+  rationale: string | null;
+  /** The git commit author. */
+  authorId: string;
+  /** The commit's author date, epoch ms. */
+  createdAt: number;
+}
+
+/**
+ * Insert a plan's backfilled revisions in one transaction, `seq`
+ * 1..N in array order (oldest commit first — the caller reverses
+ * git's newest-first log). The caller MUST have verified the plan has
+ * zero existing revisions and MUST hold the plan-file lock — backfill
+ * is a one-time migration (D-015), and explicit `seq` is safe only
+ * against an empty starting state.
+ *
+ * Every backfilled row carries `author_kind = 'human'` (a git commit
+ * is nominally person-authored — even an agent's commit is attributed
+ * to a person here), `session_id = NULL`, and `session_kind =
+ * 'git_backfill'` as the provenance marker. `withWorkspace` wraps the
+ * loop in one transaction, so a mid-loop failure rolls the whole plan
+ * back and a retry re-backfills cleanly. Returns the row count.
+ */
+export async function insertBackfillRevisions(
+  planSlug: string,
+  revisions: BackfillRevisionInput[],
+): Promise<number> {
+  if (revisions.length === 0) return 0;
+  await ensurePlanRevisionsTable();
+  return withWorkspace(DEFAULT_WORKSPACE_ID, async (tx) => {
+    let seq = 0;
+    for (const r of revisions) {
+      seq += 1;
+      await tx`
+        INSERT INTO harness_shared.plan_revisions (
+          plan_slug, seq, content_hash, content_snapshot, rationale,
+          author_kind, author_id, session_id, session_kind, created_at
+        ) VALUES (
+          ${planSlug}, ${seq}, ${r.contentHash}, ${r.content}, ${r.rationale},
+          'human', ${r.authorId}, NULL, 'git_backfill', ${r.createdAt}
+        )
+      `;
+    }
+    return seq;
+  });
 }

@@ -206,3 +206,4 @@ import './plans/set-frontmatter';
 import './plans/history';
 import './plans/diff';
 import './plans/revisions-list';
+import './plans/revisions-backfill';

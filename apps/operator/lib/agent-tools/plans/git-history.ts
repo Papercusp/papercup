@@ -53,6 +53,10 @@ export type PlanDiffResult =
   | { ok: true; diff: string }
   | { ok: false; code: PlanGitErrorCode; message?: string };
 
+export type PlanFileAtCommitResult =
+  | { ok: true; content: string }
+  | { ok: false; code: PlanGitErrorCode; message?: string };
+
 function resolveRepoRoot(): string {
   const cwd = process.cwd();
   if (existsSync(path.join(cwd, PLANS_DIR_REL))) return cwd;
@@ -105,6 +109,55 @@ export async function readPlanHistory(
       { cwd: repoRoot, timeout: 5000, maxBuffer: 512 * 1024 },
     );
     return { ok: true, commits: parseHistory(stdout) };
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
+    return { ok: false, code: 'git_error', message: message.slice(0, 400) };
+  }
+}
+
+/**
+ * The plan file's content at a specific commit — `git show
+ * <hash>:<path>`. Used by P-005's revision backfill to reconstruct a
+ * content snapshot per past commit.
+ *
+ * When the file did not exist at that commit (a pre-creation point,
+ * or a pre-rename commit surfaced by `git log --follow`) this returns
+ * `{ ok: true, content: '' }` — a normal "skip this commit" outcome
+ * for the backfill, not an error. Existence is probed deterministically
+ * with `git cat-file -e` rather than by parsing `git show`'s stderr.
+ *
+ * slug + hash are regex-validated before reaching git's argv;
+ * execFile is shell-less.
+ */
+export async function readPlanFileAtCommit(
+  slug: string,
+  hash: string,
+  opts: { archived?: boolean } = {},
+): Promise<PlanFileAtCommitResult> {
+  if (!PLAN_GIT_SLUG_RE.test(slug)) {
+    return { ok: false, code: 'invalid_slug', message: 'slug must be kebab-case alphanumerics' };
+  }
+  if (!PLAN_GIT_HASH_RE.test(hash)) {
+    return { ok: false, code: 'invalid_hash', message: 'hash must be 4-40 hex chars' };
+  }
+  const repoRoot = resolveRepoRoot();
+  const relPath = planFileRel(slug, opts.archived === true);
+  const rev = `${hash}:${relPath}`;
+
+  // Probe: did the path exist at this commit? `cat-file -e` exits
+  // non-zero (cleanly, no parsing) when the blob is absent.
+  try {
+    await exec('git', ['cat-file', '-e', rev], { cwd: repoRoot, timeout: 5000 });
+  } catch {
+    return { ok: true, content: '' };
+  }
+  try {
+    const { stdout } = await exec('git', ['show', rev], {
+      cwd: repoRoot,
+      timeout: 8000,
+      maxBuffer: 4 * 1024 * 1024,
+    });
+    return { ok: true, content: stdout };
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
     return { ok: false, code: 'git_error', message: message.slice(0, 400) };

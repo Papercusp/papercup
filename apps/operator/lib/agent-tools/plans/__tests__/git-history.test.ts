@@ -15,6 +15,7 @@ import {
   parseHistory,
   readPlanHistory,
   readPlanDiff,
+  readPlanFileAtCommit,
   PLAN_GIT_SLUG_RE,
   PLAN_GIT_HASH_RE,
 } from '../git-history';
@@ -138,5 +139,56 @@ describe('readPlanHistory — real history (when git is available)', () => {
       expect(typeof c.subject).toBe('string');
       expect(typeof c.author).toBe('string');
     }
+  });
+});
+
+describe('readPlanFileAtCommit — input validation', () => {
+  it('rejects an invalid slug before shelling out', async () => {
+    const r = await readPlanFileAtCommit('Bad Slug!', 'abc1234');
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.code).toBe('invalid_slug');
+  });
+
+  it('rejects a non-hex hash', async () => {
+    const r = await readPlanFileAtCommit('plans-admin-ui-2026-05-20', 'not-hex');
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.code).toBe('invalid_hash');
+  });
+
+  it('rejects a shell-injection attempt in the hash', async () => {
+    const r = await readPlanFileAtCommit('plans-admin-ui-2026-05-20', 'abc1; rm -rf /');
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.code).toBe('invalid_hash');
+  });
+});
+
+describe('readPlanFileAtCommit — real content (when git is available)', () => {
+  it('reconstructs a plan snapshot from its latest commit', async () => {
+    if (!(await gitAvailable())) return;
+    const hist = await readPlanHistory('agent-plan-tracking-2026-05-20', { limit: 1 });
+    if (!hist.ok || hist.commits.length === 0) return;
+    const r = await readPlanFileAtCommit(
+      'agent-plan-tracking-2026-05-20',
+      hist.commits[0]!.hash,
+    );
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.content.length).toBeGreaterThan(0);
+      expect(r.content).toContain('slug: agent-plan-tracking-2026-05-20');
+    }
+  });
+
+  it('returns empty content (not an error) for a path absent at a commit', async () => {
+    if (!(await gitAvailable())) return;
+    const hist = await readPlanHistory('agent-plan-tracking-2026-05-20', { limit: 1 });
+    if (!hist.ok || hist.commits.length === 0) return;
+    // A valid-looking slug whose file never existed at that commit —
+    // the cat-file probe fails cleanly → empty content, not an error.
+    const r = await readPlanFileAtCommit(
+      'never-existed-plan-9999-12-31',
+      hist.commits[0]!.hash,
+    );
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.content).toBe('');
   });
 });

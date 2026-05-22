@@ -12,26 +12,27 @@ owner: avi@storewolf.com
 ## Now
 
 **State:** v3, ratified — implementation in flight (started
-2026-05-21). Phase 1 (revision spine) is 4/5 done: P-001
+2026-05-21). **Phase 1 (revision spine) is complete — 5/5.** P-001
 (`plan_revisions` schema); P-002 + P-003 (`rationale` + revision
 capture on all seven `plans:*` write verbs via the shared
 `planRevisionCapture` / `withPlanLock` `afterWrite` hook); P-004
-(`plans:revisions` read verb — the chain newest-first with a
-line-LCS diff-stat). tsc-clean (0 new errors), 93 plans tests green.
-New tables use the `ensure-schema.ts` runtime-ensure pattern, not a
-`.sql` migration — see D-013. 14 decisions, no open questions.
+(`plans:revisions` read verb — chain newest-first, line-LCS
+diff-stat); P-005 (`plans:backfill-revisions` — idempotent
+git-history backfill). tsc-clean (tree total 550, 0 new errors),
+101 plans tests green. 15 decisions, no open questions.
 
-**Verification debt:** the live `plan_revisions` INSERT path
-(`ensurePlanRevisionsTable` + `recordPlanRevision`) is exercised on
-the first operator boot / first plan write, and formally re-verified
-in P-027 — the working shell cannot reach the auth-gated embedded PG
-directly. All unit-level logic (`classifyAuthor`, the no-identity
-no-op, the CAS / lint regression) is verified now.
+**Verification debt:** the live PG paths (`plan_revisions`
+INSERT/SELECT, the backfill's idempotency check) run on first
+operator boot / first invocation and are formally re-verified in
+P-027 — the working shell cannot reach the auth-gated embedded PG
+directly. All git + pure logic is verified now (101 tests, incl.
+real-git `readPlanFileAtCommit` integration).
 
-**Next:** P-005 — the last Phase 1 item: backfill `plan_revisions`
-from existing git history (one synthetic revision per past commit,
-the commit message as a weak `rationale`, `session_id` NULL). Then
-Phase 2 — conversation linkage.
+**Next:** Phase 2 — conversation linkage. P-006 (thread the
+run/session id onto the call ctx so write verbs record `session_id`),
+P-007 (fallback rationale auto-summary), P-008
+(`plans:revision-transcript`, scoped), P-009
+(`buildPlanContextBundle`).
 
 ## Background
 
@@ -311,7 +312,7 @@ plan history — before any launch capability exists.
 - **P-002** `done` Add an optional `rationale` parameter to `plans:set-content`; inside its existing write lock, after the CAS write, append a `plan_revisions` row — content snapshot + hash + identity + session ref + rationale; `seq` allocated max+1 in-lock. The append goes through a new `recordPlanRevision` helper (`revisions.ts`) called from a new `withPlanLock` `afterWrite` hook; recording is best-effort (D-014). → D-009, D-014
 - **P-003** `done` Add the same optional `rationale` + revision-append to the other mutating verbs (`set-now`, `set-status`, `add-item`, `add-decision`, `new`, `set-frontmatter`). Done via a shared `planRevisionCapture` helper (`revisions.ts`) wired into each verb's `withPlanLock` `afterWrite`; `set-content` refactored onto the same helper. blocked-by: P-002
 - **P-004** `done` `plans:revisions { slug }` read verb — the revision chain newest-first: seq, author, rationale, session ref, diff-stat (a self-contained line-LCS over the adjacent snapshot pair — no npm `diff` dependency). Snapshots themselves are not returned; an empty chain (no recorded revisions) is not an error. → D-003
-- **P-005** `todo` Backfill `plan_revisions` from existing git history — one synthetic revision per past commit, the commit message as a weak `rationale`, `session_id` NULL. blocked-by: P-001
+- **P-005** `done` Backfill `plan_revisions` from existing git history — one synthetic revision per past commit, the commit subject as a weak `rationale`, `session_kind` `git_backfill`, `session_id` NULL. Shipped as the `plans:backfill-revisions` tool (idempotent, skip-if-populated); `readPlanFileAtCommit` reconstructs each snapshot via `git show`; per-plan atomic. → D-015 blocked-by: P-001
 
 ## Phase 2 — Conversation linkage
 
@@ -509,3 +510,36 @@ observability, swallowed on failure) — though a revision is closer to
 state than an event, the FS file remains the source of truth for
 content, which is what makes best-effort safe here.
 (Decided at P-002.)
+
+### D-015 — Git-history backfill: one-time, idempotent, provenance-marked
+Date: 2026-05-21
+P-005 seeds the `plan_revisions` spine from each plan's pre-existing
+git history — one synthetic revision per `git log --follow` commit,
+the content snapshot reconstructed via `git show`. Design choices:
+
+- **Idempotent, skip-if-populated.** A plan with any existing
+  `plan_revisions` rows is left untouched. The spine table is empty
+  until the backfill runs, so backfilled `seq` is a clean 1..N; once
+  a plan has rows (backfilled or live) the backfill never touches it
+  again — no renumbering, no collision with live revisions, safe to
+  re-run. The check + insert hold the plan-file lock, serialized
+  against live `recordPlanRevision` writes.
+- **`session_kind = 'git_backfill'`, `session_id` NULL.** A commit
+  has no conversation. `git_backfill` is the provenance marker the
+  Revisions UI keys on (P-019: a "from git history" tag; the "open
+  conversation" affordance stays hidden — there is no session).
+- **`author_kind = 'human'`.** A git commit is nominally
+  person-authored — even an agent's commit is attributed to a person
+  in this repo; the commit author string goes in `author_id`.
+- **Commit subject as a weak `rationale`.** It is the only "why" a
+  commit carries — better than nothing, weaker than an authored
+  rationale. P-007's auto-summary may later improve rationale-less
+  rows.
+- **Per-plan atomic.** All of a plan's inserts run in one
+  `withWorkspace` transaction; a mid-loop failure rolls the whole
+  plan back, so a retry re-backfills cleanly.
+- **Invoked via the `plans:backfill-revisions` tool**, not a
+  standalone script — the tool runs in-process where the embedded PG
+  is reachable; a bare `tsx` script is not. Archived plans are out
+  of scope for the v1 backfill.
+(Decided at P-005.)
