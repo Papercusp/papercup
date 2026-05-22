@@ -17,10 +17,7 @@
 
 import { parseAsBoolean, parseAsInteger, useQueryState } from 'nuqs';
 import { usePlanRevisions, type PlanRevision } from './plans-api';
-import RevisionDiffModal from './RevisionDiffModal';
-import RevisionConversationModal, {
-  rowSessionTag,
-} from './RevisionConversationModal';
+import { rowSessionTag } from './RevisionConversationModal';
 
 interface Props {
   slug: string;
@@ -103,14 +100,10 @@ export default function RevisionsPanel({ slug }: Props) {
           />
         ))}
       </ul>
-      <RevisionDiffModal
-        revisionId={openRev}
-        onClose={() => setOpenRev(null)}
-      />
-      <RevisionConversationModal
-        revisionId={openConvo}
-        onClose={() => setOpenConvo(null)}
-      />
+      {/* P-020: the diff + convo modals are rendered at PlanDetail
+       *  level so a deep link `?tab=editor&rev=42` still shows them
+       *  even when this panel isn't mounted. The setters here drive
+       *  the same nuqs keys; the modals just consume those keys. */}
     </div>
   );
 }

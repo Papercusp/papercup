@@ -16,9 +16,8 @@ owner: avi@storewolf.com
 **Phase 2 (conversation linkage) is complete — P-006 … P-009 all
 done.** **Phase 3 (agent launch) is complete — P-010…P-016 all
 done.** The entire `plans:*` backend is built. **Phase 4 (Revisions
-UI) is nearly complete — P-017, P-018, P-019 done (3/4);** only
-P-020 (nuqs URL state) remains. Then Phase 5 (Agents tab) and
-Phase 6 (verification).
+UI) is complete — P-017, P-018, P-019, P-020 all done (4/4).**
+Only Phase 5 (Agents tab) and Phase 6 (verification) remain.
 
 Phase 1: P-001 (`plan_revisions` schema); P-002 + P-003 (`rationale`
 + revision capture on all seven `plans:*` write verbs via the shared
@@ -94,10 +93,13 @@ pure logic is verified now (127 tests, incl. real-git
 `buildPlanAgentMcpUrl` / tool-surface constants, and the launch
 prompt/title derivations).
 
-**Next:** **P-020** is the last Phase 4 item — nuqs URL state at
-panel level (`?tab=revisions`). Per-modal URL state already shipped
-in-line (`?rev=<id>` in P-018, `?convo=<id>` in P-019). Then
-Phase 5 (Agents tab) and Phase 6 verification.
+**Next:** **Phase 5 — the Agents tab.** **P-021** opens the phase:
+add `'agents'` as the third value of the `?tab=` enum, render an
+origin card (sourced from `plan_revisions` seq 1) + the past-runs
+list (`plans:runs`). Then P-022 (launch button + free-text note),
+P-023 (resumable run-detail view), P-024 (route handlers — extra
+verbs to wire), P-025 (PlanEditor Save "what changed & why"), P-026
+(nuqs `?run=<id>`). Then Phase 6 verification.
 
 ## Background
 
@@ -410,7 +412,7 @@ timeline.
 - **P-017** `done` `GitHistoryStrip` deleted; **`RevisionsPanel.tsx`** consumes `plans:revisions` via a new `usePlanRevisions` hook + `PlanRevision` wire type in `plans-api.ts`. Rows: `#seq`, author label (`formatAuthor` — email local-part for humans, first two dash-chunks for agents), age-bucketed timestamp (`formatTimestamp`), `+N −N` diff-stat, **rationale always inline** (D-002) with a typed placeholder per `sessionKind` (`formatRationale` — `git_backfill` / `plan_run` / direct-edit). Collapsed-by-default at 5 rows, expand toggle is nuqs-backed (`?revOpen=`). Wired into `PlanDetail.tsx`; `/api/admin/plans/revisions` already registered (P-004); CSS shipped (`pc-revisions-panel*`). 13 unit tests on the pure formatters. → D-002, D-003 blocked-by: P-004
 - **P-018** `done` Per-revision diff modal — new `plans:revision-diff { revisionId }` verb (`revision-diff.ts`) sources the patch from the `plan_revisions` snapshot pair via `getPlanRevisionPairById` (a one-query DAL that fetches the target + its immediate predecessor) and serialises a unified diff with `diff`'s `createPatch`. `RevisionDiffModal.tsx` reuses the deleted `GitDiffModal`'s `parseDiff` + `react-diff-view` rendering and raw-patch fallback; a row click in `RevisionsPanel` opens it via the nuqs-backed `?rev=<id>` state — the row head is now a `<button>` with `--button` CSS (no native chrome, hover + focus-visible affordance). Seq 1 diffs against an empty string (creation diff). `diff` declared as a direct dep on `apps/operator` (it was only transitively hoisted before). 5 unit tests on `buildRevisionDiffText`. → D-003 blocked-by: P-017
 - **P-019** `done` Per-revision drill-down — new `RevisionConversationModal.tsx` opens via the `?convo=<id>` nuqs key; reads `plans:revision-transcript` (page size 20, server-side substring filter, "Load more" appends the next cursor's page). Row footer shows the "Open conversation" button only when `rowSessionTag(sessionId, sessionKind)` returns `null` (drill-downable = `plan_run` + sessionId); otherwise a small italic tag — "direct edit" / "from git history" / "operator chat (not shown)" / "agent chat (not shown)". `unavailableReason` renders the in-modal explanation for revisions whose verb returned `available: false`. `revision-transcript` now uses `z.coerce` on numerics so the same schema serves MCP + admin route; `'revision-transcript'` added to the route's `READ_VERBS`. 8 unit tests on the two pure helpers. → D-002, D-020 blocked-by: P-008
-- **P-020** `todo` nuqs URL state for the Revisions panel (`?tab=revisions`, `?rev=<id>`).
+- **P-020** `done` `PlanDetail` gains a top-level `<PlanTabStrip>` (Editor / Revisions; Agents joins in P-021) — `?tab=editor|revisions` via `parseAsStringEnum.withDefault('editor')`. The editor scope (PlanJumpToItem + PlanEditor + PlanStatusPopover) renders under `tab === 'editor'`; RevisionsPanel under `tab === 'revisions'`. Entering edit mode auto-switches to the editor tab; switching away from a dirty editor confirms first. The revision modals (`RevisionDiffModal`/`RevisionConversationModal`) were **lifted from `RevisionsPanel` to `PlanDetail`** so a deep link `?tab=editor&rev=42` still resolves — both sides use the same nuqs `?rev=`/`?convo=` keys. Tab strip is `role="tablist"`/`role="tab"` with `aria-selected` + focus-visible affordance. `?revOpen=` (P-017 collapse) and `?rev=`/`?convo=` (P-018/P-019) were already nuqs-backed in their items. blocked-by: P-017
 
 ## Phase 5 — UI: Agents tab
 

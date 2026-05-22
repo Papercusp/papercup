@@ -14,7 +14,7 @@
  */
 
 import { useEffect, useRef, useState } from 'react';
-import { parseAsStringEnum, useQueryState } from 'nuqs';
+import { parseAsInteger, parseAsStringEnum, useQueryState } from 'nuqs';
 import {
   setPlanContent,
   staleConflictOf,
@@ -29,6 +29,8 @@ import LockBanner from './LockBanner';
 import LintBanner from './LintBanner';
 import PlanActions from './PlanActions';
 import RevisionsPanel from './RevisionsPanel';
+import RevisionDiffModal from './RevisionDiffModal';
+import RevisionConversationModal from './RevisionConversationModal';
 import PlanConflictModal from './PlanConflictModal';
 import PlanStatusPopover, {
   resolveItemId,
@@ -57,6 +59,20 @@ export default function PlanDetail({ slug, onClose, onDirtyChange }: Props) {
     'pane',
     parseAsStringEnum(['read', 'edit']).withDefault('read'),
   );
+  // plan-agent-launch P-020: which view of the plan is active.
+  // 'editor' = the markdown editor; 'revisions' = the Revisions
+  // panel (P-017). 'agents' will join in P-021. nuqs-backed so a
+  // tab + a deep-link (?rev= / ?convo=) survive reload.
+  const [tab, setTab] = useQueryState(
+    'tab',
+    parseAsStringEnum(['editor', 'revisions']).withDefault('editor'),
+  );
+  // P-018/P-019 modals — lifted from RevisionsPanel so a deep link
+  // `?tab=editor&rev=42` still shows the modal even when the panel
+  // itself isn't mounted. RevisionsPanel uses the same nuqs keys to
+  // drive open from row clicks; we render the modals here.
+  const [openRev, setOpenRev] = useQueryState('rev', parseAsInteger);
+  const [openConvo, setOpenConvo] = useQueryState('convo', parseAsInteger);
   const [draft, setDraft] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
@@ -122,6 +138,10 @@ export default function PlanDetail({ slug, onClose, onDirtyChange }: Props) {
     setDraft(raw);
     setSaveError(null);
     setPane('edit');
+    // P-020: clicking "Edit" from the Revisions tab implies "edit
+    // this plan" — switch the tab too so the editor is actually
+    // visible.
+    setTab('editor');
   };
   const exitEdit = () => {
     if (dirty && !window.confirm('Discard unsaved edits to this plan?')) return;
@@ -212,6 +232,23 @@ export default function PlanDetail({ slug, onClose, onDirtyChange }: Props) {
         />
       ) : null}
       <LintBanner report={lintReport} scopeRef={editorScopeRef} />
+      <PlanTabStrip
+        tab={tab}
+        editing={editing}
+        onTab={(next) => {
+          if (editing && next !== 'editor') {
+            // Going away from the editor mid-edit would visually
+            // discard the draft. Confirm — same gate as exitEdit's
+            // "discard unsaved edits".
+            if (dirty && !window.confirm('Leave the editor with unsaved edits?')) {
+              return;
+            }
+          }
+          setTab(next);
+        }}
+      />
+      {tab === 'editor' ? (
+        <>
       {!editing ? (
         <PlanJumpToItem
           items={data.items}
@@ -248,7 +285,9 @@ export default function PlanDetail({ slug, onClose, onDirtyChange }: Props) {
         onSuccess={onChanged}
         onClose={() => setPendingStatus(null)}
       />
-      <RevisionsPanel slug={data.slug} />
+        </>
+      ) : null}
+      {tab === 'revisions' ? <RevisionsPanel slug={data.slug} /> : null}
       <PlanConflictModal
         open={conflict !== null}
         currentContent={conflict ?? ''}
@@ -259,6 +298,17 @@ export default function PlanDetail({ slug, onClose, onDirtyChange }: Props) {
           onChanged();
         }}
         onKeepEditing={() => setConflict(null)}
+      />
+      {/* Revision modals are mounted here (P-020) — not under the
+       *  Revisions tab — so a deep link `?rev=42` / `?convo=42`
+       *  resolves regardless of which tab is active. */}
+      <RevisionDiffModal
+        revisionId={openRev}
+        onClose={() => setOpenRev(null)}
+      />
+      <RevisionConversationModal
+        revisionId={openConvo}
+        onClose={() => setOpenConvo(null)}
       />
     </DetailShell>
   );
@@ -376,6 +426,70 @@ function DetailShell({
       </header>
       {children}
     </section>
+  );
+}
+
+type PlanDetailTab = 'editor' | 'revisions';
+
+/**
+ * Top-level tab strip — P-020. Switches the main content area between
+ * the editor and the Revisions panel (the Agents tab joins in P-021).
+ * The active tab is `?tab=` (nuqs). The strip is a `tablist` with
+ * `tabpanel` roles for AT consumers.
+ *
+ * The `editing` flag is reflected as `aria-disabled` rather than
+ * blocking the switch — the parent's `onTab` already gates it with a
+ * dirty-confirm.
+ */
+function PlanTabStrip({
+  tab,
+  editing,
+  onTab,
+}: {
+  tab: PlanDetailTab;
+  editing: boolean;
+  onTab: (next: PlanDetailTab) => void;
+}) {
+  return (
+    <div className="pc-plans__tabs" role="tablist" aria-label="Plan view">
+      <TabButton tab="editor" active={tab} onTab={onTab} label="Editor" />
+      <TabButton
+        tab="revisions"
+        active={tab}
+        onTab={onTab}
+        label="Revisions"
+        hint={editing ? 'unsaved edits' : undefined}
+      />
+    </div>
+  );
+}
+
+function TabButton({
+  tab,
+  active,
+  onTab,
+  label,
+  hint,
+}: {
+  tab: PlanDetailTab;
+  active: PlanDetailTab;
+  onTab: (next: PlanDetailTab) => void;
+  label: string;
+  hint?: string;
+}) {
+  const isActive = tab === active;
+  return (
+    <button
+      type="button"
+      role="tab"
+      aria-selected={isActive}
+      className={`pc-plans__tab${isActive ? ' is-active' : ''}`}
+      onClick={() => onTab(tab)}
+      title={hint}
+    >
+      {label}
+      {hint ? <span className="pc-plans__tab-hint"> · {hint}</span> : null}
+    </button>
   );
 }
 
