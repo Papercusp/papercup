@@ -71,6 +71,16 @@ export function getArchiveDir(opts: PlanSourceOpts = {}): string {
   return resolveCanonicalRoots(opts).archive;
 }
 
+/**
+ * The repo root — the directory that contains `apps/operator/docs/plans`.
+ * `getPlansDir()` is `<root>/apps/operator/docs/plans` (PLANS_DIR_REL,
+ * four path segments); strip them back off. A launched plan agent
+ * (plan-agent-launch-2026-05-21, P-012) starts its process here.
+ */
+export function getRepoRoot(opts: PlanSourceOpts = {}): string {
+  return path.resolve(getPlansDir(opts), '..', '..', '..', '..');
+}
+
 export interface ListEntry {
   slug: string;
   filePath: string;
