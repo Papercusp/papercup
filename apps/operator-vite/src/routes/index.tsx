@@ -1,4 +1,4 @@
-import { createFileRoute, redirect } from '@tanstack/react-router';
+import { createFileRoute, isRedirect, redirect } from '@tanstack/react-router';
 
 /**
  * Root route — gateways the desktop's first-run experience.
@@ -31,8 +31,12 @@ export const Route = createFileRoute('/')({
       throw redirect({ to: '/harness' });
     } catch (err) {
       // A thrown TSR redirect must propagate; only network failures fall
-      // through to the safe-default landing.
-      if (err && typeof err === 'object' && 'to' in err) throw err;
+      // through to the safe-default landing. TSR `redirect()` returns a
+      // `Response` with the navigation options at `err.options.to`, so the
+      // old `'to' in err` check incorrectly swallowed every redirect from
+      // this beforeLoad — including the success path to `/harness` — and
+      // forced every load to `/setup`.
+      if (isRedirect(err)) throw err;
       throw redirect({ to: '/setup' });
     }
   },
