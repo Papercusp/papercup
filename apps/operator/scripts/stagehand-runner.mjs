@@ -19,6 +19,27 @@
 
 import { setTimeout as sleep } from 'node:timers/promises';
 
+// AI SDK emits a "System messages in the prompt or messages fields can
+// be a security risk…" warning via console.warn whenever a system-role
+// entry is present in the messages array. Stagehand uses that pattern
+// intentionally, so the warning is noise; suppress it before it reaches
+// stderr (which the parent ships to the user-facing log).
+const SDK_WARNING_PATTERN = 'AI SDK Warning: System messages in the prompt';
+{
+  const realWarn = console.warn;
+  console.warn = (...args) => {
+    const first = args[0];
+    if (typeof first === 'string' && first.includes(SDK_WARNING_PATTERN)) return;
+    realWarn.apply(console, args);
+  };
+  const realWrite = process.stderr.write.bind(process.stderr);
+  process.stderr.write = (chunk, ...rest) => {
+    if (typeof chunk === 'string' && chunk.includes(SDK_WARNING_PATTERN)) return true;
+    if (chunk instanceof Buffer && chunk.includes(SDK_WARNING_PATTERN)) return true;
+    return realWrite(chunk, ...rest);
+  };
+}
+
 const ANTHROPIC_PRICING = {
   // input / output per 1M tokens (rough; refine when needed)
   'anthropic/claude-sonnet-4-6': { in: 3.0, out: 15.0 },
@@ -76,7 +97,13 @@ async function main() {
     localBrowserLaunchOptions: { headless },
     logger: (entry) => {
       const line = typeof entry === 'string' ? entry : (entry?.message ?? JSON.stringify(entry));
-      emit({ type: 'log', level: entry?.level ?? 'info', line: String(line).slice(0, 500) });
+      const s = String(line);
+      // Suppress the AI SDK's "System messages in the prompt or messages
+      // fields…" warning — Stagehand intentionally puts a system entry in
+      // its messages array; the warning is informational and just noise
+      // in the user-facing chat log.
+      if (s.includes('AI SDK Warning: System messages in the prompt')) return;
+      emit({ type: 'log', level: entry?.level ?? 'info', line: s.slice(0, 500) });
     },
   });
 

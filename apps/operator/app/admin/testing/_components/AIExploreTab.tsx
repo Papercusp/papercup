@@ -259,7 +259,7 @@ export default function AIExploreTab() {
             Live log
             {lastMetrics && (
               <span style={{ marginLeft: 12, fontWeight: 400, fontSize: 12, color: 'var(--fg-mute)' }}>
-                ${lastMetrics.costUsd.toFixed(4)} · {lastMetrics.totalTokens.toLocaleString()} tokens
+                ${(lastMetrics.costUsd ?? 0).toFixed(4)} · {(lastMetrics.totalTokens ?? 0).toLocaleString()} tokens
               </span>
             )}
             {lastDone && (
@@ -278,8 +278,8 @@ export default function AIExploreTab() {
               const ts = new Date(e.ts).toLocaleTimeString();
               if (e.kind === 'start') return <div key={e.id}><span style={{ color: 'var(--fg-mute)' }}>{ts}</span> <span className="pc-test-badge is-good">start</span> goal: {e.goal}</div>;
               if (e.kind === 'step') return <div key={e.id}><span style={{ color: 'var(--fg-mute)' }}>{ts}</span> <span className={`pc-test-badge ${e.ok ? 'is-good' : 'is-poor'}`}>step {e.n}</span> {e.action} ({e.durationMs}ms){e.result ? ` — ${e.result}` : ''}</div>;
-              if (e.kind === 'metrics') return <div key={e.id}><span style={{ color: 'var(--fg-mute)' }}>{ts}</span> <span className="pc-test-badge is-muted">metrics</span> ${e.costUsd.toFixed(4)} · in {e.inputTokens.toLocaleString()} · out {e.outputTokens.toLocaleString()}</div>;
-              if (e.kind === 'done') return <div key={e.id}><span style={{ color: 'var(--fg-mute)' }}>{ts}</span> <span className={`pc-test-badge ${(e.exitCode ?? 0) === 0 ? 'is-good' : 'is-poor'}`}>done</span> {Math.round(e.totalMs/1000)}s · {e.steps} steps · ${e.costUsd.toFixed(4)}{typeof e.exitCode === 'number' ? ` · exit ${e.exitCode}` : ''}</div>;
+              if (e.kind === 'metrics') return <div key={e.id}><span style={{ color: 'var(--fg-mute)' }}>{ts}</span> <span className="pc-test-badge is-muted">metrics</span> ${(e.costUsd ?? 0).toFixed(4)} · in {(e.inputTokens ?? 0).toLocaleString()} · out {(e.outputTokens ?? 0).toLocaleString()}</div>;
+              if (e.kind === 'done') return <div key={e.id}><span style={{ color: 'var(--fg-mute)' }}>{ts}</span> <span className={`pc-test-badge ${(e.exitCode ?? 0) === 0 ? 'is-good' : 'is-poor'}`}>done</span> {Math.round((e.totalMs ?? 0)/1000)}s · {e.steps ?? 0} steps · ${(e.costUsd ?? 0).toFixed(4)}{typeof e.exitCode === 'number' ? ` · exit ${e.exitCode}` : ''}</div>;
               if (e.kind === 'error') return <div key={e.id} style={{ color: 'var(--bad)' }}><span style={{ color: 'var(--fg-mute)' }}>{ts}</span> <span className="pc-test-badge is-poor">error</span> {e.message}</div>;
               // log
               const levelCls = e.level === 'error' ? 'is-poor' : e.level === 'warn' ? 'is-needs' : 'is-muted';
