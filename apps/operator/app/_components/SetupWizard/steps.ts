@@ -28,8 +28,8 @@ export const SETUP_STEPS: readonly StepDef[] = [
   {
     id: 'logins',
     title: 'Sign in to your accounts',
-    summary: 'Uses your existing Claude or OpenAI plan. No per-token charges.',
-    required: false,
+    summary: 'Uses your existing Claude or OpenAI plan. Required — agents cannot run without it.',
+    required: true,
   },
   {
     id: 'keys',

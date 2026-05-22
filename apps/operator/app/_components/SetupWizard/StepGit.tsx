@@ -4,6 +4,13 @@ import { useEffect, useState } from 'react';
 import { isTauriNative } from '@/lib/pty-tauri';
 import { InlinePtyTerminal } from './InlinePtyTerminal';
 
+/**
+ * GitHub sign-in (`gh auth login`) is fully wired, but gated off while
+ * Papercusp is in alpha. Keep the button + pty flow in the code; flip
+ * this to `false` to re-enable when GitHub integration ships.
+ */
+const GITHUB_AUTH_ALPHA_DISABLED: boolean = true;
+
 interface GitIdentity {
   name?: string;
   email?: string;
@@ -110,6 +117,7 @@ export function StepGit() {
   };
 
   const startGithubLogin = () => {
+    if (GITHUB_AUTH_ALPHA_DISABLED) return;
     setExited(false);
     setAttempt((n) => n + 1);
     setActive(true);
@@ -212,32 +220,38 @@ export function StepGit() {
         GitHub CLI — <code>gh auth login</code> stores a token in your system keychain that{' '}
         <code>git</code> picks up automatically.
       </p>
-      {tauri && spec ? (
-        <div className="pc-step__actions">
-          <button
-            type="button"
-            className="pc-btn pc-btn--primary"
-            onClick={startGithubLogin}
-            disabled={active || ghInstalled === false}
-            title={ghInstalled === false ? 'Install the GitHub CLI first (see hint below)' : undefined}
-          >
-            {active
-              ? 'Running…'
-              : ghSignedIn
-                ? 'Re-sign in to GitHub'
-                : 'Sign in to GitHub'}
-          </button>
-          {ghInstalled === false && (
-            <span className="pc-field__hint pc-field__hint--err" style={{ marginLeft: 8 }}>
-              ⚠ GitHub CLI not detected. Install it first:{' '}
-              <a href="https://cli.github.com/" target="_blank" rel="noreferrer">cli.github.com</a>
-            </span>
-          )}
-        </div>
-      ) : (
-        <pre className="pc-code">gh auth login</pre>
-      )}
-      {(active || exited) && spec && (
+      <div className="pc-step__actions">
+        <button
+          type="button"
+          className="pc-btn pc-btn--primary"
+          onClick={startGithubLogin}
+          disabled={GITHUB_AUTH_ALPHA_DISABLED || active || !tauri || !spec || ghInstalled === false}
+          title={
+            GITHUB_AUTH_ALPHA_DISABLED
+              ? 'GitHub sign-in is disabled during the alpha'
+              : ghInstalled === false
+                ? 'Install the GitHub CLI first (see hint below)'
+                : undefined
+          }
+        >
+          {active
+            ? 'Running…'
+            : ghSignedIn
+              ? 'Re-sign in to GitHub'
+              : 'Sign in to GitHub'}
+        </button>
+        {GITHUB_AUTH_ALPHA_DISABLED ? (
+          <span className="pc-field__hint" style={{ marginLeft: 8 }}>
+            GitHub sign-in is disabled while Papercusp is in alpha — it'll light up in a later release.
+          </span>
+        ) : ghInstalled === false ? (
+          <span className="pc-field__hint pc-field__hint--err" style={{ marginLeft: 8 }}>
+            ⚠ GitHub CLI not detected. Install it first:{' '}
+            <a href="https://cli.github.com/" target="_blank" rel="noreferrer">cli.github.com</a>
+          </span>
+        ) : null}
+      </div>
+      {!GITHUB_AUTH_ALPHA_DISABLED && (active || exited) && spec && (
         <>
           <InlinePtyTerminal
             key={`github-${attempt}`}

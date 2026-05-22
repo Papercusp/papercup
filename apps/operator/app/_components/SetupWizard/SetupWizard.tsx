@@ -49,12 +49,15 @@ export function SetupWizard({ mode }: Props) {
     [stepId, persisted.last_visited_step],
   );
 
-  // Minimum to finish setup: ≥1 coding agent installed + embedded-pg
-  // ready. Workspace path is recorded server-side regardless of
-  // wizard interaction (default `~/.papercusp/projects/` always
-  // works), so it isn't part of the gate.
+  // Minimum to finish setup: embedded-pg ready + ≥1 coding agent
+  // installed + signed in to an account (agents can't actually run
+  // without a login). Workspace path is recorded server-side
+  // regardless of wizard interaction (default `~/.papercusp/projects/`
+  // always works), so it isn't part of the gate.
   const minimumMet =
-    statuses['embedded-pg'] === 'ok' && statuses['agents'] === 'ok';
+    statuses['embedded-pg'] === 'ok' &&
+    statuses['agents'] === 'ok' &&
+    statuses['logins'] === 'ok';
 
   const idx = SETUP_STEPS.findIndex((s) => s.id === active.id);
 
@@ -192,7 +195,7 @@ export function SetupWizard({ mode }: Props) {
               <span>
                 {minimumMet
                   ? 'Essentials are ready — you can finish now.'
-                  : 'To finish today: local database + one coding agent.'}
+                  : 'To finish today: local database, one coding agent, and an account sign-in.'}
               </span>
             </div>
           </div>
@@ -253,7 +256,7 @@ export function SetupWizard({ mode }: Props) {
                   </button>
                 ) : (
                   <span className="pc-setup-wizard__finish-hint">
-                    Finish unlocks after the database and a coding agent are ready.
+                    Finish unlocks after the database, a coding agent, and an account sign-in are ready.
                   </span>
                 )}
               </div>
