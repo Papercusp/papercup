@@ -4,7 +4,7 @@ import {
   askOperatorViaConverse,
   normalizeTrigger,
   ASK_OPERATOR_TIMEOUT_MS,
-} from './mobile-ask-operator';
+} from './device-ask-operator';
 
 function sseStream(events: string[]): ReadableStream<Uint8Array> {
   return new ReadableStream({

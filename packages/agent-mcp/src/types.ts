@@ -366,7 +366,7 @@ export interface ToolDefinitionInput<TArgs extends ZodTypeAny = ZodTypeAny> {
    * Explicit exposure override. When absent, `defineTool` auto-derives
    * MCP name from filename + HTTP path `/api/agent-tools/<group>/<verb>`.
    * Setting `expose` here lets a tool declare arbitrary path/methods,
-   * mark itself mobile-eligible, or expose itself over IPC.
+   * or expose itself over IPC.
    */
   expose?: import('./tool-projection').ToolExposure;
 }

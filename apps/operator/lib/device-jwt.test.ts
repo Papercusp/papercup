@@ -5,10 +5,10 @@ beforeAll(() => {
   process.env.MOBILE_JWT_SECRET = 'test-secret-padding-padding-padding-padding';
 });
 
-const mod = await import('./mobile-jwt');
+const mod = await import('./device-jwt');
 const { signDeviceToken, verifyDeviceToken } = mod;
 
-describe('mobile-jwt sign/verify', () => {
+describe('device-jwt sign/verify', () => {
   const claims = {
     sub: 'device-1',
     workspace_id: 'ws-A',

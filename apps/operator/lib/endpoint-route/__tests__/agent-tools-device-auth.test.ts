@@ -20,8 +20,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 // below is for a device that was never `insertDevice`'d, so without this
 // mock the principal would (correctly) resolve to null. The mock stands
 // it in as a known, non-revoked device.
-vi.mock('@/lib/mobile-device-store', async (orig) => ({
-  ...(await orig<typeof import('@/lib/mobile-device-store')>()),
+vi.mock('@/lib/device-store', async (orig) => ({
+  ...(await orig<typeof import('@/lib/device-store')>()),
   isRevoked: async () => false,
 }));
 
@@ -33,7 +33,7 @@ import {
 
 import catchall from '../routes/agent-tools/catchall';
 import type { RouteContext } from '../define-route';
-import { signDeviceToken } from '@/lib/mobile-jwt';
+import { signDeviceToken } from '@/lib/device-jwt';
 
 const CTX: RouteContext = {
   principal: null,

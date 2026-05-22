@@ -5,27 +5,27 @@
  *
  *   POST   /device/desktop/mint-pair-token   loopback-only
  *   POST   /device/pair                      unauthenticated (one-time token)
- *   POST   /device/workspace/switch          mobile JWT
- *   GET    /device/devices                   mobile JWT
- *   DELETE /device/devices/:deviceId         mobile JWT
- *   GET    /device/runtime-config            mobile JWT
- *   GET    /device/workspaces                mobile JWT
- *   POST   /device/heartbeat                 mobile JWT
+ *   POST   /device/workspace/switch          device JWT
+ *   GET    /device/devices                   device JWT
+ *   DELETE /device/devices/:deviceId         device JWT
+ *   GET    /device/runtime-config            device JWT
+ *   GET    /device/workspaces                device JWT
+ *   POST   /device/heartbeat                 device JWT
  */
 import { networkInterfaces } from 'node:os';
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { DEVICE_AUTH, devicePrincipal, isLoopbackHost } from './_shared';
-import { signDeviceToken } from '@/lib/mobile-jwt';
-import { getMobileVoicePort } from '@/lib/mobile-voice-ws';
-import { mintPairToken, consumePairToken, newDeviceId } from '@/lib/mobile-pair-store';
+import { signDeviceToken } from '@/lib/device-jwt';
+import { getMobileVoicePort } from '@/lib/device-voice-ws';
+import { mintPairToken, consumePairToken, newDeviceId } from '@/lib/device-pair-store';
 import { readRegistry, workspaceById } from '@/lib/workspace-registry';
 import {
   insertDevice,
   listDevices,
   revokeDevice,
   touchLastSeen,
-} from '@/lib/mobile-device-store';
+} from '@/lib/device-store';
 
 /**
  * First non-internal RFC1918 IPv4 on this host — so the pairing QR

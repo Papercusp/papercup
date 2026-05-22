@@ -1,5 +1,5 @@
 /**
- * Tests for mobile-pair-store. Mocks @restart/db-org so the PG-backed
+ * Tests for device-pair-store. Mocks @restart/db-org so the PG-backed
  * mint/consume contract is exercised without a live database.
  */
 import { describe, expect, it, vi, beforeEach } from 'vitest';
@@ -16,7 +16,7 @@ vi.mock('@restart/db-org', () => ({
   }),
 }));
 
-import { mintPairToken, consumePairToken, newDeviceId } from './mobile-pair-store';
+import { mintPairToken, consumePairToken, newDeviceId } from './device-pair-store';
 
 beforeEach(() => {
   sqlCalls.length = 0;

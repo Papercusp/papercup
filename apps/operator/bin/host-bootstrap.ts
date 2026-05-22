@@ -20,9 +20,9 @@ import { startAutoLoopOnce } from '../lib/autoloop';
 import { ensureHarnessFsWatcher } from '../lib/harness-fs-watcher';
 import { ensureHarnessStatusSweep } from '../lib/harness-status-sweep';
 import { registerAllExpirables } from '../lib/expirable-registrations';
-import { startMobileVoiceWs } from '../lib/mobile-voice-ws';
-import { startPushCredentialRefresher } from '../lib/mobile-push-credentials';
-import { startMobileInterventionWatcher } from '../lib/mobile-intervention-watcher';
+import { startMobileVoiceWs } from '../lib/device-voice-ws';
+import { startPushCredentialRefresher } from '../lib/device-push-credentials';
+import { startMobileInterventionWatcher } from '../lib/device-intervention-watcher';
 import { ensureMobileDevicesTable } from '../lib/ensure-schema';
 
 const GUARD_KEY = '__papercuspBootstrapRan__';

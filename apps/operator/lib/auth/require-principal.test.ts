@@ -13,7 +13,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 vi.mock('../auth', () => ({
   getSessionUser: vi.fn(async () => null),
 }));
-vi.mock('../mobile-jwt', () => ({
+vi.mock('../device-jwt', () => ({
   verifyDeviceToken: vi.fn(() => null),
 }));
 vi.mock('../superuser-token', () => ({
@@ -26,7 +26,7 @@ vi.mock('../workspace-registry', () => ({
 
 import { PrincipalCheckError, requirePrincipal, tryResolvePrincipal } from './require-principal';
 import { getSessionUser } from '../auth';
-import { verifyDeviceToken } from '../mobile-jwt';
+import { verifyDeviceToken } from '../device-jwt';
 import { isLoopbackRequest, isValidSuperuserBearer } from '../superuser-token';
 
 beforeEach(() => {

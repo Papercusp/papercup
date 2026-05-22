@@ -102,7 +102,7 @@ async function scanCmd(args: string[]) {
 async function pauseCmd(paused: boolean) {
   // Pause state is held in harness_shared.operator_paused (PG, migration 029).
   // The background scanner polls /api/agent-mcp/operator-pause-flag.
-  const { setPaused, setResumed } = await import('../lib/mobile-operator-actions');
+  const { setPaused, setResumed } = await import('../lib/device-operator-actions');
   if (paused) {
     await setPaused('cli');
     console.log('paused — background scans will stop on next poll');

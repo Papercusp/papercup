@@ -172,7 +172,7 @@ const voiceSessionInit = defineTool({
     }
 
     // Detect platform — EL's `source` enum needs a valid value.
-    const { detectSurface, surfaceToElSource } = await import('@/lib/mobile-surface');
+    const { detectSurface, surfaceToElSource } = await import('@/lib/device-surface');
     const surface = detectSurface({
       query: q('surface'),
       userAgent: req.headers.get('user-agent') ?? undefined,
@@ -211,7 +211,7 @@ const voiceSessionInit = defineTool({
     // Successful mint — record so subsequent calls are throttled.
     await writeCooldownMark(cooldownKey);
 
-    const { resolveVoiceInit } = await import('@/lib/mobile-voice-init-prefs');
+    const { resolveVoiceInit } = await import('@/lib/device-voice-init-prefs');
     const resolved = resolveVoiceInit(
       { mode: q('mode'), idleMin: q('idleMin'), sessionMaxMin: q('sessionMaxMin') },
       prefs,

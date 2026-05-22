@@ -132,7 +132,7 @@ export async function notifyWorkspace(
   workspaceId: string,
   payload: PushPayload,
 ): Promise<void> {
-  const { pushTargetsForWorkspace } = await import('./mobile-device-store');
+  const { pushTargetsForWorkspace } = await import('./device-store');
   const targets = await pushTargetsForWorkspace(workspaceId);
   if (targets.length === 0) return;
   await dispatchPush(targets, payload);

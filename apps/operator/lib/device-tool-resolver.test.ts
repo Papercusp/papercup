@@ -5,7 +5,7 @@ import {
   resolveRegistryToolId,
   type ToolDef,
   type ToolRegistry,
-} from './mobile-tool-resolver';
+} from './device-tool-resolver';
 
 function makeRegistry(defs: ToolDef[]): ToolRegistry {
   const byId = new Map(defs.map((d) => [d.id, d]));

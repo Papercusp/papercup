@@ -1,27 +1,27 @@
 /**
- * Mobile harness routes — Phase E4 batch M4 (endpoint-unification-2026-05-21).
+ * Device harness routes — Phase E4 batch M4 (endpoint-unification-2026-05-21).
  * Ported off `_hono/mobile.ts`.
  *
- *   GET  /device/harnesses                      mobile JWT
- *   GET  /device/harnesses/:slug                mobile JWT
- *   POST /device/harnesses/:slug/replan         mobile JWT
- *   POST /device/harnesses/:slug/smoke-test     mobile JWT
- *   POST /device/harnesses/:slug/cleanup        mobile JWT
- *   GET  /device/harnesses/:slug/log/stream     mobile JWT (SSE)
- *   GET  /device/running                        mobile JWT
+ *   GET  /device/harnesses                      device JWT
+ *   GET  /device/harnesses/:slug                device JWT
+ *   POST /device/harnesses/:slug/replan         device JWT
+ *   POST /device/harnesses/:slug/smoke-test     device JWT
+ *   POST /device/harnesses/:slug/cleanup        device JWT
+ *   GET  /device/harnesses/:slug/log/stream     device JWT (SSE)
+ *   GET  /device/running                        device JWT
  */
 import { join } from 'node:path';
 import { openSync, readSync, closeSync, statSync } from 'node:fs';
 import { sseResponse } from '@restart/sse';
 import { defineTool } from '@papercusp/agent-mcp';
 import { DEVICE_AUTH, devicePrincipal } from './_shared';
-import { listHarnessesFor, harnessExistsInWorkspace } from '@/lib/mobile-harnesses';
-import { currentlyRunning } from '@/lib/mobile-feeds';
+import { listHarnessesFor, harnessExistsInWorkspace } from '@/lib/device-harnesses';
+import { currentlyRunning } from '@/lib/device-feeds';
 import { phasePhaseLabel } from '@/lib/harness-phases';
 import { resolvePhasedProject, harnessDir } from '@/lib/harness-core';
 
 /**
- * Proxy a mobile harness mutation to the desktop's own
+ * Proxy a device harness mutation to the desktop's own
  * `/api/harness/:slug/*` endpoint. The slug is verified to exist in the
  * phone's paired workspace first; the action runs against the desktop's
  * active workspace (matching workspace_id is required for the desktop
@@ -118,7 +118,7 @@ const harnessCleanup = defineTool({
 /**
  * GET /device/harnesses/:slug/log/stream — SSE. Mirrors the desktop
  * `/api/harness/:slug/log/stream` (events: log / backfill-done) but
- * gated on the mobile JWT. Workspace check enforced; `?phase=` override.
+ * gated on the device JWT. Workspace check enforced; `?phase=` override.
  */
 const harnessLogStream = defineTool({
   method: 'GET',

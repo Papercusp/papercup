@@ -9,7 +9,7 @@
 
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
-import { isPaused } from '@/lib/mobile-operator-actions';
+import { isPaused } from '@/lib/device-operator-actions';
 
 const ALL_ROLES = [
   'scoper',

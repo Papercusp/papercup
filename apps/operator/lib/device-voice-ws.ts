@@ -1,7 +1,7 @@
 /**
  * WS transport for /api/device/voice. Pure pipe: validate JWT, forward
  * transcripts to the dispatcher, write back any frames the dispatcher
- * emits. All logic lives in `mobile-voice-dispatch.ts` (and is unit-tested).
+ * emits. All logic lives in `device-voice-dispatch.ts` (and is unit-tested).
  *
  * Why a separate WS server: Next App Router can't expose ws-upgrade hooks
  * to route handlers. The pty router uses the same workaround.
@@ -28,8 +28,8 @@
  */
 import { WebSocketServer, type WebSocket } from 'ws';
 import type { IncomingMessage } from 'node:http';
-import { verifyDeviceToken } from './mobile-jwt';
-import { dispatchTranscript, type OutgoingFrame } from './mobile-voice-dispatch';
+import { verifyDeviceToken } from './device-jwt';
+import { dispatchTranscript, type OutgoingFrame } from './device-voice-dispatch';
 
 const BASE_PORT = Number(process.env.MOBILE_VOICE_WS_PORT ?? 3068);
 const PORT_RANGE = 8;

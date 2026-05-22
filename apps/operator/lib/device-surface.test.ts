@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { detectSurface, surfaceToElSource } from './mobile-surface';
+import { detectSurface, surfaceToElSource } from './device-surface';
 
 describe('detectSurface — explicit query wins', () => {
   it('returns the query value when valid', () => {

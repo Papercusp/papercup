@@ -20,8 +20,8 @@
  */
 
 import type { Principal } from '@papercusp/agent-mcp';
-import { verifyDeviceToken } from '../../mobile-jwt';
-import { isRevoked } from '../../mobile-device-store';
+import { verifyDeviceToken } from '../../device-jwt';
+import { isRevoked } from '../../device-store';
 
 export async function principalFromDeviceJwt(headers: Headers): Promise<Principal | null> {
   const auth = headers.get('authorization');

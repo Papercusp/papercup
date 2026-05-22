@@ -1,5 +1,5 @@
 /**
- * Tests for mobile-operator-actions. Mocks the upstream readers so we can
+ * Tests for device-operator-actions. Mocks the upstream readers so we can
  * exercise the dispatch/dismiss/list resolution logic in isolation.
  */
 import { describe, expect, it, vi, beforeEach } from 'vitest';
@@ -17,7 +17,7 @@ vi.mock('./operator-dismissed-cache', () => ({
 import { readLastScan } from './operator-last-scan';
 import { reconstructCards } from './operator-card-reconstruction';
 import { recordDismissed } from './operator-dismissed-cache';
-import { listPendingCards, dismissCard, describeCard } from './mobile-operator-actions';
+import { listPendingCards, dismissCard, describeCard } from './device-operator-actions';
 
 beforeEach(() => {
   vi.resetAllMocks();

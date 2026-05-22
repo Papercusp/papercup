@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { resolveVoiceInit, type VoicePrefsSubset } from './mobile-voice-init-prefs';
+import { resolveVoiceInit, type VoicePrefsSubset } from './device-voice-init-prefs';
 
 const defaultPrefs: VoicePrefsSubset = {
   fullAgentVoiceMode: 'continuous',

@@ -96,8 +96,8 @@ export function verifyDeviceToken(token: string): DeviceClaims | null {
 
 // The `deviceAuth()` Hono middleware was deleted in Phase E5
 // (endpoint-unification-2026-05-21) along with `_hono/mobile.ts`. The
-// mobile JWT is now resolved by `requirePrincipal` via the
+// device JWT is now resolved by `requirePrincipal` via the
 // `principalFromDeviceJwt` resolver, which carries the same
 // signature-verify + `isRevoked` check the middleware did.
 // `signDeviceToken` / `verifyDeviceToken` above remain — the resolver
-// and the `/mobile/*` `defineTool`s use them.
+// and the `/device/*` `defineTool`s use them.

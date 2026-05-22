@@ -1,6 +1,6 @@
 /**
  * Pure dispatch logic for mobile voice transcripts. Extracted from
- * `mobile-voice-ws.ts` so it's testable without spinning up a real WS
+ * `device-voice-ws.ts` so it's testable without spinning up a real WS
  * server. The WS layer is just a transport — this is the brain.
  *
  * Wire: phone sends `{kind:'transcript', text, wakeWord?}` → bridge calls
@@ -12,7 +12,7 @@ import { parseOperatorIntent, resolveApprove } from './voice-intents';
 import { parseVoiceCommand } from './voice-commands';
 import { readCandidates, refreshCandidates } from './operator-standing-candidates';
 import { appendPreferenceEntry } from './operator-preferences';
-import { touchLastSeen } from './mobile-device-store';
+import { touchLastSeen } from './device-store';
 import {
   listPendingCards,
   dispatchCard,
@@ -20,8 +20,8 @@ import {
   describeCard,
   setPaused,
   setResumed,
-} from './mobile-operator-actions';
-import type { DeviceClaims } from './mobile-jwt';
+} from './device-operator-actions';
+import type { DeviceClaims } from './device-jwt';
 
 /**
  * Outgoing frame shape. The phone interprets `source` for attribution

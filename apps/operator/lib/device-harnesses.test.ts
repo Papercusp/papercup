@@ -1,5 +1,5 @@
 /**
- * Tests for mobile-harnesses. Mocks `@restart/db-org` so the registry
+ * Tests for device-harnesses. Mocks `@restart/db-org` so the registry
  * lookup, status merge, and lane/escalation rollups are exercised
  * without a live Postgres.
  */
@@ -27,7 +27,7 @@ vi.mock('@restart/db-org', () => ({
   }),
 }));
 
-import { harnessExistsInWorkspace, listHarnessesFor, harnessStatusFor } from './mobile-harnesses';
+import { harnessExistsInWorkspace, listHarnessesFor, harnessStatusFor } from './device-harnesses';
 
 beforeEach(() => {
   sqlQueue.length = 0;

@@ -5,10 +5,10 @@
  */
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 
-vi.mock('./mobile-device-store', () => ({
+vi.mock('./device-store', () => ({
   touchLastSeen: vi.fn().mockResolvedValue(undefined),
 }));
-vi.mock('./mobile-operator-actions', () => ({
+vi.mock('./device-operator-actions', () => ({
   listPendingCards: vi.fn(),
   dispatchCard: vi.fn(),
   dismissCard: vi.fn(),
@@ -30,7 +30,7 @@ import {
   dismissCard,
   setPaused,
   setResumed,
-} from './mobile-operator-actions';
+} from './device-operator-actions';
 import { refreshCandidates } from './operator-standing-candidates';
 import { appendPreferenceEntry } from './operator-preferences';
 import {
@@ -38,8 +38,8 @@ import {
   runDispatch,
   runDismiss,
   type OutgoingFrame,
-} from './mobile-voice-dispatch';
-import type { DeviceClaims } from './mobile-jwt';
+} from './device-voice-dispatch';
+import type { DeviceClaims } from './device-jwt';
 
 const claims: DeviceClaims = {
   sub: 'device-1',

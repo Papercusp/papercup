@@ -1,5 +1,5 @@
 /**
- * Tests for mobile-feeds. Mocks @restart/db-org so we can verify the
+ * Tests for device-feeds. Mocks @restart/db-org so we can verify the
  * workspace-scoping contract and SQL shape without a live database.
  */
 import { describe, expect, it, vi, beforeEach } from 'vitest';
@@ -22,7 +22,7 @@ vi.mock('@restart/db-org', () => ({
   }),
 }));
 
-import { recentToasts, recentAuditEntries, currentlyRunning, lastActivityAt } from './mobile-feeds';
+import { recentToasts, recentAuditEntries, currentlyRunning, lastActivityAt } from './device-feeds';
 
 beforeEach(() => {
   captured.length = 0;

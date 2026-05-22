@@ -1,22 +1,22 @@
 /**
- * Mobile operator-surface routes — Phase E4 batch M3
+ * Device operator-surface routes — Phase E4 batch M3
  * (endpoint-unification-2026-05-21). Ported off `_hono/mobile.ts`.
  *
- *   GET    /device/notifications/recent             mobile JWT
- *   GET    /device/actions/recent                   mobile JWT
- *   GET    /device/operator/pause                   mobile JWT
- *   POST   /device/operator/pause                   mobile JWT
- *   DELETE /device/operator/pause                   mobile JWT
- *   GET    /device/operator/cards                   mobile JWT
- *   POST   /device/operator/cards/:id/dispatch      mobile JWT
- *   POST   /device/operator/cards/:id/dismiss       mobile JWT
- *   GET    /device/operator/standing-candidates     mobile JWT
- *   POST   /device/operator/standing-candidates/decide  mobile JWT
+ *   GET    /device/notifications/recent             device JWT
+ *   GET    /device/actions/recent                   device JWT
+ *   GET    /device/operator/pause                   device JWT
+ *   POST   /device/operator/pause                   device JWT
+ *   DELETE /device/operator/pause                   device JWT
+ *   GET    /device/operator/cards                   device JWT
+ *   POST   /device/operator/cards/:id/dispatch      device JWT
+ *   POST   /device/operator/cards/:id/dismiss       device JWT
+ *   GET    /device/operator/standing-candidates     device JWT
+ *   POST   /device/operator/standing-candidates/decide  device JWT
  */
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { DEVICE_AUTH, devicePrincipal } from './_shared';
-import { recentToasts, recentAuditEntries } from '@/lib/mobile-feeds';
+import { recentToasts, recentAuditEntries } from '@/lib/device-feeds';
 import {
   listPendingCards,
   dispatchCard,
@@ -24,7 +24,7 @@ import {
   setPaused,
   setResumed,
   getPauseInfo,
-} from '@/lib/mobile-operator-actions';
+} from '@/lib/device-operator-actions';
 import { readCandidates, refreshCandidates } from '@/lib/operator-standing-candidates';
 import { appendPreferenceEntry } from '@/lib/operator-preferences';
 

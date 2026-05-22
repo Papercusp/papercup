@@ -6,7 +6,7 @@
  * modules under `routes/device/`. Registration (no path collisions, the
  * literal-before-sub-app shadowing) is covered by
  * `route-shadowing-invariant.test.ts`; mobile auth + CORS are covered by
- * `agent-tools-mobile-auth.test.ts` (E2) and `mobile-cors.test.ts` (E3).
+ * `agent-tools-device-auth.test.ts` (E2) and `device-cors.test.ts` (E3).
  *
  * This suite drives the DB-free handlers directly with a hand-built
  * `RouteContext` — proving the port preserved the claim → principal

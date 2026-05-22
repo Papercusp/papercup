@@ -1,5 +1,5 @@
 /**
- * Mobile sync + voice-tool-proxy routes — Phase E4 batch M5
+ * Device sync + voice-tool-proxy routes — Phase E4 batch M5
  * (endpoint-unification-2026-05-21). Ported off `_hono/mobile.ts`.
  *
  *   GET  /device/rest-query        device JWT (via ?token= — see tokenIn)
@@ -11,8 +11,8 @@
  */
 import { defineTool } from '@papercusp/agent-mcp';
 import { DEVICE_AUTH, devicePrincipal } from './_shared';
-import { recentToasts, recentAuditEntries, currentlyRunning } from '@/lib/mobile-feeds';
-import { listHarnessesFor, harnessStatusFor } from '@/lib/mobile-harnesses';
+import { recentToasts, recentAuditEntries, currentlyRunning } from '@/lib/device-feeds';
+import { listHarnessesFor, harnessStatusFor } from '@/lib/device-harnesses';
 import { readCandidates, refreshCandidates } from '@/lib/operator-standing-candidates';
 
 /**
@@ -119,7 +119,7 @@ const voiceToolProxy = defineTool({
       const triggerRaw = typeof p?.trigger === 'string' ? p.trigger : 'user_message';
       if (!userText && !triggerRaw) return Response.json('');
       const base = process.env.MOBILE_SELF_BASE ?? `http://localhost:${process.env.PORT ?? 3055}`;
-      const { askOperatorViaConverse } = await import('@/lib/mobile-ask-operator');
+      const { askOperatorViaConverse } = await import('@/lib/device-ask-operator');
       const result = await askOperatorViaConverse({ baseUrl: base, userText, trigger: triggerRaw });
       if (result.kind === 'empty') {
         console.warn(`[mobile:ask_operator] empty — events=${result.eventCount} trigger=${result.trigger} userText.length=${userText.length}`);
@@ -138,7 +138,7 @@ const voiceToolProxy = defineTool({
     // Side-effect import populates the registry.
     await import('@/lib/commands/defs');
     const { get, list, runCommand, runQuery } = await import('@/lib/commands/registry');
-    const { resolveRegistryToolId } = await import('@/lib/mobile-tool-resolver');
+    const { resolveRegistryToolId } = await import('@/lib/device-tool-resolver');
     const resolvedId = resolveRegistryToolId(elName, {
       get: (id) => get(id),
       list: () => [
@@ -154,7 +154,7 @@ const voiceToolProxy = defineTool({
       );
     }
     const { randomUUID } = await import('node:crypto');
-    const { detectSurface } = await import('@/lib/mobile-surface');
+    const { detectSurface } = await import('@/lib/device-surface');
     const cmdCtx = {
       agent: 'operator' as const,
       workspace: principal.workspaceId,

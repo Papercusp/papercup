@@ -5,7 +5,7 @@
  * Ported from app/api/agent-mcp/operator-pause-flag/route.ts. `auth: 'public'`.
  */
 import { getSessionUser } from '@/lib/auth';
-import { setPaused, setResumed, isPaused } from '@/lib/mobile-operator-actions';
+import { setPaused, setResumed, isPaused } from '@/lib/device-operator-actions';
 import { defineTool } from '@papercusp/agent-mcp';
 
 const get = defineTool({

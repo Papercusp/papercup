@@ -27,7 +27,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.doUnmock('@/lib/operator-budget');
-  vi.doUnmock('@/lib/mobile-operator-actions');
+  vi.doUnmock('@/lib/device-operator-actions');
   vi.doUnmock('@/lib/operator-trigger-state');
   vi.doUnmock('@/lib/operator-preferences');
   vi.doUnmock('@/lib/operator-multi-workspace');
@@ -92,7 +92,7 @@ describe('operator:budget', () => {
 
 describe('operator:paused', () => {
   it('reads pause sentinel', async () => {
-    vi.doMock('@/lib/mobile-operator-actions', () => ({
+    vi.doMock('@/lib/device-operator-actions', () => ({
       isPaused: vi.fn(async () => true),
     }));
     const { default: tool } = await import('@/lib/agent-tools/operator/paused');

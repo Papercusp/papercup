@@ -12,7 +12,7 @@ import net from 'node:net';
 
 import { readOperatorState } from '@/lib/operator-state-pg';
 import { readCredentials } from '@/lib/credentials';
-import { listDevices } from '@/lib/mobile-device-store';
+import { listDevices } from '@/lib/device-store';
 import { activeWorkspaceId, readRegistry } from '@/lib/workspace-registry';
 import { workspaceBackupFor } from '@/lib/backup';
 import { anyAgentSignedIn } from '@/lib/agent-auth-detect';
