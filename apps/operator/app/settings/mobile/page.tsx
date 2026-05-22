@@ -65,7 +65,7 @@ export default function MobileSettingsPage() {
 
   const refreshDevices = async () => {
     try {
-      const res = await fetch('/api/mobile/desktop/devices');
+      const res = await fetch('/api/device/desktop/devices');
       if (!res.ok) return;
       const body = (await res.json()) as { devices: PairedDevice[] };
       setDevices(body.devices);
@@ -77,7 +77,7 @@ export default function MobileSettingsPage() {
   const mint = async () => {
     setBusy(true);
     try {
-      const res = await fetch('/api/mobile/desktop/mint-pair-token', {
+      const res = await fetch('/api/device/desktop/mint-pair-token', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ workspaceId }),
@@ -107,7 +107,8 @@ export default function MobileSettingsPage() {
     });
     if (!ok) return;
     try {
-      await fetch(`/api/mobile/desktop/devices/${encodeURIComponent(deviceId)}`, { method: 'DELETE' });
+      const res = await fetch(`/api/device/desktop/devices/${encodeURIComponent(deviceId)}`, { method: 'DELETE' });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
       toast.success('Device revoked');
       refreshDevices();
     } catch (e) {
@@ -209,7 +210,7 @@ export default function MobileSettingsPage() {
 }
 
 /**
- * QR rendered server-side via /api/mobile/qr.svg. The phone's barcode scanner
+ * QR rendered server-side via /api/device/qr.svg. The phone's barcode scanner
  * reads the JSON payload directly from the SVG.
  */
 function ManualPayloadBox({ payload }: { payload: QrPayload }) {
@@ -256,7 +257,7 @@ function ManualPayloadBox({ payload }: { payload: QrPayload }) {
 
 function QRSvg({ payload }: { payload: QrPayload }) {
   const json = JSON.stringify(payload);
-  const src = `/api/mobile/qr.svg?payload=${encodeURIComponent(json)}`;
+  const src = `/api/device/qr.svg?payload=${encodeURIComponent(json)}`;
   return (
     // eslint-disable-next-line @next/next/no-img-element
     <img

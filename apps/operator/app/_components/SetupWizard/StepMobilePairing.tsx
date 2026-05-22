@@ -30,7 +30,7 @@ export function StepMobilePairing() {
     setBusy(true);
     setError(null);
     try {
-      const res = await fetch('/api/mobile/desktop/mint-pair-token', {
+      const res = await fetch('/api/device/desktop/mint-pair-token', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ workspaceId: 'default' }),
@@ -80,7 +80,7 @@ export function StepMobilePairing() {
         <>
           <div className="pc-qr">
             <img
-              src={`/api/mobile/qr.svg?payload=${encodeURIComponent(JSON.stringify(qr))}`}
+              src={`/api/device/qr.svg?payload=${encodeURIComponent(JSON.stringify(qr))}`}
               alt="Pairing QR code"
               className="pc-qr__img"
             />
