@@ -28,7 +28,7 @@ import PlanJumpToItem from './PlanJumpToItem';
 import LockBanner from './LockBanner';
 import LintBanner from './LintBanner';
 import PlanActions from './PlanActions';
-import GitHistoryStrip from './GitHistoryStrip';
+import RevisionsPanel from './RevisionsPanel';
 import PlanConflictModal from './PlanConflictModal';
 import PlanStatusPopover, {
   resolveItemId,
@@ -248,7 +248,7 @@ export default function PlanDetail({ slug, onClose, onDirtyChange }: Props) {
         onSuccess={onChanged}
         onClose={() => setPendingStatus(null)}
       />
-      <GitHistoryStrip slug={data.slug} archived={archived} />
+      <RevisionsPanel slug={data.slug} />
       <PlanConflictModal
         open={conflict !== null}
         currentContent={conflict ?? ''}

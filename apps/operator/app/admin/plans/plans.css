@@ -1572,7 +1572,11 @@
 }
 
 /* ── Git history strip + diff modal (P-303) ───────────────────────── */
-.pc-git-strip {
+/* Revisions panel — plan-agent-launch P-017. Successor to the git
+ * history strip; backed by `plan_revisions` (the conversation-linked
+ * spine, D-003). Each row has a head line (seq / author / when / stat)
+ * plus the inline rationale below it. */
+.pc-revisions-panel {
   display: flex;
   flex-direction: column;
   gap: 4px;
@@ -1584,12 +1588,12 @@
   color: rgba(214, 236, 248, 0.86);
   font-size: 11.5px;
 }
-.pc-git-strip--loading,
-.pc-git-strip--empty {
+.pc-revisions-panel--loading,
+.pc-revisions-panel--empty {
   color: rgba(186, 230, 253, 0.5);
   font-style: italic;
 }
-.pc-git-strip--error {
+.pc-revisions-panel--error {
   flex-direction: row;
   align-items: center;
   gap: 10px;
@@ -1598,13 +1602,13 @@
   background: rgba(248, 113, 113, 0.08);
 }
 
-.pc-git-strip__head {
+.pc-revisions-panel__head {
   display: flex;
   align-items: center;
   gap: 8px;
 }
 
-.pc-git-strip__kicker {
+.pc-revisions-panel__kicker {
   font-size: 10px;
   font-weight: 760;
   letter-spacing: 0.14em;
@@ -1612,7 +1616,7 @@
   color: rgba(125, 211, 252, 0.78);
 }
 
-.pc-git-strip__count {
+.pc-revisions-panel__count {
   padding: 1px 6px;
   border-radius: 999px;
   background: rgba(255, 255, 255, 0.06);
@@ -1621,8 +1625,8 @@
   color: rgba(186, 230, 253, 0.65);
 }
 
-.pc-git-strip__toggle,
-.pc-git-strip__retry {
+.pc-revisions-panel__toggle,
+.pc-revisions-panel__retry {
   margin-left: auto;
   padding: 2px 8px;
   border: 1px solid rgba(125, 211, 252, 0.22);
@@ -1632,59 +1636,97 @@
   font-size: 10.5px;
   cursor: pointer;
 }
-.pc-git-strip__toggle:hover,
-.pc-git-strip__retry:hover {
+.pc-revisions-panel__toggle:hover,
+.pc-revisions-panel__retry:hover {
   color: #eff8ff;
   border-color: rgba(103, 232, 249, 0.42);
 }
 
-.pc-git-strip__list {
+.pc-revisions-panel__list {
   list-style: none;
   margin: 0;
   padding: 0;
   display: grid;
-  gap: 1px;
+  gap: 2px;
 }
 
-.pc-git-commit {
-  display: grid;
-  grid-template-columns: 64px 60px 100px 1fr;
-  align-items: baseline;
-  gap: 8px;
-  width: 100%;
-  padding: 4px 6px;
+.pc-revision-row {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 5px 6px;
   border: 1px solid transparent;
   border-radius: 4px;
   background: transparent;
-  color: rgba(214, 236, 248, 0.86);
-  text-align: left;
-  cursor: pointer;
-  font-size: 11px;
 }
-.pc-git-commit:hover {
-  background: rgba(12, 24, 38, 0.85);
-  border-color: rgba(125, 211, 252, 0.22);
+.pc-revision-row:hover {
+  background: rgba(12, 24, 38, 0.6);
+  border-color: rgba(125, 211, 252, 0.18);
 }
 
-.pc-git-commit__hash {
+.pc-revision-row__head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  font-size: 11px;
+}
+
+.pc-revision-row__seq {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 10.5px;
   color: #a5e9f7;
+  min-width: 40px;
 }
 
-.pc-git-commit__date,
-.pc-git-commit__author {
-  color: rgba(186, 230, 253, 0.55);
+.pc-revision-row__author {
+  color: rgba(214, 236, 248, 0.75);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 12em;
+}
+.pc-revision-row[data-author-kind='human'] .pc-revision-row__author {
+  color: rgba(186, 230, 253, 0.85);
+}
+
+.pc-revision-row__when {
+  color: rgba(186, 230, 253, 0.5);
   font-size: 10.5px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+  margin-left: auto;
 }
 
-.pc-git-commit__subject {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+.pc-revision-row__stat {
+  display: inline-flex;
+  gap: 6px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+}
+.pc-revision-row__stat--add {
+  color: #6ee7b7;
+}
+.pc-revision-row__stat--del {
+  color: #fca5a5;
+}
+
+.pc-revision-row__rationale {
+  font-size: 11.5px;
+  color: rgba(214, 236, 248, 0.88);
+  line-height: 1.45;
+  /* keep dense — rationale is one or two sentences; wrap naturally. */
+  white-space: normal;
+  overflow-wrap: anywhere;
+  padding-left: 48px; /* align under #seq column */
+}
+
+.pc-revision-row__rationale--muted {
+  color: rgba(186, 230, 253, 0.45);
+  font-style: italic;
+}
+
+.pc-revision-row[data-session-kind='git_backfill'] .pc-revision-row__seq {
+  color: rgba(186, 230, 253, 0.55);
 }
 
 .pc-git-diff {

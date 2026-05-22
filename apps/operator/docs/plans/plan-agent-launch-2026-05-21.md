@@ -15,8 +15,9 @@ owner: avi@storewolf.com
 2026-05-21). **Phase 1 (revision spine) is complete — 5/5.**
 **Phase 2 (conversation linkage) is complete — P-006 … P-009 all
 done.** **Phase 3 (agent launch) is complete — P-010…P-016 all
-done.** The entire `plans:*` backend is built; only the UI
-(Phases 4–5) and verification (Phase 6) remain.
+done.** The entire `plans:*` backend is built. **Phase 4 (Revisions
+UI) is in flight — P-017 done.** Only Phase 5 (Agents tab) and
+Phase 6 (verification) remain.
 
 Phase 1: P-001 (`plan_revisions` schema); P-002 + P-003 (`rationale`
 + revision capture on all seven `plans:*` write verbs via the shared
@@ -92,15 +93,11 @@ pure logic is verified now (127 tests, incl. real-git
 `buildPlanAgentMcpUrl` / tool-surface constants, and the launch
 prompt/title derivations).
 
-**Next:** Phases 1, 2, 3 are all complete — the entire `plans:*`
-backend (revision spine, conversation linkage, context bundle,
-runner, launch/resume, run history + lifecycle, scoped transcript
-read, rationale auto-summary) is built and unit-verified. What
-remains is **Phase 4 + 5** — the UI: the Revisions panel (P-017…
-P-020) and the Agents tab (P-021…P-026) in `/admin/plans` — then
-**Phase 6** (P-027 / P-028 verification, including the live PG-path
-debt below). **P-017** (rebuild `GitHistoryStrip` as a
-`plan_revisions`-backed Revisions panel) is the next pickup.
+**Next:** the rest of Phase 4 — **P-018** (per-revision diff modal,
+sourced from the snapshot pair instead of `git diff`), **P-019**
+(per-revision drill-down — "open conversation" affordance gated on
+`session_id`), **P-020** (nuqs URL state — `?tab=revisions`,
+`?rev=<id>`). Then Phase 5 (Agents tab) and Phase 6 verification.
 
 ## Background
 
@@ -410,7 +407,7 @@ wire the launch and its history on top.
 Rebuild the git strip as a first-class, conversation-linked revision
 timeline.
 
-- **P-017** `todo` Rebuild `GitHistoryStrip` as a `plan_revisions`-backed Revisions panel — rows: seq, author, when, the rationale inline, diff-stat. (`plans:history`/`plans:diff` stay as a backup data source, not shown here.) blocked-by: P-004
+- **P-017** `done` `GitHistoryStrip` deleted; **`RevisionsPanel.tsx`** consumes `plans:revisions` via a new `usePlanRevisions` hook + `PlanRevision` wire type in `plans-api.ts`. Rows: `#seq`, author label (`formatAuthor` — email local-part for humans, first two dash-chunks for agents), age-bucketed timestamp (`formatTimestamp`), `+N −N` diff-stat, **rationale always inline** (D-002) with a typed placeholder per `sessionKind` (`formatRationale` — `git_backfill` / `plan_run` / direct-edit). Collapsed-by-default at 5 rows, expand toggle is nuqs-backed (`?revOpen=`). Wired into `PlanDetail.tsx`; `/api/admin/plans/revisions` already registered (P-004); CSS shipped (`pc-revisions-panel*`). 13 unit tests on the pure formatters. → D-002, D-003 blocked-by: P-004
 - **P-018** `todo` Per-revision diff modal — keep the `react-diff-view` modal; source the patch from the snapshot pair instead of `git diff`.
 - **P-019** `todo` Per-revision drill-down — "open conversation" affordance shown only when `session_id` is present; a no-session revision shows a "direct edit" tag and its inline rationale only. blocked-by: P-008
 - **P-020** `todo` nuqs URL state for the Revisions panel (`?tab=revisions`, `?rev=<id>`).

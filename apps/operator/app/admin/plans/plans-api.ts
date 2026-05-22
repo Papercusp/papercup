@@ -605,6 +605,44 @@ export function usePlanHistory(slug: string | null, archived: boolean): AsyncRes
   );
 }
 
+/* ── plan_revisions (plan-agent-launch P-004 / P-017) ──────────────── */
+
+export type PlanRevisionAuthorKind = 'agent' | 'human';
+export type PlanRevisionSessionKind =
+  | 'plan_run'
+  | 'operator_chat'
+  | 'agent_chat'
+  | 'git_backfill';
+
+export interface PlanRevision {
+  /** Global plan_revisions id — the address the P-008 transcript verb
+   *  takes. */
+  id: number;
+  /** 1-based per-plan revision number. */
+  seq: number;
+  contentHash: string;
+  rationale: string | null;
+  authorKind: PlanRevisionAuthorKind;
+  authorId: string;
+  sessionId: string | null;
+  sessionKind: PlanRevisionSessionKind | null;
+  createdAt: number;
+  diffStat: { added: number; removed: number };
+}
+
+export function fetchPlanRevisions(slug: string) {
+  return getJson<{ revisions: PlanRevision[] }>('revisions', { slug });
+}
+
+/** The Revisions panel hook (P-017) — newest-first revision chain. An
+ *  empty chain (no recorded revisions) is `data: []` not an error. */
+export function usePlanRevisions(slug: string | null): AsyncResult<PlanRevision[]> {
+  return useAsyncJson<PlanRevision[]>(
+    () => (slug ? fetchPlanRevisions(slug).then((r) => r.revisions) : Promise.resolve([])),
+    [slug],
+  );
+}
+
 /* ── Lint hook (P-206) ─────────────────────────────────────────────── */
 
 /**
