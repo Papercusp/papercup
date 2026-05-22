@@ -362,6 +362,12 @@ export interface SetContentArgs {
    *  editor — the compare-and-swap guard. Omitted only if the server
    *  build predates the `contentHash` field. */
   expectedHash?: string;
+  /** plan-agent-launch P-025 (D-009): the "what changed & why" the
+   *  editor's Save flow collects. Carried through to the new
+   *  plan_revisions row, where it becomes the always-loaded
+   *  rationale for any agent later launched from this plan. Optional
+   *  per D-009 — expectation scales with the write's significance. */
+  rationale?: string;
 }
 
 export interface PromoteArgs {

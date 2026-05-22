@@ -75,6 +75,11 @@ export default function PlanDetail({ slug, onClose, onDirtyChange }: Props) {
   const [openRev, setOpenRev] = useQueryState('rev', parseAsInteger);
   const [openConvo, setOpenConvo] = useQueryState('convo', parseAsInteger);
   const [draft, setDraft] = useState<string | null>(null);
+  // P-025 (D-009): the "what changed & why" the editor's Save
+  // surfaces. Carried into setPlanContent → recorded on the new
+  // plan_revisions row → seeded into the next agent's launch bundle.
+  // Cleared on enterEdit/exitEdit/save together with the draft.
+  const [rationale, setRationale] = useState('');
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [conflict, setConflict] = useState<string | null>(null);
@@ -137,6 +142,7 @@ export default function PlanDetail({ slug, onClose, onDirtyChange }: Props) {
 
   const enterEdit = () => {
     setDraft(raw);
+    setRationale('');
     setSaveError(null);
     setPane('edit');
     // P-020: clicking "Edit" from the Revisions tab implies "edit
@@ -147,6 +153,7 @@ export default function PlanDetail({ slug, onClose, onDirtyChange }: Props) {
   const exitEdit = () => {
     if (dirty && !window.confirm('Discard unsaved edits to this plan?')) return;
     setDraft(null);
+    setRationale('');
     setSaveError(null);
     setPane('read');
   };
@@ -159,6 +166,7 @@ export default function PlanDetail({ slug, onClose, onDirtyChange }: Props) {
         slug: data.slug,
         content: draft,
         expectedHash: data.contentHash,
+        rationale: rationale.trim() || undefined,
       });
       const stale = staleConflictOf(res);
       if (stale) {
@@ -170,8 +178,9 @@ export default function PlanDetail({ slug, onClose, onDirtyChange }: Props) {
         setSaveError(err);
         return;
       }
-      // Saved — drop the draft, return to read mode, refetch.
+      // Saved — drop the draft + rationale, return to read mode, refetch.
       setDraft(null);
+      setRationale('');
       setPane('read');
       onChanged();
     } catch (e) {
@@ -228,6 +237,8 @@ export default function PlanDetail({ slug, onClose, onDirtyChange }: Props) {
           saving={saving}
           locked={locked}
           error={saveError}
+          rationale={rationale}
+          onRationaleChange={setRationale}
           onSave={save}
           onCancel={exitEdit}
         />
@@ -359,6 +370,8 @@ function EditBar({
   saving,
   locked,
   error,
+  rationale,
+  onRationaleChange,
   onSave,
   onCancel,
 }: {
@@ -366,6 +379,8 @@ function EditBar({
   saving: boolean;
   locked: boolean;
   error: string | null;
+  rationale: string;
+  onRationaleChange: (v: string) => void;
   onSave: () => void;
   onCancel: () => void;
 }) {
@@ -396,6 +411,22 @@ function EditBar({
         >
           {saving ? 'Saving…' : 'Save'}
         </button>
+      </div>
+      {/* P-025 (D-009): the rationale input. Optional — D-009's
+       *  "expectation scales with the write" applies — but agents
+       *  launched from this plan see whatever is recorded here as
+       *  always-loaded context, so a substantive edit should fill it
+       *  in. Bound to the editor lifecycle (cleared on enter/exit/save). */}
+      <div className="pc-editbar__row pc-editbar__row--rationale">
+        <input
+          type="text"
+          className="pc-editbar__rationale"
+          placeholder="What changed & why (optional — seeded into next agent launch)"
+          value={rationale}
+          onChange={(e) => onRationaleChange(e.target.value)}
+          disabled={saving}
+          aria-label="Rationale for this edit"
+        />
       </div>
       {error ? <p className="pc-editbar__error">{error}</p> : null}
     </div>

@@ -12,14 +12,14 @@ owner: avi@storewolf.com
 ## Now
 
 **State:** v3, ratified — implementation in flight (started
-2026-05-21). **Phase 1 (revision spine) is complete — 5/5.**
-**Phase 2 (conversation linkage) is complete — P-006 … P-009 all
-done.** **Phase 3 (agent launch) is complete — P-010…P-016 all
-done.** The entire `plans:*` backend is built. **Phase 4 (Revisions
-UI) is complete — P-017–P-020 all done (4/4).** **Phase 5 (Agents
-tab) is nearly complete — P-021, P-022, P-023, P-024, P-026 done
-(5/6); only P-025 (PlanEditor rationale field) remains.** Phase 6
-(verification) remains.
+2026-05-21). **Phases 1–5 are complete.** The entire `plans:*`
+backend (revision spine, conversation linkage, context bundle,
+runner, launch/resume, run history + lifecycle, scoped transcript
+read, rationale auto-summary), the Revisions UI (panel + diff modal
++ conversation drill-down + nuqs URL state), and the Agents tab
+(origin card + past-runs list + launch + run-detail with native
+console + nuqs `?run=<id>` + PlanEditor "what changed & why")
+all ship. Only **Phase 6 (verification — P-027 + P-028)** remains.
 
 Phase 1: P-001 (`plan_revisions` schema); P-002 + P-003 (`rationale`
 + revision capture on all seven `plans:*` write verbs via the shared
@@ -95,9 +95,11 @@ pure logic is verified now (127 tests, incl. real-git
 `buildPlanAgentMcpUrl` / tool-surface constants, and the launch
 prompt/title derivations).
 
-**Next:** **P-025** is the last Phase 5 item — PlanEditor Save grows a
-"what changed & why" rationale field that flows into
-`plans:set-content`. Then Phase 6 verification (P-027 + P-028).
+**Next:** **Phase 6 verification** — P-027 (unit tests for the full
+launch/resume/transcript round-trip) and P-028 (an end-to-end
+exercise through the desktop app: author a plan, edit it twice,
+launch an agent, continue it, observe the revision timeline + run
+history + the agent console).
 
 ## Background
 
@@ -420,7 +422,7 @@ The launch surface and the resumable run history.
 - **P-022** `done` Launch button + free-text note compose form in `AgentsPanel`. "Launch agent" toggles a small `<LaunchCompose>` (3-row textarea, Cancel/Launch); submitting calls a new `launchPlanAgent` fetcher → `plans:launch` via a new `'launch'` admin-route `WRITE_VERBS` entry; on success the form closes and `runs.refresh()` makes the new 'running' row appear immediately. `launchErrorLabel` (pure, 6 tests) renders `not_found`/`busy {holder, intent}`/generic codes. **Required adding a `await: boolean` flag to `plans:launch`** (D-022 — see decision): the admin POST can't stream, so it sends `await: false`; the handler returns as soon as the `plan_runs` row exists and runs `executePlanAgentTurn` fire-and-forget (`status` settles to `idle`/`failed` async — UI polls). Default stays `true` so the streaming MCP path is unchanged. → D-007, D-022 blocked-by: P-012
 - **P-023** `done` `RunDetailPanel.tsx` — mounted on the Agents tab when `?run=<id>` is set (nuqs). Header: back-to-list button, run title, status pill, ⚠ stale badge (when `planContentHash` ≠ current — D-018), **"Open agent console" button** that spawns a native terminal running `<agent-cli> -r <sessionId>` via the existing `/api/agent-mcp/console/launch` route (extended with an optional `resumeSessionId` body field + `shellSafeId` guard against unsafe ids — D-023). Body: a paginated transcript over `plan_run_turns` via the new `plans:run-transcript` verb (substring-filterable, "Load more" appends) + a Continue form that POSTs `plans:resume` with `await: false` (D-022). **No in-browser SSE.** Past-run rows are now clickable to open the detail. → D-010, D-018, D-022, D-023 blocked-by: P-013
 - **P-024** `done` All four admin routes shipped: `GET …/revisions` (P-017), `GET …/runs` (P-021), `POST …/launch` (P-022), and now `POST …/resume` for the run-detail Continue form. The "continue" path reuses the existing single resource (no `runs/:id/continue` subpath — the verb takes `{ runId, message }` in the body, same shape as every other admin route). Plus `GET …/revision-diff` (P-018), `GET …/revision-transcript` (P-019), `GET …/run-transcript` (P-023) — the read verbs the diff modal, conversation modal, and run-detail panel consume. Both write verbs (`launch`, `resume`) carry `await: false` for the admin path (D-022). blocked-by: P-022
-- **P-025** `todo` PlanEditor Save — add an optional "what changed & why" field that supplies `rationale` to `plans:set-content`. → D-009 blocked-by: P-002
+- **P-025** `done` `SetContentArgs` gains an optional `rationale` field; `PlanDetail` holds a `rationale` state cleared on `enterEdit`/`exitEdit`/successful save; the `EditBar` renders a one-line text input ("What changed & why — optional — seeded into next agent launch") wired through `onRationaleChange`; `save` passes it to `setPlanContent` (which already supported the param server-side from P-002). Per D-009 the field is optional; placeholder text frames its role for the human writer. → D-009 blocked-by: P-002
 - **P-026** `done` `?tab=agents` shipped with P-021; `?run=<id>` shipped with P-023 (RunDetailPanel mount key — clearing it via the back button returns to the past-runs list).
 
 ## Phase 6 — Verification
