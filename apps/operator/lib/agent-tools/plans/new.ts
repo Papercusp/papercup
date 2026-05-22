@@ -19,6 +19,8 @@ import { withPlanLock } from './with-plan-lock';
 import { PLAN_STATUSES } from './parser';
 import { emitPlanEventForCaller } from '../coordination/plan-events';
 import { fireNotificationsForCaller } from '../coordination/subscriptions';
+import { planRevisionCapture } from './revisions';
+import type { ResolveIdentityCtx } from '../coordination/identity';
 
 const SU_ROLES = [
   'scoper',
@@ -44,6 +46,12 @@ const argsSchema = z.object({
   title: z.string().min(1).max(200),
   status: z.enum([...PLAN_STATUSES] as [string, ...string[]]).optional(),
   owner: z.string().email().optional(),
+  rationale: z
+    .string()
+    .optional()
+    .describe(
+      "Optional — why this plan exists / what prompted its creation. Stored as the rationale of the plan's first revision (D-009).",
+    ),
 });
 
 function todayISO(): string {
@@ -127,11 +135,13 @@ export default defineTool({
     // appends today's date when the caller didn't already include one.
     const slug = ensureDatedSlug(args.slug, date);
 
+    const rev = planRevisionCapture(ctx as ResolveIdentityCtx, slug, args.rationale);
     const result = await withPlanLock<NewPlanValue>(
       ctx as never,
       {
         slug,
         intent: `plans:new ${slug}`,
+        afterWrite: rev.afterWrite,
       },
       async (current): Promise<{ newBody: string | null; value: NewPlanValue }> => {
         if (current !== null) {
@@ -202,6 +212,7 @@ export default defineTool({
             ok: true,
             slug: value.slug,
             filePath: result.filePath,
+            revision: rev.recorded.current ? { seq: rev.recorded.current.seq } : null,
           }),
         },
       ],

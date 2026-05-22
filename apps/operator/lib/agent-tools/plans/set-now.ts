@@ -19,6 +19,8 @@ import { withPlanLock, bumpUpdatedDate } from './with-plan-lock';
 import { maskFences } from './parser';
 import { emitPlanEventForCaller } from '../coordination/plan-events';
 import { fireNotificationsForCaller } from '../coordination/subscriptions';
+import { planRevisionCapture } from './revisions';
+import type { ResolveIdentityCtx } from '../coordination/identity';
 
 const SU_ROLES = [
   'scoper',
@@ -44,6 +46,12 @@ const argsSchema = z.object({
     .min(1)
     .max(800)
     .describe('One sentence — the single next concrete action and who should do it.'),
+  rationale: z
+    .string()
+    .optional()
+    .describe(
+      'Optional — a short why behind this state change. Stored on the plan revision and shown in the revision timeline (D-009). Routine progress updates can omit it; the launch seed prefers substantive set-content rationales.',
+    ),
 });
 
 /** Explicit result payload so `withPlanLock`'s `T` is fixed by the type
@@ -102,11 +110,13 @@ export default defineTool({
   modality: ['text'],
   args: argsSchema,
   async handler(args, ctx) {
+    const rev = planRevisionCapture(ctx as ResolveIdentityCtx, args.slug, args.rationale);
     const result = await withPlanLock<SetNowValue>(
       ctx as never,
       {
         slug: args.slug,
         intent: `plans:set-now`,
+        afterWrite: rev.afterWrite,
       },
       async (current): Promise<{ newBody: string | null; value: SetNowValue }> => {
         if (current === null) {
@@ -158,7 +168,16 @@ export default defineTool({
     );
 
     return {
-      content: [{ type: 'text' as const, text: JSON.stringify({ ok: true, filePath: result.filePath }) }],
+      content: [
+        {
+          type: 'text' as const,
+          text: JSON.stringify({
+            ok: true,
+            filePath: result.filePath,
+            revision: rev.recorded.current ? { seq: rev.recorded.current.seq } : null,
+          }),
+        },
+      ],
     };
   },
 });

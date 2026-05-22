@@ -16,6 +16,8 @@ import { parsePlan, maskFences } from './parser';
 import { emitPlanEventForCaller } from '../coordination/plan-events';
 import { fireNotificationsForCaller } from '../coordination/subscriptions';
 import { readPlanBySlug } from './source';
+import { planRevisionCapture } from './revisions';
+import type { ResolveIdentityCtx } from '../coordination/identity';
 
 const SU_ROLES = [
   'scoper',
@@ -43,6 +45,12 @@ const argsSchema = z.object({
     .optional()
     .describe(
       'Slugs of OTHER plans this decision bears on. The decision stays canonically in `slug`; each affected plan gets a cross-reference plan_event + a notify to its watchers. Never duplicates the decision.',
+    ),
+  rationale: z
+    .string()
+    .optional()
+    .describe(
+      'Optional — a short why for this revision. A decision body already carries its own reasoning, so this is rarely needed. Stored on the plan revision (D-009).',
     ),
 });
 
@@ -154,11 +162,13 @@ export default defineTool({
   modality: ['text'],
   args: argsSchema,
   async handler(args, ctx) {
+    const rev = planRevisionCapture(ctx as ResolveIdentityCtx, args.slug, args.rationale);
     const result = await withPlanLock<AddDecisionValue>(
       ctx as never,
       {
         slug: args.slug,
         intent: `plans:add-decision: ${args.title.slice(0, 60)}`,
+        afterWrite: rev.afterWrite,
       },
       async (current): Promise<{ newBody: string | null; value: AddDecisionValue }> => {
         if (current === null) {
@@ -265,6 +275,7 @@ export default defineTool({
           text: JSON.stringify({
             ...result.value,
             filePath: result.filePath,
+            revision: rev.recorded.current ? { seq: rev.recorded.current.seq } : null,
             ...(propagatedTo.length > 0 ? { propagated_to: propagatedTo } : {}),
             ...(unknownAffects.length > 0 ? { unknown_affects: unknownAffects } : {}),
           }),

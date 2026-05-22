@@ -28,6 +28,8 @@ import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { withPlanLock } from './with-plan-lock';
 import { parsePlan } from './parser';
+import { planRevisionCapture } from './revisions';
+import type { ResolveIdentityCtx } from '../coordination/identity';
 
 const SU_ROLES = [
   'scoper',
@@ -60,6 +62,12 @@ const argsSchema = z.object({
     .optional()
     .describe('Creation date (YYYY-MM-DD). Defaults to today when omitted.'),
   owner: z.string().max(200).optional().describe('Plan owner (e.g. an email).'),
+  rationale: z
+    .string()
+    .optional()
+    .describe(
+      'Optional — a note on this legacy-plan conversion. Stored on the plan revision, not in the frontmatter (D-009).',
+    ),
 });
 
 /** Collapse internal whitespace + newlines so a value can never break
@@ -121,11 +129,13 @@ export default defineTool({
   async handler(args, ctx) {
     const today = new Date().toISOString().slice(0, 10);
 
+    const rev = planRevisionCapture(ctx as ResolveIdentityCtx, args.slug, args.rationale);
     const result = await withPlanLock<SetFrontmatterValue>(
       ctx as never,
       {
         slug: args.slug,
         intent: 'plans:set-frontmatter',
+        afterWrite: rev.afterWrite,
       },
       async (current): Promise<{ newBody: string | null; value: SetFrontmatterValue }> => {
         if (current === null) {
@@ -178,7 +188,12 @@ export default defineTool({
       content: [
         {
           type: 'text' as const,
-          text: JSON.stringify({ ok: true, slug: result.value.slug, filePath: result.filePath }),
+          text: JSON.stringify({
+            ok: true,
+            slug: result.value.slug,
+            filePath: result.filePath,
+            revision: rev.recorded.current ? { seq: rev.recorded.current.seq } : null,
+          }),
         },
       ],
     };

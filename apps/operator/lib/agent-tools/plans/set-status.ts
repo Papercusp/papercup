@@ -16,6 +16,8 @@ import { withPlanLock, bumpUpdatedDate } from './with-plan-lock';
 import { ITEM_STATUSES, maskFences } from './parser';
 import { emitPlanEventForCaller } from '../coordination/plan-events';
 import { fireNotificationsForCaller } from '../coordination/subscriptions';
+import { planRevisionCapture } from './revisions';
+import type { ResolveIdentityCtx } from '../coordination/identity';
 
 const SU_ROLES = [
   'scoper',
@@ -34,6 +36,12 @@ const argsSchema = z.object({
   itemId: z.string().regex(/^P-\d{3,}$/, 'P-NNN form required'),
   status: z.enum([...ITEM_STATUSES] as [string, ...string[]]),
   note: z.string().max(400).optional().describe('Optional trailing comment appended to the item line.'),
+  rationale: z
+    .string()
+    .optional()
+    .describe(
+      'Optional — rarely needed: a status flip is already visible in the plan doc. Supply only when the *why* of the flip is non-obvious (e.g. an item moved to `blocked`). Stored on the plan revision (D-009).',
+    ),
 });
 
 /** Result payload — explicit so `withPlanLock`'s `T` is fixed by the
@@ -94,11 +102,13 @@ export default defineTool({
   modality: ['text'],
   args: argsSchema,
   async handler(args, ctx) {
+    const rev = planRevisionCapture(ctx as ResolveIdentityCtx, args.slug, args.rationale);
     const result = await withPlanLock<SetStatusValue>(
       ctx as never,
       {
         slug: args.slug,
         intent: `plans:set-status ${args.itemId} → ${args.status}`,
+        afterWrite: rev.afterWrite,
       },
       async (current): Promise<{ newBody: string | null; value: SetStatusValue }> => {
         if (current === null) {
@@ -166,7 +176,14 @@ export default defineTool({
 
     return {
       content: [
-        { type: 'text' as const, text: JSON.stringify({ ...result.value, filePath: result.filePath }) },
+        {
+          type: 'text' as const,
+          text: JSON.stringify({
+            ...result.value,
+            filePath: result.filePath,
+            revision: rev.recorded.current ? { seq: rev.recorded.current.seq } : null,
+          }),
+        },
       ],
     };
   },

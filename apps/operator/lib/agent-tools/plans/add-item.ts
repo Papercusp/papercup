@@ -18,6 +18,8 @@ import { withPlanLock, bumpUpdatedDate } from './with-plan-lock';
 import { parsePlan, maskFences } from './parser';
 import { emitPlanEventForCaller } from '../coordination/plan-events';
 import { fireNotificationsForCaller } from '../coordination/subscriptions';
+import { planRevisionCapture } from './revisions';
+import type { ResolveIdentityCtx } from '../coordination/identity';
 
 const SU_ROLES = [
   'scoper',
@@ -42,6 +44,12 @@ const argsSchema = z.object({
     .array(z.string().regex(/^P-\d{3,}$/))
     .optional()
     .describe('Item IDs that must complete before this one can effectively start.'),
+  rationale: z
+    .string()
+    .optional()
+    .describe(
+      'Optional — a short why for adding this item, if non-obvious. Stored on the plan revision (D-009); routine additions can omit it.',
+    ),
 });
 
 function formatPadded(n: number): string {
@@ -165,11 +173,13 @@ export default defineTool({
   modality: ['text'],
   args: argsSchema,
   async handler(args, ctx) {
+    const rev = planRevisionCapture(ctx as ResolveIdentityCtx, args.slug, args.rationale);
     const result = await withPlanLock<AddItemValue>(
       ctx as never,
       {
         slug: args.slug,
         intent: `plans:add-item to "${args.phase.slice(0, 40)}"`,
+        afterWrite: rev.afterWrite,
       },
       async (current): Promise<{ newBody: string | null; value: AddItemValue }> => {
         if (current === null) {
@@ -234,7 +244,14 @@ export default defineTool({
 
     return {
       content: [
-        { type: 'text' as const, text: JSON.stringify({ ...result.value, filePath: result.filePath }) },
+        {
+          type: 'text' as const,
+          text: JSON.stringify({
+            ...result.value,
+            filePath: result.filePath,
+            revision: rev.recorded.current ? { seq: rev.recorded.current.seq } : null,
+          }),
+        },
       ],
     };
   },

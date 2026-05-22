@@ -10,7 +10,7 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { classifyAuthor } from '../revisions';
+import { classifyAuthor, planRevisionCapture } from '../revisions';
 import type { AgentIdentity, IdentitySource } from '../../coordination/identity';
 
 function identity(source: IdentitySource): AgentIdentity {
@@ -39,5 +39,17 @@ describe('classifyAuthor', () => {
     for (const source of agentSources) {
       expect(classifyAuthor(identity(source))).toBe('agent');
     }
+  });
+});
+
+describe('planRevisionCapture', () => {
+  it('is a best-effort no-op when the ctx carries no identity', async () => {
+    // `{}` resolves to no power-user / superuser / principal identity —
+    // `resolveAgentIdentity` throws, the capture swallows it (D-014) and
+    // returns a no-op `afterWrite` rather than failing the write.
+    const cap = planRevisionCapture({}, 'some-plan-2026-05-21', 'a reason');
+    expect(cap.recorded.current).toBeNull();
+    await expect(cap.afterWrite('# plan body')).resolves.toBeUndefined();
+    expect(cap.recorded.current).toBeNull();
   });
 });

@@ -21,7 +21,11 @@ import { withWorkspace } from '@restart/db-org';
 import { ensurePlanRevisionsTable } from '../../ensure-schema';
 import { DEFAULT_WORKSPACE_ID } from '../../workspace-registry';
 import { hashPlanContent } from './content-hash';
-import type { AgentIdentity } from '../coordination/identity';
+import {
+  resolveAgentIdentity,
+  type AgentIdentity,
+  type ResolveIdentityCtx,
+} from '../coordination/identity';
 
 /** Who authored a revision. `human` = a person driving the
  *  `/admin/plans` editor or operator chat; `agent` = an agent's own
@@ -120,4 +124,69 @@ export async function recordPlanRevision(
     );
     return null;
   }
+}
+
+export interface PlanRevisionCapture {
+  /**
+   * Pass straight to `withPlanLock`'s `afterWrite`. Appends one
+   * `plan_revisions` row for the write. A no-op when the call ctx
+   * carries no attributable identity — best-effort (D-014).
+   */
+  afterWrite: (writtenBody: string) => Promise<void>;
+  /**
+   * Mutable cell — `afterWrite` writes the recorded revision (or
+   * `null` on a best-effort miss) here. Read it *after* `withPlanLock`
+   * returns. A ref object rather than a closed-over `let` so the
+   * post-call type survives control-flow analysis.
+   */
+  recorded: { current: RecordedRevision | null };
+}
+
+/**
+ * Build the revision-capture hook for a `plans:*` write verb: resolve
+ * the caller identity once, and return an `afterWrite` that appends
+ * one `plan_revisions` row per write plus a `recorded` cell to read
+ * the result from. Every write verb wires revision capture through
+ * this one helper so the behaviour is identical (P-002 / P-003).
+ *
+ * `sessionRef` is the conversation that produced the write — Phase 2
+ * (P-006) threads it through the call ctx; until then verbs pass
+ * nothing and the revision's session columns stay `null`.
+ */
+export function planRevisionCapture(
+  ctx: ResolveIdentityCtx,
+  slug: string,
+  rationale: string | null | undefined,
+  sessionRef?: {
+    sessionId?: string | null;
+    sessionKind?: PlanRevisionSessionKind | null;
+  },
+): PlanRevisionCapture {
+  let identity: AgentIdentity | null = null;
+  try {
+    identity = resolveAgentIdentity(ctx);
+  } catch {
+    // No attributable identity — record nothing rather than fail the
+    // write (D-014). `id` stays null → `afterWrite` is a no-op.
+    identity = null;
+  }
+  const id = identity;
+  const recorded: { current: RecordedRevision | null } = { current: null };
+
+  const afterWrite = id
+    ? async (writtenBody: string): Promise<void> => {
+        recorded.current = await recordPlanRevision({
+          planSlug: slug,
+          content: writtenBody,
+          rationale: rationale ?? null,
+          identity: id,
+          sessionId: sessionRef?.sessionId ?? null,
+          sessionKind: sessionRef?.sessionKind ?? null,
+        });
+      }
+    : async (): Promise<void> => {
+        /* no identity — best-effort skip */
+      };
+
+  return { afterWrite, recorded };
 }

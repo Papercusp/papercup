@@ -38,12 +38,8 @@ import { withPlanLock } from './with-plan-lock';
 import { parsePlan } from './parser';
 import { lintParsed, type LintFinding } from './lint';
 import { hashPlanContent } from './content-hash';
-import { recordPlanRevision, type RecordedRevision } from './revisions';
-import {
-  resolveAgentIdentity,
-  type AgentIdentity,
-  type ResolveIdentityCtx,
-} from '../coordination/identity';
+import { planRevisionCapture } from './revisions';
+import type { ResolveIdentityCtx } from '../coordination/identity';
 
 const SU_ROLES = [
   'scoper',
@@ -153,38 +149,15 @@ export default defineTool({
   modality: ['text'],
   args: argsSchema,
   async handler(args, ctx) {
-    // Resolve the writer's identity for the revision row. A revision is
-    // recorded best-effort (D-014): if the ctx carries no attributable
-    // identity, skip the append rather than fail the write.
-    let writer: AgentIdentity | null = null;
-    try {
-      writer = resolveAgentIdentity(ctx as ResolveIdentityCtx);
-    } catch {
-      writer = null;
-    }
-    const identity = writer;
-
-    // Mutable ref — `afterWrite` runs inside `withPlanLock` and writes
-    // the recorded revision here. A ref object (rather than a closed-over
-    // `let`) keeps the post-call type honest under control-flow analysis.
-    const recordedRef: { current: RecordedRevision | null } = { current: null };
+    // Append a plan_revisions row after the write, while the lock is
+    // still held — so `seq` allocation is race-free (P-002 / D-003).
+    const rev = planRevisionCapture(ctx as ResolveIdentityCtx, args.slug, args.rationale);
     const result = await withPlanLock<SetContentValue>(
       ctx as never,
       {
         slug: args.slug,
         intent: 'plans:set-content',
-        // Append the plan_revisions row while the lock is still held,
-        // so `seq` allocation is race-free (P-002 / D-003).
-        afterWrite: identity
-          ? async (writtenBody) => {
-              recordedRef.current = await recordPlanRevision({
-                planSlug: args.slug,
-                content: writtenBody,
-                rationale: args.rationale ?? null,
-                identity,
-              });
-            }
-          : undefined,
+        afterWrite: rev.afterWrite,
       },
       (current) => evaluateSetContent(current, args.content, args.slug, args.expectedHash),
     );
@@ -238,7 +211,7 @@ export default defineTool({
             // The revision row appended for this write (D-003). `null`
             // when the best-effort append failed — the file write still
             // succeeded; the gap is recoverable via P-005's backfill.
-            revision: recordedRef.current ? { seq: recordedRef.current.seq } : null,
+            revision: rev.recorded.current ? { seq: rev.recorded.current.seq } : null,
           }),
         },
       ],
