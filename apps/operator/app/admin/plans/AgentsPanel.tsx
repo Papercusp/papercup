@@ -33,6 +33,7 @@ import {
   type PlanRunStatus,
 } from './plans-api';
 import { rowSessionTag } from './RevisionConversationModal';
+import RunDetailPanel from './RunDetailPanel';
 
 interface Props {
   slug: string;
@@ -48,6 +49,9 @@ export default function AgentsPanel({ slug, currentContentHash }: Props) {
   // (drives the same nuqs key as the Revisions tab — PlanDetail
   // renders the modal regardless of which tab is showing).
   const [, setOpenConvo] = useQueryState('convo', parseAsInteger);
+  // P-023: which run's detail view is open. `?run=<id>` swaps the
+  // past-runs LIST for the run-detail PANEL while set.
+  const [openRun, setOpenRun] = useQueryState('run', parseAsInteger);
 
   // P-022 launch form state.
   const [launching, setLaunching] = useState(false);
@@ -85,6 +89,17 @@ export default function AgentsPanel({ slug, currentContentHash }: Props) {
       setLaunching(false);
     }
   };
+
+  // P-023: when `?run=<id>` is set the detail view takes over —
+  // origin card + past-runs list are out of focus. RunDetailPanel
+  // clears `?run=` when the user clicks back.
+  if (openRun !== null) {
+    return (
+      <div className="pc-agents-panel" aria-label="Agents">
+        <RunDetailPanel currentContentHash={currentContentHash} />
+      </div>
+    );
+  }
 
   return (
     <div className="pc-agents-panel" aria-label="Agents">
@@ -132,6 +147,7 @@ export default function AgentsPanel({ slug, currentContentHash }: Props) {
               key={r.id}
               run={r}
               stale={isStaleAgainst(r, currentContentHash)}
+              onOpen={() => setOpenRun(r.id)}
             />
           ))}
         </ul>
@@ -278,11 +294,28 @@ function RunsHeader({
   );
 }
 
-function RunRow({ run, stale }: { run: PlanRun; stale: boolean }) {
+function RunRow({
+  run,
+  stale,
+  onOpen,
+}: {
+  run: PlanRun;
+  stale: boolean;
+  onOpen: () => void;
+}) {
   return (
     <li
-      className="pc-agent-row"
+      className="pc-agent-row pc-agent-row--clickable"
       data-status={run.status}
+      onClick={onOpen}
+      role="button"
+      tabIndex={0}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          onOpen();
+        }
+      }}
     >
       <div className="pc-agent-row__head">
         <span className="pc-agent-row__title">

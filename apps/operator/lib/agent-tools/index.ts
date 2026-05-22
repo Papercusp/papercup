@@ -210,6 +210,7 @@ import './plans/revisions-backfill';
 import './plans/revision-transcript';
 import './plans/revision-summary';
 import './plans/revision-diff';
+import './plans/run-transcript';
 // plan-agent-launch — launch / resume an autonomous agent on a plan.
 import './plans/launch';
 import './plans/resume';

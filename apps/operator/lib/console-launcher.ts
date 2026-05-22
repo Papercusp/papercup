@@ -19,6 +19,8 @@ import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, resolve as resolvePath } from 'node:path';
 
+import { resolveAgentBin, resolveBackend } from '@restart/papercup-shared/agent';
+
 import { papercuspPath } from '@/lib/papercusp-root';
 import {
   resolveContextEnv,
@@ -80,6 +82,15 @@ export interface BuildEnvelopeOpts {
   operatorBaseUrl: string;
   /** Launch flavour. Default `'shell'` (preserves the engineer path). */
   mode?: ConsoleMode;
+  /**
+   * plan-agent-launch P-023: when set, the terminal's `greetingCmd`
+   * resumes the agent's session in-place — `<agent-cli> -r <sessionId>`
+   * — so the user lands directly in the live agent console instead
+   * of a fresh shell. Backend resolved via `resolveBackend` /
+   * `resolveAgentBin` (env-driven, same logic as `runAgentChat`).
+   * Only valid in `'shell'` mode.
+   */
+  resumeSessionId?: string;
 }
 
 const TOKEN_PATH = join(homedir(), '.papercusp', 'superuser-token');
@@ -219,12 +230,44 @@ export async function buildConsoleEnvelope(
     2,
   );
 
+  // plan-agent-launch P-023: a resume launch reuses the same shell
+  // shape (cwd, env, .mcp.json, superuser bootstrap), but lands the
+  // user in the live agent CLI via `-r <sessionId>` instead of a
+  // plain shell. Default greeting stays unchanged for normal launches.
+  let greetingCmd = 'papercup status 2>/dev/null || true';
+  if (opts.resumeSessionId) {
+    // resolveBackend/resolveAgentBin take a RunAgentChatOptions with
+    // `promptText` required; we only consume the env-driven branches,
+    // so a stub options object is fine — cast to satisfy the type.
+    const stubOpts = { promptText: '' };
+    const backend = resolveBackend(stubOpts);
+    const bin = resolveAgentBin(stubOpts, backend);
+    // Both `claude` and `omp` accept `-r <session-id>`. The shell
+    // greeting echoes the run id so a stale terminal is identifiable.
+    const id = shellSafeId(opts.resumeSessionId);
+    greetingCmd = `echo "resuming plan-run ${id}…"; exec ${bin} -r ${id}`;
+  }
+
   return {
     cwd,
     env,
     mcpJsonContents,
-    greetingCmd: 'papercup status 2>/dev/null || true',
+    greetingCmd,
     needsSuperuserBootstrap,
     mode: 'shell',
   };
+}
+
+/**
+ * Validate a session id is safe to embed in a shell greeting. We
+ * mint these as `crypto.randomUUID()` so the alphabet is
+ * `[0-9a-f-]`. Reject anything else rather than try to escape — a
+ * malformed id is a bug to fix, not data to sanitise. Exported for
+ * unit testing.
+ */
+export function shellSafeId(id: string): string {
+  if (!/^[0-9a-f-]+$/i.test(id)) {
+    throw new Error(`refusing to embed unsafe session id: ${id.slice(0, 32)}`);
+  }
+  return id;
 }

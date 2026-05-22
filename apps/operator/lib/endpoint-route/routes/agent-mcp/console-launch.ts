@@ -196,7 +196,14 @@ const post = defineTool({
 
     const denied = await gatePrincipal(req.headers);
     if (denied) return denied;
-    let body: { slug?: string | null; mode?: 'shell' | 'omp' } = {};
+    let body: {
+      slug?: string | null;
+      mode?: 'shell' | 'omp';
+      // plan-agent-launch P-023: when set, the new shell `exec`s
+      // `<agent-cli> -r <sessionId>` instead of dropping into a fresh
+      // login shell. Only honoured in 'shell' mode.
+      resumeSessionId?: string | null;
+    } = {};
     try {
       const text = await req.text();
       if (text.trim()) body = JSON.parse(text);
@@ -211,6 +218,7 @@ const post = defineTool({
         slug: body.slug ?? null,
         operatorBaseUrl: new URL(req.url).origin,
         mode,
+        resumeSessionId: body.resumeSessionId ?? undefined,
       });
     } catch (e: any) {
       console.warn(`[console-launch] envelope build failed: ${e?.message}`);

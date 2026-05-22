@@ -17,7 +17,8 @@ owner: avi@storewolf.com
 done.** **Phase 3 (agent launch) is complete — P-010…P-016 all
 done.** The entire `plans:*` backend is built. **Phase 4 (Revisions
 UI) is complete — P-017–P-020 all done (4/4).** **Phase 5 (Agents
-tab) is in flight — P-021 + P-022 done (2/6).** Phase 6
+tab) is nearly complete — P-021, P-022, P-023, P-024, P-026 done
+(5/6); only P-025 (PlanEditor rationale field) remains.** Phase 6
 (verification) remains.
 
 Phase 1: P-001 (`plan_revisions` schema); P-002 + P-003 (`rationale`
@@ -94,13 +95,9 @@ pure logic is verified now (127 tests, incl. real-git
 `buildPlanAgentMcpUrl` / tool-surface constants, and the launch
 prompt/title derivations).
 
-**Next:** the rest of Phase 5 — **P-023** (resumable run-detail view —
-interactive chat over `plan_run_turns` + stale-version badge — the
-substantive item; this is where streaming finally lands UI-side, see
-D-022), **P-024** (the `runs/:id/continue` route — `launch` already
-shipped with P-022), **P-025** (PlanEditor Save → "what changed &
-why" rationale field), **P-026** (`?run=<id>` nuqs key). Then Phase 6
-verification (P-027 + P-028).
+**Next:** **P-025** is the last Phase 5 item — PlanEditor Save grows a
+"what changed & why" rationale field that flows into
+`plans:set-content`. Then Phase 6 verification (P-027 + P-028).
 
 ## Background
 
@@ -421,10 +418,10 @@ The launch surface and the resumable run history.
 
 - **P-021** `done` New **`AgentsPanel.tsx`** under `tab === 'agents'`: an **Origin card** sourced from `plan_revisions` seq 1 (D-006) via `usePlanRevisions` + a pure `pickOriginRevision` that walks newest-first → seq 1, with the "View authoring conversation" affordance routed through the same `?convo=<id>` nuqs key the Revisions tab uses; and the **Past-runs list** sourced from a new `plans:runs` admin-route entry + new `usePlanRuns` / `PlanRun` API surface — each row carries title, status pill (5 colours by `PlanRunStatus`), launched-by + when + turnCount, optional note, and a ⚠ stale badge when `pickStale` (`isStaleAgainst`) detects the run was seeded against an older `plan_content_hash` (D-018). `'agents'` added to the `?tab=` enum + the `PlanTabStrip`; the Launch button is rendered disabled (lands in P-022) so the layout settles. 14 unit tests across `pickOriginRevision` (4), `isStaleAgainst` (4), `formatOriginAuthor` (2), `formatRunLaunchedBy` (3), `describeRunStatus` (1). → D-006, D-018 blocked-by: P-015
 - **P-022** `done` Launch button + free-text note compose form in `AgentsPanel`. "Launch agent" toggles a small `<LaunchCompose>` (3-row textarea, Cancel/Launch); submitting calls a new `launchPlanAgent` fetcher → `plans:launch` via a new `'launch'` admin-route `WRITE_VERBS` entry; on success the form closes and `runs.refresh()` makes the new 'running' row appear immediately. `launchErrorLabel` (pure, 6 tests) renders `not_found`/`busy {holder, intent}`/generic codes. **Required adding a `await: boolean` flag to `plans:launch`** (D-022 — see decision): the admin POST can't stream, so it sends `await: false`; the handler returns as soon as the `plan_runs` row exists and runs `executePlanAgentTurn` fire-and-forget (`status` settles to `idle`/`failed` async — UI polls). Default stays `true` so the streaming MCP path is unchanged. → D-007, D-022 blocked-by: P-012
-- **P-023** `todo` Run detail view — an interactive, *resumable* chat over `plan_run_turns` (not a static transcript) + a plan-version badge (⚠ when `plan_content_hash` ≠ the plan's current hash). → D-010 blocked-by: P-013
-- **P-024** `todo` Route handlers — `POST …/launch`, `POST …/runs/:id/continue`, `GET …/runs`, `GET …/revisions` — the in-process tool-proxy route pattern from `plans-admin-ui-2026-05-20`.
+- **P-023** `done` `RunDetailPanel.tsx` — mounted on the Agents tab when `?run=<id>` is set (nuqs). Header: back-to-list button, run title, status pill, ⚠ stale badge (when `planContentHash` ≠ current — D-018), **"Open agent console" button** that spawns a native terminal running `<agent-cli> -r <sessionId>` via the existing `/api/agent-mcp/console/launch` route (extended with an optional `resumeSessionId` body field + `shellSafeId` guard against unsafe ids — D-023). Body: a paginated transcript over `plan_run_turns` via the new `plans:run-transcript` verb (substring-filterable, "Load more" appends) + a Continue form that POSTs `plans:resume` with `await: false` (D-022). **No in-browser SSE.** Past-run rows are now clickable to open the detail. → D-010, D-018, D-022, D-023 blocked-by: P-013
+- **P-024** `done` All four admin routes shipped: `GET …/revisions` (P-017), `GET …/runs` (P-021), `POST …/launch` (P-022), and now `POST …/resume` for the run-detail Continue form. The "continue" path reuses the existing single resource (no `runs/:id/continue` subpath — the verb takes `{ runId, message }` in the body, same shape as every other admin route). Plus `GET …/revision-diff` (P-018), `GET …/revision-transcript` (P-019), `GET …/run-transcript` (P-023) — the read verbs the diff modal, conversation modal, and run-detail panel consume. Both write verbs (`launch`, `resume`) carry `await: false` for the admin path (D-022). blocked-by: P-022
 - **P-025** `todo` PlanEditor Save — add an optional "what changed & why" field that supplies `rationale` to `plans:set-content`. → D-009 blocked-by: P-002
-- **P-026** `todo` nuqs URL state for the Agents tab (`?tab=agents`, `?run=<id>`).
+- **P-026** `done` `?tab=agents` shipped with P-021; `?run=<id>` shipped with P-023 (RunDetailPanel mount key — clearing it via the back button returns to the past-runs list).
 
 ## Phase 6 — Verification
 
@@ -777,12 +774,47 @@ We went with the second. Reasons:
 - Default `true` preserves the streaming MCP path verbatim — no
   behaviour change for the agent surface.
 
-Trade-off: the UI sees no progress until the turn settles. P-023's
-resumable run-detail view is the place that earns true streaming;
-when it lands, the same `?run=<id>` deep-link will open the run
-already in progress and stream the rest of its turn (via the
-detail's own SSE/WSS path, not this verb).
-(Decided at P-022.)
+Trade-off: the UI sees no progress until the turn settles. The user
+landed on a cleaner answer (D-023): the live agent surface is the
+agent's real terminal, opened on demand. No SSE in the browser.
+(Decided at P-022; superseded by D-023's broader design call.)
+
+### D-023 — The live agent surface is the real terminal, not in-browser SSE
+Date: 2026-05-22
+P-023's first draft proposed streaming the launched agent's deltas
+into the browser via SSE (or polling) so the run-detail view could
+show progress live. Avi's correction: that would be a *worse* version
+of what already exists — Papercusp's desktop already has a one-click
+native terminal launcher (the "+" button → `buildConsoleEnvelope` +
+`/api/agent-mcp/console/launch`). A real shell with full terminal
+semantics — cursor, scrollback, copy-paste, the user's preferred
+emulator — is strictly better than reconstructing the agent stream
+in HTML.
+
+So the live surface for a plan run is the **same console primitive**,
+specialised to "resume this run":
+
+- `BuildEnvelopeOpts` gains an optional `resumeSessionId`.
+- When set, `greetingCmd` becomes `<bin> -r <sessionId>` — the
+  backend CLI's session-resume flag (both `claude` and `omp` accept
+  `-r <uuid>`). Backend resolved via the shared `resolveBackend` /
+  `resolveAgentBin` so the launcher mirrors whatever the runner used.
+- The `/api/agent-mcp/console/launch` POST accepts `resumeSessionId`
+  in its body — one new optional field, no new route.
+- `shellSafeId` rejects anything outside `[0-9a-f-]` since session
+  ids are minted as `crypto.randomUUID()`. The id is embedded in a
+  shell oneliner; a malformed id is a bug to fix, not data to
+  sanitise.
+- The run-detail panel: the "Open agent console" button is the live
+  surface; the in-page transcript is the persisted history
+  (`plan_run_turns`, paginated) and a Continue form for sending
+  messages without leaving the browser.
+
+This deletes the SSE plumbing P-023 would have required (D-022's
+deferred SSE caveat is moot), and aligns plan runs with the rest of
+Papercusp — the engineer's primary interface for any agent run is a
+real terminal.
+(Decided at P-023, Avi's correction.)
 
 ### D-021 — Rationale auto-summary is an on-demand verb, not a hot-path step
 Date: 2026-05-21

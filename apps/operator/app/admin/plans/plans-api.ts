@@ -776,6 +776,93 @@ export function launchPlanAgent(args: LaunchPlanAgentArgs) {
   });
 }
 
+/* ── plans:resume (P-024) ──────────────────────────────────────────── */
+
+export interface ResumePlanAgentArgs {
+  runId: number;
+  message: string;
+}
+
+export interface ResumePlanAgentResult {
+  runId: number;
+  sessionId: string;
+  status: 'running';
+  planSlug: string;
+  mode: 'background';
+}
+
+export function resumePlanAgent(args: ResumePlanAgentArgs) {
+  return postJson<WriteResult<ResumePlanAgentResult>>('resume', {
+    runId: args.runId,
+    message: args.message,
+    await: false,
+  });
+}
+
+/* ── plans:run-transcript (P-023) ──────────────────────────────────── */
+
+export type PlanRunTranscriptTurnRole = 'user' | 'assistant';
+
+export interface PlanRunTranscriptTurn {
+  seq: number;
+  role: PlanRunTranscriptTurnRole;
+  content: string;
+  createdAt: number;
+}
+
+export interface PlanRunTranscriptResult {
+  runId: number;
+  planSlug: string;
+  sessionId: string;
+  status: PlanRunStatus;
+  planContentHash: string;
+  turns: PlanRunTranscriptTurn[];
+  nextCursor: number | null;
+  query: string | null;
+}
+
+export interface FetchPlanRunTranscriptArgs {
+  runId: number;
+  query?: string;
+  cursor?: number;
+  limit?: number;
+}
+
+export function fetchPlanRunTranscript(
+  args: FetchPlanRunTranscriptArgs,
+): Promise<PlanRunTranscriptResult> {
+  return getJson<PlanRunTranscriptResult>('run-transcript', {
+    runId: String(args.runId),
+    query: args.query,
+    cursor: args.cursor !== undefined ? String(args.cursor) : undefined,
+    limit: args.limit !== undefined ? String(args.limit) : undefined,
+  });
+}
+
+/* ── Open agent console for a run (P-023) ──────────────────────────── */
+
+/** Spawn a native terminal that resumes the run's agent CLI session in
+ *  place (`<bin> -r <sessionId>`). Same /api/agent-mcp/console/launch
+ *  endpoint as the global "+" button — just with `resumeSessionId`
+ *  filled in. Returns the server's status payload (or throws on a
+ *  transport error). */
+export async function launchPlanRunConsole(sessionId: string): Promise<unknown> {
+  const r = await fetch('/api/agent-mcp/console/launch', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ slug: null, mode: 'shell', resumeSessionId: sessionId }),
+  });
+  const text = await r.text();
+  if (!r.ok) {
+    throw new Error(`console launch → ${r.status}: ${text.slice(0, 200)}`);
+  }
+  try {
+    return JSON.parse(text);
+  } catch {
+    throw new Error(`console launch → non-JSON: ${text.slice(0, 200)}`);
+  }
+}
+
 /* ── Lint hook (P-206) ─────────────────────────────────────────────── */
 
 /**

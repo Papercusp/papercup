@@ -46,7 +46,11 @@ const SU_ROLES = [
 ] as const;
 
 const argsSchema = z.object({
-  runId: z
+  // z.coerce on numerics + a string-`"true"|"false"` coerce on `await`
+  // so the verb accepts MCP-style numeric args AND the admin-route's
+  // POSTed body (which arrives via fetch JSON — numbers fine, booleans
+  // fine, but the same schema also handles ?await=… string fallback).
+  runId: z.coerce
     .number()
     .int()
     .positive()
@@ -55,6 +59,17 @@ const argsSchema = z.object({
     .string()
     .min(1)
     .describe('The follow-up instruction to send into the run.'),
+  // Same fire-and-forget knob as plans:launch (D-022). admin UI sends
+  // `await: false` because the POST can't stream. Default true so MCP
+  // streaming is unchanged.
+  await: z
+    .boolean()
+    .optional()
+    .describe(
+      'When false, return immediately after recording the resume; the ' +
+        'turn runs in the background and writes turns + final status ' +
+        'asynchronously. Default true.',
+    ),
 });
 
 type ResumeArgs = z.infer<typeof argsSchema>;
@@ -135,6 +150,37 @@ async function resumeHandler(input: ResumeArgs, ctx: ResumeCtx) {
 
   // 5. Run the continuation turn — stream + persist turns + settle
   //    status. Shared with launch (P-012); see turn.ts.
+  //
+  // D-022 — background mode for the admin UI path: return as soon as
+  // the run is marked running again; let the turn run fire-and-forget.
+  // Final status flips via executePlanAgentTurn's own settle.
+  if (input.await === false) {
+    void executePlanAgentTurn({
+      runId: input.runId,
+      sessionId: run.sessionId,
+      systemPromptText: bundle.text,
+      promptText: input.message,
+      cwd: getRepoRoot(),
+      uiClientId: ctx.uiClientId ?? null,
+      signal: ctx.signal,
+      emit: ctx.emit,
+    }).catch(() => { /* settled to 'failed' inside the turn */ });
+    return {
+      content: [
+        {
+          type: 'text' as const,
+          text: JSON.stringify({
+            runId: input.runId,
+            sessionId: run.sessionId,
+            status: 'running',
+            planSlug: run.planSlug,
+            mode: 'background',
+          }),
+        },
+      ],
+    };
+  }
+
   const { status, costUsd } = await executePlanAgentTurn({
     runId: input.runId,
     sessionId: run.sessionId,

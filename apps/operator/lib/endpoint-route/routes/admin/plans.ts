@@ -44,6 +44,8 @@ const READ_VERBS = new Set([
   'revision-transcript',
   // plan-agent-launch P-021: the Agents tab's past-runs list.
   'runs',
+  // plan-agent-launch P-023: the run-detail view's transcript.
+  'run-transcript',
 ]);
 // `set-content` and `set-frontmatter` land in agent-plan-tracking
 // Phase 5 (D-011 of plans-admin-ui-2026-05-20). Listing them now means
@@ -64,6 +66,9 @@ const WRITE_VERBS = new Set([
   // and the turn runs fire-and-forget (UI polls `plans:runs` for
   // status updates).
   'launch',
+  // plan-agent-launch P-024: the run-detail Continue form — same
+  // `await: false` shape as 'launch'.
+  'resume',
 ]);
 
 // Admin proxy identity: the writes (set-status/set-now/add-decision/

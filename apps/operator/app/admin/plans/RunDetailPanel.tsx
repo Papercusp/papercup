@@ -1,0 +1,285 @@
+'use client';
+
+/**
+ * Run-detail panel — plan-agent-launch P-023.
+ *
+ * Mounted on the Agents tab when `?run=<id>` is set. Shows:
+ *   1. A header with the run's title, status pill, and a ⚠ badge when
+ *      its `planContentHash` differs from the plan's current hash
+ *      (D-018 — the run was seeded against an older revision).
+ *   2. An "Open agent console" button that spawns a native terminal
+ *      running `<agent-cli> -r <sessionId>`. The live agent surface
+ *      is the terminal itself (no in-browser SSE — D-022 amended).
+ *   3. The persisted transcript over `plan_run_turns` (paginated,
+ *      substring-filterable, never a whole dump — D-002).
+ *   4. A "Continue" form that POSTs `plans:resume` in background mode
+ *      (D-022); the new user/assistant turns appear on the next
+ *      transcript refresh.
+ *
+ * `useQueryState('run', parseAsInteger)` drives mount + unmount;
+ * close = clear the URL key.
+ */
+
+import { useCallback, useEffect, useState } from 'react';
+import { useQueryState, parseAsInteger } from 'nuqs';
+import {
+  fetchPlanRunTranscript,
+  launchPlanRunConsole,
+  resumePlanAgent,
+  type PlanRunTranscriptResult,
+  type PlanRunTranscriptTurn,
+  type PlanRunStatus,
+} from './plans-api';
+import { launchErrorLabel } from './AgentsPanel';
+
+interface Props {
+  /** The plan's current contentHash — drives the stale badge. */
+  currentContentHash: string | undefined;
+}
+
+const PAGE_SIZE = 20;
+
+export default function RunDetailPanel({ currentContentHash }: Props) {
+  const [runId, setRunId] = useQueryState('run', parseAsInteger);
+  const [meta, setMeta] = useState<PlanRunTranscriptResult | null>(null);
+  const [turns, setTurns] = useState<PlanRunTranscriptTurn[]>([]);
+  const [nextCursor, setNextCursor] = useState<number | null>(null);
+  const [query, setQuery] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  // Continue form.
+  const [message, setMessage] = useState('');
+  const [sending, setSending] = useState(false);
+  const [sendError, setSendError] = useState<string | null>(null);
+  const [consoleBusy, setConsoleBusy] = useState(false);
+  const [consoleError, setConsoleError] = useState<string | null>(null);
+
+  // Reset when the run changes.
+  useEffect(() => {
+    setMeta(null);
+    setTurns([]);
+    setNextCursor(null);
+    setQuery('');
+    setError(null);
+    setMessage('');
+    setSendError(null);
+    setConsoleError(null);
+  }, [runId]);
+
+  const loadFirstPage = useCallback(async () => {
+    if (runId === null) return;
+    setLoading(true);
+    setError(null);
+    try {
+      const r = await fetchPlanRunTranscript({
+        runId,
+        query: query.trim() || undefined,
+        limit: PAGE_SIZE,
+      });
+      setMeta(r);
+      setTurns(r.turns);
+      setNextCursor(r.nextCursor);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setLoading(false);
+    }
+  }, [runId, query]);
+
+  useEffect(() => { void loadFirstPage(); }, [loadFirstPage]);
+
+  const loadMore = useCallback(async () => {
+    if (runId === null || nextCursor === null) return;
+    setLoading(true);
+    setError(null);
+    try {
+      const r = await fetchPlanRunTranscript({
+        runId,
+        query: query.trim() || undefined,
+        cursor: nextCursor,
+        limit: PAGE_SIZE,
+      });
+      setTurns((prev) => [...prev, ...r.turns]);
+      setNextCursor(r.nextCursor);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setLoading(false);
+    }
+  }, [runId, nextCursor, query]);
+
+  const onSend = async () => {
+    if (runId === null || sending) return;
+    const text = message.trim();
+    if (!text) return;
+    setSending(true);
+    setSendError(null);
+    try {
+      const res = await resumePlanAgent({ runId, message: text });
+      if ('ok' in res && res.ok) {
+        setMessage('');
+        // Reload from page 1 so the new user turn appears at once
+        // (the assistant turn lands when the background turn settles).
+        await loadFirstPage();
+      } else {
+        setSendError(
+          launchErrorLabel(
+            res as { error?: string; busy?: Array<{ owner_label?: string; intent?: string }> },
+          ),
+        );
+      }
+    } catch (e) {
+      setSendError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSending(false);
+    }
+  };
+
+  const onOpenConsole = async () => {
+    if (!meta) return;
+    setConsoleBusy(true);
+    setConsoleError(null);
+    try {
+      await launchPlanRunConsole(meta.sessionId);
+    } catch (e) {
+      setConsoleError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setConsoleBusy(false);
+    }
+  };
+
+  if (runId === null) return null;
+
+  const stale =
+    meta !== null &&
+    currentContentHash !== undefined &&
+    meta.planContentHash !== currentContentHash;
+
+  return (
+    <section className="pc-run-detail" aria-label="Run detail">
+      <header className="pc-run-detail__head">
+        <button
+          type="button"
+          className="pc-run-detail__back"
+          onClick={() => setRunId(null)}
+          aria-label="Back to runs list"
+        >
+          ← Runs
+        </button>
+        <span className="pc-run-detail__title">
+          {meta ? `Run #${meta.runId}` : `Run #${runId}`}
+        </span>
+        {meta ? (
+          <span
+            className={`pc-agent-row__status pc-agent-row__status--${meta.status}`}
+            title={describeRunStatus(meta.status)}
+          >
+            {meta.status}
+          </span>
+        ) : null}
+        {stale ? (
+          <span
+            className="pc-agent-row__stale"
+            title="Seeded against an older revision of this plan"
+          >
+            ⚠ stale
+          </span>
+        ) : null}
+        <button
+          type="button"
+          className="pc-run-detail__console"
+          onClick={onOpenConsole}
+          disabled={!meta || consoleBusy}
+          title="Resume the run in a real terminal — the live agent surface."
+        >
+          {consoleBusy ? 'Opening…' : 'Open agent console'}
+        </button>
+      </header>
+      {consoleError ? (
+        <div className="pc-run-detail__error">{consoleError}</div>
+      ) : null}
+      <div className="pc-run-detail__controls">
+        <input
+          type="search"
+          className="pc-rev-convo__query"
+          placeholder="Filter turns (substring)…"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          aria-label="Filter turns by substring"
+        />
+      </div>
+      {error ? <div className="pc-run-detail__error">{error}</div> : null}
+      {meta && turns.length === 0 && !loading ? (
+        <div className="pc-run-detail__empty">
+          {query.trim()
+            ? 'No turns match this filter.'
+            : 'No turns recorded yet — the first turn is in flight.'}
+        </div>
+      ) : null}
+      {turns.length > 0 ? (
+        <ol className="pc-rev-convo__turns">
+          {turns.map((t) => (
+            <TurnRow key={t.seq} turn={t} />
+          ))}
+        </ol>
+      ) : null}
+      {loading ? <div className="pc-rev-convo__loading">Loading…</div> : null}
+      {nextCursor !== null && !loading ? (
+        <button type="button" className="pc-rev-convo__more" onClick={loadMore}>
+          Load more
+        </button>
+      ) : null}
+      <section className="pc-run-detail__compose" aria-label="Send a message to this run">
+        <textarea
+          className="pc-agents-compose__note"
+          placeholder="Send a follow-up to this run…"
+          value={message}
+          onChange={(e) => setMessage(e.target.value)}
+          rows={3}
+          disabled={sending}
+        />
+        {sendError ? <div className="pc-agents-compose__error">{sendError}</div> : null}
+        <div className="pc-agents-compose__row">
+          <button
+            type="button"
+            className="pc-agents-compose__submit"
+            onClick={onSend}
+            disabled={sending || message.trim().length === 0}
+          >
+            {sending ? 'Sending…' : 'Continue'}
+          </button>
+        </div>
+      </section>
+    </section>
+  );
+}
+
+function TurnRow({ turn }: { turn: PlanRunTranscriptTurn }) {
+  return (
+    <li className="pc-rev-convo-turn" data-role={turn.role}>
+      <header className="pc-rev-convo-turn__head">
+        <span className="pc-rev-convo-turn__role">{turn.role}</span>
+        <span className="pc-rev-convo-turn__seq" title={`Turn #${turn.seq}`}>
+          #{turn.seq}
+        </span>
+        <span className="pc-rev-convo-turn__when">
+          {new Date(turn.createdAt).toLocaleString()}
+        </span>
+      </header>
+      <pre className="pc-rev-convo-turn__content">{turn.content}</pre>
+    </li>
+  );
+}
+
+/* Pure helper — same shape as AgentsPanel.describeRunStatus, repeated
+ * here to avoid importing back into this file's parent module. */
+function describeRunStatus(s: PlanRunStatus): string {
+  switch (s) {
+    case 'running':  return 'a turn is in progress';
+    case 'idle':     return 'between turns, resumable';
+    case 'done':     return 'manually marked done';
+    case 'archived': return 'archived (resume to reactivate)';
+    case 'failed':   return 'the run failed or was orphaned';
+  }
+}
