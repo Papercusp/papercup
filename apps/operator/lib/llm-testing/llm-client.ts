@@ -105,6 +105,54 @@ export function isTemperatureDeprecatedError(err: unknown): boolean {
   return /temperature.{0,40}(deprecat|not supported|unsupported|no longer)/i.test(msg);
 }
 
+/**
+ * True when an error is a transient API condition worth retrying:
+ * 529 overloaded, 429 rate-limit, 5xx, or a network blip. The
+ * Anthropic SDK's built-in retries (default 2) are too few + too
+ * impatient to outlast a multi-minute capacity overload, which
+ * otherwise hard-fails a whole scenario run (2026-05-22: op-M3 died
+ * twice on raw 529s).
+ */
+function isTransientApiError(err: unknown): boolean {
+  if (err instanceof Anthropic.APIError && typeof err.status === 'number') {
+    if (err.status === 429 || err.status >= 500) return true;
+  }
+  const msg = err instanceof Error ? err.message : String(err);
+  return /(\b529\b|overloaded|rate.?limit|service unavailable|\b50[02-4]\b|ETIMEDOUT|ECONNRESET|ECONNREFUSED|socket hang up)/i.test(
+    msg,
+  );
+}
+
+const TRANSIENT_RETRY_MAX = 5;
+
+/**
+ * `client.messages.create` with a patient outer retry for transient
+ * API errors. Exponential backoff (2s/4s/8s/16s, capped 30s) on top
+ * of the SDK's own retries — outlasts a ~1–2 min overload window.
+ */
+async function createWithTransientRetry(
+  client: Anthropic,
+  params: Anthropic.MessageCreateParamsNonStreaming,
+): Promise<Anthropic.Message> {
+  let lastErr: unknown;
+  for (let attempt = 1; attempt <= TRANSIENT_RETRY_MAX; attempt++) {
+    try {
+      return await client.messages.create(params);
+    } catch (err) {
+      lastErr = err;
+      if (!isTransientApiError(err) || attempt === TRANSIENT_RETRY_MAX) throw err;
+      const backoffMs = Math.min(30_000, 1000 * 2 ** attempt) + Math.random() * 500;
+      console.warn(
+        `[llm-testing] transient API error (attempt ${attempt}/${TRANSIENT_RETRY_MAX}), ` +
+          `retrying in ${Math.round(backoffMs)}ms: ` +
+          `${err instanceof Error ? err.message.slice(0, 140) : String(err)}`,
+      );
+      await new Promise((r) => setTimeout(r, backoffMs));
+    }
+  }
+  throw lastErr;
+}
+
 export async function llmCall(opts: LlmCallOpts): Promise<LlmCallResult> {
   const client = await getClient();
 
@@ -123,7 +171,7 @@ export async function llmCall(opts: LlmCallOpts): Promise<LlmCallResult> {
 
   let resp;
   try {
-    resp = await client.messages.create({
+    resp = await createWithTransientRetry(client, {
       ...baseParams,
       ...(sendsTemperature ? { temperature: opts.temperature ?? 0.7 } : {}),
     });
@@ -135,7 +183,7 @@ export async function llmCall(opts: LlmCallOpts): Promise<LlmCallResult> {
         `[llm-testing] ${opts.model} rejected 'temperature' — retrying without it. ` +
           `Add it to TEMPERATURE_INCOMPATIBLE in llm-client.ts to skip the failed first call.`,
       );
-      resp = await client.messages.create(baseParams);
+      resp = await createWithTransientRetry(client, baseParams);
     } else {
       throw err;
     }
