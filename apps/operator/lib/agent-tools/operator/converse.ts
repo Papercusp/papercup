@@ -37,6 +37,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { defineTool } from '@papercusp/agent-mcp';
 import { runAgentChat } from '@/lib/agent-chat-stream';
+import { readAgentConfig } from '@/lib/agent-config';
 import { selfUrl } from '@/lib/self-url';
 import { checkBudget, recordSpend } from '@/lib/operator-budget';
 import { parseOperatorTurn } from '@/lib/operator-converse-tags';
@@ -85,18 +86,41 @@ const ArgsSchema = z.object({
 type Args = z.infer<typeof ArgsSchema>;
 
 /**
- * The operator brain's model is PINNED here, not inherited from the
- * user's omp `modelRoles.default` (their coding-agent default). As of
+ * The operator brain's model. Resolution chain (highest wins):
+ *   1. `OPERATOR_BRAIN_MODEL` env — CI / ad-hoc override.
+ *   2. agent-config `models['operator']` — set per-workspace via
+ *      /settings/agent, same surface as every other agent role.
+ *   3. `OPERATOR_BRAIN_MODEL_DEFAULT` — the pinned fallback below.
+ *
+ * The DEFAULT is pinned to Anthropic, NOT inherited from the user's
+ * omp `modelRoles.default` (their coding-agent default). As of
  * 2026-05-21 that default was `openai-codex/gpt-5.5:xhigh`, which
  * reliably returns `server_error` from OpenAI Codex on the operator's
  * large (~50KB) converse prompt — every live turn came back empty.
  * The Anthropic provider handles the same prompt reliably. The brain
  * is a product feature; it must not break because the user retuned
- * their coding agent. omp's `--model` needs the explicit
+ * their coding agent.
+ *
+ * A model set explicitly via env or settings is the user's INFORMED
+ * choice and overrides the pin — including non-Anthropic models that
+ * may choke on the big prompt. omp's `--model` needs the explicit
  * `provider/model` form — a bare id fuzzy-resolves to amazon-bedrock,
  * which has no key configured here.
  */
-const OPERATOR_BRAIN_MODEL = 'anthropic/claude-opus-4-7';
+const OPERATOR_BRAIN_MODEL_DEFAULT = 'anthropic/claude-opus-4-7';
+
+async function resolveBrainModel(): Promise<string> {
+  const env = process.env.OPERATOR_BRAIN_MODEL;
+  if (env && env.trim()) return env.trim();
+  try {
+    const cfg = await readAgentConfig();
+    const v = cfg.models['operator'];
+    if (v && v.trim()) return v.trim();
+  } catch {
+    /* PG unreachable — fall through to the pinned default */
+  }
+  return OPERATOR_BRAIN_MODEL_DEFAULT;
+}
 
 function readSuperuserToken(): string {
   try {
@@ -227,6 +251,10 @@ export default defineTool({
     let assembled = '';
     let emittedToolCall = false;
 
+    // Resolve the brain model once per turn: env > agent-config
+    // models['operator'] > pinned Anthropic default.
+    const brainModel = await resolveBrainModel();
+
     // The agent backend (omp → codex/anthropic) intermittently produces
     // an empty turn: a transient upstream model error, or omp exiting 0
     // with no assistant text. Retry ONCE when an attempt produced
@@ -239,7 +267,7 @@ export default defineTool({
         for await (const ev of runAgentChat({
           promptText: userPromptText,
           systemPromptText,
-          model: OPERATOR_BRAIN_MODEL,
+          model: brainModel,
           mcpConfig,
           allowedTools: [...allowedTools],
           permissionMode: 'bypassPermissions',

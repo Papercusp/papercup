@@ -49,7 +49,7 @@ interface TestResult {
   error: string | null;
 }
 
-const ROLE_HINTS = ['orchestrator', 'scoper', 'worker', 'validator', 'reviewer', 'debugger', 'curator', 'documenter', 'architect', 'planner'];
+const ROLE_HINTS = ['operator', 'orchestrator', 'scoper', 'worker', 'validator', 'reviewer', 'debugger', 'curator', 'documenter', 'architect', 'planner'];
 
 export default function AgentSettingsPage() {
   const [snapshot, setSnapshot] = useState<ConfigSnapshot | null>(null);
@@ -258,7 +258,7 @@ export default function AgentSettingsPage() {
 
         <FormField
           label="Per-role model overrides (JSON)"
-          description={`Shape: { "<role>": "<model-id>" }. Roles: ${ROLE_HINTS.join(', ')}. Per-harness .harness/config.json values still win.`}
+          description={`Shape: { "<role>": "<model-id>" }. Roles: ${ROLE_HINTS.join(', ')}. Use the explicit provider/model form (e.g. "anthropic/claude-opus-4-7"). "operator" sets the chat brain — its default is pinned to Anthropic because the large converse prompt is unreliable on some providers; override at your own risk. Per-harness .harness/config.json values still win.`}
         >
           <textarea
             rows={6}
