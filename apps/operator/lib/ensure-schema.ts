@@ -83,6 +83,7 @@ type _G = {
     backupEvents: boolean;
     powerUserSessions: boolean;
     coordPresence: boolean;
+    planRevisions: boolean;
   };
 };
 const _g = globalThis as unknown as _G;
@@ -145,6 +146,7 @@ const flags = _g.__ensureSchemaFlags ?? (_g.__ensureSchemaFlags = {
   backupEvents: false,
   powerUserSessions: false,
   coordPresence: false,
+  planRevisions: false,
 });
 
 /**
@@ -292,6 +294,44 @@ export async function ensureOperatorScansTable(): Promise<void> {
     await sql.unsafe(`GRANT USAGE, SELECT ON SEQUENCE harness_shared.operator_scans_id_seq TO harness_app, harness_admin`);
   } catch { /* not all roles can grant; fine on read replicas */ }
   flags.operatorScans = true;
+}
+
+/**
+ * harness_shared.plan_revisions — the revision spine for SU plans
+ * (plan-agent-launch-2026-05-21, P-001 / D-003).
+ *
+ * One row per semantic plan write. `content_snapshot` is the full
+ * plan markdown at that revision (D-011) — self-contained, no git
+ * dependency. `seq` is 1-based per `plan_slug`, allocated max+1
+ * inside the plan write lock, so `UNIQUE (plan_slug, seq)` also
+ * doubles as the ordering index for `plans:revisions`. `rationale`
+ * may be back-filled by the auto-summary fallback (P-007) — hence the
+ * UPDATE grant; the row is otherwise append-only.
+ */
+export async function ensurePlanRevisionsTable(): Promise<void> {
+  if (flags.planRevisions) return;
+  const { sql } = getOrgPg();
+  await sql.unsafe(`
+    CREATE TABLE IF NOT EXISTS harness_shared.plan_revisions (
+      id               BIGSERIAL PRIMARY KEY,
+      plan_slug        TEXT NOT NULL,
+      seq              INT NOT NULL,
+      content_hash     TEXT NOT NULL,
+      content_snapshot TEXT NOT NULL,
+      rationale        TEXT,
+      author_kind      TEXT NOT NULL,
+      author_id        TEXT NOT NULL,
+      session_id       TEXT,
+      session_kind     TEXT,
+      created_at       BIGINT NOT NULL,
+      UNIQUE (plan_slug, seq)
+    );
+  `);
+  try {
+    await sql.unsafe(`GRANT SELECT, INSERT, UPDATE ON harness_shared.plan_revisions TO harness_app, harness_admin`);
+    await sql.unsafe(`GRANT USAGE, SELECT ON SEQUENCE harness_shared.plan_revisions_id_seq TO harness_app, harness_admin`);
+  } catch { /* not all roles can grant; fine on read replicas */ }
+  flags.planRevisions = true;
 }
 
 
