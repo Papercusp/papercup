@@ -6,6 +6,7 @@
  */
 import { platform, homedir } from 'node:os';
 import { defineTool } from '@papercusp/agent-mcp';
+import { detectBinaries } from '@/lib/agent-bin-detect';
 
 const MERIDIAN_VERSION = '1.42.1';
 const OMP_PACKAGE = '@oh-my-pi/cli';
@@ -68,14 +69,56 @@ echo '==> done'
   return { command: 'bash', args: ['-c', script], cwd: home, env: {} };
 }
 
-/** Build the login spawn spec for a provider. Pure. */
-export function buildLoginSpec(provider: 'claude' | 'omp', home: string): SpawnSpec {
-  return { command: provider, args: ['/login'], cwd: home, env: {} };
+/**
+ * Build the login spawn spec for a provider.
+ *
+ * The Tauri PTY child does NOT inherit the parent process env (see
+ * `src-tauri/src/pty.rs:114-124` — `CommandBuilder::new(command)`
+ * starts with an empty env), so a bare `claude` / `omp` resolves
+ * against the default `/usr/bin:/bin` PATH the kernel hands the
+ * child — which is wrong for tools installed under
+ * `~/.local/bin` or `~/node_modules/.bin`. Resolve to an absolute
+ * path first; if `which` can't find it (unusual install layout),
+ * fall back to `bash -lc` which sources the user's login shell
+ * profile and picks up their full PATH.
+ *
+ * `absolutePath` is the same value `/api/agent-config` returns under
+ * `binaries.{claude|omp}` — callers can pass it in if they already
+ * have it, otherwise we detect.
+ */
+export function buildLoginSpec(
+  provider: 'claude' | 'omp',
+  home: string,
+  absolutePath?: string | null,
+): SpawnSpec {
+  const resolved = absolutePath ?? detectBinaries()[provider];
+  if (resolved) {
+    return { command: resolved, args: ['/login'], cwd: home, env: {} };
+  }
+  return {
+    command: 'bash',
+    args: ['-lc', `${provider} /login`],
+    cwd: home,
+    env: {},
+  };
 }
 
 /** GitHub CLI uses `gh auth login` (different arg shape from claude/omp). */
 export function buildGithubLoginSpec(home: string): SpawnSpec {
-  return { command: 'gh', args: ['auth', 'login'], cwd: home, env: {} };
+  const resolved = (() => {
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const { spawnSync } = require('node:child_process') as typeof import('node:child_process');
+      const r = spawnSync('which', ['gh'], { encoding: 'utf8' });
+      return r.status === 0 && r.stdout.trim() ? r.stdout.trim() : null;
+    } catch {
+      return null;
+    }
+  })();
+  if (resolved) {
+    return { command: resolved, args: ['auth', 'login'], cwd: home, env: {} };
+  }
+  return { command: 'bash', args: ['-lc', 'gh auth login'], cwd: home, env: {} };
 }
 
 export default defineTool({

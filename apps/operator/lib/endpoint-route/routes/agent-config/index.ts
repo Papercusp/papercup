@@ -9,23 +9,9 @@
  * Ported from app/api/agent-config/route.ts. `auth: 'public'` preserves
  * the original (un-authed) behavior.
  */
-import { spawnSync } from 'node:child_process';
 import { readAgentConfig, writeAgentConfig, type AgentConfig } from '@/lib/agent-config';
+import { detectBinaries } from '@/lib/agent-bin-detect';
 import { defineTool } from '@papercusp/agent-mcp';
-
-interface DetectedBinaries {
-  claude: string | null;
-  omp: string | null;
-  pi: string | null;
-}
-
-function detectBinaries(): DetectedBinaries {
-  const which = (bin: string): string | null => {
-    const r = spawnSync('which', [bin], { encoding: 'utf8' });
-    return r.status === 0 && r.stdout.trim() ? r.stdout.trim() : null;
-  };
-  return { claude: which('claude'), omp: which('omp'), pi: which('pi') };
-}
 
 function effectiveBackend(cfg: AgentConfig): 'claude-code' | 'omp' {
   if (cfg.backend !== 'auto') return cfg.backend;

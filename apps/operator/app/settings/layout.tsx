@@ -51,9 +51,9 @@ const SETTINGS_GROUPS: readonly SettingsGroup[] = [
     ],
   },
   {
-    label: 'Keys',
+    label: 'Keys & OAuth',
     links: [
-      { href: '/settings/api-keys', label: 'API keys', keywords: ['credentials', 'keys', 'anthropic', 'openai', 'github', 'google', 'elevenlabs', 'cartesia', 'deepgram', 'picovoice'] },
+      { href: '/settings/api-keys', label: 'Keys & OAuth', keywords: ['credentials', 'keys', 'oauth', 'login', 'sign in', 'claude', 'chatgpt', 'anthropic', 'openai', 'github', 'google', 'elevenlabs', 'cartesia', 'deepgram', 'picovoice'] },
     ],
   },
   {

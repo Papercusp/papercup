@@ -6,6 +6,7 @@ import { z } from 'zod';
 import type { UseFormRegisterReturn } from 'react-hook-form';
 import { useFormWith, FormField, SubmitButton } from '@/lib/forms';
 import { useConfirmDialog } from '@/app/harness/useConfirmDialog';
+import { AuthSignInCards } from '@/app/_components/AuthSignInCards';
 
 interface MaskedCoreCredentials {
   anthropic_api_key: string | null;
@@ -94,10 +95,21 @@ export default function ApiKeysPage() {
 
   return (
     <div>
-      <h1>API keys</h1>
+      <h1>Keys &amp; OAuth</h1>
       <p className="pc-settings-intro">
-        Bring-your-own keys for the third-party LLMs, voice engines, and search providers the harness can call out to.
+        Sign in to your subscriptions (recommended) or bring your own API keys.
+        Either gets the operator brain + agents talking to the LLMs.
       </p>
+
+      <section className="pc-settings-section">
+        <h2>Sign in</h2>
+        <p className="pc-settings-hint" style={{ marginBottom: 12 }}>
+          One-click OAuth into your Claude (Anthropic) and ChatGPT
+          (via omp) accounts. The CLI&rsquo;s sign-in flow runs in an
+          inline terminal; you complete it in your browser.
+        </p>
+        <AuthSignInCards />
+      </section>
 
       <div className="pc-warn pc-settings-inline-callout" role="status">
         <strong>Keys stay on this computer.</strong>
@@ -105,7 +117,7 @@ export default function ApiKeysPage() {
       </div>
 
       <section className="pc-settings-section">
-        <h2>Core</h2>
+        <h2>API keys — Core</h2>
         <p className="pc-settings-hint" style={{ marginBottom: 12 }}>
           Default backend is <code>omp</code> via Meridian — uses your Claude Max
           subscription (no API key needed). Set an Anthropic key only if you switch
