@@ -511,3 +511,91 @@ Same overload was aborting agent turns all session
 ("Anthropic stream stalled"). Retry mechanism verified correct; the
 overload simply outlasts any reasonable per-run budget. No further
 test-runner change would help right now — wait for capacity.
+
+
+---
+
+# Session 2 — 2026-05-22
+
+Picked up after the prior session's overnight stop. Goal: stop wasting
+spawn overhead on `runAgentChat` callers that don't need omp/claude-code
+subprocess semantics (no MCP, no tools, no agent loop), and tighten
+role→model resolution so llm-testing picks up workspace settings.
+
+## Shipped
+
+| Change | Commit |
+|---|---|
+| `runAgentChat` gains `'meridian'` backend — stateless HTTP via Anthropic SDK to `:3456`, OAuth token from `~/.omp/agent/auth.json`, per-call `x-meridian-agent`, 8-attempt 529 retry up to 60s. | papercup-shared `016732b` |
+| Superproject pointer bump for meridian backend. | `1deb3f0f` |
+| `llm-testing/llm-client.ts` routed through `runAgentChat({backend:'meridian'})` — single hardened path, no parallel Anthropic SDK plumbing. | `8fed80b0` |
+| `apps/operator/lib/haiku.ts` migrated to meridian (background summariser; no MCP, no tools). 5s→15s timeout to absorb cold-cache first call (~6-7s) + one 529 retry. | `82410c91` |
+| `endpoint-route/routes/agent-config/test.ts` migrated to meridian (`/settings/agent` "Test current backend" button). Behavioral shift flagged in docstring: now probes the Meridian path, not the omp/claude-code subprocess CLI. | `82410c91` |
+| `llm-testing/runner.ts` — judge + sim-user defaults consult operator agent-config `models['llm-testing-judge']` / `models['llm-testing-sim-user']` between explicit-args and registry/hardcoded fallback. `LLM_TEST_JUDGE_MODEL` / `LLM_TEST_SIM_MODEL` env still win. | `22323a07` |
+
+## runAgentChat caller audit — decisions logged
+
+Reviewed every real caller of `runAgentChat` for "is the omp subprocess
+spawn earning its keep, or is this a pure ping/summary."
+
+**Stays on omp** (legitimately needs the agent loop / MCP):
+`operator/converse.ts` (brain), `operator/scan.ts`, `operator/delegate.ts`,
+`oracle/chat.ts`, `plans/runner.ts`.
+
+**Now on meridian** (shipped this session):
+`llm-testing/llm-client.ts`, `lib/haiku.ts`, `agent-config/test.ts`.
+
+**Explicitly stays on omp by user decision** (2026-05-22):
+`architect/chat.ts` and `agent_chats/chat.ts`. Both pass `cwd` and
+would inherit omp's default builtin toolset; user chose not to migrate
+without a `harness_shared.tool_invocations` audit confirming they're
+text-only in practice.
+
+## Why op-M was not run this session
+
+Same pattern as session 1 — different proximate blocker:
+
+- The embedded Postgres on `:16534` was not running this session
+  (`~/.papercusp/embedded-pg.json` absent → desktop app not started).
+  The llm-testing framework writes results to
+  `harness_shared.llm_test_runs`; without PG the run can't persist.
+- Anthropic was stalling tool calls intermittently (six consecutive
+  `Anthropic stream stalled while waiting for the next event` errors
+  on one task), suggesting the same 529-class capacity issue that
+  blocked session 1 is still ongoing — though now the runner's retry
+  loop lives in the meridian backend (`RETRY_MAX = 8`, `RETRY_CAP_MS
+  = 60_000`) rather than in `llm-client.ts`, so longer overloads can
+  be absorbed.
+
+## Next step (still)
+
+Bring up the desktop app (or otherwise start embedded PG on
+`:16534`), wait for Anthropic capacity, then loop the op-M suite:
+
+```
+cd apps/operator
+psql "$(cat ~/.papercusp/embedded-pg.json | jq -r .url)" \
+  -c "DELETE FROM harness_shared.llm_test_claims;"
+for s in op-M1 op-M2 op-M3 op-M4 op-M5 op-M6 op-M7 op-M8 op-M9 op-M10 op-M11 op-M12; do
+  npx tsx bin/llm-test.ts --scenario "$s" --no-matrix || true
+done
+```
+
+With the meridian retry chain plus the role→model defaults from
+agent-config, the runner should ride through transient 529s and pick
+up whatever judge/sim-user model the user has set in `/settings/agent`
+without code changes.
+
+## Notes from the audit that are NOT actionable now
+
+- `MERIDIAN_PRICES` (in `libs/papercup-shared/src/agent/chat-stream.ts`)
+  is the canonical pricing table for the meridian backend. The
+  `MODEL_PRICES` table in `llm-client.ts` is **redundant** now that
+  the meridian backend returns `costUsd` in the `result` event;
+  callers can stop re-computing. Removing the duplicate is a tidy-up
+  pass, not a behavior fix.
+- The "Test current backend" button on `/settings/agent` no longer
+  validates the omp/claude-code subprocess CLI — only Meridian + auth.
+  If a future user reports "I picked claude-code in settings but the
+  button says PASS", the fix is to split this into two buttons
+  ("Test Meridian path" / "Test subprocess CLI"). Not done now.
