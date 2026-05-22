@@ -14,8 +14,10 @@
 #      untouched — engineer-collaborator mode is no longer always-on.
 #   5. Verifies HTTP 200 against the running operator
 #
-# Re-running rotates the token, updates the MCP entry, and refreshes
-# the playbook, the coordination extension, and the omp-su wrapper.
+# Re-running REUSES the existing token (so live shells keep working),
+# updates the MCP entry, and refreshes the playbook, the coordination
+# extension, and the omp-su wrapper. To rotate the token deliberately,
+# delete ~/.papercusp/superuser-token first, then re-run.
 #
 # Threat model: friction, not enforcement. Any process running as the
 # same user can read ~/.papercusp/superuser-token. See
@@ -36,12 +38,21 @@ OMP_CONFIG_PATH="${OMP_CONFIG_DIR}/mcp.json"
 mkdir -p "$(dirname "$TOKEN_PATH")"
 mkdir -p "$OMP_CONFIG_DIR"
 
-# 1+2. Generate token, write file with mode 0600.
-TOKEN=$(head -c 24 /dev/urandom | base64 | tr -d '+/=' | head -c 32)
+# 1+2. Superuser token. Reuse the existing token if one is already
+# present — re-runs refresh the playbook / extension / wrapper and must
+# NOT disrupt live shells by rotating their bearer. A fresh 32-byte
+# token is minted only on first install. To rotate deliberately, delete
+# the token file and re-run.
 umask 077
-printf '%s\n' "$TOKEN" > "$TOKEN_PATH"
-chmod 600 "$TOKEN_PATH"
-echo "✓ Wrote $TOKEN_PATH (mode 0600)"
+if [ -s "$TOKEN_PATH" ]; then
+  TOKEN="$(cat "$TOKEN_PATH")"
+  echo "✓ Reusing existing superuser token from $TOKEN_PATH"
+else
+  TOKEN=$(head -c 24 /dev/urandom | base64 | tr -d '+/=' | head -c 32)
+  printf '%s\n' "$TOKEN" > "$TOKEN_PATH"
+  chmod 600 "$TOKEN_PATH"
+  echo "✓ Minted $TOKEN_PATH (mode 0600)"
+fi
 
 # 2b. Stable agent_id (UUID) for SU-locks coordination.
 # Generated ONCE per machine+user, baked into the MCP URL as the
@@ -232,7 +243,7 @@ The papercusp-su MCP server is registered for BOTH plain omp and omp-su
 (it lives in ~/.omp/agent/mcp.json) — only the playbook and the
 coordination extension are gated behind omp-su.
 
-To rotate the token, re-run this script. To revoke, delete:
+To rotate the token, delete $TOKEN_PATH and re-run. To revoke, delete:
   $TOKEN_PATH
   $PLAYBOOK_DEST
   $COORD_EXT_DEST
