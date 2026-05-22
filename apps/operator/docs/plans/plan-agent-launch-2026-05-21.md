@@ -12,12 +12,24 @@ owner: avi@storewolf.com
 ## Now
 
 **State:** v3, ratified — implementation in flight (started
-2026-05-21). Phase 1 (revision spine): P-001 (`plan_revisions`) is
-`wip`. New tables use the `ensure-schema.ts` runtime-ensure pattern,
-not a `.sql` migration — see D-013. 13 decisions, no open questions.
+2026-05-21). Phase 1 (revision spine): P-001 (`plan_revisions`
+schema) and P-002 (`rationale` parameter + revision capture in
+`plans:set-content`) are `done` — tsc-clean, 88 plans tests green.
+New tables use the `ensure-schema.ts` runtime-ensure pattern, not a
+`.sql` migration — see D-013. 14 decisions, no open questions.
 
-**Next:** finish P-001, then P-002 — the `rationale` parameter +
-revision capture in `plans:set-content`.
+**Verification debt:** the live `plan_revisions` INSERT path
+(`ensurePlanRevisionsTable` + `recordPlanRevision`) is exercised on
+the first operator boot / first `plans:set-content`, and formally
+re-verified in P-027 — the working shell cannot reach the auth-gated
+embedded PG directly. Unit-level logic (`classifyAuthor`, the CAS /
+lint regression) is verified now.
+
+**Next:** P-003 — the same optional `rationale` + revision-append on
+the other six write verbs (`set-now`, `set-status`, `add-item`,
+`add-decision`, `new`, `set-frontmatter`), via the shared
+`withPlanLock` `afterWrite` hook + the `recordPlanRevision` helper
+added in P-002.
 
 ## Background
 
@@ -293,8 +305,8 @@ The PG foundation. Every plan write becomes a durable, identified
 revision carrying its rationale. Independently shippable — a precise
 plan history — before any launch capability exists.
 
-- **P-001** `wip` Add `ensurePlanRevisionsTable()` to `ensure-schema.ts` — `CREATE TABLE IF NOT EXISTS harness_shared.plan_revisions` (full snapshot) + grants, flag-guarded, wired into the `instrumentation-node.ts` prewarm. → D-003, D-011, D-012, D-013
-- **P-002** `todo` Add an optional `rationale` parameter to `plans:set-content`; inside its existing write lock, after the CAS write, append a `plan_revisions` row — content snapshot + hash + identity + session ref + rationale; `seq` allocated max+1 in-lock. → D-009
+- **P-001** `done` Add `ensurePlanRevisionsTable()` to `ensure-schema.ts` — `CREATE TABLE IF NOT EXISTS harness_shared.plan_revisions` (full snapshot) + grants, flag-guarded, wired into the `instrumentation-node.ts` prewarm. → D-003, D-011, D-012, D-013
+- **P-002** `done` Add an optional `rationale` parameter to `plans:set-content`; inside its existing write lock, after the CAS write, append a `plan_revisions` row — content snapshot + hash + identity + session ref + rationale; `seq` allocated max+1 in-lock. The append goes through a new `recordPlanRevision` helper (`revisions.ts`) called from a new `withPlanLock` `afterWrite` hook; recording is best-effort (D-014). → D-009, D-014
 - **P-003** `todo` Add the same optional `rationale` + revision-append to the other mutating verbs (`set-now`, `set-status`, `add-item`, `add-decision`, `new`, `set-frontmatter`). blocked-by: P-002
 - **P-004** `todo` `plans:revisions { slug }` read verb — the revision chain newest-first: seq, author, rationale, session ref, diff-stat (computed from the snapshot pair). → D-003
 - **P-005** `todo` Backfill `plan_revisions` from existing git history — one synthetic revision per past commit, the commit message as a weak `rationale`, `session_id` NULL. blocked-by: P-001
@@ -478,3 +490,20 @@ feature module. That is how `operator_scans`, `toast_log`,
 `commands/migrations/*.sql` files are reserved for ALTER / rename /
 grant on existing tables. Plan tables use the ensure pattern.
 (Discovered reading the code at P-001.)
+
+### D-014 — Revision recording is best-effort, not fatal to the write
+Date: 2026-05-21
+`recordPlanRevision()` never throws: a failure to append the
+`plan_revisions` row (a transient DB outage) is logged and returns
+`null`, and the plan write still succeeds. The `.md` file is the
+canonical artifact for plan *content*; blocking every plan write on
+the revision DB would be a worse failure than a recoverable spine
+gap — and a gap *is* recoverable, since P-005's git backfill
+reconstructs missing revisions from commit history. The
+`plans:set-content` response carries `revision: { seq } | null` so a
+caller can see whether the append landed. This mirrors the existing
+`emitPlanEventForCaller` best-effort precedent (plan-events are
+observability, swallowed on failure) — though a revision is closer to
+state than an event, the FS file remains the source of truth for
+content, which is what makes best-effort safe here.
+(Decided at P-002.)

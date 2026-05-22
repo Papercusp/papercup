@@ -38,6 +38,12 @@ import { withPlanLock } from './with-plan-lock';
 import { parsePlan } from './parser';
 import { lintParsed, type LintFinding } from './lint';
 import { hashPlanContent } from './content-hash';
+import { recordPlanRevision, type RecordedRevision } from './revisions';
+import {
+  resolveAgentIdentity,
+  type AgentIdentity,
+  type ResolveIdentityCtx,
+} from '../coordination/identity';
 
 const SU_ROLES = [
   'scoper',
@@ -62,6 +68,12 @@ const argsSchema = z.object({
     .optional()
     .describe(
       'The `contentHash` from the plans:get that loaded the editor — the compare-and-swap baseline. When it no longer matches the file on disk the write is rejected as stale. Omit only for a non-interactive caller that has just read the file.',
+    ),
+  rationale: z
+    .string()
+    .optional()
+    .describe(
+      'Optional — the *why* behind this rewrite: the rejected alternative, the constraint that forced it, the argument that settled it. Stored on the plan revision and always loaded as context for any agent later launched from this plan (D-009). State it for a substantive rewrite; a trivial fix may omit it.',
     ),
 });
 
@@ -127,7 +139,7 @@ export async function evaluateSetContent(
 export default defineTool({
   name: 'plans:set-content',
   description:
-    'Replace a plan file wholesale, guarded by a compare-and-swap on `expectedHash`. For raw-prose edits the structured verbs cannot make. Rejects a stale write (file changed since load), a write that would strip a real plan back to legacy, and a write that fails lint.',
+    'Replace a plan file wholesale, guarded by a compare-and-swap on `expectedHash`. For raw-prose edits the structured verbs cannot make. Rejects a stale write (file changed since load), a write that would strip a real plan back to legacy, and a write that fails lint. A successful write is recorded as a plan revision; pass `rationale` to capture the why.',
   guidance: {
     when: 'A human is editing the raw markdown of a plan — prose sections the assisted verbs (set-now / set-status / add-decision / add-item) do not cover.',
     notWhen:
@@ -141,11 +153,38 @@ export default defineTool({
   modality: ['text'],
   args: argsSchema,
   async handler(args, ctx) {
+    // Resolve the writer's identity for the revision row. A revision is
+    // recorded best-effort (D-014): if the ctx carries no attributable
+    // identity, skip the append rather than fail the write.
+    let writer: AgentIdentity | null = null;
+    try {
+      writer = resolveAgentIdentity(ctx as ResolveIdentityCtx);
+    } catch {
+      writer = null;
+    }
+    const identity = writer;
+
+    // Mutable ref — `afterWrite` runs inside `withPlanLock` and writes
+    // the recorded revision here. A ref object (rather than a closed-over
+    // `let`) keeps the post-call type honest under control-flow analysis.
+    const recordedRef: { current: RecordedRevision | null } = { current: null };
     const result = await withPlanLock<SetContentValue>(
       ctx as never,
       {
         slug: args.slug,
         intent: 'plans:set-content',
+        // Append the plan_revisions row while the lock is still held,
+        // so `seq` allocation is race-free (P-002 / D-003).
+        afterWrite: identity
+          ? async (writtenBody) => {
+              recordedRef.current = await recordPlanRevision({
+                planSlug: args.slug,
+                content: writtenBody,
+                rationale: args.rationale ?? null,
+                identity,
+              });
+            }
+          : undefined,
       },
       (current) => evaluateSetContent(current, args.content, args.slug, args.expectedHash),
     );
@@ -196,6 +235,10 @@ export default defineTool({
             slug: v.slug,
             contentHash: v.contentHash,
             filePath: result.filePath,
+            // The revision row appended for this write (D-003). `null`
+            // when the best-effort append failed — the file write still
+            // succeeded; the gap is recoverable via P-005's backfill.
+            revision: recordedRef.current ? { seq: recordedRef.current.seq } : null,
           }),
         },
       ],

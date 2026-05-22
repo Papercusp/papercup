@@ -32,6 +32,16 @@ export interface WithPlanLockOpts extends PlanSourceOpts {
   intent: string;
   /** Lock TTL — short by default since write verbs do a fast RMW. */
   ttlSec?: number;
+  /**
+   * Optional hook run *after* the file is written, while the lock is
+   * still held. The `plans:*` write verbs use it to append a
+   * `plan_revisions` row (P-002): holding the lock keeps the row's
+   * `seq` allocation (max+1 per plan) race-free. Only invoked when the
+   * mutator produced a write (`newBody !== null`). It must be
+   * best-effort — a throw here propagates, and the file is already
+   * written.
+   */
+  afterWrite?: (writtenBody: string, filePath: string) => Promise<void>;
 }
 
 export interface BusyError {
@@ -122,6 +132,9 @@ export async function withPlanLock<T>(
     if (newBody !== null) {
       await fs.mkdir(plansDir, { recursive: true });
       await fs.writeFile(filePath, newBody, 'utf8');
+      if (opts.afterWrite) {
+        await opts.afterWrite(newBody, filePath);
+      }
     }
 
     return { kind: 'applied', value, filePath };
