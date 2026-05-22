@@ -8,15 +8,14 @@
 #   2. Writes ~/.papercusp/superuser-token (mode 0600)
 #   3. MERGES a `papercusp-su` server entry into ~/.omp/agent/mcp.json
 #      (preserves any other MCP servers the user already has)
-#   4. Injects the engineer-collaborator playbook (papercusp-su.tools.md)
-#      as a managed block into each host agent's always-loaded context
-#      file (~/.claude/CLAUDE.md, ~/.codex/AGENTS.md, ~/.gemini/GEMINI.md,
-#      ~/.omp/agent/CLAUDE.md), if the agent's dir already exists.
-#      Existing content outside the BEGIN/END markers is preserved.
+#   4. Writes the engineer-collaborator playbook + coordination extension
+#      as standalone OPT-IN files under ~/.papercusp/, and installs an
+#      `omp-su` wrapper that launches OMP with them. Plain `omp` is left
+#      untouched — engineer-collaborator mode is no longer always-on.
 #   5. Verifies HTTP 200 against the running operator
 #
 # Re-running rotates the token, updates the MCP entry, and refreshes
-# the injected playbook block in place.
+# the playbook, the coordination extension, and the omp-su wrapper.
 #
 # Threat model: friction, not enforcement. Any process running as the
 # same user can read ~/.papercusp/superuser-token. See
@@ -99,91 +98,98 @@ PYEOF
 chmod 600 "$OMP_CONFIG_PATH"
 echo "✓ Merged 'papercusp-su' into $OMP_CONFIG_PATH (mode 0600)"
 
-# 4. Inject the engineer-collaborator playbook into OMP's always-loaded
-# context file. Idempotent: re-runs replace the block between the
-# BEGIN/END markers, leaving everything else untouched.
-#
-# OMP-ONLY (file-locking #2): the project dropped Claude Code / Codex /
-# Gemini support (see project_claude_code_unsupported). The playbook is
-# injected into ~/.omp/agent/CLAUDE.md only — the ~/.claude, ~/.codex
-# and ~/.gemini injections were removed alongside the CC PreToolUse/
-# PostToolUse hook injection.
-#
-# The dir-exists guard stays so a machine without OMP installed is left
-# untouched.
-
+# 4. Install the engineer-collaborator playbook as a standalone OPT-IN
+# file. It used to be injected as a managed block into OMP's
+# always-loaded context file (~/.omp/agent/CLAUDE.md), which made
+# engineer-collaborator mode unconditional on every `omp` launch. It now
+# lives at ~/.papercusp/engineer-collaborator.md and is loaded only when
+# the `omp-su` wrapper (step 4d) passes it via `--append-system-prompt`.
+PLAYBOOK_DEST="${HOME}/.papercusp/engineer-collaborator.md"
 if [ ! -f "$PLAYBOOK_PATH" ]; then
-  echo "! Expected playbook at $PLAYBOOK_PATH; skipping context injection"
+  echo "! Expected playbook at $PLAYBOOK_PATH; skipping playbook install"
 else
-  PLAYBOOK_CONTENT="$(cat "$PLAYBOOK_PATH")"
-  BEGIN_MARKER="<!-- BEGIN papercusp-su playbook (managed by install-standalone-mcp.sh) -->"
-  END_MARKER="<!-- END papercusp-su playbook -->"
-  HEADER_NOTE="<!-- Source of truth: apps/operator/prompts/papercusp-su.tools.md in the papercup repo. -->
-<!-- Re-run apps/operator/scripts/install-standalone-mcp.sh after edits to refresh this block. -->"
+  cp "$PLAYBOOK_PATH" "$PLAYBOOK_DEST"
+  chmod 644 "$PLAYBOOK_DEST"
+  echo "✓ Wrote engineer-collaborator playbook to $PLAYBOOK_DEST"
+fi
 
-  inject_block() {
-    local target_path="$1"
-    local parent_dir="$2"
-    # Skip if the agent's parent dir isn't present — agent isn't installed.
-    if [ ! -d "$parent_dir" ]; then
-      return 0
-    fi
-    mkdir -p "$(dirname "$target_path")"
-    python3 - "$target_path" "$PLAYBOOK_PATH" "$BEGIN_MARKER" "$END_MARKER" "$HEADER_NOTE" <<'PYEOF'
-import sys, re
-target, playbook, begin, end, header = sys.argv[1:6]
-with open(playbook) as f:
-    body = f.read().rstrip("\n")
-block = f"{begin}\n{header}\n\n{body}\n{end}\n"
-try:
-    with open(target) as f:
-        existing = f.read()
-except FileNotFoundError:
-    existing = ""
+# 4a. Migration cleanup: strip the legacy always-on managed block from
+# ~/.omp/agent/CLAUDE.md left by earlier versions of this script, so
+# plain `omp` stops auto-loading the playbook. Idempotent — a no-op once
+# the block is gone. Content outside the BEGIN/END markers is preserved.
+LEGACY_CTX="${HOME}/.omp/agent/CLAUDE.md"
+if [ -f "$LEGACY_CTX" ]; then
+  STRIPPED="$(python3 - "$LEGACY_CTX" <<'PYEOF'
+import re, sys
+path = sys.argv[1]
+begin = "<!-- BEGIN papercusp-su playbook (managed by install-standalone-mcp.sh) -->"
+end = "<!-- END papercusp-su playbook -->"
+with open(path) as f:
+    text = f.read()
 pattern = re.compile(re.escape(begin) + r".*?" + re.escape(end) + r"\n?", re.DOTALL)
-if pattern.search(existing):
-    updated = pattern.sub(block, existing)
-else:
-    sep = "\n" if existing and not existing.endswith("\n") else ""
-    gap = "\n" if existing else ""
-    updated = existing + sep + gap + block
-with open(target, "w") as f:
-    f.write(updated)
+if pattern.search(text):
+    with open(path, "w") as f:
+        f.write(pattern.sub("", text).lstrip("\n"))
+    print("stripped")
 PYEOF
-    echo "✓ Injected papercusp-su playbook into $target_path"
-  }
-
-  # OMP-only — the Claude Code / Codex / Gemini targets were removed
-  # in file-locking #2 (OMP is the only supported host CLI).
-  inject_block "${HOME}/.omp/agent/CLAUDE.md" "${HOME}/.omp/agent"
+)"
+  if [ "$STRIPPED" = "stripped" ]; then
+    echo "✓ Removed legacy always-on playbook block from $LEGACY_CTX"
+  fi
 fi
 
-# 4c. Install the coordination extension into OMP.
+# 4c. Install the coordination extension as a standalone OPT-IN file.
 #
-# OMP's current runtime loads `pi.on(...)` factory modules via the
-# EXTENSION runner (the legacy "hook" subsystem is deprecated — `--hook`
-# is now an alias for `--extension`). Extensions are auto-discovered
-# from `~/.omp/agent/extensions/` — any `*.ts` file there is loaded with
-# no config edit. So delivery is a plain file copy.
-#
-# NOTE: agent-coordination-architecture-v2 §7.3 says "~/.omp/agent/hooks/"
-# — that target is stale; the verified-correct directory for the modern
-# extension runtime is ~/.omp/agent/extensions/.
+# OMP loads `pi.on(...)` factory modules via the extension runner and
+# AUTO-DISCOVERS any `*.ts` under ~/.omp/agent/extensions/ — which made
+# the coordination runtime (locks enforcement, turn-start injection)
+# load on every `omp`. It now lives at ~/.papercusp/papercusp-coord.ts
+# and is loaded only by the `omp-su` wrapper (step 4d) via `-e`. The
+# legacy auto-discovered copy is removed so plain `omp` no longer picks
+# it up.
 COORD_EXT_SRC="${SCRIPT_DIR}/hooks/omp/coord-hook.ts"
-OMP_EXT_DIR="${OMP_CONFIG_DIR}/extensions"
+COORD_EXT_DEST="${HOME}/.papercusp/papercusp-coord.ts"
+LEGACY_EXT="${OMP_CONFIG_DIR}/extensions/papercusp-coord.ts"
 if [ -f "$COORD_EXT_SRC" ]; then
-  mkdir -p "$OMP_EXT_DIR"
-  cp "$COORD_EXT_SRC" "${OMP_EXT_DIR}/papercusp-coord.ts"
-  echo "✓ Installed coordination extension into ${OMP_EXT_DIR}/papercusp-coord.ts"
+  cp "$COORD_EXT_SRC" "$COORD_EXT_DEST"
+  chmod 644 "$COORD_EXT_DEST"
+  echo "✓ Installed coordination extension to $COORD_EXT_DEST"
 else
-  echo "! Expected coord extension at $COORD_EXT_SRC; skipping (coordination turn-start injection will be inactive)"
+  echo "! Expected coord extension at $COORD_EXT_SRC; skipping (coordination inactive in omp-su)"
+fi
+if [ -f "$LEGACY_EXT" ]; then
+  rm -f "$LEGACY_EXT"
+  echo "✓ Removed legacy auto-discovered extension at $LEGACY_EXT"
 fi
 
-# 4b. (removed) Claude Code PreToolUse/PostToolUse hook injection was
-# deleted in file-locking-improvements #2. Enforcement now lives
-# entirely in the OMP extension's tool_call/tool_result handlers
-# (apps/operator/scripts/hooks/omp/coord-hook.ts) — Claude Code, Codex
-# and Gemini are unsupported (see project_claude_code_unsupported).
+# 4d. Install the `omp-su` wrapper — engineer-collaborator mode as one
+# command. Plain `omp` stays vanilla; `omp-su` launches OMP with the
+# playbook (--append-system-prompt) + the coordination extension (-e).
+# The wrapper is co-located with the `omp` binary so it lands on the
+# same PATH; it falls back to ~/.local/bin if `omp` can't be located.
+if OMP_BIN="$(command -v omp 2>/dev/null)"; then
+  WRAPPER_DIR="$(dirname "$OMP_BIN")"
+else
+  WRAPPER_DIR="${HOME}/.local/bin"
+fi
+mkdir -p "$WRAPPER_DIR"
+WRAPPER_PATH="${WRAPPER_DIR}/omp-su"
+cat > "$WRAPPER_PATH" <<'WRAPEOF'
+#!/usr/bin/env bash
+# papercusp engineer-collaborator launcher (managed by install-standalone-mcp.sh).
+# Plain `omp` is a vanilla coding assistant; this wrapper opts into the
+# engineer-collaborator playbook + the papercusp coordination extension.
+exec omp \
+  --append-system-prompt "${HOME}/.papercusp/engineer-collaborator.md" \
+  -e "${HOME}/.papercusp/papercusp-coord.ts" \
+  "$@"
+WRAPEOF
+chmod 755 "$WRAPPER_PATH"
+echo "✓ Installed $WRAPPER_PATH"
+case ":${PATH}:" in
+  *":${WRAPPER_DIR}:"*) : ;;
+  *) echo "! $WRAPPER_DIR is not on PATH — add it or invoke $WRAPPER_PATH by full path" ;;
+esac
 
 # 5. Verify the endpoint accepts the token.
 echo
@@ -209,14 +215,28 @@ fi
 
 cat <<EOF
 
-Done. From any fresh shell:
+Done.
 
-  $ omp
-  > what mcp tools do you have starting with mcp__papercusp-su__?
-  > call mcp__papercusp-su__papercusp:list_workspaces
+  Plain OMP — vanilla coding assistant, no papercusp playbook:
+    \$ omp
+
+  Engineer-collaborator mode — playbook + coordination extension:
+    \$ omp-su
+    > call mcp__papercusp-su__papercusp:list_workspaces
+
+  One-off, without the wrapper:
+    \$ omp --append-system-prompt ~/.papercusp/engineer-collaborator.md \\
+          -e ~/.papercusp/papercusp-coord.ts
+
+The papercusp-su MCP server is registered for BOTH plain omp and omp-su
+(it lives in ~/.omp/agent/mcp.json) — only the playbook and the
+coordination extension are gated behind omp-su.
 
 To rotate the token, re-run this script. To revoke, delete:
   $TOKEN_PATH
+  $PLAYBOOK_DEST
+  $COORD_EXT_DEST
+  $WRAPPER_PATH
   (and remove the 'papercusp-su' entry from $OMP_CONFIG_PATH)
 
 EOF
