@@ -599,3 +599,81 @@ without code changes.
   If a future user reports "I picked claude-code in settings but the
   button says PASS", the fix is to split this into two buttons
   ("Test Meridian path" / "Test subprocess CLI"). Not done now.
+
+---
+
+# Path B attempt — operator brain on an OpenAI model (2026-05-22)
+
+Goal: run the op-M suite with the SUT (operator brain) on an OpenAI
+model, to side-step the Anthropic 529 storm. The brain model was made
+configurable first (commit `74ca81ff` — `OPERATOR_BRAIN_MODEL` env >
+agent-config `models['operator']` > pinned Anthropic default).
+
+**Outcome: blocked.** The brain leg of Path B cannot run on OpenAI in
+this environment. Judge + sim-user on OpenAI is fine (they use the
+meridian backend); the *brain* is the problem.
+
+## Why the brain can't go on OpenAI
+
+The brain MUST use the **omp backend** — it needs the agentmcp MCP
+tools, and the `meridian` backend explicitly rejects `mcpConfig`. omp
+has exactly two OpenAI routes, both dead here:
+
+| Route | Path | Result |
+|---|---|---|
+| `openai-codex/<model>` | omp Codex provider → ChatGPT Codex backend (`wss://chatgpt.com/backend-api/codex/responses`, or HTTPS with `providers.openaiWebsockets: off`) | omp exits 0 with **empty output**. `~/.omp/agent/auth.json` holds only an `anthropic` token — there is no Codex/ChatGPT credential, so the provider produces nothing (silently) on both transports. |
+| `openai/<model>` | omp `openai` provider → Meridian (`:3456`) | omp exits 0 empty. omp's `openai` provider uses the **OpenAI Responses API** (`POST /v1/responses`) for gpt-5; Meridian returns `404 "Endpoint not supported: POST /v1/responses"`. |
+
+Meridian (`:3456`) **does** route OpenAI models — but only on the two
+endpoints it implements: `/v1/messages` (Anthropic wire format) and
+`/v1/chat/completions` (OpenAI Chat Completions). Both translate
+`gpt-5` / `gpt-5.5` correctly (verified by direct curl). The gap is
+purely `/v1/responses`, which omp's openai provider insists on for
+gpt-class reasoning models and Meridian doesn't expose.
+
+A model alias in `~/.omp/agent/models.json`'s `models:` block does
+NOT help — that block is not omp's model-registration mechanism
+(the pre-existing `claude-sonnet-local` / `claude-opus-local` aliases
+there also fail to resolve; omp resolves models from its own catalog
++ `models.db`, fuzzy-matched).
+
+## What WOULD unblock it
+
+One of:
+1. **Authenticate omp's Codex provider** — a user action (`codex
+   login` / interactive ChatGPT login through omp). Then
+   `openai-codex/<model>` works and `models['operator']` can point at
+   it via /settings/agent.
+2. **Meridian gains `/v1/responses`** — then `openai/<model>` through
+   omp's openai provider works. (Meridian is the oh-my-pi router, not
+   papercusp code — not ours to patch.)
+3. **omp gains a way to force its openai provider onto
+   `/v1/chat/completions`** — Meridian already serves that endpoint.
+   No such toggle found (`providers.kimiApiFormat` exists for kimi;
+   no general `openaiApiFormat`).
+
+Until then, an op-M run on a fully-OpenAI stack is not possible; the
+brain stays on Anthropic.
+
+## Shipped regardless
+
+`74ca81ff` — the operator brain model is now configurable like every
+other agent role (env > agent-config `models['operator']` > pinned
+`anthropic/claude-opus-4-7`). `operator` added to the /settings/agent
+role hints. This stands on its own: once a working OpenAI route
+exists, switching the brain is a one-field settings change.
+
+## Probe notes (verified this session)
+
+- `agent-config` write API + the converse.ts resolver round-trip:
+  setting `models['operator']` → the brain picked it up on the next
+  turn with no restart (resolver reads per-turn).
+- The host (`papercup-dev-api.service`) resolves PG via
+  `embedded-pg-discovery.ts` → native fallback
+  `postgresql://harness_admin:harness_admin_pwd@localhost:5432/papercusp`.
+  `harness_shared.llm_test_*` tables are all present there. The
+  earlier ":16534 down" note was a red herring — the host never used
+  `:16534`; that was a stale desktop-embedded-PG assumption.
+- `bin/llm-test.ts` must be run with cwd `apps/operator` (the `@/`
+  path alias resolves from the local tsconfig; running from repo root
+  fails with `Cannot find module '@/lib/embedded-pg-discovery'`).
