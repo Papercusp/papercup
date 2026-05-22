@@ -89,7 +89,7 @@ registerRouteLiterals(app);
 
 // Mobile API (pair, push, voice, workspaces) — migrated off the legacy
 // `_hono/mobile.ts` Hono router to `defineTool` modules under
-// `lib/endpoint-route/routes/mobile/` (endpoint-unification-2026-05-21
+// `lib/endpoint-route/routes/device/` (endpoint-unification-2026-05-21
 // Phase E4/E5). Those register via `registerRouteLiterals` above.
 
 // /api/coord/* and /api/su-locks/* — migrated off their legacy Hono

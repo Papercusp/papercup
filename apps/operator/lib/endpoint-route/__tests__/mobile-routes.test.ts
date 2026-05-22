@@ -3,7 +3,7 @@
  * routes.
  *
  * The 33 legacy `_hono/mobile.ts` routes were ported to `defineTool`
- * modules under `routes/mobile/`. Registration (no path collisions, the
+ * modules under `routes/device/`. Registration (no path collisions, the
  * literal-before-sub-app shadowing) is covered by
  * `route-shadowing-invariant.test.ts`; mobile auth + CORS are covered by
  * `agent-tools-mobile-auth.test.ts` (E2) and `mobile-cors.test.ts` (E3).
@@ -15,8 +15,8 @@
 import { describe, expect, it } from 'vitest';
 import type { Principal } from '@papercusp/agent-mcp';
 import type { RouteContext, RouteDefinition } from '../define-route';
-import mobileVoice from '../routes/mobile/voice';
-import mobilePair from '../routes/mobile/pair';
+import mobileVoice from '../routes/device/voice';
+import mobilePair from '../routes/device/pair';
 
 /** A resolved mobile principal, as `requirePrincipal` would produce. */
 const MOBILE_PRINCIPAL: Principal = {

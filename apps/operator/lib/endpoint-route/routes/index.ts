@@ -276,12 +276,12 @@ import userActionsLog from './user-actions/log';
 import elevenlabsWebhook from './elevenlabs/webhook';
 import elevenlabsPostCall from './elevenlabs/post-call';
 import miscScratch from './misc/scratch';
-import mobileQrSvg from './mobile/qr-svg';
-import mobilePair from './mobile/pair';
-import mobileVoice from './mobile/voice';
-import mobileOperator from './mobile/operator';
-import mobileHarnesses from './mobile/harnesses';
-import mobileSync from './mobile/sync';
+import deviceQrSvg from './device/qr-svg';
+import devicePair from './device/pair';
+import deviceVoice from './device/voice';
+import deviceOperator from './device/operator';
+import deviceHarnesses from './device/harnesses';
+import deviceSync from './device/sync';
 import coordRoutes from './coord/index';
 import suLocksHookHealth from './su-locks/hook-health';
 import operatorNotesRoutes from './operator-notes/index';
@@ -593,12 +593,12 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(elevenlabsWebhook as AnyRoute),
   ...flatten(elevenlabsPostCall as AnyRoute),
   ...flatten(miscScratch as AnyRoute),
-  ...flatten(mobileQrSvg as AnyRoute),
-  ...flatten(mobilePair as AnyRoute[]),
-  ...flatten(mobileVoice as AnyRoute[]),
-  ...flatten(mobileOperator as AnyRoute[]),
-  ...flatten(mobileHarnesses as AnyRoute[]),
-  ...flatten(mobileSync as AnyRoute[]),
+  ...flatten(deviceQrSvg as AnyRoute),
+  ...flatten(devicePair as AnyRoute[]),
+  ...flatten(deviceVoice as AnyRoute[]),
+  ...flatten(deviceOperator as AnyRoute[]),
+  ...flatten(deviceHarnesses as AnyRoute[]),
+  ...flatten(deviceSync as AnyRoute[]),
   ...flatten(coordRoutes as AnyRoute[]),
   ...flatten(suLocksHookHealth as AnyRoute),
   ...flatten(operatorNotesRoutes as AnyRoute[]),
