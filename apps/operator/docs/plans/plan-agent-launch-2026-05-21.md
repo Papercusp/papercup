@@ -13,7 +13,8 @@ owner: avi@storewolf.com
 
 **State:** v3, ratified — implementation in flight (started
 2026-05-21). **Phase 1 (revision spine) is complete — 5/5.**
-**Phase 2 (conversation linkage) is in flight — 1/4.**
+**Phase 2 (conversation linkage): P-006 + P-009 built; P-007 +
+P-008 corrected to depend on Phase 3.**
 
 Phase 1: P-001 (`plan_revisions` schema); P-002 + P-003 (`rationale`
 + revision capture on all seven `plans:*` write verbs via the shared
@@ -23,21 +24,28 @@ Phase 1: P-001 (`plan_revisions` schema); P-002 + P-003 (`rationale`
 Phase 2: P-006 `done` — the call ctx carries no conversation session
 id, so the `plan_run` session is threaded via `?plan_run=` on the
 MCP URL → `ctx.planRunSessionId` → `resolvePlanSessionRef` → the
-write verbs' `plan_revisions` rows (D-016). tsc-clean (0 new errors
-in touched files; the additive `UnifiedToolContext` field is
-assignability-neutral), 104 plans tests + 8 transport tests green.
-16 decisions, no open questions.
+write verbs' `plan_revisions` rows (D-016). P-009 `done` —
+`buildPlanContextBundle` assembles the invariant launch seed
+(preamble + plan doc verbatim + rationale digest; transcripts never
+inlined). P-007 + P-008 both need a persisted transcript
+(`plan_run_turns`), which Phase 3 builds — their `blocked-by` was
+corrected to P-010 + P-012 (the plan v3 had mis-scoped them as
+buildable in Phase 2), so they execute alongside Phase 3, not before
+it. tsc-clean (549, 0 new errors), 110 plans tests + 8 transport
+tests green. 16 decisions, no open questions.
 
 **Verification debt:** the live PG paths (`plan_revisions`
 INSERT/SELECT, the backfill's idempotency check) run on first
 operator boot / first invocation and are formally re-verified in
 P-027 — the working shell cannot reach the auth-gated embedded PG
-directly. All git + pure logic is verified now (104 tests, incl.
-real-git `readPlanFileAtCommit` integration + `resolvePlanSessionRef`).
+directly. All git + pure logic is verified now (110 tests, incl.
+real-git `readPlanFileAtCommit` integration, `resolvePlanSessionRef`,
+and the `buildPlanContextBundle` seed assembler).
 
-**Next:** P-007 (fallback rationale auto-summary), P-008
-(`plans:revision-transcript`, scoped — now unblocked by P-006),
-P-009 (`buildPlanContextBundle`).
+**Next:** Phase 3 — P-010 (`ensurePlanRunsTable` +
+`ensurePlanRunTurnsTable`), then P-011 (the plan-agent runner, a
+`runAgentChat` sibling) and P-012 (`plans:launch`). P-007 and P-008
+unblock once P-010 + P-012 land.
 
 ## Background
 
@@ -325,9 +333,9 @@ Make each revision openable to the conversation that produced it,
 and define the launch seed.
 
 - **P-006** `done` Investigated: the MCP call ctx carries no conversation/run session id — `runId`/`spawnId` regenerate per-call (forbidden as identity), `uiClientId` is the stable agent id. Threaded the `plan_run` session through: `?plan_run=<uuid>` on the MCP URL → `ctx.planRunSessionId` (new optional `UnifiedToolContext` field) → `resolvePlanSessionRef` → all seven write verbs' `plan_revisions` rows. → D-016
-- **P-007** `todo` Fallback rationale auto-summary — for revisions with a session but no supplied rationale, best-effort summarize the transcript into `rationale`. → D-009
-- **P-008** `todo` `plans:revision-transcript { revisionId, query?, cursor?, limit? }` — *scoped* transcript retrieval (search / paginate), never a whole-transcript dump; reads `plan_run_turns` for a plan-run session, the operator/agent-chat store otherwise. blocked-by: P-006
-- **P-009** `todo` `buildPlanContextBundle(slug)` helper — assembles the invariant seed: a framing preamble ("you are launched to advance this plan; read `## Now`; pick up the next actionable item") + the plan doc (parser `raw` field) + the per-revision rationale summaries. → D-002
+- **P-007** `todo` Fallback rationale auto-summary — for revisions with a session but no supplied rationale, best-effort summarize the transcript into `rationale`. Needs a persisted transcript to summarize, so it cannot land before Phase 3 builds `plan_run_turns` and a run persists turns. → D-009 blocked-by: P-010, P-012
+- **P-008** `todo` `plans:revision-transcript { revisionId, query?, cursor?, limit? }` — *scoped* transcript retrieval (search / paginate), never a whole-transcript dump; reads `plan_run_turns` for a plan-run session, the operator/agent-chat store otherwise. The `plan_run_turns` store (P-010) must exist and a run must have persisted turns (P-012) before this is buildable + verifiable. blocked-by: P-006, P-010, P-012
+- **P-009** `done` `buildPlanContextBundle(slug)` helper (`context-bundle.ts`) — assembles the invariant launch seed: a framing preamble + the plan doc verbatim (parser `raw`) + the per-revision rationale digest (one entry per revision that recorded a `rationale`, newest-first; rationale-less revisions omitted). Transcripts are never inlined (D-002/D-005). Pure assembler `assemblePlanContextBundleText` split out for unit test; the revision read is best-effort so a `plan_revisions` outage cannot block a launch. Returns the seed text + `contentHash` (byte-identical to `plans:get`) for P-012 to stamp on the run. → D-002
 
 ## Phase 3 — Agent launch
 
