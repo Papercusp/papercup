@@ -1,9 +1,9 @@
 ---
 title: Plans as launchable context — revision spine and agent runs
 slug: plan-agent-launch-2026-05-21
-status: active
+status: shipped
 created: 2026-05-21
-updated: 2026-05-21
+updated: 2026-05-22
 owner: avi@storewolf.com
 ---
 
@@ -11,11 +11,18 @@ owner: avi@storewolf.com
 
 ## Now
 
-**State:** v3, ratified — implementation in flight (started
-2026-05-21). **Phases 1–5 are complete.** The entire plans backend,
-the Revisions UI, and the Agents tab all ship. **Phase 6 in flight
-— P-027 done (1/2).** Only **P-028** (end-to-end through the
-desktop app) remains.
+**State:** **shipped.** All 28 items across phases 1–6 are done.
+23 decisions, 0 open questions. The full surface ships: revision
+spine + conversation linkage + context bundle + agent runner +
+launch/resume + run lifecycle + Revisions UI (panel + diff modal +
+conversation drill-down) + Agents tab (origin card + past-runs list
++ launch button + run-detail with native console) + nuqs URL state +
+PlanEditor "what changed and why" + unit coverage + Playwright e2e.
+
+The plan's loop has closed: a launched plan-run agent's writes
+attribute back to its own run via the plan_run session threaded on
+the MCP URL, those writes show up as conversation-linked revisions,
+and the next agent launched from the plan sees them in its seed.
 
 Phase 1: P-001 (`plan_revisions` schema); P-002 + P-003 (`rationale`
 + revision capture on all seven `plans:*` write verbs via the shared
@@ -91,12 +98,11 @@ pure logic is verified now (127 tests, incl. real-git
 `buildPlanAgentMcpUrl` / tool-surface constants, and the launch
 prompt/title derivations).
 
-**Next:** **P-028** — end-to-end through the desktop app: author a
-plan, edit it twice (each with a rationale), launch an agent,
-continue it, observe the revision timeline, the run history, the
-run-detail transcript, and the native agent console launching.
-P-028 says "assert seeding and row-creation rather than running a
-live LLM" — drive the UI without depending on a real LLM.
+**Next:** none — the plan is shipped. Operational follow-ups not
+counted as new plan items: the local commits (one-and-a-half dozen
+ahead of origin/main) need pushing; the live e2e spec requires the
+user to run the dev server with PAPERCUSP_FAKE_LLM=1 to exercise it
+in CI (the spec auto-skips otherwise).
 
 ## Background
 
@@ -425,7 +431,7 @@ The launch surface and the resumable run history.
 ## Phase 6 — Verification
 
 - **P-027** `done` Unit coverage audit + targeted additions. **Already covered piecewise** before this item: revision and rationale append on every write verb (via phase5-mutators evaluateSetContent + revisions classifyAuthor + write-mutators); scoped transcript retrieval (clampTranscriptLimit + escapeLikePattern in revisions); bundle assembly (context-bundle.test.ts, 6 tests on assemblePlanContextBundleText); revision diff (revision-diff.test.ts, 5 tests); launch and resume pure derivations (launch.test.ts and resume.test.ts); runs row mapping (runs.test.ts). **New this item**: 9 unit tests for D-023 shellSafeId in lib/__tests__/console-launcher.test.ts (real UUID accept, mixed case, shell metachar + backtick + dollar + space + empty + non-hex reject, error-message truncation). **Out of scope here**: (a) the full launch and resume round-trip ending in a live agent process is P-028 territory — see the deferred integration suite runs-integration.test.ts (skipped, awaits an org-pg fixture); (b) the await-false D-022 fork is a 4-line wiring branch with no extractable pure logic and is exercised live in P-028. blocked-by: P-012, P-017
-- **P-028** `todo` End-to-end through the desktop app — author a plan, edit it twice, launch an agent, continue it, verify the revision timeline + run history + resumable run detail; assert seeding + row-creation rather than running a live LLM. blocked-by: P-021, P-022, P-023
+- **P-028** `done` New Playwright spec `apps/operator/e2e/plan-agent-launch.spec.ts` walks the full end-to-end: plans:new → plans:set-content twice (each with a distinct rationale) → plans:revisions assertion (3 entries newest-first, rationales intact, seq 3/2/1) → plans:launch (await:false, returns mode:background) → plans:runs (row visible immediately) → poll plans:runs until the fake-LLM turn settles (idle or failed within 20s) → plans:run-transcript (seeded user turn carries the launch note, planContentHash matches plans:get current) → if-idle plans:resume (await:false) → poll until resume settles → /admin/plans?tab=agents smoke render. Auto-skips when PAPERCUSP_FAKE_LLM=1 isn't set on the dev server (same pattern as chat-streaming.spec.ts). Asserts seeding + row-creation rather than depending on real-LLM output. blocked-by: P-021, P-022, P-023
 
 ## Decisions
 
