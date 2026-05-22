@@ -308,3 +308,75 @@ are connected and directly callable), or a different invocation mode.
   replicated operator-brain spawns.
 - `apps/operator/scripts/_dump-operator-prompt.ts` — dumps the real
   assembled operator system+user prompt.
+
+# Session 3 continued — bug #5 RESOLVED (the real root cause)
+
+The "part 2" above (brain calls 0 tools) is now SOLVED. The cause was
+**Meridian context contamination via a shared `x-meridian-agent`.**
+
+## Root cause
+
+The operator brain's omp spawn copies the engineer's `models.json` /
+`models.yml`, which set `providers.anthropic.headers.x-meridian-agent:
+pi`. `pi` is the SHARED omp identity every omp process on the box uses.
+Meridian keys its per-agent context — system prompt, tool set, prompt
+cache — by that header. So every `pi` request is folded into ONE shared
+context, dominated by whatever `pi` agent is live (here: the engineer's
+Claude Code session).
+
+A brain spawn inheriting `x-meridian-agent: pi` had its request's
+`system` + `tools` effectively OVERRIDDEN by that shared context. The
+model never received its 228 agentmcp tools — it received the live
+Claude Code session's toolset — so it correctly reported "no such tool"
+and confabulated. It was never a model-behaviour bug; the brain was
+handed the wrong context.
+
+Why the engineer's other omp agents are fine: they all expect the same
+shared fleet (playwright/context7/voicemode/…), so context-sharing is
+harmless for them. Only a brain that uniquely needs `agentmcp` breaks.
+
+## Proof (direct Meridian probe)
+
+Identical one-tool request to Meridian `:3456`, varying only the header:
+- `x-meridian-agent: pi` → ignores the request's `tools`, replies with
+  the foreign session's toolset (`input_tokens` inflated, `cache_read`
+  ~10 K — foreign context injected).
+- `x-meridian-agent: <fresh unique>` → `tool_use` the sent tool. ✅
+- no header → `tool_use` the sent tool. ✅
+
+## Fix — committed (papercup-shared 8b4cda7, superproject ff5728d3)
+
+`chat-stream.ts`: after copying `models.json`/`models.yml` into the
+spawn dir, rewrite every `providers.*.headers.x-meridian-agent` to a
+per-spawn-unique value `papercup-brain-<spawn-dir-basename>`. Per-spawn
+(not per-role) so concurrent brain spawns never cross-contaminate.
+
+## Verified end-to-end
+
+Replicated the exact fixed operator spawn (real persona, agentmcp,
+discovery off, `--append-system-prompt`, unique x-meridian-agent):
+omp `exit=0`, brain called **real** `mcp__agentmcp_harness_list` /
+`issues_list` / `operator_last_scan`, **0 WaitForMcpServers**, and gave
+an honest grounded answer off real tool results (it even surfaced a
+real downstream handler error rather than confabulating).
+
+## bug #5 — three layered root causes, all now fixed
+
+1. `--system-prompt @path` → persona never loaded — fixed (`e0ee131`).
+2. `--system-prompt` replace-mode drops omp grounding → WaitForMcpServers
+   reflex — fixed by `--append-system-prompt` (`e0ee131`).
+3. shared `x-meridian-agent: pi` → Meridian context contamination →
+   agentmcp tools overridden → 0 tool calls — fixed (`8b4cda7`).
+
+## Known follow-up (separate from P5)
+
+The verification run's `harness:list` and `issues:list` agentmcp calls
+returned a real handler error ("undefined reading `parsers`"). The
+brain handled it gracefully (reported it honestly). That is a genuine
+agentmcp handler bug, separate from bug #5 — file it on its own.
+
+## P5 next steps
+
+Restart the host so the fix loads, then re-run the 12 op-M scenarios.
+The brain now calls real tools, so the suite gate can finally be
+evaluated (modulo the harness:list/issues:list handler bug above).
