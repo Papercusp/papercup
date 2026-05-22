@@ -18,6 +18,9 @@
 import { parseAsBoolean, parseAsInteger, useQueryState } from 'nuqs';
 import { usePlanRevisions, type PlanRevision } from './plans-api';
 import RevisionDiffModal from './RevisionDiffModal';
+import RevisionConversationModal, {
+  rowSessionTag,
+} from './RevisionConversationModal';
 
 interface Props {
   slug: string;
@@ -34,6 +37,10 @@ export default function RevisionsPanel({ slug }: Props) {
   // P-018: revision currently shown in the diff modal. `?rev=<id>`,
   // null when closed. URL-backed so a diff link is shareable.
   const [openRev, setOpenRev] = useQueryState('rev', parseAsInteger);
+  // P-019: revision whose conversation is open. `?convo=<id>`, null
+  // when closed. Separate key from `?rev=` so a user can deep-link
+  // to either a diff or its conversation independently.
+  const [openConvo, setOpenConvo] = useQueryState('convo', parseAsInteger);
 
   const revisions = data ?? [];
   const visible = expanded ? revisions : revisions.slice(0, COLLAPSED_COUNT);
@@ -92,12 +99,17 @@ export default function RevisionsPanel({ slug }: Props) {
             key={r.id}
             revision={r}
             onOpenDiff={() => setOpenRev(r.id)}
+            onOpenConvo={() => setOpenConvo(r.id)}
           />
         ))}
       </ul>
       <RevisionDiffModal
         revisionId={openRev}
         onClose={() => setOpenRev(null)}
+      />
+      <RevisionConversationModal
+        revisionId={openConvo}
+        onClose={() => setOpenConvo(null)}
       />
     </div>
   );
@@ -106,10 +118,14 @@ export default function RevisionsPanel({ slug }: Props) {
 function RevisionRow({
   revision,
   onOpenDiff,
+  onOpenConvo,
 }: {
   revision: PlanRevision;
   onOpenDiff: () => void;
+  onOpenConvo: () => void;
 }) {
+  const tag = rowSessionTag(revision.sessionId, revision.sessionKind);
+  const drillable = tag === null;
   return (
     <li
       className="pc-revision-row"
@@ -143,6 +159,22 @@ function RevisionRow({
       </button>
       <div className="pc-revision-row__rationale">
         {formatRationale(revision)}
+      </div>
+      <div className="pc-revision-row__convo">
+        {drillable ? (
+          <button
+            type="button"
+            className="pc-revision-row__convo-btn"
+            onClick={onOpenConvo}
+            aria-label={`Open conversation behind revision #${revision.seq}`}
+          >
+            Open conversation
+          </button>
+        ) : (
+          <span className="pc-revision-row__convo-tag" title={tag ?? undefined}>
+            {tag}
+          </span>
+        )}
       </div>
     </li>
   );

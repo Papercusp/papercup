@@ -1755,6 +1755,163 @@
   color: rgba(186, 230, 253, 0.55);
 }
 
+/* P-019: per-revision conversation drill-down footer. A button if the
+ * revision has a recorded session (`session_id` + `plan_run`), a small
+ * tag otherwise — `direct edit`, `from git history`, etc. */
+.pc-revision-row__convo {
+  padding-left: 48px;
+  margin-top: 4px;
+  font-size: 10.5px;
+}
+
+.pc-revision-row__convo-btn {
+  background: none;
+  border: 1px solid rgba(165, 233, 247, 0.25);
+  color: rgba(214, 236, 248, 0.85);
+  padding: 1px 8px;
+  border-radius: 999px;
+  font: inherit;
+  font-size: 10.5px;
+  cursor: pointer;
+  transition: background-color 80ms ease, border-color 80ms ease;
+}
+
+.pc-revision-row__convo-btn:hover {
+  background: rgba(165, 233, 247, 0.08);
+  border-color: rgba(165, 233, 247, 0.55);
+}
+
+.pc-revision-row__convo-btn:focus-visible {
+  outline: 2px solid rgba(165, 233, 247, 0.6);
+  outline-offset: 1px;
+}
+
+.pc-revision-row__convo-tag {
+  color: rgba(186, 230, 253, 0.45);
+  font-style: italic;
+  font-size: 10.5px;
+}
+
+.pc-rev-convo {
+  width: min(820px, 96vw);
+  max-height: 84vh;
+  display: flex;
+  flex-direction: column;
+  background: #0c1a23;
+  color: #d6ecf8;
+  border: 1px solid rgba(165, 233, 247, 0.18);
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.pc-rev-convo__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  border-bottom: 1px solid rgba(165, 233, 247, 0.15);
+}
+
+.pc-rev-convo__head h3 {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.pc-rev-convo__close {
+  background: none;
+  border: none;
+  color: rgba(214, 236, 248, 0.7);
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.pc-rev-convo__controls {
+  padding: 8px 14px;
+  border-bottom: 1px solid rgba(165, 233, 247, 0.1);
+}
+
+.pc-rev-convo__query {
+  width: 100%;
+  padding: 6px 10px;
+  background: rgba(8, 18, 26, 0.7);
+  color: #d6ecf8;
+  border: 1px solid rgba(165, 233, 247, 0.2);
+  border-radius: 6px;
+  font-size: 12px;
+}
+
+.pc-rev-convo__error,
+.pc-rev-convo__empty,
+.pc-rev-convo__loading {
+  padding: 14px;
+  font-size: 12px;
+  color: rgba(214, 236, 248, 0.7);
+}
+
+.pc-rev-convo__error {
+  color: #fca5a5;
+}
+
+.pc-rev-convo__turns {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  flex: 1;
+}
+
+.pc-rev-convo-turn {
+  padding: 10px 14px;
+  border-bottom: 1px solid rgba(165, 233, 247, 0.07);
+}
+
+.pc-rev-convo-turn[data-role='user'] {
+  background: rgba(165, 233, 247, 0.03);
+}
+
+.pc-rev-convo-turn__head {
+  display: flex;
+  gap: 10px;
+  font-size: 10.5px;
+  color: rgba(186, 230, 253, 0.65);
+  margin-bottom: 4px;
+}
+
+.pc-rev-convo-turn__role {
+  text-transform: uppercase;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: #a5e9f7;
+}
+
+.pc-rev-convo-turn__content {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+  font-size: 12px;
+  line-height: 1.45;
+  color: rgba(214, 236, 248, 0.92);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.pc-rev-convo__more {
+  margin: 10px auto;
+  padding: 4px 14px;
+  background: none;
+  border: 1px solid rgba(165, 233, 247, 0.35);
+  color: #a5e9f7;
+  border-radius: 999px;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.pc-rev-convo__more:hover {
+  background: rgba(165, 233, 247, 0.08);
+}
+
 .pc-git-diff {
   width: min(900px, 96vw);
   max-height: 84vh;

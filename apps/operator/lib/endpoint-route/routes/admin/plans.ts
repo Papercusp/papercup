@@ -40,6 +40,8 @@ const READ_VERBS = new Set([
   'revisions',
   // plan-agent-launch P-018: the per-revision diff modal.
   'revision-diff',
+  // plan-agent-launch P-019: the per-revision conversation drill-down.
+  'revision-transcript',
 ]);
 // `set-content` and `set-frontmatter` land in agent-plan-tracking
 // Phase 5 (D-011 of plans-admin-ui-2026-05-20). Listing them now means

@@ -45,7 +45,9 @@ const ALL_ROLES = [
 ] as const;
 
 const argsSchema = z.object({
-  revisionId: z
+  // z.coerce on the numerics so the same schema accepts numeric MCP
+  // args and string query-params from the /api/admin/plans route.
+  revisionId: z.coerce
     .number()
     .int()
     .positive()
@@ -54,13 +56,13 @@ const argsSchema = z.object({
     .string()
     .optional()
     .describe('Case-insensitive literal substring filter over turn content.'),
-  cursor: z
+  cursor: z.coerce
     .number()
     .int()
     .nonnegative()
     .optional()
     .describe('Return turns after this seq — pass back the prior nextCursor.'),
-  limit: z
+  limit: z.coerce
     .number()
     .int()
     .optional()

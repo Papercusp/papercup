@@ -659,6 +659,57 @@ export async function fetchPlanRevisionDiff(revisionId: number): Promise<PlanRev
   });
 }
 
+/* ── plan_run_turns (plan-agent-launch P-019) ──────────────────────── */
+
+export type PlanRevisionTranscriptTurnRole = 'user' | 'assistant';
+
+export interface PlanRevisionTranscriptTurn {
+  seq: number;
+  role: PlanRevisionTranscriptTurnRole;
+  content: string;
+  createdAt: number;
+}
+
+/** `plans:revision-transcript` success result. `available:false` means
+ *  the revision has no drill-downable conversation: a direct edit, a
+ *  git backfill, or a session kind v1 doesn't read (D-020). */
+export type PlanRevisionTranscriptResult =
+  | {
+      available: true;
+      revisionId: number;
+      planSlug: string;
+      seq: number;
+      query: string | null;
+      turns: PlanRevisionTranscriptTurn[];
+      nextCursor: number | null;
+    }
+  | {
+      available: false;
+      revisionId: number;
+      planSlug: string;
+      seq: number;
+      reason: 'no_session' | 'git_backfill' | 'session_kind_unsupported';
+      turns: [];
+    };
+
+export interface FetchPlanRevisionTranscriptArgs {
+  revisionId: number;
+  query?: string;
+  cursor?: number;
+  limit?: number;
+}
+
+export function fetchPlanRevisionTranscript(
+  args: FetchPlanRevisionTranscriptArgs,
+): Promise<PlanRevisionTranscriptResult> {
+  return getJson<PlanRevisionTranscriptResult>('revision-transcript', {
+    revisionId: String(args.revisionId),
+    query: args.query,
+    cursor: args.cursor !== undefined ? String(args.cursor) : undefined,
+    limit: args.limit !== undefined ? String(args.limit) : undefined,
+  });
+}
+
 /* ── Lint hook (P-206) ─────────────────────────────────────────────── */
 
 /**
