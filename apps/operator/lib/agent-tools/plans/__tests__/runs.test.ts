@@ -10,9 +10,13 @@
 import { describe, expect, it } from 'vitest';
 import {
   canManuallyRestatusRun,
+  clampTranscriptLimit,
+  escapeLikePattern,
   mapPlanRunRow,
   PLAN_RUN_IDLE_ARCHIVE_MS,
   PLAN_RUN_ORPHAN_FAIL_MS,
+  TRANSCRIPT_DEFAULT_LIMIT,
+  TRANSCRIPT_MAX_LIMIT,
   type PlanRunStatus,
   type RawPlanRunRow,
 } from '../runs';
@@ -95,5 +99,42 @@ describe('run-status sweep thresholds (P-016)', () => {
     // A legitimate turn caps at the tool's 600s timeout; the orphan
     // window must sit comfortably beyond it to avoid false positives.
     expect(PLAN_RUN_ORPHAN_FAIL_MS).toBeGreaterThan(15 * 60_000);
+  });
+});
+
+describe('clampTranscriptLimit (P-008)', () => {
+  it('defaults when the limit is absent or non-numeric', () => {
+    for (const bad of [undefined, null, NaN, Infinity, -Infinity]) {
+      expect(clampTranscriptLimit(bad as number)).toBe(TRANSCRIPT_DEFAULT_LIMIT);
+    }
+  });
+
+  it('floors a fractional limit', () => {
+    expect(clampTranscriptLimit(20.9)).toBe(20);
+  });
+
+  it('clamps below 1 up to 1', () => {
+    expect(clampTranscriptLimit(0)).toBe(1);
+    expect(clampTranscriptLimit(-5)).toBe(1);
+  });
+
+  it('clamps above the max down to the max', () => {
+    expect(clampTranscriptLimit(200)).toBe(TRANSCRIPT_MAX_LIMIT);
+  });
+
+  it('passes an in-range limit through', () => {
+    expect(clampTranscriptLimit(50)).toBe(50);
+  });
+});
+
+describe('escapeLikePattern (P-008)', () => {
+  it('leaves a plain query untouched', () => {
+    expect(escapeLikePattern('refactor the runner')).toBe('refactor the runner');
+  });
+
+  it('escapes LIKE wildcards so the query matches literally', () => {
+    expect(escapeLikePattern('50%')).toBe('50\\%');
+    expect(escapeLikePattern('a_b')).toBe('a\\_b');
+    expect(escapeLikePattern('c:\\path')).toBe('c:\\\\path');
   });
 });

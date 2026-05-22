@@ -330,3 +330,113 @@ export async function appendPlanRunTurn(
     return Number(rows[0].seq);
   });
 }
+
+// ── Scoped transcript read (P-008) ─────────────────────────────────
+
+/** Default / max number of turns one `plans:revision-transcript`
+ *  page returns — the read is paginated, never a whole-transcript
+ *  dump (D-002). */
+export const TRANSCRIPT_DEFAULT_LIMIT = 20;
+export const TRANSCRIPT_MAX_LIMIT = 100;
+
+/** Clamp a caller-supplied transcript page size into
+ *  `[1, TRANSCRIPT_MAX_LIMIT]`, defaulting when absent/invalid.
+ *  Pure + exported for unit test. */
+export function clampTranscriptLimit(raw: number | null | undefined): number {
+  if (typeof raw !== 'number' || !Number.isFinite(raw)) {
+    return TRANSCRIPT_DEFAULT_LIMIT;
+  }
+  return Math.min(TRANSCRIPT_MAX_LIMIT, Math.max(1, Math.floor(raw)));
+}
+
+/** Escape the LIKE metacharacters in a transcript search query so it
+ *  matches as a literal substring (paired with `ESCAPE '\'`). Pure +
+ *  exported for unit test. */
+export function escapeLikePattern(s: string): string {
+  return s.replace(/[\\%_]/g, (ch) => '\\' + ch);
+}
+
+/** One turn in a scoped transcript page. */
+export interface PlanRunTranscriptTurn {
+  seq: number;
+  role: PlanRunTurnRole;
+  content: string;
+  createdAt: number;
+}
+
+/** A scoped, paginated slice of a run's transcript. */
+export interface PlanRunTranscriptPage {
+  turns: PlanRunTranscriptTurn[];
+  /** `seq` to pass as the next `cursor`, or `null` at the end. */
+  nextCursor: number | null;
+}
+
+export interface ReadPlanRunTranscriptOpts {
+  /** Case-insensitive literal substring filter over turn content. */
+  query?: string | null;
+  /** Return turns with `seq` strictly greater than this. */
+  cursor?: number | null;
+  /** Page size — clamped via `clampTranscriptLimit`. */
+  limit?: number | null;
+}
+
+/**
+ * Read a scoped, paginated slice of a plan run's transcript — the
+ * `plan_run` branch of `plans:revision-transcript` (P-008). Turns are
+ * `seq`-ordered; `cursor` is a `seq` exclusive lower bound; `query`
+ * is a literal substring filter. One extra row is fetched to decide
+ * `nextCursor` without a second query. A `session_id` with no `plan_run`
+ * row yields an empty page (an anomaly, not an error).
+ */
+export async function readPlanRunTranscript(
+  sessionId: string,
+  opts: ReadPlanRunTranscriptOpts = {},
+): Promise<PlanRunTranscriptPage> {
+  await ensurePlanRunTurnsTable();
+  const limit = clampTranscriptLimit(opts.limit);
+  const cursor =
+    typeof opts.cursor === 'number' && Number.isFinite(opts.cursor)
+      ? Math.floor(opts.cursor)
+      : 0;
+  const query = opts.query?.trim() ? opts.query.trim() : null;
+
+  return withWorkspace(DEFAULT_WORKSPACE_ID, async (tx) => {
+    const runRows = await tx<{ id: number | string }[]>`
+      SELECT id FROM harness_shared.plan_runs
+      WHERE session_id = ${sessionId}
+      LIMIT 1
+    `;
+    const run = runRows[0];
+    if (!run) return { turns: [], nextCursor: null };
+
+    const queryFilter = query
+      ? tx`AND content ILIKE ${'%' + escapeLikePattern(query) + '%'} ESCAPE '\\'`
+      : tx``;
+    const rows = await tx<
+      {
+        seq: number;
+        role: PlanRunTurnRole;
+        content: string;
+        created_at: string | number;
+      }[]
+    >`
+      SELECT seq, role, content, created_at
+      FROM harness_shared.plan_run_turns
+      WHERE plan_run_id = ${run.id} AND seq > ${cursor} ${queryFilter}
+      ORDER BY seq ASC
+      LIMIT ${limit + 1}
+    `;
+
+    const hasMore = rows.length > limit;
+    const page = rows.slice(0, limit);
+    return {
+      turns: page.map((r) => ({
+        seq: Number(r.seq),
+        role: r.role,
+        content: r.content,
+        createdAt: Number(r.created_at),
+      })),
+      nextCursor: hasMore ? Number(page[page.length - 1]!.seq) : null,
+    };
+  });
+}

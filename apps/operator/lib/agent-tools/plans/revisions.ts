@@ -283,6 +283,9 @@ export function revisionDiffStat(
 /** One row of the revision chain as returned by `plans:revisions` —
  *  metadata + diff-stat, never the (heavy) content snapshot itself. */
 export interface PlanRevisionRow {
+  /** Global `plan_revisions` PK — the stable id `plans:revision-transcript`
+   *  (P-008) is addressed by. `seq` is the human-facing per-plan number. */
+  id: number;
   seq: number;
   contentHash: string;
   rationale: string | null;
@@ -296,6 +299,7 @@ export interface PlanRevisionRow {
 }
 
 interface PlanRevisionDbRow {
+  id: number | string;
   seq: number;
   content_hash: string;
   content_snapshot: string;
@@ -319,7 +323,7 @@ export async function listPlanRevisions(planSlug: string): Promise<PlanRevisionR
   await ensurePlanRevisionsTable();
   const rows = await withWorkspace(DEFAULT_WORKSPACE_ID, async (tx) => {
     return tx<PlanRevisionDbRow[]>`
-      SELECT seq, content_hash, content_snapshot, rationale,
+      SELECT id, seq, content_hash, content_snapshot, rationale,
              author_kind, author_id, session_id, session_kind, created_at
       FROM harness_shared.plan_revisions
       WHERE plan_slug = ${planSlug}
@@ -333,6 +337,7 @@ export async function listPlanRevisions(planSlug: string): Promise<PlanRevisionR
   let prevSnapshot = '';
   for (const r of rows) {
     chain.push({
+      id: Number(r.id),
       seq: Number(r.seq),
       contentHash: r.content_hash,
       rationale: r.rationale,
@@ -347,6 +352,53 @@ export async function listPlanRevisions(planSlug: string): Promise<PlanRevisionR
   }
   chain.reverse();
   return chain;
+}
+
+/** A revision identified for transcript routing — what
+ *  `plans:revision-transcript` (P-008) needs to find the conversation
+ *  behind a revision. */
+export interface PlanRevisionRef {
+  id: number;
+  planSlug: string;
+  seq: number;
+  sessionId: string | null;
+  sessionKind: PlanRevisionSessionKind | null;
+}
+
+/**
+ * Fetch one revision by its global `plan_revisions` id — or `null`
+ * when no such revision exists. Used by `plans:revision-transcript`
+ * (P-008) to route to the right transcript store. Throws on a genuine
+ * DB failure.
+ */
+export async function getPlanRevisionById(
+  revisionId: number,
+): Promise<PlanRevisionRef | null> {
+  await ensurePlanRevisionsTable();
+  return withWorkspace(DEFAULT_WORKSPACE_ID, async (tx) => {
+    const rows = await tx<
+      {
+        id: number | string;
+        plan_slug: string;
+        seq: number;
+        session_id: string | null;
+        session_kind: string | null;
+      }[]
+    >`
+      SELECT id, plan_slug, seq, session_id, session_kind
+      FROM harness_shared.plan_revisions
+      WHERE id = ${revisionId}
+    `;
+    const r = rows[0];
+    if (!r) return null;
+    return {
+      id: Number(r.id),
+      planSlug: r.plan_slug,
+      seq: Number(r.seq),
+      sessionId: r.session_id,
+      sessionKind: r.session_kind as PlanRevisionSessionKind | null,
+    };
+  });
 }
 
 // ── Git-history backfill (P-005) ───────────────────────────────────

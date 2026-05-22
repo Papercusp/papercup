@@ -13,8 +13,8 @@ owner: avi@storewolf.com
 
 **State:** v3, ratified — implementation in flight (started
 2026-05-21). **Phase 1 (revision spine) is complete — 5/5.**
-**Phase 2 (conversation linkage): P-006 + P-009 built; P-007 +
-P-008 now unblocked (P-012 shipped).** **Phase 3 (agent launch)
+**Phase 2 (conversation linkage): P-006 + P-008 + P-009 done; only
+P-007 (rationale auto-summary) remains.** **Phase 3 (agent launch)
 is complete — P-010…P-016 all done.**
 
 Phase 1: P-001 (`plan_revisions` schema); P-002 + P-003 (`rationale`
@@ -28,10 +28,15 @@ MCP URL → `ctx.planRunSessionId` → `resolvePlanSessionRef` → the
 write verbs' `plan_revisions` rows (D-016). P-009 `done` —
 `buildPlanContextBundle` assembles the invariant launch seed
 (preamble + plan doc verbatim + rationale digest; transcripts never
-inlined). P-007 + P-008 both need a persisted transcript
-(`plan_run_turns`); their `blocked-by` was corrected to P-010 +
-P-012 (the plan v3 had mis-scoped them as buildable in Phase 2).
-With P-012 shipped they are now unblocked and actionable.
+inlined). P-008 `done` — `plans:revision-transcript`
+(`revision-transcript.ts`), the *scoped* (paginated + searchable,
+never a whole dump — D-002) transcript-retrieval verb;
+`readPlanRunTranscript` reads `plan_run_turns`, `getPlanRevisionById`
+routes by `session_kind` (D-020 — `plan_run` only in v1). P-007
+(rationale auto-summary) was deferred behind P-008 deliberately:
+P-008 establishes the `plan_run_turns` read surface P-007's
+summariser consumes — there is no `blocked-by` edge, just a cleaner
+build order. P-007 is the last Phase-2 item.
 
 Phase 3: P-010 `done` — `ensurePlanRunsTable()` +
 `ensurePlanRunTurnsTable()` in `ensure-schema.ts`, the
@@ -68,8 +73,8 @@ stale `idle` → `archived` at 7 days) runs best-effort from the
 rejecting a `running` run. **Phase 3 is complete.**
 
 tsc-clean (0 errors in touched files; tree 551 is other agents'
-churn), 138 plans + plan-events tests + 8 transport tests green.
-19 decisions, no open questions.
+churn), 145 plans + plan-events tests + 8 transport tests green.
+20 decisions, no open questions.
 
 **Verification debt:** the live PG paths (`plan_revisions` /
 `plan_runs` / `plan_run_turns` DDL + INSERT/SELECT, the backfill's
@@ -84,14 +89,14 @@ pure logic is verified now (127 tests, incl. real-git
 `buildPlanAgentMcpUrl` / tool-surface constants, and the launch
 prompt/title derivations).
 
-**Next:** Phases 1 + 3 are complete; the `plans:*` tool +
-revision-spine + run-launch backend is fully built. What remains:
-**P-007 + P-008** (Phase 2 — fallback rationale auto-summary +
-`plans:revision-transcript`; both now unblocked, the `plan_run_turns`
-transcript they consume exists), then **Phase 4 + 5** (the
+**Next:** Phases 1 + 3 are complete and Phase 2 is one item from
+done — the whole `plans:*` backend (revision spine, context bundle,
+runner, launch/resume, run history + lifecycle, scoped transcript
+read) is built. What remains: **P-007** (the last Phase-2 item —
+fallback rationale auto-summary), then **Phase 4 + 5** (the
 Revisions panel and Agents tab UI), then **Phase 6** (P-027 / P-028
 verification — including the live PG-path debt below). P-007 is the
-natural next pickup.
+next pickup.
 
 ## Background
 
@@ -380,7 +385,7 @@ and define the launch seed.
 
 - **P-006** `done` Investigated: the MCP call ctx carries no conversation/run session id — `runId`/`spawnId` regenerate per-call (forbidden as identity), `uiClientId` is the stable agent id. Threaded the `plan_run` session through: `?plan_run=<uuid>` on the MCP URL → `ctx.planRunSessionId` (new optional `UnifiedToolContext` field) → `resolvePlanSessionRef` → all seven write verbs' `plan_revisions` rows. → D-016
 - **P-007** `todo` Fallback rationale auto-summary — for revisions with a session but no supplied rationale, best-effort summarize the transcript into `rationale`. Needs a persisted transcript to summarize, so it cannot land before Phase 3 builds `plan_run_turns` and a run persists turns. → D-009 blocked-by: P-010, P-012
-- **P-008** `todo` `plans:revision-transcript { revisionId, query?, cursor?, limit? }` — *scoped* transcript retrieval (search / paginate), never a whole-transcript dump; reads `plan_run_turns` for a plan-run session, the operator/agent-chat store otherwise. The `plan_run_turns` store (P-010) must exist and a run must have persisted turns (P-012) before this is buildable + verifiable. blocked-by: P-006, P-010, P-012
+- **P-008** `done` `plans:revision-transcript { revisionId, query?, cursor?, limit? }` (`revision-transcript.ts`) — *scoped* transcript retrieval: `seq`-paginated by `cursor`, narrowable by a literal-substring `query`, page size clamped 1–100 (default 20) — never a whole-transcript dump (D-002). Routes by the revision's `session_kind`: `plan_run` → `readPlanRunTranscript` over `plan_run_turns`; `null`/`git_backfill`/(`operator_chat`|`agent_chat`) → `available: false` (D-020). `listPlanRevisions` now also returns the global `id` (the address P-008 takes); `getPlanRevisionById` is the new revision-by-id DAL. → D-002, D-020 blocked-by: P-006, P-010, P-012
 - **P-009** `done` `buildPlanContextBundle(slug)` helper (`context-bundle.ts`) — assembles the invariant launch seed: a framing preamble + the plan doc verbatim (parser `raw`) + the per-revision rationale digest (one entry per revision that recorded a `rationale`, newest-first; rationale-less revisions omitted). Transcripts are never inlined (D-002/D-005). Pure assembler `assemblePlanContextBundleText` split out for unit test; the revision read is best-effort so a `plan_revisions` outage cannot block a launch. Returns the seed text + `contentHash` (byte-identical to `plans:get`) for P-012 to stamp on the run. → D-002
 
 ## Phase 3 — Agent launch
@@ -704,3 +709,24 @@ idle, poll-based for v1") delivers two things, not one:
   settle. `running` / `failed` stay machine-only.
 (Decided at P-016. The plan item under-specified the manual verb;
 recorded here so the scope expansion is visible in review.)
+
+### D-020 — `plans:revision-transcript` v1 reads `plan_run_turns` only
+Date: 2026-05-21
+The P-008 item says the verb reads "`plan_run_turns` for a plan-run
+session, the operator/agent-chat store otherwise." But **no writer
+produces those other session kinds**: D-016's `resolvePlanSessionRef`
+only ever yields `{ sessionKind: 'plan_run' }` or `{ null, null }`,
+so today a `plan_revisions` row's `session_kind` is only ever
+`plan_run`, `git_backfill`, or NULL. Building `operator_chat` /
+`agent_chat` transcript readers now would be code for a value
+nothing emits.
+
+So P-008 v1 ships the `plan_run` reader (the populated case) and
+returns `available: false` for everything else — `no_session` (a
+direct `/admin/plans` editor save), `git_backfill` (a commit has no
+conversation), `session_kind_unsupported` (`operator_chat` /
+`agent_chat` — reserved, not yet produced). When a later item wires
+`resolvePlanSessionRef` to detect an operator-chat caller, *that*
+item adds the matching reader. `available: false` is a normal
+result, not an error — P-019's UI shows a "direct edit" tag for it.
+(Decided at P-008.)
