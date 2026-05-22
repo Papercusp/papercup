@@ -73,9 +73,10 @@ describe('migrated /api/device/* routes — handler behavior (E4)', () => {
     ];
     for (const def of all) {
       expect(def.auth, `${def.method} ${def.path} must declare auth`).toBeDefined();
-      // mint-pair-token is loopback-only (desktop, same-origin) — no cors.
-      // Every other route the phone reaches cross-origin → cors: true.
-      if (def.path !== '/device/desktop/mint-pair-token') {
+      // The `/device/desktop/*` routes are loopback-only (desktop,
+      // same-origin) — no cors. Every other route the phone reaches
+      // cross-origin → cors: true.
+      if (!def.path.startsWith('/device/desktop/')) {
         expect(def.cors, `${def.method} ${def.path} should be cors:true`).toBe(true);
       }
     }
@@ -84,13 +85,40 @@ describe('migrated /api/device/* routes — handler behavior (E4)', () => {
   it('JWT-gated routes resolve to kind:["device"]; pair/mint stay public', () => {
     const pairRoutes = mobilePair as RouteDefinition<never>[];
     const pub = pairRoutes.filter((r) => r.auth === 'public').map((r) => r.path).sort();
-    // /pair (one-time token) and /desktop/mint-pair-token (loopback) are
-    // the only non-JWT routes in the pair family.
-    expect(pub).toEqual(['/device/desktop/mint-pair-token', '/device/pair']);
+    // /pair (one-time token) and the loopback `/device/desktop/*` routes
+    // (mint-pair-token + device list/revoke) are the non-JWT routes.
+    expect(pub).toEqual([
+      '/device/desktop/devices',
+      '/device/desktop/devices/:deviceId',
+      '/device/desktop/mint-pair-token',
+      '/device/pair',
+    ]);
 
     const jwtGated = pairRoutes.filter((r) => r.auth !== 'public');
     for (const def of jwtGated) {
       expect((def.auth as { kind: string[] }).kind).toContain("device");
     }
+  });
+
+  it('desktop device routes (loopback-gated) reject a non-loopback Host with 403', async () => {
+    const pairRoutes = mobilePair as RouteDefinition<never>[];
+    const evilHost = { host: 'evil.example.com' };
+
+    const list = routeByPath(pairRoutes, 'GET', '/device/desktop/devices');
+    const listRes = await list.handler(
+      new Request('http://evil.example.com/api/device/desktop/devices', { headers: evilHost }),
+      ctx(),
+    );
+    expect(listRes.status).toBe(403);
+
+    const revoke = routeByPath(pairRoutes, 'DELETE', '/device/desktop/devices/:deviceId');
+    const revokeRes = await revoke.handler(
+      new Request('http://evil.example.com/api/device/desktop/devices/d1', {
+        method: 'DELETE',
+        headers: evilHost,
+      }),
+      ctx({ params: { deviceId: 'd1' } }),
+    );
+    expect(revokeRes.status).toBe(403);
   });
 });

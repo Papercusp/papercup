@@ -85,6 +85,39 @@ export async function isRevoked(deviceId: string): Promise<boolean> {
   return rows[0].revoked_at != null;
 }
 
+/**
+ * Every paired device across all workspaces — for the desktop "Manage
+ * paired devices" panel. Admin role, no workspace GUC (same pattern as
+ * `isRevoked`): a local Papercup install is single-user, so the desktop
+ * legitimately sees every paired phone, and it has no device JWT to
+ * scope by.
+ */
+export async function listAllDevices(): Promise<DeviceRow[]> {
+  const { sql } = getOrgPg();
+  return sql<DeviceRow[]>`
+    SELECT device_id, user_email, workspace_id, device_kind, device_label,
+           paired_at, last_seen, revoked_at
+    FROM harness_shared.mobile_devices
+    WHERE revoked_at IS NULL
+    ORDER BY paired_at DESC
+  `;
+}
+
+/**
+ * Revoke a device by id alone — for the desktop revoke flow, which holds
+ * the device id but no workspace context. `device_id` is globally unique
+ * (PK — see the `ON CONFLICT (device_id)` in `insertDevice`); the
+ * workspace-scoped `revokeDevice` is the phone-facing path.
+ */
+export async function revokeDeviceById(deviceId: string): Promise<void> {
+  const { sql } = getOrgPg();
+  await sql`
+    UPDATE harness_shared.mobile_devices
+    SET revoked_at = now()
+    WHERE device_id = ${deviceId}
+  `;
+}
+
 export async function upsertPushToken(opts: {
   deviceId: string;
   workspaceId: string;

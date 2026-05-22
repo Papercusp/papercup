@@ -4,6 +4,8 @@
  * URLs renamed `/api/mobile/*` → `/api/device/*` (P2b).
  *
  *   POST   /device/desktop/mint-pair-token   loopback-only
+ *   GET    /device/desktop/devices           loopback-only
+ *   DELETE /device/desktop/devices/:deviceId loopback-only
  *   POST   /device/pair                      unauthenticated (one-time token)
  *   POST   /device/workspace/switch          device JWT
  *   GET    /device/devices                   device JWT
@@ -22,8 +24,10 @@ import { mintPairToken, consumePairToken, newDeviceId } from '@/lib/device-pair-
 import { readRegistry, workspaceById } from '@/lib/workspace-registry';
 import {
   insertDevice,
+  listAllDevices,
   listDevices,
   revokeDevice,
+  revokeDeviceById,
   touchLastSeen,
 } from '@/lib/device-store';
 
@@ -100,6 +104,54 @@ const mintPairTokenRoute = defineTool({
       qrPayload: { server: serverUrl, pairToken, workspaceId },
       expiresAt,
     });
+  },
+});
+
+/**
+ * GET /device/desktop/devices — loopback-only. Backs the desktop
+ * "Manage paired devices" panel. Lists every paired device across all
+ * workspaces — a local Papercup install is single-user, and the desktop
+ * holds no device JWT to scope by. The phone-facing equivalent is the
+ * workspace-scoped `GET /device/devices`.
+ */
+const desktopDevicesListRoute = defineTool({
+  method: 'GET',
+  path: '/device/desktop/devices',
+  auth: 'public',
+  // No `cors` — loopback-only, same-origin desktop UI call (like mint-pair-token).
+  async handler(req) {
+    if (!isLoopbackHost(req)) {
+      return Response.json({ error: 'loopback_only' }, { status: 403 });
+    }
+    const rows = await listAllDevices();
+    return Response.json({
+      devices: rows.map((d) => ({
+        device_id: d.device_id,
+        device_label: d.device_label,
+        paired_at: d.paired_at,
+        last_seen: d.last_seen,
+        workspace_id: d.workspace_id,
+      })),
+    });
+  },
+});
+
+/**
+ * DELETE /device/desktop/devices/:deviceId — loopback-only. Desktop-side
+ * revoke from the "Manage paired devices" panel; revokes by device id
+ * alone (globally unique). The phone-facing equivalent is the
+ * workspace-scoped `DELETE /device/devices/:deviceId`.
+ */
+const desktopDeviceRevokeRoute = defineTool({
+  method: 'DELETE',
+  path: '/device/desktop/devices/:deviceId',
+  auth: 'public',
+  async handler(req, ctx) {
+    if (!isLoopbackHost(req)) {
+      return Response.json({ error: 'loopback_only' }, { status: 403 });
+    }
+    await revokeDeviceById(ctx.params.deviceId);
+    return Response.json({ ok: true });
   },
 });
 
@@ -266,6 +318,8 @@ const heartbeatRoute = defineTool({
 
 export default [
   mintPairTokenRoute,
+  desktopDevicesListRoute,
+  desktopDeviceRevokeRoute,
   pairRoute,
   workspaceSwitchRoute,
   devicesListRoute,
