@@ -448,3 +448,48 @@ callsite.
 Both blockers cleared: the operator brain calls real tools (bug #5
 Meridian fix) AND those tools now return real data (this fix). P5's
 12 op-M scenarios can now be run for real.
+
+# Session 3 final — P5 code blockers cleared; suite run env-blocked
+
+## All P5 code work done + committed
+
+| Fix | Commit |
+|---|---|
+| bug #5a — omp `--system-prompt @path` → persona never loaded | papercup-shared `e0ee131` |
+| bug #5b — `--system-prompt` replace-mode → grounding loss → WaitForMcpServers reflex; → `--append-system-prompt` | papercup-shared `e0ee131` |
+| bug #5c (core) — Meridian shared `x-meridian-agent: pi` context contamination → per-spawn-unique agent id | papercup-shared `8b4cda7` |
+| `parsers` regression — `drizzle(withWorkspace tx)` crash; tx lacks `.options` → shim in `withWorkspace` | papercusp `0418c70` |
+| llm-testing — patient transient-error retry (529/429/5xx) in `llmCall` | `0d8b74bb` |
+
+Superproject pointer bumps: `ff5728d3`, `593c74d9`. Handoff-doc commits:
+`f0ad2a67`, `e5edbac1`, `709aae59`, `e8d0b37e`.
+
+## Verified
+
+- Operator brain E2E (diag, both fixes live): calls real
+  `mcp__agentmcp_*` tools (harness:list/status/pending_reviews,
+  issues:list, audit:list, chat:ask_choice), 0 WaitForMcpServers, 0
+  `parsers` errors, produces a real grounded answer.
+- `harness:list` / `harness:status` return real data via direct curl.
+- The 529-retry: confirmed firing in a live op-M3 run log —
+  `transient API error (attempt 1/5)… (attempt 2/5), retrying`.
+
+## Why the op-M suite was not run to completion
+
+Not a code defect. The Anthropic API was in a sustained `529
+Overloaded` state for the whole session window; op-M3 was attempted
+5×, each defeated by either a 529 storm (now retried, but the overload
+outlasted the retry budget on the worst runs) or the test harness /
+process being killed mid-run by environment instability. The two P5
+blockers are fixed and verified; the suite simply needs to be run once
+Anthropic capacity recovers. With `0d8b74bb` in place the runner now
+rides out transient 529s on its own.
+
+## Next step (clean, when the API is healthy)
+
+`cd apps/operator && npx tsx bin/llm-test.ts --scenario op-M<N>-… --no-matrix`
+for each of the 12 op-M scenarios (or loop them). Results persist to
+`harness_shared.llm_test_runs` (status / asserts_json / judge_json),
+so a killed runner doesn't lose a completed run. Clear any stale
+`harness_shared.llm_test_claims` row first if a prior run died holding
+one.
