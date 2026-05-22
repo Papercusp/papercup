@@ -11,6 +11,7 @@ companion-to: [endpoint-route-migration-2026-05-20, phase-4-endpoint-system-2026
 <!--
 STATUS 2026-05-21: E1–E6 SHIPPED. defineRoute is now a re-export of the
 unified defineTool primitive — the collapse is done. E7–E14 not started.
+Post-E: E15 (mobile→device generalization) SHIPPED — see the E15 section.
 -->
 
 
@@ -19,6 +20,8 @@ unified defineTool primitive — the collapse is done. E7–E14 not started.
 **State:** E1 + E2 shipped. E1 (`c567f7ac`) — type-additive `defineTool` fields. E2 — the load-bearing auth fix: the `/api/agent-tools/*` catch-all now resolves a mobile device JWT (composite bearer resolver: `resolveBearer` token_index → mobile JWT), and `requirePrincipal()` gained a `from-bearer-token` resolver so agent `system`/`pi` bearers resolve there too. A paired phone can now call any built-in `defineTool`.
 
 **Next:** E7 (ESLint enforcement + docs) — though its `no-raw-route-handlers` rule is gated on E12/E13 migrating the remaining `_hono/*` routers.
+
+**Post-E follow-up shipped:** E15 — the `mobile` concept generalized to `device` (`'device'` principal kind, `auth.tokenIn`, the `cors` route field; `routes/device/`, `/api/device/*`). See the E15 section.
 
 E1–E6 shipped. The mobile arc (E1–E5) plus the actual collapse (E6): **`defineRoute` is now a re-export of the unified `defineTool` primitive.** `defineTool` discriminates structurally — a route-shaped input (`{ method, path, auth, handler }`) returns a `RouteDefinition`; a tool-shaped input returns a `ToolDefinition`. One primitive, three projections. The earlier "E6 is blocked" assessment was resolved by splitting the concern: the route *types* + the `defineTool` route *branch* (pure logic) moved into `@papercusp/agent-mcp`; the Hono-coupled `registerRoute` + `route-stack` stayed host-side. The package never imports the app.
 
@@ -217,7 +220,7 @@ E14 Delete _hono/* directory                                    ⬜ not started
 
 ### Phase E4 — Migrate the 33 legacy mobile routes — ✅ SHIPPED
 
-All 33 routes ported to `defineRoute` modules under `routes/mobile/`, grouped into 5 family files:
+All 33 routes ported to `defineRoute` modules under `routes/mobile/` (renamed `routes/device/` in E15), grouped into 5 family files:
 
 - **`pair.ts` (8):** `/desktop/mint-pair-token`, `/pair`, `/workspace/switch`, `/devices` GET, `/devices/:deviceId` DELETE, `/runtime-config`, `/workspaces`, `/heartbeat`.
 - **`voice.ts` (6):** `/voice-lease` GET/claim/heartbeat/DELETE, `/voice-session-init`, `/voice`.
@@ -333,6 +336,22 @@ This is a real security pass, not a mechanical cleanup, and it **cannot be done 
 
 - After E5 + E12 + E13, only `app.ts` (host seam) and possibly `bootstrap.ts` (startup hooks) remain.
 - Delete the rest; rename the directory if useful.
+
+### Phase E15 — mobile → device generalization — ✅ SHIPPED
+
+Post-E1–E14 follow-up (commits `ea779f95`, `d17a3b09`, `3480a51c`, `5bccbd29`; Rust client `236e935`). Supersedes the *mobile-specific* parts of E2/E3/E4/E10. "mobile" bundled three orthogonal concerns under one name — a principal kind, a CORS posture, and a route category. Each is general; none is intrinsically mobile (a phone is just the first *device*). So "mobile" was split into general primitives and deleted as a concept.
+
+- **`'device'` principal kind** replaces `'mobile'` (`PrincipalKind`, `auth/principal/from-device-jwt.ts`). Any route opts in via `auth: { kind: ['device'] }`.
+- **`auth.tokenIn: ('header'|'query')[]`** — a general token-source option. The route-stack lifts `?token=` into a synthetic `Authorization: Bearer` when a route admits `'query'`. `rest-query` uses `tokenIn: ['query']`; this replaces its per-route inline `?token=` hack.
+- **`cors` route field** (`boolean | { origins }`) replaces the `mobile` flag for cross-origin reachability — orthogonal to auth.
+- `routes/mobile/` → `routes/device/`; URLs `/api/mobile/*` → `/api/device/*`; OpenAPI tag `papercusp:mobile` → `papercusp:device`; `MOBILE_AUTH` → `DEVICE_AUTH`; `lib/mobile-*.ts` → `lib/device-*.ts`.
+- Cloudflare ingress v16: `api.papercuspai.com ^/api/device → :3070`. Rust client base path `/api/mobile` → `/api/device`.
+
+**`routes/device/` is the ratified end state — a single domain folder, not a dissolution into `routes/harness/` + `routes/operator/` + `routes/voice/`.** The repo convention is folder name = first URL segment (`routes/harness/` → `/harness/*`); given the confirmed `/api/device/*` URL prefix, one `routes/device/` folder is the consistent home. The earlier "scatter into domain folders" sketch only applied under the abandoned "merge mobile and desktop endpoints onto a shared route" branch.
+
+Kept deliberately (not stale): the `device_kind` JWT claim value stays `'mobile'` (a form-factor — extensible to `cli` / `kiosk`); the `Surface` enum values (`mobile-android` etc.) are ElevenLabs wire values; `MOBILE_*` env var names are deployment config.
+
+Audit follow-up (review of this doc, 2026-05-21 — commits `e4f5f985`, `6c142872`, `b1af1541`): deleted the vestigial `GET /device/voice` HTTP stub, removed the dead `ToolExposure.mobile` field, retargeted the e2e spec, and swept the residual stale `mobile-` file/comment references.
 
 ## 7. Risks & mitigations
 
