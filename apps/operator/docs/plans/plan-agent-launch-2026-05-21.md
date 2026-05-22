@@ -15,7 +15,7 @@ owner: avi@storewolf.com
 2026-05-21). **Phase 1 (revision spine) is complete — 5/5.**
 **Phase 2 (conversation linkage): P-006 + P-009 built; P-007 +
 P-008 now unblocked (P-012 shipped).** **Phase 3 (agent launch)
-is in flight — P-010 + P-011 + P-012 + P-013 + P-014 done.**
+is in flight — P-010…P-015 done; P-016 is the last item.**
 
 Phase 1: P-001 (`plan_revisions` schema); P-002 + P-003 (`rationale`
 + revision capture on all seven `plans:*` write verbs via the shared
@@ -57,10 +57,13 @@ resume re-stamps `plan_content_hash` (D-018). P-014 `done` —
 `agent_launched` added to `PlanEventType`; `plans:launch` emits it
 (best-effort) once the `plan_runs` row exists, so the plan's
 activity feed records every launch. A resume emits no plan-event
-(run-internal).
+(run-internal). P-015 `done` — `plans:runs` (`runs-list.ts`), the
+launch history read verb: `listPlanRuns` returns each run + its
+transcript turn count, newest-first; `getPlanRun`/`listPlanRuns`
+share a pure `mapPlanRunRow`.
 
 tsc-clean (0 errors in touched files; tree 551 is other agents'
-churn), 132 plans + plan-events tests + 8 transport tests green.
+churn), 134 plans + plan-events tests + 8 transport tests green.
 18 decisions, no open questions.
 
 **Verification debt:** the live PG paths (`plan_revisions` /
@@ -76,10 +79,9 @@ pure logic is verified now (127 tests, incl. real-git
 `buildPlanAgentMcpUrl` / tool-surface constants, and the launch
 prompt/title derivations).
 
-**Next:** the rest of Phase 3 — P-015 (`plans:runs` read verb),
-P-016 (run-status lifecycle). P-007 + P-008 are also now actionable
-(the `plan_run_turns` transcript they consume exists once a run
-persists turns).
+**Next:** P-016 (run-status lifecycle) closes Phase 3. P-007 +
+P-008 are also now actionable (the `plan_run_turns` transcript they
+consume exists once a run persists turns).
 
 ## Background
 
@@ -381,7 +383,7 @@ wire the launch and its history on top.
 - **P-012** `done` `plans:launch { slug, note? }` (`launch.ts`) — a streaming tool: assembles the P-009 bundle, mints a `session_id`, inserts the `plan_runs` row (status `running`), runs the P-011 runner, streams `delta`/`tool_call`/`cost`, persists the user + assistant turns to `plan_run_turns`, settles status to `idle`/`failed`, returns `{ runId, sessionId }`. Emits a `warning` when the plan is `superseded`. The `plan_runs`/`plan_run_turns` DAL is `runs.ts` (`insertPlanRun`/`appendPlanRunTurn`/`setPlanRunStatus`). blocked-by: P-011, P-009, P-010
 - **P-013** `done` Resume — `plans:resume` (`resume.ts`) re-invokes the runner with the run's existing `session_id`; new turns append to `plan_run_turns`. Re-seeds with the current plan + re-stamps `plan_content_hash` (D-018); the launch/resume turn core is shared (`turn.ts` `executePlanAgentTurn`). → D-010 D-018 blocked-by: P-012
 - **P-014** `done` Added `agent_launched` to `PlanEventType` in `coordination/plan-events.ts` *with* its emitter — `plans:launch` emits it (best-effort) right after the `plan_runs` row is inserted (`after` = runId, `detail` = run title). A *resume* is run-internal and emits no plan-event: the launch is the plan-level fact; continuations live in the run's own transcript.
-- **P-015** `todo` `plans:runs { slug }` read verb — the launch history for the Agents tab.
+- **P-015** `done` `plans:runs { slug }` read verb (`runs-list.ts`) — the launch history for the Agents tab, newest-first. Each row is a `PlanRunSummary` (the `plan_runs` row + a `turnCount` via a correlated subquery, so the list view needs no follow-up query). Empty list (not an error) when the plan has never been launched; DB failure → `runs_unavailable`. The `getPlanRun`/`listPlanRuns` row mapping is a shared pure `mapPlanRunRow` (unit-tested).
 - **P-016** `todo` Run-status lifecycle — maintain `plan_runs.status` (running/idle/archived/done/failed) across launch, continue, and idle (poll-based for v1).
 
 ## Phase 4 — UI: Revisions panel

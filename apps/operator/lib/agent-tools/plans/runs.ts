@@ -97,44 +97,52 @@ export interface PlanRunRow {
   updatedAt: number;
 }
 
+/** Raw `plan_runs` row as PG returns it — snake_case, and `BIGSERIAL`
+ *  / `BIGINT` columns can arrive as strings. */
+export interface RawPlanRunRow {
+  id: number | string;
+  plan_slug: string;
+  plan_content_hash: string;
+  session_id: string;
+  note: string | null;
+  launched_by: string;
+  launched_at: number | string;
+  status: PlanRunStatus;
+  title: string | null;
+  updated_at: number | string;
+}
+
+/** Map a raw `plan_runs` row to the camelCased `PlanRunRow`. Pure +
+ *  exported for unit test — the `Number()` coercions are load-bearing
+ *  (PG returns `BIGINT` columns as strings). */
+export function mapPlanRunRow(r: RawPlanRunRow): PlanRunRow {
+  return {
+    id: Number(r.id),
+    planSlug: r.plan_slug,
+    planContentHash: r.plan_content_hash,
+    sessionId: r.session_id,
+    note: r.note,
+    launchedBy: r.launched_by,
+    launchedAt: Number(r.launched_at),
+    status: r.status,
+    title: r.title,
+    updatedAt: Number(r.updated_at),
+  };
+}
+
 /** Fetch a single run by id, or `null` when no such run exists. Used
  *  by resume (P-013) to recover a run's `session_id` + `plan_slug`. */
 export async function getPlanRun(runId: number): Promise<PlanRunRow | null> {
   await ensurePlanRunsTable();
   return withWorkspace(DEFAULT_WORKSPACE_ID, async (tx) => {
-    const rows = await tx<
-      {
-        id: number;
-        plan_slug: string;
-        plan_content_hash: string;
-        session_id: string;
-        note: string | null;
-        launched_by: string;
-        launched_at: number;
-        status: PlanRunStatus;
-        title: string | null;
-        updated_at: number;
-      }[]
-    >`
+    const rows = await tx<RawPlanRunRow[]>`
       SELECT id, plan_slug, plan_content_hash, session_id, note,
              launched_by, launched_at, status, title, updated_at
       FROM harness_shared.plan_runs
       WHERE id = ${runId}
     `;
     const r = rows[0];
-    if (!r) return null;
-    return {
-      id: Number(r.id),
-      planSlug: r.plan_slug,
-      planContentHash: r.plan_content_hash,
-      sessionId: r.session_id,
-      note: r.note,
-      launchedBy: r.launched_by,
-      launchedAt: Number(r.launched_at),
-      status: r.status,
-      title: r.title,
-      updatedAt: Number(r.updated_at),
-    };
+    return r ? mapPlanRunRow(r) : null;
   });
 }
 
@@ -159,6 +167,46 @@ export async function markPlanRunResumed(
           updated_at = ${Date.now()}
       WHERE id = ${runId}
     `;
+  });
+}
+
+/** A `plan_runs` row plus its transcript turn count — the list-view
+ *  shape returned by `listPlanRuns` / the `plans:runs` tool. */
+export interface PlanRunSummary extends PlanRunRow {
+  /** Number of `plan_run_turns` rows for this run. */
+  turnCount: number;
+}
+
+/**
+ * List every run launched from a plan, newest-first. The launch
+ * history behind `plans:runs` (P-015) and the Agents tab's past-runs
+ * list (P-021). Each row carries its transcript turn count via a
+ * correlated subquery so the list view needs no follow-up query.
+ *
+ * `ensurePlanRunTurnsTable()` ensures `plan_runs` too (it depends on
+ * it for its FK), so one call materialises both tables this query
+ * touches.
+ */
+export async function listPlanRuns(
+  planSlug: string,
+): Promise<PlanRunSummary[]> {
+  await ensurePlanRunTurnsTable();
+  return withWorkspace(DEFAULT_WORKSPACE_ID, async (tx) => {
+    const rows = await tx<(RawPlanRunRow & { turn_count: number | string })[]>`
+      SELECT r.id, r.plan_slug, r.plan_content_hash, r.session_id, r.note,
+             r.launched_by, r.launched_at, r.status, r.title, r.updated_at,
+             (
+               SELECT COUNT(*) FROM harness_shared.plan_run_turns t
+               WHERE t.plan_run_id = r.id
+             ) AS turn_count
+      FROM harness_shared.plan_runs r
+      WHERE r.plan_slug = ${planSlug}
+      ORDER BY r.launched_at DESC, r.id DESC
+    `;
+    return rows.map((r) => ({
+      ...mapPlanRunRow(r),
+      turnCount: Number(r.turn_count),
+    }));
   });
 }
 
