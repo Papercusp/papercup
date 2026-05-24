@@ -130,6 +130,14 @@ without the corresponding test update is treated as suspicious.
 Same in `table-to-query-names.test.ts` — bump the
 `allBridgedQueryNames()).toHaveLength(N)` assertion.
 
+**If the name you're migrating is in the `FORWARD_DEFINED` set**
+(advance-mapped before its v2 entry existed — see
+[forward-defined-registry-entries insight](/internal/docs/agent-insights/forward-defined-registry-entries)),
+**remove it from `FORWARD_DEFINED` in the same commit**. The sanity
+assertion ("forward-defined names are NOT in v2") will fail otherwise
+and tell you to do this; doing it as part of the migration commit
+keeps the drift signal accurate.
+
 ### Step 5: verify
 
 ```bash
