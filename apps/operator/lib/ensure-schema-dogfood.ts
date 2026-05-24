@@ -35,6 +35,7 @@ type DogfoodFlags = {
   trustedAuthors: boolean;
   contributorUsageEvents: boolean;
   insightsFirstVisit: boolean;
+  sharedRepoBindingCache: boolean;
 };
 
 type _G = { __dogfoodEnsureFlags?: DogfoodFlags };
@@ -54,6 +55,7 @@ const flags: DogfoodFlags =
     trustedAuthors: false,
     contributorUsageEvents: false,
     insightsFirstVisit: false,
+    sharedRepoBindingCache: false,
   });
 
 /* ─── HYPERBEE-bucket (v5 §7.1) ───────────────────────────────────── */
@@ -327,6 +329,54 @@ export async function ensureInsightsFirstVisitTable(): Promise<void> {
   flags.insightsFirstVisit = true;
 }
 
+/** harness_shared.shared_repo_binding_cache — per-engineer cache of
+ *  canonical-binding lookups from the binding service (v5 §5.1 +
+ *  papercusp-dogfood-phase1a §P-013a). LOCAL-only by design — each
+ *  engineer's operator does its own GitHub resolves + caches the result
+ *  for 24h. Closes Phase 1a's outstanding schema gap; the eventual
+ *  Phase 1b P-068 binding-service implementation consumes this cache.
+ *
+ *  Column shape mirrors `BindingRecord` from
+ *  `apps/operator/lib/harness/binding-types.ts` (commit f05997aa)
+ *  verbatim. Primary key `(provider, github_repository_id)` per
+ *  memo D-B — owner/name renames, numeric ids don't. */
+export async function ensureSharedRepoBindingCacheTable(): Promise<void> {
+  if (flags.sharedRepoBindingCache) return;
+  const { sql } = getOrgPg();
+  await sql.unsafe(`
+    CREATE TABLE IF NOT EXISTS harness_shared.shared_repo_binding_cache (
+      workspace_id                     TEXT   NOT NULL DEFAULT '',
+      provider                         TEXT   NOT NULL DEFAULT 'github'
+        CHECK (provider IN ('github')),
+      github_repository_id             BIGINT NOT NULL,
+      github_full_name                 TEXT   NOT NULL,
+      harness_topic                    TEXT   NOT NULL,
+      harness_slug                     TEXT   NOT NULL,
+      harness_link                     TEXT   NOT NULL,
+      privacy                          TEXT   NOT NULL
+        CHECK (privacy IN ('shared-private','shared-public')),
+      claim_status                     TEXT   NOT NULL DEFAULT 'unclaimed'
+        CHECK (claim_status IN ('unclaimed','claimed','stale','superseded')),
+      provisional_owner_github_user_id BIGINT NOT NULL,
+      claimed_by_github_user_ids       BIGINT[] NOT NULL DEFAULT '{}',
+      created_at                       TIMESTAMPTZ NOT NULL DEFAULT now(),
+      claimed_at                       TIMESTAMPTZ,
+      last_permission_verified_at      TIMESTAMPTZ,
+      superseded_by_harness_topic      TEXT,
+      cached_at                        TIMESTAMPTZ NOT NULL DEFAULT now(),
+      PRIMARY KEY (workspace_id, provider, github_repository_id)
+    );
+    CREATE INDEX IF NOT EXISTS srbc_by_full_name_idx
+      ON harness_shared.shared_repo_binding_cache (workspace_id, github_full_name);
+    CREATE INDEX IF NOT EXISTS srbc_by_harness_topic_idx
+      ON harness_shared.shared_repo_binding_cache (workspace_id, harness_topic);
+    CREATE INDEX IF NOT EXISTS srbc_stale_cache_idx
+      ON harness_shared.shared_repo_binding_cache (workspace_id, cached_at)
+      WHERE claim_status IN ('unclaimed','claimed');
+  `);
+  flags.sharedRepoBindingCache = true;
+}
+
 /** harness_shared.webhook_audit — outbound webhook post log (§11 Discord
  *  integration). LOCAL-only; per-engineer. */
 export async function ensureWebhookAuditTable(): Promise<void> {
@@ -373,6 +423,7 @@ export async function ensureAllDogfoodTables(): Promise<void> {
     ensureTrustedAuthorsTable(),
     ensureContributorUsageEventsTable(),
     ensureInsightsFirstVisitTable(),
+    ensureSharedRepoBindingCacheTable(),
   ]);
 }
 
@@ -405,6 +456,7 @@ export const DOGFOOD_REACTIVE_TABLES = [
   'trusted_authors',
   'contributor_usage_events',
   'insights_first_visit',
+  'shared_repo_binding_cache',
 ] as const;
 
 /**
