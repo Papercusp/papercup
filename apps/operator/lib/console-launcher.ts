@@ -27,9 +27,11 @@ import {
   resolveProjectDir,
   resolveStateDir,
 } from '@/lib/spawn-config';
-import { getSessionUserOrDefault } from '@/lib/auth';
-import { createPowerUserSession } from '@/lib/power-user-sessions';
-import { mintAccessToken, mintRefreshToken } from '@/lib/power-user-token';
+// (Removed: getSessionUserOrDefault / createPowerUserSession /
+// mintAccessToken / mintRefreshToken — used by the old papercusp-omp
+// bundle path. /adv routes OMP launches through the omp-su wrapper
+// instead, which authenticates via the operator's loopback superuser
+// MCP and needs no workspace-scoped tokens.)
 
 /**
  * `shell` — the engineer path: a superuser console with a `.mcp.json`.
@@ -174,28 +176,18 @@ export async function buildConsoleEnvelope(
   //     in secretEnv (spawn-env only, never the oneliner). No .mcp.json
   //     here: the OMP plugin writes its own, scoped to the workspace.
   if ((opts.mode ?? 'shell') === 'omp') {
-    const user = await getSessionUserOrDefault();
-    const { authSessionId } = await createPowerUserSession({
-      workspaceId: opts.workspaceId,
-      userId: user.id,
-    });
-    const access = await mintAccessToken({
-      workspaceId: opts.workspaceId,
-      userId: user.id,
-      authSessionId,
-    });
-    const refresh = await mintRefreshToken({ authSessionId });
-    // Non-secret — fine to inline-export.
-    env.PAPERCUSP_BUNDLE_URL = `${opts.operatorBaseUrl}/api/agent-bundle`;
-    env.PAPERCUSP_AUTH_SESSION_ID = authSessionId;
-    // When the caller passed a resumeSessionId, append --resume <id>
-    // to the launch command. papercusp-omp's CLI plumbs the flag
-    // through to the underlying `omp -r <id>` invocation (the OMP
-    // CLI's native resume path — no thread-id capture needed; the
-    // user knows their session id).
+    // Route OMP launches through the `omp-su` wrapper installed by
+    // apps/operator/scripts/install-standalone-mcp.sh — it adds the
+    // engineer-collaborator playbook + the papercusp coord extension
+    // and registers the superuser MCP server in ~/.omp/agent/. Any
+    // extra args (e.g. `-r <id>` for resume) pass straight through
+    // to the underlying `omp`. We deliberately bypass the
+    // `papercusp-omp connect` bundle/token machinery for /adv
+    // launches — that path is for workspace-user OMP sessions; /adv
+    // is the engineer-collaborator surface.
     const launchCommand = opts.resumeSessionId
-      ? `papercusp-omp connect --resume ${shellSafeId(opts.resumeSessionId)}`
-      : 'papercusp-omp connect';
+      ? `omp-su -r ${shellSafeId(opts.resumeSessionId)}`
+      : 'omp-su';
     return {
       cwd,
       env,
@@ -203,10 +195,6 @@ export async function buildConsoleEnvelope(
       greetingCmd: '',
       needsSuperuserBootstrap: false,
       mode: 'omp',
-      secretEnv: {
-        PAPERCUSP_BUNDLE_ACCESS_TOKEN: access.token,
-        PAPERCUSP_BUNDLE_REFRESH_TOKEN: refresh.token,
-      },
       launchCommand,
     };
   }

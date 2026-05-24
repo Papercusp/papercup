@@ -335,13 +335,14 @@ const post = defineTool({
           501,
         );
       }
-      if (!isOnPath('papercusp-omp') || !isOnPath('omp')) {
+      if (!isOnPath('omp-su') || !isOnPath('omp')) {
         return jsonRes(
           {
             status: 'error',
             code: 'omp_not_installed',
-            error: 'OMP / @papercusp/omp not found on PATH.',
-            installCmd: 'npm i -g @oh-my-pi/cli @papercusp/omp',
+            error:
+              'omp-su wrapper or @oh-my-pi/cli not found on PATH. Run apps/operator/scripts/install-standalone-mcp.sh to install the wrapper, and `npm i -g @oh-my-pi/cli` for the OMP runtime.',
+            installCmd: 'npm i -g @oh-my-pi/cli && bash apps/operator/scripts/install-standalone-mcp.sh',
           },
           200,
         );
@@ -356,7 +357,7 @@ const post = defineTool({
       const ompOneliner = buildOmpOneliner(
         envelope.cwd,
         envelope.env,
-        envelope.launchCommand ?? 'papercusp-omp connect',
+        envelope.launchCommand ?? 'omp-su',
         { mode: 'omp', planSlug: body.planSlug ?? null, label: body.label ?? null },
       );
       try {
