@@ -395,3 +395,23 @@ Per-tool when/not-when goes in the tool file. Cross-tool patterns
 (chaining, panel verbs, workflows) go in `<role>.tools.md`. Behavior
 rules ("always call", "tier-high → confirm") go in `<role>.persona.md`.
 The split is intentional — see `apps/operator/lib/prompt-assembly.ts`.
+
+## Where new tests go — four canonical frameworks (2026-05-24)
+
+Per `admin-testing-tab-restructure-2026-05-24` D-006, every new test
+goes in **exactly one** of:
+
+- **Vitest** `<package>/lib/**/<name>.test.ts` — unit/integration/non-browser E2E
+- **Playwright** `apps/operator/e2e/<name>.spec.ts` — browser-driven E2E
+- **Cargo** `#[cfg(test)] mod tests { … }` — Rust
+- **LLM scenarios** `apps/operator/lib/llm-testing/scenarios/<role>/` — judge-scored prompts
+
+**Never** create new `.mjs` integration scripts under
+`apps/operator/__tests__/integration/` or tsx smoke scripts under
+`apps/operator/scripts/`. CI lint (P-038) fails the build on additions.
+Drop files into the conventional path and `/admin/testing` picks them
+up automatically via the registry glob walk — no registration step.
+
+See `apps/operator-docs/src/content/docs/testing/index.mdx` §1.0a for
+the full convention and `apps/operator/lib/testing-domains-registry.ts`
+for which globs each `/admin/testing` subtab discovers.
