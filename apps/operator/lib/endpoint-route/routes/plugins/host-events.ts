@@ -10,6 +10,9 @@ export default defineTool({
   method: 'GET',
   path: '/plugins/host/events',
   auth: 'public',
+  // SSE — one route-stack run per long-lived connection; a route_invocations
+  // row per connect carries little signal (RFC Q7). Don't record it.
+  sampleRate: 0,
   async handler(req) {
     const url = new URL(req.url);
     const pluginName = url.searchParams.get('plugin');

@@ -37,6 +37,7 @@ export interface RecordOpts {
   terminalBin?: string | null;
   pid?: number | null;
   label?: string | null;
+  ompThreadId?: string | null;
 }
 
 export function toIsoTimestamp(value: string | Date | null | undefined): string | null {
@@ -83,16 +84,49 @@ export async function recordAdvSession(opts: RecordOpts): Promise<number | null>
     const { sql } = getOrgPg();
     const rows = await sql<{ id: number }[]>`
       INSERT INTO harness_shared.adv_sessions
-        (workspace_id, plan_slug, mode, terminal_bin, pid, label)
+        (workspace_id, plan_slug, mode, terminal_bin, pid, label, omp_thread_id)
       VALUES
         (${activeWorkspaceId()}, ${opts.planSlug ?? null}, ${opts.mode},
-         ${opts.terminalBin ?? null}, ${opts.pid ?? null}, ${opts.label ?? null})
+         ${opts.terminalBin ?? null}, ${opts.pid ?? null}, ${opts.label ?? null},
+         ${opts.ompThreadId ?? null})
       RETURNING id
     `;
     return rows[0]?.id ?? null;
   } catch (e) {
     console.warn('[adv-sessions] recordAdvSession failed:', (e as Error).message);
     return null;
+  }
+}
+export async function setAdvSessionPid(id: number, pid: number | null): Promise<void> {
+  try {
+    await ensureAdvSessionsTable();
+    const { sql } = getOrgPg();
+    await sql`
+      UPDATE harness_shared.adv_sessions
+         SET pid = ${pid}
+       WHERE id = ${id}
+         AND workspace_id = ${activeWorkspaceId()}
+    `;
+  } catch (e) {
+    console.warn('[adv-sessions] setAdvSessionPid failed:', (e as Error).message);
+  }
+}
+
+export async function setAdvSessionOmpThreadId(id: number, ompThreadId: string): Promise<void> {
+  const trimmed = ompThreadId.trim();
+  if (!trimmed) return;
+  try {
+    await ensureAdvSessionsTable();
+    const { sql } = getOrgPg();
+    await sql`
+      UPDATE harness_shared.adv_sessions
+         SET omp_thread_id = ${trimmed}
+       WHERE id = ${id}
+         AND workspace_id = ${activeWorkspaceId()}
+         AND (omp_thread_id IS NULL OR omp_thread_id = ${trimmed})
+    `;
+  } catch (e) {
+    console.warn('[adv-sessions] setAdvSessionOmpThreadId failed:', (e as Error).message);
   }
 }
 

@@ -22,6 +22,8 @@ export interface LaunchOpts {
    *  session resumes an existing conversation. Honored only in
    *  omp mode (launchOmpAgent). */
   resumeSessionId?: string | null;
+  /** Optional OMP model fuzzy-match argument (`omp-su --model <value>`). */
+  model?: string | null;
 }
 
 interface ConsoleEnvelope {

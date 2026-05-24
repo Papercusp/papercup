@@ -29,7 +29,7 @@ import './tools/intel/spawn_tree';
 import './tools/intel/artifacts';
 import './tools/papercusp/list_workspaces';
 import './tools/pending_events/list';
-import './tools/hindsight/recall';
+
 import './tools/search/query';
 
 // Artifacts — PG-canonical text store, role-gated (D1a)
@@ -54,7 +54,6 @@ import './resources/harness/list';
 import './resources/harness/issues';
 import './resources/goals/list';
 import './resources/audit/recent';
-import './resources/hindsight/banks';
 
 // Prompts — discoverable templates (Phase B: agent-mcp prompts)
 import './prompts/agent/role';

@@ -28,6 +28,7 @@ import { usePlanList, usePlanSearch, type PlanListRow } from './plans-api';
 
 type PlansView = 'list' | 'inbox' | 'actionable' | 'triage';
 type PaneMode = 'read' | 'edit';
+type PlanDetailTab = 'editor' | 'revisions' | 'agents';
 
 const VIEWS: Array<{ id: PlansView; label: string }> = [
   { id: 'list', label: 'Browse' },
@@ -55,6 +56,11 @@ export default function PlansClient() {
     'pane',
     parseAsStringEnum<PaneMode>(['read', 'edit']).withDefault('read'),
   );
+  const [, setTab] = useQueryState(
+    'tab',
+    parseAsStringEnum<PlanDetailTab>(['editor', 'revisions', 'agents']).withDefault('editor'),
+  );
+  const [, setJump] = useQueryState('jump', parseAsString);
   const railRef = useRef<PlanRailHandle | null>(null);
   const searchRef = useRef<HTMLInputElement | null>(null);
   const planList = usePlanList({ includeArchived: true, includeLegacy: true });
@@ -93,6 +99,22 @@ export default function PlansClient() {
       setSlug(next);
     },
     [leaveGuard, setPane, setSlug],
+  );
+
+  // Open a plan from a cross-plan item list and optionally deep-link to
+  // a concrete P-NNN/D-NNN target. Unlike navSlug(), this also switches
+  // back to the plan detail surface; otherwise clicks inside view=inbox
+  // only changed `slug` while the inbox panel stayed mounted.
+  const navPlanTarget = useCallback(
+    (next: string, targetId?: string) => {
+      if (!leaveGuard()) return;
+      setPane('read');
+      setTab('editor');
+      setJump(targetId ?? null);
+      setView('list');
+      setSlug(next);
+    },
+    [leaveGuard, setJump, setPane, setSlug, setTab, setView],
   );
 
   // Switch the top-level view. Guards only when the switch abandons an
@@ -184,11 +206,11 @@ export default function PlansClient() {
         )}
 
         {view === 'inbox' && (
-          <PlanItemsList mode="inbox" onPick={(s) => navSlug(s)} />
+          <PlanItemsList mode="inbox" onPick={navPlanTarget} />
         )}
 
         {view === 'actionable' && (
-          <PlanItemsList mode="actionable" onPick={(s) => navSlug(s)} />
+          <PlanItemsList mode="actionable" onPick={navPlanTarget} />
         )}
 
         {view === 'triage' && <PlanTriage onPick={(s) => navSlug(s)} />}

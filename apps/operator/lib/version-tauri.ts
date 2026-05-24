@@ -6,7 +6,7 @@
 // public API of this file is unchanged — callers don't need to touch
 // the envelope shape returned by Specta-wrapped commands.
 
-import type { UpdateInfo as BindingsUpdateInfo } from './tauri-bindings';
+import { commands, type UpdateInfo as BindingsUpdateInfo } from './tauri-bindings';
 
 export type UpdateInfo = BindingsUpdateInfo;
 
@@ -21,13 +21,11 @@ export function isDesktop(): boolean {
 
 export async function appVersion(): Promise<string | null> {
   if (!isDesktopRuntime()) return null;
-  const { commands } = await import('./tauri-bindings');
   return commands.appVersion();
 }
 
 export async function checkForUpdate(): Promise<UpdateInfo | null> {
   if (!isDesktopRuntime()) return null;
-  const { commands } = await import('./tauri-bindings');
   const r = await commands.checkForUpdate();
   if (r.status === 'error') throw new Error(r.error);
   return r.data;
@@ -35,7 +33,6 @@ export async function checkForUpdate(): Promise<UpdateInfo | null> {
 
 export async function installUpdate(): Promise<void> {
   if (!isDesktopRuntime()) throw new Error('not in desktop mode');
-  const { commands } = await import('./tauri-bindings');
   const r = await commands.installUpdate();
   if (r.status === 'error') throw new Error(r.error);
 }

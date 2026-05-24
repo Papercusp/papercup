@@ -16,6 +16,7 @@ import {
   getAdvSession,
   listAdvSessions,
   resolveWindowIdForPid,
+  setAdvSessionOmpThreadId,
 } from '@/lib/adv-sessions';
 import { papercuspPath } from '@/lib/papercusp-root';
 import { readOmpConfig } from '@/lib/omp-config';
@@ -111,12 +112,23 @@ async function resolveOmpSessionForRequest(req: Request): Promise<{
     cwd: papercuspPath(),
     windowMs: 5 * 60_000,
   });
+  if (match?.id) {
+    await setAdvSessionOmpThreadId(advSession.id, match.id);
+  }
   return {
-    advSession,
+    advSession: match?.id ? { ...advSession, ompThreadId: match.id } : advSession,
     sessionId: match?.id ?? null,
     filePath: match?.filePath ?? null,
     match,
   };
+}
+
+function requestHasExplicitSessionScope(url: URL): boolean {
+  return (
+    url.searchParams.has('id') ||
+    url.searchParams.has('sessionId') ||
+    url.searchParams.has('filePath')
+  );
 }
 
 const list = defineTool({
@@ -222,6 +234,22 @@ const search = defineTool({
       );
     }
     const resolved = await resolveOmpSessionForRequest(req);
+    const scoped = requestHasExplicitSessionScope(url);
+    if (scoped && !resolved.sessionId && !resolved.filePath) {
+      return new Response(
+        JSON.stringify({
+          ok: false,
+          query,
+          matches: [],
+          truncated: false,
+          searchedSessions: 0,
+          advSession: resolved.advSession,
+          match: resolved.match,
+          error: 'omp_session_not_found',
+        }),
+        { status: 200, headers: JSON_HEADERS },
+      );
+    }
     const result = searchOmpSessions({
       query,
       sessionId: resolved.sessionId ?? undefined,

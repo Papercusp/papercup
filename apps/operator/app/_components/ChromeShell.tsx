@@ -141,7 +141,7 @@ export default function ChromeShell() {
         <span className="pc-header-hud-line pc-header-hud-line--secondary" aria-hidden="true" />
         {/*
           Three-region grid: left = brand + quote, centre = primary CTAs
-          (Ops, harness hide/show, Deck, auto-scan, console), right = nav. CSS Grid
+          (Adv, Ops, Deck, auto-scan), right = nav. CSS Grid
           in `1fr auto 1fr` keeps the centre cluster geometrically centred
           in the viewport regardless of how wide the brand/quote on the left
           and the nav on the right grow.
@@ -191,10 +191,6 @@ export default function ChromeShell() {
               <span className="pc-header-cta-label">OPS</span>
             </a>
           )}
-          <span
-            id="pc-harness-top-collapse-slot"
-            className="pc-header-harness-collapse-slot"
-          />
           <OperatorButton />
           <OperatorAutoScanToggle />
         </div>
@@ -202,7 +198,6 @@ export default function ChromeShell() {
           {marketplaceFlag ? (
             <a href="/marketplace/" {...navLinkProps('/marketplace')}>Marketplace</a>
           ) : null}
-          <a href="/installed/harnesses" {...navLinkProps('/installed/harnesses')}>Harnesses</a>
           <a href="/installed/plugins" {...navLinkProps('/installed/plugins')}>Plugins</a>
           {snapshotsFlag ? (
             <a href="/installed/snapshots" {...navLinkProps('/installed/snapshots')}>Snapshots</a>

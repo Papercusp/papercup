@@ -35,6 +35,56 @@ The hard part isn't writing the MCP wrapper. The hard part is pulling a function
 * Not a way to expose your dashboard to the public internet. The trust model is **loopback bind + HMAC-signed per-spawn URL params** (see [Spawn-URL signing](/internal/docs/endpoint-system/spawn-signing)), suitable for local dev + Tauri desktop. Off-loopback exposure needs a real principal/auth layer in front, since same-UID code can still read the signing key from PG.
 * Not a generic RPC framework. The contract is narrow on purpose: `(input, ctx) => ToolResult`. Trying to make it accommodate exotic shapes (callbacks, multi-response, file uploads >5MB) defeats the point of having one function as truth.
 
+## The route projection — `defineTool` also defines plumbing
+
+Not every endpoint is an agent tool. The browser, the desktop shell, an
+orchestrator, a webhook — they call **routes**: HTTP plumbing that must
+*not* appear in the agent tool catalog. `defineTool` produces those too.
+
+`defineTool` accepts a **route-shaped** input — discriminated by the
+`method` field — and returns a `RouteDefinition` instead of a
+`ToolDefinition`:
+
+```ts
+defineTool({
+  method: 'GET',
+  path: '/desktop/version',
+  auth: 'public',                    // or a PrincipalRequirements gate
+  input: z.object({ verbose: z.coerce.boolean().optional() }), // optional
+  handler(req, ctx) {                // Web-standard Request in, Response out
+    return Response.json({ version: '…' });
+  },
+});
+```
+
+A route runs through the same cross-cutting machinery — auth, input
+validation, timeout, telemetry, uniform errors — but it is **not**
+projected onto the MCP catalog. `tools/list` never sees it; an agent
+cannot call it. That guarantee is what keeps plumbing out of the agent
+surface.
+
+`defineRoute`, the name route files import, is a re-export of
+`defineTool` (Phase E6, `endpoint-unification-2026-05-21`) — the name
+survives only as an ergonomic signal ("this is plumbing").
+
+### `mobile: true` — one flag for the paired phone
+
+A route reachable from the paired phone sets one flag:
+
+```ts
+defineTool({
+  method: 'POST', path: '/mobile/heartbeat',
+  auth: { kind: ['mobile'] },        // gate on the device-JWT principal
+  mobile: true,                      // CORS allowlist + folds 'mobile' into auth.kind
+  handler(req, ctx) { /* ctx.principal is the mobile device */ },
+});
+```
+
+`mobile: true` mounts the shared mobile-CORS middleware and folds
+`'mobile'` into an explicit `auth.kind` allowlist. Built-in tools are
+reachable from the phone for free — the device JWT is a bearer token,
+and the `/api/agent-tools/*` catch-all resolves it like any other.
+
 ## Two channels at a glance
 
 A tool handler has two outbound channels available, projected uniformly across transports:

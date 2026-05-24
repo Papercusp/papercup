@@ -27,6 +27,9 @@ export default defineTool({
   method: 'GET',
   path: '/harness/:slug/branch/:branch/action-stream',
   auth: 'public',
+  // SSE — one route-stack run per long-lived connection; a route_invocations
+  // row per connect carries little signal (RFC Q7). Don't record it.
+  sampleRate: 0,
   async handler(req, ctx) {
     const slug = ctx.params.slug as string;
     const branch = ctx.params.branch as string;

@@ -76,6 +76,408 @@ See [Agent policies §18](/internal/docs/agent-policies#18-agent-insights) for t
 
 If something is obsolete, set `status: superseded` or `retired` in the frontmatter (don’t delete the file). The index hides retired entries.
 
+# Adding a reactive table — the consolidated pattern
+
+> How to make a new PG table push live updates to the UI. PG trigger → sync_invalidate → existing /api/zero-harness/sse → libs/sync invalidates the matching useSyncQuery.
+
+## What
+
+[Section titled “What”](#what)
+
+Papercusp’s UI gets live updates from PG through **one channel, two producers**:
+
+```plaintext
+  ┌──────────────────────┐
+  │ Application code     │── notifySyncInvalidate(name, args, data?) ─┐
+  └──────────────────────┘                                            │
+                                                                      ▼
+  ┌──────────────────────┐                              pg_notify('sync_invalidate', ...)
+  │ PG trigger           │── emit_change_notify() ─────────┘          │
+  │ (auto, every row)    │                                            │
+  └──────────────────────┘                                            ▼
+                            apps/operator/lib/sync-sse.ts → /api/zero-harness/sse
+                                                                      ▼
+                              libs/sync SSEAdapter → @tanstack/react-query
+                                                                      ▼
+                                                useSyncQuery refetches matching query
+```
+
+Both producers emit the same payload shape; consumers don’t care which fired. The 90-second dedupe window in `sync-sse.ts` collapses identical `(name, args)` notifies — so an app-code notify followed by a trigger-driven one for the same row hits the wire once.
+
+## When to use which producer
+
+[Section titled “When to use which producer”](#when-to-use-which-producer)
+
+| Choice                                                | Use it for                                                                                                                                                           |
+| ----------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `notifySyncInvalidate(name, args, data?)` in app code | Fine-grained, intentional notifies after a meaningful write. Optional `data` payload pushes the new rows directly, saving the client a refetch. Used by 20+ writers. |
+| `emit_change_notify` PG trigger                       | Coarse, automatic, fires on EVERY INSERT/UPDATE/DELETE. Catches writes that bypass app code — raw SQL from migrations, MCP-tool direct writes, agent-direct edits.   |
+
+You usually want **both**: app code fires the targeted notify on the happy path; the trigger covers everything else.
+
+## Recipe — add a reactive table
+
+[Section titled “Recipe — add a reactive table”](#recipe--add-a-reactive-table)
+
+### Step 1: define the table
+
+[Section titled “Step 1: define the table”](#step-1-define-the-table)
+
+Either in a `libs/papercusp/libs/db/sql/NNN-<name>.sql` migration or in `apps/operator/lib/ensure-schema*.ts` (runtime-ensure path). Both work.
+
+### Step 2: attach the trigger
+
+[Section titled “Step 2: attach the trigger”](#step-2-attach-the-trigger)
+
+```sql
+CREATE OR REPLACE TRIGGER emit_change_notify_trg
+  AFTER INSERT OR UPDATE OR DELETE
+  ON harness_shared.your_new_table
+  FOR EACH ROW EXECUTE FUNCTION harness_shared.emit_change_notify();
+```
+
+Or use the `wireDogfoodTriggers()` pattern in `apps/operator/lib/ensure-schema-dogfood.ts` — append the table name to `DOGFOOD_REACTIVE_TABLES` (new tables) or `EXISTING_HYPERBEE_REACTIVE_TABLES` (existing consolidated tables).
+
+Idempotent (`CREATE OR REPLACE TRIGGER` is PG 14+), so re-running the ensure helper on every boot is safe.
+
+### Step 3: in app code, also call `notifySyncInvalidate` after writes
+
+[Section titled “Step 3: in app code, also call notifySyncInvalidate after writes”](#step-3-in-app-code-also-call-notifysyncinvalidate-after-writes)
+
+After your route handler writes to the table:
+
+```ts
+import { notifySyncInvalidate } from '@/lib/sync-sse';
+
+
+// After the successful write:
+void notifySyncInvalidate('your_table.changed', { workspace_id, op }).catch(() => {});
+```
+
+Best-effort — never let a notify failure break the write itself.
+
+### Step 4: on the client, subscribe with `useSyncQuery`
+
+[Section titled “Step 4: on the client, subscribe with useSyncQuery”](#step-4-on-the-client-subscribe-with-usesyncquery)
+
+```tsx
+import { useSyncQuery } from '@restart/sync';
+
+
+const { data, loading } = useSyncQuery<YourRow>({
+  // ...
+});
+```
+
+`useSyncQuery` reads the SSE invalidate stream and refetches whenever a matching `name` arrives.
+
+## Payload shape — never break this
+
+[Section titled “Payload shape — never break this”](#payload-shape--never-break-this)
+
+Both producers emit on `sync_invalidate` channel with:
+
+```json
+{
+  "name": "<event-name>",
+  "args": { "workspace_id": "<id|null>", "op": "INSERT|UPDATE|DELETE" }
+}
+```
+
+Consumers filter on `name`. The format is the established `SyncEvent` contract in `apps/operator/lib/sync-sse.ts` — don’t invent a parallel channel; the trigger function was rewritten in commit `20609bb` to stop doing exactly that (was emitting on a new `papercusp_changes` channel; consolidated onto `sync_invalidate` for the 20+ existing consumers).
+
+### Two name conventions exist — they don’t talk to each other yet
+
+[Section titled “Two name conventions exist — they don’t talk to each other yet”](#two-name-conventions-exist--they-dont-talk-to-each-other-yet)
+
+| Producer                                                | Name shape                 | Example                                                          |
+| ------------------------------------------------------- | -------------------------- | ---------------------------------------------------------------- |
+| Application code via `notifySyncInvalidate(name, args)` | camelCase noun + scope     | `plans.list`, `toastLog.recent`, `harnessTextArtifact.byHarness` |
+| PG trigger `emit_change_notify` (this insight’s recipe) | `<schema>.<table>.changed` | `harness_shared.plan_runs.changed`                               |
+
+Today’s existing `useSyncQuery` consumers subscribe with `queryName: 'harnessTextArtifact.byHarness'` (camelCase). My PG-trigger events fire with `harness_shared.harness_text_artifacts.changed` — clients filter on name, see no match, refetch nothing. Trigger events are **broadcast no-ops for existing clients today.**
+
+**What this enables**: future code subscribing to `<schema>.<table>.changed` (the catch-all name shape) gets free coverage of any write to that table, including raw-SQL or MCP-tool writes that app code never notified about.
+
+**Bridge work pending**: a future item should add a translator — “when `harness_shared.harness_text_artifacts.changed` arrives, also invalidate any subscriber to `harnessTextArtifact.*`.” That ties the trigger producer to the existing consumer surface. Until that lands, app-code `notifySyncInvalidate` calls remain the active path for known consumers; the trigger is the dormant safety net.
+
+## Verifying it works
+
+[Section titled “Verifying it works”](#verifying-it-works)
+
+Live test that brings its own embedded PG, no shared-state risk:
+
+```bash
+node apps/operator/scripts/verify-trigger-consolidation.mjs
+```
+
+Runs in \~2s. Asserts the trigger fires on INSERT/UPDATE/DELETE, the payload shape is correct, the GUC workspace\_id is captured, and a coexisting trigger on the same table doesn’t block this one.
+
+## Why it matters
+
+[Section titled “Why it matters”](#why-it-matters)
+
+Before the consolidation, agents were tempted to invent a new channel per concern (e.g., a new `/api/sync/stream` endpoint for a new feature). That fragments the SSE consumer surface (one EventSource per channel — and browsers cap HTTP/1.1 connections per host at 6). One channel + payload-filtered topic gives sub-second invalidation across the whole UI without exhausting the connection pool. See the [connection-pool insight](/internal/docs/agent-insights/webkit-connection-pool-exhaustion) for the failure mode if you stack multiple long-lived connections.
+
+## Related
+
+[Section titled “Related”](#related)
+
+* `apps/operator/lib/sync-sse.ts` — `notifySyncInvalidate` + `subscribe`
+* `apps/operator/lib/endpoint-route/routes/zero-harness/sse.ts` — the SSE endpoint
+* `libs/papercusp/libs/db/sql/078-emit-change-notify.sql` — the trigger function
+* `apps/operator/lib/ensure-schema-dogfood.ts:wireDogfoodTriggers` — attach helper
+* `apps/operator/scripts/verify-trigger-consolidation.mjs` — the live verifier
+
+# Adding a query to the Zero-free sync resolver
+
+> How to add a new useSyncQuery name to the v2 dispatcher. ~15 LOC drizzle entry, registry-style, no ZQL. Pairs with the reactive-table insight.
+
+## What
+
+[Section titled “What”](#what)
+
+The operator serves `useSyncQuery({ queryName: '<name>' })` reads through a switch-on-name dispatcher at `apps/operator/lib/sync-resolver/index.ts`. Each entry is a small async function that takes validated args and returns a flat row array. Adding a query is purely additive — \~15 LOC, no client-side changes needed for the dispatcher itself.
+
+This replaced the legacy `@rocicorp/zero`-coupled ZQL resolver in P-022 (cutover commits `164671ed` + earlier batches). The legacy resolver is gone; this dispatcher is the only path.
+
+## When to use it
+
+[Section titled “When to use it”](#when-to-use-it)
+
+Add an entry when:
+
+* A UI component needs to subscribe to a PG-backed read with `useSyncQuery` and the queryName isn’t already registered.
+* You’re moving a route from manual fetch + setInterval polling to push-driven reactivity.
+
+Don’t add an entry for:
+
+* One-shot reads that don’t need invalidation. Use a regular fetch
+  * `useAsyncJson` or similar.
+* Writes. The dispatcher is read-only; mutations stay on `POST /api/...` routes and fire `notifySyncInvalidate(...)` after the write succeeds.
+
+## Recipe
+
+[Section titled “Recipe”](#recipe)
+
+### Step 1: confirm the table exists in drizzle’s generated schema
+
+[Section titled “Step 1: confirm the table exists in drizzle’s generated schema”](#step-1-confirm-the-table-exists-in-drizzles-generated-schema)
+
+The dispatcher uses `@restart/db-org`’s `generated` table registry for column → camelCase conversion. Check that your table is there:
+
+```bash
+grep "^export const yourTableNameInHarnessShared" \
+  libs/papercusp/libs/db/src/schema/generated.ts
+```
+
+If missing: regenerate the schema via the drizzle generator, or add the table via `ensure-schema.ts` / a SQL migration first.
+
+### Step 2: add a registry entry
+
+[Section titled “Step 2: add a registry entry”](#step-2-add-a-registry-entry)
+
+Open `apps/operator/lib/sync-resolver/index.ts`. Each entry has this shape (mirrors the legacy ZQL chain):
+
+```ts
+'yourQueryName.byScope': {
+  argsSchema: z.object({
+    harnessSlug: z.string(),
+    limit: z.number().int().positive().max(500).default(50),
+  }),
+  resolve: async (args) => {
+    const { harnessSlug, limit } = args as { harnessSlug: string; limit: number };
+    const { getOrgPg, generated } = await import('@restart/db-org');
+    const { desc, eq } = await import('drizzle-orm');
+    const t = generated.yourTableNameInHarnessShared;
+    const { db } = getOrgPg();
+    return (await db
+      .select()
+      .from(t)
+      .where(eq(t.harnessSlug, harnessSlug))
+      .orderBy(desc(t.updatedAt))
+      .limit(limit)) as unknown[];
+  },
+},
+```
+
+Key points:
+
+* **`argsSchema`**: a zod schema. Validation runs before `resolve`. Bad args throw → route handler returns 400.
+* **`resolve`** returns `unknown[]` — a FLAT row array. If your existing data helper returns `{rows: [...]}`, unwrap it here.
+* **Dynamic `import()`** of `@restart/db-org` + `drizzle-orm` keeps the registry module lightweight and avoids cycles. The lazy import is per-call but the loader caches; no perf cost in practice.
+* **`as unknown[]`** at the return — drizzle’s `select()` returns rich types; the dispatcher contract is `unknown[]`. The cast is intentional.
+
+### Step 3: add the bridge entry (P-067)
+
+[Section titled “Step 3: add the bridge entry (P-067)”](#step-3-add-the-bridge-entry-p-067)
+
+Open `apps/operator/lib/sync-resolver/table-to-query-names.ts`. Add a line in `TABLE_TO_QUERY_NAMES` mapping your PG table to the new queryName:
+
+```ts
+'harness_shared.your_table_name': ['yourQueryName.byScope'],
+```
+
+This makes the PG trigger producer (P-018 `emit_change_notify`) fire your camelCase invalidation when ANY write touches the table — including raw SQL, MCP-tool writes, or migrations that bypass app code. Without this bridge, only app-code `notifySyncInvalidate` calls reach your subscribers.
+
+If multiple queries scope on the same table (e.g. `byHarness` + `byFeature` over the same chunk plans), list both:
+
+```ts
+'harness_shared.harness_chunk_plans': [
+  'chunkPlans.byHarness',
+  'chunkPlans.byFeature',
+],
+```
+
+### Step 4: update the registry-count assertion
+
+[Section titled “Step 4: update the registry-count assertion”](#step-4-update-the-registry-count-assertion)
+
+Open `apps/operator/lib/sync-resolver/index.test.ts`. Bump the running-count assertion (`expect(knownQueryNamesV2()).toHaveLength(N)`) and add the new name to the closest batch assertion. The count assertion exists so future drift surfaces: a registry entry added without the corresponding test update is treated as suspicious.
+
+Same in `table-to-query-names.test.ts` — bump the `allBridgedQueryNames()).toHaveLength(N)` assertion.
+
+**If the name you’re migrating is in the `FORWARD_DEFINED` set** (advance-mapped before its v2 entry existed — see [forward-defined-registry-entries insight](/internal/docs/agent-insights/forward-defined-registry-entries)), **remove it from `FORWARD_DEFINED` in the same commit**. The sanity assertion (“forward-defined names are NOT in v2”) will fail otherwise and tell you to do this; doing it as part of the migration commit keeps the drift signal accurate.
+
+### Step 5: verify
+
+[Section titled “Step 5: verify”](#step-5-verify)
+
+```bash
+cd apps/operator
+npx vitest run lib/sync-resolver/    # 33+ tests
+npx tsc --noEmit                     # check for type regressions
+```
+
+Optional live verification against running operator:
+
+```bash
+curl "http://127.0.0.1:3055/api/zero-harness/rest-query?name=yourQueryName.byScope&args=$(python3 -c 'import json,urllib.parse; print(urllib.parse.quote(json.dumps({\"harnessSlug\":\"sheets\"})))')"
+```
+
+You should see `{"rows":[...], "version":"..."}` with the expected row shape.
+
+## Why this design (not just calling notifySyncInvalidate on each write)
+
+[Section titled “Why this design (not just calling notifySyncInvalidate on each write)”](#why-this-design-not-just-calling-notifysyncinvalidate-on-each-write)
+
+Two complementary producers run side by side:
+
+| Producer                                              | Trigger                                       | Use it for                                                             |
+| ----------------------------------------------------- | --------------------------------------------- | ---------------------------------------------------------------------- |
+| `notifySyncInvalidate(name, args, data?)` in app code | Application write paths                       | Fine-grained intentional notifies with optional row payload            |
+| PG `emit_change_notify` trigger                       | Every INSERT/UPDATE/DELETE on attached tables | Catch-all for raw SQL, MCP-tool writes, agent-direct edits, migrations |
+
+Together they cover both planned writes (app code) and any other write (trigger). The 90s dedupe window in `sync-sse.ts` collapses the inevitable overlap so subscribers see one event per (name, args) per dedupe window.
+
+The bridge (P-067, `table-to-query-names.ts`) is what makes the trigger producer reach the camelCase consumers. Without it, the trigger fires `harness_shared.your_table.changed` and clients subscribed to `yourQueryName.byScope` see no match.
+
+## When to NOT add to this dispatcher
+
+[Section titled “When to NOT add to this dispatcher”](#when-to-not-add-to-this-dispatcher)
+
+Some reads don’t fit the registry shape:
+
+* **Multi-table joins / aggregates**: legacy ZQL had limited join support too. Build a regular REST endpoint (e.g. `/api/admin/...`) and fire `notifySyncInvalidate` from the route.
+* **File-system reads** (e.g. plans-admin’s markdown loading): these aren’t PG rows; the dispatcher’s `getOrgPg` shape doesn’t apply. Use `useAsyncJson` + push invalidation via `notifySyncInvalidate('plans.list', ...)` from the file-watcher.
+* **Per-row scoped reads** (`one()` instead of an array): drizzle’s `.limit(1)` returns a single-element array, which matches the dispatcher contract. The client unwraps `rows[0]`. Don’t try to return a non-array — the SSE adapter expects `unknown[]`.
+
+## Related
+
+[Section titled “Related”](#related)
+
+* `apps/operator/lib/sync-resolver/index.ts` — the dispatcher
+* `apps/operator/lib/sync-resolver/table-to-query-names.ts` — the P-067 bridge
+* [Adding a reactive table](/internal/docs/agent-insights/adding-a-reactive-table) — the producer side (PG trigger + `notifySyncInvalidate`)
+* `apps/operator/lib/sync-sse.ts` — the LISTEN handler + SSE fan-out
+
+# Calling defineTool tools from an in-process /admin route
+
+> defineTool projections register POST-only and require identity via readIdentity(ctx). An admin route proxying them needs a synthesized POST + ?superuser=1 + ?client= + validateSuperuser, not a passthrough.
+
+## What
+
+[Section titled “What”](#what)
+
+When an admin route (loopback-only, `auth: 'public'`) wants to call a `defineTool` tool in-process via `handleHttpToolRequest`, the natural “just pass through the inbound method + searchParams” doesn’t work. Three traps:
+
+1. **Every `defineTool` registers `methods: ['POST']`.** Both `registerLegacyAsProjected` and `registerRoleGatedAsProjected` in `packages/agent-mcp/src/define-tool.ts` hardcode it. A GET dispatch returns **405** at the methods gate inside `resolveToolAndContext`. The browser side can keep cacheable GETs — the *internal* call must be POST.
+
+2. **Tool args come from `req.body`, not `req.searchParams`.** The methods gate above is the obvious one; the more subtle one is that the dispatcher validates against `body` only. If you stay GET internally, your args never reach Zod and the tool runs with `{}`. Required fields fail validation.
+
+3. **Writes (and `locks:queue`) need identity.** Tools using `with-plan-lock` or `readIdentity(ctx)` call into `resolveAgentIdentity`, which throws if ctx carries none of `isPowerUser` / `isSuperuser` / `principal`. The superuser branch *also* requires `ctx.uiClientId` to be set — otherwise it throws `"superuser context is missing uiClientId"`.
+
+## The shape that works
+
+[Section titled “The shape that works”](#the-shape-that-works)
+
+```ts
+// In your /admin/<surface>.ts route handler:
+
+
+const ADMIN_UI_CLIENT_ID = 'pc-admin-<surface>-ui';
+
+
+const HOST_EXTRAS: HttpToolHostExtras = {
+  deps: PROJECTED_DEPS,
+  log: () => {},
+  // /admin/* is loopback-bound — that's the security boundary.
+  validateSuperuser: () => true,
+};
+
+
+function adminSearchParams(inbound: URLSearchParams): URLSearchParams {
+  const sp = new URLSearchParams(inbound);
+  sp.set('superuser', '1');                       // → isSuperuser=true
+  if (!sp.has('client')) sp.set('client', ADMIN_UI_CLIENT_ID); // → uiClientId
+  return sp;
+}
+
+
+// For GETs from the browser — convert searchParams to args body:
+function bodyFromSearchParams(p: URLSearchParams): Record<string, unknown> {
+  const body: Record<string, unknown> = {};
+  for (const key of new Set(p.keys())) {
+    const all = p.getAll(key);
+    if (all.length > 1) { body[key] = all; continue; }
+    const v = all[0] ?? '';
+    if (v === 'true') body[key] = true;
+    else if (v === 'false') body[key] = false;
+    else body[key] = v;
+  }
+  return body;
+}
+
+
+async function dispatchRead(req: Request): Promise<Response> {
+  const url = new URL(req.url);
+  const result = await handleHttpToolRequest({
+    method: 'POST',                                       // ← always POST
+    pathname: '/api/agent-tools/<group>/<verb>',
+    searchParams: adminSearchParams(url.searchParams),    // ← superuser + client
+    headers: collectHeaders(req),
+    body: bodyFromSearchParams(url.searchParams),         // ← real args
+  }, HOST_EXTRAS);
+  return unwrap(result);
+}
+```
+
+Browser-facing GETs stay cacheable / ergonomic; the proxy translates to the dispatcher’s expected POST + body + identity envelope. Writes (POST in, POST out) work the same way — just pass the inbound JSON body straight through.
+
+## Required upstream support
+
+[Section titled “Required upstream support”](#required-upstream-support)
+
+`buildHttpSpawnContext` must read `?client=` into `uiClientId` (landed 2026-05-20 alongside the Plans admin tab). Without that, `?superuser=1` alone hits the `"superuser context is missing uiClientId"` throw. If you’re on an older revision and see that error from an admin proxy, that’s the symptom.
+
+## Why this matters
+
+[Section titled “Why this matters”](#why-this-matters)
+
+The catchall at `/api/agent-tools/*` works because external callers ARE bearer-authed — they supply identity through bearer. An admin shell can’t present a bearer (the UI doesn’t have one). The “synthesize a superuser identity, gated by loopback” pattern is the local equivalent and the only working option short of moving the tools’ implementations behind a non-tool route.
+
+The other working option is bypassing `handleHttpToolRequest` entirely and calling `tool.fn(input, ctx)` directly with a hand-built ctx — that works but loses the dispatcher’s role/quota/audit pipeline. Prefer the proxy pattern.
+
 # PG is canonical state, not a transport
 
 > Don't poll PG to send messages between apps. Use HTTP/SSE/in-process; persist to PG after the message is delivered, never as the channel itself.
@@ -127,6 +529,117 @@ The other shape that looks like PG-as-transport but isn’t: `pg_notify`. That�
 
 The endpoint system docs at [`/docs/endpoint-system/overview`](/internal/docs/endpoint-system/overview) describe the canonical “function as truth, transports as projections” shape. Use it.
 
+# How the papercusp-workspace + papercup-self-registration boot path works
+
+> Two fire-and-forget bootstrap helpers run on every operator boot to make Papercusp dogfood itself — sentinel workspace ensure + papercup repo auto-register. Idempotent + non-disruptive to existing installs.
+
+## What
+
+[Section titled “What”](#what)
+
+On every operator boot, two helpers run via `apps/operator/instrumentation-node.ts`:
+
+1. **`ensurePapercuspWorkspace()`** — guarantees a workspace called `papercusp-workspace` (literal name) exists in the workspace registry. Idempotent.
+2. **`registerPapercupHarness()`** — if running from the papercup source repo, auto-registers it as a harness named `papercup` inside that sentinel workspace, `state: private`. Idempotent
+   * no-op for packaged installs.
+
+Together: Papercusp dogfoods itself the moment the operator starts. The user finds `papercup` in their harness dropdown when they switch to `papercusp-workspace` — no manual `harness create` step.
+
+Files:
+
+* `apps/operator/lib/harness/papercusp-workspace.ts`
+* `apps/operator/lib/harness/register-papercup.ts`
+* `apps/operator/instrumentation-node.ts:47-72` (boot wiring)
+* `apps/operator/scripts/run-dogfood-bootstrap.ts` (one-shot manual driver)
+
+## Why two helpers, not one
+
+[Section titled “Why two helpers, not one”](#why-two-helpers-not-one)
+
+They do different things:
+
+* **`ensurePapercuspWorkspace`** writes to `~/.papercusp-workspaces/registry.json` (file-backed) — the user’s list of workspaces.
+* **`registerPapercupHarness`** writes to PG (`harness_shared.harness_registry`) **scoped to** the sentinel workspace (not the active workspace) — the harness list within that workspace.
+
+Splitting them keeps each helper testable in isolation. The bootstrap calls them in order: sentinel ensure → register papercup as harness.
+
+## The “scoped to the sentinel workspace, not active” trick
+
+[Section titled “The “scoped to the sentinel workspace, not active” trick”](#the-scoped-to-the-sentinel-workspace-not-active-trick)
+
+When you have multiple workspaces, the harness registry is per- workspace: each workspace has its own list of harnesses. The operator’s existing `saveHarnessRegistry()` defaulted to writing to the **active** workspace.
+
+If P-024 wrote to the active workspace, it would silently dump `papercup` into whichever workspace the user happened to be looking at — usually `default`. Bad: pollutes the user’s workspace.
+
+The fix (commit `b53185ee`): add an optional `workspaceId` param to `saveHarnessRegistry()` (additive, 100% back-compat across 52 call sites). The dogfood bootstrap passes `PAPERCUSP_WORKSPACE_ID` explicitly so the write lands in the sentinel workspace regardless of which one is active.
+
+A symmetric `wsOverride?` was already on `readOperatorState`; this just closes the API asymmetry at the underlying `writeOperatorState` helper.
+
+## How the papercup-root auto-detector works
+
+[Section titled “How the papercup-root auto-detector works”](#how-the-papercup-root-auto-detector-works)
+
+`detectPapercupRoot(start)` in `register-papercup.ts` walks UP from the given directory looking for both markers:
+
+```ts
+existsSync(join(dir, 'apps', 'operator', 'package.json'))
+  && existsSync(join(dir, 'libs', 'papercusp', 'package.json'))
+```
+
+Two markers because either alone could be coincidental in unrelated projects. Both together pin the directory to “this is the papercup repo.” Bounded to 8 levels up so it can’t unbounded-walk a weird filesystem.
+
+Returns `null` for packaged desktop installs where neither marker exists — the bootstrap silently skips with a `state: 'skipped'` result.
+
+## When you touch this code
+
+[Section titled “When you touch this code”](#when-you-touch-this-code)
+
+* **Renaming the sentinel** (`papercusp-workspace` → anything else)? Bad idea: many future surfaces (Cupboard, plan dogfood docs, multi-machine reconciliation) hardcode the name as a stable reference. The constant is in `papercusp-workspace.ts` for the one place that needs it; don’t make it a per-install variable.
+* **Changing the markers** in `detectPapercupRoot`? Be conservative — the two-marker rule was chosen specifically to avoid false positives. Adding a 3rd marker is fine; removing one is risky.
+* **Adding a 3rd bootstrap helper** (e.g. auto-register sub-harnesses for papercup’s submodules)? Best done as another fire-and-forget block in instrumentation-node, between the existing two. Keep each helper idempotent.
+
+## Verifying it works without restarting the operator
+
+[Section titled “Verifying it works without restarting the operator”](#verifying-it-works-without-restarting-the-operator)
+
+There’s a one-shot driver at `apps/operator/scripts/run-dogfood-bootstrap.ts`:
+
+```bash
+cd apps/operator && npx tsx scripts/run-dogfood-bootstrap.ts
+```
+
+Runs the same code paths the boot path runs. Prints the registry + PG state. Useful when:
+
+* You just made a change to the bootstrap helpers and want to verify it works against the live PG.
+* The running operator predates your changes (memory rule: don’t restart the user’s running dev server). The script exercises your new code without touching the operator process.
+* You’re debugging a “papercup isn’t showing up in the dropdown” symptom and want to confirm the PG row is there.
+
+Sample output:
+
+```plaintext
+=== STEP 1: ensurePapercuspWorkspace ===
+workspace entry: id=papercusp-workspace, name=papercusp-workspace, createdAt=...
+workspaces total: 6, current: default
+✓ sentinel 'papercusp-workspace' present in registry
+=== STEP 2: registerPapercupHarness ===
+state: already-registered
+path: /home/marsh-office/papercupai-workspace/papercup
+=== STEP 3: verify PG row ===
+harness_registry@papercusp-workspace: 1 projects
+  - papercup  →  /home/marsh-office/papercupai-workspace/papercup
+✓ papercup registered in sentinel workspace
+=== PASS — dogfooding flipped on ===
+```
+
+## Related
+
+[Section titled “Related”](#related)
+
+* `apps/operator/lib/harness/classify-tree.ts` — the 5-rule classifier for nested `.git` entries; uses the same `existsSync`-on-markers pattern. See [the classifier insight](/internal/docs/agent-insights/harness-tree-classifier).
+* v5 plan Phase 1a P-014 (workspace bootstrap) + Phase 4 P-024 (papercup self-registration).
+* `apps/operator/lib/workspace-registry.ts` — the underlying file- backed registry helpers.
+* `apps/operator/lib/operator-state-pg.ts` — `readOperatorState` / `writeOperatorState` with optional `wsOverride` for per-workspace scoping.
+
 # Never hardcode PG port — read embedded-pg.json
 
 > Embedded Postgres uses a discovered port written to ~/.papercusp/embedded-pg.json on desktop boot. Hardcoding :5432 or :16534 breaks on any machine that wasn't the one you wrote the code on.
@@ -173,6 +686,827 @@ The native-PG path (`:5432`) is also being retired (memory: `project_papercusp_p
 
 * If embedded-pg.json doesn’t exist, the desktop hasn’t been booted yet — surface that to the user rather than falling back to `:5432`.
 
+# Porting Next route.ts files to defineRoute
+
+> The non-obvious patterns from migrating all 243 operator endpoints off Next route handlers onto the Hono-mounted defineRoute primitive.
+
+The R5 endpoint migration moved every `app/api/**/route.ts` in the operator onto `defineRoute` (mounted on the Hono `app` via `registerAllRoutes`). 243 routes, 24 family batches. A few things that bite if you don’t know them:
+
+## Catch-all routes must register LAST
+
+[Section titled “Catch-all routes must register LAST”](#catch-all-routes-must-register-last)
+
+Hono’s parametric/wildcard matches (`/:transport`, `/plugins/*`, `/agent-tools/*`) will shadow literal paths registered after them in some router configs. Register every literal route first, then the family catch-all, then the absolute-last `:transport` MCP catch-all. In `routes/index.ts` the spread order in `ALL_ROUTES` is load-bearing — the comment markers there are not decoration.
+
+## A route module importing the barrel can deadlock the registry
+
+[Section titled “A route module importing the barrel can deadlock the registry”](#a-route-module-importing-the-barrel-can-deadlock-the-registry)
+
+`routes/openapi-json.ts` needs `allRouteFragments()`. Importing it from the package barrel (`@/lib/endpoint-route`) creates a cycle: `routes/index.ts → openapi-json.ts → barrel → register.ts → routes/index.ts`. Import the **leaf module** directly (`../openapi`) instead. Any route module that needs something from the endpoint-route package must reach for the specific file, never the barrel.
+
+## Port at the route’s *current* auth posture — don’t tighten mid-port
+
+[Section titled “Port at the route’s current auth posture — don’t tighten mid-port”](#port-at-the-routes-current-auth-posture--dont-tighten-mid-port)
+
+Most legacy `route.ts` files were `auth: 'public'` with an inline `isLoopback()` / `getSessionUser()` / `requirePrincipal()` check. A mechanical port keeps exactly that: `auth: 'public'` + the same inline check. Tightening (e.g. making `credentials` require `trust: 'trusted'`) is a **separate, auditable pass** — never smuggled into a migration diff. Reviewers can’t see a behavior change hidden inside 200 lines of faithful copy.
+
+## Colocated route.test.ts → Hono in-process app.request()
+
+[Section titled “Colocated route.test.ts → Hono in-process app.request()”](#colocated-routetestts--hono-in-process-apprequest)
+
+Old tests imported `{ GET, POST }` from `./route` and called them with a fake `NextRequest`. The ported test builds a Hono app, `registerAllRoutes`, and drives `app.request('/api/...')`. Move the file to `lib/endpoint-route/__tests__/`. Two recurring fixes:
+
+* **Flag-gated routes** (`gateApiRoute(FLAGS.X)`) 404 in tests unless you `vi.mock('@/lib/require-flag', () => ({ gateApiRoute: async () => null }))`.
+* **Never `vi.mock('node:fs')`** — `registerAllRoutes` transitively loads prompt-assembly, which `existsSync`/`readFileSync`s real persona files. A blanket fs mock breaks unrelated routes. Mock the specific lib instead.
+
+## getSessionUser / getSessionUserOrDefault are header-aware
+
+[Section titled “getSessionUser / getSessionUserOrDefault are header-aware”](#getsessionuser--getsessionuserordefault-are-header-aware)
+
+`defineRoute` handlers get a plain `Request`. The Next-free cookie substrate (`lib/auth.ts`) exposes `getSessionUser(headers?)` / `getSessionUserOrDefault(headers?)` — pass `req.headers`. The no-arg form falls back to `next/headers` `cookies()`, which is the thing being removed.
+
+## Enforcement is a script, not a lint rule
+
+[Section titled “Enforcement is a script, not a lint rule”](#enforcement-is-a-script-not-a-lint-rule)
+
+`apps/operator/scripts/endpoint-route-progress.mjs --check` exits non-zero if any raw `route.ts` exists under `app/api/**` outside the `[[...route]]` host-seam floor. That catches a re-introduced route regardless of contents — strictly better than a contents-matching ESLint rule. Wire it into CI next to `tsc`.
+
+# Forward-defined registry entries — advance-mapping without losing the drift signal
+
+> When you need to map something before its target exists, the cheap path is a `FORWARD_DEFINED` set + a sanity assertion that flips when the target lands. Keeps the drift visible.
+
+## What
+
+[Section titled “What”](#what)
+
+Sometimes you want to add an entry to a registry **before** the thing it references exists. Example from P-067 (bridge module):
+
+The bridge maps `harness_shared.<table>` → camelCase queryNames that consumers subscribe to. When v5 plan addendum 3 added two new tables (`contributor_usage_events` + `insights_first_visit`), the matching camelCase queryNames (`contributorUsageEvents.byHarness` + `insightsFirstVisit.byHarness`) don’t exist in the v2 sync-resolver registry YET — those will land with P-073 (Insights tab) work.
+
+Three options for the bridge:
+
+1. **Wait.** Add nothing to the bridge until v2 entries exist. Problem: when the consumer lands, someone has to remember to also wire the bridge. Easy to forget — drift.
+2. **Map anyway, ignore the consistency assertion.** Bridge fires `contributorUsageEvents.byHarness` events that nothing listens to. Harmless, but the consistency assertion (“every bridged name is in v2”) flips to false, becomes noise, gets disabled.
+3. **Forward-define with explicit tracking.** Map the names + add them to a `FORWARD_DEFINED` set + add a sanity assertion that inverts the consistency check.
+
+Option 3 is what shipped. It preserves the drift signal.
+
+## The pattern
+
+[Section titled “The pattern”](#the-pattern)
+
+```ts
+describe('TABLE_TO_QUERY_NAMES vs v2 registry consistency', () => {
+  /**
+   * Forward-defined names — mapped in the bridge BEFORE the
+   * corresponding v2 registry entry exists. Trigger events for
+   * these tables fire (as expected) but currently invalidate
+   * nothing; the matching consumer + v2 entry will land later.
+   *
+   * REMOVE an entry from this set as soon as its v2 registry
+   * entry lands — otherwise drift between intent ("this should
+   * land soon") and reality ("it never did") stops being visible.
+   */
+  const FORWARD_DEFINED = new Set<string>([
+    'contributorUsageEvents.byHarness',
+    'insightsFirstVisit.byHarness',
+  ]);
+
+
+  it('every bridged query name is either in v2 OR explicitly forward-defined', () => {
+    const v2 = new Set(knownQueryNamesV2());
+    const bridged = allBridgedQueryNames();
+    const unaccountedFor = bridged.filter((n) =>
+      !v2.has(n) && !FORWARD_DEFINED.has(n)
+    );
+    expect(unaccountedFor).toEqual([]);
+  });
+
+
+  it('forward-defined names are NOT in v2 registry (sanity)', () => {
+    const v2 = new Set(knownQueryNamesV2());
+    const stillForward = Array.from(FORWARD_DEFINED).filter((n) => !v2.has(n));
+    // If this assertion fails, a forward-defined name has been
+    // implemented and its entry in FORWARD_DEFINED should be removed.
+    expect(stillForward.sort()).toEqual(Array.from(FORWARD_DEFINED).sort());
+  });
+});
+```
+
+The two assertions work together:
+
+* The first **passes** as long as every bridged name is EITHER in v2 OR explicitly forward-defined. Drift in either direction surfaces.
+* The second **fails the moment a forward-defined name lands in v2**. The failure message tells you to remove the entry from `FORWARD_DEFINED`. The drift signal is preserved.
+
+## Why this matters
+
+[Section titled “Why this matters”](#why-this-matters)
+
+The naïve “I’ll just disable the consistency check while it’s forward-defined” pattern destroys the drift signal:
+
+* No way to tell what’s intentionally-pending vs accidentally-broken.
+* When the v2 entry lands, no test fires; the forward-define becomes obsolete vestigial code.
+* New agents reading the code can’t tell what’s intent vs bug.
+
+The `FORWARD_DEFINED` set is documentation in code: “these names are deliberately mapped before their target exists.” The sanity assertion makes that documentation **load-bearing** — the test suite forces you to update it.
+
+## When to use this
+
+[Section titled “When to use this”](#when-to-use-this)
+
+Whenever you’re tempted to:
+
+* Add a value to a registry/map ahead of its consumer landing.
+* Suppress a lint/test failure with `// @ts-expect-error` or `// eslint-disable-next-line` for “this will be fixed in a follow-up.”
+* Add a `TODO` for “remove this when X lands” — the comment is passive; the assertion is active.
+
+In each case: the question is “how will future-you/future-agent know this is still pending vs forgotten?” `FORWARD_DEFINED` + an inverted assertion answers it.
+
+## What it looks like in the wild (this codebase)
+
+[Section titled “What it looks like in the wild (this codebase)”](#what-it-looks-like-in-the-wild-this-codebase)
+
+* `apps/operator/lib/sync-resolver/table-to-query-names.test.ts` — the canonical example. 2 entries: `contributorUsageEvents.byHarness` + `insightsFirstVisit.byHarness` for P-073 Insights tab work.
+
+## Variations
+
+[Section titled “Variations”](#variations)
+
+* **`FORWARD_DEFINED` with expiration**: if you also know a target date, fail when current date > expiration with “this should have been resolved by N.” Stronger signal at the cost of brittleness.
+* **Inverted-only**: if you can’t easily list every value (e.g., a pattern instead of a finite set), invert: `expect(orphans).toEqual([])` with a comment explaining “if a real orphan appears, decide whether to add to FORWARD\_DEFINED or fix the registry.”
+* **Per-domain**: large registries can have multiple `FORWARD_DEFINED` sets keyed by purpose (e.g., `FORWARD_DEFINED_PLANNED_THIS_QUARTER` vs `FORWARD_DEFINED_DEFERRED_INDEFINITELY`). Helps prioritization.
+
+## Related
+
+[Section titled “Related”](#related)
+
+* `apps/operator/lib/sync-resolver/table-to-query-names.ts` — the bridge that uses this pattern.
+* `apps/operator/lib/sync-resolver/index.ts` — the v2 registry the bridge maps INTO.
+* [Adding a query to the sync resolver](/internal/docs/agent-insights/adding-a-sync-query) — when you migrate a forward-defined name, removing it from `FORWARD_DEFINED` is step 4 of the recipe.
+
+# The 5-rule harness-tree classifier
+
+> When walking a git repo's nested .git entries, classify each as submodule / worktree / standalone / plain-dir. Used by the harness-creation flow to decide what becomes a sub-harness.
+
+## What
+
+[Section titled “What”](#what)
+
+When you point the harness-creation flow at an existing git repo (Entries 1, 2, or 3 of the §3 create-harness wizard), it walks the directory looking for nested `.git` entries and decides whether each one becomes a sub-harness, a separate root harness, or part of the parent. The classifier lives at `apps/operator/lib/harness/classify-tree.ts` (papercusp-dogfood-v5 P-007).
+
+There are **five outcomes**, ordered by precedence:
+
+1. **Submodule** — `.git` is a *file* whose contents point into the parent repo’s `.git/modules/<name>/`. → Becomes a **sub-harness**.
+2. **Worktree** — `.git` is a *file* whose contents point into the same repo’s `.git/worktrees/<name>/`. → **NOT a new harness** (it’s an additional checkout of the same repo, which is what phases already are).
+3. **Standalone** — `.git` is a *directory* with its own `HEAD` etc. → Becomes a **separate root harness**, not a sub-harness.
+4. **Plain dir** (no `.git`) — just part of the parent repo. → No harness, no recursion needed.
+5. **Tree root** — the entry point of the walk; gets its own harness with the unified queue. Sub-harnesses share that queue (`parent_slug` link) tagged by component path.
+
+## Why distinguishing matters
+
+[Section titled “Why distinguishing matters”](#why-distinguishing-matters)
+
+The three “has-nested-.git” cases (1, 2, 3) all look superficially the same: there’s a `.git` somewhere below the root. But they mean completely different things:
+
+* **Submodule**: the parent repo deliberately references a separate upstream repo, pinned to a commit. It IS a logical sub-project of the parent. Sub-harness is right.
+* **Worktree**: the parent repo has multiple checked-out branches living side by side, sharing one object store. Each worktree is the SAME project. Treating it as a sub-harness would duplicate the harness for every phase the user has materialized.
+* **Standalone**: someone happened to clone an unrelated repo inside the parent’s directory. Not part of the parent’s project at all. Should be a separate root, not a sub of the parent.
+
+Getting this wrong creates ghost harnesses, double-counts work, or makes the harness tree feel arbitrary.
+
+## How the rules detect each case
+
+[Section titled “How the rules detect each case”](#how-the-rules-detect-each-case)
+
+The classifier reads the first line of `<dir>/.git` and pattern-matches:
+
+```plaintext
+.git is a directory          → standalone (rule 3)
+.git contents start with
+  "gitdir: <abs>/.git/modules/" → submodule (rule 1)
+  "gitdir: <abs>/.git/worktrees/" → worktree (rule 2)
+  anything else              → standalone (rule 3, fallback)
+```
+
+For directories without `.git`, the walker descends into them *unless* it hits a `.git` directory in a child — at which point the classifier fires and a single decision is made for that subtree.
+
+## Real-world layout (papercup itself)
+
+[Section titled “Real-world layout (papercup itself)”](#real-world-layout-papercup-itself)
+
+papercup has:
+
+* 1 tree root: the papercup repo at `/home/marsh-office/papercupai-workspace/papercup`
+* 9 submodules under `libs/`: `agent-chat`, `git-graph`, `papercup-db`, `papercup-shared`, `papercusp`, `papergrid`, `sync`, `ui-primitives`, `zero-harness`
+* 7 plain dirs under `libs/`: `flags`, `host-platform`, `marketplace-public-ui`, `papercusp-export-state`, `papercusp-publish-auth`, `sse`, `test-config`
+* Many worktrees in siblings of the papercup repo (`papercup-backup`, `papercup-design-migration`, etc.) — those are detected if a future walk starts above papercup, but the classifier never confuses them for new harnesses.
+
+Total `libs/` count: 16 dirs (9 + 7), exactly what the test asserts against:
+
+apps/operator/lib/harness/classify-tree.test.ts
+
+```ts
+it('classifies papercup\'s real libs/ as 9 submodules + 7 plain dirs', ...)
+```
+
+## When you touch this code
+
+[Section titled “When you touch this code”](#when-you-touch-this-code)
+
+* **Adding a 6th rule** (e.g. `git-annex` repos, fossil repos)? Add to the precedence list and update the test count. The classifier is a pure function over (path, fs) → outcome; tests are cheap.
+* **Changing the walker boundary**? The current default stops recursion at the first nested `.git` entry. If you change that, you’ll start materializing harnesses for every git repo at every depth (probably not what you want for nested monorepos).
+* **Changing the slug derivation**? Sub-harness slugs are path-qualified relative to the tree root (e.g. `papercup/libs/sync`). Changing this collides with existing harness registry entries.
+
+## Related
+
+[Section titled “Related”](#related)
+
+* `apps/operator/lib/harness/classify-tree.ts` — the classifier
+* `apps/operator/lib/harness/register-papercup.ts` — uses `detectPapercupRoot` (same shape) to find the papercup repo for Phase 4 dogfood self-registration
+* v5 plan §2 — the architectural treatment of harness hierarchy reflecting submodule hierarchy
+
+# The idempotent PG-ensure pattern (and where the in-process flag goes)
+
+> ensure-schema-dogfood.ts and ensure-schema.ts use the same recipe — CREATE ... IF NOT EXISTS + a globalThis-pinned flag that's set ONLY after the await succeeds. Errors leave the flag false so retry works.
+
+## What
+
+[Section titled “What”](#what)
+
+The operator creates several `harness_shared` tables at runtime (not via migrations) — `ensure-schema.ts` for the original surface, `ensure-schema-dogfood.ts` for v5’s new dogfood tables. Both use the same pattern:
+
+```ts
+type Flags = {
+  myTable: boolean;
+  /* ... */
+};
+
+
+type _G = { __myEnsureFlags?: Flags };
+const _g = globalThis as unknown as _G;
+const flags: Flags =
+  _g.__myEnsureFlags ?? (_g.__myEnsureFlags = { myTable: false, /* ... */ });
+
+
+export async function ensureMyTable(): Promise<void> {
+  if (flags.myTable) return;
+  const { sql } = getOrgPg();
+  await sql.unsafe(`
+    CREATE TABLE IF NOT EXISTS harness_shared.my_table (
+      workspace_id TEXT NOT NULL DEFAULT '',
+      id BIGSERIAL,
+      /* ... */
+      PRIMARY KEY (workspace_id, id)
+    );
+    CREATE INDEX IF NOT EXISTS my_table_thing_idx
+      ON harness_shared.my_table (workspace_id, thing);
+  `);
+  flags.myTable = true;
+}
+```
+
+Three load-bearing properties:
+
+1. **`CREATE TABLE IF NOT EXISTS`** + **`CREATE INDEX IF NOT EXISTS`** — both are PG-side idempotent. Re-running the statement is a no-op.
+2. **The flag is set AFTER the await**, not inside the SQL. If the `sql.unsafe(...)` call throws (PG down, partial failure, permission error, …), `flags.myTable` stays `false` and the next call will retry the full statement. PG’s idempotency handles the “already done” parts.
+3. **The flag is pinned to `globalThis`** so Turbopack HMR / dev-mode module reloads don’t reset it. Without the pin, every dev-mode code edit re-runs the full DDL on next call — slow + visible in PG logs.
+
+## Why the `globalThis` pin matters
+
+[Section titled “Why the globalThis pin matters”](#why-the-globalthis-pin-matters)
+
+Turbopack reloads modules on edit. A top-level `const flags = {...}` gets re-initialized to `{ myTable: false, ... }` every reload. The next caller sees the false flag, re-runs the DDL. Harmless (PG shrugs), but:
+
+* Slow if you have 12+ ensure-fns — each call pays the round-trip cost.
+* Visible in PG logs as repeated DDL statements.
+* Confusing during diagnosis: “why is my ensure being called every request?”
+
+The `globalThis` pin parks the flag table at a process-level singleton that survives module reloads.
+
+```ts
+// ensure-schema-dogfood.ts uses key __dogfoodEnsureFlags
+type _G = { __dogfoodEnsureFlags?: DogfoodFlags };
+```
+
+Each ensure family picks its own symbol so the namespaces don’t collide (`__dogfoodEnsureFlags`, `__syncNotifyDedupe`, etc.).
+
+## Calling pattern: batch helper
+
+[Section titled “Calling pattern: batch helper”](#calling-pattern-batch-helper)
+
+The companion to per-fn ensures is a batch helper:
+
+```ts
+export async function ensureAllDogfoodTables(): Promise<void> {
+  await Promise.all([
+    ensureFeatureQueueTable(),
+    ensureContributorsTable(),
+    /* ... */
+  ]);
+}
+```
+
+`Promise.all` is fine because each ensure has its own flag-guard + the underlying CREATE statements are independent. After first successful call, subsequent calls short-circuit at the if-flag check; the only network round-trip is the first one per process.
+
+When to call the batch helper:
+
+* At process boot in `instrumentation-node.ts` (fire-and-forget).
+* Before the projection process starts reading (gate: tables exist).
+* In tests that need the schema (the live verifier scripts do this).
+
+## ”I added a column to an existing table” pitfall
+
+[Section titled “”I added a column to an existing table” pitfall”](#i-added-a-column-to-an-existing-table-pitfall)
+
+The pattern handles “table missing” gracefully but NOT “table is out of date.” If you change the DDL string in `ensureMyTable`:
+
+* Old PG already has the table from a prior boot.
+* `CREATE TABLE IF NOT EXISTS` sees the table exists and skips.
+* The new column never lands.
+
+Fix: use `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` in the same `sql.unsafe(...)` block after the CREATE:
+
+```ts
+await sql.unsafe(`
+  CREATE TABLE IF NOT EXISTS harness_shared.my_table (...);
+  ALTER TABLE harness_shared.my_table
+    ADD COLUMN IF NOT EXISTS new_col TEXT;
+  CREATE INDEX IF NOT EXISTS my_table_new_col_idx
+    ON harness_shared.my_table (new_col);
+`);
+```
+
+`ADD COLUMN IF NOT EXISTS` is idempotent (PG 9.6+). The PR diff adds the new ALTER inline; bumping a version in your flag isn’t needed.
+
+## Graceful-skip for missing pre-existing tables (P-019 part 2 case)
+
+[Section titled “Graceful-skip for missing pre-existing tables (P-019 part 2 case)”](#graceful-skip-for-missing-pre-existing-tables-p-019-part-2-case)
+
+When you’re attaching triggers to tables you didn’t create — e.g., `harness_features_consolidated` from `001-shared.sql` — those tables may not exist yet on a freshly-installed harness before `scaffold-harness` has run. The pattern:
+
+```ts
+for (const tableName of EXISTING_HYPERBEE_REACTIVE_TABLES) {
+  try {
+    await sql.unsafe(
+      'CREATE OR REPLACE TRIGGER emit_change_notify_trg ' +
+        'AFTER INSERT OR UPDATE OR DELETE ' +
+        'ON harness_shared.' + tableName + ' ' +
+        'FOR EACH ROW EXECUTE FUNCTION harness_shared.emit_change_notify()',
+    );
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e);
+    if (/does not exist|relation .* does not exist/i.test(msg)) {
+      // Table not yet provisioned in this workspace — fine, will retry
+      // on next boot. Don't log noisily.
+      continue;
+    }
+    throw e;
+  }
+}
+```
+
+The try/catch on the `does not exist` substring is the right shape: don’t promote it to a fatal error because the table will appear later when scaffold runs. Re-throw any other error.
+
+## What NOT to do
+
+[Section titled “What NOT to do”](#what-not-to-do)
+
+* **Don’t set the flag inside the await call.** `flags.x = true; await sql.unsafe(...)` would mark success before PG confirmed; an error would wedge the in-process flag.
+* **Don’t bypass the flag with “the ensure is cheap.”** Even cheap calls add up: 100 page loads × 12 ensures = 1200 PG round-trips per session if the flag isn’t doing its job.
+* **Don’t use `CREATE TABLE` (without IF NOT EXISTS)** — first retry will error.
+* **Don’t put DDL inside a transaction that also does DML.** Mixed DDL+DML transactions have surprising lock-promotion semantics. Ensures are DDL-only; let app code use its own transaction for the row writes that follow.
+* **Don’t pull the DDL into a `.sql` migration file when it’s a runtime ensure.** Once a table is in `ensure-schema*.ts`, leave it there — moving it to a numbered SQL file creates a migration- ordering question (does my new boot run the new SQL file or the old ensure-fn first?). Pick one location.
+
+## Related
+
+[Section titled “Related”](#related)
+
+* `apps/operator/lib/ensure-schema-dogfood.ts` — recent example, 12 ensure-fns + batch helper + the graceful-skip P-019 pattern.
+* `apps/operator/lib/ensure-schema.ts` — original \~1860-line file with the same pattern. Don’t edit it for new tables — add a new sibling file instead.
+* `apps/operator/lib/sync-sse.ts` — uses the same `globalThis` pin pattern for the 90s dedupe map.
+* [pg-migrations-dollar-quote](/internal/docs/agent-insights/pg-migrations-dollar-quote) — the migration-file side of PG DDL hazards.
+
+# Canonical-form JSON for signed payloads — reach for JCS (RFC 8785)
+
+> When you need a signature over a JSON body that verifies across implementations or languages, the canonical-form spec is JCS / RFC 8785. Encode the choice in a const field-order tuple so publisher and verifier cannot drift.
+
+## The setup
+
+[Section titled “The setup”](#the-setup)
+
+You’re designing a JSON wire-format where one party signs the body and another party verifies it. The signature is computed over `JSON.stringify(body)` bytes. Pretty straightforward, right?
+
+It isn’t. `JSON.stringify` in JavaScript:
+
+* Emits object keys in insertion order, not sorted.
+* Has no defined behavior for `NaN` / `Infinity` (throws or becomes `null`).
+* Doesn’t normalize number formatting (`1.0` vs `1`, scientific notation, etc.).
+* Doesn’t normalize string escaping (`"A"` vs `"A"`).
+
+Any one of these can produce different bytes from the publisher and the verifier even though the JSON values are identical. The signature breaks. The bug is invisible until someone re-implements the serializer in Go or Rust and now nothing verifies.
+
+## The pattern
+
+[Section titled “The pattern”](#the-pattern)
+
+**Pick [JCS — JSON Canonicalization Scheme, RFC 8785](https://www.rfc-editor.org/rfc/rfc8785). It’s the deterministic-JSON spec.**
+
+JCS specifies:
+
+* Ascending Unicode code-point sort on object keys.
+* Number formatting per ECMAScript `ToString` (RFC 8785 §3.2.2.3).
+* String escaping per RFC 8259 §7 (no redundant `\uXXXX` for ASCII).
+* No whitespace, no trailing newlines.
+
+Result: identical bytes from any JCS-conformant encoder, in any language, for the same JSON value tree.
+
+## How to encode the choice in TypeScript
+
+[Section titled “How to encode the choice in TypeScript”](#how-to-encode-the-choice-in-typescript)
+
+When you write the *types* module for the signed body (per [`types-first-from-design-memo`](/internal/docs/agent-insights/types-first-from-design-memo/)), include a const tuple naming the canonical field order. The runtime serializer iterates this tuple; if anyone reorders fields silently, the const drifts visibly.
+
+```ts
+/**
+ * The canonical field-order tuple for `ContributorFileBody`. Implements
+ * the chosen canonical-form (JCS / RFC 8785). JCS specifies ascending
+ * Unicode code-point order on object keys; this tuple matches that
+ * order exactly so a hand-implemented serializer can iterate it
+ * without re-sorting.
+ */
+export const CONTRIBUTOR_FILE_CANONICAL_FIELD_ORDER = [
+  'device_attestation_gist_id',
+  'device_pubkey',
+  'github_login',
+  'github_user_id',
+  'joined_at',
+  'signature_by_device',
+  'version',
+] as const;
+```
+
+Then in tests, assert it’s actually JCS-conformant ascending sort:
+
+```ts
+it('is JCS-compliant ascending unicode-codepoint sort', () => {
+  const sorted = [...CONTRIBUTOR_FILE_CANONICAL_FIELD_ORDER].sort();
+  expect(CONTRIBUTOR_FILE_CANONICAL_FIELD_ORDER).toEqual(sorted);
+});
+
+
+it('covers every body field exactly once', () => {
+  const fields = Object.keys(sampleBody).sort();
+  expect([...CONTRIBUTOR_FILE_CANONICAL_FIELD_ORDER].sort()).toEqual(fields);
+});
+```
+
+The first test catches “someone reordered the const by hand”; the second catches “someone added a field to the type but forgot the const.” Both bugs would silently break signatures in production.
+
+## How signing strips the signature field
+
+[Section titled “How signing strips the signature field”](#how-signing-strips-the-signature-field)
+
+The signature scope is “every field except the signature itself” — otherwise you’d need to know the signature before computing it. The types module exports a helper:
+
+```ts
+export function stripSignatureForSigning(
+  body: ContributorFileBody,
+): Omit<ContributorFileBody, 'signature_by_device'> {
+  const { signature_by_device: _sig, ...rest } = body;
+  void _sig;
+  return rest;
+}
+```
+
+The runtime path is: `JCS.encode(stripSignatureForSigning(body))` → sign those bytes → inject the signature → publish.
+
+The verifier path: receive body → check shape with the structural predicate → `JCS.encode(stripSignatureForSigning(body))` → verify against `body.signature_by_device`.
+
+## Why not hand-rolled “fields sorted A-Z”?
+
+[Section titled “Why not hand-rolled “fields sorted A-Z”?”](#why-not-hand-rolled-fields-sorted-a-z)
+
+It works until you hit any of:
+
+* A nested object — does each nested object’s keys also get sorted?
+* A number that JavaScript stringifies differently from Python (`1e3` vs `1000`).
+* A string with non-ASCII chars that one impl escapes and another doesn’t.
+* A null value that one impl emits and another omits.
+
+JCS specifies the answer to all of these. Hand-rolled schemes don’t, and you’ll discover the gap when a cross-language verifier ships months later.
+
+## Why not protobuf / CBOR / something binary?
+
+[Section titled “Why not protobuf / CBOR / something binary?”](#why-not-protobuf--cbor--something-binary)
+
+Sometimes the right answer. But:
+
+* The body needs to be human-readable (e.g. committed to git as a file someone might view).
+* The body needs to be inspectable in GitHub Gist UIs / web tools.
+* The body fits in `<1KB` — the size win from binary is negligible.
+
+If those constraints don’t apply, prefer binary (CBOR or protobuf) — JSON adds parsing cost on every verify. But for “small signed config files committed to git” or “gist bodies a human might read,” JCS is the right answer.
+
+## When to skip JCS entirely
+
+[Section titled “When to skip JCS entirely”](#when-to-skip-jcs-entirely)
+
+Two cases where JCS is overkill:
+
+**(1) Signatures that stay within one process.** If publisher and verifier are the same Node program (or even same monorepo) and never cross language boundaries, `JSON.stringify` with consistent input objects works. No reason to add a JCS dep.
+
+**(2) Hash-then-sign with detached canonicalization.** If you compute a hash of *content* (not bytes) — like Git’s tree hashing — the canonicalization happens at the content layer, not the byte layer. Different problem.
+
+Otherwise: reach for JCS. The 24-hour debugging session you’ll skip is worth the 200-LOC dep.
+
+## In this codebase
+
+[Section titled “In this codebase”](#in-this-codebase)
+
+* [`apps/operator/lib/identity/contributor-file-types.ts`](https://github.com/papercupai/papercup/blob/main/apps/operator/lib/identity/contributor-file-types.ts) — the Channel 2 contributor file (Phase 1b P-075). Per `dogfood-design-memo-two-channel-binding-ux-2026-05-24`. JCS field-order const + tests.
+* [`apps/operator/lib/identity/attestation-types.ts`](https://github.com/papercupai/papercup/blob/main/apps/operator/lib/identity/attestation-types.ts) — the Channel 1 device attestation gist body (Phase 1b P-011). Per `dogfood-design-memo-device-attestation-ux-2026-05-24`. Also targets JCS canonicalization at the byte level when the runtime impl lands.
+
+Both modules ship before the runtime serializer because the field-order const is the load-bearing piece — once it’s in tree + tested, downstream implementations cannot diverge from it.
+
+## See also
+
+[Section titled “See also”](#see-also)
+
+* [JCS / RFC 8785 spec](https://www.rfc-editor.org/rfc/rfc8785) — short read (\~15 pages), worth bookmarking.
+* [`types-first-from-design-memo`](/internal/docs/agent-insights/types-first-from-design-memo/) — the broader pattern this fits into: extract types ahead of behavior so the implementation has a stable spine.
+* `dogfood-design-memo-two-channel-binding-ux-2026-05-24.md` — design memo where JCS choice was first surfaced (D-001 in `papercusp-dogfood-phase1b-oauth-clone-attestation-2026-05-24.md`).
+
+# Pair every schema-ensure module with a live-PG regression sentinel
+
+> Unit tests can't catch CREATE TABLE typos, missing CHECK constraints, or PG-side DDL incompatibilities. A 2-second live verifier (boot embedded PG → call your ensures → assert the resulting schema) catches them all and gives you a one-line pre-commit gate.
+
+## The gap unit tests can’t fill
+
+[Section titled “The gap unit tests can’t fill”](#the-gap-unit-tests-cant-fill)
+
+`ensure-schema-dogfood.ts` has \~600 lines of `CREATE TABLE IF NOT EXISTS` strings. Its unit test (`ensure-schema-dogfood-binding.test.ts`) asserts on the exported `DOGFOOD_REACTIVE_TABLES` array — useful, but the array could match the spec exactly while the SQL strings have:
+
+* A typo in a CHECK constraint name
+* A missing column in the `INSERT...ON CONFLICT DO UPDATE SET` clause
+* A `BIGINT[]` default value that PG18 parses differently than your shell does
+* A primary key that mentions a column not in the CREATE TABLE body
+
+The unit test passes. The DDL fails at first runtime. The error surfaces somewhere downstream — usually in a user-facing flow at 2am.
+
+## The pattern
+
+[Section titled “The pattern”](#the-pattern)
+
+Write a `verify-<schema>.ts` script that:
+
+1. **Boots embedded PG18** on a non-default port (e.g. 16781) with a fresh `tmpdir`. Does NOT touch the user’s running operator or any live PG.
+2. **Points the module’s PG accessor** at the test instance via the override env var your connection layer reads (here: `HARNESS_ADMIN_DATABASE_URL`).
+3. **Dynamic-imports the module AFTER the env is set** so the cached `getOrgPg()` resolves to the test PG.
+4. **Calls the module’s batch ensure** (`ensureAllDogfoodTables()`).
+5. **Asserts the resulting schema** against a declarative list of expected `(table, required-columns, CHECK constraints)` tuples.
+6. **Tests idempotence** — second call short-circuits via the globalThis flag in `<200ms`.
+7. **Cleans up** — drops the tmp PG, removes the data dir.
+
+Example (`apps/operator/scripts/verify-dogfood-schema.ts`):
+
+```ts
+process.env.HARNESS_ADMIN_DATABASE_URL = 'postgres://...:16781/papercusp';
+const { ensureAllDogfoodTables } = await import('../lib/ensure-schema-dogfood.js');
+await ensureAllDogfoodTables();
+
+
+// Then query information_schema and assert.
+const tables = await checkSql<{ table_name: string }[]>`
+  SELECT table_name FROM information_schema.tables
+   WHERE table_schema = 'harness_shared'
+   ORDER BY table_name
+`;
+for (const expected of EXPECTED_TABLES) {
+  expect(tableSet.has(expected.name), 'table ' + expected.name + ' exists');
+}
+```
+
+Total: \~180 LOC. Runs in \~2s wall-clock. Catches the entire class of bugs unit tests can’t.
+
+## What it catches that unit tests don’t
+
+[Section titled “What it catches that unit tests don’t”](#what-it-catches-that-unit-tests-dont)
+
+| Bug class                                                                  | Unit test | Live-PG sentinel         |
+| -------------------------------------------------------------------------- | --------- | ------------------------ |
+| Column missing from CREATE TABLE                                           | ❌         | ✅                        |
+| CHECK constraint syntax error                                              | ❌         | ✅ (PG rejects on CREATE) |
+| Wrong column count in array default                                        | ❌         | ✅                        |
+| `BIGINT[]` vs `BIGINT` typo                                                | ❌         | ✅                        |
+| PG18 incompatibility (e.g. `IF NOT EXISTS` on a syntax that PG14 accepted) | ❌         | ✅                        |
+| Trigger function reference to nonexistent table                            | ❌         | ✅                        |
+| `ON CONFLICT` target column not in PK                                      | ❌         | ✅                        |
+| Idempotence broken by a missing flag                                       | partial   | ✅ (timing assertion)     |
+| Renamed column not propagated to a partial index                           | ❌         | ✅                        |
+
+## Wire it as a discoverable script
+
+[Section titled “Wire it as a discoverable script”](#wire-it-as-a-discoverable-script)
+
+Add a `verify:<name>` entry to `package.json` so it surfaces under `npm run`:
+
+```json
+{
+  "scripts": {
+    "verify:dogfood-schema": "tsx scripts/verify-dogfood-schema.ts",
+    "verify:all-dogfood": "npm run verify:dogfood-schema && npm run verify:dogfood-bootstrap && npm run verify:trigger-consolidation"
+  }
+}
+```
+
+Now `npm run verify:` tab-completes the full surface. A future agent who’s about to touch the ensure module sees the sentinel exists + runs it before committing.
+
+## Pre-condition setup
+
+[Section titled “Pre-condition setup”](#pre-condition-setup)
+
+Two things the sentinel needs but the production code doesn’t:
+
+1. **The schema** (`CREATE SCHEMA IF NOT EXISTS harness_shared`) — the embedded PG starts empty; the ensure functions assume the schema exists.
+2. **Required roles** (`CREATE ROLE IF NOT EXISTS harness_app / harness_admin`) — only needed if downstream `GRANT` statements reference them. Some ensure modules don’t issue GRANTs; sniff the module before adding the role setup.
+
+Wrap both in `DO $body$ BEGIN IF NOT EXISTS ... END $body$` so re-runs are clean.
+
+Tip
+
+Use named dollar-quoting (`$body$`) not unnamed (`$$`). Bash heredocs collapse doubled `$` and you’ll lose hours debugging “PG syntax error” that’s actually a shell quoting bug. See the [`pg-migrations-dollar-quote`](/internal/docs/agent-insights/pg-migrations-dollar-quote/) insight.
+
+## When the unit test is enough
+
+[Section titled “When the unit test is enough”](#when-the-unit-test-is-enough)
+
+For modules whose only PG interaction is `SELECT` or `UPDATE` (no DDL), the unit test surface IS the regression sentinel. The live verifier pattern matters specifically for DDL-shipping modules: ensure-schema, migration files, trigger function definitions.
+
+## See also
+
+[Section titled “See also”](#see-also)
+
+* `apps/operator/scripts/verify-dogfood-schema.ts` — the canonical example. 13 tables, 80+ columns, 16 CHECK constraints verified in \~2s.
+* `apps/operator/scripts/verify-trigger-consolidation.mjs` — sibling pattern for trigger behavior (vs DDL shape).
+* [`idempotent-pg-ensure`](/internal/docs/agent-insights/idempotent-pg-ensure/) — the module-side pattern this sentinel verifies.
+* [`pg-migrations-dollar-quote`](/internal/docs/agent-insights/pg-migrations-dollar-quote/) — the shell-quoting hazard the sentinel also catches as a side effect.
+
+# Mobile endpoints are a defineRoute flag, not a separate router
+
+> The mobile API moved off the bespoke _hono/mobile.ts router onto defineRoute + a `mobile: true` flag. Device JWTs resolve through requirePrincipal; isRevoked treats unknown devices as revoked, which bites synthetic test JWTs.
+
+## What changed
+
+[Section titled “What changed”](#what-changed)
+
+The 33 `/api/mobile/*` routes used to live in a bespoke Hono router (`apps/operator/app/api/_hono/mobile.ts`, \~1000 LOC) with its own `cors()` block, its own `deviceAuth()` middleware, and lazy DDL. As of the endpoint-unification arc (`endpoint-unification-2026-05-21`) they are ordinary `defineRoute` modules under `lib/endpoint-route/routes/mobile/*.ts`.
+
+Making a route reachable from the paired phone is now one flag:
+
+```ts
+defineRoute({
+  method: 'GET',
+  path: '/mobile/whatever',
+  auth: { kind: ['mobile'] },   // gate on the device-JWT principal
+  mobile: true,                 // CORS allowlist + folds 'mobile' into auth.kind
+  handler(req, ctx) { /* ctx.principal is the mobile device */ },
+});
+```
+
+`mobile: true` does two things in `registerRoute`/`defineRoute`: it mounts the shared `mobileCors` middleware (`lib/endpoint-route/cors.ts` — tauri.localhost, localhost:\*, 127.0.0.1:\*, 10.0.2.2:\*), and it folds `'mobile'` into an explicit `auth.kind` allowlist.
+
+## Gotcha 1 — the device JWT is just a bearer
+
+[Section titled “Gotcha 1 — the device JWT is just a bearer”](#gotcha-1--the-device-jwt-is-just-a-bearer)
+
+A mobile device JWT arrives as `Authorization: Bearer <jwt>` — the same header shape as an agent’s `system`/`pi` bearer. The `/api/agent-tools/*` catch-all resolves principals with a **composite** resolver: `resolveBearer` (token\_index → agent) first, then `principalFromMobileJwt`. One hook reaches both. A phone can therefore call any built-in `defineTool` directly; it no longer needs the `/voice-tool/:name` proxy.
+
+## Gotcha 2 — `isRevoked` treats an unknown device as revoked
+
+[Section titled “Gotcha 2 — isRevoked treats an unknown device as revoked”](#gotcha-2--isrevoked-treats-an-unknown-device-as-revoked)
+
+`principalFromMobileJwt` runs `isRevoked(claims.sub)` (parity with the old `deviceAuth()` middleware). `isRevoked` returns **`true` for any device not present in `harness_shared.mobile_devices`** — a valid signature is not enough; the device must be a known, paired, non-revoked row.
+
+Consequence for tests: a synthetic JWT minted with `signDeviceToken` for a device that was never `insertDevice`’d will (correctly) resolve to a **null principal**. Mock it:
+
+```ts
+vi.mock('@/lib/mobile-device-store', async (orig) => ({
+  ...(await orig<typeof import('@/lib/mobile-device-store')>()),
+  isRevoked: async () => false,
+}));
+```
+
+## Gotcha 3 — route-stack auth needs a DB; handler-direct tests don’t
+
+[Section titled “Gotcha 3 — route-stack auth needs a DB; handler-direct tests don’t”](#gotcha-3--route-stack-auth-needs-a-db-handler-direct-tests-dont)
+
+Driving a `requirePrincipal`-gated route through `registerAllRoutes` + `app.request()` exercises the real resolver chain, which touches PG. In a no-DB test that throws (or flakily 500s). Either mock the auth/DB layer (the `auth.test.ts` pattern) or test the handler directly with a hand-built `RouteContext` (the `agent-tools-catchall.test.ts` pattern) — the latter is cleaner for verifying port fidelity.
+
+# Octokit 7+ changed the `auth:` API — use `hook.before('request')` instead of an async factory
+
+> The async-factory `auth: async () => token` pattern that worked in @octokit/rest v3-v5 throws `Token passed to createTokenAuth is not a string` on v7. Set the Authorization header in a `before('request')` hook instead.
+
+## The trap
+
+[Section titled “The trap”](#the-trap)
+
+The v3-v5 docs (and most random snippets you’ll find via search) tell you to lazy-resolve tokens like this:
+
+```ts
+import { Octokit } from '@octokit/rest';
+
+
+const oc = new Octokit({
+  auth: async () => {
+    const result = await getMyToken();
+    return result.token;
+  },
+});
+```
+
+In **@octokit/rest 7+** that throws immediately on construction:
+
+```plaintext
+[@octokit/auth-token] Token passed to createTokenAuth is not a string
+```
+
+The `auth:` option’s contract changed: v7 expects either a string literal or a structured `{ strategy, ... }` object. Functions are no longer accepted as a shortcut for “I’ll give you a token when asked.” The error message blames `@octokit/auth-token`, which masks that the real culprit is your factory shape.
+
+## The fix
+
+[Section titled “The fix”](#the-fix)
+
+Don’t pass `auth:` at all. Use the request lifecycle hooks to set the `Authorization` header on every outgoing request:
+
+```ts
+import { Octokit } from '@octokit/rest';
+
+
+const oc = new Octokit({});
+
+
+oc.hook.before('request', async (options) => {
+  const result = await getMyToken();
+  if (result.kind !== 'ok') {
+    throw new Error('not authenticated');
+  }
+  if (!options.headers) options.headers = {};
+  options.headers.authorization = 'token ' + result.token;
+});
+```
+
+You keep the same per-request async resolution. You keep your token’s cache layer hot. You don’t fight the v7 type system.
+
+## Bonus: 401-retry without infinite-looping
+
+[Section titled “Bonus: 401-retry without infinite-looping”](#bonus-401-retry-without-infinite-looping)
+
+Pair the `before` hook with a `wrap` hook to handle revoked tokens gracefully:
+
+```ts
+oc.hook.wrap('request', async (request, options) => {
+  try {
+    return await request(options);
+  } catch (err) {
+    if (isUnauthorizedError(err)) {
+      const wasRetried = (options as { __retried?: boolean }).__retried;
+      if (!wasRetried) {
+        await refreshMyTokenCache();
+        return request({ ...options, __retried: true });
+      }
+    }
+    throw err;
+  }
+});
+```
+
+The retry flag short-circuits the second 401 so a genuinely revoked token doesn’t loop forever. `before('request')` runs again on the retry (it always does for `request()` calls), so the refreshed token gets picked up automatically.
+
+## Why the v7 surface is structurally better
+
+[Section titled “Why the v7 surface is structurally better”](#why-the-v7-surface-is-structurally-better)
+
+The v3-v5 async-factory pattern conflated two concerns:
+
+1. *How* to authenticate (token, OAuth, JWT, app installation).
+2. *When* to resolve the credential (lazy, cached, refreshed).
+
+The new `authStrategy` option owns (1). Request hooks own (2). If you only need (2) — which is the common case — you don’t have to build a strategy object.
+
+`hook.before('request')` also runs for *every* request including ones the strategy layer can’t see (e.g. `oc.request('GET /custom')`). Setting the header in the hook means no path silently bypasses your auth.
+
+Caution
+
+The test you write to verify the wiring will be the thing that catches this. A unit test that just calls `oc.hook.before(...)` and asserts on the hook object will pass; a test that actually issues `oc.users.getAuthenticated()` (with `gh auth status` succeeding locally) will throw the `createTokenAuth` error and force the rewrite. Lean on live integration smokes for SDKs with breaking auth changes.
+
+## See also
+
+[Section titled “See also”](#see-also)
+
+* `apps/operator/lib/identity/octokit-client.ts` — the canonical wrapper in this repo. Uses both `before('request')` for auth and `wrap('request')` for 401-retry.
+* `apps/operator/lib/identity/gh-token.ts` — the token cache the Octokit wrapper consumes (see also [`forward-defined-registry-entries`](/internal/docs/agent-insights/forward-defined-registry-entries/) for the pattern of placing helpers ahead of their primary consumer).
+* [Octokit migration guide v6→v7](https://github.com/octokit/octokit.js/blob/main/CHANGELOG.md) — the upstream changelog.
+
 # Paperclip background runner stomps apps/operator/app/harness/*
 
 > paperclipai runs continuously and silently rewrites the harness UI directory on its own cadence. Edit fast and commit immediately; check pgrep before exploratory edits.
@@ -213,6 +1547,204 @@ Before any edit under `apps/operator/app/harness/*`:
 
 Anywhere outside `apps/operator/app/harness/*` is paperclip-safe; edit normally.
 
+# path.join normalizes `..` away — string-based traversal checks run too late
+
+> A `..`/traversal guard that inspects a string fails silently if path.join ran first; validate the raw input segment, not the joined result.
+
+## The trap
+
+[Section titled “The trap”](#the-trap)
+
+A path-traversal guard that scans a string for `..` is **only sound if it runs before any `path.join` / `path.posix.join`**. Both normalize `..` segments away as part of joining — so by the time the guard sees the string, the `..` it’s looking for is gone, and a malicious input sails through.
+
+Real bug (found in the 2026-05-21 plans-tooling audit, `withPlanLock` in `lib/agent-tools/plans/with-plan-lock.ts`):
+
+```ts
+const lockKey = path.posix.join(PLANS_DIR_REL, slug + '.md');
+//   slug = '../../../CLAUDE'
+//   PLANS_DIR_REL = 'apps/operator/docs/plans'
+//   → lockKey = 'apps/CLAUDE.md'      ← the ../ are GONE, collapsed by join
+validatePath(lockKey);  // checks for '..' in the string → finds none → PASSES
+const filePath = path.join(absPlansDir, slug + '.md');
+//   → <repo>/apps/CLAUDE.md           ← escaped docs/plans/, write lands here
+```
+
+`validatePath` did its job correctly — it just got handed a string that no longer contained the evidence. The write verb could overwrite any `.md` file in the repo.
+
+## Why it’s easy to miss
+
+[Section titled “Why it’s easy to miss”](#why-its-easy-to-miss)
+
+* The guard *looks* present and correct. `validatePath` genuinely rejects `../foo`, `a/../b`, etc. — when given a raw, un-joined path.
+* The two surfaces diverge: the **read** path (`readPlanBySlug`) was safe because it validated the raw `slug` with a charset whitelist that rejects `/`. The **write** path validated the *joined* `lockKey`. Same intent, opposite soundness.
+* `path.join` “helpfully” normalizing is the whole point of the function; nobody reads it as “destroys traversal evidence.”
+
+## The rule
+
+[Section titled “The rule”](#the-rule)
+
+**Validate the raw, caller-supplied segment — before it touches `join`.** For a slug / filename / id that becomes one path component, the simplest sound check is a charset whitelist that rejects `/` (and backslash):
+
+```ts
+const VALID_SLUG = /^[A-Za-z0-9._-]+$/;   // no '/', so no traversal
+if (!VALID_SLUG.test(slug)) throw new Error(`invalid slug: ${slug}`);
+```
+
+A `..` segment cannot traverse without a `/` — so rejecting `/` on the raw segment is enough, and it’s robust against the `path.join` normalization that defeats a `..`-substring check. (`..` alone, with no slash, just yields a weird filename like `...md` inside the intended dir — not an escape.)
+
+If you must validate a *path* rather than a single segment, validate the **raw** string for `..` segments first, and only then canonicalize — which is exactly what `lib/agent-tools/locks/path-normalize.ts` does correctly (`validatePath` runs on the raw path, `canonicalizePath` after). The `withPlanLock` bug was feeding it a path that an earlier `path.join` had already canonicalized.
+
+## Checklist when you see a traversal guard
+
+[Section titled “Checklist when you see a traversal guard”](#checklist-when-you-see-a-traversal-guard)
+
+1. Does the guard run on the **raw caller input**, or on something a `join`/`resolve`/`normalize` already touched?
+2. If the input is a single component (slug/id/name): is there a `/`-rejecting whitelist? That’s the cheap, sound check.
+3. Read and write paths for the same resource: do they validate at the **same** layer with the **same** rule? Divergence is where this hides.
+
+# Per-phase execution-plan template
+
+> The pattern proven across 13 dogfood-arc phase plans for splitting a master plan into shippable per-phase execution plans. Sub-acceptances, decision rules, named-fallback rollouts, and for-the-next-agent handoffs.
+
+When a master plan grows past \~1000 lines and covers ≥3 phases with distinct deliverables, splitting into per-phase execution plans pays off. The pattern below was proven across all 13 dogfood-arc phase plans (`papercusp-dogfood-phase{0,1a,1b,2,4,5a,5b,6,7,8,9,10,11}-...-2026-05-24.md` in `apps/operator/docs/plans/`).
+
+## When to split
+
+[Section titled “When to split”](#when-to-split)
+
+Split when:
+
+* Master plan exceeds \~1000 lines and phases have natural break-points.
+* Multiple agents will work on different phases in parallel or in sequence.
+* Some phases are partially done in-tree and others are fully greenfield — the per-phase plan can mark `DONE`/`PARTIAL`/`NOT STARTED` precisely.
+* The master plan’s phase-section entries are dense enough that a reader implementing one phase has to mentally filter out 90% of the doc.
+
+Don’t split when:
+
+* The whole arc fits on one screen.
+* All phases will run sequentially with the same agent.
+* Phases are tiny (S-sized) and a per-phase plan would be longer than the section it replaces.
+
+## The template
+
+[Section titled “The template”](#the-template)
+
+Every per-phase execution plan should contain these sections, in order:
+
+### `## Now`
+
+[Section titled “## Now”](#-now)
+
+One sentence: the next concrete action. This is the cold-resume anchor — the most-read field. Anyone landing on the plan after a break sees this first.
+
+### `## Background`
+
+[Section titled “## Background”](#-background)
+
+What this phase ships and which v5 section it implements. Two paragraphs max. Include:
+
+* What’s already done in-tree (with commit hashes if available).
+* What’s outstanding.
+* The gate (phases this phase blocks-on).
+* Whether this phase can run in parallel with siblings.
+
+### `## Phase tasks`
+
+[Section titled “## Phase tasks”](#-phase-tasks)
+
+Copy the relevant task rows from the master plan’s `## Phases` section verbatim into per-task `### P-NNN` subsections. Each expansion includes:
+
+**Sub-acceptances (P-NNNa/b/c)** — for tasks with platform-matrix or multi-condition dimensions. Example: Phase 0 P-001 (bundle Holepunch primitives) splits into P-001a (Linux), P-001b (macOS arm64), P-001c (macOS x64), P-001d (Windows), P-001e (Tauri bundle). Each sub-acceptance is independently testable and passes/fails on its own.
+
+**Files** — the concrete paths the implementer will touch (existing files to edit, new files to create). Use the real repo layout. Don’t say “the harness UI”; say `apps/operator/app/harness/FeaturesTab.tsx`.
+
+**Decision rule** — one sentence stating how to interpret partial-pass. Example: *“PASS when P-001a + P-001d + P-001e all pass. If P-001b fails but P-001c passes (or vice versa), acceptable — pick the side with prebuilds and document the other arch needs Xcode CLT. If both fail, hard fail.”* The decision rule prevents “we did 4 of 5 — is that good enough?” debates.
+
+**Status** — for tasks with prior in-tree work, mark ✅ DONE / 🟡 PARTIAL / 🔴 NOT STARTED at the section heading. Cite commit hashes for DONE. The implementer skims and knows immediately what they need to do.
+
+### `## Decisions`
+
+[Section titled “## Decisions”](#-decisions)
+
+Sub-design decisions made during execution. Don’t re-decide what the master plan already decided; reference D-NNN from the master plan instead. New decisions get fresh D-IDs scoped to this execution plan.
+
+### `## Named fallback rollout` (only for phases with substrate-class failure modes)
+
+[Section titled “## Named fallback rollout (only for phases with substrate-class failure modes)”](#-named-fallback-rollout-only-for-phases-with-substrate-class-failure-modes)
+
+Concrete numbered steps for how the fallback fires — exactly which master-plan sections get struck or rewritten, which phases get re-merged or removed, which deliverables get deleted from the tree.
+
+**The named fallback being real is itself the gate guarantee.** Aspirational fallbacks (“we’ll figure something out if this fails”) are gate failures in disguise. Phase 0 of the dogfood arc has an 8-step rollout for “HYPERBEE bucket collapses into GIT bucket”; that specificity is what makes the gate meaningful. Most phases don’t need this section (UI work, integration work without substrate dependencies); skip it then.
+
+### `## Cross-references`
+
+[Section titled “## Cross-references”](#-cross-references)
+
+Link back to:
+
+* The arc’s overview doc (5-minute orientation surface).
+* The execution-plan index doc.
+* The master plan.
+* Sibling phase plans (especially prereqs and dependents).
+* Relevant D-decisions from the master plan.
+
+A reader landing on this phase plan should never have to back-track to the master plan to find another doc; the cross-refs make the corpus self-navigating.
+
+### `## Open questions`
+
+[Section titled “## Open questions”](#-open-questions)
+
+Anything you hit during planning that needs the user’s call. Number them Q-1, Q-2, etc. Each open question states the lean (your recommended answer) so the user can ratify-by-skim if they agree.
+
+### `## For the next agent`
+
+[Section titled “## For the next agent”](#-for-the-next-agent)
+
+Brief whoever picks up the next phase. What’s done that they inherit, what’s gated on what, what surprises came up that aren’t obvious from the plan body. Hand-off documentation is the discipline that keeps a multi-phase arc shippable.
+
+This section also names the next plan that should be written. Example from Phase 2: *“Skip Phase 3 (substantially done in-tree, v5 entry suffices), write Phase 4 next. Phase 4 should heavily emphasize success criteria + pain capture.”*
+
+## Common pitfalls
+
+[Section titled “Common pitfalls”](#common-pitfalls)
+
+* **Don’t restate the master plan’s design.** The execution plan is HOW; the master plan is WHY + WHAT. Restating WHY in every phase plan bloats the corpus.
+* **Don’t pre-commit detailed design that hasn’t been discussed.** If a phase needs design work first, say so in `## Now` (“write three design memos before implementation”). Don’t speculate UX patterns in the execution plan; that traps the implementer.
+* **Don’t size phases optimistically.** L is two-three weeks; M is one week; S is one-three days. If you’re writing a phase that looks M but feels L, split it (e.g. Phase 1 → 1a + 1b; Phase 5 → 5a + 5b).
+* **Don’t omit the for-the-next-agent section.** It’s the connective tissue. Every phase plan ships with one even if the content is one paragraph.
+
+## Companion artifacts to write alongside the per-phase plans
+
+[Section titled “Companion artifacts to write alongside the per-phase plans”](#companion-artifacts-to-write-alongside-the-per-phase-plans)
+
+After splitting an arc into per-phase plans, also write:
+
+1. **Execution-plan index doc** (one page, in `apps/operator/docs/plans/<arc-slug>-execution-plan-index-<date>.md`). Status legend, per-phase status table with sizing + blockers, navigation hints. The single navigation surface so readers don’t get lost in the cohort.
+
+2. **Overview doc** (one page, in `apps/operator/docs/plans/<arc-slug>-overview-<date>.md`). 5-minute read covering why, what, how-rolled-out, what’s done, what’s deferred, what success looks like. Read before any individual phase plan.
+
+3. **Design memos** (in `apps/operator/docs/plans/<arc-slug>-design-memo-<topic>-<date>.md` initially; convert to MDX under `apps/operator/content/internal-docs/design/` when implementation of the relevant phase begins). One memo per design question that gates implementation.
+
+4. **Deferral plans** (separate plan docs for substantial threads carved out of the arc). The master plan’s deferral block points at these; each deferral plan is a real plan with its own phases, decisions, and open questions — not a stub.
+
+## When to update the index
+
+[Section titled “When to update the index”](#when-to-update-the-index)
+
+After every phase plan write or status change, update the index in the same commit. The index is the single navigation surface; keeping it fresh is the discipline that prevents the cohort from devolving into “we have 12 plans, which one is real?” confusion.
+
+## Why this template works
+
+[Section titled “Why this template works”](#why-this-template-works)
+
+The template is shaped around three forces:
+
+1. **Cold-resume reality.** Any agent picking up a phase has likely never seen it before. The `## Now` + the for-the-next-agent handoffs make cold-pickup work.
+2. **Partial-progress reality.** Most phases have some prior in-tree work. The DONE/PARTIAL/NOT STARTED status + sub-acceptances let the implementer see exactly what’s left without guesswork.
+3. **Multi-agent parallelism.** Different agents will work different phases. The cross-refs + open-questions + handoffs are the inter-agent protocol.
+
+The result: a multi-phase arc that can be picked up by any agent at any phase boundary without re-reading the entire corpus. Proven across the dogfood arc’s 13 phase plans + 3 design memos + 2 deferral plans + 1 index + 1 overview + 1 master plan = 21 documents shipping a single arc.
+
 # PG migrations — bash heredocs collapse $body$ tokens
 
 > Migrations using $body$...$body$ for function bodies break when written through bash heredocs. Use a named dollar-quote tag (e.g. $func$) and verify on apply.
@@ -241,6 +1773,227 @@ The bug also caught us a fourth time on a later migration that used `$$ ... $$` 
 * After applying, **call the function** at least once in a smoke test. An empty body parses fine; calling it does not.
 
 The migration apply script lives in `libs/papercusp/libs/db/scripts/` — check there before adding a new heredoc-based applier.
+
+# Pull daemon decision logic into pure functions, leave glue in the runtime
+
+> A poll daemon's "what should I do next?" logic is testable in isolation only when it's pure. The runtime becomes a thin shim around `decideX()` calls; every interesting branch lives in a unit-tested types module.
+
+## The trap
+
+[Section titled “The trap”](#the-trap)
+
+A typical poll daemon looks like this:
+
+```ts
+async function pollLoop() {
+  while (running) {
+    try {
+      const prs = await prHost.listOpenPrs(...);
+      for (const pr of prs.data) {
+        // 30 lines of nested ifs deciding whether to auto-approve, auto-merge,
+        // skip, retry, give up...
+        if (settings.pr_reviewer_role_enabled) {
+          if (settings.auto_review) {
+            if (pr.state === 'open' && !pr.is_draft) {
+              if (settings.trust_list.has(pr.author.github_user_id)) {
+                // ... actually fire the approve, maybe merge, maybe both ...
+              }
+            }
+          }
+        }
+      }
+    } catch (e) {
+      // 20 lines of nested ifs on error kind + attempt count + oauth-refresh
+      // state deciding whether to back off, refresh tokens, give up...
+    }
+  }
+}
+```
+
+This is wrong in a specific way: every interesting branch (the 4-clause AND for auto-approve, the 9-variant error-kind dispatch, the backoff math) is locked inside the I/O loop. To test it you’d have to mock the entire PrHost, fake the PG cache, fake the `gh` CLI, run the daemon in a vitest worker, and assert behavior at the I/O boundary. You won’t write those tests; nobody does.
+
+## The pattern
+
+[Section titled “The pattern”](#the-pattern)
+
+**Pull every interesting branch into a pure `decideX()` function. The daemon becomes a thin shim that calls `decideX()` and dispatches the result.**
+
+```ts
+// In lib/pr-host/auto-review-decision-types.ts — pure, ~150 LOC:
+export function decideAutoReview(
+  pr: Pr,
+  settings: AutoReviewSettings,
+): AutoReviewDecision {
+  // 30 lines of nested ifs, but they return discriminated unions
+  // instead of doing I/O.
+}
+
+
+// In lib/pr-host/retry-policy-types.ts — pure, ~150 LOC:
+export function decideRetry(
+  error: PrHostError,
+  ctx: RetryContext,
+  config: RetryPolicyConfig = DEFAULT_RETRY_POLICY,
+): RetryDecision {
+  // 20 lines of nested ifs, returning discriminated unions.
+}
+
+
+// In lib/pr-host/poll-daemon.ts — runtime, ~50 LOC:
+async function pollLoop() {
+  while (running) {
+    try {
+      const prs = await prHost.listOpenPrs(...);
+      for (const pr of prs.data) {
+        const decision = decideAutoReview(pr, settings);
+        switch (decision.kind) {
+          case 'skip': continue;
+          case 'approve': await prHost.postReview({ ... }); break;
+          case 'approve_and_merge': await prHost.postReview({ ... }); await prHost.merge({ ... }); break;
+        }
+      }
+    } catch (e) {
+      const retry = decideRetry(e, retryCtx);
+      switch (retry.kind) {
+        case 'wait': await delay(retry.delay_ms); break;
+        case 'oauth_refresh_then_retry': await refreshToken(); break;
+        case 'give_up': return done(retry.reason);
+        case 'alert_user': await surfaceBanner(retry.reason); return;
+      }
+    }
+  }
+}
+```
+
+The daemon collapses to “call decideX, dispatch on the discriminated union.” It **cannot have a logic bug** — every condition that could go wrong was deposited into `decideX()`, which has 100% test coverage at every input permutation.
+
+## What you give up + why it’s fine
+
+[Section titled “What you give up + why it’s fine”](#what-you-give-up--why-its-fine)
+
+**You give up** the ability to peek at I/O state mid-decision. If `decideRetry` wants to know “is this PR currently in a pending CI run?” it can’t ask GitHub directly — the caller has to pass that in. Result: `decideX` functions take more args than they would if they were impure.
+
+**Why it’s fine:** the daemon already had to fetch that state (otherwise it couldn’t decide). Pulling the fetch out to the daemon and passing the result in just makes the decision’s data dependencies explicit. The next reader of `decideRetry` sees exactly what it needs to make a decision; the next reader of the impure version had to spelunk through the daemon to figure out what state got read where.
+
+## Test surface ratio
+
+[Section titled “Test surface ratio”](#test-surface-ratio)
+
+Three concrete numbers from this session’s pr-host modules:
+
+| Module                            | LOC | Test LOC | Test count | Run time |
+| --------------------------------- | --- | -------- | ---------- | -------- |
+| `auto-review-decision-types.ts`   | 218 | 240      | 27         | 12ms     |
+| `retry-policy-types.ts`           | 196 | 215      | 25         | 13ms     |
+| `harness-feature-pr-row-types.ts` | 232 | 247      | 25         | 12ms     |
+
+For each, the test file is roughly the same size as the source file and runs in \~10ms. The daemon that consumes them needs **integration tests** but not **unit tests** — every interesting branch is already covered by the pure module tests. The integration tests only verify “I call decideX, then I actually dispatch the side effect correctly,” which is mostly a single mock + one assertion per case.
+
+## When to apply this
+
+[Section titled “When to apply this”](#when-to-apply-this)
+
+Whenever you find yourself writing a daemon with more than \~3 branches at any decision point, suspect the pattern applies. Specific smells:
+
+* A `for` loop with nested `if/else` chains for “should I fire this side effect.”
+* A `catch` block with `error.code === 'X' && attempt < N && !refreshed` shaped checks.
+* A “main loop” function over 100 LOC with comments like `// auto-approve gate`.
+* Logic you can describe in plain English (“approve if X and Y and Z, unless W”) but you don’t have a unit test for.
+
+When you don’t see the smells, don’t force it — a function that does one thing once doesn’t benefit from being split into “decide + do.”
+
+## Cross-call coherence
+
+[Section titled “Cross-call coherence”](#cross-call-coherence)
+
+A bonus the pattern enables: **multiple call-sites consume the same `decideX()`** and they can’t drift. The auto-review gate is consumed by:
+
+1. The poll daemon (fires the side effect).
+2. The PRs tab UI (renders “would auto-approve if you trusted @alice”).
+3. The audit-log replay tool (re-decides historical gate outcomes).
+
+If those three had each re-implemented the 4-clause AND, drift would be inevitable. They all import `decideAutoReview` and `wouldFireIfTrusted` from the same module. The UI hint cannot lie about what the daemon would do.
+
+## See also
+
+[Section titled “See also”](#see-also)
+
+* `apps/operator/lib/pr-host/auto-review-decision-types.ts` — the canonical example. 27 tests cover every (settings × pr-state × review-state) permutation.
+* `apps/operator/lib/pr-host/retry-policy-types.ts` — the same pattern applied to backoff math.
+* `apps/operator/lib/harness/feature-claim-types.ts` — `arbitrateClaims()` for distributed orchestration.
+* [`types-first-from-design-memo`](/internal/docs/agent-insights/types-first-from-design-memo/) — sister pattern: ship the types ahead of the runtime.
+* [`forward-defined-registry-entries`](/internal/docs/agent-insights/forward-defined-registry-entries/) — sister pattern for registrations.
+
+Tip
+
+A good `decideX` function: takes data, returns a discriminated union, has no async, has no side effects, has tests that exercise every variant. If your function fails any of those, push the impurity further out into the runtime.
+
+# Reaching an imperative library instance via React fiber walk
+
+> How to read a useRef-held instance (vditor, monaco, etc.) from a webview eval when the component doesn't expose it on window.
+
+When you need to drive an imperative library instance (vditor, monaco, codemirror, chart libs) from a webview eval — a spike, a debugging session, a `tauri-agent-tools` bridge call — the instance is usually held in `useRef<...>` inside the React wrapper component. It is **not on `window`**, has no global handle, and walking the DOM only gives you the host element.
+
+The trick: walk the React fiber from the host element up to the wrapper component, then read the hooks list. `useRef` stores its `{ current }` in the fiber’s `memoizedState` linked list in source order.
+
+```js
+const el = document.querySelector('.vditor'); // or whatever host element
+const fiberKey = Object.keys(el).find(k => k.startsWith('__reactFiber'));
+let fiber = el[fiberKey];
+
+
+// Walk up to the wrapper component (by name)
+while (fiber && (typeof fiber.type !== 'function' || fiber.type.name !== 'MarkdownEditor')) {
+  fiber = fiber.return;
+}
+
+
+// memoizedState is a linked list of hook state nodes, IN SOURCE ORDER:
+//   useRef    → { memoizedState: { current: ... } }
+//   useState  → { memoizedState: value, queue: ... }
+//   useEffect → { memoizedState: { tag, create, deps, ... } }
+// Walk .next from hook to hook.
+let hook = fiber.memoizedState;
+let i = 0;
+while (hook && i < 30) {
+  const ms = hook.memoizedState;
+  if (ms && typeof ms === 'object' && 'current' in ms && Object.keys(ms).length <= 2) {
+    console.log(i, 'ref →', ms.current?.constructor?.name, Object.keys(ms.current ?? {}));
+  }
+  hook = hook.next; i++;
+}
+```
+
+Once you see e.g. `1 ref → Vditor [isDestroyed, version, vditor]`, you have it: `fiber.memoizedState.next.memoizedState.current` is the Vditor instance. From there `instance.vditor.lute.SetJSRenderers({...})` works.
+
+## When to use this
+
+[Section titled “When to use this”](#when-to-use-this)
+
+* **Spike work** where you need to call a method on the live instance before you wire it permanently. Right path for the P-001 vditor spike (see `plans-admin-ui-2026-05-20`).
+* **Debugging** “is this method even reachable / does it fire?” without writing throwaway production code.
+* **Eval-only contexts** (Playwright, dev-bridge, devtools console) where you cannot import the React ref.
+
+## When NOT to use this
+
+[Section titled “When NOT to use this”](#when-not-to-use-this)
+
+* **Production code paths.** Hooks-list ordering is React internals and could change between minor versions. For permanent integration, expose the instance via your own `useImperativeHandle` / `forwardRef` or pass a ref-setter prop.
+* **If the wrapper already exposes the instance** through an `onReady` callback or a context — use that. The fiber walk is a last resort.
+
+## Gotchas
+
+[Section titled “Gotchas”](#gotchas)
+
+* Fiber-walk depth is brittle if the wrapper component renames change. The walk-by-`type.name` filter is reliable but breaks under prod minification — only do this in dev/Tauri-dev where names survive.
+* The hooks list reflects **call order**, not declaration order in code, but in practice for our wrappers they match. If you have a custom hook that internally calls more hooks, those land in the same flat list, in the order they ran.
+* Don’t mutate the fiber. Only read.
+
+## Real use
+
+[Section titled “Real use”](#real-use)
+
+The P-001 spike in the Plans admin UI plan ran inline against the live `PlanEditor` using exactly this technique — no `editor-demo` round-trip needed, no spike-only test scaffold, no app rebuild. Drove the question from “unknown — needs spike” to “GREEN — D-003 primary path holds” in a single eval.
 
 # React icon maps need an explicit fallback
 
@@ -290,6 +2043,248 @@ return <Icon />;
 Same rule applies to `STATUS_BADGE_MAP[status]`, `SEVERITY_COLOR_MAP[level]`, etc. — anything that maps user-data keys to React components.
 
 If you find a violation while working in a panel, fix it on the spot even if it’s outside your task — this is a category we can’t afford in any UI surface.
+
+# Extend a multi-entry route with a body-discriminator + a helper-per-entry + a shared error vocabulary
+
+> POST /harness/projects now accepts 3 entry shapes (Entry 1/2/3). The pattern that scales — discriminate on body, delegate to a per-entry helper, surface errors with a shared .code vocabulary the UI handles uniformly.
+
+## The pattern
+
+[Section titled “The pattern”](#the-pattern)
+
+`POST /harness/projects` started as a single-shape handler: `{ slug, path }` for “register an existing folder.” It now accepts three shapes (Entry 1/2/3 from the dogfood v5 §3 spec):
+
+```ts
+// Entry 1 — new local dir   (init-local-dir.ts helper, P-010)
+{ slug, parentDir, folderName }
+
+
+// Entry 2 — GitHub URL      (clone-github.ts helper, P-008)
+{ slug, githubUrl, shallow? }
+
+
+// Entry 3 — existing folder (in-route path resolve)
+{ slug, path }
+```
+
+Three rules made this scale cleanly:
+
+### 1. Discriminate on body, not on a `kind:` field
+
+[Section titled “1. Discriminate on body, not on a kind: field”](#1-discriminate-on-body-not-on-a-kind-field)
+
+The handler picks the entry by which fields are present:
+
+```ts
+if (parentDir && folderName) {
+  // Entry 1
+} else if (githubUrl) {
+  // Entry 2
+} else if (rawPath) {
+  // Entry 3
+} else {
+  return Response.json({ error: 'one of `parentDir+folderName`, `githubUrl`, or `path` required' }, { status: 400 });
+}
+```
+
+No `body.kind === 'local_init'` discriminator. Why: callers can paste a `{ githubUrl }` body without remembering to set `kind: 'github'`; the shape *is* the kind. Less ceremony, fewer bugs.
+
+The trade-off: the body must be unambiguous (you can’t paste both `path` and `githubUrl` and expect a predictable winner). The handler enforces this implicitly by check-order — if you do mix them, Entry 1 → Entry 2 → Entry 3 priority applies. Document the priority in the route’s leading comment; callers shouldn’t rely on it.
+
+### 2. Each entry has a dedicated helper module
+
+[Section titled “2. Each entry has a dedicated helper module”](#2-each-entry-has-a-dedicated-helper-module)
+
+Entry 1 → `lib/harness/init-local-dir.ts` exports `initLocalHarnessDir({parentDir, folderName})`. Entry 2 → `lib/harness/clone-github.ts` exports `cloneGithubRepo(url, opts)`. Entry 3 → in-route path resolve (small; no helper warranted).
+
+The route handler is thin: it picks the entry, calls the helper, handles errors, falls through to the shared scaffold path. The helpers are independently testable (init-local-dir: 20 tests; clone-github: 65 tests) without the HTTP layer.
+
+When Entry 4 lands (harness link via Hyperswarm, Phase 1b P-009), it’ll be `lib/harness/join-shared-harness.ts`. Same pattern.
+
+### 3. Errors share a `.code` vocabulary
+
+[Section titled “3. Errors share a .code vocabulary”](#3-errors-share-a-code-vocabulary)
+
+Both helpers throw a structured error class:
+
+```ts
+class InitLocalDirError extends Error {
+  code: 'invalid_path' | 'parent_missing' | 'dest_exists' | 'git_missing' | 'unknown';
+  detail?: string;
+}
+
+
+class CloneGithubError extends Error {
+  code: 'invalid_url' | 'dest_exists' | 'auth_required' | 'not_found' | 'git_missing' | 'unknown';
+  detail?: string;
+}
+```
+
+Overlapping codes (`dest_exists`, `git_missing`, `unknown`) map to the *same* HTTP status across entries. New codes (`invalid_path` vs `invalid_url`, `parent_missing` vs `auth_required`) cover the entry-specific cases.
+
+The route’s error mapping is a single switch:
+
+```ts
+const httpStatus =
+  e.code === 'invalid_url' || e.code === 'invalid_path' ? 400 :
+  e.code === 'parent_missing'                          ? 400 :
+  e.code === 'dest_exists'                             ? 409 :
+  e.code === 'auth_required'                           ? 401 :
+  e.code === 'not_found'                               ? 404 :
+  e.code === 'git_missing'                             ? 500 :
+                                                          502;
+```
+
+The UI’s error handler (P-012 picker, when it lands) reads `response.code` and renders the matching copy — no per-entry switch needed because the codes overlap where the meaning overlaps.
+
+## Why this scales
+
+[Section titled “Why this scales”](#why-this-scales)
+
+A new entry (Entry 4, 5, 6 …) adds:
+
+* One helper module + its tests.
+* One `if` branch in the route handler discriminator.
+* Maybe one new error code if it has a genuinely novel failure mode.
+
+It does NOT add:
+
+* Per-entry route paths (they all live at `POST /harness/projects`).
+* Per-entry response schemas (one shared `{ ok, project, provisioning, init?, clone? }`).
+* Per-entry UI error switches (the shared `.code` vocabulary covers it).
+
+The handler’s complexity grows linearly with entry count; the rest of the system doesn’t grow at all.
+
+## When NOT to use this pattern
+
+[Section titled “When NOT to use this pattern”](#when-not-to-use-this-pattern)
+
+If your entries have *fundamentally different response shapes* (e.g. one is a streaming response, one is sync JSON), don’t try to unify them into one route. Split into `POST /harness/projects/stream-clone` vs `POST /harness/projects/create`. The body-discriminator approach only works when the success shape is shared.
+
+If your entries have *security boundaries* (Entry A is public, Entry B requires admin), don’t discriminate on body — discriminate on auth. The route’s `auth:` declaration should match the most-restrictive entry, with looser entries enforcing their own checks. Mixing auth modes in one route is a privesc hazard.
+
+Tip
+
+The discriminator-extension pattern works because POST /harness/projects’s entries all do roughly the same thing: “produce a path on disk, then scaffold.” If a future entry doesn’t fit that shape, that’s the signal it needs its own route, not another branch.
+
+## See also
+
+[Section titled “See also”](#see-also)
+
+* `apps/operator/lib/endpoint-route/routes/harness/projects.ts` — the canonical example. 284 LOC, three entries.
+* `apps/operator/lib/harness/init-local-dir.ts` — Entry 1 helper + structured error.
+* `apps/operator/lib/harness/clone-github.ts` — Entry 2 helper + structured error.
+* [`verification-signal-on-the-row`](/internal/docs/agent-insights/verification-signal-on-the-row/) — sister principle: signals belong on the entity they describe; the same instinct applied to error shapes here.
+
+# Sleep-mode shared-checkout discipline
+
+> When working overnight in a shared checkout with parallel agents, every commit must be staged file-by-file with a pre-commit diff check. Skipping this WILL bundle another agent's in-flight work into your commit.
+
+## What
+
+[Section titled “What”](#what)
+
+When the user tells you “I’m sleeping, keep working on the plan,” you are working **without anyone supervising your git operations** in a checkout that **other agents are editing in parallel**. The classic shortcut `git add <file>` is unsafe in this mode: another agent may have touched the same file between your last read and your commit.
+
+The canonical sleep-mode commit sequence:
+
+```bash
+git add <files-i-intended-to-stage>
+git diff --cached --name-only     # MUST show exactly what you intended
+git diff --cached <one-file>      # for a doc edit, eyeball the actual diff
+git commit -m "..."
+```
+
+The `git diff --cached --name-only` step is non-negotiable. **One unnecessary line of confirmation prevents a class of bug that’s hard to unwind after the fact.**
+
+## The failure mode you’re guarding against
+
+[Section titled “The failure mode you’re guarding against”](#the-failure-mode-youre-guarding-against)
+
+Real overnight incident: I edited the v5 plan doc, committed, and the commit ended up `78 ++++++++++++++++++++--` instead of the expected `~10`. Another agent had added a brand-new section (`§9.0 Insights tab`, `§17 Stat trust tiers`, `§18 User profile`, multiple D-NNN decisions, multiple P-NNN items) between my read and my `git add`. `git add <file>` swept it all into my commit; my commit message claimed “no code changes — pure plan-doc accuracy” which was *technically* true (no code) but completely missed the substantive new architecture work riding along.
+
+The damage:
+
+* Author attribution muddied — the other agent’s design work shows up under my commit hash + message.
+* Commit message no longer accurately describes the commit.
+* If the other agent’s edits had bugs, my commit would have “introduced” them in the git log.
+
+## When this is most likely to bite
+
+[Section titled “When this is most likely to bite”](#when-this-is-most-likely-to-bite)
+
+The danger window is:
+
+1. Long-lived files (plan docs, schema files, monolithic config) that multiple agents care about.
+2. **Time between read and commit** — the longer you spend composing an edit, the larger the window for another agent to drop in.
+3. **No checkpoint between thinks** — when you’re in flow (“got the right edit, commit it”) it’s easy to skip the verification.
+
+Files most likely to bite (this codebase, today):
+
+* `apps/operator/docs/plans/papercusp-dogfood-v5-2026-05-23.md`
+* `apps/operator/package.json`
+* `apps/operator/lib/ensure-schema*.ts`
+* `libs/papercusp/libs/db/sql/*.sql`
+* Anything in `apps/operator/app/harness/` (paperclip’s edit zone)
+
+## The discipline that works
+
+[Section titled “The discipline that works”](#the-discipline-that-works)
+
+1. **Stage explicitly, never `git add .`** — typing the path is a forcing function for “am I really intending to touch this file.”
+2. **`git diff --cached --name-only` before every commit** — one command, \~50ms, catches 100% of stage-leakage.
+3. **For any file you touched, also `git diff --cached <path>`** — confirms the diff inside the file matches what you intended.
+4. **If the diff has more lines than you remember writing, STOP** — another agent’s work landed. Decide: split the commit, ask the user, or call out the bundling in your commit message.
+5. **Commit per item, not per session** — small commits limit the blast radius of an accidental bundle.
+
+## What to do if you bundle by accident
+
+[Section titled “What to do if you bundle by accident”](#what-to-do-if-you-bundle-by-accident)
+
+Don’t try to silently fix it. You have two clean options:
+
+**Option A — Note in your next-commit message.** Add a follow-up commit that explicitly acknowledges the prior commit bundled unrelated work, listing what wasn’t yours. Future readers will find the trail.
+
+**Option B — Reset + redo (only if you haven’t pushed)**:
+
+```bash
+git reset --soft HEAD~1                  # un-commit, keep changes staged
+git reset HEAD                           # unstage everything
+git stash --include-untracked            # safe-park everything
+# re-do with explicit staging
+git stash pop
+```
+
+The user can also help by reviewing your commits before they push; your acknowledged-bundle commit message is the signal they need.
+
+## Things to NOT do in sleep mode
+
+[Section titled “Things to NOT do in sleep mode”](#things-to-not-do-in-sleep-mode)
+
+* **Don’t restart the user’s running dev server.** The :3055 / :3070 operator processes are theirs; they’re likely mid-session, not blocked. Memory has this rule explicitly.
+* **Don’t make architectural decisions the user should weigh in on.** When a code change forces a binary choice (e.g., “delete `apps/papercup/` or refactor `schema.ts`”), document the diagnosis in the plan and defer. Don’t pick.
+* **Don’t push.** “I trust your judgment” applies to commits, not pushes. The user has the final review at wake-up.
+* **Don’t run destructive operations on shared state.** PG drops, branch deletes, force-pushes — these have no undo in a shared checkout. If a task tempts you toward one, defer.
+* **Don’t paper over conflicts you don’t understand.** If a `git add` shows lines you didn’t write, that’s a signal — investigate the holder.
+* **Don’t keep working past your usefulness.** When the available safe work runs out, write a wrap-up report and stop. The user prefers an honest “I paused at X because Y” over a 7am commit that needs reverting.
+
+## What sleep mode is good for
+
+[Section titled “What sleep mode is good for”](#what-sleep-mode-is-good-for)
+
+* **Incremental migrations** that the user has already scoped (e.g., P-022’s batches — 53 names, each batch is a mechanical pattern).
+* **Schema additions** that match an already-established pattern in the same file.
+* **Agent insights / docs** that capture patterns just shipped.
+* **Plan-doc accuracy passes** — mark shipped items DONE with commit refs (with the stage-leakage check above).
+* **Test coverage backfill** for code shipped this session.
+
+## Related
+
+[Section titled “Related”](#related)
+
+* `feedback_git_status_before_commit_shared_checkout.md` — the underlying memory rule this insight expands.
+* `feedback_paperclip_collision_race.md` — paperclip-specific case of the same hazard.
+* Other agent insights in this directory exemplify the discipline: small commits, one item per commit, explicit cross-references.
 
 # fumadocs → Starlight migration (2026-05-20)
 
@@ -391,6 +2386,115 @@ A head-to-head build-time / bundle-size comparison against the old fumadocs setu
 * Deferred companion: Next-removal plan at the same date — see the same plans/ directory.
 * The `papercusp-su.tools.md` prompt and `~/.claude/CLAUDE.md` reflect the new paths and components list. Re-run `apps/operator/scripts/install-standalone-mcp.sh` if your CLAUDE.md still says “fumadocs”.
 
+# notifySyncInvalidate's 90-second dedupe window
+
+> Identical (name, args) notifies fired within 90s are silently suppressed at the source. Per-tick / heartbeat notifies will surprise you. Carry distinguishing args or data to bypass.
+
+## What
+
+[Section titled “What”](#what)
+
+`apps/operator/lib/sync-sse.ts:notifySyncInvalidate(name, args?, data?)` has a **90-second source-side dedupe window**. Two notifies with identical `(name, args, data)` fired within that window: the second one is silently dropped before `pg_notify` runs.
+
+The constant:
+
+```ts
+const DEDUPE_WINDOW_MS = 90_000;  // 90 seconds
+```
+
+This sits IN the producer, before the channel write. SSE subscribers never see the dropped event. There’s no log line; the suppression is intentional.
+
+## Why it exists
+
+[Section titled “Why it exists”](#why-it-exists)
+
+The 60-second `harness-fs-watcher` reconcile sweep upserts every (slug, panel) row every minute even when nothing changed. Without this guard, the operator fires \~80 no-op notifies per minute and the dashboard’s panels refetch in lockstep, which renders as constant flicker.
+
+The window is sized just over the reconcile interval so a *real* per-minute change still gets through (the preceding no-op notify falls out of the dedupe map by then).
+
+## When this is a footgun
+
+[Section titled “When this is a footgun”](#when-this-is-a-footgun)
+
+You add a new heartbeat / per-tick notify expecting clients to refetch every tick:
+
+```ts
+// every 5 seconds (this is wrong):
+setInterval(() => {
+  void notifySyncInvalidate('myStream.recent').catch(() => {});
+}, 5_000);
+```
+
+Result: clients refetch ONCE, then nothing for 90 seconds. The 17 dropped notifies in between go nowhere. You spend an hour wondering why the UI is stale.
+
+## How to bypass the dedupe (when you actually want every notify)
+
+[Section titled “How to bypass the dedupe (when you actually want every notify)”](#how-to-bypass-the-dedupe-when-you-actually-want-every-notify)
+
+The dedupe key hashes `(name, args, data)`. Vary any of them per call:
+
+```ts
+// Option 1: include the timestamp in args
+void notifySyncInvalidate('myStream.heartbeat', { ts: Date.now() });
+
+
+// Option 2: include a sequence number
+void notifySyncInvalidate('myStream.heartbeat', { seq: ++heartbeatSeq });
+
+
+// Option 3: carry the actual data payload (data-bearing notifies
+// hash the data into the dedupe key, so a NEW row set passes
+// through naturally)
+void notifySyncInvalidate('myStream.recent', undefined, latestRows);
+```
+
+For data-bearing notifies the dedupe documentation says:
+
+> Notifies with a `data` payload are never dedupe’d — they carry actual content and the receiver acts on them, not just refetches.
+
+That’s not quite right: data-bearing notifies ARE dedupe’d, but the data hash is in the key, so a different payload bypasses. Identical payloads (rare but possible) still dedupe.
+
+## How the dedupe map is pinned
+
+[Section titled “How the dedupe map is pinned”](#how-the-dedupe-map-is-pinned)
+
+```ts
+const _g = globalThis as unknown as _G;
+const recentNotifies: Map<string, number> =
+  _g.__syncNotifyDedupe ?? (_g.__syncNotifyDedupe = new Map());
+```
+
+Pinned to `globalThis` so Turbopack HMR doesn’t drop the Map on each module reload. Without this pin, every dev-mode code edit resets the dedupe table and the next reconcile pass fires every notify again — re-introducing the flicker problem in dev.
+
+Same pattern `ensure-schema.ts` uses for the same reason. When you add a new long-lived in-memory map, follow this idiom.
+
+## The PG-trigger producer (P-018) does NOT use this dedupe
+
+[Section titled “The PG-trigger producer (P-018) does NOT use this dedupe”](#the-pg-trigger-producer-p-018-does-not-use-this-dedupe)
+
+The PG trigger `emit_change_notify` writes to the same `sync_invalidate` channel but **does not** go through `notifySyncInvalidate`. It calls `pg_notify` directly from the trigger function. So the 90s dedupe applies only to app-code notifies.
+
+This is fine in practice: the trigger fires on real PG writes, not on heartbeats. If an app write triggers the PG row update AND calls `notifySyncInvalidate`, the trigger fires first (synchronous inside the txn), the app-code notify second; identical (name, args) collisions get caught by the consumer-side `last-event-id` semantics
+
+* the listener’s own internal handling.
+
+## Capacity
+
+[Section titled “Capacity”](#capacity)
+
+`recentNotifies` is bounded — when it exceeds 200 entries, `pruneNotifyCache` walks the map and drops entries older than the 90s window. Cheap GC; no unbounded growth on long-lived processes.
+
+200 is sized for \~one notify per (panel, slug, phase) across registered harnesses. If you blow past it you’re probably also hitting other problems.
+
+## Related
+
+[Section titled “Related”](#related)
+
+* `apps/operator/lib/sync-sse.ts` — the implementation
+* [Adding a reactive table](/internal/docs/agent-insights/adding-a-reactive-table) — when to use `notifySyncInvalidate` vs the PG trigger
+* [Adding a query to the Zero-free sync resolver](/internal/docs/agent-insights/adding-a-sync-query) — the consumer side
+* [Sleep-mode shared-checkout discipline](/internal/docs/agent-insights/sleep-mode-shared-checkout) — companion ops doc
+
 # TIMESTAMPTZ columns MUST be number() in Zero schemas
 
 > Postgres TIMESTAMPTZ columns serialize as epoch-ms numbers in Zero. Declaring them as string() kills the WebSocket for the entire schema; every panel using it goes blank.
@@ -430,6 +2534,436 @@ Recent example: a new column on `harness_features` added as `string()` because t
 * **For `BIGINT`**: declare `number()` (postgres-js returns string, but Zero’s coercion handles it; verify in dev).
 
 The Zero schema file lives at `libs/zero-harness/src/schema.ts`. The authoritative pitfall list is at [Data Sync → pitfalls](/internal/docs/data-sync/pitfalls) item #2 — this insight is a short pointer.
+
+# Bare `tsc --noEmit` reports hundreds of errors that next build doesn't
+
+> A direct invocation of `tsc --noEmit` against apps/operator reports ~860 pre-existing errors that `next build` handles correctly. Don't chase them; treat the count as a baseline and verify only that touched files are clean.
+
+## What
+
+[Section titled “What”](#what)
+
+Running `tsc --noEmit` directly against `apps/operator/` reports **\~860 errors** on a clean main checkout. `next build` (which is what the project actually typechecks with) reports zero. The delta is real and persistent — `tsc` is not finding regressions, it’s missing context.
+
+Two reasons:
+
+1. **Generated route types.** Next.js generates `.next-prod/types/*` files during a build that the type-checker needs to see; without them, every Next page/route handler that uses typed `params` / `searchParams` flags TS2307. Bare `tsc` doesn’t run the generator.
+2. **Module-resolution scope.** Bare `tsc` walks references that `next build` skips (e.g. `@bytecodealliance/jco` inside `packages/plugin-loader`), and resolves them differently.
+
+The error count fluctuates by a few as other agents land changes — don’t treat ±5 as a regression in either direction.
+
+## How to verify your work
+
+[Section titled “How to verify your work”](#how-to-verify-your-work)
+
+Always run `tsc` from `apps/operator/`, but **scope your check to the files you touched**, not the total:
+
+```bash
+cd /home/marsh-office/papercupai-workspace/papercup/apps/operator && \
+  ../../node_modules/.bin/tsc --noEmit --ignoreDeprecations 6.0 2>&1 | \
+  tee /tmp/tsc.log | grep -cE 'error TS'   # capture baseline
+
+
+# Then per-file:
+for f in path/to/your/file1.tsx path/to/your/file2.ts; do
+  n=$(grep -cE "^${f//\//\\/}\(" /tmp/tsc.log)
+  printf "  %4d  %s\n" "$n" "$f"
+done
+```
+
+A clean PR has **zero errors in touched files**, regardless of project total. The flags matter: `--ignoreDeprecations 6.0` is required because the repo’s `tsconfig.json` uses options newer `tsc` versions deprecated.
+
+## If you must chase the baseline
+
+[Section titled “If you must chase the baseline”](#if-you-must-chase-the-baseline)
+
+Don’t. Run `cd papercusp-desktop && npm run dev` (or `next build`) and trust its output. Bare `tsc` is a fast-but-noisy file-level check, not a project-correctness signal.
+
+## Why this was costly
+
+[Section titled “Why this was costly”](#why-this-was-costly)
+
+This session, I twice spent meaningful time investigating “new” errors in `lib/agent-tools/plans/*` that turned out to be the pre- existing baseline. Stashing the diff and re-running `tsc` confirmed they were already there. The diagnosis loop is fast (1–2 minutes with `git stash push -u <files>` + re-run) but it shouldn’t be necessary — knowing the baseline exists short-circuits the chase.
+
+# Ship types-only modules from "draft for review" design memos
+
+> When a design memo is concrete enough to define a public type but the user hasn't accepted the behavior yet, ship the types alone. Future implementation gets a stable spine without forcing acceptance prematurely.
+
+## The setup
+
+[Section titled “The setup”](#the-setup)
+
+A common pattern in this codebase: a design memo is `status: draft` (“draft for review”) with concrete type signatures + a service interface, but the implementation is gated on user acceptance. Examples:
+
+* The `dogfood-design-memo-binding-service-api-2026-05-24` memo specifies `BindingRecord`, a 5-operation `BindingService` interface, and a 9-variant `BindingServiceError` union. The implementation (Phase 1b P-068) waits on the user’s review.
+* The `dogfood-design-memo-device-attestation-ux-2026-05-24` memo specifies a 3-screen modal flow. The UI implementation waits on the same review.
+
+You’re sitting on hours of safe overnight work and the memo is ready enough to type-check. What do you ship?
+
+## The pattern
+
+[Section titled “The pattern”](#the-pattern)
+
+**Split: types now, behavior on memo-acceptance.**
+
+Extract just the type declarations — `BindingRecord`, the error union, the permission enum, pure helpers like `composeBindingId` / `parseBindingId` / `hasRequiredPermission` — into a `*-types.ts` module. No service implementation, no I/O, no behavior the user would object to.
+
+Example from this codebase: `apps/operator/lib/harness/binding-types.ts` (commit `f05997aa`). 120 LOC + 15 unit tests, all pure functions. The eventual `binding-service.ts` (when the memo is accepted) will `import` from here verbatim.
+
+## Why it works
+
+[Section titled “Why it works”](#why-it-works)
+
+Three reasons.
+
+**(1) Types-only is reversible.** If the memo revises (e.g. adds a column to `BindingRecord`, swaps the error code shape), the types-only file changes alongside. Every downstream consumer gets a typecheck error to update. No runtime to break, no DB schema to migrate, no API to deprecate. It’s the lightest possible commitment to a design.
+
+**(2) The implementing agent gets a head start.** When the memo lands as accepted, P-068’s first commit doesn’t have to define the types — they already exist, already pass lint, already have unit tests. The implementer reads “the service surface is `BindingService` from binding-types.ts” and starts wiring methods. Days saved.
+
+**(3) The user reviewing the memo can see types in tree.** “Does the `BindingRecord` shape make sense?” → the user can navigate to the file, scroll through the comments, see how `composeBindingId` encodes things, run the tests. Reviewing a memo with a real types file open is qualitatively different from reviewing a memo with no code at all. The review becomes “is the implementation I see in tree what I want?” — a more concrete question than “is the design as written what I want?”
+
+## What NOT to do
+
+[Section titled “What NOT to do”](#what-not-to-do)
+
+Don’t ship anything that requires user judgment:
+
+| Safe to ship                                   | Wait for memo acceptance                          |
+| ---------------------------------------------- | ------------------------------------------------- |
+| Type declarations                              | Service implementations                           |
+| Pure functions (parsers, predicates, encoders) | Functions that perform I/O                        |
+| Error union variants                           | Error-handling policies (retry counts, backoff)   |
+| Constant tables (e.g. required permissions)    | Wiring those tables into UI behavior              |
+| Tests for the pure functions                   | Tests that assert behavior the memo hasn’t pinned |
+| New SQL columns (additive only)                | New SQL tables that imply a new domain            |
+
+The line is: *would the user reading the diff say “that’s what I’d have written”?* If yes, ship. If they’d say “wait, that’s a decision,” wait.
+
+Tip
+
+The commit message matters. State clearly: “types-only — implementation gated on memo acceptance.” Reviewers should know this is groundwork, not a service launch. Use phrasing that signals reversibility: “If you revise the memo, the types change; downstream consumers get typecheck errors to update.”
+
+## What this is NOT
+
+[Section titled “What this is NOT”](#what-this-is-not)
+
+This is not the same as [`forward-defined-registry-entries`](/internal/docs/agent-insights/forward-defined-registry-entries/) — that pattern is about *registering* something ahead of its full implementation (e.g., a query name mapped before the resolver exists). Types-first is about *publishing the type surface* of an unimplemented service so the eventual implementation has a stable spine.
+
+Both patterns are about decoupling “the user has accepted this” from “the next coder can start.” Different mechanisms, same shape.
+
+## The risk: types that get stale
+
+[Section titled “The risk: types that get stale”](#the-risk-types-that-get-stale)
+
+If the memo never lands (user rejects, scope changes, plan deprecates), the types-only module becomes dead code. Two mitigations:
+
+1. **Cross-link the memo from the types file.** The header comment should name the memo slug. If the memo is deleted, a future cleanup pass greps the types file’s references and removes the orphan.
+2. **Be honest in the commit message about the dependency.** “Per dogfood-design-memo-binding-service-api-2026-05-24.md (still ‘draft for review’).” Anyone reading `git log` knows the type spine is provisional.
+
+## See also
+
+[Section titled “See also”](#see-also)
+
+* `apps/operator/lib/harness/binding-types.ts` — the canonical example.
+* `apps/operator/lib/harness/binding-types.test.ts` — 15 tests; the unit-test surface for a types-only module is small but real.
+* `apps/operator/docs/plans/dogfood-design-memo-binding-service-api-2026-05-24.md` — the source memo.
+* [`forward-defined-registry-entries`](/internal/docs/agent-insights/forward-defined-registry-entries/) — sister pattern for ahead-of-implementation *registrations*.
+* [`verification-signal-on-the-row`](/internal/docs/agent-insights/verification-signal-on-the-row/) — when a memo’s wire-format is awkward, the right move can be deviating with diagnosis; types-first lets the implementer make that call with a clean spine to push against.
+
+# Types-spine module categories — wire, decision, PG-mirror, key-format
+
+> Eighteen types-only modules shipped in one loop fell into 4 distinct categories. Each has a different test surface, risk profile, and import-by pattern. Picking the right category up front clarifies what to test + how the runtime will consume the module.
+
+## The taxonomy
+
+[Section titled “The taxonomy”](#the-taxonomy)
+
+Eighteen types-only modules shipped in the 2026-05-24 dogfood loop ([wrap doc](/internal/docs/plans/overnight-session-2026-05-24-su) for the full list). They fell into four distinct categories. Naming the category up front clarifies what to test + how the eventual runtime will consume the module.
+
+### 1. Wire types
+
+[Section titled “1. Wire types”](#1-wire-types)
+
+Modules that pin a JSON / message shape exchanged across a process boundary.
+
+**Examples this loop:**
+
+* `lib/cupboard/types.ts` — Cupboard server ↔ desktop client RPCs
+* `lib/identity/contributor-file-types.ts` — signed JSON committed to git
+* `lib/harness/harness-link-types.ts` — `papercusp://harness?...` URL format
+* `lib/pr-host/types.ts` — neutral PrHost interface + Pr shape
+
+**Test surface:** structural predicates (`isHarnessListing`), round-trip pairs (`formatHarnessLink` ↔ `parseHarnessLink`), JCS field-order const tests, error-discriminator coverage.
+
+**Risk profile:** **highest.** A wire-shape bug ships invisibly until a second implementation tries to read what the first wrote. The structural predicate test is load-bearing — it’s the smoke test for “can the receiver parse the sender’s output.”
+
+**Import pattern:** symmetric. Sender + receiver both import; types are the bilateral contract.
+
+### 2. Pure decision functions
+
+[Section titled “2. Pure decision functions”](#2-pure-decision-functions)
+
+Modules that pull the “what should I do next?” logic out of a daemon or runtime into a pure function returning a discriminated union.
+
+**Examples this loop:**
+
+* `lib/pr-host/auto-review-decision-types.ts` (`decideAutoReview`)
+* `lib/pr-host/retry-policy-types.ts` (`decideRetry`, `computeBackoffMs`)
+* `lib/harness/feature-claim-types.ts` (`arbitrateClaims`, `findWinningClaim`)
+* `lib/identity/binding-verifier-types.ts` (`deriveBindingStatus`, `canClaimHarness`)
+
+**Test surface:** input × output permutation coverage. Every variant of the discriminated-union return shows up at least once. Edge-case args (boundary timestamps, empty arrays, zero counts) exercised explicitly.
+
+**Risk profile:** **medium.** The decision is pure, so unit tests catch logic bugs cheaply. The risk is “the caller doesn’t dispatch on every variant” — the discriminated union forces a `switch` so the type system helps.
+
+**Import pattern:** asymmetric one-way. The daemon imports the decision; the decision never imports the daemon. Other call-sites (UI hints, audit-log replay) also import the same function — that’s the value-multiplier.
+
+See [`pure-decision-functions-pulled-from-daemons`](/internal/docs/agent-insights/pure-decision-functions-pulled-from-daemons/) for the deeper why.
+
+### 3. PG-mirror row types
+
+[Section titled “3. PG-mirror row types”](#3-pg-mirror-row-types)
+
+Modules that pin a row shape mirroring a PG table that’s the canonical durability layer for a Hyperbee KV.
+
+**Examples this loop:**
+
+* `lib/harness/contributor-row-types.ts` (mirror of `contributors`)
+* `lib/harness/feature-queue-row-types.ts` (mirror of `feature_queue`)
+* `lib/pr-host/harness-feature-pr-row-types.ts` (mirror of `harness_feature_prs`)
+* `lib/pr-host/pr-reviewer-settings-types.ts` (mirror of `pr_reviewer_settings`)
+
+**Test surface:** structural predicate (rejects legacy rows missing the new columns), default-value constructor (`defaultPrReviewerSettings`), patch-merge helper (`applyPatch`), soft-delete marker (`markRemoved`), schema\_version invariants.
+
+**Risk profile:** **medium-low.** PG mirrors have a forgiving migration path (`ALTER TABLE ADD COLUMN` is cheap), but the predicate catches drift between the SQL migration + the TS reader before it surfaces as runtime errors.
+
+**Import pattern:** PG-reader → predicate-narrow → consumer. Multiple consumers (UI rows, agent calls, projection writer) share one type definition.
+
+### 4. Key-format / path-format types
+
+[Section titled “4. Key-format / path-format types”](#4-key-format--path-format-types)
+
+Modules that pin a key string shape used by a KV store, URL scheme, or filesystem layout.
+
+**Examples this loop:**
+
+* `lib/harness/hyperbee-key-types.ts` (9 key shapes for the Hyperbee KV)
+* `lib/identity/contributor-file-types.ts` (path: `.harness/contributors/<login>.json`)
+* `lib/harness/harness-shared-config-types.ts` (path: `.harness/shared.json`)
+* `lib/pr-host/types.ts` (composePrKey / parsePrKey — `<remote>#<number>`)
+
+**Test surface:** composer + parser round-trip coverage, path-escape defense (`../`, embedded slashes), edge cases (numeric overflow, empty segments).
+
+**Risk profile:** **medium.** A key-format drift loses every row that gets written but never read. Round-trip tests catch this — `parseHyperbeeKey(keyContributor(id)).tag === 'contributors'` is the smallest sanity check.
+
+**Import pattern:** writer + reader symmetric. Often the same module exports both composer and parser to enforce the symmetry locally.
+
+## How to pick the category for new groundwork
+
+[Section titled “How to pick the category for new groundwork”](#how-to-pick-the-category-for-new-groundwork)
+
+When shipping a new types-only module, decide which of these you’re writing **before** the file. The category determines:
+
+1. **Test file structure.** Wire types lean on structural predicates; decision functions lean on permutation matrices; PG mirrors lean on default/patch helpers; key formats lean on round-trips.
+2. **What to ship + skip.** Wire types ship the schema-version invariant; decision functions don’t. PG mirrors ship a default constructor; wire types don’t (the wire is built by the producer, not defaulted).
+3. **How the runtime will import.** Symmetric (wire + key) vs asymmetric (decision + PG mirror). Affects where the module lives in `lib/`.
+
+## When a module spans categories
+
+[Section titled “When a module spans categories”](#when-a-module-spans-categories)
+
+Some modules naturally span. `contributor-file-types.ts` is **both** a wire type (signed JSON over git) **and** a key format (`.harness/contributors/<login>.json` path). That’s fine — split the test file into per-category sections so the predicate-vs-round-trip-vs-edge-case coverage is visible.
+
+## The 18 from this loop, categorized
+
+[Section titled “The 18 from this loop, categorized”](#the-18-from-this-loop-categorized)
+
+| Category      | Modules                                                                                                                                                                                                                                |
+| ------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Wire types    | `cupboard/types`, `contributor-file-types`, `harness-link-types`, `pr-host/types`, `contributor-usage-event-types`, `attestation-types`, `binding-types`, `completion-ref-types`, `harness-shared-config-types`, `feature-claim-types` |
+| Pure decision | `auto-review-decision-types`, `retry-policy-types`, `binding-verifier-types`                                                                                                                                                           |
+| PG-mirror     | `contributor-row-types`, `feature-queue-row-types`, `harness-feature-pr-row-types`, `pr-reviewer-settings-types`                                                                                                                       |
+| Key-format    | `hyperbee-key-types`                                                                                                                                                                                                                   |
+
+(Total > 18 because some modules span — `contributor-file-types` is in two; `harness-link-types`, `cupboard/types`, `pr-host/types` are also dual-category.)
+
+## See also
+
+[Section titled “See also”](#see-also)
+
+* [`types-first-from-design-memo`](/internal/docs/agent-insights/types-first-from-design-memo/) — the *when* to ship types-only modules.
+* [`pure-decision-functions-pulled-from-daemons`](/internal/docs/agent-insights/pure-decision-functions-pulled-from-daemons/) — deep-dive on category 2.
+* [`jcs-canonical-form-for-signed-json`](/internal/docs/agent-insights/jcs-canonical-form-for-signed-json/) — the canonical-form spec for signed wire types in category 1.
+* [`verification-signal-on-the-row`](/internal/docs/agent-insights/verification-signal-on-the-row/) — when a PG-mirror category type doesn’t match the design memo, deviating with diagnosis can be the right call.
+* `apps/operator/docs/plans/overnight-session-2026-05-24-su.md` — the wrap doc that catalogs all 18 modules with phase + test counts.
+
+Tip
+
+A category-1 (wire) module with no structural predicate isn’t a wire type — it’s a type alias. Add the predicate. Reading “what the wire sends” is the contract; if you trust the wire, you don’t need the type. The predicate is the load-bearing piece.
+
+# Vditor Lute renderers — the WalkSkipChildren selective-override pattern
+
+> When overriding a Lute renderer in vditor's IR pipeline, return WalkSkipChildren (=1) for the custom case and ["", WalkContinue] for the default fall-through. Returning WalkContinue with custom HTML breaks subsequent renders.
+
+When you register a `SetJSRenderers({ renderers: { Md2VditorIRDOM: { renderX: ... } } })` callback for vditor (3.11.x), the return value `[html: string, walkStop: number]` controls two things at once: what HTML to emit AND whether Lute should recurse into the node’s children. Get the walk-stop wrong and rendering breaks in a way that’s hard to diagnose — subsequent siblings of the same type just don’t render at all.
+
+## The constants
+
+[Section titled “The constants”](#the-constants)
+
+```js
+window.Lute.WalkContinue    // 0
+window.Lute.WalkSkipChildren // 1
+window.Lute.WalkStop        // 2
+```
+
+They live on the `Lute` class, not on a per-instance Lute object. Read them once at module init.
+
+## The pattern
+
+[Section titled “The pattern”](#the-pattern)
+
+For nodes you take over completely (emit your own complete tag pair):
+
+```js
+renderCodeSpan(node, entering) {
+  if (!entering) return ['', WalkContinue]; // closing pass: emit nothing
+  const content = node.Content();
+  if (!isMyCase(content)) return ['', WalkContinue]; // fall through to default
+  // My case: emit complete <code>X</code>, do NOT recurse.
+  return [`<code data-my-attr="${escape(content)}">${escape(content)}</code>`, WalkSkipChildren];
+}
+```
+
+Three rules:
+
+1. **Selective takeover.** Return `['', WalkContinue]` for cases you don’t want to customize — Lute then uses its default renderer for that node.
+2. **Custom HTML always pairs with `WalkSkipChildren`.** If you emit a complete `<code>...</code>` and return `WalkContinue`, Lute also fires the per-marker sub-renderers (`renderCodeSpanOpenMarker`, `renderCodeSpanContent`, `renderCodeSpanCloseMarker`) which compose into broken HTML — and as a side effect *subsequent siblings of the same node type stop rendering*. Confirmed empirically: a document with 4 code spans and a `WalkContinue` override produced only 1 in the DOM.
+3. **The closing pass returns `['', WalkContinue]`.** When `entering` is false, the open-tag side of your selective takeover is already in the HTML stream; you don’t need to do anything.
+
+## Reading content at open-tag time
+
+[Section titled “Reading content at open-tag time”](#reading-content-at-open-tag-time)
+
+The catch with `renderCodeSpan` (and other inline-node renderers): when `entering: true` fires, the node’s children haven’t rendered yet — you can’t inspect rendered text. But `node.Content()` returns the source text directly, which is what you need for “decide based on content.”
+
+```js
+const content = node.Content(); // "todo", "P-001", "agent-plan-tracking", ...
+```
+
+For list items: `node.Content()` returns the full text including inline code (`"P-001 todo First"`); `node.Text()` returns it with code spans stripped (`"P-001 First"`).
+
+## Reaching the per-instance Lute
+
+[Section titled “Reaching the per-instance Lute”](#reaching-the-per-instance-lute)
+
+The constants live on the global `Lute` class, but `SetJSRenderers` is a method on the *instance* held by each vditor:
+
+```js
+vditor.vditor.lute.SetJSRenderers({ renderers: { Md2VditorIRDOM: ... } });
+```
+
+Note the double `.vditor.vditor.lute` — the outer is the React wrapper, the inner is vditor’s internal state. See `apps/operator/app/admin/plans/PlanEditor.tsx` for the production wiring via the `MarkdownEditor`’s `onInstance` prop (vs. the React-fiber walk used in the P-001 spike — see [react-fiber-walk-for-imperative-instances](./react-fiber-walk-for-imperative-instances)).
+
+## Common renderers and their non-obvious shapes
+
+[Section titled “Common renderers and their non-obvious shapes”](#common-renderers-and-their-non-obvious-shapes)
+
+Looking at `apps/operator/node_modules/vditor/dist/types/index.d.ts`, several inline nodes also have *sub-marker* renderers:
+
+* `renderCodeSpan` + `renderCodeSpanOpenMarker` + `renderCodeSpanContent` + `renderCodeSpanCloseMarker`
+* `renderInlineMath` + `renderInlineMathOpenMarker` + `renderInlineMathContent` + `renderInlineMathCloseMarker`
+* `renderEmphasis` + `renderEmAsteriskOpenMarker` + `renderEmAsteriskCloseMarker` + `renderEmUnderscoreOpenMarker` + `renderEmUnderscoreCloseMarker`
+* `renderStrong` + four marker variants
+
+If you override the wrapping renderer, the markers still fire by default. `WalkSkipChildren` is what tells Lute to skip them too. If you want to customize just one marker, register the specific marker renderer instead.
+
+## When NOT to override at all
+
+[Section titled “When NOT to override at all”](#when-not-to-override-at-all)
+
+If your decoration logic depends on the rendered DOM (cross-element walking, regex-replacing prose), use the read-mode `Vditor.preview({ renderers })` static path with `after()` for post-render decoration, or the editor’s `input(value)` callback in IR mode. The Lute renderer hook is for **per-node** decisions at parse time.
+
+## See also
+
+[Section titled “See also”](#see-also)
+
+* [react-fiber-walk-for-imperative-instances](./react-fiber-walk-for-imperative-instances) — reaching the vditor instance from outside the wrapper.
+* `apps/operator/app/admin/plans/plan-renderers-ir.ts` — production use (status-pill decoration).
+* `apps/operator/app/admin/plans/plan-renderers-ir.test.ts` — unit coverage on the selective-override + walk-stop contract.
+
+# Per-row verification signals belong ON the row, not in a parallel escalations table
+
+> Phase 2 P-016 specced a divergence escalation row but the escalations table is per-(slug,phase) file-mirror — wrong shape. Solution — put the verifier signal on the feature row itself; the UI reads it directly.
+
+## The trap
+
+[Section titled “The trap”](#the-trap)
+
+The Phase 2 P-016 plan said:
+
+> Daemon writes `verifier_last_error = 'sha_not_found'` and emits a `harness_escalations` row with `kind: 'completion_ref_divergence'`.
+
+Reasonable wording — until you read the actual `harness_escalations` schema. It’s a per-`(harness_slug, phase)` mirror of `.harness/escalation.md` + `.harness/supervisor-notes.md`. **One row per phase, not one row per event.** There’s no `kind` column. There’s no event-id column. It’s a file-content cache, not an event queue.
+
+Implementing the plan literally would have meant either:
+
+* Adding a `kind` column + giving up the one-row-per-phase invariant (breaks the watcher that mirrors files into the table).
+* Inventing a new `harness_events` queue table for a single use case.
+* Concatenating warning text into `escalation` (the file-mirror string) and losing structured access from the UI.
+
+All three are wrong.
+
+## The fix
+
+[Section titled “The fix”](#the-fix)
+
+Put the signal **on the entity it describes**. The verifier is per-feature, so:
+
+* `verified_done_at_remote_ts TIMESTAMPTZ` — success stamp (drives ✓ badge).
+* `verifier_last_error TEXT` — failure signal (`'sha_not_found'` or NULL).
+* `verifier_last_checked_at TIMESTAMPTZ` — bumped on every attempt.
+
+Three columns on `harness_features_consolidated`. The `FeatureDetail` UI reads them directly to render the verified / pending / divergent states. Zero new tables. Zero new event surfaces. No “emit then read” round trip.
+
+## Why this is usually right
+
+[Section titled “Why this is usually right”](#why-this-is-usually-right)
+
+Per-row verification signals follow the entity they describe. The UI that cares is *already* reading that row. Emitting to a parallel queue means:
+
+* Two reads instead of one (row + queue).
+* Two write surfaces to keep in sync.
+* A “who garbage-collects the queue” question that didn’t exist before.
+* A reactivity story that has to span two tables.
+
+The escalation surface is the right home only for things the UI *doesn’t* see by reading the entity — cross-cutting alerts (“the worker crashed”, “the migration ran wrong”). A divergent commit SHA isn’t cross-cutting. It’s an attribute of the feature row.
+
+## When to do the opposite
+
+[Section titled “When to do the opposite”](#when-to-do-the-opposite)
+
+Put signals on a separate event table when:
+
+* The signal outlives the entity (e.g. “this feature was deleted because…”).
+* Multiple entities share the same signal (e.g. “global rate-limit hit”).
+* You need temporal ordering across entities (“most recent 100 errors across the harness”).
+* The producer and the consumer have different identity (event log for audit / forensics).
+
+None of those applied to `completion_ref` divergence. One signal, one entity, one consumer.
+
+Tip
+
+When a plan says “emit a row to X table” but X’s schema doesn’t fit, that’s a signal the design wasn’t read against the schema. Implementing literally produces awkward code; departing — with a paragraph in the commit message explaining why — produces clean code. The plan-author will almost always agree; they had the right *intent*, just sketched the wrong surface.
+
+## See also
+
+[Section titled “See also”](#see-also)
+
+* [`adding-a-reactive-table`](/internal/docs/agent-insights/adding-a-reactive-table/) — the producer-side trigger that fires when columns like `verifier_last_error` change.
+* [`idempotent-pg-ensure`](/internal/docs/agent-insights/idempotent-pg-ensure/) — pattern for adding new columns via `ensure-schema*.ts` if the column isn’t worth a full SQL migration.
+* `apps/operator/lib/harness/completion-ref-verifier.ts` — P-016’s artifact, the canonical example.
+* `libs/papercusp/libs/db/sql/082-completion-ref-verifier-columns.sql` — the schema additions.
 
 # Agent policies
 
@@ -749,7 +3283,9 @@ Don’t `find` the directory by hand. Use the tools:
 * `plans:search { query }` — keyword search across scoped sections.
 * `plans:lint` — validate before claiming a plan-doc edit is done; legacy files (no/malformed frontmatter) are exempt.
 
-Writes are tool-mediated: `plans:new` / `set-status` / `set-now` / `add-decision` / `add-item`. Each acquires a `locks:*` lock around read-modify-write; ID allocation (D-NNN, P-NNN) is serialized so parallel callers produce non-colliding sequential ids.
+Writes are tool-mediated: `plans:new` / `set-status` / `set-now` / `add-decision` / `add-item` / `set-content` / `set-content-chunk`. Each acquires a `locks:*` lock around the real plan write; ID allocation (D-NNN, P-NNN) is serialized so parallel callers produce non-colliding sequential ids.
+
+For large whole-plan writes, **use `plans:set-content-chunk`** instead of a giant `plans:set-content` payload. Send `begin` with the `plans:get` `contentHash`, `append` chunks under 24k characters, then `commit`. Anthropic/tool-call errors on large plan writes often happen before the Papercusp tool receives the request, so chunking must happen at the caller/tool-call level.
 
 ### This directory is the project history
 
@@ -10999,6 +13535,122 @@ Three more cheap wins:
 * Did not edit any settings; observations are from the pages as they rendered.
 * Screenshots: `/tmp/set-personalization.png`, `/tmp/set-oracle.png`, `/tmp/set-operator.png`, `/tmp/set-voice.png`, `/tmp/set-api-keys.png`, `/tmp/set-agent.png`, `/tmp/set-meridian.png`, `/tmp/set-orchestrator.png`, `/tmp/set-profile.png`, `/tmp/set-publishing.png`, `/tmp/set-plugin-runtime.png`, `/tmp/set-mobile.png`, `/tmp/set-shortcuts.png`.
 
+# Dev modes — HMR vs. rebuild-watch vs. prod-preview
+
+> Three ways to run the Tauri desktop in dev. Pick the one whose tradeoffs match what you're doing.
+
+The operator-vite SPA can be served to `tauri dev` three ways. They use different ports and the choice has real implications for what bugs you see.
+
+## TL;DR
+
+[Section titled “TL;DR”](#tldr)
+
+|                                           | `bin/desktop-dev` (HMR)         | `bin/desktop-dev-nohmr` (rebuild-watch)           | `bin/desktop-preview-prod` (prod-preview) |
+| ----------------------------------------- | ------------------------------- | ------------------------------------------------- | ----------------------------------------- |
+| URL Tauri loads                           | `http://localhost:3055`         | `http://localhost:3070`                           | `http://localhost:4173`                   |
+| Frontend process                          | `vite` (dev server)             | `vite build --watch` → `apps/operator-vite/dist/` | `vite build` → `vite preview`             |
+| Server in front                           | Vite dev middleware             | Hono host (`host-spa.ts`, Phase G3)               | `vite preview` (static)                   |
+| `import.meta.env.PROD`                    | `false`                         | `false`                                           | `true`                                    |
+| React build                               | dev (warnings, dev checks)      | dev                                               | **prod (minified)**                       |
+| Minification                              | none                            | none                                              | **terser**                                |
+| Update on save                            | Hot-reload, state preserved     | Manual reload (Ctrl-R), state lost                | Rebuild + reload manually                 |
+| Rebuild latency                           | \~10ms per HMR patch            | \~200-500ms per incremental rebuild               | full `vite build`                         |
+| `ws://localhost:3055/?token=…` in console | Yes (Vite HMR socket)           | No                                                | No                                        |
+| Path-equivalence to prod                  | ⚠ different from `tauri build`  | ✓ same code path as `tauri build` (dev mode)      | ✓✓ identical to what users install        |
+| libsoup-pool exhaustion risk              | Yes (HMR + SSE both long-lived) | No                                                | No                                        |
+
+## When to use HMR (`bin/desktop-dev`)
+
+[Section titled “When to use HMR (bin/desktop-dev)”](#when-to-use-hmr-bindesktop-dev)
+
+The default for active UI iteration. State preservation between saves matters when you’re working on a deeply-nested view that takes effort to navigate to. The cost is divergence from prod: HMR injects additional runtime modules, the dev server transforms code differently than `vite build`, and the HMR WebSocket eats one of WebKitGTK’s six per-host connections, which can starve `fetch()` and SSE producers.
+
+## When to use rebuild-watch (`bin/desktop-dev-nohmr`)
+
+[Section titled “When to use rebuild-watch (bin/desktop-dev-nohmr)”](#when-to-use-rebuild-watch-bindesktop-dev-nohmr)
+
+Reach for this when:
+
+* You’re chasing a bug you can’t reproduce in HMR mode — the prod bundler path is meaningfully different, and bugs that hide behind HMR’s loose module resolution surface here.
+* You’re debugging connection-pool / SSE / fetch behavior. HMR’s long-lived WebSocket is itself a pool consumer; rebuild-watch removes it.
+* You want a clean console. No HMR connect/disconnect chatter, no `ws://localhost:3055/?token=` line.
+
+## Wiring
+
+[Section titled “Wiring”](#wiring)
+
+Two processes run in parallel:
+
+```bash
+# 1. From the papercup repo — rebuild apps/operator-vite/dist/ on every save.
+cd /path/to/papercupai-workspace/papercup
+npm run dev:operator:nohmr
+
+
+# 2. From the papercusp-desktop repo — Tauri dev pointing at :3070.
+cd /path/to/papercusp-desktop
+bin/desktop-dev-nohmr
+```
+
+The Hono host at `:3070` is already running (the prod operator process serves `apps/operator-vite/dist/` via `host-spa.ts` whenever the file exists). `vite build --watch` writes a fresh dist on every save; the Hono host re-reads index.html on each request, so reload in the Tauri webview to pick up changes.
+
+## Under the hood
+
+[Section titled “Under the hood”](#under-the-hood)
+
+`bin/desktop-dev-nohmr` is a one-line wrapper:
+
+```bash
+npm run tauri -- dev --config '{"build":{"devUrl":"http://localhost:3070"}}'
+```
+
+The `--config` flag accepts a JSON5 string that’s deep-merged over `tauri.conf.json`. Only `build.devUrl` is overridden — everything else (the dev-time `beforeDevCommand`, the `frontendDist`, the Tauri-side identifiers) stays as defined for the standard dev flow.
+
+`npm run dev:operator:nohmr` resolves to `npm --workspace @papercusp/operator-vite run dev:nohmr` which runs `vite build --watch --mode development`. The `--mode development` keeps sourcemaps and unminified output; the bundler path is otherwise identical to `vite build`.
+
+## When to use prod-preview (`bin/desktop-preview-prod`)
+
+[Section titled “When to use prod-preview (bin/desktop-preview-prod)”](#when-to-use-prod-preview-bindesktop-preview-prod)
+
+Reach for this when you need to know how the bundle will actually behave for a real user:
+
+* **Hunting prod-only bugs** — code paths that only run when `NODE_ENV === 'production'` (PostHog batching cadence, telemetry flush behavior, error-boundary fallbacks without React’s dev enhancements).
+* **Sanity-checking perf claims** — terser-minified bundles parse and run measurably faster than dev bundles; “feels snappy in dev” doesn’t survive minification regressions like unintentional `eval` paths or barrel-import bloat.
+* **Verifying the release before `bin/release-local.sh`** — same bundler output, same React runtime, just without the .deb/AppImage packaging step.
+
+Wiring:
+
+```bash
+# 1. Build the prod bundle once (or run in a watch loop if iterating).
+cd /path/to/papercupai-workspace/papercup
+cd apps/operator-vite && npm run build
+
+
+# 2. Launch the desktop pointed at the prod bundle.
+cd /path/to/papercusp-desktop
+bin/desktop-preview-prod
+```
+
+The launcher starts `vite preview` on `:4173` as a background child (killed on Tauri exit), waits for it to come up, then launches `tauri dev` with `build.devUrl=http://localhost:4173`. The `/api/*` calls go to whatever backend the prod bundle expects — typically the operator process on `:3070` (the `papercup-dev` systemd unit), so that needs to be running.
+
+Note: `vite preview` is a static server, not a watcher. To pick up edits, re-run `npm run build` and reload the Tauri webview (Ctrl-R / Cmd-R).
+
+## Next.js is retired
+
+[Section titled “Next.js is retired”](#nextjs-is-retired)
+
+The operator frontend is Vite-only. `next dev` and `next start` are **blocked** — a guard at the top of `apps/operator/next.config.js` throws if either subcommand is detected, so an accidental `npm run`, an `npx next dev`, or stale muscle memory can’t bind `:3055` or `:3070` and shadow the real servers.
+
+The `apps/operator` npm scripts are Vite equivalents:
+
+| `apps/operator` script | Runs                                             |
+| ---------------------- | ------------------------------------------------ |
+| `npm run dev`          | `vite` — the operator-vite dev server (`:3055`)  |
+| `npm run build`        | Starlight docs build + `vite build`              |
+| `npm run start`        | `tsx bin/hono-host.ts` — the Hono host (`:3070`) |
+
+`bin/dev` runs the dev server as a systemd unit; `bin/prod` builds the operator and runs the Hono host. Neither invokes `next`. `next build` is still allowed (it binds no port) for reference tooling — it is removed outright in Phase H.
+
 # Native console launcher
 
 > The "+" button next to the voice button opens an OS-native terminal with the same MCP context spawned agents get. macOS, Linux, Windows-via-WSL.
@@ -12056,6 +14708,47 @@ The hard part isn’t writing the MCP wrapper. The hard part is pulling a functi
 * Not a replacement for SSE chat, WebSocket voice, or anything else that holds a long-lived bidirectional connection. Those stay on dedicated routes; the endpoint system is for request → response (with optional streamed progress).
 * Not a way to expose your dashboard to the public internet. The trust model is **loopback bind + HMAC-signed per-spawn URL params** (see [Spawn-URL signing](/internal/docs/endpoint-system/spawn-signing)), suitable for local dev + Tauri desktop. Off-loopback exposure needs a real principal/auth layer in front, since same-UID code can still read the signing key from PG.
 * Not a generic RPC framework. The contract is narrow on purpose: `(input, ctx) => ToolResult`. Trying to make it accommodate exotic shapes (callbacks, multi-response, file uploads >5MB) defeats the point of having one function as truth.
+
+## The route projection — `defineTool` also defines plumbing
+
+[Section titled “The route projection — defineTool also defines plumbing”](#the-route-projection--definetool-also-defines-plumbing)
+
+Not every endpoint is an agent tool. The browser, the desktop shell, an orchestrator, a webhook — they call **routes**: HTTP plumbing that must *not* appear in the agent tool catalog. `defineTool` produces those too.
+
+`defineTool` accepts a **route-shaped** input — discriminated by the `method` field — and returns a `RouteDefinition` instead of a `ToolDefinition`:
+
+```ts
+defineTool({
+  method: 'GET',
+  path: '/desktop/version',
+  auth: 'public',                    // or a PrincipalRequirements gate
+  input: z.object({ verbose: z.coerce.boolean().optional() }), // optional
+  handler(req, ctx) {                // Web-standard Request in, Response out
+    return Response.json({ version: '…' });
+  },
+});
+```
+
+A route runs through the same cross-cutting machinery — auth, input validation, timeout, telemetry, uniform errors — but it is **not** projected onto the MCP catalog. `tools/list` never sees it; an agent cannot call it. That guarantee is what keeps plumbing out of the agent surface.
+
+`defineRoute`, the name route files import, is a re-export of `defineTool` (Phase E6, `endpoint-unification-2026-05-21`) — the name survives only as an ergonomic signal (“this is plumbing”).
+
+### `mobile: true` — one flag for the paired phone
+
+[Section titled “mobile: true — one flag for the paired phone”](#mobile-true--one-flag-for-the-paired-phone)
+
+A route reachable from the paired phone sets one flag:
+
+```ts
+defineTool({
+  method: 'POST', path: '/mobile/heartbeat',
+  auth: { kind: ['mobile'] },        // gate on the device-JWT principal
+  mobile: true,                      // CORS allowlist + folds 'mobile' into auth.kind
+  handler(req, ctx) { /* ctx.principal is the mobile device */ },
+});
+```
+
+`mobile: true` mounts the shared mobile-CORS middleware and folds `'mobile'` into an explicit `auth.kind` allowlist. Built-in tools are reachable from the phone for free — the device JWT is a bearer token, and the `/api/agent-tools/*` catch-all resolves it like any other.
 
 ## Two channels at a glance
 
@@ -23197,6 +25890,8 @@ Plans are read and written through the `plans:*` MCP tools.
 * `plans:set-now \{ slug, state, next \}` — replace the Now block atomically.
 * `plans:add-decision \{ slug, title, body, refs? \}` — append; D-NNN allocated inside the lock.
 * `plans:add-item \{ slug, phase, text, blockedBy? \}` — append; P-NNN allocated inside the lock; creates phase section if missing.
+* `plans:set-content { slug, content, expectedHash }` — replace the whole plan body after CAS/lint checks; use only when the full body comfortably fits in one tool call.
+* `plans:set-content-chunk { op, slug, draftId?, chunk?, expectedHash? }` — staged whole-body rewrite for large plans. Flow: `begin` with the `plans:get` `contentHash` as `expectedHash`, `append` chunks under 24k characters, then `commit`. Only `commit` writes the real plan file, with the same CAS/lint/revision behavior as `set-content`.
 
 All write verbs acquire a `locks:*` lock on the plan file before the read-modify-write, surface `busy` with holder info if the lock is held, and auto-bump frontmatter `updated:` to today’s date.
 
@@ -29654,6 +32349,38 @@ Status: design proposal v1.1
 This page is the active design document for the **Papercusp testing framework** — what we build, what we adopt off-the-shelf, how agents discover the right tests to run, and how CI gates merges. Once infrastructure lands and the first reference suite ships, sections will fold into the per-project `TESTING.md` files this spec defines and the page becomes a historical record of the design rationale.
 
 **This is not a test plan for any single feature.** It is the substrate-wide framework that every app and lib in the monorepo plugs into.
+
+## 1.0a Four canonical frameworks — convention (2026-05-24)
+
+[Section titled “1.0a Four canonical frameworks — convention (2026-05-24)”](#10a-four-canonical-frameworks--convention-2026-05-24)
+
+Per `admin-testing-tab-restructure-2026-05-24` D-006: **only four** test frameworks ship new tests. Everything else is being migrated out.
+
+| Framework         | File shape                     | Where                                      | Discovered by                                       |
+| ----------------- | ------------------------------ | ------------------------------------------ | --------------------------------------------------- |
+| **Vitest**        | `*.test.ts` next to source     | per-package                                | `/admin/testing` registry globs                     |
+| **Playwright**    | `*.spec.ts`                    | `apps/operator/e2e/`                       | `harness` / domain-specific E2E sections            |
+| **Cargo**         | `#[cfg(test)] mod tests { … }` | `<crate>/src/`                             | `cargo test --message-format=json` reporter (P-012) |
+| **LLM scenarios** | `.ts` / `.yaml`                | `apps/operator/lib/llm-testing/scenarios/` | LLM testing tab                                     |
+
+**Where tests appear in the UI:** drop a test file under one of the glob-matched paths in `apps/operator/lib/testing-domains-registry.ts` and it shows up automatically in the matching `/admin/testing` subtab — no registration step. The shared `<DomainTestPanel>` walks the server-side glob at every request, so renames + deletions propagate without a rebuild.
+
+**Where tests do NOT go (will be linted out — P-038):**
+
+* `apps/operator/__tests__/integration/*.mjs` — hand-rolled ok/bad drivers. Existing ones get migrated to Vitest integration tests in P-027. New `.mjs` files in this directory fail CI.
+* `apps/operator/scripts/*-smoke.ts` — tsx smoke scripts. Existing ones get migrated in P-029. New ones fail CI.
+* New bash `.sh` test drivers — bring the scenarios into Vitest specs (P-030) or accept that ad-hoc bash is for one-off ops.
+
+**WebdriverIO** survives only as the packaged-build driver (`packaged-readiness` admin suite). Not a general test framework.
+
+### Agent-e2e workflow vs. file-Run buttons
+
+[Section titled “Agent-e2e workflow vs. file-Run buttons”](#agent-e2e-workflow-vs-file-run-buttons)
+
+Two orthogonal ways to invoke a test:
+
+* **File-Run buttons in `/admin/testing`** (P-014/P-016) spawn the test file directly via `vitest run <path>` / `playwright test <path>` / `cargo test`. Single-process, polling-based status.
+* **Agent-e2e workflow** (see [`testing/agent-e2e`](./agent-e2e)) is a meta-loop where an agent drives the Tauri UI to verify the running app — the same test file may legitimately be invoked both ways.
 
 ## 1.0 Why this exists
 

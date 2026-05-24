@@ -17,6 +17,7 @@ import {
   formatSymlinkRefusal,
   formatTurnStartReminder,
   hookOwnerId,
+  linkAdvSessionFromContext,
   onSessionShutdown,
   onToolCall,
   onToolResult,
@@ -40,6 +41,40 @@ describe('formatTurnStartReminder', () => {
         changedPlans: [],
       }),
     ).toBe('');
+  });
+
+  it('returns "" in detached mode when only the detached warning would surface', () => {
+    expect(
+      formatTurnStartReminder({
+        ownerId: 'a',
+        inbox: [],
+        heldLocks: [],
+        changedPlans: [],
+        mode: 'detached',
+      }),
+    ).toBe('');
+  });
+
+  it('prepends the detached warning when detached mode has actionable coord content', () => {
+    const out = formatTurnStartReminder({
+      ownerId: 'A',
+      inbox: [
+        {
+          ts: '2026-05-20T00:00:00Z',
+          msg_id: 'm1',
+          from: 'B',
+          kind: 'message',
+          summary: 'hi',
+        },
+      ],
+      heldLocks: [],
+      changedPlans: [],
+      mode: 'detached',
+    });
+    expect(out).toContain('Coordination: DETACHED');
+    expect(out.indexOf('Coordination: DETACHED')).toBeLessThan(
+      out.indexOf('Inbox — 1 unread'),
+    );
   });
 
   it('renders escalations first within the inbox', () => {
@@ -142,11 +177,12 @@ describe('register (OMP adapter)', () => {
     expect(block).toEqual({});
   });
 
-  it('operator unreachable → detached mode, not a degraded warning (F-H4)', async () => {
+  it('operator unreachable with no coord work sends no hidden reminder (F-H4)', async () => {
     // No operator configured in the unit-test env (no PAPERCUSP_*_URL),
     // so probeOperator() → false → the turn resolves to DETACHED mode.
-    // Detached is a supported mode, not a failure: the reminder carries
-    // the detached header and NO warning notification fires.
+    // Detached is a supported mode, not a failure. Empty detached turns
+    // must not send a hidden reminder: OMP treats sendMessage() as a
+    // conversation event, which can otherwise auto-continue forever.
     const subs = new Map<string, (e: unknown, ctx?: unknown) => unknown>();
     const sent: Array<{ content: unknown }> = [];
     const notifications: Array<{ message: string; type?: string }> = [];
@@ -158,24 +194,29 @@ describe('register (OMP adapter)', () => {
         sent.push({ content: msg.content });
       },
     };
-    const { default: register } = await import('../coord-hook');
-    register(pi as never);
-    const ctx = {
-      hasUI: true,
-      ui: {
-        notify: (message: string, type?: string) => {
-          notifications.push({ message, type });
+    const prevCoordDir = process.env.PAPERCUSP_COORD_DIR;
+    const tmpCoordDir = await fs.mkdtemp(join(tmpdir(), 'coord-hook-empty-'));
+    process.env.PAPERCUSP_COORD_DIR = tmpCoordDir;
+    try {
+      const { default: register } = await import('../coord-hook');
+      register(pi as never);
+      const ctx = {
+        hasUI: true,
+        ui: {
+          notify: (message: string, type?: string) => {
+            notifications.push({ message, type });
+          },
         },
-      },
-    };
-    await subs.get('turn_start')!({ type: 'turn_start', turnIndex: 0, timestamp: 0 }, ctx);
-    // The reminder must carry the detached header.
-    const detachedMsg = sent.find(
-      (s) => typeof s.content === 'string' && s.content.includes('DETACHED'),
-    );
-    expect(detachedMsg).toBeTruthy();
-    // Detached is not an error — no warning notification.
-    expect(notifications.length).toBe(0);
+      };
+      await subs.get('turn_start')!({ type: 'turn_start', turnIndex: 0, timestamp: 0 }, ctx);
+      expect(sent).toEqual([]);
+      // Detached is not an error — no warning notification.
+      expect(notifications.length).toBe(0);
+    } finally {
+      if (prevCoordDir === undefined) delete process.env.PAPERCUSP_COORD_DIR;
+      else process.env.PAPERCUSP_COORD_DIR = prevCoordDir;
+      await fs.rm(tmpCoordDir, { recursive: true, force: true });
+    }
   });
 });
 
@@ -485,6 +526,25 @@ describe('onToolCall / onToolResult (file-locking #2)', () => {
     });
     expect(r).toEqual({});
     expect(called).toBe(false);
+  });
+
+  it('blocks Claude task-panel and subagent Task tools and points agents at todo_write', async () => {
+    for (const toolName of ['TaskUpdate', 'task']) {
+      let called = false;
+      global.fetch = (async () => {
+        called = true;
+        throw new Error('should not call');
+      }) as unknown as typeof fetch;
+      const r = await onToolCall({
+        type: 'tool_call',
+        toolName,
+        toolCallId: 't-task',
+        input: { taskId: '1', status: 'in_progress' },
+      });
+      expect(r.block).toBe(true);
+      expect(r.reason).toMatch(/todo_write/i);
+      expect(called).toBe(false);
+    }
   });
 
   it('caches lock_id on ok and releases on tool_result', async () => {
@@ -816,6 +876,79 @@ describe('callMcpTool passes ?client=<owner> (file-locking #2)', () => {
     expect(seenUrl).toContain(
       `client=${encodeURIComponent(`omp-pus-xyz-${process.pid}`)}`,
     );
+  });
+});
+
+describe('linkAdvSessionFromContext — ADV row linkage', () => {
+  const originalFetch = global.fetch;
+  const prevBundle = process.env.PAPERCUSP_BUNDLE_URL;
+  const prevAdvSessionId = process.env.PAPERCUSP_ADV_SESSION_ID;
+
+  afterEach(() => {
+    global.fetch = originalFetch;
+    if (prevBundle === undefined) delete process.env.PAPERCUSP_BUNDLE_URL;
+    else process.env.PAPERCUSP_BUNDLE_URL = prevBundle;
+    if (prevAdvSessionId === undefined) delete process.env.PAPERCUSP_ADV_SESSION_ID;
+    else process.env.PAPERCUSP_ADV_SESSION_ID = prevAdvSessionId;
+    _resetHookOwnerIdForTests();
+  });
+
+  it('calls omp:sessions link with the current OMP session id and file path', async () => {
+    process.env.PAPERCUSP_BUNDLE_URL = 'http://operator.test';
+    process.env.PAPERCUSP_ADV_SESSION_ID = '42';
+    const calls: Array<{ name: string; args: unknown }> = [];
+    global.fetch = (async (_url: unknown, init: { body: string }) => {
+      const body = JSON.parse(init.body) as {
+        params: { name: string; arguments: unknown };
+      };
+      calls.push({ name: body.params.name, args: body.params.arguments });
+      return {
+        ok: true,
+        text: async () =>
+          JSON.stringify({
+            jsonrpc: '2.0',
+            id: 1,
+            result: { content: [{ type: 'text', text: '{"ok":true}' }] },
+          }),
+      };
+    }) as unknown as typeof fetch;
+
+    await linkAdvSessionFromContext({
+      cwd: '/repo',
+      sessionManager: {
+        getSessionId: () => '019ab123',
+        getSessionFile: () => '/home/user/.omp/agent/sessions/-repo/session.jsonl',
+      },
+    });
+
+    expect(calls).toEqual([
+      {
+        name: 'omp:sessions',
+        args: {
+          op: 'link',
+          advSessionId: 42,
+          sessionId: '019ab123',
+          filePath: '/home/user/.omp/agent/sessions/-repo/session.jsonl',
+          cwd: '/repo',
+        },
+      },
+    ]);
+  });
+
+  it('does nothing without a launcher-provided ADV session id', async () => {
+    process.env.PAPERCUSP_BUNDLE_URL = 'http://operator.test';
+    delete process.env.PAPERCUSP_ADV_SESSION_ID;
+    let called = false;
+    global.fetch = (async () => {
+      called = true;
+      return { ok: true, text: async () => '{}' };
+    }) as unknown as typeof fetch;
+
+    await linkAdvSessionFromContext({
+      sessionManager: { getSessionId: () => '019ab123' },
+    });
+
+    expect(called).toBe(false);
   });
 });
 

@@ -15,6 +15,7 @@ import {
   readOmpSession,
   searchOmpSessions,
 } from '@/lib/omp-sessions';
+import { setAdvSessionOmpThreadId } from '@/lib/adv-sessions';
 
 const ALL_ROLES = [
   'scoper',
@@ -70,6 +71,12 @@ export default defineTool({
       op: z.literal('state'),
       ...RefShape,
     }),
+    z.object({
+      op: z.literal('link'),
+      advSessionId: z.number().int().positive(),
+      sessionId: z.string().min(1),
+      filePath: z.string().min(1).optional(),
+    }),
   ]),
   async handler(args) {
     if (args.op === 'list') {
@@ -111,6 +118,22 @@ export default defineTool({
       };
     }
 
+    if (args.op === 'link') {
+      await setAdvSessionOmpThreadId(args.advSessionId, args.sessionId);
+      return {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify({
+              ok: true,
+              advSessionId: args.advSessionId,
+              sessionId: args.sessionId,
+              filePath: args.filePath ?? null,
+            }),
+          },
+        ],
+      };
+    }
     const state = getOmpSessionState({ id: args.sessionId, filePath: args.filePath });
     return {
       content: [

@@ -306,6 +306,14 @@ Plans are read and written through the `plans:*` MCP tools.
 - `plans:add-item \{ slug, phase, text, blockedBy? \}` — append;
   P-NNN allocated inside the lock; creates phase section if
   missing.
+- `plans:set-content { slug, content, expectedHash }` — replace the
+  whole plan body after CAS/lint checks; use only when the full body
+  comfortably fits in one tool call.
+- `plans:set-content-chunk { op, slug, draftId?, chunk?, expectedHash? }`
+  — staged whole-body rewrite for large plans. Flow: `begin` with the
+  `plans:get` `contentHash` as `expectedHash`, `append` chunks under
+  24k characters, then `commit`. Only `commit` writes the real plan
+  file, with the same CAS/lint/revision behavior as `set-content`.
 
 All write verbs acquire a `locks:*` lock on the plan file before
 the read-modify-write, surface `busy` with holder info if the lock

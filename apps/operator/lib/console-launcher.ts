@@ -85,14 +85,13 @@ export interface BuildEnvelopeOpts {
   /** Launch flavour. Default `'shell'` (preserves the engineer path). */
   mode?: ConsoleMode;
   /**
-   * plan-agent-launch P-023: when set, the terminal's `greetingCmd`
-   * resumes the agent's session in-place — `<agent-cli> -r <sessionId>`
-   * — so the user lands directly in the live agent console instead
-   * of a fresh shell. Backend resolved via `resolveBackend` /
-   * `resolveAgentBin` (env-driven, same logic as `runAgentChat`).
-   * Only valid in `'shell'` mode.
+   * plan-agent-launch P-023: when set, the terminal resumes an existing
+   * session instead of opening fresh — `<agent-cli> -r <sessionId>` in
+   * shell mode, `omp-su -r <sessionId>` in OMP mode.
    */
   resumeSessionId?: string;
+  /** Optional OMP model fuzzy-match argument for `omp-su --model`. */
+  ompModel?: string;
 }
 
 const TOKEN_PATH = join(homedir(), '.papercusp', 'superuser-token');
@@ -185,9 +184,10 @@ export async function buildConsoleEnvelope(
     // `papercusp-omp connect` bundle/token machinery for /adv
     // launches — that path is for workspace-user OMP sessions; /adv
     // is the engineer-collaborator surface.
-    const launchCommand = opts.resumeSessionId
-      ? `omp-su -r ${shellSafeId(opts.resumeSessionId)}`
-      : 'omp-su';
+    const launchParts = ['omp-su'];
+    if (opts.ompModel) launchParts.push('--model', shellSafeOmpModel(opts.ompModel));
+    if (opts.resumeSessionId) launchParts.push('-r', shellSafeId(opts.resumeSessionId));
+    const launchCommand = launchParts.join(' ');
     return {
       cwd,
       env,
@@ -266,4 +266,18 @@ export function shellSafeId(id: string): string {
     throw new Error(`refusing to embed unsafe session id: ${id.slice(0, 32)}`);
   }
   return id;
+}
+
+/**
+ * Validate an OMP model fuzzy-match value before embedding it in an
+ * `omp-su --model <value>` shell command. OMP model names/patterns use
+ * provider slashes plus URL-ish model ids; spaces and shell metachars
+ * are not valid model selectors and should never reach the shell.
+ */
+export function shellSafeOmpModel(model: string): string {
+  const trimmed = model.trim();
+  if (!/^[A-Za-z0-9._:/+-]+$/.test(trimmed)) {
+    throw new Error(`refusing to embed unsafe OMP model: ${trimmed.slice(0, 32)}`);
+  }
+  return trimmed;
 }

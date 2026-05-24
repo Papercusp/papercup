@@ -1528,9 +1528,17 @@ v5 is wide. Before splitting, read these in order:
 
 - `## Now`: one-sentence next action.
 - `## Background`: what this phase ships and the v5-section it implements.
-- `## Phase tasks (P-NNN)`: copy the relevant task rows from v5's `## Phases` section verbatim; expand each into a fuller breakdown (file paths, function names, test fixtures, acceptance criteria).
+- `## Phase tasks (P-NNN)`: copy the relevant task rows from v5's `## Phases` section verbatim; expand each into a fuller breakdown — file paths, function names, test fixtures, acceptance criteria, **sub-acceptances (P-NNNa/b/c) when the task has a platform-matrix or multi-condition dimension**, and **a "decision rule" subsection per task** stating how to interpret partial-pass (e.g. "passes if a + c + d pass; b is informational; fails if a fails").
 - `## Decisions`: any sub-design decisions made during execution (don't re-decide what v5 already decided; reference D-NNN from v5).
+- `## Named fallback rollout` (only for phases whose failure has a documented fallback in v5, e.g. Phase 0's HYPERBEE→GIT collapse): concrete numbered steps for how the fallback fires — exactly which v5 sections get struck or rewritten, which phases get re-merged or removed, which deliverables get deleted from the tree. The named-fallback being *real* is itself the gate guarantee; aspirational fallbacks are gate failures in disguise.
 - `## Cross-references`: link back to `papercusp-dogfood-v5-2026-05-23.md` and to any cross-cutting concerns above.
 - `## Open questions`: anything you hit during implementation that needs the user's call.
+
+**Worked examples.** Three execution plans written from this template as of 2026-05-24:
+- `papercusp-dogfood-phase0-spike-2026-05-24.md` — Phase 0 (substrate gate). Pattern for named-fallback specification.
+- `papercusp-dogfood-phase1a-workspace-ui-shell-2026-05-24.md` — Phase 1a (workspace + UI shell). Pattern for partially-done phases (DONE/PARTIAL/NOT STARTED status per task) + placeholder UI for future-phase entries.
+- `papercusp-dogfood-phase2-completion-ref-2026-05-24.md` — Phase 2 (`completion_ref` + verifier). Pattern for technically-scoped phases with no UX design overhead. Runs parallel-with-Phase-1b.
+
+**Navigation index.** `papercusp-dogfood-execution-plan-index-2026-05-24.md` is the canonical list of all per-phase execution plans (existing + stub). Add your slug to the index when you write a new execution plan.
 
 **One last thing**: every phase plan should end with the same `## For the next agent` section briefing whoever picks up the *next* phase — what's done, what's gated on what, what surprises came up. Hand-off documentation is the discipline that keeps a multi-phase arc shippable.

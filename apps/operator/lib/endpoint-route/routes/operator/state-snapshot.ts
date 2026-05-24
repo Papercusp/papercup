@@ -25,6 +25,9 @@ export default defineTool({
   method: 'GET',
   path: '/operator/state-snapshot',
   auth: 'public',
+  // SSE — one route-stack run per long-lived connection; a route_invocations
+  // row per connect carries little signal (RFC Q7). Don't record it.
+  sampleRate: 0,
   async handler(req) {
     const user = await getSessionUser(req.headers);
     if (!user) {

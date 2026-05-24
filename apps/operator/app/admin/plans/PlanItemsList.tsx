@@ -15,7 +15,7 @@ import { usePlanItems, type PlanItemRow } from './plans-api';
 
 interface Props {
   mode: 'inbox' | 'actionable';
-  onPick: (slug: string) => void;
+  onPick: (slug: string, targetId?: string) => void;
 }
 
 export default function PlanItemsList({ mode, onPick }: Props) {
@@ -88,7 +88,7 @@ export default function PlanItemsList({ mode, onPick }: Props) {
                   <button
                     type="button"
                     className="pc-items__row"
-                    onClick={() => onPick(slug)}
+                    onClick={() => onPick(slug, r.item.id)}
                   >
                     <span className="pc-items__id">{r.item.id}</span>
                     <span className={`pc-count pc-count--${r.item.storedStatus}`}>

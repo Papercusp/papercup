@@ -106,7 +106,7 @@ JCS specifies the answer to all of these. Hand-rolled schemes don't, and you'll 
 Sometimes the right answer. But:
 - The body needs to be human-readable (e.g. committed to git as a file someone might view).
 - The body needs to be inspectable in GitHub Gist UIs / web tools.
-- The body fits in <1KB — the size win from binary is negligible.
+- The body fits in `<1KB` — the size win from binary is negligible.
 
 If those constraints don't apply, prefer binary (CBOR or protobuf) — JSON adds parsing cost on every verify. But for "small signed config files committed to git" or "gist bodies a human might read," JCS is the right answer.
 

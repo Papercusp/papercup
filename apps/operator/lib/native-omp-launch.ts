@@ -57,6 +57,7 @@ export async function launchOmpAgent(opts: LaunchOpts): Promise<OmpLaunchResult>
           planSlug: opts.planSlug ?? null,
           label: opts.label ?? null,
           resumeSessionId: opts.resumeSessionId ?? null,
+          model: opts.model ?? null,
         }),
       });
       const data = (await r.json().catch(() => null)) as

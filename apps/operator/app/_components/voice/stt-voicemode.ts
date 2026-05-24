@@ -89,7 +89,10 @@ export async function startWhisperCapture(
     // regardless of the current page's path. Default `./` resolution
     // breaks on nested routes like /settings/voice → /settings/silero…
     baseAssetPath: '/',
-    onnxWASMBasePath: '/',
+    // ORT wasm/mjs lives at /vad-runtime/ — under Vite, importing .mjs from
+    // publicDir root throws "should not be imported from source code".
+    // setup-vad-runtime.sh mirrors the files into public/vad-runtime/.
+    onnxWASMBasePath: '/vad-runtime/',
     positiveSpeechThreshold: 0.6, // raise = stricter (fewer false positives)
     negativeSpeechThreshold: 0.35,
     minSpeechFrames: 4,           // ~250ms minimum to count as speech

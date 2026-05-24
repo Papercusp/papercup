@@ -14,7 +14,16 @@ export function registerPrompt(def: PromptDefinition): void {
   if (CATALOG.has(def.name)) {
     const existing = CATALOG.get(def.name)!;
     if (existing === def) return;
-    throw new Error(`Prompt name collision: "${def.name}" registered twice.`);
+    // Same name + same capability is HMR re-evaluation: replace silently.
+    // Different capability is a real collision: throw so the bug surfaces.
+    if (existing.capability === def.capability) {
+      CATALOG.set(def.name, def);
+      return;
+    }
+    throw new Error(
+      `Prompt name collision: "${def.name}" registered twice. ` +
+      `First registration's capability=${existing.capability}, second's=${def.capability}.`,
+    );
   }
   CATALOG.set(def.name, def);
 }

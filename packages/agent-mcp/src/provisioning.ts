@@ -115,7 +115,6 @@ const DEFAULT_PI_CAPABILITIES = [
   'goals:read',
   'harness:read',
   'messages:read',
-  'hindsight:recall',
   'search:read',
 ];
 

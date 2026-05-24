@@ -454,9 +454,17 @@ Don't `find` the directory by hand. Use the tools:
   legacy files (no/malformed frontmatter) are exempt.
 
 Writes are tool-mediated: `plans:new` / `set-status` / `set-now` /
-`add-decision` / `add-item`. Each acquires a `locks:*` lock around
-read-modify-write; ID allocation (D-NNN, P-NNN) is serialized so
-parallel callers produce non-colliding sequential ids.
+`add-decision` / `add-item` / `set-content` / `set-content-chunk`.
+Each acquires a `locks:*` lock around the real plan write; ID allocation
+(D-NNN, P-NNN) is serialized so parallel callers produce non-colliding
+sequential ids.
+
+For large whole-plan writes, **use `plans:set-content-chunk`** instead
+of a giant `plans:set-content` payload. Send `begin` with the
+`plans:get` `contentHash`, `append` chunks under 24k characters, then
+`commit`. Anthropic/tool-call errors on large plan writes often happen
+before the Papercusp tool receives the request, so chunking must happen
+at the caller/tool-call level.
 
 ### This directory is the project history
 

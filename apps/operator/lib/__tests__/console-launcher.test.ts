@@ -6,7 +6,7 @@
  * as `crypto.randomUUID()`, so the regex is strict by design.
  */
 import { describe, expect, it } from 'vitest';
-import { shellSafeId } from '@/lib/console-launcher';
+import { shellSafeId, shellSafeOmpModel } from '@/lib/console-launcher';
 
 describe('shellSafeId', () => {
   it('accepts a real crypto.randomUUID() value', () => {
@@ -46,5 +46,22 @@ describe('shellSafeId', () => {
   it('truncates the leaked id in the error message', () => {
     const long = '!'.repeat(100);
     expect(() => shellSafeId(long)).toThrow(/refusing to embed unsafe session id/);
+  });
+});
+
+describe('shellSafeOmpModel', () => {
+  it('accepts common OMP fuzzy model patterns', () => {
+    expect(shellSafeOmpModel('opus')).toBe('opus');
+    expect(shellSafeOmpModel('gpt-5.2')).toBe('gpt-5.2');
+    expect(shellSafeOmpModel('openai/gpt-5.2')).toBe('openai/gpt-5.2');
+  });
+
+  it('trims harmless surrounding whitespace', () => {
+    expect(shellSafeOmpModel(' sonnet ')).toBe('sonnet');
+  });
+
+  it('rejects shell metacharacters and spaces', () => {
+    expect(() => shellSafeOmpModel('opus; rm -rf /')).toThrow(/unsafe OMP model/i);
+    expect(() => shellSafeOmpModel('claude opus')).toThrow(/unsafe OMP model/i);
   });
 });

@@ -84,20 +84,19 @@ export interface ReminderInput {
 /**
  * Format the turn-start reminder shown to the model. Compact,
  * skimmable — does NOT dump full bodies; those are one tool call away.
- * Returns "" when there is nothing to surface (no reminder injected) —
- * except in detached mode, where the detached header always surfaces
- * (the model must know locks/presence are unavailable every turn).
+ * Returns "" when there is nothing to surface (no reminder injected).
+ * In detached mode, the detached warning is included only when another
+ * coord surface is already being reported; injecting the header alone
+ * creates a hidden no-op turn in OMP and can auto-continue forever.
  */
 export function formatTurnStartReminder(input: ReminderInput): string {
   const out: string[] = [];
 
-  if (input.mode === 'detached') {
-    out.push(
-      'Coordination: DETACHED (no operator). Inbox + plans work via the ' +
-        'filesystem; file locks and presence are unavailable — do not rely ' +
-        'on locks:* this session.',
-    );
-  }
+  const detachedNotice =
+    'Coordination: DETACHED (no operator). Inbox + plans work via the ' +
+    'filesystem; file locks and presence are unavailable — do not rely ' +
+    'on locks:* this session.';
+
 
   if (input.heldLocks.length > 0) {
     out.push(`You (${input.ownerId}) currently hold ${input.heldLocks.length} lock${input.heldLocks.length === 1 ? '' : 's'}:`);
@@ -139,6 +138,10 @@ export function formatTurnStartReminder(input: ReminderInput): string {
   }
 
   if (out.length === 0) return '';
+
+  if (input.mode === 'detached') {
+    out.unshift(detachedNotice);
+  }
 
   return `<system-reminder type="coord">\n${out.join('\n')}\n</system-reminder>`;
 }
@@ -515,10 +518,52 @@ export async function readPlanEventsFs(sinceTs?: string): Promise<InboxEntry[]> 
 
 // ── Handlers ─────────────────────────────────────────────────────────
 
+interface HookSessionLinkContext {
+  cwd?: string;
+  sessionManager?: {
+    getSessionId?: () => string;
+    getSessionFile?: () => string | undefined;
+    getCwd?: () => string;
+  };
+}
+
+function currentSessionLinkFromContext(ctx: unknown): {
+  advSessionId: number;
+  sessionId: string;
+  filePath?: string;
+  cwd?: string;
+} | null {
+  const rawAdvSessionId = process.env.PAPERCUSP_ADV_SESSION_ID;
+  if (!rawAdvSessionId) return null;
+  const advSessionId = Number(rawAdvSessionId);
+  if (!Number.isFinite(advSessionId) || advSessionId <= 0) return null;
+
+  const c = ctx as HookSessionLinkContext | undefined;
+  const sessionId = c?.sessionManager?.getSessionId?.()?.trim();
+  if (!sessionId) return null;
+
+  const filePath = c?.sessionManager?.getSessionFile?.();
+  const cwd = c?.cwd ?? c?.sessionManager?.getCwd?.();
+  return {
+    advSessionId,
+    sessionId,
+    ...(filePath ? { filePath } : {}),
+    ...(cwd ? { cwd } : {}),
+  };
+}
+
+export async function linkAdvSessionFromContext(ctx: unknown): Promise<void> {
+  const link = currentSessionLinkFromContext(ctx);
+  if (!link) return;
+  await callMcpTool('omp:sessions', { op: 'link', ...link });
+}
+
 /** Fired once per OMP session start. Probes the operator to choose
- *  attached/detached mode, then declares presence (attached only —
- *  presence is PG-backed and unavailable detached). */
-export async function onSessionStart(): Promise<void> {
+ *  attached/detached mode, then links the ADV sessions row to the OMP
+ *  session id when the launcher passed PAPERCUSP_ADV_SESSION_ID. It then
+ *  declares presence (attached only — presence is PG-backed and unavailable
+ *  detached). */
+export async function onSessionStart(ctx?: unknown): Promise<void> {
   // Mint the per-process coordination owner id up front (file-locking
   // #2). Every subsequent callMcpTool carries it via `?client=`, so a
   // lock or coordination message authored by this process is always
@@ -527,6 +572,7 @@ export async function onSessionStart(): Promise<void> {
   hookOwnerId();
   await refreshMode();
   if (_mode === 'attached') {
+    await linkAdvSessionFromContext(ctx);
     await callMcpTool('coord:declare-intent', { intent: 'OMP session started' });
   }
 }
@@ -1048,6 +1094,14 @@ export function formatBusyRefusal(busy: BusyEntry[]): string {
 export async function onToolCall(
   event: ToolCallEvent,
 ): Promise<{ block?: boolean; reason?: string }> {
+  const blockedTaskTools = new Set(['task', 'taskcreate', 'taskupdate', 'taskget', 'tasklist']);
+  if (blockedTaskTools.has(event.toolName.toLowerCase())) {
+    return {
+      block: true,
+      reason:
+        'Do not use Claude task-panel or subagent Task tools in OMP. Use todo_write for task tracking instead.',
+    };
+  }
   const paths = extractPathsFromToolInput(event.toolName, event.input);
   if (paths.length === 0) return {};
 
@@ -1178,8 +1232,8 @@ interface HookApi {
 }
 
 export default function register(pi: HookApi): void {
-  pi.on('session_start', async () => {
-    await safe(() => onSessionStart(), undefined);
+  pi.on('session_start', async (_event, ctx) => {
+    await safe(() => onSessionStart(ctx), undefined);
   });
 
   pi.on('turn_start', async (_event, ctx) => {

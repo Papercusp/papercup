@@ -69,6 +69,7 @@ export default defineConfig({
     proxy: {
       '/api': { target: 'http://127.0.0.1:3070', ws: true, changeOrigin: true },
       '/internal/docs': { target: 'http://127.0.0.1:3070', changeOrigin: true },
+      '/docs': { target: 'http://127.0.0.1:3070', changeOrigin: true },
     },
   },
   plugins: [

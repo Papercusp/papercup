@@ -15,7 +15,6 @@ const ORACLE_CAPS = [
   'messages:read',
   'audit:read',
   'intel:read',
-  'hindsight:recall',
   'search:read',
   'messages:write',
 ];

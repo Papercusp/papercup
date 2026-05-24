@@ -11,6 +11,7 @@
 
 import { describe, expect, it } from 'vitest';
 import { evaluateSetContent } from '../set-content';
+import { appendChunkToContent } from '../set-content-chunk';
 import { buildFrontmatter, applyFrontmatterBlock } from '../set-frontmatter';
 import { hashPlanContent } from '../content-hash';
 
@@ -128,6 +129,19 @@ describe('evaluateSetContent — lint gate', () => {
   });
 });
 
+
+describe('appendChunkToContent', () => {
+  it('builds a body from multiple chunks without adding separators', () => {
+    const chunks = ['---\n', 'title: Chunked\n', '---\n\n# Chunked\n'];
+    expect(chunks.reduce((body, chunk) => appendChunkToContent(body, chunk), '')).toBe(
+      '---\ntitle: Chunked\n---\n\n# Chunked\n',
+    );
+  });
+
+  it('leaves content unchanged when commit supplies no final chunk', () => {
+    expect(appendChunkToContent('already staged', undefined)).toBe('already staged');
+  });
+});
 describe('hashPlanContent', () => {
   it('is deterministic', () => {
     expect(hashPlanContent(VALID)).toBe(hashPlanContent(VALID));

@@ -8,7 +8,6 @@
  * Spec: apps/operator/docs/dockview-migration-plan-v4.md §4
  */
 
-import 'server-only';
 import postgres from 'postgres';
 import { getHarnessAdminUrl } from './embedded-pg-discovery';
 

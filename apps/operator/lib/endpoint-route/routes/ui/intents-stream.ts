@@ -22,6 +22,9 @@ export default defineTool({
   method: 'GET',
   path: '/ui/intents/stream',
   auth: 'public',
+  // SSE — one route-stack run per long-lived connection; a route_invocations
+  // row per connect carries little signal (RFC Q7). Don't record it.
+  sampleRate: 0,
   async handler(req) {
     if (!isLoopbackRequest(req.headers)) {
       return Response.json({ error: 'loopback_required' }, { status: 403 });

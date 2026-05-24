@@ -1,6 +1,6 @@
 ---
-title: Octokit 7+ changed the `auth:` API — use `hook.before('request')` instead of an async factory
-description: The async-factory `auth: async () => token` pattern that worked in @octokit/rest v3-v5 throws `Token passed to createTokenAuth is not a string` on v7. Set the Authorization header in a `before('request')` hook instead.
+title: "Octokit 7+ changed the `auth:` API — use `hook.before('request')` instead of an async factory"
+description: "The async-factory `auth: async () => token` pattern that worked in @octokit/rest v3-v5 throws `Token passed to createTokenAuth is not a string` on v7. Set the Authorization header in a `before('request')` hook instead."
 discovered: 2026-05-25
 tags: [octokit, github-api, breaking-change, footguns]
 status: active

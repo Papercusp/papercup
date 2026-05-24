@@ -696,7 +696,7 @@ html[data-route-pending="true"] .pc-header::after {
 .pc-header-left {
   display: flex;
   align-items: center;
-  gap: 18px;
+  gap: 26px;
   min-width: 0; /* allow the quote to collapse instead of forcing the column wider */
   max-width: 100%;
   overflow: hidden;
@@ -711,18 +711,6 @@ html[data-route-pending="true"] .pc-header::after {
   overflow: visible;
 }
 
-.pc-header-harness-collapse-slot {
-  display: none;
-  align-items: center;
-  justify-content: center;
-  flex: 0 0 auto;
-  min-width: 0;
-  overflow: visible;
-}
-
-.pc-header-harness-collapse-slot:not(:empty) {
-  display: inline-flex;
-}
 
 .pc-header-right {
   display: flex;
@@ -735,17 +723,121 @@ html[data-route-pending="true"] .pc-header::after {
 }
 
 .pc-header .brand {
+  --pc-header-logo-height: 58px;
+  --pc-header-logo-max-width: 76px;
   display: inline-flex;
   align-items: center;
   flex: 0 0 auto;
   color: var(--fg);
+  isolation: isolate;
+  position: relative;
+  text-decoration: none;
 }
 
-.pc-header .brand img {
+.pc-header-brand-logo {
+  position: relative;
+  z-index: 1;
   display: block;
   width: auto;
-  max-width: 132px;
+  height: var(--pc-header-logo-height);
+  max-width: var(--pc-header-logo-max-width);
   filter: drop-shadow(0 12px 22px rgba(0, 0, 0, 0.26));
+  overflow: visible;
+}
+
+.pc-header-brand-cup,
+.pc-header-brand-cusp,
+.pc-header-brand-cup-glow {
+  transform-box: fill-box;
+  transform-origin: center;
+}
+
+.pc-header-brand-cup,
+.pc-header-brand-cusp {
+  will-change: transform, opacity, filter;
+}
+
+.pc-header-brand-logo[data-cup-motion="spin"] .pc-header-brand-cup {
+  animation: pc-header-cup-spin 1.45s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.pc-header-brand-logo[data-cup-motion="bob"] .pc-header-brand-cup {
+  animation: pc-header-cup-bob 1.2s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.pc-header-brand-logo[data-cup-motion="tilt"] .pc-header-brand-cup {
+  animation: pc-header-cup-tilt 1.25s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.pc-header-brand-logo[data-cup-motion="orbit"] .pc-header-brand-cup {
+  animation: pc-header-cup-orbit 1.5s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.pc-header-brand-logo[data-cup-motion="pulse"] .pc-header-brand-cup,
+.pc-header-brand-logo[data-cup-motion="pulse"] .pc-header-brand-cup-glow {
+  animation: pc-header-cup-pulse 1.25s ease-out both;
+}
+
+.pc-header-brand-logo[data-cup-motion="scan"] .pc-header-brand-cusp {
+  animation: pc-header-cusp-scan 1.4s ease-out both;
+}
+
+.pc-header-brand-logo[data-cup-motion="scan"] .pc-header-brand-cup {
+  animation: pc-header-cup-scan 1.4s ease-out both;
+}
+
+@keyframes pc-header-cup-spin {
+  0% { transform: rotate(0deg) scale(1); filter: drop-shadow(0 0 0 rgba(34, 211, 238, 0)); }
+  48% { transform: rotate(192deg) scale(1.08); filter: drop-shadow(0 0 7px rgba(34, 211, 238, 0.38)); }
+  78% { transform: rotate(362deg) scale(1.02); filter: drop-shadow(0 0 5px rgba(251, 191, 36, 0.22)); }
+  100% { transform: rotate(360deg) scale(1); filter: drop-shadow(0 0 0 rgba(34, 211, 238, 0)); }
+}
+
+@keyframes pc-header-cup-bob {
+  0%, 100% { transform: translateY(0) scale(1); }
+  34% { transform: translateY(-11px) scale(1.04); }
+  62% { transform: translateY(3px) scale(0.98); }
+  82% { transform: translateY(-3px) scale(1.01); }
+}
+
+@keyframes pc-header-cup-tilt {
+  0%, 100% { transform: rotate(0deg) translateX(0); }
+  22% { transform: rotate(-13deg) translateX(-3px); }
+  48% { transform: rotate(11deg) translateX(3px); }
+  70% { transform: rotate(-5deg) translateX(-1px); }
+}
+
+@keyframes pc-header-cup-orbit {
+  0%, 100% { transform: translate(0, 0) rotate(0deg) scale(1); }
+  25% { transform: translate(7px, -6px) rotate(8deg) scale(1.04); }
+  50% { transform: translate(0, -9px) rotate(0deg) scale(1.06); }
+  75% { transform: translate(-7px, -6px) rotate(-8deg) scale(1.04); }
+}
+
+@keyframes pc-header-cup-pulse {
+  0%, 100% { transform: scale(1); opacity: 1; filter: drop-shadow(0 0 0 rgba(251, 191, 36, 0)); }
+  42% { transform: scale(1.13); opacity: 0.88; filter: drop-shadow(0 0 8px rgba(251, 191, 36, 0.32)); }
+  70% { transform: scale(0.98); opacity: 1; }
+}
+
+@keyframes pc-header-cusp-scan {
+  0%, 100% { transform: translateY(0); opacity: 0.96; filter: drop-shadow(0 0 0 rgba(125, 211, 252, 0)); }
+  28% { transform: translateY(-4px); opacity: 1; filter: drop-shadow(0 0 6px rgba(125, 211, 252, 0.40)); }
+  58% { transform: translateY(3px); opacity: 0.82; }
+}
+
+@keyframes pc-header-cup-scan {
+  0%, 100% { transform: translateY(0); filter: drop-shadow(0 0 0 rgba(125, 211, 252, 0)); }
+  36% { transform: translateY(2px); filter: drop-shadow(0 0 7px rgba(125, 211, 252, 0.34)); }
+  68% { transform: translateY(-2px); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pc-header-brand-cup,
+  .pc-header-brand-cusp,
+  .pc-header-brand-cup-glow {
+    animation: none !important;
+  }
 }
 
 .pc-header-quote {
@@ -4047,9 +4139,9 @@ p {
     box-shadow: 0 0 0 2px rgb(from var(--emerald-400) r g b / 0.12), 0 0 10px rgb(from var(--emerald-400) r g b / 0.28);
   }
 
-  .pc-header .brand img {
-    max-width: 118px;
-    height: auto;
+  .pc-header .brand {
+    --pc-header-logo-height: 48px;
+    --pc-header-logo-max-width: 64px;
   }
 
   .pc-header nav {
@@ -12181,7 +12273,74 @@ body.h-harness-top-collapsed .pc-header {
   to   { transform: translateX(-12%); }
 }
 .pc-header-brand-wrap {
-  filter: drop-shadow(0 0 14px rgba(34, 211, 238, 0.12));
+  margin: -12px -12px -9px -4px;
+  padding: 2px 13px 9px;
+  border-radius: 18px;
+  filter: drop-shadow(0 0 20px rgba(34, 211, 238, 0.18)) drop-shadow(0 0 16px rgba(251, 191, 36, 0.10));
+  transition:
+    filter var(--dur-fast) var(--ease-out),
+    transform var(--dur-fast) var(--ease-out);
+}
+
+.pc-header-brand-wrap::before,
+.pc-header-brand-wrap::after {
+  content: "";
+  position: absolute;
+  pointer-events: none;
+}
+
+.pc-header-brand-wrap::before {
+  inset: 18px 0 0;
+  z-index: -1;
+  border: 1px solid rgba(125, 211, 252, 0.20);
+  border-radius: inherit;
+  background:
+    radial-gradient(circle at 18% 34%, rgba(125, 211, 252, 0.16), transparent 48%),
+    radial-gradient(circle at 84% 18%, rgba(251, 191, 36, 0.10), transparent 50%),
+    linear-gradient(145deg, rgba(6, 13, 24, 0.58), rgba(15, 23, 42, 0.42) 54%, rgba(2, 8, 16, 0.24));
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.045),
+    0 0 22px rgba(34, 211, 238, 0.10),
+    0 0 18px rgba(251, 191, 36, 0.055);
+  opacity: 0.96;
+  transition:
+    border-color var(--dur-fast) var(--ease-out),
+    box-shadow var(--dur-fast) var(--ease-out),
+    opacity var(--dur-fast) var(--ease-out);
+}
+
+.pc-header-brand-wrap::after {
+  left: 14px;
+  right: 14px;
+  bottom: 3px;
+  height: 2px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, transparent, rgba(125, 211, 252, 0.82), rgba(251, 191, 36, 0.46), transparent);
+  box-shadow: 0 0 10px rgba(34, 211, 238, 0.24);
+  opacity: 0.54;
+  transform: scaleX(0.74);
+  transition:
+    opacity var(--dur-fast) var(--ease-out),
+    transform var(--dur-fast) var(--ease-out);
+}
+
+.pc-header-brand-wrap:is(:hover, :focus-visible) {
+  filter: drop-shadow(0 0 28px rgba(34, 211, 238, 0.28)) drop-shadow(0 0 18px rgba(251, 191, 36, 0.10));
+  transform: translateY(-1px);
+}
+
+.pc-header-brand-wrap:is(:hover, :focus-visible)::before {
+  border-color: rgba(125, 211, 252, 0.34);
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.075),
+    0 0 30px rgba(34, 211, 238, 0.18),
+    0 0 22px rgba(251, 191, 36, 0.08);
+  opacity: 1;
+}
+
+.pc-header-brand-wrap:is(:hover, :focus-visible)::after {
+  opacity: 1;
+  transform: scaleX(1);
 }
 .pc-header-quote--hud {
   color: var(--pc-quote-ink);
@@ -12631,7 +12790,10 @@ html[data-visual-effects='minimal'] .pc-header-quote--hud::after {
 [data-route-transition-page="true"] {
   position: relative;
   transform-origin: 50% 44%;
-  will-change: transform, opacity, filter;
+  /* Only opacity is animated on this element now — leaving `transform` and
+     `filter` in will-change forced a permanent compositor layer that the
+     route transition no longer benefits from. */
+  will-change: opacity;
 }
 
 .pc-route-transition {
@@ -25760,177 +25922,6 @@ body:has(.operator-panel) {
   border-radius: 4px;
   font-variant-numeric: tabular-nums;
 }
-/* ── Operator chat card usability/readability pass ───────────────────
- * The ask_choice card fixtures intentionally stress every state. Keep these
- * cards compact enough for the 360px sidebar, make multi-select controls read
- * like checkboxes, and never allow the transcript/composer to create horizontal
- * scroll. */
-.op-chat-sidebar,
-.op-chat-sidebar * {
-  box-sizing: border-box;
-}
-
-.op-chat-sidebar .oracle-body {
-  overflow-x: hidden !important;
-  padding: 9px 8px 10px !important;
-  gap: 8px !important;
-}
-
-.op-chat-sidebar .oracle-virtual-container,
-.op-chat-sidebar .oracle-msg,
-.op-chat-sidebar .oracle-msg-stack,
-.op-chat-sidebar .oracle-msg-content,
-.op-chat-sidebar .ask-choice-card,
-.op-chat-sidebar .oracle-form,
-.op-chat-sidebar .oracle-input-shell {
-  max-width: 100% !important;
-  min-width: 0 !important;
-}
-
-.op-chat-sidebar .oracle-virtual-container {
-  overflow: visible !important;
-}
-
-.op-chat-sidebar .oracle-msg {
-  overflow: visible !important;
-  padding-inline: 0 !important;
-}
-
-.op-chat-sidebar .oracle-msg-stack {
-  width: calc(100% - 34px);
-}
-
-.op-chat-sidebar .oracle-msg-user .oracle-msg-stack {
-  width: min(86%, 294px);
-}
-
-.op-chat-sidebar .oracle-msg-role,
-.op-chat-sidebar .oracle-msg-user .oracle-msg-role {
-  display: none !important;
-}
-
-.op-chat-sidebar .oracle-msg-content {
-  overflow-wrap: anywhere;
-}
-
-.op-chat-sidebar .ask-choice-card {
-  width: 100% !important;
-  gap: 7px !important;
-  margin-top: 6px !important;
-  padding: 9px !important;
-  border-radius: 13px !important;
-  border-color: rgb(from var(--sky-300) r g b / 0.14) !important;
-  background: rgba(5, 12, 22, 0.96) !important;
-  box-shadow:
-    inset 0 1px 0 rgba(255,255,255,0.035),
-    0 8px 18px rgba(0,0,0,0.18) !important;
-}
-
-.op-chat-sidebar .ask-choice-card::before,
-.op-chat-sidebar .ask-choice-option::before {
-  display: none !important;
-}
-
-.op-chat-sidebar .ask-choice-card[data-answered="true"] {
-  border-color: rgb(from var(--sky-300) r g b / 0.18) !important;
-  box-shadow:
-    inset 0 1px 0 rgba(255,255,255,0.035),
-    0 7px 16px rgba(0,0,0,0.16) !important;
-}
-
-.op-chat-sidebar .ask-choice-head {
-  gap: 4px;
-}
-
-.op-chat-sidebar .ask-choice-question {
-  color: #f3f8ff;
-  font-size: 12.5px;
-  font-weight: 700;
-  line-height: 1.34;
-  overflow-wrap: anywhere;
-}
-
-.op-chat-sidebar .ask-choice-picked {
-  display: inline-flex;
-  flex-wrap: wrap;
-  gap: 4px;
-  align-items: baseline;
-  margin-top: 1px;
-  color: rgba(186, 230, 253, 0.72);
-  font-size: 9px;
-  letter-spacing: 0.06em;
-}
-
-.op-chat-sidebar .ask-choice-picked span {
-  max-width: 100%;
-  color: #e8f7ff;
-  font-size: 11px;
-  overflow-wrap: anywhere;
-}
-
-.op-chat-sidebar .ask-choice-options {
-  gap: 5px !important;
-}
-
-.op-chat-sidebar .ask-choice-option {
-  min-height: 38px;
-  gap: 8px !important;
-  padding: 7px 8px !important;
-  border-radius: 11px !important;
-  background: rgba(255,255,255,0.018) !important;
-  box-shadow: none !important;
-  transform: none !important;
-}
-
-.op-chat-sidebar .ask-choice-option:hover:not([data-disabled="true"]) {
-  background: rgb(from var(--sky-300) r g b / 0.07) !important;
-  transform: none !important;
-}
-
-.op-chat-sidebar .ask-choice-option[data-picked="true"] {
-  background: rgb(from var(--sky-400) r g b / 0.09) !important;
-  border-color: rgb(from var(--sky-400) r g b / 0.26) !important;
-}
-
-.op-chat-sidebar .ask-choice-option[data-style="primary"][data-picked="true"] {
-  background: rgb(from var(--sky-400) r g b / 0.12) !important;
-}
-
-.op-chat-sidebar .ask-choice-option[data-style="danger"][data-picked="true"] {
-  background: rgba(248, 113, 113, 0.10) !important;
-}
-
-.op-chat-sidebar .ask-choice-option-icon {
-  width: 24px !important;
-  height: 24px !important;
-  flex-basis: 24px !important;
-  border-radius: 8px !important;
-  background: rgba(255,255,255,0.025) !important;
-  color: rgba(186, 230, 253, 0.86);
-  box-shadow: none !important;
-}
-
-.op-chat-sidebar .ask-choice-card[data-multi="true"] .ask-choice-option-icon {
-  width: 18px !important;
-  height: 18px !important;
-  flex-basis: 18px !important;
-  border-radius: 5px !important;
-  background: rgba(2, 8, 16, 0.42) !important;
-}
-
-.op-chat-sidebar .ask-choice-card[data-multi="true"] .ask-choice-option[data-picked="true"] .ask-choice-option-icon {
-  background: rgb(from var(--sky-400) r g b / 0.18) !important;
-  border-color: rgb(from var(--sky-300) r g b / 0.48) !important;
-}
-
-.op-chat-sidebar .ask-choice-icon {
-  width: 13px !important;
-  height: 13px !important;
-}
-
-.op-chat-sidebar .ask-choice-card[data-multi="true"] .ask-choice-icon {
-  width: 12px !important;
-  height: 12px !important;
 .pc-setup-wizard--friendly {
   --setup-card: rgba(8, 17, 31, 0.88);
   --setup-card-soft: rgba(15, 28, 47, 0.72);
@@ -26276,6 +26267,178 @@ body:has(.operator-panel) {
     height: 92px;
   }
 }
+
+/* ── Operator chat card usability/readability pass ───────────────────
+ * The ask_choice card fixtures intentionally stress every state. Keep these
+ * cards compact enough for the 360px sidebar, make multi-select controls read
+ * like checkboxes, and never allow the transcript/composer to create horizontal
+ * scroll. */
+.op-chat-sidebar,
+.op-chat-sidebar * {
+  box-sizing: border-box;
+}
+
+.op-chat-sidebar .oracle-body {
+  overflow-x: hidden !important;
+  padding: 9px 8px 10px !important;
+  gap: 8px !important;
+}
+
+.op-chat-sidebar .oracle-virtual-container,
+.op-chat-sidebar .oracle-msg,
+.op-chat-sidebar .oracle-msg-stack,
+.op-chat-sidebar .oracle-msg-content,
+.op-chat-sidebar .ask-choice-card,
+.op-chat-sidebar .oracle-form,
+.op-chat-sidebar .oracle-input-shell {
+  max-width: 100% !important;
+  min-width: 0 !important;
+}
+
+.op-chat-sidebar .oracle-virtual-container {
+  overflow: visible !important;
+}
+
+.op-chat-sidebar .oracle-msg {
+  overflow: visible !important;
+  padding-inline: 0 !important;
+}
+
+.op-chat-sidebar .oracle-msg-stack {
+  width: calc(100% - 34px);
+}
+
+.op-chat-sidebar .oracle-msg-user .oracle-msg-stack {
+  width: min(86%, 294px);
+}
+
+.op-chat-sidebar .oracle-msg-role,
+.op-chat-sidebar .oracle-msg-user .oracle-msg-role {
+  display: none !important;
+}
+
+.op-chat-sidebar .oracle-msg-content {
+  overflow-wrap: anywhere;
+}
+
+.op-chat-sidebar .ask-choice-card {
+  width: 100% !important;
+  gap: 7px !important;
+  margin-top: 6px !important;
+  padding: 9px !important;
+  border-radius: 13px !important;
+  border-color: rgb(from var(--sky-300) r g b / 0.14) !important;
+  background: rgba(5, 12, 22, 0.96) !important;
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.035),
+    0 8px 18px rgba(0,0,0,0.18) !important;
+}
+
+.op-chat-sidebar .ask-choice-card::before,
+.op-chat-sidebar .ask-choice-option::before {
+  display: none !important;
+}
+
+.op-chat-sidebar .ask-choice-card[data-answered="true"] {
+  border-color: rgb(from var(--sky-300) r g b / 0.18) !important;
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.035),
+    0 7px 16px rgba(0,0,0,0.16) !important;
+}
+
+.op-chat-sidebar .ask-choice-head {
+  gap: 4px;
+}
+
+.op-chat-sidebar .ask-choice-question {
+  color: #f3f8ff;
+  font-size: 12.5px;
+  font-weight: 700;
+  line-height: 1.34;
+  overflow-wrap: anywhere;
+}
+
+.op-chat-sidebar .ask-choice-picked {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  align-items: baseline;
+  margin-top: 1px;
+  color: rgba(186, 230, 253, 0.72);
+  font-size: 9px;
+  letter-spacing: 0.06em;
+}
+
+.op-chat-sidebar .ask-choice-picked span {
+  max-width: 100%;
+  color: #e8f7ff;
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+.op-chat-sidebar .ask-choice-options {
+  gap: 5px !important;
+}
+
+.op-chat-sidebar .ask-choice-option {
+  min-height: 38px;
+  gap: 8px !important;
+  padding: 7px 8px !important;
+  border-radius: 11px !important;
+  background: rgba(255,255,255,0.018) !important;
+  box-shadow: none !important;
+  transform: none !important;
+}
+
+.op-chat-sidebar .ask-choice-option:hover:not([data-disabled="true"]) {
+  background: rgb(from var(--sky-300) r g b / 0.07) !important;
+  transform: none !important;
+}
+
+.op-chat-sidebar .ask-choice-option[data-picked="true"] {
+  background: rgb(from var(--sky-400) r g b / 0.09) !important;
+  border-color: rgb(from var(--sky-400) r g b / 0.26) !important;
+}
+
+.op-chat-sidebar .ask-choice-option[data-style="primary"][data-picked="true"] {
+  background: rgb(from var(--sky-400) r g b / 0.12) !important;
+}
+
+.op-chat-sidebar .ask-choice-option[data-style="danger"][data-picked="true"] {
+  background: rgba(248, 113, 113, 0.10) !important;
+}
+
+.op-chat-sidebar .ask-choice-option-icon {
+  width: 24px !important;
+  height: 24px !important;
+  flex-basis: 24px !important;
+  border-radius: 8px !important;
+  background: rgba(255,255,255,0.025) !important;
+  color: rgba(186, 230, 253, 0.86);
+  box-shadow: none !important;
+}
+
+.op-chat-sidebar .ask-choice-card[data-multi="true"] .ask-choice-option-icon {
+  width: 18px !important;
+  height: 18px !important;
+  flex-basis: 18px !important;
+  border-radius: 5px !important;
+  background: rgba(2, 8, 16, 0.42) !important;
+}
+
+.op-chat-sidebar .ask-choice-card[data-multi="true"] .ask-choice-option[data-picked="true"] .ask-choice-option-icon {
+  background: rgb(from var(--sky-400) r g b / 0.18) !important;
+  border-color: rgb(from var(--sky-300) r g b / 0.48) !important;
+}
+
+.op-chat-sidebar .ask-choice-icon {
+  width: 13px !important;
+  height: 13px !important;
+}
+
+.op-chat-sidebar .ask-choice-card[data-multi="true"] .ask-choice-icon {
+  width: 12px !important;
+  height: 12px !important;
 }
 
 .op-chat-sidebar .ask-choice-option-label {

@@ -21,7 +21,6 @@ require("./tools/messages/inbox");
 require("./tools/messages/outbox");
 require("./tools/audit/list");
 require("./tools/pending_events/list");
-require("./tools/hindsight/recall");
 require("./tools/search/query");
 // Write tools — Operator-only by capability
 require("./tools/messages/send");

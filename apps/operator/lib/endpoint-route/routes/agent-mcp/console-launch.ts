@@ -14,7 +14,7 @@ import { activeWorkspaceId } from '@/lib/workspace-registry';
 import { buildConsoleEnvelope } from '@/lib/console-launcher';
 import { PrincipalCheckError, requirePrincipal } from '@/lib/auth/require-principal';
 import { defineTool } from '@papercusp/agent-mcp';
-import { recordAdvSession, markAdvSessionEnded } from '@/lib/adv-sessions';
+import { recordAdvSession, markAdvSessionEnded, setAdvSessionPid } from '@/lib/adv-sessions';
 
 // Fire-and-forget child-exit listener that ends the adv_sessions row
 // when the spawned terminal closes. detached+unref'd children still
@@ -155,9 +155,8 @@ function hashSlugToColor(planSlug: string | null, mode: 'omp' | 'console'): stri
 
 function formatWindowTitle(opts: AppearanceOpts): string {
   const tag = opts.mode === 'omp' ? 'OMP' : 'SH';
-  if (opts.planSlug) return `${tag}: ${opts.planSlug}`;
-  if (opts.label) return `${tag}: ${opts.label}`;
-  return tag;
+  const name = opts.label?.trim() || opts.planSlug;
+  return name ? `${tag}: ${name}` : tag;
 }
 
 function buildOmpOneliner(
@@ -298,14 +297,15 @@ const post = defineTool({
     let body: {
       slug?: string | null;
       mode?: 'shell' | 'omp';
-      // plan-agent-launch P-023: when set, the new shell `exec`s
-      // `<agent-cli> -r <sessionId>` instead of dropping into a fresh
-      // login shell. Only honoured in 'shell' mode.
+      // plan-agent-launch P-023: when set, the new terminal resumes
+      // an existing session (`<agent-cli> -r <sessionId>` in shell mode,
+      // `omp-su -r <sessionId>` in OMP mode) instead of opening fresh.
       resumeSessionId?: string | null;
       // /adv plumbing: tag this session with the plan it was
       // launched from so /adv/sessions can group + display.
       planSlug?: string | null;
       label?: string | null;
+      model?: string | null;
     } = {};
     try {
       const text = await req.text();
@@ -322,6 +322,7 @@ const post = defineTool({
         operatorBaseUrl: new URL(req.url).origin,
         mode,
         resumeSessionId: body.resumeSessionId ?? undefined,
+        ompModel: body.model?.trim() || undefined,
       });
     } catch (e: any) {
       console.warn(`[console-launch] envelope build failed: ${e?.message}`);
@@ -354,9 +355,20 @@ const post = defineTool({
           500,
         );
       }
+      const advSessionId = await recordAdvSession({
+        planSlug: body.planSlug ?? null,
+        mode: 'omp',
+        terminalBin: term.bin,
+        pid: null,
+        label: body.label ?? null,
+      });
+      const ompEnv = {
+        ...envelope.env,
+        ...(advSessionId != null ? { PAPERCUSP_ADV_SESSION_ID: String(advSessionId) } : {}),
+      };
       const ompOneliner = buildOmpOneliner(
         envelope.cwd,
-        envelope.env,
+        ompEnv,
         envelope.launchCommand ?? 'omp-su',
         { mode: 'omp', planSlug: body.planSlug ?? null, label: body.label ?? null },
       );
@@ -365,20 +377,17 @@ const post = defineTool({
           detached: true,
           stdio: 'ignore',
           cwd: envelope.cwd,
-          env: { ...process.env, ...envelope.env, ...(envelope.secretEnv ?? {}) },
+          env: { ...process.env, ...ompEnv, ...(envelope.secretEnv ?? {}) },
         });
-        const sessionPromise = recordAdvSession({
-          planSlug: body.planSlug ?? null,
-          mode: 'omp',
-          terminalBin: term.bin,
-          pid: child.pid ?? null,
-          label: body.label ?? null,
-        });
-        attachExitWatcher(child, sessionPromise);
+        if (advSessionId != null) {
+          void setAdvSessionPid(advSessionId, child.pid ?? null);
+        }
+        attachExitWatcher(child, Promise.resolve(advSessionId));
         child.unref();
         console.log(`[console-launch] spawned omp agent ${term.bin} pid=${child.pid}`);
-        return jsonRes({ status: 'ok', pid: child.pid, terminal: term.bin, mode: 'omp' });
+        return jsonRes({ status: 'ok', pid: child.pid, terminal: term.bin, mode: 'omp', advSessionId });
       } catch (e: any) {
+        if (advSessionId != null) void markAdvSessionEnded(advSessionId, -1);
         console.warn(`[console-launch] omp spawn ${term.bin} failed: ${e?.message}`);
         return jsonRes(
           { status: 'error', error: `spawn ${term.bin} failed: ${e?.message}` },

@@ -132,12 +132,14 @@ interface SessionSearchResponse {
   matches: SessionSearchMatch[];
   truncated: boolean;
   searchedSessions: number;
+  error?: string | null;
 }
 
-type SessionPanel = 'overview' | 'history' | 'todos' | 'jobs' | 'goal' | 'tools' | 'memory' | 'handoff';
+type SessionPanel = 'overview' | 'context' | 'history' | 'todos' | 'jobs' | 'goal' | 'tools' | 'memory' | 'handoff';
 
 const SESSION_PANELS: Array<{ value: SessionPanel; label: string }> = [
   { value: 'overview', label: 'Overview' },
+  { value: 'context', label: 'Context' },
   { value: 'history', label: 'History' },
   { value: 'todos', label: 'Todos' },
   { value: 'jobs', label: 'Jobs' },
@@ -1001,6 +1003,7 @@ function SessionPanelContent({
   if (panel === 'jobs') return <SnippetPanel title="Job tool events" empty="No persisted job tool events in this session." snippets={state.jobs} />;
   if (panel === 'goal') return <SnippetPanel title="Goal tool events" empty="No persisted goal tool events in this session." snippets={state.goals} />;
   if (panel === 'memory') return <MemoryPanel memory={stateData?.memory} />;
+  if (panel === 'context') return <ContextPanel row={row} stateData={stateData} state={state} />;
   if (panel === 'handoff') {
     return (
       <>
@@ -1050,6 +1053,74 @@ function SessionPanelContent({
         </div>
       </div>
       <SnippetPanel title="Latest transcript snippets" empty="No messages found." snippets={state.latestMessages} />
+    </>
+  );
+}
+
+function ContextPanel({
+  row,
+  stateData,
+  state,
+}: {
+  row: SessionRow;
+  stateData: SessionStateResponse | null;
+  state: OmpSessionState;
+}) {
+  const effectiveAdv = stateData?.advSession ?? row;
+  const match = stateData?.match;
+  const counts = Object.entries(state.countsByType).sort((a, b) => b[1] - a[1]);
+  const searchInstruction =
+    `Use omp:sessions op='search' sessionId='${state.header.id}' query='<decision/error/file>' ` +
+    `or open /adv/sessions?session=${row.id}&panel=history&q=<query>.`;
+  return (
+    <>
+      <div className="pc-adv-sessions__section">
+        <h4>Successor context pointer</h4>
+        <div className="pc-adv-sessions__snippet">
+          <p className="pc-adv-sessions__snippet-text">
+            If the next agent needs context for a decision, search this origin OMP session before guessing.{'\n'}
+            <span className="pc-adv-sessions__mono">{searchInstruction}</span>
+          </p>
+        </div>
+      </div>
+
+      <div className="pc-adv-sessions__section">
+        <h4>Identity and linkage</h4>
+        <div className="pc-adv-sessions__snippet">
+          <p className="pc-adv-sessions__snippet-text">
+            adv row: #{row.id} · plan {row.planSlug ?? '(none)'} · pid {row.pid ?? '—'}{'\n'}
+            stored omp_thread_id: <span className="pc-adv-sessions__mono">{effectiveAdv.ompThreadId ?? 'not linked yet'}</span>{'\n'}
+            current OMP id: <span className="pc-adv-sessions__mono">{state.header.id}</span>{'\n'}
+            match: {match ? `${match.matchKind} · ${Math.round(match.timeDriftMs / 1000)}s drift` : 'direct id'}{'\n'}
+            cwd: <span className="pc-adv-sessions__mono">{state.header.cwd}</span>{'\n'}
+            file: <span className="pc-adv-sessions__mono">{state.filePath}</span>
+          </p>
+        </div>
+      </div>
+
+      <div className="pc-adv-sessions__section">
+        <h4>Persisted entry types</h4>
+        {counts.length === 0 ? (
+          <p className="pc-adv-sessions__placeholder">No persisted entries found.</p>
+        ) : (
+          <table className="pc-adv-sessions__table">
+            <thead>
+              <tr>
+                <th>Type</th>
+                <th>Count</th>
+              </tr>
+            </thead>
+            <tbody>
+              {counts.map(([type, count]) => (
+                <tr key={type}>
+                  <td className="pc-adv-sessions__mono">{type}</td>
+                  <td>{count}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
     </>
   );
 }
@@ -1161,6 +1232,9 @@ function HistoryPanel({
         />
       </div>
       {loading ? <p className="pc-adv-sessions__placeholder">Searching…</p> : null}
+      {searchData?.ok === false && searchData.error ? (
+        <p className="pc-adv-sessions__error">Search failed: {searchData.error}</p>
+      ) : null}
       {trimmed.length > 0 && !loading ? (
         <div className="pc-adv-sessions__section">
           <h4>

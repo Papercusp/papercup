@@ -504,28 +504,61 @@ function CollapseTopSectionPortalButton({
   onToggle: () => void;
 }): JSX.Element | null {
   const [mounted, setMounted] = useState(false);
+  const [autoToggleLeft, setAutoToggleLeft] = useState<number | null>(null);
 
   useEffect(() => { setMounted(true); }, []);
+
+  useEffect(() => {
+    if (!mounted || collapsed || typeof window === 'undefined') {
+      setAutoToggleLeft(null);
+      return;
+    }
+
+    const update = () => {
+      const autoToggle = document.querySelector<HTMLElement>('.pc-header-cta-select-shell');
+      if (!autoToggle) {
+        setAutoToggleLeft(null);
+        return;
+      }
+      setAutoToggleLeft(Math.round(autoToggle.getBoundingClientRect().right + 8));
+    };
+
+    const header = document.querySelector<HTMLElement>('.pc-header');
+    const autoToggle = document.querySelector<HTMLElement>('.pc-header-cta-select-shell');
+    const observer = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(update) : null;
+    if (header) observer?.observe(header);
+    if (autoToggle) observer?.observe(autoToggle);
+    const frame = window.requestAnimationFrame(update);
+    window.addEventListener('resize', update);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      window.removeEventListener('resize', update);
+      observer?.disconnect();
+    };
+  }, [collapsed, mounted]);
 
   if (!mounted || typeof document === 'undefined') return null;
   const Icon = collapsed ? LChevronDown : LChevronUp;
   const actionLabel = collapsed ? 'Show top section' : 'Hide top section';
   const stateLabel = collapsed ? 'Show' : 'Hide';
-  const headerSlot = !collapsed ? document.getElementById('pc-harness-top-collapse-slot') : null;
-  const portalTarget = headerSlot ?? document.body;
+  const buttonStyle = autoToggleLeft === null
+    ? undefined
+    : ({ '--h-top-collapse-left': `${autoToggleLeft}px` } as CSSProperties);
   return createPortal(
     <button
       type="button"
       className="h-top-collapse-btn h-top-collapse-inline"
       data-collapsed={collapsed ? 'true' : 'false'}
+      data-align={autoToggleLeft === null ? 'center' : 'auto-toggle'}
       onClick={onToggle}
       aria-expanded={!collapsed}
       aria-label={actionLabel}
+      style={buttonStyle}
     >
       <Icon className="h-top-collapse-icon" size={13} strokeWidth={2.4} aria-hidden="true" />
       <span className="h-top-collapse-state" aria-hidden="true">{stateLabel}</span>
     </button>,
-    portalTarget
+    document.body
   );
 }
 

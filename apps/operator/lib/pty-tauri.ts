@@ -15,7 +15,7 @@
  *   - openNativeSession(opts)   — POST /resolve + spawn + listen
  */
 
-import type { PtySpawnOpts as BindingsPtySpawnOpts } from './tauri-bindings';
+import { commands, type PtySpawnOpts as BindingsPtySpawnOpts } from './tauri-bindings';
 
 type TauriListenFn = <T>(
   event: string,
@@ -87,7 +87,6 @@ export interface NativeSession {
  * through to a fresh spawn if `resumePtyId` is missing or stale.
  */
 export async function openNativeSession(opts: OpenNativeOpts): Promise<NativeSession> {
-  const { commands } = await import('./tauri-bindings');
   const listen = tauriListen();
 
   let id: string | null = null;

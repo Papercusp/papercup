@@ -1,9 +1,137 @@
 <?xml version="1.0" encoding="UTF-8" ?>
-<testsuites name="vitest tests" tests="2" failures="0" errors="0" time="5.138358203">
-    <testsuite name="test/db.integration.test.ts" timestamp="2026-05-01T03:17:21.523Z" hostname="main-server-Precision-7865-Tower" tests="2" failures="0" errors="0" skipped="0" time="5.138358203">
-        <testcase classname="test/db.integration.test.ts" name="test-config Postgres harness &gt; boots a real Postgres and round-trips an insert" time="0.007330664">
+<testsuites name="vitest tests" tests="64" failures="0" errors="0" time="0.905825871">
+    <testsuite name="lib/adv-sessions.test.ts" timestamp="2026-05-24T21:31:13.913Z" hostname="main-server-Precision-7865-Tower" tests="4" failures="0" errors="0" skipped="0" time="0.004526677">
+        <testcase classname="lib/adv-sessions.test.ts" name="toIsoTimestamp &gt; passes Date objects through to ISO" time="0.001925456">
         </testcase>
-        <testcase classname="test/db.integration.test.ts" name="test-config Postgres harness &gt; schema is isolated per worker" time="0.000306842">
+        <testcase classname="lib/adv-sessions.test.ts" name="toIsoTimestamp &gt; normalizes postgres text timestamps to ISO" time="0.000349374">
+        </testcase>
+        <testcase classname="lib/adv-sessions.test.ts" name="toIsoTimestamp &gt; returns null for nullish values" time="0.000269681">
+        </testcase>
+        <testcase classname="lib/adv-sessions.test.ts" name="toIsoTimestamp &gt; throws on invalid timestamps" time="0.000815754">
+        </testcase>
+    </testsuite>
+    <testsuite name="lib/omp-sessions.test.ts" timestamp="2026-05-24T21:31:13.915Z" hostname="main-server-Precision-7865-Tower" tests="4" failures="0" errors="0" skipped="0" time="0.812224067">
+        <testcase classname="lib/omp-sessions.test.ts" name="omp-sessions &gt; lists sessions and filters by query" time="0.766773225">
+        </testcase>
+        <testcase classname="lib/omp-sessions.test.ts" name="omp-sessions &gt; reads a session by id and extracts structured state" time="0.018542923">
+        </testcase>
+        <testcase classname="lib/omp-sessions.test.ts" name="omp-sessions &gt; searches session history with snippets and context" time="0.01325733">
+        </testcase>
+        <testcase classname="lib/omp-sessions.test.ts" name="omp-sessions &gt; prefers exact cwd when locating a nearby session" time="0.012147208">
+        </testcase>
+    </testsuite>
+    <testsuite name="scripts/hooks/omp/__tests__/coord-hook.test.ts" timestamp="2026-05-24T21:31:13.917Z" hostname="main-server-Precision-7865-Tower" tests="56" failures="0" errors="0" skipped="0" time="0.089075127">
+        <testcase classname="scripts/hooks/omp/__tests__/coord-hook.test.ts" name="formatTurnStartReminder &gt; returns &quot;&quot; when there is nothing to surface" time="0.002271325">
+        </testcase>
+        <testcase classname="scripts/hooks/omp/__tests__/coord-hook.test.ts" name="formatTurnStartReminder &gt; returns &quot;&quot; in detached mode when only the detached warning would surface" time="0.000332612">
+        </testcase>
+        <testcase classname="scripts/hooks/omp/__tests__/coord-hook.test.ts" name="formatTurnStartReminder &gt; prepends the detached warning when detached mode has actionable coord content" time="0.000473113">
+        </testcase>
+        <testcase classname="scripts/hooks/omp/__tests__/coord-hook.test.ts" name="formatTurnStartReminder &gt; renders escalations first within the inbox" time="0.000707857">
+        </testcase>
+        <testcase classname="scripts/hooks/omp/__tests__/coord-hook.test.ts" name="formatTurnStartReminder &gt; truncates long lists and surfaces a &quot;… and N more&quot; hint for locks" time="0.000436663">
+        </testcase>
+        <testcase classname="scripts/hooks/omp/__tests__/coord-hook.test.ts" name="formatTurnStartReminder &gt; renders changed-plans block when present" time="0.000288818">
+        </testcase>
+        <testcase classname="scripts/hooks/omp/__tests__/coord-hook.test.ts" name="register (OMP adapter) &gt; subscribes session_start, turn_start, and tool_call" time="0.001543489">
+        </testcase>
+        <testcase classname="scripts/hooks/omp/__tests__/coord-hook.test.ts" name="register (OMP adapter) &gt; operator unreachable with no coord work sends no hidden reminder (F-H4)" time="0.004432516">
+        </testcase>
+        <testcase classname="scripts/hooks/omp/__tests__/coord-hook.test.ts" name="probeOperator &gt; returns false when no operator URL is configured" time="0.000472673">
+        </testcase>
+        <testcase classname="scripts/hooks/omp/__tests__/coord-hook.test.ts" name="summarisePlanEvents &gt; groups plan_event entries by plan_slug, preserving order" time="0.000501178">
+        </testcase>
+        <testcase classname="scripts/hooks/omp/__tests__/coord-hook.test.ts" name="detached filesystem reads (F-H4c) &gt; readInboxFs returns entries addressed to the owner, excludes own + others" time="0.011791">
+        </testcase>
+        <testcase classname="scripts/hooks/omp/__tests__/coord-hook.test.ts" name="detached filesystem reads (F-H4c) &gt; readInboxFs honours the since_ts watermark" time="0.003404642">
+        </testcase>
+        <testcase classname="scripts/hooks/omp/__tests__/coord-hook.test.ts" name="detached filesystem reads (F-H4c) &gt; readInboxFs returns [] when coord/messages is absent" time="0.000993939">
+        </testcase>
+        <testcase classname="scripts/hooks/omp/__tests__/coord-hook.test.ts" name="detached filesystem reads (F-H4c) &gt; watermark round-trips through the filesystem (both pointers)" time="0.003752373">
+        </testcase>
+        <testcase classname="scripts/hooks/omp/__tests__/coord-hook.test.ts" name="detached filesystem reads (F-H4c) &gt; readPlanEventsFs scans plan-events files, honours since_ts (NB-2)" time="0.002576573">
+        </testcase>
+        <testcase classname="scripts/hooks/omp/__tests__/coord-hook.test.ts" name="detached filesystem reads (F-H4c) &gt; readPlanEventsFs feeds summarisePlanEvents end to end" time="0.001516608">
+        </testcase>
+        <testcase classname="scripts/hooks/omp/__tests__/coord-hook.test.ts" name="detached filesystem reads (F-H4c) &gt; readPlanEventsFs returns [] when no plan-events files exist" time="0.000847095">
+        </testcase>
+        <testcase classname="scripts/hooks/omp/__tests__/coord-hook.test.ts" name="extractPathsFromToolInput (file-locking #2) &gt; claims `path` from a write tool input" time="0.000270492">
+        </testcase>
+        <testcase classname="scripts/hooks/omp/__tests__/coord-hook.test.ts" name="extractPathsFromToolInput (file-locking #2) &gt; accepts path | file_path | filePath for edit" time="0.000229643">
+        </testcase>
+        <testcase classname="scripts/hooks/omp/__tests__/coord-hook.test.ts" name="extractPathsFromToolInput (file-locking #2) &gt; claims every literal path from ast_edit, drops globs" time="0.000263529">
+        </testcase>
+        <testcase classname="scripts/hooks/omp/__tests__/coord-hook.test.ts" name="extractPathsFromToolInput (file-locking #2) &gt; drops paths outside the repo root" time="0.000490197">
+        </testcase>
+        <testcase classname="scripts/hooks/omp/__tests__/coord-hook.test.ts" name="extractPathsFromToolInput (file-locking #2) &gt; returns [] for non-file-editing tools" time="0.000245484">
+        </testcase>
+        <testcase classname="scripts/hooks/omp/__tests__/coord-hook.test.ts" name="extractPathsFromToolInput (file-locking #2) &gt; returns [] for malformed input (non-string path)" time="0.000281854">
+        </testcase>
+        <testcase classname="scripts/hooks/omp/__tests__/coord-hook.test.ts" name="formatBusyRefusal (file-locking #2) &gt; renders the holder line + three retry options" time="0.000575631">
+        </testcase>
+        <testcase classname="scripts/hooks/omp/__tests__/coord-hook.test.ts" name="formatBusyRefusal (file-locking #2) &gt; truncates after 5 entries with a &quot;... and N more&quot; line" time="0.0003311">
+        </testcase>
+        <testcase classname="scripts/hooks/omp/__tests__/coord-hook.test.ts" name="onToolCall / onToolResult (file-locking #2) &gt; returns {} when the tool has no claimable path" time="0.000446662">
+        </testcase>
+        <testcase classname="scripts/hooks/omp/__tests__/coord-hook.test.ts" name="onToolCall / onToolResult (file-locking #2) &gt; blocks Claude task-panel and subagent Task tools and points agents at todo_write" time="0.000402708">
+        </testcase>
+        <testcase classname="scripts/hooks/omp/__tests__/coord-hook.test.ts" name="onToolCall / onToolResult (file-locking #2) &gt; caches lock_id on ok and releases on tool_result" time="0.002982367">
+        </testcase>
+        <testcase classname="scripts/hooks/omp/__tests__/coord-hook.test.ts" name="onToolCall / onToolResult (file-locking #2) &gt; blocks with a formatted reason on busy" time="0.001092088">
+        </testcase>
+        <testcase classname="scripts/hooks/omp/__tests__/coord-hook.test.ts" name="onToolCall / onToolResult (file-locking #2) &gt; fails open when the operator is unreachable" time="0.001002075">
+        </testcase>
+        <testcase classname="scripts/hooks/omp/__tests__/coord-hook.test.ts" name="onToolCall / onToolResult (file-locking #2) &gt; onToolResult is a no-op for a toolCallId we never acquired" time="0.000279049">
+        </testcase>
+        <testcase classname="scripts/hooks/omp/__tests__/coord-hook.test.ts" name="recordHookSuccess / recordHookError (file-locking #3) &gt; recordHookSuccess writes last-success.json with a ts" time="0.001559791">
+        </testcase>
+        <testcase classname="scripts/hooks/omp/__tests__/coord-hook.test.ts" name="recordHookSuccess / recordHookError (file-locking #3) &gt; recordHookError writes last-error.json with the plan-spec shape" time="0.001958991">
+        </testcase>
+        <testcase classname="scripts/hooks/omp/__tests__/coord-hook.test.ts" name="recordHookSuccess / recordHookError (file-locking #3) &gt; creates the cache directory if missing" time="0.00409295">
+        </testcase>
+        <testcase classname="scripts/hooks/omp/__tests__/coord-hook.test.ts" name="recordHookSuccess / recordHookError (file-locking #3) &gt; does not throw when the cache dir is unwritable" time="0.002119">
+        </testcase>
+        <testcase classname="scripts/hooks/omp/__tests__/coord-hook.test.ts" name="onToolCall writes the health markers (file-locking #3) &gt; writes last-success.json on a successful acquire" time="0.003451232">
+        </testcase>
+        <testcase classname="scripts/hooks/omp/__tests__/coord-hook.test.ts" name="onToolCall writes the health markers (file-locking #3) &gt; writes last-error.json (phase=connect) when the operator is unreachable" time="0.003430522">
+        </testcase>
+        <testcase classname="scripts/hooks/omp/__tests__/coord-hook.test.ts" name="hookOwnerId — per-process coordination owner (file-locking #2) &gt; mints omp-&lt;session&gt;-&lt;pid&gt; from PAPERCUSP_AUTH_SESSION_ID" time="0.000339987">
+        </testcase>
+        <testcase classname="scripts/hooks/omp/__tests__/coord-hook.test.ts" name="hookOwnerId — per-process coordination owner (file-locking #2) &gt; falls back to a random session part when no env session id" time="0.000329596">
+        </testcase>
+        <testcase classname="scripts/hooks/omp/__tests__/coord-hook.test.ts" name="hookOwnerId — per-process coordination owner (file-locking #2) &gt; is stable across calls within the process" time="0.000247548">
+        </testcase>
+        <testcase classname="scripts/hooks/omp/__tests__/coord-hook.test.ts" name="hookOwnerId — per-process coordination owner (file-locking #2) &gt; always ends with the real pid (distinguishes sibling shells)" time="0.000284118">
+        </testcase>
+        <testcase classname="scripts/hooks/omp/__tests__/coord-hook.test.ts" name="callMcpTool passes ?client=&lt;owner&gt; (file-locking #2) &gt; appends the minted owner as a client query param" time="0.000413428">
+        </testcase>
+        <testcase classname="scripts/hooks/omp/__tests__/coord-hook.test.ts" name="linkAdvSessionFromContext — ADV row linkage &gt; calls omp:sessions link with the current OMP session id and file path" time="0.000556895">
+        </testcase>
+        <testcase classname="scripts/hooks/omp/__tests__/coord-hook.test.ts" name="linkAdvSessionFromContext — ADV row linkage &gt; does nothing without a launcher-provided ADV session id" time="0.000273888">
+        </testcase>
+        <testcase classname="scripts/hooks/omp/__tests__/coord-hook.test.ts" name="onSessionShutdown — defensive lock release (file-locking #2) &gt; calls coord:locks:release with all_mine:true" time="0.000689421">
+        </testcase>
+        <testcase classname="scripts/hooks/omp/__tests__/coord-hook.test.ts" name="extractPathsFromToolInput backslash consistency (file-locking #2) &gt; skips backslash paths (the server rejects them — path-normalize.ts)" time="0.000333103">
+        </testcase>
+        <testcase classname="scripts/hooks/omp/__tests__/coord-hook.test.ts" name="extractPathsFromToolInput backslash consistency (file-locking #2) &gt; still canonicalizes ./ // and trailing slash via resolve()" time="0.000246626">
+        </testcase>
+        <testcase classname="scripts/hooks/omp/__tests__/coord-hook.test.ts" name="detectSymlinkedPaths / formatSymlinkRefusal (file-locking #1) &gt; passes a plain non-symlinked path" time="0.001601992">
+        </testcase>
+        <testcase classname="scripts/hooks/omp/__tests__/coord-hook.test.ts" name="detectSymlinkedPaths / formatSymlinkRefusal (file-locking #1) &gt; passes a not-yet-existent leaf (new file via write)" time="0.001252297">
+        </testcase>
+        <testcase classname="scripts/hooks/omp/__tests__/coord-hook.test.ts" name="detectSymlinkedPaths / formatSymlinkRefusal (file-locking #1) &gt; flags a symlinked file pointing at a real repo file" time="0.001840423">
+        </testcase>
+        <testcase classname="scripts/hooks/omp/__tests__/coord-hook.test.ts" name="detectSymlinkedPaths / formatSymlinkRefusal (file-locking #1) &gt; flags a path whose directory component is a symlink" time="0.00172548">
+        </testcase>
+        <testcase classname="scripts/hooks/omp/__tests__/coord-hook.test.ts" name="detectSymlinkedPaths / formatSymlinkRefusal (file-locking #1) &gt; flags a symlink that escapes the repo entirely" time="0.002329346">
+        </testcase>
+        <testcase classname="scripts/hooks/omp/__tests__/coord-hook.test.ts" name="detectSymlinkedPaths / formatSymlinkRefusal (file-locking #1) &gt; fails open when the root is not a real directory" time="0.001920096">
+        </testcase>
+        <testcase classname="scripts/hooks/omp/__tests__/coord-hook.test.ts" name="detectSymlinkedPaths / formatSymlinkRefusal (file-locking #1) &gt; does not flag paths when the repo root itself is under a symlink" time="0.004080787">
+        </testcase>
+        <testcase classname="scripts/hooks/omp/__tests__/coord-hook.test.ts" name="detectSymlinkedPaths / formatSymlinkRefusal (file-locking #1) &gt; formatSymlinkRefusal names each aliased path and its real target" time="0.002596121">
+        </testcase>
+        <testcase classname="scripts/hooks/omp/__tests__/coord-hook.test.ts" name="detectSymlinkedPaths / formatSymlinkRefusal (file-locking #1) &gt; onToolCall blocks a symlinked target before contacting the operator" time="0.003178355">
         </testcase>
     </testsuite>
 </testsuites>

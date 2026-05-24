@@ -134,13 +134,13 @@ export async function evaluateSetContent(
 export default defineTool({
   name: 'plans:set-content',
   description:
-    'Replace a plan file wholesale, guarded by a compare-and-swap on `expectedHash`. For raw-prose edits the structured verbs cannot make. Rejects a stale write (file changed since load), a write that would strip a real plan back to legacy, and a write that fails lint. A successful write is recorded as a plan revision; pass `rationale` to capture the why.',
+    'Replace a plan file wholesale, guarded by a compare-and-swap on `expectedHash`. For raw-prose edits the structured verbs cannot make. Rejects a stale write (file changed since load), a write that would strip a real plan back to legacy, and a write that fails lint. A successful write is recorded as a plan revision; pass `rationale` to capture the why. For large plan bodies, use plans:set-content-chunk instead so the provider sends multiple small tool calls.',
   guidance: {
-    when: 'A human is editing the raw markdown of a plan — prose sections the assisted verbs (set-now / set-status / add-decision / add-item) do not cover.',
+    when: 'A human is editing the raw markdown of a plan — prose sections the assisted verbs (set-now / set-status / add-decision / add-item) do not cover. Use only for small-to-medium bodies that fit comfortably in one tool call.',
     notWhen:
-      'A structured edit — flipping an item, replacing the Now block, appending a decision/item — use the assisted verb. Converting a legacy plan — use plans:set-frontmatter.',
+      'A structured edit — flipping an item, replacing the Now block, appending a decision/item — use the assisted verb. Converting a legacy plan — use plans:set-frontmatter. Writing a large plan body — use plans:set-content-chunk begin → append* → commit.',
     chaining:
-      'plans:get { slug } → carry `contentHash` → plans:set-content { slug, content, expectedHash: contentHash }.',
+      'plans:get { slug } → carry `contentHash` → plans:set-content { slug, content, expectedHash: contentHash }. For large bodies: plans:set-content-chunk begin → append* → commit.',
   },
   capability: 'plans:write',
   requirePrincipal: false,

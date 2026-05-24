@@ -80,6 +80,7 @@ export function buildHttpSpawnContext(input: HttpRequestContextInput): {
   parentSpawnId?: string | null;
   projectDir?: string;
   stateDir?: string;
+  uiClientId?: string | null;
 } {
   const get = (k: keyof typeof PAPERCUSP_CONTEXT_HEADERS): string | null => {
     const headerVal = input.headers[PAPERCUSP_CONTEXT_HEADERS[k]];
@@ -105,6 +106,14 @@ export function buildHttpSpawnContext(input: HttpRequestContextInput): {
   const runId = get('run'); if (runId) out.runId = runId;
   const spawnId = get('spawn'); if (spawnId) out.spawnId = spawnId;
   out.parentSpawnId = get('parentSpawn');
+  // `?client=` carries the stable per-session uiClientId that the
+  // coordination layer uses for ownership attribution (locks, plan
+  // edits, agent_chats). Parity with the MCP URL transport's
+  // parseRequestContext — without this the HTTP transport reaches
+  // resolveAgentIdentity with uiClientId=null, which throws for
+  // superuser / power-user callers.
+  const client = input.searchParams.get('client');
+  if (client && client.trim()) out.uiClientId = client.trim();
   return out;
 }
 

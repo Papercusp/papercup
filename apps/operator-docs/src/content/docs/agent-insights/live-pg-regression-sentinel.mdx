@@ -43,7 +43,7 @@ Write a `verify-<schema>.ts` script that:
 5. **Asserts the resulting schema** against a declarative list of
    expected `(table, required-columns, CHECK constraints)` tuples.
 6. **Tests idempotence** — second call short-circuits via the
-   globalThis flag in <200ms.
+   globalThis flag in `<200ms`.
 7. **Cleans up** — drops the tmp PG, removes the data dir.
 
 Example (`apps/operator/scripts/verify-dogfood-schema.ts`):

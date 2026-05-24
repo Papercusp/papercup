@@ -109,4 +109,33 @@ export function runBootstrap(): void {
       .then(({ watchPluginsForReload }) => watchPluginsForReload())
       .catch((e) => console.warn('[plugin-host-watch] failed to arm:', e));
   }
+
+  // P-004 of desktop-app-install-integration-2026-05-23.
+  // When the sidecar is running inside Papercusp.app (Tauri exports
+  // PAPERCUSP_DESKTOP=1), self-install the engineer-collaborator
+  // files into ~/.papercusp/ on boot. Mirrors what
+  // install-standalone-mcp.sh does for dev — best-effort, logs on
+  // failure, idempotent on token + agent_id (per a03fb875).
+  //
+  // Plain dev (`npm run dev` without Tauri) leaves PAPERCUSP_DESKTOP
+  // unset, so dev users still use the shell script explicitly per the
+  // unchanged dev workflow.
+  if (process.env.PAPERCUSP_DESKTOP === '1') {
+    import('../lib/desktop-install/papercusp-files')
+      .then(({ installPapercuspFiles }) => installPapercuspFiles())
+      .then((r) => {
+        const minted = [
+          r.minted.token ? 'token' : null,
+          r.minted.agentId ? 'agent-id' : null,
+        ]
+          .filter(Boolean)
+          .join('+') || 'reused';
+        console.log(
+          `[desktop-install] papercusp-files ok (${minted}; playbook=${r.playbookWritten} ext=${r.extensionWritten})`,
+        );
+      })
+      .catch((e) => {
+        console.warn('[desktop-install] papercusp-files failed:', (e as Error)?.message ?? e);
+      });
+  }
 }

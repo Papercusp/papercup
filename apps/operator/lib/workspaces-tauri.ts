@@ -13,7 +13,7 @@
 // Tauri-side calls go through the typed tauri-bindings produced by
 // tauri-specta; the public API of this file is unchanged.
 
-import type { Workspace as BindingsWorkspace, Registry } from './tauri-bindings';
+import { commands, type Workspace as BindingsWorkspace, type Registry } from './tauri-bindings';
 
 export type Workspace = BindingsWorkspace;
 
@@ -44,7 +44,6 @@ async function http<T>(path: string, init?: RequestInit): Promise<T> {
 
 export async function listWorkspaces(): Promise<WorkspaceRegistry> {
   if (isDesktopRuntime()) {
-    const { commands } = await import('./tauri-bindings');
     return commands.workspacesList() as Promise<Registry>;
   }
   return http<WorkspaceRegistry>('/api/workspaces');
@@ -52,7 +51,6 @@ export async function listWorkspaces(): Promise<WorkspaceRegistry> {
 
 export async function createWorkspace(name: string): Promise<Workspace> {
   if (isDesktopRuntime()) {
-    const { commands } = await import('./tauri-bindings');
     const r = await commands.workspacesCreate(name);
     if (r.status === 'error') throw new Error(r.error);
     return r.data;
@@ -62,7 +60,6 @@ export async function createWorkspace(name: string): Promise<Workspace> {
 
 export async function renameWorkspace(id: string, name: string): Promise<void> {
   if (isDesktopRuntime()) {
-    const { commands } = await import('./tauri-bindings');
     const r = await commands.workspacesRename(id, name);
     if (r.status === 'error') throw new Error(r.error);
     return;
@@ -75,7 +72,6 @@ export async function renameWorkspace(id: string, name: string): Promise<void> {
 
 export async function deleteWorkspace(id: string): Promise<void> {
   if (isDesktopRuntime()) {
-    const { commands } = await import('./tauri-bindings');
     const r = await commands.workspacesDelete(id);
     if (r.status === 'error') throw new Error(r.error);
     return;
@@ -99,7 +95,6 @@ export async function deleteWorkspace(id: string): Promise<void> {
  */
 export async function switchWorkspace(id: string, opts?: { resetTo?: string }): Promise<void> {
   if (isDesktopRuntime()) {
-    const { commands } = await import('./tauri-bindings');
     const r = await commands.workspacesSwitch(id);
     if (r.status === 'error') throw new Error(r.error);
     return;

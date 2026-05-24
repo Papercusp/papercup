@@ -18,13 +18,17 @@
  * now, those steps are assumed already-done — if the operator is
  * running, the user already has the superuser token + MCP config.
  *
+ * It DOES keep OMP-native Hindsight memory enabled, because that is an
+ * idempotent OMP config write and must stay in sync for already-installed
+ * omp-su wrappers.
+ *
  * Idempotent. Safe to re-run. Logs to stderr; never throws.
  */
 
 import { existsSync, mkdirSync, copyFileSync, writeFileSync, chmodSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, dirname } from 'node:path';
-import { execSync } from 'node:child_process';
+import { execFileSync, execSync } from 'node:child_process';
 
 const OMP_SU_WRAPPER = `#!/usr/bin/env bash
 # papercusp engineer-collaborator launcher.
@@ -50,6 +54,28 @@ function isOnPath(bin: string): boolean {
   } catch {
     return false;
   }
+}
+
+function setOmpConfig(key: string, value: string): void {
+  if (!isOnPath('omp')) return;
+  try {
+    execFileSync('omp', ['config', 'set', key, value], { stdio: 'ignore' });
+    dlog(`OMP config ${key}=${value}`);
+  } catch (e) {
+    dlog(`OMP config ${key} failed: ${(e as Error).message}`);
+  }
+}
+
+function ensureOmpHindsightConfig(): void {
+  const hindsightUrl =
+    process.env.PAPERCUSP_HINDSIGHT_API_URL ??
+    process.env.HINDSIGHT_API_URL ??
+    'http://localhost:8888';
+  setOmpConfig('memory.backend', 'hindsight');
+  setOmpConfig('hindsight.apiUrl', hindsightUrl);
+  setOmpConfig('hindsight.scoping', 'per-project-tagged');
+  setOmpConfig('hindsight.autoRecall', 'true');
+  setOmpConfig('hindsight.autoRetain', 'true');
 }
 
 /** Resolve the directory `omp` lives in (so the wrapper lands on the
@@ -123,6 +149,8 @@ export async function ensureOmpSuInstalled(): Promise<void> {
   // Only meaningful on Linux right now — omp-su wrapper is bash; the
   // server-side spawn path in console-launch.ts is Linux-only too.
   if (process.platform !== 'linux') return;
+
+  ensureOmpHindsightConfig();
 
   // Skip if everything is already in place — fast path on every reboot.
   const home = homedir();

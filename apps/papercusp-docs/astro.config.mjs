@@ -12,6 +12,10 @@ import starlight from '@astrojs/starlight';
 export default defineConfig({
   site: 'https://papercup.ai',
   base: '/docs',
+  // Match `apps/operator-docs`: pages emitted as `<slug>.html` (not
+  // `<slug>/index.html`), so the operator Hono host's `/docs/*` resolver
+  // (`host-docs-public.ts`) can slug→.html-lookup uniformly.
+  build: { format: 'file' },
   integrations: [
     starlight({
       title: 'Papercusp Docs',

@@ -40,6 +40,48 @@ page becomes a historical record of the design rationale.
 substrate-wide framework that every app and lib in the monorepo
 plugs into.
 
+## 1.0a Four canonical frameworks — convention (2026-05-24)
+
+Per `admin-testing-tab-restructure-2026-05-24` D-006: **only four**
+test frameworks ship new tests. Everything else is being migrated out.
+
+| Framework         | File shape                     | Where                                      | Discovered by                                       |
+| ----------------- | ------------------------------ | ------------------------------------------ | --------------------------------------------------- |
+| **Vitest**        | `*.test.ts` next to source     | per-package                                | `/admin/testing` registry globs                     |
+| **Playwright**    | `*.spec.ts`                    | `apps/operator/e2e/`                       | `harness` / domain-specific E2E sections            |
+| **Cargo**         | `#[cfg(test)] mod tests { … }` | `<crate>/src/`                             | `cargo test --message-format=json` reporter (P-012) |
+| **LLM scenarios** | `.ts` / `.yaml`                | `apps/operator/lib/llm-testing/scenarios/` | LLM testing tab                                     |
+
+**Where tests appear in the UI:** drop a test file under one of the
+glob-matched paths in `apps/operator/lib/testing-domains-registry.ts`
+and it shows up automatically in the matching `/admin/testing` subtab
+— no registration step. The shared `<DomainTestPanel>` walks the
+server-side glob at every request, so renames + deletions propagate
+without a rebuild.
+
+**Where tests do NOT go (will be linted out — P-038):**
+
+* `apps/operator/__tests__/integration/*.mjs` — hand-rolled ok/bad
+  drivers. Existing ones get migrated to Vitest integration tests in
+  P-027. New `.mjs` files in this directory fail CI.
+* `apps/operator/scripts/*-smoke.ts` — tsx smoke scripts. Existing
+  ones get migrated in P-029. New ones fail CI.
+* New bash `.sh` test drivers — bring the scenarios into Vitest specs
+  (P-030) or accept that ad-hoc bash is for one-off ops.
+
+**WebdriverIO** survives only as the packaged-build driver
+(`packaged-readiness` admin suite). Not a general test framework.
+
+### Agent-e2e workflow vs. file-Run buttons
+
+Two orthogonal ways to invoke a test:
+
+* **File-Run buttons in `/admin/testing`** (P-014/P-016) spawn the
+  test file directly via `vitest run <path>` / `playwright test <path>` / `cargo test`. Single-process, polling-based status.
+* **Agent-e2e workflow** (see [`testing/agent-e2e`](./agent-e2e)) is a
+  meta-loop where an agent drives the Tauri UI to verify the running
+  app — the same test file may legitimately be invoked both ways.
+
 ## 1.0 Why this exists
 
 The repo today has Vitest configured in five projects (`apps/shop-api`,
