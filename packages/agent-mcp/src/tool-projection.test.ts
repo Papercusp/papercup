@@ -283,6 +283,36 @@ describe('listMcpProjections', () => {
       description: 'Progress payload',
     });
   });
+
+  // P-010 / P-011 / P-012 — profile gate
+  describe('profile gating', () => {
+    it('P-010: power profile hides engineer-tagged tools', () => {
+      registerProjectedTool(baseTool({ expose: { mcp: { name: 'group.a' } }, profile: 'engineer' }));
+      registerProjectedTool(baseTool({ expose: { mcp: { name: 'group.b' } } }));
+      registerProjectedTool(baseTool({ expose: { mcp: { name: 'group.c' } }, profile: 'all' }));
+      const names = listMcpProjections(undefined, 'power').map((t) => t.name);
+      expect(names).not.toContain('group.a');
+      expect(names).toContain('group.b');
+      expect(names).toContain('group.c');
+    });
+
+    it('P-011: SU caller with ?profile=power sees same filtered list', () => {
+      registerProjectedTool(baseTool({ expose: { mcp: { name: 'su.eng' } }, profile: 'engineer' }));
+      registerProjectedTool(baseTool({ expose: { mcp: { name: 'su.all' } } }));
+      const names = listMcpProjections(undefined, 'power').map((t) => t.name);
+      expect(names).not.toContain('su.eng');
+      expect(names).toContain('su.all');
+    });
+
+    it('P-012: engineer profile sees all tools (no regression)', () => {
+      registerProjectedTool(baseTool({ expose: { mcp: { name: 'eng.a' } }, profile: 'engineer' }));
+      registerProjectedTool(baseTool({ expose: { mcp: { name: 'eng.b' } } }));
+      const names = listMcpProjections(undefined, 'engineer').map((t) => t.name);
+      expect(names).toContain('eng.a');
+      expect(names).toContain('eng.b');
+    });
+
+  });
 });
 
 describe('emitToSseSink', () => {
