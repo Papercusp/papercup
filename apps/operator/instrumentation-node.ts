@@ -299,6 +299,24 @@ export async function register(): Promise<void> {
   } catch (err) {
     console.warn('[telemetry-flush] failed to start:', err instanceof Error ? err.message : err);
   }
+
+  // completion_ref verifier (dogfood-v5 Phase 2 P-016). Polls every
+  // harness's pending_done / recently-shipped features against the
+  // remote via `git ls-remote` and stamps verified_done_at_remote_ts.
+  // Drives the tier-B ✓ badge per §17 / D-030. Idempotent across HMR.
+  // 60s default interval; unref'd so it doesn't keep the process
+  // alive in tests.
+  try {
+    const { startCompletionRefVerifier } = await import(
+      '@/lib/harness/completion-ref-verifier'
+    );
+    startCompletionRefVerifier();
+  } catch (err) {
+    console.warn(
+      '[completion-ref-verifier] failed to start:',
+      err instanceof Error ? err.message : err,
+    );
+  }
 }
 
 let _backfillRan = false;
