@@ -11,11 +11,11 @@ owner: avi@storewolf.com
 
 ## Now
 
-**State:** SU autonomous loop continued. **~194 commits ahead of `origin/main`.** All verifiers green. **Phase 1b type-spine expanded to 4 modules** (was 3 — added `contributor-file-types.ts` for Channel 2 / Q-2 resolution). **Phase 5a now has its first types-only groundwork module** (`contributor-usage-event-types.ts` for P-070 ledger). Both Q-2 and Q-3 from Phase 1b plan resolved as D-001/D-002. Insight #26 (JCS canonical-form) shipped.
+**State:** SU autonomous loop continued. **~202 commits ahead of `origin/main`.** All verifiers green. **12-module types-only spine** now in tree spanning Phase 1b, Phase 5a, Phase 6, Phase 7. All Phase 1b open questions resolved (Q-2/Q-3/Q-4 as D-decisions; Q-1 documented). All memo-gated runtime implementations now have a stable typed entry point — when memos accept, runtime drops in cleanly.
 
-**Next action (for human):** review the commits at your pace; decide whether to push to `origin/main` and whether to act on the surfaced design memos. Phase 1b runtime implementation now has zero blocking open questions (Q-1 answered in plan body, Q-2/Q-3/Q-4 resolved as D-decisions); only memo acceptance gates remain.
+**Next action (for human):** review the commits at your pace; decide whether to push to `origin/main` and whether to accept the design memos.
 
-**Next:** Human review of the 194 commits + decision on memo acceptance to unblock Phase 1b runtime implementation.
+**Next:** Human review of the 202 commits + decision on memo acceptance to unblock Phase 1b/5a/6/7 runtime implementation.
 
 ## What shipped
 
@@ -195,3 +195,80 @@ Everything in the bulleted lists above is additive — the original session's ve
 - **Did not start any runtime implementation** of P-068 / P-011 / P-075 / P-070 — all memo-gated. Types-only groundwork is the deliberate ceiling.
 - **Did not touch paperclip-zone files** (`apps/operator/app/admin/harness/*`, `apps/operator/app/harness/*`).
 - **Did not file real features into the papercup harness queue (P-025)** — that requires user input on which 2 real engineering features to seed alongside the meta `F-DOGFOOD-001`.
+
+---
+
+## Loop-continuation segment II (7 more types-only modules)
+
+The "loop-continuation segment" above closed with 5 types-only modules in the
+spine. Seven more shipped after that, extending coverage from Phase 1b alone
+into Phase 5a, Phase 6, and Phase 7. **Type spine now 12 modules.**
+
+### Phase 6 — feature-claim-types (P-036)
+
+- **Commit `44044f92`** — `apps/operator/lib/harness/feature-claim-types.ts` + tests. The `feature_claims` Autobase log row shape, 2-variant `ClaimOutcomeStamped` + 3-variant `ClaimOutcome` (null in-flight), arbitrator pure function, composeClaimKey/parseClaimKey URL-safe display key, findWinningClaim helper. 28 unit tests.
+
+### Phase 7 — full PrHost spine (4 modules)
+
+- **Commit `ed2e3d65`** — `apps/operator/lib/pr-host/types.ts` + tests. Neutral PrHost interface (5 methods), Pr/PrAuthor/PrReviewer wire shapes, 6 enum tuples (PR_STATES / PR_CHECKS_STATES / PR_MERGEABLE_STATES / PR_MERGE_METHODS / PR_HOST_KINDS / PR_REVIEW_EVENTS), PrHostError + 9-variant error-kind union, ok/err/isRetryableError/isAuthError/isGoneError/statusToErrorKind helpers, composePrKey/parsePrKey URL-safe pair. 21 unit tests.
+- **Commit `52561171`** — `apps/operator/lib/pr-host/auto-review-decision-types.ts` + tests. Pure decideAutoReview() gate function covering P-044a/b + P-045a/b sub-acceptances. 3-variant AutoReviewDecision (skip|approve|approve_and_merge), 8-variant AutoReviewSkipReason partitioned into CONFIG_SKIP_REASONS (3) + STATE_SKIP_REASONS (5), wouldFireIfTrusted predicate for UI hint rendering. 27 unit tests covering 16+ input permutations.
+- **Commit `ebf626e7`** — `apps/operator/lib/pr-host/harness-feature-pr-row-types.ts` + tests. Extended `harness_feature_prs` row shape per v5 line 452 (adds last_polled_at_ts / checks_status / mergeable_state / review_decision / reviewers[]). prToRow / demoteRowToGone / defaultRowForNewPr pure builders. STALE_POLL_THRESHOLD_MS (5min per P-043a) + isPollStale helper. P_042_ADDED_COLUMNS const for the migration writer + sentinel cross-check. 25 unit tests.
+- **Commit `823ffd13`** — `apps/operator/lib/pr-host/retry-policy-types.ts` + tests. Pure decideRetry() function for the P-042 poll daemon's backoff/refresh decisions. 4-variant RetryDecision (wait|oauth_refresh_then_retry|give_up|alert_user), DEFAULT_RETRY_POLICY constants per P-042c (1s start, 2x, 5min cap, 8 attempts, ±10% jitter), computeBackoffMs exponential calculator, totalBackoffBudgetMs capacity-planning helper. 25 unit tests covering every (error_kind × attempt × oauth_state) permutation.
+
+### Phase 5a — wizard URL + Hyperbee key types (2 modules)
+
+- **Commit `0e88ad12`** — `apps/operator/lib/harness/harness-link-types.ts` + tests. parse + format for the `papercusp://harness?topic=...&github=...&repo_id=...` URL scheme per v5 lines 337 + 1205. Used by P-029e (wizard generates) AND P-009 (Entry 4 parses) — single source of truth means generator/parser cannot drift. 10-variant HarnessLinkParseError union; GitHub login regex; topic-hex strict validator; URL constructor for proper escaping; formatParseError for one-line UI copy per error.kind. 31 unit tests.
+- **Commit `25e0a974`** — `apps/operator/lib/harness/hyperbee-key-types.ts` + tests. Single source of truth for all 9 Hyperbee key shapes per v5 lines 433-441. 9 keyXxx() composers; parseHyperbeeKey discriminated parser; scanPrefix/scanPrefixForUser/scanPrefixForStatus helpers; APPEND_ONLY_TAGS set marking usage + claims (writer asserts no overwrite). lastIndexOf trick in claims-parsing handles theoretical embedded-slash feature_ids correctly. 39 unit tests.
+
+### Updated type-spine inventory
+
+| # | Module | Phase | Task | Tests |
+|---|---|---|---|---|
+| 1 | `lib/harness/binding-types.ts` | 1b | P-068 | 15 |
+| 2 | `lib/identity/binding-verifier-types.ts` | 1b | P-075 | 24 |
+| 3 | `lib/identity/attestation-types.ts` | 1b | P-011 | 26 |
+| 4 | `lib/identity/contributor-file-types.ts` | 1b | P-075 Channel 2 | 31 |
+| 5 | `lib/harness/contributor-usage-event-types.ts` | 5a | P-070 | 29 |
+| 6 | `lib/harness/feature-claim-types.ts` | 6 | P-036 | 28 |
+| 7 | `lib/pr-host/types.ts` | 7 | P-040 | 21 |
+| 8 | `lib/pr-host/auto-review-decision-types.ts` | 7 | P-044/P-045 | 27 |
+| 9 | `lib/pr-host/harness-feature-pr-row-types.ts` | 7 | P-042 | 25 |
+| 10 | `lib/pr-host/retry-policy-types.ts` | 7 | P-042c-e | 25 |
+| 11 | `lib/harness/harness-link-types.ts` | 5a | P-029 + 1b P-009 | 31 |
+| 12 | `lib/harness/hyperbee-key-types.ts` | 5a | P-030 + P-031 | 39 |
+
+**Cumulative: ~5,000 LOC + ~5,000 test LOC across 12 modules. 321 unit tests, all PASS in <300ms total.** Zero new tsc errors on touched paths (run `npx tsc --noEmit` from apps/operator and grep for the type module paths to confirm).
+
+### What this lets the future runtime do
+
+Every memo-gated Phase 1b/5a/6/7 runtime task now has its wire format, error union, decision function, and key format pre-pinned and tested. When the design memos accept:
+
+- **P-068 binding-service.ts** → imports `BindingRecord`, `BindingServiceError`, `composeBindingId` from binding-types
+- **P-011 attest.ts + keychain.ts** → imports `AttestationGistBody`, `DeviceKeypairId`, `attestationGistFilename`, `deriveDefaultDeviceLabel` from attestation-types
+- **P-075 two-channel-verifier.ts** → imports `BindingStatus`, `deriveBindingStatus`, `ChannelResult`, `PENDING_GRACE_WINDOW_MS` from binding-verifier-types + Channel 2 shapes from contributor-file-types
+- **P-070 usage-events.ts** (HYPERBEE writer + PG mirror + rollup) → imports `UsageEventRecord`, `USAGE_EVENT_REF_CONVENTION`, `emptyRollup`, `isUsageEventId` from contributor-usage-event-types
+- **P-036/P-037 feature-claims.ts** (Autobase writer + arbiter) → imports `FeatureClaimRecord`, `arbitrateClaims`, `findWinningClaim` from feature-claim-types
+- **P-040 pr-host/github.ts** → implements `PrHost` interface from pr-host/types
+- **P-042 poll-daemon.ts** → imports `decideRetry`, `decideAutoReview`, `prToRow`, `demoteRowToGone`, `isPollStale` — the daemon becomes ~100 LOC of glue around pure decisions
+- **P-029 wizard + P-009 Entry 4** → both import `formatHarnessLink` / `parseHarnessLink` from harness-link-types
+- **P-030 + P-031 hyperbee setup + projection** → both import `parseHyperbeeKey`, `keyContributor`, `scanPrefix` from hyperbee-key-types
+
+The runtime impl becomes the boring "wire these pure decisions to side-effects" code, not "first decide what the wire shape is."
+
+### Cumulative wrap status
+
+- **~202 commits ahead** of `origin/main`. None pushed.
+- **12 types-only modules** in tree, spanning 4 phases.
+- **All Phase 1b open questions resolved.** Q-1 documented, Q-2/Q-3/Q-4 as D-decisions.
+- **All verifiers still green** — npm scripts `verify:dogfood-schema`, `verify:dogfood-bootstrap`, `verify:trigger-consolidation`, `verify:all-dogfood` all PASS.
+- **8 agent insights** in tree (orders 19-26 inclusive).
+- **No paperclip-zone touches** — `apps/operator/app/admin/harness/*` and `apps/operator/app/harness/*` untouched.
+- **No P-025 features filed** — that's the only behavioral commitment that still needs user input.
+
+### What this loop deliberately did NOT do (cumulative)
+
+- Did not push any of the 202 commits.
+- Did not start any memo-gated runtime implementation (P-068/P-011/P-075/P-070/P-036/P-040/P-029).
+- Did not touch paperclip-zone files.
+- Did not file real features into the papercup harness queue (P-025).
+- Did not flip P-022 Phase B (delete `apps/papercup/` vs refactor `schema.ts`).
