@@ -128,6 +128,58 @@ export default function DomainTestPanel({
   const [statuses, setStatuses] = useState<Record<string, FileStatusEntry>>({});
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  // P-016/P-017: per-file active run + output drawer.
+  const [activeRun, setActiveRun] = useState<{
+    runId: string;
+    filePath: string;
+    status: string;
+    exitCode: number | null;
+    output: string;
+    finishedAt: number | null;
+  } | null>(null);
+  const [runLoading, setRunLoading] = useState<string | null>(null);
+
+  async function runVitestFile(filePath: string): Promise<void> {
+    setRunLoading(filePath);
+    setActiveRun({ runId: '', filePath, status: 'starting', exitCode: null, output: '', finishedAt: null });
+    try {
+      const r = await fetch('/api/admin/testing/run', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ runner: { kind: 'vitest', filePath } }),
+      });
+      if (!r.ok) {
+        setActiveRun({ runId: '', filePath, status: 'error', exitCode: null, output: `HTTP ${r.status}`, finishedAt: Date.now() });
+        setRunLoading(null);
+        return;
+      }
+      const { runId } = (await r.json()) as { runId: string };
+      setActiveRun((prev) => prev ? { ...prev, runId, status: 'running' } : prev);
+      // Poll until finishedAt is non-null.
+      const poll = async (): Promise<void> => {
+        const pr = await fetch(`/api/admin/testing/run/${encodeURIComponent(runId)}`);
+        if (!pr.ok) return;
+        const snap = await pr.json() as {
+          status: string; exitCode: number | null; output: string; finishedAt: number | null;
+        };
+        setActiveRun({ runId, filePath, status: snap.status, exitCode: snap.exitCode, output: snap.output, finishedAt: snap.finishedAt });
+        if (snap.finishedAt === null) {
+          setTimeout(poll, 750);
+        } else {
+          setRunLoading(null);
+          // Refetch status chips
+          void fetch(`/api/admin/testing/file-status?domainId=${encodeURIComponent(domainId)}`)
+            .then((r2) => (r2.ok ? r2.json() as Promise<FileStatusResponse> : null))
+            .then((d) => { if (d) setStatuses(d.statuses); })
+            .catch(() => { /* keep stale */ });
+        }
+      };
+      void poll();
+    } catch (e) {
+      setActiveRun({ runId: '', filePath, status: 'error', exitCode: null, output: e instanceof Error ? e.message : String(e), finishedAt: Date.now() });
+      setRunLoading(null);
+    }
+  }
 
   useEffect(() => {
     let cancelled = false;
@@ -208,6 +260,26 @@ export default function DomainTestPanel({
       {/* P-033: health strip slot — wired in Phase 6 */}
       <div className="pc-dtp-health-strip" data-pending="true" />
 
+      {activeRun && (
+        <div className={`pc-dtp-drawer pc-dtp-drawer-${activeRun.status}`}>
+          <header className="pc-dtp-drawer-header">
+            <span className="pc-dtp-drawer-title">
+              {activeRun.status === 'running' || activeRun.status === 'starting' ? '⟳' : activeRun.status === 'pass' ? '✓' : '✗'} {activeRun.filePath}
+            </span>
+            <span className="pc-dtp-drawer-meta">
+              status: {activeRun.status}{activeRun.exitCode !== null ? ` · exit ${activeRun.exitCode}` : ''}
+            </span>
+            <button
+              type="button"
+              className="pc-dtp-drawer-close"
+              onClick={() => setActiveRun(null)}
+              title="Close"
+            >×</button>
+          </header>
+          <pre className="pc-dtp-drawer-output">{activeRun.output || '(no output yet)'}</pre>
+        </div>
+      )}
+
       {customNode ? (
         <div className="pc-dtp-custom">{customNode}</div>
       ) : (
@@ -249,6 +321,15 @@ export default function DomainTestPanel({
                         <span className="pc-dtp-file-meta">
                           {(f.sizeBytes / 1024).toFixed(1)} KB · {formatMtime(f.mtimeMs)}
                         </span>
+                        <button
+                          type="button"
+                          className="pc-dtp-run-btn"
+                          disabled={runLoading !== null}
+                          onClick={() => void runVitestFile(f.path)}
+                          title="Run via vitest"
+                        >
+                          {runLoading === f.path ? '…' : '▶'}
+                        </button>
                       </li>
                     );
                   })}
