@@ -29,6 +29,16 @@ import '@/lib/agent-tools/index';
 import { PROJECTED_DEPS } from '@/lib/projected-tool-deps';
 import { defineTool, type RouteContext } from '@papercusp/agent-mcp';
 import { bodyFromSearchParams } from './_plans-args';
+// papercusp-dogfood-v5 P-021 (server-side half): fire SSE invalidations
+// on successful plan writes so any subscriber to `plans.*` queryNames
+// refetches. Pairs with the existing `notifySyncInvalidate` →
+// `sync_invalidate` channel + libs/sync SSEAdapter — same pattern as
+// /api/toast-log uses for `toastLog.recent`. The client-side hook
+// migration (useAsyncJson → useSyncQuery) is deferred until P-022
+// (drop @rocicorp/zero), since useSyncQuery currently resolves
+// queryNames through the @restart/zero-harness registry which is being
+// retired alongside the @rocicorp/zero dep.
+import { notifySyncInvalidate } from '@/lib/sync-sse';
 
 const READ_VERBS = new Set([
   'list',
@@ -182,6 +192,26 @@ async function dispatchWrite(req: Request, ctx: RouteContext): Promise<Response>
     },
     HOST_EXTRAS,
   );
+  // Fire SSE invalidations on success so the libs/sync SSEAdapter
+  // refetches any matching `plans.*` queries. Best-effort: failure to
+  // notify must not break the write itself. Coarse mapping for now —
+  // future fine-grained tuning (only invalidate plans.history on
+  // structural changes etc.) is a small follow-up.
+  if (result.status >= 200 && result.status < 300) {
+    const slug = typeof body.slug === 'string' ? body.slug : undefined;
+    void notifySyncInvalidate('plans.list', undefined).catch(() => {});
+    if (slug) {
+      void notifySyncInvalidate('plans.get', { slug }).catch(() => {});
+      void notifySyncInvalidate('plans.items', { slug }).catch(() => {});
+      if (verb === 'set-content' || verb === 'set-frontmatter' || verb === 'new') {
+        void notifySyncInvalidate('plans.history', { slug }).catch(() => {});
+        void notifySyncInvalidate('plans.revisions', { slug }).catch(() => {});
+      }
+      if (verb === 'launch' || verb === 'resume') {
+        void notifySyncInvalidate('plans.runs', { slug }).catch(() => {});
+      }
+    }
+  }
   return unwrap(result);
 }
 
