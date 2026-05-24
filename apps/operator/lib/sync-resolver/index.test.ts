@@ -83,12 +83,25 @@ describe('sync-resolver v2 registry', () => {
       }
     });
 
-    it('exposes 26 migrated entries total (running count)', () => {
+    it('includes batch 7 migrated names', () => {
+      const names = knownQueryNamesV2();
+      for (const expected of [
+        'pendingReviews.byHarness',
+        'harnessPendingIssues.byHarness',
+        'harnessScreenshots.byHarness',
+        'harnessBranchActions.byHarnessAndBranch',
+        'agentChats.byHarness',
+      ]) {
+        expect(names).toContain(expected);
+      }
+    });
+
+    it('exposes 31 migrated entries total (running count)', () => {
       // Reminder: total live count is 51. Update this assertion as
       // each batch lands; deliberately conservative so future drift is
       // surfaced (an entry added without bumping the count is silently
       // miscoded if the assertion is too loose).
-      expect(knownQueryNamesV2()).toHaveLength(26);
+      expect(knownQueryNamesV2()).toHaveLength(31);
     });
   });
 
