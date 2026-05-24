@@ -1,0 +1,232 @@
+import { describe, expect, it } from 'vitest';
+import {
+  SHARE_WIZARD_FIRST_STEP,
+  SHARE_WIZARD_LAST_STEP,
+  SHARE_WIZARD_STEPS,
+  SHARE_WIZARD_STEP_COUNT,
+  SHARE_WIZARD_STEP_INDEX,
+  emptyShareWizardState,
+  getStepPosition,
+  getStepProgressPercent,
+  isStateCompleteForFinalize,
+  nextStep,
+  previousStep,
+  type ShareWizardState,
+} from './share-wizard-step-types';
+
+const VALID_TOPIC = '0'.repeat(64);
+
+describe('constants', () => {
+  it('SHARE_WIZARD_STEPS has 9 entries per v5 §5', () => {
+    expect(SHARE_WIZARD_STEPS.length).toBe(9);
+    expect(SHARE_WIZARD_STEP_COUNT).toBe(9);
+  });
+
+  it('SHARE_WIZARD_FIRST_STEP is confirm-remote', () => {
+    expect(SHARE_WIZARD_FIRST_STEP).toBe('confirm-remote');
+  });
+
+  it('SHARE_WIZARD_LAST_STEP is write-shared-json', () => {
+    expect(SHARE_WIZARD_LAST_STEP).toBe('write-shared-json');
+  });
+
+  it('SHARE_WIZARD_STEP_INDEX is 1-9 contiguously', () => {
+    const positions = SHARE_WIZARD_STEPS.map((s) => SHARE_WIZARD_STEP_INDEX[s]);
+    expect(positions).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9]);
+  });
+});
+
+describe('nextStep — happy path forward', () => {
+  it('confirm-remote → lookup-binding when remote present', () => {
+    expect(nextStep('confirm-remote', { github_remote: 'git@x' })).toEqual({
+      kind: 'next',
+      step: 'lookup-binding',
+    });
+  });
+
+  it('lookup-binding → create-binding when no existing binding', () => {
+    expect(
+      nextStep('lookup-binding', {
+        github_remote: 'git@x',
+        github_repository_id: 1,
+        existing_binding_found: false,
+      }),
+    ).toEqual({ kind: 'next', step: 'create-binding' });
+  });
+
+  it('create-binding → generate-topic', () => {
+    expect(nextStep('create-binding', {})).toEqual({ kind: 'next', step: 'generate-topic' });
+  });
+
+  it('generate-topic → choose-discord when topic set', () => {
+    expect(nextStep('generate-topic', { topic: VALID_TOPIC })).toEqual({
+      kind: 'next',
+      step: 'choose-discord',
+    });
+  });
+
+  it('choose-discord → choose-privacy (optional step, always advances)', () => {
+    expect(nextStep('choose-discord', {})).toEqual({
+      kind: 'next',
+      step: 'choose-privacy',
+    });
+    expect(nextStep('choose-discord', { discord_channel: '#x' })).toEqual({
+      kind: 'next',
+      step: 'choose-privacy',
+    });
+  });
+
+  it('choose-privacy → privacy-confirm when privacy chosen', () => {
+    expect(nextStep('choose-privacy', { privacy: 'shared-private' })).toEqual({
+      kind: 'next',
+      step: 'privacy-confirm',
+    });
+  });
+
+  it('privacy-confirm → backfill when confirmed', () => {
+    expect(
+      nextStep('privacy-confirm', { privacy: 'shared-private', privacy_confirmed: true }),
+    ).toEqual({ kind: 'next', step: 'backfill' });
+  });
+
+  it('backfill → write-shared-json when complete', () => {
+    expect(nextStep('backfill', { backfill_completed_ts: 1 })).toEqual({
+      kind: 'next',
+      step: 'write-shared-json',
+    });
+  });
+
+  it('write-shared-json → complete', () => {
+    expect(nextStep('write-shared-json', {})).toEqual({ kind: 'complete' });
+  });
+});
+
+describe('nextStep — blocks', () => {
+  it('blocks confirm-remote when no remote', () => {
+    expect(nextStep('confirm-remote', {})).toEqual({
+      kind: 'block',
+      reason: 'no_github_remote',
+    });
+  });
+
+  it('blocks lookup-binding when lookup pending', () => {
+    expect(nextStep('lookup-binding', {})).toEqual({
+      kind: 'block',
+      reason: 'binding_lookup_pending',
+    });
+  });
+
+  it('blocks lookup-binding with binding_exists_should_join when binding found (P-029b)', () => {
+    expect(
+      nextStep('lookup-binding', {
+        github_repository_id: 1,
+        existing_binding_found: true,
+      }),
+    ).toEqual({ kind: 'block', reason: 'binding_exists_should_join' });
+  });
+
+  it('blocks generate-topic when topic not set', () => {
+    expect(nextStep('generate-topic', {})).toEqual({
+      kind: 'block',
+      reason: 'topic_not_generated',
+    });
+  });
+
+  it('blocks choose-privacy when privacy not chosen', () => {
+    expect(nextStep('choose-privacy', {})).toEqual({
+      kind: 'block',
+      reason: 'privacy_not_chosen',
+    });
+  });
+
+  it('blocks privacy-confirm when not confirmed', () => {
+    expect(nextStep('privacy-confirm', { privacy: 'shared-private' })).toEqual({
+      kind: 'block',
+      reason: 'privacy_not_confirmed',
+    });
+  });
+
+  it('blocks backfill when backfill_completed_ts not set', () => {
+    expect(nextStep('backfill', {})).toEqual({
+      kind: 'block',
+      reason: 'backfill_not_completed',
+    });
+  });
+});
+
+describe('previousStep', () => {
+  it('walks backward through steps', () => {
+    expect(previousStep('write-shared-json')).toBe('backfill');
+    expect(previousStep('backfill')).toBe('privacy-confirm');
+    expect(previousStep('privacy-confirm')).toBe('choose-privacy');
+    expect(previousStep('choose-privacy')).toBe('choose-discord');
+    expect(previousStep('choose-discord')).toBe('generate-topic');
+    expect(previousStep('generate-topic')).toBe('create-binding');
+    expect(previousStep('create-binding')).toBe('lookup-binding');
+    expect(previousStep('lookup-binding')).toBe('confirm-remote');
+  });
+
+  it('returns null on step 1', () => {
+    expect(previousStep('confirm-remote')).toBeNull();
+  });
+});
+
+describe('isStateCompleteForFinalize', () => {
+  function completeState(): ShareWizardState {
+    return {
+      github_remote: 'git@x',
+      github_repository_id: 1,
+      topic: VALID_TOPIC,
+      privacy: 'shared-private',
+      privacy_confirmed: true,
+      backfill_completed_ts: 1716_000_000_000,
+    };
+  }
+
+  it('true when all required fields set', () => {
+    expect(isStateCompleteForFinalize(completeState())).toBe(true);
+  });
+
+  it('false when any required field missing', () => {
+    expect(isStateCompleteForFinalize({ ...completeState(), github_remote: undefined })).toBe(false);
+    expect(isStateCompleteForFinalize({ ...completeState(), topic: undefined })).toBe(false);
+    expect(isStateCompleteForFinalize({ ...completeState(), privacy: undefined })).toBe(false);
+    expect(isStateCompleteForFinalize({ ...completeState(), privacy_confirmed: false })).toBe(false);
+    expect(isStateCompleteForFinalize({ ...completeState(), backfill_completed_ts: undefined })).toBe(false);
+  });
+
+  it('false on empty state', () => {
+    expect(isStateCompleteForFinalize({})).toBe(false);
+  });
+
+  it('false on invalid privacy', () => {
+    expect(
+      isStateCompleteForFinalize({
+        ...completeState(),
+        privacy: 'public' as never,
+      }),
+    ).toBe(false);
+  });
+});
+
+describe('emptyShareWizardState', () => {
+  it('returns an empty object', () => {
+    expect(emptyShareWizardState()).toEqual({});
+  });
+});
+
+describe('getStepPosition / getStepProgressPercent', () => {
+  it('step 1 → position 1, 11% progress', () => {
+    expect(getStepPosition('confirm-remote')).toEqual({ current: 1, total: 9 });
+    expect(getStepProgressPercent('confirm-remote')).toBe(11);
+  });
+
+  it('step 9 → position 9, 100% progress', () => {
+    expect(getStepPosition('write-shared-json')).toEqual({ current: 9, total: 9 });
+    expect(getStepProgressPercent('write-shared-json')).toBe(100);
+  });
+
+  it('step 5 → ~56% progress', () => {
+    expect(getStepProgressPercent('choose-discord')).toBe(56);
+  });
+});
