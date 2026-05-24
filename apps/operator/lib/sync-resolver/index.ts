@@ -172,6 +172,101 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     },
   },
 
+  // ── Batch 3: harnessXxx.byHarness family ─────────────────────────────
+  //
+  // All five follow the same pattern: filter by harness_slug, optional
+  // orderBy on a per-table column. The original ZQL chain is mechanical;
+  // each entry is ~15 LOC.
+
+  // harnessTextArtifact.byHarness — text artifacts ordered by relative path.
+  //   zql.harnessTextArtifacts.where('harnessSlug', s).orderBy('relPath', 'asc')
+  'harnessTextArtifact.byHarness': {
+    argsSchema: z.object({ harnessSlug: z.string() }),
+    resolve: async (args) => {
+      const { harnessSlug } = args as { harnessSlug: string };
+      const { getOrgPg, generated } = await import('@restart/db-org');
+      const { asc, eq } = await import('drizzle-orm');
+      const t = generated.harnessTextArtifactsInHarnessShared;
+      const { db } = getOrgPg();
+      return (await db
+        .select()
+        .from(t)
+        .where(eq(t.harnessSlug, harnessSlug))
+        .orderBy(asc(t.relPath))) as unknown[];
+    },
+  },
+
+  // harnessProjectFiles.byHarness — single-row-per-harness (SPEC.md etc bundle).
+  //   zql.harnessProjectFiles.where('harnessSlug', s)  (no order)
+  'harnessProjectFiles.byHarness': {
+    argsSchema: z.object({ harnessSlug: z.string() }),
+    resolve: async (args) => {
+      const { harnessSlug } = args as { harnessSlug: string };
+      const { getOrgPg, generated } = await import('@restart/db-org');
+      const { eq } = await import('drizzle-orm');
+      const t = generated.harnessProjectFilesInHarnessShared;
+      const { db } = getOrgPg();
+      return (await db
+        .select()
+        .from(t)
+        .where(eq(t.harnessSlug, harnessSlug))) as unknown[];
+    },
+  },
+
+  // harnessSkills.byHarness — skills sorted by name.
+  //   zql.harnessSkills.where('harnessSlug', s).orderBy('name', 'asc')
+  'harnessSkills.byHarness': {
+    argsSchema: z.object({ harnessSlug: z.string() }),
+    resolve: async (args) => {
+      const { harnessSlug } = args as { harnessSlug: string };
+      const { getOrgPg, generated } = await import('@restart/db-org');
+      const { asc, eq } = await import('drizzle-orm');
+      const t = generated.harnessSkillsInHarnessShared;
+      const { db } = getOrgPg();
+      return (await db
+        .select()
+        .from(t)
+        .where(eq(t.harnessSlug, harnessSlug))
+        .orderBy(asc(t.name))) as unknown[];
+    },
+  },
+
+  // harnessDecisions.byHarness — decisions in chronological order.
+  //   zql.harnessDecisions.where('harnessSlug', s).orderBy('ts', 'asc')
+  'harnessDecisions.byHarness': {
+    argsSchema: z.object({ harnessSlug: z.string() }),
+    resolve: async (args) => {
+      const { harnessSlug } = args as { harnessSlug: string };
+      const { getOrgPg, generated } = await import('@restart/db-org');
+      const { asc, eq } = await import('drizzle-orm');
+      const t = generated.harnessDecisionsInHarnessShared;
+      const { db } = getOrgPg();
+      return (await db
+        .select()
+        .from(t)
+        .where(eq(t.harnessSlug, harnessSlug))
+        .orderBy(asc(t.ts))) as unknown[];
+    },
+  },
+
+  // harnessExperts.byHarness — experts ordered by last-updated desc.
+  //   zql.harnessExperts.where('harnessSlug', s).orderBy('updatedAt', 'desc')
+  'harnessExperts.byHarness': {
+    argsSchema: z.object({ harnessSlug: z.string() }),
+    resolve: async (args) => {
+      const { harnessSlug } = args as { harnessSlug: string };
+      const { getOrgPg, generated } = await import('@restart/db-org');
+      const { desc, eq } = await import('drizzle-orm');
+      const t = generated.harnessExpertsInHarnessShared;
+      const { db } = getOrgPg();
+      return (await db
+        .select()
+        .from(t)
+        .where(eq(t.harnessSlug, harnessSlug))
+        .orderBy(desc(t.updatedAt))) as unknown[];
+    },
+  },
+
   // userActions.byKind — harness+workspace+kind-filtered action log.
   //   zql.userActions.where(harnessSlug).where(workspaceId).where(kind)
   //                  .orderBy('startedAt', 'desc').limit(limit)

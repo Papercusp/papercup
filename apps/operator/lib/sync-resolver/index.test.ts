@@ -30,6 +30,27 @@ describe('sync-resolver v2 registry', () => {
         expect(names).toContain(expected);
       }
     });
+
+    it('includes batch 3 migrated names (harnessXxx.byHarness family)', () => {
+      const names = knownQueryNamesV2();
+      for (const expected of [
+        'harnessTextArtifact.byHarness',
+        'harnessProjectFiles.byHarness',
+        'harnessSkills.byHarness',
+        'harnessDecisions.byHarness',
+        'harnessExperts.byHarness',
+      ]) {
+        expect(names).toContain(expected);
+      }
+    });
+
+    it('exposes 11 migrated entries total (running count)', () => {
+      // Reminder: total live count is 51. Update this assertion as
+      // each batch lands; deliberately conservative so future drift is
+      // surfaced (an entry added without bumping the count is silently
+      // miscoded if the assertion is too loose).
+      expect(knownQueryNamesV2()).toHaveLength(11);
+    });
   });
 
   describe('arg validation — batch 2', () => {
@@ -69,8 +90,12 @@ describe('sync-resolver v2 registry', () => {
     });
 
     it('returns false for unregistered names (fall-back path)', () => {
+      // These are real queryNames from the original audit that have
+      // NOT been migrated yet — they must still fall through to the
+      // legacy resolver. Update this list as each migrates.
       expect(isRegisteredV2('plans.list')).toBe(false);
-      expect(isRegisteredV2('harnessTextArtifact.byHarness')).toBe(false);
+      expect(isRegisteredV2('chunkPlans.byFeature')).toBe(false);
+      expect(isRegisteredV2('orgCharter.byOrg')).toBe(false);
       expect(isRegisteredV2('totally.unknown')).toBe(false);
       expect(isRegisteredV2('')).toBe(false);
     });
