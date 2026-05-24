@@ -11,9 +11,14 @@ owner: avi@storewolf.com
 
 ## Now
 
-**State:** P-014, P-015, P-016 all ✅ DONE. P-016 shipped with full backoff + toast (P-016c fixed in `aeb48d83`). Plan doc updated to reflect actual implementation (divergence signal on feature row, NOT harness_escalations). **Only P-017 remains** — UI surfacing of `completion_ref` + divergence warnings.
+**State:** ✅ **ALL ITEMS DONE.** P-014/P-015/P-016/P-017 all shipped. Phase 2 complete.
 
-**Next:** Implement P-017 — locate the FeatureDetail surface in `apps/operator/app/harness/`, build `CompletionRefCard.tsx` for the verified / pending / divergent states. P-017d dropped (no escalation row to link). P-017a-c are the acceptance bar.
+**Summary of shipped work:**
+- P-014/P-015: migrations 080 (completion_ref, working_users, etc.)
+- P-016: verifier daemon with backoff + toast (commits `4b950a07`, `aeb48d83`)
+- P-017: `CompletionRefCard.tsx` + `GET /api/harness/:slug/features/:id` endpoint + 13 tests (commit `c4da3a20`). P-017d dropped (no escalation row).
+
+**Next:** Phase 4 (single-engineer dogfood loop) or Phase 1b (OAuth + attestation). Phase 1b's attest.ts + keychain.ts are still types-only stubs — the design memos for binding-service and device-attestation-ux were accepted; the runtime implementations are the remaining work before dogfood kickoff.
 
 ## Background
 
@@ -70,7 +75,7 @@ v5 one-liner: *"Background verifier daemon. `git ls-remote` polling. Cache + div
 
 ---
 
-### P-017 — UI surfacing of `completion_ref` + divergence [S] — 🔴 NOT STARTED
+### P-017 — UI surfacing of `completion_ref` + divergence [S] — ✅ DONE
 
 v5 one-liner: *"Surface in PlanDetail / FeatureDetail UI: `completion_ref` + verification timestamp; warn on divergence."*
 
