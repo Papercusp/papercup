@@ -10,10 +10,12 @@ const LiveMetricsTab = dynamic(() => import('./_components/LiveMetricsTab'), { s
 const RoutesTab = dynamic(() => import('./_components/RoutesTab'), { ssr: false });
 const PackagedBuildTab = dynamic(() => import('./_components/PackagedBuildTab'), { ssr: false });
 const LlmTab = dynamic(() => import('./_components/LlmTab'), { ssr: false });
+const TestRunsTab = dynamic(() => import('./_components/TestRunsTab'), { ssr: false });
 
-type TabId = 'chaos' | 'ai' | 'live' | 'routes' | 'packaged' | 'llm';
+type TabId = 'test-runs' | 'chaos' | 'ai' | 'live' | 'routes' | 'packaged' | 'llm';
 
 const TABS: Array<{ id: TabId; label: string; hint: string }> = [
+  { id: 'test-runs', label: 'Test Runs', hint: 'suite orchestrator' },
   { id: 'live', label: 'Live metrics', hint: 'passive observer' },
   { id: 'chaos', label: 'Chaos', hint: 'autonomous clicker' },
   { id: 'ai', label: 'AI Explore', hint: 'LLM-driven walk' },
@@ -25,7 +27,7 @@ const TABS: Array<{ id: TabId; label: string; hint: string }> = [
 export default function TestingClient() {
   const [tab, setTab] = useQueryState(
     'tab',
-    parseAsStringEnum<TabId>(['chaos', 'ai', 'live', 'routes', 'packaged', 'llm']).withDefault('live'),
+    parseAsStringEnum<TabId>(['test-runs', 'chaos', 'ai', 'live', 'routes', 'packaged', 'llm']).withDefault('test-runs'),
   );
 
   return (
@@ -48,6 +50,7 @@ export default function TestingClient() {
       </aside>
       <main className="pc-test-main">
         <Suspense fallback={<div className="pc-test-loading">loading…</div>}>
+          {tab === 'test-runs' && <TestRunsTab />}
           {tab === 'live' && <LiveMetricsTab />}
           {tab === 'chaos' && <ChaosTab />}
           {tab === 'ai' && <AIExploreTab />}

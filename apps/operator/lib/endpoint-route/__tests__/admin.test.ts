@@ -57,6 +57,9 @@ import adminRun from '../routes/admin/run';
 import adminSpawnSigningRotate from '../routes/admin/spawn-signing-rotate';
 import adminTables from '../routes/admin/tables';
 import adminTestingAiExplore from '../routes/admin/testing-ai-explore';
+import adminTestingTestRuns from '../routes/admin/testing-test-runs';
+import adminTestingTestRunsById from '../routes/admin/testing-test-runs-by-id';
+import adminTestingTestRunsCancel from '../routes/admin/testing-test-runs-cancel';
 
 type AnyRoute = RouteDefinition<ZodTypeAny | undefined>;
 
@@ -144,6 +147,34 @@ describe('admin family ports', () => {
     const res = await appWith(adminTestingAiExplore as AnyRoute)
       .request('/admin/testing/ai-explore', json({ startUrl: 'http://x' }));
     expect(res.status).toBe(400);
+  });
+
+  it('POST /admin/testing/test-runs rejects a missing suiteId with 400', async () => {
+    const res = await appWith(adminTestingTestRuns as AnyRoute)
+      .request('/admin/testing/test-runs', json({}));
+    expect(res.status).toBe(400);
+  });
+
+  it('POST /admin/testing/test-runs starts a detached run', async () => {
+    const res = await appWith(adminTestingTestRuns as AnyRoute)
+      .request('/admin/testing/test-runs', json({ suiteId: 'desktop-health' }));
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({
+      runId: expect.stringContaining('testrun-'),
+      snapshot: expect.objectContaining({ selection: 'desktop-health' }),
+    });
+  });
+
+  it('GET /admin/testing/test-runs/:runId returns 404 for an unknown run id', async () => {
+    const res = await appWith(adminTestingTestRunsById as AnyRoute)
+      .request('/admin/testing/test-runs/nope');
+    expect(res.status).toBe(404);
+  });
+
+  it('POST /admin/testing/test-runs/:runId/cancel returns 404 for an unknown run id', async () => {
+    const res = await appWith(adminTestingTestRunsCancel as AnyRoute)
+      .request('/admin/testing/test-runs/nope/cancel', { method: 'POST' });
+    expect(res.status).toBe(404);
   });
 
   it('PATCH /admin/llm-tests/findings/:id rejects invalid JSON with 400', async () => {
