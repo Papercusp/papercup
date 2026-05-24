@@ -69,6 +69,22 @@
 .pc-dtp-health-strip[data-pending='true'] {
   display: none;
 }
+.pc-dtp-health-strip-live {
+  display: flex; gap: 8px; flex-wrap: wrap;
+  margin-top: 4px;
+}
+.pc-dtp-health-pill {
+  display: inline-flex; align-items: baseline; gap: 4px;
+  padding: 3px 8px; border-radius: 4px;
+  background: var(--pc-color-bg-elev, rgba(0,0,0,0.04));
+  font-size: 11px;
+  color: var(--pc-color-text-muted, #888);
+}
+.pc-dtp-health-pill strong {
+  color: var(--pc-color-text, #333); font-weight: 600;
+}
+.pc-dtp-health-pill-flaky { background: rgba(245, 158, 11, 0.15); }
+.pc-dtp-health-pill-fail { background: rgba(185, 28, 28, 0.12); }
 
 .pc-dtp-sections {
   display: flex;

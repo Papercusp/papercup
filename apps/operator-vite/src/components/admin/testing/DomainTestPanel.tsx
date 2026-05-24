@@ -70,6 +70,21 @@ interface FileStatusResponse {
   statuses: Record<string, FileStatusEntry>;
 }
 
+interface HealthStripData {
+  domainId: string;
+  branch: string | null;
+  lastSuiteDurationMs: number | null;
+  lastFailureFinishedAt: string | null;
+  flakyFileCount: number;
+  totalFilesTracked: number;
+}
+
+function formatMs(ms: number): string {
+  if (ms < 1000) return `${ms}ms`;
+  if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`;
+  return `${(ms / 60_000).toFixed(1)}m`;
+}
+
 const CHIP_LABEL: Record<ChipStatus, string> = {
   pass: '✓',
   fail: '✗',
@@ -126,6 +141,7 @@ export default function DomainTestPanel({
 }: DomainTestPanelProps): JSX.Element {
   const [detail, setDetail] = useState<DomainDetail | null>(null);
   const [statuses, setStatuses] = useState<Record<string, FileStatusEntry>>({});
+  const [health, setHealth] = useState<HealthStripData | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   // P-016/P-017: per-file active run + output drawer.
@@ -209,11 +225,16 @@ export default function DomainTestPanel({
         .then((r) => (r.ok ? (r.json() as Promise<FileStatusResponse>) : null))
         .then((d) => d?.statuses ?? {});
 
-    void Promise.all([fetchDetail(), fetchStatuses()])
-      .then(([d, s]) => {
+    const fetchHealth = () =>
+      fetch(`/api/admin/testing/health-strip?domainId=${encodeURIComponent(domainId)}`)
+        .then((r) => (r.ok ? (r.json() as Promise<HealthStripData>) : null));
+
+    void Promise.all([fetchDetail(), fetchStatuses(), fetchHealth()])
+      .then(([d, s, h]) => {
         if (cancelled) return;
         setDetail(d);
         setStatuses(s);
+        setHealth(h);
       })
       .catch((e: unknown) => {
         if (!cancelled) setError(e instanceof Error ? e.message : String(e));
@@ -280,8 +301,29 @@ export default function DomainTestPanel({
         <p className="pc-dtp-description">{detail.description}</p>
       </header>
 
-      {/* P-033: health strip slot — wired in Phase 6 */}
-      <div className="pc-dtp-health-strip" data-pending="true" />
+      {/* P-033: test-related health strip (last-suite duration, last failure, flaky-rate). */}
+      {health && (health.totalFilesTracked > 0 || health.lastSuiteDurationMs !== null) && (
+        <div className="pc-dtp-health-strip pc-dtp-health-strip-live">
+          {health.lastSuiteDurationMs !== null && (
+            <span className="pc-dtp-health-pill" title="Sum of latest-per-file durations on current branch">
+              <strong>last:</strong> {formatMs(health.lastSuiteDurationMs)}
+            </span>
+          )}
+          <span className="pc-dtp-health-pill" title="Files with at least one row on current branch">
+            <strong>tracked:</strong> {health.totalFilesTracked}/{detail.totalFiles}
+          </span>
+          {health.flakyFileCount > 0 && (
+            <span className="pc-dtp-health-pill pc-dtp-health-pill-flaky" title="Files with >1 distinct status in last 10 runs">
+              <strong>flaky:</strong> {health.flakyFileCount}
+            </span>
+          )}
+          {health.lastFailureFinishedAt && (
+            <span className="pc-dtp-health-pill pc-dtp-health-pill-fail" title={health.lastFailureFinishedAt}>
+              <strong>last fail:</strong> {new Date(health.lastFailureFinishedAt).toLocaleString()}
+            </span>
+          )}
+        </div>
+      )}
 
       {activeRun && (
         <div className={`pc-dtp-drawer pc-dtp-drawer-${activeRun.status}`}>
