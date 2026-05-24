@@ -94,6 +94,10 @@ except json.JSONDecodeError:
     cfg = {}
 
 cfg.setdefault('mcpServers', {})
+# Hindsight is intentionally disabled for engineer-collaborator OMP.
+# Keep papercusp-su, but remove the stale standalone Hindsight MCP server
+# if an older local config still has it.
+cfg['mcpServers'].pop('hindsight', None)
 # `?client=<agent_id>` surfaces as ctx.uiClientId in tool handlers so
 # locks:* can identify ownership without per-call args.
 cfg['mcpServers']['papercusp-su'] = {
@@ -242,6 +246,15 @@ Done.
 The papercusp-su MCP server is registered for BOTH plain omp and omp-su
 (it lives in ~/.omp/agent/mcp.json) — only the playbook and the
 coordination extension are gated behind omp-su.
+
+Project docs — point the docs:* tools at YOUR project's docs (instead
+of Papercusp engineering docs) by setting the env var below before
+launching omp-su (or any omp session):
+    \$ export PAPERCUSP_PROJECT_DOCS_ROOT=\$PWD/docs
+    \$ omp-su
+The docs:* tools (outline/get/search) then read from that dir on every
+no-harness call. Unset → docs:* returns no_docs_source for non-SU
+callers (rather than silently leaking Papercusp's docs).
 
 To rotate the token, delete $TOKEN_PATH and re-run. To revoke, delete:
   $TOKEN_PATH
