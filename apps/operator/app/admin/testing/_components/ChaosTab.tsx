@@ -80,6 +80,9 @@ export default function ChaosTab() {
   const runIdRef = useRef<string | null>(null);
   const recorderWindowRef = useRef<{ close: () => void } | null>(null);
   const channelRef = useRef<BroadcastChannel | null>(null);
+  const tauriUnlistenRef = useRef<(() => void) | null>(null);
+  const tauriPostRef = useRef<((msg: ControllerMsg) => void) | null>(null);
+  const fallbackStopTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     setHistory(loadRuns());
@@ -107,6 +110,24 @@ export default function ChaosTab() {
     return clicks.slice(-15).reverse();
   }, [events]);
 
+  async function closeAllRecorderWindows() {
+    const api = (window as unknown as {
+      __TAURI__?: { webviewWindow?: { getAllWebviewWindows?: () => Promise<Array<{ label: string; close: () => Promise<void> }>> } };
+    }).__TAURI__?.webviewWindow;
+    const getAll = api?.getAllWebviewWindows;
+    if (!getAll) return;
+    try {
+      const windows = await getAll();
+      await Promise.allSettled(
+        windows
+          .filter((w) => w.label.startsWith('papercusp-perf-recorder-'))
+          .map((w) => w.close()),
+      );
+    } catch {
+      // best effort
+    }
+  }
+
   async function launch() {
     const runId = `run-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     runIdRef.current = runId;
@@ -116,53 +137,95 @@ export default function ChaosTab() {
     setLastSummary(null);
     setHistoricalRunId(null);
 
-    const channel = new BroadcastChannel(CHANNEL_NAME);
-    channelRef.current = channel;
+    channelRef.current?.close();
+    channelRef.current = null;
+    tauriUnlistenRef.current?.();
+    tauriUnlistenRef.current = null;
+    tauriPostRef.current = null;
 
-    channel.addEventListener('message', (e) => {
-      const m = e.data as RecorderMsg;
-      if (m.runId && m.runId !== runId && m.type !== 'ready') return;
+    const inTauri = Boolean(
+      (window as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__,
+    );
+    if (inTauri) await closeAllRecorderWindows();
+    const startMsg: ControllerMsg = {
+      type: 'start',
+      runId,
+      durationMs: DURATIONS[duration],
+      blocklist: blocklist.split(',').map((s) => s.trim()).filter(Boolean),
+      dryRun,
+    };
+    const cleanup = () => {
+      if (fallbackStopTimerRef.current) {
+        clearTimeout(fallbackStopTimerRef.current);
+        fallbackStopTimerRef.current = null;
+      }
+      channelRef.current?.close();
+      channelRef.current = null;
+      tauriUnlistenRef.current?.();
+      tauriUnlistenRef.current = null;
+      tauriPostRef.current = null;
+      recorderWindowRef.current?.close();
+      recorderWindowRef.current = null;
+      if (inTauri) void closeAllRecorderWindows();
+    };
+    const handleRecorderMsg = (m: RecorderMsg) => {
+      if (m.runId && m.runId !== runId) return;
       if (m.type === 'ready') {
-        const startMsg: ControllerMsg = {
-          type: 'start',
-          runId,
-          durationMs: DURATIONS[duration],
-          blocklist: blocklist.split(',').map((s) => s.trim()).filter(Boolean),
-          dryRun,
-        };
-        channel.postMessage(startMsg);
+        if (tauriPostRef.current) tauriPostRef.current(startMsg);
+        else channelRef.current?.postMessage(startMsg);
       } else if (m.type === 'started') {
         setRunState('recording');
+        if (fallbackStopTimerRef.current) clearTimeout(fallbackStopTimerRef.current);
+        fallbackStopTimerRef.current = setTimeout(() => {
+          const msg = { type: 'stop', runId } as ControllerMsg;
+          if (tauriPostRef.current) tauriPostRef.current(msg);
+          else channelRef.current?.postMessage(msg);
+        }, DURATIONS[duration] + 2_000);
       } else if (m.type === 'progress') {
         setProgress({ clicks: m.clicks, elapsedMs: m.elapsedMs });
       } else if (m.type === 'event') {
         setLiveEvents((cur) => [...cur, m.event]);
       } else if (m.type === 'done') {
         setRunState('idle');
-        setLastSummary(m.summary);
-        const next = saveRun(m.summary);
-        setHistory(next);
-        channel.close();
-        channelRef.current = null;
-        recorderWindowRef.current?.close();
-        recorderWindowRef.current = null;
+        const persisted = loadRuns();
+        const saved = persisted.find((run) => run.runId === m.summary.runId) ?? m.summary;
+        setLastSummary(saved);
+        setHistory(persisted.length > 0 ? persisted : saveRun(m.summary));
+        cleanup();
       }
-    });
+    };
+
+    if (inTauri) {
+      const eventApi = (window as unknown as {
+        __TAURI__?: { event?: { emit?: (name: string, payload: unknown) => Promise<void>; listen?: (name: string, cb: (event: { payload: unknown }) => void) => Promise<() => void> } };
+      }).__TAURI__?.event;
+      if (eventApi?.listen && eventApi?.emit) {
+        tauriUnlistenRef.current = await eventApi.listen(CHANNEL_NAME, (event) => {
+          handleRecorderMsg(event.payload as RecorderMsg);
+        });
+        tauriPostRef.current = (msg: ControllerMsg) => {
+          void eventApi.emit!(CHANNEL_NAME, msg);
+        };
+      }
+    } else {
+      const channel = new BroadcastChannel(CHANNEL_NAME);
+      channelRef.current = channel;
+      channel.addEventListener('message', (e) => {
+        handleRecorderMsg(e.data as RecorderMsg);
+      });
+    }
 
     const url = new URL(route, window.location.origin);
     url.searchParams.set('perf-recorder', '1');
+    url.searchParams.set('perf-run-id', runId);
     const urlStr = url.toString();
 
-    // Tauri's WebView intercepts window.open and returns null, which
-    // looked identical to a popup-block in browsers. Use Tauri's native
-    // WebviewWindow when running inside the desktop app; fall back to
-    // window.open everywhere else.
-    const inTauri = Boolean(
-      (window as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__,
-    );
     if (inTauri) {
       try {
-        const { WebviewWindow } = await import('@tauri-apps/api/webviewWindow');
+        const WebviewWindow = (window as unknown as {
+          __TAURI__?: { webviewWindow?: { WebviewWindow?: new (label: string, opts: { url: string; title: string; width: number; height: number }) => { close: () => Promise<void> } } };
+        }).__TAURI__?.webviewWindow?.WebviewWindow;
+        if (!WebviewWindow) throw new Error('window.__TAURI__.webviewWindow.WebviewWindow is unavailable');
         const label = `papercusp-perf-recorder-${runId}`;
         const w = new WebviewWindow(label, {
           url: urlStr,
@@ -171,10 +234,19 @@ export default function ChaosTab() {
           height: 800,
         });
         recorderWindowRef.current = { close: () => { void w.close().catch(() => {}); } };
+        let attempts = 0;
+        const kick = () => {
+          if (runIdRef.current !== runId || !tauriPostRef.current) return;
+          tauriPostRef.current(startMsg);
+          attempts += 1;
+          if (attempts < 8) window.setTimeout(kick, 1000);
+        };
+        window.setTimeout(kick, 250);
         return;
       } catch (err) {
         console.error('[chaos] Tauri WebviewWindow failed', err);
         setRunState('idle');
+        cleanup();
         alert(`Could not open recorder window: ${err instanceof Error ? err.message : String(err)}`);
         return;
       }
@@ -183,6 +255,7 @@ export default function ChaosTab() {
     const popup = window.open(urlStr, 'papercusp-perf-recorder', 'width=1280,height=800');
     if (!popup) {
       setRunState('idle');
+      cleanup();
       alert('Popup blocked — allow popups for this site to run chaos tests.');
       return;
     }
@@ -190,9 +263,11 @@ export default function ChaosTab() {
   }
 
   function stopRun() {
-    if (!runIdRef.current || !channelRef.current) return;
+    if (!runIdRef.current) return;
     setRunState('finishing');
-    channelRef.current.postMessage({ type: 'stop', runId: runIdRef.current } as ControllerMsg);
+    const msg = { type: 'stop', runId: runIdRef.current } as ControllerMsg;
+    if (tauriPostRef.current) tauriPostRef.current(msg);
+    else channelRef.current?.postMessage(msg);
   }
 
   function exportJson() {

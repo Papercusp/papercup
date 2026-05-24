@@ -14,7 +14,7 @@
  */
 
 import { useEffect } from 'react';
-import { CHANNEL_NAME, type ControllerMsg, type RecorderMsg, type RecorderEvent, type RunSummary, rollupRoutes } from '../_lib/recorder-channel';
+import { CHANNEL_NAME, type ControllerMsg, type RecorderMsg, type RecorderEvent, type RunSummary, rollupRoutes, saveRun } from '../_lib/recorder-channel';
 
 declare global {
   interface Window { __papercuspRecorderActive?: boolean }
@@ -45,22 +45,28 @@ export default function RecorderHost() {
     if (window.__papercuspRecorderActive) return;
     window.__papercuspRecorderActive = true;
     const suiteRunKey = params.get('__suiteRun');
+    const expectedRunId = params.get('perf-run-id');
     const reloadStorageKey = suiteRunKey ? `papercusp.testing.chaos-reloads.${suiteRunKey}` : null;
     if (reloadStorageKey) {
       const prev = Number(sessionStorage.getItem(reloadStorageKey) || '0');
       sessionStorage.setItem(reloadStorageKey, String(prev + 1));
     }
 
-
     const channel = new BroadcastChannel(CHANNEL_NAME);
+    const tauriEvent = (window as unknown as {
+      __TAURI__?: { event?: { emit?: (name: string, payload: unknown) => Promise<void>; listen?: (name: string, cb: (event: { payload: unknown }) => void) => Promise<() => void> } };
+    }).__TAURI__?.event;
+    let offTauri: (() => void) | null = null;
     let currentRunId: string | null = null;
     let runEvents: RecorderEvent[] = [];
     let clickCount = 0;
     let startedAt = 0;
     let stopRun: (() => void) | null = null;
+    let finishCurrent: (() => void) | null = null;
 
     function send(msg: RecorderMsg) {
       channel.postMessage(msg);
+      void tauriEvent?.emit?.(CHANNEL_NAME, msg);
     }
 
     function describe(node: EventTarget | null): string {
@@ -255,6 +261,7 @@ export default function RecorderHost() {
 
       // Stop after durationMs even if horde is still running or in dry-run.
       const timer = setTimeout(() => finishRun(), msg.durationMs);
+      finishCurrent = finishRun;
 
       function finishRun() {
         clearTimeout(timer);
@@ -276,8 +283,10 @@ export default function RecorderHost() {
           frameDrops,
           maxFrameMs: Math.round(maxFrameMs),
         };
-        send({ type: 'done', runId: currentRunId!, summary });
+        saveRun(summary);
+        send({ type: 'done', runId: currentRunId!, summary: { ...summary, events: [] } });
         currentRunId = null;
+        finishCurrent = null;
       }
 
       // Allow controller to stop early.
@@ -287,15 +296,26 @@ export default function RecorderHost() {
       });
     }
 
+    const handleControllerMsg = (m: ControllerMsg) => {
+      if (m.type === 'start') {
+        if (!expectedRunId || m.runId === expectedRunId) void startRun(m);
+      } else if (m.type === 'stop' && m.runId === currentRunId) {
+        finishCurrent?.();
+      }
+    };
+
     channel.addEventListener('message', (e) => {
-      const m = e.data as ControllerMsg;
-      if (m.type === 'start') void startRun(m);
+      handleControllerMsg(e.data as ControllerMsg);
     });
+    void tauriEvent?.listen?.(CHANNEL_NAME, (event) => {
+      handleControllerMsg(event.payload as ControllerMsg);
+    }).then((off) => { offTauri = off; });
 
-    send({ type: 'ready', runId: '' });
-
+    send({ type: 'ready', runId: expectedRunId ?? '' });
     return () => {
+      offTauri?.();
       channel.close();
+      finishCurrent?.();
       stopRun?.();
     };
   }, []);

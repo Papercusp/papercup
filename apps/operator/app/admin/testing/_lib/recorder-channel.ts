@@ -52,17 +52,34 @@ export interface RouteRollup {
 
 const LS_RUNS_KEY = 'papercusp.testing.chaos-runs.v1';
 const MAX_RUNS = 10;
+const MAX_STORED_EVENTS = 400;
+
+
+function compactRun(run: RunSummary): RunSummary {
+  return {
+    ...run,
+    events: run.events.slice(-MAX_STORED_EVENTS).map((event) => ({
+      ...event,
+      detail: typeof event.detail === 'string' ? event.detail.slice(0, 200) : event.detail,
+    })),
+  };
+}
 
 export function saveRun(run: RunSummary): RunSummary[] {
   try {
     const raw = localStorage.getItem(LS_RUNS_KEY);
     const runs = raw ? (JSON.parse(raw) as RunSummary[]) : [];
-    runs.unshift(run);
-    const trimmed = runs.slice(0, MAX_RUNS);
-    localStorage.setItem(LS_RUNS_KEY, JSON.stringify(trimmed));
-    return trimmed;
+    const next = [run, ...runs].slice(0, MAX_RUNS);
+    try {
+      localStorage.setItem(LS_RUNS_KEY, JSON.stringify(next));
+      return next;
+    } catch {
+      const compact = [compactRun(run), ...runs.map(compactRun)].slice(0, MAX_RUNS);
+      localStorage.setItem(LS_RUNS_KEY, JSON.stringify(compact));
+      return compact;
+    }
   } catch {
-    return [run];
+    return [compactRun(run)];
   }
 }
 
