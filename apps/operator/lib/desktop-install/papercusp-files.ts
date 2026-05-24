@@ -52,18 +52,19 @@ export interface InstallOpts {
   /** Override ~/. Useful for tests. Defaults to os.homedir(). */
   home?: string;
   /**
-   * Override the playbook source path. Defaults to
-   * `<operatorAppRoot>/prompts/papercusp-su.tools.md`.
+   * Override the playbook source path. Defaults to first-found among
+   * the candidate layout list (see `playbookCandidates`).
    */
   playbookSource?: string;
   /**
-   * Override the extension source path. Defaults to
-   * `<operatorAppRoot>/scripts/hooks/omp/coord-hook.ts`.
+   * Override the extension source path. Defaults to first-found among
+   * the candidate layout list (see `extensionCandidates`).
    */
   extensionSource?: string;
   /**
    * Operator app root. Defaults to walking up from this module's
-   * location. Resolved playbook + extension live underneath this.
+   * location. Used as the *primary* candidate for default source
+   * resolution. Tests set this to a fake tree.
    */
   operatorAppRoot?: string;
 }
@@ -120,10 +121,59 @@ async function copyIfExists(src: string, dst: string): Promise<boolean> {
 }
 
 function resolveOperatorAppRoot(): string {
-  // This file lives at <operatorApp>/lib/desktop-install/papercusp-files.ts.
-  // Walk up two directories. Resolves correctly under both tsx (source) and
-  // built JS layouts (same relative depth).
+  // Source layout (tsx dev): this file lives at
+  // <operatorApp>/lib/desktop-install/papercusp-files.ts. Walk up two
+  // directories. In the esbuild-bundled production layout (single
+  // host.cjs in sidecar/), __dirname collapses to sidecar/ — the
+  // candidate-list fallbacks below handle that.
   return path.resolve(__dirname, '..', '..');
+}
+
+/**
+ * Candidate playbook source paths, ordered most-specific first. The
+ * first one that exists wins.
+ *
+ * When `operatorAppRoot` is explicitly provided (tests, or the caller
+ * knows where the app lives), ONLY that root is considered — no
+ * process.cwd() fallback. Auto-discovered mode (no explicit root)
+ * also tries process.cwd()-rooted paths to cover the esbuild-bundled
+ * Tauri sidecar layout where `__dirname` collapses to `sidecar/`.
+ */
+function playbookCandidates(operatorAppRoot: string, explicitRoot: boolean): string[] {
+  const fromRoot = [path.join(operatorAppRoot, 'prompts', 'papercusp-su.tools.md')];
+  if (explicitRoot) return fromRoot;
+  const sidecarRoot = process.cwd();
+  return [
+    ...fromRoot,
+    path.join(sidecarRoot, 'apps', 'operator', 'prompts', 'papercusp-su.tools.md'),
+    path.join(sidecarRoot, 'prompts', 'papercusp-su.tools.md'),
+  ];
+}
+
+function extensionCandidates(operatorAppRoot: string, explicitRoot: boolean): string[] {
+  const fromRoot = [path.join(operatorAppRoot, 'scripts', 'hooks', 'omp', 'coord-hook.ts')];
+  if (explicitRoot) return fromRoot;
+  const sidecarRoot = process.cwd();
+  return [
+    ...fromRoot,
+    path.join(sidecarRoot, 'apps', 'operator', 'scripts', 'hooks', 'omp', 'coord-hook.ts'),
+  ];
+}
+
+async function pathExists(p: string): Promise<boolean> {
+  try {
+    await fs.access(p);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function firstExisting(candidates: string[]): Promise<string | null> {
+  for (const c of candidates) {
+    if (await pathExists(c)) return c;
+  }
+  return null;
 }
 
 export function resolveInstallPaths(home: string): InstallPaths {
@@ -139,9 +189,13 @@ export function resolveInstallPaths(home: string): InstallPaths {
 
 export async function installPapercuspFiles(opts: InstallOpts = {}): Promise<InstallResult> {
   const home = opts.home ?? os.homedir();
+  const explicitRoot = !!opts.operatorAppRoot;
   const operatorAppRoot = opts.operatorAppRoot ?? resolveOperatorAppRoot();
-  const playbookSource = opts.playbookSource ?? path.join(operatorAppRoot, 'prompts', 'papercusp-su.tools.md');
-  const extensionSource = opts.extensionSource ?? path.join(operatorAppRoot, 'scripts', 'hooks', 'omp', 'coord-hook.ts');
+
+  const playbookSource =
+    opts.playbookSource ?? (await firstExisting(playbookCandidates(operatorAppRoot, explicitRoot)));
+  const extensionSource =
+    opts.extensionSource ?? (await firstExisting(extensionCandidates(operatorAppRoot, explicitRoot)));
 
   const paths = resolveInstallPaths(home);
 
@@ -150,15 +204,15 @@ export async function installPapercuspFiles(opts: InstallOpts = {}): Promise<Ins
   const token = await ensureSecret(paths.tokenPath, mintToken);
   const agentId = await ensureSecret(paths.agentIdPath, mintAgentId);
 
-  const playbookWritten = await copyIfExists(playbookSource, paths.playbookPath);
-  const extensionWritten = await copyIfExists(extensionSource, paths.extensionPath);
+  const playbookWritten = playbookSource ? await copyIfExists(playbookSource, paths.playbookPath) : false;
+  const extensionWritten = extensionSource ? await copyIfExists(extensionSource, paths.extensionPath) : false;
 
   return {
     ...paths,
     minted: { token: token.minted, agentId: agentId.minted },
     playbookWritten,
     extensionWritten,
-    playbookSource: playbookWritten ? playbookSource : '',
-    extensionSource: extensionWritten ? extensionSource : '',
+    playbookSource: playbookWritten && playbookSource ? playbookSource : '',
+    extensionSource: extensionWritten && extensionSource ? extensionSource : '',
   };
 }

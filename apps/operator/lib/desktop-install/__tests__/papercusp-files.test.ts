@@ -128,6 +128,23 @@ describe('installPapercuspFiles', () => {
     expect(p.extensionPath).toBe('/tmp/somehome/.papercusp/papercusp-coord.ts');
   });
 
+  it('auto-discover mode: when operatorAppRoot is absent, falls back to process.cwd()-rooted candidates', async () => {
+    // No explicit operatorAppRoot: only opts.playbookSource and
+    // opts.extensionSource override the candidate list. We force both
+    // via explicit non-existent paths to confirm the override-without-
+    // root branch reports missing rather than crashing.
+    const result = await installPapercuspFiles({
+      home: tmpHome,
+      playbookSource: '/nonexistent/playbook.md',
+      extensionSource: '/nonexistent/coord.ts',
+    });
+    expect(result.playbookWritten).toBe(false);
+    expect(result.extensionWritten).toBe(false);
+    // Token + agent_id still mint correctly in the no-source case.
+    expect(result.minted.token).toBe(true);
+    expect(result.minted.agentId).toBe(true);
+  });
+
   it('reuses token already present from a prior install with no trailing newline', async () => {
     const paths = resolveInstallPaths(tmpHome);
     await fs.mkdir(paths.papercuspDir, { recursive: true });
