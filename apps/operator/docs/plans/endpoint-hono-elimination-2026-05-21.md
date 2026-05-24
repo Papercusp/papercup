@@ -1,9 +1,9 @@
 ---
 title: Endpoint follow-ups — finish _hono elimination + auth-tightening
 slug: endpoint-hono-elimination-2026-05-21
-status: active
+status: shipped
 created: 2026-05-21
-updated: 2026-05-21
+updated: 2026-05-25
 owner: pandawamble@gmail.com
 companion-to: [endpoint-unification-2026-05-21, endpoint-route-migration-2026-05-20, host-architecture-2026-05-20-v2]
 ---

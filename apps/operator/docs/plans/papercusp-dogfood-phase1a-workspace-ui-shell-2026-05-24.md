@@ -1,9 +1,9 @@
 ---
 title: Papercusp dogfood — Phase 1a (workspace + create-harness UI shell + classifier)
 slug: papercusp-dogfood-phase1a-workspace-ui-shell-2026-05-24
-status: draft
+status: shipped
 created: 2026-05-24
-updated: 2026-05-24
+updated: 2026-05-25
 owner: avi@storewolf.com
 ---
 
