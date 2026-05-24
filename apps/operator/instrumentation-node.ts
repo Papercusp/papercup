@@ -46,6 +46,18 @@ export async function register(): Promise<void> {
     console.warn('[ensure-omp-su] import failed (non-fatal):', e);
   }
 
+  // Ensure the papercusp-workspace sentinel exists in the workspace
+  // registry (papercusp-dogfood-v5 §1 / P-006 / P-014). Synchronous,
+  // idempotent, and small — never blocks startup measurably. Doesn't
+  // touch registry.current for existing installs, so it can't disturb
+  // an already-running session.
+  try {
+    const { ensurePapercuspWorkspace } = await import('./lib/harness/papercusp-workspace');
+    ensurePapercuspWorkspace();
+  } catch (e) {
+    console.warn('[papercusp-workspace] ensure failed (non-fatal):', e);
+  }
+
   // Pty WS server: only when not opt-out and not running under Tauri.
   // Both early-exits below ONLY skip pty-ws — they fall through to the
   // schema pre-warm so desktop and PTY-disabled environments still get
