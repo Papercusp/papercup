@@ -26,9 +26,25 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PLAYBOOK_PATH="${SCRIPT_DIR}/../prompts/papercusp-su-engineer.tools.md"
 OPERATOR_URL="${PAPERCUSP_OPERATOR_URL:-http://localhost:3070}"
 TOKEN_PATH="${HOME}/.papercusp/superuser-token"
+
+# Parse --profile=engineer|power (default: engineer).
+# engineer — full Papercusp-engineer playbook (238 tools, all scopes).
+# power    — power-engineer subset (generic Group B + Group C harness tools).
+PROFILE="engineer"
+for arg in "$@"; do
+  case "$arg" in
+    --profile=engineer) PROFILE="engineer" ;;
+    --profile=power)    PROFILE="power" ;;
+    --profile=*)
+      echo "! Unknown profile '${arg#--profile=}'. Valid: engineer, power" >&2
+      exit 1
+      ;;
+  esac
+done
+
+PLAYBOOK_PATH="${SCRIPT_DIR}/../prompts/papercusp-su-${PROFILE}.tools.md"
 
 # OMP looks for its MCP server config at ~/.omp/agent/mcp.json. The
 # directory may not exist on a fresh OMP install — create it.
@@ -132,19 +148,23 @@ set_omp_config "hindsight.scoping" "per-project-tagged"
 set_omp_config "hindsight.autoRecall" "true"
 set_omp_config "hindsight.autoRetain" "true"
 
-# 4. Install the engineer-collaborator playbook as a standalone OPT-IN
-# file. It used to be injected as a managed block into OMP's
-# always-loaded context file (~/.omp/agent/CLAUDE.md), which made
-# engineer-collaborator mode unconditional on every `omp` launch. It now
-# lives at ~/.papercusp/engineer-collaborator.md and is loaded only when
-# the `omp-su` wrapper (step 4d) passes it via `--append-system-prompt`.
-PLAYBOOK_DEST="${HOME}/.papercusp/engineer-collaborator.md"
+# 4. Install the profile-specific playbook as a standalone OPT-IN file.
+# It used to be injected as a managed block into OMP's always-loaded
+# context file (~/.omp/agent/CLAUDE.md), which made engineer-collaborator
+# mode unconditional on every `omp` launch. It now lives at
+# ~/.papercusp/<profile>-collaborator.md and is loaded only when the
+# `omp-su` wrapper (step 4d) passes it via `--append-system-prompt`.
+#
+# Profile destinations:
+#   engineer → ~/.papercusp/engineer-collaborator.md
+#   power    → ~/.papercusp/power-collaborator.md
+PLAYBOOK_DEST="${HOME}/.papercusp/${PROFILE}-collaborator.md"
 if [ ! -f "$PLAYBOOK_PATH" ]; then
   echo "! Expected playbook at $PLAYBOOK_PATH; skipping playbook install"
 else
   cp "$PLAYBOOK_PATH" "$PLAYBOOK_DEST"
   chmod 644 "$PLAYBOOK_DEST"
-  echo "✓ Wrote engineer-collaborator playbook to $PLAYBOOK_DEST"
+  echo "✓ Wrote ${PROFILE} playbook to $PLAYBOOK_DEST"
 fi
 
 # 4a. Migration cleanup: strip the legacy always-on managed block from
@@ -208,15 +228,19 @@ else
 fi
 mkdir -p "$WRAPPER_DIR"
 WRAPPER_PATH="${WRAPPER_DIR}/omp-su"
-cat > "$WRAPPER_PATH" <<'WRAPEOF'
+# Write the wrapper with the profile-specific playbook path baked in.
+# PLAYBOOK_DEST is expanded here (not single-quoted) so the installed
+# path is concrete — the wrapper has no dependency on env vars at runtime.
+cat > "$WRAPPER_PATH" <<WRAPEOF
 #!/usr/bin/env bash
-# papercusp engineer-collaborator launcher (managed by install-standalone-mcp.sh).
-# Plain `omp` is a vanilla coding assistant; this wrapper opts into the
-# engineer-collaborator playbook + the papercusp coordination extension.
-exec omp \
-  --append-system-prompt "${HOME}/.papercusp/engineer-collaborator.md" \
-  -e "${HOME}/.papercusp/papercusp-coord.ts" \
-  "$@"
+# papercusp ${PROFILE}-collaborator launcher (managed by install-standalone-mcp.sh --profile=${PROFILE}).
+# Plain \`omp\` is a vanilla coding assistant; this wrapper opts into the
+# ${PROFILE} playbook + the papercusp coordination extension.
+# To switch profiles, re-run: install-standalone-mcp.sh --profile=engineer|power
+exec omp \\
+  --append-system-prompt "${PLAYBOOK_DEST}" \\
+  -e "${HOME}/.papercusp/papercusp-coord.ts" \\
+  "\$@"
 WRAPEOF
 chmod 755 "$WRAPPER_PATH"
 echo "✓ Installed $WRAPPER_PATH"
@@ -249,18 +273,22 @@ fi
 
 cat <<EOF
 
-Done.
+Done.  Profile: ${PROFILE}
 
   Plain OMP — vanilla coding assistant, no papercusp playbook:
     \$ omp
 
-  Engineer-collaborator mode — playbook + coordination extension:
+  ${PROFILE^}-collaborator mode — playbook + coordination extension:
     \$ omp-su
     > call mcp__papercusp-su__papercusp:list_workspaces
 
   One-off, without the wrapper:
-    \$ omp --append-system-prompt ~/.papercusp/engineer-collaborator.md \\
+    \$ omp --append-system-prompt ${PLAYBOOK_DEST} \\
           -e ~/.papercusp/papercusp-coord.ts
+
+  Switch profiles:
+    \$ install-standalone-mcp.sh --profile=engineer   # full Papercusp-engineer playbook
+    \$ install-standalone-mcp.sh --profile=power      # power-engineer subset (generic tools)
 
 The papercusp-su MCP server is registered for BOTH plain omp and omp-su
 (it lives in ~/.omp/agent/mcp.json) — only the playbook and the
