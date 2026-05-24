@@ -50,7 +50,7 @@ export function AgentLauncherButton() {
       if (result.ok) {
         setInstallCmd(null);
         toast.success('OMP agent launched.', { duration: 4000 });
-      } else if (result.code === 'omp_not_installed') {
+      } else if (result.installCmd) {
         setInstallCmd(result.installCmd ?? DEFAULT_INSTALL_CMD);
       } else {
         toast.error(`Agent launch failed: ${result.error ?? 'unknown error'}`, {

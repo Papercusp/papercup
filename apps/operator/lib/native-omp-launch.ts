@@ -15,13 +15,15 @@
 
 import type { LaunchOpts } from './native-console';
 
+type OmpLaunchCode = 'omp_not_installed' | 'omp_not_bootstrapped';
+
 /** Result of an `omp`-mode launch attempt. */
 export interface OmpLaunchResult {
   ok: boolean;
-  /** Set to 'omp_not_installed' when OMP / @papercusp/omp aren't on PATH. */
-  code?: 'omp_not_installed';
+  /** Set when the local OMP runtime or Papercusp MCP bootstrap is missing. */
+  code?: OmpLaunchCode;
   error?: string;
-  /** The `npm i -g …` line to show when code === 'omp_not_installed'. */
+  /** The suggested local command to repair the missing launch prerequisite. */
   installCmd?: string;
 }
 
@@ -29,8 +31,8 @@ export interface OmpLaunchResult {
  * Launch a power-user OMP agent session.
  *
  * Always uses POST (never the Image().src GET hack the shell path
- * uses) because we need the JSON body back to detect
- * `omp_not_installed`. content-type text/plain keeps it a CORS
+ * uses) because we need the JSON body back to detect structured
+ * bootstrap/install failures. content-type text/plain keeps it a CORS
  * "simple request" so WebKit's broken preflight is sidestepped.
  */
 export async function launchOmpAgent(opts: LaunchOpts): Promise<OmpLaunchResult> {
@@ -67,10 +69,10 @@ export async function launchOmpAgent(opts: LaunchOpts): Promise<OmpLaunchResult>
         lastError = `console/launch HTTP ${r.status} (no body)`;
         continue;
       }
-      if (data.code === 'omp_not_installed') {
+      if (data.code === 'omp_not_installed' || data.code === 'omp_not_bootstrapped') {
         return {
           ok: false,
-          code: 'omp_not_installed',
+          code: data.code,
           error: data.error,
           installCmd: data.installCmd,
         };

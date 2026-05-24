@@ -15,6 +15,8 @@ import { buildConsoleEnvelope } from '@/lib/console-launcher';
 import { PrincipalCheckError, requirePrincipal } from '@/lib/auth/require-principal';
 import { defineTool } from '@papercusp/agent-mcp';
 import { recordAdvSession, markAdvSessionEnded, setAdvSessionPid } from '@/lib/adv-sessions';
+import { readOmpIntegrationState } from '@/lib/desktop-install/omp-integration';
+import { ensureOmpSuInstalled } from '@/lib/ensure-omp-su';
 
 // Fire-and-forget child-exit listener that ends the adv_sessions row
 // when the spawned terminal closes. detached+unref'd children still
@@ -334,6 +336,20 @@ const post = defineTool({
         return jsonRes(
           { status: 'error', error: 'server-side spawn only implemented for Linux' },
           501,
+        );
+      }
+      await ensureOmpSuInstalled();
+      const ompIntegration = await readOmpIntegrationState();
+      if (!ompIntegration.mcpServerInstalled) {
+        return jsonRes(
+          {
+            status: 'error',
+            code: 'omp_not_bootstrapped',
+            error:
+              'Papercusp OMP integration is missing. Install the Papercusp MCP integration before launching an /adv OMP session.',
+            installCmd: 'bash apps/operator/scripts/install-standalone-mcp.sh',
+          },
+          200,
         );
       }
       if (!isOnPath('omp')) {

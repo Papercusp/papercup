@@ -109,9 +109,12 @@ describe('power-user auth tier e2e', () => {
       body: JSON.stringify({ mode: 'omp' }),
     });
     const json = await res.json().catch(() => null) as any;
-    const valid = json?.status === 'ok' || json?.code === 'omp_not_installed';
+    const valid =
+      json?.status === 'ok' ||
+      json?.code === 'omp_not_installed' ||
+      json?.code === 'omp_not_bootstrapped';
     expect(valid).toBe(true);
-    if (json?.code === 'omp_not_installed') {
+    if (json?.code === 'omp_not_installed' || json?.code === 'omp_not_bootstrapped') {
       expect(typeof json.installCmd).toBe('string');
     }
   });

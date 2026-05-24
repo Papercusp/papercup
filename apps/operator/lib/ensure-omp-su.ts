@@ -5,24 +5,18 @@
  * "Launch agent" / "Resume" buttons work without the user having to
  * run apps/operator/scripts/install-standalone-mcp.sh by hand.
  *
- * Scope (intentionally minimal):
- *   - ~/.papercusp/engineer-collaborator.md  (the playbook)
- *   - ~/.papercusp/papercusp-coord.ts        (the coord extension)
- *   - <PATH-dir>/omp-su                       (the wrapper script)
+ * Scope:
+ *   - ensure ~/.papercusp/engineer-collaborator.md exists and is fresh
+ *   - ensure ~/.papercusp/papercusp-coord.ts exists and is fresh
+ *   - ensure ~/.papercusp/superuser-token + su-agent-id exist
+ *   - ensure ~/.omp/agent/mcp.json contains `papercusp-su`
+ *   - ensure <PATH-dir>/omp-su exists
+ *   - ensure OMP-native Hindsight config is enabled
  *
- * What this DOES NOT do (still requires install-standalone-mcp.sh):
- *   - Mint the superuser token
- *   - Merge `papercusp-su` into ~/.omp/agent/mcp.json
- * Those are higher-stakes (token rotation semantics, mcp.json merge
- * has user-edit risk). Folding them in is tracked separately. For
- * now, those steps are assumed already-done — if the operator is
- * running, the user already has the superuser token + MCP config.
- *
- * It DOES keep OMP-native Hindsight memory enabled, because that is an
- * idempotent OMP config write and must stay in sync for already-installed
- * omp-su wrappers.
- *
- * Idempotent. Safe to re-run. Logs to stderr; never throws.
+ * Idempotent. Safe to re-run. Logs to stderr; never throws. Unlike the
+ * original shell installer, this helper is allowed to heal an incomplete
+ * bootstrap on demand from the running operator so /adv OMP launches do
+ * not depend on a one-time manual install having happened earlier.
  */
 
 import { existsSync, mkdirSync, copyFileSync, writeFileSync, chmodSync, statSync } from 'node:fs';
@@ -140,57 +134,87 @@ function ensureWrapperScript(wrapperPath: string): boolean {
   }
 }
 
-let alreadyRan = false;
+async function ensurePapercuspBootstrap(): Promise<void> {
+  try {
+    const { installPapercuspFiles } = await import('./desktop-install/papercusp-files');
+    const files = await installPapercuspFiles();
+    if (!files.playbookWritten) dlog('phase1 playbook copy skipped or missing source');
+    if (!files.extensionWritten) dlog('phase1 coord extension copy skipped or missing source');
+  } catch (e) {
+    dlog(`phase1 bootstrap failed: ${(e as Error).message}`);
+  }
+
+  try {
+    const { installOmpIntegration } = await import('./desktop-install/omp-integration');
+    const result = await installOmpIntegration();
+    if (result.reason === 'phase1_not_run') {
+      dlog('OMP integration skipped: phase1 bootstrap artifacts still missing');
+    } else if (result.changed) {
+      dlog(`OMP integration updated: ${result.actions.join('; ')}`);
+    }
+  } catch (e) {
+    dlog(`OMP integration failed: ${(e as Error).message}`);
+  }
+}
+
+
+let inFlight: Promise<void> | null = null;
 
 export async function ensureOmpSuInstalled(): Promise<void> {
-  if (alreadyRan) return;
-  alreadyRan = true;
+  if (inFlight) return inFlight;
+  inFlight = (async () => {
+    // Only meaningful on Linux right now — omp-su wrapper is bash; the
+    // server-side spawn path in console-launch.ts is Linux-only too.
+    if (process.platform !== 'linux') return;
 
-  // Only meaningful on Linux right now — omp-su wrapper is bash; the
-  // server-side spawn path in console-launch.ts is Linux-only too.
-  if (process.platform !== 'linux') return;
+    await ensurePapercuspBootstrap();
+    ensureOmpHindsightConfig();
 
-  ensureOmpHindsightConfig();
+    // Skip if everything is already in place — fast path on every reboot.
+    const home = homedir();
+    const playbookDest = join(home, '.papercusp', 'engineer-collaborator.md');
+    const coordDest = join(home, '.papercusp', 'papercusp-coord.ts');
+    const wrapperDir = resolveWrapperDir();
+    const wrapperPath = join(wrapperDir, 'omp-su');
 
-  // Skip if everything is already in place — fast path on every reboot.
-  const home = homedir();
-  const playbookDest = join(home, '.papercusp', 'engineer-collaborator.md');
-  const coordDest = join(home, '.papercusp', 'papercusp-coord.ts');
-  const wrapperDir = resolveWrapperDir();
-  const wrapperPath = join(wrapperDir, 'omp-su');
-
-  if (existsSync(playbookDest) && existsSync(coordDest) && existsSync(wrapperPath)) {
-    return;
-  }
-
-  const sourceDir = resolveSourceDir();
-  if (!sourceDir) {
-    dlog('source dir not found; skipping (cwd=' + process.cwd() + ')');
-    return;
-  }
-  const playbookSrc = join(sourceDir, 'prompts', 'papercusp-su-engineer.tools.md');
-  const coordSrc = join(sourceDir, 'scripts', 'hooks', 'omp', 'coord-hook.ts');
-
-  if (existsSync(playbookSrc)) {
-    if (ensureFileCopy(playbookSrc, playbookDest)) {
-      dlog(`installed playbook → ${playbookDest}`);
+    if (existsSync(playbookDest) && existsSync(coordDest) && existsSync(wrapperPath)) {
+      return;
     }
-  } else {
-    dlog(`playbook source missing at ${playbookSrc}; skipping`);
-  }
 
-  if (existsSync(coordSrc)) {
-    if (ensureFileCopy(coordSrc, coordDest)) {
-      dlog(`installed coord extension → ${coordDest}`);
+    const sourceDir = resolveSourceDir();
+    if (!sourceDir) {
+      dlog('source dir not found; skipping (cwd=' + process.cwd() + ')');
+      return;
     }
-  } else {
-    dlog(`coord extension source missing at ${coordSrc}; skipping`);
-  }
+    const playbookSrc = join(sourceDir, 'prompts', 'papercusp-su-engineer.tools.md');
+    const coordSrc = join(sourceDir, 'scripts', 'hooks', 'omp', 'coord-hook.ts');
 
-  if (ensureWrapperScript(wrapperPath)) {
-    dlog(`installed omp-su wrapper → ${wrapperPath}`);
-    if (!isOnPath('omp-su')) {
-      dlog(`note: ${wrapperDir} is not on PATH; add it or invoke ${wrapperPath} by full path`);
+    if (existsSync(playbookSrc)) {
+      if (ensureFileCopy(playbookSrc, playbookDest)) {
+        dlog(`installed playbook → ${playbookDest}`);
+      }
+    } else {
+      dlog(`playbook source missing at ${playbookSrc}; skipping`);
     }
+
+    if (existsSync(coordSrc)) {
+      if (ensureFileCopy(coordSrc, coordDest)) {
+        dlog(`installed coord extension → ${coordDest}`);
+      }
+    } else {
+      dlog(`coord extension source missing at ${coordSrc}; skipping`);
+    }
+
+    if (ensureWrapperScript(wrapperPath)) {
+      dlog(`installed omp-su wrapper → ${wrapperPath}`);
+      if (!isOnPath('omp-su')) {
+        dlog(`note: ${wrapperDir} is not on PATH; add it or invoke ${wrapperPath} by full path`);
+      }
+    }
+  })();
+  try {
+    await inFlight;
+  } finally {
+    inFlight = null;
   }
 }

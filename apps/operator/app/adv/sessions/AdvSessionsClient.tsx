@@ -335,6 +335,8 @@ export default function AdvSessionsClient() {
           { duration: 3000 },
         );
         setRefreshTick((t) => t + 1);
+      } else if (result.installCmd) {
+        toast.error(`${result.error ?? 'OMP launch prerequisites are missing.'} Run: ${result.installCmd}`);
       } else {
         toast.error(`Launch failed: ${result.error ?? 'unknown error'}`);
       }
@@ -378,6 +380,8 @@ export default function AdvSessionsClient() {
     if (result.ok) {
       toast.success('OMP launched (fresh session).', { duration: 3000 });
       setRefreshTick((t) => t + 1);
+    } else if (result.installCmd) {
+      toast.error(`${result.error ?? 'OMP launch prerequisites are missing.'} Run: ${result.installCmd}`);
     } else {
       toast.error(`Launch failed: ${result.error ?? 'unknown error'}`);
     }
@@ -407,6 +411,8 @@ export default function AdvSessionsClient() {
     if (result.ok) {
       toast.success(`OMP resumed (${trimmed.slice(0, 12)}…).`, { duration: 3000 });
       setRefreshTick((t) => t + 1);
+    } else if (result.installCmd) {
+      toast.error(`${result.error ?? 'OMP launch prerequisites are missing.'} Run: ${result.installCmd}`);
     } else {
       toast.error(`Resume failed: ${result.error ?? 'unknown error'}`);
     }

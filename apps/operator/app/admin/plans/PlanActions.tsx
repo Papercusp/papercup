@@ -74,9 +74,9 @@ export default function PlanActions({
       const result = await launchOmpAgent({ slug: null, planSlug: slug, label });
       if (result.ok) {
         toast.success(`Launched OMP for ${slug}.`, { duration: 4000 });
-      } else if (result.code === 'omp_not_installed') {
+      } else if (result.installCmd) {
         toast.error(
-          `OMP not installed. Run: ${result.installCmd ?? 'npm i -g @oh-my-pi/cli @papercusp/omp'}`,
+          `${result.error ?? 'OMP launch prerequisites are missing.'} Run: ${result.installCmd}`,
           { duration: 12000 },
         );
       } else {

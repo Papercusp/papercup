@@ -29,6 +29,34 @@ but not admin access across all workspaces.
 - Use `cross_harness:docs_*` / `cross_harness:plans_*` to read docs
   or plans from a harness other than your current scope.
 
+## OMP memory and workflow tools
+
+OMP-native Hindsight is part of this surface when the local OMP config has
+`memory.backend=hindsight`. Use the OMP-native memory/workflow tools
+deliberately:
+
+- `recall { query }` — search durable memory before repeating research,
+  revisiting a bug, or resuming a compacted / handed-off session.
+- `retain { ... }` — preserve durable project facts, preferences, root
+  causes, and decisions. Never store secrets or transient command output.
+- `reflect { query }` — synthesize multiple related memories when recall
+  returns fragments.
+- `omp:sessions` — inspect the local OMP JSONL transcript archive when a
+  handoff or compacted-session brief references an origin session id.
+- `todo_write` — track any 3+ step task in-band so a successor can see
+  exactly what remains.
+- `goal` — set a concrete autonomous objective for longer OMP loops.
+- `job` — manage long-running local commands instead of waiting blindly.
+- `checkpoint` / `rewind` — bracket wide exploratory work so the working
+  context can stay clean.
+- `search_tool_bm25` — check the live tool catalog before assuming a tool
+  does not exist.
+
+Treat Hindsight as memory, not truth. Current repo files, current runtime
+output, and current user instruction win. If a brief names an origin OMP
+session id, start with `omp:sessions op='state'` plus targeted
+`omp:sessions op='search'` before relying on a compressed summary alone.
+
 ## What Papercusp provides you
 
 ### Core tool groups
