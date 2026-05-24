@@ -11,7 +11,7 @@ owner: avi@storewolf.com
 
 ## Now
 
-**State:** SU autonomous loop, ~20 parent commits + 1 submodule, ~177 commits ahead of `origin/main`. All verifiers green. **Phase 1a backend COMPLETE** (P-013a + P-010 shipped overnight); Phase 2 P-016 shipped; Phase 1b Q-4 resolved + binding-types groundwork laid for P-068.
+**State:** SU autonomous loop, ~24 parent commits + 1 submodule, ~179 commits ahead of `origin/main`. All verifiers green. **Phase 1a backend COMPLETE** (P-013a + P-010 shipped overnight); Phase 2 P-016 shipped including HTTP re-check route (P-016e); Phase 1b Q-4 resolved + binding-types groundwork laid for P-068; live-PG dogfood-schema regression sentinel shipped.
 
 **Next action (for human):** review the commits at your pace; decide whether to push to `origin/main` and whether to act on the surfaced design memos. **Phase 1a's only remaining work is P-012 UI, design-gated on a picker memo.**
 
@@ -44,6 +44,13 @@ The binding-service design memo is well-developed though still "draft for review
 - **15 unit tests pass.**
 
 **Crucially: no service implementation.** Just types. If you revise the memo, the types change; downstream consumers get typecheck errors to update. No behavior is committed.
+
+### Live-PG regression sentinel + P-016e HTTP route (final session segment)
+
+After Phase 1a backend completed I added a live-PG verifier and exposed P-016e's on-demand re-check via HTTP.
+
+- **Commit `8c8605a9`** — `apps/operator/scripts/verify-dogfood-schema.ts` (~180 LOC). Boots embedded PG18, points `getOrgPg()` at it via `HARNESS_ADMIN_DATABASE_URL`, calls `ensureAllDogfoodTables()`, asserts every expected table + column + CHECK constraint. ~2s wall-clock; exit 0 PASS / 1 FAIL. Useful as a pre-commit gate on `ensure-schema-dogfood.ts`. Live verifier passes: **13/13 table existence checks + 80+ column checks + 16 CHECK constraints + 0ms idempotent re-run.**
+- **Commit `a216cf3b`** — `apps/operator/lib/endpoint-route/routes/harness/completion-ref-recheck.ts` (POST `/api/harness/:slug/completion-ref/recheck`). Wraps `verifyHarnessFeatures()` so the eventual P-017 "Re-check verification" button has an HTTP entry point. composed-app-shadowing 6/6 still PASS.
 
 ### Phase 1a backend — COMPLETE (P-013a + P-010 shipped this turn)
 
