@@ -23,6 +23,13 @@ import { expandGlobs, inferWorkspaceRoot } from '@/lib/testing-domain-glob';
 import { resolveGitContext } from '@/lib/testing-branch-resolve';
 import { ensureTestRunsTable } from '@/lib/ensure-schema';
 
+function toIso(v: unknown): string | null {
+  if (!v) return null;
+  if (v instanceof Date) return v.toISOString();
+  if (typeof v === 'string') return new Date(v).toISOString();
+  return null;
+}
+
 interface FileStatus {
   filePath: string;
   status: 'pass' | 'fail' | 'skip' | 'cancelled' | 'error' | 'running';
@@ -88,7 +95,7 @@ export default defineTool({
         file_path: string;
         status: string;
         duration_ms: string | null;
-        finished_at: Date | null;
+        finished_at: Date | string | null;
         source: string;
         branch: string | null;
       }>`
@@ -104,7 +111,7 @@ export default defineTool({
           filePath: r.file_path,
           status: r.status as FileStatus['status'],
           durationMs: r.duration_ms !== null ? Number(r.duration_ms) : null,
-          finishedAt: r.finished_at ? r.finished_at.toISOString() : null,
+          finishedAt: toIso(r.finished_at),
           source: r.source as FileStatus['source'],
           branch: r.branch,
           stale: false,
@@ -120,7 +127,7 @@ export default defineTool({
         file_path: string;
         status: string;
         duration_ms: string | null;
-        finished_at: Date | null;
+        finished_at: Date | string | null;
         source: string;
         branch: string | null;
       }>`
@@ -135,7 +142,7 @@ export default defineTool({
           filePath: r.file_path,
           status: r.status as FileStatus['status'],
           durationMs: r.duration_ms !== null ? Number(r.duration_ms) : null,
-          finishedAt: r.finished_at ? r.finished_at.toISOString() : null,
+          finishedAt: toIso(r.finished_at),
           source: r.source as FileStatus['source'],
           branch: r.branch,
           stale: true,
