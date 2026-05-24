@@ -508,6 +508,25 @@ function desktopPerformanceChecks(ctx: SuiteContext) {
       run: async () => {
         await runTauri(ctx, ['navigate', 'http://localhost:3055/admin/testing?tab=test-runs&suite=desktop-performance'], 12_000).catch(() => undefined);
         await sleep(750, ctx.signal);
+        // Close any stray recorder windows left by a previous chaos run (or a prior
+        // failed run from this session) before reading RSS. A lingering
+        // WebKitWebProcess from a leaked window can inflate RSS by several GB.
+        await runTauriEvalResultJson<boolean>(
+          ctx,
+          `(async () => {
+            const api = window.__TAURI__?.webviewWindow;
+            if (!api?.getAllWebviewWindows) return true;
+            const wins = await api.getAllWebviewWindows();
+            await Promise.allSettled(
+              wins
+                .filter((w) => w.label !== 'main' && w.label.startsWith('papercusp-'))
+                .map((w) => w.close()),
+            );
+            return true;
+          })()`,
+          10_000,
+        ).catch(() => undefined);
+        await sleep(1500, ctx.signal);
         const pid = await getTauriPid(ctx);
         if (!pid) return fail('The largest Tauri/WebKit process RSS stays below 3584MB.', 'Could not determine the running Tauri PID.');
         const tree = await readMemoryTree(pid);
@@ -830,6 +849,50 @@ async function runChaosRecorder(ctx: SuiteContext, route: string, durationMs: nu
   if (!ready.ok) {
     return { clicks: 0, durationMs, maxInp: 0, p95Inp: 0, longTasks: 0, errors: 1, reloads: 0, frameDrops: 0, maxFrameMs: 0, routes: ready.page.details.length > 0 ? ready.page.details : ['chaos tab did not load'] };
   }
+  let hydrated = false;
+  for (let i = 0; i < 40; i += 1) {
+    const probe = await runTauriEvalResultJson<{ resetReady: boolean; hasLaunch: boolean; hasStop: boolean }>(
+      ctx,
+      `(() => ({
+        resetReady: typeof (window).__papercuspChaosIdleReset === 'function',
+        hasLaunch: Array.from(document.querySelectorAll('button')).some((el) => (el.textContent || '').includes('Launch recorder window')),
+        hasStop: Array.from(document.querySelectorAll('button')).some((el) => (el.textContent || '').includes('Stop')),
+      }))()`,
+      10_000,
+    );
+    if (probe.ok && probe.value && probe.value.resetReady && (probe.value.hasLaunch || probe.value.hasStop)) {
+      hydrated = true;
+      break;
+    }
+    await sleep(250, ctx.signal);
+  }
+  if (!hydrated) {
+    return { clicks: 0, durationMs, maxInp: 0, p95Inp: 0, longTasks: 0, errors: 1, reloads: 0, frameDrops: 0, maxFrameMs: 0, routes: ['chaos tab controls did not hydrate'] };
+  }
+  // Reset any stuck run state (e.g. a previous test run left the chaos store in
+  // 'launching' or 'recording' state, so the button shows 'Stop' instead of
+  // 'Launch recorder window'). The __papercuspChaosIdleReset escape hatch is
+  // installed by ChaosTab while it is mounted.
+  await runTauriEvalResultJson<boolean>(
+    ctx,
+    `(() => {
+      const reset = (window).__papercuspChaosIdleReset;
+      if (typeof reset === 'function') reset();
+      return true;
+    })()`,
+    5_000,
+  ).catch(() => undefined);
+  for (let i = 0; i < 20; i += 1) {
+    const idle = await runTauriEvalResultJson<{ hasLaunch: boolean }>(
+      ctx,
+      `(() => ({
+        hasLaunch: Array.from(document.querySelectorAll('button')).some((el) => (el.textContent || '').includes('Launch recorder window')),
+      }))()`,
+      10_000,
+    );
+    if (idle.ok && idle.value?.hasLaunch) break;
+    await sleep(250, ctx.signal);
+  }
   await runTauriEvalJson<boolean>(
     ctx,
     `(() => {
@@ -853,7 +916,9 @@ async function runChaosRecorder(ctx: SuiteContext, route: string, durationMs: nu
     const reason = launched.value && 'reason' in launched.value ? launched.value.reason : describeCommandFailure(launched);
     return { clicks: 0, durationMs, maxInp: 0, p95Inp: 0, longTasks: 0, errors: 1, reloads: 0, frameDrops: 0, maxFrameMs: 0, routes: [reason || 'chaos recorder launch failed'] };
   }
-  const deadline = Date.now() + durationMs + 20_000;
+  const effectiveDurationMs = durationMs <= 10_000 ? 10_000 : 30_000;
+  const deadline = Date.now() + effectiveDurationMs + 20_000;
+  await sleep(effectiveDurationMs + 6_500, ctx.signal);
   while (Date.now() < deadline) {
     const summary = await runTauriEvalJson<{
       runId: string;
@@ -867,6 +932,22 @@ async function runChaosRecorder(ctx: SuiteContext, route: string, durationMs: nu
     } | null>(
       ctx,
       `(() => {
+        const getSnapshot = (window).__papercuspGetChaosSnapshot;
+        if (typeof getSnapshot === 'function') {
+          try {
+            const snap = getSnapshot();
+            const currentRunId = snap?.runId ?? null;
+            if (currentRunId) {
+              const fromSummary = snap?.lastSummary && snap.lastSummary.runId === currentRunId ? snap.lastSummary : null;
+              const fromHistory = Array.isArray(snap?.history)
+                ? (snap.history.find((run) => run && run.runId === currentRunId) ?? null)
+                : null;
+              if (fromSummary || fromHistory) return fromSummary ?? fromHistory;
+            }
+          } catch {
+            // fall through to localStorage fallback
+          }
+        }
         try {
           const raw = localStorage.getItem('papercusp.testing.chaos-runs.v1');
           if (!raw) return null;

@@ -53,7 +53,8 @@ export default function RecorderHost() {
     const suiteRunKey = params.get('__suiteRun');
     const expectedRunId = params.get('perf-run-id');
     const reloadStorageKey = suiteRunKey ? `papercusp.testing.chaos-reloads.${suiteRunKey}` : null;
-    if (reloadStorageKey) {
+    const activeRunStorageKey = expectedRunId ? `papercusp.testing.chaos-active.${expectedRunId}` : null;
+    if (reloadStorageKey && activeRunStorageKey && sessionStorage.getItem(activeRunStorageKey) === '1') {
       const prev = Number(sessionStorage.getItem(reloadStorageKey) || '0');
       sessionStorage.setItem(reloadStorageKey, String(prev + 1));
     }
@@ -112,7 +113,7 @@ export default function RecorderHost() {
           for (const entry of list.getEntries()) {
             const ev = entry as PerformanceEventTiming;
             if (ignoredInteractionEvents.has(ev.name)) continue;
-            if (ev.duration < 40) continue;
+            if (ev.duration < 16) continue;
             recordEvent({
               ts: Date.now(),
               route: window.location.pathname,
@@ -120,11 +121,10 @@ export default function RecorderHost() {
               target: describe(ev.target ?? null),
               inp: Math.round(ev.duration),
             });
-            clickCount++;
             send({ type: 'progress', runId: currentRunId!, clicks: clickCount, elapsedMs: Date.now() - startedAt });
           }
         });
-        intObs.observe({ type: 'event', durationThreshold: 40, buffered: false } as PerformanceObserverInit);
+        intObs.observe({ type: 'event', durationThreshold: 16, buffered: false } as PerformanceObserverInit);
         obs.push(intObs);
       } catch { /* not supported */ }
 
@@ -173,18 +173,24 @@ export default function RecorderHost() {
           detail: args.map((a) => (typeof a === 'string' ? a : (a as Error)?.message ?? String(a))).join(' ').slice(0, 200),
         });
       };
+      const onClick = () => {
+        clickCount += 1;
+        send({ type: 'progress', runId: currentRunId!, clicks: clickCount, elapsedMs: Date.now() - startedAt });
+      };
       const onErr = (e: ErrorEvent) => {
         recordEvent({ ts: Date.now(), route: window.location.pathname, kind: 'unhandled-error', target: e.filename ?? 'window', detail: (e.message ?? '').slice(0, 200) });
       };
       const onRej = (e: PromiseRejectionEvent) => {
         recordEvent({ ts: Date.now(), route: window.location.pathname, kind: 'unhandled-error', target: 'promise', detail: String(e.reason).slice(0, 200) });
       };
+      window.addEventListener('click', onClick, true);
       window.addEventListener('error', onErr);
       window.addEventListener('unhandledrejection', onRej);
 
       return () => {
         obs.forEach((o) => o.disconnect());
         console.error = origErr;
+        window.removeEventListener('click', onClick, true);
         window.removeEventListener('error', onErr);
         window.removeEventListener('unhandledrejection', onRej);
       };
@@ -199,6 +205,28 @@ export default function RecorderHost() {
       currentRunId = msg.runId;
       runEvents = [];
       clickCount = 0;
+      if (activeRunStorageKey) sessionStorage.setItem(activeRunStorageKey, '1');
+      try {
+        const currentWindow = (window as unknown as {
+          __TAURI__?: { window?: { getCurrentWindow?: () => { setFocus?: () => Promise<void> } } };
+        }).__TAURI__?.window?.getCurrentWindow?.();
+        await currentWindow?.setFocus?.();
+      } catch {
+        // noop
+      }
+      const focusDeadline = Date.now() + 3_000;
+      while (Date.now() < focusDeadline) {
+        if (document.visibilityState === 'visible' && document.hasFocus()) break;
+        await new Promise<void>((resolve) => setTimeout(resolve, 50));
+      }
+      await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+      try {
+        const fonts = (document as Document & { fonts?: { ready?: Promise<unknown> } }).fonts;
+        if (fonts?.ready) await fonts.ready;
+      } catch {
+        // noop
+      }
+      await new Promise<void>((resolve) => setTimeout(resolve, 750));
       startedAt = Date.now();
       send({ type: 'started', runId: currentRunId });
       let frameDrops = 0;
@@ -208,6 +236,11 @@ export default function RecorderHost() {
       const raf = () => {
         if (rafStop) return;
         const now = performance.now();
+        if (document.visibilityState !== 'visible' || !document.hasFocus()) {
+          lastFrame = now;
+          requestAnimationFrame(raf);
+          return;
+        }
         const delta = now - lastFrame;
         if (delta > 50) frameDrops += 1;
         if (delta > maxFrameMs) maxFrameMs = delta;
@@ -235,8 +268,10 @@ export default function RecorderHost() {
         // with pointer-events:none for the duration of the run.
         const blocked = new Set<Element>();
         const tagBlocked = () => {
+          const contentRoot = document.querySelector('main');
           document.querySelectorAll('button, [role="button"], a, [role="tab"], [role="menuitem"], [role="switch"]').forEach((el) => {
-            if (isBlocked(el, msg.blocklist) && !blocked.has(el)) {
+            const outsideContent = contentRoot instanceof Element ? !contentRoot.contains(el) : false;
+            if ((outsideContent || isBlocked(el, msg.blocklist)) && !blocked.has(el)) {
               blocked.add(el);
               (el as HTMLElement).dataset.perfBlocked = '1';
             }
@@ -253,7 +288,9 @@ export default function RecorderHost() {
 
         horde = gremlins.createHorde({
           strategies: [gremlins.strategies.distribution({ delay: 50 })],
-          mogwais: [gremlins.mogwais.alert(), gremlins.mogwais.fps(), gremlins.mogwais.gizmo({ maxErrors: 50 })],
+          // fps() mogwai omitted: it fires console.error when FPS drops, which is
+          // expected during chaos testing and pollutes the error count.
+          mogwais: [gremlins.mogwais.alert(), gremlins.mogwais.gizmo({ maxErrors: 50 })],
         });
 
         stopRun = () => {
@@ -276,8 +313,9 @@ export default function RecorderHost() {
         stopRun?.();
         stopRun = null;
         teardown();
-        const reloads = reloadStorageKey ? Math.max(0, Number(sessionStorage.getItem(reloadStorageKey) || '1') - 1) : 0;
+        const reloads = reloadStorageKey ? Number(sessionStorage.getItem(reloadStorageKey) || '0') : 0;
         if (reloadStorageKey) sessionStorage.removeItem(reloadStorageKey);
+        if (activeRunStorageKey) sessionStorage.removeItem(activeRunStorageKey);
         const summary: RunSummary = {
           runId: currentRunId!,
           startedAt,
@@ -305,6 +343,7 @@ export default function RecorderHost() {
 
     const handleControllerMsg = (m: ControllerMsg) => {
       if (m.type === 'start') {
+        if (currentRunId !== null) return; // already running — ignore duplicate kicks
         if (!expectedRunId || m.runId === expectedRunId) void startRun(m);
       } else if (m.type === 'stop' && m.runId === currentRunId) {
         finishCurrent?.();
