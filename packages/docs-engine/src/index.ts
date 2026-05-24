@@ -43,6 +43,7 @@ export {
 export { renderMdxToMarkdown, withPreamble } from './render-mdx.js';
 
 export { harnessFsAdapter, type HarnessFsAdapterOptions } from './adapters/harness-fs.js';
+export { genericFsAdapter, type GenericFsAdapterOptions } from './adapters/generic-fs.js';
 export {
   starlightContentAdapter,
   type StarlightContentAdapterOptions,
