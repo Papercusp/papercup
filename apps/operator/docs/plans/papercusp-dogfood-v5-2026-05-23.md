@@ -92,7 +92,7 @@ v5 ships when:
 Before Phase 1a begins:
 - **Resolved (Q-7 from v3)**: 4 papercup repos (papercup, papercusp-desktop, papercup-rust, papercup-rust-mobile) stay separate. No monorepo. No umbrella superproject. §2 submodule walking applies WITHIN each repo only (papercup's 9 `libs/*` submodules); cross-repo grouping is just multi-harness-in-one-workspace.
 - **Workspace name**: `papercusp-workspace` (literal).
-- **`libs/` topology confirmed at v5 write-time**: 16 dirs total = 9 submodules (rule #1) + 7 plain (rule #4). Plain dirs: `flags`, `host-platform`, `marketplace-public-ui`, `papercusp-export-state`, `papercusp-publish-auth`, `sse`, `test-config`. Submodules per `.gitmodules`: `agent-chat`, `git-graph`, `papercup-db`, `papercup-shared`, `papercusp`, `papergrid`, `sync`, `ui-primitives`, `zero-harness`.
+- **`libs/` topology confirmed at implementation start** (updated 2026-05-23, P-001 + P-007): 17 dirs total = 9 submodules (rule #1) + 8 plain (rule #4). Plain dirs: `flags`, `holepunch-spike` (created during P-001 spike), `host-platform`, `marketplace-public-ui`, `papercusp-export-state`, `papercusp-publish-auth`, `sse`, `test-config`. Submodules per `.gitmodules`: `agent-chat`, `git-graph`, `papercup-db`, `papercup-shared`, `papercusp`, `papergrid`, `sync`, `ui-primitives`, `zero-harness`. Drift from this count is asserted by `apps/operator/lib/harness/classify-tree.test.ts`.
 
 ## Design
 
