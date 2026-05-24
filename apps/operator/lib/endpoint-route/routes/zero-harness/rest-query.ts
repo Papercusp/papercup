@@ -7,6 +7,7 @@
  */
 import { gzipSync } from 'node:zlib';
 import { resolveNamedQuery } from '@/lib/zero-harness-resolver';
+import { resolveNamedQueryV2, NAME_NOT_FOUND } from '@/lib/sync-resolver';
 import { defineTool } from '@papercusp/agent-mcp';
 
 export default defineTool({
@@ -34,7 +35,13 @@ export default defineTool({
       return new Response(null, { status: 499 });
     }
     try {
-      const rows = await resolveNamedQuery(name, args);
+      // P-022 incremental migration: try the Zero-free dispatcher
+      // first; fall through to the legacy ZQL resolver for any name
+      // not yet migrated. Once all live queryNames are represented
+      // in sync-resolver/, the legacy import + @rocicorp/zero dep
+      // can be dropped.
+      const v2 = await resolveNamedQueryV2(name, args);
+      const rows = v2 === NAME_NOT_FOUND ? await resolveNamedQuery(name, args) : v2;
       if (req.signal.aborted) {
         return new Response(null, { status: 499 });
       }

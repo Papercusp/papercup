@@ -7,6 +7,7 @@
  */
 import { gzipSync } from 'node:zlib';
 import { resolveNamedQuery } from '@/lib/zero-harness-resolver';
+import { resolveNamedQueryV2, NAME_NOT_FOUND } from '@/lib/sync-resolver';
 import { defineTool } from '@papercusp/agent-mcp';
 
 interface BatchQuery { name: string; args?: unknown }
@@ -44,7 +45,12 @@ export default defineTool({
           return { error: 'missing query name' };
         }
         try {
-          const rows = await resolveNamedQuery(q.name, q.args ?? {});
+          // P-022 incremental migration: try Zero-free dispatcher first,
+          // fall through to legacy resolver for unmigrated names.
+          const v2 = await resolveNamedQueryV2(q.name, q.args ?? {});
+          const rows = v2 === NAME_NOT_FOUND
+            ? await resolveNamedQuery(q.name, q.args ?? {})
+            : v2;
           return { rows, version };
         } catch (err: any) {
           return { error: err?.message ?? String(err) };
