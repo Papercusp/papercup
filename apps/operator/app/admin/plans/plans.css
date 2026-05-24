@@ -629,6 +629,39 @@
   flex-direction: column;
 }
 
+/* Vditor's dark theme leaves the expanded YAML frontmatter in a low-contrast
+   source block (dark blue/gray glyphs on a gray panel). Keep the plan editor's
+   top metadata block legible without changing read-mode markdown previews. */
+.pc-plan-editor .pc-md-editor-host.vditor--dark {
+  --textarea-text-color: #edf8ff !important;
+  --second-color: rgba(186, 230, 253, 0.72) !important;
+  --ir-title-color: #cfeaff !important;
+  --ir-heading-color: #f0c8ff !important;
+  --ir-bi-color: #fbbf7a !important;
+  --ir-link-color: #f8d98c !important;
+  --ir-bracket-color: #7dd3fc !important;
+  --ir-paren-color: #9de7b2 !important;
+}
+
+.pc-plan-editor .vditor-ir__node[data-type="yaml-front-matter"] {
+  display: block;
+  margin: 8px 0 18px;
+  padding: 10px 12px;
+  border: 1px solid rgba(125, 211, 252, 0.2);
+  border-radius: 12px;
+  background: rgba(7, 16, 29, 0.86) !important;
+  color: #edf8ff !important;
+}
+
+.pc-plan-editor .vditor-ir__node[data-type="yaml-front-matter"] * {
+  color: inherit !important;
+}
+
+.pc-plan-editor .vditor-ir__node[data-type="yaml-front-matter"]::before,
+.pc-plan-editor .vditor-ir__node[data-type="yaml-front-matter"]::after {
+  color: rgba(186, 230, 253, 0.72) !important;
+}
+
 .pc-plans__back {
   flex-shrink: 0;
   padding: 6px 11px;
