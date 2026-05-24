@@ -11,7 +11,7 @@ owner: avi@storewolf.com
 
 ## Now
 
-**State:** SU autonomous loop. **~229 commits ahead of `origin/main`.** All verifiers green. **26-module types-only spine** in tree. **725 unit tests, all PASS in ~410ms** via `npm run verify:dogfood-types`. **10 agent insights** in tree.
+**State:** SU autonomous loop. **~231 commits ahead of `origin/main`.** All verifiers green. **27-module types-only spine** in tree spanning every major v5 surface. **756 unit tests, all PASS in ~430ms** via `npm run verify:dogfood-types`. **10 agent insights** in tree.
 
 **Next action (for human):** review the commits at your pace; push when ready; accept Phase 1b design memos when ready.
 
