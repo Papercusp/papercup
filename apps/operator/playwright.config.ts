@@ -12,9 +12,18 @@ export default defineConfig({
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 2 : 0,
   workers: process.env.CI ? 2 : 4,
-  reporter: process.env.CI
-    ? [['junit', { outputFile: 'junit-e2e.xml' }], ['html', { open: 'never' }]]
-    : [['list']],
+  reporter: (() => {
+    // Custom reporter (P-011) writes per-file Playwright results to
+    // harness_shared.test_runs. Fail-soft per D-007 — never throws.
+    // Opt-out via PAPERCUSP_DISABLE_TEST_RUNS_REPORTER=1.
+    const adminReporter: Array<string | [string, Record<string, unknown>]> =
+      process.env.PAPERCUSP_DISABLE_TEST_RUNS_REPORTER === '1'
+        ? []
+        : [['./test/reporters/admin-test-runs-reporter-playwright.ts', {}]];
+    return process.env.CI
+      ? [['junit', { outputFile: 'junit-e2e.xml' }], ['html', { open: 'never' }], ...adminReporter]
+      : [['list'], ...adminReporter];
+  })(),
   timeout: 60_000,
   use: {
     baseURL: BASE_URL,
