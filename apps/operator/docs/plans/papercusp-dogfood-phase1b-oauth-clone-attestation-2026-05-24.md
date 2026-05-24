@@ -14,20 +14,17 @@ owner: avi@storewolf.com
 **State:** **draft execution plan.** Phase 1b status as of 2026-05-24 overnight loop:
 - ✅ **P-008** done (clone helper via `gh auth`, commit `6cc4f6c9`)
 - ✅ **Q-4** resolved (gh-token helper `80f2717a` + octokit-client wrapper `5ca301bc`)
-- 🟡 **Type spine COMPLETE** — three types-only modules in tree, one per memo:
+- ✅ **Q-2** resolved (JCS / RFC 8785 chosen; types module `contributor-file-types.ts` shipped at `258c94b6`)
+- 🟢 **Type spine COMPLETE** — four types-only modules in tree, one per memo + Channel 2 file:
   - P-068: `binding-types.ts` (`f05997aa`)
   - P-075: `binding-verifier-types.ts` (`778ea017`)
   - P-011: `attestation-types.ts` (`4a08057e`)
+  - P-075-Channel-2: `contributor-file-types.ts` (`258c94b6`)
   Runtime implementations gated on memo acceptance; types ready to consume verbatim.
 
 Remaining greenfield runtime: P-009 Entry 4 + P-011 attest.ts/keychain.ts + P-068 binding-service.ts + P-075 two-channel-verifier.ts — all design-gated.
 
-**Next:** Write three design memos before any runtime P-task implementation starts:
-1. Device attestation UX (gist creation flow, OAuth scope prompt, error messages).
-2. Two-channel binding verifier UX (`pending` / `verified` / `unverified` surfacing).
-3. Canonical binding service API shape (wire-format + endpoint semantics for P-068, also extended by Cupboard P-051a in Phase 9).
-
-When memos are accepted, the runtime implementers consume the types-only modules already in tree; no design-vs-implementation race.
+**Next:** Write three design memos before any runtime P-task implementation starts: (1) Device attestation UX, (2) Two-channel binding verifier UX, (3) Canonical binding service API shape. When memos are accepted, the runtime implementers consume the four types-only modules already in tree; no design-vs-implementation race.
 
 ## Background
 
@@ -156,6 +153,31 @@ v5 one-liner: *"Two-channel binding verifier (D-031 / §0.2.7). Channel 1 server
 ## Decisions
 
 (Three design memos pending — see `## Now`. Memos become D-001 / D-002 / D-003 here when accepted.)
+
+
+### D-001 — Q-2 RESOLVED: Channel 2 file uses JCS / RFC 8785 canonical-form serialization
+Date: 2026-05-24
+**Question:** Channel 2's `.harness/contributors/<github_login>.json` — what's the canonical-form serialization for signature stability?
+
+**Resolution:** JCS (JSON Canonicalization Scheme, RFC 8785). Field order is ascending Unicode code-point on object keys per RFC 8785 §3.2. The seven canonical fields in order are: `device_attestation_gist_id`, `device_pubkey`, `github_login`, `github_user_id`, `joined_at`, `signature_by_device`, `version`. The signature covers a serialization of every field EXCEPT `signature_by_device` itself — implementations strip the signature, JCS-encode, sign, then inject.
+
+**Implementation status:** types-only module `apps/operator/lib/identity/contributor-file-types.ts` shipped at commit `258c94b6` (31 unit tests, all PASS). Exports:
+
+- `CONTRIBUTOR_FILE_CANONICAL_FIELD_ORDER` — JCS-ascending tuple, single source of truth.
+- `ContributorFileBody` — the 7-field signed JSON shape.
+- `parseDevicePubkeySpec` / `formatDevicePubkeySpec` — `ed25519:<base64url>` tagged-key handling.
+- `contributorFilePath(login)` / `contributorBranchRef(id)` — single-source path/branch builders.
+- `isSafeGithubLoginSegment` — path-escape defense (GitHub-login rules: alphanumeric+dashes, ≤39 chars, no leading/trailing dash, no consecutive dashes).
+- `isContributorFileBody` — structural predicate.
+- `Channel2VerificationResult` + 10-variant `Channel2FailureReason`.
+- `stripSignatureForSigning(body)` — pre-signing body shape.
+
+**What's NOT in scope here:** the JCS byte-encoder itself (runtime concern — when P-075's `two-channel-verifier.ts` lands, it imports a JCS lib or implements RFC 8785 §3 inline). The types module fixes the field-order contract so the byte-encoder cannot drift between publisher and verifier.
+
+**Why JCS over alternatives:**
+- Deterministic — RFC-specified, no implementation discretion on whitespace, field order, number-form, or string escaping.
+- Wide language support — Node, Go, Rust, Python all have RFC 8785 libs; matters for any future non-Node verifier (e.g. a CLI tool that re-checks bindings).
+- Already the consensus choice in adjacent Phase 1b types (`attestation-types.ts` references RFC 8785 in its serialization comment).
 
 ## Named fallback rollout
 
