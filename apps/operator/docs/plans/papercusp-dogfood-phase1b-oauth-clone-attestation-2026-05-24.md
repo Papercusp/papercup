@@ -28,9 +28,11 @@ Updated status (2026-05-24 continued loop):
 
 - ✅ **P-011** DONE — `keychain.ts` + `attest.ts` committed at `efa434b5` (loadOrGenerateDeviceKeypair, createAttestationGist, verifyAttestation + 24h cache; 16/16 tests pass; keychain: secret-tool → security → AES-256-GCM encrypted-file fallback)
 
-Remaining runtime: P-075 two-channel-verifier.ts + P-009 Entry 4 handler.
+- ✅ **P-075** DONE — `two-channel-verifier.ts` committed (verifyChannel1, verifyChannel2, verifyBoth; 17/17 tests pass). `ensure-schema-dogfood.ts` patched with binding_status + channel[12]_verified_at + channel2_branch_ref + binding_last_checked_at columns (P-075 §7.1). P-075f/g deferred to Phase 8.
 
-**Next:** P-075 — two-channel binding verifier (`two-channel-verifier.ts`). Type spine at `binding-verifier-types.ts` (`778ea017`); Channel 2 file format at `contributor-file-types.ts` (`258c94b6`). P-009 Entry 4 follows P-075.
+Remaining: P-009 Entry 4 handler (`url-scheme.ts` + `join-shared-harness.ts` + `EntryHarnessLinkForm.tsx` + `JoinProgress.tsx`).
+
+**Next:** P-009 — Entry 4 harness link URL scheme parser + join orchestration (9-step flow wiring P-011 + P-075).
 
 ## Background
 
@@ -130,7 +132,7 @@ v5 one-liner: *"Device attestation: Octokit + gist creation flow with required s
 
 ---
 
-### P-075 — Two-channel binding verifier (addendum 3) [M] — 🔴 NOT STARTED
+### P-075 — Two-channel binding verifier (addendum 3) [M] — ✅ DONE
 
 v5 one-liner: *"Two-channel binding verifier (D-031 / §0.2.7). Channel 1 server-side `gh api /user`. Channel 2 signed `.harness/contributors/<github_login>.json` pushed via GitHub-verified commit. Augments `contributors` schema with `binding_status` etc."*
 

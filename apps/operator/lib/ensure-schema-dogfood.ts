@@ -108,6 +108,13 @@ export async function ensureContributorsTable(): Promise<void> {
     );
     CREATE INDEX IF NOT EXISTS contributors_username_idx
       ON harness_shared.contributors (workspace_id, harness_slug, github_username);
+    -- P-075: two-channel binding status columns (addendum 3 §7.1)
+    ALTER TABLE harness_shared.contributors
+      ADD COLUMN IF NOT EXISTS binding_status       TEXT NOT NULL DEFAULT 'unverified',
+      ADD COLUMN IF NOT EXISTS channel1_verified_at TIMESTAMPTZ,
+      ADD COLUMN IF NOT EXISTS channel2_verified_at TIMESTAMPTZ,
+      ADD COLUMN IF NOT EXISTS channel2_branch_ref  TEXT,
+      ADD COLUMN IF NOT EXISTS binding_last_checked_at TIMESTAMPTZ;
   `);
   flags.contributors = true;
 }
