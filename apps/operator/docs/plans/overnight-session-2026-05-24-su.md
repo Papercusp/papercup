@@ -11,11 +11,11 @@ owner: avi@storewolf.com
 
 ## Now
 
-**State:** SU autonomous loop final state. **~213 commits ahead of `origin/main`.** All verifiers green. **18-module types-only spine** in tree spanning Phase 1b, Phase 5a, Phase 6, Phase 7, Phase 9, plus completion-ref + PR-reviewer-settings + feature-queue PG mirrors. **479 unit tests, all PASS in ~330ms** via `npm run verify:dogfood-types`. **9 agent insights** in tree. All Phase 1b open questions resolved.
+**State:** SU autonomous loop final state. **~218 commits ahead of `origin/main`.** All verifiers green. **21-module types-only spine** in tree spanning Phase 1b, Phase 2, Phase 5a, Phase 6, Phase 7, Phase 9, LOCAL audit/state tables, and D-024 schema-versioning. **568 unit tests, all PASS in ~370ms** via `npm run verify:dogfood-types`. **10 agent insights** in tree. All Phase 1b open questions resolved.
 
 **Next action (for human):** review the commits at your pace; the wrap doc's "What this lets the future runtime do" section lists each runtime task's drop-in import paths. Push when ready; accept Phase 1b design memos when ready.
 
-**Next:** Human review of 213 commits + memo acceptance to unblock memo-gated runtime implementation across Phases 1b/5a/6/7/9.
+**Next:** Human review of 218 commits + memo acceptance to unblock memo-gated runtime implementation across Phases 1b/5a/6/7/9.
 
 ## What shipped
 
@@ -462,6 +462,93 @@ becomes "import + implement," not "spec the types + then implement."
 ### What this loop deliberately did NOT do (cumulative)
 
 - Did not push any of the 213 commits.
+- Did not start any memo-gated runtime implementation.
+- Did not touch paperclip-zone files.
+- Did not file real features into the papercup harness queue (P-025).
+- Did not flip P-022 Phase B.
+
+---
+
+## Loop-continuation segment V — 21-module spine
+
+Segment IV claimed 18 as actual ceiling. The loop pushed past it again to
+21. Below the modules added since segment IV.
+
+### LOCAL audit/state — 5 tables in one module
+
+- **Commit `7fec8c82`** — `apps/operator/lib/harness/local-audit-row-types.ts` + tests. Single module covering 5 LOCAL-only (never-synced) tables that round out the dogfood-arc data model: `auto_review_audit`, `claim_audit`, `webhook_audit`, `insights_first_visit`, `trusted_authors`. Per-table row + structural predicate; plus `buildTrustListSet` + `isTrusted` which feed `decideAutoReview`'s `trust_list`; plus `shouldForceInsightsRedirect` for the §9.0 post-install landing logic. 35 tests.
+
+### Phase 5a D-024 — schema-version gate
+
+- **Commit `6ced68a9`** — `apps/operator/lib/harness/schema-version-types.ts` + tests. Pure decision function for the D-024 Hyperbee-op schema-versioning gate per v5 line 416 + 975. Every Autobase op carries `schema_version BIGINT`; peers maintain LOCAL `known_schema_versions`; receiving an op with version > my_max_known → ignore + emit "newer Papercusp" toast. Exports: `decideOpAcceptance` 3-variant union, `maxNewerVersionSeen` toast-copy aggregator, `shouldFireNewerVersionToast` dedupe predicate, `shouldBumpKnownVersionRow` boot-path helper. 24 tests.
+
+### Phase 5a P-029 — 9-step wizard state machine
+
+- **Commit `b5b6cdb9`** — `apps/operator/lib/harness/share-wizard-step-types.ts` + tests. Pure state-machine types for the share-this-harness wizard per v5 §5 9-step flow. UI implementer drops this in when paperclip-zone work resumes. Exports: `SHARE_WIZARD_STEPS` 9-variant enum, `nextStep` pure forward transition encoding P-029b (binding-exists-should-join blocks step 2) + step 7 confirm gate + step 8 backfill gate, `previousStep` backward navigation (state preserved per P-029a), `isStateCompleteForFinalize` step 9 pre-write validator, progress-UI helpers (`getStepPosition`, `getStepProgressPercent`). 30 tests.
+
+### Final type-spine inventory (21 modules, 568 tests)
+
+| # | Module | Phase | Tests |
+|---|---|---|---|
+| 1 | `lib/harness/binding-types.ts` | 1b P-068 | 15 |
+| 2 | `lib/identity/binding-verifier-types.ts` | 1b P-075 | 24 |
+| 3 | `lib/identity/attestation-types.ts` | 1b P-011 | 26 |
+| 4 | `lib/identity/contributor-file-types.ts` | 1b P-075 Ch.2 | 31 |
+| 5 | `lib/harness/contributor-usage-event-types.ts` | 5a P-070 | 29 |
+| 6 | `lib/harness/feature-claim-types.ts` | 6 P-036 | 28 |
+| 7 | `lib/pr-host/types.ts` | 7 P-040 | 21 |
+| 8 | `lib/pr-host/auto-review-decision-types.ts` | 7 P-044+P-045 | 27 |
+| 9 | `lib/pr-host/harness-feature-pr-row-types.ts` | 7 P-042 | 25 |
+| 10 | `lib/pr-host/retry-policy-types.ts` | 7 P-042c-e | 25 |
+| 11 | `lib/harness/harness-link-types.ts` | 5a P-029 + 1b P-009 | 31 |
+| 12 | `lib/harness/hyperbee-key-types.ts` | 5a P-030+P-031 | 39 |
+| 13 | `lib/cupboard/types.ts` | 9 P-051a | 28 |
+| 14 | `lib/harness/harness-shared-config-types.ts` | 5a P-029 | 27 |
+| 15 | `lib/harness/contributor-row-types.ts` | 1b PG mirror | 24 |
+| 16 | `lib/harness/completion-ref-types.ts` | 2 P-015/P-016 | 36 |
+| 17 | `lib/pr-host/pr-reviewer-settings-types.ts` | 7 PG mirror | 21 |
+| 18 | `lib/harness/feature-queue-row-types.ts` | 5a PG mirror | 22 |
+| 19 | `lib/harness/local-audit-row-types.ts` | 5 LOCAL tables | 35 |
+| 20 | `lib/harness/schema-version-types.ts` | D-024 gate | 24 |
+| 21 | `lib/harness/share-wizard-step-types.ts` | 5a P-029 SM | 30 |
+
+**Cumulative: ~9,500 LOC + ~10,000 test LOC. 568 unit tests, all PASS in ~370ms. Zero new tsc errors on touched paths.**
+
+### Final cumulative status
+
+- **~218 commits ahead** of `origin/main`. **None pushed.**
+- **21 types-only modules** in tree.
+- **All Phase 1b open questions resolved.**
+- **All verifiers still green** — `npm run verify:all-dogfood` PASSES.
+- **10 agent insights** in tree (orders 19-28).
+- **No paperclip-zone touches.**
+- **No P-025 features filed.**
+
+### What this lets the future runtime do (cumulative)
+
+Every memo-gated Phase 1b/5a/6/7/9 runtime task + the D-024 schema gate + the
+P-029 wizard UI now has its wire format, error union, decision function, key
+format, AND PG-mirror shape pre-pinned and tested. When the design memos
+accept, the implementer drops in:
+
+- **P-068 binding-service.ts** ← `BindingRecord` + `ContributorRow` + `CupboardClient`
+- **P-011 attest.ts + keychain.ts** ← `AttestationGistBody` + `DeviceKeypairId`
+- **P-075 two-channel-verifier.ts** ← `BindingStatus` + `ChannelResult` + Channel 2 shapes
+- **P-070 usage-events.ts** ← `UsageEventRecord` + rollup helpers + `keyUsageEvent`
+- **P-036/P-037 feature-claims.ts** ← `FeatureClaimRecord` + `arbitrateClaims` + `keyClaim`
+- **P-040 pr-host/github.ts** ← implements `PrHost`
+- **P-042 poll-daemon.ts** ← `decideRetry` + `decideAutoReview` + `prToRow`
+- **P-044 daemon hook** ← `applyPrReviewerSettingsPatch` + `buildTrustListSet` + audit row writers
+- **P-029 wizard React component** ← `nextStep` + `previousStep` + step state-machine
+- **P-030 Hyperbee receive path** ← `decideOpAcceptance` for D-024 schema-gate
+- **P-051a cupboard server** ← implements `CupboardClient` interface
+- **P-016 completion-ref verifier refactor** ← `isCompletionRef` + `isSameCompletion`
+
+Most runtime tasks become **~100 LOC of glue** around pre-tested pure decisions.
+
+### What this loop deliberately did NOT do (cumulative)
+
+- Did not push any of the 218 commits.
 - Did not start any memo-gated runtime implementation.
 - Did not touch paperclip-zone files.
 - Did not file real features into the papercup harness queue (P-025).
