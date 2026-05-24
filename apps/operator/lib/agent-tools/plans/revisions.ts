@@ -45,6 +45,14 @@ export type PlanRevisionSessionKind =
 export interface RecordPlanRevisionArgs {
   /** The plan whose write this revision records. */
   planSlug: string;
+  /**
+   * Harness scope for this revision. Default = 'papercup' (preserves
+   * the pre-per-harness-plans-and-docs behavior where every revision
+   * lived under the papercup harness). Per-harness write tools pass
+   * the resolved ctx.harnessSlug; cross-harness writes pass the
+   * target explicitly.
+   */
+  harnessSlug?: string;
   /** The full markdown written to disk at this revision (D-011 — the
    *  snapshot is self-contained, never a hash-only reference). */
   content: string;
@@ -94,17 +102,21 @@ export async function recordPlanRevision(
     const authorKind = classifyAuthor(args.identity);
     const createdAt = Date.now();
 
+    const harnessSlug = args.harnessSlug?.trim() || 'papercup';
     const seq = await withWorkspace(DEFAULT_WORKSPACE_ID, async (tx) => {
       // INSERT … SELECT against the same table: the aggregate
       // sub-select always yields exactly one row (COALESCE(MAX,0)+1 is
       // 1 when the plan has no prior revisions), so exactly one row is
       // inserted whether or not the plan already has revisions.
+      // seq is per (harness_slug, plan_slug) so two harnesses with the
+      // same plan slug have independent revision spines.
       const rows = await tx<{ seq: number }[]>`
         INSERT INTO harness_shared.plan_revisions (
-          plan_slug, seq, content_hash, content_snapshot, rationale,
+          harness_slug, plan_slug, seq, content_hash, content_snapshot, rationale,
           author_kind, author_id, session_id, session_kind, created_at
         )
         SELECT
+          ${harnessSlug},
           ${args.planSlug},
           COALESCE(MAX(seq), 0) + 1,
           ${contentHash},
@@ -116,7 +128,7 @@ export async function recordPlanRevision(
           ${args.sessionKind ?? null},
           ${createdAt}
         FROM harness_shared.plan_revisions
-        WHERE plan_slug = ${args.planSlug}
+        WHERE harness_slug = ${harnessSlug} AND plan_slug = ${args.planSlug}
         RETURNING seq
       `;
       return Number(rows[0].seq);
@@ -209,6 +221,7 @@ export function planRevisionCapture(
   ctx: PlanRevisionCtx,
   slug: string,
   rationale: string | null | undefined,
+  opts: { harnessSlug?: string } = {},
 ): PlanRevisionCapture {
   let identity: AgentIdentity | null = null;
   try {
@@ -226,6 +239,7 @@ export function planRevisionCapture(
     ? async (writtenBody: string): Promise<void> => {
         recorded.current = await recordPlanRevision({
           planSlug: slug,
+          ...(opts.harnessSlug ? { harnessSlug: opts.harnessSlug } : {}),
           content: writtenBody,
           rationale: rationale ?? null,
           identity: id,
@@ -549,19 +563,21 @@ export interface BackfillRevisionInput {
 export async function insertBackfillRevisions(
   planSlug: string,
   revisions: BackfillRevisionInput[],
+  opts: { harnessSlug?: string } = {},
 ): Promise<number> {
   if (revisions.length === 0) return 0;
   await ensurePlanRevisionsTable();
+  const harnessSlug = opts.harnessSlug?.trim() || 'papercup';
   return withWorkspace(DEFAULT_WORKSPACE_ID, async (tx) => {
     let seq = 0;
     for (const r of revisions) {
       seq += 1;
       await tx`
         INSERT INTO harness_shared.plan_revisions (
-          plan_slug, seq, content_hash, content_snapshot, rationale,
+          harness_slug, plan_slug, seq, content_hash, content_snapshot, rationale,
           author_kind, author_id, session_id, session_kind, created_at
         ) VALUES (
-          ${planSlug}, ${seq}, ${r.contentHash}, ${r.content}, ${r.rationale},
+          ${harnessSlug}, ${planSlug}, ${seq}, ${r.contentHash}, ${r.content}, ${r.rationale},
           'human', ${r.authorId}, NULL, 'git_backfill', ${r.createdAt}
         )
       `;
