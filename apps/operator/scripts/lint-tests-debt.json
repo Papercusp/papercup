@@ -4,7 +4,6 @@
   "integrationMjs": [
     "apps/operator/__tests__/integration/admin-failures.mjs",
     "apps/operator/__tests__/integration/admin-rotate.mjs",
-    "apps/operator/__tests__/integration/agent-tools-list.mjs",
     "apps/operator/__tests__/integration/ask-choice-e2e.mjs",
     "apps/operator/__tests__/integration/behavioral-smoke-fixture.mjs",
     "apps/operator/__tests__/integration/behavioral-smoke.mjs",
