@@ -139,35 +139,44 @@ export default function DomainTestPanel({
   } | null>(null);
   const [runLoading, setRunLoading] = useState<string | null>(null);
 
+  async function runVitestMulti(filePaths: string[], label: string): Promise<void> {
+    const key = `__multi__:${label}`;
+    setRunLoading(key);
+    setActiveRun({ runId: '', filePath: label, status: 'starting', exitCode: null, output: '', finishedAt: null });
+    await runImpl({ runner: { kind: 'vitest-multi', filePaths, label } }, label);
+  }
+
   async function runVitestFile(filePath: string): Promise<void> {
     setRunLoading(filePath);
     setActiveRun({ runId: '', filePath, status: 'starting', exitCode: null, output: '', finishedAt: null });
+    await runImpl({ runner: { kind: 'vitest', filePath } }, filePath);
+  }
+
+  async function runImpl(body: unknown, displayPath: string): Promise<void> {
     try {
       const r = await fetch('/api/admin/testing/run', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ runner: { kind: 'vitest', filePath } }),
+        body: JSON.stringify(body),
       });
       if (!r.ok) {
-        setActiveRun({ runId: '', filePath, status: 'error', exitCode: null, output: `HTTP ${r.status}`, finishedAt: Date.now() });
+        setActiveRun({ runId: '', filePath: displayPath, status: 'error', exitCode: null, output: `HTTP ${r.status}`, finishedAt: Date.now() });
         setRunLoading(null);
         return;
       }
       const { runId } = (await r.json()) as { runId: string };
       setActiveRun((prev) => prev ? { ...prev, runId, status: 'running' } : prev);
-      // Poll until finishedAt is non-null.
       const poll = async (): Promise<void> => {
         const pr = await fetch(`/api/admin/testing/run/${encodeURIComponent(runId)}`);
         if (!pr.ok) return;
         const snap = await pr.json() as {
           status: string; exitCode: number | null; output: string; finishedAt: number | null;
         };
-        setActiveRun({ runId, filePath, status: snap.status, exitCode: snap.exitCode, output: snap.output, finishedAt: snap.finishedAt });
+        setActiveRun({ runId, filePath: displayPath, status: snap.status, exitCode: snap.exitCode, output: snap.output, finishedAt: snap.finishedAt });
         if (snap.finishedAt === null) {
           setTimeout(poll, 750);
         } else {
           setRunLoading(null);
-          // Refetch status chips
           void fetch(`/api/admin/testing/file-status?domainId=${encodeURIComponent(domainId)}`)
             .then((r2) => (r2.ok ? r2.json() as Promise<FileStatusResponse> : null))
             .then((d) => { if (d) setStatuses(d.statuses); })
@@ -176,7 +185,7 @@ export default function DomainTestPanel({
       };
       void poll();
     } catch (e) {
-      setActiveRun({ runId: '', filePath, status: 'error', exitCode: null, output: e instanceof Error ? e.message : String(e), finishedAt: Date.now() });
+      setActiveRun({ runId: '', filePath: displayPath, status: 'error', exitCode: null, output: e instanceof Error ? e.message : String(e), finishedAt: Date.now() });
       setRunLoading(null);
     }
   }
@@ -253,6 +262,20 @@ export default function DomainTestPanel({
         <div className="pc-dtp-header-row">
           <h2 className="pc-dtp-title">{detail.label}</h2>
           <span className="pc-dtp-count">{detail.totalFiles} files</span>
+          {detail.totalFiles > 0 && (
+            <button
+              type="button"
+              className="pc-dtp-run-btn"
+              disabled={runLoading !== null}
+              onClick={() => {
+                const all = detail.sections.flatMap((s) => s.files.map((f) => f.path));
+                void runVitestMulti(all, `${detail.id}/all`);
+              }}
+              title={`Run all ${detail.totalFiles} files in this domain`}
+            >
+              ▶ Run all
+            </button>
+          )}
         </div>
         <p className="pc-dtp-description">{detail.description}</p>
       </header>
@@ -292,6 +315,17 @@ export default function DomainTestPanel({
                   {s.files.length} file{s.files.length === 1 ? '' : 's'}
                   {s.runners.length > 0 && `, ${s.runners.length} runner${s.runners.length === 1 ? '' : 's'}`}
                 </span>
+                {s.files.length > 0 && (
+                  <button
+                    type="button"
+                    className="pc-dtp-run-btn"
+                    disabled={runLoading !== null}
+                    onClick={() => void runVitestMulti(s.files.map((f) => f.path), `${detail.id}/${s.id}`)}
+                    title={`Run all ${s.files.length} files in this section`}
+                  >
+                    ▶ Run section
+                  </button>
+                )}
               </header>
               {s.description && <p className="pc-dtp-section-description">{s.description}</p>}
 

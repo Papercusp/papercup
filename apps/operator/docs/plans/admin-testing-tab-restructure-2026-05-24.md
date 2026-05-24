@@ -123,8 +123,8 @@ Register one "core" `defineSuite` per domain that wants "Run all in domain".
 - **P-022** `todo` [ ] Register `backup-core` suite — `lib/backup/**` + `e2e/backups.spec.ts`.
 - **P-023** `todo` [ ] Register four Papercusp-SU suites — `papercusp-su-coordination`, `papercusp-su-locking`, `papercusp-su-identity`, `papercusp-su-tools` — each scoped to its section glob from `testing-domains.ts`.
 - **P-024** `todo` [ ] Register remaining domain "core" suites — `plans-core`, `operator-core`, `design-core`, `plugins-core`, `transport-core`, `snapshots-core`, `mobile-core`, `provisioning-core`, `docs-core`. `orchestrator-legacy` is CI-only (no UI) per D-009.
-- **P-025** `todo` [ ] "Run all in domain" button on each subtab — wires to the matching `*-core` suite via the existing admin-test-suites orchestrator + the new `kind: 'admin-suite'` runner.
-- **P-026** `todo` [ ] "Run section" button per section header — same shape but scoped to one section's globs/runners.
+- **P-025** `done` [ ] "Run all in domain" button on each subtab — wires to the matching `*-core` suite via the existing admin-test-suites orchestrator + the new `kind: 'admin-suite'` runner.
+- **P-026** `done` [ ] "Run section" button per section header — same shape but scoped to one section's globs/runners.
 
 
 

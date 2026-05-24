@@ -17,6 +17,7 @@ import { startRun, type SpawnRequest } from '@/lib/testing-run-store';
 
 type TestRunner =
   | { kind: 'vitest'; filePath: string }
+  | { kind: 'vitest-multi'; filePaths: string[]; label?: string }
   | { kind: 'playwright'; filePath: string }
   | { kind: 'cargo'; crate: string; test?: string }
   | { kind: 'node'; cmd: string; args?: string[]; label?: string }
@@ -32,6 +33,16 @@ function toSpawn(runner: TestRunner): SpawnRequest | { error: string } {
         filePath: runner.filePath,
         command: 'npx',
         args: ['vitest', 'run', runner.filePath, '--reporter=default'],
+      };
+    case 'vitest-multi':
+      if (!Array.isArray(runner.filePaths) || runner.filePaths.length === 0) {
+        return { error: 'vitest-multi requires non-empty filePaths' };
+      }
+      return {
+        kind: 'vitest',
+        label: runner.label ?? `vitest ${runner.filePaths.length} files`,
+        command: 'npx',
+        args: ['vitest', 'run', ...runner.filePaths, '--reporter=default'],
       };
     case 'playwright':
       if (!runner.filePath) return { error: 'playwright requires filePath' };
