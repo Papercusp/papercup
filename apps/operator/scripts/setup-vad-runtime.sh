@@ -39,16 +39,24 @@ for f in silero_vad_v5.onnx silero_vad_legacy.onnx vad.worklet.bundle.min.js; do
   fi
 done
 
-# vad-web pulls onnxruntime-web/wasm at runtime; with onnxWASMBasePath:'/'
-# it expects ort-wasm-*.wasm files under public/.
+# vad-web / onnxruntime-web may resolve its module+wasm pair from either the
+# configured base path or the public root depending on browser/runtime backend.
+# Mirror ORT assets into BOTH locations:
+#   - public/vad-runtime/  (explicit onnxWASMBasePath in stt-voicemode.ts)
+#   - public/              (fallback module-script resolution observed in Tauri WebKit)
 ORT_DIR=""
 for cand in "$(pwd)/../../node_modules/onnxruntime-web/dist" "$(pwd)/node_modules/onnxruntime-web/dist"; do
   [ -d "$cand" ] && ORT_DIR="$cand" && break
 done
+ORT_DEST="$DEST/vad-runtime"
+mkdir -p "$ORT_DEST"
 if [ -n "$ORT_DIR" ] && [ -d "$ORT_DIR" ]; then
   for w in "$ORT_DIR"/ort-wasm-*.wasm "$ORT_DIR"/ort-wasm-*.mjs; do
-    [ -f "$w" ] && cp -f "$w" "$DEST/$(basename "$w")"
+    if [ -f "$w" ]; then
+      cp -f "$w" "$ORT_DEST/$(basename "$w")"
+      cp -f "$w" "$DEST/$(basename "$w")"
+    fi
   done
 fi
 
-echo "vad-runtime: copied silero models + worklet + ort wasm into $DEST/"
+echo "vad-runtime: copied silero models + worklet into $DEST/ and ort wasm into $ORT_DEST/ plus $DEST/"

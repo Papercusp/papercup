@@ -7,17 +7,13 @@
  * with `papercusp:operator` so the support team can tell them apart
  * from public marketing-site visits.
  *
- * Configurable via env (no recompile needed to switch inboxes):
- *   NEXT_PUBLIC_CHATWOOT_BASE_URL       — Chatwoot host
- *   NEXT_PUBLIC_CHATWOOT_WEBSITE_TOKEN  — operator inbox token (different
- *                                          from public if you want, same if
- *                                          you don't — both is fine)
- *
- * No-ops cleanly when env is unset. Pre-fills user identity if available
- * via the SessionIndicator's auth state.
+ * Performance rule: do NOT boot the cross-origin widget iframe on every
+ * operator page load. Load it only when support is explicitly requested
+ * (Support page / support CTA), otherwise the hidden iframe burns a full
+ * WebKit process for no user-visible value.
  */
 
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 
 declare global {
   interface Window {
@@ -33,14 +29,32 @@ declare global {
   }
 }
 
-// Defaults from the operator's Chatwoot setup. Override via env at deploy time.
-// The Cloudflare-Tunnel base URL ROTATES if the tunnel restarts; production DNS
-// will eventually point at chat.papercusp.com — update this default then.
 const DEFAULT_BASE_URL = 'https://chat.papercupai.com';
-const DEFAULT_TOKEN = 'CT5CTToo11YtPN3CVkhvbFs9'; // papercuspai.com (operator) inbox
+const DEFAULT_TOKEN = 'CT5CTToo11YtPN3CVkhvbFs9';
+
+function shouldEnableNow(): boolean {
+  if (typeof window === 'undefined') return false;
+  return window.location.pathname.startsWith('/support');
+}
 
 export function ChatwootWidget() {
+  const [enabled, setEnabled] = useState(shouldEnableNow);
+
   useEffect(() => {
+    const enable = () => setEnabled(true);
+    const onPopState = () => {
+      if (shouldEnableNow()) setEnabled(true);
+    };
+    window.addEventListener('papercusp:open-support', enable as EventListener);
+    window.addEventListener('popstate', onPopState);
+    return () => {
+      window.removeEventListener('papercusp:open-support', enable as EventListener);
+      window.removeEventListener('popstate', onPopState);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!enabled) return;
     const baseUrl = process.env.NEXT_PUBLIC_CHATWOOT_BASE_URL ?? DEFAULT_BASE_URL;
     const websiteToken = process.env.NEXT_PUBLIC_CHATWOOT_WEBSITE_TOKEN ?? DEFAULT_TOKEN;
     if (!websiteToken) return;
@@ -51,8 +65,6 @@ export function ChatwootWidget() {
       locale: 'en',
       type: 'standard',
       launcherTitle: 'Papercusp Support',
-      // Keep the SDK available as a hidden bridge; Support is opened through
-      // OracleDock's integrated Support tab, not a separate floating button.
       darkMode: 'dark',
       widgetColor: '#38bdf8',
       widgetStyle: 'flat',
@@ -70,8 +82,6 @@ export function ChatwootWidget() {
     script.defer = true;
     script.async = true;
     script.onerror = () => {
-      // Chatwoot host unreachable. Don't pollute the console with stack traces;
-      // the widget just won't be available this session.
       script.remove();
     };
     script.onload = () => {
@@ -86,7 +96,6 @@ export function ChatwootWidget() {
       ready(() => {
         try {
           window.$chatwoot?.setLabel('papercusp:operator');
-          // Pull in-app identity from the user-session endpoint if available (non-blocking).
           fetch('/api/auth/me')
             .then((r) => (r.ok ? r.json() : null))
             .then((auth) => {
@@ -106,7 +115,7 @@ export function ChatwootWidget() {
       });
     };
     document.body.appendChild(script);
-  }, []);
+  }, [enabled]);
 
   return null;
 }

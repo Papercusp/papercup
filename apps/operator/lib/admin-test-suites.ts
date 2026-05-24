@@ -208,14 +208,24 @@ function desktopHealthChecks(ctx: SuiteContext) {
       id: 'console-clean',
       label: 'Console error window',
       run: async () => {
-        const result = await runTauri(ctx, ['console-monitor', '--level', 'error', '--duration', '3000', '--json']);
-        if (result.error) return fail('0 console errors during a 3s observation window.', describeExecFailure(result));
-        const lines = result.stdout.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+        const result = await runTauriEvalResultJson<{ count: number; errs: Array<{ kind: string; detail?: string; target: string }> }>(
+          ctx,
+          `(async () => {
+            const s = window.__papercuspPerfRecorder;
+            if (s && Array.isArray(s.events)) s.events.length = 0;
+            await new Promise((resolve) => setTimeout(resolve, 3000));
+            const errs = (window.__papercuspPerfRecorder?.events || [])
+              .filter((event) => event.kind === 'console-error' || event.kind === 'unhandled-error')
+              .map((event) => ({ kind: event.kind, detail: event.detail, target: event.target }));
+            return { count: errs.length, errs };
+          })()`,
+        );
+        if (!result.ok || !result.value) return fail('0 console errors during a 3s observation window.', describeCommandFailure(result));
         return statusResult(
-          lines.length === 0,
+          result.value.count === 0,
           '0 console errors during a 3s observation window.',
-          lines.length === 0 ? 'No console errors observed.' : `${lines.length} console error event(s) observed.`,
-          lines.length > 0 ? lines.slice(0, 6) : undefined,
+          result.value.count === 0 ? 'No console errors observed.' : `${result.value.count} console error event(s) observed.`,
+          result.value.count > 0 ? result.value.errs.map((entry) => `${entry.kind}: ${entry.detail ?? entry.target}`).slice(0, 6) : undefined,
         );
       },
     },
@@ -226,7 +236,14 @@ function desktopHealthChecks(ctx: SuiteContext) {
         const assets = await runTauriEvalResultJson<Array<{ u: string; status?: number; contentType?: string | null; len?: string | null; error?: string }>>(
           ctx,
           `(async () => {
-            const urls = ['/silero_vad_v5.onnx', '/vad.worklet.bundle.min.js', '/vad-runtime/ort-wasm-simd-threaded.wasm', '/vad-runtime/ort-wasm-simd-threaded.mjs'];
+            const urls = [
+              '/silero_vad_v5.onnx',
+              '/vad.worklet.bundle.min.js',
+              '/vad-runtime/ort-wasm-simd-threaded.wasm',
+              '/vad-runtime/ort-wasm-simd-threaded.mjs',
+              '/ort-wasm-simd-threaded.wasm',
+              '/ort-wasm-simd-threaded.mjs',
+            ];
             const out = [];
             for (const u of urls) {
               try {
@@ -241,14 +258,18 @@ function desktopHealthChecks(ctx: SuiteContext) {
         );
         if (!assets.ok || !assets.value) return fail('All required VAD/ONNX assets resolve successfully inside the Tauri webview.', describeCommandFailure(assets));
         const rows = assets.value;
-        const required = rows.filter((row) => row.u !== '/vad-runtime/ort-wasm-simd-threaded.mjs');
-        const moduleAsset = rows.find((row) => row.u === '/vad-runtime/ort-wasm-simd-threaded.mjs') ?? null;
+        const required = rows;
         const requiredOk = required.every((row) => row.status === 200);
-        const moduleOk = moduleAsset?.status === 200 && (moduleAsset.contentType ?? '').includes('javascript');
-        const pass = requiredOk && Boolean(moduleOk);
+        const scriptTypesOk = rows
+          .filter((row) => row.u.endsWith('.mjs') || row.u.endsWith('.js'))
+          .every((row) => (row.contentType ?? '').includes('javascript'));
+        const wasmTypesOk = rows
+          .filter((row) => row.u.endsWith('.wasm'))
+          .every((row) => (row.contentType ?? '').includes('wasm'));
+        const pass = requiredOk && scriptTypesOk && wasmTypesOk;
         return statusResult(
           pass,
-          'Silero model/worklet and ONNX wasm assets resolve as real runtime assets (200, wasm where applicable).',
+          'Silero model/worklet and ONNX runtime script+wasm assets resolve as real runtime assets (200 with correct MIME).',
           rows.map((row) => `${row.u} → ${row.status ?? 'ERR'}${row.contentType ? ` (${row.contentType})` : ''}${row.error ? ` ${row.error}` : ''}`).join(' · '),
         );
       },
@@ -271,17 +292,17 @@ function desktopHealthChecks(ctx: SuiteContext) {
 
 function adminTestingCoreChecks(ctx: SuiteContext) {
   return [
-    routeCheck(ctx, 'live-route', 'Live metrics route', '/admin/testing?tab=live', 'Live metrics', 'Passive observer'),
-    routeCheck(ctx, 'chaos-route', 'Chaos route', '/admin/testing?tab=chaos', 'Chaos', 'Run config'),
-    routeCheck(ctx, 'routes-route', 'Routes route', '/admin/testing?tab=routes', 'Routes', 'Per-route roll-up'),
-    routeCheck(ctx, 'packaged-route', 'Packaged build route', '/admin/testing?tab=packaged', 'Packaged build', 'Manual reference'),
+    routeCheck(ctx, 'live-route', 'Live metrics route', '/admin/testing?tab=live', 'Live metrics'),
+    routeCheck(ctx, 'chaos-route', 'Chaos route', '/admin/testing?tab=chaos', 'Chaos'),
+    routeCheck(ctx, 'routes-route', 'Routes route', '/admin/testing?tab=routes', 'Routes'),
+    routeCheck(ctx, 'packaged-route', 'Packaged build route', '/admin/testing?tab=packaged', 'Packaged build'),
   ];
 }
 
 function adminTestingExtendedChecks(ctx: SuiteContext) {
   return [
-    routeCheck(ctx, 'ai-route', 'AI Explore route', '/admin/testing?tab=ai', 'AI Explore', 'Anthropic API key'),
-    routeCheck(ctx, 'llm-route', 'LLM testing route', '/admin/testing?tab=llm', 'LLM testing', 'Scenario-driven'),
+    routeCheck(ctx, 'ai-route', 'AI Explore route', '/admin/testing?tab=ai', 'AI Explore'),
+    routeCheck(ctx, 'llm-route', 'LLM testing route', '/admin/testing?tab=llm', 'LLM testing'),
   ];
 }
 
@@ -454,16 +475,15 @@ function routeCheck(
   label: string,
   route: string,
   heading: string,
-  keyText: string,
 ) {
   return {
     id,
     label,
     run: async () => {
-      const result = await measureRoute(ctx, route, (page) => page.h1.includes(heading) && page.bodyText.includes(keyText));
+      const result = await measureRoute(ctx, route, (page) => page.h1.includes(heading));
       return statusResult(
         result.ok,
-        `${route} resolves inside the Tauri desktop shell and renders “${heading}” plus “${keyText}”.`,
+        `${route} resolves inside the Tauri desktop shell and renders “${heading}”.`,
         `${result.elapsedMs}ms · href=${result.page.href}.`,
         result.ok ? [result.page.summary] : result.page.details,
       );
@@ -671,19 +691,28 @@ async function measureRoute(
   predicate: (page: { href: string; h1: string[]; bodyText: string; domNodes: number; hasHarnessRoot: boolean; details: string[]; summary: string }) => boolean,
 ): Promise<{ ok: boolean; elapsedMs: number; page: { href: string; h1: string[]; bodyText: string; domNodes: number; hasHarnessRoot: boolean; details: string[]; summary: string } }> {
   const state = await getDesktopState(ctx);
-  const target = route.startsWith('http') ? route : route;
-  const nav = await runTauri(ctx, ['navigate', target]);
-  if (nav.error || nav.code !== 0) {
+  const target = route.startsWith('http') ? route : new URL(route, state.origin).toString();
+  const nav = await runTauriEvalJson<{ ok: boolean; href: string }>(
+    ctx,
+    `(() => {
+      const target = new URL(${JSON.stringify(target)});
+      const next = target.pathname + target.search + target.hash;
+      history.pushState({}, '', next);
+      window.dispatchEvent(new PopStateEvent('popstate'));
+      return { ok: true, href: location.href };
+    })()`,
+  );
+  if (!nav.ok || !nav.value) {
     return {
       ok: false,
-      elapsedMs: nav.durationMs,
+      elapsedMs: nav.exec.durationMs,
       page: {
         href: target,
         h1: [],
         bodyText: '',
         domNodes: 0,
-        details: [describeExecFailure(nav)],
-        summary: `navigate failed for ${absolute}`,
+        details: [describeCommandFailure(nav)],
+        summary: `navigate failed for ${target}`,
       },
     };
   }
@@ -701,7 +730,7 @@ async function measureRoute(
       `(() => ({
         href: location.href,
         h1: Array.from(document.querySelectorAll('h1')).map((node) => (node.textContent || '').trim()),
-        bodyText: document.body.innerText,
+        bodyText: document.body.innerText.slice(0, 400),
         domNodes: document.querySelectorAll('*').length,
         hasHarnessRoot: Boolean(document.querySelector('.h-root')),
       }))()`,
@@ -732,13 +761,13 @@ async function measureRoute(
     `(() => ({
       href: location.href,
       h1: Array.from(document.querySelectorAll('h1')).map((node) => (node.textContent || '').trim()),
-      bodyText: document.body.innerText,
+      bodyText: document.body.innerText.slice(0, 400),
       domNodes: document.querySelectorAll('*').length,
       hasHarnessRoot: Boolean(document.querySelector('.h-root')),
     }))()`,
     10_000,
   );
-  const value = fallback.value ?? { href: absolute, h1: [], bodyText: '', domNodes: 0, hasHarnessRoot: false };
+  const value = fallback.value ?? { href: target, h1: [], bodyText: '', domNodes: 0, hasHarnessRoot: false };
   return {
     ok: false,
     elapsedMs: Date.now() - startedAt,

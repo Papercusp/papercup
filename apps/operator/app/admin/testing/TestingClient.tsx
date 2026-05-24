@@ -1,16 +1,13 @@
 'use client';
 
-import { Suspense } from 'react';
 import { useQueryState, parseAsStringEnum } from 'nuqs';
-import dynamic from 'next/dynamic';
-
-const ChaosTab = dynamic(() => import('./_components/ChaosTab'), { ssr: false });
-const AIExploreTab = dynamic(() => import('./_components/AIExploreTab'), { ssr: false });
-const LiveMetricsTab = dynamic(() => import('./_components/LiveMetricsTab'), { ssr: false });
-const RoutesTab = dynamic(() => import('./_components/RoutesTab'), { ssr: false });
-const PackagedBuildTab = dynamic(() => import('./_components/PackagedBuildTab'), { ssr: false });
-const LlmTab = dynamic(() => import('./_components/LlmTab'), { ssr: false });
-const TestRunsTab = dynamic(() => import('./_components/TestRunsTab'), { ssr: false });
+import ChaosTab from './_components/ChaosTab';
+import AIExploreTab from './_components/AIExploreTab';
+import LiveMetricsTab from './_components/LiveMetricsTab';
+import RoutesTab from './_components/RoutesTab';
+import PackagedBuildTab from './_components/PackagedBuildTab';
+import LlmTab from './_components/LlmTab';
+import TestRunsTab from './_components/TestRunsTab';
 
 type TabId = 'test-runs' | 'chaos' | 'ai' | 'live' | 'routes' | 'packaged' | 'llm';
 
@@ -49,15 +46,13 @@ export default function TestingClient() {
         </nav>
       </aside>
       <main className="pc-test-main">
-        <Suspense fallback={<div className="pc-test-loading">loading…</div>}>
-          {tab === 'test-runs' && <TestRunsTab />}
-          {tab === 'live' && <LiveMetricsTab />}
-          {tab === 'chaos' && <ChaosTab />}
-          {tab === 'ai' && <AIExploreTab />}
-          {tab === 'routes' && <RoutesTab />}
-          {tab === 'packaged' && <PackagedBuildTab />}
-          {tab === 'llm' && <LlmTab />}
-        </Suspense>
+        {tab === 'test-runs' && <TestRunsTab />}
+        {tab === 'live' && <LiveMetricsTab />}
+        {tab === 'chaos' && <ChaosTab />}
+        {tab === 'ai' && <AIExploreTab />}
+        {tab === 'routes' && <RoutesTab />}
+        {tab === 'packaged' && <PackagedBuildTab />}
+        {tab === 'llm' && <LlmTab />}
       </main>
     </div>
   );

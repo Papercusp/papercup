@@ -1,26 +1,20 @@
-import { Suspense, lazy } from 'react';
 import { useQueryState, parseAsStringEnum } from 'nuqs';
+import ChaosTab from '@/app/admin/testing/_components/ChaosTab';
+import AIExploreTab from '@/app/admin/testing/_components/AIExploreTab';
+import LiveMetricsTab from '@/app/admin/testing/_components/LiveMetricsTab';
+import RoutesTab from '@/app/admin/testing/_components/RoutesTab';
+import PackagedBuildTab from '@/app/admin/testing/_components/PackagedBuildTab';
+import LlmTab from '@/app/admin/testing/_components/LlmTab';
+import TestRunsTab from '@/app/admin/testing/_components/TestRunsTab';
 
 /**
  * Testing-admin client — translated from
  * `apps/operator/app/admin/testing/TestingClient.tsx` (B-2).
  *
- * next → TSR diff:
- *   - `dynamic(() => import('X'), { ssr: false })` → `lazy(() => import('X'))`.
- *     `ssr: false` is a no-op in a Vite SPA (no SSR). Existing Suspense
- *     boundary handles the loading state.
- *
- * Children live under the operator workspace (clean, no next/* imports);
- * imported via the `@` alias.
+ * Testing tools are now eagerly imported on purpose: this is the route used to
+ * measure and orchestrate performance suites, so lazy chunk waterfalls here
+ * only make the framework itself slower and harder to reason about.
  */
-const ChaosTab = lazy(() => import('@/app/admin/testing/_components/ChaosTab'));
-const AIExploreTab = lazy(() => import('@/app/admin/testing/_components/AIExploreTab'));
-const LiveMetricsTab = lazy(() => import('@/app/admin/testing/_components/LiveMetricsTab'));
-const RoutesTab = lazy(() => import('@/app/admin/testing/_components/RoutesTab'));
-const PackagedBuildTab = lazy(() => import('@/app/admin/testing/_components/PackagedBuildTab'));
-const LlmTab = lazy(() => import('@/app/admin/testing/_components/LlmTab'));
-const TestRunsTab = lazy(() => import('@/app/admin/testing/_components/TestRunsTab'));
-
 type TabId = 'test-runs' | 'chaos' | 'ai' | 'live' | 'routes' | 'packaged' | 'llm';
 
 const TABS: Array<{ id: TabId; label: string; hint: string }> = [
@@ -58,15 +52,13 @@ export default function TestingClient() {
         </nav>
       </aside>
       <main className="pc-test-main">
-        <Suspense fallback={<div className="pc-test-loading">loading…</div>}>
-          {tab === 'test-runs' && <TestRunsTab />}
-          {tab === 'live' && <LiveMetricsTab />}
-          {tab === 'chaos' && <ChaosTab />}
-          {tab === 'ai' && <AIExploreTab />}
-          {tab === 'routes' && <RoutesTab />}
-          {tab === 'packaged' && <PackagedBuildTab />}
-          {tab === 'llm' && <LlmTab />}
-        </Suspense>
+        {tab === 'test-runs' && <TestRunsTab />}
+        {tab === 'live' && <LiveMetricsTab />}
+        {tab === 'chaos' && <ChaosTab />}
+        {tab === 'ai' && <AIExploreTab />}
+        {tab === 'routes' && <RoutesTab />}
+        {tab === 'packaged' && <PackagedBuildTab />}
+        {tab === 'llm' && <LlmTab />}
       </main>
     </div>
   );

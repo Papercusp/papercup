@@ -1514,6 +1514,15 @@ async function runOneShotWhisperAfterWake(): Promise<void> {
   }, 8000);
 }
 
+
+function shouldSkipVoicemodeWhisperOnThisRuntime(): boolean {
+  if (typeof window === 'undefined') return false;
+  const ua = navigator.userAgent;
+  const isTauri = Boolean((window as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__);
+  const isWebKit = /AppleWebKit/i.test(ua) && !/(Chrome|Chromium|Edg)\//i.test(ua);
+  return isTauri && isWebKit && !self.crossOriginIsolated;
+}
+
 async function maybeStartWhisperCapture(mode: VoiceMode): Promise<void> {
   // Only initialize whisper for always-on. PTT continues to use Web
   // Speech for now (synchronous start/stop semantics are awkward to
@@ -1560,6 +1569,10 @@ async function maybeStartWhisperCapture(mode: VoiceMode): Promise<void> {
       return;
     }
     if (prefs.sttEngine !== 'voicemode') {
+      startWakeWordListening();
+      return;
+    }
+    if (shouldSkipVoicemodeWhisperOnThisRuntime()) {
       startWakeWordListening();
       return;
     }

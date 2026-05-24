@@ -2566,8 +2566,16 @@ export default function HarnessDashboard() {
   // until the user first opens that tab. After first visit, remains
   // mounted to preserve the "instant tab switch" guarantee.
   const [proposalsEverMounted, setProposalsEverMounted] = useState(false);
+  const [everMountedPanels, setEverMountedPanels] = useState<Set<string>>(() => new Set(['dashboard']));
   useEffect(() => {
     if (resolvedPanel === 'proposals' && !proposalsEverMounted) setProposalsEverMounted(true);
+    if (resolvedPanel.startsWith('plugin:')) return;
+    setEverMountedPanels((prev) => {
+      if (prev.has(resolvedPanel)) return prev;
+      const next = new Set(prev);
+      next.add(resolvedPanel);
+      return next;
+    });
   }, [resolvedPanel, proposalsEverMounted]);
   const [status, setStatus] = useState<Status | null>(null);
   const [agents, setAgents] = useState<AgentRun[]>([]);
@@ -4344,7 +4352,7 @@ export default function HarnessDashboard() {
           top of each other.
         */}
         <ReactActivity mode={resolvedPanel === 'brainstorm' ? 'visible' : 'hidden'}>
-          {activeSlug && <BrainstormFull slug={activeSlug} />}
+          {activeSlug && (resolvedPanel === 'brainstorm' || everMountedPanels.has('brainstorm')) && <BrainstormFull slug={activeSlug} />}
         </ReactActivity>
         <ReactActivity mode={resolvedPanel === 'proposals' ? 'visible' : 'hidden'}>
           {activeSlug && proposalsEverMounted && (
@@ -4357,7 +4365,7 @@ export default function HarnessDashboard() {
           )}
         </ReactActivity>
         <ReactActivity mode={resolvedPanel === 'summary' ? 'visible' : 'hidden'}>
-          {activeSlug && (
+          {activeSlug && (resolvedPanel === 'summary' || everMountedPanels.has('summary')) && (
             <SummaryPanel
               slug={activeSlug}
               onOpenFeature={(fid) => {
@@ -4372,7 +4380,7 @@ export default function HarnessDashboard() {
           )}
         </ReactActivity>
         <ReactActivity mode={resolvedPanel === 'design' && designEnabled ? 'visible' : 'hidden'}>
-          {activeSlug && designEnabled && <DesignDashboard slug={activeSlug} />}
+          {activeSlug && designEnabled && (resolvedPanel === 'design' || everMountedPanels.has('design')) && <DesignDashboard slug={activeSlug} />}
         </ReactActivity>
         {/* Plugin-mounted tabs: pick whichever plugin matches the active panel
             via the plugin:<id> prefix. iframeUrl is null when the plugin's
@@ -4436,7 +4444,7 @@ export default function HarnessDashboard() {
           );
         })()}
         <ReactActivity mode={resolvedPanel === 'insights' ? 'visible' : 'hidden'}>
-          {status && (
+          {status && (resolvedPanel === 'insights' || everMountedPanels.has('insights')) && (
             <InsightsPanel
               inline
               slug={activeSlug ?? undefined}
@@ -4450,7 +4458,7 @@ export default function HarnessDashboard() {
           )}
         </ReactActivity>
         <ReactActivity mode={resolvedPanel === 'experts' ? 'visible' : 'hidden'}>
-          {activeSlug && (
+          {activeSlug && (resolvedPanel === 'experts' || everMountedPanels.has('experts')) && (
             <ExpertsPanel
               harnessSlug={activeSlug}
               onClose={() => setActivePanel('dashboard')}
@@ -4458,7 +4466,7 @@ export default function HarnessDashboard() {
           )}
         </ReactActivity>
         <ReactActivity mode={resolvedPanel === 'config' ? 'visible' : 'hidden'}>
-          {activeSlug && status && (
+          {activeSlug && status && (resolvedPanel === 'config' || everMountedPanels.has('config')) && (
             <ConfigPanel
               harnessSlug={activeSlug}
               projectPath={status.project.path}
@@ -4478,7 +4486,7 @@ export default function HarnessDashboard() {
           )}
         </ReactActivity>
         <ReactActivity mode={resolvedPanel === 'settings' ? 'visible' : 'hidden'}>
-          {activeSlug && (
+          {activeSlug && (resolvedPanel === 'settings' || everMountedPanels.has('settings')) && (
             <HarnessSettingsPanel slug={activeSlug} phase={activePhase} />
           )}
         </ReactActivity>
