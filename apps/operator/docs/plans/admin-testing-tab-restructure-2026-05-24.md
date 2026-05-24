@@ -183,17 +183,17 @@ Final polish. Lint enforces convention. Agent prompts updated.
 
 ## Phase 1 — Tab restructure (additive, low risk)
 
-Land the registry + read-only viewer with all 20 subtab entries. Existing 8
+Land the registry + read-only viewer with all 21 subtab entries. Existing 8
 tabs adopt registry as descriptor only — bespoke UI untouched.
 
 - **P-001** `done` [ ] Create `apps/operator/lib/testing-domains.ts` with `defineTestDomain` helper + `TestDomain` / `TestSection` / `TestRunner` types (discriminated union for vitest/playwright/node/shell/cargo/admin-suite). Single source of truth shared with the SPA. (Registry helper + types landed at apps/operator/lib/testing-domains.ts 118 LOC. 7/7 tests green at apps/operator/lib/__tests__/testing-domains.test.ts.)
-- **P-002** `todo` [ ] Define all 20 domain entries with sections + globs in `testing-domains.ts`. Existing 8 tabs adapt to the registry shape; 12 new tabs (harness, voice, papercusp-su, backup, plans, operator, design, plugins, transport, snapshots, mobile, provisioning, docs) added. Orchestrator-legacy runs CI-only per D-009.
+- **P-002** `done` [ ] Define all 21 domain entries with sections + globs in `testing-domains.ts`. Existing 8 tabs adapt to the registry shape; 13 new tabs (harness, voice, papercusp-su, backup, plans, operator, design, plugins, transport, snapshots, mobile, provisioning, docs) added. Orchestrator-legacy runs CI-only per D-009. (21 domains registered in testing-domains-registry.ts 484 LOC. Caught miscount in D-001 — list has 13 new entries, not 12; plan amended. 5/5 registry smoke tests green.)
 - **P-003** `todo` [ ] Add `GET /api/admin/testing/domains/:id` route at `apps/operator/lib/endpoint-route/routes/admin/testing-domains.ts` — exposed via Hono :3070 per D-003 amendment. Server-side glob walk returns matching test files (path, size, mtime). No checked-in catalog to drift.
 - **P-004** `todo` [ ] Create shared `<DomainTestPanel>` React component in `apps/operator-vite/src/components/admin/testing/`. Three regions: header / health strip slot / sections-with-file-list. `custom?: () => ReactNode` slot lets existing-tab bespoke UI mount inside the same shell. P1 ships file-list region only.
-- **P-005** `todo` [ ] Create thin wrapper tab components for the 12 new tabs (`HarnessTab.tsx`, `VoiceTab.tsx`, `PapercuspSUTab.tsx`, `BackupTab.tsx`, etc.) — each just passes a domain id to `<DomainTestPanel>`.
-- **P-006** `todo` [ ] Wire 12 new tabs into `apps/operator-vite/src/components/admin/TestingClient.tsx`. Three-tier left column: quick runs / domains / surfaces.
+- **P-005** `todo` [ ] Create thin wrapper tab components for the 13 new tabs (`HarnessTab.tsx`, `VoiceTab.tsx`, `PapercuspSUTab.tsx`, `BackupTab.tsx`, etc.) — each just passes a domain id to `<DomainTestPanel>`.
+- **P-006** `todo` [ ] Wire 13 new tabs into `apps/operator-vite/src/components/admin/TestingClient.tsx`. Three-tier left column: quick runs / domains / surfaces.
 - **P-006a** `todo` [ ] Existing 8 tabs adopt registry as descriptor — `defineTestDomain({ id: 'llm', label: 'LLM', custom: () => <LLMTab/> })` etc. Bespoke React stays; tab list is now 100% registry-declared. Unblocks lint + Phase 4 "Run all in domain" uniformity.
-- **P-007** `todo` [ ] Verify in Tauri dev (`cd papercusp-desktop && npm run dev`) that each new tab renders, lists matching files, shows correct counts, the existing 8 tabs are unaffected, AND console-error count is zero across all 20 tabs.
+- **P-007** `todo` [ ] Verify in Tauri dev (`cd papercusp-desktop && npm run dev`) that each new tab renders, lists matching files, shows correct counts, the existing 8 tabs are unaffected, AND console-error count is zero across all 21 tabs.
 
 
 ## Phase 7 — Deferred (revisit after Phase 1 ships)
@@ -202,19 +202,21 @@ tabs adopt registry as descriptor only — bespoke UI untouched.
 
 ## Decisions
 
-### D-001 — 20-subtab structure accepted
+### D-001 — 21-subtab structure accepted
 
 **Date:** 2026-05-24
 **Refs:** P-001
 
-Accept 20 subtabs: 8 existing + 12 new (`harness`, `voice`,
+Accept 21 subtabs: 8 existing + 13 new (`harness`, `voice`,
 `papercusp-su`, `backup`, `plans`, `operator`, `design`, `plugins`,
 `transport`, `snapshots`, `mobile`, `provisioning`, `docs`).
 Group into three left-column tiers: quick runs / domains / surfaces.
 
 The 51 legacy bash-orchestrator tests run via CI only — no `orchestrator`
 tab — per D-009. Surfacing them in the UI would encourage workers to
-read/copy from dead code.
+read/copy from dead code. (Original audit said "8 + 13 = 21" but
+miscounted the new-tab list as 13 when it was 14; dropping orchestrator
+arrives at 21, not 20 — corrected here.)
 
 ### D-002 — Apply broad sectioning to every tab
 
