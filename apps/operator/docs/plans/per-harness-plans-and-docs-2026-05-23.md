@@ -15,7 +15,7 @@ related:
 ## Now
 
 **State:** Active. Closes the 2 non-identity couplings to the Papercusp codebase identified in the 2026-05-22 catalog audit (`plans:*` global plan dir + `docs:*` no-harness fallback) plus the 2026-05-23 correction that the `docs:*` engineering branch should only serve SU/engineer callers. Design simplified 2026-05-24 (D-002R / D-004R): **no workspace-scope bucket** — every plan belongs to a harness; cross-harness planning is organized via sub-harnesses (a parent harness whose children are the affected harnesses). P-002 (`genericFsAdapter`) shipped at `a4ccbed8`.
-**Next:** P-003 — extend `RouteContext`/`AgentContext` with `projectDocsRoot?: string` + `isSuperuser?: boolean`; populate from env var + `?superuser=1`.
+**Next:** **Phase 1 SHIPPED (`ff2327bf`).** Phase 2 starts with P-009 — repoint `plans/source.ts` to `resolveHarnessPlansDir(harnessSlug)` per §5.1.
 
 # Per-harness plans + project-docs adapter
 
@@ -115,10 +115,10 @@ Three new tools mirroring `cross_harness:docs_*`: `cross_harness:plans_list`, `p
 
 - **P-001** `done` Decided D-001: `ctx.projectDocsRoot` source = env var `PAPERCUSP_PROJECT_DOCS_ROOT`.
 - **P-002** `done` `genericFsAdapter` added to `@papercusp/docs-engine` — commit `a4ccbed8`. 13/13 new tests green, existing suite unchanged, tsc clean.
-- **P-003** `todo` Extend `RouteContext`/`AgentContext` with `projectDocsRoot?: string` AND `isSuperuser?: boolean`; populate both from the request (env var + `?superuser=1`).
-- **P-004** `todo` Add the `ctx.projectDocsRoot` branch to `docs/outline.ts`, `docs/get.ts`, `docs/search.ts`'s `resolveAdapter` (3 files). blocked-by: P-002, P-003
-- **P-016** `todo` Gate the engineering-adapter branch on `ctx.isSuperuser` per D-005; non-SU/non-projectDocsRoot callers get an empty/error response, not Papercusp's docs. blocked-by: P-003, P-004
-- **P-005** `todo` Tests: outline/get/search asserting `surface === 'project'` when env var set; SU-mode unchanged (engineering surface); non-SU + no-project gets error. blocked-by: P-016
+- **P-003** `done` Plumbing verified: `ctx.isSuperuser` is already populated by `http-projection.ts` from `?superuser=1` and spread into handlerCtx by `dispatch-stack.ts`. `projectDocsRoot` is read inline from `process.env.PAPERCUSP_PROJECT_DOCS_ROOT` in `resolveAdapter` — no per-call ctx field needed (process-level config). Folded into `ff2327bf`.
+- **P-004** `done` Third branch added to `resolveAdapter` in `outline.ts`/`get.ts`/`search.ts` — commit `ff2327bf`.
+- **P-016** `done` Engineering branch gated on `ctx.isSuperuser`; non-SU/non-projectDocsRoot returns `error: { code: 'no_docs_source', detail: ... }`. Folded into `ff2327bf`.
+- **P-005** `done` `routing.test.ts` grew 9 → 16 cases covering all three no-harness surfaces per tool. Folded into `ff2327bf`.
 
 ## Phase 2 — plans:* per-harness
 
