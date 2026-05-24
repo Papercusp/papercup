@@ -11,7 +11,7 @@ owner: avi@storewolf.com
 
 ## Now
 
-**State:** SU autonomous loop, ~28 parent commits + 1 submodule, ~183 commits ahead of `origin/main`. All verifiers green. **Phase 1a backend COMPLETE** (P-013a + P-010 shipped overnight); Phase 2 P-016 shipped including HTTP re-check route (P-016e); Phase 1b Q-4 resolved + **two types-only groundwork modules** laid for P-068 (binding-types) and P-075 (binding-verifier-types); live-PG dogfood-schema regression sentinel shipped.
+**State:** SU autonomous loop, ~30 parent commits + 1 submodule, ~185 commits ahead of `origin/main`. All verifiers green. **Phase 1a backend COMPLETE** (P-013a + P-010 shipped overnight); Phase 2 P-016 shipped including HTTP re-check route (P-016e); Phase 1b Q-4 resolved + **three types-only groundwork modules** laid (binding-types for P-068, binding-verifier-types for P-075, attestation-types for P-011) — one per design memo, full type spine; live-PG dogfood-schema regression sentinel shipped.
 
 **Next action (for human):** review the commits at your pace; decide whether to push to `origin/main` and whether to act on the surfaced design memos. **Phase 1a's only remaining work is P-012 UI, design-gated on a picker memo.**
 
@@ -36,7 +36,20 @@ The Phase 1b plan asked: "can we reliably introspect `gh auth login`'s token for
 - **Commit `76b262a3`** — insight `octokit-v7-auth-pattern` capturing the breaking change vs the older `auth: async () => token` factory shape (the live integration smoke caught this on the first run — without it, the bug would have shipped to P-068's first commit).
 - **18 unit tests pass** across gh-token + octokit-client.
 
-### P-075 groundwork — binding-verifier-types module (final segment)
+### P-011 groundwork — attestation-types module (one-per-memo types spine complete)
+
+Third types-only module shipped, completing the one-per-Phase-1b-memo pattern:
+
+- **Commit `4a08057e`** — `apps/operator/lib/identity/attestation-types.ts` (~150 LOC). `ATTESTATION_OAUTH_SCOPES` const tuple, `AttestationGistBody` (canonical-serialization order for signature stability), `AttestationVerificationResult` + 7-variant failure reason union, `attestationGistFilename()` single-source filename rule, `hasAllAttestationScopes` / `missingAttestationScopes` for the OAuth re-prompt error path, `deriveDefaultDeviceLabel` 3-tier fallback (hostname-username → hostname → random), `clampDeviceLabel` length cap. 26 unit tests including boundary + defensive cases. No I/O.
+
+**Phase 1b types-only spine NOW COMPLETE:**
+- `binding-types.ts` (P-068 → from binding-service-api memo)
+- `binding-verifier-types.ts` (P-075 → from two-channel-binding memo)
+- `attestation-types.ts` (P-011 → from device-attestation memo)
+
+All three runtime implementations can now land cleanly when memos are accepted — types are already in tree + tested.
+
+### P-075 groundwork — binding-verifier-types module (earlier segment)
 
 Mirrors the P-068 binding-types pattern. Same types-only, no-behavior-committed approach.
 

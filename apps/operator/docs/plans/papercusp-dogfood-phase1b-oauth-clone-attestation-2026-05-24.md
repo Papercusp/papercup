@@ -11,20 +11,23 @@ owner: avi@storewolf.com
 
 ## Now
 
-**State:** **draft execution plan.** Phase 1b is the **largest single phase** in the dogfood arc (L-sized, design-heavy). Status as of 2026-05-24 overnight loop:
+**State:** **draft execution plan.** Phase 1b status as of 2026-05-24 overnight loop:
 - ✅ **P-008** done (clone helper via `gh auth`, commit `6cc4f6c9`)
-- ✅ **Q-4** resolved (gh-token helper, commit `80f2717a` + octokit-client wrapper, commit `5ca301bc`)
-- 🟡 **P-068 groundwork**: types-only `binding-types.ts` shipped (`f05997aa`); service implementation gated on memo acceptance
-- 🟡 **P-075 groundwork**: types-only `binding-verifier-types.ts` + state-machine helper shipped (`778ea017`); runtime gated on memo acceptance
+- ✅ **Q-4** resolved (gh-token helper `80f2717a` + octokit-client wrapper `5ca301bc`)
+- 🟡 **Type spine COMPLETE** — three types-only modules in tree, one per memo:
+  - P-068: `binding-types.ts` (`f05997aa`)
+  - P-075: `binding-verifier-types.ts` (`778ea017`)
+  - P-011: `attestation-types.ts` (`4a08057e`)
+  Runtime implementations gated on memo acceptance; types ready to consume verbatim.
 
-Remaining greenfield: P-009 Entry 4 + P-011 device attestation + P-068 service + P-075 runtime — all still need the **design pass** before implementation.
+Remaining greenfield runtime: P-009 Entry 4 + P-011 attest.ts/keychain.ts + P-068 binding-service.ts + P-075 two-channel-verifier.ts — all design-gated.
 
-**Next:** Write three design memos before any P-task implementation starts:
-1. Device attestation UX (the gist creation flow, OAuth scope prompt, error messages).
-2. Two-channel binding verifier UX (what does `pending`/`verified`/`unverified` look like in Contributors + Insights surfaces).
-3. Canonical binding service API shape (the wire-format and endpoint semantics for P-068, which the Cupboard server in Phase 9 also extends).
+**Next:** Write three design memos before any runtime P-task implementation starts:
+1. Device attestation UX (gist creation flow, OAuth scope prompt, error messages).
+2. Two-channel binding verifier UX (`pending` / `verified` / `unverified` surfacing).
+3. Canonical binding service API shape (wire-format + endpoint semantics for P-068, also extended by Cupboard P-051a in Phase 9).
 
-Implementation starts only after the three memos are accepted. Q-4 resolved + two types-only modules in tree mean the runtime can land cleanly when memos pass.
+When memos are accepted, the runtime implementers consume the types-only modules already in tree; no design-vs-implementation race.
 
 ## Background
 
