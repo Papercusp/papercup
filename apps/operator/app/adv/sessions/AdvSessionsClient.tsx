@@ -1,8 +1,10 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { parseAsString, useQueryState } from 'nuqs';
 import { toast } from 'sonner';
 import { launchOmpAgent } from '@/lib/native-omp-launch';
+import { usePlanList } from '../../admin/plans/plans-api';
 
 interface SessionRow {
   id: number;
@@ -19,11 +21,162 @@ interface SessionRow {
   exitCode: number | null;
 }
 
+interface OmpSessionMatch {
+  id: string;
+  filePath: string;
+  cwd: string;
+  timestamp: string;
+  title: string;
+  matchKind: 'exact-cwd' | 'cwd-prefix' | 'time-only';
+  timeDriftMs: number;
+}
+
+interface OmpMessageSnippet {
+  id?: string;
+  timestamp?: string;
+  role: string;
+  toolName?: string;
+  isError?: boolean;
+  text: string;
+}
+
+interface OmpTodoItem {
+  content: string;
+  status: 'pending' | 'in_progress' | 'completed' | 'abandoned';
+  notes?: string[];
+}
+
+interface OmpTodoPhase {
+  name: string;
+  tasks: OmpTodoItem[];
+}
+
+interface OmpToolSummary {
+  toolName: string;
+  calls: number;
+  results: number;
+  errors: number;
+  lastUsedAt?: string;
+}
+
+interface OmpSessionState {
+  header: {
+    id: string;
+    cwd: string;
+    timestamp: string;
+    title?: string;
+  };
+  filePath: string;
+  totalLines: number;
+  countsByType: Record<string, number>;
+  messages: {
+    total: number;
+    user: number;
+    assistant: number;
+    toolResults: number;
+  };
+  latestMessages: OmpMessageSnippet[];
+  todos: OmpTodoPhase[];
+  toolCounts: OmpToolSummary[];
+  jobs: OmpMessageSnippet[];
+  goals: OmpMessageSnippet[];
+  compactions: OmpMessageSnippet[];
+  handoffs: OmpMessageSnippet[];
+}
+
+interface OmpMemoryState {
+  ok?: boolean;
+  backend?: unknown;
+  hindsight?: {
+    apiUrl?: unknown;
+    scoping?: unknown;
+    autoRecall?: unknown;
+    autoRetain?: unknown;
+    retainMode?: unknown;
+    recallBudget?: unknown;
+    recallMaxTokens?: unknown;
+  };
+  error?: string;
+}
+
+interface SessionStateResponse {
+  ok: boolean;
+  advSession: SessionRow | null;
+  match: OmpSessionMatch | null;
+  state: OmpSessionState | null;
+  memory: OmpMemoryState;
+  error: string | null;
+}
+
+interface SessionSearchMatch {
+  session: {
+    id: string;
+    title: string;
+    cwd: string;
+    timestamp: string;
+  };
+  line: number;
+  entryId?: string;
+  timestamp?: string;
+  type: string;
+  role?: string;
+  toolName?: string;
+  snippet: string;
+  contextBefore: string[];
+  contextAfter: string[];
+}
+
+interface SessionSearchResponse {
+  ok: boolean;
+  query: string;
+  matches: SessionSearchMatch[];
+  truncated: boolean;
+  searchedSessions: number;
+}
+
+type SessionPanel = 'overview' | 'history' | 'todos' | 'jobs' | 'goal' | 'tools' | 'memory' | 'handoff';
+
+const SESSION_PANELS: Array<{ value: SessionPanel; label: string }> = [
+  { value: 'overview', label: 'Overview' },
+  { value: 'history', label: 'History' },
+  { value: 'todos', label: 'Todos' },
+  { value: 'jobs', label: 'Jobs' },
+  { value: 'goal', label: 'Goal' },
+  { value: 'tools', label: 'Tools' },
+  { value: 'memory', label: 'Memory' },
+  { value: 'handoff', label: 'Handoff' },
+];
+
+const OMP_MODEL_OPTIONS = [
+  { value: '', label: 'Default' },
+  { value: 'sonnet', label: 'Claude Sonnet' },
+  { value: 'opus', label: 'Claude Opus' },
+  { value: 'haiku', label: 'Claude Haiku' },
+  { value: 'gpt-5.2', label: 'GPT-5.2' },
+] as const;
+
 export default function AdvSessionsClient() {
   const [rows, setRows] = useState<SessionRow[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [aliveByPid, setAliveByPid] = useState<Record<number, boolean>>({});
   const [refreshTick, setRefreshTick] = useState(0);
+  const [launchPlanSlug, setLaunchPlanSlug] = useQueryState('newPlan', parseAsString);
+  const [launchModel, setLaunchModel] = useQueryState(
+    'model',
+    parseAsString.withDefault(''),
+  );
+  const [selectedSessionId, setSelectedSessionId] = useQueryState('session', parseAsString);
+  const [panel, setPanel] = useQueryState('panel', parseAsString.withDefault('overview'));
+  const [historyQuery, setHistoryQuery] = useQueryState('q', parseAsString.withDefault(''));
+  const [launchingNew, setLaunchingNew] = useState(false);
+  const [stateData, setStateData] = useState<SessionStateResponse | null>(null);
+  const [stateLoading, setStateLoading] = useState(false);
+  const [stateError, setStateError] = useState<string | null>(null);
+  const [searchData, setSearchData] = useState<SessionSearchResponse | null>(null);
+  const [searchLoading, setSearchLoading] = useState(false);
+  const planList = usePlanList({ includeArchived: true, includeLegacy: true });
+
+  const activePanel = isSessionPanel(panel) ? panel : 'overview';
 
   const fetchRows = useCallback(async () => {
     try {
@@ -66,6 +219,83 @@ export default function AdvSessionsClient() {
     };
   }, [rows]);
 
+  const selectedRow = useMemo(() => {
+    if (!rows || !selectedSessionId) return null;
+    const id = Number(selectedSessionId);
+    if (!Number.isFinite(id)) return null;
+    return rows.find((row) => row.id === id) ?? null;
+  }, [rows, selectedSessionId]);
+
+  useEffect(() => {
+    if (!selectedRow) {
+      setStateData(null);
+      setStateError(null);
+      setSearchData(null);
+      return;
+    }
+    let cancelled = false;
+    setStateLoading(true);
+    setStateError(null);
+    (async () => {
+      try {
+        const r = await fetch(`/api/adv/sessions/state?id=${selectedRow.id}`, {
+          headers: { accept: 'application/json' },
+        });
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        const data = (await r.json()) as SessionStateResponse;
+        if (!cancelled) setStateData(data);
+      } catch (e: unknown) {
+        if (!cancelled) {
+          setStateError(e instanceof Error ? e.message : String(e));
+          setStateData(null);
+        }
+      } finally {
+        if (!cancelled) setStateLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedRow, refreshTick]);
+
+  useEffect(() => {
+    const q = historyQuery.trim();
+    if (!selectedRow || activePanel !== 'history' || q.length === 0) {
+      setSearchData(null);
+      setSearchLoading(false);
+      return;
+    }
+    let cancelled = false;
+    setSearchLoading(true);
+    (async () => {
+      try {
+        const params = new URLSearchParams({ id: String(selectedRow.id), q, limit: '50' });
+        const r = await fetch(`/api/adv/sessions/search?${params.toString()}`, {
+          headers: { accept: 'application/json' },
+        });
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        const data = (await r.json()) as SessionSearchResponse;
+        if (!cancelled) setSearchData(data);
+      } catch (e: unknown) {
+        if (!cancelled) {
+          setSearchData({
+            ok: false,
+            query: q,
+            matches: [],
+            truncated: false,
+            searchedSessions: 0,
+          });
+          toast.error(`Session search failed: ${e instanceof Error ? e.message : String(e)}`);
+        }
+      } finally {
+        if (!cancelled) setSearchLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [activePanel, historyQuery, selectedRow]);
+
   const isActive = useCallback(
     (row: SessionRow): boolean => {
       if (row.endedAt != null) return false;
@@ -75,6 +305,41 @@ export default function AdvSessionsClient() {
     },
     [aliveByPid],
   );
+
+  const selectedLaunchPlan = useMemo(
+    () => (planList.data?.plans ?? []).find((p) => p.slug === launchPlanSlug) ?? null,
+    [launchPlanSlug, planList.data],
+  );
+
+  const launchNewSession = useCallback(async () => {
+    if (!selectedLaunchPlan) {
+      toast.error('Choose a plan before launching a session.');
+      return;
+    }
+    if (launchingNew) return;
+    setLaunchingNew(true);
+    try {
+      const model = launchModel.trim();
+      const label = selectedLaunchPlan.title?.trim() || selectedLaunchPlan.slug;
+      const result = await launchOmpAgent({
+        slug: null,
+        planSlug: selectedLaunchPlan.slug,
+        label,
+        model: model || null,
+      });
+      if (result.ok) {
+        toast.success(
+          `OMP launched for ${label}${model ? ` (${model})` : ''}.`,
+          { duration: 3000 },
+        );
+        setRefreshTick((t) => t + 1);
+      } else {
+        toast.error(`Launch failed: ${result.error ?? 'unknown error'}`);
+      }
+    } finally {
+      setLaunchingNew(false);
+    }
+  }, [launchModel, launchingNew, selectedLaunchPlan]);
 
   const focusRow = useCallback(async (row: SessionRow) => {
     if (!row.pid) {
@@ -120,7 +385,7 @@ export default function AdvSessionsClient() {
   // `omp -r <id>`. The user knows their session id from their OMP
   // terminal; we don't auto-capture.
   const resumeByIdRow = useCallback(async (row: SessionRow) => {
-    const seed = row.ompThreadId ?? '';
+    const seed = stateData?.state?.header.id ?? row.ompThreadId ?? '';
     const id = window.prompt(
       'OMP session id to resume (passed as `omp -r <id>`):',
       seed,
@@ -143,21 +408,62 @@ export default function AdvSessionsClient() {
     } else {
       toast.error(`Resume failed: ${result.error ?? 'unknown error'}`);
     }
-  }, []);
+  }, [stateData]);
 
   const grouped = useMemo(() => groupRows(rows ?? []), [rows]);
 
   return (
     <div className="pc-adv-sessions">
       <div className="pc-adv-sessions__head">
-        <h2>Agent sessions</h2>
-        <button
-          type="button"
-          className="pc-adv-sessions__refresh"
-          onClick={() => setRefreshTick((t) => t + 1)}
-        >
-          Refresh
-        </button>
+        <div>
+          <h2>Agent sessions</h2>
+          <p className="pc-adv-sessions__subhead">
+            Launch OMP sessions, inspect their OMP transcript state, and recover handoffs after compaction.
+          </p>
+        </div>
+        <div className="pc-adv-sessions__head-actions">
+          <select
+            className="pc-adv-sessions__select pc-adv-sessions__select--plan"
+            value={launchPlanSlug ?? ''}
+            onChange={(e) => void setLaunchPlanSlug(e.target.value || null)}
+            disabled={planList.loading}
+            aria-label="Plan for new session"
+          >
+            <option value="">Select plan…</option>
+            {(planList.data?.plans ?? []).map((plan) => (
+              <option key={plan.slug} value={plan.slug}>
+                {plan.title?.trim() || plan.slug}
+              </option>
+            ))}
+          </select>
+          <select
+            className="pc-adv-sessions__select"
+            value={launchModel}
+            onChange={(e) => void setLaunchModel(e.target.value || null)}
+            aria-label="Model for new session"
+          >
+            {OMP_MODEL_OPTIONS.map((model) => (
+              <option key={model.value || 'default'} value={model.value}>
+                {model.label}
+              </option>
+            ))}
+          </select>
+          <button
+            type="button"
+            className="pc-adv-sessions__btn pc-adv-sessions__btn--primary"
+            onClick={launchNewSession}
+            disabled={launchingNew || !selectedLaunchPlan}
+          >
+            {launchingNew ? 'Launching…' : 'Create new session'}
+          </button>
+          <button
+            type="button"
+            className="pc-adv-sessions__refresh"
+            onClick={() => setRefreshTick((t) => t + 1)}
+          >
+            Refresh
+          </button>
+        </div>
       </div>
       {error ? <p className="pc-adv-sessions__error">Failed to load: {error}</p> : null}
       {rows === null && !error ? <p className="pc-adv-sessions__placeholder">Loading…</p> : null}
@@ -166,79 +472,142 @@ export default function AdvSessionsClient() {
           No agent sessions recorded yet. Launches from the Plans tab will appear here.
         </p>
       ) : null}
-      {grouped.map((group) => (
-        <section className="pc-adv-sessions__group" key={group.key}>
-          <header className="pc-adv-sessions__group-head">
-            <span className="pc-adv-sessions__group-title">
-              {group.planSlug ?? '(no plan)'}
-            </span>
-            <span className="pc-adv-sessions__group-count">{group.rows.length}</span>
-          </header>
-          <ul className="pc-adv-sessions__list">
-            {group.rows.map((row) => {
-              const active = isActive(row);
-              return (
-                <li key={row.id} className={`pc-adv-sessions__row${active ? ' is-active' : ''}`}>
-                  <div className="pc-adv-sessions__row-meta">
-                    <span className={`pc-adv-sessions__badge pc-adv-sessions__badge--${row.mode}`}>
-                      {row.mode}
-                    </span>
-                    <span className="pc-adv-sessions__row-label">
-                      {row.label ?? row.terminalBin ?? `#${row.id}`}
-                    </span>
-                    <span className="pc-adv-sessions__row-times">
-                      started {formatDate(row.startedAt)}
-                      {row.endedAt ? ` · ended ${formatDate(row.endedAt)}` : ''}
-                    </span>
-                    {row.pid != null ? (
-                      <span className="pc-adv-sessions__row-pid">pid {row.pid}</span>
-                    ) : null}
-                  </div>
-                  <div className="pc-adv-sessions__row-actions">
-                    {active ? (
+
+      <div className="pc-adv-sessions__layout">
+        <div className="pc-adv-sessions__listpane">
+          {grouped.map((group) => (
+            <section className="pc-adv-sessions__group" key={group.key}>
+              <header className="pc-adv-sessions__group-head">
+                <span className="pc-adv-sessions__group-title">
+                  {group.planSlug ?? '(no plan)'}
+                </span>
+                <span className="pc-adv-sessions__group-count">{group.rows.length}</span>
+              </header>
+              <ul className="pc-adv-sessions__list">
+                {group.rows.map((row) => {
+                  const active = isActive(row);
+                  const selected = selectedRow?.id === row.id;
+                  return (
+                    <li
+                      key={row.id}
+                      className={`pc-adv-sessions__row${active ? ' is-active' : ''}${selected ? ' is-selected' : ''}`}
+                    >
                       <button
                         type="button"
-                        className="pc-adv-sessions__btn pc-adv-sessions__btn--primary"
-                        onClick={() => focusRow(row)}
+                        className="pc-adv-sessions__row-main"
+                        onClick={() => void setSelectedSessionId(String(row.id))}
                       >
-                        Focus window
+                        <span className="pc-adv-sessions__row-meta">
+                          <span className={`pc-adv-sessions__badge pc-adv-sessions__badge--${row.mode}`}>
+                            {row.mode}
+                          </span>
+                          <span className="pc-adv-sessions__row-label">
+                            {row.label ?? row.terminalBin ?? `#${row.id}`}
+                          </span>
+                          <span className="pc-adv-sessions__row-times">
+                            started {formatDate(row.startedAt)}
+                            {row.endedAt ? ` · ended ${formatDate(row.endedAt)}` : ''}
+                          </span>
+                          {row.pid != null ? (
+                            <span className="pc-adv-sessions__row-pid">pid {row.pid}</span>
+                          ) : null}
+                        </span>
+                        <span className="pc-adv-sessions__row-hint">
+                          {selected ? 'Inspecting' : 'Inspect state'}
+                        </span>
                       </button>
-                    ) : (
-                      <>
-                        <button
-                          type="button"
-                          className="pc-adv-sessions__btn"
-                          onClick={() => freshRow(row)}
-                          title="Open a new OMP terminal at this plan (fresh conversation)"
-                        >
-                          Fresh OMP
-                        </button>
-                        <button
-                          type="button"
-                          className="pc-adv-sessions__btn pc-adv-sessions__btn--primary"
-                          onClick={() => resumeByIdRow(row)}
-                          title="Open OMP with `omp -r <id>` — you'll be prompted for the session id"
-                        >
-                          Resume by ID
-                        </button>
-                      </>
-                    )}
-                  </div>
-                </li>
-              );
-            })}
-          </ul>
-        </section>
-      ))}
+                      <div className="pc-adv-sessions__row-actions">
+                        {active ? (
+                          <button
+                            type="button"
+                            className="pc-adv-sessions__btn pc-adv-sessions__btn--primary"
+                            onClick={() => focusRow(row)}
+                          >
+                            Focus window
+                          </button>
+                        ) : (
+                          <>
+                            <button
+                              type="button"
+                              className="pc-adv-sessions__btn"
+                              onClick={() => freshRow(row)}
+                              title="Open a new OMP terminal at this plan (fresh conversation)"
+                            >
+                              Fresh OMP
+                            </button>
+                            <button
+                              type="button"
+                              className="pc-adv-sessions__btn pc-adv-sessions__btn--primary"
+                              onClick={() => resumeByIdRow(row)}
+                              title="Open OMP with `omp -r <id>` — you'll be prompted for the session id"
+                            >
+                              Resume by ID
+                            </button>
+                          </>
+                        )}
+                      </div>
+                    </li>
+                  );
+                })}
+              </ul>
+            </section>
+          ))}
+        </div>
+
+        <SessionDetail
+          row={selectedRow}
+          stateData={stateData}
+          loading={stateLoading}
+          error={stateError}
+          panel={activePanel}
+          onPanelChange={(next) => void setPanel(next)}
+          historyQuery={historyQuery}
+          onHistoryQueryChange={(next) => void setHistoryQuery(next || null)}
+          searchData={searchData}
+          searchLoading={searchLoading}
+          onRefresh={() => setRefreshTick((t) => t + 1)}
+        />
+      </div>
+
       <style>{`
         .pc-adv-sessions { padding: 16px 18px; color: rgba(220, 214, 248, 0.84); }
         .pc-adv-sessions__head {
           display: flex; align-items: center; justify-content: space-between;
           margin-bottom: 16px;
+          gap: 16px;
         }
         .pc-adv-sessions__head h2 {
           margin: 0; font-size: 18px; font-weight: 700; color: #f7f5ff;
         }
+        .pc-adv-sessions__subhead {
+          margin: 4px 0 0;
+          color: rgba(220, 214, 248, 0.58);
+          font-size: 12px;
+        }
+        .pc-adv-sessions__head-actions {
+          display: flex; align-items: center; justify-content: flex-end;
+          gap: 8px; flex-wrap: wrap;
+        }
+        .pc-adv-sessions__layout {
+          display: grid;
+          grid-template-columns: minmax(360px, 0.9fr) minmax(420px, 1.1fr);
+          gap: 16px;
+          align-items: start;
+        }
+        .pc-adv-sessions__listpane,
+        .pc-adv-sessions__detail {
+          min-width: 0;
+        }
+        .pc-adv-sessions__select {
+          min-height: 30px;
+          border-radius: 6px;
+          border: 1px solid rgba(167, 139, 250, 0.22);
+          background: rgba(31, 23, 56, 0.78);
+          color: #f7f5ff;
+          font-size: 12px;
+          padding: 4px 8px;
+        }
+        .pc-adv-sessions__select--plan { min-width: 220px; max-width: 360px; }
         .pc-adv-sessions__refresh {
           all: unset; cursor: pointer; padding: 5px 12px; border-radius: 6px;
           border: 1px solid rgba(167, 139, 250, 0.22);
@@ -269,8 +638,8 @@ export default function AdvSessionsClient() {
         .pc-adv-sessions__list { list-style: none; padding: 0; margin: 0; }
         .pc-adv-sessions__row {
           display: flex; align-items: center; justify-content: space-between;
-          gap: 16px;
-          padding: 8px 12px;
+          gap: 12px;
+          padding: 8px 10px;
           border: 1px solid rgba(167, 139, 250, 0.12);
           border-radius: 8px;
           margin-bottom: 6px;
@@ -280,9 +649,30 @@ export default function AdvSessionsClient() {
           border-color: rgba(103, 232, 249, 0.4);
           background: rgba(20, 32, 48, 0.7);
         }
+        .pc-adv-sessions__row.is-selected {
+          border-color: rgba(251, 191, 36, 0.55);
+          box-shadow: 0 0 0 1px rgba(251, 191, 36, 0.12) inset;
+        }
+        .pc-adv-sessions__row-main {
+          all: unset;
+          cursor: pointer;
+          min-width: 0;
+          display: grid;
+          gap: 4px;
+          flex: 1;
+        }
+        .pc-adv-sessions__row-main:focus-visible {
+          outline: 2px solid rgba(103, 232, 249, 0.75);
+          outline-offset: 3px;
+          border-radius: 6px;
+        }
         .pc-adv-sessions__row-meta {
           display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
           font-size: 12px;
+        }
+        .pc-adv-sessions__row-hint {
+          color: rgba(220, 214, 248, 0.44);
+          font-size: 11px;
         }
         .pc-adv-sessions__badge {
           font-size: 10px; font-weight: 700; letter-spacing: 0.06em;
@@ -295,12 +685,14 @@ export default function AdvSessionsClient() {
           color: #f7f5ff; font-weight: 600; font-size: 13px;
         }
         .pc-adv-sessions__row-times { color: rgba(220, 214, 248, 0.6); }
-        .pc-adv-sessions__row-pid {
+        .pc-adv-sessions__row-pid,
+        .pc-adv-sessions__mono {
           font-family: ui-monospace, monospace;
-          color: rgba(220, 214, 248, 0.5);
+          color: rgba(220, 214, 248, 0.58);
           font-size: 11px;
+          word-break: break-all;
         }
-        .pc-adv-sessions__row-actions { display: flex; gap: 6px; flex-shrink: 0; }
+        .pc-adv-sessions__row-actions { display: flex; gap: 6px; flex-shrink: 0; flex-wrap: wrap; justify-content: flex-end; }
         .pc-adv-sessions__btn {
           all: unset; cursor: pointer; padding: 4px 10px; border-radius: 6px;
           border: 1px solid rgba(167, 139, 250, 0.22);
@@ -312,9 +704,546 @@ export default function AdvSessionsClient() {
           background: rgba(20, 50, 65, 0.85);
         }
         .pc-adv-sessions__btn:hover { background: rgba(40, 35, 75, 0.95); }
+        .pc-adv-sessions__detail {
+          border: 1px solid rgba(167, 139, 250, 0.16);
+          border-radius: 12px;
+          background: rgba(8, 10, 22, 0.72);
+          overflow: hidden;
+        }
+        .pc-adv-sessions__detail-head {
+          display: flex;
+          justify-content: space-between;
+          gap: 12px;
+          padding: 12px 14px;
+          border-bottom: 1px solid rgba(167, 139, 250, 0.12);
+          background: rgba(20, 18, 38, 0.62);
+        }
+        .pc-adv-sessions__detail-title {
+          display: grid;
+          gap: 4px;
+          min-width: 0;
+        }
+        .pc-adv-sessions__detail-title h3 {
+          margin: 0;
+          color: #f7f5ff;
+          font-size: 15px;
+        }
+        .pc-adv-sessions__detail-sub {
+          color: rgba(220, 214, 248, 0.55);
+          font-size: 12px;
+        }
+        .pc-adv-sessions__panel-tabs {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 6px;
+          padding: 10px 12px;
+          border-bottom: 1px solid rgba(167, 139, 250, 0.12);
+        }
+        .pc-adv-sessions__panel-tab {
+          all: unset;
+          cursor: pointer;
+          padding: 5px 9px;
+          border-radius: 999px;
+          border: 1px solid rgba(167, 139, 250, 0.18);
+          color: rgba(220, 214, 248, 0.72);
+          font-size: 11px;
+          font-weight: 700;
+        }
+        .pc-adv-sessions__panel-tab.is-active {
+          color: #05131a;
+          background: #67e8f9;
+          border-color: #67e8f9;
+        }
+        .pc-adv-sessions__panel {
+          padding: 14px;
+          display: grid;
+          gap: 12px;
+        }
+        .pc-adv-sessions__cards {
+          display: grid;
+          grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+          gap: 8px;
+        }
+        .pc-adv-sessions__card {
+          border: 1px solid rgba(167, 139, 250, 0.14);
+          border-radius: 9px;
+          background: rgba(31, 23, 56, 0.35);
+          padding: 9px;
+          display: grid;
+          gap: 3px;
+        }
+        .pc-adv-sessions__card-label {
+          color: rgba(220, 214, 248, 0.52);
+          font-size: 10px;
+          text-transform: uppercase;
+          letter-spacing: 0.08em;
+        }
+        .pc-adv-sessions__card-value {
+          color: #f7f5ff;
+          font-size: 14px;
+          font-weight: 760;
+        }
+        .pc-adv-sessions__section {
+          display: grid;
+          gap: 8px;
+        }
+        .pc-adv-sessions__section h4 {
+          margin: 0;
+          color: rgba(247, 245, 255, 0.92);
+          font-size: 12px;
+          text-transform: uppercase;
+          letter-spacing: 0.08em;
+        }
+        .pc-adv-sessions__snippet-list {
+          display: grid;
+          gap: 7px;
+        }
+        .pc-adv-sessions__snippet {
+          border: 1px solid rgba(167, 139, 250, 0.12);
+          border-radius: 8px;
+          padding: 8px;
+          background: rgba(11, 13, 28, 0.54);
+        }
+        .pc-adv-sessions__snippet-meta {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 8px;
+          margin-bottom: 4px;
+          color: rgba(220, 214, 248, 0.48);
+          font-size: 11px;
+        }
+        .pc-adv-sessions__snippet-text {
+          margin: 0;
+          white-space: pre-wrap;
+          color: rgba(238, 234, 255, 0.82);
+          font-size: 12px;
+          line-height: 1.45;
+        }
+        .pc-adv-sessions__todo-phase {
+          border: 1px solid rgba(167, 139, 250, 0.12);
+          border-radius: 8px;
+          padding: 9px;
+          background: rgba(31, 23, 56, 0.28);
+        }
+        .pc-adv-sessions__todo-phase h4 {
+          margin: 0 0 7px;
+          color: #f7f5ff;
+          font-size: 13px;
+        }
+        .pc-adv-sessions__todo-list { list-style: none; padding: 0; margin: 0; display: grid; gap: 5px; }
+        .pc-adv-sessions__todo-item {
+          color: rgba(238, 234, 255, 0.82);
+          font-size: 12px;
+        }
+        .pc-adv-sessions__todo-item[data-status="completed"] { color: #86efac; }
+        .pc-adv-sessions__todo-item[data-status="in_progress"] { color: #fde68a; }
+        .pc-adv-sessions__todo-item[data-status="abandoned"] { color: #fca5a5; }
+        .pc-adv-sessions__table {
+          width: 100%;
+          border-collapse: collapse;
+          font-size: 12px;
+        }
+        .pc-adv-sessions__table th,
+        .pc-adv-sessions__table td {
+          border-bottom: 1px solid rgba(167, 139, 250, 0.12);
+          padding: 6px 4px;
+          text-align: left;
+          vertical-align: top;
+        }
+        .pc-adv-sessions__table th {
+          color: rgba(220, 214, 248, 0.58);
+          font-size: 10px;
+          text-transform: uppercase;
+          letter-spacing: 0.08em;
+        }
+        .pc-adv-sessions__search {
+          display: flex;
+          gap: 8px;
+        }
+        .pc-adv-sessions__search input {
+          flex: 1;
+          min-width: 0;
+          border-radius: 8px;
+          border: 1px solid rgba(167, 139, 250, 0.18);
+          background: rgba(5, 8, 18, 0.72);
+          color: #f7f5ff;
+          padding: 7px 9px;
+          font-size: 12px;
+        }
+        @media (max-width: 1100px) {
+          .pc-adv-sessions__layout { grid-template-columns: 1fr; }
+          .pc-adv-sessions__head { align-items: flex-start; flex-direction: column; }
+        }
       `}</style>
     </div>
   );
+}
+
+function SessionDetail({
+  row,
+  stateData,
+  loading,
+  error,
+  panel,
+  onPanelChange,
+  historyQuery,
+  onHistoryQueryChange,
+  searchData,
+  searchLoading,
+  onRefresh,
+}: {
+  row: SessionRow | null;
+  stateData: SessionStateResponse | null;
+  loading: boolean;
+  error: string | null;
+  panel: SessionPanel;
+  onPanelChange: (panel: SessionPanel) => void;
+  historyQuery: string;
+  onHistoryQueryChange: (query: string) => void;
+  searchData: SessionSearchResponse | null;
+  searchLoading: boolean;
+  onRefresh: () => void;
+}) {
+  if (!row) {
+    return (
+      <aside className="pc-adv-sessions__detail">
+        <div className="pc-adv-sessions__panel">
+          <p className="pc-adv-sessions__placeholder">
+            Select a session to inspect its OMP transcript state, todos, tools, Hindsight config, and handoff context.
+          </p>
+        </div>
+      </aside>
+    );
+  }
+
+  const state = stateData?.state ?? null;
+  const title = state?.header.title || row.label || row.planSlug || `Session #${row.id}`;
+
+  return (
+    <aside className="pc-adv-sessions__detail">
+      <header className="pc-adv-sessions__detail-head">
+        <div className="pc-adv-sessions__detail-title">
+          <h3>{title}</h3>
+          <span className="pc-adv-sessions__detail-sub">
+            {row.mode} · started {formatDate(row.startedAt)}
+            {state?.header.id ? ` · ${state.header.id.slice(0, 13)}…` : ''}
+          </span>
+        </div>
+        <button type="button" className="pc-adv-sessions__refresh" onClick={onRefresh}>
+          Reload state
+        </button>
+      </header>
+
+      <div className="pc-adv-sessions__panel-tabs" role="tablist" aria-label="Session detail panels">
+        {SESSION_PANELS.map((p) => (
+          <button
+            type="button"
+            key={p.value}
+            className={`pc-adv-sessions__panel-tab${panel === p.value ? ' is-active' : ''}`}
+            onClick={() => onPanelChange(p.value)}
+          >
+            {p.label}
+          </button>
+        ))}
+      </div>
+
+      <div className="pc-adv-sessions__panel">
+        {loading ? <p className="pc-adv-sessions__placeholder">Loading OMP session state…</p> : null}
+        {error ? <p className="pc-adv-sessions__error">Failed to load OMP state: {error}</p> : null}
+        {!loading && !error && row.mode !== 'omp' ? (
+          <p className="pc-adv-sessions__placeholder">
+            This is a console session, not an OMP transcript. Focus or resume controls still work; OMP state panels apply to OMP rows.
+          </p>
+        ) : null}
+        {!loading && !error && row.mode === 'omp' && !state ? (
+          <p className="pc-adv-sessions__placeholder">
+            No matching OMP JSONL session found yet. If this terminal just launched, wait for OMP to write its session header and refresh.
+          </p>
+        ) : null}
+        {state ? (
+          <SessionPanelContent
+            panel={panel}
+            row={row}
+            stateData={stateData}
+            historyQuery={historyQuery}
+            onHistoryQueryChange={onHistoryQueryChange}
+            searchData={searchData}
+            searchLoading={searchLoading}
+          />
+        ) : null}
+      </div>
+    </aside>
+  );
+}
+
+function SessionPanelContent({
+  panel,
+  row,
+  stateData,
+  historyQuery,
+  onHistoryQueryChange,
+  searchData,
+  searchLoading,
+}: {
+  panel: SessionPanel;
+  row: SessionRow;
+  stateData: SessionStateResponse | null;
+  historyQuery: string;
+  onHistoryQueryChange: (query: string) => void;
+  searchData: SessionSearchResponse | null;
+  searchLoading: boolean;
+}) {
+  const state = stateData?.state;
+  if (!state) return null;
+
+  if (panel === 'todos') return <TodosPanel phases={state.todos} />;
+  if (panel === 'tools') return <ToolsPanel tools={state.toolCounts} />;
+  if (panel === 'jobs') return <SnippetPanel title="Job tool events" empty="No persisted job tool events in this session." snippets={state.jobs} />;
+  if (panel === 'goal') return <SnippetPanel title="Goal tool events" empty="No persisted goal tool events in this session." snippets={state.goals} />;
+  if (panel === 'memory') return <MemoryPanel memory={stateData?.memory} />;
+  if (panel === 'handoff') {
+    return (
+      <>
+        <SnippetPanel title="Handoffs" empty="No handoff entries found in this session." snippets={state.handoffs} />
+        <SnippetPanel title="Compactions" empty="No compaction entries found in this session." snippets={state.compactions} />
+      </>
+    );
+  }
+  if (panel === 'history') {
+    return (
+      <HistoryPanel
+        query={historyQuery}
+        onQueryChange={onHistoryQueryChange}
+        latestMessages={state.latestMessages}
+        searchData={searchData}
+        loading={searchLoading}
+      />
+    );
+  }
+
+  return (
+    <>
+      <div className="pc-adv-sessions__cards">
+        <MetricCard label="Messages" value={state.messages.total} />
+        <MetricCard label="User turns" value={state.messages.user} />
+        <MetricCard label="Tool results" value={state.messages.toolResults} />
+        <MetricCard label="JSONL lines" value={state.totalLines} />
+      </div>
+      <div className="pc-adv-sessions__section">
+        <h4>OMP session</h4>
+        <div className="pc-adv-sessions__snippet">
+          <div className="pc-adv-sessions__snippet-meta">
+            <span>{state.header.id}</span>
+            <span>{formatDate(state.header.timestamp)}</span>
+            {stateData?.match ? (
+              <span>
+                match {stateData.match.matchKind} · {Math.round(stateData.match.timeDriftMs / 1000)}s drift
+              </span>
+            ) : null}
+          </div>
+          <p className="pc-adv-sessions__snippet-text">
+            {state.header.title || '(untitled)'}{'\n'}
+            cwd: <span className="pc-adv-sessions__mono">{state.header.cwd}</span>{'\n'}
+            file: <span className="pc-adv-sessions__mono">{state.filePath}</span>{'\n'}
+            adv row: #{row.id} · plan {row.planSlug ?? '(none)'}
+          </p>
+        </div>
+      </div>
+      <SnippetPanel title="Latest transcript snippets" empty="No messages found." snippets={state.latestMessages} />
+    </>
+  );
+}
+
+function TodosPanel({ phases }: { phases: OmpTodoPhase[] }) {
+  if (phases.length === 0) {
+    return <p className="pc-adv-sessions__placeholder">No todo_write state found in this session.</p>;
+  }
+  return (
+    <div className="pc-adv-sessions__section">
+      {phases.map((phase) => (
+        <div className="pc-adv-sessions__todo-phase" key={phase.name}>
+          <h4>{phase.name}</h4>
+          <ul className="pc-adv-sessions__todo-list">
+            {phase.tasks.map((task) => (
+              <li className="pc-adv-sessions__todo-item" data-status={task.status} key={`${phase.name}:${task.content}`}>
+                {statusGlyph(task.status)} {task.content}
+                {task.notes?.length ? ` (+${task.notes.length} note${task.notes.length === 1 ? '' : 's'})` : ''}
+              </li>
+            ))}
+          </ul>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function ToolsPanel({ tools }: { tools: OmpToolSummary[] }) {
+  if (tools.length === 0) {
+    return <p className="pc-adv-sessions__placeholder">No tool results found in this session.</p>;
+  }
+  return (
+    <table className="pc-adv-sessions__table">
+      <thead>
+        <tr>
+          <th>Tool</th>
+          <th>Calls</th>
+          <th>Results</th>
+          <th>Errors</th>
+          <th>Last used</th>
+        </tr>
+      </thead>
+      <tbody>
+        {tools.map((tool) => (
+          <tr key={tool.toolName}>
+            <td className="pc-adv-sessions__mono">{tool.toolName}</td>
+            <td>{tool.calls}</td>
+            <td>{tool.results}</td>
+            <td>{tool.errors}</td>
+            <td>{tool.lastUsedAt ? formatDate(tool.lastUsedAt) : '—'}</td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
+}
+
+function MemoryPanel({ memory }: { memory: OmpMemoryState | undefined }) {
+  if (!memory) return <p className="pc-adv-sessions__placeholder">Memory config unavailable.</p>;
+  if (memory.ok === false) {
+    return <p className="pc-adv-sessions__error">Could not read OMP memory config: {memory.error}</p>;
+  }
+  const hindsight = memory.hindsight ?? {};
+  return (
+    <>
+      <div className="pc-adv-sessions__cards">
+        <MetricCard label="Backend" value={String(memory.backend ?? 'unknown')} />
+        <MetricCard label="Auto recall" value={String(hindsight.autoRecall ?? 'unknown')} />
+        <MetricCard label="Auto retain" value={String(hindsight.autoRetain ?? 'unknown')} />
+        <MetricCard label="Scoping" value={String(hindsight.scoping ?? 'unknown')} />
+      </div>
+      <div className="pc-adv-sessions__section">
+        <h4>Hindsight</h4>
+        <div className="pc-adv-sessions__snippet">
+          <p className="pc-adv-sessions__snippet-text">
+            apiUrl: <span className="pc-adv-sessions__mono">{String(hindsight.apiUrl ?? 'unset')}</span>{'\n'}
+            retainMode: {String(hindsight.retainMode ?? 'unknown')}{'\n'}
+            recallBudget: {String(hindsight.recallBudget ?? 'unknown')}{'\n'}
+            recallMaxTokens: {String(hindsight.recallMaxTokens ?? 'unknown')}
+          </p>
+        </div>
+      </div>
+    </>
+  );
+}
+
+function HistoryPanel({
+  query,
+  onQueryChange,
+  latestMessages,
+  searchData,
+  loading,
+}: {
+  query: string;
+  onQueryChange: (query: string) => void;
+  latestMessages: OmpMessageSnippet[];
+  searchData: SessionSearchResponse | null;
+  loading: boolean;
+}) {
+  const trimmed = query.trim();
+  return (
+    <>
+      <div className="pc-adv-sessions__search">
+        <input
+          value={query}
+          onChange={(e) => onQueryChange(e.target.value)}
+          placeholder="Search this OMP transcript for decisions, errors, files…"
+          aria-label="Search OMP session history"
+        />
+      </div>
+      {loading ? <p className="pc-adv-sessions__placeholder">Searching…</p> : null}
+      {trimmed.length > 0 && !loading ? (
+        <div className="pc-adv-sessions__section">
+          <h4>
+            Search results
+            {searchData ? ` · ${searchData.matches.length}${searchData.truncated ? '+' : ''}` : ''}
+          </h4>
+          {searchData && searchData.matches.length > 0 ? (
+            <div className="pc-adv-sessions__snippet-list">
+              {searchData.matches.map((match) => (
+                <div className="pc-adv-sessions__snippet" key={`${match.session.id}:${match.line}:${match.entryId ?? ''}`}>
+                  <div className="pc-adv-sessions__snippet-meta">
+                    <span>line {match.line}</span>
+                    <span>{match.role ?? match.type}</span>
+                    {match.toolName ? <span>{match.toolName}</span> : null}
+                    {match.timestamp ? <span>{formatDate(match.timestamp)}</span> : null}
+                  </div>
+                  <p className="pc-adv-sessions__snippet-text">{match.snippet}</p>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className="pc-adv-sessions__placeholder">No matches.</p>
+          )}
+        </div>
+      ) : null}
+      {trimmed.length === 0 ? (
+        <SnippetPanel title="Latest transcript snippets" empty="No messages found." snippets={latestMessages} />
+      ) : null}
+    </>
+  );
+}
+
+function SnippetPanel({
+  title,
+  empty,
+  snippets,
+}: {
+  title: string;
+  empty: string;
+  snippets: OmpMessageSnippet[];
+}) {
+  return (
+    <div className="pc-adv-sessions__section">
+      <h4>{title}</h4>
+      {snippets.length === 0 ? (
+        <p className="pc-adv-sessions__placeholder">{empty}</p>
+      ) : (
+        <div className="pc-adv-sessions__snippet-list">
+          {snippets.map((snippet, index) => (
+            <div className="pc-adv-sessions__snippet" key={`${snippet.id ?? index}:${snippet.timestamp ?? ''}`}>
+              <div className="pc-adv-sessions__snippet-meta">
+                <span>{snippet.role}</span>
+                {snippet.toolName ? <span>{snippet.toolName}</span> : null}
+                {snippet.isError ? <span>error</span> : null}
+                {snippet.timestamp ? <span>{formatDate(snippet.timestamp)}</span> : null}
+              </div>
+              <p className="pc-adv-sessions__snippet-text">{snippet.text}</p>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function MetricCard({ label, value }: { label: string; value: string | number }) {
+  return (
+    <div className="pc-adv-sessions__card">
+      <span className="pc-adv-sessions__card-label">{label}</span>
+      <span className="pc-adv-sessions__card-value">{value}</span>
+    </div>
+  );
+}
+
+function isSessionPanel(value: string): value is SessionPanel {
+  return SESSION_PANELS.some((panel) => panel.value === value);
+}
+
+function statusGlyph(status: OmpTodoItem['status']): string {
+  if (status === 'completed') return '✓';
+  if (status === 'in_progress') return '→';
+  if (status === 'abandoned') return '✕';
+  return '○';
 }
 
 function groupRows(rows: SessionRow[]): Array<{ key: string; planSlug: string | null; rows: SessionRow[] }> {

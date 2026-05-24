@@ -13,11 +13,111 @@
 import { defineTool } from '@papercusp/agent-mcp';
 import {
   focusWindowId,
+  getAdvSession,
   listAdvSessions,
   resolveWindowIdForPid,
 } from '@/lib/adv-sessions';
+import { papercuspPath } from '@/lib/papercusp-root';
+import { readOmpConfig } from '@/lib/omp-config';
+import {
+  findOmpSessionNear,
+  getOmpSessionState,
+  searchOmpSessions,
+} from '@/lib/omp-sessions';
 
 const JSON_HEADERS = { 'content-type': 'application/json' } as const;
+
+async function readOmpMemoryConfig(): Promise<Record<string, unknown>> {
+  const wanted = new Set([
+    'memory.backend',
+    'hindsight.apiUrl',
+    'hindsight.scoping',
+    'hindsight.autoRecall',
+    'hindsight.autoRetain',
+    'hindsight.retainMode',
+    'hindsight.recallBudget',
+    'hindsight.recallMaxTokens',
+  ]);
+  try {
+    const sections = await readOmpConfig();
+    const values: Record<string, { value: unknown; raw: string; isUnset: boolean }> = {};
+    for (const section of sections) {
+      for (const setting of section.settings) {
+        if (!wanted.has(setting.key)) continue;
+        values[setting.key] = {
+          value: setting.parsed,
+          raw: setting.raw,
+          isUnset: setting.isUnset,
+        };
+      }
+    }
+    return {
+      ok: true,
+      backend: values['memory.backend']?.value ?? null,
+      hindsight: {
+        apiUrl: values['hindsight.apiUrl']?.value ?? null,
+        scoping: values['hindsight.scoping']?.value ?? null,
+        autoRecall: values['hindsight.autoRecall']?.value ?? null,
+        autoRetain: values['hindsight.autoRetain']?.value ?? null,
+        retainMode: values['hindsight.retainMode']?.value ?? null,
+        recallBudget: values['hindsight.recallBudget']?.value ?? null,
+        recallMaxTokens: values['hindsight.recallMaxTokens']?.value ?? null,
+      },
+      values,
+    };
+  } catch (e) {
+    return {
+      ok: false,
+      error: e instanceof Error ? e.message : String(e),
+    };
+  }
+}
+
+async function resolveOmpSessionForRequest(req: Request): Promise<{
+  advSession: Awaited<ReturnType<typeof getAdvSession>> | null;
+  sessionId: string | null;
+  filePath: string | null;
+  match: ReturnType<typeof findOmpSessionNear> | null;
+}> {
+  const url = new URL(req.url);
+  const advId = Number(url.searchParams.get('id') ?? NaN);
+  const directSessionId = url.searchParams.get('sessionId');
+  const directFilePath = url.searchParams.get('filePath');
+
+  if (directSessionId || directFilePath) {
+    return {
+      advSession: null,
+      sessionId: directSessionId,
+      filePath: directFilePath,
+      match: null,
+    };
+  }
+
+  if (!Number.isFinite(advId) || advId <= 0) {
+    return { advSession: null, sessionId: null, filePath: null, match: null };
+  }
+
+  const advSession = await getAdvSession(advId);
+  if (!advSession || advSession.mode !== 'omp') {
+    return { advSession, sessionId: null, filePath: null, match: null };
+  }
+
+  if (advSession.ompThreadId) {
+    return { advSession, sessionId: advSession.ompThreadId, filePath: null, match: null };
+  }
+
+  const match = findOmpSessionNear({
+    startedAtMs: new Date(advSession.startedAt).getTime(),
+    cwd: papercuspPath(),
+    windowMs: 5 * 60_000,
+  });
+  return {
+    advSession,
+    sessionId: match?.id ?? null,
+    filePath: match?.filePath ?? null,
+    match,
+  };
+}
 
 const list = defineTool({
   method: 'GET',
@@ -82,4 +182,58 @@ const alive = defineTool({
   },
 });
 
-export default [list, focus, alive];
+const state = defineTool({
+  method: 'GET',
+  path: '/adv/sessions/state',
+  auth: 'public',
+  async handler(req) {
+    const resolved = await resolveOmpSessionForRequest(req);
+    const sessionState =
+      resolved.sessionId || resolved.filePath
+        ? getOmpSessionState({ id: resolved.sessionId ?? undefined, filePath: resolved.filePath ?? undefined })
+        : null;
+    const memory = await readOmpMemoryConfig();
+    return new Response(
+      JSON.stringify({
+        ok: sessionState !== null,
+        advSession: resolved.advSession,
+        match: resolved.match,
+        state: sessionState,
+        memory,
+        error: sessionState ? null : 'omp_session_not_found',
+      }),
+      { status: 200, headers: JSON_HEADERS },
+    );
+  },
+});
+
+const search = defineTool({
+  method: 'GET',
+  path: '/adv/sessions/search',
+  auth: 'public',
+  async handler(req) {
+    const url = new URL(req.url);
+    const query = url.searchParams.get('q')?.trim() ?? '';
+    const limit = Number(url.searchParams.get('limit') ?? 50);
+    if (!query) {
+      return new Response(
+        JSON.stringify({ ok: true, query, matches: [], truncated: false, searchedSessions: 0 }),
+        { status: 200, headers: JSON_HEADERS },
+      );
+    }
+    const resolved = await resolveOmpSessionForRequest(req);
+    const result = searchOmpSessions({
+      query,
+      sessionId: resolved.sessionId ?? undefined,
+      filePath: resolved.filePath ?? undefined,
+      limit: Number.isFinite(limit) && limit > 0 ? limit : 50,
+      context: 1,
+    });
+    return new Response(
+      JSON.stringify({ ok: true, advSession: resolved.advSession, match: resolved.match, ...result }),
+      { status: 200, headers: JSON_HEADERS },
+    );
+  },
+});
+
+export default [list, focus, alive, state, search];

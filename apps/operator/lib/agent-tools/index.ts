@@ -93,6 +93,7 @@ import './operator/paused';
 import './operator/trigger_state';
 import './operator/preferences';
 import './omp/config';
+import './omp/sessions';
 import './operator/multi_workspace';
 import './operator/credentials_status';
 import './projects/list';
@@ -204,6 +205,7 @@ import './plans/add-decision';
 import './plans/add-item';
 // Phase 5 — whole-document write (CAS) + legacy-frontmatter conversion.
 import './plans/set-content';
+import './plans/set-content-chunk';
 import './plans/set-frontmatter';
 // Q3 — git history surface promoted to plans:* tools so agents read it too.
 import './plans/history';

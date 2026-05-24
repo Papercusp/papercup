@@ -116,6 +116,53 @@ export async function listAdvSessions(limit = 100): Promise<AdvSessionRow[]> {
   }
 }
 
+export async function getAdvSession(id: number): Promise<AdvSessionRow | null> {
+  try {
+    await ensureAdvSessionsTable();
+    const { sql } = getOrgPg();
+    const rows = await sql<Array<{
+      id: number;
+      workspace_id: string;
+      plan_slug: string | null;
+      mode: 'omp' | 'console';
+      terminal_bin: string | null;
+      pid: number | null;
+      window_id: string | null;
+      omp_thread_id: string | null;
+      label: string | null;
+      started_at: Date;
+      ended_at: Date | null;
+      exit_code: number | null;
+    }>>`
+      SELECT id, workspace_id, plan_slug, mode, terminal_bin, pid,
+             window_id, omp_thread_id, label, started_at, ended_at, exit_code
+        FROM harness_shared.adv_sessions
+       WHERE workspace_id = ${activeWorkspaceId()}
+         AND id = ${id}
+       LIMIT 1
+    `;
+    const r = rows[0];
+    if (!r) return null;
+    return {
+      id: r.id,
+      workspaceId: r.workspace_id,
+      planSlug: r.plan_slug,
+      mode: r.mode,
+      terminalBin: r.terminal_bin,
+      pid: r.pid,
+      windowId: r.window_id,
+      ompThreadId: r.omp_thread_id,
+      label: r.label,
+      startedAt: r.started_at.toISOString(),
+      endedAt: r.ended_at?.toISOString() ?? null,
+      exitCode: r.exit_code,
+    };
+  } catch (e) {
+    console.warn('[adv-sessions] getAdvSession failed:', (e as Error).message);
+    return null;
+  }
+}
+
 /**
  * Resolve a pid → X11 window id via `wmctrl -lp`. Best-effort: returns
  * null on any failure (no wmctrl, no DISPLAY, pid not yet windowed,

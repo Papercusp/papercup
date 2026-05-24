@@ -94,10 +94,9 @@ except json.JSONDecodeError:
     cfg = {}
 
 cfg.setdefault('mcpServers', {})
-# Hindsight is intentionally disabled for engineer-collaborator OMP.
-# Keep papercusp-su, but remove the stale standalone Hindsight MCP server
-# if an older local config still has it.
-cfg['mcpServers'].pop('hindsight', None)
+# Preserve any user-configured Hindsight MCP server. OMP-native Hindsight is
+# enabled through `omp config set memory.backend hindsight` below; standalone
+# Hindsight MCP entries are no longer stripped by the Papercusp installer.
 # `?client=<agent_id>` surfaces as ctx.uiClientId in tool handlers so
 # locks:* can identify ownership without per-call args.
 cfg['mcpServers']['papercusp-su'] = {
@@ -112,6 +111,26 @@ with open(path, 'w') as f:
 PYEOF
 chmod 600 "$OMP_CONFIG_PATH"
 echo "✓ Merged 'papercusp-su' into $OMP_CONFIG_PATH (mode 0600)"
+
+# 3b. Enable OMP-native Hindsight memory. This is the first-class OMP
+# memory backend: it exposes recall/retain/reflect tools and auto-retains
+# session history every N turns. The server may be local Docker or Cloud;
+# env lets a machine override the default without editing this script.
+HINDSIGHT_URL="${PAPERCUSP_HINDSIGHT_API_URL:-${HINDSIGHT_API_URL:-http://localhost:8888}}"
+set_omp_config() {
+  local key="$1"
+  local value="$2"
+  if command -v omp >/dev/null 2>&1 && omp config set "$key" "$value" >/dev/null 2>&1; then
+    echo "✓ OMP config $key=$value"
+  else
+    echo "! Could not set OMP config $key (is omp installed and healthy?)"
+  fi
+}
+set_omp_config "memory.backend" "hindsight"
+set_omp_config "hindsight.apiUrl" "$HINDSIGHT_URL"
+set_omp_config "hindsight.scoping" "per-project-tagged"
+set_omp_config "hindsight.autoRecall" "true"
+set_omp_config "hindsight.autoRetain" "true"
 
 # 4. Install the engineer-collaborator playbook as a standalone OPT-IN
 # file. It used to be injected as a managed block into OMP's
@@ -246,6 +265,13 @@ Done.
 The papercusp-su MCP server is registered for BOTH plain omp and omp-su
 (it lives in ~/.omp/agent/mcp.json) — only the playbook and the
 coordination extension are gated behind omp-su.
+
+OMP-native Hindsight memory is enabled by this installer:
+  memory.backend=hindsight
+  hindsight.apiUrl=${HINDSIGHT_URL}
+  hindsight.scoping=per-project-tagged
+Start a local server if you are not using Hindsight Cloud:
+  docker run -p 8888:8888 ghcr.io/vectorize-io/hindsight:latest
 
 Project docs — point the docs:* tools at YOUR project's docs (instead
 of Papercusp engineering docs) by setting the env var below before
