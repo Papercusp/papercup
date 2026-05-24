@@ -420,7 +420,6 @@ export function CreateHarnessPicker({ open, onOpenChange, onCreated }: CreateHar
       open={open}
       onOpenChange={(v) => { if (!v) handleClose(); else onOpenChange(true); }}
       title="Add a harness"
-      srOnlyTitle={step !== 'picker'}
       contentStyle={{
         width: 'min(520px, 96vw)',
         background: 'var(--bg-popover, #0d1829)',
