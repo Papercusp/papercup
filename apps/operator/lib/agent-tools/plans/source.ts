@@ -12,9 +12,78 @@
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import { parsePlan, type ParsedPlan } from './parser';
+import { loadHarnessRegistry } from '@/lib/harness-registry';
+import { detectPapercupRoot, PAPERCUP_HARNESS_SLUG } from '@/lib/harness/register-papercup';
 
 export const PLANS_DIR_REL = 'apps/operator/docs/plans';
 export const ARCHIVE_DIR_REL = 'apps/operator/docs/plans/archive';
+
+/**
+ * Per-harness plans directory convention. The papercup harness is the
+ * legacy case: its plans live at `apps/operator/docs/plans/` (inside
+ * the operator app). All other harnesses use `docs/plans/` at their
+ * harness root — that's the convention going forward (D-002R of
+ * per-harness-plans-and-docs-2026-05-23).
+ *
+ * TODO(per-harness-plans-and-docs-2026-05-23): extract to a registry
+ * `plans_dir` field when a third config is needed. For now, two paths
+ * = one if-clause.
+ */
+const PAPERCUP_PLANS_REL = 'apps/operator/docs/plans';
+const DEFAULT_HARNESS_PLANS_REL = 'docs/plans';
+
+function plansRelFor(harnessSlug: string): string {
+  return harnessSlug === PAPERCUP_HARNESS_SLUG ? PAPERCUP_PLANS_REL : DEFAULT_HARNESS_PLANS_REL;
+}
+
+/**
+ * Resolve the per-harness plans directory + its archive subdir.
+ *
+ * D-002R: per-harness plans live at `<harness.path>/<plansRelFor(slug)>/`.
+ * D-004R: no harness in context → fall through to the workspace's primary
+ * harness (today: `papercup`, the harness whose path == REPO_ROOT).
+ *
+ * Throws if the resolved harness isn't registered.
+ *
+ * NOTE: this is the *async* per-harness resolver. The legacy sync
+ * `getPlansDir`/`getArchiveDir` still exist for callers that haven't
+ * yet been migrated to per-harness resolution — they default to the
+ * papercup location via cwd-walk, preserving today's behavior. New
+ * code should call this resolver instead. (Migration scheduled as
+ * P-012 of per-harness-plans-and-docs-2026-05-23.)
+ */
+export async function resolveHarnessPlansDir(
+  harnessSlug?: string,
+): Promise<{ harnessSlug: string; plans: string; archive: string }> {
+  const resolved = (harnessSlug?.trim() || PAPERCUP_HARNESS_SLUG) as string;
+  const reg = await loadHarnessRegistry();
+  const project = reg.projects.find((p) => p.slug === resolved);
+  if (!project) {
+    throw new Error(
+      `resolveHarnessPlansDir: harness '${resolved}' not registered. ` +
+        `Available: ${reg.projects.map((p) => p.slug).join(', ') || '(none)'}`,
+    );
+  }
+  // P-014: runtime guard. For papercup, verify the registered path
+  // still matches the detected repo root. Catches a registry-corruption
+  // case where papercup was re-registered against a stale path; without
+  // this, every plans:* call would silently read from the wrong dir.
+  // Skip when detection returns null (packaged install — papercup repo
+  // not on disk, the whole code path is a no-op anyway).
+  if (resolved === PAPERCUP_HARNESS_SLUG) {
+    const detected = detectPapercupRoot();
+    if (detected && path.resolve(project.path) !== path.resolve(detected)) {
+      throw new Error(
+        `P-014 runtime guard: papercup harness path '${project.path}' ` +
+          `does not match detected repo root '${detected}'. ` +
+          `The registry is out of sync — re-run registerPapercupHarness() ` +
+          `with pathOverride to fix.`,
+      );
+    }
+  }
+  const plans = path.join(project.path, plansRelFor(resolved));
+  return { harnessSlug: resolved, plans, archive: path.join(plans, 'archive') };
+}
 
 export interface PlanSourceOpts {
   repoRoot?: string;
