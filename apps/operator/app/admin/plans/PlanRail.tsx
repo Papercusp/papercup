@@ -68,11 +68,16 @@ interface Props {
   list: AsyncResult<{ plans: PlanListRow[] }>;
   selectedSlug: string | null;
   query: string;
+  /** Plan slugs the server-side cross-plan search returned. The rail
+   *  unions these with the title/slug substring match so a search for
+   *  body-only text ("memory" / "mem0") still surfaces matching plans
+   *  instead of looking like "0 results". */
+  searchHitSlugs?: ReadonlySet<string>;
   onSelect: (slug: string) => void;
 }
 
 const PlanRail = forwardRef<PlanRailHandle, Props>(function PlanRail(
-  { list, selectedSlug, query, onSelect }: Props,
+  { list, selectedSlug, query, searchHitSlugs, onSelect }: Props,
   ref,
 ) {
   const { data, loading, error, refresh } = list;
@@ -116,7 +121,8 @@ const PlanRail = forwardRef<PlanRailHandle, Props>(function PlanRail(
       ? working.filter(
           (p) =>
             (p.title ?? '').toLowerCase().includes(needle) ||
-            p.slug.toLowerCase().includes(needle),
+            p.slug.toLowerCase().includes(needle) ||
+            (searchHitSlugs?.has(p.slug) ?? false),
         )
       : working;
     return [...filtered].sort((a, b) => {
@@ -125,7 +131,7 @@ const PlanRail = forwardRef<PlanRailHandle, Props>(function PlanRail(
       if (sa !== sb) return sa - sb;
       return (b.updated ?? '').localeCompare(a.updated ?? '');
     });
-  }, [plans, fStatus, fOwner, fDate, fArchived, fLegacy, fInbox, fActionable, query]);
+  }, [plans, fStatus, fOwner, fDate, fArchived, fLegacy, fInbox, fActionable, query, searchHitSlugs]);
 
   useImperativeHandle(
     ref,

@@ -24,7 +24,7 @@ import PlanItemsList from './PlanItemsList';
 import PlanFilters from './PlanFilters';
 import PlanSearchResults from './PlanSearchResults';
 import PlanTriage from './PlanTriage';
-import { usePlanList, type PlanListRow } from './plans-api';
+import { usePlanList, usePlanSearch, type PlanListRow } from './plans-api';
 
 type PlansView = 'list' | 'inbox' | 'actionable' | 'triage';
 type PaneMode = 'read' | 'edit';
@@ -59,6 +59,20 @@ export default function PlansClient() {
   const searchRef = useRef<HTMLInputElement | null>(null);
   const planList = usePlanList({ includeArchived: true, includeLegacy: true });
   const stats = useMemo(() => buildPlanStats(planList.data?.plans ?? []), [planList.data]);
+
+  // Lift cross-plan search up so PlanRail can union its hits into the
+  // rail filter — otherwise the rail does a substring match on
+  // title/slug only and a search like "memory" (which appears in body
+  // text but no title/slug) reads as "0 results" even though
+  // PlanSearchResults has 20+ hits. PlanSearchResults still mounts its
+  // own debounced search; the small duplicate fetch is the price for
+  // keeping that component standalone.
+  const railSearchHits = usePlanSearch(q);
+  const searchHitSlugs = useMemo<Set<string>>(() => {
+    const s = new Set<string>();
+    for (const h of railSearchHits.data?.hits ?? []) s.add(h.plan);
+    return s;
+  }, [railSearchHits.data]);
 
   // Bug-1 guard: PlanDetail keeps this ref current with its unsaved-
   // edit state. `leaveGuard` is consulted before every navigation that
@@ -143,6 +157,7 @@ export default function PlansClient() {
             list={planList}
             selectedSlug={slug}
             query={q}
+            searchHitSlugs={searchHitSlugs}
             onSelect={navSlug}
           />
         </div>
