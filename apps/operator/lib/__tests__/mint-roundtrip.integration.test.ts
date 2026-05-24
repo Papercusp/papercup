@@ -52,12 +52,9 @@ describe('spawn-signing mint+verify roundtrip', () => {
   });
 
   itLive('.mcp.json minted with correct mode and URL', async () => {
-    // Dynamic cross-package import; tsx resolves .ts at runtime
-    // eslint-disable-next-line @typescript-eslint/ban-ts-comment
-    // @ts-expect-error allowImportingTsExtensions not set, but tsx handles this
-    const { writeSignedSpawnMcp } = await import(
-      '../../../../libs/papercusp/packages/orchestrator/src/spawn-mcp.ts'
-    );
+    // Dynamic cross-package import; path resolved by Vitest/tsx at runtime
+    const mod = await import('../../../../libs/papercusp/packages/orchestrator/src/spawn-mcp.ts' as string);
+    const writeSignedSpawnMcp: (dir: string, opts: Record<string, unknown>) => Promise<{ path: string }> = mod.writeSignedSpawnMcp;
 
     tmpDir = mkdtempSync(join(tmpdir(), 'spawn-mint-'));
     const handle = await writeSignedSpawnMcp(tmpDir, {
