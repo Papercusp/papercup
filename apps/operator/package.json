@@ -80,6 +80,7 @@
     "@milkdown/transformer": "^7.20.0",
     "@mistralai/mistralai": "^2.2.1",
     "@monaco-editor/react": "^4.7.0",
+    "@octokit/rest": "^22.0.0",
     "@openai/agents-realtime": "^0.8.5",
     "@papercusp/docs-engine": "file:../../packages/docs-engine",
     "@papercusp/file-claim": "file:../../libs/papercusp/packages/file-claim",
