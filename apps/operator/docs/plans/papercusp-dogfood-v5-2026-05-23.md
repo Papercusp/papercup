@@ -57,6 +57,13 @@ Authority rule: unclaimed harnesses are provisional community harnesses. Claimed
 
 Implementation hooks added by this addendum: D-025, D-026, P-068, P-069, §5.1, and the Cupboard schema/API updates in §10.2/§10.3.
 
+## 2026-05-24 addendum — deferrals carved into separate plan docs
+
+Two design threads surfaced during the 2026-05-24 review pass have been carved into standalone plan docs so they can be reviewed and scheduled independently of v5. Until those plans land, the corresponding v5 surfaces ship in their simplest form:
+
+- **Team-proxy witness pattern** → [`proxy-witness-pattern-2026-05-24.md`](./proxy-witness-pattern-2026-05-24.md). Cross-engineer verifiable LLM-side stats (token spend, latency, model attribution, refusals, etc.) require a shared witness; the team proxy is the natural fit. Until that pattern is built, **all LLM-side stats surfaced in shared-harness UIs (notably the Insights "Spend" card) ship as `self-reported` (⏱ badge) only.** No cross-engineer verification of spend, no billing-admin role, no reconciliation reports in v5.
+- **Plans become harness-scoped, author-owned, fork-on-drag** → [`plans-harness-scoped-2026-05-24.md`](./plans-harness-scoped-2026-05-24.md). Plans move from workspace-scoped to harness-scoped HYPERBEE storage, with author-only edits, a Plans sidebar pane, and drag-to-fork mechanics — but only for shared harnesses; private harnesses keep the existing filesystem-backed `plans:*` tools unchanged. Until that plan lands, **plans remain workspace-scoped exactly as today**, including for shared harnesses created under v5. No Plans pane, no fork-on-drag, no per-harness plan migration. The `papercusp` harness is the migration target when this lands.
+
 ## Background
 
 (v4 §Background carries forward verbatim. Papercusp's substrate is in place: Tauri desktop, embedded PG18 via `embedded-postgres-server` ^18.3.0-beta.17 with `wal_level=logical`, Next.js operator, embedded-pg discovery file, OAuth provider lib, `libs/sync` SyncProvider + SSEAdapter, `harness-fs-watcher`, `workspace-listener.ts`, `harness_features_consolidated` / `harness_issues_consolidated` canonical, `@rocicorp/zero` retired but dep not yet removed. Phase 0 spike is the gate before anything ships; named fallback is "HYPERBEE bucket collapses into GIT bucket.")
@@ -627,7 +634,24 @@ For untrusted authors:
 
 ### §9 — Sidebar tabs
 
-Three new tabs (in addition to existing tabs):
+Pinned-top: **Insights** (§9.0) — the post-install default landing for any shared harness. Below it: **Features** (§9.1), **Contributors** (§9.2), **PRs** (§9.3). Existing harness tabs (Dashboard / Docs / VSCode etc.) remain available below the collaboration set.
+
+#### §9.0 — Insights tab (NEW in 2026-05-24 addendum 3)
+
+**Insights is the first surface a new contributor sees** after joining a shared harness via Entry 4 (§3 P-009) or after a wizard-driven conversion via §5 P-029. First-visit detection is per-`(workspace, harness)` and tracked in the LOCAL `insights_first_visit` table (§7.4); when null, the operator force-routes to `/harness/<slug>/insights` regardless of any path the user came in on. After dismissal Insights becomes a normal pinned-top tab navigable from the sidebar.
+
+Private harnesses also get an Insights page (collapsed content set; no contributor/proxy material), so the surface is consistent across harness states.
+
+**Layout — six cards, top to bottom.** All data is *composed* from existing tables; only `insights_first_visit` and the contributor usage ledger (§7.1) are new schema. Stat trust tiers from §17 apply throughout: tier-A (✓ GitHub-derived), tier-B (✓ `completion_ref`-verified), tier-C (unmarked Hyperbee-claimed), tier-D (⏱ self-reported).
+
+1. **Project card** — name, description, owner (provisional vs claimed badge per §5.1), license, languages, GitHub link, Discord link if §11 configured. Pulled from `.harness/config.json` + GitHub API (tier A).
+2. **Activity feed** — last ~20 events with tier badges: features shipped (✓ B), PRs merged (✓ A), contributors joined (C with verified-binding badge per §17), decisions added (C), escalations opened (C). Sorted newest-first. Click → relevant detail surface.
+3. **People** — horizontal avatar stack of contributors. Each carries a `verified` badge if pubkey↔login binding passed both channels (§0.2.7), `unverified` otherwise. Unverified contributors do not contribute to any tier-A/B/C stat aggregate. Click → user profile (§18).
+4. **Your place** — contextual to viewer: queue summary ("3 in queue, 1 working"), role state ("you hold pr-review for this harness" or "your contributions await review"), trust state ("trusted by 2 of 3 reviewers" or "not yet trusted"), spend-this-week ⏱.
+5. **How it works here** — short prose composed from harness config: queue → claim → PR → shipped flow, plus this harness's customizations (auto-merge on/off, branch-pattern overrides, active reviewers, peer-mirror state). Mostly static template with config-derived deltas highlighted.
+6. **Spend (self-reported, ⏱)** — local `tool_invocations`-derived total for the current viewer, plus a "your share of estimated harness spend this week" rough number from the same source. Banner: *"Cross-engineer-verifiable spend is deferred to the proxy-witness pattern (see `proxy-witness-pattern-2026-05-24.md`). Until that lands, the only spend number you can trust is your own."* No per-contributor breakdown until proxy-witness is implemented.
+
+**Ordering constraint for the implementing agent**: Insights leans hard on the trust-tier badges from §17 and the binding work from §0.2.7. **Do not ship Insights without those two**, or the "247 features by Alice" number becomes trivially fakeable and people start trusting it. P-073 is blocked-by P-075.
 
 #### §9.1 — Features tab
 
@@ -983,6 +1007,52 @@ Before every agent push (§8.1 step 2):
 
 Per-harness toggle: `auto_rebase_on_push` (default TRUE). Disable if team prefers manual conflict handling.
 
+### §17 — Stat trust tiers (NEW in 2026-05-24 addendum 3)
+
+Every collaboration stat surfaced in shared-harness UIs (Insights §9.0, Contributors §9.2, Cupboard §10, user profile §18) carries a trust tier. Tiers reflect *what mechanism makes the number trustworthy*, not how recent or polished it is. They never aggregate across tiers.
+
+| Tier | Source | Badge | Examples |
+|---|---|---|---|
+| **A** | GitHub-derived. Pulled from a public GitHub API the viewer can re-derive. | ✓ | merged-PR count, repo collaborator count, last-commit timestamp, languages, license, repo public/private status |
+| **B** | `completion_ref`-verified. The Hyperbee row asserts a state; a background `git ls-remote` poll (§15) confirmed the asserted commit actually exists at the canonical remote. | ✓ | features shipped, PRs merged-by-our-flow |
+| **C** | Hyperbee-claimed. Asserted by a contributor's pubkey-bound operator; signature verified, but the assertion itself is self-reported. | (unmarked) | features in queue, currently working, decisions added, escalations opened |
+| **D** | Self-reported (local-only). Sourced from this engineer's local `tool_invocations` or equivalent; never cross-engineer verifiable. | ⏱ | token spend, latency, model attribution (until proxy-witness pattern ships) |
+
+**Surface rules:**
+
+- **Cupboard** (§10): tier-A only. The harness's contributor count, activity timestamp, and language tags all come from GitHub APIs the Cupboard registry server hits at index time. Hyperbee-claimed numbers never appear on the public Cupboard.
+- **Insights** (§9.0): all four tiers may appear, each with its badge. Aggregates within a tier are fine; sums across tiers are not (e.g. "features done" never combines `shipped` (B) with `pending_done` (C)).
+- **Contributors tab** (§9.2): each contributor row shows tier-A merged-PR count (✓), tier-B features-shipped (✓), tier-C activity badges (unmarked), tier-D personal spend (⏱, viewer-only).
+- **User profile** (§18): tier-A and tier-B stats can be public when the harness is shared-public; tier-C stats restricted to harness members; tier-D never publishes.
+- **Unverified contributors** (per §0.2.7) contribute to no tier. A Sybil ring inflates exactly nothing visible.
+
+**Three D-decisions encode this:** D-030 (tier framework), D-031 (binding two-channel), D-027 (activity stored as append-only events not mutable counters).
+
+### §18 — User profile page (NEW in 2026-05-24 addendum 3)
+
+A first-class Papercusp surface keyed by GitHub's stable numeric user id: `/users/github/<github_user_id>`. Username routes (`/users/<github_login>`) redirect to the canonical numeric route — usernames change; numeric ids do not (per D-010).
+
+**Why a profile page**: today the Marketplace detail surface links `publishedBy` straight to GitHub. That's fine for "see who shipped this" but it gives Papercusp no way to surface a contributor's *Papercusp-side* activity (shared-harness participation, features shipped, plans authored, trust signals). The profile fills that gap and is the destination for every contributor-avatar click across the operator UI: Contributors tab (§9.2), feature cards (§9.1), PR rows (§9.3), activity feed (§9.0), Insights People card, Cupboard contributor lists.
+
+**Content**:
+- Header: GitHub avatar (or identicon fallback), display name, `@github_username`, "Verified ✓" badge if their pubkey↔login binding passed §0.2.7, GitHub profile link.
+- Shared harnesses they contribute to. Privacy-filtered: shared-public always visible; shared-private visible only to viewers who are also members of that harness; private never visible.
+- Per-harness collapsible block (one per visible harness):
+  - Tier-A: PRs opened / merged / reviewed (GitHub API).
+  - Tier-B: features shipped (`completion_ref`-verified).
+  - Tier-C: features authored, features queued, features worked, decisions added (Hyperbee-claimed, unmarked).
+  - Tier-D omitted from profile entirely (personal spend never crosses to other viewers).
+- Recent activity feed across visible harnesses (last ~30 events, tier-badged).
+- Footer: claimed harnesses (where this user is a verified claimant per §5.1) — useful for the "I see Alice's name on this Cupboard listing, what else does she maintain?" path.
+
+**Privacy invariants:**
+- Profile is fetchable for any contributor in any shared harness the viewer is a member of.
+- For viewers with no shared-harness overlap, profile shows only the GitHub-derived header + tier-A stats from shared-public harnesses.
+- An unverified contributor's profile carries a prominent banner: *"This GitHub identity has not completed Papercusp's two-channel binding. Their stats are not counted in any aggregate."*
+
+**Reuse**: where Marketplace surfaces today display `@<github_login>` linking to GitHub, switch them to also link to the Papercusp profile (with the GitHub link still available from the profile header). No new Marketplace UI; just a route change.
+
+**Implementation note for the agent**: the existing `/settings/profile` page is LOCAL preferences — name/email/default models. The new user profile at `/users/github/<id>` is a separate, public-facing surface. Do not conflate.
 
 ## Scope
 
@@ -1042,15 +1112,15 @@ Sizing legend: **S** = ~1-3 days. **M** = ~1 week. **L** = ~2-3 weeks. **XL** = 
 
 ### Phase 2 — `completion_ref` + status verification [M]
 
-- **P-014** [S] Schema add `completion_ref JSONB` to `harness_features_consolidated` (SQL migration since the base table is in `001-shared.sql`).
-- **P-015** [M] Schema additions to `harness_features_consolidated` per §7.1 (`created_by_github_user_id`, `working_users[]`, `worked_by_history`). **Explicitly NOT adding** issue-equivalent columns to `harness_issues_consolidated` (D-017).
+- **P-014** [S] Schema add `completion_ref JSONB` to `harness_features_consolidated` (SQL migration since the base table is in `001-shared.sql`). **DONE** in migration `080-harness-features-dogfood-columns.sql` (libs/papercusp submodule pointer at commit `2d9439ea`). Verified live against PG.
+- **P-015** [M] Schema additions to `harness_features_consolidated` per §7.1 (`created_by_github_user_id`, `working_users[]`, `worked_by_history`). **Explicitly NOT adding** issue-equivalent columns to `harness_issues_consolidated` (D-017). **DONE** in migration 080 alongside P-014: `created_by_github_user_id BIGINT`, `working_users BIGINT[] NOT NULL DEFAULT '{}'`, `worked_by_history JSONB NOT NULL DEFAULT '[]'::jsonb`, plus supporting indexes `hfc_working_users_active_idx`, `hfc_created_by_idx`, `hfc_pending_done_idx`. Verified live against PG.
 - **P-016** [M] Background verifier daemon. `git ls-remote` polling. Cache + divergence-warning surfacing.
 - **P-017** [S] Surface in PlanDetail / FeatureDetail UI: `completion_ref` + verification timestamp; warn on divergence.
 
 ### Phase 3 — Reactivity migration (independently shippable) [M]
 
 - **P-018** [S] PG-side `emit_change_notify` trigger function. Migration 078 adds it. **REVISED 2026-05-24** (commits 20609bb + c549e5c4): emits on the **existing** `sync_invalidate` channel (not a new `papercusp_changes` channel) with the established `{name, args}` payload shape — so the existing SSE endpoint `/api/zero-harness/sse` + `notifySyncInvalidate()`-style consumers serve both app-code notifies and PG-trigger notifies. The 90s dedupe window in `sync-sse.ts` handles the overlap when application code ALSO fires the trigger. Application-code `notifySyncInvalidate()` and PG-trigger `emit_change_notify()` are now complementary producers on the same channel: app-code = fine-grained intentional notifies; PG trigger = coarse catch-all that fires on EVERY write including raw SQL / MCP-tool direct writes / migrations.
-- **P-019** [M] Attach trigger to HYPERBEE-bucket tables + curated GIT-bucket tables. End-to-end invalidation test. **Part 1 done** in commit `da1284f6` (`wireDogfoodTriggers` helper attaching to the 10 new dogfood tables); **part 2 pending** (existing HYPERBEE tables like `harness_features_consolidated`, `harness_issues_consolidated`, `coord_presence`, `harness_feature_prs` — needs a trigger-interaction audit since those already have writers that may call `notifySyncInvalidate()`).
+- **P-019** [M] Attach trigger to HYPERBEE-bucket tables + curated GIT-bucket tables. End-to-end invalidation test. **Part 1 DONE** in commit `da1284f6` (`wireDogfoodTriggers` helper attaching to the 10 new dogfood tables). **Part 2 DONE** in commit `59611dde` (extended `wireDogfoodTriggers` with `EXISTING_HYPERBEE_REACTIVE_TABLES` — `harness_features_consolidated`, `harness_issues_consolidated`, `coord_presence`, `harness_feature_prs`). Trigger-interaction audit confirmed safe: existing triggers fire on per-harness tables and write INTO the consolidated table; the new trigger fires on the consolidated table itself — different tables, no conflict. Live e2e verifier `scripts/verify-reactivity-e2e.ts` proves trigger fires → sync-sse → /api/zero-harness/sse → SSE client receives the right name + INSERT/UPDATE/DELETE op.
 - **P-020** [DROPPED 2026-05-24] **Original**: new `/api/sync/stream` endpoint with `LISTEN papercusp_changes`. **Why dropped**: discovered the project already had this — `/api/zero-harness/sse` + `apps/operator/lib/sync-sse.ts` (`subscribe()` / `notifySyncInvalidate()` / 60s ring buffer / Last-Event-ID replay), used by 20+ existing writers. P-020's implementation (commit `e4fe1bcf`) was parallel infrastructure; reverted in commit `a0327933` and 078's channel routed to `sync_invalidate` instead. No work needed here.
 - **P-021** [S/M] Migrate `apps/operator/app/admin/plans/*` from `useAsyncJson` → `useSyncQuery`. **Note (2026-05-23 discovery)**: the actual `useAsyncJson` in `plans-api.ts` is fetch-on-mount with manual `refresh()`, NOT 30s polling — v5's original "30s polling" wording was inaccurate, no polling to remove. **Entanglement with P-022**: `useSyncQuery` resolves `queryName` through the `@restart/zero-harness` ZQL registry (`zero-harness-resolver.ts`); switching plans-admin to it means either adding plans queries to that Zero-coupled registry (which P-022 retires) OR landing a Zero-free `useSyncQuery` first. Split the work: **P-021a (server side, done in commit XXXX)** — `notifySyncInvalidate('plans.list'|'plans.get'|...)` fires on every successful plan write via the existing `sync_invalidate` channel; any future client subscriber works immediately. **P-021b (client side, deferred until after P-022)** — the actual hook migration.
 - **P-022** [S/M] Remove `@rocicorp/zero` dep from `apps/operator/package.json` + `libs/zero-harness/package.json`. Audit any residual Zero WS adapter wiring; remove. **Replace `zero-harness-resolver.ts` with a Zero-free query registry** (a switch-on-name pattern like `device/sync.ts` already uses) so P-021b can land without re-entangling. **Progress (2026-05-25 overnight)**: incremental migration COMPLETE — all 54 live queryNames in v2 `apps/operator/lib/sync-resolver/`. **Cutover Phase A DONE** (commit `164671ed`): deleted `zero-harness-resolver.ts` + `routes/misc/zero-harness-query.ts` + fall-through branches in `rest-query.ts`/`rest-query-batch.ts`. **Cutover Phase B BLOCKED on user input**: dropping the `@rocicorp/zero` dep itself would break the retired `apps/papercup/` webapp (7 runtime `import { queries } from '@restart/zero-harness'` callers) + `libs/papercup-shared/src/BriefingsView.tsx` + the auto-generated `libs/zero-harness/src/schema.ts` (76 tables using `table().from().columns()` from `@rocicorp/zero` + types like `Row<typeof projects>`). Two paths for Phase B require user judgement: (a) delete `apps/papercup/` entirely (consistent with memory `feedback_webapp_retired_use_tauri_dev`), or (b) refactor `schema.ts` to be drizzle-derived type-only + replace `useQuery` in BriefingsView with `useSyncQuery`. Per-session multi-hour focused work either way.
