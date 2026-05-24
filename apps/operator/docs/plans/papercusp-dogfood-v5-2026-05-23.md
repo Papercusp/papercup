@@ -9,11 +9,11 @@ supersedes: papercusp-dogfood-v4-2026-05-23
 
 ## Now
 
-**Single next action**: get user sign-off on v5, then split into per-phase execution plans (one per Phase 0 through Phase 11) and start Phase 0 spike.
+**Single next action**: get user sign-off on v5 + the 2026-05-24 shared-repo addendum, then split into per-phase execution plans (one per Phase 0 through Phase 11) and start Phase 0 spike.
 
 ## What changed from v4
 
-v5 is a maintenance pass folding in the v4 audit findings plus user resolutions on the 9 open questions. No architectural changes. All 22 v4 decisions stand; v5 adds fixes, clarifications, and answers to the open questions.
+v5 started as a maintenance pass folding in the v4 audit findings plus user resolutions on the 9 open questions. The 2026-05-24 addendum below adds one product/authority change: GitHub URL harness creation is canonicalized by stable repository id, and unclaimed shared harnesses can be claimed or superseded by verified GitHub maintainers.
 
 **Audit-driven changes (10):**
 
@@ -43,6 +43,19 @@ v5 is a maintenance pass folding in the v4 audit findings plus user resolutions 
 **Net open-questions list**: 1 remaining (the moderation policy itself, scoped to Phase 12+).
 
 **Smaller documentation tidies (audit B, C, N, O, P, R applied as text edits, no scope change).**
+
+## 2026-05-24 addendum — canonical shared harnesses for GitHub repos
+
+User decision: creating from a GitHub URL is a shared-harness action only. There is no "private GitHub URL" create path. Private harnesses are created from a new local directory (Entry 1) or an already-cloned local repo (Entry 3).
+
+New shared-harness rule: for GitHub-backed shared harnesses, the canonical identity is GitHub's stable numeric `repository.id`, not `owner/name`. Before creating a shared harness, the operator resolves the pasted URL through GitHub, looks up the canonical binding, and:
+
+1. If a binding already exists, shows: "A shared Papercusp harness already exists for this repo." The primary action is **Join existing harness**, which adds the existing harness to the user's harness list and runs the normal join/bootstrap flow.
+2. If no binding exists, creates the shared harness and marks it **unclaimed**. The creating user becomes the **provisional owner** and sees an explicit modal explaining which settings they can manage while unclaimed, and that any GitHub maintainer/owner can later claim or supersede the harness.
+
+Authority rule: unclaimed harnesses are provisional community harnesses. Claimed harnesses are repo-authoritative. Any GitHub user with `maintain` or `admin` permission on the bound repository can claim the harness; `admin` is required for destructive owner actions such as superseding an existing unclaimed harness. Claimed/unclaimed status must be visible in create/join, harness header, settings, Contributors, and Cupboard surfaces.
+
+Implementation hooks added by this addendum: D-025, D-026, P-068, P-069, §5.1, and the Cupboard schema/API updates in §10.2/§10.3.
 
 ## Background
 
@@ -180,11 +193,11 @@ Latency floor = Autobase merge convergence (~50–200ms on healthy mesh), which 
 
 #### §1.2 — Harness
 
-A harness is `{slug, path, state}`, where `state ∈ {private, shared-private, shared-public}`. Default state for newly-created harnesses = `private`. Conversion via §5 wizard.
+A harness is `{slug, path, state}`, where `state ∈ {private, shared-private, shared-public}`. Default state for local-only creation (Entries 1 and 3) = `private`; GitHub URL creation (Entry 2) is shared-only per D-025.
 
 State semantics:
 - `private` — single-engineer, no Hyperbee, no user-branch.
-- `shared-private` — invite-link-gated. Hyperbee sync + user-branch + GitHub-forced.
+- `shared-private` — explicit repo-link or harness-link gated. Hyperbee sync + user-branch + GitHub-forced.
 - `shared-public` — same as shared-private + Cupboard registry entry.
 
 #### §1.3 — Sub-harness
@@ -214,11 +227,16 @@ Picker exposes 4 mutually-exclusive entry points. Each maps to a different backe
 
 **Entry 1 — New local directory (non-git).** User picks a folder name + parent dir. Operator creates the directory, runs `git init`, scaffolds harness, registers in PG via `POST /api/harness/projects`. State defaults to `private`.
 
-**Entry 2 — GitHub URL.** User pastes a GitHub HTTPS URL. Operator requires GitHub OAuth (fires §0.2 if first time). Clones via `isomorphic-git` with the OAuth token as auth (new dep). Scaffolds harness, walks `.gitmodules` per §2. State defaults to `private`. User can later convert to shared via §5 wizard.
+**Entry 2 — GitHub URL (shared create/join only).** User pastes a GitHub HTTPS URL. Operator requires GitHub identity, resolves the repo via GitHub API/CLI to read stable `github_repository_id`, then calls the canonical binding lookup (§5.1):
+
+1. **Existing binding**: show "A shared Papercusp harness already exists for this repo" with claimed/unclaimed badge, creator/claimant summary, and primary action **Join existing harness**. Accepting adds the existing harness to the user's harness list, clones the repo, joins the existing topic, creates `user/<github_user_id>` branch/worktree, and publishes the contributor binding.
+2. **No binding**: create a new `shared-private` harness immediately. Generate topic, write `.harness/shared.json`, create the canonical binding with `claim_status='unclaimed'`, and show the provisional-owner explainer before finishing.
+
+There is deliberately no "private harness from GitHub URL" branch. If the user wants a private harness for GitHub code they already cloned, they use Entry 3 (existing local repo), which remains private by default.
 
 **Entry 3 — Existing local repo.** User picks an existing directory. Backend uses the existing `POST /api/harness/projects` route which validates `existsSync(path)` and runs `scaffoldHarnessSchema(slug)`. **Entry 3 does NOT require GitHub auth** (no remote interaction). State defaults to `private`.
 
-**Entry 4 — Harness link (shared harnesses only).** User pastes a `papercusp://harness?topic=<hex>&github=<owner>/<repo>` URL. Operator:
+**Entry 4 — Harness link (shared harnesses only).** User pastes a `papercusp://harness?topic=<hex>&github=<owner>/<repo>&repo_id=<github_repository_id>` URL. Operator:
 1. Requires GitHub OAuth (fires §0.2 attestation flow if first time on this device).
 2. Clones the GitHub repo via Entry 2's clone helper.
 3. Joins Hyperswarm topic (`<hex>`).
@@ -229,29 +247,87 @@ Picker exposes 4 mutually-exclusive entry points. Each maps to a different backe
 
 ### §4 — Harness states + transitions
 
-- `private` (default for Entries 1, 2, 3) — single-engineer, no Hyperbee, no user-branch.
-- `shared-private` — invite-link-gated. Hyperbee + user-branch + GitHub-forced.
+- `private` (default for Entries 1 and 3 only) — single-engineer, no Hyperbee, no user-branch.
+- `shared-private` — explicit repo-link or harness-link gated. Hyperbee + user-branch + GitHub-forced.
 - `shared-public` — same as shared-private + Cupboard registry entry.
+Claim status overlays the shared states: `unclaimed`, `claimed`, `stale`, or `superseded`. It does not replace privacy. A harness can be `shared-private + unclaimed` or `shared-public + claimed`.
 
 Transitions:
-- `private → shared-private` via §5 wizard.
+- `private → shared-private` via §5 wizard for an existing local repo, but only after canonical repo-binding lookup confirms no existing shared harness for that GitHub repository.
+- GitHub URL Entry 2 creates `shared-private` directly when no binding exists, or joins the existing shared harness when a binding already exists.
 - `shared-private → shared-public` via "publish to Cupboard" action.
 - `shared-public → shared-private` via "remove from Cupboard" action.
-- **No shared → private downgrade.** Once shared, stays shared (downgrade would orphan other engineers' branches).
+- **No shared → private downgrade.** Once shared, stays shared (downgrade would orphan other engineers' branches and invalidate the canonical repo binding).
 
 ### §5 — Share-this-harness wizard
 
-Seven-step flow:
+Nine-step flow for converting an existing private local harness (Entry 3) to shared:
 
 1. **Confirm GitHub remote.** `git remote -v` must show an authenticated GitHub remote. If not, prompt to add one (OAuth-gated).
-2. **Generate Hyperswarm topic.** 32 random bytes. Becomes the harness's swarm key.
-3. **Choose Discord channel** (optional). If user provides a channel link, store in `.harness/config.json` (committed to git).
-4. **Choose privacy** (shared-private or shared-public).
-5. **Privacy confirm-modal (D-013)**:
-   - `shared-private`: "Anyone with this link can join and see all contributors' GitHub usernames + avatars."
+2. **Resolve canonical repo id + lookup binding (§5.1).** Use GitHub's stable `repository.id`. If an active binding already exists, stop this wizard and offer **Join existing harness** instead of creating a duplicate.
+3. **Create unclaimed binding if absent.** The sharer becomes `provisional_owner_github_user_id` and sees the provisional-owner explainer/modal.
+4. **Generate Hyperswarm topic.** 32 random bytes. Becomes the harness's swarm key.
+5. **Choose Discord channel** (optional). If user provides a channel link, store in `.harness/config.json` (committed to git).
+6. **Choose privacy** (shared-private or shared-public).
+7. **Privacy confirm-modal (D-013)**:
+   - `shared-private`: "Anyone with this repo link or harness link can join and see all contributors' GitHub usernames + avatars."
    - `shared-public`: "This harness will be listed in the Cupboard. Your GitHub username, display name, and avatar will be visible to anyone."
-6. **Backfill from PG to Hyperbee + GIT** (§7.3): one-time seeding of all HYPERBEE-bucket and GIT-bucket data from this engineer's PG.
-7. **Write `.harness/shared.json`** (committed) with `{topic, github_remote, discord_channel?, privacy, created_at, schema_version}`. Generate harness link: `papercusp://harness?topic=<hex>&github=<owner>/<repo>`. Display for sharing.
+8. **Backfill from PG to Hyperbee + GIT** (§7.3): one-time seeding of all HYPERBEE-bucket and GIT-bucket data from this engineer's PG.
+9. **Write `.harness/shared.json`** (committed) with `{topic, github_remote, github_repository_id, claim_status, discord_channel?, privacy, created_at, schema_version}`. Generate harness link: `papercusp://harness?topic=<hex>&github=<owner>/<repo>&repo_id=<github_repository_id>`. Display for sharing.
+
+#### §5.1 — Canonical repo binding + "claim harness"
+
+The duplicate-prevention primitive lives in the Cupboard binding service (same deployment as §10, but a minimal binding API is required before Entry 2 ships). It is not merely local UI state: every shared harness for a GitHub repository is keyed by `(provider='github', github_repository_id)`.
+
+Binding record shape:
+
+```ts
+type SharedHarnessRepoBinding = {
+  provider: 'github';
+  github_repository_id: number;      // stable GitHub repo id, not owner/name
+  github_full_name: string;          // display only; refreshed on lookup
+  harness_topic: string;
+  harness_slug: string;
+  harness_link: string;
+  privacy: 'shared-private' | 'shared-public';
+  claim_status: 'unclaimed' | 'claimed' | 'stale' | 'superseded';
+  provisional_owner_github_user_id: number;
+  claimed_by_github_user_ids: number[];
+  created_at: string;
+  claimed_at?: string;
+  last_permission_verified_at?: string;
+  superseded_by_harness_topic?: string;
+};
+```
+
+Lookup/create rules:
+
+- **Lookup before create**: Entry 2 and §5 both resolve the GitHub repo id and query this binding before generating a new topic.
+- **Existing active binding**: no duplicate shared harness is created. UI shows an alert and lets the user join the existing harness.
+- **No binding**: create the binding as `unclaimed`; the creator is only the provisional owner.
+- **Private repos**: reveal an existing binding only after GitHub auth proves the user can read the repo. Public repos can be looked up by explicit repo URL. Cupboard browse/search remains public-repo-only.
+- **Superseded binding**: future joiners are redirected to `superseded_by_harness_topic`; existing contributors see a migration banner.
+
+Claim flow:
+
+1. User clicks **Claim harness** from harness settings/header/Cupboard detail.
+2. Operator verifies GitHub permission against the bound repo.
+3. `maintain` or `admin` can claim. `admin` is required to supersede an unclaimed harness, transfer canonical binding, or perform destructive owner actions.
+4. On successful claim, write a claim row, flip `claim_status='claimed'`, and refresh all claimed/unclaimed badges.
+5. Permission is rechecked on every owner-scoped settings write and by a daily background refresh. If no claimant still has permission, mark `claim_status='stale'` and re-enable provisional-owner controls until a maintainer reclaims.
+
+Provisional-owner explainer (shown when creating the first shared harness for a repo):
+
+> No one has created a Papercusp shared harness for this repo yet. You will become the provisional owner. While unclaimed, you can manage: harness title/description/tags, shared-private vs shared-public visibility, Cupboard listing metadata, Discord channel/webhook, default sync/peer-mirror policy, and contributor-facing welcome text. A GitHub maintainer/owner can claim this harness later and will then control those owner-level settings.
+
+UI requirements:
+
+- Header badge: `Unclaimed`, `Claimed`, `Stale claim`, or `Superseded`.
+- Settings banner explaining who currently controls owner-scoped settings.
+- Create/join modal shows existing binding status before clone/join.
+- Contributors tab identifies provisional owner and verified claimants.
+- Cupboard card/detail shows claimed/unclaimed status and claim CTA for maintainers.
+- Owner-scoped settings must be disabled or tooltip-gated for non-authoritative users.
 
 ### §6 — Hybrid sync model
 
@@ -430,6 +506,7 @@ NEVER cross machines. Operational, telemetry, runtime, personal config, UI state
 | **Known schema versions** | NEW `known_schema_versions(harness_slug, max_known_version, updated_at)` — per-engineer; drives the §6 newer-schema-detection toast |
 | **Auto-review audit** | NEW `auto_review_audit(harness_slug, pr_number, action, ts)` — per-engineer log of auto-approve / auto-merge actions |
 | **Claim audit** | NEW `claim_audit(harness_slug, feature_id, attempt_ts, outcome)` — per-engineer log of orchestrator claim attempts |
+| **Shared repo binding cache** | NEW `shared_repo_binding_cache(provider, github_repository_id, harness_topic, claim_status, refreshed_at)` — per-engineer cache of the Cupboard binding lookup; authoritative source remains §5.1/§10 server. |
 
 #### §7.5 — SECURITY bucket (~22 tables, NEVER cross machines under any circumstance)
 
@@ -626,16 +703,37 @@ CREATE TABLE harnesses (
   slug TEXT NOT NULL UNIQUE,
   title TEXT NOT NULL,
   description TEXT NOT NULL,
-  harness_link TEXT NOT NULL,            -- papercusp://harness?topic=<hex>&github=<owner>/<repo>
-  github_repo TEXT NOT NULL,             -- owner/repo
+  harness_link TEXT NOT NULL,            -- papercusp://harness?topic=<hex>&github=<owner>/<repo>&repo_id=<github_repository_id>
+  github_repository_id BIGINT NOT NULL,  -- stable GitHub repository.id; canonical uniqueness key
+  github_repo TEXT NOT NULL,             -- owner/repo display string, refreshed from GitHub
   github_repo_must_be_public BOOLEAN NOT NULL DEFAULT TRUE,
   published_by_github_user_id BIGINT NOT NULL,
+  provisional_owner_github_user_id BIGINT NOT NULL,
+  claim_status TEXT NOT NULL DEFAULT 'unclaimed'
+    CHECK (claim_status IN ('unclaimed', 'claimed', 'stale', 'superseded')),
+  claimed_at TIMESTAMPTZ,
+  last_permission_verified_at TIMESTAMPTZ,
+  superseded_by_harness_id BIGINT,
   contributor_count_estimate INT NOT NULL DEFAULT 1,  -- self-reported, recomputed weekly
   last_activity_at TIMESTAMPTZ,
   language TEXT,
   tags TEXT[],
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE UNIQUE INDEX harnesses_active_repo_unique
+  ON harnesses (github_repository_id)
+  WHERE claim_status <> 'superseded';
+
+CREATE TABLE harness_claims (
+  id BIGSERIAL PRIMARY KEY,
+  harness_id BIGINT NOT NULL REFERENCES harnesses(id),
+  claimant_github_user_id BIGINT NOT NULL,
+  github_permission TEXT NOT NULL,        -- maintain | admin at verification time
+  verified_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  revoked_at TIMESTAMPTZ,
+  UNIQUE (harness_id, claimant_github_user_id)
 );
 
 CREATE TABLE reports (
@@ -658,9 +756,13 @@ CREATE TABLE publish_rate_limit (
 
 #### §10.3 — Auth + anti-abuse
 
-- **Publish**: `POST /harnesses` requires GitHub OAuth (same provider as desktop). Rate-limited at 5 publishes per `github_user_id` per hour. Rejects if GitHub repo is private.
+- **Repo binding lookup**: `GET /repo-bindings/github/:repository_id` returns the active binding if public, or if GitHub auth proves the caller can read the repo. The create flow calls this before creating any shared harness.
+- **Create binding**: `POST /repo-bindings/github` requires GitHub OAuth, verifies repo access, enforces `harnesses_active_repo_unique`, creates `claim_status='unclaimed'`, and records `provisional_owner_github_user_id`.
+- **Claim**: `POST /harnesses/:id/claim` requires GitHub `maintain` or `admin` on the bound repo. Writes `harness_claims`, flips `claim_status='claimed'`, and stores a permission snapshot.
+- **Supersede**: `POST /harnesses/:id/supersede` requires GitHub `admin` on the bound repo. Marks the old harness `superseded` and creates/points to the claimed canonical replacement.
+- **Publish**: `POST /harnesses` requires GitHub OAuth (same provider as desktop). Rate-limited at 5 publishes per `github_user_id` per hour. Rejects Cupboard public listings for private repos, but the non-public binding service can still store private-repo bindings gated by GitHub read permission.
 - **Report**: `POST /reports` requires GitHub OAuth. Reporter identity recorded.
-- **Unlisting**: `DELETE /harnesses/:id` — only by the original publisher (`published_by_github_user_id`) OR by Cupboard operator on resolved abuse report.
+- **Unlisting**: `DELETE /harnesses/:id` — allowed by verified claimants, by the provisional owner while `unclaimed`, or by Cupboard operator on resolved abuse report.
 - **Listing fetch**: `GET /harnesses` — public, no auth.
 
 #### §10.4 — Moderation (Phase 9 v1, scaled per D-023)
@@ -925,13 +1027,16 @@ Sizing legend: **S** = ~1-3 days. **M** = ~1 week. **L** = ~2-3 weeks. **XL** = 
 - **P-007** [S] Implement §2 five-rule classifier as `apps/operator/lib/harness/classify-tree.ts`. Tests for all five cases against papercup's actual `libs/` (9 sub + 7 plain = 16 dirs total).
 - **P-010** [M] Entry 1 (new local non-git dir) + Entry 3 (existing local repo): UI shell + backend `{kind: 'local_init'}` and `{kind: 'local_existing'}` handlers. Entry 3 reuses existing `POST /api/harness/projects` path-validation; Entry 1 wraps `mkdir` + `git init` + Entry 3. **Entry 3 does NOT require GitHub auth.**
 - **P-012** [M] Create-harness UI shell: 4-entry picker, per-entry forms, progress UI for clone/init, error handling. Uses vditor for description input.
-- **P-013** [S] PG schema (in `ensure-schema.ts`): register harness rows in `harness_registry` with `entry_kind` + `state` columns. Also adds the new `feature_queue`, `contributors`, `feature_claims`, `pr_reviewer_settings` (augmented), `pr_check_status_cache`, `known_schema_versions`, `auto_review_audit`, `claim_audit`, `webhook_audit` tables.
+- **P-013** [S] PG schema (in `ensure-schema.ts`): register harness rows in `harness_registry` with `entry_kind` + `state` columns. Also adds the new `feature_queue`, `contributors`, `feature_claims`, `pr_reviewer_settings` (augmented), `pr_check_status_cache`, `known_schema_versions`, `auto_review_audit`, `claim_audit`, `webhook_audit`, and `shared_repo_binding_cache` tables.
 
 ### Phase 1b — OAuth + clone + device attestation [L]
 
+**2026-05-24 addendum**: the clone helper remains useful, but Entry 2 is now shared-only. The handler must call P-068 first: existing binding → join existing; no binding → create `shared-private` + unclaimed canonical binding. It must not create a private harness from a GitHub URL.
+
 - **P-008** [M] **REVISED 2026-05-24** Entry 2 (GitHub URL). **Discovered the established pattern is `gh auth login`** (GitHub CLI) — already covered in `apps/operator/app/_components/SetupWizard/StepGit.tsx` and currently feature-flagged for alpha. `gh` registers itself as a git credential helper; from then on a plain `git clone https://github.com/owner/repo` auths transparently via the system credential helper — no token in our process, no OAuth flow in our code. **No `isomorphic-git`/`@octokit/*` needed for the clone path.** Side benefits: respects user's 2FA / SSH keys / GH Enterprise / corp SSO; degrades gracefully for public repos (no auth at all); no token stored in our PG. Built `apps/operator/lib/harness/clone-github.ts` (170 LOC, no new deps) — `parseGithubUrl` (strict regex allowlist for the GitHub URL shapes, rejects gitlab/other hosts/path traversal), `cloneGithubRepo` (execFile shell-less, `GIT_TERMINAL_PROMPT=0` to surface auth_required immediately, half-cloned dest cleanup, structured error codes `invalid_url|dest_exists|auth_required|not_found|git_missing|unknown` mapped to HTTP 400/409/401/404/500/502). 35 unit tests pass including a real-network test for the bad-org case. POST /api/harness/projects extended to accept `{slug, githubUrl, shallow?}` alongside the existing `{slug, path}` (Entry 3). **DONE** in commits TBD.
-- **P-009** [L] Entry 4 (harness link): add link-paste flow. Parse `papercusp://harness?topic=<hex>&github=<owner>/<repo>` URL scheme. On accept: GitHub OAuth → clone via P-008 → join Hyperswarm topic → bootstrap Hyperbee → seed PG. Device attestation (P-011) runs here on first-join.
+- **P-009** [L] Entry 4 (harness link): add link-paste flow. Parse `papercusp://harness?topic=<hex>&github=<owner>/<repo>&repo_id=<github_repository_id>` URL scheme. On accept: GitHub OAuth → clone via P-008 → join Hyperswarm topic → bootstrap Hyperbee → seed PG. Device attestation (P-011) runs here on first-join.
 - **P-011** [L] Device attestation: `apps/operator/lib/identity/attest.ts`. Octokit + gist creation flow with **required scopes `gist` + `read:user`** (audit L). Verifier helper for inbound bindings (compares `gist.owner.id` to claimed `github_user_id`). Local cache (~24h TTL). Tests against a real GitHub test account.
+- **P-068** [M] Canonical shared-repo binding service (§5.1 / §10): resolve GitHub `repository.id`; lookup/create binding by stable repo id; local `shared_repo_binding_cache`; claim/supersede endpoints; permission verifier for `maintain` / `admin`. Entry 2 and §5 must call this before creating any shared harness.
 
 **Decided-first gate (recap)**: Phase 1a + 1b assume Q-7 resolved (4 repos separate) + `papercusp-workspace` name. Decided.
 
@@ -964,7 +1069,7 @@ Sizing legend: **S** = ~1-3 days. **M** = ~1 week. **L** = ~2-3 weeks. **XL** = 
 
 ### Phase 5a — Hyperbee plumbing [L]
 
-- **P-029** [M] §5 share-this-harness wizard UI. Seven-step flow + privacy confirm-modal.
+- **P-029** [M] §5 share-this-harness wizard UI. Nine-step flow + privacy/provisional-owner confirm modals + canonical repo-binding lookup.
 - **P-030** [L] Hyperbee schema + Autobase setup: per-harness corestore, per-writer Hypercore, Autobase wiring. `apps/operator/lib/sync/hyperbee/*` module. **Includes D-024 schema-versioning**: every op carries `schema_version BIGINT`; `known_schema_versions` per-engineer table; ignore-and-toast on newer-than-known.
 - **P-031** [L] Write-side projection: PG write hooks for HYPERBEE-bucket tables → serialize → append to Hypercore. Read-side projection: Hyperbee → PG row writes + `pg_notify` for §13 invalidation. **MUST gate on both ensure-paths complete** (`ensure-schema.ts` + SQL migrations) before projection starts.
 - **P-066** [S] (NEW per Q-6 resolution): Sleeping-laptop bootstrap progress indicator. Subscribe to Autobase merge events; surface as "Syncing harness (N/M ops merged)..." status in harness sidebar header. Auto-dismisses when caught up.
@@ -997,12 +1102,13 @@ Sizing legend: **S** = ~1-3 days. **M** = ~1 week. **L** = ~2-3 weeks. **XL** = 
 
 - **P-047** [M] §9.1 Features tab UI. Queue/working/shipped filters. Pull-into-queue actions.
 - **P-048** [M] §9.2 Contributors tab UI. Avatar rendering (GitHub avatar OR identicon). Trust-list actions (gated by `pr_reviewer_role_enabled`).
+- **P-069** [M] Claimed/unclaimed UI: harness header badge, settings banner, create/join existing-harness alert, provisional-owner explainer modal with owner-settings list, Contributors claimants/provisional-owner indicators, and claim CTA gated by GitHub repo permission.
 - **P-049** [S] §9.4 PR-reviewer settings modal.
 - **P-050** [M] vditor integration. **Per D-020-v5 clarification**: vditor used for BOTH editing AND reading of single-markdown surfaces (feature descriptions, decisions, design artifacts). Starlight reserved for real multi-doc sites only (existing `apps/operator-docs/` + `apps/papercusp-docs/`). Migration of existing PlanEditor in `apps/operator/app/admin/plans/` to vditor included.
 
 ### Phase 9 — Cupboard + Discord + sync-with-main [L]
 
-- **P-051a** [M] Cupboard server (NEW app `apps/operator-public/`): schema (§10.2), auth (GitHub OAuth, §10.3), rate-limit + report endpoints. Self-host-able via `PAPERCUSP_CUPBOARD_URL` env.
+- **P-051a** [M] Cupboard server (NEW app `apps/operator-public/`): extend the Phase 1b binding service with public listing schema (§10.2), auth (GitHub OAuth, §10.3), rate-limit + report endpoints. Self-host-able via `PAPERCUSP_CUPBOARD_URL` env.
 - **P-051b** [S] Cupboard server deployment: Cloudflare-fronted Next.js + managed Postgres at `cupboard.papercusp.dev`. DNS + cert setup.
 - **P-052** [M] Cupboard UI in operator: navbar item, card grid (reuse Marketplace component family), filter + search + detail view.
 - **P-053** [S] Publish-to-Cupboard action wired into §5 wizard for `shared-public` state.
@@ -1153,6 +1259,18 @@ Other git operations (peer-mirror push, sync-with-main rebase) continue using sh
 **Why**: simplest forward-compatibility story. Schema-version increments are bundled with Papercusp release versions. Prevents corrupting newer-shape data with an older-shape peer.
 
 **Alternatives rejected**: best-effort merge of unknown ops (corrupts data); hard-fail (kills harness for whole team if one peer is behind).
+
+### D-025 — GitHub URL creation is shared-only
+
+**Decided (2026-05-24 addendum).** Entry 2 no longer creates a private harness. A pasted GitHub URL either joins the existing shared harness for that stable GitHub repository id or creates a new `shared-private` harness and canonical binding. Private harnesses come from Entry 1 (new local dir) or Entry 3 (existing local repo).
+
+**Why**: a GitHub repo URL is the user's declaration of repo identity. Allowing private duplicates from the same URL would undermine the one-shared-harness-per-repo rule and create ambiguous collaboration surfaces.
+
+### D-026 — One active shared harness binding per stable GitHub repo id; maintainers can claim or supersede
+
+**Decided (2026-05-24 addendum).** Active shared harnesses are unique by GitHub `repository.id`. Existing binding → join existing. Missing binding → create unclaimed harness with provisional owner. GitHub `maintain`/`admin` users can claim; GitHub `admin` users can supersede hostile/stale unclaimed harnesses.
+
+**Why**: first creators should not permanently squat a repo's Papercusp namespace, but the first harness must still be usable before a maintainer shows up. "Unclaimed community harness" plus repo-maintainer claim/supersede gives both properties.
 
 ## Open questions
 
