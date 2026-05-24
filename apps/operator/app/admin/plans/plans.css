@@ -629,37 +629,61 @@
   flex-direction: column;
 }
 
-/* Vditor's dark theme leaves the expanded YAML frontmatter in a low-contrast
-   source block (dark blue/gray glyphs on a gray panel). Keep the plan editor's
-   top metadata block legible without changing read-mode markdown previews. */
+/* Vditor's dark theme leaves plan frontmatter and source-edit text with
+   low-contrast blue/gray glyphs. Force the plan editor's editing panes to use
+   plain high-contrast text; read-mode markdown previews stay untouched. */
 .pc-plan-editor .pc-md-editor-host.vditor--dark {
-  --textarea-text-color: #edf8ff !important;
-  --second-color: rgba(186, 230, 253, 0.72) !important;
-  --ir-title-color: #cfeaff !important;
-  --ir-heading-color: #f0c8ff !important;
-  --ir-bi-color: #fbbf7a !important;
-  --ir-link-color: #f8d98c !important;
-  --ir-bracket-color: #7dd3fc !important;
-  --ir-paren-color: #9de7b2 !important;
+  --textarea-text-color: #f8fbff !important;
+  --second-color: rgba(226, 242, 255, 0.78) !important;
+  --ir-title-color: #f8fbff !important;
+  --ir-heading-color: #f8fbff !important;
+  --ir-bi-color: #f8fbff !important;
+  --ir-link-color: #f8fbff !important;
+  --ir-bracket-color: #f8fbff !important;
+  --ir-paren-color: #f8fbff !important;
+  color: #f8fbff !important;
+  caret-color: #f8fbff;
+}
+
+.pc-plan-editor .pc-md-editor-host.vditor--dark :is(
+  .vditor-sv,
+  .vditor-sv *,
+  .vditor-ir pre.vditor-reset,
+  .vditor-ir pre.vditor-reset *,
+  .vditor-preview .vditor-yml-front-matter,
+  .vditor-preview .vditor-yml-front-matter *,
+  .vditor-ir__marker--pre,
+  .vditor-ir__marker--pre *,
+  .vditor-ir__node[data-type="yaml-front-matter"],
+  .vditor-ir__node[data-type="yaml-front-matter"] *
+) {
+  color: #f8fbff !important;
+  -webkit-text-fill-color: #f8fbff !important;
+  text-shadow: none !important;
 }
 
 .pc-plan-editor .vditor-ir__node[data-type="yaml-front-matter"] {
   display: block;
   margin: 8px 0 18px;
   padding: 10px 12px;
-  border: 1px solid rgba(125, 211, 252, 0.2);
+  border: 1px solid rgba(125, 211, 252, 0.24);
   border-radius: 12px;
-  background: rgba(7, 16, 29, 0.86) !important;
-  color: #edf8ff !important;
+  background: rgba(4, 10, 18, 0.94) !important;
 }
 
-.pc-plan-editor .vditor-ir__node[data-type="yaml-front-matter"] * {
-  color: inherit !important;
-}
-
-.pc-plan-editor .vditor-ir__node[data-type="yaml-front-matter"]::before,
-.pc-plan-editor .vditor-ir__node[data-type="yaml-front-matter"]::after {
-  color: rgba(186, 230, 253, 0.72) !important;
+.pc-plan-editor .pc-md-editor-host.vditor--dark :is(
+  .vditor-sv,
+  .vditor-sv *,
+  .vditor-ir pre.vditor-reset,
+  .vditor-ir pre.vditor-reset *,
+  .vditor-preview .vditor-yml-front-matter,
+  .vditor-preview .vditor-yml-front-matter *,
+  .vditor-ir__node[data-type="yaml-front-matter"],
+  .vditor-ir__node[data-type="yaml-front-matter"] *
+)::selection {
+  color: #ffffff !important;
+  -webkit-text-fill-color: #ffffff !important;
+  background: rgba(14, 116, 144, 0.62) !important;
 }
 
 .pc-plans__back {
