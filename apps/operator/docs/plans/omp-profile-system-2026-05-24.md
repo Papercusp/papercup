@@ -1,5 +1,5 @@
 ---
-title: OMP profile system — MCP-server-side tool gating for engineer vs power profiles
+title: OMP profile system — per-profile tool gating and installer profiles
 slug: omp-profile-system-2026-05-24
 status: draft
 created: 2026-05-24
@@ -7,73 +7,136 @@ updated: 2026-05-24
 owner: pandawamble@gmail.com
 related:
   - apps/operator/docs/plans/playbook-audience-neutral-rewrite-2026-05-23.md
-  - apps/operator/docs/plans/desktop-app-install-integration-2026-05-23.md
+  - apps/operator/docs/plans/omp-power-user-bundle-2026-05-20.md
   - apps/operator/docs/plans/per-harness-plans-and-docs-2026-05-23.md
 ---
 
 ## Now
 
-**State:** Draft. Dependency for Phase 2 of `playbook-audience-neutral-rewrite-2026-05-23` (P-010/P-011 install-script work already shipped; this plan handles the MCP-server-side tool filtering that makes the power profile actually see a different tool surface).
+**State:** Draft. P-006 + P-007 (installer --profile flag + wrapper) shipped in `b85d4739` as part of playbook-audience-neutral-rewrite P-010/P-011. Remaining work: P-001 ratification (design gate) → P-002–P-005 (core MCP gate) → P-008 (agent-bundle) → P-009–P-012 (tests + closeout).
 
-**Next:** Ratify D-001 (profile param mechanism) and D-002 (tool group definitions) before starting P-001.
+**Next:** User ratifies P-001 (design: `profile` field on `defineTool`, `ctx.profile` resolution, `tools/list` filter). Recommendation: proceed as written in §3.
 
 # OMP profile system
 
 ## §1 Why
 
-`install-standalone-mcp.sh --profile=power` now ships the power-engineer playbook. But the MCP server at `/api/mcp?superuser=1` still exposes all 238 tools regardless of profile. A power-engineer session gets the right *instructions* but still sees 150+ Papercusp-internal tools (`harness:*`, `operator:*`, `experts:*`, …) that don't apply to their work.
+The catalog audit (2026-05-22) identified three tool groups in `papercusp-su`:
 
-The profile system gates the MCP tool surface server-side so `?profile=power` returns only Group B + Group C tools, and the power-engineer session isn't cluttered with irrelevant capabilities.
+- **Group A (~150 tools)** — Papercusp-only: `harness:*`, `operator:*`, `features:*`, `issues:*`, `agents:*`, `audit:*`, `experts:*`, deployment routes, plugin management, etc. These do nothing useful for a power-engineer working on a non-Papercusp harness.
+- **Group B (~42 tools)** — Genuinely generic: `coord:*`, `locks:*`, `fetch_plus`, `firecrawl.*`, `gitnexus.*`, `repomix.pack`, `hindsight:recall`. Useful to any developer agent regardless of harness.
+- **Group C (~43 tools)** — Papercusp-wired but per-harness-portable: `plans:*`, `docs:*`, `memory:*`, `search:*`, `tasks:*`, `artifacts:*`, `agent_chats:*`, `ui:*`, `chat:*`. Useful once per-harness portability is landed (done as of `per-harness-plans-and-docs-2026-05-23`).
 
-## §2 Tool groups (from 2026-05-22 catalog audit)
+Surfacing 150 no-op Group A tools to a power-engineer session:
+- Clutters `tools/list`, making the relevant tools harder to find.
+- Creates confusion when tools silently fail or return empty (workspace-clamp blocks cross-workspace calls).
+- Wastes LLM context on tool descriptions that don't apply.
 
-| Group | Count | Description | Power profile? |
-|-------|-------|-------------|----------------|
-| A | ~150 | Papercusp-only: `harness:*`, `operator:*`, `experts:*`, `agents:*`, `features:*`, `issues:*`, `audit:*`, scans, notifications, endorsements, `design-phase:*` | No |
-| B | ~42  | Genuinely generic: `coord:*`, `locks:*`, `fetch_plus`, `firecrawl.*`, `gitnexus.*`, `repomix.pack`, `hindsight:recall` | Yes |
-| C | ~43  | Contested middle — generic concept, Papercusp-wired: `plans:*` (per-harness after per-harness plan), `docs:*` (with project root), `memory:*`, `search:*`, `tasks:*`, `artifacts:*`, `goals:*`, `messages:*` | Yes (contingent on per-harness portability) |
+The power-user playbook (`papercusp-su-power.tools.md`) is already written; it describes only Group B + Group C. The gap is that `papercusp-su` still *surfaces* all tools regardless of the caller's profile.
 
-## §3 Design decisions (needs-human)
+## §2 Scope
 
-### D-001 — How to signal profile to the MCP server
+- **Profile gating** — `papercusp-su` at `?profile=power` (or `Authorization: Bearer <power-user-token>`) filters its `tools/list` response to Group B + Group C only. Group A tools are not listed and not callable from that profile.
+- **Installer profile flag** — `install-standalone-mcp.sh --profile=engineer|power` (default `engineer`) picks which playbook to install and which `mcp_url` to write into `mcp.json` (with or without `?profile=power`). **SHIPPED** (`b85d4739`).
+- **`omp-su` wrapper** — bakes the profile-specific playbook path. **SHIPPED** (`b85d4739`).
+- **`/api/agent-bundle` route** — updated to serve `papercusp-su-power.tools.md` as `toolsmd` when the caller has a power-user token.
 
-- **(a)** **Query param: `?profile=power`**. Orthogonal to `?superuser=1`; URL remains self-contained. The install script already bakes the full URL into `~/.omp/agent/mcp.json` — adding `&profile=power` is a single-character change to the Python merge. **Recommended**.
-- **(b)** Custom HTTP header `X-Papercusp-Profile: power`. More correct REST semantics; but OMP MCP config has no header-merging UI — harder for users to configure manually.
-- **(c)** Separate MCP endpoint: `/api/mcp/power?superuser=1`. Cleaner URL; doubles the surface; requires duplicating the transport registration.
+**Not in scope:**
+- A UI for switching profiles mid-session. Session-bound; relaunch to switch.
+- New profiles beyond `engineer` and `power` (v1 ships exactly two).
+- Per-tool fine-grained gating within a profile (future: role-based filtering is already a gateway; profile gating is a second axis on top).
 
-### D-002 — Where profile filtering lives in the dispatch stack
+## §3 Design
 
-- **(a)** **`tool-projection.ts` `listTools()` + `callTool()` gating on `ctx.profile`**. Single enforcement point; all transport (HTTP/MCP/IPC) enforces consistently. **Recommended**.
-- **(b)** MCP transport layer only (`mcp-projection.ts`). Simpler; but HTTP callers bypass and IPC callers bypass — inconsistent.
-- **(c)** Tool registry tag: each `defineTool` carries a `profiles: ['engineer','power']` field; `listTools` filters by it. More declarative; adds a field to every tool definition.
+### 3.1 Tool-group tagging
 
-### D-003 — Group C tool gating strategy
+Each `defineTool` call gains an optional `profile` field:
 
-- **(a)** **Opt-in: Group C tools gate on `ctx.profile === 'power'` AND the tool's generalization work (per-harness portability) being landed**. Today's unported tools stay Group A until ported; the per-harness plan already covers most. **Recommended**.
-- **(b)** Expose all of Group C now (even Papercusp-wired) for power profile. Simpler; but a `plans:*` tool that assumes `papercup` slug confuses a power user on a different harness.
+```ts
+defineTool({
+  name: 'harness:get',
+  profile: 'engineer',  // omit = 'all' (visible to every profile)
+  // ...
+})
+```
 
-## §4 Phase 1 — query-param profile signal + listTools filter
+- `profile: 'engineer'` — Group A. Hidden from `?profile=power`.
+- omitted / `'all'` — Group B + C. Visible to every profile.
 
-- **P-001** `todo` Ratify D-001 (query param), D-002 (tool-projection), D-003 (opt-in Group C).
-- **P-002** `todo` Add `profile?: 'engineer' | 'power'` to `DispatchCtx` in `tool-projection.ts`; plumb from `?profile=` query param in `http-projection.ts` and `mcp-projection.ts`.
-- **P-003** `todo` `listTools()` in `tool-projection.ts`: when `ctx.profile === 'power'`, filter to tools tagged `group: 'B' | 'C'`; drop Group A tools from the returned list.
-- **P-004** `todo` `callTool()` in `tool-projection.ts`: return `tool_not_found` when profile is `power` and the called tool is Group A (prevents bypassing `listTools` by direct name call).
-- **P-005** `todo` Tag all tool definitions with `group: 'A' | 'B' | 'C'` in `defineTool({ group })`. Default = `'A'` (Papercusp-engineer-only) so new tools are safe by default.
-- **P-006** `todo` Update `install-standalone-mcp.sh --profile=power` to append `&profile=power` to the MCP URL baked into `mcp.json`.
-- **P-007** `todo` Tests: `listTools` returns B+C for power, all for engineer; `callTool` rejects Group A for power.
+The MCP dispatcher's `tools/list` handler filters by profile before returning. `tools/call` similarly rejects Group A calls when `ctx.profile === 'power'`.
 
-## §5 Phase 2 — Group C tool-by-tool generalization audit
+### 3.2 Profile resolution
 
-- **P-008** `todo` Audit each Group C tool against the per-harness portability work. Tools that are already harness-context-aware (post `per-harness-plans-and-docs`) get tagged `group: 'C'`; tools still Papercusp-wired remain `group: 'A'` until fixed.
-- **P-009** `todo` Port any remaining Group C tools that have a clear per-harness generalization (small: `tasks:*`, `artifacts:*`, `goals:*`).
-- **P-010** `todo` Update `papercusp-su-power.tools.md` to document only the tools actually in Group B+C.
+Priority order (highest wins):
+1. Token type — a power-user access token (`type: 'power-user'`) always implies `power` profile.
+2. URL param — `?profile=power` when `isSuperuser` (engineer testing the power view).
+3. Default — `engineer` (today's behavior, all tools visible).
 
-## §6 Dependencies
+Set on `ctx.profile: 'engineer' | 'power'`.
 
-- Depends on: `per-harness-plans-and-docs-2026-05-23` (SHIPPED) for Group C harness-context portability.
-- Depends on: `playbook-audience-neutral-rewrite-2026-05-23` (P-010/P-011 shipped) for installer profile support.
-- Blocks: Phase 2 full-split completion in `playbook-audience-neutral-rewrite-2026-05-23`.
+### 3.3 Installer flag (SHIPPED)
+
+`install-standalone-mcp.sh --profile=engineer|power` shipped in `b85d4739`. Default `engineer`. Power profile writes `power-collaborator.md` as the playbook dest and the omp-su wrapper bakes in that path.
+
+The remaining installer gap (appending `&profile=power` to the MCP URL in `mcp.json`) is gated on P-004 — need the server gate working before pointing clients at it.
+
+### 3.4 Group A tagging scope
+
+~150 tools need `profile: 'engineer'` added. The catalog:
+
+- `harness:*` (10 tools) — engineer
+- `operator:*` (8 tools) — engineer
+- `features:*` (7 tools) — engineer
+- `issues:*` (2 tools) — engineer
+- `agents:*` (3 tools) — engineer
+- `audit:*` (1 tool) — engineer
+- `experts:*` (5 tools) — engineer
+- `pending_events:*` (1 tool) — engineer
+- `notifications:*` (1 tool) — engineer
+- `snapshots:*` (2 tools) — engineer
+- `flags:*` (3 tools) — engineer
+- `plugins:*` (3 tools) — engineer
+- `roles:*` (3 tools) — engineer
+- `hooks:*` (1 tool) — engineer
+- Desktop/backup/process routes (8 tools) — engineer
+- `plans:launch` / `plans:resume` / `plans:promote` — engineer (write-side)
+- `cross_harness:*` (6 tools) — engineer (power users use harness-scoped variants)
+- `operator:scan` / `operator:converse` / `operator:delegate` — engineer
+
+Group B + C (visible to both profiles) are everything else.
+
+This is a mechanical tag sweep — no behavior changes, just metadata.
+
+## §4 Items
+
+### Phase 1 — core gate
+
+- **P-001** `needs-human` Ratify the three-part design: (a) `profile` field on `defineTool`, (b) `tools/list` filter in dispatcher, (c) `ctx.profile` resolution. See §3.1–3.2. Recommendation: proceed with design as written.
+- **P-002** `todo` Add `profile?: 'engineer' | 'power' | 'all'` to `ToolDefinition` type. blocked-by: P-001
+- **P-003** `todo` Extend dispatcher to resolve `ctx.profile` from token type + URL param. blocked-by: P-001
+- **P-004** `todo` Filter `tools/list` + reject `tools/call` for out-of-profile tools. blocked-by: P-003
+- **P-005** `todo` Tag all ~150 Group A tools with `profile: 'engineer'`. blocked-by: P-002
+
+### Phase 2 — installer + wrapper
+
+- **P-006** `done` Extend `install-standalone-mcp.sh` with `--profile=engineer|power` per §3.3. (shipped `b85d4739`)
+- **P-007** `done` Update `omp-su` wrapper template to bake profile-specific playbook path. (shipped `b85d4739`)
+- **P-008** `todo` Append `&profile=power` to MCP URL in `mcp.json` when `--profile=power`. blocked-by: P-004
+- **P-009** `todo` Update `/api/agent-bundle` to serve `papercusp-su-power.tools.md` when caller has power-user token. blocked-by: P-004
+
+### Phase 3 — verification
+
+- **P-010** `todo` Test: power-user token → `tools/list` returns only Group B + C. blocked-by: P-005
+- **P-011** `todo` Test: SU caller with `?profile=power` → same filtered list. blocked-by: P-005
+- **P-012** `todo` Test: engineer profile → all tools visible (no regression). blocked-by: P-005
+- **P-013** `todo` Flip `playbook-audience-neutral-rewrite-2026-05-23` P-010 / P-011 to `done` once above tests pass.
+
+## §5 Dependencies
+
+- **Depends on:** `playbook-audience-neutral-rewrite-2026-05-23` (playbook files already split — done).
+- **Depends on:** `per-harness-plans-and-docs-2026-05-23` (Group C generalization — done).
+- **Unblocks:** `playbook-audience-neutral-rewrite-2026-05-23` full Phase 2 completion.
 
 ## Decisions
 
-_(empty — to be filled as items are ratified)_
+_(none yet — appended as `### D-NNN — title` when P-001 is ratified.)_
