@@ -79,8 +79,15 @@ export function createOctokit(): Octokit {
               (result.error.kind === 'gh_cli_failed' ? result.error.reason : 'unknown'),
       );
     }
-    if (!options.headers) options.headers = {};
-    options.headers.authorization = 'token ' + result.token;
+    // Octokit's `EndpointOptions.headers` is a strict shape; cast
+    // through `Record<string, string>` so we can spread an
+    // authorization onto whatever's already there without fighting
+    // the union type.
+    const existing = (options.headers ?? {}) as Record<string, string>;
+    options.headers = {
+      ...existing,
+      authorization: 'token ' + result.token,
+    } as typeof options.headers;
   });
 
   // 401-retry: on a single 401, invalidate the cache and retry once

@@ -16,6 +16,9 @@
  * change to ensure-schema-dogfood.ts.
  */
 
+// @ts-expect-error — @restart/embedded-postgres-server ships JS without
+// types; the function shape we use is { dataDir, port, dbName } → handle
+// with .stop().
 import { startEmbeddedPostgresServer } from '@restart/embedded-postgres-server';
 import postgres from 'postgres';
 import { mkdtemp, rm } from 'node:fs/promises';
