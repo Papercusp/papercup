@@ -3,94 +3,105 @@
 /**
  * SyncWithMainBadge — Phase 9 P-055a.
  *
- * Polls GET /api/harness/:slug/sync-status every 60s and renders a
- * compact badge: "up to date" | "behind N" | "?" (unknown).
- * Click → opens SyncWithMainDialog.
+ * Shows `up to date` / `behind N` / `?` by polling
+ * GET /api/harness/:slug/sync-status?github_user_id=<N> every 60s.
  */
 
-import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { GitBranch, RefreshCw } from 'lucide-react';
+import { memo, useCallback, useEffect, useRef, useState } from 'react';
+import { RefreshCw } from 'lucide-react';
 import { COLORS, FONTS } from './theme';
-import type { SyncStatusSnapshot } from '@/lib/harness/sync-with-main-types';
+import type { SyncStatusSnapshot } from '../../lib/harness/sync-with-main-types';
 
-const POLL_INTERVAL_MS = 60_000;
+const POLL_MS = 60_000;
 
 interface Props {
-  slug: string;
+  harnessSlug: string;
   githubUserId: number;
-  onOpenDialog: () => void;
+  /** Called when the badge is clicked — parent opens the SyncWithMainDialog. */
+  onClick?: () => void;
 }
 
-export function SyncWithMainBadge({ slug, githubUserId, onOpenDialog }: Props) {
-  const [snap, setSnap] = useState<SyncStatusSnapshot | null>(null);
-  const [polling, setPolling] = useState(false);
-  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+async function fetchSyncStatus(
+  harnessSlug: string,
+  githubUserId: number,
+): Promise<SyncStatusSnapshot> {
+  const r = await fetch(
+    `/api/harness/${encodeURIComponent(harnessSlug)}/sync-status?github_user_id=${githubUserId}`,
+    { cache: 'no-store' },
+  );
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  return r.json() as Promise<SyncStatusSnapshot>;
+}
 
-  const fetchStatus = useCallback(async () => {
-    if (!slug || githubUserId <= 0) return;
-    setPolling(true);
+function SyncWithMainBadgeInner({ harnessSlug, githubUserId, onClick }: Props) {
+  const [snap, setSnap] = useState<SyncStatusSnapshot | null>(null);
+  const cancelRef = useRef(false);
+
+  const poll = useCallback(async () => {
     try {
-      const res = await fetch(
-        `/api/harness/${encodeURIComponent(slug)}/sync-status?github_user_id=${githubUserId}`,
-      );
-      if (res.ok) {
-        const data = (await res.json()) as SyncStatusSnapshot;
-        setSnap(data);
-      }
+      const data = await fetchSyncStatus(harnessSlug, githubUserId);
+      if (!cancelRef.current) setSnap(data);
     } catch {
-      // transient — keep previous snap
-    } finally {
-      setPolling(false);
+      // network blip — keep prior value
     }
-  }, [slug, githubUserId]);
+  }, [harnessSlug, githubUserId]);
 
   useEffect(() => {
-    void fetchStatus();
-    timerRef.current = setInterval(() => void fetchStatus(), POLL_INTERVAL_MS);
+    cancelRef.current = false;
+    void poll();
+    const id = setInterval(() => void poll(), POLL_MS);
     return () => {
-      if (timerRef.current) clearInterval(timerRef.current);
+      cancelRef.current = true;
+      clearInterval(id);
     };
-  }, [fetchStatus]);
+  }, [poll]);
 
-  const label = (() => {
-    if (!snap) return null;
-    if (snap.status === 'up_to_date') return 'up to date';
-    if (snap.status === 'behind') return `behind ${snap.behind_count}`;
-    return '?';
-  })();
+  const label =
+    snap === null
+      ? '…'
+      : snap.status === 'up_to_date'
+        ? 'up to date'
+        : snap.status === 'behind'
+          ? `behind ${snap.behind_count}`
+          : '?';
 
-  const color = (() => {
-    if (!snap || snap.status === 'up_to_date') return COLORS.textMuted;
-    if (snap.status === 'behind') return '#f59e0b'; // amber
-    return COLORS.textMuted;
-  })();
-
-  if (!snap && !polling) return null;
+  const color =
+    snap === null
+      ? COLORS.textDim
+      : snap.status === 'up_to_date'
+        ? COLORS.successText
+        : snap.status === 'behind'
+          ? COLORS.dangerText
+          : COLORS.textMuted;
 
   return (
     <button
-      onClick={onOpenDialog}
-      title="Sync status with main branch"
+      type="button"
+      onClick={onClick}
+      title={
+        snap?.status === 'unknown' && snap.poll_error
+          ? `Sync check failed: ${snap.poll_error}`
+          : 'Sync status with main branch — click to sync'
+      }
       style={{
         display: 'inline-flex',
         alignItems: 'center',
         gap: 4,
         background: 'none',
         border: 'none',
-        cursor: 'pointer',
+        cursor: onClick ? 'pointer' : 'default',
         padding: '2px 6px',
         borderRadius: 4,
+        fontFamily: FONTS.ui,
+        fontSize: 11,
         color,
-        fontSize: FONTS.size.xs,
-        fontFamily: FONTS.mono,
       }}
     >
-      {polling ? (
-        <RefreshCw size={12} style={{ animation: 'spin 1s linear infinite' }} />
-      ) : (
-        <GitBranch size={12} />
-      )}
-      {label ?? '…'}
+      <RefreshCw size={10} />
+      <span>{label}</span>
     </button>
   );
 }
+
+export const SyncWithMainBadge = memo(SyncWithMainBadgeInner);
+export default SyncWithMainBadge;

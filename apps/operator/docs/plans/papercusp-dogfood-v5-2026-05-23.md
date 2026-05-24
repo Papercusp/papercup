@@ -1237,6 +1237,27 @@ Sizing legend: **S** = ~1-3 days. **M** = ~1 week. **L** = ~2-3 weeks. **XL** = 
 - **P-027** [S] Observe scale: existing UI on papercup's 175+ tables, 50+ existing features. Capture pain points as follow-up items.
 - **P-028** [S] Decision gate: if Phase 4 surfaces blocker-level pain, fix before Phase 5; otherwise proceed.
 
+### Phase 4.5 — Plan→Feature pipeline unification [M] *(carve-out plan)*
+
+**Purpose**: close the gap between the plans framework and the feature queue so
+that features promoted from plan items carry their plan context into agent prompts,
+and the scoper writes plans instead of raw proposal files.
+
+**Full design**: see `plan-feature-pipeline-unification-2026-05-24.md`.
+
+**Critical path note**: Phase A of that plan (schema + promote write-back) must
+land before the P-026 end-to-end feature run so promoted features carry plan
+context from day one.
+
+- **P-4.5a** Gate: Phase A of carve-out plan lands (migration + promote write-back + lint check)
+- **P-4.5b** Gate: Phase B lands (agent context injection wired into assembleFeaturePrompt)
+- **P-4.5c** Gate: Phase C lands (bidirectional UI — plan→feature status badges + feature→plan pill)
+- **P-4.5d** Gate: Phase D lands (scoper plan mode + ProposalsPanel redirect, behind flag)
+- **P-4.5e** Gate: Phase E soak complete (legacy proposals path retired)
+
+Phases C–E of the carve-out can run in parallel with Phase 5a Hyperbee work.
+Phase A and B must precede P-026.
+
 ### Phase 5a — Hyperbee plumbing [L]
 
 - **P-029** [M] §5 share-this-harness wizard UI. Nine-step flow + privacy/provisional-owner confirm modals + canonical repo-binding lookup.

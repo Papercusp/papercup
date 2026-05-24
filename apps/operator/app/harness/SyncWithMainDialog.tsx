@@ -3,342 +3,368 @@
 /**
  * SyncWithMainDialog — Phase 9 P-055b/c.
  *
- * Modal dialog for manual sync-with-main:
- *   - "Sync" button runs git fetch + git rebase origin/main.
- *   - On clean rebase: success message.
- *   - On conflict: lists conflicted files with "Open in editor" /
- *     "Mark resolved" / "Abort rebase" actions (P-055c).
- *
- * No custom conflict-resolution UI per v5 audit J — uses $EDITOR
- * via the backend "open_editor" action.
+ * Drop-down panel with a "Sync with main" button. On conflict, shows
+ * the conflicted file list with "open in editor" / "mark resolved" /
+ * "abort rebase" per v5 §16.2 (no custom conflict UI, $EDITOR fallback).
  */
 
 import React, { useCallback, useState } from 'react';
-import * as Dialog from '@radix-ui/react-dialog';
-import { X, GitMerge, AlertTriangle, CheckCircle, Loader2, FileText } from 'lucide-react';
-import { toast } from 'sonner';
-import { COLORS, FONTS, RADIUS, SIZES } from './theme';
+import { AlertTriangle, CheckCircle, GitMerge, Loader2, X } from 'lucide-react';
+import { COLORS, FONTS, RADIUS } from './theme';
 
-interface ConflictedFile {
-  path: string;
-  resolved: boolean;
+interface ConflictResult {
+  outcome: 'conflict';
+  conflicted_files: string[];
+  error?: string;
 }
+
+interface CleanResult {
+  outcome: 'clean';
+}
+
+interface FetchFailedResult {
+  outcome: 'fetch_failed';
+  error?: string;
+}
+
+type SyncResult = CleanResult | ConflictResult | FetchFailedResult;
 
 interface Props {
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
-  slug: string;
+  harnessSlug: string;
   githubUserId: number;
+  onClose: () => void;
 }
 
-type Phase = 'idle' | 'syncing' | 'clean' | 'conflict' | 'aborting';
+async function postSyncWithMain(harnessSlug: string, githubUserId: number): Promise<SyncResult> {
+  const r = await fetch(
+    `/api/harness/${encodeURIComponent(harnessSlug)}/sync-with-main`,
+    {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ github_user_id: githubUserId }),
+    },
+  );
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  return r.json() as Promise<SyncResult>;
+}
 
-export function SyncWithMainDialog({ open, onOpenChange, slug, githubUserId }: Props) {
-  const [phase, setPhase] = useState<Phase>('idle');
-  const [conflictedFiles, setConflictedFiles] = useState<ConflictedFile[]>([]);
-  const [error, setError] = useState<string | null>(null);
+async function postAbortRebase(harnessSlug: string, githubUserId: number): Promise<void> {
+  await fetch(
+    `/api/harness/${encodeURIComponent(harnessSlug)}/sync-with-main/abort`,
+    {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ github_user_id: githubUserId }),
+    },
+  ).catch(() => {});
+}
+
+async function openFileInEditor(harnessSlug: string, filePath: string): Promise<void> {
+  // Ask the sidecar to open the file in $EDITOR / git core.editor.
+  await fetch(
+    `/api/harness/${encodeURIComponent(harnessSlug)}/open-in-editor`,
+    {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ path: filePath }),
+    },
+  ).catch(() => {});
+}
+
+export function SyncWithMainDialog({ harnessSlug, githubUserId, onClose }: Props) {
+  const [running, setRunning] = useState(false);
+  const [result, setResult] = useState<SyncResult | null>(null);
+  const [fetchError, setFetchError] = useState<string | null>(null);
+  const [resolvedFiles, setResolvedFiles] = useState<Set<string>>(new Set());
 
   const handleSync = useCallback(async () => {
-    setPhase('syncing');
-    setError(null);
-    setConflictedFiles([]);
+    setRunning(true);
+    setResult(null);
+    setFetchError(null);
+    setResolvedFiles(new Set());
     try {
-      const res = await fetch(`/api/harness/${encodeURIComponent(slug)}/sync-with-main`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ github_user_id: githubUserId }),
-      });
-      const data = (await res.json()) as {
-        outcome: 'clean' | 'conflict' | 'fetch_failed';
-        conflicted_files?: string[];
-        error?: string;
-      };
-      if (data.outcome === 'clean') {
-        setPhase('clean');
-        toast.success('Synced with main — rebase complete.');
-      } else if (data.outcome === 'conflict') {
-        setConflictedFiles((data.conflicted_files ?? []).map((p) => ({ path: p, resolved: false })));
-        setPhase('conflict');
-      } else {
-        setError(data.error ?? 'git fetch failed');
-        setPhase('idle');
-      }
-    } catch (err) {
-      setError(String(err));
-      setPhase('idle');
+      const r = await postSyncWithMain(harnessSlug, githubUserId);
+      setResult(r);
+    } catch (e) {
+      setFetchError(String(e));
+    } finally {
+      setRunning(false);
     }
-  }, [slug, githubUserId]);
+  }, [harnessSlug, githubUserId]);
 
   const handleAbort = useCallback(async () => {
-    setPhase('aborting');
-    try {
-      await fetch(`/api/harness/${encodeURIComponent(slug)}/sync-with-main/abort`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ github_user_id: githubUserId }),
-      });
-      toast.info('Rebase aborted.');
-      setConflictedFiles([]);
-      setPhase('idle');
-    } catch {
-      toast.error('Abort failed — run `git rebase --abort` manually.');
-      setPhase('conflict');
-    }
-  }, [slug, githubUserId]);
+    await postAbortRebase(harnessSlug, githubUserId);
+    setResult(null);
+  }, [harnessSlug, githubUserId]);
 
-  const handleOpenInEditor = useCallback(
-    (filePath: string) => {
-      // Open via code-server URL if available, otherwise show path.
-      const csUrl = `http://localhost:8082/?folder=${encodeURIComponent(
-        `/harness/${slug}`,
-      )}&file=${encodeURIComponent(filePath)}`;
-      window.open(csUrl, '_blank', 'noopener,noreferrer');
-    },
-    [slug],
-  );
-
-  const handleMarkResolved = useCallback((filePath: string) => {
-    setConflictedFiles((prev) =>
-      prev.map((f) => (f.path === filePath ? { ...f, resolved: true } : f)),
-    );
+  const markResolved = useCallback((f: string) => {
+    setResolvedFiles((prev) => new Set([...prev, f]));
   }, []);
 
-  const allResolved = conflictedFiles.length > 0 && conflictedFiles.every((f) => f.resolved);
+  const conflictedFiles =
+    result?.outcome === 'conflict' ? result.conflicted_files : [];
+  const remainingConflicts = conflictedFiles.filter((f) => !resolvedFiles.has(f));
 
-  const handleContinueRebase = useCallback(async () => {
-    setPhase('syncing');
-    try {
-      // git rebase --continue via a dedicated backend call.
-      const res = await fetch(`/api/harness/${encodeURIComponent(slug)}/sync-with-main`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ github_user_id: githubUserId }),
-      });
-      const data = (await res.json()) as { outcome: string; conflicted_files?: string[] };
-      if (data.outcome === 'clean') {
-        setPhase('clean');
-        toast.success('Rebase complete.');
-        setConflictedFiles([]);
-      } else if (data.outcome === 'conflict') {
-        setConflictedFiles((data.conflicted_files ?? []).map((p) => ({ path: p, resolved: false })));
-        setPhase('conflict');
-        toast.warning('More conflicts remain.');
-      } else {
-        setPhase('conflict');
-        toast.error('Rebase continue failed.');
-      }
-    } catch (err) {
-      setPhase('conflict');
-      toast.error(String(err));
-    }
-  }, [slug, githubUserId]);
-
-  const overlayStyle: React.CSSProperties = {
-    position: 'fixed',
-    inset: 0,
-    background: 'rgba(0,0,0,0.5)',
-    zIndex: 200,
-  };
-
-  const contentStyle: React.CSSProperties = {
-    position: 'fixed',
-    top: '50%',
-    left: '50%',
-    transform: 'translate(-50%,-50%)',
-    background: COLORS.bg,
-    border: `1px solid ${COLORS.border}`,
-    borderRadius: RADIUS.lg,
-    padding: SIZES.lg,
-    width: 480,
-    maxWidth: '95vw',
-    maxHeight: '80vh',
-    overflowY: 'auto',
-    zIndex: 201,
-    display: 'flex',
-    flexDirection: 'column',
-    gap: SIZES.md,
-  };
+  const showInitial = !running && !result && !fetchError;
 
   return (
-    <Dialog.Root open={open} onOpenChange={onOpenChange}>
-      <Dialog.Portal>
-        <Dialog.Overlay style={overlayStyle} />
-        <Dialog.Content style={contentStyle}>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-            <Dialog.Title
-              style={{ fontFamily: FONTS.sans, fontWeight: 600, fontSize: FONTS.size.md, color: COLORS.text, margin: 0 }}
-            >
-              Sync with main
-            </Dialog.Title>
-            <Dialog.Close asChild>
-              <button
-                style={{ background: 'none', border: 'none', cursor: 'pointer', color: COLORS.textMuted }}
-                aria-label="Close"
-              >
-                <X size={16} />
-              </button>
-            </Dialog.Close>
+    <div
+      style={{
+        position: 'absolute',
+        top: 'calc(100% + 4px)',
+        left: 0,
+        zIndex: 200,
+        background: COLORS.surfaceRaised,
+        border: `1px solid ${COLORS.border}`,
+        borderRadius: RADIUS.lg,
+        padding: 16,
+        minWidth: 280,
+        maxWidth: 380,
+        boxShadow: '0 8px 24px rgba(0,0,0,0.4)',
+        fontFamily: FONTS.ui,
+      }}
+    >
+      {/* Header */}
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          marginBottom: 12,
+        }}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          <GitMerge size={14} color={COLORS.accent} />
+          <span style={{ fontSize: 13, fontWeight: 600, color: COLORS.text }}>
+            Sync with main
+          </span>
+        </div>
+        <button
+          onClick={onClose}
+          style={{
+            background: 'none',
+            border: 'none',
+            cursor: 'pointer',
+            color: COLORS.textMuted,
+            padding: 2,
+          }}
+          aria-label="Close"
+        >
+          <X size={13} />
+        </button>
+      </div>
+
+      {/* Initial state */}
+      {showInitial && (
+        <>
+          <p style={{ fontSize: 12, color: COLORS.textMuted, marginBottom: 12 }}>
+            Fetches{' '}
+            <code style={{ fontFamily: 'ui-monospace,monospace', color: COLORS.text }}>
+              origin/main
+            </code>{' '}
+            and rebases your branch onto it.
+          </p>
+          <button onClick={() => void handleSync()} style={primaryBtnStyle}>
+            Sync now
+          </button>
+        </>
+      )}
+
+      {/* Running */}
+      {running && (
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 8,
+            color: COLORS.textMuted,
+            fontSize: 12,
+          }}
+        >
+          <Loader2 size={14} style={{ animation: 'spin 1s linear infinite' }} />
+          Fetching + rebasing…
+        </div>
+      )}
+
+      {/* Fetch/network error */}
+      {fetchError && (
+        <>
+          <div style={{ color: COLORS.dangerText, fontSize: 12, marginBottom: 8 }}>
+            Failed: {fetchError}
+          </div>
+          <button onClick={() => setFetchError(null)} style={backBtnStyle}>
+            ← back
+          </button>
+        </>
+      )}
+
+      {/* Clean */}
+      {result?.outcome === 'clean' && (
+        <>
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 8,
+              color: COLORS.successText,
+              fontSize: 12,
+              marginBottom: 8,
+            }}
+          >
+            <CheckCircle size={14} />
+            Up to date — rebase applied cleanly.
+          </div>
+          <button onClick={() => setResult(null)} style={backBtnStyle}>
+            ← back
+          </button>
+        </>
+      )}
+
+      {/* Fetch failed */}
+      {result?.outcome === 'fetch_failed' && (
+        <>
+          <div style={{ color: COLORS.dangerText, fontSize: 12, marginBottom: 8 }}>
+            <AlertTriangle size={12} style={{ verticalAlign: 'middle', marginRight: 4 }} />
+            Could not reach origin: {result.error ?? 'network error'}
+          </div>
+          <button onClick={() => setResult(null)} style={backBtnStyle}>
+            ← back
+          </button>
+        </>
+      )}
+
+      {/* Conflict — P-055c */}
+      {result?.outcome === 'conflict' && (
+        <div>
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 6,
+              color: COLORS.dangerText,
+              marginBottom: 10,
+              fontSize: 12,
+            }}
+          >
+            <AlertTriangle size={13} />
+            <span>
+              Merge conflicts in {conflictedFiles.length} file
+              {conflictedFiles.length !== 1 ? 's' : ''}.
+            </span>
+          </div>
+          <p style={{ fontSize: 11, color: COLORS.textMuted, marginBottom: 10 }}>
+            Open each file in your editor, resolve the markers, mark resolved,
+            then try sync again — or abort to undo.
+          </p>
+
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 4, marginBottom: 10 }}>
+            {conflictedFiles.map((f) => {
+              const resolved = resolvedFiles.has(f);
+              return (
+                <div
+                  key={f}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    padding: '4px 8px',
+                    background: COLORS.surface,
+                    borderRadius: RADIUS.sm,
+                    gap: 8,
+                  }}
+                >
+                  <span
+                    style={{
+                      fontSize: 11,
+                      fontFamily: 'ui-monospace,monospace',
+                      color: resolved ? COLORS.textMuted : COLORS.text,
+                      textDecoration: resolved ? 'line-through' : 'none',
+                      flex: 1,
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                      whiteSpace: 'nowrap',
+                    }}
+                    title={f}
+                  >
+                    {f}
+                  </span>
+                  {!resolved ? (
+                    <div style={{ display: 'flex', gap: 4, flexShrink: 0 }}>
+                      <button
+                        onClick={() => void openFileInEditor(harnessSlug, f)}
+                        style={chipStyle}
+                        title="Open in editor"
+                      >
+                        open
+                      </button>
+                      <button
+                        onClick={() => markResolved(f)}
+                        style={chipStyle}
+                        title="Mark resolved"
+                      >
+                        ✓
+                      </button>
+                    </div>
+                  ) : (
+                    <CheckCircle size={11} color={COLORS.successText} style={{ flexShrink: 0 }} />
+                  )}
+                </div>
+              );
+            })}
           </div>
 
-          {phase === 'idle' && (
-            <>
-              <p style={{ fontSize: FONTS.size.sm, color: COLORS.textMuted, margin: 0 }}>
-                Fetch <code>origin/main</code> and rebase your branch on top. Conflicts will be
-                listed here for resolution.
-              </p>
-              {error && (
-                <div style={{ color: '#f87171', fontSize: FONTS.size.sm, display: 'flex', gap: 6, alignItems: 'flex-start' }}>
-                  <AlertTriangle size={14} style={{ flexShrink: 0, marginTop: 2 }} />
-                  {error}
-                </div>
-              )}
-              <button
-                onClick={handleSync}
-                style={{
-                  background: COLORS.accent,
-                  color: '#fff',
-                  border: 'none',
-                  borderRadius: RADIUS.md,
-                  padding: '8px 16px',
-                  cursor: 'pointer',
-                  fontFamily: FONTS.sans,
-                  fontSize: FONTS.size.sm,
-                  alignSelf: 'flex-start',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 6,
-                }}
-              >
-                <GitMerge size={14} /> Sync with main
+          <div style={{ display: 'flex', gap: 8 }}>
+            {remainingConflicts.length === 0 && conflictedFiles.length > 0 && (
+              <button onClick={() => void handleSync()} style={primaryBtnStyle}>
+                Try sync again
               </button>
-            </>
-          )}
-
-          {(phase === 'syncing' || phase === 'aborting') && (
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: COLORS.textMuted, fontSize: FONTS.size.sm }}>
-              <Loader2 size={14} style={{ animation: 'spin 1s linear infinite' }} />
-              {phase === 'syncing' ? 'Running git rebase…' : 'Aborting rebase…'}
-            </div>
-          )}
-
-          {phase === 'clean' && (
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: '#4ade80', fontSize: FONTS.size.sm }}>
-              <CheckCircle size={14} />
-              Rebase complete — your branch is up to date with main.
-            </div>
-          )}
-
-          {phase === 'conflict' && (
-            <>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 6, color: '#f59e0b', fontSize: FONTS.size.sm }}>
-                <AlertTriangle size={14} />
-                <strong>Conflicts detected</strong> — resolve each file, then continue.
-              </div>
-
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                {conflictedFiles.map((f) => (
-                  <div
-                    key={f.path}
-                    style={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'space-between',
-                      background: COLORS.surface,
-                      border: `1px solid ${COLORS.border}`,
-                      borderRadius: RADIUS.sm,
-                      padding: '6px 10px',
-                      gap: 8,
-                    }}
-                  >
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
-                      {f.resolved ? (
-                        <CheckCircle size={13} color="#4ade80" />
-                      ) : (
-                        <FileText size={13} color="#f59e0b" />
-                      )}
-                      <code
-                        style={{
-                          fontSize: FONTS.size.xs,
-                          fontFamily: FONTS.mono,
-                          color: f.resolved ? COLORS.textMuted : COLORS.text,
-                          overflow: 'hidden',
-                          textOverflow: 'ellipsis',
-                          whiteSpace: 'nowrap',
-                        }}
-                      >
-                        {f.path}
-                      </code>
-                    </div>
-                    {!f.resolved && (
-                      <div style={{ display: 'flex', gap: 4, flexShrink: 0 }}>
-                        <button
-                          onClick={() => handleOpenInEditor(f.path)}
-                          style={smallBtnStyle}
-                          title="Open in code-server"
-                        >
-                          Open in editor
-                        </button>
-                        <button
-                          onClick={() => handleMarkResolved(f.path)}
-                          style={{ ...smallBtnStyle, background: '#166534', color: '#4ade80' }}
-                          title="Mark as resolved"
-                        >
-                          Mark resolved
-                        </button>
-                      </div>
-                    )}
-                  </div>
-                ))}
-              </div>
-
-              <div style={{ display: 'flex', gap: 8 }}>
-                <button
-                  onClick={handleContinueRebase}
-                  disabled={!allResolved}
-                  style={{
-                    background: allResolved ? COLORS.accent : COLORS.surface,
-                    color: allResolved ? '#fff' : COLORS.textMuted,
-                    border: `1px solid ${COLORS.border}`,
-                    borderRadius: RADIUS.md,
-                    padding: '6px 14px',
-                    cursor: allResolved ? 'pointer' : 'not-allowed',
-                    fontFamily: FONTS.sans,
-                    fontSize: FONTS.size.sm,
-                  }}
-                >
-                  Continue rebase
-                </button>
-                <button
-                  onClick={handleAbort}
-                  style={{
-                    background: 'none',
-                    color: '#f87171',
-                    border: `1px solid #7f1d1d`,
-                    borderRadius: RADIUS.md,
-                    padding: '6px 14px',
-                    cursor: 'pointer',
-                    fontFamily: FONTS.sans,
-                    fontSize: FONTS.size.sm,
-                  }}
-                >
-                  Abort rebase
-                </button>
-              </div>
-            </>
-          )}
-        </Dialog.Content>
-      </Dialog.Portal>
-    </Dialog.Root>
+            )}
+            <button
+              onClick={() => void handleAbort()}
+              style={{
+                ...primaryBtnStyle,
+                background: COLORS.dangerBg,
+                color: COLORS.dangerText,
+              }}
+            >
+              Abort rebase
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
   );
 }
 
-const smallBtnStyle: React.CSSProperties = {
+const primaryBtnStyle: React.CSSProperties = {
+  width: '100%',
+  padding: '6px 12px',
+  background: COLORS.accent,
+  color: '#fff',
+  border: 'none',
+  borderRadius: RADIUS.md,
+  fontSize: 12,
+  cursor: 'pointer',
+  fontFamily: FONTS.ui,
+};
+
+const backBtnStyle: React.CSSProperties = {
   background: 'none',
-  border: `1px solid ${COLORS.border}`,
-  borderRadius: 3,
-  padding: '2px 8px',
+  border: 'none',
   cursor: 'pointer',
   fontSize: 11,
   color: COLORS.textMuted,
-  fontFamily: FONTS.mono,
+  fontFamily: FONTS.ui,
+  padding: 0,
+};
+
+const chipStyle: React.CSSProperties = {
+  fontSize: 10,
+  padding: '1px 6px',
+  background: COLORS.surfaceHover,
+  border: `1px solid ${COLORS.border}`,
+  borderRadius: 3,
+  cursor: 'pointer',
+  color: COLORS.textMuted,
+  fontFamily: 'inherit',
 };
