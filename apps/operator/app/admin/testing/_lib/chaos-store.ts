@@ -87,6 +87,18 @@ export function finalizeRun(summary: RunSummary) {
   emit();
 }
 
+export function idleReset() {
+  snapshot = {
+    runId: null,
+    runState: 'idle',
+    progress: { clicks: 0, elapsedMs: 0 },
+    liveEvents: [],
+    lastSummary: snapshot.lastSummary,
+    history: snapshot.history,
+  };
+  emit();
+}
+
 export function clearHistory() {
   snapshot = { ...snapshot, history: [], lastSummary: null };
   emit();
