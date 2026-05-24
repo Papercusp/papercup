@@ -1183,6 +1183,34 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     },
   },
 
+  // userActions.byHarness — harness+workspace-filtered action log.
+  //   zql.userActions.where(harnessSlug).where(workspaceId)
+  //                  .orderBy('startedAt', 'desc').limit(limit)
+  'userActions.byHarness': {
+    argsSchema: z.object({
+      harnessSlug: z.string(),
+      workspaceId: z.string(),
+      limit: z.number().int().positive().max(500).default(50),
+    }),
+    resolve: async (args) => {
+      const { harnessSlug, workspaceId, limit } = args as {
+        harnessSlug: string;
+        workspaceId: string;
+        limit: number;
+      };
+      const { getOrgPg, generated } = await import('@restart/db-org');
+      const { and, desc, eq } = await import('drizzle-orm');
+      const t = generated.userActionsInHarnessShared;
+      const { db } = getOrgPg();
+      return (await db
+        .select()
+        .from(t)
+        .where(and(eq(t.harnessSlug, harnessSlug), eq(t.workspaceId, workspaceId)))
+        .orderBy(desc(t.startedAt))
+        .limit(limit)) as unknown[];
+    },
+  },
+
   // userActions.byKind — harness+workspace+kind-filtered action log.
   //   zql.userActions.where(harnessSlug).where(workspaceId).where(kind)
   //                  .orderBy('startedAt', 'desc').limit(limit)

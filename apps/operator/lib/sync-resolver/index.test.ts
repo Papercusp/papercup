@@ -150,13 +150,13 @@ describe('sync-resolver v2 registry', () => {
       }
     });
 
-    it('exposes 53 migrated entries total — all live queryNames migrated', () => {
-      // P-022 migration complete: every queryName from the 2026-05-24
-      // audit (51) plus chunkPlans.byFeature (was bundled as 1 name in
-      // the audit but is 2 namespaces in queries.ts) is in the v2
-      // registry. The legacy resolver fall-through is now dead code;
-      // cutover commit removes it.
-      expect(knownQueryNamesV2()).toHaveLength(53);
+    it('exposes 54 migrated entries total — all live queryNames migrated', () => {
+      // P-022 migration complete: every live queryName from the
+      // 2026-05-24 audit is in the v2 registry. Pre-cutover audit
+      // (2026-05-25) found one missed entry (userActions.byHarness)
+      // and added it. The legacy resolver fall-through is now dead
+      // code; cutover commit removes it.
+      expect(knownQueryNamesV2()).toHaveLength(54);
     });
   });
 
