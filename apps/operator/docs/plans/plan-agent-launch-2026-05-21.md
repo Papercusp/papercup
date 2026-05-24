@@ -849,3 +849,30 @@ distinguish them, that is a P-019 follow-up, not v1 schema churn.
 Auto-invocation (a post-turn hook, a background sweep) is a possible
 follow-up, deliberately not v1.
 (Decided at P-007.)
+
+## Post-ship follow-ups
+
+Recorded from the 2026-05-22 code audit. Not blocking; the plan
+shipped without them. Each is a known tradeoff, not a defect in the
+delivered scope.
+
+### F-1 — No process-level kill for a wedged background launch
+A `plans:launch` / `plans:resume` call with `await: false` (the admin
+UI path) runs `executePlanAgentTurn` fire-and-forget. The dispatch
+stack's `finally` clears the timeout + idle watchdog timers when the
+handler returns early, and the handler's `ctx.signal` is a fresh
+never-aborted `AbortController` — so the background turn correctly
+survives (intended). The flip side: a genuinely hung agent process
+has nothing killing it. P-016's `sweepPlanRuns` flips the DB row to
+`failed` after 30 min, but the OS process can linger. Proper fix: a
+process handle on `plan_runs` + a kill path in the sweep. New scope.
+
+### F-2 — RunDetailPanel Continue: user turn appears one refresh late
+`RunDetailPanel.onSend` calls `loadFirstPage()` right after the
+`plans:resume` POST resolves, but the background turn persists the
+user turn slightly later (inside the fire-and-forget
+`executePlanAgentTurn`). So a just-sent message can be missing until
+the next transcript refresh. Cosmetic; consistent with the
+background-mode polling model. Fix: optimistic-append the user turn
+client-side, or have `plans:resume` persist the user turn before it
+returns.
