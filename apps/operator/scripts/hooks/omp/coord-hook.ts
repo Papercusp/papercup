@@ -190,7 +190,8 @@ interface JsonRpcResp {
  * (see _mcp-handler.ts).
  */
 let _hookOwnerId: string | null = null;
-let _advSessionLinked = false;
+type AdvSessionLinkState = 'pending' | 'linked' | 'conflict';
+let _advSessionLinkState: AdvSessionLinkState = 'pending';
 export function hookOwnerId(): string {
   if (_hookOwnerId === null) {
     const session =
@@ -206,7 +207,7 @@ export function hookOwnerId(): string {
 /** Test-only: reset memoised state between cases. */
 export function _resetHookOwnerIdForTests(): void {
   _hookOwnerId = null;
-  _advSessionLinked = false;
+  _advSessionLinkState = 'pending';
   _mode = 'attached';
   _lastProbeAtMs = 0;
 }
@@ -557,15 +558,20 @@ function currentSessionLinkFromContext(ctx: unknown): {
 }
 
 export async function linkAdvSessionFromContext(ctx: unknown): Promise<boolean> {
-  if (_advSessionLinked) return true;
+  if (_advSessionLinkState === 'linked') return true;
+  if (_advSessionLinkState === 'conflict') return false;
   const link = currentSessionLinkFromContext(ctx);
   if (!link) return false;
   const result = await callMcpTool('omp:sessions', { op: 'link', ...link }) as
     | { ok?: boolean; result?: string }
     | null;
+  if (result?.result === 'conflict') {
+    _advSessionLinkState = 'conflict';
+    return false;
+  }
   const linked = result?.ok === true &&
     (result.result === 'linked' || result.result === 'already_linked');
-  if (linked) _advSessionLinked = true;
+  if (linked) _advSessionLinkState = 'linked';
   return linked;
 }
 
@@ -752,7 +758,7 @@ export async function onTurnStart(ctx?: unknown): Promise<TurnStartResult> {
     // Throttled re-probe — a recovered operator is picked up without
     // paying a probe (a 2s timeout while still down) every turn.
     const needsImmediateAdvLinkProbe =
-      !_advSessionLinked && !!process.env.PAPERCUSP_ADV_SESSION_ID;
+      _advSessionLinkState === 'pending' && !!process.env.PAPERCUSP_ADV_SESSION_ID;
     if (needsImmediateAdvLinkProbe || Date.now() - _lastProbeAtMs > DETACHED_REPROBE_MS) {
       await refreshMode();
     }

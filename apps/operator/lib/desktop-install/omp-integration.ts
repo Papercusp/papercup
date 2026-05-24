@@ -153,8 +153,9 @@ async function readOmpConfigValue(
 async function ensureOmpHindsightConfig(
   ompBinaryPath: string | null,
   home: string,
-): Promise<void> {
-  if (!ompBinaryPath) return;
+): Promise<string[]> {
+  if (!ompBinaryPath) return [];
+  const updated: string[] = [];
   for (const [key, value] of OMP_HINDSIGHT_DESIRED_CONFIG) {
     const current = await readOmpConfigValue(ompBinaryPath, home, key);
     if (current === value) continue;
@@ -163,10 +164,12 @@ async function ensureOmpHindsightConfig(
         timeout: 3000,
         env: ompExecEnv(home),
       });
+      updated.push(key);
     } catch {
-      return;
+      return updated;
     }
   }
+  return updated;
 }
 
 export async function detectOmp(home: string): Promise<OmpDetection> {
@@ -393,7 +396,10 @@ export async function installOmpIntegration(opts: InstallOptions = {}): Promise<
     actions.push(`removed legacy extension at ${ompPaths.legacyExtensionPath}`);
   }
 
-  await ensureOmpHindsightConfig(detection.ompBinaryPath, home);
+  const hindsightUpdated = await ensureOmpHindsightConfig(detection.ompBinaryPath, home);
+  if (hindsightUpdated.length > 0) {
+    actions.push(`configured OMP Hindsight (${hindsightUpdated.join(', ')})`);
+  }
 
   // 4. install omp-su wrapper.
   const wrapperPath = resolveWrapperPath(home, detection.ompBinaryPath);

@@ -35,9 +35,9 @@ import {
 
 /**
  * `shell` — the engineer path: a superuser console with a `.mcp.json`.
- * `omp`   — the power-user path: launch `papercusp-omp connect`, which
- *           seeds a workspace-scoped OMP agent. See
- *           docs/plans/omp-power-user-bundle-2026-05-20.md §4.4.
+ * `omp`   — the engineer OMP path: launch `omp` directly with the
+ *           Papercusp engineer playbook + coordination extension,
+ *           scoped to the local superuser MCP surface.
  */
 export type ConsoleMode = 'shell' | 'omp';
 
@@ -50,8 +50,8 @@ export interface ConsoleEnvelope {
    * spawned shell's argv and is visible in `ps`).
    */
   env: Record<string, string>;
-  /** Pretty-printed .mcp.json contents. Empty in `omp` mode (the OMP
-   *  plugin writes its own .mcp.json). */
+  /** Pretty-printed .mcp.json contents. Empty in `omp` mode — engineer
+   *  OMP launches do not need a per-cwd MCP file. */
   mcpJsonContents: string;
   /** Greeting command the launcher runs before exec'ing the user's shell. */
   greetingCmd: string;
@@ -70,7 +70,7 @@ export interface ConsoleEnvelope {
   secretEnv?: Record<string, string>;
   /**
    * `omp` mode only — the command the terminal `exec`s in place of the
-   * user's `$SHELL` (e.g. `papercusp-omp connect`).
+   * user's `$SHELL` (e.g. `omp --append-system-prompt …`).
    */
   launchCommand?: string;
 }
@@ -87,10 +87,10 @@ export interface BuildEnvelopeOpts {
   /**
    * plan-agent-launch P-023: when set, the terminal resumes an existing
    * session instead of opening fresh — `<agent-cli> -r <sessionId>` in
-   * shell mode, `omp-su -r <sessionId>` in OMP mode.
+   * shell mode, `omp -r <sessionId>` in OMP mode.
    */
   resumeSessionId?: string;
-  /** Optional OMP model fuzzy-match argument for `omp-su --model`. */
+  /** Optional OMP model fuzzy-match argument for `omp --model`. */
   ompModel?: string;
 }
 
@@ -170,24 +170,12 @@ export async function buildConsoleEnvelope(
   const scriptsDir = resolveScriptsDir();
   if (scriptsDir) env.PAPERCUSP_SCRIPTS_DIR = scriptsDir;
 
-  // 2c. omp mode — mint a power-user session + tokens and return an
-  //     envelope that launches `papercusp-omp connect`. The tokens go
-  //     in secretEnv (spawn-env only, never the oneliner). No .mcp.json
-  //     here: the OMP plugin writes its own, scoped to the workspace.
+  // 2c. omp mode — launch the local OMP CLI directly with the
+  //     engineer-collaborator playbook + coordination extension. This
+  //     avoids depending on whatever profile the ambient `omp-su`
+  //     wrapper was last installed with; /adv is always the
+  //     engineer-collaborator surface.
   if ((opts.mode ?? 'shell') === 'omp') {
-    // Route OMP launches through the `omp-su` wrapper installed by
-    // apps/operator/scripts/install-standalone-mcp.sh — it adds the
-    // engineer-collaborator playbook + the papercusp coord extension
-    // and registers the superuser MCP server in ~/.omp/agent/. Any
-    // extra args (e.g. `-r <id>` for resume) pass straight through
-    // to the underlying `omp`. We deliberately bypass the
-    // `papercusp-omp connect` bundle/token machinery for /adv
-    // launches — that path is for workspace-user OMP sessions; /adv
-    // is the engineer-collaborator surface.
-    const launchParts = ['omp-su'];
-    if (opts.ompModel) launchParts.push('--model', shellSafeOmpModel(opts.ompModel));
-    if (opts.resumeSessionId) launchParts.push('-r', shellSafeId(opts.resumeSessionId));
-    const launchCommand = launchParts.join(' ');
     return {
       cwd,
       env,
@@ -195,7 +183,10 @@ export async function buildConsoleEnvelope(
       greetingCmd: '',
       needsSuperuserBootstrap: false,
       mode: 'omp',
-      launchCommand,
+      launchCommand: buildEngineerOmpLaunchCommand({
+        ompModel: opts.ompModel,
+        resumeSessionId: opts.resumeSessionId,
+      }),
     };
   }
 
@@ -280,4 +271,20 @@ export function shellSafeOmpModel(model: string): string {
     throw new Error(`refusing to embed unsafe OMP model: ${trimmed.slice(0, 32)}`);
   }
   return trimmed;
+}
+
+export function buildEngineerOmpLaunchCommand(input: {
+  ompModel?: string;
+  resumeSessionId?: string;
+}): string {
+  const launchParts = [
+    'omp',
+    '--append-system-prompt',
+    '"$HOME/.papercusp/engineer-collaborator.md"',
+    '-e',
+    '"$HOME/.papercusp/papercusp-coord.ts"',
+  ];
+  if (input.ompModel) launchParts.push('--model', shellSafeOmpModel(input.ompModel));
+  if (input.resumeSessionId) launchParts.push('-r', shellSafeId(input.resumeSessionId));
+  return launchParts.join(' ');
 }

@@ -18,7 +18,6 @@ import {
   resolveWindowIdForPid,
   setAdvSessionOmpThreadId,
 } from '@/lib/adv-sessions';
-import { papercuspPath } from '@/lib/papercusp-root';
 import { readOmpConfig } from '@/lib/omp-config';
 import {
   findOmpSessionNear,
@@ -109,7 +108,7 @@ async function resolveOmpSessionForRequest(req: Request): Promise<{
 
   const match = findOmpSessionNear({
     startedAtMs: new Date(advSession.startedAt).getTime(),
-    cwd: advSession.cwd ?? papercuspPath(),
+    cwd: advSession.cwd ?? undefined,
     windowMs: 5 * 60_000,
   });
   if (match?.id) {

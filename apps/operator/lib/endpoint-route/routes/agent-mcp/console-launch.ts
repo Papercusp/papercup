@@ -336,14 +336,14 @@ const post = defineTool({
           501,
         );
       }
-      if (!isOnPath('omp-su') || !isOnPath('omp')) {
+      if (!isOnPath('omp')) {
         return jsonRes(
           {
             status: 'error',
             code: 'omp_not_installed',
             error:
-              'omp-su wrapper or @oh-my-pi/cli not found on PATH. Run apps/operator/scripts/install-standalone-mcp.sh to install the wrapper, and `npm i -g @oh-my-pi/cli` for the OMP runtime.',
-            installCmd: 'npm i -g @oh-my-pi/cli && bash apps/operator/scripts/install-standalone-mcp.sh',
+              '@oh-my-pi/cli not found on PATH. Install the OMP runtime with `npm i -g @oh-my-pi/cli`; the operator supplies the engineer playbook + coordination files for /adv launches.',
+            installCmd: 'npm i -g @oh-my-pi/cli',
           },
           200,
         );

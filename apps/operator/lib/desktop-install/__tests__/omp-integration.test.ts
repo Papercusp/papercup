@@ -155,6 +155,32 @@ describe('installOmpIntegration', () => {
     }
   });
 
+  it('reports changed=true when it corrects stale OMP Hindsight config', async () => {
+    await seedPhase1(tmpHome);
+    const fakeOmp = await makeFakeOmp();
+    try {
+      await installOmpIntegration({
+        home: tmpHome,
+        operatorUrl: 'http://localhost:3070',
+        ompBinaryPath: fakeOmp,
+      });
+      await fs.writeFile(path.join(tmpHome, '.omp-config-memory.backend'), 'memory', 'utf8');
+
+      const rerun = await installOmpIntegration({
+        home: tmpHome,
+        operatorUrl: 'http://localhost:3070',
+        ompBinaryPath: fakeOmp,
+      });
+
+      expect(rerun.changed).toBe(true);
+      expect(rerun.actions).toContain(
+        'configured OMP Hindsight (memory.backend)',
+      );
+    } finally {
+      await fs.rm(path.dirname(fakeOmp), { recursive: true, force: true });
+    }
+  });
+
   it('re-run is a no-op (returns changed=false, empty actions)', async () => {
     await seedPhase1(tmpHome);
     const first = await installOmpIntegration({

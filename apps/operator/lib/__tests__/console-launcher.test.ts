@@ -6,7 +6,7 @@
  * as `crypto.randomUUID()`, so the regex is strict by design.
  */
 import { describe, expect, it } from 'vitest';
-import { shellSafeId, shellSafeOmpModel } from '@/lib/console-launcher';
+import { buildEngineerOmpLaunchCommand, shellSafeId, shellSafeOmpModel } from '@/lib/console-launcher';
 
 describe('shellSafeId', () => {
   it('accepts a real crypto.randomUUID() value', () => {
@@ -63,5 +63,23 @@ describe('shellSafeOmpModel', () => {
   it('rejects shell metacharacters and spaces', () => {
     expect(() => shellSafeOmpModel('opus; rm -rf /')).toThrow(/unsafe OMP model/i);
     expect(() => shellSafeOmpModel('claude opus')).toThrow(/unsafe OMP model/i);
+  });
+});
+
+describe('buildEngineerOmpLaunchCommand', () => {
+  it('always targets the engineer playbook directly instead of the ambient omp-su wrapper', () => {
+    const cmd = buildEngineerOmpLaunchCommand({});
+    expect(cmd).toContain('omp --append-system-prompt "$HOME/.papercusp/engineer-collaborator.md"');
+    expect(cmd).toContain('-e "$HOME/.papercusp/papercusp-coord.ts"');
+    expect(cmd).not.toContain('omp-su');
+  });
+
+  it('appends model and resume args safely', () => {
+    const cmd = buildEngineerOmpLaunchCommand({
+      ompModel: 'openai/gpt-5.2',
+      resumeSessionId: '550e8400-e29b-41d4-a716-446655440000',
+    });
+    expect(cmd).toContain('--model openai/gpt-5.2');
+    expect(cmd).toContain('-r 550e8400-e29b-41d4-a716-446655440000');
   });
 });
