@@ -8,8 +8,16 @@
  * spawns the user's OS-native terminal in a new window.
  */
 
+import { commands } from './tauri-bindings';
+
 export interface LaunchOpts {
   slug: string | null;
+  /** Plan slug to tag the launched session with — surfaces in
+   *  /adv/sessions for grouping + focus. Optional; null = untagged. */
+  planSlug?: string | null;
+  /** Display label shown in the /adv/sessions list. Falls back to
+   *  the plan title or the cwd basename when omitted. */
+  label?: string | null;
 }
 
 interface ConsoleEnvelope {
@@ -81,7 +89,10 @@ function resolveLaunchEndpoint(): string {
   }
 }
 
-async function tryServerSideSpawn(slug: string | null, url: string): Promise<{ ok: boolean; data: any; status: number }> {
+async function tryServerSideSpawn(
+  opts: LaunchOpts,
+  url: string,
+): Promise<{ ok: boolean; data: any; status: number }> {
   console.info('[console-launcher] fetching', url);
   // Use text/plain content-type so this counts as a CORS "simple request"
   // and skips the preflight OPTIONS entirely — Tauri's webkit2gtk in this
@@ -90,7 +101,11 @@ async function tryServerSideSpawn(slug: string | null, url: string): Promise<{ o
   const r = await fetch(url, {
     method: 'POST',
     headers: { 'content-type': 'text/plain' },
-    body: JSON.stringify({ slug }),
+    body: JSON.stringify({
+      slug: opts.slug,
+      planSlug: opts.planSlug ?? null,
+      label: opts.label ?? null,
+    }),
   });
   const data = await r.json().catch(() => ({ status: 'error', error: 'invalid JSON' }));
   return { ok: r.ok, data, status: r.status };
@@ -139,7 +154,7 @@ export async function launchNativeConsole(opts: LaunchOpts): Promise<void> {
   let lastError: any;
   for (const url of endpoints) {
     try {
-      const { ok, data, status } = await tryServerSideSpawn(opts.slug, url);
+      const { ok, data, status } = await tryServerSideSpawn(opts, url);
       console.info('[console-launcher] fetch result', { url, status, data });
       if (ok && data?.status === 'ok') return;
       if (status === 501) break;
@@ -165,7 +180,6 @@ export async function launchNativeConsole(opts: LaunchOpts): Promise<void> {
     throw new Error(detail?.error ?? `console/resolve HTTP ${resolveR.status}`);
   }
   const envelope = (await resolveR.json()) as ConsoleEnvelope;
-  const { commands } = await import('./tauri-bindings');
   const launchFn = (commands as { consoleLaunch?: (e: ConsoleEnvelope) => Promise<unknown> })
     .consoleLaunch;
   if (typeof launchFn !== 'function') {

@@ -51,7 +51,12 @@ export async function launchOmpAgent(opts: LaunchOpts): Promise<OmpLaunchResult>
       const r = await fetch(url, {
         method: 'POST',
         headers: { 'content-type': 'text/plain' },
-        body: JSON.stringify({ slug: opts.slug, mode: 'omp' }),
+        body: JSON.stringify({
+          slug: opts.slug,
+          mode: 'omp',
+          planSlug: opts.planSlug ?? null,
+          label: opts.label ?? null,
+        }),
       });
       const data = (await r.json().catch(() => null)) as
         | { status?: string; code?: string; error?: string; installCmd?: string }

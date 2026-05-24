@@ -86,6 +86,7 @@ type _G = {
     planRevisions: boolean;
     planRuns: boolean;
     planRunTurns: boolean;
+    advSessions: boolean;
   };
 };
 const _g = globalThis as unknown as _G;
@@ -151,6 +152,7 @@ const flags = _g.__ensureSchemaFlags ?? (_g.__ensureSchemaFlags = {
   planRevisions: false,
   planRuns: false,
   planRunTurns: false,
+  advSessions: false,
 });
 
 /**
@@ -1846,6 +1848,42 @@ export async function ensureBackupTables(): Promise<void> {
   flags.workspaceBackupSettings = true;
   flags.backupSnapshots = true;
   flags.backupEvents = true;
+}
+
+/**
+ * Creates harness_shared.adv_sessions — lifecycle row per terminal
+ * session launched from the /adv UI (Plans tab). Read by /adv/sessions
+ * to render active + recent rows with focus + omp --resume controls.
+ * Canonical SQL: libs/papercusp/libs/db/sql/079-adv-sessions.sql.
+ */
+export async function ensureAdvSessionsTable(): Promise<void> {
+  if (flags.advSessions) return;
+  const { sql } = getOrgPg();
+  await sql.unsafe(`
+    CREATE TABLE IF NOT EXISTS harness_shared.adv_sessions (
+      id              BIGSERIAL PRIMARY KEY,
+      workspace_id    TEXT NOT NULL,
+      plan_slug       TEXT NULL,
+      mode            TEXT NOT NULL CHECK (mode IN ('omp', 'console')),
+      terminal_bin    TEXT NULL,
+      pid             INT NULL,
+      window_id       TEXT NULL,
+      omp_thread_id   TEXT NULL,
+      label           TEXT NULL,
+      started_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+      ended_at        TIMESTAMPTZ NULL,
+      exit_code       INT NULL
+    );
+    CREATE INDEX IF NOT EXISTS adv_sessions_workspace_active_idx
+      ON harness_shared.adv_sessions(workspace_id, started_at DESC)
+      WHERE ended_at IS NULL;
+    CREATE INDEX IF NOT EXISTS adv_sessions_workspace_recent_idx
+      ON harness_shared.adv_sessions(workspace_id, started_at DESC);
+    CREATE INDEX IF NOT EXISTS adv_sessions_plan_idx
+      ON harness_shared.adv_sessions(plan_slug, started_at DESC)
+      WHERE plan_slug IS NOT NULL;
+  `);
+  flags.advSessions = true;
 }
 
 /** Test-only: clear the per-process cache so DDL re-runs. */

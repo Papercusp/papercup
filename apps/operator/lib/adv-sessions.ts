@@ -1,0 +1,156 @@
+/**
+ * adv-sessions.ts — server-side lifecycle helpers for the /adv
+ * Sessions surface. Wraps the `harness_shared.adv_sessions` table
+ * (migration 079, ensured at runtime via ensureAdvSessionsTable).
+ *
+ * Two writers:
+ *   - `recordAdvSession` inserts a row at spawn time and returns the
+ *     new row id.
+ *   - `markAdvSessionEnded` updates the row when the child exits.
+ *
+ * One reader: `listAdvSessions`, used by both the UI route and the
+ * `adv:sessions_list` MCP tool (later).
+ */
+
+import { getOrgPg } from '@restart/db-org';
+import { ensureAdvSessionsTable } from './ensure-schema';
+import { activeWorkspaceId } from './workspace-registry';
+
+export interface AdvSessionRow {
+  id: number;
+  workspaceId: string;
+  planSlug: string | null;
+  mode: 'omp' | 'console';
+  terminalBin: string | null;
+  pid: number | null;
+  windowId: string | null;
+  ompThreadId: string | null;
+  label: string | null;
+  startedAt: string;
+  endedAt: string | null;
+  exitCode: number | null;
+}
+
+export interface RecordOpts {
+  planSlug?: string | null;
+  mode: 'omp' | 'console';
+  terminalBin?: string | null;
+  pid?: number | null;
+  label?: string | null;
+}
+
+export async function recordAdvSession(opts: RecordOpts): Promise<number | null> {
+  try {
+    await ensureAdvSessionsTable();
+    const { sql } = getOrgPg();
+    const rows = await sql<{ id: number }[]>`
+      INSERT INTO harness_shared.adv_sessions
+        (workspace_id, plan_slug, mode, terminal_bin, pid, label)
+      VALUES
+        (${activeWorkspaceId()}, ${opts.planSlug ?? null}, ${opts.mode},
+         ${opts.terminalBin ?? null}, ${opts.pid ?? null}, ${opts.label ?? null})
+      RETURNING id
+    `;
+    return rows[0]?.id ?? null;
+  } catch (e) {
+    console.warn('[adv-sessions] recordAdvSession failed:', (e as Error).message);
+    return null;
+  }
+}
+
+export async function markAdvSessionEnded(id: number, exitCode: number | null): Promise<void> {
+  try {
+    const { sql } = getOrgPg();
+    await sql`
+      UPDATE harness_shared.adv_sessions
+         SET ended_at = now(), exit_code = ${exitCode}
+       WHERE id = ${id} AND ended_at IS NULL
+    `;
+  } catch (e) {
+    console.warn('[adv-sessions] markAdvSessionEnded failed:', (e as Error).message);
+  }
+}
+
+export async function listAdvSessions(limit = 100): Promise<AdvSessionRow[]> {
+  try {
+    await ensureAdvSessionsTable();
+    const { sql } = getOrgPg();
+    const rows = await sql<Array<{
+      id: number;
+      workspace_id: string;
+      plan_slug: string | null;
+      mode: 'omp' | 'console';
+      terminal_bin: string | null;
+      pid: number | null;
+      window_id: string | null;
+      omp_thread_id: string | null;
+      label: string | null;
+      started_at: Date;
+      ended_at: Date | null;
+      exit_code: number | null;
+    }>>`
+      SELECT id, workspace_id, plan_slug, mode, terminal_bin, pid,
+             window_id, omp_thread_id, label, started_at, ended_at, exit_code
+        FROM harness_shared.adv_sessions
+       WHERE workspace_id = ${activeWorkspaceId()}
+       ORDER BY started_at DESC
+       LIMIT ${limit}
+    `;
+    return rows.map((r) => ({
+      id: r.id,
+      workspaceId: r.workspace_id,
+      planSlug: r.plan_slug,
+      mode: r.mode,
+      terminalBin: r.terminal_bin,
+      pid: r.pid,
+      windowId: r.window_id,
+      ompThreadId: r.omp_thread_id,
+      label: r.label,
+      startedAt: r.started_at.toISOString(),
+      endedAt: r.ended_at?.toISOString() ?? null,
+      exitCode: r.exit_code,
+    }));
+  } catch (e) {
+    console.warn('[adv-sessions] listAdvSessions failed:', (e as Error).message);
+    return [];
+  }
+}
+
+/**
+ * Resolve a pid → X11 window id via `wmctrl -lp`. Best-effort: returns
+ * null on any failure (no wmctrl, no DISPLAY, pid not yet windowed,
+ * etc.). Callers should accept the null and surface a "couldn't focus"
+ * message rather than crashing.
+ */
+export async function resolveWindowIdForPid(pid: number): Promise<string | null> {
+  const { spawnSync } = await import('node:child_process');
+  try {
+    const r = spawnSync('wmctrl', ['-lp'], { encoding: 'utf8' });
+    if (r.status !== 0) return null;
+    // wmctrl -lp output: <wid> <desktop> <pid> <host> <title>
+    for (const line of r.stdout.split('\n')) {
+      const parts = line.trim().split(/\s+/, 5);
+      if (parts.length < 4) continue;
+      if (Number(parts[2]) === pid) return parts[0];
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Bring an X11 window to the foreground via `wmctrl -ia <wid>`.
+ * User-initiated only — see memory feedback_e2e_no_focus_steal: this
+ * pattern is forbidden for automated drivers but fine for an explicit
+ * focus-button click.
+ */
+export async function focusWindowId(windowId: string): Promise<boolean> {
+  const { spawnSync } = await import('node:child_process');
+  try {
+    const r = spawnSync('wmctrl', ['-ia', windowId], { encoding: 'utf8' });
+    return r.status === 0;
+  } catch {
+    return false;
+  }
+}

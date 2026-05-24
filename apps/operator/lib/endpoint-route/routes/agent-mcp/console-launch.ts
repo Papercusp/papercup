@@ -7,13 +7,34 @@
  * Ported from app/api/agent-mcp/console/launch/route.ts. `auth: 'public'` —
  * requirePrincipal() inline.
  */
-import { spawn } from 'node:child_process';
+import { spawn, type ChildProcess } from 'node:child_process';
 import { appendFileSync, existsSync, writeFileSync, renameSync } from 'node:fs';
 import { join } from 'node:path';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
 import { buildConsoleEnvelope } from '@/lib/console-launcher';
 import { PrincipalCheckError, requirePrincipal } from '@/lib/auth/require-principal';
 import { defineTool } from '@papercusp/agent-mcp';
+import { recordAdvSession, markAdvSessionEnded } from '@/lib/adv-sessions';
+
+// Fire-and-forget child-exit listener that ends the adv_sessions row
+// when the spawned terminal closes. detached+unref'd children still
+// emit 'exit' on the parent's ChildProcess handle as long as we keep
+// the JS reference alive — we don't, because the parent process
+// outlives any one terminal. So we attach the listener before
+// `unref()` and let Node hold it via the closure; the row will close
+// when the terminal exits if the operator process is still alive,
+// otherwise the row stays "active" (acceptable — operator-restart is
+// the recovery boundary anyway). A future reaper can sweep stale
+// rows by querying live pids.
+function attachExitWatcher(child: ChildProcess, sessionPromise: Promise<number | null>): void {
+  child.on('exit', (code) => {
+    sessionPromise
+      .then((id) => {
+        if (id != null) void markAdvSessionEnded(id, code);
+      })
+      .catch(() => { /* best-effort */ });
+  });
+}
 
 const DEBUG_LOG = '/tmp/console-launch.log';
 function dlog(line: string): void {
@@ -203,6 +224,10 @@ const post = defineTool({
       // `<agent-cli> -r <sessionId>` instead of dropping into a fresh
       // login shell. Only honoured in 'shell' mode.
       resumeSessionId?: string | null;
+      // /adv plumbing: tag this session with the plan it was
+      // launched from so /adv/sessions can group + display.
+      planSlug?: string | null;
+      label?: string | null;
     } = {};
     try {
       const text = await req.text();
@@ -262,6 +287,14 @@ const post = defineTool({
           cwd: envelope.cwd,
           env: { ...process.env, ...envelope.env, ...(envelope.secretEnv ?? {}) },
         });
+        const sessionPromise = recordAdvSession({
+          planSlug: body.planSlug ?? null,
+          mode: 'omp',
+          terminalBin: term.bin,
+          pid: child.pid ?? null,
+          label: body.label ?? null,
+        });
+        attachExitWatcher(child, sessionPromise);
         child.unref();
         console.log(`[console-launch] spawned omp agent ${term.bin} pid=${child.pid}`);
         return jsonRes({ status: 'ok', pid: child.pid, terminal: term.bin, mode: 'omp' });
@@ -309,6 +342,14 @@ const post = defineTool({
         cwd: envelope.cwd,
         env: { ...process.env, ...envelope.env },
       });
+      const sessionPromise = recordAdvSession({
+        planSlug: body.planSlug ?? null,
+        mode: 'console',
+        terminalBin: term.bin,
+        pid: child.pid ?? null,
+        label: body.label ?? null,
+      });
+      attachExitWatcher(child, sessionPromise);
       child.unref();
       console.log(`[console-launch] spawned ${term.bin} pid=${child.pid} cwd=${envelope.cwd}`);
       return jsonRes({
