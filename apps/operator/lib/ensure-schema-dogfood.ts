@@ -321,3 +321,69 @@ export async function ensureAllDogfoodTables(): Promise<void> {
     ensureTrustedAuthorsTable(),
   ]);
 }
+
+/* ─── P-019: reactivity trigger wiring ────────────────────────────── */
+
+/**
+ * Tables that should fire `harness_shared.emit_change_notify()` on every
+ * INSERT / UPDATE / DELETE. Producer side of the reactivity stack from
+ * v5 §13. The set is conservative for v1:
+ *
+ *   - All NEW dogfood tables (this file). Safe — no pre-existing
+ *     triggers on them; created here by us.
+ *   - Existing HYPERBEE-bucket tables (harness_features_consolidated,
+ *     harness_issues_consolidated, coord_presence, harness_feature_prs)
+ *     are deliberately NOT in this list. Those tables have pre-existing
+ *     triggers (sync_consolidated_trg, sync_issues_consolidated_trg,
+ *     etc.) and attaching another trigger needs an audit of trigger
+ *     interaction first. Tracked as P-019 follow-up.
+ *
+ *   - Some LOCAL-bucket tables (`known_schema_versions`,
+ *     `auto_review_audit`) don't need the notify because nothing in the
+ *     UI subscribes to changes — they're write-only audit logs. We
+ *     attach anyway because: (a) the surface is uniform, (b) listeners
+ *     can filter, (c) future UIs may want to subscribe.
+ */
+export const DOGFOOD_REACTIVE_TABLES = [
+  'feature_queue',
+  'contributors',
+  'feature_claims',
+  'pr_reviewer_settings',
+  'pr_check_status_cache',
+  'known_schema_versions',
+  'auto_review_audit',
+  'claim_audit',
+  'webhook_audit',
+  'trusted_authors',
+] as const;
+
+type _TG = { __dogfoodTriggersWired?: boolean };
+const _gTrig = globalThis as unknown as _TG;
+
+/**
+ * Attach `harness_shared.emit_change_notify()` (defined in migration 078)
+ * to every table in `DOGFOOD_REACTIVE_TABLES`. Idempotent via
+ * `CREATE OR REPLACE TRIGGER` (PG 14+). Safe to call on every boot.
+ *
+ * Pre-condition: migration 078 has run (the trigger function exists).
+ * That migration is bundled with the embedded-postgres-server boot
+ * sequence, so by the time runtime code calls this helper, the function
+ * is guaranteed to be there. If somehow it isn't, this throws cleanly —
+ * caller should surface the error rather than swallowing.
+ */
+export async function wireDogfoodTriggers(): Promise<void> {
+  if (_gTrig.__dogfoodTriggersWired) return;
+  // Ensure every target table exists first; trigger DDL otherwise
+  // refers to a missing relation and fails.
+  await ensureAllDogfoodTables();
+  const { sql } = getOrgPg();
+  for (const tableName of DOGFOOD_REACTIVE_TABLES) {
+    await sql.unsafe(
+      'CREATE OR REPLACE TRIGGER emit_change_notify_trg ' +
+        'AFTER INSERT OR UPDATE OR DELETE ' +
+        'ON harness_shared.' + tableName + ' ' +
+        'FOR EACH ROW EXECUTE FUNCTION harness_shared.emit_change_notify()',
+    );
+  }
+  _gTrig.__dogfoodTriggersWired = true;
+}
