@@ -44,7 +44,7 @@ v5 started as a maintenance pass folding in the v4 audit findings plus user reso
 
 **Smaller documentation tidies (audit B, C, N, O, P, R applied as text edits, no scope change).**
 
-## 2026-05-24 addendum — canonical shared harnesses for GitHub repos
+## 2026-05-24 addendum 1 — canonical shared harnesses for GitHub repos
 
 User decision: creating from a GitHub URL is a shared-harness action only. There is no "private GitHub URL" create path. Private harnesses are created from a new local directory (Entry 1) or an already-cloned local repo (Entry 3).
 
@@ -57,6 +57,13 @@ Authority rule: unclaimed harnesses are provisional community harnesses. Claimed
 
 Implementation hooks added by this addendum: D-025, D-026, P-068, P-069, §5.1, and the Cupboard schema/API updates in §10.2/§10.3.
 
+## 2026-05-24 addendum 2 — deferrals carved into separate plan docs
+
+Two design threads surfaced during the 2026-05-24 review pass have been carved into standalone plan docs so they can be reviewed and scheduled independently of v5. Until those plans land, the corresponding v5 surfaces ship in their simplest form:
+
+- **Team-proxy witness pattern** → [`proxy-witness-pattern-2026-05-24.md`](./proxy-witness-pattern-2026-05-24.md). Cross-engineer verifiable LLM-side stats (token spend, latency, model attribution, refusals, etc.) require a shared witness; the team proxy is the natural fit. Until that pattern is built, **all LLM-side stats surfaced in shared-harness UIs (notably the Insights "Spend" card) ship as `self-reported` (⏱ badge) only.** No cross-engineer verification of spend, no billing-admin role, no reconciliation reports in v5.
+- **Plans become harness-scoped, author-owned, fork-on-drag** → [`plans-harness-scoped-2026-05-24.md`](./plans-harness-scoped-2026-05-24.md). Plans move from workspace-scoped to harness-scoped HYPERBEE storage, with author-only edits, a Plans sidebar pane, and drag-to-fork mechanics — but only for shared harnesses; private harnesses keep the existing filesystem-backed `plans:*` tools unchanged. Until that plan lands, **plans remain workspace-scoped exactly as today**, including for shared harnesses created under v5. No Plans pane, no fork-on-drag, no per-harness plan migration. The `papercusp` harness is the migration target when this lands.
+
 ## 2026-05-24 addendum 3 — Insights, anti-fakery, contributor stats, user profile
 
 Three threads from the 2026-05-24 review pass land in v5 in-place rather than as deferrals:
@@ -66,13 +73,6 @@ Three threads from the 2026-05-24 review pass land in v5 in-place rather than as
 - **Contributor activity stats + user profile page (§9.2 update, §18, D-027, D-028)**. Activity stored as append-only `contributor_usage_events` ledger in HYPERBEE; mutable counter columns explicitly rejected (LWW race-prone). Per-contributor activity badges with tier labels on Contributors tab, Insights People card, feature/PR cards. New `/users/github/<github_user_id>` user profile page (numeric canonical, redirects from `/users/<login>`) showing harness participation + tier-labeled stats, filtered by viewer's harness-membership privacy invariants. Replaces the Marketplace `publishedBy` GitHub-direct link.
 
 Implementation hooks added by this addendum: D-027 through D-031, P-070 through P-076, §0.2.7, §9.0, §17, §18, schema additions to `contributors` and `harness_features_consolidated`-adjacent tables, new HYPERBEE `contributor_usage_events`, new LOCAL `insights_first_visit`. Spend remains self-reported per the proxy-witness deferral.
-
-## 2026-05-24 addendum — deferrals carved into separate plan docs
-
-Two design threads surfaced during the 2026-05-24 review pass have been carved into standalone plan docs so they can be reviewed and scheduled independently of v5. Until those plans land, the corresponding v5 surfaces ship in their simplest form:
-
-- **Team-proxy witness pattern** → [`proxy-witness-pattern-2026-05-24.md`](./proxy-witness-pattern-2026-05-24.md). Cross-engineer verifiable LLM-side stats (token spend, latency, model attribution, refusals, etc.) require a shared witness; the team proxy is the natural fit. Until that pattern is built, **all LLM-side stats surfaced in shared-harness UIs (notably the Insights "Spend" card) ship as `self-reported` (⏱ badge) only.** No cross-engineer verification of spend, no billing-admin role, no reconciliation reports in v5.
-- **Plans become harness-scoped, author-owned, fork-on-drag** → [`plans-harness-scoped-2026-05-24.md`](./plans-harness-scoped-2026-05-24.md). Plans move from workspace-scoped to harness-scoped HYPERBEE storage, with author-only edits, a Plans sidebar pane, and drag-to-fork mechanics — but only for shared harnesses; private harnesses keep the existing filesystem-backed `plans:*` tools unchanged. Until that plan lands, **plans remain workspace-scoped exactly as today**, including for shared harnesses created under v5. No Plans pane, no fork-on-drag, no per-harness plan migration. The `papercusp` harness is the migration target when this lands.
 
 ## Background
 
@@ -1183,7 +1183,7 @@ Sizing legend: **S** = ~1-3 days. **M** = ~1 week. **L** = ~2-3 weeks. **XL** = 
 
 ### Phase 0 — Spike (gate before all subsequent phases) [M]
 
-- **P-001** [M] Bundle the Holepunch primitive packages (`hyperswarm`, `hypercore`, `autobase`, `hyperbee`, `corestore`, `hyperdrive`, `hyperdht`, `b4a` — all unscoped npm names; published from the `holepunchto` GitHub org) into the Tauri+Node desktop build. Verify native-dep prebuilds (UDX, sodium-native) cover macOS / Linux / Windows targets. **PARTIAL PASS as of 2026-05-23**: Linux x64 Node 25 verified (commits `fa887946`..`ff2cdd3f`, see `libs/holepunch-spike/`); macOS + Windows + Tauri-bundle verification still pending.
+- **P-001** [M] Bundle the Holepunch primitive packages (`hyperswarm`, `hypercore`, `autobase`, `hyperbee`, `corestore`, `hyperdrive`, `hyperdht`, `b4a` — all unscoped npm names; published from the `holepunchto` GitHub org) into the Tauri+Node desktop build. Verify native-dep prebuilds (UDX, sodium-native) cover macOS / Linux / Windows targets. **PARTIAL PASS as of 2026-05-25**: Linux x64 Node 25 verified standalone (commits `fa887946`..`ff2cdd3f`, see `libs/holepunch-spike/`); operator-bundle precondition met (commit `f9b02723` — all 8 packages added to `apps/operator/package.json`, `npm install --legacy-peer-deps` succeeds in 20s adding 94 packages, all 8 packages resolve + dynamic-import successfully under operator's Node 25 runtime). macOS + Windows + Tauri-packaged-build verification still pending (need those hosts).
 - **P-002** [S] Hyperswarm DHT join + UDP holepunching smoke test across 2 networks (home + cellular tether).
 - **P-003** [M] Autobase stability test: 3 writers, 1000 ops each, sleeping-peer simulation (offline for hours, reconnects, view re-converges). Measure convergence latency.
 - **P-004** [S] Hyperbee KV write/read benchmarks under projected load (~10 ops/sec).
@@ -1493,3 +1493,44 @@ Other git operations (peer-mirror push, sync-with-main rebase) continue using sh
 
 **v5 STATUS**: PARTIALLY RESOLVED via D-023. v1 ships rate-limit + reports + manual review. Open: what richer tools (auto-takedown, contributor reputation, etc.) belong in Phase 12+? Scope a sub-plan when adoption is real.
 
+
+## For the implementing agent splitting this into execution plans
+
+v5 is wide. Before splitting, read these in order:
+
+1. **`## Now`** + **the three addenda** (1, 2, 3) — the most recent context, sets the orientation for everything below.
+2. **`## Decided-first gate`** — these decisions are load-bearing and not up for re-litigation.
+3. **`## Phases`** — already pre-sized and sequenced; this is the natural split-line. One execution plan per phase (Phase 0 through Phase 11) is the recommended granularity. Some phases (5a/5b, 1a/1b, 8) are themselves split candidates if a single phase ends up XL.
+
+**Cross-cutting work that crosses phase boundaries** — flag these in each execution plan you write:
+
+- **Two-channel binding (P-075)** lands in Phase 1b but gates Phase 8's Insights and all tier-A/B/C stat surfaces. Don't let Phase 8 plans assume P-075 is "later"; it must already be live.
+- **Trust tiers (§17)** are referenced from §9.0 (Insights), §9.2 (Contributors), §10 (Cupboard), §18 (User profile). Every UI execution plan that surfaces a stat needs to reference §17 explicitly.
+- **`contributor_usage_events` ledger (P-070)** lives in Phase 5a but every later phase that emits an activity event (feature ops, PR ops, decision writes, plan writes, agent runs) needs to write to it. Add a one-line "emits to `contributor_usage_events`" instruction to each phase's relevant tasks.
+- **`completion_ref` (Phase 2)** + GitHub poll (P-016, P-042) feed the tier-B verification. Without those running, "features shipped ✓" rows render as tier-C until verification catches up; spec the graceful-degradation behavior in Phase 8's Insights plan.
+- **Cupboard tier-A-only rule (P-076)** is a Phase 9 task but its data source (GitHub APIs for repo activity) needs cache + rate-limit thinking that fits naturally with Phase 7's PR poll budget. Coordinate the GitHub-API budget across both phases when planning.
+
+**Deferred work** — do NOT spec these inside v5 execution plans:
+
+- **Cross-engineer verifiable spend / latency / model attribution** → `proxy-witness-pattern-2026-05-24.md`. v5 Insights "Spend" card stays self-reported (⏱) with the deferral banner.
+- **Plans become harness-scoped + fork-on-drag** → `plans-harness-scoped-2026-05-24.md`. v5 leaves plans workspace-scoped exactly as today. No Plans sidebar pane in v5.
+- **Issue collab columns** → D-017 says wait. Don't add `working_users`/`completion_ref` to `harness_issues_consolidated` until issues are their own plan.
+
+**Common pitfalls to avoid:**
+
+- **Don't confuse `user/<github_user_id>` (branch name, numeric per D-010) with `<github_login>` (display + binding file name).** Both appear in §0.2.7 and §3 Entry 4. Wrong choice creates rename-fragility.
+- **Don't reintroduce mutable counter columns on `contributors`** for performance reasons. D-027 explicitly rejects this. Use the event ledger + read-time rollup; cache the rollup in LOCAL if perf matters.
+- **Don't aggregate across trust tiers** in any UI you build. §17 is binding; a "total activity" pill that sums tier-A merged PRs + tier-C decisions added is the bug class we're preventing.
+- **Don't ship Insights (P-073) before binding (P-075)**. Per the §9.0 ordering constraint. Phase 8 plan should explicitly list P-075 as a prerequisite at the top.
+- **Don't write to `harness_features_consolidated` or other shared-schema tables with raw SQL.** Use the documented verbs (`features:update`, `messages:feature_send`, etc.) — they emit audit rows. See the engineer-collaborator playbook in `~/.claude/CLAUDE.md`.
+
+**Per-phase plan template — what each execution plan should contain:**
+
+- `## Now`: one-sentence next action.
+- `## Background`: what this phase ships and the v5-section it implements.
+- `## Phase tasks (P-NNN)`: copy the relevant task rows from v5's `## Phases` section verbatim; expand each into a fuller breakdown (file paths, function names, test fixtures, acceptance criteria).
+- `## Decisions`: any sub-design decisions made during execution (don't re-decide what v5 already decided; reference D-NNN from v5).
+- `## Cross-references`: link back to `papercusp-dogfood-v5-2026-05-23.md` and to any cross-cutting concerns above.
+- `## Open questions`: anything you hit during implementation that needs the user's call.
+
+**One last thing**: every phase plan should end with the same `## For the next agent` section briefing whoever picks up the *next* phase — what's done, what's gated on what, what surprises came up. Hand-off documentation is the discipline that keeps a multi-phase arc shippable.
