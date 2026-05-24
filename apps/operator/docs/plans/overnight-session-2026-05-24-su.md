@@ -11,9 +11,11 @@ owner: avi@storewolf.com
 
 ## Now
 
-**State:** SU autonomous loop, ~30 parent commits + 1 submodule, ~185 commits ahead of `origin/main`. All verifiers green. **Phase 1a backend COMPLETE** (P-013a + P-010 shipped overnight); Phase 2 P-016 shipped including HTTP re-check route (P-016e); Phase 1b Q-4 resolved + **three types-only groundwork modules** laid (binding-types for P-068, binding-verifier-types for P-075, attestation-types for P-011) — one per design memo, full type spine; live-PG dogfood-schema regression sentinel shipped.
+**State:** SU autonomous loop continued. **~194 commits ahead of `origin/main`.** All verifiers green. **Phase 1b type-spine expanded to 4 modules** (was 3 — added `contributor-file-types.ts` for Channel 2 / Q-2 resolution). **Phase 5a now has its first types-only groundwork module** (`contributor-usage-event-types.ts` for P-070 ledger). Both Q-2 and Q-3 from Phase 1b plan resolved as D-001/D-002. Insight #26 (JCS canonical-form) shipped.
 
-**Next action (for human):** review the commits at your pace; decide whether to push to `origin/main` and whether to act on the surfaced design memos. **Phase 1a's only remaining work is P-012 UI, design-gated on a picker memo.**
+**Next action (for human):** review the commits at your pace; decide whether to push to `origin/main` and whether to act on the surfaced design memos. Phase 1b runtime implementation now has zero blocking open questions (Q-1 answered in plan body, Q-2/Q-3/Q-4 resolved as D-decisions); only memo acceptance gates remain.
+
+**Next:** Human review of the 194 commits + decision on memo acceptance to unblock Phase 1b runtime implementation.
 
 ## What shipped
 
@@ -145,3 +147,51 @@ The dogfood-arc plan-cohort split was written across multiple earlier turns but 
 - Phase 0 macOS / Windows Holepunch primitive verification — requires those hosts.
 - Test surface caught the Octokit v7 break; consider adding a "live integration smoke required" rule to SDK-wrapping module review checklists.
 - Plan-doc hot-zone discipline held throughout this session (no stage-leakage incidents, two `git diff --cached <file>` checks per plan commit). The discipline is documented in insight `sleep-mode-shared-checkout`.
+
+---
+
+## Loop-continuation segment (later in the same overnight loop)
+
+Six more commits shipped after the initial wrap above was written. All within the same SU autonomous loop the user reaffirmed with "I trust your judgement."
+
+### Phase 1b Q-2 + Q-3 resolved + Channel 2 type spine
+
+- **Commit `258c94b6`** — `apps/operator/lib/identity/contributor-file-types.ts` (288 LOC + 232 LOC tests). Channel 2 wire-format for the `.harness/contributors/<github_login>.json` file pushed to user branches. Exports: `ContributorFileBody`, `CONTRIBUTOR_FILE_CANONICAL_FIELD_ORDER` (JCS-ordering tuple), `Channel2VerificationResult` + 10-variant `Channel2FailureReason`, `parseDevicePubkeySpec`/`formatDevicePubkeySpec`, `contributorFilePath`/`contributorBranchRef`, `isSafeGithubLoginSegment`, `isContributorFileBody`, `stripSignatureForSigning`. **31 unit tests PASS.** Fourth types-only module in the Phase 1b identity spine.
+- **Commit `3a3f2f51`** — Phase 1b plan **D-001**: Q-2 resolved (JCS / RFC 8785 canonical-form chosen) + Now-block refresh listing all 4 spine modules.
+- **Commit `eda30a3b`** — execution-plan index Phase 1b row updated to reflect Q-2 resolved + 4-module type spine.
+- **Commit `6f9e4181`** — Insight #26 `jcs-canonical-form-for-signed-json.mdx` (134 LOC). Pattern: when designing a signed JSON wire-format that needs cross-implementation verification, reach for JCS (RFC 8785) — not a hand-rolled scheme. Sibling to `types-first-from-design-memo` insight.
+- **Commit `481eb992`** — Phase 1b plan **D-002**: Q-3 resolved (per-repo bulk `/collaborators` re-check via `If-None-Match` ETag-based 304s; 100× cheaper than per-contributor calls at typical team scale). Adds `last_collaborators_etag` + `last_collaborators_etag_at` columns to `shared_repo_binding_cache` when P-068 schema gate opens. Locks in the strategy ahead of memo acceptance so no re-design round is needed.
+
+**All three deferrable Phase 1b open questions now resolved as D-decisions:**
+
+| Q | Decision | Implementation |
+|---|---|---|
+| Q-2 | JCS / RFC 8785 canonical-form | `contributor-file-types.ts` (`258c94b6`) |
+| Q-3 | Per-repo bulk `/collaborators` + ETag 304s | Pre-decided strategy; impl gated on P-068 memo |
+| Q-4 | `gh auth token` introspection | `gh-token.ts` + `octokit-client.ts` (earlier in session) |
+
+Q-1 (where design memos live on-disk) was already answered in the plan's `## For the next agent` section: `apps/operator/content/internal-docs/design/`.
+
+### Phase 5a P-070 types-only spine (first groundwork beyond Phase 1b)
+
+- **Commit `ab61ffa8`** — `apps/operator/lib/harness/contributor-usage-event-types.ts` (269 LOC + 230 LOC tests). The append-only `contributor_usage_events` HYPERBEE ledger per v5 §7.1 / D-027. Exports: `UsageEventKind` (8-variant enum matching v5 schema comment), `UsageEventRecord<K>` + `UsageEventPayloadByKind` discriminator, `USAGE_EVENT_SCHEMA_VERSION` (lock-step with PG default), `USAGE_EVENT_REF_CONVENTION` (kind → ref_id meaning mapping), `USAGE_EVENT_PAYLOAD_MAX_BYTES` (2KB anti-bloat cap), `isUsageEventId` (ULID-shape predicate, 26-char Crockford base32), `isUsageEventRecordShape`, `emptyRollup` + `UsageRollupForContributor`, `isSameEvent` (idempotency dedupe). **29 unit tests PASS.** First module in Phase 5a's types-only spine; when `usage-events.ts` runtime lands, write path + PG mirror + rollup helpers all consume the shape pinned here.
+
+### Updated session-end status
+
+- **~194 commits ahead** of `origin/main` (was 167 at original wrap, +27 across the continuation segment).
+- **Type spine now 5 modules** across Phase 1b + Phase 5a:
+  - Phase 1b: `binding-types`, `binding-verifier-types`, `attestation-types`, `contributor-file-types`
+  - Phase 5a: `contributor-usage-event-types`
+- **Insights total this loop: 7** (orders 19–26 inclusive, sans 50): `idempotent-pg-ensure`, `forward-defined-registry-entries`, `verification-signal-on-the-row`, `octokit-v7-auth-pattern`, `types-first-from-design-memo`, `route-discriminator-extension-pattern`, `live-pg-regression-sentinel`, `jcs-canonical-form-for-signed-json`.
+- **All Phase 1b open questions resolved.** Memo acceptance is now the only gate between Phase 1b runtime implementation and shippable.
+
+### What still applies from the original wrap
+
+Everything in the bulleted lists above is additive — the original session's verifiers are all still green, all the same commits + pointers above are still accurate. The "Recommended order of review" + "Next-session candidates" sections at the top apply unchanged, with the additions noted in this segment.
+
+### What this loop deliberately did NOT do
+
+- **Did not push** any of the 194 commits.
+- **Did not start any runtime implementation** of P-068 / P-011 / P-075 / P-070 — all memo-gated. Types-only groundwork is the deliberate ceiling.
+- **Did not touch paperclip-zone files** (`apps/operator/app/admin/harness/*`, `apps/operator/app/harness/*`).
+- **Did not file real features into the papercup harness queue (P-025)** — that requires user input on which 2 real engineering features to seed alongside the meta `F-DOGFOOD-001`.
