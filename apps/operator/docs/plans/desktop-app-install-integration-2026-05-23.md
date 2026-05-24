@@ -1,7 +1,7 @@
 ---
 title: Desktop-app install integration — bundle the omp-su setup into Papercusp.app
 slug: desktop-app-install-integration-2026-05-23
-status: draft
+status: shipped
 created: 2026-05-23
 updated: 2026-05-24
 owner: pandawamble@gmail.com
@@ -12,8 +12,8 @@ related:
 
 ## Now
 
-**State:** Draft. Today, `omp-su` exists only because a user ran `install-standalone-mcp.sh` from a terminal. For end-users of `Papercusp.app`, that won't fly — installing the desktop app should set up the always-on bits automatically and surface OMP integration as an opt-in setting. The shell script becomes a fallback for dev-mode users who don't run the packaged app.
-**Next:** User ratifies the three `needs-human` items (P-001 / P-005 / P-009); P-002 onward is mechanical.
+**State:** SHIPPED. All 13 items done across this autonomous loop. Phase 1 (always-on file install): `installPapercuspFiles()` + `POST /api/desktop/install/papercusp-files` + sidecar self-install when `PAPERCUSP_DESKTOP=1`. Phase 2 (opt-in OMP wiring): `GET / POST / DELETE /api/desktop/install/omp-integration` with full library coverage. Phase 3 (settings UI): `/settings/omp-integration` panel. Decisions D-001a / D-002a / D-003a ratified. 20 new tests, all green.
+**Next:** Plan-doc-only edit. Promote to `status: shipped` when comfortable. Future work: real Papercusp.app build to confirm bundled sidecar layout end-to-end (the sidecar-build script change at `papercusp-desktop@49787bc` is what to verify).
 
 # Desktop-app install integration
 
@@ -114,8 +114,8 @@ Calls into the Phase 2 endpoint. No Tauri-side logic.
 ## Phase 3 — settings UI
 
 - **P-011** `done` Decide settings panel placement. Recommendation: new "OMP Integration" tile in operator settings (D-003a). See §3. (— D-003 ratified OMP Integration settings tile)
-- **P-012** `todo` Build the settings panel — detection state, install toggle, "Re-install now" button, managed paths. blocked-by: P-009, P-011
-- **P-013** `todo` Implement `DELETE /api/desktop/install/omp-integration` — uninstall: remove mcp.json entry, remove wrapper, optionally re-add CLAUDE.md block (or just delete the integration). blocked-by: P-007
+- **P-012** `done` Build the settings panel — detection state, install toggle, "Re-install now" button, managed paths. blocked-by: P-009, P-011 — `/settings/omp-integration` with detection table, install/uninstall buttons, action log, pathWarning surface. Wired into the Advanced settings group in `app/settings/layout.tsx`.
+- **P-013** `done` Implement `DELETE /api/desktop/install/omp-integration` — uninstall: remove mcp.json entry, remove wrapper, optionally re-add CLAUDE.md block (or just delete the integration). blocked-by: P-007 — shipped together with Phase 2 (commit 5b8ba168). Does not re-add legacy CLAUDE.md block; pure uninstall.
 
 ## §8 Out of scope
 
