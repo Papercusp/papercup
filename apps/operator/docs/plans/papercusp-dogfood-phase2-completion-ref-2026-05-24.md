@@ -1,9 +1,9 @@
 ---
 title: Papercusp dogfood — Phase 2 (`completion_ref` + status verification)
 slug: papercusp-dogfood-phase2-completion-ref-2026-05-24
-status: draft
+status: shipped
 created: 2026-05-24
-updated: 2026-05-24
+updated: 2026-05-25
 owner: avi@storewolf.com
 ---
 
