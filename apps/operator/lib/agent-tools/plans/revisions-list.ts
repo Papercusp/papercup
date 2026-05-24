@@ -55,8 +55,9 @@ export default defineTool({
   args: argsSchema,
   async handler(args, ctx) {
     const ctxAny = ctx as { metadata?: (d: Record<string, unknown>) => void };
+    const harnessSlug = (ctx as { harnessSlug?: string }).harnessSlug?.trim() || undefined;
     try {
-      const revisions = await listPlanRevisions(args.slug);
+      const revisions = await listPlanRevisions(args.slug, harnessSlug ? { harnessSlug } : {});
       ctxAny.metadata?.({ slug: args.slug, revisionCount: revisions.length });
       return {
         content: [{ type: 'text' as const, text: JSON.stringify({ revisions }) }],

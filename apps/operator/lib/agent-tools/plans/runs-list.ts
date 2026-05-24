@@ -71,7 +71,8 @@ export default defineTool({
             (e instanceof Error ? e.message : String(e)),
         );
       });
-      const runs = await listPlanRuns(args.slug);
+      const harnessSlug = (ctx as { harnessSlug?: string }).harnessSlug?.trim() || undefined;
+      const runs = await listPlanRuns(args.slug, harnessSlug ? { harnessSlug } : {});
       ctxAny.metadata?.({ slug: args.slug, runCount: runs.length });
       return {
         content: [{ type: 'text' as const, text: JSON.stringify({ runs }) }],

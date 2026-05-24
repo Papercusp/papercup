@@ -155,8 +155,10 @@ async function launchHandler(input: LaunchArgs, ctx: LaunchCtx) {
   const note = (input.note ?? '').trim() || null;
 
   // 4. Insert the plan_runs row — the canonical record of the launch.
+  const launchHarnessSlug = (ctx as unknown as { harnessSlug?: string }).harnessSlug?.trim() || undefined;
   const runId = await insertPlanRun({
     planSlug: input.slug,
+    ...(launchHarnessSlug ? { harnessSlug: launchHarnessSlug } : {}),
     planContentHash: bundle.contentHash,
     sessionId,
     note,
