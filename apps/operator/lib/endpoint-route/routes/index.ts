@@ -56,6 +56,7 @@ import harnessProjects from './harness/projects';
 import harnessJoinLink from './harness/join-link';
 import harnessPrs from './harness/prs';
 import harnessSync from './harness/sync';
+import cupboard from './cupboard';
 import harnessSpec from './harness/spec';
 import harnessTextViews from './harness/text-views';
 import harnessRuns from './harness/runs';
@@ -441,6 +442,7 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(harnessJoinLink as AnyRoute),
   ...flatten(harnessPrs as AnyRoute[]),
   ...flatten(harnessSync as AnyRoute[]),
+  ...flatten(cupboard as AnyRoute[]),
   ...flatten(harnessSpec as AnyRoute[]),
   ...flatten(harnessTextViews as AnyRoute[]),
   ...flatten(harnessRuns as AnyRoute[]),
