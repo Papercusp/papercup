@@ -17,7 +17,6 @@
   "scriptsSmoke": [
     "apps/operator/scripts/su-locks-omp-smoke.ts",
     "apps/operator/scripts/su-locks-progress-smoke.ts",
-    "apps/operator/scripts/su-locks-smoke.ts",
     "apps/operator/scripts/su-locks-wait-smoke.ts"
   ]
 }
