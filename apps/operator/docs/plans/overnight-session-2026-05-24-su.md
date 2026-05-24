@@ -11,11 +11,11 @@ owner: avi@storewolf.com
 
 ## Now
 
-**State:** SU autonomous loop reached genuine ceiling on types-only groundwork. **~208 commits ahead of `origin/main`.** All verifiers green. **16-module types-only spine** in tree spanning Phase 1b, Phase 5a, Phase 6, Phase 7, Phase 9 + completion-ref. **430 unit tests, all PASS in <320ms** across the spine. **9 agent insights** in tree. All Phase 1b open questions resolved (Q-1 documented + Q-2/Q-3/Q-4 as D-decisions).
+**State:** SU autonomous loop final state. **~213 commits ahead of `origin/main`.** All verifiers green. **18-module types-only spine** in tree spanning Phase 1b, Phase 5a, Phase 6, Phase 7, Phase 9, plus completion-ref + PR-reviewer-settings + feature-queue PG mirrors. **479 unit tests, all PASS in ~330ms** via `npm run verify:dogfood-types`. **9 agent insights** in tree. All Phase 1b open questions resolved.
 
-**Next action (for human):** review the commits at your pace; the wrap doc's "What this lets the future runtime do" section lists each runtime task's drop-in import paths. Push when you're ready; accept the 3 Phase 1b design memos when ready.
+**Next action (for human):** review the commits at your pace; the wrap doc's "What this lets the future runtime do" section lists each runtime task's drop-in import paths. Push when ready; accept Phase 1b design memos when ready.
 
-**Next:** Human review of 208 commits + memo acceptance to unblock memo-gated runtime implementation across Phases 1b/5a/6/7/9.
+**Next:** Human review of 213 commits + memo acceptance to unblock memo-gated runtime implementation across Phases 1b/5a/6/7/9.
 
 ## What shipped
 
@@ -374,3 +374,95 @@ upserts" code, not "first decide what the wire shape is."
 - Did not touch paperclip-zone files.
 - Did not file real features into the papercup harness queue (P-025).
 - Did not flip P-022 Phase B (delete `apps/papercup/` vs refactor `schema.ts`).
+
+---
+
+## Loop-continuation segment IV — actual ceiling (18 modules, 479 tests)
+
+Segment III claimed 16 was the genuine ceiling. The loop pushed past it once
+more to 18. Final state.
+
+### Phase 7 P-044 PG-mirror — pr-reviewer-settings-types
+
+- **Commit `36e8f438`** — `apps/operator/lib/pr-host/pr-reviewer-settings-types.ts` + tests. The PG row shape for `harness_shared.pr_reviewer_settings` per v5 §7.8. Backs the in-memory `AutoReviewSettings` consumed by `decideAutoReview()`. Closes the Phase 7 settings loop: PG row → mapping fn (when impl lands) → AutoReviewSettings → decideAutoReview → action. Same commit also aligned `completion-ref-types` with v5 §8.1 by adding optional `pr_number` (was just `pr_url` per v5 line 451; §8.1 has both). 21 new + 6 added completion-ref tests.
+
+### Phase 5a P-031 PG-mirror — feature-queue-row-types
+
+- **Commit `12a51bbc`** — `apps/operator/lib/harness/feature-queue-row-types.ts` + tests. The PG row shape for `harness_shared.feature_queue` per v5 §7.1 schema. Closes the queue triad: `hyperbee-key-types.keyQueueEntry` (composer) + this (PG mirror) + `contributor-row-types` (joiner identity). Soft-delete via `removed_at` so historical replay can reconstruct queue state at any point in time. 22 unit tests.
+
+### verify:dogfood-types now covers all 18
+
+- **Commits `e85f3251` + `45ccb7af` + `12a51bbc`** — `verify:dogfood-types` npm script grew from 16 → 17 → 18 modules. Runs vitest in a single invocation across the spine in ~330ms. Rolled into `verify:all-dogfood`.
+
+### Final type-spine inventory (18 modules, 479 tests)
+
+| # | Module | Phase | Task | Tests |
+|---|---|---|---|---|
+| 1 | `lib/harness/binding-types.ts` | 1b | P-068 | 15 |
+| 2 | `lib/identity/binding-verifier-types.ts` | 1b | P-075 | 24 |
+| 3 | `lib/identity/attestation-types.ts` | 1b | P-011 | 26 |
+| 4 | `lib/identity/contributor-file-types.ts` | 1b | P-075 Channel 2 | 31 |
+| 5 | `lib/harness/contributor-usage-event-types.ts` | 5a | P-070 | 29 |
+| 6 | `lib/harness/feature-claim-types.ts` | 6 | P-036 | 28 |
+| 7 | `lib/pr-host/types.ts` | 7 | P-040 | 21 |
+| 8 | `lib/pr-host/auto-review-decision-types.ts` | 7 | P-044+P-045 | 27 |
+| 9 | `lib/pr-host/harness-feature-pr-row-types.ts` | 7 | P-042 | 25 |
+| 10 | `lib/pr-host/retry-policy-types.ts` | 7 | P-042c-e | 25 |
+| 11 | `lib/harness/harness-link-types.ts` | 5a + 1b | P-029 + P-009 | 31 |
+| 12 | `lib/harness/hyperbee-key-types.ts` | 5a | P-030 + P-031 | 39 |
+| 13 | `lib/cupboard/types.ts` | 9 | P-051a | 28 |
+| 14 | `lib/harness/harness-shared-config-types.ts` | 5a | P-029 | 27 |
+| 15 | `lib/harness/contributor-row-types.ts` | 1b PG mirror | P-068/P-075 | 24 |
+| 16 | `lib/harness/completion-ref-types.ts` | 2 | P-015/P-016 | 36 |
+| 17 | `lib/pr-host/pr-reviewer-settings-types.ts` | 7 PG mirror | P-044 | 21 |
+| 18 | `lib/harness/feature-queue-row-types.ts` | 5a PG mirror | P-031 | 22 |
+
+**Cumulative: ~8,000 LOC + ~8,200 test LOC. 479 unit tests, all PASS in ~330ms total. Zero new tsc errors on touched paths.**
+
+### Phase-7 closure achieved
+
+Phase 7 (PR lifecycle) has the most complete spine coverage — 5 modules collectively cover the entire P-040–P-046 surface:
+
+| P-task | Module(s) |
+|---|---|
+| P-040 (PrHost abstraction + GitHub impl) | `pr-host/types.ts` |
+| P-042 (poll daemon) | `harness-feature-pr-row-types`, `retry-policy-types` |
+| P-044 (auto-approve) | `auto-review-decision-types`, `pr-reviewer-settings-types` |
+| P-045 (auto-merge) | `auto-review-decision-types` (handles both) |
+| P-043 (PRs tab UI) | `harness-feature-pr-row-types` (`isPollStale` for the badge) |
+| P-046 (manual review + consequence modal) | `auto-review-decision-types` (`wouldFireIfTrusted` for the hint) |
+
+When the Phase 7 memos accept (none deep-blocking — most is straightforward
+GitHub-via-Octokit impl), the implementer can drop in `decideAutoReview` +
+`decideRetry` + `prToRow` and the daemon becomes ~100 LOC of glue.
+
+### Final cumulative status
+
+- **~213 commits ahead** of `origin/main`. **None pushed.**
+- **18 types-only modules** in tree, spanning 5 phases + PG-mirrors + completion-ref.
+- **All Phase 1b open questions resolved** (Q-1 documented, Q-2/Q-3/Q-4 as D-decisions).
+- **All verifiers still green** — `npm run verify:all-dogfood` PASSES (includes verify:dogfood-types).
+- **9 agent insights** in tree (orders 19-27).
+- **No paperclip-zone touches.**
+- **No P-025 features filed.**
+
+### Actual ceiling reached
+
+Past 18 modules, the remaining spec surfaces are:
+- Too small to warrant a dedicated module (e.g. coord_presence row — single timestamp field; insights_first_visit — boolean per harness).
+- UI-state machines (e.g. P-029 wizard 9-step transitions — better in the component file once the UI agent picks it up).
+- Memo-gated runtime decisions (waiting on user accept for shape clarity).
+
+The 18-module spine + 479 tests is the genuine payoff for this overnight loop.
+The implementer agents picking up Phase 1b/5a/6/7/9 runtime work will find
+their wire-shapes, decision functions, row mirrors, error unions, and key
+formats already in tree + already tested. Their first commit per phase
+becomes "import + implement," not "spec the types + then implement."
+
+### What this loop deliberately did NOT do (cumulative)
+
+- Did not push any of the 213 commits.
+- Did not start any memo-gated runtime implementation.
+- Did not touch paperclip-zone files.
+- Did not file real features into the papercup harness queue (P-025).
+- Did not flip P-022 Phase B.
