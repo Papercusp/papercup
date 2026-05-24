@@ -150,12 +150,19 @@ export default defineTool({
   async handler(args, ctx) {
     // Append a plan_revisions row after the write, while the lock is
     // still held — so `seq` allocation is race-free (P-002 / D-003).
-    const rev = planRevisionCapture(ctx as PlanRevisionCtx, args.slug, args.rationale);
+    const harnessSlug = (ctx as { harnessSlug?: string }).harnessSlug?.trim() || undefined;
+    const rev = planRevisionCapture(
+      ctx as PlanRevisionCtx,
+      args.slug,
+      args.rationale,
+      harnessSlug ? { harnessSlug } : {},
+    );
     const result = await withPlanLock<SetContentValue>(
       ctx as never,
       {
         slug: args.slug,
         intent: 'plans:set-content',
+        ...(harnessSlug ? { harnessSlug } : {}),
         afterWrite: rev.afterWrite,
       },
       (current) => evaluateSetContent(current, args.content, args.slug, args.expectedHash),

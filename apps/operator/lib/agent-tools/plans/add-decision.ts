@@ -161,12 +161,19 @@ export default defineTool({
   modality: ['text'],
   args: argsSchema,
   async handler(args, ctx) {
-    const rev = planRevisionCapture(ctx as PlanRevisionCtx, args.slug, args.rationale);
+    const harnessSlug = (ctx as { harnessSlug?: string }).harnessSlug?.trim() || undefined;
+    const rev = planRevisionCapture(
+      ctx as PlanRevisionCtx,
+      args.slug,
+      args.rationale,
+      harnessSlug ? { harnessSlug } : {},
+    );
     const result = await withPlanLock<AddDecisionValue>(
       ctx as never,
       {
         slug: args.slug,
         intent: `plans:add-decision: ${args.title.slice(0, 60)}`,
+        ...(harnessSlug ? { harnessSlug } : {}),
         afterWrite: rev.afterWrite,
       },
       async (current): Promise<{ newBody: string | null; value: AddDecisionValue }> => {

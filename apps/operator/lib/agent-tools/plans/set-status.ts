@@ -101,12 +101,19 @@ export default defineTool({
   modality: ['text'],
   args: argsSchema,
   async handler(args, ctx) {
-    const rev = planRevisionCapture(ctx as PlanRevisionCtx, args.slug, args.rationale);
+    const harnessSlug = (ctx as { harnessSlug?: string }).harnessSlug?.trim() || undefined;
+    const rev = planRevisionCapture(
+      ctx as PlanRevisionCtx,
+      args.slug,
+      args.rationale,
+      harnessSlug ? { harnessSlug } : {},
+    );
     const result = await withPlanLock<SetStatusValue>(
       ctx as never,
       {
         slug: args.slug,
         intent: `plans:set-status ${args.itemId} → ${args.status}`,
+        ...(harnessSlug ? { harnessSlug } : {}),
         afterWrite: rev.afterWrite,
       },
       async (current): Promise<{ newBody: string | null; value: SetStatusValue }> => {

@@ -128,12 +128,19 @@ export default defineTool({
   async handler(args, ctx) {
     const today = new Date().toISOString().slice(0, 10);
 
-    const rev = planRevisionCapture(ctx as PlanRevisionCtx, args.slug, args.rationale);
+    const harnessSlug = (ctx as { harnessSlug?: string }).harnessSlug?.trim() || undefined;
+    const rev = planRevisionCapture(
+      ctx as PlanRevisionCtx,
+      args.slug,
+      args.rationale,
+      harnessSlug ? { harnessSlug } : {},
+    );
     const result = await withPlanLock<SetFrontmatterValue>(
       ctx as never,
       {
         slug: args.slug,
         intent: 'plans:set-frontmatter',
+        ...(harnessSlug ? { harnessSlug } : {}),
         afterWrite: rev.afterWrite,
       },
       async (current): Promise<{ newBody: string | null; value: SetFrontmatterValue }> => {

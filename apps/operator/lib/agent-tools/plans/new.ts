@@ -134,12 +134,19 @@ export default defineTool({
     // appends today's date when the caller didn't already include one.
     const slug = ensureDatedSlug(args.slug, date);
 
-    const rev = planRevisionCapture(ctx as PlanRevisionCtx, slug, args.rationale);
+    const harnessSlug = (ctx as { harnessSlug?: string }).harnessSlug?.trim() || undefined;
+    const rev = planRevisionCapture(
+      ctx as PlanRevisionCtx,
+      slug,
+      args.rationale,
+      harnessSlug ? { harnessSlug } : {},
+    );
     const result = await withPlanLock<NewPlanValue>(
       ctx as never,
       {
         slug,
         intent: `plans:new ${slug}`,
+        ...(harnessSlug ? { harnessSlug } : {}),
         afterWrite: rev.afterWrite,
       },
       async (current): Promise<{ newBody: string | null; value: NewPlanValue }> => {
