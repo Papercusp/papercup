@@ -1,0 +1,141 @@
+/**
+ * Tests for installPapercuspFiles (P-006 of
+ * desktop-app-install-integration-2026-05-23).
+ *
+ * Covers:
+ *   - First install: token + agent_id minted, playbook + extension copied
+ *   - Re-run: token + agent_id reused; playbook + extension refreshed
+ *   - Token + agent_id files written mode 0600
+ *   - Missing source files don't crash (logged via *Written=false)
+ */
+
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import * as fs from 'node:fs/promises';
+import * as path from 'node:path';
+import * as os from 'node:os';
+import { installPapercuspFiles, resolveInstallPaths } from '../papercusp-files';
+
+let tmpHome: string;
+let tmpAppRoot: string;
+
+beforeEach(async () => {
+  tmpHome = await fs.mkdtemp(path.join(os.tmpdir(), 'pcusp-install-home-'));
+  tmpAppRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'pcusp-install-app-'));
+  // Lay out a fake operator app tree with the sources the installer looks for.
+  await fs.mkdir(path.join(tmpAppRoot, 'prompts'), { recursive: true });
+  await fs.mkdir(path.join(tmpAppRoot, 'scripts', 'hooks', 'omp'), { recursive: true });
+  await fs.writeFile(
+    path.join(tmpAppRoot, 'prompts', 'papercusp-su.tools.md'),
+    '# Playbook v1\n',
+  );
+  await fs.writeFile(
+    path.join(tmpAppRoot, 'scripts', 'hooks', 'omp', 'coord-hook.ts'),
+    '// coord-hook v1\n',
+  );
+});
+
+afterEach(async () => {
+  await fs.rm(tmpHome, { recursive: true, force: true });
+  await fs.rm(tmpAppRoot, { recursive: true, force: true });
+});
+
+describe('installPapercuspFiles', () => {
+  it('first install: mints token + agent_id, copies playbook + extension', async () => {
+    const result = await installPapercuspFiles({ home: tmpHome, operatorAppRoot: tmpAppRoot });
+
+    expect(result.minted.token).toBe(true);
+    expect(result.minted.agentId).toBe(true);
+    expect(result.playbookWritten).toBe(true);
+    expect(result.extensionWritten).toBe(true);
+
+    const token = (await fs.readFile(result.tokenPath, 'utf8')).trim();
+    expect(token).toMatch(/^[A-Za-z0-9_-]{32}$/);
+
+    const agentId = (await fs.readFile(result.agentIdPath, 'utf8')).trim();
+    expect(agentId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+
+    const playbook = await fs.readFile(result.playbookPath, 'utf8');
+    expect(playbook).toBe('# Playbook v1\n');
+
+    const ext = await fs.readFile(result.extensionPath, 'utf8');
+    expect(ext).toBe('// coord-hook v1\n');
+  });
+
+  it('re-run: reuses existing token + agent_id, refreshes playbook + extension', async () => {
+    const first = await installPapercuspFiles({ home: tmpHome, operatorAppRoot: tmpAppRoot });
+    const tokenBefore = (await fs.readFile(first.tokenPath, 'utf8')).trim();
+    const agentIdBefore = (await fs.readFile(first.agentIdPath, 'utf8')).trim();
+
+    // Update source files in place — simulates an app update.
+    await fs.writeFile(
+      path.join(tmpAppRoot, 'prompts', 'papercusp-su.tools.md'),
+      '# Playbook v2\n',
+    );
+    await fs.writeFile(
+      path.join(tmpAppRoot, 'scripts', 'hooks', 'omp', 'coord-hook.ts'),
+      '// coord-hook v2\n',
+    );
+
+    const second = await installPapercuspFiles({ home: tmpHome, operatorAppRoot: tmpAppRoot });
+
+    expect(second.minted.token).toBe(false);
+    expect(second.minted.agentId).toBe(false);
+
+    const tokenAfter = (await fs.readFile(second.tokenPath, 'utf8')).trim();
+    const agentIdAfter = (await fs.readFile(second.agentIdPath, 'utf8')).trim();
+    expect(tokenAfter).toBe(tokenBefore);
+    expect(agentIdAfter).toBe(agentIdBefore);
+
+    const playbook = await fs.readFile(second.playbookPath, 'utf8');
+    expect(playbook).toBe('# Playbook v2\n');
+
+    const ext = await fs.readFile(second.extensionPath, 'utf8');
+    expect(ext).toBe('// coord-hook v2\n');
+  });
+
+  it('token file written with mode 0600', async () => {
+    const result = await installPapercuspFiles({ home: tmpHome, operatorAppRoot: tmpAppRoot });
+    const tokenStat = await fs.stat(result.tokenPath);
+    expect(tokenStat.mode & 0o777).toBe(0o600);
+    const agentStat = await fs.stat(result.agentIdPath);
+    expect(agentStat.mode & 0o777).toBe(0o600);
+  });
+
+  it('missing playbook source: playbookWritten=false, no throw', async () => {
+    await fs.rm(path.join(tmpAppRoot, 'prompts', 'papercusp-su.tools.md'));
+    const result = await installPapercuspFiles({ home: tmpHome, operatorAppRoot: tmpAppRoot });
+    expect(result.playbookWritten).toBe(false);
+    expect(result.playbookSource).toBe('');
+    // Other artifacts still landed
+    expect(result.minted.token).toBe(true);
+    expect(result.extensionWritten).toBe(true);
+  });
+
+  it('missing extension source: extensionWritten=false, no throw', async () => {
+    await fs.rm(path.join(tmpAppRoot, 'scripts', 'hooks', 'omp', 'coord-hook.ts'));
+    const result = await installPapercuspFiles({ home: tmpHome, operatorAppRoot: tmpAppRoot });
+    expect(result.extensionWritten).toBe(false);
+    expect(result.extensionSource).toBe('');
+    expect(result.playbookWritten).toBe(true);
+  });
+
+  it('resolveInstallPaths returns expected layout', () => {
+    const p = resolveInstallPaths('/tmp/somehome');
+    expect(p.papercuspDir).toBe('/tmp/somehome/.papercusp');
+    expect(p.tokenPath).toBe('/tmp/somehome/.papercusp/superuser-token');
+    expect(p.agentIdPath).toBe('/tmp/somehome/.papercusp/su-agent-id');
+    expect(p.playbookPath).toBe('/tmp/somehome/.papercusp/engineer-collaborator.md');
+    expect(p.extensionPath).toBe('/tmp/somehome/.papercusp/papercusp-coord.ts');
+  });
+
+  it('reuses token already present from a prior install with no trailing newline', async () => {
+    const paths = resolveInstallPaths(tmpHome);
+    await fs.mkdir(paths.papercuspDir, { recursive: true });
+    await fs.writeFile(paths.tokenPath, 'preexisting-token-12345', { mode: 0o600 });
+
+    const result = await installPapercuspFiles({ home: tmpHome, operatorAppRoot: tmpAppRoot });
+    expect(result.minted.token).toBe(false);
+    const token = (await fs.readFile(result.tokenPath, 'utf8')).trim();
+    expect(token).toBe('preexisting-token-12345');
+  });
+});

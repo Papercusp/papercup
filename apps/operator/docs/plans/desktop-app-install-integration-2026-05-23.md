@@ -3,7 +3,7 @@ title: Desktop-app install integration — bundle the omp-su setup into Papercus
 slug: desktop-app-install-integration-2026-05-23
 status: draft
 created: 2026-05-23
-updated: 2026-05-23
+updated: 2026-05-24
 owner: pandawamble@gmail.com
 related:
   - apps/operator/docs/plans/omp-power-user-bundle-2026-05-20.md
@@ -97,11 +97,11 @@ Calls into the Phase 2 endpoint. No Tauri-side logic.
 
 ## Phase 1 — always-on file install
 
-- **P-001** `needs-human` Decide where the install logic lives. Recommendation: Node operator sidecar (D-001a). See §3.
+- **P-001** `done` Decide where the install logic lives. Recommendation: Node operator sidecar (D-001a). See §3. (— D-001 ratified Node sidecar)
 - **P-002** `todo` Implement `POST /api/desktop/install/papercusp-files` (Node) — token + agent_id + playbook + extension. blocked-by: P-001
 - **P-003** `todo` Locate the playbook + extension source paths inside the bundled sidecar resources (Tauri ships them — pick the right relative path). blocked-by: P-001
 - **P-004** `todo` Tauri host fires the endpoint at startup after sidecar reaches "ready." Best-effort, logs on failure. blocked-by: P-002
-- **P-005** `needs-human` Decide Windows scope. Recommendation: Mac + Linux only in v1 (D-002a). See §3.
+- **P-005** `done` Decide Windows scope. Recommendation: Mac + Linux only in v1 (D-002a). See §3. (— D-002 ratified Mac+Linux v1, defer Windows)
 - **P-006** `todo` Tests: token mint vs reuse, agent-id mint vs reuse, playbook overwrite refreshes content, sidecar-resource path resolves correctly. blocked-by: P-002
 
 ## Phase 2 — opt-in OMP integration endpoint
@@ -113,7 +113,7 @@ Calls into the Phase 2 endpoint. No Tauri-side logic.
 
 ## Phase 3 — settings UI
 
-- **P-011** `needs-human` Decide settings panel placement. Recommendation: new "OMP Integration" tile in operator settings (D-003a). See §3.
+- **P-011** `done` Decide settings panel placement. Recommendation: new "OMP Integration" tile in operator settings (D-003a). See §3. (— D-003 ratified OMP Integration settings tile)
 - **P-012** `todo` Build the settings panel — detection state, install toggle, "Re-install now" button, managed paths. blocked-by: P-009, P-011
 - **P-013** `todo` Implement `DELETE /api/desktop/install/omp-integration` — uninstall: remove mcp.json entry, remove wrapper, optionally re-add CLAUDE.md block (or just delete the integration). blocked-by: P-007
 
@@ -127,3 +127,40 @@ Calls into the Phase 2 endpoint. No Tauri-side logic.
 ## Decisions
 
 (none yet — appended as `### D-NNN — title` when P-001 / P-005 / P-009 are ratified.)
+
+### D-001 — D-001a — install logic lives in the Node operator sidecar
+Date: 2026-05-24
+Ratified P-001. Install logic goes in the Node operator sidecar — two endpoints under `/api/desktop/install/`. Tauri host stays thin and fires the always-on endpoint at startup.
+
+Why Node sidecar over Tauri Rust:
+- Cross-platform `fs`/`crypto`/`os` already there; no new Rust deps.
+- Playbook + extension source files already live in the operator app — no Tauri-resource handling needed.
+- Operator already binds the superuser token — single owner.
+- Keeps Tauri host minimal (preferred direction).
+
+Cost of being wrong: small. If a startup-ordering issue surfaces, Tauri can do the always-on directly (option c) later; the API surface stays the same.
+Related: P-001
+
+### D-002 — D-002a — Mac + Linux only in v1; defer Windows
+Date: 2026-05-24
+Ratified P-005. v1 supports Mac + Linux only. Windows deferred to a separate plan.
+
+Why:
+- Windows needs `.cmd` shim instead of bash wrapper; needs PowerShell PATH munging; OMP itself may not run cleanly there.
+- Cross-platform on day one triples testing surface for the unproven happy path.
+- Most current papercusp users + the engineers building it are Mac/Linux.
+
+Implementation: detect `process.platform === 'win32'` in the omp-integration endpoint and return `{ supported: false, reason: 'Windows is not yet supported' }`. The papercusp-files endpoint (Phase 1) is platform-agnostic — works on Windows for free.
+Related: P-005
+
+### D-003 — D-003a — settings tile placement for OMP integration
+Date: 2026-05-24
+Ratified P-011. New "OMP Integration" tile in operator settings. NOT a setup-wizard step.
+
+Why:
+- Settings panel is the discoverable, repeatable surface; wizard fires once.
+- Matches how other integrations (mobile pair, backups) surface.
+- The toggle needs to be revisitable — users may install OMP after Papercusp, or want to uninstall the integration without uninstalling Papercusp.
+
+Could later add a one-shot wizard nudge (option c) without architecture changes.
+Related: P-011
