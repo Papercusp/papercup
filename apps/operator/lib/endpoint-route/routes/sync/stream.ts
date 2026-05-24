@@ -29,7 +29,7 @@
  * Sibling pattern to /api/zero-harness/sse — same `sampleRate: 0` to
  * keep route_invocations clean.
  */
-import { sseResponse, parseLastEventId } from '@restart/sse';
+import { sseResponse, parseLastEventId, type SyncSseEventVocabulary } from '@restart/sse';
 import { defineTool } from '@papercusp/agent-mcp';
 import {
   subscribe,
@@ -41,15 +41,17 @@ import {
  * Map a PG `papercusp_changes` payload into the SSE invalidate payload
  * the browser expects. The `name` is the unqualified table name (we
  * strip the `harness_shared.` prefix) — that's what useSyncQuery keys
- * its queries against on the client side.
+ * its queries against on the client side. The PG `op` (INSERT/UPDATE/
+ * DELETE) rides in `args.op` per the SyncSseEventVocabulary's
+ * `invalidate: { name, args?, tsMs? }` shape.
  */
 function unqualified(table: string): string {
   const dot = table.indexOf('.');
   return dot >= 0 ? table.slice(dot + 1) : table;
 }
 
-function payloadFor(ev: ChangeEvent): { name: string; tsMs: number; op: string } {
-  return { name: unqualified(ev.table), tsMs: ev.ts, op: ev.op };
+function payloadFor(ev: ChangeEvent): { name: string; args: { op: string }; tsMs: number } {
+  return { name: unqualified(ev.table), args: { op: ev.op }, tsMs: ev.ts };
 }
 
 export default defineTool({
@@ -64,7 +66,7 @@ export default defineTool({
     const workspaceId = url.searchParams.get('workspace');
     const lastEventId = parseLastEventId(req);
 
-    return sseResponse({
+    return sseResponse<SyncSseEventVocabulary>({
       signal: req.signal,
       lastEventId,
       heartbeatMs: 15_000,
