@@ -19,8 +19,10 @@ import {
   hookOwnerId,
   linkAdvSessionFromContext,
   onSessionShutdown,
+  onSessionStart,
   onToolCall,
   onToolResult,
+  onTurnStart,
   readInboxFs,
   readPlanEventsFs,
   readWatermarkFs,
@@ -908,7 +910,7 @@ describe('linkAdvSessionFromContext — ADV row linkage', () => {
           JSON.stringify({
             jsonrpc: '2.0',
             id: 1,
-            result: { content: [{ type: 'text', text: '{"ok":true}' }] },
+            result: { content: [{ type: 'text', text: '{"ok":true,"result":"linked"}' }] },
           }),
       };
     }) as unknown as typeof fetch;
@@ -949,6 +951,64 @@ describe('linkAdvSessionFromContext — ADV row linkage', () => {
     });
 
     expect(called).toBe(false);
+  });
+
+  it('re-probes immediately on turn start when an ADV link is still missing', async () => {
+    process.env.PAPERCUSP_BUNDLE_URL = 'http://operator.test';
+    process.env.PAPERCUSP_ADV_SESSION_ID = '42';
+    let healthChecks = 0;
+    const calls: string[] = [];
+    global.fetch = (async (url: unknown, init?: { body?: string }) => {
+      if (String(url).endsWith('/api/health')) {
+        healthChecks += 1;
+        return { ok: healthChecks >= 2 } as Response;
+      }
+      const body = JSON.parse(init?.body ?? '{}') as {
+        params?: { name?: string };
+      };
+      const name = body.params?.name ?? '';
+      calls.push(name);
+      const resultText =
+        name === 'omp:sessions'
+          ? '{"ok":true,"result":"linked"}'
+          : name === 'coord:watermark'
+            ? '{"watermark":{}}'
+            : name === 'coord:inbox'
+              ? '{"entries":[]}'
+              : name === 'locks:queue'
+                ? '{"active_locks":[]}'
+                : name === 'coord:plan-events'
+                  ? '{"events":[]}'
+                  : '{"ok":true}';
+      return {
+        ok: true,
+        text: async () =>
+          JSON.stringify({
+            jsonrpc: '2.0',
+            id: 1,
+            result: { content: [{ type: 'text', text: resultText }] },
+          }),
+      } as Response;
+    }) as unknown as typeof fetch;
+
+    await onSessionStart({
+      cwd: '/repo',
+      sessionManager: {
+        getSessionId: () => '019ab123',
+        getSessionFile: () => '/home/user/.omp/agent/sessions/-repo/session.jsonl',
+      },
+    });
+    const turn = await onTurnStart({
+      cwd: '/repo',
+      sessionManager: {
+        getSessionId: () => '019ab123',
+        getSessionFile: () => '/home/user/.omp/agent/sessions/-repo/session.jsonl',
+      },
+    });
+
+    expect(turn.mode).toBe('attached');
+    expect(healthChecks).toBe(2);
+    expect(calls).toContain('omp:sessions');
   });
 });
 

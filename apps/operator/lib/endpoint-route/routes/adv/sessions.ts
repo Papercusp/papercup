@@ -109,7 +109,7 @@ async function resolveOmpSessionForRequest(req: Request): Promise<{
 
   const match = findOmpSessionNear({
     startedAtMs: new Date(advSession.startedAt).getTime(),
-    cwd: papercuspPath(),
+    cwd: advSession.cwd ?? papercuspPath(),
     windowMs: 5 * 60_000,
   });
   if (match?.id) {

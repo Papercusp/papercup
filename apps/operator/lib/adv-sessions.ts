@@ -26,6 +26,7 @@ export interface AdvSessionRow {
   windowId: string | null;
   ompThreadId: string | null;
   label: string | null;
+  cwd: string | null;
   startedAt: string;
   endedAt: string | null;
   exitCode: number | null;
@@ -38,6 +39,7 @@ export interface RecordOpts {
   pid?: number | null;
   label?: string | null;
   ompThreadId?: string | null;
+  cwd?: string | null;
 }
 
 export function toIsoTimestamp(value: string | Date | null | undefined): string | null {
@@ -58,6 +60,7 @@ function mapAdvSessionRow(r: {
   window_id: string | null;
   omp_thread_id: string | null;
   label: string | null;
+  cwd: string | null;
   started_at: string | Date;
   ended_at: string | Date | null;
   exit_code: number | null;
@@ -71,6 +74,7 @@ function mapAdvSessionRow(r: {
     pid: r.pid,
     windowId: r.window_id,
     ompThreadId: r.omp_thread_id,
+    cwd: r.cwd,
     label: r.label,
     startedAt: toIsoTimestamp(r.started_at)!,
     endedAt: toIsoTimestamp(r.ended_at),
@@ -84,11 +88,11 @@ export async function recordAdvSession(opts: RecordOpts): Promise<number | null>
     const { sql } = getOrgPg();
     const rows = await sql<{ id: number }[]>`
       INSERT INTO harness_shared.adv_sessions
-        (workspace_id, plan_slug, mode, terminal_bin, pid, label, omp_thread_id)
+        (workspace_id, plan_slug, mode, terminal_bin, pid, label, omp_thread_id, cwd)
       VALUES
         (${activeWorkspaceId()}, ${opts.planSlug ?? null}, ${opts.mode},
          ${opts.terminalBin ?? null}, ${opts.pid ?? null}, ${opts.label ?? null},
-         ${opts.ompThreadId ?? null})
+         ${opts.ompThreadId ?? null}, ${opts.cwd ?? null})
       RETURNING id
     `;
     return rows[0]?.id ?? null;
@@ -112,21 +116,42 @@ export async function setAdvSessionPid(id: number, pid: number | null): Promise<
   }
 }
 
-export async function setAdvSessionOmpThreadId(id: number, ompThreadId: string): Promise<void> {
+export type AdvSessionLinkResult =
+  | 'linked'
+  | 'already_linked'
+  | 'not_found'
+  | 'conflict';
+
+export async function setAdvSessionOmpThreadId(
+  id: number,
+  ompThreadId: string,
+): Promise<AdvSessionLinkResult> {
   const trimmed = ompThreadId.trim();
-  if (!trimmed) return;
+  if (!trimmed) return 'not_found';
   try {
     await ensureAdvSessionsTable();
     const { sql } = getOrgPg();
+    const currentRows = await sql<Array<{ omp_thread_id: string | null }>>`
+      SELECT omp_thread_id
+        FROM harness_shared.adv_sessions
+       WHERE id = ${id}
+         AND workspace_id = ${activeWorkspaceId()}
+       LIMIT 1
+    `;
+    const current = currentRows[0];
+    if (!current) return 'not_found';
+    if (current.omp_thread_id === trimmed) return 'already_linked';
+    if (current.omp_thread_id != null && current.omp_thread_id !== trimmed) return 'conflict';
     await sql`
       UPDATE harness_shared.adv_sessions
          SET omp_thread_id = ${trimmed}
        WHERE id = ${id}
          AND workspace_id = ${activeWorkspaceId()}
-         AND (omp_thread_id IS NULL OR omp_thread_id = ${trimmed})
     `;
+    return 'linked';
   } catch (e) {
     console.warn('[adv-sessions] setAdvSessionOmpThreadId failed:', (e as Error).message);
+    return 'not_found';
   }
 }
 
@@ -157,12 +182,13 @@ export async function listAdvSessions(limit = 100): Promise<AdvSessionRow[]> {
       window_id: string | null;
       omp_thread_id: string | null;
       label: string | null;
+      cwd: string | null;
       started_at: string | Date;
       ended_at: string | Date | null;
       exit_code: number | null;
     }>>`
       SELECT id, workspace_id, plan_slug, mode, terminal_bin, pid,
-             window_id, omp_thread_id, label, started_at, ended_at, exit_code
+             window_id, omp_thread_id, label, cwd, started_at, ended_at, exit_code
         FROM harness_shared.adv_sessions
        WHERE workspace_id = ${activeWorkspaceId()}
        ORDER BY started_at DESC
@@ -189,12 +215,13 @@ export async function getAdvSession(id: number): Promise<AdvSessionRow | null> {
       window_id: string | null;
       omp_thread_id: string | null;
       label: string | null;
+      cwd: string | null;
       started_at: string | Date;
       ended_at: string | Date | null;
       exit_code: number | null;
     }>>`
       SELECT id, workspace_id, plan_slug, mode, terminal_bin, pid,
-             window_id, omp_thread_id, label, started_at, ended_at, exit_code
+             window_id, omp_thread_id, label, cwd, started_at, ended_at, exit_code
         FROM harness_shared.adv_sessions
        WHERE workspace_id = ${activeWorkspaceId()}
          AND id = ${id}

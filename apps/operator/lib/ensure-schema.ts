@@ -88,6 +88,7 @@ type _G = {
     planRuns: boolean;
     planRunTurns: boolean;
     advSessions: boolean;
+    advSessionsCwd: boolean;
   };
 };
 const _g = globalThis as unknown as _G;
@@ -155,6 +156,7 @@ const flags = _g.__ensureSchemaFlags ?? (_g.__ensureSchemaFlags = {
   planRuns: false,
   planRunTurns: false,
   advSessions: false,
+  advSessionsCwd: false,
 });
 
 /**
@@ -1911,7 +1913,7 @@ export async function ensureBackupTables(): Promise<void> {
  * Canonical SQL: libs/papercusp/libs/db/sql/079-adv-sessions.sql.
  */
 export async function ensureAdvSessionsTable(): Promise<void> {
-  if (flags.advSessions) return;
+  if (flags.advSessions && flags.advSessionsCwd) return;
   const { sql } = getOrgPg();
   await sql.unsafe(`
     CREATE TABLE IF NOT EXISTS harness_shared.adv_sessions (
@@ -1924,10 +1926,13 @@ export async function ensureAdvSessionsTable(): Promise<void> {
       window_id       TEXT NULL,
       omp_thread_id   TEXT NULL,
       label           TEXT NULL,
+      cwd             TEXT NULL,
       started_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
       ended_at        TIMESTAMPTZ NULL,
       exit_code       INT NULL
     );
+    ALTER TABLE harness_shared.adv_sessions
+      ADD COLUMN IF NOT EXISTS cwd TEXT NULL;
     CREATE INDEX IF NOT EXISTS adv_sessions_workspace_active_idx
       ON harness_shared.adv_sessions(workspace_id, started_at DESC)
       WHERE ended_at IS NULL;
@@ -1938,6 +1943,7 @@ export async function ensureAdvSessionsTable(): Promise<void> {
       WHERE plan_slug IS NOT NULL;
   `);
   flags.advSessions = true;
+  flags.advSessionsCwd = true;
 }
 
 /**

@@ -2,10 +2,12 @@
  * Phase 2 (opt-in) of desktop-app-install-integration-2026-05-23:
  * wire the operator into the user's local OMP install.
  *
- * Idempotent. Mirrors steps 3 + 4a + 4c-rm + 4d of
+ * Idempotent. Mirrors steps 3 + 3b + 4a + 4c-rm + 4d of
  * install-standalone-mcp.sh:
  *   - merge papercusp-su MCP server into ~/.omp/agent/mcp.json
  *     (preserves any other configured MCP servers)
+ *   - enable OMP-native Hindsight memory config when an `omp` binary is
+ *     available
  *   - strip the legacy always-on playbook block from
  *     ~/.omp/agent/CLAUDE.md (left there by older versions of the
  *     shell script — keeps plain `omp` from auto-loading the playbook)
@@ -116,6 +118,54 @@ async function detectOmpBinary(): Promise<string | null> {
     return found || null;
   } catch {
     return null;
+  }
+}
+
+const OMP_HINDSIGHT_DESIRED_CONFIG = [
+  ['memory.backend', 'hindsight'],
+  ['hindsight.apiUrl', process.env.PAPERCUSP_HINDSIGHT_API_URL ?? process.env.HINDSIGHT_API_URL ?? 'http://localhost:8888'],
+  ['hindsight.scoping', 'per-project-tagged'],
+  ['hindsight.autoRecall', 'true'],
+  ['hindsight.autoRetain', 'true'],
+] as const;
+
+function ompExecEnv(home: string): NodeJS.ProcessEnv {
+  return { ...process.env, HOME: home };
+}
+
+async function readOmpConfigValue(
+  ompBinaryPath: string,
+  home: string,
+  key: string,
+): Promise<string | null> {
+  try {
+    const { stdout } = await exec(ompBinaryPath, ['config', 'get', key], {
+      timeout: 3000,
+      env: ompExecEnv(home),
+    });
+    const value = stdout.trim();
+    return value.length > 0 ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+async function ensureOmpHindsightConfig(
+  ompBinaryPath: string | null,
+  home: string,
+): Promise<void> {
+  if (!ompBinaryPath) return;
+  for (const [key, value] of OMP_HINDSIGHT_DESIRED_CONFIG) {
+    const current = await readOmpConfigValue(ompBinaryPath, home, key);
+    if (current === value) continue;
+    try {
+      await exec(ompBinaryPath, ['config', 'set', key, value], {
+        timeout: 3000,
+        env: ompExecEnv(home),
+      });
+    } catch {
+      return;
+    }
   }
 }
 
@@ -342,6 +392,8 @@ export async function installOmpIntegration(opts: InstallOptions = {}): Promise<
     await fs.rm(ompPaths.legacyExtensionPath, { force: true });
     actions.push(`removed legacy extension at ${ompPaths.legacyExtensionPath}`);
   }
+
+  await ensureOmpHindsightConfig(detection.ompBinaryPath, home);
 
   // 4. install omp-su wrapper.
   const wrapperPath = resolveWrapperPath(home, detection.ompBinaryPath);

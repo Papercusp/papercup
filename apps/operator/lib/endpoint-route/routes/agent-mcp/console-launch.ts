@@ -361,6 +361,7 @@ const post = defineTool({
         terminalBin: term.bin,
         pid: null,
         label: body.label ?? null,
+        cwd: envelope.cwd,
       });
       const ompEnv = {
         ...envelope.env,
@@ -441,6 +442,7 @@ const post = defineTool({
         terminalBin: term.bin,
         pid: child.pid ?? null,
         label: body.label ?? null,
+        cwd: envelope.cwd,
       });
       attachExitWatcher(child, sessionPromise);
       child.unref();

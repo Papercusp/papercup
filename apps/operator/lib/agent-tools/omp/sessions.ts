@@ -119,16 +119,19 @@ export default defineTool({
     }
 
     if (args.op === 'link') {
-      await setAdvSessionOmpThreadId(args.advSessionId, args.sessionId);
+      const linkResult = await setAdvSessionOmpThreadId(args.advSessionId, args.sessionId);
       return {
         content: [
           {
             type: 'text',
             text: JSON.stringify({
-              ok: true,
+              ok: linkResult === 'linked' || linkResult === 'already_linked',
               advSessionId: args.advSessionId,
               sessionId: args.sessionId,
               filePath: args.filePath ?? null,
+              result: linkResult,
+              ...(linkResult === 'conflict' ? { error: 'adv_session_already_linked_to_different_omp_session' } : {}),
+              ...(linkResult === 'not_found' ? { error: 'adv_session_not_found' } : {}),
             }),
           },
         ],

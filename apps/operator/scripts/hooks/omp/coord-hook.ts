@@ -190,6 +190,7 @@ interface JsonRpcResp {
  * (see _mcp-handler.ts).
  */
 let _hookOwnerId: string | null = null;
+let _advSessionLinked = false;
 export function hookOwnerId(): string {
   if (_hookOwnerId === null) {
     const session =
@@ -202,9 +203,12 @@ export function hookOwnerId(): string {
   return _hookOwnerId;
 }
 
-/** Test-only: reset the memoised owner id between cases. */
+/** Test-only: reset memoised state between cases. */
 export function _resetHookOwnerIdForTests(): void {
   _hookOwnerId = null;
+  _advSessionLinked = false;
+  _mode = 'attached';
+  _lastProbeAtMs = 0;
 }
 
 export async function callMcpTool(
@@ -552,10 +556,17 @@ function currentSessionLinkFromContext(ctx: unknown): {
   };
 }
 
-export async function linkAdvSessionFromContext(ctx: unknown): Promise<void> {
+export async function linkAdvSessionFromContext(ctx: unknown): Promise<boolean> {
+  if (_advSessionLinked) return true;
   const link = currentSessionLinkFromContext(ctx);
-  if (!link) return;
-  await callMcpTool('omp:sessions', { op: 'link', ...link });
+  if (!link) return false;
+  const result = await callMcpTool('omp:sessions', { op: 'link', ...link }) as
+    | { ok?: boolean; result?: string }
+    | null;
+  const linked = result?.ok === true &&
+    (result.result === 'linked' || result.result === 'already_linked');
+  if (linked) _advSessionLinked = true;
+  return linked;
 }
 
 /** Fired once per OMP session start. Probes the operator to choose
@@ -734,13 +745,15 @@ async function onTurnStartDetached(ownerId: string): Promise<TurnStartResult> {
  *  bidirectional (audit NB-1): an attached call that comes back
  *  degraded re-probes (operator may have gone away); a detached turn
  *  re-probes on a throttle (operator may have come back). */
-export async function onTurnStart(): Promise<TurnStartResult> {
+export async function onTurnStart(ctx?: unknown): Promise<TurnStartResult> {
   const ownerId = process.env.PAPERCUSP_AUTH_SESSION_ID ?? 'unknown';
 
   if (_mode === 'detached') {
     // Throttled re-probe — a recovered operator is picked up without
     // paying a probe (a 2s timeout while still down) every turn.
-    if (Date.now() - _lastProbeAtMs > DETACHED_REPROBE_MS) {
+    const needsImmediateAdvLinkProbe =
+      !_advSessionLinked && !!process.env.PAPERCUSP_ADV_SESSION_ID;
+    if (needsImmediateAdvLinkProbe || Date.now() - _lastProbeAtMs > DETACHED_REPROBE_MS) {
       await refreshMode();
     }
     if (_mode === 'detached') {
@@ -749,6 +762,7 @@ export async function onTurnStart(): Promise<TurnStartResult> {
     // Operator came back — fall through to the attached path.
   }
 
+  await linkAdvSessionFromContext(ctx);
   const attached = await onTurnStartAttached(ownerId);
   if (!attached.degraded) return attached;
   // Attached call failed — was it a transient blip or did the operator
@@ -763,6 +777,7 @@ export async function onTurnStart(): Promise<TurnStartResult> {
   if (reprobed === 'detached') {
     return onTurnStartDetached(ownerId);
   }
+  await linkAdvSessionFromContext(ctx);
   return attached; // operator is up — a genuine transient failure
 }
 
@@ -1237,7 +1252,7 @@ export default function register(pi: HookApi): void {
   });
 
   pi.on('turn_start', async (_event, ctx) => {
-    const { reminder, degraded } = await safe(() => onTurnStart(), {
+    const { reminder, degraded } = await safe(() => onTurnStart(ctx), {
       reminder: '',
       degraded: true,
       mode: 'attached' as CoordMode,

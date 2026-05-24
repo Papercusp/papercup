@@ -35,6 +35,34 @@ async function seedPhase1(home: string, token = 'tok-abc-123', agentId = 'agent-
   await fs.writeFile(p.agentIdPath, agentId + '\n', { mode: 0o600 });
 }
 
+async function makeFakeOmp(): Promise<string> {
+  const fakeBinDir = await fs.mkdtemp(path.join(os.tmpdir(), 'fake-omp-bin-'));
+  const fakeOmp = path.join(fakeBinDir, 'omp');
+  const script = [
+    '#!/usr/bin/env bash',
+    'set -euo pipefail',
+    'LOG="$HOME/.omp-config-log"',
+    'mkdir -p "$HOME"',
+    'if [ "${1:-}" = "config" ] && [ "${2:-}" = "get" ]; then',
+    '  KEY="$3"',
+    '  FILE="$HOME/.omp-config-${KEY//\\//_}"',
+    '  if [ -f "$FILE" ]; then cat "$FILE"; fi',
+    '  exit 0',
+    'fi',
+    'if [ "${1:-}" = "config" ] && [ "${2:-}" = "set" ]; then',
+    '  KEY="$3"',
+    '  VALUE="$4"',
+    '  FILE="$HOME/.omp-config-${KEY//\\//_}"',
+    '  printf "%s" "$VALUE" > "$FILE"',
+    '  printf "%s=%s\\n" "$KEY" "$VALUE" >> "$LOG"',
+    '  exit 0',
+    'fi',
+    'exit 1',
+  ].join('\n');
+  await fs.writeFile(fakeOmp, script, { mode: 0o755 });
+  return fakeOmp;
+}
+
 beforeEach(async () => {
   tmpHome = await fs.mkdtemp(path.join(os.tmpdir(), 'pcusp-omp-int-'));
 });
@@ -93,6 +121,37 @@ describe('installOmpIntegration', () => {
       expect(wrapperContent).toContain('papercusp-coord.ts');
     } finally {
       await fs.rm(fakeBinDir, { recursive: true, force: true });
+    }
+  });
+
+  it('configures OMP-native Hindsight when an omp binary is available', async () => {
+    await seedPhase1(tmpHome);
+    const fakeOmp = await makeFakeOmp();
+    try {
+      await installOmpIntegration({
+        home: tmpHome,
+        operatorUrl: 'http://localhost:3070',
+        ompBinaryPath: fakeOmp,
+      });
+      const logPath = path.join(tmpHome, '.omp-config-log');
+      const lines = (await fs.readFile(logPath, 'utf8')).trim().split('\n');
+      expect(lines).toEqual([
+        'memory.backend=hindsight',
+        'hindsight.apiUrl=http://localhost:8888',
+        'hindsight.scoping=per-project-tagged',
+        'hindsight.autoRecall=true',
+        'hindsight.autoRetain=true',
+      ]);
+
+      await installOmpIntegration({
+        home: tmpHome,
+        operatorUrl: 'http://localhost:3070',
+        ompBinaryPath: fakeOmp,
+      });
+      const secondLines = (await fs.readFile(logPath, 'utf8')).trim().split('\n');
+      expect(secondLines).toEqual(lines);
+    } finally {
+      await fs.rm(path.dirname(fakeOmp), { recursive: true, force: true });
     }
   });
 
