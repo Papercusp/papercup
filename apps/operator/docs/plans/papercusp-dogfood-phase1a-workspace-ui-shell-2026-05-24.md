@@ -11,9 +11,9 @@ owner: avi@storewolf.com
 
 ## Now
 
-**State:** **draft execution plan**. Phase 1a backend now COMPLETE as of 2026-05-24 overnight loop. Done: P-006 (sentinel), P-007 (classifier), **P-013 ALL** (incl. shared_repo_binding_cache via `8ed90e57`), **P-010 ALL** — init-local-dir helper (`init-local-dir.ts` + 20 tests, prior commit) + route wiring on POST /harness/projects (`3caa50ca`, Entry 1 discriminator added; existing Entry 2 + Entry 3 untouched). Remaining: **P-012 (the 4-entry picker UI) only**.
+**State:** **PHASE 1a COMPLETE** as of 2026-05-24 overnight loop. Done: P-006 (sentinel), P-007 (classifier), P-013 ALL (incl. shared_repo_binding_cache via `8ed90e57`), **P-010 ALL** — init-local-dir helper (`init-local-dir.ts` + 20 tests, `3caa50ca`) + route wiring, **P-012 ALL** — CreateHarnessPicker.tsx (4-entry modal, Entry 1 + Entry 3 fully functional, Entry 2 + Entry 4 Phase 1b stubs) committed at `5731f0dd`.
 
-**Next:** P-012 — design memo first (Q-1) since it's the first user-visible surface of the dogfood arc. Three entries are wired backend-side (Entry 1 / Entry 2 / Entry 3 all functional via POST /harness/projects); Entry 4 stays placeholder until Phase 1b P-009 lands. Implementation gates on user's UX call.
+**Next:** Phase 1b runtime — P-011 (attest.ts + keychain.ts) is the first unblocked item. P-068 binding-service.ts already committed (`81c608ba`); P-075 two-channel-verifier.ts and P-009 Entry 4 handler still pending.
 
 ## Background
 
@@ -71,7 +71,7 @@ v5 one-liner: *"Register harness rows in `harness_registry` with `entry_kind` + 
 
 ---
 
-### P-010 — Entry 1 + Entry 3 backend handlers [M] — 🔴 NOT STARTED
+### P-010 — Entry 1 + Entry 3 backend handlers [M] — ✅ DONE
 
 v5 one-liner: *"Entry 1 (new local non-git dir) + Entry 3 (existing local repo): UI shell + backend `{kind: 'local_init'}` and `{kind: 'local_existing'}` handlers. Entry 3 reuses existing `POST /api/harness/projects` path-validation; Entry 1 wraps `mkdir` + `git init` + Entry 3. **Entry 3 does NOT require GitHub auth.**"*
 
@@ -91,7 +91,7 @@ v5 one-liner: *"Entry 1 (new local non-git dir) + Entry 3 (existing local repo):
 
 ---
 
-### P-012 — Create-harness UI shell [M] — 🔴 NOT STARTED
+### P-012 — Create-harness UI shell [M] — ✅ DONE
 
 v5 one-liner: *"Create-harness UI shell: 4-entry picker, per-entry forms, progress UI for clone/init, error handling. Uses vditor for description input."*
 

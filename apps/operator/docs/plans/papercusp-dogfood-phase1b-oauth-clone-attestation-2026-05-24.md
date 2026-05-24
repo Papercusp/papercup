@@ -23,9 +23,12 @@ owner: avi@storewolf.com
   - P-075-Channel-2: `contributor-file-types.ts` (`258c94b6`)
   Runtime implementations gated on memo acceptance; types ready to consume verbatim.
 
-Remaining greenfield runtime: P-009 Entry 4 + P-011 attest.ts/keychain.ts + P-068 binding-service.ts + P-075 two-channel-verifier.ts — all design-gated. Of the four Phase 1b open questions, only **Q-1** remains (where the three design memos live on-disk — answer is `apps/operator/content/internal-docs/design/` per `## For the next agent`).
+Updated status (2026-05-24 continued loop):
+- ✅ **P-068** DONE — `binding-service.ts` committed at `81c608ba` (resolveRepoBinding, createUnclaimedBinding, claimBinding, supersedeBinding, recheckClaimantPermissions — full runtime, not stub)
 
-**Next:** Write three design memos before any runtime P-task implementation starts: (1) Device attestation UX, (2) Two-channel binding verifier UX, (3) Canonical binding service API shape. When memos are accepted, the runtime implementers consume the four types-only modules already in tree + the Q-2 / Q-3 / Q-4 D-decisions; no design-vs-implementation race and no re-design round needed for the rate-limit strategy or canonical-form choice.
+Remaining runtime: P-011 attest.ts/keychain.ts + P-075 two-channel-verifier.ts + P-009 Entry 4 handler.
+
+**Next:** P-011 — device attestation runtime (`attest.ts` + `keychain.ts`). Type spine already in tree at `attestation-types.ts` (`4a08057e`); Q-2/Q-3/Q-4 resolved; no design blockers. P-075 follows P-011; P-009 follows both.
 
 ## Background
 
@@ -52,7 +55,7 @@ v5 one-liner: *"Entry 2 (GitHub URL). REVISED 2026-05-24 to use `gh auth login` 
 
 ---
 
-### P-068 — Canonical shared-repo binding service [M] — 🔴 NOT STARTED
+### P-068 — Canonical shared-repo binding service [M] — ✅ DONE
 
 v5 one-liner: *"Resolve GitHub `repository.id`; lookup/create binding by stable repo id; local `shared_repo_binding_cache`; claim/supersede endpoints; permission verifier for `maintain` / `admin`."*
 

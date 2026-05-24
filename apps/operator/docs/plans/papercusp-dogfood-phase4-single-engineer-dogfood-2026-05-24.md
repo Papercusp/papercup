@@ -11,9 +11,9 @@ owner: avi@storewolf.com
 
 ## Now
 
-**State:** **draft execution plan**, fourth in the per-phase cohort. Phase 4 is the **first real-use phase** — the moment the team commits to running Papercusp's own development queue through Papercusp. P-024 (register papercup as a harness) is already DONE in-tree; the rest (P-025 seed features, P-026 run end-to-end, P-027 observe, P-028 gate decision) are outstanding and inherently tied to *behavioral commitments*, not just code.
+**State:** P-024 + P-025 DONE. P-024 (register papercup as a harness) committed at `b53185ee`; P-025 (seed features) DONE — F-DOGFOOD-001/002/003 confirmed live in PG (`harness_papercup` schema), surviving operator restart.
 
-**Next action:** seed the first three real features into the papercup harness queue (P-025). Doing this **before** Phase 1a's UI work fully ships is fine — feature CRUD already works against the existing operator UI; the new picker is for *creating* harnesses, not features.
+**Next action:** P-026 — run a real feature (F-DOGFOOD-001 or F-DOGFOOD-002) end-to-end via the orchestrator. This is a behavioral commitment: open the feature in the harness UI, queue it, let the orchestrator dispatch scoper → architect → worker → validator. Record what breaks in F-DOGFOOD-001's observations (per P-027).
 
 ## Background
 
@@ -50,7 +50,7 @@ v5 one-liner: *"Use Entry 3 to register the papercup repo as a harness in the ne
 
 ---
 
-### P-025 — Seed initial features into the harness queue [S] — 🔴 NOT STARTED
+### P-025 — Seed initial features into the harness queue [S] — ✅ DONE
 
 v5 one-liner: *"Seed initial features into the harness queue. Reuse existing feature-CRUD tools."*
 
