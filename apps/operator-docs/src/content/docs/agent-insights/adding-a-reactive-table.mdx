@@ -100,7 +100,7 @@ Both producers emit on `sync_invalidate` channel with:
 
 ```json
 {
-  "name": "harness_shared.your_new_table.changed",
+  "name": "<event-name>",
   "args": { "workspace_id": "<id|null>", "op": "INSERT|UPDATE|DELETE" }
 }
 ```
@@ -111,6 +111,31 @@ channel; the trigger function was rewritten in commit `20609bb` to
 stop doing exactly that (was emitting on a new `papercusp_changes`
 channel; consolidated onto `sync_invalidate` for the 20+ existing
 consumers).
+
+### Two name conventions exist — they don't talk to each other yet
+
+| Producer | Name shape | Example |
+|---|---|---|
+| Application code via `notifySyncInvalidate(name, args)` | camelCase noun + scope | `plans.list`, `toastLog.recent`, `harnessTextArtifact.byHarness` |
+| PG trigger `emit_change_notify` (this insight's recipe) | `<schema>.<table>.changed` | `harness_shared.plan_runs.changed` |
+
+Today's existing `useSyncQuery` consumers subscribe with `queryName:
+'harnessTextArtifact.byHarness'` (camelCase). My PG-trigger events
+fire with `harness_shared.harness_text_artifacts.changed` — clients
+filter on name, see no match, refetch nothing. Trigger events are
+**broadcast no-ops for existing clients today.**
+
+**What this enables**: future code subscribing to
+`<schema>.<table>.changed` (the catch-all name shape) gets free
+coverage of any write to that table, including raw-SQL or
+MCP-tool writes that app code never notified about.
+
+**Bridge work pending**: a future item should add a translator —
+"when `harness_shared.harness_text_artifacts.changed` arrives,
+also invalidate any subscriber to `harnessTextArtifact.*`." That
+ties the trigger producer to the existing consumer surface. Until
+that lands, app-code `notifySyncInvalidate` calls remain the active
+path for known consumers; the trigger is the dormant safety net.
 
 ## Verifying it works
 
