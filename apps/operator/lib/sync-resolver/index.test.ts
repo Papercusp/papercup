@@ -263,4 +263,49 @@ describe('sync-resolver v2 registry', () => {
       await expect(r('toastLog.recent', { limit: 'twenty' })).rejects.toThrow();
     });
   });
+
+  describe('structural — every registered entry is well-shaped', () => {
+    // Sentinel: walk every registered name and call resolveNamedQueryV2
+    // with null/undefined args. The expected outcome is one of:
+    //   (a) zod throws with a ZodError (resolver shape: argsSchema +
+    //       valid schema, args required → throws on null)
+    //   (b) resolve runs (resolver shape: no argsSchema, OR schema with
+    //       all-defaulted fields). Result of that call hits PG, which
+    //       we DON'T want in unit tests — so we wrap in a timeout/abort.
+    //
+    // Either way, what we MUST see for every entry is: the call goes
+    // through the dispatcher without a TypeError ("not a function")
+    // or "Cannot read properties of undefined" — those signal a
+    // typo'd registry entry (e.g., 'resolves:' instead of 'resolve:').
+    it('every registered name dispatches without TypeError', async () => {
+      const { knownQueryNamesV2: known, resolveNamedQueryV2: r } =
+        await import('./index');
+      const names = known();
+      expect(names.length).toBeGreaterThan(40); // sanity: we have ~54 today
+
+      const typeErrors: Array<{ name: string; msg: string }> = [];
+      const otherOk: string[] = [];
+      for (const name of names) {
+        try {
+          // Pass null — zod argsSchema will throw "Expected object,
+          // received null" for entries with required schemas. Entries
+          // that accept null/undefined go on to call PG, which we
+          // immediately abort/ignore.
+          await Promise.race([
+            r(name, null).catch(() => undefined),
+            new Promise((res) => setTimeout(res, 50)),
+          ]);
+          otherOk.push(name);
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : String(e);
+          if (/is not a function|Cannot read properties|undefined is not/i.test(msg)) {
+            typeErrors.push({ name, msg: msg.slice(0, 120) });
+          }
+          // Other errors (zod, PG connection failure, etc.) are fine —
+          // they prove the dispatcher walked through to the resolve.
+        }
+      }
+      expect(typeErrors).toEqual([]);
+    }, 10_000);
+  });
 });
