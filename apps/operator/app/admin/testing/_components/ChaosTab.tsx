@@ -233,6 +233,9 @@ async function startChaosRun(opts: {
   const url = new URL(opts.route, window.location.origin);
   url.searchParams.set('perf-recorder', '1');
   url.searchParams.set('perf-run-id', runId);
+  url.searchParams.set('perf-duration-ms', String(durationMs));
+  url.searchParams.set('perf-dry-run', opts.dryRun ? '1' : '0');
+  opts.blocklist.forEach((item) => url.searchParams.append('perf-block', item));
   const urlStr = url.toString();
 
   if (inTauri) {

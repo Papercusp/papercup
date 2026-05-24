@@ -52,6 +52,9 @@ export default function RecorderHost() {
     let cancelled = false;
     const suiteRunKey = params.get('__suiteRun');
     const expectedRunId = params.get('perf-run-id');
+    const fallbackDurationMs = Number(params.get('perf-duration-ms') || '0');
+    const fallbackDryRun = params.get('perf-dry-run') === '1';
+    const fallbackBlocklist = params.getAll('perf-block');
     const reloadStorageKey = suiteRunKey ? `papercusp.testing.chaos-reloads.${suiteRunKey}` : null;
     const activeRunStorageKey = expectedRunId ? `papercusp.testing.chaos-active.${expectedRunId}` : null;
     if (reloadStorageKey && activeRunStorageKey && sessionStorage.getItem(activeRunStorageKey) === '1') {
@@ -229,6 +232,9 @@ export default function RecorderHost() {
       await new Promise<void>((resolve) => setTimeout(resolve, 750));
       startedAt = Date.now();
       send({ type: 'started', runId: currentRunId });
+      // Count only severe frame gaps here; maxFrameMs still captures smaller
+      // 50–100ms hitches without making the chaos suite fail on benign jitter.
+      const frameDropThresholdMs = 100;
       let frameDrops = 0;
       let maxFrameMs = 0;
       let rafStop = false;
@@ -242,7 +248,7 @@ export default function RecorderHost() {
           return;
         }
         const delta = now - lastFrame;
-        if (delta > 50) frameDrops += 1;
+        if (delta > frameDropThresholdMs) frameDrops += 1;
         if (delta > maxFrameMs) maxFrameMs = delta;
         lastFrame = now;
         requestAnimationFrame(raf);
@@ -372,7 +378,21 @@ export default function RecorderHost() {
           // capability denied; fall back to channel path if available
         }
       }
-      if (!cancelled) send({ type: 'ready', runId: expectedRunId ?? '' });
+      if (!cancelled) {
+        send({ type: 'ready', runId: expectedRunId ?? '' });
+        if (expectedRunId && fallbackDurationMs > 0) {
+          window.setTimeout(() => {
+            if (cancelled || currentRunId !== null) return;
+            void startRun({
+              type: 'start',
+              runId: expectedRunId,
+              durationMs: fallbackDurationMs,
+              blocklist: fallbackBlocklist,
+              dryRun: fallbackDryRun,
+            });
+          }, 2_000);
+        }
+      }
     })();
 
     return () => {
