@@ -119,7 +119,11 @@ type LaunchCtx = ResolveIdentityCtx & {
 
 async function launchHandler(input: LaunchArgs, ctx: LaunchCtx) {
   // 1. Assemble the launch seed (plan doc + rationale digest — P-009).
-  const bundle = await buildPlanContextBundle(input.slug);
+  const __ctxHarness = (ctx as unknown as { harnessSlug?: string }).harnessSlug?.trim() || undefined;
+  const bundle = await buildPlanContextBundle(
+    input.slug,
+    __ctxHarness ? { harnessSlug: __ctxHarness } : {},
+  );
   if (!bundle) {
     return {
       isError: true,

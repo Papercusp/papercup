@@ -166,7 +166,7 @@ export function assemblePlanContextBundleText(input: PlanBundleInput): string {
  */
 export async function buildPlanContextBundle(
   slug: string,
-  opts: PlanSourceOpts = {},
+  opts: PlanSourceOpts & { harnessSlug?: string } = {},
 ): Promise<PlanContextBundle | null> {
   const read = await readPlanBySlug(slug, opts);
   if (!read) return null;
@@ -174,7 +174,10 @@ export async function buildPlanContextBundle(
 
   let rationales: PlanBundleRationale[] = [];
   try {
-    const revisions = await listPlanRevisions(slug);
+    const revisions = await listPlanRevisions(
+      slug,
+      opts.harnessSlug ? { harnessSlug: opts.harnessSlug } : {},
+    );
     rationales = revisions
       .filter((r) => typeof r.rationale === 'string' && r.rationale.trim().length > 0)
       .map((r) => ({

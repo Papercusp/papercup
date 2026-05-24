@@ -126,7 +126,11 @@ async function resumeHandler(input: ResumeArgs, ctx: ResumeCtx) {
   if (!run) return notFound('runId', input.runId);
 
   // 2. Re-assemble the launch seed from the *current* plan state.
-  const bundle = await buildPlanContextBundle(run.planSlug);
+  const resumeHarnessSlug = (ctx as unknown as { harnessSlug?: string }).harnessSlug?.trim() || undefined;
+  const bundle = await buildPlanContextBundle(
+    run.planSlug,
+    resumeHarnessSlug ? { harnessSlug: resumeHarnessSlug } : {},
+  );
   if (!bundle) return notFound('slug', run.planSlug);
 
   // 3. Tell the caller when the plan moved under the run.
