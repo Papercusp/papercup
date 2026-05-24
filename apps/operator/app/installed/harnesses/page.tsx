@@ -7,8 +7,9 @@
 // Source of truth: /api/installed returns { projects, harnesses,
 // staleCount }. Each project corresponds to one installed harness.
 
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import RouteLink from '../../_components/RouteLink';
+import { CreateHarnessPicker } from '../../harness/CreateHarnessPicker';
 import { toast } from 'sonner';
 import { RichGrid, type ColumnDef } from '@restart/grid-core';
 
@@ -112,38 +113,58 @@ export default function InstalledHarnessesPage() {
   const [data, setData] = useState<InstalledResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [pickerOpen, setPickerOpen] = useState(false);
+
+  const load = useCallback(async (signal?: AbortSignal) => {
+    try {
+      setLoading(true);
+      const res = await fetch('/api/installed', { cache: 'no-store', signal });
+      if (!res.ok) throw new Error(`/api/installed returned ${res.status}`);
+      const json: InstalledResponse = await res.json();
+      setData(json);
+    } catch (e: any) {
+      if ((e as Error).name === 'AbortError') return;
+      setError(String(e?.message ?? e));
+      toast.error(`failed to load harnesses: ${e?.message ?? e}`);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
 
   useEffect(() => {
-    let cancelled = false;
-    async function load() {
-      try {
-        setLoading(true);
-        const res = await fetch('/api/installed', { cache: 'no-store' });
-        if (!res.ok) throw new Error(`/api/installed returned ${res.status}`);
-        const json: InstalledResponse = await res.json();
-        if (!cancelled) setData(json);
-      } catch (e: any) {
-        if (!cancelled) {
-          setError(String(e?.message ?? e));
-          toast.error(`failed to load harnesses: ${e?.message ?? e}`);
-        }
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    }
-    load();
-    return () => { cancelled = true; };
-  }, []);
+    const controller = new AbortController();
+    void load(controller.signal);
+    return () => controller.abort();
+  }, [load]);
+
+  const handleCreated = useCallback((_slug: string) => {
+    void load();
+  }, [load]);
 
   return (
     <div className="pc-installed-ops-shell pc-installed-harnesses-shell" style={{ maxWidth: 1100, margin: '0 auto', padding: '32px 24px' }}>
-      <header className="pc-installed-ops-header pc-installed-harnesses-header" style={{ marginBottom: 24 }}>
-        <h1 style={{ margin: 0 }}>Harnesses</h1>
-        <p style={{ color: 'var(--fg-mute)', marginTop: 8 }}>
-          Locally-installed harnesses. Each is a project scaffolded into this workspace.
-          Click a harness to open it in mission control.
-        </p>
+      <header className="pc-installed-ops-header pc-installed-harnesses-header" style={{ marginBottom: 24, display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 16 }}>
+        <div>
+          <h1 style={{ margin: 0 }}>Harnesses</h1>
+          <p style={{ color: 'var(--fg-mute)', marginTop: 8 }}>
+            Locally-installed harnesses. Each is a project scaffolded into this workspace.
+            Click a harness to open it in mission control.
+          </p>
+        </div>
+        <button
+          type="button"
+          className="pc-button pc-btn-primary pc-installed-harnesses-add-btn"
+          onClick={() => setPickerOpen(true)}
+          style={{ whiteSpace: 'nowrap', marginTop: 4 }}
+        >
+          + Add harness
+        </button>
       </header>
+      <CreateHarnessPicker
+        open={pickerOpen}
+        onOpenChange={setPickerOpen}
+        onCreated={handleCreated}
+      />
 
       {loading && <p className="pc-installed-ops-loading" style={{ color: 'var(--fg-mute)' }}>Loading…</p>}
       {error && <p className="pc-installed-ops-error" style={{ color: 'var(--warn)' }}>Error: {error}</p>}
