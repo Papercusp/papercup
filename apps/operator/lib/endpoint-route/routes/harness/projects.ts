@@ -169,19 +169,45 @@ const create = defineTool({
       return Response.json({ error: 'slug already exists' }, { status: 409 });
     }
 
-    // Resolve the harness path from the body shape — supports two
-    // entry points so far (papercusp-dogfood-v5 §3 P-008/P-009):
+    // Resolve the harness path from the body shape — supports three
+    // entry points so far (papercusp-dogfood-v5 §3 P-008/P-009/P-010):
+    //   Entry 1 — new local dir:    { slug, parentDir, folderName }
+    //                              → mkdir + git init then falls through.
     //   Entry 3 — existing folder:  { slug, path }
     //   Entry 2 — GitHub URL:       { slug, githubUrl, shallow? }
     //                              → clones to ~/.papercusp-workspaces/clones/<repo>
     //                                then falls through to the path flow.
     let path: string;
     let cloneInfo: { url: string; owner: string; repo: string } | null = null;
+    let initInfo: { parentDir: string; folderName: string; initialized: boolean } | null = null;
 
     const githubUrl = typeof body.githubUrl === 'string' ? body.githubUrl.trim() : '';
     const rawPath = typeof body.path === 'string' ? body.path.trim() : '';
+    const parentDir = typeof body.parentDir === 'string' ? body.parentDir.trim() : '';
+    const folderName = typeof body.folderName === 'string' ? body.folderName.trim() : '';
 
-    if (githubUrl) {
+    if (parentDir && folderName) {
+      const { initLocalHarnessDir, InitLocalDirError } = await import('@/lib/harness/init-local-dir');
+      try {
+        const initResult = await initLocalHarnessDir({ parentDir, folderName });
+        path = initResult.path;
+        initInfo = { parentDir, folderName, initialized: initResult.initialized };
+      } catch (e: unknown) {
+        if (e instanceof InitLocalDirError) {
+          const httpStatus =
+            e.code === 'invalid_path'   ? 400 :
+            e.code === 'parent_missing' ? 400 :
+            e.code === 'dest_exists'    ? 409 :
+            e.code === 'git_missing'    ? 500 :
+                                          500;
+          return Response.json(
+            { error: e.message, code: e.code, detail: e.detail },
+            { status: httpStatus },
+          );
+        }
+        throw e;
+      }
+    } else if (githubUrl) {
       const { cloneGithubRepo, isCloneError } = await import('@/lib/harness/clone-github');
       const cloneResult = await cloneGithubRepo(githubUrl, {
         shallow: body.shallow === true,
@@ -235,6 +261,7 @@ const create = defineTool({
       project: { slug, path },
       provisioning,
       ...(cloneInfo ? { clone: cloneInfo } : {}),
+      ...(initInfo ? { init: initInfo } : {}),
     });
   },
 });
