@@ -139,12 +139,36 @@
   border-top: none;
 }
 
+.pc-dtp-chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 3px;
+  font-size: 11px;
+  font-weight: 700;
+  font-family: var(--pc-font-mono, monospace);
+  flex-shrink: 0;
+  background: var(--pc-color-bg-elev, rgba(0,0,0,0.06));
+  color: var(--pc-color-text-muted, #888);
+}
+.pc-dtp-chip-pass { background: #166534; color: #fff; }
+.pc-dtp-chip-fail { background: #b91c1c; color: #fff; }
+.pc-dtp-chip-skip { background: #6b7280; color: #fff; }
+.pc-dtp-chip-cancelled { background: #f59e0b; color: #fff; }
+.pc-dtp-chip-error { background: #7c2d12; color: #fff; }
+.pc-dtp-chip-running { background: #2563eb; color: #fff; }
+.pc-dtp-chip-none { opacity: 0.4; }
+.pc-dtp-chip.is-stale { opacity: 0.55; outline: 1px dashed currentColor; }
+
 .pc-dtp-file-path {
   font-family: var(--pc-font-mono, monospace);
   font-size: 11px;
   color: var(--pc-color-text, #222);
   overflow-x: auto;
   white-space: nowrap;
+  flex: 1;
 }
 
 .pc-dtp-file-meta {

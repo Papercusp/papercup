@@ -51,6 +51,38 @@ interface DomainDetail {
   totalFiles: number;
 }
 
+// P-013: status chip data per file from /api/admin/testing/file-status.
+type ChipStatus = 'pass' | 'fail' | 'skip' | 'cancelled' | 'error' | 'running';
+
+interface FileStatusEntry {
+  status: ChipStatus;
+  durationMs: number | null;
+  finishedAt: string | null;
+  source: 'ci' | 'local' | 'admin-ui';
+  branch: string | null;
+  stale: boolean;
+}
+
+interface FileStatusResponse {
+  domainId: string;
+  branch: string | null;
+  commit: string | null;
+  statuses: Record<string, FileStatusEntry>;
+}
+
+const CHIP_LABEL: Record<ChipStatus, string> = {
+  pass: '✓',
+  fail: '✗',
+  skip: '·',
+  cancelled: '⊘',
+  error: '!',
+  running: '…',
+};
+
+function chipClass(s: ChipStatus, stale: boolean): string {
+  return `pc-dtp-chip pc-dtp-chip-${s}${stale ? ' is-stale' : ''}`;
+}
+
 function runnerLabel(r: TestRunnerWire): string {
   if (r.kind === 'node' || r.kind === 'shell') {
     return r.label ?? `${r.kind} ${r.cmd}`;
@@ -93,6 +125,7 @@ export default function DomainTestPanel({
   customNode,
 }: DomainTestPanelProps): JSX.Element {
   const [detail, setDetail] = useState<DomainDetail | null>(null);
+  const [statuses, setStatuses] = useState<Record<string, FileStatusEntry>>({});
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
@@ -101,38 +134,42 @@ export default function DomainTestPanel({
     setLoading(true);
     setError(null);
     setDetail(null);
-    void fetch(`/api/admin/testing/domains/${encodeURIComponent(domainId)}`)
-      .then(async (r) => {
-        if (!r.ok) {
-          throw new Error(`HTTP ${r.status}`);
-        }
-        return r.json() as Promise<DomainDetail>;
-      })
-      .then((d) => {
-        if (!cancelled) setDetail(d);
+    setStatuses({});
+
+    const fetchDetail = () =>
+      fetch(`/api/admin/testing/domains/${encodeURIComponent(domainId)}`)
+        .then(async (r) => {
+          if (!r.ok) throw new Error(`HTTP ${r.status}`);
+          return r.json() as Promise<DomainDetail>;
+        });
+
+    const fetchStatuses = () =>
+      fetch(`/api/admin/testing/file-status?domainId=${encodeURIComponent(domainId)}`)
+        .then((r) => (r.ok ? (r.json() as Promise<FileStatusResponse>) : null))
+        .then((d) => d?.statuses ?? {});
+
+    void Promise.all([fetchDetail(), fetchStatuses()])
+      .then(([d, s]) => {
+        if (cancelled) return;
+        setDetail(d);
+        setStatuses(s);
       })
       .catch((e: unknown) => {
-        if (!cancelled) {
-          setError(e instanceof Error ? e.message : String(e));
-        }
+        if (!cancelled) setError(e instanceof Error ? e.message : String(e));
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
       });
 
-    // Refetch on tab focus — matches the SPA's existing data-fetch
-    // pattern (per D-013 amendment, no SWR/TanStack-Query in this app).
+    // Refetch on tab focus — no SWR/TanStack-Query in operator-vite per D-013.
     const onVisible = () => {
-      if (document.visibilityState === 'visible') {
-        void fetch(`/api/admin/testing/domains/${encodeURIComponent(domainId)}`)
-          .then((r) => (r.ok ? (r.json() as Promise<DomainDetail>) : null))
-          .then((d) => {
-            if (d && !cancelled) setDetail(d);
-          })
-          .catch(() => {
-            /* keep last good data */
-          });
-      }
+      if (document.visibilityState !== 'visible') return;
+      void Promise.all([fetchDetail().catch(() => null), fetchStatuses().catch(() => ({}))])
+        .then(([d, s]) => {
+          if (cancelled) return;
+          if (d) setDetail(d);
+          setStatuses(s);
+        });
     };
     document.addEventListener('visibilitychange', onVisible);
     return () => {
@@ -190,15 +227,31 @@ export default function DomainTestPanel({
                 <p className="pc-dtp-empty">No matching files.</p>
               ) : (
                 <ul className="pc-dtp-files">
-                  {s.files.map((f) => (
-                    <li key={f.path} className="pc-dtp-file">
-                      <code className="pc-dtp-file-path">{f.path}</code>
-                      <span className="pc-dtp-file-meta">
-                        {(f.sizeBytes / 1024).toFixed(1)} KB · {formatMtime(f.mtimeMs)}
-                      </span>
-                      {/* P-013: status chip slot, P-016: Run button slot */}
-                    </li>
-                  ))}
+                  {s.files.map((f) => {
+                    const st = statuses[f.path];
+                    return (
+                      <li key={f.path} className="pc-dtp-file">
+                        {st ? (
+                          <span
+                            className={chipClass(st.status, st.stale)}
+                            title={
+                              `${st.status} · ${st.durationMs ?? '?'}ms · ` +
+                              `source=${st.source} · branch=${st.branch ?? 'none'}` +
+                              (st.stale ? ' · STALE (no row on current branch)' : '')
+                            }
+                          >
+                            {CHIP_LABEL[st.status]}
+                          </span>
+                        ) : (
+                          <span className="pc-dtp-chip pc-dtp-chip-none" title="never run">?</span>
+                        )}
+                        <code className="pc-dtp-file-path">{f.path}</code>
+                        <span className="pc-dtp-file-meta">
+                          {(f.sizeBytes / 1024).toFixed(1)} KB · {formatMtime(f.mtimeMs)}
+                        </span>
+                      </li>
+                    );
+                  })}
                   {s.runners.map((r, i) => (
                     <li key={`runner-${i}`} className="pc-dtp-file pc-dtp-runner">
                       <code className="pc-dtp-file-path">⚙ {runnerLabel(r)}</code>
