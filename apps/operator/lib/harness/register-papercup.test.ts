@@ -55,6 +55,30 @@ describe('detectPapercupRoot', () => {
     expect(found).not.toBe(null);
     expect(found).toMatch(/papercup$/);
   });
+
+  it('respects 8-iteration walk bound — does not unbounded-walk on weird filesystems', async () => {
+    // The walker runs 8 iterations: iter 0 checks start, iters 1-7
+    // check each parent up. Net effect: reaches start + 7 parents
+    // above. Real-world: prevents wild walking on symlink loops or
+    // chroots where the filesystem root is far away.
+    const root = join(work, 'far-from-markers');
+    await mkdir(join(root, 'apps', 'operator'), { recursive: true });
+    await mkdir(join(root, 'libs', 'papercusp'), { recursive: true });
+    await writeFile(join(root, 'apps', 'operator', 'package.json'), '{}');
+    await writeFile(join(root, 'libs', 'papercusp', 'package.json'), '{}');
+
+    // Start 8 levels deep: walker reaches start + 7 parents up,
+    // which stops at root/a — does NOT reach root.
+    const tooDeep = join(root, 'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h');
+    await mkdir(tooDeep, { recursive: true });
+    expect(detectPapercupRoot(tooDeep)).toBe(null);
+
+    // Start 7 levels deep: walker reaches start + 7 parents up =
+    // root itself on iteration 7. Should find root.
+    const within = join(root, 'a', 'b', 'c', 'd', 'e', 'f', 'g');
+    await mkdir(within, { recursive: true });
+    expect(detectPapercupRoot(within)).toBe(root);
+  });
 });
 
 describe('PAPERCUP_HARNESS_SLUG', () => {
