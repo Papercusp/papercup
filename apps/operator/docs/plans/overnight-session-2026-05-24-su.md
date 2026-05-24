@@ -1,0 +1,109 @@
+---
+title: Overnight session wrap — 2026-05-24 (SU autonomous loop)
+slug: overnight-session-2026-05-24-su
+status: shipped
+created: 2026-05-24
+updated: 2026-05-24
+owner: avi@storewolf.com
+---
+
+# Overnight session wrap — 2026-05-24
+
+## Now
+
+**State:** SU autonomous loop, 12 commits (11 parent + 1 submodule), 167 commits ahead of `origin/main`. All verifiers green. Phase 2 P-016 shipped; Phase 1b Q-4 resolved; binding-types groundwork laid for P-068.
+
+**Next action (for human):** review the 12 commits at your pace; decide whether to push to `origin/main` and whether to act on the surfaced design memos.
+
+## What shipped
+
+### Phase 2 P-016 — completion_ref verifier daemon (the big one)
+
+The daemon polls every harness's `pending_done` and recently-shipped(24h) features against the remote via `git ls-remote` and stamps verification timestamps. Drives the tier-B ✓ badge per §17 / D-030.
+
+- **Commit `4b950a07`** (parent) — `apps/operator/lib/harness/completion-ref-verifier.ts` + tests + boot wiring in `instrumentation-node.ts`.
+- **Commit `ad029f5`** (libs/papercusp submodule) — migration `082-completion-ref-verifier-columns.sql` adds 3 columns (`verified_done_at_remote_ts`, `verifier_last_error`, `verifier_last_checked_at`) + 2 partial indexes to `harness_features_consolidated`.
+- **12 unit tests pass.** Pure parsing + decision-mapping + live integration smoke that hits a bad URL and confirms graceful error.
+
+**Design departure from plan worth knowing about:** plan said "emit a row to `harness_escalations`" for divergence. That table is per-`(slug, phase)` file-mirror — wrong shape. I put the divergence signal ON the feature row itself (`verifier_last_error`); the UI reads it directly. Cleaner. Insight `verification-signal-on-the-row` captures the lesson (commit `f47edfc1`).
+
+### Phase 1b Q-4 — resolved + Octokit groundwork shipped
+
+The Phase 1b plan asked: "can we reliably introspect `gh auth login`'s token for `@octokit/rest`?" Yes — `gh auth token` runs in ~55ms cold. Built the helper + the Octokit wrapper that consumes it.
+
+- **Commit `80f2717a`** — `apps/operator/lib/identity/gh-token.ts` (cache + 401-invalidation + scope-checking + structured errors).
+- **Commit `5ca301bc`** — `apps/operator/lib/identity/octokit-client.ts` (Octokit 7+ wrapper using `hook.before('request')` for auth + `hook.wrap('request')` for 401-retry).
+- **Commit `76b262a3`** — insight `octokit-v7-auth-pattern` capturing the breaking change vs the older `auth: async () => token` factory shape (the live integration smoke caught this on the first run — without it, the bug would have shipped to P-068's first commit).
+- **18 unit tests pass** across gh-token + octokit-client.
+
+### P-068 groundwork — binding-types module
+
+The binding-service design memo is well-developed though still "draft for review." I shipped the types-only module so P-068's eventual implementation can consume them without a circular design-vs-implementation race.
+
+- **Commit `f05997aa`** — `apps/operator/lib/harness/binding-types.ts` (`BindingRecord`, `BindingServiceError` 9-variant union, `GithubRepoPermission` ladder, `composeBindingId` / `parseBindingId` reversible encoding).
+- **15 unit tests pass.**
+
+**Crucially: no service implementation.** Just types. If you revise the memo, the types change; downstream consumers get typecheck errors to update. No behavior is committed.
+
+### Plan documentation hygiene
+
+The dogfood-arc plan-cohort split was written across multiple earlier turns but most files were never `git add`'d. Caught up:
+
+- **Commit `c92ce12b`** — Phase 2 plan committed + `plans:set-now` marking P-016 done.
+- **Commit `e666cff6`** — Phase 1b plan committed + `plans:set-now` marking Q-4 resolved.
+- **Commit `0e4dea29`** — bulk commit of 16 dogfood-arc plan files (Phase 0, 1a, 4, 5a, 5b, 6, 7, 8, 9, 10, 11, overview, 3 design memos, plans-harness-scoped).
+- **Commit `92487ceb`** — execution-plan index committed + Phase 2 row updated.
+- **Commit `d3703d55`** — plan-agent-launch F-1/F-2 audit notes committed (had been written but not staged).
+
+**All 16 bulk-committed plans + the 3 individually-committed plans pass `plans:lint` clean.** The 19 lint errors in the global report are all in OTHER plans (not mine).
+
+## What I deliberately did NOT do
+
+- **Did not push.** 167 commits sit on local `main` ahead of `origin/main`. Pushing requires your explicit go.
+- **Did not start P-068 implementation.** The binding-service-api memo is "draft for review"; implementation is gated on your acceptance. Types-only is the safe groundwork.
+- **Did not start P-017 (Phase 2 UI).** That's in paperclip-adjacent territory (`apps/operator/app/harness/`); coordination with paperclip + your UX call on the Completion card states would be needed.
+- **Did not touch the M-marked `papercusp-dogfood-v5-2026-05-23.md`** — its uncommitted edits are from other agents this session; staging them was stage-leakage risk.
+- **Did not flip P-022 Phase B.** That decision (delete `apps/papercup/` retired webapp vs refactor `schema.ts`) needs your call — see the existing block in `papercusp-dogfood-v5-2026-05-23.md`.
+
+## Verifiers green at session end
+
+| Verifier | Result |
+|---|---|
+| `apps/operator/lib/harness` + `lib/identity` + `lib/sync-resolver` vitest | 181/181 PASS |
+| `apps/operator/lib/harness/completion-ref-verifier.test.ts` | 12/12 PASS |
+| `apps/operator/lib/identity/gh-token.test.ts` | 9/9 PASS (incl. live `gh auth token` smoke) |
+| `apps/operator/lib/identity/octokit-client.test.ts` | 9/9 PASS (incl. live `/user` smoke, ~440ms) |
+| `apps/operator/lib/harness/binding-types.test.ts` | 15/15 PASS |
+| `apps/operator/scripts/run-dogfood-bootstrap.ts` | PASS (idempotent — sentinel + harness still present) |
+| `apps/operator/scripts/verify-trigger-consolidation.mjs` | 10/10 assertions PASS |
+| `plans:lint` over all SU plans | clean for my work; 19 errors elsewhere (not mine) |
+
+## New agent insights (3 this turn)
+
+| Slug | Order | What |
+|---|---|---|
+| `verification-signal-on-the-row` | 21 | Per-row verification signals belong ON the row, not in a parallel escalations table — captures the Phase 2 design departure. |
+| `octokit-v7-auth-pattern` | 22 | Octokit 7+ changed the `auth:` API; use `hook.before('request')` instead of an async factory. Caught by live integration smoke. |
+| (earlier this loop) | 19, 20 | `idempotent-pg-ensure`, `forward-defined-registry-entries`. |
+
+## Recommended order of review
+
+1. **Read the Phase 2 plan.** Confirm the design departure on divergence-signal-on-row is acceptable; if you want a parallel escalations queue, the P-016 work is easy to extend.
+2. **Skim `gh-token.ts` + `octokit-client.ts`.** They're ~250 LOC total. The Octokit v7 hook pattern is the load-bearing piece.
+3. **Read the binding-service-api memo.** It's the most ready of the three Phase 1b memos. Acceptance unblocks P-068 implementation; once accepted, the types-only module already in tree (`binding-types.ts`) becomes the spine.
+4. **Decide P-022 Phase B path** (delete `apps/papercup/` vs refactor `schema.ts`). Documented in v5; not touched this session.
+5. **`git log origin/main..HEAD`** — full diff is reviewable; commits are scoped + the messages explain each.
+
+## Next-session candidates (when you authorize them)
+
+- **Push the 167 commits.**
+- **Accept / revise the 3 Phase 1b design memos** (binding-service-api, device-attestation-ux, two-channel-binding-ux) → unblocks P-068 / P-011 / P-075 implementation.
+- **P-022 Phase B path decision** → unblocks `@rocicorp/zero` dependency removal.
+- **P-017 (Phase 2 UI)** — your UX call on Completion card states; paperclip-coordination on the FeatureDetail surface.
+- **Phase 4 P-025** — file the first three real features into the papercup harness queue (behavioral commitment, not code).
+
+## Standing follow-ups (no urgency)
+
+- Phase 0 macOS / Windows Holepunch primitive verification — requires those hosts.
+- Test surface caught the Octokit v7 break; consider adding a "live integration smoke required" rule to SDK-wrapping module review checklists.
+- Plan-doc hot-zone discipline held throughout this session (no stage-leakage incidents, two `git diff --cached <file>` checks per plan commit). The discipline is documented in insight `sleep-mode-shared-checkout`.
