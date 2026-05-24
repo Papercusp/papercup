@@ -14,7 +14,26 @@
 import { createHmac, randomBytes } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { execSync } from 'node:child_process';
-import { cleanupTestFailures } from './_cleanup-test-failures.mjs';
+/**
+ * Inlined from _cleanup-test-failures.mjs (removed P-027 cleanup).
+ * Each suite calls this with its own claimed_spawn LIKE pattern at
+ * the end to purge the rows it created via deliberately-bad signature
+ * test cases. Fail-soft per the original — never masks a signing
+ * regression with a cleanup error.
+ */
+function cleanupTestFailures(claimedSpawnPattern) {
+  try {
+    execSync(
+      `PGPASSWORD=harness_admin_pwd psql -h localhost -p 5432 -U harness_admin -d papercusp -c "DELETE FROM harness_shared.spawn_sig_verification_failures WHERE claimed_spawn LIKE '${claimedSpawnPattern}'" -q`,
+      { stdio: 'pipe' },
+    );
+  } catch (err) {
+    console.warn(
+      `[test cleanup] could not purge spawn_sig_verification_failures rows matching ${claimedSpawnPattern}: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+}
+
 
 const OP_PORT = process.env.OP_PORT || '3070';
 const BASE = `http://localhost:${OP_PORT}`;
