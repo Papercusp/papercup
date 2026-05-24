@@ -929,7 +929,7 @@ Sizing legend: **S** = ~1-3 days. **M** = ~1 week. **L** = ~2-3 weeks. **XL** = 
 
 ### Phase 1b — OAuth + clone + device attestation [L]
 
-- **P-008** [L] Entry 2 (GitHub URL): add `isomorphic-git` + `@octokit/rest` + `@octokit/auth-oauth-device` deps (NEW). Build `clone-with-oauth` helper. Wire into `POST /api/harness/projects` to accept `{kind: 'github_url', url, oauth_token}`. Real work, not just wiring; OAuth lib provides token mgmt, not clone-with-auth.
+- **P-008** [M] **REVISED 2026-05-24** Entry 2 (GitHub URL). **Discovered the established pattern is `gh auth login`** (GitHub CLI) — already covered in `apps/operator/app/_components/SetupWizard/StepGit.tsx` and currently feature-flagged for alpha. `gh` registers itself as a git credential helper; from then on a plain `git clone https://github.com/owner/repo` auths transparently via the system credential helper — no token in our process, no OAuth flow in our code. **No `isomorphic-git`/`@octokit/*` needed for the clone path.** Side benefits: respects user's 2FA / SSH keys / GH Enterprise / corp SSO; degrades gracefully for public repos (no auth at all); no token stored in our PG. Built `apps/operator/lib/harness/clone-github.ts` (170 LOC, no new deps) — `parseGithubUrl` (strict regex allowlist for the GitHub URL shapes, rejects gitlab/other hosts/path traversal), `cloneGithubRepo` (execFile shell-less, `GIT_TERMINAL_PROMPT=0` to surface auth_required immediately, half-cloned dest cleanup, structured error codes `invalid_url|dest_exists|auth_required|not_found|git_missing|unknown` mapped to HTTP 400/409/401/404/500/502). 35 unit tests pass including a real-network test for the bad-org case. POST /api/harness/projects extended to accept `{slug, githubUrl, shallow?}` alongside the existing `{slug, path}` (Entry 3). **DONE** in commits TBD.
 - **P-009** [L] Entry 4 (harness link): add link-paste flow. Parse `papercusp://harness?topic=<hex>&github=<owner>/<repo>` URL scheme. On accept: GitHub OAuth → clone via P-008 → join Hyperswarm topic → bootstrap Hyperbee → seed PG. Device attestation (P-011) runs here on first-join.
 - **P-011** [L] Device attestation: `apps/operator/lib/identity/attest.ts`. Octokit + gist creation flow with **required scopes `gist` + `read:user`** (audit L). Verifier helper for inbound bindings (compares `gist.owner.id` to claimed `github_user_id`). Local cache (~24h TTL). Tests against a real GitHub test account.
 
@@ -1109,9 +1109,19 @@ Sizing legend: **S** = ~1-3 days. **M** = ~1 week. **L** = ~2-3 weeks. **XL** = 
 
 **Decided.** One `GET /repos/{owner}/{repo}/pulls?state=open&per_page=100` per harness per 60s. Cache per §8.4. Error handling per audit M (NEW in v5).
 
-### D-019 — New deps: `isomorphic-git`, `@octokit/rest`, `@octokit/auth-oauth-device`
+### D-019 — New deps: `@octokit/rest` only (NOT isomorphic-git, NOT auth-oauth-device)
 
-**Decided (v5, audit D).** `isomorphic-git` for clone-with-OAuth-token (Entry 2). `@octokit/rest` for PR APIs + bulk PR list + check-runs. `@octokit/auth-oauth-device` for device-flow OAuth. Other git operations (peer-mirror push, sync-with-main rebase) continue using shell-out to system `git`.
+**Decided (v5, audit D). REVISED 2026-05-24 during P-008 implementation.**
+
+Original v5 plan called for three new deps: `isomorphic-git`, `@octokit/rest`, `@octokit/auth-oauth-device`. Discovery during implementation:
+
+1. **`isomorphic-git` not needed** — the established pattern is `gh auth login` (GitHub CLI, already in SetupWizard/StepGit) registering as a git credential helper. Plain `git clone` via `execFile` auths transparently. Side benefits: respects user 2FA / SSH keys / GHE / corp SSO; no token in our process; public repos work without auth.
+2. **`@octokit/auth-oauth-device` not needed** — same reason. `gh auth login` IS the device-flow OAuth; we don't reimplement it.
+3. **`@octokit/rest` still planned** for PR APIs + bulk PR list + check-runs (P-040, PrHost abstraction). Not yet installed; will be added when P-040 lands.
+
+Net: ZERO new deps for Phase 1b clone work. One new dep (`@octokit/rest`) added in Phase 8 PR work.
+
+Other git operations (peer-mirror push, sync-with-main rebase) continue using shell-out to system `git`.
 
 **Why**: repo currently has none of these. Plan implicitly assumed them in v4; v5 makes the new deps explicit.
 

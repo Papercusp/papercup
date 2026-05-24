@@ -160,16 +160,63 @@ const create = defineTool({
   path: '/harness/projects',
   auth: 'public',
   async handler(req) {
-    const body = await req.json();
-    const slug = String((body as any).slug ?? '').trim();
-    const rawPath = String((body as any).path ?? '').trim();
-    if (!slug || !rawPath) return Response.json({ error: 'slug and path required' }, { status: 400 });
-    const path = resolve(rawPath);
-    if (!existsSync(path)) return Response.json({ error: 'path does not exist' }, { status: 400 });
+    const body = (await req.json()) as Record<string, unknown>;
+    const slug = String(body.slug ?? '').trim();
+    if (!slug) return Response.json({ error: 'slug required' }, { status: 400 });
+
     const reg = await loadHarnessRegistry();
     if (reg.projects.some((p) => p.slug === slug)) {
       return Response.json({ error: 'slug already exists' }, { status: 409 });
     }
+
+    // Resolve the harness path from the body shape — supports two
+    // entry points so far (papercusp-dogfood-v5 §3 P-008/P-009):
+    //   Entry 3 — existing folder:  { slug, path }
+    //   Entry 2 — GitHub URL:       { slug, githubUrl, shallow? }
+    //                              → clones to ~/.papercusp-workspaces/clones/<repo>
+    //                                then falls through to the path flow.
+    let path: string;
+    let cloneInfo: { url: string; owner: string; repo: string } | null = null;
+
+    const githubUrl = typeof body.githubUrl === 'string' ? body.githubUrl.trim() : '';
+    const rawPath = typeof body.path === 'string' ? body.path.trim() : '';
+
+    if (githubUrl) {
+      const { cloneGithubRepo, isCloneError } = await import('@/lib/harness/clone-github');
+      const cloneResult = await cloneGithubRepo(githubUrl, {
+        shallow: body.shallow === true,
+      });
+      if (isCloneError(cloneResult)) {
+        const httpStatus =
+          cloneResult.code === 'invalid_url'    ? 400 :
+          cloneResult.code === 'dest_exists'    ? 409 :
+          cloneResult.code === 'auth_required'  ? 401 :
+          cloneResult.code === 'not_found'      ? 404 :
+          cloneResult.code === 'git_missing'    ? 500 :
+                                                  502;
+        return Response.json(
+          { error: cloneResult.message, code: cloneResult.code },
+          { status: httpStatus },
+        );
+      }
+      path = cloneResult.path;
+      cloneInfo = {
+        url: githubUrl,
+        owner: cloneResult.parsed.owner,
+        repo: cloneResult.parsed.repo,
+      };
+    } else if (rawPath) {
+      path = resolve(rawPath);
+      if (!existsSync(path)) {
+        return Response.json({ error: 'path does not exist' }, { status: 400 });
+      }
+    } else {
+      return Response.json(
+        { error: 'one of `path` or `githubUrl` is required' },
+        { status: 400 },
+      );
+    }
+
     reg.projects.push({ slug, path });
     await saveHarnessRegistry(reg);
 
@@ -178,11 +225,17 @@ const create = defineTool({
       const { scaffoldHarnessSchema } = await import('@/lib/scaffold-harness-schema');
       await scaffoldHarnessSchema(slug);
       provisioning = { ok: true };
-    } catch (e: any) {
-      provisioning = { ok: false, error: String(e?.message ?? e).slice(0, 300) };
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      provisioning = { ok: false, error: msg.slice(0, 300) };
     }
 
-    return Response.json({ ok: true, project: { slug, path }, provisioning });
+    return Response.json({
+      ok: true,
+      project: { slug, path },
+      provisioning,
+      ...(cloneInfo ? { clone: cloneInfo } : {}),
+    });
   },
 });
 
