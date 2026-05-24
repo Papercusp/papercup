@@ -154,7 +154,7 @@ Vitest. Replace switch-DSL with `defineSuite` files.
 
 Final polish. Lint enforces convention. Agent prompts updated.
 - **P-033** `todo` [ ] Wire **test-related** health strips per domain — last full-suite-run duration, last failure timestamp, flaky-rate (>1 status flip in last 10 runs of the same file), per-suite trend sparkline (pass/fail over last 30 runs). Read from `harness_shared.test_runs`; no new tools. **Operational** health (voice spend, lock queue, snapshot age, escalations) is out of scope for the testing tab — belongs on per-domain admin pages (`/admin/voice`, `/admin/backups`, etc.) tracked separately.
-- **P-034** `todo` [ ] Ad-hoc runner adapters (transitional) — until S2/S3 land, wrap remaining `.mjs`/`.sh` runners via the `kind: 'node'|'shell'` runner descriptors in `testing-domains.ts`. Delete after migrations complete.
+- **P-034** `done` [ ] Ad-hoc runner adapters (transitional) — until S2/S3 land, wrap remaining `.mjs`/`.sh` runners via the `kind: 'node'|'shell'` runner descriptors in `testing-domains.ts`. Delete after migrations complete.
 - **P-035** `done` [ ] Update `apps/operator/prompts/{worker,validator,debugger}.tools.md` — add "Where new tests go" section enumerating the four canonical frameworks (D-006). Explicit prohibition on new `.mjs` integration scripts and tsx smoke scripts.
 - **P-036** `done` [ ] Update `apps/operator/content/internal-docs/testing/index.mdx` — codify the four canonical frameworks + the glob conventions per domain so a worker writing a voice test knows the file goes under `lib/voice-*` and gets picked up by the Voice tab automatically.
 - **P-037** `done` [ ] Update `apps/operator/CLAUDE.md` (and root CLAUDE.md) — one-line directive lifting the framework rule into the always-loaded context.

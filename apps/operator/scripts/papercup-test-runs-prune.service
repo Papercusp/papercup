@@ -1,0 +1,13 @@
+[Unit]
+Description=Papercup /admin/testing — daily test_runs retention pruner
+Documentation=apps/operator/docs/plans/admin-testing-tab-restructure-2026-05-24.md#p-041
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/papercupai-workspace/papercup
+ExecStart=/bin/bash -lc 'cd %h/papercupai-workspace/papercup && npx tsx apps/operator/scripts/prune-test-runs.ts --keep 50'
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target
