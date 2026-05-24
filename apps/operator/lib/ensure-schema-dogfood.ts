@@ -327,16 +327,10 @@ export async function ensureAllDogfoodTables(): Promise<void> {
 /**
  * Tables that should fire `harness_shared.emit_change_notify()` on every
  * INSERT / UPDATE / DELETE. Producer side of the reactivity stack from
- * v5 §13. The set is conservative for v1:
+ * v5 §13.
  *
  *   - All NEW dogfood tables (this file). Safe — no pre-existing
  *     triggers on them; created here by us.
- *   - Existing HYPERBEE-bucket tables (harness_features_consolidated,
- *     harness_issues_consolidated, coord_presence, harness_feature_prs)
- *     are deliberately NOT in this list. Those tables have pre-existing
- *     triggers (sync_consolidated_trg, sync_issues_consolidated_trg,
- *     etc.) and attaching another trigger needs an audit of trigger
- *     interaction first. Tracked as P-019 follow-up.
  *
  *   - Some LOCAL-bucket tables (`known_schema_versions`,
  *     `auto_review_audit`) don't need the notify because nothing in the
@@ -355,6 +349,41 @@ export const DOGFOOD_REACTIVE_TABLES = [
   'claim_audit',
   'webhook_audit',
   'trusted_authors',
+] as const;
+
+/**
+ * Existing HYPERBEE-bucket consolidated tables (v5 §7.1) — the tables
+ * the UI actually reads from today. Wired in P-019 part 2 (2026-05-24
+ * after trigger consolidation).
+ *
+ * Trigger-interaction audit: each of these tables already carries
+ * existing triggers, but those triggers fire on PER-HARNESS tables
+ * (`{{schema}}.harness_issues` etc.) and write INTO the consolidated
+ * table. My `emit_change_notify` trigger fires AFTER an INSERT/UPDATE/
+ * DELETE on the consolidated table itself — different table, no
+ * conflict. The chain becomes:
+ *
+ *   1. App writes per-harness table → existing trigger fires
+ *   2. Existing trigger upserts into consolidated table
+ *   3. My emit_change_notify trigger fires on the consolidated row
+ *   4. pg_notify('sync_invalidate', ...) → existing SSE consumer
+ *
+ * Direct consolidated-table writes (no per-harness mirror) also get
+ * caught — my trigger is the catch-all.
+ *
+ * Dedup note: coord_presence sees heartbeats every ~30s per active
+ * agent. The 90s dedup window in sync-sse.ts collapses identical
+ * (name, args) notifies — `{name: 'coord_presence.changed', args:
+ * {workspace_id, op:'UPDATE'}}` matches across all agents in one
+ * workspace, so the notify cascade is bounded to one event per 90s
+ * even with 10+ agents. Sufficient signal for "presence changed,
+ * refetch".
+ */
+export const EXISTING_HYPERBEE_REACTIVE_TABLES = [
+  'harness_features_consolidated',
+  'harness_issues_consolidated',
+  'coord_presence',
+  'harness_feature_prs',
 ] as const;
 
 type _TG = { __dogfoodTriggersWired?: boolean };
@@ -377,6 +406,8 @@ export async function wireDogfoodTriggers(): Promise<void> {
   // refers to a missing relation and fails.
   await ensureAllDogfoodTables();
   const { sql } = getOrgPg();
+
+  // Phase 3 P-019 part 1: new dogfood tables (this file).
   for (const tableName of DOGFOOD_REACTIVE_TABLES) {
     await sql.unsafe(
       'CREATE OR REPLACE TRIGGER emit_change_notify_trg ' +
@@ -385,5 +416,33 @@ export async function wireDogfoodTriggers(): Promise<void> {
         'FOR EACH ROW EXECUTE FUNCTION harness_shared.emit_change_notify()',
     );
   }
+
+  // Phase 3 P-019 part 2 (2026-05-24): existing HYPERBEE consolidated
+  // tables. These may not exist yet on a freshly-installed harness
+  // before scaffold-harness runs; tolerate missing tables silently —
+  // the trigger will get attached on the next boot once scaffold has
+  // run. Other tables in this list almost always exist (e.g.
+  // harness_features_consolidated is in 001-shared.sql, which is part
+  // of the universal bootstrap).
+  for (const tableName of EXISTING_HYPERBEE_REACTIVE_TABLES) {
+    try {
+      await sql.unsafe(
+        'CREATE OR REPLACE TRIGGER emit_change_notify_trg ' +
+          'AFTER INSERT OR UPDATE OR DELETE ' +
+          'ON harness_shared.' + tableName + ' ' +
+          'FOR EACH ROW EXECUTE FUNCTION harness_shared.emit_change_notify()',
+      );
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      if (/does not exist|relation .* does not exist/i.test(msg)) {
+        // Table not yet provisioned in this workspace — fine, will retry
+        // on next boot. Don't log noisily; this is the expected pre-
+        // scaffold state.
+        continue;
+      }
+      throw e;
+    }
+  }
+
   _gTrig.__dogfoodTriggersWired = true;
 }

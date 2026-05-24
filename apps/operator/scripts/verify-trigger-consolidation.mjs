@@ -140,6 +140,51 @@ async function main() {
       `INSERT without GUC → args.workspace_id is null/undefined (got ${JSON.stringify(noGucEv?.args?.workspace_id)})`);
     await writer2.end();
 
+    // 9) Test trigger coexistence with a pre-existing trigger (the
+    // P-019 part 2 case: existing consolidated tables already have
+    // sync triggers; my emit_change_notify must not conflict).
+    await sysSql.unsafe(`
+      CREATE TABLE harness_shared.coexist_test (
+        id   serial PRIMARY KEY,
+        name text NOT NULL
+      );
+    `);
+    // Pre-existing trigger that writes to a side table — simulates
+    // the existing sync_consolidated_trg shape.
+    await sysSql.unsafe(`
+      CREATE TABLE harness_shared.coexist_side (
+        from_id integer NOT NULL,
+        op text NOT NULL
+      );
+      CREATE OR REPLACE FUNCTION harness_shared.coexist_side_fn() RETURNS TRIGGER AS $body$
+      BEGIN
+        INSERT INTO harness_shared.coexist_side (from_id, op)
+        VALUES (COALESCE(NEW.id, OLD.id), TG_OP);
+        IF TG_OP = 'DELETE' THEN RETURN OLD; END IF;
+        RETURN NEW;
+      END;
+      $body$ LANGUAGE plpgsql;
+      CREATE TRIGGER coexist_side_trg
+        AFTER INSERT OR UPDATE OR DELETE ON harness_shared.coexist_test
+        FOR EACH ROW EXECUTE FUNCTION harness_shared.coexist_side_fn();
+    `);
+    // Now ALSO attach emit_change_notify on the same table.
+    await sysSql.unsafe(`
+      CREATE OR REPLACE TRIGGER emit_change_notify_trg
+        AFTER INSERT OR UPDATE OR DELETE ON harness_shared.coexist_test
+        FOR EACH ROW EXECUTE FUNCTION harness_shared.emit_change_notify();
+    `);
+    const beforeCo = received.length;
+    await writerSql.unsafe(`INSERT INTO harness_shared.coexist_test (name) VALUES ('co')`);
+    await new Promise((r) => setTimeout(r, 150));
+    expect(received.length === beforeCo + 1,
+      `coexisting trigger: emit_change_notify still fires when another trigger is attached (got ${received.length - beforeCo} new events, expected 1)`);
+    const coRows = await sysSql`SELECT * FROM harness_shared.coexist_side`;
+    expect(coRows.length === 1,
+      `coexisting trigger: pre-existing trigger STILL fires (got ${coRows.length} side rows, expected 1)`);
+    expect(received[beforeCo]?.name === 'harness_shared.coexist_test.changed',
+      `coexisting trigger: emit_change_notify payload correct (got "${received[beforeCo]?.name}")`);
+
     if (failures > 0) {
       console.error(`\n[test] FAILED: ${failures} assertion(s) failed`);
       process.exit(1);
