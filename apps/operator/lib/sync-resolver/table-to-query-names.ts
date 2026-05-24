@@ -100,6 +100,14 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly string[]>> =
   'harness_shared.org_outbox': ['orgOutbox.byDept'],
   'harness_shared.org_notes': ['orgNotes.byDept'],
   'harness_shared.org_decisions': ['orgDecisions.byDept'],
+
+  // ── Insights / activity ledger (v5 addendum 3) ──────────────────
+  // No camelCase query names yet — Insights tab + activity-feed reads
+  // are P-073+ work. Mapped here in advance so trigger events have a
+  // home the moment the consumers land; until then, the trigger fires
+  // events with no matching subscriber (harmless no-op, dedupe handles).
+  'harness_shared.contributor_usage_events': ['contributorUsageEvents.byHarness'],
+  'harness_shared.insights_first_visit': ['insightsFirstVisit.byHarness'],
 };
 
 /**

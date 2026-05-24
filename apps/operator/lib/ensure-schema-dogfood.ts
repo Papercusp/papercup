@@ -33,6 +33,8 @@ type DogfoodFlags = {
   claimAudit: boolean;
   webhookAudit: boolean;
   trustedAuthors: boolean;
+  contributorUsageEvents: boolean;
+  insightsFirstVisit: boolean;
 };
 
 type _G = { __dogfoodEnsureFlags?: DogfoodFlags };
@@ -50,6 +52,8 @@ const flags: DogfoodFlags =
     claimAudit: false,
     webhookAudit: false,
     trustedAuthors: false,
+    contributorUsageEvents: false,
+    insightsFirstVisit: false,
   });
 
 /* ─── HYPERBEE-bucket (v5 §7.1) ───────────────────────────────────── */
@@ -275,6 +279,54 @@ export async function ensureClaimAuditTable(): Promise<void> {
   flags.claimAudit = true;
 }
 
+/** harness_shared.contributor_usage_events — append-only per-event
+ *  activity ledger (v5 addendum 3 §7.1, D-027). Source of truth for
+ *  all tier-C activity stats; rollups derived on read. Never store
+ *  mutable counters on `contributors`. HYPERBEE-synced. */
+export async function ensureContributorUsageEventsTable(): Promise<void> {
+  if (flags.contributorUsageEvents) return;
+  const { sql } = getOrgPg();
+  await sql.unsafe(`
+    CREATE TABLE IF NOT EXISTS harness_shared.contributor_usage_events (
+      harness_slug    TEXT NOT NULL,
+      event_id        TEXT NOT NULL,
+      github_user_id  BIGINT NOT NULL,
+      device_pubkey   TEXT NOT NULL,
+      kind            TEXT NOT NULL,
+      ref_id          TEXT,
+      payload         JSONB,
+      ts              TIMESTAMPTZ NOT NULL DEFAULT now(),
+      schema_version  BIGINT NOT NULL DEFAULT 1,
+      PRIMARY KEY (harness_slug, event_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_usage_events_user
+      ON harness_shared.contributor_usage_events (harness_slug, github_user_id, ts DESC);
+    CREATE INDEX IF NOT EXISTS idx_usage_events_kind
+      ON harness_shared.contributor_usage_events (harness_slug, kind, ts DESC);
+  `);
+  flags.contributorUsageEvents = true;
+}
+
+/** harness_shared.insights_first_visit — per-(workspace, harness) flag
+ *  driving the §9.0 post-install default landing. Null seen_at_ts means
+ *  the operator force-routes new contributors to /harness/<slug>/insights
+ *  on next nav; set to now() on first dismissal. LOCAL bucket — never
+ *  cross-machines (each user dismisses for themselves). */
+export async function ensureInsightsFirstVisitTable(): Promise<void> {
+  if (flags.insightsFirstVisit) return;
+  const { sql } = getOrgPg();
+  await sql.unsafe(`
+    CREATE TABLE IF NOT EXISTS harness_shared.insights_first_visit (
+      workspace_id  TEXT   NOT NULL DEFAULT '',
+      harness_slug  TEXT   NOT NULL,
+      user_id       TEXT   NOT NULL,
+      seen_at_ts    TIMESTAMPTZ,
+      PRIMARY KEY (workspace_id, harness_slug, user_id)
+    );
+  `);
+  flags.insightsFirstVisit = true;
+}
+
 /** harness_shared.webhook_audit — outbound webhook post log (§11 Discord
  *  integration). LOCAL-only; per-engineer. */
 export async function ensureWebhookAuditTable(): Promise<void> {
@@ -319,6 +371,8 @@ export async function ensureAllDogfoodTables(): Promise<void> {
     ensureClaimAuditTable(),
     ensureWebhookAuditTable(),
     ensureTrustedAuthorsTable(),
+    ensureContributorUsageEventsTable(),
+    ensureInsightsFirstVisitTable(),
   ]);
 }
 
@@ -349,6 +403,8 @@ export const DOGFOOD_REACTIVE_TABLES = [
   'claim_audit',
   'webhook_audit',
   'trusted_authors',
+  'contributor_usage_events',
+  'insights_first_visit',
 ] as const;
 
 /**

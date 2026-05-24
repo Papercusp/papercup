@@ -46,20 +46,42 @@ describe('queryNamesForTriggerEvent', () => {
 });
 
 describe('TABLE_TO_QUERY_NAMES vs v2 registry consistency', () => {
-  it('every bridged query name is also a v2 registry entry', () => {
+  /**
+   * Forward-defined names — mapped in the bridge BEFORE the
+   * corresponding v2 registry entry exists. Trigger events for these
+   * tables fire (as expected) but currently invalidate nothing; the
+   * matching consumer + v2 entry will land later. Listed here so
+   * the consistency assertion stays sharp while permitting deliberate
+   * advance-mapping.
+   *
+   * REMOVE an entry from this set as soon as its v2 registry entry
+   * lands — otherwise drift between intent ("this should land soon")
+   * and reality ("it never did") stops being visible.
+   */
+  const FORWARD_DEFINED = new Set<string>([
+    // v5 addendum 3 §9.0 Insights tab — P-073+ work.
+    'contributorUsageEvents.byHarness',
+    'insightsFirstVisit.byHarness',
+  ]);
+
+  it('every bridged query name is either in v2 registry OR explicitly forward-defined', () => {
     const v2 = new Set(knownQueryNamesV2());
     const bridged = allBridgedQueryNames();
-    const orphans = bridged.filter((n) => !v2.has(n));
-    expect(orphans).toEqual([]);
+    const unaccountedFor = bridged.filter((n) => !v2.has(n) && !FORWARD_DEFINED.has(n));
+    expect(unaccountedFor).toEqual([]);
   });
 
-  it('exposes 54 distinct camelCase names through the bridge', () => {
-    // Snapshot count so future drift surfaces. The bridge covers
-    // every v2 registry entry — *.byHarness, *.byWorkspace, *.byKind,
-    // *.byOrg, *.byDept, *.byProject, *.byHarnessAndBranch, *.bySlug,
-    // *.byFeature, *.recent — every name the trigger could plausibly
-    // invalidate.
-    expect(allBridgedQueryNames()).toHaveLength(54);
+  it('forward-defined names are NOT in v2 registry (sanity)', () => {
+    const v2 = new Set(knownQueryNamesV2());
+    const stillForward = Array.from(FORWARD_DEFINED).filter((n) => !v2.has(n));
+    // If this assertion fails, a forward-defined name has been
+    // implemented and its entry in FORWARD_DEFINED should be removed.
+    expect(stillForward.sort()).toEqual(Array.from(FORWARD_DEFINED).sort());
+  });
+
+  it('exposes 56 distinct camelCase names through the bridge', () => {
+    // 54 v2-registered + 2 forward-defined = 56.
+    expect(allBridgedQueryNames()).toHaveLength(56);
   });
 });
 
