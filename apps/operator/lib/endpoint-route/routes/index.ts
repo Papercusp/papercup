@@ -110,7 +110,6 @@ import uiIntentResult from './ui/intent-result';
 import zeroHarnessSse from './zero-harness/sse';
 import zeroHarnessRestQuery from './zero-harness/rest-query';
 import zeroHarnessRestQueryBatch from './zero-harness/rest-query-batch';
-import miscZeroHarnessQuery from './misc/zero-harness-query';
 import agentToolsCatchall from './agent-tools/catchall';
 import pluginRuntimeCatchall from './plugin-runtime/catchall';
 import transport from './transport/index';
@@ -483,7 +482,6 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(zeroHarnessSse as AnyRoute),
   ...flatten(zeroHarnessRestQuery as AnyRoute),
   ...flatten(zeroHarnessRestQueryBatch as AnyRoute),
-  ...flatten(miscZeroHarnessQuery as AnyRoute),
   ...flatten(agentToolsCatchall as AnyRoute[]),
   ...flatten(pluginRuntimeCatchall as AnyRoute),
   ...flatten(internalLogEvent as AnyRoute),

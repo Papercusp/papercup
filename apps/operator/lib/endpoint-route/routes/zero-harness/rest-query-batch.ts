@@ -6,7 +6,6 @@
  * Ported from app/api/zero-harness/rest-query-batch/route.ts. `auth: 'public'`.
  */
 import { gzipSync } from 'node:zlib';
-import { resolveNamedQuery } from '@/lib/zero-harness-resolver';
 import { resolveNamedQueryV2, NAME_NOT_FOUND } from '@/lib/sync-resolver';
 import { defineTool } from '@papercusp/agent-mcp';
 
@@ -45,13 +44,14 @@ export default defineTool({
           return { error: 'missing query name' };
         }
         try {
-          // P-022 incremental migration: try Zero-free dispatcher first,
-          // fall through to legacy resolver for unmigrated names.
+          // P-022 cutover (2026-05-25): legacy fall-through removed.
+          // NAME_NOT_FOUND in batch context returns an error per-slot
+          // rather than the legacy resolver path.
           const v2 = await resolveNamedQueryV2(q.name, q.args ?? {});
-          const rows = v2 === NAME_NOT_FOUND
-            ? await resolveNamedQuery(q.name, q.args ?? {})
-            : v2;
-          return { rows, version };
+          if (v2 === NAME_NOT_FOUND) {
+            return { error: `unknown queryName: ${q.name}` };
+          }
+          return { rows: v2, version };
         } catch (err: any) {
           return { error: err?.message ?? String(err) };
         }
