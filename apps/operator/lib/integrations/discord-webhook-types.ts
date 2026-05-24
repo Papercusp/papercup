@@ -111,8 +111,26 @@ export interface DiscordEmbed {
   url?: string;
   color?: number; // RGB int, e.g. 0x00ff00
   fields?: Array<{ name: string; value: string; inline?: boolean }>;
+  footer?: { text: string; icon_url?: string };
   timestamp?: string; // ISO 8601
 }
+
+/**
+ * Convert a CSS hex color string (e.g. '#5865F2') to the integer form
+ * Discord embeds expect. Returns 0 on any parse failure.
+ */
+export function formatDiscordEmbedColor(hex: string): number {
+  if (typeof hex !== 'string') return 0;
+  const cleaned = hex.startsWith('#') ? hex.slice(1) : hex;
+  const parsed = parseInt(cleaned, 16);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+/**
+ * Alias for validateDiscordWebhookPayload for callers that use the shorter
+ * name. Returns the first validation error or null on success.
+ */
+export const validateDiscordPayload = validateDiscordWebhookPayload;
 
 export const DISCORD_CONTENT_MAX = 2000;
 export const DISCORD_EMBEDS_MAX = 10;
