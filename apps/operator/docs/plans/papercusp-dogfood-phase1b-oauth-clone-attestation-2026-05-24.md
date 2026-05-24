@@ -30,9 +30,9 @@ Updated status (2026-05-24 continued loop):
 
 - ✅ **P-075** DONE — `two-channel-verifier.ts` committed (verifyChannel1, verifyChannel2, verifyBoth; 17/17 tests pass). `ensure-schema-dogfood.ts` patched with binding_status + channel[12]_verified_at + channel2_branch_ref + binding_last_checked_at columns (P-075 §7.1). P-075f/g deferred to Phase 8.
 
-Remaining: P-009 Entry 4 handler (`url-scheme.ts` + `join-shared-harness.ts` + `EntryHarnessLinkForm.tsx` + `JoinProgress.tsx`).
-
-**Next:** P-009 — Entry 4 harness link URL scheme parser + join orchestration (9-step flow wiring P-011 + P-075).
+- ✅ **P-009** DONE — `url-scheme.ts` + `join-shared-harness.ts` + `EntryHarnessLinkForm.tsx` + `JoinProgress.tsx` + `join-link.ts` committed at `8e1e122b` (33/33 tests pass; OAuth step stubbed with clear error until Tauri plugin lands).
+**Phase 1b COMPLETE.** All items shipped: P-008, P-068, P-011, P-075, P-009.
+**Next:** Phase 4 P-026 (user-initiated end-to-end run); continue Phase 5a groundwork in parallel.
 
 ## Background
 
@@ -83,7 +83,7 @@ v5 one-liner: *"Resolve GitHub `repository.id`; lookup/create binding by stable 
 
 ---
 
-### P-009 — Entry 4 harness link [L] — 🔴 NOT STARTED
+### P-009 — Entry 4 harness link [L] — ✅ DONE
 
 v5 one-liner: *"Entry 4 (harness link): add link-paste flow. Parse `papercusp://harness?topic=<hex>&github=<owner>/<repo>&repo_id=<github_repository_id>` URL scheme. On accept: GitHub OAuth → clone via P-008 → join Hyperswarm topic → bootstrap Hyperbee → seed PG. Device attestation (P-011) runs here on first-join."*
 
