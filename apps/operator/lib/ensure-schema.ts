@@ -31,6 +31,7 @@ type _G = {
     operatorScans: boolean;
     delegateInbox: boolean;
     harnessSummaries: boolean;
+    testRuns: boolean;
     pendingReviews: boolean;
     harnessProposalsShared: boolean;
     harnessStatus: boolean;
@@ -97,6 +98,7 @@ const flags = _g.__ensureSchemaFlags ?? (_g.__ensureSchemaFlags = {
   operatorScans: false,
   delegateInbox: false,
   harnessSummaries: false,
+  testRuns: false,
   pendingReviews: false,
   harnessProposalsShared: false,
   harnessStatus: false,
@@ -1884,6 +1886,83 @@ export async function ensureAdvSessionsTable(): Promise<void> {
       WHERE plan_slug IS NOT NULL;
   `);
   flags.advSessions = true;
+}
+
+/**
+ * Creates harness_shared.test_runs — per-file test invocation history
+ * backing /admin/testing status chips (P-008, plan
+ * admin-testing-tab-restructure-2026-05-24).
+ *
+ * Schema mirrors libs/papercusp/libs/db/sql/083-test-runs.sql.
+ * Populated by the vitest/playwright/cargo reporters (P-010 through
+ * P-012) and the admin-testing-run.ts route (P-014). The file-status
+ * route (P-009) reads the most recent row per file, scoped by branch.
+ *
+ * Fail-soft contract (D-007): reporters MUST never throw on insert
+ * failure — they wrap with try/catch and log-and-continue.
+ */
+export async function ensureTestRunsTable(): Promise<void> {
+  if (flags.testRuns) return;
+  const { sql } = getOrgPg();
+  await sql.unsafe(`
+    CREATE TABLE IF NOT EXISTS harness_shared.test_runs (
+      id             BIGSERIAL    PRIMARY KEY,
+      file_path      TEXT         NOT NULL,
+      framework      TEXT         NOT NULL,
+      status         TEXT         NOT NULL,
+      duration_ms    BIGINT,
+      started_at     TIMESTAMPTZ  NOT NULL DEFAULT now(),
+      finished_at    TIMESTAMPTZ,
+      output_tail    TEXT,
+      suite_id       TEXT,
+      run_group_id   TEXT,
+      source         TEXT         NOT NULL DEFAULT 'local',
+      branch         TEXT,
+      commit_sha     TEXT,
+      created_at     TIMESTAMPTZ  NOT NULL DEFAULT now(),
+      CONSTRAINT test_runs_source_valid CHECK (source IN ('ci', 'local', 'admin-ui')),
+      CONSTRAINT test_runs_status_valid CHECK (
+        status IN ('pass', 'fail', 'skip', 'cancelled', 'error', 'running')
+      )
+    );
+    CREATE INDEX IF NOT EXISTS test_runs_file_path_idx
+      ON harness_shared.test_runs (file_path, finished_at DESC);
+    CREATE INDEX IF NOT EXISTS test_runs_branch_idx
+      ON harness_shared.test_runs (branch, finished_at DESC)
+      WHERE branch IS NOT NULL;
+    CREATE INDEX IF NOT EXISTS test_runs_source_idx
+      ON harness_shared.test_runs (source, finished_at DESC);
+    CREATE INDEX IF NOT EXISTS test_runs_run_group_idx
+      ON harness_shared.test_runs (run_group_id)
+      WHERE run_group_id IS NOT NULL;
+  `);
+  // The prune_test_runs() function uses a named dollar-quote per
+  // feedback_named_dollar_quote_in_sql (bash heredoc collapses $).
+  await sql.unsafe(`
+    CREATE OR REPLACE FUNCTION harness_shared.prune_test_runs(
+      keep_per_file_branch INTEGER DEFAULT 50
+    ) RETURNS INTEGER
+    LANGUAGE plpgsql
+    AS $prunefn$
+    DECLARE
+      deleted_count INTEGER;
+    BEGIN
+      WITH ranked AS (
+        SELECT id,
+               ROW_NUMBER() OVER (
+                 PARTITION BY file_path, COALESCE(branch, '__null__')
+                 ORDER BY finished_at DESC NULLS LAST, id DESC
+               ) AS rn
+          FROM harness_shared.test_runs
+      )
+      DELETE FROM harness_shared.test_runs
+       WHERE id IN (SELECT id FROM ranked WHERE rn > keep_per_file_branch);
+      GET DIAGNOSTICS deleted_count = ROW_COUNT;
+      RETURN deleted_count;
+    END;
+    $prunefn$;
+  `);
+  flags.testRuns = true;
 }
 
 /** Test-only: clear the per-process cache so DDL re-runs. */
