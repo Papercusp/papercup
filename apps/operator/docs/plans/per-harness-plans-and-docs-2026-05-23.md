@@ -15,7 +15,7 @@ related:
 ## Now
 
 **State:** Active. Closes the 2 non-identity couplings to the Papercusp codebase identified in the 2026-05-22 catalog audit (`plans:*` global plan dir + `docs:*` no-harness fallback), plus a third correction surfaced 2026-05-23: the `docs:*` engineering branch was leaking Papercusp's docs to any no-harness caller — it should be gated to `papercusp-su` (SU/engineer) callers only. Decisions D-001 through D-005 ratified.
-**Next:** Implement P-002 — `genericFsAdapter` in `@papercusp/docs-engine`. Then P-003 (ctx field), P-004 (wire the third + gating branch), P-016 (engineering gate), P-005 (tests).
+**Next:** P-002 shipped (`a4ccbed8`). Implementing P-003 — extend `RouteContext`/`AgentContext` with `projectDocsRoot?: string` + `isSuperuser?: boolean`; wire from env var + `?superuser=1`.
 
 # Per-harness plans + project-docs adapter
 
@@ -119,7 +119,7 @@ Three new tools mirroring `cross_harness:docs_*`: `cross_harness:plans_list`, `p
 ## Phase 1 — docs:* third adapter branch + engineering-branch gate
 
 - **P-001** `done` Decided D-001: `ctx.projectDocsRoot` source = env var `PAPERCUSP_PROJECT_DOCS_ROOT`.
-- **P-002** `todo` Add `genericFsAdapter(root, opts)` to `@papercusp/docs-engine` — a thin FS adapter without harness-registry coupling.
+- **P-002** `done` `genericFsAdapter` added to `@papercusp/docs-engine` — commit `a4ccbed8`. 13/13 new tests green, existing suite unchanged, tsc clean.
 - **P-003** `todo` Extend `RouteContext`/`AgentContext` with `projectDocsRoot?: string` AND `isSuperuser?: boolean`; populate both from the request (env var + `?superuser=1`).
 - **P-004** `todo` Add the `ctx.projectDocsRoot` branch to `docs/outline.ts`, `docs/get.ts`, `docs/search.ts`'s `resolveAdapter` (3 files). blocked-by: P-002, P-003
 - **P-016** `todo` Gate the engineering-adapter branch on `ctx.isSuperuser` per D-005; non-SU/non-projectDocsRoot callers get an empty/error response, not Papercusp's docs. blocked-by: P-003, P-004
