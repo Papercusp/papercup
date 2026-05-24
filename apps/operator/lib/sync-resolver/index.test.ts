@@ -110,12 +110,25 @@ describe('sync-resolver v2 registry', () => {
       }
     });
 
-    it('exposes 37 migrated entries total (running count)', () => {
+    it('includes batch 9 migrated names', () => {
+      const names = knownQueryNamesV2();
+      for (const expected of [
+        'pluginConfigs.byHarness',
+        'pluginEnables.byWorkspace',
+        'projectSpecRevisions.byProject',
+        'orgCharter.byOrg',
+        'orgDepartments.byOrg',
+      ]) {
+        expect(names).toContain(expected);
+      }
+    });
+
+    it('exposes 42 migrated entries total (running count)', () => {
       // Reminder: total live count is 51. Update this assertion as
       // each batch lands; deliberately conservative so future drift is
       // surfaced (an entry added without bumping the count is silently
       // miscoded if the assertion is too loose).
-      expect(knownQueryNamesV2()).toHaveLength(37);
+      expect(knownQueryNamesV2()).toHaveLength(42);
     });
   });
 
@@ -160,8 +173,8 @@ describe('sync-resolver v2 registry', () => {
       // NOT been migrated yet — they must still fall through to the
       // legacy resolver. Update this list as each migrates.
       expect(isRegisteredV2('plans.list')).toBe(false);
-      expect(isRegisteredV2('orgCharter.byOrg')).toBe(false);
-      expect(isRegisteredV2('projectSpecRevisions.byProject')).toBe(false);
+      expect(isRegisteredV2('orgInbox.byDept')).toBe(false);
+      expect(isRegisteredV2('agentRunsConsolidated.bySlug')).toBe(false);
       expect(isRegisteredV2('totally.unknown')).toBe(false);
       expect(isRegisteredV2('')).toBe(false);
     });

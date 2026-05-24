@@ -847,6 +847,107 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     },
   },
 
+  // ── Batch 9: plugins / projectSpec / org_* (first 2) ──────────────────
+
+  // pluginConfigs.byHarness — plugin configs scoped to (harness, workspace).
+  //   zql.pluginConfigs.where(harnessSlug).where(workspaceId)
+  'pluginConfigs.byHarness': {
+    argsSchema: z.object({
+      harnessSlug: z.string(),
+      workspaceId: z.string(),
+    }),
+    resolve: async (args) => {
+      const { harnessSlug, workspaceId } = args as {
+        harnessSlug: string;
+        workspaceId: string;
+      };
+      const { getOrgPg, generated } = await import('@restart/db-org');
+      const { and, eq } = await import('drizzle-orm');
+      const t = generated.pluginConfigsInHarnessShared;
+      const { db } = getOrgPg();
+      return (await db
+        .select()
+        .from(t)
+        .where(and(eq(t.harnessSlug, harnessSlug), eq(t.workspaceId, workspaceId)))) as unknown[];
+    },
+  },
+
+  // pluginEnables.byWorkspace — plugin-enable rows for a workspace.
+  //   zql.pluginEnables.where(workspaceId).orderBy('updatedAt', 'desc')
+  'pluginEnables.byWorkspace': {
+    argsSchema: z.object({ workspaceId: z.string() }),
+    resolve: async (args) => {
+      const { workspaceId } = args as { workspaceId: string };
+      const { getOrgPg, generated } = await import('@restart/db-org');
+      const { desc, eq } = await import('drizzle-orm');
+      const t = generated.pluginEnablesInHarnessShared;
+      const { db } = getOrgPg();
+      return (await db
+        .select()
+        .from(t)
+        .where(eq(t.workspaceId, workspaceId))
+        .orderBy(desc(t.updatedAt))) as unknown[];
+    },
+  },
+
+  // projectSpecRevisions.byProject — spec revisions for one project, newest first.
+  //   zql.projectSpecRevisions.where(projectId).orderBy('ts', 'desc').limit(limit)
+  'projectSpecRevisions.byProject': {
+    argsSchema: z.object({
+      projectId: z.string(),
+      limit: z.number().int().positive().max(200).default(50),
+    }),
+    resolve: async (args) => {
+      const { projectId, limit } = args as { projectId: string; limit: number };
+      const { getOrgPg, generated } = await import('@restart/db-org');
+      const { desc, eq } = await import('drizzle-orm');
+      const t = generated.projectSpecRevisionsInHarnessShared;
+      const { db } = getOrgPg();
+      return (await db
+        .select()
+        .from(t)
+        .where(eq(t.projectId, projectId))
+        .orderBy(desc(t.ts))
+        .limit(limit)) as unknown[];
+    },
+  },
+
+  // orgCharter.byOrg — single charter row per org.
+  //   zql.orgCharter.where(orgId).limit(1)
+  'orgCharter.byOrg': {
+    argsSchema: z.object({ orgId: z.string().default('default') }),
+    resolve: async (args) => {
+      const { orgId } = args as { orgId: string };
+      const { getOrgPg, generated } = await import('@restart/db-org');
+      const { eq } = await import('drizzle-orm');
+      const t = generated.orgCharterInHarnessShared;
+      const { db } = getOrgPg();
+      return (await db
+        .select()
+        .from(t)
+        .where(eq(t.orgId, orgId))
+        .limit(1)) as unknown[];
+    },
+  },
+
+  // orgDepartments.byOrg — departments ordered by deptSlug asc.
+  //   zql.orgDepartments.where(orgId).orderBy('deptSlug', 'asc')
+  'orgDepartments.byOrg': {
+    argsSchema: z.object({ orgId: z.string().default('default') }),
+    resolve: async (args) => {
+      const { orgId } = args as { orgId: string };
+      const { getOrgPg, generated } = await import('@restart/db-org');
+      const { asc, eq } = await import('drizzle-orm');
+      const t = generated.orgDepartmentsInHarnessShared;
+      const { db } = getOrgPg();
+      return (await db
+        .select()
+        .from(t)
+        .where(eq(t.orgId, orgId))
+        .orderBy(asc(t.deptSlug))) as unknown[];
+    },
+  },
+
   // userActions.byKind — harness+workspace+kind-filtered action log.
   //   zql.userActions.where(harnessSlug).where(workspaceId).where(kind)
   //                  .orderBy('startedAt', 'desc').limit(limit)
