@@ -137,12 +137,26 @@ describe('sync-resolver v2 registry', () => {
       }
     });
 
-    it('exposes 48 migrated entries total (running count)', () => {
-      // Reminder: total live count is 51. Update this assertion as
-      // each batch lands; deliberately conservative so future drift is
-      // surfaced (an entry added without bumping the count is silently
-      // miscoded if the assertion is too loose).
-      expect(knownQueryNamesV2()).toHaveLength(48);
+    it('includes batch 11 migrated names (final *Consolidated batch)', () => {
+      const names = knownQueryNamesV2();
+      for (const expected of [
+        'featuresConsolidated.bySlug',
+        'issuesConsolidated.bySlug',
+        'agentRunsConsolidated.bySlug',
+        'agentRunsConsolidated.recent',
+        'snapshotsConsolidated.bySlug',
+      ]) {
+        expect(names).toContain(expected);
+      }
+    });
+
+    it('exposes 53 migrated entries total — all live queryNames migrated', () => {
+      // P-022 migration complete: every queryName from the 2026-05-24
+      // audit (51) plus chunkPlans.byFeature (was bundled as 1 name in
+      // the audit but is 2 namespaces in queries.ts) is in the v2
+      // registry. The legacy resolver fall-through is now dead code;
+      // cutover commit removes it.
+      expect(knownQueryNamesV2()).toHaveLength(53);
     });
   });
 
@@ -183,14 +197,15 @@ describe('sync-resolver v2 registry', () => {
     });
 
     it('returns false for unregistered names (fall-back path)', () => {
-      // These are real queryNames from the original audit that have
-      // NOT been migrated yet — they must still fall through to the
-      // legacy resolver. Update this list as each migrates.
-      expect(isRegisteredV2('plans.list')).toBe(false);
-      expect(isRegisteredV2('agentRunsConsolidated.bySlug')).toBe(false);
-      expect(isRegisteredV2('agentRunsConsolidated.recent')).toBe(false);
+      // After P-022 batch 11, every queryName from the original 2026-05-24
+      // audit has been migrated. Only entirely-unknown / synthetic names
+      // should hit the fall-back path now. Once the legacy resolver is
+      // removed (P-022 cutover), the route handler will return an
+      // error envelope instead of falling through, but the v2 dispatcher
+      // contract still surfaces NAME_NOT_FOUND for unknown names.
       expect(isRegisteredV2('totally.unknown')).toBe(false);
       expect(isRegisteredV2('')).toBe(false);
+      expect(isRegisteredV2('plans.list')).toBe(false); // not in audit; new API surface
     });
   });
 

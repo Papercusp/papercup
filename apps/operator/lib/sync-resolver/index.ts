@@ -1085,6 +1085,104 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     },
   },
 
+  // ── Batch 11 (final): the four *Consolidated cross-harness queries ──
+  //
+  // Each ZQL `featuresConsolidated` etc. maps to drizzle's
+  // `harnessFeaturesConsolidatedInHarnessShared` (the table is
+  // `harness_features_consolidated` etc — the prefix mismatch is
+  // historical, drizzle's canonical name wins).
+
+  // featuresConsolidated.bySlug — features for a harness, latest first.
+  //   zql.featuresConsolidated.where(harnessSlug).orderBy('updatedTs', 'desc')
+  'featuresConsolidated.bySlug': {
+    argsSchema: z.object({ harnessSlug: z.string() }),
+    resolve: async (args) => {
+      const { harnessSlug } = args as { harnessSlug: string };
+      const { getOrgPg, generated } = await import('@restart/db-org');
+      const { desc, eq } = await import('drizzle-orm');
+      const t = generated.harnessFeaturesConsolidatedInHarnessShared;
+      const { db } = getOrgPg();
+      return (await db
+        .select()
+        .from(t)
+        .where(eq(t.harnessSlug, harnessSlug))
+        .orderBy(desc(t.updatedTs))) as unknown[];
+    },
+  },
+
+  // issuesConsolidated.bySlug — issues for a harness, latest first.
+  //   zql.issuesConsolidated.where(harnessSlug).orderBy('updatedTs', 'desc')
+  'issuesConsolidated.bySlug': {
+    argsSchema: z.object({ harnessSlug: z.string() }),
+    resolve: async (args) => {
+      const { harnessSlug } = args as { harnessSlug: string };
+      const { getOrgPg, generated } = await import('@restart/db-org');
+      const { desc, eq } = await import('drizzle-orm');
+      const t = generated.harnessIssuesConsolidatedInHarnessShared;
+      const { db } = getOrgPg();
+      return (await db
+        .select()
+        .from(t)
+        .where(eq(t.harnessSlug, harnessSlug))
+        .orderBy(desc(t.updatedTs))) as unknown[];
+    },
+  },
+
+  // agentRunsConsolidated.bySlug — agent runs for a harness, latest first.
+  //   zql.agentRunsConsolidated.where(harnessSlug).orderBy('ts', 'desc')
+  'agentRunsConsolidated.bySlug': {
+    argsSchema: z.object({ harnessSlug: z.string() }),
+    resolve: async (args) => {
+      const { harnessSlug } = args as { harnessSlug: string };
+      const { getOrgPg, generated } = await import('@restart/db-org');
+      const { desc, eq } = await import('drizzle-orm');
+      const t = generated.agentRunsConsolidatedInHarnessShared;
+      const { db } = getOrgPg();
+      return (await db
+        .select()
+        .from(t)
+        .where(eq(t.harnessSlug, harnessSlug))
+        .orderBy(desc(t.ts))) as unknown[];
+    },
+  },
+
+  // agentRunsConsolidated.recent — agent runs for a harness, latest 50.
+  //   zql.agentRunsConsolidated.where(harnessSlug).orderBy('ts', 'desc').limit(50)
+  'agentRunsConsolidated.recent': {
+    argsSchema: z.object({ harnessSlug: z.string() }),
+    resolve: async (args) => {
+      const { harnessSlug } = args as { harnessSlug: string };
+      const { getOrgPg, generated } = await import('@restart/db-org');
+      const { desc, eq } = await import('drizzle-orm');
+      const t = generated.agentRunsConsolidatedInHarnessShared;
+      const { db } = getOrgPg();
+      return (await db
+        .select()
+        .from(t)
+        .where(eq(t.harnessSlug, harnessSlug))
+        .orderBy(desc(t.ts))
+        .limit(50)) as unknown[];
+    },
+  },
+
+  // snapshotsConsolidated.bySlug — snapshots for a harness, latest first.
+  //   zql.snapshotsConsolidated.where(harnessSlug).orderBy('ts', 'desc')
+  'snapshotsConsolidated.bySlug': {
+    argsSchema: z.object({ harnessSlug: z.string() }),
+    resolve: async (args) => {
+      const { harnessSlug } = args as { harnessSlug: string };
+      const { getOrgPg, generated } = await import('@restart/db-org');
+      const { desc, eq } = await import('drizzle-orm');
+      const t = generated.harnessSnapshotsConsolidatedInHarnessShared;
+      const { db } = getOrgPg();
+      return (await db
+        .select()
+        .from(t)
+        .where(eq(t.harnessSlug, harnessSlug))
+        .orderBy(desc(t.ts))) as unknown[];
+    },
+  },
+
   // userActions.byKind — harness+workspace+kind-filtered action log.
   //   zql.userActions.where(harnessSlug).where(workspaceId).where(kind)
   //                  .orderBy('startedAt', 'desc').limit(limit)
