@@ -77,6 +77,18 @@ describe('resolveHarnessPlansDir', () => {
     expect(result.harnessSlug).toBe('papercup');
   });
 
+  it("SU-wildcard harnessSlug='*' → falls through to papercup", async () => {
+    // ?superuser=1 dispatch supplies harnessSlug='*' to mean "no
+    // specific harness in scope". Without the wildcard handling,
+    // plans:get under SU mode fails with "harness '*' not registered".
+    mockRegistry([{ slug: 'papercup', path: '/home/u/papercup' }]);
+    mockPapercupDetection('/home/u/papercup');
+    const mod = await import('../source');
+    const result = await mod.resolveHarnessPlansDir('*');
+    expect(result.harnessSlug).toBe('papercup');
+    expect(result.plans).toContain(path.join('apps', 'operator', 'docs', 'plans'));
+  });
+
   it('throws when the resolved harness is not in the registry', async () => {
     mockRegistry([{ slug: 'other', path: '/x' }]);
     mockPapercupDetection(null);

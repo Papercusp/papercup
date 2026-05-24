@@ -56,7 +56,12 @@ export async function resolveHarnessPlansDir(
   harnessSlug?: string,
   opts: { workspaceId?: string } = {},
 ): Promise<{ harnessSlug: string; plans: string; archive: string }> {
-  const resolved = (harnessSlug?.trim() || PAPERCUP_HARNESS_SLUG) as string;
+  // SU mode passes harnessSlug='*' as a wildcard sentinel meaning "no
+  // specific harness in scope". Treat it (and any empty/whitespace
+  // value) as a no-harness ctx and fall back to the workspace's
+  // primary harness per D-004R.
+  const raw = harnessSlug?.trim();
+  const resolved = (!raw || raw === '*' ? PAPERCUP_HARNESS_SLUG : raw) as string;
   const reg = await loadHarnessRegistry(opts.workspaceId);
   const project = reg.projects.find((p) => p.slug === resolved);
   if (!project) {
