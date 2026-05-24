@@ -9,6 +9,7 @@ import { COLORS, FONTS, RADIUS, SIZES, STATUS, HarnessStatus } from './theme';
 import { StatusPill, IdPill, RolePill, KbdHint } from './primitives';
 import { HarnessMarkdownView } from './HarnessMarkdownView';
 import { FeatureTagsAndSeeAlso, FeatureMessagesList } from './FeatureMetadataPanels';
+import { CompletionRefCard } from './CompletionRefCard';
 import { PromptBudgetView } from './PromptBudgetView';
 
 const FeatureTimelinePanel = dynamic(() => import('./FeatureTimelinePanel'), { ssr: false });
@@ -411,6 +412,11 @@ export default function FeaturePeekPanel({
               </div>
             </Section>
           )}
+
+          {/* P-017 — completion_ref verification state (dogfood-v5 Phase 2). */}
+          <Section title="Completion">
+            <CompletionRefCard slug={slug} featureId={displayFeature.id} status={displayFeature.status} />
+          </Section>
 
           {/* Phase 2 — tags + see-also editor. */}
           <Section title="Tags & see-also">

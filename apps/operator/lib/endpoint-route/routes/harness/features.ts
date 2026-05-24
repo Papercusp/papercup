@@ -1,6 +1,7 @@
 /**
- * Feature-mutation routes:
+ * Feature routes:
  *
+ *   GET    /api/harness/:slug/features/:id                   — read one feature + verification columns
  *   POST   /api/harness/:slug/features                       — create
  *   POST   /api/harness/:slug/features/import                — bulk-import
  *   PATCH  /api/harness/:slug/features/:id                   — update
@@ -14,7 +15,7 @@
  */
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { getLegacyClient, withWorkspaceLegacy } from '@restart/db-org';
+import { getLegacyClient, withWorkspaceLegacy, getOrgPg } from '@restart/db-org';
 import { resolveProject, resolvePhasedProject, harnessDir, rowToFeature } from '@/lib/harness-core';
 import { phasePhaseLabel } from '@/lib/harness-phases';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
@@ -26,6 +27,70 @@ import { defineTool } from '@papercusp/agent-mcp';
 const FEATURE_ID_RE = /^[A-Z][A-Z0-9-]+(-[A-Z0-9-]+)?$/;
 
 const dbcFor = (slug: string) => getLegacyClient(slug);
+
+// ── GET /:slug/features/:id ─────────────────────────────────────────────
+
+const getFeature = defineTool({
+  method: 'GET',
+  path: '/harness/:slug/features/:id',
+  auth: 'public',
+  async handler(_req, ctx) {
+    const slug = ctx.params.slug as string;
+    const id = ctx.params.id as string;
+    const project = await resolveProject(slug);
+    if (!project) return Response.json({ error: 'unknown project' }, { status: 404 });
+
+    const dbc = dbcFor(project.slug);
+    const row = await dbc.prepare(
+      'SELECT * FROM harness_features WHERE harness_slug = ? AND feature_id = ?',
+    ).get(project.slug, id) as any;
+    if (!row) return Response.json({ error: 'feature not found' }, { status: 404 });
+
+    // Dogfood-arc verification columns live in PG consolidated (not in SQLite).
+    // Use a try/catch so the read still works on harnesses that have never run
+    // the 080/082 migrations (e.g. older harnesses).
+    type PgVerifRow = {
+      completion_ref: unknown;
+      verified_done_at_remote_ts: Date | null;
+      verifier_last_error: string | null;
+      verifier_last_checked_at: Date | null;
+    };
+    let pgVerif: PgVerifRow | null = null;
+    try {
+      const { sql } = getOrgPg();
+      const rows = await sql<PgVerifRow[]>`
+        SELECT completion_ref,
+               verified_done_at_remote_ts,
+               verifier_last_error,
+               verifier_last_checked_at
+          FROM harness_shared.harness_features_consolidated
+         WHERE harness_slug = ${project.slug}
+           AND feature_id = ${id}
+      `;
+      pgVerif = rows[0] ?? null;
+    } catch {
+      // PG not available or migration not applied — return base feature only
+    }
+
+    return Response.json({
+      feature: {
+        ...rowToFeature(row),
+        completion_ref: pgVerif?.completion_ref ?? null,
+        verified_done_at_remote_ts: pgVerif?.verified_done_at_remote_ts
+          ? pgVerif.verified_done_at_remote_ts instanceof Date
+            ? pgVerif.verified_done_at_remote_ts.toISOString()
+            : String(pgVerif.verified_done_at_remote_ts)
+          : null,
+        verifier_last_error: pgVerif?.verifier_last_error ?? null,
+        verifier_last_checked_at: pgVerif?.verifier_last_checked_at
+          ? pgVerif.verifier_last_checked_at instanceof Date
+            ? pgVerif.verifier_last_checked_at.toISOString()
+            : String(pgVerif.verifier_last_checked_at)
+          : null,
+      },
+    });
+  },
+});
 
 // ── POST /:slug/features/:id/reset ─────────────────────────────────────
 
@@ -529,6 +594,7 @@ const approveHumanReview = defineTool({
 });
 
 export default [
+  getFeature,
   resetFeature,
   updateFeature,
   importFeatures,
