@@ -15,7 +15,6 @@
     "apps/operator/__tests__/integration/ui-control.mjs"
   ],
   "scriptsSmoke": [
-    "apps/operator/scripts/su-locks-omp-smoke.ts",
-    "apps/operator/scripts/su-locks-wait-smoke.ts"
+    "apps/operator/scripts/su-locks-omp-smoke.ts"
   ]
 }

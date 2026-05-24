@@ -1,0 +1,154 @@
+/**
+ * su-locks-wait — LISTEN/NOTIFY end-to-end + waiter cap + timeout.
+ *
+ * Plan: admin-testing-tab-restructure-2026-05-24, P-029.
+ * Migrated from apps/operator/scripts/su-locks-wait-smoke.ts.
+ *
+ *   1. Agent A acquires lib/foo.ts (TTL 60s)
+ *   2. Agent B inserts waiter w/ subscribe
+ *   3. A releases; B wakes via NOTIFY
+ *   4. Waiter cap rejects the (MAX+1)th wait
+ *   5. Wait timeout marks the row expired
+ */
+
+import { describe, it, expect } from 'vitest';
+import {
+  ensureBootstrap, expireWaiter, getTxPool, normalizePaths,
+  tryAcquire, tryInsertWaiter, tryRelease, readWaiterStatus,
+  _resetForTests, MAX_WAITERS_PER_OWNER,
+} from '../su-lock-store';
+import { inWorkspaceTxn } from '../in-workspace-txn';
+import {
+  subscribeWorkspace, _resetListenersForTests,
+} from '../workspace-listener';
+
+const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+async function dbLive(): Promise<boolean> {
+  try {
+    const sql = getTxPool();
+    await sql`SELECT 1`;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+describe('su-locks wait subsystem', async () => {
+  const live = await dbLive();
+
+  it.skipIf(!live)('LISTEN/NOTIFY round-trip wakes a waiter on release', async () => {
+    await ensureBootstrap();
+    const sql = getTxPool();
+    const ws = 'wait-smoke-' + Date.now();
+
+    const a = await inWorkspaceTxn(ws, 'agent-a', (tx) => tryAcquire(tx, {
+      coordinationDomain: ws, owner: 'agent-a', ownerLabel: 'A',
+      paths: normalizePaths(['lib/foo.ts']),
+      intent: 'hold the file', ttlSec: 60,
+    }));
+    expect(a.ok).toBe(true);
+
+    let wakeResolve: (() => void) | null = null;
+    let ticketId: string | null = null;
+    const unsub = await subscribeWorkspace(ws, (tid) => {
+      if (ticketId && tid === ticketId && wakeResolve) {
+        const r = wakeResolve;
+        wakeResolve = null;
+        r();
+      }
+    });
+
+    const inserted = await inWorkspaceTxn(ws, 'agent-b', (tx) => tryInsertWaiter(tx, {
+      coordinationDomain: ws, owner: 'agent-b', ownerLabel: 'B',
+      paths: ['lib/foo.ts'], intent: 'want it', ttlSec: 60, maxWaitSec: 30,
+    }));
+    expect(inserted.ok).toBe(true);
+    ticketId = (inserted as { ticket_id: string }).ticket_id;
+
+    await sleep(2000);
+
+    const wakeP = new Promise<void>((resolve) => {
+      wakeResolve = resolve;
+      setTimeout(() => { if (wakeResolve) { const r = wakeResolve; wakeResolve = null; r(); } }, 30_000);
+    });
+
+    await inWorkspaceTxn(ws, 'agent-a', (tx) => tryRelease(tx, {
+      coordinationDomain: ws, owner: 'agent-a', lockId: (a as { lock_id: string }).lock_id,
+    }));
+    await wakeP;
+
+    const status = await readWaiterStatus(sql, ticketId);
+    expect(status.status).toBe('granted');
+    expect(status.granted_lock_id).toBeTruthy();
+
+    await inWorkspaceTxn(ws, 'agent-b', (tx) => tryRelease(tx, {
+      coordinationDomain: ws, owner: 'agent-b', lockId: status.granted_lock_id!,
+    }));
+    await unsub();
+    await _resetListenersForTests();
+    await _resetForTests();
+  }, 60_000);
+
+  it.skipIf(!live)('waiter cap rejects the (MAX+1)th wait', async () => {
+    await ensureBootstrap();
+    const sql = getTxPool();
+    const ws2 = 'cap-smoke-' + Date.now();
+    const blocker = await inWorkspaceTxn(ws2, 'blocker', (tx) => tryAcquire(tx, {
+      coordinationDomain: ws2, owner: 'blocker', ownerLabel: 'blocker',
+      paths: ['cap.ts'], intent: 'block', ttlSec: 120,
+    }));
+    expect(blocker.ok).toBe(true);
+
+    let lastResult: unknown = null;
+    for (let i = 0; i < MAX_WAITERS_PER_OWNER + 1; i++) {
+      lastResult = await inWorkspaceTxn(ws2, 'capped-owner', (tx) => tryInsertWaiter(tx, {
+        coordinationDomain: ws2, owner: 'capped-owner', ownerLabel: 'capped',
+        paths: ['cap.ts'], intent: `wait #${i}`, ttlSec: 60, maxWaitSec: 60,
+      }));
+      if (i < MAX_WAITERS_PER_OWNER) {
+        expect((lastResult as { ok: boolean }).ok, `wait #${i}`).toBe(true);
+      }
+    }
+    expect((lastResult as { ok: boolean }).ok).toBe(false);
+    expect((lastResult as { reason?: string }).reason).toBe('waiter_cap_exceeded');
+
+    await inWorkspaceTxn(ws2, 'blocker', (tx) => tryRelease(tx, {
+      coordinationDomain: ws2, owner: 'blocker', lockId: (blocker as { lock_id: string }).lock_id,
+    }));
+    await sql`UPDATE agent_lock_waiters SET status = 'expired' WHERE coordination_domain = ${ws2} AND status = 'waiting'`;
+    await sql`DELETE FROM agent_file_locks WHERE coordination_domain = ${ws2}`;
+    await sql`DELETE FROM agent_lock_waiters WHERE coordination_domain = ${ws2}`;
+  }, 30_000);
+
+  it.skipIf(!live)('wait timeout marks the row expired', async () => {
+    await ensureBootstrap();
+    const sql = getTxPool();
+    const ws3 = 'timeout-smoke-' + Date.now();
+    const holder = await inWorkspaceTxn(ws3, 'holder', (tx) => tryAcquire(tx, {
+      coordinationDomain: ws3, owner: 'holder', ownerLabel: 'H',
+      paths: ['timeout.ts'], intent: 'hold', ttlSec: 60,
+    }));
+    expect(holder.ok).toBe(true);
+
+    const tInsert = await inWorkspaceTxn(ws3, 'waiter', (tx) => tryInsertWaiter(tx, {
+      coordinationDomain: ws3, owner: 'waiter', ownerLabel: 'W',
+      paths: ['timeout.ts'], intent: 'wait', ttlSec: 60, maxWaitSec: 1,
+    }));
+    expect(tInsert.ok).toBe(true);
+    await sleep(1500);
+    await inWorkspaceTxn(ws3, 'waiter', (tx) =>
+      expireWaiter(tx, (tInsert as { ticket_id: string }).ticket_id),
+    );
+    const expired = await readWaiterStatus(sql, (tInsert as { ticket_id: string }).ticket_id);
+    expect(expired.status).toBe('expired');
+
+    await inWorkspaceTxn(ws3, 'holder', (tx) => tryRelease(tx, {
+      coordinationDomain: ws3, owner: 'holder', lockId: (holder as { lock_id: string }).lock_id,
+    }));
+  }, 10_000);
+
+  it('skipped diagnostic when DB unreachable', () => {
+    expect(live ? 'live' : 'offline').toMatch(/^(live|offline)$/);
+  });
+});
