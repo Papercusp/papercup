@@ -3,37 +3,81 @@
  *
  * The engine package tests cover buildOutline/getDocs/searchDocs
  * against a mock DocSource. These tests cover the operator-side
- * branching: which adapter does each tool pick given ctx.harnessSlug?
+ * branching: which adapter does each tool pick given ctx.harnessSlug,
+ * ctx.isSuperuser, and PAPERCUSP_PROJECT_DOCS_ROOT?
+ *
+ * Resolution order (no-harness branch):
+ *   1. PAPERCUSP_PROJECT_DOCS_ROOT set → project (D-001 / P-004)
+ *   2. else isSuperuser → engineering (D-005 / P-016)
+ *   3. else → error('no_docs_source')
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+const ORIGINAL_ENV = process.env.PAPERCUSP_PROJECT_DOCS_ROOT;
+
 beforeEach(() => {
   vi.resetModules();
+  delete process.env.PAPERCUSP_PROJECT_DOCS_ROOT;
 });
 
 afterEach(() => {
   vi.doUnmock('@/lib/harness-registry');
+  if (ORIGINAL_ENV === undefined) delete process.env.PAPERCUSP_PROJECT_DOCS_ROOT;
+  else process.env.PAPERCUSP_PROJECT_DOCS_ROOT = ORIGINAL_ENV;
 });
 
+function mockEmptyRegistry() {
+  vi.doMock('@/lib/harness-registry', () => ({
+    loadHarnessRegistry: vi.fn(async () => ({ projects: [] })),
+  }));
+}
+
+function mockRegistryWith(slug: string, path: string) {
+  vi.doMock('@/lib/harness-registry', () => ({
+    loadHarnessRegistry: vi.fn(async () => ({ projects: [{ slug, path }] })),
+  }));
+}
+
 describe('docs:outline resolveAdapter', () => {
-  it('falls back to engineering when no harnessSlug', async () => {
-    vi.doMock('@/lib/harness-registry', () => ({
-      loadHarnessRegistry: vi.fn(async () => ({ projects: [] })),
-    }));
+  it('SU caller with no harness + no env var → engineering surface', async () => {
+    mockEmptyRegistry();
     const mod = await import('../outline');
-    const result = await mod.resolveAdapter(undefined);
+    const result = await mod.resolveAdapter(undefined, { isSuperuser: true });
     expect(result.surface).toBe('engineering');
     expect(result.scope).toBe('_engineering');
     expect(result.error).toBeUndefined();
   });
 
+  it('env var set → project surface (wins over isSuperuser)', async () => {
+    process.env.PAPERCUSP_PROJECT_DOCS_ROOT = '/tmp/my-project-docs';
+    mockEmptyRegistry();
+    const mod = await import('../outline');
+    const result = await mod.resolveAdapter(undefined, { isSuperuser: true });
+    expect(result.surface).toBe('project');
+    expect(result.scope).toBe('_project');
+    expect(result.error).toBeUndefined();
+  });
+
+  it('non-SU caller with no harness + no env var → no_docs_source error (D-005)', async () => {
+    mockEmptyRegistry();
+    const mod = await import('../outline');
+    const result = await mod.resolveAdapter(undefined);
+    expect(result.error?.code).toBe('no_docs_source');
+    expect(result.error?.detail).toContain('PAPERCUSP_PROJECT_DOCS_ROOT');
+  });
+
+  it('non-SU caller with env var → project surface (still works without SU)', async () => {
+    process.env.PAPERCUSP_PROJECT_DOCS_ROOT = '/tmp/my-project-docs';
+    mockEmptyRegistry();
+    const mod = await import('../outline');
+    const result = await mod.resolveAdapter(undefined);
+    expect(result.surface).toBe('project');
+    expect(result.error).toBeUndefined();
+  });
+
   it('resolves to harness adapter when slug is registered', async () => {
-    vi.doMock('@/lib/harness-registry', () => ({
-      loadHarnessRegistry: vi.fn(async () => ({
-        projects: [{ slug: 'sheets', path: '/tmp/harness-fixture' }],
-      })),
-    }));
+    mockRegistryWith('sheets', '/tmp/harness-fixture');
     const mod = await import('../outline');
     const result = await mod.resolveAdapter('sheets');
     expect(result.surface).toBe('harness');
@@ -42,9 +86,7 @@ describe('docs:outline resolveAdapter', () => {
   });
 
   it('returns harness_not_registered error when slug is unknown', async () => {
-    vi.doMock('@/lib/harness-registry', () => ({
-      loadHarnessRegistry: vi.fn(async () => ({ projects: [] })),
-    }));
+    mockEmptyRegistry();
     const mod = await import('../outline');
     const result = await mod.resolveAdapter('does-not-exist');
     expect(result.error).toEqual({ code: 'harness_not_registered', slug: 'does-not-exist' });
@@ -53,31 +95,39 @@ describe('docs:outline resolveAdapter', () => {
 });
 
 describe('docs:get resolveAdapter', () => {
-  it('falls back to engineering when no harnessSlug', async () => {
-    vi.doMock('@/lib/harness-registry', () => ({
-      loadHarnessRegistry: vi.fn(async () => ({ projects: [] })),
-    }));
+  it('SU caller with no harness + no env var → engineering surface', async () => {
+    mockEmptyRegistry();
     const mod = await import('../get');
-    const result = await mod.resolveAdapter(undefined);
+    const result = await mod.resolveAdapter(undefined, { isSuperuser: true });
     expect(result.surface).toBe('engineering');
     expect(result.error).toBeUndefined();
   });
 
+  it('env var set → project surface', async () => {
+    process.env.PAPERCUSP_PROJECT_DOCS_ROOT = '/tmp/my-project-docs';
+    mockEmptyRegistry();
+    const mod = await import('../get');
+    const result = await mod.resolveAdapter(undefined);
+    expect(result.surface).toBe('project');
+    expect(result.error).toBeUndefined();
+  });
+
+  it('non-SU caller with no harness + no env var → no_docs_source error', async () => {
+    mockEmptyRegistry();
+    const mod = await import('../get');
+    const result = await mod.resolveAdapter(undefined);
+    expect(result.error?.code).toBe('no_docs_source');
+  });
+
   it('resolves to harness adapter when slug is registered', async () => {
-    vi.doMock('@/lib/harness-registry', () => ({
-      loadHarnessRegistry: vi.fn(async () => ({
-        projects: [{ slug: 'sheets', path: '/tmp/harness-fixture' }],
-      })),
-    }));
+    mockRegistryWith('sheets', '/tmp/harness-fixture');
     const mod = await import('../get');
     const result = await mod.resolveAdapter('sheets');
     expect(result.surface).toBe('harness');
   });
 
   it('returns harness_not_registered error when slug is unknown', async () => {
-    vi.doMock('@/lib/harness-registry', () => ({
-      loadHarnessRegistry: vi.fn(async () => ({ projects: [] })),
-    }));
+    mockEmptyRegistry();
     const mod = await import('../get');
     const result = await mod.resolveAdapter('does-not-exist');
     expect(result.error).toEqual({ code: 'harness_not_registered', slug: 'does-not-exist' });
@@ -85,30 +135,37 @@ describe('docs:get resolveAdapter', () => {
 });
 
 describe('docs:search resolveAdapter', () => {
-  it('falls back to engineering when no harnessSlug', async () => {
-    vi.doMock('@/lib/harness-registry', () => ({
-      loadHarnessRegistry: vi.fn(async () => ({ projects: [] })),
-    }));
+  it('SU caller with no harness + no env var → engineering surface', async () => {
+    mockEmptyRegistry();
     const mod = await import('../search');
-    const result = await mod.resolveAdapter(undefined);
+    const result = await mod.resolveAdapter(undefined, { isSuperuser: true });
     expect(result.surface).toBe('engineering');
   });
 
+  it('env var set → project surface', async () => {
+    process.env.PAPERCUSP_PROJECT_DOCS_ROOT = '/tmp/my-project-docs';
+    mockEmptyRegistry();
+    const mod = await import('../search');
+    const result = await mod.resolveAdapter(undefined);
+    expect(result.surface).toBe('project');
+  });
+
+  it('non-SU caller with no harness + no env var → no_docs_source error', async () => {
+    mockEmptyRegistry();
+    const mod = await import('../search');
+    const result = await mod.resolveAdapter(undefined);
+    expect(result.error?.code).toBe('no_docs_source');
+  });
+
   it('resolves to harness adapter when slug is registered', async () => {
-    vi.doMock('@/lib/harness-registry', () => ({
-      loadHarnessRegistry: vi.fn(async () => ({
-        projects: [{ slug: 'sheets', path: '/tmp/harness-fixture' }],
-      })),
-    }));
+    mockRegistryWith('sheets', '/tmp/harness-fixture');
     const mod = await import('../search');
     const result = await mod.resolveAdapter('sheets');
     expect(result.surface).toBe('harness');
   });
 
   it('returns harness_not_registered error when slug is unknown', async () => {
-    vi.doMock('@/lib/harness-registry', () => ({
-      loadHarnessRegistry: vi.fn(async () => ({ projects: [] })),
-    }));
+    mockEmptyRegistry();
     const mod = await import('../search');
     const result = await mod.resolveAdapter('does-not-exist');
     expect(result.error).toEqual({ code: 'harness_not_registered', slug: 'does-not-exist' });

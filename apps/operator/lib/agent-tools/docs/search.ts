@@ -8,6 +8,7 @@
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import {
+  genericFsAdapter,
   searchDocs,
   harnessFsAdapter,
   type DocSource,
@@ -27,12 +28,37 @@ const ALL_ROLES = [
   'curator',
 ] as const;
 
-export async function resolveAdapter(harnessSlug: string | undefined): Promise<{
+export async function resolveAdapter(
+  harnessSlug: string | undefined,
+  opts: { isSuperuser?: boolean } = {},
+): Promise<{
   adapter: DocSource;
-  surface: 'harness' | 'engineering';
-  error?: { code: string; slug?: string };
+  surface: 'harness' | 'engineering' | 'project';
+  error?: { code: string; slug?: string; detail?: string };
 }> {
-  if (!harnessSlug) return { adapter: engineeringAdapter, surface: 'engineering' };
+  if (!harnessSlug) {
+    // D-001 / P-004: project-docs branch via env var (set by omp-su wrapper).
+    const projectDocsRoot = process.env.PAPERCUSP_PROJECT_DOCS_ROOT?.trim();
+    if (projectDocsRoot) {
+      return {
+        adapter: genericFsAdapter(projectDocsRoot, { name: 'project' }),
+        surface: 'project',
+      };
+    }
+    // D-005 / P-016: engineering branch is for papercusp-su (SU/engineer) only.
+    if (opts.isSuperuser) {
+      return { adapter: engineeringAdapter, surface: 'engineering' };
+    }
+    return {
+      adapter: engineeringAdapter,
+      surface: 'engineering',
+      error: {
+        code: 'no_docs_source',
+        detail:
+          'No harness in context, PAPERCUSP_PROJECT_DOCS_ROOT not set, and caller is not papercusp-su. Set PAPERCUSP_PROJECT_DOCS_ROOT to point at your project docs.',
+      },
+    };
+  }
   const reg = await loadHarnessRegistry();
   const project = reg.projects.find((p) => p.slug === harnessSlug);
   if (!project) {
@@ -56,7 +82,7 @@ const argsSchema = z.object({
 export default defineTool({
   name: 'docs:search',
   description:
-    "Keyword search across your context's documentation — your harness's docs if you're in a harness, otherwise the Papercusp framework reference. Returns ranked hits (slug, title, description, excerpt).",
+    "Keyword search across your context's documentation — your harness's docs (in a harness), your project's docs (PAPERCUSP_PROJECT_DOCS_ROOT env var), or the Papercusp framework reference (papercusp-su callers only). Returns ranked hits (slug, title, description, excerpt).",
   guidance: {
     when: 'You have specific terminology in mind (a function name, concept, or component) and want to find which doc page covers it. Faster than scanning the outline when the section name is non-obvious.',
     notWhen:
@@ -76,11 +102,12 @@ export default defineTool({
   async handler(args, ctx) {
     const ctxAny = ctx as {
       harnessSlug?: string;
+      isSuperuser?: boolean;
       signal?: AbortSignal;
       metadata?: (d: Record<string, unknown>) => void;
       progress?: (pct: number, msg: string) => void;
     };
-    const resolved = await resolveAdapter(ctxAny.harnessSlug);
+    const resolved = await resolveAdapter(ctxAny.harnessSlug, { isSuperuser: ctxAny.isSuperuser });
     if (resolved.error) {
       return {
         content: [

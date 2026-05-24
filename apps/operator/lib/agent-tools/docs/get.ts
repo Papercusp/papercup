@@ -8,6 +8,7 @@
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import {
+  genericFsAdapter,
   getDocs,
   harnessFsAdapter,
   withPreamble,
@@ -42,13 +43,36 @@ function wrapWithPreamble(base: DocSource): DocSource {
   };
 }
 
-export async function resolveAdapter(harnessSlug: string | undefined): Promise<{
+export async function resolveAdapter(
+  harnessSlug: string | undefined,
+  opts: { isSuperuser?: boolean } = {},
+): Promise<{
   adapter: DocSource;
-  surface: 'harness' | 'engineering';
-  error?: { code: string; slug?: string };
+  surface: 'harness' | 'engineering' | 'project';
+  error?: { code: string; slug?: string; detail?: string };
 }> {
   if (!harnessSlug) {
-    return { adapter: wrapWithPreamble(engineeringBase), surface: 'engineering' };
+    // D-001 / P-004: project-docs branch via env var (set by omp-su wrapper).
+    const projectDocsRoot = process.env.PAPERCUSP_PROJECT_DOCS_ROOT?.trim();
+    if (projectDocsRoot) {
+      return {
+        adapter: wrapWithPreamble(genericFsAdapter(projectDocsRoot, { name: 'project' })),
+        surface: 'project',
+      };
+    }
+    // D-005 / P-016: engineering branch is for papercusp-su (SU/engineer) only.
+    if (opts.isSuperuser) {
+      return { adapter: wrapWithPreamble(engineeringBase), surface: 'engineering' };
+    }
+    return {
+      adapter: wrapWithPreamble(engineeringBase),
+      surface: 'engineering',
+      error: {
+        code: 'no_docs_source',
+        detail:
+          'No harness in context, PAPERCUSP_PROJECT_DOCS_ROOT not set, and caller is not papercusp-su. Set PAPERCUSP_PROJECT_DOCS_ROOT to point at your project docs.',
+      },
+    };
   }
   const reg = await loadHarnessRegistry();
   const project = reg.projects.find((p) => p.slug === harnessSlug);
@@ -85,7 +109,7 @@ const argsSchema = z
 export default defineTool({
   name: 'docs:get',
   description:
-    "Fetch documentation pages by slug — your harness's docs if you're in a harness, otherwise the Papercusp framework reference. Batch up to 10; pass `heading` (single-slug only) for a section slice. Per-slug error envelope.",
+    "Fetch documentation pages by slug — your harness's docs (in a harness), your project's docs (PAPERCUSP_PROJECT_DOCS_ROOT env var), or the Papercusp framework reference (papercusp-su callers only). Batch up to 10; pass `heading` (single-slug only) for a section slice. Per-slug error envelope.",
   guidance: {
     when: 'You have slugs from docs:outline and need page contents. Use `heading` (single-slug) when only one section of a long page is relevant.',
     notWhen:
@@ -105,10 +129,11 @@ export default defineTool({
   async handler(args, ctx) {
     const ctxAny = ctx as {
       harnessSlug?: string;
+      isSuperuser?: boolean;
       signal?: AbortSignal;
       metadata?: (d: Record<string, unknown>) => void;
     };
-    const resolved = await resolveAdapter(ctxAny.harnessSlug);
+    const resolved = await resolveAdapter(ctxAny.harnessSlug, { isSuperuser: ctxAny.isSuperuser });
     if (resolved.error) {
       return {
         content: [

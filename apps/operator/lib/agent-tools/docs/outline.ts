@@ -18,6 +18,7 @@ import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import {
   buildOutline,
+  genericFsAdapter,
   harnessFsAdapter,
   RunCache,
   type DocSource,
@@ -40,14 +41,40 @@ const ALL_ROLES = [
 
 const cache = new RunCache<OutlinePayload>();
 
-export async function resolveAdapter(harnessSlug: string | undefined): Promise<{
+export async function resolveAdapter(
+  harnessSlug: string | undefined,
+  opts: { isSuperuser?: boolean } = {},
+): Promise<{
   adapter: DocSource;
   scope: string;
-  surface: 'harness' | 'engineering';
-  error?: { code: string; slug?: string };
+  surface: 'harness' | 'engineering' | 'project';
+  error?: { code: string; slug?: string; detail?: string };
 }> {
   if (!harnessSlug) {
-    return { adapter: engineeringAdapter, scope: '_engineering', surface: 'engineering' };
+    // D-001 / P-004: project-docs branch via env var (set by omp-su wrapper).
+    const projectDocsRoot = process.env.PAPERCUSP_PROJECT_DOCS_ROOT?.trim();
+    if (projectDocsRoot) {
+      return {
+        adapter: genericFsAdapter(projectDocsRoot, { name: 'project' }),
+        scope: '_project',
+        surface: 'project',
+      };
+    }
+    // D-005 / P-016: engineering branch is for papercusp-su (SU/engineer) only.
+    if (opts.isSuperuser) {
+      return { adapter: engineeringAdapter, scope: '_engineering', surface: 'engineering' };
+    }
+    // Non-SU caller with no project docs — don't leak Papercusp's docs.
+    return {
+      adapter: engineeringAdapter, // placeholder; handler bails on `error`
+      scope: '_none',
+      surface: 'engineering',
+      error: {
+        code: 'no_docs_source',
+        detail:
+          'No harness in context, PAPERCUSP_PROJECT_DOCS_ROOT not set, and caller is not papercusp-su. Set PAPERCUSP_PROJECT_DOCS_ROOT to point at your project docs.',
+      },
+    };
   }
   const reg = await loadHarnessRegistry();
   const project = reg.projects.find((p) => p.slug === harnessSlug);
@@ -69,7 +96,7 @@ export async function resolveAdapter(harnessSlug: string | undefined): Promise<{
 export default defineTool({
   name: 'docs:outline',
   description:
-    'Return the documentation table-of-contents for your context — your harness\'s docs if you\'re in a harness, otherwise the Papercusp framework engineering reference. Cached per run. Call this FIRST when you need design context; drill in via docs:get.',
+    'Return the documentation table-of-contents for your context — your harness\'s docs (in a harness), your project\'s docs (PAPERCUSP_PROJECT_DOCS_ROOT env var), or the Papercusp framework engineering reference (papercusp-su callers only). Cached per run. Call this FIRST when you need design context; drill in via docs:get.',
   guidance: {
     when: 'You need design context, architectural rationale, or "how does X work" answers and have not yet called docs:outline this run.',
     notWhen:
@@ -87,10 +114,11 @@ export default defineTool({
       runId?: string;
       spawnId?: string;
       harnessSlug?: string;
+      isSuperuser?: boolean;
       signal?: AbortSignal;
       metadata?: (d: Record<string, unknown>) => void;
     };
-    const resolved = await resolveAdapter(ctxAny.harnessSlug);
+    const resolved = await resolveAdapter(ctxAny.harnessSlug, { isSuperuser: ctxAny.isSuperuser });
     if (resolved.error) {
       return {
         content: [
