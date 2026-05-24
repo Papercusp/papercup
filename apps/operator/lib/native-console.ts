@@ -18,6 +18,10 @@ export interface LaunchOpts {
   /** Display label shown in the /adv/sessions list. Falls back to
    *  the plan title or the cwd basename when omitted. */
   label?: string | null;
+  /** OMP session id to pass through as `omp -r <id>` so the new
+   *  session resumes an existing conversation. Honored only in
+   *  omp mode (launchOmpAgent). */
+  resumeSessionId?: string | null;
 }
 
 interface ConsoleEnvelope {

@@ -153,6 +153,25 @@ export default function ChromeShell() {
           <span className="pc-header-quote pc-header-quote--hud" data-quote="Nothing Is So Painful To The Human Mind As A Great And Sudden Change">Nothing Is So Painful To The Human Mind As A Great And Sudden Change</span>
         </div>
         <div className="pc-header-center">
+          {onAdv ? (
+            <span
+              className="pc-header-cta pc-header-cta--mission is-current"
+              aria-label="Adv (current page)"
+              aria-current="page"
+            >
+              <span className="pc-header-cta-orb" aria-hidden="true">
+                <BrainMark className="pc-header-cta-logo pc-header-cta-logo--adv" />
+              </span>
+              <span className="pc-header-cta-label">ADV</span>
+            </span>
+          ) : (
+            <a href="/adv" className="pc-header-cta pc-header-cta--mission" aria-label="Adv" {...mainNavJumpGateProps}>
+              <span className="pc-header-cta-orb" aria-hidden="true">
+                <BrainMark className="pc-header-cta-logo pc-header-cta-logo--adv" />
+              </span>
+              <span className="pc-header-cta-label">ADV</span>
+            </a>
+          )}
           {onHarness ? (
             <span
               className="pc-header-cta pc-header-cta--mission is-current"
@@ -178,25 +197,6 @@ export default function ChromeShell() {
           />
           <OperatorButton />
           <OperatorAutoScanToggle />
-          {onAdv ? (
-            <span
-              className="pc-header-cta pc-header-cta--mission is-current"
-              aria-label="Adv (current page)"
-              aria-current="page"
-            >
-              <span className="pc-header-cta-orb" aria-hidden="true">
-                <BrainMark className="pc-header-cta-logo pc-header-cta-logo--adv" />
-              </span>
-              <span className="pc-header-cta-label">ADV</span>
-            </span>
-          ) : (
-            <a href="/adv" className="pc-header-cta pc-header-cta--mission" aria-label="Adv" {...mainNavJumpGateProps}>
-              <span className="pc-header-cta-orb" aria-hidden="true">
-                <BrainMark className="pc-header-cta-logo pc-header-cta-logo--adv" />
-              </span>
-              <span className="pc-header-cta-label">ADV</span>
-            </a>
-          )}
         </div>
         <nav className="pc-header-right" aria-label="Primary navigation">
           {marketplaceFlag ? (

@@ -100,21 +100,45 @@ export default function AdvSessionsClient() {
     }
   }, []);
 
-  const resumeRow = useCallback(async (row: SessionRow) => {
-    // The Resume button re-launches OMP in a fresh terminal. When
-    // we've captured the OMP thread id, `papercusp-omp connect`
-    // can be told to resume the same conversation via its CLI; we
-    // pass that hint through the launch path. When the thread id
-    // isn't captured (most rows today), we open a fresh OMP at the
-    // same plan/cwd — the conversation is new but the workspace
-    // context matches.
+  // Option A — open a fresh OMP at the same plan. No session id;
+  // new conversation, same workspace context.
+  const freshRow = useCallback(async (row: SessionRow) => {
+    const result = await launchOmpAgent({
+      slug: null,
+      planSlug: row.planSlug,
+      label: row.label ?? row.planSlug ?? `fresh-${row.id}`,
+    });
+    if (result.ok) {
+      toast.success('OMP launched (fresh session).', { duration: 3000 });
+      setRefreshTick((t) => t + 1);
+    } else {
+      toast.error(`Launch failed: ${result.error ?? 'unknown error'}`);
+    }
+  }, []);
+
+  // Option B — prompt for an OMP session id and pass it through as
+  // `omp -r <id>`. The user knows their session id from their OMP
+  // terminal; we don't auto-capture.
+  const resumeByIdRow = useCallback(async (row: SessionRow) => {
+    const seed = row.ompThreadId ?? '';
+    const id = window.prompt(
+      'OMP session id to resume (passed as `omp -r <id>`):',
+      seed,
+    );
+    if (id == null) return;
+    const trimmed = id.trim();
+    if (!trimmed) {
+      toast.error('No session id provided.');
+      return;
+    }
     const result = await launchOmpAgent({
       slug: null,
       planSlug: row.planSlug,
       label: row.label ?? row.planSlug ?? `resume-${row.id}`,
+      resumeSessionId: trimmed,
     });
     if (result.ok) {
-      toast.success('OMP relaunched.', { duration: 3000 });
+      toast.success(`OMP resumed (${trimmed.slice(0, 12)}…).`, { duration: 3000 });
       setRefreshTick((t) => t + 1);
     } else {
       toast.error(`Resume failed: ${result.error ?? 'unknown error'}`);
@@ -180,13 +204,24 @@ export default function AdvSessionsClient() {
                         Focus window
                       </button>
                     ) : (
-                      <button
-                        type="button"
-                        className="pc-adv-sessions__btn"
-                        onClick={() => resumeRow(row)}
-                      >
-                        Resume
-                      </button>
+                      <>
+                        <button
+                          type="button"
+                          className="pc-adv-sessions__btn"
+                          onClick={() => freshRow(row)}
+                          title="Open a new OMP terminal at this plan (fresh conversation)"
+                        >
+                          Fresh OMP
+                        </button>
+                        <button
+                          type="button"
+                          className="pc-adv-sessions__btn pc-adv-sessions__btn--primary"
+                          onClick={() => resumeByIdRow(row)}
+                          title="Open OMP with `omp -r <id>` — you'll be prompted for the session id"
+                        >
+                          Resume by ID
+                        </button>
+                      </>
                     )}
                   </div>
                 </li>

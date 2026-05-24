@@ -42,6 +42,11 @@ export interface ConnectOptions {
   ompCwd: string;
   /** auth_session_id — names the scratch dir. */
   authSessionId: string;
+  /** When set, passed through to underlying `omp -r <id>` so the
+   *  spawned OMP resumes the named session instead of starting fresh.
+   *  The id is whatever `omp` itself exposes (its session/thread id) —
+   *  papercusp-omp doesn't interpret it. */
+  resumeSessionId?: string;
 }
 
 /** Refresh this many ms before the access token expires. */
@@ -86,10 +91,17 @@ function syncMcpConfig(profile: SessionProfile, ompCwd: string): void {
 }
 
 /** Spawn `omp` with the profile's flags. Resolves with its exit code. */
-function spawnOmp(profile: SessionProfile, ompCwd: string): Promise<number> {
+function spawnOmp(
+  profile: SessionProfile,
+  ompCwd: string,
+  resumeSessionId?: string,
+): Promise<number> {
   const args = ['--append-system-prompt', profile.systemPromptPath];
   for (const hook of profile.hookPaths) {
     args.push('--hook', hook);
+  }
+  if (resumeSessionId) {
+    args.push('-r', resumeSessionId);
   }
   return new Promise((resolve, reject) => {
     const child = spawn('omp', args, { cwd: ompCwd, stdio: 'inherit' });
@@ -204,7 +216,7 @@ export async function connect(opts: ConnectOptions): Promise<number> {
   process.once('SIGTERM', once);
 
   try {
-    const code = await spawnOmp(profile, opts.ompCwd);
+    const code = await spawnOmp(profile, opts.ompCwd, opts.resumeSessionId);
     log(`omp exited (code ${code})`);
     return code;
   } finally {

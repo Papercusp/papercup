@@ -188,6 +188,14 @@ export async function buildConsoleEnvelope(
     // Non-secret — fine to inline-export.
     env.PAPERCUSP_BUNDLE_URL = `${opts.operatorBaseUrl}/api/agent-bundle`;
     env.PAPERCUSP_AUTH_SESSION_ID = authSessionId;
+    // When the caller passed a resumeSessionId, append --resume <id>
+    // to the launch command. papercusp-omp's CLI plumbs the flag
+    // through to the underlying `omp -r <id>` invocation (the OMP
+    // CLI's native resume path — no thread-id capture needed; the
+    // user knows their session id).
+    const launchCommand = opts.resumeSessionId
+      ? `papercusp-omp connect --resume ${shellSafeId(opts.resumeSessionId)}`
+      : 'papercusp-omp connect';
     return {
       cwd,
       env,
@@ -199,7 +207,7 @@ export async function buildConsoleEnvelope(
         PAPERCUSP_BUNDLE_ACCESS_TOKEN: access.token,
         PAPERCUSP_BUNDLE_REFRESH_TOKEN: refresh.token,
       },
-      launchCommand: 'papercusp-omp connect',
+      launchCommand,
     };
   }
 

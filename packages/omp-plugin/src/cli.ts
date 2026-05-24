@@ -23,10 +23,17 @@ interface ParsedArgs {
   command: string | undefined;
   url: string | undefined;
   cwd: string | undefined;
+  /** OMP session id to resume — passed through as `omp -r <id>`. */
+  resume: string | undefined;
 }
 
 function parseArgs(argv: string[]): ParsedArgs {
-  const out: ParsedArgs = { command: undefined, url: undefined, cwd: undefined };
+  const out: ParsedArgs = {
+    command: undefined,
+    url: undefined,
+    cwd: undefined,
+    resume: undefined,
+  };
   const rest: string[] = [];
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -34,10 +41,14 @@ function parseArgs(argv: string[]): ParsedArgs {
       out.url = argv[++i];
     } else if (a === '--cwd') {
       out.cwd = argv[++i];
+    } else if (a === '--resume' || a === '-r') {
+      out.resume = argv[++i];
     } else if (a?.startsWith('--url=')) {
       out.url = a.slice('--url='.length);
     } else if (a?.startsWith('--cwd=')) {
       out.cwd = a.slice('--cwd='.length);
+    } else if (a?.startsWith('--resume=')) {
+      out.resume = a.slice('--resume='.length);
     } else if (a) {
       rest.push(a);
     }
@@ -102,6 +113,7 @@ async function main(): Promise<number> {
       refreshToken: refreshToken!,
       ompCwd,
       authSessionId,
+      resumeSessionId: args.resume,
     });
   } catch (err) {
     process.stderr.write(
