@@ -100,16 +100,16 @@ Calls into the Phase 2 endpoint. No Tauri-side logic.
 - **P-001** `done` Decide where the install logic lives. Recommendation: Node operator sidecar (D-001a). See §3. (— D-001 ratified Node sidecar)
 - **P-002** `done` Implement `POST /api/desktop/install/papercusp-files` (Node) — token + agent_id + playbook + extension. blocked-by: P-001 (— shipped f7b80951 + registered 0ae7df2c; verified live with POST returning 200)
 - **P-003** `done` Locate the playbook + extension source paths inside the bundled sidecar resources (Tauri ships them — pick the right relative path). blocked-by: P-001 — sidecar build copies both files (papercusp-desktop@49787bc); operator candidate-path fallback handles dev + sidecar layouts
-- **P-004** `todo` Tauri host fires the endpoint at startup after sidecar reaches "ready." Best-effort, logs on failure. blocked-by: P-002
+- **P-004** `done` Tauri host fires the endpoint at startup after sidecar reaches "ready." Best-effort, logs on failure. blocked-by: P-002 — pivoted to sidecar self-install via `PAPERCUSP_DESKTOP=1` env in `host-bootstrap.ts` (commit 2e65de9d), strictly better than the Rust route (no new HTTP dep, no env wiring)
 - **P-005** `done` Decide Windows scope. Recommendation: Mac + Linux only in v1 (D-002a). See §3. (— D-002 ratified Mac+Linux v1, defer Windows)
 - **P-006** `done` Tests: token mint vs reuse, agent-id mint vs reuse, playbook overwrite refreshes content, sidecar-resource path resolves correctly. blocked-by: P-002 (— covered by 7 tests in f7b80951: first-install + re-run + mode-0600 + missing-source + reuse-without-newline + resolveInstallPaths shape)
 
 ## Phase 2 — opt-in OMP integration endpoint
 
-- **P-007** `todo` Implement `POST /api/desktop/install/omp-integration` (Node) — mcp.json merge, wrapper install, legacy-block strip. blocked-by: P-005
-- **P-008** `todo` Wrapper-install logic platform-aware: POSIX → bash shim in `~/.bun/bin/` or `~/.local/bin/`; Windows → out of scope per P-005. blocked-by: P-005
-- **P-009** `todo` Implement `GET /api/desktop/install/omp-integration` — current state probe. blocked-by: P-007
-- **P-010** `todo` Tests with a fake `~/.omp/` tree: detection, merge preserves other entries, wrapper PATH warning when `~/.local/bin` not on PATH. blocked-by: P-007
+- **P-007** `done` Implement `POST /api/desktop/install/omp-integration` (Node) — mcp.json merge, wrapper install, legacy-block strip. blocked-by: P-005 — shipped with PUT/DELETE too
+- **P-008** `done` Wrapper-install logic platform-aware: POSIX → bash shim in `~/.bun/bin/` or `~/.local/bin/`; Windows → out of scope per P-005. blocked-by: P-005 — co-locates with detected omp binary, falls back to ~/.local/bin/; win32 short-circuits with reason=windows_not_supported_in_v1
+- **P-009** `done` Implement `GET /api/desktop/install/omp-integration` — current state probe. blocked-by: P-007
+- **P-010** `done` Tests with a fake `~/.omp/` tree: detection, merge preserves other entries, wrapper PATH warning when `~/.local/bin` not on PATH. blocked-by: P-007 — 13 tests cover detection + merge + wrapper-co-locate + path-warning + legacy-block strip + uninstall
 
 ## Phase 3 — settings UI
 

@@ -1,0 +1,260 @@
+/**
+ * Tests for omp-integration (P-010 of
+ * desktop-app-install-integration-2026-05-23).
+ *
+ * Fake ~/.omp/ + ~/.papercusp/ tree under tmp; covers:
+ *  - merge preserves other MCP servers
+ *  - re-run is a no-op when already current
+ *  - wrapper installs at omp-co-located path when binary detected
+ *  - wrapper falls back to ~/.local/bin/omp-su when no binary
+ *  - pathWarning fires when wrapperDir not on PATH
+ *  - legacy block stripped from CLAUDE.md
+ *  - legacy auto-discovered extension removed
+ *  - phase1_not_run reason when token + agent_id missing
+ *  - uninstall removes papercusp-su but preserves other servers
+ *  - read-only state snapshot vs. install action
+ */
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import * as fs from 'node:fs/promises';
+import * as path from 'node:path';
+import * as os from 'node:os';
+import {
+  installOmpIntegration,
+  uninstallOmpIntegration,
+  readOmpIntegrationState,
+  resolveOmpPaths,
+} from '../omp-integration';
+import { resolveInstallPaths } from '../papercusp-files';
+
+let tmpHome: string;
+
+async function seedPhase1(home: string, token = 'tok-abc-123', agentId = 'agent-456') {
+  const p = resolveInstallPaths(home);
+  await fs.mkdir(p.papercuspDir, { recursive: true, mode: 0o700 });
+  await fs.writeFile(p.tokenPath, token + '\n', { mode: 0o600 });
+  await fs.writeFile(p.agentIdPath, agentId + '\n', { mode: 0o600 });
+}
+
+beforeEach(async () => {
+  tmpHome = await fs.mkdtemp(path.join(os.tmpdir(), 'pcusp-omp-int-'));
+});
+
+afterEach(async () => {
+  await fs.rm(tmpHome, { recursive: true, force: true });
+});
+
+describe('installOmpIntegration', () => {
+  it('phase1 not run: returns reason=phase1_not_run, no changes', async () => {
+    const result = await installOmpIntegration({ home: tmpHome, ompBinaryPath: null });
+    expect(result.supported).toBe(true);
+    expect(result.reason).toBe('phase1_not_run');
+    expect(result.changed).toBe(false);
+    expect(result.actions).toEqual([]);
+    expect(result.mcpServerInstalled).toBe(false);
+  });
+
+  it('first run: creates mcp.json + installs wrapper at fallback path', async () => {
+    await seedPhase1(tmpHome);
+    const result = await installOmpIntegration({
+      home: tmpHome,
+      operatorUrl: 'http://localhost:3070',
+      ompBinaryPath: null,
+    });
+    expect(result.supported).toBe(true);
+    expect(result.changed).toBe(true);
+    expect(result.mcpServerInstalled).toBe(true);
+    expect(result.wrapperInstalled).toBe(true);
+    expect(result.wrapperPath).toBe(path.join(tmpHome, '.local', 'bin', 'omp-su'));
+
+    const cfg = JSON.parse(
+      await fs.readFile(resolveOmpPaths(tmpHome).mcpJsonPath, 'utf8'),
+    );
+    expect(cfg.mcpServers['papercusp-su']).toEqual({
+      type: 'http',
+      url: 'http://localhost:3070/api/mcp?superuser=1&client=agent-456',
+      headers: { Authorization: 'Bearer tok-abc-123' },
+    });
+  });
+
+  it('wrapper co-locates with detected omp binary', async () => {
+    await seedPhase1(tmpHome);
+    const fakeBinDir = await fs.mkdtemp(path.join(os.tmpdir(), 'fake-bin-'));
+    const fakeOmp = path.join(fakeBinDir, 'omp');
+    await fs.writeFile(fakeOmp, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+    try {
+      const result = await installOmpIntegration({
+        home: tmpHome,
+        operatorUrl: 'http://localhost:3070',
+        ompBinaryPath: fakeOmp,
+      });
+      expect(result.wrapperPath).toBe(path.join(fakeBinDir, 'omp-su'));
+      const wrapperContent = await fs.readFile(result.wrapperPath, 'utf8');
+      expect(wrapperContent).toContain('engineer-collaborator.md');
+      expect(wrapperContent).toContain('papercusp-coord.ts');
+    } finally {
+      await fs.rm(fakeBinDir, { recursive: true, force: true });
+    }
+  });
+
+  it('re-run is a no-op (returns changed=false, empty actions)', async () => {
+    await seedPhase1(tmpHome);
+    const first = await installOmpIntegration({
+      home: tmpHome,
+      operatorUrl: 'http://localhost:3070',
+      ompBinaryPath: null,
+    });
+    expect(first.changed).toBe(true);
+
+    const second = await installOmpIntegration({
+      home: tmpHome,
+      operatorUrl: 'http://localhost:3070',
+      ompBinaryPath: null,
+    });
+    expect(second.changed).toBe(false);
+    expect(second.actions).toEqual([]);
+    expect(second.mcpServerInstalled).toBe(true);
+    expect(second.wrapperInstalled).toBe(true);
+  });
+
+  it('merge preserves other MCP servers in mcp.json', async () => {
+    await seedPhase1(tmpHome);
+    const ompPaths = resolveOmpPaths(tmpHome);
+    await fs.mkdir(ompPaths.ompAgentDir, { recursive: true });
+    await fs.writeFile(
+      ompPaths.mcpJsonPath,
+      JSON.stringify({
+        mcpServers: {
+          'other-server': { type: 'http', url: 'http://x', headers: { Authorization: 'Bearer y' } },
+        },
+        unrelated: 'preserved',
+      }),
+    );
+
+    await installOmpIntegration({
+      home: tmpHome,
+      operatorUrl: 'http://localhost:3070',
+      ompBinaryPath: null,
+    });
+
+    const cfg = JSON.parse(await fs.readFile(ompPaths.mcpJsonPath, 'utf8'));
+    expect(cfg.mcpServers['other-server']).toBeDefined();
+    expect(cfg.mcpServers['papercusp-su']).toBeDefined();
+    expect(cfg.unrelated).toBe('preserved');
+  });
+
+  it('strips the legacy CLAUDE.md playbook block', async () => {
+    await seedPhase1(tmpHome);
+    const ompPaths = resolveOmpPaths(tmpHome);
+    await fs.mkdir(ompPaths.ompAgentDir, { recursive: true });
+    const before = [
+      '# top of file',
+      '',
+      '<!-- BEGIN papercusp-su playbook (managed by install-standalone-mcp.sh) -->',
+      'old playbook content',
+      '<!-- END papercusp-su playbook -->',
+      '',
+      '# bottom of file',
+      '',
+    ].join('\n');
+    await fs.writeFile(ompPaths.legacyContextPath, before);
+
+    const result = await installOmpIntegration({
+      home: tmpHome,
+      ompBinaryPath: null,
+    });
+    expect(result.actions.some((a) => a.startsWith('stripped legacy'))).toBe(true);
+
+    const after = await fs.readFile(ompPaths.legacyContextPath, 'utf8');
+    expect(after).not.toContain('BEGIN papercusp-su playbook');
+    expect(after).toContain('# top of file');
+    expect(after).toContain('# bottom of file');
+  });
+
+  it('removes the legacy auto-discovered extension copy', async () => {
+    await seedPhase1(tmpHome);
+    const ompPaths = resolveOmpPaths(tmpHome);
+    await fs.mkdir(path.dirname(ompPaths.legacyExtensionPath), { recursive: true });
+    await fs.writeFile(ompPaths.legacyExtensionPath, '// legacy ext');
+
+    await installOmpIntegration({ home: tmpHome, ompBinaryPath: null });
+
+    expect(
+      await fs
+        .access(ompPaths.legacyExtensionPath)
+        .then(() => true)
+        .catch(() => false),
+    ).toBe(false);
+  });
+});
+
+describe('readOmpIntegrationState', () => {
+  it('reports installed=false on a fresh tree', async () => {
+    const state = await readOmpIntegrationState({ home: tmpHome, ompBinaryPath: null });
+    expect(state.mcpServerInstalled).toBe(false);
+    expect(state.wrapperInstalled).toBe(false);
+    expect(state.legacyBlockPresent).toBe(false);
+    expect(state.wrapperPath).toBe(path.join(tmpHome, '.local', 'bin', 'omp-su'));
+  });
+
+  it('reports installed=true after install', async () => {
+    await seedPhase1(tmpHome);
+    await installOmpIntegration({ home: tmpHome, ompBinaryPath: null });
+    const state = await readOmpIntegrationState({ home: tmpHome, ompBinaryPath: null });
+    expect(state.mcpServerInstalled).toBe(true);
+    expect(state.wrapperInstalled).toBe(true);
+  });
+
+  it('pathWarning fires when wrapperDir not on PATH', async () => {
+    const oldPath = process.env.PATH;
+    process.env.PATH = '/usr/bin:/bin';
+    try {
+      const state = await readOmpIntegrationState({ home: tmpHome, ompBinaryPath: null });
+      expect(state.pathWarning).toContain('not on PATH');
+    } finally {
+      process.env.PATH = oldPath;
+    }
+  });
+
+  it('pathWarning null when wrapperDir IS on PATH', async () => {
+    const oldPath = process.env.PATH;
+    process.env.PATH = `${path.join(tmpHome, '.local', 'bin')}:/usr/bin`;
+    try {
+      const state = await readOmpIntegrationState({ home: tmpHome, ompBinaryPath: null });
+      expect(state.pathWarning).toBeNull();
+    } finally {
+      process.env.PATH = oldPath;
+    }
+  });
+});
+
+describe('uninstallOmpIntegration', () => {
+  it('removes papercusp-su entry but preserves other servers', async () => {
+    await seedPhase1(tmpHome);
+    const ompPaths = resolveOmpPaths(tmpHome);
+    await fs.mkdir(ompPaths.ompAgentDir, { recursive: true });
+    await fs.writeFile(
+      ompPaths.mcpJsonPath,
+      JSON.stringify({
+        mcpServers: {
+          'other-server': { type: 'http', url: 'http://x', headers: { Authorization: 'Bearer y' } },
+        },
+      }),
+    );
+    await installOmpIntegration({ home: tmpHome, ompBinaryPath: null });
+
+    const result = await uninstallOmpIntegration({ home: tmpHome, ompBinaryPath: null });
+    expect(result.changed).toBe(true);
+    expect(result.mcpServerInstalled).toBe(false);
+    expect(result.wrapperInstalled).toBe(false);
+
+    const cfg = JSON.parse(await fs.readFile(ompPaths.mcpJsonPath, 'utf8'));
+    expect(cfg.mcpServers['other-server']).toBeDefined();
+    expect(cfg.mcpServers['papercusp-su']).toBeUndefined();
+  });
+
+  it('uninstall on an empty tree is a no-op', async () => {
+    const result = await uninstallOmpIntegration({ home: tmpHome, ompBinaryPath: null });
+    expect(result.changed).toBe(false);
+    expect(result.actions).toEqual([]);
+  });
+});
