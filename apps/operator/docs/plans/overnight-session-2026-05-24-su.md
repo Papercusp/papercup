@@ -11,9 +11,9 @@ owner: avi@storewolf.com
 
 ## Now
 
-**State:** SU autonomous loop, 12 commits (11 parent + 1 submodule), 167 commits ahead of `origin/main`. All verifiers green. Phase 2 P-016 shipped; Phase 1b Q-4 resolved; binding-types groundwork laid for P-068.
+**State:** SU autonomous loop, ~20 parent commits + 1 submodule, ~177 commits ahead of `origin/main`. All verifiers green. **Phase 1a backend COMPLETE** (P-013a + P-010 shipped overnight); Phase 2 P-016 shipped; Phase 1b Q-4 resolved + binding-types groundwork laid for P-068.
 
-**Next action (for human):** review the 12 commits at your pace; decide whether to push to `origin/main` and whether to act on the surfaced design memos.
+**Next action (for human):** review the commits at your pace; decide whether to push to `origin/main` and whether to act on the surfaced design memos. **Phase 1a's only remaining work is P-012 UI, design-gated on a picker memo.**
 
 ## What shipped
 
@@ -44,6 +44,17 @@ The binding-service design memo is well-developed though still "draft for review
 - **15 unit tests pass.**
 
 **Crucially: no service implementation.** Just types. If you revise the memo, the types change; downstream consumers get typecheck errors to update. No behavior is committed.
+
+### Phase 1a backend — COMPLETE (P-013a + P-010 shipped this turn)
+
+The Phase 1a plan flagged P-013a as "blocked on Phase 1b P-068 design" but with `binding-types.ts` shipped the schema gap was unblocked. P-010 (Entry 1 backend) followed naturally.
+
+- **Commit `8ed90e57`** — `ensureSharedRepoBindingCacheTable()` added to `apps/operator/lib/ensure-schema-dogfood.ts`. Schema mirrors `BindingRecord` verbatim; PK `(workspace_id, provider, github_repository_id)`; wired into `DOGFOOD_REACTIVE_TABLES`. 7 structural tests.
+- **Commit (P-010 helper)** — `apps/operator/lib/harness/init-local-dir.ts` (180 LOC) + 20 tests including 5 real-filesystem integration cases. `mkdir + git init` via shell-less `execFile`. Idempotent; structured `InitLocalDirError` with the same `.code` vocabulary as `clone-github.ts` for response-shape uniformity.
+- **Commit `3caa50ca`** — `POST /harness/projects` route extended with the Entry 1 discriminator (`{slug, parentDir, folderName}`). Three entries now wired backend-side (Entry 1 / Entry 2 GitHub URL / Entry 3 existing folder); only Entry 4 (harness link, Phase 1b) remains as a placeholder.
+- **Commits `bca885c0` + `2daa73c5`** — Phase 1a plan Now-block + execution-plan index updated to reflect the new state.
+
+**Phase 1a backend is now feature-complete.** Only P-012 (the 4-entry picker UI) remains, design-gated on the picker design memo (Q-1 in the Phase 1a plan).
 
 ### Plan documentation hygiene
 
