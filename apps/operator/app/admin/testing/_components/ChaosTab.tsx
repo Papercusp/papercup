@@ -83,6 +83,9 @@ export default function ChaosTab() {
   const tauriUnlistenRef = useRef<(() => void) | null>(null);
   const tauriPostRef = useRef<((msg: ControllerMsg) => void) | null>(null);
   const fallbackStopTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const fallbackFinalizeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const liveEventsRef = useRef<RecorderEvent[]>([]);
+  const progressRef = useRef<{ clicks: number; elapsedMs: number }>({ clicks: 0, elapsedMs: 0 });
 
   useEffect(() => {
     setHistory(loadRuns());
@@ -133,7 +136,9 @@ export default function ChaosTab() {
     runIdRef.current = runId;
     setRunState('launching');
     setProgress({ clicks: 0, elapsedMs: 0 });
+    progressRef.current = { clicks: 0, elapsedMs: 0 };
     setLiveEvents([]);
+    liveEventsRef.current = [];
     setLastSummary(null);
     setHistoricalRunId(null);
 
@@ -147,6 +152,7 @@ export default function ChaosTab() {
       (window as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__,
     );
     if (inTauri) await closeAllRecorderWindows();
+    const controllerStartedAt = Date.now();
     const startMsg: ControllerMsg = {
       type: 'start',
       runId,
@@ -159,6 +165,10 @@ export default function ChaosTab() {
         clearTimeout(fallbackStopTimerRef.current);
         fallbackStopTimerRef.current = null;
       }
+      if (fallbackFinalizeTimerRef.current) {
+        clearTimeout(fallbackFinalizeTimerRef.current);
+        fallbackFinalizeTimerRef.current = null;
+      }
       channelRef.current?.close();
       channelRef.current = null;
       tauriUnlistenRef.current?.();
@@ -168,6 +178,22 @@ export default function ChaosTab() {
       recorderWindowRef.current = null;
       if (inTauri) void closeAllRecorderWindows();
     };
+    const finalizeFromController = () => {
+      const summary: RunSummary = {
+        runId,
+        startedAt: controllerStartedAt,
+        endedAt: Date.now(),
+        durationMs: Math.max(progressRef.current.elapsedMs, Date.now() - controllerStartedAt),
+        clicks: progressRef.current.clicks,
+        events: liveEventsRef.current,
+        routes: rollupRoutes(liveEventsRef.current),
+      };
+      setRunState('idle');
+      setLastSummary(summary);
+      setHistory(saveRun(summary));
+      cleanup();
+    };
+
     const handleRecorderMsg = (m: RecorderMsg) => {
       if (m.runId && m.runId !== runId) return;
       if (m.type === 'ready') {
@@ -181,16 +207,32 @@ export default function ChaosTab() {
           if (tauriPostRef.current) tauriPostRef.current(msg);
           else channelRef.current?.postMessage(msg);
         }, DURATIONS[duration] + 2_000);
+        if (fallbackFinalizeTimerRef.current) clearTimeout(fallbackFinalizeTimerRef.current);
+        fallbackFinalizeTimerRef.current = setTimeout(() => {
+          finalizeFromController();
+        }, DURATIONS[duration] + 6_000);
       } else if (m.type === 'progress') {
-        setProgress({ clicks: m.clicks, elapsedMs: m.elapsedMs });
+        progressRef.current = { clicks: m.clicks, elapsedMs: m.elapsedMs };
+        setProgress(progressRef.current);
       } else if (m.type === 'event') {
-        setLiveEvents((cur) => [...cur, m.event]);
+        setLiveEvents((cur) => {
+          const next = [...cur, m.event];
+          liveEventsRef.current = next;
+          return next;
+        });
       } else if (m.type === 'done') {
+        if (fallbackFinalizeTimerRef.current) {
+          clearTimeout(fallbackFinalizeTimerRef.current);
+          fallbackFinalizeTimerRef.current = null;
+        }
         setRunState('idle');
         const persisted = loadRuns();
-        const saved = persisted.find((run) => run.runId === m.summary.runId) ?? m.summary;
-        setLastSummary(saved);
-        setHistory(persisted.length > 0 ? persisted : saveRun(m.summary));
+        const targetRunId = m.summary?.runId ?? runId;
+        const saved = persisted.find((run) => run.runId === targetRunId) ?? persisted[0] ?? m.summary ?? null;
+        if (saved) {
+          setLastSummary(saved);
+          setHistory(persisted.length > 0 ? persisted : saveRun(saved));
+        }
         cleanup();
       }
     };
