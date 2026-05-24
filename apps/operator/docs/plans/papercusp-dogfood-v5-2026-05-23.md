@@ -13,7 +13,7 @@ supersedes: papercusp-dogfood-v4-2026-05-23
 
 ## What changed from v4
 
-v5 started as a maintenance pass folding in the v4 audit findings plus user resolutions on the 9 open questions. The 2026-05-24 addendum below adds one product/authority change: GitHub URL harness creation is canonicalized by stable repository id, and unclaimed shared harnesses can be claimed or superseded by verified GitHub maintainers.
+v5 started as a maintenance pass folding in the v4 audit findings plus user resolutions on the 9 open questions. Three 2026-05-24 addenda were added during a follow-up review pass: (1) canonical shared-harness binding by GitHub repository id + claim/supersede by verified maintainers; (2) two carve-out deferrals (proxy-witness pattern for cross-engineer-verifiable LLM stats, plans-harness-scoped rework); (3) Insights tab + anti-fakery (trust tiers, two-channel pubkey↔login binding) + contributor stats + user profile page. The addendum sections below summarize each; in-place edits to design / decisions / phases reflect each addendum's content.
 
 **Audit-driven changes (10):**
 
@@ -57,6 +57,16 @@ Authority rule: unclaimed harnesses are provisional community harnesses. Claimed
 
 Implementation hooks added by this addendum: D-025, D-026, P-068, P-069, §5.1, and the Cupboard schema/API updates in §10.2/§10.3.
 
+## 2026-05-24 addendum 3 — Insights, anti-fakery, contributor stats, user profile
+
+Three threads from the 2026-05-24 review pass land in v5 in-place rather than as deferrals:
+
+- **Insights tab + post-install default landing (§9.0, D-029)**. New pinned-top sidebar tab in every shared harness. After Entry 2 / Entry 4 / §5 wizard completion, the operator force-routes the user to `/harness/<slug>/insights` until they dismiss it (tracked in LOCAL `insights_first_visit` per §7.4). Six cards: Project, Activity feed, People, Your place, How it works here, Spend (self-reported with proxy-witness deferral banner). Private harnesses get a reduced Insights surface so the navigation is consistent.
+- **Anti-fakery: stat trust tiers + two-channel binding (§17, §0.2.7, D-030, D-031)**. Every collaboration stat carries an explicit tier — A=GitHub-derived ✓, B=`completion_ref`-verified ✓, C=Hyperbee-claimed unmarked, D=self-reported ⏱. Tiers never aggregate across boundaries; Cupboard listings use tier-A only. Pubkey↔login binding requires two independent channels: server-side `gh api /user` OAuth re-check + a GitHub-verified commit pushing a signed `.harness/contributors/<github_login>.json` file to the contributor's user branch. Unverified contributors contribute to zero stats. Sybil cost: one real GitHub account per Sybil.
+- **Contributor activity stats + user profile page (§9.2 update, §18, D-027, D-028)**. Activity stored as append-only `contributor_usage_events` ledger in HYPERBEE; mutable counter columns explicitly rejected (LWW race-prone). Per-contributor activity badges with tier labels on Contributors tab, Insights People card, feature/PR cards. New `/users/github/<github_user_id>` user profile page (numeric canonical, redirects from `/users/<login>`) showing harness participation + tier-labeled stats, filtered by viewer's harness-membership privacy invariants. Replaces the Marketplace `publishedBy` GitHub-direct link.
+
+Implementation hooks added by this addendum: D-027 through D-031, P-070 through P-076, §0.2.7, §9.0, §17, §18, schema additions to `contributors` and `harness_features_consolidated`-adjacent tables, new HYPERBEE `contributor_usage_events`, new LOCAL `insights_first_visit`. Spend remains self-reported per the proxy-witness deferral.
+
 ## 2026-05-24 addendum — deferrals carved into separate plan docs
 
 Two design threads surfaced during the 2026-05-24 review pass have been carved into standalone plan docs so they can be reviewed and scheduled independently of v5. Until those plans land, the corresponding v5 surfaces ship in their simplest form:
@@ -71,17 +81,19 @@ Two design threads surfaced during the 2026-05-24 review pass have been carved i
 **Two-ensure-path reality (NEW in v5):**
 - `libs/papercusp/libs/db/sql/*.sql` → 114 SQL-migrated tables, run by the migration system at boot.
 - `apps/operator/lib/ensure-schema.ts` → 57 tables in `harness_shared` created at operator boot via `CREATE TABLE IF NOT EXISTS`.
-- New tables added by v5 (`feature_queue`, `contributors`, augmented `pr_reviewer_settings`) go into `ensure-schema.ts` — same path the existing HYPERBEE-bucket tables use.
+- New tables added by v5 (`feature_queue`, `contributors`, augmented `pr_reviewer_settings`, plus addendum-3's `contributor_usage_events` and the LOCAL `insights_first_visit`) go into `ensure-schema.ts` — same path the existing HYPERBEE-bucket tables use.
 
 ## Goals
 
-(Same as v4. Restated for completeness.)
+(v4 goals + two additions from 2026-05-24 addendum 3.)
 
 1. **Workspace + harness model** that supports private + shared modes with submodule walking.
 2. **Per-human cross-device identity** via GitHub-Gist attestation, no centralized server.
 3. **Live collab via Hyperbee + Autobase**, falling back to git-as-sync only if Phase 0 spike fails.
 4. **GitHub-forced for PRs and identity attestation**, behind a `PrHost` abstraction.
 5. **A Cupboard registry for public harnesses**, discoverable + joinable in one click.
+6. **(addendum 3) Honest collaboration stats**: every surfaced number carries an explicit trust tier (§17); contributors are verified via the two-channel binding (§0.2.7) before counting; fake-by-construction Sybils inflate nothing.
+7. **(addendum 3) New-contributor orientation**: Insights tab (§9.0) is pinned-top and the post-install default landing, so a new joiner immediately sees who's here, what's happening, and what the harness is about.
 
 ## Non-goals
 
@@ -102,7 +114,8 @@ v5 ships when:
 - Phase 0 spike passes (Holepunch primitives bundle and converge as expected) OR the named fallback is invoked.
 - Phases 1a, 1b, 2, 3, 4 are complete: a private harness on papercup runs the existing single-engineer flow against this plan's primitives.
 - Phases 5a, 5b, 6, 7, 8 are complete: a shared-private harness works end-to-end with one other engineer.
-- Phase 9 ships Cupboard + Discord + sync-with-main.
+- **(addendum 3) Two-channel binding is live (P-075) before any tier-A/B/C stat surfaces**, and the Insights tab (P-073) renders trust-tier-labeled stats for both viewer's own and peer activity.
+- Phase 9 ships Cupboard + Discord + sync-with-main (with Cupboard stats restricted to tier-A per P-076).
 - Phases 10, 11 are complete: peer-mirror is opt-in-able and Cupboard listings exist.
 - Dogfood signal: the team is using Papercusp to run Papercusp's own development queue, not just demoing.
 
@@ -154,6 +167,44 @@ The core shift from "Papercusp with collaboration features" to "Papercusp where 
 **Auto-trust across devices.** Trust is keyed by `trusted_github_user_id`. New devices added by a trusted human are auto-trusted with no re-trust gesture. OAuth + gist combination guarantees only the actual GitHub-account holder can bind a new device.
 
 **Revocation race (Q-3, resolved)**: when a stolen device's pubkey is revoked, prior writes from that pubkey persist in Autobase history (append-only). Future writes are ignored. User accepts this; no design changes.
+
+#### §0.2.7 — Two-channel binding verification (NEW in 2026-05-24 addendum 3)
+
+Steps 1-7 above bind a device pubkey to a GitHub user via a gist that only the real GitHub account holder can publish. That's strong, but the **claim that "this pubkey is `github_user_id` N"** still rides into Hyperbee as one row written by one device. A malicious device could write a row asserting an `_id` it doesn't own and hope no peer re-verifies the gist quickly.
+
+To eliminate the asymmetric trust window, every joining device must pass **two independent verification channels** before its contributor record counts in any tier-A/B/C stat:
+
+**Channel 1 — Server-side OAuth re-check.** During join, the operator (not the client) calls `GET https://api.github.com/user` using the freshly-issued OAuth token. The response's `id` and `login` MUST match what the device claims in its Hyperbee binding row. This proves the device currently holds a live OAuth session for the claimed GitHub account — something a Sybil can't fake without GitHub-account compromise.
+
+**Channel 2 — Branch-pushed signed binding file with GitHub-verified commit author.** Device pushes a file `.harness/contributors/<github_login>.json` to its `user/<github_user_id>` branch (numeric branch name per D-010) as the *initial commit on that branch*, signed via the GitHub-issued commit signing key in `gh auth`. The file body:
+
+```json
+{
+  "github_user_id": 12345,
+  "github_login": "alice",
+  "device_pubkey": "ed25519:<base64url>",
+  "device_attestation_gist_id": "<gist_id>",
+  "joined_at": "2026-05-24T18:00:00Z",
+  "signature_by_device": "<base64url-signed canonical body>"
+}
+```
+
+The asymmetry — and what makes this channel non-spoofable — is **GitHub's commit-author attribution**, not the branch name. Any peer can:
+
+1. `git fetch origin user/<github_user_id>` and verify the file exists with the expected device-pubkey signature.
+2. `GET https://api.github.com/repos/<owner>/<repo>/commits/<sha>` and confirm `author.login` matches the claimed `github_login` AND `verification.verified` is `true`. GitHub only stamps `verified=true` when the commit signature chains to a GPG/SSH/web-flow key registered on the asserted account. No other user can produce a verified commit attributed to alice without compromising her GitHub account.
+
+(Numeric-branch detail: D-010 makes `user/12345` the canonical branch name. The login-claim lives inside the file + on the GitHub commit metadata, not in the branch path. Either is verifiable; using both is belt-and-suspenders.)
+
+**Both channels MUST pass.** Result is one of:
+
+- **Both pass** → contributor row is `verified`. Their pubkey is auto-trusted across that user's future devices (per §0.2 step 5-6); their stats count in all tiers.
+- **Channel 1 passes, channel 2 missing** → contributor row is `pending` for up to 24h while the branch may still be propagating; UI shows ⏳ "join finalizing". After 24h with no channel-2 file, demoted to `unverified`.
+- **Channel 1 fails OR signature invalid** → contributor row is `unverified`. Render with a clear badge ("⚠ binding not verified"); do not count toward any aggregate stat. The user can re-join via the wizard to retry; no auto-retry (a permission gap is the most likely cause and re-OAuth is the fix).
+
+**Why both channels:** server-side OAuth alone proves the live session; branch-pushed file alone proves write access at moment-of-push. Together they prove both, and either's absence is a useful diagnostic (OAuth fail = bad token, branch fail = branch protection misconfig).
+
+**Sybil cost (intended):** each Sybil pubkey needs a separate GitHub account (phone-verified by GitHub) with both OAuth scopes granted AND branch-write to a `user/<the-Sybil-login>` branch on the harness repo. That's friction GitHub already imposes; Papercusp inherits it.
 
 #### §0.3 — Contributors
 
@@ -249,8 +300,11 @@ There is deliberately no "private harness from GitHub URL" branch. If the user w
 3. Joins Hyperswarm topic (`<hex>`).
 4. Bootstraps Hyperbee from peer-replicated Autobase.
 5. Seeds local PG from the projection.
-6. Creates `user/<github_user_id>` branch + worktree.
-7. Publishes contributor binding to Hyperbee.
+6. Creates `user/<github_user_id>` branch + worktree (numeric, per D-010).
+6.5. **Pushes signed `.harness/contributors/<github_login>.json` to that branch** as a GitHub-signed commit (channel 2 of §0.2.7 two-channel binding). The push author is what proves the login claim — GitHub's `commits` API returns `author.login` for any SHA, which peers can re-derive without trusting the file's body.
+7. Publishes contributor binding to Hyperbee (channel 1 server-side OAuth re-check happens here per §0.2.7).
+8. Verifier waits for both channels green (or marks `pending`/`unverified` per §0.2.7).
+9. **Routes the operator to `/harness/<slug>/insights`** as the post-install default landing (§9.0). LOCAL `insights_first_visit` row is created with null `seen_at_ts`; Insights's dismiss action sets it.
 
 ### §4 — Harness states + transitions
 
@@ -372,7 +426,7 @@ Several v4-classified HYPERBEE tables (`coord_presence`, `harness_decisions`, `h
 
 New v5 tables (`feature_queue`, `contributors`, augmented `pr_reviewer_settings`) go into `ensure-schema.ts` — same path as existing HYPERBEE-bucket tables.
 
-#### §7.1 — HYPERBEE bucket (7 tables, ~live state)
+#### §7.1 — HYPERBEE bucket (8 tables, ~live state)
 
 Propagate via Hyperbee CRDT (Autobase log → Hyperbee KV → per-peer projection back into PG).
 
@@ -380,7 +434,8 @@ Propagate via Hyperbee CRDT (Autobase log → Hyperbee KV → per-peer projectio
 |---|---|---|---|
 | `harness_features_consolidated` | `001-shared.sql` | Queue, status, working state change sub-second | `features/by-id/<feature_id>` + `features/by-status/<status>/<id>` |
 | `feature_queue` (NEW) | `ensure-schema.ts` | Pointer table; queue membership live | `queue/<github_user_id>/<feature_id>` |
-| `contributors` (NEW) | `ensure-schema.ts` | Membership + device attestations | `contributors/<github_user_id>` |
+| `contributors` (NEW) | `ensure-schema.ts` | Membership + device attestations + two-channel binding state | `contributors/<github_user_id>` |
+| `contributor_usage_events` (NEW addendum 3) | `ensure-schema.ts` | Append-only per-event activity ledger; rollups derived on read | `usage/<github_user_id>/<event_id>` (append-only) |
 | `coord_presence` | `ensure-schema.ts` | Who is in harness UI right now | `presence/<github_user_id>/<machine_label>` |
 | `feature_claims` (NEW) | `ensure-schema.ts` (audit log only) | Orchestrator arbitration; Autobase-only | `claims/<feature_id>/<seq>` (append-only) |
 | `harness_feature_prs` | `ensure-schema.ts` | Shared PR metadata + live status from poll | `prs/<feature_id>` |
@@ -412,7 +467,8 @@ CREATE TABLE IF NOT EXISTS harness_shared.feature_queue (
 CREATE INDEX IF NOT EXISTS idx_feature_queue_feature
   ON harness_shared.feature_queue (harness_slug, feature_id);
 
--- contributors: human identity with device list + attestation refs
+-- contributors: human identity with device list + attestation refs +
+-- two-channel binding state (§0.2.7)
 CREATE TABLE IF NOT EXISTS harness_shared.contributors (
   harness_slug TEXT NOT NULL,
   github_user_id BIGINT NOT NULL,
@@ -424,9 +480,39 @@ CREATE TABLE IF NOT EXISTS harness_shared.contributors (
   revoked_pubkeys TEXT[] NOT NULL DEFAULT '{}',
   joined_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   last_seen_at TIMESTAMPTZ,
+  -- §0.2.7 two-channel binding state. 'unverified' until both channels pass.
+  binding_status TEXT NOT NULL DEFAULT 'pending',
+    -- 'pending' | 'verified' | 'unverified'
+  channel1_verified_at TIMESTAMPTZ,    -- server-side gh api /user re-check
+  channel2_verified_at TIMESTAMPTZ,    -- .harness/contributors/<login>.json fetched + verified
+  channel2_branch_ref TEXT,            -- 'user/<github_login>' for diagnostics
+  binding_last_checked_at TIMESTAMPTZ,
   schema_version BIGINT NOT NULL DEFAULT 1,
   PRIMARY KEY (harness_slug, github_user_id)
 );
+
+-- contributor_usage_events: append-only per-event activity ledger. Source of
+-- truth for all tier-C activity stats (D-027); rollups derived on read.
+-- Never store mutable counters on `contributors`.
+CREATE TABLE IF NOT EXISTS harness_shared.contributor_usage_events (
+  harness_slug TEXT NOT NULL,
+  event_id TEXT NOT NULL,             -- ulid-like; HYPERBEE key
+  github_user_id BIGINT NOT NULL,
+  device_pubkey TEXT NOT NULL,
+  kind TEXT NOT NULL,
+    -- 'feature_authored' | 'feature_queued' | 'feature_worked_start'
+    -- | 'feature_worked_end' | 'pr_opened' | 'decision_added'
+    -- | 'plan_authored' | 'agent_run_completed' | ...
+  ref_id TEXT,                        -- feature_id | pr_number | plan_id | run_id
+  payload JSONB,                      -- kind-specific extra context
+  ts TIMESTAMPTZ NOT NULL DEFAULT now(),
+  schema_version BIGINT NOT NULL DEFAULT 1,
+  PRIMARY KEY (harness_slug, event_id)
+);
+CREATE INDEX IF NOT EXISTS idx_usage_events_user
+  ON harness_shared.contributor_usage_events (harness_slug, github_user_id, ts DESC);
+CREATE INDEX IF NOT EXISTS idx_usage_events_kind
+  ON harness_shared.contributor_usage_events (harness_slug, kind, ts DESC);
 
 -- feature_claims: Autobase-only audit log (also mirrored to PG for diagnostics).
 CREATE TABLE IF NOT EXISTS harness_shared.feature_claims (
@@ -513,6 +599,7 @@ NEVER cross machines. Operational, telemetry, runtime, personal config, UI state
 | **Known schema versions** | NEW `known_schema_versions(harness_slug, max_known_version, updated_at)` — per-engineer; drives the §6 newer-schema-detection toast |
 | **Auto-review audit** | NEW `auto_review_audit(harness_slug, pr_number, action, ts)` — per-engineer log of auto-approve / auto-merge actions |
 | **Claim audit** | NEW `claim_audit(harness_slug, feature_id, attempt_ts, outcome)` — per-engineer log of orchestrator claim attempts |
+| **Insights first-visit flag** | NEW `insights_first_visit(harness_slug, user_id, seen_at_ts)` — per-`(workspace, harness)`. Null seen_at_ts → operator force-routes new contributor to `/harness/<slug>/insights` on next nav. Set to now() on first dismissal. Drives the §9.0 post-install default landing. |
 | **Shared repo binding cache** | NEW `shared_repo_binding_cache(provider, github_repository_id, harness_topic, claim_status, refreshed_at)` — per-engineer cache of the Cupboard binding lookup; authoritative source remains §5.1/§10 server. |
 
 #### §7.5 — SECURITY bucket (~22 tables, NEVER cross machines under any circumstance)
@@ -670,14 +757,25 @@ Click → detail panel with description (vditor-rendered markdown), notes, audit
 
 #### §9.2 — Contributors tab
 
-Lists all contributors (HYPERBEE-synced `contributors` table):
-- Avatar (GitHub avatar by `github_user_id` or identicon fallback)
-- Display name + `@github_username` (resolved at display-time)
-- Joined date
-- Activity badges: features authored, features worked, PRs merged
+Lists all contributors (HYPERBEE-synced `contributors` table). Each row:
+- Avatar (GitHub avatar by `github_user_id` or identicon fallback) → click routes to user profile §18.
+- Display name + `@github_username` (resolved at display-time).
+- **Binding badge** (§0.2.7): `verified ✓` / `pending ⏳` / `unverified ⚠`. Unverified contributors are listed but their stats are zeroed out and rendered greyed.
+- Joined date.
+- **Activity badges with trust tiers** (per §17):
+  - PRs merged (✓ A — GitHub-derived).
+  - Features shipped (✓ B — `completion_ref`-verified).
+  - Features authored / worked (C — Hyperbee-claimed, unmarked).
+  - Total Hyperbee write events (C — proxy for "active in the harness").
+  - **Token usage pill** next to the badges: tier-D for the viewer's own row only (⏱), hidden for everyone else's rows in v5. When proxy-witness pattern ships (deferred per the addendum), this becomes a tier-B-equivalent ✓ pill visible across contributors.
+- Sortable by: joined-recency, PRs-merged (✓ A), features-shipped (✓ B), activity (C). The sortable columns are visually grouped by tier so users see what they're ranking on.
 - Per-contributor menu (visible if I have `pr_reviewer_role_enabled`):
-  - "Add to my trust list" / "Remove from my trust list" (consequence modal per §8.3)
-- Devices section (collapsed by default): each `device_pubkey` + machine label + attestation gist URL (link out)
+  - "Add to my trust list" / "Remove from my trust list" (consequence modal per §8.3).
+  - "Open Papercusp profile" (→ §18 surface).
+  - "Open on GitHub" (→ `https://github.com/<github_login>`).
+- Devices section (collapsed by default): each `device_pubkey` + machine label + attestation gist URL (link out).
+
+Aggregated activity numbers come from the append-only `contributor_usage_events` ledger in §7.1 (D-027), NOT from mutable counter columns on `contributors`. Rollups are derived on read.
 
 #### §9.3 — PRs tab
 
@@ -1093,20 +1191,22 @@ Sizing legend: **S** = ~1-3 days. **M** = ~1 week. **L** = ~2-3 weeks. **XL** = 
 
 ### Phase 1a — Workspace + create-harness UI shell + classifier [M]
 
-- **P-006** [S] Create the `papercusp-workspace` (literal name) — sentinel workspace for dogfooding papercup itself. Schema-only; UI binds later.
-- **P-007** [S] Implement §2 five-rule classifier as `apps/operator/lib/harness/classify-tree.ts`. Tests for all five cases against papercup's actual `libs/` (9 sub + 7 plain = 16 dirs total).
+- **P-006** [S] Create the `papercusp-workspace` (literal name) — sentinel workspace for dogfooding papercup itself. Schema-only; UI binds later. **DONE** in commit `805a2e70` (`apps/operator/lib/harness/papercusp-workspace.ts` — `PAPERCUSP_WORKSPACE_ID` constant + `ensurePapercuspWorkspace()` idempotent helper) + wired into `instrumentation-node.ts` boot path in commit `0fdbdbe0` (P-014). 6/6 unit tests pass; verified live via `scripts/run-dogfood-bootstrap.ts` (registry.json now has 6 workspaces, sentinel present).
+- **P-007** [S] Implement §2 five-rule classifier as `apps/operator/lib/harness/classify-tree.ts`. Tests for all five cases against papercup's actual `libs/` (9 sub + 7 plain = 16 dirs total). **DONE** in commit `4725cf93`. 14/14 unit tests pass including the real-papercup integration test. Documented in agent insight `/internal/docs/agent-insights/harness-tree-classifier` (commit `603f172f`).
 - **P-010** [M] Entry 1 (new local non-git dir) + Entry 3 (existing local repo): UI shell + backend `{kind: 'local_init'}` and `{kind: 'local_existing'}` handlers. Entry 3 reuses existing `POST /api/harness/projects` path-validation; Entry 1 wraps `mkdir` + `git init` + Entry 3. **Entry 3 does NOT require GitHub auth.**
 - **P-012** [M] Create-harness UI shell: 4-entry picker, per-entry forms, progress UI for clone/init, error handling. Uses vditor for description input.
-- **P-013** [S] PG schema (in `ensure-schema.ts`): register harness rows in `harness_registry` with `entry_kind` + `state` columns. Also adds the new `feature_queue`, `contributors`, `feature_claims`, `pr_reviewer_settings` (augmented), `pr_check_status_cache`, `known_schema_versions`, `auto_review_audit`, `claim_audit`, `webhook_audit`, and `shared_repo_binding_cache` tables.
+- **P-013** [S] PG schema (in `ensure-schema.ts`): register harness rows in `harness_registry` with `entry_kind` + `state` columns. Also adds the new `feature_queue`, `contributors`, `feature_claims`, `pr_reviewer_settings` (augmented), `pr_check_status_cache`, `known_schema_versions`, `auto_review_audit`, `claim_audit`, `webhook_audit`, and `shared_repo_binding_cache` tables. **DONE** in commit `556b37d7`: new sibling file `apps/operator/lib/ensure-schema-dogfood.ts` (kept separate to avoid mass-edit hazards on the 1860-line original). 10 `ensureXxxTable()` functions, all idempotent `CREATE TABLE IF NOT EXISTS`, globalThis-pinned flags. Includes the `wireDogfoodTriggers()` helper that attaches `emit_change_notify` to `DOGFOOD_REACTIVE_TABLES` for P-019 reactivity. Two later additions: `EXISTING_HYPERBEE_REACTIVE_TABLES` (P-019 part 2, commit `59611dde`) + `contributorUsageEvents` / `insightsFirstVisit` (addendum-3, commit `98ff062a`). `shared_repo_binding_cache` from D-026 still pending (waits on Phase 1b P-068).
 
 ### Phase 1b — OAuth + clone + device attestation [L]
 
 **2026-05-24 addendum**: the clone helper remains useful, but Entry 2 is now shared-only. The handler must call P-068 first: existing binding → join existing; no binding → create `shared-private` + unclaimed canonical binding. It must not create a private harness from a GitHub URL.
 
-- **P-008** [M] **REVISED 2026-05-24** Entry 2 (GitHub URL). **Discovered the established pattern is `gh auth login`** (GitHub CLI) — already covered in `apps/operator/app/_components/SetupWizard/StepGit.tsx` and currently feature-flagged for alpha. `gh` registers itself as a git credential helper; from then on a plain `git clone https://github.com/owner/repo` auths transparently via the system credential helper — no token in our process, no OAuth flow in our code. **No `isomorphic-git`/`@octokit/*` needed for the clone path.** Side benefits: respects user's 2FA / SSH keys / GH Enterprise / corp SSO; degrades gracefully for public repos (no auth at all); no token stored in our PG. Built `apps/operator/lib/harness/clone-github.ts` (170 LOC, no new deps) — `parseGithubUrl` (strict regex allowlist for the GitHub URL shapes, rejects gitlab/other hosts/path traversal), `cloneGithubRepo` (execFile shell-less, `GIT_TERMINAL_PROMPT=0` to surface auth_required immediately, half-cloned dest cleanup, structured error codes `invalid_url|dest_exists|auth_required|not_found|git_missing|unknown` mapped to HTTP 400/409/401/404/500/502). 35 unit tests pass including a real-network test for the bad-org case. POST /api/harness/projects extended to accept `{slug, githubUrl, shallow?}` alongside the existing `{slug, path}` (Entry 3). **DONE** in commits TBD.
+- **P-008** [M] **REVISED 2026-05-24** Entry 2 (GitHub URL). **Discovered the established pattern is `gh auth login`** (GitHub CLI) — already covered in `apps/operator/app/_components/SetupWizard/StepGit.tsx` and currently feature-flagged for alpha. `gh` registers itself as a git credential helper; from then on a plain `git clone https://github.com/owner/repo` auths transparently via the system credential helper — no token in our process, no OAuth flow in our code. **No `isomorphic-git`/`@octokit/*` needed for the clone path.** Side benefits: respects user's 2FA / SSH keys / GH Enterprise / corp SSO; degrades gracefully for public repos (no auth at all); no token stored in our PG. Built `apps/operator/lib/harness/clone-github.ts` (170 LOC, no new deps) — `parseGithubUrl` (strict regex allowlist for the GitHub URL shapes, rejects gitlab/other hosts/path traversal), `cloneGithubRepo` (execFile shell-less, `GIT_TERMINAL_PROMPT=0` to surface auth_required immediately, half-cloned dest cleanup, structured error codes `invalid_url|dest_exists|auth_required|not_found|git_missing|unknown` mapped to HTTP 400/409/401/404/500/502). 35 unit tests pass including a real-network test for the bad-org case. POST /api/harness/projects extended to accept `{slug, githubUrl, shallow?}` alongside the existing `{slug, path}` (Entry 3). **DONE** in commit `6cc4f6c9`. Note: Entry 2 is now shared-only per D-025 (private from GitHub URL is gone); the clone helper itself is still useful — wired upstream from the new handler that calls P-068 binding service first.
 - **P-009** [L] Entry 4 (harness link): add link-paste flow. Parse `papercusp://harness?topic=<hex>&github=<owner>/<repo>&repo_id=<github_repository_id>` URL scheme. On accept: GitHub OAuth → clone via P-008 → join Hyperswarm topic → bootstrap Hyperbee → seed PG. Device attestation (P-011) runs here on first-join.
 - **P-011** [L] Device attestation: `apps/operator/lib/identity/attest.ts`. Octokit + gist creation flow with **required scopes `gist` + `read:user`** (audit L). Verifier helper for inbound bindings (compares `gist.owner.id` to claimed `github_user_id`). Local cache (~24h TTL). Tests against a real GitHub test account.
 - **P-068** [M] Canonical shared-repo binding service (§5.1 / §10): resolve GitHub `repository.id`; lookup/create binding by stable repo id; local `shared_repo_binding_cache`; claim/supersede endpoints; permission verifier for `maintain` / `admin`. Entry 2 and §5 must call this before creating any shared harness.
+- **P-075** [M] **Two-channel binding verifier** (D-031 / §0.2.7). Channel 1: operator-side `gh api /user` re-check during join (compares OAuth token's resolved login to claimed `github_user_id`). Channel 2: push signed `.harness/contributors/<github_login>.json` to `user/<github_user_id>` branch as a GitHub-verified commit + verifier that fetches the branch, validates the file's device-pubkey signature, and calls `GET /repos/<owner>/<repo>/commits/<sha>` to confirm `author.login == github_login` AND `verification.verified == true`. Augments `contributors` schema with `binding_status` / `channel1_verified_at` / `channel2_verified_at` / `channel2_branch_ref` / `binding_last_checked_at`. Backgrounds a daily re-check. Surfaces verified/pending/unverified badges in §9.2 Contributors and §9.0 Insights People card. **Blocks P-073 (Insights tab) and any tier-A/B/C stat surface — unverified contributors must not aggregate before this lands.**
+- **P-074** [S] **Insights first-visit auto-route** (D-029 / §9.0). LOCAL `insights_first_visit` table (§7.4). On every harness navigation, if `seen_at_ts` is null for `(workspace_id, harness_slug, user_id)`, force-route to `/harness/<slug>/insights`. Insights dismiss action sets the timestamp. Wire into Entry 2 + Entry 4 + §5 wizard completion handlers.
 
 **Decided-first gate (recap)**: Phase 1a + 1b assume Q-7 resolved (4 repos separate) + `papercusp-workspace` name. Decided.
 
@@ -1131,7 +1231,7 @@ Sizing legend: **S** = ~1-3 days. **M** = ~1 week. **L** = ~2-3 weeks. **XL** = 
 
 **Purpose**: prove the harness-creation + PR + completion_ref flow on a real codebase BEFORE adding any sharing/P2P complexity.
 
-- **P-024** [S] Use Entry 3 to register the papercup repo as a harness in the new `papercusp-workspace`, `state: private`. No GitHub auth needed at this step.
+- **P-024** [S] Use Entry 3 to register the papercup repo as a harness in the new `papercusp-workspace`, `state: private`. No GitHub auth needed at this step. **DONE** in commit `b53185ee` (`apps/operator/lib/harness/register-papercup.ts` — `detectPapercupRoot` walker + `registerPapercupHarness` idempotent registration). Wired into `instrumentation-node.ts` boot path: every boot detects the papercup root + registers it in the `papercusp-workspace` (NOT the active workspace — uses the new optional `workspaceId` param on `saveHarnessRegistry` to target the sentinel surgically without disturbing the user's current session). Live-verified via `scripts/run-dogfood-bootstrap.ts`: PG `harness_registry` now has 2 rows (`default`/8 projects + `papercusp-workspace`/papercup at `/home/marsh-office/papercupai-workspace/papercup`). 5/5 detector unit tests pass. Documented in agent insight `/internal/docs/agent-insights/dogfood-bootstrap` (commit `082b4e5e`).
 - **P-025** [S] Seed initial features into the harness queue. Reuse existing feature-CRUD tools.
 - **P-026** [M] Run a feature end-to-end on papercup: orchestrator picks → worker run → PR opened → manual review → merge → `shipped`. Verify `completion_ref` populates and status reaches `shipped`.
 - **P-027** [S] Observe scale: existing UI on papercup's 175+ tables, 50+ existing features. Capture pain points as follow-up items.
@@ -1143,6 +1243,7 @@ Sizing legend: **S** = ~1-3 days. **M** = ~1 week. **L** = ~2-3 weeks. **XL** = 
 - **P-030** [L] Hyperbee schema + Autobase setup: per-harness corestore, per-writer Hypercore, Autobase wiring. `apps/operator/lib/sync/hyperbee/*` module. **Includes D-024 schema-versioning**: every op carries `schema_version BIGINT`; `known_schema_versions` per-engineer table; ignore-and-toast on newer-than-known.
 - **P-031** [L] Write-side projection: PG write hooks for HYPERBEE-bucket tables → serialize → append to Hypercore. Read-side projection: Hyperbee → PG row writes + `pg_notify` for §13 invalidation. **MUST gate on both ensure-paths complete** (`ensure-schema.ts` + SQL migrations) before projection starts.
 - **P-066** [S] (NEW per Q-6 resolution): Sleeping-laptop bootstrap progress indicator. Subscribe to Autobase merge events; surface as "Syncing harness (N/M ops merged)..." status in harness sidebar header. Auto-dismisses when caught up.
+- **P-070** [M] **`contributor_usage_events` HYPERBEE ledger** (D-027 / §7.1). Append-only event ledger; emitters in: feature CRUD (`feature_authored`, `feature_queued`, `feature_worked_*`), PR daemon (`pr_opened`), decision/plan writes (`decision_added`, `plan_authored`), agent run completion (`agent_run_completed`). Read-side rollup helpers (`rollupForContributor(userId, harnessSlug)` → tier-C activity numbers) used by §9.2 Contributors row + §18 User profile + §9.0 Insights People card. Idempotent dedupe on `event_id` (UUIDv7-style); no race-prone counters anywhere.
 
 ### Phase 5b — Hyperbee UI integration + clobber-toast [M]
 
@@ -1171,10 +1272,13 @@ Sizing legend: **S** = ~1-3 days. **M** = ~1 week. **L** = ~2-3 weeks. **XL** = 
 ### Phase 8 — Sidebar tabs + identity UI [L]
 
 - **P-047** [M] §9.1 Features tab UI. Queue/working/shipped filters. Pull-into-queue actions.
-- **P-048** [M] §9.2 Contributors tab UI. Avatar rendering (GitHub avatar OR identicon). Trust-list actions (gated by `pr_reviewer_role_enabled`).
+- **P-048** [M] §9.2 Contributors tab UI. Avatar rendering (GitHub avatar OR identicon). Trust-list actions (gated by `pr_reviewer_role_enabled`). **Updated for addendum 3:** rows now include binding-status badge (verified ✓ / pending ⏳ / unverified ⚠ per §0.2.7), tier-A/B/C activity badges with tier labels (per §17), sortable activity columns. Click avatar → routes to §18 user profile (P-072).
 - **P-069** [M] Claimed/unclaimed UI: harness header badge, settings banner, create/join existing-harness alert, provisional-owner explainer modal with owner-settings list, Contributors claimants/provisional-owner indicators, and claim CTA gated by GitHub repo permission.
 - **P-049** [S] §9.4 PR-reviewer settings modal.
 - **P-050** [M] vditor integration. **Per D-020-v5 clarification**: vditor used for BOTH editing AND reading of single-markdown surfaces (feature descriptions, decisions, design artifacts). Starlight reserved for real multi-doc sites only (existing `apps/operator-docs/` + `apps/papercusp-docs/`). Migration of existing PlanEditor in `apps/operator/app/admin/plans/` to vditor included.
+- **P-071** [S] **Contributor activity badges** (D-027 / §9.2). Tier-A merged-PR pill (✓ from GitHub API), tier-B features-shipped pill (✓ from `completion_ref`), tier-C activity pill (unmarked, from `contributor_usage_events` rollup), viewer-only tier-D spend pill (⏱). Used in §9.2 Contributors rows, §9.0 Insights People card, §18 user profile, feature/PR card avatars.
+- **P-072** [M] **User profile page** (D-028 / §18). New route `/users/github/<github_user_id>` (numeric canonical) + redirect from `/users/<github_login>`. Header with GitHub avatar/name/login + verified-binding badge. Per-harness collapsible blocks with tier-A/B/C stats (filtered by viewer's shared-harness membership per §18 privacy invariants). Recent activity feed across visible harnesses. Footer with claimed harnesses (§5.1). Updates Marketplace `publishedBy` link target from GitHub-direct to Papercusp profile (which still surfaces the GitHub link).
+- **P-073** [M] **§9.0 Insights tab UI**. Pinned-top sidebar tab. Six cards per §9.0: Project, Activity feed, People, Your place, How it works here, Spend (self-reported with proxy-witness deferral banner). Tier badges from §17 applied throughout. **Blocked-by P-070 (usage ledger) + P-071 (activity badges) + P-075 (binding verifier)** — Insights cannot honestly render People + Activity surfaces until contributors have verified bindings AND activity rollups exist.
 
 ### Phase 9 — Cupboard + Discord + sync-with-main [L]
 
@@ -1182,6 +1286,7 @@ Sizing legend: **S** = ~1-3 days. **M** = ~1 week. **L** = ~2-3 weeks. **XL** = 
 - **P-051b** [S] Cupboard server deployment: Cloudflare-fronted Next.js + managed Postgres at `cupboard.papercusp.dev`. DNS + cert setup.
 - **P-052** [M] Cupboard UI in operator: navbar item, card grid (reuse Marketplace component family), filter + search + detail view.
 - **P-053** [S] Publish-to-Cupboard action wired into §5 wizard for `shared-public` state.
+- **P-076** [S] **Cupboard stats are tier-A only** (D-030 / §17). Cupboard listing schema + indexer pull contributor count, last-activity timestamp, and language tags from the GitHub repo API at index time. Any Hyperbee-claimed numbers (queue depth, working count, harness-internal activity) MUST NOT appear on public Cupboard surfaces. Cards display tier-A stats with ✓ badges; tier-A is derivable by anyone re-hitting the GitHub API, which is the Cupboard trust property.
 - **P-054** [S] Discord integration: deep-link on harness switch (opt-in setting, fallback to HTTPS URL), optional outbound webhook via new `apps/operator/lib/integrations/outbound-webhook.ts` module (audit G).
 - **P-055** [M] §16 sync-with-main trio: status badge, manual sync button (with $EDITOR fallback per audit J), auto-rebase-on-push (wired in P-041).
 
@@ -1341,6 +1446,46 @@ Other git operations (peer-mirror push, sync-with-main rebase) continue using sh
 **Decided (2026-05-24 addendum).** Active shared harnesses are unique by GitHub `repository.id`. Existing binding → join existing. Missing binding → create unclaimed harness with provisional owner. GitHub `maintain`/`admin` users can claim; GitHub `admin` users can supersede hostile/stale unclaimed harnesses.
 
 **Why**: first creators should not permanently squat a repo's Papercusp namespace, but the first harness must still be usable before a maintainer shows up. "Unclaimed community harness" plus repo-maintainer claim/supersede gives both properties.
+
+### D-027 — Contributor activity stored as an append-only event ledger, not mutable counters
+
+**Decided (2026-05-24 addendum 3).** All tier-C contributor activity surfaces ("features authored", "PRs opened", "decisions added", "Hyperbee write events") derive from the new HYPERBEE `contributor_usage_events` ledger (§7.1). The `contributors` row never carries mutable counter columns. Rollups are computed on read.
+
+**Why**: counters under HYPERBEE LWW would silently lose increments under concurrent writes. Events under HYPERBEE LWW are idempotent — each event has a unique `event_id` and never updates after insert, so two devices recording the same activity write distinct rows or the same row twice (dedupable on `event_id`). No lost data. Bonus: the ledger is naturally queryable for trend lines, "what did Alice do this week", and the Insights activity feed.
+
+**Alternatives rejected**: counter columns on `contributors` (LWW race conditions); HYPERBEE-CRDT-counter type (not in the unscoped Holepunch primitives we're committed to per D-015); periodic recompute jobs (introduces drift between display and truth, and requires every peer to run the job to converge).
+
+### D-028 — User profiles keyed by GitHub numeric user id
+
+**Decided (2026-05-24 addendum 3).** The Papercusp user profile page lives at `/users/github/<github_user_id>`. Username routes redirect; the numeric id is canonical (consistent with D-010 which uses numeric id everywhere else in the system).
+
+**Why**: GitHub usernames change; numeric ids do not. Any URL that survives a rename must be numeric. Username routes still work as bookmarks via redirect.
+
+**Alternatives rejected**: username-canonical with rename-detection backfill (race-prone, needs a rename-watcher); Papercusp-internal id (loses the "click takes me to a GitHub-resolvable identity" affordance).
+
+### D-029 — Insights tab is pinned-top + post-install default landing
+
+**Decided (2026-05-24 addendum 3).** The Insights tab (§9.0) is the pinned-top sidebar tab for any shared harness and the page operators force-route to on first visit per `(workspace, harness)` (tracked via LOCAL `insights_first_visit`, §7.4). Private harnesses also get an Insights page with a reduced content set.
+
+**Why**: a new contributor joining a shared harness needs orientation — who's here, what's happening, what the harness is. Burying that one click deeper means most contributors never see it. The Marketplace/Cupboard handoff also benefits: "I installed this harness, now what?" should be answered by the operator, not require the user to discover Insights manually.
+
+**Alternatives rejected**: optional /insights surface (most users never visit it); always-visible inline panel on Features tab (cluttered; doesn't survive `state: private`); modal on first visit (annoying; users dismiss modals reflexively without reading).
+
+### D-030 — Stat trust tiers (A / B / C / D); never aggregate across
+
+**Decided (2026-05-24 addendum 3).** Every collaboration stat carries an explicit tier (§17). Tier-A (GitHub-derived ✓), tier-B (`completion_ref`-verified ✓), tier-C (Hyperbee-claimed, unmarked), tier-D (self-reported ⏱). Aggregates within a tier are fine; cross-tier sums are forbidden in UI surfaces. Cupboard listings use tier-A only.
+
+**Why**: shipping tier-C numbers without labels means anyone making trust decisions on them (auto-approve trust list, "should I onboard this person?", Cupboard rankings) acts on potentially-fabricated data. Honest labeling lets viewers self-calibrate; deliberate refusal-to-aggregate prevents tier-A numbers from being polluted by tier-C ones in the same display.
+
+**Alternatives rejected**: "best-effort verification, no tiering" (the dishonest fallback that loses the trust property); tier-A-only display (loses tier-C surfaces that are genuinely useful, like "who's queueing this feature"); manual tier-tagging per-stat (every new stat surface becomes a design discussion — better to enforce by code path).
+
+### D-031 — Two-channel pubkey↔login binding required for contributor verification
+
+**Decided (2026-05-24 addendum 3).** Every joining device must pass §0.2.7's two-channel verification before its contributor row counts in any tier-A/B/C stat: (channel 1) server-side `gh api /user` OAuth re-check; (channel 2) signed `.harness/contributors/<github_login>.json` file pushed via a GitHub-verified commit to the user's `user/<github_user_id>` branch. Both channels' results are persisted on the `contributors` HYPERBEE row (`binding_status` ∈ `pending`/`verified`/`unverified`).
+
+**Why**: pubkey-signed Hyperbee rows alone prove "the device that signed this row owns the pubkey," not "the device's claimed `github_user_id` is real". Channel 1 proves live OAuth session; channel 2 proves write-access + GitHub-attributed commit author. Together they make Sybil bindings cost a real verified GitHub account per Sybil — the friction is what we want.
+
+**Alternatives rejected**: single-channel (gist-only) verification (one attacker-controlled HTTP fetch; gives the asymmetric trust window we're trying to close); admin-approves-each-contributor (high friction for the team-collab use case); trust-on-first-use (defeats the purpose).
 
 ## Open questions
 
