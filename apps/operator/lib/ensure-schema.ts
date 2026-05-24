@@ -319,9 +319,11 @@ export async function ensureOperatorScansTable(): Promise<void> {
 export async function ensurePlanRevisionsTable(): Promise<void> {
   if (flags.planRevisions) return;
   const { sql } = getOrgPg();
+  // Fresh-install schema includes harness_slug (per-harness-plans-and-docs P-010).
   await sql.unsafe(`
     CREATE TABLE IF NOT EXISTS harness_shared.plan_revisions (
       id               BIGSERIAL PRIMARY KEY,
+      harness_slug     TEXT NOT NULL DEFAULT 'papercup',
       plan_slug        TEXT NOT NULL,
       seq              INT NOT NULL,
       content_hash     TEXT NOT NULL,
@@ -332,8 +334,34 @@ export async function ensurePlanRevisionsTable(): Promise<void> {
       session_id       TEXT,
       session_kind     TEXT,
       created_at       BIGINT NOT NULL,
-      UNIQUE (plan_slug, seq)
+      UNIQUE (harness_slug, plan_slug, seq)
     );
+  `);
+  // Idempotent migration for existing tables (per-harness-plans-and-docs P-010).
+  // Multi-process safe via pg_advisory_xact_lock: the whole DO block runs in
+  // an implicit transaction, the advisory lock serializes concurrent
+  // operator processes calling ensurePlanRevisionsTable for the first time,
+  // and the IF NOT EXISTS check makes it idempotent so late-comers no-op.
+  await sql.unsafe(`
+    DO $body$
+    BEGIN
+      PERFORM pg_advisory_xact_lock(hashtext('per-harness-plans-and-docs:p-010:plan_revisions'));
+      IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = 'harness_shared'
+          AND table_name = 'plan_revisions'
+          AND column_name = 'harness_slug'
+      ) THEN
+        ALTER TABLE harness_shared.plan_revisions
+          ADD COLUMN harness_slug TEXT NOT NULL DEFAULT 'papercup';
+        ALTER TABLE harness_shared.plan_revisions
+          DROP CONSTRAINT IF EXISTS plan_revisions_plan_slug_seq_key;
+        ALTER TABLE harness_shared.plan_revisions
+          ADD CONSTRAINT plan_revisions_harness_plan_seq_key
+          UNIQUE (harness_slug, plan_slug, seq);
+      END IF;
+    END
+    $body$;
   `);
   try {
     await sql.unsafe(`GRANT SELECT, INSERT, UPDATE ON harness_shared.plan_revisions TO harness_app, harness_admin`);
@@ -355,9 +383,11 @@ export async function ensurePlanRevisionsTable(): Promise<void> {
 export async function ensurePlanRunsTable(): Promise<void> {
   if (flags.planRuns) return;
   const { sql } = getOrgPg();
+  // Fresh-install schema includes harness_slug (per-harness-plans-and-docs P-010).
   await sql.unsafe(`
     CREATE TABLE IF NOT EXISTS harness_shared.plan_runs (
       id                BIGSERIAL PRIMARY KEY,
+      harness_slug      TEXT NOT NULL DEFAULT 'papercup',
       plan_slug         TEXT NOT NULL,
       plan_content_hash TEXT NOT NULL,
       session_id        TEXT NOT NULL,
@@ -372,6 +402,28 @@ export async function ensurePlanRunsTable(): Promise<void> {
   await sql.unsafe(`
     CREATE INDEX IF NOT EXISTS plan_runs_plan_slug_idx
       ON harness_shared.plan_runs (plan_slug)
+  `);
+  // P-010: harness-scoped index for plans:runs cross-harness queries.
+  await sql.unsafe(`
+    CREATE INDEX IF NOT EXISTS plan_runs_harness_plan_slug_idx
+      ON harness_shared.plan_runs (harness_slug, plan_slug)
+  `);
+  // Idempotent migration for existing tables — same race-safe shape as plan_revisions.
+  await sql.unsafe(`
+    DO $body$
+    BEGIN
+      PERFORM pg_advisory_xact_lock(hashtext('per-harness-plans-and-docs:p-010:plan_runs'));
+      IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = 'harness_shared'
+          AND table_name = 'plan_runs'
+          AND column_name = 'harness_slug'
+      ) THEN
+        ALTER TABLE harness_shared.plan_runs
+          ADD COLUMN harness_slug TEXT NOT NULL DEFAULT 'papercup';
+      END IF;
+    END
+    $body$;
   `);
   try {
     await sql.unsafe(`GRANT SELECT, INSERT, UPDATE ON harness_shared.plan_runs TO harness_app, harness_admin`);
