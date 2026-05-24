@@ -39,6 +39,44 @@ export interface RecordOpts {
   label?: string | null;
 }
 
+export function toIsoTimestamp(value: string | Date | null | undefined): string | null {
+  if (value == null) return null;
+  if (value instanceof Date) return value.toISOString();
+  const parsed = new Date(value);
+  if (!Number.isNaN(parsed.getTime())) return parsed.toISOString();
+  throw new Error(`invalid timestamp: ${String(value)}`);
+}
+
+function mapAdvSessionRow(r: {
+  id: number;
+  workspace_id: string;
+  plan_slug: string | null;
+  mode: 'omp' | 'console';
+  terminal_bin: string | null;
+  pid: number | null;
+  window_id: string | null;
+  omp_thread_id: string | null;
+  label: string | null;
+  started_at: string | Date;
+  ended_at: string | Date | null;
+  exit_code: number | null;
+}): AdvSessionRow {
+  return {
+    id: r.id,
+    workspaceId: r.workspace_id,
+    planSlug: r.plan_slug,
+    mode: r.mode,
+    terminalBin: r.terminal_bin,
+    pid: r.pid,
+    windowId: r.window_id,
+    ompThreadId: r.omp_thread_id,
+    label: r.label,
+    startedAt: toIsoTimestamp(r.started_at)!,
+    endedAt: toIsoTimestamp(r.ended_at),
+    exitCode: r.exit_code,
+  };
+}
+
 export async function recordAdvSession(opts: RecordOpts): Promise<number | null> {
   try {
     await ensureAdvSessionsTable();
@@ -85,8 +123,8 @@ export async function listAdvSessions(limit = 100): Promise<AdvSessionRow[]> {
       window_id: string | null;
       omp_thread_id: string | null;
       label: string | null;
-      started_at: Date;
-      ended_at: Date | null;
+      started_at: string | Date;
+      ended_at: string | Date | null;
       exit_code: number | null;
     }>>`
       SELECT id, workspace_id, plan_slug, mode, terminal_bin, pid,
@@ -96,20 +134,7 @@ export async function listAdvSessions(limit = 100): Promise<AdvSessionRow[]> {
        ORDER BY started_at DESC
        LIMIT ${limit}
     `;
-    return rows.map((r) => ({
-      id: r.id,
-      workspaceId: r.workspace_id,
-      planSlug: r.plan_slug,
-      mode: r.mode,
-      terminalBin: r.terminal_bin,
-      pid: r.pid,
-      windowId: r.window_id,
-      ompThreadId: r.omp_thread_id,
-      label: r.label,
-      startedAt: r.started_at.toISOString(),
-      endedAt: r.ended_at?.toISOString() ?? null,
-      exitCode: r.exit_code,
-    }));
+    return rows.map(mapAdvSessionRow);
   } catch (e) {
     console.warn('[adv-sessions] listAdvSessions failed:', (e as Error).message);
     return [];
@@ -130,8 +155,8 @@ export async function getAdvSession(id: number): Promise<AdvSessionRow | null> {
       window_id: string | null;
       omp_thread_id: string | null;
       label: string | null;
-      started_at: Date;
-      ended_at: Date | null;
+      started_at: string | Date;
+      ended_at: string | Date | null;
       exit_code: number | null;
     }>>`
       SELECT id, workspace_id, plan_slug, mode, terminal_bin, pid,
@@ -143,20 +168,7 @@ export async function getAdvSession(id: number): Promise<AdvSessionRow | null> {
     `;
     const r = rows[0];
     if (!r) return null;
-    return {
-      id: r.id,
-      workspaceId: r.workspace_id,
-      planSlug: r.plan_slug,
-      mode: r.mode,
-      terminalBin: r.terminal_bin,
-      pid: r.pid,
-      windowId: r.window_id,
-      ompThreadId: r.omp_thread_id,
-      label: r.label,
-      startedAt: r.started_at.toISOString(),
-      endedAt: r.ended_at?.toISOString() ?? null,
-      exitCode: r.exit_code,
-    };
+    return mapAdvSessionRow(r);
   } catch (e) {
     console.warn('[adv-sessions] getAdvSession failed:', (e as Error).message);
     return null;
