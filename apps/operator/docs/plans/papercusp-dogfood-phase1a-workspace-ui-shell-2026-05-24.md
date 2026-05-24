@@ -52,11 +52,11 @@ v5 one-liner: *"Implement §2 five-rule classifier as `apps/operator/lib/harness
 
 ---
 
-### P-013 — PG schema for new dogfood tables [S] — 🟡 PARTIAL
+### P-013 — PG schema for new dogfood tables [S] — ✅ DONE
 
 v5 one-liner: *"Register harness rows in `harness_registry` with `entry_kind` + `state` columns. Also adds the new `feature_queue`, `contributors`, `feature_claims`, `pr_reviewer_settings` (augmented), `pr_check_status_cache`, `known_schema_versions`, `auto_review_audit`, `claim_audit`, `webhook_audit`, and `shared_repo_binding_cache` tables."*
 
-**Status:** 🟡 PARTIAL — 10 of 11 ensure-functions done in commit `556b37d7`; `shared_repo_binding_cache` outstanding.
+**Status:** ✅ DONE — initial 10 ensure-functions in commit `556b37d7`; P-013a (`shared_repo_binding_cache`) added in commit `8ed90e57` once `binding-types.ts` (`f05997aa`) shipped the canonical `BindingRecord` shape. All 13 dogfood tables verified live via `scripts/verify-dogfood-schema.ts` (commit `8c8605a9`).
 
 **What's done:**
 - New sibling file `apps/operator/lib/ensure-schema-dogfood.ts` (kept separate from the 1860-line `ensure-schema.ts` to avoid mass-edit hazards).
@@ -64,10 +64,10 @@ v5 one-liner: *"Register harness rows in `harness_registry` with `entry_kind` + 
 - `wireDogfoodTriggers()` helper attaches `emit_change_notify` to `DOGFOOD_REACTIVE_TABLES` for P-019 reactivity.
 - Later additions: `EXISTING_HYPERBEE_REACTIVE_TABLES` (P-019 part 2, `59611dde`) + `contributorUsageEvents` / `insightsFirstVisit` (addendum 3, `98ff062a`).
 
-**Remaining sub-acceptance:**
-- **P-013a — `shared_repo_binding_cache` table** — pending. Blocked by Phase 1b P-068 design (the schema follows the binding-record shape in v5 §5.1). When P-068 spec is finalized, add the corresponding `ensureSharedRepoBindingCacheTable()` to `ensure-schema-dogfood.ts` using the same pattern as the other 10 tables.
+**Resolved sub-acceptance:**
+- **P-013a — `shared_repo_binding_cache` table** — ✅ DONE in commit `8ed90e57`. Unblocked by `binding-types.ts` (commit `f05997aa`) shipping the canonical `BindingRecord` shape from the binding-service-api design memo. The schema mirrors `BindingRecord` verbatim with PK `(workspace_id, provider, github_repository_id)` per memo D-B. Includes 3 partial/secondary indexes (by full_name, by harness_topic, stale-cache sweep). Wired into `DOGFOOD_REACTIVE_TABLES` so the table gets `emit_change_notify` for reactivity. Live-PG verifier (`scripts/verify-dogfood-schema.ts`) confirms: 16 CHECK constraints, all required columns present.
 
-**Decision rule:** P-013 reaches PASS when P-013a lands. P-013 does not block Phase 1a's user-visible surface (P-010, P-012); it blocks Phase 1b's binding service (P-068). Track but don't gate on it.
+**Decision rule:** P-013 PASSED. Phase 1b's binding-service implementation (P-068) consumes this cache when it lands.
 
 ---
 
