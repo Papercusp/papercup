@@ -42,8 +42,14 @@ export default function RecorderHost() {
     if (typeof window === 'undefined') return;
     const params = new URLSearchParams(window.location.search);
     if (params.get('perf-recorder') !== '1') return;
-    if (window.__papercuspRecorderActive) return;
+    // Note: previously bailed on window.__papercuspRecorderActive to
+    // prevent double-mount duplication. That broke under React strict
+    // mode in dev: mount → cleanup → mount; the second mount bailed,
+    // and the first effect's listener was torn down before the async
+    // listen() ever resolved. Allow re-registration on every mount;
+    // the return cleanup will properly tear down any prior listener.
     window.__papercuspRecorderActive = true;
+    let cancelled = false;
     const suiteRunKey = params.get('__suiteRun');
     const expectedRunId = params.get('perf-run-id');
     const reloadStorageKey = suiteRunKey ? `papercusp.testing.chaos-reloads.${suiteRunKey}` : null;
@@ -308,12 +314,30 @@ export default function RecorderHost() {
     channel?.addEventListener('message', (e) => {
       handleControllerMsg(e.data as ControllerMsg);
     });
-    void tauriEvent?.listen?.(CHANNEL_NAME, (event) => {
-      handleControllerMsg(event.payload as ControllerMsg);
-    }).then((off) => { offTauri = off; });
 
-    send({ type: 'ready', runId: expectedRunId ?? '' });
+    // Register Tauri listener BEFORE sending ready, otherwise the
+    // controller's 'start' reply races our listener registration and
+    // is delivered to nothing.
+    (async () => {
+      if (tauriEvent?.listen) {
+        try {
+          const off = await tauriEvent.listen(CHANNEL_NAME, (event) => {
+            handleControllerMsg(event.payload as ControllerMsg);
+          });
+          if (cancelled) {
+            off();
+            return;
+          }
+          offTauri = off;
+        } catch {
+          // capability denied; fall back to channel path if available
+        }
+      }
+      if (!cancelled) send({ type: 'ready', runId: expectedRunId ?? '' });
+    })();
+
     return () => {
+      cancelled = true;
       offTauri?.();
       channel?.close();
       finishCurrent?.();
