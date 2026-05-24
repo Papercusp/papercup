@@ -52,7 +52,8 @@ export default function RecorderHost() {
       sessionStorage.setItem(reloadStorageKey, String(prev + 1));
     }
 
-    const channel = new BroadcastChannel(CHANNEL_NAME);
+    const inTauri = Boolean((window as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__);
+    const channel = inTauri ? null : new BroadcastChannel(CHANNEL_NAME);
     const tauriEvent = (window as unknown as {
       __TAURI__?: { event?: { emit?: (name: string, payload: unknown) => Promise<void>; listen?: (name: string, cb: (event: { payload: unknown }) => void) => Promise<() => void> } };
     }).__TAURI__?.event;
@@ -65,7 +66,7 @@ export default function RecorderHost() {
     let finishCurrent: (() => void) | null = null;
 
     function send(msg: RecorderMsg) {
-      channel.postMessage(msg);
+      try { channel?.postMessage(msg); } catch { /* noop on desktop path */ }
       void tauriEvent?.emit?.(CHANNEL_NAME, msg);
     }
 
@@ -215,7 +216,7 @@ export default function RecorderHost() {
       // Dynamic import gremlins.js — keeps it out of the main app bundle.
       let gremlins: Gremlins | null = null;
       try {
-        const mod = await import('gremlins.js');
+        const mod = await import('../_lib/gremlins-runtime');
         gremlins = (mod as unknown as { default: Gremlins }).default ?? (mod as unknown as Gremlins);
       } catch (err) {
         recordEvent({ ts: Date.now(), route: window.location.pathname, kind: 'unhandled-error', target: 'gremlins-import', detail: String(err).slice(0, 200) });
@@ -290,7 +291,7 @@ export default function RecorderHost() {
       }
 
       // Allow controller to stop early.
-      channel.addEventListener('message', (e) => {
+      channel?.addEventListener('message', (e) => {
         const m = e.data as ControllerMsg;
         if (m.type === 'stop' && m.runId === currentRunId) finishRun();
       });
@@ -304,7 +305,7 @@ export default function RecorderHost() {
       }
     };
 
-    channel.addEventListener('message', (e) => {
+    channel?.addEventListener('message', (e) => {
       handleControllerMsg(e.data as ControllerMsg);
     });
     void tauriEvent?.listen?.(CHANNEL_NAME, (event) => {
@@ -314,7 +315,7 @@ export default function RecorderHost() {
     send({ type: 'ready', runId: expectedRunId ?? '' });
     return () => {
       offTauri?.();
-      channel.close();
+      channel?.close();
       finishCurrent?.();
       stopRun?.();
     };
