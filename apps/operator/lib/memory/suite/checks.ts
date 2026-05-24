@@ -308,7 +308,7 @@ async function checkRoundtripForget(): Promise<CheckResult> {
     userId: _state.userAId,
     metadata: { kind: 'ephemeral', test_tag: PREFIX_BASE, workspace_id: _state.workspaceId },
   }) as { results?: Array<{ id: string }> };
-  let id = (added.results ?? [])[0]?.id;
+  let id: string | undefined = (added.results ?? [])[0]?.id;
   if (!id) {
     const all = await client.getAll({ filters: { user_id: _state.userAId }, topK: 5000 });
     id = ((all.results as Mem0Entry[] | undefined) ?? []).find((e) => (e.memory ?? '').includes('transient-fact'))?.id;
