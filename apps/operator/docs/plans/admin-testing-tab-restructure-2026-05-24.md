@@ -3,7 +3,7 @@ title: Admin Testing Tab Restructure + Test Framework Standardization
 slug: admin-testing-tab-restructure-2026-05-24
 status: shipped
 created: 2026-05-24
-updated: 2026-05-24
+updated: 2026-05-25
 owner: avi@storewolf.com
 ---
 
@@ -11,7 +11,7 @@ owner: avi@storewolf.com
 
 ## Now
 
-**Status:** Plan SHIPPED 2026-05-24 (overnight loop). 37 items done, 0 todo, 9 blocked on out-of-scope follow-up work, 2 dropped (no cargo crate in this repo).
+**Status:** Plan SHIPPED + all framework migrations complete 2026-05-25. 41 items done, 0 todo, 5 blocked on out-of-scope follow-up work, 2 dropped (no cargo crate in this repo).
 
 **Shipped:**
 - Phase 1 (P-001..P-007 + P-006a): registry, 21 tabs, glob walk, DomainTestPanel, TestingClient.
@@ -24,7 +24,8 @@ owner: avi@storewolf.com
 
 **Blocked (tracked, out-of-scope for this loop):**
 - P-012, P-032 — Cargo reporter + adapter (DROPPED — no cargo crate in this repo; rust lives in sibling papercup-rust-* repos).
-- P-027..P-031 — framework migrations + defineSuite DSL (multi-day; lint freezes the floor so additions are blocked, migrations can happen incrementally).
+- P-027..P-030 DONE 2026-05-25: all 13 .mjs integration files migrated to Vitest, 8 tsx smoke scripts migrated, su-locks-e2e.sh converted, stale package.json scripts removed.
+- P-031/P-045 — defineSuite DSL + loader test (extensibility refactor, not a functional gap; deferred until auto-scan is needed).
 - P-039 — TESTING.md retirement sweep (separate cleanup).
 - P-040 — orchestrator-legacy retirement (gated on the run.sh retirement plan).
 - P-045 — defineSuite loader test (gated on P-031).
@@ -154,10 +155,10 @@ Register one "core" `defineSuite` per domain that wants "Run all in domain".
 
 Collapse nine conventions to four. Migrate `.mjs` and tsx smoke scripts to
 Vitest. Replace switch-DSL with `defineSuite` files.
-- **P-027** `blocked` [ ] [framework migration — multi-day work, deferred to a follow-up plan. P-038 lint counter freezes the current debt baseline (15 mjs + 5 smoke ts) so additions are blocked] S2: Migrate 13 `apps/operator/__tests__/integration/*.mjs` files to `*.integration.test.ts` using `@papercusp/test-config` testcontainers (already used by `apps/operator/test/db.integration.test.ts`). Move to a new `vitest.integration.config.ts` workspace.
-- **P-028** `blocked` [ ] [framework migration — multi-day work, deferred to a follow-up plan. P-038 lint counter freezes the current debt baseline (15 mjs + 5 smoke ts) so additions are blocked] S2: Delete the corresponding `package.json` scripts (`test:spawn-signing`, `test:mint-roundtrip`, `test:admin-rotate`, `test:agent-tools-list`, `test:power-user-e2e`, `test:ask-choice-e2e`, `test:behavioral-smoke`, `test:chat-surface-tools`, `test:finding-context-sync`, `test:per-role-tools`, `test:tools-md-sync`, `test:ui-control`, `test:admin-failures`).
-- **P-029** `blocked` [ ] [framework migration — multi-day work, deferred to a follow-up plan. P-038 lint counter freezes the current debt baseline (15 mjs + 5 smoke ts) so additions are blocked] S3: Migrate 8 tsx smoke scripts (`apps/operator/scripts/su-locks-*.ts`, `su-cancel-smoke.ts`) to `apps/operator/lib/agent-tools/locks/__tests__/*.integration.test.ts`.
-- **P-030** `blocked` [ ] [framework migration — multi-day work, deferred to a follow-up plan. P-038 lint counter freezes the current debt baseline (15 mjs + 5 smoke ts) so additions are blocked] S3: Convert `apps/operator/scripts/su-locks-e2e.sh` to a single Vitest spec that orchestrates the migrated specs (replaces #6 bash test drivers).
+- **P-027** `done` [x] [framework migration — multi-day work, deferred to a follow-up plan. P-038 lint counter freezes the current debt baseline (15 mjs + 5 smoke ts) so additions are blocked] S2: Migrate 13 `apps/operator/__tests__/integration/*.mjs` files to `*.integration.test.ts` using `@papercusp/test-config` testcontainers (already used by `apps/operator/test/db.integration.test.ts`). Move to a new `vitest.integration.config.ts` workspace.
+- **P-028** `done` [x] [framework migration — multi-day work, deferred to a follow-up plan. P-038 lint counter freezes the current debt baseline (15 mjs + 5 smoke ts) so additions are blocked] S2: Delete the corresponding `package.json` scripts (`test:spawn-signing`, `test:mint-roundtrip`, `test:admin-rotate`, `test:agent-tools-list`, `test:power-user-e2e`, `test:ask-choice-e2e`, `test:behavioral-smoke`, `test:chat-surface-tools`, `test:finding-context-sync`, `test:per-role-tools`, `test:tools-md-sync`, `test:ui-control`, `test:admin-failures`).
+- **P-029** `done` [x] [framework migration — multi-day work, deferred to a follow-up plan. P-038 lint counter freezes the current debt baseline (15 mjs + 5 smoke ts) so additions are blocked] S3: Migrate 8 tsx smoke scripts (`apps/operator/scripts/su-locks-*.ts`, `su-cancel-smoke.ts`) to `apps/operator/lib/agent-tools/locks/__tests__/*.integration.test.ts`.
+- **P-030** `done` [x] [framework migration — multi-day work, deferred to a follow-up plan. P-038 lint counter freezes the current debt baseline (15 mjs + 5 smoke ts) so additions are blocked] S3: Convert `apps/operator/scripts/su-locks-e2e.sh` to a single Vitest spec that orchestrates the migrated specs (replaces #6 bash test drivers).
 - **P-031** `blocked` [ ] [framework migration — multi-day work, deferred to a follow-up plan. P-038 lint counter freezes the current debt baseline (15 mjs + 5 smoke ts) so additions are blocked] S4 (D-008): Create `apps/operator/lib/admin-test-suites/` directory + `defineSuite` helper. Migrate the 7 existing suites in `admin-test-suites.ts` to 7 one-file declarations; replace the switch with a file-system auto-scan that mirrors the `defineTool` auto-loader pattern at `packages/agent-mcp/src/tools/index.ts` (don't reinvent — match its glob + import shape).
 - **P-032** `dropped` [ ] [deferred: no cargo test crate in this repo; rust lives in sibling papercup-rust-* repos; revisit when first crate lands here] S5: Cargo `--message-format=json` adapter (already scaffolded in P-012). Add `kind: 'cargo'` runner support to the run route + wire the `orchestrator` tab (and any Rust-side sections in other tabs) to actually execute Rust tests from the UI.
 
