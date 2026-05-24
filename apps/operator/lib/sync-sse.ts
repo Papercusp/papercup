@@ -21,17 +21,17 @@
  * Modeled on `mobile-sync-sse.ts` — same dedicated-client pattern, same
  * ring-buffer, same `Last-Event-ID` resume semantics.
  */
-// Guardrail: this module opens a long-lived PG LISTEN connection and
-// must never reach the browser bundle. If a client import path ever
-// drags it in, Next/Turbopack errors at compile time instead of
-// silently shipping `postgres` (which can't resolve `fs`/`net`/`tls`)
-// into a client chunk and crashing every dev render.
-// Removing this requires the consumer chain to provably be server-only.
-import 'server-only';
+// Host-only module: opens a long-lived PG LISTEN connection. Only the
+// Hono host (Node) imports it — Vite bundles `apps/operator-vite/src/`
+// only, so this never reaches a browser chunk. (The former
+// `import 'server-only'` guard was a Next-bundler construct, dropped in
+// the Vite migration — `server-only` has no meaning outside Next's RSC
+// compiler.)
 import postgres from 'postgres';
 import type { Sql } from 'postgres';
 import { getOrgPg } from '@restart/db-org';
 import { getHarnessAdminUrl } from './embedded-pg-discovery';
+import { queryNamesForTriggerEvent } from './sync-resolver/table-to-query-names';
 
 export interface SyncEvent {
   id: number;
@@ -84,6 +84,29 @@ async function startListener(): Promise<void> {
     pruneHistory();
     for (const s of subscribers) {
       try { s.send(ev); } catch { /* best-effort */ }
+    }
+
+    // P-067 bridge: PG-trigger emit_change_notify events fire on a
+    // <schema>.<table>.changed name. Existing useSyncQuery consumers
+    // subscribe to camelCase names (e.g. 'harnessTextArtifact.byHarness').
+    // Without this bridge, trigger events are no-ops for those clients.
+    // Synthesize one additional event per mapped query name; the SSE
+    // adapter invalidates the matching TanStack Query keys and they
+    // refetch. The 90s dedupe in notifySyncInvalidate handles overlap
+    // with app-code writes that ALSO fire notifySyncInvalidate.
+    const bridged = queryNamesForTriggerEvent(parsed.name);
+    for (const bridgedName of bridged) {
+      const bridgedEv: SyncEvent = {
+        id: nextId++,
+        ts: Date.now(),
+        name: bridgedName,
+        // No args — clients invalidate the full query cache for that
+        // name. Per-row scoping isn't available from the PG trigger.
+      };
+      history.push(bridgedEv);
+      for (const s of subscribers) {
+        try { s.send(bridgedEv); } catch { /* best-effort */ }
+      }
     }
   }).then(() => {
     console.log('[sync-sse] LISTEN sync_invalidate ready');
