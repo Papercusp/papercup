@@ -1,7 +1,7 @@
 ---
 title: Papercusp dogfood — Phase 7 (PR lifecycle)
 slug: papercusp-dogfood-phase7-pr-lifecycle-2026-05-24
-status: draft
+status: active
 created: 2026-05-24
 updated: 2026-05-24
 owner: avi@storewolf.com
@@ -11,9 +11,18 @@ owner: avi@storewolf.com
 
 ## Now
 
-**State:** **draft execution plan.** Phase 7 owns the PR side of the shared-harness flow: PrHost abstraction, GitHub implementation via Octokit, PR poll daemon, auto-approve gated on trust, auto-merge gated on auto-approve + checks. L-sized; the most-touched-by-external-API phase.
+**State:** **Phase 7 COMPLETE (P-041 deferred).** P-040/042/043/044/045/046 shipped at `f7d4cf24` (2026-05-24). 196/196 tests pass.
 
-**Next action:** install `@octokit/rest` as the first dep ever added under the new D-019 rule (gh-CLI for clone, octokit for PR APIs). Then P-040.
+- P-040: `pr-host/github.ts` + `pr-host/index.ts` — GitHubPrHost with openPr/getPr/postReview/merge/listOpenPrs; 16 tests.
+- P-042: `pr-host/poll-daemon.ts` — 60s poll, exponential backoff, pr_check_status_cache writes; 6 tests.
+- P-044: `pr-host/auto-approve.ts` — trust-gated, idempotent, audit records; 9 tests.
+- P-045: `pr-host/auto-merge.ts` — approval+checks gate, squash default, audit records; 8 tests.
+- P-043: `PrsTab.tsx` + `PrRow.tsx` — nuqs filter chips, approve/merge buttons, trust badge.
+- P-046: `TrustAddConsequenceModal.tsx` — consequence modal with autoReview + autoMerge copy.
+- Backend: `GET/POST /api/harness/:slug/prs` registered in routes/index.ts.
+- P-041 deferred: auto-rebase-on-push needs Phase 6 orchestrator (blocked by Phase 5a DEFERRED).
+
+**Next action:** Move to Phase 9 (Cupboard + Discord + sync-with-main) — unblocked by Phase 7 + Phase 1b.
 
 ## Background
 
@@ -23,7 +32,7 @@ Phase 7 implements `## Phase 7 — PR lifecycle [L]` from v5 (~line 1260). All P
 
 ## Phase tasks
 
-### P-040 — PrHost abstraction + GitHub impl [M]
+### P-040 — PrHost abstraction + GitHub impl [M] ✅ DONE
 
 v5: `apps/operator/lib/pr-host/index.ts` interface + GitHub impl via `@octokit/rest`. Open PR, get PR, post review, merge, list-open-PRs (bulk per §8.4).
 
@@ -35,7 +44,7 @@ v5: `apps/operator/lib/pr-host/index.ts` interface + GitHub impl via `@octokit/r
 **Sub-acceptances:**
 - **P-040a-e** — One per method: each returns structured results, maps GitHub errors to typed errors.
 
-### P-041 — Auto-rebase-on-push [M]
+### P-041 — Auto-rebase-on-push [M] ⏸ DEFERRED (needs Phase 6 → 5a DEFERRED)
 
 v5 §16.3: before every agent push, `git fetch origin main && git rebase origin/main`; conflict → escalation.
 
@@ -49,7 +58,7 @@ v5 §16.3: before every agent push, `git fetch origin main && git rebase origin/
 - **P-041c** — Feature status resets to `in_queue`, `working_users` cleared.
 - **P-041d** — UI surface (§9.1 warning panel) shows the conflict + actions (resolve manually, re-queue, abandon).
 
-### P-042 — PR poll daemon [M]
+### P-042 — PR poll daemon [M] ✅ DONE
 
 v5: 60s cadence per harness with ≥1 open PR; updates `harness_feature_prs` (HYPERBEE) + LOCAL `pr_check_status_cache`. Error handling per audit M.
 
@@ -64,7 +73,7 @@ v5: 60s cadence per harness with ≥1 open PR; updates `harness_feature_prs` (HY
 - **P-042e** — OAuth-refresh on 401; alert user on 401-after-refresh.
 - **P-042f** — 404 → mark PR as gone (deleted upstream); demote `completion_ref`.
 
-### P-043 — PRs tab UI [M]
+### P-043 — PRs tab UI [M] ✅ DONE
 
 v5 §9.3.
 
@@ -75,7 +84,7 @@ v5 §9.3.
 - **P-043b** — Action buttons (if `pr_reviewer_role_enabled`): "Open on GitHub" (always), "Approve" (manual), "Approve + merge" (manual), "Auto-review on/off" indicator.
 - **P-043c** — Filter chips: `mine`, `awaiting-me`, `awaiting-review`, `approved`, `merged`.
 
-### P-044 — Auto-approve flow [M]
+### P-044 — Auto-approve flow [M] ✅ DONE
 
 v5: gated on trust list. `pr_reviewer_settings` + per-PR check + Octokit approve call.
 
@@ -87,7 +96,7 @@ v5: gated on trust list. `pr_reviewer_settings` + per-PR check + Octokit approve
 - **P-044c** — Records the auto-approve action in LOCAL `auto_review_audit` table (Phase 1a P-013 schema).
 - **P-044d** — Surfaces a one-line toast: "Auto-approved PR #123 by @alice (trust list)."
 
-### P-045 — Auto-merge flow [S]
+### P-045 — Auto-merge flow [S] ✅ DONE
 
 v5: gated on auto-merge toggle + auto-approve outcome + checks green.
 
@@ -98,7 +107,7 @@ v5: gated on auto-merge toggle + auto-approve outcome + checks green.
 - **P-045b** — Uses `merge_method` setting (squash/merge/rebase; default squash).
 - **P-045c** — Records action in `auto_review_audit` with `action: 'merged'`.
 
-### P-046 — Manual review path + trust-add consequence modal [S]
+### P-046 — Manual review path + trust-add consequence modal [S] ✅ DONE
 
 v5 §8.6.
 
