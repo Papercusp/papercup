@@ -713,14 +713,19 @@ Discord webhook adapter calls this module with Discord's standard webhook payloa
 
 ### §12 — P2P transport (Hyperswarm + Hyperbee + Autobase)
 
-**Packages** (`@holepunchto/*`, all real npm modules; D-015 — primitives, NOT Pear):
+**Packages** (all unscoped npm modules; `holepunchto` is the GitHub org but published packages are NOT scoped; D-015 — primitives, NOT Pear):
 - `hyperswarm` — DHT-based peer discovery + UDP holepunching
 - `corestore` — manages local Hypercore storage
 - `hypercore` — append-only signed log per writer
 - `autobase` — multi-writer append-only log merged into a single linearized view
 - `hyperbee` — P2P B-tree (sorted KV) over Hypercore (or Autobase)
 - `hyperdht` — the DHT (transitive)
+- `hyperdrive` — P2P filesystem (Path B per-harness opt-in, §14)
 - `b4a` — Buffer-compatible byte arrays for cross-runtime
+
+Verified install + load on Node 25 Linux x64 (commit `fa887946` and follow-ups). Native deps (UDX, sodium-native) ship prebuilds — no system toolchain required on Linux. macOS/Windows verification pending (needs those hosts). Spike package at `libs/holepunch-spike/`.
+
+**Possible future amendment**: context7 surfaced **HyperDB** (a newer abstraction over Hyperbee with RocksDB-backed local indexing). May be worth evaluating as the projection-layer substrate (§7.1) once the base spike fully closes. Out of scope for Phase 0 itself.
 
 **Per-harness swarm**:
 - 32-byte topic key generated at share-time (§5).
@@ -749,7 +754,9 @@ Discord webhook adapter calls this module with Discord's standard webhook payloa
 
 **Why not Pear runtime (D-015)**: Pear replaces Tauri end-to-end — months-long port. Not v1.
 
-**Phase 0 spike gates this** (P-001..P-005): validate `@holepunchto/*` packages bundle into Tauri/Node desktop build (native deps: UDX, sodium-native), validate Autobase stability under expected churn (3-5 active writers per harness, sleeping laptops returning days later). If spike fails: fallback is "HYPERBEE bucket collapses into GIT bucket."
+**Phase 0 spike gates this** (P-001..P-005): validate the unscoped npm packages (hyperswarm, hypercore, autobase, hyperbee, corestore, hyperdrive, hyperdht, b4a) bundle into Tauri/Node desktop build (native deps: UDX, sodium-native), validate Autobase stability under expected churn (3-5 active writers per harness, sleeping laptops returning days later). If spike fails: fallback is "HYPERBEE bucket collapses into GIT bucket."
+
+**P-001..P-004 sub-gates closed on Linux x64 Node 25** (2026-05-23, commits `fa887946`, `f94346d8`, `6f6b753e`, `ff2cdd3f`): install + load (7s), two-peer swarm loopback via real DHT (~7-10s), two-writer Autobase convergence on deterministic merged view, Hyperbee-over-Autobase KV with LWW conflict resolution + range queries. Remaining Phase 0 work: macOS/Windows verification, Tauri-bundle verification, sleeping-laptop convergence, real cross-network test.
 
 ### §13 — Reactivity architecture
 
@@ -906,7 +913,7 @@ Sizing legend: **S** = ~1-3 days. **M** = ~1 week. **L** = ~2-3 weeks. **XL** = 
 
 ### Phase 0 — Spike (gate before all subsequent phases) [M]
 
-- **P-001** [M] Bundle `@holepunchto/*` packages into the Tauri+Node desktop build. Verify native-dep compilation across macOS / Linux / Windows targets.
+- **P-001** [M] Bundle the Holepunch primitive packages (`hyperswarm`, `hypercore`, `autobase`, `hyperbee`, `corestore`, `hyperdrive`, `hyperdht`, `b4a` — all unscoped npm names; published from the `holepunchto` GitHub org) into the Tauri+Node desktop build. Verify native-dep prebuilds (UDX, sodium-native) cover macOS / Linux / Windows targets. **PARTIAL PASS as of 2026-05-23**: Linux x64 Node 25 verified (commits `fa887946`..`ff2cdd3f`, see `libs/holepunch-spike/`); macOS + Windows + Tauri-bundle verification still pending.
 - **P-002** [S] Hyperswarm DHT join + UDP holepunching smoke test across 2 networks (home + cellular tether).
 - **P-003** [M] Autobase stability test: 3 writers, 1000 ops each, sleeping-peer simulation (offline for hours, reconnects, view re-converges). Measure convergence latency.
 - **P-004** [S] Hyperbee KV write/read benchmarks under projected load (~10 ops/sec).
@@ -1088,7 +1095,7 @@ Sizing legend: **S** = ~1-3 days. **M** = ~1 week. **L** = ~2-3 weeks. **XL** = 
 
 ### D-015 — Holepunch primitives only (NOT Pear runtime)
 
-**Decided.** Stay on Tauri. Use `@holepunchto/*` npm modules embedded in existing desktop runtime.
+**Decided.** Stay on Tauri. Use the unscoped Holepunch npm modules (`hyperswarm`, `hypercore`, `autobase`, `hyperbee`, `corestore`, `hyperdrive`, `hyperdht`, `b4a`) embedded in existing desktop runtime.
 
 ### D-016 — `current_worker` derived, not stored
 
