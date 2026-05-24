@@ -11,7 +11,7 @@ owner: avi@storewolf.com
 
 ## Now
 
-**State:** SU autonomous loop, ~24 parent commits + 1 submodule, ~179 commits ahead of `origin/main`. All verifiers green. **Phase 1a backend COMPLETE** (P-013a + P-010 shipped overnight); Phase 2 P-016 shipped including HTTP re-check route (P-016e); Phase 1b Q-4 resolved + binding-types groundwork laid for P-068; live-PG dogfood-schema regression sentinel shipped.
+**State:** SU autonomous loop, ~28 parent commits + 1 submodule, ~183 commits ahead of `origin/main`. All verifiers green. **Phase 1a backend COMPLETE** (P-013a + P-010 shipped overnight); Phase 2 P-016 shipped including HTTP re-check route (P-016e); Phase 1b Q-4 resolved + **two types-only groundwork modules** laid for P-068 (binding-types) and P-075 (binding-verifier-types); live-PG dogfood-schema regression sentinel shipped.
 
 **Next action (for human):** review the commits at your pace; decide whether to push to `origin/main` and whether to act on the surfaced design memos. **Phase 1a's only remaining work is P-012 UI, design-gated on a picker memo.**
 
@@ -35,6 +35,13 @@ The Phase 1b plan asked: "can we reliably introspect `gh auth login`'s token for
 - **Commit `5ca301bc`** — `apps/operator/lib/identity/octokit-client.ts` (Octokit 7+ wrapper using `hook.before('request')` for auth + `hook.wrap('request')` for 401-retry).
 - **Commit `76b262a3`** — insight `octokit-v7-auth-pattern` capturing the breaking change vs the older `auth: async () => token` factory shape (the live integration smoke caught this on the first run — without it, the bug would have shipped to P-068's first commit).
 - **18 unit tests pass** across gh-token + octokit-client.
+
+### P-075 groundwork — binding-verifier-types module (final segment)
+
+Mirrors the P-068 binding-types pattern. Same types-only, no-behavior-committed approach.
+
+- **Commit `778ea017`** — `apps/operator/lib/identity/binding-verifier-types.ts` (~130 LOC). Exports `BindingStatus` union (`verified | pending | unverified`), `ChannelResult` discriminated union with structured failure/pending reason enums, `PENDING_GRACE_WINDOW_MS` (24h default per memo) + `PENDING_GRACE_WINDOW_MAX_MS` (1 week cap), `canClaimHarness()` + `statsAggregateForStatus()` predicates, `deriveBindingStatus()` state machine reflecting every transition from the two-channel memo. 24 unit tests including the at-the-grace-boundary edge case + a sentinel comparing claim + stats gates.
+- When P-075 runtime implementation begins, `apps/operator/lib/identity/two-channel-verifier.ts` imports these types verbatim; `BindingStatusBadge.tsx` consumes the same enum.
 
 ### P-068 groundwork — binding-types module
 

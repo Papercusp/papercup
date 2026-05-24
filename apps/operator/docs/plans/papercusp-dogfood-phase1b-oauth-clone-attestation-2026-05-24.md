@@ -11,14 +11,20 @@ owner: avi@storewolf.com
 
 ## Now
 
-**State:** **draft execution plan.** Phase 1b is the **largest single phase** in the dogfood arc (L-sized, design-heavy). It unlocks every shared-harness feature in Phases 5-9. P-008 (clone helper via `gh auth`) is DONE; **Q-4 (auth-token introspection) RESOLVED 2026-05-24** with the `gh-token.ts` spike (commit `80f2717a`). Remaining greenfield: P-009 Entry 4, P-011 device attestation, P-068 canonical repo binding service, P-075 two-channel verifier — still need a **design pass** before implementation.
+**State:** **draft execution plan.** Phase 1b is the **largest single phase** in the dogfood arc (L-sized, design-heavy). Status as of 2026-05-24 overnight loop:
+- ✅ **P-008** done (clone helper via `gh auth`, commit `6cc4f6c9`)
+- ✅ **Q-4** resolved (gh-token helper, commit `80f2717a` + octokit-client wrapper, commit `5ca301bc`)
+- 🟡 **P-068 groundwork**: types-only `binding-types.ts` shipped (`f05997aa`); service implementation gated on memo acceptance
+- 🟡 **P-075 groundwork**: types-only `binding-verifier-types.ts` + state-machine helper shipped (`778ea017`); runtime gated on memo acceptance
+
+Remaining greenfield: P-009 Entry 4 + P-011 device attestation + P-068 service + P-075 runtime — all still need the **design pass** before implementation.
 
 **Next:** Write three design memos before any P-task implementation starts:
 1. Device attestation UX (the gist creation flow, OAuth scope prompt, error messages).
 2. Two-channel binding verifier UX (what does `pending`/`verified`/`unverified` look like in Contributors + Insights surfaces).
 3. Canonical binding service API shape (the wire-format and endpoint semantics for P-068, which the Cupboard server in Phase 9 also extends).
 
-Implementation starts only after the three memos are accepted. Q-4 resolved: P-068 / P-011 can consume `lib/identity/gh-token.ts` (cache + scope-check + structured errors).
+Implementation starts only after the three memos are accepted. Q-4 resolved + two types-only modules in tree mean the runtime can land cleanly when memos pass.
 
 ## Background
 
