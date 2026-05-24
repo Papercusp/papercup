@@ -11,11 +11,11 @@ owner: avi@storewolf.com
 
 ## Now
 
-**State:** SU autonomous loop final state. **~223 commits ahead of `origin/main`.** All verifiers green. **24-module types-only spine** in tree. **682 unit tests, all PASS in ~400ms** via `npm run verify:dogfood-types`. **10 agent insights** in tree. All Phase 1b open questions resolved.
+**State:** SU autonomous loop. **~226 commits ahead of `origin/main`.** All verifiers green. **25-module types-only spine** in tree. **708 unit tests, all PASS in ~410ms** via `npm run verify:dogfood-types`. **10 agent insights** in tree. All Phase 1b open questions resolved.
 
-**Next action (for human):** review the commits at your pace; the wrap doc's "What this lets the future runtime do" section lists each runtime task's drop-in import paths. Push when ready; accept Phase 1b design memos when ready.
+**Next action (for human):** review the commits at your pace; push when ready; accept Phase 1b design memos when ready. The wrap doc's "What this lets the future runtime do" section lists each runtime task's drop-in import paths.
 
-**Next:** Human review of 223 commits + memo acceptance to unblock memo-gated runtime implementation across Phases 1b/5a/6/7/9.
+**Next:** Human review of 226 commits + memo acceptance.
 
 ## What shipped
 
