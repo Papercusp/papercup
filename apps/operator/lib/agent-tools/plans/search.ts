@@ -57,9 +57,15 @@ function scoreScope(text: string, queryTokens: string[]): number {
   if (!text) return 0;
   const docTokens = tokenize(text);
   if (docTokens.length === 0) return 0;
-  const docSet = new Set(docTokens);
+  // Term-frequency tally: count every occurrence of every query token,
+  // not just distinct presence. A doc that mentions `mem0` 20× should
+  // rank above one that mentions it once — the prior Set-based check
+  // gave both the same `1`, burying high-relevance plans in the long
+  // score-1 tail.
+  const tf = new Map<string, number>();
+  for (const t of docTokens) tf.set(t, (tf.get(t) ?? 0) + 1);
   let hits = 0;
-  for (const q of queryTokens) if (docSet.has(q)) hits++;
+  for (const q of queryTokens) hits += tf.get(q) ?? 0;
   return hits;
 }
 

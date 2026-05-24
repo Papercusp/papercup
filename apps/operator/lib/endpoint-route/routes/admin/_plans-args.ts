@@ -26,6 +26,20 @@ export const PLANS_BOOLEAN_KEYS: ReadonlySet<string> = new Set([
 ]);
 
 /**
+ * The plans:* argument names whose values are `z.number()` and need
+ * URL-string → number coercion when projected from a query string.
+ * Like PLANS_BOOLEAN_KEYS this is an explicit allowlist so we don't
+ * accidentally coerce a free-text query that happens to look numeric.
+ */
+export const PLANS_NUMBER_KEYS: ReadonlySet<string> = new Set([
+  'limit',
+  'files_back',
+  'audit_rows',
+  'notes_max_chars',
+  'debug_max_chars',
+]);
+
+/**
  * Convert URL searchParams to a JSON body for an internal POST
  * dispatch into a plans:* tool.
  *
@@ -51,6 +65,10 @@ export function bodyFromSearchParams(p: URLSearchParams): Record<string, unknown
       if (v === 'true') body[key] = true;
       else if (v === 'false') body[key] = false;
       // anything else for a boolean key: drop (caller passed garbage)
+    } else if (PLANS_NUMBER_KEYS.has(key)) {
+      const n = Number(v);
+      if (Number.isFinite(n)) body[key] = n;
+      // garbage numeric: drop (let the tool's default kick in)
     } else {
       body[key] = v;
     }
