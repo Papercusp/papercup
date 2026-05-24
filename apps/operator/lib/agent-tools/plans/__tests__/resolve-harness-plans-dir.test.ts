@@ -77,6 +77,30 @@ describe('resolveHarnessPlansDir', () => {
     expect(result.harnessSlug).toBe('papercup');
   });
 
+  it('no harness: path-matches the primary harness by repo root regardless of slug', async () => {
+    // After dogfood Phase 4, the primary slug may be 'papercup-org' instead of
+    // 'papercup'. The fallback must find it by path-match, not slug-match.
+    mockRegistry([
+      { slug: 'sheets', path: '/elsewhere/sheets' },
+      { slug: 'papercup-org', path: '/home/u/papercup' },
+    ]);
+    mockPapercupDetection('/home/u/papercup');
+    const mod = await import('../source');
+    const result = await mod.resolveHarnessPlansDir();
+    expect(result.harnessSlug).toBe('papercup-org');
+    // Renamed-slug still gets the legacy plans-dir because its PATH matches.
+    expect(result.plans).toBe(
+      path.join('/home/u/papercup', 'apps', 'operator', 'docs', 'plans'),
+    );
+  });
+
+  it('no harness: throws when no path-match and no papercup slug', async () => {
+    mockRegistry([{ slug: 'sheets', path: '/elsewhere/sheets' }]);
+    mockPapercupDetection('/home/u/papercup');
+    const mod = await import('../source');
+    await expect(mod.resolveHarnessPlansDir()).rejects.toThrow(/no primary harness findable/);
+  });
+
   it("SU-wildcard harnessSlug='*' → falls through to papercup", async () => {
     // ?superuser=1 dispatch supplies harnessSlug='*' to mean "no
     // specific harness in scope". Without the wildcard handling,

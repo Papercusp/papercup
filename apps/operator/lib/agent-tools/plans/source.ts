@@ -32,8 +32,19 @@ export const ARCHIVE_DIR_REL = 'apps/operator/docs/plans/archive';
 const PAPERCUP_PLANS_REL = 'apps/operator/docs/plans';
 const DEFAULT_HARNESS_PLANS_REL = 'docs/plans';
 
-function plansRelFor(harnessSlug: string): string {
-  return harnessSlug === PAPERCUP_HARNESS_SLUG ? PAPERCUP_PLANS_REL : DEFAULT_HARNESS_PLANS_REL;
+/**
+ * Pick the plans-dir relative path for a harness. Path-based detection
+ * — not slug-based — so the legacy `apps/operator/docs/plans/` location
+ * is used whenever the harness lives at the detected papercup repo
+ * root, regardless of what slug it's registered under (dogfood Phase 4
+ * may rename `papercup` to `papercup-org` etc.).
+ */
+function plansRelFor(harnessPath: string): string {
+  const detected = detectPapercupRoot();
+  if (detected && path.resolve(harnessPath) === path.resolve(detected)) {
+    return PAPERCUP_PLANS_REL;
+  }
+  return DEFAULT_HARNESS_PLANS_REL;
 }
 
 /**
@@ -58,17 +69,42 @@ export async function resolveHarnessPlansDir(
 ): Promise<{ harnessSlug: string; plans: string; archive: string }> {
   // SU mode passes harnessSlug='*' as a wildcard sentinel meaning "no
   // specific harness in scope". Treat it (and any empty/whitespace
-  // value) as a no-harness ctx and fall back to the workspace's
-  // primary harness per D-004R.
+  // value) as a no-harness ctx and fall back per D-004R to the
+  // workspace's primary harness — identified by `path === REPO_ROOT`,
+  // not by slug. The primary slug used to be `papercup` but the
+  // papercusp-dogfood Phase 4 restructure can rename it (e.g. to
+  // `papercup-org`), so path-match is the resilient resolver.
   const raw = harnessSlug?.trim();
-  const resolved = (!raw || raw === '*' ? PAPERCUP_HARNESS_SLUG : raw) as string;
   const reg = await loadHarnessRegistry(opts.workspaceId);
-  const project = reg.projects.find((p) => p.slug === resolved);
-  if (!project) {
-    throw new Error(
-      `resolveHarnessPlansDir: harness '${resolved}' not registered. ` +
-        `Available: ${reg.projects.map((p) => p.slug).join(', ') || '(none)'}`,
-    );
+
+  let project: typeof reg.projects[number] | undefined;
+  let resolved: string;
+
+  if (!raw || raw === '*') {
+    // No harness in ctx: find the project whose path is the detected repo root.
+    const detected = detectPapercupRoot();
+    if (detected) {
+      project = reg.projects.find((p) => path.resolve(p.path) === path.resolve(detected));
+    }
+    // Fallback chain: path-matched → legacy hardcoded papercup slug → first project.
+    project = project ?? reg.projects.find((p) => p.slug === PAPERCUP_HARNESS_SLUG);
+    if (!project) {
+      throw new Error(
+        `resolveHarnessPlansDir: no harness in ctx and no primary harness ` +
+          `findable (no path-match for repo root '${detected}', no '${PAPERCUP_HARNESS_SLUG}' slug). ` +
+          `Available: ${reg.projects.map((p) => p.slug).join(', ') || '(none)'}`,
+      );
+    }
+    resolved = project.slug;
+  } else {
+    resolved = raw;
+    project = reg.projects.find((p) => p.slug === resolved);
+    if (!project) {
+      throw new Error(
+        `resolveHarnessPlansDir: harness '${resolved}' not registered. ` +
+          `Available: ${reg.projects.map((p) => p.slug).join(', ') || '(none)'}`,
+      );
+    }
   }
   // P-014: runtime guard. For papercup, verify the registered path
   // still matches the detected repo root. Catches a registry-corruption
@@ -87,7 +123,7 @@ export async function resolveHarnessPlansDir(
       );
     }
   }
-  const plans = path.join(project.path, plansRelFor(resolved));
+  const plans = path.join(project.path, plansRelFor(project.path));
   return { harnessSlug: resolved, plans, archive: path.join(plans, 'archive') };
 }
 
