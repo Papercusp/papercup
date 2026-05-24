@@ -34,7 +34,7 @@ npm run smoke:all
 ## Status
 
 - [x] `smoke:install` — **PASS on Linux x64 Node 25** (2026-05-23): 105 transitive packages installed in 7s with prebuilds, all 8 top-level packages import + resolve their default export. No native compilation toolchain required.
-- [ ] `smoke:swarm` — two-peer loopback discovery + handshake
+- [x] `smoke:swarm` — **PASS on Linux x64 Node 25** (2026-05-23): two-peer loopback discovery + payload exchange in 10.4s via public DHT + UDP holepunching.
 - [ ] `smoke:autobase` — 3-writer convergence
 - [ ] `smoke:hyperbee` — KV survives view changes
 - [ ] macOS verification (requires macOS host)
