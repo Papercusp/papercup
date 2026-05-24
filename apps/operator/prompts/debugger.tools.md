@@ -54,6 +54,20 @@ The validator already explained what failed. Your job is WHY.
 4. Cite the slug URLs in any artifact you save.
 
 
+### Where new tests go
+
+A failure reproducer should land as a real test, not a one-off script.
+The four canonical frameworks
+(admin-testing-tab-restructure-2026-05-24, D-006):
+
+- Vitest `*.test.ts` next to source — for unit/integration
+- Playwright `*.spec.ts` in `apps/operator/e2e/` — for browser
+- Cargo `#[cfg(test)]` — for Rust
+- LLM scenarios — for prompt judging
+
+Never write a new `.mjs` integration script or tsx smoke script. CI
+lint (P-038) fails the build on additions.
+
 ## Discovery
 
 Tools not described above: `agent_tools:list { asRole: 'debugger' }`.

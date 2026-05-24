@@ -46,6 +46,29 @@ payload into your artifacts.
 a previous worker / debugger has hit a similar problem. Cheap; call when
 uncertain about an approach.
 
+### Where new tests go
+
+New tests **always** go in one of the four canonical frameworks
+(admin-testing-tab-restructure-2026-05-24, D-006):
+
+- `<package>/lib/**/<name>.test.ts` — Vitest. For unit, integration, or
+  non-browser E2E. Picked up automatically by `/admin/testing` via the
+  registry glob — drop a file, it appears.
+- `apps/operator/e2e/<name>.spec.ts` — Playwright. For anything that
+  drives the browser.
+- `<crate>/src/<name>.rs` `#[cfg(test)] mod tests { … }` — Cargo. For
+  Rust code.
+- `apps/operator/lib/llm-testing/scenarios/<role>/<name>.{ts,yaml}` —
+  LLM scenarios. For judge-scored prompt tests.
+
+**Never** create a new `.mjs` integration script under
+`apps/operator/__tests__/integration/`, a new tsx smoke script under
+`apps/operator/scripts/`, or a hand-rolled ok/bad driver. CI lint
+(P-038) fails the build on additions.
+
+If a test needs a runner the four frameworks don't cover, file the gap
+on the admin-testing-tab-restructure plan; do not invent a fifth shape.
+
 ## Discovery
 
 Tools not described above: call `agent_tools:list { asRole: 'worker' }`.

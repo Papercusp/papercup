@@ -45,6 +45,20 @@ Architects ask validators to sanity-check plans before workers run.
 4. Cite the slug URLs in any artifact you save.
 
 
+### Where new tests go
+
+When validation work spawns a new test (e.g. a regression cover for a
+fix you verified), it MUST land in one of four canonical frameworks
+(admin-testing-tab-restructure-2026-05-24, D-006):
+
+- Vitest `*.test.ts` next to source
+- Playwright `*.spec.ts` in `apps/operator/e2e/`
+- Cargo `#[cfg(test)]` in the Rust crate
+- LLM scenarios in `apps/operator/lib/llm-testing/scenarios/`
+
+Never invent a `.mjs` integration script or tsx smoke script. CI lint
+(P-038) fails the build on additions.
+
 ## Discovery
 
 Tools not described above: `agent_tools:list { asRole: 'validator' }`.
