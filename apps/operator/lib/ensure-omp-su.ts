@@ -19,7 +19,7 @@
  * not depend on a one-time manual install having happened earlier.
  */
 
-import { existsSync, mkdirSync, copyFileSync, writeFileSync, chmodSync, statSync } from 'node:fs';
+import { existsSync, mkdirSync, copyFileSync, writeFileSync, chmodSync, statSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { execFileSync, execSync } from 'node:child_process';
@@ -74,12 +74,45 @@ function ensureOmpHindsightConfig(): void {
 
 /** Resolve the directory `omp` lives in (so the wrapper lands on the
  *  same PATH); fallback to ~/.local/bin. */
-function resolveWrapperDir(): string {
+function resolveWrapperDir(home = homedir()): string {
   try {
     const ompPath = execSync('command -v omp', { encoding: 'utf8' }).trim();
     if (ompPath) return dirname(ompPath);
   } catch { /* omp not installed yet */ }
-  return join(homedir(), '.local', 'bin');
+  return join(home, '.local', 'bin');
+}
+
+function wrapperScriptCurrent(wrapperPath: string): boolean {
+  try {
+    return existsSync(wrapperPath) && readFileSync(wrapperPath, 'utf8') === OMP_SU_WRAPPER;
+  } catch {
+    return false;
+  }
+}
+
+export interface EngineerOmpBootstrapState {
+  playbookPath: string;
+  coordPath: string;
+  wrapperPath: string;
+  playbookPresent: boolean;
+  coordPresent: boolean;
+  wrapperPresent: boolean;
+  wrapperCurrent: boolean;
+}
+
+export function readEngineerOmpBootstrapState(home = homedir()): EngineerOmpBootstrapState {
+  const playbookPath = join(home, '.papercusp', 'engineer-collaborator.md');
+  const coordPath = join(home, '.papercusp', 'papercusp-coord.ts');
+  const wrapperPath = join(resolveWrapperDir(home), 'omp-su');
+  return {
+    playbookPath,
+    coordPath,
+    wrapperPath,
+    playbookPresent: existsSync(playbookPath),
+    coordPresent: existsSync(coordPath),
+    wrapperPresent: existsSync(wrapperPath),
+    wrapperCurrent: wrapperScriptCurrent(wrapperPath),
+  };
 }
 
 /** Find the operator's source dir so we can copy the playbook + coord
@@ -124,9 +157,10 @@ function ensureFileCopy(srcPath: string, destPath: string, mode = 0o644): boolea
 
 function ensureWrapperScript(wrapperPath: string): boolean {
   try {
-    if (existsSync(wrapperPath)) return false;
+    if (wrapperScriptCurrent(wrapperPath)) return false;
     mkdirSync(dirname(wrapperPath), { recursive: true });
     writeFileSync(wrapperPath, OMP_SU_WRAPPER, { mode: 0o755 });
+    chmodSync(wrapperPath, 0o755);
     return true;
   } catch (e) {
     dlog(`write ${wrapperPath} failed: ${(e as Error).message}`);
@@ -171,13 +205,10 @@ export async function ensureOmpSuInstalled(): Promise<void> {
     ensureOmpHindsightConfig();
 
     // Skip if everything is already in place — fast path on every reboot.
-    const home = homedir();
-    const playbookDest = join(home, '.papercusp', 'engineer-collaborator.md');
-    const coordDest = join(home, '.papercusp', 'papercusp-coord.ts');
-    const wrapperDir = resolveWrapperDir();
-    const wrapperPath = join(wrapperDir, 'omp-su');
+    const { playbookPath: playbookDest, coordPath: coordDest, wrapperPath, wrapperCurrent } =
+      readEngineerOmpBootstrapState();
 
-    if (existsSync(playbookDest) && existsSync(coordDest) && existsSync(wrapperPath)) {
+    if (existsSync(playbookDest) && existsSync(coordDest) && wrapperCurrent) {
       return;
     }
 

@@ -8,6 +8,7 @@
  * requirePrincipal() inline.
  */
 import { spawn, type ChildProcess } from 'node:child_process';
+import { homedir } from 'node:os';
 import { appendFileSync, existsSync, writeFileSync, renameSync } from 'node:fs';
 import { join } from 'node:path';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
@@ -16,6 +17,7 @@ import { PrincipalCheckError, requirePrincipal } from '@/lib/auth/require-princi
 import { defineTool } from '@papercusp/agent-mcp';
 import { recordAdvSession, markAdvSessionEnded, setAdvSessionPid } from '@/lib/adv-sessions';
 import { readOmpIntegrationState } from '@/lib/desktop-install/omp-integration';
+import { resolveInstallPaths } from '@/lib/desktop-install/papercusp-files';
 import { ensureOmpSuInstalled } from '@/lib/ensure-omp-su';
 
 // Fire-and-forget child-exit listener that ends the adv_sessions row
@@ -340,6 +342,19 @@ const post = defineTool({
       }
       await ensureOmpSuInstalled();
       const ompIntegration = await readOmpIntegrationState();
+      const installPaths = resolveInstallPaths(homedir());
+      if (!existsSync(installPaths.playbookPath) || !existsSync(installPaths.extensionPath)) {
+        return jsonRes(
+          {
+            status: 'error',
+            code: 'omp_not_bootstrapped',
+            error:
+              'Papercusp engineer OMP files are missing. Install the engineer playbook and coordination extension before launching an /adv OMP session.',
+            installCmd: 'bash apps/operator/scripts/install-standalone-mcp.sh',
+          },
+          200,
+        );
+      }
       if (!ompIntegration.mcpServerInstalled) {
         return jsonRes(
           {
