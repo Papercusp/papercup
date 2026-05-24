@@ -11,9 +11,9 @@ owner: avi@storewolf.com
 
 ## Now
 
-**State:** **draft execution plan**, third in the per-phase cohort after Phase 0 (spike gate) and Phase 1a (workspace + UI shell). Phase 2 status as of 2026-05-24 (overnight loop): **P-014 + P-015 done in-tree** (migration `080-harness-features-dogfood-columns.sql`); **P-016 verifier daemon SHIPPED** in commit `4b950a07` (parent) + `ad029f5` (libs/papercusp submodule, migration `082-completion-ref-verifier-columns.sql`). Remaining: **P-017 (UI surfacing of `completion_ref` + divergence warnings)**.
+**State:** P-014, P-015, P-016 all ✅ DONE. P-016 shipped with full backoff + toast (P-016c fixed in `aeb48d83`). Plan doc updated to reflect actual implementation (divergence signal on feature row, NOT harness_escalations). **Only P-017 remains** — UI surfacing of `completion_ref` + divergence warnings.
 
-**Next:** Implement P-017 — locate the FeatureDetail surface in `apps/operator/app/harness/`, build `CompletionRefCard.tsx` for the verified / pending / divergent states. UI work — coordinate with paperclip (paperclip's edit zone is `apps/operator/app/admin/harness/*`; check first whether the FeatureDetail surface is admin or non-admin).
+**Next:** Implement P-017 — locate the FeatureDetail surface in `apps/operator/app/harness/`, build `CompletionRefCard.tsx` for the verified / pending / divergent states. P-017d dropped (no escalation row to link). P-017a-c are the acceptance bar.
 
 ## Background
 
@@ -45,26 +45,28 @@ v5 one-liner: *"Schema additions to `harness_features_consolidated` per §7.1 (`
 
 ---
 
-### P-016 — Background verifier daemon [M] — 🔴 NOT STARTED
+### P-016 — Background verifier daemon [M] — ✅ DONE
 
 v5 one-liner: *"Background verifier daemon. `git ls-remote` polling. Cache + divergence-warning surfacing."*
 
-**Expansion.** A daemon that periodically polls every harness's canonical remote via `git ls-remote`, verifies each feature's `completion_ref.commit_sha` is reachable from the remote's `main` (or whatever the harness's main branch is), and stamps a `done_at_remote_ts` on the feature row. On divergence (the SHA is *gone* from the remote — force-push, reverted PR, etc.), emit an escalation.
+**Status:** ✅ DONE. `completion-ref-verifier.ts` shipped (`4b950a07` + backoff fix `aeb48d83`). Migration `082-completion-ref-verifier-columns.sql` landed `verified_done_at_remote_ts`, `verifier_last_error`, `verifier_last_checked_at`. Daemon wired at `instrumentation-node.ts:313`.
 
-**Files:**
-- `apps/operator/lib/harness/completion-ref-verifier.ts` (new) — main daemon module. Exports `startCompletionRefVerifier({ pollIntervalMs }: { pollIntervalMs?: number })` and `verifyHarnessFeatures(slug: string): Promise<VerificationResult>`. The factored `verifyHarnessFeatures` is callable on-demand (from a UI "force re-check" button if needed); the daemon is just a polling wrapper.
-- `apps/operator/lib/harness/completion-ref-verifier.test.ts` (new) — unit tests covering: SHA found on remote → stamps `done_at_remote_ts`; SHA missing → emits divergence escalation; remote unreachable (network down) → retry with backoff, no false-positive escalation; rate-limit handling (use `git ls-remote` against the local clone's already-configured remote, NOT GitHub API, so no rate-limit issue).
-- `apps/operator/instrumentation-node.ts` — wire `startCompletionRefVerifier()` into the boot sequence after `ensurePapercuspWorkspace()`.
-- `apps/operator/lib/ensure-schema-dogfood.ts` — confirm a column exists on `harness_features_consolidated` to hold the verification timestamp; if not, add `verified_done_at_remote_ts TIMESTAMPTZ` and `verifier_last_error TEXT` via the same migration-extension pattern. (Sanity-check the existing migration 080 — these columns may already be there from the schema work.)
+**Expansion.** A daemon that periodically polls every harness's canonical remote via `git ls-remote`, verifies each feature's `completion_ref.commit_sha` is reachable from the remote, and stamps a `verified_done_at_remote_ts` on the feature row. On divergence (the SHA is *gone* — force-push, reverted PR), writes `verifier_last_error = 'sha_not_found'` directly on the feature row. **The signal lives on the feature row, NOT in `harness_escalations`** — the escalations table is a per-(slug, phase) file-mirror and the wrong shape for a per-feature signal. P-017's UI reads `verifier_last_error` directly.
+
+**Files (shipped):**
+- `apps/operator/lib/harness/completion-ref-verifier.ts` — daemon module. Exports `startCompletionRefVerifier()` and `verifyHarnessFeatures(slug)`. Daemon tick uses `verifyHarnessFeaturesWithBackoff()` internally (backoff-aware); `verifyHarnessFeatures()` is the unfiltered on-demand path.
+- `apps/operator/lib/harness/completion-ref-verifier.test.ts` — unit tests: `parseLsRemoteOutput`, `decideVerificationOutcome`, `BINDING_CACHE_TTL_MS`, `BindingServiceErrorThrowable`.
+- `apps/operator/instrumentation-node.ts` — `startCompletionRefVerifier()` called at line 313.
+- Migration `082-completion-ref-verifier-columns.sql` — `verified_done_at_remote_ts TIMESTAMPTZ`, `verifier_last_error TEXT`, `verifier_last_checked_at TIMESTAMPTZ`.
 
 **Sub-acceptances:**
-- **P-016a — Happy path verification.** Daemon picks up a feature in `status='pending_done'` with a `completion_ref`; runs `git ls-remote origin <commit_sha>`; SHA is found; stamps `verified_done_at_remote_ts = now()`. UI consumers (P-017) can show ✓.
-- **P-016b — Divergence detection.** Same feature, but the SHA has been force-pushed away from the remote (or the branch was deleted). `git ls-remote` returns empty for the SHA → daemon writes `verifier_last_error = 'sha_not_found'` and emits a `harness_escalations` row with `kind: 'completion_ref_divergence'`. Feature remains in `pending_done`; flips to `failing` only after the user acknowledges the escalation (don't silently revert status).
-- **P-016c — Network unreachable.** `git ls-remote` fails with a timeout or DNS error → daemon backs off (exponential, max 5 min) and retries. No `verified_done_at_remote_ts` is stamped; no false-positive escalation. After 5 retries with no success, surface a quiet info-toast ("Verifier can't reach origin — retrying in background").
-- **P-016d — Cadence + scope.** Poll every harness with ≥1 `pending_done` or recently-`shipped` (within 24h) feature, every 60s. Don't poll harnesses with no recent feature activity (cheap heuristic to keep network traffic down). Daemon uses the same coalesce-by-harness pattern as the existing PR poll (P-042 spec).
-- **P-016e — On-demand re-check.** `verifyHarnessFeatures(slug)` callable from the UI; returns within 5s for a harness with <50 features. Used by a "Re-check verification" button in the harness escalations UI (added in P-017).
+- **P-016a — Happy path verification.** Daemon picks up `pending_done` feature with `completion_ref`; `git ls-remote` finds SHA; stamps `verified_done_at_remote_ts = NOW()`, clears `verifier_last_error`. ✅
+- **P-016b — Divergence detection.** SHA force-pushed away → `git ls-remote` returns empty → daemon writes `verifier_last_error = 'sha_not_found'` on the feature row. Feature remains `pending_done`; no harness_escalations row emitted (design departure from original spec — per-feature signal is the right shape). ✅
+- **P-016c — Network unreachable.** Network error → exponential backoff (60s → 120s → 240s → cap 5min); `verifier_last_error` NOT poisoned on transient errors. After 5 consecutive errors: writes one `warning` toast to `toast_log` with feature context. ✅ (fixed `aeb48d83`)
+- **P-016d — Cadence + scope.** 60s poll; coalesced to harnesses with ≥1 `pending_done` or recently-`shipped` (24h) feature. ✅
+- **P-016e — On-demand re-check.** `verifyHarnessFeatures(slug)` exported; no backoff filter on on-demand path. Used by P-017c UI button. ✅
 
-**Decision rule:** P-016 passes when P-016a-d all pass. P-016e is part of P-017's UI work — split into that phase if scope-cutting is needed.
+**Decision rule:** PASS.
 
 ---
 
@@ -79,15 +81,15 @@ v5 one-liner: *"Surface in PlanDetail / FeatureDetail UI: `completion_ref` + ver
 - `apps/operator/app/harness/CompletionRefCard.tsx` (new) — the visual rendering. Three states:
   - **Verified** (✓ tier-B): "Merged at `<commit_sha[:8]>` on `<branch>` — verified `<relative-time>`". Tier-B badge per §17.
   - **Unverified-pending** (unmarked tier-C): "Merged at `<commit_sha[:8]>` on `<branch>` — verifying…" with a small spinner. Tier-C until P-016 stamps `verified_done_at_remote_ts`.
-  - **Divergent** (⚠ warning): "The recorded commit `<commit_sha[:8]>` is no longer present on `<remote>`. The PR may have been force-pushed or reverted. Resolve via escalation panel."
+  - **Divergent** (⚠ warning): "The recorded commit `<commit_sha[:8]>` is no longer present on `<remote>`. The PR may have been force-pushed or reverted." Plus a "Re-check" button (P-017c) to verify again once resolved.
 
 **Sub-acceptances:**
 - **P-017a — Card renders for each of the three states.** Render tests in `apps/operator/app/harness/__tests__/CompletionRefCard.test.tsx`.
 - **P-017b — Tier badges per §17.** Verified state uses the tier-B ✓; pending state is unmarked tier-C; divergent state uses the ⚠ pattern from existing escalation surfaces. Mock the trust-tier helper from §17 if it doesn't exist yet (it will in P-073 / Insights work) — encapsulate as `getTrustTierBadge(tier: 'A' | 'B' | 'C' | 'D' | 'warning')` to swap in the real helper later.
 - **P-017c — Force re-check button on divergent state.** Calls `verifyHarnessFeatures(slug)` from P-016e; shows a brief loading state; updates the card based on the new verification result. Useful when the divergence was transient (network issue) and the user wants to confirm.
-- **P-017d — Escalations-panel link on divergent state.** "Resolve via escalation panel" deep-links to the escalation row P-016 emitted.
+- **P-017d — ~~Escalations-panel link~~ (DROPPED).** Original spec said "deep-link to the escalation row P-016 emitted." P-016's implementation departed from the spec: divergence signal lives on the feature row (`verifier_last_error`), NOT in `harness_escalations`. There is no escalation row to deep-link. The Re-check button (P-017c) covers the user's action need.
 
-**Decision rule:** P-017 passes when P-017a-c pass. P-017d is nice-to-have; can ship as a follow-up.
+**Decision rule:** P-017 passes when P-017a-c pass.
 
 ## Decisions
 
@@ -121,9 +123,9 @@ I cited `apps/operator/app/harness/FeatureDetail.tsx` as a placeholder. The actu
 
 A `shipped` feature's `completion_ref` could in principle become divergent if someone force-pushes main weeks later. Whether to keep polling is a tradeoff between catching late-divergences and not burning network on stable history. My lean: poll `shipped` features for 7 days, then stop (long-tail divergence is unlikely and an explicit "Re-check" button is available). Spec the 7-day cutoff in P-016d.
 
-### Q-3 — UI for the escalation row when the daemon emits one?
+### Q-3 — UI for the escalation row when the daemon emits one? — ✅ RESOLVED
 
-P-016 emits a `harness_escalations` row with `kind: 'completion_ref_divergence'`. The existing escalations UI should pick this up — but does it have a dedicated UI for this `kind`, or does it fall through to a generic escalation card? Audit before P-017d (the deep-link target).
+**Resolution:** P-016 does NOT emit a `harness_escalations` row. The divergence signal (`verifier_last_error = 'sha_not_found'`) lives on the feature row itself. This was an intentional design departure — `harness_escalations` is per-(slug, phase) file-mirrored; per-feature signals need to live on `harness_features_consolidated`. P-017d dropped accordingly. The P-017 UI reads `verifier_last_error` directly from the feature row.
 
 ## For the next agent (Phase 3 or Phase 4)
 

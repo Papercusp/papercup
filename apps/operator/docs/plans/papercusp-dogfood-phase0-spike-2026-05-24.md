@@ -143,7 +143,26 @@ This entire rollout is sized **M** if it fires. The fact that it's specced is *i
 
 ## Decisions
 
-(No execution-time decisions yet. The gate verdict from P-005 will land here.)
+### D-001 — Phase 0 gate: PARTIAL PASS (Linux x64 only; macOS/Windows/Tauri-bundle pending)
+
+**Date:** 2026-05-24  
+**Verdict:** `GATE: PARTIAL PASS`
+
+**What passed (Linux x64):**
+- P-001a — `npm install` + `smoke/01-install-check.mjs` PASS on Linux x64, Node 25. 105 packages, 7s install, no native compilation required (prebuilds shipped for all native deps).
+- P-002a — `smoke/02-swarm-loopback.mjs` PASS: Hyperswarm DHT join + peer discovery + payload exchange over public DHT in 10.4s.
+- P-003a/b — Autobase 2-writer in-process convergence PASS.
+- P-004 — `smoke/04-hyperbee-kv.mjs` Hyperbee KV read/write PASS.
+
+**What is still pending (gate remains OPEN for cross-platform):**
+- P-001b/c — macOS arm64 + x64 prebuild verification
+- P-001d — Windows x64 prebuild verification
+- P-001e — Tauri-bundle verification (all OSes)
+- P-002b/c — cross-network holepunching (home Wi-Fi ↔ cellular tether; symmetric NAT)
+- P-003 (full 3-writer + sleeping-peer reconnect at projected load)
+- P-005 — formal gate recording pending above
+
+**Implication:** Phase 1a has proceeded under the assumption that Linux x64 passes and that the Hyperbee bucket can be deferred or collapsed to GIT bucket if macOS/Windows fail. Per D-003 in v5 (Phase 5a deferred): "Phase 5a (Hyperbee live state) DEFERRED until cross-platform spike passes." Phase 1a–4 work is safe to continue on Linux-only infrastructure. Revisit full gate when macOS/Windows hosts are available.
 
 ## Cross-references
 
