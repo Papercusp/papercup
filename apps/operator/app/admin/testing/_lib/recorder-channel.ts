@@ -36,6 +36,9 @@ export interface RunSummary {
   events: RecorderEvent[];
   /** route → { count, p50inp, p95inp, maxInp, errors } */
   routes: Record<string, RouteRollup>;
+  reloads?: number;
+  frameDrops?: number;
+  maxFrameMs?: number;
 }
 
 export interface RouteRollup {

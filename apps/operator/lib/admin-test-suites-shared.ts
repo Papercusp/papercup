@@ -4,7 +4,8 @@ export type AdminTestSuiteId =
   | 'admin-testing-extended'
   | 'desktop-performance'
   | 'packaged-readiness'
-  | 'memory-core';
+  | 'memory-core'
+  | 'ai-explore-prompts';
 
 export type AdminTestStatus = 'pass' | 'warn' | 'fail' | 'skip';
 export type AdminTestRunStatus = 'running' | 'done' | 'error' | 'cancelled';
@@ -128,6 +129,16 @@ export const ADMIN_TEST_SUITES: AdminTestSuiteSpec[] = [
     estimatedSeconds: 30,
     safeDefault: false,
     tags: ['memory', 'mem0', 'pgvector'],
+  },
+  {
+    id: 'ai-explore-prompts',
+    label: 'AI Explore prompts',
+    hint: 'preconfigured LLM workflows',
+    description: 'Runs a small opt-in set of preconfigured prompts through the same AI Explore Stagehand backend used by the Testing tab, reporting steps, tokens, cost, and failures.',
+    runner: 'mixed',
+    estimatedSeconds: 90,
+    safeDefault: false,
+    tags: ['ai', 'llm', 'stagehand', 'prompts'],
   },
 ];
 

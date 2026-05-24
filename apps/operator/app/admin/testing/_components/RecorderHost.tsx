@@ -44,6 +44,13 @@ export default function RecorderHost() {
     if (params.get('perf-recorder') !== '1') return;
     if (window.__papercuspRecorderActive) return;
     window.__papercuspRecorderActive = true;
+    const suiteRunKey = params.get('__suiteRun');
+    const reloadStorageKey = suiteRunKey ? `papercusp.testing.chaos-reloads.${suiteRunKey}` : null;
+    if (reloadStorageKey) {
+      const prev = Number(sessionStorage.getItem(reloadStorageKey) || '0');
+      sessionStorage.setItem(reloadStorageKey, String(prev + 1));
+    }
+
 
     const channel = new BroadcastChannel(CHANNEL_NAME);
     let currentRunId: string | null = null;
@@ -73,12 +80,25 @@ export default function RecorderHost() {
       send({ type: 'event', runId: currentRunId!, event: e });
     }
 
+
+    const ignoredInteractionEvents = new Set([
+      'mouseover',
+      'mouseout',
+      'pointerover',
+      'pointerout',
+      'mouseenter',
+      'mouseleave',
+      'pointerenter',
+      'pointerleave',
+    ]);
+
     function setupObservers(): () => void {
       const obs: PerformanceObserver[] = [];
       try {
         const intObs = new PerformanceObserver((list) => {
           for (const entry of list.getEntries()) {
             const ev = entry as PerformanceEventTiming;
+            if (ignoredInteractionEvents.has(ev.name)) continue;
             if (ev.duration < 40) continue;
             recordEvent({
               ts: Date.now(),
@@ -168,6 +188,21 @@ export default function RecorderHost() {
       clickCount = 0;
       startedAt = Date.now();
       send({ type: 'started', runId: currentRunId });
+      let frameDrops = 0;
+      let maxFrameMs = 0;
+      let rafStop = false;
+      let lastFrame = performance.now();
+      const raf = () => {
+        if (rafStop) return;
+        const now = performance.now();
+        const delta = now - lastFrame;
+        if (delta > 50) frameDrops += 1;
+        if (delta > maxFrameMs) maxFrameMs = delta;
+        lastFrame = now;
+        requestAnimationFrame(raf);
+      };
+      requestAnimationFrame(raf);
+
 
       const teardown = setupObservers();
 
@@ -223,9 +258,12 @@ export default function RecorderHost() {
 
       function finishRun() {
         clearTimeout(timer);
+        rafStop = true;
         stopRun?.();
         stopRun = null;
         teardown();
+        const reloads = reloadStorageKey ? Math.max(0, Number(sessionStorage.getItem(reloadStorageKey) || '1') - 1) : 0;
+        if (reloadStorageKey) sessionStorage.removeItem(reloadStorageKey);
         const summary: RunSummary = {
           runId: currentRunId!,
           startedAt,
@@ -234,6 +272,9 @@ export default function RecorderHost() {
           clicks: clickCount,
           events: runEvents,
           routes: rollupRoutes(runEvents),
+          reloads,
+          frameDrops,
+          maxFrameMs: Math.round(maxFrameMs),
         };
         send({ type: 'done', runId: currentRunId!, summary });
         currentRunId = null;

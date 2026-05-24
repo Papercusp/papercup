@@ -67,6 +67,32 @@ interface MemoryTree {
   rows: MemoryRow[];
 }
 
+interface ChaosRecorderSummary {
+  clicks: number;
+  durationMs: number;
+  maxInp: number;
+  p95Inp: number;
+  longTasks: number;
+  errors: number;
+  reloads: number;
+  frameDrops: number;
+  maxFrameMs: number;
+  routes: string[];
+}
+
+interface AiExploreRunSummary {
+  goal: string;
+  steps: number;
+  totalMs: number;
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  costUsd: number;
+  exitCode: number | null;
+  errors: string[];
+  logs: string[];
+}
+
 const SUITE_MAP = new Map(ADMIN_TEST_SUITES.map((suite) => [suite.id, suite] as const));
 const SAFE_DEFAULT_IDS = ADMIN_TEST_SUITES.filter((suite) => suite.safeDefault).map((suite) => suite.id);
 
@@ -147,6 +173,8 @@ function getSuiteChecks(ctx: SuiteContext): Array<{
       return packagedReadinessChecks(ctx);
     case 'memory-core':
       return memoryCoreChecks(ctx);
+    case 'ai-explore-prompts':
+      return aiExplorePromptChecks(ctx);
   }
 }
 
@@ -331,6 +359,41 @@ function desktopHealthChecks(ctx: SuiteContext) {
   ];
 }
 
+function aiExplorePromptChecks(ctx: SuiteContext) {
+  const prompts = [
+    {
+      id: 'testing-tab-overview',
+      label: 'Testing tab overview prompt',
+      goal: 'Open the Testing page and summarize which testing tools are available. Do not change settings or run destructive actions.',
+      startUrl: 'http://127.0.0.1:3055/admin/testing?tab=test-runs',
+    },
+    {
+      id: 'plans-page-overview',
+      label: 'Plans page overview prompt',
+      goal: 'Open the Plans page and identify whether the page renders a plans list or an empty state. Do not edit plans.',
+      startUrl: 'http://127.0.0.1:3055/admin/plans',
+    },
+  ];
+  return prompts.map((prompt) => ({
+    id: prompt.id,
+    label: prompt.label,
+    run: async () => {
+      const summary = await runAiExplorePrompt(ctx, prompt.goal, prompt.startUrl);
+      const ok = summary.errors.length === 0 && (summary.exitCode === null || summary.exitCode === 0) && summary.costUsd <= 0.15;
+      return statusResult(
+        ok,
+        'AI Explore backend completes the prompt without errors and stays within the $0.15 per-prompt cap.',
+        `${summary.steps} steps · ${summary.totalTokens} tokens · $${summary.costUsd.toFixed(4)} · exit=${summary.exitCode ?? 'unknown'}.`,
+        [
+          `goal: ${summary.goal}`,
+          ...summary.errors.map((error) => `error: ${error}`),
+          ...summary.logs.slice(-5).map((line) => `log: ${line}`),
+        ],
+      );
+    },
+  }));
+}
+
 function adminTestingCoreChecks(ctx: SuiteContext) {
   return [
     routeCheck(ctx, 'live-route', 'Live metrics route', '/admin/testing?tab=live', 'Live metrics'),
@@ -390,6 +453,24 @@ function desktopPerformanceChecks(ctx: SuiteContext) {
           'Warm /admin/plans settles within 1500ms in the Tauri desktop shell.',
           `${result.elapsedMs}ms · href=${result.page.href} · domNodes=${result.page.domNodes}.`,
           result.ok ? undefined : result.page.details,
+        );
+      },
+    },
+    {
+      id: 'chaos-recorder-usability',
+      label: 'Chaos recorder usability',
+      run: async () => {
+        const summary = await runChaosRecorder(ctx, '/admin/testing?tab=test-runs', 5_000);
+        const pass = summary.clicks > 0 && summary.maxInp <= 500 && summary.p95Inp <= 250 && summary.errors === 0 && summary.reloads === 0 && summary.frameDrops <= 8 && summary.maxFrameMs <= 120;
+        return statusResult(
+          pass,
+          'Existing Chaos recorder can click around for 5s with p95 INP <=250ms, max INP <=500ms, no errors, no reloads, <=8 dropped frames, and max frame <=120ms.',
+          `${summary.clicks} clicks · p95=${summary.p95Inp}ms · max=${summary.maxInp}ms · errors=${summary.errors} · reloads=${summary.reloads} · frameDrops=${summary.frameDrops} · maxFrame=${summary.maxFrameMs}ms.`,
+          [
+            `routes: ${summary.routes.join(', ') || '(none)'}`,
+            `duration=${summary.durationMs}ms`,
+            `longTasks=${summary.longTasks}`,
+          ],
         );
       },
     },
@@ -654,6 +735,174 @@ function describeExecFailure(exec: ExecResult): string {
 function describeCommandFailure(result: { command: string; exec: ExecResult }): string {
   const body = describeExecFailure(result.exec);
   return body ? `${result.command} → ${body}` : `${result.command} failed.`;
+}
+
+async function runAiExplorePrompt(ctx: SuiteContext, goal: string, startUrl: string): Promise<AiExploreRunSummary> {
+  const state = await getDesktopState(ctx);
+  const endpoint = new URL('/api/admin/testing/ai-explore', state.origin).toString();
+  const script = `
+    (async () => {
+      const res = await fetch(${JSON.stringify(endpoint)}, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          goal: ${JSON.stringify(goal)},
+          startUrl: ${JSON.stringify(startUrl)},
+          model: 'anthropic/claude-haiku-4-5',
+          maxSteps: 8,
+          maxCostUsd: 0.15,
+          headless: true
+        })
+      });
+      if (!res.ok || !res.body) {
+        return { ok: false, status: res.status, text: await res.text().catch(() => '') };
+      }
+      const reader = res.body.pipeThrough(new TextDecoderStream()).getReader();
+      let buffer = '';
+      let currentEvent = null;
+      const summary = {
+        goal: ${JSON.stringify(goal)},
+        steps: 0,
+        totalMs: 0,
+        inputTokens: 0,
+        outputTokens: 0,
+        totalTokens: 0,
+        costUsd: 0,
+        exitCode: null,
+        errors: [],
+        logs: []
+      };
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += value;
+        const lines = buffer.split(/\\r?\\n/);
+        buffer = lines.pop() || '';
+        for (const line of lines) {
+          if (line === '') { currentEvent = null; continue; }
+          if (line.startsWith('event: ')) { currentEvent = line.slice(7).trim(); continue; }
+          if (!line.startsWith('data: ') || !currentEvent) continue;
+          const payload = JSON.parse(line.slice(6));
+          if (currentEvent === 'step') summary.steps = Math.max(summary.steps, Number(payload.n || 0));
+          else if (currentEvent === 'metrics') {
+            summary.inputTokens = Number(payload.inputTokens || 0);
+            summary.outputTokens = Number(payload.outputTokens || 0);
+            summary.totalTokens = Number(payload.totalTokens || 0);
+            summary.costUsd = Number(payload.costUsd || 0);
+          } else if (currentEvent === 'done') {
+            summary.totalMs = Number(payload.totalMs || 0);
+            summary.steps = Math.max(summary.steps, Number(payload.steps || 0));
+            summary.costUsd = Number(payload.costUsd || summary.costUsd || 0);
+            summary.exitCode = typeof payload.exitCode === 'number' ? payload.exitCode : null;
+          } else if (currentEvent === 'error') {
+            summary.errors.push(String(payload.message || 'unknown error'));
+          } else if (currentEvent === 'log' && payload.level === 'error') {
+            summary.logs.push(String(payload.line || '').slice(0, 300));
+          }
+        }
+      }
+      return { ok: true, summary };
+    })()
+  `;
+  const result = await runTauriEvalResultJson<
+    { ok: true; summary: AiExploreRunSummary } | { ok: false; status: number; text: string }
+  >(ctx, script, 120_000);
+  if (!result.ok || !result.value) {
+    return { goal, steps: 0, totalMs: 0, inputTokens: 0, outputTokens: 0, totalTokens: 0, costUsd: 0, exitCode: null, errors: [describeCommandFailure(result)], logs: [] };
+  }
+  if (!result.value.ok) {
+    return { goal, steps: 0, totalMs: 0, inputTokens: 0, outputTokens: 0, totalTokens: 0, costUsd: 0, exitCode: null, errors: [`HTTP ${result.value.status}: ${result.value.text}`], logs: [] };
+  }
+  return result.value.summary;
+}
+
+async function runChaosRecorder(ctx: SuiteContext, route: string, durationMs: number): Promise<ChaosRecorderSummary> {
+  const state = await getDesktopState(ctx);
+  const suiteRun = `suite-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+  const routeUrl = new URL(route, state.origin);
+  routeUrl.searchParams.set('__suiteRun', suiteRun);
+  const chaosUrl = new URL('/admin/testing', state.origin);
+  chaosUrl.searchParams.set('tab', 'chaos');
+  chaosUrl.searchParams.set('chaosRoute', `${routeUrl.pathname}${routeUrl.search}${routeUrl.hash}`);
+  chaosUrl.searchParams.set('chaosDur', durationMs <= 10_000 ? '10s' : '30s');
+  chaosUrl.searchParams.set('dry', 'false');
+  const ready = await measureRoute(ctx, chaosUrl.toString(), (page) => page.href.includes('/admin/testing') && page.h1.includes('Chaos'));
+  if (!ready.ok) {
+    return { clicks: 0, durationMs, maxInp: 0, p95Inp: 0, longTasks: 0, errors: 1, reloads: 0, frameDrops: 0, maxFrameMs: 0, routes: ready.page.details.length > 0 ? ready.page.details : ['chaos tab did not load'] };
+  }
+  await runTauriEvalJson<boolean>(
+    ctx,
+    `(() => {
+      try { localStorage.removeItem('papercusp.testing.chaos-runs.v1'); } catch {}
+      return true;
+    })()`,
+    10_000,
+  ).catch(() => undefined);
+  const launched = await runTauriEvalResultJson<{ ok: boolean; reason?: string }>(
+    ctx,
+    `(() => {
+      const btn = Array.from(document.querySelectorAll('button'))
+        .find((el) => (el.textContent || '').includes('Launch recorder window'));
+      if (!(btn instanceof HTMLButtonElement)) return { ok: false, reason: 'Launch recorder window button not found' };
+      btn.click();
+      return { ok: true };
+    })()`,
+    10_000,
+  );
+  if (!launched.ok || !launched.value?.ok) {
+    const reason = launched.value && 'reason' in launched.value ? launched.value.reason : describeCommandFailure(launched);
+    return { clicks: 0, durationMs, maxInp: 0, p95Inp: 0, longTasks: 0, errors: 1, reloads: 0, frameDrops: 0, maxFrameMs: 0, routes: [reason || 'chaos recorder launch failed'] };
+  }
+  const deadline = Date.now() + durationMs + 20_000;
+  while (Date.now() < deadline) {
+    const summary = await runTauriEvalJson<{
+      runId: string;
+      durationMs: number;
+      clicks: number;
+      events: Array<{ kind: string; route: string; inp?: number; duration?: number }>;
+      routes: Record<string, unknown>;
+      reloads?: number;
+      frameDrops?: number;
+      maxFrameMs?: number;
+    } | null>(
+      ctx,
+      `(() => {
+        try {
+          const raw = localStorage.getItem('papercusp.testing.chaos-runs.v1');
+          if (!raw) return null;
+          const runs = JSON.parse(raw);
+          return Array.isArray(runs) && runs[0] ? runs[0] : null;
+        } catch {
+          return null;
+        }
+      })()`,
+      10_000,
+    );
+    if (summary.ok && summary.value) {
+      const source = Array.isArray(summary.value.events) ? summary.value.events : [];
+      const inps = source
+        .filter((ev) => ev.kind === 'click' && typeof ev.inp === 'number')
+        .map((ev) => Number(ev.inp))
+        .sort((a, b) => a - b);
+      const errors = source.filter((ev) => ev.kind === 'console-error' || ev.kind === 'unhandled-error').length;
+      const longTasks = source.filter((ev) => ev.kind === 'long-task').length;
+      const routes = Object.keys(summary.value.routes || {});
+      return {
+        clicks: Number(summary.value.clicks || inps.length),
+        durationMs: Number(summary.value.durationMs || durationMs),
+        maxInp: inps.length ? inps[inps.length - 1] : 0,
+        p95Inp: inps.length ? inps[Math.min(inps.length - 1, Math.floor(inps.length * 0.95))] : 0,
+        longTasks,
+        errors,
+        reloads: Number(summary.value.reloads || 0),
+        frameDrops: Number(summary.value.frameDrops || 0),
+        maxFrameMs: Number(summary.value.maxFrameMs || 0),
+        routes,
+      };
+    }
+    await sleep(500, ctx.signal);
+  }
+  return { clicks: 0, durationMs, maxInp: 0, p95Inp: 0, longTasks: 0, errors: 1, reloads: 0, frameDrops: 0, maxFrameMs: 0, routes: ['chaos recorder summary did not arrive before timeout'] };
 }
 
 async function getDesktopState(ctx: SuiteContext): Promise<DesktopState> {
