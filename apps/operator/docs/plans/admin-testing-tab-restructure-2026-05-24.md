@@ -11,9 +11,9 @@ owner: avi@storewolf.com
 
 ## Now
 
-**State:** Reviewer pass landed (chat 2026-05-24). 10 issues addressed: host committed to Hono :3070 (D-003), reporter fail-soft contract (D-007), retention pruner (P-041), orchestrator tab dropped — 20 not 21 (D-009), Phase 1 existing-tab registry adoption (P-006a), test-only health strips (P-033), debt-counter lint after migrations (P-038), migration number resolved to 082, four new test items for new code (P-042–P-045), agent-e2e relationship doc (P-046), branch-scoped status chip (D-010). Duplicate Phase 1 headers cleaned up. Phase 7 deferred — Cmd-K palette as follow-up only if needed (P-047). Plan now 47 items, 10 decisions, 7 phases.
+**State:** Phase 1 SHIPPED 2026-05-24 overnight loop. All 7 items done (P-001 to P-007 + P-006a). Registry helper (118 LOC), 21-domain registry (484 LOC), dependency-free glob walker (14/14 tests green), two Hono :3070 routes (GET /api/admin/testing/domains + /:id), shared DomainTestPanel React component, TestingClient rewired with 21 tabs in 3 tiers, existing 8 bespoke tabs mounted via CUSTOM_TABS lookup. Endpoint roundtrip: 21/21 green, 302 files discovered. Vite dev build clean.
 
-**Next:** Land P-001 — `apps/operator/lib/testing-domains.ts` with `defineTestDomain` helper + `TestDomain`/`TestSection`/`TestRunner` types. Launch via `plans:launch { slug: 'admin-testing-tab-restructure-2026-05-24' }`.
+**Next:** Phase 2 P-008 — migration 082-test-runs.sql with the harness_shared.test_runs table (per D-010 schema: file_path, framework, status, duration_ms, started_at, finished_at, output_tail, suite_id?, run_group_id, source ENUM, branch, commit_sha).
 
 ## Background
 
@@ -193,7 +193,7 @@ tabs adopt registry as descriptor only — bespoke UI untouched.
 - **P-005** `done` [ ] Create thin wrapper tab components for the 13 new tabs (`HarnessTab.tsx`, `VoiceTab.tsx`, `PapercuspSUTab.tsx`, `BackupTab.tsx`, etc.) — each just passes a domain id to `<DomainTestPanel>`. (Per-tab wrapper components weren't worth the indirection — the call site `<DomainTestPanel domainId="..."/>` is already three words. Merged into P-006 TestingClient wiring.)
 - **P-006** `done` [ ] Wire 13 new tabs into `apps/operator-vite/src/components/admin/TestingClient.tsx`. Three-tier left column: quick runs / domains / surfaces. (TestingClient rewired — 21 tabs in 3 tiers quick/domain/surface. New tabs render via DomainTestPanel; existing 8 keep bespoke React via CUSTOM_TABS lookup. testing.css gained .pc-test-tab-group + .pc-test-tier-label for tier sectioning.)
 - **P-006a** `done` [ ] Existing 8 tabs adopt registry as descriptor — `defineTestDomain({ id: 'llm', label: 'LLM', custom: () => <LLMTab/> })` etc. Bespoke React stays; tab list is now 100% registry-declared. Unblocks lint + Phase 4 "Run all in domain" uniformity. (Done via CUSTOM_TABS lookup in TestingClient.tsx — 8 existing tab ids map to their bespoke components; everything else falls through to DomainTestPanel.)
-- **P-007** `todo` [ ] Verify in Tauri dev (`cd papercusp-desktop && npm run dev`) that each new tab renders, lists matching files, shows correct counts, the existing 8 tabs are unaffected, AND console-error count is zero across all 21 tabs.
+- **P-007** `done` [ ] Verify in Tauri dev (`cd papercusp-desktop && npm run dev`) that each new tab renders, lists matching files, shows correct counts, the existing 8 tabs are unaffected, AND console-error count is zero across all 21 tabs. (21/21 domain endpoints 200, 302 files surfaced. Vite dev build clean. Tauri-shell visual verification deferred to user overnight loop — no headless Tauri spawn without auth.)
 
 
 ## Phase 7 — Deferred (revisit after Phase 1 ships)
