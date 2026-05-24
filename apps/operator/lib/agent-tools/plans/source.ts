@@ -54,9 +54,10 @@ function plansRelFor(harnessSlug: string): string {
  */
 export async function resolveHarnessPlansDir(
   harnessSlug?: string,
+  opts: { workspaceId?: string } = {},
 ): Promise<{ harnessSlug: string; plans: string; archive: string }> {
   const resolved = (harnessSlug?.trim() || PAPERCUP_HARNESS_SLUG) as string;
-  const reg = await loadHarnessRegistry();
+  const reg = await loadHarnessRegistry(opts.workspaceId);
   const project = reg.projects.find((p) => p.slug === resolved);
   if (!project) {
     throw new Error(
@@ -87,6 +88,15 @@ export async function resolveHarnessPlansDir(
 
 export interface PlanSourceOpts {
   repoRoot?: string;
+  /**
+   * Direct override of the plans directory. When provided, bypasses
+   * the cwd-walk that locates the papercup-default location. Used by
+   * cross_harness:plans_* to target a specific harness's plans dir
+   * (resolved via resolveHarnessPlansDir).
+   */
+  plansDir?: string;
+  /** Direct override of the archive directory. Paired with `plansDir`. */
+  archiveDir?: string;
 }
 
 /**
@@ -99,6 +109,14 @@ export interface PlanSourceOpts {
  * on first read with a clear path.
  */
 function resolveCanonicalRoots(opts: PlanSourceOpts): { plans: string; archive: string } {
+  // Direct override wins — no cwd-walk needed. Used by
+  // cross_harness:plans_* and by tests that pass an explicit dir.
+  if (opts.plansDir) {
+    return {
+      plans: opts.plansDir,
+      archive: opts.archiveDir ?? path.join(opts.plansDir, 'archive'),
+    };
+  }
   const candidates: string[] = [];
   if (opts.repoRoot) {
     candidates.push(opts.repoRoot);
