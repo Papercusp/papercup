@@ -59,6 +59,36 @@ export function DeckCardsMark({ className, ...props }: IconProps) {
   );
 }
 
+export function BrainMark({ className, ...props }: IconProps) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      className={className}
+      focusable="false"
+      {...props}
+    >
+      <path
+        d="M9 4.4a2.6 2.6 0 0 0-2.6 2.6c0 .25.04.49.1.72A2.8 2.8 0 0 0 4 10.5c0 .98.5 1.85 1.25 2.36A2.8 2.8 0 0 0 4.6 15a2.8 2.8 0 0 0 1.84 2.63A2.5 2.5 0 0 0 6.4 18.5a2.6 2.6 0 0 0 5.1.7V5.6A2.6 2.6 0 0 0 9 4.4Z"
+        stroke="currentColor"
+        strokeWidth="1.6"
+        strokeLinejoin="round"
+      />
+      <path
+        d="M15 4.4a2.6 2.6 0 0 1 2.6 2.6c0 .25-.04.49-.1.72A2.8 2.8 0 0 1 20 10.5c0 .98-.5 1.85-1.25 2.36A2.8 2.8 0 0 1 19.4 15a2.8 2.8 0 0 1-1.84 2.63c.03.28.04.41.04.87a2.6 2.6 0 0 1-5.1.7V5.6A2.6 2.6 0 0 1 15 4.4Z"
+        stroke="currentColor"
+        strokeWidth="1.6"
+        strokeLinejoin="round"
+      />
+      <path d="M12 5.6v13.6" stroke="currentColor" strokeWidth="1.4" strokeOpacity="0.65" />
+      <path d="M8.4 9.6c.7.6 1.6.9 2.5.9" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeOpacity="0.7" />
+      <path d="M15.6 9.6c-.7.6-1.6.9-2.5.9" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeOpacity="0.7" />
+      <path d="M8.4 13.6c.7.6 1.6.9 2.5.9" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeOpacity="0.7" />
+      <path d="M15.6 13.6c-.7.6-1.6.9-2.5.9" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeOpacity="0.7" />
+    </svg>
+  );
+}
+
 export function OpsTargetMark({ className, ...props }: IconProps) {
   return (
     <svg

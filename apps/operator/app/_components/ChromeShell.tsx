@@ -8,9 +8,7 @@ import { useGSAP } from '@gsap/react';
 import { useReducedMotion } from 'motion/react';
 import { useFancyEffectsEnabled } from '@/lib/visual-effects';
 import { OperatorButton, OperatorAutoScanToggle } from './OperatorChromeControls';
-import { ConsoleLauncherButton } from './ConsoleLauncherButton';
-import { AgentLauncherButton } from './AgentLauncherButton';
-import { OpsTargetMark } from './ChromeNavMarks';
+import { OpsTargetMark, BrainMark } from './ChromeNavMarks';
 import { AriaLiveRegions } from './voice/AriaLiveRegions';
 import { VoiceLeaderBootstrap } from './voice/VoiceLeaderBootstrap';
 import { HostCheckBanner } from './HostCheckBanner';
@@ -21,6 +19,7 @@ import UpdateChip from './UpdateChip';
 import { NotificationCenter } from './NotificationCenter';
 import { RecentActionsCenter } from './RecentActionsCenter';
 import TutorialButton from './TutorialButton';
+import { AnimatedPapercuspCup } from './AnimatedPapercuspCup';
 import { FLAGS } from '@papercusp/flags';
 import { useFlag } from '@/lib/flag-hooks';
 
@@ -88,6 +87,7 @@ export default function ChromeShell() {
   // non-link span with `is-current` styling so it's visibly distinct from
   // the active CTA elsewhere in the app.
   const onHarness = pathname === '/harness' || pathname.startsWith('/harness/');
+  const onAdv = pathname === '/adv' || pathname.startsWith('/adv/');
   const snapshotsFlag = useFlag(FLAGS.SNAPSHOTS);
   const marketplaceFlag = useFlag(FLAGS.MARKETPLACE);
   const oracleFlag = useFlag(FLAGS.ORACLE);
@@ -147,8 +147,8 @@ export default function ChromeShell() {
           and the nav on the right grow.
         */}
         <div className="pc-header-left">
-          <a href="/" className="brand pc-header-brand-wrap" aria-label="papercusp" style={{ display: 'flex', alignItems: 'center' }} {...mainNavJumpGateProps}>
-            <img src="/wordmark.svg" alt="papercusp" height={22} style={{ display: 'block' }} />
+          <a href="/" className="brand pc-header-brand-wrap" aria-label="papercusp" {...mainNavJumpGateProps}>
+            <AnimatedPapercuspCup />
           </a>
           <span className="pc-header-quote pc-header-quote--hud" data-quote="Nothing Is So Painful To The Human Mind As A Great And Sudden Change">Nothing Is So Painful To The Human Mind As A Great And Sudden Change</span>
         </div>
@@ -178,8 +178,25 @@ export default function ChromeShell() {
           />
           <OperatorButton />
           <OperatorAutoScanToggle />
-          <ConsoleLauncherButton />
-          <AgentLauncherButton />
+          {onAdv ? (
+            <span
+              className="pc-header-cta pc-header-cta--mission is-current"
+              aria-label="Adv (current page)"
+              aria-current="page"
+            >
+              <span className="pc-header-cta-orb" aria-hidden="true">
+                <BrainMark className="pc-header-cta-logo pc-header-cta-logo--adv" />
+              </span>
+              <span className="pc-header-cta-label">ADV</span>
+            </span>
+          ) : (
+            <a href="/adv" className="pc-header-cta pc-header-cta--mission" aria-label="Adv" {...mainNavJumpGateProps}>
+              <span className="pc-header-cta-orb" aria-hidden="true">
+                <BrainMark className="pc-header-cta-logo pc-header-cta-logo--adv" />
+              </span>
+              <span className="pc-header-cta-label">ADV</span>
+            </a>
+          )}
         </div>
         <nav className="pc-header-right" aria-label="Primary navigation">
           {marketplaceFlag ? (

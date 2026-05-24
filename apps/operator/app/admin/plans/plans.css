@@ -3100,3 +3100,41 @@
   background: rgba(165, 233, 247, 0.04);
   margin-top: 8px;
 }
+
+.pc-plan-fm {
+  margin: 8px 0 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--pc-plans-border);
+  border-radius: 10px;
+  background: var(--pc-plans-surface);
+}
+.pc-plan-fm__grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 4px 18px;
+  margin: 0;
+}
+.pc-plan-fm__row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+.pc-plan-fm__key {
+  margin: 0;
+  flex: 0 0 auto;
+  color: var(--pc-plans-fg-muted);
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.pc-plan-fm__val {
+  margin: 0;
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--pc-plans-fg-strong);
+  font-size: 13px;
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}

@@ -91,6 +91,12 @@ export default function PlanDetail({ slug, onClose, onDirtyChange }: Props) {
   };
 
   const raw = data?.raw ?? data?.prose ?? '';
+  // In read mode the parsed frontmatter is already surfaced in
+  // FrontmatterCard above the editor. Stripping the leading
+  // `---\n…\n---\n` block from the rendered markdown prevents
+  // Vditor.preview from showing it as a low-contrast paragraph
+  // (was dark-blue-on-dark-blue and unreadable).
+  const strippedRaw = data?.legacy ? raw : stripFrontmatter(raw);
   const editing = pane === 'edit';
   const dirty = editing && draft !== null && draft !== raw;
   const locked = !!lock;
@@ -208,6 +214,9 @@ export default function PlanDetail({ slug, onClose, onDirtyChange }: Props) {
       }
     >
       <LockBanner lock={lock} />
+      {!data.legacy && data.frontmatter ? (
+        <FrontmatterCard slug={data.slug} frontmatter={data.frontmatter} />
+      ) : null}
       {data.now ? <NowHero state={data.now.state} next={data.now.next} /> : null}
       {data.legacy ? (
         <div className="pc-plans__legacy-banner">
@@ -270,7 +279,7 @@ export default function PlanDetail({ slug, onClose, onDirtyChange }: Props) {
       ) : null}
       <div ref={editorScopeRef} className="pc-plan-editor-scope">
         <PlanEditor
-          value={editing ? (draft ?? raw) : raw}
+          value={editing ? (draft ?? raw) : strippedRaw}
           slug={slug}
           items={data.items}
           // P-205: while another shell holds the lock, the editor is
@@ -531,6 +540,53 @@ function TabButton({
       {label}
       {hint ? <span className="pc-plans__tab-hint"> · {hint}</span> : null}
     </button>
+  );
+}
+
+/** Leading `---\nyaml\n---\n` YAML frontmatter — Vditor renders this as
+ *  a low-contrast paragraph in read mode. The parsed values are already
+ *  available via plans:get → data.frontmatter, so we strip them from
+ *  the prose and render them in FrontmatterCard instead. */
+function stripFrontmatter(src: string): string {
+  const m = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?/.exec(src);
+  return m ? src.slice(m[0].length) : src;
+}
+
+function FrontmatterCard({
+  slug,
+  frontmatter,
+}: {
+  slug: string;
+  frontmatter: Record<string, unknown>;
+}) {
+  const rows: Array<[string, string]> = [];
+  const push = (label: string, val: unknown) => {
+    if (val === undefined || val === null) return;
+    const s = String(val).trim();
+    if (s.length === 0) return;
+    rows.push([label, s]);
+  };
+  push('slug', (frontmatter.slug as string | undefined) ?? slug);
+  push('status', frontmatter.status);
+  push('created', frontmatter.created);
+  push('updated', frontmatter.updated);
+  push('owner', frontmatter.owner);
+  for (const k of Object.keys(frontmatter)) {
+    if (['title', 'slug', 'status', 'created', 'updated', 'owner'].includes(k)) continue;
+    push(k, frontmatter[k]);
+  }
+  if (rows.length === 0) return null;
+  return (
+    <section className="pc-plan-fm" aria-label="Plan metadata">
+      <dl className="pc-plan-fm__grid">
+        {rows.map(([label, val]) => (
+          <div className="pc-plan-fm__row" key={label}>
+            <dt className="pc-plan-fm__key">{label}</dt>
+            <dd className="pc-plan-fm__val">{val}</dd>
+          </div>
+        ))}
+      </dl>
+    </section>
   );
 }
 
