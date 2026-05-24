@@ -126,7 +126,7 @@ export const ADMIN_TEST_SUITES: AdminTestSuiteSpec[] = [
     description: 'End-to-end check of the mem0 memory system: pgvector + client + embedder, per-user / workspace-shared scoping, CRUD round-trip, TTL cleanup, pre-turn injection, feedback signal, performance budgets. Requires an embedder (OpenAI key OR local transformers).',
     runner: 'host',
     estimatedSeconds: 30,
-    safeDefault: true,
+    safeDefault: false,
     tags: ['memory', 'mem0', 'pgvector'],
   },
 ];
