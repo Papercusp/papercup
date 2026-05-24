@@ -26,9 +26,11 @@ owner: avi@storewolf.com
 Updated status (2026-05-24 continued loop):
 - ✅ **P-068** DONE — `binding-service.ts` committed at `81c608ba` (resolveRepoBinding, createUnclaimedBinding, claimBinding, supersedeBinding, recheckClaimantPermissions — full runtime, not stub)
 
-Remaining runtime: P-011 attest.ts/keychain.ts + P-075 two-channel-verifier.ts + P-009 Entry 4 handler.
+- ✅ **P-011** DONE — `keychain.ts` + `attest.ts` committed at `efa434b5` (loadOrGenerateDeviceKeypair, createAttestationGist, verifyAttestation + 24h cache; 16/16 tests pass; keychain: secret-tool → security → AES-256-GCM encrypted-file fallback)
 
-**Next:** P-011 — device attestation runtime (`attest.ts` + `keychain.ts`). Type spine already in tree at `attestation-types.ts` (`4a08057e`); Q-2/Q-3/Q-4 resolved; no design blockers. P-075 follows P-011; P-009 follows both.
+Remaining runtime: P-075 two-channel-verifier.ts + P-009 Entry 4 handler.
+
+**Next:** P-075 — two-channel binding verifier (`two-channel-verifier.ts`). Type spine at `binding-verifier-types.ts` (`778ea017`); Channel 2 file format at `contributor-file-types.ts` (`258c94b6`). P-009 Entry 4 follows P-075.
 
 ## Background
 
@@ -103,7 +105,7 @@ v5 one-liner: *"Entry 4 (harness link): add link-paste flow. Parse `papercusp://
 
 ---
 
-### P-011 — Device attestation [L] — 🔴 NOT STARTED
+### P-011 — Device attestation [L] — ✅ DONE
 
 v5 one-liner: *"Device attestation: Octokit + gist creation flow with required scopes `gist` + `read:user`. Verifier helper for inbound bindings. Local cache (~24h TTL). Tests against a real GitHub test account."*
 
