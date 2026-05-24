@@ -107,7 +107,7 @@ vi.mock(import('node:fs'), async (importOriginal) => {
     }) as never,
     readFileSync: ((p: string, ...rest: unknown[]) => {
       if (typeof p === 'string') {
-        if (p.endsWith('papercusp-su-engineer.tools.md')) return '# papercusp-su tools.md FIXTURE\n';
+        if (p.endsWith('papercusp-su-power.tools.md')) return '# papercusp-su tools.md FIXTURE\n';
         if (p.endsWith('papercusp-su.persona.md')) return '# persona FIXTURE\n';
         if (p.endsWith('.persona.md')) return '# role persona stub\n';
         if (p.endsWith('.tools.md')) return '# role tools stub\n';
@@ -307,7 +307,7 @@ describe('GET /api/agent-bundle', () => {
     expect(j.user.id).toBe('user-test');
     expect(Array.isArray(j.skills)).toBe(true);
     expect(Array.isArray(j.hooks)).toBe(true);
-    expect(j.mcp_url).toMatch(/\/api\/mcp\?power_user=1$/);
+    expect(j.mcp_url).toMatch(/\/api\/mcp\?power_user=1&profile=power$/);
     expect(Date.parse(j.expires_at)).toBeGreaterThan(Date.now());
   });
 
@@ -318,7 +318,7 @@ describe('GET /api/agent-bundle', () => {
       headers: { ...bearer(tok) },
     });
     const j = (await res.json()) as { mcp_url: string };
-    expect(j.mcp_url).toBe('http://operator.local:9999/api/mcp?power_user=1');
+    expect(j.mcp_url).toBe('http://operator.local:9999/api/mcp?power_user=1&profile=power');
   });
 
   it('401 with no Authorization header', async () => {

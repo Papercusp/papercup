@@ -103,7 +103,7 @@ export default defineTool({
         { status: 500 },
       );
     }
-    const toolsmd = readFileSync(join(promptsDir, 'papercusp-su-engineer.tools.md'), 'utf8');
+    const toolsmd = readFileSync(join(promptsDir, 'papercusp-su-power.tools.md'), 'utf8');
     const personaPath = join(promptsDir, 'papercusp-su.persona.md');
     const persona = existsSync(personaPath) ? readFileSync(personaPath, 'utf8') : '';
     const skills = readDirFiles(join(promptsDir, 'power-user-skills'), ['.md']);
@@ -127,7 +127,7 @@ export default defineTool({
       toolsmd,
       skills,
       hooks,
-      mcp_url: `${origin}/api/mcp?power_user=1`,
+      mcp_url: `${origin}/api/mcp?power_user=1&profile=power`,
       workspace: { id: claims.workspaceId, name: ws?.name ?? claims.workspaceId },
       user,
       expires_at: new Date(claims.exp * 1000).toISOString(),

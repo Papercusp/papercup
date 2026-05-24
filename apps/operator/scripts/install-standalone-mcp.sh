@@ -96,9 +96,9 @@ fi
 # 3. Merge `papercusp-su` into the existing OMP MCP config.
 # We use python because jq is not guaranteed and the merge needs to be
 # idempotent (re-runs just rotate the token, don't duplicate the entry).
-python3 - "$OMP_CONFIG_PATH" "$OPERATOR_URL" "$TOKEN" "$AGENT_ID" <<'PYEOF'
+python3 - "$OMP_CONFIG_PATH" "$OPERATOR_URL" "$TOKEN" "$AGENT_ID" "$PROFILE" <<'PYEOF'
 import json, os, sys
-path, operator_url, token, agent_id = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+path, operator_url, token, agent_id, profile = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5]
 try:
     with open(path) as f:
         cfg = json.load(f)
@@ -115,9 +115,10 @@ cfg.setdefault('mcpServers', {})
 # Hindsight MCP entries are no longer stripped by the Papercusp installer.
 # `?client=<agent_id>` surfaces as ctx.uiClientId in tool handlers so
 # locks:* can identify ownership without per-call args.
+profile_param = '&profile=power' if profile == 'power' else ''
 cfg['mcpServers']['papercusp-su'] = {
     'type': 'http',
-    'url': operator_url + '/api/mcp?superuser=1&client=' + agent_id,
+    'url': operator_url + '/api/mcp?superuser=1' + profile_param + '&client=' + agent_id,
     'headers': {
         'Authorization': 'Bearer ' + token,
     },

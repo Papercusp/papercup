@@ -13,9 +13,9 @@ related:
 
 ## Now
 
-**State:** Draft. P-006 + P-007 (installer --profile flag + wrapper) shipped in `b85d4739` as part of playbook-audience-neutral-rewrite P-010/P-011. Remaining work: P-001 ratification (design gate) → P-002–P-005 (core MCP gate) → P-008 (agent-bundle) → P-009–P-012 (tests + closeout).
+**State:** Phase 1 + 2 complete. P-001 auto-ratified (user mandate). P-002–P-007 all shipped in `67d1c92a` (profile type + resolution + list/call gate + ~113 Group A tool tags) and `b85d4739` (installer flag + wrapper). Remaining: P-008 (mcp.json URL for power installs) → P-009 (agent-bundle) → P-010–P-012 (tests).
 
-**Next:** User ratifies P-001 (design: `profile` field on `defineTool`, `ctx.profile` resolution, `tools/list` filter). Recommendation: proceed as written in §3.
+**Next:** P-008 — append `&profile=power` to MCP URL in `mcp.json` when `install-standalone-mcp.sh --profile=power`.
 
 # OMP profile system
 
@@ -111,17 +111,17 @@ This is a mechanical tag sweep — no behavior changes, just metadata.
 
 ### Phase 1 — core gate
 
-- **P-001** `needs-human` Ratify the three-part design: (a) `profile` field on `defineTool`, (b) `tools/list` filter in dispatcher, (c) `ctx.profile` resolution. See §3.1–3.2. Recommendation: proceed with design as written.
-- **P-002** `todo` Add `profile?: 'engineer' | 'power' | 'all'` to `ToolDefinition` type. blocked-by: P-001
-- **P-003** `todo` Extend dispatcher to resolve `ctx.profile` from token type + URL param. blocked-by: P-001
-- **P-004** `todo` Filter `tools/list` + reject `tools/call` for out-of-profile tools. blocked-by: P-003
-- **P-005** `todo` Tag all ~150 Group A tools with `profile: 'engineer'`. blocked-by: P-002
+- **P-001** `done` Ratify the three-part design: (a) `profile` field on `defineTool`, (b) `tools/list` filter in dispatcher, (c) `ctx.profile` resolution. Auto-ratified per user mandate.
+- **P-002** `done` Add `profile?: 'engineer' | 'all'` to `ToolDefinitionInput` + `ProjectedTool`. (`67d1c92a`)
+- **P-003** `done` Extend `UnifiedToolContext.profile`; resolve from power-user token, `?profile=power` SU param, or default `'engineer'`. (`67d1c92a`)
+- **P-004** `done` Filter `tools/list` + reject `tools/call` for out-of-profile tools in `_mcp-handler.ts`; `listMcpProjections(role, profile)`. (`67d1c92a`)
+- **P-005** `done` Tagged ~113 Group A tools with `profile: 'engineer'`. (`67d1c92a`)
 
 ### Phase 2 — installer + wrapper
 
 - **P-006** `done` Extend `install-standalone-mcp.sh` with `--profile=engineer|power` per §3.3. (shipped `b85d4739`)
 - **P-007** `done` Update `omp-su` wrapper template to bake profile-specific playbook path. (shipped `b85d4739`)
-- **P-008** `todo` Append `&profile=power` to MCP URL in `mcp.json` when `--profile=power`. blocked-by: P-004
+- **P-008** `wip` Append `&profile=power` to MCP URL in `mcp.json` when `--profile=power`.
 - **P-009** `todo` Update `/api/agent-bundle` to serve `papercusp-su-power.tools.md` when caller has power-user token. blocked-by: P-004
 
 ### Phase 3 — verification
