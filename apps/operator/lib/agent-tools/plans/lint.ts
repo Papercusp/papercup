@@ -24,6 +24,7 @@
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { listPlanFiles, readPlanBySlug, type PlanSourceOpts } from './source';
+import { ctxToPlanSourceOpts } from './_ctx-opts';
 import { resolveEffectiveStatus } from './effective-status';
 import type { ParsedPlan } from './parser';
 import * as fs from 'node:fs/promises';
@@ -258,10 +259,11 @@ export default defineTool({
   args: argsSchema,
   async handler(args, ctx) {
     const ctxAny = ctx as { metadata?: (d: Record<string, unknown>) => void };
+    const opts = await ctxToPlanSourceOpts(ctx);
 
     let reports: PlanLintReport[];
     if (args.slug) {
-      const r = await lintPlan(args.slug);
+      const r = await lintPlan(args.slug, opts);
       if (!r) {
         return {
           content: [{ type: 'text' as const, text: JSON.stringify({ error: 'not_found', slug: args.slug }) }],
@@ -271,11 +273,11 @@ export default defineTool({
       reports = [r];
     } else {
       const includeArchived = args.includeArchived === true;
-      const entries = await listPlanFiles();
+      const entries = await listPlanFiles(opts);
       const filtered = includeArchived ? entries : entries.filter((e) => !e.archived);
       reports = [];
       for (const e of filtered) {
-        const r = await lintPlan(e.slug);
+        const r = await lintPlan(e.slug, opts);
         if (r) reports.push(r);
       }
     }

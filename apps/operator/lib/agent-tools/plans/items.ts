@@ -17,6 +17,7 @@
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { readAllPlans, readPlanBySlug } from './source';
+import { ctxToPlanSourceOpts } from './_ctx-opts';
 import { resolveEffectiveStatus, type ResolvedItem } from './effective-status';
 import { ITEM_STATUSES } from './parser';
 
@@ -80,12 +81,13 @@ export default defineTool({
   args: argsSchema,
   async handler(args, ctx) {
     const ctxAny = ctx as { metadata?: (d: Record<string, unknown>) => void };
+    const opts = await ctxToPlanSourceOpts(ctx);
     const includeArchived = args.includeArchived === true;
 
     let parsedPlans: Array<{ parsed: import('./parser').ParsedPlan; archived: boolean }> = [];
 
     if (args.slug) {
-      const one = await readPlanBySlug(args.slug);
+      const one = await readPlanBySlug(args.slug, opts);
       if (!one) {
         return {
           content: [{ type: 'text' as const, text: JSON.stringify({ error: 'not_found', slug: args.slug }) }],
@@ -96,7 +98,7 @@ export default defineTool({
         parsedPlans = [one];
       }
     } else {
-      parsedPlans = await readAllPlans({ includeArchived });
+      parsedPlans = await readAllPlans({ includeArchived, ...opts });
     }
 
     const rows: ItemRow[] = [];

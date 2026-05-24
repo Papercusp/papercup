@@ -12,6 +12,7 @@
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { listPlanFiles, readPlanBySlug } from './source';
+import { ctxToPlanSourceOpts } from './_ctx-opts';
 import { resolveEffectiveStatus } from './effective-status';
 import { ITEM_STATUSES, PLAN_STATUSES } from './parser';
 
@@ -75,12 +76,13 @@ export default defineTool({
     const includeArchived = args.includeArchived === true;
     const includeLegacy = args.includeLegacy !== false;
 
-    const entries = await listPlanFiles();
+    const opts = await ctxToPlanSourceOpts(ctx);
+    const entries = await listPlanFiles(opts);
     const filtered = includeArchived ? entries : entries.filter((e) => !e.archived);
 
     const rows: ListRow[] = [];
     for (const entry of filtered) {
-      const result = await readPlanBySlug(entry.slug);
+      const result = await readPlanBySlug(entry.slug, opts);
       if (!result) continue;
       const { parsed, archived } = result;
 

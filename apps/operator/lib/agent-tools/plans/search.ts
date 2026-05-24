@@ -16,6 +16,7 @@
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { readAllPlans } from './source';
+import { ctxToPlanSourceOpts } from './_ctx-opts';
 
 const ALL_ROLES = [
   'scoper',
@@ -112,7 +113,8 @@ export default defineTool({
       };
     }
 
-    const parsedPlans = await readAllPlans({ includeArchived });
+    const opts = await ctxToPlanSourceOpts(ctx);
+    const parsedPlans = await readAllPlans({ includeArchived, ...opts });
     const hits: Hit[] = [];
 
     for (const { parsed } of parsedPlans) {

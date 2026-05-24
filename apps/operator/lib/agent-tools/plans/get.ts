@@ -11,6 +11,7 @@
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { readPlanBySlug } from './source';
+import { ctxToPlanSourceOpts } from './_ctx-opts';
 import { resolveEffectiveStatus } from './effective-status';
 import { hashPlanContent } from './content-hash';
 
@@ -50,7 +51,8 @@ export default defineTool({
   args: argsSchema,
   async handler(args, ctx) {
     const ctxAny = ctx as { metadata?: (d: Record<string, unknown>) => void };
-    const result = await readPlanBySlug(args.slug);
+    const opts = await ctxToPlanSourceOpts(ctx);
+    const result = await readPlanBySlug(args.slug, opts);
     if (!result) {
       return {
         content: [{ type: 'text' as const, text: JSON.stringify({ error: 'not_found', slug: args.slug }) }],
