@@ -82,6 +82,131 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       return toasts;
     },
   },
+
+  // ── Batch 2: drizzle-backed simple selects (audit/scan/state) ────────
+  //
+  // Each entry queries the canonical drizzle-typed table and emits
+  // camelCase rows. Mirrors the ZQL `where`/`orderBy`/`limit` chain
+  // shape — drizzle's column map handles the snake_case → camelCase
+  // conversion, matching what the legacy Zero resolver produced.
+
+  // auditLog.operatorDecisions — workspace+actor-filtered audit log.
+  //   zql.auditLog.where(workspaceId).where(actor='system:operator')
+  //              .orderBy('ts', 'desc').limit(limit)
+  'auditLog.operatorDecisions': {
+    argsSchema: z.object({
+      workspaceId: z.string(),
+      limit: z.number().int().positive().max(500).default(20),
+    }),
+    resolve: async (args) => {
+      const { workspaceId, limit } = args as { workspaceId: string; limit: number };
+      const { getOrgPg, generated } = await import('@restart/db-org');
+      const { and, desc, eq } = await import('drizzle-orm');
+      const t = generated.auditLogInHarnessShared;
+      const { db } = getOrgPg();
+      return (await db
+        .select()
+        .from(t)
+        .where(and(eq(t.workspaceId, workspaceId), eq(t.actor, 'system:operator')))
+        .orderBy(desc(t.ts))
+        .limit(limit)) as unknown[];
+    },
+  },
+
+  // operatorScans.byWorkspace — operator scan history.
+  //   zql.operatorScans.where(workspaceId).orderBy('startedAt', 'desc').limit(limit)
+  'operatorScans.byWorkspace': {
+    argsSchema: z.object({
+      workspaceId: z.string(),
+      limit: z.number().int().positive().max(500).default(50),
+    }),
+    resolve: async (args) => {
+      const { workspaceId, limit } = args as { workspaceId: string; limit: number };
+      const { getOrgPg, generated } = await import('@restart/db-org');
+      const { desc, eq } = await import('drizzle-orm');
+      const t = generated.operatorScansInHarnessShared;
+      const { db } = getOrgPg();
+      return (await db
+        .select()
+        .from(t)
+        .where(eq(t.workspaceId, workspaceId))
+        .orderBy(desc(t.startedAt))
+        .limit(limit)) as unknown[];
+    },
+  },
+
+  // operatorBudget.byWorkspace — single-row-per-workspace budget state.
+  //   zql.operatorBudget.where(workspaceId).limit(1)
+  // Per the ZQL comment: limit(1) instead of .one() — feedback_zero_one_shape_mismatch.
+  'operatorBudget.byWorkspace': {
+    argsSchema: z.object({ workspaceId: z.string() }),
+    resolve: async (args) => {
+      const { workspaceId } = args as { workspaceId: string };
+      const { getOrgPg, generated } = await import('@restart/db-org');
+      const { eq } = await import('drizzle-orm');
+      const t = generated.operatorBudgetInHarnessShared;
+      const { db } = getOrgPg();
+      return (await db
+        .select()
+        .from(t)
+        .where(eq(t.workspaceId, workspaceId))
+        .limit(1)) as unknown[];
+    },
+  },
+
+  // operatorLastScan.byWorkspace — single-row-per-workspace last-scan snapshot.
+  //   zql.operatorLastScan.where(workspaceId).limit(1)
+  'operatorLastScan.byWorkspace': {
+    argsSchema: z.object({ workspaceId: z.string() }),
+    resolve: async (args) => {
+      const { workspaceId } = args as { workspaceId: string };
+      const { getOrgPg, generated } = await import('@restart/db-org');
+      const { eq } = await import('drizzle-orm');
+      const t = generated.operatorLastScanInHarnessShared;
+      const { db } = getOrgPg();
+      return (await db
+        .select()
+        .from(t)
+        .where(eq(t.workspaceId, workspaceId))
+        .limit(1)) as unknown[];
+    },
+  },
+
+  // userActions.byKind — harness+workspace+kind-filtered action log.
+  //   zql.userActions.where(harnessSlug).where(workspaceId).where(kind)
+  //                  .orderBy('startedAt', 'desc').limit(limit)
+  'userActions.byKind': {
+    argsSchema: z.object({
+      harnessSlug: z.string(),
+      workspaceId: z.string(),
+      kind: z.string(),
+      limit: z.number().int().positive().max(500).default(50),
+    }),
+    resolve: async (args) => {
+      const { harnessSlug, workspaceId, kind, limit } = args as {
+        harnessSlug: string;
+        workspaceId: string;
+        kind: string;
+        limit: number;
+      };
+      const { getOrgPg, generated } = await import('@restart/db-org');
+      const { and, desc, eq } = await import('drizzle-orm');
+      const t = generated.userActionsInHarnessShared;
+      const { db } = getOrgPg();
+      return (await db
+        .select()
+        .from(t)
+        .where(
+          and(
+            eq(t.harnessSlug, harnessSlug),
+            eq(t.workspaceId, workspaceId),
+            eq(t.kind, kind),
+          ),
+        )
+        .orderBy(desc(t.startedAt))
+        .limit(limit)) as unknown[];
+    },
+  },
 } satisfies Record<string, QueryEntry<unknown>>;
 
 // ─── Public API ─────────────────────────────────────────────────────
