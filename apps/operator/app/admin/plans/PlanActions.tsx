@@ -23,7 +23,9 @@
  */
 
 import { useEffect, useMemo, useState } from 'react';
+import { toast } from 'sonner';
 import { Modal } from '@/app/harness/Modal';
+import { launchOmpAgent } from '@/lib/native-omp-launch';
 import {
   addPlanDecision,
   addPlanItem,
@@ -39,6 +41,9 @@ interface Props {
   items: PlanItem[] | undefined;
   decisions: PlanDecision[] | undefined;
   currentNow: { state: string | null; next: string | null } | null | undefined;
+  /** Plan title — surfaced into the launched OMP session label so the
+   *  /adv/sessions list reads naturally. */
+  planTitle?: string | null;
   /** Fired after a successful write so the caller can refresh plan data. */
   onChanged: () => void;
   /** Disabled while the file is locked or in raw-Edit mode. */
@@ -53,11 +58,34 @@ export default function PlanActions({
   items,
   decisions,
   currentNow,
+  planTitle,
   onChanged,
   disabled,
   disabledReason,
 }: Props) {
   const [open, setOpen] = useState<Dialog>(null);
+  const [launchingAgent, setLaunchingAgent] = useState(false);
+
+  const onLaunchAgent = async () => {
+    if (launchingAgent) return;
+    setLaunchingAgent(true);
+    try {
+      const label = planTitle?.trim() || slug;
+      const result = await launchOmpAgent({ slug: null, planSlug: slug, label });
+      if (result.ok) {
+        toast.success(`Launched OMP for ${slug}.`, { duration: 4000 });
+      } else if (result.code === 'omp_not_installed') {
+        toast.error(
+          `OMP not installed. Run: ${result.installCmd ?? 'npm i -g @oh-my-pi/cli @papercusp/omp'}`,
+          { duration: 12000 },
+        );
+      } else {
+        toast.error(`Launch failed: ${result.error ?? 'unknown error'}`, { duration: 10000 });
+      }
+    } finally {
+      setLaunchingAgent(false);
+    }
+  };
 
   const phases = useMemo(() => {
     const seen = new Set<string>();
@@ -97,6 +125,15 @@ export default function PlanActions({
         title={disabled ? disabledReason : 'Append a new P-NNN item'}
       >
         + Item
+      </button>
+      <button
+        type="button"
+        className="pc-plan-actions__btn pc-plan-actions__btn--launch"
+        onClick={onLaunchAgent}
+        disabled={launchingAgent}
+        title={`Launch a power-user OMP agent terminal tagged with ${slug}; appears in /adv/sessions`}
+      >
+        {launchingAgent ? 'Launching…' : 'Launch agent'}
       </button>
 
       <SetNowDialog

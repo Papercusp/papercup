@@ -229,6 +229,7 @@ export default function PlanDetail({ slug, onClose, onDirtyChange }: Props) {
           items={data.items}
           decisions={data.decisions}
           currentNow={data.now ?? null}
+          planTitle={title}
           onChanged={onChanged}
           disabled={editing || locked}
           disabledReason={

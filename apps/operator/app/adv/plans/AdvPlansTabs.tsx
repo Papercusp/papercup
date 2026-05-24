@@ -29,6 +29,7 @@ import {
   parseAsStringEnum,
   useQueryState,
 } from 'nuqs';
+import { usePlanList } from '../../admin/plans/plans-api';
 
 type PlansView = 'list' | 'inbox' | 'actionable' | 'triage';
 type PaneMode = 'read' | 'edit';
@@ -58,6 +59,19 @@ export default function AdvPlansTabs({ children }: { children: React.ReactNode }
 
   const queryTrimmed = q.trim();
 
+  // Pull plan titles so tab labels are human-readable, not raw slugs.
+  // PlansClient already mounts a copy of this hook for the rail — the
+  // shared SWR/Zero cache (whatever usePlanList is built on) makes the
+  // second mount cheap.
+  const planList = usePlanList({ includeArchived: true, includeLegacy: true });
+  const titleBySlug = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const p of planList.data?.plans ?? []) {
+      if (p.title) map.set(p.slug, p.title);
+    }
+    return map;
+  }, [planList.data]);
+
   // Push every newly-opened plan onto the tab stack (de-duped, order
   // preserved). This is the "click a plan in the rail → it appears
   // as a new tab" wiring.
@@ -86,9 +100,12 @@ export default function AdvPlansTabs({ children }: { children: React.ReactNode }
         closeable: false,
       },
     ];
-    for (const s of openSlugs) base.push({ id: `plan:${s}`, label: s, hint: s, closeable: true });
+    for (const s of openSlugs) {
+      const label = labelForPlan(s, titleBySlug.get(s) ?? null);
+      base.push({ id: `plan:${s}`, label, hint: s, closeable: true });
+    }
     return base;
-  }, [queryTrimmed, openSlugs]);
+  }, [queryTrimmed, openSlugs, titleBySlug]);
 
   const focus = (tabId: string) => {
     if (tabId === 'index') {
@@ -230,4 +247,17 @@ export default function AdvPlansTabs({ children }: { children: React.ReactNode }
 
 function truncate(s: string, n: number): string {
   return s.length > n ? `${s.slice(0, n - 1)}…` : s;
+}
+
+/**
+ * Pick a readable label for a plan tab:
+ *   - plan title (best — what a human wrote)
+ *   - else slug with the trailing `-YYYY-MM-DD` date suffix stripped
+ *   - else slug verbatim
+ * Capped at 32 chars with an ellipsis.
+ */
+function labelForPlan(slug: string, title: string | null): string {
+  if (title && title.trim()) return truncate(title.trim(), 32);
+  const stripped = slug.replace(/-\d{4}-\d{2}-\d{2}$/, '');
+  return truncate(stripped, 32);
 }
