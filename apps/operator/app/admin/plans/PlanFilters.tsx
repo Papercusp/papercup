@@ -153,6 +153,7 @@ export default function PlanFilters({
           value={query}
           onChange={(e) => onQueryChange(e.target.value || null)}
           aria-label="Search plans"
+          data-plan-search-input
         />
 
         <Select

@@ -1,4 +1,5 @@
 import PlansClient from '../../admin/plans/PlansClient';
+import AdvPlansTabs from './AdvPlansTabs';
 import 'react-diff-view/style/index.css';
 import '../../admin/plans/plans.css';
 
@@ -6,10 +7,14 @@ export const dynamic = 'force-dynamic';
 export const metadata = { title: 'Advanced · Plans · Papercusp' };
 
 // Plans surface, relocated from the hidden /admin/plans (Batch B of
-// plans-admin-ui continuation). Reuses the existing PlansClient and
-// sibling components in app/admin/plans/ unchanged — the inner-tab
-// refactor (clicking a plan opens it as a new tab; search submission
-// focuses a Search tab) ships in B.2.
+// plans-admin-ui continuation). PlansClient comes over unchanged from
+// app/admin/plans/; AdvPlansTabs wraps it with a VSCode-style tab
+// strip that observes (slug, q) for the active highlight and persists
+// the open-plan stack via `?tabs=` so reloads restore it.
 export default function AdvPlansPage() {
-  return <PlansClient />;
+  return (
+    <AdvPlansTabs>
+      <PlansClient />
+    </AdvPlansTabs>
+  );
 }
