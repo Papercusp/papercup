@@ -66,17 +66,35 @@ export interface MemoryInjectionInput {
   /**
    * Per-user memory scope. Omit (or pass null) on workspace-bearer
    * routes that don't have a session user — the helper will then
-   * inject only workspace-shared memories.
+   * inject only the harness/workspace pools.
    */
   userId?: string | null;
   workspaceId: string;
+  /**
+   * Harness slugs whose shared memory should be pulled into recall.
+   * Agent inside one harness: pass `[currentSlug]`. Operator chat
+   * (no specific harness): pass every harness the session user has
+   * access to. Omit/[] to skip the harness pool entirely.
+   */
+  harnessSlugs?: readonly string[];
   /** Recent user-turn content concatenated. Empty string returns null. */
   queryContext: string;
-  /** Defaults to 6. The shared-workspace pull adds ceil(limit/2) more. */
+  /** Defaults to 6. */
   limit?: number;
   /** Defaults to "Operator memory (relevant entries)". */
   heading?: string;
 }
+
+/**
+ * Cap the number of harness pools fanned out per turn. Each pool is
+ * an independent mem0.search() (= one embed + one pgvector query).
+ * 20 is fine on local pgvector; if a workspace exceeds this we slice
+ * and log a warning — the optimization path (embed once + custom
+ * SQL with IN()) is documented in the memory-harness-scope plan.
+ */
+const MAX_HARNESS_FANOUT = 20;
+/** Hits requested per harness pool. Kept small so the merged section stays bounded. */
+const PER_HARNESS_LIMIT = 3;
 
 export async function buildMemoryContextBlock(
   input: MemoryInjectionInput,
@@ -94,30 +112,52 @@ export async function buildMemoryContextBlock(
   if (!client) return null;
 
   const userLimit = input.limit ?? 6;
-  const sharedLimit = Math.ceil(userLimit / 2);
+  const workspaceLimit = Math.ceil(userLimit / 2);
 
-  type Hits = { results?: Array<{ memory: string; metadata?: Record<string, unknown> }> };
+  let harnessSlugs = (input.harnessSlugs ?? []).filter((s) => typeof s === 'string' && s.length > 0);
+  if (harnessSlugs.length > MAX_HARNESS_FANOUT) {
+    console.warn(
+      `[memory-injection] harnessSlugs (${harnessSlugs.length}) exceeds MAX_HARNESS_FANOUT (${MAX_HARNESS_FANOUT}); slicing.`,
+    );
+    harnessSlugs = harnessSlugs.slice(0, MAX_HARNESS_FANOUT);
+  }
+
+  type Hit = { memory: string; metadata?: Record<string, unknown> };
+  type Hits = { results?: Array<Hit> };
   let userHits: Hits = {};
-  let sharedHits: Hits = {};
+  let workspaceHits: Hits = {};
+  let harnessHitsByPool: Hits[] = [];
   try {
-    const pulls: Array<Promise<Hits>> = [];
-    if (input.userId) {
-      pulls.push(
-        client.search(input.queryContext, {
+    const userPull: Promise<Hits> = input.userId
+      ? (client.search(input.queryContext, {
           filters: { user_id: input.userId },
           limit: userLimit,
-        }) as Promise<Hits>,
-      );
-    } else {
-      pulls.push(Promise.resolve({} as Hits));
-    }
-    pulls.push(
+        }) as Promise<Hits>)
+      : Promise.resolve({} as Hits);
+
+    // Legacy workspace pull — back-compat read-through during deprecation
+    // window. Once all `workspace:*` entries are drained, this and the
+    // "deprecated workspace" UI section can both be removed (see the
+    // memory-harness-scope plan, Phase 5).
+    const workspacePull: Promise<Hits> = client.search(input.queryContext, {
+      filters: { user_id: `workspace:${input.workspaceId}` },
+      limit: workspaceLimit,
+    }) as Promise<Hits>;
+
+    const harnessPulls: Promise<Hits>[] = harnessSlugs.map((slug) =>
       client.search(input.queryContext, {
-        filters: { user_id: `workspace:${input.workspaceId}` },
-        limit: input.userId ? sharedLimit : userLimit,
+        filters: { user_id: `harness:${slug}` },
+        limit: PER_HARNESS_LIMIT,
       }) as Promise<Hits>,
     );
-    [userHits, sharedHits] = await withTimeout(Promise.all(pulls), 'search');
+
+    const all = await withTimeout(
+      Promise.all([userPull, workspacePull, ...harnessPulls]),
+      'search',
+    );
+    userHits = all[0];
+    workspaceHits = all[1];
+    harnessHitsByPool = all.slice(2);
   } catch (err) {
     noteMemoryFailure(err);
     if (!(err instanceof MemoryTimeoutError) && process.env.NODE_ENV !== 'test') {
@@ -126,18 +166,25 @@ export async function buildMemoryContextBlock(
     return null;
   }
 
-  const combined = [
-    ...(userHits.results ?? []),
-    ...(sharedHits.results ?? []),
-  ];
-  if (combined.length === 0) return null;
+  const harnessHits = harnessSlugs.flatMap((slug, i) =>
+    (harnessHitsByPool[i]?.results ?? []).map((h) => ({ hit: h, slug })),
+  );
+  const userResults = userHits.results ?? [];
+  const workspaceResults = workspaceHits.results ?? [];
+  if (userResults.length + workspaceResults.length + harnessHits.length === 0) return null;
 
-  const lines = combined.map((hit) => {
-    const meta = (hit.metadata ?? {}) as Record<string, unknown>;
+  const fmtScope = (meta: Record<string, unknown>, slug?: string): string => {
     const kind = (meta.kind as string) ?? 'unknown';
-    const shared = meta.shared ? ' [shared]' : '';
-    return `- [${kind}${shared}] ${hit.memory}`;
-  });
+    if (slug) return `[${kind} @ ${slug}]`;
+    if (meta.shared || meta.scope === 'workspace') return `[${kind} [shared]]`;
+    return `[${kind}]`;
+  };
+
+  const lines: string[] = [];
+  for (const h of userResults) lines.push(`- ${fmtScope((h.metadata ?? {}) as Record<string, unknown>)} ${h.memory}`);
+  for (const { hit, slug } of harnessHits) lines.push(`- ${fmtScope((hit.metadata ?? {}) as Record<string, unknown>, slug)} ${hit.memory}`);
+  for (const h of workspaceResults) lines.push(`- ${fmtScope((h.metadata ?? {}) as Record<string, unknown>)} ${h.memory}`);
+
   const heading = input.heading ?? 'Operator memory (relevant entries)';
   return `## ${heading}\n\n${lines.join('\n')}`;
 }

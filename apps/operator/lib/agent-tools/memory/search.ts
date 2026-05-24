@@ -3,13 +3,16 @@
  *
  * The route's pre-turn injection auto-surfaces relevant memories every
  * turn; brain only needs to call this for targeted lookup ("did I tell
- * you about X?"). Per-user scoped + workspace-shared.
+ * you about X?"). Searches user-scoped + harness-scoped (current
+ * harness if `harness_slug` is passed, every harness in the workspace
+ * otherwise) + legacy workspace-shared.
  */
 
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { getMemoryClient } from '../../memory/mem0-client';
 import { getSessionUserOrDefault } from '../../auth';
+import { loadHarnessRegistry } from '../../harness-registry';
 
 const ALL_ROLES = [
   'scoper', 'architect', 'worker', 'validator',
@@ -35,6 +38,8 @@ export default defineTool({
   args: z.object({
     query: z.string().min(1).max(500),
     limit: z.number().int().min(1).max(20).optional(),
+    harness_slug: z.string().optional()
+      .describe('Scope the search to a single harness in addition to user memory. Omit to fan out across every harness in the workspace.'),
   }),
   async handler(args, ctx) {
     const user = await getSessionUserOrDefault();
@@ -46,15 +51,32 @@ export default defineTool({
     }
     const limit = args.limit ?? 8;
 
-    // Search across this user's memories AND workspace-shared ones.
+    let harnessSlugs: string[];
+    if (args.harness_slug) {
+      harnessSlugs = [args.harness_slug];
+    } else {
+      try {
+        const reg = await loadHarnessRegistry(ctx.workspaceId);
+        harnessSlugs = reg.projects.map((p) => p.slug);
+      } catch {
+        harnessSlugs = [];
+      }
+    }
+
     // mem0 v3: filter key is `user_id` (snake_case), not `userId`.
-    const [userHits, sharedHits] = await Promise.all([
-      client.search(args.query, { filters: { user_id: user.id }, limit }),
-      client.search(args.query, { filters: { user_id: `workspace:${ctx.workspaceId}` }, limit }),
-    ]);
+    // Fan-out is N parallel searches; mem0's PGVector adapter does not
+    // support OR/IN at the storage layer (see audit in the
+    // memory-harness-scope plan).
+    const userPull = client.search(args.query, { filters: { user_id: user.id }, limit });
+    const workspacePull = client.search(args.query, { filters: { user_id: `workspace:${ctx.workspaceId}` }, limit });
+    const harnessPulls = harnessSlugs.map((slug) =>
+      client.search(args.query, { filters: { user_id: `harness:${slug}` }, limit }),
+    );
+
+    const all = (await Promise.all([userPull, workspacePull, ...harnessPulls]))
+      .flatMap((r) => r.results ?? []);
 
     // Merge + dedupe by id, take top N by score.
-    const all = [...(userHits.results ?? []), ...(sharedHits.results ?? [])];
     const byId = new Map<string, typeof all[0]>();
     for (const h of all) byId.set(h.id, h);
     const merged = [...byId.values()].sort((a, b) => (b.score ?? 0) - (a.score ?? 0)).slice(0, limit);

@@ -24,6 +24,7 @@ import {
 } from '@/lib/prompt-assembly';
 import { buildMemoryContextBlock, lastUserContext } from '@/lib/memory/injection';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
+import { loadHarnessRegistry } from '@/lib/harness-registry';
 
 export interface ConverseInput {
   messages?: Array<{ role: 'user' | 'assistant' | 'system'; content: string }>;
@@ -96,9 +97,18 @@ export async function buildOperatorPrompt(
   // helper. Same source of truth as architect/brainstorm prompts +
   // operator:delegate (each picks its own user/workspace scope).
   // Falls through silently when mem0 is unavailable.
+  // Operator chat has no specific harness in scope, so fan out the
+  // memory recall across every harness in the workspace. Failures
+  // here are non-fatal — the injection helper is best-effort.
+  let harnessSlugs: string[] = [];
+  try {
+    const reg = await loadHarnessRegistry(activeWorkspaceId());
+    harnessSlugs = reg.projects.map((p) => p.slug);
+  } catch { /* leave empty — recall just skips the harness pool */ }
   const memBlock = await buildMemoryContextBlock({
     userId: sessionUser?.id ?? null,
     workspaceId: activeWorkspaceId(),
+    harnessSlugs,
     queryContext: lastUserContext(messages, 3),
   });
   if (memBlock) systemSections.push(memBlock);

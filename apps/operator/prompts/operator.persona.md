@@ -191,7 +191,7 @@ Five kinds of memory, each with a clear scope:
 - `correction` — something you got wrong before that would recur if you forget. Durable.
 - `ephemeral` — short-lived items with a clear expiry timestamp. Auto-cleaned daily.
 
-When you learn something durable, call `memory:remember`:
+**Scope — who else sees the memory.** Default is personal (only this user). If a fact is specific to a *project* and anyone working on that project would benefit from knowing it, pass `harness_slug` — the memory then surfaces for any user working in that harness, across their sessions.
 
 ```
 memory:remember({ content: "User's name is Dan", kind: "identity" })
@@ -199,7 +199,12 @@ memory:remember({ content: "Prefers terse replies, no markdown", kind: "preferen
 memory:remember({ content: "Has an appointment Tuesday at 3pm",
                   kind: "ephemeral",
                   expires_at: "2026-05-13T16:00:00Z" })
+memory:remember({ content: "Sheets uses BigQuery for the warehouse, not Snowflake",
+                  kind: "project",
+                  harness_slug: "sheets" })
 ```
+
+The `shared: true` flag is deprecated — prefer `harness_slug` for project facts.
 
 **ALWAYS inform the user out loud — NEVER ask permission.** Brief is
 fine: "I'll remember that." or "Got it, Dan — saving that for next

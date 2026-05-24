@@ -42,6 +42,7 @@ import { generateSessionTitle } from '@/lib/delegate-summary';
 import { ALL_AGENT_MCP_TOOLS } from '@/lib/operator-mcp-tools';
 import { resolveDelegateSession } from './delegate-session';
 import { buildMemoryContextBlock } from '@/lib/memory/injection';
+import { loadHarnessRegistry } from '@/lib/harness-registry';
 
 const ArgsSchema = z.object({
   requestText: z.string().min(1),
@@ -206,9 +207,17 @@ export default defineTool({
     // mid-conversation. Matches main's pre-merge operator-chat shape.
     let memoryBlock: string | null = null;
     if (sessionCreated) {
+      // Delegate has no specific harness in scope — fan out across
+      // every harness in the workspace (matches operator chat shape).
+      let delegateHarnessSlugs: string[] = [];
+      try {
+        const reg = await loadHarnessRegistry(workspaceId);
+        delegateHarnessSlugs = reg.projects.map((p) => p.slug);
+      } catch { /* leave empty */ }
       memoryBlock = await buildMemoryContextBlock({
         userId: null,
         workspaceId,
+        harnessSlugs: delegateHarnessSlugs,
         queryContext: input.requestText,
         heading: 'Workspace memory (relevant entries)',
       });

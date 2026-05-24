@@ -9,6 +9,7 @@
 import { getSessionUser } from '@/lib/auth';
 import { getMemoryClient, invalidateMemoryClient } from '@/lib/memory/mem0-client';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
+import { loadHarnessRegistry } from '@/lib/harness-registry';
 import { recordFeedback } from '@/lib/memory/feedback';
 import { defineTool } from '@papercusp/agent-mcp';
 
@@ -24,13 +25,36 @@ const list = defineTool({
       return Response.json({ results: [], reason: 'mem0_unavailable' });
     }
     const ws = activeWorkspaceId();
-    const [userResults, sharedResults] = await Promise.all([
-      client.getAll({ filters: { user_id: user.id }, topK: 5000 }),
-      client.getAll({ filters: { user_id: `workspace:${ws}` }, topK: 5000 }),
+
+    // Three-way fan-out: user-scoped + per-harness (one pull per slug)
+    // + legacy workspace-shared. mem0's PGVector adapter doesn't
+    // support OR/IN filters, so each pool is a separate getAll() —
+    // see the memory-harness-scope plan for the audit.
+    let harnessSlugs: string[] = [];
+    try {
+      const reg = await loadHarnessRegistry(ws);
+      harnessSlugs = reg.projects.map((p) => p.slug);
+    } catch { /* leave empty — section will just be empty */ }
+
+    const userPull = client.getAll({ filters: { user_id: user.id }, topK: 5000 });
+    const workspacePull = client.getAll({ filters: { user_id: `workspace:${ws}` }, topK: 5000 });
+    const harnessPulls = harnessSlugs.map((slug) =>
+      client.getAll({ filters: { user_id: `harness:${slug}` }, topK: 5000 })
+        .then((r) => ({ slug, results: r.results ?? [] })),
+    );
+
+    const [userRes, workspaceRes, ...harnessResults] = await Promise.all([
+      userPull,
+      workspacePull,
+      ...harnessPulls,
     ]);
+
     const combined = [
-      ...((userResults.results ?? []).map((r) => ({ ...r, scope: 'user' as const }))),
-      ...((sharedResults.results ?? []).map((r) => ({ ...r, scope: 'workspace' as const }))),
+      ...((userRes.results ?? []).map((r) => ({ ...r, scope: 'user' as const }))),
+      ...harnessResults.flatMap((h) =>
+        h.results.map((r) => ({ ...r, scope: 'harness' as const, harness_slug: h.slug })),
+      ),
+      ...((workspaceRes.results ?? []).map((r) => ({ ...r, scope: 'workspace' as const }))),
     ];
     combined.sort((a, b) => {
       const tA = ((a.metadata as Record<string, unknown>)?.turn_at as number) ?? 0;

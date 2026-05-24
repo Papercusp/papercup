@@ -1,8 +1,18 @@
 /**
  * mem0 client singleton for the operator's persistent memory.
  *
- * Plan 3. Backed by mem0ai v3 OSS in library mode:
- *   - storage: pgvector (embedded PG)
+ * Plan 3 (storage layer rewritten 2026-05-24 per memory-harness-scope plan).
+ *
+ * Stack:
+ *   - storage: CanonicalVectorStore (our own pgvector layer) —
+ *              one canonical `memory_canonical` row per fact, with
+ *              per-embedder-model vec tables joined by memory_id.
+ *              Switching embedder mode no longer "loses" your old
+ *              memories; only the recall side picks a different vec
+ *              table. Re-embedding into the other model is an INSERT
+ *              into the other vec table without touching the canonical
+ *              row. See apps/operator/lib/memory/canonical-store.ts +
+ *              migration 081-memory-canonical.sql.
  *   - LLM:     Anthropic Haiku 4.5 (cheap fact extraction; only generative
  *              vendor we use — Anthropic does not offer embeddings)
  *   - embedder: cascade with three modes (configurable via voice-prefs
@@ -16,20 +26,20 @@
  *                → local (if package installed)
  *                → disabled (silent)
  *
- * Per-user scoping: userId = session.user.id (Plan 4 dependency).
- * Workspace-shared memories: userId = `workspace:<id>`, metadata.shared.
+ * Per-user scoping: userId = session.user.id.
+ * Harness-scoped: userId = `harness:<slug>`.
+ * Legacy workspace-shared (deprecated): userId = `workspace:<id>`,
+ *   metadata.shared. Read-through only; the write path no longer
+ *   emits these (see memory:remember).
  *
- * Vector dimensions are kept at 384 across both embedders so the
- * pgvector schema is uniform. OpenAI text-embedding-3-small supports
- * a `dimensions` request parameter that truncates from native 1536 to
- * 384 with negligible quality loss (per OpenAI's own benchmarks).
+ * Vector dimensions: 384 across both embedders. OpenAI's native 1536
+ * is truncated via its `dimensions` parameter. BGE-small is natively
+ * 384. Same wire shape lets both vec tables share migration 081's
+ * schema.
  *
- * Vector SPACES still differ — a vector from BGE-small and one from
- * OpenAI aren't comparable even at the same dim count. So we use a
- * per-mode collection: `operator_memory_openai` vs `operator_memory_local`.
- * Switching mode "loses" your old memories until you switch back, but
- * doesn't corrupt either set. A future ship can add re-embed-on-switch
- * if it becomes a real friction point.
+ * Vector SPACES still differ across embedders, so each model writes
+ * to its own vec table — `memory_vec_openai` vs `memory_vec_local`.
+ * The canonical text is shared.
  *
  * Failure mode: if a fatal load error occurs (missing npm package),
  * memory tools return graceful no-ops. Logs once per process per
@@ -38,11 +48,45 @@
  * call retries.
  */
 
+import { CanonicalVectorStore } from './canonical-store';
+
 const EMBEDDER_DIM = 384;
 const LOCAL_EMBEDDER_MODEL = 'Xenova/bge-small-en-v1.5';
 const OPENAI_EMBEDDER_MODEL = 'text-embedding-3-small';
 const LLM_MODEL = 'claude-haiku-4-5';
+// The collectionName is passed to mem0 for its internal bookkeeping
+// but our CanonicalVectorStore ignores it — scope lives in payload.
 const MEM0_COLLECTION_PREFIX = 'operator_memory';
+
+let _factoryPatched = false;
+/**
+ * Register CanonicalVectorStore as a `'canonical'` provider on mem0's
+ * VectorStoreFactory. mem0's OSS factory uses a hard-coded switch with
+ * no plugin hook, so we patch the static `create` method in place at
+ * first construction. Idempotent — subsequent calls no-op.
+ */
+function patchVectorStoreFactory(mem0Module: {
+  VectorStoreFactory: { create: (provider: string, config: Record<string, unknown>) => unknown };
+}): void {
+  if (_factoryPatched) return;
+  const Factory = mem0Module.VectorStoreFactory;
+  if (!Factory || typeof Factory.create !== 'function') {
+    warnOnce('mem0 VectorStoreFactory not patchable (interface changed?); canonical store unavailable');
+    return;
+  }
+  const orig = Factory.create.bind(Factory);
+  Factory.create = (provider: string, config: Record<string, unknown>) => {
+    if (provider === 'canonical') {
+      // mem0 passes the inner config object directly (not wrapped in
+      // { provider, config }) — see Memory constructor invoking
+      // VectorStoreFactory.create(this.config.vectorStore.provider,
+      // this.config.vectorStore.config).
+      return new CanonicalVectorStore(config as unknown as ConstructorParameters<typeof CanonicalVectorStore>[0]);
+    }
+    return orig(provider, config);
+  };
+  _factoryPatched = true;
+}
 
 type MemoryEntry = {
   id: string;
@@ -289,13 +333,17 @@ async function tryLoad(): Promise<MemoryClient | null> {
     return null;
   }
 
-  // Per-mode collection name keeps vector spaces from mixing.
+  // Per-mode collection name kept only for mem0's internal logging /
+  // bookkeeping (its DEFAULT_MEMORY_CONFIG reads it). Our
+  // CanonicalVectorStore ignores it — scope lives in payload.user_id.
   const collectionName = `${MEM0_COLLECTION_PREFIX}_${resolution.mode}`;
+  const vecTable = resolution.mode === 'openai' ? 'memory_vec_openai' : 'memory_vec_local';
 
-  // Vector-store selection. Prefer pgvector when available; fall back
-  // to mem0's in-process `memory` provider when the PG doesn't ship
-  // the `vector` extension. The in-process store is volatile (lost on
-  // restart) but lets memory:* work end-to-end.
+  // Vector-store selection. Prefer the canonical store (migration 081)
+  // when pgvector is present; fall back to mem0's in-process `memory`
+  // provider when it isn't. The in-process store is volatile (lost on
+  // restart) but lets memory:* work end-to-end during local-dev /
+  // pre-extension setups.
   let vectorStoreConfig: Record<string, unknown>;
   try {
     // Probe: does PG have the vector extension available?
@@ -307,7 +355,7 @@ async function tryLoad(): Promise<MemoryClient | null> {
     await probe.end();
     if (r.rowCount && r.rowCount > 0) {
       vectorStoreConfig = {
-        provider: 'pgvector',
+        provider: 'canonical',
         config: {
           host: pgFields.host,
           port: pgFields.port,
@@ -315,6 +363,7 @@ async function tryLoad(): Promise<MemoryClient | null> {
           password: pgFields.password,
           dbname: pgFields.dbname,
           collectionName,
+          vecTable,
           embeddingModelDims: EMBEDDER_DIM,
         },
       };
@@ -381,7 +430,9 @@ async function tryLoad(): Promise<MemoryClient | null> {
   } catch { /* best-effort */ }
 
   try {
-    const { Memory } = await dynamicImport<Mem0Module>(MEM0_PACKAGE);
+    const mem0 = await dynamicImport<Mem0Module & { VectorStoreFactory: { create: (provider: string, config: Record<string, unknown>) => unknown } }>(MEM0_PACKAGE);
+    patchVectorStoreFactory(mem0);
+    const { Memory } = mem0;
     _client = new Memory({
       embedder: embedderConfig,
       vectorStore: vectorStoreConfig,

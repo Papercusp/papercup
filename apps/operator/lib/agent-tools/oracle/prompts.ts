@@ -23,6 +23,7 @@ import {
 } from '@/lib/prompt-assembly';
 import { listAgentsAcrossWorkspace } from '@/lib/agents-list';
 import { buildMemoryContextBlock } from '@/lib/memory/injection';
+import { loadHarnessRegistry } from '@/lib/harness-registry';
 
 const ORACLE_PROMPT_TABLE = 'harness_shared.operator_oracle_prompt';
 const ORACLE_MEMORY_TABLE = 'harness_shared.operator_oracle_memory';
@@ -218,14 +219,19 @@ export async function composeOraclePrompt(
   const playbook = loadRoleToolsMd('oracle') ?? '';
   const inventoryBlock = await buildOracleInventoryBlock().catch(() => '');
 
-  // mem0 dual-scope memory injection. buildMemoryContextBlock already
-  // pulls user-scope + workspace-shared memories and merges them when
-  // a userId is provided; when userId is undefined it returns
-  // workspace-shared only. Either failure mode (no client, search throws)
-  // returns null and degrades gracefully.
+  // Oracle answers Q&A workspace-wide with no specific harness in
+  // scope, so fan out memory recall across every harness in the
+  // workspace (same shape as operator chat). Failures degrade
+  // gracefully — the helper returns null.
+  let oracleHarnessSlugs: string[] = [];
+  try {
+    const reg = await loadHarnessRegistry(activeWorkspaceId());
+    oracleHarnessSlugs = reg.projects.map((p) => p.slug);
+  } catch { /* leave empty */ }
   const memInjected = await buildMemoryContextBlock({
     userId: opts.userId ?? null,
     workspaceId: activeWorkspaceId(),
+    harnessSlugs: oracleHarnessSlugs,
     queryContext: userContent,
     heading: 'Oracle memory (relevant entries)',
   }).catch(() => null);

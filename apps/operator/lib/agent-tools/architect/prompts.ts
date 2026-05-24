@@ -107,13 +107,13 @@ Rules for proposals:
 - The body must be complete — do not elide. The UI writes it verbatim on Accept.
 - Be decisive but never fabricate facts. If you don't know a constraint, ask instead of proposing.`;
 
-  // Workspace-scope memory injection (architect has no session user;
-  // workspace shared memory is the right grain). Rebase-note adoption:
-  // unlocks "the architect remembers prior design decisions" with no
-  // new infrastructure.
+  // Architect runs inside one specific harness — fan out to its
+  // harness-scoped memory pool (plus the legacy workspace pool which
+  // injection.ts still reads through for back-compat).
   const memBlock = await buildMemoryContextBlock({
     userId: null,
     workspaceId: activeWorkspaceId(),
+    harnessSlugs: [project.slug],
     queryContext: message,
     heading: 'Architect memory (relevant entries)',
   });
@@ -167,10 +167,12 @@ Rules:
 - Don't promote too eagerly. Wait until the user signals the idea is ready, or ask them first.
 - Keep responses short and punchy. Long speeches kill brainstorming.`;
 
-  // Workspace-scope memory injection (same shape as architect).
+  // Brainstorm is also harness-scoped (called from a specific
+  // harness's inbox) — same fan-out shape as architect.
   const memBlock = await buildMemoryContextBlock({
     userId: null,
     workspaceId: activeWorkspaceId(),
+    harnessSlugs: [project.slug],
     queryContext: message,
     heading: 'Brainstorm memory (relevant entries)',
   });

@@ -36,7 +36,6 @@ const SETTINGS_GROUPS: readonly SettingsGroup[] = [
     label: 'Identity & devices',
     links: [
       { href: '/settings/profile', label: 'Profile', keywords: ['account', 'identity', 'email', 'display name', 'project directory'] },
-      { href: '/settings/user/memory', label: 'Memory', keywords: ['memory', 'mem0', 'recall', 'forget', 'embeddings', 'history', 'identity', 'preference'] },
       { href: '/settings/user', label: 'User preferences', keywords: ['user', 'me', 'override', 'password', 'session', 'logout'] },
       { href: '/settings/mobile', label: 'Mobile access', keywords: ['phone', 'device', 'pair', 'qr', 'workspace'] },
       { href: '/settings/publishing', label: 'Publishing', keywords: ['publish', 'preview', 'subdomain', 'public', 'marketplace'] },
@@ -66,6 +65,7 @@ const SETTINGS_GROUPS: readonly SettingsGroup[] = [
   {
     label: 'Advanced',
     links: [
+      { href: '/settings/user/memory', label: 'Memory', keywords: ['memory', 'mem0', 'recall', 'forget', 'embeddings', 'history', 'identity', 'preference', 'harness'], advanced: true },
       { href: '/settings/agent', label: 'AI backend', keywords: ['agent backend', 'claude', 'omp', 'meridian', 'models', 'roles', 'command'], advanced: true },
       { href: '/settings/omp', label: 'Oh-My-Pi (omp)', keywords: ['omp', 'oh my pi', 'web search', 'tavily', 'perplexity', 'brave', 'jina', 'kimi', 'exa', 'kagi', 'searxng', 'parallel', 'synthetic', 'hindsight', 'memory', 'thinking', 'compaction'], advanced: true },
       { href: '/settings/meridian', label: 'Meridian', keywords: ['meridian', 'telemetry', 'profiles', 'iframe'], advanced: true },

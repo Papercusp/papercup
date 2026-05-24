@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, type ReactElement } from 'react';
 import { toast } from 'sonner';
 import { useConfirmDialog } from '@/app/harness/useConfirmDialog';
 
@@ -8,7 +8,8 @@ interface MemoryRow {
   id: string;
   memory: string;
   metadata?: Record<string, unknown>;
-  scope: 'user' | 'workspace';
+  scope: 'user' | 'harness' | 'workspace';
+  harness_slug?: string;
 }
 
 const KIND_COLORS: Record<string, string> = {
@@ -136,18 +137,82 @@ export default function MemoryPage() {
     ? rows
     : rows.filter((r) => (r.metadata as Record<string, unknown>)?.kind === filter);
 
+  const renderRow = useCallback((row: MemoryRow): ReactElement => {
+    const meta = (row.metadata ?? {}) as Record<string, unknown>;
+    const kind = (meta.kind as string) ?? 'unknown';
+    const color = KIND_COLORS[kind] ?? '#6b7280';
+    return (
+      <li
+        key={row.id}
+        style={{
+          display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start',
+          padding: 12, gap: 12,
+          borderRadius: 6, border: '1px solid var(--border)',
+          background: 'var(--bg-2)',
+        }}
+      >
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 4, flexWrap: 'wrap' }}>
+            <span style={{ padding: '2px 8px', borderRadius: 4, background: color, color: '#fff', fontSize: 11, fontWeight: 600 }}>{kind}</span>
+            {meta.expires_at !== undefined && (
+              <span style={{ fontSize: 11, color: 'var(--fg-mute)' }}>expires {new Date(meta.expires_at as string).toLocaleString()}</span>
+            )}
+          </div>
+          {editingId === row.id ? (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+              <textarea
+                value={editingDraft}
+                onChange={(e) => setEditingDraft(e.target.value)}
+                rows={3}
+                style={{ width: '100%', padding: 6, fontFamily: 'inherit', fontSize: 13, border: '1px solid var(--border)', borderRadius: 4, background: 'var(--bg-3)', color: 'var(--fg)' }}
+              />
+              <div style={{ display: 'flex', gap: 6 }}>
+                <button type="button" onClick={() => onSaveEdit(row.id)} style={{ padding: '2px 10px', borderRadius: 4, border: '1px solid var(--border)', background: 'var(--bg-3)', cursor: 'pointer', fontSize: 12 }}>Save</button>
+                <button type="button" onClick={() => setEditingId(null)} style={{ padding: '2px 10px', borderRadius: 4, border: '1px solid var(--border)', background: 'transparent', cursor: 'pointer', fontSize: 12 }}>Cancel</button>
+              </div>
+            </div>
+          ) : (
+            <div style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{row.memory}</div>
+          )}
+        </div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 4, flexShrink: 0 }}>
+          <button
+            type="button"
+            onClick={() => {
+              setEditingId(row.id);
+              setEditingDraft(row.memory);
+            }}
+            disabled={editingId !== null && editingId !== row.id}
+            style={{ padding: '4px 10px', fontSize: 12, borderRadius: 4, background: 'transparent', border: '1px solid var(--border)', cursor: 'pointer' }}
+          >
+            Edit
+          </button>
+          <button
+            type="button"
+            onClick={() => onDelete(row.id)}
+            style={{ padding: '4px 10px', fontSize: 12, borderRadius: 4, background: 'transparent', border: '1px solid #f87171', color: '#f87171', cursor: 'pointer' }}
+          >
+            Delete
+          </button>
+        </div>
+      </li>
+    );
+  }, [editingId, editingDraft, onSaveEdit, onDelete]);
+
   if (loading) return <div style={{ padding: 32 }}>Loading…</div>;
 
   return (
     <div style={{ padding: 32, maxWidth: 920, display: 'flex', flexDirection: 'column', gap: 16 }}>
       {confirmEl}
       <header>
-        <h1>Papercup memory</h1>
+        <h1>Papercusp memory</h1>
         <p className="pc-settings-intro">
-          Facts Papercup has stored about you. Inspect, edit, or delete
-          per entry. Edits and deletes are recorded as feedback signal for
-          future tuning. Workspace-shared entries (visible to other users in
-          this workspace) are marked with a badge.
+          Everything Papercusp remembers, organized by who can see it.
+          Personal entries are private to you; per-harness entries are
+          shared with anyone working on that project; the deprecated
+          workspace tier is shown only if you have legacy entries to
+          clean up. Edits and deletes are recorded as feedback for
+          future tuning.
         </p>
         {stats && (stats.total_edits > 0 || stats.total_deletes > 0) && (
           <p style={{ fontSize: 12, color: 'var(--fg-mute)', margin: '8px 0 0' }}>
@@ -224,81 +289,94 @@ export default function MemoryPage() {
         </div>
       </div>
 
-      {filtered.length === 0 ? (
-        <p style={{ color: 'var(--fg-mute)' }}>
-          {rows.length === 0 ? 'No memories stored yet.' : `No memories matching '${filter}'.`}
-        </p>
+      {(() => {
+        const userRows = filtered.filter((r) => r.scope === 'user');
+        const harnessRows = filtered.filter((r) => r.scope === 'harness');
+        const workspaceRows = filtered.filter((r) => r.scope === 'workspace');
+
+        if (filtered.length === 0) {
+          return (
+            <p style={{ color: 'var(--fg-mute)' }}>
+              {rows.length === 0 ? 'No memories stored yet.' : `No memories matching '${filter}'.`}
+            </p>
+          );
+        }
+
+        // Group harness rows by slug
+        const bySlug = new Map<string, MemoryRow[]>();
+        for (const r of harnessRows) {
+          const slug = r.harness_slug ?? (r.metadata as Record<string, unknown> | undefined)?.harness_slug as string ?? 'unknown';
+          if (!bySlug.has(slug)) bySlug.set(slug, []);
+          bySlug.get(slug)!.push(r);
+        }
+
+        return (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
+            <Section
+              title="My memory"
+              description="Personal facts about you. Private — only you see these. Carried across every project."
+              rows={userRows}
+              renderRow={renderRow}
+              empty="No personal memories yet. Tell Papercusp something to remember — &ldquo;remember I prefer terse replies&rdquo; — and it&rsquo;ll land here."
+            />
+            <Section
+              title="Per-harness memory"
+              description="Project-specific facts shared with anyone who has access to that harness. Use these for team conventions, project context, or anything an agent working on this project should know."
+              rows={harnessRows}
+              renderRow={renderRow}
+              groupedBySlug={bySlug}
+              empty="No per-harness memories yet. Ask Papercusp to remember a project fact and tag a harness — &ldquo;for the sheets harness, we use BigQuery&rdquo;."
+            />
+            {workspaceRows.length > 0 && (
+              <Section
+                title="Deprecated — workspace memory"
+                description="Older shared memories from before per-harness scope existed. Move important ones into the right harness (delete here, then ask Papercusp to remember with a harness_slug), or just delete."
+                rows={workspaceRows}
+                renderRow={renderRow}
+                deprecated
+              />
+            )}
+          </div>
+        );
+      })()}
+    </div>
+  );
+}
+
+function Section(props: {
+  title: string;
+  description: string;
+  rows: MemoryRow[];
+  renderRow: (row: MemoryRow) => ReactElement;
+  empty?: string;
+  groupedBySlug?: Map<string, MemoryRow[]>;
+  deprecated?: boolean;
+}) {
+  const { title, description, rows, renderRow, empty, groupedBySlug, deprecated } = props;
+  return (
+    <section style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+      <div>
+        <h2 style={{ margin: '0 0 4px', fontSize: 16, opacity: deprecated ? 0.7 : 1 }}>{title}</h2>
+        <p style={{ margin: 0, fontSize: 13, color: 'var(--fg-mute)' }}>{description}</p>
+      </div>
+      {rows.length === 0 ? (
+        empty ? <p style={{ color: 'var(--fg-mute)', fontSize: 13, fontStyle: 'italic', margin: 0 }}>{empty}</p> : null
+      ) : groupedBySlug ? (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+          {[...groupedBySlug.entries()].map(([slug, slugRows]) => (
+            <div key={slug} style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+              <h3 style={{ margin: 0, fontSize: 13, color: 'var(--fg-mute)', textTransform: 'uppercase', letterSpacing: 0.5 }}>{slug}</h3>
+              <ul style={{ listStyle: 'none', padding: 0, display: 'flex', flexDirection: 'column', gap: 8 }}>
+                {slugRows.map(renderRow)}
+              </ul>
+            </div>
+          ))}
+        </div>
       ) : (
         <ul style={{ listStyle: 'none', padding: 0, display: 'flex', flexDirection: 'column', gap: 8 }}>
-          {filtered.map((row) => {
-            const meta = (row.metadata ?? {}) as Record<string, unknown>;
-            const kind = (meta.kind as string) ?? 'unknown';
-            const color = KIND_COLORS[kind] ?? '#6b7280';
-            return (
-              <li
-                key={row.id}
-                style={{
-                  display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start',
-                  padding: 12, gap: 12,
-                  borderRadius: 6, border: '1px solid var(--border)',
-                  background: 'var(--bg-2)',
-                }}
-              >
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 4, flexWrap: 'wrap' }}>
-                    <span style={{ padding: '2px 8px', borderRadius: 4, background: color, color: '#fff', fontSize: 11, fontWeight: 600 }}>{kind}</span>
-                    {row.scope === 'workspace' && (
-                      <span style={{ padding: '2px 8px', borderRadius: 4, background: '#3b82f6', color: '#fff', fontSize: 11 }}>shared</span>
-                    )}
-                    {meta.harness_slug && (
-                      <span style={{ padding: '2px 8px', borderRadius: 4, background: 'var(--bg-3)', fontSize: 11 }}>{meta.harness_slug as string}</span>
-                    )}
-                    {meta.expires_at && (
-                      <span style={{ fontSize: 11, color: 'var(--fg-mute)' }}>expires {new Date(meta.expires_at as string).toLocaleString()}</span>
-                    )}
-                  </div>
-                  {editingId === row.id ? (
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                      <textarea
-                        value={editingDraft}
-                        onChange={(e) => setEditingDraft(e.target.value)}
-                        rows={3}
-                        style={{ width: '100%', padding: 6, fontFamily: 'inherit', fontSize: 13, border: '1px solid var(--border)', borderRadius: 4, background: 'var(--bg-3)', color: 'var(--fg)' }}
-                      />
-                      <div style={{ display: 'flex', gap: 6 }}>
-                        <button type="button" onClick={() => onSaveEdit(row.id)} style={{ padding: '2px 10px', borderRadius: 4, border: '1px solid var(--border)', background: 'var(--bg-3)', cursor: 'pointer', fontSize: 12 }}>Save</button>
-                        <button type="button" onClick={() => setEditingId(null)} style={{ padding: '2px 10px', borderRadius: 4, border: '1px solid var(--border)', background: 'transparent', cursor: 'pointer', fontSize: 12 }}>Cancel</button>
-                      </div>
-                    </div>
-                  ) : (
-                    <div style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{row.memory}</div>
-                  )}
-                </div>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 4, flexShrink: 0 }}>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setEditingId(row.id);
-                      setEditingDraft(row.memory);
-                    }}
-                    disabled={editingId !== null && editingId !== row.id}
-                    style={{ padding: '4px 10px', fontSize: 12, borderRadius: 4, background: 'transparent', border: '1px solid var(--border)', cursor: 'pointer' }}
-                  >
-                    Edit
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => onDelete(row.id)}
-                    style={{ padding: '4px 10px', fontSize: 12, borderRadius: 4, background: 'transparent', border: '1px solid #f87171', color: '#f87171', cursor: 'pointer' }}
-                  >
-                    Delete
-                  </button>
-                </div>
-              </li>
-            );
-          })}
+          {rows.map(renderRow)}
         </ul>
       )}
-    </div>
+    </section>
   );
 }
