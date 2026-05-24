@@ -1,0 +1,164 @@
+/* <DomainTestPanel> styles. Sibling-namespaced to pc-test-* to avoid
+ * collisions with the existing testing-tab stylesheet. */
+
+.pc-dtp {
+  padding: 16px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  overflow: auto;
+  height: 100%;
+}
+
+.pc-dtp-loading,
+.pc-dtp-error {
+  padding: 24px;
+  color: var(--pc-color-text-muted, #888);
+}
+
+.pc-dtp-error h3 {
+  margin: 0 0 8px 0;
+  color: var(--pc-color-error, #c33);
+  font-size: 14px;
+}
+
+.pc-dtp-error pre {
+  font-family: var(--pc-font-mono, monospace);
+  font-size: 12px;
+  background: var(--pc-color-bg-elev, rgba(0, 0, 0, 0.04));
+  padding: 8px;
+  border-radius: 4px;
+  white-space: pre-wrap;
+}
+
+.pc-dtp-header {
+  border-bottom: 1px solid var(--pc-color-border, rgba(0, 0, 0, 0.08));
+  padding-bottom: 12px;
+}
+
+.pc-dtp-header-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.pc-dtp-title {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 600;
+}
+
+.pc-dtp-count {
+  font-size: 12px;
+  color: var(--pc-color-text-muted, #888);
+  font-variant-numeric: tabular-nums;
+}
+
+.pc-dtp-description {
+  margin: 6px 0 0 0;
+  font-size: 13px;
+  color: var(--pc-color-text-muted, #888);
+}
+
+.pc-dtp-health-strip {
+  /* P-033 — collapses to zero height until wired. */
+  min-height: 0;
+}
+
+.pc-dtp-health-strip[data-pending='true'] {
+  display: none;
+}
+
+.pc-dtp-sections {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.pc-dtp-section {
+  border: 1px solid var(--pc-color-border, rgba(0, 0, 0, 0.08));
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.pc-dtp-section-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 14px;
+  background: var(--pc-color-bg-elev, rgba(0, 0, 0, 0.03));
+  border-bottom: 1px solid var(--pc-color-border, rgba(0, 0, 0, 0.08));
+}
+
+.pc-dtp-section-title {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.pc-dtp-section-count {
+  font-size: 11px;
+  color: var(--pc-color-text-muted, #888);
+  font-variant-numeric: tabular-nums;
+}
+
+.pc-dtp-section-description {
+  margin: 0;
+  padding: 8px 14px 0 14px;
+  font-size: 12px;
+  color: var(--pc-color-text-muted, #888);
+}
+
+.pc-dtp-empty {
+  margin: 0;
+  padding: 16px 14px;
+  font-size: 12px;
+  color: var(--pc-color-text-muted, #888);
+  font-style: italic;
+}
+
+.pc-dtp-files {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.pc-dtp-file {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 14px;
+  border-top: 1px solid var(--pc-color-border, rgba(0, 0, 0, 0.06));
+  font-size: 12px;
+}
+
+.pc-dtp-file:first-child {
+  border-top: none;
+}
+
+.pc-dtp-file-path {
+  font-family: var(--pc-font-mono, monospace);
+  font-size: 11px;
+  color: var(--pc-color-text, #222);
+  overflow-x: auto;
+  white-space: nowrap;
+}
+
+.pc-dtp-file-meta {
+  font-size: 11px;
+  color: var(--pc-color-text-muted, #888);
+  font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
+}
+
+.pc-dtp-runner .pc-dtp-file-path {
+  color: var(--pc-color-accent, #4a7bc8);
+}
+
+.pc-dtp-custom {
+  flex: 1;
+  min-height: 0;
+}

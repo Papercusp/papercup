@@ -57,6 +57,20 @@
   font-weight: normal;
 }
 
+/* Three-tier grouping (admin-testing-tab-restructure-2026-05-24, P-006). */
+.pc-test-tab-group {
+  display: block;
+  margin-bottom: 12px;
+}
+.pc-test-tier-label {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--fg-mute);
+  margin: 8px 4px 2px;
+  font-weight: 600;
+}
+
 .pc-test-main {
   padding: 20px 24px;
   overflow-y: auto;
