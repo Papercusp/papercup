@@ -95,9 +95,10 @@ export async function readOperatorState<T>(table: StateTable, wsOverride?: strin
 export async function writeOperatorState<T>(
   table: StateTable,
   payload: T,
+  wsOverride?: string,
 ): Promise<void> {
   const { sql } = getOrgPg();
-  const ws = activeWorkspaceId();
+  const ws = wsOverride ?? activeWorkspaceId();
   const now = Date.now();
 
   if (ENCRYPTED_TABLES.has(table)) {

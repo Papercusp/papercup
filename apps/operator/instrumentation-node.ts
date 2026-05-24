@@ -58,6 +58,25 @@ export async function register(): Promise<void> {
     console.warn('[papercusp-workspace] ensure failed (non-fatal):', e);
   }
 
+  // Auto-register the papercup repo as a harness in the sentinel
+  // workspace if we're running from source (papercusp-dogfood-v5
+  // Phase 4 / P-024). Fire-and-forget; no-op for packaged installs
+  // where the repo isn't on disk. Idempotent: subsequent boots
+  // detect the existing entry and return immediately.
+  (async () => {
+    try {
+      const { registerPapercupHarness } = await import('./lib/harness/register-papercup');
+      const result = await registerPapercupHarness();
+      if (result.state === 'newly-registered') {
+        console.log(`[register-papercup] registered as harness 'papercup' at ${result.path}`);
+      } else if (result.state === 'skipped') {
+        console.log(`[register-papercup] skipped: ${result.reason}`);
+      }
+    } catch (e) {
+      console.warn('[register-papercup] failed (non-fatal):', e);
+    }
+  })();
+
   // Pty WS server: only when not opt-out and not running under Tauri.
   // Both early-exits below ONLY skip pty-ws — they fall through to the
   // schema pre-warm so desktop and PTY-disabled environments still get

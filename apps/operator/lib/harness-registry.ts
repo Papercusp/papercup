@@ -33,6 +33,9 @@ export async function loadHarnessRegistry(workspaceId?: string): Promise<Harness
   return { projects: raw?.projects ?? [] };
 }
 
-export async function saveHarnessRegistry(reg: HarnessRegistry): Promise<void> {
-  await writeOperatorState('harness_registry', { projects: reg.projects ?? [] });
+export async function saveHarnessRegistry(
+  reg: HarnessRegistry,
+  workspaceId?: string,
+): Promise<void> {
+  await writeOperatorState('harness_registry', { projects: reg.projects ?? [] }, workspaceId);
 }
