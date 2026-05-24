@@ -383,6 +383,119 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     },
   },
 
+  // ── Batch 5: status / tests / archives / hook-logs / health ─────────
+
+  // harnessStatus.byHarness — single status row per (harness, workspace, phase).
+  //   zql.harnessStatus.where(harnessSlug).where(workspaceId).where(phase).limit(1)
+  'harnessStatus.byHarness': {
+    argsSchema: z.object({
+      harnessSlug: z.string(),
+      workspaceId: z.string(),
+      phase: z.string().default('staging'),
+    }),
+    resolve: async (args) => {
+      const { harnessSlug, workspaceId, phase } = args as {
+        harnessSlug: string;
+        workspaceId: string;
+        phase: string;
+      };
+      const { getOrgPg, generated } = await import('@restart/db-org');
+      const { and, eq } = await import('drizzle-orm');
+      const t = generated.harnessStatusInHarnessShared;
+      const { db } = getOrgPg();
+      return (await db
+        .select()
+        .from(t)
+        .where(
+          and(
+            eq(t.harnessSlug, harnessSlug),
+            eq(t.workspaceId, workspaceId),
+            eq(t.phase, phase),
+          ),
+        )
+        .limit(1)) as unknown[];
+    },
+  },
+
+  // harnessTests.byHarness — tests filtered by harness+phase, by name.
+  //   zql.harnessTests.where(harnessSlug).where(phase).orderBy('name', 'asc')
+  'harnessTests.byHarness': {
+    argsSchema: z.object({
+      harnessSlug: z.string(),
+      phase: z.string().default('staging'),
+    }),
+    resolve: async (args) => {
+      const { harnessSlug, phase } = args as { harnessSlug: string; phase: string };
+      const { getOrgPg, generated } = await import('@restart/db-org');
+      const { and, asc, eq } = await import('drizzle-orm');
+      const t = generated.harnessTestsInHarnessShared;
+      const { db } = getOrgPg();
+      return (await db
+        .select()
+        .from(t)
+        .where(and(eq(t.harnessSlug, harnessSlug), eq(t.phase, phase)))
+        .orderBy(asc(t.name))) as unknown[];
+    },
+  },
+
+  // harnessArchives.byHarness — archives by harness+phase, latest first.
+  //   zql.harnessArchives.where(harnessSlug).where(phase).orderBy('ts', 'desc')
+  'harnessArchives.byHarness': {
+    argsSchema: z.object({
+      harnessSlug: z.string(),
+      phase: z.string().default('staging'),
+    }),
+    resolve: async (args) => {
+      const { harnessSlug, phase } = args as { harnessSlug: string; phase: string };
+      const { getOrgPg, generated } = await import('@restart/db-org');
+      const { and, desc, eq } = await import('drizzle-orm');
+      const t = generated.harnessArchivesInHarnessShared;
+      const { db } = getOrgPg();
+      return (await db
+        .select()
+        .from(t)
+        .where(and(eq(t.harnessSlug, harnessSlug), eq(t.phase, phase)))
+        .orderBy(desc(t.ts))) as unknown[];
+    },
+  },
+
+  // harnessHookLogs.byHarness — most-recent 50 hook events per harness.
+  //   zql.harnessHookLogs.where(harnessSlug).orderBy('ts', 'desc').limit(50)
+  'harnessHookLogs.byHarness': {
+    argsSchema: z.object({ harnessSlug: z.string() }),
+    resolve: async (args) => {
+      const { harnessSlug } = args as { harnessSlug: string };
+      const { getOrgPg, generated } = await import('@restart/db-org');
+      const { desc, eq } = await import('drizzle-orm');
+      const t = generated.harnessHookLogsInHarnessShared;
+      const { db } = getOrgPg();
+      return (await db
+        .select()
+        .from(t)
+        .where(eq(t.harnessSlug, harnessSlug))
+        .orderBy(desc(t.ts))
+        .limit(50)) as unknown[];
+    },
+  },
+
+  // harnessHealth.byHarness — single health row per harness.
+  //   zql.harnessHealth.where(harnessSlug).limit(1)
+  'harnessHealth.byHarness': {
+    argsSchema: z.object({ harnessSlug: z.string() }),
+    resolve: async (args) => {
+      const { harnessSlug } = args as { harnessSlug: string };
+      const { getOrgPg, generated } = await import('@restart/db-org');
+      const { eq } = await import('drizzle-orm');
+      const t = generated.harnessHealthInHarnessShared;
+      const { db } = getOrgPg();
+      return (await db
+        .select()
+        .from(t)
+        .where(eq(t.harnessSlug, harnessSlug))
+        .limit(1)) as unknown[];
+    },
+  },
+
   // userActions.byKind — harness+workspace+kind-filtered action log.
   //   zql.userActions.where(harnessSlug).where(workspaceId).where(kind)
   //                  .orderBy('startedAt', 'desc').limit(limit)
