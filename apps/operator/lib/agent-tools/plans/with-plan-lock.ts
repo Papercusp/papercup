@@ -23,13 +23,28 @@ import {
 } from '@/lib/agent-tools/locks/su-lock-store';
 import { SuLocksCoordinator } from '@/lib/agent-tools/locks/coordinator';
 import { readIdentity, type IdentityCtx } from '@/lib/agent-tools/locks/identity';
-import { getPlansDir, PLANS_DIR_REL, VALID_PLAN_SLUG, type PlanSourceOpts } from './source';
+import {
+  getPlansDir,
+  PLANS_DIR_REL,
+  resolveHarnessPlansDir,
+  VALID_PLAN_SLUG,
+  type PlanSourceOpts,
+} from './source';
+import { PAPERCUP_HARNESS_SLUG } from '@/lib/harness/register-papercup';
 
 export interface WithPlanLockOpts extends PlanSourceOpts {
   /** Plan slug (filename stem). Resolves to `<plansDir>/<slug>.md`. */
   slug: string;
   /** One-line description of the mutation, surfaced to busy callers. */
   intent: string;
+  /**
+   * Harness scope for this write. Omit → defaults to `papercup`
+   * (preserves today's behavior — every existing SU caller is on
+   * papercup). When provided + != 'papercup', the plans dir resolves
+   * via the harness registry AND the lock key gets harness-prefixed
+   * so per-harness writes never collide on the same plan slug.
+   */
+  harnessSlug?: string;
   /** Lock TTL — short by default since write verbs do a fast RMW. */
   ttlSec?: number;
   /**
@@ -85,12 +100,34 @@ export async function withPlanLock<T>(
   if (typeof opts.slug !== 'string' || !VALID_PLAN_SLUG.test(opts.slug)) {
     throw new Error(`withPlanLock: invalid plan slug ${JSON.stringify(opts.slug)}`);
   }
-  const plansDir = getPlansDir(opts);
+  // Resolve the plans dir per opts.harnessSlug (D-002R / D-004R of
+  // per-harness-plans-and-docs-2026-05-23). Default = papercup → preserves
+  // legacy sync cwd-walk for back-compat with every existing caller.
+  const harnessSlug = opts.harnessSlug?.trim() || PAPERCUP_HARNESS_SLUG;
+  let plansDir: string;
+  if (opts.plansDir) {
+    // Direct override (cross_harness:* or tests). Trust caller's path.
+    plansDir = opts.plansDir;
+  } else if (harnessSlug === PAPERCUP_HARNESS_SLUG) {
+    // Papercup — keep legacy sync resolver for back-compat.
+    plansDir = getPlansDir(opts);
+  } else {
+    // Per-harness — registry-backed resolver.
+    const resolved = await resolveHarnessPlansDir(harnessSlug);
+    plansDir = resolved.plans;
+  }
   const filePath = path.join(plansDir, opts.slug + '.md');
-  // Lock key is the workspace-canonical relative path so the same
-  // plan always hashes to the same lock regardless of repoRoot. The
-  // lock store rejects absolute paths.
-  const lockKey = path.posix.join(PLANS_DIR_REL, opts.slug + '.md');
+  // P-011: harness-discriminated lock key. Papercup retains its legacy
+  // key (`apps/operator/docs/plans/<slug>.md`) so any in-flight lock
+  // acquired by an older caller still matches; other harnesses use a
+  // synthetic `harnesses/<slug>/...` path so the same plan slug in
+  // different harnesses never collides. Both are workspace-canonical
+  // relative paths so the same plan-in-harness always hashes to the
+  // same lock regardless of repoRoot.
+  const lockKey =
+    harnessSlug === PAPERCUP_HARNESS_SLUG
+      ? path.posix.join(PLANS_DIR_REL, opts.slug + '.md')
+      : path.posix.join('harnesses', harnessSlug, 'docs', 'plans', opts.slug + '.md');
   const paths = normalizePaths([lockKey]);
 
   await ensureBootstrap();
