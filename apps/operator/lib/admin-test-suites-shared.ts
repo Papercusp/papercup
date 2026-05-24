@@ -115,7 +115,7 @@ export const ADMIN_TEST_SUITES: AdminTestSuiteSpec[] = [
     description: 'Verifies that the packaged-binary performance runner can execute: tauri-driver present, WebKit WebDriver present, wdio deps installed, packaged binary present, and smoke selector still valid.',
     runner: 'host',
     estimatedSeconds: 5,
-    safeDefault: true,
+    safeDefault: false,
     tags: ['packaged', 'wdio', 'tauri-driver'],
   },
 ];
