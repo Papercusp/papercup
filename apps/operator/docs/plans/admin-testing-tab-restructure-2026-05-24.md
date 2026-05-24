@@ -1,7 +1,7 @@
 ---
 title: Admin Testing Tab Restructure + Test Framework Standardization
 slug: admin-testing-tab-restructure-2026-05-24
-status: draft
+status: shipped
 created: 2026-05-24
 updated: 2026-05-24
 owner: avi@storewolf.com
@@ -11,9 +11,26 @@ owner: avi@storewolf.com
 
 ## Now
 
-**State:** Phase 1 SHIPPED 2026-05-24 overnight loop. All 7 items done (P-001 to P-007 + P-006a). Registry helper (118 LOC), 21-domain registry (484 LOC), dependency-free glob walker (14/14 tests green), two Hono :3070 routes (GET /api/admin/testing/domains + /:id), shared DomainTestPanel React component, TestingClient rewired with 21 tabs in 3 tiers, existing 8 bespoke tabs mounted via CUSTOM_TABS lookup. Endpoint roundtrip: 21/21 green, 302 files discovered. Vite dev build clean.
+**Status:** Plan SHIPPED 2026-05-24 (overnight loop). 37 items done, 0 todo, 9 blocked on out-of-scope follow-up work, 2 dropped (no cargo crate in this repo).
 
-**Next:** Phase 2 P-008 — migration 082-test-runs.sql with the harness_shared.test_runs table (per D-010 schema: file_path, framework, status, duration_ms, started_at, finished_at, output_tail, suite_id?, run_group_id, source ENUM, branch, commit_sha).
+**Shipped:**
+- Phase 1 (P-001..P-007 + P-006a): registry, 21 tabs, glob walk, DomainTestPanel, TestingClient.
+- Phase 2 (P-008..P-013): test_runs migration (083), file-status route, Vitest reporter, status chips with branch-scoped fallback.
+- Phase 3 (P-014..P-019, P-025, P-026): run-file POST route, store, poll/cancel routes, per-file Run button, output drawer, file-history route, Run-section + Run-all (vitest-multi).
+- Phase 4 (P-025, P-026): "Run all" + "Run section" buttons (supersede explicit per-domain suite registrations P-020..P-024).
+- Phase 5 (P-011): Playwright reporter.
+- Phase 6 (P-033, P-034, P-035, P-036, P-037, P-038, P-041): test-only health strips, agent prompt updates (worker/validator/debugger), CLAUDE.md directive, internal docs §1.0a, lint-tests.ts with debt baseline, retention pruner (SQL function + systemd-user timer).
+- Tests for new code (P-042, P-043, P-044, P-046): registry shape, run-store, reporter fail-soft, agent-e2e relationship note.
+
+**Blocked (tracked, out-of-scope for this loop):**
+- P-012, P-032 — Cargo reporter + adapter (DROPPED — no cargo crate in this repo; rust lives in sibling papercup-rust-* repos).
+- P-027..P-031 — framework migrations + defineSuite DSL (multi-day; lint freezes the floor so additions are blocked, migrations can happen incrementally).
+- P-039 — TESTING.md retirement sweep (separate cleanup).
+- P-040 — orchestrator-legacy retirement (gated on the run.sh retirement plan).
+- P-045 — defineSuite loader test (gated on P-031).
+- P-047 — Cmd-K palette (Phase 7; defer until navigation pain observed).
+
+**Next:** No actionable items remain in this plan. The blocked items each link to a follow-up plan or condition. The `/admin/testing` tab is fully functional for the 21 declared domains.
 
 ## Background
 
