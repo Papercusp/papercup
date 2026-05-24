@@ -692,29 +692,51 @@ async function measureRoute(
 ): Promise<{ ok: boolean; elapsedMs: number; page: { href: string; h1: string[]; bodyText: string; domNodes: number; hasHarnessRoot: boolean; details: string[]; summary: string } }> {
   const state = await getDesktopState(ctx);
   const target = route.startsWith('http') ? route : new URL(route, state.origin).toString();
-  const nav = await runTauriEvalJson<{ ok: boolean; href: string }>(
-    ctx,
-    `(() => {
-      const target = new URL(${JSON.stringify(target)});
-      const next = target.pathname + target.search + target.hash;
-      history.pushState({}, '', next);
-      window.dispatchEvent(new PopStateEvent('popstate'));
-      return { ok: true, href: location.href };
-    })()`,
-  );
-  if (!nav.ok || !nav.value) {
-    return {
-      ok: false,
-      elapsedMs: nav.exec.durationMs,
-      page: {
-        href: target,
-        h1: [],
-        bodyText: '',
-        domNodes: 0,
-        details: [describeCommandFailure(nav)],
-        summary: `navigate failed for ${target}`,
-      },
-    };
+  const currentUrl = new URL(state.href);
+  const targetUrl = new URL(target);
+  const currentRoot = currentUrl.pathname.split('/')[1] ?? '';
+  const targetRoot = targetUrl.pathname.split('/')[1] ?? '';
+  if (currentRoot === targetRoot) {
+    const nav = await runTauriEvalJson<{ ok: boolean; href: string }>(
+      ctx,
+      `(() => {
+        const target = new URL(${JSON.stringify(target)});
+        const next = target.pathname + target.search + target.hash;
+        history.pushState({}, '', next);
+        window.dispatchEvent(new PopStateEvent('popstate'));
+        return { ok: true, href: location.href };
+      })()`,
+    );
+    if (!nav.ok || !nav.value) {
+      return {
+        ok: false,
+        elapsedMs: nav.exec.durationMs,
+        page: {
+          href: target,
+          h1: [],
+          bodyText: '',
+          domNodes: 0,
+          details: [describeCommandFailure(nav)],
+          summary: `navigate failed for ${target}`,
+        },
+      };
+    }
+  } else {
+    const nav = await runTauri(ctx, ['navigate', target]);
+    if (nav.error || nav.code !== 0) {
+      return {
+        ok: false,
+        elapsedMs: nav.durationMs,
+        page: {
+          href: target,
+          h1: [],
+          bodyText: '',
+          domNodes: 0,
+          details: [describeExecFailure(nav)],
+          summary: `navigate failed for ${target}`,
+        },
+      };
+    }
   }
   const startedAt = Date.now();
   for (let i = 0; i < 24; i += 1) {

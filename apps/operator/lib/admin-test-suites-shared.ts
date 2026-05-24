@@ -79,6 +79,16 @@ export const ADMIN_TEST_SUITES: AdminTestSuiteSpec[] = [
     tags: ['tauri', 'health', 'console', 'assets'],
   },
   {
+    id: 'desktop-performance',
+    label: 'Desktop performance snapshot',
+    hint: 'routes, INP, RSS',
+    description: 'Measures warm route-settle times, current slow-interaction budget, and total desktop memory usage from inside the Tauri desktop shell.',
+    runner: 'mixed',
+    estimatedSeconds: 18,
+    safeDefault: false,
+    tags: ['tauri', 'performance', 'memory'],
+  },
+  {
     id: 'admin-testing-core',
     label: 'Testing tab core smoke',
     hint: 'live, chaos, routes, packaged',
@@ -97,16 +107,6 @@ export const ADMIN_TEST_SUITES: AdminTestSuiteSpec[] = [
     estimatedSeconds: 12,
     safeDefault: false,
     tags: ['tauri', 'smoke', 'testing-tab', 'heavy'],
-  },
-  {
-    id: 'desktop-performance',
-    label: 'Desktop performance snapshot',
-    hint: 'routes, INP, RSS',
-    description: 'Measures warm route-settle times, current slow-interaction budget, and total desktop memory usage from inside the Tauri desktop shell.',
-    runner: 'mixed',
-    estimatedSeconds: 18,
-    safeDefault: true,
-    tags: ['tauri', 'performance', 'memory'],
   },
   {
     id: 'packaged-readiness',
