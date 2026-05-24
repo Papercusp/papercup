@@ -108,6 +108,7 @@ import uiPresence from './ui/presence';
 import uiIntentsStream from './ui/intents-stream';
 import uiIntentResult from './ui/intent-result';
 import zeroHarnessSse from './zero-harness/sse';
+import syncStream from './sync/stream';
 import zeroHarnessRestQuery from './zero-harness/rest-query';
 import zeroHarnessRestQueryBatch from './zero-harness/rest-query-batch';
 import miscZeroHarnessQuery from './misc/zero-harness-query';
@@ -476,6 +477,7 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(uiIntentsStream as AnyRoute),
   ...flatten(uiIntentResult as AnyRoute),
   ...flatten(zeroHarnessSse as AnyRoute),
+  ...flatten(syncStream as AnyRoute),
   ...flatten(zeroHarnessRestQuery as AnyRoute),
   ...flatten(zeroHarnessRestQueryBatch as AnyRoute),
   ...flatten(miscZeroHarnessQuery as AnyRoute),
