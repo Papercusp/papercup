@@ -98,20 +98,93 @@ function shellEscape(s: string): string {
   return `'${s.replace(/'/g, "'\\''")}'`;
 }
 
+/**
+ * Emit the OSC escape sequences that recolor + retitle the terminal
+ * window: foreground (OSC 10), background (OSC 11), window title
+ * (OSC 0). User did this manually as
+ *   echo -ne '\e]10;#000000\e\\' && printf '\033]11;#51febf\007'
+ *     && printf '\033]0;RUNNERS\a'
+ * — Batch D automates it per-session by hashing the plan slug into a
+ * distinguishable background color. Foreground is black (#000000)
+ * for readable contrast on the bright backgrounds we pick. Wrapping
+ * in `printf` with literal escape bytes so the sequence reaches the
+ * terminal before the spawned shell starts reading.
+ */
+interface AppearanceOpts {
+  mode: 'omp' | 'console';
+  planSlug: string | null;
+  label: string | null;
+}
+function buildAppearancePrelude(opts: AppearanceOpts): string {
+  const bg = hashSlugToColor(opts.planSlug, opts.mode);
+  const fg = '#000000';
+  const title = formatWindowTitle(opts);
+  // Use printf with octal escape codes so the bytes reach the tty
+  // verbatim regardless of the shell's echo dialect. OSC sequences:
+  //   ESC ] 10 ; <fg> BEL    → foreground
+  //   ESC ] 11 ; <bg> BEL    → background
+  //   ESC ] 0  ; <title> BEL → window + tab title
+  // \033 = ESC (octal 33), \007 = BEL.
+  const titleEsc = title.replace(/'/g, "'\\''");
+  return [
+    `printf '\\033]10;${fg}\\007'`,
+    `printf '\\033]11;${bg}\\007'`,
+    `printf '\\033]0;${titleEsc}\\007'`,
+  ].join(' && ');
+}
+
+/**
+ * Deterministic slug → background color. Picks from a curated palette
+ * of high-saturation, high-luminance hues so all options stay readable
+ * against the black foreground. Returns a fixed neutral fallback when
+ * planSlug is null (untagged session).
+ */
+function hashSlugToColor(planSlug: string | null, mode: 'omp' | 'console'): string {
+  if (!planSlug) return mode === 'omp' ? '#51febf' : '#a8b3ff';
+  const palette = [
+    '#51febf', '#fcd34d', '#fda4af', '#86efac', '#7dd3fc',
+    '#c4b5fd', '#fdba74', '#f0abfc', '#5eead4', '#fde68a',
+    '#bef264', '#a5b4fc', '#fb7185', '#34d399', '#facc15',
+  ];
+  let h = 0;
+  for (let i = 0; i < planSlug.length; i++) {
+    h = ((h << 5) - h + planSlug.charCodeAt(i)) | 0;
+  }
+  return palette[Math.abs(h) % palette.length];
+}
+
+function formatWindowTitle(opts: AppearanceOpts): string {
+  const tag = opts.mode === 'omp' ? 'OMP' : 'SH';
+  if (opts.planSlug) return `${tag}: ${opts.planSlug}`;
+  if (opts.label) return `${tag}: ${opts.label}`;
+  return tag;
+}
+
 function buildOmpOneliner(
   cwd: string,
   env: Record<string, string>,
   launchCommand: string,
+  appearance: AppearanceOpts,
 ): string {
   const envExports: string[] = [];
   for (const [k, v] of Object.entries(env)) {
     if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(k)) continue;
     envExports.push(`export ${k}=${shellEscape(v)}`);
   }
-  return [`cd ${shellEscape(cwd)}`, ...envExports, `exec ${launchCommand}`].join(' && ');
+  return [
+    buildAppearancePrelude(appearance),
+    `cd ${shellEscape(cwd)}`,
+    ...envExports,
+    `exec ${launchCommand}`,
+  ].join(' && ');
 }
 
-function buildOneliner(cwd: string, env: Record<string, string>, greeting: string): string {
+function buildOneliner(
+  cwd: string,
+  env: Record<string, string>,
+  greeting: string,
+  appearance: AppearanceOpts,
+): string {
   const envExports: string[] = [];
   if (env.PAPERCUSP_SCRIPTS_DIR) {
     envExports.push(`export PATH=${shellEscape(env.PAPERCUSP_SCRIPTS_DIR)}:\${PATH}`);
@@ -122,10 +195,11 @@ function buildOneliner(cwd: string, env: Record<string, string>, greeting: strin
   }
   const escapedCwd = shellEscape(cwd);
   return [
+    buildAppearancePrelude(appearance),
     `cd ${escapedCwd}`,
     ...envExports,
-    `touch .papercup-console-active.$$`,
-    `trap 'rm -f .papercup-console-active.$$' EXIT`,
+    `touch .papercup-console-active.$`,
+    `trap 'rm -f .papercup-console-active.$' EXIT`,
     `(${greeting.replace(/'/g, "'\\''")})`,
     `exec "\${SHELL:-/bin/bash}" -l`,
   ].join(' && ').replace(' && (', ' ; (');
@@ -146,7 +220,11 @@ async function doSpawn(opts: { slug: string | null; operatorBaseUrl: string }): 
   if (process.platform !== 'linux') throw new Error('linux-only spawn for now');
   const term = findLinuxTerminal();
   if (!term) throw new Error('no terminal emulator found');
-  const oneliner = buildOneliner(envelope.cwd, envelope.env, envelope.greetingCmd);
+  const oneliner = buildOneliner(envelope.cwd, envelope.env, envelope.greetingCmd, {
+    mode: 'console',
+    planSlug: null,
+    label: null,
+  });
   const childArgs = [...term.args, 'bash', '-lc', oneliner];
   const child = spawn(term.bin, childArgs, {
     detached: true,
@@ -279,6 +357,7 @@ const post = defineTool({
         envelope.cwd,
         envelope.env,
         envelope.launchCommand ?? 'papercusp-omp connect',
+        { mode: 'omp', planSlug: body.planSlug ?? null, label: body.label ?? null },
       );
       try {
         const child = spawn(term.bin, [...term.args, 'bash', '-lc', ompOneliner], {
@@ -333,7 +412,11 @@ const post = defineTool({
       );
     }
 
-    const oneliner = buildOneliner(envelope.cwd, envelope.env, envelope.greetingCmd);
+    const oneliner = buildOneliner(envelope.cwd, envelope.env, envelope.greetingCmd, {
+      mode: 'console',
+      planSlug: body.planSlug ?? null,
+      label: body.label ?? null,
+    });
     const childArgs = [...term.args, 'bash', '-lc', oneliner];
     try {
       const child = spawn(term.bin, childArgs, {
