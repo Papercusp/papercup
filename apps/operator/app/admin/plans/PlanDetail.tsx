@@ -561,10 +561,31 @@ function FrontmatterCard({
   frontmatter: Record<string, unknown>;
 }) {
   const rows: Array<[string, string]> = [];
+  const formatScalar = (val: unknown): string | null => {
+    if (val === undefined || val === null) return null;
+    if (val instanceof Date) {
+      const iso = val.toISOString();
+      // YYYY-MM-DD if the time component is zeroed (typical for plan
+      // `created:` / `updated:` fields written as bare dates).
+      return /T00:00:00\.000Z$/.test(iso) ? iso.slice(0, 10) : iso;
+    }
+    if (typeof val === 'string' || typeof val === 'number' || typeof val === 'boolean') {
+      const s = String(val).trim();
+      return s.length === 0 ? null : s;
+    }
+    if (Array.isArray(val)) {
+      const parts = val.map((v) => formatScalar(v)).filter((s): s is string => s != null);
+      return parts.length > 0 ? parts.join(', ') : null;
+    }
+    // Nested object — skip rather than render `[object Object]`. The
+    // human-relevant fields are scalars (title/slug/status/created/
+    // updated/owner); structured side-data isn't useful in a metadata
+    // bar.
+    return null;
+  };
   const push = (label: string, val: unknown) => {
-    if (val === undefined || val === null) return;
-    const s = String(val).trim();
-    if (s.length === 0) return;
+    const s = formatScalar(val);
+    if (s == null) return;
     rows.push([label, s]);
   };
   push('slug', (frontmatter.slug as string | undefined) ?? slug);
