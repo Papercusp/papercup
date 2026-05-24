@@ -6,7 +6,6 @@
     "apps/operator/__tests__/integration/behavioral-smoke-fixture.mjs",
     "apps/operator/__tests__/integration/behavioral-smoke.mjs",
     "apps/operator/__tests__/integration/chat-surface-tools.mjs",
-    "apps/operator/__tests__/integration/mint-roundtrip.mjs",
     "apps/operator/__tests__/integration/power-user-e2e.mjs",
     "apps/operator/__tests__/integration/spawn-signing-e2e.mjs",
     "apps/operator/__tests__/integration/tools-md-sync.mjs",
