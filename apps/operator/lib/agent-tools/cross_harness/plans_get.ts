@@ -28,6 +28,7 @@ const argsSchema = z.object({
 
 export default defineTool({
   name: 'cross_harness:plans_get',
+  profile: 'engineer',
   description:
     "Fetch the full parsed structure of one plan in any harness by explicit slug: frontmatter, ## Now, items with effectiveStatus, decisions. Read-only.",
   guidance: {

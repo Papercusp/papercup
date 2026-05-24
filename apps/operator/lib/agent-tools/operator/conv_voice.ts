@@ -12,6 +12,7 @@ import { readConvVoice, setConvVoice } from '@/lib/conv-voice';
 
 export default defineTool({
   name: 'operator:conv_voice',
+  profile: 'engineer',
   description: 'Read or set the EL Conv AI agent voice (voice_id, optional model_id). Adds public voices to library if needed.',
   capability: 'operator:write',
   guidance: {

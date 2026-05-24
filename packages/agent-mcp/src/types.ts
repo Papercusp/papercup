@@ -369,6 +369,12 @@ export interface ToolDefinitionInput<TArgs extends ZodTypeAny = ZodTypeAny> {
    * or expose itself over IPC.
    */
   expose?: import('./tool-projection').ToolExposure;
+  /**
+   * Profile gate. `'engineer'` = Group A (Papercusp-only, hidden from
+   * power-engineer sessions). Omit / `'all'` = visible to every profile.
+   * See `ProjectedTool.profile` and omp-profile-system-2026-05-24 plan.
+   */
+  profile?: 'engineer' | 'all';
 }
 
 /**

@@ -36,6 +36,7 @@ const StateSchema = z.object({
 
 export default defineTool({
   name: 'dev:state_counter',
+  profile: 'engineer',
   description:
     'Demo state-shaped tool: ticks a counter and publishes each tick via ctx.publishState. Reconnect-resilient by construction.',
   capability: 'tasks:read',

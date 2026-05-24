@@ -26,6 +26,7 @@ interface FeatureRow {
 
 export default defineTool({
   name: 'features:search',
+  profile: 'engineer',
   capability: 'features:read',
   guidance: {
     when: 'Free-text query for features matching a topic ("auth", "error handling") — use when the user names a concept, not a specific feature id.',

@@ -25,6 +25,7 @@ const ALL_ROLES = [
 
 export default defineTool({
   name: 'snapshots:list',
+  profile: 'engineer',
   guidance: {
     when: 'User asks "what snapshots do I have?", "any backups?". Cross-harness snapshot enumeration.',
     notWhen: 'For ONE snapshot\'s detail, use `snapshots:get`. For automated backups (not snapshots), check backup-group tools.',

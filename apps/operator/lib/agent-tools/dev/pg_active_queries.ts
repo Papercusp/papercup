@@ -11,6 +11,7 @@ import { pgActiveQueries } from '@/lib/dev-data';
 
 export default defineTool({
   name: 'dev:pg_active_queries',
+  profile: 'engineer',
   description: 'List current pg_stat_activity rows (pid, state, query, duration) for the operator database.',
   capability: 'intel:read',
   guidance: {

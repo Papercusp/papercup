@@ -22,6 +22,7 @@ const SLUG_RE = /^[a-z0-9._-]+$/i;
 
 export default defineTool({
   name: 'features:get',
+  profile: 'engineer',
   capability: 'features:read',
   guidance: {
     when: 'User names a specific feature ("the auth one", "F-AUTH-001") and you need its body / acceptance criteria.',

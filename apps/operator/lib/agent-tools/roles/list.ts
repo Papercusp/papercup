@@ -23,6 +23,7 @@ const ALL_ROLES = [
 
 export default defineTool({
   name: 'roles:list',
+  profile: 'engineer',
   guidance: {
     when: 'You need the set of agent roles configured in the workspace (architect, worker, validator, …) before spawning or dispatching.',
     notWhen: 'For agents currently RUNNING, use `agents:list`. roles:list is the static configuration; agents:list is the live processes.',

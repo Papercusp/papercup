@@ -35,6 +35,7 @@ const ALL_ROLES = [
 
 export default defineTool({
   name: 'operator:credentials_status',
+  profile: 'engineer',
   description: 'Masked credential status for voice providers (set/not-set + tail). Read-only — never returns raw keys.',
   capability: 'secrets:operator-credentials:read',
   guidance: {

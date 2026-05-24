@@ -27,6 +27,7 @@ const ALL_ROLES = [
 
 export default defineTool({
   name: 'harness:list_features',
+  profile: 'engineer',
   description: 'List features for a harness slug (optionally for a specific phase: staging, testing, production).',
   guidance: {
     when: 'User asks "what features does sheets have?" or you need a feature id before calling `features:get`. Pass a phase to scope (staging = upcoming, testing = in-flight, production = done).',

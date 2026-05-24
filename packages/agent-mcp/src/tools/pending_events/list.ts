@@ -17,6 +17,7 @@ type PERow = z.infer<typeof PESelect>;
 
 export default defineTool({
   name: 'pending_events:list',
+  profile: 'engineer',
   capability: 'pending_events:read',
   guidance: {
     when: 'User asks "what\'s queued up?", "what events are pending?", or you need to inspect the hook-event backlog.',

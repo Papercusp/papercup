@@ -214,6 +214,7 @@ async function resumeHandler(input: ResumeArgs, ctx: ResumeCtx) {
 
 export default defineTool({
   name: 'plans:resume',
+  profile: 'engineer',
   description:
     'Continue an existing plan-agent run. Sends a follow-up message into a run started by plans:launch, re-seeding the agent with the current plan and appending new turns to its transcript.',
   guidance: {

@@ -14,6 +14,7 @@ import './_register-backend';
 
 export default defineTool({
   name: 'flags:list',
+  profile: 'engineer',
   description:
     'List every Papercusp feature flag with its resolved boolean state for this host. Use to discover what features are gated, audit V1 ship state, or check whether a flag is on before suggesting work that depends on it.',
   capability: 'intel:read',

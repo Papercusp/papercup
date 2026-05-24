@@ -35,6 +35,7 @@ const ALL_ROLES = [
 
 export default defineTool({
   name: 'operator:scans_list',
+  profile: 'engineer',
   description: 'List recent operator scans, search by ILIKE, or fetch one by id. Mirrors the agent-mcp/operator-scans route.',
   capability: 'operator:read',
   guidance: {

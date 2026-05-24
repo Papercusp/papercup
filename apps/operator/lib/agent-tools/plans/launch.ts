@@ -246,6 +246,7 @@ async function launchHandler(input: LaunchArgs, ctx: LaunchCtx) {
 
 export default defineTool({
   name: 'plans:launch',
+  profile: 'engineer',
   description:
     'Launch an autonomous agent on a plan. Assembles the plan context bundle (plan doc + revision rationale), starts a resumable run, streams the agent, records it in plan_runs. Returns the run id + session id.',
   guidance: {

@@ -18,6 +18,7 @@ import { killProcess } from '@/lib/process-kill';
 
 export default defineTool({
   name: 'processes:kill',
+  profile: 'engineer',
   guidance: {
     when: 'User says "kill that process", "stop the runaway harness" — sends SIGTERM (then SIGKILL after timeout) to a tracked OS process.',
     notWhen: 'For SPAWNED agents, use `orchestrator.cancel`. For DELEGATES, use the delegate-cancel endpoint. processes:kill is the OS-level escape hatch.',

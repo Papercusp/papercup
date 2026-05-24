@@ -36,6 +36,7 @@ const RefShape = {
 
 export default defineTool({
   name: 'omp:sessions',
+  profile: 'engineer',
   guidance: {
     when: `Search or inspect local OMP session history. Use this when a successor agent needs context from an earlier compacted/handed-off session, when debugging what an overnight OMP agent did, or when answering "what happened in that session?"`,
     notWhen: `For Papercusp harness runs stored in Postgres, use the harness/agent_chats/plans tools first. omp:sessions is specifically the local OMP JSONL transcript archive on this workstation.`,

@@ -23,6 +23,7 @@ const ALL_ROLES = [
 
 export default defineTool({
   name: 'harness:health',
+  profile: 'engineer',
   description:
     'Read consolidated health verdict for a harness (alive, escalated, feature counts, ghost rate, checks).',
   capability: 'harness:read',

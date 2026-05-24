@@ -22,6 +22,7 @@ const ALL_ROLES = [
 
 export default defineTool({
   name: 'cross_harness:supervisor_notes',
+  profile: 'engineer',
   description: 'Read supervisor notes for a harness (id, body, source, created_at).',
   guidance: {
     when: 'You need the supervisor\'s annotations on a harness — context the supervisor logged that\'s not in audit_log.',

@@ -20,6 +20,7 @@ type AuditRow = z.infer<typeof AuditSelect>;
 
 export default defineTool({
   name: 'harness:status',
+  profile: 'engineer',
   capability: 'harness:read',
   guidance: {
     when: 'User asks "what is harness X doing right now?", "is sheets active?", or you need recent-activity counts + phase.',

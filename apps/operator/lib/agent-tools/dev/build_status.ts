@@ -11,6 +11,7 @@ import { buildStatus } from '@/lib/dev-data';
 
 export default defineTool({
   name: 'dev:build_status',
+  profile: 'engineer',
   description: 'Local-host build mtime + bin/prod log tail + dev/prod server reachability.',
   capability: 'intel:read',
   guidance: {

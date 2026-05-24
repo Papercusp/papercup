@@ -22,6 +22,7 @@ const ALL_ROLES = [
 
 export default defineTool({
   name: 'agents:list',
+  profile: 'engineer',
   description: 'List agents across the workspace (optionally filtered by harness slug). Limit clamped 1..100, default 40.',
   capability: 'agents:read',
   guidance: {

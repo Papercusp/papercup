@@ -132,6 +132,7 @@ async function postFeaturesImport(
 
 export default defineTool({
   name: 'plans:promote',
+  profile: 'engineer',
   description:
     "Promote a `plans:*` plan into a harness. Preview computes the SPEC.md mutation (new [SC-NNN]-tagged criteria with provenance) + per-feature covers mapping. Apply additionally PUTs the new spec with optimistic concurrency, POSTs features to /features/import (server allocates F-AUTO-*), and marks the plan's from_items as done. Always emits a `plan_event` of kind=promoted.",
   guidance: {

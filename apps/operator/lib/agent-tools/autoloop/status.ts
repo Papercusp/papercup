@@ -23,6 +23,7 @@ const ALL_ROLES = [
 
 export default defineTool({
   name: 'autoloop:status',
+  profile: 'engineer',
   guidance: {
     when: 'User asks "is the autoloop running?", "is the harness on autopilot?". Reads enabled/paused state + recent tick info.',
     notWhen: 'For TURNING the autoloop on/off, use `autoloop:control`. For harness liveness in general, use `harness:health`.',

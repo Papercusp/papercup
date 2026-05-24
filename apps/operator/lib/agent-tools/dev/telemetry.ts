@@ -12,6 +12,7 @@ import { telemetryRollup } from '@/lib/dev-data';
 
 export default defineTool({
   name: 'dev:telemetry',
+  profile: 'engineer',
   description: 'Per-tool invocation rollup (count, error rate, p50/p95) across selected workspaces over the last N hours.',
   capability: 'intel:read',
   guidance: {

@@ -14,6 +14,7 @@ import { findOmpSessionForSpawn, readOmpSession } from '@/lib/omp-sessions';
 
 export default defineTool({
   name: 'dev:omp_session',
+  profile: 'engineer',
   description:
     'Find and read the omp session JSONL file for a spawn_id, by cwd + start-time match against ~/.omp/agent/sessions/.',
   capability: 'intel:read',

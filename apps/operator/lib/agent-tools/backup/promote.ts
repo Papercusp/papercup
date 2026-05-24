@@ -13,6 +13,7 @@ const PROMOTE_ROLES = ['operator', 'debugger'] as const;
 
 export default defineTool({
   name: 'backup:promote',
+  profile: 'engineer',
   description:
     'Promote a restored clone to live by atomic rename. ' +
     'Live dir becomes .broken-<ts>-<name>/. Reversible by renaming back. ' +

@@ -10,6 +10,7 @@ import { listAllHarnessesWithHealth } from '@/lib/dev-data';
 
 export default defineTool({
   name: 'dev:harnesses',
+  profile: 'engineer',
   description: 'List harnesses across selected workspaces with health verdict for each.',
   capability: 'harness:read',
   guidance: {

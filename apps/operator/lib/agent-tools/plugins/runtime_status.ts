@@ -25,6 +25,7 @@ const ALL_ROLES = [
 
 export default defineTool({
   name: 'plugins:runtime_status',
+  profile: 'engineer',
   guidance: {
     when: 'You need to know which plugins are loaded + healthy in the current operator process (per-harness or workspace-level).',
     notWhen: 'For the plugin CATALOG (everything installable), use the marketplace endpoints. plugins:runtime_status is the runtime view.',

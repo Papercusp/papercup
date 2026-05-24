@@ -34,6 +34,7 @@ const ALL_ROLES = [
 
 export default defineTool({
   name: 'delegates:inbox',
+  profile: 'engineer',
   guidance: {
     when: 'User asks "did the delegate finish?", "what did the worker come back with?" — read pending delegate-completion messages.',
     notWhen: 'For YOUR ordinary inbox, use `messages:inbox`. delegates:inbox is the narrow stream of "delegate finished, here\'s the summary" messages.',

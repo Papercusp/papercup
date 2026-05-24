@@ -22,6 +22,7 @@ const ALL_ROLES = [
 
 export default defineTool({
   name: 'operator:budget',
+  profile: 'engineer',
   description: 'Read or set the daily operator budget cap. Get is any role; set is operator only.',
   capability: 'operator:write',
   guidance: {

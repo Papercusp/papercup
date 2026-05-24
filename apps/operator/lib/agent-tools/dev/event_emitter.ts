@@ -30,6 +30,7 @@ const EventsSchema = {
 
 export default defineTool({
   name: 'dev:event_emitter',
+  profile: 'engineer',
   description: 'Replay-buffer probe — emits N tick events with serial ids. Dev-only.',
   capability: 'tasks:read',
   requirePrincipal: false,

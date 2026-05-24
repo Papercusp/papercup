@@ -131,6 +131,7 @@ function buildMcpConfig(workspaceId: string): { mcpServers: Record<string, unkno
 
 export default defineTool({
   name: 'operator:delegate',
+  profile: 'engineer',
   description:
     'Delegate-to-claude streaming chat. Resolves session, builds MCP config, spawns claude with session resume + MCP tools; emits session→deltas→tool_calls→done. Self-contained: writes appendDelegateTurn + generateSessionTitle internally.',
   capability: 'operator:delegate',

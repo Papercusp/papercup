@@ -34,6 +34,7 @@ const ALLOWED_METHODS = ['voice', 'click', 'api'] as const;
 
 export default defineTool({
   name: 'operator:audit',
+  profile: 'engineer',
   description: 'Log a single operator-card lifecycle event (accepted / ignored / dispatched / dismissed / …) so the dashboard reconstruction sees it.',
   capability: 'operator:write',
   guidance: {

@@ -27,6 +27,7 @@ const ALL_ROLES = [
 
 export default defineTool({
   name: 'operator:standing_approvals_list',
+  profile: 'engineer',
   description: 'Standing-approval candidates: capability/target pairs the operator has silently dispatched ≥3× in 24h, eligible for "always allow".',
   capability: 'operator:read',
   guidance: {

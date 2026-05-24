@@ -330,6 +330,23 @@ export interface UnifiedToolContext {
    * auth session (`uiClientId`), not the per-request `runId`.
    */
   isPowerUser?: boolean;
+  /**
+   * Active caller profile. Governs which tools appear in `tools/list`
+   * and which `tools/call` invocations are accepted.
+   *
+   * - `'power'`    — power-engineer-on-any-harness. Only Group B + C
+   *                  tools (`ProjectedTool.profile` omitted or `'all'`).
+   *                  Group A (`profile: 'engineer'`) is hidden + rejected.
+   * - `'engineer'` — Papercusp engineer/operator. All tools visible.
+   *
+   * Resolution order (highest wins):
+   *   1. `isPowerUser` (power-user token) → always `'power'`.
+   *   2. `isSuperuser` + `?profile=power` URL param → `'power'` (SU testing).
+   *   3. Default → `'engineer'`.
+   *
+   * See: apps/operator/docs/plans/omp-profile-system-2026-05-24.md
+   */
+  profile?: 'engineer' | 'power';
 
   /**
    * Which transport adapter built this context. Recorded on the
@@ -571,6 +588,23 @@ export interface ProjectedTool {
    * invisible to a voice user).
    */
   modality?: ReadonlyArray<'text' | 'voice'>;
+  /**
+   * Profile gate. Controls which caller profile sees this tool in
+   * `tools/list` and can invoke it via `tools/call`.
+   *
+   * - `'engineer'` — Papercusp-engineer/operator profile only. Hidden
+   *   from `?profile=power` (power-engineer-on-any-harness) sessions.
+   *   Group A tools (harness:*, operator:*, features:*, etc.) carry
+   *   this tag. Default for new tools if uncertain.
+   * - `'all'` (or omitted) — visible to every profile. Group B + C.
+   *
+   * Absent / undefined → treated as `'all'` for backward compatibility:
+   * existing tools with no profile field remain visible until explicitly
+   * tagged. New tools should always set this field.
+   *
+   * See: apps/operator/docs/plans/omp-profile-system-2026-05-24.md
+   */
+  profile?: 'engineer' | 'all';
   /**
    * State-shaped tool schema (bespoke-card-improvements #1 / T4.3).
    *
@@ -874,11 +908,15 @@ function serializeEventsSchema(events: EventsSchema): Record<string, Record<stri
   return out;
 }
 
-export function listMcpProjections(role?: AgentRole): McpToolListing[] {
+export function listMcpProjections(role?: AgentRole, profile?: 'engineer' | 'power'): McpToolListing[] {
   const out: McpToolListing[] = [];
   for (const tool of REGISTRY.values()) {
     if (!tool.expose.mcp) continue;
     if (role && tool.roles && !tool.roles.includes(role)) continue;
+    // Profile gate: tools tagged `profile: 'engineer'` are hidden from
+    // power-profile callers. Untagged tools (undefined / 'all') are visible
+    // to everyone — backward-compatible for tools not yet tagged.
+    if (profile === 'power' && tool.profile === 'engineer') continue;
     const listing: McpToolListing = {
       name: tool.expose.mcp.name,
       description: tool.description,

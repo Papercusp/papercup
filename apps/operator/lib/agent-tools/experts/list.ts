@@ -16,6 +16,7 @@ const ALL_ROLES = [
 
 export default defineTool({
   name: 'experts:list',
+  profile: 'engineer',
   guidance: {
     when: 'Enumerate registered experts in the harness. Experts are role-scoped reviewer agents that fire on specific events.',
     notWhen: 'For AGENTS (any role), use `agents:list`. Experts are a subset with explicit firing rules.',

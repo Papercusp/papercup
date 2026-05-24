@@ -25,6 +25,7 @@ interface AuditRow {
 
 export default defineTool({
   name: 'features:history',
+  profile: 'engineer',
   capability: 'features:read',
   guidance: {
     when: 'User asks "what changed on feature X?", "who edited the spec?", or you need a timeline of edits.',

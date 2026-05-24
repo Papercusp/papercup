@@ -10,6 +10,7 @@ import { markCandidateShown } from '@/lib/operator-standing-candidates';
 
 export default defineTool({
   name: 'operator:standing_approval_mark_shown',
+  profile: 'engineer',
   description: 'Mark a standing-approval candidate as first-shown (timestamp gate for voice-approve eligibility).',
   capability: 'operator:write',
   guidance: {

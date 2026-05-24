@@ -9,6 +9,7 @@ import { defineTool } from '../../define-tool';
 
 export default defineTool({
   name: 'issues:list',
+  profile: 'engineer',
   capability: 'issues:read',
   guidance: {
     when: 'User asks "any open issues?", "what bugs are tracked", "what\'s wrong with X", or "what\'s outstanding?". Pass a slug to scope; omit for cross-harness. The dedicated problem-side view.',

@@ -27,6 +27,7 @@ const ALL_ROLES = [
 
 export default defineTool({
   name: 'operator:dedup_check',
+  profile: 'engineer',
   description: 'Check if a candidate title fuzzy-matches any card in `existing` above the threshold. Returns { match, threshold }.',
   capability: 'operator:read',
   guidance: {

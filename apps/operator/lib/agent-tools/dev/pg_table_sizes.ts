@@ -9,6 +9,7 @@ import { pgTableSizes } from '@/lib/dev-data';
 
 export default defineTool({
   name: 'dev:pg_table_sizes',
+  profile: 'engineer',
   description: 'List tables in a pg schema with total size, index size, and estimated row count. Defaults to harness_shared.',
   capability: 'intel:read',
   guidance: {

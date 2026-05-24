@@ -20,6 +20,7 @@ type ProjectRow = z.infer<typeof ProjectSelect>;
 
 export default defineTool({
   name: 'harness:get',
+  profile: 'engineer',
   capability: 'harness:read',
   guidance: {
     when: 'User asks about a specific harness by name ("tell me about sheets", "what\'s the status of forms") and you need its row + feature counts.',

@@ -21,6 +21,7 @@ const KOPIA_BIN = process.env.KOPIA_BIN ?? 'kopia';
 
 export default defineTool({
   name: 'backup:diff',
+  profile: 'engineer',
   description: 'Diff two kopia snapshots — list files added/changed/removed.',
   capability: 'backup:read',
   guidance: {

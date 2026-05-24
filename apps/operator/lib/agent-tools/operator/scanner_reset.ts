@@ -16,6 +16,7 @@ import {
 
 export default defineTool({
   name: 'operator:scanner_reset',
+  profile: 'engineer',
   description: 'Wipe the workspace scanner session so the next scan starts a fresh Claude conversation.',
   capability: 'operator:write',
   guidance: {

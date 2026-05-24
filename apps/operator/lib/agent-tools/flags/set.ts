@@ -21,6 +21,7 @@ const FlagKeySchema = z.enum(ALL_FLAG_KEYS as unknown as [FlagKey, ...FlagKey[]]
 
 export default defineTool({
   name: 'flags:set',
+  profile: 'engineer',
   description:
     'Flip a Papercusp feature flag on or off in PostHog. High-risk: changes app-wide behavior. Provide a clear reason; it is recorded for audit.',
   capability: 'audit:write',

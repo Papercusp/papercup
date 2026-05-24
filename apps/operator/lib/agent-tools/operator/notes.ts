@@ -29,6 +29,7 @@ const ALL_ROLES = [
 
 export default defineTool({
   name: 'operator:notes',
+  profile: 'engineer',
   description: 'Read or append feature-scoped operator notes (Steer primitive). { op: read|append, slug?, featureId, content?, author? }.',
   capability: 'operator:write',
   guidance: {

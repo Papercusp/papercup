@@ -24,6 +24,7 @@ const ALL_ROLES = [
 
 export default defineTool({
   name: 'cross_harness:inbox',
+  profile: 'engineer',
   description: 'Read messages addressed to a harness (status pending|all|other; optional role filter).',
   guidance: {
     when: 'You need to see messages addressed TO a specific harness across senders. The cross-harness analog of `messages:inbox`.',

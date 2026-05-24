@@ -13,6 +13,7 @@ const RetentionSchema = z.object({
 
 export default defineTool({
   name: 'backup:settings_set',
+  profile: 'engineer',
   description: 'Patch backup settings for the active workspace. All fields optional; missing keys preserve existing values.',
   capability: 'backup:write',
   guidance: {

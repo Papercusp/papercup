@@ -28,6 +28,7 @@ const ALL_ROLES = [
 
 export default defineTool({
   name: 'operator:last_scan',
+  profile: 'engineer',
   description: 'Most-recent operator scan snapshot, with each card merged with its current lifecycle state from audit_log.',
   capability: 'operator:read',
   guidance: {

@@ -25,6 +25,7 @@ const ALL_ROLES = [
 
 export default defineTool({
   name: 'operator:paused',
+  profile: 'engineer',
   description: 'Read the operator pause sentinel — true when scans are suppressed.',
   capability: 'operator:read',
   guidance: {

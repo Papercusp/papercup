@@ -28,6 +28,7 @@ const ALL_ROLES = [
 
 export default defineTool({
   name: 'omp:config',
+  profile: 'engineer',
   guidance: {
     when: 'Read or set an OMP CLI config key (model, paths, env tweaks). Used during installation / first-run flows.',
     notWhen: 'For OPERATOR runtime preferences (voice, scanner), use `operator:preferences`. omp:config is the CLI tool\'s config.',

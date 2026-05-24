@@ -28,6 +28,7 @@ const ALL_ROLES = [
 
 export default defineTool({
   name: 'operator:preferences',
+  profile: 'engineer',
   description: 'List / append / remove operator preference entries (provenance-tagged markdown).',
   capability: 'operator:write',
   guidance: {

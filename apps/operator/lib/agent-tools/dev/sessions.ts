@@ -12,6 +12,7 @@ import { listSessions } from '@/lib/dev-data';
 
 export default defineTool({
   name: 'dev:sessions',
+  profile: 'engineer',
   description: 'Cross-workspace agent sessions, one row per spawn_id with started/ended/tool_count/error_count/duration totals.',
   capability: 'intel:read',
   guidance: {

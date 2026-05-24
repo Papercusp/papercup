@@ -25,6 +25,7 @@ const ALL_ROLES = [
 
 export default defineTool({
   name: 'harness:markdown_index',
+  profile: 'engineer',
   description: 'Load the per-harness markdown index (filename + headings + anchor ids) across the workspace.',
   guidance: {
     when: 'User asks "what docs exist?", "where\'s the spec for X?", or you need to navigate to a specific section of the harness\'s markdown.',

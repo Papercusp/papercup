@@ -12,6 +12,7 @@ import { getSessionDetail } from '@/lib/dev-data';
 
 export default defineTool({
   name: 'dev:session_detail',
+  profile: 'engineer',
   description: 'Drilldown for one spawn_id: agent metadata, tool invocations timeline, child spawns, related chats.',
   capability: 'intel:read',
   guidance: {

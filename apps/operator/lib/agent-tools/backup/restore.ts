@@ -13,6 +13,7 @@ const RESTORE_ROLES = ['operator', 'debugger', 'reviewer'] as const;
 
 export default defineTool({
   name: 'backup:restore',
+  profile: 'engineer',
   description:
     'Restore a kopia snapshot. mode="clone" (default) writes to .restored/<id>/ ' +
     'and never overwrites live state; mode="in_place" overwrites the target ' +

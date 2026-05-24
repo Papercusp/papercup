@@ -13,6 +13,7 @@ const ROLLBACK_ROLES = ['operator', 'debugger'] as const;
 
 export default defineTool({
   name: 'backup:rollback',
+  profile: 'engineer',
   description:
     'Undo a previous backup:promote. Renames the .broken-<ts>-<name>/ dir ' +
     'back to live; current live becomes .rolled-back-<ts>-<name>/.',

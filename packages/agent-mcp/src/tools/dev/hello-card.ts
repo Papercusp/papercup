@@ -15,6 +15,7 @@ import { defineUITool } from '../../define-ui-tool';
 
 export default defineUITool({
   name: 'dev:hello-card',
+  profile: 'engineer',
   description:
     'Phase E fixture: returns a minimal mcp-ui card so external clients can verify UI rendering. Args: { greeting? }.',
   capability: 'tasks:read',

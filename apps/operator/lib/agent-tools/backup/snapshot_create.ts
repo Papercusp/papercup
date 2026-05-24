@@ -19,6 +19,7 @@ const ALL_ROLES = [
 
 export default defineTool({
   name: 'backup:snapshot_create',
+  profile: 'engineer',
   description:
     'Create a kopia snapshot of the active workspace before a destructive op. ' +
     'Returns the snapshot id so the same agent can restore from it if needed.',

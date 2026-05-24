@@ -34,6 +34,7 @@ const argsSchema = z.object({
 
 export default defineTool({
   name: 'cross_harness:docs_outline',
+  profile: 'engineer',
   description:
     "Outline of any registered harness's documentation by explicit slug. For engineers operating outside a harness context who need to query a specific harness's docs. Per-run cached.",
   guidance: {

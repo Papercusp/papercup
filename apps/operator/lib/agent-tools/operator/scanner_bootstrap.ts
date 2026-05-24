@@ -26,6 +26,7 @@ const ALL_ROLES = [
 
 export default defineTool({
   name: 'operator:scanner_bootstrap',
+  profile: 'engineer',
   description: 'Build the scanner bootstrap blob (prior-scan summary + workspace cues) without starting a scan.',
   capability: 'operator:read',
   guidance: {

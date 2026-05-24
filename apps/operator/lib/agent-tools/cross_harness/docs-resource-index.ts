@@ -17,6 +17,7 @@ import { loadHarnessRegistry } from '@/lib/harness-registry';
 
 export default defineResource({
   name: 'cross_harness:docs_index',
+  profile: 'engineer',
   uri: 'papercusp://harness/{slug}/docs/index',
   capability: 'harness:read',
   mimeType: 'text/plain',

@@ -35,6 +35,7 @@ const argsSchema = z
 
 export default defineTool({
   name: 'cross_harness:docs_get',
+  profile: 'engineer',
   description:
     "Fetch documentation pages from any registered harness by explicit slug. Batch up to 10; pass `heading` (single-slug only) for a section slice. Per-slug error envelope.",
   guidance: {

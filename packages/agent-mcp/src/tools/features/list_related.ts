@@ -29,6 +29,7 @@ interface RelatedRow {
 
 export default defineTool({
   name: 'features:list_related',
+  profile: 'engineer',
   capability: 'features:read',
   guidance: {
     when: 'You have a feature and need to find related ones — tag overlap, shared chunks, dependency neighbors.',

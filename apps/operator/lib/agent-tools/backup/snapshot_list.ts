@@ -10,6 +10,7 @@ const ALL_ROLES = [
 
 export default defineTool({
   name: 'backup:snapshot_list',
+  profile: 'engineer',
   description: 'List recent kopia snapshots for the active workspace.',
   capability: 'backup:read',
   guidance: {

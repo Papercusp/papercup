@@ -21,6 +21,7 @@ interface TagCount {
 
 export default defineTool({
   name: 'features:tag_vocabulary',
+  profile: 'engineer',
   capability: 'features:read',
   guidance: {
     when: 'You need the set of known feature tags before tagging a new one — keeps tags consistent across the harness.',

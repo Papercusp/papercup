@@ -24,6 +24,7 @@ const ALL_ROLES = [
 
 export default defineTool({
   name: 'operator:multi_workspace',
+  profile: 'engineer',
   description: 'Aggregation of every other workspace\'s last-scan snapshot (active workspace omitted).',
   capability: 'operator:read',
   guidance: {

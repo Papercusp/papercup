@@ -23,6 +23,7 @@ const ALL_ROLES = [
 
 export default defineTool({
   name: 'roles:known',
+  profile: 'engineer',
   guidance: {
     when: 'Static enum of role names the runtime supports — use to validate a role string before passing it elsewhere.',
     notWhen: 'For the workspace\'s ACTUAL roles (may be a subset), use `roles:list`. known is the universe; list is what\'s configured.',

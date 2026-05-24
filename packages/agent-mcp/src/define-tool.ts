@@ -372,6 +372,7 @@ function registerLegacyAsProjected<TArgs extends ZodTypeAny>(def: ToolDefinition
     description: def.description,
     inputSchema,
     capabilities: [def.capability as never],
+    profile: (def as { profile?: 'engineer' | 'all' }).profile,
     expose: {
       mcp: { name: def.name },
       http: { path: httpPath, methods: ['POST'] },
@@ -430,6 +431,7 @@ function registerRoleGatedAsProjected<TArgs extends ZodTypeAny>(
     description: def.description,
     inputSchema,
     capabilities: [def.capability as never],
+    profile: (def as { profile?: 'engineer' | 'all' }).profile,
     roles: def.roles,
     rolesQuota: def.rolesQuota,
     timeoutSec: def.timeoutSec,

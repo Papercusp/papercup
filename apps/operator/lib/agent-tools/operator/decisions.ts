@@ -26,6 +26,7 @@ const ALL_ROLES = [
 
 export default defineTool({
   name: 'operator:decisions',
+  profile: 'engineer',
   description: 'Read recent operator_decisions rows for the active workspace (id, ts, actor, action, target, details).',
   capability: 'operator:read',
   guidance: {

@@ -15,6 +15,7 @@ import { startAutoLoopOnce, stopAutoLoop } from '@/lib/autoloop';
 
 export default defineTool({
   name: 'autoloop:control',
+  profile: 'engineer',
   guidance: {
     when: 'User says "pause the autoloop", "turn it on", "stop autopilot". Toggles enabled/paused for a harness.',
     notWhen: 'For PAUSING all of the operator (silence-mode-style), use the operator-pause flag in operator-internal tools — autoloop is per-harness, operator pause is global.',

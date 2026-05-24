@@ -10,6 +10,7 @@ import { auditFeed } from '@/lib/dev-data';
 
 export default defineTool({
   name: 'dev:audit',
+  profile: 'engineer',
   description: 'Cross-workspace audit_log feed (last N hours).',
   capability: 'audit:read',
   guidance: {

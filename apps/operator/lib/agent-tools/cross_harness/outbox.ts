@@ -23,6 +23,7 @@ const ALL_ROLES = [
 
 export default defineTool({
   name: 'cross_harness:outbox',
+  profile: 'engineer',
   description: 'Read messages a harness sent (cross-schema scan by from_slug).',
   guidance: {
     when: 'You need to see what a specific harness sent — across recipients. Cross-harness analog of `messages:outbox`.',

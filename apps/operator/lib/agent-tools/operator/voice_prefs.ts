@@ -11,6 +11,7 @@ import { loadVoicePrefs, saveVoicePrefs, type VoicePrefs } from '@/lib/voice-pre
 
 export default defineTool({
   name: 'operator:voice_prefs',
+  profile: 'engineer',
   description: 'Read or partial-update operator voice prefs (engine selectors, feature toggles, agent ids).',
   capability: 'operator:write',
   guidance: {

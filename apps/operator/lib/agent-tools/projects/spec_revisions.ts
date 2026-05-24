@@ -24,6 +24,7 @@ const ALL_ROLES = [
 
 export default defineTool({
   name: 'projects:spec_revisions',
+  profile: 'engineer',
   guidance: {
     when: 'User asks "how has the spec changed?", "when did we update X?", or you need a list of spec revision ids before reading one.',
     notWhen: 'For ONE revision\'s body, use `projects:spec_revision`. For the current spec, use `projects:get`.',

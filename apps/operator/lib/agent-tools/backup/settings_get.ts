@@ -10,6 +10,7 @@ const ALL_ROLES = [
 
 export default defineTool({
   name: 'backup:settings_get',
+  profile: 'engineer',
   description: 'Read backup settings + repo stats for the active workspace.',
   capability: 'backup:read',
   guidance: {

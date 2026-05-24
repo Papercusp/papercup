@@ -17,6 +17,7 @@ const ALL_ROLES = [
 
 export default defineTool({
   name: 'experts:get',
+  profile: 'engineer',
   guidance: {
     when: 'User names a specific expert and wants its definition (prompt, firing rules, output schema).',
     notWhen: 'For the list, use `experts:list`. For the SPEC body specifically, use `experts:spec_get`.',

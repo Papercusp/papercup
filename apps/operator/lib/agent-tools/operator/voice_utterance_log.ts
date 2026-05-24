@@ -12,6 +12,7 @@ import { logVoiceUtterance } from '@/lib/voice-utterance-log';
 
 export default defineTool({
   name: 'operator:voice_utterance_log',
+  profile: 'engineer',
   description: 'Append a voice-utterance audit row (source/mode/length/persona-flags/modifications).',
   capability: 'operator:write',
   guidance: {

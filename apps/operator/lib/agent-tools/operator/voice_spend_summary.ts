@@ -79,6 +79,7 @@ async function readElSpend(): Promise<ElSpend> {
 
 export default defineTool({
   name: 'operator:voice_spend_summary',
+  profile: 'engineer',
   description: 'Voice spend snapshot — el (Conv AI minutes), stt (today USD + caps), tts (per-K-char rate + caps), or all merged.',
   capability: 'operator:read',
   guidance: {

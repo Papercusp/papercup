@@ -25,6 +25,7 @@ const ALL_ROLES = [
 
 export default defineTool({
   name: 'harness:escalation',
+  profile: 'engineer',
   description: 'Read escalation.md + supervisor-notes.md for a harness slug.',
   guidance: {
     when: 'User asks "what\'s flagged?", "what got escalated to the supervisor?", or you need to see the supervisor\'s notes on a harness.',

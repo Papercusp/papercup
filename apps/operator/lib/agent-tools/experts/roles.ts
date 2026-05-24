@@ -17,6 +17,7 @@ const ALL_ROLES = [
 
 export default defineTool({
   name: 'experts:roles',
+  profile: 'engineer',
   guidance: {
     when: 'Read the set of roles experts are configured for in the harness.',
     notWhen: 'For ROLES across the workspace, use `roles:list`. experts:roles is the experts subset.',

@@ -27,6 +27,7 @@ const argsSchema = z.object({
 
 export default defineTool({
   name: 'cross_harness:docs_search',
+  profile: 'engineer',
   description:
     "Keyword search across any registered harness's documentation by explicit slug. Returns ranked hits (slug, title, description, excerpt). For out-of-harness engineers who need to find content in a specific harness without scanning its outline by hand.",
   guidance: {

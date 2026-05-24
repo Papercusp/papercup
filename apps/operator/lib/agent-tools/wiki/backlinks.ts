@@ -21,6 +21,7 @@ const ALL_ROLES = [
 
 export default defineTool({
   name: 'wiki:backlinks',
+  profile: 'engineer',
   guidance: {
     when: 'User asks "what links to X?", "where is `[[name]]` referenced?". Wiki-style backlink lookup across markdown files.',
     notWhen: 'For cross-resource full-text search, use `search:query`. For markdown TOC, use `harness:markdown_index`.',

@@ -15,6 +15,7 @@ import { defineTool } from '../../define-tool';
 
 export default defineTool({
   name: 'audit:list',
+  profile: 'engineer',
   capability: 'audit:read',
   guidance: {
     when: 'User asks "what happened recently?", "who did X?", or you need a forensic timeline of agent + user actions.',

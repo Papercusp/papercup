@@ -9,6 +9,7 @@ import { activityFeed } from '@/lib/dev-data';
 
 export default defineTool({
   name: 'dev:activity',
+  profile: 'engineer',
   description: 'Most-recent tool invocations across selected workspaces (live activity feed).',
   capability: 'intel:read',
   guidance: {

@@ -29,6 +29,7 @@ const ALL_ROLES = [
 
 export default defineTool({
   name: 'operator:parse_suggestions',
+  profile: 'engineer',
   description: 'Extract <suggestion> blocks from text, Zod-validate, and enrich with tier + auto_dispatch derivation.',
   capability: 'operator:read',
   guidance: {

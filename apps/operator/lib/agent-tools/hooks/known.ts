@@ -20,6 +20,7 @@ const ALL_ROLES = [
 
 export default defineTool({
   name: 'hooks:known',
+  profile: 'engineer',
   guidance: {
     when: 'Static enum of supported hook event names — use to validate an event string before firing or registering for it.',
     notWhen: 'For PENDING events queued up, use `pending_events:list`. For firing an event, use `plugins:fire_event`.',

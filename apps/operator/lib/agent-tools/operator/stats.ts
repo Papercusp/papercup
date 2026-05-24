@@ -30,6 +30,7 @@ const ALL_ROLES = [
 
 export default defineTool({
   name: 'operator:stats',
+  profile: 'engineer',
   description: '7-day operator KPIs: card counts, auto-dispatch rate, dismissal rate, escalation rate, median ack latency, spend.',
   capability: 'operator:read',
   guidance: {

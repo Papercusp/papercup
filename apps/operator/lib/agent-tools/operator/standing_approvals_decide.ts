@@ -16,6 +16,7 @@ import { refreshCandidates } from '@/lib/operator-standing-candidates';
 
 export default defineTool({
   name: 'operator:standing_approvals_decide',
+  profile: 'engineer',
   description: 'Approve or dismiss a standing-approval candidate. Approve writes a [STANDING-APPROVE] entry to operator preferences.',
   capability: 'operator:write',
   guidance: {

@@ -24,6 +24,7 @@ const ALL_ROLES = [
 
 export default defineTool({
   name: 'snapshots:get',
+  profile: 'engineer',
   guidance: {
     when: 'User names a specific snapshot id and wants its full content (spec, code, history).',
     notWhen: 'For the snapshot list, use `snapshots:list` first.',

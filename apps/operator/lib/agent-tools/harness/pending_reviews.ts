@@ -25,6 +25,7 @@ const ALL_ROLES = [
 
 export default defineTool({
   name: 'harness:pending_reviews',
+  profile: 'engineer',
   description: 'List unresolved pending-review entries for a harness slug (optionally per phase).',
   guidance: {
     when: 'User asks "anything pending review?", "what needs my approval?". The dedicated tool for plan-review state.',

@@ -23,6 +23,7 @@ const ALL_ROLES = [
 
 export default defineTool({
   name: 'operator:trigger_state',
+  profile: 'engineer',
   description: 'Read the workspace trigger-state fingerprint + raw state (used by background scanner to decide rescans).',
   capability: 'operator:read',
   guidance: {

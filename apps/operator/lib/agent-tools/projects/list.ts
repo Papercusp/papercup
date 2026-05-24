@@ -24,6 +24,7 @@ const ALL_ROLES = [
 
 export default defineTool({
   name: 'projects:list',
+  profile: 'engineer',
   guidance: {
     when: 'User asks "what projects do I have?" or you need a project id before calling `projects:get`. Workspace-level project enumeration.',
     notWhen: 'For HARNESSES (work running inside a project), use `harness:list`. Projects ⊇ harnesses; the slug overlap is intentional but the surfaces are different.',

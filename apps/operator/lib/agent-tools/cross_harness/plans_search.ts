@@ -69,6 +69,7 @@ function snippet(text: string, queryTokens: string[], maxLen = 160): string {
 
 export default defineTool({
   name: 'cross_harness:plans_search',
+  profile: 'engineer',
   description:
     "Keyword search across plans of any registered harness by explicit slug. Scopes: title, now, items, decisions, prose. Read-only.",
   guidance: {

@@ -17,6 +17,7 @@ const ALLOWED_KINDS = ['budget', 'breaker', 'pause'] as const;
 
 export default defineTool({
   name: 'operator:nudge',
+  profile: 'engineer',
   description: 'Arbitrate a spoken nudge — returns { fired } indicating whether the per-kind dedup window allows speaking now.',
   capability: 'operator:write',
   guidance: {

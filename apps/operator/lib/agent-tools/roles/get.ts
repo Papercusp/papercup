@@ -20,6 +20,7 @@ const ALL_ROLES = [
 
 export default defineTool({
   name: 'roles:get',
+  profile: 'engineer',
   guidance: {
     when: 'User names a specific role and wants its full definition (system prompt, allowed tools, quotas).',
     notWhen: 'For the role list, use `roles:list`. For the known-role enum (static), use `roles:known`.',

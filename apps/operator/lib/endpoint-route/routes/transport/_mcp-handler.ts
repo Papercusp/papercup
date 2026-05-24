@@ -117,6 +117,13 @@ export interface BuiltSpawnContext {
    * quotaStep and dispatch-types.ts computeProjectedQuotaWindowKey.
    */
   isPowerUser?: boolean;
+  /**
+   * Resolved caller profile — `'power'` for power-user tokens or SU
+   * callers passing `?profile=power`; `'engineer'` otherwise.
+   * Forwarded to `UnifiedToolContext.profile` for tool-list filtering
+   * and call gating in the dispatcher.
+   */
+  profile?: 'engineer' | 'power';
 }
 
 /**
@@ -198,6 +205,8 @@ async function tryBuildSpawnContext(extra: unknown): Promise<TrySpawnContextResu
         uiClientId: suIdentity.length > 0 ? suIdentity : null,
         planRunSessionId,
         isSuperuser: true,
+        // SU callers testing the power profile pass ?profile=power.
+        profile: url.searchParams.get('profile') === 'power' ? 'power' : 'engineer',
       },
     };
   }
@@ -253,6 +262,8 @@ async function tryBuildSpawnContext(extra: unknown): Promise<TrySpawnContextResu
         // above is the security boundary that distinguishes the tiers.
         isSuperuser: true,
         isPowerUser: true,
+        // Power-user tokens always imply the power profile.
+        profile: 'power',
       },
     };
   }
@@ -474,6 +485,7 @@ async function buildMcpToolContext(
     planRunSessionId: spawn.planRunSessionId ?? null,
     isSuperuser: spawn.isSuperuser ?? false,
     isPowerUser: spawn.isPowerUser ?? false,
+    profile: spawn.profile ?? 'engineer',
     log: (msg) => {
       // eslint-disable-next-line no-console
       console.log(`[mcp-tool][${spawn.harnessSlug}/${spawn.role}/${spawn.spawnId}] ${msg}`);
@@ -537,7 +549,8 @@ const handler = createMcpHandler(
           return { tools: [] };
         }
         const role = spawnRes.kind === 'ok' ? spawnRes.ctx.role : undefined;
-        return { tools: listMcpProjections(role).map((t) => ({ ...t })) };
+        const profile = spawnRes.kind === 'ok' ? spawnRes.ctx.profile : undefined;
+        return { tools: listMcpProjections(role, profile).map((t) => ({ ...t })) };
       },
     );
 
@@ -600,6 +613,21 @@ const handler = createMcpHandler(
         }
 
         if (projected && spawnRes.kind === 'ok') {
+          // Profile gate: power-profile callers cannot invoke Group A tools
+          // even if they know the name. Mirrors the tools/list filter so
+          // direct-name calls can't bypass the listing restriction.
+          if (
+            spawnRes.ctx.profile === 'power' &&
+            projected.profile === 'engineer'
+          ) {
+            return {
+              isError: true,
+              content: [{
+                type: 'text' as const,
+                text: `tool_not_available_for_profile: "${toolName}" is not available in the power-engineer profile`,
+              }],
+            };
+          }
           const baseCtx = await buildMcpToolContext(spawnRes.ctx, progressToken, sendNotification);
           // Power-user workspace clamp (defense in depth). The ctx's
           // workspaceId is already token-clamped, so any tool reading

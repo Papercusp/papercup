@@ -11,6 +11,7 @@ import { pgHealth } from '@/lib/dev-data';
 
 export default defineTool({
   name: 'dev:pg_health',
+  profile: 'engineer',
   description: 'PostgreSQL version + connection counts (total/active/idle) for the operator database.',
   capability: 'intel:read',
   guidance: {

@@ -22,6 +22,7 @@ const ALL_ROLES = [
 
 export default defineTool({
   name: 'cross_harness:recent_activity',
+  profile: 'engineer',
   description: 'Workspace-wide recent activity feed (ts, harness_slug, action, subject, actor) from harness_shared.audit_log.',
   guidance: {
     when: 'User asks "what\'s been happening across all my harnesses?", "any cross-harness activity?". The workspace-level activity feed.',

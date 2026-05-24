@@ -25,6 +25,7 @@ const ALL_ROLES = [
 
 export default defineTool({
   name: 'actions:recent',
+  profile: 'engineer',
   description: 'List recent long-running user-initiated actions for a harness (replan, cleanup, snapshot).',
   capability: 'actions:read',
   guidance: {

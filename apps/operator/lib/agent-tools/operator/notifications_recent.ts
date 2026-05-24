@@ -24,6 +24,7 @@ const ALL_ROLES = [
 
 export default defineTool({
   name: 'notifications:recent',
+  profile: 'engineer',
   description: 'List recent toast notifications shown in the app (errors, warnings, info, success).',
   capability: 'notifications:read',
   guidance: {

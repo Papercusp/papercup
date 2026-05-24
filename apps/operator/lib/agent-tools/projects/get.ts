@@ -23,6 +23,7 @@ const ALL_ROLES = [
 
 export default defineTool({
   name: 'projects:get',
+  profile: 'engineer',
   guidance: {
     when: 'User names a specific project and wants its full record (spec, status, metadata).',
     notWhen: 'For SPEC revisions / history, use `projects:spec_revisions`. For the runtime harness state, use `harness:get`.',

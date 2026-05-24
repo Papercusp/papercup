@@ -20,6 +20,7 @@ import {
 
 export default defineTool({
   name: 'operator:voice_debug',
+  profile: 'engineer',
   description: 'Read, append, or clear the process-local voice-debug ring buffer (same buffer as the agent-mcp/voice-debug route).',
   capability: 'operator:write',
   guidance: {

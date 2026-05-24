@@ -10,6 +10,7 @@ import { recordDismissed } from '@/lib/operator-dismissed-cache';
 
 export default defineTool({
   name: 'operator:dismissed',
+  profile: 'engineer',
   description: 'Record a card-id as dismissed so the parser filters re-emissions during the cooldown window.',
   capability: 'operator:write',
   guidance: {

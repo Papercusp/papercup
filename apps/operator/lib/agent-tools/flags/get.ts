@@ -13,6 +13,7 @@ const FlagKeySchema = z.enum(ALL_FLAG_KEYS as unknown as [FlagKey, ...FlagKey[]]
 
 export default defineTool({
   name: 'flags:get',
+  profile: 'engineer',
   description:
     'Resolve one Papercusp feature flag to a boolean for this host.',
   capability: 'intel:read',

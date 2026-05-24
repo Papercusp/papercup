@@ -53,6 +53,7 @@ type ListRow = {
 
 export default defineTool({
   name: 'cross_harness:plans_list',
+  profile: 'engineer',
   description:
     "List plans of any registered harness by explicit slug. For agents operating outside a single harness context who need to query another harness's plans. Read-only — writes go through ambient plans:*.",
   guidance: {

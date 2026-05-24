@@ -14,6 +14,7 @@ const KIND_ENUM = ['run.sh', 'omp', 'claude', 'paperclip', 'pty', 'next'] as con
 
 export default defineTool({
   name: 'dev:processes',
+  profile: 'engineer',
   description: 'Inventory of agent-related processes on this host (run.sh, omp, claude, paperclip, pty, next) with cmdline, cwd, and inferred harness/workspace.',
   capability: 'intel:read',
   guidance: {
