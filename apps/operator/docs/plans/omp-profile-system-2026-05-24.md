@@ -1,7 +1,7 @@
 ---
 title: OMP profile system — per-profile tool gating and installer profiles
 slug: omp-profile-system-2026-05-24
-status: draft
+status: shipped
 created: 2026-05-24
 updated: 2026-05-24
 owner: pandawamble@gmail.com
@@ -13,9 +13,9 @@ related:
 
 ## Now
 
-**State:** Phase 1 + 2 complete. P-001 auto-ratified (user mandate). P-002–P-007 all shipped in `67d1c92a` (profile type + resolution + list/call gate + ~113 Group A tool tags) and `b85d4739` (installer flag + wrapper). Remaining: P-008 (mcp.json URL for power installs) → P-009 (agent-bundle) → P-010–P-012 (tests).
+**State:** COMPLETE. All 13 items done across 4 commits: `67d1c92a` (types + gate + ~113 tags), `b85d4739` (installer + wrapper), `be37a8a2` (agent-bundle + power URL), `99c66d28` (37/37 profile-gate tests). Power profile filters ~150 Group A tools; engineer profile sees all. Installer, bundle route, and test suite all wired.
 
-**Next:** P-008 — append `&profile=power` to MCP URL in `mcp.json` when `install-standalone-mcp.sh --profile=power`.
+**Next:** No further action required. Plan shipped.
 
 # OMP profile system
 
@@ -121,15 +121,15 @@ This is a mechanical tag sweep — no behavior changes, just metadata.
 
 - **P-006** `done` Extend `install-standalone-mcp.sh` with `--profile=engineer|power` per §3.3. (shipped `b85d4739`)
 - **P-007** `done` Update `omp-su` wrapper template to bake profile-specific playbook path. (shipped `b85d4739`)
-- **P-008** `wip` Append `&profile=power` to MCP URL in `mcp.json` when `--profile=power`.
-- **P-009** `todo` Update `/api/agent-bundle` to serve `papercusp-su-power.tools.md` when caller has power-user token. blocked-by: P-004
+- **P-008** `done` Append `&profile=power` to MCP URL in `mcp.json` when `--profile=power`. (`be37a8a2`)
+- **P-009** `done` Update `/api/agent-bundle` to serve `papercusp-su-power.tools.md` when caller has power-user token. (`be37a8a2`)
 
 ### Phase 3 — verification
 
-- **P-010** `todo` Test: power-user token → `tools/list` returns only Group B + C. blocked-by: P-005
-- **P-011** `todo` Test: SU caller with `?profile=power` → same filtered list. blocked-by: P-005
-- **P-012** `todo` Test: engineer profile → all tools visible (no regression). blocked-by: P-005
-- **P-013** `todo` Flip `playbook-audience-neutral-rewrite-2026-05-23` P-010 / P-011 to `done` once above tests pass.
+- **P-010** `done` Test: power-user token → `tools/list` returns only Group B + C. (`99c66d28`)
+- **P-011** `done` Test: SU caller with `?profile=power` → same filtered list. (`99c66d28`)
+- **P-012** `done` Test: engineer profile → all tools visible (no regression). (`99c66d28`)
+- **P-013** `done` Confirmed `playbook-audience-neutral-rewrite-2026-05-23` P-010 + P-011 already `done` (shipped `b85d4739`).
 
 ## §5 Dependencies
 
