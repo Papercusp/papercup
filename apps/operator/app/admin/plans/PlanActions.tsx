@@ -113,7 +113,11 @@ export default function PlanActions({
         className="pc-plan-actions__btn"
         onClick={() => setOpen('add-decision')}
         disabled={disabled}
-        title={disabled ? disabledReason : 'Append a new D-NNN decision'}
+        title={
+          disabled
+            ? disabledReason
+            : 'Log a decision — the rationale behind a choice (rejected alternative, constraint, argument that settled it). Gets a permanent D-NNN id.'
+        }
       >
         + Decision
       </button>
@@ -122,9 +126,13 @@ export default function PlanActions({
         className="pc-plan-actions__btn"
         onClick={() => setOpen('add-item')}
         disabled={disabled}
-        title={disabled ? disabledReason : 'Append a new P-NNN item'}
+        title={
+          disabled
+            ? disabledReason
+            : 'Add a task — one concrete work unit under a phase. Tracked by status (todo / wip / done / …). Gets a permanent P-NNN id.'
+        }
       >
-        + Item
+        + Task
       </button>
       <button
         type="button"
@@ -351,7 +359,10 @@ function AddDecisionDialog({
         <header className="pc-plan-dialog__head">
           <h3>+ Decision</h3>
           <p>
-            Append <code>{nextDecisionPreview}</code> to the <code>## Decisions</code> log.
+            A <strong>decision</strong> is a rationale-log entry — capture
+            why this choice was made and what was rejected. Append{' '}
+            <code>{nextDecisionPreview}</code> to the{' '}
+            <code>## Decisions</code> log.
           </p>
         </header>
         <label className="pc-plan-dialog__field">
@@ -467,16 +478,18 @@ function AddItemDialog({
     <Modal
       open={open}
       onOpenChange={(o) => !o && onClose()}
-      title="Add item"
+      title="Add task"
       srOnlyTitle
       contentClassName="pc-plan-dialog"
     >
       <form onSubmit={onSubmit} className="pc-plan-dialog__form">
         <header className="pc-plan-dialog__head">
-          <h3>+ Item</h3>
+          <h3>+ Task</h3>
           <p>
-            Append <code>{nextItemPreview}</code> under a phase. A new phase
-            heading is created if you type one that doesn't exist.
+            A <strong>task</strong> (also called an <em>item</em> in plan
+            markdown) is one concrete work unit under a phase. Append{' '}
+            <code>{nextItemPreview}</code>; a new phase heading is created
+            if you type one that doesn't exist.
           </p>
         </header>
         <label className="pc-plan-dialog__field">
