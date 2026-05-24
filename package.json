@@ -44,7 +44,7 @@
     "lint:knip:fix": "knip --fix --no-config-hints",
     "lint:drizzle-drift": "node scripts/check-drizzle-drift.mjs",
     "test:el-suite": "npm --workspace @papercusp/web run test:el-suite",
-    "postinstall": "node scripts/patch-noble-ciphers-exports.mjs"
+    "postinstall": "node scripts/patch-noble-ciphers-exports.mjs && patch-package"
   },
   "dependencies": {
     "@ai-sdk/google": "^3.0.64",
@@ -136,9 +136,8 @@
     "pi-claude-bridge": "^0.3.1",
     "postgres": "^3.4.9",
     "qrcode": "^1.5.4",
-    "react": "^19.2.0",
-    "react-diff-viewer-continued": "^4.2.2",
-    "react-dom": "^19.2.0",
+    "react": "^19.2.6",
+    "react-dom": "^19.2.6",
     "react-json-view-lite": "^2.5.0",
     "react-markdown": "^10.1.0",
     "react-resizable-panels": "^4.9.0",

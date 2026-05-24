@@ -1,0 +1,32 @@
+diff --git a/node_modules/next-transition-router/dist/index.js b/node_modules/next-transition-router/dist/index.js
+index 92a6e0f..9fe0e77 100644
+--- a/node_modules/next-transition-router/dist/index.js
++++ b/node_modules/next-transition-router/dist/index.js
+@@ -144,6 +144,27 @@ function TransitionRouter({ children, leave = /*#__PURE__*/ _async_to_generator(
+         stage,
+         enter
+     ]);
++    // Patched 2026-05-24: watchdog recovery for stuck `leaving` state.
++    // The library's `leaving -> entering` transition is driven only by
++    // the cleanup of the effect below firing on a pathname change. If
++    // the navigation either never updates pathname (rare) or the
++    // effect-cleanup chain doesn't re-run (observed under the
++    // operator's Vite + next-router shim stack), the state machine
++    // gets wedged at "leaving" forever and every subsequent navigate()
++    // call is silently dropped by the guard at line 71 — UX symptom:
++    // tabs stop working after the first click. This watchdog force-
++    // recovers after 8s so further clicks can proceed.
++    useEffect(()=>{
++        if (stage !== "leaving") return undefined;
++        const _watchdog = setTimeout(()=>{
++            if (typeof enterRef.current === "function") enterRef.current();
++            enterRef.current = null;
++            setStage("entering");
++        }, 8000);
++        return ()=>clearTimeout(_watchdog);
++    }, [
++        stage
++    ]);
+     useEffect(()=>{
+         return ()=>{
+             if (stage === "leaving") {
