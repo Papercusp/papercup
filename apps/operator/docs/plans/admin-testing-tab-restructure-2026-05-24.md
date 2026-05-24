@@ -102,12 +102,12 @@ PG-backed per-file run history table + status chips per file.
 ## Phase 3 — Run-file action
 
 `POST /api/admin/testing/run` with SSE. Run button per file + output drawer.
-- **P-014** `todo` [ ] Add `POST /api/admin/testing/run` route at `apps/operator/lib/endpoint-route/routes/admin/testing-run.ts` (Hono :3070 per D-003) accepting `{ runner: TestRunner }`. Spawns the appropriate child process per `kind`, streams output via `@restart/sse`, persists final row in `test_runs` with `source='admin-ui'`.
-- **P-015** `todo` [ ] Spawn-shape adapters for each `TestRunner` variant — vitest (`vitest run <path>`), playwright (`playwright test <path>`), node (`node <cmd>`), shell (`bash <cmd>`), cargo (`cargo test <test> -p <crate> --message-format=json`), admin-suite (delegate to existing orchestrator).
+- **P-014** `done` [ ] Add `POST /api/admin/testing/run` route at `apps/operator/lib/endpoint-route/routes/admin/testing-run.ts` (Hono :3070 per D-003) accepting `{ runner: TestRunner }`. Spawns the appropriate child process per `kind`, streams output via `@restart/sse`, persists final row in `test_runs` with `source='admin-ui'`.
+- **P-015** `done` [ ] Spawn-shape adapters for each `TestRunner` variant — vitest (`vitest run <path>`), playwright (`playwright test <path>`), node (`node <cmd>`), shell (`bash <cmd>`), cargo (`cargo test <test> -p <crate> --message-format=json`), admin-suite (delegate to existing orchestrator).
 - **P-016** `todo` [ ] Run button per file in `<DomainTestPanel>` — POSTs to the run route, opens an output drawer showing live SSE stdout/stderr + final status.
 - **P-017** `todo` [ ] Output drawer component — collapsible per-file, persists last output, "Re-run" + "Copy command" actions. URL-backed via nuqs (per memory rule).
 - **P-018** `todo` [ ] Per-file run history view — clicking the status chip opens a sheet listing the last N runs from `test_runs` with timings and output tails.
-- **P-019** `todo` [ ] Per D-003: run is host-side only (operator's child-process spawner). Packaged-build runs stay in the existing `packaged` tab. Document this in the run-route handler comment + a `<DomainTestPanel>` tooltip on Run buttons when packaged.
+- **P-019** `done` [ ] Per D-003: run is host-side only (operator's child-process spawner). Packaged-build runs stay in the existing `packaged` tab. Document this in the run-route handler comment + a `<DomainTestPanel>` tooltip on Run buttons when packaged.
 
 
 
