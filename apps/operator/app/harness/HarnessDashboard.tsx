@@ -48,7 +48,7 @@ import { Group as PanelGroup, Panel as RPanel, Separator } from 'react-resizable
 import {
   Activity, Play, Square, SlidersHorizontal, RotateCcw, RefreshCw,
   Coins, TrendingUp, CheckCircle2, AlertTriangle, Loader2, Wrench, ArrowRight,
-  Code2, BookOpen, LayoutDashboard, Lightbulb, FileText, Palette,
+  Code2, BookOpen, LayoutDashboard, Lightbulb, FileText, Palette, GitPullRequest,
   // Icons available to plugin manifests via dashboardTabs[].icon
   Terminal, Code, Plus, Puzzle, Database, Cloud, MessageSquare,
   Zap, Bell, Calendar, Folder, FolderOpen, Globe, GitBranch, Inbox,
@@ -92,7 +92,7 @@ function openInVSCode(projectPath: string) {
   window.open(url, VSCODE_WINDOW_NAME);
 }
 
-type MainPanel = 'brainstorm' | 'proposals' | 'git' | 'dashboard' | 'summary' | 'insights' | 'config' | 'settings' | `plugin:${string}`;
+type MainPanel = 'brainstorm' | 'proposals' | 'git' | 'dashboard' | 'summary' | 'insights' | 'config' | 'settings' | 'prs' | `plugin:${string}`;
 
 import { Panel } from '@restart/ui-primitives';
 import { StatCard } from '@restart/ui-primitives';
@@ -119,6 +119,7 @@ import ArchitectInbox from './ArchitectInbox';
 import { CollapsedGitRail } from './CollapsedRails';
 import PhaseTabs, { type Phase } from './PhaseTabs';
 import TestsTab from './TestsTab';
+import PrsTab from './PrsTab';
 // Dynamic + sticky-mount (see proposalsEverMounted gating below): defers
 // the proposals JS+CSS chunks until the user first opens that tab, then
 // keeps the component mounted so subsequent tab switches stay instant.
@@ -4329,6 +4330,11 @@ export default function HarnessDashboard() {
               }}
             />
           ))}
+          <Tooltip label={activeSlug ? 'Pull requests — view, approve, and merge PRs for this harness' : 'Select a project to view PRs'}>
+            <Tabs.Trigger value="prs" className="h-tab h-tab--prs" disabled={!activeSlug}>
+              <GitPullRequest size={13} /> prs
+            </Tabs.Trigger>
+          </Tooltip>
           <Tooltip label={activeSlug ? 'Insights — analytics' : 'Select a project to view insights'}>
             <Tabs.Trigger value="insights" className="h-tab h-tab--insights" disabled={!activeSlug}>
               <TrendingUp size={13} /> insights
@@ -4488,6 +4494,11 @@ export default function HarnessDashboard() {
               iteration={status.iteration}
               onClose={() => setActivePanel('dashboard')}
             />
+          )}
+        </ReactActivity>
+        <ReactActivity mode={resolvedPanel === 'prs' ? 'visible' : 'hidden'}>
+          {activeSlug && (resolvedPanel === 'prs' || everMountedPanels.has('prs')) && (
+            <PrsTab slug={activeSlug} />
           )}
         </ReactActivity>
         <ReactActivity mode={resolvedPanel === 'experts' ? 'visible' : 'hidden'}>
