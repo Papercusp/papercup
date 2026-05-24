@@ -14,7 +14,5 @@
     "apps/operator/__tests__/integration/tools-md-sync.mjs",
     "apps/operator/__tests__/integration/ui-control.mjs"
   ],
-  "scriptsSmoke": [
-    "apps/operator/scripts/su-locks-omp-smoke.ts"
-  ]
+  "scriptsSmoke": []
 }
