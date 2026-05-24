@@ -1,7 +1,7 @@
 ---
 title: Per-harness plans + project-docs adapter — portability beyond the Papercusp codebase
 slug: per-harness-plans-and-docs-2026-05-23
-status: active
+status: shipped
 created: 2026-05-23
 updated: 2026-05-24
 owner: pandawamble@gmail.com
