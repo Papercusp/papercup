@@ -83,6 +83,73 @@ describe('parseGithubUrl', () => {
   it('handles trim of leading/trailing whitespace', () => {
     expect(parseGithubUrl('  https://github.com/a/b  ')?.repo).toBe('b');
   });
+
+  describe('security — attack-shaped inputs', () => {
+    // Defense-in-depth: these should all be rejected by the allowlist
+    // regex even if upstream sanitization is bypassed. Each represents
+    // a real attack class the validator must catch.
+    const attacks: ReadonlyArray<readonly [string, string]> = [
+      // Path traversal attempts in owner/repo segments
+      ['https://github.com/../etc/passwd', 'path-traversal in owner'],
+      ['https://github.com/owner/../../etc/passwd', 'path-traversal in repo'],
+      ['https://github.com/owner/repo/../other', 'path-traversal in trailing'],
+      // Whitespace / newline injection (CRLF etc.)
+      ['https://github.com/owner/repo\nINJECTED', 'newline in URL'],
+      ['https://github.com/owner\r/repo', 'CR in owner'],
+      ['https://github.com/owner\t/repo', 'internal tab in URL (trailing tab is stripped by trim — correct)'],
+      // URL-shape attacks
+      ['https://github.com/owner/repo?token=...', 'query string'],
+      ['https://github.com/owner/repo#fragment', 'fragment'],
+      ['https://github.com/owner/repo;rm -rf /', 'semicolon command injection-shape'],
+      ['https://github.com/owner/repo&malicious', 'ampersand'],
+      // userinfo prefix attempts
+      ['https://attacker@github.com/owner/repo', 'userinfo prefix'],
+      ['https://github.com@evil.com/owner/repo', 'userinfo confusion'],
+      ['https://github.com:80@evil.com/owner/repo', 'userinfo + port confusion'],
+      // protocol substitution
+      ['http://github.com/owner/repo', 'http instead of https'],
+      ['ftp://github.com/owner/repo', 'ftp scheme'],
+      ['javascript:alert(1)//github.com/owner/repo', 'javascript: scheme'],
+      ['data:text/plain,malicious', 'data: scheme'],
+      ['file:///etc/passwd', 'file: scheme'],
+      // host confusion
+      ['https://github.com.evil.com/owner/repo', 'host suffix confusion'],
+      ['https://evil.github.com/owner/repo', 'host subdomain confusion'],
+      ['https://Github.com/owner/repo', 'host case (uppercase G)'], // strict regex is case-sensitive on host
+      ['https://github.io/owner/repo', 'github.io not github.com'],
+      // SSH form attacks
+      ['git@evil.com:owner/repo', 'SSH wrong host'],
+      ['git@github.com:owner/repo;rm', 'SSH command injection-shape'],
+      // null bytes
+      ['https://github.com/owner/repo\0', 'null byte in URL'],
+      ['https://github.com/owner\0/repo', 'null byte in owner'],
+    ];
+    for (const [url, label] of attacks) {
+      it(`rejects ${label}: ${JSON.stringify(url).slice(0, 80)}`, () => {
+        expect(parseGithubUrl(url)).toBeNull();
+      });
+    }
+
+    // The allowlist regex must NOT accept very long inputs that
+    // could DoS the regex engine (ReDoS). GitHub's actual limits:
+    // owner ≤39 chars, repo ≤100 chars.
+    it('rejects owner over 39 chars', () => {
+      const longOwner = 'a'.repeat(40);
+      expect(parseGithubUrl(`https://github.com/${longOwner}/repo`)).toBeNull();
+    });
+    it('rejects repo over 100 chars', () => {
+      const longRepo = 'a'.repeat(101);
+      expect(parseGithubUrl(`https://github.com/owner/${longRepo}`)).toBeNull();
+    });
+    it('accepts owner of exactly 39 chars (GitHub max)', () => {
+      const maxOwner = 'a'.repeat(39);
+      expect(parseGithubUrl(`https://github.com/${maxOwner}/repo`)?.owner).toBe(maxOwner);
+    });
+    it('accepts repo of exactly 100 chars (GitHub max)', () => {
+      const maxRepo = 'a'.repeat(100);
+      expect(parseGithubUrl(`https://github.com/owner/${maxRepo}`)?.repo).toBe(maxRepo);
+    });
+  });
 });
 
 describe('defaultClonesDir', () => {
