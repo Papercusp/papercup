@@ -333,14 +333,18 @@ interface PlanRevisionDbRow {
  * an error. Throws on a genuine DB failure so the caller can surface
  * "revisions unavailable" rather than a misleading empty chain.
  */
-export async function listPlanRevisions(planSlug: string): Promise<PlanRevisionRow[]> {
+export async function listPlanRevisions(
+  planSlug: string,
+  opts: { harnessSlug?: string } = {},
+): Promise<PlanRevisionRow[]> {
   await ensurePlanRevisionsTable();
+  const harnessSlug = opts.harnessSlug?.trim() || 'papercup';
   const rows = await withWorkspace(DEFAULT_WORKSPACE_ID, async (tx) => {
     return tx<PlanRevisionDbRow[]>`
       SELECT id, seq, content_hash, content_snapshot, rationale,
              author_kind, author_id, session_id, session_kind, created_at
       FROM harness_shared.plan_revisions
-      WHERE plan_slug = ${planSlug}
+      WHERE harness_slug = ${harnessSlug} AND plan_slug = ${planSlug}
       ORDER BY seq ASC
     `;
   });
@@ -456,14 +460,15 @@ export async function getPlanRevisionPairById(
       }[]
     >`
       WITH target AS (
-        SELECT plan_slug, seq
+        SELECT harness_slug, plan_slug, seq
         FROM harness_shared.plan_revisions
         WHERE id = ${revisionId}
       )
       SELECT r.id, r.plan_slug, r.seq, r.content_snapshot, r.created_at,
              (r.seq = (SELECT seq FROM target)) AS is_target
       FROM harness_shared.plan_revisions r, target t
-      WHERE r.plan_slug = t.plan_slug
+      WHERE r.harness_slug = t.harness_slug
+        AND r.plan_slug = t.plan_slug
         AND r.seq IN (t.seq, t.seq - 1)
       ORDER BY r.seq DESC
     `;
@@ -518,13 +523,17 @@ export async function setPlanRevisionRationale(
  * this for idempotency — a plan with any rows is left untouched, so
  * the backfill never collides with or renumbers live revisions.
  */
-export async function countPlanRevisions(planSlug: string): Promise<number> {
+export async function countPlanRevisions(
+  planSlug: string,
+  opts: { harnessSlug?: string } = {},
+): Promise<number> {
   await ensurePlanRevisionsTable();
+  const harnessSlug = opts.harnessSlug?.trim() || 'papercup';
   return withWorkspace(DEFAULT_WORKSPACE_ID, async (tx) => {
     const rows = await tx<{ n: number }[]>`
       SELECT COUNT(*)::int AS n
       FROM harness_shared.plan_revisions
-      WHERE plan_slug = ${planSlug}
+      WHERE harness_slug = ${harnessSlug} AND plan_slug = ${planSlug}
     `;
     return Number(rows[0]?.n ?? 0);
   });

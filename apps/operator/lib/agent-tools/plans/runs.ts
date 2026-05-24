@@ -59,6 +59,12 @@ export type PlanRunTurnRole = 'user' | 'assistant';
 
 export interface InsertPlanRunArgs {
   planSlug: string;
+  /**
+   * Harness scope for the launch. Default = 'papercup' (preserves the
+   * pre-per-harness-plans-and-docs behavior). Per-harness callers
+   * (plans:launch from a harness-context agent) pass their harness slug.
+   */
+  harnessSlug?: string;
   /** `hashPlanContent` of the plan doc that seeded the launch — P-023's
    *  stale-version badge compares it against the plan's current hash. */
   planContentHash: string;
@@ -79,13 +85,14 @@ export interface InsertPlanRunArgs {
 export async function insertPlanRun(args: InsertPlanRunArgs): Promise<number> {
   await ensurePlanRunsTable();
   const now = Date.now();
+  const harnessSlug = args.harnessSlug?.trim() || 'papercup';
   return withWorkspace(DEFAULT_WORKSPACE_ID, async (tx) => {
     const rows = await tx<{ id: number }[]>`
       INSERT INTO harness_shared.plan_runs (
-        plan_slug, plan_content_hash, session_id, note,
+        harness_slug, plan_slug, plan_content_hash, session_id, note,
         launched_by, launched_at, status, title, updated_at
       ) VALUES (
-        ${args.planSlug}, ${args.planContentHash}, ${args.sessionId},
+        ${harnessSlug}, ${args.planSlug}, ${args.planContentHash}, ${args.sessionId},
         ${args.note}, ${args.launchedBy}, ${now}, ${args.status},
         ${args.title}, ${now}
       )
@@ -268,8 +275,10 @@ export interface PlanRunSummary extends PlanRunRow {
  */
 export async function listPlanRuns(
   planSlug: string,
+  opts: { harnessSlug?: string } = {},
 ): Promise<PlanRunSummary[]> {
   await ensurePlanRunTurnsTable();
+  const harnessSlug = opts.harnessSlug?.trim() || 'papercup';
   return withWorkspace(DEFAULT_WORKSPACE_ID, async (tx) => {
     const rows = await tx<(RawPlanRunRow & { turn_count: number | string })[]>`
       SELECT r.id, r.plan_slug, r.plan_content_hash, r.session_id, r.note,
@@ -279,7 +288,7 @@ export async function listPlanRuns(
                WHERE t.plan_run_id = r.id
              ) AS turn_count
       FROM harness_shared.plan_runs r
-      WHERE r.plan_slug = ${planSlug}
+      WHERE r.harness_slug = ${harnessSlug} AND r.plan_slug = ${planSlug}
       ORDER BY r.launched_at DESC, r.id DESC
     `;
     return rows.map((r) => ({
