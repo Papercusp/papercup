@@ -22,8 +22,10 @@
  *  - Dependency injection on `runGitLsRemote` lets tests stub the
  *    network without spawning real git or mocking child_process.
  *
- *  - Cadence: 60s default. Per-harness coalesce inside the tick (only
- *    poll harnesses with ≥1 pending_done or recently-shipped feature).
+ *  - Cadence: 60s default. Per-feature exponential backoff on
+ *    consecutive network errors, capped at 5 min (P-016c). After 5
+ *    consecutive errors a warning toast is written once. The backoff
+ *    state resets as soon as a feature verifies cleanly or diverges.
  *
  *  - Recency cutoff for shipped features: 24h. Long-tail divergence
  *    is rare and an explicit "Re-check" button covers it (P-017c).
@@ -37,7 +39,10 @@
  */
 
 import { spawn } from 'node:child_process';
-import { getOrgPg } from '@restart/db-org';
+import { getOrgPg, generated } from '@restart/db-org';
+import { desc, inArray } from 'drizzle-orm';
+import { ensureToastLogTable } from '../ensure-schema';
+import { notifySyncInvalidate } from '../sync-sse';
 
 export type CompletionRef = {
   remote: string;
@@ -72,6 +77,86 @@ const DEFAULT_TIMEOUT_MS = 10_000;
 const DEFAULT_POLL_INTERVAL_MS = 60_000;
 const SHIPPED_RECENCY_HOURS = 24;
 const SHIPPED_RECENCY_MS = SHIPPED_RECENCY_HOURS * 60 * 60 * 1000;
+
+/** P-016c: backoff cap and toast threshold */
+const BACKOFF_CAP_MS = 5 * 60 * 1000;
+const TOAST_AFTER_N_ERRORS = 5;
+
+type BackoffEntry = {
+  consecutiveErrors: number;
+  nextCheckAt: number;
+  toastedAt: number | null;
+};
+
+type BackoffSingleton = { __completionRefBackoff?: Map<string, BackoffEntry> };
+const _bg = globalThis as unknown as BackoffSingleton;
+function backoffMap(): Map<string, BackoffEntry> {
+  _bg.__completionRefBackoff ??= new Map();
+  return _bg.__completionRefBackoff;
+}
+
+function backoffKey(harnessSlug: string, featureId: string): string {
+  return `${harnessSlug}\0${featureId}`;
+}
+
+function backoffDelayMs(consecutiveErrors: number): number {
+  return Math.min(DEFAULT_POLL_INTERVAL_MS * Math.pow(2, consecutiveErrors - 1), BACKOFF_CAP_MS);
+}
+
+function shouldSkipFeature(harnessSlug: string, featureId: string): boolean {
+  const entry = backoffMap().get(backoffKey(harnessSlug, featureId));
+  if (!entry) return false;
+  return Date.now() < entry.nextCheckAt;
+}
+
+function recordNetworkError(harnessSlug: string, featureId: string): BackoffEntry {
+  const key = backoffKey(harnessSlug, featureId);
+  const prev = backoffMap().get(key);
+  const count = (prev?.consecutiveErrors ?? 0) + 1;
+  const entry: BackoffEntry = {
+    consecutiveErrors: count,
+    nextCheckAt: Date.now() + backoffDelayMs(count),
+    toastedAt: prev?.toastedAt ?? null,
+  };
+  backoffMap().set(key, entry);
+  return entry;
+}
+
+function clearBackoffEntry(harnessSlug: string, featureId: string): void {
+  backoffMap().delete(backoffKey(harnessSlug, featureId));
+}
+
+async function writeVerifierWarningToast(
+  harnessSlug: string,
+  featureId: string,
+  lastReason: string,
+  count: number,
+): Promise<void> {
+  try {
+    const tl = generated.toastLogInHarnessShared;
+    await ensureToastLogTable();
+    const { db } = getOrgPg();
+    const RING_BUFFER_SIZE = 2000;
+    await db.insert(tl).values({
+      level: 'warning',
+      message: `Completion ref verification failing — ${featureId}`,
+      description: `git ls-remote has failed ${count} consecutive times for ${harnessSlug}/${featureId}. Last error: ${lastReason}. Check git credentials and the remote URL on the feature's completion_ref.`,
+      harnessSlug,
+      createdAt: Date.now(),
+      actionLabel: null,
+      actionHref: null,
+    });
+    void (async () => {
+      const stale = await db.select({ id: tl.id }).from(tl).orderBy(desc(tl.createdAt)).offset(RING_BUFFER_SIZE);
+      if (stale.length > 0) {
+        await db.delete(tl).where(inArray(tl.id, stale.map((r) => r.id)));
+      }
+    })().catch(() => {});
+    void notifySyncInvalidate('toastLog.recent', undefined).catch(() => {});
+  } catch {
+    // toast failure is non-fatal
+  }
+}
 
 /**
  * Parse the stdout of `git ls-remote <remote> <sha>`. The command
@@ -222,6 +307,7 @@ export type VerifyHarnessFeaturesDeps = {
  *
  * On-demand callable from the UI "Re-check verification" button
  * (P-017c) — should return within ~5s for a harness with <50 features.
+ * Does NOT apply backoff filtering (always checks all eligible features).
  */
 export async function verifyHarnessFeatures(
   harnessSlug: string,
@@ -240,6 +326,57 @@ export async function verifyHarnessFeatures(
     else if (outcome === 'divergent') divergent += 1;
     else errors += 1;
   }
+  return { harnessSlug, checked: rows.length, verified, divergent, errors };
+}
+
+/**
+ * Verify completion_refs for one harness respecting per-feature
+ * exponential backoff (P-016c). Used by the daemon tick only.
+ *
+ * On network error:
+ *   - Increments per-feature consecutive-error counter
+ *   - Schedules next check at base × 2^(count-1), capped at 5 min
+ *   - After 5 consecutive errors writes a warning toast (once per streak)
+ *
+ * On verified or divergent: clears the backoff entry for that feature.
+ */
+async function verifyHarnessFeaturesWithBackoff(
+  harnessSlug: string,
+  runGit: RunGitLsRemote,
+): Promise<VerificationResult> {
+  const rows = await selectVerifiableFeatures(harnessSlug);
+  let verified = 0;
+  let divergent = 0;
+  let errors = 0;
+
+  for (const row of rows) {
+    const { feature_id } = row;
+    if (shouldSkipFeature(harnessSlug, feature_id)) {
+      // still in backoff window — skip without bumping checked_at
+      errors += 1;
+      continue;
+    }
+
+    const result = await runGit(row.completion_ref.remote, row.completion_ref.commit_sha);
+    const outcome = decideVerificationOutcome(result);
+    await applyOutcomeToRow(harnessSlug, feature_id, outcome);
+
+    if (outcome === 'verified' || outcome === 'divergent') {
+      clearBackoffEntry(harnessSlug, feature_id);
+      if (outcome === 'verified') verified += 1;
+      else divergent += 1;
+    } else {
+      const reason = result.kind === 'error' ? result.reason : 'unknown';
+      const entry = recordNetworkError(harnessSlug, feature_id);
+      errors += 1;
+
+      if (entry.consecutiveErrors >= TOAST_AFTER_N_ERRORS && entry.toastedAt === null) {
+        entry.toastedAt = Date.now();
+        void writeVerifierWarningToast(harnessSlug, feature_id, reason, entry.consecutiveErrors);
+      }
+    }
+  }
+
   return { harnessSlug, checked: rows.length, verified, divergent, errors };
 }
 
@@ -277,12 +414,12 @@ const _g = globalThis as unknown as Singleton;
 export function startCompletionRefVerifier(opts: StartOpts = {}): void {
   if (_g.__completionRefVerifierTimer) return;
   const interval = opts.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
-  const runGit = opts.runGitLsRemote;
+  const runGit = opts.runGitLsRemote ?? defaultRunGitLsRemote;
   const tick = async (): Promise<void> => {
     try {
       const slugs = await selectHarnessesWithVerifiableWork();
       for (const slug of slugs) {
-        await verifyHarnessFeatures(slug, { runGitLsRemote: runGit });
+        await verifyHarnessFeaturesWithBackoff(slug, runGit);
       }
     } catch (err) {
       console.warn(
