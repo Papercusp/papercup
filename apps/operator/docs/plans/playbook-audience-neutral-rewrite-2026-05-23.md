@@ -1,9 +1,9 @@
 ---
 title: Playbook audience-neutral rewrite — papercusp-su.tools.md for the power-engineer audience
 slug: playbook-audience-neutral-rewrite-2026-05-23
-status: active
+status: shipped
 created: 2026-05-23
-updated: 2026-05-23
+updated: 2026-05-24
 owner: pandawamble@gmail.com
 related:
   - apps/operator/docs/plans/omp-power-user-bundle-2026-05-20.md
@@ -13,9 +13,9 @@ related:
 
 ## Now
 
-**State:** Draft. Closes `omp-power-user-bundle` D-008b ("audience-neutral rewrite of papercusp-su.tools.md"). The catalog-split audit (2026-05-22) makes it clear the playbook today is written for a single audience (Papercusp engineer) while the bundle ships it to a different one (power-engineer on any harness) — ~150 of the tools described don't apply to that audience.
+**State:** SHIPPED 2026-05-24. All 11 items done. Phase 1 (interim neutralization) + Phase 2 (full split: two playbooks, installer --profile flag, wrapper update) complete. MCP-server-side tool gating continues in `omp-profile-system-2026-05-24`.
 
-**Next:** Phase 2 P-010 / P-011 blocked on `omp-profile-system` plan (MCP-server-side tool filtering + installer `--profile` flag). Draft that plan to unblock.
+**Next:** No further action in this plan. See `omp-profile-system-2026-05-24` for the MCP gating work that completes the power-profile tool surface.
 
 # Playbook audience-neutral rewrite
 
@@ -98,8 +98,8 @@ Two playbooks:
 - **P-007** `done` Decide split filename convention → D-003: `-engineer` + `-power` suffixes (auto-ratified 2026-05-24).
 - **P-008** `done` Wrote `apps/operator/prompts/papercusp-su-power.tools.md` — power-engineer subset per §5.
 - **P-009** `done` Renamed `papercusp-su.tools.md` → `papercusp-su-engineer.tools.md`; updated all runtime references (install script, 4 TS files, 2 test files).
-- **P-010** `blocked` Extend `install-standalone-mcp.sh` with `--profile=engineer|power` (default engineer). blocked-by: omp-profile-system plan (MCP-server-side tool gating)
-- **P-011** `blocked` Update `omp-su` wrapper template to set `--profile` in lockstep with the installed playbook. blocked-by: P-010
+- **P-010** `done` Extend `install-standalone-mcp.sh` with `--profile=engineer|power` (default engineer). (shipped `b85d4739`)
+- **P-011** `done` Update `omp-su` wrapper template to bake profile-specific playbook path. (shipped `b85d4739`)
 
 ## §6 Dependencies & out of scope
 
