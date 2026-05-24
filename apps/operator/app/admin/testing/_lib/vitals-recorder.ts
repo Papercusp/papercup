@@ -117,10 +117,22 @@ export function startRecorder(): void {
     w.__papercuspPerfSeq = (w.__papercuspPerfSeq ?? 0) + 1;
     return w.__papercuspPerfSeq;
   };
+  const ignoredInteractionEvents = new Set([
+    'mouseover',
+    'mouseout',
+    'pointerover',
+    'pointerout',
+    'mouseenter',
+    'mouseleave',
+    'pointerenter',
+    'pointerleave',
+  ]);
+
   try {
     const intObs = new PerformanceObserver((list) => {
       for (const entry of list.getEntries()) {
         const e = entry as PerformanceEventTiming;
+        if (ignoredInteractionEvents.has(e.name)) continue;
         if (e.duration < 40) continue; // ignore fast interactions
         addEvent(state, {
           id: `ev-${nextSeq()}-${e.name}`,

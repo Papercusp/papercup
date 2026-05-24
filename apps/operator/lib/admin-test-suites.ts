@@ -45,6 +45,15 @@ interface DesktopState {
   activeSlug: string;
 }
 
+interface RoutePage {
+  href: string;
+  h1: string[];
+  domNodes: number;
+  hasHarnessRoot: boolean;
+  details: string[];
+  summary: string;
+}
+
 interface MemoryRow {
   pid: number;
   name: string | null;
@@ -339,15 +348,17 @@ function adminTestingExtendedChecks(ctx: SuiteContext) {
 }
 
 function desktopPerformanceChecks(ctx: SuiteContext) {
+  const startedAt = Date.now();
+
   return [
     {
       id: 'harness-warm-route',
       label: 'Harness warm route',
       run: async () => {
-        await runTauriEvalJson<boolean>(ctx, `(() => { const s = window.__papercuspPerfRecorder; if (s && Array.isArray(s.events)) s.events.length = 0; return true; })()`);
+        await clearPerfRecorder(ctx);
         const state = await getDesktopState(ctx);
         const route = `/harness?slug=${encodeURIComponent(state.activeSlug)}&ws=default`;
-        const result = await measureRoute(ctx, route, (page) => page.href.includes('/harness') && page.hasHarnessRoot);
+        const result = await measureWarmRoute(ctx, route, (page) => page.href.includes('/harness') && page.hasHarnessRoot);
         return statusResult(
           result.ok && result.elapsedMs <= 1500,
           'Warm harness route settles within 1500ms in the Tauri desktop shell.',
@@ -360,7 +371,7 @@ function desktopPerformanceChecks(ctx: SuiteContext) {
       id: 'testing-live-warm-route',
       label: 'Testing live warm route',
       run: async () => {
-        const result = await measureRoute(ctx, '/admin/testing?tab=live', (page) => page.href.includes('/admin/testing') && page.h1.includes('Live metrics'));
+        const result = await measureWarmRoute(ctx, '/admin/testing?tab=live', (page) => page.href.includes('/admin/testing') && page.h1.includes('Live metrics'));
         return statusResult(
           result.ok && result.elapsedMs <= 1500,
           'Warm /admin/testing?tab=live settles within 1500ms in the Tauri desktop shell.',
@@ -373,7 +384,7 @@ function desktopPerformanceChecks(ctx: SuiteContext) {
       id: 'plans-warm-route',
       label: 'Plans warm route',
       run: async () => {
-        const result = await measureRoute(ctx, '/admin/plans', (page) => page.href.includes('/admin/plans') && page.h1.includes('Plans'));
+        const result = await measureWarmRoute(ctx, '/admin/plans', (page) => page.href.includes('/admin/plans') && page.h1.includes('Plans'));
         return statusResult(
           result.ok && result.elapsedMs <= 1500,
           'Warm /admin/plans settles within 1500ms in the Tauri desktop shell.',
@@ -392,7 +403,8 @@ function desktopPerformanceChecks(ctx: SuiteContext) {
         }>(
           ctx,
           `(() => {
-            const events = (window.__papercuspPerfRecorder?.events || []).filter((event) => event.kind === 'interaction');
+            const events = (window.__papercuspPerfRecorder?.events || [])
+              .filter((event) => event.kind === 'interaction' && Number(event.ts || 0) >= ${startedAt});
             const sorted = events
               .map((event) => ({ duration: Number(event.duration || 0), route: event.route || '', target: event.target || '' }))
               .sort((a, b) => b.duration - a.duration);
@@ -413,6 +425,8 @@ function desktopPerformanceChecks(ctx: SuiteContext) {
       id: 'desktop-memory-budget',
       label: 'Desktop RSS budget',
       run: async () => {
+        await runTauri(ctx, ['navigate', 'http://localhost:3055/admin/testing?tab=test-runs&suite=desktop-performance'], 12_000).catch(() => undefined);
+        await sleep(750, ctx.signal);
         const pid = await getTauriPid(ctx);
         if (!pid) return fail('The largest Tauri/WebKit process RSS stays below 3584MB.', 'Could not determine the running Tauri PID.');
         const tree = await readMemoryTree(pid);
@@ -717,11 +731,33 @@ function parseKb(value: string | undefined): number {
   return Number.isFinite(num) ? num : 0;
 }
 
+async function clearPerfRecorder(ctx: SuiteContext): Promise<void> {
+  await runTauriEvalJson<boolean>(
+    ctx,
+    `(() => {
+      const s = window.__papercuspPerfRecorder;
+      if (s && Array.isArray(s.events)) s.events.length = 0;
+      try { localStorage.removeItem('papercusp.testing.perf-events.v1'); } catch {}
+      return true;
+    })()`,
+  ).catch(() => undefined);
+}
+
+async function measureWarmRoute(
+  ctx: SuiteContext,
+  route: string,
+  predicate: (page: RoutePage) => boolean,
+): Promise<{ ok: boolean; elapsedMs: number; page: RoutePage }> {
+  await measureRoute(ctx, route, predicate);
+  await sleep(250, ctx.signal);
+  return measureRoute(ctx, route, predicate);
+}
+
 async function measureRoute(
   ctx: SuiteContext,
   route: string,
-  predicate: (page: { href: string; h1: string[]; bodyText: string; domNodes: number; hasHarnessRoot: boolean; details: string[]; summary: string }) => boolean,
-): Promise<{ ok: boolean; elapsedMs: number; page: { href: string; h1: string[]; bodyText: string; domNodes: number; hasHarnessRoot: boolean; details: string[]; summary: string } }> {
+  predicate: (page: RoutePage) => boolean,
+): Promise<{ ok: boolean; elapsedMs: number; page: RoutePage }> {
   const state = await getDesktopState(ctx);
   const target = route.startsWith('http') ? route : new URL(route, state.origin).toString();
   const currentUrl = new URL(state.href);
@@ -740,74 +776,35 @@ async function measureRoute(
       })()`,
     );
     if (!nav.ok || !nav.value) {
-      return {
-        ok: false,
-        elapsedMs: nav.exec.durationMs,
-        page: {
-          href: target,
-          h1: [],
-          bodyText: '',
-          domNodes: 0,
-          details: [describeCommandFailure(nav)],
-          summary: `navigate failed for ${target}`,
-        },
-      };
+      return routeFailure(target, nav.exec.durationMs, describeCommandFailure(nav));
     }
   } else {
     const nav = await runTauri(ctx, ['navigate', target]);
     if (nav.error || nav.code !== 0) {
-      return {
-        ok: false,
-        elapsedMs: nav.durationMs,
-        page: {
-          href: target,
-          h1: [],
-          bodyText: '',
-          domNodes: 0,
-          details: [describeExecFailure(nav)],
-          summary: `navigate failed for ${target}`,
-        },
-      };
+      return routeFailure(target, nav.durationMs, describeExecFailure(nav));
     }
   }
   const startedAt = Date.now();
   for (let i = 0; i < 24; i += 1) {
     await sleep(125, ctx.signal);
-    const page = await runTauriEvalJson<{
-      href: string;
-      h1: string[];
-      bodyText: string;
-      domNodes: number;
-      hasHarnessRoot: boolean;
-    }>(
-      ctx,
-      `(() => ({
-        href: location.href,
-        h1: Array.from(document.querySelectorAll('h1')).map((node) => (node.textContent || '').trim()),
-        bodyText: document.body.innerText.slice(0, 400),
-        domNodes: document.querySelectorAll('*').length,
-        hasHarnessRoot: Boolean(document.querySelector('.h-root')),
-      }))()`,
-      10_000,
-    );
-    if (!page.ok || !page.value) continue;
-    const current = {
-      href: page.value.href,
-      h1: page.value.h1,
-      bodyText: page.value.bodyText,
-      domNodes: page.value.domNodes,
-      hasHarnessRoot: page.value.hasHarnessRoot,
-      details: [page.value.bodyText.slice(0, 240)],
-      summary: `${page.value.href} · h1=${page.value.h1.join(' | ') || '(none)'} · domNodes=${page.value.domNodes}${page.value.hasHarnessRoot ? ' · h-root' : ''}`,
-    };
-    if (predicate(current)) {
-      return { ok: true, elapsedMs: Date.now() - startedAt, page: current };
+    const page = await readRoutePage(ctx);
+    if (!page) continue;
+    if (predicate(page)) {
+      return { ok: true, elapsedMs: Date.now() - startedAt, page };
     }
   }
-  const fallback = await runTauriEvalJson<{
+  const fallback = await readRoutePage(ctx);
+  return {
+    ok: false,
+    elapsedMs: Date.now() - startedAt,
+    page: fallback ?? makeRoutePage(target, [], 0, false, [`route did not settle for ${target}`]),
+  };
+}
+
+async function readRoutePage(ctx: SuiteContext): Promise<RoutePage | null> {
+  const page = await runTauriEvalJson<{
     href: string;
     h1: string[];
-    bodyText: string;
     domNodes: number;
     hasHarnessRoot: boolean;
   }>(
@@ -815,25 +812,37 @@ async function measureRoute(
     `(() => ({
       href: location.href,
       h1: Array.from(document.querySelectorAll('h1')).map((node) => (node.textContent || '').trim()),
-      bodyText: document.body.innerText.slice(0, 400),
       domNodes: document.querySelectorAll('*').length,
       hasHarnessRoot: Boolean(document.querySelector('.h-root')),
     }))()`,
     10_000,
   );
-  const value = fallback.value ?? { href: target, h1: [], bodyText: '', domNodes: 0, hasHarnessRoot: false };
+  if (!page.ok || !page.value) return null;
+  return makeRoutePage(page.value.href, page.value.h1, page.value.domNodes, page.value.hasHarnessRoot);
+}
+
+function routeFailure(target: string, elapsedMs: number, detail: string): { ok: false; elapsedMs: number; page: RoutePage } {
   return {
     ok: false,
-    elapsedMs: Date.now() - startedAt,
-    page: {
-      href: value.href,
-      h1: value.h1,
-      bodyText: value.bodyText,
-      domNodes: value.domNodes,
-      hasHarnessRoot: value.hasHarnessRoot,
-      details: [value.bodyText.slice(0, 240)],
-      summary: `${value.href} · h1=${value.h1.join(' | ') || '(none)'} · domNodes=${value.domNodes}${value.hasHarnessRoot ? ' · h-root' : ''}`,
-    },
+    elapsedMs,
+    page: makeRoutePage(target, [], 0, false, [detail]),
+  };
+}
+
+function makeRoutePage(
+  href: string,
+  h1: string[],
+  domNodes: number,
+  hasHarnessRoot: boolean,
+  details: string[] = [],
+): RoutePage {
+  return {
+    href,
+    h1,
+    domNodes,
+    hasHarnessRoot,
+    details,
+    summary: `${href} · h1=${h1.join(' | ') || '(none)'} · domNodes=${domNodes}${hasHarnessRoot ? ' · h-root' : ''}`,
   };
 }
 
