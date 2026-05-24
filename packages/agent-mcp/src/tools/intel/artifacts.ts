@@ -13,6 +13,7 @@ import { defineTool } from '../../define-tool';
 
 export default defineTool({
   name: 'intel:artifacts',
+  profile: 'engineer',
   guidance: {
     when: 'You need the Intel-panel-shaped view of recent artifacts — grouped + summarized for UI display.',
     notWhen: 'For loading a specific artifact body, use `artifacts:load`. For listing artifacts a tool produced, use the tool\'s response. intel:artifacts is the panel feed.',

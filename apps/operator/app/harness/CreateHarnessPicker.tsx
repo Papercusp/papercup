@@ -16,6 +16,7 @@
 import { useState, useRef, type FormEvent, type ReactNode } from 'react';
 import { Modal } from './Modal';
 import { toast } from 'sonner';
+import { EntryHarnessLinkForm } from './EntryHarnessLinkForm';
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -326,9 +327,8 @@ const ENTRIES: {
   {
     id: 'harness-link-stub',
     label: 'Harness link',
-    description: 'Link to a shared harness from another Papercusp workspace.',
+    description: 'Join a shared harness via a papercusp://harness?… invite link.',
     icon: '🔗',
-    phase1b: true,
   },
 ];
 
@@ -433,7 +433,7 @@ export function CreateHarnessPicker({ open, onOpenChange, onCreated }: CreateHar
       {step === 'new-local' && <NewLocalForm onBack={goBack} onSuccess={handleSuccess} />}
       {step === 'existing-local' && <ExistingLocalForm onBack={goBack} onSuccess={handleSuccess} />}
       {step === 'github-url-stub' && <Phase1bStub title="GitHub URL" onBack={goBack} />}
-      {step === 'harness-link-stub' && <Phase1bStub title="Harness link" onBack={goBack} />}
+      {step === 'harness-link-stub' && <EntryHarnessLinkForm onBack={goBack} onCreated={handleSuccess} />}
     </Modal>
   );
 }

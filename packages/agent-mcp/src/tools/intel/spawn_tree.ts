@@ -16,6 +16,7 @@ import { defineTool } from '../../define-tool';
 
 export default defineTool({
   name: 'intel:spawn_tree',
+  profile: 'engineer',
   guidance: {
     when: 'User asks "what triggered this?", "show me the lineage of agent X", or you need the parent-child spawn graph for an Intel-panel-style view.',
     notWhen: 'For LIVE running spawns only, use `orchestrator.list_active`. spawn_tree is historical + structural; list_active is the now-snapshot.',
