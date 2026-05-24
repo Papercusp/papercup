@@ -11,9 +11,9 @@ owner: avi@storewolf.com
 
 ## Now
 
-**State:** **draft execution plan**. Phase 1a backend status as of 2026-05-24 overnight loop: P-006 (sentinel workspace), P-007 (five-rule classifier), **P-013 ALL** (10 + `shared_repo_binding_cache` from P-013a, commit `8ed90e57`) — DONE. The schema gap on the binding cache was unblocked by `binding-types.ts` (`f05997aa`) shipping the canonical `BindingRecord` shape. Remaining: **P-010 (Entry 1 + Entry 3 backend handlers) and P-012 (the 4-entry picker UI)**.
+**State:** **draft execution plan**. Phase 1a backend now COMPLETE as of 2026-05-24 overnight loop. Done: P-006 (sentinel), P-007 (classifier), **P-013 ALL** (incl. shared_repo_binding_cache via `8ed90e57`), **P-010 ALL** — init-local-dir helper (`init-local-dir.ts` + 20 tests, prior commit) + route wiring on POST /harness/projects (`3caa50ca`, Entry 1 discriminator added; existing Entry 2 + Entry 3 untouched). Remaining: **P-012 (the 4-entry picker UI) only**.
 
-**Next:** P-010 (backend, no design dep) — extend `/api/harness/projects` with `{kind: 'local_init', ...}` + `{kind: 'local_existing', ...}` discriminated-union handlers. Backend-only, parallelizes with the P-012 design discussion. P-012 still benefits from a brief design memo before implementing (Q-1 in the plan).
+**Next:** P-012 — design memo first (Q-1) since it's the first user-visible surface of the dogfood arc. Three entries are wired backend-side (Entry 1 / Entry 2 / Entry 3 all functional via POST /harness/projects); Entry 4 stays placeholder until Phase 1b P-009 lands. Implementation gates on user's UX call.
 
 ## Background
 
