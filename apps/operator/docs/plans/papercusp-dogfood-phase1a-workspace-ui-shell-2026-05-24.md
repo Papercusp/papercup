@@ -11,9 +11,9 @@ owner: avi@storewolf.com
 
 ## Now
 
-**State:** **draft execution plan**, the second per-phase split from v5 after `papercusp-dogfood-phase0-spike-2026-05-24.md`. Phase 1a is **roughly half-done in-tree as of 2026-05-24**: P-006 (sentinel workspace), P-007 (five-rule classifier), and most of P-013 (PG schema) are landed and tested. Remaining work: P-010 (Entry 1 + Entry 3 backend handlers), P-012 (the 4-entry picker UI), and closing the schema gap on `shared_repo_binding_cache` (which gates on Phase 1b P-068).
+**State:** **draft execution plan**. Phase 1a backend status as of 2026-05-24 overnight loop: P-006 (sentinel workspace), P-007 (five-rule classifier), **P-013 ALL** (10 + `shared_repo_binding_cache` from P-013a, commit `8ed90e57`) — DONE. The schema gap on the binding cache was unblocked by `binding-types.ts` (`f05997aa`) shipping the canonical `BindingRecord` shape. Remaining: **P-010 (Entry 1 + Entry 3 backend handlers) and P-012 (the 4-entry picker UI)**.
 
-**Next action:** spec P-012 in design before implementing — the 4-entry picker is the first user-visible surface of the dogfood arc and benefits from a brief design discussion before code. P-010 can start in parallel since its backend shape is constrained by the existing `/api/harness/projects` route.
+**Next:** P-010 (backend, no design dep) — extend `/api/harness/projects` with `{kind: 'local_init', ...}` + `{kind: 'local_existing', ...}` discriminated-union handlers. Backend-only, parallelizes with the P-012 design discussion. P-012 still benefits from a brief design memo before implementing (Q-1 in the plan).
 
 ## Background
 
