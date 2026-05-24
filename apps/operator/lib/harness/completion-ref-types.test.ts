@@ -136,6 +136,24 @@ describe('isDirectMainPush', () => {
   });
 });
 
+describe('pr_number (optional)', () => {
+  it('accepts ref with pr_number', () => {
+    expect(isCompletionRef(makeRef({ pr_number: 42 } as unknown as Partial<CompletionRef>))).toBe(true);
+  });
+
+  it('rejects non-positive pr_number when present', () => {
+    expect(isCompletionRef({ ...makeRef(), pr_number: 0 })).toBe(false);
+    expect(isCompletionRef({ ...makeRef(), pr_number: -1 })).toBe(false);
+    expect(isCompletionRef({ ...makeRef(), pr_number: 1.5 })).toBe(false);
+  });
+
+  it('accepts ref without pr_number (v5 line 451 omits)', () => {
+    const r: CompletionRef = makeRef();
+    delete (r as Partial<CompletionRef>).pr_number;
+    expect(isCompletionRef(r)).toBe(true);
+  });
+});
+
 describe('buildCompletionRef', () => {
   it('builds with required fields + default empty pr_url', () => {
     const ref = buildCompletionRef({
@@ -155,6 +173,35 @@ describe('buildCompletionRef', () => {
       pr_url: 'https://github.com/x/y/pull/1',
     });
     expect(ref.pr_url).toBe('https://github.com/x/y/pull/1');
+  });
+
+  it('builds with pr_number when supplied', () => {
+    const ref = buildCompletionRef({
+      remote: 'r',
+      branch: 'b',
+      commit_sha: SHA1,
+      pr_url: 'https://github.com/x/y/pull/42',
+      pr_number: 42,
+    });
+    expect(ref.pr_number).toBe(42);
+  });
+
+  it('omits pr_number when not supplied', () => {
+    const ref = buildCompletionRef({
+      remote: 'r',
+      branch: 'b',
+      commit_sha: SHA1,
+    });
+    expect(ref.pr_number).toBeUndefined();
+  });
+
+  it('rejects bad pr_number', () => {
+    expect(() =>
+      buildCompletionRef({ remote: 'r', branch: 'b', commit_sha: SHA1, pr_number: 0 }),
+    ).toThrow(TypeError);
+    expect(() =>
+      buildCompletionRef({ remote: 'r', branch: 'b', commit_sha: SHA1, pr_number: 1.5 }),
+    ).toThrow(TypeError);
   });
 
   it('rejects bad inputs', () => {

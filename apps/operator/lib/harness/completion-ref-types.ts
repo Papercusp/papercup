@@ -67,6 +67,12 @@ export interface CompletionRef {
    * without a PR (rare, but allowed by the workflow). */
   pr_url: string;
 
+  /** PR number on the host (e.g. 42 for /pull/42). Optional —
+   * not all writers populate it (v5 line 451 omits it; §8.1
+   * includes it). Verifier callers prefer pr_number when present
+   * for stable display; otherwise extract from pr_url. */
+  pr_number?: number;
+
   /** Wire-schema version of THIS payload. */
   schema_version: CompletionRefSchemaVersion;
 }
@@ -106,17 +112,18 @@ export function isValidPrUrl(pr_url: string): boolean {
 export function isCompletionRef(input: unknown): input is CompletionRef {
   if (input === null || typeof input !== 'object') return false;
   const r = input as Record<string, unknown>;
-  return (
-    typeof r.remote === 'string' &&
-    r.remote.length > 0 &&
-    typeof r.branch === 'string' &&
-    r.branch.length > 0 &&
-    typeof r.commit_sha === 'string' &&
-    isValidCommitSha(r.commit_sha) &&
-    typeof r.pr_url === 'string' &&
-    isValidPrUrl(r.pr_url) &&
-    r.schema_version === COMPLETION_REF_SCHEMA_VERSION
-  );
+  if (typeof r.remote !== 'string' || r.remote.length === 0) return false;
+  if (typeof r.branch !== 'string' || r.branch.length === 0) return false;
+  if (typeof r.commit_sha !== 'string' || !isValidCommitSha(r.commit_sha)) return false;
+  if (typeof r.pr_url !== 'string' || !isValidPrUrl(r.pr_url)) return false;
+  if (
+    r.pr_number !== undefined &&
+    (typeof r.pr_number !== 'number' || !Number.isInteger(r.pr_number) || r.pr_number <= 0)
+  ) {
+    return false;
+  }
+  if (r.schema_version !== COMPLETION_REF_SCHEMA_VERSION) return false;
+  return true;
 }
 
 /**
@@ -139,6 +146,7 @@ export function buildCompletionRef(args: {
   branch: string;
   commit_sha: string;
   pr_url?: string;
+  pr_number?: number;
 }): CompletionRef {
   if (typeof args.remote !== 'string' || args.remote.length === 0) {
     throw new TypeError('remote required');
@@ -153,13 +161,22 @@ export function buildCompletionRef(args: {
   if (!isValidPrUrl(pr_url)) {
     throw new TypeError('pr_url must be empty or a valid http(s) URL');
   }
-  return {
+  if (args.pr_number !== undefined) {
+    if (!Number.isInteger(args.pr_number) || args.pr_number <= 0) {
+      throw new TypeError('pr_number must be a positive integer when supplied');
+    }
+  }
+  const ref: CompletionRef = {
     remote: args.remote,
     branch: args.branch,
     commit_sha: args.commit_sha,
     pr_url,
     schema_version: COMPLETION_REF_SCHEMA_VERSION,
   };
+  if (args.pr_number !== undefined) {
+    ref.pr_number = args.pr_number;
+  }
+  return ref;
 }
 
 /**
