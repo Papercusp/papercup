@@ -78,6 +78,15 @@ async function sweep(): Promise<void> {
  * Start the periodic cleanup sweep. Idempotent — safe to call multiple
  * times. Runs once on start, then every SWEEP_INTERVAL_MS.
  */
+/**
+ * Drive one synchronous sweep pass. Exposed for the /admin/testing
+ * memory suite; production code keeps using startMemoryCleanup. Safe
+ * to call concurrently — the underlying sweep gates on _running.
+ */
+export async function runMemoryCleanupOnce(): Promise<void> {
+  await sweep();
+}
+
 export function startMemoryCleanup(): void {
   if (_sweepTimer) return;
   // Initial sweep after 60s of process boot — avoids contending with

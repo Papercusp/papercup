@@ -8,12 +8,14 @@ import RoutesTab from './_components/RoutesTab';
 import PackagedBuildTab from './_components/PackagedBuildTab';
 import LlmTab from './_components/LlmTab';
 import TestRunsTab from './_components/TestRunsTab';
+import MemoryTab from './_components/MemoryTab';
 
-type TabId = 'test-runs' | 'chaos' | 'ai' | 'live' | 'routes' | 'packaged' | 'llm';
+type TabId = 'test-runs' | 'chaos' | 'ai' | 'live' | 'routes' | 'packaged' | 'llm' | 'memory';
 
 const TABS: Array<{ id: TabId; label: string; hint: string }> = [
   { id: 'test-runs', label: 'Test Runs', hint: 'suite orchestrator' },
   { id: 'live', label: 'Live metrics', hint: 'passive observer' },
+  { id: 'memory', label: 'Memory', hint: 'mem0 health + suite' },
   { id: 'chaos', label: 'Chaos', hint: 'autonomous clicker' },
   { id: 'ai', label: 'AI Explore', hint: 'LLM-driven walk' },
   { id: 'routes', label: 'Routes', hint: 'per-route roll-up' },
@@ -24,7 +26,7 @@ const TABS: Array<{ id: TabId; label: string; hint: string }> = [
 export default function TestingClient() {
   const [tab, setTab] = useQueryState(
     'tab',
-    parseAsStringEnum<TabId>(['test-runs', 'chaos', 'ai', 'live', 'routes', 'packaged', 'llm']).withDefault('test-runs'),
+    parseAsStringEnum<TabId>(['test-runs', 'chaos', 'ai', 'live', 'routes', 'packaged', 'llm', 'memory']).withDefault('test-runs'),
   );
 
   return (
@@ -48,6 +50,7 @@ export default function TestingClient() {
       <main className="pc-test-main">
         {tab === 'test-runs' && <TestRunsTab />}
         {tab === 'live' && <LiveMetricsTab />}
+        {tab === 'memory' && <MemoryTab />}
         {tab === 'chaos' && <ChaosTab />}
         {tab === 'ai' && <AIExploreTab />}
         {tab === 'routes' && <RoutesTab />}

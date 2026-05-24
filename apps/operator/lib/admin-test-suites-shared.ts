@@ -3,7 +3,8 @@ export type AdminTestSuiteId =
   | 'admin-testing-core'
   | 'admin-testing-extended'
   | 'desktop-performance'
-  | 'packaged-readiness';
+  | 'packaged-readiness'
+  | 'memory-core';
 
 export type AdminTestStatus = 'pass' | 'warn' | 'fail' | 'skip';
 export type AdminTestRunStatus = 'running' | 'done' | 'error' | 'cancelled';
@@ -117,6 +118,16 @@ export const ADMIN_TEST_SUITES: AdminTestSuiteSpec[] = [
     estimatedSeconds: 5,
     safeDefault: false,
     tags: ['packaged', 'wdio', 'tauri-driver'],
+  },
+  {
+    id: 'memory-core',
+    label: 'Memory system',
+    hint: 'mem0 round-trip, tenancy, TTL',
+    description: 'End-to-end check of the mem0 memory system: pgvector + client + embedder, per-user / workspace-shared scoping, CRUD round-trip, TTL cleanup, pre-turn injection, feedback signal, performance budgets. Requires an embedder (OpenAI key OR local transformers).',
+    runner: 'host',
+    estimatedSeconds: 30,
+    safeDefault: true,
+    tags: ['memory', 'mem0', 'pgvector'],
   },
 ];
 

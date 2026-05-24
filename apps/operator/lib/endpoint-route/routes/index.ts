@@ -272,6 +272,10 @@ import adminTestingAiExplore from './admin/testing-ai-explore';
 import adminTestingTestRuns from './admin/testing-test-runs';
 import adminTestingTestRunsById from './admin/testing-test-runs-by-id';
 import adminTestingTestRunsCancel from './admin/testing-test-runs-cancel';
+import adminTestingMemoryHealth from './admin/testing-memory-health';
+import adminTestingMemoryPreflight from './admin/testing-memory-preflight';
+import adminTestingMemoryChecks from './admin/testing-memory-checks';
+import adminTestingMemoryProbe from './admin/testing-memory-probe';
 import workspaces from './workspaces/index';
 import workspaceById from './workspaces/by-id';
 import workspaceSwitch from './workspaces/switch';
@@ -593,6 +597,10 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(adminTestingTestRuns as AnyRoute),
   ...flatten(adminTestingTestRunsById as AnyRoute),
   ...flatten(adminTestingTestRunsCancel as AnyRoute),
+  ...flatten(adminTestingMemoryHealth as AnyRoute),
+  ...flatten(adminTestingMemoryPreflight as AnyRoute),
+  ...flatten(adminTestingMemoryChecks as AnyRoute),
+  ...flatten(adminTestingMemoryProbe as AnyRoute),
   ...flatten(workspaces as AnyRoute[]),
   ...flatten(workspaceById as AnyRoute[]),
   ...flatten(workspaceSwitch as AnyRoute),

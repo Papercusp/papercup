@@ -136,7 +136,39 @@ function getSuiteChecks(ctx: SuiteContext): Array<{
       return desktopPerformanceChecks(ctx);
     case 'packaged-readiness':
       return packagedReadinessChecks(ctx);
+    case 'memory-core':
+      return memoryCoreChecks(ctx);
   }
+}
+
+function memoryCoreChecks(_ctx: SuiteContext) {
+  const runId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+  return [
+    {
+      id: 'memory-suite',
+      label: 'Memory system end-to-end',
+      run: async () => {
+        const { buildMemoryCoreChecks } = await import('./memory/suite/checks');
+        const checks = buildMemoryCoreChecks(runId);
+        let failed = 0, warned = 0, passed = 0, skipped = 0;
+        const failures: string[] = [];
+        for (const c of checks) {
+          const r = await c.run();
+          if (r.status === 'fail') { failed += 1; failures.push(`${c.id}: ${r.actual}`); }
+          else if (r.status === 'warn') warned += 1;
+          else if (r.status === 'pass') passed += 1;
+          else skipped += 1;
+        }
+        const status: 'pass' | 'warn' | 'fail' = failed > 0 ? 'fail' : warned > 0 ? 'warn' : 'pass';
+        return {
+          status,
+          expected: 'All memory-system sub-checks pass.',
+          actual: `${passed} pass · ${warned} warn · ${failed} fail · ${skipped} skip · ${checks.length} total`,
+          details: failures.length > 0 ? failures.slice(0, 8) : undefined,
+        };
+      },
+    },
+  ];
 }
 
 async function executeCheck(
