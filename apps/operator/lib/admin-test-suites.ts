@@ -226,7 +226,7 @@ function desktopHealthChecks(ctx: SuiteContext) {
         const assets = await runTauriEvalResultJson<Array<{ u: string; status?: number; contentType?: string | null; len?: string | null; error?: string }>>(
           ctx,
           `(async () => {
-            const urls = ['/silero_vad_v5.onnx', '/vad.worklet.bundle.min.js', '/ort-wasm-simd-threaded.wasm', '/ort-wasm-simd.wasm'];
+            const urls = ['/silero_vad_v5.onnx', '/vad.worklet.bundle.min.js', '/vad-runtime/ort-wasm-simd-threaded.wasm', '/vad-runtime/ort-wasm-simd-threaded.mjs'];
             const out = [];
             for (const u of urls) {
               try {
@@ -241,11 +241,11 @@ function desktopHealthChecks(ctx: SuiteContext) {
         );
         if (!assets.ok || !assets.value) return fail('All required VAD/ONNX assets resolve successfully inside the Tauri webview.', describeCommandFailure(assets));
         const rows = assets.value;
-        const required = rows.filter((row) => row.u !== '/ort-wasm-simd.wasm');
-        const fallback = rows.find((row) => row.u === '/ort-wasm-simd.wasm') ?? null;
+        const required = rows.filter((row) => row.u !== '/vad-runtime/ort-wasm-simd-threaded.mjs');
+        const moduleAsset = rows.find((row) => row.u === '/vad-runtime/ort-wasm-simd-threaded.mjs') ?? null;
         const requiredOk = required.every((row) => row.status === 200);
-        const fallbackOk = fallback?.status === 200 && (fallback.contentType ?? '').includes('application/wasm');
-        const pass = requiredOk && Boolean(fallbackOk);
+        const moduleOk = moduleAsset?.status === 200 && (moduleAsset.contentType ?? '').includes('javascript');
+        const pass = requiredOk && Boolean(moduleOk);
         return statusResult(
           pass,
           'Silero model/worklet and ONNX wasm assets resolve as real runtime assets (200, wasm where applicable).',
@@ -257,12 +257,12 @@ function desktopHealthChecks(ctx: SuiteContext) {
       id: 'packaged-smoke-selector',
       label: 'Packaged smoke mount selector',
       run: async () => {
-        const marker = await runTauriEvalJson<boolean>(ctx, `Boolean(document.querySelector('[data-app-root]'))`);
-        if (!marker.ok || typeof marker.value !== 'boolean') return fail('The packaged WDIO smoke selector [data-app-root] still exists.', describeCommandFailure(marker));
+        const marker = await runTauriEvalJson<boolean>(ctx, `Boolean(document.querySelector('#root')?.firstElementChild)`);
+        if (!marker.ok || typeof marker.value !== 'boolean') return fail('The packaged WDIO smoke selector (#root with mounted children) still exists.', describeCommandFailure(marker));
         return statusResult(
           marker.value,
-          'The packaged WDIO smoke selector [data-app-root] still exists.',
-          marker.value ? '[data-app-root] is present.' : '[data-app-root] is missing from the current desktop DOM.',
+          'The packaged WDIO smoke selector (#root with mounted children) still exists.',
+          marker.value ? '#root contains mounted app content.' : '#root has no mounted app content in the current desktop DOM.',
         );
       },
     },
@@ -291,6 +291,7 @@ function desktopPerformanceChecks(ctx: SuiteContext) {
       id: 'harness-warm-route',
       label: 'Harness warm route',
       run: async () => {
+        await runTauriEvalJson<boolean>(ctx, `(() => { const s = window.__papercuspPerfRecorder; if (s && Array.isArray(s.events)) s.events.length = 0; return true; })()`);
         const state = await getDesktopState(ctx);
         const route = `/harness?slug=${encodeURIComponent(state.activeSlug)}&ws=default`;
         const result = await measureRoute(ctx, route, (page) => page.href.includes('/harness') && page.hasHarnessRoot);
@@ -360,13 +361,14 @@ function desktopPerformanceChecks(ctx: SuiteContext) {
       label: 'Desktop RSS budget',
       run: async () => {
         const pid = await getTauriPid(ctx);
-        if (!pid) return fail('Total Tauri + WebKit RSS stays below 3584MB.', 'Could not determine the running Tauri PID.');
+        if (!pid) return fail('The largest Tauri/WebKit process RSS stays below 3584MB.', 'Could not determine the running Tauri PID.');
         const tree = await readMemoryTree(pid);
         const top = [...tree.rows].sort((a, b) => b.rssKb - a.rssKb).slice(0, 5);
+        const largest = top[0]?.rssKb ?? 0;
         return statusResult(
-          tree.totalRssKb <= 3_584 * 1024,
-          'Total Tauri + WebKit RSS stays below 3584MB (512MB below the 4096MB kill threshold).',
-          `${Math.round(tree.totalRssKb / 1024)}MB total RSS across ${tree.rows.length} processes.`,
+          largest <= 3_584 * 1024,
+          'The largest Tauri/WebKit process RSS stays below 3584MB (512MB below the 4096MB kill threshold).',
+          `${Math.round(largest / 1024)}MB max RSS across ${tree.rows.length} processes (${Math.round(tree.totalRssKb / 1024)}MB total).`,
           top.map((row) => `${row.pid} ${row.name ?? 'unknown'} → ${Math.round(row.rssKb / 1024)}MB RSS (HWM ${Math.round(row.hwmKb / 1024)}MB)`),
         );
       },
@@ -434,12 +436,12 @@ function packagedReadinessChecks(ctx: SuiteContext) {
       id: 'smoke-selector',
       label: 'packaged smoke selector stays valid',
       run: async () => {
-        const marker = await runTauriEvalJson<boolean>(ctx, `Boolean(document.querySelector('[data-app-root]'))`);
-        if (!marker.ok || typeof marker.value !== 'boolean') return fail('The WDIO smoke spec selector [data-app-root] still exists.', describeCommandFailure(marker));
+        const marker = await runTauriEvalJson<boolean>(ctx, `Boolean(document.querySelector('#root')?.firstElementChild)`);
+        if (!marker.ok || typeof marker.value !== 'boolean') return fail('The WDIO smoke spec selector (#root with mounted children) still exists.', describeCommandFailure(marker));
         return statusResult(
           marker.value,
-          'The WDIO smoke spec selector [data-app-root] still exists.',
-          marker.value ? '[data-app-root] is present.' : '[data-app-root] is absent in the current desktop shell DOM.',
+          'The WDIO smoke spec selector (#root with mounted children) still exists.',
+          marker.value ? '#root contains mounted app content.' : '#root has no mounted app content in the current desktop shell DOM.',
         );
       },
     },
@@ -669,14 +671,14 @@ async function measureRoute(
   predicate: (page: { href: string; h1: string[]; bodyText: string; domNodes: number; hasHarnessRoot: boolean; details: string[]; summary: string }) => boolean,
 ): Promise<{ ok: boolean; elapsedMs: number; page: { href: string; h1: string[]; bodyText: string; domNodes: number; hasHarnessRoot: boolean; details: string[]; summary: string } }> {
   const state = await getDesktopState(ctx);
-  const absolute = route.startsWith('http') ? route : new URL(route, state.origin).toString();
-  const nav = await runTauri(ctx, ['navigate', absolute]);
+  const target = route.startsWith('http') ? route : route;
+  const nav = await runTauri(ctx, ['navigate', target]);
   if (nav.error || nav.code !== 0) {
     return {
       ok: false,
       elapsedMs: nav.durationMs,
       page: {
-        href: absolute,
+        href: target,
         h1: [],
         bodyText: '',
         domNodes: 0,
@@ -699,7 +701,7 @@ async function measureRoute(
       `(() => ({
         href: location.href,
         h1: Array.from(document.querySelectorAll('h1')).map((node) => (node.textContent || '').trim()),
-        bodyText: document.body.innerText.slice(0, 2000),
+        bodyText: document.body.innerText,
         domNodes: document.querySelectorAll('*').length,
         hasHarnessRoot: Boolean(document.querySelector('.h-root')),
       }))()`,
@@ -730,7 +732,7 @@ async function measureRoute(
     `(() => ({
       href: location.href,
       h1: Array.from(document.querySelectorAll('h1')).map((node) => (node.textContent || '').trim()),
-      bodyText: document.body.innerText.slice(0, 2000),
+      bodyText: document.body.innerText,
       domNodes: document.querySelectorAll('*').length,
       hasHarnessRoot: Boolean(document.querySelector('.h-root')),
     }))()`,

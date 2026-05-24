@@ -30,7 +30,7 @@ export default function LiveMetricsTab() {
     if (sort === 'ts') sorted.sort((a, b) => b.ts - a.ts);
     else if (sort === 'duration') sorted.sort((a, b) => b.duration - a.duration);
     else sorted.sort((a, b) => a.route.localeCompare(b.route));
-    return sorted.slice(0, 200);
+    return sorted.slice(0, 50);
   }, [events, kindFilter, routeFilter, sort]);
 
   const counts = useMemo(() => {

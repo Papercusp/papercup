@@ -8,11 +8,11 @@ import { browser } from "@wdio/globals";
 
 describe("Packaged Papercusp desktop binary", () => {
   it("loads the operator UI and reports web-vitals", async () => {
-    // Wait for the Next.js app inside the webview to render the root layout.
+    // Wait for the operator UI inside the webview to mount real app content.
     await browser.waitUntil(
       async () =>
         await browser.execute(
-          () => !!document.querySelector("[data-app-root]")
+          () => Boolean(document.querySelector('#root')?.firstElementChild)
         ),
       { timeout: 30_000, timeoutMsg: "operator UI did not mount in 30s" }
     );

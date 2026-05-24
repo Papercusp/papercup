@@ -26,7 +26,7 @@ export interface PerfEvent {
 }
 
 const LS_KEY = 'papercusp.testing.perf-events.v1';
-const MAX_EVENTS = 1000;
+const MAX_EVENTS = 250;
 const FLUSH_INTERVAL_MS = 5_000;
 
 interface RecorderState {
