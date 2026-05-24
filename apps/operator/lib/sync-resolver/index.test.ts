@@ -96,12 +96,26 @@ describe('sync-resolver v2 registry', () => {
       }
     });
 
-    it('exposes 31 migrated entries total (running count)', () => {
+    it('includes batch 8 migrated names', () => {
+      const names = knownQueryNamesV2();
+      for (const expected of [
+        'featureNotes.byHarness',
+        'featureDebugNotes.byHarness',
+        'featureAudit.byHarness',
+        'chunkPlans.byHarness',
+        'chunkPlans.byFeature',
+        'delegates.byWorkspace',
+      ]) {
+        expect(names).toContain(expected);
+      }
+    });
+
+    it('exposes 37 migrated entries total (running count)', () => {
       // Reminder: total live count is 51. Update this assertion as
       // each batch lands; deliberately conservative so future drift is
       // surfaced (an entry added without bumping the count is silently
       // miscoded if the assertion is too loose).
-      expect(knownQueryNamesV2()).toHaveLength(31);
+      expect(knownQueryNamesV2()).toHaveLength(37);
     });
   });
 
@@ -146,8 +160,8 @@ describe('sync-resolver v2 registry', () => {
       // NOT been migrated yet — they must still fall through to the
       // legacy resolver. Update this list as each migrates.
       expect(isRegisteredV2('plans.list')).toBe(false);
-      expect(isRegisteredV2('chunkPlans.byFeature')).toBe(false);
       expect(isRegisteredV2('orgCharter.byOrg')).toBe(false);
+      expect(isRegisteredV2('projectSpecRevisions.byProject')).toBe(false);
       expect(isRegisteredV2('totally.unknown')).toBe(false);
       expect(isRegisteredV2('')).toBe(false);
     });

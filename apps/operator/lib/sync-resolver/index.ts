@@ -724,6 +724,129 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     },
   },
 
+  // ── Batch 8: featureNotes / featureDebugNotes / featureAudit / chunkPlans / delegates ─
+
+  // featureNotes.byHarness — feature notes ordered by featureId asc.
+  //   zql.harnessFeatureNotes.where(harnessSlug).orderBy('featureId', 'asc')
+  'featureNotes.byHarness': {
+    argsSchema: z.object({ harnessSlug: z.string() }),
+    resolve: async (args) => {
+      const { harnessSlug } = args as { harnessSlug: string };
+      const { getOrgPg, generated } = await import('@restart/db-org');
+      const { asc, eq } = await import('drizzle-orm');
+      const t = generated.harnessFeatureNotesInHarnessShared;
+      const { db } = getOrgPg();
+      return (await db
+        .select()
+        .from(t)
+        .where(eq(t.harnessSlug, harnessSlug))
+        .orderBy(asc(t.featureId))) as unknown[];
+    },
+  },
+
+  // featureDebugNotes.byHarness — debug notes ordered by featureId asc.
+  //   zql.harnessFeatureDebugNotes.where(harnessSlug).orderBy('featureId', 'asc')
+  'featureDebugNotes.byHarness': {
+    argsSchema: z.object({ harnessSlug: z.string() }),
+    resolve: async (args) => {
+      const { harnessSlug } = args as { harnessSlug: string };
+      const { getOrgPg, generated } = await import('@restart/db-org');
+      const { asc, eq } = await import('drizzle-orm');
+      const t = generated.harnessFeatureDebugNotesInHarnessShared;
+      const { db } = getOrgPg();
+      return (await db
+        .select()
+        .from(t)
+        .where(eq(t.harnessSlug, harnessSlug))
+        .orderBy(asc(t.featureId))) as unknown[];
+    },
+  },
+
+  // featureAudit.byHarness — feature audit log, newest first, cap 2000.
+  //   zql.featureAuditConsolidated.where(harnessSlug).orderBy('ts', 'desc').limit(2000)
+  'featureAudit.byHarness': {
+    argsSchema: z.object({ harnessSlug: z.string() }),
+    resolve: async (args) => {
+      const { harnessSlug } = args as { harnessSlug: string };
+      const { getOrgPg, generated } = await import('@restart/db-org');
+      const { desc, eq } = await import('drizzle-orm');
+      const t = generated.featureAuditConsolidatedInHarnessShared;
+      const { db } = getOrgPg();
+      return (await db
+        .select()
+        .from(t)
+        .where(eq(t.harnessSlug, harnessSlug))
+        .orderBy(desc(t.ts))
+        .limit(2000)) as unknown[];
+    },
+  },
+
+  // chunkPlans.byHarness — all chunk plans for a harness, ordered.
+  //   zql.harnessChunkPlans.where(harnessSlug)
+  //                        .orderBy('featureId', 'asc').orderBy('chunkIndex', 'asc')
+  'chunkPlans.byHarness': {
+    argsSchema: z.object({ harnessSlug: z.string() }),
+    resolve: async (args) => {
+      const { harnessSlug } = args as { harnessSlug: string };
+      const { getOrgPg, generated } = await import('@restart/db-org');
+      const { asc, eq } = await import('drizzle-orm');
+      const t = generated.harnessChunkPlansInHarnessShared;
+      const { db } = getOrgPg();
+      return (await db
+        .select()
+        .from(t)
+        .where(eq(t.harnessSlug, harnessSlug))
+        .orderBy(asc(t.featureId), asc(t.chunkIndex))) as unknown[];
+    },
+  },
+
+  // chunkPlans.byFeature — chunk plans filtered by harness+feature.
+  //   zql.harnessChunkPlans.where(harnessSlug).where(featureId)
+  //                        .orderBy('chunkIndex', 'asc')
+  'chunkPlans.byFeature': {
+    argsSchema: z.object({ harnessSlug: z.string(), featureId: z.string() }),
+    resolve: async (args) => {
+      const { harnessSlug, featureId } = args as { harnessSlug: string; featureId: string };
+      const { getOrgPg, generated } = await import('@restart/db-org');
+      const { and, asc, eq } = await import('drizzle-orm');
+      const t = generated.harnessChunkPlansInHarnessShared;
+      const { db } = getOrgPg();
+      return (await db
+        .select()
+        .from(t)
+        .where(and(eq(t.harnessSlug, harnessSlug), eq(t.featureId, featureId)))
+        .orderBy(asc(t.chunkIndex))) as unknown[];
+    },
+  },
+
+  // delegates.byWorkspace — delegate sessions filtered by workspace+status.
+  //   zql.delegates.where(workspace).where(status).orderBy('lastActiveAt', 'desc').limit(limit)
+  // Note: field is `workspace` (not workspaceId) per the legacy ZQL schema.
+  'delegates.byWorkspace': {
+    argsSchema: z.object({
+      workspace: z.string(),
+      status: z.string().default('open'),
+      limit: z.number().int().positive().max(500).default(50),
+    }),
+    resolve: async (args) => {
+      const { workspace, status, limit } = args as {
+        workspace: string;
+        status: string;
+        limit: number;
+      };
+      const { getOrgPg, generated } = await import('@restart/db-org');
+      const { and, desc, eq } = await import('drizzle-orm');
+      const t = generated.delegatesInHarnessShared;
+      const { db } = getOrgPg();
+      return (await db
+        .select()
+        .from(t)
+        .where(and(eq(t.workspace, workspace), eq(t.status, status)))
+        .orderBy(desc(t.lastActiveAt))
+        .limit(limit)) as unknown[];
+    },
+  },
+
   // userActions.byKind — harness+workspace+kind-filtered action log.
   //   zql.userActions.where(harnessSlug).where(workspaceId).where(kind)
   //                  .orderBy('startedAt', 'desc').limit(limit)
