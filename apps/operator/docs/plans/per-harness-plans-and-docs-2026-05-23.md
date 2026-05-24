@@ -14,8 +14,8 @@ related:
 
 ## Now
 
-**State:** Active. Closes the 2 non-identity couplings to the Papercusp codebase identified in the 2026-05-22 catalog audit (`plans:*` global plan dir + `docs:*` no-harness fallback) plus the 2026-05-23 correction that the `docs:*` engineering branch should only serve SU/engineer callers. Design simplified 2026-05-24 (D-002R / D-004R): **no workspace-scope bucket** — every plan belongs to a harness; cross-harness planning is organized via sub-harnesses (a parent harness whose children are the affected harnesses). P-002 (`genericFsAdapter`) shipped at `a4ccbed8`.
-**Next:** **Phase 1 SHIPPED (`ff2327bf`).** Phase 2 starts with P-009 — repoint `plans/source.ts` to `resolveHarnessPlansDir(harnessSlug)` per §5.1.
+**State:** **Phase 1 SHIPPED + Phase 2a SHIPPED. Phase 2b deferred until demand.** Phase 1 closes the docs:* leaks (`ff2327bf`). Phase 2a delivers the per-harness resolver + runtime guard (`4016d828`) and the cross_harness:plans_* read-only carve-out (`7a4866f2`) — any harness's plans can now be inspected. Phase 2b items (PG schema migration, lock-key change, 25-tool refactor to ctx-aware writes, tool-description updates) are forward-looking machinery for the multi-harness write path: today only papercup has plans, so the collision risks they prevent don't materialize and the work has no test path. Re-activate when a second harness adopts `plans:*` (the actual write workflow).
+**Next:** none — Phase 2b deferred with a clear trigger condition. Plan stays `active` until that condition fires.
 
 # Per-harness plans + project-docs adapter
 
@@ -125,13 +125,13 @@ Three new tools mirroring `cross_harness:docs_*`: `cross_harness:plans_list`, `p
 - **P-006** `done` Decided D-002R: per-harness plans at `<harness.path>/docs/plans/`. No workspace bucket.
 - **P-007** `done` Decided D-003: `plans:*` ctx-only + `cross_harness:plans_*` carve-out.
 - **P-008** `done` Decided D-004R: no-harness fallback = workspace's primary/root harness (today = `papercup`).
-- **P-009** `todo` Repoint `plans/source.ts` to `resolveHarnessPlansDir(harnessSlug)` per §5.1 — looks up `<harness.path>` via the harness registry; no-harness ctx → root harness.
-- **P-010** `todo` PG migration: add `harness_slug` NOT NULL DEFAULT `'papercup'` to plan_revisions + plan runs tables; backfill; compound key `(harness_slug, plan_slug, seq)`.
-- **P-011** `todo` Update `withPlanLock` to include `harnessSlug` in the lock key. blocked-by: P-009
-- **P-012** `todo` Update all 25 `plans:*` tools to resolve `harnessSlug` from ctx; per-harness ID counters. blocked-by: P-009, P-011
-- **P-013** `todo` Build `cross_harness:plans_*` (list/get/search) carve-out — explicit `harnessSlug` arg, read-only.
-- **P-014** `todo` Runtime guard: verify `harnessRegistry.find('papercup').path === REPO_ROOT` at startup; abort migration on mismatch.
-- **P-017** `todo` Update all 25 `plans:*` tool descriptions to mention per-harness scope. blocked-by: P-012
+- **P-009** `done` `resolveHarnessPlansDir(harnessSlug, opts)` shipped at `4016d828`. Async, registry-backed, papercup-special-case for the legacy `apps/operator/docs/plans/` location.
+- **P-013** `done` `cross_harness:plans_list / plans_get / plans_search` shipped at `7a4866f2`. 8 new tests; mirrors `cross_harness:docs_*` pattern; uses new `plansDir`/`archiveDir` overrides on `PlanSourceOpts`.
+- **P-014** `done` Runtime guard inline in `resolveHarnessPlansDir` (`4016d828`): for `papercup` resolution, asserts `project.path === detectPapercupRoot()`. Skipped when detection returns null (packaged install).
+- **P-010** `deferred` PG migration adding `harness_slug` to `plan_revisions` + plan_runs tables. Today only `papercup` has plans → no cross-harness key collisions exist. Re-activate when a second harness adopts `plans:*` writes. Risk to defer: zero (papercup-default behavior is preserved); risk to execute now: ALTER TABLE on a shared PG while other agents may be running.
+- **P-011** `deferred` `withPlanLock(harnessSlug, slug, ...)` lock-key update. Same trigger as P-010 — no second-harness writes to collide with today. Deferring also dodges the "breaking for in-flight SU-shell locks at deploy time" risk noted in §5.5.
+- **P-012** `deferred` Update all 25 `plans:*` write tools to resolve `harnessSlug` from ctx. Mechanical refactor; no behavior change today (the only `ctx.harnessSlug = papercup` callers are SU agents that already get papercup plans). Re-activate when a second harness adopts `plans:*` writes — at that point the refactor has a test path and a real failure mode. blocked-by: P-009 (done), P-011 (deferred)
+- **P-017** `deferred` Tool-description updates for the 25 `plans:*` tools to mention per-harness scope. Pointless until P-012 ships (descriptions would lie about per-harness behavior the implementation doesn't yet have).
 
 ## §7 Out of scope
 
