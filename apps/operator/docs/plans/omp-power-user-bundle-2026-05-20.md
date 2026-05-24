@@ -27,8 +27,12 @@ entirely cross-plan or a deploy step:
   `apps/operator/scripts/hooks/omp/coord-hook.ts` (6 handlers,
   incl. `onToolCall` lock enforcement) — the bundle's `hooks[]`
   is now non-empty (§4.3.1, D-008a).
-- **(cross-plan)** Audience-neutral rewrite of `papercusp-su.tools.md`
-  (D-008b, locks plan owner).
+- **(done 2026-05-24)** Audience-neutral rewrite of `papercusp-su.tools.md`
+  (D-008b) — Phase 1 shipped via `playbook-audience-neutral-rewrite-2026-05-23` plan:
+  intro paragraph neutralized + orientation section added; file renamed to
+  `papercusp-su-engineer.tools.md` (D-003a); `papercusp-su-power.tools.md`
+  drafted as Phase 2 groundwork. Phase 2 full split blocked on
+  `omp-profile-system` plan (MCP-server-side tool filtering).
 - **(deploy)** Rebuild the desktop operator sidecar so the new
   routes + navbar button go live in the packaged app. The dev
   server already serves everything; the packaged app picks it up on

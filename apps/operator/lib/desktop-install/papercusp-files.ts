@@ -140,13 +140,13 @@ function resolveOperatorAppRoot(): string {
  * Tauri sidecar layout where `__dirname` collapses to `sidecar/`.
  */
 function playbookCandidates(operatorAppRoot: string, explicitRoot: boolean): string[] {
-  const fromRoot = [path.join(operatorAppRoot, 'prompts', 'papercusp-su.tools.md')];
+  const fromRoot = [path.join(operatorAppRoot, 'prompts', 'papercusp-su-engineer.tools.md')];
   if (explicitRoot) return fromRoot;
   const sidecarRoot = process.cwd();
   return [
     ...fromRoot,
-    path.join(sidecarRoot, 'apps', 'operator', 'prompts', 'papercusp-su.tools.md'),
-    path.join(sidecarRoot, 'prompts', 'papercusp-su.tools.md'),
+    path.join(sidecarRoot, 'apps', 'operator', 'prompts', 'papercusp-su-engineer.tools.md'),
+    path.join(sidecarRoot, 'prompts', 'papercusp-su-engineer.tools.md'),
   ];
 }
 

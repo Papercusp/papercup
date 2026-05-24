@@ -1,7 +1,7 @@
 ---
 title: Playbook audience-neutral rewrite — papercusp-su.tools.md for the power-engineer audience
 slug: playbook-audience-neutral-rewrite-2026-05-23
-status: draft
+status: active
 created: 2026-05-23
 updated: 2026-05-23
 owner: pandawamble@gmail.com
@@ -15,7 +15,7 @@ related:
 
 **State:** Draft. Closes `omp-power-user-bundle` D-008b ("audience-neutral rewrite of papercusp-su.tools.md"). The catalog-split audit (2026-05-22) makes it clear the playbook today is written for a single audience (Papercusp engineer) while the bundle ships it to a different one (power-engineer on any harness) — ~150 of the tools described don't apply to that audience.
 
-**Next:** User ratifies P-001 / P-006 / P-007 (3 `needs-human` items). P-001 ungates the interim rewrite (Phase 1, shippable now). Phase 2 is blocked on a separate profile-system plan that doesn't yet exist.
+**Next:** Phase 2 P-010 / P-011 blocked on `omp-profile-system` plan (MCP-server-side tool filtering + installer `--profile` flag). Draft that plan to unblock.
 
 # Playbook audience-neutral rewrite
 
@@ -86,20 +86,20 @@ Two playbooks:
 
 ## Phase 1 — interim audience-neutralization
 
-- **P-001** `needs-human` Decide interim approach. Recommendation: neutralize-now + full-split-later (D-001a). See §3.
-- **P-002** `todo` Patch playbook intro framing in `apps/operator/prompts/papercusp-su.tools.md` per §4. blocked-by: P-001
-- **P-003** `todo` Add the "Working on Papercusp vs working on a harness" orientation section. blocked-by: P-001
-- **P-004** `todo` Re-run `install-standalone-mcp.sh` (or have the user run it) to refresh `~/.papercusp/engineer-collaborator.md`. blocked-by: P-002, P-003
-- **P-005** `todo` Update `omp-power-user-bundle-2026-05-20`'s D-008b note to reflect Phase 1 shipped + Phase 2 blocked.
+- **P-001** `done` Decide interim approach → D-001: neutralize-now + full-split-later (auto-ratified 2026-05-24).
+- **P-002** `done` Patched playbook intro framing in `apps/operator/prompts/papercusp-su-engineer.tools.md` per §4.
+- **P-003** `done` Added "Working context: Papercusp vs a harness" orientation section.
+- **P-004** `done` Re-ran `install-standalone-mcp.sh`; `~/.papercusp/engineer-collaborator.md` refreshed.
+- **P-005** `done` Updated `omp-power-user-bundle-2026-05-20` D-008b note to reflect Phase 1 shipped + Phase 2 blocked.
 
 ## Phase 2 — full split
 
-- **P-006** `needs-human` Decide whether Phase 2 blocks on a separate profile-system plan. Recommendation: separate plan (D-002a). See §3.
-- **P-007** `needs-human` Decide split filename convention. Recommendation: `-engineer` + `-power` suffixes (D-003a). See §3.
-- **P-008** `todo` Write `papercusp-su-power.tools.md` — subset for power-engineer audience per §5. blocked-by: P-007, profile-system plan
-- **P-009** `todo` Rename `papercusp-su.tools.md` → `papercusp-su-engineer.tools.md` (per D-003a). Update all references in install script + repo. blocked-by: P-007
-- **P-010** `todo` Extend `install-standalone-mcp.sh` (or its successor — see `desktop-app-install-integration-2026-05-23`) with `--profile=engineer|power` (default engineer). blocked-by: P-008, P-009
-- **P-011** `todo` Update `omp-su` wrapper template to set `--profile` via env var or arg, in lockstep with which playbook was installed. blocked-by: P-010
+- **P-006** `done` Decide whether Phase 2 blocks on a separate profile-system plan → D-002: separate `omp-profile-system` plan (auto-ratified 2026-05-24).
+- **P-007** `done` Decide split filename convention → D-003: `-engineer` + `-power` suffixes (auto-ratified 2026-05-24).
+- **P-008** `done` Wrote `apps/operator/prompts/papercusp-su-power.tools.md` — power-engineer subset per §5.
+- **P-009** `done` Renamed `papercusp-su.tools.md` → `papercusp-su-engineer.tools.md`; updated all runtime references (install script, 4 TS files, 2 test files).
+- **P-010** `blocked` Extend `install-standalone-mcp.sh` with `--profile=engineer|power` (default engineer). blocked-by: omp-profile-system plan (MCP-server-side tool gating)
+- **P-011** `blocked` Update `omp-su` wrapper template to set `--profile` in lockstep with the installed playbook. blocked-by: P-010
 
 ## §6 Dependencies & out of scope
 
@@ -109,4 +109,14 @@ Two playbooks:
 
 ## Decisions
 
-(none yet — appended as `### D-NNN — title` when P-001 / P-006 / P-007 are ratified.)
+### D-001 — Interim audience-neutralization now, full split later
+
+Auto-ratified 2026-05-24. Rationale: minimal change, immediate correctness win for power-user sessions, doesn't commit to a profile system design before that system is designed. Phase 2 supersedes when `omp-profile-system` lands.
+
+### D-002 — Phase 2 blocked on a separate `omp-profile-system` plan
+
+Auto-ratified 2026-05-24. Rationale: the profile mechanism (MCP-server-side tool filtering, per-profile install paths, settings UI) is large enough to warrant its own plan. This plan tracks the playbook rewrite; the profile machinery is a dependency, not in scope here.
+
+### D-003 — Filename convention: `-engineer` + `-power` suffixes
+
+Auto-ratified 2026-05-24. Rationale: the `-engineer` / `-power` suffix maps 1:1 to the profile id, making the symmetry explicit. Asymmetric naming (`papercusp-su.tools.md` kept as engineer + new `-power` file) hides the structural symmetry and complicates future profile-system tooling.

@@ -27,7 +27,7 @@ function resolvePromptsDir(): string | null {
     resolvePath(cwd, '..', '..', 'prompts'),
     resolvePath(cwd, '..', '..', '..', 'prompts'),
   ]) {
-    if (existsSync(join(c, 'papercusp-su.tools.md'))) return c;
+    if (existsSync(join(c, 'papercusp-su-engineer.tools.md'))) return c;
   }
   return null;
 }
@@ -103,7 +103,7 @@ export default defineTool({
         { status: 500 },
       );
     }
-    const toolsmd = readFileSync(join(promptsDir, 'papercusp-su.tools.md'), 'utf8');
+    const toolsmd = readFileSync(join(promptsDir, 'papercusp-su-engineer.tools.md'), 'utf8');
     const personaPath = join(promptsDir, 'papercusp-su.persona.md');
     const persona = existsSync(personaPath) ? readFileSync(personaPath, 'utf8') : '';
     const skills = readDirFiles(join(promptsDir, 'power-user-skills'), ['.md']);

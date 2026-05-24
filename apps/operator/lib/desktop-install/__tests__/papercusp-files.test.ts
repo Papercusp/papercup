@@ -25,7 +25,7 @@ beforeEach(async () => {
   await fs.mkdir(path.join(tmpAppRoot, 'prompts'), { recursive: true });
   await fs.mkdir(path.join(tmpAppRoot, 'scripts', 'hooks', 'omp'), { recursive: true });
   await fs.writeFile(
-    path.join(tmpAppRoot, 'prompts', 'papercusp-su.tools.md'),
+    path.join(tmpAppRoot, 'prompts', 'papercusp-su-engineer.tools.md'),
     '# Playbook v1\n',
   );
   await fs.writeFile(
@@ -68,7 +68,7 @@ describe('installPapercuspFiles', () => {
 
     // Update source files in place — simulates an app update.
     await fs.writeFile(
-      path.join(tmpAppRoot, 'prompts', 'papercusp-su.tools.md'),
+      path.join(tmpAppRoot, 'prompts', 'papercusp-su-engineer.tools.md'),
       '# Playbook v2\n',
     );
     await fs.writeFile(
@@ -102,7 +102,7 @@ describe('installPapercuspFiles', () => {
   });
 
   it('missing playbook source: playbookWritten=false, no throw', async () => {
-    await fs.rm(path.join(tmpAppRoot, 'prompts', 'papercusp-su.tools.md'));
+    await fs.rm(path.join(tmpAppRoot, 'prompts', 'papercusp-su-engineer.tools.md'));
     const result = await installPapercuspFiles({ home: tmpHome, operatorAppRoot: tmpAppRoot });
     expect(result.playbookWritten).toBe(false);
     expect(result.playbookSource).toBe('');

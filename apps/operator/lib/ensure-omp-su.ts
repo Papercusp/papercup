@@ -168,7 +168,7 @@ export async function ensureOmpSuInstalled(): Promise<void> {
     dlog('source dir not found; skipping (cwd=' + process.cwd() + ')');
     return;
   }
-  const playbookSrc = join(sourceDir, 'prompts', 'papercusp-su.tools.md');
+  const playbookSrc = join(sourceDir, 'prompts', 'papercusp-su-engineer.tools.md');
   const coordSrc = join(sourceDir, 'scripts', 'hooks', 'omp', 'coord-hook.ts');
 
   if (existsSync(playbookSrc)) {

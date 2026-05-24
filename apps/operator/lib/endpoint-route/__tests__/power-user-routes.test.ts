@@ -107,7 +107,7 @@ vi.mock(import('node:fs'), async (importOriginal) => {
     }) as never,
     readFileSync: ((p: string, ...rest: unknown[]) => {
       if (typeof p === 'string') {
-        if (p.endsWith('papercusp-su.tools.md')) return '# papercusp-su tools.md FIXTURE\n';
+        if (p.endsWith('papercusp-su-engineer.tools.md')) return '# papercusp-su tools.md FIXTURE\n';
         if (p.endsWith('papercusp-su.persona.md')) return '# persona FIXTURE\n';
         if (p.endsWith('.persona.md')) return '# role persona stub\n';
         if (p.endsWith('.tools.md')) return '# role tools stub\n';

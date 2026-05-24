@@ -26,7 +26,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PLAYBOOK_PATH="${SCRIPT_DIR}/../prompts/papercusp-su.tools.md"
+PLAYBOOK_PATH="${SCRIPT_DIR}/../prompts/papercusp-su-engineer.tools.md"
 OPERATOR_URL="${PAPERCUSP_OPERATOR_URL:-http://localhost:3070}"
 TOKEN_PATH="${HOME}/.papercusp/superuser-token"
 
