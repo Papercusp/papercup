@@ -14,7 +14,8 @@ owner: avi@storewolf.com
 **State:** **draft execution plan.** Phase 1b status as of 2026-05-24 overnight loop:
 - ✅ **P-008** done (clone helper via `gh auth`, commit `6cc4f6c9`)
 - ✅ **Q-4** resolved (gh-token helper `80f2717a` + octokit-client wrapper `5ca301bc`)
-- ✅ **Q-2** resolved (JCS / RFC 8785 chosen; types module `contributor-file-types.ts` shipped at `258c94b6`)
+- ✅ **Q-2** resolved (JCS / RFC 8785 chosen; types module `contributor-file-types.ts` shipped at `258c94b6`) — see D-001
+- ✅ **Q-3** resolved (per-repo bulk `/collaborators` re-check + ETag-based 304s) — see D-002
 - 🟢 **Type spine COMPLETE** — four types-only modules in tree, one per memo + Channel 2 file:
   - P-068: `binding-types.ts` (`f05997aa`)
   - P-075: `binding-verifier-types.ts` (`778ea017`)
@@ -22,9 +23,9 @@ owner: avi@storewolf.com
   - P-075-Channel-2: `contributor-file-types.ts` (`258c94b6`)
   Runtime implementations gated on memo acceptance; types ready to consume verbatim.
 
-Remaining greenfield runtime: P-009 Entry 4 + P-011 attest.ts/keychain.ts + P-068 binding-service.ts + P-075 two-channel-verifier.ts — all design-gated.
+Remaining greenfield runtime: P-009 Entry 4 + P-011 attest.ts/keychain.ts + P-068 binding-service.ts + P-075 two-channel-verifier.ts — all design-gated. Of the four Phase 1b open questions, only **Q-1** remains (where the three design memos live on-disk — answer is `apps/operator/content/internal-docs/design/` per `## For the next agent`).
 
-**Next:** Write three design memos before any runtime P-task implementation starts: (1) Device attestation UX, (2) Two-channel binding verifier UX, (3) Canonical binding service API shape. When memos are accepted, the runtime implementers consume the four types-only modules already in tree; no design-vs-implementation race.
+**Next:** Write three design memos before any runtime P-task implementation starts: (1) Device attestation UX, (2) Two-channel binding verifier UX, (3) Canonical binding service API shape. When memos are accepted, the runtime implementers consume the four types-only modules already in tree + the Q-2 / Q-3 / Q-4 D-decisions; no design-vs-implementation race and no re-design round needed for the rate-limit strategy or canonical-form choice.
 
 ## Background
 
@@ -178,6 +179,55 @@ Date: 2026-05-24
 - Deterministic — RFC-specified, no implementation discretion on whitespace, field order, number-form, or string escaping.
 - Wide language support — Node, Go, Rust, Python all have RFC 8785 libs; matters for any future non-Node verifier (e.g. a CLI tool that re-checks bindings).
 - Already the consensus choice in adjacent Phase 1b types (`attestation-types.ts` references RFC 8785 in its serialization comment).
+
+
+### D-002 — Q-3 RESOLVED: P-068f daily re-check uses bulk per-repo /collaborators, not per-contributor calls
+Date: 2026-05-24
+**Question:** How does the daily permission re-check (P-068f) handle GitHub API rate limits at scale?
+
+**Resolution:** **Per-repo bulk pull via `GET /repos/{owner}/{repo}/collaborators?affiliation=all&per_page=100`** (paginated), not per-contributor calls. One paginated call returns every collaborator + their permission level. Diff against the cached `shared_repo_binding_cache` rows drives the `ChannelResult` transitions.
+
+### Rate-limit math
+
+GitHub authenticated rate limit: **5,000 req/hr per token** (15,000/hr for GitHub Apps). Per-repo cost: `ceil(collaborators / 100)` requests — typical median 1–2 reqs per repo.
+
+For a workspace with N shared harnesses:
+- **Per-contributor approach**: `Σ contributors` reqs/day. 100 contributors × 10 repos = 1,000 reqs/day.
+- **Per-repo bulk**: `Σ ceil(collaborators / 100)` reqs/day. Same scenario = ~10 reqs/day. **100× cheaper at typical scale.**
+
+A single OAuth token re-checks up to **120,000 repos/day** at 1 req each — far beyond any single-team deployment.
+
+### Why bulk over per-contributor
+
+`GET /user/{id}` returns no permission information. Per-user permission checks need `GET /repos/{owner}/{repo}/collaborators/{username}/permission` (cost: 1 req per `contributor × repo` per day). The bulk endpoint scales independently of contributor count.
+
+### Scheduling — stagger across the day
+
+Avoid burst contention at 00:00 UTC. Re-check on a per-harness staggered schedule, anchored on `harness_registry.created_ts` modulo 24h. A 100-harness workspace fans calls across the day at ~4 req/hr.
+
+### Backoff + caching
+
+- **Rate-limited (HTTP 403 + `X-RateLimit-Remaining: 0`)**: respect `X-RateLimit-Reset`, pause verifier until window resets. Mark in-flight contributors as `pending` with `pending_reason: 'github_api_rate_limited'` — UI shows ⏳ until re-check completes.
+- **Conditional requests (`If-None-Match` ETag)**: GitHub `304 Not Modified` **does not deduct** from rate-limit budget. Cache the previous ETag per repo in `shared_repo_binding_cache.last_collaborators_etag` (new column). 304 hits cost zero requests; idle workspaces consume zero budget.
+- **Cache TTL**: daily cadence is the default. ETag + 304 makes more frequent re-checks effectively free.
+
+### What this means for P-068's BindingService surface
+
+`BindingService.verifyPermissions(repoId)` becomes the bulk-collaborator-fetch path internally. Per-contributor `verifyPermission(repoId, githubUserId)` is a thin wrapper consulting the cached bulk result. Only fires a fresh fetch if `last_collaborators_etag_at` is older than `BULK_COLLABORATORS_REFRESH_INTERVAL_MS` (suggested: 4h). Keeps the BindingService API contract per-contributor (matches `binding-service-api` memo) while the implementation is per-repo (matches GitHub's endpoint shape).
+
+### Failure modes + UX
+
+- **Network down** → `pending` for the window, clears on next success. Copy per `two-channel-binding-ux` memo §"Re-verification timeout."
+- **Token revoked** → bulk calls 401; mark every contributor on the affected repo `unverified` (reason: `oauth_revoked`); surface "re-link GitHub" CTA in the workspace banner.
+- **Repo deleted / archived / lost access** → 404; emit `harness_escalations` row + Contributors tab marks the repo "disconnected — re-bind required."
+
+### Implementation gates
+
+- Adds `last_collaborators_etag TEXT` + `last_collaborators_etag_at TIMESTAMPTZ` to `shared_repo_binding_cache` (extends P-013a). Additive.
+- BindingService impl (P-068) consumes the strategy when its memo accepts.
+- Verifier daemon (P-075) consumes the same strategy for Channel 1's daily re-check when its memo accepts.
+
+No code committed yet — this D-decision pre-decides the approach so when memos pass, impl begins without a re-design round.
 
 ## Named fallback rollout
 
