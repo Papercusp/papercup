@@ -34,6 +34,18 @@ export async function register(): Promise<void> {
     console.warn('[host-platform] register failed (non-fatal):', err);
   }
 
+  // Drop the omp-su wrapper + its deps into the user's home so /adv
+  // OMP launches work out of the box. Fire-and-forget; never blocks
+  // operator startup.
+  try {
+    const { ensureOmpSuInstalled } = await import('./lib/ensure-omp-su');
+    ensureOmpSuInstalled().catch((e) =>
+      console.warn('[ensure-omp-su] failed (non-fatal):', e),
+    );
+  } catch (e) {
+    console.warn('[ensure-omp-su] import failed (non-fatal):', e);
+  }
+
   // Pty WS server: only when not opt-out and not running under Tauri.
   // Both early-exits below ONLY skip pty-ws — they fall through to the
   // schema pre-warm so desktop and PTY-disabled environments still get
