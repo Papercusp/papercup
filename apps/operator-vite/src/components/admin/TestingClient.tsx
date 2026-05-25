@@ -136,19 +136,28 @@ export default function TestingClient() {
         <h2 className="pc-test-section-label">Testing</h2>
         <nav aria-label="Testing tabs">
           {groupedTabs().map(({ tier, tabs }) => (
-            <div key={tier} className="pc-test-tab-group">
-              <div className="pc-test-tier-label">{TIER_LABELS[tier]}</div>
-              {tabs.map((t) => (
-                <button
-                  key={t.id}
-                  type="button"
-                  className={`pc-test-tab ${tab === t.id ? 'is-active' : ''}`}
-                  onClick={() => setTab(t.id)}
-                >
-                  <span className="pc-test-tab-label">{t.label}</span>
-                  <span className="pc-test-tab-hint">{t.hint}</span>
-                </button>
-              ))}
+            <div key={tier} className="pc-test-tab-group" data-tier={tier}>
+              <div className="pc-test-tier-label">
+                <span>{TIER_LABELS[tier]}</span>
+                <span className="pc-test-tier-count">{tabs.length}</span>
+              </div>
+              {tabs.map((t) => {
+                const active = tab === t.id;
+                return (
+                  <button
+                    key={t.id}
+                    type="button"
+                    className={`pc-test-tab ${active ? 'is-active' : ''}`}
+                    data-tier={tier}
+                    aria-current={active ? 'page' : undefined}
+                    aria-pressed={active}
+                    onClick={() => setTab(t.id)}
+                  >
+                    <span className="pc-test-tab-label">{t.label}</span>
+                    <span className="pc-test-tab-hint">{t.hint}</span>
+                  </button>
+                );
+              })}
             </div>
           ))}
         </nav>
