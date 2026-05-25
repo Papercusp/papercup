@@ -334,6 +334,7 @@ defineTestDomain({
         'apps/operator/app/_components/__tests__/UserPicker.test.tsx',
         'apps/operator/lib/__tests__/PluginIframe.test.tsx',
         'apps/operator/lib/__tests__/notify.test.ts',
+        'apps/operator/app/_components/__tests__/routePending.test.ts',
       ],
     },
   ],
