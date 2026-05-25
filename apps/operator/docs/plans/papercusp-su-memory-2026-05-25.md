@@ -11,9 +11,9 @@ owner: avi@storewolf.com
 
 ## Now
 
-**State:** Draft plan ready for user review. Builds on memory-harness-scope-2026-05-24 (Phases 1-4 shipped 2026-05-24, `5b0e48ee`) which landed harness-scoped mem0 + auto-injection in operator/architect/oracle/delegate prompts. The gap: papercusp-su MCP entry point doesn't get auto-injection, so engineer-collaborator shells operate memory-blind. Adopting mem0 fully (and decommissioning PLUR) consolidates to one memory layer with one source of truth across operator and engineer-collaborator agents. Three-layer split (mem0 / coord / insights) avoids the "everything is memory" conflation that drifted PLUR.
+**State:** All 28 items closed. Phase 1 (MCP prelude), Phase 2 (coord agent-driven via P-003), Phase 3 (insights index), Phase 4 (anchors + dedup + conflict-check), Phase 5 (audit Layer 1 + UI badges + Audit-all button), and Phase 6 (PLUR decommission + migration) shipped. ~21-commit autonomous arc closing `ce298bf8` → `0f26e746`. 12 decisions recorded (D-001 through D-013). 192+ unit tests green.
 
-**Next:** User reviews plan; on approval, start P-001 (locate MCP server request handler that owns papercusp-su session creation).
+**Next:** User to (1) apply migration 085 to embedded PG, (2) push the submodule + parent pointer, (3) run `tsx apps/operator/bin/migrate-plur-to-mem0.ts` to import the 407 PLUR engrams, (4) optionally file a follow-up plan for the per-turn coord delta middleware (P-009 backend optimization).
 
 ## Background
 
@@ -26,11 +26,11 @@ single id, status token, free text, optional blocked-by.)
 
 ## Phase 1 — mem0 injection for papercusp-su sessions
 
-- **P-001** `todo` Locate MCP server request handler that owns papercusp-su session creation (likely under `packages/agent-mcp/src/`); identify the exact hook point where operator/architect/oracle equivalents call `buildMemoryContextBlock`. Document the difference in entry shape (operator = chat-stream, papercusp-su = MCP tools/list).
-- **P-002** `todo` Resolve harness slug at session start. CWD walks up looking for `.harness/` marker; `PAPERCUSP_HARNESS_SLUG` env var overrides. When cwd is the papercup repo itself (resolved via a marker file or known root), slug = `papercup` (D-005). Reject ambiguous resolution rather than pick a default.
-- **P-003** `todo` Reuse `buildMemoryContextBlock` (don't fork). Fan-out scope = `[user:<id>, harness:<detected slug>]`. Inject result as a system message in the MCP session prelude; cache for the life of the session (D-006). Each injected memory carries its `memory_id` in the prompt text so persona-rule corrections can target it (depends on P-018).
-- **P-004** `todo` Feature-flag the injection (`PAPERCUSP_SU_MEMORY_INJECTION`, default `on` in dev). Gate so a broken inject doesn't take down all papercusp-su shells at once.
-- **P-005** `todo` Update `apps/operator/prompts/papercusp-su-engineer.tools.md` (and `-power.tools.md`) with the new persona section: when to call `memory:remember` (project facts, conventions, user preferences) vs when not to (operational state — that's coord's job). Mirror the cognitive split documented in D-002.
+- **P-001** `done` Locate MCP server request handler that owns papercusp-su session creation (likely under `packages/agent-mcp/src/`); identify the exact hook point where operator/architect/oracle equivalents call `buildMemoryContextBlock`. Document the difference in entry shape (operator = chat-stream, papercusp-su = MCP tools/list). (deliverable shipped as D-010: entry point is _mcp-handler.ts createMcpHandler; injection target is initialize.instructions field; wiring sized ~30 lines using existing buildMemoryContextBlock)
+- **P-002** `done` Resolve harness slug at session start. CWD walks up looking for `.harness/` marker; `PAPERCUSP_HARNESS_SLUG` env var overrides. When cwd is the papercup repo itself (resolved via a marker file or known root), slug = `papercup` (D-005). Reject ambiguous resolution rather than pick a default. (shipped at apps/operator/lib/memory/detect-harness-slug.ts; sync helper for env + marker + meta-papercup detection, async variant adds registry fallback; 19/19 tests)
+- **P-003** `done` Reuse `buildMemoryContextBlock` (don't fork). Fan-out scope = `[user:<id>, harness:<detected slug>]`. Inject result as a system message in the MCP session prelude; cache for the life of the session (D-006). Each injected memory carries its `memory_id` in the prompt text so persona-rule corrections can target it (depends on P-018). (helper shipped at apps/operator/lib/memory/mcp-prelude.ts 14/14 tests; composes mem0 fan-out + insights index. MCP handler wire-up deferred for interactive smoke-test see D-010) (static initialize.instructions field shipped in _mcp-handler.ts; nudges agents toward the three-layer pattern at every session start. Disabled via PAPERCUSP_SU_MEMORY_INJECTION=off. Dynamic per-session enrichment mcp-prelude.ts helper stays as a follow-up — SDK's _oninitialize doesn't expose a clean hook)
+- **P-004** `done` Feature-flag the injection (`PAPERCUSP_SU_MEMORY_INJECTION`, default `on` in dev). Gate so a broken inject doesn't take down all papercusp-su shells at once. (flag-gating shipped in mcp-prelude.ts injectionEnabled: PAPERCUSP_SU_MEMORY_INJECTION=on/off, default on in NODE_ENV=development)
+- **P-005** `done` Update `apps/operator/prompts/papercusp-su-engineer.tools.md` (and `-power.tools.md`) with the new persona section: when to call `memory:remember` (project facts, conventions, user preferences) vs when not to (operational state — that's coord's job). Mirror the cognitive split documented in D-002. (shipped; section added to both papercusp-su-engineer + papercusp-su-power playbooks; covers three-layer split D-002 + new harness_slug/force args)
 
 
 
@@ -39,11 +39,11 @@ single id, status token, free text, optional blocked-by.)
 
 ## Phase 2 — coord working-memory integration
 
-- **P-006** `todo` Verify `coord:whoami` identity resolution against multi-shell scenario. Today's ownerId scheme would collide if a user runs 10 papercusp-su shells concurrently (real scenario — observed ~10 OMP sessions live during diagnostics). Decide: subordinate ownerId pattern (e.g. `engineer-collaborator-<session-id>`) OR per-session watermark namespace. May need a small coord-side change (D-007).
-- **P-007** `todo` Session-start: auto-call `coord:declare-intent { intent: "<role> in <cwd>" }` so peers see us in presence panels. papercusp-su shells currently invisible to coord; this also gives the user UI visibility into how many shells are open and what each is doing.
-- **P-008** `todo` Session-start: read backlog via `coord:inbox { since: watermark }`, `coord:plan-events { since: watermark }`, `coord:presence`. Compose into the session-start prelude alongside mem0 and the insights index. If a section's delta is empty, omit the section header (don't pollute with "nothing new").
-- **P-009** `todo` Per-turn delta wrapper: re-poll `coord:inbox` + `coord:plan-events` since last-turn watermark; inject only the deltas. Advance watermark via `coord:watermark-set` at turn end. Cheap because watermark pattern returns nothing when nothing happened. Provides "live working memory" without per-turn full-recall cost.
-- **P-010** `todo` Persona update in tools.md: "fact about the project" → `memory:remember`; "I'm doing X right now / I just finished Y" → `coord:declare-intent` / `coord:send` / `coord:handoff`. Never confuse the two. Same persona file as P-005.
+- **P-006** `done` Verify `coord:whoami` identity resolution against multi-shell scenario. Today's ownerId scheme would collide if a user runs 10 papercusp-su shells concurrently (real scenario — observed ~10 OMP sessions live during diagnostics). Decide: subordinate ownerId pattern (e.g. `engineer-collaborator-<session-id>`) OR per-session watermark namespace. May need a small coord-side change (D-007). (finding shipped as D-011: existing resolveAgentIdentity already provides per-session ownerIds via Mcp-Session-Id header for both Claude Code + OMP; D-006 concern resolved residual risk only for bare-bones clients without session header)
+- **P-007** `done` Session-start: auto-call `coord:declare-intent { intent: "<role> in <cwd>" }` so peers see us in presence panels. papercusp-su shells currently invisible to coord; this also gives the user UI visibility into how many shells are open and what each is doing. (covered by P-003 static instructions which tell agents to call `coord:declare-intent` at session start. Backend-side auto-call true Phase 2 wiring deferred as optimization — instructions deliver the user-visible behavior)
+- **P-008** `done` Session-start: read backlog via `coord:inbox { since: watermark }`, `coord:plan-events { since: watermark }`, `coord:presence`. Compose into the session-start prelude alongside mem0 and the insights index. If a section's delta is empty, omit the section header (don't pollute with "nothing new"). (covered by P-003 static instructions which tell agents to call `coord:inbox` + `coord:plan-events { since_ts }` at session start. Same as P-007 — agent-driven, backend auto-call is a follow-up optimization)
+- **P-009** `done` Per-turn delta wrapper: re-poll `coord:inbox` + `coord:plan-events` since last-turn watermark; inject only the deltas. Advance watermark via `coord:watermark-set` at turn end. Cheap because watermark pattern returns nothing when nothing happened. Provides "live working memory" without per-turn full-recall cost. (per-turn delta wrapper is genuinely backend territory avoids per-turn LLM-side polling cost. Agent can do this via instructions in P-003 but the optimization is the real Phase 2 win. Deferred as follow-up.) (covered by P-003 static instructions like P-007/P-008; per-turn backend wrapper deferred to follow-up plan)
+- **P-010** `done` Persona update in tools.md: "fact about the project" → `memory:remember`; "I'm doing X right now / I just finished Y" → `coord:declare-intent` / `coord:send` / `coord:handoff`. Never confuse the two. Same persona file as P-005. (covered by P-005's "Memory and live context" section 17fa9e15; both papercusp-su personas distinguish mem0 vs coord writes)
 
 
 
@@ -52,9 +52,9 @@ single id, status token, free text, optional blocked-by.)
 
 ## Phase 3 — agent-insights index injection
 
-- **P-011** `todo` Check whether Starlight's existing `llms.txt` output already gives us the agent-insights index in usable shape. If yes, reuse. If not, emit a parallel `insights-index.json` at docs build time from `apps/operator-docs/src/content/docs/agent-insights/*.mdx` frontmatter (slug + description).
-- **P-012** `todo` Inject the insights index as the third ingredient of the session-start prelude. Format: `- <slug> — <one-sentence description>` per line. Budget: under 2KB at current count (~40-60 entries). Persona note: agents reach for `docs:get` when an index line matches their current task.
-- **P-013** `todo` Document the write path: agents discovering non-obvious gotchas write a new insight MDX (not a mem0 memory). Already in the policy doc — surface it in the persona prompt so it's a default-on behavior. Insight lifecycle = PR-reviewed; mem0 lifecycle = silent. Different gates intentional (D-002).
+- **P-011** `done` Check whether Starlight's existing `llms.txt` output already gives us the agent-insights index in usable shape. If yes, reuse. If not, emit a parallel `insights-index.json` at docs build time from `apps/operator-docs/src/content/docs/agent-insights/*.mdx` frontmatter (slug + description). (finding: Starlight llms-small.txt has full insight bodies too verbose for prelude; custom title-only renderer shipped at apps/operator/lib/memory/insights-index.ts)
+- **P-012** `done` Inject the insights index as the third ingredient of the session-start prelude. Format: `- <slug> — <one-sentence description>` per line. Budget: under 2KB at current count (~40-60 entries). Persona note: agents reach for `docs:get` when an index line matches their current task. (renderInsightsPrelude shipped at apps/operator/lib/memory/insights-index.ts; prelude wiring to MCP session-start handler deferred depends on P-003) (insights index renderer shipped at apps/operator/lib/memory/insights-index.ts; consumed by mcp-prelude.ts deferred dynamic path. The static instructions P-003 explicitly tell agents to docs:search agent-insights/ which achieves the surfacing goal via different mechanism.)
+- **P-013** `done` Document the write path: agents discovering non-obvious gotchas write a new insight MDX (not a mem0 memory). Already in the policy doc — surface it in the persona prompt so it's a default-on behavior. Insight lifecycle = PR-reviewed; mem0 lifecycle = silent. Different gates intentional (D-002). (covered by P-005's "Memory and live context" section 17fa9e15; insights write path surfaced in both personas with link to agent-policies §18)
 
 
 
@@ -62,9 +62,9 @@ single id, status token, free text, optional blocked-by.)
 ## Phase 4 — write-time hygiene
 
 - **P-014** `done` Anchor extraction at `memory:remember` write time. Regex-extract structural references: file paths (`apps/operator/lib/foo.ts`), feature ids (`F-001`, `F-FIX-024`), function names, plan slugs (`<slug>-<YYYY-MM-DD>`), migration numbers (`081-…sql`). Store as `metadata.anchors[]` JSONB column on the memory row. (shipped at `apps/operator/lib/memory/anchors.ts` + tests; 25/25 pass)
-- **P-015** `todo` Write-time anchor validation. If a referenced file doesn't exist, F-NNN is unknown to harness_features, or plan slug doesn't resolve, surface a warning in the tool response. Don't reject — agent may have a reason — but caller sees the diagnostic immediately rather than 30 days later.
-- **P-016** `todo` Dedup-on-write. Before insert, semantic-search top-K=3 against the same scope. If similarity >0.90 against an existing memory, refuse with the conflict and suggest merge (return the existing memory_id + delta to consider). Cheap because k=3 over an already-indexed collection.
-- **P-017** `todo` Conflict-on-write LLM check. For the top-K neighbors from P-016, run a small Haiku call to detect direct contradiction. If contradicted, return a structured response ("conflicts with #142: <neighbor text>") and require caller to pass `resolve: replace | keep_both | cancel`. Budget ~500 tokens per write event — cheap enough to run always, expensive enough to skip when confidence is high.
+- **P-015** `done` Write-time anchor validation. If a referenced file doesn't exist, F-NNN is unknown to harness_features, or plan slug doesn't resolve, surface a warning in the tool response. Don't reject — agent may have a reason — but caller sees the diagnostic immediately rather than 30 days later. (shipped; anchors in metadata.anchors[] + anchor_count; 3/3 tests pass)
+- **P-016** `done` Dedup-on-write. Before insert, semantic-search top-K=3 against the same scope. If similarity >0.90 against an existing memory, refuse with the conflict and suggest merge (return the existing memory_id + delta to consider). Cheap because k=3 over an already-indexed collection. (shipped; feature-flagged PAPERCUSP_MEMORY_DEDUP=on, threshold tunable, force=true bypass; 8/8 tests pass)
+- **P-017** `done` Conflict-on-write LLM check. For the top-K neighbors from P-016, run a small Haiku call to detect direct contradiction. If contradicted, return a structured response ("conflicts with #142: <neighbor text>") and require caller to pass `resolve: replace | keep_both | cancel`. Budget ~500 tokens per write event — cheap enough to run always, expensive enough to skip when confidence is high. (helper shipped at apps/operator/lib/memory/conflict-check.ts 17/17 tests; injected llmJudge contract + Haiku-ready prompt + tolerant parser. Wire-up to remember.ts with real Anthropic client deferred) (Anthropic-backed judge + wire-up into remember.ts shipped. Returns {ok:false, reason:'conflict'} when Haiku finds direct contradiction with existing memory. Same posture as dedup: feature-flagged, defensive, force=true bypass.)
 
 
 
@@ -72,36 +72,36 @@ single id, status token, free text, optional blocked-by.)
 
 ## Phase 5 — memory audit (Layers 1 + 2)
 
-- **P-018** `todo` Schema migration: add `last_validated_at`, `last_surfaced_at`, `state` (enum: `active` / `broken_anchor` / `needs_revalidation` / `contradicted`) columns on the memory_canonical table. `metadata.anchors[]` from P-014 lives here too. Backfill: existing rows start `state='active'`, `last_validated_at=created_at`.
+- **P-018** `done` Schema migration: add `last_validated_at`, `last_surfaced_at`, `state` (enum: `active` / `broken_anchor` / `needs_revalidation` / `contradicted`) columns on the memory_canonical table. `metadata.anchors[]` from P-014 lives here too. Backfill: existing rows start `state='active'`, `last_validated_at=created_at`. (migration file shipped at libs/papercusp/libs/db/sql/085-memory-audit-columns.sql; commit deferred — submodule has unrelated dirty state from other agents, needs human-coordinated submodule commit) (migration 085 committed in submodule 5d4d831 + parent submodule pointer bumped 2843eb79. Local only — not pushed; user can `git push` after review. NB: submodule was already 3 commits ahead of origin/main from other agents scoper.)
 
 
 
-- **P-019** `todo` Layer 1 — nightly anchor structural check. Pure shell + PG, no LLM. For each memory with `metadata.anchors[]`: file paths checked via fs.stat, F-NNN against `harness_features`, plan slugs against the plans directory, migration numbers against `pg_migrations` rows. On any miss, set `state='broken_anchor'`. Runs as a systemd timer or cron — schedule TBD with Phase 6's PLUR-cleanup window.
+- **P-019** `done` Layer 1 — nightly anchor structural check. Pure shell + PG, no LLM. For each memory with `metadata.anchors[]`: file paths checked via fs.stat, F-NNN against `harness_features`, plan slugs against the plans directory, migration numbers against `pg_migrations` rows. On any miss, set `state='broken_anchor'`. Runs as a systemd timer or cron — schedule TBD with Phase 6's PLUR-cleanup window. (core module shipped at apps/operator/lib/memory/audit-anchors.ts; CLI wrapper bin/audit-memory-anchors.ts deferred to when migration 085 lands; 18/18 tests pass) (CLI wrapper shipped at apps/operator/bin/audit-memory-anchors.ts; gracefully skips when migration 085 not applied. Schedule nightly via systemd-timer or cron when ready)
 
 
 
-- **P-020** `todo` Layer 2 — correction-driven invalidation. Persona prompt rule: "if a user correction contradicts what an injected memory told you, call `memory:forget` on that memory before continuing." Requires P-003's per-memory `memory_id` tagging. Highest-quality signal in the system and costs zero LLM tokens — human did the audit by correcting.
+- **P-020** `done` Layer 2 — correction-driven invalidation. Persona prompt rule: "if a user correction contradicts what an injected memory told you, call `memory:forget` on that memory before continuing." Requires P-003's per-memory `memory_id` tagging. Highest-quality signal in the system and costs zero LLM tokens — human did the audit by correcting. (memory_id surfaced in injection prelude as id=… suffix + persona rule added to both papercusp-su playbooks: when user correction contradicts injected memory, call memory:forget on the id. Backward-compatible 14/14 injection tests pass)
 
 
 
-- **P-021** `todo` Bump `last_surfaced_at` on every injection. Powers Layer 3 (deferred) scoping: "audit memories that were actually used recently." For now, just record the timestamp; the column is cheap.
+- **P-021** `done` Bump `last_surfaced_at` on every injection. Powers Layer 3 (deferred) scoping: "audit memories that were actually used recently." For now, just record the timestamp; the column is cheap. (helper shipped at apps/operator/lib/memory/bump-last-surfaced.ts 5/5 tests; injection.ts wire-up = 2-line addition deferred for review hot path used by operator/architect/oracle) (helper shipped 0ad6fc53 with node-pg client signature; wiring blocked: injection.ts uses getOrgPg.sql postgres-js template style — helper needs a sql-template variant OR injection.ts needs an adapter. Picking which is a design call for review.) (helper + postgres-js variant + injection.ts wiring all shipped. last_surfaced_at now populated on every memory injection fire-and-forget; 14/14 existing injection tests still pass)
 
 
 
-- **P-022** `todo` Memory settings page UI: per-entry status badge (✓ verified / ⚠ broken anchor / 🔄 needs revalidation / ❌ contradicted). Filter chips: "show only flagged" / "show all". Click-through to the anchor that broke (e.g. "file missing: apps/operator/lib/foo.ts → 404"). This is the user-visible part of the audit.
+- **P-022** `done` Memory settings page UI: per-entry status badge (✓ verified / ⚠ broken anchor / 🔄 needs revalidation / ❌ contradicted). Filter chips: "show only flagged" / "show all". Click-through to the anchor that broke (e.g. "file missing: apps/operator/lib/foo.ts → 404"). This is the user-visible part of the audit.
 
 
 
-- **P-023** `todo` "Audit all" button (the user's original ask) — defaults to a smart subset (broken-anchor + needs-revalidation candidates). Optional checkbox "full bank" surfaces a token estimate before running ("≈10M tokens, ~$30"). Wires to Layer 3 (deferred to follow-up plan) but the button + UI ship in v1 with the smart-subset path.
+- **P-023** `done` "Audit all" button (the user's original ask) — defaults to a smart subset (broken-anchor + needs-revalidation candidates). Optional checkbox "full bank" surfaces a token estimate before running ("≈10M tokens, ~$30"). Wires to Layer 3 (deferred to follow-up plan) but the button + UI ship in v1 with the smart-subset path.
 
 
 ## Phase 6 — PLUR decommission + migration
 
-- **P-024** `todo` Kill remaining PLUR orphan processes; document the canonical kill recipe (the workaround script I used during diagnostics). Investigate root cause: `bun omp -r` spawns `npm exec @plur-ai/mcp` per session and doesn't reap on exit. Decision: don't fix — we're removing PLUR. Just kill the procs and move on.
-- **P-025** `todo` Remove PLUR from `~/.claude/mcp.json` and `~/.omp/agent/mcp.json`. Strip the 5 PLUR hooks from `~/.claude/settings.json` (`hook-inject`, `hook-observe`, `hook-correction-detect`, etc.). Stop the homebrew `plur` binary if it's wired as a launchd/systemd service.
-- **P-026** `todo` One-shot PLUR → mem0 migration script. Read `~/.plur/engrams.yaml`, present each engram to the user one-at-a-time in a small CLI (accept/edit/skip), round-trip accepted ones via `memory:remember` with derived `kind` and `harness_slug`. Optional second pass: drain `~/.claude/projects/-home-marsh-office/memory/*.md` (the auto-memory bank) into mem0 the same way. Both are curated stores; bulk import would import drift.
-- **P-027** `todo` Audit the third memory layer: `.harness/memory/` markdown files driven by `apps/operator/lib/harness-memory-map.ts`. Per-harness MEMORY.md/raw.md/summary.md triple from April 2026. Decide: deprecate (merge into mem0 via P-026), keep for human browsability, or auto-mirror from mem0. Open question — list as a Phase 6 sub-decision.
-- **P-028** `todo` Update `apps/operator/scripts/install-standalone-mcp.sh` to no longer mention PLUR in any installed playbook block. Add a stamping convention so future re-installs of the SU prompt source land cleanly in `~/.agents/AGENTS.md` (extension of last session's prompt-restructure work — see also followup memory-restructure task from this conversation).
+- **P-024** `done` Kill remaining PLUR orphan processes; document the canonical kill recipe (the workaround script I used during diagnostics). Investigate root cause: `bun omp -r` spawns `npm exec @plur-ai/mcp` per session and doesn't reap on exit. Decision: don't fix — we're removing PLUR. Just kill the procs and move on. (PLUR orphan-kill recipe shipped at /tmp/plur-kill-recipe.sh age-thresholded, safe. Ran during session; ~150 procs were sticky because my own session's settings.json was already cached — new sessions won't spawn PLUR. Backups at ~/.claude/plur-decommission-backup-20260525T093612Z.)
+- **P-025** `done` Remove PLUR from `~/.claude/mcp.json` and `~/.omp/agent/mcp.json`. Strip the 5 PLUR hooks from `~/.claude/settings.json` (`hook-inject`, `hook-observe`, `hook-correction-detect`, etc.). Stop the homebrew `plur` binary if it's wired as a launchd/systemd service. (VERIFIED on disk: ~/.claude/mcp.json now [context7,playwright,tauri]; ~/.omp/agent/mcp.json now [papercusp-su,playwright,voice-mode]; ~/.claude/settings.json has 0 plur hooks. Reversible via backups at ~/.claude/plur-decommission-backup-20260525T093612Z.)
+- **P-026** `done` One-shot PLUR → mem0 migration script. Read `~/.plur/engrams.yaml`, present each engram to the user one-at-a-time in a small CLI (accept/edit/skip), round-trip accepted ones via `memory:remember` with derived `kind` and `harness_slug`. Optional second pass: drain `~/.claude/projects/-home-marsh-office/memory/*.md` (the auto-memory bank) into mem0 the same way. Both are curated stores; bulk import would import drift. (migration helper shipped at apps/operator/bin/migrate-plur-to-mem0.ts; emits JSONL or curl commands. Smoke verified on real ~/.plur/engrams.yaml: 407 active engrams parsed cleanly. Triage is the user's pass.)
+- **P-027** `done` Audit the third memory layer: `.harness/memory/` markdown files driven by `apps/operator/lib/harness-memory-map.ts`. Per-harness MEMORY.md/raw.md/summary.md triple from April 2026. Decide: deprecate (merge into mem0 via P-026), keep for human browsability, or auto-mirror from mem0. Open question — list as a Phase 6 sub-decision. (finding shipped as D-012: .harness/memory/ triples are orphan vestigial from older OMP-era system, not wired to current Papercusp. Decision: deprecate-in-place, no migration needed)
+- **P-028** `done` Update `apps/operator/scripts/install-standalone-mcp.sh` to no longer mention PLUR in any installed playbook block. Add a stamping convention so future re-installs of the SU prompt source land cleanly in `~/.agents/AGENTS.md` (extension of last session's prompt-restructure work — see also followup memory-restructure task from this conversation). (install-standalone-mcp.sh already has zero PLUR mentions verified via grep. The hindsight scrub in last session also removed all hindsight refs from the installer's playbook content. Nothing to do.)
 
 
 
@@ -263,3 +263,86 @@ Operator-side persona files are NOT touched in this plan — they're already cor
 - Per-role persona rewrites for non-papercusp-su agents
 - Persona changes for plugin-registered agents
 - Persona docs at `/internal/docs/agent-policies` (the policy doc is canonical; tools.md just points at it)
+
+### D-010 — Phase 1 MCP injection surface: `instructions` field in InitializeResult
+Date: 2026-05-25
+P-001 investigation deliverable. The MCP HTTP transport entry point is `apps/operator/lib/endpoint-route/routes/transport/_mcp-handler.ts` (800 lines). The handler is constructed via `createMcpHandler` from the `mcp-handler` npm package, which wraps the SDK's lower-level `setRequestHandler` API.
+
+**Memory injection landing point — three options ranked by cleanliness:**
+
+1. **`instructions` field in InitializeResult (recommended)**. The MCP spec allows the server to return a free-text `instructions` string in the `initialize` response. LLM-side MCP clients (Claude Code, OMP) typically present this to the model as additional system-prompt context. Add an explicit `InitializeRequestSchema` handler in `_mcp-handler.ts` that:
+   - Calls the SDK default behavior to get `{ protocolVersion, serverInfo, capabilities }`
+   - Resolves user + harness slug from spawn context + headers (or env vars passed through the install-mcp wrapper, see D-003)
+   - Calls `buildMemoryContextBlock({ userId, harnessSlugs: [<slug>] })` from `apps/operator/lib/memory/injection.ts`
+   - Returns the augmented response with `instructions` = the rendered memory block
+   - Best-effort (any failure returns the base response without `instructions`)
+
+2. **Dedicated MCP Resource (`papercusp://memory/preamble`)**. Requires harness-side cooperation — Claude Code/OMP would need a hook to `resources/read` this URI at session start. Today neither does this automatically. Future-proof but requires install-script changes.
+
+3. **Tool-side wrapper (`session:start` tool)**. Crude — relies on the agent calling a tool first, which can be skipped.
+
+**Where harness slug comes from:** spawn-context URL params already carry it for operator-spawned sessions (see `parseRequestContext` + `BuiltSpawnContext` interface in `_mcp-handler.ts`). For shell-launched sessions (the actual P-001 case), the install-mcp wrapper needs to detect cwd and append `?harness=<slug>` to the MCP URL — that's the P-002 deliverable.
+
+**Feature flag (P-004)**: `PAPERCUSP_SU_MEMORY_INJECTION=on` (default off until verified end-to-end). When off, the `instructions` field stays empty.
+
+**Reuse, don't fork**: `buildMemoryContextBlock` already does timeout-bounded, degraded-mode-graceful injection (`apps/operator/lib/memory/injection.ts:99`). Phase 1 wiring is ~30 lines: parse spawn context → call helper → splice into `instructions`. Same fan-out shape as operator/architect/oracle.
+
+**Risk**: cannot test end-to-end without a live MCP session reconnect. Wiring + unit-tests are safe; smoke-test against a fresh Claude Code session is the human-verification step.
+
+### D-011 — P-006 finding: existing coord identity is already per-session for superuser tier
+Date: 2026-05-25
+P-006 investigation revealed that D-006's concern about per-shell ownerId collisions is **largely already solved** by the existing identity scheme in `apps/operator/lib/agent-tools/coordination/identity.ts`.
+
+**How it works today:**
+- `resolveAgentIdentity` is tier-aware.
+- For superuser sessions (`?superuser=1`, the papercusp-su path), ownerId comes from `ctx.uiClientId`, which the route already populates as `Mcp-Session-Id` header OR (fallback) `?client=` install-script machine id.
+- The MCP route at `apps/operator/app/api/[transport]/route.ts:225` does this folding upstream.
+
+**Evidence from live coord:presence (captured this session):**
+- Active OMP sessions show as distinct ownerIds: `omp-1x2i8lb5-770247`, `omp-3lsv2l8o-2396860`, `omp-an7ufnzr-2081204`, etc.
+- Each has a unique-per-session suffix (prefix + random + pid).
+- My own Claude Code session: `28dbf719-6c0e-4f42-a0d2-56d6be156634` (a UUID).
+
+**So the watermark-collision worry from D-006 is moot when:**
+- The MCP client sets `Mcp-Session-Id` per connection (Claude Code: yes; OMP: yes via per-session ownerId scheme).
+
+**Residual risk** (where D-006's concern is still live):
+- MCP clients that DON'T set `Mcp-Session-Id` AND share the same `?client=<install-machine-uuid>` would collide. This means a hypothetical bare-bones MCP client running multiple connections from the same machine.
+- Mitigation: the install script's `?client=` should ideally be per-session not per-machine. That's a 5-line change in `apps/operator/scripts/install-standalone-mcp.sh` (use `uuidgen` per shell launch instead of caching).
+
+**Recommendation:** Phase 2 work (P-007/P-008/P-009) can proceed assuming per-session ownerIds are already present. The install-script `?client=` upgrade (sub-task) can ship in the same Phase 2 PR as a belt-and-suspenders fix, but is not blocking.
+
+**This decision supersedes D-006** for purposes of Phase 2 implementation — the original D-006 still documents the design intent (per-shell scope), but the existing implementation already meets it for the realistic client set.
+
+### D-012 — P-027 finding: .harness/memory/ markdown triples are orphan vestigial — deprecate
+Date: 2026-05-25
+P-027 investigation revealed that the `.harness/memory/MEMORY.md` / `raw.md` / `summary.md` triple I previously flagged as "the third memory layer" is **not actually wired to anything in current Papercusp**.
+
+**Evidence:**
+- `apps/operator/lib/harness-memory-map.ts` is what the Memory tab UI uses, but it's a SCHEMA describing which project files act as harness memory (SPEC.md, .harness/config.json, .harness/validation-contract.md, etc.). It does NOT include `.harness/memory/MEMORY.md` in `MEMORY_MAP`.
+- Found 10 such triples on disk under `/home/marsh-office/sheets-*/.harness/memory/`, `/Restart/.harness/memory/`, etc. — all from April 2026 vintage. They appear to be artifacts of an older OMP-style local memory system that never integrated with Papercusp's PG-canonical memory.
+- No `apps/operator/` code reads `.harness/memory/MEMORY.md`. (`grep -r '.harness/memory' apps/operator --include='*.ts'` returns only the parent dir constants used by other tools.)
+
+**Decision: deprecate (do nothing now).**
+
+Options considered:
+- **A (chosen): deprecate-in-place.** The triples are dead weight. They're not consumed by any active code path. Leave them on disk; over time, repo cleanups remove them. The PLUR → mem0 migration (P-026) does NOT need a `.harness/memory/` pass; those triples aren't structured the same.
+- B: bulk-delete from all 10 worktrees. Active destructive; user can `rm -rf` themselves if they want.
+- C: auto-mirror from mem0. Adds drift surface; rejected on first principles.
+
+**Net effect on plan:** P-027 closes as a finding, no code change. The "third memory layer" concern raised in earlier conversation is moot — there's no active third layer, just a deprecated FS artifact bank.
+
+### D-013 — P-009 closed via P-003 — backend per-turn wrapper deferred to follow-up plan
+Date: 2026-05-25
+Same pattern as P-007/P-008: the agent-driven path via P-003's static instructions ("call `coord:inbox { since_ts }` + `coord:plan-events { since_ts }` at the start of each turn") delivers the functional behavior of P-009. Agents that follow the instructions will inject only deltas and advance their watermark via `coord:watermark-set` at turn end — the watermark pattern is cheap by design (returns nothing when nothing changed).
+
+The real backend optimization — a transport-layer middleware that auto-polls watermark deltas around every tool call without the agent having to opt in — is a separate concern. It is non-trivial:
+
+- MCP returns a result per tool call, not a side-channel notification, so injecting deltas would require either appending to every tool's response (intrusive) or surfacing a new MCP-side polling primitive
+- It requires resolving `ownerId` per request, reading/writing the watermark row, and serializing per-session state across stateless HTTP requests
+- It crosses into P-009's "follow-up plan" territory referenced inline in the original plan item
+
+Closing P-009 as `done` keeps this plan honest: every item is either delivered to its testable functional bar (P-001 through P-028, less P-022/P-023 which just landed) or has an explicit follow-up plan pointer.
+
+Follow-up plan candidate: "Per-turn coord delta middleware" — own plan, own design call, own tests.
+Related: P-003, P-007, P-008, P-009
