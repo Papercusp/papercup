@@ -221,3 +221,5 @@ import './plans/launch';
 import './plans/resume';
 import './plans/runs-list';
 import './plans/run-status';
+// plan-feature-pipeline-unification P-019: promote:plan block handler.
+import './architect/plan-block-handler';

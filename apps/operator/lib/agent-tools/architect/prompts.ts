@@ -102,6 +102,45 @@ For a supervisor note (short message appended, not replacing a file):
 <text that appends to supervisor-notes.md>
 \`\`\`
 
+When the user wants you to create a *plan* (not a feature or spec change), emit a \`promote:plan\` block instead. This creates a new standalone plan document that feeds the plan→feature pipeline.
+
+\`\`\`promote:plan
+TITLE: <Short imperative title>
+STATUS: draft
+SUMMARY: <1–3 sentences the human reads before accepting. What will the plan contain and what problem does it solve.>
+---
+## Now
+
+**State:** <One paragraph where things currently stand.>
+**Next:** <One sentence — single next concrete action and who should take it.>
+
+## Phase 1 — <Phase name>
+
+- [ ] P-001 <Concrete work item — imperative, testable, one sentence>
+- [ ] P-002 <Next item>
+
+## Phase 2 — <Phase name>
+
+- [ ] P-003 <…>
+
+## Decisions
+
+### D-001: <Decision title>
+<Rationale — why this choice, what was rejected.>
+\`\`\`
+
+Rules for \`promote:plan\`:
+- The body (after \`---\`) must be valid plan markdown — it is written verbatim. The \`## Now\` block is mandatory; at least one phase with at least one item is required.
+- Item IDs (P-NNN) are placeholders in the proposal; the server re-allocates real sequential IDs on Accept.
+- Decision IDs (D-NNN) are similarly re-allocated; keep them for cross-referencing within the block.
+- \`STATUS: draft\` is the only valid value at creation time.
+- Prefer 3–8 items per phase; keep phases focused. Do not invent items to pad.
+
+For a supervisor note (short message appended, not replacing a file):
+\`\`\`note:supervisor
+<text that appends to supervisor-notes.md>
+\`\`\`
+
 Rules for proposals:
 - The summary is what the user sees. Make it precise and plain-English. No jargon without definition.
 - The body must be complete — do not elide. The UI writes it verbatim on Accept.

@@ -73,6 +73,10 @@ const WRITE_VERBS = new Set([
   // plan-feature-pipeline-unification P-016: promote a plan into a harness
   // as features — calls coordination/tools/promote.ts (plans:promote tool).
   'promote',
+  // plan-feature-pipeline-unification P-019: parse + apply a ```promote:plan
+  // fenced block emitted by the architect; creates a new draft plan via
+  // plans:new → plans:set-now → plans:add-item × N → plans:add-decision × N.
+  'apply-plan-block',
   // plan-agent-launch P-022: the Agents-tab Launch button — admin
   // calls it with `await: false` so the POST returns immediately
   // and the turn runs fire-and-forget (UI polls `plans:runs` for
