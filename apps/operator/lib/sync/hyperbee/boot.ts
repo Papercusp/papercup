@@ -36,6 +36,7 @@ import { createAutobaseHarness, type AutobaseHarnessHandle } from './autobase-se
 import { acceptOpVersion, type SchemaVersionAlert } from './schema-version';
 import { schemaVersionEvents } from './schema-version';
 import { registerAllHarnessProjections } from './projections/register-all';
+import { startBootstrapProgressPoller } from './bootstrap-progress-poller';
 import type Corestore from 'corestore';
 
 export interface BootHarnessOpts {
@@ -103,12 +104,27 @@ export async function bootHarnessSubstrate(opts: BootHarnessOpts): Promise<Boote
     harnessSlug: opts.harnessSlug,
   });
 
+  // P-066 bootstrap-progress tracker. Polls base.view.length each
+  // second; feeds the BootstrapProgressIndicator via /api/harness/
+  // :slug/bootstrap-progress. Cheap (one async getter call per
+  // second per harness); idempotent across reboots since the tracker
+  // map keys by (workspaceId, slug).
+  const progressPoller = startBootstrapProgressPoller({
+    workspaceId: opts.workspaceId,
+    harnessSlug: opts.harnessSlug,
+    base,
+  });
+
   return {
     workspaceId: opts.workspaceId,
     harnessSlug: opts.harnessSlug,
     store,
     base,
     async close() {
+      // Stop the progress poller first so it doesn't race the
+      // autobase teardown trying to read .view.length on a closed
+      // store.
+      progressPoller.stop();
       // Autobase first, then corestore — autobase holds open writers
       // into the store.
       try { await base.close(); } catch {}
