@@ -10,20 +10,27 @@ vi.mock('../client-navigation', () => ({
   navigateClient: (...args: unknown[]) => navigateClient(...args),
 }));
 
+const commands = {
+  workspacesList: vi.fn(),
+  workspacesCreate: vi.fn(),
+  workspacesRename: vi.fn(),
+  workspacesDelete: vi.fn(),
+  workspacesSwitch: vi.fn(),
+};
+
 vi.mock('../tauri-bindings', () => ({
-  commands: {
-    workspacesList: vi.fn(),
-    workspacesCreate: vi.fn(),
-    workspacesRename: vi.fn(),
-    workspacesDelete: vi.fn(),
-    workspacesSwitch: vi.fn(),
-  },
+  commands,
 }));
 
 afterEach(() => {
   navigateClient.mockReset();
   fetchMock.mockReset();
   vi.unstubAllGlobals();
+  commands.workspacesList.mockReset();
+  commands.workspacesCreate.mockReset();
+  commands.workspacesRename.mockReset();
+  commands.workspacesDelete.mockReset();
+  commands.workspacesSwitch.mockReset();
 });
 
 describe('workspaces-tauri', () => {
@@ -41,5 +48,25 @@ describe('workspaces-tauri', () => {
 
     expect(fetchMock).toHaveBeenCalledWith('/api/workspaces/switch', expect.objectContaining({ method: 'POST' }));
     expect(navigateClient).toHaveBeenCalledWith('/harness?ws=beta&panel=overview');
+  });
+  it('uses the desktop command path without soft navigation when Tauri is present', async () => {
+    vi.stubGlobal('window', { ...window, __TAURI_INTERNALS__: {} });
+    commands.workspacesSwitch.mockResolvedValue({ status: 'ok' });
+    const { switchWorkspace } = await import('../workspaces-tauri');
+
+    await switchWorkspace('gamma', { resetTo: '/harness?ws=gamma' });
+
+    expect(commands.workspacesSwitch).toHaveBeenCalledWith('gamma');
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(navigateClient).not.toHaveBeenCalled();
+  });
+
+  it('surfaces desktop command errors', async () => {
+    vi.stubGlobal('window', { ...window, __TAURI_INTERNALS__: {} });
+    commands.workspacesSwitch.mockResolvedValue({ status: 'error', error: 'boom' });
+    const { switchWorkspace } = await import('../workspaces-tauri');
+
+    await expect(switchWorkspace('gamma')).rejects.toThrow('boom');
+    expect(navigateClient).not.toHaveBeenCalled();
   });
 });
