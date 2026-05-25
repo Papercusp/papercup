@@ -251,7 +251,20 @@ const messagesRoute = defineTool({
         heading: 'Agent memory (relevant entries)',
       }).catch(() => null);
       const memorySection = memBlock ? `\n---\n\n${memBlock}\n` : '';
-      const promptText = `${r.text}${lockNotice}${memorySection}${historyBlock}\n---\n\n## User\n\n${userContent}\n`;
+
+      // Plan context — inject for worker/validator/reviewer roles on
+      // plan-derived features. Best-effort; 3 s timeout; empty on miss.
+      const CHAT_PLAN_ROLES = new Set(['worker', 'validator', 'reviewer']);
+      let planContextSection = '';
+      if (CHAT_PLAN_ROLES.has(chat.role) && chat.feature_id) {
+        try {
+          const { getPlanContextForFeature } = await import('@/lib/plan-context-for-feature');
+          const planCtx = await getPlanContextForFeature(slug, chat.feature_id);
+          if (planCtx) planContextSection = `\n---\n\n${planCtx.section}\n`;
+        } catch { /* best-effort */ }
+      }
+
+      const promptText = `${r.text}${lockNotice}${planContextSection}${memorySection}${historyBlock}\n---\n\n## User\n\n${userContent}\n`;
       assembled = { text: promptText, runId: r.meta.runId };
     } catch (e) {
       return Response.json({ error: `failed to assemble prompt: ${(e as Error).message}` }, { status: 500 });
