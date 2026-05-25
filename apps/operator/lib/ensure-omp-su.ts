@@ -19,23 +19,13 @@
  * not depend on a one-time manual install having happened earlier.
  */
 
+import { ENGINEER_OMP_SU_WRAPPER } from './omp-su-wrapper';
 import { existsSync, mkdirSync, copyFileSync, writeFileSync, chmodSync, statSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { execFileSync, execSync } from 'node:child_process';
 
-const OMP_SU_WRAPPER = `#!/usr/bin/env bash
-# papercusp engineer-collaborator launcher.
-# Managed by the Papercusp operator (lib/ensure-omp-su.ts) — overwriting
-# is safe; the operator will rewrite this on next boot.
-# Plain \`omp\` is a vanilla coding assistant; this wrapper opts into
-# the engineer-collaborator playbook + the papercusp coordination
-# extension.
-exec omp \\
-  --append-system-prompt "\${HOME}/.papercusp/engineer-collaborator.md" \\
-  -e "\${HOME}/.papercusp/papercusp-coord.ts" \\
-  "$@"
-`;
+const OMP_SU_WRAPPER = ENGINEER_OMP_SU_WRAPPER;
 
 function dlog(msg: string): void {
   process.stderr.write(`[ensure-omp-su] ${msg}\n`);

@@ -18,6 +18,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import * as os from 'node:os';
+import { ENGINEER_OMP_SU_WRAPPER } from '../../omp-su-wrapper';
 import {
   installOmpIntegration,
   uninstallOmpIntegration,
@@ -117,8 +118,7 @@ describe('installOmpIntegration', () => {
       });
       expect(result.wrapperPath).toBe(path.join(fakeBinDir, 'omp-su'));
       const wrapperContent = await fs.readFile(result.wrapperPath, 'utf8');
-      expect(wrapperContent).toContain('engineer-collaborator.md');
-      expect(wrapperContent).toContain('papercusp-coord.ts');
+      expect(wrapperContent).toBe(ENGINEER_OMP_SU_WRAPPER);
     } finally {
       await fs.rm(fakeBinDir, { recursive: true, force: true });
     }

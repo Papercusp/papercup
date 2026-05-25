@@ -33,6 +33,7 @@ import * as os from 'node:os';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { resolveInstallPaths } from './papercusp-files';
+import { ENGINEER_OMP_SU_WRAPPER } from '../omp-su-wrapper';
 
 const exec = promisify(execFile);
 
@@ -267,17 +268,7 @@ function resolveWrapperPath(home: string, ompBinaryPath: string | null): string 
 }
 
 function wrapperContent(): string {
-  return [
-    '#!/usr/bin/env bash',
-    '# papercusp engineer-collaborator launcher (managed by Papercusp.app sidecar).',
-    '# Plain `omp` is a vanilla coding assistant; this wrapper opts into the',
-    '# engineer-collaborator playbook + the papercusp coordination extension.',
-    'exec omp \\',
-    '  --append-system-prompt "${HOME}/.papercusp/engineer-collaborator.md" \\',
-    '  -e "${HOME}/.papercusp/papercusp-coord.ts" \\',
-    '  "$@"',
-    '',
-  ].join('\n');
+  return ENGINEER_OMP_SU_WRAPPER;
 }
 
 async function installWrapper(wrapperPath: string): Promise<boolean> {

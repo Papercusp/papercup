@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { ENGINEER_OMP_SU_WRAPPER } from './omp-su-wrapper';
 
 let tmpHome = '';
 let fakeOmp = '';
@@ -65,8 +66,7 @@ describe('ensure-omp-su', () => {
     const after = mod.readEngineerOmpBootstrapState(tmpHome);
     expect(after.wrapperCurrent).toBe(true);
     const content = readFileSync(wrapper, 'utf8');
-    expect(content).toContain('--append-system-prompt "${HOME}/.papercusp/engineer-collaborator.md"');
-    expect(content).toContain('-e "${HOME}/.papercusp/papercusp-coord.ts"');
+    expect(content).toBe(ENGINEER_OMP_SU_WRAPPER);
     expect(content).not.toContain('echo stale');
   });
 });
