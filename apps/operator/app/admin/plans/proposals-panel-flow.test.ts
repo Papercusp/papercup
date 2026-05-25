@@ -172,6 +172,75 @@ updated: 2026-05-24
     const result = await rejectDraftPlan('empty-plan');
     expect(result).toEqual({ ok: false, error: 'no_content' });
   });
+
+  it('threads harnessSlug into the set-content body for admin-route invalidation (R3-A)', async () => {
+    const raw = `---
+title: my-plan
+slug: hs-plan-2026-05-25
+status: draft
+created: 2026-05-25
+updated: 2026-05-25
+---
+`;
+    let setBody: Record<string, unknown> | null = null;
+    global.fetch = vi.fn(async (url: string, opts?: RequestInit) => {
+      const verb = String(url).split('/plans/')[1]?.split('?')[0];
+      if (verb === 'get') {
+        return {
+          ok: true, status: 200,
+          json: async () => ({ raw, contentHash: 'h', items: [] }),
+          text: async () => JSON.stringify({ raw, contentHash: 'h', items: [] }),
+        } as Response;
+      }
+      if (verb === 'set-content') {
+        setBody = JSON.parse((opts?.body as string) ?? '{}');
+        return {
+          ok: true, status: 200,
+          json: async () => ({ ok: true }),
+          text: async () => JSON.stringify({ ok: true }),
+        } as Response;
+      }
+      throw new Error(`unexpected verb: ${verb}`);
+    }) as unknown as typeof fetch;
+
+    const { rejectDraftPlan } = await import('./plans-api');
+    const result = await rejectDraftPlan('hs-plan-2026-05-25', 'sheets-clone');
+    expect(result).toEqual({ ok: true });
+    // The body MUST carry harness_slug so the admin route can invalidate
+    // plansDrafts.bySlug for the right harness. Without this, the card
+    // lingers in ProposalsPanel after reject until manual refresh.
+    expect((setBody as unknown as Record<string, unknown>).harness_slug).toBe('sheets-clone');
+  });
+
+  it('omits harness_slug from body when no harnessSlug arg passed (backwards-compat)', async () => {
+    const raw = `---
+title: x
+slug: x-2026-05-25
+status: draft
+---
+`;
+    let setBody: Record<string, unknown> | null = null;
+    global.fetch = vi.fn(async (url: string, opts?: RequestInit) => {
+      const verb = String(url).split('/plans/')[1]?.split('?')[0];
+      if (verb === 'get') {
+        return {
+          ok: true, status: 200,
+          json: async () => ({ raw, contentHash: 'h', items: [] }),
+          text: async () => JSON.stringify({ raw, contentHash: 'h', items: [] }),
+        } as Response;
+      }
+      setBody = JSON.parse((opts?.body as string) ?? '{}');
+      return {
+        ok: true, status: 200,
+        json: async () => ({ ok: true }),
+        text: async () => JSON.stringify({ ok: true }),
+      } as Response;
+    }) as unknown as typeof fetch;
+
+    const { rejectDraftPlan } = await import('./plans-api');
+    await rejectDraftPlan('x-2026-05-25');
+    expect((setBody as unknown as Record<string, unknown>).harness_slug).toBeUndefined();
+  });
 });
 
 /* ── writeErrorOf ───────────────────────────────────────────────── */

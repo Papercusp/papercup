@@ -512,7 +512,21 @@ export function promoteToHarness(args: PromoteToHarnessArgs) {
  * The plansDrafts.bySlug resolver filters out non-draft plans, so the
  * card disappears from ProposalsPanel immediately after this resolves.
  */
-export async function rejectDraftPlan(slug: string): Promise<{ ok: boolean; error?: string }> {
+/**
+ * Reject (i.e. supersede) a draft plan. Flips `status: draft` →
+ * `status: superseded` via a CAS set-content call.
+ *
+ * Pass `harnessSlug` from the calling UI so the admin route can
+ * invalidate that harness's `plansDrafts.bySlug` subscription —
+ * otherwise the card lingers in ProposalsPanel until next refresh.
+ * Server reads it from `body.harness_slug` (also accepts the URL
+ * `?harness=` form); set-content's argsSchema strips the unknown
+ * key, so it's purely a routing hint.
+ */
+export async function rejectDraftPlan(
+  slug: string,
+  harnessSlug?: string,
+): Promise<{ ok: boolean; error?: string }> {
   const plan = await fetchPlan(slug);
   if ('error' in plan && plan.error) return { ok: false, error: plan.error };
   const raw = plan.raw;
@@ -520,7 +534,12 @@ export async function rejectDraftPlan(slug: string): Promise<{ ok: boolean; erro
   if (!raw) return { ok: false, error: 'no_content' };
   const updated = raw.replace(/^(status:\s*)draft\b/m, '$1superseded');
   if (updated === raw) return { ok: false, error: 'status_not_draft' };
-  const res = await setPlanContent({ slug, content: updated, expectedHash: contentHash });
+  const res = await setPlanContent({
+    slug,
+    content: updated,
+    expectedHash: contentHash,
+    ...(harnessSlug && { harness_slug: harnessSlug }),
+  } as SetContentArgs & { harness_slug?: string });
   if ('ok' in res && res.ok) return { ok: true };
   return { ok: false, error: writeErrorOf(res) ?? 'set_content_failed' };
 }

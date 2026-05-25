@@ -175,7 +175,7 @@ function CardDetail({
     setBusy(true);
     setError(null);
     try {
-      const res = await rejectDraftPlan(card.id);
+      const res = await rejectDraftPlan(card.id, harnessSlug);
       if (!res.ok) throw new Error(res.error ?? 'reject failed');
       onRejected();
     } catch (e) {
@@ -183,7 +183,7 @@ function CardDetail({
     } finally {
       setBusy(false);
     }
-  }, [card, askConfirm, onRejected]);
+  }, [card, harnessSlug, askConfirm, onRejected]);
 
   return (
     <section className="h-proposal-detail" aria-label="Proposal detail">
