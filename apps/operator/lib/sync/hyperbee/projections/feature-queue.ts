@@ -31,8 +31,12 @@ export interface FeatureQueueProjectionOpts {
   harnessSlug: string;
 }
 
+export function composeFeatureQueueKey(githubUserId: number, featureId: string): string {
+  return `${githubUserId}/${featureId}`;
+}
+
 function composeKey(row: FeatureQueueRow): string {
-  return `${row.github_user_id}/${row.feature_id}`;
+  return composeFeatureQueueKey(row.github_user_id, row.feature_id);
 }
 
 export function isFeatureQueueRow(input: unknown): input is FeatureQueueRow {
