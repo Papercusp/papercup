@@ -1,0 +1,137 @@
+import { createFileRoute } from '@tanstack/react-router';
+import { useEffect, useState } from 'react';
+import AdminShell from '../../components/admin/AdminShell';
+import { SubstrateSummaryCardClient } from '@/app/harness/insights/SubstrateSummaryCardClient';
+import { BootHistoryTableClient } from '@/app/harness/insights/BootHistoryTableClient';
+import { SubstrateHealthPill } from '@/app/harness/insights/SubstrateHealthPill';
+
+/**
+ * /admin/dogfood-substrate — Vite-side mirror of the SSR diagnostic
+ * page at `apps/operator/app/admin/dogfood-substrate/page.tsx`.
+ *
+ * The operator-vite SPA owns admin routes for the live Tauri shell,
+ * so the SSR version is unreachable until this route exists.
+ *
+ * Uses the client wrappers shipped in apps/operator/app/harness/insights/
+ * — they self-fetch /api/admin/dogfood-substrate-* so the route is
+ * a thin composition.
+ */
+
+export const Route = createFileRoute('/admin/dogfood-substrate')({
+  component: DogfoodSubstratePage,
+});
+
+interface HealthResponse {
+  flagEnabled?: boolean;
+  summary?: {
+    enabled: boolean;
+    totalHarnesses: number;
+    healthy: number;
+    booting: number;
+    degraded: number;
+    unhealthy: number;
+    disabled: number;
+    worstVerdict: 'disabled' | 'booting' | 'healthy' | 'degraded' | 'unhealthy';
+  };
+  harnesses?: Array<{
+    workspaceId: string;
+    harnessSlug: string;
+    verdict: 'disabled' | 'booting' | 'healthy' | 'degraded' | 'unhealthy';
+    reasons?: string[];
+  }>;
+}
+
+function DogfoodSubstratePage() {
+  const [resp, setResp] = useState<HealthResponse | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    const run = async () => {
+      try {
+        const r = await fetch('/api/admin/dogfood-substrate-health', { cache: 'no-store' });
+        if (!r.ok) return;
+        const json = (await r.json()) as HealthResponse;
+        if (!cancelled) setResp(json);
+      } catch {
+        // hold last-known
+      }
+    };
+    void run();
+    const t = setInterval(() => void run(), 10_000);
+    return () => {
+      cancelled = true;
+      clearInterval(t);
+    };
+  }, []);
+
+  const rows =
+    (resp?.harnesses ?? []).filter(
+      (h) => h.workspaceId !== '' && h.harnessSlug !== '',
+    );
+
+  return (
+    <AdminShell title="Substrate diagnostic">
+      <div style={{ padding: '16px max(24px, calc((100% - 960px) / 2))', display: 'flex', flexDirection: 'column', gap: 16 }}>
+        <SubstrateSummaryCardClient diagnosticHref={undefined} />
+
+        <p style={{ fontSize: 13, color: 'var(--fg-dim, #888)', margin: 0 }}>
+          Hyperbee substrate boot state for this operator process. Gated by
+          {' '}<code>PAPERCUSP_DOGFOOD_SUBSTRATE_ENABLE=1</code>. With the flag off
+          the operator runs in PG-only mode.
+        </p>
+
+        {rows.length === 0 ? (
+          <div style={{ padding: 16, fontSize: 13, color: 'var(--fg-dim, #888)' }} data-testid="dogfood-substrate-empty">
+            {resp?.flagEnabled
+              ? 'Flag enabled but no harnesses have booted yet.'
+              : 'Flag disabled — set PAPERCUSP_DOGFOOD_SUBSTRATE_ENABLE=1 and restart.'}
+          </div>
+        ) : (
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }} data-testid="dogfood-substrate-table">
+            <thead>
+              <tr>
+                <th style={th}>Workspace</th>
+                <th style={th}>Harness</th>
+                <th style={th}>Health</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((h) => (
+                <tr key={`${h.workspaceId}::${h.harnessSlug}`} data-testid={`dogfood-substrate-row-${h.harnessSlug}`}>
+                  <td style={td}><code>{h.workspaceId}</code></td>
+                  <td style={td}><code>{h.harnessSlug}</code></td>
+                  <td style={td}>
+                    <SubstrateHealthPill verdict={h.verdict} reasons={h.reasons} />
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+
+        <section style={{ marginTop: 12 }} data-testid="dogfood-substrate-boot-history-section">
+          <h2 style={{ fontSize: 11, fontWeight: 600, color: 'var(--fg-dim, #888)', textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: 8 }}>
+            Boot history
+          </h2>
+          <BootHistoryTableClient limit={50} />
+        </section>
+      </div>
+    </AdminShell>
+  );
+}
+
+const th = {
+  textAlign: 'left' as const,
+  borderBottom: '1px solid var(--border, #2a2a2a)',
+  padding: '8px 12px',
+  fontWeight: 600,
+  color: 'var(--fg-dim, #888)',
+  fontSize: 11,
+  textTransform: 'uppercase' as const,
+  letterSpacing: '0.04em',
+};
+
+const td = {
+  padding: '10px 12px',
+  borderBottom: '1px solid var(--border-subtle, #222)',
+};
