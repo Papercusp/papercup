@@ -857,7 +857,6 @@ export default function AdvSessionsClient() {
           color: var(--fg-dim);
         }
         .pc-adv-sessions__head {
-        .pc-adv-sessions__head {
           display: grid;
           grid-template-columns: minmax(240px, 0.82fr) minmax(380px, 1.18fr);
           gap: 10px;
