@@ -321,6 +321,13 @@ defineTestDomain({
       label: 'UI',
       globs: [
         'apps/operator/app/admin/plans/**/*.test.*',
+        'apps/operator/lib/__tests__/client-navigation.test.ts',
+        'apps/operator/lib/__tests__/desktop-static-host.test.ts',
+        'apps/operator/lib/__tests__/desktop-ui-intents.test.ts',
+        'apps/operator/lib/__tests__/operator-vite-dev-mode.test.ts',
+        'apps/operator/lib/__tests__/lazy-with-retry.test.ts',
+        'apps/operator/lib/__tests__/navigation-progress-helpers.test.ts',
+        'apps/operator/app/admin/testing/_lib/recorder-start-params.test.ts',
       ],
     },
   ],
