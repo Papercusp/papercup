@@ -93,6 +93,19 @@ describe('routePending helpers', () => {
     vi.advanceTimersByTime(0);
     expect(getRoutePendingHref()).toBeNull();
   });
+  it('cancels a previously scheduled clear when a new pending route begins', () => {
+    beginRoutePending('/support?ws=default');
+    scheduleRoutePendingClear();
+    beginRoutePending('/harness/sheets?ws=default');
+
+    vi.advanceTimersByTime(10);
+
+    expect(getRoutePendingHref()).toBe('/harness/sheets?ws=default');
+
+    vi.advanceTimersByTime(400);
+
+    expect(getRoutePendingHref()).toBe('/harness/sheets?ws=default');
+  });
   it('notifies subscribers on begin and finish transitions', () => {
     const listener = vi.fn();
     const unsubscribe = subscribeRoutePending(listener);
