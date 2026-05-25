@@ -317,6 +317,61 @@ export async function register(): Promise<void> {
       err instanceof Error ? err.message : err,
     );
   }
+
+  // dogfood-v5 Phase 5a — Hyperbee substrate boot.
+  //
+  // Gated by PAPERCUSP_DOGFOOD_SUBSTRATE_ENABLE=1. Default OFF so the
+  // existing dev loop is unchanged until you explicitly opt in (real
+  // Hyperswarm peer discovery + Corestore IO at boot, not the kind of
+  // thing you want firing in a unit-test CI worker by accident).
+  //
+  // When enabled:
+  //   1. await awaitEnsurePaths() — both SQL migrations + runtime
+  //      schema-ensure must complete before any projection writer can
+  //      land rows.
+  //   2. bootAllHarnessesForActiveWorkspace() enumerates every
+  //      `<workspace>/.papercusp/harnesses/<slug>/` directory and
+  //      boots a corestore + autobase + projection set per harness.
+  //   3. Handles live in a module-level Map; getBootedHarness() is the
+  //      lookup from anywhere in the operator (orchestrator claim,
+  //      share-wizard, etc.).
+  //
+  // Failures roll up but don't block the rest of boot — the operator
+  // stays usable in PG-only mode if the substrate can't come up.
+  if (process.env.PAPERCUSP_DOGFOOD_SUBSTRATE_ENABLE === '1') {
+    void (async () => {
+      try {
+        const { awaitEnsurePaths } = await import(
+          '@/lib/sync/hyperbee/boot-gate'
+        );
+        await awaitEnsurePaths({ timeoutMs: 60_000 });
+        const { bootAllHarnessesForActiveWorkspace } = await import(
+          '@/lib/sync/hyperbee/boot-all'
+        );
+        const t0 = Date.now();
+        const result = await bootAllHarnessesForActiveWorkspace({
+          perHarnessTimeoutMs: 30_000,
+        });
+        console.log(
+          `[hyperbee-substrate] boot complete in ${Date.now() - t0}ms — attempted=${result.attempted} booted=${result.booted} alreadyBooted=${result.alreadyBooted} failed=${result.failed}`,
+        );
+        if (result.failed > 0) {
+          for (const r of result.results) {
+            if (r.state === 'failed') {
+              console.warn(
+                `[hyperbee-substrate] (${r.workspaceId}::${r.harnessSlug}) failed: ${r.error}`,
+              );
+            }
+          }
+        }
+      } catch (err) {
+        console.warn(
+          '[hyperbee-substrate] boot failed (non-fatal):',
+          err instanceof Error ? err.message : err,
+        );
+      }
+    })();
+  }
 }
 
 let _backfillRan = false;
