@@ -20086,3 +20086,50 @@ body > .h-top-collapse-btn.h-top-collapse-inline .h-top-collapse-state {
   border-color: color-mix(in oklab, var(--h-row-tone, var(--h-row-accent)), transparent 28%) !important;
   box-shadow: none !important;
 }
+
+/* Row title cleanup: titles should read as text on the row, not as pills. */
+.h-root :is(
+  .h-feature-row-title,
+  .h-issue-title,
+  .h-inbox-row-title,
+  .h-proposal-row-title,
+  .h-git-subject,
+  .h-agent-role,
+  .h-log-msg
+) {
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  padding: 0 !important;
+  color: color-mix(in oklab, var(--fg), white 6%) !important;
+}
+
+.h-root .h-feature-row-main .h-feature-row-title,
+.h-root .h-issue-body--inline .h-issue-title {
+  inline-size: auto !important;
+  width: auto !important;
+}
+
+/* Match feature and issue row outlines to the clearer git-row treatment. */
+.h-root .h-feature-row,
+.h-root [data-index] > .h-feature-row,
+.h-root .h-dashboard-panel-anchor[data-dashboard-panel="issues"] .h-issue,
+.h-root .h-issue {
+  border: 1px solid color-mix(in oklab, var(--h-row-tone, var(--h-row-accent)), transparent 52%) !important;
+  border-left-width: 3px !important;
+  border-radius: 9px !important;
+}
+
+.h-root :is(.h-feature-row.h-row-even, .h-issue.h-row-even),
+.h-root [data-index]:nth-child(2n) > .h-feature-row {
+  border-color: color-mix(in oklab, var(--h-row-tone, var(--h-row-accent)), transparent 58%) !important;
+}
+
+.h-root :is(.h-feature-row, .h-issue):is(:hover, :focus-visible, :focus-within, .is-active, .is-focused, .is-selected),
+.h-root [data-index] > .h-feature-row:is(:hover, :focus-visible, :focus-within, .is-active, .is-focused, .is-selected),
+.h-root .h-dashboard-panel-anchor[data-dashboard-panel="issues"] .h-issue:is(:hover, :focus-visible, :focus-within) {
+  border-color: color-mix(in oklab, var(--h-row-tone, var(--h-row-accent)), transparent 28%) !important;
+  border-left-color: color-mix(in oklab, var(--h-row-tone, var(--h-row-accent)), transparent 12%) !important;
+  box-shadow: none !important;
+}
