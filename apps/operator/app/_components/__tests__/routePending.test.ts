@@ -106,6 +106,20 @@ describe('routePending helpers', () => {
 
     expect(getRoutePendingHref()).toBe('/harness/sheets?ws=default');
   });
+  it('resets the harness minimum-visible timer when a new harness route begins', () => {
+    beginRoutePending('/harness/alpha?ws=default');
+    scheduleRoutePendingClear();
+
+    vi.advanceTimersByTime(200);
+    beginRoutePending('/harness/beta?ws=default');
+    scheduleRoutePendingClear();
+
+    vi.advanceTimersByTime(200);
+    expect(getRoutePendingHref()).toBe('/harness/beta?ws=default');
+
+    vi.advanceTimersByTime(200);
+    expect(getRoutePendingHref()).toBeNull();
+  });
   it('notifies subscribers on begin and finish transitions', () => {
     const listener = vi.fn();
     const unsubscribe = subscribeRoutePending(listener);
