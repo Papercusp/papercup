@@ -16,6 +16,7 @@
 import { use, useState } from 'react';
 import { ForkCompletionForm, type ForkSuccessPayload } from '@/app/_components/ForkCompletionForm';
 import { ForkProvisioningProgress } from '@/app/_components/ForkProvisioningProgress';
+import { navigateClient } from '../../../../lib/client-navigation';
 
 interface Props {
   params: Promise<{ id: string }>;
@@ -34,7 +35,7 @@ export default function ForkClient({ params }: Props) {
             // No provisioning needed → redirect immediately.
             const queue = payload.pendingProvisioning ?? [];
             if (queue.length === 0) {
-              window.location.href = `/harness?slug=${payload.newSlug}`;
+              navigateClient(`/harness?slug=${payload.newSlug}`);
               return;
             }
             // Otherwise stay on this page and walk the queue.
@@ -53,7 +54,7 @@ export default function ForkClient({ params }: Props) {
         onAllDone={() => {
           // Brief delay so the user reads the summary screen.
           setTimeout(() => {
-            window.location.href = `/harness?slug=${forked.newSlug}`;
+            navigateClient(`/harness?slug=${forked.newSlug}`);
           }, 1500);
         }}
       />

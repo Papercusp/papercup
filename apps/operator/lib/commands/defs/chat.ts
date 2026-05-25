@@ -8,6 +8,7 @@
 import { z } from 'zod';
 import { register } from '../registry';
 import type { CommandDef, QueryDef } from '../types';
+import { navigateClient } from '../../client-navigation';
 
 function baseUrl(): string {
   if (typeof window !== 'undefined') return '';
@@ -78,7 +79,7 @@ const chatOpenPane: CommandDef<z.infer<typeof OpenPaneArgs>> = {
       throw new Error('chat.open-pane must run in the browser process');
     }
     const target = `/harness?ws=${encodeURIComponent(getWs())}&project=${encodeURIComponent(slug)}&panel=experts&chat=${encodeURIComponent(chatId)}`;
-    window.location.href = target;
+    navigateClient(target);
     return { slug, chatId, navigated: true };
   },
 };

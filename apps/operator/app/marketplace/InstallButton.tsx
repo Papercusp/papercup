@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import { toast } from 'sonner';
+import { navigateClient } from '../../lib/client-navigation';
 
 interface Subproject {
   suffix: string;
@@ -42,7 +43,7 @@ export default function InstallButton({ slug, alreadyInstalled, topology, subpro
       const multiBlurb = isMulti && subprojects ? ` · ${subprojects.length} sub-harnesses created` : '';
       toast.success(`✓ ${d.projectSlug} installed${multiBlurb}`, {
         description: where,
-        action: { label: 'Open harness', onClick: () => (window.location.href = `/harness/${d.projectSlug}`) },
+        action: { label: 'Open harness', onClick: () => navigateClient(`/harness/${d.projectSlug}`) },
         duration: 8000,
       });
       setMode('idle');

@@ -6,6 +6,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { toast } from 'sonner';
 import { useConfirmDialog } from '../../harness/useConfirmDialog';
 import { usePromptDialog } from '../../harness/usePromptDialog';
+import { navigateClient } from '../../../lib/client-navigation';
 
 interface PublishRecord {
   slug: string;
@@ -101,7 +102,7 @@ export default function MarketplaceSnapshotsClient() {
           p.shape && Object.keys(p.shape.fields ?? {}).length > 0,
         );
         if (hasStripped) {
-          window.location.href = `/snapshots/${row.id}/fork`;
+          navigateClient(`/snapshots/${row.id}/fork`);
           return;
         }
       }
@@ -129,7 +130,7 @@ export default function MarketplaceSnapshotsClient() {
       if (!r.ok || !d.ok) throw new Error(d.error ?? `HTTP ${r.status}`);
       toast.success(`Instantiated as ${d.newSlug}`, {
         description: 'Open the Harnesses tab to find it.',
-        action: { label: 'Open', onClick: () => { window.location.href = `/harness?slug=${d.newSlug}`; } },
+        action: { label: 'Open', onClick: () => { navigateClient(`/harness?slug=${d.newSlug}`); } },
         duration: 8000,
       });
     } catch (e: unknown) {

@@ -6,6 +6,7 @@ import { RichGrid, type ColumnDef } from '@restart/grid-core';
 import RouteLink from '../_components/RouteLink';
 import { useConfirmDialog } from '../harness/useConfirmDialog';
 import { usePromptDialog } from '../harness/usePromptDialog';
+import { navigateClient } from '../../lib/client-navigation';
 
 interface PublishRecord {
   slug: string;
@@ -90,7 +91,7 @@ export default function SnapshotsClient() {
         description: 'Open the Harnesses tab to find it.',
         action: {
           label: 'Open',
-          onClick: () => { window.location.href = `/harness?slug=${d.newSlug}`; },
+          onClick: () => { navigateClient(`/harness?slug=${d.newSlug}`); },
         },
         duration: 8000,
       });

@@ -44,6 +44,7 @@ import { useQueryState, parseAsBoolean, parseAsString, parseAsStringEnum } from 
 import dynamic from 'next/dynamic';
 import { toast } from 'sonner';
 import { notify } from '@/lib/notify';
+import { navigateClient } from '../../lib/client-navigation';
 import { Group as PanelGroup, Panel as RPanel, Separator } from 'react-resizable-panels';
 import {
   Activity, Play, Square, SlidersHorizontal, RotateCcw, RefreshCw,
@@ -1278,7 +1279,7 @@ function SaveSnapshotButton({ slug }: { slug: string }) {
       }
       toast.success(`Snapshot ${d.id} captured (${(d.bytes / 1e6).toFixed(1)} MB)`, {
         id: t,
-        action: { label: 'Open Snapshots', onClick: () => { window.location.href = '/snapshots'; } },
+        action: { label: 'Open Snapshots', onClick: () => { navigateClient('/snapshots'); } },
         duration: 8000,
       });
       for (const w of (d.warnings ?? []) as string[]) toast.warning(w);
@@ -3864,13 +3865,13 @@ export default function HarnessDashboard() {
     // Always-available navigation commands so the palette never lands
     // empty (e.g. on first open before projects load).
     cs.push(
-      { id: 'nav:marketplace', section: 'Navigate', title: 'Marketplace', icon: '🛒', keywords: 'marketplace plugins templates browse', perform: () => { window.location.href = '/marketplace'; } },
-      { id: 'nav:harnesses', section: 'Navigate', title: 'Installed harnesses', icon: '📦', keywords: 'harnesses installed projects list', perform: () => { window.location.href = '/installed/harnesses'; } },
-      { id: 'nav:plugins', section: 'Navigate', title: 'Installed plugins', icon: '🔌', keywords: 'plugins installed list', perform: () => { window.location.href = '/installed/plugins'; } },
-      { id: 'nav:snapshots', section: 'Navigate', title: 'Snapshots', icon: '⟲', keywords: 'snapshots backups', perform: () => { window.location.href = '/installed/snapshots'; } },
-      { id: 'nav:settings', section: 'Navigate', title: 'Settings', icon: '⚙', keywords: 'settings operator oracle voice', perform: () => { window.location.href = '/settings/operator'; } },
-      { id: 'nav:setup', section: 'Navigate', title: 'Setup guide', icon: '📖', keywords: 'setup install help getting started', perform: () => { window.location.href = '/setup'; } },
-      { id: 'nav:support', section: 'Navigate', title: 'Support', icon: '💬', keywords: 'support help troubleshoot', perform: () => { window.location.href = '/support'; } },
+      { id: 'nav:marketplace', section: 'Navigate', title: 'Marketplace', icon: '🛒', keywords: 'marketplace plugins templates browse', perform: () => { navigateClient('/marketplace'); } },
+      { id: 'nav:harnesses', section: 'Navigate', title: 'Installed harnesses', icon: '📦', keywords: 'harnesses installed projects list', perform: () => { navigateClient('/installed/harnesses'); } },
+      { id: 'nav:plugins', section: 'Navigate', title: 'Installed plugins', icon: '🔌', keywords: 'plugins installed list', perform: () => { navigateClient('/installed/plugins'); } },
+      { id: 'nav:snapshots', section: 'Navigate', title: 'Snapshots', icon: '⟲', keywords: 'snapshots backups', perform: () => { navigateClient('/installed/snapshots'); } },
+      { id: 'nav:settings', section: 'Navigate', title: 'Settings', icon: '⚙', keywords: 'settings operator oracle voice', perform: () => { navigateClient('/settings/operator'); } },
+      { id: 'nav:setup', section: 'Navigate', title: 'Setup guide', icon: '📖', keywords: 'setup install help getting started', perform: () => { navigateClient('/setup'); } },
+      { id: 'nav:support', section: 'Navigate', title: 'Support', icon: '💬', keywords: 'support help troubleshoot', perform: () => { navigateClient('/support'); } },
     );
     // Documented keyboard shortcuts. The palette has no power to
     // re-bind these — these entries are reference-only, surfaced here
