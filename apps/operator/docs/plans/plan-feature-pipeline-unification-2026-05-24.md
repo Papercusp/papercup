@@ -9,9 +9,9 @@ owner: aviynw3@gmail.com
 
 ## Now
 
-**State:** Phase A + B + C COMPLETE (P-001–P-017). P-016: promote button + `PromoteDialog` in `PlanActions.tsx`; `promoteToHarness()` API call; `plans.ts` route verb; SSE invalidation on success. P-017: 17 tests covering `decoratePromotedBlock` + `buildFeatureSummary` in `plan-renderers-promoted.test.ts`. Phase D (architect prompt + `promote:plan` action) is next.
+**State:** Phases A–E complete (P-001–P-028). Phase E delivered: `plansDrafts.bySlug` sync query in `sync-resolver/index.ts`, ProposalsPanel rewritten (~1100 LOC → 588 LOC) to read from that query merged with legacy `proposalsShared.byHarness`, unified `ProposalCard` type, source-tag pills ("you"/"scoper"/"legacy"), "New proposal" modal wrapping `ArchitectChat`, Edit link to `/adv/plans`, `CardDetail` with Accept (confirm → `fetchPlan` → `promoteToHarness`) and Reject (`rejectDraftPlan` → status: superseded), `h-proposals.css` source-pill styles. Phase F (scoper → plan output) is next.
 
-**Next:** P-018 — add `promote:plan` action block to architect prompt template (`apps/operator/lib/agent-tools/architect/prompts.ts`).
+**Next:** P-029 — end-to-end tests for the new proposal flow.
 
 ---
 ## Background
@@ -322,20 +322,20 @@ Default stays `proposal` until Phase F soaks; flip to `plan` after.
 
 ### Phase D — Architect: `promote:plan` action + clarifying-question guidance (2 days)
 
-- [ ] P-018 Add `promote:plan` action block to architect prompt template (`apps/operator/lib/agent-tools/architect/prompts.ts`)
-- [ ] P-019 Implement action handler: parses the block, calls `plans:new` + `plans:set-now` + `plans:add-item` + `plans:add-decision` in sequence; rolls back on partial failure
-- [ ] P-020 Update architect persona (`apps/operator/prompts/architect.persona.md` — verify path): clarifying-question guidance per D-008. Lead with "work with the user so you can create a fully detailed plan; keep in mind they're a novice — no technical details"
-- [ ] P-021 Tests: architect responds to a single-prompt input with at least one clarifying question; emits valid `promote:plan` block once it has enough context; handler creates a valid plan with `status: draft`
+- [x] P-018 Add `promote:plan` action block to architect prompt template (`apps/operator/lib/agent-tools/architect/prompts.ts`)
+- [x] P-019 Implement action handler: `plan-block-handler.ts` — parses block, calls plans:new → set-now → add-item × N → add-decision × N; no rollback needed (plan stays draft on partial failure)
+- [x] P-020 Update architect tools (`apps/operator/prompts/architect.tools.md`): clarifying-question guidance per D-008; "Create a plan from user conversation" workflow
+- [x] P-021 Tests: 13/13 parsePlanBlock + applyPlanBlock tests in `plan-block-handler.test.ts`
 
 ### Phase E — ProposalsPanel rewrite (2–3 days)
 
-- [ ] P-022 New sync-query `plansDrafts.bySlug` returning plans where `status: draft`, with item count + source tag
-- [ ] P-023 ProposalsPanel reads from `plansDrafts.bySlug` (initially merged with `harness_proposals_shared` during transition)
-- [ ] P-024 Source-tag pill on each card ("you" vs "scoper")
-- [ ] P-025 **New "New" button** at top of panel — opens architect chat modal pre-seeded with proposal-creation context
-- [ ] P-026 Edit button navigates to `/admin/plans/<slug>`
-- [ ] P-027 Accept button = one-click `plans:promote` with confirmation modal (D-006); features derived from plan items
-- [ ] P-028 Reject button = `plans:set-frontmatter status=dropped`
+- [x] P-022 New sync-query `plansDrafts.bySlug` returning plans where `status: draft`, with item count + source tag
+- [x] P-023 ProposalsPanel reads from `plansDrafts.bySlug` (initially merged with `harness_proposals_shared` during transition)
+- [x] P-024 Source-tag pill on each card ("you" vs "scoper")
+- [x] P-025 **New "New" button** at top of panel — opens architect chat modal pre-seeded with proposal-creation context
+- [x] P-026 Edit button navigates to `/adv/plans?slug=<slug>` (plan detail page)
+- [x] P-027 Accept button = confirm modal → `fetchPlan` → derive features from items → `promoteToHarness({ apply: true })`
+- [x] P-028 Reject button = `rejectDraftPlan(slug)` → CAS set-content flipping `status: draft` → `status: superseded`
 - [ ] P-029 Tests: New flow end-to-end (click New → architect chat → emit promote:plan → card appears → Accept → features land)
 
 ### Phase F — Scoper `MODE=proposal` → plan output (2 days + 1 week soak)

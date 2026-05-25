@@ -3077,3 +3077,31 @@
     rgba(7, 26, 43, 0.98) !important;
   color: #ffffff !important;
 }
+
+/* ── P-024: source-tag pills (plan-based proposals) ─────────────── */
+.h-proposal-source-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+.h-proposal-source-pill.source-user {
+  color: color-mix(in oklab, var(--good, #22c55e), white 20%);
+  background: color-mix(in oklab, var(--good, #22c55e), transparent 88%);
+  border: 1px solid color-mix(in oklab, var(--good, #22c55e), transparent 70%);
+}
+.h-proposal-source-pill.source-scoper {
+  color: color-mix(in oklab, var(--fg-accent, #38bdf8), white 10%);
+  background: color-mix(in oklab, var(--fg-accent, #38bdf8), transparent 88%);
+  border: 1px solid color-mix(in oklab, var(--fg-accent, #38bdf8), transparent 70%);
+}
+.h-proposal-source-pill.source-legacy {
+  color: var(--fg-dim);
+  background: color-mix(in oklab, var(--bg-2), transparent 30%);
+  border: 1px solid var(--border);
+}

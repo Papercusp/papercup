@@ -486,6 +486,24 @@ export function promoteToHarness(args: PromoteToHarnessArgs) {
   return postJson<PromoteToHarnessResult>('promote', args as unknown as Record<string, unknown>);
 }
 
+/**
+ * Reject a draft plan: flip status → superseded via CAS set-content.
+ * The plansDrafts.bySlug resolver filters out non-draft plans, so the
+ * card disappears from ProposalsPanel immediately after this resolves.
+ */
+export async function rejectDraftPlan(slug: string): Promise<{ ok: boolean; error?: string }> {
+  const plan = await fetchPlan(slug);
+  if ('error' in plan && plan.error) return { ok: false, error: plan.error };
+  const raw = plan.raw;
+  const contentHash = plan.contentHash;
+  if (!raw) return { ok: false, error: 'no_content' };
+  const updated = raw.replace(/^(status:\s*)draft\b/m, '$1superseded');
+  if (updated === raw) return { ok: false, error: 'status_not_draft' };
+  const res = await setPlanContent({ slug, content: updated, expectedHash: contentHash });
+  if ('ok' in res && res.ok) return { ok: true };
+  return { ok: false, error: writeErrorOf(res) ?? 'set_content_failed' };
+}
+
 export function lintPlan(args: LintArgs = {}) {
   // lint is a read (GET) but logically a write-time companion (called
   // after assisted writes); expose it next to the writers so call sites
