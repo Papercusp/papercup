@@ -346,3 +346,44 @@ Closing P-009 as `done` keeps this plan honest: every item is either delivered t
 
 Follow-up plan candidate: "Per-turn coord delta middleware" — own plan, own design call, own tests.
 Related: P-003, P-007, P-008, P-009
+
+### D-014 — P-015 anchors-to-table writer shipped
+Date: 2026-05-25
+Closes the dormant-pipeline gap on P-015: anchors now persist to `harness_shared.memory_anchors` after every `memory:remember` succeeds, not just to mem0 metadata.
+
+Implementation in commit `804be5dc`:
+- New sibling module `apps/operator/lib/memory/persist-anchors.ts` exporting `extractAddedIds(result)` + `persistAnchorsSql(sql, memoryId, anchors)`.
+- `remember.ts` calls them inside a `void (async () => …)()` after `client.add(...)`, so the mem0 response is never blocked.
+- Single `INSERT … SELECT FROM unnest(kinds, values)` per added memory id, `ON CONFLICT (memory_id, kind, value) DO NOTHING` for idempotent retries.
+- Same defensive posture as `bumpLastSurfacedSql`: table-missing detection caches as a no-op for the rest of the process lifetime; transient PG errors are swallowed; `UPDATE`/`NONE` events skipped (only `ADD` rows produce anchor inserts).
+
+This unblocks three previously-dormant code paths:
+- `apps/operator/bin/audit-memory-anchors.ts` (Layer 1 nightly CLI, P-019)
+- `apps/operator/lib/endpoint-route/routes/user/memory.ts` `broken_anchors` enrichment (P-022)
+- `/api/user/memory/audit` "Audit all" button (P-023)
+
+Tests: 10 specs in `persist-anchors.test.ts` (extractor + writer + table-missing caching + transient-error posture) + 3 wiring specs in `remember.test.ts`. 169/169 green across `lib/agent-tools/memory/` + `lib/memory/`.
+
+Out of scope (deferred): backfilling the one pre-P-014 `metadata.anchors[]` row into the table (it has no anchors anyway); symbol-anchor checking (Layer 3); P-009 per-turn coord-delta wrapper.
+Related: P-015
+
+### D-015 — P-015 audit gap closed — anchors-to-table writer live
+Date: 2026-05-25
+Code-truth audit on 2026-05-25 found that P-015 had marked done while shipping only the metadata.anchors[] write into mem0's payload — the dedicated `harness_shared.memory_anchors` table (migration 085 substrate) was never populated. Net effect: P-019 Layer 1 audit, P-022 status badges, and P-023 Audit-all button were all structurally dormant in production (they queried a perpetually-empty table).
+
+Closed by commit `804be5dc` (writer + tests) + `38ba9549` (test tsc fix):
+
+- New module `apps/operator/lib/memory/persist-anchors.ts`: `persistAnchorsSql(sql, memoryId, anchors)` does a single `INSERT … SELECT FROM unnest(kinds, values) ON CONFLICT DO NOTHING`. Fire-and-forget posture; transient PG errors swallowed; table-missing cached as no-op for process lifetime. Mirrors `bump-last-surfaced.ts:bumpLastSurfacedSql`.
+- New helper `extractAddedIds(mem0Result)`: walks `results[]`, returns ids for `event === 'ADD'` only (`UPDATE`/`NONE`/`DELETE` skipped — those merged into existing rows whose anchors were already persisted).
+- Wire-up in `remember.ts`: after `client.add()` succeeds, `void (async () => { for (const id of extractAddedIds(result)) await persistAnchorsSql(sql, id, anchors.anchors); })()`.
+
+**Live verification (run against real PG):**
+- Inserted a memory canonical row, called persistAnchorsSql → 4 anchor rows landed (file, feature, plan, migration)
+- Mixed valid + broken file anchors → audit CLI reported `checked=1 anchors=2 broken_anchors=1 broken_memories=1`
+- `memory_canonical.state` correctly flipped to `broken_anchor`
+- `memory_anchors.last_check_ok` correctly true for real file, false for missing file
+
+Tests: 21/21 in `lib/memory/persist-anchors.test.ts` + `lib/agent-tools/memory/remember.test.ts` (10 new + 1 reworked integration spec). Full memory suite: 181/181.
+
+The audit pipeline is now end-to-end live: write a memory → anchors land in PG → nightly audit flips broken-anchor states → UI badges + Audit-all button surface them.
+Related: P-014, P-015, P-019, P-022, P-023
