@@ -31,7 +31,9 @@ Total Phase 8 tests landed: **82/82 pass**.
 
 **P-069 — DONE (a/b/c/d/e all shipped as standalone components).** Wire-up into ChromeShell + settings page is a follow-up assembly item.
 
-**Next action:** P-049 (PR-reviewer settings modal) — composes ClaimStatusBadge with per-harness toggle rows. Then P-073 Insights tab (gated on substrate boot for stat aggregations) or P-047 Features tab feature-detail polish.
+**P-049 — DONE (PrReviewerSettings modal at `apps/operator/app/harness/PrReviewerSettings.tsx`).** Three sections: P-049a toggles + merge-method radio, P-049b trust list + remove inline, P-049c audit log read-only. Pure UI; consumer wires PG. 14/14 tests pass.
+
+**Next action:** P-073 Insights cards as standalone components. Each card is a pure-UI consumer of pre-computed props; the aggregation wiring lands separately once substrate boots. Order: ProjectCard → PeopleCard → ActivityFeedCard → YourPlaceCard → HowItWorksHereCard → SpendCard.
 
 ## Background
 
