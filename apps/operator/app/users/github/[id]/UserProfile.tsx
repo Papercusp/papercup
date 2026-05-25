@@ -1,0 +1,211 @@
+'use client';
+
+/**
+ * UserProfile — Phase 8 P-072.
+ *
+ * Plan: papercusp-dogfood-phase8-sidebar-insights-profile-2026-05-24.
+ * v5 addendum 3 §18 + D-028: route at `/users/github/<github_user_id>`;
+ * username route redirects to numeric.
+ *
+ * This is the SHELL implementation — the data dependencies (per-harness
+ * stat rollups, recent activity feed, claim-list) are stubbed via
+ * props so the page can render with mock data today + the real wiring
+ * lands incrementally as the projection-fed PG tables get UI queries.
+ *
+ * Sub-acceptances covered by this shell:
+ *   P-072a — header (avatar, name, login, verified-binding badge, GH link).
+ *   P-072b — per-harness collapsible blocks (one per visible harness).
+ *   P-072c — recent activity feed (last ~30 events).
+ *   P-072d — footer claimed harnesses.
+ *
+ * NOT yet wired (follow-up):
+ *   - The hook that fetches user + per-harness rollups from PG.
+ *   - The privacy filter for shared-private harnesses (Q-2 in plan).
+ *   - The Marketplace publishedBy switch-over to this page (P-072f).
+ */
+
+import type { CSSProperties, ReactNode } from 'react';
+import { ContributorBadgeRow } from '@/app/_components/ContributorBadge';
+import { BindingStatusBadge, type BindingStatus } from '@/app/_components/BindingStatusBadge';
+import { ClaimStatusBadge, type ClaimStatus } from '@/app/_components/ClaimStatusBadge';
+
+export interface UserProfileData {
+  github_user_id: number;
+  github_login: string;
+  display_name: string | null;
+  avatar_url: string | null;
+  /** Aggregate binding state across harnesses (worst case). */
+  binding_status: BindingStatus;
+  /** Per-harness blocks the viewer can see. */
+  harnesses: ReadonlyArray<HarnessBlock>;
+  /** Cross-harness recent activity, capped at ~30 events. */
+  recent_activity: ReadonlyArray<ActivityEntry>;
+  /** Harnesses this user has claimed as a verified maintainer. */
+  claimed_harnesses: ReadonlyArray<ClaimedHarness>;
+}
+
+export interface HarnessBlock {
+  harness_slug: string;
+  display_title: string;
+  href: string;
+  prs_merged: number;
+  features_shipped: number;
+  activity_events: number;
+}
+
+export interface ActivityEntry {
+  id: string;
+  ts: number;
+  kind: string;
+  /** Pre-rendered short label, e.g. "Shipped F-042 in sheets". */
+  label: string;
+  href?: string;
+}
+
+export interface ClaimedHarness {
+  harness_slug: string;
+  display_title: string;
+  href: string;
+  claim_status: ClaimStatus;
+}
+
+const PAGE_STYLE: CSSProperties = {
+  padding: '32px max(24px, calc((100% - 960px) / 2))',
+  fontFamily: 'inherit',
+  color: 'var(--fg)',
+};
+
+const SECTION_STYLE: CSSProperties = {
+  marginTop: 32,
+};
+
+const SECTION_TITLE: CSSProperties = {
+  fontSize: 14,
+  fontWeight: 600,
+  color: 'var(--fg-dim)',
+  textTransform: 'uppercase',
+  letterSpacing: 0.5,
+  marginBottom: 12,
+};
+
+const CARD_STYLE: CSSProperties = {
+  background: 'var(--bg-2)',
+  border: '1px solid var(--border)',
+  borderRadius: 8,
+  padding: 16,
+  marginBottom: 8,
+};
+
+function fmtTime(ts: number): string {
+  const ageMs = Date.now() - ts;
+  const hours = Math.floor(ageMs / 3_600_000);
+  if (hours < 1) return 'just now';
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  if (days < 7) return `${days}d ago`;
+  const weeks = Math.floor(days / 7);
+  return `${weeks}w ago`;
+}
+
+export function UserProfile(props: { data: UserProfileData }): ReactNode {
+  const u = props.data;
+  return (
+    <div style={PAGE_STYLE} data-testid="user-profile-page">
+      {/* ── P-072a — Header ─────────────────────────────────────── */}
+      <header style={{ display: 'flex', gap: 24, alignItems: 'center' }}>
+        {u.avatar_url && (
+          <img
+            src={u.avatar_url}
+            alt=""
+            width={96}
+            height={96}
+            style={{ borderRadius: '50%', border: '1px solid var(--border)' }}
+          />
+        )}
+        <div style={{ flex: 1 }}>
+          <h1 style={{ margin: 0, fontSize: 24, fontWeight: 600 }}>
+            {u.display_name ?? u.github_login}
+          </h1>
+          <div style={{ marginTop: 4, color: 'var(--fg-dim)', display: 'flex', alignItems: 'center', gap: 12 }}>
+            <a
+              href={`https://github.com/${u.github_login}`}
+              target="_blank"
+              rel="noreferrer"
+              style={{ color: 'var(--fg-dim)', textDecoration: 'underline' }}
+            >
+              @{u.github_login}
+            </a>
+            <BindingStatusBadge status={u.binding_status} />
+          </div>
+        </div>
+      </header>
+
+      {/* ── P-072b — Per-harness collapsible blocks ─────────────── */}
+      <section style={SECTION_STYLE} data-testid="profile-section-harnesses">
+        <div style={SECTION_TITLE}>Harnesses</div>
+        {u.harnesses.length === 0 && (
+          <div style={{ color: 'var(--fg-dim)', fontSize: 14 }}>
+            No visible harnesses for this user.
+          </div>
+        )}
+        {u.harnesses.map((h) => (
+          <details key={h.harness_slug} style={CARD_STYLE}>
+            <summary style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', cursor: 'pointer' }}>
+              <a href={h.href} style={{ color: 'var(--fg)', textDecoration: 'none', fontWeight: 500 }}>
+                {h.display_title}
+              </a>
+              <ContributorBadgeRow
+                prsMerged={h.prs_merged}
+                featuresShipped={h.features_shipped}
+                activityEvents={h.activity_events}
+              />
+            </summary>
+            <div style={{ marginTop: 12, fontSize: 13, color: 'var(--fg-dim)' }}>
+              Recent activity in <code>{h.harness_slug}</code>:{' '}
+              {h.activity_events} events, {h.features_shipped} features shipped, {h.prs_merged} PRs merged.
+            </div>
+          </details>
+        ))}
+      </section>
+
+      {/* ── P-072c — Recent activity feed ───────────────────────── */}
+      <section style={SECTION_STYLE} data-testid="profile-section-activity">
+        <div style={SECTION_TITLE}>Recent activity</div>
+        {u.recent_activity.length === 0 && (
+          <div style={{ color: 'var(--fg-dim)', fontSize: 14 }}>
+            No recent activity.
+          </div>
+        )}
+        {u.recent_activity.slice(0, 30).map((e) => {
+          const body: ReactNode = e.href
+            ? <a href={e.href} style={{ color: 'var(--fg)', textDecoration: 'none' }}>{e.label}</a>
+            : e.label;
+          return (
+            <div
+              key={e.id}
+              style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 0', borderBottom: '1px solid var(--border)', fontSize: 13 }}
+            >
+              <span>{body}</span>
+              <span style={{ color: 'var(--fg-dim)', whiteSpace: 'nowrap' }}>{fmtTime(e.ts)}</span>
+            </div>
+          );
+        })}
+      </section>
+
+      {/* ── P-072d — Claimed harnesses footer ────────────────────── */}
+      {u.claimed_harnesses.length > 0 && (
+        <section style={SECTION_STYLE} data-testid="profile-section-claimed">
+          <div style={SECTION_TITLE}>Claimed harnesses</div>
+          {u.claimed_harnesses.map((c) => (
+            <div key={c.harness_slug} style={{ ...CARD_STYLE, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <a href={c.href} style={{ color: 'var(--fg)', textDecoration: 'none', fontWeight: 500 }}>
+                {c.display_title}
+              </a>
+              <ClaimStatusBadge status={c.claim_status} claimantLogin={u.github_login} />
+            </div>
+          ))}
+        </section>
+      )}
+    </div>
+  );
+}
