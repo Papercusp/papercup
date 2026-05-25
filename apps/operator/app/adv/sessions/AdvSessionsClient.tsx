@@ -85,9 +85,10 @@ interface OmpSessionState {
     assistant: number;
     toolResults: number;
   };
-  models: string[];
-  latestModel: string | null;
-  usage: OmpSessionUsage;
+  /** Optional — older API responses (pre-token-spend) omit these. */
+  models?: string[];
+  latestModel?: string | null;
+  usage?: OmpSessionUsage;
   latestMessages: OmpMessageSnippet[];
   todos: OmpTodoPhase[];
   toolCounts: OmpToolSummary[];
@@ -95,6 +96,31 @@ interface OmpSessionState {
   goals: OmpMessageSnippet[];
   compactions: OmpMessageSnippet[];
   handoffs: OmpMessageSnippet[];
+}
+
+const EMPTY_USAGE: OmpSessionUsage = {
+  inputTokens: 0,
+  outputTokens: 0,
+  cacheReadTokens: 0,
+  cacheWriteTokens: 0,
+  totalTokens: 0,
+  totalCostUsd: 0,
+  assistantTurnsWithUsage: 0,
+};
+
+/** Always returns a populated usage block — missing fields default
+ *  to 0 so the UI never tries to read `.totalTokens` off undefined. */
+function normalizeUsage(u: OmpSessionUsage | undefined): OmpSessionUsage {
+  if (!u) return EMPTY_USAGE;
+  return {
+    inputTokens: u.inputTokens ?? 0,
+    outputTokens: u.outputTokens ?? 0,
+    cacheReadTokens: u.cacheReadTokens ?? 0,
+    cacheWriteTokens: u.cacheWriteTokens ?? 0,
+    totalTokens: u.totalTokens ?? 0,
+    totalCostUsd: u.totalCostUsd ?? 0,
+    assistantTurnsWithUsage: u.assistantTurnsWithUsage ?? 0,
+  };
 }
 
 interface OmpMemoryState {
@@ -242,11 +268,12 @@ export default function AdvSessionsClient() {
             const data = (await r.json()) as SessionStateResponse;
             const s = data.state;
             if (!s) return;
+            const usage = normalizeUsage(s.usage);
             updates[row.id] = {
-              model: s.latestModel,
-              totalTokens: s.usage.totalTokens,
-              totalCostUsd: s.usage.totalCostUsd,
-              ompSessionId: s.header.id ?? null,
+              model: s.latestModel ?? null,
+              totalTokens: usage.totalTokens,
+              totalCostUsd: usage.totalCostUsd,
+              ompSessionId: s.header?.id ?? null,
               loaded: true,
             };
           } catch { /* swallow */ }
@@ -1150,28 +1177,30 @@ function SessionPanelContent({
     );
   }
 
+  const usage = normalizeUsage(state.usage);
+  const models = state.models ?? [];
   return (
     <>
       <div className="pc-adv-sessions__cards">
-        <MetricCard label="Model" value={formatModelLabel(state.latestModel) ?? '—'} />
-        <MetricCard label="Total tokens" value={formatCompactNumber(state.usage.totalTokens)} />
-        <MetricCard label="Cost (USD)" value={formatCostUsd(state.usage.totalCostUsd)} />
+        <MetricCard label="Model" value={formatModelLabel(state.latestModel ?? null) ?? '—'} />
+        <MetricCard label="Total tokens" value={formatCompactNumber(usage.totalTokens)} />
+        <MetricCard label="Cost (USD)" value={formatCostUsd(usage.totalCostUsd)} />
         <MetricCard label="Messages" value={state.messages.total} />
         <MetricCard label="User turns" value={state.messages.user} />
         <MetricCard label="Tool results" value={state.messages.toolResults} />
       </div>
-      {state.usage.assistantTurnsWithUsage > 0 ? (
+      {usage.assistantTurnsWithUsage > 0 ? (
         <div className="pc-adv-sessions__cards">
-          <MetricCard label="Input tokens" value={formatCompactNumber(state.usage.inputTokens)} />
-          <MetricCard label="Output tokens" value={formatCompactNumber(state.usage.outputTokens)} />
-          <MetricCard label="Cache read" value={formatCompactNumber(state.usage.cacheReadTokens)} />
-          <MetricCard label="Cache write" value={formatCompactNumber(state.usage.cacheWriteTokens)} />
+          <MetricCard label="Input tokens" value={formatCompactNumber(usage.inputTokens)} />
+          <MetricCard label="Output tokens" value={formatCompactNumber(usage.outputTokens)} />
+          <MetricCard label="Cache read" value={formatCompactNumber(usage.cacheReadTokens)} />
+          <MetricCard label="Cache write" value={formatCompactNumber(usage.cacheWriteTokens)} />
         </div>
       ) : null}
-      {state.models.length > 1 ? (
+      {models.length > 1 ? (
         <div className="pc-adv-sessions__section">
           <h4>Models used</h4>
-          <p className="pc-adv-sessions__snippet-text">{state.models.map(formatModelLabel).join(' → ')}</p>
+          <p className="pc-adv-sessions__snippet-text">{models.map(formatModelLabel).join(' → ')}</p>
         </div>
       ) : null}
       <div className="pc-adv-sessions__section">
