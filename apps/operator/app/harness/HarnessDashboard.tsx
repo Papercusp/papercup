@@ -93,7 +93,12 @@ function openInVSCode(projectPath: string) {
   window.open(url, VSCODE_WINDOW_NAME);
 }
 
-type MainPanel = 'brainstorm' | 'proposals' | 'git' | 'dashboard' | 'summary' | 'insights' | 'config' | 'settings' | 'prs' | `plugin:${string}`;
+type MainPanel = 'brainstorm' | 'proposals' | 'git' | 'dashboard' | 'summary' | 'insights' | 'config' | 'settings' | 'prs' | 'docs' | `plugin:${string}`;
+
+type HarnessDashboardProps = {
+  forcedPanel?: MainPanel;
+  embeddedPanelChrome?: boolean;
+};
 
 import { Panel } from '@restart/ui-primitives';
 import { StatCard } from '@restart/ui-primitives';
@@ -2419,13 +2424,14 @@ const tagStyle: React.CSSProperties = {
   color: 'var(--fg-dim)',
 };
 
-export default function HarnessDashboard() {
+export default function HarnessDashboard({ forcedPanel, embeddedPanelChrome = false }: HarnessDashboardProps = {}) {
   const rootRef = useRef<HTMLDivElement | null>(null);
   const reducedMotion = useReducedMotion() ?? false;
   const snapshotsEnabled = useFlag(FLAGS.SNAPSHOTS);
   const templatesEnabled = useFlag(FLAGS.TEMPLATES);
   const harnessPhasesEnabled = useFlag(FLAGS.HARNESS_PHASES);
   const designEnabled = useFlag(FLAGS.DESIGN);
+  const testingEnabled = useFlag(FLAGS.TESTING);
   const visualEffectsEnabled = useFancyEffectsEnabled();
   const localGithubUser = useLocalGithubUser();
   const fancyEffectsEnabled = visualEffectsEnabled && !reducedMotion;
@@ -2578,7 +2584,15 @@ export default function HarnessDashboard() {
   // has no rendering branch. Resolve it to the matching `plugin:<tabId>`
   // once the plugin tabs have loaded. Same shim covers callers that still
   // call `setActivePanel('pi')` directly (FeatureList chat button, etc).
-  const [activePanel, setActivePanel] = useQueryState('panel', parseAsString.withDefault('dashboard'));
+  const [urlActivePanel, setUrlActivePanel] = useQueryState('panel', parseAsString.withDefault('dashboard'));
+  const activePanel = forcedPanel ?? urlActivePanel;
+  const setActivePanel = useCallback(
+    (next: MainPanel | string) => {
+      if (forcedPanel) return;
+      void setUrlActivePanel(next);
+    },
+    [forcedPanel, setUrlActivePanel],
+  );
   // Plugin tab replacement shim uses activePanel, so declare it before the effect.
   const LEGACY_ALIASES = useMemo(() => ['pi', 'docs', 'vscode'], []);
   useEffect(() => {
@@ -3982,25 +3996,29 @@ export default function HarnessDashboard() {
     <div
       ref={rootRef}
       data-hud-panel={activePanel}
-      className={`h-root h-root--maximal-hud${isBrainstormPanel ? ' brainstorm-mode' : ''}${topChromeCollapsed ? ' top-chrome-collapsed' : ''}`}
+      className={`h-root h-root--maximal-hud${embeddedPanelChrome ? ' h-root--embedded-panel' : ''}${isBrainstormPanel ? ' brainstorm-mode' : ''}${topChromeCollapsed ? ' top-chrome-collapsed' : ''}`}
     >
       {confirmEl}
       {promptEl}
-      <HarnessHudOverlay
-        alive={!!status?.alive}
-        activePanel={activePanel}
-        laneCount={activeLanes.length}
-        pendingCount={todoCount}
-        escalated={!!status?.escalated}
-      />
+      {!embeddedPanelChrome && (
+        <HarnessHudOverlay
+          alive={!!status?.alive}
+          activePanel={activePanel}
+          laneCount={activeLanes.length}
+          pendingCount={todoCount}
+          escalated={!!status?.escalated}
+        />
+      )}
       {/* Toaster is mounted globally in app/layout.tsx (outside <main>)
           so it can stack above pc-header. A page-level Toaster trapped
           inside <main z:70> cannot visually escape. */}
 
-      <CollapseTopSectionPortalButton
-        collapsed={topChromeCollapsed}
-        onToggle={() => { void setTopChromeCollapsed(!topChromeCollapsed); }}
-      />
+      {!embeddedPanelChrome && (
+        <CollapseTopSectionPortalButton
+          collapsed={topChromeCollapsed}
+          onToggle={() => { void setTopChromeCollapsed(!topChromeCollapsed); }}
+        />
+      )}
       {!topChromeCollapsed && (
         <>
           {/* ── Mission header ─────────────────────────────────── */}
@@ -4033,9 +4051,10 @@ export default function HarnessDashboard() {
               value={activeSlug ?? ''}
               onValueChange={(next) => {
                 setActiveSlug(next);
-                // Keep the URL path in sync with the dropdown so the URL
-                // remains the canonical source of truth across reloads.
-                if (typeof window !== 'undefined' && next) {
+                // Keep the URL path in sync with the dropdown on the legacy
+                // /harness route. ADV embeds only want ?slug= state; rewriting
+                // the path from inside /adv would eject the user back to OPS.
+                if (!embeddedPanelChrome && typeof window !== 'undefined' && next) {
                   const target = `/harness/${encodeURIComponent(next)}`;
                   if (window.location.pathname !== target) {
                     window.history.replaceState(null, '', target + window.location.search);
@@ -4344,7 +4363,7 @@ export default function HarnessDashboard() {
           </Tooltip>
           {/* docs / vscode / pi tabs are now plugin-mounted (see pluginTabs below). */}
           {/* Plugin-mounted tabs use the tab itself as the only control. */}
-          {pluginTabs.map((pt) => (
+          {pluginTabs.filter((pt) => !pt.replaces.includes('pi') || testingEnabled).map((pt) => (
             <PluginTabTrigger
               key={`${pt.pluginSlug}:${pt.tabId}`}
               pluginSlug={pt.pluginSlug}
@@ -4379,6 +4398,7 @@ export default function HarnessDashboard() {
               <Settings size={13} aria-hidden /> settings
             </Tabs.Trigger>
           </Tooltip>
+          {testingEnabled && (
           <AddPluginButton
             activeSlug={activeSlug}
             alreadyEnabled={new Set(activeSlug ? enabledByHarness[activeSlug] ?? [] : [])}
@@ -4390,6 +4410,7 @@ export default function HarnessDashboard() {
             }}
             onRetry={() => setInstalledPluginsRefreshKey((k) => k + 1)}
           />
+          )}
         </Tabs.List>
       </Tabs.Root>
 
@@ -4455,7 +4476,7 @@ export default function HarnessDashboard() {
             manifest doesn't expose one of the conventional config keys. */}
         {resolvedPanel.startsWith('plugin:') && activeSlug && (() => {
           const tabId = resolvedPanel.slice('plugin:'.length);
-          const pt = pluginTabs.find((t) => t.tabId === tabId);
+          const pt = pluginTabs.filter((t) => !t.replaces.includes('pi') || testingEnabled).find((t) => t.tabId === tabId);
           if (!pt) {
             return (
               <div style={{ flex: 1, padding: 24, color: 'var(--fg-dim)' }}>
