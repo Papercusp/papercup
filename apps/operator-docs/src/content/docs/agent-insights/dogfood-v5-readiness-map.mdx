@@ -27,14 +27,23 @@ HTTP paths registered in `lib/endpoint-route/routes/index.ts`.
 | Wired | Boot composer | `lib/sync/hyperbee/boot.ts` |
 | Wired | Boot orchestrator (idempotent map, inflight races) | `lib/sync/hyperbee/boot-all.ts` |
 | Wired | Status enumerator | `listBootedHandles` in `boot-all.ts` |
+| Wired | Boot-history tracker (event timeline, FIFO 200-entry) | `lib/sync/hyperbee/boot-history.ts` |
 | Wired | Admin status endpoint | `GET /api/admin/dogfood-substrate-status` |
+| Wired | Admin boot-history endpoint | `GET /api/admin/dogfood-substrate-boot-history` |
 | Wired | Pure-UI status pill | `app/harness/insights/SubstrateStatusBadge.tsx` |
 | Wired | Polling client | `app/harness/insights/SubstrateStatusBadgeClient.tsx` |
-| Wired | Admin diagnostic page | `app/admin/dogfood-substrate/page.tsx` |
+| Wired | Boot-history table | `app/harness/insights/BootHistoryTable.tsx` |
+| Wired | Boot-history table client | `app/harness/insights/BootHistoryTableClient.tsx` |
+| Wired | Admin diagnostic page (3 indicators + main table + boot-history) | `app/admin/dogfood-substrate/page.tsx` |
 | Wired | Combined health verdict | `lib/sync/hyperbee/health.ts` |
-| Wired | Health endpoint | `GET /api/admin/dogfood-substrate-health` |
+| Wired | Workspace summary aggregator (worst-verdict + counts) | `lib/sync/hyperbee/summary.ts` |
+| Wired | Health endpoint (returns summary + harnesses) | `GET /api/admin/dogfood-substrate-health` |
 | Wired | Health pill | `app/harness/insights/SubstrateHealthPill.tsx` |
 | Wired | Health pill client | `app/harness/insights/SubstrateHealthPillClient.tsx` |
+| Wired | Workspace summary card | `app/harness/insights/SubstrateSummaryCard.tsx` |
+| Wired | Workspace summary card client | `app/harness/insights/SubstrateSummaryCardClient.tsx` |
+| Wired | CLI verdict formatter (pure logic) | `lib/sync/hyperbee/format-cli.ts` |
+| Wired | CLI script | `scripts/substrate-status.ts` (`npm run substrate:status`) |
 | Gated | Real boot succeeds | only with flag on + valid workspace |
 
 ## Phase 5b — Hyperbee UI integration
@@ -60,6 +69,7 @@ HTTP paths registered in `lib/endpoint-route/routes/index.ts`.
 | Wired | Claim audit reader | `lib/orchestrator/load-claim-attempts.ts` |
 | Wired | Claim-attempts endpoint | `GET /api/harness/:slug/claim-attempts` |
 | Wired | Claim attempt stats pill | `app/harness/insights/ClaimAttemptStatsPill.tsx` |
+| Wired | Claim attempt stats pill client | `app/harness/insights/ClaimAttemptStatsPillClient.tsx` |
 | User-driven | Production orchestrator wiring | swap `claim_feature` for `if (getClaimStrategy() === 'distributed') { ... }` |
 
 ## Phase 8 — Sidebar, Insights, Profile
@@ -134,17 +144,40 @@ HTTP paths registered in `lib/endpoint-route/routes/index.ts`.
 
 | Component | What it bundles |
 | --------- | --------------- |
-| `HarnessChromeHeaderBadges` | `SubstrateStatusBadgeClient` + `SubstrateHealthPillClient` + `BootstrapProgressIndicatorClient` |
+| `HarnessChromeHeaderBadges` | `SubstrateStatusBadgeClient` + `SubstrateHealthPillClient` + `BootstrapProgressIndicatorClient` + (opt-in) `ClaimAttemptStatsPillClient` |
 
-Drop into the harness chrome header for the full three-pill substrate view.
+Drop into the harness chrome header for the full substrate view. Each
+child toggleable via `hideSubstrateBadge` / `hideHealthPill` /
+`hideBootstrapProgress` / `hideClaimStats` (default true).
+
+## Pure-UI ↔ client wrapper symmetry
+
+Every dogfood pure-UI component now has a self-fetching client wrapper:
+
+| Pure UI | Client |
+| ------- | ------ |
+| `SubstrateStatusBadge` | `SubstrateStatusBadgeClient` |
+| `SubstrateHealthPill` | `SubstrateHealthPillClient` |
+| `BootstrapProgressIndicator` | `BootstrapProgressIndicatorClient` |
+| `SubstrateSummaryCard` | `SubstrateSummaryCardClient` |
+| `BootHistoryTable` | `BootHistoryTableClient` |
+| `ClaimAttemptStatsPill` | `ClaimAttemptStatsPillClient` |
+| `InsightsTab` | `InsightsTabClient` |
+
+Any consumer drops a surface into any client-rendered context with
+zero data-fetch boilerplate.
 
 ## Pure-logic primitives (always live, not gated)
 
 | Helper | Where |
 | ------ | ----- |
 | `assessHarnessSubstrateHealth` | `lib/sync/hyperbee/health.ts` |
+| `summariseWorkspaceSubstrate` | `lib/sync/hyperbee/summary.ts` |
 | `attemptDistributedClaim` | `lib/orchestrator/distributed-claim.ts` |
 | `getClaimStrategy` | `lib/orchestrator/get-claim-strategy.ts` |
+| `recordBootEvent` / `listBootHistory` | `lib/sync/hyperbee/boot-history.ts` |
+| `recordMergedOps` / `getBootstrapProgress` | `lib/sync/hyperbee/bootstrap-progress.ts` |
+| `formatSubstrateStatus` (CLI verdict formatter) | `lib/sync/hyperbee/format-cli.ts` |
 | `loadUserProfile` + `loadUserRecentActivity` | `lib/user-profile/` |
 | `loadHarnessInsights` | `lib/harness-insights/load-all.ts` |
 | `loadHarnessActivity` | `lib/harness-activity/load.ts` |
@@ -152,7 +185,8 @@ Drop into the harness chrome header for the full three-pill substrate view.
 
 Every loader takes an injectable `runQuery` so tests fake PG. Every
 loader is defensive against missing tables (returns empty / zero
-shape rather than throwing).
+shape rather than throwing). Test seams (`_setNowForTests`,
+`_resetForTests`) on every in-memory tracker.
 
 ## Gated by `PAPERCUSP_DOGFOOD_SUBSTRATE_ENABLE=1`
 
