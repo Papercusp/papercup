@@ -28,7 +28,7 @@ status. Convention spec: `/internal/docs/spec/plan-format`
 | 5a — Hyperbee plumbing | `papercusp-dogfood-phase5a-hyperbee-plumbing-2026-05-24` | draft (P-029 wizard + P-030/P-031 wiring in 2026-05-25 loop) |
 | 5b — Hyperbee UI integration | `papercusp-dogfood-phase5b-hyperbee-ui-integration-2026-05-24` | draft (blocked on 5a P-030/P-031) |
 | 6 — Orchestrator claim | `papercusp-dogfood-phase6-orchestrator-claim-2026-05-24` | draft (in 2026-05-25 loop) |
-| 7 — PR lifecycle | `papercusp-dogfood-phase7-pr-lifecycle-2026-05-24` | active |
+| 7 — PR lifecycle | `papercusp-dogfood-phase7-pr-lifecycle-2026-05-24` | shipped (P-041 auto-rebase deferred → blocked on Phase 5a) |
 | 8 — Sidebar Insights + Profile | `papercusp-dogfood-phase8-sidebar-insights-profile-2026-05-24` | draft (in 2026-05-25 loop) |
 | 9 — Cupboard + Discord | `papercusp-dogfood-phase9-cupboard-discord-sync-2026-05-24` | in-progress (P-051a in 2026-05-25 loop; P-051b deploy deferred to user) |
 | 10 — Hyperdrive peer mirror | `papercusp-dogfood-phase10-hyperdrive-peer-mirror-2026-05-24` | draft (Phase 12+ candidate) |

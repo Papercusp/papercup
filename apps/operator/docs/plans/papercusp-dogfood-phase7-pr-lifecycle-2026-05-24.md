@@ -1,9 +1,10 @@
 ---
 title: Papercusp dogfood — Phase 7 (PR lifecycle)
 slug: papercusp-dogfood-phase7-pr-lifecycle-2026-05-24
-status: active
+status: shipped
+parent: papercusp-dogfood-v5-2026-05-23
 created: 2026-05-24
-updated: 2026-05-24
+updated: 2026-05-25
 owner: avi@storewolf.com
 ---
 
