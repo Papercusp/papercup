@@ -23,6 +23,7 @@ import {
 import { readOmpConfig } from '@/lib/omp-config';
 import {
   findOmpSessionNear,
+  getOmpSessionRowSummary,
   getOmpSessionState,
   searchOmpSessions,
 } from '@/lib/omp-sessions';
@@ -138,7 +139,49 @@ const list = defineTool({
   auth: 'public',
   async handler() {
     const rows = await listAdvSessions(200);
-    return new Response(JSON.stringify({ rows }), { status: 200, headers: JSON_HEADERS });
+    // For every OMP row, attach a lightweight row-summary read from
+    // the JSONL. Done server-side so the client sees the final filtered
+    // list on first paint — the previous client-side filter ran AFTER
+    // a per-row lazy /state fetch and caused empty rows to flash in
+    // and out as the summaries arrived.
+    //
+    // Filter rule (only applies to OMP rows):
+    //   - If the row has ended and recorded 0 user messages → drop.
+    //   - If the row has ended and we couldn't find its JSONL → drop.
+    //   - If the row is still active (no endedAt), keep it regardless.
+    //     A brand-new launch may not have written its JSONL header yet.
+    const withSummary = await Promise.all(
+      rows.map(async (row) => {
+        if (row.mode !== 'omp') return { row, summary: null };
+        const summary = row.ompThreadId
+          ? getOmpSessionRowSummary({ id: row.ompThreadId })
+          : null;
+        return { row, summary };
+      }),
+    );
+    const STARTUP_GRACE_MS = 60_000;
+    const now = Date.now();
+    const filtered = withSummary.filter(({ row, summary }) => {
+      if (row.mode !== 'omp') return true;
+      // Summary present + user typed at least once → real session.
+      if (summary && summary.userMessages > 0) return true;
+      // Otherwise the row is either dead-on-arrival or a zombie
+      // (PG says active but JSONL is gone — operator restart can
+      // leave these behind). Give it 60s of startup grace so a
+      // brand-new launch isn't filtered out mid-spawn.
+      const startedMs = Date.parse(row.startedAt);
+      const inStartupGrace =
+        Number.isFinite(startedMs) && now - startedMs < STARTUP_GRACE_MS;
+      return inStartupGrace;
+    });
+    const responseRows = filtered.map(({ row, summary }) => ({
+      ...row,
+      summary,
+    }));
+    return new Response(JSON.stringify({ rows: responseRows }), {
+      status: 200,
+      headers: JSON_HEADERS,
+    });
   },
 });
 

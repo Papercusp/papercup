@@ -596,6 +596,79 @@ function messageSnippet(entry: OmpSessionTurn): OmpMessageSnippet {
   };
 }
 
+/** Lightweight row-summary fields — what the sessions list needs to
+ *  decide whether to show a row and what pills to render on it,
+ *  without doing the full state extraction (tool counts, todo phases,
+ *  message snippets, etc.). Reads the same JSONL but skips
+ *  content-text reconstruction. */
+export interface OmpSessionRowSummary {
+  /** OMP session id from the JSONL header — the canonical thread id. */
+  ompSessionId: string;
+  /** Number of user-role turns. Zero = transcript exists but user
+   *  never typed — filtered out of the sessions list. */
+  userMessages: number;
+  /** Latest model id reported by an assistant turn. */
+  latestModel: string | null;
+  /** Aggregate input/output/cache tokens. */
+  totalTokens: number;
+  /** Aggregate USD cost (sum of `usage.cost.total` across turns). */
+  totalCostUsd: number;
+}
+
+/** Cheap variant of getOmpSessionState — same JSONL read, but skips
+ *  content-text reconstruction, tool maps, todos, snippets. Used by
+ *  the sessions list to filter empties server-side so the client
+ *  doesn't see rows appear and then vanish as summaries resolve. */
+export function getOmpSessionRowSummary(input: { id?: string; filePath?: string }): OmpSessionRowSummary | null {
+  const record = resolveSessionRecord(input);
+  if (!record) return null;
+  const parsed = readSessionEntries(record.filePath);
+  if (!parsed?.header) return null;
+  let userMessages = 0;
+  let latestModel: string | null = null;
+  let inputTokens = 0;
+  let outputTokens = 0;
+  let cacheReadTokens = 0;
+  let cacheWriteTokens = 0;
+  let totalTokens = 0;
+  let totalCostUsd = 0;
+  for (const entry of parsed.entries) {
+    const msg = messageFromEntry(entry);
+    if (!msg) continue;
+    const role = typeof msg.role === 'string' ? msg.role : undefined;
+    if (role === 'user') {
+      userMessages += 1;
+      continue;
+    }
+    if (role !== 'assistant') continue;
+    if (typeof msg.model === 'string') latestModel = msg.model;
+    const u = asObject(msg.usage);
+    if (!u) continue;
+    const num = (v: unknown): number => (typeof v === 'number' && Number.isFinite(v) ? v : 0);
+    inputTokens += num(u.input);
+    outputTokens += num(u.output);
+    cacheReadTokens += num(u.cacheRead);
+    cacheWriteTokens += num(u.cacheWrite);
+    const reportedTotal = num(u.totalTokens);
+    totalTokens +=
+      reportedTotal > 0
+        ? reportedTotal
+        : num(u.input) + num(u.output) + num(u.cacheRead) + num(u.cacheWrite);
+    const cost = asObject(u.cost);
+    if (cost) totalCostUsd += num(cost.total);
+  }
+  // Avoid 'unused' on the four counters when not exported — they
+  // would let us return per-bucket breakdowns later if needed.
+  void inputTokens; void outputTokens; void cacheReadTokens; void cacheWriteTokens;
+  return {
+    ompSessionId: parsed.header.id,
+    userMessages,
+    latestModel,
+    totalTokens,
+    totalCostUsd,
+  };
+}
+
 export function getOmpSessionState(input: { id?: string; filePath?: string }): OmpSessionState | null {
   const record = resolveSessionRecord(input);
   if (!record) return null;

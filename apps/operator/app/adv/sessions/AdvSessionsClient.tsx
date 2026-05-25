@@ -12,6 +12,14 @@ import { Tooltip } from '@/app/harness/Tooltip';
 import { launchOmpAgent } from '@/lib/native-omp-launch';
 import { usePlanList } from '../../admin/plans/plans-api';
 
+interface ServerRowSummary {
+  ompSessionId: string;
+  userMessages: number;
+  latestModel: string | null;
+  totalTokens: number;
+  totalCostUsd: number;
+}
+
 interface SessionRow {
   id: number;
   workspaceId: string;
@@ -25,6 +33,10 @@ interface SessionRow {
   startedAt: string;
   endedAt: string | null;
   exitCode: number | null;
+  /** Server-computed lightweight summary for OMP rows; null for
+   *  console rows or for OMP rows whose JSONL isn't loadable yet
+   *  (brand-new launches still initializing). */
+  summary: ServerRowSummary | null;
 }
 
 interface OmpSessionMatch {
@@ -205,28 +217,11 @@ const OMP_MODEL_OPTIONS = [
   { value: 'gpt-5.2', label: 'GPT-5.2' },
 ];
 
-interface RowSummary {
-  model: string | null;
-  totalTokens: number;
-  totalCostUsd: number;
-  /** OMP session id (UUIDv7) from the JSONL header — the canonical
-   *  thread id used by `omp -r <id>` to resume. Captured lazily on
-   *  every row so Resume-by-ID never needs a prompt. */
-  ompSessionId: string | null;
-  /** How many user turns the transcript recorded. Zero means OMP
-   *  opened but the user never typed anything — same noise category
-   *  as dead-on-arrival, just discovered after the fact. Such rows
-   *  get hidden from the list. */
-  userMessageCount: number;
-  loaded: boolean;
-}
-
 export default function AdvSessionsClient() {
   const [rows, setRows] = useState<SessionRow[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [aliveByPid, setAliveByPid] = useState<Record<number, boolean>>({});
   const [refreshTick, setRefreshTick] = useState(0);
-  const [summaryByRowId, setSummaryByRowId] = useState<Record<number, RowSummary>>({});
   const [launchPlanSlug, setLaunchPlanSlug] = useQueryState('newPlan', parseAsString);
   const [launchModel, setLaunchModel] = useQueryState(
     'model',
@@ -282,80 +277,11 @@ export default function AdvSessionsClient() {
   }, [rows, fetchRows]);
 
   // Lazy-load token/cost/model summary for each OMP row so the main
-  // card surfaces spend without the user having to click into the
-  // detail panel. Cached per id; refreshTick busts the cache.
-  //
-  // Only fetches summaries for rows we don't yet have. The 3s
-  // auto-refresh polls /api/adv/sessions (cheap) but doesn't re-hit
-  // /state for every OMP row — that path reads JSONL files off disk
-  // and shouldn't run on every poll. Explicit refresh (refreshTick
-  // bump from the Refresh button or a fresh launch) re-fetches all.
-  useEffect(() => {
-    if (!rows) return;
-    const ompRows = rows.filter((r) => r.mode === 'omp');
-    if (ompRows.length === 0) return;
-    const missing = ompRows.filter((r) => !summaryByRowId[r.id]?.loaded);
-    if (missing.length === 0) return;
-    let cancelled = false;
-    (async () => {
-      const updates: Record<number, RowSummary> = {};
-      await Promise.all(
-        missing.map(async (row) => {
-          // Default: row is "loaded but empty" — filtered out by the
-          // visibleRows guard. Any successful state load overwrites
-          // these defaults below. This way a transcript that's gone
-          // (rotated, deleted, never finished) is filtered out the
-          // same as a dead-on-arrival row instead of sitting in
-          // "loading…" forever.
-          const fallback: RowSummary = {
-            model: null,
-            totalTokens: 0,
-            totalCostUsd: 0,
-            ompSessionId: null,
-            userMessageCount: 0,
-            loaded: true,
-          };
-          try {
-            const r = await fetch(`/api/adv/sessions/state?id=${row.id}`, {
-              headers: { accept: 'application/json' },
-            });
-            if (!r.ok) {
-              updates[row.id] = fallback;
-              return;
-            }
-            const data = (await r.json()) as SessionStateResponse;
-            const s = data.state;
-            if (!s) {
-              updates[row.id] = fallback;
-              return;
-            }
-            const usage = normalizeUsage(s.usage);
-            updates[row.id] = {
-              model: s.latestModel ?? null,
-              totalTokens: usage.totalTokens,
-              totalCostUsd: usage.totalCostUsd,
-              ompSessionId: s.header?.id ?? null,
-              userMessageCount: s.messages?.user ?? 0,
-              loaded: true,
-            };
-          } catch {
-            updates[row.id] = fallback;
-          }
-        }),
-      );
-      if (!cancelled && Object.keys(updates).length > 0) {
-        setSummaryByRowId((prev) => ({ ...prev, ...updates }));
-      }
-    })();
-    return () => { cancelled = true; };
-  }, [rows, summaryByRowId]);
-
-  // Explicit refresh wipes the summary cache so the next render
-  // re-fetches every OMP row's usage. Bumping refreshTick is the
-  // Refresh button's signal.
-  useEffect(() => {
-    if (refreshTick > 0) setSummaryByRowId({});
-  }, [refreshTick]);
+  // Row-summary fields (model, tokens, cost, user-message count,
+  // OMP session id) now arrive pre-computed on each OMP row via
+  // /api/adv/sessions.row.summary. No client-side lazy fetching — the
+  // first paint of the list is already final, so the user never sees
+  // rows flash in and then disappear as summaries resolve.
 
   // Re-check pid liveness when the row list changes. For rows the DB
   // says are still active, ask the operator whether the pid is alive —
@@ -579,20 +505,20 @@ export default function AdvSessionsClient() {
       // 1. PG-stored thread id wins — it's the persisted, canonical link.
       const stored = row.ompThreadId?.trim();
       if (stored) return stored;
-      // 2. Otherwise, the lazy summary's captured header id (works
-      //    for any row that's been listed, not just the selected one).
-      const summaryId = summaryByRowId[row.id]?.ompSessionId?.trim();
+      // 2. Server-attached summary's captured header id (every OMP row
+      //    in the list has one whenever the JSONL is loadable).
+      const summaryId = row.summary?.ompSessionId?.trim();
       if (summaryId) return summaryId;
-      // 3. Last resort: in-memory header id from the loaded state
-      //    (covers the freshly-selected case before the summary
-      //    populates).
+      // 3. Last resort: in-memory header id from the loaded detail
+      //    state (covers the freshly-selected case where neither of
+      //    the above populated yet).
       if (selectedRow?.id === row.id) {
         const headerId = stateData?.state?.header.id?.trim();
         if (headerId) return headerId;
       }
       return null;
     },
-    [selectedRow, stateData, summaryByRowId],
+    [selectedRow, stateData],
   );
 
   const resumeByIdRow = useCallback(async (row: SessionRow) => {
@@ -619,22 +545,9 @@ export default function AdvSessionsClient() {
     }
   }, [resolveResumeId]);
 
-  // Filter rows before grouping:
-  //   - drop OMP rows whose summary loaded with 0 user messages (the
-  //     terminal opened but the user never typed; same noise category
-  //     as dead-on-arrival, just discovered after the fact)
-  //   - rows still loading are kept; they'll get filtered when the
-  //     summary arrives
-  const visibleRows = useMemo(() => {
-    return (rows ?? []).filter((r) => {
-      if (r.mode !== 'omp') return true;
-      const s = summaryByRowId[r.id];
-      if (!s?.loaded) return true;
-      return s.userMessageCount > 0;
-    });
-  }, [rows, summaryByRowId]);
-
-  const grouped = useMemo(() => groupRows(visibleRows), [visibleRows]);
+  // Server already filtered empty OMP rows out of the response —
+  // see /adv/sessions list handler. Grouping consumes rows directly.
+  const grouped = useMemo(() => groupRows(rows ?? []), [rows]);
   const autoExpandedSelectionRef = React.useRef<string | null>(null);
 
   // Auto-expand a newly-selected deep-linked row once so it becomes
@@ -779,7 +692,7 @@ export default function AdvSessionsClient() {
                                 {row.endedAt ? ` · ${formatCardDateTime(row.endedAt)}` : ''}
                               </span>
                             </span>
-                            <RowUsagePills summary={summaryByRowId[row.id]} mode={row.mode} />
+                            <RowUsagePills summary={row.summary} mode={row.mode} />
                           </button>
                           <div className="pc-adv-sessions__row-actions">
                             {active ? (
@@ -1907,31 +1820,26 @@ function SnippetPanel({
   );
 }
 
-/** Inline pills on the row card — model + tokens + cost. Quiet
- *  placeholder while the lazy summary load is in flight; nothing
- *  rendered for console rows (no JSONL → no usage). */
+/** Inline pills on the row card — model + tokens + cost. Server
+ *  attaches summary on the list response; nothing rendered for
+ *  console rows or for OMP rows that haven't materialised yet
+ *  (brand-new launches where the JSONL hasn't been written). */
 function RowUsagePills({
   summary,
   mode,
 }: {
-  summary: RowSummary | undefined;
+  summary: ServerRowSummary | null;
   mode: 'omp' | 'console';
 }) {
   if (mode !== 'omp') return null;
-  if (!summary || !summary.loaded) {
-    return (
-      <span className="pc-adv-sessions__row-usage pc-adv-sessions__row-usage--loading">
-        <span className="pc-adv-sessions__row-usage-pill">loading usage…</span>
-      </span>
-    );
-  }
-  const modelLabel = formatModelLabel(summary.model);
+  if (!summary) return null;
+  const modelLabel = formatModelLabel(summary.latestModel);
   return (
     <span className="pc-adv-sessions__row-usage">
       {modelLabel ? (
         <span
           className="pc-adv-sessions__row-usage-pill pc-adv-sessions__row-usage-pill--model"
-          title={summary.model ?? undefined}
+          title={summary.latestModel ?? undefined}
         >
           {modelLabel}
         </span>
