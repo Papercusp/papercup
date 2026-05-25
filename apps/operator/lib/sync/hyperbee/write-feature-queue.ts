@@ -19,6 +19,7 @@
 import type { BootedHarnessHandle } from './boot';
 import { composeFeatureQueueKey, type FeatureQueueRow } from './projections/feature-queue';
 import { CURRENT_SCHEMA_VERSION } from './schema-version';
+import { recordLocalWrite } from './clobber-events';
 
 export interface QueueWriteOpts {
   handle: BootedHarnessHandle;
@@ -26,6 +27,14 @@ export interface QueueWriteOpts {
   featureId: string;
   /** Override clock — test injection point. */
   now?: number;
+  /**
+   * Optional local-writer pubkey (hex). When provided, this write is
+   * registered with the clobber-events tracker so a later remote
+   * override on the same key fires a `clobber` event. Omit when the
+   * caller doesn't have the pubkey resolved — the write still
+   * succeeds, it just won't be eligible for clobber detection.
+   */
+  writerPubkey?: string;
 }
 
 function validate(opts: QueueWriteOpts): void {
@@ -53,10 +62,14 @@ export async function enqueueFeature(opts: QueueWriteOpts): Promise<void> {
     removed_at: null,
     schema_version: CURRENT_SCHEMA_VERSION,
   };
+  const hbKey = composeFeatureQueueKey(opts.githubUserId, opts.featureId);
+  if (opts.writerPubkey) {
+    recordLocalWrite({ table: 'queue', hbKey, ts, pubkey: opts.writerPubkey });
+  }
   await opts.handle.base.append({
     type: 'put',
     table: 'queue',
-    hbKey: composeFeatureQueueKey(opts.githubUserId, opts.featureId),
+    hbKey,
     value: row,
     schema_version: CURRENT_SCHEMA_VERSION,
     ts,
@@ -80,10 +93,14 @@ export async function dequeueFeature(opts: QueueWriteOpts): Promise<void> {
     removed_at: ts,
     schema_version: CURRENT_SCHEMA_VERSION,
   };
+  const hbKey = composeFeatureQueueKey(opts.githubUserId, opts.featureId);
+  if (opts.writerPubkey) {
+    recordLocalWrite({ table: 'queue', hbKey, ts, pubkey: opts.writerPubkey });
+  }
   await opts.handle.base.append({
     type: 'put',
     table: 'queue',
-    hbKey: composeFeatureQueueKey(opts.githubUserId, opts.featureId),
+    hbKey,
     value: row,
     schema_version: CURRENT_SCHEMA_VERSION,
     ts,

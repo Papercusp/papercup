@@ -1,9 +1,18 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import { publishContributorRow } from '../write-contributor-row';
 import type { BootedHarnessHandle } from '../boot';
 import type { OpEnvelope } from '../autobase-setup';
 import type { ContributorRow } from '../../../harness/contributor-row-types';
 import { CURRENT_SCHEMA_VERSION } from '../schema-version';
+import {
+  clobberEvents,
+  observeMergedOp,
+  _resetForTests,
+  _setNowForTests,
+  type ClobberEvent,
+} from '../clobber-events';
+
+afterEach(() => _resetForTests());
 
 function fakeHandle(slug = 'papercup'): {
   handle: BootedHarnessHandle;
@@ -97,6 +106,45 @@ describe('publishContributorRow', () => {
         publishContributorRow({ handle, row: mkRow({ github_user_id: bad }) }),
       ).rejects.toThrow(/github_user_id/);
     }
+  });
+
+  it('records the local write with clobber-events when writerPubkey provided', async () => {
+    _setNowForTests(() => 1000);
+    const events: ClobberEvent[] = [];
+    clobberEvents.on('clobber', (e) => events.push(e));
+    const { handle } = fakeHandle();
+    await publishContributorRow({
+      handle,
+      row: mkRow({ github_user_id: 42 }),
+      now: 1000,
+      writerPubkey: 'me-hex',
+    });
+    _setNowForTests(() => 1500);
+    const fired = observeMergedOp({
+      table: 'contributors',
+      hbKey: '42',
+      ts: 1200,
+      pubkey: 'remote-hex',
+    });
+    expect(fired).toBe(true);
+    expect(events[0].my.pubkey).toBe('me-hex');
+  });
+
+  it('omits recordLocalWrite when writerPubkey is absent', async () => {
+    _setNowForTests(() => 1000);
+    const { handle } = fakeHandle();
+    await publishContributorRow({
+      handle,
+      row: mkRow({ github_user_id: 42 }),
+      now: 1000,
+    });
+    const fired = observeMergedOp({
+      table: 'contributors',
+      hbKey: '42',
+      ts: 1200,
+      pubkey: 'remote-hex',
+    });
+    expect(fired).toBe(false);
   });
 
   it('round-trips: published value passes the projection decoder', async () => {

@@ -16,12 +16,19 @@
 import type { BootedHarnessHandle } from './boot';
 import type { ContributorRow } from '../../harness/contributor-row-types';
 import { CURRENT_SCHEMA_VERSION } from './schema-version';
+import { recordLocalWrite } from './clobber-events';
 
 export interface PublishContributorRowOpts {
   handle: BootedHarnessHandle;
   row: ContributorRow;
   /** Override clock — test injection point. */
   now?: number;
+  /**
+   * Optional local-writer pubkey (hex). When provided, registers this
+   * write with the clobber-events tracker so a later remote override
+   * on the same row fires a `clobber` event.
+   */
+  writerPubkey?: string;
 }
 
 function validate(opts: PublishContributorRowOpts): void {
@@ -42,10 +49,14 @@ export async function publishContributorRow(
 ): Promise<void> {
   validate(opts);
   const ts = opts.now ?? Date.now();
+  const hbKey = String(opts.row.github_user_id);
+  if (opts.writerPubkey) {
+    recordLocalWrite({ table: 'contributors', hbKey, ts, pubkey: opts.writerPubkey });
+  }
   await opts.handle.base.append({
     type: 'put',
     table: 'contributors',
-    hbKey: String(opts.row.github_user_id),
+    hbKey,
     value: opts.row,
     schema_version: CURRENT_SCHEMA_VERSION,
     ts,
