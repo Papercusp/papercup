@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { isDesktopHmrEnabled, NO_VITE_CLIENT_BODY, shouldServeNoopViteClient } from '../../../operator-vite/dev-mode';
+import { isDesktopHmrEnabled, NO_VITE_CLIENT_BODY, shouldServeNoopViteClient, shouldSuppressJsReload } from '../../../operator-vite/dev-mode';
 
 describe('operator-vite desktop no-HMR mode', () => {
   it('disables HMR by default', () => {
@@ -19,6 +19,12 @@ describe('operator-vite desktop no-HMR mode', () => {
     expect(shouldServeNoopViteClient('/src/main.tsx', false)).toBe(false);
     expect(shouldServeNoopViteClient('/@vite/client', true)).toBe(false);
     expect(NO_VITE_CLIENT_BODY).toContain('Vite client disabled');
+  });
+  it('suppresses JS reloads on static desktop hosts only', () => {
+    expect(shouldSuppressJsReload('http://localhost:3070')).toBe(true);
+    expect(shouldSuppressJsReload('http://127.0.0.1:3070')).toBe(true);
+    expect(shouldSuppressJsReload('http://localhost:4173')).toBe(true);
+    expect(shouldSuppressJsReload('http://localhost:3055')).toBe(false);
   });
 
   it('keeps desktop dev defaulting to the no-HMR script', () => {

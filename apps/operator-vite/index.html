@@ -4,6 +4,32 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Papercusp Operator</title>
+    <script>
+      (() => {
+        const suppress =
+          location.origin === 'http://localhost:3070'
+          || location.origin === 'http://127.0.0.1:3070'
+          || location.origin === 'http://localhost:4173'
+          || location.origin === 'http://127.0.0.1:4173';
+        if (!suppress) return;
+
+        try {
+          const originalReload = location.reload.bind(location);
+          Object.defineProperty(location, 'reload', {
+            configurable: true,
+            value: () => {
+              console.info('[Papercusp] JS reload suppressed on static desktop host — use Cmd/Ctrl+R for manual refresh.');
+            },
+          });
+          Object.defineProperty(window, '__papercuspOriginalReload', {
+            configurable: true,
+            value: originalReload,
+          });
+        } catch {
+          // Best effort — some browsers disallow redefining location.reload.
+        }
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>
