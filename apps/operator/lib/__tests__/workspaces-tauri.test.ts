@@ -69,4 +69,29 @@ describe('workspaces-tauri', () => {
     await expect(switchWorkspace('gamma')).rejects.toThrow('boom');
     expect(navigateClient).not.toHaveBeenCalled();
   });
+  it('lists workspaces through the desktop command path when Tauri is present', async () => {
+    vi.stubGlobal('window', { ...window, __TAURI_INTERNALS__: {} });
+    commands.workspacesList.mockResolvedValue({ current: 'alpha', workspaces: [{ id: 'alpha', name: 'Alpha' }] });
+    const { listWorkspaces } = await import('../workspaces-tauri');
+
+    await expect(listWorkspaces()).resolves.toEqual({ current: 'alpha', workspaces: [{ id: 'alpha', name: 'Alpha' }] });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('creates, renames, and deletes workspaces through the desktop command path when Tauri is present', async () => {
+    vi.stubGlobal('window', { ...window, __TAURI_INTERNALS__: {} });
+    commands.workspacesCreate.mockResolvedValue({ status: 'ok', data: { id: 'beta', name: 'Beta' } });
+    commands.workspacesRename.mockResolvedValue({ status: 'ok' });
+    commands.workspacesDelete.mockResolvedValue({ status: 'ok' });
+    const { createWorkspace, renameWorkspace, deleteWorkspace } = await import('../workspaces-tauri');
+
+    await expect(createWorkspace('Beta')).resolves.toEqual({ id: 'beta', name: 'Beta' });
+    await expect(renameWorkspace('beta', 'Beta 2')).resolves.toBeUndefined();
+    await expect(deleteWorkspace('beta')).resolves.toBeUndefined();
+
+    expect(commands.workspacesCreate).toHaveBeenCalledWith('Beta');
+    expect(commands.workspacesRename).toHaveBeenCalledWith('beta', 'Beta 2');
+    expect(commands.workspacesDelete).toHaveBeenCalledWith('beta');
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
 });
