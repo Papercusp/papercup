@@ -1,8 +1,14 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
+import * as Collapsible from '@radix-ui/react-collapsible';
+import * as Tabs from '@radix-ui/react-tabs';
+import { Activity, ChevronRight, FolderKanban, TerminalSquare, Zap } from 'lucide-react';
 import { parseAsArrayOf, parseAsString, useQueryState } from 'nuqs';
 import { toast } from 'sonner';
+import { Button } from '@/app/harness/Button';
+import { Select } from '@/app/harness/Select';
+import { Tooltip } from '@/app/harness/Tooltip';
 import { launchOmpAgent } from '@/lib/native-omp-launch';
 import { usePlanList } from '../../admin/plans/plans-api';
 
@@ -188,13 +194,16 @@ const SESSION_PANELS: Array<{ value: SessionPanel; label: string }> = [
   { value: 'handoff', label: 'Handoff' },
 ];
 
+const PLAN_SELECT_PLACEHOLDER = '__select_plan__';
+const MODEL_SELECT_DEFAULT = '__default_model__';
+
 const OMP_MODEL_OPTIONS = [
-  { value: '', label: 'Default' },
+  { value: MODEL_SELECT_DEFAULT, label: 'Default' },
   { value: 'sonnet', label: 'Claude Sonnet' },
   { value: 'opus', label: 'Claude Opus' },
   { value: 'haiku', label: 'Claude Haiku' },
   { value: 'gpt-5.2', label: 'GPT-5.2' },
-] as const;
+];
 
 interface RowSummary {
   model: string | null;
@@ -204,6 +213,11 @@ interface RowSummary {
    *  thread id used by `omp -r <id>` to resume. Captured lazily on
    *  every row so Resume-by-ID never needs a prompt. */
   ompSessionId: string | null;
+  /** How many user turns the transcript recorded. Zero means OMP
+   *  opened but the user never typed anything — same noise category
+   *  as dead-on-arrival, just discovered after the fact. Such rows
+   *  get hidden from the list. */
+  userMessageCount: number;
   loaded: boolean;
 }
 
@@ -287,23 +301,46 @@ export default function AdvSessionsClient() {
       const updates: Record<number, RowSummary> = {};
       await Promise.all(
         missing.map(async (row) => {
+          // Default: row is "loaded but empty" — filtered out by the
+          // visibleRows guard. Any successful state load overwrites
+          // these defaults below. This way a transcript that's gone
+          // (rotated, deleted, never finished) is filtered out the
+          // same as a dead-on-arrival row instead of sitting in
+          // "loading…" forever.
+          const fallback: RowSummary = {
+            model: null,
+            totalTokens: 0,
+            totalCostUsd: 0,
+            ompSessionId: null,
+            userMessageCount: 0,
+            loaded: true,
+          };
           try {
             const r = await fetch(`/api/adv/sessions/state?id=${row.id}`, {
               headers: { accept: 'application/json' },
             });
-            if (!r.ok) return;
+            if (!r.ok) {
+              updates[row.id] = fallback;
+              return;
+            }
             const data = (await r.json()) as SessionStateResponse;
             const s = data.state;
-            if (!s) return;
+            if (!s) {
+              updates[row.id] = fallback;
+              return;
+            }
             const usage = normalizeUsage(s.usage);
             updates[row.id] = {
               model: s.latestModel ?? null,
               totalTokens: usage.totalTokens,
               totalCostUsd: usage.totalCostUsd,
               ompSessionId: s.header?.id ?? null,
+              userMessageCount: s.messages?.user ?? 0,
               loaded: true,
             };
-          } catch { /* swallow */ }
+          } catch {
+            updates[row.id] = fallback;
+          }
         }),
       );
       if (!cancelled && Object.keys(updates).length > 0) {
@@ -436,6 +473,17 @@ export default function AdvSessionsClient() {
     () => (planList.data?.plans ?? []).find((p) => p.slug === launchPlanSlug) ?? null,
     [launchPlanSlug, planList.data],
   );
+  const launchPlanOptions = useMemo(
+    () => [
+      { value: PLAN_SELECT_PLACEHOLDER, label: planList.loading ? 'Loading plans…' : 'Select plan…' },
+      ...(planList.data?.plans ?? []).map((plan) => ({
+        value: plan.slug,
+        label: plan.title?.trim() || plan.slug,
+      })),
+    ],
+    [planList.data, planList.loading],
+  );
+
 
   const launchNewSession = useCallback(async () => {
     if (!selectedLaunchPlan) {
@@ -562,7 +610,23 @@ export default function AdvSessionsClient() {
     }
   }, [resolveResumeId]);
 
-  const grouped = useMemo(() => groupRows(rows ?? []), [rows]);
+  // Filter rows before grouping:
+  //   - drop OMP rows whose summary loaded with 0 user messages (the
+  //     terminal opened but the user never typed; same noise category
+  //     as dead-on-arrival, just discovered after the fact)
+  //   - rows still loading are kept; they'll get filtered when the
+  //     summary arrives
+  const visibleRows = useMemo(() => {
+    return (rows ?? []).filter((r) => {
+      if (r.mode !== 'omp') return true;
+      const s = summaryByRowId[r.id];
+      if (!s?.loaded) return true;
+      return s.userMessageCount > 0;
+    });
+  }, [rows, summaryByRowId]);
+
+  const grouped = useMemo(() => groupRows(visibleRows), [visibleRows]);
+  const stats = useMemo(() => summarizeRows(rows ?? []), [rows]);
 
   // If the user deep-links to a session inside a collapsed group,
   // auto-expand that group so the row is visible. Don't fight the
@@ -577,56 +641,59 @@ export default function AdvSessionsClient() {
 
   return (
     <div className="pc-adv-sessions">
-      <div className="pc-adv-sessions__head">
-        <div>
+      <header className="pc-adv-sessions__head">
+        <div className="pc-adv-sessions__head-copy">
+          <span className="pc-adv-sessions__kicker">Session recovery</span>
           <h2>Agent sessions</h2>
           <p className="pc-adv-sessions__subhead">
-            Launch OMP sessions, inspect their OMP transcript state, and recover handoffs after compaction.
+            Launch OMP sessions, inspect transcript state, and recover handoffs after compaction.
           </p>
         </div>
-        <div className="pc-adv-sessions__head-actions">
-          <select
-            className="pc-adv-sessions__select pc-adv-sessions__select--plan"
-            value={launchPlanSlug ?? ''}
-            onChange={(e) => void setLaunchPlanSlug(e.target.value || null)}
-            disabled={planList.loading}
-            aria-label="Plan for new session"
-          >
-            <option value="">Select plan…</option>
-            {(planList.data?.plans ?? []).map((plan) => (
-              <option key={plan.slug} value={plan.slug}>
-                {plan.title?.trim() || plan.slug}
-              </option>
-            ))}
-          </select>
-          <select
-            className="pc-adv-sessions__select"
-            value={launchModel}
-            onChange={(e) => void setLaunchModel(e.target.value || null)}
-            aria-label="Model for new session"
-          >
-            {OMP_MODEL_OPTIONS.map((model) => (
-              <option key={model.value || 'default'} value={model.value}>
-                {model.label}
-              </option>
-            ))}
-          </select>
-          <button
-            type="button"
-            className="pc-adv-sessions__btn pc-adv-sessions__btn--primary"
-            onClick={launchNewSession}
-            disabled={launchingNew || !selectedLaunchPlan}
-          >
-            {launchingNew ? 'Launching…' : 'Create new session'}
-          </button>
-          <button
-            type="button"
-            className="pc-adv-sessions__refresh"
-            onClick={() => setRefreshTick((t) => t + 1)}
-          >
-            Refresh
-          </button>
+        <div className="pc-adv-sessions__launch-card" aria-label="Launch a new OMP session">
+          <div className="pc-adv-sessions__launch-copy">
+            <strong>Start from plan context</strong>
+            <span>Pick a plan and model; the new terminal opens with the right briefing.</span>
+          </div>
+          <div className="pc-adv-sessions__head-actions">
+            <Select
+              triggerClassName="pc-adv-sessions__select pc-adv-sessions__select--plan"
+              value={launchPlanSlug ?? PLAN_SELECT_PLACEHOLDER}
+              onChange={(value) => void setLaunchPlanSlug(value === PLAN_SELECT_PLACEHOLDER ? null : value)}
+              disabled={planList.loading}
+              ariaLabel="Plan for new session"
+              options={launchPlanOptions}
+            />
+            <Select
+              triggerClassName="pc-adv-sessions__select pc-adv-sessions__select--model"
+              value={launchModel || MODEL_SELECT_DEFAULT}
+              onChange={(value) => void setLaunchModel(value === MODEL_SELECT_DEFAULT ? '' : value)}
+              ariaLabel="Model for new session"
+              options={OMP_MODEL_OPTIONS}
+            />
+            <Button
+              variant="primary"
+              className="pc-adv-sessions__btn pc-adv-sessions__btn--primary pc-adv-sessions__launch-btn"
+              onClick={launchNewSession}
+              disabled={launchingNew || !selectedLaunchPlan}
+            >
+              {launchingNew ? 'Launching…' : 'Create new session'}
+            </Button>
+            <button
+              type="button"
+              className="pc-adv-sessions__refresh"
+              onClick={() => setRefreshTick((t) => t + 1)}
+            >
+              Refresh
+            </button>
+          </div>
         </div>
+      </header>
+
+      <div className="pc-adv-sessions__statstrip" aria-label="Session summary">
+        <SummaryStat label="Sessions" value={rows ? stats.total : '—'} icon={<TerminalSquare size={15} />} />
+        <SummaryStat label="Active" value={rows ? stats.active : '—'} icon={<Activity size={15} />} tone="active" />
+        <SummaryStat label="OMP" value={rows ? stats.omp : '—'} icon={<Zap size={15} />} />
+        <SummaryStat label="Plans" value={rows ? stats.planCount : '—'} icon={<FolderKanban size={15} />} />
       </div>
       {error ? <p className="pc-adv-sessions__error">Failed to load: {error}</p> : null}
       {rows === null && !error ? <p className="pc-adv-sessions__placeholder">Loading…</p> : null}
@@ -642,113 +709,123 @@ export default function AdvSessionsClient() {
             const isExpanded = expandedGroups.includes(group.key);
             const activeCount = group.rows.filter((r) => r.endedAt == null).length;
             return (
-            <section className="pc-adv-sessions__group" key={group.key}>
-              <button
-                type="button"
-                className="pc-adv-sessions__group-head"
-                onClick={() =>
+              <Collapsible.Root
+                className="pc-adv-sessions__group"
+                key={group.key}
+                open={isExpanded}
+                onOpenChange={(open) =>
                   void setExpandedGroups(
-                    isExpanded
-                      ? expandedGroups.filter((k) => k !== group.key)
-                      : [...expandedGroups, group.key],
+                    open
+                      ? Array.from(new Set([...expandedGroups, group.key]))
+                      : expandedGroups.filter((k) => k !== group.key),
                   )
                 }
-                aria-expanded={isExpanded}
               >
-                <span className="pc-adv-sessions__group-chevron" aria-hidden>
-                  {isExpanded ? '▼' : '▶'}
-                </span>
-                <span className="pc-adv-sessions__group-title">
-                  {group.planSlug ?? '(no plan)'}
-                </span>
-                <span className="pc-adv-sessions__group-count">{group.rows.length}</span>
-                {activeCount > 0 ? (
-                  <span className="pc-adv-sessions__group-active" title={`${activeCount} active session${activeCount === 1 ? '' : 's'}`}>
-                    {activeCount} active
-                  </span>
-                ) : null}
-              </button>
-              {isExpanded ? (
-              <ul className="pc-adv-sessions__list">
-                {group.rows.map((row) => {
-                  const active = isActive(row);
-                  const selected = selectedRow?.id === row.id;
-                  return (
-                    <li
-                      key={row.id}
-                      className={`pc-adv-sessions__row${active ? ' is-active' : ''}${selected ? ' is-selected' : ''}`}
-                    >
-                      <button
-                        type="button"
-                        className="pc-adv-sessions__row-main"
-                        onClick={() => void setSelectedSessionId(String(row.id))}
+                <Collapsible.Trigger asChild>
+                  <button type="button" className="pc-adv-sessions__group-head">
+                    <ChevronRight className="pc-adv-sessions__group-chevron" size={13} aria-hidden />
+                    <span className="pc-adv-sessions__group-title">
+                      {group.planSlug ?? '(no plan)'}
+                    </span>
+                    <span className="pc-adv-sessions__group-count">{group.rows.length}</span>
+                    {activeCount > 0 ? (
+                      <span className="pc-adv-sessions__group-active">
+                        {activeCount} active
+                      </span>
+                    ) : (
+                      <span
+                        className="pc-adv-sessions__group-last-active"
+                        title={`Last active ${new Date(group.lastActiveMs).toLocaleString()}`}
                       >
-                        <span className="pc-adv-sessions__row-meta">
-                          <span className={`pc-adv-sessions__badge pc-adv-sessions__badge--${row.mode}`}>
-                            {row.mode}
-                          </span>
-                          <span className="pc-adv-sessions__row-label">
-                            {row.label ?? row.terminalBin ?? `#${row.id}`}
-                          </span>
-                          <span className="pc-adv-sessions__row-times">
-                            started {formatDate(row.startedAt)}
-                            {row.endedAt ? ` · ended ${formatDate(row.endedAt)}` : ''}
-                          </span>
-                          {row.pid != null ? (
-                            <span className="pc-adv-sessions__row-pid">pid {row.pid}</span>
-                          ) : null}
-                        </span>
-                        <RowUsagePills summary={summaryByRowId[row.id]} mode={row.mode} />
-                        <span className="pc-adv-sessions__row-hint">
-                          {selected ? 'Inspecting' : 'Inspect state'}
-                        </span>
-                      </button>
-                      <div className="pc-adv-sessions__row-actions">
-                        {active ? (
+                        last active {formatLastActive(group.lastActiveMs)}
+                      </span>
+                    )}
+                  </button>
+                </Collapsible.Trigger>
+                <Collapsible.Content className="pc-adv-sessions__group-content">
+                  <ul className="pc-adv-sessions__list">
+                    {group.rows.map((row) => {
+                      const active = isActive(row);
+                      const selected = selectedRow?.id === row.id;
+                      return (
+                        <li
+                          key={row.id}
+                          className={`pc-adv-sessions__row${active ? ' is-active' : ''}${selected ? ' is-selected' : ''}`}
+                        >
                           <button
                             type="button"
-                            className="pc-adv-sessions__btn pc-adv-sessions__btn--primary"
-                            onClick={() => focusRow(row)}
+                            className="pc-adv-sessions__row-main"
+                            onClick={() => void setSelectedSessionId(String(row.id))}
                           >
-                            Focus window
+                            <span className="pc-adv-sessions__row-meta">
+                              <span className={`pc-adv-sessions__badge pc-adv-sessions__badge--${row.mode}`}>
+                                {row.mode}
+                              </span>
+                              <span className="pc-adv-sessions__row-label">
+                                {row.label ?? row.terminalBin ?? `#${row.id}`}
+                              </span>
+                              <span className="pc-adv-sessions__row-times">
+                                started {formatDate(row.startedAt)}
+                                {row.endedAt ? ` · ended ${formatDate(row.endedAt)}` : ''}
+                              </span>
+                              {row.pid != null ? (
+                                <span className="pc-adv-sessions__row-pid">pid {row.pid}</span>
+                              ) : null}
+                            </span>
+                            <RowUsagePills summary={summaryByRowId[row.id]} mode={row.mode} />
+                            <span className="pc-adv-sessions__row-hint">
+                              {selected ? 'Inspecting' : 'Inspect state'}
+                            </span>
                           </button>
-                        ) : (
-                          <>
-                            <button
-                              type="button"
-                              className="pc-adv-sessions__btn"
-                              onClick={() => freshRow(row)}
-                              title="Open a new OMP terminal at this plan (fresh conversation)"
-                            >
-                              Fresh OMP
-                            </button>
-                            {(() => {
-                              const resumeId = resolveResumeId(row);
-                              return (
-                                <button
-                                  type="button"
-                                  className="pc-adv-sessions__btn pc-adv-sessions__btn--primary"
-                                  onClick={() => resumeByIdRow(row)}
-                                  disabled={!resumeId}
-                                  title={
-                                    resumeId
-                                      ? `Resume OMP with this session's tracked id (${resumeId.slice(0, 12)}…)`
-                                      : 'No OMP session id tracked yet — open via "Inspect state" first.'
-                                  }
-                                >
-                                  Resume
-                                </button>
-                              );
-                            })()}
-                          </>
-                        )}
-                      </div>
-                    </li>
-                  );
-                })}
-              </ul>
-              ) : null}
-            </section>
+                          <div className="pc-adv-sessions__row-actions">
+                            {active ? (
+                              <button
+                                type="button"
+                                className="pc-adv-sessions__btn pc-adv-sessions__btn--primary"
+                                onClick={() => focusRow(row)}
+                              >
+                                Focus window
+                              </button>
+                            ) : (
+                              <>
+                                <Tooltip label="Open a new OMP terminal at this plan (fresh conversation)">
+                                  <button
+                                    type="button"
+                                    className="pc-adv-sessions__btn"
+                                    onClick={() => freshRow(row)}
+                                  >
+                                    Fresh OMP
+                                  </button>
+                                </Tooltip>
+                                {(() => {
+                                  const resumeId = resolveResumeId(row);
+                                  const resumeLabel = resumeId
+                                    ? `Resume OMP with this session's tracked id (${resumeId.slice(0, 12)}…)`
+                                    : 'No OMP session id tracked yet — open via "Inspect state" first.';
+                                  return (
+                                    <Tooltip label={resumeLabel}>
+                                      <span className="pc-adv-sessions__tooltip-trigger">
+                                        <button
+                                          type="button"
+                                          className="pc-adv-sessions__btn pc-adv-sessions__btn--primary"
+                                          onClick={() => resumeByIdRow(row)}
+                                          disabled={!resumeId}
+                                        >
+                                          Resume
+                                        </button>
+                                      </span>
+                                    </Tooltip>
+                                  );
+                                })()}
+                              </>
+                            )}
+                          </div>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                </Collapsible.Content>
+              </Collapsible.Root>
             );
           })}
         </div>
@@ -769,87 +846,279 @@ export default function AdvSessionsClient() {
       </div>
 
       <style>{`
-        .pc-adv-sessions { padding: 16px 18px; color: rgba(220, 214, 248, 0.84); }
+        .pc-adv-sessions {
+          display: grid;
+          gap: 14px;
+          padding: 18px;
+          color: var(--fg-dim);
+        }
         .pc-adv-sessions__head {
-          display: flex; align-items: center; justify-content: space-between;
-          margin-bottom: 16px;
-          gap: 16px;
+          display: grid;
+          grid-template-columns: minmax(260px, 0.72fr) minmax(420px, 1.28fr);
+          gap: 14px;
+          align-items: stretch;
+        }
+        .pc-adv-sessions__head-copy,
+        .pc-adv-sessions__launch-card {
+          border: 1px solid var(--border);
+          border-radius: 16px;
+          background:
+            radial-gradient(circle at top left, color-mix(in oklab, var(--accent), transparent 86%), transparent 34%),
+            linear-gradient(180deg, color-mix(in oklab, var(--bg-2), white 4%), color-mix(in oklab, var(--bg), transparent 6%));
+        }
+        .pc-adv-sessions__head-copy {
+          display: grid;
+          align-content: center;
+          gap: 6px;
+          min-width: 0;
+          padding: 16px;
+        }
+        .pc-adv-sessions__kicker {
+          color: var(--accent);
+          font-size: 10px;
+          font-weight: 760;
+          letter-spacing: 0.12em;
+          line-height: 1;
+          text-transform: uppercase;
         }
         .pc-adv-sessions__head h2 {
-          margin: 0; font-size: 18px; font-weight: 700; color: #f7f5ff;
+          margin: 0;
+          color: var(--fg);
+          font-size: 22px;
+          font-weight: 760;
+          letter-spacing: -0.02em;
+          line-height: 1.08;
         }
         .pc-adv-sessions__subhead {
-          margin: 4px 0 0;
-          color: rgba(220, 214, 248, 0.58);
+          margin: 0;
+          max-width: 54ch;
+          color: var(--fg-mute);
+          font-size: 12px;
+          line-height: 1.45;
+        }
+        .pc-adv-sessions__launch-card {
+          display: grid;
+          gap: 12px;
+          padding: 14px;
+        }
+        .pc-adv-sessions__launch-copy {
+          display: grid;
+          gap: 3px;
+        }
+        .pc-adv-sessions__launch-copy strong {
+          color: var(--fg);
+          font-size: 13px;
+        }
+        .pc-adv-sessions__launch-copy span {
+          color: var(--fg-mute);
           font-size: 12px;
         }
         .pc-adv-sessions__head-actions {
-          display: flex; align-items: center; justify-content: flex-end;
-          gap: 8px; flex-wrap: wrap;
+          display: flex;
+          align-items: center;
+          justify-content: flex-end;
+          gap: 8px;
+          flex-wrap: wrap;
+        }
+        .pc-adv-sessions__statstrip {
+          display: grid;
+          grid-template-columns: repeat(4, minmax(0, 1fr));
+          gap: 10px;
+        }
+        .pc-adv-sessions__stat {
+          display: flex;
+          align-items: center;
+          gap: 10px;
+          min-width: 0;
+          padding: 10px 12px;
+          border: 1px solid var(--border);
+          border-radius: 14px;
+          background: color-mix(in oklab, var(--bg-2), white 2%);
+        }
+        .pc-adv-sessions__stat.is-active {
+          border-color: var(--border-strong);
+          background: color-mix(in oklab, var(--accent), transparent 88%);
+        }
+        .pc-adv-sessions__stat-icon {
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          width: 28px;
+          height: 28px;
+          border-radius: 10px;
+          color: var(--accent);
+          background: color-mix(in oklab, var(--accent), transparent 88%);
+          flex: 0 0 auto;
+        }
+        .pc-adv-sessions__stat-copy {
+          display: grid;
+          gap: 1px;
+          min-width: 0;
+        }
+        .pc-adv-sessions__stat-copy strong {
+          color: var(--fg);
+          font-size: 18px;
+          line-height: 1;
+        }
+        .pc-adv-sessions__stat-copy span {
+          color: var(--fg-mute);
+          font-size: 10px;
+          font-weight: 700;
+          letter-spacing: 0.08em;
+          text-transform: uppercase;
         }
         .pc-adv-sessions__layout {
           display: grid;
-          grid-template-columns: minmax(360px, 0.9fr) minmax(420px, 1.1fr);
+          grid-template-columns: minmax(360px, 0.92fr) minmax(420px, 1.08fr);
           gap: 16px;
           align-items: start;
         }
         .pc-adv-sessions__listpane,
         .pc-adv-sessions__detail {
           min-width: 0;
+          border: 1px solid var(--border);
+          border-radius: 16px;
+          background:
+            linear-gradient(180deg, color-mix(in oklab, var(--bg-2), white 2%), color-mix(in oklab, var(--bg), transparent 4%));
+        }
+        .pc-adv-sessions__listpane {
+          max-height: calc(100vh - 320px);
+          overflow: auto;
+          padding: 10px;
+          scrollbar-width: thin;
         }
         .pc-adv-sessions__select {
-          min-height: 30px;
-          border-radius: 6px;
-          border: 1px solid rgba(167, 139, 250, 0.22);
-          background: rgba(31, 23, 56, 0.78);
-          color: #f7f5ff;
+          display: inline-flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 8px;
+          min-height: 32px;
+          min-width: 132px;
+          border-radius: 10px;
+          border: 1px solid var(--border);
+          background: color-mix(in oklab, var(--bg-2), white 4%);
+          color: var(--fg);
+          font: inherit;
           font-size: 12px;
-          padding: 4px 8px;
+          font-weight: 650;
+          padding: 0 9px;
+          cursor: pointer;
+          outline: none;
         }
-        .pc-adv-sessions__select--plan { min-width: 220px; max-width: 360px; }
-        .pc-adv-sessions__refresh {
-          all: unset; cursor: pointer; padding: 5px 12px; border-radius: 6px;
-          border: 1px solid rgba(167, 139, 250, 0.22);
-          background: rgba(31, 23, 56, 0.6);
-          font-size: 12px; font-weight: 600; color: #f7f5ff;
+        .pc-adv-sessions__select:hover {
+          border-color: var(--border-strong);
+          background: var(--bg-3);
         }
-        .pc-adv-sessions__refresh:hover { background: rgba(31, 23, 56, 0.9); }
-        .pc-adv-sessions__error, .pc-adv-sessions__placeholder {
-          padding: 12px; border-radius: 8px;
-          background: rgba(31, 23, 56, 0.45);
-          color: rgba(220, 214, 248, 0.7);
+        .pc-adv-sessions__select:focus-visible {
+          outline: 2px solid color-mix(in oklab, var(--accent), transparent 30%);
+          outline-offset: 2px;
+        }
+        .pc-adv-sessions__select[data-disabled] {
+          opacity: 0.55;
+          cursor: not-allowed;
+        }
+        .pc-adv-sessions__select--plan {
+          flex: 1 1 260px;
+          min-width: min(100%, 260px);
+          max-width: 420px;
+        }
+        .pc-adv-sessions__refresh,
+        .pc-adv-sessions__btn {
+          all: unset;
+          box-sizing: border-box;
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          min-height: 30px;
+          padding: 0 11px;
+          border-radius: 10px;
+          border: 1px solid var(--border);
+          background: color-mix(in oklab, var(--bg-2), white 2%);
+          color: var(--fg);
+          font-size: 12px;
+          font-weight: 700;
+          cursor: pointer;
+          transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease, transform 120ms ease;
+        }
+        .pc-adv-sessions__refresh:hover,
+        .pc-adv-sessions__btn:hover {
+          border-color: var(--border-strong);
+          background: var(--bg-3);
+        }
+        .pc-adv-sessions__refresh:focus-visible,
+        .pc-adv-sessions__btn:focus-visible {
+          outline: 2px solid color-mix(in oklab, var(--accent), transparent 28%);
+          outline-offset: 2px;
+        }
+        .pc-adv-sessions__btn--primary {
+          border-color: color-mix(in oklab, var(--accent), transparent 48%);
+          background: color-mix(in oklab, var(--accent), var(--bg) 72%);
+          color: var(--fg);
+        }
+        .pc-adv-sessions__launch-btn {
+          min-width: 142px;
+        }
+        .pc-adv-sessions__btn:disabled {
+          opacity: 0.48;
+          cursor: not-allowed;
+          transform: none;
+        }
+        .pc-adv-sessions__tooltip-trigger {
+          display: inline-flex;
+        }
+        .pc-adv-sessions__error,
+        .pc-adv-sessions__placeholder {
+          margin: 0;
+          padding: 12px;
+          border-radius: 12px;
+          background: color-mix(in oklab, var(--bg-2), white 2%);
+          color: var(--fg-mute);
           font-size: 13px;
+          line-height: 1.45;
         }
-        .pc-adv-sessions__error { color: #fca5a5; border: 1px solid rgba(248, 113, 113, 0.4); }
-        .pc-adv-sessions__group { margin-bottom: 14px; }
+        .pc-adv-sessions__error {
+          color: var(--bad);
+          border: 1px solid color-mix(in oklab, var(--bad), transparent 58%);
+          background: color-mix(in oklab, var(--bad), transparent 92%);
+        }
+        .pc-adv-sessions__group + .pc-adv-sessions__group {
+          margin-top: 8px;
+        }
         .pc-adv-sessions__group-head {
           all: unset;
+          box-sizing: border-box;
           cursor: pointer;
-          display: flex; align-items: center; gap: 8px;
-          padding: 6px 8px;
+          display: flex;
+          align-items: center;
+          gap: 9px;
+          padding: 8px 9px;
           width: 100%;
-          border-radius: 6px;
-          border: 1px solid rgba(167, 139, 250, 0.16);
-          background: rgba(11, 13, 28, 0.45);
-          transition: background 80ms;
-          margin-bottom: 4px;
+          border-radius: 12px;
+          border: 1px solid var(--border);
+          background: color-mix(in oklab, var(--bg-2), white 1%);
+          transition: background-color 120ms ease, border-color 120ms ease;
         }
         .pc-adv-sessions__group-head:hover {
-          background: rgba(31, 23, 56, 0.7);
+          background: var(--bg-3);
+          border-color: var(--border-strong);
         }
         .pc-adv-sessions__group-head:focus-visible {
-          outline: 2px solid rgba(103, 232, 249, 0.6);
-          outline-offset: 1px;
+          outline: 2px solid color-mix(in oklab, var(--accent), transparent 30%);
+          outline-offset: 2px;
         }
         .pc-adv-sessions__group-chevron {
-          font-size: 9px;
-          color: rgba(220, 214, 248, 0.55);
-          width: 10px;
-          text-align: center;
-          flex-shrink: 0;
+          color: var(--fg-mute);
+          flex: 0 0 auto;
+          transition: transform 140ms ease, color 120ms ease;
+        }
+        .pc-adv-sessions__group-head[data-state="open"] .pc-adv-sessions__group-chevron {
+          transform: rotate(90deg);
+          color: var(--accent);
         }
         .pc-adv-sessions__group-title {
-          font-size: 13px; font-weight: 700; color: #f7f5ff;
+          color: var(--fg);
+          font-size: 13px;
+          font-weight: 740;
           flex: 1;
           min-width: 0;
           overflow: hidden;
@@ -857,129 +1126,174 @@ export default function AdvSessionsClient() {
           white-space: nowrap;
         }
         .pc-adv-sessions__group-count {
-          font-size: 11px; color: rgba(220, 214, 248, 0.55);
+          color: var(--fg-mute);
           font-family: ui-monospace, monospace;
+          font-size: 11px;
         }
         .pc-adv-sessions__group-active {
+          padding: 2px 7px;
+          border: 1px solid color-mix(in oklab, var(--accent), transparent 56%);
+          border-radius: 999px;
+          background: color-mix(in oklab, var(--accent), transparent 86%);
+          color: var(--accent);
+          font-size: 10px;
+          font-weight: 750;
+          letter-spacing: 0.04em;
+        }
+        .pc-adv-sessions__group-last-active {
+          padding: 2px 7px;
+          border: 1px solid var(--border);
+          border-radius: 999px;
+          background: color-mix(in oklab, var(--fg-mute), transparent 88%);
+          color: var(--fg-mute);
           font-size: 10px;
           font-weight: 600;
-          letter-spacing: 0.04em;
-          padding: 2px 7px;
-          border-radius: 999px;
-          background: rgba(103, 232, 249, 0.18);
-          color: #67e8f9;
-          border: 1px solid rgba(103, 232, 249, 0.32);
+          letter-spacing: 0.02em;
+          font-variant-numeric: tabular-nums;
+          white-space: nowrap;
         }
-        .pc-adv-sessions__list { list-style: none; padding: 0; margin: 0; }
+        .pc-adv-sessions__group-content {
+          padding: 7px 0 2px;
+        }
+        .pc-adv-sessions__list {
+          list-style: none;
+          padding: 0;
+          margin: 0;
+          display: grid;
+          gap: 7px;
+        }
         .pc-adv-sessions__row {
-          display: flex; align-items: center; justify-content: space-between;
+          display: grid;
+          grid-template-columns: minmax(0, 1fr) auto;
+          align-items: center;
           gap: 12px;
-          padding: 8px 10px;
-          border: 1px solid rgba(167, 139, 250, 0.12);
-          border-radius: 8px;
-          margin-bottom: 6px;
-          background: rgba(11, 13, 28, 0.6);
+          padding: 10px;
+          border: 1px solid color-mix(in oklab, var(--border), transparent 25%);
+          border-radius: 13px;
+          background: color-mix(in oklab, var(--bg), white 2%);
+          transition: background-color 120ms ease, border-color 120ms ease, transform 120ms ease;
+        }
+        .pc-adv-sessions__row:hover {
+          border-color: var(--border-strong);
+          background: color-mix(in oklab, var(--bg-3), var(--bg) 72%);
         }
         .pc-adv-sessions__row.is-active {
-          border-color: rgba(103, 232, 249, 0.4);
-          background: rgba(20, 32, 48, 0.7);
+          border-color: color-mix(in oklab, var(--accent), transparent 48%);
+          background: color-mix(in oklab, var(--accent), transparent 91%);
         }
         .pc-adv-sessions__row.is-selected {
-          border-color: rgba(251, 191, 36, 0.55);
-          box-shadow: 0 0 0 1px rgba(251, 191, 36, 0.12) inset;
+          border-color: color-mix(in oklab, var(--warn), transparent 38%);
+          box-shadow: 0 0 0 1px color-mix(in oklab, var(--warn), transparent 82%) inset;
         }
         .pc-adv-sessions__row-main {
           all: unset;
           cursor: pointer;
           min-width: 0;
           display: grid;
-          gap: 4px;
-          flex: 1;
+          gap: 6px;
         }
         .pc-adv-sessions__row-main:focus-visible {
-          outline: 2px solid rgba(103, 232, 249, 0.75);
+          outline: 2px solid color-mix(in oklab, var(--accent), transparent 24%);
           outline-offset: 3px;
-          border-radius: 6px;
+          border-radius: 8px;
         }
         .pc-adv-sessions__row-meta {
-          display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          flex-wrap: wrap;
           font-size: 12px;
         }
         .pc-adv-sessions__row-hint {
-          color: rgba(220, 214, 248, 0.44);
+          color: var(--fg-mute);
           font-size: 11px;
         }
         .pc-adv-sessions__badge {
-          font-size: 10px; font-weight: 700; letter-spacing: 0.06em;
+          padding: 2px 7px;
+          border-radius: 999px;
+          font-size: 10px;
+          font-weight: 780;
+          letter-spacing: 0.06em;
           text-transform: uppercase;
-          padding: 2px 6px; border-radius: 4px;
         }
-        .pc-adv-sessions__badge--omp { background: rgba(103, 232, 249, 0.2); color: #67e8f9; }
-        .pc-adv-sessions__badge--console { background: rgba(167, 139, 250, 0.2); color: #c4b5fd; }
+        .pc-adv-sessions__badge--omp {
+          background: color-mix(in oklab, var(--accent), transparent 84%);
+          color: var(--accent);
+        }
+        .pc-adv-sessions__badge--console {
+          background: color-mix(in oklab, var(--warn), transparent 86%);
+          color: var(--warn);
+        }
         .pc-adv-sessions__row-label {
-          color: #f7f5ff; font-weight: 600; font-size: 13px;
+          color: var(--fg);
+          font-size: 13px;
+          font-weight: 700;
         }
-        .pc-adv-sessions__row-times { color: rgba(220, 214, 248, 0.6); }
+        .pc-adv-sessions__row-times {
+          color: var(--fg-mute);
+        }
         .pc-adv-sessions__row-usage {
-          display: flex; align-items: center; gap: 5px; flex-wrap: wrap;
-          margin-top: 2px;
+          display: flex;
+          align-items: center;
+          gap: 5px;
+          flex-wrap: wrap;
         }
         .pc-adv-sessions__row-usage-pill {
           display: inline-block;
-          font-size: 10px; font-weight: 600; letter-spacing: 0.02em;
-          padding: 2px 7px; border-radius: 999px;
-          background: rgba(167, 139, 250, 0.16);
-          color: rgba(220, 214, 248, 0.82);
-          border: 1px solid rgba(167, 139, 250, 0.22);
+          padding: 2px 7px;
+          border: 1px solid var(--border);
+          border-radius: 999px;
+          background: color-mix(in oklab, var(--bg-2), white 2%);
+          color: var(--fg-dim);
           font-family: ui-monospace, monospace;
+          font-size: 10px;
+          font-weight: 650;
+          letter-spacing: 0.02em;
           white-space: nowrap;
         }
         .pc-adv-sessions__row-usage-pill--model {
-          background: rgba(103, 232, 249, 0.16);
-          color: #a5e9f7;
-          border-color: rgba(103, 232, 249, 0.32);
+          border-color: color-mix(in oklab, var(--accent), transparent 54%);
+          background: color-mix(in oklab, var(--accent), transparent 86%);
+          color: var(--accent);
         }
         .pc-adv-sessions__row-usage-pill--cost {
-          background: rgba(132, 204, 22, 0.14);
-          color: #bef264;
-          border-color: rgba(132, 204, 22, 0.32);
+          border-color: color-mix(in oklab, var(--good), transparent 56%);
+          background: color-mix(in oklab, var(--good), transparent 88%);
+          color: var(--good);
         }
         .pc-adv-sessions__row-usage--loading .pc-adv-sessions__row-usage-pill {
-          opacity: 0.45;
+          opacity: 0.5;
           background: transparent;
         }
         .pc-adv-sessions__row-pid,
         .pc-adv-sessions__mono {
+          color: var(--fg-mute);
           font-family: ui-monospace, monospace;
-          color: rgba(220, 214, 248, 0.58);
           font-size: 11px;
           word-break: break-all;
         }
-        .pc-adv-sessions__row-actions { display: flex; gap: 6px; flex-shrink: 0; flex-wrap: wrap; justify-content: flex-end; }
-        .pc-adv-sessions__btn {
-          all: unset; cursor: pointer; padding: 4px 10px; border-radius: 6px;
-          border: 1px solid rgba(167, 139, 250, 0.22);
-          background: rgba(31, 23, 56, 0.6);
-          font-size: 12px; font-weight: 600; color: #f7f5ff;
+        .pc-adv-sessions__row-actions {
+          display: flex;
+          gap: 7px;
+          flex-shrink: 0;
+          flex-wrap: wrap;
+          justify-content: flex-end;
         }
-        .pc-adv-sessions__btn--primary {
-          border-color: rgba(103, 232, 249, 0.5);
-          background: rgba(20, 50, 65, 0.85);
-        }
-        .pc-adv-sessions__btn:hover { background: rgba(40, 35, 75, 0.95); }
         .pc-adv-sessions__detail {
-          border: 1px solid rgba(167, 139, 250, 0.16);
-          border-radius: 12px;
-          background: rgba(8, 10, 22, 0.72);
+          position: sticky;
+          top: 12px;
+          display: grid;
+          grid-template-rows: auto auto minmax(0, 1fr);
+          max-height: calc(100vh - 166px);
           overflow: hidden;
         }
         .pc-adv-sessions__detail-head {
           display: flex;
           justify-content: space-between;
           gap: 12px;
-          padding: 12px 14px;
-          border-bottom: 1px solid rgba(167, 139, 250, 0.12);
-          background: rgba(20, 18, 38, 0.62);
+          padding: 13px 14px;
+          border-bottom: 1px solid var(--border);
+          background: color-mix(in oklab, var(--bg-2), white 2%);
         }
         .pc-adv-sessions__detail-title {
           display: grid;
@@ -988,39 +1302,55 @@ export default function AdvSessionsClient() {
         }
         .pc-adv-sessions__detail-title h3 {
           margin: 0;
-          color: #f7f5ff;
+          color: var(--fg);
           font-size: 15px;
+          line-height: 1.25;
         }
         .pc-adv-sessions__detail-sub {
-          color: rgba(220, 214, 248, 0.55);
+          color: var(--fg-mute);
           font-size: 12px;
         }
         .pc-adv-sessions__panel-tabs {
+          padding: 10px 12px;
+          border-bottom: 1px solid var(--border);
+        }
+        .pc-adv-sessions__panel-tablist {
           display: flex;
           flex-wrap: wrap;
           gap: 6px;
-          padding: 10px 12px;
-          border-bottom: 1px solid rgba(167, 139, 250, 0.12);
         }
         .pc-adv-sessions__panel-tab {
           all: unset;
           cursor: pointer;
           padding: 5px 9px;
+          border: 1px solid var(--border);
           border-radius: 999px;
-          border: 1px solid rgba(167, 139, 250, 0.18);
-          color: rgba(220, 214, 248, 0.72);
+          color: var(--fg-dim);
           font-size: 11px;
-          font-weight: 700;
+          font-weight: 760;
+          transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease;
         }
-        .pc-adv-sessions__panel-tab.is-active {
-          color: #05131a;
-          background: #67e8f9;
-          border-color: #67e8f9;
+        .pc-adv-sessions__panel-tab:hover {
+          border-color: var(--border-strong);
+          color: var(--fg);
+          background: var(--bg-3);
+        }
+        .pc-adv-sessions__panel-tab[aria-selected="true"],
+        .pc-adv-sessions__panel-tab[data-state="active"] {
+          border-color: var(--accent);
+          background: var(--accent);
+          color: var(--accent-ink);
+        }
+        .pc-adv-sessions__panel-tab:focus-visible {
+          outline: 2px solid color-mix(in oklab, var(--accent), transparent 30%);
+          outline-offset: 2px;
         }
         .pc-adv-sessions__panel {
-          padding: 14px;
           display: grid;
           gap: 12px;
+          min-height: 0;
+          overflow: auto;
+          padding: 14px;
         }
         .pc-adv-sessions__cards {
           display: grid;
@@ -1028,21 +1358,21 @@ export default function AdvSessionsClient() {
           gap: 8px;
         }
         .pc-adv-sessions__card {
-          border: 1px solid rgba(167, 139, 250, 0.14);
-          border-radius: 9px;
-          background: rgba(31, 23, 56, 0.35);
-          padding: 9px;
           display: grid;
           gap: 3px;
+          padding: 10px;
+          border: 1px solid var(--border);
+          border-radius: 12px;
+          background: color-mix(in oklab, var(--bg-2), white 2%);
         }
         .pc-adv-sessions__card-label {
-          color: rgba(220, 214, 248, 0.52);
+          color: var(--fg-mute);
           font-size: 10px;
-          text-transform: uppercase;
           letter-spacing: 0.08em;
+          text-transform: uppercase;
         }
         .pc-adv-sessions__card-value {
-          color: #f7f5ff;
+          color: var(--fg);
           font-size: 14px;
           font-weight: 760;
         }
@@ -1052,72 +1382,93 @@ export default function AdvSessionsClient() {
         }
         .pc-adv-sessions__section h4 {
           margin: 0;
-          color: rgba(247, 245, 255, 0.92);
+          color: var(--fg);
           font-size: 12px;
-          text-transform: uppercase;
           letter-spacing: 0.08em;
+          text-transform: uppercase;
         }
         .pc-adv-sessions__snippet-list {
           display: grid;
           gap: 7px;
         }
+        .pc-adv-sessions__snippet,
+        .pc-adv-sessions__todo-phase,
+        .pc-adv-sessions__data-list {
+          border: 1px solid var(--border);
+          border-radius: 12px;
+          background: color-mix(in oklab, var(--bg-2), white 1%);
+        }
         .pc-adv-sessions__snippet {
-          border: 1px solid rgba(167, 139, 250, 0.12);
-          border-radius: 8px;
-          padding: 8px;
-          background: rgba(11, 13, 28, 0.54);
+          padding: 9px;
         }
         .pc-adv-sessions__snippet-meta {
           display: flex;
           flex-wrap: wrap;
           gap: 8px;
           margin-bottom: 4px;
-          color: rgba(220, 214, 248, 0.48);
+          color: var(--fg-mute);
           font-size: 11px;
         }
         .pc-adv-sessions__snippet-text {
           margin: 0;
-          white-space: pre-wrap;
-          color: rgba(238, 234, 255, 0.82);
+          color: var(--fg-dim);
           font-size: 12px;
           line-height: 1.45;
+          white-space: pre-wrap;
         }
         .pc-adv-sessions__todo-phase {
-          border: 1px solid rgba(167, 139, 250, 0.12);
-          border-radius: 8px;
-          padding: 9px;
-          background: rgba(31, 23, 56, 0.28);
+          padding: 10px;
         }
         .pc-adv-sessions__todo-phase h4 {
           margin: 0 0 7px;
-          color: #f7f5ff;
+          color: var(--fg);
           font-size: 13px;
         }
-        .pc-adv-sessions__todo-list { list-style: none; padding: 0; margin: 0; display: grid; gap: 5px; }
+        .pc-adv-sessions__todo-list {
+          list-style: none;
+          padding: 0;
+          margin: 0;
+          display: grid;
+          gap: 5px;
+        }
         .pc-adv-sessions__todo-item {
-          color: rgba(238, 234, 255, 0.82);
+          color: var(--fg-dim);
           font-size: 12px;
         }
-        .pc-adv-sessions__todo-item[data-status="completed"] { color: #86efac; }
-        .pc-adv-sessions__todo-item[data-status="in_progress"] { color: #fde68a; }
-        .pc-adv-sessions__todo-item[data-status="abandoned"] { color: #fca5a5; }
-        .pc-adv-sessions__table {
-          width: 100%;
-          border-collapse: collapse;
+        .pc-adv-sessions__todo-item[data-status="completed"] { color: var(--good); }
+        .pc-adv-sessions__todo-item[data-status="in_progress"] { color: var(--warn); }
+        .pc-adv-sessions__todo-item[data-status="abandoned"] { color: var(--bad); }
+        .pc-adv-sessions__data-list {
+          overflow: hidden;
+        }
+        .pc-adv-sessions__data-row {
+          display: grid;
+          grid-template-columns: minmax(0, 1fr) auto;
+          gap: 10px;
+          align-items: center;
+          padding: 8px 10px;
+          color: var(--fg-dim);
           font-size: 12px;
         }
-        .pc-adv-sessions__table th,
-        .pc-adv-sessions__table td {
-          border-bottom: 1px solid rgba(167, 139, 250, 0.12);
-          padding: 6px 4px;
-          text-align: left;
-          vertical-align: top;
+        .pc-adv-sessions__data-row + .pc-adv-sessions__data-row {
+          border-top: 1px solid var(--border);
         }
-        .pc-adv-sessions__table th {
-          color: rgba(220, 214, 248, 0.58);
+        .pc-adv-sessions__data-row strong {
+          color: var(--fg);
+        }
+        .pc-adv-sessions__data-row--head {
+          color: var(--fg-mute);
           font-size: 10px;
-          text-transform: uppercase;
+          font-weight: 760;
           letter-spacing: 0.08em;
+          text-transform: uppercase;
+        }
+        .pc-adv-sessions__data-list--tools .pc-adv-sessions__data-row {
+          grid-template-columns: minmax(150px, 1.4fr) repeat(3, minmax(56px, 0.45fr)) minmax(112px, 0.8fr);
+        }
+        .pc-adv-sessions__bad {
+          color: var(--bad);
+          font-weight: 750;
         }
         .pc-adv-sessions__search {
           display: flex;
@@ -1126,16 +1477,47 @@ export default function AdvSessionsClient() {
         .pc-adv-sessions__search input {
           flex: 1;
           min-width: 0;
-          border-radius: 8px;
-          border: 1px solid rgba(167, 139, 250, 0.18);
-          background: rgba(5, 8, 18, 0.72);
-          color: #f7f5ff;
-          padding: 7px 9px;
-          font-size: 12px;
         }
         @media (max-width: 1100px) {
-          .pc-adv-sessions__layout { grid-template-columns: 1fr; }
-          .pc-adv-sessions__head { align-items: flex-start; flex-direction: column; }
+          .pc-adv-sessions__head,
+          .pc-adv-sessions__layout {
+            grid-template-columns: 1fr;
+          }
+          .pc-adv-sessions__detail {
+            position: static;
+            max-height: none;
+          }
+          .pc-adv-sessions__listpane {
+            max-height: none;
+          }
+        }
+        @media (max-width: 720px) {
+          .pc-adv-sessions {
+            padding: 12px;
+          }
+          .pc-adv-sessions__statstrip {
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+          }
+          .pc-adv-sessions__head-actions,
+          .pc-adv-sessions__row {
+            align-items: stretch;
+            grid-template-columns: 1fr;
+          }
+          .pc-adv-sessions__select,
+          .pc-adv-sessions__btn,
+          .pc-adv-sessions__refresh,
+          .pc-adv-sessions__tooltip-trigger {
+            width: 100%;
+          }
+          .pc-adv-sessions__row-actions {
+            justify-content: stretch;
+          }
+          .pc-adv-sessions__data-list--tools .pc-adv-sessions__data-row {
+            grid-template-columns: 1fr 1fr;
+          }
+          .pc-adv-sessions__data-row--head {
+            display: none;
+          }
         }
       `}</style>
     </div>
@@ -1197,18 +1579,19 @@ function SessionDetail({
         </button>
       </header>
 
-      <div className="pc-adv-sessions__panel-tabs" role="tablist" aria-label="Session detail panels">
-        {SESSION_PANELS.map((p) => (
-          <button
-            type="button"
-            key={p.value}
-            className={`pc-adv-sessions__panel-tab${panel === p.value ? ' is-active' : ''}`}
-            onClick={() => onPanelChange(p.value)}
-          >
-            {p.label}
-          </button>
-        ))}
-      </div>
+      <Tabs.Root
+        value={panel}
+        onValueChange={(value) => onPanelChange(value as SessionPanel)}
+        className="pc-adv-sessions__panel-tabs"
+      >
+        <Tabs.List className="pc-adv-sessions__panel-tablist" aria-label="Session detail panels">
+          {SESSION_PANELS.map((p) => (
+            <Tabs.Trigger key={p.value} value={p.value} className="pc-adv-sessions__panel-tab">
+              {p.label}
+            </Tabs.Trigger>
+          ))}
+        </Tabs.List>
+      </Tabs.Root>
 
       <div className="pc-adv-sessions__panel">
         {loading ? <p className="pc-adv-sessions__placeholder">Loading OMP session state…</p> : null}
@@ -1382,22 +1765,14 @@ function ContextPanel({
         {counts.length === 0 ? (
           <p className="pc-adv-sessions__placeholder">No persisted entries found.</p>
         ) : (
-          <table className="pc-adv-sessions__table">
-            <thead>
-              <tr>
-                <th>Type</th>
-                <th>Count</th>
-              </tr>
-            </thead>
-            <tbody>
-              {counts.map(([type, count]) => (
-                <tr key={type}>
-                  <td className="pc-adv-sessions__mono">{type}</td>
-                  <td>{count}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+          <div className="pc-adv-sessions__data-list" role="list">
+            {counts.map(([type, count]) => (
+              <div className="pc-adv-sessions__data-row" role="listitem" key={type}>
+                <span className="pc-adv-sessions__mono">{type}</span>
+                <strong>{count}</strong>
+              </div>
+            ))}
+          </div>
         )}
       </div>
     </>
@@ -1432,28 +1807,24 @@ function ToolsPanel({ tools }: { tools: OmpToolSummary[] }) {
     return <p className="pc-adv-sessions__placeholder">No tool results found in this session.</p>;
   }
   return (
-    <table className="pc-adv-sessions__table">
-      <thead>
-        <tr>
-          <th>Tool</th>
-          <th>Calls</th>
-          <th>Results</th>
-          <th>Errors</th>
-          <th>Last used</th>
-        </tr>
-      </thead>
-      <tbody>
-        {tools.map((tool) => (
-          <tr key={tool.toolName}>
-            <td className="pc-adv-sessions__mono">{tool.toolName}</td>
-            <td>{tool.calls}</td>
-            <td>{tool.results}</td>
-            <td>{tool.errors}</td>
-            <td>{tool.lastUsedAt ? formatDate(tool.lastUsedAt) : '—'}</td>
-          </tr>
-        ))}
-      </tbody>
-    </table>
+    <div className="pc-adv-sessions__data-list pc-adv-sessions__data-list--tools" role="list">
+      <div className="pc-adv-sessions__data-row pc-adv-sessions__data-row--head" aria-hidden>
+        <span>Tool</span>
+        <span>Calls</span>
+        <span>Results</span>
+        <span>Errors</span>
+        <span>Last used</span>
+      </div>
+      {tools.map((tool) => (
+        <div className="pc-adv-sessions__data-row pc-adv-sessions__data-row--tools" role="listitem" key={tool.toolName}>
+          <span className="pc-adv-sessions__mono">{tool.toolName}</span>
+          <strong>{tool.calls}</strong>
+          <span>{tool.results}</span>
+          <span className={tool.errors > 0 ? 'pc-adv-sessions__bad' : undefined}>{tool.errors}</span>
+          <span>{tool.lastUsedAt ? formatDate(tool.lastUsedAt) : '—'}</span>
+        </div>
+      ))}
+    </div>
   );
 }
 
@@ -1621,6 +1992,47 @@ function RowUsagePills({
     </span>
   );
 }
+function SummaryStat({
+  label,
+  value,
+  icon,
+  tone,
+}: {
+  label: string;
+  value: string | number;
+  icon: ReactNode;
+  tone?: 'active';
+}) {
+  return (
+    <div className={`pc-adv-sessions__stat${tone === 'active' ? ' is-active' : ''}`}>
+      <span className="pc-adv-sessions__stat-icon" aria-hidden>{icon}</span>
+      <span className="pc-adv-sessions__stat-copy">
+        <strong>{value}</strong>
+        <span>{label}</span>
+      </span>
+    </div>
+  );
+}
+
+function summarizeRows(rows: SessionRow[]) {
+  const planKeys = new Set<string>();
+  let active = 0;
+  let omp = 0;
+  let linked = 0;
+  for (const row of rows) {
+    planKeys.add(row.planSlug ?? '(no plan)');
+    if (row.endedAt == null) active += 1;
+    if (row.mode === 'omp') omp += 1;
+    if (row.ompThreadId?.trim()) linked += 1;
+  }
+  return {
+    total: rows.length,
+    active,
+    omp,
+    linked,
+    planCount: planKeys.size,
+  };
+}
 
 function MetricCard({ label, value }: { label: string; value: string | number }) {
   return (
@@ -1642,7 +2054,25 @@ function statusGlyph(status: OmpTodoItem['status']): string {
   return '○';
 }
 
-function groupRows(rows: SessionRow[]): Array<{ key: string; planSlug: string | null; rows: SessionRow[] }> {
+/** Most-recent activity timestamp for a row: endedAt when set,
+ *  otherwise startedAt. Used to sort groups + render the
+ *  "last active" pill on inactive groups. */
+function rowActivityMs(r: SessionRow): number {
+  const stamp = r.endedAt ?? r.startedAt;
+  const ms = Date.parse(stamp);
+  return Number.isFinite(ms) ? ms : 0;
+}
+
+interface GroupRow {
+  key: string;
+  planSlug: string | null;
+  rows: SessionRow[];
+  /** Most-recent activity across all rows in the group. Drives the
+   *  group sort (newest first) and the "last active" pill. */
+  lastActiveMs: number;
+}
+
+function groupRows(rows: SessionRow[]): GroupRow[] {
   const map = new Map<string, { planSlug: string | null; rows: SessionRow[] }>();
   for (const r of rows) {
     const key = r.planSlug ?? '_';
@@ -1653,7 +2083,31 @@ function groupRows(rows: SessionRow[]): Array<{ key: string; planSlug: string | 
     }
     g.rows.push(r);
   }
-  return Array.from(map.entries()).map(([key, g]) => ({ key, planSlug: g.planSlug, rows: g.rows }));
+  const groups: GroupRow[] = Array.from(map.entries()).map(([key, g]) => ({
+    key,
+    planSlug: g.planSlug,
+    rows: g.rows,
+    lastActiveMs: g.rows.reduce((acc, r) => Math.max(acc, rowActivityMs(r)), 0),
+  }));
+  // Most-recently-active plans first.
+  groups.sort((a, b) => b.lastActiveMs - a.lastActiveMs);
+  return groups;
+}
+
+/** Compact "last active" label — same shape as the row times. */
+function formatLastActive(ms: number): string {
+  if (!Number.isFinite(ms) || ms <= 0) return '';
+  const ageMs = Date.now() - ms;
+  const minute = 60_000;
+  const hour = 3_600_000;
+  const day = 86_400_000;
+  if (ageMs < 2 * minute) return 'just now';
+  if (ageMs < hour) return `${Math.floor(ageMs / minute)}m ago`;
+  if (ageMs < day) return `${Math.floor(ageMs / hour)}h ago`;
+  if (ageMs < 30 * day) return `${Math.floor(ageMs / day)}d ago`;
+  return new Date(ms).toLocaleDateString(undefined, {
+    month: 'short', day: 'numeric',
+  });
 }
 
 /** Compact human-readable model label: "claude-opus-4-7" → "Opus 4.7".
