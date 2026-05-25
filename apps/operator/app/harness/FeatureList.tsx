@@ -16,6 +16,8 @@ import { useShortcut } from '../../lib/hotkeys';
 import { FeatureFilterChips, type FeatureFilter } from './FeatureFilterChips';
 import { useViewerGithubId } from './useViewerGithubId';
 import { useQueueMembership } from './insights/useQueueMembership';
+import { QueueAvatarCluster } from './insights/QueueAvatarCluster';
+import { PullToQueueButtonClient } from './insights/PullToQueueButtonClient';
 
 // Loaded eagerly (no `dynamic` wrapper) so the inline-note pane renders
 // its textarea immediately when the user clicks "steer". Was lazy-loaded
@@ -617,6 +619,36 @@ function ListView({
         ),
       });
     }
+    if (!compact) {
+      // P-047b — per-row queue avatars + pull-to-queue toggle. v5 §9.1.
+      cols.push({
+        key: 'queue',
+        header: 'Queue',
+        width: '160px',
+        align: 'left',
+        render: ({ row }) => {
+          const members = queueMembership.membersFor(row.id);
+          const queued =
+            viewerGithubId > 0 &&
+            queueMembership.isQueued(row.id, viewerGithubId);
+          return (
+            <span
+              onClick={(e) => e.stopPropagation()}
+              style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}
+            >
+              <QueueAvatarCluster members={members} />
+              <PullToQueueButtonClient
+                slug={slug}
+                featureId={row.id}
+                githubUserId={viewerGithubId}
+                initialQueued={queued}
+                hidden={viewerGithubId === 0}
+              />
+            </span>
+          );
+        },
+      });
+    }
     cols.push({
       key: 'status',
       header: 'Status',
@@ -675,7 +707,7 @@ function ListView({
       });
     }
     return cols;
-  }, [chatBusyId, compact, noteFeatureId, onEdit, onReset, onToggleSelect, selected, startChat]);
+  }, [chatBusyId, compact, noteFeatureId, onEdit, onReset, onToggleSelect, selected, startChat, slug, viewerGithubId, queueMembership]);
 
   // Map per-row aria/data attributes + per-row background to mirror the
   // pre-RichGrid behaviour (focus ring on keyboard focus, active row tint,
