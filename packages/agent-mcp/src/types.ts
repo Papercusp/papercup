@@ -323,6 +323,8 @@ export interface ToolDefinition<TArgs extends ZodTypeAny = ZodTypeAny> {
    * See `ToolGuidance` for shape.
    */
   guidance?: ToolGuidance;
+  /** See `ToolDefinitionInput.profile`. */
+  profile?: 'engineer' | 'all';
 }
 
 /** Input shape for `defineTool` — same as ToolDefinition minus derived fields. */

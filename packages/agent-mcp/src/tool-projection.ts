@@ -727,6 +727,10 @@ export class ToolRegistrationError extends Error {
  *   - `expose.http.path` must be unique across the registry.
  */
 export function registerProjectedTool(tool: ProjectedTool): void {
+  if (tool.expose.mcp?.name === 'intel:artifacts') {
+    // eslint-disable-next-line no-console
+    console.log('[registerProjectedTool] intel:artifacts profile=', tool.profile, new Error().stack?.split('\n').slice(1,4).join(' | '));
+  }
   if (!tool.expose.http && !tool.expose.mcp) {
     throw new ToolRegistrationError(
       `tool from plugin "${tool.pluginName}" must declare at least one of expose.http / expose.mcp`,
@@ -916,6 +920,7 @@ export function listMcpProjections(role?: AgentRole, profile?: 'engineer' | 'pow
     // Profile gate: tools tagged `profile: 'engineer'` are hidden from
     // power-profile callers. Untagged tools (undefined / 'all') are visible
     // to everyone — backward-compatible for tools not yet tagged.
+    // eslint-disable-next-line no-console
     if (profile === 'power' && tool.profile === 'engineer') continue;
     const listing: McpToolListing = {
       name: tool.expose.mcp.name,

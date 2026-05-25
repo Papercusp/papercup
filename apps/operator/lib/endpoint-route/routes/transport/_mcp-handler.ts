@@ -66,10 +66,14 @@ function bearerFromExtra(extra: unknown): string {
 }
 
 function urlFromExtra(extra: unknown): URL | null {
-  const e = extra as { requestInfo?: { url?: string } };
+  const e = extra as { requestInfo?: { url?: unknown } };
   const raw = e?.requestInfo?.url;
   if (!raw) return null;
-  try { return new URL(raw); } catch { return null; }
+  try {
+    return new URL(raw as string);
+  } catch {
+    return null;
+  }
 }
 
 function headersFromExtra(extra: unknown): Headers {
@@ -550,7 +554,8 @@ const handler = createMcpHandler(
         }
         const role = spawnRes.kind === 'ok' ? spawnRes.ctx.role : undefined;
         const profile = spawnRes.kind === 'ok' ? spawnRes.ctx.profile : undefined;
-        return { tools: listMcpProjections(role, profile).map((t) => ({ ...t })) };
+        const result = listMcpProjections(role, profile);
+        return { tools: result.map((t) => ({ ...t })) };
       },
     );
 

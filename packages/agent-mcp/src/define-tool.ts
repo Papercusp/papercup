@@ -182,6 +182,7 @@ function definePrincipalGatedTool<TArgs extends ZodTypeAny>(
     args: input.args,
     handler: input.handler,
     guidance: input.guidance,
+    profile: input.profile,
   };
 
   register(def);
@@ -372,7 +373,7 @@ function registerLegacyAsProjected<TArgs extends ZodTypeAny>(def: ToolDefinition
     description: def.description,
     inputSchema,
     capabilities: [def.capability as never],
-    profile: (def as { profile?: 'engineer' | 'all' }).profile,
+    profile: def.profile,
     expose: {
       mcp: { name: def.name },
       http: { path: httpPath, methods: ['POST'] },
