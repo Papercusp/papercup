@@ -14,12 +14,12 @@
 
 import { useUiPresence } from '@/lib/ui/use-ui-presence';
 import { UiIntentDispatcher } from '@/lib/ui/intent-dispatcher';
-import { shouldEnableRemoteUiIntents } from '@/lib/ui/desktop-ui-intents';
+import { shouldMountRemoteUiControl } from '@/lib/ui/desktop-ui-intents';
 
 export function UiPresenceProvider(): React.ReactElement | null {
   const enableRemoteUi = typeof window === 'undefined'
     ? true
-    : shouldEnableRemoteUiIntents(window.location.origin);
+    : shouldMountRemoteUiControl(window.location.origin);
 
   if (!enableRemoteUi) return null;
 

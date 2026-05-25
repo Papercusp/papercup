@@ -4,3 +4,7 @@ export function isStaticDesktopHost(origin: string): boolean {
     || origin === 'http://localhost:4173'
     || origin === 'http://127.0.0.1:4173';
 }
+
+export function shouldEnableSupportWidget(pathname: string, origin: string): boolean {
+  return pathname.startsWith('/support') && !isStaticDesktopHost(origin);
+}

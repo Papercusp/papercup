@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { isStaticDesktopHost } from '../ui/desktop-static-host';
+import { isStaticDesktopHost, shouldEnableSupportWidget } from '../ui/desktop-static-host';
 
 describe('static desktop host detection', () => {
   it('matches the static desktop hosts', () => {
@@ -11,5 +11,12 @@ describe('static desktop host detection', () => {
 
   it('does not match the live HMR/web host', () => {
     expect(isStaticDesktopHost('http://localhost:3055')).toBe(false);
+  });
+
+  it('enables support widget only on non-static support routes', () => {
+    expect(shouldEnableSupportWidget('/support', 'http://localhost:3055')).toBe(true);
+    expect(shouldEnableSupportWidget('/support/faq', 'http://localhost:3055')).toBe(true);
+    expect(shouldEnableSupportWidget('/support', 'http://localhost:3070')).toBe(false);
+    expect(shouldEnableSupportWidget('/harness', 'http://localhost:3055')).toBe(false);
   });
 });
