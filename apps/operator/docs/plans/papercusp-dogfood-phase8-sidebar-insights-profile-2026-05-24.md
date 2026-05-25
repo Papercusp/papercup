@@ -1,9 +1,10 @@
 ---
 title: Papercusp dogfood — Phase 8 (sidebar tabs + Insights + contributor stats + user profile)
 slug: papercusp-dogfood-phase8-sidebar-insights-profile-2026-05-24
-status: draft
+status: in-progress
+parent: papercusp-dogfood-v5-2026-05-23
 created: 2026-05-24
-updated: 2026-05-24
+updated: 2026-05-25
 owner: avi@storewolf.com
 ---
 
@@ -11,9 +12,19 @@ owner: avi@storewolf.com
 
 ## Now
 
-**State:** **draft execution plan.** Phase 8 is the **biggest user-visible phase** — every shared-harness surface from §9, §17, §18 lands here. Originally L-sized in v5, **the addendum-3 additions (Insights tab P-073, activity badges P-071, user profile page P-072) make it XL-shaped**. Recommended split: **Phase 8a (sidebar tabs + claimed/unclaimed UI)** and **Phase 8b (Insights + stats + profile)**. Both have the same gates so they can run in parallel.
+**State:** **Visual building blocks shipped 2026-05-25 — assembly TBD.**
 
-**Next action:** decide on the Phase 8a/8b split before starting; commit to either single-XL execution plan or two-M execution plans. My lean: split, because Phase 8a's deliverables ship usable independently and unblock multi-engineer dogfood (Phase 11) sooner.
+Per-component progress:
+- **P-071 ContributorBadge** + **ContributorBadgeRow** at `apps/operator/app/_components/ContributorBadge.tsx`. 4 trust tiers (A ✓ accent, B ✓ secondary, C unmarked, D ⏱ viewer-only with privacy gate). 10/10 tests pass.
+- **P-069a ClaimStatusBadge** at `apps/operator/app/_components/ClaimStatusBadge.tsx`. 4 states (unclaimed / claimed / stale / superseded) with optional claimant login + successor href. 8/8 tests pass.
+- **BindingStatusBadge** (P-048a partner / P-075 UI hook) at `apps/operator/app/_components/BindingStatusBadge.tsx`. 3 states (verified ✓ / pending ⏳ / unverified ⚠) with optional age text + failure reason. 6/6 tests pass.
+- **P-072 User profile shell** at `apps/operator/app/users/github/[id]/`. Numeric canonical route + `app/users/[login]/page.tsx` username redirect. All 4 P-072 sub-acceptance regions render with stub data (header / per-harness blocks / activity feed / claimed-harnesses footer). 10/10 tests pass. Real data fetch is a follow-up.
+
+Total Phase 8 tests landed: **34/34 pass**.
+
+**Next action:** P-048 (Contributors tab) — composes ContributorBadgeRow + BindingStatusBadge per row. Reads from the now-existing `harness_shared.contributors` PG table (populated by either the existing PG path or the Phase 5a contributors projection). After P-048, P-073 Insights tab + P-069b/c/d wire-up of ClaimStatusBadge into the harness chrome.
+
+The Phase 8a/8b split (originally proposed for parallelization) is moot now that the building blocks are shared components: any consumer can pick them up incrementally.
 
 ## Background
 
