@@ -219,20 +219,37 @@ export async function lintParsed(
     }
   }
 
-  // P-005: if any item has been promoted (detected via from_items P-NNN refs
-  // in item text or decision bodies that mention F-AUTO / F-\d+ feature ids),
-  // the plan should have a ## Promoted block. Use the raw body as source of
-  // truth — emit a warning (not error) since plans promoted before migration
-  // 084 won't have the block yet and it's not worth blocking agents over it.
+  // P-004 / D-005: if any item has been promoted (detected via F-NNN refs
+  // in the plan body), the plan should have a ## Promoted block.
+  //
+  // Severity is date-gated against the migration-084 ship date. Plans
+  // CREATED before the migration won't have the block until backfilled —
+  // emit a WARNING (don't block CI). Plans created AFTER the migration
+  // shipped should always have it — emit an ERROR. CI doesn't break on
+  // day-one but actively enforces going forward.
+  //
+  // Backfill state takes precedence: a plan that was backfilled by
+  // P-003 will have the block regardless of created-date, so the check
+  // simply doesn't fire.
+  const PROMOTED_BLOCK_ENFORCEMENT_DATE = '2026-05-24'; // migration 084 ship date
   const hasPromotedBlock = /^## Promoted\b/m.test(parsed.raw);
   const hasPromotedFeatureRef = /\bF-(?:AUTO-[A-Z0-9]+|[A-Z0-9-]+-\d{3,})\b/.test(parsed.raw);
   if (hasPromotedFeatureRef && !hasPromotedBlock) {
-    report.warnings.push({
-      level: 'warning',
+    const createdStr = parsed.frontmatter.created;
+    const isPostMigration =
+      typeof createdStr === 'string' && createdStr >= PROMOTED_BLOCK_ENFORCEMENT_DATE;
+    const finding: LintFinding = {
+      level: isPostMigration ? 'error' : 'warning',
       code: 'missing_promoted_block',
-      message:
-        'Plan references promoted feature ids but has no `## Promoted` block — run plans:promote apply=true to generate it.',
-    });
+      message: isPostMigration
+        ? `Plan was created on or after the plan-pipeline-unification migration (${PROMOTED_BLOCK_ENFORCEMENT_DATE}) and references promoted feature ids but has no \`## Promoted\` block — run plans:promote apply=true.`
+        : `Plan references promoted feature ids but has no \`## Promoted\` block — run plans:promote apply=true (or the backfill script) to generate it.`,
+    };
+    if (isPostMigration) {
+      report.errors.push(finding);
+    } else {
+      report.warnings.push(finding);
+    }
   }
 
   if (parsed.frontmatter.updated) {

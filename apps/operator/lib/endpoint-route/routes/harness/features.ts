@@ -376,21 +376,50 @@ const importFeatures = defineTool({
 
     // Write plan provenance to PG consolidated — best-effort (migration 084).
     // Only fires for features that carry source_plan_slug in the payload.
+    let provenanceWritten = 0;
+    const provenanceErrors: Array<{ feature_id: string; error: string }> = [];
     const withProvenance = features.filter((f) => f.source_plan_slug);
     if (withProvenance.length > 0) {
       try {
         const { sql } = getOrgPg();
         for (const f of withProvenance) {
-          await sql`
-            UPDATE harness_shared.harness_features_consolidated
-               SET source_plan_slug     = ${f.source_plan_slug!},
-                   source_plan_item_ids = ${f.source_plan_item_ids ?? []}
-             WHERE harness_slug = ${project.slug}
-               AND feature_id   = ${f.id}
-          `;
+          try {
+            const r = await sql`
+              UPDATE harness_shared.harness_features_consolidated
+                 SET source_plan_slug     = ${f.source_plan_slug!},
+                     source_plan_item_ids = ${f.source_plan_item_ids ?? []}
+               WHERE harness_slug = ${project.slug}
+                 AND feature_id   = ${f.id}
+              RETURNING feature_id
+            `;
+            if (r.length > 0) {
+              provenanceWritten++;
+            } else {
+              // Trigger hasn't fired yet OR row missing from consolidated.
+              // Surface this — it points at a real sync bug.
+              provenanceErrors.push({
+                feature_id: f.id,
+                error: 'consolidated_row_missing',
+              });
+              console.warn(
+                `[features/import] provenance UPDATE matched 0 rows for ${f.id} in ${project.slug} — consolidated trigger may not have fired yet`,
+              );
+            }
+          } catch (e) {
+            const msg = e instanceof Error ? e.message : String(e);
+            provenanceErrors.push({ feature_id: f.id, error: msg });
+            console.warn(
+              `[features/import] provenance UPDATE failed for ${f.id} in ${project.slug}: ${msg}`,
+            );
+          }
         }
-      } catch {
-        // PG unavailable or migration not yet applied — skip silently.
+      } catch (e) {
+        // getOrgPg() itself threw — PG unavailable or org schema missing.
+        const msg = e instanceof Error ? e.message : String(e);
+        console.warn(`[features/import] PG provenance update skipped: ${msg}`);
+        for (const f of withProvenance) {
+          provenanceErrors.push({ feature_id: f.id, error: `pg_unavailable: ${msg}` });
+        }
       }
     }
 
@@ -401,6 +430,11 @@ const importFeatures = defineTool({
       total: features.length,
       skippedKindMismatch,
       ids: allocatedIds,
+      ...(withProvenance.length > 0 && {
+        provenanceWritten,
+        provenanceFailed: provenanceErrors.length,
+        ...(provenanceErrors.length > 0 && { provenanceErrors }),
+      }),
     });
   },
 });

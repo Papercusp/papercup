@@ -3,7 +3,7 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { upsertPromotedBlock } from '../tools/promote';
+import { upsertPromotedBlock, upsertPromoteStatusLine } from '../tools/promote';
 
 const FENCE = '<!-- plan-pipeline: do not edit this block manually -->';
 
@@ -100,5 +100,75 @@ describe('upsertPromotedBlock — second promote (append without duplication)', 
     expect(out).toContain('F-002');
     const count001 = (out.match(/F-001/g) ?? []).length;
     expect(count001).toBe(1);
+  });
+});
+
+/* ── upsertPromoteStatusLine (F3) ─────────────────────────────────── */
+
+describe('upsertPromoteStatusLine — Now block promote-status line', () => {
+  const PLAN_WITH_NOW = `---
+title: T
+slug: x
+status: active
+---
+
+## Now
+
+**State:** user wrote this.
+
+**Next:** user wrote this too.
+
+## Phases
+
+- P-001 stuff
+`;
+
+  it('appends a status line after the existing Now block on first promote', () => {
+    const out = upsertPromoteStatusLine(PLAN_WITH_NOW, 'myharn', {
+      total: 3,
+      inflight: 2,
+      passed: 1,
+    });
+    expect(out).toContain('**State:** user wrote this.');
+    expect(out).toContain('**Next:** user wrote this too.');
+    expect(out).toContain('<!-- plan-pipeline-status -->');
+    expect(out).toContain('**Promote-status:** 3 feature(s) in `myharn`: 2 in-flight · 1 passed');
+    // Status line is BEFORE the next ## heading.
+    const statusIdx = out.indexOf('Promote-status:');
+    const phasesIdx = out.indexOf('## Phases');
+    expect(statusIdx).toBeGreaterThan(0);
+    expect(statusIdx).toBeLessThan(phasesIdx);
+  });
+
+  it('replaces an existing status line (idempotent re-promote)', () => {
+    const first = upsertPromoteStatusLine(PLAN_WITH_NOW, 'myharn', {
+      total: 3,
+      inflight: 3,
+      passed: 0,
+    });
+    const second = upsertPromoteStatusLine(first, 'myharn', {
+      total: 5,
+      inflight: 2,
+      passed: 3,
+    });
+    // Exactly one status line.
+    const matches = (second.match(/Promote-status:/g) ?? []).length;
+    expect(matches).toBe(1);
+    // Shows new counts, not old.
+    expect(second).toContain('5 feature(s) in `myharn`: 2 in-flight · 3 passed');
+    expect(second).not.toContain('3 feature(s) in `myharn`: 3 in-flight · 0 passed');
+  });
+
+  it('preserves user state/next verbatim across multiple promotes', () => {
+    const a = upsertPromoteStatusLine(PLAN_WITH_NOW, 'h', { total: 1, inflight: 1, passed: 0 });
+    const b = upsertPromoteStatusLine(a, 'h', { total: 2, inflight: 1, passed: 1 });
+    expect(b).toContain('**State:** user wrote this.');
+    expect(b).toContain('**Next:** user wrote this too.');
+  });
+
+  it('returns body unchanged when ## Now is absent', () => {
+    const noNow = `---\ntitle: t\n---\n\n## Phases\n\n- P-001 x\n`;
+    const out = upsertPromoteStatusLine(noNow, 'h', { total: 1, inflight: 1, passed: 0 });
+    expect(out).toBe(noNow);
   });
 });

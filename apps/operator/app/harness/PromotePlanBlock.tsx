@@ -4,13 +4,13 @@ import { useMemo, useState } from 'react';
 import { toast } from 'sonner';
 import { Check, ChevronDown, ChevronRight, ExternalLink, Loader2 } from 'lucide-react';
 import type { ActionBlock } from '@restart/agent-chat';
-import {
-  addPlanDecision,
-  addPlanItem,
-  createPlan,
-  setPlanNow,
-} from '@/app/admin/plans/plans-api';
+import { applyPlanBlock } from '@/app/admin/plans/plans-api';
 
+// Preview-only parser. The server (plan-block-handler.ts) re-parses on
+// apply with its own implementation — this one exists ONLY to render
+// the user-facing summary (title, item count) before they click accept.
+// On accept we send the raw block content to the server, which is the
+// single source of truth for actually creating the plan.
 interface ParsedPromotePlan {
   title: string;
   summary: string;
@@ -20,16 +20,6 @@ interface ParsedPromotePlan {
   nowNext: string;
   items: Array<{ phase: string; text: string }>;
   decisions: Array<{ title: string; body: string }>;
-}
-
-function slugify(title: string): string {
-  return title
-    .toLowerCase()
-    .replace(/[^a-z0-9\s-]/g, '')
-    .replace(/\s+/g, '-')
-    .replace(/-+/g, '-')
-    .replace(/^-|-$/g, '')
-    .slice(0, 80);
 }
 
 function parseBlock(content: string): ParsedPromotePlan {
@@ -122,43 +112,23 @@ export function PromotePlanBlock({
     setStage('applying');
     setError(null);
 
-    const slug = slugify(parsed.title);
     try {
-      const newRes = await createPlan({ slug, title: parsed.title, status: 'draft' });
-      if (!('ok' in newRes) || !newRes.ok) {
-        throw new Error('error' in newRes ? String((newRes as Record<string, unknown>).error) : 'plans:new failed');
+      // Single round-trip: send the raw block content; the server
+      // (plan-block-handler.ts) parses, validates, and applies the
+      // plans:new → set-now → add-item × N → add-decision × N
+      // sequence atomically under the plan-lock.
+      const res = await applyPlanBlock({ blockContent: block.content });
+      if (!('ok' in res) || !res.ok) {
+        const errMsg = 'error' in res ? String((res as Record<string, unknown>).error) : 'apply-plan-block failed';
+        const detail = 'detail' in res ? String((res as Record<string, unknown>).detail) : '';
+        throw new Error(detail ? `${errMsg}: ${detail}` : errMsg);
       }
-      const finalSlug: string =
-        'slug' in newRes && typeof (newRes as Record<string, unknown>).slug === 'string'
-          ? (newRes as Record<string, unknown>).slug as string
-          : slug;
-
-      if (parsed.nowState || parsed.nowNext) {
-        const nowRes = await setPlanNow({
-          slug: finalSlug,
-          state: parsed.nowState || 'Plan created from architect proposal.',
-          next: parsed.nowNext || 'Review and refine the plan items.',
-        });
-        if (!('ok' in nowRes) || !nowRes.ok) {
-          const msg = 'error' in nowRes ? String((nowRes as Record<string, unknown>).error) : 'set-now failed';
-          toast.warning(`Plan created but Now block failed: ${msg}`);
-        }
-      }
-
-      for (const item of parsed.items) {
-        const r = await addPlanItem({ slug: finalSlug, phase: item.phase, text: item.text });
-        if (!('ok' in r) || !r.ok) {
-          const msg = 'error' in r ? String((r as Record<string, unknown>).error) : 'add-item failed';
-          toast.warning(`Item "${item.text.slice(0, 40)}" failed: ${msg}`);
-        }
-      }
-
-      for (const dec of parsed.decisions) {
-        const r = await addPlanDecision({ slug: finalSlug, title: dec.title, body: dec.body });
-        if (!('ok' in r) || !r.ok) {
-          const msg = 'error' in r ? String((r as Record<string, unknown>).error) : 'add-decision failed';
-          toast.warning(`Decision "${dec.title.slice(0, 40)}" failed: ${msg}`);
-        }
+      const finalSlug =
+        'slug' in res && typeof (res as Record<string, unknown>).slug === 'string'
+          ? ((res as Record<string, unknown>).slug as string)
+          : '';
+      if (!finalSlug) {
+        throw new Error('Server did not return a slug for the created plan.');
       }
 
       setCreatedSlug(finalSlug);

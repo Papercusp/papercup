@@ -346,6 +346,22 @@ export function createPlan(args: NewPlanArgs) {
   return postJson<WriteResult<{ slug: string }>>('new', args as unknown as Record<string, unknown>);
 }
 
+/**
+ * Apply a `promote:plan` fenced block emitted by the architect.
+ * Server-side wraps the full plans:new → set-now → add-item × N →
+ * add-decision × N sequence (plan-block-handler.ts).
+ *
+ * Single round-trip from the client; the server holds the lock once
+ * and applies all writes atomically from the client's perspective.
+ * Returns `{ ok: true, slug }` on success.
+ */
+export function applyPlanBlock(args: { blockContent: string }) {
+  return postJson<WriteResult<{ slug: string }>>(
+    'apply-plan-block',
+    args as unknown as Record<string, unknown>,
+  );
+}
+
 /* ── Phase 3 write verbs (P-301 / P-302, D-011) ────────────────────── */
 
 /** Plan-frontmatter statuses that can be *written* — the parser-

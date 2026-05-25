@@ -32,8 +32,61 @@ import { emitPlanEventForCaller } from '../plan-events';
 import { readPlanBySlug } from '../../plans/source';
 import { withPlanLock, bumpUpdatedDate } from '../../plans/with-plan-lock';
 import { flipStatusInBody } from '../../plans/set-status';
+import { getOrgPg } from '@restart/db-org';
 
 const PROMOTED_FENCE = '<!-- plan-pipeline: do not edit this block manually -->';
+
+/**
+ * Marker for the auto-generated promote-status line inside `## Now`.
+ * Lives at the end of the Now block, BELOW user-authored `**State:**`
+ * and `**Next:**` lines. Idempotently replaced on each promote so
+ * re-promoting accumulates correctly instead of appending duplicates.
+ */
+const PROMOTE_STATUS_MARKER = '<!-- plan-pipeline-status -->';
+
+/**
+ * Append (or replace) an auto-generated status line inside the `## Now`
+ * block summarising how many features the plan has promoted and where
+ * they are. Preserves user-authored `**State:**` / `**Next:**` content
+ * verbatim — only the marker-delimited line is touched.
+ *
+ * The status line format:
+ *   <!-- plan-pipeline-status -->
+ *   **Promote-status:** N features in <harnessSlug>: <inflight> in-flight · <passed> passed
+ *
+ * If the plan has no `## Now` block, returns the body unchanged
+ * (promote write-back has no preferred state/next to author).
+ */
+export function upsertPromoteStatusLine(
+  body: string,
+  harnessSlug: string,
+  counts: { total: number; inflight: number; passed: number },
+): string {
+  const block =
+    `${PROMOTE_STATUS_MARKER}\n` +
+    `**Promote-status:** ${counts.total} feature(s) in \`${harnessSlug}\`: ` +
+    `${counts.inflight} in-flight · ${counts.passed} passed`;
+
+  // Strip any prior marker line + its content (idempotent re-promote).
+  const stripRe = new RegExp(
+    `\\n?${PROMOTE_STATUS_MARKER}\\n[^\\n]*(\\n[^\\n]*)?`,
+    'g',
+  );
+  const stripped = body.replace(stripRe, '');
+
+  // Find the end of the ## Now block (next ## heading or EOF).
+  const nowMatch = /^## (?:\d+(?:\.\d+)?\.\s+)?Now\b/m.exec(stripped);
+  if (!nowMatch) return stripped;
+  const afterNow = nowMatch.index + nowMatch[0].length;
+  const tail = stripped.slice(afterNow);
+  const nextSection = /^## /m.exec(tail);
+  const insertAt = nextSection ? afterNow + nextSection.index : stripped.length;
+
+  // Ensure exactly one blank line before the marker, one after.
+  const before = stripped.slice(0, insertAt).replace(/\n*$/, '');
+  const after = stripped.slice(insertAt).replace(/^\n*/, '');
+  return `${before}\n\n${block}\n\n${after}`;
+}
 
 export function upsertPromotedBlock(body: string, newRows: string[]): string {
   if (newRows.length === 0) return body;
@@ -434,11 +487,36 @@ export default defineTool({
       }
     }
 
-    // Write-back: stamp ## Promoted block in the plan file (P-004).
+    // Query consolidated for THIS plan's full feature set, post-import.
+    // Used to refresh the ## Now promote-status line with live counts.
+    // Best-effort: failure here is non-fatal — the ## Promoted block
+    // write proceeds regardless.
+    let statusCounts: { total: number; inflight: number; passed: number } | null = null;
+    try {
+      const { sql } = getOrgPg();
+      const rows = await sql<{ status: string }[]>`
+        SELECT status FROM harness_shared.harness_features_consolidated
+         WHERE source_plan_slug = ${args.slug}
+           AND harness_slug     = ${args.harness_slug}
+      `;
+      let passed = 0;
+      let inflight = 0;
+      for (const r of rows) {
+        if (r.status === 'passed') passed++;
+        else inflight++;
+      }
+      statusCounts = { total: rows.length, inflight, passed };
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      ctx.log?.(`[plans:promote] status-count query failed (status line skipped): ${msg}`);
+    }
+
+    // Write-back: stamp ## Promoted block + refresh ## Now promote-status line.
     // Item-level idempotent: parse existing block, append only new feature IDs.
+    // Status line is marker-delimited so re-promote replaces in place.
     await withPlanLock<null>(
       ctx as never,
-      { slug: args.slug, intent: 'plans:promote → write ## Promoted block' },
+      { slug: args.slug, intent: 'plans:promote → write ## Promoted block + Now status' },
       async (current): Promise<{ newBody: string | null; value: null }> => {
         if (current === null) return { newBody: null, value: null };
         const featureRows = importRes.ids.map((fid, idx) => {
@@ -446,7 +524,10 @@ export default defineTool({
           const itemRef = feat?.from_items?.[0] ? ` <!-- ${feat.from_items[0]} -->` : '';
           return `- [ ] ${fid} — ${feat?.title ?? fid}${itemRef}`;
         });
-        const newBody = upsertPromotedBlock(current, featureRows);
+        let newBody = upsertPromotedBlock(current, featureRows);
+        if (statusCounts) {
+          newBody = upsertPromoteStatusLine(newBody, args.harness_slug, statusCounts);
+        }
         return { newBody: bumpUpdatedDate(newBody), value: null };
       },
     );
