@@ -151,4 +151,48 @@ export function runBootstrap(): void {
         console.warn('[desktop-install] papercusp-files failed:', (e as Error)?.message ?? e);
       });
   }
+
+  // dogfood-v5 Phase 5a — Hyperbee substrate boot. Gated by
+  // PAPERCUSP_DOGFOOD_SUBSTRATE_ENABLE=1; default OFF so the dev loop is
+  // unchanged until explicit opt-in. Same wiring as the (retired)
+  // instrumentation-node.ts: await boot-gate, then boot every harness
+  // in the active workspace. Failures roll up but don't block the host.
+  if (process.env.PAPERCUSP_DOGFOOD_SUBSTRATE_ENABLE === '1') {
+    void (async () => {
+      try {
+        // host-bootstrap.ts doesn't run a separate migrations / schema-
+        // ensure phase the way the retired Next instrumentation did.
+        // The dogfood projection writers handle their own ensure on
+        // first write, so mark the gate complete here and proceed.
+        const { markSqlMigrationsComplete, markRuntimeEnsureComplete } =
+          await import('../lib/sync/hyperbee/boot-gate');
+        markSqlMigrationsComplete();
+        markRuntimeEnsureComplete();
+        const { bootAllHarnessesForActiveWorkspace } = await import(
+          '../lib/sync/hyperbee/boot-all'
+        );
+        const t0 = Date.now();
+        const result = await bootAllHarnessesForActiveWorkspace({
+          perHarnessTimeoutMs: 30_000,
+        });
+        console.log(
+          `[hyperbee-substrate] boot complete in ${Date.now() - t0}ms — attempted=${result.attempted} booted=${result.booted} alreadyBooted=${result.alreadyBooted} failed=${result.failed}`,
+        );
+        if (result.failed > 0) {
+          for (const r of result.results) {
+            if (r.state === 'failed') {
+              console.warn(
+                `[hyperbee-substrate] (${r.workspaceId}::${r.harnessSlug}) failed: ${r.error}`,
+              );
+            }
+          }
+        }
+      } catch (err) {
+        console.warn(
+          '[hyperbee-substrate] boot failed (non-fatal):',
+          err instanceof Error ? err.message : err,
+        );
+      }
+    })();
+  }
 }
