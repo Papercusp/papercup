@@ -8,3 +8,7 @@ export function isStaticDesktopHost(origin: string): boolean {
 export function shouldEnableSupportWidget(pathname: string, origin: string): boolean {
   return pathname.startsWith('/support') && !isStaticDesktopHost(origin);
 }
+
+export function shouldSuppressStaticDesktopReload(origin: string): boolean {
+  return isStaticDesktopHost(origin);
+}

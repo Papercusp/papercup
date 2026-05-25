@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { isStaticDesktopHost, shouldEnableSupportWidget } from '../ui/desktop-static-host';
+import { isStaticDesktopHost, shouldEnableSupportWidget, shouldSuppressStaticDesktopReload } from '../ui/desktop-static-host';
 
 describe('static desktop host detection', () => {
   it('matches the static desktop hosts', () => {
@@ -18,5 +18,10 @@ describe('static desktop host detection', () => {
     expect(shouldEnableSupportWidget('/support/faq', 'http://localhost:3055')).toBe(true);
     expect(shouldEnableSupportWidget('/support', 'http://localhost:3070')).toBe(false);
     expect(shouldEnableSupportWidget('/harness', 'http://localhost:3055')).toBe(false);
+  });
+  it('reuses the same host list for reload suppression', () => {
+    expect(shouldSuppressStaticDesktopReload('http://localhost:3070')).toBe(true);
+    expect(shouldSuppressStaticDesktopReload('http://localhost:4173')).toBe(true);
+    expect(shouldSuppressStaticDesktopReload('http://localhost:3055')).toBe(false);
   });
 });
