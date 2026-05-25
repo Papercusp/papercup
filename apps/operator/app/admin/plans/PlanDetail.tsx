@@ -13,7 +13,8 @@
  * unsaved draft (D-007).
  */
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { useSyncQuery } from '@restart/sync';
 import { parseAsInteger, parseAsString, parseAsStringEnum, useQueryState } from 'nuqs';
 import {
   setPlanContent,
@@ -24,6 +25,7 @@ import {
   writeErrorOf,
 } from './plans-api';
 import PlanEditor from './PlanEditor';
+import type { PromotedFeature } from './plan-renderers';
 import PlanJumpToItem from './PlanJumpToItem';
 import LockBanner from './LockBanner';
 import LintBanner from './LintBanner';
@@ -54,6 +56,25 @@ export default function PlanDetail({ slug, onClose, onDirtyChange }: Props) {
   const [writeTick, setWriteTick] = useState(0);
   const { data: lintReport } = usePlanLint(data ? slug : null, writeTick);
   const editorScopeRef = useRef<HTMLDivElement>(null);
+
+  // P-013: subscribe to features promoted from this plan for live status badges.
+  const { data: promotedRaw } = useSyncQuery<{
+    featureId: string;
+    harnessSlug: string;
+    title: string | null;
+    status: string | null;
+  }>({
+    queryName: 'featuresConsolidated.byPlanSlug',
+    args: { planSlug: slug },
+  });
+  const promotedFeatures = useMemo(
+    (): PromotedFeature[] => (Array.isArray(promotedRaw) ? promotedRaw : []),
+    [promotedRaw],
+  );
+  const featureSummary = useMemo(
+    () => buildFeatureSummary(promotedFeatures),
+    [promotedFeatures],
+  );
 
   // P-301 Edit-mode state.
   const [pane, setPane] = useQueryState(
@@ -240,7 +261,13 @@ export default function PlanDetail({ slug, onClose, onDirtyChange }: Props) {
       {!data.legacy && data.frontmatter ? (
         <FrontmatterCard slug={data.slug} frontmatter={data.frontmatter} />
       ) : null}
-      {data.now ? <NowHero state={data.now.state} next={data.now.next} /> : null}
+      {data.now ? (
+        <NowHero
+          state={data.now.state}
+          next={data.now.next}
+          featureSummary={featureSummary}
+        />
+      ) : null}
       {data.legacy ? (
         <div className="pc-plans__legacy-banner">
           Legacy plan — frontmatter not parsed; rendering raw markdown.
@@ -306,6 +333,7 @@ export default function PlanDetail({ slug, onClose, onDirtyChange }: Props) {
           value={editing ? (draft ?? raw) : strippedRaw}
           slug={slug}
           items={data.items}
+          promotedFeatures={promotedFeatures.length > 0 ? promotedFeatures : undefined}
           // P-205: while another shell holds the lock, the editor is
           // forced read-only even in edit mode — the draft is preserved
           // (value still resolves to `draft ?? raw`), so editing resumes
@@ -635,11 +663,44 @@ function FrontmatterCard({
   );
 }
 
-function NowHero({ state, next }: { state: string | null; next: string | null }) {
+function buildFeatureSummary(features: PromotedFeature[]): string | null {
+  if (features.length === 0) return null;
+  const counts: Record<string, number> = {};
+  for (const f of features) {
+    const s = f.status ?? 'todo';
+    counts[s] = (counts[s] ?? 0) + 1;
+  }
+  const parts: string[] = [];
+  const inflight = (counts['in_progress'] ?? 0) + (counts['validating'] ?? 0);
+  if (inflight > 0) parts.push(`${inflight} in-flight`);
+  if (counts['failing']) parts.push(`${counts['failing']} failing`);
+  if (counts['passed']) parts.push(`${counts['passed']} passed`);
+  if (counts['todo']) parts.push(`${counts['todo']} todo`);
+  if (counts['blocked']) parts.push(`${counts['blocked']} blocked`);
+  return parts.length > 0
+    ? `${features.length} features: ${parts.join(' · ')}`
+    : `${features.length} features`;
+}
+
+function NowHero({
+  state,
+  next,
+  featureSummary,
+}: {
+  state: string | null;
+  next: string | null;
+  featureSummary?: string | null;
+}) {
   if (!state && !next) return null;
   return (
     <section className="pc-now-hero" aria-label="Now">
       <span className="pc-now-hero__kicker">Now</span>
+      {featureSummary ? (
+        <div className="pc-now-hero__row">
+          <span className="pc-now-hero__label">Features</span>
+          <p style={{ color: 'var(--fg-mute)', fontSize: '0.85em' }}>{featureSummary}</p>
+        </div>
+      ) : null}
       {state ? (
         <div className="pc-now-hero__row">
           <span className="pc-now-hero__label">State</span>

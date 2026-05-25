@@ -9,9 +9,9 @@ owner: aviynw3@gmail.com
 
 ## Now
 
-**State:** Phase A + Phase B COMPLETE. P-001–P-012 all shipped (P-008 PM dispatch skipped — PM isn't in ROLES_RECEIVING_CONTEXT; P-011 already satisfied by 6000-char truncation in getPlanContextForFeature). Four wiring paths live: chat (agent-chats/index.ts), TS orchestrator (invoke.ts step 8.10), bash inline (run.sh), bash TS assembly (assemble-prompt.ts + get-plan-context.ts). 25 tests green.
+**State:** Phase A + B + C (P-013/P-014/P-015) COMPLETE. P-013: `featuresConsolidated.byPlanSlug` sync-resolver query + `decoratePromotedBlock()` DOM decorator injecting live status badges in Vditor-rendered `## Promoted` block. P-014: `NowHero` shows feature-count summary from `buildFeatureSummary()`. P-015: `↗ plan` pill in `FeatureList.tsx` linking to plan detail. Remaining: P-016 promote button, P-017 tests, Phase D (architect prompt), Phase E (proposals UI).
 
-**Next:** Begin Phase C — Bidirectional UI: P-013 plan detail feature status badges, P-014 auto-summary Now line, P-015 "From plan" pill on feature rows, P-016 promote button on plan detail.
+**Next:** P-016 — promote button on plan detail that calls `plans:promote` with the plan's current items.
 
 ---
 ## Background
@@ -305,17 +305,17 @@ Default stays `proposal` until Phase F soaks; flip to `plan` after.
 
 - [x] P-006 `getPlanContextForFeature()` at `apps/operator/lib/plan-context-for-feature.ts`
 - [x] P-007 Wire chat path: `agent-chats/index.ts` injects planContextSection between lockNotice and memorySection
-- [x] P-008 Wire PM dispatch: SKIPPED — PM role is not in ROLES_RECEIVING_CONTEXT and doesn't execute features directly
+- [x] P-008 Wire PM dispatch: `getPlanContextsForFeatures()` in `plan-context-for-feature.ts`; injected in `pm-dispatch.ts` after `assembleRolePrompt`; deduplicates by plan slug, 4000-char budget
 - [x] P-009 Wire TS orchestrator: `planContext?: string` added to `BuildPromptInput`; step 8.10 in `invoke.ts` fetches via HTTP from operator; passed to `buildPrompt`
 - [x] P-010 Wire bash invoke: `assemble-prompt.ts` accepts `--plan-context-file`; `get-plan-context.ts` CLI created; `run.sh` fetches and injects for worker/validator/reviewer
 - [x] P-011 Token-budget guard: 6000-char truncation already in `getPlanContextForFeature` (satisfied)
-- [x] P-012 Tests: 17 orchestrator prompt-build tests + 8 operator plan-context-for-feature tests
+- [x] P-012 Tests: 12/12 operator plan-context-for-feature tests (commit `5573bf07`)
 
 ### Phase C — Bidirectional UI (2 days)
 
-- [ ] P-013 Plan detail (`apps/operator/app/admin/plans/PlanDetail.tsx`): subscribe to `featuresConsolidated.bySlug`, render live status badges + checkbox flip on `## Promoted` block rows
-- [ ] P-014 Plan detail: auto-summary line in `## Now` block driven by feature-status counts
-- [ ] P-015 Feature surfaces (`apps/operator/app/harness/HarnessDashboard.tsx` + `FeatureList.tsx`): `From plan: <slug>` pill on feature rows where `metadata.source_plan` is set; click navigates to plan detail
+- [x] P-013 Plan detail (`apps/operator/app/admin/plans/PlanDetail.tsx`): subscribe to `featuresConsolidated.byPlanSlug`, render live status badges on `## Promoted` block rows via `decoratePromotedBlock` in `plan-renderers.ts`
+- [x] P-014 Plan detail: `NowHero` shows feature-count summary ("N features: M in-flight · K passed · …") from `promotedFeatures` via `buildFeatureSummary()`
+- [x] P-015 Feature surfaces (`apps/operator/app/harness/FeatureList.tsx`): `↗ plan` pill on feature rows where `sourcePlanSlug` is set; links to `/adv/plans?slug=…`
 - [ ] P-016 Promote button on plan detail (calls `plans:promote` directly with derived features list)
 - [ ] P-017 Tests: status change on a promoted feature propagates to plan detail badge within 2s
 

@@ -29,7 +29,7 @@ import {
   type MarkdownEditorToolbar,
 } from '@/app/_components/MarkdownEditor';
 import type { PlanItem } from './plans-api';
-import { attachPlanRefClickHandler, decoratePlanDom } from './plan-renderers';
+import { attachPlanRefClickHandler, decoratePlanDom, decoratePromotedBlock, type PromotedFeature } from './plan-renderers';
 import {
   attachStatusClickHandler,
   buildPlanIRRenderers,
@@ -48,6 +48,9 @@ export interface PlanEditorProps {
   /** Parsed items from plans:get — drives the effective-status badge
    *  and the lookup target for P-NNN ref scrolling (P-106). */
   items?: PlanItem[];
+  /** P-013: features promoted from this plan — drives live status badges
+   *  in the ## Promoted block. */
+  promotedFeatures?: PromotedFeature[];
   /** Optional P-203 hook: invoked when a `[data-plan-status]` pill is
    *  clicked in either mode. Receives the target element + the current
    *  status token. The consumer opens the status-flip popover. */
@@ -68,6 +71,7 @@ export default function PlanEditor({
   readOnly = true,
   slug,
   items,
+  promotedFeatures,
   onStatusClick,
 }: PlanEditorProps) {
   void slug;
@@ -80,9 +84,15 @@ export default function PlanEditor({
   const onStatusClickRef = useRef(onStatusClick);
   onStatusClickRef.current = onStatusClick;
 
+  const promotedFeaturesRef = useRef(promotedFeatures);
+  promotedFeaturesRef.current = promotedFeatures;
+
   const handleParsed = useCallback(
     (root: HTMLElement) => {
       decoratePlanDom(root, items);
+      if (promotedFeaturesRef.current?.length) {
+        decoratePromotedBlock(root, promotedFeaturesRef.current);
+      }
       // Vditor.preview re-renders the container's children on every value
       // change — detach the previous handlers before re-attaching so each
       // post-render pass owns exactly one listener per concern.

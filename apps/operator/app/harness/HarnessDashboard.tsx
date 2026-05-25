@@ -387,6 +387,7 @@ interface Feature {
   status: FeatureStatus;
   attempts: number;
   summary?: string;
+  sourcePlanSlug?: string;
 }
 
 interface Status {
@@ -3237,7 +3238,7 @@ export default function HarnessDashboard() {
     // Wait until polling has at least one response before applying — the
     // initial empty array would clobber any polled-from-REST features.
     if (!featuresQueryName || featuresLoading || !Array.isArray(zeroFeatureRows)) return;
-    type LocalFeatureRow = { featureId: string; title: string; summary?: string | null; status: string; attempts: number | string; claims?: string | null };
+    type LocalFeatureRow = { featureId: string; title: string; summary?: string | null; status: string; attempts: number | string; claims?: string | null; sourcePlanSlug?: string | null };
     const adapted: Feature[] = (zeroFeatureRows as unknown as LocalFeatureRow[]).map((zf) => ({
       id: zf.featureId,
       title: zf.title,
@@ -3245,6 +3246,7 @@ export default function HarnessDashboard() {
       status: zf.status as FeatureStatus,
       attempts: Number(zf.attempts) || 0,
       claims: zf.claims ? safeParseClaims(zf.claims) : undefined,
+      sourcePlanSlug: zf.sourcePlanSlug ?? undefined,
     }));
     setStatus((prev) => {
       if (!prev) {

@@ -30,6 +30,7 @@ interface Feature {
   attempts: number;
   summary?: string;
   labels?: string[];
+  sourcePlanSlug?: string;
 }
 
 type ViewMode = 'list' | 'board';
@@ -505,6 +506,17 @@ function ListView({
                 {row.attempts > 0 && (
                   <span className={`h-feature-attempts-pill${row.attempts >= 3 ? ' warn' : ''}`}>×{row.attempts}</span>
                 )}
+                {row.sourcePlanSlug && (
+                  <a
+                    href={`/adv/plans?slug=${encodeURIComponent(row.sourcePlanSlug)}`}
+                    className="h-feature-plan-pill"
+                    title={`From plan: ${row.sourcePlanSlug}`}
+                    onClick={(e) => e.stopPropagation()}
+                    style={{ color: COLORS.accent, fontSize: SIZES.xs, textDecoration: 'none', whiteSpace: 'nowrap' }}
+                  >
+                    ↗ plan
+                  </a>
+                )}
               </span>
             </div>
           );
@@ -518,6 +530,17 @@ function ListView({
             }}>{row.summary || row.title}</span>
             {claimsCount > 0 && (
               <span className="h-feature-claims-chip">{claimsCount} claim{claimsCount === 1 ? '' : 's'}</span>
+            )}
+            {row.sourcePlanSlug && (
+              <a
+                href={`/adv/plans?slug=${encodeURIComponent(row.sourcePlanSlug)}`}
+                className="h-feature-plan-pill"
+                title={`From plan: ${row.sourcePlanSlug}`}
+                onClick={(e) => e.stopPropagation()}
+                style={{ color: COLORS.accent, fontSize: SIZES.xs, textDecoration: 'none', whiteSpace: 'nowrap', flexShrink: 0 }}
+              >
+                ↗ plan
+              </a>
             )}
           </span>
         );

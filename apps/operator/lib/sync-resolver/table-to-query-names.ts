@@ -84,7 +84,7 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly string[]>> =
   'harness_shared.project_spec_revisions': ['projectSpecRevisions.byProject'],
 
   // ── Cross-harness *Consolidated tables ────────────────────────────
-  'harness_shared.harness_features_consolidated': ['featuresConsolidated.bySlug'],
+  'harness_shared.harness_features_consolidated': ['featuresConsolidated.bySlug', 'featuresConsolidated.byPlanSlug'],
   'harness_shared.harness_issues_consolidated': ['issuesConsolidated.bySlug'],
   'harness_shared.agent_runs_consolidated': [
     'agentRunsConsolidated.bySlug',

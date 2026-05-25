@@ -1110,6 +1110,30 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     },
   },
 
+  // featuresConsolidated.byPlanSlug — features promoted from a specific plan,
+  // across all harnesses, ordered by created_ts desc. Uses the first-class
+  // source_plan_slug column added in migration 084 (indexed; fast).
+  'featuresConsolidated.byPlanSlug': {
+    argsSchema: z.object({ planSlug: z.string() }),
+    resolve: async (args) => {
+      const { planSlug } = args as { planSlug: string };
+      const { getOrgPg, generated } = await import('@restart/db-org');
+      const { desc, eq } = await import('drizzle-orm');
+      const t = generated.harnessFeaturesConsolidatedInHarnessShared;
+      const { db } = getOrgPg();
+      return (await db
+        .select({
+          featureId: t.featureId,
+          harnessSlug: t.harnessSlug,
+          title: t.title,
+          status: t.status,
+        })
+        .from(t)
+        .where(eq(t.sourcePlanSlug, planSlug))
+        .orderBy(desc(t.createdTs))) as unknown[];
+    },
+  },
+
   // issuesConsolidated.bySlug — issues for a harness, latest first.
   //   zql.issuesConsolidated.where(harnessSlug).orderBy('updatedTs', 'desc')
   'issuesConsolidated.bySlug': {

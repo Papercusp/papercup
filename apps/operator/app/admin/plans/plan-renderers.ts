@@ -163,3 +163,115 @@ function findRefTarget(root: HTMLElement, id: string): HTMLElement | null {
   }
   return null;
 }
+
+// ---------------------------------------------------------------------------
+// P-013 — Promoted-block feature status badges
+// ---------------------------------------------------------------------------
+
+export interface PromotedFeature {
+  featureId: string;
+  title: string | null;
+  status: string | null;
+  harnessSlug: string;
+}
+
+const FEATURE_ID_RE = /\bF-[A-Z0-9]+-?\d*[A-Z0-9]*\b/g;
+
+const PROMOTED_STATUS_META: Record<string, { color: string; label: string }> = {
+  todo:        { color: 'var(--fg-mute)',  label: 'todo'       },
+  in_progress: { color: '#7aa2f7',         label: 'working'    },
+  validating:  { color: '#c084fc',         label: 'validating' },
+  failing:     { color: '#f7768e',         label: 'failing'    },
+  passed:      { color: '#9ece6a',         label: 'passed'     },
+  blocked:     { color: '#e0af68',         label: 'blocked'    },
+};
+
+/**
+ * After Vditor renders the plan in read-mode, find the `## Promoted`
+ * section and inject a live status badge next to each feature ID found
+ * in the checklist items.
+ *
+ * Idempotent: clears previously injected badges before re-decorating,
+ * so calling this on every re-render is safe.
+ */
+export function decoratePromotedBlock(
+  root: HTMLElement,
+  features: PromotedFeature[],
+): void {
+  if (features.length === 0) return;
+
+  // Remove any badges from a previous decoration pass.
+  for (const old of Array.from(root.querySelectorAll('.pc-promoted-badge'))) {
+    old.remove();
+  }
+
+  // Build a fast lookup: featureId → feature.
+  const byId = new Map<string, PromotedFeature>();
+  for (const f of features) byId.set(f.featureId, f);
+
+  // Find the ## Promoted heading.
+  let promotedHeading: HTMLElement | null = null;
+  for (const h of Array.from(root.querySelectorAll<HTMLElement>('h2, h3'))) {
+    if ((h.textContent ?? '').trim() === 'Promoted') {
+      promotedHeading = h;
+      break;
+    }
+  }
+  if (!promotedHeading) return;
+
+  // Collect list items under the Promoted heading until the next heading.
+  const items: HTMLElement[] = [];
+  let node: Element | null = promotedHeading.nextElementSibling;
+  while (node && !node.matches('h2, h3')) {
+    for (const li of Array.from(node.querySelectorAll<HTMLElement>('li'))) {
+      items.push(li);
+    }
+    node = node.nextElementSibling;
+  }
+
+  for (const li of items) {
+    const text = li.textContent ?? '';
+    const matches = Array.from(text.matchAll(FEATURE_ID_RE));
+    for (const m of matches) {
+      const fid = m[0];
+      const feature = byId.get(fid);
+      if (!feature) continue;
+      const status = feature.status ?? 'todo';
+      const meta = PROMOTED_STATUS_META[status] ?? PROMOTED_STATUS_META['todo'];
+
+      const badge = document.createElement('span');
+      badge.className = 'pc-promoted-badge';
+      badge.textContent = meta.label;
+      badge.style.cssText = [
+        `color: ${meta.color}`,
+        `background: color-mix(in oklab, ${meta.color}, transparent 82%)`,
+        `border: 1px solid color-mix(in oklab, ${meta.color}, transparent 55%)`,
+        'font-size: 10px',
+        'font-weight: 500',
+        'padding: 1px 5px',
+        'border-radius: 3px',
+        'margin-left: 6px',
+        'vertical-align: middle',
+        'white-space: nowrap',
+      ].join(';');
+      badge.title = `${fid}: ${feature.title ?? ''} (${feature.harnessSlug})`;
+
+      // Find the text node containing the feature ID and insert after it.
+      const walker = document.createTreeWalker(li, NodeFilter.SHOW_TEXT);
+      let injected = false;
+      let textNode: Text | null;
+      while ((textNode = walker.nextNode() as Text | null) !== null) {
+        const idx = textNode.textContent?.indexOf(fid) ?? -1;
+        if (idx === -1) continue;
+        const after = textNode.splitText(idx + fid.length);
+        after.parentNode?.insertBefore(badge, after);
+        injected = true;
+        break;
+      }
+      if (!injected) {
+        // Fallback: append badge at end of li.
+        li.appendChild(badge);
+      }
+    }
+  }
+}
