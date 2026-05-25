@@ -354,8 +354,13 @@ export function createPlan(args: NewPlanArgs) {
  * Single round-trip from the client; the server holds the lock once
  * and applies all writes atomically from the client's perspective.
  * Returns `{ ok: true, slug }` on success.
+ *
+ * Pass `harnessSlug` when calling from a harness-scoped UI so the
+ * admin route invalidates that harness's `plansDrafts.bySlug`
+ * subscription — the new draft card then appears in ProposalsPanel
+ * without waiting for a manual refresh.
  */
-export function applyPlanBlock(args: { blockContent: string }) {
+export function applyPlanBlock(args: { blockContent: string; harnessSlug?: string }) {
   return postJson<WriteResult<{ slug: string }>>(
     'apply-plan-block',
     args as unknown as Record<string, unknown>,

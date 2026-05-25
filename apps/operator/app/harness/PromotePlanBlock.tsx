@@ -92,9 +92,13 @@ function parseBlock(content: string): ParsedPromotePlan {
 
 export function PromotePlanBlock({
   block,
+  harnessSlug,
   onAccepted,
 }: {
   block: ActionBlock;
+  /** When set, the server invalidates plansDrafts.bySlug for this
+   *  harness on success so ProposalsPanel sees the new card immediately. */
+  harnessSlug?: string;
   onAccepted?: (planSlug: string) => void;
 }) {
   const [stage, setStage] = useState<'idle' | 'applying' | 'applied' | 'error'>('idle');
@@ -117,7 +121,10 @@ export function PromotePlanBlock({
       // (plan-block-handler.ts) parses, validates, and applies the
       // plans:new → set-now → add-item × N → add-decision × N
       // sequence atomically under the plan-lock.
-      const res = await applyPlanBlock({ blockContent: block.content });
+      const res = await applyPlanBlock({
+        blockContent: block.content,
+        ...(harnessSlug && { harnessSlug }),
+      });
       if (!('ok' in res) || !res.ok) {
         const errMsg = 'error' in res ? String((res as Record<string, unknown>).error) : 'apply-plan-block failed';
         const detail = 'detail' in res ? String((res as Record<string, unknown>).detail) : '';

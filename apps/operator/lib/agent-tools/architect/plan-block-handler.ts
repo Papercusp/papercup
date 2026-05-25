@@ -268,6 +268,12 @@ export default defineTool({
       .describe(
         'Raw content of the ```promote:plan block (between the opening and closing fence lines, not including them).',
       ),
+    harnessSlug: z
+      .string()
+      .optional()
+      .describe(
+        'Harness this plan should belong to. Used by the admin HTTP route to invalidate that harness\'s plansDrafts.bySlug subscription so the ProposalsPanel sees the new draft immediately. When omitted, no sync invalidation is fired (callers should poll/refresh).',
+      ),
   }),
   async handler(args) {
     const parsed = parsePlanBlock(args.blockContent);

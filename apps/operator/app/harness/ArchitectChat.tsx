@@ -19,7 +19,7 @@ export default function ArchitectChat({
 
   const renderActionBlock = (block: ActionBlock) => {
     if (block.tag === 'promote:plan') {
-      return <PromotePlanBlock block={block} />;
+      return <PromotePlanBlock block={block} harnessSlug={slug} />;
     }
     if (block.tag.startsWith('proposal:') || block.tag.startsWith('patch:') || block.tag.startsWith('note:')) {
       return (

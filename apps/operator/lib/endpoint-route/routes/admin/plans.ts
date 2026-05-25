@@ -221,6 +221,22 @@ async function dispatchWrite(req: Request, ctx: RouteContext): Promise<Response>
           void notifySyncInvalidate('plansDrafts.bySlug', { harnessSlug }).catch(() => {});
         }
       }
+      if (verb === 'apply-plan-block') {
+        // R2 audit: architect's promote:plan flow creates a new draft
+        // plan via this verb. Pass through harnessSlug (different key
+        // shape from harness_slug because plan-block-handler accepts
+        // camelCase) to invalidate ProposalsPanel's subscription so the
+        // new card appears immediately instead of waiting for refresh.
+        const harnessSlug =
+          typeof body.harnessSlug === 'string'
+            ? body.harnessSlug
+            : typeof body.harness_slug === 'string'
+              ? body.harness_slug
+              : undefined;
+        if (harnessSlug) {
+          void notifySyncInvalidate('plansDrafts.bySlug', { harnessSlug }).catch(() => {});
+        }
+      }
       if (verb === 'launch' || verb === 'resume') {
         void notifySyncInvalidate('plans.runs', { slug }).catch(() => {});
       }
