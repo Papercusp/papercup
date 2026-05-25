@@ -13,6 +13,7 @@ import {
   scheduleRoutePendingClear,
   subscribeRoutePending,
 } from './routePending';
+import { shouldStartRouteProgressForClick } from './route-link-progress';
 
 export type RouteLinkProps = React.ComponentProps<typeof TransitionLink>;
 
@@ -28,27 +29,24 @@ export type RouteLinkProps = React.ComponentProps<typeof TransitionLink>;
 //     letting it disappear before the new route has mounted.
 //   See /docs/performance #A16 for the broader pattern.
 function shouldStartRouteProgress(event: MouseEvent<HTMLAnchorElement>): boolean {
-  if (event.defaultPrevented) return false;
-  if (event.button !== 0) return false;
-  if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return false;
-
   const anchor = event.currentTarget;
-  if (anchor.hasAttribute('download')) return false;
-  if (anchor.target === '_blank') return false;
-  if (anchor.getAttribute('data-disable-progress') === 'true') return false;
-
   const target = event.target;
-  if (
-    target instanceof Element
-    && (target.closest('[data-prevent-progress="true"]') || target.closest('[data-disable-progress="true"]'))
-  ) {
-    return false;
-  }
-
-  const targetUrl = new URL(anchor.href);
-  const currentUrl = new URL(window.location.href);
-  if (targetUrl.origin !== currentUrl.origin) return false;
-  return targetUrl.href !== currentUrl.href;
+  return shouldStartRouteProgressForClick({
+    defaultPrevented: event.defaultPrevented,
+    button: event.button,
+    metaKey: event.metaKey,
+    ctrlKey: event.ctrlKey,
+    shiftKey: event.shiftKey,
+    altKey: event.altKey,
+    download: anchor.hasAttribute('download'),
+    targetBlank: anchor.target === '_blank',
+    disableProgress: anchor.getAttribute('data-disable-progress') === 'true',
+    targetBlocksProgress:
+      target instanceof Element
+      && Boolean(target.closest('[data-prevent-progress="true"]') || target.closest('[data-disable-progress="true"]')),
+    currentHref: window.location.href,
+    targetHref: anchor.href,
+  });
 }
 
 export default function RouteLink({ className, onClickCapture, ...props }: RouteLinkProps) {
