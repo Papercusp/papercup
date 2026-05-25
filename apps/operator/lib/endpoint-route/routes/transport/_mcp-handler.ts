@@ -524,6 +524,49 @@ export const MCP_SERVER_CAPABILITIES = {
   },
 } as const;
 
+/**
+ * Static MCP `initialize.instructions` field — surfaced to LLM clients
+ * (Claude Code, OMP) at session start as additional system-prompt
+ * context.
+ *
+ * Plan: papercusp-su-memory-2026-05-25 (Phase 1, P-003).
+ *
+ * Nudges agents toward the three-layer memory pattern. Per-session
+ * dynamic injection (mem0 fan-out + coord backlog + insights index)
+ * is deferred — the SDK Server doesn't expose a clean hook for
+ * per-session instructions without overwriting the protocol-version
+ * negotiation in _oninitialize. Static text lands the user-visible
+ * behavior now; the dynamic enrichment ships later as a follow-up.
+ *
+ * Disabled via PAPERCUSP_SU_MEMORY_INJECTION=off when needed.
+ */
+const PAPERCUSP_MCP_INSTRUCTIONS = `At the start of any session-with-context (a user task you have not
+seen this run), establish your three-layer memory state:
+
+  1. **mem0 (what you know)** — call \`memory:search\` with the user's
+     intent as the query. Pass \`harness_slug\` for project-specific
+     facts. Each result carries \`id\` — remember it; if the user later
+     contradicts something, call \`memory:forget\` on that id.
+
+  2. **coord (what's happening)** — call \`coord:inbox\` for messages
+     addressed to you and \`coord:plan-events\` for recent plan changes
+     (use \`since_ts\` to get only deltas). Then call
+     \`coord:declare-intent\` so peers see what you're working on.
+
+  3. **insights (how things work)** — when you hit a confusing failure,
+     \`docs:search\` the \`agent-insights/\` section before grepping
+     code — many "weird bugs" already have a written runbook.
+
+Memory writes belong in the right layer: stable facts → mem0,
+in-flight state → coord, long-form runbooks → a new MDX in
+\`apps/operator-docs/src/content/docs/agent-insights/\`. See the plan
+\`papercusp-su-memory-2026-05-25\` for the full design.`;
+
+function mcpInstructionsForServer(): string | undefined {
+  if (process.env.PAPERCUSP_SU_MEMORY_INJECTION === 'off') return undefined;
+  return PAPERCUSP_MCP_INSTRUCTIONS;
+}
+
 const handler = createMcpHandler(
   (server) => {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -781,7 +824,10 @@ const handler = createMcpHandler(
 
     void getResourceCatalog;
   },
-  { capabilities: MCP_SERVER_CAPABILITIES },
+  {
+    capabilities: MCP_SERVER_CAPABILITIES,
+    instructions: mcpInstructionsForServer(),
+  },
   {
     basePath: '/api',
     maxDuration: 60,
