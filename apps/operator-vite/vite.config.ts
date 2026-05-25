@@ -2,6 +2,7 @@ import { defineConfig, type Plugin } from 'vite';
 import react from '@vitejs/plugin-react';
 import { tanstackRouter } from '@tanstack/router-plugin/vite';
 import { resolve } from 'node:path';
+import { isDesktopHmrEnabled, NO_VITE_CLIENT_BODY, shouldServeNoopViteClient } from './dev-mode';
 
 // Operator SPA — Vite dev server. Takes over :3055 (was `next dev`).
 // The API + internal docs are served by the @hono/node-server host on
@@ -11,20 +12,20 @@ import { resolve } from 'node:path';
 // apps/operator/docs/plans/operator-vite-migration-2026-05-20.md.
 const operatorRoot = resolve(import.meta.dirname, '../operator');
 
-const enableHmr = process.env.PAPERCUSP_ENABLE_HMR === '1' || process.env.NEXT_PUBLIC_ENABLE_HMR === '1';
+const enableHmr = isDesktopHmrEnabled(process.env);
 
 const noViteClientPlugin: Plugin = {
   name: 'papercusp-no-vite-client',
   configureServer(server) {
     if (enableHmr) return;
     server.middlewares.use((req, res, next) => {
-      if (!req.url?.startsWith('/@vite/client')) {
+      if (!shouldServeNoopViteClient(req.url, enableHmr)) {
         next();
         return;
       }
       res.statusCode = 200;
       res.setHeader('Content-Type', 'application/javascript');
-      res.end('/* Papercusp desktop dev: Vite client disabled; refresh manually. */');
+      res.end(NO_VITE_CLIENT_BODY);
     });
   },
 };
