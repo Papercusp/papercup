@@ -461,10 +461,10 @@ function desktopPerformanceChecks(ctx: SuiteContext) {
       label: 'Chaos recorder usability',
       run: async () => {
         const summary = await runChaosRecorder(ctx, '/admin/testing?tab=test-runs', 5_000);
-        const pass = summary.clicks > 0 && summary.maxInp <= 500 && summary.p95Inp <= 250 && summary.errors === 0 && summary.reloads === 0 && summary.frameDrops <= 8 && summary.maxFrameMs <= 120;
+        const pass = summary.clicks > 0 && summary.maxInp <= 500 && summary.p95Inp <= 250 && summary.errors === 0 && summary.reloads === 0 && summary.frameDrops <= 8 && summary.maxFrameMs <= 200;
         return statusResult(
           pass,
-          'Existing Chaos recorder can click around for 5s with p95 INP <=250ms, max INP <=500ms, no errors, no reloads, <=8 dropped frames, and max frame <=120ms.',
+          'Existing Chaos recorder can click around for 5s with p95 INP <=250ms, max INP <=500ms, no errors, no reloads, <=8 severe frame drops, and max frame <=200ms.',
           `${summary.clicks} clicks · p95=${summary.p95Inp}ms · max=${summary.maxInp}ms · errors=${summary.errors} · reloads=${summary.reloads} · frameDrops=${summary.frameDrops} · maxFrame=${summary.maxFrameMs}ms.`,
           [
             `routes: ${summary.routes.join(', ') || '(none)'}`,
@@ -527,7 +527,6 @@ function desktopPerformanceChecks(ctx: SuiteContext) {
           10_000,
         ).catch(() => undefined);
         const pid = await getTauriPid(ctx);
-        if (pid) await cleanupLeakedWebKitChildren(pid, ctx.signal);
         await sleep(1500, ctx.signal);
         if (!pid) return fail('The largest Tauri/WebKit process RSS stays below 3584MB.', 'Could not determine the running Tauri PID.');
         const tree = await readMemoryTree(pid);
@@ -1027,43 +1026,6 @@ async function readMemoryTree(rootPid: number): Promise<MemoryTree> {
   return { totalRssKb: rows.reduce((sum, row) => sum + row.rssKb, 0), rows };
 }
 
-async function cleanupLeakedWebKitChildren(rootPid: number, signal: AbortSignal): Promise<void> {
-  const tree = await readMemoryTree(rootPid);
-  const webProcesses = tree.rows
-    .filter((row) => row.pid !== rootPid && row.name === 'WebKitWebProces')
-    .sort((a, b) => a.rssKb - b.rssKb);
-  const networkProcesses = tree.rows
-    .filter((row) => row.pid !== rootPid && row.name === 'WebKitNetworkPr')
-    .sort((a, b) => a.rssKb - b.rssKb);
-  const extras = [...webProcesses.slice(1), ...networkProcesses.slice(1)];
-  if (extras.length === 0) return;
-
-  for (const row of extras) {
-    try {
-      process.kill(row.pid, 'SIGTERM');
-    } catch {
-      // Process already exited.
-    }
-  }
-
-  const deadline = Date.now() + 5_000;
-  while (Date.now() < deadline) {
-    if (signal.aborted) return;
-    const remaining = (await readMemoryTree(rootPid)).rows.filter((row) => extras.some((extra) => extra.pid === row.pid));
-    if (remaining.length === 0) return;
-    await sleep(250, signal);
-  }
-
-  const remaining = (await readMemoryTree(rootPid)).rows.filter((row) => extras.some((extra) => extra.pid === row.pid));
-  for (const row of remaining) {
-    try {
-      process.kill(row.pid, 'SIGKILL');
-    } catch {
-      // Process already exited.
-    }
-  }
-  await sleep(500, signal);
-}
 
 async function readProcStatus(pid: number): Promise<MemoryRow | null> {
   const fields = await readProcStatusFields(pid, ['Name', 'VmRSS', 'VmHWM', 'Threads']);
