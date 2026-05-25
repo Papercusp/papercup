@@ -67,7 +67,19 @@ async function main() {
     console.error(`✗ substrate-health fetch failed: ${health.err}`);
     process.exit(2);
   }
-  const { harnesses = [] } = health.ok ?? {};
+  const { harnesses = [], summary } = health.ok ?? {};
+  if (summary && typeof summary === 'object') {
+    const segs = [];
+    if (summary.healthy) segs.push(`${summary.healthy}✓`);
+    if (summary.booting) segs.push(`${summary.booting}⏳`);
+    if (summary.degraded) segs.push(`${summary.degraded}!`);
+    if (summary.unhealthy) segs.push(`${summary.unhealthy}✗`);
+    if (summary.disabled) segs.push(`${summary.disabled}·`);
+    const seg = segs.length > 0 ? segs.join(' ') : '—';
+    console.log(
+      `Workspace summary: ${summary.worstVerdict ?? '?'}   ${seg}`,
+    );
+  }
   console.log('');
   console.log(`  ${pad('workspace', 24)} ${pad('harness', 24)} verdict`);
   let anyBad = false;
