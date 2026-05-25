@@ -16,6 +16,7 @@ import { getOrgPg } from '@restart/db-org';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
 import { InsightsTab } from '../../insights/InsightsTab';
 import { loadHarnessInsights } from '../../../../lib/harness-insights/load-all';
+import { markInsightsSeen } from '../../../../lib/harness-insights/first-visit';
 import { getSessionUserOrDefault } from '@/lib/auth';
 
 export const dynamic = 'force-dynamic';
@@ -61,6 +62,17 @@ export default async function InsightsPage({ params }: PageProps) {
     workspace_id: workspaceId,
     harness_slug: slug,
     viewer_github_user_id: viewerId,
+    runQuery,
+  });
+  // P-074: mark the first-visit gate as seen. Best-effort; never
+  // blocks the render. Uses the same viewer id resolution as the
+  // /api/harness/:slug/insights-first-visit endpoint.
+  const userIdForGate =
+    viewerId > 0 ? String(viewerId) : 'anonymous';
+  void markInsightsSeen({
+    workspace_id: workspaceId,
+    harness_slug: slug,
+    user_id: userIdForGate,
     runQuery,
   });
   return <InsightsTab {...insights} />;

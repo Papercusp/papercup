@@ -58,6 +58,7 @@ import harnessCupboardPublish from './harness/cupboard-publish';
 import harnessContributors from './harness/contributors';
 import harnessActivity from './harness/activity';
 import harnessInsights from './harness/insights';
+import harnessInsightsFirstVisit from './harness/insights-first-visit';
 import usersByGithubId from './users/by-github-id';
 import harnessPrs from './harness/prs';
 import harnessSync from './harness/sync';
@@ -450,6 +451,7 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(harnessContributors as AnyRoute[]),
   ...flatten(harnessActivity as AnyRoute[]),
   ...flatten(harnessInsights as AnyRoute[]),
+  ...flatten(harnessInsightsFirstVisit as AnyRoute[]),
   ...flatten(usersByGithubId as AnyRoute[]),
   ...flatten(harnessPrs as AnyRoute[]),
   ...flatten(harnessSync as AnyRoute[]),
