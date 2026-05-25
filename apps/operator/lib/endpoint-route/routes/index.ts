@@ -272,6 +272,7 @@ import adminLlmTestsRunById from './admin/llm-tests-run-by-id';
 import adminLlmTestsScenarios from './admin/llm-tests-scenarios';
 import adminPlans from './admin/plans';
 import adminLocksQueue from './admin/locks-queue';
+import adminDogfoodSubstrateStatus from './admin/dogfood-substrate-status';
 import advSessions from './adv/sessions';
 import adminPlanGit from './admin/plan-git';
 import adminPruneExecutedActions from './admin/prune-executed-actions';
@@ -617,6 +618,7 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(adminLlmTestsScenarios as AnyRoute),
   ...flatten(adminPlans as AnyRoute),
   ...flatten(adminLocksQueue as AnyRoute),
+  ...flatten(adminDogfoodSubstrateStatus as AnyRoute[]),
   ...flatten(advSessions as unknown as AnyRoute[]),
   ...flatten(adminPlanGit as AnyRoute),
   ...flatten(adminPruneExecutedActions as AnyRoute),

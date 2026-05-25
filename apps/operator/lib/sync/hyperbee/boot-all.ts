@@ -234,6 +234,26 @@ export async function closeAllBootedHarnesses(): Promise<number> {
   return closed;
 }
 
+/**
+ * Snapshot of every booted handle. Read-only — returns a fresh array
+ * each call. Used by the admin status endpoint + diagnostic tools.
+ */
+export interface BootedHandleSummary {
+  workspaceId: string;
+  harnessSlug: string;
+}
+
+export function listBootedHandles(): BootedHandleSummary[] {
+  const out: BootedHandleSummary[] = [];
+  for (const handle of handles.values()) {
+    out.push({
+      workspaceId: handle.workspaceId,
+      harnessSlug: handle.harnessSlug,
+    });
+  }
+  return out;
+}
+
 /** For tests. Clears the handle map WITHOUT closing — useful when the
  * handles were faked. Never call from production code. */
 export function _resetHandleMapForTests(): void {

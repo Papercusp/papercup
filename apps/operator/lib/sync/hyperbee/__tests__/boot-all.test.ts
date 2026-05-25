@@ -14,6 +14,7 @@ import {
   closeAllBootedHarnesses,
   closeBootedHarness,
   getBootedHarness,
+  listBootedHandles,
 } from '../boot-all';
 import type { BootedHarnessHandle } from '../boot';
 
@@ -113,5 +114,27 @@ describe('boot-all — substrate orchestrator', () => {
       workspaceIds: ['ws-with-no-harnesses-dir-12345'],
     });
     expect(result.attempted).toBe(0);
+  });
+
+  it('listBootedHandles returns empty when no handles', () => {
+    expect(listBootedHandles()).toEqual([]);
+  });
+
+  it('listBootedHandles enumerates every cached handle', () => {
+    _setHandleForTests('ws-1', 'a', fakeHandle('ws-1', 'a'));
+    _setHandleForTests('ws-1', 'b', fakeHandle('ws-1', 'b'));
+    _setHandleForTests('ws-2', 'a', fakeHandle('ws-2', 'a'));
+    const list = listBootedHandles();
+    expect(list).toHaveLength(3);
+    const keys = list.map((l) => `${l.workspaceId}::${l.harnessSlug}`).sort();
+    expect(keys).toEqual(['ws-1::a', 'ws-1::b', 'ws-2::a']);
+  });
+
+  it('listBootedHandles returns a fresh array each call', () => {
+    _setHandleForTests('ws-1', 'a', fakeHandle('ws-1', 'a'));
+    const a = listBootedHandles();
+    const b = listBootedHandles();
+    expect(a).not.toBe(b);
+    expect(a).toEqual(b);
   });
 });
