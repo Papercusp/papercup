@@ -19333,3 +19333,431 @@ body > .h-top-collapse-btn.h-top-collapse-inline .h-top-collapse-state {
   box-shadow: none !important;
   filter: none !important;
 }
+
+/* Broader panel pass: flatten remaining button-like controls and compact
+   information rows while preserving their status/accent colors. */
+.h-root .h-feature-filter:nth-child(1) { --h-feature-filter-tone: var(--accent-cool); }
+.h-root .h-feature-filter:nth-child(2) { --h-feature-filter-tone: var(--good); }
+.h-root .h-feature-filter:nth-child(3) { --h-feature-filter-tone: var(--bad); }
+.h-root .h-feature-filter:nth-child(4) { --h-feature-filter-tone: var(--warn); }
+.h-root .h-feature-filter:nth-child(5) { --h-feature-filter-tone: color-mix(in oklab, var(--fg-dim), white 22%); }
+.h-root .h-feature-filter:nth-child(6) { --h-feature-filter-tone: var(--good); }
+.h-root .h-feature-filter:nth-child(7) { --h-feature-filter-tone: #c084fc; }
+
+.h-root .h-feature-filter {
+  --h-flat-control-tone: var(--h-feature-filter-tone, var(--accent-cool));
+  border-color: color-mix(in oklab, var(--h-flat-control-tone), transparent 58%) !important;
+  background: color-mix(in oklab, var(--h-flat-control-tone), var(--bg-2) 88%) !important;
+  color: color-mix(in oklab, var(--h-flat-control-tone), white 42%) !important;
+  box-shadow: none !important;
+  filter: none !important;
+  text-shadow: none !important;
+}
+
+.h-root .h-feature-filter.active,
+.h-root .h-feature-filter[aria-pressed="true"],
+.h-root .h-feature-filter:hover,
+.h-root .h-feature-filter:focus-visible {
+  border-color: color-mix(in oklab, var(--h-flat-control-tone), transparent 34%) !important;
+  background: color-mix(in oklab, var(--h-flat-control-tone), var(--bg-3) 80%) !important;
+  color: color-mix(in oklab, var(--h-flat-control-tone), white 58%) !important;
+  box-shadow: none !important;
+  filter: none !important;
+}
+
+.h-root .h-feature-filter strong,
+.h-root .h-feature-filter b {
+  border-color: color-mix(in oklab, var(--h-flat-control-tone), transparent 48%) !important;
+  background: color-mix(in oklab, var(--h-flat-control-tone), transparent 84%) !important;
+  color: color-mix(in oklab, var(--h-flat-control-tone), white 64%) !important;
+  box-shadow: none !important;
+}
+
+.h-root .h-main-tabs .h-tab.h-tab--brainstorm { --h-main-tab-accent: #38bdf8; --h-main-tab-accent-rgb: 56, 189, 248; }
+.h-root .h-main-tabs .h-tab.h-tab--proposals { --h-main-tab-accent: #f59e0b; --h-main-tab-accent-rgb: 245, 158, 11; }
+.h-root .h-main-tabs .h-tab.h-tab--experts { --h-main-tab-accent: #f472b6; --h-main-tab-accent-rgb: 244, 114, 182; }
+.h-root .h-main-tabs .h-tab.h-tab--dashboard { --h-main-tab-accent: #3b82f6; --h-main-tab-accent-rgb: 59, 130, 246; }
+.h-root .h-main-tabs .h-tab.h-tab--summary { --h-main-tab-accent: #a78bfa; --h-main-tab-accent-rgb: 167, 139, 250; }
+.h-root .h-main-tabs .h-tab.h-tab--pi { --h-main-tab-accent: #22c55e; --h-main-tab-accent-rgb: 34, 197, 94; }
+.h-root .h-main-tabs .h-tab.h-tab--docs { --h-main-tab-accent: #60a5fa; --h-main-tab-accent-rgb: 96, 165, 250; }
+.h-root .h-main-tabs .h-tab.h-tab--vscode { --h-main-tab-accent: #818cf8; --h-main-tab-accent-rgb: 129, 140, 248; }
+.h-root .h-main-tabs .h-tab.h-tab--prs { --h-main-tab-accent: #fb7185; --h-main-tab-accent-rgb: 251, 113, 133; }
+.h-root .h-main-tabs .h-tab.h-tab--insights { --h-main-tab-accent: #14b8a6; --h-main-tab-accent-rgb: 20, 184, 166; }
+.h-root .h-main-tabs .h-tab.h-tab--config { --h-main-tab-accent: #e879f9; --h-main-tab-accent-rgb: 232, 121, 249; }
+.h-root .h-main-tabs .h-tab.h-tab--settings { --h-main-tab-accent: #f97316; --h-main-tab-accent-rgb: 249, 115, 22; }
+.h-root .h-main-tabs .h-add-plugin-tab { --h-main-tab-accent: #94a3b8; --h-main-tab-accent-rgb: 148, 163, 184; }
+
+.h-root .h-main-tabs .h-tab.h-tab--dashboard[aria-selected="true"],
+.h-root .h-main-tabs .h-tab.h-tab--dashboard.on {
+  background: rgba(59, 130, 246, 0.22) !important;
+  border-color: rgba(59, 130, 246, 0.68) !important;
+}
+
+.h-root :is(
+  .h-phase-actions-btn,
+  .h-guide-action,
+  .h-save-template-btn,
+  .h-save-snapshot-btn,
+  .h-proposal-btn,
+  .h-git-worktree-filter,
+  .h-git-limit,
+  .h-git-clear,
+  .h-git-filter,
+  .h-git-ref-chip,
+  .h-git-author-rail button,
+  .h-git-row-bookmark,
+  .h-git-actions button,
+  .h-btn-icon
+) {
+  --h-flat-panel-tone: var(--git-button-accent, var(--h-topbar-control-tone, var(--h-flat-control-tone, var(--accent-cool))));
+  border-color: color-mix(in oklab, var(--h-flat-panel-tone), transparent 56%) !important;
+  background: color-mix(in oklab, var(--h-flat-panel-tone), var(--bg-2) 90%) !important;
+  color: color-mix(in oklab, var(--h-flat-panel-tone), white 46%) !important;
+  box-shadow: none !important;
+  filter: none !important;
+  text-shadow: none !important;
+}
+
+.h-root :is(
+  .h-phase-actions-btn,
+  .h-guide-action,
+  .h-save-template-btn,
+  .h-save-snapshot-btn,
+  .h-proposal-btn,
+  .h-git-worktree-filter,
+  .h-git-limit,
+  .h-git-clear,
+  .h-git-filter,
+  .h-git-ref-chip,
+  .h-git-author-rail button,
+  .h-git-row-bookmark,
+  .h-git-actions button,
+  .h-btn-icon
+):hover,
+.h-root :is(
+  .h-phase-actions-btn,
+  .h-guide-action,
+  .h-save-template-btn,
+  .h-save-snapshot-btn,
+  .h-proposal-btn,
+  .h-git-worktree-filter,
+  .h-git-limit,
+  .h-git-clear,
+  .h-git-filter,
+  .h-git-ref-chip,
+  .h-git-author-rail button,
+  .h-git-row-bookmark,
+  .h-git-actions button,
+  .h-btn-icon
+):focus-visible {
+  border-color: color-mix(in oklab, var(--h-flat-panel-tone), transparent 34%) !important;
+  background: color-mix(in oklab, var(--h-flat-panel-tone), var(--bg-3) 82%) !important;
+  color: color-mix(in oklab, var(--h-flat-panel-tone), white 62%) !important;
+  box-shadow: none !important;
+  filter: none !important;
+  outline-color: color-mix(in oklab, var(--h-flat-panel-tone), transparent 40%) !important;
+}
+
+.h-root .h-git-filter.on,
+.h-root .h-git-filter[aria-selected="true"],
+.h-root .h-git-ref-chip.head {
+  border-color: color-mix(in oklab, var(--h-flat-panel-tone), transparent 34%) !important;
+  background: color-mix(in oklab, var(--h-flat-panel-tone), var(--bg-3) 80%) !important;
+  color: color-mix(in oklab, var(--h-flat-panel-tone), white 62%) !important;
+}
+
+.h-root .h-git-ref-chip.head {
+  --h-flat-panel-tone: var(--good);
+}
+
+.h-root .h-git-ref-chip.tag {
+  --h-flat-panel-tone: var(--info);
+}
+
+.h-root :is(
+  .h-feature-row,
+  .h-issue,
+  .h-inbox-row,
+  .h-agent-row,
+  .h-git-row,
+  .h-proposal-item,
+  .h-proposals-card,
+  .h-proposals-goal-preview,
+  .h-project-topline-statuses .h-overview-pulse,
+  .h-project-topline-statuses .h-overview-lanes,
+  .h-project-topline-statuses .h-project-lanes
+) {
+  background: color-mix(in oklab, var(--accent-cool), var(--bg-2) 96%) !important;
+  box-shadow: none !important;
+  filter: none !important;
+  text-shadow: none !important;
+}
+
+.h-root :is(.h-feature-row, .h-issue, .h-inbox-row, .h-agent-row, .h-git-row, .h-proposal-item):hover,
+.h-root :is(.h-feature-row, .h-issue, .h-inbox-row, .h-agent-row, .h-git-row, .h-proposal-item):focus-visible {
+  background: color-mix(in oklab, var(--accent-cool), var(--bg-3) 90%) !important;
+  box-shadow: none !important;
+  filter: none !important;
+}
+
+.h-root :is(.h-status-token, .h-pill, .h-feature-status-pill, .h-inbox-kind-chip, .h-log-tag, .h-agent-badge) {
+  box-shadow: none !important;
+  filter: none !important;
+  text-shadow: none !important;
+}
+
+.h-root :is(.h-feature-row-action, .h-issue-row-action, .h-inbox-action).primary,
+.h-root :is(.h-feature-row-action, .h-issue-row-action, .h-inbox-action).active {
+  border-color: color-mix(in oklab, var(--accent), transparent 42%) !important;
+  background: color-mix(in oklab, var(--accent), transparent 84%) !important;
+  color: color-mix(in oklab, var(--accent), white 32%) !important;
+  box-shadow: none !important;
+}
+
+.h-root :is(.h-feature-row-action, .h-issue-row-action, .h-inbox-action).success {
+  border-color: color-mix(in oklab, var(--good), transparent 48%) !important;
+  background: color-mix(in oklab, var(--good), transparent 88%) !important;
+  color: color-mix(in oklab, var(--good), white 16%) !important;
+  box-shadow: none !important;
+}
+
+.h-root :is(.h-feature-row-action, .h-issue-row-action, .h-inbox-action).danger {
+  border-color: color-mix(in oklab, var(--bad), transparent 48%) !important;
+  background: color-mix(in oklab, var(--bad), transparent 88%) !important;
+  color: color-mix(in oklab, var(--bad), white 20%) !important;
+  box-shadow: none !important;
+}
+
+/* Specificity guards for panel-local control rules that load with stronger
+   selectors than the generic flat pass above. */
+.h-root .h-project-phases .h-phase-actions-btn,
+.h-root .h-project-phases .h-phase-open {
+  --h-flat-panel-tone: var(--h-topbar-control-tone, var(--h-flat-blue));
+  border-color: color-mix(in oklab, var(--h-flat-panel-tone), transparent 38%) !important;
+  background: color-mix(in oklab, var(--h-flat-panel-tone), var(--bg-2) 86%) !important;
+  color: color-mix(in oklab, var(--h-flat-panel-tone), white 52%) !important;
+  box-shadow: none !important;
+  filter: none !important;
+  text-shadow: none !important;
+}
+
+.h-root .h-project-phases .h-phase-actions-btn:hover,
+.h-root .h-project-phases .h-phase-actions-btn:focus-visible,
+.h-root .h-project-phases .h-phase-open:hover,
+.h-root .h-project-phases .h-phase-open:focus-visible {
+  border-color: color-mix(in oklab, var(--h-flat-panel-tone), transparent 22%) !important;
+  background: color-mix(in oklab, var(--h-flat-panel-tone), var(--bg-3) 78%) !important;
+  box-shadow: none !important;
+  filter: none !important;
+}
+
+.h-root .h-git-panel :is(
+  button,
+  .h-btn-icon,
+  .h-git-worktree-filter,
+  .h-git-limit,
+  .h-git-clear,
+  .h-git-filter,
+  .h-git-ref-chip,
+  .h-git-author-rail button,
+  .h-git-row-bookmark,
+  .h-git-actions button
+) {
+  --h-flat-panel-tone: var(--git-button-accent, #d7f3ff);
+  border-color: color-mix(in oklab, var(--h-flat-panel-tone), transparent 56%) !important;
+  background: color-mix(in oklab, var(--h-flat-panel-tone), var(--bg-2) 90%) !important;
+  color: color-mix(in oklab, var(--h-flat-panel-tone), white 46%) !important;
+  box-shadow: none !important;
+  filter: none !important;
+  text-shadow: none !important;
+}
+
+.h-root .h-git-panel :is(
+  button,
+  .h-btn-icon,
+  .h-git-worktree-filter,
+  .h-git-limit,
+  .h-git-clear,
+  .h-git-filter,
+  .h-git-ref-chip,
+  .h-git-author-rail button,
+  .h-git-row-bookmark,
+  .h-git-actions button
+):hover,
+.h-root .h-git-panel :is(
+  button,
+  .h-btn-icon,
+  .h-git-worktree-filter,
+  .h-git-limit,
+  .h-git-clear,
+  .h-git-filter,
+  .h-git-ref-chip,
+  .h-git-author-rail button,
+  .h-git-row-bookmark,
+  .h-git-actions button
+):focus-visible,
+.h-root .h-git-panel .h-git-filter.on,
+.h-root .h-git-panel .h-git-ref-chip.head {
+  border-color: color-mix(in oklab, var(--h-flat-panel-tone), transparent 34%) !important;
+  background: color-mix(in oklab, var(--h-flat-panel-tone), var(--bg-3) 80%) !important;
+  color: color-mix(in oklab, var(--h-flat-panel-tone), white 62%) !important;
+  box-shadow: none !important;
+  filter: none !important;
+}
+
+.h-root .h-git-panel .h-git-ref-chip.head {
+  --h-flat-panel-tone: var(--good);
+}
+
+.h-root .h-git-panel .h-git-ref-chip.tag {
+  --h-flat-panel-tone: var(--info);
+}
+
+.h-root :is(.h-panel, .h-compact-panel) .h-tabs:not(.h-main-tabs) .h-tab,
+.h-root .h-dashboard-panel-anchor .h-tab {
+  --h-panel-tab-tone: var(--accent-cool);
+  border-color: color-mix(in oklab, var(--h-panel-tab-tone), transparent 58%) !important;
+  background: color-mix(in oklab, var(--h-panel-tab-tone), var(--bg-2) 90%) !important;
+  color: color-mix(in oklab, var(--h-panel-tab-tone), white 46%) !important;
+  box-shadow: none !important;
+  filter: none !important;
+  text-shadow: none !important;
+}
+
+.h-root :is(.h-panel, .h-compact-panel) .h-tabs:not(.h-main-tabs) .h-tab:nth-child(2),
+.h-root .h-dashboard-panel-anchor .h-tab:nth-child(2) {
+  --h-panel-tab-tone: var(--good);
+}
+
+.h-root :is(.h-panel, .h-compact-panel) .h-tabs:not(.h-main-tabs) .h-tab:nth-child(3),
+.h-root .h-dashboard-panel-anchor .h-tab:nth-child(3) {
+  --h-panel-tab-tone: var(--warn);
+}
+
+.h-root :is(.h-panel, .h-compact-panel) .h-tabs:not(.h-main-tabs) .h-tab.on,
+.h-root :is(.h-panel, .h-compact-panel) .h-tabs:not(.h-main-tabs) .h-tab[aria-selected="true"],
+.h-root .h-dashboard-panel-anchor .h-tab.on,
+.h-root .h-dashboard-panel-anchor .h-tab[aria-selected="true"],
+.h-root :is(.h-panel, .h-compact-panel) .h-tabs:not(.h-main-tabs) .h-tab:hover,
+.h-root .h-dashboard-panel-anchor .h-tab:hover {
+  border-color: color-mix(in oklab, var(--h-panel-tab-tone), transparent 34%) !important;
+  background: color-mix(in oklab, var(--h-panel-tab-tone), var(--bg-3) 80%) !important;
+  color: color-mix(in oklab, var(--h-panel-tab-tone), white 62%) !important;
+  box-shadow: none !important;
+  filter: none !important;
+}
+
+.h-root .h-log-tabs .h-log-tab:nth-child(1) { --h-log-flat-tone: var(--accent-cool); }
+.h-root .h-log-tabs .h-log-tab:nth-child(2) { --h-log-flat-tone: #a7f3d0; }
+.h-root .h-log-tabs .h-log-tab:nth-child(3) { --h-log-flat-tone: #c4b5fd; }
+.h-root .h-log-tabs .h-log-tab:nth-child(4) { --h-log-flat-tone: var(--warn); }
+
+.h-root .h-log-tab {
+  --h-log-flat-tone: var(--accent-cool);
+  border-color: color-mix(in oklab, var(--h-log-flat-tone), transparent 58%) !important;
+  background: color-mix(in oklab, var(--h-log-flat-tone), var(--bg-2) 90%) !important;
+  color: color-mix(in oklab, var(--h-log-flat-tone), white 46%) !important;
+  box-shadow: none !important;
+  filter: none !important;
+  text-shadow: none !important;
+}
+
+.h-root .h-log-tab.active,
+.h-root .h-log-tab:hover,
+.h-root .h-log-tab:focus-visible {
+  border-color: color-mix(in oklab, var(--h-log-flat-tone), transparent 34%) !important;
+  background: color-mix(in oklab, var(--h-log-flat-tone), var(--bg-3) 80%) !important;
+  color: color-mix(in oklab, var(--h-log-flat-tone), white 62%) !important;
+  box-shadow: none !important;
+}
+
+.h-root :is(.h-log-toolbar-btn, .h-log-pause-toggle) {
+  border-color: color-mix(in oklab, var(--accent-cool), transparent 62%) !important;
+  background: color-mix(in oklab, var(--accent-cool), var(--bg-2) 92%) !important;
+  color: color-mix(in oklab, var(--accent-cool), white 48%) !important;
+  box-shadow: none !important;
+  filter: none !important;
+  text-shadow: none !important;
+}
+
+.h-root :is(.h-log-toolbar-btn, .h-log-pause-toggle):hover,
+.h-root :is(.h-log-toolbar-btn, .h-log-pause-toggle):focus-visible {
+  border-color: color-mix(in oklab, var(--accent-cool), transparent 42%) !important;
+  background: color-mix(in oklab, var(--accent-cool), var(--bg-3) 84%) !important;
+  box-shadow: none !important;
+}
+
+.h-root .h-dashboard-panel-anchor[data-dashboard-panel="issues"] .h-panel-actions > .h-tab,
+.h-root .h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-tab {
+  --h-panel-tab-tone: var(--issue-tab-accent, var(--log-tab-accent, var(--accent-cool)));
+  border-color: color-mix(in oklab, var(--h-panel-tab-tone), transparent 58%) !important;
+  background: color-mix(in oklab, var(--h-panel-tab-tone), var(--bg-2) 90%) !important;
+  color: color-mix(in oklab, var(--h-panel-tab-tone), white 46%) !important;
+  box-shadow: none !important;
+  filter: none !important;
+  text-shadow: none !important;
+}
+
+.h-root .h-dashboard-panel-anchor[data-dashboard-panel="issues"] .h-panel-actions > .h-tab.on,
+.h-root .h-dashboard-panel-anchor[data-dashboard-panel="issues"] .h-panel-actions > .h-tab:hover,
+.h-root .h-dashboard-panel-anchor[data-dashboard-panel="issues"] .h-panel-actions > .h-tab:focus-visible,
+.h-root .h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-tab.active,
+.h-root .h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-tab:hover,
+.h-root .h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-tab:focus-visible {
+  border-color: color-mix(in oklab, var(--h-panel-tab-tone), transparent 34%) !important;
+  background: color-mix(in oklab, var(--h-panel-tab-tone), var(--bg-3) 80%) !important;
+  color: color-mix(in oklab, var(--h-panel-tab-tone), white 62%) !important;
+  box-shadow: none !important;
+  filter: none !important;
+}
+
+.h-root .h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-toolbar-btn,
+.h-root .h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-pause-toggle {
+  border-color: color-mix(in oklab, var(--accent-cool), transparent 62%) !important;
+  background: color-mix(in oklab, var(--accent-cool), var(--bg-2) 92%) !important;
+  color: color-mix(in oklab, var(--accent-cool), white 48%) !important;
+  box-shadow: none !important;
+  filter: none !important;
+}
+
+.h-root .h-chip.h-issues-filter {
+  --h-issues-filter-tone: var(--accent-cool);
+  border-color: color-mix(in oklab, var(--h-issues-filter-tone), transparent 58%) !important;
+  background: color-mix(in oklab, var(--h-issues-filter-tone), var(--bg-2) 90%) !important;
+  color: color-mix(in oklab, var(--h-issues-filter-tone), white 46%) !important;
+  box-shadow: none !important;
+  filter: none !important;
+  text-shadow: none !important;
+}
+
+.h-root .h-chip.h-issues-filter--all { --h-issues-filter-tone: #a7f3d0; }
+.h-root .h-chip.h-issues-filter--active { --h-issues-filter-tone: var(--accent-cool); }
+.h-root .h-chip.h-issues-filter--closed { --h-issues-filter-tone: #c4b5fd; }
+.h-root .h-chip.h-issues-filter--triage { --h-issues-filter-tone: var(--warn); }
+
+.h-root .h-chip.h-issues-filter.on,
+.h-root .h-chip.h-issues-filter[aria-pressed="true"],
+.h-root .h-chip.h-issues-filter:hover,
+.h-root .h-chip.h-issues-filter:focus-visible {
+  border-color: color-mix(in oklab, var(--h-issues-filter-tone), transparent 34%) !important;
+  background: color-mix(in oklab, var(--h-issues-filter-tone), var(--bg-3) 80%) !important;
+  color: color-mix(in oklab, var(--h-issues-filter-tone), white 62%) !important;
+  box-shadow: none !important;
+  filter: none !important;
+}
+
+.h-root .h-dashboard-panel-anchor[data-dashboard-panel="logs"] :is(.h-log-load-older, .h-log-scrubber-bar) {
+  border-color: color-mix(in oklab, var(--accent-cool), transparent 66%) !important;
+  background: color-mix(in oklab, var(--accent-cool), var(--bg-2) 94%) !important;
+  color: color-mix(in oklab, var(--accent-cool), white 48%) !important;
+  box-shadow: none !important;
+  filter: none !important;
+  text-shadow: none !important;
+}
+
+.h-root .h-dashboard-panel-anchor[data-dashboard-panel="logs"] :is(.h-log-load-older, .h-log-scrubber-bar):hover,
+.h-root .h-dashboard-panel-anchor[data-dashboard-panel="logs"] :is(.h-log-load-older, .h-log-scrubber-bar):focus-visible {
+  border-color: color-mix(in oklab, var(--accent-cool), transparent 44%) !important;
+  background: color-mix(in oklab, var(--accent-cool), var(--bg-3) 86%) !important;
+  box-shadow: none !important;
+}
