@@ -17,6 +17,8 @@ describe('client navigation', () => {
     expect(shouldSoftNavigate('/support', 'http://localhost:3070/harness?ws=default')).toBe(true);
     expect(shouldSoftNavigate('http://localhost:3070/settings/operator', 'http://localhost:3070/harness')).toBe(true);
     expect(shouldSoftNavigate('http://127.0.0.1:3070/settings/operator', 'http://127.0.0.1:3070/harness')).toBe(true);
+    expect(shouldSoftNavigate('/', 'http://localhost:3070/harness?ws=default')).toBe(true);
+    expect(shouldSoftNavigate('/harness/', 'http://localhost:3070/harness?ws=default')).toBe(true);
   });
 
   it('does not soft-navigate cross-origin targets', () => {
@@ -46,6 +48,11 @@ describe('client navigation', () => {
     expect(resolveClientNavigation('settings/operator?tab=voice#mic', 'http://localhost:3070/harness')).toEqual({
       mode: 'soft',
       href: '/settings/operator?tab=voice#mic',
+      replace: false,
+    });
+    expect(resolveClientNavigation('/harness/', 'http://localhost:3070/harness?ws=default')).toEqual({
+      mode: 'soft',
+      href: '/harness/',
       replace: false,
     });
   });
