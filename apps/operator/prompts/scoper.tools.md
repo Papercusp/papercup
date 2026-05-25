@@ -46,6 +46,19 @@ After scoping, you may delegate validation:
 4. Cite the slug URLs in any artifact you save.
 
 
+### Emit a scope proposal as a plan draft (OUTPUT_MODE=plan)
+
+When run.sh passes `OUTPUT_MODE=plan` (set via `.harness/config.json → scoper.outputMode: "plan"`), write proposals through the `plans:*` MCP instead of a filesystem `.md` file.
+
+1. `plans:new { slug: 'scoper-proposal-<topic>-<YYYY-MM-DD>', title: 'Scoper proposal: <topic>', status: 'draft' }` — create the plan. Topic is ≤3 kebab-case words summarizing the gap.
+2. `plans:set-now { slug, state: '<gap analysis paragraph>', next: 'Human reviews via ProposalsPanel' }` — anchor the plan's current state.
+3. `plans:add-item { slug, phase: 'Proposed Features', text: '<title> — <user story>' }` × N — one item per proposal, ranked by user value.
+4. `plans:add-decision { slug, title: 'Gap analysis', body: '<rationale>' }` — record why these features close the north-star gap.
+
+The plan draft surfaces in the ProposalsPanel UI with `source: scoper`. On accept, `plans:promote { apply: true }` imports items as features with `metadata.covers` preventing duplication on the next `MODE=replan` run.
+
+Do NOT write `.harness/proposals/<ISO-timestamp>.md` in this mode — the plan draft is the only artifact. Stdout is still `PROPOSE <N>` (N = number of items added).
+
 ## Discovery
 
 Tools not described above: `agent_tools:list { asRole: 'scoper' }`.
