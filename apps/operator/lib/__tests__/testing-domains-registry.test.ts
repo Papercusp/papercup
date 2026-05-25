@@ -64,6 +64,7 @@ describe('testing-domains-registry', () => {
       'apps/operator/app/_components/__tests__/UserPicker.test.tsx',
       'apps/operator/lib/__tests__/PluginIframe.test.tsx',
       'apps/operator/lib/__tests__/notify.test.ts',
+      'apps/operator/lib/__tests__/workspaces-tauri.test.ts',
       'apps/operator/app/_components/__tests__/routePending.test.ts',
       'apps/operator/app/_components/__tests__/RouteLink.test.ts',
     ]));

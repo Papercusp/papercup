@@ -94,6 +94,10 @@ export async function deleteWorkspace(id: string): Promise<void> {
  * page so client-side state (cached fetches, plugin host snapshots in
  * the panels) doesn't lag behind.
  */
+
+export function resolveWorkspaceSwitchTarget(id: string, opts?: { resetTo?: string }): string {
+  return opts?.resetTo ?? `/harness?ws=${encodeURIComponent(id)}`;
+}
 export async function switchWorkspace(id: string, opts?: { resetTo?: string }): Promise<void> {
   if (isDesktopRuntime()) {
     const r = await commands.workspacesSwitch(id);
@@ -102,6 +106,6 @@ export async function switchWorkspace(id: string, opts?: { resetTo?: string }): 
   }
   await http<unknown>('/api/workspaces/switch', { method: 'POST', body: JSON.stringify({ id }) });
   if (typeof window !== 'undefined') {
-    navigateClient(opts?.resetTo ?? `/harness?ws=${encodeURIComponent(id)}`);
+    navigateClient(resolveWorkspaceSwitchTarget(id, opts));
   }
 }
