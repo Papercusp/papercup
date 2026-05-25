@@ -60,7 +60,8 @@ export function resolveNotifyActionTarget(
   try {
     const url = new URL(href);
     if (url.protocol !== 'http:' && url.protocol !== 'https:') return { kind: 'none', href: null };
-    if (currentOrigin && url.origin === currentOrigin) {
+    const normalizedOrigin = currentOrigin?.endsWith('/') ? currentOrigin.slice(0, -1) : currentOrigin;
+    if (normalizedOrigin && url.origin === normalizedOrigin) {
       return { kind: 'client', href: `${url.pathname}${url.search}${url.hash}` };
     }
     return { kind: 'external', href: url.href };

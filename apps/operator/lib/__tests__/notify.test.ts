@@ -13,6 +13,10 @@ describe('notify action target resolution', () => {
       kind: 'client',
       href: '/support?ws=default',
     });
+    expect(resolveNotifyActionTarget('http://localhost:3070/support?ws=default', 'http://localhost:3070/')).toEqual({
+      kind: 'client',
+      href: '/support?ws=default',
+    });
     expect(resolveNotifyActionTarget('http://127.0.0.1:3070/support?ws=default#faq', 'http://127.0.0.1:3070')).toEqual({
       kind: 'client',
       href: '/support?ws=default#faq',
