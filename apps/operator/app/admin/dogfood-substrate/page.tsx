@@ -18,6 +18,7 @@
 import { getOrgPg } from '@restart/db-org';
 import { listBootedHandles } from '@/lib/sync/hyperbee/boot-all';
 import { listBootstrapProgress } from '@/lib/sync/hyperbee/bootstrap-progress';
+import { listBootHistory } from '@/lib/sync/hyperbee/boot-history';
 import { loadClaimAttemptStats } from '@/lib/orchestrator/load-claim-attempts';
 import { assessHarnessSubstrateHealth } from '@/lib/sync/hyperbee/health';
 import { summariseWorkspaceSubstrate } from '@/lib/sync/hyperbee/summary';
@@ -25,6 +26,7 @@ import { SubstrateStatusBadge } from '../../harness/insights/SubstrateStatusBadg
 import { ClaimAttemptStatsPill } from '../../harness/insights/ClaimAttemptStatsPill';
 import { BootstrapProgressIndicator } from '../../harness/insights/BootstrapProgressIndicator';
 import { SubstrateHealthPill } from '../../harness/insights/SubstrateHealthPill';
+import { BootHistoryTable } from '../../harness/insights/BootHistoryTable';
 
 export const dynamic = 'force-dynamic';
 
@@ -233,6 +235,22 @@ export default async function DogfoodSubstratePage() {
           </tbody>
         </table>
       )}
+
+      <div style={{ marginTop: 28 }}>
+        <h2
+          style={{
+            fontSize: 13,
+            fontWeight: 600,
+            color: 'var(--fg-dim, #888)',
+            textTransform: 'uppercase',
+            letterSpacing: '0.04em',
+            marginBottom: 8,
+          }}
+        >
+          Boot history
+        </h2>
+        <BootHistoryTable entries={listBootHistory({ limit: 50 })} />
+      </div>
     </div>
   );
 }
