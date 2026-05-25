@@ -230,10 +230,15 @@ function CardDetail({
             <button
               type="button"
               onClick={handleAccept}
-              disabled={busy}
+              disabled={busy || (card.itemCount ?? 0) === 0}
+              title={(card.itemCount ?? 0) === 0 ? 'Plan has no items to promote — edit the plan first.' : undefined}
               className="h-proposal-btn good"
             >
-              {busy ? '…' : `accept → ${card.itemCount ?? '?'} feature${card.itemCount !== 1 ? 's' : ''}`}
+              {busy
+                ? '…'
+                : (card.itemCount ?? 0) === 0
+                  ? 'no items'
+                  : `accept → ${card.itemCount} feature${card.itemCount !== 1 ? 's' : ''}`}
             </button>
           </div>
         )}
