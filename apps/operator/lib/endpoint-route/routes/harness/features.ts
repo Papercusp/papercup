@@ -297,6 +297,8 @@ const importFeatures = defineTool({
         tags?: string[] | null;
         needs_human_review?: boolean;
         ts?: number | null;
+        source_plan_slug?: string | null;
+        source_plan_item_ids?: string[] | null;
       }>;
     };
     if (!body?.features || !Array.isArray(body.features) || body.features.length === 0) {
@@ -371,6 +373,27 @@ const importFeatures = defineTool({
         }
       }
     });
+
+    // Write plan provenance to PG consolidated — best-effort (migration 084).
+    // Only fires for features that carry source_plan_slug in the payload.
+    const withProvenance = features.filter((f) => f.source_plan_slug);
+    if (withProvenance.length > 0) {
+      try {
+        const { sql } = getOrgPg();
+        for (const f of withProvenance) {
+          await sql`
+            UPDATE harness_shared.harness_features_consolidated
+               SET source_plan_slug     = ${f.source_plan_slug!},
+                   source_plan_item_ids = ${f.source_plan_item_ids ?? []}
+             WHERE harness_slug = ${project.slug}
+               AND feature_id   = ${f.id}
+          `;
+        }
+      } catch {
+        // PG unavailable or migration not yet applied — skip silently.
+      }
+    }
+
     return Response.json({
       ok: true,
       inserted,

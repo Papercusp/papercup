@@ -219,6 +219,22 @@ export async function lintParsed(
     }
   }
 
+  // P-005: if any item has been promoted (detected via from_items P-NNN refs
+  // in item text or decision bodies that mention F-AUTO / F-\d+ feature ids),
+  // the plan should have a ## Promoted block. Use the raw body as source of
+  // truth — emit a warning (not error) since plans promoted before migration
+  // 084 won't have the block yet and it's not worth blocking agents over it.
+  const hasPromotedBlock = /^## Promoted\b/m.test(parsed.raw);
+  const hasPromotedFeatureRef = /\bF-(?:AUTO-[A-Z0-9]+|[A-Z0-9-]+-\d{3,})\b/.test(parsed.raw);
+  if (hasPromotedFeatureRef && !hasPromotedBlock) {
+    report.warnings.push({
+      level: 'warning',
+      code: 'missing_promoted_block',
+      message:
+        'Plan references promoted feature ids but has no `## Promoted` block — run plans:promote apply=true to generate it.',
+    });
+  }
+
   if (parsed.frontmatter.updated) {
     try {
       const stat = await fs.stat(parsed.filePath);

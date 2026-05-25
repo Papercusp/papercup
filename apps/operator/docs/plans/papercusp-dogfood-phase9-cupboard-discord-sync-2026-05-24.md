@@ -1,7 +1,7 @@
 ---
 title: Papercusp dogfood — Phase 9 (Cupboard + Discord + sync-with-main)
 slug: papercusp-dogfood-phase9-cupboard-discord-sync-2026-05-24
-status: draft
+status: in-progress
 created: 2026-05-24
 updated: 2026-05-24
 owner: avi@storewolf.com
@@ -11,9 +11,9 @@ owner: avi@storewolf.com
 
 ## Now
 
-**State:** **draft execution plan.** Phase 9 ships the three public-discovery / external-integration pieces: the Cupboard registry (a new `apps/operator-public/` app), Discord integration (deep-link + optional webhook), and the sync-with-main UI trio. L-sized; deploys a new public-facing service.
+**State:** **🟡 PARTIAL.** P-052 (Cupboard UI), P-054 (Discord deep-link + webhook), P-055 (sync-with-main badge + dialog) shipped 2026-05-24. P-051a/b (Cupboard server + deploy) and P-053 (publish wizard) are deferred pending an infra decision. P-076 (stats indexer) deferred until server exists.
 
-**Next action:** decide deployment story for Cupboard server (P-051b) — Cloudflare-fronted Next.js + managed Postgres at `cupboard.papercusp.dev`, OR initial self-hosted from the dogfood-team's existing infra. Affects P-051a's API design choices (rate-limit storage, SSO assumptions).
+**Next action:** human decision needed — confirm Cupboard server deployment target (Cloudflare Workers + Neon vs. self-hosted Hono on existing infra) before P-051a can proceed. In the meantime, Phase 9's client-side deliverables are complete and gate-passable for Phase 11.
 
 ## Background
 

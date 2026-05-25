@@ -27,11 +27,42 @@ import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../identity';
 import { COORD_ROLES } from '../roles';
-import { buildSpecMutation, type PromoteFeatureInput } from '../promote';
+import { buildSpecMutation, findUnknownFromItems, type PromoteFeatureInput } from '../promote';
 import { emitPlanEventForCaller } from '../plan-events';
 import { readPlanBySlug } from '../../plans/source';
 import { withPlanLock, bumpUpdatedDate } from '../../plans/with-plan-lock';
 import { flipStatusInBody } from '../../plans/set-status';
+
+const PROMOTED_BLOCK_RE = /^## Promoted\n[\s\S]*?(?=\n## |\n---\s*$|$)/m;
+const PROMOTED_FENCE = '<!-- plan-pipeline: do not edit this block manually -->';
+
+function upsertPromotedBlock(body: string, newRows: string[]): string {
+  const existingMatch = PROMOTED_BLOCK_RE.exec(body);
+  const existingIds = new Set<string>();
+  if (existingMatch) {
+    for (const m of existingMatch[0].matchAll(/^\- \[[ x]\] (F-[A-Z0-9-]+)/gm)) {
+      existingIds.add(m[1]);
+    }
+  }
+  const deduped = newRows.filter((r) => {
+    const m = /^\- \[[ x]\] (F-[A-Z0-9-]+)/.exec(r);
+    return m ? !existingIds.has(m[1]) : true;
+  });
+  if (deduped.length === 0) return body;
+  if (existingMatch) {
+    const end = existingMatch.index + existingMatch[0].length;
+    const insert = '\n' + deduped.join('\n');
+    return body.slice(0, end) + insert + body.slice(end);
+  }
+  const block = `\n## Promoted\n\n${PROMOTED_FENCE}\n${deduped.join('\n')}\n`;
+  const nowIdx = body.indexOf('\n## Now\n');
+  if (nowIdx !== -1) {
+    const afterNow = body.indexOf('\n## ', nowIdx + 1);
+    const ins = afterNow !== -1 ? afterNow : body.length;
+    return body.slice(0, ins) + block + body.slice(ins);
+  }
+  return body + block;
+}
 
 const FEATURE_INPUT = z.object({
   title: z.string().min(1).max(200),
@@ -108,6 +139,8 @@ async function postFeaturesImport(
     title: string;
     summary?: string;
     metadata: Record<string, unknown>;
+    source_plan_slug?: string;
+    source_plan_item_ids?: string[];
   }>,
 ): Promise<{ ids: string[]; inserted: number; updated: number }> {
   const r = await fetch(
@@ -328,9 +361,18 @@ export default defineTool({
       if (f.from_items && f.from_items.length > 0) {
         metadata.from_plan_items = f.from_items;
       }
-      const out: { title: string; summary?: string; metadata: Record<string, unknown>; id?: string } = {
+      const out: {
+        title: string;
+        summary?: string;
+        metadata: Record<string, unknown>;
+        id?: string;
+        source_plan_slug: string;
+        source_plan_item_ids: string[];
+      } = {
         title: f.title,
         metadata,
+        source_plan_slug: args.slug,
+        source_plan_item_ids: f.from_items ?? [],
       };
       if (f.body) out.summary = f.body;
       if (args.feature_ids && args.feature_ids[idx]) {
@@ -384,6 +426,23 @@ export default defineTool({
         }
       }
     }
+
+    // Write-back: stamp ## Promoted block in the plan file (P-004).
+    // Item-level idempotent: parse existing block, append only new feature IDs.
+    await withPlanLock<null>(
+      ctx as never,
+      { slug: args.slug, intent: 'plans:promote → write ## Promoted block' },
+      async (current): Promise<{ newBody: string | null; value: null }> => {
+        if (current === null) return { newBody: null, value: null };
+        const featureRows = importRes.ids.map((fid, idx) => {
+          const feat = args.features[idx];
+          const itemRef = feat?.from_items?.[0] ? ` <!-- ${feat.from_items[0]} -->` : '';
+          return `- [ ] ${fid} — ${feat?.title ?? fid}${itemRef}`;
+        });
+        const newBody = upsertPromotedBlock(current, featureRows);
+        return { newBody: bumpUpdatedDate(newBody), value: null };
+      },
+    );
 
     await emitPlanEventForCaller(ctx, {
       planSlug: args.slug,
