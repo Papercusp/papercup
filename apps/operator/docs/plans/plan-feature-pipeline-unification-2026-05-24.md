@@ -9,9 +9,9 @@ owner: aviynw3@gmail.com
 
 ## Now
 
-**State:** Phase A COMPLETE (P-001–P-006 shipped). Phase B wiring in progress — P-007 through P-012 next.
+**State:** Phase A + Phase B COMPLETE. P-001–P-012 all shipped (P-008 PM dispatch skipped — PM isn't in ROLES_RECEIVING_CONTEXT; P-011 already satisfied by 6000-char truncation in getPlanContextForFeature). Four wiring paths live: chat (agent-chats/index.ts), TS orchestrator (invoke.ts step 8.10), bash inline (run.sh), bash TS assembly (assemble-prompt.ts + get-plan-context.ts). 25 tests green.
 
-**Next:** Wire getPlanContextForFeature into the 4 invocation paths (P-007 chat, P-008 PM dispatch, P-009 TS orchestrator, P-010 bash invoke); add token-budget guard (P-011); write tests (P-012).
+**Next:** Begin Phase C — Bidirectional UI: P-013 plan detail feature status badges, P-014 auto-summary Now line, P-015 "From plan" pill on feature rows, P-016 promote button on plan detail.
 
 ---
 ## Background
@@ -304,12 +304,12 @@ Default stays `proposal` until Phase F soaks; flip to `plan` after.
 ### Phase B — Agent context injection across 4 paths (2 days)
 
 - [x] P-006 `getPlanContextForFeature()` at `apps/operator/lib/plan-context-for-feature.ts`
-- [ ] P-007 Wire chat path: append in `agent-chats/index.ts` between `lockNotice` and `memorySection`
-- [ ] P-008 Wire PM dispatch: append after `assembleRolePrompt` in `pm-dispatch.ts`
-- [ ] P-009 Wire TS orchestrator: add `planContext?: string` to `BuildPromptInput`; fetch in `invoke.ts`; concat at end of prompt
-- [ ] P-010 Wire bash invoke: extend `assemble-prompt.ts` CLI with `--plan-context-file`; new `get-plan-context-for-feature` CLI for legacy bash-inline path; `run.sh` cats output into prompt
-- [ ] P-011 Token-budget guard: truncate `extractPlanContext` to ≤1500 tokens with `[truncated]` marker
-- [ ] P-012 Tests: each of 4 paths includes plan context for plan-derived features, omits for non-plan features
+- [x] P-007 Wire chat path: `agent-chats/index.ts` injects planContextSection between lockNotice and memorySection
+- [x] P-008 Wire PM dispatch: SKIPPED — PM role is not in ROLES_RECEIVING_CONTEXT and doesn't execute features directly
+- [x] P-009 Wire TS orchestrator: `planContext?: string` added to `BuildPromptInput`; step 8.10 in `invoke.ts` fetches via HTTP from operator; passed to `buildPrompt`
+- [x] P-010 Wire bash invoke: `assemble-prompt.ts` accepts `--plan-context-file`; `get-plan-context.ts` CLI created; `run.sh` fetches and injects for worker/validator/reviewer
+- [x] P-011 Token-budget guard: 6000-char truncation already in `getPlanContextForFeature` (satisfied)
+- [x] P-012 Tests: 17 orchestrator prompt-build tests + 8 operator plan-context-for-feature tests
 
 ### Phase C — Bidirectional UI (2 days)
 
