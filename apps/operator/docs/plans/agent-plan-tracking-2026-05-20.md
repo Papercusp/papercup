@@ -3,7 +3,7 @@ title: Agent plan tracking — a markdown-canonical plan system for SU agents
 slug: agent-plan-tracking-2026-05-20
 status: shipped
 created: 2026-05-20
-updated: 2026-05-21
+updated: 2026-05-25
 owner: pandawamble@gmail.com
 ---
 
@@ -488,6 +488,11 @@ identical; only the listing rule differs.
 This deliberately keeps everything plan-shaped under one root so
 tooling has one place to look. A separate `docs/archive/` would
 quietly reintroduce the dispersal we're fixing.
+
+
+## Phase 6 — Follow-up bugs
+
+- **P-505** `todo` `plans:add-item` emits a duplicate `## Phase <name>` heading per call instead of reusing the existing one with that exact name. Discovered while implementing `plans-newbutton-and-subharness-scope-2026-05-25` (2026-05-25) — 21 add-item calls produced 21 phase headings instead of 3. Lint doesn't catch it (both forms parse equivalently to the same item set). Workaround: dedupe via direct file edit + relint. Fix: in the add-item write path, look up the existing phase section by literal heading match before appending; if a heading with the exact text exists, append the new item line under it rather than creating a fresh section.
 
 ## 7. Decisions
 

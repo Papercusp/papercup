@@ -79,6 +79,11 @@ owner: avi@storewolf.com
 
 - **P-028** `done` Tests + verification. (a) `plans:list` returns `harness` field — unit test against a fixture with two harness dirs. (b) PlanRow snapshot includes the harness pill. (c) AdvSessionsClient grouped picker: a fixture with 3 plans across 2 harnesses produces 2 groups in expected order with the updated-ago suffix. (d) Manual: open /adv/plans, confirm the pill renders + filter narrows the list; open /adv/sessions, confirm grouped picker.
 
+
+## Phase 4 — Follow-ups (deferred)
+
+- **P-029** `todo` `plans:list` MCP arg widening: accept `harness_slugs?: string[]` in addition to the singular ctx-resolved harness. UI side already handles the union client-side via the `harness` field on each row (P-022) + scope filter (P-016), so this is non-blocking for the UI but matters for direct MCP callers (cross_harness:* tools, external agents). Implementation: extend `argsSchema` in `apps/operator/lib/agent-tools/plans/list.ts` to accept the array; iterate `resolveHarnessPlansDir` for each entry; merge `listPlanFiles` outputs; dedup by slug (a given plan slug is unique within a harness, so cross-harness collisions would namespace by harness:slug pair). Singular form remains supported for back-compat.
+
 ## Decisions
 
 ### D-001 — System-prompt channel for kickoff, not first user message
