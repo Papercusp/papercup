@@ -12,16 +12,24 @@ owner: avi@storewolf.com
 
 ## Now
 
-**State:** **Substrate + first 2 per-table hooks shipped 2026-05-25.**
+**State:** **Substrate + 7 of 8 per-table hooks shipped 2026-05-25.**
 
 - `apps/operator/lib/sync/hyperbee/` — corestore + autobase + schema-version + boot-gate + projection registry. 18/19 tests pass (1 native-binding test deliberately skipped — covered by holepunch-spike).
-- `apps/operator/lib/sync/hyperbee/projections/contributors.ts` — Hyperbee → PG upsert for `harness_shared.contributors`. 9/9 tests pass.
-- `apps/operator/lib/sync/hyperbee/projections/feature-claims.ts` — append-only projection for `harness_shared.feature_claims`. 5/5 tests pass.
+- Per-table projection hooks at `apps/operator/lib/sync/hyperbee/projections/`:
+  - `contributors.ts` (9/9)
+  - `feature-claims.ts` (5/5) — append-only
+  - `harness-features.ts` (14/14) — most-consumed
+  - `feature-queue.ts` (13/13) — soft-delete + key parsing
+  - `prs.ts` (12/12)
+  - `issues.ts` (12/12) — full 17-col body
+  - `usage.ts` (14/14) — append-only, P-070 substrate
 - P-029 ShareWizard.tsx — 7/7 tests pass.
 
-Total Phase 5a tests landed this loop: 39/40 pass (1 skipped).
+Total Phase 5a tests landed this loop: **104/105 pass** (1 native-binding skipped).
 
-**Next action:** remaining per-table hooks (harness_features, feature_queue, prs, issues, presence, usage) follow the contributors.ts pattern. Each ~80 LOC + 9 tests. Then `instrumentation-node.ts` boot wiring (gated on the boot-gate flags being set) + the Hyperswarm replication step. P-066 (bootstrap progress indicator) follows.
+**Skipped:** `presence` projection — the dogfood-v5 `presence/<github_user_id>/<machine_label>` Hyperbee shape is distinct from the existing operator-internal `coord_presence` table (single-owner_id PK, not per-user/machine). The new shared-presence table needs its own `ensureFn` in `ensure-schema-dogfood.ts` before a projection makes sense.
+
+**Next action:** `instrumentation-node.ts` boot wiring — gated on the boot-gate flags being set — wires the substrate's `corestore.replicate()` to a Hyperswarm topic per harness's `.harness/shared.json:topic`. Then P-066 (bootstrap progress indicator) + the presence ensureFn + projection.
 
 ## Background
 
