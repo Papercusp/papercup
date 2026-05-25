@@ -17,9 +17,11 @@
 
 import { getOrgPg } from '@restart/db-org';
 import { listBootedHandles } from '@/lib/sync/hyperbee/boot-all';
+import { listBootstrapProgress } from '@/lib/sync/hyperbee/bootstrap-progress';
 import { loadClaimAttemptStats } from '@/lib/orchestrator/load-claim-attempts';
 import { SubstrateStatusBadge } from '../../harness/insights/SubstrateStatusBadge';
 import { ClaimAttemptStatsPill } from '../../harness/insights/ClaimAttemptStatsPill';
+import { BootstrapProgressIndicator } from '../../harness/insights/BootstrapProgressIndicator';
 
 export const dynamic = 'force-dynamic';
 
@@ -91,6 +93,14 @@ export default async function DogfoodSubstratePage() {
     }),
   );
 
+  const progressBySlug = new Map<
+    string,
+    ReturnType<typeof listBootstrapProgress>[number]
+  >();
+  for (const snap of listBootstrapProgress()) {
+    progressBySlug.set(`${snap.workspaceId}::${snap.harnessSlug}`, snap);
+  }
+
   const topStatus = !enabled ? 'disabled' : booted.length > 0 ? 'booted' : 'booting';
   const hint = !enabled
     ? null
@@ -129,15 +139,18 @@ export default async function DogfoodSubstratePage() {
             <tr>
               <th style={TH}>Workspace</th>
               <th style={TH}>Harness</th>
+              <th style={TH}>Bootstrap</th>
               <th style={TH}>Claim audit</th>
             </tr>
           </thead>
           <tbody>
             {booted.map((h) => {
-              const stats = statsBySlug.get(`${h.workspaceId}::${h.harnessSlug}`);
+              const key = `${h.workspaceId}::${h.harnessSlug}`;
+              const stats = statsBySlug.get(key);
+              const progress = progressBySlug.get(key);
               return (
                 <tr
-                  key={`${h.workspaceId}::${h.harnessSlug}`}
+                  key={key}
                   data-testid={`dogfood-substrate-row-${h.harnessSlug}`}
                 >
                   <td style={TD}>
@@ -145,6 +158,19 @@ export default async function DogfoodSubstratePage() {
                   </td>
                   <td style={TD}>
                     <code>{h.harnessSlug}</code>
+                  </td>
+                  <td style={TD}>
+                    {progress ? (
+                      <BootstrapProgressIndicator
+                        totalOps={Math.max(
+                          progress.highestSeen,
+                          progress.mergedOps,
+                        )}
+                        mergedOps={progress.mergedOps}
+                      />
+                    ) : (
+                      <span style={{ color: 'var(--fg-dim, #888)' }}>—</span>
+                    )}
                   </td>
                   <td style={TD}>
                     {stats && stats.total > 0 ? (
