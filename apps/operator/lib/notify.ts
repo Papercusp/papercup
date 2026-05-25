@@ -48,7 +48,10 @@ export interface NotifyOptions {
   action?: NotifyAction;
 }
 
-export function resolveNotifyActionTarget(href: string | undefined): {
+export function resolveNotifyActionTarget(
+  href: string | undefined,
+  currentOrigin?: string,
+): {
   kind: 'client' | 'external' | 'none';
   href: string | null;
 } {
@@ -57,7 +60,10 @@ export function resolveNotifyActionTarget(href: string | undefined): {
   try {
     const url = new URL(href);
     if (url.protocol !== 'http:' && url.protocol !== 'https:') return { kind: 'none', href: null };
-    return { kind: 'external', href };
+    if (currentOrigin && url.origin === currentOrigin) {
+      return { kind: 'client', href: `${url.pathname}${url.search}${url.hash}` };
+    }
+    return { kind: 'external', href: url.href };
   } catch {
     return { kind: 'none', href: null };
   }
@@ -84,7 +90,7 @@ function buildSonnerAction(action: NotifyAction | undefined) {
   return {
     label: labelNode,
     onClick: () => {
-      const target = resolveNotifyActionTarget(action.href);
+      const target = resolveNotifyActionTarget(action.href, window.location.origin);
       if (target.kind === 'client' && target.href) {
         navigateClient(target.href);
       } else if (target.kind === 'external' && target.href) {

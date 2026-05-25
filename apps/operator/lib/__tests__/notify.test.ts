@@ -7,8 +7,12 @@ describe('notify action target resolution', () => {
     expect(resolveNotifyActionTarget('/settings/operator?tab=voice')).toEqual({ kind: 'client', href: '/settings/operator?tab=voice' });
   });
 
-  it('routes absolute URLs through external open handling', () => {
+  it('routes external and same-origin absolute URLs appropriately', () => {
     expect(resolveNotifyActionTarget('https://example.com/docs')).toEqual({ kind: 'external', href: 'https://example.com/docs' });
+    expect(resolveNotifyActionTarget('http://localhost:3070/support?ws=default', 'http://localhost:3070')).toEqual({
+      kind: 'client',
+      href: '/support?ws=default',
+    });
   });
 
   it('returns none when no href is supplied', () => {
