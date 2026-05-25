@@ -12,6 +12,10 @@ describe('client navigation', () => {
     expect(shouldSoftNavigate('https://example.com', 'http://localhost:3070/harness')).toBe(false);
     expect(shouldSoftNavigate('http://localhost:3055/harness', 'http://localhost:3070/harness')).toBe(false);
   });
+  it('soft-navigates same-origin support and settings routes used by static desktop chrome', () => {
+    expect(shouldSoftNavigate('/support', 'http://localhost:3070/harness?ws=default')).toBe(true);
+    expect(shouldSoftNavigate('/settings/operator', 'http://localhost:3070/harness?ws=default')).toBe(true);
+  });
 
   it('fails closed on unsafe schemes', () => {
     expect(shouldSoftNavigate('javascript:alert(1)', 'http://localhost:3070/harness')).toBe(false);
