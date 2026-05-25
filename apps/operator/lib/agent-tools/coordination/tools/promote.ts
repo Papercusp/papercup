@@ -514,9 +514,15 @@ export default defineTool({
     // Write-back: stamp ## Promoted block + refresh ## Now promote-status line.
     // Item-level idempotent: parse existing block, append only new feature IDs.
     // Status line is marker-delimited so re-promote replaces in place.
+    //
+    // R2-B: also flip `status: draft` → `status: active` in the frontmatter.
+    // A promote turns a "proposal" (draft) into an "active work plan"; the
+    // ProposalsPanel filters drafts only, so this is what makes the card
+    // disappear from the panel after Accept. Idempotent: a plan that's
+    // already `active`/`shipped`/`superseded` is left alone.
     await withPlanLock<null>(
       ctx as never,
-      { slug: args.slug, intent: 'plans:promote → write ## Promoted block + Now status' },
+      { slug: args.slug, intent: 'plans:promote → write ## Promoted block + Now status + activate' },
       async (current): Promise<{ newBody: string | null; value: null }> => {
         if (current === null) return { newBody: null, value: null };
         const featureRows = importRes.ids.map((fid, idx) => {
@@ -528,6 +534,10 @@ export default defineTool({
         if (statusCounts) {
           newBody = upsertPromoteStatusLine(newBody, args.harness_slug, statusCounts);
         }
+        // Promote-on-draft: flip status to active. Only the literal
+        // `status: draft` line in frontmatter is rewritten — does not
+        // touch any draft-shaped text in the body.
+        newBody = newBody.replace(/^(status:\s*)draft\b/m, '$1active');
         return { newBody: bumpUpdatedDate(newBody), value: null };
       },
     );

@@ -172,3 +172,56 @@ status: active
     expect(out).toBe(noNow);
   });
 });
+
+/* ── Draft → active status flip on promote (R2-B) ─────────────────── */
+
+describe('promote status-flip helper — draft → active idempotency', () => {
+  it('replaces status: draft → status: active in frontmatter only', () => {
+    const body = `---
+title: x
+slug: x-2026-05-25
+status: draft
+---
+
+## Now
+**State:** stuff with the word draft in it
+`;
+    const out = body.replace(/^(status:\s*)draft\b/m, '$1active');
+    expect(out).toContain('status: active');
+    expect(out).not.toMatch(/^status:\s*draft/m);
+    // body text containing "draft" is untouched
+    expect(out).toContain('stuff with the word draft in it');
+  });
+
+  it('is a no-op on a plan that is already active', () => {
+    const body = `---
+title: x
+status: active
+---
+`;
+    const out = body.replace(/^(status:\s*)draft\b/m, '$1active');
+    expect(out).toBe(body);
+  });
+
+  it('is a no-op on a shipped plan', () => {
+    const body = `---
+title: x
+status: shipped
+---
+`;
+    const out = body.replace(/^(status:\s*)draft\b/m, '$1active');
+    expect(out).toBe(body);
+  });
+
+  it('does not match the word "draft" outside the status: line', () => {
+    const body = `---
+title: my-draft-thoughts
+status: active
+---
+
+Something about draft.
+`;
+    const out = body.replace(/^(status:\s*)draft\b/m, '$1active');
+    expect(out).toBe(body);
+  });
+});

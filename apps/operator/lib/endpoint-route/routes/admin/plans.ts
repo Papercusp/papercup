@@ -247,6 +247,10 @@ async function dispatchWrite(req: Request, ctx: RouteContext): Promise<Response>
         if (harnessSlug) {
           void notifySyncInvalidate('featuresConsolidated.bySlug', { harnessSlug }).catch(() => {});
           void notifySyncInvalidate('featuresConsolidated.byPlanSlug', { planSlug: slug }).catch(() => {});
+          // R2-B: promote also flips the plan frontmatter from draft → active,
+          // so the ProposalsPanel subscription needs to refetch and drop the
+          // card from the list.
+          void notifySyncInvalidate('plansDrafts.bySlug', { harnessSlug }).catch(() => {});
         }
         void notifySyncInvalidate('plans.get', { slug: slug ?? '' }).catch(() => {});
       }
