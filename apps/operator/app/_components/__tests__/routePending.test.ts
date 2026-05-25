@@ -129,6 +129,13 @@ describe('routePending helpers', () => {
     expect(getRoutePendingTarget()).toBeNull();
     expect(document.documentElement.hasAttribute('data-route-pending')).toBe(false);
   });
+  it('normalizes equivalent pending URLs consistently across repeated begins', () => {
+    beginRoutePending('/support/?ws=default#faq');
+    expect(getRoutePendingHref()).toBe('/support?ws=default#faq');
+
+    beginRoutePending('http://localhost:3070/support?ws=default#faq');
+    expect(getRoutePendingHref()).toBe('/support?ws=default#faq');
+  });
   it('notifies subscribers on begin and finish transitions', () => {
     const listener = vi.fn();
     const unsubscribe = subscribeRoutePending(listener);
