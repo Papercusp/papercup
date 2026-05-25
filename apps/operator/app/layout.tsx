@@ -138,10 +138,11 @@ export default async function RootLayout({ children }: { children: React.ReactNo
 
     // Dev-only: turbopack rebuilds invalidate chunk hashes; a previously
     // mounted page may hold a stale chunk reference for the next lazy()
-    // mount. Catch ChunkLoadError at the global level, swallow the event
-    // so it doesn't reach the console, and trigger one reload so the
-    // module manifest is refetched. A one-shot guard in sessionStorage
-    // prevents reload loops if the chunk is genuinely gone.
+    // mount. Do NOT auto-reload here in the Tauri dev shell: multiple
+    // agents save files continuously, and an automatic recovery reload can
+    // become an infinite visible refresh loop. Surface the stale chunk in
+    // the console and let the developer choose Cmd/Ctrl+R when they want
+    // to pick up the latest build.
     function isChunkErr(e) {
       var msg = (e && (e.message || (e.reason && e.reason.message))) || '';
       var name = (e && (e.name || (e.error && e.error.name) || (e.reason && e.reason.name))) || '';
@@ -150,21 +151,10 @@ export default async function RootLayout({ children }: { children: React.ReactNo
     }
     function recover() {
       try {
-        var k = '__chunkReloadOnce__';
-        if (!sessionStorage.getItem(k)) {
-          sessionStorage.setItem(k, String(Date.now()));
-          window.location.reload();
-          return true;
-        }
+        console.info('[DevReloadGate] stale chunk detected; auto-reload suppressed — Cmd/Ctrl+R to refresh manually');
       } catch (_) {}
-      return false;
+      return true;
     }
-    // Clear the reload guard after a successful hydration so subsequent
-    // chunk failures within the same session can still recover. Runs once
-    // after first paint settles.
-    setTimeout(function () {
-      try { sessionStorage.removeItem('__chunkReloadOnce__'); } catch (_) {}
-    }, 5000);
 
     window.addEventListener('error', function (e) {
       if (isChunkErr(e)) { try { e.preventDefault(); e.stopImmediatePropagation(); } catch (_) {} recover(); }
