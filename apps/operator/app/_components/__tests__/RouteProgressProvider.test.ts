@@ -57,4 +57,7 @@ describe('RouteProgressProvider document capture helper', () => {
   it('does not start progress for hash-only document anchor navigations', () => {
     expect(shouldStartDocumentRouteProgressForAnchor({ ...base, targetHref: '/harness?ws=default#details' })).toBe(false);
   });
+  it('starts progress for protocol-relative same-origin anchor hrefs', () => {
+    expect(shouldStartDocumentRouteProgressForAnchor({ ...base, targetHref: '//localhost:3070/support?ws=default' })).toBe(true);
+  });
 });
