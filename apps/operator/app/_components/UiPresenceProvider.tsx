@@ -14,8 +14,12 @@
 
 import { useUiPresence } from '@/lib/ui/use-ui-presence';
 import { UiIntentDispatcher } from '@/lib/ui/intent-dispatcher';
+import { shouldEnableRemoteUiIntents } from '@/lib/ui/desktop-ui-intents';
 
-export function UiPresenceProvider(): React.ReactElement {
+export function UiPresenceProvider(): React.ReactElement | null {
   useUiPresence();
-  return <UiIntentDispatcher />;
+  const enableIntents = typeof window === 'undefined'
+    ? true
+    : shouldEnableRemoteUiIntents(window.location.origin);
+  return enableIntents ? <UiIntentDispatcher /> : null;
 }
