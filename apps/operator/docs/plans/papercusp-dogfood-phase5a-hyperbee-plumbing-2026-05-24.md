@@ -23,13 +23,14 @@ owner: avi@storewolf.com
   - `prs.ts` (12/12)
   - `issues.ts` (12/12) — full 17-col body
   - `usage.ts` (14/14) — append-only, P-070 substrate
+  - `presence.ts` (13/13) — paired with new `ensureSharedPresenceTable()` in `ensure-schema-dogfood.ts`
 - P-029 ShareWizard.tsx — 7/7 tests pass.
 
-Total Phase 5a tests landed this loop: **104/105 pass** (1 native-binding skipped).
+Total Phase 5a tests landed this loop: **117/118 pass** (1 native-binding skipped).
 
-**Skipped:** `presence` projection — the dogfood-v5 `presence/<github_user_id>/<machine_label>` Hyperbee shape is distinct from the existing operator-internal `coord_presence` table (single-owner_id PK, not per-user/machine). The new shared-presence table needs its own `ensureFn` in `ensure-schema-dogfood.ts` before a projection makes sense.
+**All 8 per-table projection hooks now in tree.** Substrate fully wireable.
 
-**Next action:** `instrumentation-node.ts` boot wiring — gated on the boot-gate flags being set — wires the substrate's `corestore.replicate()` to a Hyperswarm topic per harness's `.harness/shared.json:topic`. Then P-066 (bootstrap progress indicator) + the presence ensureFn + projection.
+**Next action:** `instrumentation-node.ts` boot wiring — gated on the boot-gate flags being set — wires the substrate's `corestore.replicate()` to a Hyperswarm topic per harness's `.harness/shared.json:topic`. Then P-066 (bootstrap progress indicator) follows naturally from the substrate event stream.
 
 ## Background
 

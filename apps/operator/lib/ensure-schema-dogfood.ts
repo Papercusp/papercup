@@ -36,6 +36,7 @@ type DogfoodFlags = {
   contributorUsageEvents: boolean;
   insightsFirstVisit: boolean;
   sharedRepoBindingCache: boolean;
+  sharedPresence: boolean;
 };
 
 type _G = { __dogfoodEnsureFlags?: DogfoodFlags };
@@ -56,6 +57,7 @@ const flags: DogfoodFlags =
     contributorUsageEvents: false,
     insightsFirstVisit: false,
     sharedRepoBindingCache: false,
+    sharedPresence: false,
   });
 
 /* ─── HYPERBEE-bucket (v5 §7.1) ───────────────────────────────────── */
@@ -416,6 +418,35 @@ export async function ensureWebhookAuditTable(): Promise<void> {
  *  projection process at boot, BEFORE replication starts, to satisfy
  *  the audit-A rule from v5 §7 (projection must wait for both
  *  ensure-paths — the original ensure-schema.ts AND this one). */
+/** harness_shared.shared_presence — per-(harness, contributor, machine)
+ *  presence pings. HYPERBEE-synced (v5 §7.1 `presence/<github_user_id>/<machine_label>`).
+ *  Distinct from the operator-internal coord_presence table (which is
+ *  per-owner_id, not per-user/machine, and serves the agent-mcp
+ *  presence dashboard). LWW per (harness, user, machine). */
+export async function ensureSharedPresenceTable(): Promise<void> {
+  if (flags.sharedPresence) return;
+  const { sql } = getOrgPg();
+  await sql.unsafe(`
+    CREATE TABLE IF NOT EXISTS harness_shared.shared_presence (
+      workspace_id     TEXT   NOT NULL DEFAULT '',
+      harness_slug     TEXT   NOT NULL,
+      github_user_id   BIGINT NOT NULL,
+      machine_label    TEXT   NOT NULL,
+      device_pubkey    TEXT   NOT NULL,
+      intent           TEXT,
+      current_view     TEXT,
+      last_seen_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+      schema_version   BIGINT NOT NULL DEFAULT 1,
+      PRIMARY KEY (workspace_id, harness_slug, github_user_id, machine_label)
+    );
+    CREATE INDEX IF NOT EXISTS shared_presence_user_idx
+      ON harness_shared.shared_presence (workspace_id, harness_slug, github_user_id);
+    CREATE INDEX IF NOT EXISTS shared_presence_recent_idx
+      ON harness_shared.shared_presence (workspace_id, harness_slug, last_seen_at DESC);
+  `);
+  flags.sharedPresence = true;
+}
+
 export async function ensureAllDogfoodTables(): Promise<void> {
   await Promise.all([
     ensureFeatureQueueTable(),
@@ -431,6 +462,7 @@ export async function ensureAllDogfoodTables(): Promise<void> {
     ensureContributorUsageEventsTable(),
     ensureInsightsFirstVisitTable(),
     ensureSharedRepoBindingCacheTable(),
+    ensureSharedPresenceTable(),
   ]);
 }
 
