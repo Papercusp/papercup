@@ -45,7 +45,14 @@ describe('RouteLink click progress decision', () => {
   it('does not start progress for hash-only navigations on the same document', () => {
     expect(shouldStartRouteProgressForClick({ ...base, targetHref: 'http://localhost:3070/harness?ws=default#details' })).toBe(false);
   });
+  it('starts progress for relative same-origin navigations', () => {
+    expect(shouldStartRouteProgressForClick({ ...base, targetHref: '/support?ws=default' })).toBe(true);
+  });
+
   it('starts progress for protocol-relative same-origin targets', () => {
     expect(shouldStartRouteProgressForClick({ ...base, targetHref: '//localhost:3070/support?ws=default' })).toBe(true);
+  });
+  it('does not start progress for relative hash-only navigations on the same document', () => {
+    expect(shouldStartRouteProgressForClick({ ...base, targetHref: '#details' })).toBe(false);
   });
 });

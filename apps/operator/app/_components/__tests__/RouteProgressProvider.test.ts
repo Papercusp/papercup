@@ -50,12 +50,16 @@ describe('RouteProgressProvider document capture helper', () => {
     expect(shouldStartDocumentRouteProgressForAnchor({ ...base, targetHref: '/support?ws=default' })).toBe(true);
   });
 
+
   it('fails closed on unsafe-scheme target hrefs', () => {
     expect(shouldStartDocumentRouteProgressForAnchor({ ...base, targetHref: 'javascript:alert(1)' })).toBe(false);
     expect(shouldStartDocumentRouteProgressForAnchor({ ...base, targetHref: 'data:text/plain,hi' })).toBe(false);
   });
   it('does not start progress for hash-only document anchor navigations', () => {
     expect(shouldStartDocumentRouteProgressForAnchor({ ...base, targetHref: '/harness?ws=default#details' })).toBe(false);
+  });
+  it('does not start progress for relative hash-only document anchor navigations', () => {
+    expect(shouldStartDocumentRouteProgressForAnchor({ ...base, targetHref: '#details' })).toBe(false);
   });
   it('starts progress for protocol-relative same-origin anchor hrefs', () => {
     expect(shouldStartDocumentRouteProgressForAnchor({ ...base, targetHref: '//localhost:3070/support?ws=default' })).toBe(true);
