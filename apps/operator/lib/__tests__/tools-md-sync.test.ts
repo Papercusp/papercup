@@ -55,12 +55,25 @@ function parseChatSurfaceAllowedTools(filepath: string): Set<string> {
   return names;
 }
 
+/**
+ * Known non-tool mentions that look like tool names in backticks.
+ * These are documentation references — markdown block emissions (`promote:plan`)
+ * or metadata-key references (`metadata.covers`) — not invocable tools.
+ */
+const NON_TOOL_MENTION_ALLOWLIST = new Set<string>([
+  // Markdown block emissions consumed by the architect/scoper handlers.
+  'promote:plan',
+  // Metadata-key references (frontmatter or schema columns), not tool names.
+  'metadata.covers',
+]);
+
 function parseToolMentions(md: string): Set<string> {
   const FILE_SUFFIX = /\.(md|ts|tsx|js|jsx|mjs|cjs|json|sh|py|css|html|toml|yaml|yml)$/i;
   const mentions = new Set<string>();
   for (const m of md.matchAll(/`([a-zA-Z0-9_]+[:.][a-zA-Z0-9_:.\-\/]+)`/g)) {
     const candidate = m[1];
     if (FILE_SUFFIX.test(candidate) || candidate.includes('/')) continue;
+    if (NON_TOOL_MENTION_ALLOWLIST.has(candidate)) continue;
     mentions.add(candidate);
   }
   return mentions;
@@ -112,12 +125,14 @@ for (const file of TOOL_FILES) {
   if (!src.includes('defineTool(')) continue;
   // Require at least one separator (`:` or `.`) so we skip inline `name: 'project'`
   // style arguments that appear before the tool's own `name:` field.
-  const nameMatch = src.match(/name:\s*['"]([a-zA-Z0-9_]+[:.][a-zA-Z0-9_:.]+)['"]/);
+  const nameMatch = src.match(/name:\s*['"]([a-zA-Z0-9_]+[:.][a-zA-Z0-9_:.\-]+)['"]/);
   if (!nameMatch) continue;
   const name = nameMatch[1];
   const rolesMatch = src.match(/roles:\s*\[([^\]]*)\]/);
   const rolesStr = rolesMatch?.[1] ?? '';
-  const allRolesSpread = /\.\.\.ALL_ROLES|\.\.\.AGENT_ROLES/.test(rolesStr);
+  // SU_ROLES expands to every agent role in lib/agent-tools/plans/*; treat it
+  // as the same "all roles" signal as ALL_ROLES / AGENT_ROLES.
+  const allRolesSpread = /\.\.\.ALL_ROLES|\.\.\.AGENT_ROLES|\.\.\.SU_ROLES/.test(rolesStr);
   const roles = allRolesSpread
     ? [...KNOWN_ROLES]
     : [...rolesStr.matchAll(/['"]([a-z]+)['"]/g)].map((m) => m[1]);

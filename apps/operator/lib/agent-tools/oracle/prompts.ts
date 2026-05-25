@@ -65,6 +65,8 @@ export const ORACLE_ALLOWED_TOOLS = [
   'mcp__agentmcp__audit:list',
   // Memory + search.
   'mcp__agentmcp__hindsight:recall',
+  'mcp__agentmcp__memory:search',
+  'mcp__agentmcp__memory:remember',
   'mcp__agentmcp__search:query',
   // Tool introspection.
   'mcp__agentmcp__agent_tools:list',
