@@ -12,9 +12,24 @@ owner: avi@storewolf.com
 
 ## Now
 
-**State:** **🟡 PARTIAL → MOVING.** Client-side P-052/P-054/P-055 shipped 2026-05-24. **P-051a (Cupboard server) shipped 2026-05-25** at `apps/operator-public/` — Hono on Cloudflare Workers + D1, mirroring `apps/papercusp-publish` pattern. 18/18 unit tests pass; typecheck clean. Infra decision (Workers + D1, NOT Next.js + Postgres) recorded as D-001 below.
+**State:** **🟢 CODE-COMPLETE.** Only P-051b deploy remains (user step).
 
-**Next action:** **P-051b deploy is a user step** — DNS + Workers route + secrets. README.md has the full sequence. P-053 (publish wizard) and P-076 (indexer) can start in parallel with deploy.
+Shipped 2026-05-24: P-052 (Cupboard UI), P-054 (Discord deep-link + webhook), P-055 (sync-with-main badge + dialog).
+
+Shipped 2026-05-25 (this loop):
+- **P-051a** Cupboard server at `apps/operator-public/` — Hono on Cloudflare Workers + D1. 18/18 tests. D-001 records the Workers+D1 vs Next.js+PG infra call.
+- **P-076** hourly stats indexer at `apps/operator-public/src/indexer.ts` — refreshes tier-A fields from GitHub API; 404 → auto-unlist; 429 → early-exit; batch-capped; audit row per run. 14/14 tests.
+- **P-053** ShareWizard shared-public → Cupboard publish: client hook in ShareWizard step 9 + operator proxy route at `/api/harness/cupboard/publish`. The wizard POSTs to the operator; the operator forwards to Cupboard with the user's gh-token added server-side (browser never holds the token). Publish failure → inline 'publish later' warning; local finalize still succeeds. 10/10 wizard tests + 15/15 proxy-route tests.
+
+**Next action:** **P-051b deploy is a user step.** Sequence in `apps/operator-public/README.md`:
+  1. `wrangler d1 create papercusp-cupboard` + `wrangler kv:namespace create papercusp-cupboard-counters`; paste returned ids into wrangler.toml
+  2. `npm run d1:apply:remote` (initial schema)
+  3. `wrangler secret put GITHUB_CLIENT_ID / GITHUB_CLIENT_SECRET / IP_HASH_PEPPER`
+  4. DNS for chosen hostname + Cloudflare Workers route binding
+  5. `npm run deploy`
+  6. `echo 'PAPERCUSP_CUPBOARD_URL="https://<hostname>"' >> ~/.papercusp/env`
+
+Cron is wired in wrangler.toml (`0 * * * *`); the indexer runs as soon as deploy lands.
 
 ## Background
 
