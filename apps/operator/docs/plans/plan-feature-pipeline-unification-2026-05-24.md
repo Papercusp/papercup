@@ -336,7 +336,7 @@ Default stays `proposal` until Phase F soaks; flip to `plan` after.
 - [x] P-026 Edit button navigates to `/adv/plans?slug=<slug>` (plan detail page)
 - [x] P-027 Accept button = confirm modal → `fetchPlan` → derive features from items → `promoteToHarness({ apply: true })`
 - [x] P-028 Reject button = `rejectDraftPlan(slug)` → CAS set-content flipping `status: draft` → `status: superseded`
-- [ ] P-029 Tests: New flow end-to-end (click New → architect chat → emit promote:plan → card appears → Accept → features land)
+- [x] P-029 Tests: New flow end-to-end (click New → architect chat → emit promote:plan → card appears → Accept → features land)
 
 ### Phase F — Scoper `MODE=proposal` → plan output (2 days + 1 week soak)
 
