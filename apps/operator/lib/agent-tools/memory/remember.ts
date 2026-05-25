@@ -13,6 +13,7 @@
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { getMemoryClient } from '../../memory/mem0-client';
+import { anchorMetadata } from '../../memory/anchors';
 import { getSessionUserOrDefault } from '../../auth';
 
 const KINDS = ['identity', 'preference', 'project', 'correction', 'ephemeral'] as const;
@@ -90,6 +91,16 @@ export default defineTool({
     if (args.expires_at) metadata.expires_at = args.expires_at;
     if (args.harness_slug) metadata.harness_slug = args.harness_slug;
     if (args.shared) metadata.shared = true;
+
+    // Phase 4 P-015: extract structural anchors from the body so Layer 1
+    // (P-019) can later validate them with zero LLM cost. Anchors stored
+    // in metadata; the dedicated memory_anchors table (migration 085) is
+    // populated by a follow-up handler once that migration lands in PG.
+    const anchors = anchorMetadata(args.content);
+    if (anchors) {
+      metadata.anchors = anchors.anchors;
+      metadata.anchor_count = anchors.anchor_count;
+    }
 
     const result = await client.add(args.content, {
       userId: userIdForWrite,
