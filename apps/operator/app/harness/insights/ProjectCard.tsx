@@ -1,0 +1,204 @@
+'use client';
+
+/**
+ * ProjectCard — Phase 8 P-073a.
+ *
+ * Plan: papercusp-dogfood-phase8-sidebar-insights-profile-2026-05-24.
+ * v5 §9.0 Insights tab — project card.
+ *
+ * Tier-A static card: name, description, owner (with claimed/unclaimed
+ * badge per addendum 1), license, languages (top 3), GitHub link,
+ * optional Discord link (§11).
+ *
+ * Pure UI; the caller supplies the rendered values (the substrate
+ * aggregations + harness config feed these).
+ */
+
+import type { CSSProperties, ReactNode } from 'react';
+import {
+  ClaimStatusBadge,
+  type ClaimStatus,
+} from '../../_components/ClaimStatusBadge';
+
+const CARD: CSSProperties = {
+  border: '1px solid var(--border, #2a2a2a)',
+  background: 'var(--surface, #1a1a1a)',
+  borderRadius: 10,
+  padding: 20,
+  display: 'flex',
+  flexDirection: 'column',
+  gap: 12,
+  fontSize: 14,
+};
+
+const TITLE_ROW: CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  gap: 10,
+};
+
+const TITLE: CSSProperties = {
+  fontSize: 18,
+  fontWeight: 600,
+  color: 'var(--fg, #ddd)',
+};
+
+const DESCRIPTION: CSSProperties = {
+  color: 'var(--fg-dim, #aaa)',
+  fontSize: 13,
+  lineHeight: 1.5,
+};
+
+const META_GRID: CSSProperties = {
+  display: 'grid',
+  gridTemplateColumns: '90px 1fr',
+  rowGap: 6,
+  columnGap: 12,
+  fontSize: 13,
+};
+
+const META_LABEL: CSSProperties = {
+  color: 'var(--fg-dim, #888)',
+};
+
+const META_VALUE: CSSProperties = {
+  color: 'var(--fg, #ddd)',
+};
+
+const LANG_PILL: CSSProperties = {
+  display: 'inline-flex',
+  alignItems: 'center',
+  gap: 4,
+  padding: '2px 8px',
+  borderRadius: 12,
+  fontSize: 12,
+  background: 'var(--surface-2, #2a2a2a)',
+  color: 'var(--fg, #ddd)',
+  marginRight: 4,
+};
+
+const LANG_DOT: CSSProperties = {
+  width: 8,
+  height: 8,
+  borderRadius: 4,
+  flexShrink: 0,
+};
+
+const LINK_ROW: CSSProperties = {
+  display: 'flex',
+  gap: 12,
+  fontSize: 13,
+};
+
+const LINK: CSSProperties = {
+  color: 'var(--accent, #4CAF50)',
+  textDecoration: 'none',
+};
+
+export interface ProjectCardLanguage {
+  name: string;
+  /** Hex color matching the language. */
+  color: string;
+  /** Percentage 0-100. Used to size visual weight; not rendered here. */
+  percent: number;
+}
+
+export interface ProjectCardProps {
+  /** Harness slug or display name. */
+  name: string;
+  /** One-line description, usually from harness config. */
+  description: string;
+  /** Owner's GitHub login (or display name). */
+  ownerDisplayName: string;
+  /** Used to render ClaimStatusBadge in the title row. */
+  claimStatus: ClaimStatus;
+  /** Optional — for status='claimed', the lead claimant login. */
+  claimantLogin?: string | null;
+  /** Repo license short name (e.g. 'MIT', 'Apache-2.0'). */
+  license?: string | null;
+  /** Top 3 languages, ordered by percent desc. */
+  languages?: ProjectCardLanguage[];
+  /** GitHub repo URL. */
+  githubUrl: string;
+  /** Optional — Discord server URL if §11 is set. */
+  discordUrl?: string | null;
+}
+
+export function ProjectCard(props: ProjectCardProps): ReactNode {
+  const {
+    name,
+    description,
+    ownerDisplayName,
+    claimStatus,
+    claimantLogin,
+    license,
+    languages,
+    githubUrl,
+    discordUrl,
+  } = props;
+
+  const topLanguages = (languages ?? []).slice(0, 3);
+
+  return (
+    <div style={CARD} data-testid="insights-project-card">
+      <div style={TITLE_ROW}>
+        <div style={TITLE}>{name}</div>
+        <ClaimStatusBadge
+          status={claimStatus}
+          claimantLogin={claimantLogin}
+        />
+      </div>
+
+      <div style={DESCRIPTION}>{description}</div>
+
+      <div style={META_GRID}>
+        <div style={META_LABEL}>Owner</div>
+        <div style={META_VALUE}>@{ownerDisplayName}</div>
+
+        {license ? (
+          <>
+            <div style={META_LABEL}>License</div>
+            <div style={META_VALUE}>{license}</div>
+          </>
+        ) : null}
+
+        {topLanguages.length > 0 ? (
+          <>
+            <div style={META_LABEL}>Languages</div>
+            <div style={META_VALUE} data-testid="project-card-languages">
+              {topLanguages.map((l) => (
+                <span key={l.name} style={LANG_PILL}>
+                  <span style={{ ...LANG_DOT, background: l.color }} />
+                  {l.name}
+                </span>
+              ))}
+            </div>
+          </>
+        ) : null}
+      </div>
+
+      <div style={LINK_ROW}>
+        <a
+          href={githubUrl}
+          target="_blank"
+          rel="noreferrer"
+          style={LINK}
+          data-testid="project-card-github-link"
+        >
+          GitHub →
+        </a>
+        {discordUrl ? (
+          <a
+            href={discordUrl}
+            target="_blank"
+            rel="noreferrer"
+            style={LINK}
+            data-testid="project-card-discord-link"
+          >
+            Discord →
+          </a>
+        ) : null}
+      </div>
+    </div>
+  );
+}
