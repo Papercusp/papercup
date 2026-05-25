@@ -43,6 +43,11 @@ describe('client navigation', () => {
       href: '/settings/operator#voice',
       replace: true,
     });
+    expect(resolveClientNavigation('settings/operator?tab=voice#mic', 'http://localhost:3070/harness')).toEqual({
+      mode: 'soft',
+      href: '/settings/operator?tab=voice#mic',
+      replace: false,
+    });
   });
 
   it('resolves cross-origin targets to hard navigation payloads', () => {
@@ -50,6 +55,11 @@ describe('client navigation', () => {
       mode: 'hard',
       href: 'https://example.com',
       replace: false,
+    });
+    expect(resolveClientNavigation('https://example.com', 'http://localhost:3070/harness', { replace: true })).toEqual({
+      mode: 'hard',
+      href: 'https://example.com',
+      replace: true,
     });
   });
 
@@ -68,6 +78,11 @@ describe('client navigation', () => {
       mode: 'none',
       href: null,
       replace: false,
+    });
+    expect(resolveClientNavigation('data:text/plain,hi', 'http://localhost:3070/harness', { replace: true })).toEqual({
+      mode: 'none',
+      href: null,
+      replace: true,
     });
   });
 
