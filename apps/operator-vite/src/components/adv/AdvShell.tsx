@@ -6,9 +6,15 @@ import * as Tabs from '@radix-ui/react-tabs';
  *
  * The Vite operator is the live UI (the legacy Next operator at
  * apps/operator/app/* is parallel/transitional); /adv has to live
- * here too or the ADV navbar button 404s.
+ * here too or the ADV navbar button serves stale tabs.
  */
 const TABS = [
+  { href: '/adv/brainstorm', label: 'Brainstorm' },
+  { href: '/adv/prs', label: 'PRs' },
+  { href: '/adv/insights', label: 'Insights' },
+  { href: '/adv/config', label: 'Config' },
+  { href: '/adv/settings', label: 'Settings' },
+  { href: '/adv/docs', label: 'Docs' },
   { href: '/adv/plans', label: 'Plans' },
   { href: '/adv/sessions', label: 'Sessions' },
 ] as const;
@@ -20,7 +26,7 @@ export default function AdvShell({
   title?: string;
   children: React.ReactNode;
 }) {
-  const pathname = useRouterState({ select: (s) => s.location.pathname }) || '/adv/plans';
+  const pathname = useRouterState({ select: (s) => s.location.pathname }) || '/adv/brainstorm';
   const activeTab = TABS.find((t) => pathname === t.href || pathname.startsWith(`${t.href}/`)) ?? TABS[0];
 
   return (
