@@ -30,8 +30,10 @@ import {
   addPlanDecision,
   addPlanItem,
   setPlanNow,
+  promoteToHarness,
   type PlanDecision,
   type PlanItem,
+  type PromoteToHarnessResult,
   type WriteResult,
 } from './plans-api';
 
@@ -51,7 +53,7 @@ interface Props {
   disabledReason?: string;
 }
 
-type Dialog = null | 'set-now' | 'add-decision' | 'add-item';
+type Dialog = null | 'set-now' | 'add-decision' | 'add-item' | 'promote';
 
 export default function PlanActions({
   slug,
@@ -136,6 +138,32 @@ export default function PlanActions({
       </button>
       <button
         type="button"
+        className="pc-plan-actions__btn pc-plan-actions__btn--promote"
+        onClick={() => setOpen('promote')}
+        disabled={disabled || (items ?? []).filter((i) => i.effectiveStatus !== 'done' && i.effectiveStatus !== 'dropped').length === 0}
+        title={
+          disabled
+            ? disabledReason
+            : 'Promote plan items to harness features (plans:promote apply=true)'
+        }
+      >
+        Promote to features
+      </button>
+      <button
+        type="button"
+        className="pc-plan-actions__btn pc-plan-actions__btn--promote"
+        onClick={() => setOpen('promote')}
+        disabled={disabled || (items ?? []).filter((i) => i.effectiveStatus === 'todo' || i.effectiveStatus === 'wip').length === 0}
+        title={
+          disabled
+            ? disabledReason
+            : 'Promote plan items to harness features via plans:promote'
+        }
+      >
+        → Harness
+      </button>
+      <button
+        type="button"
         className="pc-plan-actions__btn pc-plan-actions__btn--launch"
         onClick={onLaunchAgent}
         disabled={launchingAgent}
@@ -144,6 +172,16 @@ export default function PlanActions({
         {launchingAgent ? 'Launching…' : 'Launch agent'}
       </button>
 
+      <PromoteDialog
+        open={open === 'promote'}
+        onClose={() => setOpen(null)}
+        slug={slug}
+        items={items}
+        onSuccess={() => {
+          setOpen(null);
+          onChanged();
+        }}
+      />
       <SetNowDialog
         open={open === 'set-now'}
         onClose={() => setOpen(null)}
@@ -175,6 +213,17 @@ export default function PlanActions({
         nextItemPreview={previewNextItemId(items)}
         onSuccess={() => {
           setOpen(null);
+          onChanged();
+        }}
+      />
+      <PromoteDialog
+        open={open === 'promote'}
+        onClose={() => setOpen(null)}
+        slug={slug}
+        items={items}
+        onSuccess={(count) => {
+          setOpen(null);
+          toast.success(`Promoted ${count} feature${count === 1 ? '' : 's'} to harness. Worker will pick up shortly.`, { duration: 6000 });
           onChanged();
         }}
       />
@@ -540,6 +589,285 @@ function AddItemDialog({
           canSubmit={!!phase.trim() && !!text.trim()}
         />
       </form>
+    </Modal>
+  );
+}
+
+/* ── Promote to features dialog ────────────────────────────────────── */
+
+function PromoteDialog({
+  open,
+  onClose,
+  slug,
+  items,
+  onSuccess,
+}: {
+  open: boolean;
+  onClose: () => void;
+  slug: string;
+  items: PlanItem[] | undefined;
+  onSuccess: (count: number) => void;
+}) {
+  const [harnessSlug, setHarnessSlug] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const promotable = useMemo(
+    () => (items ?? []).filter((i) => i.effectiveStatus !== 'done' && i.effectiveStatus !== 'dropped'),
+    [items],
+  );
+
+  useResetOnOpen(open, () => {
+    setHarnessSlug('');
+    setError(null);
+  });
+
+  const onSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const target = harnessSlug.trim();
+    if (!target) return;
+    setSubmitting(true);
+    setError(null);
+    try {
+      const features = promotable.map((item) => ({
+        title: item.text.slice(0, 200),
+        from_items: [item.id],
+      }));
+      const r = await promoteToHarness({ slug, harness_slug: target, features, apply: true });
+      if (r.ok === false && r.error) {
+        setError(r.error);
+      } else {
+        onSuccess(r.features_created ?? features.length);
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <Modal
+      open={open}
+      onOpenChange={(o) => !o && onClose()}
+      title="Promote to features"
+      srOnlyTitle
+      contentClassName="pc-plan-dialog"
+    >
+      <form onSubmit={onSubmit} className="pc-plan-dialog__form">
+        <header className="pc-plan-dialog__head">
+          <h3>Promote to features</h3>
+          <p>
+            {promotable.length === 0
+              ? 'No promotable items — all items are done or dropped.'
+              : <>Promote <strong>{promotable.length}</strong> item{promotable.length === 1 ? '' : 's'} from this plan into the target harness as features.</>
+            }
+          </p>
+        </header>
+        <label className="pc-plan-dialog__field">
+          <span>Target harness slug</span>
+          <input
+            type="text"
+            value={harnessSlug}
+            onChange={(e) => setHarnessSlug(e.target.value)}
+            placeholder="e.g. papercup, restart, sheets"
+            required
+            autoFocus
+            disabled={promotable.length === 0}
+          />
+        </label>
+        <DialogFooter
+          error={error}
+          submitting={submitting}
+          submitLabel={`Promote ${promotable.length} item${promotable.length === 1 ? '' : 's'}`}
+          onCancel={onClose}
+          canSubmit={!!harnessSlug.trim() && promotable.length > 0}
+        />
+      </form>
+    </Modal>
+  );
+}
+
+/* ── Promote to Harness dialog ─────────────────────────────────────── */
+
+function PromoteDialog({
+  open,
+  onClose,
+  slug,
+  items,
+  onSuccess,
+}: {
+  open: boolean;
+  onClose: () => void;
+  slug: string;
+  items: PlanItem[] | undefined;
+  onSuccess: () => void;
+}) {
+  const [harnessSlug, setHarnessSlug] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [result, setResult] = useState<PromoteToHarnessResult | null>(null);
+
+  const candidateItems = useMemo(
+    () =>
+      (items ?? []).filter(
+        (i) => i.effectiveStatus === 'todo' || i.effectiveStatus === 'wip',
+      ),
+    [items],
+  );
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+
+  useResetOnOpen(open, () => {
+    setHarnessSlug('');
+    setSelected(new Set(candidateItems.map((i) => i.id)));
+    setError(null);
+    setResult(null);
+  });
+
+  // Keep selected in sync when candidateItems changes (e.g. dialog reopened).
+  useEffect(() => {
+    if (open) {
+      setSelected(new Set(candidateItems.map((i) => i.id)));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
+
+  const toggleItem = (id: string) => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const onSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const hs = harnessSlug.trim();
+    if (!hs) {
+      setError('Harness slug is required.');
+      return;
+    }
+    const features = candidateItems
+      .filter((i) => selected.has(i.id))
+      .map((i) => ({ title: i.text, from_items: [i.id] }));
+    if (features.length === 0) {
+      setError('Select at least one item to promote.');
+      return;
+    }
+    setSubmitting(true);
+    setError(null);
+    setResult(null);
+    try {
+      const r = await promoteToHarness({ slug, harness_slug: hs, features, apply: true });
+      if (!r.ok) {
+        setError(r.error ?? 'promote failed');
+      } else {
+        setResult(r);
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <Modal
+      open={open}
+      onOpenChange={(o) => !o && onClose()}
+      title="Promote to harness"
+      srOnlyTitle
+      contentClassName="pc-plan-dialog"
+    >
+      {result ? (
+        <div className="pc-plan-dialog__form">
+          <header className="pc-plan-dialog__head">
+            <h3>Promoted</h3>
+            <p>
+              {result.features_created ?? result.ids?.length ?? 0} feature(s) created in{' '}
+              <strong>{harnessSlug}</strong>.
+            </p>
+          </header>
+          <footer className="pc-plan-dialog__foot">
+            <div className="pc-plan-dialog__buttons">
+              <button
+                type="button"
+                className="pc-plan-dialog__btn pc-plan-dialog__btn--primary"
+                onClick={onSuccess}
+              >
+                Done
+              </button>
+            </div>
+          </footer>
+        </div>
+      ) : (
+        <form onSubmit={onSubmit} className="pc-plan-dialog__form">
+          <header className="pc-plan-dialog__head">
+            <h3>→ Promote to Harness</h3>
+            <p>
+              Creates harness features from the selected plan items via{' '}
+              <code>plans:promote</code>. Each item's text becomes the feature
+              title; items are marked done after promotion.
+            </p>
+          </header>
+          <label className="pc-plan-dialog__field">
+            <span>Harness slug</span>
+            <input
+              type="text"
+              value={harnessSlug}
+              onChange={(e) => setHarnessSlug(e.target.value)}
+              placeholder="e.g. papercup, sheets"
+              required
+              autoFocus
+            />
+          </label>
+          <div className="pc-plan-dialog__field">
+            <span>Items to promote ({selected.size} / {candidateItems.length} selected)</span>
+            <div style={{ maxHeight: '240px', overflowY: 'auto', marginTop: '4px' }}>
+              {candidateItems.length === 0 ? (
+                <p style={{ color: 'var(--fg-mute)', fontSize: '0.85em' }}>
+                  No todo/wip items to promote.
+                </p>
+              ) : (
+                candidateItems.map((item) => (
+                  <label
+                    key={item.id}
+                    style={{
+                      display: 'flex',
+                      gap: '8px',
+                      alignItems: 'flex-start',
+                      padding: '4px 0',
+                      cursor: 'pointer',
+                      fontSize: '0.85em',
+                    }}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={selected.has(item.id)}
+                      onChange={() => toggleItem(item.id)}
+                      style={{ marginTop: '2px', flexShrink: 0 }}
+                    />
+                    <span>
+                      <code style={{ color: 'var(--fg-mute)', fontSize: '0.9em' }}>
+                        {item.id}
+                      </code>{' '}
+                      {item.text}
+                    </span>
+                  </label>
+                ))
+              )}
+            </div>
+          </div>
+          <DialogFooter
+            error={error}
+            submitting={submitting}
+            submitLabel={`Promote ${selected.size} item${selected.size === 1 ? '' : 's'}`}
+            onCancel={onClose}
+            canSubmit={!!harnessSlug.trim() && selected.size > 0}
+          />
+        </form>
+      )}
     </Modal>
   );
 }

@@ -463,6 +463,29 @@ export function promotePlan(args: PromoteArgs) {
   );
 }
 
+export interface PromoteToHarnessFeature {
+  title: string;
+  from_items?: string[];
+}
+
+export interface PromoteToHarnessArgs {
+  slug: string;
+  harness_slug: string;
+  features: PromoteToHarnessFeature[];
+  apply: boolean;
+}
+
+export interface PromoteToHarnessResult {
+  ok: boolean;
+  features_created?: number;
+  ids?: string[];
+  error?: string;
+}
+
+export function promoteToHarness(args: PromoteToHarnessArgs) {
+  return postJson<PromoteToHarnessResult>('promote', args as unknown as Record<string, unknown>);
+}
+
 export function lintPlan(args: LintArgs = {}) {
   // lint is a read (GET) but logically a write-time companion (called
   // after assisted writes); expose it next to the writers so call sites
