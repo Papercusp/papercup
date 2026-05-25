@@ -158,14 +158,25 @@ const HOST_EXTRAS = {
   validateSuperuser: () => true,
 };
 
-const ADMIN_SP = new URLSearchParams({ superuser: '1', client: 'pc-admin-plan-block' });
+function buildAdminSp(harnessSlug?: string): URLSearchParams {
+  const sp = new URLSearchParams({ superuser: '1', client: 'pc-admin-plan-block' });
+  // R3-C: pass harness so ctx.harnessSlug is set on the dispatched tool
+  // call. Without this, plans:new resolves to the primary harness and
+  // the architect's plan lands in the wrong harness's plans dir.
+  if (harnessSlug && harnessSlug.trim()) sp.set('harness', harnessSlug.trim());
+  return sp;
+}
 
-async function callTool(verb: string, body: Record<string, unknown>): Promise<unknown> {
+async function callTool(
+  verb: string,
+  body: Record<string, unknown>,
+  harnessSlug?: string,
+): Promise<unknown> {
   const res = await handleHttpToolRequest(
     {
       method: 'POST',
       pathname: `/api/agent-tools/plans/${verb}`,
-      searchParams: ADMIN_SP,
+      searchParams: buildAdminSp(harnessSlug),
       headers: {},
       body,
     },
@@ -191,13 +202,16 @@ async function callTool(verb: string, body: Record<string, unknown>): Promise<un
  * succeeded). This is safe because the plan is `status: draft` and not
  * yet in any queue. The caller can delete or ignore it.
  */
-export async function applyPlanBlock(parsed: ParsedPlanBlock): Promise<{ slug: string }> {
+export async function applyPlanBlock(
+  parsed: ParsedPlanBlock,
+  harnessSlug?: string,
+): Promise<{ slug: string }> {
   // 1. Create the plan stub.
   const newResult = (await callTool('new', {
     slug: toKebab(parsed.title),
     title: parsed.title,
     status: 'draft',
-  })) as { ok?: boolean; slug?: string; error?: string };
+  }, harnessSlug)) as { ok?: boolean; slug?: string; error?: string };
 
   if (!newResult.ok || !newResult.slug) {
     throw new Error(newResult.error ?? 'plans:new failed');
@@ -210,7 +224,7 @@ export async function applyPlanBlock(parsed: ParsedPlanBlock): Promise<{ slug: s
       slug,
       state: parsed.nowState || 'Plan freshly created by architect.',
       next: parsed.nowNext || 'Human reviews plan and approves.',
-    });
+    }, harnessSlug);
   }
 
   // 3. Add items phase-by-phase.
@@ -221,7 +235,7 @@ export async function applyPlanBlock(parsed: ParsedPlanBlock): Promise<{ slug: s
         phase: phase.name,
         text: item.text,
         blockedBy: item.blockedBy.length > 0 ? item.blockedBy : undefined,
-      });
+      }, harnessSlug);
     }
   }
 
@@ -231,7 +245,7 @@ export async function applyPlanBlock(parsed: ParsedPlanBlock): Promise<{ slug: s
       slug,
       title: dec.title,
       body: dec.body,
-    });
+    }, harnessSlug);
   }
 
   return { slug };
@@ -293,7 +307,7 @@ export default defineTool({
       };
     }
     try {
-      const { slug } = await applyPlanBlock(parsed);
+      const { slug } = await applyPlanBlock(parsed, args.harnessSlug);
       return {
         content: [
           {
