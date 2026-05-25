@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { resolveNotifyActionTarget } from '../notify';
+import { resolveNotifyActionTarget, shouldInvokeNotifyActionCallback } from '../notify';
 
 describe('notify action target resolution', () => {
   it('routes same-origin app paths through client navigation', () => {
@@ -19,5 +19,10 @@ describe('notify action target resolution', () => {
     expect(resolveNotifyActionTarget('javascript:alert(1)')).toEqual({ kind: 'none', href: null });
     expect(resolveNotifyActionTarget('data:text/plain,hi')).toEqual({ kind: 'none', href: null });
     expect(resolveNotifyActionTarget('not a url')).toEqual({ kind: 'none', href: null });
+  });
+  it('reports whether a toast action callback should be invoked', () => {
+    expect(shouldInvokeNotifyActionCallback(undefined)).toBe(false);
+    expect(shouldInvokeNotifyActionCallback({})).toBe(false);
+    expect(shouldInvokeNotifyActionCallback({ onClick: () => {} })).toBe(true);
   });
 });

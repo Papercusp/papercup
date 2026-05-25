@@ -63,6 +63,10 @@ export function resolveNotifyActionTarget(href: string | undefined): {
   }
 }
 
+export function shouldInvokeNotifyActionCallback(action: Pick<NotifyAction, 'onClick'> | undefined): boolean {
+  return typeof action?.onClick === 'function';
+}
+
 function buildSonnerAction(action: NotifyAction | undefined) {
   if (!action) return undefined;
   // The `label` is rendered by sonner inside its action `<button>`. By
@@ -86,7 +90,7 @@ function buildSonnerAction(action: NotifyAction | undefined) {
       } else if (target.kind === 'external' && target.href) {
         window.open(target.href, '_blank', 'noopener,noreferrer');
       }
-      action.onClick?.();
+      if (shouldInvokeNotifyActionCallback(action)) action.onClick?.();
     },
   };
 }
