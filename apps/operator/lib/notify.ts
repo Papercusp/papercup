@@ -53,9 +53,14 @@ export function resolveNotifyActionTarget(href: string | undefined): {
   href: string | null;
 } {
   if (!href) return { kind: 'none', href: null };
-  return href.startsWith('/')
-    ? { kind: 'client', href }
-    : { kind: 'external', href };
+  if (href.startsWith('/')) return { kind: 'client', href };
+  try {
+    const url = new URL(href);
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') return { kind: 'none', href: null };
+    return { kind: 'external', href };
+  } catch {
+    return { kind: 'none', href: null };
+  }
 }
 
 function buildSonnerAction(action: NotifyAction | undefined) {

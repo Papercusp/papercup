@@ -14,4 +14,10 @@ describe('notify action target resolution', () => {
   it('returns none when no href is supplied', () => {
     expect(resolveNotifyActionTarget(undefined)).toEqual({ kind: 'none', href: null });
   });
+
+  it('fails closed on unsafe or malformed hrefs', () => {
+    expect(resolveNotifyActionTarget('javascript:alert(1)')).toEqual({ kind: 'none', href: null });
+    expect(resolveNotifyActionTarget('data:text/plain,hi')).toEqual({ kind: 'none', href: null });
+    expect(resolveNotifyActionTarget('not a url')).toEqual({ kind: 'none', href: null });
+  });
 });
