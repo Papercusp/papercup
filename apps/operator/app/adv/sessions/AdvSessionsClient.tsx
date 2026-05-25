@@ -3,7 +3,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import * as Collapsible from '@radix-ui/react-collapsible';
 import * as Tabs from '@radix-ui/react-tabs';
-import { Activity, ChevronRight, FolderKanban, TerminalSquare, Zap } from 'lucide-react';
+import { ChevronRight } from 'lucide-react';
 import { parseAsArrayOf, parseAsString, useQueryState } from 'nuqs';
 import { toast } from 'sonner';
 import { Button } from '@/app/harness/Button';
@@ -626,16 +626,25 @@ export default function AdvSessionsClient() {
   }, [rows, summaryByRowId]);
 
   const grouped = useMemo(() => groupRows(visibleRows), [visibleRows]);
-  const stats = useMemo(() => summarizeRows(rows ?? []), [rows]);
+  const autoExpandedSelectionRef = React.useRef<string | null>(null);
 
-  // If the user deep-links to a session inside a collapsed group,
-  // auto-expand that group so the row is visible. Don't fight the
-  // user — only adds keys, never removes.
+  // Auto-expand a newly-selected deep-linked row once so it becomes
+  // visible, but don't immediately re-open a group the user just
+  // collapsed while that same row remains selected.
   useEffect(() => {
-    if (!selectedRow) return;
+    if (!selectedRow) {
+      autoExpandedSelectionRef.current = null;
+      return;
+    }
     const group = grouped.find((g) => g.rows.some((r) => r.id === selectedRow.id));
     if (!group) return;
-    if (expandedGroups.includes(group.key)) return;
+    const token = `${selectedRow.id}:${group.key}`;
+    if (expandedGroups.includes(group.key)) {
+      autoExpandedSelectionRef.current = token;
+      return;
+    }
+    if (autoExpandedSelectionRef.current === token) return;
+    autoExpandedSelectionRef.current = token;
     void setExpandedGroups([...expandedGroups, group.key]);
   }, [selectedRow, grouped, expandedGroups, setExpandedGroups]);
 
@@ -652,7 +661,6 @@ export default function AdvSessionsClient() {
         <div className="pc-adv-sessions__launch-card" aria-label="Launch a new OMP session">
           <div className="pc-adv-sessions__launch-copy">
             <strong>Start from plan context</strong>
-            <span>Pick a plan and model; the new terminal opens with the right briefing.</span>
           </div>
           <div className="pc-adv-sessions__head-actions">
             <Select
@@ -689,12 +697,6 @@ export default function AdvSessionsClient() {
         </div>
       </header>
 
-      <div className="pc-adv-sessions__statstrip" aria-label="Session summary">
-        <SummaryStat label="Sessions" value={rows ? stats.total : '—'} icon={<TerminalSquare size={15} />} />
-        <SummaryStat label="Active" value={rows ? stats.active : '—'} icon={<Activity size={15} />} tone="active" />
-        <SummaryStat label="OMP" value={rows ? stats.omp : '—'} icon={<Zap size={15} />} />
-        <SummaryStat label="Plans" value={rows ? stats.planCount : '—'} icon={<FolderKanban size={15} />} />
-      </div>
       {error ? <p className="pc-adv-sessions__error">Failed to load: {error}</p> : null}
       {rows === null && !error ? <p className="pc-adv-sessions__placeholder">Loading…</p> : null}
       {rows && rows.length === 0 ? (
@@ -846,25 +848,26 @@ export default function AdvSessionsClient() {
           color: var(--fg-dim);
         }
         .pc-adv-sessions__head {
+        .pc-adv-sessions__head {
           display: grid;
-          grid-template-columns: minmax(260px, 0.72fr) minmax(420px, 1.28fr);
-          gap: 14px;
+          grid-template-columns: minmax(240px, 0.82fr) minmax(380px, 1.18fr);
+          gap: 10px;
           align-items: stretch;
         }
         .pc-adv-sessions__head-copy,
         .pc-adv-sessions__launch-card {
           border: 1px solid var(--border);
-          border-radius: 16px;
+          border-radius: 14px;
           background:
-            radial-gradient(circle at top left, color-mix(in oklab, var(--accent), transparent 86%), transparent 34%),
-            linear-gradient(180deg, color-mix(in oklab, var(--bg-2), white 4%), color-mix(in oklab, var(--bg), transparent 6%));
+            radial-gradient(circle at top left, color-mix(in oklab, var(--accent), transparent 88%), transparent 28%),
+            linear-gradient(180deg, color-mix(in oklab, var(--bg-2), white 3%), color-mix(in oklab, var(--bg), transparent 5%));
         }
         .pc-adv-sessions__head-copy {
           display: grid;
           align-content: center;
-          gap: 6px;
+          gap: 4px;
           min-width: 0;
-          padding: 16px;
+          padding: 12px 14px;
         }
         .pc-adv-sessions__kicker {
           color: var(--accent);
@@ -877,88 +880,39 @@ export default function AdvSessionsClient() {
         .pc-adv-sessions__head h2 {
           margin: 0;
           color: var(--fg);
-          font-size: 22px;
-          font-weight: 760;
+          font-size: 18px;
+          font-weight: 740;
           letter-spacing: -0.02em;
-          line-height: 1.08;
+          line-height: 1.05;
         }
         .pc-adv-sessions__subhead {
           margin: 0;
-          max-width: 54ch;
+          max-width: 52ch;
           color: var(--fg-mute);
-          font-size: 12px;
-          line-height: 1.45;
+          font-size: 11px;
+          line-height: 1.35;
         }
         .pc-adv-sessions__launch-card {
           display: grid;
-          gap: 12px;
-          padding: 14px;
+          align-content: center;
+          gap: 8px;
+          padding: 12px 14px;
         }
         .pc-adv-sessions__launch-copy {
           display: grid;
-          gap: 3px;
+          gap: 0;
         }
         .pc-adv-sessions__launch-copy strong {
           color: var(--fg);
-          font-size: 13px;
-        }
-        .pc-adv-sessions__launch-copy span {
-          color: var(--fg-mute);
           font-size: 12px;
+          line-height: 1.2;
         }
         .pc-adv-sessions__head-actions {
           display: flex;
           align-items: center;
-          justify-content: flex-end;
+          justify-content: flex-start;
           gap: 8px;
           flex-wrap: wrap;
-        }
-        .pc-adv-sessions__statstrip {
-          display: grid;
-          grid-template-columns: repeat(4, minmax(0, 1fr));
-          gap: 10px;
-        }
-        .pc-adv-sessions__stat {
-          display: flex;
-          align-items: center;
-          gap: 10px;
-          min-width: 0;
-          padding: 10px 12px;
-          border: 1px solid var(--border);
-          border-radius: 14px;
-          background: color-mix(in oklab, var(--bg-2), white 2%);
-        }
-        .pc-adv-sessions__stat.is-active {
-          border-color: var(--border-strong);
-          background: color-mix(in oklab, var(--accent), transparent 88%);
-        }
-        .pc-adv-sessions__stat-icon {
-          display: inline-flex;
-          align-items: center;
-          justify-content: center;
-          width: 28px;
-          height: 28px;
-          border-radius: 10px;
-          color: var(--accent);
-          background: color-mix(in oklab, var(--accent), transparent 88%);
-          flex: 0 0 auto;
-        }
-        .pc-adv-sessions__stat-copy {
-          display: grid;
-          gap: 1px;
-          min-width: 0;
-        }
-        .pc-adv-sessions__stat-copy strong {
-          color: var(--fg);
-          font-size: 18px;
-          line-height: 1;
-        }
-        .pc-adv-sessions__stat-copy span {
-          color: var(--fg-mute);
-          font-size: 10px;
-          font-weight: 700;
-          letter-spacing: 0.08em;
-          text-transform: uppercase;
         }
         .pc-adv-sessions__layout {
           display: grid;
@@ -1011,9 +965,9 @@ export default function AdvSessionsClient() {
           cursor: not-allowed;
         }
         .pc-adv-sessions__select--plan {
-          flex: 1 1 260px;
-          min-width: min(100%, 260px);
-          max-width: 420px;
+          flex: 1 1 240px;
+          min-width: min(100%, 240px);
+          max-width: 380px;
         }
         .pc-adv-sessions__refresh,
         .pc-adv-sessions__btn {
@@ -1049,7 +1003,7 @@ export default function AdvSessionsClient() {
           color: var(--fg);
         }
         .pc-adv-sessions__launch-btn {
-          min-width: 142px;
+          min-width: 136px;
         }
         .pc-adv-sessions__btn:disabled {
           opacity: 0.48;
@@ -1196,10 +1150,6 @@ export default function AdvSessionsClient() {
           gap: 8px;
           flex-wrap: wrap;
           font-size: 12px;
-        }
-        .pc-adv-sessions__row-hint {
-          color: var(--fg-mute);
-          font-size: 11px;
         }
         .pc-adv-sessions__badge {
           padding: 2px 7px;
@@ -1488,10 +1438,10 @@ export default function AdvSessionsClient() {
           .pc-adv-sessions {
             padding: 12px;
           }
-          .pc-adv-sessions__statstrip {
-            grid-template-columns: repeat(2, minmax(0, 1fr));
+          .pc-adv-sessions__head-actions {
+            align-items: stretch;
+            flex-direction: column;
           }
-          .pc-adv-sessions__head-actions,
           .pc-adv-sessions__row {
             align-items: stretch;
             grid-template-columns: 1fr;
@@ -1984,47 +1934,6 @@ function RowUsagePills({
       ) : null}
     </span>
   );
-}
-function SummaryStat({
-  label,
-  value,
-  icon,
-  tone,
-}: {
-  label: string;
-  value: string | number;
-  icon: React.ReactNode;
-  tone?: 'active';
-}) {
-  return (
-    <div className={`pc-adv-sessions__stat${tone === 'active' ? ' is-active' : ''}`}>
-      <span className="pc-adv-sessions__stat-icon" aria-hidden>{icon}</span>
-      <span className="pc-adv-sessions__stat-copy">
-        <strong>{value}</strong>
-        <span>{label}</span>
-      </span>
-    </div>
-  );
-}
-
-function summarizeRows(rows: SessionRow[]) {
-  const planKeys = new Set<string>();
-  let active = 0;
-  let omp = 0;
-  let linked = 0;
-  for (const row of rows) {
-    planKeys.add(row.planSlug ?? '(no plan)');
-    if (row.endedAt == null) active += 1;
-    if (row.mode === 'omp') omp += 1;
-    if (row.ompThreadId?.trim()) linked += 1;
-  }
-  return {
-    total: rows.length,
-    active,
-    omp,
-    linked,
-    planCount: planKeys.size,
-  };
 }
 
 function MetricCard({ label, value }: { label: string; value: string | number }) {
