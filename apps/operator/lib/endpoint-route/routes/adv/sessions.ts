@@ -16,7 +16,9 @@ import {
   getAdvSession,
   listAdvSessions,
   resolveWindowIdForPid,
+  resolveWindowIdForTitleFragment,
   setAdvSessionOmpThreadId,
+  setAdvSessionWindowId,
 } from '@/lib/adv-sessions';
 import { readOmpConfig } from '@/lib/omp-config';
 import {
@@ -145,15 +147,26 @@ const focus = defineTool({
   path: '/adv/sessions/focus',
   auth: 'public',
   async handler(req) {
-    let body: { pid?: number; windowId?: string | null } = {};
+    let body: { id?: number; pid?: number; windowId?: string | null } = {};
     try {
       const text = await req.text();
       if (text.trim()) body = JSON.parse(text);
     } catch { /* ignore */ }
 
     let wid = body.windowId ?? null;
+    const latestRow =
+      typeof body.id === 'number' && body.id > 0
+        ? await getAdvSession(body.id)
+        : null;
+    if (!wid && latestRow?.windowId) {
+      wid = latestRow.windowId;
+    }
     if (!wid && typeof body.pid === 'number') {
       wid = await resolveWindowIdForPid(body.pid);
+    }
+    if (!wid && latestRow?.id) {
+      wid = await resolveWindowIdForTitleFragment(`[adv:${latestRow.id}]`);
+      if (wid) await setAdvSessionWindowId(latestRow.id, wid);
     }
     if (!wid) {
       return new Response(

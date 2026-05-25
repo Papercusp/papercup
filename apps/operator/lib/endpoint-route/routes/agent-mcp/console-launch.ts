@@ -7,7 +7,7 @@
  * Ported from app/api/agent-mcp/console/launch/route.ts. `auth: 'public'` —
  * requirePrincipal() inline.
  */
-import { spawn, type ChildProcess } from 'node:child_process';
+import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import { homedir } from 'node:os';
 import { appendFileSync, existsSync, writeFileSync, renameSync } from 'node:fs';
 import { join } from 'node:path';
@@ -15,7 +15,7 @@ import { activeWorkspaceId } from '@/lib/workspace-registry';
 import { buildConsoleEnvelope } from '@/lib/console-launcher';
 import { PrincipalCheckError, requirePrincipal } from '@/lib/auth/require-principal';
 import { defineTool } from '@papercusp/agent-mcp';
-import { recordAdvSession, markAdvSessionEnded, setAdvSessionPid } from '@/lib/adv-sessions';
+import { recordAdvSession, markAdvSessionEnded, resolveWindowIdForTitleFragment, setAdvSessionPid, setAdvSessionWindowId } from '@/lib/adv-sessions';
 import { readOmpIntegrationState } from '@/lib/desktop-install/omp-integration';
 import { resolveInstallPaths } from '@/lib/desktop-install/papercusp-files';
 import { ensureOmpSuInstalled } from '@/lib/ensure-omp-su';
@@ -72,7 +72,11 @@ async function gatePrincipal(headers: Headers): Promise<Response | null> {
 }
 
 const LINUX_TERMINALS: Array<[string, string[]]> = [
-  ['gnome-terminal', ['--window', '--']],
+  // gnome-terminal is a thin client talking to gnome-terminal-server; without
+  // `--wait` the client process exits immediately after creating the window,
+  // which makes adv_sessions rows look "ended" even while the real terminal is
+  // still open.
+  ['gnome-terminal', ['--wait', '--window', '--']],
   ['konsole', ['--new-window', '-e']],
   ['xfce4-terminal', ['--window', '-e']],
   ['alacritty', ['-e']],
@@ -90,10 +94,33 @@ function isOnPath(bin: string): boolean {
 function findLinuxTerminal(): { bin: string; args: string[] } | null {
   const fromEnv = process.env.TERMINAL;
   if (fromEnv && isOnPath(fromEnv)) {
+    if (fromEnv === 'gnome-terminal') return { bin: fromEnv, args: ['--wait', '--'] };
     return { bin: fromEnv, args: ['-e'] };
   }
   for (const [bin, args] of LINUX_TERMINALS) {
     if (isOnPath(bin)) return { bin, args: [...args] };
+  }
+  return null;
+}
+
+function listWmctrlWindowIds(): string[] {
+  try {
+    const r = spawnSync('wmctrl', ['-lp'], { encoding: 'utf8' });
+    if (r.status !== 0) return [];
+    return r.stdout
+      .split('\n')
+      .map((line) => line.trim().split(/\s+/, 2)[0])
+      .filter((id) => id && /^0x[0-9a-f]+$/i.test(id));
+  } catch {
+    return [];
+  }
+}
+
+async function resolveNewWindowId(before: ReadonlySet<string>): Promise<string | null> {
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    const next = listWmctrlWindowIds().find((id) => !before.has(id));
+    if (next) return next;
+    await new Promise((resolve) => setTimeout(resolve, 250));
   }
   return null;
 }
@@ -118,6 +145,7 @@ interface AppearanceOpts {
   mode: 'omp' | 'console';
   planSlug: string | null;
   label: string | null;
+  advSessionId?: number | null;
 }
 function buildAppearancePrelude(opts: AppearanceOpts): string {
   const bg = hashSlugToColor(opts.planSlug, opts.mode);
@@ -157,10 +185,27 @@ function hashSlugToColor(planSlug: string | null, mode: 'omp' | 'console'): stri
   return palette[Math.abs(h) % palette.length];
 }
 
+function advSessionTitleTag(id: number | null | undefined): string {
+  return id != null ? `[adv:${id}]` : '';
+}
+
+async function resolveAndStoreWindowIdForAdvSession(id: number): Promise<void> {
+  const tag = advSessionTitleTag(id);
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    const wid = await resolveWindowIdForTitleFragment(tag);
+    if (wid) {
+      await setAdvSessionWindowId(id, wid);
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+}
+
 function formatWindowTitle(opts: AppearanceOpts): string {
   const tag = opts.mode === 'omp' ? 'OMP' : 'SH';
+  const advTag = advSessionTitleTag(opts.advSessionId);
   const name = opts.label?.trim() || opts.planSlug;
-  return name ? `${tag}: ${name}` : tag;
+  return name ? `${tag}${advTag}: ${name}` : `${tag}${advTag}`;
 }
 
 function buildOmpOneliner(
@@ -386,6 +431,7 @@ const post = defineTool({
           500,
         );
       }
+      const beforeWindowIds = new Set(listWmctrlWindowIds());
       const advSessionId = await recordAdvSession({
         planSlug: body.planSlug ?? null,
         mode: 'omp',
@@ -402,7 +448,7 @@ const post = defineTool({
         envelope.cwd,
         ompEnv,
         envelope.launchCommand ?? 'omp-su',
-        { mode: 'omp', planSlug: body.planSlug ?? null, label: body.label ?? null },
+        { mode: 'omp', planSlug: body.planSlug ?? null, label: body.label ?? null, advSessionId },
       );
       try {
         const child = spawn(term.bin, [...term.args, 'bash', '-lc', ompOneliner], {
@@ -413,6 +459,10 @@ const post = defineTool({
         });
         if (advSessionId != null) {
           void setAdvSessionPid(advSessionId, child.pid ?? null);
+          void resolveAndStoreWindowIdForAdvSession(advSessionId);
+          void resolveNewWindowId(beforeWindowIds).then((wid) => {
+            if (wid) return setAdvSessionWindowId(advSessionId, wid);
+          });
         }
         attachExitWatcher(child, Promise.resolve(advSessionId));
         child.unref();

@@ -116,6 +116,23 @@ export async function setAdvSessionPid(id: number, pid: number | null): Promise<
   }
 }
 
+export async function setAdvSessionWindowId(id: number, windowId: string | null): Promise<void> {
+  const trimmed = windowId?.trim() || null;
+  if (!trimmed) return;
+  try {
+    await ensureAdvSessionsTable();
+    const { sql } = getOrgPg();
+    await sql`
+      UPDATE harness_shared.adv_sessions
+         SET window_id = ${trimmed}
+       WHERE id = ${id}
+         AND workspace_id = ${activeWorkspaceId()}
+    `;
+  } catch (e) {
+    console.warn('[adv-sessions] setAdvSessionWindowId failed:', (e as Error).message);
+  }
+}
+
 export type AdvSessionLinkResult =
   | 'linked'
   | 'already_linked'
@@ -252,6 +269,24 @@ export async function resolveWindowIdForPid(pid: number): Promise<string | null>
       const parts = line.trim().split(/\s+/, 5);
       if (parts.length < 4) continue;
       if (Number(parts[2]) === pid) return parts[0];
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+export async function resolveWindowIdForTitleFragment(fragment: string): Promise<string | null> {
+  const wanted = fragment.trim();
+  if (!wanted) return null;
+  const { spawnSync } = await import('node:child_process');
+  try {
+    const r = spawnSync('wmctrl', ['-lp'], { encoding: 'utf8' });
+    if (r.status !== 0) return null;
+    for (const line of r.stdout.split('\n')) {
+      const parts = line.trim().split(/\s+/, 5);
+      if (parts.length < 5) continue;
+      if (parts[4]?.includes(wanted)) return parts[0];
     }
     return null;
   } catch {

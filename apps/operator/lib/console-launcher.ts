@@ -156,6 +156,7 @@ export async function buildConsoleEnvelope(
       requestUrl: opts.operatorBaseUrl,
     }),
     PAPERCUSP_WORKSPACE: opts.workspaceId,
+    PAPERCUSP_OPERATOR_URL: opts.operatorBaseUrl,
     PAPERCUSP_HOME: papercuspPath(),
   };
   // If no slug, resolveContextEnv set PAPERCUSP_HARNESS_SLUG=''; drop
@@ -176,6 +177,7 @@ export async function buildConsoleEnvelope(
   //     wrapper was last installed with; /adv is always the
   //     engineer-collaborator surface.
   if ((opts.mode ?? 'shell') === 'omp') {
+    const token = readSuperuserToken();
     return {
       cwd,
       env,
@@ -183,6 +185,7 @@ export async function buildConsoleEnvelope(
       greetingCmd: '',
       needsSuperuserBootstrap: false,
       mode: 'omp',
+      secretEnv: token ? { PAPERCUSP_SUPERUSER_TOKEN: token } : undefined,
       launchCommand: buildEngineerOmpLaunchCommand({
         ompModel: opts.ompModel,
         resumeSessionId: opts.resumeSessionId,

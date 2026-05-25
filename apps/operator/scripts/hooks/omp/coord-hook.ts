@@ -44,6 +44,7 @@
  */
 
 import { promises as fsp, existsSync, realpathSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 
 // ── Pure helpers (unit-tested) ───────────────────────────────────────
@@ -229,13 +230,29 @@ export async function callMcpTool(
       ? withClient(
           new URL('/api/mcp?power_user=1', process.env.PAPERCUSP_BUNDLE_URL).toString(),
         )
-      : process.env.PAPERCUSP_OPERATOR_URL
+      : (process.env.PAPERCUSP_OPERATOR_URL || process.env.PAPERCUSP_API_BASE)
       ? withClient(
-          new URL('/api/mcp?power_user=1', process.env.PAPERCUSP_OPERATOR_URL).toString(),
+          new URL(
+            '/api/mcp?superuser=1',
+            process.env.PAPERCUSP_OPERATOR_URL || process.env.PAPERCUSP_API_BASE!,
+          ).toString(),
         )
       : null);
   if (!mcpUrl) return null;
-  const bearer = env.bearer ?? process.env.PAPERCUSP_BUNDLE_ACCESS_TOKEN ?? '';
+  let bearer =
+    env.bearer ??
+    process.env.PAPERCUSP_BUNDLE_ACCESS_TOKEN ??
+    process.env.PAPERCUSP_SUPERUSER_TOKEN ??
+    '';
+  if (!bearer && !process.env.PAPERCUSP_BUNDLE_URL) {
+    try {
+      bearer = (
+        await fsp.readFile(join(process.env.HOME ?? homedir(), '.papercusp', 'superuser-token'), 'utf8')
+      ).trim();
+    } catch {
+      bearer = '';
+    }
+  }
   const sessionId = env.sessionId ?? process.env.PAPERCUSP_AUTH_SESSION_ID ?? '';
   try {
     const res = await fetch(mcpUrl, {

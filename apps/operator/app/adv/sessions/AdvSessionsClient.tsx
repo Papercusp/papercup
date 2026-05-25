@@ -346,15 +346,15 @@ export default function AdvSessionsClient() {
   }, [launchModel, launchingNew, selectedLaunchPlan]);
 
   const focusRow = useCallback(async (row: SessionRow) => {
-    if (!row.pid) {
-      toast.error('No pid recorded for this session — cannot focus.');
+    if (!row.pid && !row.windowId) {
+      toast.error('No pid or window id recorded for this session — cannot focus.');
       return;
     }
     try {
       const r = await fetch('/api/adv/sessions/focus', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ pid: row.pid, windowId: row.windowId }),
+        body: JSON.stringify({ id: row.id, pid: row.pid, windowId: row.windowId }),
       });
       const data = (await r.json().catch(() => null)) as
         | { status?: string; error?: string }

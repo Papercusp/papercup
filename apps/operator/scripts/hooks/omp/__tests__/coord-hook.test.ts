@@ -854,11 +854,17 @@ describe('hookOwnerId — per-process coordination owner (file-locking #2)', () 
 describe('callMcpTool passes ?client=<owner> (file-locking #2)', () => {
   const originalFetch = global.fetch;
   const prevBundle = process.env.PAPERCUSP_BUNDLE_URL;
+  const prevOperator = process.env.PAPERCUSP_OPERATOR_URL;
+  const prevSuperuser = process.env.PAPERCUSP_SUPERUSER_TOKEN;
   const prevSid = process.env.PAPERCUSP_AUTH_SESSION_ID;
   afterEach(() => {
     global.fetch = originalFetch;
     if (prevBundle === undefined) delete process.env.PAPERCUSP_BUNDLE_URL;
     else process.env.PAPERCUSP_BUNDLE_URL = prevBundle;
+    if (prevOperator === undefined) delete process.env.PAPERCUSP_OPERATOR_URL;
+    else process.env.PAPERCUSP_OPERATOR_URL = prevOperator;
+    if (prevSuperuser === undefined) delete process.env.PAPERCUSP_SUPERUSER_TOKEN;
+    else process.env.PAPERCUSP_SUPERUSER_TOKEN = prevSuperuser;
     if (prevSid === undefined) delete process.env.PAPERCUSP_AUTH_SESSION_ID;
     else process.env.PAPERCUSP_AUTH_SESSION_ID = prevSid;
     _resetHookOwnerIdForTests();
@@ -878,6 +884,23 @@ describe('callMcpTool passes ?client=<owner> (file-locking #2)', () => {
     expect(seenUrl).toContain(
       `client=${encodeURIComponent(`omp-pus-xyz-${process.pid}`)}`,
     );
+  });
+
+  it('falls back to the superuser MCP route for /adv engineer launches', async () => {
+    delete process.env.PAPERCUSP_BUNDLE_URL;
+    process.env.PAPERCUSP_OPERATOR_URL = 'http://operator.test';
+    process.env.PAPERCUSP_SUPERUSER_TOKEN = 'su-token';
+    _resetHookOwnerIdForTests();
+    let seenUrl = '';
+    let auth = '';
+    global.fetch = (async (url: unknown, init?: { headers?: Record<string, string> }) => {
+      seenUrl = String(url);
+      auth = String(init?.headers?.Authorization ?? '');
+      return { ok: true, text: async () => '{}' };
+    }) as unknown as typeof fetch;
+    await callMcpTool('coord:declare-intent', { intent: 'x' });
+    expect(seenUrl).toContain('superuser=1');
+    expect(auth).toBe('Bearer su-token');
   });
 });
 
