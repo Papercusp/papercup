@@ -4289,10 +4289,10 @@ export default function HarnessDashboard({ forcedPanel, embeddedPanelChrome = fa
 
       {/* Plan review + checkpoint banners surface above the plugin-actions row
           so user-required decisions don't get hidden under tool buttons. */}
-      {activeSlug && <PlanReviewBanner slug={activeSlug} />}
-      {activeSlug && <CheckpointBanner slug={activeSlug} />}
+      {!embeddedPanelChrome && activeSlug && <PlanReviewBanner slug={activeSlug} />}
+      {!embeddedPanelChrome && activeSlug && <CheckpointBanner slug={activeSlug} />}
 
-      {activeSlug && status && (
+      {!embeddedPanelChrome && activeSlug && status && (
         <HarnessQuickActionRow
           harnessSlug={activeSlug}
           installed={installedPlugins ?? []}
@@ -4305,7 +4305,7 @@ export default function HarnessDashboard({ forcedPanel, embeddedPanelChrome = fa
         />
       )}
 
-      {activeSlug && status && (
+      {!embeddedPanelChrome && activeSlug && status && (
         <EscalationBanner
           slug={activeSlug}
           escalated={status.escalated}

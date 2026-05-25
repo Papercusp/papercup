@@ -31,8 +31,6 @@ export default function AdvHarnessPanelPage({ panel }: { panel: AdvHarnessPanel 
         .pc-adv-harness-panel .h-root--embedded-panel .h-header,
         .pc-adv-harness-panel .h-root--embedded-panel .h-tab-strip,
         .pc-adv-harness-panel .h-root--embedded-panel .h-active-agents-row,
-        .pc-adv-harness-panel .h-root--embedded-panel .h-plan-review-banner,
-        .pc-adv-harness-panel .h-root--embedded-panel .h-quick-action-row,
         .pc-adv-harness-panel .h-root--embedded-panel .h-guide-strip {
           display: none !important;
         }
