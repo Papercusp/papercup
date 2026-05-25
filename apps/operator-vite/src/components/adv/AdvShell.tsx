@@ -13,6 +13,7 @@ import {
   TrendingUp,
 } from 'lucide-react';
 import { Select } from '@/app/harness/Select';
+import AdvNowRunning from './AdvNowRunning';
 
 const ADV_TAB_IDS = ['harnesses', 'brainstorm', 'prs', 'insights', 'config', 'settings', 'docs', 'git', 'plans', 'sessions'] as const;
 export type AdvTabId = (typeof ADV_TAB_IDS)[number];
@@ -116,6 +117,7 @@ export default function AdvShell({
             triggerClassName="pc-advshell__select-trigger"
           />
         </label>
+        <AdvNowRunning slug={activeSlug} />
         <Tabs.Root value={activeTab} onValueChange={(value) => void setActiveTab(value as AdvTabId)} className="pc-advshell__tabs">
           <Tabs.List className="pc-advshell__tablist" aria-label="Adv sections">
             {ADV_TABS.map((t) => {
@@ -206,6 +208,94 @@ export default function AdvShell({
         .pc-advshell__select-trigger[data-disabled] {
           color: var(--fg-mute, #7f9bb4);
           cursor: default;
+        }
+        .pc-advshell__now-running {
+          display: flex;
+          align-items: center;
+          gap: 6px;
+          min-width: 0;
+          max-width: 540px;
+          padding-bottom: 2px;
+        }
+        .pc-advshell__action {
+          display: inline-flex;
+          align-items: center;
+          gap: 5px;
+          padding: 5px 10px;
+          font-size: 11px;
+          font-weight: 700;
+          letter-spacing: 0.04em;
+          text-transform: uppercase;
+          border-radius: 6px;
+          border: 1px solid transparent;
+          cursor: pointer;
+          flex-shrink: 0;
+        }
+        .pc-advshell__action:disabled {
+          opacity: 0.55;
+          cursor: default;
+        }
+        .pc-advshell__action--start {
+          background: rgba(34, 197, 94, 0.16);
+          color: #86efac;
+          border-color: rgba(34, 197, 94, 0.38);
+        }
+        .pc-advshell__action--start:hover:not(:disabled) {
+          background: rgba(34, 197, 94, 0.26);
+        }
+        .pc-advshell__action--stop {
+          background: rgba(239, 68, 68, 0.12);
+          color: #fca5a5;
+          border-color: rgba(239, 68, 68, 0.34);
+        }
+        .pc-advshell__action--stop:hover {
+          background: rgba(239, 68, 68, 0.22);
+        }
+        .pc-advshell__pills {
+          display: flex;
+          gap: 4px;
+          min-width: 0;
+          overflow: hidden;
+        }
+        .pc-advshell__pill {
+          display: inline-flex;
+          align-items: center;
+          gap: 6px;
+          padding: 4px 8px;
+          font-size: 11px;
+          color: rgba(220, 214, 248, 0.86);
+          background: rgba(20, 18, 38, 0.7);
+          border: 1px solid rgba(167, 139, 250, 0.28);
+          border-radius: 999px;
+          cursor: default;
+          font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+          white-space: nowrap;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          max-width: 200px;
+        }
+        .pc-advshell__pill:hover {
+          background: rgba(31, 23, 56, 0.96);
+          border-color: rgba(167, 139, 250, 0.5);
+        }
+        .pc-advshell__pill-dot {
+          width: 6px;
+          height: 6px;
+          border-radius: 50%;
+          background: #86efac;
+          box-shadow: 0 0 8px rgba(134, 239, 172, 0.6);
+          flex-shrink: 0;
+          animation: pc-advshell-pulse 1.6s ease-in-out infinite;
+        }
+        @keyframes pc-advshell-pulse {
+          0%, 100% { opacity: 1; }
+          50% { opacity: 0.4; }
+        }
+        .pc-advshell__idle {
+          font-size: 11px;
+          font-style: italic;
+          color: rgba(220, 214, 248, 0.5);
+          white-space: nowrap;
         }
         .pc-advshell__tabs { flex: 1; min-width: 0; display: flex; align-items: flex-end; }
         .pc-advshell__tablist {

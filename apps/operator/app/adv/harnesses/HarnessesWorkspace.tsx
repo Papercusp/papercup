@@ -13,14 +13,15 @@ export interface AdvProjectEntry {
 }
 
 /**
- * /adv/harnesses — replacement for the legacy /harness OPS surface.
+ * /adv/harnesses — single-harness workspace replacing the legacy /harness
+ * OPS surface.
  *
- * Single-harness scope: top bar drives the selected slug, and the
- * dockview below shows Features + Issues for that same slug. The
- * selected slug lives in `?slug=` so the page is deep-linkable.
+ * Slug comes from `?slug=` which the AdvShell header already owns. We
+ * only fetch projects locally for the path-and-progress meta line in the
+ * top bar; the selector itself lives in the shell.
  */
 export default function HarnessesWorkspace() {
-  const [slug, setSlug] = useQueryState('slug', parseAsString.withDefault(''));
+  const [slug] = useQueryState('slug', parseAsString.withDefault(''));
   const [projects, setProjects] = useState<AdvProjectEntry[]>([]);
   const [projectsError, setProjectsError] = useState<string | null>(null);
 
@@ -34,18 +35,6 @@ export default function HarnessesWorkspace() {
       .then((j) => {
         if (cancelled) return;
         setProjects(j.projects);
-        if (!slug && j.projects.length > 0) {
-          // Default to the last-active project from legacy localStorage
-          // so /adv/harnesses lands on the same project /harness would.
-          let initial = j.projects[0].slug;
-          try {
-            const saved = window.localStorage.getItem('harness.activeProject');
-            if (saved && j.projects.some((p) => p.slug === saved)) initial = saved;
-          } catch {
-            /* localStorage unavailable */
-          }
-          void setSlug(initial);
-        }
       })
       .catch((e: Error) => {
         if (cancelled) return;
@@ -54,28 +43,11 @@ export default function HarnessesWorkspace() {
     return () => {
       cancelled = true;
     };
-    // intentionally NOT depending on `slug` — we only want the auto-pick
-    // logic to run once on mount.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-
-  useEffect(() => {
-    if (!slug) return;
-    try {
-      window.localStorage.setItem('harness.activeProject', slug);
-    } catch {
-      /* ignore */
-    }
-  }, [slug]);
 
   return (
     <div className="pc-adv-harnesses">
-      <HarnessTopBar
-        slug={slug || ''}
-        projects={projects}
-        projectsError={projectsError}
-        onSlugChange={(next) => void setSlug(next)}
-      />
+      <HarnessTopBar slug={slug} projects={projects} />
       <div className="pc-adv-harnesses__dock">
         {slug ? (
           <HarnessesDock slug={slug} />
