@@ -48,6 +48,16 @@ export interface NotifyOptions {
   action?: NotifyAction;
 }
 
+export function resolveNotifyActionTarget(href: string | undefined): {
+  kind: 'client' | 'external' | 'none';
+  href: string | null;
+} {
+  if (!href) return { kind: 'none', href: null };
+  return href.startsWith('/')
+    ? { kind: 'client', href }
+    : { kind: 'external', href };
+}
+
 function buildSonnerAction(action: NotifyAction | undefined) {
   if (!action) return undefined;
   // The `label` is rendered by sonner inside its action `<button>`. By
@@ -65,12 +75,11 @@ function buildSonnerAction(action: NotifyAction | undefined) {
   return {
     label: labelNode,
     onClick: () => {
-      if (action.href) {
-        if (action.href.startsWith('/')) {
-          navigateClient(action.href);
-        } else {
-          window.open(action.href, '_blank', 'noopener,noreferrer');
-        }
+      const target = resolveNotifyActionTarget(action.href);
+      if (target.kind === 'client' && target.href) {
+        navigateClient(target.href);
+      } else if (target.kind === 'external' && target.href) {
+        window.open(target.href, '_blank', 'noopener,noreferrer');
       }
       action.onClick?.();
     },
