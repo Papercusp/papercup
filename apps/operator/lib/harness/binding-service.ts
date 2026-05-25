@@ -36,18 +36,15 @@ import {
  * Throwable wrapper around the typed error union. Lets callers do
  * `try { ... } catch (e) { if (e instanceof BindingServiceErrorThrowable) { switch (e.error.code) {...} } }`.
  */
-export class BindingServiceErrorThrowable extends Error {
-  readonly error: BindingServiceError;
-
-  constructor(error: BindingServiceError) {
-    super(error.code);
-    this.error = error;
-    this.name = 'BindingServiceErrorThrowable';
-  }
-}
+// Re-export so existing callers (`import { BindingServiceErrorThrowable }
+// from '.../binding-service'`) keep compiling; canonical location is
+// now `binding-types.ts` so UI / client code can import the throwable
+// without pulling in server-only imports.
+export { BindingServiceErrorThrowable } from './binding-types';
+import { BindingServiceErrorThrowable as _BindingServiceErrorThrowable } from './binding-types';
 
 const fail = (err: BindingServiceError): never => {
-  throw new BindingServiceErrorThrowable(err);
+  throw new _BindingServiceErrorThrowable(err);
 };
 
 const CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 24h per memo §"resolve cached"

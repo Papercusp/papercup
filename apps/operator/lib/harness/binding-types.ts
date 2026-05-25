@@ -166,3 +166,19 @@ export function hasRequiredPermission(
 ): boolean {
   return required.includes(actual);
 }
+
+/**
+ * Structured throwable wrapper for `BindingServiceError`. Lives in the
+ * types module (not the service) so UI / client code can `instanceof`
+ * the error without dragging in the server-only binding-service
+ * imports (octokit, workspace-registry, PG).
+ */
+export class BindingServiceErrorThrowable extends Error {
+  readonly error: BindingServiceError;
+
+  constructor(error: BindingServiceError) {
+    super(error.code);
+    this.error = error;
+    this.name = 'BindingServiceErrorThrowable';
+  }
+}
