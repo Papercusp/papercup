@@ -63,14 +63,16 @@ const READ_VERBS = new Set([
 // call dispatches to handleHttpToolRequest and returns a clean 404
 // `unknown_tool`, which the UI surfaces as a normal save error.
 //
-// NOTE: the frontmatter writer is `set-frontmatter`, NOT `promote` —
-// `plans:promote` is already a different, unrelated tool
-// (coordination/tools/promote.ts: promote a plan into a harness).
-// Exposing `promote` here would route the triage screen to the wrong
-// tool, so it is deliberately absent from this set.
+// NOTE: the frontmatter writer is `set-frontmatter` (promotes a legacy
+// plan to have valid frontmatter). `plans:promote` (coordination tool)
+// promotes a plan INTO a harness — creating features. Both are intentionally
+// exposed here under different verbs ('set-frontmatter' vs 'promote').
 const WRITE_VERBS = new Set([
   'set-status', 'set-now', 'add-decision', 'add-item', 'new',
   'set-content', 'set-frontmatter',
+  // plan-feature-pipeline-unification P-016: promote a plan into a harness
+  // as features — calls coordination/tools/promote.ts (plans:promote tool).
+  'promote',
   // plan-agent-launch P-022: the Agents-tab Launch button — admin
   // calls it with `await: false` so the POST returns immediately
   // and the turn runs fire-and-forget (UI polls `plans:runs` for
@@ -209,6 +211,16 @@ async function dispatchWrite(req: Request, ctx: RouteContext): Promise<Response>
       }
       if (verb === 'launch' || verb === 'resume') {
         void notifySyncInvalidate('plans.runs', { slug }).catch(() => {});
+      }
+      if (verb === 'promote') {
+        // Promote creates features — invalidate featuresConsolidated so the
+        // plan detail status badges and harness feature list update live.
+        const harnessSlug = typeof body.harness_slug === 'string' ? body.harness_slug : undefined;
+        if (harnessSlug) {
+          void notifySyncInvalidate('featuresConsolidated.bySlug', { harnessSlug }).catch(() => {});
+          void notifySyncInvalidate('featuresConsolidated.byPlanSlug', { planSlug: slug }).catch(() => {});
+        }
+        void notifySyncInvalidate('plans.get', { slug: slug ?? '' }).catch(() => {});
       }
     }
   }
