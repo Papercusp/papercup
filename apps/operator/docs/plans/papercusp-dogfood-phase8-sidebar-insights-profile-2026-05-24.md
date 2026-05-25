@@ -15,16 +15,23 @@ owner: avi@storewolf.com
 **State:** **Visual building blocks shipped 2026-05-25 — assembly TBD.**
 
 Per-component progress:
-- **P-071 ContributorBadge** + **ContributorBadgeRow** at `apps/operator/app/_components/ContributorBadge.tsx`. 4 trust tiers (A ✓ accent, B ✓ secondary, C unmarked, D ⏱ viewer-only with privacy gate). 10/10 tests pass.
-- **P-069a ClaimStatusBadge** at `apps/operator/app/_components/ClaimStatusBadge.tsx`. 4 states (unclaimed / claimed / stale / superseded) with optional claimant login + successor href. 8/8 tests pass.
-- **BindingStatusBadge** (P-048a partner / P-075 UI hook) at `apps/operator/app/_components/BindingStatusBadge.tsx`. 3 states (verified ✓ / pending ⏳ / unverified ⚠) with optional age text + failure reason. 6/6 tests pass.
-- **P-072 User profile shell** at `apps/operator/app/users/github/[id]/`. Numeric canonical route + `app/users/[login]/page.tsx` username redirect. All 4 P-072 sub-acceptance regions render with stub data (header / per-harness blocks / activity feed / claimed-harnesses footer). 10/10 tests pass. Real data fetch is a follow-up.
+- **P-071 ContributorBadge** + **ContributorBadgeRow** at `apps/operator/app/_components/ContributorBadge.tsx`. 4 trust tiers. 10/10 tests pass.
+- **P-069a ClaimStatusBadge** at `apps/operator/app/_components/ClaimStatusBadge.tsx`. 4 states with optional claimant login + successor href. 8/8 tests pass.
+- **BindingStatusBadge** at `apps/operator/app/_components/BindingStatusBadge.tsx`. 3 states with optional age text + failure reason. 6/6 tests pass.
+- **P-072 User profile shell** at `apps/operator/app/users/github/[id]/`. Numeric canonical route + `[login]` redirect. All 4 P-072 regions render with stub data. 10/10 tests pass. Real data fetch is a follow-up.
+- **P-048 Contributors tab UI** at `apps/operator/app/harness/ContributorsTab.tsx` + `ContributorRow.tsx`. Reads from `harness_shared.contributors` via `/harness/:slug/contributors`. Composes ContributorBadgeRow + BindingStatusBadge. Sortable columns + tier grouping. 13/13 tests pass.
+- **P-069b SettingsBanner** at `apps/operator/app/harness/SettingsBanner.tsx`. Three modes (provisional / unclaimed / claimed) explaining owner-scope. 8/8 tests pass.
+- **P-069c ExistingBindingAlert** at `apps/operator/app/harness/ExistingBindingAlert.tsx`. Create/join collision alert for all 4 claim states; render-prop action slot. 9/9 tests pass.
+- **P-069d ProvisionalOwnerExplainer** at `apps/operator/app/_components/ProvisionalOwnerExplainer.tsx`. First-share gating dialog with per-machine localStorage flag. 8/8 tests pass.
+- **P-069e ClaimCTA** at `apps/operator/app/harness/ClaimCTA.tsx`. Claim button + structured-error UI mapping every `BindingServiceError` variant. 10/10 tests pass.
 
-Total Phase 8 tests landed: **34/34 pass**.
+Refactor: `BindingServiceErrorThrowable` moved from `binding-service.ts` to `binding-types.ts` so client/UI can `instanceof`-check without server-only deps. Re-export kept for back-compat callers.
 
-**Next action:** P-048 (Contributors tab) — composes ContributorBadgeRow + BindingStatusBadge per row. Reads from the now-existing `harness_shared.contributors` PG table (populated by either the existing PG path or the Phase 5a contributors projection). After P-048, P-073 Insights tab + P-069b/c/d wire-up of ClaimStatusBadge into the harness chrome.
+Total Phase 8 tests landed: **82/82 pass**.
 
-The Phase 8a/8b split (originally proposed for parallelization) is moot now that the building blocks are shared components: any consumer can pick them up incrementally.
+**P-069 — DONE (a/b/c/d/e all shipped as standalone components).** Wire-up into ChromeShell + settings page is a follow-up assembly item.
+
+**Next action:** P-049 (PR-reviewer settings modal) — composes ClaimStatusBadge with per-harness toggle rows. Then P-073 Insights tab (gated on substrate boot for stat aggregations) or P-047 Features tab feature-detail polish.
 
 ## Background
 
