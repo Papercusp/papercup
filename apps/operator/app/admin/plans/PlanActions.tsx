@@ -140,24 +140,11 @@ export default function PlanActions({
         type="button"
         className="pc-plan-actions__btn pc-plan-actions__btn--promote"
         onClick={() => setOpen('promote')}
-        disabled={disabled || (items ?? []).filter((i) => i.effectiveStatus !== 'done' && i.effectiveStatus !== 'dropped').length === 0}
-        title={
-          disabled
-            ? disabledReason
-            : 'Promote plan items to harness features (plans:promote apply=true)'
-        }
-      >
-        Promote to features
-      </button>
-      <button
-        type="button"
-        className="pc-plan-actions__btn pc-plan-actions__btn--promote"
-        onClick={() => setOpen('promote')}
         disabled={disabled || (items ?? []).filter((i) => i.effectiveStatus === 'todo' || i.effectiveStatus === 'wip').length === 0}
         title={
           disabled
             ? disabledReason
-            : 'Promote plan items to harness features via plans:promote'
+            : 'Promote todo/wip plan items to harness features via plans:promote'
         }
       >
         → Harness
@@ -172,16 +159,6 @@ export default function PlanActions({
         {launchingAgent ? 'Launching…' : 'Launch agent'}
       </button>
 
-      <PromoteDialog
-        open={open === 'promote'}
-        onClose={() => setOpen(null)}
-        slug={slug}
-        items={items}
-        onSuccess={() => {
-          setOpen(null);
-          onChanged();
-        }}
-      />
       <SetNowDialog
         open={open === 'set-now'}
         onClose={() => setOpen(null)}
@@ -593,101 +570,6 @@ function AddItemDialog({
   );
 }
 
-/* ── Promote to features dialog ────────────────────────────────────── */
-
-function PromoteDialog({
-  open,
-  onClose,
-  slug,
-  items,
-  onSuccess,
-}: {
-  open: boolean;
-  onClose: () => void;
-  slug: string;
-  items: PlanItem[] | undefined;
-  onSuccess: (count: number) => void;
-}) {
-  const [harnessSlug, setHarnessSlug] = useState('');
-  const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  const promotable = useMemo(
-    () => (items ?? []).filter((i) => i.effectiveStatus !== 'done' && i.effectiveStatus !== 'dropped'),
-    [items],
-  );
-
-  useResetOnOpen(open, () => {
-    setHarnessSlug('');
-    setError(null);
-  });
-
-  const onSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    const target = harnessSlug.trim();
-    if (!target) return;
-    setSubmitting(true);
-    setError(null);
-    try {
-      const features = promotable.map((item) => ({
-        title: item.text.slice(0, 200),
-        from_items: [item.id],
-      }));
-      const r = await promoteToHarness({ slug, harness_slug: target, features, apply: true });
-      if (r.ok === false && r.error) {
-        setError(r.error);
-      } else {
-        onSuccess(r.features_created ?? features.length);
-      }
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
-  return (
-    <Modal
-      open={open}
-      onOpenChange={(o) => !o && onClose()}
-      title="Promote to features"
-      srOnlyTitle
-      contentClassName="pc-plan-dialog"
-    >
-      <form onSubmit={onSubmit} className="pc-plan-dialog__form">
-        <header className="pc-plan-dialog__head">
-          <h3>Promote to features</h3>
-          <p>
-            {promotable.length === 0
-              ? 'No promotable items — all items are done or dropped.'
-              : <>Promote <strong>{promotable.length}</strong> item{promotable.length === 1 ? '' : 's'} from this plan into the target harness as features.</>
-            }
-          </p>
-        </header>
-        <label className="pc-plan-dialog__field">
-          <span>Target harness slug</span>
-          <input
-            type="text"
-            value={harnessSlug}
-            onChange={(e) => setHarnessSlug(e.target.value)}
-            placeholder="e.g. papercup, restart, sheets"
-            required
-            autoFocus
-            disabled={promotable.length === 0}
-          />
-        </label>
-        <DialogFooter
-          error={error}
-          submitting={submitting}
-          submitLabel={`Promote ${promotable.length} item${promotable.length === 1 ? '' : 's'}`}
-          onCancel={onClose}
-          canSubmit={!!harnessSlug.trim() && promotable.length > 0}
-        />
-      </form>
-    </Modal>
-  );
-}
-
 /* ── Promote to Harness dialog ─────────────────────────────────────── */
 
 function PromoteDialog({
@@ -701,7 +583,7 @@ function PromoteDialog({
   onClose: () => void;
   slug: string;
   items: PlanItem[] | undefined;
-  onSuccess: () => void;
+  onSuccess: (count: number) => void;
 }) {
   const [harnessSlug, setHarnessSlug] = useState('');
   const [submitting, setSubmitting] = useState(false);
@@ -794,7 +676,7 @@ function PromoteDialog({
               <button
                 type="button"
                 className="pc-plan-dialog__btn pc-plan-dialog__btn--primary"
-                onClick={onSuccess}
+                onClick={() => onSuccess(result.features_created ?? result.ids?.length ?? 0)}
               >
                 Done
               </button>
