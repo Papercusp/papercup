@@ -38,8 +38,9 @@ import PlanConflictModal from './PlanConflictModal';
 import PlanStatusPopover, {
   resolveItemId,
   type PendingStatusFlip,
-  type PlanStatus,
+  type PlanStatus as PlanItemStatus,
 } from './PlanStatusPopover';
+import type { PlanStatus } from './plans-api';
 
 interface Props {
   slug: string;
@@ -64,7 +65,7 @@ export default function PlanDetail({ slug, onClose, onDirtyChange }: Props) {
     title: string | null;
     status: string | null;
   }>({
-    queryName: 'featuresConsolidated.bySourcePlan',
+    queryName: 'featuresConsolidated.byPlanSlug',
     args: { planSlug: slug },
   });
   const promotedFeatures = useMemo(
@@ -189,6 +190,9 @@ export default function PlanDetail({ slug, onClose, onDirtyChange }: Props) {
   }
 
   const title = (data.frontmatter?.title as string | undefined) ?? data.slug;
+  const planStatus = (data.frontmatter?.status as PlanStatus | undefined) ?? undefined;
+  const draftSource: 'user' | 'scoper' | null =
+    planStatus === 'draft' ? (data.slug.startsWith('scoper-proposal-') ? 'scoper' : 'user') : null;
 
   const enterEdit = () => {
     setDraft(raw);
@@ -245,6 +249,17 @@ export default function PlanDetail({ slug, onClose, onDirtyChange }: Props) {
       slug={slug}
       title={title}
       onClose={onClose}
+      kickerExtra={
+        draftSource ? (
+          <span
+            className={`pc-pill pc-pill--source-${draftSource}`}
+            title={draftSource === 'scoper' ? 'Authored by the scoper' : 'Authored by you'}
+            style={{ marginLeft: 8 }}
+          >
+            {draftSource === 'scoper' ? 'scoper' : 'you'}
+          </span>
+        ) : null
+      }
       headerExtra={
         data.legacy ? null : (
           <EditToggle
@@ -280,7 +295,9 @@ export default function PlanDetail({ slug, onClose, onDirtyChange }: Props) {
           decisions={data.decisions}
           currentNow={data.now ?? null}
           planTitle={title}
+          planStatus={planStatus}
           onChanged={onChanged}
+          onRejected={onClose}
           disabled={editing || locked}
           disabledReason={
             editing
@@ -348,7 +365,7 @@ export default function PlanDetail({ slug, onClose, onDirtyChange }: Props) {
             if (editing || locked) return;
             const itemId = resolveItemId(target);
             if (!itemId) return;
-            setPendingStatus({ target, status: status as PlanStatus, itemId });
+            setPendingStatus({ target, status: status as PlanItemStatus, itemId });
           }}
         />
       </div>
@@ -499,12 +516,14 @@ function DetailShell({
   title,
   onClose,
   headerExtra,
+  kickerExtra,
   children,
 }: {
   slug: string;
   title?: string;
   onClose: () => void;
   headerExtra?: React.ReactNode;
+  kickerExtra?: React.ReactNode;
   children: React.ReactNode;
 }) {
   return (
@@ -514,7 +533,10 @@ function DetailShell({
           ← All plans
         </button>
         <div className="pc-plans__detail-title">
-          <span className="pc-plans__detail-kicker">Plan detail</span>
+          <span className="pc-plans__detail-kicker">
+            Plan detail
+            {kickerExtra}
+          </span>
           <h2>{title ?? slug}</h2>
           {title && title !== slug ? (
             <span className="pc-plans__detail-slug">{slug}</span>

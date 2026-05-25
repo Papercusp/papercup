@@ -212,6 +212,7 @@ function PlanRow({
   onSelect: () => void;
 }) {
   const title = plan.title ?? plan.slug;
+  const source = sourceOfDraftPlan(plan);
   return (
     <li className={`pc-plan-rail__item pc-plan-rail__item--${plan.status}`}>
       <button
@@ -225,6 +226,7 @@ function PlanRow({
           <Tooltip label={title}>
             <span className="pc-plan-row__title">{title}</span>
           </Tooltip>
+          {source ? <SourcePill source={source} /> : null}
           <StatusPill status={plan.status} />
         </div>
         <div className="pc-plan-row__meta-line">
@@ -249,6 +251,28 @@ function PlanRow({
 
 function StatusPill({ status }: { status: PlanStatus }) {
   return <span className={`pc-pill pc-pill--${status}`}>{status}</span>;
+}
+
+/**
+ * Whether a draft plan was authored by the user or by the scoper. Mirrors
+ * the convention used by the plansDrafts.bySlug resolver so the rail and
+ * ProposalsPanel agree on labelling — only draft plans get a source tag
+ * (active/shipped plans have outlived the proposal stage).
+ */
+function sourceOfDraftPlan(plan: PlanListRow): 'user' | 'scoper' | null {
+  if (plan.status !== 'draft') return null;
+  return plan.slug.startsWith('scoper-proposal-') ? 'scoper' : 'user';
+}
+
+function SourcePill({ source }: { source: 'user' | 'scoper' }) {
+  return (
+    <span
+      className={`pc-pill pc-pill--source-${source}`}
+      title={source === 'scoper' ? 'Authored by the scoper' : 'Authored by you'}
+    >
+      {source === 'scoper' ? 'scoper' : 'you'}
+    </span>
+  );
 }
 
 function formatUpdated(updated: string): string {

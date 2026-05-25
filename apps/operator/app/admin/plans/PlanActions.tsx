@@ -29,10 +29,12 @@ import { launchOmpAgent } from '@/lib/native-omp-launch';
 import {
   addPlanDecision,
   addPlanItem,
+  rejectDraftPlan,
   setPlanNow,
   promoteToHarness,
   type PlanDecision,
   type PlanItem,
+  type PlanStatus,
   type PromoteToHarnessResult,
   type WriteResult,
 } from './plans-api';
@@ -46,14 +48,19 @@ interface Props {
   /** Plan title — surfaced into the launched OMP session label so the
    *  /adv/sessions list reads naturally. */
   planTitle?: string | null;
+  /** Plan status drives draft-only affordances (Reject button) so /adv/plans
+   *  has parity with the ProposalsPanel UX for drafts. */
+  planStatus?: PlanStatus;
   /** Fired after a successful write so the caller can refresh plan data. */
   onChanged: () => void;
+  /** Fired after a successful rejection — caller closes the detail. */
+  onRejected?: () => void;
   /** Disabled while the file is locked or in raw-Edit mode. */
   disabled?: boolean;
   disabledReason?: string;
 }
 
-type Dialog = null | 'set-now' | 'add-decision' | 'add-item' | 'promote';
+type Dialog = null | 'set-now' | 'add-decision' | 'add-item' | 'promote' | 'reject';
 
 export default function PlanActions({
   slug,
@@ -61,7 +68,9 @@ export default function PlanActions({
   decisions,
   currentNow,
   planTitle,
+  planStatus,
   onChanged,
+  onRejected,
   disabled,
   disabledReason,
 }: Props) {
@@ -149,6 +158,21 @@ export default function PlanActions({
       >
         → Harness
       </button>
+      {planStatus === 'draft' ? (
+        <button
+          type="button"
+          className="pc-plan-actions__btn pc-plan-actions__btn--reject"
+          onClick={() => setOpen('reject')}
+          disabled={disabled}
+          title={
+            disabled
+              ? disabledReason
+              : 'Flip status: draft → superseded — removes the plan from ProposalsPanel without deleting it'
+          }
+        >
+          Reject
+        </button>
+      ) : null}
       <button
         type="button"
         className="pc-plan-actions__btn pc-plan-actions__btn--launch"
@@ -201,6 +225,18 @@ export default function PlanActions({
         onSuccess={(count) => {
           setOpen(null);
           toast.success(`Promoted ${count} feature${count === 1 ? '' : 's'} to harness. Worker will pick up shortly.`, { duration: 6000 });
+          onChanged();
+        }}
+      />
+      <RejectDialog
+        open={open === 'reject'}
+        onClose={() => setOpen(null)}
+        slug={slug}
+        planTitle={planTitle ?? null}
+        onSuccess={() => {
+          setOpen(null);
+          toast.success(`Rejected "${planTitle ?? slug}".`, { duration: 4000 });
+          onRejected?.();
           onChanged();
         }}
       />
@@ -750,6 +786,74 @@ function PromoteDialog({
           />
         </form>
       )}
+    </Modal>
+  );
+}
+
+/* ── Reject draft dialog ───────────────────────────────────────────── */
+
+function RejectDialog({
+  open,
+  onClose,
+  slug,
+  planTitle,
+  onSuccess,
+}: {
+  open: boolean;
+  onClose: () => void;
+  slug: string;
+  planTitle: string | null;
+  onSuccess: () => void;
+}) {
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useResetOnOpen(open, () => setError(null));
+
+  const onSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setSubmitting(true);
+    setError(null);
+    try {
+      const r = await rejectDraftPlan(slug);
+      if (!r.ok) {
+        setError(r.error ?? 'reject failed');
+      } else {
+        onSuccess();
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <Modal
+      open={open}
+      onOpenChange={(o) => !o && onClose()}
+      title="Reject draft"
+      srOnlyTitle
+      contentClassName="pc-plan-dialog"
+    >
+      <form onSubmit={onSubmit} className="pc-plan-dialog__form">
+        <header className="pc-plan-dialog__head">
+          <h3>Reject draft</h3>
+          <p>
+            Flip <strong>{planTitle ?? slug}</strong> from{' '}
+            <code>status: draft</code> to <code>status: superseded</code>. The
+            plan stays on disk but disappears from the proposals panel.
+            Reversible by editing the frontmatter.
+          </p>
+        </header>
+        <DialogFooter
+          error={error}
+          submitting={submitting}
+          submitLabel="Reject draft"
+          onCancel={onClose}
+          canSubmit
+        />
+      </form>
     </Modal>
   );
 }
