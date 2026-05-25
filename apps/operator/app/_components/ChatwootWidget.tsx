@@ -14,6 +14,7 @@
  */
 
 import { useEffect, useState } from 'react';
+import { isStaticDesktopHost } from '../../lib/ui/desktop-static-host';
 
 declare global {
   interface Window {
@@ -34,6 +35,7 @@ const DEFAULT_TOKEN = 'CT5CTToo11YtPN3CVkhvbFs9';
 
 function shouldEnableNow(): boolean {
   if (typeof window === 'undefined') return false;
+  if (isStaticDesktopHost(window.location.origin)) return false;
   return window.location.pathname.startsWith('/support');
 }
 
@@ -41,9 +43,13 @@ export function ChatwootWidget() {
   const [enabled, setEnabled] = useState(shouldEnableNow);
 
   useEffect(() => {
-    const enable = () => setEnabled(true);
+    const enable = () => {
+      if (!shouldEnableNow()) return;
+      setEnabled(true);
+    };
     const onPopState = () => {
       if (shouldEnableNow()) setEnabled(true);
+      else setEnabled(false);
     };
     window.addEventListener('papercusp:open-support', enable as EventListener);
     window.addEventListener('popstate', onPopState);
