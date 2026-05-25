@@ -25,7 +25,7 @@ import {
   writeErrorOf,
 } from './plans-api';
 import PlanEditor from './PlanEditor';
-import type { PromotedFeature } from './plan-renderers';
+import { buildFeatureSummary, type PromotedFeature } from './plan-renderers';
 import PlanJumpToItem from './PlanJumpToItem';
 import LockBanner from './LockBanner';
 import LintBanner from './LintBanner';
@@ -64,7 +64,7 @@ export default function PlanDetail({ slug, onClose, onDirtyChange }: Props) {
     title: string | null;
     status: string | null;
   }>({
-    queryName: 'featuresConsolidated.byPlanSlug',
+    queryName: 'featuresConsolidated.bySourcePlan',
     args: { planSlug: slug },
   });
   const promotedFeatures = useMemo(
@@ -661,25 +661,6 @@ function FrontmatterCard({
       </dl>
     </section>
   );
-}
-
-function buildFeatureSummary(features: PromotedFeature[]): string | null {
-  if (features.length === 0) return null;
-  const counts: Record<string, number> = {};
-  for (const f of features) {
-    const s = f.status ?? 'todo';
-    counts[s] = (counts[s] ?? 0) + 1;
-  }
-  const parts: string[] = [];
-  const inflight = (counts['in_progress'] ?? 0) + (counts['validating'] ?? 0);
-  if (inflight > 0) parts.push(`${inflight} in-flight`);
-  if (counts['failing']) parts.push(`${counts['failing']} failing`);
-  if (counts['passed']) parts.push(`${counts['passed']} passed`);
-  if (counts['todo']) parts.push(`${counts['todo']} todo`);
-  if (counts['blocked']) parts.push(`${counts['blocked']} blocked`);
-  return parts.length > 0
-    ? `${features.length} features: ${parts.join(' · ')}`
-    : `${features.length} features`;
 }
 
 function NowHero({

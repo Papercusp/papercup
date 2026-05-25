@@ -275,3 +275,26 @@ export function decoratePromotedBlock(
     }
   }
 }
+
+/**
+ * Compute a human-readable summary of promoted features for the NowHero
+ * strip. E.g. "5 features: 2 in-flight · 3 todo".
+ */
+export function buildFeatureSummary(features: PromotedFeature[]): string | null {
+  if (features.length === 0) return null;
+  const counts: Record<string, number> = {};
+  for (const f of features) {
+    const s = f.status ?? 'todo';
+    counts[s] = (counts[s] ?? 0) + 1;
+  }
+  const parts: string[] = [];
+  const inflight = (counts['in_progress'] ?? 0) + (counts['validating'] ?? 0);
+  if (inflight > 0) parts.push(`${inflight} in-flight`);
+  if (counts['failing']) parts.push(`${counts['failing']} failing`);
+  if (counts['passed']) parts.push(`${counts['passed']} passed`);
+  if (counts['todo']) parts.push(`${counts['todo']} todo`);
+  if (counts['blocked']) parts.push(`${counts['blocked']} blocked`);
+  return parts.length > 0
+    ? `${features.length} features: ${parts.join(' · ')}`
+    : `${features.length} features`;
+}
