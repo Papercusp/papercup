@@ -9,9 +9,9 @@ owner: aviynw3@gmail.com
 
 ## Now
 
-**State:** Phases A–E complete (P-001–P-028). Phase E delivered: `plansDrafts.bySlug` sync query in `sync-resolver/index.ts`, ProposalsPanel rewritten (~1100 LOC → 588 LOC) to read from that query merged with legacy `proposalsShared.byHarness`, unified `ProposalCard` type, source-tag pills ("you"/"scoper"/"legacy"), "New proposal" modal wrapping `ArchitectChat`, Edit link to `/adv/plans`, `CardDetail` with Accept (confirm → `fetchPlan` → `promoteToHarness`) and Reject (`rejectDraftPlan` → status: superseded), `h-proposals.css` source-pill styles. Phase F (scoper → plan output) is next.
+**State:** Phases A–F complete (P-001–P-031). Phase F delivered: `scoper.outputMode` config gate in run.sh (both afterDone + near-done triggers) and harness-scoper.ts; `OUTPUT_MODE=` extra passed to scoper invoke; scoper.md `MODE=proposal` Output section branched on OUTPUT_MODE=plan (plans:new → plans:set-now → plans:add-item ×N → plans:add-decision) vs OUTPUT_MODE=proposal (legacy file path); scoper.tools.md named workflow added. Default `proposal` preserves existing behaviour; opt-in via `.harness/config.json → scoper.outputMode: "plan"`.
 
-**Next:** P-029 — end-to-end tests for the new proposal flow.
+**Next:** P-032 — run end-to-end on the dogfood harness for 1 week with `outputMode: 'plan'`; collect bugs before flipping the default.
 
 ---
 ## Background
@@ -340,8 +340,8 @@ Default stays `proposal` until Phase F soaks; flip to `plan` after.
 
 ### Phase F — Scoper `MODE=proposal` → plan output (2 days + 1 week soak)
 
-- [ ] P-030 Scoper persona/tools update: emit plan drafts via `plans:*` MCP when `outputMode: 'plan'`
-- [ ] P-031 Per-harness config gate: `.harness/config.json` → `scoper.outputMode` (default `proposal`, opt-in `plan`)
+- [x] P-030 Scoper persona/tools update: emit plan drafts via `plans:*` MCP when `outputMode: 'plan'`
+- [x] P-031 Per-harness config gate: `.harness/config.json` → `scoper.outputMode` (default `proposal`, opt-in `plan`)
 - [ ] P-032 Run end-to-end on the dogfood harness for 1 week with `outputMode: 'plan'`; collect bugs
 - [ ] P-033 Once stable, flip default to `plan`
 
