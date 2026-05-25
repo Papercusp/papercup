@@ -25,9 +25,9 @@ status. Convention spec: `/internal/docs/spec/plan-format`
 | 2 — completion_ref verifier | `papercusp-dogfood-phase2-completion-ref-2026-05-24` | shipped |
 | 3 — Reactivity | (in-tree work; no separate plan — covered by Phase 2 + Phase 4 prereqs) | shipped |
 | 4 — Single-engineer dogfood | `papercusp-dogfood-phase4-single-engineer-dogfood-2026-05-24` | draft (P-026 awaits user behavioral run) |
-| 5a — Hyperbee plumbing | `papercusp-dogfood-phase5a-hyperbee-plumbing-2026-05-24` | in-progress (P-029 wizard + P-030/P-031 substrate + contributors + feature_claims projections shipped 2026-05-25) |
-| 5b — Hyperbee UI integration | `papercusp-dogfood-phase5b-hyperbee-ui-integration-2026-05-24` | draft (blocked on 5a P-030/P-031) |
-| 6 — Orchestrator claim | `papercusp-dogfood-phase6-orchestrator-claim-2026-05-24` | in-progress (P-039 claim_audit + P-031 claims projection shipped 2026-05-25; P-036/P-037 land with substrate boot wiring) |
+| 5a — Hyperbee plumbing | `papercusp-dogfood-phase5a-hyperbee-plumbing-2026-05-24` | shipped (substrate + 8 projections + flag-gated boot wiring + full diagnostic stack across 7 access paths) |
+| 5b — Hyperbee UI integration | `papercusp-dogfood-phase5b-hyperbee-ui-integration-2026-05-24` | in-progress (P-066 bootstrap-progress vertical slice shipped; P-032/033/034/035 gated on flag flip) |
+| 6 — Orchestrator claim | `papercusp-dogfood-phase6-orchestrator-claim-2026-05-24` | in-progress (every substrate-facing piece shipped — primitive + adapter + lookup + entry-point + strategy + audit + endpoint + pills; P-037 production wiring is the only user-driven step) |
 | 7 — PR lifecycle | `papercusp-dogfood-phase7-pr-lifecycle-2026-05-24` | shipped (P-041 auto-rebase deferred → blocked on Phase 5a) |
 | 8 — Sidebar Insights + Profile | `papercusp-dogfood-phase8-sidebar-insights-profile-2026-05-24` | in-progress (badges + P-072 user profile shell shipped 2026-05-25; P-048/P-073 assembly next) |
 | 9 — Cupboard + Discord | `papercusp-dogfood-phase9-cupboard-discord-sync-2026-05-24` | code-complete (P-051a + P-053 + P-076 shipped 2026-05-25; P-051b deploy = user step per README) |
