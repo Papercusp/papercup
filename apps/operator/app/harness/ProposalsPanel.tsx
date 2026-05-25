@@ -307,14 +307,18 @@ function ProposalsPanelInner({ slug, architectInbox }: Props) {
   }, []);
 
   // Draft plans (new data source — P-022/P-023).
-  const { data: draftRows, loading: draftLoading } = useSyncQuery<DraftPlanRow>({
+  const {
+    data: draftRows,
+    loading: draftLoading,
+    error: draftError,
+  } = useSyncQuery<DraftPlanRow>({
     queryName: 'plansDrafts.bySlug',
     args: { harnessSlug: slug },
     enabled: !!slug,
   });
 
   // Legacy proposals — kept during Phase E transition.
-  const { data: legacyRows } = useSyncQuery<LegacyProposalRow>({
+  const { data: legacyRows, error: legacyError } = useSyncQuery<LegacyProposalRow>({
     queryName: 'proposalsShared.byHarness',
     args: { harnessSlug: slug, workspaceId },
     enabled: !!slug,
@@ -414,6 +418,26 @@ function ProposalsPanelInner({ slug, architectInbox }: Props) {
             />
           </div>
 
+          {(draftError || legacyError) && (
+            <div
+              role="alert"
+              style={{
+                padding: '8px 12px',
+                margin: '8px 0',
+                background: 'color-mix(in oklab, var(--error, #f7768e) 12%, transparent)',
+                border: '1px solid color-mix(in oklab, var(--error, #f7768e) 40%, transparent)',
+                borderRadius: 4,
+                fontSize: 12,
+                color: 'var(--error, #f7768e)',
+              }}
+            >
+              <strong>Sync error</strong> —{' '}
+              {draftError ? `drafts: ${draftError.message}` : ''}
+              {draftError && legacyError ? ' · ' : ''}
+              {legacyError ? `legacy: ${legacyError.message}` : ''}
+              . The list below may be stale or empty; check the dev console for details.
+            </div>
+          )}
           <div className="h-proposal-list" role="list">
             {draftLoading && cards.length === 0 ? (
               <div className="h-proposal-empty">
