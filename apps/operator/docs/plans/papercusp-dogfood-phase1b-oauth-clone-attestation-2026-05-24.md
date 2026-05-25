@@ -1,9 +1,10 @@
 ---
 title: Papercusp dogfood — Phase 1b (OAuth + clone + device attestation + binding service + two-channel verifier)
 slug: papercusp-dogfood-phase1b-oauth-clone-attestation-2026-05-24
-status: draft
+status: shipped
+parent: papercusp-dogfood-v5-2026-05-23
 created: 2026-05-24
-updated: 2026-05-24
+updated: 2026-05-25
 owner: avi@storewolf.com
 ---
 

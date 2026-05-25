@@ -9,7 +9,43 @@ supersedes: papercusp-dogfood-v4-2026-05-23
 
 ## Now
 
-**Single next action**: get user sign-off on v5 + the 2026-05-24 shared-repo addendum, then split into per-phase execution plans (one per Phase 0 through Phase 11) and start Phase 0 spike.
+**State (2026-05-25):** Umbrella plan. Per-phase execution plans
+own their own `## Now` / items / decisions; this block is a
+**phase-status rollup only**, updated when any phase transitions
+status. Convention spec: `/internal/docs/spec/plan-format`
+(§Umbrella plans and per-phase split-outs).
+
+### Phase status (read from each per-phase plan's frontmatter)
+
+| Phase | Plan slug | Status |
+|-------|-----------|--------|
+| 0 — Holepunch primitives spike | `papercusp-dogfood-phase0-spike-2026-05-24` | draft (macOS gate skipped per 2026-05-25 user direction) |
+| 1a — Workspace + classifier + UI shell | `papercusp-dogfood-phase1a-workspace-ui-shell-2026-05-24` | shipped |
+| 1b — OAuth + clone + attestation + binding + verifier | `papercusp-dogfood-phase1b-oauth-clone-attestation-2026-05-24` | shipped |
+| 2 — completion_ref verifier | `papercusp-dogfood-phase2-completion-ref-2026-05-24` | shipped |
+| 3 — Reactivity | (in-tree work; no separate plan — covered by Phase 2 + Phase 4 prereqs) | shipped |
+| 4 — Single-engineer dogfood | `papercusp-dogfood-phase4-single-engineer-dogfood-2026-05-24` | draft (P-026 awaits user behavioral run) |
+| 5a — Hyperbee plumbing | `papercusp-dogfood-phase5a-hyperbee-plumbing-2026-05-24` | draft (P-029 wizard + P-030/P-031 wiring in 2026-05-25 loop) |
+| 5b — Hyperbee UI integration | `papercusp-dogfood-phase5b-hyperbee-ui-integration-2026-05-24` | draft (blocked on 5a P-030/P-031) |
+| 6 — Orchestrator claim | `papercusp-dogfood-phase6-orchestrator-claim-2026-05-24` | draft (in 2026-05-25 loop) |
+| 7 — PR lifecycle | `papercusp-dogfood-phase7-pr-lifecycle-2026-05-24` | active |
+| 8 — Sidebar Insights + Profile | `papercusp-dogfood-phase8-sidebar-insights-profile-2026-05-24` | draft (in 2026-05-25 loop) |
+| 9 — Cupboard + Discord | `papercusp-dogfood-phase9-cupboard-discord-sync-2026-05-24` | in-progress (P-051a in 2026-05-25 loop; P-051b deploy deferred to user) |
+| 10 — Hyperdrive peer mirror | `papercusp-dogfood-phase10-hyperdrive-peer-mirror-2026-05-24` | draft (Phase 12+ candidate) |
+| 11 — Multi-engineer dogfood | `papercusp-dogfood-phase11-multi-engineer-dogfood-2026-05-24` | draft (blocked on multi-engineer setup) |
+
+### What this plan is for now
+
+This umbrella holds the design (10 audit changes, 8 resolved Q's,
+3 addenda) and the cross-phase decisions. **Routine progress
+inside any phase does not touch this file.** A `plans:set-now`
+here is justified only when a per-phase plan's frontmatter
+`status:` flips — at which point this rollup table updates and
+the line gets a one-sentence "what shipped" note if material.
+
+Carve-outs (separate plan docs, status: draft):
+- `proxy-witness-pattern-2026-05-24` (addendum 2)
+- `plans-harness-scoped-2026-05-24` (addendum 2)
 
 ## What changed from v4
 
