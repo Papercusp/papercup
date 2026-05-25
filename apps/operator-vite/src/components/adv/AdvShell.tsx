@@ -3,7 +3,7 @@ import * as Tabs from '@radix-ui/react-tabs';
 import { parseAsString, parseAsStringEnum, useQueryState } from 'nuqs';
 import { Select } from '@/app/harness/Select';
 
-const ADV_TAB_IDS = ['brainstorm', 'prs', 'insights', 'config', 'settings', 'docs', 'plans', 'sessions'] as const;
+const ADV_TAB_IDS = ['brainstorm', 'prs', 'insights', 'config', 'settings', 'docs', 'git', 'plans', 'sessions'] as const;
 export type AdvTabId = (typeof ADV_TAB_IDS)[number];
 
 /**
@@ -17,6 +17,7 @@ export const ADV_TABS: ReadonlyArray<{ id: Exclude<AdvTabId, 'prs'>; label: stri
   { id: 'brainstorm', label: 'Brainstorm' },
   { id: 'plans', label: 'Plans' },
   { id: 'sessions', label: 'Sessions' },
+  { id: 'git', label: 'Git' },
   { id: 'docs', label: 'Docs' },
   { id: 'insights', label: 'Insights' },
   { id: 'config', label: 'Config' },

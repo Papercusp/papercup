@@ -38,6 +38,7 @@ function renderAdvTab(tab: AdvTabId) {
     case 'config':
     case 'settings':
     case 'docs':
+    case 'git':
       return <AdvHarnessPanelPage panel={tab} />;
     case 'plans':
       return (
