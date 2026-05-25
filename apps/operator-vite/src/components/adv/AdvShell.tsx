@@ -1,4 +1,4 @@
-import { useEffect, useState, type ComponentType, type CSSProperties } from 'react';
+import { useEffect, useRef, useState, type ComponentType, type CSSProperties } from 'react';
 import * as Tabs from '@radix-ui/react-tabs';
 import { parseAsString, parseAsStringEnum, useQueryState } from 'nuqs';
 import {
@@ -48,6 +48,10 @@ type HarnessProjectLite = {
   path?: string;
   hasState?: boolean;
   hasSpec?: boolean;
+  // P-012: lite payload now surfaces parent_slug + harness_kind so the
+  // selector can render a tree without paying for /projects.
+  parent_slug?: string | null;
+  harness_kind?: string | null;
 };
 
 export default function AdvShell({
@@ -61,7 +65,32 @@ export default function AdvShell({
     'tab',
     parseAsStringEnum<AdvTabId>([...ADV_TAB_IDS]).withDefault('brainstorm'),
   );
+  // The tab strip overflows horizontally on narrow viewports — anything
+  // narrower than ~1400px combined with the sidebar + selector + scope
+  // toggle pushes the leftmost tabs (Harnesses, Brainstorm) off-screen.
+  // Whenever the URL says we're on tab X, snap the strip so X is in view.
+  const tablistRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    const list = tablistRef.current;
+    if (!list) return;
+    const trigger = list.querySelector(`.pc-advshell__tab--${activeTab}`);
+    if (trigger && 'scrollIntoView' in trigger) {
+      try {
+        (trigger as HTMLElement).scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
+      } catch {
+        /* older browsers / odd contexts — best effort */
+      }
+    }
+  }, [activeTab]);
   const [activeSlug, setActiveSlug] = useQueryState('slug', parseAsString);
+  // P-015: scope toggle. 'expanded' (default) means consumers should
+  // UNION across the selected slug + its sub-harnesses; 'self' narrows
+  // to just the picked slug. URL-round-tripped so the choice survives
+  // refresh + tab switches.
+  const [scopeMode, setScopeMode] = useQueryState(
+    'scope',
+    parseAsStringEnum<'expanded' | 'self'>(['expanded', 'self']).withDefault('expanded'),
+  );
   const [projects, setProjects] = useState<HarnessProjectLite[]>([]);
   const [projectLoadError, setProjectLoadError] = useState<string | null>(null);
 
@@ -109,23 +138,28 @@ export default function AdvShell({
             disabled={projects.length === 0}
             ariaLabel="Select harness"
             placeholder={projectLoadError ? 'Failed to load harnesses' : 'Select harness'}
-            options={
-              projects.length === 0
-                ? [{ value: '__loading', label: projectLoadError ? 'Failed to load harnesses' : 'Loading harnesses…', disabled: true }]
-                : projects.map((project) => ({ value: project.slug, label: project.slug }))
-            }
+            options={buildHarnessSelectOptions(projects, projectLoadError)}
             triggerClassName="pc-advshell__select-trigger"
           />
         </label>
+        <label className="pc-advshell__scope-toggle" title="Include sub-harnesses in list views (plans, sessions). Editor views still focus a single harness.">
+          <input
+            type="checkbox"
+            checked={scopeMode === 'expanded'}
+            onChange={(e) => void setScopeMode(e.target.checked ? 'expanded' : 'self')}
+          />
+          <span>Include sub-harnesses</span>
+        </label>
         <AdvNowRunning slug={activeSlug} />
         <Tabs.Root value={activeTab} onValueChange={(value) => void setActiveTab(value as AdvTabId)} className="pc-advshell__tabs">
-          <Tabs.List className="pc-advshell__tablist" aria-label="Adv sections">
+          <Tabs.List ref={tablistRef} className="pc-advshell__tablist" aria-label="Adv sections">
             {ADV_TABS.map((t) => {
               const Icon = t.icon;
               return (
                 <Tabs.Trigger
                   key={t.id}
                   value={t.id}
+                  title={t.label}
                   className={`pc-advshell__tab pc-advshell__tab--${t.id}`}
                   style={{
                     '--h-main-tab-accent': t.accent,
@@ -133,7 +167,7 @@ export default function AdvShell({
                   } as CSSProperties}
                 >
                   <Icon size={13} aria-hidden />
-                  {t.label.toLowerCase()}
+                  <span className="pc-advshell__tab-label">{t.label.toLowerCase()}</span>
                 </Tabs.Trigger>
               );
             })}
@@ -298,6 +332,17 @@ export default function AdvShell({
           white-space: nowrap;
         }
         .pc-advshell__tabs { flex: 1; min-width: 0; display: flex; align-items: flex-end; }
+        .pc-advshell__tab-label { display: inline; }
+        /* Header gets crowded when copy + selector + scope-toggle +
+         * now-running all claim absolute width. Below ~1500px, drop the
+         * tab text labels so all 9 tabs stay reachable as icons. The
+         * active tab keeps its label so the user always sees where they
+         * are. Tooltips on the trigger handle discoverability. */
+        @media (max-width: 1500px) {
+          .pc-advshell__tab:not([data-state='active']) .pc-advshell__tab-label {
+            display: none;
+          }
+        }
         .pc-advshell__tablist {
           display: inline-flex;
           align-items: flex-end;
@@ -372,4 +417,69 @@ export default function AdvShell({
       `}</style>
     </div>
   );
+}
+
+/**
+ * Build the harness selector option list as a tree: roots
+ * alphabetically, each child (where parent_slug → root) listed under
+ * it with a leading "  ↳ " marker. Picks remain single-slug; the
+ * scope toggle decides whether downstream consumers UNION across the
+ * subtree. Per `plans-newbutton-and-subharness-scope-2026-05-25` P-014.
+ *
+ * Exported for unit tests.
+ */
+export function buildHarnessSelectOptions(
+  projects: HarnessProjectLite[],
+  projectLoadError: string | null,
+): Array<{ value: string; label: string; disabled?: boolean }> {
+  if (projects.length === 0) {
+    return [{
+      value: '__loading',
+      label: projectLoadError ? 'Failed to load harnesses' : 'Loading harnesses…',
+      disabled: true,
+    }];
+  }
+
+  const childrenByParent = new Map<string, HarnessProjectLite[]>();
+  const roots: HarnessProjectLite[] = [];
+  for (const p of projects) {
+    const parent = p.parent_slug?.trim() || null;
+    if (!parent) {
+      roots.push(p);
+    } else {
+      let bucket = childrenByParent.get(parent);
+      if (!bucket) {
+        bucket = [];
+        childrenByParent.set(parent, bucket);
+      }
+      bucket.push(p);
+    }
+  }
+  // Orphans (parent_slug set but parent not in registry) — render as
+  // roots so they're still pickable.
+  for (const p of projects) {
+    const parent = p.parent_slug?.trim() || null;
+    if (parent && !projects.some((q) => q.slug === parent) && !roots.includes(p)) {
+      roots.push(p);
+    }
+  }
+  roots.sort((a, b) => a.slug.localeCompare(b.slug));
+  for (const list of childrenByParent.values()) {
+    list.sort((a, b) => a.slug.localeCompare(b.slug));
+  }
+
+  const out: Array<{ value: string; label: string; disabled?: boolean }> = [];
+  const visited = new Set<string>();
+  function emit(node: HarnessProjectLite, depth: number): void {
+    if (visited.has(node.slug)) return;
+    visited.add(node.slug);
+    const indent = depth === 0 ? '' : '  '.repeat(depth) + '↳ ';
+    out.push({ value: node.slug, label: indent + node.slug });
+    const kids = childrenByParent.get(node.slug);
+    if (kids && depth < 4) {
+      for (const k of kids) emit(k, depth + 1);
+    }
+  }
+  for (const r of roots) emit(r, 0);
+  return out;
 }

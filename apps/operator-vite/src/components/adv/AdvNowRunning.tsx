@@ -167,7 +167,7 @@ export default function AdvNowRunning({ slug }: Props) {
           Start
         </button>
       )}
-      {runs.length > 0 ? (
+      {runs.length > 0 && (
         <div className="pc-advshell__pills" data-count={runs.length}>
           {runs.map((r) => {
             const dur = now - r.ts;
@@ -198,9 +198,7 @@ export default function AdvNowRunning({ slug }: Props) {
             );
           })}
         </div>
-      ) : alive === true ? (
-        <span className="pc-advshell__idle">deciding next step…</span>
-      ) : null}
+      )}
       {hovered && (
         <AgentThinkingPopover
           slug={slug}
