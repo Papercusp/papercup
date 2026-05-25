@@ -13,15 +13,14 @@ export type AdvTabId = (typeof ADV_TAB_IDS)[number];
  * apps/operator/app/* is parallel/transitional); /adv has to live
  * here too or the ADV navbar button serves stale tabs.
  */
-export const ADV_TABS: ReadonlyArray<{ id: AdvTabId; label: string }> = [
+export const ADV_TABS: ReadonlyArray<{ id: Exclude<AdvTabId, 'prs'>; label: string }> = [
   { id: 'brainstorm', label: 'Brainstorm' },
-  { id: 'prs', label: 'PRs' },
+  { id: 'plans', label: 'Plans' },
+  { id: 'sessions', label: 'Sessions' },
+  { id: 'docs', label: 'Docs' },
   { id: 'insights', label: 'Insights' },
   { id: 'config', label: 'Config' },
   { id: 'settings', label: 'Settings' },
-  { id: 'docs', label: 'Docs' },
-  { id: 'plans', label: 'Plans' },
-  { id: 'sessions', label: 'Sessions' },
 ] as const;
 
 type HarnessProjectLite = {

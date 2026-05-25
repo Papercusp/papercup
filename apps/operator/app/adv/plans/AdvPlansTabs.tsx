@@ -193,11 +193,11 @@ export default function AdvPlansTabs({ children }: { children: React.ReactNode }
         .pc-adv-tabstrip {
           display: flex;
           align-items: stretch;
-          gap: 2px;
+          gap: 3px;
           overflow-x: auto;
           padding: 6px 10px 0;
-          border-bottom: 1px solid rgba(167, 139, 250, 0.18);
-          background: rgba(11, 13, 28, 0.96);
+          border-bottom: 1px solid var(--border, rgba(125, 211, 252, 0.15));
+          background: var(--bg-2, rgba(255, 255, 255, 0.045));
           scrollbar-width: thin;
         }
         .pc-adv-tab {
@@ -207,21 +207,23 @@ export default function AdvPlansTabs({ children }: { children: React.ReactNode }
           min-height: 28px;
           max-width: 240px;
           padding: 0 6px 0 10px;
-          border: 1px solid rgba(167, 139, 250, 0.14);
+          border: 1px solid var(--border, rgba(125, 211, 252, 0.15));
           border-bottom-color: transparent;
           border-radius: 8px 8px 0 0;
-          background: rgba(255, 255, 255, 0.02);
-          color: rgba(220, 214, 248, 0.7);
+          background: color-mix(in oklab, var(--bg-2, rgba(255, 255, 255, 0.045)), transparent 25%);
+          color: var(--fg-dim, #b9d4e8);
           font-size: 12px;
           font-weight: 600;
           letter-spacing: 0.01em;
           white-space: nowrap;
         }
-        .pc-adv-tab.is-pinned { background: rgba(31, 23, 56, 0.5); }
+        .pc-adv-tab.is-pinned {
+          background: color-mix(in oklab, var(--bg-3, rgba(255, 255, 255, 0.075)), transparent 20%);
+        }
         .pc-adv-tab.is-active {
-          color: #f7f5ff;
-          background: rgba(31, 23, 56, 0.96);
-          border-color: rgba(167, 139, 250, 0.5);
+          color: var(--fg, #e7f7ff);
+          background: color-mix(in oklab, var(--accent, #38bdf8), transparent 84%);
+          border-color: color-mix(in oklab, var(--accent, #38bdf8), transparent 48%);
         }
         .pc-adv-tab__label {
           all: unset;
@@ -231,15 +233,15 @@ export default function AdvPlansTabs({ children }: { children: React.ReactNode }
           overflow: hidden;
           text-overflow: ellipsis;
         }
-        .pc-adv-tab__label:focus-visible { outline: 1px dashed rgba(167, 139, 250, 0.6); }
+        .pc-adv-tab__label:focus-visible { outline: 1px dashed var(--accent-strong, #7dd3fc); }
         .pc-adv-tab__close {
           all: unset;
           cursor: pointer;
           padding: 0 6px;
-          color: rgba(220, 214, 248, 0.5);
+          color: var(--fg-mute, #7f9bb4);
           border-radius: 4px;
         }
-        .pc-adv-tab__close:hover { color: #f7f5ff; background: rgba(167, 139, 250, 0.18); }
+        .pc-adv-tab__close:hover { color: var(--fg, #e7f7ff); background: color-mix(in oklab, var(--accent, #38bdf8), transparent 84%); }
       `}</style>
     </>
   );
