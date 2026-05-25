@@ -12,6 +12,7 @@ import {
   routeHrefFromProp,
   routePendingTargetFromHref,
   scheduleRoutePendingClear,
+  subscribeRoutePending,
 } from '../routePending';
 
 describe('routePending helpers', () => {
@@ -72,5 +73,17 @@ describe('routePending helpers', () => {
 
     expect(getRoutePendingHref()).toBeNull();
     expect(getRoutePendingTarget()).toBeNull();
+  });
+  it('notifies subscribers on begin and finish transitions', () => {
+    const listener = vi.fn();
+    const unsubscribe = subscribeRoutePending(listener);
+
+    beginRoutePending('/support?ws=default');
+    expect(listener).toHaveBeenCalledTimes(1);
+
+    finishRoutePending();
+    expect(listener).toHaveBeenCalledTimes(2);
+
+    unsubscribe();
   });
 });
