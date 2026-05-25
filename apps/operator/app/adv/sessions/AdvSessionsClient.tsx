@@ -4,13 +4,15 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import * as Collapsible from '@radix-ui/react-collapsible';
 import * as Tabs from '@radix-ui/react-tabs';
 import { ChevronRight } from 'lucide-react';
-import { parseAsArrayOf, parseAsString, useQueryState } from 'nuqs';
+import { parseAsArrayOf, parseAsString, parseAsStringEnum, useQueryState } from 'nuqs';
 import { toast } from 'sonner';
 import { Button } from '@/app/harness/Button';
 import { Select } from '@/app/harness/Select';
 import { Tooltip } from '@/app/harness/Tooltip';
 import { launchOmpAgent } from '@/lib/native-omp-launch';
-import { usePlanList } from '../../admin/plans/plans-api';
+import { formatRelativeUpdated } from '@/lib/format/relative-time';
+import { resolveHarnessScope, type HarnessNodeForScope } from '@/lib/harness/scope';
+import { usePlanList, type PlanListRow } from '../../admin/plans/plans-api';
 
 interface ServerRowSummary {
   ompSessionId: string;
@@ -408,15 +410,16 @@ export default function AdvSessionsClient() {
     () => (planList.data?.plans ?? []).find((p) => p.slug === launchPlanSlug) ?? null,
     [launchPlanSlug, planList.data],
   );
+  // P-026: grouped + sorted picker. Plans group by `harness` (their
+  // resolved harness slug); within each group sort by `updated` DESC;
+  // labels gain "· updated Nd ago" for context. The AdvShell-active
+  // harness slug is read from the `slug` nuqs key (we don't import
+  // AdvShell directly to avoid a cycle) so its group leads. Empty
+  // groups are omitted.
+  const [advActiveSlug] = useQueryState('slug', parseAsString);
   const launchPlanOptions = useMemo(
-    () => [
-      { value: PLAN_SELECT_PLACEHOLDER, label: planList.loading ? 'Loading plans…' : 'Select plan…' },
-      ...(planList.data?.plans ?? []).map((plan) => ({
-        value: plan.slug,
-        label: plan.title?.trim() || plan.slug,
-      })),
-    ],
-    [planList.data, planList.loading],
+    () => buildLaunchPlanOptions(planList.data?.plans ?? [], advActiveSlug, planList.loading),
+    [planList.data, planList.loading, advActiveSlug],
   );
 
 
@@ -545,9 +548,64 @@ export default function AdvSessionsClient() {
     }
   }, [resolveResumeId]);
 
+  // P-025: derive the harness slug for each session via its plan.
+  // Sessions don't carry a harness column; the join is plan → harness.
+  const harnessByPlanSlug = useMemo<Map<string, string>>(() => {
+    const m = new Map<string, string>();
+    for (const p of planList.data?.plans ?? []) {
+      if (p.harness) m.set(p.slug, p.harness);
+    }
+    return m;
+  }, [planList.data]);
+  const harnessForRow = useCallback(
+    (row: SessionRow): string | null =>
+      row.planSlug ? harnessByPlanSlug.get(row.planSlug) ?? null : null,
+    [harnessByPlanSlug],
+  );
+  const [sessionHarnessFilter, setSessionHarnessFilter] = useQueryState('h', parseAsString);
+  const [scopeMode] = useQueryState(
+    'scope',
+    parseAsStringEnum<'expanded' | 'self'>(['expanded', 'self']).withDefault('expanded'),
+  );
+  const [registryProjects, setRegistryProjects] = useState<HarnessNodeForScope[]>([]);
+  useEffect(() => {
+    let cancelled = false;
+    fetch('/api/harness/projects/lite', { cache: 'no-store' })
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
+      .then((d) => {
+        if (cancelled) return;
+        setRegistryProjects(Array.isArray(d?.projects) ? d.projects : []);
+      })
+      .catch(() => { /* fall back to per-row plan join */ });
+    return () => { cancelled = true; };
+  }, []);
+  const scopeSlugs = useMemo<Set<string> | null>(() => {
+    if (sessionHarnessFilter) return new Set([sessionHarnessFilter]);
+    if (!advActiveSlug) return null;
+    if (scopeMode === 'self') return new Set([advActiveSlug]);
+    if (registryProjects.length === 0) return new Set([advActiveSlug]);
+    return new Set(resolveHarnessScope(advActiveSlug, registryProjects));
+  }, [sessionHarnessFilter, advActiveSlug, scopeMode, registryProjects]);
+  const sessionHarnessOptions = useMemo<string[]>(() => {
+    const set = new Set<string>();
+    for (const r of rows ?? []) {
+      const h = harnessForRow(r);
+      if (h) set.add(h);
+    }
+    return [...set].sort();
+  }, [rows, harnessForRow]);
+  const filteredRows = useMemo<SessionRow[]>(() => {
+    if (!scopeSlugs) return rows ?? [];
+    return (rows ?? []).filter((r) => {
+      const h = harnessForRow(r);
+      return h ? scopeSlugs.has(h) : false;
+    });
+  }, [rows, scopeSlugs, harnessForRow]);
+
   // Server already filtered empty OMP rows out of the response —
-  // see /adv/sessions list handler. Grouping consumes rows directly.
-  const grouped = useMemo(() => groupRows(rows ?? []), [rows]);
+  // see /adv/sessions list handler. Grouping consumes the harness-
+  // filtered rows.
+  const grouped = useMemo(() => groupRows(filteredRows), [filteredRows]);
   const autoExpandedSelectionRef = React.useRef<string | null>(null);
 
   // Auto-expand a newly-selected deep-linked row once so it becomes
@@ -615,6 +673,19 @@ export default function AdvSessionsClient() {
             >
               Refresh
             </button>
+            {sessionHarnessOptions.length > 1 ? (
+              <select
+                aria-label="Filter sessions by harness"
+                className="pc-adv-sessions__harness-filter"
+                value={sessionHarnessFilter ?? ''}
+                onChange={(e) => void setSessionHarnessFilter(e.target.value || null)}
+              >
+                <option value="">All harnesses</option>
+                {sessionHarnessOptions.map((h) => (
+                  <option key={h} value={h}>{h}</option>
+                ))}
+              </select>
+            ) : null}
           </div>
         </div>
       </header>
@@ -684,6 +755,11 @@ export default function AdvSessionsClient() {
                               <span className={`pc-adv-sessions__badge pc-adv-sessions__badge--${row.mode}`}>
                                 {row.mode}
                               </span>
+                              {harnessForRow(row) ? (
+                                <span className="pc-adv-sessions__harness-chip" title={`harness: ${harnessForRow(row)}`}>
+                                  {harnessForRow(row)}
+                                </span>
+                              ) : null}
                               <span className="pc-adv-sessions__row-label">
                                 {row.label ?? row.terminalBin ?? `#${row.id}`}
                               </span>
@@ -1087,6 +1163,25 @@ export default function AdvSessionsClient() {
         .pc-adv-sessions__badge--console {
           background: color-mix(in oklab, var(--warn), transparent 86%);
           color: var(--warn);
+        }
+        .pc-adv-sessions__harness-chip {
+          padding: 1px 6px;
+          border-radius: 999px;
+          background: rgba(125, 211, 252, 0.12);
+          color: #bae6fd;
+          font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+          font-size: 10px;
+          font-weight: 700;
+          letter-spacing: 0.01em;
+        }
+        .pc-adv-sessions__harness-filter {
+          padding: 4px 6px;
+          background: var(--bg-2);
+          color: var(--fg);
+          border: 1px solid color-mix(in oklab, var(--accent), transparent 62%);
+          border-radius: 6px;
+          font-size: 12px;
+          font-family: inherit;
         }
         .pc-adv-sessions__row-label {
           color: var(--fg);
@@ -2218,4 +2313,78 @@ function formatDate(iso: string): string {
   } catch {
     return iso;
   }
+}
+/**
+ * Build the grouped + sorted option tree for the "Start from plan
+ * context" picker. Per `plans-newbutton-and-subharness-scope-2026-05-25`
+ * P-026 / D-011.
+ *
+ * Pure — exported for unit-test access.
+ */
+export function buildLaunchPlanOptions(
+  plans: PlanListRow[],
+  activeHarness: string | null | undefined,
+  loading: boolean,
+): import('@/app/harness/Select').SelectEntry[] {
+  const placeholder = {
+    value: PLAN_SELECT_PLACEHOLDER,
+    label: loading ? 'Loading plans…' : 'Select plan…',
+  };
+  if (plans.length === 0) return [placeholder];
+
+  const NO_HARNESS_KEY = '__no-harness__';
+  const byHarness = new Map<string, PlanListRow[]>();
+  for (const p of plans) {
+    const key = p.harness?.trim() || NO_HARNESS_KEY;
+    let bucket = byHarness.get(key);
+    if (!bucket) {
+      bucket = [];
+      byHarness.set(key, bucket);
+    }
+    bucket.push(p);
+  }
+
+  // Sort plans within each harness by updated DESC (newest first).
+  const updatedMs = (p: PlanListRow): number => {
+    if (!p.updated) return 0;
+    const t = Date.parse(p.updated);
+    return Number.isFinite(t) ? t : 0;
+  };
+  for (const list of byHarness.values()) {
+    list.sort((a, b) => updatedMs(b) - updatedMs(a));
+  }
+
+  const allKeys = [...byHarness.keys()];
+  const active = activeHarness?.trim() || null;
+  const activeFirst = active && byHarness.has(active) ? [active] : [];
+  const restKeys = allKeys
+    .filter((k) => k !== active && k !== NO_HARNESS_KEY)
+    .sort((a, b) => a.localeCompare(b));
+  const orderedKeys = [
+    ...activeFirst,
+    ...restKeys,
+    ...(byHarness.has(NO_HARNESS_KEY) ? [NO_HARNESS_KEY] : []),
+  ];
+
+  const groups: import('@/app/harness/Select').SelectEntry[] = orderedKeys.map((key) => {
+    const label = key === NO_HARNESS_KEY ? '(no harness)' : key;
+    return {
+      kind: 'group' as const,
+      label,
+      options: byHarness.get(key)!.map((plan) => ({
+        value: plan.slug,
+        label: formatLaunchPlanOptionLabel(plan),
+      })),
+    };
+  });
+
+  return [placeholder, ...groups];
+}
+
+/** "<title> · updated 5d ago" or just "<title>" when no updated field. */
+function formatLaunchPlanOptionLabel(plan: PlanListRow): string {
+  const title = plan.title?.trim() || plan.slug;
+  if (!plan.updated) return title;
+  const rel = formatRelativeUpdated(plan.updated);
+  return rel ? `${title} · updated ${rel}` : title;
 }

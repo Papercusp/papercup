@@ -82,4 +82,47 @@ describe('buildEngineerOmpLaunchCommand', () => {
     expect(cmd).toContain('--model openai/gpt-5.2');
     expect(cmd).toContain('-r 550e8400-e29b-41d4-a716-446655440000');
   });
+
+  it('appends a kickoff brief after the engineer-collaborator brief', () => {
+    const cmd = buildEngineerOmpLaunchCommand({
+      extraSystemPromptPaths: ['/dev/shm/papercusp-kickoff-xyz/new-plan.md'],
+    });
+    const engineerIdx = cmd.indexOf('"$HOME/.papercusp/engineer-collaborator.md"');
+    const kickoffIdx = cmd.indexOf('--append-system-prompt="/dev/shm/papercusp-kickoff-xyz/new-plan.md"');
+    expect(engineerIdx).toBeGreaterThan(-1);
+    expect(kickoffIdx).toBeGreaterThan(engineerIdx);
+  });
+
+  it('preserves order of multiple extra system-prompt paths', () => {
+    const cmd = buildEngineerOmpLaunchCommand({
+      extraSystemPromptPaths: ['/dev/shm/a.md', '/dev/shm/b.md', '/dev/shm/c.md'],
+    });
+    const a = cmd.indexOf('"/dev/shm/a.md"');
+    const b = cmd.indexOf('"/dev/shm/b.md"');
+    const c = cmd.indexOf('"/dev/shm/c.md"');
+    expect(a).toBeGreaterThan(-1);
+    expect(b).toBeGreaterThan(a);
+    expect(c).toBeGreaterThan(b);
+  });
+
+  it('rejects a non-absolute prompt path', () => {
+    expect(() =>
+      buildEngineerOmpLaunchCommand({ extraSystemPromptPaths: ['relative/path.md'] }),
+    ).toThrow(/must be absolute/i);
+  });
+
+  it('rejects a prompt path with quote/control chars', () => {
+    expect(() =>
+      buildEngineerOmpLaunchCommand({ extraSystemPromptPaths: ['/tmp/"evil".md'] }),
+    ).toThrow(/quote\/control/i);
+    expect(() =>
+      buildEngineerOmpLaunchCommand({ extraSystemPromptPaths: ['/tmp/a\nb.md'] }),
+    ).toThrow(/quote\/control/i);
+  });
+
+  it('rejects an empty prompt path', () => {
+    expect(() =>
+      buildEngineerOmpLaunchCommand({ extraSystemPromptPaths: [''] }),
+    ).toThrow(/non-empty/i);
+  });
 });

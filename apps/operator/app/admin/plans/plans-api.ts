@@ -29,6 +29,13 @@ export interface PlanListRow {
   isLegacy: boolean;
   itemCounts: Partial<Record<ItemStatus | 'unknown', number>> | null;
   nextAction: string | null;
+  /**
+   * Resolved harness slug for the plan — per
+   * `plans-newbutton-and-subharness-scope-2026-05-25` P-022. Always
+   * present (the server resolver falls back to the workspace primary
+   * when no ctx harness is provided).
+   */
+  harness: string;
 }
 
 export interface PlanItem {

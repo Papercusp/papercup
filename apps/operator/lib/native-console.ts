@@ -24,6 +24,15 @@ export interface LaunchOpts {
   resumeSessionId?: string | null;
   /** Optional OMP model fuzzy-match argument (`omp-su --model <value>`). */
   model?: string | null;
+  /**
+   * Optional kickoff brief — per
+   * `plans-newbutton-and-subharness-scope-2026-05-25` P-005. Honored
+   * only in omp mode. The console-launch route Zod-validates `kind`
+   * against the allowlist; the server then writes a /dev/shm brief
+   * and appends `--append-system-prompt=<path>` to the OMP launch
+   * command. Curated in-repo briefs only — no free-text payloads.
+   */
+  kickoff?: { kind: 'new-plan' } | null;
 }
 
 interface ConsoleEnvelope {

@@ -53,6 +53,38 @@ const CORS_HEADERS: Record<string, string> = {
   'access-control-allow-headers': 'content-type, accept',
 };
 
+/**
+ * Allowlist of curated kickoff kinds the launch route accepts.
+ * Per `plans-newbutton-and-subharness-scope-2026-05-25` D-003: the
+ * brief body lives in-repo at `apps/operator/prompts/kickoffs/<kind>.md`
+ * and is never passed as a free-text payload. Add a kind here only
+ * after the brief MD file + the renderer in
+ * `lib/agent-kickoff/prompt-file.ts` both exist.
+ */
+const KICKOFF_KIND_ALLOW = new Set<string>(['new-plan']);
+
+type KickoffValidation =
+  | { kind: 'ok'; value: { kind: 'new-plan' } | null }
+  | { kind: 'error'; error: string };
+
+/** Test-only re-export of the validator. Underscore-prefixed to
+ *  signal "internal"; consumed by lib/agent-kickoff/kickoff-test-exports.ts. */
+export const __validateKickoffForTest = (raw: { kind?: string } | null | undefined) =>
+  validateKickoff(raw);
+
+function validateKickoff(raw: { kind?: string } | null | undefined): KickoffValidation {
+  if (!raw) return { kind: 'ok', value: null };
+  const k = typeof raw.kind === 'string' ? raw.kind.trim() : '';
+  if (!k) return { kind: 'ok', value: null };
+  if (!KICKOFF_KIND_ALLOW.has(k)) {
+    return {
+      kind: 'error',
+      error: `kickoff.kind '${k.slice(0, 32)}' is not in the allowlist (${[...KICKOFF_KIND_ALLOW].join(', ')})`,
+    };
+  }
+  return { kind: 'ok', value: { kind: k as 'new-plan' } };
+}
+
 function jsonRes(body: unknown, init?: number | ResponseInit): Response {
   const r = Response.json(body, typeof init === 'number' ? { status: init } : init);
   for (const [k, v] of Object.entries(CORS_HEADERS)) r.headers.set(k, v);
@@ -367,6 +399,11 @@ const post = defineTool({
       planSlug?: string | null;
       label?: string | null;
       model?: string | null;
+      // plans-newbutton-and-subharness-scope-2026-05-25 P-005:
+      // curated kickoff briefs. Only the kinds in KICKOFF_KIND_ALLOW
+      // are accepted — the brief body lives in-repo at
+      // apps/operator/prompts/kickoffs/<kind>.md (D-003).
+      kickoff?: { kind?: string } | null;
     } = {};
     try {
       const text = await req.text();
@@ -374,6 +411,11 @@ const post = defineTool({
     } catch { /* ignore — empty body is fine */ }
 
     const mode = body.mode === 'omp' ? 'omp' : 'shell';
+
+    const kickoff = validateKickoff(body.kickoff ?? null);
+    if (kickoff.kind === 'error') {
+      return jsonRes({ status: 'error', error: kickoff.error }, 400);
+    }
 
     let envelope;
     try {
@@ -384,6 +426,7 @@ const post = defineTool({
         mode,
         resumeSessionId: body.resumeSessionId ?? undefined,
         ompModel: body.model?.trim() || undefined,
+        kickoff: kickoff.value ?? undefined,
       });
     } catch (e: any) {
       console.warn(`[console-launch] envelope build failed: ${e?.message}`);

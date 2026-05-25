@@ -65,21 +65,27 @@ export default function AdvShell({
     'tab',
     parseAsStringEnum<AdvTabId>([...ADV_TAB_IDS]).withDefault('brainstorm'),
   );
-  // The tab strip overflows horizontally on narrow viewports — anything
-  // narrower than ~1400px combined with the sidebar + selector + scope
-  // toggle pushes the leftmost tabs (Harnesses, Brainstorm) off-screen.
-  // Whenever the URL says we're on tab X, snap the strip so X is in view.
+  // Tab strip overflows on narrow viewports. Only scroll into view when
+  // the active tab is actually clipped — otherwise we'd scroll AWAY from
+  // tabs the user can already see (the first wrong version of this
+  // effect scrolled `brainstorm` to centre on /adv and pushed `harnesses`
+  // off-screen to the left).
   const tablistRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
     const list = tablistRef.current;
     if (!list) return;
-    const trigger = list.querySelector(`.pc-advshell__tab--${activeTab}`);
-    if (trigger && 'scrollIntoView' in trigger) {
-      try {
-        (trigger as HTMLElement).scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
-      } catch {
-        /* older browsers / odd contexts — best effort */
-      }
+    const trigger = list.querySelector<HTMLElement>(`.pc-advshell__tab--${activeTab}`);
+    if (!trigger) return;
+    const listRect = list.getBoundingClientRect();
+    const tabRect = trigger.getBoundingClientRect();
+    const PAD = 8;
+    const clippedLeft = tabRect.left < listRect.left + PAD;
+    const clippedRight = tabRect.right > listRect.right - PAD;
+    if (!clippedLeft && !clippedRight) return;
+    try {
+      trigger.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'nearest' });
+    } catch {
+      /* best effort */
     }
   }, [activeTab]);
   const [activeSlug, setActiveSlug] = useQueryState('slug', parseAsString);
@@ -333,16 +339,6 @@ export default function AdvShell({
         }
         .pc-advshell__tabs { flex: 1; min-width: 0; display: flex; align-items: flex-end; }
         .pc-advshell__tab-label { display: inline; }
-        /* Header gets crowded when copy + selector + scope-toggle +
-         * now-running all claim absolute width. Below ~1500px, drop the
-         * tab text labels so all 9 tabs stay reachable as icons. The
-         * active tab keeps its label so the user always sees where they
-         * are. Tooltips on the trigger handle discoverability. */
-        @media (max-width: 1500px) {
-          .pc-advshell__tab:not([data-state='active']) .pc-advshell__tab-label {
-            display: none;
-          }
-        }
         .pc-advshell__tablist {
           display: inline-flex;
           align-items: flex-end;

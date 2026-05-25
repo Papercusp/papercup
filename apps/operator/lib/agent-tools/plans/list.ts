@@ -53,6 +53,14 @@ type ListRow = {
   isLegacy: boolean;
   itemCounts: Partial<Record<(typeof ITEM_STATUSES)[number] | 'unknown', number>> | null;
   nextAction: string | null;
+  /**
+   * Resolved harness slug per
+   * `plans-newbutton-and-subharness-scope-2026-05-25` P-022 / D-009.
+   * Populated from `resolveHarnessPlansDir`'s output so callers don't
+   * re-walk the registry. Always present (the resolver always picks
+   * SOME harness, falling back to the workspace primary).
+   */
+  harness: string;
 };
 
 export default defineTool({
@@ -112,6 +120,7 @@ export default defineTool({
         isLegacy: parsed.isLegacy,
         itemCounts,
         nextAction: parsed.now?.next ?? null,
+        harness: opts.harnessSlug,
       });
     }
 

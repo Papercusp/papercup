@@ -17,7 +17,8 @@
  */
 
 import { useQueryState, parseAsString, parseAsStringEnum } from 'nuqs';
-import { useCallback, useEffect, useMemo, useRef } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { toast } from 'sonner';
 import PlanRail, { type PlanRailHandle } from './PlanRail';
 import PlanDetail from './PlanDetail';
 import PlanItemsList from './PlanItemsList';
@@ -25,6 +26,11 @@ import PlanFilters from './PlanFilters';
 import PlanSearchResults from './PlanSearchResults';
 import PlanTriage from './PlanTriage';
 import { usePlanList, usePlanSearch, type PlanListRow } from './plans-api';
+import { launchOmpAgent } from '@/lib/native-omp-launch';
+import { resolveHarnessScope, type HarnessNodeForScope } from '@/lib/harness/scope';
+
+/** localStorage key AdvShell uses for the fallback active-harness slug. */
+const ACTIVE_HARNESS_KEY = 'harness.activeProject';
 
 type PlansView = 'list' | 'inbox' | 'actionable' | 'triage';
 type PaneMode = 'read' | 'edit';
@@ -64,7 +70,60 @@ export default function PlansClient() {
   const railRef = useRef<PlanRailHandle | null>(null);
   const searchRef = useRef<HTMLInputElement | null>(null);
   const planList = usePlanList({ includeArchived: true, includeLegacy: true });
-  const stats = useMemo(() => buildPlanStats(planList.data?.plans ?? []), [planList.data]);
+
+  // P-024 + P-016 + P-015: harness filter for the rail.
+  // Three signals stack:
+  //   - `?h=<slug>` user-explicit harness filter (overrides everything).
+  //   - `?slug=<slug>` AdvShell-active harness (default narrow).
+  //   - `?scope=` AdvShell scope toggle: 'expanded' (default) UNIONS
+  //     the slug + its sub-harnesses; 'self' narrows to just the slug.
+  // Sub-harness resolution requires the registry payload — fetched once.
+  const [harnessFilter, setHarnessFilter] = useQueryState('h', parseAsString);
+  const [advActiveSlug] = useQueryState('slug', parseAsString);
+  const [scopeMode] = useQueryState(
+    'scope',
+    parseAsStringEnum<'expanded' | 'self'>(['expanded', 'self']).withDefault('expanded'),
+  );
+  const [registryProjects, setRegistryProjects] = useState<HarnessNodeForScope[]>([]);
+  useEffect(() => {
+    let cancelled = false;
+    fetch('/api/harness/projects/lite', { cache: 'no-store' })
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
+      .then((d) => {
+        if (cancelled) return;
+        setRegistryProjects(Array.isArray(d?.projects) ? d.projects : []);
+      })
+      .catch(() => { /* selector still works on the existing plan-row harness set */ });
+    return () => { cancelled = true; };
+  }, []);
+  const scopeSlugs = useMemo<Set<string> | null>(() => {
+    if (harnessFilter) return new Set([harnessFilter]);
+    if (!advActiveSlug) return null;
+    if (scopeMode === 'self') return new Set([advActiveSlug]);
+    if (registryProjects.length === 0) return new Set([advActiveSlug]);
+    return new Set(resolveHarnessScope(advActiveSlug, registryProjects));
+  }, [harnessFilter, advActiveSlug, scopeMode, registryProjects]);
+  const harnessOptions = useMemo<string[]>(() => {
+    const set = new Set<string>();
+    for (const p of planList.data?.plans ?? []) {
+      if (p.harness) set.add(p.harness);
+    }
+    return [...set].sort();
+  }, [planList.data]);
+  const visiblePlans = useMemo<PlanListRow[]>(() => {
+    const all = planList.data?.plans ?? [];
+    if (!scopeSlugs) return all;
+    return all.filter((p) => scopeSlugs.has(p.harness));
+  }, [planList.data, scopeSlugs]);
+  const filteredPlanList = useMemo(
+    () => ({
+      ...planList,
+      data: planList.data ? { ...planList.data, plans: visiblePlans } : null,
+    }),
+    [planList, visiblePlans],
+  );
+
+  const stats = useMemo(() => buildPlanStats(visiblePlans), [visiblePlans]);
 
   // Lift cross-plan search up so PlanRail can union its hits into the
   // rail filter — otherwise the rail does a substring match on
@@ -146,9 +205,62 @@ export default function PlansClient() {
     search: searchRef,
   });
 
+  // P-007: PlansClient is dual-homed (/admin/plans + /adv?tab=plans).
+  // /adv puts the active harness slug on `?slug=`; standalone /admin
+  // doesn't. Fall back to localStorage (the same key AdvShell uses
+  // for first-load) so the New plan button still works there.
+  const [activeHarnessSlug] = useQueryState('slug', parseAsString);
+  const [fallbackHarnessSlug, setFallbackHarnessSlug] = useState<string | null>(null);
+  useEffect(() => {
+    if (activeHarnessSlug) return;
+    if (typeof window === 'undefined') return;
+    try {
+      setFallbackHarnessSlug(window.localStorage.getItem(ACTIVE_HARNESS_KEY));
+    } catch { /* ignore */ }
+  }, [activeHarnessSlug]);
+  const resolvedHarnessSlug = activeHarnessSlug ?? fallbackHarnessSlug;
+
+  const [launchingNewPlan, setLaunchingNewPlan] = useState(false);
+  const onNewPlan = useCallback(async () => {
+    if (launchingNewPlan) return;
+    setLaunchingNewPlan(true);
+    try {
+      const result = await launchOmpAgent({
+        slug: resolvedHarnessSlug ?? null,
+        planSlug: null,
+        label: resolvedHarnessSlug ? `new-plan · ${resolvedHarnessSlug}` : 'new-plan',
+        kickoff: { kind: 'new-plan' },
+      });
+      if (result.ok) {
+        toast.success('OMP launched to draft a new plan.', { duration: 3000 });
+      } else if (result.installCmd) {
+        toast.error(`${result.error ?? 'OMP launch prerequisites are missing.'} Run: ${result.installCmd}`);
+      } else {
+        toast.error(`Launch failed: ${result.error ?? 'unknown error'}`);
+      }
+    } finally {
+      setLaunchingNewPlan(false);
+    }
+  }, [launchingNewPlan, resolvedHarnessSlug]);
+
   return (
     <div className="pc-plans">
       <aside className="pc-plans__rail">
+        <div className="pc-plans__rail-actions">
+          <button
+            type="button"
+            className="pc-plans__new-plan"
+            onClick={onNewPlan}
+            disabled={launchingNewPlan}
+            title={
+              resolvedHarnessSlug
+                ? `Launch an OMP session to draft a new plan in ${resolvedHarnessSlug}`
+                : 'Launch an OMP session to draft a new plan (no active harness — agent will ask)'
+            }
+          >
+            {launchingNewPlan ? 'Launching…' : '+ New plan'}
+          </button>
+        </div>
         <PlansOverview stats={stats} loading={planList.loading} />
 
         <nav className="pc-plans__views" aria-label="Plans views">
@@ -166,8 +278,32 @@ export default function PlansClient() {
           ))}
         </nav>
 
+        {harnessOptions.length > 1 ? (
+          <div className="pc-plans__harness-filter">
+            <label className="pc-plans__harness-filter-label" htmlFor="pc-plans-harness-filter">
+              Harness
+            </label>
+            <select
+              id="pc-plans-harness-filter"
+              className="pc-plans__harness-filter-select"
+              value={harnessFilter ?? ''}
+              onChange={(e) => void setHarnessFilter(e.target.value || null)}
+            >
+              <option value="">All ({planList.data?.plans.length ?? 0})</option>
+              {harnessOptions.map((h) => {
+                const count = (planList.data?.plans ?? []).filter((p) => p.harness === h).length;
+                return (
+                  <option key={h} value={h}>
+                    {h} ({count})
+                  </option>
+                );
+              })}
+            </select>
+          </div>
+        ) : null}
+
         <PlanFilters
-          list={planList}
+          list={filteredPlanList}
           query={q}
           onQueryChange={setQ}
           searchRef={searchRef}
@@ -176,7 +312,7 @@ export default function PlansClient() {
         <div className="pc-plans__list" aria-label="Plan list">
           <PlanRail
             ref={railRef}
-            list={planList}
+            list={filteredPlanList}
             selectedSlug={slug}
             query={q}
             searchHitSlugs={searchHitSlugs}

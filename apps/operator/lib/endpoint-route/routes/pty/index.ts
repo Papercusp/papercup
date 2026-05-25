@@ -21,19 +21,19 @@
  * module-level state — same one-instance-per-process lifetime.
  */
 import {
-  existsSync, mkdtempSync, readFileSync, mkdirSync, writeFileSync,
+  existsSync, mkdirSync, readFileSync, writeFileSync,
   readdirSync, renameSync, rmSync, statSync,
 } from 'node:fs';
-import { homedir, tmpdir } from 'node:os';
+import { homedir } from 'node:os';
 import { basename, join } from 'node:path';
 import { spawn as spawnChild } from 'node:child_process';
 import { sseResponse } from '@restart/sse';
-import { getLegacyClient, getFeatureLineage, formatLineageForPrompt } from '@restart/db-org';
 import {
   killPty, markActive, resizePty, spawnPty, writePty, getPty, getPtyMeta, getHistory, PtyError,
 } from '@/lib/pty-bridge';
 import { papercuspPath } from '@/lib/papercusp-root';
 import { resolveProjectDir, resolveStateDir, resolveSpawnCwd, resolveContextEnv } from '@/lib/spawn-config';
+import { buildKickoffPromptFile } from '@/lib/agent-kickoff/prompt-file';
 import { defineTool } from '@papercusp/agent-mcp';
 
 interface SpawnBody {
@@ -50,51 +50,14 @@ const stateDirForSlug = resolveStateDir;
 
 /**
  * Build a markdown system-prompt fragment describing the feature pi is
- * scoped to; write it to a ram-tmp dir. Returns the path or null.
+ * scoped to. Thin wrapper around the shared kickoff factory.
  */
 async function buildFeaturePromptFile(
   slug: string,
   featureId: string,
   _stateDir: string,
 ): Promise<string | null> {
-  try {
-    const c = getLegacyClient(slug);
-    const feature = (await c
-      .prepare('SELECT feature_id, title, summary, status FROM harness_features WHERE harness_slug = ? AND feature_id = ? LIMIT 1')
-      .get(slug, featureId)) as { feature_id: string; title?: string; summary?: string; status?: string } | undefined;
-    if (!feature) return null;
-
-    // Lineage block skipped — getFeatureLineage signature changed; best-effort omit.
-    let lineageBlock = '';
-    void getFeatureLineage; void formatLineageForPrompt;
-
-    const lines = [
-      `# Pi context — ${slug} / ${featureId}`,
-      '',
-      `You are running inside an isolated git worktree dedicated to **feature ${featureId}**.`,
-      `The Papercusp harness expects you to make focused changes for THIS feature only,`,
-      `then commit them in this worktree. The validator role will pick up your commits and`,
-      `decide whether to merge.`,
-      '',
-      `## Feature: ${feature.title ?? featureId}`,
-    ];
-    if (feature.status) lines.push('', `Status: ${feature.status}`);
-    if (feature.summary && feature.summary.trim().length > 0) {
-      lines.push('', '## Spec', '', feature.summary.trim());
-    }
-    if (lineageBlock) lines.push(lineageBlock);
-
-    const ramRoot = (process.platform === 'linux' && existsSync('/dev/shm')) ? '/dev/shm' : tmpdir();
-    const tmpDir = mkdtempSync(join(ramRoot, 'papercusp-pty-'));
-    const path = join(tmpDir, `${featureId}.md`);
-    writeFileSync(path, lines.join('\n'), 'utf8');
-    setTimeout(() => {
-      try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* GC */ }
-    }, 30_000).unref();
-    return path;
-  } catch {
-    return null;
-  }
+  return buildKickoffPromptFile({ kind: 'feature', harnessSlug: slug, featureId });
 }
 
 /** pi/omp session jsonls created within `windowMs` of the pty's startup. */

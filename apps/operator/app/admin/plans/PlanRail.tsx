@@ -227,6 +227,7 @@ function PlanRow({
             <span className="pc-plan-row__title">{title}</span>
           </Tooltip>
           {source ? <SourcePill source={source} /> : null}
+          {plan.harness ? <HarnessPill harness={plan.harness} /> : null}
           <StatusPill status={plan.status} />
         </div>
         <div className="pc-plan-row__meta-line">
@@ -254,6 +255,19 @@ function StatusPill({ status }: { status: PlanStatus }) {
 }
 
 /**
+ * Harness pill — P-023. Shows the resolved harness slug each plan
+ * row lives in so the rail is legible when the user expands the
+ * scope to include multiple harnesses (Phase 2 sub-harness scope).
+ */
+function HarnessPill({ harness }: { harness: string }) {
+  return (
+    <Tooltip label={`harness: ${harness}`}>
+      <span className="pc-pill pc-pill--harness">{harness}</span>
+    </Tooltip>
+  );
+}
+
+/**
  * Whether a draft plan was authored by the user or by the scoper. Mirrors
  * the convention used by the plansDrafts.bySlug resolver so the rail and
  * ProposalsPanel agree on labelling — only draft plans get a source tag
@@ -275,15 +289,16 @@ function SourcePill({ source }: { source: 'user' | 'scoper' }) {
   );
 }
 
+import { formatRelativeUpdated } from '@/lib/format/relative-time';
+
+/**
+ * Thin wrapper kept for call-site stability inside this file. The
+ * canonical implementation lives at `@/lib/format/relative-time`
+ * (P-027 / D-011) so the picker in AdvSessionsClient + any future
+ * caller renders the same "Nd ago" string.
+ */
 function formatUpdated(updated: string): string {
-  const t = Date.parse(updated);
-  if (!Number.isFinite(t)) return updated;
-  const ageMs = Date.now() - t;
-  const day = 86_400_000;
-  if (ageMs < day) return 'today';
-  if (ageMs < day * 2) return 'yesterday';
-  if (ageMs < day * 30) return `${Math.floor(ageMs / day)}d ago`;
-  return updated.slice(0, 10);
+  return formatRelativeUpdated(updated);
 }
 
 function ItemCounts({

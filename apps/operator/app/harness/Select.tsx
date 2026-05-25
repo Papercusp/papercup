@@ -10,6 +10,36 @@ export interface SelectOption {
   disabled?: boolean;
 }
 
+/**
+ * Group wrapper around a sub-list of `SelectOption`s. Mix freely with
+ * flat `SelectOption`s in the same `options` array — the wrapper
+ * decides which are which by the discriminant `kind` field. Added per
+ * `plans-newbutton-and-subharness-scope-2026-05-25` P-026 so the
+ * /adv/sessions "Start from plan context" picker can group plans by
+ * their resolved harness.
+ */
+export interface SelectGroup {
+  kind: 'group';
+  /** Group heading, e.g. the harness slug. */
+  label: ReactNode;
+  options: SelectOption[];
+}
+
+export type SelectEntry = SelectOption | SelectGroup;
+
+const GROUP_LABEL_STYLE: CSSProperties = {
+  padding: '6px 8px 2px',
+  fontSize: 10,
+  fontWeight: 700,
+  letterSpacing: '0.08em',
+  textTransform: 'uppercase',
+  color: 'color-mix(in oklab, var(--fg, #e7f7ff), transparent 38%)',
+};
+
+function isGroup(entry: SelectEntry): entry is SelectGroup {
+  return (entry as { kind?: string }).kind === 'group';
+}
+
 const TRIGGER_DEFAULT_STYLE: CSSProperties = {
   display: 'inline-flex',
   alignItems: 'center',
@@ -76,7 +106,7 @@ export function Select({
 }: {
   value: string;
   onChange: (value: string) => void;
-  options: SelectOption[];
+  options: SelectEntry[];
   placeholder?: string;
   ariaLabel?: string;
   disabled?: boolean;
@@ -103,12 +133,24 @@ export function Select({
           style={{ ...CONTENT_STYLE, ...contentStyle }}
         >
           <RS.Viewport>
-            {options.map((opt) => (
-              <RS.Item key={opt.value} value={opt.value} disabled={opt.disabled} style={ITEM_STYLE} className="h-select-item">
-                <RS.ItemText>{opt.label}</RS.ItemText>
-                <RS.ItemIndicator><Check size={11} /></RS.ItemIndicator>
-              </RS.Item>
-            ))}
+            {options.map((entry, idx) =>
+              isGroup(entry) ? (
+                <RS.Group key={`grp-${idx}`}>
+                  <RS.Label style={GROUP_LABEL_STYLE}>{entry.label}</RS.Label>
+                  {entry.options.map((opt) => (
+                    <RS.Item key={opt.value} value={opt.value} disabled={opt.disabled} style={ITEM_STYLE} className="h-select-item">
+                      <RS.ItemText>{opt.label}</RS.ItemText>
+                      <RS.ItemIndicator><Check size={11} /></RS.ItemIndicator>
+                    </RS.Item>
+                  ))}
+                </RS.Group>
+              ) : (
+                <RS.Item key={entry.value} value={entry.value} disabled={entry.disabled} style={ITEM_STYLE} className="h-select-item">
+                  <RS.ItemText>{entry.label}</RS.ItemText>
+                  <RS.ItemIndicator><Check size={11} /></RS.ItemIndicator>
+                </RS.Item>
+              ),
+            )}
           </RS.Viewport>
         </RS.Content>
       </RS.Portal>

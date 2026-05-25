@@ -22,6 +22,7 @@ import { join, resolve as resolvePath } from 'node:path';
 import { resolveAgentBin, resolveBackend } from '@restart/papercup-shared/agent';
 
 import { papercuspPath } from '@/lib/papercusp-root';
+import { buildKickoffPromptFile } from '@/lib/agent-kickoff/prompt-file';
 import {
   resolveContextEnv,
   resolveProjectDir,
@@ -92,7 +93,18 @@ export interface BuildEnvelopeOpts {
   resumeSessionId?: string;
   /** Optional OMP model fuzzy-match argument for `omp --model`. */
   ompModel?: string;
+  /**
+   * Optional kickoff brief — per
+   * `plans-newbutton-and-subharness-scope-2026-05-25` P-004/P-005.
+   * When set in OMP mode the envelope builder calls the shared kickoff
+   * factory and appends the brief to the OMP launchCommand as a
+   * second `--append-system-prompt=<path>`. Ignored in shell mode.
+   */
+  kickoff?: KickoffSpec;
 }
+
+/** Curated kickoff-kind allowlist for the launch surface. */
+export type KickoffSpec = { kind: 'new-plan' };
 
 const TOKEN_PATH = join(homedir(), '.papercusp', 'superuser-token');
 
@@ -178,6 +190,13 @@ export async function buildConsoleEnvelope(
   //     engineer-collaborator surface.
   if ((opts.mode ?? 'shell') === 'omp') {
     const token = readSuperuserToken();
+    const extraSystemPromptPaths: string[] = [];
+    if (opts.kickoff) {
+      const briefPath = await buildKickoffPromptFile(
+        kickoffSpecToCtx(opts.kickoff, opts.slug),
+      );
+      if (briefPath) extraSystemPromptPaths.push(briefPath);
+    }
     return {
       cwd,
       env,
@@ -189,6 +208,7 @@ export async function buildConsoleEnvelope(
       launchCommand: buildEngineerOmpLaunchCommand({
         ompModel: opts.ompModel,
         resumeSessionId: opts.resumeSessionId,
+        extraSystemPromptPaths,
       }),
     };
   }
@@ -279,6 +299,14 @@ export function shellSafeOmpModel(model: string): string {
 export function buildEngineerOmpLaunchCommand(input: {
   ompModel?: string;
   resumeSessionId?: string;
+  /**
+   * Additional `--append-system-prompt=<path>` flags appended after
+   * the engineer-collaborator brief. OMP applies repeated
+   * `--append-system-prompt` flags additively in order, so caller
+   * order determines layering (each subsequent brief is appended
+   * after the previous one in the final system prompt).
+   */
+  extraSystemPromptPaths?: string[];
 }): string {
   const launchParts = [
     'omp',
@@ -287,7 +315,43 @@ export function buildEngineerOmpLaunchCommand(input: {
     '-e',
     '"$HOME/.papercusp/papercusp-coord.ts"',
   ];
+  for (const path of input.extraSystemPromptPaths ?? []) {
+    launchParts.push(`--append-system-prompt=${shellSafePromptPath(path)}`);
+  }
   if (input.ompModel) launchParts.push('--model', shellSafeOmpModel(input.ompModel));
   if (input.resumeSessionId) launchParts.push('-r', shellSafeId(input.resumeSessionId));
   return launchParts.join(' ');
+}
+
+/**
+ * Validate + shell-escape a kickoff prompt file path before embedding
+ * it in the OMP `--append-system-prompt=<path>` flag. The path is
+ * server-generated (under /dev/shm/papercusp-kickoff-* per the
+ * factory), but we still gate it: rejects empty / non-absolute paths
+ * and shell-quotes whitespace.
+ */
+function shellSafePromptPath(p: string): string {
+  if (typeof p !== 'string' || p.length === 0) {
+    throw new Error('extraSystemPromptPath must be a non-empty string');
+  }
+  if (!p.startsWith('/')) {
+    throw new Error(`extraSystemPromptPath must be absolute: ${p.slice(0, 64)}`);
+  }
+  if (/['"\n\r\0]/.test(p)) {
+    throw new Error(`extraSystemPromptPath rejects quote/control chars: ${p.slice(0, 64)}`);
+  }
+  // Wrap in double-quotes so spaces in the path survive the bash
+  // oneliner; the rejection above means no quote-escape gymnastics.
+  return `"${p}"`;
+}
+
+/** Translate a curated KickoffSpec into the factory's input shape. */
+function kickoffSpecToCtx(
+  spec: KickoffSpec,
+  harnessSlug: string | null,
+): import('@/lib/agent-kickoff/prompt-file').KickoffCtx {
+  switch (spec.kind) {
+    case 'new-plan':
+      return { kind: 'new-plan', harnessSlug };
+  }
 }

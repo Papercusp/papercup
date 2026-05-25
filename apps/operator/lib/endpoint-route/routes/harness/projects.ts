@@ -45,17 +45,31 @@ const lite = defineTool({
       return Response.json(hit.payload as object);
     }
     const reg = await loadHarnessRegistry();
-    const projects = reg.projects.map((p) => {
+    // P-012: surface `parent_slug` + `harness_kind` so the AdvShell
+    // selector can render a tree (P-014) without paying the full
+    // /projects round-trip. parent_slug comes from each project's
+    // .harness/config.json — same read the heavy /projects route does.
+    const projects = await Promise.all(reg.projects.map(async (p) => {
       const hDir = harnessDir(p);
+      const cfgPath = join(p.path, '.harness', 'config.json');
+      let parentSlug: string | null = null;
+      try {
+        if (existsSync(cfgPath)) {
+          const txt = await readFile(cfgPath, 'utf8');
+          const j = JSON.parse(txt) as { parent_slug?: unknown };
+          parentSlug = typeof j?.parent_slug === 'string' && j.parent_slug ? j.parent_slug : null;
+        }
+      } catch { /* ignore — bad config = no parent */ }
       return {
         slug: p.slug,
         path: p.path,
         harness_kind: (p as { harness_kind?: string }).harness_kind ?? null,
+        parent_slug: parentSlug,
         hasState: existsSync(hDir),
         hasSpec: existsSync(join(p.path, 'SPEC.md')),
         harnessDir: hDir,
       };
-    });
+    }));
     const payload = { projects };
     g[__liteKey] = { ts: Date.now(), payload };
     return Response.json(payload);
@@ -281,4 +295,133 @@ const remove = defineTool({
   },
 });
 
-export default [lite, list, create, remove];
+/**
+ * P-010 — sub-harness classifier (read-only diagnostic).
+ *
+ * POST /api/harness/projects/scan-subharnesses { slug }
+ * Returns the SubmoduleNode list `classify-tree` would register, with
+ * each node's qualifiedSlug. Persists nothing — callers preview the
+ * result before invoking /register-subs.
+ */
+const scanSubharnesses = defineTool({
+  method: 'POST',
+  path: '/harness/projects/scan-subharnesses',
+  auth: 'public',
+  async handler(req) {
+    let body: { slug?: string } = {};
+    try { body = (await req.json()) as { slug?: string }; } catch { /* empty */ }
+    const slug = typeof body.slug === 'string' ? body.slug.trim() : '';
+    if (!slug) return Response.json({ error: 'slug required' }, { status: 400 });
+
+    const reg = await loadHarnessRegistry();
+    const project = reg.projects.find((p) => p.slug === slug);
+    if (!project) return Response.json({ error: 'unknown harness slug' }, { status: 404 });
+
+    const { walkHarnessTree } = await import('@/lib/harness/classify-tree');
+    const nodes = walkHarnessTree(project.path, { parentSlug: slug });
+    const submodules = nodes
+      .filter((n) => n.kind === 'submodule')
+      .map((n) => ({
+        relPath: n.relPath,
+        absPath: n.absPath,
+        qualifiedSlug: (n as { qualifiedSlug: string }).qualifiedSlug,
+        gitDirTarget: (n as { gitDirTarget: string }).gitDirTarget,
+      }));
+    return Response.json({
+      ok: true,
+      rootSlug: slug,
+      rootPath: project.path,
+      submodules,
+    });
+  },
+});
+
+/**
+ * P-011 — persist sub-harness registration.
+ *
+ * POST /api/harness/projects/register-subs { rootSlug }
+ * For each submodule the classifier returns, register a
+ * `ProjectEntry { slug: qualifiedSlug, path: absPath, harness_kind: 'sub-harness' }`
+ * and write `<absPath>/.harness/config.json:{ parent_slug: rootSlug }`.
+ * Idempotent: skips slugs that already exist but reconciles parent_slug
+ * on disk if it drifted. Per D-006 (on-demand) + D-007 (self-describing
+ * config).
+ */
+const registerSubs = defineTool({
+  method: 'POST',
+  path: '/harness/projects/register-subs',
+  auth: 'public',
+  async handler(req) {
+    let body: { rootSlug?: string } = {};
+    try { body = (await req.json()) as { rootSlug?: string }; } catch { /* empty */ }
+    const rootSlug = typeof body.rootSlug === 'string' ? body.rootSlug.trim() : '';
+    if (!rootSlug) return Response.json({ error: 'rootSlug required' }, { status: 400 });
+
+    const reg = await loadHarnessRegistry();
+    const root = reg.projects.find((p) => p.slug === rootSlug);
+    if (!root) return Response.json({ error: 'unknown root harness slug' }, { status: 404 });
+
+    const { walkHarnessTree } = await import('@/lib/harness/classify-tree');
+    const { writeFile, mkdir } = await import('node:fs/promises');
+    const nodes = walkHarnessTree(root.path, { parentSlug: rootSlug });
+    const submodules = nodes.filter((n): n is import('@/lib/harness/classify-tree').SubmoduleNode => n.kind === 'submodule');
+
+    const registered: Array<{ slug: string; path: string; created: boolean }> = [];
+    const reconciled: Array<{ slug: string; path: string }> = [];
+    const errors: Array<{ slug: string; error: string }> = [];
+
+    for (const node of submodules) {
+      const subSlug = node.qualifiedSlug;
+      const subPath = node.absPath;
+      try {
+        const existing = reg.projects.find((p) => p.slug === subSlug);
+        let created = false;
+        if (!existing) {
+          reg.projects.push({
+            slug: subSlug,
+            path: subPath,
+            harness_kind: 'sub-harness',
+          });
+          created = true;
+        }
+        // Self-describing parent_slug on disk per D-007.
+        const cfgDir = join(subPath, '.harness');
+        const cfgPath = join(cfgDir, 'config.json');
+        let prior: Record<string, unknown> = {};
+        try {
+          if (existsSync(cfgPath)) {
+            prior = JSON.parse(await readFile(cfgPath, 'utf8')) as Record<string, unknown>;
+          }
+        } catch { /* malformed = overwrite with our additions */ }
+        const desired = { ...prior, parent_slug: rootSlug };
+        if (prior.parent_slug !== rootSlug) {
+          if (!existsSync(cfgDir)) await mkdir(cfgDir, { recursive: true });
+          await writeFile(cfgPath, JSON.stringify(desired, null, 2), 'utf8');
+          if (!created) reconciled.push({ slug: subSlug, path: subPath });
+        }
+        if (created) registered.push({ slug: subSlug, path: subPath, created: true });
+      } catch (e) {
+        errors.push({ slug: subSlug, error: e instanceof Error ? e.message : String(e) });
+      }
+    }
+
+    if (registered.length > 0 || reconciled.length > 0) {
+      await saveHarnessRegistry(reg);
+      // Bust the lite-cache so consumers see the new tree on next poll.
+      const g = globalThis as LiteGlobals;
+      delete g[__liteKey];
+      __projectsCache.expires = 0;
+    }
+
+    return Response.json({
+      ok: true,
+      rootSlug,
+      discovered: submodules.length,
+      registered,
+      reconciled,
+      errors,
+    });
+  },
+});
+
+export default [lite, list, create, remove, scanSubharnesses, registerSubs];

@@ -1,7 +1,8 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
-import { Activity, CheckCircle2, Coins } from 'lucide-react';
+import { Activity, CheckCircle2, Coins, Network } from 'lucide-react';
+import { toast } from 'sonner';
 import { StatCard } from '@restart/ui-primitives';
 import HealthBadge from '../../harness/HealthBadge';
 import type { AdvProjectEntry } from './HarnessesWorkspace';
@@ -143,6 +144,7 @@ export default function HarnessTopBar({ slug, projects }: Props) {
           </>
         )}
         {!status && slug && <span className="pc-adv-topbar__loading">loading…</span>}
+        {slug && <RegisterSubsButton slug={slug} />}
       </div>
 
       <style>{`
@@ -200,5 +202,81 @@ export default function HarnessTopBar({ slug, projects }: Props) {
         }
       `}</style>
     </div>
+  );
+}
+
+/**
+ * P-019 — one-click "register sub-harnesses" action. POSTs to
+ * `/api/harness/projects/register-subs`, surfaces the discovered +
+ * newly-registered count via toast. Idempotent — re-clicking after a
+ * `git submodule add` picks up the new one.
+ *
+ * Lives on the Harness top bar so it's always reachable for the
+ * currently selected root harness.
+ */
+function RegisterSubsButton({ slug }: { slug: string }) {
+  const [pending, setPending] = useState(false);
+  return (
+    <button
+      type="button"
+      className="pc-adv-topbar__register-subs"
+      onClick={async () => {
+        if (pending) return;
+        setPending(true);
+        try {
+          const r = await fetch('/api/harness/projects/register-subs', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ rootSlug: slug }),
+          });
+          const data = (await r.json().catch(() => null)) as
+            | { ok?: boolean; discovered?: number; registered?: unknown[]; reconciled?: unknown[]; errors?: Array<{ slug: string; error: string }>; error?: string }
+            | null;
+          if (!r.ok || !data?.ok) {
+            toast.error(`register-subs failed: ${data?.error ?? `HTTP ${r.status}`}`);
+            return;
+          }
+          const newCount = (data.registered ?? []).length;
+          const fixedCount = (data.reconciled ?? []).length;
+          const errCount = (data.errors ?? []).length;
+          const msg = `Discovered ${data.discovered ?? 0} submodules — ${newCount} new, ${fixedCount} reconciled${errCount ? `, ${errCount} errors` : ''}.`;
+          if (errCount > 0) toast.error(msg);
+          else if (newCount + fixedCount === 0) toast.success(`No new sub-harnesses (registry up-to-date).`, { duration: 2500 });
+          else toast.success(msg, { duration: 3000 });
+        } catch (e) {
+          toast.error(`register-subs failed: ${e instanceof Error ? e.message : String(e)}`);
+        } finally {
+          setPending(false);
+        }
+      }}
+      title="Scan this harness for git submodules and register them as sub-harnesses"
+      disabled={pending}
+    >
+      <Network size={13} aria-hidden />
+      {pending ? 'Scanning…' : 'Register sub-harnesses'}
+      <style>{`
+        .pc-adv-topbar__register-subs {
+          display: inline-flex;
+          align-items: center;
+          gap: 5px;
+          padding: 4px 10px;
+          border: 1px solid color-mix(in oklab, var(--accent, #38bdf8), transparent 60%);
+          border-radius: 999px;
+          background: color-mix(in oklab, var(--accent, #38bdf8), transparent 84%);
+          color: #e7f7ff;
+          font-size: 11px;
+          font-weight: 700;
+          letter-spacing: 0.02em;
+          cursor: pointer;
+        }
+        .pc-adv-topbar__register-subs:hover:not(:disabled) {
+          background: color-mix(in oklab, var(--accent, #38bdf8), transparent 70%);
+        }
+        .pc-adv-topbar__register-subs:disabled {
+          opacity: 0.6;
+          cursor: not-allowed;
+        }
+      `}</style>
+    </button>
   );
 }
