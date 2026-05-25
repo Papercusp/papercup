@@ -69,7 +69,7 @@ export default function CupboardDetailPage() {
       <div style={{ marginTop: SIZES.lg }}>
         {/* Header */}
         <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12 }}>
-          <h1 style={{ fontFamily: FONTS.sans, fontWeight: 700, fontSize: 20, color: COLORS.text, margin: 0 }}>
+          <h1 style={{ fontFamily: FONTS.ui, fontWeight: 700, fontSize: 20, color: COLORS.text, margin: 0 }}>
             {listing.title || listing.slug}
           </h1>
           {listing.claim_status === 'claimed' && (
@@ -77,7 +77,7 @@ export default function CupboardDetailPage() {
               display: 'inline-flex', alignItems: 'center', gap: 4,
               background: 'rgba(16,185,129,0.12)', color: '#6ee7b7',
               borderRadius: RADIUS.sm, padding: '3px 9px',
-              fontSize: FONTS.size.sm, fontFamily: FONTS.sans, flexShrink: 0,
+              fontSize: SIZES.sm, fontFamily: FONTS.ui, flexShrink: 0,
             }}>
               <Shield size={12} /> Claimed
             </span>
@@ -85,7 +85,7 @@ export default function CupboardDetailPage() {
         </div>
 
         {/* Description */}
-        <p style={{ fontFamily: FONTS.sans, fontSize: FONTS.size.sm, color: COLORS.textMuted, marginTop: 8 }}>
+        <p style={{ fontFamily: FONTS.ui, fontSize: SIZES.sm, color: COLORS.textMuted, marginTop: 8 }}>
           {listing.description || 'No description.'}
         </p>
 
@@ -99,13 +99,13 @@ export default function CupboardDetailPage() {
             <a
               href={`https://github.com/${listing.github_repo}`}
               target="_blank" rel="noopener noreferrer"
-              style={{ color: COLORS.accent, fontFamily: FONTS.mono, fontSize: FONTS.size.sm, display: 'inline-flex', alignItems: 'center', gap: 4 }}
+              style={{ color: COLORS.accent, fontFamily: FONTS.mono, fontSize: SIZES.sm, display: 'inline-flex', alignItems: 'center', gap: 4 }}
             >
               {listing.github_repo} <ExternalLink size={11} />
             </a>
           </MetaRow>
           <MetaRow label="Claim status">
-            <span style={{ fontFamily: FONTS.sans, fontSize: FONTS.size.sm, color: COLORS.text, textTransform: 'capitalize' }}>
+            <span style={{ fontFamily: FONTS.ui, fontSize: SIZES.sm, color: COLORS.text, textTransform: 'capitalize' }}>
               {listing.claim_status}
             </span>
           </MetaRow>
@@ -138,7 +138,7 @@ export default function CupboardDetailPage() {
             style={{
               background: COLORS.accent, color: '#fff', border: 'none',
               borderRadius: RADIUS.md, padding: '9px 20px', cursor: 'pointer',
-              fontFamily: FONTS.sans, fontSize: FONTS.size.sm, fontWeight: 600,
+              fontFamily: FONTS.ui, fontSize: SIZES.sm, fontWeight: 600,
             }}
           >
             Install this harness
@@ -150,7 +150,7 @@ export default function CupboardDetailPage() {
               display: 'inline-flex', alignItems: 'center', gap: 6,
               background: COLORS.surface, border: `1px solid ${COLORS.border}`,
               borderRadius: RADIUS.md, padding: '9px 14px', color: COLORS.textMuted,
-              fontFamily: FONTS.sans, fontSize: FONTS.size.sm, textDecoration: 'none',
+              fontFamily: FONTS.ui, fontSize: SIZES.sm, textDecoration: 'none',
             }}
           >
             <ExternalLink size={13} /> View on GitHub
@@ -158,7 +158,7 @@ export default function CupboardDetailPage() {
         </div>
 
         {listing.claim_status === 'unclaimed' && (
-          <p style={{ fontFamily: FONTS.sans, fontSize: 12, color: COLORS.textMuted, marginTop: SIZES.sm }}>
+          <p style={{ fontFamily: FONTS.ui, fontSize: 12, color: COLORS.textMuted, marginTop: SIZES.sm }}>
             This harness is unclaimed. If you are the maintainer, you can claim it from the harness settings after installing.
           </p>
         )}
@@ -170,7 +170,7 @@ export default function CupboardDetailPage() {
 function MetaRow({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div>
-      <div style={{ fontFamily: FONTS.sans, fontSize: 11, color: COLORS.textMuted, marginBottom: 2, textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+      <div style={{ fontFamily: FONTS.ui, fontSize: 11, color: COLORS.textMuted, marginBottom: 2, textTransform: 'uppercase', letterSpacing: '0.04em' }}>
         {label}
       </div>
       {children}
@@ -180,11 +180,11 @@ function MetaRow({ label, children }: { label: string; children: React.ReactNode
 
 const valueStyle: React.CSSProperties = {
   display: 'inline-flex', alignItems: 'center', gap: 4,
-  fontFamily: FONTS.sans, fontSize: FONTS.size.sm, color: COLORS.text,
+  fontFamily: FONTS.ui, fontSize: SIZES.sm, color: COLORS.text,
 };
 
 const backBtnStyle: React.CSSProperties = {
   display: 'inline-flex', alignItems: 'center', gap: 5,
   background: 'none', border: 'none', cursor: 'pointer',
-  color: COLORS.textMuted, fontFamily: FONTS.sans, fontSize: FONTS.size.sm, padding: 0,
+  color: COLORS.textMuted, fontFamily: FONTS.ui, fontSize: SIZES.sm, padding: 0,
 };
