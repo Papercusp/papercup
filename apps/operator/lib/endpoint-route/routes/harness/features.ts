@@ -616,7 +616,30 @@ const approveHumanReview = defineTool({
   },
 });
 
+// ── GET /:slug/features/:id/plan-context ────────────────────────────────
+// Called by the TS orchestrator (invoke.ts step 8.8) to get the plan
+// context section for a feature that was promoted from a plan. Returns
+// { section, planSlug, truncated } or 404 when the feature has no plan
+// origin. The orchestrator fetches this over HTTP using PAPERCUSP_OPERATOR_BASE
+// so the submodule stays clean of operator-layer PG imports.
+
+const getPlanContext = defineTool({
+  method: 'GET',
+  path: '/harness/:slug/features/:id/plan-context',
+  auth: 'public',
+  async handler(_req, ctx) {
+    const { slug, id } = ctx.params as { slug: string; id: string };
+    const project = await resolveProject(slug);
+    if (!project) return Response.json({ error: 'unknown project' }, { status: 404 });
+    const { getPlanContextForFeature } = await import('@/lib/plan-context-for-feature');
+    const result = await getPlanContextForFeature(project.slug, id);
+    if (!result) return Response.json({ error: 'no plan origin' }, { status: 404 });
+    return Response.json(result);
+  },
+});
+
 export default [
+  getPlanContext,
   getFeature,
   resetFeature,
   updateFeature,
