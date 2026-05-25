@@ -11,10 +11,22 @@
  *   - Once after deploying migration 084 and Phase A changes
  *   - Safe to re-run at any time (idempotent)
  *
+ * SAFETY (R10-C audit): this script writes directly via fs.writeFile
+ * WITHOUT acquiring `withPlanLock`. The operator's plans:* tools all
+ * coordinate via the plan-lock, but this script does not — running it
+ * while agents are actively editing plans can race and overwrite
+ * in-flight edits. Use the `--dry-run` flag first to preview, then run
+ * with no agents mid-edit.
+ *
+ *   1. Pause autoloop (or any agent that calls plans:set-content/
+ *      set-now/add-item/add-decision/promote).
+ *   2. Run `--dry-run` first to confirm the diff is what you expect.
+ *   3. Run for real once no agents are active.
+ *
  * Usage:
  *   cd apps/operator
- *   npx tsx scripts/migrations/backfill-plan-promoted-blocks.ts
  *   npx tsx scripts/migrations/backfill-plan-promoted-blocks.ts --dry-run
+ *   npx tsx scripts/migrations/backfill-plan-promoted-blocks.ts
  */
 
 import * as fs from 'node:fs/promises';
