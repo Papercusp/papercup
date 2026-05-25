@@ -63,6 +63,27 @@ export interface PlanLintReport {
   warnings: LintFinding[];
 }
 
+/** Count features in harness_features_consolidated whose metadata
+ *  records this plan slug as their source. Returns 0 when PG is
+ *  unreachable so the lint never breaks on infra blips. */
+async function countFeaturesFromPlan(planSlug: string): Promise<number> {
+  try {
+    const { getOrgPg } = await import('@restart/db-org');
+    const { sql } = getOrgPg();
+    const rows = await sql<Array<{ n: number }>>`
+      SELECT COUNT(*)::int AS n
+        FROM harness_shared.harness_features_consolidated
+       WHERE source_plan_slug = ${planSlug}
+    `;
+    return rows[0]?.n ?? 0;
+  } catch {
+    // PG offline / column missing — fail open. The lint surfacing a
+    // false negative is strictly better than a false positive
+    // (which is the very issue we're fixing).
+    return 0;
+  }
+}
+
 export async function lintPlan(
   slug: string,
   opts: PlanSourceOpts = {},
@@ -219,36 +240,45 @@ export async function lintParsed(
     }
   }
 
-  // P-004 / D-005: if any item has been promoted (detected via F-NNN refs
-  // in the plan body), the plan should have a ## Promoted block.
+  // P-004 / D-005: if this plan ACTUALLY promoted features (i.e.
+  // harness_features_consolidated has rows with
+  // metadata.source_plan === <this slug>), the plan body should have
+  // a ## Promoted block recording them.
   //
-  // Severity is date-gated against the migration-084 ship date. Plans
-  // CREATED before the migration won't have the block until backfilled —
-  // emit a WARNING (don't block CI). Plans created AFTER the migration
-  // shipped should always have it — emit an ERROR. CI doesn't break on
-  // day-one but actively enforces going forward.
+  // The trigger is semantic, not syntactic. The earlier version
+  // regex-scanned the plan body for F-NNN-shaped strings, which
+  // false-positived on any plan that mentioned a feature id in
+  // *prose* — even purely as documentation ("here's how F-FIX-024
+  // works"). Querying PG for features that claim this slug as their
+  // source asks the right question: did this plan actually mint
+  // features?
   //
-  // Backfill state takes precedence: a plan that was backfilled by
-  // P-003 will have the block regardless of created-date, so the check
-  // simply doesn't fire.
-  const PROMOTED_BLOCK_ENFORCEMENT_DATE = '2026-05-24'; // migration 084 ship date
+  // Severity is date-gated against the migration ship date. Plans
+  // CREATED before then won't have the block until backfilled — emit
+  // a WARNING. Plans created AFTER should always have it — emit an
+  // ERROR. Backfill state takes precedence: a plan with the block
+  // already silences the check regardless of created-date.
+  const PROMOTED_BLOCK_ENFORCEMENT_DATE = '2026-05-24';
   const hasPromotedBlock = /^## Promoted\b/m.test(parsed.raw);
-  const hasPromotedFeatureRef = /\bF-(?:AUTO-[A-Z0-9]+|[A-Z0-9-]+-\d{3,})\b/.test(parsed.raw);
-  if (hasPromotedFeatureRef && !hasPromotedBlock) {
-    const createdStr = parsed.frontmatter.created;
-    const isPostMigration =
-      typeof createdStr === 'string' && createdStr >= PROMOTED_BLOCK_ENFORCEMENT_DATE;
-    const finding: LintFinding = {
-      level: isPostMigration ? 'error' : 'warning',
-      code: 'missing_promoted_block',
-      message: isPostMigration
-        ? `Plan was created on or after the plan-pipeline-unification migration (${PROMOTED_BLOCK_ENFORCEMENT_DATE}) and references promoted feature ids but has no \`## Promoted\` block — run plans:promote apply=true.`
-        : `Plan references promoted feature ids but has no \`## Promoted\` block — run plans:promote apply=true (or the backfill script) to generate it.`,
-    };
-    if (isPostMigration) {
-      report.errors.push(finding);
-    } else {
-      report.warnings.push(finding);
+  if (!hasPromotedBlock) {
+    const planSlug = parsed.frontmatter.slug ?? parsed.slug;
+    const promotedCount = await countFeaturesFromPlan(planSlug);
+    if (promotedCount > 0) {
+      const createdStr = parsed.frontmatter.created;
+      const isPostMigration =
+        typeof createdStr === 'string' && createdStr >= PROMOTED_BLOCK_ENFORCEMENT_DATE;
+      const finding: LintFinding = {
+        level: isPostMigration ? 'error' : 'warning',
+        code: 'missing_promoted_block',
+        message: isPostMigration
+          ? `Plan promoted ${promotedCount} feature(s) (metadata.source_plan == ${planSlug}) but the body has no \`## Promoted\` block — run plans:promote apply=true to regenerate it.`
+          : `Plan promoted ${promotedCount} feature(s) (metadata.source_plan == ${planSlug}) but the body has no \`## Promoted\` block — run plans:promote apply=true (or the backfill script) to generate it.`,
+      };
+      if (isPostMigration) {
+        report.errors.push(finding);
+      } else {
+        report.warnings.push(finding);
+      }
     }
   }
 

@@ -1,18 +1,25 @@
 /**
  * P-004 / D-005 — missing_promoted_block: warning before migration date,
- * error after.
+ * error after. Trigger is SEMANTIC: the check fires only when
+ * harness_features_consolidated has rows whose source_plan_slug equals
+ * this plan's slug. Regex-scanning prose mentions of F-NNN ids was a
+ * false-positive trap (a plan mentioning `F-FIX-024` in documentation
+ * prose tripped the rule) and was removed in favour of the PG lookup.
+ *
+ * These tests focus on the false-positive fix (no rule fires when no
+ * features in PG claim this plan as their source) — the positive
+ * paths require a populated PG fixture and are covered by end-to-end
+ * tests against a live workspace.
  */
 
 import { describe, expect, it } from 'vitest';
 import { parsePlan } from '../parser';
 import { lintParsed } from '../lint';
 
-const MIGRATION_DATE = '2026-05-24'; // see lint.ts PROMOTED_BLOCK_ENFORCEMENT_DATE
-
-function frontmatter(createdDate: string): string {
+function frontmatter(slug: string, createdDate: string): string {
   return `---
 title: Demo Plan
-slug: demo-${createdDate}
+slug: ${slug}
 status: active
 created: ${createdDate}
 updated: ${createdDate}
@@ -24,81 +31,57 @@ owner: test@example.com
 const NOW_BLOCK = `\n## Now\n\n**State:** Active\n**Next:** Do things.\n`;
 const DECISIONS_BLOCK = `\n## Decisions\n\n### D-001 — First\nDate: 2026-05-24\nDecided.\n`;
 
-function makePlan(body: string, createdDate = '2026-05-20'): string {
-  return frontmatter(createdDate) + NOW_BLOCK + body + DECISIONS_BLOCK;
+function makePlan(slug: string, body: string, createdDate = '2026-05-20'): string {
+  return frontmatter(slug, createdDate) + NOW_BLOCK + body + DECISIONS_BLOCK;
 }
 
-describe('lint missing_promoted_block — pre-migration plans get warning', () => {
-  const PRE = '2026-05-20'; // before migration enforcement date
-
-  it('emits warning when plan mentions a feature id but has no ## Promoted block', async () => {
-    const doc = makePlan('\n## Phase 1\n\n- **P-001** `done` Item.\n\nSee F-AUTO-ABC123 for details.\n', PRE);
-    const parsed = parsePlan(doc, { filePath: `/fake/demo-${PRE}.md` });
-    const report = await lintParsed(parsed, `demo-${PRE}`, false);
-    const finding = report.warnings.find((w) => w.code === 'missing_promoted_block');
-    expect(finding).toBeDefined();
-    expect(finding?.level).toBe('warning');
-    expect(report.errors.some((e) => e.code === 'missing_promoted_block')).toBe(false);
-  });
-
-  it('also fires for F-NNN-NNN style feature ids', async () => {
-    const doc = makePlan('\nPromoted feature: F-FEAT-001.\n', PRE);
-    const parsed = parsePlan(doc, { filePath: `/fake/demo-${PRE}.md` });
-    const report = await lintParsed(parsed, `demo-${PRE}`, false);
-    expect(report.warnings.some((w) => w.code === 'missing_promoted_block')).toBe(true);
-  });
-
-  it('does NOT warn when plan has ## Promoted block', async () => {
-    const doc = makePlan('\n## Promoted\n\n- [ ] F-AUTO-ABC123 — Feature\n\n## Phase 1\n\n- **P-001** `done` Item.\n', PRE);
-    const parsed = parsePlan(doc, { filePath: `/fake/demo-${PRE}.md` });
-    const report = await lintParsed(parsed, `demo-${PRE}`, false);
+describe('lint missing_promoted_block — false-positive fix', () => {
+  it('does NOT fire when plan body mentions a feature id in prose but no PG row claims this plan', async () => {
+    // The original failure mode the user reported: a plan that
+    // documents how F-FIX-024 works tripped the syntactic regex
+    // check. The new semantic check stays quiet because PG has no
+    // row whose source_plan_slug matches this plan's slug.
+    const slug = `lint-prose-only-${Date.now()}`;
+    const doc = makePlan(
+      slug,
+      '\n## Phase 1\n\n- **P-001** `done` Documents how F-FIX-024 works.\n\nSee also F-AUTO-XYZ.\n',
+      '2026-05-25', // post-migration date
+    );
+    const parsed = parsePlan(doc, { filePath: `/fake/${slug}.md` });
+    const report = await lintParsed(parsed, slug, false);
     expect(report.warnings.some((w) => w.code === 'missing_promoted_block')).toBe(false);
     expect(report.errors.some((e) => e.code === 'missing_promoted_block')).toBe(false);
   });
 
-  it('does NOT warn when plan has no feature id references at all', async () => {
-    const doc = makePlan('\n## Phase 1\n\n- **P-001** `todo` Plain item, no feature refs.\n', PRE);
-    const parsed = parsePlan(doc, { filePath: `/fake/demo-${PRE}.md` });
-    const report = await lintParsed(parsed, `demo-${PRE}`, false);
+  it('does NOT fire on a plan with no feature id mentions at all', async () => {
+    const slug = `lint-no-refs-${Date.now()}`;
+    const doc = makePlan(slug, '\n## Phase 1\n\n- **P-001** `todo` Plain item, no feature refs.\n', '2026-05-20');
+    const parsed = parsePlan(doc, { filePath: `/fake/${slug}.md` });
+    const report = await lintParsed(parsed, slug, false);
     expect(report.warnings.some((w) => w.code === 'missing_promoted_block')).toBe(false);
     expect(report.errors.some((e) => e.code === 'missing_promoted_block')).toBe(false);
   });
 
-  it('is not emitted for legacy plans', async () => {
+  it('does NOT fire when plan has ## Promoted block', async () => {
+    // The block silences the check unconditionally — same shape as
+    // backfilled plans.
+    const slug = `lint-has-block-${Date.now()}`;
+    const doc = makePlan(
+      slug,
+      '\n## Promoted\n\n- [ ] F-AUTO-ABC123 — Feature\n\n## Phase 1\n\n- **P-001** `done` Item.\n',
+      '2026-05-25',
+    );
+    const parsed = parsePlan(doc, { filePath: `/fake/${slug}.md` });
+    const report = await lintParsed(parsed, slug, false);
+    expect(report.warnings.some((w) => w.code === 'missing_promoted_block')).toBe(false);
+    expect(report.errors.some((e) => e.code === 'missing_promoted_block')).toBe(false);
+  });
+
+  it('is not emitted for legacy plans (no frontmatter)', async () => {
     const legacy = '# Old plan\n\nF-AUTO-ABC123 mentioned here.\n';
-    const parsed = parsePlan(legacy, { filePath: `/fake/demo-${PRE}.md` });
-    const report = await lintParsed(parsed, `demo-${PRE}`, false);
-    // legacy plans return early — exempt is true, no checks run
+    const parsed = parsePlan(legacy, { filePath: `/fake/legacy.md` });
+    const report = await lintParsed(parsed, 'legacy', false);
     expect(report.exempt).toBe(true);
     expect(report.warnings).toHaveLength(0);
-  });
-});
-
-describe('lint missing_promoted_block — post-migration plans get error (D-005)', () => {
-  const POST = '2026-05-25'; // after migration enforcement date
-
-  it('emits error when plan mentions a feature id but has no ## Promoted block', async () => {
-    const doc = makePlan('\n## Phase 1\n\n- **P-001** `done` Item.\n\nSee F-AUTO-ABC123 for details.\n', POST);
-    const parsed = parsePlan(doc, { filePath: `/fake/demo-${POST}.md` });
-    const report = await lintParsed(parsed, `demo-${POST}`, false);
-    const finding = report.errors.find((e) => e.code === 'missing_promoted_block');
-    expect(finding).toBeDefined();
-    expect(finding?.level).toBe('error');
-    expect(report.warnings.some((w) => w.code === 'missing_promoted_block')).toBe(false);
-  });
-
-  it('does NOT error when plan has ## Promoted block', async () => {
-    const doc = makePlan('\n## Promoted\n\n- [ ] F-AUTO-ABC123 — Feature\n\n## Phase 1\n\n- **P-001** `done` Item.\n', POST);
-    const parsed = parsePlan(doc, { filePath: `/fake/demo-${POST}.md` });
-    const report = await lintParsed(parsed, `demo-${POST}`, false);
-    expect(report.errors.some((e) => e.code === 'missing_promoted_block')).toBe(false);
-    expect(report.warnings.some((w) => w.code === 'missing_promoted_block')).toBe(false);
-  });
-
-  it('plan exactly on the enforcement date is treated as post-migration (error)', async () => {
-    const doc = makePlan('\n## Phase 1\n\nSee F-AUTO-A1 for details.\n', MIGRATION_DATE);
-    const parsed = parsePlan(doc, { filePath: `/fake/demo-${MIGRATION_DATE}.md` });
-    const report = await lintParsed(parsed, `demo-${MIGRATION_DATE}`, false);
-    expect(report.errors.some((e) => e.code === 'missing_promoted_block')).toBe(true);
   });
 });
