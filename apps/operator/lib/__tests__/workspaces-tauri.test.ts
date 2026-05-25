@@ -115,4 +115,57 @@ describe('workspaces-tauri', () => {
     expect(fetchMock).not.toHaveBeenCalled();
     expect(navigateClient).not.toHaveBeenCalled();
   });
+
+  it('uses fetch on the web/static path for list/create/rename/delete', async () => {
+    fetchMock
+      .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ current: 'alpha', workspaces: [{ id: 'alpha', name: 'Alpha' }] }) })
+      .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ id: 'beta', name: 'Beta' }) })
+      .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({}) })
+      .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({}) });
+    vi.stubGlobal('fetch', fetchMock);
+    const {
+      listWorkspaces,
+      createWorkspace,
+      renameWorkspace,
+      deleteWorkspace,
+    } = await import('../workspaces-tauri');
+
+    await expect(listWorkspaces()).resolves.toEqual({ current: 'alpha', workspaces: [{ id: 'alpha', name: 'Alpha' }] });
+    await expect(createWorkspace('Beta')).resolves.toEqual({ id: 'beta', name: 'Beta' });
+    await expect(renameWorkspace('beta', 'Beta 2')).resolves.toBeUndefined();
+    await expect(deleteWorkspace('beta')).resolves.toBeUndefined();
+
+    expect(fetchMock).toHaveBeenCalledWith('/api/workspaces', expect.objectContaining({
+      cache: 'no-store',
+      headers: expect.objectContaining({ 'content-type': 'application/json' }),
+    }));
+    expect(fetchMock).toHaveBeenCalledWith('/api/workspaces', expect.objectContaining({
+      method: 'POST',
+      cache: 'no-store',
+    }));
+    expect(fetchMock).toHaveBeenCalledWith('/api/workspaces/beta', expect.objectContaining({
+      method: 'PATCH',
+      cache: 'no-store',
+    }));
+    expect(fetchMock).toHaveBeenCalledWith('/api/workspaces/beta', expect.objectContaining({
+      method: 'DELETE',
+      cache: 'no-store',
+    }));
+    expect(navigateClient).not.toHaveBeenCalled();
+  });
+
+  it('surfaces web/static path fetch failures', async () => {
+    vi.stubGlobal('fetch', fetchMock.mockResolvedValue({ ok: false, status: 500, json: () => Promise.resolve({ error: 'boom' }) }));
+    const {
+      listWorkspaces,
+      createWorkspace,
+      renameWorkspace,
+      deleteWorkspace,
+    } = await import('../workspaces-tauri');
+
+    await expect(listWorkspaces()).rejects.toThrow('boom');
+    await expect(createWorkspace('Beta')).rejects.toThrow('boom');
+    await expect(renameWorkspace('beta', 'Beta 2')).rejects.toThrow('boom');
+    await expect(deleteWorkspace('beta')).rejects.toThrow('boom');
+  });
 });
