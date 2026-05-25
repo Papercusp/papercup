@@ -93,6 +93,7 @@ export default function ChromeShell() {
   const snapshotsFlag = useFlag(FLAGS.SNAPSHOTS);
   const marketplaceFlag = useFlag(FLAGS.MARKETPLACE);
   const oracleFlag = useFlag(FLAGS.ORACLE);
+  const testingFlag = useFlag(FLAGS.TESTING);
   const mainNavJumpGateProps = { 'data-route-transition-intent': 'jump-gate' as const };
   const navLinkProps = (href: string) => {
     const active = isChromeShellNavActive(pathname, href);
@@ -193,7 +194,7 @@ export default function ChromeShell() {
               <span className="pc-header-cta-label">OPS</span>
             </RouteLink>
           )}
-          <OperatorButton />
+          {testingFlag ? <OperatorButton /> : null}
           <OperatorAutoScanToggle />
         </div>
         <nav className="pc-header-right" aria-label="Primary navigation">
