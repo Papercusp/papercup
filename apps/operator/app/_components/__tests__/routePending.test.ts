@@ -120,6 +120,15 @@ describe('routePending helpers', () => {
     vi.advanceTimersByTime(200);
     expect(getRoutePendingHref()).toBeNull();
   });
+  it('finishRoutePending is idempotent and scheduleRoutePendingClear is a no-op when nothing is pending', () => {
+    finishRoutePending();
+    scheduleRoutePendingClear();
+    vi.runAllTimers();
+
+    expect(getRoutePendingHref()).toBeNull();
+    expect(getRoutePendingTarget()).toBeNull();
+    expect(document.documentElement.hasAttribute('data-route-pending')).toBe(false);
+  });
   it('notifies subscribers on begin and finish transitions', () => {
     const listener = vi.fn();
     const unsubscribe = subscribeRoutePending(listener);
