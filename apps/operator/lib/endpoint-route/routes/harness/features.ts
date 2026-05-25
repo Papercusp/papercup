@@ -28,6 +28,63 @@ const FEATURE_ID_RE = /^[A-Z][A-Z0-9-]+(-[A-Z0-9-]+)?$/;
 
 const dbcFor = (slug: string) => getLegacyClient(slug);
 
+/**
+ * Pure provenance writer (R8-A testability split).
+ *
+ * For each feature, calls the injected `updater` and tallies success vs
+ * failure. Returns counts + per-feature errors. Caller injects either a
+ * real PG sql callback or null (when getOrgPg threw — in which case
+ * `pgConnectError` is passed and we surface 'pg_unavailable' for every
+ * row instead of trying to write).
+ *
+ * `updater` should return the number of rows actually updated. If it
+ * returns 0, that means the consolidated row didn't exist yet (trigger
+ * race or genuinely missing) — surfaced as 'consolidated_row_missing'.
+ */
+export interface ProvenanceFeature {
+  id: string;
+  source_plan_slug: string;
+  source_plan_item_ids: string[];
+}
+export interface ProvenanceWriteResult {
+  written: number;
+  errors: Array<{ feature_id: string; error: string }>;
+}
+export async function writeProvenance(
+  features: ProvenanceFeature[],
+  harnessSlug: string,
+  updater: ((f: ProvenanceFeature, slug: string) => Promise<number>) | null,
+  pgConnectError: string | null = null,
+): Promise<ProvenanceWriteResult> {
+  const errors: Array<{ feature_id: string; error: string }> = [];
+  let written = 0;
+  if (pgConnectError !== null) {
+    for (const f of features) {
+      errors.push({ feature_id: f.id, error: `pg_unavailable: ${pgConnectError}` });
+    }
+    return { written, errors };
+  }
+  if (!updater) return { written, errors };
+  for (const f of features) {
+    try {
+      const rows = await updater(f, harnessSlug);
+      if (rows > 0) {
+        written++;
+      } else {
+        errors.push({ feature_id: f.id, error: 'consolidated_row_missing' });
+        console.warn(
+          `[features/import] provenance UPDATE matched 0 rows for ${f.id} in ${harnessSlug} — consolidated trigger may not have fired yet`,
+        );
+      }
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      errors.push({ feature_id: f.id, error: msg });
+      console.warn(`[features/import] provenance UPDATE failed for ${f.id} in ${harnessSlug}: ${msg}`);
+    }
+  }
+  return { written, errors };
+}
+
 // ── GET /:slug/features/:id ─────────────────────────────────────────────
 
 const getFeature = defineTool({
@@ -375,53 +432,41 @@ const importFeatures = defineTool({
     });
 
     // Write plan provenance to PG consolidated — best-effort (migration 084).
-    // Only fires for features that carry source_plan_slug in the payload.
-    let provenanceWritten = 0;
-    const provenanceErrors: Array<{ feature_id: string; error: string }> = [];
+    // Logic extracted into pure helper for testability (R8-A).
     const withProvenance = features.filter((f) => f.source_plan_slug);
+    let pgConnectError: string | null = null;
+    let updater: ((f: ProvenanceFeature, slug: string) => Promise<number>) | null = null;
     if (withProvenance.length > 0) {
       try {
         const { sql } = getOrgPg();
-        for (const f of withProvenance) {
-          try {
-            const r = await sql`
-              UPDATE harness_shared.harness_features_consolidated
-                 SET source_plan_slug     = ${f.source_plan_slug!},
-                     source_plan_item_ids = ${f.source_plan_item_ids ?? []}
-               WHERE harness_slug = ${project.slug}
-                 AND feature_id   = ${f.id}
-              RETURNING feature_id
-            `;
-            if (r.length > 0) {
-              provenanceWritten++;
-            } else {
-              // Trigger hasn't fired yet OR row missing from consolidated.
-              // Surface this — it points at a real sync bug.
-              provenanceErrors.push({
-                feature_id: f.id,
-                error: 'consolidated_row_missing',
-              });
-              console.warn(
-                `[features/import] provenance UPDATE matched 0 rows for ${f.id} in ${project.slug} — consolidated trigger may not have fired yet`,
-              );
-            }
-          } catch (e) {
-            const msg = e instanceof Error ? e.message : String(e);
-            provenanceErrors.push({ feature_id: f.id, error: msg });
-            console.warn(
-              `[features/import] provenance UPDATE failed for ${f.id} in ${project.slug}: ${msg}`,
-            );
-          }
-        }
+        updater = async (f, slug) => {
+          const r = await sql`
+            UPDATE harness_shared.harness_features_consolidated
+               SET source_plan_slug     = ${f.source_plan_slug}
+                 , source_plan_item_ids = ${f.source_plan_item_ids}
+             WHERE harness_slug = ${slug}
+               AND feature_id   = ${f.id}
+            RETURNING feature_id
+          `;
+          return (r as unknown as unknown[]).length;
+        };
       } catch (e) {
-        // getOrgPg() itself threw — PG unavailable or org schema missing.
-        const msg = e instanceof Error ? e.message : String(e);
-        console.warn(`[features/import] PG provenance update skipped: ${msg}`);
-        for (const f of withProvenance) {
-          provenanceErrors.push({ feature_id: f.id, error: `pg_unavailable: ${msg}` });
-        }
+        pgConnectError = e instanceof Error ? e.message : String(e);
+        console.warn(`[features/import] PG provenance update skipped: ${pgConnectError}`);
       }
     }
+    const provenanceResult = await writeProvenance(
+      withProvenance.map((f) => ({
+        id: f.id,
+        source_plan_slug: f.source_plan_slug!,
+        source_plan_item_ids: f.source_plan_item_ids ?? [],
+      })),
+      project.slug,
+      updater,
+      pgConnectError,
+    );
+    const provenanceWritten = provenanceResult.written;
+    const provenanceErrors = provenanceResult.errors;
 
     return Response.json({
       ok: true,
