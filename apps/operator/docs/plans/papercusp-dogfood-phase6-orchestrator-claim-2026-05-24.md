@@ -12,12 +12,13 @@ owner: avi@storewolf.com
 
 ## Now
 
-**State:** **P-039 + P-031-claims-projection SHIPPED 2026-05-25.**
+**State:** **P-036 + P-039 + P-031-claims-projection SHIPPED 2026-05-25.**
 
-- `apps/operator/lib/orchestrator/claim-audit.ts` — `recordClaimAttempt({...})` + `recentClaimAttempts({...})` against `harness_shared.claim_audit`. PG-only LOCAL audit log. 6/6 validation tests pass.
+- `apps/operator/lib/orchestrator/feature-claim.ts` — `claimFeature(base, opts)` pure-logic primitive against `ClaimAutobaseHandle` interface. Implements v5 §0.6: append-claim → await-own-merge → check-first-in-order → fire-or-drop. Carries `schema_version` per D-024. `pickWinningClaim` helper handles tiebreak (earliest seq + bytewise-lex of pubkey on exact tie). 12/12 tests pass — covers P-036a single-writer, P-036b two-writer race, P-036c/d schema_version, plus validation + three-writer + defensive missing-own-claim paths.
+- `apps/operator/lib/orchestrator/claim-audit.ts` — `recordClaimAttempt` + `recentClaimAttempts` against `harness_shared.claim_audit`. PG-only LOCAL audit log. 6/6 tests pass.
 - `apps/operator/lib/sync/hyperbee/projections/feature-claims.ts` — Hyperbee `claims/<feature_id>/<seq>` → PG `harness_shared.feature_claims` append-only projection. 5/5 tests pass.
 
-**Next action:** P-036 `claimFeature(feature_id)` — issues an Autobase append against the substrate's Autobase handle (Phase 5a P-030), awaits own merge, checks first-in-order. Then P-037 wires the orchestrator's pickup path to call it. Both depend on the substrate's Autobase wiring being live in `instrumentation-node.ts` — currently substrate is in tree but not booted, so P-036/P-037 land alongside the boot wiring (single PR).
+**Next action:** P-037 — wire the orchestrator's pickup path to call `claimFeature(base, {feature_id, claimer_github_user_id})` + log the result via `recordClaimAttempt`. Requires the substrate's Autobase to be booted in `instrumentation-node.ts` so a real `ClaimAutobaseHandle` exists. Currently the substrate is in tree but not booted; P-037 lands alongside the boot wiring. P-038 (manual `working` flip) and full P-036f (backoff on contested features) follow.
 
 ## Background
 
