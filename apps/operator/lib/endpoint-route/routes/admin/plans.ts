@@ -216,7 +216,14 @@ async function dispatchWrite(req: Request, ctx: RouteContext): Promise<Response>
       if (verb === 'new' || verb === 'set-frontmatter' || verb === 'set-content') {
         // Any of these can change plan status (e.g. draft→active), which
         // affects ProposalsPanel's plansDrafts.bySlug subscription.
-        const harnessSlug = typeof body.harness_slug === 'string' ? body.harness_slug : undefined;
+        // R2-D: also accept harness from the URL query (?harness=…) — this
+        // is the path the scoper subprocess uses when running curl from a
+        // harness cwd; it doesn't set the harness_slug body field.
+        const url = new URL(req.url);
+        const harnessSlug =
+          (typeof body.harness_slug === 'string' && body.harness_slug) ||
+          url.searchParams.get('harness') ||
+          undefined;
         if (harnessSlug) {
           void notifySyncInvalidate('plansDrafts.bySlug', { harnessSlug }).catch(() => {});
         }
