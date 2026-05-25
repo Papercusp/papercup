@@ -107,8 +107,22 @@ Format:
 
 The `[x]` checkbox is updated reactively (§4) by the plan detail page; the block itself is owned by the promote write-back path.
 
-Also calls `plans:set-now` to refresh the state line with counts:
-> "3 features in-flight · 2 passed · 5 remaining"
+**Promote also writes a marker-delimited status line inside `## Now`** (implemented as `upsertPromoteStatusLine` in `promote.ts`). The line lives BELOW user-authored `**State:**` / `**Next:**` content so user prose is never overwritten. Format:
+
+```markdown
+## Now
+
+**State:** <user wrote this>
+
+**Next:** <user wrote this>
+
+<!-- plan-pipeline-status -->
+**Promote-status:** 3 feature(s) in `myharn`: 2 in-flight · 1 passed
+```
+
+The marker comment makes re-promote idempotent — each `plans:promote` replaces the line in place rather than appending duplicates. Counts come from a `SELECT status FROM harness_features_consolidated WHERE source_plan_slug = ? AND harness_slug = ?` run inline against the just-imported features.
+
+**Promote also flips the plan frontmatter from `status: draft` → `status: active`** (R2-B). This makes the card disappear from ProposalsPanel (which filters by `status === 'draft'`). Idempotent: a plan that's already `active` / `shipped` / `superseded` is left alone. Only the literal `status: draft` line in frontmatter is rewritten — body text containing "draft" is untouched.
 
 ### §3 — Agent context injection (4 prompt-assembly paths)
 
