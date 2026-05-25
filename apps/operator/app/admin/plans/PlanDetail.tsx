@@ -381,6 +381,7 @@ export default function PlanDetail({ slug, onClose, onDirtyChange }: Props) {
       {tab === 'agents' ? (
         <AgentsPanel
           slug={data.slug}
+          planTitle={title}
           currentContentHash={data.contentHash}
         />
       ) : null}

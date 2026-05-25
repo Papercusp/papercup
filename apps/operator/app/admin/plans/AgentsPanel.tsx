@@ -37,12 +37,15 @@ import RunDetailPanel from './RunDetailPanel';
 
 interface Props {
   slug: string;
+  /** Plan display title — surfaced into the RunDetailPanel header and
+   *  into the spawned terminal's window title. */
+  planTitle?: string | null;
   /** The plan's current `contentHash` (from `plans:get`) — used to
    *  flag past runs that were seeded against an older revision. */
   currentContentHash: string | undefined;
 }
 
-export default function AgentsPanel({ slug, currentContentHash }: Props) {
+export default function AgentsPanel({ slug, planTitle, currentContentHash }: Props) {
   const revisions = usePlanRevisions(slug);
   const runs = usePlanRuns(slug);
   // Open conversation drill-down for the origin's recorded session
@@ -96,7 +99,11 @@ export default function AgentsPanel({ slug, currentContentHash }: Props) {
   if (openRun !== null) {
     return (
       <div className="pc-agents-panel" aria-label="Agents">
-        <RunDetailPanel currentContentHash={currentContentHash} />
+        <RunDetailPanel
+          planSlug={slug}
+          planTitle={planTitle ?? null}
+          currentContentHash={currentContentHash}
+        />
       </div>
     );
   }

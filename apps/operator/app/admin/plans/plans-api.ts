@@ -930,14 +930,26 @@ export function fetchPlanRunTranscript(
 
 /** Spawn a native terminal that resumes the run's agent CLI session in
  *  place (`<bin> -r <sessionId>`). Same /api/agent-mcp/console/launch
- *  endpoint as the global "+" button — just with `resumeSessionId`
- *  filled in. Returns the server's status payload (or throws on a
- *  transport error). */
-export async function launchPlanRunConsole(sessionId: string): Promise<unknown> {
+ *  endpoint as the global "+" button — with `resumeSessionId`,
+ *  `planSlug` (so the terminal gets its per-plan background color),
+ *  and `label` (so the window title is the plan title, not the bare
+ *  session id) filled in. Returns the server's status payload (or
+ *  throws on a transport error). */
+export async function launchPlanRunConsole(args: {
+  sessionId: string;
+  planSlug: string | null;
+  label: string | null;
+}): Promise<unknown> {
   const r = await fetch('/api/agent-mcp/console/launch', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ slug: null, mode: 'shell', resumeSessionId: sessionId }),
+    body: JSON.stringify({
+      slug: null,
+      mode: 'shell',
+      resumeSessionId: args.sessionId,
+      planSlug: args.planSlug,
+      label: args.label,
+    }),
   });
   const text = await r.text();
   if (!r.ok) {

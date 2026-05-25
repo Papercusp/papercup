@@ -3064,6 +3064,23 @@
 .pc-run-detail__title {
   font-weight: 500;
   color: #d6ecf8;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+.pc-run-detail__plan-title {
+  font-weight: 600;
+  color: #f0f7ff;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 480px;
+}
+.pc-run-detail__run-id {
+  font-weight: 400;
+  font-size: 11px;
+  color: rgba(214, 236, 248, 0.6);
 }
 
 .pc-run-detail__console {

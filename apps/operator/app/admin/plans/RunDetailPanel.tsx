@@ -33,13 +33,20 @@ import {
 import { launchErrorLabel } from './AgentsPanel';
 
 interface Props {
+  /** The plan's slug — passed to launchPlanRunConsole so the spawned
+   *  terminal picks up the per-plan background color. */
+  planSlug: string;
+  /** The plan's display title — surfaced in the header AND passed to
+   *  the spawned console as its window title (issue: "titlebar should
+   *  be the plan title"). */
+  planTitle: string | null;
   /** The plan's current contentHash — drives the stale badge. */
   currentContentHash: string | undefined;
 }
 
 const PAGE_SIZE = 20;
 
-export default function RunDetailPanel({ currentContentHash }: Props) {
+export default function RunDetailPanel({ planSlug, planTitle, currentContentHash }: Props) {
   const [runId, setRunId] = useQueryState('run', parseAsInteger);
   const [meta, setMeta] = useState<PlanRunTranscriptResult | null>(null);
   const [turns, setTurns] = useState<PlanRunTranscriptTurn[]>([]);
@@ -141,7 +148,13 @@ export default function RunDetailPanel({ currentContentHash }: Props) {
     setConsoleBusy(true);
     setConsoleError(null);
     try {
-      await launchPlanRunConsole(meta.sessionId);
+      await launchPlanRunConsole({
+        sessionId: meta.sessionId,
+        planSlug,
+        // Window title prefers the plan's display title; falls back to
+        // the slug if the plan has no title yet.
+        label: planTitle?.trim() || planSlug,
+      });
     } catch (e) {
       setConsoleError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -168,7 +181,12 @@ export default function RunDetailPanel({ currentContentHash }: Props) {
           ← Runs
         </button>
         <span className="pc-run-detail__title">
-          {meta ? `Run #${meta.runId}` : `Run #${runId}`}
+          <span className="pc-run-detail__plan-title">
+            {planTitle?.trim() || planSlug}
+          </span>
+          <span className="pc-run-detail__run-id">
+            {meta ? `Run #${meta.runId}` : `Run #${runId}`}
+          </span>
         </span>
         {meta ? (
           <span

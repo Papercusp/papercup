@@ -132,14 +132,22 @@ function shellEscape(s: string): string {
 /**
  * Emit the OSC escape sequences that recolor + retitle the terminal
  * window: foreground (OSC 10), background (OSC 11), window title
- * (OSC 0). User did this manually as
- *   echo -ne '\e]10;#000000\e\\' && printf '\033]11;#51febf\007'
- *     && printf '\033]0;RUNNERS\a'
- * — Batch D automates it per-session by hashing the plan slug into a
- * distinguishable background color. Foreground is black (#000000)
- * for readable contrast on the bright backgrounds we pick. Wrapping
- * in `printf` with literal escape bytes so the sequence reaches the
- * terminal before the spawned shell starts reading.
+ * (OSC 0). Per-plan background is hashed from the plan slug for
+ * visual identity; foreground is fixed white for contrast.
+ *
+ * Why dark backgrounds + light foreground (not light + black):
+ * agent CLIs (omp / claude / codex) emit ANSI bright colors
+ * (bright-yellow, bright-cyan, bright-white) which are designed for
+ * dark-themed terminals. On a light pastel background they become
+ * illegible — the "bright text on bright background" failure mode.
+ * Dark saturated backgrounds keep those ANSI brights readable while
+ * still letting each plan's terminal be visually distinct at a
+ * glance.
+ *
+ * Wrapped in `printf` with literal escape bytes (`\033` = ESC,
+ * `\007` = BEL) so the sequence reaches the tty verbatim regardless
+ * of the shell's echo dialect, before the spawned shell starts
+ * reading.
  */
 interface AppearanceOpts {
   mode: 'omp' | 'console';
@@ -149,14 +157,12 @@ interface AppearanceOpts {
 }
 function buildAppearancePrelude(opts: AppearanceOpts): string {
   const bg = hashSlugToColor(opts.planSlug, opts.mode);
-  const fg = '#000000';
+  const fg = '#f4f4f5'; // zinc-100 — bright but not pure white (avoids halation on dark bg)
   const title = formatWindowTitle(opts);
-  // Use printf with octal escape codes so the bytes reach the tty
-  // verbatim regardless of the shell's echo dialect. OSC sequences:
-  //   ESC ] 10 ; <fg> BEL    → foreground
-  //   ESC ] 11 ; <bg> BEL    → background
+  // OSC sequences:
+  //   ESC ] 10 ; <fg> BEL    → default foreground
+  //   ESC ] 11 ; <bg> BEL    → default background
   //   ESC ] 0  ; <title> BEL → window + tab title
-  // \033 = ESC (octal 33), \007 = BEL.
   const titleEsc = title.replace(/'/g, "'\\''");
   return [
     `printf '\\033]10;${fg}\\007'`,
@@ -167,16 +173,31 @@ function buildAppearancePrelude(opts: AppearanceOpts): string {
 
 /**
  * Deterministic slug → background color. Picks from a curated palette
- * of high-saturation, high-luminance hues so all options stay readable
- * against the black foreground. Returns a fixed neutral fallback when
- * planSlug is null (untagged session).
+ * of dark, saturated, high-distinctness hues. Every color is dark
+ * enough that ANSI bright colors (90–97 / brights 8–15 / true-color
+ * pastels) remain readable on top — the contrast budget is reserved
+ * for whatever the agent CLI emits, not for the default text. Fixed
+ * neutral fallback when planSlug is null.
  */
 function hashSlugToColor(planSlug: string | null, mode: 'omp' | 'console'): string {
-  if (!planSlug) return mode === 'omp' ? '#51febf' : '#a8b3ff';
+  // mode-specific defaults: deep teal for OMP, dark indigo for raw consoles.
+  if (!planSlug) return mode === 'omp' ? '#0f3a36' : '#1e1b4b';
   const palette = [
-    '#51febf', '#fcd34d', '#fda4af', '#86efac', '#7dd3fc',
-    '#c4b5fd', '#fdba74', '#f0abfc', '#5eead4', '#fde68a',
-    '#bef264', '#a5b4fc', '#fb7185', '#34d399', '#facc15',
+    '#1e293b', // slate-800
+    '#0f172a', // slate-900
+    '#1e1b4b', // indigo-950
+    '#312e81', // indigo-900
+    '#3b0764', // purple-950
+    '#581c87', // purple-900
+    '#831843', // pink-900
+    '#7f1d1d', // red-900
+    '#7c2d12', // orange-900
+    '#78350f', // amber-900
+    '#365314', // lime-900
+    '#14532d', // green-900
+    '#134e4a', // teal-900
+    '#164e63', // cyan-900
+    '#0c4a6e', // sky-900
   ];
   let h = 0;
   for (let i = 0; i < planSlug.length; i++) {
