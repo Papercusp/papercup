@@ -9,10 +9,14 @@ vi.mock('../../auth', () => ({
 vi.mock('@papercusp/agent-mcp', () => ({
   defineTool: (def: unknown) => def,
 }));
+vi.mock('@restart/db-org', () => ({
+  getOrgPg: vi.fn(),
+}));
 
 import remember from './remember';
 import { getMemoryClient } from '../../memory/mem0-client';
 import { getSessionUserOrDefault } from '../../auth';
+import { getOrgPg } from '@restart/db-org';
 
 type FakeClient = {
   add: ReturnType<typeof vi.fn>;
@@ -35,6 +39,11 @@ beforeEach(() => {
     id: 'user-1',
     display_name: 'Test User',
   } as unknown as Awaited<ReturnType<typeof getSessionUserOrDefault>>);
+  // Default: silent no-op sql tag so the handler's fire-and-forget
+  // anchor writer never throws into the test scope.
+  vi.mocked(getOrgPg).mockReturnValue({
+    sql: vi.fn(async () => undefined) as unknown,
+  } as unknown as ReturnType<typeof getOrgPg>);
 });
 
 describe('memory:remember — anchor extraction (P-015)', () => {
@@ -203,5 +212,87 @@ describe('memory:remember — dedup-on-write (P-016)', () => {
     expect(c.search).not.toHaveBeenCalled();
     // restore for following tests
     process.env.PAPERCUSP_MEMORY_DEDUP = 'on';
+  });
+});
+
+
+describe('memory:remember — anchor table wiring (P-015)', () => {
+  it('hands the new memory id + extracted anchors to the writer after a successful add', async () => {
+    const c = fakeClient();
+    c.add.mockResolvedValue({
+      results: [{ id: '77777777-7777-7777-7777-777777777777', event: 'ADD' }],
+    });
+    vi.mocked(getMemoryClient).mockResolvedValue(c as unknown as Awaited<ReturnType<typeof getMemoryClient>>);
+
+    const sql = vi.fn(async () => undefined);
+    vi.mocked(getOrgPg).mockReturnValue({
+      sql: sql as unknown,
+    } as unknown as ReturnType<typeof getOrgPg>);
+
+    const res = await remember.handler(
+      {
+        content: 'F-001 lives at apps/operator/lib/foo.ts',
+        kind: 'project',
+      },
+      fakeCtx,
+    );
+    expect(JSON.parse(res.content[0].text).ok).toBe(true);
+
+    // Fire-and-forget — yield once so the void IIFE's microtasks run.
+    await new Promise((r) => setImmediate(r));
+
+    // persist-anchors.ts uses unnest — one INSERT per added memory id
+    // (carries every anchor for that id). One added id → one INSERT.
+    expect(sql).toHaveBeenCalledTimes(1);
+    const tpl = (sql.mock.calls[0][0] as TemplateStringsArray).join('');
+    expect(tpl).toContain('INSERT INTO harness_shared.memory_anchors');
+    expect(tpl).toContain('ON CONFLICT (memory_id, kind, value) DO NOTHING');
+    // Values: memory_id, kinds[], values[]
+    expect(sql.mock.calls[0][1]).toBe('77777777-7777-7777-7777-777777777777');
+    expect(sql.mock.calls[0][2]).toEqual(['file', 'feature']);
+    expect(sql.mock.calls[0][3]).toEqual(['apps/operator/lib/foo.ts', 'F-001']);
+  });
+
+  it('skips the writer entirely when no anchors were extracted', async () => {
+    const c = fakeClient();
+    c.add.mockResolvedValue({
+      results: [{ id: '88888888-8888-8888-8888-888888888888', event: 'ADD' }],
+    });
+    vi.mocked(getMemoryClient).mockResolvedValue(c as unknown as Awaited<ReturnType<typeof getMemoryClient>>);
+
+    const sql = vi.fn(async () => undefined);
+    vi.mocked(getOrgPg).mockReturnValue({
+      sql: sql as unknown,
+    } as unknown as ReturnType<typeof getOrgPg>);
+
+    await remember.handler(
+      { content: 'Avi prefers terse responses', kind: 'preference' },
+      fakeCtx,
+    );
+    await new Promise((r) => setImmediate(r));
+    expect(sql).not.toHaveBeenCalled();
+  });
+
+  it('skips the writer when mem0 returned no addable ids (DELETE/NONE only)', async () => {
+    const c = fakeClient();
+    c.add.mockResolvedValue({
+      results: [
+        { id: '99999999-9999-9999-9999-999999999999', event: 'DELETE' },
+        { id: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', event: 'NONE' },
+      ],
+    });
+    vi.mocked(getMemoryClient).mockResolvedValue(c as unknown as Awaited<ReturnType<typeof getMemoryClient>>);
+
+    const sql = vi.fn(async () => undefined);
+    vi.mocked(getOrgPg).mockReturnValue({
+      sql: sql as unknown,
+    } as unknown as ReturnType<typeof getOrgPg>);
+
+    await remember.handler(
+      { content: 'F-001 in apps/operator/lib/foo.ts', kind: 'project' },
+      fakeCtx,
+    );
+    await new Promise((r) => setImmediate(r));
+    expect(sql).not.toHaveBeenCalled();
   });
 });

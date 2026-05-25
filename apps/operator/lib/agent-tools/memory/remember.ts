@@ -12,10 +12,12 @@
 
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
+import { getOrgPg } from '@restart/db-org';
 import { getMemoryClient } from '../../memory/mem0-client';
 import { anchorMetadata } from '../../memory/anchors';
 import { checkConflicts } from '../../memory/conflict-check';
 import { createAnthropicJudge } from '../../memory/anthropic-judge';
+import { extractAddedIds, persistAnchorsSql } from '../../memory/persist-anchors';
 import { getSessionUserOrDefault } from '../../auth';
 
 const KINDS = ['identity', 'preference', 'project', 'correction', 'ephemeral'] as const;
@@ -119,9 +121,9 @@ export default defineTool({
     if (args.shared) metadata.shared = true;
 
     // Phase 4 P-015: extract structural anchors from the body so Layer 1
-    // (P-019) can later validate them with zero LLM cost. Anchors stored
-    // in metadata; the dedicated memory_anchors table (migration 085) is
-    // populated by a follow-up handler once that migration lands in PG.
+    // (P-019) can later validate them with zero LLM cost. Anchors are
+    // stored in metadata AND persisted to harness_shared.memory_anchors
+    // post-add (below) so the audit + UI paths can find them.
     const anchors = anchorMetadata(args.content);
     if (anchors) {
       metadata.anchors = anchors.anchors;
@@ -198,6 +200,26 @@ export default defineTool({
       userId: userIdForWrite,
       metadata,
     });
+
+    // Phase 4 P-015: persist anchors to harness_shared.memory_anchors so
+    // Layer 1 (audit-memory-anchors.ts) and the settings-UI broken_anchors
+    // enrichment can find them. Fire-and-forget — never load-bearing on
+    // the write path; same posture as bumpLastSurfacedSql in injection.ts.
+    if (anchors) {
+      const addedIds = extractAddedIds(result);
+      if (addedIds.length > 0) {
+        void (async () => {
+          try {
+            const { sql } = getOrgPg();
+            for (const id of addedIds) {
+              await persistAnchorsSql(sql, id, anchors.anchors);
+            }
+          } catch {
+            /* swallow — never load-bearing on the mem0 write path */
+          }
+        })();
+      }
+    }
 
     return {
       content: [{ type: 'text', text: JSON.stringify({ ok: true, result }) }],
