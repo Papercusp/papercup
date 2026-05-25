@@ -74,12 +74,12 @@ describe('GitHubPrHost.openPr', () => {
       remote: REMOTE,
       title: 'Fix the thing',
       body: 'Body',
-      head_branch: 'fix/thing',
-      base_branch: 'main',
+      head_ref: 'fix/thing',
+      base_ref: 'main',
     });
     expect(result.ok).toBe(true);
     if (result.ok) {
-      expect(result.data.number).toBe(42);
+      expect(result.data.ref.number).toBe(42);
       expect(result.data.state).toBe('open');
     }
   });
@@ -88,14 +88,14 @@ describe('GitHubPrHost.openPr', () => {
     const oc = mockOctokit({});
     vi.mocked(oc.pulls.create).mockRejectedValue({ status: 422, message: 'Validation failed' });
     const host = new GitHubPrHost(oc);
-    const result = await host.openPr({ remote: REMOTE, title: 'x', body: '', head_branch: 'f', base_branch: 'main' });
+    const result = await host.openPr({ remote: REMOTE, title: 'x', body: '', head_ref: 'f', base_ref: 'main' });
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.error.kind).toBe('validation');
   });
 
   it('P-040a: returns validation error on unparseable remote', async () => {
     const host = new GitHubPrHost(mockOctokit({}));
-    const result = await host.openPr({ remote: 'not-github', title: 'x', body: '', head_branch: 'f', base_branch: 'main' });
+    const result = await host.openPr({ remote: 'not-github', title: 'x', body: '', head_ref: 'f', base_ref: 'main' });
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.error.kind).toBe('validation');
   });
@@ -185,7 +185,7 @@ describe('GitHubPrHost.listOpenPrs', () => {
     expect(result.ok).toBe(true);
     if (result.ok) {
       expect(result.data).toHaveLength(1);
-      expect(result.data[0].number).toBe(42);
+      expect(result.data[0].ref.number).toBe(42);
       expect(result.data[0].state).toBe('open');
     }
   });

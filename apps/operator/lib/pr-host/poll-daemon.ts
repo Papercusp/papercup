@@ -11,7 +11,7 @@
  */
 
 import { ensurePrCheckStatusCacheTable, ensureAutoReviewAuditTable } from '../ensure-schema-dogfood';
-import { getOrgPg } from '../pg';
+import { getOrgPg } from '@restart/db-org';
 import type { PrHost, PrHostError, Pr } from './types';
 import { isRetryableError } from './types';
 
@@ -29,6 +29,8 @@ export interface PollDaemonOptions {
   onAuthFailure?: (harnessSlug: string, error: PrHostError) => void;
   /** Optional callback on a PR going gone (P-042f). */
   onPrGone?: (harnessSlug: string, prNumber: number) => void;
+  /** Override poll interval in ms (for tests). */
+  _pollIntervalMs?: number;
 }
 
 interface HarnessState {
@@ -104,7 +106,7 @@ async function pollHarness(
   state.nextAllowedAt = 0;
 
   const freshPrs = result.data;
-  const freshNumbers = new Set(freshPrs.map((p) => p.number));
+  const freshNumbers = new Set(freshPrs.map((p) => p.ref.number));
 
   // P-042f: detect PRs that disappeared (gone).
   for (const known of state.lastKnownPrNumbers) {
@@ -171,7 +173,7 @@ export function createPollDaemon(opts: PollDaemonOptions): PollDaemon {
     start() {
       if (timer) return;
       void tick();
-      timer = setInterval(() => void tick(), POLL_INTERVAL_MS);
+      timer = setInterval(() => void tick(), opts._pollIntervalMs ?? POLL_INTERVAL_MS);
     },
     stop() {
       if (timer) {

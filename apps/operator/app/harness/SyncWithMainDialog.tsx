@@ -368,3 +368,5 @@ const chipStyle: React.CSSProperties = {
   color: COLORS.textMuted,
   fontFamily: 'inherit',
 };
+
+export default SyncWithMainDialog;

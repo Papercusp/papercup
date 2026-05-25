@@ -82,11 +82,11 @@ export default function CupboardClient() {
     <div style={{ padding: SIZES.lg, maxWidth: 1100, margin: '0 auto' }}>
       {/* Header */}
       <div style={{ marginBottom: SIZES.lg }}>
-        <h1 style={{ fontFamily: FONTS.sans, fontWeight: 700, fontSize: 22, color: COLORS.text, margin: 0 }}>
+        <h1 style={{ fontFamily: FONTS.ui, fontWeight: 700, fontSize: 22, color: COLORS.text, margin: 0 }}>
           <Globe size={18} style={{ verticalAlign: 'middle', marginRight: 8 }} />
           Cupboard
         </h1>
-        <p style={{ fontFamily: FONTS.sans, fontSize: FONTS.size.sm, color: COLORS.textMuted, marginTop: 4 }}>
+        <p style={{ fontFamily: FONTS.ui, fontSize: 12, color: COLORS.textMuted, marginTop: 4 }}>
           Discover and join shared Papercusp harnesses.
         </p>
       </div>
@@ -113,8 +113,8 @@ export default function CupboardClient() {
               border: `1px solid ${COLORS.border}`,
               borderRadius: RADIUS.md,
               color: COLORS.text,
-              fontFamily: FONTS.sans,
-              fontSize: FONTS.size.sm,
+              fontFamily: FONTS.ui,
+              fontSize: 12,
               outline: 'none',
             }}
           />
@@ -132,8 +132,8 @@ export default function CupboardClient() {
                 borderRadius: RADIUS.md,
                 padding: '6px 12px',
                 cursor: 'pointer',
-                fontSize: FONTS.size.sm,
-                fontFamily: FONTS.sans,
+                fontSize: 12,
+                fontFamily: FONTS.ui,
                 textTransform: 'capitalize',
               }}
             >
@@ -161,7 +161,7 @@ export default function CupboardClient() {
 
       {/* Error */}
       {error && !loading && (
-        <div style={{ color: '#f87171', fontSize: FONTS.size.sm, marginBottom: SIZES.md }}>
+        <div style={{ color: '#f87171', fontSize: 12, marginBottom: SIZES.md }}>
           {error === 'HTTP 503' || error.includes('fetch')
             ? 'Cupboard server unreachable. Is NEXT_PUBLIC_CUPBOARD_URL configured?'
             : error}
@@ -170,7 +170,7 @@ export default function CupboardClient() {
 
       {/* Card grid */}
       {!loading && !error && listings.length === 0 && (
-        <div style={{ color: COLORS.textMuted, fontSize: FONTS.size.sm, textAlign: 'center', paddingTop: 40 }}>
+        <div style={{ color: COLORS.textMuted, fontSize: 12, textAlign: 'center', paddingTop: 40 }}>
           No harnesses found{q ? ` matching "${q}"` : ''}.
         </div>
       )}
@@ -228,9 +228,9 @@ function HarnessCard({
             border: 'none',
             padding: 0,
             cursor: 'pointer',
-            fontFamily: FONTS.sans,
+            fontFamily: FONTS.ui,
             fontWeight: 600,
-            fontSize: FONTS.size.md,
+            fontSize: 14,
             color: COLORS.text,
             textAlign: 'left',
           }}
@@ -249,7 +249,7 @@ function HarnessCard({
               borderRadius: RADIUS.sm,
               padding: '2px 7px',
               fontSize: 11,
-              fontFamily: FONTS.sans,
+              fontFamily: FONTS.ui,
               flexShrink: 0,
             }}
           >
@@ -262,8 +262,8 @@ function HarnessCard({
       {listing.description && (
         <p
           style={{
-            fontFamily: FONTS.sans,
-            fontSize: FONTS.size.sm,
+            fontFamily: FONTS.ui,
+            fontSize: 12,
             color: COLORS.textMuted,
             margin: 0,
             display: '-webkit-box',
@@ -304,8 +304,8 @@ function HarnessCard({
             borderRadius: RADIUS.md,
             padding: '6px 0',
             cursor: 'pointer',
-            fontFamily: FONTS.sans,
-            fontSize: FONTS.size.sm,
+            fontFamily: FONTS.ui,
+            fontSize: 12,
           }}
         >
           Install
@@ -335,7 +335,7 @@ function HarnessCard({
 
 function Stat({ icon, label }: { icon: React.ReactNode; label: string }) {
   return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 4, color: COLORS.textMuted, fontSize: 11, fontFamily: FONTS.sans }}>
+    <div style={{ display: 'flex', alignItems: 'center', gap: 4, color: COLORS.textMuted, fontSize: 11, fontFamily: FONTS.ui }}>
       {icon}
       {label}
     </div>

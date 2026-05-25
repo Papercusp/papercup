@@ -20,6 +20,7 @@ import {
   type ListOpenPrsArgs,
   type PrState,
   type PrReviewDecision,
+  type PrMergeableState,
   ok,
   err,
   statusToErrorKind,
@@ -35,8 +36,7 @@ export function parseRemote(remote: string): { owner: string; repo: string } | n
 function mapOctokitError(e: unknown): ReturnType<typeof err> {
   if (e && typeof e === 'object') {
     const status: number = (e as { status?: number }).status ?? 0;
-    const message: string =
-      (e as { message?: string }).message ?? 'GitHub API error';
+    const message: string = (e as { message?: string }).message ?? 'GitHub API error';
     const rateLimitReset =
       (e as { response?: { headers?: { 'x-ratelimit-reset'?: string } } }).response?.headers?.[
         'x-ratelimit-reset'
@@ -64,12 +64,19 @@ function ghReviewStateToPrDecision(state: string): PrReviewDecision {
     case 'CHANGES_REQUESTED':
       return 'changes_requested';
     case 'COMMENTED':
+    case 'DISMISSED': // dismissed is no longer actionable; treat as commented
       return 'commented';
-    case 'DISMISSED':
-      return 'dismissed';
     default:
       return 'none';
   }
+}
+
+function ghMergeableStateToPrMergeableState(
+  mergeable: boolean | null | undefined,
+): PrMergeableState {
+  if (mergeable === true) return 'mergeable';
+  if (mergeable === false) return 'not_mergeable';
+  return 'unknown';
 }
 
 export class GitHubPrHost implements PrHost {
@@ -88,28 +95,29 @@ export class GitHubPrHost implements PrHost {
         repo: parsed.repo,
         title: args.title,
         body: args.body,
-        head: args.head_branch,
-        base: args.base_branch,
+        head: args.head_ref,
+        base: args.base_ref,
         draft: args.draft ?? false,
       });
-      return ok({
-        remote: args.remote,
-        number: data.number,
-        title: data.title,
-        body: data.body ?? '',
+      const pr: Pr = {
+        ref: { remote: args.remote, number: data.number },
         state: 'open',
+        title: data.title,
+        body: data.body ?? null,
+        head_ref: data.head.ref,
+        base_ref: data.base.ref,
         head_sha: data.head.sha,
-        base_branch: data.base.ref,
-        head_branch: data.head.ref,
-        author_github_id: data.user?.id ?? 0,
-        author_login: data.user?.login ?? '',
-        html_url: data.html_url,
-        created_at: data.created_at,
-        updated_at: data.updated_at,
-        merged_at: null,
+        merge_commit_sha: null,
+        author: { github_user_id: data.user?.id ?? 0, github_login: data.user?.login ?? '' },
+        reviewers_requested: [],
         review_decision: 'none',
-        check_conclusion: null,
-      });
+        checks_state: 'unknown',
+        mergeable_state: 'unknown',
+        is_draft: data.draft ?? false,
+        url: data.html_url,
+        updated_at: new Date(data.updated_at).getTime(),
+      };
+      return ok(pr);
     } catch (e) {
       return mapOctokitError(e);
     }
@@ -136,24 +144,31 @@ export class GitHubPrHost implements PrHost {
       const latestDecision = reviews.data.length
         ? ghReviewStateToPrDecision(reviews.data[reviews.data.length - 1].state)
         : 'none';
-      return ok({
-        remote: ref.remote,
-        number: data.number,
-        title: data.title,
-        body: data.body ?? '',
+      const pr: Pr = {
+        ref: { remote: ref.remote, number: data.number },
         state,
+        title: data.title,
+        body: data.body ?? null,
+        head_ref: data.head.ref,
+        base_ref: data.base.ref,
         head_sha: data.head.sha,
-        base_branch: data.base.ref,
-        head_branch: data.head.ref,
-        author_github_id: data.user?.id ?? 0,
-        author_login: data.user?.login ?? '',
-        html_url: data.html_url,
-        created_at: data.created_at,
-        updated_at: data.updated_at,
-        merged_at: (data as { merged_at?: string | null }).merged_at ?? null,
+        merge_commit_sha: (data as { merge_commit_sha?: string | null }).merge_commit_sha ?? null,
+        author: { github_user_id: data.user?.id ?? 0, github_login: data.user?.login ?? '' },
+        reviewers_requested: (data.requested_reviewers ?? []).map((r) => ({
+          github_user_id: r.id,
+          github_login: r.login,
+          avatar_url: r.avatar_url ?? undefined,
+        })),
         review_decision: latestDecision,
-        check_conclusion: null,
-      });
+        checks_state: 'unknown',
+        mergeable_state: ghMergeableStateToPrMergeableState(
+          (data as { mergeable?: boolean | null }).mergeable,
+        ),
+        is_draft: data.draft ?? false,
+        url: data.html_url,
+        updated_at: new Date(data.updated_at).getTime(),
+      };
+      return ok(pr);
     } catch (e) {
       return mapOctokitError(e);
     }
@@ -222,22 +237,26 @@ export class GitHubPrHost implements PrHost {
         per_page: args.per_page ?? 100,
       });
       const prs: Pr[] = data.map((d) => ({
-        remote: args.remote,
-        number: d.number,
-        title: d.title,
-        body: d.body ?? '',
+        ref: { remote: args.remote, number: d.number },
         state: 'open' as PrState,
+        title: d.title,
+        body: d.body ?? null,
+        head_ref: d.head.ref,
+        base_ref: d.base.ref,
         head_sha: d.head.sha,
-        base_branch: d.base.ref,
-        head_branch: d.head.ref,
-        author_github_id: d.user?.id ?? 0,
-        author_login: d.user?.login ?? '',
-        html_url: d.html_url,
-        created_at: d.created_at,
-        updated_at: d.updated_at,
-        merged_at: null,
+        merge_commit_sha: null,
+        author: { github_user_id: d.user?.id ?? 0, github_login: d.user?.login ?? '' },
+        reviewers_requested: (d.requested_reviewers ?? []).map((r) => ({
+          github_user_id: r.id,
+          github_login: r.login,
+          avatar_url: r.avatar_url ?? undefined,
+        })),
         review_decision: 'none',
-        check_conclusion: null,
+        checks_state: 'unknown',
+        mergeable_state: 'unknown',
+        is_draft: d.draft ?? false,
+        url: d.html_url,
+        updated_at: new Date(d.updated_at).getTime(),
       }));
       return ok(prs);
     } catch (e) {

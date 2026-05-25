@@ -354,6 +354,10 @@ const ArchivesPanel = dynamicWithRetry(() => import('./ArchivesPanel'), 'Archive
 const DecisionsPanel = dynamicWithRetry(() => import('./DecisionsPanel'), 'DecisionsPanel', { prewarm: false });
 const IntelPanel = dynamicWithRetry(() => import('./IntelPanel'), 'IntelPanel', { prewarm: false });
 const HealthBadge = dynamicWithRetry(() => import('./HealthBadge'), 'HealthBadge');
+const SyncWithMainBadge = dynamicWithRetry(() => import('./SyncWithMainBadge'), 'SyncWithMainBadge');
+const SyncWithMainDialog = dynamicWithRetry(() => import('./SyncWithMainDialog'), 'SyncWithMainDialog');
+import DiscordChannelLink from '../_components/DiscordChannelLink';
+import { useLocalGithubUser } from './useLocalGithubUser';
 const SmokeTestPanel = dynamicWithRetry(() => import('./SmokeTestPanel'), 'SmokeTestPanel');
 const IdentityPanel = dynamicWithRetry(() => import('./IdentityPanel'), 'IdentityPanel');
 const SummaryPanel = dynamicWithRetry(() => import('./SummaryPanel'), 'SummaryPanel');
@@ -399,6 +403,7 @@ interface Status {
   missionCostUsd?: number;
   missionInputTokens?: number;
   missionOutputTokens?: number;
+  discord_channel_url?: string | null;
 }
 
 interface TimelineEntry {
@@ -2420,6 +2425,7 @@ export default function HarnessDashboard() {
   const harnessPhasesEnabled = useFlag(FLAGS.HARNESS_PHASES);
   const designEnabled = useFlag(FLAGS.DESIGN);
   const visualEffectsEnabled = useFancyEffectsEnabled();
+  const localGithubUser = useLocalGithubUser();
   const fancyEffectsEnabled = visualEffectsEnabled && !reducedMotion;
   const { confirm: askConfirm, element: confirmEl } = useConfirmDialog();
   const { prompt: askPrompt, element: promptEl } = usePromptDialog();
@@ -2660,6 +2666,7 @@ export default function HarnessDashboard() {
   const [showTemplates, setShowTemplates] = useQueryState('templates', parseAsBoolean.withDefault(false));
   const [showArchives, setShowArchives] = useQueryState('archives', parseAsBoolean.withDefault(false));
   const [showIntel, setShowIntel] = useQueryState('intel', parseAsBoolean.withDefault(false));
+  const [showSyncDialog, setShowSyncDialog] = useState(false);
   const [diffFeatureId, setDiffFeatureId] = useQueryState('diff', parseAsString);
   const [editingFeature, setEditingFeature] = useState<Feature | null | 'new'>(null);
   // Memoized handler for FeatureList's onEdit prop — without this, every
@@ -4132,6 +4139,25 @@ export default function HarnessDashboard() {
                 </Tooltip>
               )}
               {activeSlug && <HealthBadge slug={activeSlug} />}
+              {activeSlug && localGithubUser && (
+                <div style={{ position: 'relative' }}>
+                  <SyncWithMainBadge
+                    harnessSlug={activeSlug}
+                    githubUserId={localGithubUser.id}
+                    onClick={() => setShowSyncDialog((v) => !v)}
+                  />
+                  {showSyncDialog && (
+                    <SyncWithMainDialog
+                      harnessSlug={activeSlug}
+                      githubUserId={localGithubUser.id}
+                      onClose={() => setShowSyncDialog(false)}
+                    />
+                  )}
+                </div>
+              )}
+              {status?.discord_channel_url && (
+                <DiscordChannelLink discordChannelUrl={status.discord_channel_url} />
+              )}
               {typeof status.pendingCheckpoints === 'number' && status.pendingCheckpoints > 0 && (
                 <div title={`${status.pendingCheckpoints} checkpoint${status.pendingCheckpoints === 1 ? '' : 's'} awaiting grant`}>
                   <StatCard
@@ -4498,7 +4524,7 @@ export default function HarnessDashboard() {
         </ReactActivity>
         <ReactActivity mode={resolvedPanel === 'prs' ? 'visible' : 'hidden'}>
           {activeSlug && (resolvedPanel === 'prs' || everMountedPanels.has('prs')) && (
-            <PrsTab slug={activeSlug} />
+            <PrsTab harnessSlug={activeSlug} />
           )}
         </ReactActivity>
         <ReactActivity mode={resolvedPanel === 'experts' ? 'visible' : 'hidden'}>

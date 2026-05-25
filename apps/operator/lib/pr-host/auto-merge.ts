@@ -6,7 +6,7 @@
  */
 
 import { ensureAutoReviewAuditTable } from '../ensure-schema-dogfood';
-import { getOrgPg } from '../pg';
+import { getOrgPg } from '@restart/db-org';
 import type { PrHost, Pr, PrMergeMethod } from './types';
 
 export interface AutoMergeContext {
@@ -38,37 +38,40 @@ export async function tryAutoMerge(
   pr: Pr,
   ctx: AutoMergeContext,
 ): Promise<AutoMergeResult> {
+  const prNumber = pr.ref.number;
+  const authorId = pr.author.github_user_id;
+
   if (!ctx.autoMerge) {
-    return { action: 'skipped_disabled', prNumber: pr.number };
+    return { action: 'skipped_disabled', prNumber };
   }
 
   // Must have been approved (by us or anyone — in auto-approve+auto-merge
   // flow the PR will already have review_decision='approved').
   if (pr.review_decision !== 'approved') {
-    return { action: 'skipped_not_approved', prNumber: pr.number };
+    return { action: 'skipped_not_approved', prNumber };
   }
 
-  // Checks must be green or absent (null = no check runs configured).
-  if (pr.check_conclusion !== null && pr.check_conclusion !== 'success') {
-    await writeAudit(ctx.harnessSlug, pr.number, pr.html_url, pr.author_github_id, ctx.reviewerGithubId, 'skipped_checks_failing', `check_conclusion: ${pr.check_conclusion}`);
-    return { action: 'skipped_checks_failing', prNumber: pr.number };
+  // Checks must be green or not yet reported ('unknown' = no checks configured).
+  if (pr.checks_state !== 'success' && pr.checks_state !== 'unknown') {
+    await writeAudit(ctx.harnessSlug, prNumber, pr.url, authorId, ctx.reviewerGithubId, 'skipped_checks_failing', `checks_state: ${pr.checks_state}`);
+    return { action: 'skipped_checks_failing', prNumber };
   }
 
   const mergeResult = await host.merge({
-    ref: { remote: pr.remote, number: pr.number },
+    ref: pr.ref,
     method: ctx.mergeMethod,
-    commit_title: `${pr.title} (#${pr.number})`,
+    commit_title: `${pr.title} (#${prNumber})`,
     commit_message: `Auto-merged by Papercusp via @${ctx.reviewerLogin}.`,
     expected_head_sha: pr.head_sha,
   });
 
   if (!mergeResult.ok) {
-    await writeAudit(ctx.harnessSlug, pr.number, pr.html_url, pr.author_github_id, ctx.reviewerGithubId, 'error', mergeResult.error.message);
-    return { action: 'error', prNumber: pr.number, detail: mergeResult.error.message };
+    await writeAudit(ctx.harnessSlug, prNumber, pr.url, authorId, ctx.reviewerGithubId, 'error', mergeResult.error.message);
+    return { action: 'error', prNumber, detail: mergeResult.error.message };
   }
 
-  await writeAudit(ctx.harnessSlug, pr.number, pr.html_url, pr.author_github_id, ctx.reviewerGithubId, 'auto_merge', null);
-  return { action: 'merged', prNumber: pr.number, mergeCommitSha: mergeResult.data.merge_commit_sha };
+  await writeAudit(ctx.harnessSlug, prNumber, pr.url, authorId, ctx.reviewerGithubId, 'auto_merge', null);
+  return { action: 'merged', prNumber, mergeCommitSha: mergeResult.data.merge_commit_sha };
 }
 
 async function writeAudit(

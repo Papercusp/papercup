@@ -365,3 +365,72 @@ describe('GET /api/agent-bundle', () => {
     expect(res.status).toBe(401);
   });
 });
+
+/* ─── 4. POST /api/mcp?power_user=1 (tools/list profile gate) ─────────── */
+
+describe('POST /api/mcp?power_user=1 (tools/list profile gate)', () => {
+  async function freshAccessToken(): Promise<string> {
+    const res = await postJson('/api/agent-tokens/power-user', {});
+    const j = (await res.json()) as { access_token: string };
+    return j.access_token;
+  }
+
+  // Sends tools/list over the MCP Streamable-HTTP transport and returns
+  // the list of tool names from the JSON-RPC response.  The response body
+  // is an SSE stream; we drain it and extract the first `data:` line that
+  // carries a tools/list result.
+  async function mcpToolsListNames(accessToken: string): Promise<string[]> {
+    const res = await app.request('http://localhost:3070/api/mcp?power_user=1', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        accept: 'application/json, text/event-stream',
+        authorization: `Bearer ${accessToken}`,
+      },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} }),
+    });
+    if (!res.body) return [];
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let text = '';
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      text += decoder.decode(value, { stream: true });
+    }
+    for (const line of text.split('\n')) {
+      if (!line.startsWith('data:')) continue;
+      try {
+        const msg = JSON.parse(line.slice('data:'.length).trim()) as {
+          result?: { tools?: Array<{ name: string }> };
+        };
+        if (msg?.result?.tools) return msg.result.tools.map((t) => t.name);
+      } catch { /* skip non-JSON lines (e.g. keep-alive pings) */ }
+    }
+    return [];
+  }
+
+  it('engineer-tagged (Group A) tools absent; untagged (Group B/C) tools present', async () => {
+    const tok = await freshAccessToken();
+    const names = await mcpToolsListNames(tok);
+
+    // The power profile must return at least some tools.
+    expect(names.length).toBeGreaterThan(0);
+
+    // Group A — profile: 'engineer' — must NOT appear.
+    expect(names).not.toContain('intel:artifacts');  // tagged profile: 'engineer' (P-013)
+    expect(names).not.toContain('intel:spawn_tree'); // tagged profile: 'engineer' (P-013)
+    expect(names).not.toContain('harness:get');      // tagged profile: 'engineer'
+    expect(names).not.toContain('issues:list');      // tagged profile: 'engineer'
+    expect(names).not.toContain('audit:list');       // tagged profile: 'engineer'
+
+    // Group B/C — no profile tag — must appear.
+    expect(names).toContain('tasks:list');   // untagged
+    expect(names).toContain('goals:list');   // untagged
+  });
+
+  it('invalid power-user token → tools/list returns empty list (failed spawn ctx)', async () => {
+    const names = await mcpToolsListNames('a.bogus.token');
+    expect(names).toHaveLength(0);
+  });
+});

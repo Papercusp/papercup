@@ -107,14 +107,14 @@ export function PrsTab({
   });
 
   return (
-    <div style={{ padding: SIZES.panelPadding, fontFamily: FONTS.sans }}>
+    <div style={{ padding: 20, fontFamily: FONTS.ui }}>
       {/* Header */}
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           <GitPullRequest size={16} color={COLORS.accent} />
           <span style={{ fontSize: 14, fontWeight: 600, color: COLORS.text }}>Pull Requests</span>
           {pollingFailed && (
-            <span style={{ fontSize: 11, color: COLORS.error, marginLeft: 4 }}>
+            <span style={{ fontSize: 11, color: COLORS.dangerText, marginLeft: 4 }}>
               cannot reach GitHub
             </span>
           )}
@@ -154,7 +154,7 @@ export function PrsTab({
         <div style={{ color: COLORS.textMuted, fontSize: 13 }}>Loading…</div>
       )}
       {!loading && error && (
-        <div style={{ color: COLORS.error, fontSize: 13 }}>{error}</div>
+        <div style={{ color: COLORS.dangerText, fontSize: 13 }}>{error}</div>
       )}
       {!loading && !error && displayed.length === 0 && (
         <div style={{ color: COLORS.textMuted, fontSize: 13, textAlign: 'center', padding: '24px 0' }}>
@@ -172,3 +172,5 @@ export function PrsTab({
     </div>
   );
 }
+
+export default PrsTab;

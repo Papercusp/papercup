@@ -1,15 +1,15 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { tryAutoApprove, formatAutoApproveToast } from './auto-approve';
 import type { PrHost, Pr } from './types';
 
 vi.mock('../ensure-schema-dogfood', () => ({
   ensureAutoReviewAuditTable: vi.fn().mockResolvedValue(undefined),
 }));
-vi.mock('../pg', () => ({
+vi.mock('@restart/db-org', () => ({
   getOrgPg: () => ({ sql: { unsafe: vi.fn().mockResolvedValue([]) } }),
 }));
 
-function makeHost(postReviewResult = { ok: true as const, data: undefined }): PrHost {
+function makeHost(postReviewResult: { ok: true; data: undefined } | { ok: false; error: { kind: string; message: string } } = { ok: true, data: undefined }): PrHost {
   return {
     kind: 'github',
     openPr: vi.fn(),
@@ -22,22 +22,22 @@ function makeHost(postReviewResult = { ok: true as const, data: undefined }): Pr
 
 function makePr(overrides: Partial<Pr> = {}): Pr {
   return {
-    remote: 'github.com/owner/repo',
-    number: 42,
-    title: 'Fix thing',
-    body: '',
+    ref: { remote: 'github.com/owner/repo', number: 42 },
     state: 'open',
-    head_sha: 'abc',
-    base_branch: 'main',
-    head_branch: 'fix/thing',
-    author_github_id: 999,
-    author_login: 'alice',
-    html_url: 'https://github.com/owner/repo/pull/42',
-    created_at: '2026-05-24T00:00:00Z',
-    updated_at: '2026-05-24T00:00:00Z',
-    merged_at: null,
+    title: 'Fix thing',
+    body: null,
+    head_ref: 'fix/thing',
+    base_ref: 'main',
+    head_sha: 'abc123',
+    merge_commit_sha: null,
+    author: { github_user_id: 999, github_login: 'alice' },
+    reviewers_requested: [],
     review_decision: 'none',
-    check_conclusion: null,
+    checks_state: 'unknown',
+    mergeable_state: 'unknown',
+    is_draft: false,
+    url: 'https://github.com/owner/repo/pull/42',
+    updated_at: 1716508800000,
     ...overrides,
   };
 }
@@ -63,7 +63,11 @@ describe('tryAutoApprove P-044', () => {
   });
 
   it('P-044a: skips when author not in trust list', async () => {
-    const result = await tryAutoApprove(makeHost(), makePr({ author_github_id: 888 }), baseCtx);
+    const result = await tryAutoApprove(
+      makeHost(),
+      makePr({ author: { github_user_id: 888, github_login: 'mallory' } }),
+      baseCtx,
+    );
     expect(result.action).toBe('skipped_untrusted');
   });
 
@@ -75,6 +79,7 @@ describe('tryAutoApprove P-044', () => {
   it('P-044a+b: approves trusted author with no prior review', async () => {
     const result = await tryAutoApprove(makeHost(), makePr(), baseCtx);
     expect(result.action).toBe('approved');
+    expect(result.prNumber).toBe(42);
   });
 
   it('P-044c: errors are recorded and returned', async () => {

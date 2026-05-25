@@ -254,6 +254,7 @@ import desktopTelemetryReport from './desktop/telemetry-report';
 import desktopWorkspaceValidate from './desktop/workspace-validate';
 import desktopInstallPapercuspFiles from './desktop/install-papercusp-files';
 import desktopInstallOmpIntegration from './desktop/install-omp-integration';
+import { desktopGithubUser } from './desktop/github-user';
 import adminBackupOrphanCleanup from './admin/backup-orphan-cleanup';
 import adminCommands from './admin/commands';
 import adminEmbedBackfill from './admin/embed-backfill';
@@ -592,6 +593,7 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(desktopWorkspaceValidate as AnyRoute),
   ...flatten(desktopInstallPapercuspFiles as AnyRoute[]),
   ...flatten(desktopInstallOmpIntegration as AnyRoute[]),
+  desktopGithubUser,
   ...flatten(adminBackupOrphanCleanup as AnyRoute),
   ...flatten(adminCommands as AnyRoute),
   ...flatten(adminEmbedBackfill as AnyRoute),

@@ -78,3 +78,5 @@ export function DiscordChannelLink({ discordChannelUrl, className }: Props) {
     </a>
   );
 }
+
+export default DiscordChannelLink;

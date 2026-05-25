@@ -18,6 +18,10 @@ import {
 } from 'node:fs';
 import { join } from 'node:path';
 import { getLegacyClient } from '@restart/db-org';
+import {
+  HARNESS_SHARED_CONFIG_REL_PATH,
+  isHarnessSharedConfig,
+} from './harness/harness-shared-config-types';
 
 import { loadHarnessRegistry, type ProjectEntry } from './harness-registry';
 import { type Phase, phasePath } from './harness-phases';
@@ -393,6 +397,17 @@ export async function getHarnessStatusFull(
     }
   } catch {}
 
+  let discord_channel_url: string | null = null;
+  try {
+    const sharedRaw = safeRead(join(project.path, HARNESS_SHARED_CONFIG_REL_PATH));
+    if (sharedRaw) {
+      const parsed: unknown = JSON.parse(sharedRaw);
+      if (isHarnessSharedConfig(parsed) && parsed.discord_channel) {
+        discord_channel_url = parsed.discord_channel;
+      }
+    }
+  } catch {}
+
   return {
     project: { slug: project.slug, path: project.path },
     features,
@@ -407,6 +422,7 @@ export async function getHarnessStatusFull(
     missionCostUsd: __agg.cost,
     missionInputTokens: __agg.inputTokens,
     missionOutputTokens: __agg.outputTokens,
+    discord_channel_url,
   };
 }
 

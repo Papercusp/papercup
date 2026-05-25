@@ -11,7 +11,7 @@
  */
 
 import { ensureAutoReviewAuditTable } from '../ensure-schema-dogfood';
-import { getOrgPg } from '../pg';
+import { getOrgPg } from '@restart/db-org';
 import type { PrHost, Pr } from './types';
 
 export interface AutoApproveContext {
@@ -47,32 +47,35 @@ export async function tryAutoApprove(
   pr: Pr,
   ctx: AutoApproveContext,
 ): Promise<AutoApproveResult> {
+  const prNumber = pr.ref.number;
+  const authorId = pr.author.github_user_id;
+
   // P-044a gate checks.
   if (!ctx.reviewerRoleEnabled || !ctx.autoReview) {
-    return { action: 'skipped_disabled', prNumber: pr.number };
+    return { action: 'skipped_disabled', prNumber };
   }
-  if (!ctx.trustedAuthorIds.has(pr.author_github_id)) {
-    await writeAudit(ctx.harnessSlug, pr.number, pr.html_url, pr.author_github_id, ctx.reviewerGithubId, 'skipped_untrusted', null);
-    return { action: 'skipped_untrusted', prNumber: pr.number };
+  if (!ctx.trustedAuthorIds.has(authorId)) {
+    await writeAudit(ctx.harnessSlug, prNumber, pr.url, authorId, ctx.reviewerGithubId, 'skipped_untrusted', null);
+    return { action: 'skipped_untrusted', prNumber };
   }
   // P-044b idempotent: already approved by us → skip.
   if (pr.review_decision === 'approved') {
-    return { action: 'skipped_already_approved', prNumber: pr.number };
+    return { action: 'skipped_already_approved', prNumber };
   }
 
   const reviewResult = await host.postReview({
-    ref: { remote: pr.remote, number: pr.number },
+    ref: pr.ref,
     event: 'approve',
-    body: `Auto-approved by Papercusp — @${ctx.reviewerLogin} has ${pr.author_login} in their trust list.`,
+    body: `Auto-approved by Papercusp — @${ctx.reviewerLogin} has @${pr.author.github_login} in their trust list.`,
   });
 
   if (!reviewResult.ok) {
-    await writeAudit(ctx.harnessSlug, pr.number, pr.html_url, pr.author_github_id, ctx.reviewerGithubId, 'error', reviewResult.error.message);
-    return { action: 'error', prNumber: pr.number, detail: reviewResult.error.message };
+    await writeAudit(ctx.harnessSlug, prNumber, pr.url, authorId, ctx.reviewerGithubId, 'error', reviewResult.error.message);
+    return { action: 'error', prNumber, detail: reviewResult.error.message };
   }
 
-  await writeAudit(ctx.harnessSlug, pr.number, pr.html_url, pr.author_github_id, ctx.reviewerGithubId, 'auto_approve', null);
-  return { action: 'approved', prNumber: pr.number };
+  await writeAudit(ctx.harnessSlug, prNumber, pr.url, authorId, ctx.reviewerGithubId, 'auto_approve', null);
+  return { action: 'approved', prNumber };
 }
 
 /** Format P-044d one-line toast string. */

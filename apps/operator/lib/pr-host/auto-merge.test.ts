@@ -5,11 +5,18 @@ import type { PrHost, Pr } from './types';
 vi.mock('../ensure-schema-dogfood', () => ({
   ensureAutoReviewAuditTable: vi.fn().mockResolvedValue(undefined),
 }));
-vi.mock('../pg', () => ({
+vi.mock('@restart/db-org', () => ({
   getOrgPg: () => ({ sql: { unsafe: vi.fn().mockResolvedValue([]) } }),
 }));
 
-function makeHost(mergeResult = { ok: true as const, data: { merge_commit_sha: 'abc123' } }): PrHost {
+function makeHost(
+  mergeResult:
+    | { ok: true; data: { merge_commit_sha: string } }
+    | { ok: false; error: { kind: string; message: string } } = {
+    ok: true,
+    data: { merge_commit_sha: 'abc123' },
+  },
+): PrHost {
   return {
     kind: 'github',
     openPr: vi.fn(),
@@ -22,22 +29,22 @@ function makeHost(mergeResult = { ok: true as const, data: { merge_commit_sha: '
 
 function makePr(overrides: Partial<Pr> = {}): Pr {
   return {
-    remote: 'github.com/owner/repo',
-    number: 42,
-    title: 'Fix thing',
-    body: '',
+    ref: { remote: 'github.com/owner/repo', number: 42 },
     state: 'open',
-    head_sha: 'abc',
-    base_branch: 'main',
-    head_branch: 'fix/thing',
-    author_github_id: 999,
-    author_login: 'alice',
-    html_url: 'https://github.com/owner/repo/pull/42',
-    created_at: '2026-05-24T00:00:00Z',
-    updated_at: '2026-05-24T00:00:00Z',
-    merged_at: null,
+    title: 'Fix thing',
+    body: null,
+    head_ref: 'fix/thing',
+    base_ref: 'main',
+    head_sha: 'abc123',
+    merge_commit_sha: null,
+    author: { github_user_id: 999, github_login: 'alice' },
+    reviewers_requested: [],
     review_decision: 'approved',
-    check_conclusion: null,
+    checks_state: 'unknown',
+    mergeable_state: 'unknown',
+    is_draft: false,
+    url: 'https://github.com/owner/repo/pull/42',
+    updated_at: 1716508800000,
     ...overrides,
   };
 }
@@ -62,18 +69,23 @@ describe('tryAutoMerge P-045', () => {
   });
 
   it('P-045a: skips when checks are failing', async () => {
-    const result = await tryAutoMerge(makeHost(), makePr({ check_conclusion: 'failure' }), baseCtx);
+    const result = await tryAutoMerge(makeHost(), makePr({ checks_state: 'failure' }), baseCtx);
     expect(result.action).toBe('skipped_checks_failing');
   });
 
-  it('P-045a: merges when approved + checks null (no CI)', async () => {
-    const result = await tryAutoMerge(makeHost(), makePr({ check_conclusion: null }), baseCtx);
+  it('P-045a: skips when checks are pending', async () => {
+    const result = await tryAutoMerge(makeHost(), makePr({ checks_state: 'pending' }), baseCtx);
+    expect(result.action).toBe('skipped_checks_failing');
+  });
+
+  it('P-045a: merges when approved + checks unknown (no CI configured)', async () => {
+    const result = await tryAutoMerge(makeHost(), makePr({ checks_state: 'unknown' }), baseCtx);
     expect(result.action).toBe('merged');
     if (result.action === 'merged') expect(result.mergeCommitSha).toBe('abc123');
   });
 
   it('P-045a: merges when approved + checks success', async () => {
-    const result = await tryAutoMerge(makeHost(), makePr({ check_conclusion: 'success' }), baseCtx);
+    const result = await tryAutoMerge(makeHost(), makePr({ checks_state: 'success' }), baseCtx);
     expect(result.action).toBe('merged');
   });
 
@@ -81,7 +93,7 @@ describe('tryAutoMerge P-045', () => {
     const host = makeHost();
     await tryAutoMerge(host, makePr(), { ...baseCtx, mergeMethod: 'rebase' });
     expect(vi.mocked(host.merge)).toHaveBeenCalledWith(
-      expect.objectContaining({ method: 'rebase' })
+      expect.objectContaining({ method: 'rebase' }),
     );
   });
 
@@ -89,8 +101,6 @@ describe('tryAutoMerge P-045', () => {
     const host = makeHost();
     const result = await tryAutoMerge(host, makePr(), baseCtx);
     expect(result.action).toBe('merged');
-    // The audit write happens inside tryAutoMerge after merge() succeeds.
-    // We verify merge() was called (the audit path ran) via the mock call count.
     expect(vi.mocked(host.merge)).toHaveBeenCalledTimes(1);
   });
 

@@ -5,10 +5,12 @@
  *   GET /api/harness/:slug/lanes       — parallel-worker lane PIDs + liveness
  *   GET /api/harness/:slug/knowledge   — PG-canonical knowledge.md (FS fallback)
  *   PUT /api/harness/:slug/knowledge   — write knowledge.md (PG + disk mirror)
- *   GET /api/harness/:slug/prs         — prs.json
  *
  * Relocated from `_hono/harness.ts` (endpoint-hono-elimination-2026-05-21
  * A4 batch 7).
+ *
+ * NOTE: GET /harness/:slug/prs was here as a prs.json file reader but is
+ * superseded by harness/prs.ts which reads live from GitHub.
  */
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
@@ -105,23 +107,4 @@ const putKnowledge = defineTool({
   },
 });
 
-const getPrs = defineTool({
-  method: 'GET',
-  path: '/harness/:slug/prs',
-  auth: 'public',
-  async handler(req, ctx) {
-    const slug = ctx.params.slug as string;
-    const project = await resolvePhasedProject(slug, phaseFromReq(req));
-    if (!project) return Response.json({ error: 'unknown project' }, { status: 404 });
-    const p = join(harnessDir(project), 'prs.json');
-    if (!existsSync(p)) return Response.json({ prs: {} });
-    try {
-      const raw = JSON.parse(readFileSync(p, 'utf8'));
-      return Response.json({ prs: raw.prs ?? {} });
-    } catch {
-      return Response.json({ prs: {} });
-    }
-  },
-});
-
-export default [getHealth, getLanes, getKnowledge, putKnowledge, getPrs];
+export default [getHealth, getLanes, getKnowledge, putKnowledge];

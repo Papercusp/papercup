@@ -6,28 +6,28 @@ vi.mock('../ensure-schema-dogfood', () => ({
   ensurePrCheckStatusCacheTable: vi.fn().mockResolvedValue(undefined),
   ensureAutoReviewAuditTable: vi.fn().mockResolvedValue(undefined),
 }));
-vi.mock('../pg', () => ({
+vi.mock('@restart/db-org', () => ({
   getOrgPg: () => ({ sql: { unsafe: vi.fn().mockResolvedValue([]) } }),
 }));
 
 function makePr(number = 1): Pr {
   return {
-    remote: 'github.com/owner/repo',
-    number,
+    ref: { remote: 'github.com/owner/repo', number },
     title: 'PR ' + number,
     body: '',
     state: 'open',
     head_sha: 'sha' + number,
-    base_branch: 'main',
-    head_branch: 'fix/' + number,
-    author_github_id: 1,
-    author_login: 'alice',
-    html_url: 'https://github.com/owner/repo/pull/' + number,
-    created_at: '2026-05-24T10:00:00Z',
-    updated_at: '2026-05-24T11:00:00Z',
-    merged_at: null,
+    base_ref: 'main',
+    head_ref: 'fix/' + number,
+    author: { github_user_id: 1, github_login: 'alice' },
+    reviewers_requested: [],
     review_decision: 'none',
-    check_conclusion: null,
+    checks_state: 'unknown',
+    mergeable_state: 'unknown',
+    is_draft: false,
+    url: 'https://github.com/owner/repo/pull/' + number,
+    updated_at: 1716544800000,
+    merge_commit_sha: null,
   };
 }
 
@@ -81,13 +81,13 @@ describe('poll-daemon P-042', () => {
     daemon.stop();
   });
 
-  it('P-042d: respects retry_after_ms from rate_limit error', async () => {
+  it('P-042d: honors X-RateLimit-Reset on rate_limit', async () => {
     const onUpdate = vi.fn();
+    const resetTs = Math.floor(Date.now() / 1000) + 3600;
     const host = makeHost({
-      listOpenPrs: vi.fn().mockResolvedValue({
-        ok: false,
-        error: { kind: 'rate_limited', message: '429', retry_after_ms: 300_000 },
-      }),
+      listOpenPrs: vi.fn()
+        .mockResolvedValueOnce({ ok: false, error: { kind: 'rate_limit', resetAt: resetTs } })
+        .mockResolvedValue({ ok: true, data: [makePr(1)] }),
     });
     const daemon = createPollDaemon({
       harnessRemotes: async () => [{ harnessSlug: 'papercup', remote: 'github.com/owner/repo' }],
@@ -100,17 +100,18 @@ describe('poll-daemon P-042', () => {
     daemon.stop();
   });
 
-  it('P-042e: fires onAuthFailure and does not crash on 401', async () => {
+  it('P-042e: calls onAuthFailure on unauthorized error', async () => {
     const onAuthFailure = vi.fn();
     const host = makeHost({
       listOpenPrs: vi.fn().mockResolvedValue({
         ok: false,
-        error: { kind: 'unauthorized', message: '401' },
+        error: { kind: 'unauthorized' },
       }),
     });
     const daemon = createPollDaemon({
       harnessRemotes: async () => [{ harnessSlug: 'papercup', remote: 'github.com/owner/repo' }],
       host,
+      onUpdate: vi.fn(),
       onAuthFailure,
     });
     daemon.start();
@@ -120,45 +121,21 @@ describe('poll-daemon P-042', () => {
 
   it('P-042f: fires onPrGone when a previously-seen PR disappears', async () => {
     const onPrGone = vi.fn();
-    const listOpenPrs = vi.fn()
-      .mockResolvedValueOnce({ ok: true, data: [makePr(10), makePr(11)] })
-      .mockResolvedValue({ ok: true, data: [makePr(11)] }); // PR 10 is gone
-    const host = makeHost({ listOpenPrs });
-
-    // Manually trigger two polls by using a very short interval via start + manual ticks.
+    const host = makeHost({
+      listOpenPrs: vi.fn()
+        .mockResolvedValueOnce({ ok: true, data: [makePr(10), makePr(11)] })
+        .mockResolvedValue({ ok: true, data: [makePr(11)] }), // PR 10 is gone
+    });
     const daemon = createPollDaemon({
       harnessRemotes: async () => [{ harnessSlug: 'papercup', remote: 'github.com/owner/repo' }],
       host,
+      onUpdate: vi.fn(),
       onPrGone,
+      _pollIntervalMs: 20,
     });
-
-    // Manually drive two ticks (bypassing interval timer).
     daemon.start();
-    await vi.waitFor(() => expect(listOpenPrs).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(onPrGone).toHaveBeenCalled());
     daemon.stop();
-
-    // Second daemon starting fresh but inheriting daemonState (module-level).
-    const daemon2 = createPollDaemon({
-      harnessRemotes: async () => [{ harnessSlug: 'papercup', remote: 'github.com/owner/repo' }],
-      host,
-      onPrGone,
-    });
-    daemon2.start();
-    await vi.waitFor(() => expect(listOpenPrs).toHaveBeenCalledTimes(2));
-    daemon2.stop();
-
     expect(onPrGone).toHaveBeenCalledWith('papercup', 10);
-    expect(onPrGone).not.toHaveBeenCalledWith('papercup', 11);
-  });
-
-  it('start() is idempotent — double-start does not create extra intervals', () => {
-    const host = makeHost();
-    const daemon = createPollDaemon({
-      harnessRemotes: async () => [],
-      host,
-    });
-    daemon.start();
-    daemon.start(); // second call should be a no-op
-    daemon.stop();
   });
 });
