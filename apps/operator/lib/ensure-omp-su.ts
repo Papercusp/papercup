@@ -182,11 +182,17 @@ async function ensurePapercuspBootstrap(): Promise<void> {
 }
 
 
-let inFlight: Promise<void> | null = null;
+// Cache the completion of the heavy bootstrap for the process
+// lifetime. The original implementation reset `inFlight = null` in a
+// `finally` block, defeating the single-flight pattern: every console
+// launch re-ran ~5s of work (4× synchronous `omp config set` shellouts
+// + file copies). Bootstrap is idempotent at server-startup scope, so
+// caching the resolved promise is the right shape.
+let completed: Promise<void> | null = null;
 
 export async function ensureOmpSuInstalled(): Promise<void> {
-  if (inFlight) return inFlight;
-  inFlight = (async () => {
+  if (completed) return completed;
+  completed = (async () => {
     // Only meaningful on Linux right now — omp-su wrapper is bash; the
     // server-side spawn path in console-launch.ts is Linux-only too.
     if (process.platform !== 'linux') return;
@@ -229,13 +235,13 @@ export async function ensureOmpSuInstalled(): Promise<void> {
     if (ensureWrapperScript(wrapperPath)) {
       dlog(`installed omp-su wrapper → ${wrapperPath}`);
       if (!isOnPath('omp-su')) {
-        dlog(`note: ${wrapperDir} is not on PATH; add it or invoke ${wrapperPath} by full path`);
+        dlog(`note: ${dirname(wrapperPath)} is not on PATH; add it or invoke ${wrapperPath} by full path`);
       }
     }
   })();
-  try {
-    await inFlight;
-  } finally {
-    inFlight = null;
-  }
+  // Don't release the cache on rejection either — a transient failure
+  // shouldn't cause the next launch to re-spend 5s repeating the same
+  // failing work; we'd rather fail-fast and let the operator
+  // restart-fix it.
+  return completed;
 }

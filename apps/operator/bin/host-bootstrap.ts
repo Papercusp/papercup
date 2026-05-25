@@ -34,6 +34,19 @@ export function runBootstrap(): void {
   if (g[GUARD_KEY]) return;
   g[GUARD_KEY] = true;
 
+  // Prewarm the OMP-SU bootstrap (file copies + `omp config set` shell-
+  // outs). Runs once per process, fire-and-forget. Without this the
+  // first /adv launch pays 5+ seconds of bootstrap synchronously on
+  // the response path; with it, the work happens during startup and
+  // the first user click is fast like every subsequent click.
+  import('../lib/ensure-omp-su')
+    .then(({ ensureOmpSuInstalled }) =>
+      ensureOmpSuInstalled().catch((e) =>
+        console.warn('[ensure-omp-su] prewarm failed (non-fatal):', e),
+      ),
+    )
+    .catch((e) => console.warn('[ensure-omp-su] import failed (non-fatal):', e));
+
   // Plugin apiRoutes — populate the in-memory registry from disk. The
   // `/plugins/*` defineTool catch-all (routes/plugins/catchall.ts)
   // consults this registry per request via `dispatchPluginApiRoute`,

@@ -247,19 +247,40 @@ export default function AdvSessionsClient() {
     fetchRows();
   }, [fetchRows, refreshTick]);
 
+  // Auto-refresh while there are active terminals. The exit watcher
+  // on the server marks rows as ended in PG when a terminal closes,
+  // but the client doesn't learn about it without a fetch — without
+  // this poll a user could close a window and see the row stay
+  // "active" with a Focus button that doesn't work. 3s feels alive
+  // without hammering. Stops polling when no active rows are visible.
+  useEffect(() => {
+    if (!rows) return;
+    const hasActive = rows.some((r) => r.endedAt == null);
+    if (!hasActive) return;
+    const id = window.setInterval(() => fetchRows(), 3000);
+    return () => window.clearInterval(id);
+  }, [rows, fetchRows]);
+
   // Lazy-load token/cost/model summary for each OMP row so the main
   // card surfaces spend without the user having to click into the
   // detail panel. Cached per id; refreshTick busts the cache.
+  //
+  // Only fetches summaries for rows we don't yet have. The 3s
+  // auto-refresh polls /api/adv/sessions (cheap) but doesn't re-hit
+  // /state for every OMP row — that path reads JSONL files off disk
+  // and shouldn't run on every poll. Explicit refresh (refreshTick
+  // bump from the Refresh button or a fresh launch) re-fetches all.
   useEffect(() => {
     if (!rows) return;
     const ompRows = rows.filter((r) => r.mode === 'omp');
     if (ompRows.length === 0) return;
+    const missing = ompRows.filter((r) => !summaryByRowId[r.id]?.loaded);
+    if (missing.length === 0) return;
     let cancelled = false;
     (async () => {
       const updates: Record<number, RowSummary> = {};
-      // Batch fan-out — each /state call hits the FS; small N so just await all.
       await Promise.all(
-        ompRows.map(async (row) => {
+        missing.map(async (row) => {
           try {
             const r = await fetch(`/api/adv/sessions/state?id=${row.id}`, {
               headers: { accept: 'application/json' },
@@ -279,10 +300,19 @@ export default function AdvSessionsClient() {
           } catch { /* swallow */ }
         }),
       );
-      if (!cancelled) setSummaryByRowId((prev) => ({ ...prev, ...updates }));
+      if (!cancelled && Object.keys(updates).length > 0) {
+        setSummaryByRowId((prev) => ({ ...prev, ...updates }));
+      }
     })();
     return () => { cancelled = true; };
-  }, [rows, refreshTick]);
+  }, [rows, summaryByRowId]);
+
+  // Explicit refresh wipes the summary cache so the next render
+  // re-fetches every OMP row's usage. Bumping refreshTick is the
+  // Refresh button's signal.
+  useEffect(() => {
+    if (refreshTick > 0) setSummaryByRowId({});
+  }, [refreshTick]);
 
   // Re-check pid liveness when the row list changes. For rows the DB
   // says are still active, ask the operator whether the pid is alive —
@@ -666,7 +696,7 @@ export default function AdvSessionsClient() {
                                       : 'No OMP session id tracked yet — open via "Inspect state" first.'
                                   }
                                 >
-                                  Resume by ID
+                                  Resume
                                 </button>
                               );
                             })()}

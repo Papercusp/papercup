@@ -7,7 +7,7 @@
  * Ported from app/api/agent-mcp/console/launch/route.ts. `auth: 'public'` —
  * requirePrincipal() inline.
  */
-import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
+import { spawn, type ChildProcess } from 'node:child_process';
 import { homedir } from 'node:os';
 import { appendFileSync, existsSync, writeFileSync, renameSync } from 'node:fs';
 import { join } from 'node:path';
@@ -91,38 +91,29 @@ function isOnPath(bin: string): boolean {
   return paths.some((p) => existsSync(join(p, bin)));
 }
 
+// Cache the terminal selection — it's the same on every call
+// (terminal binaries don't appear/disappear at runtime), and the
+// existsSync sweep across LINUX_TERMINALS was adding noticeable
+// latency to every console launch.
+let cachedTerminal: { bin: string; args: string[] } | null | undefined;
 function findLinuxTerminal(): { bin: string; args: string[] } | null {
+  if (cachedTerminal !== undefined) return cachedTerminal;
   const fromEnv = process.env.TERMINAL;
   if (fromEnv && isOnPath(fromEnv)) {
-    if (fromEnv === 'gnome-terminal') return { bin: fromEnv, args: ['--wait', '--'] };
-    return { bin: fromEnv, args: ['-e'] };
+    cachedTerminal =
+      fromEnv === 'gnome-terminal'
+        ? { bin: fromEnv, args: ['--wait', '--'] }
+        : { bin: fromEnv, args: ['-e'] };
+    return cachedTerminal;
   }
   for (const [bin, args] of LINUX_TERMINALS) {
-    if (isOnPath(bin)) return { bin, args: [...args] };
+    if (isOnPath(bin)) {
+      cachedTerminal = { bin, args: [...args] };
+      return cachedTerminal;
+    }
   }
-  return null;
-}
-
-function listWmctrlWindowIds(): string[] {
-  try {
-    const r = spawnSync('wmctrl', ['-lp'], { encoding: 'utf8' });
-    if (r.status !== 0) return [];
-    return r.stdout
-      .split('\n')
-      .map((line) => line.trim().split(/\s+/, 2)[0])
-      .filter((id) => id && /^0x[0-9a-f]+$/i.test(id));
-  } catch {
-    return [];
-  }
-}
-
-async function resolveNewWindowId(before: ReadonlySet<string>): Promise<string | null> {
-  for (let attempt = 0; attempt < 20; attempt += 1) {
-    const next = listWmctrlWindowIds().find((id) => !before.has(id));
-    if (next) return next;
-    await new Promise((resolve) => setTimeout(resolve, 250));
-  }
-  return null;
+  cachedTerminal = null;
+  return cachedTerminal;
 }
 
 function shellEscape(s: string): string {
@@ -452,7 +443,6 @@ const post = defineTool({
           500,
         );
       }
-      const beforeWindowIds = new Set(listWmctrlWindowIds());
       const advSessionId = await recordAdvSession({
         planSlug: body.planSlug ?? null,
         mode: 'omp',
@@ -480,10 +470,13 @@ const post = defineTool({
         });
         if (advSessionId != null) {
           void setAdvSessionPid(advSessionId, child.pid ?? null);
+          // Title-fragment lookup uses our unique [adv:N] tag, so it's
+          // race-free against concurrent terminal opens/closes. The
+          // previous "diff before/after wmctrl listing" approach was
+          // a parallel writer with no synchronization — a window that
+          // appeared OR disappeared during the poll could win the
+          // write and stomp a correct id.
           void resolveAndStoreWindowIdForAdvSession(advSessionId);
-          void resolveNewWindowId(beforeWindowIds).then((wid) => {
-            if (wid) return setAdvSessionWindowId(advSessionId, wid);
-          });
         }
         attachExitWatcher(child, Promise.resolve(advSessionId));
         child.unref();
