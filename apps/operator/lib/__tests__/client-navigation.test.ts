@@ -28,6 +28,7 @@ describe('client navigation', () => {
   it('soft-navigates same-origin support and settings routes used by static desktop chrome', () => {
     expect(shouldSoftNavigate('/support', 'http://localhost:3070/harness?ws=default')).toBe(true);
     expect(shouldSoftNavigate('/settings/operator', 'http://localhost:3070/harness?ws=default')).toBe(true);
+    expect(shouldSoftNavigate('//localhost:3070/support?ws=default', 'http://localhost:3070/harness?ws=default')).toBe(true);
   });
 
   it('fails closed on unsafe schemes', () => {
@@ -53,6 +54,11 @@ describe('client navigation', () => {
     expect(resolveClientNavigation('/harness/', 'http://localhost:3070/harness?ws=default')).toEqual({
       mode: 'soft',
       href: '/harness/',
+      replace: false,
+    });
+    expect(resolveClientNavigation('//localhost:3070/support?ws=default', 'http://localhost:3070/harness?ws=default')).toEqual({
+      mode: 'soft',
+      href: '/support?ws=default',
       replace: false,
     });
   });
