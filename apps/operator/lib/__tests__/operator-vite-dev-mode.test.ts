@@ -26,9 +26,14 @@ describe('operator-vite desktop no-HMR mode', () => {
     const pkg = JSON.parse(readFileSync(resolve(root, 'package.json'), 'utf8')) as {
       scripts?: Record<string, string>;
     };
+    const desktopPkg = JSON.parse(readFileSync(resolve(root, '../papercusp-desktop/package.json'), 'utf8')) as {
+      scripts?: Record<string, string>;
+    };
 
     expect(pkg.scripts?.['dev:operator']).toBe('npm --workspace @papercusp/operator-vite run dev:nohmr');
     expect(pkg.scripts?.['dev:operator:hmr']).toBe('npm --workspace @papercusp/operator-vite run dev');
     expect(pkg.scripts?.['dev:operator:nohmr']).toBe('npm --workspace @papercusp/operator-vite run dev:nohmr');
+    expect(desktopPkg.scripts?.dev).toBe('bin/desktop-dev-nohmr');
+    expect(desktopPkg.scripts?.['dev:hmr']).toBe('tauri dev');
   });
 });
