@@ -187,39 +187,50 @@ describe('phase-0 stubs', () => {
 // ─── Step 6: create_user_branch ──────────────────────────────────────────────
 
 describe('step6_createUserBranch', () => {
-  it('creates branch when it does not exist', async () => {
+  it('creates branch + worktree when neither exists', async () => {
     const calls: string[][] = [];
     const execFileFn = vi.fn().mockImplementation((_f: string, args: string[]) => {
       calls.push(args);
-      // rev-parse fails (branch not found), track fails, create succeeds
-      if (args[0] === 'rev-parse') throw new Error('unknown revision');
-      if (args[0] === 'checkout' && args[1] === '--track') throw new Error('no such remote ref');
+      // show-ref --verify fails (branch not found), worktree add succeeds
+      if (args.includes('show-ref')) {
+        const err = new Error('not found') as Error & { code?: number; stderr?: string };
+        err.code = 1;
+        err.stderr = 'fatal: bad reference';
+        throw err;
+      }
       return Promise.resolve({ stdout: '', stderr: '' });
     });
 
-    await step6_createUserBranch({
+    const r = await step6_createUserBranch({
       cloneDir: '/fake',
       githubUserId: 42,
       execFileFn,
+      pathExistsFn: () => false,
     });
 
     const branch = contributorBranchRef(42);
-    const createArgs = calls.find((a) => a[0] === 'checkout' && a.includes('-b'));
-    expect(createArgs).toContain(branch);
+    expect(r.branchRef).toBe(branch);
+    expect(r.worktreeAbsPath).toBe('/fake/.papercusp/user-trees/42');
+    // worktree add -b user/42 <path> origin/main
+    const addArgs = calls.find((a) => a.includes('worktree') && a.includes('-b'));
+    expect(addArgs).toContain(branch);
+    expect(addArgs).toContain('/fake/.papercusp/user-trees/42');
   });
 
-  it('is idempotent when branch already exists', async () => {
-    const execFileFn = vi.fn().mockResolvedValue({ stdout: 'deadbeef', stderr: '' });
+  it('is a no-op when branch + worktree both already exist', async () => {
+    const execFileFn = vi.fn().mockResolvedValue({ stdout: '', stderr: '' });
 
-    await step6_createUserBranch({
+    const r = await step6_createUserBranch({
       cloneDir: '/fake',
       githubUserId: 42,
       execFileFn,
+      pathExistsFn: () => true,
     });
 
-    // Only rev-parse was called — no checkout -b.
+    // Only show-ref ran — no worktree add.
     expect(execFileFn).toHaveBeenCalledTimes(1);
-    expect(execFileFn.mock.calls[0][1][0]).toBe('rev-parse');
+    expect(execFileFn.mock.calls[0][1]).toContain('show-ref');
+    expect(r.branchRef).toBe(contributorBranchRef(42));
   });
 });
 
@@ -249,7 +260,7 @@ describe('step7_pushContributorFile', () => {
     const mkdirFn = vi.fn().mockResolvedValue(undefined);
 
     const result = await step7_pushContributorFile({
-      cloneDir: '/fake',
+      worktreeDir: '/fake/.papercusp/user-trees/1001',
       githubUserId: 1001,
       githubLogin: 'alice',
       devicePubkeyBase64: DEVICE_PUBKEY_B64,

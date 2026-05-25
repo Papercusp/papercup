@@ -43,6 +43,12 @@ import {
   contributorFilePath,
   contributorBranchRef,
 } from '../identity/contributor-file-types';
+import {
+  ensureUserBranchAndWorktree,
+  type RunGit,
+} from './ensure-user-branch';
+import { userTreeAbsPath } from './user-tree-types';
+import { rmSync } from 'node:fs';
 import { keychainLoad } from '../identity/keychain';
 import { loadOrGenerateDeviceKeypair } from '../identity/attest';
 import type { DeviceKeypairId } from '../identity/attestation-types';
@@ -99,6 +105,8 @@ export interface JoinState {
   completedAt?: number;
   /** Absolute path of the cloned repo dir (set after step 2). */
   cloneDir?: string;
+  /** Absolute path of the user's worktree dir (set after step 6). v5 §0.4. */
+  userWorktreeDir?: string;
   /** Base64 raw-bytes device public key (set after step 1). */
   pubkeyBase64?: string;
   /** Attestation gist id (set after step 1). */
@@ -276,6 +284,40 @@ export async function step5_seedPg(_opts: {
 }
 
 // ─── step 6: create_user_branch ──────────────────────────────────────────────
+//
+// Provisions the `user/<github_user_id>` branch AND its dedicated worktree
+// at `<cloneDir>/.papercusp/user-trees/<github_user_id>/` per v5 §0.4.
+// The main cloneDir's HEAD stays on `main`; the user's writes land in the
+// separate worktree dir. Idempotent.
+
+export interface Step6Result {
+  branchRef: string;
+  worktreeAbsPath: string;
+}
+
+function execFileToRunGit(
+  execFileFn: (
+    file: string,
+    args: string[],
+    opts?: { cwd?: string; timeout?: number },
+  ) => Promise<{ stdout: string; stderr: string }>,
+): RunGit {
+  return async (args) => {
+    try {
+      const r = await execFileFn('git', args);
+      return { stdout: r.stdout ?? '', stderr: r.stderr ?? '', exitCode: 0 };
+    } catch (e: unknown) {
+      // child_process.execFile rejects on non-zero exit with a NodeError that
+      // carries .code (numeric exit), .stderr, .stdout. Normalize to RunGit.
+      const err = e as { code?: number; stderr?: string; stdout?: string; message?: string };
+      return {
+        stdout: err.stdout ?? '',
+        stderr: err.stderr ?? err.message ?? '',
+        exitCode: typeof err.code === 'number' ? err.code : 1,
+      };
+    }
+  };
+}
 
 export async function step6_createUserBranch(opts: {
   cloneDir: string;
@@ -285,30 +327,20 @@ export async function step6_createUserBranch(opts: {
     args: string[],
     opts?: { cwd?: string; timeout?: number },
   ) => Promise<{ stdout: string; stderr: string }>;
-}): Promise<void> {
+  pathExistsFn?: (path: string) => boolean;
+  rmDirSyncFn?: (path: string) => void;
+}): Promise<Step6Result> {
   const exF = opts.execFileFn ?? defaultExecFile;
-  const branch = contributorBranchRef(opts.githubUserId);
-  const cwd = opts.cloneDir;
-
-  // Check if branch already exists locally.
+  const runGit = execFileToRunGit(exF);
   try {
-    await exF('git', ['rev-parse', '--verify', branch], { cwd });
-    // Branch exists — nothing to do.
-    return;
-  } catch {
-    // Doesn't exist locally — create it.
-  }
-
-  // Try to track from remote first (in case a prior attempt pushed).
-  try {
-    await exF('git', ['checkout', '--track', `origin/${branch}`], { cwd });
-    return;
-  } catch {
-    // Remote branch doesn't exist either — create fresh.
-  }
-
-  try {
-    await exF('git', ['checkout', '-b', branch], { cwd });
+    const r = await ensureUserBranchAndWorktree({
+      harnessRoot: opts.cloneDir,
+      githubUserId: opts.githubUserId,
+      runGit,
+      pathExists: opts.pathExistsFn ?? existsSync,
+      rmDirSync: opts.rmDirSyncFn ?? ((p) => rmSync(p, { recursive: true, force: true })),
+    });
+    return { branchRef: r.branchRef, worktreeAbsPath: r.worktreeAbsPath };
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : String(e);
     throw new JoinStepError('create_user_branch', 'branch_failed', msg.slice(0, 300));
@@ -322,7 +354,12 @@ export interface Step7Result {
 }
 
 export async function step7_pushContributorFile(opts: {
-  cloneDir: string;
+  /**
+   * The user's worktree dir (per v5 §0.4 the `user/<id>` branch lives in
+   * a worktree at `<cloneDir>/.papercusp/user-trees/<id>/`). All writes
+   * + commits + push happen here, NOT in the main cloneDir.
+   */
+  worktreeDir: string;
   githubUserId: number;
   githubLogin: string;
   devicePubkeyBase64: string;
@@ -339,7 +376,7 @@ export async function step7_pushContributorFile(opts: {
   const exF = opts.execFileFn ?? defaultExecFile;
   const wF = opts.writeFileFn ?? ((p, c) => writeFile(p, c, 'utf8'));
   const mkF = opts.mkdirFn ?? ((p, o) => mkdir(p, o ?? {}));
-  const cwd = opts.cloneDir;
+  const cwd = opts.worktreeDir;
 
   // Build the file body (unsigned).
   const unsignedBody = {
@@ -571,11 +608,12 @@ export async function joinSharedHarness(opts: JoinOptions): Promise<JoinState> {
   if (state.steps.create_user_branch.status !== 'done') {
     markRunning('create_user_branch');
     try {
-      await step6_createUserBranch({
+      const s6 = await step6_createUserBranch({
         cloneDir,
         githubUserId: opts.githubUserId,
         execFileFn: opts.execFileFn,
       });
+      state.userWorktreeDir = s6.worktreeAbsPath;
       markDone('create_user_branch');
     } catch (e: unknown) {
       const err = e instanceof JoinStepError ? e : null;
@@ -585,6 +623,15 @@ export async function joinSharedHarness(opts: JoinOptions): Promise<JoinState> {
     }
     await saveAndEmit();
   }
+  // After step 6 (whether just run or already done) ensure we have the
+  // resolved worktree path on state for downstream steps.
+  if (!state.userWorktreeDir) {
+    state.userWorktreeDir = userTreeAbsPath({
+      harnessRoot: cloneDir,
+      githubUserId: opts.githubUserId,
+    });
+  }
+  const worktreeDir = state.userWorktreeDir;
 
   // ── Step 7: push_contributor_file ──
   if (state.steps.push_contributor_file.status !== 'done') {
@@ -592,7 +639,7 @@ export async function joinSharedHarness(opts: JoinOptions): Promise<JoinState> {
     const gistId = state.attestationGistId ?? opts.existingGistId ?? '';
     try {
       const r = await step7_pushContributorFile({
-        cloneDir,
+        worktreeDir,
         githubUserId: opts.githubUserId,
         githubLogin: opts.githubLogin,
         devicePubkeyBase64: state.pubkeyBase64!,
