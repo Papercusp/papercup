@@ -18368,3 +18368,470 @@ body > .h-top-collapse-btn.h-top-collapse-inline .h-top-collapse-state {
     grid-template-columns: 1fr !important;
   }
 }
+
+/* Standard harness chrome pass: reduce HUD gloss/neon and make controls feel
+   closer to the flatter sessions-page buttons.  Animations/transitions remain
+   in place; these overrides only change surface treatment. */
+.h-root.h-root--maximal-hud {
+  background:
+    linear-gradient(180deg, color-mix(in oklab, var(--bg), white 1.5%), var(--bg)) !important;
+}
+
+.h-root.h-root--maximal-hud .h-hud-overlay {
+  opacity: 0.34 !important;
+}
+
+.h-root.h-root--maximal-hud .h-hud-overlay__grid,
+.h-root.h-root--maximal-hud .h-hud-overlay__wash {
+  opacity: 0.16 !important;
+}
+
+.h-root.h-root--maximal-hud .h-hud-overlay__scanline {
+  opacity: 0.10 !important;
+}
+
+.h-root.h-root--maximal-hud .h-hud-dial,
+.h-root.h-root--maximal-hud .h-hud-node {
+  opacity: 0.28 !important;
+  filter: saturate(0.55) contrast(0.95) !important;
+}
+
+.h-root.h-root--maximal-hud .hud-frame-corners__corner {
+  opacity: 0.42 !important;
+}
+
+.h-header,
+.h-project-card,
+.h-quick-action-row,
+.h-active-agents-row,
+.h-plan-review-banner,
+.h-panel,
+.h-compact-panel,
+.h-feature-toolbar,
+.h-inbox-command {
+  border-color: color-mix(in oklab, var(--border), white 6%) !important;
+  background:
+    linear-gradient(180deg, color-mix(in oklab, var(--bg-2), white 2%), color-mix(in oklab, var(--bg-2), transparent 4%)) !important;
+  box-shadow: none !important;
+}
+
+.h-header {
+  border-bottom: 1px solid color-mix(in oklab, var(--border), white 6%) !important;
+}
+
+.h-project-card,
+.h-stat,
+.h-project,
+.h-status-chip,
+.h-project-count,
+.h-phase-item,
+.h-running-lane,
+.h-plan-review-banner code {
+  box-shadow: none !important;
+}
+
+.h-stat,
+.h-project,
+.h-project-phases .h-phase-item,
+.h-status-chip,
+.h-project-count,
+.h-running-lane {
+  border-color: color-mix(in oklab, var(--border), white 6%) !important;
+  background: color-mix(in oklab, var(--bg-2), white 2%) !important;
+  color: color-mix(in oklab, var(--fg-dim), white 9%) !important;
+}
+
+.h-project,
+.h-stat {
+  border-radius: 9px !important;
+}
+
+.h-status-chip.idle,
+.h-project-count.todo,
+.h-project-count.blocked,
+.h-project-count.passed {
+  color: var(--fg-dim) !important;
+}
+
+.h-stat-value,
+.h-project-count strong,
+.h-project-progress {
+  color: color-mix(in oklab, var(--fg), white 4%) !important;
+}
+
+.h-stat-value.warn,
+.h-btn.danger {
+  color: color-mix(in oklab, var(--warn), white 10%) !important;
+}
+
+.h-btn,
+.h-key-btn,
+.h-feature-row-action,
+.h-issue-row-action,
+.h-feature-add,
+.h-inbox-action,
+.h-phase-actions-btn,
+.h-active-agents-idle,
+.h-active-agents-start,
+.h-plan-review-banner button,
+.h-top-collapse-btn.h-top-collapse-inline,
+.h-top-collapse-btn.h-top-collapse-floating,
+.h-quick-action-btn {
+  border: 1px solid color-mix(in oklab, var(--border), white 7%) !important;
+  background: color-mix(in oklab, var(--bg-2), white 2%) !important;
+  color: color-mix(in oklab, var(--fg-dim), white 10%) !important;
+  box-shadow: none !important;
+  text-shadow: none !important;
+}
+
+.h-btn:hover,
+.h-key-btn:hover,
+.h-feature-row-action:hover,
+.h-issue-row-action:hover,
+.h-feature-add:hover,
+.h-inbox-action:hover,
+.h-phase-actions-btn:hover,
+.h-active-agents-idle:hover,
+.h-active-agents-start:hover,
+.h-plan-review-banner button:hover,
+.h-top-collapse-btn:hover,
+.h-quick-action-btn:hover {
+  border-color: color-mix(in oklab, var(--border-strong), white 8%) !important;
+  background: var(--bg-3) !important;
+  color: var(--fg) !important;
+  box-shadow: none !important;
+}
+
+.h-btn.danger,
+.h-active-agents-start,
+.h-plan-review-banner button {
+  border-color: color-mix(in oklab, var(--border), var(--warn) 18%) !important;
+  background: color-mix(in oklab, var(--bg-2), var(--warn) 4%) !important;
+}
+
+.h-btn.danger:hover,
+.h-active-agents-start:hover,
+.h-plan-review-banner button:hover {
+  border-color: color-mix(in oklab, var(--warn), transparent 48%) !important;
+  background: color-mix(in oklab, var(--bg-3), var(--warn) 8%) !important;
+  color: color-mix(in oklab, var(--warn), white 14%) !important;
+}
+
+.h-top-collapse-btn::before,
+.h-top-collapse-btn::after {
+  display: none !important;
+}
+
+.h-top-collapse-icon,
+.h-quick-action-btn svg {
+  border: 0 !important;
+  background: transparent !important;
+  color: currentColor !important;
+  box-shadow: none !important;
+}
+
+.h-quick-action-row {
+  background: color-mix(in oklab, var(--bg-2), white 2%) !important;
+}
+
+.h-quick-action-btn {
+  min-height: 32px !important;
+  border-radius: 9px !important;
+}
+
+.h-quick-action-btn span {
+  color: color-mix(in oklab, var(--fg), white 4%) !important;
+}
+
+.h-quick-action-btn em {
+  color: var(--fg-mute) !important;
+}
+
+.h-tabs.h-main-tabs {
+  background: color-mix(in oklab, var(--bg-2), black 1%) !important;
+  box-shadow: none !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+  mask-image: none !important;
+  border-top: 1px solid color-mix(in oklab, var(--border), transparent 40%) !important;
+  border-bottom: 1px solid color-mix(in oklab, var(--border), white 6%) !important;
+}
+
+.h-main-tabs .h-tab,
+.h-main-tabs .h-tab[class*="h-tab--"] {
+  border: 1px solid color-mix(in oklab, var(--border), white 6%) !important;
+  border-radius: 9px !important;
+  background: color-mix(in oklab, var(--bg-2), white 2%) !important;
+  color: color-mix(in oklab, var(--fg-dim), white 7%) !important;
+  box-shadow: none !important;
+}
+
+.h-main-tabs .h-tab:hover,
+.h-main-tabs .h-tab[class*="h-tab--"]:hover {
+  border-color: var(--border-strong) !important;
+  background: var(--bg-3) !important;
+  color: var(--fg) !important;
+  box-shadow: none !important;
+}
+
+.h-main-tabs .h-tab.on,
+.h-main-tabs .h-tab[aria-selected="true"],
+.h-main-tabs .h-tab[class*="h-tab--"].on,
+.h-main-tabs .h-tab[class*="h-tab--"][aria-selected="true"] {
+  border-color: color-mix(in oklab, var(--accent), transparent 48%) !important;
+  background: color-mix(in oklab, var(--accent), var(--bg-2) 82%) !important;
+  color: color-mix(in oklab, var(--fg), white 8%) !important;
+  box-shadow: none !important;
+}
+
+.h-main-tabs .h-tab.on::after,
+.h-main-tabs .h-tab[aria-selected="true"]::after {
+  background: var(--accent) !important;
+  box-shadow: none !important;
+  left: 10px !important;
+  right: 10px !important;
+  bottom: 3px !important;
+}
+
+.h-tab-count {
+  border: 1px solid color-mix(in oklab, var(--border), white 6%) !important;
+  background: color-mix(in oklab, var(--bg-3), transparent 18%) !important;
+  color: var(--fg-dim) !important;
+}
+
+.h-main-tabs .h-tab[aria-selected="true"] .h-tab-count,
+.h-main-tabs .h-tab.on .h-tab-count {
+  border-color: color-mix(in oklab, var(--accent), transparent 52%) !important;
+  background: color-mix(in oklab, var(--accent), transparent 82%) !important;
+  color: color-mix(in oklab, var(--accent), white 10%) !important;
+}
+
+.h-active-agents-row {
+  background: color-mix(in oklab, var(--bg-2), white 1.5%) !important;
+}
+
+.h-active-agents-row.is-stopped {
+  border-block: 1px solid color-mix(in oklab, var(--border), white 4%) !important;
+}
+
+.h-feature-row,
+.h-issue {
+  background: color-mix(in oklab, var(--bg-2), white 1.5%) !important;
+  box-shadow: none !important;
+}
+
+.h-feature-row:hover,
+.h-feature-row:focus-visible,
+.h-issue:hover,
+.h-issue:focus-visible {
+  box-shadow: none !important;
+  background: color-mix(in oklab, var(--bg-3), transparent 12%) !important;
+}
+
+.h-panel-head {
+  background: color-mix(in oklab, var(--bg-2), white 2%) !important;
+}
+
+.h-top-collapse-btn:focus-visible,
+.h-main-tabs .h-tab:focus-visible,
+.h-btn:focus-visible,
+.h-quick-action-btn:focus-visible {
+  outline: 2px solid color-mix(in oklab, var(--accent), transparent 34%) !important;
+  outline-offset: 2px !important;
+  box-shadow: none !important;
+}
+
+/* Specificity guard for the late maximal-HUD tab/button rules above. */
+.h-root--maximal-hud .h-tabs.h-main-tabs,
+.h-root .h-tabs.h-main-tabs {
+  background: color-mix(in oklab, var(--bg-2), black 1%) !important;
+  box-shadow: none !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+  mask-image: none !important;
+  border-top: 1px solid color-mix(in oklab, var(--border), transparent 40%) !important;
+  border-bottom: 1px solid color-mix(in oklab, var(--border), white 6%) !important;
+}
+
+.h-root--maximal-hud .h-tabs.h-main-tabs::before,
+.h-root--maximal-hud .h-tabs.h-main-tabs::after,
+.h-root--maximal-hud .h-main-tabs .h-tab::before {
+  content: none !important;
+  display: none !important;
+  animation: none !important;
+}
+
+.h-root .h-main-tabs .h-tab,
+.h-root .h-main-tabs .h-tab[class*="h-tab--"],
+.h-root--maximal-hud .h-main-tabs .h-tab,
+.h-root--maximal-hud .h-main-tabs .h-tab[class*="h-tab--"],
+.h-root .h-add-plugin-tab {
+  border: 1px solid color-mix(in oklab, var(--border), white 6%) !important;
+  border-radius: 9px !important;
+  background: color-mix(in oklab, var(--bg-2), white 2%) !important;
+  color: color-mix(in oklab, var(--fg-dim), white 7%) !important;
+  box-shadow: none !important;
+  filter: none !important;
+  text-shadow: none !important;
+}
+
+.h-root .h-main-tabs .h-tab:hover,
+.h-root .h-main-tabs .h-tab[class*="h-tab--"]:hover,
+.h-root--maximal-hud .h-main-tabs .h-tab:hover,
+.h-root--maximal-hud .h-main-tabs .h-tab[class*="h-tab--"]:hover,
+.h-root .h-add-plugin-tab:hover {
+  border-color: var(--border-strong) !important;
+  background: var(--bg-3) !important;
+  color: var(--fg) !important;
+  box-shadow: none !important;
+  filter: none !important;
+  text-shadow: none !important;
+}
+
+.h-root .h-main-tabs .h-tab.on,
+.h-root .h-main-tabs .h-tab[aria-selected="true"],
+.h-root .h-main-tabs .h-tab[class*="h-tab--"].on,
+.h-root .h-main-tabs .h-tab[class*="h-tab--"][aria-selected="true"],
+.h-root--maximal-hud .h-main-tabs .h-tab.on,
+.h-root--maximal-hud .h-main-tabs .h-tab[aria-selected="true"],
+.h-root--maximal-hud .h-main-tabs .h-tab[class*="h-tab--"].on,
+.h-root--maximal-hud .h-main-tabs .h-tab[class*="h-tab--"][aria-selected="true"] {
+  border-color: color-mix(in oklab, var(--accent), transparent 48%) !important;
+  background: color-mix(in oklab, var(--accent), var(--bg-2) 82%) !important;
+  color: color-mix(in oklab, var(--fg), white 8%) !important;
+  box-shadow: none !important;
+  filter: none !important;
+  text-shadow: none !important;
+}
+
+.h-root .h-main-tabs .h-tab.on::after,
+.h-root .h-main-tabs .h-tab[aria-selected="true"]::after,
+.h-root--maximal-hud .h-main-tabs .h-tab.on::after,
+.h-root--maximal-hud .h-main-tabs .h-tab[aria-selected="true"]::after {
+  background: var(--accent) !important;
+  box-shadow: none !important;
+  filter: none !important;
+  left: 10px !important;
+  right: 10px !important;
+  bottom: 3px !important;
+}
+
+.h-root .h-header-side .h-btn,
+.h-root .h-phase-plan-row .h-btn,
+.h-root .h-top-collapse-btn,
+.h-root .h-chip,
+.h-root .h-feature-filter,
+.h-root .h-feature-project-filter,
+.h-root .h-feature-tag-filter,
+.h-root .h-feature-mode-btn,
+.h-root .h-feature-add,
+.h-root .h-inbox-action,
+.h-root .h-feature-row-action,
+.h-root .h-issue-row-action,
+.h-root .h-phase-actions-btn,
+.h-root .h-active-agents-idle,
+.h-root .h-active-agents-start,
+.h-root .h-plan-review-banner button,
+.h-root .h-quick-action-btn {
+  border: 1px solid color-mix(in oklab, var(--border), white 7%) !important;
+  background: color-mix(in oklab, var(--bg-2), white 2%) !important;
+  color: color-mix(in oklab, var(--fg-dim), white 10%) !important;
+  box-shadow: none !important;
+  filter: none !important;
+  text-shadow: none !important;
+}
+
+.h-root .h-header-side .h-btn:hover,
+.h-root .h-phase-plan-row .h-btn:hover,
+.h-root .h-top-collapse-btn:hover,
+.h-root .h-chip:hover,
+.h-root .h-feature-filter:hover,
+.h-root .h-feature-project-filter:hover,
+.h-root .h-feature-tag-filter:hover,
+.h-root .h-feature-mode-btn:hover,
+.h-root .h-feature-add:hover,
+.h-root .h-inbox-action:hover,
+.h-root .h-feature-row-action:hover,
+.h-root .h-issue-row-action:hover,
+.h-root .h-phase-actions-btn:hover,
+.h-root .h-active-agents-idle:hover,
+.h-root .h-active-agents-start:hover,
+.h-root .h-plan-review-banner button:hover,
+.h-root .h-quick-action-btn:hover {
+  border-color: var(--border-strong) !important;
+  background: var(--bg-3) !important;
+  color: var(--fg) !important;
+  box-shadow: none !important;
+  filter: none !important;
+  text-shadow: none !important;
+}
+
+.h-root .h-header-side .h-btn.danger,
+.h-root .h-active-agents-start,
+.h-root .h-plan-review-banner button {
+  border-color: color-mix(in oklab, var(--border), var(--warn) 18%) !important;
+  background: color-mix(in oklab, var(--bg-2), var(--warn) 4%) !important;
+  color: color-mix(in oklab, var(--warn), white 8%) !important;
+}
+
+.h-root .h-active-agents-row,
+.h-root .h-active-agents-row.is-idle,
+.h-root .h-active-agents-row.is-stopped,
+.h-root .h-active-agents-row.is-running {
+  border-top: 1px solid color-mix(in oklab, var(--border), white 6%) !important;
+  border-bottom: 1px solid color-mix(in oklab, var(--border), white 6%) !important;
+  background: color-mix(in oklab, var(--bg-2), white 1.5%) !important;
+  box-shadow: none !important;
+}
+
+.h-root .h-active-agents-row .h-active-agents-copy strong,
+.h-root .h-active-agents-row .h-active-agents-copy span {
+  color: color-mix(in oklab, var(--fg-dim), white 10%) !important;
+  text-shadow: none !important;
+}
+
+.h-root .h-active-agents-row.is-running .h-active-agents-copy strong,
+.h-root .h-active-agents-row.is-stopped .h-active-agents-copy strong {
+  color: color-mix(in oklab, var(--fg), white 6%) !important;
+}
+
+.h-root .h-active-agents-row .h-active-agents-idle,
+.h-root .h-active-agents-row .h-active-agents-start {
+  border: 1px solid color-mix(in oklab, var(--border), white 7%) !important;
+  background: color-mix(in oklab, var(--bg-2), white 2%) !important;
+  color: color-mix(in oklab, var(--fg-dim), white 10%) !important;
+  box-shadow: none !important;
+}
+
+.h-root .h-active-agents-row .h-active-agents-start {
+  border-color: color-mix(in oklab, var(--border), var(--warn) 18%) !important;
+  background: color-mix(in oklab, var(--bg-2), var(--warn) 4%) !important;
+  color: color-mix(in oklab, var(--warn), white 8%) !important;
+}
+
+/* Final flattening for the main harness tab rail: override the late
+   label-accent gradient layers with simple surfaces. */
+.h-root .h-main-tabs .h-tab[role="tab"],
+.h-root--maximal-hud .h-main-tabs .h-tab[role="tab"] {
+  background: color-mix(in oklab, var(--bg-2), white 2%) !important;
+  border-color: color-mix(in oklab, var(--border), white 6%) !important;
+  box-shadow: none !important;
+}
+
+.h-root .h-main-tabs .h-tab[role="tab"]:not([disabled]):hover,
+.h-root .h-main-tabs .h-tab[role="tab"]:focus-visible,
+.h-root--maximal-hud .h-main-tabs .h-tab[role="tab"]:not([disabled]):hover,
+.h-root--maximal-hud .h-main-tabs .h-tab[role="tab"]:focus-visible {
+  background: var(--bg-3) !important;
+  border-color: var(--border-strong) !important;
+  box-shadow: none !important;
+}
+
+.h-root .h-main-tabs .h-tab[role="tab"][aria-selected="true"],
+.h-root .h-main-tabs .h-tab[role="tab"].on,
+.h-root--maximal-hud .h-main-tabs .h-tab[role="tab"][aria-selected="true"],
+.h-root--maximal-hud .h-main-tabs .h-tab[role="tab"].on {
+  background: color-mix(in oklab, var(--accent), var(--bg-2) 82%) !important;
+  border-color: color-mix(in oklab, var(--accent), transparent 48%) !important;
+  box-shadow: none !important;
+}
