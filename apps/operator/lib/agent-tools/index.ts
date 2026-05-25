@@ -132,6 +132,7 @@ import './dev/pg_health';
 import './dev/pg_active_queries';
 import './dev/pg_table_sizes';
 import './dev/build_status';
+import './dev/dogfood_substrate_status';
 import './dev/ipc_echo';
 import './dev/state_counter';
 import './dev/event_emitter';
