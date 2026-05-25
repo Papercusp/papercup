@@ -1,0 +1,51 @@
+# Cupboard server — public listing service for shared Papercusp harnesses.
+#
+# Plan: papercusp-dogfood-phase9-cupboard-discord-sync-2026-05-24 (P-051a/b).
+# v5 §10 — Cupboard server architecture.
+#
+# Mounts at cupboard.papercusp.dev. The desktop operator's Cupboard UI
+# (Phase 9 P-052, already shipped) reads from PAPERCUSP_CUPBOARD_URL env.
+#
+# Bindings (run once before first deploy):
+#   wrangler d1 create papercusp-cupboard
+#   wrangler kv:namespace create papercusp-cupboard-counters
+# Then paste the returned ids into [[d1_databases]] and [[kv_namespaces]] below.
+#
+# Secrets (install via `wrangler secret put`):
+#   GITHUB_CLIENT_ID      — for OAuth app (future: web-flow login)
+#   GITHUB_CLIENT_SECRET  — same
+#   IP_HASH_PEPPER        — 32 random bytes, base64
+#
+# Domain setup (manual user step):
+#   1. Add cupboard.papercusp.dev (or cupboard.papercuspai.com) DNS as a
+#      proxied CNAME → 100-100-100-100.cdn.cloudflare.net.
+#   2. In Cloudflare dashboard, add this Worker to the cupboard.* route.
+#   3. `wrangler deploy`.
+name = "papercusp-cupboard"
+main = "src/index.ts"
+compatibility_date = "2026-04-01"
+compatibility_flags = ["nodejs_compat"]
+
+[vars]
+ENVIRONMENT = "production"
+CUPBOARD_HOST = "cupboard.papercusp.dev"
+RATE_PER_USER_PUBLISH_HOURLY = "5"
+RATE_PER_USER_REPORT_HOURLY = "10"
+RATE_PER_IP_LIST_PER_MINUTE = "60"
+INDEXER_BATCH_SIZE = "100"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "papercusp-cupboard"
+database_id = "local-dev-stub-id"
+
+[[kv_namespaces]]
+binding = "COUNTERS"
+id = "local-dev-stub-id"
+
+[[routes]]
+pattern = "cupboard.papercusp.dev/*"
+zone_name = "papercusp.dev"
+
+[triggers]
+crons = ["0 * * * *"]                          # hourly indexer refresh per P-076

@@ -1,0 +1,104 @@
+# `apps/operator-public` — Cupboard server
+
+The public listing service for shared Papercusp harnesses.
+
+A harness owner publishes their (public) GitHub-backed shared harness here; other users browse + install. Mirrors the `papercusp-publish` Worker's deploy pattern.
+
+**Plan:** `apps/operator/docs/plans/papercusp-dogfood-phase9-cupboard-discord-sync-2026-05-24.md` (P-051a server endpoints; P-051b deploy).
+
+**Master:** `papercusp-dogfood-v5-2026-05-23.md` §10 (Cupboard server architecture) + addendum 1 (canonical binding by `github_repository_id`).
+
+## Architecture decision (2026-05-25 loop)
+
+Original plan called for "Cloudflare-fronted Next.js + managed Postgres." This loop chose a thinner shape:
+
+- **Cloudflare Workers + Hono** (not Next.js). The Cupboard server is API-only; the desktop operator already owns the listing UI (Phase 9 P-052). A Next.js app would be 80% empty.
+- **D1 (SQLite)** instead of managed Postgres. Cupboard data is moderate-scale + relational + low-cost; D1's free tier covers v1 easily. Reusing the `papercusp-publish` pattern keeps the deploy + auth + rate-limit code shapes consistent.
+- **GitHub bearer auth** (validate `Authorization: Bearer <gh_token>` against `https://api.github.com/user`). Desktop operator passes the same token produced by Phase 1b `lib/identity/gh-token.ts`.
+
+## Endpoints
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| `GET`  | `/healthz` | none | Liveness |
+| `GET`  | `/harnesses` | none | Paginated public listing. Query: `q`, `claim` (`claimed`/`unclaimed`), `limit` (1-100), `cursor` (last_activity_at) |
+| `GET`  | `/harnesses/:id` | none | Single listing detail |
+| `POST` | `/harnesses` | gh-bearer | Publish a new harness (5/hr per user; private GitHub repos rejected) |
+| `DELETE` | `/harnesses/:id` | gh-bearer | Unlist (publisher or claimant only) |
+| `POST` | `/harnesses/:id/claim` | gh-bearer | Claim by `maintain`/`admin` GitHub perm (addendum 1 / Phase 1b §5.1) |
+| `GET`  | `/binding/:github_repository_id` | none | Lookup by repo id (Entry 2 "join existing" alert) |
+| `POST` | `/reports` | gh-bearer | File abuse report (10/hr per user) |
+
+## Local dev
+
+```bash
+cd apps/operator-public
+npm install
+npm run d1:apply:local          # initialises local D1 schema
+npm run dev                     # wrangler dev --local
+```
+
+Hit `http://127.0.0.1:8787/healthz` to verify.
+
+To exercise a publish:
+```bash
+curl -X POST http://127.0.0.1:8787/harnesses \
+  -H "Authorization: Bearer $(gh auth token)" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "github_repository_id": 12345,
+    "github_owner": "owner",
+    "github_name": "repo",
+    "github_url": "https://github.com/owner/repo",
+    "title": "Test",
+    "description": "A test harness",
+    "topic_hex": "0000000000000000000000000000000000000000000000000000000000000000"
+  }'
+```
+
+## Deploy (P-051b — user step)
+
+1. **Provision bindings:**
+   ```bash
+   wrangler d1 create papercusp-cupboard
+   wrangler kv:namespace create papercusp-cupboard-counters
+   ```
+   Paste the returned `database_id` + KV `id` into `wrangler.toml`.
+
+2. **Apply schema to remote:**
+   ```bash
+   npm run d1:apply:remote
+   ```
+
+3. **Install secrets:**
+   ```bash
+   wrangler secret put GITHUB_CLIENT_ID
+   wrangler secret put GITHUB_CLIENT_SECRET
+   wrangler secret put IP_HASH_PEPPER       # 32 random bytes, base64
+   ```
+
+4. **DNS + Workers route:**
+   - Decide the hostname. `cupboard.papercusp.dev` is the v5 default; can also live at `cupboard.papercuspai.com` if the team prefers a single brand.
+   - Add a proxied CNAME for the chosen hostname pointing at `100-100-100-100.cdn.cloudflare.net` (Cloudflare placeholder; Worker route binding takes precedence).
+   - In Cloudflare dashboard → Workers Routes, add `<hostname>/*` → this Worker.
+
+5. **Deploy:**
+   ```bash
+   npm run deploy
+   ```
+
+6. **Point the desktop operator at the live Cupboard:**
+   ```bash
+   echo 'PAPERCUSP_CUPBOARD_URL="https://<hostname>"' >> ~/.papercusp/env
+   ```
+
+## P-076 indexer (not yet wired)
+
+Hourly cron in `wrangler.toml` is set up but the handler in `src/index.ts:scheduled` is intentionally a no-op stub. The indexer's job is to call GitHub's repo API for each listed harness and refresh `stars`, `contributor_count`, `last_activity_at`, `languages`. It's a small follow-up — landed separately to keep P-051a's PR diff focused on schema + auth + endpoints.
+
+## Why D1 and not Postgres
+
+- **Cost:** D1 free tier handles v1; Postgres on Neon/Supabase is also free but adds a region pin.
+- **Latency:** D1 reads run inside the Worker — single-digit ms p50. PG over the network is 50-100ms even on the best path.
+- **Migration ergonomics:** D1's `wrangler d1 execute --file` is the same shape as the publish-worker repo, so dev/prod symmetry is high.
+- **Tradeoff:** D1's write throughput cap is ~1k inserts/sec per database. Cupboard publish + report volume is far below that (target: ≤10 publishes/day across the whole user base in v1). Re-evaluate if Cupboard becomes a hot surface — switching to PG-on-Neon is a one-week migration if it ever matters.

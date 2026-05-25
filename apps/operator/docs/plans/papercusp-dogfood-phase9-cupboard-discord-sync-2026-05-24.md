@@ -2,8 +2,9 @@
 title: Papercusp dogfood — Phase 9 (Cupboard + Discord + sync-with-main)
 slug: papercusp-dogfood-phase9-cupboard-discord-sync-2026-05-24
 status: in-progress
+parent: papercusp-dogfood-v5-2026-05-23
 created: 2026-05-24
-updated: 2026-05-24
+updated: 2026-05-25
 owner: avi@storewolf.com
 ---
 
@@ -11,9 +12,9 @@ owner: avi@storewolf.com
 
 ## Now
 
-**State:** **🟡 PARTIAL.** P-052 (Cupboard UI), P-054 (Discord deep-link + webhook), P-055 (sync-with-main badge + dialog) shipped 2026-05-24. P-051a/b (Cupboard server + deploy) and P-053 (publish wizard) are deferred pending an infra decision. P-076 (stats indexer) deferred until server exists.
+**State:** **🟡 PARTIAL → MOVING.** Client-side P-052/P-054/P-055 shipped 2026-05-24. **P-051a (Cupboard server) shipped 2026-05-25** at `apps/operator-public/` — Hono on Cloudflare Workers + D1, mirroring `apps/papercusp-publish` pattern. 18/18 unit tests pass; typecheck clean. Infra decision (Workers + D1, NOT Next.js + Postgres) recorded as D-001 below.
 
-**Next action:** human decision needed — confirm Cupboard server deployment target (Cloudflare Workers + Neon vs. self-hosted Hono on existing infra) before P-051a can proceed. In the meantime, Phase 9's client-side deliverables are complete and gate-passable for Phase 11.
+**Next action:** **P-051b deploy is a user step** — DNS + Workers route + secrets. README.md has the full sequence. P-053 (publish wizard) and P-076 (indexer) can start in parallel with deploy.
 
 ## Background
 
@@ -118,7 +119,20 @@ v5 addendum 3: Cupboard listing schema + indexer pull contributor count, last-ac
 
 ## Decisions
 
-(None yet.)
+### D-001 — Cupboard server is Hono + D1, not Next.js + Postgres
+Date: 2026-05-25
+
+**Question:** v5 §10.1 specified "Cloudflare-fronted Next.js + managed Postgres at cupboard.papercusp.dev." Should P-051a follow that literally, or pick a thinner shape now that the rest of the stack is in place?
+
+**Resolution:** Hono on Cloudflare Workers + D1 (SQLite). Reasons:
+
+1. **Scope:** Cupboard server is API-only. The listing UI lives in the desktop operator (P-052, shipped). A Next.js app would be 80% empty pages.
+2. **Pattern reuse:** `apps/papercusp-publish` is already a Hono-on-Workers + D1 worker with the same auth/ratelimit/migration shape. Mirroring it cuts the dev/test/deploy surface.
+3. **Latency:** D1 reads inside the Worker are <5ms p50. PG-on-Neon costs 50-100ms per query even on the fastest path.
+4. **Cost:** D1 free tier covers v1 publish/list volume. PG-on-Neon would add a region pin and a separate cost line.
+5. **Migration off:** D1 → PG is a one-week port if v1 ever justifies it (target volume: ≤10 publishes/day across the user base at launch). Easy to defer.
+
+The plan body's §10.1 prose is now historical — `apps/operator-public/README.md` documents the actual deploy.
 
 ## Named fallback rollout
 

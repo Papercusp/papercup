@@ -1,0 +1,25 @@
+/**
+ * Cupboard server bindings + secrets + vars.
+ *
+ * Mirrors the papercusp-publish env shape so the deploy patterns
+ * carry over. D1 + KV bindings; GitHub OAuth secrets; rate-limit vars.
+ */
+
+export interface Env {
+  // Bindings
+  DB: D1Database;
+  COUNTERS: KVNamespace;
+
+  // Secrets
+  GITHUB_CLIENT_ID: string;
+  GITHUB_CLIENT_SECRET: string;
+  IP_HASH_PEPPER: string;
+
+  // Vars
+  ENVIRONMENT: string;
+  CUPBOARD_HOST: string;
+  RATE_PER_USER_PUBLISH_HOURLY: string;     // default '5'
+  RATE_PER_USER_REPORT_HOURLY: string;      // default '10'
+  RATE_PER_IP_LIST_PER_MINUTE: string;      // default '60'
+  INDEXER_BATCH_SIZE: string;               // default '100'
+}
