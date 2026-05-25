@@ -4,6 +4,7 @@
 import { z } from 'zod';
 import { register } from '../registry';
 import type { CommandDef } from '../types';
+import { navigateClient } from '../../client-navigation';
 
 const NavigateArgs = z.object({
   path: z.string().min(1).describe('Path within the operator app (e.g. /harness, /settings/voice).'),
@@ -15,7 +16,7 @@ function navTo(path: string): { path: string } {
   let target = path;
   if (ws && !path.includes('?')) target = `${path}?ws=${encodeURIComponent(ws)}`;
   else if (ws && path.includes('?') && !path.includes('ws=')) target = `${path}&ws=${encodeURIComponent(ws)}`;
-  window.location.href = target;
+  navigateClient(target);
   return { path: target };
 }
 

@@ -8,6 +8,7 @@
 import { z } from 'zod';
 import { register } from '../registry';
 import type { CommandDef, QueryDef } from '../types';
+import { navigateClient } from '../../client-navigation';
 
 function baseUrl(): string {
   if (typeof window !== 'undefined') return '';
@@ -60,10 +61,9 @@ const workspaceSwitch: CommandDef<z.infer<typeof SwitchArgs>> = {
       body: JSON.stringify({ id }),
     });
     if (!r.ok) throw new Error(`workspace.switch failed: HTTP ${r.status}`);
-    // Reload to pick up the new ws context.
     const url = new URL(window.location.href);
     url.searchParams.set('ws', id);
-    window.location.href = url.toString();
+    navigateClient(url.toString(), { replace: true });
     return { id, switched: true };
   },
 };

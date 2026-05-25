@@ -4,6 +4,7 @@ import { useEffect, useState, useCallback, type MouseEvent } from 'react';
 import { toast } from 'sonner';
 import { ChevronDown, UserPlus, Settings, LogOut, ArrowLeftRight } from 'lucide-react';
 import { Popover } from '../harness/Popover';
+import { navigateClient } from '../../lib/client-navigation';
 
 interface User {
   id: string;
@@ -58,7 +59,7 @@ export default function UserPicker() {
   const navigateTo = useCallback((event: MouseEvent<HTMLAnchorElement>) => {
     event.preventDefault();
     const href = event.currentTarget.getAttribute('href');
-    if (href && typeof window !== 'undefined') window.location.assign(href);
+    if (href && typeof window !== 'undefined') navigateClient(href);
   }, []);
 
   const onLogout = useCallback(async () => {
@@ -67,7 +68,7 @@ export default function UserPicker() {
       const response = await fetch('/api/auth/logout', { method: 'POST' });
       if (!response.ok) throw new Error('logout failed');
       toast.success('Logged out');
-      if (typeof window !== 'undefined') window.location.assign('/login');
+      if (typeof window !== 'undefined') navigateClient('/login');
     } catch {
       toast.error('Logout failed');
     }

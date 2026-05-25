@@ -14,6 +14,7 @@
 // tauri-specta; the public API of this file is unchanged.
 
 import { commands, type Workspace as BindingsWorkspace, type Registry } from './tauri-bindings';
+import { navigateClient } from './client-navigation';
 
 export type Workspace = BindingsWorkspace;
 
@@ -101,6 +102,6 @@ export async function switchWorkspace(id: string, opts?: { resetTo?: string }): 
   }
   await http<unknown>('/api/workspaces/switch', { method: 'POST', body: JSON.stringify({ id }) });
   if (typeof window !== 'undefined') {
-    window.location.href = opts?.resetTo ?? `/harness?ws=${encodeURIComponent(id)}`;
+    navigateClient(opts?.resetTo ?? `/harness?ws=${encodeURIComponent(id)}`);
   }
 }

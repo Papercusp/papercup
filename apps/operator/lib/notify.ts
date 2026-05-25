@@ -25,6 +25,7 @@
 
 import { type ReactElement, createElement } from 'react';
 import { toast as sonnerToast } from 'sonner';
+import { navigateClient } from './client-navigation';
 
 export type NotifyLevel = 'message' | 'info' | 'success' | 'warning' | 'error';
 
@@ -66,11 +67,7 @@ function buildSonnerAction(action: NotifyAction | undefined) {
     onClick: () => {
       if (action.href) {
         if (action.href.startsWith('/')) {
-          // Same-origin navigation. Use location.assign so the chrome
-          // (route progress bar, oracle dock, etc.) gets a real
-          // navigation event. If you need soft navigation specifically,
-          // pass an onClick that calls router.push() in addition.
-          window.location.assign(action.href);
+          navigateClient(action.href);
         } else {
           window.open(action.href, '_blank', 'noopener,noreferrer');
         }

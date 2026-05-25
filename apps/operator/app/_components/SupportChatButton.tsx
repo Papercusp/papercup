@@ -8,6 +8,7 @@
  */
 
 import type { ReactNode } from 'react';
+import { navigateClient } from '../../lib/client-navigation';
 
 interface Props {
   children?: ReactNode;
@@ -25,7 +26,7 @@ export function SupportChatButton({ children, className, message }: Props) {
     window.dispatchEvent(new CustomEvent('papercusp:open-support'));
     window.setTimeout(() => {
       if (!document.querySelector('[data-oracle-dock]')) {
-        window.location.href = '/support';
+        navigateClient('/support');
       }
     }, 250);
   };
