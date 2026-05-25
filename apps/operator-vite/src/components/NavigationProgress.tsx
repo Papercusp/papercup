@@ -1,6 +1,7 @@
 import { useEffect } from 'react';
 import { useRouterState } from '@tanstack/react-router';
 import { useProgress } from '@bprogress/react';
+import { shouldClearStaleBusyClass, shouldHideIdleProgressBar, shouldMaintainIdleProgress, shouldSuppressNavigationProgress } from './navigation-progress-helpers';
 
 /**
  * Phase B6 — the operator-vite navigation progress bar.
@@ -21,30 +22,51 @@ import { useProgress } from '@bprogress/react';
  * link click and the router-driven progress here cooperate on one bar.
  */
 
-function cleanupStaleBusyClass() {
-  if (document.querySelector('.bprogress')) return;
+function cleanupStaleBusyClass(isPending: boolean) {
+  if (!shouldClearStaleBusyClass(isPending)) return;
   document.documentElement.classList.remove('bprogress-busy');
+  const bar = document.querySelector<HTMLElement>('.bprogress');
+  if (bar && shouldHideIdleProgressBar(isPending)) {
+    bar.style.opacity = '0';
+    bar.style.pointerEvents = 'none';
+  }
 }
 export function NavigationProgress() {
   const isPending = useRouterState({ select: (s) => s.status === 'pending' });
   const { start, stop } = useProgress();
+  const suppressProgress = typeof window !== 'undefined' && shouldSuppressNavigationProgress(window.location.origin);
 
   useEffect(() => {
+    if (suppressProgress) {
+      const forceIdle = () => cleanupStaleBusyClass(false);
+      forceIdle();
+      const interval = window.setInterval(forceIdle, 250);
+      return () => {
+        window.clearInterval(interval);
+      };
+    }
+
     if (isPending) {
       start();
+      const bar = document.querySelector<HTMLElement>('.bprogress');
+      if (bar) {
+        bar.style.removeProperty('opacity');
+        bar.style.removeProperty('pointer-events');
+      }
       return;
     }
 
+    if (!shouldMaintainIdleProgress(isPending)) return;
     const settle = () => {
       stop();
-      window.setTimeout(cleanupStaleBusyClass, 200);
+      window.setTimeout(() => cleanupStaleBusyClass(isPending), 200);
     };
     settle();
     const interval = window.setInterval(settle, 1_000);
     return () => {
       window.clearInterval(interval);
     };
-  }, [isPending, start, stop]);
+  }, [isPending, start, stop, suppressProgress]);
 
   return null;
 }
