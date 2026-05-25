@@ -2,16 +2,16 @@
 title: Memory scope — user + harness model
 slug: memory-harness-scope-2026-05-24
 created: 2026-05-24
-updated: 2026-05-24
-status: draft
+updated: 2026-05-25
+status: active
 owner: aviynw3@gmail.com
 ---
 
 ## Now
 
-**State**: Memory today has two tiers — user (`user_id = <user.id>`) and workspace-shared (`user_id = "workspace:<wsId>"`). Pre-turn injection at `apps/operator/lib/memory/injection.ts` does two parallel `client.search()` calls and merges. The editor lives at `/settings/user/memory`, currently nav-grouped under "Identity & devices", with a single mixed list of user + workspace entries (workspace entries badged "shared").
+**State**: Phases 1–4 SHIPPED. Backend (writes, injection fan-out, per-tool callers, search) was already in place from prior session work. UI restructure (Papercusp rename, 3-section split, Advanced nav placement) was already done in `app/settings/user/memory/page.tsx`. P-010 suite checks landed `5b0e48ee` (harness tenancy + harness injection + deprecation readthrough + drive-by `workspaceLimit` fix → 14/14 injection tests).
 
-**Next**: Replace the workspace tier with a per-harness tier (`user_id = "harness:<slug>"`). Agents inside a harness recall `[user, this-harness]`; operator chat fans out across `[user, every-harness-the-user-has-access-to]`. The editor moves to "Advanced", renames "Papercup" → "Papercusp", and splits into labeled sections with user-friendly explanations.
+**Next**: P-011 verdict e2e (browser-driven; deferred — needs Tauri shell). P-012 deprecation cleanup is a future plan once `workspace:*` entries are drained from real users.
 
 ## Context
 
@@ -58,33 +58,33 @@ Every claim that drove the design was checked against the actual files in `apps/
 
 ### Phase 1 — Backend: writes + storage key
 
-- **P-001** [todo] `apps/operator/lib/agent-tools/memory/remember.ts`: add `harness_slug` arg (mutually exclusive with `shared`); when present, write `userId: "harness:<slug>"` and `metadata.scope = "harness"`. `shared: true` path keeps working but is marked deprecated in the tool description.
-- **P-002** [todo] `apps/operator/prompts/operator.persona.md` + `oracle.persona.md`: persona-prompt guidance — prefer `harness_slug` over `shared: true` when the fact is project-specific.
+- **P-001** [x] `apps/operator/lib/agent-tools/memory/remember.ts`: add `harness_slug` arg (mutually exclusive with `shared`); when present, write `userId: "harness:<slug>"` and `metadata.scope = "harness"`. `shared: true` path keeps working but is marked deprecated in the tool description.
+- **P-002** [x] `apps/operator/prompts/operator.persona.md` + `oracle.persona.md`: persona-prompt guidance — prefer `harness_slug` over `shared: true` when the fact is project-specific.
 
 ### Phase 2 — Backend: recall fan-out
 
-- **P-003** [todo] `apps/operator/lib/memory/injection.ts`: extend `MemoryInjectionInput` with `harnessSlugs?: string[]`. Replace the single `workspace:<wsId>` pull with N parallel `client.search()` calls (one per harness slug). Keep the `workspace:<wsId>` pull as a back-compat read-through (one extra call) for D4 deprecation period. Merge all hits, rank by score, return top-K.
-- **P-004** [todo] `apps/operator/lib/agent-tools/operator/converse-prompt.ts`: resolve `harnessSlugs` via the harness registry (list all harnesses in the active workspace) and pass to `buildMemoryContextBlock`. Cache the slug list per-process — slugs change rarely.
-- **P-005** [todo] Harness-context callers — pass `harnessSlugs: [<currentSlug>]`:
+- **P-003** [x] `apps/operator/lib/memory/injection.ts`: extend `MemoryInjectionInput` with `harnessSlugs?: string[]`. Replace the single `workspace:<wsId>` pull with N parallel `client.search()` calls (one per harness slug). Keep the `workspace:<wsId>` pull as a back-compat read-through (one extra call) for D4 deprecation period. Merge all hits, rank by score, return top-K.
+- **P-004** [x] `apps/operator/lib/agent-tools/operator/converse-prompt.ts`: resolve `harnessSlugs` via the harness registry (list all harnesses in the active workspace) and pass to `buildMemoryContextBlock`. Cache the slug list per-process — slugs change rarely.
+- **P-005** [x] Harness-context callers — pass `harnessSlugs: [<currentSlug>]`:
   - `apps/operator/lib/agent-tools/architect/prompts.ts:110, 170`
   - `apps/operator/lib/agent-tools/oracle/prompts.ts:221`
   - `apps/operator/lib/agent-tools/operator/delegate.ts:201`
-- **P-006** [todo] `apps/operator/lib/agent-tools/memory/search.ts`: add `harness_slug` arg; when present, the parallel search becomes `[user, harness:<slug>]` instead of `[user, workspace:<wsId>]`.
+- **P-006** [x] `apps/operator/lib/agent-tools/memory/search.ts`: add `harness_slug` arg; when present, the parallel search becomes `[user, harness:<slug>]` instead of `[user, workspace:<wsId>]`.
 
 ### Phase 3 — Editor restructure
 
-- **P-007** [todo] `apps/operator/app/settings/layout.tsx`: move the `/settings/user/memory` link from "Identity & devices" to "Advanced" (D6). Keep `keywords` so search still finds it.
-- **P-008** [todo] `apps/operator/app/settings/user/memory/page.tsx`:
+- **P-007** [x] `apps/operator/app/settings/layout.tsx`: move the `/settings/user/memory` link from "Identity & devices" to "Advanced" (D6). Keep `keywords` so search still finds it.
+- **P-008** [x] `apps/operator/app/settings/user/memory/page.tsx`:
   - Rename `<h1>Papercup memory</h1>` → `<h1>Papercusp memory</h1>` (line 145) and "Facts Papercup has stored…" → user-friendly description (D7).
   - Replace single list with three labeled sections (D5):
     - "My memory" (`scope === 'user'`) — short blurb: *"Personal facts about you. Carried across every project. Only you can see these."*
     - "Per-harness memory" (`scope === 'harness'`, grouped by `harness_slug`) — *"Per-project facts shared with anyone who has access to that harness."*
     - "Deprecated — workspace memory" (`scope === 'workspace'`, hidden when empty) — *"Older shared memories from before per-harness scope existed. Move important ones into the right harness, or delete."*
-- **P-009** [todo] `apps/operator/lib/endpoint-route/routes/user/memory.ts` GET handler: fan out three pulls (user + all-harnesses + legacy workspace), tag each entry with `scope` and include `harness_slug` from metadata. Forget-all stays user-scoped only (already correct per existing handler).
+- **P-009** [x] `apps/operator/lib/endpoint-route/routes/user/memory.ts` GET handler: fan out three pulls (user + all-harnesses + legacy workspace), tag each entry with `scope` and include `harness_slug` from metadata. Forget-all stays user-scoped only (already correct per existing handler).
 
 ### Phase 4 — Verify
 
-- **P-010** [todo] `apps/operator/lib/memory/suite/checks.ts`: add a per-harness round-trip — write `harness:foo` memory, run operator pre-turn injection with `harnessSlugs: ['foo']`, assert it surfaces. Add a deprecation-readthrough check: write a legacy `workspace:*` memory and confirm it still surfaces during the deprecation window.
+- **P-010** [x] `apps/operator/lib/memory/suite/checks.ts`: add a per-harness round-trip — write `harness:foo` memory, run operator pre-turn injection with `harnessSlugs: ['foo']`, assert it surfaces. Add a deprecation-readthrough check: write a legacy `workspace:*` memory and confirm it still surfaces during the deprecation window.
 - **P-011** [todo] verdict e2e: log in as `default`, write a harness memory via `memory:remember harness_slug=sheets`, open `/settings/memory` (new path), confirm it appears in the per-harness section under "sheets", confirm title reads "Papercusp memory" not "Papercup memory", confirm tab lives under "Advanced".
 
 ### Phase 5 — Deprecation cleanup (follow-up plan, not this one)
