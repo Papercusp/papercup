@@ -59,6 +59,13 @@ describe('workspaces-tauri', () => {
     expect(fetchMock).toHaveBeenCalledWith('/api/workspaces/switch', expect.objectContaining({ method: 'POST' }));
     expect(navigateClient).toHaveBeenCalledWith('/harness?ws=delta');
   });
+  it('does not soft-navigate when the web/static workspace switch request fails', async () => {
+    vi.stubGlobal('fetch', fetchMock.mockResolvedValue({ ok: false, status: 500, json: () => Promise.resolve({ error: 'switch-fail' }) }));
+    const { switchWorkspace } = await import('../workspaces-tauri');
+
+    await expect(switchWorkspace('delta')).rejects.toThrow('switch-fail');
+    expect(navigateClient).not.toHaveBeenCalled();
+  });
   it('uses the desktop command path without soft navigation when Tauri is present', async () => {
     vi.stubGlobal('window', { ...window, __TAURI_INTERNALS__: {} });
     commands.workspacesSwitch.mockResolvedValue({ status: 'ok' });
