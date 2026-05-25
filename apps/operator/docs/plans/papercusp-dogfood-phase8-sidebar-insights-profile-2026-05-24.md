@@ -33,7 +33,20 @@ Total Phase 8 tests landed: **82/82 pass**.
 
 **P-049 — DONE (PrReviewerSettings modal at `apps/operator/app/harness/PrReviewerSettings.tsx`).** Three sections: P-049a toggles + merge-method radio, P-049b trust list + remove inline, P-049c audit log read-only. Pure UI; consumer wires PG. 14/14 tests pass.
 
-**Next action:** P-073 Insights cards as standalone components. Each card is a pure-UI consumer of pre-computed props; the aggregation wiring lands separately once substrate boots. Order: ProjectCard → PeopleCard → ActivityFeedCard → YourPlaceCard → HowItWorksHereCard → SpendCard.
+**P-073 — DONE (all 6 cards + assembly at `apps/operator/app/harness/insights/`).** All pure UI; consumer feeds pre-computed props:
+- **P-073a ProjectCard** — name + description + owner + claim badge + license + top-3 languages + GitHub/Discord links. 8/8 tests.
+- **P-073b ActivityFeedCard** — last ~20 events with tier-A/B/C pills. 10/10 tests.
+- **P-073c PeopleCard** — horizontal avatar stack with binding-status overlay + overflow pill. 10/10 tests.
+- **P-073d YourPlaceCard** — viewer-scoped queue + role + trust + spend (Tier D). 10/10 tests.
+- **P-073e HowItWorksHereCard** — templated 3-step workflow from harness config; customWelcome override. 11/11 tests.
+- **P-073f SpendCard** — Tier D harness total + viewer share with progress bar; proxy-witness deferral banner. 10/10 tests.
+- **P-073 InsightsTab** — assembly: project | activity+yourplace/spend | people | howitworks. 1/1 test.
+
+P-073g (force-route on first visit) is a sidebar-router wiring task, not a card concern.
+
+Phase 8 tests this session: **143/143 pass.**
+
+**Next action:** P-047 (Features tab UI extensions) or P-050 (vditor integration). Substrate-boot-gated work (data fetches for P-073, real props for P-072) waits for substrate boot in instrumentation-node.ts.
 
 ## Background
 
