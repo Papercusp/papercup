@@ -389,8 +389,17 @@ export default function AdvSessionsClient() {
     return rows.find((row) => row.id === id) ?? null;
   }, [rows, selectedSessionId]);
 
+  // Deliberately depend on selectedRow?.id (the stable identity) and
+  // refreshTick (explicit user action) — NOT the full selectedRow
+  // object. The 3s auto-refresh rebuilds the rows array every cycle;
+  // selectedRow is a useMemo over rows so it gets a new reference on
+  // every poll even when the underlying row didn't change. Depending
+  // on the object made this effect re-run every 3s and flash a fresh
+  // "Loading OMP session state…" placeholder, which is exactly the
+  // flicker the user reported.
+  const selectedRowId = selectedRow?.id ?? null;
   useEffect(() => {
-    if (!selectedRow) {
+    if (selectedRowId === null) {
       setStateData(null);
       setStateError(null);
       setSearchData(null);
@@ -401,7 +410,7 @@ export default function AdvSessionsClient() {
     setStateError(null);
     (async () => {
       try {
-        const r = await fetch(`/api/adv/sessions/state?id=${selectedRow.id}`, {
+        const r = await fetch(`/api/adv/sessions/state?id=${selectedRowId}`, {
           headers: { accept: 'application/json' },
         });
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
@@ -419,7 +428,7 @@ export default function AdvSessionsClient() {
     return () => {
       cancelled = true;
     };
-  }, [selectedRow, refreshTick]);
+  }, [selectedRowId, refreshTick]);
 
   useEffect(() => {
     const q = historyQuery.trim();
@@ -1537,7 +1546,13 @@ function SessionDetail({
       </Tabs.Root>
 
       <div className="pc-adv-sessions__panel">
-        {loading ? <p className="pc-adv-sessions__placeholder">Loading OMP session state…</p> : null}
+        {/* Only show the loading placeholder on the INITIAL load — a
+            refetch (Refresh button, explicit user action) keeps the
+            stale content visible underneath instead of clearing the
+            panel to a single line of text every time. */}
+        {loading && !stateData ? (
+          <p className="pc-adv-sessions__placeholder">Loading OMP session state…</p>
+        ) : null}
         {error ? <p className="pc-adv-sessions__error">Failed to load OMP state: {error}</p> : null}
         {!loading && !error && row.mode !== 'omp' ? (
           <p className="pc-adv-sessions__placeholder">
