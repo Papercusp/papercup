@@ -1270,6 +1270,67 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
         .limit(limit)) as unknown[];
     },
   },
+
+  // plansDrafts.bySlug — draft plans for a harness, newest-first.
+  // Used by ProposalsPanel (plan-feature-pipeline-unification P-022).
+  // Reads from the filesystem (plans are not in PG) via the plans:source
+  // helpers. Returns a lightweight row per draft plan — UI uses these to
+  // render proposal cards; clicking Edit navigates to /admin/plans/<slug>.
+  'plansDrafts.bySlug': {
+    argsSchema: z.object({ harnessSlug: z.string() }),
+    resolve: async (args) => {
+      const { harnessSlug } = args as { harnessSlug: string };
+      const { resolveHarnessPlansDir, listPlanFiles } = await import(
+        '@/lib/agent-tools/plans/source'
+      );
+      const { parsePlan } = await import('@/lib/agent-tools/plans/parser');
+      const { readFile } = await import('node:fs/promises');
+
+      const dirs = await resolveHarnessPlansDir(harnessSlug);
+      const entries = await listPlanFiles({ plansDir: dirs.plans, archiveDir: dirs.archive });
+
+      const rows: unknown[] = [];
+      for (const entry of entries) {
+        if (entry.archived) continue;
+        let raw: string;
+        try {
+          raw = await readFile(entry.filePath, 'utf8');
+        } catch {
+          continue;
+        }
+        const parsed = parsePlan(raw, { filePath: entry.filePath });
+        if (parsed.isLegacy) continue;
+        if (parsed.frontmatter.status !== 'draft') continue;
+
+        const itemCount = parsed.items.length;
+        // Source tag: slug prefixed with 'scoper-proposal-' → 'scoper'; else 'user'.
+        const source = entry.slug.startsWith('scoper-proposal-') ? 'scoper' : 'user';
+
+        rows.push({
+          slug: entry.slug,
+          title: parsed.frontmatter.title ?? entry.slug,
+          status: 'draft' as const,
+          nowState: parsed.now?.state ?? null,
+          nowNext: parsed.now?.next ?? null,
+          itemCount,
+          source,
+          created: parsed.frontmatter.created ?? null,
+          updated: parsed.frontmatter.updated ?? null,
+        });
+      }
+
+      // Newest-first by updated, then created.
+      rows.sort((a, b) => {
+        const ra = a as { updated: string | null; created: string | null };
+        const rb = b as { updated: string | null; created: string | null };
+        const ta = ra.updated ?? ra.created ?? '';
+        const tb = rb.updated ?? rb.created ?? '';
+        return tb.localeCompare(ta);
+      });
+
+      return rows;
+    },
+  },
 } satisfies Record<string, QueryEntry<unknown>>;
 
 // ─── Public API ─────────────────────────────────────────────────────

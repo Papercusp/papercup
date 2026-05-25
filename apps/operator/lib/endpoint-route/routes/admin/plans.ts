@@ -213,6 +213,14 @@ async function dispatchWrite(req: Request, ctx: RouteContext): Promise<Response>
         void notifySyncInvalidate('plans.history', { slug }).catch(() => {});
         void notifySyncInvalidate('plans.revisions', { slug }).catch(() => {});
       }
+      if (verb === 'new' || verb === 'set-frontmatter' || verb === 'set-content') {
+        // Any of these can change plan status (e.g. draft→active), which
+        // affects ProposalsPanel's plansDrafts.bySlug subscription.
+        const harnessSlug = typeof body.harness_slug === 'string' ? body.harness_slug : undefined;
+        if (harnessSlug) {
+          void notifySyncInvalidate('plansDrafts.bySlug', { harnessSlug }).catch(() => {});
+        }
+      }
       if (verb === 'launch' || verb === 'resume') {
         void notifySyncInvalidate('plans.runs', { slug }).catch(() => {});
       }
