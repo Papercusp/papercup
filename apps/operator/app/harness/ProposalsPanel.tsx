@@ -210,6 +210,26 @@ function CardDetail({
             </p>
           )}
         </div>
+        {card.kind === 'legacy' && (
+          <div
+            role="note"
+            style={{
+              marginTop: 8,
+              padding: '8px 10px',
+              borderRadius: 4,
+              background: 'var(--bg-2)',
+              border: '1px solid var(--border)',
+              fontSize: 12,
+              color: 'var(--fg-dim)',
+              lineHeight: 1.5,
+            }}
+          >
+            <strong style={{ color: 'var(--fg)' }}>Legacy proposal</strong> — handle
+            via <code>.harness/proposals/&lt;file&gt;.md</code> (add{' '}
+            <code>applied: true</code> footer to accept, or delete the file to dismiss).
+            New proposals should use the architect "New" button above so they become draft plans.
+          </div>
+        )}
         {card.kind === 'draft-plan' && (
           <div className="h-proposal-detail-actions">
             <a
