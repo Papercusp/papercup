@@ -22,11 +22,15 @@ describe('static desktop host detection', () => {
     expect(shouldEnableSupportWidget('/support', 'http://127.0.0.1:4173')).toBe(false);
     expect(shouldEnableSupportWidget('/', 'http://localhost:3055')).toBe(false);
     expect(shouldEnableSupportWidget('/harness', 'http://localhost:3070')).toBe(false);
+    expect(shouldEnableSupportWidget('/support', 'http://localhost:3070/')).toBe(false);
+    expect(shouldEnableSupportWidget('/support', 'http://localhost:4173/')).toBe(false);
   });
   it('reuses the same host list for reload suppression', () => {
     expect(shouldSuppressStaticDesktopReload('http://localhost:3070')).toBe(true);
     expect(shouldSuppressStaticDesktopReload('http://localhost:4173')).toBe(true);
     expect(shouldSuppressStaticDesktopReload('http://localhost:3055')).toBe(false);
+    expect(shouldSuppressStaticDesktopReload('http://localhost:3070/')).toBe(true);
+    expect(shouldSuppressStaticDesktopReload('http://localhost:4173/')).toBe(true);
   });
   it('falls back to the support route only when the oracle dock is absent', () => {
     expect(shouldFallbackToSupportRoute(false)).toBe(true);
