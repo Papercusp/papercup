@@ -1343,227 +1343,93 @@ export default function AdvSessionsClient() {
           min-width: 0;
         }
 
-        /* Compact readability pass for the sessions tab.  Keep the existing
-           two-pane structure, but make dense cards easier to scan. */
-        .pc-adv-sessions__listpane,
+        /* Right sidebar detail pass: keep the same panel structure, but make
+           the selected session readable, compact, and easier to operate. */
         .pc-adv-sessions__detail {
-          border-color: color-mix(in oklab, var(--border), var(--accent) 12%);
+          border-color: color-mix(in oklab, var(--border), var(--accent) 14%);
           background:
-            radial-gradient(circle at top left, color-mix(in oklab, var(--accent), transparent 94%), transparent 36%),
-            linear-gradient(180deg, color-mix(in oklab, var(--bg-2), white 4%), color-mix(in oklab, var(--bg), black 4%));
+            radial-gradient(circle at top right, color-mix(in oklab, var(--accent), transparent 92%), transparent 32%),
+            linear-gradient(180deg, color-mix(in oklab, var(--bg-2), white 4%), color-mix(in oklab, var(--bg), transparent 4%));
           box-shadow:
-            0 14px 34px rgba(0, 0, 0, 0.18),
+            0 18px 42px rgba(0, 0, 0, 0.22),
             inset 0 1px 0 rgb(from var(--fg) r g b / 0.045);
         }
-        .pc-adv-sessions__listpane {
-          padding: 8px;
-        }
-        .pc-adv-sessions__group + .pc-adv-sessions__group {
-          margin-top: 7px;
-        }
-        .pc-adv-sessions__group-head {
-          min-height: 36px;
-          gap: 8px;
-          padding: 7px 8px;
-          border-color: color-mix(in oklab, var(--border), var(--accent) 8%);
-          background: color-mix(in oklab, var(--bg-2), white 4%);
-        }
-        .pc-adv-sessions__group-head:hover,
-        .pc-adv-sessions__group-head[data-state="open"] {
-          border-color: color-mix(in oklab, var(--accent), transparent 58%);
-          background: color-mix(in oklab, var(--bg-3), var(--accent) 7%);
-        }
-        .pc-adv-sessions__group-title {
-          color: color-mix(in oklab, var(--fg), white 6%);
-          font-size: 12.5px;
-          font-weight: 780;
-        }
-        .pc-adv-sessions__group-count {
-          display: inline-flex;
-          min-width: 22px;
-          justify-content: center;
-          padding: 2px 6px;
-          border: 1px solid color-mix(in oklab, var(--border), var(--accent) 18%);
-          border-radius: 999px;
-          background: color-mix(in oklab, var(--bg-3), transparent 18%);
-          color: var(--fg-dim);
-          font-weight: 750;
-          line-height: 1.2;
-        }
-        .pc-adv-sessions__group-active,
-        .pc-adv-sessions__group-last-active {
-          min-height: 20px;
-          padding: 3px 7px;
-          font-weight: 780;
-        }
-        .pc-adv-sessions__group-last-active {
-          border-color: color-mix(in oklab, var(--border), white 8%);
-          background: color-mix(in oklab, var(--bg-3), transparent 10%);
-          color: color-mix(in oklab, var(--fg-mute), white 14%);
-        }
-        .pc-adv-sessions__group-content {
-          padding: 6px 0 1px;
-        }
-        .pc-adv-sessions__list {
-          gap: 6px;
-        }
-        .pc-adv-sessions__row {
-          position: relative;
-          grid-template-columns: minmax(0, 1fr);
-          align-items: stretch;
-          gap: 7px;
-          padding: 9px 9px 9px 10px;
-          overflow: hidden;
-          border-color: color-mix(in oklab, var(--border), transparent 5%);
-          border-radius: 12px;
-          background:
-            linear-gradient(180deg, color-mix(in oklab, var(--bg-2), white 3%), color-mix(in oklab, var(--bg), transparent 3%));
-        }
-        .pc-adv-sessions__row::before {
-          content: "";
-          position: absolute;
-          inset: 9px auto 9px 5px;
-          width: 3px;
-          border-radius: 999px;
-          background: var(--accent);
-          opacity: 0;
-          transition: opacity 120ms ease;
-        }
-        .pc-adv-sessions__row:hover {
-          border-color: color-mix(in oklab, var(--accent), transparent 64%);
-          background:
-            linear-gradient(180deg, color-mix(in oklab, var(--bg-3), var(--accent) 5%), color-mix(in oklab, var(--bg-2), transparent 2%));
-          transform: translateY(-1px);
-        }
-        .pc-adv-sessions__row:hover::before {
-          opacity: 0.42;
-        }
-        .pc-adv-sessions__row.is-active {
-          border-color: color-mix(in oklab, var(--accent), transparent 42%);
-          background:
-            linear-gradient(180deg, color-mix(in oklab, var(--accent), transparent 88%), color-mix(in oklab, var(--bg-2), transparent 4%));
-        }
-        .pc-adv-sessions__row.is-selected {
-          border-color: color-mix(in oklab, var(--accent), transparent 30%);
-          background:
-            linear-gradient(180deg, color-mix(in oklab, var(--accent), transparent 86%), color-mix(in oklab, var(--bg-2), transparent 3%));
-          box-shadow:
-            0 0 0 1px color-mix(in oklab, var(--accent), transparent 78%) inset,
-            0 10px 24px rgba(0, 0, 0, 0.18);
-        }
-        .pc-adv-sessions__row.is-active::before,
-        .pc-adv-sessions__row.is-selected::before {
-          opacity: 1;
-        }
-        .pc-adv-sessions__row-main {
-          gap: 5px;
-          padding-left: 4px;
-          border-radius: 9px;
-        }
-        .pc-adv-sessions__row-meta {
-          gap: 5px 7px;
-          line-height: 1.25;
-        }
-        .pc-adv-sessions__badge {
-          padding: 2px 6px;
-          border: 1px solid transparent;
-          line-height: 1.15;
-        }
-        .pc-adv-sessions__badge--omp {
-          border-color: color-mix(in oklab, var(--accent), transparent 58%);
-          background: color-mix(in oklab, var(--accent), transparent 82%);
-          color: color-mix(in oklab, var(--accent), white 10%);
-        }
-        .pc-adv-sessions__badge--console {
-          border-color: color-mix(in oklab, var(--warn), transparent 58%);
-          background: color-mix(in oklab, var(--warn), transparent 84%);
-          color: color-mix(in oklab, var(--warn), white 10%);
-        }
-        .pc-adv-sessions__row-label {
-          flex: 1 1 180px;
+        .pc-adv-sessions__detail > .pc-adv-sessions__detail-head,
+        .pc-adv-sessions__detail > .pc-adv-sessions__panel-tabs,
+        .pc-adv-sessions__detail > .pc-adv-sessions__panel {
+          box-sizing: border-box;
+          width: 100%;
+          max-width: 100%;
           min-width: 0;
-          color: color-mix(in oklab, var(--fg), white 5%);
-          font-size: 12.5px;
-          font-weight: 760;
-          line-height: 1.25;
-        }
-        .pc-adv-sessions__row-times {
-          color: color-mix(in oklab, var(--fg-mute), white 13%);
-          font-family: ui-monospace, monospace;
-          font-size: 10.5px;
-          font-variant-numeric: tabular-nums;
-          line-height: 1.35;
-        }
-        .pc-adv-sessions__row-usage {
-          gap: 4px;
-          padding-left: 4px;
-        }
-        .pc-adv-sessions__row-usage-pill {
-          min-height: 19px;
-          padding: 2px 6px;
-          border-color: color-mix(in oklab, var(--border), white 6%);
-          background: color-mix(in oklab, var(--bg-3), transparent 8%);
-          color: color-mix(in oklab, var(--fg-dim), white 7%);
-          font-size: 10px;
-          line-height: 1.2;
-        }
-        .pc-adv-sessions__row-usage-pill--model {
-          border-color: color-mix(in oklab, var(--accent), transparent 48%);
-          background: color-mix(in oklab, var(--accent), transparent 84%);
-          color: color-mix(in oklab, var(--accent), white 10%);
-        }
-        .pc-adv-sessions__row-usage-pill--cost {
-          border-color: color-mix(in oklab, var(--good), transparent 50%);
-          background: color-mix(in oklab, var(--good), transparent 86%);
-          color: color-mix(in oklab, var(--good), white 10%);
-        }
-        .pc-adv-sessions__row-actions {
-          justify-content: flex-start;
-          gap: 6px;
-          padding-left: 4px;
-        }
-        .pc-adv-sessions__row-actions .pc-adv-sessions__btn {
-          min-height: 28px;
-          padding: 0 10px;
-          border-radius: 9px;
-          font-size: 11.5px;
-        }
-        .pc-adv-sessions__btn--primary {
-          border-color: color-mix(in oklab, var(--accent), transparent 42%);
-          background:
-            linear-gradient(180deg, color-mix(in oklab, var(--accent), white 4%), color-mix(in oklab, var(--accent), var(--bg) 70%));
-          color: var(--accent-ink);
         }
         .pc-adv-sessions__detail-head {
-          padding: 12px 13px;
+          display: grid;
+          grid-template-columns: minmax(0, 1fr) auto;
+          align-items: flex-start;
+          gap: 10px;
+          padding: 12px;
           background:
-            linear-gradient(180deg, color-mix(in oklab, var(--bg-3), var(--accent) 4%), color-mix(in oklab, var(--bg-2), transparent 3%));
+            linear-gradient(180deg, color-mix(in oklab, var(--bg-3), var(--accent) 5%), color-mix(in oklab, var(--bg-2), transparent 4%));
+        }
+        .pc-adv-sessions__detail-head .pc-adv-sessions__refresh {
+          align-self: flex-start;
+          flex: 0 0 auto;
+          min-height: 28px;
+          padding: 0 9px;
+          border-radius: 9px;
+          font-size: 11px;
+          white-space: nowrap;
+        }
+        .pc-adv-sessions__detail-title {
+          gap: 5px;
+          min-width: 0;
         }
         .pc-adv-sessions__detail-title h3 {
+          display: -webkit-box;
+          max-height: 38px;
+          overflow: hidden;
           color: color-mix(in oklab, var(--fg), white 6%);
           font-size: 14px;
           font-weight: 780;
+          line-height: 1.25;
+          -webkit-box-orient: vertical;
+          -webkit-line-clamp: 2;
         }
         .pc-adv-sessions__detail-sub {
+          display: block;
+          overflow: hidden;
           color: color-mix(in oklab, var(--fg-mute), white 12%);
-          font-size: 11.5px;
+          font-family: ui-monospace, monospace;
+          font-size: 10.5px;
           line-height: 1.35;
+          text-overflow: ellipsis;
+          white-space: nowrap;
         }
         .pc-adv-sessions__panel-tabs {
-          padding: 9px 10px;
+          overflow: hidden;
+          padding: 8px 10px;
           background: color-mix(in oklab, var(--bg-2), black 2%);
         }
         .pc-adv-sessions__panel-tablist {
-          gap: 5px;
+          min-width: 0;
+          max-width: 100%;
+          display: flex;
+          flex-wrap: nowrap;
+          gap: 4px;
+          overflow-x: auto;
+          padding-bottom: 1px;
+          scrollbar-width: thin;
         }
         .pc-adv-sessions__panel-tab {
           box-sizing: border-box;
-          min-height: 26px;
-          padding: 4px 8px;
-          border-color: color-mix(in oklab, var(--border), white 5%);
+          min-height: 25px;
+          flex: 0 0 auto;
+          padding: 4px 6px;
+          border-color: color-mix(in oklab, var(--border), white 6%);
           background: color-mix(in oklab, var(--bg-2), white 2%);
-          color: color-mix(in oklab, var(--fg-dim), white 6%);
+          color: color-mix(in oklab, var(--fg-dim), white 8%);
           font-size: 10.5px;
+          line-height: 1;
         }
         .pc-adv-sessions__panel-tab:hover {
           background: color-mix(in oklab, var(--bg-3), var(--accent) 4%);
@@ -1579,36 +1445,122 @@ export default function AdvSessionsClient() {
           gap: 10px;
           padding: 12px;
         }
-        .pc-adv-sessions__placeholder {
-          border: 1px solid color-mix(in oklab, var(--border), white 5%);
+        .pc-adv-sessions__panel .pc-adv-sessions__placeholder {
+          border: 1px solid color-mix(in oklab, var(--border), white 6%);
           background: color-mix(in oklab, var(--bg-2), white 3%);
           color: color-mix(in oklab, var(--fg-mute), white 10%);
         }
-        .pc-adv-sessions__cards {
+        .pc-adv-sessions__panel .pc-adv-sessions__cards {
+          grid-template-columns: repeat(auto-fit, minmax(104px, 1fr));
           gap: 7px;
         }
-        .pc-adv-sessions__card,
-        .pc-adv-sessions__snippet,
-        .pc-adv-sessions__todo-phase,
-        .pc-adv-sessions__data-list {
-          border-color: color-mix(in oklab, var(--border), white 5%);
+        .pc-adv-sessions__panel .pc-adv-sessions__card {
+          gap: 4px;
+          padding: 9px;
+          border-color: color-mix(in oklab, var(--border), white 6%);
+          background:
+            linear-gradient(180deg, color-mix(in oklab, var(--bg-2), white 4%), color-mix(in oklab, var(--bg), transparent 2%));
+        }
+        .pc-adv-sessions__panel .pc-adv-sessions__card-label {
+          color: color-mix(in oklab, var(--fg-mute), white 14%);
+          font-size: 9.5px;
+          font-weight: 760;
+        }
+        .pc-adv-sessions__panel .pc-adv-sessions__card-value {
+          overflow: hidden;
+          color: color-mix(in oklab, var(--fg), white 6%);
+          font-size: 13px;
+          line-height: 1.25;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+        }
+        .pc-adv-sessions__panel .pc-adv-sessions__section {
+          gap: 7px;
+        }
+        .pc-adv-sessions__panel .pc-adv-sessions__section h4 {
+          display: flex;
+          align-items: center;
+          gap: 7px;
+          color: color-mix(in oklab, var(--fg), white 5%);
+          font-size: 10.5px;
+          font-weight: 800;
+        }
+        .pc-adv-sessions__panel .pc-adv-sessions__section h4::before {
+          content: "";
+          width: 6px;
+          height: 6px;
+          flex: 0 0 auto;
+          border-radius: 999px;
+          background: var(--accent);
+          opacity: 0.9;
+        }
+        .pc-adv-sessions__panel .pc-adv-sessions__snippet,
+        .pc-adv-sessions__panel .pc-adv-sessions__todo-phase,
+        .pc-adv-sessions__panel .pc-adv-sessions__data-list {
+          border-color: color-mix(in oklab, var(--border), white 6%);
           background: color-mix(in oklab, var(--bg-2), white 3%);
         }
-        .pc-adv-sessions__card {
-          padding: 9px;
+        .pc-adv-sessions__panel .pc-adv-sessions__snippet {
+          padding: 8px;
         }
-        .pc-adv-sessions__card-label,
-        .pc-adv-sessions__data-row--head {
+        .pc-adv-sessions__panel .pc-adv-sessions__snippet-meta {
+          gap: 6px;
+          margin-bottom: 5px;
+          color: color-mix(in oklab, var(--fg-mute), white 14%);
+          font-size: 10px;
+        }
+        .pc-adv-sessions__panel .pc-adv-sessions__snippet-meta span {
+          min-width: 0;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+        }
+        .pc-adv-sessions__panel .pc-adv-sessions__snippet-text {
+          max-height: 148px;
+          overflow: auto;
+          color: color-mix(in oklab, var(--fg-dim), white 9%);
+          font-size: 11.5px;
+          line-height: 1.45;
+          scrollbar-width: thin;
+        }
+        .pc-adv-sessions__panel .pc-adv-sessions__mono {
+          color: color-mix(in oklab, var(--fg-mute), white 15%);
+        }
+        .pc-adv-sessions__panel .pc-adv-sessions__data-row {
+          min-height: 34px;
+          padding: 7px 9px;
+          color: color-mix(in oklab, var(--fg-dim), white 8%);
+        }
+        .pc-adv-sessions__panel .pc-adv-sessions__data-row + .pc-adv-sessions__data-row {
+          border-top-color: color-mix(in oklab, var(--border), transparent 12%);
+        }
+        .pc-adv-sessions__panel .pc-adv-sessions__data-row strong {
+          color: color-mix(in oklab, var(--fg), white 6%);
+          font-weight: 780;
+        }
+        .pc-adv-sessions__panel .pc-adv-sessions__data-row--head {
           color: color-mix(in oklab, var(--fg-mute), white 12%);
         }
-        .pc-adv-sessions__card-value,
-        .pc-adv-sessions__data-row strong {
-          color: color-mix(in oklab, var(--fg), white 5%);
+        .pc-adv-sessions__panel .pc-adv-sessions__todo-phase {
+          padding: 9px;
         }
-        .pc-adv-sessions__snippet-text,
-        .pc-adv-sessions__todo-item,
-        .pc-adv-sessions__data-row {
-          color: color-mix(in oklab, var(--fg-dim), white 7%);
+        .pc-adv-sessions__panel .pc-adv-sessions__todo-phase h4 {
+          margin-bottom: 6px;
+        }
+        .pc-adv-sessions__panel .pc-adv-sessions__todo-list {
+          gap: 4px;
+        }
+        .pc-adv-sessions__panel .pc-adv-sessions__todo-item {
+          color: color-mix(in oklab, var(--fg-dim), white 8%);
+          font-size: 11.5px;
+          line-height: 1.35;
+        }
+        .pc-adv-sessions__search input {
+          min-height: 32px;
+          border-color: color-mix(in oklab, var(--border), white 6%);
+          background: color-mix(in oklab, var(--bg-2), white 3%);
+          color: var(--fg);
+          font-size: 12px;
         }
         @media (max-width: 1100px) {
           .pc-adv-sessions__head,
@@ -1694,13 +1646,13 @@ function SessionDetail({
   }
 
   const state = stateData?.state ?? null;
-  const title = state?.header.title || row.label || row.planSlug || `Session #${row.id}`;
+  const title = row.label || row.planSlug || state?.header.title || `Session #${row.id}`;
 
   return (
     <aside className="pc-adv-sessions__detail">
       <header className="pc-adv-sessions__detail-head">
         <div className="pc-adv-sessions__detail-title">
-          <h3>{title}</h3>
+          <h3 title={state?.header.title || title}>{title}</h3>
           <span className="pc-adv-sessions__detail-sub">
             {row.mode} · started {formatDate(row.startedAt)}
             {state?.header.id ? ` · ${state.header.id.slice(0, 13)}…` : ''}
