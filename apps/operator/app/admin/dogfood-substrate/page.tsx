@@ -20,6 +20,7 @@ import { listBootedHandles } from '@/lib/sync/hyperbee/boot-all';
 import { listBootstrapProgress } from '@/lib/sync/hyperbee/bootstrap-progress';
 import { loadClaimAttemptStats } from '@/lib/orchestrator/load-claim-attempts';
 import { assessHarnessSubstrateHealth } from '@/lib/sync/hyperbee/health';
+import { summariseWorkspaceSubstrate } from '@/lib/sync/hyperbee/summary';
 import { SubstrateStatusBadge } from '../../harness/insights/SubstrateStatusBadge';
 import { ClaimAttemptStatsPill } from '../../harness/insights/ClaimAttemptStatsPill';
 import { BootstrapProgressIndicator } from '../../harness/insights/BootstrapProgressIndicator';
@@ -110,11 +111,38 @@ export default async function DogfoodSubstratePage() {
       ? `${booted.length} harness${booted.length === 1 ? '' : 'es'}`
       : null;
 
+  // Compute the workspace-level health summary for the top bar.
+  const healthRows = booted.map((h) => {
+    const key = `${h.workspaceId}::${h.harnessSlug}`;
+    const stats = statsBySlug.get(key);
+    const progress = progressBySlug.get(key);
+    const { verdict } = assessHarnessSubstrateHealth({
+      flagEnabled: enabled,
+      handlePresent: true,
+      claimStats: stats,
+      bootstrapProgress: progress ?? null,
+    });
+    return {
+      workspaceId: h.workspaceId,
+      harnessSlug: h.harnessSlug,
+      verdict,
+    };
+  });
+  const summary = summariseWorkspaceSubstrate(enabled, healthRows);
+
   return (
     <div style={PAGE_STYLE} data-testid="dogfood-substrate-page">
       <div style={HEADER_ROW}>
         <span style={TITLE}>Substrate diagnostic</span>
         <SubstrateStatusBadge status={topStatus} hint={hint} />
+        {summary.totalHarnesses > 0 ? (
+          <SubstrateHealthPill
+            verdict={summary.worstVerdict}
+            reasons={[
+              `${summary.healthy}✓ ${summary.booting}⏳ ${summary.degraded}! ${summary.unhealthy}✗`,
+            ]}
+          />
+        ) : null}
       </div>
 
       <p
