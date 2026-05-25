@@ -8,6 +8,7 @@
  */
 
 import type { ReactNode } from 'react';
+import { shouldFallbackToSupportRoute } from '../../lib/ui/desktop-static-host';
 import { navigateClient } from '../../lib/client-navigation';
 
 interface Props {
@@ -25,7 +26,7 @@ export function SupportChatButton({ children, className, message }: Props) {
     }
     window.dispatchEvent(new CustomEvent('papercusp:open-support'));
     window.setTimeout(() => {
-      if (!document.querySelector('[data-oracle-dock]')) {
+      if (shouldFallbackToSupportRoute(Boolean(document.querySelector('[data-oracle-dock]')))) {
         navigateClient('/support');
       }
     }, 250);

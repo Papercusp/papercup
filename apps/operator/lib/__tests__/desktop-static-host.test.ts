@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { isStaticDesktopHost, shouldEnableSupportWidget, shouldSuppressStaticDesktopReload } from '../ui/desktop-static-host';
+import { isStaticDesktopHost, shouldEnableSupportWidget, shouldFallbackToSupportRoute, shouldSuppressStaticDesktopReload } from '../ui/desktop-static-host';
 
 describe('static desktop host detection', () => {
   it('matches the static desktop hosts', () => {
@@ -23,5 +23,9 @@ describe('static desktop host detection', () => {
     expect(shouldSuppressStaticDesktopReload('http://localhost:3070')).toBe(true);
     expect(shouldSuppressStaticDesktopReload('http://localhost:4173')).toBe(true);
     expect(shouldSuppressStaticDesktopReload('http://localhost:3055')).toBe(false);
+  });
+  it('falls back to the support route only when the oracle dock is absent', () => {
+    expect(shouldFallbackToSupportRoute(false)).toBe(true);
+    expect(shouldFallbackToSupportRoute(true)).toBe(false);
   });
 });

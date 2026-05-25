@@ -12,3 +12,7 @@ export function shouldEnableSupportWidget(pathname: string, origin: string): boo
 export function shouldSuppressStaticDesktopReload(origin: string): boolean {
   return isStaticDesktopHost(origin);
 }
+
+export function shouldFallbackToSupportRoute(hasOracleDock: boolean): boolean {
+  return !hasOracleDock;
+}

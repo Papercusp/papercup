@@ -58,6 +58,7 @@ describe('testing-domains-registry', () => {
       'apps/operator/lib/__tests__/lazy-with-retry.test.ts',
       'apps/operator/lib/__tests__/navigation-progress-helpers.test.ts',
       'apps/operator/app/admin/testing/_lib/recorder-start-params.test.ts',
+      'apps/operator/app/_components/__tests__/SupportChatButton.test.tsx',
     ]));
   });
 });
