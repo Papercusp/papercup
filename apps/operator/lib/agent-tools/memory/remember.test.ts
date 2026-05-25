@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterAll } from 'vitest';
 
 vi.mock('../../memory/mem0-client', () => ({
   getMemoryClient: vi.fn(),
@@ -14,10 +14,16 @@ import remember from './remember';
 import { getMemoryClient } from '../../memory/mem0-client';
 import { getSessionUserOrDefault } from '../../auth';
 
-type MaybeAdd = { add: ReturnType<typeof vi.fn> };
+type FakeClient = {
+  add: ReturnType<typeof vi.fn>;
+  search: ReturnType<typeof vi.fn>;
+};
 
-const fakeClient = (): MaybeAdd => ({
+const fakeClient = (
+  searchResults: Array<{ id: string; memory: string; score?: number }> = [],
+): FakeClient => ({
   add: vi.fn(async () => ({ ok: true })),
+  search: vi.fn(async () => ({ results: searchResults })),
 });
 
 const fakeCtx = {
@@ -99,5 +105,103 @@ describe('memory:remember — anchor extraction (P-015)', () => {
     expect(meta.harness_slug).toBe('sheets');
     expect(meta.workspace_id).toBe('ws-test');
     expect(meta.anchor_count).toBe(2);
+  });
+});
+
+describe('memory:remember — dedup-on-write (P-016)', () => {
+  const origEnv = process.env.PAPERCUSP_MEMORY_DEDUP;
+  beforeEach(() => {
+    process.env.PAPERCUSP_MEMORY_DEDUP = 'on';
+  });
+  afterAll(() => {
+    if (origEnv === undefined) delete process.env.PAPERCUSP_MEMORY_DEDUP;
+    else process.env.PAPERCUSP_MEMORY_DEDUP = origEnv;
+  });
+
+  it('refuses when a similar memory exists (score above threshold)', async () => {
+    const c = fakeClient([
+      { id: 'mem-old', memory: 'Avi prefers terse responses', score: 0.95 },
+    ]);
+    vi.mocked(getMemoryClient).mockResolvedValue(c as unknown as Awaited<ReturnType<typeof getMemoryClient>>);
+
+    const res = await remember.handler(
+      { content: 'Avi prefers short responses', kind: 'preference' },
+      fakeCtx,
+    );
+    const parsed = JSON.parse(res.content[0].text);
+
+    expect(parsed.ok).toBe(false);
+    expect(parsed.reason).toBe('similar_exists');
+    expect(parsed.similar_memory_id).toBe('mem-old');
+    expect(parsed.similar_score).toBe(0.95);
+    expect(c.add).not.toHaveBeenCalled();
+  });
+
+  it('allows when no similar memory found (low score)', async () => {
+    const c = fakeClient([
+      { id: 'mem-old', memory: 'unrelated', score: 0.30 },
+    ]);
+    vi.mocked(getMemoryClient).mockResolvedValue(c as unknown as Awaited<ReturnType<typeof getMemoryClient>>);
+
+    const res = await remember.handler(
+      { content: 'New unrelated fact', kind: 'preference' },
+      fakeCtx,
+    );
+    expect(JSON.parse(res.content[0].text).ok).toBe(true);
+    expect(c.add).toHaveBeenCalled();
+  });
+
+  it('force: true bypasses the dedup check', async () => {
+    const c = fakeClient([
+      { id: 'mem-old', memory: 'Avi prefers terse responses', score: 0.99 },
+    ]);
+    vi.mocked(getMemoryClient).mockResolvedValue(c as unknown as Awaited<ReturnType<typeof getMemoryClient>>);
+
+    const res = await remember.handler(
+      {
+        content: 'Avi prefers terse responses',
+        kind: 'preference',
+        force: true,
+      },
+      fakeCtx,
+    );
+    expect(JSON.parse(res.content[0].text).ok).toBe(true);
+    expect(c.add).toHaveBeenCalled();
+    // search not invoked when force=true (no dedup check)
+    expect(c.search).not.toHaveBeenCalled();
+  });
+
+  it('proceeds defensively if dedup search throws', async () => {
+    const c = fakeClient();
+    c.search.mockRejectedValue(new Error('mem0 search broken'));
+    vi.mocked(getMemoryClient).mockResolvedValue(c as unknown as Awaited<ReturnType<typeof getMemoryClient>>);
+
+    const res = await remember.handler(
+      { content: 'something', kind: 'preference' },
+      fakeCtx,
+    );
+    expect(JSON.parse(res.content[0].text).ok).toBe(true);
+    expect(c.add).toHaveBeenCalled();
+  });
+
+  it('dedup is disabled by default (env not set)', async () => {
+    delete process.env.PAPERCUSP_MEMORY_DEDUP;
+    // Re-import to re-evaluate the module-level const
+    vi.resetModules();
+    const { default: rememberFresh } = await import('./remember');
+    const c = fakeClient([
+      { id: 'mem-old', memory: 'exact match', score: 0.99 },
+    ]);
+    vi.mocked(getMemoryClient).mockResolvedValue(c as unknown as Awaited<ReturnType<typeof getMemoryClient>>);
+
+    const res = await rememberFresh.handler(
+      { content: 'exact match', kind: 'preference' },
+      fakeCtx,
+    );
+    // With flag off, the high-similarity write should still succeed
+    expect(JSON.parse(res.content[0].text).ok).toBe(true);
+    expect(c.search).not.toHaveBeenCalled();
+    // restore for following tests
+    process.env.PAPERCUSP_MEMORY_DEDUP = 'on';
   });
 });

@@ -18,6 +18,28 @@ import { getSessionUserOrDefault } from '../../auth';
 
 const KINDS = ['identity', 'preference', 'project', 'correction', 'ephemeral'] as const;
 
+/**
+ * P-016: dedup-on-write similarity threshold. Tunable via env. A score
+ * above this against the top-K nearest existing memory in the same
+ * scope triggers a "similar_exists" rejection (bypassable via
+ * `force: true`).
+ *
+ * Disabled by default (set PAPERCUSP_MEMORY_DEDUP=on to enable).
+ * Ramp-up plan: ship off; turn on once Layer 1 audit reports the
+ * actual dedup pressure isn't going to false-positive on real writes.
+ *
+ * Evaluated at call time (not module load) so tests can flip the env
+ * per-test without resetting the module.
+ */
+function dedupEnabled(): boolean {
+  return process.env.PAPERCUSP_MEMORY_DEDUP === 'on';
+}
+function dedupThreshold(): number {
+  const raw = Number(process.env.PAPERCUSP_MEMORY_DEDUP_THRESHOLD);
+  return Number.isFinite(raw) && raw > 0 && raw <= 1 ? raw : 0.9;
+}
+const DEDUP_TOP_K = 3;
+
 const ALL_ROLES = [
   'scoper', 'architect', 'worker', 'validator',
   'reviewer', 'debugger', 'operator', 'documenter', 'curator',
@@ -48,6 +70,8 @@ export default defineTool({
       .describe('Scope to a specific harness (project). Anyone with access to that harness will see this memory in their recall. Mutually exclusive with shared.'),
     shared: z.boolean().optional()
       .describe('DEPRECATED — prefer harness_slug. Workspace-wide shared memory (visible to all users in the workspace, across every harness). Kept for back-compat; do not use for new memories.'),
+    force: z.boolean().optional()
+      .describe('Bypass the dedup-on-write similarity check (P-016). Use only when knowingly writing a near-duplicate the agent has decided to keep separate. Default: false.'),
   }),
   async handler(args, ctx) {
     const user = await getSessionUserOrDefault();
@@ -100,6 +124,42 @@ export default defineTool({
     if (anchors) {
       metadata.anchors = anchors.anchors;
       metadata.anchor_count = anchors.anchor_count;
+    }
+
+    // Phase 4 P-016: dedup-on-write. Semantic-search the same scope for
+    // near-duplicates before inserting. If similarity exceeds the
+    // threshold, refuse and surface the existing memory_id so the agent
+    // can decide to merge / forget-then-rewrite / force-through.
+    //
+    // Defensive: any failure of the search falls through to insert. The
+    // dedup check is a hygiene layer, never load-bearing. Same posture
+    // as injection.ts (failures degrade silently).
+    if (dedupEnabled() && !args.force) {
+      try {
+        const dedup = await client.search(args.content, {
+          filters: { user_id: userIdForWrite },
+          limit: DEDUP_TOP_K,
+        });
+        const top = dedup?.results?.[0];
+        const topScore = typeof top?.score === 'number' ? top.score : null;
+        if (top && topScore !== null && topScore >= dedupThreshold()) {
+          return {
+            content: [{
+              type: 'text',
+              text: JSON.stringify({
+                ok: false,
+                reason: 'similar_exists',
+                similar_memory_id: top.id,
+                similar_score: topScore,
+                similar_text: top.memory,
+                hint: 'Set force=true to write anyway, or call memory:forget on the similar memory first.',
+              }),
+            }],
+          };
+        }
+      } catch {
+        // dedup check failed — proceed with the write (degraded mode).
+      }
     }
 
     const result = await client.add(args.content, {
