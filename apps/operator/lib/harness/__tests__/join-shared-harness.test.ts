@@ -163,11 +163,65 @@ describe('phase-0 stubs', () => {
     });
   });
 
-  it('step4_bootstrapHyperbee throws phase_0_pending', async () => {
-    await expect(step4_bootstrapHyperbee({ topic: 'a'.repeat(64) })).rejects.toMatchObject({
-      name: 'JoinStepError',
-      code: 'phase_0_pending',
+  it('step4_bootstrapHyperbee throws phase_0_pending when substrate is not booted', async () => {
+    await expect(
+      step4_bootstrapHyperbee({
+        workspaceId: 'ws-x',
+        harnessSlug: 'h',
+        resolveHandle: async () => null,
+      }),
+    ).rejects.toMatchObject({ name: 'JoinStepError', code: 'phase_0_pending' });
+  });
+
+  it('step4_bootstrapHyperbee returns caughtUp:true when getProgress reports caught up', async () => {
+    const r = await step4_bootstrapHyperbee({
+      workspaceId: 'ws-x',
+      harnessSlug: 'h',
+      resolveHandle: async () => ({}),
+      getProgress: () => ({
+        workspaceId: 'ws-x',
+        harnessSlug: 'h',
+        mergedOps: 10,
+        highestSeen: 10,
+        lastChangeMs: 0,
+        caughtUp: true,
+      }),
+      sleep: async () => {},
     });
+    expect(r.caughtUp).toBe(true);
+    expect(r.timedOut).toBe(false);
+    expect(r.observed).toBe(10);
+  });
+
+  it('step4_bootstrapHyperbee returns timedOut:true when deadline passes without catch-up', async () => {
+    const fakeNow = (() => {
+      let t = 1_000_000;
+      return () => {
+        const v = t;
+        t += 30;
+        return v;
+      };
+    })();
+    const r = await step4_bootstrapHyperbee({
+      workspaceId: 'ws-x',
+      harnessSlug: 'h',
+      timeoutMs: 50,
+      pollMs: 10,
+      now: fakeNow,
+      resolveHandle: async () => ({}),
+      getProgress: () => ({
+        workspaceId: 'ws-x',
+        harnessSlug: 'h',
+        mergedOps: 3,
+        highestSeen: 3,
+        lastChangeMs: 0,
+        caughtUp: false,
+      }),
+      sleep: async () => {},
+    });
+    expect(r.caughtUp).toBe(false);
+    expect(r.timedOut).toBe(true);
+    expect(r.observed).toBe(3);
   });
 
   it('step5_seedPg throws phase_0_pending', async () => {

@@ -5,7 +5,7 @@
  *   1. oauth_attest        — ensure device keypair + channel-1 OAuth re-check
  *   2. clone_repo          — git-clone the shared GitHub repo (P-008 helper)
  *   3. join_hyperswarm     — join Hyperswarm topic  [STUB: phase_0_pending]
- *   4. bootstrap_hyperbee  — replicate Autobase     [STUB: phase_0_pending]
+ *   4. bootstrap_hyperbee  — wait for substrate catch-up signal (P-034)
  *   5. seed_pg             — seed local PG from projection  [STUB: phase_0_pending]
  *   6. create_user_branch  — create user/<github_user_id> branch + worktree
  *   7. push_contributor_file — push signed .harness/contributors/<login>.json
@@ -13,10 +13,11 @@
  *   9. verify_binding      — two-channel binding verification (P-075)
  *  10. route_insights      — signal completion (UI navigates to /harness/<slug>/insights)
  *
- * Stubs: steps 3, 4, 5 still depend on Hyperswarm/Autobase replication
+ * Stubs: steps 3 and 5 still depend on Hyperswarm/Autobase replication
  * specifics (Phase 5a P-030/P-031 native bits) and produce
- * `JoinStepStatus.phase_0_pending`. Step 8 now writes to the substrate
- * when booted; it soft-skips (phase_0_pending) only when the substrate
+ * `JoinStepStatus.phase_0_pending`. Steps 4 and 8 now exercise the
+ * substrate when booted (P-034 bootstrap-wait + P-033 contributor
+ * publication); both soft-skip (phase_0_pending) only when the substrate
  * flag is off / the per-harness handle isn't ready.
  *
  * Idempotent resume: the orchestrator persists `JoinState` to
@@ -56,6 +57,7 @@ import {
   CONTRIBUTOR_ROW_SCHEMA_VERSION,
   type ContributorRow,
 } from './contributor-row-types';
+import { waitForHyperbeeBootstrap } from './bootstrap-wait';
 import { keychainLoad } from '../identity/keychain';
 import { loadOrGenerateDeviceKeypair } from '../identity/attest';
 import type { DeviceKeypairId } from '../identity/attestation-types';
@@ -265,16 +267,73 @@ export async function step3_joinHyperswarm(_opts: {
 }
 
 // ─── step 4: bootstrap_hyperbee ──────────────────────────────────────────────
-// STUB: Phase 5a deferred.
+//
+// Waits for the per-harness Hyperbee replication to catch up (P-066
+// caught-up signal) so the wizard's route-to-Insights renders meaningful
+// state. Timeout fires the "still syncing — continue anyway" affordance
+// per v5 §3 Entry 4 sub-acceptance P-034b; the step still completes
+// (NOT an error) so the join flow can continue.
+//
+// Soft-skip when the substrate isn't booted (flag off / handle not
+// resolved): throws phase_0_pending, caller maps to markPhase0 so flow
+// continues.
 
-export async function step4_bootstrapHyperbee(_opts: {
-  topic: string;
-}): Promise<void> {
-  throw new JoinStepError(
-    'bootstrap_hyperbee',
-    'phase_0_pending',
-    'Hyperbee bootstrap deferred until Phase 5a',
-  );
+export interface Step4Result {
+  caughtUp: boolean;
+  timedOut: boolean;
+  observed: number;
+  substrateInactive: boolean;
+}
+
+export async function step4_bootstrapHyperbee(opts: {
+  workspaceId: string;
+  harnessSlug: string;
+  timeoutMs?: number;
+  pollMs?: number;
+  /** Test override; runtime imports getBootstrapProgress lazily. */
+  getProgress?: (
+    workspaceId: string,
+    harnessSlug: string,
+  ) => import('../sync/hyperbee/bootstrap-progress').BootstrapProgressSnapshot | null;
+  sleep?: (ms: number) => Promise<void>;
+  now?: () => number;
+  /** Test override; runtime resolves via getBootedHarness. */
+  resolveHandle?: () => Promise<unknown | null>;
+}): Promise<Step4Result> {
+  const resolveHandle =
+    opts.resolveHandle ??
+    (async () => {
+      const mod = await import('../sync/hyperbee/boot-all');
+      return mod.getBootedHarness(opts.workspaceId, opts.harnessSlug);
+    });
+  const handle = await resolveHandle();
+  if (!handle) {
+    throw new JoinStepError(
+      'bootstrap_hyperbee',
+      'phase_0_pending',
+      'Hyperbee substrate not booted for this harness; will sync on next online join.',
+    );
+  }
+  const getProgress =
+    opts.getProgress ??
+    ((ws, slug) => {
+      // Lazy import + delegate; require sync to keep step4 callers' import
+      // graph small. The bootstrap-progress module is pure (no PG / IO).
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      const mod = require('../sync/hyperbee/bootstrap-progress') as typeof import('../sync/hyperbee/bootstrap-progress');
+      return mod.getBootstrapProgress(ws, slug);
+    });
+  const sleep = opts.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms)));
+  const r = await waitForHyperbeeBootstrap({
+    workspaceId: opts.workspaceId,
+    harnessSlug: opts.harnessSlug,
+    timeoutMs: opts.timeoutMs,
+    pollMs: opts.pollMs,
+    getProgress,
+    sleep,
+    now: opts.now,
+  });
+  return r;
 }
 
 // ─── step 5: seed_pg ─────────────────────────────────────────────────────────
@@ -665,13 +724,44 @@ export async function joinSharedHarness(opts: JoinOptions): Promise<JoinState> {
     await saveAndEmit();
   }
 
-  // ── Steps 3-5: Phase-0 stubs (skip without failing) ──
-  for (const stubId of ['join_hyperswarm', 'bootstrap_hyperbee', 'seed_pg'] as JoinStepId[]) {
+  // ── Steps 3 + 5: Phase-0 stubs (skip without failing) ──
+  for (const stubId of ['join_hyperswarm', 'seed_pg'] as JoinStepId[]) {
     if (state.steps[stubId].status !== 'done' && state.steps[stubId].status !== 'phase_0_pending') {
       markPhase0(stubId, 'deferred until Phase 5a (Hyperswarm/Autobase)');
     }
   }
   await saveAndEmit();
+
+  // ── Step 4: bootstrap_hyperbee — wait for substrate catch-up ──
+  if (state.steps.bootstrap_hyperbee.status !== 'done') {
+    markRunning('bootstrap_hyperbee');
+    try {
+      const { activeWorkspaceId } = await import('../workspace-registry');
+      const s4 = await step4_bootstrapHyperbee({
+        workspaceId: activeWorkspaceId(),
+        harnessSlug: opts.slug,
+      });
+      if (s4.timedOut) {
+        // Soft completion: the UI surfaces "still syncing — continue anyway"
+        // per v5 §3 Entry 4 sub-acceptance P-034b.
+        state.steps.bootstrap_hyperbee = {
+          id: 'bootstrap_hyperbee',
+          status: 'done',
+          detail: `still syncing (observed ${s4.observed} ops, continued after timeout)`,
+        };
+      } else {
+        markDone('bootstrap_hyperbee');
+      }
+    } catch (e: unknown) {
+      const err = e instanceof JoinStepError ? e : null;
+      if (err?.code === 'phase_0_pending') {
+        markPhase0('bootstrap_hyperbee', err.message ?? 'substrate not booted');
+      } else {
+        markError('bootstrap_hyperbee', err?.code ?? 'unknown', err?.message);
+      }
+    }
+    await saveAndEmit();
+  }
 
   const cloneDir = state.cloneDir!;
 
