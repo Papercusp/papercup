@@ -21,7 +21,9 @@
  * unaffected. Never throws.
  */
 
+import { getOrgPg } from '@restart/db-org';
 import { getMemoryClient } from './mem0-client';
+import { bumpLastSurfacedSql } from './bump-last-surfaced';
 
 /**
  * mem0 memory injection is a best-effort enhancement — never
@@ -186,6 +188,27 @@ export async function buildMemoryContextBlock(
   for (const h of userResults) lines.push(`- ${fmtScope((h.metadata ?? {}) as Record<string, unknown>)} ${h.memory}`);
   for (const { hit, slug } of harnessHits) lines.push(`- ${fmtScope((hit.metadata ?? {}) as Record<string, unknown>, slug)} ${hit.memory}`);
   for (const h of workspaceResults) lines.push(`- ${fmtScope((h.metadata ?? {}) as Record<string, unknown>)} ${h.memory}`);
+
+  // Phase 5 P-021: stamp last_surfaced_at on every memory we surfaced
+  // so Layer 3 (deferred) can target "memories actually used recently"
+  // for revalidation. Fire-and-forget: bumpLastSurfacedSql is fully
+  // defensive (column-missing cached, transient errors swallowed) and
+  // its outcome doesn't affect the injection block we return.
+  type HitWithId = { id?: string };
+  const surfacedIds: string[] = [];
+  for (const h of userResults) if ((h as HitWithId).id) surfacedIds.push((h as HitWithId).id!);
+  for (const { hit } of harnessHits) if ((hit as HitWithId).id) surfacedIds.push((hit as HitWithId).id!);
+  for (const h of workspaceResults) if ((h as HitWithId).id) surfacedIds.push((h as HitWithId).id!);
+  if (surfacedIds.length > 0) {
+    void (async () => {
+      try {
+        const { sql } = getOrgPg();
+        await bumpLastSurfacedSql(sql, surfacedIds);
+      } catch {
+        /* swallow — never load-bearing */
+      }
+    })();
+  }
 
   const heading = input.heading ?? 'Operator memory (relevant entries)';
   return `## ${heading}\n\n${lines.join('\n')}`;
