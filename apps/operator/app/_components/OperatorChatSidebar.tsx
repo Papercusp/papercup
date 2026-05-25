@@ -450,10 +450,11 @@ body.has-op-chat {
   padding-left: var(--op-chat-w, 360px);
 }
 
-/* Header (.pc-header) is fixed at the top; same shift applies so it
-   doesn't render under the sidebar. */
-body.has-op-chat .pc-header,
-body.has-op-chat .h-header {
+/* Only the global fixed header needs an explicit left/width offset.
+   The harness strip (.h-header) already sits inside body content, so the
+   body padding-left above shifts it naturally; offsetting it again doubles
+   the shift and clips the right-side controls after chat mount / resize. */
+body.has-op-chat .pc-header {
   left: var(--op-chat-w, 360px);
   width: calc(100vw - var(--op-chat-w, 360px));
 }
