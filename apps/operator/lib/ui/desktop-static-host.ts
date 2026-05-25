@@ -1,8 +1,9 @@
 export function isStaticDesktopHost(origin: string): boolean {
-  return origin === 'http://localhost:3070'
-    || origin === 'http://127.0.0.1:3070'
-    || origin === 'http://localhost:4173'
-    || origin === 'http://127.0.0.1:4173';
+  const normalized = origin.endsWith('/') ? origin.slice(0, -1) : origin;
+  return normalized === 'http://localhost:3070'
+    || normalized === 'http://127.0.0.1:3070'
+    || normalized === 'http://localhost:4173'
+    || normalized === 'http://127.0.0.1:4173';
 }
 
 export function shouldEnableSupportWidget(pathname: string, origin: string): boolean {

@@ -17,6 +17,8 @@ describe('desktop UI intents host policy', () => {
     expect(shouldMountRemoteUiControl('http://127.0.0.1:3070')).toBe(false);
     expect(shouldMountRemoteUiControl('http://localhost:4173')).toBe(false);
     expect(shouldMountRemoteUiControl('http://127.0.0.1:4173')).toBe(false);
+    expect(shouldMountRemoteUiControl('http://localhost:3070/')).toBe(false);
+    expect(shouldMountRemoteUiControl('http://localhost:4173/')).toBe(false);
     expect(shouldMountRemoteUiControl('http://localhost:3055')).toBe(true);
   });
   it('keeps both remote-ui policy helpers in sync for known hosts', () => {
