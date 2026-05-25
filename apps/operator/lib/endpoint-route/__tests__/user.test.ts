@@ -36,6 +36,7 @@ import userSearch from '../routes/user/search';
 import userMemory from '../routes/user/memory';
 import userMemoryFeedback from '../routes/user/memory-feedback';
 import userMemoryReembed from '../routes/user/memory-reembed';
+import userMemoryAudit from '../routes/user/memory-audit';
 
 type AnyRoute = RouteDefinition<ZodTypeAny | undefined>;
 
@@ -78,6 +79,27 @@ describe('user family ports — 401 gate', () => {
   it('POST /user/memory/reembed returns 401', async () => {
     const res = await appWith(userMemoryReembed as AnyRoute).request('/user/memory/reembed', post({}));
     expect(res.status).toBe(401);
+  });
+  it('POST /user/memory/audit returns 401', async () => {
+    const res = await appWith(userMemoryAudit as AnyRoute).request('/user/memory/audit', post({}));
+    expect(res.status).toBe(401);
+  });
+});
+
+describe('POST /user/memory/audit — auth + full-flag pathways', () => {
+  it('returns full-audit estimate when authenticated and full=true', async () => {
+    vi.mocked(getSessionUser).mockResolvedValueOnce({ id: 'u1', email: 'a@b' } as never);
+    const res = await appWith(userMemoryAudit as AnyRoute).request(
+      '/user/memory/audit',
+      post({ full: true }),
+    );
+    expect(res.status).toBe(200);
+    const j = await res.json();
+    expect(j.ok).toBe(true);
+    expect(j.skipped).toBe(true);
+    expect(j.reason).toBe('full_audit_pending_layer_3');
+    expect(j.estimate).toBeDefined();
+    expect(j.estimate.tokens).toBeGreaterThan(0);
   });
 });
 

@@ -334,6 +334,7 @@ import userSearch from './user/search';
 import userMemory from './user/memory';
 import userMemoryFeedback from './user/memory-feedback';
 import userMemoryReembed from './user/memory-reembed';
+import userMemoryAudit from './user/memory-audit';
 import devSql from './dev/sql';
 import devProcessesKill from './dev/processes-kill';
 import devTables from './dev/tables';
@@ -684,6 +685,7 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(userMemory as AnyRoute[]),
   ...flatten(userMemoryFeedback as AnyRoute),
   ...flatten(userMemoryReembed as AnyRoute),
+  ...flatten(userMemoryAudit as AnyRoute),
   ...flatten(devSql as AnyRoute),
   ...flatten(devProcessesKill as AnyRoute),
   ...flatten(devTables as AnyRoute),

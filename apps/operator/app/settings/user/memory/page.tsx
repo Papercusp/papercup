@@ -4,12 +4,26 @@ import { useEffect, useState, useCallback, type ReactElement } from 'react';
 import { toast } from 'sonner';
 import { useConfirmDialog } from '@/app/harness/useConfirmDialog';
 
+interface BrokenAnchor {
+  kind: string;
+  value: string;
+  reason: string | null;
+}
+
+interface AuditFields {
+  state: string;
+  last_validated_at: string | null;
+  last_surfaced_at: string | null;
+  broken_anchors: BrokenAnchor[];
+}
+
 interface MemoryRow {
   id: string;
   memory: string;
   metadata?: Record<string, unknown>;
   scope: 'user' | 'harness' | 'workspace';
   harness_slug?: string;
+  audit?: AuditFields;
 }
 
 const KIND_COLORS: Record<string, string> = {
@@ -19,6 +33,19 @@ const KIND_COLORS: Record<string, string> = {
   correction: '#f87171',
   ephemeral:  '#9ca3af',
 };
+
+const STATE_BADGES: Record<string, { label: string; icon: string; color: string; bg: string }> = {
+  active:        { label: 'verified',           icon: '✓', color: '#065f46', bg: '#d1fae5' },
+  broken_anchor: { label: 'broken anchor',      icon: '⚠', color: '#92400e', bg: '#fef3c7' },
+  superseded:    { label: 'superseded',         icon: '🔄', color: '#1e40af', bg: '#dbeafe' },
+  contradicted: { label: 'contradicted',       icon: '❌', color: '#991b1b', bg: '#fee2e2' },
+  forgotten:     { label: 'forgotten',          icon: '🗑', color: '#374151', bg: '#e5e7eb' },
+};
+
+function isFlagged(row: MemoryRow): boolean {
+  const state = row.audit?.state ?? 'active';
+  return state !== 'active';
+}
 
 interface FeedbackStats {
   total_edits: number;
@@ -33,6 +60,8 @@ export default function MemoryPage() {
   const { confirm: askConfirm, element: confirmEl } = useConfirmDialog();
   const [reason, setReason] = useState<string | null>(null);
   const [filter, setFilter] = useState<string>('all');
+  const [flaggedOnly, setFlaggedOnly] = useState<boolean>(false);
+  const [auditBusy, setAuditBusy] = useState<boolean>(false);
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -74,6 +103,7 @@ export default function MemoryPage() {
   const onDelete = useCallback(async (id: string) => {
     const ok = await askConfirm({
       title: 'Delete this memory?',
+      body: 'This memory will be removed and a feedback entry recorded so the extractor learns to skip similar memories.',
       confirmLabel: 'Delete',
       destructive: true,
     });
@@ -108,7 +138,7 @@ export default function MemoryPage() {
   const onReembed = useCallback(async (from: 'openai' | 'local', to: 'openai' | 'local') => {
     const ok = await askConfirm({
       title: `Re-embed memories from "${from}" → "${to}"?`,
-      description: `This may take 30s-5min depending on size. Existing "${to}" memories with the same id will be overwritten.`,
+      body: `This may take 30s-5min depending on size. Existing "${to}" memories with the same id will be overwritten.`,
       confirmLabel: 'Re-embed',
     });
     if (!ok) return;
@@ -133,31 +163,101 @@ export default function MemoryPage() {
     }
   }, [refresh, askConfirm]);
 
-  const filtered = filter === 'all'
+  const onAuditAll = useCallback(async () => {
+    const ok = await askConfirm({
+      title: 'Audit all memories?',
+      body: 'Runs the structural anchor check (Layer 1). Free and fast — checks that files / plans / migrations referenced by your memories still exist. Results land as status badges below.',
+      confirmLabel: 'Audit',
+    });
+    if (!ok) return;
+    setAuditBusy(true);
+    try {
+      const r = await fetch('/api/user/memory/audit', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({}),
+      });
+      const j = await r.json();
+      if (r.ok) {
+        if (j.skipped) {
+          toast.warning(`Audit skipped: ${j.reason}`);
+        } else {
+          toast.success(`Audit complete: ${j.summary ?? 'done'}`);
+        }
+        await refresh();
+      } else {
+        toast.error(`Audit failed: ${j.message ?? j.error}`);
+      }
+    } catch (err) {
+      toast.error(`Audit failed: ${(err as Error).message}`);
+    } finally {
+      setAuditBusy(false);
+    }
+  }, [askConfirm, refresh]);
+
+  const filteredByKind = filter === 'all'
     ? rows
     : rows.filter((r) => (r.metadata as Record<string, unknown>)?.kind === filter);
+  const filtered = flaggedOnly
+    ? filteredByKind.filter(isFlagged)
+    : filteredByKind;
+  const flaggedCount = rows.filter(isFlagged).length;
 
   const renderRow = useCallback((row: MemoryRow): ReactElement => {
     const meta = (row.metadata ?? {}) as Record<string, unknown>;
     const kind = (meta.kind as string) ?? 'unknown';
     const color = KIND_COLORS[kind] ?? '#6b7280';
+    const state = row.audit?.state ?? 'active';
+    const stateBadge = STATE_BADGES[state];
+    const brokenAnchors = row.audit?.broken_anchors ?? [];
     return (
       <li
         key={row.id}
         style={{
           display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start',
           padding: 12, gap: 12,
-          borderRadius: 6, border: '1px solid var(--border)',
+          borderRadius: 6,
+          border: state !== 'active' ? '1px solid #f59e0b' : '1px solid var(--border)',
           background: 'var(--bg-2)',
         }}
       >
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 4, flexWrap: 'wrap' }}>
             <span style={{ padding: '2px 8px', borderRadius: 4, background: color, color: '#fff', fontSize: 11, fontWeight: 600 }}>{kind}</span>
+            {stateBadge && state !== 'active' && (
+              <span
+                title={brokenAnchors.length > 0
+                  ? `Broken anchors:\n${brokenAnchors.map((a) => `• ${a.kind}:${a.value}${a.reason ? ` (${a.reason})` : ''}`).join('\n')}`
+                  : `State: ${state}`}
+                style={{
+                  padding: '2px 8px', borderRadius: 4,
+                  background: stateBadge.bg, color: stateBadge.color,
+                  fontSize: 11, fontWeight: 600,
+                  cursor: brokenAnchors.length > 0 ? 'help' : 'default',
+                }}
+              >
+                {stateBadge.icon} {stateBadge.label}
+              </span>
+            )}
             {meta.expires_at !== undefined && (
               <span style={{ fontSize: 11, color: 'var(--fg-mute)' }}>expires {new Date(meta.expires_at as string).toLocaleString()}</span>
             )}
+            {row.audit?.last_validated_at && (
+              <span style={{ fontSize: 11, color: 'var(--fg-mute)' }}>
+                audited {new Date(row.audit.last_validated_at).toLocaleString()}
+              </span>
+            )}
           </div>
+          {brokenAnchors.length > 0 && (
+            <div style={{ marginBottom: 4, fontSize: 12, color: '#92400e' }}>
+              {brokenAnchors.map((a, i) => (
+                <div key={`${a.kind}-${a.value}-${i}`}>
+                  <code style={{ background: 'transparent', color: '#92400e' }}>{a.kind}:{a.value}</code>
+                  {a.reason && <> — {a.reason}</>}
+                </div>
+              ))}
+            </div>
+          )}
           {editingId === row.id ? (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
               <textarea
@@ -240,8 +340,8 @@ export default function MemoryPage() {
         </div>
       )}
 
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
-        <div style={{ display: 'flex', gap: 8 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
           {['all', 'identity', 'preference', 'project', 'correction', 'ephemeral'].map((f) => (
             <button
               key={f}
@@ -258,8 +358,39 @@ export default function MemoryPage() {
               {f} {f !== 'all' && `(${rows.filter((r) => (r.metadata as Record<string, unknown>)?.kind === f).length})`}
             </button>
           ))}
+          <button
+            type="button"
+            onClick={() => setFlaggedOnly((v) => !v)}
+            title="Show only memories with broken anchors / contradictions / etc."
+            style={{
+              padding: '4px 10px', borderRadius: 6,
+              border: flaggedOnly ? '2px solid #f59e0b' : '1px solid var(--border)',
+              background: flaggedOnly ? '#fef3c7' : 'var(--bg-2)',
+              color: flaggedOnly ? '#92400e' : 'var(--fg)',
+              cursor: 'pointer', fontSize: 13,
+              fontWeight: flaggedOnly ? 600 : 400,
+            }}
+          >
+            ⚠ flagged only ({flaggedCount})
+          </button>
         </div>
-        <div style={{ display: 'flex', gap: 8 }}>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          <button
+            type="button"
+            onClick={onAuditAll}
+            disabled={auditBusy || rows.length === 0}
+            title="Run the Layer 1 structural anchor audit — checks that every file / plan / migration referenced by a memory still exists. Free and fast."
+            style={{
+              padding: '4px 10px', borderRadius: 6,
+              border: '1px solid var(--border)',
+              background: auditBusy ? 'var(--bg-2)' : 'var(--bg-3)',
+              cursor: auditBusy ? 'wait' : 'pointer',
+              fontSize: 13, fontWeight: 600,
+              opacity: auditBusy ? 0.5 : 1,
+            }}
+          >
+            {auditBusy ? 'Auditing…' : 'Audit all'}
+          </button>
           <button
             type="button"
             onClick={() => onReembed('openai', 'local')}
