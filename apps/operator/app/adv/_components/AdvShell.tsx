@@ -7,12 +7,17 @@ import * as Tabs from '@radix-ui/react-tabs';
 /**
  * /adv shell — Advanced Agent Orchestration surface.
  *
- * Mirrors AdminShell but is reachable from the ADV navbar button
- * (sibling of OPS/DECK). First tab is Plans (relocated from the
- * hidden /admin/plans page). Sessions tab lists agent terminal
- * launches initiated from the Plans surface.
+ * This is becoming the replacement shell for the legacy OPS /harness
+ * workspace. Harness-scoped pages keep their selected project in ?slug=
+ * so the surface is deep-linkable and agent-drivable.
  */
 const TABS = [
+  { href: '/adv/brainstorm', label: 'Brainstorm' },
+  { href: '/adv/prs', label: 'PRs' },
+  { href: '/adv/insights', label: 'Insights' },
+  { href: '/adv/config', label: 'Config' },
+  { href: '/adv/settings', label: 'Settings' },
+  { href: '/adv/docs', label: 'Docs' },
   { href: '/adv/plans', label: 'Plans' },
   { href: '/adv/sessions', label: 'Sessions' },
 ] as const;
@@ -24,7 +29,7 @@ export default function AdvShell({
   title?: string;
   children: React.ReactNode;
 }) {
-  const pathname = usePathname() || '/adv/plans';
+  const pathname = usePathname() || '/adv/brainstorm';
   const activeTab =
     TABS.find((t) => pathname === t.href || pathname.startsWith(`${t.href}/`)) ?? TABS[0];
 
