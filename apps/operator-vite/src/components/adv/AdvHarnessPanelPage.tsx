@@ -28,20 +28,13 @@ export default function AdvHarnessPanelPage({ panel }: { panel: AdvHarnessPanel 
           flex: 1;
           min-height: 0;
         }
+        .pc-adv-harness-panel .h-root--embedded-panel .h-header,
         .pc-adv-harness-panel .h-root--embedded-panel .h-tab-strip,
-        .pc-adv-harness-panel .h-root--embedded-panel .h-header-side,
         .pc-adv-harness-panel .h-root--embedded-panel .h-active-agents-row,
         .pc-adv-harness-panel .h-root--embedded-panel .h-plan-review-banner,
         .pc-adv-harness-panel .h-root--embedded-panel .h-quick-action-row,
         .pc-adv-harness-panel .h-root--embedded-panel .h-guide-strip {
           display: none !important;
-        }
-        .pc-adv-harness-panel .h-root--embedded-panel .h-header {
-          flex: 0 0 auto;
-          min-height: unset;
-        }
-        .pc-adv-harness-panel .h-root--embedded-panel .h-project-card {
-          max-width: min(920px, 100%);
         }
         .pc-adv-harness-panel .h-root--embedded-panel .h-main-shell {
           flex: 1;
