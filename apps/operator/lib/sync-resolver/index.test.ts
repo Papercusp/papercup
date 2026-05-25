@@ -150,13 +150,14 @@ describe('sync-resolver v2 registry', () => {
       }
     });
 
-    it('exposes 54 migrated entries total — all live queryNames migrated', () => {
+    it('exposes 56 migrated entries total — all live queryNames migrated', () => {
       // P-022 migration complete: every live queryName from the
       // 2026-05-24 audit is in the v2 registry. Pre-cutover audit
       // (2026-05-25) found one missed entry (userActions.byHarness)
-      // and added it. The legacy resolver fall-through is now dead
-      // code; cutover commit removes it.
-      expect(knownQueryNamesV2()).toHaveLength(54);
+      // and added it. plansDrafts.bySlug added 2026-05-24 (P-022).
+      // The legacy resolver fall-through is now dead code; cutover
+      // commit removes it.
+      expect(knownQueryNamesV2()).toHaveLength(56);
     });
   });
 
@@ -307,5 +308,215 @@ describe('sync-resolver v2 registry', () => {
       }
       expect(typeErrors).toEqual([]);
     }, 10_000);
+  });
+});
+
+/* ── P-029: plansDrafts.bySlug resolver ────────────────────────────── */
+
+describe('resolveNamedQueryV2 — plansDrafts.bySlug (P-029)', () => {
+  beforeEach(() => {
+    vi.resetModules();
+  });
+
+  function mockPlansDeps(
+    plans: Array<{
+      slug: string;
+      filePath: string;
+      archived?: boolean;
+      content: string;
+    }>,
+  ) {
+    vi.doMock('@/lib/agent-tools/plans/source', () => ({
+      resolveHarnessPlansDir: vi.fn(async () => ({
+        plans: '/fake/plans',
+        archive: '/fake/plans/archive',
+      })),
+      listPlanFiles: vi.fn(async () =>
+        plans.map((p) => ({
+          slug: p.slug,
+          filePath: p.filePath,
+          archived: p.archived ?? false,
+        })),
+      ),
+    }));
+
+    const contentMap = Object.fromEntries(plans.map((p) => [p.filePath, p.content]));
+    vi.doMock('node:fs/promises', () => ({
+      readFile: vi.fn(async (path: string) => {
+        if (path in contentMap) return contentMap[path];
+        throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+      }),
+    }));
+
+    // Minimal parsePlan that handles frontmatter + items for test fixtures.
+    vi.doMock('@/lib/agent-tools/plans/parser', () => ({
+      parsePlan: vi.fn((raw: string) => {
+        const fm: Record<string, string> = {};
+        const fmMatch = raw.match(/^---\n([\s\S]*?)\n---/);
+        if (fmMatch) {
+          for (const line of fmMatch[1].split('\n')) {
+            const m = line.match(/^(\w+):\s*"?(.+?)"?\s*$/);
+            if (m) fm[m[1]] = m[2];
+          }
+        }
+        const items = [...raw.matchAll(/^- \[[ x]\] (P-\d+)/gm)].map((m, i) => ({
+          id: m[1],
+          text: `item ${i + 1}`,
+        }));
+        const nowStateM = raw.match(/\*\*State:\*\*\s*(.+)/);
+        const nowNextM = raw.match(/\*\*Next:\*\*\s*(.+)/);
+        return {
+          isLegacy: !fmMatch,
+          frontmatter: {
+            title: fm.title ?? null,
+            slug: fm.slug ?? null,
+            status: fm.status ?? null,
+            created: fm.created ?? null,
+            updated: fm.updated ?? null,
+          },
+          items,
+          now: nowStateM
+            ? { state: nowStateM[1].trim(), next: nowNextM?.[1].trim() ?? null }
+            : null,
+        };
+      }),
+    }));
+  }
+
+  const DRAFT_PLAN = (slug: string, source: 'user' | 'scoper' = 'user') => `---
+title: "${source === 'scoper' ? 'Scoper proposal' : 'My draft plan'}"
+slug: ${slug}
+status: draft
+created: 2026-05-24
+updated: 2026-05-24
+---
+
+## Now
+
+**State:** Not started.
+**Next:** Human reviews.
+
+## Phase 1 — Core
+
+- [ ] P-001 Do the thing
+- [ ] P-002 Do another thing
+`;
+
+  const ACTIVE_PLAN = (slug: string) => `---
+title: "Active plan"
+slug: ${slug}
+status: active
+created: 2026-05-20
+updated: 2026-05-22
+---
+
+## Now
+
+**State:** In progress.
+**Next:** Keep going.
+
+## Phase 1
+
+- [ ] P-001 item
+`;
+
+  it('returns draft plans only — skips active/archived', async () => {
+    mockPlansDeps([
+      { slug: 'my-plan-2026-05-24', filePath: '/fake/plans/my-plan-2026-05-24.md', content: DRAFT_PLAN('my-plan-2026-05-24') },
+      { slug: 'active-2026-05-20', filePath: '/fake/plans/active-2026-05-20.md', content: ACTIVE_PLAN('active-2026-05-20') },
+      { slug: 'archived-2026-05-10', filePath: '/fake/plans/archive/archived-2026-05-10.md', archived: true, content: DRAFT_PLAN('archived-2026-05-10') },
+    ]);
+    const { resolveNamedQueryV2: r } = await import('./index');
+    const rows = (await r('plansDrafts.bySlug', { harnessSlug: 'myharn' })) as Array<{
+      slug: string;
+      status: string;
+    }>;
+    expect(rows).toHaveLength(1);
+    expect(rows[0].slug).toBe('my-plan-2026-05-24');
+    expect(rows[0].status).toBe('draft');
+  });
+
+  it('derives source: scoper for scoper-proposal-* slug, user otherwise', async () => {
+    mockPlansDeps([
+      { slug: 'my-feature-2026-05-24', filePath: '/fake/plans/my-feature-2026-05-24.md', content: DRAFT_PLAN('my-feature-2026-05-24', 'user') },
+      { slug: 'scoper-proposal-gap-2026-05-24', filePath: '/fake/plans/scoper-proposal-gap-2026-05-24.md', content: DRAFT_PLAN('scoper-proposal-gap-2026-05-24', 'scoper') },
+    ]);
+    const { resolveNamedQueryV2: r } = await import('./index');
+    const rows = (await r('plansDrafts.bySlug', { harnessSlug: 'myharn' })) as Array<{
+      slug: string;
+      source: string;
+    }>;
+    const bySlug = Object.fromEntries(rows.map((r) => [r.slug, r]));
+    expect(bySlug['my-feature-2026-05-24'].source).toBe('user');
+    expect(bySlug['scoper-proposal-gap-2026-05-24'].source).toBe('scoper');
+  });
+
+  it('returns itemCount matching parsed items', async () => {
+    mockPlansDeps([
+      { slug: 'two-items-2026-05-24', filePath: '/fake/plans/two-items-2026-05-24.md', content: DRAFT_PLAN('two-items-2026-05-24') },
+    ]);
+    const { resolveNamedQueryV2: r } = await import('./index');
+    const rows = (await r('plansDrafts.bySlug', { harnessSlug: 'myharn' })) as Array<{
+      itemCount: number;
+    }>;
+    expect(rows[0].itemCount).toBe(2);
+  });
+
+  it('sorts newest-first by updated date', async () => {
+    const older = `---
+title: "Older"
+slug: older-2026-05-22
+status: draft
+created: 2026-05-22
+updated: 2026-05-22
+---
+## Now
+**State:** s
+**Next:** n
+## Phase 1
+- [ ] P-001 x
+`;
+    const newer = `---
+title: "Newer"
+slug: newer-2026-05-24
+status: draft
+created: 2026-05-24
+updated: 2026-05-24
+---
+## Now
+**State:** s
+**Next:** n
+## Phase 1
+- [ ] P-001 x
+`;
+    mockPlansDeps([
+      { slug: 'older-2026-05-22', filePath: '/fake/plans/older-2026-05-22.md', content: older },
+      { slug: 'newer-2026-05-24', filePath: '/fake/plans/newer-2026-05-24.md', content: newer },
+    ]);
+    const { resolveNamedQueryV2: r } = await import('./index');
+    const rows = (await r('plansDrafts.bySlug', { harnessSlug: 'myharn' })) as Array<{
+      slug: string;
+    }>;
+    expect(rows[0].slug).toBe('newer-2026-05-24');
+    expect(rows[1].slug).toBe('older-2026-05-22');
+  });
+
+  it('skips a file that cannot be read (ENOENT) without throwing', async () => {
+    vi.doMock('@/lib/agent-tools/plans/source', () => ({
+      resolveHarnessPlansDir: vi.fn(async () => ({ plans: '/fake', archive: '/fake/archive' })),
+      listPlanFiles: vi.fn(async () => [
+        { slug: 'missing-2026-05-24', filePath: '/fake/missing-2026-05-24.md', archived: false },
+      ]),
+    }));
+    vi.doMock('node:fs/promises', () => ({
+      readFile: vi.fn(async () => { throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' }); }),
+    }));
+    const { resolveNamedQueryV2: r } = await import('./index');
+    const rows = (await r('plansDrafts.bySlug', { harnessSlug: 'myharn' })) as unknown[];
+    expect(rows).toEqual([]);
+  });
+
+  it('is registered in knownQueryNamesV2', () => {
+    expect(knownQueryNamesV2()).toContain('plansDrafts.bySlug');
   });
 });
