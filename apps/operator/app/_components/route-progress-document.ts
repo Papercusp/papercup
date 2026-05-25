@@ -27,5 +27,6 @@ export function shouldStartDocumentRouteProgressForAnchor(opts: {
   const targetUrl = new URL(opts.targetHref, opts.currentHref);
   const currentUrl = new URL(opts.currentHref);
   if (targetUrl.origin !== currentUrl.origin) return false;
-  return targetUrl.href !== currentUrl.href;
+  if (targetUrl.pathname === currentUrl.pathname && targetUrl.search === currentUrl.search) return false;
+  return true;
 }

@@ -54,4 +54,7 @@ describe('RouteProgressProvider document capture helper', () => {
     expect(shouldStartDocumentRouteProgressForAnchor({ ...base, targetHref: 'javascript:alert(1)' })).toBe(false);
     expect(shouldStartDocumentRouteProgressForAnchor({ ...base, targetHref: 'data:text/plain,hi' })).toBe(false);
   });
+  it('does not start progress for hash-only document anchor navigations', () => {
+    expect(shouldStartDocumentRouteProgressForAnchor({ ...base, targetHref: '/harness?ws=default#details' })).toBe(false);
+  });
 });

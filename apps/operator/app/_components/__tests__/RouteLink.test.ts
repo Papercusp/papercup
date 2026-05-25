@@ -42,4 +42,7 @@ describe('RouteLink click progress decision', () => {
     expect(shouldStartRouteProgressForClick({ ...base, targetHref: 'http://localhost:3070/harness?ws=default' })).toBe(false);
     expect(shouldStartRouteProgressForClick({ ...base, targetHref: 'https://example.com/docs' })).toBe(false);
   });
+  it('does not start progress for hash-only navigations on the same document', () => {
+    expect(shouldStartRouteProgressForClick({ ...base, targetHref: 'http://localhost:3070/harness?ws=default#details' })).toBe(false);
+  });
 });

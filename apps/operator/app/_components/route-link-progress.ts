@@ -20,8 +20,9 @@ export function shouldStartRouteProgressForClick(opts: {
   if (opts.disableProgress) return false;
   if (opts.targetBlocksProgress) return false;
 
-  const targetUrl = new URL(opts.targetHref);
+  const targetUrl = new URL(opts.targetHref, opts.currentHref);
   const currentUrl = new URL(opts.currentHref);
   if (targetUrl.origin !== currentUrl.origin) return false;
-  return targetUrl.href !== currentUrl.href;
+  if (targetUrl.pathname === currentUrl.pathname && targetUrl.search === currentUrl.search) return false;
+  return true;
 }
