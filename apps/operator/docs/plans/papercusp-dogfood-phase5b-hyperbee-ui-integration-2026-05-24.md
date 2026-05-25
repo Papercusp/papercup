@@ -1,9 +1,9 @@
 ---
 title: Papercusp dogfood — Phase 5b (Hyperbee UI integration + clobber-toast)
 slug: papercusp-dogfood-phase5b-hyperbee-ui-integration-2026-05-24
-status: draft
+status: in-progress
 created: 2026-05-24
-updated: 2026-05-24
+updated: 2026-05-25
 owner: avi@storewolf.com
 ---
 
@@ -11,9 +11,18 @@ owner: avi@storewolf.com
 
 ## Now
 
-**State:** **draft execution plan.** Phase 5b consumes Phase 5a's plumbing and lights up the user-visible Hyperbee surfaces: per-user feature queue, contributors list with user branches, Entry 4 wizard hook-up, and the LWW clobber-toast that surfaces silent overrides honestly per D-012.
+**State:** **P-066 Bootstrap progress indicator end-to-end SHIPPED 2026-05-25.** Rest of Phase 5b still gated on Phase 5a → real substrate boot.
 
-**Next action:** wait for Phase 5a P-029-P-031 done; then start P-032.
+P-066 vertical slice shipped:
+- `lib/sync/hyperbee/bootstrap-progress.ts` — in-process tracker (12 tests).
+- `lib/sync/hyperbee/bootstrap-progress-poller.ts` — substrate poller wired into boot composer (5 tests).
+- `GET /api/harness/:slug/bootstrap-progress` — JSON endpoint.
+- `BootstrapProgressIndicator` pure UI (8 tests) + `BootstrapProgressIndicatorClient` polling wrapper (8 tests).
+- Surfaces in `HarnessChromeHeaderBadges` + admin `/admin/dogfood-substrate` page bootstrap column.
+
+Once flag flips → substrate boots → poller fires `recordMergedOps` per merged op → indicator pill shows live N/M sync progress → goes quiet after the 30s idle window.
+
+**Next action:** P-032 (feature_queue UI), P-033 (contributors branch), P-034 (Entry 4 wizard hookup), P-035 (LWW clobber-toast). These are UI-heavy and best done with the flag on so the harness pages reflect real merged state.
 
 ## Background
 
