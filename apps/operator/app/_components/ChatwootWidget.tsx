@@ -33,9 +33,19 @@ declare global {
 const DEFAULT_BASE_URL = 'https://chat.papercupai.com';
 const DEFAULT_TOKEN = 'CT5CTToo11YtPN3CVkhvbFs9';
 
+export function shouldEnableChatwootForCurrentWindow(view: {
+  pathname: string;
+  origin: string;
+}): boolean {
+  return shouldEnableSupportWidget(view.pathname, view.origin);
+}
+
 function shouldEnableNow(): boolean {
   if (typeof window === 'undefined') return false;
-  return shouldEnableSupportWidget(window.location.pathname, window.location.origin);
+  return shouldEnableChatwootForCurrentWindow({
+    pathname: window.location.pathname,
+    origin: window.location.origin,
+  });
 }
 
 export function ChatwootWidget() {

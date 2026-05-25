@@ -329,6 +329,7 @@ defineTestDomain({
         'apps/operator/lib/__tests__/navigation-progress-helpers.test.ts',
         'apps/operator/app/admin/testing/_lib/recorder-start-params.test.ts',
         'apps/operator/app/_components/__tests__/SupportChatButton.test.tsx',
+        'apps/operator/app/_components/__tests__/ChatwootWidget.test.tsx',
       ],
     },
   ],
