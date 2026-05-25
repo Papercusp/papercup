@@ -362,6 +362,74 @@ async function checkTenancyWorkspaceShared(): Promise<CheckResult> {
   );
 }
 
+async function checkTenancyHarnessScoped(): Promise<CheckResult> {
+  if (!_state) return fail('Suite state present.', 'Setup did not run.');
+  const client = await getMemoryClient();
+  if (!client) return skip('mem0 unavailable.');
+  const slug = `__memtest_harness_${_state.runId}`;
+  const marker = `solstice-${Date.now()}`;
+  await client.add(uniqueFact(_state.runId, 'harness', `harness-fact=${marker}`), {
+    userId: `harness:${slug}`,
+    metadata: { kind: 'project', scope: 'harness', harness_slug: slug, test_tag: PREFIX_BASE, workspace_id: _state.workspaceId },
+  });
+  const harnessView = await client.getAll({ filters: { user_id: `harness:${slug}` }, topK: 100 });
+  const visible = ((harnessView.results as Mem0Entry[] | undefined) ?? []).some((e) => (e.memory ?? '').includes(marker));
+  const userAView = await client.getAll({ filters: { user_id: _state.userAId }, topK: 5000 });
+  const leaked = ((userAView.results as Mem0Entry[] | undefined) ?? []).some((e) => (e.memory ?? '').includes(marker));
+  if (leaked) return fail('Harness memory isolated from personal scope.', `Isolation breach: harness entry appeared in user A's personal bucket.`);
+  return check(visible, 'Harness-scoped memory visible under harness:<slug> scope.', 'Harness memory stored and retrieved correctly.', 'Harness memory not found in harness bucket.');
+}
+
+async function checkInjectionHarnessScoped(): Promise<CheckResult> {
+  if (!_state) return fail('Suite state present.', 'Setup did not run.');
+  const client = await getMemoryClient();
+  if (!client) return skip('mem0 unavailable.');
+  const slug = `__memtest_harness_${_state.runId}`;
+  const marker = `equinox-${Date.now()}`;
+  await client.add(`Harness convention: all migrations must be reviewed before merging. (${marker})`, {
+    userId: `harness:${slug}`,
+    metadata: { kind: 'project', scope: 'harness', harness_slug: slug, test_tag: PREFIX_BASE, workspace_id: _state.workspaceId },
+  });
+  await new Promise((r) => setTimeout(r, 200));
+  const block = await buildMemoryContextBlock({
+    userId: _state.userAId,
+    workspaceId: _state.workspaceId,
+    harnessSlugs: [slug],
+    queryContext: 'What are the migration review requirements?',
+    limit: 6,
+  });
+  return check(
+    !!block && block.includes(marker),
+    'Harness-scoped memory surfaced when harnessSlugs includes the slug.',
+    'Harness memory found in injection block.',
+    `Harness memory not surfaced. Block: ${block ? block.slice(0, 200) : 'null'}`,
+  );
+}
+
+async function checkInjectionDeprecationReadthrough(): Promise<CheckResult> {
+  if (!_state) return fail('Suite state present.', 'Setup did not run.');
+  const client = await getMemoryClient();
+  if (!client) return skip('mem0 unavailable.');
+  const marker = `zenith-${Date.now()}`;
+  await client.add(`Legacy workspace convention: use snake_case for all identifiers. (${marker})`, {
+    userId: `workspace:${_state.workspaceId}`,
+    metadata: { kind: 'project', scope: 'workspace', test_tag: PREFIX_BASE, workspace_id: _state.workspaceId, shared: true },
+  });
+  await new Promise((r) => setTimeout(r, 200));
+  const block = await buildMemoryContextBlock({
+    userId: _state.userAId,
+    workspaceId: _state.workspaceId,
+    queryContext: 'What is the naming convention?',
+    limit: 8,
+  });
+  return check(
+    !!block && block.includes(marker),
+    'Legacy workspace:* entries still surfaced during deprecation window.',
+    'Workspace back-compat readthrough working.',
+    `Legacy workspace entry not surfaced. Block: ${block ? block.slice(0, 200) : 'null'}`,
+  );
+}
+
 async function checkTtlExpired(): Promise<CheckResult> {
   if (!_state) return fail('Suite state present.', 'Setup did not run.');
   const client = await getMemoryClient();
@@ -644,11 +712,14 @@ export function buildMemoryCoreChecks(runId: string): MemorySuiteCheck[] {
     { id: 'roundtrip.forget', label: 'Round-trip: forget removes entry', run: checkRoundtripForget },
     { id: 'tenancy.per-user-isolation', label: 'Tenancy: per-user isolation', run: checkTenancyPerUserIsolation },
     { id: 'tenancy.workspace-shared', label: 'Tenancy: workspace-shared bucket', run: checkTenancyWorkspaceShared },
+    { id: 'tenancy.harness-scoped', label: 'Tenancy: per-harness scoped bucket', run: checkTenancyHarnessScoped },
     { id: 'ttl.expired-purged', label: 'TTL: expired ephemeral purged', run: checkTtlExpired },
     { id: 'ttl.future-survives', label: 'TTL: future-dated survives', run: checkTtlFutureSurvives },
     { id: 'injection.relevant', label: 'Injection: relevant fact included', run: checkInjectionRelevant },
     { id: 'injection.empty-context', label: 'Injection: empty queryContext → null', run: checkInjectionEmpty },
     { id: 'injection.shared-included', label: 'Injection: workspace-shared included', run: checkInjectionShared },
+    { id: 'injection.harness-scoped', label: 'Injection: per-harness memory surfaced', run: checkInjectionHarnessScoped },
+    { id: 'injection.deprecation-readthrough', label: 'Injection: legacy workspace:* back-compat', run: checkInjectionDeprecationReadthrough },
     { id: 'extraction.from-turn', label: 'Extraction: fact extracted from turn', run: checkExtractionFromTurn },
     { id: 'feedback.edit-recorded', label: 'Feedback: edit row recorded', run: checkFeedbackRecordedOnEdit },
     { id: 'feedback.learning-instructions', label: 'Feedback: learning instructions stable', run: checkLearningInstructions },

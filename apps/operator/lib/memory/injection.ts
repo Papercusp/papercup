@@ -112,7 +112,9 @@ export async function buildMemoryContextBlock(
   if (!client) return null;
 
   const userLimit = input.limit ?? 6;
-  const workspaceLimit = Math.ceil(userLimit / 2);
+  // When there's a user pull, share the budget with workspace half-and-half;
+  // when no user (workspace-only / agent-bearer routes), workspace gets full.
+  const workspaceLimit = input.userId ? Math.ceil(userLimit / 2) : userLimit;
 
   let harnessSlugs = (input.harnessSlugs ?? []).filter((s) => typeof s === 'string' && s.length > 0);
   if (harnessSlugs.length > MAX_HARNESS_FANOUT) {
