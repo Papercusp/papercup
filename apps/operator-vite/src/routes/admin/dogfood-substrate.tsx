@@ -4,6 +4,7 @@ import AdminShell from '../../components/admin/AdminShell';
 import { SubstrateSummaryCardClient } from '@/app/harness/insights/SubstrateSummaryCardClient';
 import { BootHistoryTableClient } from '@/app/harness/insights/BootHistoryTableClient';
 import { SubstrateHealthPill } from '@/app/harness/insights/SubstrateHealthPill';
+import { ClaimAttemptTimelineClient } from '@/app/harness/insights/ClaimAttemptTimelineClient';
 
 /**
  * /admin/dogfood-substrate — Vite-side mirror of the SSR diagnostic
@@ -43,6 +44,7 @@ interface HealthResponse {
 
 function DogfoodSubstratePage() {
   const [resp, setResp] = useState<HealthResponse | null>(null);
+  const [pickedSlug, setPickedSlug] = useState<string>('');
 
   useEffect(() => {
     let cancelled = false;
@@ -114,6 +116,33 @@ function DogfoodSubstratePage() {
             Boot history
           </h2>
           <BootHistoryTableClient limit={50} />
+        </section>
+
+        <section style={{ marginTop: 12 }} data-testid="dogfood-substrate-claim-attempts-section">
+          <h2 style={{ fontSize: 11, fontWeight: 600, color: 'var(--fg-dim, #888)', textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: 8, display: 'flex', alignItems: 'center', gap: 12 }}>
+            Claim attempts
+            {rows.length > 0 && (
+              <select
+                data-testid="claim-attempts-harness-picker"
+                value={pickedSlug || rows[0].harnessSlug}
+                onChange={(e) => setPickedSlug(e.target.value)}
+                style={{ fontSize: 11, fontWeight: 400, padding: '2px 6px', textTransform: 'none', letterSpacing: 0 }}
+              >
+                {rows.map((h) => (
+                  <option key={h.harnessSlug} value={h.harnessSlug}>
+                    {h.harnessSlug}
+                  </option>
+                ))}
+              </select>
+            )}
+          </h2>
+          {rows.length > 0 ? (
+            <ClaimAttemptTimelineClient slug={pickedSlug || rows[0].harnessSlug} limit={50} />
+          ) : (
+            <div style={{ padding: 12, fontSize: 12, color: 'var(--fg-dim, #888)' }}>
+              No harnesses booted — claim attempts only record under a booted substrate.
+            </div>
+          )}
         </section>
       </div>
     </AdminShell>
