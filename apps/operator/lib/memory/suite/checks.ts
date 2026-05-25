@@ -17,6 +17,8 @@ import {
   invalidateMemoryClient,
 } from '../mem0-client';
 import { buildMemoryContextBlock } from '../injection';
+import { extractAnchors, anchorMetadata } from '../anchors';
+import { extractAddedIds, persistAnchorsSql } from '../persist-anchors';
 import { activeWorkspaceId } from '../../workspace-registry';
 import type { AdminTestCheckResult } from '../../admin-test-suites-shared';
 
@@ -564,6 +566,169 @@ async function checkExtractionFromTurn(): Promise<CheckResult> {
   );
 }
 
+/* ─── Anchors + Layer-1 audit (P-014/P-015/P-019) ──────────────────── */
+
+async function checkAnchorExtraction(): Promise<CheckResult> {
+  // Pure-logic — doesn't touch mem0 or PG, but exercised here so the
+  // /admin/testing dashboard shows the anchor pipeline lit up.
+  const content =
+    'See apps/operator/lib/memory/persist-anchors.ts and F-001 and ' +
+    'plan papercusp-su-memory-2026-05-25 and migration 085 for context.';
+  const anchors = extractAnchors(content);
+  const kinds = new Set(anchors.map((a) => a.kind));
+  const required = ['file', 'feature', 'plan', 'migration'];
+  const missing = required.filter((k) => !kinds.has(k as 'file' | 'feature' | 'plan' | 'migration'));
+  return check(
+    missing.length === 0,
+    'Anchor extractor identifies file/feature/plan/migration tokens.',
+    `Extracted ${anchors.length} anchors: ${[...kinds].sort().join(', ')}.`,
+    `Missing kinds: ${missing.join(', ')} (got: ${[...kinds].sort().join(', ') || 'none'}).`,
+    [JSON.stringify(anchors)],
+  );
+}
+
+async function checkAnchorsPersistedOnWrite(): Promise<CheckResult> {
+  // Insert a synthetic memory_canonical row + anchors via persist-anchors,
+  // bypassing mem0 (which needs an LLM key to extract). This proves the
+  // PG-side writer plumbing is wired end-to-end.
+  if (!_state) return fail('Suite state present.', 'Setup did not run.');
+  const { sql } = getOrgPg();
+  const memoryId = '00000000-0000-4000-8000-' + _state.runId.slice(0, 12).replace(/[^0-9a-f]/gi, '0').padEnd(12, '0');
+  const anchors: Array<{ kind: 'file' | 'feature'; value: string }> = [
+    { kind: 'file', value: 'apps/operator/lib/memory/persist-anchors.ts' },
+    { kind: 'feature', value: 'F-001' },
+  ];
+  try {
+    await sql`
+      INSERT INTO harness_shared.memory_canonical (id, payload, state)
+      VALUES (${memoryId}::uuid, ${JSON.stringify({ memory: `${PREFIX_BASE}/${_state.runId}/anchors-write` })}::jsonb, 'active')
+      ON CONFLICT (id) DO UPDATE SET state = 'active'
+    `;
+  } catch (e) {
+    return fail('memory_canonical INSERT for synthetic id.', `${(e as Error).message}`);
+  }
+  const ok = await persistAnchorsSql(sql as unknown as Parameters<typeof persistAnchorsSql>[0], memoryId, anchors);
+  if (!ok) {
+    return fail(
+      'persistAnchorsSql returns true for valid input.',
+      'Returned false — table may be missing or PG error swallowed.',
+    );
+  }
+  const rows = (await sql`
+    SELECT kind, value FROM harness_shared.memory_anchors
+    WHERE memory_id = ${memoryId}::uuid
+    ORDER BY kind, value
+  `) as unknown as Array<{ kind: string; value: string }>;
+  // Cleanup (CASCADE handles memory_anchors).
+  await sql`DELETE FROM harness_shared.memory_canonical WHERE id = ${memoryId}::uuid`;
+
+  return check(
+    rows.length === anchors.length,
+    `${anchors.length} memory_anchors rows persisted for the synthetic id.`,
+    `Found ${rows.length} rows: ${rows.map((r) => `${r.kind}:${r.value}`).join(', ')}.`,
+    `Expected ${anchors.length} rows, found ${rows.length}.`,
+  );
+}
+
+async function checkLayer1AuditFlipsState(): Promise<CheckResult> {
+  // Seed a row with one valid + one broken file anchor; run audit(); assert
+  // state flips to 'broken_anchor' and per-anchor last_check_ok is recorded.
+  if (!_state) return fail('Suite state present.', 'Setup did not run.');
+  const { audit } = await import('../../../bin/audit-memory-anchors');
+  const { sql } = getOrgPg();
+  const path = await import('node:path');
+
+  const memoryId = '00000000-0000-4000-8000-' + _state.runId.slice(0, 12).replace(/[^0-9a-f]/gi, '0').padEnd(12, '0').slice(0, 12);
+  const probeAnchors: Array<{ kind: 'file'; value: string }> = [
+    { kind: 'file', value: 'apps/operator/lib/memory/persist-anchors.ts' },        // exists
+    { kind: 'file', value: 'apps/operator/__memtest__/no-such-file-xyzzy.ts' },    // missing
+  ];
+
+  try {
+    await sql`
+      INSERT INTO harness_shared.memory_canonical (id, payload, state)
+      VALUES (${memoryId}::uuid, ${JSON.stringify({ memory: `${PREFIX_BASE}/${_state.runId}/audit-flip` })}::jsonb, 'active')
+      ON CONFLICT (id) DO UPDATE SET state = 'active'
+    `;
+    await persistAnchorsSql(sql as unknown as Parameters<typeof persistAnchorsSql>[0], memoryId, probeAnchors);
+
+    // Walk up two levels from the operator app to find repoRoot (apps/operator → apps → repo).
+    const repoRoot = path.resolve(process.cwd(), '..', '..');
+    const result = await audit({ dryRun: false, repoRoot });
+
+    if (result.skipped) {
+      return skip(`Audit skipped: ${(result as { reason?: string }).reason ?? 'unknown'}.`);
+    }
+
+    const stateRows = (await sql`
+      SELECT state FROM harness_shared.memory_canonical WHERE id = ${memoryId}::uuid
+    `) as unknown as Array<{ state: string }>;
+    const state = stateRows[0]?.state;
+    const anchorRows = (await sql`
+      SELECT kind, value, last_check_ok FROM harness_shared.memory_anchors WHERE memory_id = ${memoryId}::uuid ORDER BY value
+    `) as unknown as Array<{ kind: string; value: string; last_check_ok: boolean | null }>;
+
+    const stateOk = state === 'broken_anchor';
+    const valid = anchorRows.find((r) => r.value.endsWith('persist-anchors.ts'));
+    const broken = anchorRows.find((r) => r.value.endsWith('no-such-file-xyzzy.ts'));
+    const anchorsOk = valid?.last_check_ok === true && broken?.last_check_ok === false;
+
+    return check(
+      stateOk && anchorsOk,
+      'state flips to broken_anchor; per-anchor last_check_ok correctly recorded.',
+      `state=${state}, valid.ok=${valid?.last_check_ok}, broken.ok=${broken?.last_check_ok}.`,
+      `state=${state} (expected broken_anchor); valid.ok=${valid?.last_check_ok} (expected true); broken.ok=${broken?.last_check_ok} (expected false).`,
+    );
+  } finally {
+    await sql`DELETE FROM harness_shared.memory_canonical WHERE id = ${memoryId}::uuid`;
+  }
+}
+
+async function checkAnchorMetadataShape(): Promise<CheckResult> {
+  // anchorMetadata() is the function remember.ts actually uses — verify its
+  // wrapper shape (`{ anchors, anchor_count }`) is stable. Pure-logic, fast.
+  const meta = anchorMetadata('apps/operator/foo.ts and F-007');
+  const empty = anchorMetadata('no anchors here at all');
+  const okShape =
+    meta !== null &&
+    Array.isArray(meta.anchors) &&
+    meta.anchor_count === meta.anchors.length &&
+    meta.anchor_count >= 2;
+  const okEmpty = empty === null;
+  return check(
+    okShape && okEmpty,
+    'anchorMetadata returns {anchors, anchor_count} on content with anchors and null on empty.',
+    `meta.anchor_count=${meta?.anchor_count}; empty=${empty === null ? 'null' : 'not-null'}.`,
+    `meta=${JSON.stringify(meta)}; empty=${JSON.stringify(empty)}.`,
+  );
+}
+
+async function checkExtractAddedIdsContract(): Promise<CheckResult> {
+  // Wire-format guard: mem0 v3 has two return shapes (we've seen drift in
+  // the past). extractAddedIds should accept both and only return ADD.
+  const fromWrapped = extractAddedIds({
+    results: [
+      { id: '11111111-1111-4111-8111-111111111111', event: 'ADD' },
+      { id: '22222222-2222-4222-8222-222222222222', event: 'UPDATE' },
+      { id: '33333333-3333-4333-8333-333333333333', event: 'NONE' },
+    ],
+  });
+  const fromBare = extractAddedIds({
+    // shouldn't crash on a bare array — extractAddedIds currently only
+    // accepts the wrapped shape, so this should yield [].
+    results: undefined,
+  });
+  const onlyAdds = fromWrapped.length === 1 && fromWrapped[0].startsWith('11111111');
+  return check(
+    onlyAdds && fromBare.length === 0,
+    'extractAddedIds returns only ADD-event ids from wrapped mem0 results.',
+    `wrapped→${fromWrapped.length} id(s), bare-undefined→${fromBare.length} id(s).`,
+    `wrapped=${JSON.stringify(fromWrapped)}; bare=${JSON.stringify(fromBare)}.`,
+  );
+}
+
+/* ──────────────────────────────────────────────────────────────────────── */
+
 async function checkFeedbackRecordedOnEdit(): Promise<CheckResult> {
   if (!_state) return fail('Suite state present.', 'Setup did not run.');
   const client = await getMemoryClient();
@@ -710,6 +875,11 @@ export function buildMemoryCoreChecks(runId: string): MemorySuiteCheck[] {
     { id: 'roundtrip.semantic-search', label: 'Round-trip: remember → semantic search', run: checkRoundtripSemanticSearch },
     { id: 'roundtrip.update', label: 'Round-trip: update content', run: checkRoundtripUpdate },
     { id: 'roundtrip.forget', label: 'Round-trip: forget removes entry', run: checkRoundtripForget },
+    { id: 'anchors.extraction', label: 'Anchors: file/feature/plan/migration extracted', run: checkAnchorExtraction },
+    { id: 'anchors.metadata-shape', label: 'Anchors: anchorMetadata wrapper shape', run: checkAnchorMetadataShape },
+    { id: 'anchors.extract-added-ids', label: 'Anchors: extractAddedIds returns only ADD events', run: checkExtractAddedIdsContract },
+    { id: 'anchors.persisted-on-write', label: 'Anchors: rows persisted to memory_anchors table', run: checkAnchorsPersistedOnWrite },
+    { id: 'anchors.layer1-audit', label: 'Anchors: Layer-1 audit flips state on broken file', run: checkLayer1AuditFlipsState },
     { id: 'tenancy.per-user-isolation', label: 'Tenancy: per-user isolation', run: checkTenancyPerUserIsolation },
     { id: 'tenancy.workspace-shared', label: 'Tenancy: workspace-shared bucket', run: checkTenancyWorkspaceShared },
     { id: 'tenancy.harness-scoped', label: 'Tenancy: per-harness scoped bucket', run: checkTenancyHarnessScoped },
