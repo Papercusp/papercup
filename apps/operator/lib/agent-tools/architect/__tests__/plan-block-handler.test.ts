@@ -195,6 +195,19 @@ SUMMARY: Test.
 
 /* ── applyPlanBlock (integration via mocked handleHttpToolRequest) ── */
 
+// Stub for @papercusp/agent-mcp — used by the applyPlanBlock tests
+// via vi.doMock after vi.resetModules() so each test gets a fresh
+// handleHttpToolRequest spy. defineTool is stubbed as a no-op so the
+// module-level registration call in plan-block-handler.ts doesn't fail.
+function makeMcpStub(
+  handleHttpToolRequest: (...args: unknown[]) => unknown,
+): Record<string, unknown> {
+  return {
+    defineTool: (cfg: unknown) => cfg,
+    handleHttpToolRequest,
+  };
+}
+
 describe('applyPlanBlock', () => {
   beforeEach(() => {
     vi.resetModules();
@@ -203,30 +216,22 @@ describe('applyPlanBlock', () => {
   it('calls plans:new → set-now → add-item × N → add-decision × N in order', async () => {
     const calls: Array<{ verb: string; body: Record<string, unknown> }> = [];
 
-    vi.doMock('@papercusp/agent-mcp', async () => {
-      const actual = await vi.importActual<typeof import('@papercusp/agent-mcp')>(
-        '@papercusp/agent-mcp',
-      );
-      return {
-        ...actual,
-        handleHttpToolRequest: vi.fn(
-          async (req: { pathname: string; body: Record<string, unknown> }) => {
-            const verb = req.pathname.split('/').pop()!;
-            calls.push({ verb, body: req.body });
-            if (verb === 'new') {
-              return {
-                status: 200,
-                body: { content: [{ type: 'text', text: JSON.stringify({ ok: true, slug: 'realtime-notifications-2026-05-24' }) }] },
-              };
-            }
-            return {
-              status: 200,
-              body: { content: [{ type: 'text', text: JSON.stringify({ ok: true }) }] },
-            };
-          },
-        ),
-      };
-    });
+    vi.doMock('@papercusp/agent-mcp', () =>
+      makeMcpStub(async (req: { pathname: string; body: Record<string, unknown> }) => {
+        const verb = req.pathname.split('/').pop()!;
+        calls.push({ verb, body: req.body });
+        if (verb === 'new') {
+          return {
+            status: 200,
+            body: { content: [{ type: 'text', text: JSON.stringify({ ok: true, slug: 'realtime-notifications-2026-05-24' }) }] },
+          };
+        }
+        return {
+          status: 200,
+          body: { content: [{ type: 'text', text: JSON.stringify({ ok: true }) }] },
+        };
+      }),
+    );
 
     const { parsePlanBlock: parse, applyPlanBlock } = await import('../plan-block-handler');
     const parsed = parse(FULL_BLOCK)!;
@@ -234,7 +239,6 @@ describe('applyPlanBlock', () => {
 
     expect(slug).toBe('realtime-notifications-2026-05-24');
 
-    // Verify call order: new, set-now, then items, then decisions.
     expect(calls[0].verb).toBe('new');
     expect(calls[0].body).toMatchObject({ title: 'Realtime notifications', status: 'draft' });
 
@@ -244,35 +248,23 @@ describe('applyPlanBlock', () => {
       state: 'Socket infra exists but notifications are not wired.',
     });
 
-    // 5 items across 2 phases
     const itemCalls = calls.filter((c) => c.verb === 'add-item');
     expect(itemCalls).toHaveLength(5);
     expect(itemCalls[0].body).toMatchObject({ text: 'Add push gateway service', slug: 'realtime-notifications-2026-05-24' });
     expect(itemCalls[1].body).toMatchObject({ text: 'Wire event emitter', blockedBy: ['P-001'] });
 
-    // 2 decisions
     const decCalls = calls.filter((c) => c.verb === 'add-decision');
     expect(decCalls).toHaveLength(2);
     expect(decCalls[0].body).toMatchObject({ title: 'Use Firebase over APNs directly' });
   });
 
   it('throws when plans:new returns ok:false', async () => {
-    vi.doMock('@papercusp/agent-mcp', async () => {
-      const actual = await vi.importActual<typeof import('@papercusp/agent-mcp')>(
-        '@papercusp/agent-mcp',
-      );
-      return {
-        ...actual,
-        handleHttpToolRequest: vi.fn(async () => ({
-          status: 200,
-          body: {
-            content: [
-              { type: 'text', text: JSON.stringify({ ok: false, error: 'slug_conflict' }) },
-            ],
-          },
-        })),
-      };
-    });
+    vi.doMock('@papercusp/agent-mcp', () =>
+      makeMcpStub(async () => ({
+        status: 200,
+        body: { content: [{ type: 'text', text: JSON.stringify({ ok: false, error: 'slug_conflict' }) }] },
+      })),
+    );
 
     const { parsePlanBlock: parse, applyPlanBlock } = await import('../plan-block-handler');
     const parsed = parse(MINIMAL_BLOCK)!;
@@ -280,18 +272,9 @@ describe('applyPlanBlock', () => {
   });
 
   it('throws when plans:new returns non-200', async () => {
-    vi.doMock('@papercusp/agent-mcp', async () => {
-      const actual = await vi.importActual<typeof import('@papercusp/agent-mcp')>(
-        '@papercusp/agent-mcp',
-      );
-      return {
-        ...actual,
-        handleHttpToolRequest: vi.fn(async () => ({
-          status: 500,
-          body: { error: 'internal error' },
-        })),
-      };
-    });
+    vi.doMock('@papercusp/agent-mcp', () =>
+      makeMcpStub(async () => ({ status: 500, body: { error: 'internal error' } })),
+    );
 
     const { parsePlanBlock: parse, applyPlanBlock } = await import('../plan-block-handler');
     const parsed = parse(MINIMAL_BLOCK)!;
