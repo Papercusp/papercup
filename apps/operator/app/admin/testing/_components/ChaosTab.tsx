@@ -25,6 +25,7 @@ import {
   setRunState as storeSetRunState,
   subscribeChaos,
 } from '../_lib/chaos-store';
+import { appendRecorderStartParams } from '../_lib/recorder-start-params';
 import { rateINP } from '../_lib/vitals-recorder';
 
 const DEFAULT_BLOCKLIST = 'delete,remove,reset,sign out,log out,destroy,drop,wipe,format,uninstall,revoke';
@@ -231,11 +232,12 @@ async function startChaosRun(opts: {
 
   // Open recorder window
   const url = new URL(opts.route, window.location.origin);
-  url.searchParams.set('perf-recorder', '1');
-  url.searchParams.set('perf-run-id', runId);
-  url.searchParams.set('perf-duration-ms', String(durationMs));
-  url.searchParams.set('perf-dry-run', opts.dryRun ? '1' : '0');
-  opts.blocklist.forEach((item) => url.searchParams.append('perf-block', item));
+  appendRecorderStartParams(url, {
+    runId,
+    durationMs,
+    dryRun: opts.dryRun,
+    blocklist: opts.blocklist,
+  });
   const urlStr = url.toString();
 
   if (inTauri) {

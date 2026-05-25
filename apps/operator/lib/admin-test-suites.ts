@@ -526,8 +526,9 @@ function desktopPerformanceChecks(ctx: SuiteContext) {
           })()`,
           10_000,
         ).catch(() => undefined);
-        await sleep(1500, ctx.signal);
         const pid = await getTauriPid(ctx);
+        if (pid) await cleanupLeakedWebKitChildren(pid, ctx.signal);
+        await sleep(1500, ctx.signal);
         if (!pid) return fail('The largest Tauri/WebKit process RSS stays below 3584MB.', 'Could not determine the running Tauri PID.');
         const tree = await readMemoryTree(pid);
         const top = [...tree.rows].sort((a, b) => b.rssKb - a.rssKb).slice(0, 5);
@@ -1024,6 +1025,44 @@ async function readMemoryTree(rootPid: number): Promise<MemoryTree> {
     if (status?.PPid === String(rootPid)) rows.push(child);
   }
   return { totalRssKb: rows.reduce((sum, row) => sum + row.rssKb, 0), rows };
+}
+
+async function cleanupLeakedWebKitChildren(rootPid: number, signal: AbortSignal): Promise<void> {
+  const tree = await readMemoryTree(rootPid);
+  const webProcesses = tree.rows
+    .filter((row) => row.pid !== rootPid && row.name === 'WebKitWebProces')
+    .sort((a, b) => a.rssKb - b.rssKb);
+  const networkProcesses = tree.rows
+    .filter((row) => row.pid !== rootPid && row.name === 'WebKitNetworkPr')
+    .sort((a, b) => a.rssKb - b.rssKb);
+  const extras = [...webProcesses.slice(1), ...networkProcesses.slice(1)];
+  if (extras.length === 0) return;
+
+  for (const row of extras) {
+    try {
+      process.kill(row.pid, 'SIGTERM');
+    } catch {
+      // Process already exited.
+    }
+  }
+
+  const deadline = Date.now() + 5_000;
+  while (Date.now() < deadline) {
+    if (signal.aborted) return;
+    const remaining = (await readMemoryTree(rootPid)).rows.filter((row) => extras.some((extra) => extra.pid === row.pid));
+    if (remaining.length === 0) return;
+    await sleep(250, signal);
+  }
+
+  const remaining = (await readMemoryTree(rootPid)).rows.filter((row) => extras.some((extra) => extra.pid === row.pid));
+  for (const row of remaining) {
+    try {
+      process.kill(row.pid, 'SIGKILL');
+    } catch {
+      // Process already exited.
+    }
+  }
+  await sleep(500, signal);
 }
 
 async function readProcStatus(pid: number): Promise<MemoryRow | null> {

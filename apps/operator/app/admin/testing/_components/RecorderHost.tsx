@@ -15,6 +15,7 @@
 
 import { useEffect } from 'react';
 import { CHANNEL_NAME, type ControllerMsg, type RecorderMsg, type RecorderEvent, type RunSummary, rollupRoutes, saveRun } from '../_lib/recorder-channel';
+import { readRecorderStartParams } from '../_lib/recorder-start-params';
 
 declare global {
   interface Window { __papercuspRecorderActive?: boolean }
@@ -52,9 +53,7 @@ export default function RecorderHost() {
     let cancelled = false;
     const suiteRunKey = params.get('__suiteRun');
     const expectedRunId = params.get('perf-run-id');
-    const fallbackDurationMs = Number(params.get('perf-duration-ms') || '0');
-    const fallbackDryRun = params.get('perf-dry-run') === '1';
-    const fallbackBlocklist = params.getAll('perf-block');
+    const fallbackStart = readRecorderStartParams(params);
     const reloadStorageKey = suiteRunKey ? `papercusp.testing.chaos-reloads.${suiteRunKey}` : null;
     const activeRunStorageKey = expectedRunId ? `papercusp.testing.chaos-active.${expectedRunId}` : null;
     if (reloadStorageKey && activeRunStorageKey && sessionStorage.getItem(activeRunStorageKey) === '1') {
@@ -336,6 +335,12 @@ export default function RecorderHost() {
         };
         saveRun(summary);
         send({ type: 'done', runId: currentRunId!, summary: { ...summary, events: [] } });
+        window.setTimeout(() => {
+          const currentWindow = (window as unknown as {
+            __TAURI__?: { webviewWindow?: { getCurrentWebviewWindow?: () => { close?: () => Promise<void> } } };
+          }).__TAURI__?.webviewWindow?.getCurrentWebviewWindow?.();
+          void currentWindow?.close?.().catch(() => undefined);
+        }, 250);
         currentRunId = null;
         finishCurrent = null;
       }
@@ -380,16 +385,10 @@ export default function RecorderHost() {
       }
       if (!cancelled) {
         send({ type: 'ready', runId: expectedRunId ?? '' });
-        if (expectedRunId && fallbackDurationMs > 0) {
+        if (fallbackStart) {
           window.setTimeout(() => {
             if (cancelled || currentRunId !== null) return;
-            void startRun({
-              type: 'start',
-              runId: expectedRunId,
-              durationMs: fallbackDurationMs,
-              blocklist: fallbackBlocklist,
-              dryRun: fallbackDryRun,
-            });
+            void startRun(fallbackStart);
           }, 2_000);
         }
       }
