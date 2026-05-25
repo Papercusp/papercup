@@ -9,13 +9,15 @@
  *   5. seed_pg             — seed local PG from projection  [STUB: phase_0_pending]
  *   6. create_user_branch  — create user/<github_user_id> branch + worktree
  *   7. push_contributor_file — push signed .harness/contributors/<login>.json
- *   8. publish_binding     — publish contributor row to Hyperbee  [STUB: phase_0_pending]
+ *   8. publish_binding     — publish contributor row to Hyperbee (P-033)
  *   9. verify_binding      — two-channel binding verification (P-075)
  *  10. route_insights      — signal completion (UI navigates to /harness/<slug>/insights)
  *
- * Stubs: steps 3, 4, 5, 8 depend on Hyperswarm/Autobase/Hyperbee (Phase 5a,
- * currently DEFERRED). They produce `JoinStepStatus.phase_0_pending` and are
- * skipped during orchestration without failing the flow. All other steps run.
+ * Stubs: steps 3, 4, 5 still depend on Hyperswarm/Autobase replication
+ * specifics (Phase 5a P-030/P-031 native bits) and produce
+ * `JoinStepStatus.phase_0_pending`. Step 8 now writes to the substrate
+ * when booted; it soft-skips (phase_0_pending) only when the substrate
+ * flag is off / the per-harness handle isn't ready.
  *
  * Idempotent resume: the orchestrator persists `JoinState` to
  * `~/.papercusp/join-state/<slug>.json` after each step. On re-run, completed
@@ -49,6 +51,11 @@ import {
 } from './ensure-user-branch';
 import { userTreeAbsPath } from './user-tree-types';
 import { rmSync } from 'node:fs';
+import { publishContributorRow } from '../sync/hyperbee/write-contributor-row';
+import {
+  CONTRIBUTOR_ROW_SCHEMA_VERSION,
+  type ContributorRow,
+} from './contributor-row-types';
 import { keychainLoad } from '../identity/keychain';
 import { loadOrGenerateDeviceKeypair } from '../identity/attest';
 import type { DeviceKeypairId } from '../identity/attestation-types';
@@ -442,19 +449,83 @@ export async function step7_pushContributorFile(opts: {
 }
 
 // ─── step 8: publish_binding ─────────────────────────────────────────────────
-// STUB: Phase 5a deferred.
+//
+// Publishes the contributor row to the per-harness Hyperbee. The PG
+// projection at lib/sync/hyperbee/projections/contributors.ts picks
+// the op up + upserts into harness_shared.contributors so every other
+// reader (Insights People card, Contributors tab, claim-CTA gate) sees
+// the new contributor without a round-trip.
+//
+// When the substrate isn't booted (PAPERCUSP_DOGFOOD_SUBSTRATE_ENABLE=0)
+// or the per-harness handle isn't ready, this step marks itself
+// phase_0_pending and the flow continues — the bare-PG path still
+// works, just without the substrate-fan-out signal. Mirrors the
+// pre-substrate behavior.
 
-export async function step8_publishBinding(_opts: {
+export async function step8_publishBinding(opts: {
+  workspaceId: string;
+  harnessSlug: string;
   githubUserId: number;
   githubLogin: string;
   pubkeyBase64: string;
   attestationGistId: string;
+  channel2CommitSha?: string;
+  /** Test override; runtime resolves via getBootedHarness. */
+  resolveHandle?: () => Promise<import('../sync/hyperbee/boot').BootedHarnessHandle | null>;
+  /** Test override for the publish call. */
+  publishRow?: typeof publishContributorRow;
+  /** Override clock. */
+  now?: number;
 }): Promise<void> {
-  throw new JoinStepError(
-    'publish_binding',
-    'phase_0_pending',
-    'Hyperbee binding publication deferred until Phase 5a',
-  );
+  const resolveHandle =
+    opts.resolveHandle ??
+    (async () => {
+      const mod = await import('../sync/hyperbee/boot-all');
+      return mod.getBootedHarness(opts.workspaceId, opts.harnessSlug);
+    });
+  const handle = await resolveHandle();
+  if (!handle) {
+    // Substrate off / not yet booted for this harness — soft-skip.
+    throw new JoinStepError(
+      'publish_binding',
+      'phase_0_pending',
+      'Hyperbee substrate not booted for this harness; contributor row will publish on the next online join.',
+    );
+  }
+  const ts = opts.now ?? Date.now();
+  const row: ContributorRow = {
+    harness_slug: opts.harnessSlug,
+    github_user_id: opts.githubUserId,
+    github_username: opts.githubLogin,
+    display_name: null,
+    avatar_url: null,
+    device_attestations: [
+      {
+        device_pubkey: `ed25519:${opts.pubkeyBase64}`,
+        gist_id: opts.attestationGistId,
+        gist_url: `https://gist.github.com/${opts.attestationGistId}`,
+        device_label: 'unnamed-device',
+        created_at: ts,
+        signature_by_device: '',
+      },
+    ],
+    revoked_pubkeys: [],
+    joined_at: ts,
+    last_seen_at: ts,
+    binding_status: 'pending',
+    channel1_verified_at: null,
+    channel2_verified_at: null,
+    channel2_branch_ref: contributorBranchRef(opts.githubUserId),
+    binding_last_checked_at: null,
+    schema_version: CONTRIBUTOR_ROW_SCHEMA_VERSION,
+  };
+  const publish = opts.publishRow ?? publishContributorRow;
+  try {
+    await publish({ handle, row, now: ts });
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e);
+    throw new JoinStepError('publish_binding', 'publish_failed', msg.slice(0, 300));
+  }
 }
 
 // ─── step 9: verify_binding ──────────────────────────────────────────────────
@@ -660,9 +731,30 @@ export async function joinSharedHarness(opts: JoinOptions): Promise<JoinState> {
     await saveAndEmit();
   }
 
-  // ── Step 8: publish_binding (Phase-0 stub) ──
-  if (state.steps.publish_binding.status !== 'done' && state.steps.publish_binding.status !== 'phase_0_pending') {
-    markPhase0('publish_binding', 'deferred until Phase 5a (Hyperbee)');
+  // ── Step 8: publish_binding ──
+  if (state.steps.publish_binding.status !== 'done') {
+    markRunning('publish_binding');
+    try {
+      const { activeWorkspaceId } = await import('../workspace-registry');
+      await step8_publishBinding({
+        workspaceId: activeWorkspaceId(),
+        harnessSlug: opts.slug,
+        githubUserId: opts.githubUserId,
+        githubLogin: opts.githubLogin,
+        pubkeyBase64: state.pubkeyBase64!,
+        attestationGistId: state.attestationGistId ?? opts.existingGistId ?? '',
+        channel2CommitSha: state.channel2CommitSha,
+      });
+      markDone('publish_binding');
+    } catch (e: unknown) {
+      const err = e instanceof JoinStepError ? e : null;
+      if (err?.code === 'phase_0_pending') {
+        // Substrate not booted — soft-skip, flow continues.
+        markPhase0('publish_binding', err.message ?? 'substrate not booted');
+      } else {
+        markError('publish_binding', err?.code ?? 'unknown', err?.message);
+      }
+    }
     await saveAndEmit();
   }
 

@@ -177,10 +177,81 @@ describe('phase-0 stubs', () => {
     });
   });
 
-  it('step8_publishBinding throws phase_0_pending', async () => {
+  it('step8_publishBinding throws phase_0_pending when substrate is not booted', async () => {
     await expect(
-      step8_publishBinding({ githubUserId: 1, githubLogin: 'alice', pubkeyBase64: DEVICE_PUBKEY_B64, attestationGistId: 'g' }),
+      step8_publishBinding({
+        workspaceId: 'ws-x',
+        harnessSlug: 'h',
+        githubUserId: 1,
+        githubLogin: 'alice',
+        pubkeyBase64: DEVICE_PUBKEY_B64,
+        attestationGistId: 'g',
+        resolveHandle: async () => null,
+      }),
     ).rejects.toMatchObject({ name: 'JoinStepError', code: 'phase_0_pending' });
+  });
+
+  it('step8_publishBinding publishes a ContributorRow on the booted handle', async () => {
+    let captured: { row: unknown } | null = null;
+    await step8_publishBinding({
+      workspaceId: 'ws-x',
+      harnessSlug: 'h',
+      githubUserId: 7,
+      githubLogin: 'bob',
+      pubkeyBase64: DEVICE_PUBKEY_B64,
+      attestationGistId: 'g-123',
+      now: 1700000000000,
+      resolveHandle: async () =>
+        ({
+          workspaceId: 'ws-x',
+          harnessSlug: 'h',
+          store: {} as never,
+          base: { base: {} as never, async close() {}, async append() {} },
+          async close() {},
+        }) as never,
+      publishRow: async (p) => {
+        captured = { row: p.row };
+      },
+    });
+    expect(captured).not.toBeNull();
+    const row = captured!.row as Record<string, unknown>;
+    expect(row.harness_slug).toBe('h');
+    expect(row.github_user_id).toBe(7);
+    expect(row.github_username).toBe('bob');
+    expect(row.binding_status).toBe('pending');
+    expect(row.channel2_branch_ref).toBe('user/7');
+    expect(row.joined_at).toBe(1700000000000);
+    const attestations = row.device_attestations as Array<Record<string, unknown>>;
+    expect(attestations).toHaveLength(1);
+    expect(attestations[0].gist_id).toBe('g-123');
+    expect(attestations[0].device_pubkey).toMatch(/^ed25519:/);
+  });
+
+  it('step8_publishBinding wraps publishRow throws as JoinStepError(publish_failed)', async () => {
+    await expect(
+      step8_publishBinding({
+        workspaceId: 'ws-x',
+        harnessSlug: 'h',
+        githubUserId: 7,
+        githubLogin: 'bob',
+        pubkeyBase64: DEVICE_PUBKEY_B64,
+        attestationGistId: 'g',
+        resolveHandle: async () =>
+          ({
+            workspaceId: 'ws-x',
+            harnessSlug: 'h',
+            store: {} as never,
+            base: { base: {} as never, async close() {}, async append() {} },
+            async close() {},
+          }) as never,
+        publishRow: async () => {
+          throw new Error('autobase append failed');
+        },
+      }),
+    ).rejects.toMatchObject({
+      name: 'JoinStepError',
+      code: 'publish_failed',
+    });
   });
 });
 
