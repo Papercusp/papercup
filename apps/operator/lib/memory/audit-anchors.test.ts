@@ -1,0 +1,233 @@
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
+import * as os from 'node:os';
+import {
+  runAnchorAudit,
+  fileChecker,
+  planChecker,
+  migrationChecker,
+  featureChecker,
+  type AuditCheckers,
+  type MemoryWithAnchors,
+} from './audit-anchors';
+
+const okChecker = async () => ({ ok: true } as const);
+const fixedNow = () => '2026-05-25T00:00:00.000Z';
+
+const allOk: AuditCheckers = {
+  file: okChecker,
+  plan: okChecker,
+  migration: okChecker,
+  feature: okChecker,
+  symbol: okChecker,
+};
+
+describe('runAnchorAudit — empty + happy paths', () => {
+  it('handles empty memory list', async () => {
+    const r = await runAnchorAudit({ memories: [], checkers: allOk, now: fixedNow });
+    expect(r.memoriesChecked).toBe(0);
+    expect(r.anchorsChecked).toBe(0);
+    expect(r.anchorsBroken).toBe(0);
+    expect(r.memoriesBroken).toBe(0);
+    expect(r.broken).toEqual([]);
+  });
+
+  it('handles memory with no anchors', async () => {
+    const mems: MemoryWithAnchors[] = [{ memoryId: 'm1', anchors: [] }];
+    const r = await runAnchorAudit({ memories: mems, checkers: allOk, now: fixedNow });
+    expect(r.memoriesChecked).toBe(1);
+    expect(r.anchorsChecked).toBe(0);
+    expect(r.all[0].hasBroken).toBe(false);
+  });
+
+  it('all anchors pass — no breakage', async () => {
+    const mems: MemoryWithAnchors[] = [{
+      memoryId: 'm1',
+      anchors: [
+        { kind: 'file', value: 'apps/operator/lib/foo.ts' },
+        { kind: 'feature', value: 'F-001' },
+      ],
+    }];
+    const r = await runAnchorAudit({ memories: mems, checkers: allOk, now: fixedNow });
+    expect(r.anchorsChecked).toBe(2);
+    expect(r.anchorsBroken).toBe(0);
+    expect(r.broken).toEqual([]);
+  });
+});
+
+describe('runAnchorAudit — broken anchors', () => {
+  it('flags memory when any anchor fails', async () => {
+    const mems: MemoryWithAnchors[] = [{
+      memoryId: 'm1',
+      anchors: [
+        { kind: 'file', value: 'gone.ts' },
+        { kind: 'feature', value: 'F-001' },
+      ],
+    }];
+    const checkers: AuditCheckers = {
+      ...allOk,
+      file: async () => ({ ok: false, reason: 'file_not_found' }),
+    };
+    const r = await runAnchorAudit({ memories: mems, checkers, now: fixedNow });
+    expect(r.anchorsBroken).toBe(1);
+    expect(r.memoriesBroken).toBe(1);
+    expect(r.broken[0].memoryId).toBe('m1');
+    expect(r.broken[0].anchors[0].ok).toBe(false);
+    expect(r.broken[0].anchors[0].reason).toBe('file_not_found');
+    expect(r.broken[0].anchors[1].ok).toBe(true);
+  });
+
+  it('multiple broken memories accumulate correctly', async () => {
+    const mems: MemoryWithAnchors[] = [
+      { memoryId: 'm1', anchors: [{ kind: 'file', value: 'a.ts' }] },
+      { memoryId: 'm2', anchors: [{ kind: 'feature', value: 'F-X' }] },
+      { memoryId: 'm3', anchors: [{ kind: 'file', value: 'b.ts' }] },
+    ];
+    const checkers: AuditCheckers = {
+      ...allOk,
+      file: async () => ({ ok: false, reason: 'file_not_found' }),
+    };
+    const r = await runAnchorAudit({ memories: mems, checkers, now: fixedNow });
+    expect(r.memoriesChecked).toBe(3);
+    expect(r.memoriesBroken).toBe(2);
+    expect(r.anchorsBroken).toBe(2);
+    expect(r.broken.map((m) => m.memoryId).sort()).toEqual(['m1', 'm3']);
+  });
+
+  it('checker that throws is treated as broken (not propagated)', async () => {
+    const mems: MemoryWithAnchors[] = [{
+      memoryId: 'm1',
+      anchors: [{ kind: 'file', value: 'a.ts' }],
+    }];
+    const checkers: AuditCheckers = {
+      ...allOk,
+      file: async () => { throw new Error('disk error'); },
+    };
+    const r = await runAnchorAudit({ memories: mems, checkers, now: fixedNow });
+    expect(r.anchorsBroken).toBe(1);
+    expect(r.broken[0].anchors[0].reason).toBe('checker_threw:disk error');
+  });
+
+  it('symbol anchors skip with default checker', async () => {
+    const mems: MemoryWithAnchors[] = [{
+      memoryId: 'm1',
+      anchors: [{ kind: 'symbol', value: 'getHarnessAdminUrl' }],
+    }];
+    // No symbol checker provided
+    const { symbol: _, ...checkersWithoutSymbol } = allOk;
+    const r = await runAnchorAudit({
+      memories: mems,
+      checkers: checkersWithoutSymbol as AuditCheckers,
+      now: fixedNow,
+    });
+    expect(r.anchorsBroken).toBe(0);
+    expect(r.all[0].anchors[0].ok).toBe(true);
+  });
+});
+
+/* ─── Standard checkers — file/plan/migration backed by tmpdir ──────── */
+
+let tmpRoot: string;
+beforeEach(() => {
+  tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'audit-anchors-'));
+});
+afterEach(() => {
+  fs.rmSync(tmpRoot, { recursive: true, force: true });
+});
+
+describe('fileChecker', () => {
+  it('passes when file exists under repoRoot', async () => {
+    fs.mkdirSync(path.join(tmpRoot, 'apps/operator/lib'), { recursive: true });
+    fs.writeFileSync(path.join(tmpRoot, 'apps/operator/lib/foo.ts'), '');
+    const c = fileChecker(tmpRoot);
+    const r = await c({ kind: 'file', value: 'apps/operator/lib/foo.ts' });
+    expect(r.ok).toBe(true);
+  });
+
+  it('fails when file missing', async () => {
+    const c = fileChecker(tmpRoot);
+    const r = await c({ kind: 'file', value: 'missing/file.ts' });
+    expect(r).toEqual({ ok: false, reason: 'file_not_found' });
+  });
+});
+
+describe('planChecker', () => {
+  it('finds plan in plansDir', async () => {
+    const plansDir = path.join(tmpRoot, 'plans');
+    const archiveDir = path.join(tmpRoot, 'plans/archive');
+    fs.mkdirSync(plansDir, { recursive: true });
+    fs.writeFileSync(path.join(plansDir, 'my-plan-2026-05-25.md'), '');
+    const c = planChecker(plansDir, archiveDir);
+    const r = await c({ kind: 'plan', value: 'my-plan-2026-05-25' });
+    expect(r.ok).toBe(true);
+  });
+
+  it('falls through to archiveDir', async () => {
+    const plansDir = path.join(tmpRoot, 'plans');
+    const archiveDir = path.join(tmpRoot, 'plans/archive');
+    fs.mkdirSync(archiveDir, { recursive: true });
+    fs.writeFileSync(path.join(archiveDir, 'old-plan-2026-01-01.md'), '');
+    const c = planChecker(plansDir, archiveDir);
+    const r = await c({ kind: 'plan', value: 'old-plan-2026-01-01' });
+    expect(r.ok).toBe(true);
+  });
+
+  it('fails when plan missing in both', async () => {
+    const plansDir = path.join(tmpRoot, 'plans');
+    const archiveDir = path.join(tmpRoot, 'plans/archive');
+    fs.mkdirSync(plansDir, { recursive: true });
+    fs.mkdirSync(archiveDir, { recursive: true });
+    const c = planChecker(plansDir, archiveDir);
+    const r = await c({ kind: 'plan', value: 'ghost-2026-01-01' });
+    expect(r).toEqual({ ok: false, reason: 'plan_not_found' });
+  });
+});
+
+describe('migrationChecker', () => {
+  it('finds migration by 3-digit prefix', async () => {
+    const sqlDir = path.join(tmpRoot, 'sql');
+    fs.mkdirSync(sqlDir, { recursive: true });
+    fs.writeFileSync(path.join(sqlDir, '081-memory-canonical.sql'), '');
+    const c = migrationChecker(sqlDir);
+    expect((await c({ kind: 'migration', value: '081' })).ok).toBe(true);
+  });
+
+  it('finds migration when value is bare number string', async () => {
+    const sqlDir = path.join(tmpRoot, 'sql');
+    fs.mkdirSync(sqlDir, { recursive: true });
+    fs.writeFileSync(path.join(sqlDir, '042-foo.sql'), '');
+    const c = migrationChecker(sqlDir);
+    expect((await c({ kind: 'migration', value: '42' })).ok).toBe(true);
+  });
+
+  it('fails when no matching prefix', async () => {
+    const sqlDir = path.join(tmpRoot, 'sql');
+    fs.mkdirSync(sqlDir, { recursive: true });
+    fs.writeFileSync(path.join(sqlDir, '081-memory.sql'), '');
+    const c = migrationChecker(sqlDir);
+    const r = await c({ kind: 'migration', value: '999' });
+    expect(r).toEqual({ ok: false, reason: 'migration_not_found' });
+  });
+
+  it('fails gracefully when sqlDir missing', async () => {
+    const c = migrationChecker(path.join(tmpRoot, 'no-such-dir'));
+    const r = await c({ kind: 'migration', value: '081' });
+    expect(r).toEqual({ ok: false, reason: 'sql_dir_not_readable' });
+  });
+});
+
+describe('featureChecker', () => {
+  it('uses injected lookup', async () => {
+    const c = featureChecker(async (id) => id === 'F-001');
+    expect((await c({ kind: 'feature', value: 'F-001' })).ok).toBe(true);
+    expect((await c({ kind: 'feature', value: 'F-999' })).ok).toBe(false);
+  });
+
+  it('reports failure when lookup throws', async () => {
+    const c = featureChecker(async () => { throw new Error('PG down'); });
+    const r = await c({ kind: 'feature', value: 'F-001' });
+    expect(r.ok).toBe(false);
+    expect(r.ok === false && r.reason).toContain('feature_lookup_failed:PG down');
+  });
+});
