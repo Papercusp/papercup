@@ -37,6 +37,7 @@ import { acceptOpVersion, type SchemaVersionAlert } from './schema-version';
 import { schemaVersionEvents } from './schema-version';
 import { registerAllHarnessProjections } from './projections/register-all';
 import { startBootstrapProgressPoller } from './bootstrap-progress-poller';
+import { recordBootEvent } from './boot-history';
 import type Corestore from 'corestore';
 
 export interface BootHarnessOpts {
@@ -80,6 +81,21 @@ export async function bootHarnessSubstrate(opts: BootHarnessOpts): Promise<Boote
   if (!opts.workspaceId) throw new Error('bootHarnessSubstrate: workspaceId required');
   if (!opts.harnessSlug) throw new Error('bootHarnessSubstrate: harnessSlug required');
 
+  recordBootEvent(opts.workspaceId, opts.harnessSlug, 'boot_start');
+  try {
+    return await bootHarnessSubstrateInner(opts);
+  } catch (e) {
+    recordBootEvent(
+      opts.workspaceId,
+      opts.harnessSlug,
+      'boot_fail',
+      e instanceof Error ? e.message : String(e),
+    );
+    throw e;
+  }
+}
+
+async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedHarnessHandle> {
   const storeOpts: HarnessStoreOpts = {
     workspaceRoot: opts.workspaceRoot,
     harnessSlug: opts.harnessSlug,
@@ -115,6 +131,8 @@ export async function bootHarnessSubstrate(opts: BootHarnessOpts): Promise<Boote
     base,
   });
 
+  recordBootEvent(opts.workspaceId, opts.harnessSlug, 'boot_ok');
+
   return {
     workspaceId: opts.workspaceId,
     harnessSlug: opts.harnessSlug,
@@ -129,6 +147,7 @@ export async function bootHarnessSubstrate(opts: BootHarnessOpts): Promise<Boote
       // into the store.
       try { await base.close(); } catch {}
       try { await store.close(); } catch {}
+      recordBootEvent(opts.workspaceId, opts.harnessSlug, 'close');
     },
   };
 }

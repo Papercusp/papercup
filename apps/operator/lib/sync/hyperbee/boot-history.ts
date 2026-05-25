@@ -1,0 +1,99 @@
+/**
+ * boot-history — in-process record of substrate boot events.
+ *
+ * Plan: papercusp-dogfood-phase5a-hyperbee-plumbing-2026-05-24.
+ *
+ * Tracks each `bootHarnessSubstrate` start / finish / close so flaky-
+ * boot debugging has a per-harness timeline. Distinct from `boot-all`
+ * (which holds the live handle map): this is the *history* of boot
+ * events, including ones that fell out of the map.
+ *
+ * Pure logic — module-level append-only buffer with a configurable
+ * cap (default 200 entries). Process-local; clears when the operator
+ * restarts. Test seams for time + reset.
+ *
+ * Event kinds:
+ *   - 'boot_start'  — bootHarnessSubstrate called; corestore opening.
+ *   - 'boot_ok'     — bootHarnessSubstrate returned successfully.
+ *   - 'boot_fail'   — bootHarnessSubstrate threw.
+ *   - 'close'       — handle.close() called.
+ */
+
+export type BootHistoryKind = 'boot_start' | 'boot_ok' | 'boot_fail' | 'close';
+
+export interface BootHistoryEntry {
+  ts: number;
+  workspaceId: string;
+  harnessSlug: string;
+  kind: BootHistoryKind;
+  message?: string;
+}
+
+const DEFAULT_CAP = 200;
+
+const buffer: BootHistoryEntry[] = [];
+let cap = DEFAULT_CAP;
+
+let _nowImpl: () => number = () => Date.now();
+
+export function _setNowForTests(impl: () => number): void {
+  _nowImpl = impl;
+}
+
+export function _setCapForTests(n: number): void {
+  cap = n;
+}
+
+export function _resetBootHistoryForTests(): void {
+  buffer.length = 0;
+  cap = DEFAULT_CAP;
+  _nowImpl = () => Date.now();
+}
+
+export function recordBootEvent(
+  workspaceId: string,
+  harnessSlug: string,
+  kind: BootHistoryKind,
+  message?: string,
+): void {
+  buffer.push({
+    ts: _nowImpl(),
+    workspaceId,
+    harnessSlug,
+    kind,
+    message,
+  });
+  while (buffer.length > cap) buffer.shift();
+}
+
+export interface ListBootHistoryOpts {
+  workspaceId?: string;
+  harnessSlug?: string;
+  limit?: number;
+  /** Filter to events with one of these kinds. */
+  kinds?: ReadonlyArray<BootHistoryKind>;
+}
+
+/**
+ * Returns a fresh array each call (sorted newest first), capped at
+ * `limit` (default 50).
+ */
+export function listBootHistory(
+  opts: ListBootHistoryOpts = {},
+): BootHistoryEntry[] {
+  const limit = opts.limit ?? 50;
+  const kinds = opts.kinds ? new Set(opts.kinds) : null;
+  const filtered: BootHistoryEntry[] = [];
+  for (let i = buffer.length - 1; i >= 0 && filtered.length < limit; i -= 1) {
+    const entry = buffer[i]!;
+    if (opts.workspaceId && entry.workspaceId !== opts.workspaceId) continue;
+    if (opts.harnessSlug && entry.harnessSlug !== opts.harnessSlug) continue;
+    if (kinds && !kinds.has(entry.kind)) continue;
+    filtered.push(entry);
+  }
+  return filtered;
+}
+
+export function bootHistoryDepth(): number {
+  return buffer.length;
+}
