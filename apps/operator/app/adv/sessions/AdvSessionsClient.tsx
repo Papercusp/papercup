@@ -590,7 +590,7 @@ export default function AdvSessionsClient() {
     const id = resolveResumeId(row);
     if (!id) {
       toast.error(
-        'No OMP session id tracked for this row. Open it via "Inspect state" first so the id is captured.',
+        'No OMP session id tracked for this row yet. Select the session first so the id can be loaded.',
       );
       return;
     }
@@ -646,7 +646,7 @@ export default function AdvSessionsClient() {
           <span className="pc-adv-sessions__kicker">Session recovery</span>
           <h2>Agent sessions</h2>
           <p className="pc-adv-sessions__subhead">
-            Launch OMP sessions, inspect transcript state, and recover handoffs after compaction.
+            View current and previous agent sessions, recover them or locate them on your desktop
           </p>
         </div>
         <div className="pc-adv-sessions__launch-card" aria-label="Launch a new OMP session">
@@ -764,17 +764,11 @@ export default function AdvSessionsClient() {
                                 {row.label ?? row.terminalBin ?? `#${row.id}`}
                               </span>
                               <span className="pc-adv-sessions__row-times">
-                                started {formatDate(row.startedAt)}
-                                {row.endedAt ? ` · ended ${formatDate(row.endedAt)}` : ''}
+                                {formatCardDateTime(row.startedAt)}
+                                {row.endedAt ? ` · ${formatCardDateTime(row.endedAt)}` : ''}
                               </span>
-                              {row.pid != null ? (
-                                <span className="pc-adv-sessions__row-pid">pid {row.pid}</span>
-                              ) : null}
                             </span>
                             <RowUsagePills summary={summaryByRowId[row.id]} mode={row.mode} />
-                            <span className="pc-adv-sessions__row-hint">
-                              {selected ? 'Inspecting' : 'Inspect state'}
-                            </span>
                           </button>
                           <div className="pc-adv-sessions__row-actions">
                             {active ? (
@@ -800,7 +794,7 @@ export default function AdvSessionsClient() {
                                   const resumeId = resolveResumeId(row);
                                   const resumeLabel = resumeId
                                     ? `Resume OMP with this session's tracked id (${resumeId.slice(0, 12)}…)`
-                                    : 'No OMP session id tracked yet — open via "Inspect state" first.';
+                                    : 'No OMP session id tracked yet — select this session first.';
                                   return (
                                     <Tooltip label={resumeLabel}>
                                       <span className="pc-adv-sessions__tooltip-trigger">
@@ -2141,8 +2135,24 @@ function formatCompactNumber(n: number): string {
 function formatCostUsd(amount: number): string {
   if (!Number.isFinite(amount) || amount <= 0) return '$0';
   if (amount < 0.01) return '<$0.01';
-  if (amount < 1) return `${amount.toFixed(3)}`;
-  return `${amount.toFixed(2)}`;
+  if (amount < 1) return `$${amount.toFixed(3)}`;
+  return `$${amount.toFixed(2)}`;
+}
+function formatCardDateTime(iso: string): string {
+  try {
+    const d = new Date(iso);
+    const date = d.toLocaleDateString(undefined, {
+      month: 'numeric',
+      day: 'numeric',
+    });
+    const time = d.toLocaleTimeString(undefined, {
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+    return `${date} ${time}`;
+  } catch {
+    return iso;
+  }
 }
 
 function formatDate(iso: string): string {
