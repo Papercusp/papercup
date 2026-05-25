@@ -121,4 +121,58 @@ export async function getPlanContextForFeature(
   return { section: text, planSlug, truncated };
 }
 
+/**
+ * Returns a combined `## Source Plans Context` section for a batch of
+ * feature IDs. Used by PM dispatch, which operates on multiple features.
+ *
+ * Deduplicates by plan slug; at most 2 plans are included to cap context
+ * size. Returns null if no features have source_plan_slug set.
+ */
+export async function getPlanContextsForFeatures(
+  harnessSlug: string,
+  featureIds: string[],
+): Promise<string | null> {
+  if (featureIds.length === 0) return null;
+  try {
+    const { sql } = getOrgPg();
+    const rows = await sql<Array<{ source_plan_slug: string }>>`
+      SELECT DISTINCT source_plan_slug
+        FROM harness_shared.harness_features_consolidated
+       WHERE harness_slug = ${harnessSlug}
+         AND feature_id   = ANY(${featureIds})
+         AND source_plan_slug IS NOT NULL
+       LIMIT 2
+    `;
+    if (rows.length === 0) return null;
+
+    const sections: string[] = ['## Source Plans Context', ''];
+    for (const { source_plan_slug } of rows) {
+      let planResult: Awaited<ReturnType<typeof readPlanBySlug>>;
+      try { planResult = await readPlanBySlug(source_plan_slug); } catch { continue; }
+      if (!planResult) continue;
+
+      const { parsed } = planResult;
+      const planTitle = parsed.frontmatter.title ?? source_plan_slug;
+      sections.push(`### Plan: \`${source_plan_slug}\` — ${planTitle}`, '');
+      if (parsed.now) {
+        sections.push(parsed.now.state, '', `**Next:** ${parsed.now.next}`);
+      }
+      const recent = parsed.decisions.slice(-2).reverse();
+      if (recent.length > 0) {
+        sections.push('', '**Recent Decisions:**');
+        for (const d of recent) {
+          sections.push(`- **${d.id} — ${d.title}**: ${d.body.slice(0, 200)}${d.body.length > 200 ? '…' : ''}`);
+        }
+      }
+      sections.push('');
+    }
+
+    const raw = sections.join('\n');
+    const { text } = truncate(raw, 4_000);
+    return text;
+  } catch {
+    return null;
+  }
+}
+
 export { ROLES_RECEIVING_CONTEXT };

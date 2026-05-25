@@ -1,12 +1,15 @@
 /**
- * P-012: plan context injection — unit coverage for getPlanContextForFeature.
+ * P-012: plan context injection — unit coverage for getPlanContextForFeature
+ * and getPlanContextsForFeatures.
  *
- * Tests the core function that drives all 4 wiring paths:
+ * Tests the core functions that drive all 4 wiring paths:
  *   - Returns null when the feature has no source_plan_slug in PG
  *   - Returns null when the plan file cannot be read
  *   - Returns a formatted section with Now block + decisions
  *   - Truncates content beyond 6 000 chars
  *   - ROLES_RECEIVING_CONTEXT export contains the right roles
+ *   - getPlanContextsForFeatures: deduplicates by plan slug, returns null
+ *     when no features have plan origin
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -199,5 +202,62 @@ describe('getPlanContextForFeature', () => {
     const { getPlanContextForFeature } = await import(MODULE_PATH);
     const result = await getPlanContextForFeature('myharness', 'F-001');
     expect(result!.section).not.toContain('### Recent Decisions');
+  });
+});
+
+describe('getPlanContextsForFeatures', () => {
+  it('returns null for empty feature list', async () => {
+    mockPg([]);
+    mockSource(null);
+    const { getPlanContextsForFeatures } = await import(MODULE_PATH);
+    expect(await getPlanContextsForFeatures('myharness', [])).toBeNull();
+  });
+
+  it('returns null when no features have source_plan_slug', async () => {
+    // PG returns no rows with plan slugs
+    mockPg([]);
+    mockSource(null);
+    const { getPlanContextsForFeatures } = await import(MODULE_PATH);
+    expect(await getPlanContextsForFeatures('myharness', ['F-001', 'F-002'])).toBeNull();
+  });
+
+  it('returns combined section for plan-derived features', async () => {
+    mockPg([{ source_plan_slug: 'my-plan-2026-05-24' }]);
+    mockSource({
+      parsed: {
+        frontmatter: { title: 'My Plan' },
+        now: { state: 'Working on Phase B.', next: 'Ship P-008.' },
+        items: [],
+        decisions: [
+          { id: 'D-001', title: 'Use HTTP', body: 'Avoids cross-layer PG.' },
+        ],
+      },
+    });
+    const { getPlanContextsForFeatures } = await import(MODULE_PATH);
+    const result = await getPlanContextsForFeatures('myharness', ['F-001', 'F-002']);
+
+    expect(result).not.toBeNull();
+    expect(result).toContain('## Source Plans Context');
+    expect(result).toContain('my-plan-2026-05-24');
+    expect(result).toContain('My Plan');
+    expect(result).toContain('Working on Phase B.');
+    expect(result).toContain('Ship P-008.');
+  });
+
+  it('truncates combined output at 4000 chars', async () => {
+    mockPg([{ source_plan_slug: 'big-plan' }]);
+    mockSource({
+      parsed: {
+        frontmatter: { title: 'Big' },
+        now: { state: 'x'.repeat(5_000), next: 'Next.' },
+        items: [],
+        decisions: [],
+      },
+    });
+    const { getPlanContextsForFeatures } = await import(MODULE_PATH);
+    const result = await getPlanContextsForFeatures('myharness', ['F-001']);
+    expect(result).not.toBeNull();
+    expect(result!.length).toBeLessThanOrEqual(4_020);
+    expect(result).toContain('[truncated]');
   });
 });

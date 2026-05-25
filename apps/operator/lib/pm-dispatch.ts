@@ -26,6 +26,7 @@ import { assembleRolePrompt } from '@papercusp/orchestrator/role-prompt';
 import { projectDirForSlug } from './operator-notes';
 import { resolveBackend, resolveAgentBin } from '@restart/papercup-shared/agent';
 import { applyToProcessEnv, readAgentConfig } from './agent-config';
+import { getPlanContextsForFeatures } from './plan-context-for-feature';
 
 export interface RunPmOptions {
   slug: string;
@@ -263,13 +264,19 @@ async function runProjectManagerInner(
       ],
     });
 
+    // P-008: inject plan context for plan-derived features (best-effort).
+    const planContextSection = await getPlanContextsForFeatures(slug, recentFeatureIds).catch(() => null);
+    const promptText = planContextSection
+      ? `${assembled.text}\n\n---\n\n${planContextSection}`
+      : assembled.text;
+
     // 6. Spawn claude with cwd set to the harness project directory so its
     // session-scoped path restriction allows reading harness state, feature
     // docs, .harness/memory/, etc. Without this, claude is locked to the
     // dev-server's cwd and cannot read any of the inputs the PM prompt
     // tells it to look at.
     const projectDir = await projectDirForSlug(slug);
-    const spawned = await spawnClaude(agentCmd, assembled.text, projectDir ?? undefined);
+    const spawned = await spawnClaude(agentCmd, promptText, projectDir ?? undefined);
     if (!spawned.ok) {
       return { ok: false, error: 'claude invocation failed', detail: spawned.detail };
     }
