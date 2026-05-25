@@ -1,0 +1,98 @@
+/**
+ * GET /api/admin/dogfood-substrate-health — per-harness verdict.
+ *
+ * Plan: papercusp-dogfood-phase5a-hyperbee-plumbing-2026-05-24.
+ *
+ * Aggregates flag state + boot map + per-harness claim stats + per-
+ * harness bootstrap progress into a single
+ * { workspaceId, harnessSlug, verdict, reasons }[] envelope.
+ *
+ * Used by monitoring scripts + the admin diagnostic page. Public read.
+ */
+
+import { defineTool } from '@papercusp/agent-mcp';
+import { getOrgPg } from '@restart/db-org';
+import { listBootedHandles } from '@/lib/sync/hyperbee/boot-all';
+import { listBootstrapProgress } from '@/lib/sync/hyperbee/bootstrap-progress';
+import { loadClaimAttemptStats } from '@/lib/orchestrator/load-claim-attempts';
+import {
+  assessHarnessSubstrateHealth,
+  type SubstrateHealthVerdict,
+} from '@/lib/sync/hyperbee/health';
+
+interface HarnessHealthRow {
+  workspaceId: string;
+  harnessSlug: string;
+  verdict: SubstrateHealthVerdict;
+  reasons: string[];
+}
+
+const get = defineTool({
+  method: 'GET',
+  path: '/admin/dogfood-substrate-health',
+  auth: 'public',
+  async handler() {
+    const flagEnabled =
+      process.env.PAPERCUSP_DOGFOOD_SUBSTRATE_ENABLE === '1';
+    const booted = listBootedHandles();
+    const progress = listBootstrapProgress();
+    const progressByKey = new Map<
+      string,
+      ReturnType<typeof listBootstrapProgress>[number]
+    >();
+    for (const p of progress) {
+      progressByKey.set(`${p.workspaceId}::${p.harnessSlug}`, p);
+    }
+
+    const { sql } = getOrgPg();
+    const runQuery = async <T,>(
+      query: string,
+      paramsArr: unknown[],
+    ): Promise<T[]> => {
+      return (await sql.unsafe(query, paramsArr as never)) as unknown as T[];
+    };
+
+    const rows: HarnessHealthRow[] = await Promise.all(
+      booted.map(async (h) => {
+        const stats = await loadClaimAttemptStats({
+          workspace_id: h.workspaceId,
+          harness_slug: h.harnessSlug,
+          runQuery,
+        });
+        const bp = progressByKey.get(`${h.workspaceId}::${h.harnessSlug}`);
+        const { verdict, reasons } = assessHarnessSubstrateHealth({
+          flagEnabled,
+          handlePresent: true,
+          claimStats: stats,
+          bootstrapProgress: bp ?? null,
+        });
+        return {
+          workspaceId: h.workspaceId,
+          harnessSlug: h.harnessSlug,
+          verdict,
+          reasons,
+        };
+      }),
+    );
+
+    // Add a workspace-level row when the flag is OFF (no harnesses
+    // booted, but the disabled state itself is the verdict).
+    if (rows.length === 0) {
+      rows.push({
+        workspaceId: '',
+        harnessSlug: '',
+        ...assessHarnessSubstrateHealth({
+          flagEnabled,
+          handlePresent: false,
+        }),
+      });
+    }
+
+    return Response.json({
+      flagEnabled,
+      harnesses: rows,
+    });
+  },
+});
+
+export default [get];

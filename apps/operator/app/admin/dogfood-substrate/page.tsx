@@ -19,9 +19,11 @@ import { getOrgPg } from '@restart/db-org';
 import { listBootedHandles } from '@/lib/sync/hyperbee/boot-all';
 import { listBootstrapProgress } from '@/lib/sync/hyperbee/bootstrap-progress';
 import { loadClaimAttemptStats } from '@/lib/orchestrator/load-claim-attempts';
+import { assessHarnessSubstrateHealth } from '@/lib/sync/hyperbee/health';
 import { SubstrateStatusBadge } from '../../harness/insights/SubstrateStatusBadge';
 import { ClaimAttemptStatsPill } from '../../harness/insights/ClaimAttemptStatsPill';
 import { BootstrapProgressIndicator } from '../../harness/insights/BootstrapProgressIndicator';
+import { SubstrateHealthPill } from '../../harness/insights/SubstrateHealthPill';
 
 export const dynamic = 'force-dynamic';
 
@@ -139,6 +141,7 @@ export default async function DogfoodSubstratePage() {
             <tr>
               <th style={TH}>Workspace</th>
               <th style={TH}>Harness</th>
+              <th style={TH}>Health</th>
               <th style={TH}>Bootstrap</th>
               <th style={TH}>Claim audit</th>
             </tr>
@@ -148,6 +151,12 @@ export default async function DogfoodSubstratePage() {
               const key = `${h.workspaceId}::${h.harnessSlug}`;
               const stats = statsBySlug.get(key);
               const progress = progressBySlug.get(key);
+              const health = assessHarnessSubstrateHealth({
+                flagEnabled: enabled,
+                handlePresent: true,
+                claimStats: stats,
+                bootstrapProgress: progress ?? null,
+              });
               return (
                 <tr
                   key={key}
@@ -158,6 +167,12 @@ export default async function DogfoodSubstratePage() {
                   </td>
                   <td style={TD}>
                     <code>{h.harnessSlug}</code>
+                  </td>
+                  <td style={TD}>
+                    <SubstrateHealthPill
+                      verdict={health.verdict}
+                      reasons={health.reasons}
+                    />
                   </td>
                   <td style={TD}>
                     {progress ? (
