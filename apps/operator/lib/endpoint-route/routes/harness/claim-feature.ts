@@ -1,0 +1,106 @@
+/**
+ * Distributed-claim HTTP wrapper — Phase 6 P-037 production wiring.
+ *
+ *   POST /api/harness/:slug/claim-feature
+ *     body: { feature_id: string, github_user_id: number }
+ *     →
+ *       { strategy: 'distributed' | 'single-writer',
+ *         reason?: 'attempted' | 'substrate-not-booted' | 'pubkey-unresolved',
+ *         won: boolean,
+ *         winner_pubkey?: string,
+ *         my_pubkey?: string,
+ *         audit_outcome?: 'won' | 'lost',
+ *         audit_recorded?: boolean,
+ *         audit_error?: string }
+ *
+ * Purpose: the subprocess orchestrator can't access the operator's
+ * in-process substrate handles directly. It calls this endpoint
+ * before dispatching a worker on a feature; if `won` is false (or
+ * strategy is 'single-writer' and the caller decides to fall back),
+ * it drops the candidate and selects the next eligible feature
+ * per v5 §0.6.
+ *
+ * Public (auth=public) — same tier as the rest of the harness API
+ * during pre-alpha.
+ */
+
+import { defineTool } from '@papercusp/agent-mcp';
+import { activeWorkspaceId } from '@/lib/workspace-registry';
+import { getClaimStrategy } from '@/lib/orchestrator/get-claim-strategy';
+import { attemptDistributedClaim } from '@/lib/orchestrator/distributed-claim';
+
+interface ClaimBody {
+  feature_id?: unknown;
+  github_user_id?: unknown;
+}
+
+export function parseClaimBody(
+  body: unknown,
+): { ok: true; featureId: string; userId: number } | { ok: false; error: string } {
+  if (!body || typeof body !== 'object') return { ok: false, error: 'body required' };
+  const b = body as ClaimBody;
+  if (typeof b.feature_id !== 'string' || b.feature_id.length === 0) {
+    return { ok: false, error: 'feature_id required' };
+  }
+  const rawUser = b.github_user_id;
+  const n = typeof rawUser === 'number' ? rawUser : Number.parseInt(String(rawUser), 10);
+  if (!Number.isInteger(n) || n <= 0) {
+    return { ok: false, error: 'github_user_id must be positive integer' };
+  }
+  return { ok: true, featureId: b.feature_id, userId: n };
+}
+
+const post = defineTool({
+  method: 'POST',
+  path: '/harness/:slug/claim-feature',
+  auth: 'public',
+  async handler(req, ctx) {
+    const slug = ctx.params.slug as string;
+    const workspaceId = activeWorkspaceId();
+    const parsed = parseClaimBody(await req.json().catch(() => null));
+    if (!parsed.ok) return Response.json({ error: parsed.error }, { status: 400 });
+
+    const strategy = getClaimStrategy({ workspaceId, harnessSlug: slug });
+    if (strategy === 'single-writer') {
+      // Substrate is off / handle not booted for this harness. Caller
+      // should fall back to its legacy claim path (PG-only, single-
+      // writer race-free because there's only one writer).
+      return Response.json({
+        strategy,
+        won: true,
+        reason: 'single-writer-fallback',
+      });
+    }
+    const r = await attemptDistributedClaim({
+      workspaceId,
+      harnessSlug: slug,
+      feature_id: parsed.featureId,
+      claimer_github_user_id: parsed.userId,
+    });
+
+    if (r.reason === 'substrate-not-booted' || r.reason === 'pubkey-unresolved') {
+      // Per-harness handle disappeared between strategy check and
+      // claim attempt — race, but recoverable. Tell the caller to
+      // fall back as if single-writer.
+      return Response.json({
+        strategy: 'single-writer',
+        won: true,
+        reason: r.reason,
+      });
+    }
+    // reason === 'attempted' — return the full claim result.
+    return Response.json({
+      strategy: 'distributed',
+      reason: r.reason,
+      won: r.won,
+      claim_seq: r.claim_seq,
+      winner_pubkey: r.winner_pubkey,
+      my_pubkey: r.my_pubkey,
+      audit_outcome: r.audit_outcome,
+      audit_recorded: r.audit_recorded,
+      audit_error: r.audit_error,
+    });
+  },
+});
+
+export default [post];
