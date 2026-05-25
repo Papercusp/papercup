@@ -1,4 +1,4 @@
-import { defineConfig } from 'vite';
+import { defineConfig, type Plugin } from 'vite';
 import react from '@vitejs/plugin-react';
 import { tanstackRouter } from '@tanstack/router-plugin/vite';
 import { resolve } from 'node:path';
@@ -12,6 +12,22 @@ import { resolve } from 'node:path';
 const operatorRoot = resolve(import.meta.dirname, '../operator');
 
 const enableHmr = process.env.PAPERCUSP_ENABLE_HMR === '1' || process.env.NEXT_PUBLIC_ENABLE_HMR === '1';
+
+const noViteClientPlugin: Plugin = {
+  name: 'papercusp-no-vite-client',
+  configureServer(server) {
+    if (enableHmr) return;
+    server.middlewares.use((req, res, next) => {
+      if (!req.url?.startsWith('/@vite/client')) {
+        next();
+        return;
+      }
+      res.statusCode = 200;
+      res.setHeader('Content-Type', 'application/javascript');
+      res.end('/* Papercusp desktop dev: Vite client disabled; refresh manually. */');
+    });
+  },
+};
 
 export default defineConfig({
   // Static assets (wordmark.svg, mascot.svg, the Oracle/header icons,
@@ -81,6 +97,7 @@ export default defineConfig({
     },
   },
   plugins: [
+    noViteClientPlugin,
     // Route generation must run before the React plugin.
     tanstackRouter({
       target: 'react',

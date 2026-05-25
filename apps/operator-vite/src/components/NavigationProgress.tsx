@@ -20,13 +20,30 @@ import { useProgress } from '@bprogress/react';
  * alias shim) share the same context, so a manual `.start()` from a
  * link click and the router-driven progress here cooperate on one bar.
  */
+
+function cleanupStaleBusyClass() {
+  if (document.querySelector('.bprogress')) return;
+  document.documentElement.classList.remove('bprogress-busy');
+}
 export function NavigationProgress() {
   const isPending = useRouterState({ select: (s) => s.status === 'pending' });
   const { start, stop } = useProgress();
 
   useEffect(() => {
-    if (isPending) start();
-    else stop();
+    if (isPending) {
+      start();
+      return;
+    }
+
+    const settle = () => {
+      stop();
+      window.setTimeout(cleanupStaleBusyClass, 200);
+    };
+    settle();
+    const interval = window.setInterval(settle, 1_000);
+    return () => {
+      window.clearInterval(interval);
+    };
   }, [isPending, start, stop]);
 
   return null;
