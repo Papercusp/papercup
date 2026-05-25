@@ -1,5 +1,5 @@
 ---
-title: "Plan→Feature Pipeline Unification"
+title: "Plan→Feature Pipeline Unification (v2)"
 slug: plan-feature-pipeline-unification-2026-05-24
 status: active
 created: 2026-05-24
@@ -9,368 +9,419 @@ owner: aviynw3@gmail.com
 
 ## Now
 
-**State:** Draft — reviewed by second agent, corrected, not yet implemented.
+**State:** Phase A COMPLETE (P-001–P-006 shipped). Phase B wiring in progress — P-007 through P-012 next.
 
-**Next:** User approves D-001–D-005; agent starts Phase A (schema migration + promote write-back).
+**Next:** Wire getPlanContextForFeature into the 4 invocation paths (P-007 chat, P-008 PM dispatch, P-009 TS orchestrator, P-010 bash invoke); add token-budget guard (P-011); write tests (P-012).
 
 ---
 ## Background
 
-Three disconnected pipelines exist today:
+### The current state (verified from code)
 
-### 1. The `plans:*` framework (new)
-Plans live as markdown at `apps/operator/docs/plans/`. The `plans:promote` tool
-(`apps/operator/lib/agent-tools/coordination/tools/promote.ts`) can batch-promote
-plan items into harness features. However:
-- Provenance is stored in unstructured JSONB metadata, not first-class columns
-- `plans:promote` does **not** write back to the plan body (no "promoted" marker)
-- Workers receive no plan context when executing a promoted feature
+Two pipelines today, both ending at the same feature queue:
 
-### 2. The legacy proposal pipeline
-`invokeScoperBackground` writes `.harness/proposals/*.md` → synced to
-`harness_shared.harness_proposals_shared` → shown in `ProposalsPanel` → user
-manually promotes to features. This is the path novice users encounter. It uses
-none of the plan infrastructure.
+**Path A — `plans:promote`** (`apps/operator/lib/agent-tools/coordination/tools/promote.ts`):
+- Atomic: PUTs SPEC.md (adds `[SC-NNN]` criteria with `<!-- promoted from plans/<slug> -->` comments) + POSTs `/features/import` (creates F-AUTO-* with `metadata.source_plan` + `metadata.from_plan_items` + `metadata.covers`) + marks plan items done
+- Scoper never involved
+- Used by agents; no UI surface
 
-### 3. Features with no plan origin
-Most existing features have no upstream plan record at all.
+**Path B — Proposals → SPEC → MODE=replan**:
+- Scoper `MODE=proposal` writes `.harness/proposals/*.md`
+- File watcher syncs to `harness_shared.harness_proposals_shared`
+- ProposalsPanel shows cards with Accept/Reject
+- Accept handler appends bullets to SPEC.md + auto-fires `invokeScoperBackground(project, 'replan')`
+- `MODE=replan` reads SPEC, diffs against existing features, creates new F-* rows. Honors `metadata.covers` to skip already-covered criteria (the integration point with Path A)
+- Used by novice users; no plan ever exists
 
-### The gap
-The plan system was designed so that once a plan is ready, it feeds into the
-feature queue and agents pick it up. That loop was never closed:
-- No first-class plan→feature column link
-- No promote write-back to the plan body
-- Agents don't see plan context during execution
-- Scoper ignores the plans framework entirely
+### The gaps
 
-This plan closes all three gaps.
+1. **Plan-derived features lose their plan context.** Workers/validators/reviewers don't see `## Now`, decisions, or item body during execution.
+2. **No promote write-back.** The plan body doesn't reflect which features shipped from it.
+3. **No bidirectional UI.** Plan detail doesn't show feature status; feature surfaces don't link back to plan.
+4. **Novice users have no way to file a custom proposal.** ProposalsPanel only has Accept/Reject/Replan-now — no "New" button. They can wait for the scoper to think of their idea, or jump to the brainstorm tab.
+5. **Two pipelines, two audit trails, two surfaces to evolve.** Adding cost estimation / agent hints / blocked-by would have to land twice.
+
+### The direction (D-006 + D-007)
+
+Unify everything on the plan format. Proposals become a thin UI layer over draft plans. Two user tiers:
+
+- **Advanced users**: open a terminal, work with agents directly. Write plans manually or via MCP, then `plans:promote`.
+- **Novice users**: click "New" in the proposals panel → architect chat → answer a few clarifying questions → architect writes a plan draft → user clicks Accept → one-click `plans:promote`.
+
+Both produce plans. Both flow through `plans:promote`. Both get plan-context-aware agents. One audit trail, one surface to evolve.
 
 ---
 ## Goals
 
-1. **First-class provenance**: promoted features carry `source_plan_slug` +
-   `source_plan_item_ids` as indexed columns, not buried in JSONB.
-2. **Promote write-back**: `plans:promote apply=true` stamps the plan body with
-   a `## Promoted` block (item-level idempotent) and updates `## Now`.
-3. **Agent context injection**: worker, validator, and reviewer roles receive
-   the source plan's `## Now`, recent decisions, and item body automatically
-   via the `extras` parameter to `assembleRolePrompt`.
-4. **Bidirectional UI view**: plan items show their derived feature status;
-   feature detail links back to the plan item.
-5. **Scoper writes plans**: `invokeScoperBackground` gains a `plan` mode that
-   produces a plan draft instead of a raw proposal file.
-6. **Graceful migration**: existing features without a plan origin continue
-   unchanged. The legacy proposals path stays alive during transition.
+1. **One structured surface**: all human-initiated and scoper-initiated work originates as a plan (status `draft` → `active` → `shipped`).
+2. **Proposals panel becomes UI on draft plans** — same name (D-009), different storage.
+3. **Novice user flow**: single prompt → architect chat → architect writes plan draft → one-click accept (D-006) → features land.
+4. **Agent-initiated flow**: scoper `MODE=proposal` writes plan drafts (not `.harness/proposals/*.md`).
+5. **Plan-derived features carry plan context** to all 4 prompt-assembly paths.
+6. **Bidirectional UI** via `useSyncQuery('featuresConsolidated.bySlug')`.
+7. **Legacy retirement**: `.harness/proposals/*.md` + `harness_proposals_shared` deprecated once empty.
 
 ---
+
 ## Design
 
-### §1 — Schema: first-class plan provenance
+### §1 — Provenance: use existing JSONB, add an index
+
+**No new columns.** `plans:promote` already writes provenance to `metadata` JSONB on per-harness `harness_<slug>.harness_features`:
+- `metadata.source_plan` (string) — the plan slug
+- `metadata.from_plan_items` (string[]) — the P-NNN ids covered
+- `metadata.covers` (string[]) — the SC-NNN ids in SPEC.md
+
+This data is already synced to `harness_shared.harness_features_consolidated` via the trigger at `001-shared.sql:93`. The trigger copies `metadata` as-is — no schema changes needed.
 
 ```sql
--- Migration NNN: promote plan provenance to first-class columns.
--- Table lives in harness_shared schema (confirmed: 001-shared.sql:63).
-ALTER TABLE harness_shared.harness_features_consolidated
-  ADD COLUMN IF NOT EXISTS source_plan_slug      TEXT,
-  ADD COLUMN IF NOT EXISTS source_plan_item_ids  TEXT[];
+-- Migration NNN: index for plan-provenance queries.
+CREATE INDEX IF NOT EXISTS hfc_source_plan_idx
+  ON harness_shared.harness_features_consolidated USING GIN (metadata jsonb_path_ops);
 
-CREATE INDEX IF NOT EXISTS hfc_source_plan_slug_idx
-  ON harness_shared.harness_features_consolidated (source_plan_slug)
-  WHERE source_plan_slug IS NOT NULL;
-
--- Backfill from existing JSONB metadata where present.
-UPDATE harness_shared.harness_features_consolidated
-SET
-  source_plan_slug     = metadata_json->>'source_plan_slug',
-  source_plan_item_ids = ARRAY(
-    SELECT jsonb_array_elements_text(metadata_json->'source_plan_item_ids')
-  )
-WHERE metadata_json ? 'source_plan_slug'
-  AND source_plan_slug IS NULL;
-
--- Backfill the ## Promoted block for any plan whose items were already
--- promoted before this migration (avoids lint errors on day one — see D-005).
--- Executed as a Node migration step, not raw SQL, because it requires
--- reading plan files from disk and calling plans:set-content.
--- See: scripts/migrations/backfill-plan-promoted-blocks.ts
+-- Optional expression index for the hot path (faster than GIN for equality):
+CREATE INDEX IF NOT EXISTS hfc_source_plan_expr_idx
+  ON harness_shared.harness_features_consolidated ((metadata->>'source_plan'))
+  WHERE metadata ? 'source_plan';
 ```
 
-`metadata_json` retains its values (no deletion). The new columns are the
-query surface going forward.
+The expression index makes `WHERE metadata->>'source_plan' = $1` fast. The GIN index supports more general JSONB queries (key existence, containment) for future needs.
+
+**No trigger update needed**, no per-harness schema update, no backfill of new columns. The data is already correctly stored — we just need to query it.
 
 
 ### §2 — Promote write-back
 
-When `plans:promote { apply: true }` runs it currently:
-1. PUTs the new SPEC.md
-2. POSTs features to `/features/import`
-3. Marks `from_items` as `done` in the plan
+When `plans:promote { apply: true }` succeeds, append a `## Promoted` block to the plan body listing each F-AUTO-* feature with its source P-NNN.
 
-**Added in this plan:**
+**Item-level idempotency** (D-002): the writer parses the existing block, extracts feature IDs already listed, and appends only new rows. Re-promoting the same items is a no-op. Promoting `[D,E]` from a plan that already has `[A,B,C]` in the block correctly appends `[D,E]` without touching the originals.
 
-4. Reads the current `## Promoted — <date>` block (if any) and extracts the
-   feature IDs already listed. Appends only *new* feature IDs — idempotency is
-   **item-level**, not block-level. This means a second call promoting [D,E]
-   from a plan that already has [A,B,C] in the block correctly appends [D,E]
-   without duplicating A/B/C.
-5. Calls `plans:set-now` to update the state line with the number of features
-   in-flight vs. passed vs. remaining.
-
-Block format:
+Format:
 ```markdown
 ## Promoted
 
 <!-- plan-pipeline: do not edit this block manually -->
-- [ ] F-001 — Title of feature A  <!-- P-001 -->
-- [x] F-002 — Title of feature B  <!-- P-002 -->  ← checked when feature reaches `passed`
+- [ ] F-AUTO-XXX — Title of feature A  <!-- P-001 -->
+- [x] F-AUTO-YYY — Title of feature B  <!-- P-002 -->  ← flips when feature reaches `passed`
 ```
 
-The `[x]` checkbox is updated by a Zero/IPC listener that watches feature
-status changes (see §4).
+The `[x]` checkbox is updated reactively (§4) by the plan detail page; the block itself is owned by the promote write-back path.
 
+Also calls `plans:set-now` to refresh the state line with counts:
+> "3 features in-flight · 2 passed · 5 remaining"
 
-### §3 — Agent context injection
+### §3 — Agent context injection (4 prompt-assembly paths)
 
-**Actual injection point** (verified from codebase):
+Verified callsites (v1's "wire into assembleFeaturePrompt" was wrong — that function doesn't exist):
 
-The function is `assembleRolePrompt` from
-`@papercusp/orchestrator/role-prompt` (`libs/papercusp/packages/orchestrator/src/role-prompt-from-slug.ts`).
-It accepts an `extras: string[]` array for runtime-context bullets and supports
-appending blocks after the call returns (the same pattern used for `memorySection`
-and `lockNotice` in the agent-chats route).
+| Path | Entry point | Mechanism |
+|---|---|---|
+| Chat (operator UI, agent-chats) | `apps/operator/lib/endpoint-route/routes/agent-chats/index.ts:233` | `assembleRolePrompt` + post-call append |
+| PM dispatch | `apps/operator/lib/pm-dispatch.ts:256` | `assembleRolePrompt` + extras |
+| Bash autonomous spawn | `libs/papercusp/packages/harness/run.sh:1197` (`invoke()`) | inline bash assembly; opt-in TS via `PAPERCUSP_USE_TS_PROMPT_ASSEMBLY=1` shells to `assemble-prompt.ts` |
+| TS orchestrator | `libs/papercusp/packages/orchestrator/src/invoke.ts:480` | calls `buildPrompt({ extras, featureHistory, substrateContext, ... })` |
 
-**New helper** at `apps/operator/lib/plan-context-for-feature.ts`
-(NOT in `packages/agent-mcp` — that package must not have filesystem deps
-into `apps/operator/docs/plans/`):
+**New helper** at `apps/operator/lib/plan-context-for-feature.ts` (NOT in `packages/agent-mcp` — that package must remain transport-agnostic without filesystem coupling to `apps/operator/docs/plans/`):
 
 ```ts
-// apps/operator/lib/plan-context-for-feature.ts
 export async function getPlanContextForFeature(
   db: Db,
   featureId: string,
   harnessSlug: string,
 ): Promise<string | null> {
   const row = await db.queryOne<{
-    source_plan_slug: string | null;
-    source_plan_item_ids: string[] | null;
+    metadata: { source_plan?: string; from_plan_items?: string[] } | null;
   }>(sql`
-    SELECT source_plan_slug, source_plan_item_ids
+    SELECT metadata
     FROM harness_shared.harness_features_consolidated
-    WHERE id = ${featureId} AND harness_slug = ${harnessSlug}
+    WHERE feature_id = ${featureId} AND harness_slug = ${harnessSlug}
   `);
-  if (!row?.source_plan_slug) return null;
-  const planMd = await readPlanFile(harnessSlug, row.source_plan_slug);
+  const planSlug = row?.metadata?.source_plan;
+  const itemIds = row?.metadata?.from_plan_items ?? [];
+  if (!planSlug) return null;
+  const planMd = await readPlanFile(harnessSlug, planSlug);
   if (!planMd) return null;
-  return extractPlanContext(planMd, row.source_plan_item_ids ?? []);
+  return extractPlanContext(planMd, itemIds); // ≤1500 tokens
 }
 ```
 
-`extractPlanContext` returns ≤1,500 tokens of: the `## Now` block, last 3
-decisions, and the item body for each id in `source_plan_item_ids`.
+`extractPlanContext` returns: `## Now` block + last 3 decisions + item body for each id. Truncates with `[truncated]` marker at the budget.
 
-**Callsites to update:**
-- `apps/operator/lib/endpoint-route/routes/agent-chats/index.ts` — append the
-  result after `assembleRolePrompt` returns, between `lockNotice` and
-  `memorySection`, under a `## Source Plan Context` heading.
-- Any autonomous spawn path that calls `assembleRolePrompt` with role
-  `worker` / `validator` / `reviewer` (check `pm-dispatch.ts` and run.sh
-  orchestrator paths) — pass plan context via `extras` or post-call append.
+**Wiring per path:**
+
+- **Chat**: append result between `lockNotice` and `memorySection` under a `## Source Plan Context` heading (mirrors how `memorySection` is appended today).
+- **PM dispatch**: same pattern after `assembleRolePrompt` returns.
+- **TS orchestrator**: add `planContext?: string` to `BuildPromptInput` (parallel to `featureHistory` + `substrateContext`); fetch in `invoke.ts` before calling `buildPrompt`; concatenate at the end so it doesn't invalidate the cacheable preamble.
+- **Bash invoke**: extend `assemble-prompt.ts` CLI to accept `--plan-context-file <path>` so the bash side can pass a pre-fetched file. For the legacy bash-inline path (default when `PAPERCUSP_USE_TS_PROMPT_ASSEMBLY=0`), shell out to a small CLI `get-plan-context-for-feature` that prints the block to stdout; `run.sh` cats it into the prompt assembly.
 
 
-### §4 — Bidirectional UI view
+### §4 — Bidirectional UI via useSyncQuery
 
-**Current real-time mechanism**: IPC EventSource via `RootSyncProvider`
-(NOT Zero — Zero is legacy per project history). Feature status changes
-propagate via `IpcEventSource` → `RootSyncProvider` → component re-render.
+**Verified mechanism** (v1's "IPC EventSource" was one layer too low): components use `useSyncQuery` from `@restart/sync`. Confirmed at `apps/operator/app/harness/HarnessDashboard.tsx:3223`:
 
-**Plan side** (plan detail page):
-- Each item in the `## Promoted` block becomes a live row showing the feature's
-  current status badge. The component subscribes to feature status via the IPC
-  EventSource path and updates the checkbox state when a feature reaches `passed`.
-- Auto-summary line in `## Now`: `"3 features in-flight · 2 passed · 5 remaining"`
-  — derived from `harness_shared.harness_features_consolidated` counts.
+```ts
+const { data: zeroFeatureRows, loading } = useSyncQuery<FeatureRow>({
+  queryName: 'featuresConsolidated.bySlug',
+  args: { harnessSlug: activeSlug },
+  enabled: !!activeSlug,
+});
+```
 
-**Feature side** (feature detail page):
-- If `source_plan_slug` is set, a `From plan` pill links to the plan detail page.
-- The source item text is shown as a collapsible `Plan context` section.
-- P-item: add a **"Promote to features"** button on the plan detail page so
-  non-technical users can trigger `plans:promote` without MCP access (see D-005).
+The IPC transport is plumbed under `RootSyncProvider`; component code uses `useSyncQuery` directly.
 
-Both views need no new API routes — plan data is filesystem reads (plan detail)
-and feature status comes from the existing `harness_features_consolidated` query.
+**Plan detail page** (`apps/operator/app/admin/plans/PlanDetail.tsx`):
+- Subscribe to `featuresConsolidated.bySlug` for the plan's harness
+- Filter to features where `metadata.source_plan === <this plan's slug>`
+- For each F-AUTO-* row in the `## Promoted` block, render the live status badge
+- Auto-summary line: counts derived from the filtered rows
+
+**Feature-side UI**: features render inline in `apps/operator/app/harness/HarnessDashboard.tsx` + `apps/operator/app/harness/FeatureList.tsx` (no `FeatureDetail.tsx` exists — v1 invented it). Add a `From plan: <slug>` pill in the feature row metadata when `metadata.source_plan` is set; clicking navigates to the plan detail page.
+
+**Promote button** (D-006): on the plan detail page, a single "Promote to features" button calls `plans:promote` directly with the plan's items. One-click, no review intermediate.
+
+### §5 — Architect: `promote:plan` action + clarifying-question guidance
+
+The architect role today supports three action blocks (`apps/operator/lib/agent-tools/architect/prompts.ts:164`):
+```
+promote:feature  → create todo feature in harness_features
+promote:spec     → insert into SPEC.md under ## Brainstormed
+promote:issue    → file as issue in issues.json
+```
+
+**Add a fourth:** `promote:plan`. Format:
+````
+```promote:plan
+title: <Plan title>
+slug-hint: <kebab-case suggestion, server may append date>
+
+## Now
+state: …
+next: …
+
+## Phases
+
+### Phase 1 — …
+
+- P-001 <item text>
+- P-002 <item text>
+
+## Decisions
+
+### D-001 — <decision title>
+
+<body>
+```
+````
+
+The architect emits this block when it has enough context to write a complete plan. The action handler:
+1. Calls `plans:new { slug, title }` (server allocates date suffix if not present)
+2. Calls `plans:set-now { state, next }`
+3. For each item, calls `plans:add-item { phase, text }`
+4. For each decision, calls `plans:add-decision { title, body }`
+5. Plan is created with `status: draft`; appears as a proposal card in the panel.
+
+**Architect persona update** (`apps/operator/prompts/architect.persona.md` — verify exact path during implementation):
+
+> When a novice user gives you a one-line idea for new work, your job is to work with them so you can create a fully detailed plan they can ship. Keep in mind they're a novice — don't present them with technical details. Ask questions in plain language about what they want, who it's for, and what "done" looks like. Once you have enough to fill out a plan, emit a `promote:plan` block. Show them what you wrote in plain prose before they commit; let them say "looks good" or "actually change X" without having to learn the plan format.
+
+No question-count guidance (D-008) — the architect uses judgment based on how specific the initial prompt is.
 
 
-### §5 — Scoper migration: from proposals to plan drafts
+### §6 — ProposalsPanel rewrite
 
-`invokeScoperBackground` gains a new mode flag `outputMode: 'plan' | 'proposal'`.
+Name stays "Proposals" (D-009). Underlying storage flips from `harness_proposals_shared` to plans list filtered by `status: draft`.
 
-**`proposal` mode** (existing behaviour, unchanged):
-- Writes `.harness/proposals/<slug>.md`
-- Syncs to `harness_shared.harness_proposals_shared`
-- Shows in ProposalsPanel as before
+**Reads:**
+- Subscribe to a new sync-query `plansDrafts.bySlug` (returns plans where `status: draft` for the harness)
+- Each row carries: plan slug, title, `## Now.state` summary, item count, source (`user` | `scoper`), created/updated timestamps
 
-**`plan` mode** (new):
-1. Scoper generates a structured plan using `plans:new` + `plans:add-item` calls
-2. Plan is created with `status: draft`
-3. ProposalsPanel is replaced by (or redirected to) the Plans list filtered to
-   `status: draft`
-4. User reviews, edits if needed, then clicks "Promote to features"
+**UI:**
+- Cards mirror today's proposal-card layout: title, short summary, source tag pill ("you" vs "scoper"), Accept / Reject / Edit / Dismiss buttons
+- **New "New" button** at the top of the panel (the missing piece) — opens an architect chat modal pre-seeded with "user wants to file a new proposal for <harness>"
+- Editing a card navigates to `/admin/plans/<slug>` (the existing plan detail page)
+- Dismissing is non-destructive (hides locally); Reject sets `plans:set-frontmatter status=dropped`
 
-The plan text is generated in **one LLM call per natural section** (see §6).
+**Accept = one-click `plans:promote`** (D-006):
+- Confirmation modal: "Promote <N> items to features?" + Cancel/Confirm
+- On Confirm: call `plans:promote { slug, harness_slug, features: <derived from plan items>, apply: true }`
+- Features derived from items: each `P-NNN` item becomes a feature with title = item text, body = item details if present, `from_items: [P-NNN]`, acceptance bullets pulled from the plan if structured that way
+- Toast on completion: "Promoted N features. Worker will pick up shortly."
 
-The legacy path stays alive during transition. Retirement (Phase E) happens once
-no new proposals have entered `harness_proposals_shared` for 5 consecutive days.
+**Backwards compat during migration:**
+- During Phase F soak, also subscribe to legacy `harness_proposals_shared` and merge results
+- Once Phase G ships, drop the legacy query
 
-Note: `harness_proposals_shared` lives at `harness_shared.harness_proposals_shared`
-(confirmed from `017-harness-shared-phase-and-proposal-cols.sql`). The per-harness
-`harness_proposals` table was already retired prior to this plan.
+### §7 — Scoper `MODE=proposal` rewrite
 
-### §6 — Scoper chunk-size guidance
+Today: `MODE=proposal` writes `.harness/proposals/<id>.md`. After Phase F it writes a plan draft via `plans:*` MCP calls.
 
-**Per-harness config** (not a process-global env var — see D-004):
+**Trigger conditions unchanged:**
+- Scheduled (`autoloop` ticker)
+- Triggered post-`DONE` event from worker
+- User clicks "replan now" button in proposals panel
+
+**Output flow (new):**
+1. Scoper assesses SPEC + features + recent validator findings (same as today)
+2. For each gap it identifies, generates a plan draft:
+   - `plans:new { slug: 'scoper-proposal-<topic>-<date>', title }` — `status: draft`
+   - `plans:set-now { state, next }`
+   - `plans:add-item` per scoped item
+   - `plans:add-decision` for any non-obvious choice it made while drafting
+3. Plan appears in the panel with `source: scoper` tag
+
+**Per-harness config gate** (D-004) — initial rollout is opt-in:
 ```json
 // .harness/config.json
 {
   "scoper": {
-    "outputMode": "plan"
+    "outputMode": "plan"  // or "proposal" (default, legacy)
   }
 }
 ```
 
-**Cost model** (Sonnet 4.6):
+Default stays `proposal` until Phase F soaks; flip to `plan` after.
 
-| Strategy | Calls | Approx total tokens | Approx cost |
-|---|---|---|---|
-| All-at-once (10 items) | 1 | ~13K in / 3K out | ~$0.085 |
-| Per-item chunked (10 items) | 10 | ~115K in / 3K out | ~$0.39 |
-| Section-chunked (2×5 items) | 2 | ~27K in / 3K out | ~$0.13 |
+**`MODE=replan` unchanged** — already correctly honors `metadata.covers` to avoid duplicating plan-promoted features. The integration point that exists today keeps working.
 
-With prompt caching: all-at-once ~$0.042, per-item ~$0.16, section-chunked ~$0.065.
+### §8 — Legacy retirement
 
-**Decision (D-003):** Generate all-at-once for plans ≤15 items. Section-chunked
-at natural phase breaks for larger plans (≤12 items per section). Per-item
-generation is only for *writing* (`plans:add-item` API calls, not LLM calls).
+- File watcher (`apps/operator/lib/harness-fs-watcher.ts:7`) keeps syncing `.harness/proposals/*.md` → `harness_shared.harness_proposals_shared` during Phase F soak (handles any in-flight proposals when the flag flips)
+- After 5+ days no new proposal files: deprecate watcher path
+- Rename table `harness_proposals_shared` → `_legacy_proposals` (no drop — pre-alpha but proposal text may be referenced elsewhere)
+- ProposalsPanel drops the legacy query subscription
 
 ---
 ## Phases
 
-### Phase A — Schema + promote write-back (1–2 days)
+### Phase A — Schema index + promote write-back (1–2 days)
 
-- [ ] P-001 SQL migration: `ADD COLUMN source_plan_slug TEXT` + `source_plan_item_ids TEXT[]` on `harness_shared.harness_features_consolidated`; index; backfill from `metadata_json`
-- [ ] P-002 Node backfill script `scripts/migrations/backfill-plan-promoted-blocks.ts`: for each plan that already has promoted features (detected via `source_plan_slug` backfill), write a `## Promoted` block to the plan file using `plans:set-content`
-- [ ] P-003 Update `plans:promote` apply path to populate the new columns (not just `metadata_json`)
-- [ ] P-004 Promote write-back: item-level idempotent — parse existing `## Promoted` block, diff against new feature IDs, append only new rows; call `plans:set-now` with counts
-- [ ] P-005 `plans:lint` check: if plan has promoted items, `## Promoted` block must exist — emit **warning** (not error) for plans promoted before migration version; error only for plans promoted after
-- [ ] P-006 Tests: promote round-trip; second promote appends new items without duplicating old ones; backfill script produces valid lint-passing plans
+- [x] P-001 Migration: GIN index on `harness_shared.harness_features_consolidated.metadata` + expression index on `metadata->>'source_plan'`
+- [x] P-002 Promote write-back: parse existing `## Promoted` block, item-level idempotent append, bump `## Now` with counts
+- [x] P-003 Backfill script `scripts/migrations/backfill-plan-promoted-blocks.ts`: for each plan that already promoted features (detected via `metadata.source_plan` query), append `## Promoted` block using `plans:set-content`
+- [x] P-004 `plans:lint` check: if features point at the plan but block is missing, emit **warning** for plans dated before migration; **error** for plans dated after (D-005)
+- [x] P-005 Tests: promote round-trip; second promote appends incrementally; backfill produces lint-passing plans
 
-### Phase B — Agent context injection (1 day)
+### Phase B — Agent context injection across 4 paths (2 days)
 
-- [ ] P-007 Find all `assembleRolePrompt` callsites where role is `worker`, `validator`, or `reviewer` (confirmed: `agent-chats/index.ts`, `pm-dispatch.ts`, and any autonomous spawn paths)
-- [ ] P-008 Implement `getPlanContextForFeature()` at `apps/operator/lib/plan-context-for-feature.ts` (§3 spec; reads from `harness_shared.harness_features_consolidated` + plan filesystem)
-- [ ] P-009 Wire into each callsite: fetch plan context after `assembleRolePrompt`, append under `## Source Plan Context` heading (same pattern as `memorySection`)
-- [ ] P-010 Add token-budget guard: truncate to ≤1,500 tokens with `[truncated]` marker
-- [ ] P-011 Tests: prompt assembly includes plan context when `source_plan_slug` is set; absent when not; truncation fires at budget
+- [x] P-006 `getPlanContextForFeature()` at `apps/operator/lib/plan-context-for-feature.ts`
+- [ ] P-007 Wire chat path: append in `agent-chats/index.ts` between `lockNotice` and `memorySection`
+- [ ] P-008 Wire PM dispatch: append after `assembleRolePrompt` in `pm-dispatch.ts`
+- [ ] P-009 Wire TS orchestrator: add `planContext?: string` to `BuildPromptInput`; fetch in `invoke.ts`; concat at end of prompt
+- [ ] P-010 Wire bash invoke: extend `assemble-prompt.ts` CLI with `--plan-context-file`; new `get-plan-context-for-feature` CLI for legacy bash-inline path; `run.sh` cats output into prompt
+- [ ] P-011 Token-budget guard: truncate `extractPlanContext` to ≤1500 tokens with `[truncated]` marker
+- [ ] P-012 Tests: each of 4 paths includes plan context for plan-derived features, omits for non-plan features
+
+### Phase C — Bidirectional UI (2 days)
+
+- [ ] P-013 Plan detail (`apps/operator/app/admin/plans/PlanDetail.tsx`): subscribe to `featuresConsolidated.bySlug`, render live status badges + checkbox flip on `## Promoted` block rows
+- [ ] P-014 Plan detail: auto-summary line in `## Now` block driven by feature-status counts
+- [ ] P-015 Feature surfaces (`apps/operator/app/harness/HarnessDashboard.tsx` + `FeatureList.tsx`): `From plan: <slug>` pill on feature rows where `metadata.source_plan` is set; click navigates to plan detail
+- [ ] P-016 Promote button on plan detail (calls `plans:promote` directly with derived features list)
+- [ ] P-017 Tests: status change on a promoted feature propagates to plan detail badge within 2s
 
 
-### Phase C — Bidirectional UI (1–2 days)
+### Phase D — Architect: `promote:plan` action + clarifying-question guidance (2 days)
 
-- [ ] P-012 Plan detail: live feature-status badges on promoted items via IPC EventSource / RootSyncProvider (NOT Zero)
-- [ ] P-013 Plan detail: `## Now` auto-summary line (in-flight / passed / remaining counts from `harness_features_consolidated`)
-- [ ] P-014 **"Promote to features" button** on plan detail page — calls `plans:promote apply=true` for plans in `status: draft` or `status: active`; disabled with tooltip if plan has no un-promoted items
-- [ ] P-015 Feature detail: `From plan` pill linking to plan detail page (shown when `source_plan_slug` is set)
-- [ ] P-016 Feature detail: collapsible `Plan context` section showing source item text
-- [ ] P-017 Tests: IPC update propagates to plan detail status badge within 2s; promote button triggers correct API call
+- [ ] P-018 Add `promote:plan` action block to architect prompt template (`apps/operator/lib/agent-tools/architect/prompts.ts`)
+- [ ] P-019 Implement action handler: parses the block, calls `plans:new` + `plans:set-now` + `plans:add-item` + `plans:add-decision` in sequence; rolls back on partial failure
+- [ ] P-020 Update architect persona (`apps/operator/prompts/architect.persona.md` — verify path): clarifying-question guidance per D-008. Lead with "work with the user so you can create a fully detailed plan; keep in mind they're a novice — no technical details"
+- [ ] P-021 Tests: architect responds to a single-prompt input with at least one clarifying question; emits valid `promote:plan` block once it has enough context; handler creates a valid plan with `status: draft`
 
-### Phase D — Scoper migration (2–3 days)
+### Phase E — ProposalsPanel rewrite (2–3 days)
 
-- [ ] P-018 Add `outputMode: 'plan' | 'proposal'` to `invokeScoperBackground`; default `proposal` (no behaviour change)
-- [ ] P-019 Implement `plan` mode: call `plans:new` for the draft; generate items all-at-once (or section-chunked per §6); write via `plans:add-item`
-- [ ] P-020 Gate `plan` mode via per-harness config field `scoper.outputMode` (not a process-global env var)
-- [ ] P-021 ProposalsPanel: when `outputMode: plan`, redirect to Plans list filtered to `status: draft`
-- [ ] P-022 Tests: scoper plan mode produces a valid lint-passing draft plan; ProposalsPanel redirect works
+- [ ] P-022 New sync-query `plansDrafts.bySlug` returning plans where `status: draft`, with item count + source tag
+- [ ] P-023 ProposalsPanel reads from `plansDrafts.bySlug` (initially merged with `harness_proposals_shared` during transition)
+- [ ] P-024 Source-tag pill on each card ("you" vs "scoper")
+- [ ] P-025 **New "New" button** at top of panel — opens architect chat modal pre-seeded with proposal-creation context
+- [ ] P-026 Edit button navigates to `/admin/plans/<slug>`
+- [ ] P-027 Accept button = one-click `plans:promote` with confirmation modal (D-006); features derived from plan items
+- [ ] P-028 Reject button = `plans:set-frontmatter status=dropped`
+- [ ] P-029 Tests: New flow end-to-end (click New → architect chat → emit promote:plan → card appears → Accept → features land)
 
-### Phase E — Dogfood + legacy retirement (1 week soak)
+### Phase F — Scoper `MODE=proposal` → plan output (2 days + 1 week soak)
 
-- [ ] P-023 Run Phase D on the dogfood harness for 1 week; collect bugs
-- [ ] P-024 Once no new rows enter `harness_shared.harness_proposals_shared` for 5 days, flip the dogfood harness config to `outputMode: plan` as default
-- [ ] P-025 When all harnesses have migrated: rename `harness_shared.harness_proposals_shared` to `harness_shared._legacy_proposals_shared` (no drop — retains authored content)
-- [ ] P-026 Remove ProposalsPanel from default tab set; keep behind `?legacy=1` for 30 days, then delete
+- [ ] P-030 Scoper persona/tools update: emit plan drafts via `plans:*` MCP when `outputMode: 'plan'`
+- [ ] P-031 Per-harness config gate: `.harness/config.json` → `scoper.outputMode` (default `proposal`, opt-in `plan`)
+- [ ] P-032 Run end-to-end on the dogfood harness for 1 week with `outputMode: 'plan'`; collect bugs
+- [ ] P-033 Once stable, flip default to `plan`
 
-**Critical path:** Phase A + B must land before the Phase 4 end-to-end dogfood run
-(P-026 in `papercusp-dogfood-v5-2026-05-23.md`) so promoted features carry plan
-context from day one. Phase C–E can run in parallel with dogfood Phase 5a.
+### Phase G — Legacy retirement (after Phase F soak)
+
+- [ ] P-034 Verify no new proposal files entered `harness_proposals_shared` for 5 consecutive days
+- [ ] P-035 Deprecate the watcher path in `harness-fs-watcher.ts` for `.harness/proposals/*.md`
+- [ ] P-036 Rename `harness_proposals_shared` → `_legacy_proposals` (no drop; pre-alpha but readable history matters)
+- [ ] P-037 ProposalsPanel drops the legacy query subscription
+- [ ] P-038 Remove `.harness/proposals/` from watcher's tracked paths
+
+**Critical path:** Phase A + B must land before any `papercusp-dogfood-v5` end-to-end run that exercises plan-derived features (P-026 in the dogfood plan). Phases C–G can run in parallel with dogfood Phase 5a.
 
 ---
 ## Decisions
 
-### D-001 — First-class columns, not JSONB expansion
+### D-001 — Use existing JSONB `metadata` + indexes, no new columns
 
-Promote plan provenance to `source_plan_slug TEXT` and `source_plan_item_ids TEXT[]`
-on `harness_shared.harness_features_consolidated` rather than querying JSONB.
+`plans:promote` already writes `metadata.source_plan` / `metadata.from_plan_items` / `metadata.covers` to per-harness `harness_features.metadata` (JSONB). The trigger at `001-shared.sql:93` syncs `metadata` as-is to consolidated. Add a GIN index + an expression index; no schema migration, no trigger update, no backfill of column values.
 
-**Rationale:** JSONB lookup is non-indexable for equality filters. The bidirectional
-UI and agent context injection both need efficient "all features for plan X" queries.
-`metadata_json` is retained (no deletion); new columns are the query surface.
+**Why this beats v1's "add columns" approach:** v1 named the wrong column (`metadata_json` doesn't exist — actual column is `metadata`) and wrong metadata keys (`source_plan_slug` / `source_plan_item_ids` — actual keys are `source_plan` / `from_plan_items`). Even if those names were right, adding columns to consolidated requires also adding them to per-harness `harness_features` AND updating the trigger to copy them — three coordinated changes for data that's already correctly stored. JSONB + indexes is the minimum-coordination solution.
 
 ### D-002 — Promote write-back is mandatory and item-level idempotent
 
-`plans:promote apply=true` always appends to the `## Promoted` block. Idempotency
-is per-feature-ID: re-promoting the same feature ID is a no-op; promoting new
-items [D,E] when [A,B,C] already exist correctly appends only the new rows.
+`plans:promote apply=true` always appends to `## Promoted`. Re-promoting same items is a no-op; promoting new items appends without touching old rows.
 
-**Rationale:** The plan body is the source of truth for what has been executed.
-Block-level idempotency (skip if any block exists) would prevent incremental
-promotions from the same plan, which is a valid use case.
+### D-003 — Plan context flows into all 4 prompt-assembly paths
 
-### D-003 — All-at-once LLM generation ≤15 items; section-chunked above
+Chat, PM dispatch, TS orchestrator, bash invoke (legacy + opt-in TS). v1 named only one non-existent `assembleFeaturePrompt`. Four paths exist in code today; each gets the appropriate hook.
 
-See §6 cost table. The 15-item threshold balances output quality against cost.
-Per-item LLM generation is never used — `plans:add-item` calls (PG writes) can
-be per-item, but the upstream LLM call that produces the items is batched.
+### D-004 — Scoper output mode is per-harness config
 
-### D-004 — Scoper output mode is per-harness config, not process-global env var
+`.harness/config.json` → `scoper.outputMode: 'plan' | 'proposal'`. Avoids a process-global env flag flipping all harnesses at once during transition.
 
-`outputMode: 'plan' | 'proposal'` lives in `.harness/config.json` under a
-`scoper` key. This allows the dogfood harness to test `plan` mode while other
-harnesses remain on the legacy proposal path.
+### D-005 — `plans:lint` rule for `## Promoted` is warning before migration, error after
 
-**Rationale:** A process-global `PAPERCUSP_SCOPER_PLAN_MODE` flag would flip all
-harnesses simultaneously, preventing incremental rollout and parallel testing.
+Pre-existing plans get backfilled by P-003. The lint rule checks plan's `created:` frontmatter vs. migration version; older plans emit a warning, newer plans an error. CI doesn't break on day one.
 
-### D-005 — Lint rule for `## Promoted` is a warning, not an error, before migration
+### D-006 — Accept = one-click `plans:promote` (Option A)
 
-Plans promoted before this plan ships get backfilled by the Node migration script
-(P-002). The lint rule emits a warning (not error) for plans that predate the
-migration version, so CI doesn't break on day one.
+Confirmed by user: no review intermediate. Confirmation modal only ("Promote N items?" + Cancel/Confirm). Settings preference for "skip confirmation" deferred — not in this plan.
 
-### D-006 — "Promote to features" button ships in Phase C (no UX design gate)
+### D-007 — Architect role drives novice proposal creation
 
-A plain button on the plan detail page is sufficient for pre-alpha. Leaving it
-as an open question with no P-item would mean it never ships; pre-alpha users
-need a UI path to promote plans without MCP access.
+Architect already serves both `architect:chat` and `brainstorm:chat` (`apps/operator/lib/agent-tools/architect/chat.ts:1-2`). Reuse for novice proposal authoring rather than adding a new role.
+
+### D-008 — Clarifying-question guidance has no question-count
+
+Persona text: "work with the user so you can create a fully detailed plan; keep in mind they're a novice — don't present them with technical details." Question count left to architect's judgment based on initial-prompt specificity.
+
+### D-009 — Keep the name "Proposals"
+
+Panel name doesn't change. Underlying storage switches from `harness_proposals_shared` to draft plans. Source-tag pill ("you" vs "scoper") distinguishes origin.
+
+### D-010 — Hard unification (Option 3), not Option 1 (keep separate)
+
+After audit revealed the proposal pipeline is structurally a poorer version of plans (no decisions, no `## Now`, no item dependencies, no revision history, no agent context injection), converging on the plan format is the better target. Pre-alpha policy makes today the right time — the longer we wait the more code accrues around the duplication.
 
 ---
-## Review notes (2026-05-24)
+## Code-audit corrections (v1 → v2)
 
-A second agent reviewed v1 of this plan and identified four critical issues, all
-corrected in this version:
+The first draft had 8 inaccuracies that would have caused implementation failures or wasted work. All corrected here:
 
-| Issue | Resolution |
-|---|---|
-| `assembleFeaturePrompt` doesn't exist | Replaced with `assembleRolePrompt` from `@papercusp/orchestrator/role-prompt`; §3 now references the real callsites and the `extras`/post-call-append injection pattern |
-| SQL migration missing `harness_shared.` prefix | All SQL now uses `harness_shared.harness_features_consolidated` explicitly |
-| Phase C used Zero subscriptions (legacy) | §4 rewritten to use IPC EventSource via `RootSyncProvider` |
-| Lint check would break existing plans on day one | P-002 adds backfill script; D-005 makes the lint rule a warning before migration version |
+| # | v1 claim | v2 correction (code evidence) |
+|---|---|---|
+| 1 | Column is `metadata_json` | Column is `metadata` (`001-shared.sql:72`) |
+| 2 | Metadata keys are `source_plan_slug` + `source_plan_item_ids` | Actual keys are `source_plan` + `from_plan_items` + `covers` (`promote.ts:317-327`) |
+| 3 | `WHERE id = ${featureId}` | Column is `feature_id`, PK is `(harness_slug, feature_id)` (`002-per-harness-template.sql:6-36`) |
+| 4 | Add columns to consolidated | Consolidated is trigger-maintained from per-harness `harness_features` (`001-shared.sql:93-122`) — adding columns requires coordinating both tables AND the trigger. Use JSONB indexes instead. |
+| 5 | Phase D = scoper "plan mode" replacing proposals | `MODE=replan` already auto-creates features from SPEC and honors `metadata.covers` from plans:promote-imported features (`scoper.md:65,205,219`). The real unification is making proposals = draft plans, not making scoper write plans. |
+| 6 | "Wire into `assembleFeaturePrompt`" | That function doesn't exist. 4 prompt-assembly paths exist in code: agent-chats, pm-dispatch, run.sh bash inline, TS orchestrator's `buildPrompt`. Each gets its own hook (P-007–P-010). |
+| 7 | "Subscribe via IPC EventSource" | Components use `useSyncQuery` from `@restart/sync` (`HarnessDashboard.tsx:3223`). IPC EventSource is one transport layer below. |
+| 8 | `PlanDetail.tsx` + `FeatureDetail.tsx` exist as named | `PlanDetail.tsx` exists at `apps/operator/app/admin/plans/`. `FeatureDetail.tsx` does NOT exist — features render inline in `HarnessDashboard.tsx` + `FeatureList.tsx`. |
 
-One reviewer point was incorrect: `harness_proposals_shared` **does** exist at
-`harness_shared.harness_proposals_shared` (confirmed in
-`017-harness-shared-phase-and-proposal-cols.sql:49`). The per-harness
-`harness_proposals` table was already retired before this plan.
+One reviewer point in the v1 review was incorrect: `harness_shared.harness_proposals_shared` DOES exist (confirmed `017-harness-shared-phase-and-proposal-cols.sql:49`). Per-harness `harness_proposals` was retired earlier.
 
 ---
 
 ## Related Plans
 
-- `papercusp-dogfood-v5-2026-05-23.md` — parent plan; this work is the Phase 4.5 gate
-- `plans-harness-scoped-2026-05-24.md` — HYPERBEE-backed plans for shared harnesses (Q-1)
-- `proxy-witness-pattern-2026-05-24.md` — spend verification infrastructure
+- `papercusp-dogfood-v5-2026-05-23.md` — parent plan; this is its Phase 4.5 gate
+- `plans-harness-scoped-2026-05-24.md` — HYPERBEE-backed plans for shared harnesses (downstream)
+- `proxy-witness-pattern-2026-05-24.md` — spend verification infrastructure (unrelated)

@@ -1,0 +1,124 @@
+/**
+ * Phase B: plan context injection for promoted features.
+ *
+ * When a worker/validator/reviewer agent is invoked for a feature that was
+ * promoted from a plan, this module fetches the relevant plan context (Now
+ * block, source item text, most-recent decisions) and returns a prompt
+ * section the caller appends to the assembled role prompt.
+ *
+ * Token budget: ≤1,500 tokens ≈ ≤6,000 characters.  Content that exceeds
+ * this limit is truncated with a `[truncated]` marker.
+ */
+
+import { getOrgPg } from '@restart/db-org';
+import { readPlanBySlug } from './agent-tools/plans/source';
+
+const PLAN_CONTEXT_CHAR_BUDGET = 6_000;
+const PLAN_CONTEXT_HEADING = '## Source Plan Context';
+const ROLES_RECEIVING_CONTEXT = new Set(['worker', 'validator', 'reviewer']);
+
+export interface PlanContextResult {
+  section: string;
+  planSlug: string;
+  truncated: boolean;
+}
+
+interface FeatureProvenanceRow {
+  source_plan_slug: string | null;
+  source_plan_item_ids: string[] | null;
+  title: string;
+}
+
+async function queryProvenance(
+  harnessSlug: string,
+  featureId: string,
+): Promise<FeatureProvenanceRow | null> {
+  try {
+    const { sql } = getOrgPg();
+    const rows = await sql<FeatureProvenanceRow[]>`
+      SELECT source_plan_slug, source_plan_item_ids, title
+        FROM harness_shared.harness_features_consolidated
+       WHERE harness_slug = ${harnessSlug}
+         AND feature_id   = ${featureId}
+       LIMIT 1
+    `;
+    return rows[0] ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function truncate(text: string, maxChars: number): { text: string; truncated: boolean } {
+  if (text.length <= maxChars) return { text, truncated: false };
+  return { text: text.slice(0, maxChars) + '\n[truncated]', truncated: true };
+}
+
+/**
+ * Returns a formatted `## Source Plan Context` section for the given
+ * feature, or `null` when:
+ *   - the feature has no `source_plan_slug` in PG
+ *   - the plan file cannot be read
+ *   - PG is unavailable (best-effort)
+ *
+ * Caller must check `role` belongs to ROLES_RECEIVING_CONTEXT before
+ * calling; this function does not filter by role.
+ */
+export async function getPlanContextForFeature(
+  harnessSlug: string,
+  featureId: string,
+): Promise<PlanContextResult | null> {
+  const provenance = await queryProvenance(harnessSlug, featureId);
+  if (!provenance?.source_plan_slug) return null;
+
+  const planSlug = provenance.source_plan_slug;
+  const itemIds = provenance.source_plan_item_ids ?? [];
+
+  let planResult: Awaited<ReturnType<typeof readPlanBySlug>>;
+  try {
+    planResult = await readPlanBySlug(planSlug);
+  } catch {
+    planResult = null;
+  }
+  if (!planResult) return null;
+
+  const { parsed } = planResult;
+
+  const parts: string[] = [PLAN_CONTEXT_HEADING, ''];
+
+  const planTitle = parsed.frontmatter.title ?? planSlug;
+  parts.push(`**Plan:** \`${planSlug}\` — ${planTitle}`);
+
+  // Source item body (first matching from_item id)
+  if (itemIds.length > 0) {
+    const item = parsed.items.find((i) => itemIds.includes(i.id));
+    if (item) {
+      const itemPreview = item.text.slice(0, 200);
+      parts.push(`**Item ${item.id}:** ${itemPreview}${item.text.length > 200 ? '…' : ''}`);
+    }
+  }
+  parts.push('');
+
+  // Now block
+  if (parsed.now) {
+    parts.push('### Current State', '', parsed.now.state, '', `**Next:** ${parsed.now.next}`);
+  }
+
+  // Last 3 decisions, most-recent first
+  const recentDecisions = parsed.decisions.slice(-3).reverse();
+  if (recentDecisions.length > 0) {
+    parts.push('', '### Recent Decisions', '');
+    for (const d of recentDecisions) {
+      const body = d.body.slice(0, 300);
+      parts.push(`**${d.id} — ${d.title}**\n${body}${d.body.length > 300 ? '…' : ''}`);
+    }
+  }
+
+  parts.push('');
+
+  const raw = parts.join('\n');
+  const { text, truncated } = truncate(raw, PLAN_CONTEXT_CHAR_BUDGET);
+
+  return { section: text, planSlug, truncated };
+}
+
+export { ROLES_RECEIVING_CONTEXT };
