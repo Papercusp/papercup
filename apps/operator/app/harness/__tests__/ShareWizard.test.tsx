@@ -58,6 +58,7 @@ function renderWizard(opts: {
   existingBinding?: boolean;
   resolveBinding?: (remote: string) => Promise<BindingResolveResult>;
   writeSharedJson?: (slug: string, state: ShareWizardState) => Promise<void>;
+  publishToCupboard?: (input: unknown) => Promise<void>;
 } = {}) {
   const onClose = vi.fn();
   const resolveBinding =
@@ -76,6 +77,7 @@ function renderWizard(opts: {
         : null,
     }));
   const writeSharedJson = opts.writeSharedJson ?? vi.fn(async () => {});
+  const publishToCupboard = opts.publishToCupboard ?? vi.fn(async () => {});
   const result = render(
     <ShareWizard
       open
@@ -85,9 +87,10 @@ function renderWizard(opts: {
       resolveBinding={resolveBinding}
       runBackfill={async () => {}}
       writeSharedJson={writeSharedJson}
+      publishToCupboard={publishToCupboard as never}
     />,
   );
-  return { ...result, onClose, writeSharedJson };
+  return { ...result, onClose, writeSharedJson, publishToCupboard };
 }
 
 function parseSlug(remote: string): { owner: string; repo: string } | null {
@@ -232,6 +235,85 @@ describe('P-029e — finalize step', () => {
     await user.click(screen.getByText('Copy'));
     await waitFor(() => expect(clipboardWrites.length).toBe(1));
     expect(clipboardWrites[0]).toMatch(/^papercusp:\/\/harness\?/);
+  });
+});
+
+// ── P-053 — shared-public also publishes to Cupboard ──────────────────────
+
+describe('P-053 — Cupboard publish flow', () => {
+  async function walkToFinalize(user: ReturnType<typeof userEvent.setup>, privacy: 'shared-private' | 'shared-public') {
+    await user.click(screen.getByText('Next →'));                  // 1→2
+    await user.click(screen.getByText('Look up binding'));
+    await waitFor(() => screen.getByTestId('no-binding-message'));
+    await user.click(screen.getByText('Next →'));                  // 2→3
+    await user.click(screen.getByText('Next →'));                  // 3→4
+    await user.click(screen.getByText('Generate topic'));
+    await user.click(screen.getByText('Next →'));                  // 4→5
+    await user.click(screen.getByText('Next →'));                  // 5→6
+    await user.click(screen.getByLabelText(new RegExp(privacy)));
+    await user.click(screen.getByText('Next →'));                  // 6→7
+    await user.click(screen.getByLabelText(/I understand and want to continue/));
+    await user.click(screen.getByText('Next →'));                  // 7→8
+    await user.click(screen.getByText('Run backfill'));
+    await waitFor(() => screen.getByText(/Backfill complete/));
+    await user.click(screen.getByText('Next →'));                  // 8→9
+    await waitFor(() => screen.getByText('Finalize + share'));
+  }
+
+  it('P-053a — shared-public triggers publishToCupboard with full payload', async () => {
+    const user = userEvent.setup();
+    interface CupboardArg {
+      github_repository_id: number;
+      github_owner: string;
+      github_name: string;
+      github_url: string;
+      topic_hex: string;
+    }
+    const publishToCupboard = vi.fn(async (_input: CupboardArg) => {});
+    renderWizard({
+      initialRemote: 'https://github.com/owner/repo',
+      publishToCupboard: publishToCupboard as unknown as (input: unknown) => Promise<void>,
+    });
+    await walkToFinalize(user, 'shared-public');
+    await user.click(screen.getByText('Finalize + share'));
+    await waitFor(() => screen.getByText('Done'));
+    expect(publishToCupboard).toHaveBeenCalledTimes(1);
+    const arg = publishToCupboard.mock.calls[0][0];
+    expect(arg.github_repository_id).toBe(12345);
+    expect(arg.github_owner).toBe('owner');
+    expect(arg.github_name).toBe('repo');
+    expect(arg.github_url).toBe('https://github.com/owner/repo');
+    expect(arg.topic_hex).toMatch(TOPIC_LIKE);
+  });
+
+  it('shared-private does NOT trigger publishToCupboard', async () => {
+    const user = userEvent.setup();
+    const publishToCupboard = vi.fn(async () => {});
+    renderWizard({
+      initialRemote: 'https://github.com/owner/repo',
+      publishToCupboard,
+    });
+    await walkToFinalize(user, 'shared-private');
+    await user.click(screen.getByText('Finalize + share'));
+    await waitFor(() => screen.getByText('Done'));
+    expect(publishToCupboard).not.toHaveBeenCalled();
+  });
+
+  it('P-053b — Cupboard publish failure surfaces inline warning, finalize still succeeds', async () => {
+    const user = userEvent.setup();
+    const publishToCupboard = vi.fn(async () => { throw new Error('cupboard 503'); });
+    renderWizard({
+      initialRemote: 'https://github.com/owner/repo',
+      publishToCupboard,
+    });
+    await walkToFinalize(user, 'shared-public');
+    await user.click(screen.getByText('Finalize + share'));
+    await waitFor(() => screen.getByText('Done'));
+    // Local finalize completed (Done button visible).
+    // Cupboard warning shows the failure + the publish-later hint.
+    const warning = await screen.findByTestId('cupboard-publish-warning');
+    expect(warning.textContent).toContain('cupboard 503');
+    expect(warning.textContent).toContain('publish to Cupboard later');
   });
 });
 

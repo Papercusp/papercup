@@ -79,6 +79,24 @@ export interface ShareWizardProps {
    * follow-up API route; tests pass a stub.
    */
   writeSharedJson?: (slug: string, state: ShareWizardState) => Promise<void>;
+  /**
+   * Cupboard publish injection point (P-053). Called on finalize ONLY
+   * when privacy === 'shared-public'. Defaults to a fetch against
+   * `${PAPERCUSP_CUPBOARD_URL}/harnesses` resolved at call time.
+   * Tests pass a stub. Failures don't fail the wizard — see P-053b
+   * "publish later" affordance.
+   */
+  publishToCupboard?: (input: CupboardPublishInput) => Promise<void>;
+}
+
+export interface CupboardPublishInput {
+  github_repository_id: number;
+  github_owner: string;
+  github_name: string;
+  github_url: string;
+  title?: string;
+  description?: string;
+  topic_hex: string;
 }
 
 export interface BindingResolveResult {
@@ -157,6 +175,27 @@ async function defaultWriteSharedJson(
   if (!res.ok) throw new Error(`finalize failed: ${res.status}`);
 }
 
+/**
+ * Default Cupboard publish — POSTs to the configured Cupboard URL.
+ * The URL is resolved from a meta tag (`<meta name="papercusp-cupboard-url">`)
+ * or falls back to the production host. Server-side authentication
+ * uses the user's gh-bearer token via the operator's Cupboard proxy
+ * route (the desktop operator handles credential forwarding so the
+ * browser never holds the gh token).
+ */
+async function defaultPublishToCupboard(input: CupboardPublishInput): Promise<void> {
+  // Routed through the operator so the gh token stays server-side.
+  const res = await fetch('/api/harness/cupboard/publish', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  });
+  if (!res.ok) {
+    const detail = await res.text().catch(() => '');
+    throw new Error(`cupboard publish failed: ${res.status} ${detail.slice(0, 120)}`);
+  }
+}
+
 // ── Step header ───────────────────────────────────────────────────────────
 
 function StepHeader({ step, label }: { step: ShareWizardStep; label: string }) {
@@ -180,7 +219,9 @@ export function ShareWizard(props: ShareWizardProps): ReactNode {
     resolveBinding = defaultResolveBinding,
     runBackfill = defaultRunBackfill,
     writeSharedJson = defaultWriteSharedJson,
+    publishToCupboard = defaultPublishToCupboard,
   } = props;
+  const [publishWarning, setPublishWarning] = useState<string | null>(null);
 
   const [step, setStep] = useState<ShareWizardStep>(SHARE_WIZARD_FIRST_STEP);
   const [state, setState] = useState<ShareWizardState>(() => {
@@ -475,6 +516,29 @@ export function ShareWizard(props: ShareWizardProps): ReactNode {
       await writeSharedJson(harnessSlug, { ...state, harness_link: finalLink });
       setState((s) => ({ ...s, harness_link: finalLink }));
       setFinalized(true);
+
+      // P-053 — shared-public also publishes to Cupboard. Best-effort:
+      // a Cupboard failure does NOT roll back the local finalize. The
+      // user sees an inline warning + a "publish later" affordance.
+      if (state.privacy === 'shared-public') {
+        const parsed = parseGithubRemote(state.github_remote);
+        if (parsed) {
+          try {
+            await publishToCupboard({
+              github_repository_id: state.github_repository_id,
+              github_owner: parsed.owner,
+              github_name: parsed.repo,
+              github_url: state.github_remote,
+              topic_hex: state.topic,
+            });
+            setPublishWarning(null);
+          } catch (cupErr) {
+            setPublishWarning(
+              `Cupboard publish failed (${(cupErr as Error).message}). The harness is shared-private locally; you can publish to Cupboard later from settings.`,
+            );
+          }
+        }
+      }
     } catch (e) {
       setErr((e as Error).message);
     } finally {
@@ -511,6 +575,14 @@ export function ShareWizard(props: ShareWizardProps): ReactNode {
               <div style={{ marginTop: 12, fontSize: 13, color: 'var(--fg-dim)' }}>
                 Send this link to contributors. They paste it into Entry 4 of the create-harness picker.
               </div>
+              {publishWarning && (
+                <div
+                  data-testid="cupboard-publish-warning"
+                  style={{ marginTop: 12, padding: 10, background: 'var(--bg-warning, #4a3a1a)', border: '1px solid var(--border)', borderRadius: 4, fontSize: 13, color: 'var(--fg)' }}
+                >
+                  {publishWarning}
+                </div>
+              )}
             </>
           )}
         </div>
