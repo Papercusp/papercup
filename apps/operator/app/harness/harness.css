@@ -20116,20 +20116,20 @@ body > .h-top-collapse-btn.h-top-collapse-inline .h-top-collapse-state {
 .h-root [data-index] > .h-feature-row,
 .h-root .h-dashboard-panel-anchor[data-dashboard-panel="issues"] .h-issue,
 .h-root .h-issue {
-  border: 1px solid color-mix(in oklab, var(--h-row-tone, var(--h-row-accent)), transparent 52%) !important;
-  border-left-width: 3px !important;
+  border: 1px solid color-mix(in oklab, var(--h-row-tone, var(--h-row-accent)), transparent 72%) !important;
+  border-left-width: 2px !important;
   border-radius: 9px !important;
 }
 
 .h-root :is(.h-feature-row.h-row-even, .h-issue.h-row-even),
 .h-root [data-index]:nth-child(2n) > .h-feature-row {
-  border-color: color-mix(in oklab, var(--h-row-tone, var(--h-row-accent)), transparent 58%) !important;
+  border-color: color-mix(in oklab, var(--h-row-tone, var(--h-row-accent)), transparent 78%) !important;
 }
 
 .h-root :is(.h-feature-row, .h-issue):is(:hover, :focus-visible, :focus-within, .is-active, .is-focused, .is-selected),
 .h-root [data-index] > .h-feature-row:is(:hover, :focus-visible, :focus-within, .is-active, .is-focused, .is-selected),
 .h-root .h-dashboard-panel-anchor[data-dashboard-panel="issues"] .h-issue:is(:hover, :focus-visible, :focus-within) {
-  border-color: color-mix(in oklab, var(--h-row-tone, var(--h-row-accent)), transparent 28%) !important;
-  border-left-color: color-mix(in oklab, var(--h-row-tone, var(--h-row-accent)), transparent 12%) !important;
+  border-color: color-mix(in oklab, var(--h-row-tone, var(--h-row-accent)), transparent 58%) !important;
+  border-left-color: color-mix(in oklab, var(--h-row-tone, var(--h-row-accent)), transparent 44%) !important;
   box-shadow: none !important;
 }
