@@ -9273,17 +9273,17 @@ body.h-harness-top-collapsed .pc-header {
 /* When the persistent chat rail is open the available chrome width is much
    smaller than the viewport, so keep the account selector compact instead of
    letting it spill off the right edge. */
-body.has-op-chat .pc-header nav {
+body.has-op-chat:not(.op-chat-collapsed) .pc-header nav {
   gap: 10px;
 }
 
-body.has-op-chat .pc-user-trigger {
+body.has-op-chat:not(.op-chat-collapsed) .pc-user-trigger {
   max-width: 34px;
   padding: 3px 5px;
 }
 
-body.has-op-chat .pc-user-trigger-copy,
-body.has-op-chat .pc-user-caret {
+body.has-op-chat:not(.op-chat-collapsed) .pc-user-trigger-copy,
+body.has-op-chat:not(.op-chat-collapsed) .pc-user-caret {
   display: none;
 }
 
@@ -26234,7 +26234,7 @@ body.has-op-chat:has(.operator-panel) .operator-panel {
   left: calc(var(--op-chat-w, 360px) + 16px) !important;
 }
 
-body.has-op-chat:has(.operator-panel) .op-chat-sidebar {
+body.has-op-chat:not(.op-chat-collapsed):has(.operator-panel) .op-chat-sidebar {
   opacity: 0.22;
   filter: saturate(0.45) blur(4px);
   pointer-events: none;

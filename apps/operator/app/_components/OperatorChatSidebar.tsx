@@ -1,12 +1,12 @@
 'use client';
 
 /**
- * OperatorChatSidebar — fixed left, full-height, not collapsible.
+ * OperatorChatSidebar — fixed left, full-height, and collapsible.
  *
  * Hosts the OperatorChat. Width is drag-resizable from the right
- * edge; min 360px, no upper bound. Width persists in localStorage
- * so it survives reloads (mode persistence is sessionStorage; that
- * one is intentionally per-session).
+ * edge while expanded; the expanded width persists in localStorage
+ * so it survives reloads. The open/closed state is user-meaningful,
+ * so it lives in the URL via nuqs (`?chat=`).
  *
  * Sets `--op-chat-w` on :root so the rest of the app can use it
  * for left-padding on the body. Pages with centered content
@@ -20,6 +20,8 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { ChevronLeft, ChevronRight } from 'lucide-react';
+import { parseAsBoolean, useQueryState } from 'nuqs';
 import { OperatorChat } from './OperatorChat';
 import { LocalCardHost } from './chat/LocalCardHost';
 import { useOperatorConversation } from './OperatorConversationProvider';
@@ -29,27 +31,34 @@ import { OperatorLogoMark } from './OperatorLogoMark';
 import { OperatorWordmarkLockup } from './OperatorWordmarkLockup';
 import { OperatorActiveToggle } from './OperatorActiveToggle';
 import { VoiceButton } from './voice/VoiceButton';
-import { clampOperatorChatWidth } from './operator-chat-layout';
+import {
+  OPERATOR_CHAT_COLLAPSED_WIDTH,
+  OPERATOR_CHAT_DEFAULT_WIDTH,
+  OPERATOR_CHAT_OPEN_QUERY_KEY,
+  clampOperatorChatWidth,
+} from './operator-chat-layout';
 
 const STORAGE_KEY = 'papercusp.operatorChat.width';
-const MIN_WIDTH = 360;
-const DEFAULT_WIDTH = 360;
 
-/** Read the stored width from localStorage, clamped to [MIN, viewport ceiling]. */
+/** Read the stored width from localStorage, clamped to the viewport ceiling. */
 function readStoredWidth(): number {
-  if (typeof window === 'undefined') return DEFAULT_WIDTH;
+  if (typeof window === 'undefined') return OPERATOR_CHAT_DEFAULT_WIDTH;
   try {
     const raw = window.localStorage.getItem(STORAGE_KEY);
-    if (!raw) return DEFAULT_WIDTH;
+    if (!raw) return OPERATOR_CHAT_DEFAULT_WIDTH;
     const n = Number(raw);
     return clampOperatorChatWidth(n, window.innerWidth);
   } catch {
-    return DEFAULT_WIDTH;
+    return OPERATOR_CHAT_DEFAULT_WIDTH;
   }
 }
 
 export function OperatorChatSidebar() {
-  const [width, setWidth] = useState<number>(DEFAULT_WIDTH);
+  const [chatOpen, setChatOpen] = useQueryState(
+    OPERATOR_CHAT_OPEN_QUERY_KEY,
+    parseAsBoolean.withDefault(true),
+  );
+  const [width, setWidth] = useState<number>(OPERATOR_CHAT_DEFAULT_WIDTH);
   const [hydrated, setHydrated] = useState(false);
 
   // Hydrate width from localStorage post-mount to keep SSR markup stable.
@@ -58,16 +67,19 @@ export function OperatorChatSidebar() {
     setHydrated(true);
   }, []);
 
-  // Mirror to a CSS var on :root + body padding so app content shifts.
+  // Mirror the active offset width to a CSS var so app content shifts.
   useEffect(() => {
     if (!hydrated) return;
-    document.documentElement.style.setProperty('--op-chat-w', `${width}px`);
+    const offsetWidth = chatOpen ? width : OPERATOR_CHAT_COLLAPSED_WIDTH;
+    document.documentElement.style.setProperty('--op-chat-w', `${offsetWidth}px`);
     document.body.classList.add('has-op-chat');
+    document.body.classList.toggle('op-chat-collapsed', !chatOpen);
     try {
       window.localStorage.setItem(STORAGE_KEY, String(width));
     } catch { /* sandbox / quota */ }
-    return () => { /* leave the class in place across re-renders */ };
-  }, [width, hydrated]);
+    return () => { /* leave the classes in place across re-renders */ };
+  }, [chatOpen, hydrated, width]);
+
   useEffect(() => {
     if (!hydrated) return;
     const onResize = () => {
@@ -77,13 +89,13 @@ export function OperatorChatSidebar() {
     return () => window.removeEventListener('resize', onResize);
   }, [hydrated]);
 
-
   // Strip the body class on unmount (chromeless routes don't render
   // this component — the cleanup is for completeness/HMR safety).
   useEffect(() => {
     return () => {
       try {
         document.body.classList.remove('has-op-chat');
+        document.body.classList.remove('op-chat-collapsed');
         document.documentElement.style.removeProperty('--op-chat-w');
       } catch { /* DOM may be torn down already */ }
     };
@@ -101,8 +113,6 @@ export function OperatorChatSidebar() {
   }, []);
   const onHandleMove = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
     if (!draggingRef.current) return;
-    // Width = pointer X (sidebar is fixed at left:0). Clamp to MIN
-    // and the viewport ceiling so a later resize can't push content off-screen.
     const next = clampOperatorChatWidth(e.clientX, window.innerWidth);
     setWidth(next);
   }, []);
@@ -112,6 +122,14 @@ export function OperatorChatSidebar() {
     document.body.style.userSelect = '';
     document.body.style.cursor = '';
   }, []);
+
+  const collapseChat = useCallback(() => {
+    void setChatOpen(false);
+  }, [setChatOpen]);
+
+  const expandChat = useCallback(() => {
+    void setChatOpen(true);
+  }, [setChatOpen]);
 
   // Conversation state from the OperatorConversationProvider mounted
   // in the root layout. The provider owns the state machine + silence
@@ -126,10 +144,11 @@ export function OperatorChatSidebar() {
     conv.generateIdeas();
   });
 
-  // Pre-hydration: render the sidebar at default width so the layout
-  // doesn't jump after JS evaluates. The body padding-left is set by
-  // the inline bootstrap script in layout.tsx.
-  const renderedWidth = hydrated ? width : DEFAULT_WIDTH;
+  // Pre-hydration: render the sidebar at its expanded default width so
+  // the lazy mount lines up with the bootstrap script in layout.tsx.
+  const renderedWidth = hydrated
+    ? (chatOpen ? width : OPERATOR_CHAT_COLLAPSED_WIDTH)
+    : OPERATOR_CHAT_DEFAULT_WIDTH;
 
   const sidebarStyle = useMemo<React.CSSProperties>(() => ({
     width: renderedWidth,
@@ -145,50 +164,80 @@ export function OperatorChatSidebar() {
   }
 
   return (
-    <aside className="op-chat-sidebar" style={sidebarStyle} aria-label="Papercup chat">
+    <aside
+      className="op-chat-sidebar"
+      style={sidebarStyle}
+      aria-label="Papercup chat"
+      data-collapsed={chatOpen ? 'false' : 'true'}
+    >
       <style>{OP_CHAT_SIDEBAR_CSS}</style>
-      <div className="op-chat-header">
-        <div className="op-chat-header-main">
-          <div className="op-chat-header-orb" aria-hidden="true">
-            <OperatorLogoMark className="op-chat-header-logo" />
-          </div>
-          <div className="op-chat-header-copy">
-            <div className="op-chat-header-title-row">
-              <OperatorWordmarkLockup
-                className="op-chat-wordmark"
-                titleClassName="op-chat-wordmark-title"
-                subtitleClassName="op-chat-wordmark-subtitle"
-                subtitle=""
-              />
+      <button
+        type="button"
+        className="op-chat-expand-rail"
+        onClick={expandChat}
+        aria-label="Expand Papercup chat"
+        title="Expand Papercup chat"
+        aria-hidden={chatOpen}
+      >
+        <span className="op-chat-expand-orb" aria-hidden="true">
+          <OperatorLogoMark className="op-chat-expand-logo" />
+        </span>
+        <span className="op-chat-expand-label">Chat</span>
+        <ChevronRight className="op-chat-expand-chevron" strokeWidth={1.9} aria-hidden="true" />
+      </button>
+      <div className="op-chat-expanded-shell" aria-hidden={!chatOpen}>
+        <div className="op-chat-header">
+          <div className="op-chat-header-main">
+            <div className="op-chat-header-orb" aria-hidden="true">
+              <OperatorLogoMark className="op-chat-header-logo" />
             </div>
-            <div className="op-chat-controls" role="group" aria-label={`Papercup voice controls — ${statusText}`}>
-              <OperatorActiveToggle />
-              <VoiceButton />
+            <div className="op-chat-header-copy">
+              <div className="op-chat-header-title-row">
+                <OperatorWordmarkLockup
+                  className="op-chat-wordmark"
+                  titleClassName="op-chat-wordmark-title"
+                  subtitleClassName="op-chat-wordmark-subtitle"
+                  subtitle=""
+                />
+                <button
+                  type="button"
+                  className="op-chat-toggle"
+                  onClick={collapseChat}
+                  aria-label="Collapse Papercup chat"
+                  title="Collapse Papercup chat"
+                >
+                  <ChevronLeft strokeWidth={1.9} aria-hidden="true" />
+                </button>
+              </div>
+              <div className="op-chat-controls" role="group" aria-label={`Papercup voice controls — ${statusText}`}>
+                <OperatorActiveToggle />
+                <VoiceButton />
+              </div>
             </div>
           </div>
         </div>
+        <OperatorChat
+          messages={conv.messages}
+          busy={conv.busy}
+          passive={conv.mode === 'passive'}
+          onSend={conv.sendUserMessage}
+          onGenerateIdeas={conv.generateIdeas}
+          banner={conv.bannerText ? <div className="op-chat-banner">{conv.bannerText}</div> : null}
+          error={conv.error}
+          onLoadEarlier={conv.loadEarlier}
+          hasMoreEarlier={conv.hasMoreEarlier}
+          loadingEarlier={conv.loadingEarlier}
+          onAnswerChoice={conv.answerChoice}
+          conversationId={conv.conversationId ?? undefined}
+          workspaceId={workspaceId}
+        />
+        {/* M6: askUserLocal renderer host. Mounted once per sidebar so any
+            client-side caller of askUserLocal has a slot to render into.
+            Cards render here when triggered by render-time UI affordances
+            (tab pickers, confirms) rather than server-side tool flows
+            which go through PendingCardsBar instead. */}
+        <LocalCardHost />
       </div>
-      <OperatorChat
-        messages={conv.messages}
-        busy={conv.busy}
-        passive={conv.mode === 'passive'}
-        onSend={conv.sendUserMessage}
-        onGenerateIdeas={conv.generateIdeas}
-        banner={conv.bannerText ? <div className="op-chat-banner">{conv.bannerText}</div> : null}
-        error={conv.error}
-        onLoadEarlier={conv.loadEarlier}
-        hasMoreEarlier={conv.hasMoreEarlier}
-        loadingEarlier={conv.loadingEarlier}
-        onAnswerChoice={conv.answerChoice}
-        conversationId={conv.conversationId ?? undefined}
-        workspaceId={workspaceId}
-      />
-      {/* M6: askUserLocal renderer host. Mounted once per sidebar so any
-          client-side caller of askUserLocal has a slot to render into.
-          Cards render here when triggered by render-time UI affordances
-          (tab pickers, confirms) rather than server-side tool flows
-          which go through PendingCardsBar instead. */}
-      <LocalCardHost />
       <div
         className="op-chat-resize-handle"
         role="separator"
@@ -222,6 +271,78 @@ const OP_CHAT_SIDEBAR_CSS = `
   box-shadow: inset -1px 0 0 rgba(255,255,255,0.03), 18px 0 44px rgba(0, 0, 0, 0.18);
   overflow: hidden;
   /* Width set inline via style. */
+}
+.op-chat-expanded-shell {
+  min-height: 0;
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+}
+
+.op-chat-expand-rail {
+  position: relative;
+  z-index: 3;
+  display: none;
+  width: 100%;
+  height: 100%;
+  padding: 12px 8px 10px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  align-items: center;
+  justify-content: flex-start;
+  flex-direction: column;
+  gap: 12px;
+  cursor: pointer;
+}
+
+.op-chat-expand-orb {
+  width: 38px;
+  height: 38px;
+  flex: 0 0 38px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 14px;
+  border: 1px solid rgba(125, 211, 252, 0.24);
+  background: radial-gradient(circle at 35% 25%, rgba(255,255,255,0.18), transparent 24%), rgba(56, 189, 248, 0.12);
+  color: #7dd3fc;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.06), 0 12px 28px rgba(2, 8, 23, 0.24);
+}
+
+.op-chat-expand-logo {
+  width: 30px;
+  height: 30px;
+}
+
+.op-chat-expand-label {
+  writing-mode: vertical-rl;
+  transform: rotate(180deg);
+  text-transform: uppercase;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.22em;
+  color: rgba(207, 238, 255, 0.86);
+}
+
+.op-chat-expand-chevron {
+  width: 18px;
+  height: 18px;
+  color: rgba(148, 224, 255, 0.86);
+}
+
+.op-chat-sidebar[data-collapsed="true"] .op-chat-expanded-shell {
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.op-chat-sidebar[data-collapsed="true"] .op-chat-expand-rail {
+  display: flex;
+}
+
+.op-chat-sidebar[data-collapsed="true"] .op-chat-resize-handle {
+  display: none;
 }
 
 .op-chat-header {
@@ -281,6 +402,38 @@ const OP_CHAT_SIDEBAR_CSS = `
   font-size: 14px;
   line-height: 1.1;
   letter-spacing: 0.01em;
+}
+.op-chat-toggle {
+  margin-left: auto;
+  width: 28px;
+  height: 28px;
+  flex: 0 0 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid rgba(125, 211, 252, 0.22);
+  border-radius: 999px;
+  background: rgba(9, 19, 31, 0.94);
+  color: #eef8ff;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.04);
+  cursor: pointer;
+}
+
+.op-chat-toggle svg {
+  width: 16px;
+  height: 16px;
+}
+
+.op-chat-expand-rail:hover,
+.op-chat-toggle:hover {
+  background: rgba(12, 28, 44, 0.98);
+  border-color: rgba(125, 211, 252, 0.34);
+}
+
+.op-chat-expand-rail:focus-visible,
+.op-chat-toggle:focus-visible {
+  outline: 2px solid rgba(125, 211, 252, 0.82);
+  outline-offset: 2px;
 }
 
 .op-chat-controls {

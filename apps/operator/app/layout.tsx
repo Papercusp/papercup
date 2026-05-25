@@ -17,6 +17,12 @@ import PerfObserverProvider from './admin/testing/_components/PerfObserverProvid
 import RecorderHost from './admin/testing/_components/RecorderHost';
 import DevReloadGate from './_components/DevReloadGate';
 import { UiPresenceProvider } from './_components/UiPresenceProvider';
+import {
+  OPERATOR_CHAT_COLLAPSED_WIDTH,
+  OPERATOR_CHAT_DEFAULT_WIDTH,
+  OPERATOR_CHAT_MIN_WIDTH,
+  OPERATOR_CHAT_OPEN_QUERY_KEY,
+} from './_components/operator-chat-layout';
 import { getAllFlags } from '@papercusp/flags/server';
 import '@/lib/flag-bus';
 import './globals.css';
@@ -41,20 +47,21 @@ const visualEffectsBootstrapScript = `
 })();
 `;
 
-// Bootstrap the operator-chat sidebar width pre-hydration so the body
+// Bootstrap the operator-chat sidebar offset pre-hydration so the body
 // padding (and the .pc-header left/width override) is set before the
 // first paint. Without this, every page first paints under the sidebar,
 // then jumps right when OperatorChatSidebar's useEffect runs.
 //
-// Reads the same localStorage key the sidebar component writes
-// (papercusp.operatorChat.width); falls back to 360px. Adds the
-// has-op-chat body class so CSS that gates on it applies immediately.
+// Reads the same localStorage width and URL open/closed state the
+// sidebar component uses. Adds the has-op-chat body class so CSS that
+// gates on it applies immediately, and toggles op-chat-collapsed so
+// compact-header rules only apply while the full rail is visible.
 //
 // Iframe routes (CHROMELESS_PATH_PREFIXES in ChromeShell) are also
 // covered: ChromeShell returns null for them, so the sidebar never
 // renders and the body class is added but the sidebar element is
-// absent — leaving 360px of empty padding. Strip it on those routes
-// via the same path check, inline:
+// absent — leaving empty padding. Strip it on those routes via the
+// same path check, inline:
 const operatorChatBootstrapScript = `
 (() => {
   try {
@@ -62,17 +69,22 @@ const operatorChatBootstrapScript = `
     var chromeless = ['/pi', '/project-docs', '/el-min'];
     var skip = chromeless.some(function (p) { return path === p || path.indexOf(p + '/') === 0; });
     if (skip) return;
+    var params = new URLSearchParams(location.search || '');
+    var open = params.get('${OPERATOR_CHAT_OPEN_QUERY_KEY}') !== 'false';
     var stored = window.localStorage.getItem('papercusp.operatorChat.width');
-    var w = 360;
-    if (stored) {
+    var w = open ? ${OPERATOR_CHAT_DEFAULT_WIDTH} : ${OPERATOR_CHAT_COLLAPSED_WIDTH};
+    if (open && stored) {
       var n = Number(stored);
-      if (Number.isFinite(n) && n >= 360) {
-        var ceiling = Math.max(360, Math.floor(window.innerWidth * 0.75));
+      if (Number.isFinite(n) && n >= ${OPERATOR_CHAT_MIN_WIDTH}) {
+        var ceiling = Math.max(${OPERATOR_CHAT_MIN_WIDTH}, Math.floor(window.innerWidth * 0.75));
         w = Math.min(n, ceiling);
       }
     }
     document.documentElement.style.setProperty('--op-chat-w', w + 'px');
-    document.body && document.body.classList.add('has-op-chat');
+    if (document.body) {
+      document.body.classList.add('has-op-chat');
+      document.body.classList.toggle('op-chat-collapsed', !open);
+    }
   } catch (_) {}
 })();
 `;
