@@ -20018,3 +20018,71 @@ body > .h-top-collapse-btn.h-top-collapse-inline .h-top-collapse-state {
   border-color: color-mix(in oklab, var(--h-row-tone, var(--h-row-accent)), transparent 36%) !important;
   box-shadow: none !important;
 }
+
+/* Final row pass: darker fills and softer cool-tone bias for easier scanning. */
+.h-root {
+  --h-row-info: color-mix(in oklab, var(--accent-cool), var(--fg-dim) 68%);
+  --h-row-accent: color-mix(in oklab, var(--accent-cool), var(--fg-dim) 72%);
+}
+
+.h-root :is(
+  .h-feature-row,
+  .h-issue,
+  .h-git-row,
+  .h-inbox-row,
+  .h-agent-row,
+  .h-proposal-item,
+  .h-plugin-action-row,
+  .h-feature-run-row,
+  .h-log-line,
+  .h-insights-status-row
+),
+.h-root [data-index] > .h-feature-row,
+.h-root .h-git-panel .h-git-row,
+.h-root .h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-line,
+.h-root .h-dashboard-panel-anchor[data-dashboard-panel="issues"] .h-issue,
+.h-root .h-agent-table .h-agent-row,
+.h-root .h-proposals-panel .h-proposal-item,
+.h-root .h-proposal-list .h-proposal-item {
+  background: color-mix(in oklab, var(--h-row-tone, var(--h-row-accent)) 6%, rgb(4 9 18 / 0.985)) !important;
+  border-color: color-mix(in oklab, var(--h-row-tone, var(--h-row-accent)), transparent 52%) !important;
+  color: color-mix(in oklab, var(--fg), white 5%) !important;
+  box-shadow: none !important;
+  filter: none !important;
+}
+
+.h-root :is(.h-feature-row, .h-issue, .h-git-row, .h-inbox-row, .h-agent-row, .h-proposal-item, .h-log-line).h-row-even,
+.h-root [data-index]:nth-child(2n) > .h-feature-row,
+.h-root [data-index] > .h-feature-row.h-row-even,
+.h-root .h-git-panel .h-git-row:nth-child(2n),
+.h-root .h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-line:nth-child(2n),
+.h-root .h-dashboard-panel-anchor[data-dashboard-panel="issues"] .h-issue.h-row-even,
+.h-root .h-agent-table .h-agent-row:nth-of-type(2n),
+.h-root .h-proposals-panel .h-proposal-item:nth-child(2n),
+.h-root .h-proposal-list .h-proposal-item:nth-child(2n) {
+  background: color-mix(in oklab, var(--h-row-tone, var(--h-row-accent)) 4%, rgb(8 15 27 / 0.99)) !important;
+}
+
+.h-root :is(
+  .h-feature-row,
+  .h-issue,
+  .h-git-row,
+  .h-inbox-row,
+  .h-agent-row,
+  .h-proposal-item,
+  .h-plugin-action-row,
+  .h-feature-run-row,
+  .h-log-line,
+  .h-insights-status-row
+):is(:hover, :focus-visible, :focus-within, .is-active, .is-focused, .is-selected),
+.h-root [data-index] > .h-feature-row:is(:hover, :focus-visible, :focus-within, .is-active, .is-focused, .is-selected),
+.h-root .h-git-panel .h-git-row:is(:hover, :focus-visible, :focus-within, .is-active),
+.h-root .h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-line:is(:hover, :focus-within),
+.h-root .h-dashboard-panel-anchor[data-dashboard-panel="issues"] .h-issue:is(:hover, :focus-visible, :focus-within),
+.h-root .h-agent-table .h-agent-row:is(:hover, :focus-visible, :focus-within),
+.h-root .h-proposals-panel .h-proposal-item:is(:hover, :focus-within, .is-active),
+.h-root .h-proposal-list .h-proposal-item:is(:hover, :focus-within, .is-active) {
+  background: color-mix(in oklab, var(--h-row-tone, var(--h-row-accent)) 14%, rgb(12 24 40 / 0.992)) !important;
+  border-color: color-mix(in oklab, var(--h-row-tone, var(--h-row-accent)), transparent 28%) !important;
+  box-shadow: none !important;
+}
