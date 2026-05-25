@@ -244,13 +244,14 @@ describe('memory:remember — anchor table wiring (P-015)', () => {
     // persist-anchors.ts uses unnest — one INSERT per added memory id
     // (carries every anchor for that id). One added id → one INSERT.
     expect(sql).toHaveBeenCalledTimes(1);
-    const tpl = (sql.mock.calls[0][0] as TemplateStringsArray).join('');
+    const callArgs = (sql.mock.calls[0] as unknown) as unknown[];
+    const tpl = ((callArgs[0] as unknown) as TemplateStringsArray).join('');
     expect(tpl).toContain('INSERT INTO harness_shared.memory_anchors');
     expect(tpl).toContain('ON CONFLICT (memory_id, kind, value) DO NOTHING');
     // Values: memory_id, kinds[], values[]
-    expect(sql.mock.calls[0][1]).toBe('77777777-7777-7777-7777-777777777777');
-    expect(sql.mock.calls[0][2]).toEqual(['file', 'feature']);
-    expect(sql.mock.calls[0][3]).toEqual(['apps/operator/lib/foo.ts', 'F-001']);
+    expect(callArgs[1]).toBe('77777777-7777-7777-7777-777777777777');
+    expect(callArgs[2]).toEqual(['file', 'feature']);
+    expect(callArgs[3]).toEqual(['apps/operator/lib/foo.ts', 'F-001']);
   });
 
   it('skips the writer entirely when no anchors were extracted', async () => {
