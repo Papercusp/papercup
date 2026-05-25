@@ -32,6 +32,13 @@ export interface OpEnvelope {
   value?: unknown;
   schema_version?: number;
   ts?: number;
+  /**
+   * Hex-encoded writer pubkey. Optional on local writes (callers may
+   * not have it threaded yet); when present, projections fire the
+   * clobber-events `observeMergedOp` on apply so a stale remote
+   * override of a recent local write surfaces as a toast. v5 D-012.
+   */
+  writerPubkey?: string;
 }
 
 export interface AutobaseHarnessHandle {

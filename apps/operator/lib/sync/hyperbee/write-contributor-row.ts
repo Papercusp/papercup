@@ -60,5 +60,6 @@ export async function publishContributorRow(
     value: opts.row,
     schema_version: CURRENT_SCHEMA_VERSION,
     ts,
+    writerPubkey: opts.writerPubkey,
   });
 }

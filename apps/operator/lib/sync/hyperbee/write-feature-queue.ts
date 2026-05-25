@@ -73,6 +73,7 @@ export async function enqueueFeature(opts: QueueWriteOpts): Promise<void> {
     value: row,
     schema_version: CURRENT_SCHEMA_VERSION,
     ts,
+    writerPubkey: opts.writerPubkey,
   });
 }
 
@@ -104,5 +105,6 @@ export async function dequeueFeature(opts: QueueWriteOpts): Promise<void> {
     value: row,
     schema_version: CURRENT_SCHEMA_VERSION,
     ts,
+    writerPubkey: opts.writerPubkey,
   });
 }

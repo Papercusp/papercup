@@ -17,6 +17,7 @@
  */
 
 import type { OpEnvelope } from './autobase-setup';
+import { observeMergedOp } from './clobber-events';
 
 export interface TableProjection<Row> {
   /** Table tag, matching `hyperbee-key-types.HYPERBEE_TABLE_TAGS`. */
@@ -67,6 +68,18 @@ export async function applyHyperbeeOpToPg(op: OpEnvelope): Promise<boolean> {
   const row = p.decodeValue(op.value);
   if (!row) return false;
   await p.writeToPg(row);
+  // P-035: clobber-event hook. Fires only when the incoming op has
+  // a writerPubkey + the tracker has a recent local write for the
+  // same key from a *different* pubkey within the 60s window.
+  // No-op when writerPubkey is absent (legacy / un-threaded write).
+  if (op.writerPubkey && op.hbKey && typeof op.ts === 'number') {
+    observeMergedOp({
+      table: op.table,
+      hbKey: op.hbKey,
+      ts: op.ts,
+      pubkey: op.writerPubkey,
+    });
+  }
   return true;
 }
 
