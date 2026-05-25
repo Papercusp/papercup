@@ -190,7 +190,17 @@ async function callTool(
   }
   const b = res.body as { content?: Array<{ type: string; text?: string }> };
   const text = b.content?.find((c) => c.type === 'text')?.text ?? '{}';
-  return JSON.parse(text);
+  const parsed = JSON.parse(text) as Record<string, unknown>;
+  // R21: MCP tools wrap their errors in { ok: false, error: '...' } inside
+  // a 200 envelope. Surface those as throws so partial-failure plan creation
+  // aborts cleanly (plan stays in draft state on disk per the documented
+  // rollback contract) instead of silently succeeding with missing items.
+  if (parsed && parsed.ok === false) {
+    const err = typeof parsed.error === 'string' ? parsed.error : `plans:${verb} reported ok:false`;
+    const code = typeof parsed.code === 'string' ? ` (${parsed.code})` : '';
+    throw new Error(`${err}${code}`);
+  }
+  return parsed;
 }
 
 /**

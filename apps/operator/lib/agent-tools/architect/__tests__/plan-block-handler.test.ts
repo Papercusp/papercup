@@ -280,4 +280,57 @@ describe('applyPlanBlock', () => {
     const parsed = parse(MINIMAL_BLOCK)!;
     await expect(applyPlanBlock(parsed)).rejects.toThrow();
   });
+
+  it('R21: throws if plans:add-item returns ok:false in a 200 envelope', async () => {
+    // plans:new succeeds, set-now succeeds, add-item returns ok:false.
+    // Before R21 this was silently swallowed; now must throw so the user
+    // sees the partial-failure state instead of "plan created" success.
+    vi.doMock('@papercusp/agent-mcp', () =>
+      makeMcpStub(async (req) => {
+        const verb = req.pathname.split('/').pop()!;
+        if (verb === 'new') {
+          return {
+            status: 200,
+            body: {
+              content: [{ type: 'text', text: JSON.stringify({ ok: true, slug: 'demo-2026-05-25' }) }],
+            },
+          };
+        }
+        if (verb === 'add-item') {
+          return {
+            status: 200,
+            body: {
+              content: [
+                { type: 'text', text: JSON.stringify({ ok: false, error: 'plan_locked', code: 'busy' }) },
+              ],
+            },
+          };
+        }
+        // set-now passes silently
+        return {
+          status: 200,
+          body: { content: [{ type: 'text', text: JSON.stringify({ ok: true }) }] },
+        };
+      }),
+    );
+
+    // Need a block with at least one item so add-item is invoked.
+    const blockWithItem = `TITLE: Demo
+SUMMARY: x
+---
+
+## Now
+
+**State:** placeholder
+**Next:** placeholder
+
+## Phase 1 — Stuff
+
+- [ ] P-001 First item
+`;
+    const { parsePlanBlock: parse, applyPlanBlock } = await import('../plan-block-handler');
+    const parsed = parse(blockWithItem)!;
+    expect(parsed.phases.length).toBeGreaterThan(0);
+    await expect(applyPlanBlock(parsed)).rejects.toThrow(/plan_locked/);
+  });
 });
