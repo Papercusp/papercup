@@ -2,10 +2,31 @@
  * @vitest-environment jsdom
  */
 
-import { describe, expect, it } from 'vitest';
-import { getRoutePendingTarget, normalizeRouteHref, routeHrefFromProp, routePendingTargetFromHref } from '../routePending';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  beginRoutePending,
+  finishRoutePending,
+  getRoutePendingHref,
+  getRoutePendingTarget,
+  normalizeRouteHref,
+  routeHrefFromProp,
+  routePendingTargetFromHref,
+  scheduleRoutePendingClear,
+} from '../routePending';
 
 describe('routePending helpers', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    document.documentElement.removeAttribute('data-route-pending');
+    document.documentElement.removeAttribute('data-route-pending-target');
+    finishRoutePending();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    finishRoutePending();
+  });
+
   it('normalizes trailing slashes while preserving search/hash', () => {
     expect(normalizeRouteHref('/support/?ws=default#faq')).toBe('/support?ws=default#faq');
     expect(normalizeRouteHref('http://localhost:3070/harness/sheets/?tab=files')).toBe('/harness/sheets?tab=files');
@@ -24,6 +45,32 @@ describe('routePending helpers', () => {
   });
 
   it('defaults getRoutePendingTarget to null before any route is pending', () => {
+    expect(getRoutePendingTarget()).toBeNull();
+  });
+
+  it('tracks and clears the current pending route with DOM attributes', () => {
+    beginRoutePending('/harness/sheets?ws=default');
+
+    expect(getRoutePendingHref()).toBe('/harness/sheets?ws=default');
+    expect(getRoutePendingTarget()).toBe('harness');
+    expect(document.documentElement.getAttribute('data-route-pending')).toBe('true');
+    expect(document.documentElement.getAttribute('data-route-pending-target')).toBe('harness');
+
+    finishRoutePending();
+
+    expect(getRoutePendingHref()).toBeNull();
+    expect(getRoutePendingTarget()).toBeNull();
+    expect(document.documentElement.hasAttribute('data-route-pending')).toBe(false);
+    expect(document.documentElement.hasAttribute('data-route-pending-target')).toBe(false);
+  });
+
+  it('clears pending state after the scheduled timer fires', () => {
+    beginRoutePending('/support?ws=default');
+    scheduleRoutePendingClear();
+
+    vi.runAllTimers();
+
+    expect(getRoutePendingHref()).toBeNull();
     expect(getRoutePendingTarget()).toBeNull();
   });
 });
