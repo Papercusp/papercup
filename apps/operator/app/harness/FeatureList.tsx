@@ -13,6 +13,9 @@ import { COLORS, FONTS, RADIUS, SIZES, STATUS, STATUS_ORDER, BOARD_COLUMN_ORDER,
 import { StatusPill, IdPill, IconButton, KbdHint } from './primitives';
 import { RichGrid, type ColumnDef } from '@restart/grid-core';
 import { useShortcut } from '../../lib/hotkeys';
+import { FeatureFilterChips, type FeatureFilter } from './FeatureFilterChips';
+import { useViewerGithubId } from './useViewerGithubId';
+import { useQueueMembership } from './insights/useQueueMembership';
 
 // Loaded eagerly (no `dynamic` wrapper) so the inline-note pane renders
 // its textarea immediately when the user clicks "steer". Was lazy-loaded
@@ -82,6 +85,13 @@ function FeatureListInner({
   );
   const [viewId, setViewId] = useQueryState('viewId', parseAsString.withDefault('all'));
   const [search, setSearch] = useQueryState('q', parseAsString.withDefault(''));
+  // P-047a — Phase-8 lifecycle filter (mine/working/available/shipped). Null = no extra filter.
+  const [phaseFilter, setPhaseFilter] = useQueryState(
+    'pf',
+    parseAsStringEnum<FeatureFilter>(['mine', 'working', 'available', 'shipped']),
+  );
+  const viewerGithubId = useViewerGithubId();
+  const queueMembership = useQueueMembership({ slug });
   // Item 7 (2026-04-26): project + tag filters for the new project_id and tags fields
   const [projectFilter, setProjectFilter] = useQueryState('proj', parseAsString.withDefault('all'));
   const [tagFilter, setTagFilter] = useQueryState('tag', parseAsString.withDefault(''));
@@ -110,6 +120,23 @@ function FeatureListInner({
     }
     if (view.filter.statuses) out = out.filter((f) => view.filter.statuses!.includes(f.status));
     if (view.filter.minAttempts != null) out = out.filter((f) => f.attempts >= view.filter.minAttempts!);
+    // P-047a — Phase-8 lifecycle filter (orthogonal to the saved-view filter).
+    if (phaseFilter) {
+      out = out.filter((f) => {
+        switch (phaseFilter) {
+          case 'mine':
+            return viewerGithubId > 0 && queueMembership.isQueued(f.id, viewerGithubId);
+          case 'working':
+            return f.status === 'in_progress' || f.status === 'validating';
+          case 'available':
+            return f.status === 'todo';
+          case 'shipped':
+            return f.status === 'passed';
+          default:
+            return true;
+        }
+      });
+    }
     if (projectFilter !== 'all') {
       out = out.filter((f) => (projectFilter === '__none' ? !(f as any).project_id : (f as any).project_id === projectFilter));
     }
@@ -127,7 +154,28 @@ function FeatureListInner({
       if (ai !== bi) return ai - bi;
       return a.id.localeCompare(b.id);
     });
-  }, [features, view, search, projectFilter, tagFilter]);
+  }, [features, view, search, projectFilter, tagFilter, phaseFilter, viewerGithubId, queueMembership]);
+
+  // P-047a counts — applied against the SAME pipeline EXCEPT the phaseFilter,
+  // so each chip shows how many features match it overall (not within the
+  // currently-applied filter).
+  const phaseCounts = useMemo(() => {
+    let pool = features;
+    if (!view.filter.statuses?.includes('deprecated')) {
+      pool = pool.filter((f) => f.status !== 'deprecated');
+    }
+    let mine = 0;
+    let working = 0;
+    let available = 0;
+    let shipped = 0;
+    for (const f of pool) {
+      if (viewerGithubId > 0 && queueMembership.isQueued(f.id, viewerGithubId)) mine++;
+      if (f.status === 'in_progress' || f.status === 'validating') working++;
+      if (f.status === 'todo') available++;
+      if (f.status === 'passed') shipped++;
+    }
+    return { mine, working, available, shipped };
+  }, [features, view, viewerGithubId, queueMembership]);
 
   useEffect(() => {
     const media = window.matchMedia('(max-width: 760px)');
@@ -249,6 +297,16 @@ function FeatureListInner({
               </button>
             );
           })}
+        </div>
+
+        {/* P-047a — lifecycle chips per v5 §9.1, orthogonal to saved views above. */}
+        <div className="h-feature-phasebar" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <FeatureFilterChips
+            value={phaseFilter}
+            onChange={setPhaseFilter}
+            counts={phaseCounts}
+            hide={viewerGithubId > 0 ? undefined : ['mine']}
+          />
         </div>
 
         <div className="h-feature-toolrow">
