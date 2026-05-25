@@ -136,6 +136,38 @@ export default async function RootLayout({ children }: { children: React.ReactNo
     var origWarn = console.warn;
     console.warn = function(){ if (shouldDrop.apply(null, arguments)) return; return origWarn.apply(console, arguments); };
 
+    // Dev-only: block Next's HMR socket before React hydrates. The client
+    // DevReloadGate also does this, but it mounts after Next's dev runtime
+    // has already had a chance to connect and apply a full-page refresh.
+    // In the shared Tauri shell, automatic HMR reloads look like constant
+    // refreshing while other agents save files.
+    (function () {
+      if (typeof window === 'undefined') return;
+      if (window.__PAPERCUSP_ALLOW_HMR__ === '1') return;
+      var blockedHosts = /\\/_next\\/webpack-hmr|\\/_next\\/turbopack-hmr/;
+      var OrigWS = window.WebSocket;
+      if (!OrigWS || OrigWS.__papercuspDevReloadGate) return;
+      function GatedWebSocket(url, protocols) {
+        var str = typeof url === 'string' ? url : String(url);
+        if (blockedHosts.test(str)) {
+          try { console.info('[DevReloadGate] blocked pre-hydration HMR WebSocket →', str); } catch (_) {}
+          try { return new OrigWS('wss://127.0.0.1:9/__papercusp-hmr-blocked__', protocols); } catch (_) {
+            return new OrigWS(url, protocols);
+          }
+        }
+        return new OrigWS(url, protocols);
+      }
+      GatedWebSocket.prototype = OrigWS.prototype;
+      try {
+        Object.defineProperty(GatedWebSocket, 'CONNECTING', { value: OrigWS.CONNECTING });
+        Object.defineProperty(GatedWebSocket, 'OPEN', { value: OrigWS.OPEN });
+        Object.defineProperty(GatedWebSocket, 'CLOSING', { value: OrigWS.CLOSING });
+        Object.defineProperty(GatedWebSocket, 'CLOSED', { value: OrigWS.CLOSED });
+        Object.defineProperty(GatedWebSocket, '__papercuspDevReloadGate', { value: true });
+      } catch (_) {}
+      window.WebSocket = GatedWebSocket;
+    })();
+
     // Dev-only: turbopack rebuilds invalidate chunk hashes; a previously
     // mounted page may hold a stale chunk reference for the next lazy()
     // mount. Do NOT auto-reload here in the Tauri dev shell: multiple

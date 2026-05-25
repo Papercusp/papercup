@@ -36,6 +36,7 @@ export default function DevReloadGate() {
     //    any new connection whose URL matches Next's dev endpoints, and
     //    walk any already-open sockets via a brief delayed sweep.
     const blockedHosts = /\/_next\/webpack-hmr|\/_next\/turbopack-hmr/;
+    if ((window.WebSocket as unknown as { __papercuspDevReloadGate?: boolean }).__papercuspDevReloadGate) return;
     const OrigWS = window.WebSocket;
     function GatedWebSocket(this: WebSocket, url: string | URL, protocols?: string | string[]): WebSocket {
       const str = typeof url === 'string' ? url : url.toString();

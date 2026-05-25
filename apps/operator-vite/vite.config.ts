@@ -11,6 +11,8 @@ import { resolve } from 'node:path';
 // apps/operator/docs/plans/operator-vite-migration-2026-05-20.md.
 const operatorRoot = resolve(import.meta.dirname, '../operator');
 
+const enableHmr = process.env.PAPERCUSP_ENABLE_HMR === '1' || process.env.NEXT_PUBLIC_ENABLE_HMR === '1';
+
 export default defineConfig({
   // Static assets (wordmark.svg, mascot.svg, the Oracle/header icons,
   // onnx/wasm voice models, …) live in the operator's own `public/`.
@@ -66,6 +68,12 @@ export default defineConfig({
   server: {
     port: 3055,
     host: process.env.PAPERCUSP_BIND_HOST ?? '127.0.0.1',
+    // The Tauri shell is the product surface, and this checkout is edited by
+    // multiple agents at once. Vite HMR/full-reload traffic makes the desktop
+    // look like it is constantly refreshing while unrelated files are saved.
+    // Default to manual refresh; opt in with PAPERCUSP_ENABLE_HMR=1 when an
+    // engineer explicitly wants hot module replacement for a local UI tweak.
+    hmr: enableHmr ? undefined : false,
     proxy: {
       '/api': { target: 'http://127.0.0.1:3070', ws: true, changeOrigin: true },
       '/internal/docs': { target: 'http://127.0.0.1:3070', changeOrigin: true },
