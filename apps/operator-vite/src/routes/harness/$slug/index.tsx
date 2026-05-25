@@ -2,6 +2,7 @@ import { createFileRoute, notFound } from '@tanstack/react-router';
 import HarnessDashboard from '@/app/harness/HarnessDashboard';
 import DepartmentHarnessDashboard from '@/app/harness/DepartmentHarnessDashboard';
 import HarnessDockShell from '@/app/harness/[slug]/HarnessDockShell';
+import { InsightsFirstVisitGate } from '@/app/harness/insights/InsightsFirstVisitGate';
 
 /**
  * /harness/$slug — per-project harness surface. Translated from
@@ -49,18 +50,34 @@ function HarnessProjectPage() {
 
   // Phase 5 dock — opt-in via ?dock=1.
   if (search.dock === '1') {
-    return <HarnessDockShell slug={project.slug} />;
+    return (
+      <>
+        <InsightsFirstVisitGate slug={project.slug} />
+        <HarnessDockShell slug={project.slug} />
+      </>
+    );
   }
 
   if (project.harness_kind === 'department' && project.department_slug) {
     return (
-      <DepartmentHarnessDashboard
-        harnessSlug={project.slug}
-        departmentSlug={project.department_slug}
-      />
+      <>
+        <InsightsFirstVisitGate slug={project.slug} />
+        <DepartmentHarnessDashboard
+          harnessSlug={project.slug}
+          departmentSlug={project.department_slug}
+        />
+      </>
     );
   }
 
   // Coding flavor — same as /harness, locked to this slug via the URL.
-  return <HarnessDashboard />;
+  // P-073g — on first visit (no row OR null seen_at_ts) the gate
+  // redirects the contributor to /harness/<slug>/insights via
+  // window.location.assign. Subsequent visits no-op.
+  return (
+    <>
+      <InsightsFirstVisitGate slug={project.slug} />
+      <HarnessDashboard />
+    </>
+  );
 }
