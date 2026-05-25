@@ -26,6 +26,7 @@
 import * as React from 'react';
 import { useEffect, useRef, useState } from 'react';
 import { createResilientEventSource } from '@restart/sse';
+import { navigateClient, resolveClientNavigation } from './client-navigation';
 
 interface Props {
   pluginName: string;
@@ -52,6 +53,18 @@ function genNonce(): string {
   const arr = new Uint8Array(16);
   crypto.getRandomValues(arr);
   return Array.from(arr).map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+export function shouldSoftNavigatePluginIframe(
+  targetUrl: string,
+  currentHref: string,
+  navigateOrigins: string[],
+): boolean {
+  let target: URL;
+  try { target = new URL(targetUrl); } catch { return false; }
+  const allowed = navigateOrigins.some((o) => o === target.origin || o === '*');
+  if (!allowed) return false;
+  return resolveClientNavigation(targetUrl, currentHref).mode === 'soft';
 }
 
 export default function PluginIframe({
@@ -149,16 +162,18 @@ export default function PluginIframe({
         case 'iframe-navigate': {
           // Batch H5 — iframe:navigate:<origin> capability check.
           const n = data as NavigateReq;
-          let target: URL;
-          try { target = new URL(n.url); } catch { return; }
-          const allowed = navigateOrigins.some((o) => o === target.origin || o === '*');
-          if (!allowed) {
-            console.warn(`[PluginIframe] navigation to ${target.origin} denied (manifest iframeNavigateOrigins=${navigateOrigins.join(',')})`);
-            return;
+          if (shouldSoftNavigatePluginIframe(n.url, window.location.href, navigateOrigins)) {
+            navigateClient(n.url);
+          } else {
+            let target: URL;
+            try { target = new URL(n.url); } catch { return; }
+            const allowed = navigateOrigins.some((o) => o === target.origin || o === '*');
+            if (!allowed) {
+              console.warn(`[PluginIframe] navigation to ${target.origin} denied (manifest iframeNavigateOrigins=${navigateOrigins.join(',')})`);
+              return;
+            }
+            window.location.href = n.url;
           }
-          // Top-navigate the parent. CSP gates which destinations
-          // are reachable; the cap check above is the manifest gate.
-          window.location.href = n.url;
           break;
         }
       }

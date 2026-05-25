@@ -332,6 +332,7 @@ defineTestDomain({
         'apps/operator/app/_components/__tests__/ChatwootWidget.test.tsx',
         'apps/operator/app/_components/__tests__/UiPresenceProvider.test.tsx',
         'apps/operator/app/_components/__tests__/UserPicker.test.tsx',
+        'apps/operator/lib/__tests__/PluginIframe.test.tsx',
       ],
     },
   ],
