@@ -46,4 +46,12 @@ describe('RouteProgressProvider document capture helper', () => {
     expect(shouldStartDocumentRouteProgressForAnchor({ ...base, targetHref: 'http://localhost:3070/harness?ws=default' })).toBe(false);
     expect(shouldStartDocumentRouteProgressForAnchor({ ...base, targetHref: 'https://example.com/docs' })).toBe(false);
   });
+  it('starts progress for relative same-origin anchor hrefs', () => {
+    expect(shouldStartDocumentRouteProgressForAnchor({ ...base, targetHref: '/support?ws=default' })).toBe(true);
+  });
+
+  it('fails closed on unsafe-scheme target hrefs', () => {
+    expect(shouldStartDocumentRouteProgressForAnchor({ ...base, targetHref: 'javascript:alert(1)' })).toBe(false);
+    expect(shouldStartDocumentRouteProgressForAnchor({ ...base, targetHref: 'data:text/plain,hi' })).toBe(false);
+  });
 });
