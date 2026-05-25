@@ -17,10 +17,8 @@
  */
 
 import { useDeferredValue, useEffect, useMemo, useState, useCallback, useRef, type ReactElement } from 'react';
-import * as Collapsible from '@radix-ui/react-collapsible';
-import { Activity, ArrowUpRight, ChevronDown, Hand, Info, Mail, Pause, Play, RefreshCcw, Search, Settings2, TriangleAlert, X, Zap } from 'lucide-react';
 import { usePathname } from 'next/navigation';
-import { useQueryState, parseAsStringLiteral } from 'nuqs';
+import { useQueryState, parseAsString, parseAsStringLiteral } from 'nuqs';
 import { useSyncQuery } from '@restart/sync';
 import { createResilientEventSource } from '@restart/sse';
 import { useWorkspaceId } from '@/lib/use-workspace-id';
@@ -35,9 +33,11 @@ import { speak, onFinalUtterance, getVoiceState } from './voice/voice-mode';
 import { registerVoiceConsumer } from './voice/VoiceAppBridge';
 import { findFuzzyDuplicate } from '../../lib/operator-fuzzy-dedup';
 import RouteLink from './RouteLink';
+import { OperatorReactorCore } from './hud/OperatorReactorCore';
 import { OperatorScanOverlay } from './hud/OperatorScanOverlay';
 import DelegatesSection from './DelegatesSection';
 import ScanHistorySection from './ScanHistorySection';
+import { DeckCardsMark } from './ChromeNavMarks';
 import { OperatorWordmarkLockup } from './OperatorWordmarkLockup';
 type IconState = 'idle' | 'scanning' | 'thinking' | 'acting' | 'paused' | 'awaiting-input';
 
@@ -144,26 +144,6 @@ function tierLabel(tier: SuggestionCard['actualTier']): string {
 type MainView = 'cards' | 'accepted' | 'ignored' | 'scan-history';
 type ScanStatus = 'idle' | 'scanning' | 'complete' | 'error';
 
-function titleCaseStatus(value: string): string {
-  return value
-    .split('-')
-    .map((part) => part[0].toUpperCase() + part.slice(1))
-    .join(' ');
-}
-
-function humanizeAutoAcceptMode(value: AutoAcceptLevel): string {
-  switch (value) {
-    case 'low':
-      return 'low risk';
-    case 'medium':
-      return 'low + medium';
-    case 'high':
-      return 'all risks';
-    case 'off':
-      return 'off';
-  }
-}
-
 function lifecycleLabelForCard(card: SuggestionCard): string {
   if (card.action === 'inform' && card.status === 'pending') return 'Informational';
   if (card.auto_dispatch && card.status === 'pending') return 'Auto-fire pending';
@@ -215,16 +195,10 @@ const TIER_SORT_RANK: Record<SuggestionCard['actualTier'], number> = {
   low: 1,
 };
 
-function actionIconForCard(card: SuggestionCard): ReactElement {
-  if (card.action === 'navigate') return <ArrowUpRight size={14} strokeWidth={2.2} />;
-  if (card.action === 'inform') return <Info size={14} strokeWidth={2.2} />;
-  return <Mail size={14} strokeWidth={2.2} />;
-}
-
-function reviewIconForCard(card: SuggestionCard): ReactElement {
-  if (card.auto_dispatch) return <Zap size={15} strokeWidth={2.2} />;
-  if (card.actualTier === 'high') return <TriangleAlert size={15} strokeWidth={2.2} />;
-  return <Hand size={15} strokeWidth={2.2} />;
+function actionGlyphForCard(card: SuggestionCard): string {
+  if (card.action === 'navigate') return '↗';
+  if (card.action === 'inform') return 'ℹ';
+  return '✉';
 }
 
 function normalizeDuplicateText(value: string | null | undefined): string {
@@ -301,19 +275,137 @@ function searchableTextForCard(card: SuggestionCard): string {
 
 import {
   broadcastState,
+  hydrateOperatorStateFromPg,
   isAutoAcceptedByThreshold,
   pushAutoAcceptEvent,
   setOperatorState,
   sharedState,
   subscribeOperatorState,
-  type OperatorState,
   type AutoAcceptLevel,
+  type OperatorState,
 } from './operator-shared-state';
 
 gsap.registerPlugin(useGSAP);
 
 export { setOperatorState };
 
+export function OperatorButton(): ReactElement {
+  const [state, setState] = useState<OperatorState>(sharedState);
+
+  useEffect(() => {
+    const fn = (partial: Partial<OperatorState>) =>
+      setState((s) => ({ ...s, ...partial }));
+    void hydrateOperatorStateFromPg();
+    return subscribeOperatorState(fn);
+  }, []);
+
+  useEffect(() => {
+    let armed = false;
+    let timer: number | null = null;
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
+        armed = true;
+        if (timer) window.clearTimeout(timer);
+        timer = window.setTimeout(() => {
+          armed = false;
+        }, 1000);
+        return;
+      }
+      if (armed && e.key.toLowerCase() === 'd') {
+        e.preventDefault();
+        broadcastState({ open: !sharedState.open });
+        armed = false;
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
+
+  const toggle = useCallback(() => {
+    broadcastState({ open: !sharedState.open });
+  }, []);
+
+  // Pause is "no autonomous work" — manual scan/think/act are user-driven
+  // and should override the paused indicator while they're running. Pause
+  // re-asserts itself when iconState falls back to idle/awaiting-input.
+  const pausedActive = state.paused && (state.iconState === 'idle' || state.iconState === 'awaiting-input');
+  const titleByState: Record<IconState, string> = {
+    idle: 'Deck — Operator idle',
+    scanning: 'Deck — Operator scanning workspace',
+    thinking: 'Deck — Operator composing suggestions',
+    acting: 'Deck — Operator dispatching',
+    paused: 'Deck — Operator paused (autonomous actions disabled)',
+    'awaiting-input': 'Deck — Operator awaiting your decision on pending suggestions',
+  };
+  const title = pausedActive
+    ? titleByState.paused
+    : state.paused
+      ? `${titleByState[state.iconState]} (paused — auto-dispatch off)`
+      : titleByState[state.iconState];
+
+  const scanning = state.iconState === 'scanning' || state.iconState === 'thinking';
+
+  // Always-visible count bubbles under the header Deck button. Counts come
+  // from sharedState.cards (mirrored from the panel's suggestion array).
+  const counts = useMemo(() => {
+    const c = { pending: 0, accepted: 0, ignored: 0 };
+    for (const card of state.cards) {
+      if (card.status === 'pending') c.pending++;
+      else if (card.status === 'accepted') c.accepted++;
+      else if (card.status === 'ignored') c.ignored++;
+    }
+    return c;
+  }, [state.cards]);
+
+
+  return (
+    <span className="pc-header-cta-shell pc-header-cta-shell--operator">
+      <button
+        className={`pc-header-cta pc-header-cta--operator pc-header-cta--${state.iconState}${state.paused ? ' is-paused' : ''}${scanning ? ' is-scanning' : ''}${state.autoAccept !== 'off' ? ' is-auto' : ''}`}
+        aria-label={title}
+        title={title}
+        onClick={toggle}
+        aria-expanded={state.open}
+        style={{ marginLeft: 8 }}
+      >
+        <span className="pc-header-cta-orb" aria-hidden="true">
+          <DeckCardsMark className="pc-header-cta-logo pc-header-cta-logo--deck" />
+          {scanning && <span className="pc-header-cta-scan-ring" aria-hidden="true" />}
+          {state.autoAccept !== 'off' && !scanning && <span className="pc-header-cta-auto-dot" aria-hidden="true" />}
+        </span>
+        <span className="pc-header-cta-label">DECK</span>
+      </button>
+      <div
+        role="status"
+        aria-label={`Deck card counts: ${counts.pending} pending, ${counts.accepted} accepted, ${counts.ignored} ignored`}
+        aria-live="polite"
+        className="pc-operator-popdown"
+      >
+        <OperatorCountBubble label="pending" count={counts.pending} tone="pending" />
+        <OperatorCountBubble label="accepted" count={counts.accepted} tone="accepted" />
+        <OperatorCountBubble label="ignored" count={counts.ignored} tone="ignored" />
+      </div>
+      <OperatorAutoAcceptFeed events={state.recentAutoAccepts} />
+    </span>
+  );
+}
+
+const TIER_DOT_COLOR: Record<'low' | 'medium' | 'high', string> = {
+  low: '#10b981',
+  medium: '#f59e0b',
+  high: '#ef4444',
+};
+
+function formatRelativeAgo(now: number, then: number): string {
+  const ms = Math.max(0, now - then);
+  const sec = Math.floor(ms / 1000);
+  if (sec < 5) return 'just now';
+  if (sec < 60) return `${sec}s ago`;
+  const min = Math.floor(sec / 60);
+  if (min < 60) return `${min}m ago`;
+  const hr = Math.floor(min / 60);
+  return `${hr}h ago`;
+}
 
 function CustomBudgetEntry({ disabled, onSet }: { disabled: boolean; onSet: (cap: number) => void | Promise<void> }): ReactElement {
   const [value, setValue] = useState<string>('');
@@ -361,43 +453,116 @@ function CustomBudgetEntry({ disabled, onSet }: { disabled: boolean; onSet: (cap
   );
 }
 
+function OperatorAutoAcceptFeed({ events }: { events: readonly import('./operator-shared-state').AutoAcceptEvent[] }): ReactElement | null {
+  // Tick once per 30s so relative-time labels refresh while the feed is visible.
+  const [, forceTick] = useState(0);
+  useEffect(() => {
+    if (events.length === 0) return;
+    const t = setInterval(() => forceTick((n) => n + 1), 30_000);
+    return () => clearInterval(t);
+  }, [events.length]);
+  if (events.length === 0) return null;
+  const now = Date.now();
+
+  return (
+    <div
+      role="region"
+      aria-label="Recent auto-accepted cards"
+      className="pc-operator-auto-feed"
+    >
+      <div className="pc-operator-auto-feed__head">
+        <span className="pc-operator-auto-feed__title">Auto-accepted</span>
+        <span className="pc-operator-auto-feed__count">{events.length}</span>
+      </div>
+      <ul className="pc-operator-auto-feed__list">
+        {events.slice(0, 5).map((e) => (
+          <li key={e.id} className="pc-operator-auto-feed__row">
+            <span
+              aria-hidden="true"
+              className="pc-operator-auto-feed__tier-dot"
+              style={{ background: TIER_DOT_COLOR[e.tier] }}
+            />
+            <span className="pc-operator-auto-feed__title-cell" title={e.title}>{e.title}</span>
+            {e.targetHarness && (
+              <span className="pc-operator-auto-feed__harness">{e.targetHarness}</span>
+            )}
+            <span className="pc-operator-auto-feed__age">{formatRelativeAgo(now, e.acceptedAt)}</span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+function OperatorCountBubble({
+  label,
+  count,
+  tone,
+}: {
+  label: 'pending' | 'accepted' | 'ignored';
+  count: number;
+  tone: 'pending' | 'accepted' | 'ignored';
+}): ReactElement {
+  return (
+    <span
+      className={`pc-operator-count-bubble pc-operator-count-bubble--${tone}`}
+      aria-label={`${count} ${label}`}
+      title={`${count} ${label}`}
+    >
+      {count}
+    </span>
+  );
+}
+
+// Auto-accept threshold cycler. Single click steps Off → Low → Medium → High → Off.
+// Tooltip explains what each level means; the visible label is the current level.
+const AUTO_ACCEPT_LEVELS_ORDER: readonly AutoAcceptLevel[] = ['off', 'low', 'medium', 'high'];
+const AUTO_ACCEPT_LABEL: Record<AutoAcceptLevel, string> = {
+  off: 'off',
+  low: 'low',
+  medium: 'med',
+  high: 'high',
+};
+const AUTO_ACCEPT_TOOLTIP: Record<AutoAcceptLevel, string> = {
+  off: 'Auto-accept: OFF. Every suggestion waits for your decision. Background scans still run; cards just queue up. Click to cycle: Off → Low → Medium → High.',
+  low: 'Auto-accept: LOW. Only low-risk cards auto-accept after a 10s review window. Medium and high still wait for you. Click to cycle.',
+  medium: 'Auto-accept: MEDIUM. Low and medium-risk cards auto-accept after the 10s review window. High-risk still waits for you. Click to cycle.',
+  high: 'Auto-accept: HIGH. Every card auto-fires after the 10s review window — INCLUDING high-risk ones (secrets, dispatches, code execution). Use with care. Click to cycle.',
+};
+
+export function OperatorAutoScanToggle(): ReactElement {
+  const [autoAccept, setAutoAcceptState] = useState<AutoAcceptLevel>(sharedState.autoAccept);
+  useEffect(() => {
+    return subscribeOperatorState((s) => {
+      if (s.autoAccept) setAutoAcceptState(s.autoAccept);
+    });
+  }, []);
+  const cycle = useCallback(() => {
+    const i = AUTO_ACCEPT_LEVELS_ORDER.indexOf(sharedState.autoAccept);
+    const next = AUTO_ACCEPT_LEVELS_ORDER[(i + 1) % AUTO_ACCEPT_LEVELS_ORDER.length];
+    broadcastState({ autoAccept: next });
+  }, []);
+  const title = AUTO_ACCEPT_TOOLTIP[autoAccept];
+  return (
+    <button
+      type="button"
+      className={`pc-header-cta-mini pc-header-cta-mini--auto pc-header-cta-mini--auto-${autoAccept}${autoAccept !== 'off' ? ' is-on' : ''}`}
+      aria-label={title}
+      title={title}
+      onClick={cycle}
+      style={{ marginLeft: 4 }}
+    >
+      <span className="pc-header-cta-mini-dot" aria-hidden="true" />
+      <span className="pc-header-cta-mini-label">auto: {AUTO_ACCEPT_LABEL[autoAccept]}</span>
+    </button>
+  );
+}
 
 interface BudgetSnapshot {
   configured: boolean;
   dailyCapUsd: number;
   todaySpendUsd: number;
   exceeded: boolean;
-}
-
-/**
- * The `operator_budget` Zero row stores the raw PG payload
- * (`{ dailyCapUsd?, spend? }`) — NOT the `BudgetSnapshot` shape the panel
- * renders against. Map it the same way `GET /api/agent-mcp/operator-budget`
- * does (see `lib/operator-budget.ts` → `checkBudget`). Without this, the
- * raw payload's missing `configured` field reads as `undefined`, so
- * `!budget.configured` is always true and the first-run budget overlay
- * snaps back the instant the post-save PG NOTIFY reaches the subscription
- * — the overlay never dismisses after the user picks a cap.
- */
-function budgetSnapshotFromZeroPayload(payload: unknown): BudgetSnapshot {
-  const raw = (payload ?? {}) as { dailyCapUsd?: unknown; spend?: unknown };
-  const configured = typeof raw.dailyCapUsd === 'number' && raw.dailyCapUsd > 0;
-  const dailyCapUsd = configured ? (raw.dailyCapUsd as number) : 0;
-  const today = new Date().toISOString().slice(0, 10);
-  const spend = Array.isArray(raw.spend) ? raw.spend : [];
-  const todayEntry = spend.find(
-    (s): s is { date: string; usd: number } =>
-      !!s && typeof s === 'object'
-      && (s as { date?: unknown }).date === today
-      && typeof (s as { usd?: unknown }).usd === 'number',
-  );
-  const todaySpendUsd = todayEntry?.usd ?? 0;
-  return {
-    configured,
-    dailyCapUsd,
-    todaySpendUsd,
-    exceeded: configured && todaySpendUsd >= dailyCapUsd,
-  };
 }
 
 export function OperatorPanel(): ReactElement | null {
@@ -417,14 +582,14 @@ export function OperatorPanel(): ReactElement | null {
   // for post-mutation refresh and as REST fallback while the
   // subscription warms up.
   const operatorWorkspaceId = useWorkspaceId();
-  const { data: budgetRows } = useSyncQuery<{ workspaceId: string; payload: unknown; updatedAt: number }>({
+  const { data: budgetRows } = useSyncQuery<{ workspaceId: string; payload: BudgetSnapshot; updatedAt: number }>({
     queryName: 'operatorBudget.byWorkspace',
     args: { workspaceId: operatorWorkspaceId },
     enabled: !!operatorWorkspaceId,
   });
   useEffect(() => {
     if (!Array.isArray(budgetRows) || budgetRows.length === 0) return;
-    setBudget(budgetSnapshotFromZeroPayload(budgetRows[0].payload));
+    setBudget(budgetRows[0].payload as BudgetSnapshot);
   }, [budgetRows]);
   const { data: lastScanRows } = useSyncQuery<{ workspaceId: string; payload: unknown; updatedAt: number }>({
     queryName: 'operatorLastScan.byWorkspace',
@@ -511,14 +676,15 @@ export function OperatorPanel(): ReactElement | null {
   }, []);
   const panelRef = useRef<HTMLDivElement | null>(null);
   const evtSrcRef = useRef<{ close: () => void } | null>(null);
-  const [feedQuery, setFeedQuery] = useState('');
+  const [feedQuery, setFeedQuery] = useQueryState('deckQ', parseAsString.withDefault(''));
   const [mainView, setMainView] = useQueryState<MainView>(
     'deckView',
     parseAsStringLiteral(['cards', 'accepted', 'ignored', 'scan-history'] as const).withDefault('cards'),
   );
   // Active harness filter — selected from the card toolbar dropdown.
-  // null = all harnesses.
-  const [harnessFilter, setHarnessFilter] = useState<string | null>(null);
+  // Empty string = all harnesses.
+  const [harnessFilterValue, setHarnessFilterValue] = useQueryState('deckHarness', parseAsString.withDefault(''));
+  const harnessFilter = harnessFilterValue || null;
   const [harnessRows, setHarnessRows] = useState<HarnessOneLiner[]>([]);
   const [scanStatus, setScanStatus] = useState<ScanStatus>('idle');
   const [scanError, setScanError] = useState<string | null>(null);
@@ -553,6 +719,26 @@ export function OperatorPanel(): ReactElement | null {
     return subscribeOperatorState(fn);
   }, []);
 
+  // Click-outside or Escape to close.
+  useEffect(() => {
+    if (!state.open) return;
+    const onDocClick = (e: MouseEvent) => {
+      if (!panelRef.current) return;
+      if (panelRef.current.contains(e.target as Node)) return;
+      const target = e.target as HTMLElement;
+      if (target.closest('[aria-label^="Deck"]')) return;
+      broadcastState({ open: false });
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') broadcastState({ open: false });
+    };
+    document.addEventListener('mousedown', onDocClick);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onDocClick);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [state.open]);
   useEffect(() => {
     if (!state.open) return;
     // Updates `now` so relative timestamps in the panel re-render. 500ms
@@ -636,7 +822,7 @@ export function OperatorPanel(): ReactElement | null {
         //     server didn't standing-approve). This is how the user
         //     opts into auto-dispatch for high-risk cards: they cycle
         //     the navbar auto button to HIGH, accepting that everything
-        //     auto-fires after the 5s undo countdown.
+        //     auto-fires after the 10s review window.
         const tierAllowed = isAutoAcceptedByThreshold(raw.actualTier, sharedState.autoAccept);
         let nextAuto = raw.auto_dispatch;
         if (nextAuto && (sharedState.paused || !tierAllowed)) nextAuto = false;
@@ -645,7 +831,7 @@ export function OperatorPanel(): ReactElement | null {
           ? { ...raw, auto_dispatch: nextAuto }
           : raw;
         setSuggestions((prev) => {
-          const autoDispatchAt = s.auto_dispatch ? Date.now() + 5_000 : undefined;
+          const autoDispatchAt = s.auto_dispatch ? Date.now() + 10_000 : undefined;
           const idx = prev.findIndex((c) => c.id === s.id);
           if (idx >= 0) {
             // Stable-id collision. Pending cards get their content
@@ -807,7 +993,7 @@ export function OperatorPanel(): ReactElement | null {
             ...rest,
             status,
             acceptedAt: status === 'accepted' ? _dispatchedAt : undefined,
-            autoDispatchAt: rest.auto_dispatch && status === 'pending' ? Date.now() + 5_000 : undefined,
+            autoDispatchAt: rest.auto_dispatch && status === 'pending' ? Date.now() + 10_000 : undefined,
             undoCancelled: _undoCancelled,
           };
         }));
@@ -837,8 +1023,8 @@ export function OperatorPanel(): ReactElement | null {
             }).then((nr) => nr.ok ? nr.json() : { fired: false });
             if (nudge.fired) {
               const phrase = ratio >= 1.0
-                ? `Papercup paused. Daily budget reached: ${snap.todaySpendUsd.toFixed(2)}.`
-                : `Papercup budget at ${Math.round(ratio * 100)} percent — ${snap.todaySpendUsd.toFixed(2)} of ${snap.dailyCapUsd}.`;
+                ? `Operator paused. Daily budget reached: ${snap.todaySpendUsd.toFixed(2)}.`
+                : `Operator budget at ${Math.round(ratio * 100)} percent — ${snap.todaySpendUsd.toFixed(2)} of ${snap.dailyCapUsd}.`;
               speak(phrase, 'system:operator-nudge', 'assertive');
             }
           }).catch(() => {});
@@ -876,14 +1062,14 @@ export function OperatorPanel(): ReactElement | null {
     void hydrateFromLastScan();
     // Cards pre-seeded by the lastScan Zero subscription (so the top-bar
     // count widget renders pre-open) intentionally skip setting
-    // autoDispatchAt. Start their undo windows now that the panel is
+    // autoDispatchAt. Start their review windows now that the panel is
     // actually visible.
     setSuggestions((prev) => {
       let touched = false;
       const next = prev.map((c) => {
         if (c.status !== 'pending' || !c.auto_dispatch || c.autoDispatchAt) return c;
         touched = true;
-        return { ...c, autoDispatchAt: Date.now() + 5_000 };
+        return { ...c, autoDispatchAt: Date.now() + 10_000 };
       });
       return touched ? next : prev;
     });
@@ -1085,7 +1271,7 @@ export function OperatorPanel(): ReactElement | null {
     const reason = await askPrompt({
       title: 'Why ignore this?',
       label: 'Reason (optional)',
-      body: 'Tell Papercup why this suggestion isn\'t useful so it can learn. Leave blank to dismiss without logging.',
+      body: 'Tell Operator why this suggestion isn\'t useful so it can learn. Leave blank to dismiss without logging.',
       placeholder: 'not relevant to this harness…',
       submitLabel: 'Dismiss',
       allowEmpty: true,
@@ -1100,7 +1286,7 @@ export function OperatorPanel(): ReactElement | null {
   }, [askPrompt]);
 
   /**
-   * Undo-window cancel — user hit Cancel within 5s of a background
+   * Undo-window cancel — user hit Keep for review during the 10s window of a background
    * auto-fire toast. Audit-only; explicitly DOES NOT touch preferences
    * (per §4 decision 2). Background auto-fire toasts arrive in Phase 3;
    * this helper is exported now so the existing UI dismiss button can
@@ -1322,7 +1508,6 @@ export function OperatorPanel(): ReactElement | null {
   ));
   const filteredEmpty = filterActive && hasCardEntries && !hasFeedEntries;
   const streamMuted = scanStatus === 'complete' && suggestions.length > 0;
-  const railHasActivity = decisions.length > 0 || streamLog.length > 0 || scanStatus === 'scanning' || scanStatus === 'error';
   // Per-tab empty states are independent of scanStatus: a scan-in-progress
   // does not change whether the Accepted/Ignored lists are empty, so don't
   // overwrite their copy with "Scanning workspace…".
@@ -1333,16 +1518,16 @@ export function OperatorPanel(): ReactElement | null {
       : mainView === 'ignored'
         ? 'No ignored actions yet'
         : scanStatus === 'error'
-          ? 'Papercup scan needs setup'
+          ? 'Operator scan needs setup'
           : scanStatus === 'scanning'
             ? 'Scanning workspace…'
             : state.paused
-              ? 'Papercup is paused'
+              ? 'Operator is paused'
               : scanStatus === 'complete' && suggestions.length === 0
                 ? 'No suggestions found'
                 : scanStarted
-                  ? "Papercup hasn't surfaced any pending actions"
-                  : 'Papercup has not scanned yet';
+                  ? "Operator hasn't surfaced any pending actions"
+                  : 'Operator has not scanned yet';
   const emptyBody = filteredEmpty
     ? 'Filters are narrowing this view. Clear the active filters or choose a different harness.'
     : mainView === 'accepted'
@@ -1350,11 +1535,11 @@ export function OperatorPanel(): ReactElement | null {
       : mainView === 'ignored'
         ? 'Ignored actions will appear here after you ignore them.'
         : scanStatus === 'error'
-          ? 'The scan did not complete. Check Papercup settings or provision the substrate before scanning again.'
+          ? 'The scan did not complete. Check Operator settings or provision the substrate before scanning again.'
           : scanStatus === 'scanning'
-            ? 'Papercup is checking workspace state, recent decisions, and pending harness work.'
+            ? 'Operator is checking workspace state, recent decisions, and pending harness work.'
             : state.paused
-              ? 'Resume Papercup before automatic scans continue. You can still run a manual scan from the controls above.'
+              ? 'Resume Operator before automatic scans continue. You can still run a manual scan from the controls above.'
               : scanStatus === 'complete' && suggestions.length === 0
                 ? `Last scan completed ${lastScanAgeLabel ?? 'recently'} and found no actions. Run Scan again when the workspace changes.`
                 : scanStarted
@@ -1365,22 +1550,10 @@ export function OperatorPanel(): ReactElement | null {
   const pausedVisible = state.paused && (state.iconState === 'idle' || state.iconState === 'awaiting-input');
   const effectiveIconState: IconState = pausedVisible ? 'paused' : state.iconState;
   const statusLabel = pausedVisible
-    ? 'Paused'
+    ? 'paused'
     : state.paused
-      ? `${titleCaseStatus(state.iconState)} (Paused)`
-      : titleCaseStatus(state.iconState);
-  const footerScanLabel = scanStatus === 'scanning'
-    ? 'Scan running'
-    : scanStatus === 'error'
-      ? 'Last scan errored'
-      : lastScanAgeLabel
-        ? `Last scan ${lastScanAgeLabel}`
-        : 'No scan yet';
-  const footerAutonomyLabel = state.paused
-    ? 'Autopilot paused'
-    : state.autoAccept === 'off'
-      ? 'Autopilot off'
-      : `Autopilot: ${humanizeAutoAcceptMode(state.autoAccept)}`;
+      ? `${state.iconState.replace('-', ' ')} (paused)`
+      : state.iconState.replace('-', ' ');
   const reducedMotion = useReducedMotion() ?? false;
   const visualEffectsEnabled = useFancyEffectsEnabled();
   const calmMotion = reducedMotion || !visualEffectsEnabled;
@@ -1526,6 +1699,9 @@ export function OperatorPanel(): ReactElement | null {
       {state.open ? (
         <motion.div
           ref={panelRef}
+          role="dialog"
+          aria-modal="true"
+          aria-label="Deck"
           data-harness-modal="true"
           data-operator-state={effectiveIconState}
           data-scan-status={scanStatus}
@@ -1537,6 +1713,24 @@ export function OperatorPanel(): ReactElement | null {
           style={calmMotion ? undefined : { transformPerspective: 1800 }}
         >
           {promptEl}
+          <svg className="operator-panel__svg-frame" viewBox="0 0 1000 600" preserveAspectRatio="none" aria-hidden="true" focusable="false">
+            <defs>
+              <linearGradient id="operatorPanelFrameRail" x1="0%" y1="0%" x2="100%" y2="100%">
+                <stop offset="0%" stopColor="rgb(238 254 255)" stopOpacity="0.86" />
+                <stop offset="34%" stopColor="rgb(99 230 255)" stopOpacity="0.92" />
+                <stop offset="58%" stopColor="rgb(255 184 68)" stopOpacity="0.78" />
+                <stop offset="100%" stopColor="rgb(16 185 235)" stopOpacity="0.86" />
+              </linearGradient>
+              <filter id="operatorPanelFrameGlow" x="-10%" y="-18%" width="120%" height="136%">
+                <feGaussianBlur stdDeviation="2.6" result="softGlow" />
+                <feMerge>
+                  <feMergeNode in="softGlow" />
+                  <feMergeNode in="SourceGraphic" />
+                </feMerge>
+              </filter>
+            </defs>
+            <path className="operator-panel__svg-frame-spine" d="M46 10 H414 L448 27 H552 L586 10 H954 L990 46 V554 L954 590 H46 L10 554 V46 Z" />
+          </svg>
           <span className="operator-panel__lock-flash" aria-hidden="true" />
           <OperatorScanOverlay
             state={effectiveIconState}
@@ -1544,6 +1738,7 @@ export function OperatorPanel(): ReactElement | null {
           />
           <header className="operator-panel__header pc-animate-in pc-animate-in--down pc-animate-in--fast">
             <div className="operator-panel__titleblock">
+              <OperatorReactorCore state={effectiveIconState} reducedMotion={calmMotion} />
               <div className="operator-panel__titlecopy">
                 <div className="operator-panel__title-overline" aria-hidden="true" />
                 <div className="operator-panel__titleline">
@@ -1564,21 +1759,20 @@ export function OperatorPanel(): ReactElement | null {
                   onClick={() => startScan()}
                   aria-label="Scan"
                 >
-                  <RefreshCcw size={14} aria-hidden="true" strokeWidth={2.2} />
+                  <span aria-hidden="true">↻</span>
                   <span>Scan</span>
                 </button>
                 <button
                   type="button"
-                  className={`operator-btn operator-btn--icon operator-btn--pause${state.paused ? ' is-paused' : ''}`}
+                  className="operator-btn operator-btn--icon"
                   onClick={() => broadcastState({ paused: !state.paused })}
                   aria-label={state.paused ? 'Resume autonomous actions' : 'Pause autonomous actions'}
                 >
-                  {state.paused ? <Play size={14} aria-hidden="true" strokeWidth={2.2} /> : <Pause size={14} aria-hidden="true" strokeWidth={2.2} />}
+                  <span aria-hidden="true">{state.paused ? '▶' : '⏸'}</span>
                   <span>{state.paused ? 'Resume' : 'Pause'}</span>
                 </button>
-                <RouteLink className="operator-btn operator-btn--ghost operator-btn--with-icon" href="/settings/operator">
-                  <Settings2 size={14} aria-hidden="true" strokeWidth={2.2} />
-                  <span>Settings</span>
+                <RouteLink className="operator-btn operator-btn--ghost" href="/settings/operator">
+                  Settings
                 </RouteLink>
               </div>
               <button
@@ -1587,7 +1781,7 @@ export function OperatorPanel(): ReactElement | null {
                 onClick={() => broadcastState({ open: false })}
                 aria-label="Close"
               >
-                <X size={18} aria-hidden="true" strokeWidth={2.2} />
+                ×
               </button>
             </div>
           </header>
@@ -1596,9 +1790,9 @@ export function OperatorPanel(): ReactElement | null {
             <div className="operator-budget-overlay pc-animate-in pc-animate-in--fade">
               <div className="operator-budget-card pc-animate-in pc-animate-in--down pc-animate-in--delay-1">
                 <div className="operator-panel__eyebrow">First run</div>
-                <h3>Pick a daily budget for Papercup</h3>
+                <h3>Pick a daily budget for Operator</h3>
                 <p>
-                  Papercup stops scanning automatically when today&apos;s spend reaches the cap.
+                  Operator stops scanning automatically when today&apos;s spend reaches the cap.
                   You can change this any time at <RouteLink href="/settings/operator">/settings/operator</RouteLink>.
                 </p>
                 <div className="operator-budget-options">
@@ -1620,25 +1814,18 @@ export function OperatorPanel(): ReactElement | null {
             </div>
           )}
 
-          <div className={`operator-panel__body${railHasActivity ? ' has-rail-activity' : ' has-empty-rail'} pc-animate-in pc-animate-in--down pc-animate-in--delay-1`}>
+          <div className={`operator-panel__body${decisions.length === 0 ? ' has-empty-activity' : ''} pc-animate-in pc-animate-in--down pc-animate-in--delay-1`}>
+            <aside className="operator-panel__rail operator-panel__rail--left">
+              <DelegatesSection />
+            </aside>
 
             <main className="operator-panel__feed pc-animate-in pc-animate-in--fade pc-animate-in--delay-2">
-              {firstRun && (
-                <section className="operator-callout operator-callout--first-run">
-                  <strong>First run</strong>
-                  <p>
-                    Papercup can write across every harness in this workspace.
-                    Edit its prompt or preferences from <RouteLink href="/settings/operator">/settings/operator</RouteLink>.
-                  </p>
-                </section>
-              )}
-
-              <div className="operator-panel__metrics operator-feed-tabs pc-animate-in pc-animate-in--down pc-animate-in--delay-1" role="tablist" aria-label="Deck filters">
+              <div className="operator-panel__metrics operator-feed-tabs pc-animate-in pc-animate-in--down pc-animate-in--delay-1" role="tablist" aria-label="Deck action views">
                 {[
-                  { key: 'cards' as MainView, count: pendingCount, label: 'Pending', ariaLabel: `Pending, ${pendingCount}` },
-                  { key: 'accepted' as MainView, count: acceptedCount, label: 'Accepted', ariaLabel: `Accepted, ${acceptedCount}` },
-                  { key: 'ignored' as MainView, count: ignoredCount, label: 'Ignored', ariaLabel: `Ignored, ${ignoredCount}` },
-                  { key: 'scan-history' as MainView, count: '—', label: 'Scans', ariaLabel: 'Scans' },
+                  { key: 'cards' as MainView, count: pendingCount, label: 'Pending' },
+                  { key: 'accepted' as MainView, count: acceptedCount, label: 'Accepted' },
+                  { key: 'ignored' as MainView, count: ignoredCount, label: 'Ignored' },
+                  { key: 'scan-history' as MainView, count: null, label: 'Scans' },
                 ].map((view) => (
                   <button
                     key={view.key}
@@ -1646,19 +1833,19 @@ export function OperatorPanel(): ReactElement | null {
                     role="tab"
                     className="operator-panel__metric-card operator-panel__metric-card--tab"
                     aria-selected={mainView === view.key}
-                    aria-label={view.ariaLabel}
+                    aria-pressed={mainView === view.key}
                     onClick={() => { void setMainView(view.key); }}
                   >
-                    <em className="operator-tab-label" aria-hidden="true">{view.label}</em>
-                    <strong className="operator-tab-count" data-zero={view.count === 0 ? 'true' : undefined} aria-hidden="true">{view.count}</strong>
+                    <em>{view.label}</em>
+                    {typeof view.count === 'number' ? <strong>{view.count}</strong> : null}
                   </button>
                 ))}
               </div>
-              {mainView !== 'scan-history' && (hasCardEntries || filterActive) && (
-                <div className="operator-feed-head">
+              <div className="operator-feed-head">
+                {mainView !== 'scan-history' && (
                   <div className="operator-feed-tools">
                     <div className={`operator-feed-search${textFilterActive ? ' has-value' : ''}`}>
-                      <span className="operator-feed-search__icon" aria-hidden="true"><Search size={14} /></span>
+                      <span className="operator-feed-search__icon" aria-hidden="true">⌕</span>
                       <input
                         type="search"
                         value={feedQuery}
@@ -1681,16 +1868,16 @@ export function OperatorPanel(): ReactElement | null {
                     </div>
                     <div className="operator-feed-harness-filter">
                       <Select
-                        value={harnessFilter ?? '_all'}
-                        onChange={(v) => setHarnessFilter(v === '_all' ? null : v)}
+                        value={harnessFilterValue || '_all'}
+                        onChange={(value) => setHarnessFilterValue(value === '_all' ? '' : value)}
                         ariaLabel="Filter actions by harness"
                         triggerClassName="operator-feed-harness-select"
                         options={harnessOptions.map((option) => ({ value: option.value, label: option.label }))}
                       />
                     </div>
                   </div>
-                </div>
-              )}
+                )}
+              </div>
               {mainView !== 'scan-history' && filterActive && (
                 <div className="operator-feed-active-filters" aria-label="Active filters">
                   <span>Filtered</span>
@@ -1701,7 +1888,7 @@ export function OperatorPanel(): ReactElement | null {
                     type="button"
                     onClick={() => {
                       setFeedQuery('');
-                      setHarnessFilter(null);
+                      setHarnessFilterValue('');
                     }}
                   >
                     Clear
@@ -1714,26 +1901,10 @@ export function OperatorPanel(): ReactElement | null {
               ) : !hasFeedEntries ? (
                 <div className={`operator-empty-state operator-empty-state--${scanStatus}`}>
                   <div className="operator-empty-state__icon" aria-hidden="true">
-                    {scanStatus === 'error' ? (
-                      <TriangleAlert size={18} strokeWidth={2.2} />
-                    ) : (
-                      <RefreshCcw size={18} strokeWidth={2.2} />
-                    )}
+                    {scanStatus === 'error' ? '!' : scanStatus === 'scanning' ? '◐' : '·'}
                   </div>
                   <h3>{emptyTitle}</h3>
                   <p>{emptyBody}</p>
-                  {scanStatus !== 'error' && scanStatus !== 'scanning' && (
-                    <div className="operator-empty-state__actions">
-                      <button
-                        type="button"
-                        className="operator-btn operator-btn--primary operator-btn--icon"
-                        onClick={() => startScan()}
-                      >
-                        <RefreshCcw size={14} aria-hidden="true" strokeWidth={2.2} />
-                        <span>Scan workspace</span>
-                      </button>
-                    </div>
-                  )}
                   {scanStatus === 'error' && (
                     <button
                       type="button"
@@ -1741,7 +1912,7 @@ export function OperatorPanel(): ReactElement | null {
                       onClick={() => provisionAndRescan()}
                       disabled={provisioning}
                     >
-                      {provisioning ? 'Setting up…' : 'Set up Papercup →'}
+                      {provisioning ? 'Setting up…' : 'Set up Operator →'}
                     </button>
                   )}
                 </div>
@@ -1750,6 +1921,7 @@ export function OperatorPanel(): ReactElement | null {
                   {visibleSuggestions.map((s, index) => (
                     <li
                       key={s.id}
+                      role="article"
                       aria-label={`${s.title} — ${s.status === 'accepted' ? 'accepted' : s.status === 'ignored' ? 'ignored' : s.auto_dispatch ? 'accepts automatically soon' : 'awaiting your decision'}`}
                       data-entry-index={index}
                       data-entry-state={s.status}
@@ -1758,27 +1930,33 @@ export function OperatorPanel(): ReactElement | null {
                       className={`operator-entry operator-entry--suggestion operator-entry--tier-${s.actualTier}${s.action === 'inform' ? ' operator-entry--inform-card' : ''}`}
                     >
                       <div className="operator-entry__rail">
-                        <span className="operator-entry__review-icon" title={s.auto_dispatch ? 'Auto-dispatch suggestion' : s.actualTier === 'high' ? 'High-risk review required' : 'Needs your decision'}>
-                          {reviewIconForCard(s)}
+                        <span title={s.auto_dispatch ? 'Auto-dispatch suggestion' : s.actualTier === 'high' ? 'High-risk review required' : 'Needs your decision'}>
+                          {s.auto_dispatch ? '⚡' : s.actualTier === 'high' ? '⚠' : '✋'}
                         </span>
                       </div>
                       <div className="operator-entry__content">
                         <div className="operator-entry__meta">
-                          <span className={`operator-kind operator-kind--${s.action}`}>{s.action === 'send_directive' ? 'Directive' : s.action === 'navigate' ? 'Open' : 'Note'}</span>
                           <span className={`operator-tier operator-tier--${s.actualTier}`}>{tierLabel(s.actualTier)}</span>
                           {!(mainView === 'cards' && s.status === 'pending') && (
-                            <span className={`operator-life operator-life--${lifecycleClassForCard(s)}`}>{lifecycleLabelForCard(s)}</span>
+                            <>
+                              <span className="operator-meta-sep" aria-hidden="true">·</span>
+                              <span className={`operator-life operator-life--${lifecycleClassForCard(s)}`}>{lifecycleLabelForCard(s)}</span>
+                            </>
                           )}
                           {s.target_harness && (
-                            <span className="operator-target">{s.target_harness}</span>
+                            <>
+                              <span className="operator-meta-sep" aria-hidden="true">·</span>
+                              <span className="operator-target">{s.target_harness}</span>
+                            </>
                           )}
+                          <span className="operator-voice-slot" aria-hidden="true" />
                         </div>
                         <div className="operator-entry__title-row">
                           <div className="operator-entry__heading">
                             <span className={`operator-entry__type-glyph operator-entry__type-glyph--${s.action}`} aria-hidden="true">
-                              {actionIconForCard(s)}
+                              {actionGlyphForCard(s)}
                             </span>
-                            <h3>{s.title}</h3>
+                            <h4>{s.title}</h4>
                           </div>
                           <div className="operator-entry__title-actions">
                             <div className="operator-entry__state">
@@ -1792,20 +1970,20 @@ export function OperatorPanel(): ReactElement | null {
                                   className="operator-state-text operator-state-text--warn"
                                   title={s.lastFailureReason ?? 'unknown error'}
                                 >
-                                  Last attempt failed: {humanizeFailure(s.lastFailureReason)} — try again
+                                  ⚠ Last attempt failed: {humanizeFailure(s.lastFailureReason)} — try again
                                 </span>
                               )}
                               {s.status === 'accepted' && (
-                                <span className="operator-state-text operator-state-text--good">Accepted</span>
+                                <span className="operator-state-text operator-state-text--good">✓ accepted</span>
                               )}
                               {s.status === 'ignored' && (
-                                <span className="operator-state-text operator-state-text--muted">Ignored</span>
+                                <span className="operator-state-text operator-state-text--muted">ignored</span>
                               )}
                             </div>
                             <div className="operator-entry__buttons">
                               {/* Auto-fire countdown: Keep for review turns it into a regular pending card; otherwise the timer fires the same Accept flow. */}
                               {s.status === 'pending' && s.auto_dispatch && (
-                                <button type="button" className="operator-mini-btn operator-mini-btn--auto" onClick={() => undoCancelSuggestion(s.id)}>
+                                <button type="button" className="operator-mini-btn operator-mini-btn--ghost" onClick={() => undoCancelSuggestion(s.id)}>
                                   Keep for review
                                 </button>
                               )}
@@ -1880,32 +2058,21 @@ export function OperatorPanel(): ReactElement | null {
                         {(s.provenanceFlags?.tierMismatch || s.provenanceFlags?.capabilityUnknown) && (
                           <div className="operator-entry__flags" aria-label="Provenance warnings">
                             {s.provenanceFlags?.tierMismatch && (
-                              <span title="LLM-claimed tier overridden by substrate">
-                                <TriangleAlert size={12} aria-hidden="true" strokeWidth={2.2} />
-                                tier corrected
-                              </span>
+                              <span title="LLM-claimed tier overridden by substrate">⚠ tier corrected</span>
                             )}
                             {s.provenanceFlags?.capabilityUnknown && (
-                              <span title="Unknown capability — forced high (fail-safe)">
-                                <TriangleAlert size={12} aria-hidden="true" strokeWidth={2.2} />
-                                capability unknown
-                              </span>
+                              <span title="Unknown capability — forced high (fail-safe)">⚠ capability unknown</span>
                             )}
                           </div>
                         )}
 
                         {s.action === 'send_directive' && s.directive_body && (
-                          <Collapsible.Root className="operator-entry__details">
-                            <Collapsible.Trigger className="operator-entry__details-trigger">
-                              <ChevronDown size={12} aria-hidden="true" strokeWidth={2.2} />
-                              <span>Preview message</span>
-                            </Collapsible.Trigger>
-                            <Collapsible.Content className="operator-entry__details-content">
-                              <div>
-                                <MarkdownPreview value={s.directive_body} outline="left" />
-                              </div>
-                            </Collapsible.Content>
-                          </Collapsible.Root>
+                          <details className="operator-entry__details">
+                            <summary>Directive body</summary>
+                            <div>
+                              <MarkdownPreview value={s.directive_body} outline="left" />
+                            </div>
+                          </details>
                         )}
                         {s.action === 'inform' && s.body && (
                           <div className="operator-entry__markdown operator-entry__markdown--compact">
@@ -1930,36 +2097,44 @@ export function OperatorPanel(): ReactElement | null {
               )}
             </main>
 
-            <aside className={`operator-panel__rail operator-panel__rail--right${railHasActivity ? '' : ' is-empty'} pc-animate-in pc-animate-in--fade pc-animate-in--delay-2`}>
-              <DelegatesSection />
+            <aside className={`operator-panel__rail operator-panel__rail--right${decisions.length === 0 ? ' is-empty' : ''} pc-animate-in pc-animate-in--fade pc-animate-in--delay-2`}>
+              {firstRun && (
+                <section className="operator-callout">
+                  <strong>First-run intro</strong>
+                  <p>
+                    I have full write authority across all harnesses in this workspace.
+                    Edit my prompt or preferences from <RouteLink href="/settings/operator">/settings/operator</RouteLink>.
+                  </p>
+                </section>
+              )}
               <section className="operator-section">
-                <div className="operator-section__head">
-                  <span>Decisions</span>
-                  <em>{decisions.length === 0 ? 'empty' : 'recent'}</em>
-                </div>
                 {decisions.length === 0 ? (
-                  <div className="operator-empty-rail operator-empty-rail--decisions">
-                    <Info size={14} aria-hidden="true" strokeWidth={2.2} />
-                    <div>
-                      <strong>No decisions yet</strong>
-                      <span>Accepted and ignored suggestions appear here.</span>
-                    </div>
+                  <div className="operator-empty-rail">
+                    <strong>Decisions</strong>
+                    <span>no recent decisions</span>
+                    <em>0</em>
                   </div>
                 ) : (
-                  <ul className="operator-activity-list">
-                    {decisions.map((r) => (
-                      <li key={r.id} className="operator-activity-item">
-                        <span className="operator-activity-dot" aria-hidden="true" />
-                        <div>
-                          <strong>{r.action}</strong>
-                          <p>
-                            {r.target}{' '}
-                            <span>· {new Date(r.ts).toLocaleString()}</span>
-                          </p>
-                        </div>
-                      </li>
-                    ))}
-                  </ul>
+                  <>
+                    <div className="operator-section__head">
+                      <span>Decisions</span>
+                      <em>recent</em>
+                    </div>
+                    <ul className="operator-activity-list">
+                      {decisions.map((r) => (
+                        <li key={r.id} className="operator-activity-item">
+                          <span className="operator-activity-dot" aria-hidden="true" />
+                          <div>
+                            <strong>{r.action}</strong>
+                            <p>
+                              {r.target}{' '}
+                              <span>· {new Date(r.ts).toLocaleString()}</span>
+                            </p>
+                          </div>
+                        </li>
+                      ))}
+                    </ul>
+                  </>
                 )}
               </section>
               <section className={`operator-section operator-stream${streamMuted ? ' operator-stream--muted' : ''}${scanStatus === 'error' ? ' operator-stream--error' : ''}`}>
@@ -1970,17 +2145,15 @@ export function OperatorPanel(): ReactElement | null {
                 {scanStatus === 'error' ? (
                   <div className="operator-stream-error">
                     <strong>Scan errored</strong>
-                    <p>{scanError || 'Papercup substrate is not ready.'}</p>
-                    {hasFeedEntries ? (
-                      <button
-                        type="button"
-                        className="operator-btn operator-btn--ghost"
-                        onClick={() => provisionAndRescan()}
-                        disabled={provisioning}
-                      >
-                        {provisioning ? 'Setting up…' : 'Set up Papercup →'}
-                      </button>
-                    ) : null}
+                    <p>{scanError || 'Operator substrate is not ready.'}</p>
+                    <button
+                      type="button"
+                      className="operator-btn operator-btn--ghost"
+                      onClick={() => provisionAndRescan()}
+                      disabled={provisioning}
+                    >
+                      {provisioning ? 'Setting up…' : 'Set up Operator →'}
+                    </button>
                     {onSettingsPage ? null : (
                       <RouteLink className="operator-btn operator-btn--muted" href="/settings/operator">
                         Open settings
@@ -1988,13 +2161,7 @@ export function OperatorPanel(): ReactElement | null {
                     )}
                   </div>
                 ) : streamLog.length === 0 ? (
-                  <div className="operator-stream-empty">
-                    <Activity size={14} aria-hidden="true" strokeWidth={2.2} />
-                    <div>
-                      <strong>No stream yet</strong>
-                      <span>Run Scan to populate live operator events.</span>
-                    </div>
-                  </div>
+                  <p className="operator-empty-small">(no stream yet)</p>
                 ) : (
                   <pre>{streamLog.join('\n')}</pre>
                 )}
@@ -2003,9 +2170,7 @@ export function OperatorPanel(): ReactElement | null {
           </div>
 
           <footer className="operator-panel__footer pc-animate-in pc-animate-in--fade pc-animate-in--delay-2">
-            <span>Esc closes</span>
-            <span>{footerScanLabel}</span>
-            <span>{footerAutonomyLabel}</span>
+            <span>Cmd/Ctrl+K then D • Esc closes • Click outside closes</span>
           </footer>
         </motion.div>
       ) : null}

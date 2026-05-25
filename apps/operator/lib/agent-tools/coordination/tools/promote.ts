@@ -33,32 +33,39 @@ import { readPlanBySlug } from '../../plans/source';
 import { withPlanLock, bumpUpdatedDate } from '../../plans/with-plan-lock';
 import { flipStatusInBody } from '../../plans/set-status';
 
-const PROMOTED_BLOCK_RE = /^## Promoted\n[\s\S]*?(?=\n## |\n---\s*$|$)/m;
 const PROMOTED_FENCE = '<!-- plan-pipeline: do not edit this block manually -->';
 
-function upsertPromotedBlock(body: string, newRows: string[]): string {
-  const existingMatch = PROMOTED_BLOCK_RE.exec(body);
-  const existingIds = new Set<string>();
-  if (existingMatch) {
-    for (const m of existingMatch[0].matchAll(/^\- \[[ x]\] (F-[A-Z0-9-]+)/gm)) {
+export function upsertPromotedBlock(body: string, newRows: string[]): string {
+  if (newRows.length === 0) return body;
+  const headerMatch = /^## Promoted\b/m.exec(body);
+
+  if (headerMatch) {
+    const start = headerMatch.index;
+    const afterHeader = start + headerMatch[0].length;
+    const nextSectionRel = /^## /m.exec(body.slice(afterHeader));
+    const blockEnd = nextSectionRel ? afterHeader + nextSectionRel.index : body.length;
+    const blockContent = body.slice(start, blockEnd);
+
+    const existingIds = new Set<string>();
+    for (const m of blockContent.matchAll(/^\- \[[ x]\] (F-[A-Z0-9-]+)/gm)) {
       existingIds.add(m[1]);
     }
+    const deduped = newRows.filter((r) => {
+      const m = /^\- \[[ x]\] (F-[A-Z0-9-]+)/.exec(r);
+      return m ? !existingIds.has(m[1]) : true;
+    });
+    if (deduped.length === 0) return body;
+
+    const insert = deduped.join('\n') + '\n';
+    return body.slice(0, blockEnd) + insert + body.slice(blockEnd);
   }
-  const deduped = newRows.filter((r) => {
-    const m = /^\- \[[ x]\] (F-[A-Z0-9-]+)/.exec(r);
-    return m ? !existingIds.has(m[1]) : true;
-  });
-  if (deduped.length === 0) return body;
-  if (existingMatch) {
-    const end = existingMatch.index + existingMatch[0].length;
-    const insert = '\n' + deduped.join('\n');
-    return body.slice(0, end) + insert + body.slice(end);
-  }
-  const block = `\n## Promoted\n\n${PROMOTED_FENCE}\n${deduped.join('\n')}\n`;
-  const nowIdx = body.indexOf('\n## Now\n');
-  if (nowIdx !== -1) {
-    const afterNow = body.indexOf('\n## ', nowIdx + 1);
-    const ins = afterNow !== -1 ? afterNow : body.length;
+
+  const block = `\n## Promoted\n\n${PROMOTED_FENCE}\n${newRows.join('\n')}\n`;
+  const nowMatch = /^## Now\b/m.exec(body);
+  if (nowMatch) {
+    const afterNow = nowMatch.index + nowMatch[0].length;
+    const nextSectionRel = /^## /m.exec(body.slice(afterNow));
+    const ins = nextSectionRel ? afterNow + nextSectionRel.index : body.length;
     return body.slice(0, ins) + block + body.slice(ins);
   }
   return body + block;
