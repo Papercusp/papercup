@@ -3,15 +3,15 @@ title: Operator behavior tests — 2026-05-14 (v3, implemented)
 slug: operator-behavior-tests-2026-05-14
 status: active
 created: 2026-05-14
-updated: 2026-05-20
+updated: 2026-05-25
 owner: pandawamble@gmail.com
 ---
 
 ## Now
 
-**State:** P1–P4 shipped. Framework retargeted for the post-Vite topology (`75215108` — see §13, 2026-05-21). P5 *clean* live run is STILL BLOCKED — not on the framework, but on a server-side operator defect: `operator-converse` on the Hono host (`:3070`) hangs before producing any turn output (no brain subprocess spawns; 0 deltas in 40s+; SSE heartbeats only). Root-caused as far as is safe without editing hot migration-zone operator code — see §13, 2026-05-21.
+**State:** P1–P4 shipped. Framework retargeted for the post-Vite topology (`75215108` — see §13, 2026-05-21). `operator-converse` stall **fixed** at `1083bfaf` (2026-05-21) — mem0 5s timeout + model pin to opus-4-7 + `:3070` self-fetch URLs (see §13, 2026-05-21 fix entry). Adaptive HTTP timeouts added at `52dd562a`. P5 is unblocked; 160/160 unit tests pass.
 
-**Next:** P5 resumes the moment `operator-converse` produces a real turn. The framework side is ready (points at `:3070`, 160/160 tests pass). The blocker is for the operator / Vite-migration owners — see §13 hand-off.
+**Next:** Set `ANTHROPIC_API_KEY` in the environment and run the §12 procedure. Smoke one scenario first (`op-S01-status-quick --no-matrix`), then run the full operator target (`--target operator --parallel 2`).
 
 
 # Operator behavior tests — 2026-05-14 (v3, implemented)
@@ -114,7 +114,7 @@ scenarios together (S + M): ~$48/full pass. Nightly: ~$1,440/month.
 | P2 M1–M5 | ✅ shipped |
 | P3 M6–M9 | ✅ shipped |
 | P4 M10–M12 + rubric axis | ✅ shipped |
-| P5 full live run + triage | BLOCKED — framework retargeted to `:3070` (`75215108`); operator-converse SUT hangs before any output (§13, 2026-05-21). Blocker is operator-side, not framework-side. |
+| P5 full live run + triage | READY — operator-converse stall fixed (`1083bfaf`); adaptive timeouts (`52dd562a`); 160/160 unit tests. Waiting on `ANTHROPIC_API_KEY` in env. |
 
 ## 8. Guard-rail vs positive-signal
 
@@ -281,13 +281,30 @@ SUT-health gate (`676746e7`) already classifies this correctly as
 `errored` + `meta/sut_no_output`, so a half-fixed SUT won't masquerade
 as operator behavioral findings.
 
-### Resumption checklist (when operator-converse produces a real turn)
+### 2026-05-21 — operator-converse stall fixed (1083bfaf + 52dd562a)
+
+Three distinct issues combined to prevent any turn output post-Vite-migration.
+All fixed in the same session:
+
+| Root cause | Fix | Commit |
+|---|---|---|
+| mem0 `buildMemoryContextBlock` had no timeout; stuck local BGE ONNX embedder blocked the whole turn | Bound every mem0 op to 5 s; `memoryDegraded=true` on first timeout skips all further mem0 for the session | `1083bfaf` |
+| Brain model inherited OMP default, which 500-errors on the ~50 KB converse prompt | Pin to `anthropic/claude-opus-4-7`; retry once on all-empty turn before surfacing a real error | `1083bfaf` |
+| `converse.ts` hardcoded `http://127.0.0.1:3055` for brain's agentmcp MCP URL and `<spawn>` dispatch; `:3055` is now the Vite SPA, not the API | Route through `selfUrl()`; `bin/hono-host.ts` now sets `process.env.PORT` before `serve()` so `selfUrl()` resolves to `:3070` | `1083bfaf` |
+| Flat 120 s HTTP timeout aborted cold operator turns mid-stream (first delta can take 90–150 s) | Adaptive inactivity timeouts: 90 s initial / 45 s idle / 600 s total cap | `52dd562a` |
+
+Post-fix `curl` probe (`2026-05-24`): `/api/agent-mcp/operator-converse` returns `event: delta` with real turn text (confirmed from session context). P5 gate cleared.
+
+### Resumption checklist — **P5 is now ready to run**
 
 1. ✅ Done (`75215108`) — `OperatorTarget` points at `:3070`.
-2. Smoke one scenario: `npx tsx bin/llm-test.ts run --scenario op-S01-status-quick --no-matrix`.
+2. ✅ Done (`1083bfaf`) — `operator-converse` produces real turn output.
+3. ✅ Done (`52dd562a`) — Adaptive HTTP timeouts (90 s / 45 s / 600 s cap).
+4. **TODO** — Smoke one scenario with `ANTHROPIC_API_KEY` set:
+   ```bash
+   cd apps/operator
+   ANTHROPIC_API_KEY=<key> npx tsx bin/llm-test.ts run --scenario op-S01-status-quick --no-matrix
+   ```
    Expect a real transcript, not `finishReason=error` / `sut_no_output`.
-3. Run the §12 procedure (`--target operator --parallel 2`).
-4. Triage per §12. The SUT-health gate means a genuinely broken SUT
-   yields `errored` + `meta/sut_no_output` — distinguishable at a
-   glance from real operator `failed` verdicts.
-5. Update §7 P5 row + this log with the classified results.
+5. **TODO** — Run the §12 procedure (`--target operator --parallel 2`).
+6. **TODO** — Triage per §12 and update §7 P5 row + this log.
