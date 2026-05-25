@@ -25,7 +25,7 @@ function AdvIndexPage() {
 }
 
 function getAdvTitle(tab: AdvTabId): string {
-  if (tab === 'harnesses') return 'Harnesses';
+  if (tab === 'harnesses') return 'Harness';
   if (tab in ADV_HARNESS_PANEL_LABELS) {
     return ADV_HARNESS_PANEL_LABELS[tab as keyof typeof ADV_HARNESS_PANEL_LABELS];
   }
