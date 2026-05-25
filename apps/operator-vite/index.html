@@ -15,10 +15,39 @@
 
         try {
           const originalReload = location.reload.bind(location);
+          const originalAssign = location.assign.bind(location);
+          const originalReplace = location.replace.bind(location);
+          const softNavigate = (target, replace) => {
+            try {
+              const next = new URL(String(target), location.href);
+              if (next.origin !== location.origin) return false;
+              const href = `${next.pathname}${next.search}${next.hash}`;
+              if (replace) history.replaceState({}, '', href);
+              else history.pushState({}, '', href);
+              window.dispatchEvent(new PopStateEvent('popstate'));
+              return true;
+            } catch {
+              return false;
+            }
+          };
           Object.defineProperty(location, 'reload', {
             configurable: true,
             value: () => {
               console.info('[Papercusp] JS reload suppressed on static desktop host — use Cmd/Ctrl+R for manual refresh.');
+            },
+          });
+          Object.defineProperty(location, 'assign', {
+            configurable: true,
+            value: (target) => {
+              if (softNavigate(target, false)) return;
+              originalAssign(target);
+            },
+          });
+          Object.defineProperty(location, 'replace', {
+            configurable: true,
+            value: (target) => {
+              if (softNavigate(target, true)) return;
+              originalReplace(target);
             },
           });
           Object.defineProperty(window, '__papercuspOriginalReload', {
@@ -26,7 +55,7 @@
             value: originalReload,
           });
         } catch {
-          // Best effort — some browsers disallow redefining location.reload.
+          // Best effort — some browsers disallow redefining location methods.
         }
       })();
     </script>
