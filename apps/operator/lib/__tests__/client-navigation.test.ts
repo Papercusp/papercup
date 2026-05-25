@@ -1,7 +1,18 @@
-import { describe, expect, it } from 'vitest';
-import { resolveClientNavigation, shouldSoftNavigate } from '../client-navigation';
+/**
+ * @vitest-environment jsdom
+ */
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { navigateClient, resolveClientNavigation, shouldSoftNavigate } from '../client-navigation';
 
 describe('client navigation', () => {
+  beforeEach(() => {
+    window.history.replaceState({}, '', '/harness?ws=default');
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   it('soft-navigates same-origin absolute and relative app routes', () => {
     expect(shouldSoftNavigate('/support', 'http://localhost:3070/harness?ws=default')).toBe(true);
     expect(shouldSoftNavigate('http://localhost:3070/settings/operator', 'http://localhost:3070/harness')).toBe(true);
@@ -54,6 +65,38 @@ describe('client navigation', () => {
       replace: false,
     });
     expect(resolveClientNavigation('http://[::1', 'http://localhost:3070/harness')).toEqual({
+      mode: 'none',
+      href: null,
+      replace: false,
+    });
+  });
+
+  it('pushes history and dispatches popstate for soft navigation', () => {
+    const listener = vi.fn();
+    window.addEventListener('popstate', listener);
+
+    navigateClient('/support?ws=default#faq');
+
+    expect(window.location.pathname).toBe('/support');
+    expect(window.location.search).toBe('?ws=default');
+    expect(window.location.hash).toBe('#faq');
+    expect(listener).toHaveBeenCalledTimes(1);
+
+    window.removeEventListener('popstate', listener);
+  });
+
+  it('replaces history for soft navigation when requested', () => {
+    navigateClient('/settings/operator', { replace: true });
+    expect(window.location.pathname).toBe('/settings/operator');
+  });
+
+  it('hard and none navigation modes are delegated by resolveClientNavigation', () => {
+    expect(resolveClientNavigation('https://example.com/docs', 'http://localhost:3070/harness')).toEqual({
+      mode: 'hard',
+      href: 'https://example.com/docs',
+      replace: false,
+    });
+    expect(resolveClientNavigation('javascript:alert(1)', 'http://localhost:3070/harness')).toEqual({
       mode: 'none',
       href: null,
       replace: false,
