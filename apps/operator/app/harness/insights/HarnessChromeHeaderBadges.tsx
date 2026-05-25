@@ -24,6 +24,7 @@
 import type { CSSProperties, ReactNode } from 'react';
 import { SubstrateStatusBadgeClient } from './SubstrateStatusBadgeClient';
 import { BootstrapProgressIndicatorClient } from './BootstrapProgressIndicatorClient';
+import { SubstrateHealthPillClient } from './SubstrateHealthPillClient';
 
 const ROW: CSSProperties = {
   display: 'inline-flex',
@@ -38,15 +39,23 @@ export interface HarnessChromeHeaderBadgesProps {
   hideSubstrateBadge?: boolean;
   /** Hide the bootstrap-progress pill. Default false. */
   hideBootstrapProgress?: boolean;
+  /** Hide the substrate-health verdict pill. Default false. */
+  hideHealthPill?: boolean;
 }
 
 export function HarnessChromeHeaderBadges(
   props: HarnessChromeHeaderBadgesProps,
 ): ReactNode {
-  const { slug, hideSubstrateBadge, hideBootstrapProgress } = props;
+  const {
+    slug,
+    hideSubstrateBadge,
+    hideBootstrapProgress,
+    hideHealthPill,
+  } = props;
   return (
     <span style={ROW} data-testid="harness-chrome-header-badges">
       {!hideSubstrateBadge && <SubstrateStatusBadgeClient slug={slug} />}
+      {!hideHealthPill && <SubstrateHealthPillClient slug={slug} />}
       {!hideBootstrapProgress && (
         <BootstrapProgressIndicatorClient slug={slug} />
       )}
