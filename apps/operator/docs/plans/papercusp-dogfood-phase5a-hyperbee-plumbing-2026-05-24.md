@@ -1,7 +1,7 @@
 ---
 title: Papercusp dogfood — Phase 5a (Hyperbee plumbing)
 slug: papercusp-dogfood-phase5a-hyperbee-plumbing-2026-05-24
-status: in-progress
+status: shipped
 parent: papercusp-dogfood-v5-2026-05-23
 created: 2026-05-24
 updated: 2026-05-25
@@ -12,25 +12,32 @@ owner: avi@storewolf.com
 
 ## Now
 
-**State:** **Substrate + 7 of 8 per-table hooks shipped 2026-05-25.**
+**State:** **Substrate + 8 projections + full diagnostic stack + flag-gated boot wiring SHIPPED 2026-05-25.**
 
-- `apps/operator/lib/sync/hyperbee/` — corestore + autobase + schema-version + boot-gate + projection registry. 18/19 tests pass (1 native-binding test deliberately skipped — covered by holepunch-spike).
-- Per-table projection hooks at `apps/operator/lib/sync/hyperbee/projections/`:
-  - `contributors.ts` (9/9)
-  - `feature-claims.ts` (5/5) — append-only
-  - `harness-features.ts` (14/14) — most-consumed
-  - `feature-queue.ts` (13/13) — soft-delete + key parsing
-  - `prs.ts` (12/12)
-  - `issues.ts` (12/12) — full 17-col body
-  - `usage.ts` (14/14) — append-only, P-070 substrate
-  - `presence.ts` (13/13) — paired with new `ensureSharedPresenceTable()` in `ensure-schema-dogfood.ts`
-- P-029 ShareWizard.tsx — 7/7 tests pass.
+Substrate primitives (`apps/operator/lib/sync/hyperbee/`):
+- `corestore.ts` + `autobase-setup.ts` + `schema-version.ts` + `boot-gate.ts` + `projection.ts` + LWW helper (18/19 tests, 1 native-binding skipped).
+- All 8 per-table projection hooks under `projections/` (~92 tests collectively).
+- P-029 `ShareWizard.tsx` (7/7).
 
-Total Phase 5a tests landed this loop: **117/118 pass** (1 native-binding skipped).
+Substrate boot orchestration:
+- `boot.ts` composer + `boot-all.ts` orchestrator (idempotent map, inflight races, listBootedHandles enumerator).
+- `boot-history.ts` event tracker (FIFO 200-entry, 11 tests).
+- `bootstrap-progress.ts` + `bootstrap-progress-poller.ts` (12 + 5 tests).
+- `instrumentation-node.ts` flag-gated boot wiring (`PAPERCUSP_DOGFOOD_SUBSTRATE_ENABLE=1`).
 
-**All 8 per-table projection hooks now in tree.** Substrate fully wireable.
+Diagnostic stack:
+- Pure-logic: `health.ts` (assessor, 12 tests), `summary.ts` (workspace rollup, 9 tests), `format-cli.ts` (CLI verdict, 11 tests), `in-process-status.ts` (composer for non-HTTP, 9 tests).
+- JSON endpoints: `/api/admin/dogfood-substrate-status` + `-health` (with summary) + `-boot-history`.
+- Pure-UI + client-wrapper pairs (7 pairs): SubstrateStatusBadge / SubstrateHealthPill / BootstrapProgressIndicator / SubstrateSummaryCard / BootHistoryTable / ClaimAttemptStatsPill / InsightsTab.
+- `HarnessChromeHeaderBadges` chrome composer (4 pills, last opt-in).
+- `/admin/dogfood-substrate` SSR diagnostic page (3 top indicators + per-row table + boot-history section).
+- `npm run substrate:status` CLI (`scripts/substrate-status.ts`).
+- `dev:dogfood_substrate_status` MCP tool (SU shell access).
+- 3 agent-insight docs.
 
-**Next action:** `instrumentation-node.ts` boot wiring — gated on the boot-gate flags being set — wires the substrate's `corestore.replicate()` to a Hyperswarm topic per harness's `.harness/shared.json:topic`. Then P-066 (bootstrap progress indicator) follows naturally from the substrate event stream.
+Phase 5a verdict: **GATE: PROCEED.** Substrate is wired, diagnostic-instrumented, and ready for the flag flip.
+
+**Next action:** User flips `PAPERCUSP_DOGFOOD_SUBSTRATE_ENABLE=1` + restarts the operator (per `substrate-flag-flip-runbook` insight). Real Hyperswarm + corestore IO engages on first boot. Health pill on `/admin/dogfood-substrate` should go green within seconds.
 
 ## Background
 
