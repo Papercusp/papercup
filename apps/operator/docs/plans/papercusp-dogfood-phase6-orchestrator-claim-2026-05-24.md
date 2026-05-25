@@ -1,9 +1,10 @@
 ---
 title: Papercusp dogfood — Phase 6 (orchestrator distributed claim)
 slug: papercusp-dogfood-phase6-orchestrator-claim-2026-05-24
-status: draft
+status: in-progress
+parent: papercusp-dogfood-v5-2026-05-23
 created: 2026-05-24
-updated: 2026-05-24
+updated: 2026-05-25
 owner: avi@storewolf.com
 ---
 
@@ -11,9 +12,12 @@ owner: avi@storewolf.com
 
 ## Now
 
-**State:** **draft execution plan.** Phase 6 is the orchestrator's race-free feature claim mechanism per D-002 — Autobase merge-order arbitration replaces any central lock or quiescence-window approach. Mathematical guarantee that two peers can't simultaneously fire workers for the same feature.
+**State:** **P-039 + P-031-claims-projection SHIPPED 2026-05-25.**
 
-**Next action:** P-036 (Autobase log structure) — depends on Phase 5a P-030's per-harness Autobase wiring being live.
+- `apps/operator/lib/orchestrator/claim-audit.ts` — `recordClaimAttempt({...})` + `recentClaimAttempts({...})` against `harness_shared.claim_audit`. PG-only LOCAL audit log. 6/6 validation tests pass.
+- `apps/operator/lib/sync/hyperbee/projections/feature-claims.ts` — Hyperbee `claims/<feature_id>/<seq>` → PG `harness_shared.feature_claims` append-only projection. 5/5 tests pass.
+
+**Next action:** P-036 `claimFeature(feature_id)` — issues an Autobase append against the substrate's Autobase handle (Phase 5a P-030), awaits own merge, checks first-in-order. Then P-037 wires the orchestrator's pickup path to call it. Both depend on the substrate's Autobase wiring being live in `instrumentation-node.ts` — currently substrate is in tree but not booted, so P-036/P-037 land alongside the boot wiring (single PR).
 
 ## Background
 

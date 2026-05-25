@@ -12,9 +12,16 @@ owner: avi@storewolf.com
 
 ## Now
 
-**State:** **P-029 + P-030/P-031 SUBSTRATE SHIPPED 2026-05-25.** The Hyperbee + Autobase substrate is in tree at `apps/operator/lib/sync/hyperbee/` (corestore factory, autobase wrapper, schema-version gate, boot gate, projection registry). 18/19 tests pass (1 native-binding test deliberately skipped — covered by holepunch-spike's smoke runs). Typecheck clean. P-029 ShareWizard.tsx is at `apps/operator/app/harness/`, 7/7 tests pass.
+**State:** **Substrate + first 2 per-table hooks shipped 2026-05-25.**
 
-**Next action:** per-table read/write hooks (one PR per HYPERBEE-bucket table — contributors, harness_features, feature_queue, prs, issues, presence, usage, claims) wiring the substrate's `registerProjection` interface to real PG row contracts. Each is ~50 LOC + 2 tests. Then boot wiring in `instrumentation-node.ts` + Hyperswarm replication step. P-066 (bootstrap progress indicator) follows.
+- `apps/operator/lib/sync/hyperbee/` — corestore + autobase + schema-version + boot-gate + projection registry. 18/19 tests pass (1 native-binding test deliberately skipped — covered by holepunch-spike).
+- `apps/operator/lib/sync/hyperbee/projections/contributors.ts` — Hyperbee → PG upsert for `harness_shared.contributors`. 9/9 tests pass.
+- `apps/operator/lib/sync/hyperbee/projections/feature-claims.ts` — append-only projection for `harness_shared.feature_claims`. 5/5 tests pass.
+- P-029 ShareWizard.tsx — 7/7 tests pass.
+
+Total Phase 5a tests landed this loop: 39/40 pass (1 skipped).
+
+**Next action:** remaining per-table hooks (harness_features, feature_queue, prs, issues, presence, usage) follow the contributors.ts pattern. Each ~80 LOC + 9 tests. Then `instrumentation-node.ts` boot wiring (gated on the boot-gate flags being set) + the Hyperswarm replication step. P-066 (bootstrap progress indicator) follows.
 
 ## Background
 

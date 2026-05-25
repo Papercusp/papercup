@@ -25,9 +25,9 @@ status. Convention spec: `/internal/docs/spec/plan-format`
 | 2 — completion_ref verifier | `papercusp-dogfood-phase2-completion-ref-2026-05-24` | shipped |
 | 3 — Reactivity | (in-tree work; no separate plan — covered by Phase 2 + Phase 4 prereqs) | shipped |
 | 4 — Single-engineer dogfood | `papercusp-dogfood-phase4-single-engineer-dogfood-2026-05-24` | draft (P-026 awaits user behavioral run) |
-| 5a — Hyperbee plumbing | `papercusp-dogfood-phase5a-hyperbee-plumbing-2026-05-24` | in-progress (P-029 wizard shipped; P-030/P-031 substrate shipped 2026-05-25 at `lib/sync/hyperbee/`; per-table projection hooks next) |
+| 5a — Hyperbee plumbing | `papercusp-dogfood-phase5a-hyperbee-plumbing-2026-05-24` | in-progress (P-029 wizard + P-030/P-031 substrate + contributors + feature_claims projections shipped 2026-05-25) |
 | 5b — Hyperbee UI integration | `papercusp-dogfood-phase5b-hyperbee-ui-integration-2026-05-24` | draft (blocked on 5a P-030/P-031) |
-| 6 — Orchestrator claim | `papercusp-dogfood-phase6-orchestrator-claim-2026-05-24` | draft (in 2026-05-25 loop) |
+| 6 — Orchestrator claim | `papercusp-dogfood-phase6-orchestrator-claim-2026-05-24` | in-progress (P-039 claim_audit + P-031 claims projection shipped 2026-05-25; P-036/P-037 land with substrate boot wiring) |
 | 7 — PR lifecycle | `papercusp-dogfood-phase7-pr-lifecycle-2026-05-24` | shipped (P-041 auto-rebase deferred → blocked on Phase 5a) |
 | 8 — Sidebar Insights + Profile | `papercusp-dogfood-phase8-sidebar-insights-profile-2026-05-24` | draft (in 2026-05-25 loop) |
 | 9 — Cupboard + Discord | `papercusp-dogfood-phase9-cupboard-discord-sync-2026-05-24` | in-progress (P-051a shipped 2026-05-25 in `apps/operator-public/`; P-051b deploy deferred to user; D-001 chose Hono+D1 over Next.js+PG) |
