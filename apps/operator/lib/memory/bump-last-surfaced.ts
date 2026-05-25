@@ -70,6 +70,50 @@ export async function bumpLastSurfaced(
   }
 }
 
+/**
+ * postgres-js variant — takes the `sql` template-tag from
+ * `getOrgPg().sql` instead of a node-pg Client. Used by injection.ts
+ * which already plumbs through @restart/db-org.
+ *
+ * Same defensive posture as the node-pg variant.
+ */
+export type SqlTag = <T = unknown>(
+  template: TemplateStringsArray,
+  ...values: unknown[]
+) => Promise<T>;
+
+export async function bumpLastSurfacedSql(
+  sql: SqlTag,
+  memoryIds: string[],
+): Promise<boolean> {
+  if (memoryIds.length === 0) return true;
+  if (columnMissing) return false;
+
+  const ids = memoryIds.filter(
+    (id) => typeof id === 'string' && /^[0-9a-f-]{20,}$/i.test(id),
+  );
+  if (ids.length === 0) return true;
+
+  try {
+    await sql`
+      UPDATE harness_shared.memory_canonical
+      SET last_surfaced_at = now()
+      WHERE id = ANY(${ids}::uuid[])
+    `;
+    return true;
+  } catch (err) {
+    const msg = (err as Error)?.message ?? '';
+    if (
+      msg.includes('last_surfaced_at') ||
+      msg.includes('column') ||
+      /relation .* does not exist/.test(msg)
+    ) {
+      columnMissing = true;
+    }
+    return false;
+  }
+}
+
 /** Test hook: reset the column-missing cache. */
 export function _resetForTests(): void {
   columnMissing = false;

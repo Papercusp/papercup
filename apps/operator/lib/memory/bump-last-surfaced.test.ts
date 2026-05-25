@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { bumpLastSurfaced, _resetForTests } from './bump-last-surfaced';
+import { bumpLastSurfaced, bumpLastSurfacedSql, _resetForTests } from './bump-last-surfaced';
 
 const fakeClient = (queryImpl?: (sql: string, params?: unknown[]) => Promise<unknown>) => ({
   query: vi.fn(queryImpl ?? (async () => ({ rowCount: 1 }))),
@@ -60,5 +60,44 @@ describe('bumpLastSurfaced', () => {
     expect(ok2).toBe(false);
     // BOTH calls hit the client — not cached
     expect(c.query).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('bumpLastSurfacedSql (postgres-js template variant)', () => {
+  it('no-ops on empty', async () => {
+    const sql = vi.fn(async () => undefined);
+    expect(await bumpLastSurfacedSql(sql as unknown as Parameters<typeof bumpLastSurfacedSql>[0], [])).toBe(true);
+    expect(sql).not.toHaveBeenCalled();
+  });
+
+  it('runs UPDATE for valid uuid ids', async () => {
+    const sql = vi.fn(async () => undefined);
+    const ok = await bumpLastSurfacedSql(
+      sql as unknown as Parameters<typeof bumpLastSurfacedSql>[0],
+      ['123e4567-e89b-12d3-a456-426614174000'],
+    );
+    expect(ok).toBe(true);
+    expect(sql).toHaveBeenCalledTimes(1);
+    // Template strings carry the SQL fragments
+    const tpl = sql.mock.calls[0][0] as TemplateStringsArray;
+    expect(tpl.join('')).toContain('UPDATE harness_shared.memory_canonical');
+    expect(tpl.join('')).toContain('last_surfaced_at = now()');
+  });
+
+  it('returns false + caches when column missing', async () => {
+    const sql = vi.fn(async () => {
+      throw new Error('column "last_surfaced_at" does not exist');
+    });
+    const ok1 = await bumpLastSurfacedSql(
+      sql as unknown as Parameters<typeof bumpLastSurfacedSql>[0],
+      ['123e4567-e89b-12d3-a456-426614174000'],
+    );
+    expect(ok1).toBe(false);
+    const ok2 = await bumpLastSurfacedSql(
+      sql as unknown as Parameters<typeof bumpLastSurfacedSql>[0],
+      ['123e4567-e89b-12d3-a456-426614174000'],
+    );
+    expect(ok2).toBe(false);
+    expect(sql).toHaveBeenCalledTimes(1); // cached
   });
 });
