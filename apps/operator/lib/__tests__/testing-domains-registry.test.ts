@@ -60,6 +60,7 @@ describe('testing-domains-registry', () => {
       'apps/operator/app/admin/testing/_lib/recorder-start-params.test.ts',
       'apps/operator/app/_components/__tests__/SupportChatButton.test.tsx',
       'apps/operator/app/_components/__tests__/ChatwootWidget.test.tsx',
+      'apps/operator/app/_components/__tests__/OperatorChatSidebar.test.ts',
       'apps/operator/app/_components/__tests__/UiPresenceProvider.test.tsx',
       'apps/operator/app/_components/__tests__/UserPicker.test.tsx',
       'apps/operator/lib/__tests__/PluginIframe.test.tsx',

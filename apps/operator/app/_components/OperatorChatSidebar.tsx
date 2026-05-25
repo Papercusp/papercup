@@ -29,22 +29,20 @@ import { OperatorLogoMark } from './OperatorLogoMark';
 import { OperatorWordmarkLockup } from './OperatorWordmarkLockup';
 import { OperatorActiveToggle } from './OperatorActiveToggle';
 import { VoiceButton } from './voice/VoiceButton';
+import { clampOperatorChatWidth } from './operator-chat-layout';
 
 const STORAGE_KEY = 'papercusp.operatorChat.width';
 const MIN_WIDTH = 360;
 const DEFAULT_WIDTH = 360;
 
-/** Read the stored width from localStorage, clamped to [MIN, vw/2]. */
+/** Read the stored width from localStorage, clamped to [MIN, viewport ceiling]. */
 function readStoredWidth(): number {
   if (typeof window === 'undefined') return DEFAULT_WIDTH;
   try {
     const raw = window.localStorage.getItem(STORAGE_KEY);
     if (!raw) return DEFAULT_WIDTH;
     const n = Number(raw);
-    if (!Number.isFinite(n) || n < MIN_WIDTH) return MIN_WIDTH;
-    // Hard ceiling at 75% viewport so a misclick can't lock the user out.
-    const ceiling = Math.max(MIN_WIDTH, Math.floor(window.innerWidth * 0.75));
-    return Math.min(n, ceiling);
+    return clampOperatorChatWidth(n, window.innerWidth);
   } catch {
     return DEFAULT_WIDTH;
   }
@@ -70,6 +68,15 @@ export function OperatorChatSidebar() {
     } catch { /* sandbox / quota */ }
     return () => { /* leave the class in place across re-renders */ };
   }, [width, hydrated]);
+  useEffect(() => {
+    if (!hydrated) return;
+    const onResize = () => {
+      setWidth((current) => clampOperatorChatWidth(current, window.innerWidth));
+    };
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, [hydrated]);
+
 
   // Strip the body class on unmount (chromeless routes don't render
   // this component — the cleanup is for completeness/HMR safety).
@@ -95,9 +102,8 @@ export function OperatorChatSidebar() {
   const onHandleMove = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
     if (!draggingRef.current) return;
     // Width = pointer X (sidebar is fixed at left:0). Clamp to MIN
-    // and a generous ceiling so a runaway drag doesn't hide content.
-    const ceiling = Math.max(MIN_WIDTH, Math.floor(window.innerWidth * 0.75));
-    const next = Math.max(MIN_WIDTH, Math.min(ceiling, e.clientX));
+    // and the viewport ceiling so a later resize can't push content off-screen.
+    const next = clampOperatorChatWidth(e.clientX, window.innerWidth);
     setWidth(next);
   }, []);
   const onHandleUp = useCallback((e: React.PointerEvent<HTMLDivElement>) => {

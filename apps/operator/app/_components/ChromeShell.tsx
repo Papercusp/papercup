@@ -20,8 +20,10 @@ import { NotificationCenter } from './NotificationCenter';
 import { RecentActionsCenter } from './RecentActionsCenter';
 import TutorialButton from './TutorialButton';
 import { AnimatedPapercuspCup } from './AnimatedPapercuspCup';
+import RouteLink from './RouteLink';
 import { FLAGS } from '@papercusp/flags';
 import { useFlag } from '@/lib/flag-hooks';
+import { isChromeShellNavActive } from './chrome-shell-nav';
 
 // Heavy dock components — they run polling, subscriptions, and large
 // useEffects on mount. Not needed for first paint of any page; defer to
@@ -86,14 +88,14 @@ export default function ChromeShell() {
   // When the user is already on a harness page, Ops is a no-op. Render a
   // non-link span with `is-current` styling so it's visibly distinct from
   // the active CTA elsewhere in the app.
-  const onHarness = pathname === '/harness' || pathname.startsWith('/harness/');
-  const onAdv = pathname === '/adv' || pathname.startsWith('/adv/');
+  const onHarness = isChromeShellNavActive(pathname, '/harness');
+  const onAdv = isChromeShellNavActive(pathname, '/adv');
   const snapshotsFlag = useFlag(FLAGS.SNAPSHOTS);
   const marketplaceFlag = useFlag(FLAGS.MARKETPLACE);
   const oracleFlag = useFlag(FLAGS.ORACLE);
   const mainNavJumpGateProps = { 'data-route-transition-intent': 'jump-gate' as const };
   const navLinkProps = (href: string) => {
-    const active = pathname === href || pathname.startsWith(`${href}/`);
+    const active = isChromeShellNavActive(pathname, href);
     return active
       ? { ...mainNavJumpGateProps, className: 'pc-header-nav-link active', 'aria-current': 'page' as const }
       : { ...mainNavJumpGateProps, className: 'pc-header-nav-link' };
@@ -147,9 +149,9 @@ export default function ChromeShell() {
           and the nav on the right grow.
         */}
         <div className="pc-header-left">
-          <a href="/" className="brand pc-header-brand-wrap" aria-label="papercusp" {...mainNavJumpGateProps}>
+          <RouteLink href="/" className="brand pc-header-brand-wrap" aria-label="papercusp" {...mainNavJumpGateProps}>
             <AnimatedPapercuspCup />
-          </a>
+          </RouteLink>
           <span className="pc-header-quote pc-header-quote--hud" data-quote="Nothing Is So Painful To The Human Mind As A Great And Sudden Change">Nothing Is So Painful To The Human Mind As A Great And Sudden Change</span>
         </div>
         <div className="pc-header-center">
@@ -165,12 +167,12 @@ export default function ChromeShell() {
               <span className="pc-header-cta-label">ADV</span>
             </span>
           ) : (
-            <a href="/adv" className="pc-header-cta pc-header-cta--mission" aria-label="Adv" {...mainNavJumpGateProps}>
+            <RouteLink href="/adv" className="pc-header-cta pc-header-cta--mission" aria-label="Adv" {...mainNavJumpGateProps}>
               <span className="pc-header-cta-orb" aria-hidden="true">
                 <BrainMark className="pc-header-cta-logo pc-header-cta-logo--adv" />
               </span>
               <span className="pc-header-cta-label">ADV</span>
-            </a>
+            </RouteLink>
           )}
           {onHarness ? (
             <span
@@ -184,30 +186,30 @@ export default function ChromeShell() {
               <span className="pc-header-cta-label">OPS</span>
             </span>
           ) : (
-            <a href="/harness" className="pc-header-cta pc-header-cta--mission" aria-label="Ops" {...mainNavJumpGateProps}>
+            <RouteLink href="/harness" className="pc-header-cta pc-header-cta--mission" aria-label="Ops" {...mainNavJumpGateProps}>
               <span className="pc-header-cta-orb" aria-hidden="true">
                 <OpsTargetMark className="pc-header-cta-logo pc-header-cta-logo--ops" />
               </span>
               <span className="pc-header-cta-label">OPS</span>
-            </a>
+            </RouteLink>
           )}
           <OperatorButton />
           <OperatorAutoScanToggle />
         </div>
         <nav className="pc-header-right" aria-label="Primary navigation">
           {marketplaceFlag ? (
-            <a href="/marketplace/" {...navLinkProps('/marketplace')}>Marketplace</a>
+            <RouteLink href="/marketplace/" {...navLinkProps('/marketplace')}>Marketplace</RouteLink>
           ) : null}
-          <a href="/installed/plugins" {...navLinkProps('/installed/plugins')}>Plugins</a>
+          <RouteLink href="/installed/plugins" {...navLinkProps('/installed/plugins')}>Plugins</RouteLink>
           {snapshotsFlag ? (
-            <a href="/installed/snapshots" {...navLinkProps('/installed/snapshots')}>Snapshots</a>
+            <RouteLink href="/installed/snapshots" {...navLinkProps('/installed/snapshots')}>Snapshots</RouteLink>
           ) : null}
-          <a href="/support" {...navLinkProps('/support')}>Support</a>
-          <a href="/settings/operator" {...navLinkProps('/settings/operator')}>Settings</a>
+          <RouteLink href="/support" {...navLinkProps('/support')}>Support</RouteLink>
+          <RouteLink href="/settings/operator" {...navLinkProps('/settings/operator')}>Settings</RouteLink>
           {/* Admin link intentionally NOT rendered — reachable only by URL /admin */}
           {(() => {
             const p = navLinkProps('/dev');
-            return <a href="/dev" {...p} className={`${p.className} is-dev`}>DEV</a>;
+            return <RouteLink href="/dev" {...p} className={`${p.className} is-dev`}>DEV</RouteLink>;
           })()}
           <a href="https://github.com/papercupai" target="_blank" rel="noopener noreferrer" className="pc-header-nav-link">GitHub</a>
           {oracleFlag ? <TutorialButton /> : null}
