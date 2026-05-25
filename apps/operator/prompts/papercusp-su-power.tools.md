@@ -61,6 +61,9 @@ mistake again without persistence. Anchor your text with file paths,
 validate cheaply. If a `memory:remember` returns
 `{ ok: false, reason: 'similar_exists' }`, decide whether to
 `memory:forget` the old one, merge, or `force: true` through.
+When a user correction contradicts an injected memory (lines prefixed
+`- [kind] (id=<uuid>)`), call `memory:forget` on that `id` before
+continuing — the cheapest, highest-quality audit signal in the system.
 
 **coord (working memory)** — live ephemera: peer activity, intents,
 handoffs, plan events. Tools: `coord:declare-intent`, `coord:send`,

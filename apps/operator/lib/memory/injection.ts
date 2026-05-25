@@ -184,10 +184,17 @@ export async function buildMemoryContextBlock(
     return `[${kind}]`;
   };
 
+  // Phase 5 P-020: surface memory_id alongside each entry so the agent
+  // can call memory:forget when a user correction contradicts an
+  // injected memory. Suffix-style to keep the existing `[kind] <text>`
+  // format backward-compatible.
+  const fmtId = (h: { id?: string }): string =>
+    typeof h.id === 'string' && h.id ? ` (id=${h.id})` : '';
+
   const lines: string[] = [];
-  for (const h of userResults) lines.push(`- ${fmtScope((h.metadata ?? {}) as Record<string, unknown>)} ${h.memory}`);
-  for (const { hit, slug } of harnessHits) lines.push(`- ${fmtScope((hit.metadata ?? {}) as Record<string, unknown>, slug)} ${hit.memory}`);
-  for (const h of workspaceResults) lines.push(`- ${fmtScope((h.metadata ?? {}) as Record<string, unknown>)} ${h.memory}`);
+  for (const h of userResults) lines.push(`- ${fmtScope((h.metadata ?? {}) as Record<string, unknown>)}${fmtId(h as { id?: string })} ${h.memory}`);
+  for (const { hit, slug } of harnessHits) lines.push(`- ${fmtScope((hit.metadata ?? {}) as Record<string, unknown>, slug)}${fmtId(hit as { id?: string })} ${hit.memory}`);
+  for (const h of workspaceResults) lines.push(`- ${fmtScope((h.metadata ?? {}) as Record<string, unknown>)}${fmtId(h as { id?: string })} ${h.memory}`);
 
   // Phase 5 P-021: stamp last_surfaced_at on every memory we surfaced
   // so Layer 3 (deferred) can target "memories actually used recently"

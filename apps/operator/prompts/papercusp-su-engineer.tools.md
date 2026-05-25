@@ -226,6 +226,13 @@ project conventions, decisions. Tools: `memory:remember`,
   when your write is a near-duplicate of an existing memory. Decide:
   `memory:forget` the old one first, merge into your new write, or
   pass `force: true` to write anyway.
+- *Correction → forget*: when the user corrects you and the correction
+  contradicts a memory the pre-turn injection surfaced (the lines
+  prefixed `- [kind] (id=<uuid>)` in the memory block), call
+  `memory:forget` on that `id` before continuing. The injected `(id=…)`
+  is exactly what `memory:forget` wants. This is the cheapest, highest-
+  quality audit signal in the system — a real human disagreement
+  trumps anything the periodic scanner could detect.
 
 **coord (working memory)** — live ephemera: peer activity, intents,
 handoffs, plan events, inter-agent messages. Tools: `coord:declare-intent`,
