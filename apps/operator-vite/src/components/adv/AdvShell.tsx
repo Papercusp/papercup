@@ -1,4 +1,4 @@
-import { useEffect, useState, type ComponentType } from 'react';
+import { useEffect, useState, type ComponentType, type CSSProperties } from 'react';
 import * as Tabs from '@radix-ui/react-tabs';
 import { parseAsString, parseAsStringEnum, useQueryState } from 'nuqs';
 import {
@@ -23,15 +23,21 @@ export type AdvTabId = (typeof ADV_TAB_IDS)[number];
  * apps/operator/app/* is parallel/transitional); /adv has to live
  * here too or the ADV navbar button serves stale tabs.
  */
-export const ADV_TABS: ReadonlyArray<{ id: Exclude<AdvTabId, 'prs'>; label: string; icon: ComponentType<{ size?: number; 'aria-hidden'?: boolean }> }> = [
-  { id: 'brainstorm', label: 'Brainstorm', icon: Lightbulb },
-  { id: 'plans', label: 'Plans', icon: ListChecks },
-  { id: 'sessions', label: 'Sessions', icon: Terminal },
-  { id: 'git', label: 'Git', icon: GitBranch },
-  { id: 'docs', label: 'Docs', icon: BookOpen },
-  { id: 'insights', label: 'Insights', icon: TrendingUp },
-  { id: 'config', label: 'Config', icon: SlidersHorizontal },
-  { id: 'settings', label: 'Settings', icon: Settings },
+export const ADV_TABS: ReadonlyArray<{
+  id: Exclude<AdvTabId, 'prs'>;
+  label: string;
+  icon: ComponentType<{ size?: number; 'aria-hidden'?: boolean }>;
+  accent: string;
+  accentRgb: string;
+}> = [
+  { id: 'brainstorm', label: 'Brainstorm', icon: Lightbulb, accent: '#38bdf8', accentRgb: '56, 189, 248' },
+  { id: 'plans', label: 'Plans', icon: ListChecks, accent: '#f59e0b', accentRgb: '245, 158, 11' },
+  { id: 'sessions', label: 'Sessions', icon: Terminal, accent: '#f472b6', accentRgb: '244, 114, 182' },
+  { id: 'git', label: 'Git', icon: GitBranch, accent: '#22c55e', accentRgb: '34, 197, 94' },
+  { id: 'docs', label: 'Docs', icon: BookOpen, accent: '#60a5fa', accentRgb: '96, 165, 250' },
+  { id: 'insights', label: 'Insights', icon: TrendingUp, accent: '#14b8a6', accentRgb: '20, 184, 166' },
+  { id: 'config', label: 'Config', icon: SlidersHorizontal, accent: '#e879f9', accentRgb: '232, 121, 249' },
+  { id: 'settings', label: 'Settings', icon: Settings, accent: '#f97316', accentRgb: '249, 115, 22' },
 ] as const;
 
 type HarnessProjectLite = {
@@ -113,7 +119,15 @@ export default function AdvShell({
             {ADV_TABS.map((t) => {
               const Icon = t.icon;
               return (
-                <Tabs.Trigger key={t.id} value={t.id} className="pc-advshell__tab">
+                <Tabs.Trigger
+                  key={t.id}
+                  value={t.id}
+                  className={`pc-advshell__tab pc-advshell__tab--${t.id}`}
+                  style={{
+                    '--h-main-tab-accent': t.accent,
+                    '--h-main-tab-accent-rgb': t.accentRgb,
+                  } as CSSProperties}
+                >
                   <Icon size={13} aria-hidden />
                   {t.label.toLowerCase()}
                 </Tabs.Trigger>
@@ -222,8 +236,11 @@ export default function AdvShell({
           border: 1px solid transparent;
           border-bottom: 1px solid transparent;
           border-radius: 10px 10px 0 0;
-          background: transparent;
-          color: var(--fg-dim, #b9d4e8);
+          background:
+            radial-gradient(circle at 18% 0%, rgba(var(--h-main-tab-accent-rgb), 0.12), transparent 72%),
+            linear-gradient(180deg, rgba(var(--h-main-tab-accent-rgb), 0.080), rgba(3, 10, 20, 0.98));
+          border-color: rgba(var(--h-main-tab-accent-rgb), 0.28);
+          color: color-mix(in oklab, var(--fg-dim, #b9d4e8), var(--h-main-tab-accent) 18%);
           font-size: 11.5px;
           font-weight: 600;
           letter-spacing: 0.4px;
@@ -242,8 +259,8 @@ export default function AdvShell({
         .pc-advshell__tab[aria-selected='true'],
         .pc-advshell__tab[data-state='active'] {
           color: var(--fg, #e7f7ff);
-          background: color-mix(in oklab, var(--bg-2, rgba(255, 255, 255, 0.045)), white 3%);
-          border-color: color-mix(in oklab, var(--border, rgba(125, 211, 252, 0.15)), white 8%);
+          background: rgba(var(--h-main-tab-accent-rgb), 0.22);
+          border-color: rgba(var(--h-main-tab-accent-rgb), 0.68);
           border-bottom-color: color-mix(in oklab, var(--bg-2, rgba(255, 255, 255, 0.045)), white 3%);
           box-shadow: 0 -8px 22px rgba(0, 0, 0, 0.16);
         }
@@ -256,8 +273,8 @@ export default function AdvShell({
           bottom: 2px;
           height: 2px;
           border-radius: 999px;
-          background: linear-gradient(90deg, var(--accent, #38bdf8), color-mix(in oklab, var(--accent, #38bdf8), white 28%));
-          box-shadow: 0 0 14px color-mix(in oklab, var(--accent, #38bdf8), transparent 54%);
+          background: linear-gradient(90deg, var(--h-main-tab-accent), color-mix(in oklab, var(--h-main-tab-accent), white 28%));
+          box-shadow: 0 0 14px color-mix(in oklab, var(--h-main-tab-accent), transparent 54%);
         }
         .pc-advshell__body { flex: 1; min-height: 0; display: flex; flex-direction: column; }
       `}</style>
