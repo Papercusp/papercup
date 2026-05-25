@@ -8,6 +8,7 @@
 
 import type { Env } from './env.ts';
 import { buildApi } from './routes/index.ts';
+import { indexBatch } from './indexer.ts';
 
 const api = buildApi();
 
@@ -16,8 +17,10 @@ export default {
     return api.fetch(req, env, ctx);
   },
 
-  async scheduled(_event: ScheduledEvent, _env: Env, _ctx: ExecutionContext): Promise<void> {
-    // Daily indexer GC runs here in P-076 (Cupboard stats indexer).
-    // Wired separately so this entrypoint stays minimal.
+  async scheduled(_event: ScheduledEvent, env: Env, ctx: ExecutionContext): Promise<void> {
+    // P-076 — hourly stats indexer refreshes tier-A fields on each
+    // listed harness from the GitHub API. Capped batch per tick;
+    // early-exits on rate-limit. Best-effort; failures audited.
+    ctx.waitUntil(indexBatch(env).then(() => undefined).catch(() => undefined));
   },
 };
