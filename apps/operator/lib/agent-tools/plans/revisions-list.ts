@@ -16,6 +16,7 @@
 
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
+import { resolveCtxHarnessSlug } from './_ctx-opts';
 import { listPlanRevisions } from './revisions';
 
 const ALL_ROLES = [
@@ -55,7 +56,7 @@ export default defineTool({
   args: argsSchema,
   async handler(args, ctx) {
     const ctxAny = ctx as { metadata?: (d: Record<string, unknown>) => void };
-    const harnessSlug = (ctx as { harnessSlug?: string }).harnessSlug?.trim() || undefined;
+    const harnessSlug = resolveCtxHarnessSlug(ctx);
     try {
       const revisions = await listPlanRevisions(args.slug, harnessSlug ? { harnessSlug } : {});
       ctxAny.metadata?.({ slug: args.slug, revisionCount: revisions.length });

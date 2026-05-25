@@ -15,6 +15,7 @@
 
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
+import { resolveCtxHarnessSlug } from './_ctx-opts';
 import { withPlanLock, bumpUpdatedDate } from './with-plan-lock';
 import { maskFences } from './parser';
 import { emitPlanEventForCaller } from '../coordination/plan-events';
@@ -109,7 +110,7 @@ export default defineTool({
   modality: ['text'],
   args: argsSchema,
   async handler(args, ctx) {
-    const harnessSlug = (ctx as { harnessSlug?: string }).harnessSlug?.trim() || undefined;
+    const harnessSlug = resolveCtxHarnessSlug(ctx);
     const rev = planRevisionCapture(
       ctx as PlanRevisionCtx,
       args.slug,

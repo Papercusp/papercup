@@ -21,6 +21,7 @@
 
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
+import { resolveCtxHarnessSlug } from './_ctx-opts';
 import { listPlanRuns, sweepPlanRuns } from './runs';
 
 const ALL_ROLES = [
@@ -71,7 +72,7 @@ export default defineTool({
             (e instanceof Error ? e.message : String(e)),
         );
       });
-      const harnessSlug = (ctx as { harnessSlug?: string }).harnessSlug?.trim() || undefined;
+      const harnessSlug = resolveCtxHarnessSlug(ctx);
       const runs = await listPlanRuns(args.slug, harnessSlug ? { harnessSlug } : {});
       ctxAny.metadata?.({ slug: args.slug, runCount: runs.length });
       return {

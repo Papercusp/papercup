@@ -29,6 +29,23 @@ export interface CtxHarnessOpts extends PlanSourceOpts {
   harnessSlug: string;
 }
 
+/**
+ * Resolve `ctx.harnessSlug` into a registered slug or `undefined`,
+ * treating the SU wildcard `'*'` (set by http-projection.ts on
+ * `?superuser=1` with no `?harness=`) the same as "no harness in
+ * scope". Used by tool handlers that pass the slug into PG queries
+ * (`listPlanRuns`, `listPlanRevisions`, etc.) — passing `'*'` through
+ * unfiltered makes those queries match nothing instead of falling
+ * back to the papercup default. Returns `undefined` so callers can
+ * keep their `opts.harnessSlug ?? 'papercup'` defaulting logic.
+ */
+export function resolveCtxHarnessSlug(ctx: unknown): string | undefined {
+  const c = ctx as { harnessSlug?: string };
+  const raw = c.harnessSlug?.trim();
+  if (!raw || raw === '*') return undefined;
+  return raw;
+}
+
 export async function ctxToPlanSourceOpts(ctx: unknown): Promise<CtxHarnessOpts> {
   const c = ctx as { harnessSlug?: string };
   const raw = c.harnessSlug?.trim();

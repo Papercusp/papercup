@@ -14,6 +14,7 @@
 
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
+import { resolveCtxHarnessSlug } from './_ctx-opts';
 import * as fs from 'node:fs/promises';
 import { withPlanLock } from './with-plan-lock';
 import { PLAN_STATUSES } from './parser';
@@ -134,7 +135,7 @@ export default defineTool({
     // appends today's date when the caller didn't already include one.
     const slug = ensureDatedSlug(args.slug, date);
 
-    const harnessSlug = (ctx as { harnessSlug?: string }).harnessSlug?.trim() || undefined;
+    const harnessSlug = resolveCtxHarnessSlug(ctx);
     const rev = planRevisionCapture(
       ctx as PlanRevisionCtx,
       slug,

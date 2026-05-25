@@ -15,6 +15,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
+import { resolveCtxHarnessSlug } from './_ctx-opts';
 import { withPlanLock } from './with-plan-lock';
 import { evaluateSetContent, type SetContentValue } from './set-content';
 import { planRevisionCapture, type PlanRevisionCtx } from './revisions';
@@ -196,7 +197,7 @@ export default defineTool({
   modality: ['text'],
   args: argsSchema,
   async handler(args, ctx) {
-    const harnessSlug = (ctx as { harnessSlug?: string }).harnessSlug?.trim() || undefined;
+    const harnessSlug = resolveCtxHarnessSlug(ctx);
 
     if (args.op === 'begin') {
       const value = await createDraft(args, harnessSlug);

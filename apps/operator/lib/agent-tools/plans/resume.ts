@@ -28,6 +28,7 @@
 
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
+import { resolveCtxHarnessSlug } from './_ctx-opts';
 import { buildPlanContextBundle } from './context-bundle';
 import { getRepoRoot } from './source';
 import { getPlanRun, markPlanRunResumed } from './runs';
@@ -126,7 +127,7 @@ async function resumeHandler(input: ResumeArgs, ctx: ResumeCtx) {
   if (!run) return notFound('runId', input.runId);
 
   // 2. Re-assemble the launch seed from the *current* plan state.
-  const resumeHarnessSlug = (ctx as unknown as { harnessSlug?: string }).harnessSlug?.trim() || undefined;
+  const resumeHarnessSlug = resolveCtxHarnessSlug(ctx);
   const bundle = await buildPlanContextBundle(
     run.planSlug,
     resumeHarnessSlug ? { harnessSlug: resumeHarnessSlug } : {},

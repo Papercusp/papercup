@@ -25,6 +25,7 @@
 
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
+import { resolveCtxHarnessSlug } from './_ctx-opts';
 import { buildPlanContextBundle } from './context-bundle';
 import { getRepoRoot } from './source';
 import { insertPlanRun } from './runs';
@@ -119,7 +120,7 @@ type LaunchCtx = ResolveIdentityCtx & {
 
 async function launchHandler(input: LaunchArgs, ctx: LaunchCtx) {
   // 1. Assemble the launch seed (plan doc + rationale digest — P-009).
-  const __ctxHarness = (ctx as unknown as { harnessSlug?: string }).harnessSlug?.trim() || undefined;
+  const __ctxHarness = resolveCtxHarnessSlug(ctx);
   const bundle = await buildPlanContextBundle(
     input.slug,
     __ctxHarness ? { harnessSlug: __ctxHarness } : {},
@@ -159,7 +160,7 @@ async function launchHandler(input: LaunchArgs, ctx: LaunchCtx) {
   const note = (input.note ?? '').trim() || null;
 
   // 4. Insert the plan_runs row — the canonical record of the launch.
-  const launchHarnessSlug = (ctx as unknown as { harnessSlug?: string }).harnessSlug?.trim() || undefined;
+  const launchHarnessSlug = resolveCtxHarnessSlug(ctx);
   const runId = await insertPlanRun({
     planSlug: input.slug,
     ...(launchHarnessSlug ? { harnessSlug: launchHarnessSlug } : {}),
