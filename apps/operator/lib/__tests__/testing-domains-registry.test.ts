@@ -44,4 +44,20 @@ describe('testing-domains-registry', () => {
       expect(d.id, d.label).toMatch(/^[a-z][a-z0-9-]*$/);
     }
   });
+
+  it('ui suite exposes the desktop stability regression tests in /admin/testing', () => {
+    const plans = domains.find((d) => d.id === 'plans');
+    expect(plans).toBeDefined();
+    const ui = plans!.sections.find((s) => s.id === 'ui');
+    expect(ui).toBeDefined();
+    expect(ui!.globs).toEqual(expect.arrayContaining([
+      'apps/operator/lib/__tests__/client-navigation.test.ts',
+      'apps/operator/lib/__tests__/desktop-static-host.test.ts',
+      'apps/operator/lib/__tests__/desktop-ui-intents.test.ts',
+      'apps/operator/lib/__tests__/operator-vite-dev-mode.test.ts',
+      'apps/operator/lib/__tests__/lazy-with-retry.test.ts',
+      'apps/operator/lib/__tests__/navigation-progress-helpers.test.ts',
+      'apps/operator/app/admin/testing/_lib/recorder-start-params.test.ts',
+    ]));
+  });
 });
