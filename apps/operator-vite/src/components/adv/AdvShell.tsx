@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import * as Tabs from '@radix-ui/react-tabs';
 import { parseAsString, parseAsStringEnum, useQueryState } from 'nuqs';
+import { Select } from '@/app/harness/Select';
 
 const ADV_TAB_IDS = ['brainstorm', 'prs', 'insights', 'config', 'settings', 'docs', 'plans', 'sessions'] as const;
 export type AdvTabId = (typeof ADV_TAB_IDS)[number];
@@ -71,36 +72,32 @@ export default function AdvShell({
   return (
     <div className="pc-advshell">
       <header className="pc-advshell__header">
-        <div className="pc-advshell__topline">
-          <div className="pc-advshell__copy">
-            <span className="pc-advshell__kicker">Advanced orchestration</span>
-            <h1>{title}</h1>
-          </div>
-          <label className="pc-advshell__selector">
-            <span>Harness</span>
-            <select
-              value={activeSlug ?? ''}
-              onChange={(event) => {
-                const next = event.currentTarget.value || null;
-                void setActiveSlug(next);
-                if (next && typeof window !== 'undefined') {
-                  window.localStorage.setItem('harness.activeProject', next);
-                }
-              }}
-              disabled={projects.length === 0}
-            >
-              {projects.length === 0 ? (
-                <option value="">{projectLoadError ? 'Failed to load harnesses' : 'Loading harnesses…'}</option>
-              ) : (
-                projects.map((project) => (
-                  <option key={project.slug} value={project.slug}>
-                    {project.slug}
-                  </option>
-                ))
-              )}
-            </select>
-          </label>
+        <div className="pc-advshell__copy">
+          <span className="pc-advshell__kicker">Advanced orchestration</span>
+          <h1>{title}</h1>
         </div>
+        <label className="pc-advshell__selector">
+          <span>Harness</span>
+          <Select
+            value={activeSlug ?? ''}
+            onChange={(next) => {
+              if (next === '__loading') return;
+              void setActiveSlug(next);
+              if (next && typeof window !== 'undefined') {
+                window.localStorage.setItem('harness.activeProject', next);
+              }
+            }}
+            disabled={projects.length === 0}
+            ariaLabel="Select harness"
+            placeholder={projectLoadError ? 'Failed to load harnesses' : 'Select harness'}
+            options={
+              projects.length === 0
+                ? [{ value: '__loading', label: projectLoadError ? 'Failed to load harnesses' : 'Loading harnesses…', disabled: true }]
+                : projects.map((project) => ({ value: project.slug, label: project.slug }))
+            }
+            triggerClassName="pc-advshell__select-trigger"
+          />
+        </label>
         <Tabs.Root value={activeTab} onValueChange={(value) => void setActiveTab(value as AdvTabId)} className="pc-advshell__tabs">
           <Tabs.List className="pc-advshell__tablist" aria-label="Adv sections">
             {ADV_TABS.map((t) => (
@@ -123,20 +120,13 @@ export default function AdvShell({
         }
         .pc-advshell__header {
           display: flex;
-          flex-direction: column;
-          align-items: stretch;
-          gap: 10px;
-          padding: 14px 18px 0;
-          border-bottom: 1px solid var(--border, rgba(125, 211, 252, 0.15));
-          background:
-            linear-gradient(180deg, color-mix(in oklab, var(--bg-1, #0b1220), white 3%), var(--bg, #07101d));
-          box-shadow: inset 0 -1px 0 rgba(255, 255, 255, 0.025);
-        }
-        .pc-advshell__topline {
-          display: flex;
           align-items: flex-end;
-          gap: 16px;
+          gap: 14px;
           min-width: 0;
+          padding: 8px 12px;
+          border-bottom: 1px solid var(--border, rgba(125, 211, 252, 0.15));
+          background: var(--bg-2, rgba(255, 255, 255, 0.045));
+          box-shadow: inset 0 -1px 0 rgba(255, 255, 255, 0.025);
         }
         .pc-advshell__copy { display: grid; gap: 4px; min-width: 0; }
         .pc-advshell__kicker {
@@ -149,7 +139,7 @@ export default function AdvShell({
         }
         .pc-advshell__header h1 {
           margin: 0;
-          font-size: 28px;
+          font-size: 22px;
           font-weight: 760;
           line-height: 1;
           letter-spacing: -0.02em;
@@ -158,7 +148,7 @@ export default function AdvShell({
         .pc-advshell__selector {
           display: grid;
           gap: 5px;
-          min-width: 210px;
+          min-width: 190px;
           color: var(--fg-dim, #b9d4e8);
           font-size: 10px;
           font-weight: 760;
@@ -166,27 +156,35 @@ export default function AdvShell({
           line-height: 1;
           text-transform: uppercase;
         }
-        .pc-advshell__selector select {
+        .pc-advshell__select-trigger {
+          display: inline-flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 8px;
           min-height: 34px;
-          min-width: 0;
+          min-width: 190px;
           border: 1px solid var(--border-strong, rgba(125, 211, 252, 0.32));
           border-radius: 10px;
           background: var(--bg-popover, #0d1829);
           color: var(--fg, #e7f7ff);
           font-size: 12px;
           font-weight: 650;
-          letter-spacing: 0;
-          padding: 0 34px 0 11px;
-          text-transform: none;
+          padding: 0 11px;
+          cursor: pointer;
+          outline: none;
         }
-        .pc-advshell__selector select:disabled {
+        .pc-advshell__select-trigger[data-disabled] {
           color: var(--fg-mute, #7f9bb4);
+          cursor: default;
         }
-        .pc-advshell__tabs { align-self: stretch; display: flex; align-items: flex-end; }
+        .pc-advshell__tabs { flex: 1; min-width: 0; display: flex; align-items: flex-end; }
         .pc-advshell__tablist {
           display: inline-flex;
           align-items: flex-end;
           gap: 6px;
+          min-width: 0;
+          max-width: 100%;
+          overflow-x: auto;
           padding: 0;
         }
         .pc-advshell__tab {
@@ -210,6 +208,7 @@ export default function AdvShell({
           background: var(--bg-3, rgba(255, 255, 255, 0.075));
           border-color: var(--border-strong, rgba(125, 211, 252, 0.32));
         }
+        .pc-advshell__tab[aria-selected='true'],
         .pc-advshell__tab[data-state='active'] {
           color: var(--fg, #e7f7ff);
           background: color-mix(in oklab, var(--accent, #38bdf8), transparent 82%);
