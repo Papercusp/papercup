@@ -41,7 +41,7 @@ describe('routePending helpers', () => {
 
   it('extracts hrefs from string and pathname-like props', () => {
     expect(routeHrefFromProp('/support?ws=default')).toBe('/support?ws=default');
-    expect(routeHrefFromProp({ pathname: '/settings/operator/' })).toBe('/settings/operator');
+    expect(routeHrefFromProp({ pathname: '/settings/operator/', search: '?tab=voice', hash: '#mic' })).toBe('/settings/operator?tab=voice#mic');
     expect(routeHrefFromProp({ pathname: 42 })).toBeNull();
   });
 

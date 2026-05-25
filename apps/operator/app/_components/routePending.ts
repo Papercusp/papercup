@@ -64,7 +64,9 @@ export function routeHrefFromProp(href: unknown): string | null {
     && 'pathname' in href
     && typeof href.pathname === 'string'
   ) {
-    return normalizeRouteHref(href.pathname);
+    const search = 'search' in href && typeof href.search === 'string' ? href.search : '';
+    const hash = 'hash' in href && typeof href.hash === 'string' ? href.hash : '';
+    return normalizeRouteHref(`${href.pathname}${search}${hash}`);
   }
   return null;
 }
