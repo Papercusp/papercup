@@ -60,6 +60,7 @@ import harnessActivity from './harness/activity';
 import harnessInsights from './harness/insights';
 import harnessInsightsFirstVisit from './harness/insights-first-visit';
 import harnessClaimAttempts from './harness/claim-attempts';
+import harnessBootstrapProgress from './harness/bootstrap-progress';
 import usersByGithubId from './users/by-github-id';
 import harnessPrs from './harness/prs';
 import harnessSync from './harness/sync';
@@ -455,6 +456,7 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(harnessInsights as AnyRoute[]),
   ...flatten(harnessInsightsFirstVisit as AnyRoute[]),
   ...flatten(harnessClaimAttempts as AnyRoute[]),
+  ...flatten(harnessBootstrapProgress as AnyRoute[]),
   ...flatten(usersByGithubId as AnyRoute[]),
   ...flatten(harnessPrs as AnyRoute[]),
   ...flatten(harnessSync as AnyRoute[]),
