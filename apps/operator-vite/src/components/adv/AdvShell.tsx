@@ -1,5 +1,8 @@
-import { Link, useRouterState } from '@tanstack/react-router';
+import { parseAsStringEnum, useQueryState } from 'nuqs';
 import * as Tabs from '@radix-ui/react-tabs';
+
+const ADV_TAB_IDS = ['brainstorm', 'prs', 'insights', 'config', 'settings', 'docs', 'plans', 'sessions'] as const;
+export type AdvTabId = (typeof ADV_TAB_IDS)[number];
 
 /**
  * /adv shell — TSR mirror of apps/operator/app/adv/_components/AdvShell.tsx.
@@ -8,15 +11,15 @@ import * as Tabs from '@radix-ui/react-tabs';
  * apps/operator/app/* is parallel/transitional); /adv has to live
  * here too or the ADV navbar button serves stale tabs.
  */
-const TABS = [
-  { href: '/adv/brainstorm', label: 'Brainstorm' },
-  { href: '/adv/prs', label: 'PRs' },
-  { href: '/adv/insights', label: 'Insights' },
-  { href: '/adv/config', label: 'Config' },
-  { href: '/adv/settings', label: 'Settings' },
-  { href: '/adv/docs', label: 'Docs' },
-  { href: '/adv/plans', label: 'Plans' },
-  { href: '/adv/sessions', label: 'Sessions' },
+export const ADV_TABS: ReadonlyArray<{ id: AdvTabId; label: string }> = [
+  { id: 'brainstorm', label: 'Brainstorm' },
+  { id: 'prs', label: 'PRs' },
+  { id: 'insights', label: 'Insights' },
+  { id: 'config', label: 'Config' },
+  { id: 'settings', label: 'Settings' },
+  { id: 'docs', label: 'Docs' },
+  { id: 'plans', label: 'Plans' },
+  { id: 'sessions', label: 'Sessions' },
 ] as const;
 
 export default function AdvShell({
@@ -26,8 +29,10 @@ export default function AdvShell({
   title?: string;
   children: React.ReactNode;
 }) {
-  const pathname = useRouterState({ select: (s) => s.location.pathname }) || '/adv/brainstorm';
-  const activeTab = TABS.find((t) => pathname === t.href || pathname.startsWith(`${t.href}/`)) ?? TABS[0];
+  const [activeTab, setActiveTab] = useQueryState(
+    'tab',
+    parseAsStringEnum<AdvTabId>([...ADV_TAB_IDS]).withDefault('brainstorm'),
+  );
 
   return (
     <div className="pc-advshell">
@@ -36,11 +41,11 @@ export default function AdvShell({
           <span className="pc-advshell__kicker">Advanced orchestration</span>
           <h1>{title}</h1>
         </div>
-        <Tabs.Root value={activeTab.href} className="pc-advshell__tabs">
+        <Tabs.Root value={activeTab} onValueChange={(value) => void setActiveTab(value as AdvTabId)} className="pc-advshell__tabs">
           <Tabs.List className="pc-advshell__tablist" aria-label="Adv sections">
-            {TABS.map((t) => (
-              <Tabs.Trigger key={t.href} value={t.href} asChild className="pc-advshell__tab">
-                <Link to={t.href}>{t.label}</Link>
+            {ADV_TABS.map((t) => (
+              <Tabs.Trigger key={t.id} value={t.id} className="pc-advshell__tab">
+                {t.label}
               </Tabs.Trigger>
             ))}
           </Tabs.List>

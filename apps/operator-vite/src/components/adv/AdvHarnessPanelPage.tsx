@@ -1,11 +1,11 @@
 import { useEffect } from 'react';
 import { parseAsString, useQueryState } from 'nuqs';
-import AdvShell from './AdvShell';
+import type { AdvTabId } from './AdvShell';
 import HarnessDashboard from '@/app/harness/HarnessDashboard';
 
-type AdvHarnessPanel = 'brainstorm' | 'prs' | 'insights' | 'config' | 'settings' | 'docs';
+type AdvHarnessPanel = Extract<AdvTabId, 'brainstorm' | 'prs' | 'insights' | 'config' | 'settings' | 'docs'>;
 
-const PANEL_LABELS: Record<AdvHarnessPanel, string> = {
+export const ADV_HARNESS_PANEL_LABELS: Record<AdvHarnessPanel, string> = {
   brainstorm: 'Brainstorm',
   prs: 'PRs',
   insights: 'Insights',
@@ -25,22 +25,20 @@ export default function AdvHarnessPanelPage({ panel }: { panel: AdvHarnessPanel 
   }, [activePanel, panel, setActivePanel]);
 
   return (
-    <AdvShell title={PANEL_LABELS[panel]}>
-      <section className="pc-adv-harness-panel" aria-label={`ADV ${PANEL_LABELS[panel]} workspace`}>
-        <HarnessDashboard />
-        <style>{`
-          .pc-adv-harness-panel {
-            flex: 1;
-            min-height: 0;
-            display: flex;
-            flex-direction: column;
-          }
-          .pc-adv-harness-panel > .h-root {
-            flex: 1;
-            min-height: 0;
-          }
-        `}</style>
-      </section>
-    </AdvShell>
+    <section className="pc-adv-harness-panel" aria-label={`ADV ${ADV_HARNESS_PANEL_LABELS[panel]} workspace`}>
+      <HarnessDashboard />
+      <style>{`
+        .pc-adv-harness-panel {
+          flex: 1;
+          min-height: 0;
+          display: flex;
+          flex-direction: column;
+        }
+        .pc-adv-harness-panel > .h-root {
+          flex: 1;
+          min-height: 0;
+        }
+      `}</style>
+    </section>
   );
 }

@@ -1,10 +1,7 @@
-import { createFileRoute } from '@tanstack/react-router';
-import AdvHarnessPanelPage from '../../components/adv/AdvHarnessPanelPage';
+import { createFileRoute, redirect } from '@tanstack/react-router';
 
 export const Route = createFileRoute('/adv/brainstorm')({
-  component: AdvBrainstormPage,
+  beforeLoad: () => {
+    throw redirect({ to: '/adv', search: { tab: 'brainstorm' } });
+  },
 });
-
-function AdvBrainstormPage() {
-  return <AdvHarnessPanelPage panel="brainstorm" />;
-}
