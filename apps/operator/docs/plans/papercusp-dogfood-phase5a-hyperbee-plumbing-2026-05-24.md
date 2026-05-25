@@ -12,9 +12,9 @@ owner: avi@storewolf.com
 
 ## Now
 
-**State:** **P-029 SHIPPED 2026-05-25.** ShareWizard.tsx (9-step UI) + ShareWizard.test.tsx (7/7 tests pass) at `apps/operator/app/harness/`. UI uses the existing types-only spine in `lib/harness/share-wizard-step-types.ts` (state machine), `harness-shared-config-types.ts` (buildFreshConfig), `harness-link-types.ts` (formatHarnessLink). Backend injection points (`resolveBinding`, `runBackfill`, `writeSharedJson`) are stubbed via prop overrides — each one points at a follow-up backend route to be added when wired.
+**State:** **P-029 + P-030/P-031 SUBSTRATE SHIPPED 2026-05-25.** The Hyperbee + Autobase substrate is in tree at `apps/operator/lib/sync/hyperbee/` (corestore factory, autobase wrapper, schema-version gate, boot gate, projection registry). 18/19 tests pass (1 native-binding test deliberately skipped — covered by holepunch-spike's smoke runs). Typecheck clean. P-029 ShareWizard.tsx is at `apps/operator/app/harness/`, 7/7 tests pass.
 
-**Next action:** P-030/P-031 (Hyperbee + Autobase wiring + bidirectional projection). Phase 0 macOS gate skipped per 2026-05-25 user direction — Linux-x64 spike already passes; treat the substrate as PASS for this loop. P-066 + P-070 follow once P-030/P-031 land.
+**Next action:** per-table read/write hooks (one PR per HYPERBEE-bucket table — contributors, harness_features, feature_queue, prs, issues, presence, usage, claims) wiring the substrate's `registerProjection` interface to real PG row contracts. Each is ~50 LOC + 2 tests. Then boot wiring in `instrumentation-node.ts` + Hyperswarm replication step. P-066 (bootstrap progress indicator) follows.
 
 ## Background
 
