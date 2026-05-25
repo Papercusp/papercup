@@ -9,9 +9,9 @@ owner: aviynw3@gmail.com
 
 ## Now
 
-**State:** Phase A + B + C (P-013/P-014/P-015) COMPLETE. P-013: `featuresConsolidated.byPlanSlug` sync-resolver query + `decoratePromotedBlock()` DOM decorator injecting live status badges in Vditor-rendered `## Promoted` block. P-014: `NowHero` shows feature-count summary from `buildFeatureSummary()`. P-015: `↗ plan` pill in `FeatureList.tsx` linking to plan detail. Remaining: P-016 promote button, P-017 tests, Phase D (architect prompt), Phase E (proposals UI).
+**State:** Phase A + B + C COMPLETE (P-001–P-017). P-016: promote button + `PromoteDialog` in `PlanActions.tsx`; `promoteToHarness()` API call; `plans.ts` route verb; SSE invalidation on success. P-017: 17 tests covering `decoratePromotedBlock` + `buildFeatureSummary` in `plan-renderers-promoted.test.ts`. Phase D (architect prompt + `promote:plan` action) is next.
 
-**Next:** P-016 — promote button on plan detail that calls `plans:promote` with the plan's current items.
+**Next:** P-018 — add `promote:plan` action block to architect prompt template (`apps/operator/lib/agent-tools/architect/prompts.ts`).
 
 ---
 ## Background
@@ -316,8 +316,8 @@ Default stays `proposal` until Phase F soaks; flip to `plan` after.
 - [x] P-013 Plan detail (`apps/operator/app/admin/plans/PlanDetail.tsx`): subscribe to `featuresConsolidated.byPlanSlug`, render live status badges on `## Promoted` block rows via `decoratePromotedBlock` in `plan-renderers.ts`
 - [x] P-014 Plan detail: `NowHero` shows feature-count summary ("N features: M in-flight · K passed · …") from `promotedFeatures` via `buildFeatureSummary()`
 - [x] P-015 Feature surfaces (`apps/operator/app/harness/FeatureList.tsx`): `↗ plan` pill on feature rows where `sourcePlanSlug` is set; links to `/adv/plans?slug=…`
-- [ ] P-016 Promote button on plan detail (calls `plans:promote` directly with derived features list)
-- [ ] P-017 Tests: status change on a promoted feature propagates to plan detail badge within 2s
+- [x] P-016 Promote button on plan detail (calls `plans:promote` directly with derived features list)
+- [x] P-017 Tests: status change on a promoted feature propagates to plan detail badge within 2s
 
 
 ### Phase D — Architect: `promote:plan` action + clarifying-question guidance (2 days)

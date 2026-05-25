@@ -2,6 +2,7 @@
 
 import { HarnessChat, type ActionBlock } from '@restart/agent-chat';
 import { PatchBlock } from '@restart/agent-chat';
+import { PromotePlanBlock } from './PromotePlanBlock';
 
 interface Props {
   slug: string;
@@ -17,6 +18,9 @@ export default function ArchitectChat({
   const chatKey = reviewId ?? threadId ?? 'adhoc';
 
   const renderActionBlock = (block: ActionBlock) => {
+    if (block.tag === 'promote:plan') {
+      return <PromotePlanBlock block={block} />;
+    }
     if (block.tag.startsWith('proposal:') || block.tag.startsWith('patch:') || block.tag.startsWith('note:')) {
       return (
         <PatchBlock
