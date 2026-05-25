@@ -60,13 +60,18 @@ describe('client navigation', () => {
   it('resolves cross-origin targets to hard navigation payloads', () => {
     expect(resolveClientNavigation('https://example.com', 'http://localhost:3070/harness')).toEqual({
       mode: 'hard',
-      href: 'https://example.com',
+      href: 'https://example.com/',
       replace: false,
     });
     expect(resolveClientNavigation('https://example.com', 'http://localhost:3070/harness', { replace: true })).toEqual({
       mode: 'hard',
-      href: 'https://example.com',
+      href: 'https://example.com/',
       replace: true,
+    });
+    expect(resolveClientNavigation('//example.com/docs', 'http://localhost:3070/harness')).toEqual({
+      mode: 'hard',
+      href: 'http://example.com/docs',
+      replace: false,
     });
   });
 

@@ -15,8 +15,9 @@ export function resolveClientNavigation(
   opts?: { replace?: boolean },
 ): { mode: 'soft' | 'hard' | 'none'; href: string | null; replace: boolean } {
   const replace = Boolean(opts?.replace);
+  let parsed: URL;
   try {
-    const parsed = new URL(target, currentHref);
+    parsed = new URL(target, currentHref);
     if (!(parsed.protocol === 'http:' || parsed.protocol === 'https:')) {
       return { mode: 'none', href: null, replace };
     }
@@ -25,11 +26,10 @@ export function resolveClientNavigation(
   }
 
   if (!shouldSoftNavigate(target, currentHref)) {
-    return { mode: 'hard', href: target, replace };
+    return { mode: 'hard', href: parsed.href, replace };
   }
 
-  const next = new URL(target, currentHref);
-  const href = `${next.pathname}${next.search}${next.hash}`;
+  const href = `${parsed.pathname}${parsed.search}${parsed.hash}`;
   return { mode: 'soft', href, replace };
 }
 
