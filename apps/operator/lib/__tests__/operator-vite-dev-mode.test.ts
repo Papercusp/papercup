@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { isDesktopHmrEnabled, NO_VITE_CLIENT_BODY, shouldServeNoopViteClient, shouldSuppressJsReload } from '../../../operator-vite/dev-mode';
+import { isDesktopHmrEnabled, NO_VITE_CLIENT_BODY, shouldInterceptStaticAnchor, shouldServeNoopViteClient, shouldSuppressJsReload } from '../../../operator-vite/dev-mode';
 
 describe('operator-vite desktop no-HMR mode', () => {
   it('disables HMR by default', () => {
@@ -20,11 +20,18 @@ describe('operator-vite desktop no-HMR mode', () => {
     expect(shouldServeNoopViteClient('/@vite/client', true)).toBe(false);
     expect(NO_VITE_CLIENT_BODY).toContain('Vite client disabled');
   });
-  it('suppresses JS reloads on static desktop hosts only', () => {
+  it('uses the same static-host policy for reload suppression and same-origin navigation interception', () => {
     expect(shouldSuppressJsReload('http://localhost:3070')).toBe(true);
     expect(shouldSuppressJsReload('http://127.0.0.1:3070')).toBe(true);
     expect(shouldSuppressJsReload('http://localhost:4173')).toBe(true);
     expect(shouldSuppressJsReload('http://localhost:3055')).toBe(false);
+  });
+  it('intercepts same-origin anchor navigations only on static desktop hosts', () => {
+    expect(shouldInterceptStaticAnchor('/support', 'http://localhost:3070/harness?ws=default')).toBe(true);
+    expect(shouldInterceptStaticAnchor('/settings/operator', 'http://127.0.0.1:4173/harness')).toBe(true);
+    expect(shouldInterceptStaticAnchor('https://example.com', 'http://localhost:3070/harness')).toBe(false);
+    expect(shouldInterceptStaticAnchor('javascript:alert(1)', 'http://localhost:3070/harness')).toBe(false);
+    expect(shouldInterceptStaticAnchor('/support', 'http://localhost:3055/harness')).toBe(false);
   });
 
   it('keeps desktop dev defaulting to the no-HMR script', () => {

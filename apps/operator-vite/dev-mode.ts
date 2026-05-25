@@ -14,3 +14,15 @@ export function shouldSuppressJsReload(origin: string): boolean {
     || origin === 'http://localhost:4173'
     || origin === 'http://127.0.0.1:4173';
 }
+
+export function shouldInterceptStaticAnchor(targetHref: string, currentHref: string): boolean {
+  if (!shouldSuppressJsReload(new URL(currentHref).origin)) return false;
+  try {
+    const current = new URL(currentHref);
+    const next = new URL(targetHref, currentHref);
+    if (!(next.protocol === 'http:' || next.protocol === 'https:')) return false;
+    return next.origin === current.origin;
+  } catch {
+    return false;
+  }
+}
