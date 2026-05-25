@@ -38,6 +38,7 @@ describe('workspaces-tauri', () => {
     const { resolveWorkspaceSwitchTarget } = await import('../workspaces-tauri');
     expect(resolveWorkspaceSwitchTarget('alpha')).toBe('/harness?ws=alpha');
     expect(resolveWorkspaceSwitchTarget('alpha', { resetTo: '/support?ws=alpha' })).toBe('/support?ws=alpha');
+    expect(resolveWorkspaceSwitchTarget('alpha beta/γ')).toBe('/harness?ws=alpha%20beta%2F%CE%B3');
   });
 
   it('soft-navigates on the web/static path after a successful workspace switch', async () => {
