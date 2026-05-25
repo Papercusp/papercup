@@ -41,4 +41,22 @@ describe('client navigation', () => {
       replace: false,
     });
   });
+
+  it('fails closed for malformed or unsafe hard-navigation targets', () => {
+    expect(resolveClientNavigation('javascript:alert(1)', 'http://localhost:3070/harness')).toEqual({
+      mode: 'none',
+      href: null,
+      replace: false,
+    });
+    expect(resolveClientNavigation('data:text/plain,hi', 'http://localhost:3070/harness')).toEqual({
+      mode: 'none',
+      href: null,
+      replace: false,
+    });
+    expect(resolveClientNavigation('http://[::1', 'http://localhost:3070/harness')).toEqual({
+      mode: 'none',
+      href: null,
+      replace: false,
+    });
+  });
 });
