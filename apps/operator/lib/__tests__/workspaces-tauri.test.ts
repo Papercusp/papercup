@@ -94,4 +94,25 @@ describe('workspaces-tauri', () => {
     expect(commands.workspacesDelete).toHaveBeenCalledWith('beta');
     expect(fetchMock).not.toHaveBeenCalled();
   });
+
+  it('surfaces desktop command errors for list/create/rename/delete', async () => {
+    vi.stubGlobal('window', { ...window, __TAURI_INTERNALS__: {} });
+    commands.workspacesList.mockRejectedValue(new Error('list-fail'));
+    commands.workspacesCreate.mockResolvedValue({ status: 'error', error: 'create-fail' });
+    commands.workspacesRename.mockResolvedValue({ status: 'error', error: 'rename-fail' });
+    commands.workspacesDelete.mockResolvedValue({ status: 'error', error: 'delete-fail' });
+    const {
+      listWorkspaces,
+      createWorkspace,
+      renameWorkspace,
+      deleteWorkspace,
+    } = await import('../workspaces-tauri');
+
+    await expect(listWorkspaces()).rejects.toThrow('list-fail');
+    await expect(createWorkspace('Beta')).rejects.toThrow('create-fail');
+    await expect(renameWorkspace('beta', 'Beta 2')).rejects.toThrow('rename-fail');
+    await expect(deleteWorkspace('beta')).rejects.toThrow('delete-fail');
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(navigateClient).not.toHaveBeenCalled();
+  });
 });
