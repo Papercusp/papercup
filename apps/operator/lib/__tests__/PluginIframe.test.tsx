@@ -39,4 +39,20 @@ describe('PluginIframe iframe:navigate', () => {
       ),
     ).toBe(false);
   });
+  it('treats wildcard origins as allowed but still soft-navigates only same-origin targets', () => {
+    expect(
+      shouldSoftNavigatePluginIframe(
+        'http://localhost:3070/settings/operator',
+        'http://localhost:3070/harness?ws=default',
+        ['*'],
+      ),
+    ).toBe(true);
+    expect(
+      shouldSoftNavigatePluginIframe(
+        'https://example.com/docs',
+        'http://localhost:3070/harness?ws=default',
+        ['*'],
+      ),
+    ).toBe(false);
+  });
 });
