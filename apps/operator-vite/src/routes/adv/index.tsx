@@ -2,6 +2,7 @@ import { createFileRoute } from '@tanstack/react-router';
 import { parseAsStringEnum, useQueryState } from 'nuqs';
 import AdvShell, { ADV_TABS, type AdvTabId } from '../../components/adv/AdvShell';
 import AdvHarnessPanelPage, { ADV_HARNESS_PANEL_LABELS } from '../../components/adv/AdvHarnessPanelPage';
+import HarnessesWorkspace from '@/app/adv/harnesses/HarnessesWorkspace';
 import PlansClient from '@/app/admin/plans/PlansClient';
 import AdvPlansTabs from '@/app/adv/plans/AdvPlansTabs';
 import AdvSessionsClient from '@/app/adv/sessions/AdvSessionsClient';
@@ -24,6 +25,7 @@ function AdvIndexPage() {
 }
 
 function getAdvTitle(tab: AdvTabId): string {
+  if (tab === 'harnesses') return 'Harnesses';
   if (tab in ADV_HARNESS_PANEL_LABELS) {
     return ADV_HARNESS_PANEL_LABELS[tab as keyof typeof ADV_HARNESS_PANEL_LABELS];
   }
@@ -32,6 +34,8 @@ function getAdvTitle(tab: AdvTabId): string {
 
 function renderAdvTab(tab: AdvTabId) {
   switch (tab) {
+    case 'harnesses':
+      return <HarnessesWorkspace />;
     case 'brainstorm':
     case 'prs':
     case 'insights':

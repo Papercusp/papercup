@@ -3,6 +3,7 @@ import * as Tabs from '@radix-ui/react-tabs';
 import { parseAsString, parseAsStringEnum, useQueryState } from 'nuqs';
 import {
   BookOpen,
+  Boxes,
   GitBranch,
   Lightbulb,
   ListChecks,
@@ -13,7 +14,7 @@ import {
 } from 'lucide-react';
 import { Select } from '@/app/harness/Select';
 
-const ADV_TAB_IDS = ['brainstorm', 'prs', 'insights', 'config', 'settings', 'docs', 'git', 'plans', 'sessions'] as const;
+const ADV_TAB_IDS = ['harnesses', 'brainstorm', 'prs', 'insights', 'config', 'settings', 'docs', 'git', 'plans', 'sessions'] as const;
 export type AdvTabId = (typeof ADV_TAB_IDS)[number];
 
 /**
@@ -30,6 +31,7 @@ export const ADV_TABS: ReadonlyArray<{
   accent: string;
   accentRgb: string;
 }> = [
+  { id: 'harnesses', label: 'Harnesses', icon: Boxes, accent: '#a78bfa', accentRgb: '167, 139, 250' },
   { id: 'brainstorm', label: 'Brainstorm', icon: Lightbulb, accent: '#38bdf8', accentRgb: '56, 189, 248' },
   { id: 'plans', label: 'Plans', icon: ListChecks, accent: '#f59e0b', accentRgb: '245, 158, 11' },
   { id: 'sessions', label: 'Sessions', icon: Terminal, accent: '#f472b6', accentRgb: '244, 114, 182' },

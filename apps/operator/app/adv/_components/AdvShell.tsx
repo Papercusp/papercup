@@ -12,6 +12,7 @@ import * as Tabs from '@radix-ui/react-tabs';
  * so the surface is deep-linkable and agent-drivable.
  */
 const TABS = [
+  { href: '/adv/harnesses', label: 'Harnesses' },
   { href: '/adv/brainstorm', label: 'Brainstorm' },
   { href: '/adv/prs', label: 'PRs' },
   { href: '/adv/insights', label: 'Insights' },

@@ -246,6 +246,51 @@ export function defaultDashboardLayout(harnessSlug = ''): LayoutDoc {
 }
 
 /**
+ * /adv/harnesses seed — 50/50 horizontal split of the rebuilt Features
+ * and Issues panels for one harness. Used by `adv-harnesses:<slug>`
+ * layouts (see HarnessesDock).
+ */
+export function defaultAdvHarnessesLayout(harnessSlug = ''): LayoutDoc {
+  return {
+    schemaVersion: 1,
+    root: {
+      kind: 'group',
+      id: 'root',
+      direction: 'row',
+      children: [
+        {
+          kind: 'tabs',
+          id: 'features-cell',
+          size: 0.5,
+          activePanelId: 'p-adv-features',
+          panels: [
+            {
+              id: 'p-adv-features',
+              type: 'adv:features',
+              params: { harnessSlug },
+            },
+          ],
+        },
+        {
+          kind: 'tabs',
+          id: 'issues-cell',
+          size: 0.5,
+          activePanelId: 'p-adv-issues',
+          panels: [
+            {
+              id: 'p-adv-issues',
+              type: 'adv:issues',
+              params: { harnessSlug },
+            },
+          ],
+        },
+      ],
+    },
+    floating: [],
+  };
+}
+
+/**
  * Pi-tab-specific seed for Phase 2. The pi tab today owns its own
  * localStorage layout; this seeds the PG-backed replacement.
  */
@@ -430,13 +475,18 @@ export async function getLayout(
   // params carry the right harnessSlug — otherwise every panel hydrates
   // with empty slug and fetches fail.
   const isPi = name === 'pi' || name.startsWith('pi:');
+  const isAdvHarnesses = name === 'adv-harnesses' || name.startsWith('adv-harnesses:');
   let seededSlug = '';
   if (name.startsWith('dashboard:')) {
     seededSlug = name.slice('dashboard:'.length);
+  } else if (name.startsWith('adv-harnesses:')) {
+    seededSlug = name.slice('adv-harnesses:'.length);
   }
-  const seed = isPi
+  const seed: LayoutDoc = isPi
     ? ({ schemaVersion: OPAQUE_SCHEMA_VERSION, dockviewJson: null } as unknown as LayoutDoc)
-    : defaultDashboardLayout(seededSlug);
+    : isAdvHarnesses
+      ? defaultAdvHarnessesLayout(seededSlug)
+      : defaultDashboardLayout(seededSlug);
   return saveLayout(principal, name, seed);
 }
 
@@ -543,8 +593,15 @@ export async function resetLayout(
   principal: LayoutPrincipal,
   name = 'default',
 ): Promise<LayoutRow> {
+  let seededSlug = '';
+  if (name.startsWith('dashboard:')) seededSlug = name.slice('dashboard:'.length);
+  else if (name.startsWith('adv-harnesses:')) seededSlug = name.slice('adv-harnesses:'.length);
   const seed =
-    name === 'pi' ? defaultPiTerminalsLayout() : defaultDashboardLayout();
+    name === 'pi' || name.startsWith('pi:')
+      ? defaultPiTerminalsLayout()
+      : name === 'adv-harnesses' || name.startsWith('adv-harnesses:')
+        ? defaultAdvHarnessesLayout(seededSlug)
+        : defaultDashboardLayout(seededSlug);
   return saveLayout(principal, name, seed);
 }
 
