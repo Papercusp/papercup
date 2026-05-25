@@ -1,6 +1,16 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type ComponentType } from 'react';
 import * as Tabs from '@radix-ui/react-tabs';
 import { parseAsString, parseAsStringEnum, useQueryState } from 'nuqs';
+import {
+  BookOpen,
+  GitBranch,
+  Lightbulb,
+  ListChecks,
+  Settings,
+  SlidersHorizontal,
+  Terminal,
+  TrendingUp,
+} from 'lucide-react';
 import { Select } from '@/app/harness/Select';
 
 const ADV_TAB_IDS = ['brainstorm', 'prs', 'insights', 'config', 'settings', 'docs', 'git', 'plans', 'sessions'] as const;
@@ -13,15 +23,15 @@ export type AdvTabId = (typeof ADV_TAB_IDS)[number];
  * apps/operator/app/* is parallel/transitional); /adv has to live
  * here too or the ADV navbar button serves stale tabs.
  */
-export const ADV_TABS: ReadonlyArray<{ id: Exclude<AdvTabId, 'prs'>; label: string }> = [
-  { id: 'brainstorm', label: 'Brainstorm' },
-  { id: 'plans', label: 'Plans' },
-  { id: 'sessions', label: 'Sessions' },
-  { id: 'git', label: 'Git' },
-  { id: 'docs', label: 'Docs' },
-  { id: 'insights', label: 'Insights' },
-  { id: 'config', label: 'Config' },
-  { id: 'settings', label: 'Settings' },
+export const ADV_TABS: ReadonlyArray<{ id: Exclude<AdvTabId, 'prs'>; label: string; icon: ComponentType<{ size?: number; 'aria-hidden'?: boolean }> }> = [
+  { id: 'brainstorm', label: 'Brainstorm', icon: Lightbulb },
+  { id: 'plans', label: 'Plans', icon: ListChecks },
+  { id: 'sessions', label: 'Sessions', icon: Terminal },
+  { id: 'git', label: 'Git', icon: GitBranch },
+  { id: 'docs', label: 'Docs', icon: BookOpen },
+  { id: 'insights', label: 'Insights', icon: TrendingUp },
+  { id: 'config', label: 'Config', icon: SlidersHorizontal },
+  { id: 'settings', label: 'Settings', icon: Settings },
 ] as const;
 
 type HarnessProjectLite = {
@@ -100,11 +110,15 @@ export default function AdvShell({
         </label>
         <Tabs.Root value={activeTab} onValueChange={(value) => void setActiveTab(value as AdvTabId)} className="pc-advshell__tabs">
           <Tabs.List className="pc-advshell__tablist" aria-label="Adv sections">
-            {ADV_TABS.map((t) => (
-              <Tabs.Trigger key={t.id} value={t.id} className="pc-advshell__tab">
-                {t.label}
-              </Tabs.Trigger>
-            ))}
+            {ADV_TABS.map((t) => {
+              const Icon = t.icon;
+              return (
+                <Tabs.Trigger key={t.id} value={t.id} className="pc-advshell__tab">
+                  <Icon size={13} aria-hidden />
+                  {t.label.toLowerCase()}
+                </Tabs.Trigger>
+              );
+            })}
           </Tabs.List>
         </Tabs.Root>
       </header>
@@ -185,35 +199,65 @@ export default function AdvShell({
           min-width: 0;
           max-width: 100%;
           overflow-x: auto;
+          overflow-y: hidden;
+          overscroll-behavior-x: contain;
+          scrollbar-width: none;
+          -webkit-overflow-scrolling: touch;
           padding: 0;
+          mask-image: linear-gradient(90deg, #000 calc(100% - 18px), transparent);
+        }
+        .pc-advshell__tablist::-webkit-scrollbar {
+          display: none;
         }
         .pc-advshell__tab {
+          position: relative;
+          flex: 0 0 auto;
+          scroll-snap-align: start;
           display: inline-flex;
           align-items: center;
+          gap: 6px;
           min-height: 34px;
-          padding: 0 12px;
-          border: 1px solid var(--border, rgba(125, 211, 252, 0.15));
-          border-bottom-color: color-mix(in oklab, var(--border, rgba(125, 211, 252, 0.15)), transparent 35%);
+          margin-bottom: -1px;
+          padding: 9px 14px 10px;
+          border: 1px solid transparent;
+          border-bottom: 1px solid transparent;
           border-radius: 10px 10px 0 0;
-          background: var(--bg-2, rgba(255, 255, 255, 0.045));
+          background: transparent;
           color: var(--fg-dim, #b9d4e8);
-          font-size: 12px;
-          font-weight: 650;
-          letter-spacing: 0.02em;
-          text-decoration: none !important;
-          transition: background-color 120ms, border-color 120ms, color 120ms;
+          font-size: 11.5px;
+          font-weight: 600;
+          letter-spacing: 0.4px;
+          text-transform: uppercase;
+          cursor: pointer;
+          transition: color var(--dur-fast, 120ms) var(--ease-out, ease), border-color var(--dur-fast, 120ms) var(--ease-out, ease), background-color var(--dur-fast, 120ms) var(--ease-out, ease);
         }
         .pc-advshell__tab:hover {
           color: var(--fg, #e7f7ff);
-          background: var(--bg-3, rgba(255, 255, 255, 0.075));
-          border-color: var(--border-strong, rgba(125, 211, 252, 0.32));
+        }
+        .pc-advshell__tab:focus-visible {
+          color: var(--fg, #e7f7ff);
+          outline: 1px solid color-mix(in oklab, var(--accent, #38bdf8), white 16%);
+          outline-offset: -2px;
         }
         .pc-advshell__tab[aria-selected='true'],
         .pc-advshell__tab[data-state='active'] {
           color: var(--fg, #e7f7ff);
-          background: color-mix(in oklab, var(--accent, #38bdf8), transparent 82%);
-          border-color: color-mix(in oklab, var(--accent, #38bdf8), transparent 48%);
-          border-bottom-color: transparent;
+          background: color-mix(in oklab, var(--bg-2, rgba(255, 255, 255, 0.045)), white 3%);
+          border-color: color-mix(in oklab, var(--border, rgba(125, 211, 252, 0.15)), white 8%);
+          border-bottom-color: color-mix(in oklab, var(--bg-2, rgba(255, 255, 255, 0.045)), white 3%);
+          box-shadow: 0 -8px 22px rgba(0, 0, 0, 0.16);
+        }
+        .pc-advshell__tab[aria-selected='true']::after,
+        .pc-advshell__tab[data-state='active']::after {
+          content: "";
+          position: absolute;
+          left: 12px;
+          right: 12px;
+          bottom: 2px;
+          height: 2px;
+          border-radius: 999px;
+          background: linear-gradient(90deg, var(--accent, #38bdf8), color-mix(in oklab, var(--accent, #38bdf8), white 28%));
+          box-shadow: 0 0 14px color-mix(in oklab, var(--accent, #38bdf8), transparent 54%);
         }
         .pc-advshell__body { flex: 1; min-height: 0; display: flex; flex-direction: column; }
       `}</style>
