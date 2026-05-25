@@ -59,6 +59,16 @@ interface OmpToolSummary {
   lastUsedAt?: string;
 }
 
+interface OmpSessionUsage {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  totalTokens: number;
+  totalCostUsd: number;
+  assistantTurnsWithUsage: number;
+}
+
 interface OmpSessionState {
   header: {
     id: string;
@@ -75,6 +85,9 @@ interface OmpSessionState {
     assistant: number;
     toolResults: number;
   };
+  models: string[];
+  latestModel: string | null;
+  usage: OmpSessionUsage;
   latestMessages: OmpMessageSnippet[];
   todos: OmpTodoPhase[];
   toolCounts: OmpToolSummary[];
@@ -157,11 +170,23 @@ const OMP_MODEL_OPTIONS = [
   { value: 'gpt-5.2', label: 'GPT-5.2' },
 ] as const;
 
+interface RowSummary {
+  model: string | null;
+  totalTokens: number;
+  totalCostUsd: number;
+  /** OMP session id (UUIDv7) from the JSONL header — the canonical
+   *  thread id used by `omp -r <id>` to resume. Captured lazily on
+   *  every row so Resume-by-ID never needs a prompt. */
+  ompSessionId: string | null;
+  loaded: boolean;
+}
+
 export default function AdvSessionsClient() {
   const [rows, setRows] = useState<SessionRow[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [aliveByPid, setAliveByPid] = useState<Record<number, boolean>>({});
   const [refreshTick, setRefreshTick] = useState(0);
+  const [summaryByRowId, setSummaryByRowId] = useState<Record<number, RowSummary>>({});
   const [launchPlanSlug, setLaunchPlanSlug] = useQueryState('newPlan', parseAsString);
   const [launchModel, setLaunchModel] = useQueryState(
     'model',
@@ -195,6 +220,42 @@ export default function AdvSessionsClient() {
   useEffect(() => {
     fetchRows();
   }, [fetchRows, refreshTick]);
+
+  // Lazy-load token/cost/model summary for each OMP row so the main
+  // card surfaces spend without the user having to click into the
+  // detail panel. Cached per id; refreshTick busts the cache.
+  useEffect(() => {
+    if (!rows) return;
+    const ompRows = rows.filter((r) => r.mode === 'omp');
+    if (ompRows.length === 0) return;
+    let cancelled = false;
+    (async () => {
+      const updates: Record<number, RowSummary> = {};
+      // Batch fan-out — each /state call hits the FS; small N so just await all.
+      await Promise.all(
+        ompRows.map(async (row) => {
+          try {
+            const r = await fetch(`/api/adv/sessions/state?id=${row.id}`, {
+              headers: { accept: 'application/json' },
+            });
+            if (!r.ok) return;
+            const data = (await r.json()) as SessionStateResponse;
+            const s = data.state;
+            if (!s) return;
+            updates[row.id] = {
+              model: s.latestModel,
+              totalTokens: s.usage.totalTokens,
+              totalCostUsd: s.usage.totalCostUsd,
+              ompSessionId: s.header.id ?? null,
+              loaded: true,
+            };
+          } catch { /* swallow */ }
+        }),
+      );
+      if (!cancelled) setSummaryByRowId((prev) => ({ ...prev, ...updates }));
+    })();
+    return () => { cancelled = true; };
+  }, [rows, refreshTick]);
 
   // Re-check pid liveness when the row list changes. For rows the DB
   // says are still active, ask the operator whether the pid is alive —
@@ -387,36 +448,56 @@ export default function AdvSessionsClient() {
     }
   }, []);
 
-  // Option B — prompt for an OMP session id and pass it through as
-  // `omp -r <id>`. The user knows their session id from their OMP
-  // terminal; we don't auto-capture.
+  // Option B — resume an OMP session by id. The id is tracked
+  // automatically: we prefer the row's PG-recorded `ompThreadId`
+  // (populated by `resolveAndStoreOmpThreadIdForAdvSession`), and
+  // fall back to the session header id from the loaded state. No
+  // user prompt — if neither exists, the button is disabled and a
+  // toast explains why on click.
+  const resolveResumeId = useCallback(
+    (row: SessionRow): string | null => {
+      // 1. PG-stored thread id wins — it's the persisted, canonical link.
+      const stored = row.ompThreadId?.trim();
+      if (stored) return stored;
+      // 2. Otherwise, the lazy summary's captured header id (works
+      //    for any row that's been listed, not just the selected one).
+      const summaryId = summaryByRowId[row.id]?.ompSessionId?.trim();
+      if (summaryId) return summaryId;
+      // 3. Last resort: in-memory header id from the loaded state
+      //    (covers the freshly-selected case before the summary
+      //    populates).
+      if (selectedRow?.id === row.id) {
+        const headerId = stateData?.state?.header.id?.trim();
+        if (headerId) return headerId;
+      }
+      return null;
+    },
+    [selectedRow, stateData, summaryByRowId],
+  );
+
   const resumeByIdRow = useCallback(async (row: SessionRow) => {
-    const seed = stateData?.state?.header.id ?? row.ompThreadId ?? '';
-    const id = window.prompt(
-      'OMP session id to resume (passed as `omp -r <id>`):',
-      seed,
-    );
-    if (id == null) return;
-    const trimmed = id.trim();
-    if (!trimmed) {
-      toast.error('No session id provided.');
+    const id = resolveResumeId(row);
+    if (!id) {
+      toast.error(
+        'No OMP session id tracked for this row. Open it via "Inspect state" first so the id is captured.',
+      );
       return;
     }
     const result = await launchOmpAgent({
       slug: null,
       planSlug: row.planSlug,
       label: row.label ?? row.planSlug ?? `resume-${row.id}`,
-      resumeSessionId: trimmed,
+      resumeSessionId: id,
     });
     if (result.ok) {
-      toast.success(`OMP resumed (${trimmed.slice(0, 12)}…).`, { duration: 3000 });
+      toast.success(`OMP resumed (${id.slice(0, 12)}…).`, { duration: 3000 });
       setRefreshTick((t) => t + 1);
     } else if (result.installCmd) {
       toast.error(`${result.error ?? 'OMP launch prerequisites are missing.'} Run: ${result.installCmd}`);
     } else {
       toast.error(`Resume failed: ${result.error ?? 'unknown error'}`);
     }
-  }, [stateData]);
+  }, [resolveResumeId]);
 
   const grouped = useMemo(() => groupRows(rows ?? []), [rows]);
 
@@ -520,6 +601,7 @@ export default function AdvSessionsClient() {
                             <span className="pc-adv-sessions__row-pid">pid {row.pid}</span>
                           ) : null}
                         </span>
+                        <RowUsagePills summary={summaryByRowId[row.id]} mode={row.mode} />
                         <span className="pc-adv-sessions__row-hint">
                           {selected ? 'Inspecting' : 'Inspect state'}
                         </span>
@@ -543,14 +625,24 @@ export default function AdvSessionsClient() {
                             >
                               Fresh OMP
                             </button>
-                            <button
-                              type="button"
-                              className="pc-adv-sessions__btn pc-adv-sessions__btn--primary"
-                              onClick={() => resumeByIdRow(row)}
-                              title="Open OMP with `omp -r <id>` — you'll be prompted for the session id"
-                            >
-                              Resume by ID
-                            </button>
+                            {(() => {
+                              const resumeId = resolveResumeId(row);
+                              return (
+                                <button
+                                  type="button"
+                                  className="pc-adv-sessions__btn pc-adv-sessions__btn--primary"
+                                  onClick={() => resumeByIdRow(row)}
+                                  disabled={!resumeId}
+                                  title={
+                                    resumeId
+                                      ? `Resume OMP with this session's tracked id (${resumeId.slice(0, 12)}…)`
+                                      : 'No OMP session id tracked yet — open via "Inspect state" first.'
+                                  }
+                                >
+                                  Resume by ID
+                                </button>
+                              );
+                            })()}
                           </>
                         )}
                       </div>
@@ -693,6 +785,34 @@ export default function AdvSessionsClient() {
           color: #f7f5ff; font-weight: 600; font-size: 13px;
         }
         .pc-adv-sessions__row-times { color: rgba(220, 214, 248, 0.6); }
+        .pc-adv-sessions__row-usage {
+          display: flex; align-items: center; gap: 5px; flex-wrap: wrap;
+          margin-top: 2px;
+        }
+        .pc-adv-sessions__row-usage-pill {
+          display: inline-block;
+          font-size: 10px; font-weight: 600; letter-spacing: 0.02em;
+          padding: 2px 7px; border-radius: 999px;
+          background: rgba(167, 139, 250, 0.16);
+          color: rgba(220, 214, 248, 0.82);
+          border: 1px solid rgba(167, 139, 250, 0.22);
+          font-family: ui-monospace, monospace;
+          white-space: nowrap;
+        }
+        .pc-adv-sessions__row-usage-pill--model {
+          background: rgba(103, 232, 249, 0.16);
+          color: #a5e9f7;
+          border-color: rgba(103, 232, 249, 0.32);
+        }
+        .pc-adv-sessions__row-usage-pill--cost {
+          background: rgba(132, 204, 22, 0.14);
+          color: #bef264;
+          border-color: rgba(132, 204, 22, 0.32);
+        }
+        .pc-adv-sessions__row-usage--loading .pc-adv-sessions__row-usage-pill {
+          opacity: 0.45;
+          background: transparent;
+        }
         .pc-adv-sessions__row-pid,
         .pc-adv-sessions__mono {
           font-family: ui-monospace, monospace;
@@ -1033,11 +1153,27 @@ function SessionPanelContent({
   return (
     <>
       <div className="pc-adv-sessions__cards">
+        <MetricCard label="Model" value={formatModelLabel(state.latestModel) ?? '—'} />
+        <MetricCard label="Total tokens" value={formatCompactNumber(state.usage.totalTokens)} />
+        <MetricCard label="Cost (USD)" value={formatCostUsd(state.usage.totalCostUsd)} />
         <MetricCard label="Messages" value={state.messages.total} />
         <MetricCard label="User turns" value={state.messages.user} />
         <MetricCard label="Tool results" value={state.messages.toolResults} />
-        <MetricCard label="JSONL lines" value={state.totalLines} />
       </div>
+      {state.usage.assistantTurnsWithUsage > 0 ? (
+        <div className="pc-adv-sessions__cards">
+          <MetricCard label="Input tokens" value={formatCompactNumber(state.usage.inputTokens)} />
+          <MetricCard label="Output tokens" value={formatCompactNumber(state.usage.outputTokens)} />
+          <MetricCard label="Cache read" value={formatCompactNumber(state.usage.cacheReadTokens)} />
+          <MetricCard label="Cache write" value={formatCompactNumber(state.usage.cacheWriteTokens)} />
+        </div>
+      ) : null}
+      {state.models.length > 1 ? (
+        <div className="pc-adv-sessions__section">
+          <h4>Models used</h4>
+          <p className="pc-adv-sessions__snippet-text">{state.models.map(formatModelLabel).join(' → ')}</p>
+        </div>
+      ) : null}
       <div className="pc-adv-sessions__section">
         <h4>OMP session</h4>
         <div className="pc-adv-sessions__snippet">
@@ -1306,6 +1442,49 @@ function SnippetPanel({
   );
 }
 
+/** Inline pills on the row card — model + tokens + cost. Quiet
+ *  placeholder while the lazy summary load is in flight; nothing
+ *  rendered for console rows (no JSONL → no usage). */
+function RowUsagePills({
+  summary,
+  mode,
+}: {
+  summary: RowSummary | undefined;
+  mode: 'omp' | 'console';
+}) {
+  if (mode !== 'omp') return null;
+  if (!summary || !summary.loaded) {
+    return (
+      <span className="pc-adv-sessions__row-usage pc-adv-sessions__row-usage--loading">
+        <span className="pc-adv-sessions__row-usage-pill">loading usage…</span>
+      </span>
+    );
+  }
+  const modelLabel = formatModelLabel(summary.model);
+  return (
+    <span className="pc-adv-sessions__row-usage">
+      {modelLabel ? (
+        <span
+          className="pc-adv-sessions__row-usage-pill pc-adv-sessions__row-usage-pill--model"
+          title={summary.model ?? undefined}
+        >
+          {modelLabel}
+        </span>
+      ) : null}
+      {summary.totalTokens > 0 ? (
+        <span className="pc-adv-sessions__row-usage-pill" title="Total tokens (input + output + cache)">
+          {formatCompactNumber(summary.totalTokens)} tok
+        </span>
+      ) : null}
+      {summary.totalCostUsd > 0 ? (
+        <span className="pc-adv-sessions__row-usage-pill pc-adv-sessions__row-usage-pill--cost" title="USD cost reported by OMP">
+          {formatCostUsd(summary.totalCostUsd)}
+        </span>
+      ) : null}
+    </span>
+  );
+}
+
 function MetricCard({ label, value }: { label: string; value: string | number }) {
   return (
     <div className="pc-adv-sessions__card">
@@ -1338,6 +1517,42 @@ function groupRows(rows: SessionRow[]): Array<{ key: string; planSlug: string | 
     g.rows.push(r);
   }
   return Array.from(map.entries()).map(([key, g]) => ({ key, planSlug: g.planSlug, rows: g.rows }));
+}
+
+/** Compact human-readable model label: "claude-opus-4-7" → "Opus 4.7".
+ *  Falls through to the raw id for unknowns so unfamiliar providers
+ *  still surface something. Null pass-through. */
+function formatModelLabel(model: string | null): string | null {
+  if (!model) return null;
+  // Anthropic: claude-{family}-{version}[-suffix]
+  const m = /^claude-(opus|sonnet|haiku)-?(\d[\w.-]*)?/i.exec(model);
+  if (m) {
+    const family = m[1]!.charAt(0).toUpperCase() + m[1]!.slice(1).toLowerCase();
+    const ver = m[2] ? ` ${m[2].replace(/-/g, '.')}` : '';
+    return `${family}${ver}`;
+  }
+  // GPT: gpt-{ver}[-suffix]
+  const g = /^gpt-?(\d[\w.-]*)/i.exec(model);
+  if (g) return `GPT-${g[1]!.replace(/-/g, '.')}`;
+  return model;
+}
+
+/** 12345 → "12.3K"; 1234567 → "1.23M". Whole numbers under 1k stay bare. */
+function formatCompactNumber(n: number): string {
+  if (!Number.isFinite(n) || n <= 0) return '0';
+  if (n < 1000) return String(Math.round(n));
+  if (n < 1_000_000) return `${(n / 1000).toFixed(n < 10_000 ? 2 : 1)}K`;
+  if (n < 1_000_000_000) return `${(n / 1_000_000).toFixed(n < 10_000_000 ? 2 : 1)}M`;
+  return `${(n / 1_000_000_000).toFixed(2)}B`;
+}
+
+/** USD with sensible precision: <$0.01 → "<$0.01"; <$1 → "$0.123";
+ *  ≥$1 → "$12.34". Zero pass-through. */
+function formatCostUsd(amount: number): string {
+  if (!Number.isFinite(amount) || amount <= 0) return '$0';
+  if (amount < 0.01) return '<$0.01';
+  if (amount < 1) return `${amount.toFixed(3)}`;
+  return `${amount.toFixed(2)}`;
 }
 
 function formatDate(iso: string): string {

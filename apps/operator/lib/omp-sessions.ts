@@ -97,6 +97,23 @@ export interface OmpToolSummary {
   lastUsedAt?: string;
 }
 
+export interface OmpSessionUsage {
+  /** Aggregate input tokens across all assistant turns. */
+  inputTokens: number;
+  /** Aggregate output tokens across all assistant turns. */
+  outputTokens: number;
+  /** Aggregate cache-read tokens (tokens served from prompt cache). */
+  cacheReadTokens: number;
+  /** Aggregate cache-write tokens (tokens written to prompt cache). */
+  cacheWriteTokens: number;
+  /** Aggregate of all of the above. */
+  totalTokens: number;
+  /** Aggregate USD cost reported by OMP for this session. */
+  totalCostUsd: number;
+  /** Number of assistant turns that reported a usage block. */
+  assistantTurnsWithUsage: number;
+}
+
 export interface OmpSessionState {
   header: SessionHeader;
   filePath: string;
@@ -108,6 +125,15 @@ export interface OmpSessionState {
     assistant: number;
     toolResults: number;
   };
+  /** Distinct model ids used across assistant turns, in the order
+   *  they were first seen — most sessions stay on one model the
+   *  whole way through, but a model switch mid-session is allowed. */
+  models: string[];
+  /** Model used by the most recent assistant turn — null if none. */
+  latestModel: string | null;
+  /** Aggregate token + cost usage. Zeros when no assistant turn
+   *  reported a usage block (e.g. transcript truncated). */
+  usage: OmpSessionUsage;
   latestMessages: OmpMessageSnippet[];
   todos: OmpTodoPhase[];
   toolCounts: OmpToolSummary[];
@@ -583,6 +609,17 @@ export function getOmpSessionState(input: { id?: string; filePath?: string }): O
   const goals: OmpMessageSnippet[] = [];
   const compactions: OmpMessageSnippet[] = [];
   const handoffs: OmpMessageSnippet[] = [];
+  const modelSeen: string[] = [];
+  let latestModel: string | null = null;
+  const usage: OmpSessionUsage = {
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
+    totalTokens: 0,
+    totalCostUsd: 0,
+    assistantTurnsWithUsage: 0,
+  };
   let user = 0;
   let assistant = 0;
   let toolResults = 0;
@@ -596,6 +633,34 @@ export function getOmpSessionState(input: { id?: string; filePath?: string }): O
     if (role === 'user') user += 1;
     if (role === 'assistant') assistant += 1;
     if (role === 'toolResult') toolResults += 1;
+
+    // Token + model + cost aggregation. OMP records this on assistant
+    // turns as `message.model` (string) + `message.usage` (object with
+    // input/output/cacheRead/cacheWrite/totalTokens + cost.total).
+    if (role === 'assistant' && msg) {
+      const modelId = typeof msg.model === 'string' ? msg.model : null;
+      if (modelId) {
+        latestModel = modelId;
+        if (!modelSeen.includes(modelId)) modelSeen.push(modelId);
+      }
+      const u = asObject(msg.usage);
+      if (u) {
+        usage.assistantTurnsWithUsage += 1;
+        const num = (v: unknown): number => (typeof v === 'number' && Number.isFinite(v) ? v : 0);
+        usage.inputTokens += num(u.input);
+        usage.outputTokens += num(u.output);
+        usage.cacheReadTokens += num(u.cacheRead);
+        usage.cacheWriteTokens += num(u.cacheWrite);
+        // totalTokens is reported by OMP — prefer it; fall back to sum.
+        const reportedTotal = num(u.totalTokens);
+        usage.totalTokens +=
+          reportedTotal > 0
+            ? reportedTotal
+            : num(u.input) + num(u.output) + num(u.cacheRead) + num(u.cacheWrite);
+        const cost = asObject(u.cost);
+        if (cost) usage.totalCostUsd += num(cost.total);
+      }
+    }
 
     const text = extractEntryText(entry);
     if (msg && (role === 'user' || role === 'assistant' || role === 'toolResult')) {
@@ -647,6 +712,9 @@ export function getOmpSessionState(input: { id?: string; filePath?: string }): O
       assistant,
       toolResults,
     },
+    models: modelSeen,
+    latestModel,
+    usage,
     latestMessages,
     todos: latestTodoPhases(parsed.entries),
     toolCounts: Array.from(toolMap.values()).sort((a, b) => (b.lastUsedAt ?? '').localeCompare(a.lastUsedAt ?? '')),
