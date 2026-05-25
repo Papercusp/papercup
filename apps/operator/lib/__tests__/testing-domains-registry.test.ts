@@ -67,6 +67,7 @@ describe('testing-domains-registry', () => {
       'apps/operator/lib/__tests__/workspaces-tauri.test.ts',
       'apps/operator/app/_components/__tests__/routePending.test.ts',
       'apps/operator/app/_components/__tests__/RouteLink.test.ts',
+      'apps/operator/app/_components/__tests__/RouteProgressProvider.test.ts',
     ]));
   });
 });

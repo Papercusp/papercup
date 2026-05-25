@@ -14,27 +14,30 @@ import {
   scheduleRoutePendingClear,
   subscribeRoutePending,
 } from './routePending';
+import { shouldStartDocumentRouteProgressForAnchor } from './route-progress-document';
 
 function shouldStartDocumentRouteProgress(event: MouseEvent | PointerEvent): HTMLAnchorElement | null {
-  if (event.defaultPrevented) return null;
-  if ('button' in event && event.button !== 0) return null;
-  if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return null;
-
   const target = event.target;
-  if (!(target instanceof Element)) return null;
-
-  const anchor = target.closest('a[href]');
-  if (!(anchor instanceof HTMLAnchorElement)) return null;
-  if (anchor.hasAttribute('download')) return null;
-  if (anchor.target === '_blank') return null;
-  if (anchor.getAttribute('data-disable-progress') === 'true') return null;
-  if (target.closest('[data-prevent-progress="true"], [data-disable-progress="true"]')) return null;
-
-  const targetUrl = new URL(anchor.href);
-  const currentUrl = new URL(window.location.href);
-  if (targetUrl.origin !== currentUrl.origin) return null;
-  if (targetUrl.href === currentUrl.href) return null;
-  return anchor;
+  const anchor = target instanceof Element ? target.closest('a[href]') : null;
+  const allowed = shouldStartDocumentRouteProgressForAnchor({
+    defaultPrevented: event.defaultPrevented,
+    button: 'button' in event ? event.button : 0,
+    metaKey: event.metaKey,
+    ctrlKey: event.ctrlKey,
+    shiftKey: event.shiftKey,
+    altKey: event.altKey,
+    isElementTarget: target instanceof Element,
+    anchorPresent: anchor instanceof HTMLAnchorElement,
+    download: anchor instanceof HTMLAnchorElement ? anchor.hasAttribute('download') : false,
+    targetBlank: anchor instanceof HTMLAnchorElement ? anchor.target === '_blank' : false,
+    disableProgress: anchor instanceof HTMLAnchorElement ? anchor.getAttribute('data-disable-progress') === 'true' : false,
+    targetBlocksProgress:
+      target instanceof Element
+      && Boolean(target.closest('[data-prevent-progress="true"], [data-disable-progress="true"]')),
+    currentHref: window.location.href,
+    targetHref: anchor instanceof HTMLAnchorElement ? anchor.href : window.location.href,
+  });
+  return allowed && anchor instanceof HTMLAnchorElement ? anchor : null;
 }
 
 function BProgressBusyClassCleanup() {
