@@ -14,6 +14,8 @@ import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { getMemoryClient } from '../../memory/mem0-client';
 import { anchorMetadata } from '../../memory/anchors';
+import { checkConflicts } from '../../memory/conflict-check';
+import { createAnthropicJudge } from '../../memory/anthropic-judge';
 import { getSessionUserOrDefault } from '../../auth';
 
 const KINDS = ['identity', 'preference', 'project', 'correction', 'ephemeral'] as const;
@@ -157,8 +159,38 @@ export default defineTool({
             }],
           };
         }
+
+        // P-017: conflict-check on the top-K neighbors (semantic
+        // similarity didn't trip dedup, but the new fact may directly
+        // contradict an existing one — Haiku judges). Same posture as
+        // dedup: feature-flagged, failures fall through to write,
+        // bypassable via force=true.
+        const neighbors = (dedup?.results ?? [])
+          .filter((r): r is { id: string; memory: string; score?: number } =>
+            typeof r?.id === 'string' && typeof r?.memory === 'string')
+          .map((r) => ({ id: r.id, text: r.memory, score: r.score }));
+        if (neighbors.length > 0) {
+          const conflict = await checkConflicts({
+            newText: args.content,
+            neighbors,
+            judge: createAnthropicJudge(),
+          });
+          if (conflict.conflicts.length > 0) {
+            return {
+              content: [{
+                type: 'text',
+                text: JSON.stringify({
+                  ok: false,
+                  reason: 'conflict',
+                  conflicts: conflict.conflicts,
+                  hint: 'New memory directly contradicts existing memories. memory:forget the contradicted entries first, or pass force=true to write anyway.',
+                }),
+              }],
+            };
+          }
+        }
       } catch {
-        // dedup check failed — proceed with the write (degraded mode).
+        // dedup or conflict check failed — proceed with the write (degraded mode).
       }
     }
 
