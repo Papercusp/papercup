@@ -19,6 +19,7 @@ import {
   assessHarnessSubstrateHealth,
   type SubstrateHealthVerdict,
 } from '@/lib/sync/hyperbee/health';
+import { summariseWorkspaceSubstrate } from '@/lib/sync/hyperbee/summary';
 
 interface HarnessHealthRow {
   workspaceId: string;
@@ -88,8 +89,15 @@ const get = defineTool({
       });
     }
 
+    const summary = summariseWorkspaceSubstrate(
+      flagEnabled,
+      // The fallback row's workspaceId/slug are empty strings — drop
+      // those so the summary reflects only real per-harness verdicts.
+      rows.filter((r) => r.workspaceId !== '' && r.harnessSlug !== ''),
+    );
     return Response.json({
       flagEnabled,
+      summary,
       harnesses: rows,
     });
   },
