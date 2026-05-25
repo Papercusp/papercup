@@ -1,9 +1,10 @@
 ---
 title: Papercusp dogfood — Phase 5a (Hyperbee plumbing)
 slug: papercusp-dogfood-phase5a-hyperbee-plumbing-2026-05-24
-status: draft
+status: in-progress
+parent: papercusp-dogfood-v5-2026-05-23
 created: 2026-05-24
-updated: 2026-05-24
+updated: 2026-05-25
 owner: avi@storewolf.com
 ---
 
@@ -11,9 +12,9 @@ owner: avi@storewolf.com
 
 ## Now
 
-**State:** **draft execution plan.** Phase 5a is the **first phase that activates the HYPERBEE bucket** — every prior phase has used PG-only sync (Phase 3 reactivity + completion_ref). Phase 5a wires the Hyperbee primitives validated by Phase 0 spike into a working per-harness Autobase + Hyperbee KV + projection-to-PG path. L-sized; the largest plumbing task in the arc.
+**State:** **P-029 SHIPPED 2026-05-25.** ShareWizard.tsx (9-step UI) + ShareWizard.test.tsx (7/7 tests pass) at `apps/operator/app/harness/`. UI uses the existing types-only spine in `lib/harness/share-wizard-step-types.ts` (state machine), `harness-shared-config-types.ts` (buildFreshConfig), `harness-link-types.ts` (formatHarnessLink). Backend injection points (`resolveBinding`, `runBackfill`, `writeSharedJson`) are stubbed via prop overrides — each one points at a follow-up backend route to be added when wired.
 
-**Next action:** confirm Phase 0 `GATE: PASS` (especially Tauri-bundle verification — P-001e) before P-030 lands. Phase 5a will be the first real consumer of the bundled native deps; if Tauri bundling is broken, fix in Phase 0 first.
+**Next action:** P-030/P-031 (Hyperbee + Autobase wiring + bidirectional projection). Phase 0 macOS gate skipped per 2026-05-25 user direction — Linux-x64 spike already passes; treat the substrate as PASS for this loop. P-066 + P-070 follow once P-030/P-031 land.
 
 ## Background
 

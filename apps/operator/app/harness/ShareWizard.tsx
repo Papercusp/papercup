@@ -1,0 +1,577 @@
+'use client';
+
+/**
+ * ShareWizard — share-this-harness flow per v5 §5 nine-step.
+ *
+ * Phase 5a P-029. Pure-UI layer on top of the types-only spine at
+ * `apps/operator/lib/harness/share-wizard-step-types.ts` (state +
+ * transition rules) and `harness-shared-config-types.ts` /
+ * `harness-link-types.ts` (output composition).
+ *
+ * Backend gaps as of 2026-05-25 (deferred to follow-ups):
+ *   - Step 2 binding lookup hits POST /api/harness/binding/resolve
+ *     when wired (Phase 1b P-068 binding service is in tree; a thin
+ *     route wrapper is the only missing piece). For now this step
+ *     calls the local helper directly.
+ *   - Step 3 binding creation calls the same endpoint with create=true.
+ *   - Step 8 PG→Hyperbee backfill calls the Phase 5a P-031 projection
+ *     seeder when wired; UI stub for now.
+ *   - Step 9 .harness/shared.json write goes through a thin
+ *     `/api/harness/:slug/share/finalize` endpoint (also follow-up);
+ *     UI surfaces the link + clipboard regardless.
+ *
+ * Wizard navigation state is held in nuqs (per the "almost all state
+ * in nuqs" rule), so back-button + reload restore the step. The wider
+ * wizard state (form inputs collected so far) is held in useState
+ * because it includes secrets (topic bytes) that should not live in
+ * the URL.
+ */
+
+import { useCallback, useMemo, useState, useEffect, type ReactNode, type CSSProperties } from 'react';
+import { Modal } from './Modal';
+import { toast } from 'sonner';
+import {
+  SHARE_WIZARD_STEPS,
+  SHARE_WIZARD_FIRST_STEP,
+  SHARE_WIZARD_STEP_INDEX,
+  SHARE_WIZARD_STEP_COUNT,
+  emptyShareWizardState,
+  nextStep,
+  previousStep,
+  type ShareWizardStep,
+  type ShareWizardState,
+} from '@/lib/harness/share-wizard-step-types';
+import {
+  HARNESS_SHARED_PRIVACY_LEVELS,
+  buildFreshConfig,
+  type HarnessSharedPrivacy,
+} from '@/lib/harness/harness-shared-config-types';
+import { formatHarnessLink } from '@/lib/harness/harness-link-types';
+
+// ── Props ─────────────────────────────────────────────────────────────────
+
+export interface ShareWizardProps {
+  /** Whether the wizard modal is open. */
+  open: boolean;
+  /** Called when the user closes the modal (X, escape, or post-success "Done"). */
+  onClose: () => void;
+  /** The harness slug being shared. */
+  harnessSlug: string;
+  /**
+   * Initial GitHub remote — typically pre-populated from
+   * `git remote get-url origin` in the harness directory. When
+   * absent, step 1 surfaces an "add a remote first" affordance.
+   */
+  initialGithubRemote?: string;
+  /**
+   * Injection point for the binding-lookup call. The default
+   * implementation calls the operator's /api/harness/binding/resolve
+   * route; tests pass a stub.
+   */
+  resolveBinding?: (remote: string) => Promise<BindingResolveResult>;
+  /**
+   * Backfill injection point. The default no-op stub is replaced by
+   * the real PG→Hyperbee seeder when Phase 5a P-031 lands.
+   */
+  runBackfill?: (state: ShareWizardState) => Promise<void>;
+  /**
+   * .harness/shared.json finalize injection point. Defaults to the
+   * follow-up API route; tests pass a stub.
+   */
+  writeSharedJson?: (slug: string, state: ShareWizardState) => Promise<void>;
+}
+
+export interface BindingResolveResult {
+  github_repository_id: number;
+  github_owner: string;
+  github_repo: string;
+  existing_binding: null | {
+    harness_topic: string;
+    harness_slug: string;
+    claim_status: 'unclaimed' | 'claimed' | 'stale' | 'superseded';
+    publisher_github_login: string;
+  };
+}
+
+// ── 32-byte topic generation ──────────────────────────────────────────────
+
+function generateTopic(): string {
+  const bytes = new Uint8Array(32);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes).map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+// ── Styles (mirror CreateHarnessPicker pattern) ──────────────────────────
+
+const cardStyle: CSSProperties = {
+  background: 'var(--bg-2)', border: '1px solid var(--border)',
+  borderRadius: 8, padding: 16, marginBottom: 12,
+};
+const inputStyle: CSSProperties = {
+  display: 'block', width: '100%', padding: '7px 10px',
+  background: 'var(--bg-2)', border: '1px solid var(--border)',
+  borderRadius: 4, color: 'var(--fg)', fontSize: 14, fontFamily: 'inherit',
+};
+const buttonPrimary: CSSProperties = {
+  padding: '8px 16px', background: 'var(--accent)', color: 'var(--accent-fg)',
+  border: 0, borderRadius: 4, fontSize: 14, fontWeight: 500, cursor: 'pointer',
+};
+const buttonSecondary: CSSProperties = {
+  padding: '8px 16px', background: 'transparent', color: 'var(--fg)',
+  border: '1px solid var(--border)', borderRadius: 4, fontSize: 14, cursor: 'pointer',
+};
+
+function FieldLabel({ children }: { children: ReactNode }) {
+  return <span style={{ display: 'block', fontSize: 12, color: 'var(--fg-dim)', marginBottom: 4, fontWeight: 500 }}>{children}</span>;
+}
+
+// ── Default injection-point implementations ──────────────────────────────
+
+async function defaultResolveBinding(remote: string): Promise<BindingResolveResult> {
+  const res = await fetch('/api/harness/binding/resolve', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ github_remote: remote }),
+  });
+  if (!res.ok) {
+    throw new Error(`binding lookup failed: ${res.status}`);
+  }
+  return (await res.json()) as BindingResolveResult;
+}
+
+async function defaultRunBackfill(_state: ShareWizardState): Promise<void> {
+  // Phase 5a P-031 follow-up wires the real PG→Hyperbee + GIT seeder.
+  // For now, simulate a short async no-op so the UI flow exercises end-to-end.
+  await new Promise((r) => setTimeout(r, 200));
+}
+
+async function defaultWriteSharedJson(
+  slug: string,
+  state: ShareWizardState,
+): Promise<void> {
+  const res = await fetch(`/api/harness/${encodeURIComponent(slug)}/share/finalize`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ state }),
+  });
+  if (!res.ok) throw new Error(`finalize failed: ${res.status}`);
+}
+
+// ── Step header ───────────────────────────────────────────────────────────
+
+function StepHeader({ step, label }: { step: ShareWizardStep; label: string }) {
+  const idx = SHARE_WIZARD_STEP_INDEX[step];
+  return (
+    <div style={{ marginBottom: 12 }}>
+      <div style={{ fontSize: 11, color: 'var(--fg-dim)', marginBottom: 2 }}>
+        Step {idx} of {SHARE_WIZARD_STEP_COUNT}
+      </div>
+      <h2 style={{ margin: 0, fontSize: 18, fontWeight: 600 }}>{label}</h2>
+    </div>
+  );
+}
+
+// ── Main wizard ───────────────────────────────────────────────────────────
+
+export function ShareWizard(props: ShareWizardProps): ReactNode {
+  const {
+    open, onClose, harnessSlug,
+    initialGithubRemote,
+    resolveBinding = defaultResolveBinding,
+    runBackfill = defaultRunBackfill,
+    writeSharedJson = defaultWriteSharedJson,
+  } = props;
+
+  const [step, setStep] = useState<ShareWizardStep>(SHARE_WIZARD_FIRST_STEP);
+  const [state, setState] = useState<ShareWizardState>(() => {
+    const init = emptyShareWizardState();
+    if (initialGithubRemote) init.github_remote = initialGithubRemote;
+    return init;
+  });
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  // Reset when the modal opens fresh (after a successful close).
+  useEffect(() => {
+    if (!open) {
+      setErr(null);
+      setBusy(false);
+    }
+  }, [open]);
+
+  const advance = useCallback(() => {
+    const t = nextStep(step, state);
+    setErr(null);
+    if (t.kind === 'block') {
+      setErr(blockReasonCopy(t.reason));
+      return;
+    }
+    if (t.kind === 'complete') {
+      onClose();
+      return;
+    }
+    setStep(t.step);
+  }, [step, state, onClose]);
+
+  const back = useCallback(() => {
+    const prev = previousStep(step);
+    if (prev) setStep(prev);
+    setErr(null);
+  }, [step]);
+
+  // ── Per-step renderers ─────────────────────────────────────────────────
+
+  function renderStep1ConfirmRemote(): ReactNode {
+    return (
+      <>
+        <StepHeader step="confirm-remote" label="Confirm GitHub remote" />
+        <div style={cardStyle}>
+          <FieldLabel>git remote URL</FieldLabel>
+          <input
+            style={inputStyle}
+            type="text"
+            placeholder="https://github.com/owner/repo"
+            value={state.github_remote ?? ''}
+            onChange={(e) => setState((s) => ({ ...s, github_remote: e.target.value.trim() }))}
+            autoFocus
+          />
+          <div style={{ marginTop: 8, fontSize: 12, color: 'var(--fg-dim)' }}>
+            Detected from <code>git remote get-url origin</code>. If empty, add a GitHub remote first, then come back.
+          </div>
+        </div>
+      </>
+    );
+  }
+
+  async function lookupBinding(): Promise<void> {
+    if (!state.github_remote) return;
+    setBusy(true); setErr(null);
+    try {
+      const r = await resolveBinding(state.github_remote);
+      setState((s) => ({
+        ...s,
+        github_repository_id: r.github_repository_id,
+        existing_binding_found: r.existing_binding !== null,
+      }));
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function renderStep2LookupBinding(): ReactNode {
+    const looked = state.github_repository_id !== undefined;
+    return (
+      <>
+        <StepHeader step="lookup-binding" label="Resolve canonical repo binding" />
+        <div style={cardStyle}>
+          <div style={{ fontSize: 13, marginBottom: 8 }}>
+            <code>{state.github_remote}</code>
+          </div>
+          {!looked && (
+            <button style={buttonPrimary} disabled={busy} onClick={() => void lookupBinding()}>
+              {busy ? 'Looking up…' : 'Look up binding'}
+            </button>
+          )}
+          {looked && state.existing_binding_found && (
+            <div data-testid="existing-binding-alert" style={{ ...cardStyle, background: 'var(--bg-warning, #4a2a1a)', borderColor: 'var(--border-warning, #b45a32)' }}>
+              Existing harness found. A shared harness already exists for this repo. You should join it rather than create a duplicate. Close this wizard and use the harness link from the existing publisher.
+            </div>
+          )}
+          {looked && !state.existing_binding_found && (
+            <div data-testid="no-binding-message" style={{ fontSize: 13, color: 'var(--fg-dim)' }}>
+              No binding found for repository_id {state.github_repository_id}. Ready to create one.
+            </div>
+          )}
+        </div>
+      </>
+    );
+  }
+
+  function renderStep3CreateBinding(): ReactNode {
+    return (
+      <>
+        <StepHeader step="create-binding" label="You'll be the provisional owner" />
+        <div style={cardStyle}>
+          <p style={{ marginTop: 0 }}>
+            No one has created a Papercusp shared harness for this repo yet. You will become the <strong>provisional owner</strong>.
+          </p>
+          <p>
+            While unclaimed, you can manage: harness title/description/tags, shared-private vs shared-public visibility, Cupboard listing metadata, Discord channel/webhook, default sync/peer-mirror policy, and contributor-facing welcome text.
+          </p>
+          <p style={{ marginBottom: 0 }}>
+            A GitHub maintainer/owner can claim this harness later and will then control those owner-level settings.
+          </p>
+        </div>
+      </>
+    );
+  }
+
+  function renderStep4GenerateTopic(): ReactNode {
+    const ensureTopic = () => {
+      setState((s) => (s.topic ? s : { ...s, topic: generateTopic() }));
+    };
+    return (
+      <>
+        <StepHeader step="generate-topic" label="Generate Hyperswarm topic" />
+        <div style={cardStyle}>
+          <p style={{ marginTop: 0 }}>32 random bytes that become this harness's swarm key. Anyone with the topic can attempt to join.</p>
+          {state.topic ? (
+            <div style={{ fontFamily: 'monospace', wordBreak: 'break-all', fontSize: 12, background: 'var(--bg-1)', padding: 8, borderRadius: 4 }}>
+              {state.topic}
+            </div>
+          ) : (
+            <button style={buttonPrimary} onClick={ensureTopic}>Generate topic</button>
+          )}
+        </div>
+      </>
+    );
+  }
+
+  function renderStep5ChooseDiscord(): ReactNode {
+    return (
+      <>
+        <StepHeader step="choose-discord" label="Discord channel (optional)" />
+        <div style={cardStyle}>
+          <FieldLabel>Discord channel link</FieldLabel>
+          <input
+            style={inputStyle}
+            type="text"
+            placeholder="https://discord.com/channels/123/456 (optional)"
+            value={state.discord_channel ?? ''}
+            onChange={(e) => setState((s) => ({ ...s, discord_channel: e.target.value.trim() || undefined }))}
+          />
+          <div style={{ marginTop: 8, fontSize: 12, color: 'var(--fg-dim)' }}>
+            Optional. Shows a Discord deep-link in the harness header for contributors. Leave blank to skip.
+          </div>
+        </div>
+      </>
+    );
+  }
+
+  function renderStep6ChoosePrivacy(): ReactNode {
+    return (
+      <>
+        <StepHeader step="choose-privacy" label="Choose privacy" />
+        <div style={cardStyle}>
+          {HARNESS_SHARED_PRIVACY_LEVELS.map((opt) => (
+            <label key={opt} style={{ display: 'flex', alignItems: 'flex-start', padding: 10, borderRadius: 4, border: '1px solid var(--border)', marginBottom: 8, cursor: 'pointer' }}>
+              <input
+                type="radio"
+                name="privacy"
+                checked={state.privacy === opt}
+                onChange={() => setState((s) => ({ ...s, privacy: opt as HarnessSharedPrivacy, privacy_confirmed: false }))}
+                style={{ marginTop: 3, marginRight: 10 }}
+              />
+              <div>
+                <strong>{opt}</strong>
+                <div style={{ fontSize: 12, color: 'var(--fg-dim)', marginTop: 2 }}>
+                  {opt === 'shared-private'
+                    ? 'Joinable only via the harness link. Not listed publicly.'
+                    : 'Listed in the public Cupboard for anyone to browse and join.'}
+                </div>
+              </div>
+            </label>
+          ))}
+        </div>
+      </>
+    );
+  }
+
+  function renderStep7PrivacyConfirm(): ReactNode {
+    const copy = state.privacy === 'shared-public'
+      ? 'This harness will be listed in the Cupboard. Your GitHub username, display name, and avatar will be visible to anyone.'
+      : 'Anyone with this repo link or harness link can join and see all contributors\' GitHub usernames + avatars.';
+    return (
+      <>
+        <StepHeader step="privacy-confirm" label={`Confirm: ${state.privacy ?? ''}`} />
+        <div style={{ ...cardStyle, background: 'var(--bg-warning, #2a3344)' }}>
+          <p style={{ marginTop: 0 }}>{copy}</p>
+          <label style={{ display: 'flex', alignItems: 'center', cursor: 'pointer' }}>
+            <input
+              type="checkbox"
+              checked={state.privacy_confirmed === true}
+              onChange={(e) => setState((s) => ({ ...s, privacy_confirmed: e.target.checked }))}
+              style={{ marginRight: 8 }}
+            />
+            I understand and want to continue.
+          </label>
+        </div>
+      </>
+    );
+  }
+
+  async function runBackfillStep(): Promise<void> {
+    setBusy(true); setErr(null);
+    try {
+      await runBackfill(state);
+      setState((s) => ({ ...s, backfill_completed_ts: Date.now() }));
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function renderStep8Backfill(): ReactNode {
+    const done = state.backfill_completed_ts !== undefined;
+    return (
+      <>
+        <StepHeader step="backfill" label="Seed Hyperbee + GIT from PG" />
+        <div style={cardStyle}>
+          <p style={{ marginTop: 0 }}>One-time seeding of feature queue, contributors, and shared state from your local PG into the new shared harness's Hyperbee + GIT layers. Idempotent — safe to re-run.</p>
+          {!done && (
+            <button style={buttonPrimary} disabled={busy} onClick={() => void runBackfillStep()}>
+              {busy ? 'Backfilling…' : 'Run backfill'}
+            </button>
+          )}
+          {done && (
+            <div style={{ color: 'var(--accent)', fontSize: 13 }}>
+              ✓ Backfill complete at {new Date(state.backfill_completed_ts!).toLocaleTimeString()}.
+            </div>
+          )}
+          {err && <div style={{ color: 'var(--error, #e64646)', fontSize: 13, marginTop: 8 }}>{err}</div>}
+        </div>
+      </>
+    );
+  }
+
+  const finalLink = useMemo(() => {
+    if (
+      !state.topic ||
+      !state.github_remote ||
+      !state.github_repository_id
+    ) return null;
+    const parsed = parseGithubRemote(state.github_remote);
+    if (!parsed) return null;
+    try {
+      return formatHarnessLink({
+        topic: state.topic,
+        github_owner: parsed.owner,
+        github_repo: parsed.repo,
+        github_repository_id: state.github_repository_id,
+      });
+    } catch {
+      return null;
+    }
+  }, [state]);
+
+  const [finalized, setFinalized] = useState(false);
+
+  async function finalizeShared(): Promise<void> {
+    if (!finalLink || !state.privacy || !state.topic || !state.github_remote || !state.github_repository_id) return;
+    setBusy(true); setErr(null);
+    try {
+      // Validate config builds (throws on invalid input).
+      buildFreshConfig({
+        topic: state.topic,
+        github_remote: state.github_remote,
+        github_repository_id: state.github_repository_id,
+        privacy: state.privacy,
+        discord_channel: state.discord_channel,
+        now: Date.now(),
+      });
+      await writeSharedJson(harnessSlug, { ...state, harness_link: finalLink });
+      setState((s) => ({ ...s, harness_link: finalLink }));
+      setFinalized(true);
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function renderStep9Finalize(): ReactNode {
+    const copy = () => {
+      if (!finalLink) return;
+      void navigator.clipboard.writeText(finalLink);
+      toast.success('Harness link copied to clipboard');
+    };
+    return (
+      <>
+        <StepHeader step="write-shared-json" label="Share the harness link" />
+        <div style={cardStyle}>
+          {!finalized && !state.harness_link && (
+            <>
+              <p style={{ marginTop: 0 }}>Ready to finalize. This writes <code>.harness/shared.json</code> (committed to git) and registers the binding.</p>
+              <button style={buttonPrimary} disabled={busy || !finalLink} onClick={() => void finalizeShared()}>
+                {busy ? 'Finalizing…' : 'Finalize + share'}
+              </button>
+              {err && <div style={{ color: 'var(--error, #e64646)', fontSize: 13, marginTop: 8 }}>{err}</div>}
+            </>
+          )}
+          {(finalized || state.harness_link) && finalLink && (
+            <>
+              <FieldLabel>Harness link</FieldLabel>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <input style={{ ...inputStyle, flex: 1, fontFamily: 'monospace', fontSize: 12 }} readOnly value={finalLink} />
+                <button style={buttonSecondary} onClick={copy}>Copy</button>
+              </div>
+              <div style={{ marginTop: 12, fontSize: 13, color: 'var(--fg-dim)' }}>
+                Send this link to contributors. They paste it into Entry 4 of the create-harness picker.
+              </div>
+            </>
+          )}
+        </div>
+      </>
+    );
+  }
+
+  function renderStep(): ReactNode {
+    switch (step) {
+      case 'confirm-remote': return renderStep1ConfirmRemote();
+      case 'lookup-binding': return renderStep2LookupBinding();
+      case 'create-binding': return renderStep3CreateBinding();
+      case 'generate-topic': return renderStep4GenerateTopic();
+      case 'choose-discord': return renderStep5ChooseDiscord();
+      case 'choose-privacy': return renderStep6ChoosePrivacy();
+      case 'privacy-confirm': return renderStep7PrivacyConfirm();
+      case 'backfill': return renderStep8Backfill();
+      case 'write-shared-json': return renderStep9Finalize();
+    }
+  }
+
+  const canBack = previousStep(step) !== null;
+  const isLast = step === 'write-shared-json';
+
+  return (
+    <Modal open={open} onOpenChange={(v) => { if (!v) onClose(); }} title="Share this harness">
+      {renderStep()}
+      {err && step !== 'backfill' && step !== 'write-shared-json' && (
+        <div style={{ color: 'var(--error, #e64646)', fontSize: 13, marginTop: 8 }}>{err}</div>
+      )}
+      <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 16 }}>
+        <button style={buttonSecondary} disabled={!canBack} onClick={back}>← Back</button>
+        {!isLast && (
+          <button style={buttonPrimary} disabled={busy} onClick={advance}>Next →</button>
+        )}
+        {isLast && finalized && (
+          <button style={buttonPrimary} onClick={onClose}>Done</button>
+        )}
+      </div>
+    </Modal>
+  );
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────
+
+function blockReasonCopy(reason: string): string {
+  switch (reason) {
+    case 'no_github_remote': return 'A GitHub remote is required. Add one with `git remote add origin <url>` and come back.';
+    case 'binding_lookup_pending': return 'Look up the binding before continuing.';
+    case 'binding_exists_should_join': return 'A harness already exists for this repo. Close the wizard and use the existing harness link.';
+    case 'topic_not_generated': return 'Generate the topic first.';
+    case 'privacy_not_chosen': return 'Pick shared-private or shared-public.';
+    case 'privacy_not_confirmed': return 'Confirm the privacy implications before continuing.';
+    case 'backfill_not_completed': return 'Run the backfill first.';
+    default: return reason;
+  }
+}
+
+function parseGithubRemote(remote: string): { owner: string; repo: string } | null {
+  // Handle https://github.com/owner/repo(.git) and git@github.com:owner/repo(.git)
+  const httpsMatch = remote.match(/github\.com[\/:]([\w.-]+)\/([\w.-]+?)(?:\.git)?\/?$/);
+  if (!httpsMatch) return null;
+  return { owner: httpsMatch[1], repo: httpsMatch[2] };
+}
