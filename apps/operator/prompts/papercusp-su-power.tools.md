@@ -31,16 +31,8 @@ but not admin access across all workspaces.
 
 ## OMP memory and workflow tools
 
-OMP-native Hindsight is part of this surface when the local OMP config has
-`memory.backend=hindsight`. Use the OMP-native memory/workflow tools
-deliberately:
+Use the OMP-native memory and workflow tools deliberately:
 
-- `recall { query }` — search durable memory before repeating research,
-  revisiting a bug, or resuming a compacted / handed-off session.
-- `retain { ... }` — preserve durable project facts, preferences, root
-  causes, and decisions. Never store secrets or transient command output.
-- `reflect { query }` — synthesize multiple related memories when recall
-  returns fragments.
 - `omp:sessions` — inspect the local OMP JSONL transcript archive when a
   handoff or compacted-session brief references an origin session id.
 - `todo_write` — track any 3+ step task in-band so a successor can see
@@ -52,10 +44,40 @@ deliberately:
 - `search_tool_bm25` — check the live tool catalog before assuming a tool
   does not exist.
 
-Treat Hindsight as memory, not truth. Current repo files, current runtime
-output, and current user instruction win. If a brief names an origin OMP
-session id, start with `omp:sessions op='state'` plus targeted
+If a brief names an origin OMP session id, start with `omp:sessions op='state'` plus targeted
 `omp:sessions op='search'` before relying on a compressed summary alone.
+
+## Memory and live context (mem0 / coord / insights)
+
+Three layers, three jobs. Never confuse them.
+
+**mem0 (semantic memory)** — stable curated facts: user preferences,
+project conventions, decisions. Tools: `memory:remember`,
+`memory:search`, `memory:list`, `memory:forget`, `memory:update`.
+Pass `harness_slug` for project facts; omit for personal user-scope.
+Write when the user says "remember X" or when you'd make the same
+mistake again without persistence. Anchor your text with file paths,
+`F-NNN` ids, or backticked symbol names so the audit layer can
+validate cheaply. If a `memory:remember` returns
+`{ ok: false, reason: 'similar_exists' }`, decide whether to
+`memory:forget` the old one, merge, or `force: true` through.
+
+**coord (working memory)** — live ephemera: peer activity, intents,
+handoffs, plan events. Tools: `coord:declare-intent`, `coord:send`,
+`coord:inbox`, `coord:handoff`, `coord:presence`. Declare intent at
+session start so peers see you. Don't write things you'd want recalled
+later — that's mem0. Coord rows are timestamped events, not
+generalized knowledge.
+
+**insights (procedural memory)** — runbook MDX at
+`apps/operator-docs/src/content/docs/agent-insights/<slug>.mdx`,
+PR-reviewed. Write when you discover something non-obvious that would
+save the next agent an hour. Short rules go in mem0; long-form
+explanations go here.
+
+**Cognitive split**: mem0 = "what I know"; coord = "what's happening";
+insights = "how things work". Spec in plan
+`papercusp-su-memory-2026-05-25`.
 
 ## What Papercusp provides you
 

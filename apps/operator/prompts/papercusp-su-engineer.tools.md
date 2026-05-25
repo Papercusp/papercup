@@ -145,24 +145,8 @@ Read it once at the start of a fresh session. The policies are
 binding; this tools.md is the *how*, the policies are the *what's
 allowed.*
 
-### OMP memory, Hindsight, and blocked task-panel tools
+### OMP session recovery and blocked task-panel tools
 
-OMP-native Hindsight is enabled for engineer-collaborator sessions when
-the local OMP config has `memory.backend=hindsight`. Use the native OMP
-memory tools deliberately:
-
-- `recall { query }` — search durable Hindsight memory before making
-  an architectural decision, debugging a familiar failure, or resuming
-  a compacted / handed-off session.
-- `retain { ... }` — preserve durable facts: user preferences, repo
-  conventions, root causes, non-obvious invariants, and decisions that
-  would save the next agent time. Do **not** store secrets, tokens,
-  passwords, private keys, or transient command output.
-- `reflect { query }` — ask Hindsight to synthesize prior experience
-  across related memories when `recall` returns multiple partial hits.
-
-Treat Hindsight as memory, not truth. Current user instruction, current
-repo files, and current runtime output always override recalled memory.
 If a successor brief names an origin OMP session id, use
 `omp:sessions { op: 'search' | 'get' | 'state', ... }` to recover the
 session history before guessing why a prior decision was made.
@@ -219,6 +203,58 @@ For compaction-sensitive work, write successor briefs that name the
 origin OMP session id and the relevant plan/session state. The next
 agent should start by calling `omp:sessions op='state'` and targeted
 `omp:sessions op='search'` before relying on a compressed summary alone.
+
+## Memory and live context (mem0 / coord / insights)
+
+Three layers, three jobs. Never confuse them.
+
+**mem0 (semantic memory)** — stable curated facts: user preferences,
+project conventions, decisions. Tools: `memory:remember`,
+`memory:search`, `memory:list`, `memory:forget`, `memory:update`.
+
+- *Scope*: pass `harness_slug` for project facts; omit for personal
+  user-scope facts. The `shared` arg is deprecated.
+- *When to write*: the user explicitly says "remember X" / "don't
+  forget Y" / "from now on…", OR you notice a recurring mistake you'd
+  make again without persistence. Anchor your text with file paths,
+  `F-NNN` ids, or backticked symbol names — the audit layer validates
+  them later (zero LLM cost).
+- *When NOT to write*: "I'm doing X right now" / "I just finished Y" —
+  that's coord. "Here's a runbook for handling Z" — that's an insight.
+- *Hygiene*: `memory:remember` may return
+  `{ ok: false, reason: 'similar_exists', similar_memory_id: ..., ... }`
+  when your write is a near-duplicate of an existing memory. Decide:
+  `memory:forget` the old one first, merge into your new write, or
+  pass `force: true` to write anyway.
+
+**coord (working memory)** — live ephemera: peer activity, intents,
+handoffs, plan events, inter-agent messages. Tools: `coord:declare-intent`,
+`coord:send`, `coord:inbox`, `coord:handoff`, `coord:presence`,
+`coord:plan-events`.
+
+- *When to write*: at session start (declare-intent so peers see you),
+  when work transitions to another agent (handoff), when sending a
+  directive (send), when checking what peers are doing (presence).
+- *When NOT to write*: anything you'd want recalled later — that's
+  mem0. Coord rows are timestamped events, not generalized knowledge;
+  they expire from relevance fast.
+
+**insights (procedural memory)** — the runbook. MDX files at
+`apps/operator-docs/src/content/docs/agent-insights/<slug>.mdx`.
+Long-form explanations of confusing failures, root causes, recipes.
+PR-reviewed.
+
+- *When to write*: you discover something non-obvious that would save
+  the next agent an hour. Write a new insight MDX (one short page per
+  insight). Format spec in
+  [agent policies §18](/internal/docs/agent-policies#18-agent-insights).
+- *When NOT to write*: short factual rules (those are mem0); ephemeral
+  state (that's coord).
+
+**Cognitive split**: mem0 = "what I know"; coord = "what's happening";
+insights = "how things work". Mixing layers leads to drift — the same
+failure mode that motivated this plan
+(`papercusp-su-memory-2026-05-25`).
 
 ## Cross-tool patterns
 
