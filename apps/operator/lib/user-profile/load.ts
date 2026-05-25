@@ -25,6 +25,7 @@ import type {
 } from '../../app/users/github/[id]/UserProfile';
 import type { BindingStatus } from '../../app/_components/BindingStatusBadge';
 import type { ClaimStatus } from '../../app/_components/ClaimStatusBadge';
+import { loadUserRecentActivity } from './load-activity';
 
 export interface UserProfileLoadOpts {
   github_user_id: number;
@@ -243,10 +244,17 @@ export async function loadUserProfile(
       claim_status: normalizeClaimStatus(c.claim_status),
     }));
 
-  // 5) Recent activity is substrate-fed (feature_claims + auto_review_audit
-  //    + others); left as an empty array for now and filled by a future
-  //    follow-up that joins those tables once the substrate is booting.
-  const recent_activity: ActivityEntry[] = [];
+  // 5) Recent activity feed — cross-harness, scoped to visible harnesses.
+  let recent_activity: ActivityEntry[] = [];
+  try {
+    recent_activity = await loadUserRecentActivity({
+      github_user_id,
+      visible_harness_slugs: harnesses.map((h) => h.harness_slug),
+      runQuery,
+    });
+  } catch {
+    recent_activity = [];
+  }
 
   return {
     github_user_id,
