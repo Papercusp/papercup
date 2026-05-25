@@ -74,6 +74,25 @@ describe('routePending helpers', () => {
     expect(getRoutePendingHref()).toBeNull();
     expect(getRoutePendingTarget()).toBeNull();
   });
+  it('keeps harness pending state visible until its minimum window elapses', () => {
+    beginRoutePending('/harness/sheets?ws=default');
+    scheduleRoutePendingClear();
+
+    vi.advanceTimersByTime(200);
+    expect(getRoutePendingHref()).toBe('/harness/sheets?ws=default');
+
+    vi.advanceTimersByTime(200);
+    expect(getRoutePendingHref()).toBeNull();
+  });
+
+  it('generic routes clear immediately and duplicate scheduling is idempotent', () => {
+    beginRoutePending('/support?ws=default');
+    scheduleRoutePendingClear();
+    scheduleRoutePendingClear();
+
+    vi.advanceTimersByTime(0);
+    expect(getRoutePendingHref()).toBeNull();
+  });
   it('notifies subscribers on begin and finish transitions', () => {
     const listener = vi.fn();
     const unsubscribe = subscribeRoutePending(listener);
