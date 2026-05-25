@@ -16,9 +16,11 @@ describe('navigation progress helpers', () => {
     expect(shouldMaintainIdleProgress(false)).toBe(true);
     expect(shouldMaintainIdleProgress(true)).toBe(false);
   });
-  it('suppresses navigation progress on the no-HMR desktop host', () => {
+  it('suppresses navigation progress on the no-HMR desktop and preview hosts', () => {
     expect(shouldSuppressNavigationProgress('http://localhost:3070')).toBe(true);
     expect(shouldSuppressNavigationProgress('http://127.0.0.1:3070')).toBe(true);
+    expect(shouldSuppressNavigationProgress('http://localhost:4173')).toBe(true);
+    expect(shouldSuppressNavigationProgress('http://127.0.0.1:4173')).toBe(true);
     expect(shouldSuppressNavigationProgress('http://localhost:3055')).toBe(false);
   });
 });
