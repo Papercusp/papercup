@@ -64,4 +64,11 @@ describe('RouteProgressProvider document capture helper', () => {
   it('starts progress for protocol-relative same-origin anchor hrefs', () => {
     expect(shouldStartDocumentRouteProgressForAnchor({ ...base, targetHref: '//localhost:3070/support?ws=default' })).toBe(true);
   });
+  it('does not start progress for protocol-relative cross-origin anchor hrefs', () => {
+    expect(shouldStartDocumentRouteProgressForAnchor({ ...base, targetHref: '//example.com/docs' })).toBe(false);
+  });
+
+  it('does not start progress for relative same-document anchor hrefs', () => {
+    expect(shouldStartDocumentRouteProgressForAnchor({ ...base, targetHref: '?ws=default#details' })).toBe(false);
+  });
 });

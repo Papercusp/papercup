@@ -55,4 +55,11 @@ describe('RouteLink click progress decision', () => {
   it('does not start progress for relative hash-only navigations on the same document', () => {
     expect(shouldStartRouteProgressForClick({ ...base, targetHref: '#details' })).toBe(false);
   });
+  it('does not start progress for protocol-relative cross-origin targets', () => {
+    expect(shouldStartRouteProgressForClick({ ...base, targetHref: '//example.com/docs' })).toBe(false);
+  });
+
+  it('does not start progress for relative same-document targets', () => {
+    expect(shouldStartRouteProgressForClick({ ...base, targetHref: '?ws=default#details' })).toBe(false);
+  });
 });
