@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import * as Collapsible from '@radix-ui/react-collapsible';
 import * as Tabs from '@radix-ui/react-tabs';
 import { Activity, ChevronRight, FolderKanban, TerminalSquare, Zap } from 'lucide-react';
@@ -733,12 +733,11 @@ export default function AdvSessionsClient() {
                         {activeCount} active
                       </span>
                     ) : (
-                      <span
-                        className="pc-adv-sessions__group-last-active"
-                        title={`Last active ${new Date(group.lastActiveMs).toLocaleString()}`}
-                      >
-                        last active {formatLastActive(group.lastActiveMs)}
-                      </span>
+                      <Tooltip label={`Last active ${new Date(group.lastActiveMs).toLocaleString()}`}>
+                        <span className="pc-adv-sessions__group-last-active">
+                          last active {formatLastActive(group.lastActiveMs)}
+                        </span>
+                      </Tooltip>
                     )}
                   </button>
                 </Collapsible.Trigger>
@@ -2000,7 +1999,7 @@ function SummaryStat({
 }: {
   label: string;
   value: string | number;
-  icon: ReactNode;
+  icon: React.ReactNode;
   tone?: 'active';
 }) {
   return (
