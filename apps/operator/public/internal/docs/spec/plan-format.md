@@ -228,6 +228,64 @@ poison the allocator.
 * `## Deferred follow-ups` — items intentionally not in scope;
   can later be promoted to real items.
 
+## Umbrella plans and per-phase split-outs
+
+A long-running plan often gets split into per-phase execution
+plans (e.g. `myproject-v5-2026-05-23.md` spawns
+`myproject-phase0-2026-05-23.md`, `myproject-phase1a-…`, etc).
+When that happens, write activity divides:
+
+* **The per-phase plan owns its item-level `## Now`.** Every
+  `plans:set-now` / `plans:set-status` / `plans:add-item` /
+  `plans:add-decision` for work *inside* the phase lands on the
+  per-phase plan, not the umbrella.
+* **The umbrella plan owns phase-level rollup.** Its `## Now`
+  only updates on a *phase status transition* — a per-phase plan
+  flips from `draft` → `active` → `shipped` (or `superseded`).
+* **Per-phase plan's frontmatter `status:` is the source of truth
+  for that phase's state.** The umbrella does *not* duplicate
+  the value; it links + reads.
+
+### Why
+
+Two `## Now` blocks updated in parallel drift within a day. A
+1000+-line umbrella's `## Now` cannot be a per-task journal
+without rotting. Each doc gets one job: the per-phase plan is
+the working surface; the umbrella is the index.
+
+### When to update the umbrella
+
+Trigger an umbrella `plans:set-now` only on these events:
+
+1. A per-phase plan moves to `status: shipped` — record it in
+   the rollup line, advance any blocked phases.
+2. A per-phase plan moves to `status: active` — record "Phase
+   X started."
+3. A per-phase plan moves to `status: superseded` — note the
+   reason and the successor slug.
+4. A phase that was implicit in the umbrella's prose acquires
+   a per-phase plan — record the slug + carve-out date.
+
+Routine progress inside an active phase never touches the
+umbrella. If you find yourself updating both per-phase and
+umbrella in the same commit for the same item, you're doing
+it wrong: ask "did a *phase* just change status?" If no, the
+umbrella stays untouched.
+
+### Umbrella's relationship to its per-phase plans
+
+Recommended pattern: the umbrella's `## Now` carries a short
+"Phase status" line per phase, sourced from each per-phase
+plan's frontmatter — manually mirrored at status-transition
+time. For programs spawning many phases, a `## Phase index`
+section listing each per-phase slug + its frontmatter status
+keeps the rollup readable without one-block-per-phase
+duplication.
+
+Per-phase plans should include a `supersedes:` or `parent:`
+hint in frontmatter pointing back at the umbrella's slug —
+this is informational; the parser ignores it.
+
 ## Worked example
 
 Filename: `example-feature-2026-05-20.md` (slug = stem).
