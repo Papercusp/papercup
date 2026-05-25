@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { isDesktopHmrEnabled, NO_VITE_CLIENT_BODY, shouldInterceptStaticAnchor, shouldServeNoopViteClient, shouldSuppressJsReload } from '../../../operator-vite/dev-mode';
+import { isDesktopHmrEnabled, NO_VITE_CLIENT_BODY, shouldInterceptStaticAnchor, shouldInterceptStaticAnchorClick, shouldServeNoopViteClient, shouldSuppressJsReload } from '../../../operator-vite/dev-mode';
 
 describe('operator-vite desktop no-HMR mode', () => {
   it('disables HMR by default', () => {
@@ -32,6 +32,29 @@ describe('operator-vite desktop no-HMR mode', () => {
     expect(shouldInterceptStaticAnchor('https://example.com', 'http://localhost:3070/harness')).toBe(false);
     expect(shouldInterceptStaticAnchor('javascript:alert(1)', 'http://localhost:3070/harness')).toBe(false);
     expect(shouldInterceptStaticAnchor('/support', 'http://localhost:3055/harness')).toBe(false);
+  });
+  it('does not intercept modified, non-primary, download, or _blank anchor clicks', () => {
+    const base = {
+      targetHref: '/support',
+      currentHref: 'http://localhost:3070/harness?ws=default',
+      defaultPrevented: false,
+      button: 0,
+      metaKey: false,
+      ctrlKey: false,
+      shiftKey: false,
+      altKey: false,
+      download: false,
+      targetBlank: false,
+    };
+    expect(shouldInterceptStaticAnchorClick(base)).toBe(true);
+    expect(shouldInterceptStaticAnchorClick({ ...base, metaKey: true })).toBe(false);
+    expect(shouldInterceptStaticAnchorClick({ ...base, ctrlKey: true })).toBe(false);
+    expect(shouldInterceptStaticAnchorClick({ ...base, shiftKey: true })).toBe(false);
+    expect(shouldInterceptStaticAnchorClick({ ...base, altKey: true })).toBe(false);
+    expect(shouldInterceptStaticAnchorClick({ ...base, button: 1 })).toBe(false);
+    expect(shouldInterceptStaticAnchorClick({ ...base, download: true })).toBe(false);
+    expect(shouldInterceptStaticAnchorClick({ ...base, targetBlank: true })).toBe(false);
+    expect(shouldInterceptStaticAnchorClick({ ...base, defaultPrevented: true })).toBe(false);
   });
 
   it('keeps desktop dev defaulting to the no-HMR script', () => {

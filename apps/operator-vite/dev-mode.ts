@@ -24,3 +24,22 @@ export function shouldInterceptStaticAnchor(targetHref: string, currentHref: str
     return false;
   }
 }
+
+export function shouldInterceptStaticAnchorClick(opts: {
+  targetHref: string;
+  currentHref: string;
+  defaultPrevented: boolean;
+  button: number;
+  metaKey: boolean;
+  ctrlKey: boolean;
+  shiftKey: boolean;
+  altKey: boolean;
+  download: boolean;
+  targetBlank: boolean;
+}): boolean {
+  if (opts.defaultPrevented) return false;
+  if (opts.button !== 0) return false;
+  if (opts.metaKey || opts.ctrlKey || opts.shiftKey || opts.altKey) return false;
+  if (opts.download || opts.targetBlank) return false;
+  return shouldInterceptStaticAnchor(opts.targetHref, opts.currentHref);
+}
