@@ -9,9 +9,9 @@ owner: aviynw3@gmail.com
 
 ## Now
 
-**State:** Phases A–F complete (P-001–P-031). Phase F delivered: `scoper.outputMode` config gate in run.sh (both afterDone + near-done triggers) and harness-scoper.ts; `OUTPUT_MODE=` extra passed to scoper invoke; scoper.md `MODE=proposal` Output section branched on OUTPUT_MODE=plan (plans:new → plans:set-now → plans:add-item ×N → plans:add-decision) vs OUTPUT_MODE=proposal (legacy file path); scoper.tools.md named workflow added. Default `proposal` preserves existing behaviour; opt-in via `.harness/config.json → scoper.outputMode: "plan"`.
+**State:** Phases A–F complete (P-001–P-031). P-032 soak **started 2026-05-25**: `scoper.outputMode: 'plan'` enabled in `sheets-clone/.harness/config.json`. Waiting for 1 week of live scoper proposal runs before flipping the default and retiring the legacy path (P-033–P-038).
 
-**Next:** P-032 — run end-to-end on the dogfood harness for 1 week with `outputMode: 'plan'`; collect bugs before flipping the default.
+**Next:** P-033–P-038 are blocked on the P-032 soak completing (~2026-06-01). Human review required: check `sheets-clone/.harness/proposals/` is empty (no new files) and that plan drafts appear in ProposalsPanel with `source: scoper` after the next scoper proposal run.
 
 ---
 ## Background
@@ -342,7 +342,7 @@ Default stays `proposal` until Phase F soaks; flip to `plan` after.
 
 - [x] P-030 Scoper persona/tools update: emit plan drafts via `plans:*` MCP when `outputMode: 'plan'`
 - [x] P-031 Per-harness config gate: `.harness/config.json` → `scoper.outputMode` (default `proposal`, opt-in `plan`)
-- [ ] P-032 Run end-to-end on the dogfood harness for 1 week with `outputMode: 'plan'`; collect bugs
+- [~] P-032 Run end-to-end on the dogfood harness for 1 week with `outputMode: 'plan'`; collect bugs — **soak started 2026-05-25 on sheets-clone**; complete ~2026-06-01
 - [ ] P-033 Once stable, flip default to `plan`
 
 ### Phase G — Legacy retirement (after Phase F soak)
