@@ -12,13 +12,23 @@ owner: avi@storewolf.com
 
 ## Now
 
-**State:** **P-036 + P-039 + P-031-claims-projection SHIPPED 2026-05-25.**
+**State:** **Distributed-claim primitive + adapter + bridge + audit-read end-to-end SHIPPED 2026-05-25.**
 
-- `apps/operator/lib/orchestrator/feature-claim.ts` — `claimFeature(base, opts)` pure-logic primitive against `ClaimAutobaseHandle` interface. Implements v5 §0.6: append-claim → await-own-merge → check-first-in-order → fire-or-drop. Carries `schema_version` per D-024. `pickWinningClaim` helper handles tiebreak (earliest seq + bytewise-lex of pubkey on exact tie). 12/12 tests pass — covers P-036a single-writer, P-036b two-writer race, P-036c/d schema_version, plus validation + three-writer + defensive missing-own-claim paths.
-- `apps/operator/lib/orchestrator/claim-audit.ts` — `recordClaimAttempt` + `recentClaimAttempts` against `harness_shared.claim_audit`. PG-only LOCAL audit log. 6/6 tests pass.
-- `apps/operator/lib/sync/hyperbee/projections/feature-claims.ts` — Hyperbee `claims/<feature_id>/<seq>` → PG `harness_shared.feature_claims` append-only projection. 5/5 tests pass.
+Phase 6 primitives shipped:
+- `lib/orchestrator/feature-claim.ts` — `claimFeature(base, opts)` v5 §0.6 implementation (12 tests).
+- `lib/orchestrator/claim-audit.ts` — `recordClaimAttempt` + `recentClaimAttempts` (6 tests).
+- `lib/sync/hyperbee/projections/feature-claims.ts` — Hyperbee → PG projection (5 tests).
+- `lib/orchestrator/claim-handle-adapter.ts` — substrate `AutobaseHarnessHandle` → `ClaimAutobaseHandle` (8 tests).
+- `lib/orchestrator/get-claim-handle.ts` — handle lookup composing boot-all + adapter (5 tests).
+- `lib/orchestrator/distributed-claim.ts` — `attemptDistributedClaim` entry point with substrate-not-booted / pubkey-unresolved / attempted branches (8 tests).
+- `lib/orchestrator/get-claim-strategy.ts` — `'distributed' | 'single-writer'` decision (3 tests).
+- `lib/orchestrator/load-claim-attempts.ts` — `loadRecentClaimAttempts` + `loadClaimAttemptStats` for diagnostics (11 tests).
+- `GET /api/harness/:slug/claim-attempts` — JSON read.
+- `ClaimAttemptStatsPill` + `ClaimAttemptStatsPillClient` (6 + 7 tests).
 
-**Next action:** P-037 — wire the orchestrator's pickup path to call `claimFeature(base, {feature_id, claimer_github_user_id})` + log the result via `recordClaimAttempt`. Requires the substrate's Autobase to be booted in `instrumentation-node.ts` so a real `ClaimAutobaseHandle` exists. Currently the substrate is in tree but not booted; P-037 lands alongside the boot wiring. P-038 (manual `working` flip) and full P-036f (backoff on contested features) follow.
+**Next action:** P-037 production orchestrator wiring — the actual call site that invokes `if (getClaimStrategy(...) === 'distributed') { await attemptDistributedClaim(...) } else { /* legacy */ }`. Pure code change; needs UI verification of the orchestrator's existing chrome before flipping. Pattern documented in `substrate-flag-flip-runbook` §6.
+
+Phase 6 verdict: **GATE: PROCEED.** Every substrate-facing piece is wired; production wiring is the user-driven step.
 
 ## Background
 
