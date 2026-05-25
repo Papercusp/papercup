@@ -200,7 +200,7 @@ SUMMARY: Test.
 // handleHttpToolRequest spy. defineTool is stubbed as a no-op so the
 // module-level registration call in plan-block-handler.ts doesn't fail.
 function makeMcpStub(
-  handleHttpToolRequest: (...args: unknown[]) => unknown,
+  handleHttpToolRequest: (req: { pathname: string; body: Record<string, unknown> }) => Promise<unknown>,
 ): Record<string, unknown> {
   return {
     defineTool: (cfg: unknown) => cfg,

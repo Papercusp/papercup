@@ -75,21 +75,21 @@ updated: 2026-05-24
         } as Response;
       }
       throw new Error(`unexpected verb: ${verb}`);
-    }) as typeof fetch;
+    }) as unknown as typeof fetch;
 
     const { rejectDraftPlan } = await import('./plans-api');
     const result = await rejectDraftPlan('my-plan-2026-05-24');
 
     expect(result).toEqual({ ok: true });
     expect(setCalled).toBe(true);
-    expect(setBody?.slug).toBe('my-plan-2026-05-24');
-    expect(setBody?.expectedHash).toBe(contentHash);
-    expect(typeof setBody?.content).toBe('string');
+    expect((setBody as unknown as Record<string, unknown>).slug).toBe('my-plan-2026-05-24');
+    expect((setBody as unknown as Record<string, unknown>).expectedHash).toBe(contentHash);
+    expect(typeof (setBody as unknown as Record<string, unknown>).content).toBe('string');
     // The CAS payload must swap draft → superseded but otherwise be identical.
-    expect((setBody?.content as string)).toContain('status: superseded');
-    expect((setBody?.content as string)).not.toContain('status: draft');
+    expect(((setBody as unknown as Record<string, unknown>).content as string)).toContain('status: superseded');
+    expect(((setBody as unknown as Record<string, unknown>).content as string)).not.toContain('status: draft');
     // Everything else is preserved.
-    expect((setBody?.content as string)).toContain('title: My plan');
+    expect(((setBody as unknown as Record<string, unknown>).content as string)).toContain('title: My plan');
   });
 
   it('returns ok:false with status_not_draft when plan is not draft', async () => {
@@ -106,7 +106,7 @@ updated: 2026-05-24
       status: 200,
       json: async () => ({ raw, contentHash: 'h', items: [] }),
       text: async () => JSON.stringify({ raw, contentHash: 'h', items: [] }),
-    })) as typeof fetch;
+    })) as unknown as typeof fetch;
 
     const { rejectDraftPlan } = await import('./plans-api');
     const result = await rejectDraftPlan('my-plan-2026-05-24');
@@ -119,7 +119,7 @@ updated: 2026-05-24
       status: 200,
       json: async () => ({ error: 'plan_not_found' }),
       text: async () => JSON.stringify({ error: 'plan_not_found' }),
-    })) as typeof fetch;
+    })) as unknown as typeof fetch;
 
     const { rejectDraftPlan } = await import('./plans-api');
     const result = await rejectDraftPlan('no-such-plan');
@@ -152,7 +152,7 @@ updated: 2026-05-24
         json: async () => ({ code: 'stale', currentContent: raw, currentHash: 'new' }),
         text: async () => JSON.stringify({ code: 'stale', currentContent: raw }),
       } as Response;
-    }) as typeof fetch;
+    }) as unknown as typeof fetch;
 
     const { rejectDraftPlan } = await import('./plans-api');
     const result = await rejectDraftPlan('stale-2026-05-24');
@@ -166,7 +166,7 @@ updated: 2026-05-24
       ok: true, status: 200,
       json: async () => ({ raw: null, contentHash: 'h', items: [] }),
       text: async () => JSON.stringify({ raw: null, contentHash: 'h', items: [] }),
-    })) as typeof fetch;
+    })) as unknown as typeof fetch;
 
     const { rejectDraftPlan } = await import('./plans-api');
     const result = await rejectDraftPlan('empty-plan');
@@ -192,7 +192,7 @@ describe('writeErrorOf', () => {
     const res = writeErrorOf({
       error: 'lint_failed',
       errors: [{ code: 'missing-now', message: 'no now block', severity: 'error' }],
-    } as Parameters<typeof writeErrorOf>[0]);
+    } as unknown as Parameters<typeof writeErrorOf>[0]);
     expect(res).toContain('missing-now');
   });
 
@@ -232,7 +232,7 @@ describe('promoteToHarness — feature-derivation shape (P-027 contract)', () =>
         json: async () => ({ ok: true, features_created: 2, ids: ['F-AUTO-001', 'F-AUTO-002'] }),
         text: async () => JSON.stringify({ ok: true, features_created: 2 }),
       } as Response;
-    }) as typeof fetch;
+    }) as unknown as typeof fetch;
 
     const { promoteToHarness } = await import('./plans-api');
     const res = await promoteToHarness({
@@ -243,9 +243,9 @@ describe('promoteToHarness — feature-derivation shape (P-027 contract)', () =>
     });
 
     expect(res.ok).toBe(true);
-    expect(capturedBody?.slug).toBe('my-plan-2026-05-24');
-    expect(capturedBody?.harness_slug).toBe('myharn');
-    expect(capturedBody?.apply).toBe(true);
-    expect(Array.isArray(capturedBody?.features)).toBe(true);
+    expect((capturedBody as unknown as Record<string, unknown>).slug).toBe('my-plan-2026-05-24');
+    expect((capturedBody as unknown as Record<string, unknown>).harness_slug).toBe('myharn');
+    expect((capturedBody as unknown as Record<string, unknown>).apply).toBe(true);
+    expect(Array.isArray((capturedBody as unknown as Record<string, unknown>).features)).toBe(true);
   });
 });
