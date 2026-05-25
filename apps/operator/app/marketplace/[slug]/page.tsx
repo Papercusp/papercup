@@ -118,7 +118,7 @@ export default async function HarnessDetailPage({ params }: { params: Promise<{ 
           <div className="pc-marketplace-detail-meta">
             <code>v{m.version}</code>
             <span>{m.license ?? 'unspecified'}</span>
-            <span>by {m.publishedBy ? <a href={`https://github.com/${m.publishedBy}`} target="_blank" rel="noreferrer">@{m.publishedBy}</a> : (m.author ?? 'unknown')}</span>
+            <span>by {m.publishedBy ? <a href={`/users/${encodeURIComponent(m.publishedBy)}`} title={`View @${m.publishedBy}'s Papercusp profile`}>@{m.publishedBy}</a> : (m.author ?? 'unknown')}</span>
             {m.publishedAt && <span>published {new Date(m.publishedAt).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })}</span>}
             {m.homepage && <a href={m.homepage} target="_blank" rel="noreferrer">homepage</a>}
           </div>
