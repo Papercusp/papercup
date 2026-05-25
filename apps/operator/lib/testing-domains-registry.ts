@@ -201,9 +201,8 @@ defineTestDomain({
       globs: [
         'apps/operator/lib/agent-tools/locks/**/*.test.ts',
         'apps/operator/lib/endpoint-route/__tests__/su-locks*.test.ts',
-      ],
-      runners: [
-        { kind: 'shell', cmd: 'bash', args: ['apps/operator/scripts/su-locks-e2e.sh'], label: 'su-locks-e2e' },
+        // P-030 migrated the legacy su-locks-e2e.sh into:
+        'apps/operator/scripts/hooks/omp/__tests__/su-locks-omp.integration.test.ts',
       ],
     },
     {

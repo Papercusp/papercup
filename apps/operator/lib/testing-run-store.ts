@@ -10,11 +10,20 @@
  *
  * Runs auto-evict 1h after finishing so the map stays bounded across
  * a long dev session.
+ *
+ * P-014 persistence (admin-ui rows):
+ * - For 'vitest' / 'playwright' spawns, we set `PAPERCUSP_TEST_RUN_SOURCE=admin-ui`
+ *   on the child env. The admin-test-runs reporter inside the child reads it
+ *   and writes per-file rows with `source='admin-ui'`. This preserves
+ *   per-file granularity, including for vitest-multi (Run section / Run all).
+ * - For 'node' / 'shell' spawns there's no in-process reporter, so the store
+ *   itself writes one fallback row on close. Fail-soft (D-007) — never throws.
  */
 
 import { spawn, type ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { inferWorkspaceRoot } from './testing-domain-glob';
+import { resolveGitContext } from './testing-branch-resolve';
 
 export type RunStatus = 'running' | 'pass' | 'fail' | 'cancelled' | 'error';
 
@@ -91,7 +100,15 @@ export function startRun(req: SpawnRequest): RunSnapshot {
   try {
     proc = spawn(req.command, req.args, {
       cwd,
-      env: { ...process.env, PAPERCUSP_TEST_RUN_GROUP: runId },
+      env: {
+        ...process.env,
+        PAPERCUSP_TEST_RUN_GROUP: runId,
+        // P-014: tell the in-process reporter (vitest/playwright) to stamp
+        // rows with source='admin-ui' instead of inferring ci/local. For
+        // node/shell runners we additionally write a single fallback row
+        // from this store at close (see persistFallbackRow below).
+        PAPERCUSP_TEST_RUN_SOURCE: 'admin-ui',
+      },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
   } catch (e) {
@@ -112,15 +129,72 @@ export function startRun(req: SpawnRequest): RunSnapshot {
     appendOutput(state, `\n[spawn-error] ${e.message}\n`);
     state.snapshot.status = 'error';
     if (state.snapshot.finishedAt === null) state.snapshot.finishedAt = Date.now();
+    void persistFallbackRow(state.snapshot);
   });
   proc.on('close', (code) => {
     state.snapshot.exitCode = code;
     state.snapshot.finishedAt = Date.now();
-    if (state.snapshot.status === 'cancelled') return;
-    state.snapshot.status = code === 0 ? 'pass' : 'fail';
+    if (state.snapshot.status !== 'cancelled') {
+      state.snapshot.status = code === 0 ? 'pass' : 'fail';
+    }
+    void persistFallbackRow(state.snapshot);
   });
 
   return snapshot;
+}
+
+/**
+ * P-014 fallback persistence — write one row to harness_shared.test_runs
+ * for runners that have no in-process reporter (node, shell). For vitest /
+ * playwright spawns the in-process reporter already writes per-file rows
+ * with source='admin-ui'; this helper short-circuits in those cases to
+ * avoid duplicating work.
+ *
+ * D-007 fail-soft: every error swallowed, never throws.
+ */
+async function persistFallbackRow(s: RunSnapshot): Promise<void> {
+  if (s.kind === 'vitest' || s.kind === 'playwright' || s.kind === 'cargo') return;
+  if (s.kind === 'admin-suite') return;
+  if (s.status === 'running') return;
+  try {
+    const filePath = s.filePath ?? s.label;
+    const startedAtIso = new Date(s.startedAt).toISOString();
+    const finishedAtIso = s.finishedAt ? new Date(s.finishedAt).toISOString() : null;
+    const duration = s.finishedAt ? s.finishedAt - s.startedAt : null;
+    const outputTail = s.output ? s.output.slice(-4096) : null;
+
+    let branch: string | null = null;
+    let commit: string | null = null;
+    try {
+      const ctx = await resolveGitContext();
+      branch = ctx.branch;
+      commit = ctx.commit;
+    } catch { /* fail-soft */ }
+
+    const pg = await import('postgres');
+    const url =
+      process.env.HARNESS_ADMIN_DATABASE_URL ??
+      process.env.PAPERCUSP_TEST_RUNS_DB_URL ??
+      'postgresql://harness_admin:harness_admin_pwd@localhost:5432/papercusp';
+    const sql = pg.default(url, {
+      max: 1,
+      connect_timeout: 1,
+      idle_timeout: 1,
+      max_lifetime: 5,
+      onnotice: () => {},
+    });
+    await Promise.race([
+      sql`
+        INSERT INTO harness_shared.test_runs
+          (file_path, framework, status, duration_ms, started_at, finished_at, output_tail, run_group_id, source, branch, commit_sha)
+        VALUES
+          (${filePath}, ${s.kind}, ${s.status}, ${duration}, ${startedAtIso},
+           ${finishedAtIso}, ${outputTail}, ${s.runId}, ${'admin-ui'}, ${branch}, ${commit})
+      `,
+      new Promise((_, reject) => setTimeout(() => reject(new Error('pg_insert_timeout')), 1000)),
+    ]).catch(() => { /* swallow — D-007 */ });
+    try { await sql.end({ timeout: 1 }); } catch { /* swallow */ }
+  } catch { /* swallow — D-007 */ }
 }
 
 export function getRun(runId: string): RunSnapshot | null {

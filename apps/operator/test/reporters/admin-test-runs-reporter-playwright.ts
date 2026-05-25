@@ -23,6 +23,7 @@
 import type { Reporter, TestCase, TestResult } from '@playwright/test/reporter';
 import { resolveGitContext } from '@/lib/testing-branch-resolve';
 import { inferWorkspaceRoot } from '@/lib/testing-domain-glob';
+import { resolveTestRunSource } from '@/lib/testing-run-source';
 import { posix, relative } from 'node:path';
 
 interface TestRunRow {
@@ -76,7 +77,7 @@ async function insertRow(row: TestRunRow): Promise<void> {
   const pg = await tryGetPg();
   if (!pg) return;
 
-  const source = process.env.CI ? 'ci' : 'local';
+  const source = resolveTestRunSource();
   const runGroupId = process.env.PAPERCUSP_TEST_RUN_GROUP ?? null;
 
   try {

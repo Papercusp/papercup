@@ -130,3 +130,51 @@ describe('listRuns', () => {
     expect(ids.indexOf(b.runId)).toBeLessThan(ids.indexOf(a.runId));
   });
 });
+
+describe('P-014 admin-ui source propagation', () => {
+  // The store sets PAPERCUSP_TEST_RUN_SOURCE=admin-ui on every spawn so the
+  // in-process Vitest/Playwright reporter stamps rows with the right source.
+  // The child env is observable via bash printenv.
+  it('passes PAPERCUSP_TEST_RUN_SOURCE=admin-ui to the child env', async () => {
+    const snap = startRun({
+      kind: 'shell',
+      label: 'env-probe',
+      command: 'bash',
+      args: ['-c', 'echo SRC=$PAPERCUSP_TEST_RUN_SOURCE; exit 0'],
+    });
+    await waitFor(() => getRun(snap.runId)?.finishedAt !== null);
+    expect(getRun(snap.runId)?.output).toContain('SRC=admin-ui');
+  });
+
+  it('passes PAPERCUSP_TEST_RUN_GROUP=<runId> to the child env', async () => {
+    const snap = startRun({
+      kind: 'shell',
+      label: 'group-probe',
+      command: 'bash',
+      args: ['-c', 'echo GRP=$PAPERCUSP_TEST_RUN_GROUP; exit 0'],
+    });
+    await waitFor(() => getRun(snap.runId)?.finishedAt !== null);
+    expect(getRun(snap.runId)?.output).toContain(`GRP=${snap.runId}`);
+  });
+
+  // persistFallbackRow is fail-soft (D-007). With no PG configured for the
+  // unit-test env the insert silently swallows; the run should still finish
+  // cleanly and never throw.
+  it('node/shell close handler never throws even when PG is unreachable', async () => {
+    const original = process.env.HARNESS_ADMIN_DATABASE_URL;
+    process.env.HARNESS_ADMIN_DATABASE_URL = 'postgresql://nobody@127.0.0.1:1/papercusp_no_such_db';
+    try {
+      const snap = startRun({
+        kind: 'shell',
+        label: 'fail-soft',
+        command: 'bash',
+        args: ['-c', 'echo done'],
+      });
+      await waitFor(() => getRun(snap.runId)?.finishedAt !== null, 5000);
+      expect(getRun(snap.runId)?.status).toBe('pass');
+    } finally {
+      if (original === undefined) delete process.env.HARNESS_ADMIN_DATABASE_URL;
+      else process.env.HARNESS_ADMIN_DATABASE_URL = original;
+    }
+  });
+});

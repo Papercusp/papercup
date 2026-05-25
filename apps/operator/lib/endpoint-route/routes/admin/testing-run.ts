@@ -27,12 +27,16 @@ function toSpawn(runner: TestRunner): SpawnRequest | { error: string } {
   switch (runner.kind) {
     case 'vitest':
       if (!runner.filePath) return { error: 'vitest requires filePath' };
+      // No explicit --reporter flag: vitest CLI's --reporter REPLACES the
+      // config-side reporter list, which would drop the admin reporter that
+      // writes per-file rows to test_runs (P-014). The merged config already
+      // includes `default` via @papercusp/test-config.
       return {
         kind: 'vitest',
         label: `vitest ${runner.filePath}`,
         filePath: runner.filePath,
         command: 'npx',
-        args: ['vitest', 'run', runner.filePath, '--reporter=default'],
+        args: ['vitest', 'run', runner.filePath],
       };
     case 'vitest-multi':
       if (!Array.isArray(runner.filePaths) || runner.filePaths.length === 0) {
@@ -42,7 +46,7 @@ function toSpawn(runner: TestRunner): SpawnRequest | { error: string } {
         kind: 'vitest',
         label: runner.label ?? `vitest ${runner.filePaths.length} files`,
         command: 'npx',
-        args: ['vitest', 'run', ...runner.filePaths, '--reporter=default'],
+        args: ['vitest', 'run', ...runner.filePaths],
       };
     case 'playwright':
       if (!runner.filePath) return { error: 'playwright requires filePath' };
