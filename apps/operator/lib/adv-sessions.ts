@@ -189,6 +189,14 @@ export async function listAdvSessions(limit = 100): Promise<AdvSessionRow[]> {
   try {
     await ensureAdvSessionsTable();
     const { sql } = getOrgPg();
+    // Filter "dead-on-arrival" rows — a terminal that ended within 5
+    // seconds of launch and never recorded an omp_thread_id never
+    // produced a transcript. Showing those rows is just noise: the
+    // detail panel can't load state, the Inspect / Resume buttons
+    // dead-end, the user has no recourse. They're tracked in PG (audit
+    // trail) but excluded from the UI list. A surviving session with
+    // no omp_thread_id is still shown (it might be brand-new and
+    // OMP just hasn't written its JSONL header yet).
     const rows = await sql<Array<{
       id: number;
       workspace_id: string;
@@ -208,6 +216,11 @@ export async function listAdvSessions(limit = 100): Promise<AdvSessionRow[]> {
              window_id, omp_thread_id, label, cwd, started_at, ended_at, exit_code
         FROM harness_shared.adv_sessions
        WHERE workspace_id = ${activeWorkspaceId()}
+         AND NOT (
+           ended_at IS NOT NULL
+           AND omp_thread_id IS NULL
+           AND EXTRACT(EPOCH FROM (ended_at - started_at)) < 5
+         )
        ORDER BY started_at DESC
        LIMIT ${limit}
     `;

@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { parseAsString, useQueryState } from 'nuqs';
+import { parseAsArrayOf, parseAsString, useQueryState } from 'nuqs';
 import { toast } from 'sonner';
 import { launchOmpAgent } from '@/lib/native-omp-launch';
 import { usePlanList } from '../../admin/plans/plans-api';
@@ -219,6 +219,12 @@ export default function AdvSessionsClient() {
     parseAsString.withDefault(''),
   );
   const [selectedSessionId, setSelectedSessionId] = useQueryState('session', parseAsString);
+  // Plan groups start collapsed; user-expanded ones are pinned in the
+  // URL. nuqs so reloads keep the user's open set.
+  const [expandedGroups, setExpandedGroups] = useQueryState(
+    'expand',
+    parseAsArrayOf(parseAsString).withDefault([]),
+  );
   const [panel, setPanel] = useQueryState('panel', parseAsString.withDefault('overview'));
   const [historyQuery, setHistoryQuery] = useQueryState('q', parseAsString.withDefault(''));
   const [launchingNew, setLaunchingNew] = useState(false);
@@ -558,6 +564,17 @@ export default function AdvSessionsClient() {
 
   const grouped = useMemo(() => groupRows(rows ?? []), [rows]);
 
+  // If the user deep-links to a session inside a collapsed group,
+  // auto-expand that group so the row is visible. Don't fight the
+  // user — only adds keys, never removes.
+  useEffect(() => {
+    if (!selectedRow) return;
+    const group = grouped.find((g) => g.rows.some((r) => r.id === selectedRow.id));
+    if (!group) return;
+    if (expandedGroups.includes(group.key)) return;
+    void setExpandedGroups([...expandedGroups, group.key]);
+  }, [selectedRow, grouped, expandedGroups, setExpandedGroups]);
+
   return (
     <div className="pc-adv-sessions">
       <div className="pc-adv-sessions__head">
@@ -621,14 +638,37 @@ export default function AdvSessionsClient() {
 
       <div className="pc-adv-sessions__layout">
         <div className="pc-adv-sessions__listpane">
-          {grouped.map((group) => (
+          {grouped.map((group) => {
+            const isExpanded = expandedGroups.includes(group.key);
+            const activeCount = group.rows.filter((r) => r.endedAt == null).length;
+            return (
             <section className="pc-adv-sessions__group" key={group.key}>
-              <header className="pc-adv-sessions__group-head">
+              <button
+                type="button"
+                className="pc-adv-sessions__group-head"
+                onClick={() =>
+                  void setExpandedGroups(
+                    isExpanded
+                      ? expandedGroups.filter((k) => k !== group.key)
+                      : [...expandedGroups, group.key],
+                  )
+                }
+                aria-expanded={isExpanded}
+              >
+                <span className="pc-adv-sessions__group-chevron" aria-hidden>
+                  {isExpanded ? '▼' : '▶'}
+                </span>
                 <span className="pc-adv-sessions__group-title">
                   {group.planSlug ?? '(no plan)'}
                 </span>
                 <span className="pc-adv-sessions__group-count">{group.rows.length}</span>
-              </header>
+                {activeCount > 0 ? (
+                  <span className="pc-adv-sessions__group-active" title={`${activeCount} active session${activeCount === 1 ? '' : 's'}`}>
+                    {activeCount} active
+                  </span>
+                ) : null}
+              </button>
+              {isExpanded ? (
               <ul className="pc-adv-sessions__list">
                 {group.rows.map((row) => {
                   const active = isActive(row);
@@ -707,8 +747,10 @@ export default function AdvSessionsClient() {
                   );
                 })}
               </ul>
+              ) : null}
             </section>
-          ))}
+            );
+          })}
         </div>
 
         <SessionDetail
@@ -779,18 +821,54 @@ export default function AdvSessionsClient() {
           font-size: 13px;
         }
         .pc-adv-sessions__error { color: #fca5a5; border: 1px solid rgba(248, 113, 113, 0.4); }
-        .pc-adv-sessions__group { margin-bottom: 18px; }
+        .pc-adv-sessions__group { margin-bottom: 14px; }
         .pc-adv-sessions__group-head {
-          display: flex; align-items: baseline; gap: 8px;
-          padding-bottom: 6px;
-          border-bottom: 1px solid rgba(167, 139, 250, 0.16);
-          margin-bottom: 6px;
+          all: unset;
+          cursor: pointer;
+          display: flex; align-items: center; gap: 8px;
+          padding: 6px 8px;
+          width: 100%;
+          border-radius: 6px;
+          border: 1px solid rgba(167, 139, 250, 0.16);
+          background: rgba(11, 13, 28, 0.45);
+          transition: background 80ms;
+          margin-bottom: 4px;
+        }
+        .pc-adv-sessions__group-head:hover {
+          background: rgba(31, 23, 56, 0.7);
+        }
+        .pc-adv-sessions__group-head:focus-visible {
+          outline: 2px solid rgba(103, 232, 249, 0.6);
+          outline-offset: 1px;
+        }
+        .pc-adv-sessions__group-chevron {
+          font-size: 9px;
+          color: rgba(220, 214, 248, 0.55);
+          width: 10px;
+          text-align: center;
+          flex-shrink: 0;
         }
         .pc-adv-sessions__group-title {
           font-size: 13px; font-weight: 700; color: #f7f5ff;
+          flex: 1;
+          min-width: 0;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
         }
         .pc-adv-sessions__group-count {
           font-size: 11px; color: rgba(220, 214, 248, 0.55);
+          font-family: ui-monospace, monospace;
+        }
+        .pc-adv-sessions__group-active {
+          font-size: 10px;
+          font-weight: 600;
+          letter-spacing: 0.04em;
+          padding: 2px 7px;
+          border-radius: 999px;
+          background: rgba(103, 232, 249, 0.18);
+          color: #67e8f9;
+          border: 1px solid rgba(103, 232, 249, 0.32);
         }
         .pc-adv-sessions__list { list-style: none; padding: 0; margin: 0; }
         .pc-adv-sessions__row {
