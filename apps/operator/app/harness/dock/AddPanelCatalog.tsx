@@ -27,6 +27,11 @@ interface AddPanelCatalogProps {
   className?: string;
   /** Show stub panel types (view:design/proposals/etc) in the catalog. */
   includeStubs?: boolean;
+  /**
+   * When provided, only these panel types are shown. Useful for context-
+   * scoped catalogs (e.g. adv harnesses dock only shows adv:* panels).
+   */
+  allowedTypes?: string[];
 }
 
 const HUMAN_LABELS: Record<string, string> = {
@@ -44,6 +49,9 @@ const HUMAN_LABELS: Record<string, string> = {
   'view:summary': 'Summary',
   'view:insights': 'Insights',
   'view:config': 'Config',
+  'adv:features': 'Features',
+  'adv:issues': 'Issues',
+  'adv:detail': 'Detail',
 };
 
 const STUB_TYPES = new Set([
@@ -54,10 +62,14 @@ const STUB_TYPES = new Set([
   'view:insights',
   'view:config',
   'data:chat',
+  // spawned programmatically via pin action — not user-openable
+  'adv:pinned',
 ]);
 
 function labelFor(type: string): string {
   if (HUMAN_LABELS[type]) return HUMAN_LABELS[type];
+  const registryTitle = panelRegistry.get(type)?.meta.title;
+  if (registryTitle) return registryTitle;
   if (type.startsWith('plugin:')) {
     const parts = type.split(':');
     // plugin:<name>:<id>
@@ -70,6 +82,7 @@ export function AddPanelCatalog({
   defaultSlug,
   className,
   includeStubs = false,
+  allowedTypes,
 }: AddPanelCatalogProps) {
   const [open, setOpen] = useState(false);
   const [registryTick, setRegistryTick] = useState(0);
@@ -80,8 +93,9 @@ export function AddPanelCatalog({
     return panelRegistry
       .list()
       .filter((t) => t !== '__missing__')
-      .filter((t) => includeStubs || !STUB_TYPES.has(t));
-  }, [registryTick, includeStubs]);
+      .filter((t) => includeStubs || !STUB_TYPES.has(t))
+      .filter((t) => !allowedTypes || allowedTypes.includes(t));
+  }, [registryTick, includeStubs, allowedTypes]);
 
   useEffect(() => {
     if (!open) return;

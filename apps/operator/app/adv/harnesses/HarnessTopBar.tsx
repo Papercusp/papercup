@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { Activity, CheckCircle2, Coins, Network } from 'lucide-react';
+import { AddPanelCatalog } from '../../harness/dock/AddPanelCatalog';
 import { toast } from 'sonner';
 import { StatCard } from '@restart/ui-primitives';
 import HealthBadge from '../../harness/HealthBadge';
@@ -145,6 +146,13 @@ export default function HarnessTopBar({ slug, projects }: Props) {
         )}
         {!status && slug && <span className="pc-adv-topbar__loading">loading…</span>}
         {slug && <RegisterSubsButton slug={slug} />}
+        {slug && (
+          <AddPanelCatalog
+            defaultSlug={slug}
+            allowedTypes={['adv:features', 'adv:issues', 'adv:detail']}
+            className="pc-adv-topbar__add-panel"
+          />
+        )}
       </div>
 
       <style>{`
@@ -199,6 +207,18 @@ export default function HarnessTopBar({ slug, projects }: Props) {
           color: rgba(220, 214, 248, 0.5);
           font-size: 12px;
           font-style: italic;
+        }
+        .pc-adv-topbar__add-panel {
+          background: rgba(167, 139, 250, 0.14);
+          color: #c4b5fd;
+          border: 1px solid rgba(167, 139, 250, 0.38);
+          border-radius: 999px;
+          font-weight: 700;
+          letter-spacing: 0.02em;
+        }
+        .pc-adv-topbar__add-panel:hover {
+          background: rgba(167, 139, 250, 0.26);
+          color: #e7f7ff;
         }
       `}</style>
     </div>
