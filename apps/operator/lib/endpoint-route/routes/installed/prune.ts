@@ -61,7 +61,9 @@ export default defineTool({
     const reg = await loadHarnessRegistry();
     const { removed, kept } = pruneRegistry(reg, body);
     if (!body.dryRun && removed.length > 0) {
-      await saveHarnessRegistry({ projects: kept });
+      // Prune is an intentional-removal path: a registry whose every
+      // entry is stale legitimately prunes to empty.
+      await saveHarnessRegistry({ projects: kept }, undefined, { allowEmpty: true });
     }
     return Response.json({ ok: true, removed, remaining: kept.length, dryRun: !!body.dryRun });
   },

@@ -290,7 +290,9 @@ const remove = defineTool({
     const before = reg.projects.length;
     reg.projects = reg.projects.filter((p) => p.slug !== slug);
     if (reg.projects.length === before) return Response.json({ error: 'not found' }, { status: 404 });
-    await saveHarnessRegistry(reg);
+    // Intentional-removal path: deleting the last harness legitimately
+    // empties the registry, so opt out of the catastrophic-empty guard.
+    await saveHarnessRegistry(reg, undefined, { allowEmpty: true });
     return Response.json({ ok: true });
   },
 });
