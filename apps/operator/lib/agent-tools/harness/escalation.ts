@@ -1,9 +1,9 @@
 /**
- * harness:escalation — read escalation.md + supervisor-notes.md for a
- * harness slug.
+ * harness:escalation — read escalation + supervisor-notes for a harness.
  *
- * Calls getEscalation() in lib/harness-readers.ts directly — same
- * function the GET /api/harness/:slug/escalation route projects.
+ * Reads from harness_escalations (PG-canonical, written by TS orchestrator
+ * + bash run.sh), then harness_text_artifacts, then disk fallback.
+ * Calls getEscalation() in lib/harness-readers.ts.
  */
 
 import { z } from 'zod';
@@ -26,7 +26,7 @@ const ALL_ROLES = [
 export default defineTool({
   name: 'harness:escalation',
   profile: 'engineer',
-  description: 'Read escalation.md + supervisor-notes.md for a harness slug.',
+  description: 'Read escalation + supervisor-notes for a harness (PG-canonical; falls back to disk).',
   guidance: {
     when: 'User asks "what\'s flagged?", "what got escalated to the supervisor?", or you need to see the supervisor\'s notes on a harness.',
     notWhen: 'For general "what\'s wrong with X" (open issues), use `issues:list`. Escalation files are a specific, narrower view than the issue list.',

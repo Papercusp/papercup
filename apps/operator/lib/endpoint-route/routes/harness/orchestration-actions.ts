@@ -2,7 +2,10 @@
  * Independent orchestration actions:
  *
  *   POST /api/harness/:slug/smoke-test/run     — exec service-smoke-test.sh; capture combined stdout+stderr
- *   POST /api/harness/:slug/architect/apply    — write a body to SPEC.md, validation-contract.md, or append to supervisor-notes.md (target switch)
+ *   POST /api/harness/:slug/architect/apply    — write a body to SPEC.md or append to supervisor-notes.md (target switch)
+ *
+ * Note: 'contract' (validation-contract.md) target removed — assertions are now
+ * inline VAL-* bullets in plan items (plans-central-harness-ux-2026-05-26 P-014).
  *
  * Two unrelated POSTs with no shared helpers — bundled into one batch
  * to keep the file count manageable.
@@ -60,7 +63,6 @@ const architectApply = defineTool({
     let path: string;
     switch (body.target) {
       case 'SPEC.md': path = join(project.path, 'SPEC.md'); break;
-      case 'contract': path = join(harnessDir(project), 'validation-contract.md'); break;
       case 'supervisor-notes': {
         const notesPath = join(harnessDir(project), 'supervisor-notes.md');
         const block = `\n## architect ${new Date().toISOString()}\n\n${body.content}\n`;
