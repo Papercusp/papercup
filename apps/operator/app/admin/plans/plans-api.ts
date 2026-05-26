@@ -113,13 +113,21 @@ const BASE = '/api/admin/plans';
 
 async function getJson<T>(
   verb: string,
-  params?: Record<string, string | boolean | undefined>,
+  params?: Record<string, string | boolean | readonly string[] | undefined>,
 ): Promise<T> {
   const url = new URL(`${BASE}/${verb}`, window.location.origin);
   if (params) {
     for (const [k, v] of Object.entries(params)) {
       if (v === undefined || v === null) continue;
-      url.searchParams.set(k, String(v));
+      if (Array.isArray(v)) {
+        // Repeated params → bodyFromSearchParams (admin/_plans-args.ts)
+        // collapses repeated keys into string[]. Lets us pass
+        // `harness_slugs: ['a', 'b']` as `?harness_slugs=a&harness_slugs=b`
+        // without changing the admin route.
+        for (const item of v) url.searchParams.append(k, String(item));
+      } else {
+        url.searchParams.set(k, String(v));
+      }
     }
   }
   const r = await fetch(url.toString());
@@ -151,6 +159,8 @@ export function fetchPlanList(params?: {
   status?: PlanStatus;
   includeArchived?: boolean;
   includeLegacy?: boolean;
+  /** P-029: fan out across multiple harnesses. */
+  harness_slugs?: readonly string[];
 }) {
   return getJson<{ plans: PlanListRow[] }>('list', params);
 }
@@ -214,10 +224,16 @@ export function usePlanList(params?: {
   status?: PlanStatus;
   includeArchived?: boolean;
   includeLegacy?: boolean;
+  /** P-029: fan out across multiple harnesses. Pass undefined to use
+   *  the ctx-resolved single harness. */
+  harness_slugs?: readonly string[];
 }) {
+  // Dep key for the array: stable join so a same-content array doesn't
+  // re-trigger the fetch every render.
+  const harnessSlugsKey = params?.harness_slugs?.slice().sort().join('|') ?? '';
   return useAsyncJson(
     () => fetchPlanList(params),
-    [params?.status, params?.includeArchived, params?.includeLegacy],
+    [params?.status, params?.includeArchived, params?.includeLegacy, harnessSlugsKey],
   );
 }
 

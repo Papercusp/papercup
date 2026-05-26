@@ -69,15 +69,17 @@ export default function PlansClient() {
   const [, setJump] = useQueryState('jump', parseAsString);
   const railRef = useRef<PlanRailHandle | null>(null);
   const searchRef = useRef<HTMLInputElement | null>(null);
-  const planList = usePlanList({ includeArchived: true, includeLegacy: true });
 
-  // P-024 + P-016 + P-015: harness filter for the rail.
+  // P-024 + P-016 + P-015 + P-029 (audit fix): harness scope.
   // Three signals stack:
   //   - `?h=<slug>` user-explicit harness filter (overrides everything).
   //   - `?slug=<slug>` AdvShell-active harness (default narrow).
   //   - `?scope=` AdvShell scope toggle: 'expanded' (default) UNIONS
   //     the slug + its sub-harnesses; 'self' narrows to just the slug.
-  // Sub-harness resolution requires the registry payload — fetched once.
+  // Audit fix: the resolved scope is sent as `harness_slugs` to the
+  // server (P-029) so plans:list actually fans out across multiple
+  // harness dirs — Phase 3 was previously inert because the server
+  // only ever returned one harness's plans.
   const [harnessFilter, setHarnessFilter] = useQueryState('h', parseAsString);
   const [advActiveSlug] = useQueryState('slug', parseAsString);
   const [scopeMode] = useQueryState(
@@ -96,13 +98,19 @@ export default function PlansClient() {
       .catch(() => { /* selector still works on the existing plan-row harness set */ });
     return () => { cancelled = true; };
   }, []);
-  const scopeSlugs = useMemo<Set<string> | null>(() => {
-    if (harnessFilter) return new Set([harnessFilter]);
-    if (!advActiveSlug) return null;
-    if (scopeMode === 'self') return new Set([advActiveSlug]);
-    if (registryProjects.length === 0) return new Set([advActiveSlug]);
-    return new Set(resolveHarnessScope(advActiveSlug, registryProjects));
+  /** Server-side fan-out list. null = use ctx default (no harness arg). */
+  const harnessSlugsForFetch = useMemo<readonly string[] | undefined>(() => {
+    if (harnessFilter) return [harnessFilter];
+    if (!advActiveSlug) return undefined;
+    if (scopeMode === 'self') return [advActiveSlug];
+    if (registryProjects.length === 0) return [advActiveSlug];
+    return resolveHarnessScope(advActiveSlug, registryProjects);
   }, [harnessFilter, advActiveSlug, scopeMode, registryProjects]);
+  const planList = usePlanList({
+    includeArchived: true,
+    includeLegacy: true,
+    harness_slugs: harnessSlugsForFetch,
+  });
   const harnessOptions = useMemo<string[]>(() => {
     const set = new Set<string>();
     for (const p of planList.data?.plans ?? []) {
@@ -110,11 +118,13 @@ export default function PlansClient() {
     }
     return [...set].sort();
   }, [planList.data]);
+  // Client-side narrow when the user has set ?h= explicitly. The server
+  // already returned multi-harness data; this is the final per-row gate.
   const visiblePlans = useMemo<PlanListRow[]>(() => {
     const all = planList.data?.plans ?? [];
-    if (!scopeSlugs) return all;
-    return all.filter((p) => scopeSlugs.has(p.harness));
-  }, [planList.data, scopeSlugs]);
+    if (!harnessFilter) return all;
+    return all.filter((p) => p.harness === harnessFilter);
+  }, [planList.data, harnessFilter]);
   const filteredPlanList = useMemo(
     () => ({
       ...planList,

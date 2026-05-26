@@ -373,6 +373,14 @@ const registerSubs = defineTool({
     for (const node of submodules) {
       const subSlug = node.qualifiedSlug;
       const subPath = node.absPath;
+      // P-021 safety: reject sub-harness slugs containing path-traversal
+      // segments or absolute-path prefixes. classify-tree builds qualifiedSlug
+      // from a sanitized relPath, but a defensive check at the registration
+      // boundary keeps a malformed classifier output from corrupting the registry.
+      if (!isSafeSubHarnessSlug(subSlug)) {
+        errors.push({ slug: subSlug, error: 'unsafe slug rejected (path-traversal / absolute / control chars)' });
+        continue;
+      }
       try {
         const existing = reg.projects.find((p) => p.slug === subSlug);
         let created = false;
@@ -423,5 +431,24 @@ const registerSubs = defineTool({
     });
   },
 });
+
+/**
+ * Sub-harness slug guard for P-021. Rejects slugs that would either
+ * (a) traverse out of the root harness's directory or (b) break the
+ * slug → path mapping downstream. Exported only for tests.
+ */
+export function isSafeSubHarnessSlug(slug: string): boolean {
+  if (typeof slug !== 'string' || slug.length === 0) return false;
+  if (slug.length > 200) return false;
+  if (slug.startsWith('/') || slug.startsWith('\\')) return false;
+  // Split into segments — any segment that is exactly '..' or '.' is rejected.
+  const segments = slug.split('/');
+  for (const seg of segments) {
+    if (seg === '' || seg === '.' || seg === '..') return false;
+    // No control chars, no whitespace.
+    if (/[\x00-\x20]/.test(seg)) return false;
+  }
+  return true;
+}
 
 export default [lite, list, create, remove, scanSubharnesses, registerSubs];

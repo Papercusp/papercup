@@ -594,11 +594,19 @@ export default function AdvSessionsClient() {
     }
     return [...set].sort();
   }, [rows, harnessForRow]);
+  // Audit fix (post-2026-05-25): when a harness scope is active, hide
+  // sessions whose plan resolves to a DIFFERENT harness — but always
+  // keep harness-agnostic rows (no plan, or a plan whose harness can't
+  // be resolved) visible per D-010's "(no harness) bucket stays
+  // visible." The prior `h ? scopeSlugs.has(h) : false` form
+  // regressed the sessions tab to empty whenever the active harness
+  // wasn't the one with the plans.
   const filteredRows = useMemo<SessionRow[]>(() => {
     if (!scopeSlugs) return rows ?? [];
     return (rows ?? []).filter((r) => {
       const h = harnessForRow(r);
-      return h ? scopeSlugs.has(h) : false;
+      if (h === null) return true; // no-plan / no-harness rows always visible
+      return scopeSlugs.has(h);
     });
   }, [rows, scopeSlugs, harnessForRow]);
 
