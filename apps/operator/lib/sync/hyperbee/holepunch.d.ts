@@ -39,6 +39,23 @@ declare module 'autobase' {
   }
 }
 
+declare module 'hyperswarm' {
+  import type { EventEmitter } from 'node:events';
+  // Minimal surface — we use join/leave/destroy + the 'connection' event.
+  export default class Hyperswarm extends EventEmitter {
+    constructor(opts?: Record<string, unknown>);
+    join(
+      topic: Buffer,
+      opts?: { server?: boolean; client?: boolean },
+    ): { flushed(): Promise<void> };
+    leave(topic: Buffer): Promise<void> | void;
+    flush(): Promise<void>;
+    destroy(): Promise<void>;
+    on(event: 'connection', listener: (socket: unknown, info: unknown) => void): this;
+    on(event: string, listener: (...args: unknown[]) => void): this;
+  }
+}
+
 declare module 'hyperbee' {
   export default class Hyperbee {
     constructor(feed: unknown, opts?: Record<string, unknown>);
