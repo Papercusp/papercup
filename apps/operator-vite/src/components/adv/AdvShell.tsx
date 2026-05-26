@@ -9,12 +9,14 @@ import {
   ListChecks,
   Plus,
   Settings,
+  Share2,
   SlidersHorizontal,
   Terminal,
   TrendingUp,
 } from 'lucide-react';
 import { Select } from '@/app/harness/Select';
 import { CreateHarnessPicker } from '@/app/harness/CreateHarnessPicker';
+import { ShareWizard } from '@/app/harness/ShareWizard';
 import AdvNowRunning from './AdvNowRunning';
 
 const ADV_TAB_IDS = ['harnesses', 'brainstorm', 'prs', 'insights', 'config', 'settings', 'docs', 'git', 'plans', 'sessions'] as const;
@@ -105,6 +107,9 @@ export default function AdvShell({
   // survives refresh and is agent-controllable; `refreshNonce` re-runs the
   // project fetch once a harness is created so the selector picks it up.
   const [createOpen, setCreateOpen] = useQueryState('create', parseAsBoolean.withDefault(false));
+  // Share the currently-selected harness. URL-backed so it survives refresh
+  // and is agent-controllable; only meaningful when a slug is active.
+  const [shareOpen, setShareOpen] = useQueryState('share', parseAsBoolean.withDefault(false));
   const [refreshNonce, setRefreshNonce] = useState(0);
 
   useEffect(() => {
@@ -163,6 +168,16 @@ export default function AdvShell({
         >
           <Plus size={13} aria-hidden /> New
         </button>
+        {activeSlug && (
+          <button
+            type="button"
+            className="pc-advshell__action pc-advshell__action--share"
+            title={`Share ${activeSlug} — publish to GitHub + invite collaborators`}
+            onClick={() => void setShareOpen(true)}
+          >
+            <Share2 size={13} aria-hidden /> Share
+          </button>
+        )}
         <label className="pc-advshell__scope-toggle" title="Include sub-harnesses in list views (plans, sessions). Editor views still focus a single harness.">
           <input
             type="checkbox"
@@ -206,6 +221,13 @@ export default function AdvShell({
           }
         }}
       />
+      {shareOpen && activeSlug && (
+        <ShareWizard
+          open={shareOpen}
+          onClose={() => void setShareOpen(false)}
+          harnessSlug={activeSlug}
+        />
+      )}
       <div className="pc-advshell__body">{children}</div>
       <style>{`
         .pc-advshell {
@@ -325,6 +347,16 @@ export default function AdvShell({
         }
         .pc-advshell__action--new:hover {
           background: rgba(167, 139, 250, 0.28);
+          color: #e7f7ff;
+        }
+        .pc-advshell__action--share {
+          align-self: center;
+          background: rgba(56, 189, 248, 0.14);
+          color: #7dd3fc;
+          border-color: rgba(56, 189, 248, 0.38);
+        }
+        .pc-advshell__action--share:hover {
+          background: rgba(56, 189, 248, 0.26);
           color: #e7f7ff;
         }
         .pc-advshell__pills {
