@@ -32,6 +32,8 @@ import { emitPlanEventForCaller } from '../plan-events';
 import { readPlanBySlug } from '../../plans/source';
 import { withPlanLock, bumpUpdatedDate } from '../../plans/with-plan-lock';
 import { flipStatusInBody } from '../../plans/set-status';
+import { extractAssertions } from '../../plans/val-assertions';
+import { ensureHarnessPlanAssertionsTable } from '../../ensure-schema';
 import { getOrgPg } from '@restart/db-org';
 
 const PROMOTED_FENCE = '<!-- plan-pipeline: do not edit this block manually -->';
@@ -160,6 +162,13 @@ interface FeaturesImportResponse {
   total?: number;
   ids?: string[];
   error?: string;
+  // R23: provenance back-channel observability (from R8 + F2 features.ts work).
+  // When a feature carries source_plan_slug the import handler back-writes to
+  // consolidated; per-feature errors are surfaced so plans:promote can echo
+  // them in its response.
+  provenanceWritten?: number;
+  provenanceFailed?: number;
+  provenanceErrors?: Array<{ feature_id: string; error: string }>;
 }
 
 async function fetchCurrentSpec(harnessSlug: string): Promise<{ spec: string; version: number }> {
@@ -199,10 +208,19 @@ async function postFeaturesImport(
     title: string;
     summary?: string;
     metadata: Record<string, unknown>;
+    id?: string;
+    claims?: string[];
     source_plan_slug?: string;
     source_plan_item_ids?: string[];
   }>,
-): Promise<{ ids: string[]; inserted: number; updated: number }> {
+): Promise<{
+  ids: string[];
+  inserted: number;
+  updated: number;
+  provenanceWritten?: number;
+  provenanceFailed?: number;
+  provenanceErrors?: Array<{ feature_id: string; error: string }>;
+}> {
   const r = await fetch(
     `${operatorBase()}/api/harness/${encodeURIComponent(harnessSlug)}/features/import`,
     {
@@ -220,6 +238,9 @@ async function postFeaturesImport(
     ids: j.ids ?? [],
     inserted: j.inserted ?? 0,
     updated: j.updated ?? 0,
+    ...(j.provenanceWritten != null && { provenanceWritten: j.provenanceWritten }),
+    ...(j.provenanceFailed != null && { provenanceFailed: j.provenanceFailed }),
+    ...(j.provenanceErrors && j.provenanceErrors.length > 0 && { provenanceErrors: j.provenanceErrors }),
   };
 }
 
@@ -410,8 +431,27 @@ export default defineTool({
     }
     const newSpecVersion = put.version;
 
+    // Extract inline VAL-* assertions before building the import payload so
+    // claims can be included in the SQLite INSERT (the import endpoint only
+    // sets claims on INSERT, not UPDATE, so they must arrive with the row).
+    const allItemIds = new Set<string>();
+    for (const f of args.features) {
+      for (const id of f.from_items ?? []) allItemIds.add(id);
+    }
+    // assertions keyed by item_id for O(1) lookup during payload construction.
+    const assertionsByItem = new Map<string, string[]>();
+    const allAssertions = allItemIds.size > 0
+      ? extractAssertions(planFile.parsed.raw, allItemIds)
+      : [];
+    for (const a of allAssertions) {
+      const arr = assertionsByItem.get(a.itemId) ?? [];
+      arr.push(a.valId);
+      assertionsByItem.set(a.itemId, arr);
+    }
+
     // POST features to /features/import. Server allocates F-AUTO-* ids.
     // metadata.source_plan + metadata.covers carry provenance forward.
+    // claims is populated from extracted VAL-* assertions for this feature's items.
     const importPayload = args.features.map((f, idx) => {
       const cov = mutation.perFeatureCovers[idx] ?? [];
       const metadata: Record<string, unknown> = {
@@ -421,11 +461,15 @@ export default defineTool({
       if (f.from_items && f.from_items.length > 0) {
         metadata.from_plan_items = f.from_items;
       }
+      const featureClaims = (f.from_items ?? []).flatMap(
+        (id) => assertionsByItem.get(id) ?? [],
+      );
       const out: {
         title: string;
         summary?: string;
         metadata: Record<string, unknown>;
         id?: string;
+        claims?: string[];
         source_plan_slug: string;
         source_plan_item_ids: string[];
       } = {
@@ -433,6 +477,7 @@ export default defineTool({
         metadata,
         source_plan_slug: args.slug,
         source_plan_item_ids: f.from_items ?? [],
+        ...(featureClaims.length > 0 && { claims: featureClaims }),
       };
       if (f.body) out.summary = f.body;
       if (args.feature_ids && args.feature_ids[idx]) {
@@ -442,11 +487,44 @@ export default defineTool({
     });
     const importRes = await postFeaturesImport(args.harness_slug, importPayload);
 
-    // Mark plan items as done via withPlanLock + flipStatusInBody.
-    const allFromItems = new Set<string>();
-    for (const f of args.features) {
-      for (const id of f.from_items ?? []) allFromItems.add(id);
+    // Store assertions in harness_plan_assertions (PG). Best-effort — features
+    // are already imported with their claims, so assertion lookup failures
+    // don't break validation, just degrade the /assertion/:valId endpoint.
+    let assertionsWritten = 0;
+    const assertionErrors: string[] = [];
+    if (allAssertions.length > 0) {
+      try {
+        await ensureHarnessPlanAssertionsTable();
+        const { sql } = getOrgPg();
+        const workspaceId = ctx.workspaceId ?? '';
+        for (const a of allAssertions) {
+          try {
+            await sql`
+              INSERT INTO harness_shared.harness_plan_assertions
+                (workspace_id, harness_slug, val_id, plan_slug, item_id, verify_text, evidence_text, status)
+              VALUES
+                (${workspaceId}, ${args.harness_slug}, ${a.valId}, ${args.slug}, ${a.itemId},
+                 ${a.verifyText}, ${a.evidenceText}, ${a.status})
+              ON CONFLICT (workspace_id, harness_slug, val_id) DO UPDATE SET
+                plan_slug     = EXCLUDED.plan_slug,
+                item_id       = EXCLUDED.item_id,
+                verify_text   = EXCLUDED.verify_text,
+                evidence_text = EXCLUDED.evidence_text,
+                updated_at    = now()
+            `;
+            assertionsWritten++;
+          } catch (e) {
+            assertionErrors.push(`${a.valId}: ${e instanceof Error ? e.message : String(e)}`);
+          }
+        }
+      } catch (e) {
+        assertionErrors.push(e instanceof Error ? e.message : String(e));
+        ctx.log?.(`[plans:promote] assertion PG store failed: ${assertionErrors[assertionErrors.length - 1]}`);
+      }
     }
+
+    // Mark plan items as done via withPlanLock + flipStatusInBody.
+    const allFromItems = allItemIds;
     const markedItems: string[] = [];
     const skippedItems: Array<{ id: string; reason: string }> = [];
     if (args.mark_items && allFromItems.size > 0) {
@@ -574,6 +652,15 @@ export default defineTool({
               features_updated: importRes.updated,
               marked_items: markedItems,
               skipped_items: skippedItems,
+              assertions_written: assertionsWritten,
+              ...(assertionErrors.length > 0 && { assertion_errors: assertionErrors }),
+              // R23: surface provenance back-channel errors so the caller knows
+              // if Phase C UI badges may be stale. Omitted when everything wrote
+              // cleanly (no provenance attempt or zero failures).
+              ...(importRes.provenanceFailed != null && importRes.provenanceFailed > 0 && {
+                provenance_failed: importRes.provenanceFailed,
+                provenance_errors: importRes.provenanceErrors ?? [],
+              }),
             },
           }),
         },

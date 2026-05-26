@@ -157,6 +157,7 @@ const flags = _g.__ensureSchemaFlags ?? (_g.__ensureSchemaFlags = {
   planRunTurns: false,
   advSessions: false,
   advSessionsCwd: false,
+  harnessPlanAssertions: false,
 });
 
 /**
@@ -2021,6 +2022,54 @@ export async function ensureTestRunsTable(): Promise<void> {
     $prunefn$;
   `);
   flags.testRuns = true;
+}
+
+/**
+ * Creates harness_shared.harness_plan_assertions — inline VAL-* assertion
+ * storage. Populated by plans:promote; queried by the assertion endpoint.
+ * Canonical DDL: libs/papercusp/libs/db/sql/087-harness-plan-assertions.sql
+ */
+export async function ensureHarnessPlanAssertionsTable(): Promise<void> {
+  if (flags.harnessPlanAssertions) return;
+  const { sql } = getOrgPg();
+  await sql.unsafe(`
+    CREATE TABLE IF NOT EXISTS harness_shared.harness_plan_assertions (
+      workspace_id   TEXT        NOT NULL,
+      harness_slug   TEXT        NOT NULL,
+      val_id         TEXT        NOT NULL,
+      plan_slug      TEXT        NOT NULL,
+      item_id        TEXT        NOT NULL,
+      verify_text    TEXT        NOT NULL,
+      evidence_text  TEXT        NOT NULL DEFAULT '',
+      status         TEXT        NOT NULL DEFAULT 'todo'
+                                 CHECK (status IN ('todo', 'validating', 'passed', 'failed')),
+      created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+      updated_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+      PRIMARY KEY (workspace_id, harness_slug, val_id)
+    );
+    ALTER TABLE harness_shared.harness_plan_assertions ENABLE ROW LEVEL SECURITY;
+    DO $body$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_policies
+         WHERE schemaname = 'harness_shared'
+           AND tablename  = 'harness_plan_assertions'
+           AND policyname = 'harness_plan_assertions_workspace_isolation'
+      ) THEN
+        CREATE POLICY harness_plan_assertions_workspace_isolation
+          ON harness_shared.harness_plan_assertions
+          AS PERMISSIVE FOR ALL TO public
+          USING (workspace_id = current_setting('app.workspace_id', true))
+          WITH CHECK (workspace_id = current_setting('app.workspace_id', true));
+      END IF;
+    END;
+    $body$;
+    CREATE INDEX IF NOT EXISTS hpa_plan_item_idx
+      ON harness_shared.harness_plan_assertions (workspace_id, harness_slug, plan_slug, item_id);
+    GRANT SELECT, INSERT, UPDATE, DELETE ON harness_shared.harness_plan_assertions TO harness_app;
+    GRANT SELECT, INSERT, UPDATE, DELETE ON harness_shared.harness_plan_assertions TO harness_admin;
+  `);
+  flags.harnessPlanAssertions = true;
 }
 
 /** Test-only: clear the per-process cache so DDL re-runs. */
