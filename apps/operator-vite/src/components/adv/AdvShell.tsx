@@ -1,18 +1,20 @@
 import { useEffect, useRef, useState, type ComponentType, type CSSProperties } from 'react';
 import * as Tabs from '@radix-ui/react-tabs';
-import { parseAsString, parseAsStringEnum, useQueryState } from 'nuqs';
+import { parseAsBoolean, parseAsString, parseAsStringEnum, useQueryState } from 'nuqs';
 import {
   BookOpen,
   Boxes,
   GitBranch,
   Lightbulb,
   ListChecks,
+  Plus,
   Settings,
   SlidersHorizontal,
   Terminal,
   TrendingUp,
 } from 'lucide-react';
 import { Select } from '@/app/harness/Select';
+import { CreateHarnessPicker } from '@/app/harness/CreateHarnessPicker';
 import AdvNowRunning from './AdvNowRunning';
 
 const ADV_TAB_IDS = ['harnesses', 'brainstorm', 'prs', 'insights', 'config', 'settings', 'docs', 'git', 'plans', 'sessions'] as const;
@@ -99,6 +101,11 @@ export default function AdvShell({
   );
   const [projects, setProjects] = useState<HarnessProjectLite[]>([]);
   const [projectLoadError, setProjectLoadError] = useState<string | null>(null);
+  // Create-harness flow. The dialog open-state is URL-backed (nuqs) so it
+  // survives refresh and is agent-controllable; `refreshNonce` re-runs the
+  // project fetch once a harness is created so the selector picks it up.
+  const [createOpen, setCreateOpen] = useQueryState('create', parseAsBoolean.withDefault(false));
+  const [refreshNonce, setRefreshNonce] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -121,7 +128,7 @@ export default function AdvShell({
     return () => {
       cancelled = true;
     };
-  }, [activeSlug, setActiveSlug]);
+  }, [activeSlug, setActiveSlug, refreshNonce]);
 
   return (
     <div className="pc-advshell">
@@ -148,6 +155,14 @@ export default function AdvShell({
             triggerClassName="pc-advshell__select-trigger"
           />
         </label>
+        <button
+          type="button"
+          className="pc-advshell__action pc-advshell__action--new"
+          title="Create or add a new harness"
+          onClick={() => void setCreateOpen(true)}
+        >
+          <Plus size={13} aria-hidden /> New
+        </button>
         <label className="pc-advshell__scope-toggle" title="Include sub-harnesses in list views (plans, sessions). Editor views still focus a single harness.">
           <input
             type="checkbox"
@@ -180,6 +195,17 @@ export default function AdvShell({
           </Tabs.List>
         </Tabs.Root>
       </header>
+      <CreateHarnessPicker
+        open={createOpen}
+        onOpenChange={(o: boolean) => void setCreateOpen(o)}
+        onCreated={(slug: string) => {
+          setRefreshNonce((n) => n + 1);
+          void setActiveSlug(slug);
+          if (typeof window !== 'undefined') {
+            window.localStorage.setItem('harness.activeProject', slug);
+          }
+        }}
+      />
       <div className="pc-advshell__body">{children}</div>
       <style>{`
         .pc-advshell {
@@ -290,6 +316,16 @@ export default function AdvShell({
         }
         .pc-advshell__action--stop:hover {
           background: rgba(239, 68, 68, 0.22);
+        }
+        .pc-advshell__action--new {
+          align-self: center;
+          background: rgba(167, 139, 250, 0.16);
+          color: #c4b5fd;
+          border-color: rgba(167, 139, 250, 0.4);
+        }
+        .pc-advshell__action--new:hover {
+          background: rgba(167, 139, 250, 0.28);
+          color: #e7f7ff;
         }
         .pc-advshell__pills {
           display: flex;
