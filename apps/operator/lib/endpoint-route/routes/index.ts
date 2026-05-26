@@ -64,6 +64,7 @@ import harnessBootstrapProgress from './harness/bootstrap-progress';
 import harnessFeatureQueue from './harness/feature-queue';
 import harnessClaimFeature from './harness/claim-feature';
 import harnessClobberStream from './harness/clobber-stream';
+import harnessWorkingSet from './harness/working-set';
 import usersByGithubId from './users/by-github-id';
 import usersByLogin from './users/by-login';
 import harnessPrs from './harness/prs';
@@ -467,6 +468,7 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(harnessFeatureQueue as AnyRoute[]),
   ...flatten(harnessClaimFeature as AnyRoute[]),
   ...flatten(harnessClobberStream as AnyRoute[]),
+  ...flatten(harnessWorkingSet as AnyRoute[]),
   ...flatten(usersByGithubId as AnyRoute[]),
   ...flatten(usersByLogin as AnyRoute[]),
   ...flatten(harnessPrs as AnyRoute[]),
