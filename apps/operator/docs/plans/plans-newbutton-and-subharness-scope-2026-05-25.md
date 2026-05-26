@@ -3,7 +3,7 @@ title: Plans new-button + ADV subharness-aware scope
 slug: plans-newbutton-and-subharness-scope-2026-05-25
 status: draft
 created: 2026-05-25
-updated: 2026-05-25
+updated: 2026-05-26
 owner: avi@storewolf.com
 ---
 
@@ -11,9 +11,9 @@ owner: avi@storewolf.com
 
 ## Now
 
-**State:** **done.** All 28 items shipped, lint clean, 53 unit tests pass, typecheck clean. Live verification against the running :3070 host confirms: lite payload includes `parent_slug`, scan-subharnesses + register-subs routes respond with correct success/404/400 shapes, `plans:list` rows include `harness`, PlansClient renders the "+ New plan" button + "Include sub-harnesses" checkbox + filter dropdown, AdvShell selector renders the tree-aware picker, AdvSessionsClient "Start from plan context" picker is grouped by harness with `· updated Nd ago` labels in updated-DESC order. Docs page `apps/operator-docs/src/content/docs/agents/kickoffs.mdx` built into `apps/operator/public/internal/docs/agents/kickoffs.html` and served HTTP 200. Implementation commit `af8669b3`, follow-ups commit `2821875f`, both pushed to main.
+**State:** **done + audited.** All 29 items closed. Audit (2026-05-25) found one real bug (Sessions tab regression hiding no-plan + cross-harness rows by default) and two paper-only items (P-016/P-017 server-side widening, P-021 slug-guard) — all three fixed in commit `b47d3c1e`. P-029 (plans:list `harness_slugs[]` fan-out) is now the keystone that makes Phase 3's harness-differentiation observable — without it the pill / filter / picker groups would collapse to no-ops in a single-harness workspace. 68 unit tests green (5 phase suites + 2 audit suites); typecheck clean; live `/api/admin/plans/list?harness_slugs=…` validated against the running :3070 host.
 
-**Next:** **Plan complete.** Optional follow-ups tracked as Phase 4 (P-029 `plans:list` MCP arg widening) and on `agent-plan-tracking-2026-05-20` P-505 (`plans:add-item` duplicate-phase-heading bug). Manual exercise of the "+ New plan" terminal spawn + a real git-submodule register-subs round remain — both require physical attendance.
+**Next:** **Plan complete.** No open items. The one remaining physical-attendance check is exercising the New-Plan button + Register-sub-harnesses against a real git submodule — both require you to drive the UI.
 
 ## Phase 1 — New-plan button (system-prompt kickoff)
 
@@ -82,7 +82,7 @@ owner: avi@storewolf.com
 
 ## Phase 4 — Follow-ups (deferred)
 
-- **P-029** `todo` `plans:list` MCP arg widening: accept `harness_slugs?: string[]` in addition to the singular ctx-resolved harness. UI side already handles the union client-side via the `harness` field on each row (P-022) + scope filter (P-016), so this is non-blocking for the UI but matters for direct MCP callers (cross_harness:* tools, external agents). Implementation: extend `argsSchema` in `apps/operator/lib/agent-tools/plans/list.ts` to accept the array; iterate `resolveHarnessPlansDir` for each entry; merge `listPlanFiles` outputs; dedup by slug (a given plan slug is unique within a harness, so cross-harness collisions would namespace by harness:slug pair). Singular form remains supported for back-compat.
+- **P-029** `done` `plans:list` MCP arg widening: accept `harness_slugs?: string[]` in addition to the singular ctx-resolved harness. UI side already handles the union client-side via the `harness` field on each row (P-022) + scope filter (P-016), so this is non-blocking for the UI but matters for direct MCP callers (cross_harness:* tools, external agents). Implementation: extend `argsSchema` in `apps/operator/lib/agent-tools/plans/list.ts` to accept the array; iterate `resolveHarnessPlansDir` for each entry; merge `listPlanFiles` outputs; dedup by slug (a given plan slug is unique within a harness, so cross-harness collisions would namespace by harness:slug pair). Singular form remains supported for back-compat. (Shipped in commit b47d3c1e. plans:list now accepts harness_slugs?: string[] or single string via HTTP, capped at 64, dedup by harness,slug. PlansClient threads the resolved scope to the server, closing the P-016/P-017 server-side gap audit found. 8 schema tests; live-verified.)
 
 ## Decisions
 
