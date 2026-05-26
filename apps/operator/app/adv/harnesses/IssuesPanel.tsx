@@ -1,8 +1,10 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
+import { parseAsString, useQueryState } from 'nuqs';
 import type { PanelComponentProps } from '../../harness/dock/panel-registry';
 import type { Issue, IssueSeverity, IssueStatus } from '../../harness/issues/types';
+import PinMenu, { type PinMenuState } from './PinMenu';
 
 interface IssuesListResponse {
   issues: Issue[];
@@ -40,6 +42,8 @@ export default function IssuesPanel({ params, api }: PanelComponentProps) {
   const [error, setError] = useState<Error | null>(null);
   const [filter, setFilter] = useState<(typeof STATUS_FILTERS)[number]['key']>('open');
   const [search, setSearch] = useState('');
+  const [selectedId, setSelectedId] = useQueryState('sel', parseAsString.withDefault(''));
+  const [pinMenu, setPinMenu] = useState<PinMenuState | null>(null);
 
   useEffect(() => {
     if (!slug) {
@@ -140,8 +144,24 @@ export default function IssuesPanel({ params, api }: PanelComponentProps) {
         ) : (
           filtered.map((i) => {
             const sevTone = SEVERITY_TONE[i.severity] ?? SEVERITY_TONE.minor;
+            const isActive = i.id === selectedId;
             return (
-              <div key={i.id} className="pc-adv-issues__row">
+              <div
+                key={i.id}
+                className={`pc-adv-issues__row${isActive ? ' is-active' : ''}`}
+                onClick={() => void setSelectedId(i.id)}
+                onContextMenu={(e) => {
+                  e.preventDefault();
+                  setPinMenu({
+                    pos: { x: e.clientX, y: e.clientY },
+                    itemId: i.id,
+                    itemLabel: i.id,
+                    harnessSlug: slug,
+                  });
+                }}
+                role="button"
+                tabIndex={0}
+              >
                 <span className="pc-adv-issues__id">{i.id}</span>
                 <span
                   className="pc-adv-issues__severity"
@@ -253,8 +273,17 @@ export default function IssuesPanel({ params, api }: PanelComponentProps) {
           color: rgba(220, 214, 248, 0.86);
           border-bottom: 1px solid rgba(167, 139, 250, 0.06);
         }
+        .pc-adv-issues__row {
+          cursor: pointer;
+          user-select: none;
+        }
         .pc-adv-issues__row:hover {
           background: rgba(31, 23, 56, 0.45);
+        }
+        .pc-adv-issues__row.is-active {
+          background: rgba(167, 139, 250, 0.18);
+          border-left: 2px solid rgba(167, 139, 250, 0.78);
+          padding-left: 10px;
         }
         .pc-adv-issues__id {
           font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
@@ -292,6 +321,7 @@ export default function IssuesPanel({ params, api }: PanelComponentProps) {
           color: rgba(199, 188, 252, 0.66);
         }
       `}</style>
+      <PinMenu state={pinMenu} onClose={() => setPinMenu(null)} />
     </div>
   );
 }

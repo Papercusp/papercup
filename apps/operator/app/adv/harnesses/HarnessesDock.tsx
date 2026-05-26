@@ -6,12 +6,15 @@ import { panelRegistry } from '../../harness/dock/panel-registry';
 import { listPanels, onDockApiBind, setPanelParams } from '../../harness/dock/dock-actions';
 import FeaturesPanel from './FeaturesPanel';
 import IssuesPanel from './IssuesPanel';
+import DetailPanel from './DetailPanel';
 
 let registered = false;
 function ensureRegistered() {
   if (registered) return;
   panelRegistry.register('adv:features', FeaturesPanel, { title: 'Features' });
   panelRegistry.register('adv:issues', IssuesPanel, { title: 'Issues' });
+  panelRegistry.register('adv:detail', DetailPanel, { title: 'Detail' });
+  panelRegistry.register('adv:pinned', DetailPanel, { title: 'Pinned' });
   registered = true;
 }
 

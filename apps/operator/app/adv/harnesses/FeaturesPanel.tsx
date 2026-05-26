@@ -1,7 +1,9 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
+import { parseAsString, useQueryState } from 'nuqs';
 import type { PanelComponentProps } from '../../harness/dock/panel-registry';
+import PinMenu, { type PinMenuState } from './PinMenu';
 
 type FeatureStatus = 'todo' | 'validating' | 'passed' | 'failing' | 'deprecated' | 'blocked';
 
@@ -43,6 +45,8 @@ export default function FeaturesPanel({ params, api }: PanelComponentProps) {
   const [error, setError] = useState<Error | null>(null);
   const [filter, setFilter] = useState<(typeof FILTERS)[number]['key']>('all');
   const [search, setSearch] = useState('');
+  const [selectedId, setSelectedId] = useQueryState('sel', parseAsString.withDefault(''));
+  const [pinMenu, setPinMenu] = useState<PinMenuState | null>(null);
 
   useEffect(() => {
     if (!slug) {
@@ -134,8 +138,24 @@ export default function FeaturesPanel({ params, api }: PanelComponentProps) {
         ) : (
           filtered.map((f) => {
             const tone = STATUS_TONE[f.status] ?? STATUS_TONE.todo;
+            const isActive = f.id === selectedId;
             return (
-              <div key={f.id} className="pc-adv-features__row">
+              <div
+                key={f.id}
+                className={`pc-adv-features__row${isActive ? ' is-active' : ''}`}
+                onClick={() => void setSelectedId(f.id)}
+                onContextMenu={(e) => {
+                  e.preventDefault();
+                  setPinMenu({
+                    pos: { x: e.clientX, y: e.clientY },
+                    itemId: f.id,
+                    itemLabel: f.id,
+                    harnessSlug: slug,
+                  });
+                }}
+                role="button"
+                tabIndex={0}
+              >
                 <span className="pc-adv-features__id">{f.id}</span>
                 <span
                   className="pc-adv-features__status"
@@ -225,8 +245,17 @@ export default function FeaturesPanel({ params, api }: PanelComponentProps) {
           color: rgba(220, 214, 248, 0.86);
           border-bottom: 1px solid rgba(167, 139, 250, 0.06);
         }
+        .pc-adv-features__row {
+          cursor: pointer;
+          user-select: none;
+        }
         .pc-adv-features__row:hover {
           background: rgba(31, 23, 56, 0.45);
+        }
+        .pc-adv-features__row.is-active {
+          background: rgba(167, 139, 250, 0.18);
+          border-left: 2px solid rgba(167, 139, 250, 0.78);
+          padding-left: 10px;
         }
         .pc-adv-features__id {
           font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
@@ -254,6 +283,7 @@ export default function FeaturesPanel({ params, api }: PanelComponentProps) {
           color: rgba(220, 214, 248, 0.54);
         }
       `}</style>
+      <PinMenu state={pinMenu} onClose={() => setPinMenu(null)} />
     </div>
   );
 }

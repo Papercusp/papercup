@@ -246,9 +246,15 @@ export function defaultDashboardLayout(harnessSlug = ''): LayoutDoc {
 }
 
 /**
- * /adv/harnesses seed — 50/50 horizontal split of the rebuilt Features
- * and Issues panels for one harness. Used by `adv-harnesses:<slug>`
- * layouts (see HarnessesDock).
+ * /adv/harnesses seed — three horizontal panes (Features 25 / Issues 25 /
+ * Detail 50). The Detail pane swaps content based on the `?sel=<id>`
+ * URL selector — feature mode for `F-*` ids, issue mode for `I-*` ids,
+ * empty state when nothing selected.
+ *
+ * Right-clicking a row in either list and choosing "Pin to new panel"
+ * opens an `adv:pinned` tab whose item is fixed (it ignores `?sel=`).
+ * These pinned tabs ride alongside Detail and are arbitrarily resizable
+ * / draggable / closable via dockview.
  */
 export function defaultAdvHarnessesLayout(harnessSlug = ''): LayoutDoc {
   return {
@@ -257,11 +263,14 @@ export function defaultAdvHarnessesLayout(harnessSlug = ''): LayoutDoc {
       kind: 'group',
       id: 'root',
       direction: 'row',
+      // Sizes are pixel values relative to the grid's notional width
+      // (dockview rescales proportionally on mount against the actual
+      // container size). 400/400/800 = 1:1:2 → 25/25/50 split.
       children: [
         {
           kind: 'tabs',
           id: 'features-cell',
-          size: 0.5,
+          size: 400,
           activePanelId: 'p-adv-features',
           panels: [
             {
@@ -274,12 +283,25 @@ export function defaultAdvHarnessesLayout(harnessSlug = ''): LayoutDoc {
         {
           kind: 'tabs',
           id: 'issues-cell',
-          size: 0.5,
+          size: 400,
           activePanelId: 'p-adv-issues',
           panels: [
             {
               id: 'p-adv-issues',
               type: 'adv:issues',
+              params: { harnessSlug },
+            },
+          ],
+        },
+        {
+          kind: 'tabs',
+          id: 'detail-cell',
+          size: 800,
+          activePanelId: 'p-adv-detail',
+          panels: [
+            {
+              id: 'p-adv-detail',
+              type: 'adv:detail',
               params: { harnessSlug },
             },
           ],
