@@ -17,6 +17,7 @@ import { useState, useRef, type FormEvent, type ReactNode } from 'react';
 import { Modal } from './Modal';
 import { toast } from 'sonner';
 import { EntryHarnessLinkForm } from './EntryHarnessLinkForm';
+import { ShareWizard } from './ShareWizard';
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -25,7 +26,8 @@ type Step =
   | 'new-local'
   | 'existing-local'
   | 'github-url-stub'
-  | 'harness-link-stub';
+  | 'harness-link-stub'
+  | 'share-offer';
 
 interface CreateResult {
   ok: boolean;
@@ -402,38 +404,134 @@ interface CreateHarnessPickerProps {
 
 export function CreateHarnessPicker({ open, onOpenChange, onCreated }: CreateHarnessPickerProps) {
   const [step, setStep] = useState<Step>('picker');
+  const [createdSlug, setCreatedSlug] = useState<string | null>(null);
+  const [shareOpen, setShareOpen] = useState(false);
 
   const handleClose = () => {
     setStep('picker');
+    setCreatedSlug(null);
+    setShareOpen(false);
     onOpenChange(false);
   };
 
   const handleSuccess = (slug: string) => {
     onCreated?.(slug);
-    handleClose();
+    setCreatedSlug(slug);
+    setStep('share-offer');
   };
 
   const goBack = () => setStep('picker');
 
+  // Entry 4 (harness-link) JOINS an existing shared harness — sharing
+  // it again makes no sense. For Entries 1/3 (new-local, existing-local)
+  // the harness is freshly local and may want to be shared.
+  const showShareOffer =
+    step === 'share-offer' &&
+    createdSlug !== null;
+
   return (
-    <Modal
-      open={open}
-      onOpenChange={(v) => { if (!v) handleClose(); else onOpenChange(true); }}
-      title="Add a harness"
-      contentStyle={{
-        width: 'min(520px, 96vw)',
-        background: 'var(--bg-popover, #0d1829)',
-        border: '1px solid var(--border)',
-        borderRadius: 10,
-        padding: 24,
-        color: 'var(--fg, #e8e8ea)',
-      }}
-    >
-      {step === 'picker' && <PickerStep onSelect={setStep} />}
-      {step === 'new-local' && <NewLocalForm onBack={goBack} onSuccess={handleSuccess} />}
-      {step === 'existing-local' && <ExistingLocalForm onBack={goBack} onSuccess={handleSuccess} />}
-      {step === 'github-url-stub' && <Phase1bStub title="GitHub URL" onBack={goBack} />}
-      {step === 'harness-link-stub' && <EntryHarnessLinkForm onBack={goBack} onCreated={handleSuccess} />}
-    </Modal>
+    <>
+      <Modal
+        open={open && !shareOpen}
+        onOpenChange={(v) => { if (!v) handleClose(); else onOpenChange(true); }}
+        title={step === 'share-offer' ? 'Harness created' : 'Add a harness'}
+        contentStyle={{
+          width: 'min(520px, 96vw)',
+          background: 'var(--bg-popover, #0d1829)',
+          border: '1px solid var(--border)',
+          borderRadius: 10,
+          padding: 24,
+          color: 'var(--fg, #e8e8ea)',
+        }}
+      >
+        {step === 'picker' && <PickerStep onSelect={setStep} />}
+        {step === 'new-local' && <NewLocalForm onBack={goBack} onSuccess={handleSuccess} />}
+        {step === 'existing-local' && <ExistingLocalForm onBack={goBack} onSuccess={handleSuccess} />}
+        {step === 'github-url-stub' && <Phase1bStub title="GitHub URL" onBack={goBack} />}
+        {step === 'harness-link-stub' && (
+          <EntryHarnessLinkForm
+            onBack={goBack}
+            onCreated={(slug) => {
+              // Harness-link join — skip the share offer (already shared upstream).
+              onCreated?.(slug);
+              handleClose();
+            }}
+          />
+        )}
+        {showShareOffer && createdSlug && (
+          <ShareOfferStep
+            slug={createdSlug}
+            onShare={() => setShareOpen(true)}
+            onDone={handleClose}
+          />
+        )}
+      </Modal>
+      {showShareOffer && createdSlug && shareOpen && (
+        <ShareWizard
+          open={shareOpen}
+          onClose={() => {
+            setShareOpen(false);
+            handleClose();
+          }}
+          harnessSlug={createdSlug}
+        />
+      )}
+    </>
+  );
+}
+
+// ── Share-offer step ───────────────────────────────────────────────────────
+
+function ShareOfferStep({
+  slug,
+  onShare,
+  onDone,
+}: {
+  slug: string;
+  onShare: () => void;
+  onDone: () => void;
+}) {
+  return (
+    <div>
+      <h2 style={{ margin: '0 0 6px', fontSize: 15, fontWeight: 600 }}>
+        ✓ Harness created
+      </h2>
+      <p style={{ margin: '0 0 20px', fontSize: 13, color: 'var(--fg-dim)' }}>
+        <code>{slug}</code> is registered. You can share it now so other engineers can join, or share it later from the harness top bar.
+      </p>
+      <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
+        <button
+          type="button"
+          onClick={onDone}
+          style={{
+            padding: '8px 14px',
+            background: 'transparent',
+            color: 'var(--fg-dim)',
+            border: '1px solid var(--border)',
+            borderRadius: 5,
+            fontSize: 13,
+            cursor: 'pointer',
+          }}
+        >
+          Share later
+        </button>
+        <button
+          type="button"
+          onClick={onShare}
+          style={{
+            padding: '8px 14px',
+            background: 'var(--accent, #38bdf8)',
+            color: '#0a1424',
+            border: 0,
+            borderRadius: 5,
+            fontSize: 13,
+            fontWeight: 600,
+            cursor: 'pointer',
+          }}
+        >
+          Share this harness →
+        </button>
+      </div>
+    </div>
   );
 }

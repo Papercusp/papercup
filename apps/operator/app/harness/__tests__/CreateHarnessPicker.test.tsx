@@ -43,10 +43,10 @@ describe('P-012a — picker step', () => {
     screen.getByText('Harness link');
   });
 
-  it('renders Phase 1b badges on github-url and harness-link', () => {
+  it('renders one Phase 1b badge (GitHub URL only — harness-link is now wired)', () => {
     renderPicker();
     const badges = screen.getAllByText('Phase 1b');
-    expect(badges.length).toBe(2);
+    expect(badges.length).toBe(1);
   });
 
   it('shows the add-a-harness heading', () => {
@@ -189,11 +189,12 @@ describe('P-012e — Phase 1b stubs', () => {
     screen.getByText('Available in Phase 1b');
   });
 
-  it('Harness link card shows Phase 1b stub on click', async () => {
+  it('Harness link card opens the EntryHarnessLinkForm (no longer a stub)', async () => {
     const user = userEvent.setup();
     renderPicker();
     await user.click(screen.getByText('Harness link'));
-    screen.getByText('Available in Phase 1b');
+    // EntryHarnessLinkForm renders an input for the harness link.
+    expect(screen.queryByText('Available in Phase 1b')).toBeNull();
   });
 
   it('Phase 1b stub has a back button that returns to picker', async () => {
