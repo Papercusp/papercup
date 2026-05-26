@@ -7,7 +7,7 @@ import PackagedBuildTab from '@/app/admin/testing/_components/PackagedBuildTab';
 import LlmTab from '@/app/admin/testing/_components/LlmTab';
 import TestRunsTab from '@/app/admin/testing/_components/TestRunsTab';
 import MemoryTab from '@/app/admin/testing/_components/MemoryTab';
-import DomainTestPanel from './testing/DomainTestPanel';
+import { DomainTestPanel, adminTestingDataSource } from '@papercusp/testing-shell';
 
 /**
  * Testing-admin client.
@@ -163,7 +163,7 @@ export default function TestingClient() {
         </nav>
       </aside>
       <main className="pc-test-main">
-        {CustomComponent ? <CustomComponent /> : <DomainTestPanel domainId={tab} />}
+        {CustomComponent ? <CustomComponent /> : <DomainTestPanel domainId={tab} dataSource={adminTestingDataSource} />}
       </main>
     </div>
   );

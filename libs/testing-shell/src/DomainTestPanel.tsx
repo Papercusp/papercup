@@ -1,84 +1,35 @@
 /**
- * <DomainTestPanel> — shared shell for every /admin/testing subtab.
+ * <DomainTestPanel> — shared shell for every testing-domain subtab.
  *
- * Plan: admin-testing-tab-restructure-2026-05-24, P-004.
+ * Moved to @papercusp/testing-shell as Phase A / P-002 of
+ * harness-tests-tab-and-tester-promotion-2026-05-26 so the harness Tests
+ * tab consumes the same shell as /admin/testing. The only behavioral
+ * change vs. the operator-vite original: backend access goes through an
+ * injected `dataSource: TestingDataSource` instead of hardcoded
+ * `/api/admin/testing/*` fetches. The admin call site passes
+ * `adminTestingDataSource`, preserving exact prior behavior.
  *
- * Three regions:
- *   1. Header — domain label + description + total file count
- *   2. Health strip — reserved slot; populated in P-033 (test-related
- *      signals only: last full-suite duration, last failure, flaky rate)
- *   3. Sections — file lists per section
+ * Original provenance: admin-testing-tab-restructure-2026-05-24
+ * (P-004 shell, P-013 status chips, P-016/P-017 run drawer, P-018 history).
  *
- * Existing 8 tabs mount their bespoke React inside this shell via the
- * `customId` lookup table the SPA owns (P-006a). When `customNode` is
- * passed, the sections list is replaced wholesale.
- *
- * P-004 ships the file-list region only. Run button per file lands in
- * P-016; status chip in P-013; output drawer in P-017.
+ * Three regions: header (label + count + run-all), health strip
+ * (test-related signals), and the per-section file list. When
+ * `customNode` is passed, the sections region is replaced wholesale —
+ * existing bespoke tabs mount their UI inside the same shell.
  */
 
-import { useEffect, useState, type ReactNode } from 'react';
+import { useEffect, useState, type ReactNode, type ReactElement } from 'react';
 import { useQueryState } from 'nuqs';
 import './domain-panel.css';
-
-interface FileHit {
-  path: string;
-  sizeBytes: number;
-  mtimeMs: number;
-}
-
-type TestRunnerWire =
-  | { kind: 'vitest'; filePath: string }
-  | { kind: 'playwright'; filePath: string }
-  | { kind: 'cargo'; crate: string; test?: string }
-  | { kind: 'node'; cmd: string; args?: string[]; label?: string }
-  | { kind: 'shell'; cmd: string; args?: string[]; label?: string }
-  | { kind: 'admin-suite'; suiteId: string };
-
-interface ResolvedSection {
-  id: string;
-  label: string;
-  description?: string;
-  files: FileHit[];
-  runners: TestRunnerWire[];
-}
-
-interface DomainDetail {
-  id: string;
-  label: string;
-  description: string;
-  tier: 'quick' | 'domain' | 'surface';
-  sections: ResolvedSection[];
-  totalFiles: number;
-}
-
-// P-013: status chip data per file from /api/admin/testing/file-status.
-type ChipStatus = 'pass' | 'fail' | 'skip' | 'cancelled' | 'error' | 'running';
-
-interface FileStatusEntry {
-  status: ChipStatus;
-  durationMs: number | null;
-  finishedAt: string | null;
-  source: 'ci' | 'local' | 'admin-ui';
-  branch: string | null;
-  stale: boolean;
-}
-
-interface FileStatusResponse {
-  domainId: string;
-  branch: string | null;
-  commit: string | null;
-  statuses: Record<string, FileStatusEntry>;
-}
-
-interface HealthStripData {
-  domainId: string;
-  branch: string | null;
-  lastSuiteDurationMs: number | null;
-  lastFailureFinishedAt: string | null;
-  flakyFileCount: number;
-  totalFilesTracked: number;
-}
+import {
+  type TestingDataSource,
+  type DomainDetail,
+  type FileStatusEntry,
+  type HealthStripData,
+  type HistoryRow,
+  type ChipStatus,
+  type TestRunnerWire,
+} from './data-source';
 
 function formatMs(ms: number): string {
   if (ms < 1000) return `${ms}ms`;
@@ -128,6 +79,8 @@ function formatMtime(ms: number): string {
 
 interface DomainTestPanelProps {
   domainId: string;
+  /** Backend surface. Defaults to the /admin/testing REST implementation. */
+  dataSource: TestingDataSource;
   /**
    * If passed, replaces the sections region with the caller-provided
    * React. Used by existing bespoke tabs (P-006a) to mount their UI
@@ -138,8 +91,9 @@ interface DomainTestPanelProps {
 
 export default function DomainTestPanel({
   domainId,
+  dataSource,
   customNode,
-}: DomainTestPanelProps): JSX.Element {
+}: DomainTestPanelProps): ReactElement {
   const [detail, setDetail] = useState<DomainDetail | null>(null);
   const [statuses, setStatuses] = useState<Record<string, FileStatusEntry>>({});
   const [health, setHealth] = useState<HealthStripData | null>(null);
@@ -180,32 +134,25 @@ export default function DomainTestPanel({
 
   async function runImpl(body: unknown, displayPath: string): Promise<void> {
     try {
-      const r = await fetch('/api/admin/testing/run', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(body),
-      });
-      if (!r.ok) {
-        setActiveRun({ runId: '', filePath: displayPath, status: 'error', exitCode: null, output: `HTTP ${r.status}`, finishedAt: Date.now() });
+      let runId: string;
+      try {
+        ({ runId } = await dataSource.startRun(body));
+      } catch (e) {
+        setActiveRun({ runId: '', filePath: displayPath, status: 'error', exitCode: null, output: e instanceof Error ? e.message : String(e), finishedAt: Date.now() });
         setRunLoading(null);
         return;
       }
-      const { runId } = (await r.json()) as { runId: string };
       setActiveRun((prev) => prev ? { ...prev, runId, status: 'running' } : prev);
       const poll = async (): Promise<void> => {
-        const pr = await fetch(`/api/admin/testing/run/${encodeURIComponent(runId)}`);
-        if (!pr.ok) return;
-        const snap = await pr.json() as {
-          status: string; exitCode: number | null; output: string; finishedAt: number | null;
-        };
+        const snap = await dataSource.pollRun(runId);
+        if (!snap) return;
         setActiveRun({ runId, filePath: displayPath, status: snap.status, exitCode: snap.exitCode, output: snap.output, finishedAt: snap.finishedAt });
         if (snap.finishedAt === null) {
           setTimeout(poll, 750);
         } else {
           setRunLoading(null);
-          void fetch(`/api/admin/testing/file-status?domainId=${encodeURIComponent(domainId)}`)
-            .then((r2) => (r2.ok ? r2.json() as Promise<FileStatusResponse> : null))
-            .then((d) => { if (d) setStatuses(d.statuses); })
+          void dataSource.fetchStatuses(domainId)
+            .then((s) => setStatuses(s))
             .catch(() => { /* keep stale */ });
         }
       };
@@ -223,23 +170,11 @@ export default function DomainTestPanel({
     setDetail(null);
     setStatuses({});
 
-    const fetchDetail = () =>
-      fetch(`/api/admin/testing/domains/${encodeURIComponent(domainId)}`)
-        .then(async (r) => {
-          if (!r.ok) throw new Error(`HTTP ${r.status}`);
-          return r.json() as Promise<DomainDetail>;
-        });
-
-    const fetchStatuses = () =>
-      fetch(`/api/admin/testing/file-status?domainId=${encodeURIComponent(domainId)}`)
-        .then((r) => (r.ok ? (r.json() as Promise<FileStatusResponse>) : null))
-        .then((d) => d?.statuses ?? {});
-
-    const fetchHealth = () =>
-      fetch(`/api/admin/testing/health-strip?domainId=${encodeURIComponent(domainId)}`)
-        .then((r) => (r.ok ? (r.json() as Promise<HealthStripData>) : null));
-
-    void Promise.all([fetchDetail(), fetchStatuses(), fetchHealth()])
+    void Promise.all([
+      dataSource.fetchDomain(domainId),
+      dataSource.fetchStatuses(domainId).catch(() => ({})),
+      dataSource.fetchHealth(domainId).catch(() => null),
+    ])
       .then(([d, s, h]) => {
         if (cancelled) return;
         setDetail(d);
@@ -256,7 +191,10 @@ export default function DomainTestPanel({
     // Refetch on tab focus — no SWR/TanStack-Query in operator-vite per D-013.
     const onVisible = () => {
       if (document.visibilityState !== 'visible') return;
-      void Promise.all([fetchDetail().catch(() => null), fetchStatuses().catch(() => ({}))])
+      void Promise.all([
+        dataSource.fetchDomain(domainId).catch(() => null),
+        dataSource.fetchStatuses(domainId).catch(() => ({})),
+      ])
         .then(([d, s]) => {
           if (cancelled) return;
           if (d) setDetail(d);
@@ -268,7 +206,7 @@ export default function DomainTestPanel({
       cancelled = true;
       document.removeEventListener('visibilitychange', onVisible);
     };
-  }, [domainId]);
+  }, [domainId, dataSource]);
 
   if (loading && !detail) {
     return <div className="pc-dtp-loading">Loading {domainId}…</div>;
@@ -358,6 +296,7 @@ export default function DomainTestPanel({
       {historyFile && (
         <FileHistorySheet
           filePath={historyFile}
+          dataSource={dataSource}
           onClose={() => void setHistoryFile(null)}
         />
       )}
@@ -452,27 +391,14 @@ export default function DomainTestPanel({
 
 /**
  * P-018 — per-file history sheet. Opens when a status chip is clicked;
- * reads /api/admin/testing/file-history?filePath=<path>&limit=20.
- * URL-backed via `?historyFile=<path>` so reload preserves visibility.
+ * reads run history via `dataSource.fetchHistory`. URL-backed via
+ * `?historyFile=<path>` so reload preserves visibility.
  */
-
-interface HistoryRow {
-  id: number;
-  status: 'pass' | 'fail' | 'skip' | 'cancelled' | 'error' | 'running';
-  durationMs: number | null;
-  startedAt: string | null;
-  finishedAt: string | null;
-  source: 'ci' | 'local' | 'admin-ui';
-  branch: string | null;
-  commitSha: string | null;
-  framework: string;
-  outputTail: string | null;
-}
-
 function FileHistorySheet({
   filePath,
+  dataSource,
   onClose,
-}: { filePath: string; onClose: () => void }): JSX.Element {
+}: { filePath: string; dataSource: TestingDataSource; onClose: () => void }): ReactElement {
   const [rows, setRows] = useState<HistoryRow[] | null>(null);
   const [err, setErr] = useState<string | null>(null);
 
@@ -480,12 +406,11 @@ function FileHistorySheet({
     let cancelled = false;
     setRows(null);
     setErr(null);
-    fetch(`/api/admin/testing/file-history?filePath=${encodeURIComponent(filePath)}&limit=20`)
-      .then((r) => (r.ok ? (r.json() as Promise<{ rows?: HistoryRow[] }>) : Promise.reject(new Error(`HTTP ${r.status}`))))
-      .then((d) => { if (!cancelled) setRows(d.rows ?? []); })
+    dataSource.fetchHistory(filePath, 20)
+      .then((rs) => { if (!cancelled) setRows(rs); })
       .catch((e) => { if (!cancelled) setErr(e instanceof Error ? e.message : String(e)); });
     return () => { cancelled = true; };
-  }, [filePath]);
+  }, [filePath, dataSource]);
 
   return (
     <div className="pc-dtp-sheet-backdrop" onClick={onClose}>
@@ -513,7 +438,7 @@ function FileHistorySheet({
             <tbody>
               {rows.map((r) => (
                 <tr key={r.id} className={`pc-dtp-sheet-row pc-dtp-sheet-row-${r.status}`}>
-                  <td><span className={`pc-dtp-chip pc-dtp-chip-${r.status}`}>{CHIP_LABEL[r.status as ChipStatus] ?? r.status}</span></td>
+                  <td><span className={`pc-dtp-chip pc-dtp-chip-${r.status}`}>{CHIP_LABEL[r.status] ?? r.status}</span></td>
                   <td title={r.finishedAt ?? ''}>{r.finishedAt ? new Date(r.finishedAt).toLocaleString() : '—'}</td>
                   <td>{r.durationMs !== null ? `${r.durationMs} ms` : '—'}</td>
                   <td>{r.source}</td>

@@ -1,8 +1,13 @@
 /**
  * @papercusp/testing-shell — public surface.
  *
- * Phase A (P-001) ships the registry only. The shared <DomainTestPanel>
- * and <TestingShell> components land in P-002 / P-003 and will be
- * re-exported from here alongside the registry.
+ * - registry: defineTestDomain + TestDomain/TestSection/TestRunner types (P-001)
+ * - DomainTestPanel: the shared subtab shell, parameterized by dataSource (P-002)
+ * - data-source: the TestingDataSource interface + wire types + the
+ *   default adminTestingDataSource (P-002)
+ *
+ * <TestingShell> (the left-rail + panel host) lands in P-003.
  */
 export * from './registry';
+export * from './data-source';
+export { default as DomainTestPanel } from './DomainTestPanel';

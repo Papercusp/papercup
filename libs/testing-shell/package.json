@@ -17,6 +17,7 @@
     "vitest": "^3.0.0"
   },
   "peerDependencies": {
-    "react": ">=18"
+    "react": ">=18",
+    "nuqs": ">=2"
   }
 }
