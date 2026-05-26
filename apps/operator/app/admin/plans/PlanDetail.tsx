@@ -40,7 +40,7 @@ import PlanStatusPopover, {
   type PendingStatusFlip,
   type PlanStatus as PlanItemStatus,
 } from './PlanStatusPopover';
-import type { PlanStatus } from './plans-api';
+import type { PlanStatus, PlanStartStatus } from './plans-api';
 
 interface Props {
   slug: string;
@@ -48,9 +48,13 @@ interface Props {
   /** Reports unsaved-edit state up to PlansClient so navigation away
    *  from a dirty plan can prompt before discarding (Bug-1 guard). */
   onDirtyChange?: (dirty: boolean) => void;
+  /** Operational start state from harness_plan_status. */
+  startStatus?: PlanStartStatus;
+  /** Called after a successful start/pause so the rail can refresh. */
+  onStartStatusChange?: (newStatus: PlanStartStatus) => void;
 }
 
-export default function PlanDetail({ slug, onClose, onDirtyChange }: Props) {
+export default function PlanDetail({ slug, onClose, onDirtyChange, startStatus, onStartStatusChange }: Props) {
   const { data, loading, error, refresh } = usePlan(slug);
   const archived = data?.archived ?? false;
   const { data: lock } = usePlanLock(data ? slug : null, archived);
@@ -296,6 +300,8 @@ export default function PlanDetail({ slug, onClose, onDirtyChange }: Props) {
           currentNow={data.now ?? null}
           planTitle={title}
           planStatus={planStatus}
+          startStatus={startStatus}
+          onStartStatusChange={onStartStatusChange}
           onChanged={onChanged}
           onRejected={onClose}
           disabled={editing || locked}

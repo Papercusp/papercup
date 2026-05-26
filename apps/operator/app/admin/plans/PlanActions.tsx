@@ -32,9 +32,12 @@ import {
   rejectDraftPlan,
   setPlanNow,
   promoteToHarness,
+  startPlan,
+  pausePlan,
   type PlanDecision,
   type PlanItem,
   type PlanStatus,
+  type PlanStartStatus,
   type PromoteToHarnessResult,
   type WriteResult,
 } from './plans-api';
@@ -51,6 +54,10 @@ interface Props {
   /** Plan status drives draft-only affordances (Reject button) so /adv/plans
    *  has parity with the ProposalsPanel UX for drafts. */
   planStatus?: PlanStatus;
+  /** Operational start state from harness_plan_status. null = never started. */
+  startStatus?: PlanStartStatus;
+  /** Called after a successful start/pause so the caller can refresh the list. */
+  onStartStatusChange?: (newStatus: PlanStartStatus) => void;
   /** Fired after a successful write so the caller can refresh plan data. */
   onChanged: () => void;
   /** Fired after a successful rejection — caller closes the detail. */
@@ -69,6 +76,8 @@ export default function PlanActions({
   currentNow,
   planTitle,
   planStatus,
+  startStatus,
+  onStartStatusChange,
   onChanged,
   onRejected,
   disabled,
@@ -76,6 +85,29 @@ export default function PlanActions({
 }: Props) {
   const [open, setOpen] = useState<Dialog>(null);
   const [launchingAgent, setLaunchingAgent] = useState(false);
+  const [startPending, setStartPending] = useState(false);
+
+  const isStarted = startStatus === 'started';
+
+  const handleStartPause = async () => {
+    if (startPending) return;
+    setStartPending(true);
+    try {
+      if (isStarted) {
+        await pausePlan(slug);
+        toast.success(`Plan paused — orchestrator will finish in-flight work then stop.`);
+        onStartStatusChange?.('paused');
+      } else {
+        await startPlan(slug);
+        toast.success(`Plan started — orchestrator will pick up features from this plan.`);
+        onStartStatusChange?.('started');
+      }
+    } catch (e) {
+      toast.error(`Failed: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setStartPending(false);
+    }
+  };
 
   const onLaunchAgent = async () => {
     if (launchingAgent) return;
@@ -110,6 +142,15 @@ export default function PlanActions({
 
   return (
     <div className="pc-plan-actions">
+      <button
+        type="button"
+        className={`pc-plan-actions__btn pc-plan-actions__btn--start${isStarted ? ' pc-plan-actions__btn--started' : ''}`}
+        onClick={handleStartPause}
+        disabled={startPending}
+        title={isStarted ? 'Pause plan — orchestrator stops picking new features' : 'Start plan — orchestrator picks features from this plan'}
+      >
+        {startPending ? (isStarted ? 'Pausing…' : 'Starting…') : isStarted ? '⏸ Pause Plan' : '▶ Start Plan'}
+      </button>
       <button
         type="button"
         className="pc-plan-actions__btn"

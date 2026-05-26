@@ -51,10 +51,10 @@ export default defineTool({
   async handler(args, ctx) {
     const ctxAny = ctx as { metadata?: (d: Record<string, unknown>) => void };
     const harnessSlug = resolveCtxHarnessSlug(ctx) ?? 'papercup';
-    const now = new Date();
+    const now = new Date().toISOString();
 
     const rows = await withWorkspace(DEFAULT_WORKSPACE_ID, async (tx) => {
-      return tx<{ status: string; updated_at: Date }[]>`
+      return tx<{ status: string; updated_at: string }[]>`
         UPDATE harness_shared.harness_plan_status
            SET status = 'paused', updated_at = ${now}
          WHERE workspace_id = ${DEFAULT_WORKSPACE_ID}

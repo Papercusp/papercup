@@ -85,6 +85,8 @@ const WRITE_VERBS = new Set([
   // plan-agent-launch P-024: the run-detail Continue form — same
   // `await: false` shape as 'launch'.
   'resume',
+  // plans-central-harness-ux P-003: operational start/pause in harness_plan_status.
+  'start', 'pause',
 ]);
 
 // Admin proxy identity: the writes (set-status/set-now/add-decision/

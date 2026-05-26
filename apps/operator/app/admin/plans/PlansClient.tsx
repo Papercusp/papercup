@@ -340,6 +340,8 @@ export default function PlansClient() {
             onDirtyChange={(d) => {
               dirtyRef.current = d;
             }}
+            startStatus={visiblePlans.find((p) => p.slug === slug)?.startStatus ?? null}
+            onStartStatusChange={() => planList.refresh()}
           />
         )}
 

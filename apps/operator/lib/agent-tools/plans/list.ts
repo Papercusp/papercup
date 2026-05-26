@@ -15,6 +15,8 @@ import { listPlanFiles, readPlanBySlug, resolveHarnessPlansDir } from './source'
 import { ctxToPlanSourceOpts } from './_ctx-opts';
 import { resolveEffectiveStatus } from './effective-status';
 import { ITEM_STATUSES, PLAN_STATUSES } from './parser';
+import { withWorkspace } from '@restart/db-org';
+import { DEFAULT_WORKSPACE_ID } from '../../workspace-registry';
 
 /** Cap for the multi-harness arg per P-021 — keeps IN-style fan-out bounded. */
 const HARNESS_SLUGS_MAX = 64;
@@ -198,8 +200,37 @@ export default defineTool({
       ...(unknownHarnesses.length > 0 && { unknownHarnesses }),
     });
 
+    // Batch-load harness_plan_status for all slugs so Start/Pause UI
+    // can derive button state without a separate fetch per plan.
+    let startStatusMap: Map<string, string> = new Map();
+    try {
+      const slugSet = rows.map((r) => r.slug);
+      if (slugSet.length > 0) {
+        const harnessSlug = perHarnessOpts[0]?.harnessSlug ?? 'papercup';
+        const statusRows = await withWorkspace(DEFAULT_WORKSPACE_ID, async (tx) => {
+          return tx<{ plan_slug: string; status: string }[]>`
+            SELECT plan_slug, status
+              FROM harness_shared.harness_plan_status
+             WHERE workspace_id = ${DEFAULT_WORKSPACE_ID}
+               AND harness_slug  = ${harnessSlug}
+               AND plan_slug = ANY(${slugSet})
+          `;
+        });
+        for (const sr of statusRows) {
+          startStatusMap.set(sr.plan_slug, sr.status);
+        }
+      }
+    } catch {
+      // harness_plan_status may not exist yet on older installs — degrade gracefully
+    }
+
+    const augmentedRows = rows.map((r) => ({
+      ...r,
+      startStatus: (startStatusMap.get(r.slug) ?? null) as 'started' | 'paused' | 'done' | null,
+    }));
+
     return {
-      content: [{ type: 'text' as const, text: JSON.stringify({ plans: rows }) }],
+      content: [{ type: 'text' as const, text: JSON.stringify({ plans: augmentedRows }) }],
     };
   },
 });

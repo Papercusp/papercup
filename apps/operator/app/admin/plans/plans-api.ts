@@ -18,6 +18,7 @@ import { useEffect, useState } from 'react';
 
 export type PlanStatus = 'draft' | 'active' | 'blocked' | 'shipped' | 'superseded' | 'unknown';
 export type ItemStatus = 'todo' | 'wip' | 'blocked' | 'needs-human' | 'done' | 'dropped';
+export type PlanStartStatus = 'started' | 'paused' | 'done' | null;
 
 export interface PlanListRow {
   slug: string;
@@ -36,6 +37,8 @@ export interface PlanListRow {
    * when no ctx harness is provided).
    */
   harness: string;
+  /** Operational start state — null means never started. */
+  startStatus: PlanStartStatus;
 }
 
 export interface PlanItem {
@@ -565,6 +568,17 @@ export async function rejectDraftPlan(
   } as SetContentArgs & { harness_slug?: string });
   if ('ok' in res && res.ok) return { ok: true };
   return { ok: false, error: writeErrorOf(res) ?? 'set_content_failed' };
+}
+
+export function startPlan(slug: string) {
+  return postJson<{ slug: string; harnessSlug: string; status: string }>('start', { slug });
+}
+
+export function pausePlan(slug: string) {
+  return postJson<{ slug: string; harnessSlug: string; status?: string; notStarted?: boolean }>(
+    'pause',
+    { slug },
+  );
 }
 
 export function lintPlan(args: LintArgs = {}) {

@@ -8,5 +8,11 @@
  * working unchanged (testing-domains-registry.ts, the four admin
  * endpoint routes, and the two test files). New code should import from
  * `@papercusp/testing-shell` directly.
+ *
+ * DomainTestPanel is intentionally NOT re-exported here: it is a React
+ * component with a CSS side-effect import that crashes the Hono/tsx server
+ * when pulled in server-side. Import it directly from
+ * `@papercusp/testing-shell` in browser-only (Vite-bundled) code.
  */
-export * from '@papercusp/testing-shell';
+export * from '@papercusp/testing-shell/registry';
+export * from '@papercusp/testing-shell/data-source';
