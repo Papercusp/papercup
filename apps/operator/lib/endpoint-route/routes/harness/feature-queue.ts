@@ -30,6 +30,7 @@ import {
   dequeueFeature,
 } from '@/lib/sync/hyperbee/write-feature-queue';
 import { loadQueueMembership } from '@/lib/sync/hyperbee/load-queue-membership';
+import { resolveMyPubkey } from '@/lib/orchestrator/distributed-claim';
 
 // ─── GET membership ────────────────────────────────────────────────
 
@@ -102,7 +103,14 @@ const postEnqueue = defineTool({
     if (!handle) {
       return Response.json({ ok: false, reason: 'substrate-off' }, { status: 200 });
     }
-    await enqueueFeature({ handle, githubUserId: parsed.userId, featureId });
+    await enqueueFeature({
+      handle,
+      githubUserId: parsed.userId,
+      featureId,
+      // Pass through so the clobber-events tracker can fire a toast
+      // if a remote override of the same row arrives within 60s.
+      writerPubkey: resolveMyPubkey(handle) ?? undefined,
+    });
     return Response.json({ ok: true });
   },
 });
@@ -124,7 +132,12 @@ const postDequeue = defineTool({
     if (!handle) {
       return Response.json({ ok: false, reason: 'substrate-off' }, { status: 200 });
     }
-    await dequeueFeature({ handle, githubUserId: parsed.userId, featureId });
+    await dequeueFeature({
+      handle,
+      githubUserId: parsed.userId,
+      featureId,
+      writerPubkey: resolveMyPubkey(handle) ?? undefined,
+    });
     return Response.json({ ok: true });
   },
 });

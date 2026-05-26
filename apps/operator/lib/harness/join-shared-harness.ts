@@ -579,8 +579,17 @@ export async function step8_publishBinding(opts: {
     schema_version: CONTRIBUTOR_ROW_SCHEMA_VERSION,
   };
   const publish = opts.publishRow ?? publishContributorRow;
+  // Thread the local writer pubkey so a remote override of this
+  // contributor row within the clobber window surfaces a toast.
+  let writerPubkey: string | undefined;
   try {
-    await publish({ handle, row, now: ts });
+    const { resolveMyPubkey } = await import('../orchestrator/distributed-claim');
+    writerPubkey = resolveMyPubkey(handle) ?? undefined;
+  } catch {
+    writerPubkey = undefined;
+  }
+  try {
+    await publish({ handle, row, now: ts, writerPubkey });
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : String(e);
     throw new JoinStepError('publish_binding', 'publish_failed', msg.slice(0, 300));
