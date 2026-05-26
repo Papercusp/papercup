@@ -126,7 +126,6 @@ function HealthBadgeInner({ slug }: Props) {
     const lastRunAgeSeconds = lastRunMs ? Math.floor((Date.now() - lastRunMs) / 1000) : null;
 
     const checks: HealthCheck[] = [
-      { name: 'spec_present',        ok: files.specPresent },
       { name: 'features_present',    ok: total > 0 },
       { name: 'contract_present',    ok: files.contractPresent },
       { name: 'not_escalated',       ok: !escalated, detail: escalated ? 'see escalation.md' : undefined },

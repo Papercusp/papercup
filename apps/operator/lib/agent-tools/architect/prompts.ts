@@ -49,8 +49,6 @@ export async function composeArchitectPrompt(
   message: string,
   reviewId?: string,
 ): Promise<string> {
-  const spec = safeRead(join(project.path, 'SPEC.md')) ?? '';
-  const contract = safeRead(join(harnessDir(project), 'validation-contract.md')) ?? '';
   const featuresList = await parseFeatures(project);
   const features = JSON.stringify(
     { features: featuresList.map((f) => ({ id: f.id, title: f.title, status: f.status, attempts: f.attempts })) },
@@ -67,15 +65,9 @@ export async function composeArchitectPrompt(
 
   const systemPrompt = `You are the ARCHITECT in an autonomous coding harness, chatting with the human supervisor through the /harness Inbox.
 
-Your job is to help them clarify the spec: ask Socratic questions about any vagueness until the user's intent is precise and testable, then propose a concrete change to SPEC.md or .harness/validation-contract.md.
+Your job is to help them clarify intent: ask Socratic questions about any vagueness until the user's intent is precise and testable, then propose a concrete plan item or decision.
 
 Current state:
-
-## SPEC.md
-${spec.slice(0, 8000)}
-
-## validation-contract.md
-${contract.slice(0, 6000)}
 
 ## features (harness_features in Postgres — summary)
 ${features.slice(0, 3000)}
@@ -88,14 +80,14 @@ Rules:
 - Prefer short, pointed clarifying questions over long speeches.
 - When you're ready to propose a change, emit a fenced block. The UI shows the user a summary + Accept button; they trust you on the mechanical details.
 
-Format for file replacements:
-\`\`\`proposal:SPEC.md
+Format for plan proposals:
+\`\`\`proposal:contract
 SUMMARY: <1–3 sentences in plain English: what will change and why. This is the ONLY text the user reads by default.>
 ---
 <complete replacement file contents — verbatim, nothing elided>
 \`\`\`
 
-Use \`proposal:SPEC.md\` or \`proposal:contract\` as the fence language. First line after the fence MUST start with \`SUMMARY:\` then human-facing text; then a line \`---\`; then the full replacement body.
+Use \`proposal:contract\` as the fence language. First line after the fence MUST start with \`SUMMARY:\` then human-facing text; then a line \`---\`; then the full replacement body.
 
 For a supervisor note (short message appended, not replacing a file):
 \`\`\`note:supervisor
@@ -173,7 +165,6 @@ export async function composeBrainstormPrompt(
   history: ChatHistoryEntry[],
   message: string,
 ): Promise<string> {
-  const spec = safeRead(join(project.path, 'SPEC.md')) ?? '';
   const brainstorm = safeRead(brainstormPath(project)) ?? '';
   const featuresList = await parseFeatures(project);
   const features = JSON.stringify(
@@ -184,12 +175,9 @@ export async function composeBrainstormPrompt(
 
   const systemPrompt = `You are a BRAINSTORM PARTNER for a software project. You're chatting with the human supervisor of a coding harness to help them explore ideas before they become features.
 
-Your job: expand the space of possibilities. Suggest analogues, probe "have you considered…", challenge hidden assumptions. You are expansive, not reductive. This is pre-SPEC ideation — nothing needs to be final yet.
+Your job: expand the space of possibilities. Suggest analogues, probe "have you considered…", challenge hidden assumptions. You are expansive, not reductive. This is pre-plan ideation — nothing needs to be final yet.
 
 Current state:
-
-## SPEC.md
-${spec.slice(0, 6000)}
 
 ## Existing features (harness_features in Postgres — summary)
 ${features.slice(0, 2000)}
@@ -201,7 +189,7 @@ Rules:
 - Lead with ideas, tradeoffs, analogues from other domains. Be concrete.
 - When an idea matures enough to be acted on, emit a fenced action block:
   - \`\`\`promote:feature — create a new todo feature in harness_features. Put a short title on the first line, then markdown body explaining intent + optional claims.
-  - \`\`\`promote:spec — insert into SPEC.md under a "## Brainstormed" section.
+  - \`\`\`promote:plan — create a new plan document that feeds the plan→feature pipeline.
   - \`\`\`promote:issue — file as an issue in issues.json. First line is title; rest is evidence/context.
 - Don't promote too eagerly. Wait until the user signals the idea is ready, or ask them first.
 - Keep responses short and punchy. Long speeches kill brainstorming.`;

@@ -629,18 +629,6 @@ async function doScaffoldHarness(
     };
   }
 
-  // Write SPEC.md (single source of truth for project intent — includes
-  // the north-star goal and the technical scope). The legacy `goal` field
-  // is folded into SPEC.md as a leading section if both are passed.
-  try {
-    const specBody = action.goal && action.goal.trim()
-      ? `${action.goal.trim()}\n\n${action.spec}`
-      : action.spec;
-    await fs.writeFile(join(projectPath, 'SPEC.md'), specBody, 'utf8');
-  } catch (e: any) {
-    return { ok: false, actionId: '', error: 'internal', detail: `failed to write SPEC: ${e?.message}` };
-  }
-
   // Generate harness_token + merge into config.json (mode 0600).
   const harnessToken = base64url(randomBytes(32));
   const configPath = join(projectPath, '.harness', 'config.json');

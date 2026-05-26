@@ -16,7 +16,7 @@ import { useSyncQuery } from '@restart/sync';
 type ProjectFilesRow = { harnessSlug: string; spec: string | null; agents: string | null; contract: string | null; config: string | null; updatedAt: number };
 type TextArtifactRow = { harnessSlug: string; relPath: string; content: string; updatedAt: number };
 
-type SimpleTab = 'spec' | 'agents' | 'contract' | 'config' | 'knowledge' | 'mcp' | 'supervisor' | 'claudeSettings' | 'env';
+type SimpleTab = 'agents' | 'contract' | 'config' | 'knowledge' | 'mcp' | 'supervisor' | 'claudeSettings' | 'env';
 type Tab = SimpleTab | 'skills';
 
 type TabKind = 'file' | 'collection';
@@ -25,7 +25,6 @@ type Sensitivity = 'normal' | 'warn' | 'secret';
 type Section = 'settings' | 'memory' | 'prompts';
 
 const TABS: Array<{ id: Tab; label: string; filename: string; path: (projectPath: string) => string; language: 'markdown' | 'json'; kind: TabKind; sensitivity?: Sensitivity }> = [
-  { id: 'spec',            label: 'SPEC.md',                 filename: 'SPEC.md',              path: (p) => `${p}/SPEC.md`,                        language: 'markdown', kind: 'file' },
   { id: 'agents',          label: 'AGENTS.md',               filename: 'AGENTS.md',            path: (p) => `${p}/AGENTS.md`,                      language: 'markdown', kind: 'file' },
   { id: 'contract',        label: 'validation-contract.md',  filename: 'validation-contract.md', path: (p) => `${p}/.harness/validation-contract.md`, language: 'markdown', kind: 'file' },
   { id: 'config',          label: 'config.json',             filename: 'config.json',          path: (p) => `${p}/.harness/config.json`,            language: 'json',    kind: 'file' },
@@ -37,7 +36,7 @@ const TABS: Array<{ id: Tab; label: string; filename: string; path: (projectPath
   { id: 'env',             label: '.env',                    filename: '.env',                 path: (p) => `${p}/.env`,                            language: 'markdown', kind: 'file', sensitivity: 'secret' },
 ];
 
-const SIMPLE_TABS: readonly SimpleTab[] = ['spec', 'agents', 'contract', 'config', 'knowledge', 'mcp', 'supervisor', 'claudeSettings', 'env'] as const;
+const SIMPLE_TABS: readonly SimpleTab[] = ['agents', 'contract', 'config', 'knowledge', 'mcp', 'supervisor', 'claudeSettings', 'env'] as const;
 
 interface Props {
   slug: string;
@@ -54,10 +53,10 @@ export default function SpecEditor({ slug, projectPath, alive, onClose, inline =
   );
   const [tab, setTab] = useQueryState(
     'specTab',
-    parseAsStringEnum<Tab>(['spec', 'agents', 'contract', 'config', 'knowledge', 'mcp', 'supervisor', 'claudeSettings', 'env', 'skills']).withDefault('spec'),
+    parseAsStringEnum<Tab>(['agents', 'contract', 'config', 'knowledge', 'mcp', 'supervisor', 'claudeSettings', 'env', 'skills']).withDefault('agents'),
   );
-  const [original, setOriginal] = useState<Record<SimpleTab, string | null>>({ spec: null, agents: null, contract: null, config: null, knowledge: null, mcp: null, supervisor: null, claudeSettings: null, env: null });
-  const [draft, setDraft] = useState<Record<SimpleTab, string>>({ spec: '', agents: '', contract: '', config: '', knowledge: '', mcp: '', supervisor: '', claudeSettings: '', env: '' });
+  const [original, setOriginal] = useState<Record<SimpleTab, string | null>>({ agents: null, contract: null, config: null, knowledge: null, mcp: null, supervisor: null, claudeSettings: null, env: null });
+  const [draft, setDraft] = useState<Record<SimpleTab, string>>({ agents: '', contract: '', config: '', knowledge: '', mcp: '', supervisor: '', claudeSettings: '', env: '' });
   const [envRevealed, setEnvRevealed] = useQueryState('showEnv', parseAsBoolean.withDefault(false));
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -139,7 +138,6 @@ export default function SpecEditor({ slug, projectPath, alive, onClose, inline =
 
     const apply = () => {
       const o: Record<SimpleTab, string | null> = {
-        spec: projectFilesRow?.spec ?? null,
         agents: projectFilesRow?.agents ?? null,
         contract: projectFilesRow?.contract ?? null,
         config: projectFilesRow?.config ?? null,
@@ -151,7 +149,6 @@ export default function SpecEditor({ slug, projectPath, alive, onClose, inline =
       };
       setOriginal(o);
       setDraft({
-        spec: o.spec ?? '',
         agents: o.agents ?? '',
         contract: o.contract ?? '',
         config: o.config ?? '',
