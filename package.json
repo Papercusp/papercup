@@ -15,6 +15,7 @@
     "libs/papercusp-export-state",
     "libs/zero-harness",
     "libs/sync",
+    "libs/testing-shell",
     "libs/host-platform",
     "libs/flags",
     "libs/papergrid/grid-core",
