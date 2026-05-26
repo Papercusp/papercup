@@ -18,6 +18,8 @@ import { useViewerGithubId } from './useViewerGithubId';
 import { useQueueMembership } from './insights/useQueueMembership';
 import { QueueAvatarCluster } from './insights/QueueAvatarCluster';
 import { PullToQueueButtonClient } from './insights/PullToQueueButtonClient';
+import { useWorkingSet } from './insights/useWorkingSet';
+import { SetActiveButtonClient } from './insights/SetActiveButtonClient';
 
 // Loaded eagerly (no `dynamic` wrapper) so the inline-note pane renders
 // its textarea immediately when the user clicks "steer". Was lazy-loaded
@@ -94,6 +96,7 @@ function FeatureListInner({
   );
   const viewerGithubId = useViewerGithubId();
   const queueMembership = useQueueMembership({ slug });
+  const workingSet = useWorkingSet({ slug });
   // Item 7 (2026-04-26): project + tag filters for the new project_id and tags fields
   const [projectFilter, setProjectFilter] = useQueryState('proj', parseAsString.withDefault('all'));
   const [tagFilter, setTagFilter] = useQueryState('tag', parseAsString.withDefault(''));
@@ -624,13 +627,17 @@ function ListView({
       cols.push({
         key: 'queue',
         header: 'Queue',
-        width: '160px',
+        width: '260px',
         align: 'left',
         render: ({ row }) => {
           const members = queueMembership.membersFor(row.id);
           const queued =
             viewerGithubId > 0 &&
             queueMembership.isQueued(row.id, viewerGithubId);
+          const iAmActive =
+            viewerGithubId > 0 && workingSet.isActive(row.id, viewerGithubId);
+          const takenByOther =
+            !iAmActive && workingSet.hasAnyWorker(row.id);
           return (
             <span
               onClick={(e) => e.stopPropagation()}
@@ -642,6 +649,14 @@ function ListView({
                 featureId={row.id}
                 githubUserId={viewerGithubId}
                 initialQueued={queued}
+                hidden={viewerGithubId === 0}
+              />
+              <SetActiveButtonClient
+                slug={slug}
+                featureId={row.id}
+                githubUserId={viewerGithubId}
+                initialActive={iAmActive}
+                takenByOther={takenByOther}
                 hidden={viewerGithubId === 0}
               />
             </span>
@@ -707,7 +722,7 @@ function ListView({
       });
     }
     return cols;
-  }, [chatBusyId, compact, noteFeatureId, onEdit, onReset, onToggleSelect, selected, startChat, slug, viewerGithubId, queueMembership]);
+  }, [chatBusyId, compact, noteFeatureId, onEdit, onReset, onToggleSelect, selected, startChat, slug, viewerGithubId, queueMembership, workingSet]);
 
   // Map per-row aria/data attributes + per-row background to mirror the
   // pre-RichGrid behaviour (focus ring on keyboard focus, active row tint,
