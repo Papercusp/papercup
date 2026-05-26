@@ -11,11 +11,9 @@ owner: avi@storewolf.com
 
 ## Now
 
-**State:** Substrate cross-machine replication wiring SHIPPED 2026-05-26 (`728901c3`). This plan tracks the remaining work to make Papercusp itself the first multi-engineer shared harness.
+**State:** Substrate cross-machine replication wiring SHIPPED 2026-05-26 (`728901c3`). P-078 boot-side wiring also SHIPPED 2026-05-26: `boot-all.ts` now reads `.harness/shared.json` from each harness's project dir on boot and synthesizes a `{ kind: 'gh', github_repository_id }` `swarmBinding` automatically. Commits `cb875057` (loader) + `aa9f566e` (boot-all wire). Tests: 10 (loader) + 5 added to boot-all (18 total). Optional refinement remains: `join-shared-harness.ts` step 4 could short-circuit-pass the binding without waiting for the next boot, but that's redundant — once shared.json is written, the next boot picks it up. P-079 (2-instance cross-machine smoke test) is now the verification gate.
 
-Substrate replication is *wired but unverified* — `bootHarnessSubstrate` now optionally joins a Hyperswarm topic + plugs `corestore.replicate(socket)` into every peer connection when a `swarmBinding` is passed, but the runtime still has to (a) pass the binding from `ShareWizard` / the per-harness registry row, and (b) be observed actually replicating against a second machine. The 2-engineer acceptance test (P-079, below) is the verification gate.
-
-**Next action:** P-078 — ShareWizard wiring to set `swarmBinding` from the harness's resolved GitHub repository id (post-binding) or `{ kind: 'local', ... }` (pre-binding). Then P-079 — 2-engineer cross-machine smoke test.
+**Next:** P-079 — run the 2-engineer cross-machine smoke test (Q-2's same-laptop surrogate is acceptable first pass). Requires opening ShareWizard on the papercup harness (P-077) so a `.harness/shared.json` actually exists. Bravo (second instance) then joins via Entry 4 and the swarm should pair automatically through the boot-all wiring shipped today.
 
 ## Background
 
