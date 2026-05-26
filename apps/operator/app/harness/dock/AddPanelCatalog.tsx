@@ -52,6 +52,7 @@ const HUMAN_LABELS: Record<string, string> = {
   'adv:features': 'Features',
   'adv:issues': 'Issues',
   'adv:detail': 'Detail',
+  'adv:git': 'Git',
 };
 
 const STUB_TYPES = new Set([

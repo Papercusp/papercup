@@ -149,7 +149,7 @@ export default function HarnessTopBar({ slug, projects }: Props) {
         {slug && (
           <AddPanelCatalog
             defaultSlug={slug}
-            allowedTypes={['adv:features', 'adv:issues', 'adv:detail']}
+            allowedTypes={['adv:features', 'adv:issues', 'adv:detail', 'adv:git']}
             className="pc-adv-topbar__add-panel"
           />
         )}
