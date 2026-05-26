@@ -218,6 +218,8 @@ import './plans/revision-summary';
 import './plans/revision-diff';
 import './plans/run-transcript';
 // plan-agent-launch — launch / resume an autonomous agent on a plan.
+import './plans/start';
+import './plans/pause';
 import './plans/launch';
 import './plans/resume';
 import './plans/runs-list';
