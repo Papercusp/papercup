@@ -21,7 +21,8 @@ export interface PlanAssertion {
   status: 'todo' | 'validating' | 'passed' | 'failed';
 }
 
-const VAL_HEADER_RE = /^\s{1,8}-\s+\*\*\[VAL-([^\]]+)\]\*\*\s*$/;
+// Accepts both canonical `**[VAL-id]**` and scoper-written `[VAL-id] description` forms.
+const VAL_HEADER_RE = /^\s{1,8}-\s+\*{0,2}\[VAL-([^\]]+)\]\*{0,2}(?:\s.*)?$/;
 const VAL_FIELD_RE = /^\s{2,12}-\s+\*\*(Verify|Evidence|Status):\*\*\s*(.*)/;
 const ITEM_LINE_RE = /^-\s+\*\*(P-\d{3,})\*\*/;
 

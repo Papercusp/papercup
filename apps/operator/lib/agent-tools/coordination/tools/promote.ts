@@ -27,7 +27,7 @@ import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../identity';
 import { COORD_ROLES } from '../roles';
-import { buildSpecMutation, findUnknownFromItems, type PromoteFeatureInput } from '../promote';
+import { findUnknownFromItems, type PromoteFeatureInput } from '../promote';
 import { emitPlanEventForCaller } from '../plan-events';
 import { readPlanBySlug } from '../../plans/source';
 import { withPlanLock, bumpUpdatedDate } from '../../plans/with-plan-lock';
@@ -141,20 +141,6 @@ function operatorBase(): string {
   return process.env.INTERNAL_API_BASE ?? `http://127.0.0.1:${port}`;
 }
 
-interface SpecGetResponse {
-  spec?: string | null;
-  version?: number;
-  error?: string;
-}
-
-interface SpecPutResponse {
-  ok?: boolean;
-  written?: string[];
-  version?: number;
-  error?: string;
-  current?: number;
-}
-
 interface FeaturesImportResponse {
   ok?: boolean;
   inserted?: number;
@@ -171,36 +157,7 @@ interface FeaturesImportResponse {
   provenanceErrors?: Array<{ feature_id: string; error: string }>;
 }
 
-async function fetchCurrentSpec(harnessSlug: string): Promise<{ spec: string; version: number }> {
-  const r = await fetch(`${operatorBase()}/api/harness/${encodeURIComponent(harnessSlug)}/spec`);
-  if (!r.ok) {
-    throw new Error(`fetch_spec_failed:${r.status}`);
-  }
-  const j = (await r.json()) as SpecGetResponse;
-  return { spec: j.spec ?? '', version: typeof j.version === 'number' ? j.version : 0 };
-}
 
-async function putSpec(
-  harnessSlug: string,
-  spec: string,
-  expectedVersion: number,
-): Promise<{ ok: true; version: number } | { ok: false; conflict: number }> {
-  const r = await fetch(`${operatorBase()}/api/harness/${encodeURIComponent(harnessSlug)}/spec`, {
-    method: 'PUT',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ spec, expected_version: expectedVersion }),
-  });
-  if (r.status === 409) {
-    const j = (await r.json()) as SpecPutResponse;
-    return { ok: false, conflict: j.current ?? 0 };
-  }
-  if (!r.ok) {
-    const text = await r.text().catch(() => '');
-    throw new Error(`put_spec_failed:${r.status}:${text.slice(0, 200)}`);
-  }
-  const j = (await r.json()) as SpecPutResponse;
-  return { ok: true, version: j.version ?? expectedVersion + 1 };
-}
 
 async function postFeaturesImport(
   harnessSlug: string,
@@ -248,7 +205,7 @@ export default defineTool({
   name: 'plans:promote',
   profile: 'engineer',
   description:
-    "Promote a `plans:*` plan into a harness. Preview computes the SPEC.md mutation (new [SC-NNN]-tagged criteria with provenance) + per-feature covers mapping. Apply additionally PUTs the new spec with optimistic concurrency, POSTs features to /features/import (server allocates F-AUTO-*), and marks the plan's from_items as done. Always emits a `plan_event` of kind=promoted.",
+    "Promote a `plans:*` plan into a harness. Preview computes the per-feature covers mapping and lists assertions that would be extracted. Apply POSTs features to /features/import (server allocates F-AUTO-*), stores inline VAL-* assertions to harness_plan_assertions, and marks the plan's from_items as done. Always emits a `plan_event` of kind=promoted.",
   guidance: {
     when: 'A plan is ready to enter the harness — you and the human (and any expert agents) have settled the feature list and acceptance criteria.',
     notWhen:
@@ -342,35 +299,26 @@ export default defineTool({
       from_items: f.from_items,
     }));
 
-    // Resolve the spec we're building the mutation against.
-    let currentSpec = args.current_spec ?? '';
-    let currentVersion = 0;
-    if (args.apply) {
-      const fetched = await fetchCurrentSpec(args.harness_slug);
-      currentSpec = fetched.spec;
-      currentVersion = fetched.version;
-    }
-
-    let mutation = buildSpecMutation({
-      currentSpec,
-      planSlug: args.slug,
-      authorOwnerId: identity.ownerId,
-      features,
-      featureIds: args.feature_ids,
-    });
-
-    // Preview path: emit history event + return.
+    // Preview path: emit plan event + return per-feature covers + assertion preview.
     if (!args.apply) {
+      const previewItemIds = new Set<string>();
+      for (const f of args.features) {
+        for (const id of f.from_items ?? []) previewItemIds.add(id);
+      }
+      const previewAssertions = previewItemIds.size > 0
+        ? extractAssertions(planFile.parsed.raw, previewItemIds)
+        : [];
+
       await emitPlanEventForCaller(ctx, {
         planSlug: args.slug,
         event: 'promoted',
         after: {
           harness_slug: args.harness_slug,
           feature_count: args.features.length,
-          sc_ids: mutation.criteria.map((c) => c.id),
+          assertion_count: previewAssertions.length,
           mode: 'preview',
         },
-        detail: `previewed promote to ${args.harness_slug}: ${args.features.length} feature(s), ${mutation.criteria.length} criteria`,
+        detail: `previewed promote to ${args.harness_slug}: ${args.features.length} feature(s), ${previewAssertions.length} assertion(s)`,
       });
 
       return {
@@ -382,54 +330,19 @@ export default defineTool({
               mode: 'preview',
               plan_title: planTitle,
               preview: {
-                new_spec: mutation.newSpec,
-                added_criteria: mutation.criteria,
-                per_feature_covers: mutation.perFeatureCovers,
+                feature_count: args.features.length,
+                assertion_count: previewAssertions.length,
+                assertions: previewAssertions.map((a) => ({ val_id: a.valId, item_id: a.itemId, verify: a.verifyText })),
               },
               apply_hint: {
-                spec_put_endpoint: `/api/harness/${args.harness_slug}/spec`,
                 features_import_endpoint: `/api/harness/${args.harness_slug}/features/import`,
-                note: 'Re-call with apply=true to write spec + import features + mark plan items.',
+                note: 'Re-call with apply=true to import features + store assertions + mark plan items.',
               },
             }),
           },
         ],
       };
     }
-
-    // Apply path: PUT spec with OCC + retry-on-409 once.
-    let put = await putSpec(args.harness_slug, mutation.newSpec, currentVersion);
-    if (!put.ok) {
-      // Rebase: re-fetch, rebuild mutation, retry once.
-      const refetched = await fetchCurrentSpec(args.harness_slug);
-      currentSpec = refetched.spec;
-      currentVersion = refetched.version;
-      mutation = buildSpecMutation({
-        currentSpec,
-        planSlug: args.slug,
-        authorOwnerId: identity.ownerId,
-        features,
-        featureIds: args.feature_ids,
-      });
-      put = await putSpec(args.harness_slug, mutation.newSpec, currentVersion);
-      if (!put.ok) {
-        return {
-          content: [
-            {
-              type: 'text' as const,
-              text: JSON.stringify({
-                ok: false,
-                error: 'spec_version_conflict',
-                detail: 'Spec moved concurrently twice; aborting.',
-                conflict_version: put.conflict,
-              }),
-            },
-          ],
-          isError: true,
-        };
-      }
-    }
-    const newSpecVersion = put.version;
 
     // Extract inline VAL-* assertions before building the import payload so
     // claims can be included in the SQLite INSERT (the import endpoint only
@@ -453,10 +366,8 @@ export default defineTool({
     // metadata.source_plan + metadata.covers carry provenance forward.
     // claims is populated from extracted VAL-* assertions for this feature's items.
     const importPayload = args.features.map((f, idx) => {
-      const cov = mutation.perFeatureCovers[idx] ?? [];
       const metadata: Record<string, unknown> = {
         source_plan: args.slug,
-        covers: cov,
       };
       if (f.from_items && f.from_items.length > 0) {
         metadata.from_plan_items = f.from_items;
@@ -626,13 +537,11 @@ export default defineTool({
       after: {
         harness_slug: args.harness_slug,
         feature_count: args.features.length,
-        sc_ids: mutation.criteria.map((c) => c.id),
-        spec_version: newSpecVersion,
         feature_ids: importRes.ids,
         marked_items: markedItems,
         mode: 'apply',
       },
-      detail: `applied promote to ${args.harness_slug}: ${args.features.length} feature(s) → ids [${importRes.ids.join(', ')}], ${mutation.criteria.length} criteria, ${markedItems.length} item(s) marked done`,
+      detail: `applied promote to ${args.harness_slug}: ${args.features.length} feature(s) → ids [${importRes.ids.join(', ')}], ${markedItems.length} item(s) marked done`,
     });
 
     return {
@@ -644,9 +553,6 @@ export default defineTool({
             mode: 'apply',
             plan_title: planTitle,
             applied: {
-              spec_version: newSpecVersion,
-              added_criteria: mutation.criteria,
-              per_feature_covers: mutation.perFeatureCovers,
               feature_ids: importRes.ids,
               features_inserted: importRes.inserted,
               features_updated: importRes.updated,
@@ -654,9 +560,6 @@ export default defineTool({
               skipped_items: skippedItems,
               assertions_written: assertionsWritten,
               ...(assertionErrors.length > 0 && { assertion_errors: assertionErrors }),
-              // R23: surface provenance back-channel errors so the caller knows
-              // if Phase C UI badges may be stale. Omitted when everything wrote
-              // cleanly (no provenance attempt or zero failures).
               ...(importRes.provenanceFailed != null && importRes.provenanceFailed > 0 && {
                 provenance_failed: importRes.provenanceFailed,
                 provenance_errors: importRes.provenanceErrors ?? [],
