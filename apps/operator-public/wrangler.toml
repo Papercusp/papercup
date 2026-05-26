@@ -37,15 +37,16 @@ INDEXER_BATCH_SIZE = "100"
 [[d1_databases]]
 binding = "DB"
 database_name = "papercusp-cupboard"
-database_id = "local-dev-stub-id"
+database_id = "cebe92a9-52c2-4f2e-81c4-d9d3a668d720"
 
 [[kv_namespaces]]
 binding = "COUNTERS"
-id = "local-dev-stub-id"
+id = "4c9faf66981b4f3ca29f2bcc632d2504"
 
-[[routes]]
-pattern = "cupboard.papercusp.com"
-custom_domain = true
+# Custom domain bound via dashboard / API after first deploy (see below).
+# [[routes]]
+# pattern = "cupboard.papercusp.com"
+# custom_domain = true
 
 [triggers]
 crons = ["0 * * * *"]                          # hourly indexer refresh per P-076
