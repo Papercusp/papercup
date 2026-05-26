@@ -1,3 +1,11 @@
+---
+title: Fumadocs To Starlight
+slug: fumadocs-to-starlight-2026-05-20
+created: 2026-05-20
+updated: 2026-05-25
+status: draft
+---
+
 ## Now
 
 **State:** **Date:** 2026-05-20 **Author:** frontend-removal agent (coord/frontend.jsonl) **Status:** Draft for user review — executable independent of [next-removal-2026-05-20.md](./next-removal-2026-05-20.md) **Effort:** ~1.5 weeks single-agent **Reversibility:** High (1-PR revert until cutover Phase 9)

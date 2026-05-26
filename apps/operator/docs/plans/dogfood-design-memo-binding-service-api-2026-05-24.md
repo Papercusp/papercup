@@ -1,12 +1,9 @@
 ---
 title: Papercusp dogfood — design memo — canonical binding service API
 slug: dogfood-design-memo-binding-service-api-2026-05-24
-status: accepted
-accepted_at: 2026-05-24
-accepted_by: avi@storewolf.com
 created: 2026-05-24
-updated: 2026-05-24
-owner: avi@storewolf.com
+updated: 2026-05-25
+status: draft
 ---
 
 # Design memo — canonical binding service API

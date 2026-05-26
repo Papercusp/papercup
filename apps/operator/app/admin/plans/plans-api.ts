@@ -91,6 +91,9 @@ export interface PlanGetResult {
   contentHash?: string;
   filename?: string;
   error?: string;
+  /** P-006: Map of plan-item-id → { featureId, status }. Present when the
+   *  plan has features promoted from it; absent for legacy / no-features plans. */
+  linkedFeatures?: Record<string, { featureId: string; status: string }>;
 }
 
 export type SearchScope = 'title' | 'now' | 'items' | 'decisions' | 'prose';

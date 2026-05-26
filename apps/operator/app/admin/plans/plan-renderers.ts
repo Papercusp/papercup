@@ -217,9 +217,10 @@ export function decoratePlanItemBadges(
       'margin-left: 8px',
       'vertical-align: middle',
       'white-space: nowrap',
-      'cursor: default',
+      'cursor: pointer',
     ].join(';');
     badge.title = `Feature ${link.featureId} — status: ${status}`;
+    badge.dataset.featureId = link.featureId;
 
     // Insert after the first <strong> (the P-NNN id), or at end of li.
     const firstStrong =
@@ -231,6 +232,29 @@ export function decoratePlanItemBadges(
       li.appendChild(badge);
     }
   }
+}
+
+/**
+ * Attach a delegated click listener for feature badges injected by
+ * `decoratePlanItemBadges`. Clicks on `[data-feature-id]` call back
+ * with the feature ID. Returns a teardown fn.
+ */
+export function attachFeatureBadgeClickHandler(
+  root: HTMLElement,
+  onFeatureClick: (featureId: string) => void,
+): () => void {
+  const handler = (e: MouseEvent) => {
+    const target = e.target as HTMLElement | null;
+    const badge = target?.closest<HTMLElement>('[data-feature-id]');
+    if (!badge) return;
+    const featureId = badge.dataset.featureId;
+    if (!featureId) return;
+    e.preventDefault();
+    e.stopPropagation();
+    onFeatureClick(featureId);
+  };
+  root.addEventListener('click', handler);
+  return () => root.removeEventListener('click', handler);
 }
 
 // ---------------------------------------------------------------------------

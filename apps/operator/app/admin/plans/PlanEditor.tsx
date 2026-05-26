@@ -29,7 +29,7 @@ import {
   type MarkdownEditorToolbar,
 } from '@/app/_components/MarkdownEditor';
 import type { PlanItem } from './plans-api';
-import { attachPlanRefClickHandler, decoratePlanDom, decoratePromotedBlock, decoratePlanItemBadges, type PromotedFeature } from './plan-renderers';
+import { attachPlanRefClickHandler, decoratePlanDom, decoratePromotedBlock, decoratePlanItemBadges, attachFeatureBadgeClickHandler, type PromotedFeature } from './plan-renderers';
 import {
   attachStatusClickHandler,
   buildPlanIRRenderers,
@@ -58,6 +58,8 @@ export interface PlanEditorProps {
    *  clicked in either mode. Receives the target element + the current
    *  status token. The consumer opens the status-flip popover. */
   onStatusClick?: (target: HTMLElement, status: string) => void;
+  /** P-007: invoked when a feature status badge is clicked. */
+  onFeatureClick?: (featureId: string) => void;
 }
 
 const PLAN_TOOLBAR: MarkdownEditorToolbar = [
@@ -77,6 +79,7 @@ export default function PlanEditor({
   promotedFeatures,
   linkedFeatures,
   onStatusClick,
+  onFeatureClick,
 }: PlanEditorProps) {
   void slug;
   // Read-mode delegated click teardown (P-106 ref scroll + optional
@@ -87,6 +90,8 @@ export default function PlanEditor({
   // renderers does not depend on the prop identity.
   const onStatusClickRef = useRef(onStatusClick);
   onStatusClickRef.current = onStatusClick;
+  const onFeatureClickRef = useRef(onFeatureClick);
+  onFeatureClickRef.current = onFeatureClick;
 
   const promotedFeaturesRef = useRef(promotedFeatures);
   promotedFeaturesRef.current = promotedFeatures;
@@ -110,9 +115,13 @@ export default function PlanEditor({
       const detachStatus = onStatusClickRef.current
         ? attachStatusClickHandler(root, (t, s) => onStatusClickRef.current?.(t, s))
         : () => {};
+      const detachFeature = onFeatureClickRef.current
+        ? attachFeatureBadgeClickHandler(root, (id) => onFeatureClickRef.current?.(id))
+        : () => {};
       readDetachRef.current = () => {
         detachRefs();
         detachStatus();
+        detachFeature();
       };
     },
     [items],

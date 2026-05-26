@@ -40,12 +40,6 @@ payload into your artifacts.
 2. `messages:feature_send` with kind="Blocker" and the specific question.
 3. The orchestrator routes to the right next role (debugger, architect, etc.).
 
-### Read prior context (hindsight)
-
-`hindsight:recall { query }` — cross-agent memory. Use to check whether
-a previous worker / debugger has hit a similar problem. Cheap; call when
-uncertain about an approach.
-
 ### Where new tests go
 
 New tests **always** go in one of the four canonical frameworks

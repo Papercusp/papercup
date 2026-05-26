@@ -1,11 +1,9 @@
 ---
 title: Papercusp dogfood — Phase 9 (Cupboard + Discord + sync-with-main)
 slug: papercusp-dogfood-phase9-cupboard-discord-sync-2026-05-24
-status: in-progress
-parent: papercusp-dogfood-v5-2026-05-23
 created: 2026-05-24
 updated: 2026-05-25
-owner: avi@storewolf.com
+status: draft
 ---
 
 # Papercusp dogfood — Phase 9 (Cupboard + Discord + sync-with-main)

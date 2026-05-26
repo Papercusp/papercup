@@ -1,12 +1,9 @@
 ---
 title: File-locking improvements — SU-locks + FileLockQueue
-status: shipped
-date: 2026-05-20
-supersedes: none
-related:
-  - apps/operator/docs/plans/su-agent-coordination-v3-2026-05-14.md
-  - apps/operator/docs/plans/file-locking-systems-comparison-2026-05-20.md
-updated: 2026-05-20
+slug: file-locking-improvements-2026-05-20
+created: 2026-05-20
+updated: 2026-05-25
+status: draft
 ---
 
 ## Now

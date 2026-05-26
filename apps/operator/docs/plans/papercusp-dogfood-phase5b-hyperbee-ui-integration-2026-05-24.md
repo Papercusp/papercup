@@ -1,28 +1,30 @@
 ---
 title: Papercusp dogfood — Phase 5b (Hyperbee UI integration + clobber-toast)
 slug: papercusp-dogfood-phase5b-hyperbee-ui-integration-2026-05-24
-status: in-progress
 created: 2026-05-24
 updated: 2026-05-25
-owner: avi@storewolf.com
+status: draft
 ---
 
 # Papercusp dogfood — Phase 5b (Hyperbee UI integration + clobber-toast)
 
 ## Now
 
-**State:** **P-066 Bootstrap progress indicator end-to-end SHIPPED 2026-05-25.** Rest of Phase 5b still gated on Phase 5a → real substrate boot.
+**State:** **Phase 5b substrate + UI primitives COMPLETE 2026-05-25** (12 commits).
 
-P-066 vertical slice shipped:
-- `lib/sync/hyperbee/bootstrap-progress.ts` — in-process tracker (12 tests).
-- `lib/sync/hyperbee/bootstrap-progress-poller.ts` — substrate poller wired into boot composer (5 tests).
-- `GET /api/harness/:slug/bootstrap-progress` — JSON endpoint.
-- `BootstrapProgressIndicator` pure UI (8 tests) + `BootstrapProgressIndicatorClient` polling wrapper (8 tests).
-- Surfaces in `HarnessChromeHeaderBadges` + admin `/admin/dogfood-substrate` page bootstrap column.
+P-032: feature_queue Hyperbee write helpers, PG reader, 3 HTTP endpoints (live on `:3070`), QueueAvatarCluster + PullToQueueButton(+Client) + useQueueMembership hook.
 
-Once flag flips → substrate boots → poller fires `recordMergedOps` per merged op → indicator pill shows live N/M sync progress → goes quiet after the 30s idle window.
+P-033: ensureUserBranchAndWorktree helper, publishContributorRow append, step6 worktree-based (v5 §0.4), step7 takes worktreeDir, step8 publishes ContributorRow when substrate booted.
 
-**Next action:** P-032 (feature_queue UI), P-033 (contributors branch), P-034 (Entry 4 wizard hookup), P-035 (LWW clobber-toast). These are UI-heavy and best done with the flag on so the harness pages reflect real merged state.
+P-034: bootstrap-wait helper + step4 polls `getBootstrapProgress.caughtUp` with 2-min timeout + "continue anyway" path.
+
+P-035: clobber-events tracker (D-012 tuple compare, 60s window, self-echo filter, FIFO eviction) + ClobberToast pure UI ("was overridden" copy, inline diff, per-event dismiss).
+
+Sweep: 1331/1332 passing across changed scope. 2 pre-existing CreateHarnessPicker failures unrelated.
+
+**Follow-ups (not blocking subsequent phases):** FeatureList integration of P-032 components, ShareWizard post-wizard publication hook, recordLocalWrite/observeMergedOp call sites at projection write paths, SSE projector for browser clobber delivery, P-030/P-031 native macOS verification.
+
+**Next:** Move on to Phase 6 P-037 (production wiring of distributed claim) or another phase per user direction. Phase 5b foundation is complete; remaining items are integration glue tracked above.
 
 ## Background
 

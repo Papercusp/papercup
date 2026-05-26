@@ -1,11 +1,9 @@
 ---
 title: Principal — unified auth subject RFC
 slug: principal-rfc-2026-05-20
-status: design-review
 created: 2026-05-20
-updated: 2026-05-20
-owner: pandawamble@gmail.com
-companion-to: [host-architecture-2026-05-20-v2]
+updated: 2026-05-25
+status: draft
 ---
 
 # Principal — unified auth subject (RFC)

@@ -327,6 +327,7 @@ export default function PlansClient() {
             query={q}
             searchHitSlugs={searchHitSlugs}
             onSelect={navSlug}
+            onStartToggle={() => planList.refresh()}
           />
         </div>
       </aside>
@@ -354,7 +355,14 @@ export default function PlansClient() {
         )}
 
         {view === 'inbox' && (
-          <PlanItemsList mode="inbox" onPick={navPlanTarget} />
+          <PlanItemsList
+            mode="inbox"
+            onPick={navPlanTarget}
+            harnessByPlan={useMemo(
+              () => new Map((planList.data?.plans ?? []).map((p) => [p.slug, p.harness])),
+              [planList.data],
+            )}
+          />
         )}
 
         {view === 'actionable' && (

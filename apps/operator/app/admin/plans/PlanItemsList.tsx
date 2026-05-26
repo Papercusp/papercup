@@ -6,19 +6,24 @@
  * P-108 deliverable. Backs both view=inbox (needs-human) and
  * view=actionable (effective-todo with all blockers cleared). Items
  * grouped under their parent plan; clicking a row (or the plan head)
- * navigates to the plan in detail view. Per the underlying plan's
- * §4.3, the inbox is "the single most useful view for the human
- * reviewer" — surface it as a first-class panel, not a filter preset.
+ * navigates to the plan in detail view.
+ *
+ * P-013: inbox mode adds a one-click "Mark resolved" button per row
+ * that flips the item to done and optionally relaunches the harness loop.
  */
 
-import { usePlanItems, type PlanItemRow } from './plans-api';
+import { useState } from 'react';
+import { toast } from 'sonner';
+import { usePlanItems, setItemStatus, type PlanItemRow } from './plans-api';
 
 interface Props {
   mode: 'inbox' | 'actionable';
   onPick: (slug: string, targetId?: string) => void;
+  /** plan-slug → harness-slug map; required for inbox mode to relaunch the loop. */
+  harnessByPlan?: Map<string, string>;
 }
 
-export default function PlanItemsList({ mode, onPick }: Props) {
+export default function PlanItemsList({ mode, onPick, harnessByPlan }: Props) {
   const args = mode === 'inbox' ? { needsHuman: true } : { actionable: true };
   const { data, loading, error, refresh } = usePlanItems(args);
 
@@ -71,24 +76,24 @@ export default function PlanItemsList({ mode, onPick }: Props) {
     <div className="pc-items">
       <Heading mode={mode} count={rows.length} />
       <ul className="pc-items__groups" role="list">
-        {[...groups.entries()].map(([slug, planRows]) => (
-          <li key={slug} className="pc-items__group">
+        {[...groups.entries()].map(([planSlug, planRows]) => (
+          <li key={planSlug} className="pc-items__group">
             <button
               type="button"
               className="pc-items__plan-head"
-              onClick={() => onPick(slug)}
-              aria-label={`Open plan ${slug}`}
+              onClick={() => onPick(planSlug)}
+              aria-label={`Open plan ${planSlug}`}
             >
-              <span className="pc-items__plan-name">{slug}</span>
+              <span className="pc-items__plan-name">{planSlug}</span>
               <span className="pc-items__plan-count">{planRows.length}</span>
             </button>
             <ul className="pc-items__rows" role="list">
               {planRows.map((r) => (
-                <li key={r.item.id}>
+                <li key={r.item.id} className="pc-items__row-wrap">
                   <button
                     type="button"
                     className="pc-items__row"
-                    onClick={() => onPick(slug, r.item.id)}
+                    onClick={() => onPick(planSlug, r.item.id)}
                   >
                     <span className="pc-items__id">{r.item.id}</span>
                     <span className={`pc-count pc-count--${r.item.storedStatus}`}>
@@ -96,6 +101,14 @@ export default function PlanItemsList({ mode, onPick }: Props) {
                     </span>
                     <span className="pc-items__text">{r.item.text}</span>
                   </button>
+                  {mode === 'inbox' && (
+                    <ResolveButton
+                      planSlug={planSlug}
+                      itemId={r.item.id}
+                      harnessSlug={harnessByPlan?.get(planSlug)}
+                      onResolved={refresh}
+                    />
+                  )}
                 </li>
               ))}
             </ul>
@@ -103,6 +116,58 @@ export default function PlanItemsList({ mode, onPick }: Props) {
         ))}
       </ul>
     </div>
+  );
+}
+
+function ResolveButton({
+  planSlug,
+  itemId,
+  harnessSlug,
+  onResolved,
+}: {
+  planSlug: string;
+  itemId: string;
+  harnessSlug: string | undefined;
+  onResolved: () => void;
+}) {
+  const [busy, setBusy] = useState(false);
+
+  const handleResolve = async () => {
+    setBusy(true);
+    try {
+      const result = await setItemStatus({ slug: planSlug, itemId, status: 'done' });
+      if (!result.ok) throw new Error(result.detail ?? 'unknown error');
+
+      if (harnessSlug) {
+        fetch(`/api/harness/${encodeURIComponent(harnessSlug)}/launch?phase=staging`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({}),
+        }).catch(() => {});
+      }
+
+      toast.success(`${itemId} resolved`, {
+        description: harnessSlug ? `Harness loop resumed for ${harnessSlug}.` : undefined,
+      });
+      onResolved();
+    } catch (e) {
+      toast.error('Resolve failed', { description: String(e) });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <button
+      type="button"
+      className="pc-items__resolve"
+      onClick={handleResolve}
+      disabled={busy}
+      aria-label={`Mark ${itemId} resolved`}
+      title="Mark resolved — flips item to done and resumes the harness loop"
+    >
+      {busy ? '…' : '✓ Resolve'}
+    </button>
   );
 }
 

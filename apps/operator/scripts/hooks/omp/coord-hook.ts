@@ -273,10 +273,14 @@ export async function callMcpTool(
     if (!res.ok) return null;
     const text = await res.text();
     // The Streamable HTTP MCP transport may return either application/json
-    // or text/event-stream framed. Strip SSE `data: ` if present.
-    const payload = text.startsWith('data:')
-      ? text.split('\n').find((l) => l.startsWith('data:'))?.slice(5).trim() ?? text
-      : text;
+    // or text/event-stream framed. A correctly framed SSE response from
+    // the current @modelcontextprotocol/sdk leads with `event: message\n`
+    // BEFORE the `data: <json>` line — the older check only handled the
+    // case where `data:` was the first byte, which silently broke every
+    // coord call (regression: see plans/coord-hook-sse-event-prefix-*).
+    // Always scan for a `data:` line first; fall back to raw text.
+    const dataLine = text.split('\n').find((l) => l.startsWith('data:'));
+    const payload = dataLine !== undefined ? dataLine.slice(5).trim() : text;
     const parsed = JSON.parse(payload) as JsonRpcResp;
     if (parsed.error) return null;
     const content = parsed.result?.content?.[0]?.text;

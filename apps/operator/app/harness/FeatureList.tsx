@@ -15,10 +15,10 @@ import { RichGrid, type ColumnDef } from '@restart/grid-core';
 import { useShortcut } from '../../lib/hotkeys';
 import { FeatureFilterChips, type FeatureFilter } from './FeatureFilterChips';
 import { useViewerGithubId } from './useViewerGithubId';
-import { useQueueMembership } from './insights/useQueueMembership';
+import { useQueueMembership, type UseQueueMembershipResult } from './insights/useQueueMembership';
 import { QueueAvatarCluster } from './insights/QueueAvatarCluster';
 import { PullToQueueButtonClient } from './insights/PullToQueueButtonClient';
-import { useWorkingSet } from './insights/useWorkingSet';
+import { useWorkingSet, type UseWorkingSetResult } from './insights/useWorkingSet';
 import { SetActiveButtonClient } from './insights/SetActiveButtonClient';
 
 // Loaded eagerly (no `dynamic` wrapper) so the inline-note pane renders
@@ -439,6 +439,9 @@ function FeatureListInner({
             compact={isCompact}
             scrollRef={listRef}
             notesByFeatureId={notesByFeatureId}
+            viewerGithubId={viewerGithubId}
+            queueMembership={queueMembership}
+            workingSet={workingSet}
           />
         ) : (
           <BoardView
@@ -477,7 +480,7 @@ export default FeatureList;
 // ─── List view ─────────────────────────────────────────────────────
 
 function ListView({
-  slug, features, focusIdx, activeId, selected, onSelect, onToggleSelect, onReset, onEdit, onSwitchToPi, compact = false, scrollRef, notesByFeatureId,
+  slug, features, focusIdx, activeId, selected, onSelect, onToggleSelect, onReset, onEdit, onSwitchToPi, compact = false, scrollRef, notesByFeatureId, viewerGithubId, queueMembership, workingSet,
 }: {
   slug: string;
   features: Feature[];
@@ -492,6 +495,9 @@ function ListView({
   compact?: boolean;
   scrollRef: MutableRefObject<HTMLDivElement | null>;
   notesByFeatureId?: Map<string, string>;
+  viewerGithubId: number;
+  queueMembership: UseQueueMembershipResult;
+  workingSet: UseWorkingSetResult;
 }) {
   const [noteFeatureId, setNoteFeatureId] = useState<string | null>(null);
   const [chatBusyId, setChatBusyId] = useState<string | null>(null);

@@ -13,8 +13,9 @@
  */
 
 import { useQueryState, parseAsBoolean, parseAsString, parseAsStringEnum } from 'nuqs';
-import { forwardRef, useImperativeHandle, useMemo } from 'react';
-import { type AsyncResult, type PlanListRow, type ItemStatus, type PlanStatus } from './plans-api';
+import { forwardRef, useImperativeHandle, useMemo, useCallback, useState } from 'react';
+import { Play, Pause } from 'lucide-react';
+import { type AsyncResult, type PlanListRow, type ItemStatus, type PlanStatus, startPlan, pausePlan } from './plans-api';
 import { withinDateWindow, type DateWindow } from './PlanFilters';
 import { Tooltip } from '@/app/harness/Tooltip';
 
@@ -74,10 +75,12 @@ interface Props {
    *  instead of looking like "0 results". */
   searchHitSlugs?: ReadonlySet<string>;
   onSelect: (slug: string) => void;
+  /** Called after a start/pause action so the parent can re-fetch. */
+  onStartToggle?: () => void;
 }
 
 const PlanRail = forwardRef<PlanRailHandle, Props>(function PlanRail(
-  { list, selectedSlug, query, searchHitSlugs, onSelect }: Props,
+  { list, selectedSlug, query, searchHitSlugs, onSelect, onStartToggle }: Props,
   ref,
 ) {
   const { data, loading, error, refresh } = list;
@@ -194,6 +197,7 @@ const PlanRail = forwardRef<PlanRailHandle, Props>(function PlanRail(
           plan={p}
           active={p.slug === selectedSlug}
           onSelect={() => onSelect(p.slug)}
+          onStartToggle={onStartToggle}
         />
       ))}
     </ul>
@@ -206,15 +210,39 @@ function PlanRow({
   plan,
   active,
   onSelect,
+  onStartToggle,
 }: {
   plan: PlanListRow;
   active: boolean;
   onSelect: () => void;
+  onStartToggle?: () => void;
 }) {
   const title = plan.title ?? plan.slug;
   const source = sourceOfDraftPlan(plan);
+  const [busy, setBusy] = useState(false);
+
+  const handleStartToggle = useCallback(
+    async (e: React.MouseEvent) => {
+      e.stopPropagation();
+      setBusy(true);
+      try {
+        if (plan.startStatus === 'started') {
+          await pausePlan(plan.slug);
+        } else {
+          await startPlan(plan.slug);
+        }
+        onStartToggle?.();
+      } finally {
+        setBusy(false);
+      }
+    },
+    [plan.slug, plan.startStatus, onStartToggle],
+  );
+
+  const isStarted = plan.startStatus === 'started';
+
   return (
-    <li className={`pc-plan-rail__item pc-plan-rail__item--${plan.status}`}>
+    <li className={`pc-plan-rail__item pc-plan-rail__item--${plan.status}${isStarted ? ' pc-plan-rail__item--started' : ''}`}>
       <button
         type="button"
         className={`pc-plan-row ${active ? 'is-active' : ''}`}
@@ -229,6 +257,17 @@ function PlanRow({
           {source ? <SourcePill source={source} /> : null}
           {plan.harness ? <HarnessPill harness={plan.harness} /> : null}
           <StatusPill status={plan.status} />
+          <button
+            type="button"
+            className={`pc-plan-row__start-btn${isStarted ? ' is-started' : ''}`}
+            disabled={busy}
+            onClick={handleStartToggle}
+            title={isStarted ? 'Pause plan (orchestrator stops picking features)' : 'Start plan (orchestrator picks features from this plan)'}
+            aria-label={isStarted ? `Pause plan ${plan.slug}` : `Start plan ${plan.slug}`}
+          >
+            {isStarted ? <Pause size={11} /> : <Play size={11} />}
+            {isStarted ? 'Pause' : 'Start'}
+          </button>
         </div>
         <div className="pc-plan-row__meta-line">
           <span className="pc-plan-row__slug">{plan.slug}</span>
@@ -236,6 +275,7 @@ function PlanRow({
             <span className="pc-plan-row__updated">updated {formatUpdated(plan.updated)}</span>
           ) : null}
         </div>
+        {plan.itemCounts ? <PlanProgressBar counts={plan.itemCounts} /> : null}
         {plan.itemCounts ? <ItemCounts counts={plan.itemCounts} /> : null}
         {plan.nextAction ? (
           <Tooltip label={plan.nextAction}>
@@ -299,6 +339,35 @@ import { formatRelativeUpdated } from '@/lib/format/relative-time';
  */
 function formatUpdated(updated: string): string {
   return formatRelativeUpdated(updated);
+}
+
+/** P-023: segmented progress bar showing done / active / remaining proportions. */
+function PlanProgressBar({
+  counts,
+}: {
+  counts: Partial<Record<ItemStatus | 'unknown', number>>;
+}) {
+  const done = counts['done'] ?? 0;
+  const active = (counts['wip'] ?? 0) + (counts['needs-human'] ?? 0);
+  const remaining = (counts['todo'] ?? 0) + (counts['blocked'] ?? 0) + (counts['unknown'] ?? 0);
+  const total = done + active + remaining + (counts['dropped'] ?? 0);
+  if (total === 0) return null;
+  const pct = (n: number) => `${((n / total) * 100).toFixed(1)}%`;
+  return (
+    <div
+      className="pc-plan-row__progress"
+      role="progressbar"
+      aria-valuemin={0}
+      aria-valuemax={total}
+      aria-valuenow={done}
+      aria-label={`${done} of ${total} items done`}
+      title={`${done} done · ${active} active · ${remaining} remaining`}
+    >
+      {done > 0 && <span className="pc-progress__done" style={{ width: pct(done) }} />}
+      {active > 0 && <span className="pc-progress__active" style={{ width: pct(active) }} />}
+      {remaining > 0 && <span className="pc-progress__remaining" style={{ width: pct(remaining) }} />}
+    </div>
+  );
 }
 
 function ItemCounts({

@@ -10,9 +10,9 @@ updated: 2026-05-26
 
 ## Now
 
-**State:** Plan document is complete: 26 items across 7 phases (P-001–P-026) and 6 architectural decisions (D-001–D-006). Phases 1–4 cover the orchestrator scope filter, per-plan Start button, plan→feature links, and the decisions/needs-human replacement for checkpoints. Phase 5 deprecates SPEC.md in favor of plan items+decisions. Phase 6 migrates validation-contract.md to inline VAL-* assertion bullets in plan items with a new harness_plan_assertions PG table and assertion lookup API (no fallback). Phase 7 adds the progress UI (progress bars, Now callout, kanban, activity feed). The FeatureList.tsx viewerGithubId runtime crash is already fixed and shipped.
+**State:** Phase 1 (plan→orchestrator wiring) and Phase 2 (plan→feature links) are complete. All agent prompts updated: scoper (P-015), orchestrator (P-005/P-008), architect and worker (P-016) now read from the active plan instead of SPEC.md. UI improvements P-023/P-024 were already implemented. P-011 (escalate writes plan items) was already done. Next unblocked work is P-018 (inline VAL-* format spec), which gates the entire Phase 6 validation-contract migration chain (P-019–P-022). P-009 (remove CHECKPOINT substrate) is unblocked but risky without P-013 decisions panel built first.
 
-**Next:** User to review the plan and approve starting Phase 1 implementation (P-001: add `status` column to plans PG table with started/paused/done values).
+**Next:** Implement P-018: write the inline VAL-* format spec document that defines how validation assertions move from validation-contract.md into plan items — this is the gate for Phase 6.
 
 ## Background
 
@@ -30,7 +30,7 @@ single id, status token, free text, optional blocked-by.)
 - **P-002** `done` Replace global Start/Stop button in `AdvNowRunning` with per-plan Start/Stop buttons in the plans list. Stop harness (kill process) remains a single global action in the header. A started plan shows a green "running" indicator; a stopped plan shows a grey "paused" state. blocked-by: P-001
 - **P-003** `done` Inject active plan slugs into orchestrator runtime context block at launch time. The substrate reads `WHERE active = true` from the plans table for the current harness and passes `ACTIVE_PLANS=slug-a,slug-b` into the orchestrator's context section. blocked-by: P-001
 - **P-004** `done` Update orchestrator prompt: when `ACTIVE_PLANS` is present in runtime context, the feature query is scoped to `source_plan_slug = ANY(active_plans)`. Add rule: "Only consider features whose source_plan_slug is in the ACTIVE_PLANS list. Features with no source_plan_slug are not eligible unless explicitly noted below." No ACTIVE_PLANS = current behaviour unchanged (backward compat for harnesses not yet on plans). blocked-by: P-003
-- **P-005** `todo` F-FIX-* issue features (no source_plan_slug) are eligible if their `foundDuring` feature belongs to an active plan. Add this rule to the orchestrator prompt and update the issue-conversion step (D) to back-fill `source_plan_slug` on the created F-FIX-* feature by looking up the origin feature's plan. blocked-by: P-004
+- **P-005** `done` F-FIX-* issue features (no source_plan_slug) are eligible if their `foundDuring` feature belongs to an active plan. Add this rule to the orchestrator prompt and update the issue-conversion step (D) to back-fill `source_plan_slug` on the created F-FIX-* feature by looking up the origin feature's plan. blocked-by: P-004 (orchestrator convert_issues D now inherits source_plan_slug from foundDuring origin feature)
 
 
 
@@ -61,7 +61,7 @@ single id, status token, free text, optional blocked-by.)
 
 ## Phase 4 — Agent Decisions Surface as Plan Items
 
-- **P-011** `todo` Update orchestrator prompt: when it would write to escalation.md (ESCALATE verb), instead call `POST /api/harness/:slug/plans/:planSlug/items` to add a new `[needs-human]` item describing the blocker. The ESCALATE verb is kept as output (so the substrate can halt the loop) but the escalation content is written to the plan, not to a file.
+- **P-011** `done` Update orchestrator prompt: when it would write to escalation.md (ESCALATE verb), instead call `POST /api/harness/:slug/plans/:planSlug/items` to add a new `[needs-human]` item describing the blocker. The ESCALATE verb is kept as output (so the substrate can halt the loop) but the escalation content is written to the plan, not to a file.
 - **P-012** `todo` Architect consultation results (D' — spec-suspect failures) also write a `[needs-human]` plan item instead of `pending-reviews/`. The item includes the feature id, attempt count, and the architect's diagnosis. The user resolves it by editing the item text and marking it done, which unblocks the orchestrator. blocked-by: P-011
 - **P-013** `todo` Add "Decisions" panel to the plans tab: a live list of all `[needs-human]` items across active plans, sorted oldest first. Each row shows: plan name, item text, age, and a one-click "Mark resolved" button that flips the item to done and resumes the orchestrator loop. blocked-by: P-011
 
@@ -75,20 +75,20 @@ single id, status token, free text, optional blocked-by.)
 
 ## Phase 5 — Plans Replace SPEC.md
 
-- **P-015** `todo` Update scoper prompt: replace "read SPEC.md for feature scope context" with "read active plan items (status=todo/wip) from the plan that owns this feature's source_plan_slug; use the plan's Now block as the high-level intent and individual P-NNN items as the scope boundary". Remove all SPEC.md read references from the scoper prompt.
-- **P-016** `todo` Update architect and worker prompts: replace "read SPEC.md for architecture decisions and constraints" with "read active plan decisions (D-NNN blocks) from the owning plan". The plan's decisions section IS the architectural record; SPEC.md is not read by any agent role after this item ships. blocked-by: P-015
-- **P-017** `todo` Deprecate SPEC.md: remove SPEC.md creation from harness init, remove any harness setup flow that prompts the user to write a spec. Existing SPEC.md files in live harnesses are not deleted (read-only tombstone), but no agent writes to them and the harness UI no longer shows a "Spec" tab or edit surface. blocked-by: P-016
+- **P-015** `done` Update scoper prompt: replace "read SPEC.md for feature scope context" with "read active plan items (status=todo/wip) from the plan that owns this feature's source_plan_slug; use the plan's Now block as the high-level intent and individual P-NNN items as the scope boundary". Remove all SPEC.md read references from the scoper prompt. (scoper.md: all 4 modes now read active plan items/Now block instead of SPEC.md)
+- **P-016** `done` Update architect and worker prompts: replace "read SPEC.md for architecture decisions and constraints" with "read active plan decisions (D-NNN blocks) from the owning plan". The plan's decisions section IS the architectural record; SPEC.md is not read by any agent role after this item ships. blocked-by: P-015
+- **P-017** `done` Deprecate SPEC.md: remove SPEC.md creation from harness init, remove any harness setup flow that prompts the user to write a spec. Existing SPEC.md files in live harnesses are not deleted (read-only tombstone), but no agent writes to them and the harness UI no longer shows a "Spec" tab or edit surface. blocked-by: P-016
 
 
 
 
 ## Phase 6 — Validation Contract → Plan Items
 
-- **P-018** `todo` Define inline VAL-* format spec: within a plan item's text, behavioral assertions are written as a nested bullet block starting with `[VAL-{PLAN_SLUG}-{NNN}]` then `Verify:`, `Evidence:`, `Status:` sub-bullets. The assertion ID is globally unique (plan slug prefix + 3-digit sequence). Document this format in `docs/spec/validation-assertion-format.md` and reference it from the plan format spec page.
-- **P-019** `todo` Update `plans:promote`: when extracting features from plan items, parse inline VAL-* assertion bullets and populate `feature.claims` with those assertion IDs. The assertion text (Verify/Evidence/Status) is stored in a new `harness_plan_assertions` PG table keyed by `(harness_slug, val_id)` with columns `plan_slug`, `item_id`, `verify_text`, `evidence_text`, `status`. No migration of old validation-contract.md data. blocked-by: P-018
-- **P-020** `todo` Add `GET /api/harness/:slug/assertion/:valId` endpoint: reads from `harness_plan_assertions` and returns `{ val_id, verify_text, evidence_text, status, plan_slug, item_id }`. Returns 404 if not found — no fallback to validation-contract.md. Validator uses this endpoint to resolve assertion text by ID before writing its report. blocked-by: P-019
-- **P-021** `todo` Update validator prompt: replace "read validation-contract.md and find the VAL-### entry" with "call GET /api/harness/:slug/assertion/:valId for each claim in feature.claims to retrieve the Verify/Evidence/Status text; if 404, fail validation with message 'assertion not found — feature must be promoted from a plan with inline VAL-* assertions'". Remove all validation-contract.md read logic. blocked-by: P-020
-- **P-022** `todo` Update scoper prompt: when writing validation assertions for a feature chunk, write them as inline VAL-* bullets inside the plan item (not to validation-contract.md). Scoper must call `plans:set-content` or `plans:add-item` to embed the assertion block. The `feature.claims` array is populated by `plans:promote` extraction — scoper does not set claims directly. Remove all validation-contract.md write logic from the scoper prompt. blocked-by: P-019, P-021
+- **P-018** `done` Define inline VAL-* format spec: within a plan item's text, behavioral assertions are written as a nested bullet block starting with `[VAL-{PLAN_SLUG}-{NNN}]` then `Verify:`, `Evidence:`, `Status:` sub-bullets. The assertion ID is globally unique (plan slug prefix + 3-digit sequence). Document this format in `docs/spec/validation-assertion-format.md` and reference it from the plan format spec page.
+- **P-019** `done` Update `plans:promote`: when extracting features from plan items, parse inline VAL-* assertion bullets and populate `feature.claims` with those assertion IDs. The assertion text (Verify/Evidence/Status) is stored in a new `harness_plan_assertions` PG table keyed by `(harness_slug, val_id)` with columns `plan_slug`, `item_id`, `verify_text`, `evidence_text`, `status`. No migration of old validation-contract.md data. blocked-by: P-018
+- **P-020** `done` Add `GET /api/harness/:slug/assertion/:valId` endpoint: reads from `harness_plan_assertions` and returns `{ val_id, verify_text, evidence_text, status, plan_slug, item_id }`. Returns 404 if not found — no fallback to validation-contract.md. Validator uses this endpoint to resolve assertion text by ID before writing its report. blocked-by: P-019
+- **P-021** `done` Update validator prompt: replace "read validation-contract.md and find the VAL-### entry" with "call GET /api/harness/:slug/assertion/:valId for each claim in feature.claims to retrieve the Verify/Evidence/Status text; if 404, fail validation with message 'assertion not found — feature must be promoted from a plan with inline VAL-* assertions'". Remove all validation-contract.md read logic. blocked-by: P-020
+- **P-022** `done` Update scoper prompt: when writing validation assertions for a feature chunk, write them as inline VAL-* bullets inside the plan item (not to validation-contract.md). Scoper must call `plans:set-content` or `plans:add-item` to embed the assertion block. The `feature.claims` array is populated by `plans:promote` extraction — scoper does not set claims directly. Remove all validation-contract.md write logic from the scoper prompt. blocked-by: P-019, P-021
 
 
 

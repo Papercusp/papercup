@@ -1,11 +1,9 @@
 ---
 title: Harness finish-line — last 20 routes, _hono/ delete, no-raw-routes lint
 slug: harness-finish-line-2026-05-21
-status: done
 created: 2026-05-21
-updated: 2026-05-21
-owner: pandawamble@gmail.com
-companion-to: [endpoint-hono-elimination-2026-05-21]
+updated: 2026-05-25
+status: draft
 ---
 
 ## Now

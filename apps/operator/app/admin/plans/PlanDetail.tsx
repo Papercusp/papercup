@@ -40,7 +40,8 @@ import PlanStatusPopover, {
   type PendingStatusFlip,
   type PlanStatus as PlanItemStatus,
 } from './PlanStatusPopover';
-import type { PlanStatus, PlanStartStatus } from './plans-api';
+import { setItemStatus, usePlanRevisions } from './plans-api';
+import type { PlanStatus, PlanStartStatus, PlanItem, ItemStatus } from './plans-api';
 
 interface Props {
   slug: string;
@@ -94,6 +95,14 @@ export default function PlanDetail({ slug, onClose, onDirtyChange, startStatus, 
     'tab',
     parseAsStringEnum(['editor', 'revisions', 'agents']).withDefault('editor'),
   );
+  const [itemView, setItemView] = useQueryState(
+    'itemView',
+    parseAsStringEnum<'list' | 'kanban'>(['list', 'kanban']).withDefault('list'),
+  );
+  const [activityOpen, setActivityOpen] = useQueryState(
+    'activity',
+    parseAsStringEnum<'open' | 'closed'>(['open', 'closed']).withDefault('closed'),
+  );
   // P-018/P-019 modals — lifted from RevisionsPanel so a deep link
   // `?tab=editor&rev=42` still shows the modal even when the panel
   // itself isn't mounted. RevisionsPanel uses the same nuqs keys to
@@ -111,6 +120,7 @@ export default function PlanDetail({ slug, onClose, onDirtyChange, startStatus, 
   const [saveError, setSaveError] = useState<string | null>(null);
   const [conflict, setConflict] = useState<string | null>(null);
   const [pendingStatus, setPendingStatus] = useState<PendingStatusFlip | null>(null);
+  const [selectedFeatureId, setSelectedFeatureId] = useState<string | null>(null);
 
   const onChanged = () => {
     refresh();
@@ -345,6 +355,26 @@ export default function PlanDetail({ slug, onClose, onDirtyChange, startStatus, 
       {tab === 'editor' ? (
         <>
       {!editing ? (
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', padding: '0 0 4px' }}>
+          <button
+            type="button"
+            onClick={() => setItemView(itemView === 'kanban' ? 'list' : 'kanban')}
+            style={{ fontSize: '0.78em', padding: '2px 10px', borderRadius: 4, border: '1px solid var(--border)', background: itemView === 'kanban' ? 'var(--surface-2)' : 'none', cursor: 'pointer', color: 'var(--fg-mute)' }}
+          >
+            {itemView === 'kanban' ? '☰ List' : '⊞ Kanban'}
+          </button>
+        </div>
+      ) : null}
+      {!editing && itemView === 'kanban' ? (
+        <PlanKanbanView
+          items={data.items ?? []}
+          slug={slug}
+          onChanged={onChanged}
+        />
+      ) : null}
+      {(editing || itemView === 'list') ? (
+        <>
+      {!editing ? (
         <PlanJumpToItem
           items={data.items}
           decisions={data.decisions}
@@ -365,6 +395,7 @@ export default function PlanDetail({ slug, onClose, onDirtyChange, startStatus, 
           // state and Save stays disabled.
           readOnly={!editing || locked}
           onChange={editing && !locked ? setDraft : undefined}
+          onFeatureClick={(featureId) => setSelectedFeatureId(featureId)}
           onStatusClick={(target, status) => {
             // While editing, a setValue round-trip from set-status would
             // clobber the draft — D-007 disables structured writes in that
@@ -382,6 +413,8 @@ export default function PlanDetail({ slug, onClose, onDirtyChange, startStatus, 
         onSuccess={onChanged}
         onClose={() => setPendingStatus(null)}
       />
+        </>
+      ) : null}
         </>
       ) : null}
       {tab === 'revisions' ? <RevisionsPanel slug={data.slug} /> : null}
@@ -413,6 +446,23 @@ export default function PlanDetail({ slug, onClose, onDirtyChange, startStatus, 
       <RevisionConversationModal
         revisionId={openConvo}
         onClose={() => setOpenConvo(null)}
+      />
+      {selectedFeatureId ? (() => {
+        const pf = promotedFeatures.find((f) => f.featureId === selectedFeatureId);
+        return (
+          <FeatureSlideOver
+            featureId={selectedFeatureId}
+            harnessSlug={pf?.harnessSlug ?? data.slug}
+            featureTitle={pf?.title ?? null}
+            featureStatus={pf?.status ?? null}
+            onClose={() => setSelectedFeatureId(null)}
+          />
+        );
+      })() : null}
+      <PlanActivityFeed
+        slug={slug}
+        open={activityOpen === 'open'}
+        onToggle={() => setActivityOpen(activityOpen === 'open' ? 'closed' : 'open')}
       />
     </DetailShell>
   );
@@ -750,4 +800,291 @@ function findHeadingByText(scope: HTMLElement, id: string): HTMLElement | null {
     if ((h.textContent ?? '').trim().startsWith(id)) return h;
   }
   return null;
+}
+
+// ---------------------------------------------------------------------------
+// P-026 — Activity feed
+// ---------------------------------------------------------------------------
+
+function PlanActivityFeed({
+  slug,
+  open,
+  onToggle,
+}: {
+  slug: string;
+  open: boolean;
+  onToggle: () => void;
+}) {
+  const { data: revisions, loading } = usePlanRevisions(open ? slug : null);
+
+  return (
+    <div
+      style={{
+        position: 'fixed', right: open ? 0 : -280, top: 0, bottom: 0, zIndex: 35,
+        width: 280, background: 'var(--surface-1)',
+        borderLeft: '1px solid var(--border)',
+        transition: 'right 0.2s ease',
+        display: 'flex', flexDirection: 'column',
+      }}
+      aria-label="Activity feed"
+    >
+      <button
+        type="button"
+        onClick={onToggle}
+        aria-label={open ? 'Close activity feed' : 'Open activity feed'}
+        style={{
+          position: 'absolute', left: -28, top: '50%', transform: 'translateY(-50%)',
+          width: 28, height: 56, borderRadius: '6px 0 0 6px',
+          background: 'var(--surface-2)', border: '1px solid var(--border)',
+          borderRight: 'none', cursor: 'pointer', fontSize: '0.7em',
+          color: 'var(--fg-mute)', writingMode: 'vertical-rl',
+        }}
+        title={open ? 'Close' : 'Activity'}
+      >
+        {open ? '›' : 'Activity'}
+      </button>
+      <div style={{ padding: '14px 14px 8px', borderBottom: '1px solid var(--border)' }}>
+        <h4 style={{ margin: 0, fontSize: '0.8em', fontWeight: 600 }}>Activity</h4>
+      </div>
+      <div style={{ flex: 1, overflow: 'auto', padding: '10px 14px' }}>
+        {loading ? <p style={{ color: 'var(--fg-mute)', fontSize: '0.8em' }}>Loading…</p> : null}
+        {!loading && (!revisions || revisions.length === 0) ? (
+          <p style={{ color: 'var(--fg-mute)', fontSize: '0.8em' }}>No activity yet.</p>
+        ) : null}
+        {revisions?.map((rev) => (
+          <div key={rev.id} style={{ marginBottom: 12, fontSize: '0.78em' }}>
+            <div style={{ display: 'flex', gap: 6, alignItems: 'center', marginBottom: 2 }}>
+              <span style={{
+                fontSize: '0.8em', padding: '1px 5px', borderRadius: 3,
+                background: rev.authorKind === 'agent' ? 'color-mix(in oklab, var(--accent), transparent 80%)' : 'color-mix(in oklab, var(--success), transparent 80%)',
+                color: rev.authorKind === 'agent' ? 'var(--accent)' : 'var(--success)',
+              }}>
+                {rev.authorKind}
+              </span>
+              <time style={{ color: 'var(--fg-mute)', fontSize: '0.85em' }}>
+                {new Date(rev.createdAt).toLocaleDateString([], { month: 'short', day: 'numeric' })} {new Date(rev.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+              </time>
+            </div>
+            {rev.rationale ? (
+              <p style={{ margin: '2px 0 0', color: 'var(--fg)', lineHeight: 1.4 }}>{rev.rationale.slice(0, 140)}{rev.rationale.length > 140 ? '…' : ''}</p>
+            ) : (
+              <p style={{ margin: '2px 0 0', color: 'var(--fg-mute)' }}>
+                +{rev.diffStat.added} −{rev.diffStat.removed} lines
+              </p>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// P-025 — Kanban view
+// ---------------------------------------------------------------------------
+
+const KANBAN_COLS: Array<{ status: ItemStatus; label: string; accent: string }> = [
+  { status: 'todo',        label: 'To Do',       accent: 'var(--fg-mute)' },
+  { status: 'wip',         label: 'In Progress',  accent: 'var(--accent)' },
+  { status: 'needs-human', label: 'Needs Human',  accent: 'var(--warning)' },
+  { status: 'done',        label: 'Done',         accent: 'var(--success)' },
+];
+
+function PlanKanbanView({
+  items,
+  slug,
+  onChanged,
+}: {
+  items: PlanItem[];
+  slug: string;
+  onChanged: () => void;
+}) {
+  const [saving, setSaving] = useState<string | null>(null);
+
+  const byStatus = useMemo(() => {
+    const m = new Map<ItemStatus, PlanItem[]>();
+    for (const col of KANBAN_COLS) m.set(col.status, []);
+    for (const item of items) {
+      const eff = item.effectiveStatus as ItemStatus;
+      if (m.has(eff)) m.get(eff)!.push(item);
+    }
+    return m;
+  }, [items]);
+
+  const move = async (item: PlanItem, newStatus: ItemStatus) => {
+    if (item.effectiveStatus === newStatus) return;
+    setSaving(item.id);
+    try {
+      await setItemStatus({ slug, itemId: item.id, status: newStatus });
+      onChanged();
+    } catch {}
+    setSaving(null);
+  };
+
+  return (
+    <div style={{ display: 'flex', gap: 10, overflow: 'auto', padding: '8px 0', minHeight: 200 }}>
+      {KANBAN_COLS.map((col) => (
+        <div
+          key={col.status}
+          onDragOver={(e) => e.preventDefault()}
+          onDrop={(e) => {
+            e.preventDefault();
+            const itemId = e.dataTransfer.getData('text/plain');
+            const item = items.find((i) => i.id === itemId);
+            if (item) move(item, col.status);
+          }}
+          style={{
+            flex: '1 1 0', minWidth: 140, background: 'var(--surface-2)',
+            borderRadius: 6, padding: '10px 10px 14px',
+            borderTop: `3px solid ${col.accent}`,
+          }}
+        >
+          <div style={{ fontSize: '0.72em', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: col.accent, marginBottom: 8 }}>
+            {col.label} <span style={{ fontWeight: 400, color: 'var(--fg-mute)' }}>({byStatus.get(col.status)?.length ?? 0})</span>
+          </div>
+          {byStatus.get(col.status)?.map((item) => (
+            <div
+              key={item.id}
+              draggable
+              onDragStart={(e) => e.dataTransfer.setData('text/plain', item.id)}
+              style={{
+                background: 'var(--surface-1)', borderRadius: 4, padding: '6px 8px',
+                marginBottom: 6, cursor: 'grab', fontSize: '0.8em',
+                border: '1px solid var(--border)',
+                opacity: saving === item.id ? 0.5 : 1,
+              }}
+            >
+              <code style={{ color: 'var(--fg-mute)', fontSize: '0.85em', display: 'block', marginBottom: 2 }}>{item.id}</code>
+              <span style={{ lineHeight: 1.4 }}>{item.text.replace(/^`[^`]+`\s*/, '').slice(0, 120)}</span>
+              <div style={{ marginTop: 6, display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+                {KANBAN_COLS.filter((c) => c.status !== col.status && !['dropped', 'blocked'].includes(c.status)).map((c) => (
+                  <button
+                    key={c.status}
+                    type="button"
+                    onClick={() => move(item, c.status)}
+                    disabled={saving === item.id}
+                    style={{ fontSize: '0.7em', padding: '1px 5px', border: `1px solid ${c.accent}`, borderRadius: 3, background: 'none', cursor: 'pointer', color: c.accent }}
+                  >
+                    → {c.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// P-007 — Feature slide-over
+// ---------------------------------------------------------------------------
+
+interface TimelineEvent { iso: string; kind: string; detail: string }
+
+function FeatureSlideOver({
+  featureId,
+  harnessSlug,
+  featureTitle,
+  featureStatus,
+  onClose,
+}: {
+  featureId: string;
+  harnessSlug: string;
+  featureTitle: string | null;
+  featureStatus: string | null;
+  onClose: () => void;
+}) {
+  const [events, setEvents] = useState<TimelineEvent[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setLoading(true);
+    setError(null);
+    fetch(`/api/harness/${encodeURIComponent(harnessSlug)}/features/${encodeURIComponent(featureId)}/timeline`)
+      .then((r) => r.ok ? r.json() : r.json().then((j: any) => Promise.reject(j.error ?? 'fetch failed')))
+      .then((j: any) => setEvents((j.events ?? []).slice().reverse()))
+      .catch((e: unknown) => setError(String(e)))
+      .finally(() => setLoading(false));
+  }, [featureId, harnessSlug]);
+
+  const statusMeta: Record<string, { color: string }> = {
+    passed:     { color: 'var(--success)' },
+    failing:    { color: 'var(--error)' },
+    validating: { color: 'var(--warning)' },
+    todo:       { color: 'var(--fg-mute)' },
+  };
+  const color = statusMeta[featureStatus ?? '']?.color ?? 'var(--fg-mute)';
+
+  return (
+    <>
+      <div
+        className="pc-feature-overlay"
+        aria-hidden
+        onClick={onClose}
+        style={{ position: 'fixed', inset: 0, zIndex: 40, background: 'transparent' }}
+      />
+      <aside
+        className="pc-feature-drawer"
+        aria-label={`Feature ${featureId}`}
+        style={{
+          position: 'fixed', right: 0, top: 0, bottom: 0, zIndex: 41,
+          width: 'min(480px, 100vw)', background: 'var(--surface-1)',
+          borderLeft: '1px solid var(--border)', display: 'flex',
+          flexDirection: 'column', overflow: 'hidden',
+        }}
+      >
+        <header style={{ padding: '16px 20px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'flex-start', gap: 12 }}>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+              <code style={{ fontSize: '0.8em', color: 'var(--fg-mute)' }}>{featureId}</code>
+              {featureStatus ? (
+                <span style={{ fontSize: '10px', fontWeight: 600, padding: '1px 6px', borderRadius: 3, color, border: `1px solid color-mix(in oklab, ${color}, transparent 50%)`, background: `color-mix(in oklab, ${color}, transparent 85%)` }}>
+                  {featureStatus}
+                </span>
+              ) : null}
+            </div>
+            {featureTitle ? <p style={{ margin: 0, fontWeight: 500, fontSize: '0.9em' }}>{featureTitle}</p> : null}
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label="Close"
+            style={{ padding: '4px 8px', background: 'none', border: '1px solid var(--border)', borderRadius: 4, cursor: 'pointer', color: 'var(--fg-mute)', flexShrink: 0 }}
+          >
+            ✕
+          </button>
+        </header>
+        <div style={{ flex: 1, overflow: 'auto', padding: '16px 20px' }}>
+          <h4 style={{ margin: '0 0 12px', fontSize: '0.8em', textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--fg-mute)' }}>Timeline</h4>
+          {loading ? <p style={{ color: 'var(--fg-mute)', fontSize: '0.875em' }}>Loading…</p> : null}
+          {error ? <p style={{ color: 'var(--error)', fontSize: '0.875em' }}>{error}</p> : null}
+          {!loading && !error && events.length === 0 ? (
+            <p style={{ color: 'var(--fg-mute)', fontSize: '0.875em' }}>No timeline events yet.</p>
+          ) : null}
+          {events.map((ev, i) => (
+            <div key={i} style={{ display: 'flex', gap: 10, marginBottom: 10, fontSize: '0.82em' }}>
+              <time style={{ color: 'var(--fg-mute)', flexShrink: 0, whiteSpace: 'nowrap' }}>
+                {new Date(ev.iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+              </time>
+              <div>
+                <span style={{ fontWeight: 500, marginRight: 6 }}>{ev.kind.replace(/_/g, ' ')}</span>
+                <span style={{ color: 'var(--fg-mute)' }}>{ev.detail}</span>
+              </div>
+            </div>
+          ))}
+        </div>
+        <footer style={{ padding: '12px 20px', borderTop: '1px solid var(--border)' }}>
+          <a
+            href={`/adv?h=${encodeURIComponent(harnessSlug)}&feature=${encodeURIComponent(featureId)}`}
+            style={{ fontSize: '0.82em', color: 'var(--accent)' }}
+          >
+            Open in feature queue ↗
+          </a>
+        </footer>
+      </aside>
+    </>
+  );
 }

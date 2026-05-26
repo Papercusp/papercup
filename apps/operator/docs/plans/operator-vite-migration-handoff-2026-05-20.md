@@ -1,8 +1,9 @@
 ---
 title: operator-vite migration handoff (Phase E shipped, uncommitted)
-date: 2026-05-20
-status: in-progress
-next: verify gzip behavior, commit Phase E, then Phase B
+slug: operator-vite-migration-handoff-2026-05-20
+created: 2026-05-20
+updated: 2026-05-25
+status: draft
 ---
 
 # Handoff — operator-vite migration

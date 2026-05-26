@@ -902,6 +902,24 @@ describe('callMcpTool passes ?client=<owner> (file-locking #2)', () => {
     expect(seenUrl).toContain('superuser=1');
     expect(auth).toBe('Bearer su-token');
   });
+
+  // Regression: @modelcontextprotocol/sdk's Streamable HTTP transport
+  // frames responses as `event: message\ndata: <json>\n\n`. An earlier
+  // parser only handled the case where `data:` was the first byte and
+  // silently returned null on every coord call — flipping the hook into
+  // `degraded` every turn and spamming the model + TUI with the
+  // "coordination call failed this turn" reminder.
+  it('parses SSE responses that lead with an `event: message` line', async () => {
+    process.env.PAPERCUSP_BUNDLE_URL = 'http://operator.test';
+    _resetHookOwnerIdForTests();
+    global.fetch = (async () => ({
+      ok: true,
+      text: async () =>
+        'event: message\ndata: {"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"{\\"ok\\":true}"}]}}\n\n',
+    })) as unknown as typeof fetch;
+    const out = await callMcpTool('coord:inbox', {});
+    expect(out).toEqual({ ok: true });
+  });
 });
 
 describe('linkAdvSessionFromContext — ADV row linkage', () => {

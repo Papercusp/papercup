@@ -3,7 +3,7 @@ title: Papercusp dogfood — Phase 4 (single-engineer dogfood — papercup as st
 slug: papercusp-dogfood-phase4-single-engineer-dogfood-2026-05-24
 status: draft
 created: 2026-05-24
-updated: 2026-05-24
+updated: 2026-05-26
 owner: avi@storewolf.com
 ---
 
@@ -11,9 +11,23 @@ owner: avi@storewolf.com
 
 ## Now
 
-**State:** P-024 + P-025 DONE. P-024 (register papercup as a harness) committed at `b53185ee`; P-025 (seed features) DONE — F-DOGFOOD-001/002/003 confirmed live in PG (`harness_papercup` schema), surviving operator restart.
+**State:** **P-024 + P-025 DONE. P-026 BLOCKED on operator registry-substrate drift (P-027 observation #1).**
 
-**Next action:** P-026 — run a real feature (F-DOGFOOD-001 or F-DOGFOOD-002) end-to-end via the orchestrator. This is a behavioral commitment: open the feature in the harness UI, queue it, let the orchestrator dispatch scoper → architect → worker → validator. Record what breaks in F-DOGFOOD-001's observations (per P-027).
+First P-026 attempt 2026-05-26 surfaced this:
+- `/api/admin/dogfood-substrate-status` shows 83 booted harnesses incl. `papercup-coding` + `papercup-org`, all healthy.
+- `/api/harness/projects/lite` returns `{projects:[]}` for same operator.
+- `/api/harness/papercup-coding/invoke?role=director` → 404 `{"error":"unknown project"}`. Same for /launch, /features, /spec.
+
+**Root cause:** substrate's `getBootedHarness` reads boot_history + Hyperbee state; `resolveProject(slug)` reads `harness_registry` per-workspace. Two have drifted: registry empty, substrate full. Either boot wiring landed today without backfilling harness_registry, OR the operator session is on a workspace where papercup was never registered (per insight `dogfood-bootstrap` it was `papercusp-workspace`, but booted entries report `workspaceId: default`).
+
+**Fix paths (pick one before re-attempting P-026):**
+1. Bounce hono-host so `register-papercup.ts` re-fires.
+2. Manually INSERT into harness_registry.
+3. Switch operator's active workspace to `papercusp-workspace`.
+
+Cupboard live at https://cupboard.papercusp.com (P-051b shipped today) — separate path, not blocking P-026.
+
+**Next:** Hydrate harness_registry via one of the 3 fix paths above, then re-run P-026 per the runbook (commit 6ff3db32).
 
 ## Background
 

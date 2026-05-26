@@ -21,7 +21,7 @@ work backward.
 
 ### Recall before re-investigating
 
-`hindsight:recall { query }` — cross-agent memory. The same bug may
+`memory:search { query }` — durable cross-session memory. The same bug may
 have been hit before. Cheap to call; save yourself the work.
 
 ## Named workflows

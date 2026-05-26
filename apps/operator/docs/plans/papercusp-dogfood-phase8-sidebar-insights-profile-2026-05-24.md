@@ -1,52 +1,38 @@
 ---
 title: Papercusp dogfood — Phase 8 (sidebar tabs + Insights + contributor stats + user profile)
 slug: papercusp-dogfood-phase8-sidebar-insights-profile-2026-05-24
-status: in-progress
-parent: papercusp-dogfood-v5-2026-05-23
 created: 2026-05-24
 updated: 2026-05-25
-owner: avi@storewolf.com
+status: draft
 ---
 
 # Papercusp dogfood — Phase 8 (sidebar tabs + Insights + contributor stats + user profile)
 
 ## Now
 
-**State:** **Visual building blocks shipped 2026-05-25 — assembly TBD.**
+**State:** **P-047a/b + P-072 (numeric + login) + P-073g SHIPPED 2026-05-25.**
 
-Per-component progress:
-- **P-071 ContributorBadge** + **ContributorBadgeRow** at `apps/operator/app/_components/ContributorBadge.tsx`. 4 trust tiers. 10/10 tests pass.
-- **P-069a ClaimStatusBadge** at `apps/operator/app/_components/ClaimStatusBadge.tsx`. 4 states with optional claimant login + successor href. 8/8 tests pass.
-- **BindingStatusBadge** at `apps/operator/app/_components/BindingStatusBadge.tsx`. 3 states with optional age text + failure reason. 6/6 tests pass.
-- **P-072 User profile shell** at `apps/operator/app/users/github/[id]/`. Numeric canonical route + `[login]` redirect. All 4 P-072 regions render with stub data. 10/10 tests pass. Real data fetch is a follow-up.
-- **P-048 Contributors tab UI** at `apps/operator/app/harness/ContributorsTab.tsx` + `ContributorRow.tsx`. Reads from `harness_shared.contributors` via `/harness/:slug/contributors`. Composes ContributorBadgeRow + BindingStatusBadge. Sortable columns + tier grouping. 13/13 tests pass.
-- **P-069b SettingsBanner** at `apps/operator/app/harness/SettingsBanner.tsx`. Three modes (provisional / unclaimed / claimed) explaining owner-scope. 8/8 tests pass.
-- **P-069c ExistingBindingAlert** at `apps/operator/app/harness/ExistingBindingAlert.tsx`. Create/join collision alert for all 4 claim states; render-prop action slot. 9/9 tests pass.
-- **P-069d ProvisionalOwnerExplainer** at `apps/operator/app/_components/ProvisionalOwnerExplainer.tsx`. First-share gating dialog with per-machine localStorage flag. 8/8 tests pass.
-- **P-069e ClaimCTA** at `apps/operator/app/harness/ClaimCTA.tsx`. Claim button + structured-error UI mapping every `BindingServiceError` variant. 10/10 tests pass.
+Today's Phase 8 commits (8 incl. this turn):
+- `730119af` FeatureFilterChips primitive
+- `7397a7ce` useViewerGithubId hook
+- `1240532e` FeatureList toolbar wiring
+- `2dd0b34b` per-row Queue column
+- `654cc4b0` Vite /harness/$slug/insights + first-visit gate
+- `b7c57abb` Vite /users/github/$id (P-072 canonical)
+- `<this commit>` by-login endpoint + Vite /users/$login redirect (P-072e)
 
-Refactor: `BindingServiceErrorThrowable` moved from `binding-service.ts` to `binding-types.ts` so client/UI can `instanceof`-check without server-only deps. Re-export kept for back-compat callers.
+Three Vite routes now live in the SPA matching the SSR Next pages:
+- `/harness/$slug/insights` — InsightsTab from /api/harness/:slug/insights
+- `/users/github/$id` — UserProfile from /api/users/github/:id
+- `/users/$login` — redirect via /api/users/by-login/:login
 
-Total Phase 8 tests landed: **82/82 pass**.
+P-072 + P-072e + P-073g are all functionally complete. P-050 audited complete.
 
-**P-069 — DONE (a/b/c/d/e all shipped as standalone components).** Wire-up into ChromeShell + settings page is a follow-up assembly item.
+**Remaining Phase 8:**
+- **P-047c** — feature detail panel (vditor description, notes, audit log, current PR).
+- P-038 still gated on `working_users` Hyperbee projection (separate Phase 5b follow-up).
 
-**P-049 — DONE (PrReviewerSettings modal at `apps/operator/app/harness/PrReviewerSettings.tsx`).** Three sections: P-049a toggles + merge-method radio, P-049b trust list + remove inline, P-049c audit log read-only. Pure UI; consumer wires PG. 14/14 tests pass.
-
-**P-073 — DONE (all 6 cards + assembly at `apps/operator/app/harness/insights/`).** All pure UI; consumer feeds pre-computed props:
-- **P-073a ProjectCard** — name + description + owner + claim badge + license + top-3 languages + GitHub/Discord links. 8/8 tests.
-- **P-073b ActivityFeedCard** — last ~20 events with tier-A/B/C pills. 10/10 tests.
-- **P-073c PeopleCard** — horizontal avatar stack with binding-status overlay + overflow pill. 10/10 tests.
-- **P-073d YourPlaceCard** — viewer-scoped queue + role + trust + spend (Tier D). 10/10 tests.
-- **P-073e HowItWorksHereCard** — templated 3-step workflow from harness config; customWelcome override. 11/11 tests.
-- **P-073f SpendCard** — Tier D harness total + viewer share with progress bar; proxy-witness deferral banner. 10/10 tests.
-- **P-073 InsightsTab** — assembly: project | activity+yourplace/spend | people | howitworks. 1/1 test.
-
-P-073g (force-route on first visit) is a sidebar-router wiring task, not a card concern.
-
-Phase 8 tests this session: **143/143 pass.**
-
-**Next action:** P-047 (Features tab UI extensions) or P-050 (vditor integration). Substrate-boot-gated work (data fetches for P-073, real props for P-072) waits for substrate boot in instrumentation-node.ts.
+**Next:** P-047c — feature detail panel. Or pivot to a different phase per direction. Phase 8 visual + routing story essentially complete.
 
 ## Background
 

@@ -1,10 +1,9 @@
 ---
-title: "@papercusp/omp — power-user agent bundle"
+title: @papercusp/omp — power-user agent bundle
 slug: omp-power-user-bundle-2026-05-20
-status: in-progress
 created: 2026-05-20
-updated: 2026-05-20
-owner: pandawamble@gmail.com
+updated: 2026-05-25
+status: draft
 ---
 
 # @papercusp/omp — power-user agent bundle

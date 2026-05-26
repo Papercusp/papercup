@@ -1,34 +1,37 @@
 ---
 title: Papercusp dogfood — Phase 6 (orchestrator distributed claim)
 slug: papercusp-dogfood-phase6-orchestrator-claim-2026-05-24
-status: in-progress
-parent: papercusp-dogfood-v5-2026-05-23
 created: 2026-05-24
-updated: 2026-05-25
-owner: avi@storewolf.com
+updated: 2026-05-26
+status: draft
 ---
 
 # Papercusp dogfood — Phase 6 (orchestrator distributed claim)
 
 ## Now
 
-**State:** **Distributed-claim primitive + adapter + bridge + audit-read end-to-end SHIPPED 2026-05-25.**
+**State:** **Phase 6 + P-038 end-to-end SHIPPED 2026-05-25.**
 
-Phase 6 primitives shipped:
-- `lib/orchestrator/feature-claim.ts` — `claimFeature(base, opts)` v5 §0.6 implementation (12 tests).
-- `lib/orchestrator/claim-audit.ts` — `recordClaimAttempt` + `recentClaimAttempts` (6 tests).
-- `lib/sync/hyperbee/projections/feature-claims.ts` — Hyperbee → PG projection (5 tests).
-- `lib/orchestrator/claim-handle-adapter.ts` — substrate `AutobaseHarnessHandle` → `ClaimAutobaseHandle` (8 tests).
-- `lib/orchestrator/get-claim-handle.ts` — handle lookup composing boot-all + adapter (5 tests).
-- `lib/orchestrator/distributed-claim.ts` — `attemptDistributedClaim` entry point with substrate-not-booted / pubkey-unresolved / attempted branches (8 tests).
-- `lib/orchestrator/get-claim-strategy.ts` — `'distributed' | 'single-writer'` decision (3 tests).
-- `lib/orchestrator/load-claim-attempts.ts` — `loadRecentClaimAttempts` + `loadClaimAttemptStats` for diagnostics (11 tests).
-- `GET /api/harness/:slug/claim-attempts` — JSON read.
-- `ClaimAttemptStatsPill` + `ClaimAttemptStatsPillClient` (6 + 7 tests).
+P-036/P-039a/P-037 substrate + production wiring + audit UI (prior commits — `ba1ba191`, submodule `66b18043`, `3adb7b86`).
 
-**Next action:** P-037 production orchestrator wiring — the actual call site that invokes `if (getClaimStrategy(...) === 'distributed') { await attemptDistributedClaim(...) } else { /* legacy */ }`. Pure code change; needs UI verification of the orchestrator's existing chrome before flipping. Pattern documented in `substrate-flag-flip-runbook` §6.
+**P-038 — manual "set active" full stack today (6 commits):**
+- `a6f30883` substrate read side: harness_shared.feature_working_set table + Hyperbee projection + key-types entry + register-all wiring.
+- `9f8d83d5` write helper (setActiveFeature/clearActiveFeature) + PG reader (loadWorkingSet) with writerPubkey + clobber-events integration. 14 tests.
+- `0b6e4619` HTTP endpoints (GET membership + POST set-active/clear-active). 8 tests.
+- `cf216aad` P-038b orchestrator eligibility: claim-feature endpoint refuses claims when a non-self contributor is in the working set.
+- `d1d931dd` UI primitives: useWorkingSet hook + SetActiveButton (3-state: Start working / Working / Taken) + Client wrapper. 18 tests.
+- `9b1607bd` FeatureList Queue column wiring (now 260px) — third button next to pull-to-queue.
 
-Phase 6 verdict: **GATE: PROCEED.** Every substrate-facing piece is wired; production wiring is the user-driven step.
+P-038 verdict: COMPLETE for substrate + production wiring + UI. Acceptance map:
+- P-038a (user-initiated working flip writes working_users) → ✅
+- P-038b (orchestrator excludes any feature with non-empty working set) → ✅
+- P-038c (race between user-active and orchestrator claim) → ✅ (Autobase merge order; claim-feature rejects on non-empty other-pubkey working set, eligible-self bypasses).
+
+P-039b admin claim-attempt timeline UI shipped earlier today (`3adb7b86`).
+
+Phase 6 is now COMPLETE.
+
+**Next:** All Phase 6 tasks shipped. Remaining outstanding items live in other phases (Phase 9 deploy = user-driven; Phase 5a native verification = user-driven; P-047c new-column scope).
 
 ## Background
 

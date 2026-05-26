@@ -10,10 +10,12 @@
 
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
+import { withWorkspace } from '@restart/db-org';
 import { readPlanBySlug } from './source';
-import { ctxToPlanSourceOpts } from './_ctx-opts';
+import { ctxToPlanSourceOpts, resolveCtxHarnessSlug } from './_ctx-opts';
 import { resolveEffectiveStatus } from './effective-status';
 import { hashPlanContent } from './content-hash';
+import { DEFAULT_WORKSPACE_ID } from '../../workspace-registry';
 
 const ALL_ROLES = [
   'scoper',
@@ -84,6 +86,30 @@ export default defineTool({
 
     const resolved = resolveEffectiveStatus(parsed);
 
+    // P-006: Build a map of plan-item-id → { featureId, status } so the UI
+    // can show live feature status badges next to each P-NNN item.
+    const harnessSlug = resolveCtxHarnessSlug(ctx) ?? 'papercup';
+    let linkedFeatures: Record<string, { featureId: string; status: string }> = {};
+    try {
+      const rows = await withWorkspace(DEFAULT_WORKSPACE_ID, async (tx) => {
+        return tx<{ feature_id: string; status: string; source_plan_item_ids: string[] | null }[]>`
+          SELECT feature_id, status, source_plan_item_ids
+            FROM harness_shared.harness_features_consolidated
+           WHERE workspace_id   = ${DEFAULT_WORKSPACE_ID}
+             AND harness_slug   = ${harnessSlug}
+             AND source_plan_slug = ${args.slug}
+             AND source_plan_item_ids IS NOT NULL
+        `;
+      });
+      for (const row of rows) {
+        for (const itemId of row.source_plan_item_ids ?? []) {
+          linkedFeatures[itemId] = { featureId: row.feature_id, status: row.status };
+        }
+      }
+    } catch {
+      // Non-fatal — UI degrades to no badges.
+    }
+
     return {
       content: [
         {
@@ -101,6 +127,7 @@ export default defineTool({
             prose: parsed.prose,
             raw: parsed.raw,
             contentHash: hashPlanContent(parsed.raw),
+            linkedFeatures,
           }),
         },
       ],
