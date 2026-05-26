@@ -25,9 +25,11 @@
  */
 
 import { defineTool } from '@papercusp/agent-mcp';
+import { getOrgPg } from '@restart/db-org';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
 import { getClaimStrategy } from '@/lib/orchestrator/get-claim-strategy';
 import { attemptDistributedClaim } from '@/lib/orchestrator/distributed-claim';
+import { loadWorkingSet } from '@/lib/sync/hyperbee/load-working-set';
 
 interface ClaimBody {
   feature_id?: unknown;
@@ -59,6 +61,38 @@ const post = defineTool({
     const workspaceId = activeWorkspaceId();
     const parsed = parseClaimBody(await req.json().catch(() => null));
     if (!parsed.ok) return Response.json({ error: parsed.error }, { status: 400 });
+
+    // P-038b — orchestrator eligibility exclusion. If a human has
+    // manually flipped this feature to "working" (non-empty working
+    // set, excluding the claimer themselves), the orchestrator must
+    // NOT pick it up. Checked before the distributed claim so a
+    // manual flip wins regardless of substrate strategy.
+    try {
+      const { sql } = getOrgPg();
+      const runQuery = async <T,>(query: string, paramsArr: unknown[]): Promise<T[]> => {
+        return (await sql.unsafe(query, paramsArr as never)) as unknown as T[];
+      };
+      const working = await loadWorkingSet({
+        workspace_id: workspaceId,
+        harness_slug: slug,
+        feature_ids: [parsed.featureId],
+        runQuery,
+      });
+      const members = working[parsed.featureId] ?? [];
+      const othersActive = members.filter((m) => m.github_user_id !== parsed.userId);
+      if (othersActive.length > 0) {
+        return Response.json({
+          strategy: 'distributed',
+          won: false,
+          reason: 'manually-active',
+          active_users: othersActive.map((m) => m.github_user_id),
+        });
+      }
+    } catch {
+      // Working-set lookup failed (table missing / PG hiccup) — don't
+      // block the claim on a diagnostic read. Fall through to the
+      // normal claim path.
+    }
 
     const strategy = getClaimStrategy({ workspaceId, harnessSlug: slug });
     if (strategy === 'single-writer') {
