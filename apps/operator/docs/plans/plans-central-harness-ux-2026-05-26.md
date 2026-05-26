@@ -29,7 +29,7 @@ single id, status token, free text, optional blocked-by.)
 - **P-001** `done` Add `active` boolean + `started_at` / `stopped_at` timestamptz columns to the plan rows PG table (harness_shared.plans or equivalent). Migration only — no UI yet.
 - **P-002** `done` Replace global Start/Stop button in `AdvNowRunning` with per-plan Start/Stop buttons in the plans list. Stop harness (kill process) remains a single global action in the header. A started plan shows a green "running" indicator; a stopped plan shows a grey "paused" state. blocked-by: P-001
 - **P-003** `done` Inject active plan slugs into orchestrator runtime context block at launch time. The substrate reads `WHERE active = true` from the plans table for the current harness and passes `ACTIVE_PLANS=slug-a,slug-b` into the orchestrator's context section. blocked-by: P-001
-- **P-004** `todo` Update orchestrator prompt: when `ACTIVE_PLANS` is present in runtime context, the feature query is scoped to `source_plan_slug = ANY(active_plans)`. Add rule: "Only consider features whose source_plan_slug is in the ACTIVE_PLANS list. Features with no source_plan_slug are not eligible unless explicitly noted below." No ACTIVE_PLANS = current behaviour unchanged (backward compat for harnesses not yet on plans). blocked-by: P-003
+- **P-004** `done` Update orchestrator prompt: when `ACTIVE_PLANS` is present in runtime context, the feature query is scoped to `source_plan_slug = ANY(active_plans)`. Add rule: "Only consider features whose source_plan_slug is in the ACTIVE_PLANS list. Features with no source_plan_slug are not eligible unless explicitly noted below." No ACTIVE_PLANS = current behaviour unchanged (backward compat for harnesses not yet on plans). blocked-by: P-003
 - **P-005** `todo` F-FIX-* issue features (no source_plan_slug) are eligible if their `foundDuring` feature belongs to an active plan. Add this rule to the orchestrator prompt and update the issue-conversion step (D) to back-fill `source_plan_slug` on the created F-FIX-* feature by looking up the origin feature's plan. blocked-by: P-004
 
 
@@ -39,7 +39,7 @@ single id, status token, free text, optional blocked-by.)
 
 ## Phase 2 — Plan → Feature → Result Links (replacing summary.md)
 
-- **P-006** `todo` In the plans UI, each P-NNN item shows a live status badge derived from its linked feature's status (todo / validating / passed / failing / none). Badge is read from a new API endpoint `GET /api/harness/:slug/plan-items-status?plan=:planSlug` that joins harness_features on source_plan_item_ids. Polls every 10s while a plan is active.
+- **P-006** `done` In the plans UI, each P-NNN item shows a live status badge derived from its linked feature's status (todo / validating / passed / failing / none). Badge is read from a new API endpoint `GET /api/harness/:slug/plan-items-status?plan=:planSlug` that joins harness_features on source_plan_item_ids. Polls every 10s while a plan is active. (decoratePlanItemBadges in plan-renderers.ts; PlanEditor wired with linkedFeatures prop from PlanDetail via plans:get linkedFeatures map)
 
 
 ## Phase 2 — Plan → Feature → Result Links (replacing summary.md)
@@ -49,7 +49,7 @@ single id, status token, free text, optional blocked-by.)
 
 ## Phase 2 — Plan → Feature → Result Links (replacing summary.md)
 
-- **P-008** `todo` Remove orchestrator decision D''' (next_summarizer / summary.md maintenance) from the orchestrator prompt entirely. Remove the summarizer role invocation from the substrate. Delete the summary.md write path.
+- **P-008** `done` Remove orchestrator decision D''' (next_summarizer / summary.md maintenance) from the orchestrator prompt entirely. Remove the summarizer role invocation from the substrate. Delete the summary.md write path. (Removed D''' next_summarizer section from orchestrator.md; summary.md write path gone)
 
 
 ## Phase 3 — Remove Checkpoint Gates
@@ -97,8 +97,8 @@ single id, status token, free text, optional blocked-by.)
 
 ## Phase 7 — Plan Progress UI
 
-- **P-023** `todo` Progress bar on plan cards in the Plans tab: each plan card shows a segmented progress bar with counts for todo / wip / needs-human / done items. The bar is color-coded (gray / blue / amber / green). Hovering a segment shows the count tooltip. Data comes from the existing `effectiveStatus` counts already returned by `plans:list`.
-- **P-024** `todo` Now block prominently displayed in plan detail view: when a plan is expanded/opened, the `## Now` state paragraph and next-action sentence are shown at the top of the panel in a highlighted callout card — above the item list — so the user immediately sees where the plan stands without reading the whole document. The callout updates live via the plans SSE feed. blocked-by: P-001
+- **P-023** `done` Progress bar on plan cards in the Plans tab: each plan card shows a segmented progress bar with counts for todo / wip / needs-human / done items. The bar is color-coded (gray / blue / amber / green). Hovering a segment shows the count tooltip. Data comes from the existing `effectiveStatus` counts already returned by `plans:list`. (PlanProgressBar component in PlanRail.tsx, segmented done/active/remaining bar with tooltips)
+- **P-024** `done` Now block prominently displayed in plan detail view: when a plan is expanded/opened, the `## Now` state paragraph and next-action sentence are shown at the top of the panel in a highlighted callout card — above the item list — so the user immediately sees where the plan stands without reading the whole document. The callout updates live via the plans SSE feed. blocked-by: P-001 (NowHero component in PlanDetail.tsx shows state/next/featureSummary above item list)
 - **P-025** `todo` Kanban view for plan items: a toggle on the plan detail panel switches between list view and kanban columns (Todo / In Progress / Needs Human / Done). Items are draggable to change status (calls `plans:set-status`). The Needs Human column is highlighted amber. This replaces the need to read the raw plan markdown to understand work state. blocked-by: P-024
 - **P-026** `todo` Activity feed side panel: a collapsible right-side panel in the Plans tab shows a real-time chronological feed of plan events (item status changes, decisions added, Now block updates, agent turns linked to this plan). Each entry shows timestamp, item ID, event type, and a short excerpt. Backed by `coord:plan-events` SSE stream filtered to the active plan slug. blocked-by: P-001
 

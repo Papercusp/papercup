@@ -165,6 +165,75 @@ function findRefTarget(root: HTMLElement, id: string): HTMLElement | null {
 }
 
 // ---------------------------------------------------------------------------
+// P-006 — Plan-item feature status badges (per P-NNN item, via linkedFeatures)
+// ---------------------------------------------------------------------------
+
+const ITEM_STATUS_META: Record<string, { color: string; label: string }> = {
+  todo:        { color: 'var(--fg-mute)',  label: 'todo'       },
+  in_progress: { color: '#7aa2f7',         label: 'working'    },
+  validating:  { color: '#c084fc',         label: 'validating' },
+  failing:     { color: '#f7768e',         label: 'failing'    },
+  passed:      { color: '#9ece6a',         label: 'passed'     },
+  blocked:     { color: '#e0af68',         label: 'blocked'    },
+};
+
+/**
+ * After decoratePlanDom runs (which sets data-plan-item on each <li>),
+ * inject a live feature status badge next to each item that has a
+ * linked feature in the linkedFeatures map from plans:get.
+ *
+ * Idempotent: removes previously injected badges before re-decorating.
+ */
+export function decoratePlanItemBadges(
+  root: HTMLElement,
+  linkedFeatures: Record<string, { featureId: string; status: string }>,
+): void {
+  if (Object.keys(linkedFeatures).length === 0) return;
+
+  for (const old of Array.from(root.querySelectorAll('.pc-item-feature-badge'))) {
+    old.remove();
+  }
+
+  for (const li of Array.from(root.querySelectorAll<HTMLElement>('li[data-plan-item]'))) {
+    const itemId = li.dataset.planItem;
+    if (!itemId) continue;
+    const link = linkedFeatures[itemId];
+    if (!link) continue;
+
+    const status = link.status ?? 'todo';
+    const meta = ITEM_STATUS_META[status] ?? ITEM_STATUS_META['todo'];
+
+    const badge = document.createElement('span');
+    badge.className = 'pc-item-feature-badge';
+    badge.textContent = `${link.featureId} · ${meta.label}`;
+    badge.style.cssText = [
+      `color: ${meta.color}`,
+      `background: color-mix(in oklab, ${meta.color}, transparent 85%)`,
+      `border: 1px solid color-mix(in oklab, ${meta.color}, transparent 58%)`,
+      'font-size: 10px',
+      'font-weight: 500',
+      'padding: 1px 6px',
+      'border-radius: 3px',
+      'margin-left: 8px',
+      'vertical-align: middle',
+      'white-space: nowrap',
+      'cursor: default',
+    ].join(';');
+    badge.title = `Feature ${link.featureId} — status: ${status}`;
+
+    // Insert after the first <strong> (the P-NNN id), or at end of li.
+    const firstStrong =
+      li.querySelector<HTMLElement>(':scope > strong') ??
+      li.querySelector<HTMLElement>(':scope > p > strong');
+    if (firstStrong) {
+      firstStrong.after(badge);
+    } else {
+      li.appendChild(badge);
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // P-013 — Promoted-block feature status badges
 // ---------------------------------------------------------------------------
 

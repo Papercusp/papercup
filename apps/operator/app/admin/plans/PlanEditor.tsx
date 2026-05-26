@@ -29,7 +29,7 @@ import {
   type MarkdownEditorToolbar,
 } from '@/app/_components/MarkdownEditor';
 import type { PlanItem } from './plans-api';
-import { attachPlanRefClickHandler, decoratePlanDom, decoratePromotedBlock, type PromotedFeature } from './plan-renderers';
+import { attachPlanRefClickHandler, decoratePlanDom, decoratePromotedBlock, decoratePlanItemBadges, type PromotedFeature } from './plan-renderers';
 import {
   attachStatusClickHandler,
   buildPlanIRRenderers,
@@ -51,6 +51,9 @@ export interface PlanEditorProps {
   /** P-013: features promoted from this plan — drives live status badges
    *  in the ## Promoted block. */
   promotedFeatures?: PromotedFeature[];
+  /** P-006: map of P-NNN → { featureId, status } from plans:get — drives
+   *  inline feature status badges next to each linked plan item. */
+  linkedFeatures?: Record<string, { featureId: string; status: string }>;
   /** Optional P-203 hook: invoked when a `[data-plan-status]` pill is
    *  clicked in either mode. Receives the target element + the current
    *  status token. The consumer opens the status-flip popover. */
@@ -72,6 +75,7 @@ export default function PlanEditor({
   slug,
   items,
   promotedFeatures,
+  linkedFeatures,
   onStatusClick,
 }: PlanEditorProps) {
   void slug;
@@ -86,12 +90,17 @@ export default function PlanEditor({
 
   const promotedFeaturesRef = useRef(promotedFeatures);
   promotedFeaturesRef.current = promotedFeatures;
+  const linkedFeaturesRef = useRef(linkedFeatures);
+  linkedFeaturesRef.current = linkedFeatures;
 
   const handleParsed = useCallback(
     (root: HTMLElement) => {
       decoratePlanDom(root, items);
       if (promotedFeaturesRef.current?.length) {
         decoratePromotedBlock(root, promotedFeaturesRef.current);
+      }
+      if (linkedFeaturesRef.current && Object.keys(linkedFeaturesRef.current).length > 0) {
+        decoratePlanItemBadges(root, linkedFeaturesRef.current);
       }
       // Vditor.preview re-renders the container's children on every value
       // change — detach the previous handlers before re-attaching so each
