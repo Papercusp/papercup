@@ -26757,14 +26757,14 @@ Items not under a `## Phase N` heading are still parsed but flagged by lint as �
 
 Six tokens. One is *computed*.
 
-| Token         | Meaning                                                                                                                              |
-| ------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
-| `todo`        | Not started. Default for new items.                                                                                                  |
-| `wip`         | In progress. The active item. Use `locks:acquire` on the plan file before flipping to `wip`.                                         |
-| `blocked`     | **External** blocker only — upstream PR, vendor response, awaiting a release, etc. *Not* used for items waiting on other plan items. |
-| `needs-human` | A human decision/approval/clarification is required. Surfaces in `plans:items \{ needsHuman: true \}`.                               |
-| `done`        | Completed and verified.                                                                                                              |
-| `dropped`     | Decided not to do. Keep the line; record the reason in a `D-NNN` decision.                                                           |
+| Token         | Meaning                                                                                                                                                                                             |
+| ------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `todo`        | Not started. Default for new items.                                                                                                                                                                 |
+| `wip`         | In progress. The active item. Use `locks:acquire` on the plan file before flipping to `wip`.                                                                                                        |
+| `blocked`     | **External** blocker only — upstream PR, vendor response, awaiting a release, etc. *Not* used for items waiting on other plan items.                                                                |
+| `needs-human` | A human decision/approval/clarification is required. Surfaces in `plans:items \{ needsHuman: true \}`. **The orchestrator cannot emit DONE while any started plan has an open `needs-human` item.** |
+| `done`        | Completed and verified.                                                                                                                                                                             |
+| `dropped`     | Decided not to do. Keep the line; record the reason in a `D-NNN` decision.                                                                                                                          |
 
 ### Computed-blocked
 
@@ -26778,6 +26778,28 @@ This is the load-bearing reason for the parser/effectiveStatus split:
 * `effectiveStatus` is what callers (such as `plans:items` with `actionable: true`) actually want.
 
 Why: a stored `blocked` would go stale the moment a blocker finishes, and the only way to find the staleness is to remember. Computing it eliminates the bug. The literal `blocked` token stays useful for the case markdown genuinely can’t compute — an external blocker — where a human/agent has to explicitly declare it.
+
+## Milestone gates
+
+[Section titled “Milestone gates”](#milestone-gates)
+
+Use `needs-human` items to insert mandatory approval gates between phases. The orchestrator cannot emit `DONE` while any started plan has an open `needs-human` item, so these gates block autonomous progress until the user acts.
+
+**Recommended pattern — pre-ship sign-off:**
+
+```markdown
+## Phase 3 — Ship
+
+
+- [needs-human] P-030: Human sign-off before shipping to production
+  — review the Phase 2 results, confirm validation-contract.md is
+  final, and mark this done to unblock the release.
+- [ ] P-031: Tag v1.0.0 release commit. blocked-by: P-030
+```
+
+When the user is satisfied with Phase 2 output they flip P-030 to `done` (via the plan editor or `plans:set-status`). The orchestrator picks up P-031 on its next tick.
+
+**Agent-created gates** (architect judgment calls, spec ambiguities): The architect and orchestrator create `needs-human` items dynamically when they hit decisions that require human input. These appear in the Decisions panel (`plans:items { needsHuman: true }`) with the feature id, attempt count, and the agent’s diagnosis. The user resolves by editing the item note and marking it `done`.
 
 ## The `## Decisions` log
 
