@@ -22,7 +22,7 @@ afterEach(() => {
 
 describe('resolveCupboardBaseUrl', () => {
   it('defaults to the canonical host when no env var', () => {
-    expect(resolveCupboardBaseUrl()).toBe('https://cupboard.papercusp.dev');
+    expect(resolveCupboardBaseUrl()).toBe('https://cupboard.papercusp.com');
   });
 
   it('uses PAPERCUSP_CUPBOARD_URL when set', () => {
@@ -37,7 +37,7 @@ describe('resolveCupboardBaseUrl', () => {
 
   it('falls back to default on blank env var', () => {
     process.env.PAPERCUSP_CUPBOARD_URL = '   ';
-    expect(resolveCupboardBaseUrl()).toBe('https://cupboard.papercusp.dev');
+    expect(resolveCupboardBaseUrl()).toBe('https://cupboard.papercusp.com');
   });
 });
 

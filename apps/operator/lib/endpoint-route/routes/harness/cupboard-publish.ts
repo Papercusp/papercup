@@ -21,13 +21,13 @@
  *
  * Cupboard URL resolution:
  *   - PAPERCUSP_CUPBOARD_URL env var if set (override / self-host)
- *   - else 'https://cupboard.papercusp.dev' (canonical per addendum 1)
+ *   - else 'https://cupboard.papercusp.com' (canonical hostname per 2026-05-26 deploy)
  */
 
 import { defineTool } from '@papercusp/agent-mcp';
 import { getGhAuthToken } from '@/lib/identity/gh-token';
 
-const DEFAULT_CUPBOARD_URL = 'https://cupboard.papercusp.dev';
+const DEFAULT_CUPBOARD_URL = 'https://cupboard.papercusp.com';
 const TOPIC_HEX_RE = /^[0-9a-f]{64}$/;
 
 interface PublishInput {
