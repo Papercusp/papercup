@@ -8,6 +8,7 @@ import { X } from 'lucide-react';
 import { COLORS, FONTS, RADIUS, SIZES, STATUS, HarnessStatus } from './theme';
 import { StatusPill, IdPill, RolePill, KbdHint } from './primitives';
 import { HarnessMarkdownView } from './HarnessMarkdownView';
+import { FeatureDescriptionPanel } from './FeatureDescriptionPanel';
 import { FeatureTagsAndSeeAlso, FeatureMessagesList } from './FeatureMetadataPanels';
 import { CompletionRefCard } from './CompletionRefCard';
 import { PromptBudgetView } from './PromptBudgetView';
@@ -311,6 +312,10 @@ export default function FeaturePeekPanel({
                 marginBottom: 12,
               }}>{displayFeature.title}</div>
             )}
+            {/* P-047c — vditor-rendered description from metadata.description */}
+            <div style={{ marginBottom: 12 }}>
+              <FeatureDescriptionPanel slug={slug} featureId={displayFeature.id} />
+            </div>
             {/* Property rail */}
             <div style={{
               display: 'grid',
