@@ -39,6 +39,16 @@ import { registerAllHarnessProjections } from './projections/register-all';
 import { startBootstrapProgressPoller } from './bootstrap-progress-poller';
 import { recordBootEvent } from './boot-history';
 import type Corestore from 'corestore';
+import {
+  deriveSwarmTopic,
+  type SwarmBinding,
+} from './derive-swarm-topic';
+import {
+  joinHarnessSwarm,
+  getSharedSwarm,
+  type HyperswarmLike,
+  type SwarmHandle,
+} from './swarm';
 
 export interface BootHarnessOpts {
   workspaceRoot: string;
@@ -50,6 +60,23 @@ export interface BootHarnessOpts {
    * (i.e. share-wizard P-029 flow → `bootstrap: null`).
    */
   bootstrap?: string | null;
+  /**
+   * Optional swarm binding. When present, the harness joins a
+   * Hyperswarm topic + plugs corestore.replicate into every peer
+   * stream so writes federate cross-machine. Omit (or pass null) for
+   * `state: private` harnesses that stay single-engineer.
+   *
+   * v5 §0.2.7 + addendum 1 — pass `{ kind: 'gh', github_repository_id }`
+   * for the canonical post-binding topic. Pre-binding dev mode can
+   * pass `{ kind: 'local', workspace_id, harness_slug }`.
+   */
+  swarmBinding?: SwarmBinding | null;
+  /**
+   * Test seam — supply a fake swarm. Runtime callers leave this
+   * undefined; bootHarnessSubstrate lazy-imports the real swarm via
+   * getSharedSwarm() (one Hyperswarm per process).
+   */
+  swarmOverride?: HyperswarmLike;
 }
 
 export interface BootedHarnessHandle {
@@ -59,7 +86,10 @@ export interface BootedHarnessHandle {
   store: Corestore;
   /** Autobase handle. Pass to claimFeature / appendOp callers. */
   base: AutobaseHarnessHandle;
-  /** Cleanup. Idempotent. */
+  /** Swarm handle. Null when this boot didn't join a swarm
+   *  (private harness OR swarmBinding omitted). */
+  swarm: SwarmHandle | null;
+  /** Cleanup. Idempotent. Tears down swarm + Autobase + Corestore. */
   close(): Promise<void>;
 }
 
@@ -131,6 +161,38 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
     base,
   });
 
+  // ── Hyperswarm replication (final substrate piece) ──
+  // Joins the swarm topic + plugs corestore.replicate into every
+  // peer stream. Only fires for harnesses that pass swarmBinding;
+  // `state: private` harnesses (no binding) stay local-only.
+  // Defensive: swarm join failures don't fail the boot — harness
+  // still works as a local-only substrate; UI can show "offline"
+  // status if needed.
+  let swarmHandle: SwarmHandle | null = null;
+  if (opts.swarmBinding) {
+    try {
+      const swarm = opts.swarmOverride ?? (await getSharedSwarm());
+      const topic = deriveSwarmTopic(opts.swarmBinding);
+      swarmHandle = await joinHarnessSwarm({
+        store,
+        topic,
+        swarm,
+        onPeerConnected: () => {
+          recordBootEvent(opts.workspaceId, opts.harnessSlug, 'peer_connected');
+        },
+      });
+    } catch (e) {
+      // Swarm join failed (DHT unreachable / port blocked / etc).
+      // Record + continue — local writes still work.
+      recordBootEvent(
+        opts.workspaceId,
+        opts.harnessSlug,
+        'swarm_join_failed',
+        e instanceof Error ? e.message : String(e),
+      );
+    }
+  }
+
   recordBootEvent(opts.workspaceId, opts.harnessSlug, 'boot_ok');
 
   return {
@@ -138,11 +200,18 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
     harnessSlug: opts.harnessSlug,
     store,
     base,
+    swarm: swarmHandle,
     async close() {
       // Stop the progress poller first so it doesn't race the
       // autobase teardown trying to read .view.length on a closed
       // store.
       progressPoller.stop();
+      // Leave the swarm before tearing down autobase/store so we
+      // stop receiving peer replication onto an about-to-close
+      // corestore.
+      if (swarmHandle) {
+        try { await swarmHandle.close(); } catch {}
+      }
       // Autobase first, then corestore — autobase holds open writers
       // into the store.
       try { await base.close(); } catch {}
