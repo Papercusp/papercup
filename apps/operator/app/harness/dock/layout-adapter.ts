@@ -88,6 +88,13 @@ export function toDockviewJson(doc: LayoutDoc): DockviewLayout {
         activeView: t.activePanelId,
         id: t.id,
       },
+      // Preserve the seed's proportional size. dockview emits `size` on
+      // leaves when it serializes (toLayoutDoc reads it back), so dropping
+      // it here made the round-trip asymmetric: a seed where two sibling
+      // tabs-leaves each declare size 0.5 rendered as min-width + remainder
+      // instead of 50/50. Carrying size through fixes the first-render
+      // proportions for any leaf-level split (e.g. /adv/harnesses).
+      size: t.size,
     };
   }
 

@@ -65,5 +65,15 @@ export default function HarnessesDock({ slug }: { slug: string }) {
     };
   }, [slug]);
 
-  return <HarnessDock layoutName={layoutName} />;
+  // Absolute fill instead of height:100%. DockviewReact's root (.dv-shell)
+  // sizes from its container; a height:100% chain collapses to 0 in
+  // WebKitGTK (the Tauri webview) when an ancestor's height comes from
+  // `flex: 1` rather than an explicit value — Chromium resolves it, WebKit
+  // doesn't. position:absolute + inset:0 against the relative dock wrapper
+  // gives a definite pixel box that both engines honour.
+  return (
+    <div style={{ position: 'absolute', inset: 0 }}>
+      <HarnessDock layoutName={layoutName} />
+    </div>
+  );
 }
