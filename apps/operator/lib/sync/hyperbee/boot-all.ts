@@ -2,7 +2,7 @@
  * boot-all — workspace-scoped Hyperbee substrate orchestrator.
  *
  * Plan: papercusp-dogfood-phase5a-hyperbee-plumbing-2026-05-24
- *       (instrumentation-node.ts wiring task).
+ *       + papercusp-dogfood-phase11-multi-engineer-2026-05-25 (P-078).
  *
  * One entry point per process. Discovers every harness in the active
  * workspace, calls `bootHarnessSubstrate` per harness, stashes the
@@ -14,11 +14,14 @@
  *   - Booting after partial failure retries only the failed harnesses.
  *   - Closing a non-existent handle is a no-op.
  *
+ * Phase 11 P-078 — when a harness has a committed
+ * `.harness/shared.json`, this module resolves the harness's project
+ * directory (PG-canonical via `resolveHarnessPaths`), reads the
+ * config, and synthesizes a `gh:<repository_id>` SwarmBinding so the
+ * substrate joins Hyperswarm at boot. Private harnesses (no
+ * shared.json) get no binding and stay local-only.
+ *
  * What this DOES NOT do:
- *   - Hyperswarm replication. The bootHarnessSubstrate caller is
- *     responsible for handing the corestore to a swarm topic, since
- *     not every harness joins a swarm at boot (private harnesses
- *     skip it entirely).
  *   - Boot retry / backoff. A failure logs + moves on; the next
  *     bootAllHarnessesForActiveWorkspace() call retries.
  *
@@ -34,6 +37,8 @@ import {
   bootHarnessSubstrate,
   type BootedHarnessHandle,
 } from './boot';
+import type { SwarmBinding } from './derive-swarm-topic';
+import { loadSharedConfigFromProjectDir } from '../../harness/load-shared-config';
 
 const handles: Map<string, BootedHarnessHandle> = new Map();
 const inflight: Map<string, Promise<BootedHarnessHandle>> = new Map();
@@ -89,7 +94,29 @@ export interface BootAllOpts {
   workspaceIds?: string[];
   /** Per-harness boot timeout. Default 30s. */
   perHarnessTimeoutMs?: number;
+  /**
+   * Override the swarm-binding resolver. Default reads
+   * `.harness/shared.json` via `resolveHarnessPaths` and returns
+   * `{ kind: 'gh', github_repository_id }` when present. Tests
+   * inject a synchronous fake.
+   */
+  resolveSwarmBinding?: SwarmBindingResolver;
 }
+
+/**
+ * Given (workspaceId, harnessSlug) decide whether the substrate
+ * should join a Hyperswarm topic at boot.
+ *
+ *   - `null` / `undefined` → private harness, skip swarm join.
+ *   - `SwarmBinding` → boot joins the derived 32-byte topic.
+ *
+ * Async so the default resolver can hit PG via `resolveHarnessPaths`
+ * for the project directory.
+ */
+export type SwarmBindingResolver = (
+  workspaceId: string,
+  harnessSlug: string,
+) => Promise<SwarmBinding | null | undefined>;
 
 export interface BootAllResult {
   attempted: number;
@@ -107,11 +134,38 @@ export function getBootedHarness(
   return handles.get(key(workspaceId, harnessSlug)) ?? null;
 }
 
+/**
+ * Default swarm-binding resolver — reads `.harness/shared.json` from
+ * the harness's project directory (PG-canonical via
+ * `resolveHarnessPaths`) and returns a `gh:<repository_id>` binding
+ * when present. Errors swallow to `null` so a missing/corrupt config
+ * never blocks the boot loop.
+ */
+export async function defaultResolveSwarmBinding(
+  workspaceId: string,
+  harnessSlug: string,
+): Promise<SwarmBinding | null> {
+  try {
+    const { resolveHarnessPaths } = await import('@/lib/resolve-harness-paths');
+    const { projectDir } = await resolveHarnessPaths(harnessSlug, workspaceId);
+    if (projectDir.startsWith('/tmp/papercusp-unresolved/')) return null;
+    const cfg = loadSharedConfigFromProjectDir(projectDir);
+    if (!cfg) return null;
+    return { kind: 'gh', github_repository_id: cfg.github_repository_id };
+  } catch {
+    return null;
+  }
+}
+
 /** Boot a single (workspace, harness). Idempotent; safe to race. */
 export async function bootSingleHarness(
   workspaceId: string,
   harnessSlug: string,
-  opts: { workspaceRoot?: string; timeoutMs?: number } = {},
+  opts: {
+    workspaceRoot?: string;
+    timeoutMs?: number;
+    resolveSwarmBinding?: SwarmBindingResolver;
+  } = {},
 ): Promise<BootSingleResult> {
   const k = key(workspaceId, harnessSlug);
   if (handles.has(k)) {
@@ -141,9 +195,16 @@ export async function bootSingleHarness(
   }
   const workspaceRoot = opts.workspaceRoot ?? workspaceRootForId(workspaceId);
   const timeoutMs = opts.timeoutMs ?? 30_000;
+  const resolver = opts.resolveSwarmBinding ?? defaultResolveSwarmBinding;
   const bootPromise = (async () => {
+    const swarmBinding = (await resolver(workspaceId, harnessSlug)) ?? null;
     return await Promise.race([
-      bootHarnessSubstrate({ workspaceRoot, workspaceId, harnessSlug }),
+      bootHarnessSubstrate({
+        workspaceRoot,
+        workspaceId,
+        harnessSlug,
+        swarmBinding,
+      }),
       new Promise<never>((_, reject) =>
         setTimeout(
           () => reject(new Error(`boot timeout after ${timeoutMs}ms`)),
@@ -185,6 +246,7 @@ export async function bootAllHarnessesForActiveWorkspace(
       tasks.push(
         bootSingleHarness(wsId, slug, {
           timeoutMs: opts.perHarnessTimeoutMs,
+          resolveSwarmBinding: opts.resolveSwarmBinding,
         }),
       );
     }

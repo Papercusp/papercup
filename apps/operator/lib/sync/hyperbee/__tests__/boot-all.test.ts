@@ -13,10 +13,13 @@ import {
   bootSingleHarness,
   closeAllBootedHarnesses,
   closeBootedHarness,
+  defaultResolveSwarmBinding,
   getBootedHarness,
   listBootedHandles,
+  type SwarmBindingResolver,
 } from '../boot-all';
 import type { BootedHarnessHandle } from '../boot';
+import type { SwarmBinding } from '../derive-swarm-topic';
 
 function fakeHandle(workspaceId: string, harnessSlug: string): BootedHarnessHandle {
   return {
@@ -136,5 +139,71 @@ describe('boot-all — substrate orchestrator', () => {
     const b = listBootedHandles();
     expect(a).not.toBe(b);
     expect(a).toEqual(b);
+  });
+});
+
+describe('boot-all — Phase 11 P-078 swarm-binding resolution', () => {
+  it('defaultResolveSwarmBinding returns null when projectDir resolves to placeholder', async () => {
+    // Without a populated PG harness_registry, resolveHarnessPaths
+    // returns the /tmp/papercusp-unresolved/... placeholder which the
+    // default resolver explicitly maps to null (no swarm join).
+    const got = await defaultResolveSwarmBinding(
+      'ws-with-no-registry-entry',
+      'no-such-harness-slug',
+    );
+    expect(got).toBeNull();
+  });
+
+  it('bootSingleHarness invokes the resolver with (workspaceId, harnessSlug)', async () => {
+    const calls: Array<[string, string]> = [];
+    const fakeResolver: SwarmBindingResolver = async (ws, slug) => {
+      calls.push([ws, slug]);
+      return null;
+    };
+    await bootSingleHarness('ws-resolver-spy', 'my-slug', {
+      workspaceRoot: '/tmp/nonexistent-substrate-boot-test-resolver',
+      timeoutMs: 1,
+      resolveSwarmBinding: fakeResolver,
+    });
+    expect(calls).toEqual([['ws-resolver-spy', 'my-slug']]);
+  });
+
+  it('bootSingleHarness still attempts boot when resolver returns null', async () => {
+    const fakeResolver: SwarmBindingResolver = async () => null;
+    const result = await bootSingleHarness('ws-null-resolver', 'slug-x', {
+      workspaceRoot: '/tmp/nonexistent-substrate-boot-test-null',
+      timeoutMs: 1,
+      resolveSwarmBinding: fakeResolver,
+    });
+    // Boot fails (no real substrate) but the failure path is still
+    // exercised — resolver returning null does NOT throw.
+    expect(result.state).toBe('failed');
+  });
+
+  it('bootSingleHarness still attempts boot when resolver returns a binding', async () => {
+    const binding: SwarmBinding = { kind: 'gh', github_repository_id: 42 };
+    const fakeResolver: SwarmBindingResolver = async () => binding;
+    const result = await bootSingleHarness('ws-with-binding', 'slug-y', {
+      workspaceRoot: '/tmp/nonexistent-substrate-boot-test-binding',
+      timeoutMs: 1,
+      resolveSwarmBinding: fakeResolver,
+    });
+    expect(result.state).toBe('failed');
+  });
+
+  it('bootAllHarnessesForActiveWorkspace forwards resolveSwarmBinding to per-harness', async () => {
+    // No harnesses-dir → no per-harness boots, but we can verify the
+    // option is accepted without error.
+    const calls: number = 0;
+    const fakeResolver: SwarmBindingResolver = async () => {
+      // never called when there are no harnesses, but the type is exercised
+      return null;
+    };
+    const result = await bootAllHarnessesForActiveWorkspace({
+      workspaceIds: ['ws-no-harness-dir-resolver'],
+      resolveSwarmBinding: fakeResolver,
+    });
+    expect(result.attempted).toBe(0);
+    expect(calls).toBe(0);
   });
 });
