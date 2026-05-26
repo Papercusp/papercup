@@ -28,7 +28,7 @@ compatibility_flags = ["nodejs_compat"]
 
 [vars]
 ENVIRONMENT = "production"
-CUPBOARD_HOST = "cupboard.papercusp.dev"
+CUPBOARD_HOST = "cupboard.papercusp.com"
 RATE_PER_USER_PUBLISH_HOURLY = "5"
 RATE_PER_USER_REPORT_HOURLY = "10"
 RATE_PER_IP_LIST_PER_MINUTE = "60"
@@ -44,8 +44,8 @@ binding = "COUNTERS"
 id = "local-dev-stub-id"
 
 [[routes]]
-pattern = "cupboard.papercusp.dev/*"
-zone_name = "papercusp.dev"
+pattern = "cupboard.papercusp.com"
+custom_domain = true
 
 [triggers]
 crons = ["0 * * * *"]                          # hourly indexer refresh per P-076
