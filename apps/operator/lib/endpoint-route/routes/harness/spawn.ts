@@ -47,14 +47,32 @@ const launch = defineTool({
     if (!project) return Response.json({ error: 'unknown project' }, { status: 404 });
     const specPath = join(project.path, 'SPEC.md');
     if (!existsSync(specPath)) {
-      return Response.json(
-        {
-          error: 'SPEC.md not found',
-          hint: 'Create SPEC.md in the project directory describing what you want built. The scoper reads this to generate the work queue.',
-          path: specPath,
-        },
-        { status: 400 },
-      );
+      // Plan-based harnesses don't use SPEC.md — check for started plans before rejecting.
+      let hasStartedPlan = false;
+      try {
+        const { sql } = getOrgPg();
+        const { activeWorkspaceId } = await import('@/lib/workspace-registry');
+        const wid = activeWorkspaceId();
+        const rows = await sql<{ plan_slug: string }[]>`
+          SELECT plan_slug FROM harness_shared.harness_plan_status
+           WHERE workspace_id = ${wid}
+             AND harness_slug  = ${project.slug}
+             AND status        = 'started'
+           LIMIT 1
+        `;
+        hasStartedPlan = rows.length > 0;
+      } catch { /* table absent in older installs — fall through */ }
+
+      if (!hasStartedPlan) {
+        return Response.json(
+          {
+            error: 'SPEC.md not found',
+            hint: 'Either create SPEC.md in the project directory, or start a plan via the Plans tab to use plan-based orchestration.',
+            path: specPath,
+          },
+          { status: 400 },
+        );
+      }
     }
     const body = await req.json().catch(() => ({}));
     const extra = typeof (body as any).extra === 'string' ? (body as any).extra : '';

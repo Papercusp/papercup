@@ -53,16 +53,43 @@ export async function getEscalation(
     /* missing file — null mtime */
   }
   const { loadTextArtifact } = await import('./text-artifacts');
-  const [pgEscalation, pgNotes] = await Promise.all([
-    loadTextArtifact(slug, 'escalation.md'),
+  const { activeWorkspaceId } = await import('./workspace-registry');
+
+  // Query harness_escalations (written by TS orchestrator + bash run.sh) first,
+  // then fall back to harness_text_artifacts (written by harness-fs-watcher for
+  // disk files), then finally the disk file itself.
+  let pgEscalation: string | null = null;
+  let pgMtimeMs: number | null = null;
+  try {
+    const { sql } = getOrgPg();
+    const wid = activeWorkspaceId();
+    const rows = await sql<{ escalation: string; mtime_ms: number }[]>`
+      SELECT escalation, mtime_ms
+        FROM harness_shared.harness_escalations
+       WHERE workspace_id = ${wid}
+         AND harness_slug  = ${slug}
+       ORDER BY mtime_ms DESC
+       LIMIT 1
+    `;
+    if (rows.length > 0) {
+      pgEscalation = rows[0].escalation;
+      pgMtimeMs = rows[0].mtime_ms;
+    }
+  } catch {
+    /* table may not exist in older installs — fall through */
+  }
+
+  const [artifactEscalation, pgNotes] = await Promise.all([
+    pgEscalation === null ? loadTextArtifact(slug, 'escalation.md') : Promise.resolve(null),
     loadTextArtifact(slug, 'supervisor-notes.md'),
   ]);
+
   return {
     ok: true,
     data: {
-      escalation: pgEscalation ?? safeRead(escalationPath),
+      escalation: pgEscalation ?? artifactEscalation ?? safeRead(escalationPath),
       supervisorNotes: pgNotes ?? safeRead(supervisorNotesPath),
-      mtimeMs,
+      mtimeMs: pgMtimeMs ?? mtimeMs,
     },
   };
 }
