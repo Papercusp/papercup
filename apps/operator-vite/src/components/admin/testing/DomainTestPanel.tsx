@@ -18,6 +18,7 @@
  */
 
 import { useEffect, useState, type ReactNode } from 'react';
+import { useQueryState } from 'nuqs';
 import './domain-panel.css';
 
 interface FileHit {
@@ -144,7 +145,14 @@ export default function DomainTestPanel({
   const [health, setHealth] = useState<HealthStripData | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
-  // P-016/P-017: per-file active run + output drawer.
+  // P-016/P-017: per-file active run + output drawer. Drawer-open state
+  // is URL-backed (?runFile=<path>) so reload preserves the visible
+  // drawer and the URL is shareable. The transient runId/output stays in
+  // useState — generated server-side per click, not useful in URL.
+  const [runFile, setRunFile] = useQueryState('runFile');
+  // P-018: clicking a status chip opens a per-file run-history sheet.
+  // URL-backed for the same reasons.
+  const [historyFile, setHistoryFile] = useQueryState('historyFile');
   const [activeRun, setActiveRun] = useState<{
     runId: string;
     filePath: string;
@@ -159,12 +167,14 @@ export default function DomainTestPanel({
     const key = `__multi__:${label}`;
     setRunLoading(key);
     setActiveRun({ runId: '', filePath: label, status: 'starting', exitCode: null, output: '', finishedAt: null });
+    void setRunFile(label);
     await runImpl({ runner: { kind: 'vitest-multi', filePaths, label } }, label);
   }
 
   async function runVitestFile(filePath: string): Promise<void> {
     setRunLoading(filePath);
     setActiveRun({ runId: '', filePath, status: 'starting', exitCode: null, output: '', finishedAt: null });
+    void setRunFile(filePath);
     await runImpl({ runner: { kind: 'vitest', filePath } }, filePath);
   }
 
@@ -325,7 +335,7 @@ export default function DomainTestPanel({
         </div>
       )}
 
-      {activeRun && (
+      {runFile && activeRun && (
         <div className={`pc-dtp-drawer pc-dtp-drawer-${activeRun.status}`}>
           <header className="pc-dtp-drawer-header">
             <span className="pc-dtp-drawer-title">
@@ -337,12 +347,19 @@ export default function DomainTestPanel({
             <button
               type="button"
               className="pc-dtp-drawer-close"
-              onClick={() => setActiveRun(null)}
+              onClick={() => { setActiveRun(null); void setRunFile(null); }}
               title="Close"
             >×</button>
           </header>
           <pre className="pc-dtp-drawer-output">{activeRun.output || '(no output yet)'}</pre>
         </div>
+      )}
+
+      {historyFile && (
+        <FileHistorySheet
+          filePath={historyFile}
+          onClose={() => void setHistoryFile(null)}
+        />
       )}
 
       {customNode ? (
@@ -380,18 +397,26 @@ export default function DomainTestPanel({
                     return (
                       <li key={f.path} className="pc-dtp-file">
                         {st ? (
-                          <span
-                            className={chipClass(st.status, st.stale)}
+                          <button
+                            type="button"
+                            className={`${chipClass(st.status, st.stale)} pc-dtp-chip-button`}
                             title={
                               `${st.status} · ${st.durationMs ?? '?'}ms · ` +
                               `source=${st.source} · branch=${st.branch ?? 'none'}` +
-                              (st.stale ? ' · STALE (no row on current branch)' : '')
+                              (st.stale ? ' · STALE (no row on current branch)' : '') +
+                              ' — click for history'
                             }
+                            onClick={() => void setHistoryFile(f.path)}
                           >
                             {CHIP_LABEL[st.status]}
-                          </span>
+                          </button>
                         ) : (
-                          <span className="pc-dtp-chip pc-dtp-chip-none" title="never run">?</span>
+                          <button
+                            type="button"
+                            className="pc-dtp-chip pc-dtp-chip-none pc-dtp-chip-button"
+                            title="never run — click for history"
+                            onClick={() => void setHistoryFile(f.path)}
+                          >?</button>
                         )}
                         <code className="pc-dtp-file-path">{f.path}</code>
                         <span className="pc-dtp-file-meta">
@@ -421,6 +446,85 @@ export default function DomainTestPanel({
           ))}
         </div>
       )}
+    </div>
+  );
+}
+
+/**
+ * P-018 — per-file history sheet. Opens when a status chip is clicked;
+ * reads /api/admin/testing/file-history?filePath=<path>&limit=20.
+ * URL-backed via `?historyFile=<path>` so reload preserves visibility.
+ */
+
+interface HistoryRow {
+  id: number;
+  status: 'pass' | 'fail' | 'skip' | 'cancelled' | 'error' | 'running';
+  durationMs: number | null;
+  startedAt: string | null;
+  finishedAt: string | null;
+  source: 'ci' | 'local' | 'admin-ui';
+  branch: string | null;
+  commitSha: string | null;
+  framework: string;
+  outputTail: string | null;
+}
+
+function FileHistorySheet({
+  filePath,
+  onClose,
+}: { filePath: string; onClose: () => void }): JSX.Element {
+  const [rows, setRows] = useState<HistoryRow[] | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setRows(null);
+    setErr(null);
+    fetch(`/api/admin/testing/file-history?filePath=${encodeURIComponent(filePath)}&limit=20`)
+      .then((r) => (r.ok ? (r.json() as Promise<{ rows?: HistoryRow[] }>) : Promise.reject(new Error(`HTTP ${r.status}`))))
+      .then((d) => { if (!cancelled) setRows(d.rows ?? []); })
+      .catch((e) => { if (!cancelled) setErr(e instanceof Error ? e.message : String(e)); });
+    return () => { cancelled = true; };
+  }, [filePath]);
+
+  return (
+    <div className="pc-dtp-sheet-backdrop" onClick={onClose}>
+      <aside className="pc-dtp-sheet" onClick={(e) => e.stopPropagation()}>
+        <header className="pc-dtp-sheet-header">
+          <h3>Run history</h3>
+          <code className="pc-dtp-sheet-path">{filePath}</code>
+          <button type="button" className="pc-dtp-sheet-close" onClick={onClose} title="Close">×</button>
+        </header>
+        {err && <p className="pc-dtp-sheet-error">Error: {err}</p>}
+        {rows === null && !err && <p className="pc-dtp-sheet-loading">Loading…</p>}
+        {rows && rows.length === 0 && <p className="pc-dtp-sheet-empty">No runs recorded for this file yet.</p>}
+        {rows && rows.length > 0 && (
+          <table className="pc-dtp-sheet-table">
+            <thead>
+              <tr>
+                <th>Status</th>
+                <th>Finished</th>
+                <th>Duration</th>
+                <th>Source</th>
+                <th>Branch</th>
+                <th>Framework</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((r) => (
+                <tr key={r.id} className={`pc-dtp-sheet-row pc-dtp-sheet-row-${r.status}`}>
+                  <td><span className={`pc-dtp-chip pc-dtp-chip-${r.status}`}>{CHIP_LABEL[r.status as ChipStatus] ?? r.status}</span></td>
+                  <td title={r.finishedAt ?? ''}>{r.finishedAt ? new Date(r.finishedAt).toLocaleString() : '—'}</td>
+                  <td>{r.durationMs !== null ? `${r.durationMs} ms` : '—'}</td>
+                  <td>{r.source}</td>
+                  <td title={r.commitSha ?? ''}>{r.branch ?? '—'}</td>
+                  <td>{r.framework}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </aside>
     </div>
   );
 }
