@@ -332,6 +332,26 @@ inherit the filesystem-canonical model of the sibling `docs:*`
 system.
 ```
 
+## Validation assertions (VAL-\*)
+
+Plan items can carry inline behavioral assertions that the validator
+agent checks when certifying a feature. See
+[Validation assertion format](/internal/docs/spec/validation-assertion-format)
+for the full format, ID scheme, and tooling contract.
+
+Short form: each assertion is a nested sub-bullet block under a plan item:
+
+```markdown
+- **P-007** `todo` Implement CSV export.
+  - **[VAL-my-plan-2026-05-26-001]**
+    - **Verify:** `GET /api/reports/:id/csv` returns `Content-Type: text/csv`.
+    - **Evidence:** `tests/api/reports.csv.test.ts`
+    - **Status:** `todo`
+```
+
+The plan parser ignores these sub-bullets; `plans:promote` extracts them
+into `harness_plan_assertions` and populates `feature.claims`.
+
 ## Tool surface
 
 Plans are read and written through the `plans:*` MCP tools.
