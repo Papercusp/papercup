@@ -21,12 +21,13 @@ import {
 } from './hyperbee-key-types';
 
 describe('table tags', () => {
-  it('HYPERBEE_TABLE_TAGS has all 9 v5 tables', () => {
-    expect(HYPERBEE_TABLE_TAGS.length).toBe(9);
+  it('HYPERBEE_TABLE_TAGS has all 10 v5 tables', () => {
+    expect(HYPERBEE_TABLE_TAGS.length).toBe(10);
     for (const t of [
       'features-by-id',
       'features-by-status',
       'queue',
+      'working-set',
       'contributors',
       'usage',
       'presence',

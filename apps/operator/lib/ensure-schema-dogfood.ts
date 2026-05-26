@@ -24,6 +24,7 @@ import { getOrgPg } from '@restart/db-org';
 
 type DogfoodFlags = {
   featureQueue: boolean;
+  featureWorkingSet: boolean;
   contributors: boolean;
   featureClaims: boolean;
   prReviewerSettings: boolean;
@@ -45,6 +46,7 @@ const flags: DogfoodFlags =
   _g.__dogfoodEnsureFlags ??
   (_g.__dogfoodEnsureFlags = {
     featureQueue: false,
+    featureWorkingSet: false,
     contributors: false,
     featureClaims: false,
     prReviewerSettings: false,
@@ -85,6 +87,36 @@ export async function ensureFeatureQueueTable(): Promise<void> {
       WHERE removed_at IS NULL;
   `);
   flags.featureQueue = true;
+}
+
+/** harness_shared.feature_working_set — pointer table per (user, feature)
+ *  marking a human is ACTIVELY working a feature (v5 §0.5 working_users).
+ *  HYPERBEE-synced, same shape as feature_queue. Distinct from feature_queue
+ *  (intent) + harness_features.claims (orchestrator worker dispatch): this
+ *  is the human "set active" surface (P-038). Orchestrator eligibility
+ *  excludes any feature with a non-empty working set. */
+export async function ensureFeatureWorkingSetTable(): Promise<void> {
+  if (flags.featureWorkingSet) return;
+  const { sql } = getOrgPg();
+  await sql.unsafe(`
+    CREATE TABLE IF NOT EXISTS harness_shared.feature_working_set (
+      workspace_id   TEXT   NOT NULL DEFAULT '',
+      harness_slug   TEXT   NOT NULL,
+      github_user_id BIGINT NOT NULL,
+      feature_id     TEXT   NOT NULL,
+      started_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+      cleared_at     TIMESTAMPTZ,
+      schema_version BIGINT NOT NULL DEFAULT 1,
+      PRIMARY KEY (workspace_id, harness_slug, github_user_id, feature_id)
+    );
+    CREATE INDEX IF NOT EXISTS feature_working_set_feature_idx
+      ON harness_shared.feature_working_set (workspace_id, harness_slug, feature_id)
+      WHERE cleared_at IS NULL;
+    CREATE INDEX IF NOT EXISTS feature_working_set_user_idx
+      ON harness_shared.feature_working_set (workspace_id, harness_slug, github_user_id)
+      WHERE cleared_at IS NULL;
+  `);
+  flags.featureWorkingSet = true;
 }
 
 /** harness_shared.contributors — human identity per shared harness, with
@@ -450,6 +482,7 @@ export async function ensureSharedPresenceTable(): Promise<void> {
 export async function ensureAllDogfoodTables(): Promise<void> {
   await Promise.all([
     ensureFeatureQueueTable(),
+    ensureFeatureWorkingSetTable(),
     ensureContributorsTable(),
     ensureFeatureClaimsTable(),
     ensurePrReviewerSettingsTable(),
@@ -484,6 +517,7 @@ export async function ensureAllDogfoodTables(): Promise<void> {
  */
 export const DOGFOOD_REACTIVE_TABLES = [
   'feature_queue',
+  'feature_working_set',
   'contributors',
   'feature_claims',
   'pr_reviewer_settings',

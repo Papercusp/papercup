@@ -23,6 +23,7 @@ import { registerProjection } from '../projection';
 import { buildContributorsProjection } from './contributors';
 import { buildFeatureClaimsProjection } from './feature-claims';
 import { buildFeatureQueueProjection } from './feature-queue';
+import { buildFeatureWorkingSetProjection } from './feature-working-set';
 import { buildHarnessFeaturesProjection } from './harness-features';
 import { buildIssuesProjection } from './issues';
 import { buildPresenceProjection } from './presence';
@@ -43,6 +44,7 @@ export const REGISTERED_PROJECTION_TAGS = [
   'contributors',
   'claims',
   'queue',
+  'working-set',
   'features-by-id',
   'issues',
   'presence',
@@ -58,6 +60,7 @@ export function registerAllHarnessProjections(opts: RegisterAllOpts): void {
   registerProjection(buildContributorsProjection(opts));
   registerProjection(buildFeatureClaimsProjection(opts));
   registerProjection(buildFeatureQueueProjection(opts));
+  registerProjection(buildFeatureWorkingSetProjection(opts));
   registerProjection(buildHarnessFeaturesProjection(opts));
   registerProjection(buildIssuesProjection(opts));
   registerProjection(buildPresenceProjection(opts));

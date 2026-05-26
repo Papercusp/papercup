@@ -26,7 +26,7 @@ describe('registerAllHarnessProjections', () => {
     ).toThrow(/harnessSlug/);
   });
 
-  it('registers exactly the 8 expected tags', () => {
+  it('registers exactly the expected tags', () => {
     registerAllHarnessProjections({ workspaceId: 'w', harnessSlug: 'sheets' });
     for (const tag of REGISTERED_PROJECTION_TAGS) {
       expect(getProjection(tag)).not.toBeNull();

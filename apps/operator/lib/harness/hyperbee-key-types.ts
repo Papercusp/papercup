@@ -30,7 +30,7 @@
  */
 
 /**
- * The 9 canonical Hyperbee table tags. Append-only tables (usage,
+ * The 10 canonical Hyperbee table tags. Append-only tables (usage,
  * claims) are flagged separately via APPEND_ONLY_TAGS so the
  * projection can refuse `put`-overwrites on them.
  */
@@ -38,6 +38,7 @@ export const HYPERBEE_TABLE_TAGS = [
   'features-by-id',
   'features-by-status',
   'queue',
+  'working-set',
   'contributors',
   'usage',
   'presence',
@@ -66,6 +67,7 @@ export const HYPERBEE_TAG_TO_PREFIX: Record<HyperbeeTableTag, string> = {
   'features-by-id': 'features/by-id/',
   'features-by-status': 'features/by-status/',
   queue: 'queue/',
+  'working-set': 'working-set/',
   contributors: 'contributors/',
   usage: 'usage/',
   presence: 'presence/',
@@ -86,6 +88,7 @@ export const HYPERBEE_PREFIX_TO_TAG: Record<string, HyperbeeTableTag> = {
   'features/by-id/': 'features-by-id',
   'features/by-status/': 'features-by-status',
   'queue/': 'queue',
+  'working-set/': 'working-set',
   'contributors/': 'contributors',
   'usage/': 'usage',
   'presence/': 'presence',
