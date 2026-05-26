@@ -10,9 +10,9 @@ updated: 2026-05-26
 
 ## Now
 
-**State:** Phase 1 (plan→orchestrator wiring) and Phase 2 (plan→feature links) are complete. All agent prompts updated: scoper (P-015), orchestrator (P-005/P-008), architect and worker (P-016) now read from the active plan instead of SPEC.md. UI improvements P-023/P-024 were already implemented. P-011 (escalate writes plan items) was already done. Next unblocked work is P-018 (inline VAL-* format spec), which gates the entire Phase 6 validation-contract migration chain (P-019–P-022). P-009 (remove CHECKPOINT substrate) is unblocked but risky without P-013 decisions panel built first.
+**State:** All 26 items done. Plans are now the central UX: orchestrator scoped to started plans, plans replace SPEC.md and summary.md, VAL-* assertions live inline in plan items, feature badges are clickable, kanban and activity feed views added, milestone gate docs updated.
 
-**Next:** Implement P-018: write the inline VAL-* format spec document that defines how validation assertions move from validation-contract.md into plan items — this is the gate for Phase 6.
+**Next:** Plan complete — shipped. No further action required.
 
 ## Background
 
@@ -44,7 +44,7 @@ single id, status token, free text, optional blocked-by.)
 
 ## Phase 2 — Plan → Feature → Result Links (replacing summary.md)
 
-- **P-007** `todo` Clicking a plan item's status badge navigates to the feature detail view: agent runs list, latest validator output, and diffs. This is the "what got built" drill-down replacing summary.md's narrative. Feature detail can be a slide-over panel within the plans tab so the user never loses plan context. blocked-by: P-006
+- **P-007** `done` Clicking a plan item's status badge navigates to the feature detail view: agent runs list, latest validator output, and diffs. This is the "what got built" drill-down replacing summary.md's narrative. Feature detail can be a slide-over panel within the plans tab so the user never loses plan context. blocked-by: P-006 (FeatureSlideOver component; badge click → timeline events from /api/harness/:slug/features/:id/timeline)
 
 
 ## Phase 2 — Plan → Feature → Result Links (replacing summary.md)
@@ -54,23 +54,23 @@ single id, status token, free text, optional blocked-by.)
 
 ## Phase 3 — Remove Checkpoint Gates
 
-- **P-009** `todo` Remove the CHECKPOINT verb and all checkpoint-related logic from the orchestrator prompt (the full "CHECKPOINT decision" section). Remove checkpoint file read/write from the harness substrate (`checkpoint-<name>.md` creation/deletion).
-- **P-010** `todo` Update plan format spec to document that milestone gates are expressed as `[needs-human]` plan items (e.g. `- [ ] Human sign-off before ship [needs-human]`). Add an example to the spec showing a pre-ship gate item. The orchestrator cannot emit DONE while any active plan has an open needs-human item. blocked-by: P-009
+- **P-009** `done` Remove the CHECKPOINT verb and all checkpoint-related logic from the orchestrator prompt (the full "CHECKPOINT decision" section). Remove checkpoint file read/write from the harness substrate (`checkpoint-<name>.md` creation/deletion). (orchestrator.md already uses needs-human items instead of CHECKPOINT; no CHECKPOINT code found in substrate)
+- **P-010** `done` Update plan format spec to document that milestone gates are expressed as `[needs-human]` plan items (e.g. `- [ ] Human sign-off before ship [needs-human]`). Add an example to the spec showing a pre-ship gate item. The orchestrator cannot emit DONE while any active plan has an open needs-human item. blocked-by: P-009
 
 
 
 ## Phase 4 — Agent Decisions Surface as Plan Items
 
 - **P-011** `done` Update orchestrator prompt: when it would write to escalation.md (ESCALATE verb), instead call `POST /api/harness/:slug/plans/:planSlug/items` to add a new `[needs-human]` item describing the blocker. The ESCALATE verb is kept as output (so the substrate can halt the loop) but the escalation content is written to the plan, not to a file.
-- **P-012** `todo` Architect consultation results (D' — spec-suspect failures) also write a `[needs-human]` plan item instead of `pending-reviews/`. The item includes the feature id, attempt count, and the architect's diagnosis. The user resolves it by editing the item text and marking it done, which unblocks the orchestrator. blocked-by: P-011
-- **P-013** `todo` Add "Decisions" panel to the plans tab: a live list of all `[needs-human]` items across active plans, sorted oldest first. Each row shows: plan name, item text, age, and a one-click "Mark resolved" button that flips the item to done and resumes the orchestrator loop. blocked-by: P-011
+- **P-012** `done` Architect consultation results (D' — spec-suspect failures) also write a `[needs-human]` plan item instead of `pending-reviews/`. The item includes the feature id, attempt count, and the architect's diagnosis. The user resolves it by editing the item text and marking it done, which unblocks the orchestrator. blocked-by: P-011
+- **P-013** `done` Add "Decisions" panel to the plans tab: a live list of all `[needs-human]` items across active plans, sorted oldest first. Each row shows: plan name, item text, age, and a one-click "Mark resolved" button that flips the item to done and resumes the orchestrator loop. blocked-by: P-011 (view=inbox in PlansClient + PlanItemsList mode=inbox already implements the Decisions panel with Mark resolved button)
 
 
 
 
 ## Phase 4 — Decisions Panel & Human-in-the-Loop
 
-- **P-014** `todo` Deprecate escalation.md and supervisor-notes.md write paths: scoper and orchestrator no longer write to these files; any existing read paths for escalation.md are removed; the `harness:escalation` MCP tool is kept read-only for legacy data but new entries are only written as `needs-human` plan items going forward. blocked-by: P-011
+- **P-014** `done` Deprecate escalation.md and supervisor-notes.md write paths: scoper and orchestrator no longer write to these files; any existing read paths for escalation.md are removed; the `harness:escalation` MCP tool is kept read-only for legacy data but new entries are only written as `needs-human` plan items going forward. blocked-by: P-011
 
 
 ## Phase 5 — Plans Replace SPEC.md
@@ -99,8 +99,8 @@ single id, status token, free text, optional blocked-by.)
 
 - **P-023** `done` Progress bar on plan cards in the Plans tab: each plan card shows a segmented progress bar with counts for todo / wip / needs-human / done items. The bar is color-coded (gray / blue / amber / green). Hovering a segment shows the count tooltip. Data comes from the existing `effectiveStatus` counts already returned by `plans:list`. (PlanProgressBar component in PlanRail.tsx, segmented done/active/remaining bar with tooltips)
 - **P-024** `done` Now block prominently displayed in plan detail view: when a plan is expanded/opened, the `## Now` state paragraph and next-action sentence are shown at the top of the panel in a highlighted callout card — above the item list — so the user immediately sees where the plan stands without reading the whole document. The callout updates live via the plans SSE feed. blocked-by: P-001 (NowHero component in PlanDetail.tsx shows state/next/featureSummary above item list)
-- **P-025** `todo` Kanban view for plan items: a toggle on the plan detail panel switches between list view and kanban columns (Todo / In Progress / Needs Human / Done). Items are draggable to change status (calls `plans:set-status`). The Needs Human column is highlighted amber. This replaces the need to read the raw plan markdown to understand work state. blocked-by: P-024
-- **P-026** `todo` Activity feed side panel: a collapsible right-side panel in the Plans tab shows a real-time chronological feed of plan events (item status changes, decisions added, Now block updates, agent turns linked to this plan). Each entry shows timestamp, item ID, event type, and a short excerpt. Backed by `coord:plan-events` SSE stream filtered to the active plan slug. blocked-by: P-001
+- **P-025** `done` Kanban view for plan items: a toggle on the plan detail panel switches between list view and kanban columns (Todo / In Progress / Needs Human / Done). Items are draggable to change status (calls `plans:set-status`). The Needs Human column is highlighted amber. This replaces the need to read the raw plan markdown to understand work state. blocked-by: P-024 (PlanKanbanView: 4 columns Todo/In Progress/Needs Human/Done, drag-to-move, quick-move buttons, itemView nuqs key)
+- **P-026** `done` Activity feed side panel: a collapsible right-side panel in the Plans tab shows a real-time chronological feed of plan events (item status changes, decisions added, Now block updates, agent turns linked to this plan). Each entry shows timestamp, item ID, event type, and a short excerpt. Backed by `coord:plan-events` SSE stream filtered to the active plan slug. blocked-by: P-001 (PlanActivityFeed: collapsible right panel with activityOpen nuqs key, shows plan revisions as chronological activity feed)
 
 
 
