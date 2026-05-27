@@ -78,7 +78,11 @@ export async function buildOperatorPrompt(
 
   // Audience-mode overlay first — frames who the user is before shared rules.
   const modeOverlay = loadRoleModePersona('operator', audienceMode);
-  if (modeOverlay) systemSections.push(modeOverlay);
+  if (modeOverlay) {
+    systemSections.push(modeOverlay);
+  } else {
+    console.warn(`[converse-prompt] No mode overlay found for audienceMode="${audienceMode}" — operator.persona.${audienceMode}-mode.md is missing or unreadable.`);
+  }
 
   systemSections.push(loadRoleConverse('operator'));
   systemSections.push(loadRolePersona('operator'));

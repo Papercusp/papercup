@@ -10,7 +10,11 @@ import type { VoicePrefs } from '@/lib/voice-prefs';
 
 type AudienceMode = 'engineer' | 'novice';
 
+const LS_KEY = 'pc:audienceMode';
+
 async function saveAudienceMode(mode: AudienceMode): Promise<void> {
+  // Broadcast to other tabs before the fetch so the storage event fires promptly.
+  try { localStorage.setItem(LS_KEY, mode); } catch { /* private browsing */ }
   const r = await fetch('/api/agent-mcp/operator-voice-prefs', {
     method: 'PUT',
     headers: { 'content-type': 'application/json' },
@@ -27,10 +31,21 @@ export function AudienceModeSelector() {
 
   useEffect(() => {
     setMode(loadVoicePrefsClient().audienceMode ?? 'engineer');
+    // Same-tab sync: fires when this tab calls setVoicePrefsClient.
     const unsub = subscribeVoicePrefsClient((next) => {
       setMode(next.audienceMode ?? 'engineer');
     });
-    return unsub;
+    // Cross-tab sync: fires when another tab writes LS_KEY.
+    const onStorage = (e: StorageEvent) => {
+      if (e.key === LS_KEY && (e.newValue === 'engineer' || e.newValue === 'novice')) {
+        setMode(e.newValue);
+      }
+    };
+    window.addEventListener('storage', onStorage);
+    return () => {
+      unsub();
+      window.removeEventListener('storage', onStorage);
+    };
   }, []);
 
   const select = useCallback((next: AudienceMode) => {
