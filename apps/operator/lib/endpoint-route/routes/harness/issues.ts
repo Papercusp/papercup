@@ -291,6 +291,19 @@ const promoteIssue = defineTool({
 
     // Append a F-FIX-### entry to harness_features (PG).
     const dbc = getLegacyClient(project.slug);
+
+    // Inherit source_plan_slug from the feature the issue was found in so
+    // the orchestrator's plan-scoping filter (P-005) includes this fix.
+    let parentPlanSlug: string | null = null;
+    if (issue.foundDuring) {
+      try {
+        const parentRow = dbc.prepare(`
+          SELECT source_plan_slug FROM harness_features
+           WHERE harness_slug = ? AND feature_id = ? LIMIT 1
+        `).get(project.slug, issue.foundDuring) as { source_plan_slug: string | null } | undefined;
+        parentPlanSlug = parentRow?.source_plan_slug ?? null;
+      } catch { /* non-fatal */ }
+    }
     const fixRows = await dbc.prepare(`
       SELECT feature_id FROM harness_features
        WHERE harness_slug = ? AND feature_id LIKE 'F-FIX-%'
@@ -310,13 +323,15 @@ const promoteIssue = defineTool({
       INSERT INTO harness_features
         (harness_slug, feature_id, title, summary, status, attempts, claims, notes, metadata,
          kind, project_id, expected_cost_cents, tags, needs_human_review,
+         source_plan_slug,
          ts, created_ts, updated_ts)
-      VALUES (?, ?, ?, NULL, 'todo', 0, ?, ?, ?, NULL, NULL, NULL, NULL, false, ?, ?, ?)
+      VALUES (?, ?, ?, NULL, 'todo', 0, ?, ?, ?, NULL, NULL, NULL, NULL, false, ?, ?, ?, ?)
     `).run(
       project.slug, featureId, issue.title,
       claims.length ? JSON.stringify(claims) : null,
       featureNotes || null,
       JSON.stringify({ sourceIssueId: issue.id }),
+      parentPlanSlug,
       featureTs, featureTs, featureTs,
     );
     auditFeatureChange(

@@ -89,21 +89,20 @@ export default defineTool({
     // P-006: Build a map of plan-item-id → { featureId, status } so the UI
     // can show live feature status badges next to each P-NNN item.
     const harnessSlug = resolveCtxHarnessSlug(ctx) ?? 'papercup';
-    let linkedFeatures: Record<string, { featureId: string; status: string }> = {};
+    let linkedFeatures: Record<string, { featureId: string; status: string; harnessSlug: string }> = {};
     try {
       const rows = await withWorkspace(DEFAULT_WORKSPACE_ID, async (tx) => {
-        return tx<{ feature_id: string; status: string; source_plan_item_ids: string[] | null }[]>`
-          SELECT feature_id, status, source_plan_item_ids
+        return tx<{ feature_id: string; status: string; source_plan_item_ids: string[] | null; harness_slug: string }[]>`
+          SELECT feature_id, status, source_plan_item_ids, harness_slug
             FROM harness_shared.harness_features_consolidated
            WHERE workspace_id   = ${DEFAULT_WORKSPACE_ID}
-             AND harness_slug   = ${harnessSlug}
              AND source_plan_slug = ${args.slug}
              AND source_plan_item_ids IS NOT NULL
         `;
       });
       for (const row of rows) {
         for (const itemId of row.source_plan_item_ids ?? []) {
-          linkedFeatures[itemId] = { featureId: row.feature_id, status: row.status };
+          linkedFeatures[itemId] = { featureId: row.feature_id, status: row.status, harnessSlug: row.harness_slug };
         }
       }
     } catch {

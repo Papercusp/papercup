@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Play, Square } from 'lucide-react';
+import { Square } from 'lucide-react';
 import { toast } from 'sonner';
 import AgentThinkingPopover from '@/app/harness/AgentThinkingPopover';
 
@@ -103,22 +103,6 @@ export default function AdvNowRunning({ slug }: Props) {
     return () => window.clearInterval(id);
   }, [runs.length]);
 
-  const launchHarness = useCallback(async () => {
-    if (!slug) return;
-    try {
-      const res = await fetch(`/api/harness/${encodeURIComponent(slug)}/launch?phase=${PHASE}`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({}),
-      });
-      if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`);
-      const d = (await res.json()) as { logPath?: string };
-      toast.success('Harness launched', { description: d.logPath });
-    } catch (e) {
-      toast.error('Launch failed', { description: String(e) });
-    }
-  }, [slug]);
-
   const stopHarness = useCallback(async () => {
     if (!slug) return;
     if (!window.confirm(`Stop harness ${slug}? In-flight work will be interrupted.`)) return;
@@ -155,18 +139,7 @@ export default function AdvNowRunning({ slug }: Props) {
           <Square size={11} />
           Stop
         </button>
-      ) : (
-        <button
-          type="button"
-          className="pc-advshell__action pc-advshell__action--start"
-          onClick={launchHarness}
-          title="Start the harness"
-          disabled={alive === null}
-        >
-          <Play size={11} />
-          Start
-        </button>
-      )}
+      ) : null}
       {runs.length > 0 && (
         <div className="pc-advshell__pills" data-count={runs.length}>
           {runs.map((r) => {

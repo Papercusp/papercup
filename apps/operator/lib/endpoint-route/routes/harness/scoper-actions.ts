@@ -36,10 +36,6 @@ const productReview = defineTool({
   async handler(_req, ctx) {
     const project = await resolveProject(ctx.params.slug as string);
     if (!project) return Response.json({ error: 'unknown project' }, { status: 404 });
-    const specPath = join(project.path, 'SPEC.md');
-    if (!existsSync(specPath)) {
-      return Response.json({ error: 'SPEC.md not found in project root' }, { status: 400 });
-    }
     const { invocationId } = invokeScoperBackground(project, 'proposal');
     return Response.json({ ok: true, invocationId, mode: 'proposal' });
   },
@@ -70,12 +66,9 @@ const replan = defineTool({
       return Response.json({ ok: true, invocationId, mode: 'replan' });
     }
 
-    // Destructive: wipe features in PG (after snapshot), move
-    // validation-contract.md to a backup dir, then invoke scoper
-    // MODE=initial inline (MAX_ITERATIONS=0 skips the orchestration loop).
-    const specPath = join(project.path, 'SPEC.md');
-    if (!existsSync(specPath)) return Response.json({ error: 'SPEC.md not found' }, { status: 400 });
-    const contractPath = join(harnessDir(project), 'validation-contract.md');
+    // Destructive: wipe features in PG (after snapshot), back up state files,
+    // then invoke scoper MODE=initial inline (MAX_ITERATIONS=0 skips the loop).
+    // Plan-based harnesses have no SPEC.md or validation-contract.md — that is fine.
 
     await mkdir(harnessDir(project), { recursive: true });
     const backupDir = join(harnessDir(project), `.replan-backup-${Date.now()}`);
@@ -113,7 +106,7 @@ const replan = defineTool({
         maxBuffer: 1024 * 1024,
         timeout: 5 * 60_000,
       }, async (err: any, stdout, stderr) => {
-        const produced = (await parseFeatures(project)).length > 0 && existsSync(contractPath);
+        const produced = (await parseFeatures(project)).length > 0;
         if (err && !produced) {
           resolve(Response.json({ ok: false, error: String(err.message || err).slice(0, 400), stderr, logPath }, { status: 500 }));
           return;

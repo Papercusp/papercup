@@ -151,6 +151,14 @@ export default function PlanDetail({ slug, onClose, onDirtyChange, startStatus, 
   }, [dirty, onDirtyChange]);
   useEffect(() => () => onDirtyChange?.(false), [onDirtyChange]);
 
+  // P-006: poll linkedFeatures every 10s while the plan is actively running
+  // so feature status badges stay current without a manual refresh.
+  useEffect(() => {
+    if (startStatus !== 'started') return;
+    const id = window.setInterval(() => { refresh(); }, 10_000);
+    return () => window.clearInterval(id);
+  }, [startStatus, refresh]);
+
   // Cross-plan inbox/actionable clicks deep-link here with ?jump=P-NNN.
   // Vditor preview rendering is async, so retry briefly until the
   // decorated markdown nodes exist, then clear the URL param.

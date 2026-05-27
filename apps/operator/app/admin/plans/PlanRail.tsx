@@ -77,10 +77,12 @@ interface Props {
   onSelect: (slug: string) => void;
   /** Called after a start/pause action so the parent can re-fetch. */
   onStartToggle?: () => void;
+  /** Current harness slug — used to auto-launch the harness when starting a plan. */
+  harnessSlug?: string | null;
 }
 
 const PlanRail = forwardRef<PlanRailHandle, Props>(function PlanRail(
-  { list, selectedSlug, query, searchHitSlugs, onSelect, onStartToggle }: Props,
+  { list, selectedSlug, query, searchHitSlugs, onSelect, onStartToggle, harnessSlug }: Props,
   ref,
 ) {
   const { data, loading, error, refresh } = list;
@@ -198,6 +200,7 @@ const PlanRail = forwardRef<PlanRailHandle, Props>(function PlanRail(
           active={p.slug === selectedSlug}
           onSelect={() => onSelect(p.slug)}
           onStartToggle={onStartToggle}
+          harnessSlug={harnessSlug}
         />
       ))}
     </ul>
@@ -211,11 +214,13 @@ function PlanRow({
   active,
   onSelect,
   onStartToggle,
+  harnessSlug,
 }: {
   plan: PlanListRow;
   active: boolean;
   onSelect: () => void;
   onStartToggle?: () => void;
+  harnessSlug?: string | null;
 }) {
   const title = plan.title ?? plan.slug;
   const source = sourceOfDraftPlan(plan);
@@ -230,13 +235,25 @@ function PlanRow({
           await pausePlan(plan.slug);
         } else {
           await startPlan(plan.slug);
+          // Auto-launch the harness process if not already running.
+          if (harnessSlug) {
+            try {
+              await fetch(`/api/harness/${encodeURIComponent(harnessSlug)}/launch?phase=staging`, {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({}),
+              });
+            } catch {
+              // Non-fatal — harness may already be running.
+            }
+          }
         }
         onStartToggle?.();
       } finally {
         setBusy(false);
       }
     },
-    [plan.slug, plan.startStatus, onStartToggle],
+    [plan.slug, plan.startStatus, onStartToggle, harnessSlug],
   );
 
   const isStarted = plan.startStatus === 'started';

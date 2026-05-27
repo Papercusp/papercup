@@ -328,6 +328,7 @@ export default function PlansClient() {
             searchHitSlugs={searchHitSlugs}
             onSelect={navSlug}
             onStartToggle={() => planList.refresh()}
+            harnessSlug={harnessFilter ?? advActiveSlug}
           />
         </div>
       </aside>
