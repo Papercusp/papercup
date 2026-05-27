@@ -33,7 +33,7 @@ import { readPlanBySlug } from '../../plans/source';
 import { withPlanLock, bumpUpdatedDate } from '../../plans/with-plan-lock';
 import { flipStatusInBody } from '../../plans/set-status';
 import { extractAssertions } from '../../plans/val-assertions';
-import { ensureHarnessPlanAssertionsTable } from '../../ensure-schema';
+import { ensureHarnessPlanAssertionsTable } from '../../../ensure-schema';
 import { getOrgPg } from '@restart/db-org';
 
 const PROMOTED_FENCE = '<!-- plan-pipeline: do not edit this block manually -->';

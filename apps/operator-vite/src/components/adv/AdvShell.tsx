@@ -18,6 +18,7 @@ import { Select } from '@/app/harness/Select';
 import { CreateHarnessPicker } from '@/app/harness/CreateHarnessPicker';
 import { ShareWizard } from '@/app/harness/ShareWizard';
 import AdvNowRunning from './AdvNowRunning';
+import DiscordBadge from './DiscordBadge';
 
 const ADV_TAB_IDS = ['harnesses', 'brainstorm', 'prs', 'insights', 'config', 'settings', 'docs', 'git', 'plans', 'sessions'] as const;
 export type AdvTabId = (typeof ADV_TAB_IDS)[number];
@@ -178,6 +179,7 @@ export default function AdvShell({
             <Share2 size={13} aria-hidden /> Share
           </button>
         )}
+        <DiscordBadge slug={activeSlug} />
         <label className="pc-advshell__scope-toggle" title="Include sub-harnesses in list views (plans, sessions). Editor views still focus a single harness.">
           <input
             type="checkbox"

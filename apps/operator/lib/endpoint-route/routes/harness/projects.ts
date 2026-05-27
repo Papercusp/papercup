@@ -60,11 +60,13 @@ const lite = defineTool({
           parentSlug = typeof j?.parent_slug === 'string' && j.parent_slug ? j.parent_slug : null;
         }
       } catch { /* ignore — bad config = no parent */ }
+      const isShared = existsSync(join(p.path, '.harness', 'shared.json'));
       return {
         slug: p.slug,
         path: p.path,
         harness_kind: (p as { harness_kind?: string }).harness_kind ?? null,
         parent_slug: parentSlug,
+        is_shared: isShared,
         hasState: existsSync(hDir),
         hasSpec: existsSync(join(p.path, 'SPEC.md')),
         harnessDir: hDir,
