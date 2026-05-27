@@ -18,6 +18,7 @@ import { loadVoicePrefs } from '@/lib/voice-prefs';
 import { ALL_AGENT_MCP_TOOLS } from '@/lib/operator-mcp-tools';
 import {
   loadRolePersona,
+  loadRoleModePersona,
   loadRoleToolsMd,
   loadRoleConverse,
   renderToolsCatalog,
@@ -32,6 +33,9 @@ export interface ConverseInput {
   welcomed_user?: { display_name?: string };
   mayAskActive?: boolean;
   modality?: 'voice' | 'text';
+  /** Who the operator is talking to. Controls the persona overlay injected
+   *  as the first system section. Defaults to 'engineer'. */
+  audienceMode?: 'engineer' | 'novice';
 }
 
 export interface ConverseSessionUser {
@@ -67,9 +71,15 @@ export async function buildOperatorPrompt(
   const modality: 'voice' | 'text' = input.modality === 'voice' ? 'voice' : 'text';
   const trigger = input.trigger ?? 'user_message';
   const mayAskActive = !!input.mayAskActive;
+  const audienceMode = input.audienceMode ?? 'engineer';
 
   // SYSTEM sections (stable persona spec — set as omp --system-prompt)
   const systemSections: string[] = [];
+
+  // Audience-mode overlay first — frames who the user is before shared rules.
+  const modeOverlay = loadRoleModePersona('operator', audienceMode);
+  if (modeOverlay) systemSections.push(modeOverlay);
+
   systemSections.push(loadRoleConverse('operator'));
   systemSections.push(loadRolePersona('operator'));
 

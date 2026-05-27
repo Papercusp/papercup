@@ -31,6 +31,7 @@ import { OperatorLogoMark } from './OperatorLogoMark';
 import { OperatorWordmarkLockup } from './OperatorWordmarkLockup';
 import { OperatorActiveToggle } from './OperatorActiveToggle';
 import { VoiceButton } from './voice/VoiceButton';
+import { AudienceModeSelector } from './AudienceModeSelector';
 import {
   OPERATOR_CHAT_COLLAPSED_WIDTH,
   OPERATOR_CHAT_DEFAULT_WIDTH,
@@ -210,6 +211,7 @@ export function OperatorChatSidebar() {
                 </button>
               </div>
               <div className="op-chat-controls" role="group" aria-label={`Papercup voice controls — ${statusText}`}>
+                <AudienceModeSelector />
                 <OperatorActiveToggle />
                 <VoiceButton />
               </div>

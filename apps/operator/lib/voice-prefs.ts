@@ -245,6 +245,14 @@ export interface VoicePrefs {
    */
   memoryEmbedderMode: 'auto' | 'openai' | 'local' | 'disabled';
 
+  /**
+   * Who the operator thinks it's talking to. Controls which audience-mode
+   * persona overlay is injected at the start of the system prompt.
+   *   'engineer' (default) — terse, technical, peer-to-peer
+   *   'novice'             — warm, plain-English, outcome-framed
+   */
+  audienceMode: 'engineer' | 'novice';
+
   // One-time consents
   webSpeechLeakAcked: boolean;
   kokoroSlowSuggestionDismissed: boolean;
@@ -299,6 +307,7 @@ export const DEFAULT_VOICE_PREFS: VoicePrefs = {
   wakeGatedIdleTimeoutSec: 20,
   agentLanguage: 'en',
   memoryEmbedderMode: 'auto',
+  audienceMode: 'engineer',
   webSpeechLeakAcked: false,
   kokoroSlowSuggestionDismissed: false,
   nudgeDedup: {

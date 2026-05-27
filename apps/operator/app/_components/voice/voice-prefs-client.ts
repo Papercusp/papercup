@@ -32,6 +32,7 @@ const DEFAULT_CLIENT_PREFS: VoicePrefs = {
   sttEngine: 'voicemode',
   ttsEngine: 'kokoro',
   elevenlabsVoiceId: '21m00Tcm4TlvDq8ikWAM',
+  audienceMode: 'engineer' as const,
   webSpeechLeakAcked: false,
   kokoroSlowSuggestionDismissed: false,
   nudgeDedup: {

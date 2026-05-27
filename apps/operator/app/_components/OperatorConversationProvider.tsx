@@ -492,6 +492,8 @@ export interface GenerationRequest {
    * for the ledger.
    */
   isAutoFire?: boolean;
+  /** Audience persona overlay: 'engineer' (default) or 'novice'. */
+  audienceMode?: 'engineer' | 'novice';
 }
 
 export interface GenerationStream {
@@ -542,6 +544,7 @@ const defaultGenerationFn: GenerationFn = async (req) => {
       // missing values gracefully.
       conversationId: req.conversationId ?? undefined,
       isAutoFire: req.isAutoFire ?? undefined,
+      audienceMode: req.audienceMode,
     }),
     signal: req.signal,
   });
@@ -701,6 +704,9 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
   // state machine, not React state. Buffer-window timer lives alongside.
   const routerStateRef = useRef(createRouterState());
   const routerBufferTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Live mirror of voice-prefs.audienceMode. Updated via subscribeVoicePrefsClient.
+  const audienceModeRef = useRef<'engineer' | 'novice'>('engineer');
+
   // Live mirror of voice-prefs.cardAnsweringEnabled. Updated via
   // subscribeVoicePrefsClient so toggling the pref OFF mid-session
   // immediately tears down any armed voice card (plan §C.10 / audit
@@ -1258,6 +1264,7 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
           // row per chain turn so deterministic asserts can verify caps.
           conversationId: conversationIdRef.current ?? undefined,
           isAutoFire: opts?.isAutoFire,
+          audienceMode: audienceModeRef.current,
         });
 
         let buf = '';
@@ -1717,6 +1724,15 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
   }, []);
 
   // Live voice-prefs subscription. Tears down the active router ref
+  // Seed audienceModeRef from prefs cache and keep it live.
+  useEffect(() => {
+    audienceModeRef.current = loadVoicePrefsClient().audienceMode ?? 'engineer';
+    const unsub = subscribeVoicePrefsClient((next) => {
+      audienceModeRef.current = next.audienceMode ?? 'engineer';
+    });
+    return unsub;
+  }, []);
+
   // when cardAnsweringEnabled flips OFF mid-session (plan §C.10 +
   // audit gap #2). Hydration also calls the listener so the initial
   // value reflects the server cache, not the DEFAULT_CLIENT_PREFS

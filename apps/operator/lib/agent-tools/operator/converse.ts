@@ -77,6 +77,7 @@ const ArgsSchema = z.object({
   welcomedUser: z.object({ display_name: z.string().optional() }).optional(),
   mayAskActive: z.boolean().optional(),
   modality: z.union([z.literal('voice'), z.literal('text')]).optional(),
+  audienceMode: z.union([z.literal('engineer'), z.literal('novice')]).optional(),
   uiClientId: z.string().optional(),
   /** Session user resolved from cookies by the HTTP route; null
    *  acceptable on the IPC path or unauthenticated calls. */
@@ -176,6 +177,7 @@ export default defineTool({
         welcomed_user: input.welcomedUser,
         mayAskActive: input.mayAskActive,
         modality: input.modality,
+        audienceMode: input.audienceMode,
       } satisfies OperatorConverseInput,
       sessionUser,
     );

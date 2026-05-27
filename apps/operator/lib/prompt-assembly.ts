@@ -150,6 +150,27 @@ export function loadRoleToolsMd(role: Role): string | null {
  * already require it. If a role exists that doesn't use the converse
  * pattern, that role's route just doesn't call this.
  */
+const modePersonaCache = new Map<string, string | null>();
+
+/**
+ * Load `<role>.persona.<mode>-mode.md` — the audience-mode character
+ * overlay. Injected as the first system section so it frames who the
+ * user is before the shared persona rules apply.
+ *
+ * Returns null when no file exists for the given mode (opt-in per role).
+ * Throws when a file exists but is unreadable.
+ */
+export function loadRoleModePersona(role: Role, mode: string): string | null {
+  const key = `${role}:${mode}`;
+  if (!shouldBypassCache() && modePersonaCache.has(key)) {
+    return modePersonaCache.get(key)!;
+  }
+  const path = join(promptsDir(), `${role}.persona.${mode}-mode.md`);
+  const text = existsSync(path) ? readFileSync(path, 'utf8') : null;
+  modePersonaCache.set(key, text);
+  return text;
+}
+
 export function loadRoleConverse(role: Role): string {
   if (!shouldBypassCache() && converseCache.has(role)) {
     return converseCache.get(role)!;

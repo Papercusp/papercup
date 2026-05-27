@@ -229,6 +229,7 @@ const voiceSessionInit = defineTool({
         surface,
         desktop_host: process.env.MOBILE_DESKTOP_HOST ?? '',
         voice_mode: resolved.voiceMode,
+        audience_mode: prefs.audienceMode ?? 'engineer',
       },
     });
   },
