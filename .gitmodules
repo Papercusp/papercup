@@ -1,27 +1,27 @@
 [submodule "libs/agent-chat"]
 	path = libs/agent-chat
-	url = https://github.com/papercupai/agent-chat.git
+	url = https://github.com/Papercusp/agent-chat.git
 [submodule "libs/git-graph"]
 	path = libs/git-graph
-	url = https://github.com/papercupai/git-graph.git
+	url = https://github.com/Papercusp/git-graph.git
 [submodule "libs/papergrid"]
 	path = libs/papergrid
-	url = https://github.com/papercupai/papergrid.git
+	url = https://github.com/Papercusp/papergrid.git
 [submodule "libs/papercup-db"]
 	path = libs/papercup-db
-	url = https://github.com/papercupai/papercup-db.git
+	url = https://github.com/Papercusp/papercup-db.git
 [submodule "libs/papercup-shared"]
 	path = libs/papercup-shared
-	url = https://github.com/papercupai/papercup-shared.git
+	url = https://github.com/Papercusp/papercup-shared.git
 [submodule "libs/ui-primitives"]
 	path = libs/ui-primitives
-	url = https://github.com/papercupai/ui-primitives.git
+	url = https://github.com/Papercusp/ui-primitives.git
 [submodule "libs/papercusp"]
 	path = libs/papercusp
-	url = https://github.com/papercupai/papercusp.git
+	url = https://github.com/Papercusp/papercusp.git
 [submodule "libs/zero-harness"]
 	path = libs/zero-harness
-	url = https://github.com/papercupai/zero-harness.git
+	url = https://github.com/Papercusp/zero-harness.git
 [submodule "libs/sync"]
 	path = libs/sync
-	url = https://github.com/papercupai/sync.git
+	url = https://github.com/Papercusp/sync.git
