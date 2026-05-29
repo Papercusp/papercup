@@ -36,6 +36,7 @@ import {
   InvalidRequestContextError,
   lookupByMcpName,
   listMcpProjections,
+  applyToolManifest,
   dispatchProjectedTool,
   type UnifiedToolContext,
 } from '@papercusp/agent-mcp';
@@ -597,7 +598,16 @@ const handler = createMcpHandler(
         }
         const role = spawnRes.kind === 'ok' ? spawnRes.ctx.role : undefined;
         const profile = spawnRes.kind === 'ok' ? spawnRes.ctx.profile : undefined;
-        const result = listMcpProjections(role, profile);
+        // Pin the exposed surface to the tool manifest (if configured) so the
+        // catalog the SDK inlines is byte-stable across reconnects/reloads —
+        // adding tools during development no longer busts a live session's
+        // upstream prompt cache. `manifestBypass=1` returns the full set so the
+        // snapshot generator can (re)write the manifest. See tool-manifest.ts.
+        const bypass =
+          urlFromExtra(extra)?.searchParams.get('manifestBypass') === '1';
+        const result = applyToolManifest(listMcpProjections(role, profile), {
+          bypass,
+        });
         return { tools: result.map((t) => ({ ...t })) };
       },
     );

@@ -27,6 +27,11 @@ export {
 } from './server';
 export { getCatalog, lookup } from './registry';
 export {
+  applyToolManifest,
+  reloadToolManifest,
+  hasToolManifest,
+} from './tool-manifest';
+export {
   getResourceCatalog,
   lookupResource,
   matchResource,

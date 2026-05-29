@@ -28,6 +28,7 @@ import { z } from 'zod';
 import { withWorkspace } from '@restart/db-org';
 import { resolveBearer } from './auth';
 import { getCatalog, lookup } from './registry';
+import { applyToolManifest } from './tool-manifest';
 import {
   getResourceCatalog,
   matchResource,
@@ -377,7 +378,9 @@ export async function startServer(opts: StartServerOptions = {}): Promise<void> 
         delete (inputSchema as Record<string, unknown>).$schema;
         return { name: t.name, description: t.description, inputSchema };
       });
-    return { tools };
+    // Pin to the tool manifest (if configured) for cache-stable parity with
+    // the HTTP transport. No-op when no manifest is present. See tool-manifest.ts.
+    return { tools: applyToolManifest(tools) };
   });
 
   server.setRequestHandler(CallToolRequestSchema, async (req) => {
