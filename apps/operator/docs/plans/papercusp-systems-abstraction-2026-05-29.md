@@ -281,7 +281,7 @@ two SEPARATE storage components**, not one dual-backend interface:
   append-only channel surfaces, `FsCoordLog` default + optional PG log;
   (c) `PresenceStore` — PG upsert+roster-join (mechanism (c), `getOrgPg`), NOT
   behind the event-log interface. → D-004 D-009
-- **P-012** `todo` Normalize the lone mutating file surface: migrate
+- **P-012** `done` Normalize the lone mutating file surface: migrate (escalation log append-only — resolveEscalation appends escalation_resolved sibling, folds at read; commit f25af167)
   `escalations.resolveEscalation` from read-modify-write-in-place to emitting an
   `escalation_resolved` envelope (the `CoordKind` already exists, `envelope.ts:28`),
   matching `handoffs`. Makes `CoordEventLog` cleanly append-only (and PG-swappable).
