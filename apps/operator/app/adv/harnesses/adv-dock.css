@@ -20,8 +20,8 @@
   --dv-inactivegroup-visiblepanel-tab-color: var(--fg-mute);
   --dv-activegroup-hiddenpanel-tab-color: var(--fg-mute);
   --dv-inactivegroup-hiddenpanel-tab-color: var(--fg-mute);
-  --dv-tab-divider-color: rgb(from var(--sky-300) r g b / 0.16);
-  --dv-separator-border: rgb(from var(--sky-300) r g b / 0.14);
+  --dv-tab-divider-color: rgb(from var(--accent-strong) r g b / 0.16);
+  --dv-separator-border: rgb(from var(--accent-strong) r g b / 0.14);
 }
 
 /* Empty panels + group surface + the empty-group watermark + the
@@ -31,7 +31,7 @@
 .pc-adv-harnesses__empty,
 .pc-adv-git__empty {
   background:
-    radial-gradient(ellipse at 50% -10%, rgba(215, 243, 255, 0.06), transparent 60%),
+    radial-gradient(ellipse at 50% -10%, color-mix(in srgb, var(--accent-cool), transparent 94%), transparent 60%),
     var(--frost),
     rgba(9, 19, 34, 0.55) !important;
 }
@@ -39,13 +39,13 @@
 /* Panel headers (every panel) — frosted glass strip + sky hairline. */
 .pc-adv-dock .dockview-theme-dark .dv-tabs-and-actions-container {
   background:
-    radial-gradient(ellipse at 50% 0%, rgba(215, 243, 255, 0.085), transparent 68%),
+    radial-gradient(ellipse at 50% 0%, color-mix(in srgb, var(--accent-cool), transparent 91.5%), transparent 68%),
     var(--frost),
     rgba(9, 19, 34, 0.62) !important;
-  border-bottom: 1px solid rgb(from var(--sky-300) r g b / 0.16);
+  border-bottom: 1px solid rgb(from var(--accent-strong) r g b / 0.16);
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.06),
-    inset 0 -1px 0 rgb(from var(--sky-300) r g b / 0.06);
+    inset 0 -1px 0 rgb(from var(--accent-strong) r g b / 0.06);
 }
 
 /* Tabs ride transparent over the frost strip; active tab gets a sky wash
