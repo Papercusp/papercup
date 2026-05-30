@@ -13,26 +13,16 @@ import { getHostPlatform } from '@papercusp/host-platform';
 import { definePrompt } from '@papercusp/tooldef';
 import type { PromptResult } from '@papercusp/tooldef';
 
-const KNOWN_ROLES = [
-  'architect',
-  'orchestrator',
-  'scoper',
-  'worker',
-  'validator',
-  'tester',
-  'reviewer',
-  'documenter',
-  'debugger',
-  'curator',
-  'expert',
-  'feedback',
-  'project_manager',
-  'security-reviewer',
-  'infra-reviewer',
-  'summarizer',
-  'crosscheck',
-  'ui-qa',
-] as const;
+// No hand-kept role list here. The previous `KNOWN_ROLES` array had drifted
+// from both `AGENT_ROLES` (role-config.ts) and the on-disk prompts — it
+// accepted `tester` (which has no `<role>.md`, so the read below threw) and
+// rejected `plan-gate`/`scanner`/`synthesizer` (which DO have one). The
+// on-disk `libs/papercusp/packages/harness/prompts/<role>.md` set IS the
+// source of truth for which roles have a persona, so we validate the id is
+// well-formed (anti path-traversal) and let the file read below be the
+// existence check — no second list to drift. (su-prompt-audit-fixes P-017 /
+// D-006; the canonical role *registry* is `AGENT_ROLES`.)
+const ROLE_ID_RE = /^[a-z][a-z0-9_-]*$/i;
 
 function findPromptsDir(): string | null {
   // Search candidates from this file outward; works in monorepo + standalone.
@@ -59,16 +49,17 @@ export default definePrompt({
   arguments: [
     {
       name: 'role',
-      description: `One of: ${KNOWN_ROLES.join(', ')}.`,
+      description:
+        'A Papercusp role id with a prompt at ' +
+        'libs/papercusp/packages/harness/prompts/<role>.md ' +
+        '(e.g. architect, scoper, worker, reviewer, validator, debugger, orchestrator).',
       required: true,
     },
   ],
   async render(args): Promise<PromptResult> {
     const role = args.role;
-    if (!role || !KNOWN_ROLES.includes(role as (typeof KNOWN_ROLES)[number])) {
-      throw new Error(
-        `Unknown role "${role}". Known: ${KNOWN_ROLES.join(', ')}`,
-      );
+    if (!role || !ROLE_ID_RE.test(role)) {
+      throw new Error(`Invalid role id "${role}".`);
     }
     const dir = findPromptsDir();
     if (!dir) {
