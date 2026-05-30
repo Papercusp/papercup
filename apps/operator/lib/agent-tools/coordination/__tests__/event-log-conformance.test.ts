@@ -44,17 +44,22 @@ afterAll(async () => {
   if (sql) await sql.end({ timeout: 5 });
 });
 
+// Scope every clear to a dedicated test workspace so the suite never touches
+// real coord rows. This matters now that the operator writes live messages to
+// harness_shared.coord_event_log (post-cutover) under the 'default' workspace —
+// an unscoped DELETE would wipe them. D-007's workspace_id is exactly this lever.
+const TEST_WS = 'test-coord-conformance';
+
 describeCoordEventLogConformance(
   'PgCoordLog (live PG)',
   async () => {
-    // coord_event_log is a test-only table (the operator runs FsCoordLog), so
-    // a full clear per case gives every test an empty surface to start from —
-    // matching the in-mem/fs factories that hand back a fresh store.
-    await sql!`DELETE FROM harness_shared.coord_event_log`;
+    // A full clear of THIS test workspace per case gives every test an empty
+    // surface to start from — matching the in-mem/fs factories.
+    await sql!`DELETE FROM harness_shared.coord_event_log WHERE workspace_id = ${TEST_WS}`;
     return {
-      log: new PgCoordLog({ getSql: () => sql!, ensureSchema: async () => {} }),
+      log: new PgCoordLog({ getSql: () => sql!, ensureSchema: async () => {}, workspaceId: TEST_WS }),
       cleanup: async () => {
-        await sql!`DELETE FROM harness_shared.coord_event_log`;
+        await sql!`DELETE FROM harness_shared.coord_event_log WHERE workspace_id = ${TEST_WS}`;
       },
     };
   },
@@ -67,7 +72,7 @@ describeCoordEventLogConformance(
 // workspace_id filter.
 (pgOk ? describe : describe.skip)('PgCoordLog workspace_id isolation (D-007)', () => {
   it('a row written in one workspace is invisible to another', async () => {
-    await sql!`DELETE FROM harness_shared.coord_event_log`;
+    await sql!`DELETE FROM harness_shared.coord_event_log WHERE workspace_id IN ('wsA', 'wsB')`;
     const wsA = new PgCoordLog({ getSql: () => sql!, ensureSchema: async () => {}, workspaceId: 'wsA' });
     const wsB = new PgCoordLog({ getSql: () => sql!, ensureSchema: async () => {}, workspaceId: 'wsB' });
 
@@ -89,6 +94,6 @@ describeCoordEventLogConformance(
     expect((await wsA.getEvent('escalations', 'shared-id'))?.from).toBe('agentA');
     expect((await wsB.getEvent('escalations', 'shared-id'))?.from).toBe('agentB');
 
-    await sql!`DELETE FROM harness_shared.coord_event_log`;
+    await sql!`DELETE FROM harness_shared.coord_event_log WHERE workspace_id IN ('wsA', 'wsB')`;
   });
 });
