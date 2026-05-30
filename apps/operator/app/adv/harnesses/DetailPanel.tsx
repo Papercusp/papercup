@@ -5,6 +5,7 @@ import { parseAsString, useQueryState } from 'nuqs';
 import { toast } from 'sonner';
 import { ArrowUpRight } from 'lucide-react';
 import { useSyncQuery } from '@restart/sync';
+import { openFeatureChat } from '@restart/papercup-shared';
 import type { Issue, IssueNote } from '../../harness/issues/types';
 import type { PanelComponentProps } from '../../harness/dock/panel-registry';
 import { StatusPill, SeverityPill, IssueStatusPill } from '../../harness/primitives';
@@ -491,6 +492,30 @@ function FeatureDetail({
         <div className="pc-adv-detail__section">
           <h3>Actions</h3>
           <div className="pc-adv-detail__actions">
+            <button
+              type="button"
+              disabled={working !== null}
+              onClick={async () => {
+                setWorking('chat');
+                try {
+                  const res = await openFeatureChat({
+                    slug,
+                    role: 'worker',
+                    featureId: feature.id,
+                    title: feature.summary || feature.title,
+                  });
+                  if (res && typeof res === 'object' && 'error' in res) {
+                    throw new Error(String((res as { error: unknown }).error));
+                  }
+                } catch (e) {
+                  toast.error('Open chat failed', { description: String(e) });
+                } finally {
+                  setWorking(null);
+                }
+              }}
+            >
+              💬 Chat
+            </button>
             <button type="button" disabled={working !== null} onClick={resetFeature}>
               Reset
             </button>

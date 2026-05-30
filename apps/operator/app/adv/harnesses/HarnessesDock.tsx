@@ -1,16 +1,59 @@
 'use client';
 
 import { useEffect } from 'react';
+import { OPEN_CHAT_EVENT, type OpenChatEventDetail } from '@restart/papercup-shared';
 import { HarnessDock } from '../../harness/dock/HarnessDock';
 import { panelRegistry } from '../../harness/dock/panel-registry';
-import { listPanels, onDockApiBind, setPanelParams } from '../../harness/dock/dock-actions';
+import {
+  focusPanel,
+  listPanels,
+  onDockApiBind,
+  openPanel,
+  setPanelParams,
+  setPanelTitle,
+} from '../../harness/dock/dock-actions';
 import FeaturesPanel from './FeaturesPanel';
 import IssuesPanel from './IssuesPanel';
 import DetailPanel from './DetailPanel';
+import AdvChatPanel from './AdvChatPanel';
 import { AdvGitPanel } from './AdvGitPanel';
 import AdvAgentsPanel from './AdvAgentsPanel';
 import AdvLogsPanel from './AdvLogsPanel';
 import AdvOverviewPanel from './AdvOverviewPanel';
+
+const CHAT_PANEL_TYPE = 'adv:chat';
+
+/**
+ * Open a worker chat into the dock, preferring (a) the panel already
+ * showing this chat, then (b) the first FREE chat slot (an `adv:chat`
+ * panel with no chatId), then (c) a brand-new chat panel. This gives the
+ * "open in the first not-used chat panel" + multi-instance behaviour.
+ * Throws if the dock api isn't bound yet (callers guard on that).
+ */
+function openChatInDock(d: OpenChatEventDetail): void {
+  const panels = listPanels();
+  const already = panels.find(
+    (p) => p.type === CHAT_PANEL_TYPE && p.params.chatId === d.chatId,
+  );
+  if (already) {
+    focusPanel(already.id);
+    return;
+  }
+  const title = d.title ?? (d.featureId ? `${d.role ?? 'worker'} · ${d.featureId}` : 'chat');
+  const free = panels.find((p) => p.type === CHAT_PANEL_TYPE && !p.params.chatId);
+  if (free) {
+    setPanelParams(free.id, { harnessSlug: d.slug, chatId: d.chatId, title });
+    setPanelTitle(free.id, title);
+    focusPanel(free.id);
+    return;
+  }
+  const id = openPanel({
+    type: CHAT_PANEL_TYPE,
+    title,
+    params: { harnessSlug: d.slug, chatId: d.chatId },
+  });
+  focusPanel(id);
+}
 
 let registered = false;
 function ensureRegistered() {
@@ -23,6 +66,10 @@ function ensureRegistered() {
   panelRegistry.register('adv:agents', AdvAgentsPanel, { title: 'Agents' });
   panelRegistry.register('adv:logs', AdvLogsPanel, { title: 'Run log' });
   panelRegistry.register('adv:overview', AdvOverviewPanel, { title: 'Overview' });
+  // keepAlive: the chat keeps its SSE stream + transcript when its tab is
+  // inactive. Multi-instance: several chat slots can coexist (the open-chat
+  // drain fills the first free one).
+  panelRegistry.register(CHAT_PANEL_TYPE, AdvChatPanel, { title: 'Chat', keepAlive: true });
   registered = true;
 }
 
@@ -73,6 +120,46 @@ export default function HarnessesDock({ slug }: { slug: string }) {
     });
     return () => {
       if (addPanelDispose) addPanelDispose.dispose();
+      unbind();
+    };
+  }, [slug]);
+
+  // Open-chat handling: `openFeatureChat` (feature row / detail buttons)
+  // creates the chat row, pushes a detail onto the window queue, and fires
+  // OPEN_CHAT_EVENT. We drain the queue into a chat panel — on the dock api
+  // binding (chats opened before the dock mounted) and on each event (chats
+  // opened while mounted). Adapts /pi's PiTerminalsDock drain into this dock.
+  useEffect(() => {
+    if (!slug) return;
+    const drain = () => {
+      const w = window as Window & {
+        __PAPERCUSP_PENDING_CHAT_OPENS__?: OpenChatEventDetail[];
+      };
+      const queue = w.__PAPERCUSP_PENDING_CHAT_OPENS__;
+      if (!queue || queue.length === 0) return;
+      for (let i = queue.length - 1; i >= 0; i--) {
+        const d = queue[i];
+        if (d.slug !== slug || !d.chatId) continue;
+        try {
+          openChatInDock(d);
+        } catch {
+          // Dock api not bound yet — leave it queued; the bind handler retries.
+          continue;
+        }
+        queue.splice(i, 1);
+      }
+    };
+    let bound = false;
+    const unbind = onDockApiBind((api) => {
+      bound = !!api;
+      if (api) drain();
+    });
+    const handler = () => {
+      if (bound) drain();
+    };
+    window.addEventListener(OPEN_CHAT_EVENT, handler);
+    return () => {
+      window.removeEventListener(OPEN_CHAT_EVENT, handler);
       unbind();
     };
   }, [slug]);
