@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { parseAsString, parseAsStringEnum, useQueryState } from 'nuqs';
 import { toast } from 'sonner';
 import { openFeatureChat } from '@restart/papercup-shared';
@@ -60,6 +60,9 @@ export default function FeaturesPanel({ params, api }: PanelComponentProps) {
   const [selectedId, setSelectedId] = useQueryState('sel', parseAsString.withDefault(''));
   const [pinMenu, setPinMenu] = useState<PinMenuState | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [focusIdx, setFocusIdx] = useState(0);
+  const listRef = useRef<HTMLDivElement>(null);
+  const searchRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     if (features) api.setTitle(`Features · ${slug} (${features.length})`);
@@ -129,6 +132,49 @@ export default function FeaturesPanel({ params, api }: PanelComponentProps) {
     });
   }, [features, activeView, search]);
 
+  // P-019 keyboard nav (panel-scoped): J/K move a focus cursor, ↵ opens
+  // (sets ?sel), R resets the focused feature, / focuses search. Fires only
+  // when the list (or a row in it) holds focus, so it never hijacks typing.
+  useEffect(() => {
+    setFocusIdx((i) => Math.min(i, Math.max(0, filtered.length - 1)));
+  }, [filtered.length]);
+  useEffect(() => {
+    const el = listRef.current?.querySelector(`[data-fidx="${focusIdx}"]`) as HTMLElement | null;
+    el?.scrollIntoView({ block: 'nearest' });
+  }, [focusIdx]);
+  const onListKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    if (filtered.length === 0) return;
+    switch (e.key) {
+      case 'j':
+      case 'ArrowDown':
+        e.preventDefault();
+        setFocusIdx((i) => Math.min(filtered.length - 1, i + 1));
+        break;
+      case 'k':
+      case 'ArrowUp':
+        e.preventDefault();
+        setFocusIdx((i) => Math.max(0, i - 1));
+        break;
+      case 'Enter': {
+        e.preventDefault();
+        const f = filtered[focusIdx];
+        if (f) void setSelectedId(f.id);
+        break;
+      }
+      case 'r':
+      case 'R': {
+        e.preventDefault();
+        const f = filtered[focusIdx];
+        if (f) void handleReset(f);
+        break;
+      }
+      case '/':
+        e.preventDefault();
+        searchRef.current?.focus();
+        break;
+    }
+  };
+
   if (!slug) {
     return <PanelMessage>Pick a harness to view its features.</PanelMessage>;
   }
@@ -145,10 +191,14 @@ export default function FeaturesPanel({ params, api }: PanelComponentProps) {
     <div className="pc-adv-features">
       <div className="pc-adv-features__bar">
         <input
+          ref={searchRef}
           className="pc-adv-features__search"
           placeholder="Search features…"
           value={search}
           onChange={(e) => void setSearch(e.target.value || null)}
+          onKeyDown={(e) => {
+            if (e.key === 'Escape') e.currentTarget.blur();
+          }}
         />
         <div className="pc-adv-features__views" role="tablist" aria-label="Feature views">
           {SAVED_VIEWS.map((v) => (
@@ -166,13 +216,13 @@ export default function FeaturesPanel({ params, api }: PanelComponentProps) {
           ))}
         </div>
       </div>
-      <div className="pc-adv-features__list">
+      <div ref={listRef} className="pc-adv-features__list" tabIndex={0} onKeyDown={onListKeyDown}>
         {filtered.length === 0 ? (
           <PanelMessage>
             {total === 0 ? 'No features yet — planner may still be running.' : 'No features match this view.'}
           </PanelMessage>
         ) : (
-          filtered.map((f) => {
+          filtered.map((f, idx) => {
             const tone = STATUS_TONE[f.status] ?? STATUS_TONE.todo;
             const isActive = f.id === selectedId;
             const attempts = f.attempts ?? 0;
@@ -180,7 +230,8 @@ export default function FeaturesPanel({ params, api }: PanelComponentProps) {
             return (
               <div
                 key={f.id}
-                className={`pc-adv-features__row${isActive ? ' is-active' : ''}`}
+                data-fidx={idx}
+                className={`pc-adv-features__row${isActive ? ' is-active' : ''}${idx === focusIdx ? ' is-focused' : ''}`}
                 onClick={() => void setSelectedId(f.id)}
                 onContextMenu={(e) => {
                   e.preventDefault();
@@ -250,6 +301,7 @@ export default function FeaturesPanel({ params, api }: PanelComponentProps) {
       </div>
       <div className="pc-adv-features__footer">
         <span>{filtered.length}/{total} shown</span>
+        <span className="pc-adv-features__kbd">J/K move · ↵ open · R reset · / search</span>
       </div>
       <style>{`
         .pc-adv-features {
@@ -332,6 +384,14 @@ export default function FeaturesPanel({ params, api }: PanelComponentProps) {
           background: rgba(167, 139, 250, 0.18);
           border-left: 2px solid rgba(167, 139, 250, 0.78);
           padding-left: 10px;
+        }
+        .pc-adv-features__row.is-focused {
+          outline: 1px solid rgba(196, 181, 253, 0.55);
+          outline-offset: -1px;
+        }
+        .pc-adv-features__list:focus,
+        .pc-adv-features__list:focus-visible {
+          outline: none;
         }
         .pc-adv-features__id {
           font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
@@ -434,10 +494,17 @@ export default function FeaturesPanel({ params, api }: PanelComponentProps) {
         }
         .pc-adv-features__footer {
           flex-shrink: 0;
+          display: flex;
+          justify-content: space-between;
+          gap: 12px;
           padding: 4px 12px;
           font-size: 10px;
           color: rgba(220, 214, 248, 0.5);
           border-top: 1px solid rgba(167, 139, 250, 0.08);
+        }
+        .pc-adv-features__kbd {
+          opacity: 0.75;
+          white-space: nowrap;
         }
       `}</style>
       <PinMenu state={pinMenu} onClose={() => setPinMenu(null)} />
