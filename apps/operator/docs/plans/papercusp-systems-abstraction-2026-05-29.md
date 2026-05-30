@@ -326,7 +326,7 @@ two SEPARATE storage components**, not one dual-backend interface:
 
 ## Phase 4 — Backup + desktop IPC + rate-limit
 
-- **P-023** `todo` Extract `@papercusp/backup` (kopia wrapper, ~95% CLI
+- **P-023** `done` Extract `@papercusp/backup` (kopia wrapper, ~95% CLI (@papercusp/backup extracted behind configureBackup host seam 73fa053d)
   passthrough). **Audit correction:** the real seam is NOT a PG tx handle. Backup
   uses raw `getOrgPg()` with no transactions (mechanism (c)); its dominant
   coupling is the **workspace-root filesystem path** (the kopia repo lives at
@@ -335,7 +335,7 @@ two SEPARATE storage components**, not one dual-backend interface:
   **not** `workspace_backup_config` as the first draft said). Keep the load-bearing
   self-exclusion guard (`policy.ts` `IGNORE_PATTERNS` must contain `backups`;
   enforced on every `snapshot()` by `assertSelfExclusionPolicy`). → D-010
-- **P-024** `todo` Resolve backup's harness-lifecycle coupling: the
+- **P-024** `done` Resolve backup's harness-lifecycle coupling: the (SnapshotTriggerReason opened to 'manual'|'interval'|string&{}; event reasons no longer baked into package 73fa053d)
   `SnapshotTriggerReason` enum (`pre_destructive`/`post_run`/`plugin_install`/
   `secret_change`/…) is hardcoded and `triggerSnapshotEvent` is called from
   git/restore/plugin call-sites. Externalize as a caller-registered trigger
