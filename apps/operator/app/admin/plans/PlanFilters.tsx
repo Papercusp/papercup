@@ -114,7 +114,6 @@ export default function PlanFilters({
     <div className="pc-filters" aria-label="Plan filters">
       <div className="pc-filters__head">
         <span className="pc-filters__kicker-row">
-          <span className="pc-filters__kicker">Filters</span>
           {activeCount > 0 ? (
             <span className="pc-filters__active-count">{activeCount} active</span>
           ) : null}
