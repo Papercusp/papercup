@@ -730,7 +730,23 @@ recursively snapshots itself toward 1TB). Doubles: `PgHandle` fake + a temp
    no seam (property-test the encode/decode roundtrip).
 2. **`@papercusp/desktop-ipc`** — `desktop-bootstrap.ts` (`IpcEventSource`,
    `ipcFetch`, `installDesktopIpcPolyfills`) + `ipc-fetch`/`ipc-event-source`/
-   `ipc-stream`. Verified zero Papercusp coupling; no seam (pure transport).
+   `ipc-stream`. **Re-scoped 2026-05-30 — NOT a clean 4-file cut (deferred).**
+   The audit said "4 IPC files, zero coupling"; the actual import graph in
+   `lib/transport-adapters/` refutes a simple lift: the IPC files depend on
+   **shared siblings** — `ipc-stream.ts`→`types.ts`; `ipc-event-source.ts`→
+   `types.ts`+`sse-parser.ts`; `ipc-fetch.ts`→`ipc-stream.ts`+`types.ts` — and
+   `types.ts` + `sse-parser.ts` are ALSO consumed by the HTTP path
+   (`http-stream.ts`) and the `index.ts` transport-picker, which wires IPC+HTTP
+   together behind a Tauri feature-detect. So extracting "just the 4 IPC files"
+   would orphan or duplicate `types.ts`/`sse-parser.ts`. The honest seam is one
+   of: (a) extract the WHOLE `transport-adapters/` dir as `@papercusp/desktop-ipc`
+   (IPC **and** HTTP transport + shared types/sse-parser — it's a cohesive
+   "endpoint-stream transport" unit, arguably the right boundary), or (b) leave
+   it in-app. Decide (a) vs (b) before coding; do NOT do the 4-file cut. The
+   `ipc-framing` codec (piece 1) is already cleanly out, which was the genuinely
+   pure part. Coupling here is LOW (Tauri/`window` globals, no harness domain),
+   so (a) is viable — but it's a ~9-file move, not the "zero-coupling" trivial
+   one the audit implied.
 3. **`@papercusp/ipc-endpoint-server`** — `endpoint-ipc/server.ts`, already
    DI-shaped (`DispatchProjectedDeps`); needs **four** injected deps, not one:
    ```ts
