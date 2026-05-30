@@ -265,3 +265,161 @@ export function useHarnessIssues(slug: string): {
 
   return { issues, pendingCount, loading: issues === null && !error, error, patchIssue };
 }
+
+// ───────── Agents (recent agent runs) ─────────
+
+export interface HarnessAgentRun {
+  runId: string;
+  role: string;
+  ts?: number;
+  sizeBytes: number;
+  running: boolean;
+  lastEventTs?: number;
+  costUsd?: number;
+  featureId?: string | null;
+}
+
+// Consolidated agent-run row exported to Zero (camelCase). See
+// libs/zero-harness/src/schema.ts `agentRunsConsolidated`.
+type ZeroAgentRow = {
+  runId: string;
+  role: string;
+  ts?: number | string | null;
+  sizeBytes?: number | string | null;
+  running?: boolean;
+  lastEventTs?: number | string | null;
+  costUsd?: number | string | null;
+  featureId?: string | null;
+};
+
+function toMs(v: number | string | null | undefined): number | undefined {
+  if (v == null) return undefined;
+  if (typeof v === 'number') return v;
+  const ms = Date.parse(String(v));
+  return Number.isFinite(ms) ? ms : undefined;
+}
+
+/**
+ * Recent agent runs for a harness. Same shape as the Features/Issues
+ * hooks: one-shot REST bootstrap (`/agents`) + a live Zero overlay
+ * (`agentRunsConsolidated.bySlug`) applied only when non-empty, so an
+ * initial empty Zero result never clobbers the REST baseline. No polling
+ * timer — the legacy panel's 5s `setInterval` is replaced by Zero. The
+ * `refresh()` re-pulls REST (useful when the harness isn't consolidated).
+ */
+export function useHarnessAgents(slug: string): {
+  agents: HarnessAgentRun[] | null;
+  loading: boolean;
+  error: string | null;
+  refresh: () => void;
+} {
+  const [agents, setAgents] = useState<HarnessAgentRun[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [tick, setTick] = useState(0);
+  const refresh = useCallback(() => setTick((t) => t + 1), []);
+
+  useEffect(() => {
+    if (!slug) {
+      setAgents(null);
+      return;
+    }
+    let cancel = false;
+    setError(null);
+    fetch(`/api/harness/${encodeURIComponent(slug)}/agents?phase=staging`)
+      .then((r) => (r.ok ? (r.json() as Promise<{ runs?: HarnessAgentRun[] }>) : Promise.reject(new Error(`agents ${r.status}`))))
+      .then((j) => {
+        if (cancel) return;
+        // Don't clobber a Zero overlay that already landed for this slug.
+        setAgents((prev) => (prev && prev.length ? prev : j.runs ?? []));
+      })
+      .catch((e: Error) => {
+        if (!cancel) setError(e.message);
+      });
+    return () => {
+      cancel = true;
+    };
+  }, [slug, tick]);
+
+  const { data: zeroRows, loading } = useSyncQuery<ZeroAgentRow>({
+    queryName: 'agentRunsConsolidated.bySlug',
+    args: slug ? { harnessSlug: slug } : undefined,
+    enabled: !!slug,
+  });
+  useEffect(() => {
+    if (loading || !Array.isArray(zeroRows) || zeroRows.length === 0) return;
+    setAgents(
+      zeroRows.map(
+        (r): HarnessAgentRun => ({
+          runId: r.runId,
+          role: r.role,
+          ts: toMs(r.ts),
+          sizeBytes: Number(r.sizeBytes) || 0,
+          running: !!r.running,
+          lastEventTs: toMs(r.lastEventTs),
+          costUsd: r.costUsd != null ? Number(r.costUsd) : undefined,
+          featureId: r.featureId ?? undefined,
+        }),
+      ),
+    );
+  }, [zeroRows, loading]);
+
+  return { agents, loading: agents === null && !error, error, refresh };
+}
+
+// ───────── Logs (run.log.jsonl history) ─────────
+
+// One parsed line from run.log.jsonl. The harness writer's schema is
+// loose; `ts` is reliable, the rest is best-effort. Read the message
+// under whichever key the writer used.
+export interface HarnessLogEvent {
+  ts: string;
+  source?: string;
+  level?: string;
+  msg?: string;
+  message?: string;
+  [k: string]: unknown;
+}
+
+/**
+ * Recent structured log events from `run.log.jsonl` (+ rotated peers),
+ * via `/log/history`. Append-only file source with no Zero mirror, so
+ * this is a one-shot REST read + manual `refresh()` (no auto-poll — the
+ * legacy panel's 3s interval is dropped per the /adv no-polling ethos).
+ */
+export function useHarnessLogs(
+  slug: string,
+  limit = 300,
+): {
+  events: HarnessLogEvent[] | null;
+  loading: boolean;
+  error: string | null;
+  refresh: () => void;
+} {
+  const [events, setEvents] = useState<HarnessLogEvent[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [tick, setTick] = useState(0);
+  const refresh = useCallback(() => setTick((t) => t + 1), []);
+
+  useEffect(() => {
+    if (!slug) {
+      setEvents(null);
+      return;
+    }
+    let cancel = false;
+    setError(null);
+    fetch(`/api/harness/${encodeURIComponent(slug)}/log/history?limit=${limit}&phase=staging`)
+      .then((r) => (r.ok ? (r.json() as Promise<{ events?: HarnessLogEvent[] }>) : Promise.reject(new Error(`log/history ${r.status}`))))
+      .then((j) => {
+        if (cancel) return;
+        setEvents(Array.isArray(j.events) ? j.events : []);
+      })
+      .catch((e: Error) => {
+        if (!cancel) setError(e.message);
+      });
+    return () => {
+      cancel = true;
+    };
+  }, [slug, limit, tick]);
+
+  return { events, loading: events === null && !error, error, refresh };
+}

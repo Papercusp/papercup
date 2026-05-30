@@ -8,6 +8,9 @@ import FeaturesPanel from './FeaturesPanel';
 import IssuesPanel from './IssuesPanel';
 import DetailPanel from './DetailPanel';
 import { AdvGitPanel } from './AdvGitPanel';
+import AdvAgentsPanel from './AdvAgentsPanel';
+import AdvLogsPanel from './AdvLogsPanel';
+import AdvOverviewPanel from './AdvOverviewPanel';
 
 let registered = false;
 function ensureRegistered() {
@@ -17,6 +20,9 @@ function ensureRegistered() {
   panelRegistry.register('adv:detail', DetailPanel, { title: 'Detail' });
   panelRegistry.register('adv:pinned', DetailPanel, { title: 'Pinned' });
   panelRegistry.register('adv:git', AdvGitPanel, { title: 'Git' });
+  panelRegistry.register('adv:agents', AdvAgentsPanel, { title: 'Agents' });
+  panelRegistry.register('adv:logs', AdvLogsPanel, { title: 'Run log' });
+  panelRegistry.register('adv:overview', AdvOverviewPanel, { title: 'Overview' });
   registered = true;
 }
 
