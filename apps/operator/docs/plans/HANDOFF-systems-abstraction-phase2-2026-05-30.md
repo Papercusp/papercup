@@ -53,9 +53,12 @@ only config change required was the `ipc-framing` `exports` → object-form fix
 `@papercusp/tooldef`); the moved+fixed fixture (`description` + `inputSchema` +
 literal `eventWireKinds`) un-breaks it without touching the tooldef package.
 
-**Next:** the backlog in lowest-risk-first order. **search (P-013/P-020) and
-locks (P-010) are now `done`.** Remaining: **P-021 (memory)** → **P-011/P-012
-(coordination)** → P-040 → P-050/P-051.
+**Next:** the backlog in lowest-risk-first order. **search (P-013/P-020),
+locks (P-010), and memory (P-021) are now `done`.** Remaining: **P-011/P-012
+(coordination)** → P-040 → P-050/P-051. (memory: commit `28014805` — 6
+store-core files behind `configureMemory()` seams; the embedder is a
+pre-built `(text)=>number[]` fn injected from the operator, so mem0 always
+uses `provider:'custom'`; deep-path shims keep all 26 consumers unchanged.)
 
 **P-023/P-024 notes (what actually shipped, vs the audit below):** the audit
 called the DB seam a "settings-table accessor" — it's actually the org-PG `sql`
