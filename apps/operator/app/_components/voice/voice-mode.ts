@@ -1520,7 +1520,11 @@ async function runOneShotWhisperAfterWake(): Promise<void> {
 }
 
 
-function shouldSkipVoicemodeWhisperOnThisRuntime(): boolean {
+// Exported for unit testing the runtime-gating truth table. Returns true
+// on the Tauri WebKitGTK desktop webview without crossOriginIsolated —
+// the runtime where onnxruntime-web threading (and thus voicemode Whisper)
+// can't run, so always-on capture must fall through to wake-word listening.
+export function shouldSkipVoicemodeWhisperOnThisRuntime(): boolean {
   if (typeof window === 'undefined') return false;
   const ua = navigator.userAgent;
   const isTauri = Boolean((window as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__);

@@ -21,6 +21,7 @@
 
 import { MicVAD } from '@ricky0123/vad-web';
 import { transcribeChunk } from '../../../lib/voice-engines/whisper';
+import { f32ToWav } from './f32-to-wav';
 
 export interface WhisperListener {
   onPartial?: (text: string) => void;
@@ -32,48 +33,6 @@ export interface WhisperCapture {
   stop(): void;
 }
 
-/**
- * Wrap a Float32Array of mono 16kHz samples as a WAV blob.
- * Whisper's HTTP endpoint handles WAV natively; cleaner than re-encoding
- * to webm/opus and round-tripping.
- */
-function f32ToWav(samples: Float32Array, sampleRate = 16000): Blob {
-  const numChannels = 1;
-  const bytesPerSample = 2; // PCM16
-  const blockAlign = numChannels * bytesPerSample;
-  const byteRate = sampleRate * blockAlign;
-  const dataSize = samples.length * bytesPerSample;
-  const buf = new ArrayBuffer(44 + dataSize);
-  const view = new DataView(buf);
-
-  let offset = 0;
-  function writeStr(s: string) {
-    for (let i = 0; i < s.length; i++) view.setUint8(offset++, s.charCodeAt(i));
-  }
-  function writeU32(v: number) { view.setUint32(offset, v, true); offset += 4; }
-  function writeU16(v: number) { view.setUint16(offset, v, true); offset += 2; }
-
-  writeStr('RIFF');
-  writeU32(36 + dataSize);
-  writeStr('WAVE');
-  writeStr('fmt ');
-  writeU32(16);              // PCM header size
-  writeU16(1);               // PCM format
-  writeU16(numChannels);
-  writeU32(sampleRate);
-  writeU32(byteRate);
-  writeU16(blockAlign);
-  writeU16(bytesPerSample * 8);
-  writeStr('data');
-  writeU32(dataSize);
-
-  for (let i = 0; i < samples.length; i++) {
-    const s = Math.max(-1, Math.min(1, samples[i]));
-    view.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7fff, true);
-    offset += 2;
-  }
-  return new Blob([buf], { type: 'audio/wav' });
-}
 
 export async function startWhisperCapture(
   baseUrl: string,

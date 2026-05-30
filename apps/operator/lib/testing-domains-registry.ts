@@ -96,9 +96,10 @@ defineTestDomain({
 defineTestDomain({
   id: 'voice',
   label: 'Voice',
-  description: 'Voice stack: cards, engines, persona, spend.',
+  description: 'Voice stack: runtime/capture, cards, engines, persona, spend.',
   tier: 'domain',
   sections: [
+    { id: 'runtime', label: 'Runtime', globs: ['apps/operator/app/_components/voice/**/*.test.*'] },
     { id: 'cards', label: 'Cards', globs: ['apps/operator/lib/voice-cards/**/*.test.ts'] },
     { id: 'engines', label: 'Engines', globs: [
         'apps/operator/lib/voice-engines/**/*.test.ts',
