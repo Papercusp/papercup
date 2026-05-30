@@ -103,6 +103,21 @@ End-of-Phase-11 verdict. Either:
 - **P-081a** — Verdict recorded as `D-001` in this plan.
 - **P-081b** — F-DOGFOOD-001 observations triaged into `must-fix`, `track`, `wontfix` per Phase 4 P-028's pattern.
 
+
+## Substrate wiring (2026-05-30)
+
+- **P-001** `todo` ✅ SHIPPED (`409681ff`): Hyperbee→PG read-loop (Phase 5a P-031 read side). startHyperbeeReadLoop replays each harness's merged Autobase view op-log into PG via applyHyperbeeOpToPg (which had ZERO runtime callers — substrate was write-only). Driven by the 'update' event + 1s polled fallback; idempotent op-replay; wired into bootHarnessSubstrate start+close. read-loop 7/7, boot/boot-all 31/31, tsc clean.
+
+
+## Substrate wiring (2026-05-30)
+
+- **P-002** `todo` ✅ SHIPPED (`a3f6c812`): ShareWizard finalize route (P-077 backend). POST /api/harness/:slug/share/finalize → finalizeShare() writes a valid .harness/shared.json (SharedHarnessConfig: topic/github_remote/github_repository_id/privacy/claim_status/created_at/schema_version) via writeSharedConfig + flips registry state to shared-{private,public} via setHarnessState. boot-all's defaultResolveSwarmBinding keys the swarm on github_repository_id, so this is what lets a harness actually join the swarm. Core logic deps-injected; registered in routes/index.ts (mirrors join-link). share-finalize 9/9, tsc clean.
+
+
+## Substrate wiring (2026-05-30)
+
+- **P-003** `todo` TODO (P-077 frontend, NOT done): point ShareWizard.tsx's finalize action at POST /api/harness/:slug/share/finalize (it currently no-ops / doesn't call the route), passing {github_remote, github_repository_id, privacy, discord_channel_url?}. NOTE: the github-facts/binding step must supply a real numeric github_repository_id (boot keys the swarm on it; 0/null → swarm stays null). Also needs a substrate RE-BOOT trigger: writing shared.json does not retroactively swarm-join an already-booted harness (bootHarnessSubstrate created it with swarm:null) — finalize should rebootHarness or it joins on next operator restart. Blocked this session: ShareWizard.tsx (649 lines) was unreadable via Read/grep/sed (tool-output unreliability) so I did not edit it blind.
+
 ## Decisions
 
 (Recorded at P-081 time. None yet.)
