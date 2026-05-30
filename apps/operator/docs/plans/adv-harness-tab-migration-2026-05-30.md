@@ -11,9 +11,9 @@ owner: avi@storewolf.com
 
 ## Now
 
-**State:** Migration shipped + /adv fully decoupled from HarnessDashboard (all 7 tabs render their own components) + /harness retired as the landing (home/CTA/root redirect) + dead pre-Vite Next route trees deleted for BOTH /adv and /harness + the papercusp-CLI plugin-enable bug fixed (shared resolver). HarnessDashboard now has just 3 importers: ProposalsPanel + DesignDashboard (symbol imports) and the live coding /harness/$slug render. The full _retired move is feature-gated (see D-016), not cleanup-gated.
+**State:** Done: /adv fully decoupled from HarnessDashboard (all tabs render their own components); /harness retired as the landing (home/CTA/root + coding /harness/$slug all redirect to /adv); the 4,380-line HarnessDashboard monolith DELETED; the ~100-file legacy orphan cascade swept (0 orphans, 0 dangling refs, build green); papercusp-CLI plugin-enable bug fixed; knip's vitest-config load error fixed. app/harness is down from ~200+ to 139 files — the shared substrate + the live org/department surface only.
 
-**Next:** Human decision: pick the next P-022 project — (A) build /adv org/department-coordination parity (to retire the department /harness/$slug flavor), and/or (B+C) lift SingleSubpanelHeader out of HarnessDashboard + redirect coding /harness/$slug → /adv, which makes the 5,259-line monolith unused so it + the legacy-only panels can move to _retired/.
+**Next:** Only remaining P-022 piece: build /adv org/department-coordination parity (port DepartmentHarnessDashboard's inbox/outbox/departments/mandates UI) so the department /harness/$slug flavor + its HarnessDockShell can also be retired. That's a feature (D-016 item A), not cleanup — needs a product decision before starting.
 
 ## Background
 
@@ -247,4 +247,17 @@ Killed the monolith via the B+C plan:
 **Result: `/adv` is canonical, `/harness` redirects in, and the monolith is gone.**
 
 **Follow-up — the orphan cascade.** Deleting `HarnessDashboard` orphaned ~40 first-level `app/harness/*` files that only it imported (ProposalsPanel, ExpertsPanel, SummaryPanel, TriageQueue, FeatureList, FeaturePeekPanel, CommandPalette, IntelPanel, InterventionPanel, UsagePanel, HooksPanel, SmokeTestPanel, IdentityPanel, ScreenshotsPanel, SnapshotsPanel, TemplatesModal, FeatureDiffModal, ArchivesPanel, DecisionsPanel, ArchitectInbox, PhaseTabs, PulseFeed, ContributorsTab, TestsTab, the *Banner files, plus now-unused primitives TextInput + useDebouncedSave). Confirmed 0-importer (grep validated against known-shared Button/Select/HealthBadge, which correctly show importers). They're tree-shaken out of the bundle (harmless) but are dead files. A safe full sweep is multi-round (each deletion orphans 2nd-level deps + has colocated tests) and is best driven by **knip** — which is currently **broken** (`Error loading apps/operator/vitest.config.ts`; see knip.dev/reference/known-issues). Recommend: fix knip's config load, then run a knip-guided dead-file sweep across `app/harness/`. The remaining legacy `/harness/$slug` org/department surface (DepartmentHarnessDashboard) still needs /adv parity (D-016, item A) before it + its panels can go too.
+Related: P-022
+
+### D-018 — Orphan sweep complete: ~100 dead legacy files removed after the monolith deletion (knip fixed too)
+Date: 2026-05-30
+Finished the cleanup the `HarnessDashboard` deletion opened up.
+
+**knip fix (`68445dbf`):** knip crashed on the whole `apps/operator` workspace (`Error loading vitest.config.ts: Object.defineProperty called on non-object`). Disabled the vitest plugin + listed the test files/shims as explicit entries → knip runs again. CAVEAT recorded: knip's `--include files` is unreliable for `app/*` because it analyzes workspaces in isolation and can't trace the cross-workspace `@/app/*` alias imports from `apps/operator-vite` (it false-flags everything the SPA imports). So the sweep used a both-trees grep instead.
+
+**Orphan sweep (`e93fc3a9` round 1, `1c273169` rounds 2-3):** fixpoint dead-code elimination — deleting the monolith orphaned its panels, which orphaned their private deps, etc. Three rounds (45 → 26 → 6 source files) removed the transitive closure: ProposalsPanel, ExpertsPanel, FeatureList + its sub-panels, TriageQueue, CommandPalette, ArchitectChat/Inbox, the `*Banner`s, IntelPanel/InterventionPanel/UsagePanel/HooksPanel/SmokeTestPanel/IdentityPanel/Screenshots/Snapshots/Templates/FeatureDiff/Archives/Decisions panels, the legacy `issues/IssuesList`+`IssueDetail`+`parse-md`, `OperatorNoteForm`, `FeatureLink`/`remarkFeatureLinks`, `CollapsedRails`, the insights `*Client` widgets + hooks, dead Next `loading.tsx` route files, and `SingleSubpanelHeader` (the symbol extracted in B — dead once ProposalsPanel went) — plus ~25 colocated `__tests__`. Each round re-detected 0-importer files (both-trees grep, static + dynamic; validated against known-shared Button/Select/HealthBadge). **Final state: 0 orphans, 0 dangling refs, operator-vite build green.** `app/harness` is down from ~200+ files to 139 — the shared substrate (dock/, UI primitives, ConfigPanel, HealthBadge, CreateHarnessPicker, HarnessSettingsPanel, BrainstormFull, PrsTab, InsightsPanel, issues/types) + the live org/department surface (DepartmentHarnessDashboard, HarnessDockShell). **Kept** TextInput + useDebouncedSave (design-doc-canonical shared primitives, unused now but intended-shared).
+
+(Two of these commits got their deletions swept into concurrent agents' commits by the shared-index footgun, then re-staged + committed under mine — net deletions are correct + verified.)
+
+**P-022 remaining:** only the org/department `/harness/$slug` surface (DepartmentHarnessDashboard) + its dock shell still live, gated on /adv org/department-coordination parity (D-016 item A). Everything else legacy is gone.
 Related: P-022
