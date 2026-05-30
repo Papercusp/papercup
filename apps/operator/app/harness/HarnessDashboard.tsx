@@ -3475,7 +3475,7 @@ export default function HarnessDashboard({ forcedPanel, embeddedPanelChrome = fa
       if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`);
       const d = await res.json();
       toast.success('Replan started', {
-        description: 'Scoper is folding new SPEC.md bullets into the work queue. Updates will appear in a few minutes.',
+        description: 'Scoper is folding new plan items into the work queue. Updates will appear in a few minutes.',
       });
       if (d.invocationId) {
         // Poll fires completion narration when the scoper finishes,
@@ -3496,7 +3496,7 @@ export default function HarnessDashboard({ forcedPanel, embeddedPanelChrome = fa
       const res = await fetch(`/api/harness/${activeSlug}/product-review`, { method: 'POST' });
       if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`);
       toast.success('Propose started', {
-        description: 'Scoper is reading SPEC.md and drafting proposals. New cards will appear in the Proposals tab in a few minutes.',
+        description: 'Scoper is reading the active plan and drafting proposals. New cards will appear in the Proposals tab in a few minutes.',
       });
     } catch (e) {
       toast.error('Propose failed', { description: String(e) });
@@ -3507,7 +3507,7 @@ export default function HarnessDashboard({ forcedPanel, embeddedPanelChrome = fa
     if (!activeSlug) return;
     if (!await askConfirm({
       title: 'Run cleanup?',
-      body: 'Scoper will deprecate features whose claims no longer match SPEC.md and modify partial-matches. No new features will be added. Code is not auto-removed.',
+      body: 'Scoper will deprecate features whose claims no longer match the active plan and modify partial-matches. No new features will be added. Code is not auto-removed.',
       confirmLabel: 'Run cleanup',
     })) return;
     const { announceOpStart, announceOpEnd } = await import('@/lib/voice-narration');
@@ -3517,7 +3517,7 @@ export default function HarnessDashboard({ forcedPanel, embeddedPanelChrome = fa
       if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`);
       const d = await res.json();
       toast.success('Cleanup started', {
-        description: 'Scoper is comparing existing features against SPEC.md. Updates will appear in a few minutes.',
+        description: 'Scoper is comparing existing features against the active plan. Updates will appear in a few minutes.',
       });
       if (d.invocationId) {
         void pollScoperResult(activeSlug, d.invocationId, 'Cleanup', 'cleanup', handle);
@@ -3751,20 +3751,20 @@ export default function HarnessDashboard({ forcedPanel, embeddedPanelChrome = fa
       cs.push({
         id: 'replan',
         section: 'Control',
-        title: 'Replan — fold new SPEC.md bullets into the work queue',
+        title: 'Replan — fold new plan items into the work queue',
         icon: '🔄',
-        keywords: 'replan rescope refresh queue spec scoper',
+        keywords: 'replan rescope refresh queue plan scoper',
         perform: replanHarness,
       });
       cs.push({
         id: 'cleanup',
         section: 'Control',
-        title: 'Cleanup — deprecate or modify features that no longer match SPEC.md',
+        title: 'Cleanup — deprecate or modify features that no longer match the active plan',
         icon: '🧹',
         keywords: 'cleanup deprecate prune retire scoper stale orphan',
         perform: cleanupHarness,
       });
-      cs.push({ id: 'config', section: 'Control', title: 'Edit config / spec', icon: '✎', keywords: 'spec agents contract', perform: () => setActivePanel('config') });
+      cs.push({ id: 'config', section: 'Control', title: 'Edit config', icon: '✎', keywords: 'config agents contract json', perform: () => setActivePanel('config') });
       cs.push({ id: 'vscode', section: 'Control', title: 'Open current project in VSCode', icon: '</>', keywords: 'vscode code editor open folder', perform: () => openInVSCode(status.project.path) });
       cs.push({ id: 'triage', section: 'Control', title: 'Triage — stuck/blocked/failing features', icon: '🔺', keywords: 'escalation blocked', perform: () => setShowTriage(true) });
       cs.push({ id: 'insights', section: 'Control', title: 'Insights — analytics', icon: '📊', keywords: 'analytics histogram', perform: () => setActivePanel('insights') });
@@ -4230,17 +4230,17 @@ export default function HarnessDashboard({ forcedPanel, embeddedPanelChrome = fa
                     <AlertTriangle size={13} /> triage{triageCount > 0 ? ` · ${triageCount}` : ''}
                   </button>
                 </Tooltip>
-                <Tooltip label="Propose — run the scoper agent (MODE=proposal) to read SPEC.md and suggest scoped features in the Proposals tab">
+                <Tooltip label="Propose — run the scoper agent (MODE=proposal) to read the active plan and suggest scoped features in the Proposals tab">
                   <button className="h-btn ghost" onClick={proposeHarness}>
                     <Lightbulb size={13} /> propose
                   </button>
                 </Tooltip>
-                <Tooltip label="Replan — fold new SPEC.md bullets into the work queue without restarting the harness">
+                <Tooltip label="Replan — fold new plan items into the work queue without restarting the harness">
                   <button className="h-btn ghost" onClick={replanHarness}>
                     <RefreshCw size={13} /> replan
                   </button>
                 </Tooltip>
-                <Tooltip label="Cleanup — deprecate or modify existing features that no longer match SPEC.md (won't add new ones)">
+                <Tooltip label="Cleanup — deprecate or modify existing features that no longer match the active plan (won't add new ones)">
                   <button className="h-btn ghost" onClick={cleanupHarness}>
                     <Wrench size={13} /> cleanup
                   </button>
@@ -4333,7 +4333,7 @@ export default function HarnessDashboard({ forcedPanel, embeddedPanelChrome = fa
               <Lightbulb size={13} /> brainstorm
             </Tabs.Trigger>
           </Tooltip>
-          <Tooltip label={activeSlug ? `Product proposals — scope expansion from SPEC.md${pendingProposals > 0 ? ` · ${pendingProposals} pending` : ''}` : 'Select a project to view proposals'}>
+          <Tooltip label={activeSlug ? `Product proposals — scope expansion from the active plan${pendingProposals > 0 ? ` · ${pendingProposals} pending` : ''}` : 'Select a project to view proposals'}>
             <Tabs.Trigger value="proposals" className="h-tab h-tab--proposals" disabled={!activeSlug}>
               🪄 proposals
               {pendingProposals > 0 && <span className="h-tab-count">{pendingProposals}</span>}
@@ -4388,7 +4388,7 @@ export default function HarnessDashboard({ forcedPanel, embeddedPanelChrome = fa
               <TrendingUp size={13} /> insights
             </Tabs.Trigger>
           </Tooltip>
-          <Tooltip label={activeSlug ? 'Edit SPEC.md / AGENTS.md / config.json' : 'Select a project to edit config'}>
+          <Tooltip label={activeSlug ? 'Edit AGENTS.md / config.json' : 'Select a project to edit config'}>
             <Tabs.Trigger value="config" className="h-tab h-tab--config" disabled={!activeSlug}>
               <SlidersHorizontal size={13} /> config
             </Tabs.Trigger>
