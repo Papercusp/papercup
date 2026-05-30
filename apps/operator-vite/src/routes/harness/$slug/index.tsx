@@ -1,5 +1,4 @@
-import { createFileRoute, notFound } from '@tanstack/react-router';
-import HarnessDashboard from '@/app/harness/HarnessDashboard';
+import { createFileRoute, notFound, redirect, Navigate } from '@tanstack/react-router';
 import DepartmentHarnessDashboard from '@/app/harness/DepartmentHarnessDashboard';
 import HarnessDockShell from '@/app/harness/[slug]/HarnessDockShell';
 import { InsightsFirstVisitGate } from '@/app/harness/insights/InsightsFirstVisitGate';
@@ -30,7 +29,8 @@ export const Route = createFileRoute('/harness/$slug/')({
   validateSearch: (search): { dock?: '1' } => ({
     dock: search.dock === '1' ? '1' : undefined,
   }),
-  loader: async ({ params }) => {
+  loaderDeps: ({ search }) => ({ dock: search.dock }),
+  loader: async ({ params, deps }) => {
     // /projects/lite — only slug+path; not the heavy /projects endpoint
     // (~4-5s per the 2026-05-03 perf audit).
     const res = await fetch('/api/harness/projects/lite', { cache: 'no-store' });
@@ -39,6 +39,11 @@ export const Route = createFileRoute('/harness/$slug/')({
     const projects: ProjectEntry[] = data.projects ?? [];
     const project = projects.find((p) => p.slug === params.slug);
     if (!project) throw notFound();
+    // Coding harnesses are now served by /adv; only org/department + the
+    // opt-in ?dock=1 shell still render the legacy per-slug surface here.
+    if (deps.dock !== '1' && project.harness_kind !== 'department') {
+      throw redirect({ to: '/adv', search: { tab: 'harnesses', slug: params.slug } });
+    }
     return { project };
   },
   component: HarnessProjectPage,
@@ -70,14 +75,7 @@ function HarnessProjectPage() {
     );
   }
 
-  // Coding flavor — same as /harness, locked to this slug via the URL.
-  // P-073g — on first visit (no row OR null seen_at_ts) the gate
-  // redirects the contributor to /harness/<slug>/insights via
-  // window.location.assign. Subsequent visits no-op.
-  return (
-    <>
-      <InsightsFirstVisitGate slug={project.slug} />
-      <HarnessDashboard />
-    </>
-  );
+  // Coding harnesses are redirected to /adv in the loader; this branch is an
+  // unreachable safety net (HarnessDashboard is no longer rendered anywhere).
+  return <Navigate to="/adv" search={{ tab: 'harnesses', slug: project.slug }} replace />;
 }
