@@ -289,7 +289,7 @@ two SEPARATE storage components**, not one dual-backend interface:
 
 ## Phase 3 — Retrieval cluster (search + memory; each its own seam)
 
-- **P-013** `todo` **Hardening (pre-req for P-020) — re-verified 2026-05-30, NOT
+- **P-013** `done` **Hardening (pre-req for P-020) — re-verified 2026-05-30, NOT (explicit PgHandle contract — search sources take injected sql, not ambient ctx.tx 163d60b3)
   a crash bug:** `fulltext.ts` (4×) and `semantic.ts` (8×) read `ctx.tx`, which is
   optional — `http-projection.ts:331` sets it only when a bearer token resolves
   (`requirePrincipal: false`, so no-bearer calls leave it undefined). **Correction
@@ -303,7 +303,7 @@ two SEPARATE storage components**, not one dual-backend interface:
   (the seam) so the extracted package's DB dependency is declared, not smuggled via
   an optional dispatcher field. Low urgency — pre-existing, graceful, and reworked
   by P-020 anyway. → D-010
-- **P-020** `todo` Extract `@papercusp/search` (BM25 + pgvector hybrid). Three
+- **P-020** `done` Extract `@papercusp/search` (BM25 + pgvector hybrid). Three (@papercusp/search wired; fulltext/semantic thin wrappers over SearchSource registry + embedder seam 0332afba + 163d60b3)
   seams (mechanism (e) today): (i) **source registry** — the 4 surfaces
   (escalations/brainstorm/turns/decisions) are hardcoded literal branches, not a
   registry; turn them into a `SearchSource` adapter callers register; (ii) **embedder**
