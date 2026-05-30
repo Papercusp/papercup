@@ -11,13 +11,21 @@ owner: avi@storewolf.com
 
 ## Now
 
-**State:** Phase 1 in progress — theme apply mechanism (`lib/theme.ts`), a first
-hand-authored `[data-theme="black"]` block, and the pre-paint boot script. No
-selector UI yet (Phase 3).
+**State:** Phase 1 committed (`3520c73a`) — theme apply mechanism (`lib/theme.ts`),
+a first hand-authored `[data-theme="black"]` block, and the pre-paint boot script
+in both `app/layout.tsx` (Next) and `apps/operator-vite/index.html` (the live SPA
+shell). No selector UI yet (Phase 3). Verified: typecheck clean for the new files;
+the boot script + inlined black block confirmed in the served Vite module graph.
+Not yet done: the on-screen frost↔black swap + leak inventory (deferred to avoid
+mutating the user's live window; the open `:3070` windows also need a reload since
+dev runs no-HMR). Note: the pre-existing `app/_lints/css-tokens.test.ts` failure
+(undefined tokens like `--accent-2`, `--fg-danger`, `--danger` used in unrelated
+components) is exactly the Phase 5 robustness backlog surfacing — not a regression.
 
-**Next:** Finish Phase 1 (verify the frost↔black swap on `/dev/tokens` through the
-Tauri desktop shell, enumerate the leak sites), then Phase 2 (move the black theme
-into the DTCG token pipeline).
+**Next:** Phase 2 — move the black theme into the DTCG token pipeline
+(`design-tokens/black.semantic.tokens.json` + a `css-semantic-black` Style
+Dictionary platform). Then Phase 3 (selector UI), at which point the on-screen
+swap + leak inventory get done with a real toggle.
 
 ## Goal
 
