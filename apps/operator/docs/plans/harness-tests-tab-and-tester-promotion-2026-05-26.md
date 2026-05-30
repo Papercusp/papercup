@@ -11,11 +11,11 @@ owner: avi@storewolf.com
 
 ## Now
 
-**State:** Phase A in progress. P-001 DONE (266b25be): registry → @papercusp/testing-shell, shim, 13/13 tests. P-002 DONE (ca24cbee): DomainTestPanel + domain-panel.css moved into the lib; backend access now via injected TestingDataSource (interface + wire types + default adminTestingDataSource in data-source.ts); TestingClient passes adminTestingDataSource — behavior preserved. Verified: lib tsc exits 0; 13/13 testing-domains tests pass; new import resolves under operator-vite tsc (117 baseline errors are pre-existing @-alias/JSX-namespace, none mention testing-shell); HEAD tree confirms all files incl. css committed at new paths, old paths removed; no dangling refs. NOT yet checked: live /admin/testing page render in a browser. Also committed ca24's prerequisite: 2dc54b4b recovered the prior session's uncommitted DomainTestPanel run-drawer/history work to give P-002 a clean base.
+**State:** **Phase A COMPLETE.** P-001 (266b25be: registry → @papercusp/testing-shell) + P-002 (ca24cbee: DomainTestPanel + injected TestingDataSource into the lib) done earlier. P-003/P-004/P-005 done (fdb365e8): `<TestingShell>` (left-rail + panel host) extracted to the lib, parameterized by `tabs` / `tierLabels` / `dataSource` / `customTabs` — the admin 3-tier grouping generalized to an arbitrary tierId→label map (key order = render order) so the harness can use Built-in/Project tiers; added `tabsFromRegistry(TestDomain[])` for registry-shaped callers; the shell chrome CSS moved into the lib (`testing-shell.css`) so it travels with the component. Admin `TestingClient` reduced to a thin wrapper (behavior identical). Verified: lib tsc clean; operator-vite 120 errors vs 121 original (net −1, zero new); 17/17 tests pass (4 new in `apps/operator/lib/__tests__/testing-shell.test.tsx` + 13 existing registry). NOT browser-verified live in the desktop shell yet.
 
-**Reconciliation (2026-05-30):** Phases E + F were written assuming VALs lived in `.harness/validation-contract.md` and would be promoted into a *new* `validation_criteria` table. That premise is **superseded** by `plans-central-harness-ux-2026-05-26` (shipped 2026-05-30, its D-005): VALs are already first-class PG rows in `harness_shared.harness_plan_assertions`, authored as inline `[VAL-…]` bullets inside plan items and populated by `plans:promote`; `validation-contract.md` is retired. Phase E is rewritten to *reconcile onto* that shipped store (no new table, no markdown backfill), and a new **Phase G** adds the actual plan↔test link as a rollup join through the VAL (decision B-as-D below). See new D-005 / D-006.
+**Reconciliation (2026-05-30) still stands:** Phase E rewritten onto the shipped `harness_plan_assertions` (no new `validation_criteria` table); Phase G adds the plan↔test-via-VAL link (B-as-D). See D-005 / D-006.
 
-**Next:** Finish Phase A (P-003 extract `TestingClient → TestingShell`; P-004 thin wrapper; P-005 tests; optional browser-verify /admin/testing post-P-002). Phase E/F/G work is gated on the reconciliation decisions below but needs no new VAL store — it builds on `harness_plan_assertions`.
+**Next:** Phase B (P-010–P-012): split `testing-domains-registry.ts` into `generalizedRegistry` (chaos/ai/live/routes/test-runs) vs the 16 Papercusp-only domains — the prerequisite for the harness Tests tab (Phase C). Optionally first: browser-verify /admin/testing renders identically post-extraction.
 
 ## Background
 
@@ -105,11 +105,11 @@ The user's request had four parts:
 
 - **P-002** `done` Move `apps/operator-vite/src/components/admin/testing/DomainTestPanel.tsx` to `libs/testing-shell/src/DomainTestPanel.tsx`. ONE behavior-preserving change: extract every `/api/admin/testing/*` fetch (lines 183, 196, 206, 226, 233, 238, 483 in the current file) into a `dataSource: TestingDataSource` prop. Default implementation hits the same admin paths.
 
-- **P-003** `todo` Move `apps/operator-vite/src/components/admin/TestingClient.tsx` to `libs/testing-shell/src/TestingShell.tsx`. Take `registry`, `tierLabels`, `dataSource` as props. The 3-tier `{quick,domain,surface}` becomes a generic `{[tierId]: label}` map.
+- **P-003** `done` Move `apps/operator-vite/src/components/admin/TestingClient.tsx` to `libs/testing-shell/src/TestingShell.tsx`. Take `registry`, `tierLabels`, `dataSource` as props. The 3-tier `{quick,domain,surface}` becomes a generic `{[tierId]: label}` map. (fdb365e8 extracted to libs/testing-shell/src/TestingShell.tsx; shell chrome CSS moved to the lib)
 
-- **P-004** `todo` Re-implement `apps/operator-vite/src/components/admin/TestingClient.tsx` as a thin `<TestingShell registry={adminRegistry} tierLabels={{quick:'Quick runs', domain:'Domains', surface:'Surfaces'}} dataSource={adminDataSource}/>`. Behavior identical.
+- **P-004** `done` Re-implement `apps/operator-vite/src/components/admin/TestingClient.tsx` as a thin `<TestingShell registry={adminRegistry} tierLabels={{quick:'Quick runs', domain:'Domains', surface:'Surfaces'}} dataSource={adminDataSource}/>`. Behavior identical. (fdb365e8 admin TestingClient is now a thin <TestingShell> wrapper; behavior identical operator-vite tsc net -1, no new errors)
 
-- **P-005** `todo` Tests covering registry round-trip, dataSource injection (mock dataSource → asserts file-status chip), tier grouping with arbitrary tier ids.
+- **P-005** `done` Tests covering registry round-trip, dataSource injection (mock dataSource → asserts file-status chip), tier grouping with arbitrary tier ids. (fdb365e8 apps/operator/lib/__tests__/testing-shell.test.tsx — round-trip, arbitrary-tier grouping, dataSource injection chip, custom override; 4/4 pass 17/17 with registry suite)
 
 ## Phase B — split generalized vs Papercusp-only declarations
 
