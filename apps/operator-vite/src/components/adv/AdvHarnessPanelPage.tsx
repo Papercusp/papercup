@@ -7,6 +7,7 @@ import { BrainstormFull } from '@/app/harness/brainstorm/BrainstormFull';
 import PrsTab from '@/app/harness/PrsTab';
 import HarnessSettingsPanel from '@/app/harness/HarnessSettingsPanel';
 import InsightsPanel from '@/app/harness/InsightsPanel';
+import AdvConfigTab from '@/app/adv/harnesses/AdvConfigTab';
 
 type AdvHarnessPanel = Extract<AdvTabId, 'brainstorm' | 'prs' | 'insights' | 'config' | 'settings' | 'docs' | 'git'>;
 
@@ -68,15 +69,17 @@ function AdvInsightsTab({ slug }: { slug: string }) {
 /**
  * Tabs whose body is a self-contained harness panel component. These render
  * the component DIRECTLY — the legacy `HarnessDashboard` monolith is never
- * mounted for them. Tabs NOT listed here (config, docs) still fall back to the
- * dashboard bridge below, because their bodies depend on the dashboard's
- * plugin-tab + spec resolution (decoupling those is a later pass).
+ * mounted for them. Only `docs` is NOT listed here; it falls back to the
+ * dashboard bridge below because it's entirely plugin-contribution-driven
+ * (resolving `?panel=docs` → `plugin:<tabId>` + the plugin tab renderer),
+ * which still lives in the monolith. config now renders via AdvConfigTab.
  */
 const DIRECT: Partial<Record<AdvHarnessPanel, (slug: string) => ReactNode>> = {
   brainstorm: (slug) => <BrainstormFull slug={slug} />,
   prs: (slug) => <PrsTab harnessSlug={slug} />,
   settings: (slug) => <HarnessSettingsPanel slug={slug} phase={ADV_PHASE} />,
   insights: (slug) => <AdvInsightsTab slug={slug} />,
+  config: (slug) => <AdvConfigTab slug={slug} />,
 };
 
 const PANEL_FILL_CSS = `
@@ -171,8 +174,8 @@ export default function AdvHarnessPanelPage({ panel }: { panel: AdvHarnessPanel 
     );
   }
 
-  // Fallback (config, docs): still backed by HarnessDashboard with its chrome
-  // hidden, until those panels' plugin/spec resolution is lifted out.
+  // Fallback (docs only): still backed by HarnessDashboard with its chrome
+  // hidden, until the plugin-tab resolution + renderer is lifted out.
   return (
     <section className="pc-adv-harness-panel" aria-label={`ADV ${ADV_HARNESS_PANEL_LABELS[panel]} workspace`}>
       <HarnessDashboard forcedPanel={panel} embeddedPanelChrome />
