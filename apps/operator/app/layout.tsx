@@ -70,6 +70,15 @@ const themeBootstrapScript = `
   } catch (e) {
     document.documentElement.dataset.theme = DEFAULT;
   }
+  try {
+    const css = window.localStorage.getItem('pc:ws:' + wsId() + ':papercusp.customThemesCss');
+    if (css) {
+      const st = document.createElement('style');
+      st.id = 'pc-custom-themes';
+      st.textContent = css;
+      document.head.appendChild(st);
+    }
+  } catch (e) {}
 })();
 `;
 

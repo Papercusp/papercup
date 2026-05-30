@@ -329,6 +329,7 @@ import suLocksHookHealth from './su-locks/hook-health';
 import operatorNotesRoutes from './operator-notes/index';
 import oracleRoutes from './oracle/index';
 import dockLayoutsRoutes from './dock-layouts/index';
+import themesRoutes from './themes/index';
 import crossHarnessRoutes from './cross-harness/index';
 import projectsRoutes from './projects/index';
 import ptyRoutes from './pty/index';
@@ -689,6 +690,7 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(operatorNotesRoutes as AnyRoute[]),
   ...flatten(oracleRoutes as AnyRoute[]),
   ...flatten(dockLayoutsRoutes as AnyRoute[]),
+  ...flatten(themesRoutes as AnyRoute[]),
   ...flatten(crossHarnessRoutes as AnyRoute[]),
   ...flatten(projectsRoutes as AnyRoute[]),
   ...flatten(ptyRoutes as AnyRoute[]),

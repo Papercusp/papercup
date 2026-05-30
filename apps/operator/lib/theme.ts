@@ -1,78 +1,46 @@
 'use client';
 
 /**
- * Color-theme selection for the operator UI.
+ * Color-theme selection for the operator UI (client runtime).
  *
  * Mirrors the `lib/visual-effects.ts` pattern (read/write/apply/subscribe +
  * `useSyncExternalStore`, `wsLocalKey`-scoped, applied pre-paint by a boot
- * `<script>` in `app/layout.tsx`). The *active theme selection* is a per-device
- * browser-local preference; *custom theme definitions* persist to a local file
- * (Phase 4).
+ * `<script>` in `app/layout.tsx` + `apps/operator-vite/index.html`). The *active
+ * theme selection* is a per-device browser-local preference; *custom theme
+ * definitions* persist to a per-workspace local file via `/api/themes` (D-1).
  *
  * Apply mechanism — one path for every theme: `document.documentElement
- * .dataset.theme = '<id>'`. Built-in themes resolve via generated CSS selector
- * blocks (`:root` = frost default, `[data-theme="black"]`); custom themes
- * (Phase 4) inject a `<style>` block keyed on `[data-theme="custom:<id>"]`.
+ * .dataset.theme = '<id>'`. Built-ins resolve via generated CSS selector blocks
+ * (`:root`/`[data-theme="frost"]` = frost, `[data-theme="black"]`); custom themes
+ * inject a `<style id="pc-custom-themes">` block keyed on `[data-theme="custom:<id>"]`.
  *
- * The theme contract (load-bearing): a theme may set ONLY the semantic tokens in
- * {@link THEME_TOKENS} — never brand primitives (`--sky-*`) or raw literals. If
- * swapping those tokens doesn't fully restyle the app, that's a token-system
- * robustness bug to fix (re-route the leak through a semantic token), not
- * something a theme should work around. See
- * `docs/plans/personalization-theme-selector-2026-05-30.md`.
+ * The token contract lives in `lib/theme-tokens.ts` (shared with the server) and
+ * is re-exported here so existing `@/lib/theme` importers keep working.
  */
 import { useSyncExternalStore } from 'react';
 import { wsLocalKey } from '@/lib/browser-workspace';
+import {
+  BUILTIN_THEMES,
+  CUSTOM_PREFIX,
+  customThemeCss,
+  customThemeSlug,
+  DEFAULT_THEME_ID,
+  isValidThemeId,
+  type CustomTheme,
+  type ThemeMeta,
+} from '@/lib/theme-tokens';
+
+export * from '@/lib/theme-tokens';
 
 export const THEME_STORAGE_KEY = 'papercusp.theme';
 export const THEME_CHANGE_EVENT = 'papercusp:theme-changed';
+/** localStorage key (workspace-scoped) holding the resolved CSS for all custom
+ * themes, so the pre-paint boot script can inject it before React/fetch and avoid
+ * a flash when a custom theme is active. Kept in sync by {@link applyCustomThemes}. */
+export const CUSTOM_THEMES_CSS_KEY = 'papercusp.customThemesCss';
+export const CUSTOM_THEMES_STYLE_ID = 'pc-custom-themes';
 
-/**
- * The semantic-token allow-list — the only CSS variables a theme may set.
- * Source of truth: the color/overlay tokens in `app/_semantic.css` (generated
- * from `design-tokens/desktop.semantic.tokens.json`). Kept in sync by hand; the
- * Phase-2 DTCG black file and the Phase-4 custom-theme editor both operate on
- * exactly this set.
- */
-export const THEME_TOKENS = [
-  'bg', 'bg-1', 'bg-2', 'bg-3', 'bg-4', 'bg-popover',
-  'fg', 'fg-dim', 'fg-mute',
-  'border', 'border-strong',
-  'accent', 'accent-strong', 'accent-cool', 'accent-ink',
-  'good', 'warn', 'bad', 'warn-bg', 'warn-border',
-  'frost', 'card-shadow',
-] as const;
-export type ThemeToken = (typeof THEME_TOKENS)[number];
-
-export const BUILTIN_THEME_IDS = ['frost', 'black'] as const;
-export type BuiltinThemeId = (typeof BUILTIN_THEME_IDS)[number];
-
-/** Frost is the `:root` default — the base semantic layer in `_semantic.css`. */
-export const DEFAULT_THEME_ID: BuiltinThemeId = 'frost';
-
-export interface ThemeMeta {
-  id: string;
-  label: string;
-  builtin: boolean;
-}
-
-export const BUILTIN_THEMES: ThemeMeta[] = [
-  { id: 'frost', label: 'Blue frost', builtin: true },
-  { id: 'black', label: 'Black', builtin: true },
-];
-
-const CUSTOM_PREFIX = 'custom:';
-
-/**
- * A theme id is valid if it's a known built-in or a `custom:<id>` id. Custom
- * themes have no CSS until Phase 4, but the id shape is accepted now so a
- * previously-saved selection round-trips instead of silently resetting.
- */
-export function isValidThemeId(value: unknown): value is string {
-  if (typeof value !== 'string' || !value) return false;
-  if ((BUILTIN_THEME_IDS as readonly string[]).includes(value)) return true;
-  return value.startsWith(CUSTOM_PREFIX) && value.length > CUSTOM_PREFIX.length;
-}
+// ── active-theme selection ────────────────────────────────────────────────
 
 export function readActiveTheme(): string {
   if (typeof window === 'undefined') return DEFAULT_THEME_ID;
@@ -138,4 +106,75 @@ function getServerThemeSnapshot(): string {
 
 export function useActiveTheme(): string {
   return useSyncExternalStore(subscribeTheme, getThemeSnapshot, getServerThemeSnapshot);
+}
+
+// ── custom themes (definitions live in a per-workspace file) ────────────────
+
+/** Inject/replace the `<style>` element that holds every custom theme's rule
+ * block, and cache its CSS so the boot script can re-inject it pre-paint. */
+export function applyCustomThemes(themes: CustomTheme[]): void {
+  const css = themes.map(customThemeCss).join('\n\n');
+  if (typeof document !== 'undefined') {
+    let el = document.getElementById(CUSTOM_THEMES_STYLE_ID) as HTMLStyleElement | null;
+    if (!el) {
+      el = document.createElement('style');
+      el.id = CUSTOM_THEMES_STYLE_ID;
+      document.head.appendChild(el);
+    }
+    el.textContent = css;
+  }
+  if (typeof window !== 'undefined') {
+    try {
+      window.localStorage.setItem(wsLocalKey(CUSTOM_THEMES_CSS_KEY), css);
+    } catch {
+      /* best effort */
+    }
+  }
+}
+
+async function themesRequest(path: string, init?: RequestInit): Promise<Response> {
+  return fetch(`/api/themes${path}`, {
+    ...init,
+    headers: { 'content-type': 'application/json', ...(init?.headers ?? {}) },
+  });
+}
+
+export async function fetchCustomThemes(): Promise<CustomTheme[]> {
+  const res = await themesRequest('');
+  if (!res.ok) throw new Error(`failed to load custom themes (${res.status})`);
+  const body = (await res.json()) as { themes?: CustomTheme[] };
+  const themes = body.themes ?? [];
+  applyCustomThemes(themes);
+  return themes;
+}
+
+export async function saveCustomTheme(theme: CustomTheme): Promise<CustomTheme> {
+  const res = await themesRequest(`/${encodeURIComponent(theme.id)}`, {
+    method: 'PUT',
+    body: JSON.stringify({ theme }),
+  });
+  if (!res.ok) {
+    const err = (await res.json().catch(() => ({}))) as { error?: string };
+    throw new Error(err.error ?? `failed to save theme (${res.status})`);
+  }
+  return (await res.json()) as CustomTheme;
+}
+
+export async function deleteCustomTheme(id: string): Promise<void> {
+  const res = await themesRequest(`/${encodeURIComponent(id)}`, { method: 'DELETE' });
+  if (!res.ok && res.status !== 204) throw new Error(`failed to delete theme (${res.status})`);
+}
+
+/** Selector list: built-ins followed by custom themes (as ThemeMeta). */
+export function themeList(customThemes: CustomTheme[]): ThemeMeta[] {
+  return [
+    ...BUILTIN_THEMES,
+    ...customThemes.map((t) => ({ id: `${CUSTOM_PREFIX}${t.id}`, label: t.label, builtin: false })),
+  ];
+}
+
+/** The CustomTheme matching an active id like `custom:<slug>` (or null). */
+export function findCustomTheme(activeId: string, customThemes: CustomTheme[]): CustomTheme | null {
+  const slug = customThemeSlug(activeId);
+  return slug ? (customThemes.find((t) => t.id === slug) ?? null) : null;
 }

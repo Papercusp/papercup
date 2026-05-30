@@ -58,6 +58,8 @@ app.use('/plugins/*', tauriApiCors);
 app.use('/oracle/*', tauriApiCors);
 app.use('/dock-layouts/*', tauriApiCors);
 app.use('/harness-phase-last-used/*', tauriApiCors);
+app.use('/themes', tauriApiCors);
+app.use('/themes/*', tauriApiCors);
 
 app.use('*', compress({ threshold: 1024 }));
 

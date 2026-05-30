@@ -100,6 +100,17 @@
         } catch (e) {
           document.documentElement.dataset.theme = DEFAULT;
         }
+        // Re-inject the cached custom-theme CSS (written by applyCustomThemes in
+        // lib/theme.ts) so a `custom:<id>` active theme paints correctly pre-fetch.
+        try {
+          const css = window.localStorage.getItem('pc:ws:' + wsId() + ':papercusp.customThemesCss');
+          if (css) {
+            const st = document.createElement('style');
+            st.id = 'pc-custom-themes';
+            st.textContent = css;
+            document.head.appendChild(st);
+          }
+        } catch (e) {}
       })();
     </script>
     <!--
