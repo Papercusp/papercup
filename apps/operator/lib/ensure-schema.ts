@@ -2095,10 +2095,13 @@ export async function ensureHarnessPlanAssertionsTable(): Promise<void> {
       evidence_text  TEXT        NOT NULL DEFAULT '',
       status         TEXT        NOT NULL DEFAULT 'todo'
                                  CHECK (status IN ('todo', 'validating', 'passed', 'failed')),
+      requires_test  BOOLEAN     NOT NULL DEFAULT true,
       created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
       updated_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
       PRIMARY KEY (workspace_id, harness_slug, val_id)
     );
+    ALTER TABLE harness_shared.harness_plan_assertions
+      ADD COLUMN IF NOT EXISTS requires_test BOOLEAN NOT NULL DEFAULT true;
     ALTER TABLE harness_shared.harness_plan_assertions ENABLE ROW LEVEL SECURITY;
     DO $body$
     BEGIN

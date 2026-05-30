@@ -18,6 +18,7 @@ interface AssertionRow {
   verify_text: string;
   evidence_text: string;
   status: string;
+  requires_test: boolean;
 }
 
 export default defineTool({
@@ -42,7 +43,7 @@ export default defineTool({
       const workspaceId = activeWorkspaceId();
 
       const rows = await sql<AssertionRow[]>`
-        SELECT val_id, plan_slug, item_id, verify_text, evidence_text, status
+        SELECT val_id, plan_slug, item_id, verify_text, evidence_text, status, requires_test
           FROM harness_shared.harness_plan_assertions
          WHERE workspace_id = ${workspaceId}
            AND harness_slug = ${slug}
@@ -66,6 +67,7 @@ export default defineTool({
         verify_text: row.verify_text,
         evidence_text: row.evidence_text,
         status: row.status,
+        requires_test: row.requires_test,
         plan_slug: row.plan_slug,
         item_id: row.item_id,
       });

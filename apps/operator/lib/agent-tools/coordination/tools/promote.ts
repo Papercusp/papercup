@@ -411,15 +411,16 @@ export default defineTool({
           try {
             await sql`
               INSERT INTO harness_shared.harness_plan_assertions
-                (workspace_id, harness_slug, val_id, plan_slug, item_id, verify_text, evidence_text, status)
+                (workspace_id, harness_slug, val_id, plan_slug, item_id, verify_text, evidence_text, status, requires_test)
               VALUES
                 (${workspaceId}, ${args.harness_slug}, ${a.valId}, ${args.slug}, ${a.itemId},
-                 ${a.verifyText}, ${a.evidenceText}, ${a.status})
+                 ${a.verifyText}, ${a.evidenceText}, ${a.status}, ${a.requiresTest})
               ON CONFLICT (workspace_id, harness_slug, val_id) DO UPDATE SET
                 plan_slug     = EXCLUDED.plan_slug,
                 item_id       = EXCLUDED.item_id,
                 verify_text   = EXCLUDED.verify_text,
                 evidence_text = EXCLUDED.evidence_text,
+                requires_test = EXCLUDED.requires_test,
                 updated_at    = now()
             `;
             assertionsWritten++;

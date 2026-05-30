@@ -19,17 +19,30 @@ export interface PlanAssertion {
   verifyText: string;
   evidenceText: string;
   status: 'todo' | 'validating' | 'passed' | 'failed';
+  /**
+   * Whether this VAL needs a passing automated test before the feature can
+   * be approved. Default `true`; an optional `RequiresTest: false` sub-bullet
+   * exempts non-testable claims (copy, design-spec, judgement). The tester
+   * gate (orchestrator C0) + validator gate skip `requires_test = false` VALs.
+   */
+  requiresTest: boolean;
 }
 
 // Accepts both canonical `**[VAL-id]**` and scoper-written `[VAL-id] description` forms.
 const VAL_HEADER_RE = /^\s{1,8}-\s+\*{0,2}\[VAL-([^\]]+)\]\*{0,2}(?:\s.*)?$/;
-const VAL_FIELD_RE = /^\s{2,12}-\s+\*\*(Verify|Evidence|Status):\*\*\s*(.*)/;
+const VAL_FIELD_RE = /^\s{2,12}-\s+\*\*(Verify|Evidence|Status|RequiresTest):\*\*\s*(.*)/;
 const ITEM_LINE_RE = /^-\s+\*\*(P-\d{3,})\*\*/;
 
 function parseStatus(raw: string): PlanAssertion['status'] {
   const s = raw.replace(/`/g, '').trim().toLowerCase();
   if (s === 'validating' || s === 'passed' || s === 'failed') return s;
   return 'todo';
+}
+
+// `RequiresTest:` defaults to true; only an explicit false/no/0 exempts.
+function parseRequiresTest(raw: string): boolean {
+  const s = raw.replace(/`/g, '').trim().toLowerCase();
+  return !(s === 'false' || s === 'no' || s === '0');
 }
 
 /**
@@ -57,6 +70,7 @@ export function extractAssertions(
         verifyText: a.verifyText.trim(),
         evidenceText: (a.evidenceText ?? '').trim(),
         status: a.status ?? 'todo',
+        requiresTest: a.requiresTest ?? true,
       });
     }
     currentAssertion = null;
@@ -92,6 +106,7 @@ export function extractAssertions(
       if (key === 'Verify') currentAssertion.verifyText = value;
       else if (key === 'Evidence') currentAssertion.evidenceText = value;
       else if (key === 'Status') currentAssertion.status = parseStatus(value);
+      else if (key === 'RequiresTest') currentAssertion.requiresTest = parseRequiresTest(value);
     }
   }
 
