@@ -19,6 +19,13 @@ import { usePromptDialog } from './usePromptDialog';
 import { Select } from './Select';
 import HarnessSettingsPanel from './HarnessSettingsPanel';
 import AgentThinkingPopover from './AgentThinkingPopover';
+import {
+  PluginIcon,
+  pluginSlugFromPath,
+  type InstalledPluginAction,
+  type InstalledPluginInfo,
+  type EnabledPluginManifest,
+} from './plugin-utils';
 
 import { Activity as ReactActivity, type CSSProperties, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
@@ -59,22 +66,8 @@ import {
   CheckSquare, ListChecks, BarChart, PieChart, LineChart,
 } from 'lucide-react';
 
-// Plugin manifests reference icons by string name (e.g. "BookOpen", "Code").
-// Resolve to a lucide component, with Puzzle as the catch-all fallback so
-// plugins always render *something* even if they pick an unsupported name.
-const PLUGIN_ICON_MAP: Record<string, React.ComponentType<{ size?: number | string }>> = {
-  Activity, ArrowRight, AlertTriangle, BarChart, Bell, BookOpen, Box, Calendar,
-  CheckCircle2, CheckSquare, Cloud, Code, Code2, Coins, Database, Download,
-  FileText, Folder, FolderOpen, GitBranch, Globe, Image: ImageIcon, Inbox,
-  Layers, LayoutDashboard, Lightbulb, LineChart, Link: LinkIcon, ListChecks,
-  Loader2, Mail, MessageSquare, Music, PieChart, Play, Plus, Puzzle, RotateCcw,
-  Search, Send, Server, Settings, Shield, Slack: MessageSquare, SlidersHorizontal, Square,
-  Star, Tag, Terminal, TrendingUp, Upload, Video, Wrench, Zap,
-};
-function PluginIcon({ name, size = 13 }: { name?: string | null; size?: number }) {
-  const Icon: React.ComponentType<{ size?: number | string }> = (name && PLUGIN_ICON_MAP[name]) || Puzzle;
-  return <Icon size={size} />;
-}
+// PLUGIN_ICON_MAP + PluginIcon now live in ./plugin-utils (shared with the
+// extracted ConfigPanel, which /adv renders standalone).
 
 gsap.registerPlugin(useGSAP);
 
@@ -675,37 +668,8 @@ function PluginIframeWithLoader({ url, title }: { url: string; title: string }) 
  * Sending the bare basename for scoped-only installs makes the CLI look up
  * `<name>` at the top level and fail with "not installed".
  */
-function pluginSlugFromPath(path: string | null | undefined, fallbackName: string): string {
-  if (!path) return fallbackName;
-  const parts = path.replace(/\/$/, '').split('/');
-  const last = parts[parts.length - 1];
-  const parent = parts[parts.length - 2];
-  if (parent && parent.startsWith('@')) return `${parent}/${last}`;
-  return last ?? fallbackName;
-}
-
-interface InstalledPluginAction {
-  name?: string;
-  label?: string;
-  surfaces?: string[];
-  /** Optional manifest-declared lucide icon name (e.g. "Cloud", "Database").
-   *  Resolved via PLUGIN_ICON_MAP at render time. Falls back to the plugin's
-   *  own icon, then to Puzzle. */
-  icon?: string;
-}
-
-interface InstalledPluginInfo {
-  name: string;
-  version?: string;
-  description?: string;
-  source?: string;
-  icon?: string;
-  /** Absolute on-disk path; basename is the dir slug the CLI keys
-   *  enable/disable by (independent of scoped manifest.name). */
-  path?: string;
-  dashboardTabs?: Array<{ id?: string; label?: string; icon?: string }>;
-  actions?: InstalledPluginAction[];
-}
+// pluginSlugFromPath + InstalledPluginAction + InstalledPluginInfo now live
+// in ./plugin-utils (imported above).
 
 /**
  * "+" trigger after the last plugin tab. Opens a popover listing every
@@ -1047,12 +1011,7 @@ function AddPluginButton({ activeSlug, alreadyEnabled, installed, error, onEnabl
   );
 }
 
-interface EnabledPluginManifest extends InstalledPluginInfo {
-  capabilities?: string[];
-  actions?: Array<{ id?: string; name?: string; label?: string; description?: string; params?: Record<string, unknown> }>;
-  routines?: Array<{ name?: string; trigger?: string }>;
-  configSchema?: { properties?: Record<string, { default?: unknown; description?: string }> };
-}
+// EnabledPluginManifest now lives in ./plugin-utils (imported above).
 
 /**
  * Visible per-harness "what plugins are enabled" surface. Lists every
