@@ -1,11 +1,18 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
-import { parseAsString, useQueryState } from 'nuqs';
+import { parseAsString, parseAsStringEnum, useQueryState } from 'nuqs';
 import type { PanelComponentProps } from '../../harness/dock/panel-registry';
 import PinMenu, { type PinMenuState } from './PinMenu';
 
-type FeatureStatus = 'todo' | 'validating' | 'passed' | 'failing' | 'deprecated' | 'blocked';
+type FeatureStatus =
+  | 'todo'
+  | 'in_progress'
+  | 'validating'
+  | 'passed'
+  | 'failing'
+  | 'deprecated'
+  | 'blocked';
 
 interface Feature {
   id: string;
@@ -13,6 +20,7 @@ interface Feature {
   status: FeatureStatus;
   attempts?: number;
   summary?: string;
+  needs_human_review?: boolean;
 }
 
 interface StatusResponse {
@@ -20,19 +28,39 @@ interface StatusResponse {
   counts: Record<string, number>;
 }
 
-const FILTERS: Array<{ key: 'all' | FeatureStatus; label: string }> = [
-  { key: 'all', label: 'All' },
-  { key: 'todo', label: 'Todo' },
-  { key: 'validating', label: 'Validating' },
-  { key: 'passed', label: 'Passed' },
-  { key: 'failing', label: 'Failing' },
-  { key: 'blocked', label: 'Blocked' },
-  { key: 'deprecated', label: 'Deprecated' },
+// Saved views mirror the legacy FeatureList BUILT_IN_VIEWS. Each view is a
+// predicate over a feature; counts are computed client-side. "Running" and
+// "Blocked" group multiple statuses, "Stuck" keys off attempts (≥3) — the
+// flat one-chip-per-status filter the panel shipped with couldn't express
+// those. Deprecated features are hidden from every view except Deprecated.
+type ViewId = 'all' | 'running' | 'stuck' | 'blocked' | 'todo' | 'passed' | 'deprecated';
+
+const SAVED_VIEWS: Array<{ id: ViewId; label: string; match: (f: Feature) => boolean }> = [
+  { id: 'all', label: 'All', match: () => true },
+  { id: 'running', label: 'Running', match: (f) => f.status === 'in_progress' || f.status === 'validating' },
+  { id: 'stuck', label: 'Stuck', match: (f) => (f.attempts ?? 0) >= 3 },
+  { id: 'blocked', label: 'Blocked', match: (f) => f.status === 'blocked' || f.status === 'failing' },
+  { id: 'todo', label: 'Todo', match: (f) => f.status === 'todo' },
+  { id: 'passed', label: 'Passed', match: (f) => f.status === 'passed' },
+  { id: 'deprecated', label: 'Deprecated', match: (f) => f.status === 'deprecated' },
+];
+
+// Sort order within a view, matching the legacy STATUS_ORDER intent
+// (active work first, terminal states last).
+const STATUS_ORDER: FeatureStatus[] = [
+  'in_progress',
+  'validating',
+  'blocked',
+  'failing',
+  'todo',
+  'passed',
+  'deprecated',
 ];
 
 const STATUS_TONE: Record<string, { bg: string; fg: string }> = {
   passed: { bg: 'rgba(34, 197, 94, 0.14)', fg: '#86efac' },
   todo: { bg: 'rgba(148, 163, 184, 0.12)', fg: '#cbd5e1' },
+  in_progress: { bg: 'rgba(96, 165, 250, 0.18)', fg: '#93c5fd' },
   failing: { bg: 'rgba(239, 68, 68, 0.16)', fg: '#fca5a5' },
   validating: { bg: 'rgba(250, 204, 21, 0.16)', fg: '#fde68a' },
   blocked: { bg: 'rgba(244, 114, 182, 0.16)', fg: '#f9a8d4' },
@@ -43,8 +71,11 @@ export default function FeaturesPanel({ params, api }: PanelComponentProps) {
   const slug = (params.harnessSlug as string) || '';
   const [data, setData] = useState<StatusResponse | null>(null);
   const [error, setError] = useState<Error | null>(null);
-  const [filter, setFilter] = useState<(typeof FILTERS)[number]['key']>('all');
-  const [search, setSearch] = useState('');
+  // Filter selection + search are user-meaningful → URL state (nuqs), not
+  // useState, so the view is deep-linkable and agent-driveable. Keys are
+  // feature-prefixed (fview/fq) so they don't collide with the Issues panel.
+  const [view, setView] = useQueryState('fview', parseAsStringEnum<ViewId>(SAVED_VIEWS.map((v) => v.id)).withDefault('all'));
+  const [search, setSearch] = useQueryState('fq', parseAsString.withDefault(''));
   const [selectedId, setSelectedId] = useQueryState('sel', parseAsString.withDefault(''));
   const [pinMenu, setPinMenu] = useState<PinMenuState | null>(null);
 
@@ -79,11 +110,29 @@ export default function FeaturesPanel({ params, api }: PanelComponentProps) {
     };
   }, [slug, api]);
 
+  const activeView = SAVED_VIEWS.find((v) => v.id === view) ?? SAVED_VIEWS[0];
+
+  // Per-view counts (deprecated hidden everywhere except the Deprecated view).
+  const viewCounts = useMemo(() => {
+    const feats = data?.features ?? [];
+    const out: Record<ViewId, number> = {
+      all: 0, running: 0, stuck: 0, blocked: 0, todo: 0, passed: 0, deprecated: 0,
+    };
+    for (const v of SAVED_VIEWS) {
+      out[v.id] = feats.filter((f) => {
+        if (v.id !== 'deprecated' && f.status === 'deprecated') return false;
+        return v.match(f);
+      }).length;
+    }
+    return out;
+  }, [data]);
+
   const filtered = useMemo(() => {
     if (!data) return [];
     const q = search.trim().toLowerCase();
-    return data.features.filter((f) => {
-      if (filter !== 'all' && f.status !== filter) return false;
+    const out = data.features.filter((f) => {
+      if (activeView.id !== 'deprecated' && f.status === 'deprecated') return false;
+      if (!activeView.match(f)) return false;
       if (!q) return true;
       return (
         f.id.toLowerCase().includes(q) ||
@@ -91,7 +140,13 @@ export default function FeaturesPanel({ params, api }: PanelComponentProps) {
         (f.summary?.toLowerCase().includes(q) ?? false)
       );
     });
-  }, [data, filter, search]);
+    return out.sort((a, b) => {
+      const ai = STATUS_ORDER.indexOf(a.status);
+      const bi = STATUS_ORDER.indexOf(b.status);
+      if (ai !== bi) return ai - bi;
+      return a.id.localeCompare(b.id);
+    });
+  }, [data, activeView, search]);
 
   if (!slug) {
     return <PanelMessage>Pick a harness to view its features.</PanelMessage>;
@@ -103,6 +158,8 @@ export default function FeaturesPanel({ params, api }: PanelComponentProps) {
     return <PanelMessage>Loading features…</PanelMessage>;
   }
 
+  const total = data.features.length;
+
   return (
     <div className="pc-adv-features">
       <div className="pc-adv-features__bar">
@@ -110,35 +167,34 @@ export default function FeaturesPanel({ params, api }: PanelComponentProps) {
           className="pc-adv-features__search"
           placeholder="Search features…"
           value={search}
-          onChange={(e) => setSearch(e.target.value)}
+          onChange={(e) => void setSearch(e.target.value || null)}
         />
-        <div className="pc-adv-features__filters">
-          {FILTERS.map((f) => {
-            const count =
-              f.key === 'all'
-                ? data.features.length
-                : (data.counts?.[f.key] ?? data.features.filter((x) => x.status === f.key).length);
-            return (
-              <button
-                key={f.key}
-                type="button"
-                className={`pc-adv-features__filter${filter === f.key ? ' is-active' : ''}`}
-                onClick={() => setFilter(f.key)}
-              >
-                {f.label}
-                <span>{count}</span>
-              </button>
-            );
-          })}
+        <div className="pc-adv-features__views" role="tablist" aria-label="Feature views">
+          {SAVED_VIEWS.map((v) => (
+            <button
+              key={v.id}
+              type="button"
+              role="tab"
+              aria-selected={view === v.id}
+              className={`pc-adv-features__view${view === v.id ? ' is-active' : ''}`}
+              onClick={() => void setView(v.id === 'all' ? null : v.id)}
+            >
+              {v.label}
+              <span>{viewCounts[v.id]}</span>
+            </button>
+          ))}
         </div>
       </div>
       <div className="pc-adv-features__list">
         {filtered.length === 0 ? (
-          <PanelMessage>No features match the current filter.</PanelMessage>
+          <PanelMessage>
+            {total === 0 ? 'No features yet — planner may still be running.' : 'No features match this view.'}
+          </PanelMessage>
         ) : (
           filtered.map((f) => {
             const tone = STATUS_TONE[f.status] ?? STATUS_TONE.todo;
             const isActive = f.id === selectedId;
+            const attempts = f.attempts ?? 0;
             return (
               <div
                 key={f.id}
@@ -163,16 +219,27 @@ export default function FeaturesPanel({ params, api }: PanelComponentProps) {
                 >
                   {f.status}
                 </span>
-                <span className="pc-adv-features__title">{f.title}</span>
-                {typeof f.attempts === 'number' && f.attempts > 0 && (
-                  <span className="pc-adv-features__attempts" title="attempts">
-                    {f.attempts}×
+                <span className="pc-adv-features__title">
+                  {f.needs_human_review && (
+                    <span className="pc-adv-features__review" title="Needs human review" aria-label="Needs human review" />
+                  )}
+                  {f.title}
+                </span>
+                {attempts > 0 && (
+                  <span
+                    className={`pc-adv-features__attempts${attempts >= 3 ? ' is-warn' : ''}`}
+                    title={`${attempts} attempt${attempts === 1 ? '' : 's'}`}
+                  >
+                    ×{attempts}
                   </span>
                 )}
               </div>
             );
           })
         )}
+      </div>
+      <div className="pc-adv-features__footer">
+        <span>{filtered.length}/{total} shown</span>
       </div>
       <style>{`
         .pc-adv-features {
@@ -200,12 +267,12 @@ export default function FeaturesPanel({ params, api }: PanelComponentProps) {
           border: 1px solid rgba(167, 139, 250, 0.2);
           border-radius: 6px;
         }
-        .pc-adv-features__filters {
+        .pc-adv-features__views {
           display: flex;
           gap: 4px;
           flex-wrap: wrap;
         }
-        .pc-adv-features__filter {
+        .pc-adv-features__view {
           display: inline-flex;
           gap: 6px;
           align-items: center;
@@ -218,16 +285,16 @@ export default function FeaturesPanel({ params, api }: PanelComponentProps) {
           border-radius: 4px;
           cursor: pointer;
         }
-        .pc-adv-features__filter span {
+        .pc-adv-features__view span {
           color: rgba(220, 214, 248, 0.5);
           font-weight: 700;
         }
-        .pc-adv-features__filter.is-active {
+        .pc-adv-features__view.is-active {
           color: #f7f5ff;
           background: rgba(31, 23, 56, 0.96);
           border-color: rgba(167, 139, 250, 0.4);
         }
-        .pc-adv-features__filter.is-active span {
+        .pc-adv-features__view.is-active span {
           color: #c4b5fd;
         }
         .pc-adv-features__list {
@@ -244,8 +311,6 @@ export default function FeaturesPanel({ params, api }: PanelComponentProps) {
           font-size: 12px;
           color: rgba(220, 214, 248, 0.86);
           border-bottom: 1px solid rgba(167, 139, 250, 0.06);
-        }
-        .pc-adv-features__row {
           cursor: pointer;
           user-select: none;
         }
@@ -273,14 +338,39 @@ export default function FeaturesPanel({ params, api }: PanelComponentProps) {
           text-align: center;
         }
         .pc-adv-features__title {
+          display: inline-flex;
+          gap: 7px;
+          align-items: center;
           color: #f7f5ff;
           overflow: hidden;
           text-overflow: ellipsis;
           white-space: nowrap;
         }
+        .pc-adv-features__review {
+          width: 6px;
+          height: 6px;
+          border-radius: 50%;
+          background: #fbbf24;
+          flex-shrink: 0;
+          box-shadow: 0 0 0 2px rgba(251, 191, 36, 0.2);
+        }
         .pc-adv-features__attempts {
           font-size: 10px;
+          font-weight: 700;
           color: rgba(220, 214, 248, 0.54);
+        }
+        .pc-adv-features__attempts.is-warn {
+          color: #fca5a5;
+          background: rgba(239, 68, 68, 0.14);
+          padding: 1px 6px;
+          border-radius: 999px;
+        }
+        .pc-adv-features__footer {
+          flex-shrink: 0;
+          padding: 4px 12px;
+          font-size: 10px;
+          color: rgba(220, 214, 248, 0.5);
+          border-top: 1px solid rgba(167, 139, 250, 0.08);
         }
       `}</style>
       <PinMenu state={pinMenu} onClose={() => setPinMenu(null)} />

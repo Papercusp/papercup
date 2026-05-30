@@ -1,9 +1,23 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
-import { parseAsString, useQueryState } from 'nuqs';
+import { parseAsString, parseAsStringEnum, useQueryState } from 'nuqs';
+import {
+  AlertOctagon,
+  AlertTriangle,
+  ArrowUpRight,
+  CheckCircle,
+  Circle,
+  Eye,
+  FileCode,
+  Hammer,
+  Info,
+  User,
+  Bot,
+  XCircle,
+} from 'lucide-react';
 import type { PanelComponentProps } from '../../harness/dock/panel-registry';
-import type { Issue, IssueSeverity, IssueStatus } from '../../harness/issues/types';
+import type { Issue, IssueSeverity, IssueSource, IssueStatus } from '../../harness/issues/types';
 import PinMenu, { type PinMenuState } from './PinMenu';
 
 interface IssuesListResponse {
@@ -12,7 +26,9 @@ interface IssuesListResponse {
   pending?: Array<Partial<Issue> & { title: string }>;
 }
 
-const STATUS_FILTERS: Array<{ key: 'all' | IssueStatus; label: string }> = [
+type StatusFilter = 'all' | IssueStatus;
+
+const STATUS_FILTERS: Array<{ key: StatusFilter; label: string }> = [
   { key: 'all', label: 'All' },
   { key: 'open', label: 'Open' },
   { key: 'acknowledged', label: 'Ack' },
@@ -28,7 +44,28 @@ const SEVERITY_TONE: Record<IssueSeverity, { bg: string; fg: string }> = {
   nit: { bg: 'rgba(148, 163, 184, 0.14)', fg: '#cbd5e1' },
 };
 
-const STATUS_DOT: Record<IssueStatus, string> = {
+// Icon maps mirror the legacy IssuesList. Every lookup falls back to Circle
+// (`?? Circle`) — a missing/typo'd key returning undefined would otherwise
+// render `<undefined />` and crash the whole panel subtree.
+const SEVERITY_ICON: Record<IssueSeverity, typeof Circle> = {
+  critical: AlertOctagon,
+  major: AlertTriangle,
+  minor: Info,
+  nit: Circle,
+};
+const SOURCE_ICON: Record<IssueSource, typeof Circle> = {
+  validator: Bot,
+  worker: Bot,
+  human: User,
+};
+const STATUS_ICON: Record<IssueStatus, typeof Circle> = {
+  open: Circle,
+  acknowledged: Eye,
+  fixing: Hammer,
+  closed: CheckCircle,
+  wontfix: XCircle,
+};
+const STATUS_COLOR: Record<IssueStatus, string> = {
   open: '#fca5a5',
   acknowledged: '#fde68a',
   fixing: '#c4b5fd',
@@ -40,8 +77,11 @@ export default function IssuesPanel({ params, api }: PanelComponentProps) {
   const slug = (params.harnessSlug as string) || '';
   const [data, setData] = useState<IssuesListResponse | null>(null);
   const [error, setError] = useState<Error | null>(null);
-  const [filter, setFilter] = useState<(typeof STATUS_FILTERS)[number]['key']>('open');
-  const [search, setSearch] = useState('');
+  // URL state (nuqs) so the filter/search are deep-linkable + agent-driveable.
+  // Keys are issue-prefixed (ifilter/iq) to avoid colliding with the Features
+  // panel's fview/fq.
+  const [filter, setFilter] = useQueryState('ifilter', parseAsStringEnum<StatusFilter>(STATUS_FILTERS.map((f) => f.key)).withDefault('open'));
+  const [search, setSearch] = useQueryState('iq', parseAsString.withDefault(''));
   const [selectedId, setSelectedId] = useQueryState('sel', parseAsString.withDefault(''));
   const [pinMenu, setPinMenu] = useState<PinMenuState | null>(null);
 
@@ -117,7 +157,7 @@ export default function IssuesPanel({ params, api }: PanelComponentProps) {
           className="pc-adv-issues__search"
           placeholder="Search issues…"
           value={search}
-          onChange={(e) => setSearch(e.target.value)}
+          onChange={(e) => void setSearch(e.target.value || null)}
         />
         <div className="pc-adv-issues__filters">
           {STATUS_FILTERS.map((f) => (
@@ -125,25 +165,33 @@ export default function IssuesPanel({ params, api }: PanelComponentProps) {
               key={f.key}
               type="button"
               className={`pc-adv-issues__filter${filter === f.key ? ' is-active' : ''}`}
-              onClick={() => setFilter(f.key)}
+              onClick={() => void setFilter(f.key === 'open' ? null : f.key)}
             >
               {f.label}
               <span>{counts[f.key] ?? 0}</span>
             </button>
           ))}
-          {pendingCount > 0 && (
-            <span className="pc-adv-issues__pending" title="pending validator findings awaiting triage">
-              pending <strong>{pendingCount}</strong>
-            </span>
-          )}
         </div>
       </div>
+
+      {pendingCount > 0 && (
+        <div className="pc-adv-issues__triage" role="status">
+          <Bot size={13} aria-hidden />
+          <span>
+            <strong>{pendingCount}</strong> validator finding{pendingCount === 1 ? '' : 's'} pending triage
+          </span>
+        </div>
+      )}
+
       <div className="pc-adv-issues__list">
         {filtered.length === 0 ? (
           <PanelMessage>No issues match the current filter.</PanelMessage>
         ) : (
           filtered.map((i) => {
             const sevTone = SEVERITY_TONE[i.severity] ?? SEVERITY_TONE.minor;
+            const SevIcon = SEVERITY_ICON[i.severity] ?? Circle;
+            const SrcIcon = SOURCE_ICON[i.source] ?? Circle;
+            const StatusIcon = STATUS_ICON[i.status] ?? Circle;
             const isActive = i.id === selectedId;
             return (
               <div
@@ -167,21 +215,35 @@ export default function IssuesPanel({ params, api }: PanelComponentProps) {
                   className="pc-adv-issues__severity"
                   style={{ background: sevTone.bg, color: sevTone.fg }}
                 >
+                  <SevIcon size={11} aria-hidden />
                   {i.severity}
                 </span>
                 <span className="pc-adv-issues__title">
-                  <span
-                    className="pc-adv-issues__dot"
-                    style={{ background: STATUS_DOT[i.status] ?? '#888' }}
-                    title={i.status}
+                  <StatusIcon
+                    size={12}
+                    aria-label={i.status}
+                    style={{ color: STATUS_COLOR[i.status] ?? '#888', flexShrink: 0 }}
                   />
-                  {i.title}
+                  <SrcIcon size={11} aria-label={i.source} style={{ color: 'rgba(199, 188, 252, 0.6)', flexShrink: 0 }} />
+                  <span className="pc-adv-issues__titletext">{i.title}</span>
                 </span>
-                {i.linkedFeatureId && (
-                  <span className="pc-adv-issues__link" title="linked feature">
-                    {i.linkedFeatureId}
-                  </span>
-                )}
+                <span className="pc-adv-issues__meta">
+                  {i.codePointer && (
+                    <span className="pc-adv-issues__pointer" title={i.codePointer}>
+                      <FileCode size={10} aria-hidden /> {shortPointer(i.codePointer)}
+                    </span>
+                  )}
+                  {i.linkedFeatureId && (
+                    <span className="pc-adv-issues__link" title={`Linked feature: ${i.linkedFeatureId}`}>
+                      <ArrowUpRight size={10} aria-hidden /> {i.linkedFeatureId}
+                    </span>
+                  )}
+                  {i.foundDuring && (
+                    <span className="pc-adv-issues__found" title={`Found during: ${i.foundDuring}`}>
+                      {i.foundDuring}
+                    </span>
+                  )}
+                </span>
               </div>
             );
           })
@@ -244,19 +306,21 @@ export default function IssuesPanel({ params, api }: PanelComponentProps) {
         .pc-adv-issues__filter.is-active span {
           color: #c4b5fd;
         }
-        .pc-adv-issues__pending {
-          font-size: 10px;
-          color: rgba(220, 214, 248, 0.6);
-          text-transform: uppercase;
-          letter-spacing: 0.08em;
-          padding: 4px 8px;
-          border-radius: 4px;
-          background: rgba(250, 204, 21, 0.08);
-          border: 1px solid rgba(250, 204, 21, 0.24);
-        }
-        .pc-adv-issues__pending strong {
+        .pc-adv-issues__triage {
+          display: flex;
+          gap: 8px;
+          align-items: center;
+          margin: 8px 12px 0;
+          padding: 6px 10px;
+          font-size: 11px;
           color: #fde68a;
-          font-weight: 700;
+          background: rgba(250, 204, 21, 0.1);
+          border: 1px solid rgba(250, 204, 21, 0.28);
+          border-radius: 6px;
+        }
+        .pc-adv-issues__triage strong {
+          color: #fef3c7;
+          font-weight: 800;
         }
         .pc-adv-issues__list {
           flex: 1;
@@ -265,15 +329,13 @@ export default function IssuesPanel({ params, api }: PanelComponentProps) {
         }
         .pc-adv-issues__row {
           display: grid;
-          grid-template-columns: 78px 80px 1fr auto;
+          grid-template-columns: 70px 92px 1fr auto;
           gap: 10px;
           align-items: center;
           padding: 6px 12px;
           font-size: 12px;
           color: rgba(220, 214, 248, 0.86);
           border-bottom: 1px solid rgba(167, 139, 250, 0.06);
-        }
-        .pc-adv-issues__row {
           cursor: pointer;
           user-select: none;
         }
@@ -291,39 +353,61 @@ export default function IssuesPanel({ params, api }: PanelComponentProps) {
           font-weight: 600;
         }
         .pc-adv-issues__severity {
-          display: inline-block;
+          display: inline-flex;
+          gap: 4px;
+          align-items: center;
           padding: 1px 8px;
           font-size: 10px;
           font-weight: 700;
           text-transform: uppercase;
-          letter-spacing: 0.06em;
+          letter-spacing: 0.05em;
           border-radius: 999px;
-          text-align: center;
         }
         .pc-adv-issues__title {
           display: inline-flex;
-          gap: 8px;
+          gap: 7px;
           align-items: center;
           color: #f7f5ff;
+          overflow: hidden;
+          min-width: 0;
+        }
+        .pc-adv-issues__titletext {
           overflow: hidden;
           text-overflow: ellipsis;
           white-space: nowrap;
         }
-        .pc-adv-issues__dot {
-          width: 6px;
-          height: 6px;
-          border-radius: 50%;
+        .pc-adv-issues__meta {
+          display: inline-flex;
+          gap: 8px;
+          align-items: center;
           flex-shrink: 0;
         }
+        .pc-adv-issues__pointer,
         .pc-adv-issues__link {
+          display: inline-flex;
+          gap: 3px;
+          align-items: center;
           font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
           font-size: 10px;
-          color: rgba(199, 188, 252, 0.66);
+          color: rgba(199, 188, 252, 0.7);
+        }
+        .pc-adv-issues__found {
+          font-size: 10px;
+          color: rgba(220, 214, 248, 0.45);
+          text-transform: uppercase;
+          letter-spacing: 0.05em;
         }
       `}</style>
       <PinMenu state={pinMenu} onClose={() => setPinMenu(null)} />
     </div>
   );
+}
+
+// Collapse a long code pointer (path:line) to the basename for the chip,
+// keeping the full value in the title attribute.
+function shortPointer(p: string): string {
+  const base = p.split('/').pop() ?? p;
+  return base.length > 28 ? `…${base.slice(-27)}` : base;
 }
 
 function PanelMessage({
