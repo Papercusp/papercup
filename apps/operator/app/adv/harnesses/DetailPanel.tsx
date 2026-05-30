@@ -1,10 +1,11 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { parseAsString, useQueryState } from 'nuqs';
 import { toast } from 'sonner';
+import { useSyncQuery } from '@restart/sync';
+import type { Issue, IssueNote, IssueSeverity } from '../../harness/issues/types';
 import type { PanelComponentProps } from '../../harness/dock/panel-registry';
-import type { Issue, IssueSeverity, IssueStatus } from '../../harness/issues/types';
 import { useHarnessFeatures, useHarnessIssues, type FeatureStatus, type HarnessFeature } from './useHarnessData';
 
 const FEATURE_STATUSES: FeatureStatus[] = [
@@ -34,6 +35,33 @@ const SEVERITY_TONE: Record<IssueSeverity, { bg: string; fg: string }> = {
   nit: { bg: 'rgba(148, 163, 184, 0.16)', fg: '#cbd5e1' },
 };
 
+// Consolidated agent-run row (camelCase Zero export).
+type RunRow = {
+  runId: string;
+  role: string;
+  ts: number | string;
+  featureId?: string | null;
+  costUsd?: number | string;
+};
+
+// Selection-history stack, module-scoped so it survives DetailPanel
+// re-mounts (a slug change remounts the panel). Only the swap panel
+// (no pinned itemId) pushes/pops; pinned panels are read-only viewers.
+const selHistory: string[] = [];
+let suppressHistoryPush = false;
+
+function fmtAgo(ts: number | string): string {
+  const ms = typeof ts === 'number' ? ts : Date.parse(String(ts));
+  if (!Number.isFinite(ms)) return '';
+  const s = Math.max(0, Math.round((Date.now() - ms) / 1000));
+  if (s < 60) return `${s}s ago`;
+  const m = Math.round(s / 60);
+  if (m < 60) return `${m}m ago`;
+  const h = Math.round(m / 60);
+  if (h < 24) return `${h}h ago`;
+  return `${Math.round(h / 24)}d ago`;
+}
+
 /**
  * Detail panel — renders the currently-selected feature or issue.
  *
@@ -47,13 +75,48 @@ const SEVERITY_TONE: Record<IssueSeverity, { bg: string; fg: string }> = {
 export default function DetailPanel({ params, api }: PanelComponentProps) {
   const slug = (params.harnessSlug as string) || '';
   const pinnedId = (params.itemId as string) || null;
-  const [urlSel] = useQueryState('sel', parseAsString.withDefault(''));
+  const [urlSel, setUrlSel] = useQueryState('sel', parseAsString.withDefault(''));
   const selectedId = pinnedId ?? urlSel;
 
   // Phase 3: live data via Zero (REST bootstrap + Zero overlay), no polling.
   // The Features/Issues panels subscribe to the same queries → Zero dedups.
   const { features } = useHarnessFeatures(slug);
   const { issues } = useHarnessIssues(slug);
+  const { data: runRows } = useSyncQuery<RunRow>({
+    queryName: 'agentRunsConsolidated.bySlug',
+    args: slug ? { harnessSlug: slug } : undefined,
+    enabled: !!slug,
+  });
+
+  // Select-from-Detail (related issue/feature cross-links) drives the global
+  // ?sel so the swap panel follows, even when invoked from a pinned panel.
+  const onSelect = useCallback((id: string) => void setUrlSel(id || null), [setUrlSel]);
+
+  // Selection history: push the previous ?sel whenever it changes (swap panel
+  // only), so a Back affordance can retrace feature↔issue cross-links.
+  const prevSelRef = useRef<string>('');
+  useEffect(() => {
+    if (pinnedId) return;
+    if (suppressHistoryPush) {
+      suppressHistoryPush = false;
+      prevSelRef.current = urlSel;
+      return;
+    }
+    const prev = prevSelRef.current;
+    if (prev && prev !== urlSel) {
+      selHistory.push(prev);
+      if (selHistory.length > 50) selHistory.shift();
+    }
+    prevSelRef.current = urlSel;
+  }, [urlSel, pinnedId]);
+  const goBack = useCallback(() => {
+    const prev = selHistory.pop();
+    if (prev !== undefined) {
+      suppressHistoryPush = true;
+      void setUrlSel(prev || null);
+    }
+  }, [setUrlSel]);
+  const onBack = !pinnedId && selHistory.length > 0 ? goBack : undefined;
 
   // Resolve the selected item. F-* → feature, I-* → issue.
   const kind: 'feature' | 'issue' | null = useMemo(() => {
@@ -101,15 +164,95 @@ export default function DetailPanel({ params, api }: PanelComponentProps) {
     return <Empty tone="error">No item found for {selectedId}.</Empty>;
   }
 
-  if (feature) return <FeatureDetail slug={slug} feature={feature} />;
-  if (issue) return <IssueDetail slug={slug} issue={issue} />;
+  if (feature) {
+    return (
+      <FeatureDetail
+        slug={slug}
+        feature={feature}
+        issues={issues ?? []}
+        runs={Array.isArray(runRows) ? runRows : []}
+        onSelect={onSelect}
+        onBack={onBack}
+      />
+    );
+  }
+  if (issue) {
+    return <IssueDetail slug={slug} issue={issue} onSelect={onSelect} onBack={onBack} />;
+  }
   return null;
 }
 
-function FeatureDetail({ slug, feature }: { slug: string; feature: HarnessFeature }) {
+function BackChip({ onBack }: { onBack?: () => void }) {
+  if (!onBack) return null;
+  return (
+    <button type="button" className="pc-adv-detail__back" onClick={onBack} title="Back to previous selection">
+      ← Back
+    </button>
+  );
+}
+
+function FeatureDetail({
+  slug,
+  feature,
+  issues,
+  runs,
+  onSelect,
+  onBack,
+}: {
+  slug: string;
+  feature: HarnessFeature;
+  issues: Issue[];
+  runs: RunRow[];
+  onSelect: (id: string) => void;
+  onBack?: () => void;
+}) {
   const [working, setWorking] = useState<string | null>(null);
+  const [notes, setNotes] = useState<string[] | null>(null);
+  const [notesOpen, setNotesOpen] = useState(false);
 
   const tone = STATUS_TONE[feature.status] ?? STATUS_TONE.todo;
+
+  // Issues filed against this feature: linked as the fix (linkedFeatureId) or
+  // found while working on it (foundDuring).
+  const relatedIssues = useMemo(
+    () => issues.filter((i) => i.linkedFeatureId === feature.id || i.foundDuring === feature.id),
+    [issues, feature.id],
+  );
+  // Recent agent runs for this feature (consolidated row carries feature_id).
+  const featureRuns = useMemo(
+    () =>
+      runs
+        .filter((r) => r.featureId === feature.id)
+        .sort((a, b) => Date.parse(String(b.ts)) - Date.parse(String(a.ts)))
+        .slice(0, 3),
+    [runs, feature.id],
+  );
+
+  // Steer notes (operator notes for this feature). Collapsed unless populated.
+  useEffect(() => {
+    let aborted = false;
+    setNotes(null);
+    fetch(`/api/harness/${encodeURIComponent(slug)}/features/${encodeURIComponent(feature.id)}/notes`)
+      .then((r) => (r.ok ? r.json() : { blocks: [] }))
+      .then((d: { blocks?: unknown[] }) => {
+        if (aborted) return;
+        const texts = (d.blocks ?? [])
+          .map((b) => {
+            if (typeof b === 'string') return b;
+            if (b && typeof b === 'object') {
+              const o = b as Record<string, unknown>;
+              return String(o.text ?? o.body ?? o.markdown ?? o.content ?? '');
+            }
+            return '';
+          })
+          .filter((t) => t.trim().length > 0);
+        setNotes(texts);
+      })
+      .catch(() => !aborted && setNotes([]));
+    return () => {
+      aborted = true;
+    };
+  }, [slug, feature.id]);
 
   const callJson = useCallback(
     async (path: string, init?: RequestInit) => {
@@ -155,6 +298,7 @@ function FeatureDetail({ slug, feature }: { slug: string; feature: HarnessFeatur
   return (
     <div className="pc-adv-detail">
       <header className="pc-adv-detail__header">
+        <BackChip onBack={onBack} />
         <div className="pc-adv-detail__id">{feature.id}</div>
         <div className="pc-adv-detail__title">{feature.title}</div>
         <div className="pc-adv-detail__meta">
@@ -200,6 +344,68 @@ function FeatureDetail({ slug, feature }: { slug: string; feature: HarnessFeatur
           </div>
         </div>
 
+        {relatedIssues.length > 0 && (
+          <div className="pc-adv-detail__section">
+            <h3>Issues ({relatedIssues.length})</h3>
+            <div className="pc-adv-detail__related">
+              {relatedIssues.map((i) => {
+                const t = SEVERITY_TONE[i.severity] ?? SEVERITY_TONE.minor;
+                return (
+                  <button
+                    key={i.id}
+                    type="button"
+                    className="pc-adv-detail__related-row"
+                    onClick={() => onSelect(i.id)}
+                    title={i.title}
+                  >
+                    <span className="pc-adv-detail__related-id">{i.id}</span>
+                    <span className="pc-adv-detail__related-dot" style={{ background: t.fg }} />
+                    <span className="pc-adv-detail__related-title">{i.title}</span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        <div className="pc-adv-detail__section">
+          <h3>Recent activity</h3>
+          {featureRuns.length === 0 ? (
+            <p className="pc-adv-detail__muted">No agent runs for this feature yet.</p>
+          ) : (
+            <div className="pc-adv-detail__runs">
+              {featureRuns.map((r) => (
+                <div key={r.runId} className="pc-adv-detail__run">
+                  <span className="pc-adv-detail__run-role">{r.role}</span>
+                  <span className="pc-adv-detail__run-time">{fmtAgo(r.ts)}</span>
+                  {r.costUsd != null && Number(r.costUsd) > 0 && (
+                    <span className="pc-adv-detail__run-cost">${Number(r.costUsd).toFixed(2)}</span>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {notes && notes.length > 0 && (
+          <div className="pc-adv-detail__section">
+            <h3>
+              <button type="button" className="pc-adv-detail__collapse" onClick={() => setNotesOpen((o) => !o)}>
+                {notesOpen ? '▾' : '▸'} Steer notes ({notes.length})
+              </button>
+            </h3>
+            {notesOpen && (
+              <div className="pc-adv-detail__notes">
+                {notes.map((n, idx) => (
+                  <p key={idx} className="pc-adv-detail__note">
+                    {n}
+                  </p>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
         <div className="pc-adv-detail__section">
           <h3>Actions</h3>
           <div className="pc-adv-detail__actions">
@@ -227,9 +433,28 @@ function FeatureDetail({ slug, feature }: { slug: string; feature: HarnessFeatur
   );
 }
 
-function IssueDetail({ slug, issue }: { slug: string; issue: Issue }) {
+function IssueDetail({
+  slug,
+  issue,
+  onSelect,
+  onBack,
+}: {
+  slug: string;
+  issue: Issue;
+  onSelect: (id: string) => void;
+  onBack?: () => void;
+}) {
   const [working, setWorking] = useState<string | null>(null);
+  const [note, setNote] = useState('');
+  const [extraNotes, setExtraNotes] = useState<IssueNote[]>([]);
   const sevTone = SEVERITY_TONE[issue.severity] ?? SEVERITY_TONE.minor;
+
+  // Reset optimistic notes when the selected issue changes.
+  useEffect(() => {
+    setExtraNotes([]);
+  }, [issue.id]);
+
+  const allNotes = useMemo(() => [...(issue.notes ?? []), ...extraNotes], [issue.notes, extraNotes]);
 
   const runAction = useCallback(
     async (action: 'promote' | 'acknowledge' | 'close' | 'wontfix') => {
@@ -257,9 +482,32 @@ function IssueDetail({ slug, issue }: { slug: string; issue: Issue }) {
     [slug, issue.id],
   );
 
+  const addNote = useCallback(async () => {
+    const text = note.trim();
+    if (!text) return;
+    setWorking('note');
+    try {
+      const res = await fetch(`/api/harness/${encodeURIComponent(slug)}/issues/${encodeURIComponent(issue.id)}/update`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ note: text, by: 'human' }),
+      });
+      if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`);
+      // Optimistic: Zero will also push the updated issue, but show it now.
+      setExtraNotes((prev) => [...prev, { ts: new Date().toISOString(), by: 'human', text }]);
+      setNote('');
+      toast.success('Note added');
+    } catch (e) {
+      toast.error('Add note failed', { description: String(e) });
+    } finally {
+      setWorking(null);
+    }
+  }, [slug, issue.id, note]);
+
   return (
     <div className="pc-adv-detail">
       <header className="pc-adv-detail__header">
+        <BackChip onBack={onBack} />
         <div className="pc-adv-detail__id">{issue.id}</div>
         <div className="pc-adv-detail__title">{issue.title}</div>
         <div className="pc-adv-detail__meta">
@@ -268,9 +516,14 @@ function IssueDetail({ slug, issue }: { slug: string; issue: Issue }) {
           </span>
           <span className="pc-adv-detail__status">{issue.status}</span>
           {issue.linkedFeatureId && (
-            <span className="pc-adv-detail__link" title={`Linked feature: ${issue.linkedFeatureId}`}>
+            <button
+              type="button"
+              className="pc-adv-detail__link pc-adv-detail__link-btn"
+              title={`Go to linked feature ${issue.linkedFeatureId}`}
+              onClick={() => onSelect(issue.linkedFeatureId!)}
+            >
               ↗ {issue.linkedFeatureId}
-            </span>
+            </button>
           )}
         </div>
       </header>
@@ -299,6 +552,35 @@ function IssueDetail({ slug, issue }: { slug: string; issue: Issue }) {
             <code className="pc-adv-detail__pointer">{issue.codePointer}</code>
           </div>
         )}
+
+        <div className="pc-adv-detail__section">
+          <h3>Notes{allNotes.length > 0 ? ` (${allNotes.length})` : ''}</h3>
+          {allNotes.length > 0 && (
+            <div className="pc-adv-detail__notes">
+              {allNotes.map((n, idx) => (
+                <div key={idx} className="pc-adv-detail__note-row">
+                  <div className="pc-adv-detail__note-meta">
+                    {n.by} · {n.ts ? new Date(n.ts).toLocaleString() : ''}
+                  </div>
+                  <p className="pc-adv-detail__note">{n.text}</p>
+                </div>
+              ))}
+            </div>
+          )}
+          <div className="pc-adv-detail__note-form">
+            <textarea
+              value={note}
+              onChange={(e) => setNote(e.target.value)}
+              placeholder="Add a note…"
+              rows={2}
+              aria-label="Add a note"
+            />
+            <button type="button" disabled={working !== null || !note.trim()} onClick={() => void addNote()}>
+              Add note
+            </button>
+          </div>
+        </div>
+
         <div className="pc-adv-detail__section">
           <h3>Actions</h3>
           <div className="pc-adv-detail__actions">
@@ -364,6 +646,22 @@ function DetailStyles() {
         padding: 14px 18px 12px;
         border-bottom: 1px solid rgba(167, 139, 250, 0.14);
       }
+      .pc-adv-detail__back {
+        display: inline-block;
+        margin-bottom: 8px;
+        padding: 2px 8px;
+        font-size: 11px;
+        font-weight: 600;
+        color: rgba(199, 188, 252, 0.85);
+        background: rgba(20, 18, 38, 0.7);
+        border: 1px solid rgba(167, 139, 250, 0.24);
+        border-radius: 999px;
+        cursor: pointer;
+      }
+      .pc-adv-detail__back:hover {
+        background: rgba(31, 23, 56, 0.96);
+        border-color: rgba(167, 139, 250, 0.5);
+      }
       .pc-adv-detail__id {
         font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
         font-size: 11px;
@@ -406,6 +704,17 @@ function DetailStyles() {
         color: rgba(199, 188, 252, 0.78);
         font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
       }
+      .pc-adv-detail__link-btn {
+        background: none;
+        border: none;
+        padding: 0;
+        cursor: pointer;
+        text-decoration: underline;
+        text-underline-offset: 2px;
+      }
+      .pc-adv-detail__link-btn:hover {
+        color: #ddd6fe;
+      }
       .pc-adv-detail__body {
         flex: 1;
         overflow: auto;
@@ -422,6 +731,16 @@ function DetailStyles() {
         letter-spacing: 0.11em;
         color: rgba(199, 188, 252, 0.72);
       }
+      .pc-adv-detail__collapse {
+        background: none;
+        border: none;
+        padding: 0;
+        font: inherit;
+        text-transform: uppercase;
+        letter-spacing: 0.11em;
+        color: rgba(199, 188, 252, 0.72);
+        cursor: pointer;
+      }
       .pc-adv-detail__prose {
         margin: 0;
         font-size: 13px;
@@ -434,6 +753,122 @@ function DetailStyles() {
         font-size: 12px;
         font-style: italic;
         color: rgba(220, 214, 248, 0.5);
+      }
+      .pc-adv-detail__related {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+      }
+      .pc-adv-detail__related-row {
+        display: grid;
+        grid-template-columns: auto auto 1fr;
+        gap: 8px;
+        align-items: center;
+        padding: 5px 8px;
+        font-size: 12px;
+        text-align: left;
+        color: rgba(220, 214, 248, 0.86);
+        background: rgba(20, 18, 38, 0.6);
+        border: 1px solid rgba(167, 139, 250, 0.14);
+        border-radius: 6px;
+        cursor: pointer;
+      }
+      .pc-adv-detail__related-row:hover {
+        background: rgba(31, 23, 56, 0.9);
+        border-color: rgba(167, 139, 250, 0.4);
+      }
+      .pc-adv-detail__related-id {
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 11px;
+        color: rgba(199, 188, 252, 0.78);
+      }
+      .pc-adv-detail__related-dot {
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+      }
+      .pc-adv-detail__related-title {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        color: #f7f5ff;
+      }
+      .pc-adv-detail__runs {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+      }
+      .pc-adv-detail__run {
+        display: flex;
+        gap: 10px;
+        align-items: baseline;
+        font-size: 12px;
+      }
+      .pc-adv-detail__run-role {
+        font-weight: 600;
+        color: #c4b5fd;
+        min-width: 80px;
+      }
+      .pc-adv-detail__run-time {
+        color: rgba(220, 214, 248, 0.55);
+      }
+      .pc-adv-detail__run-cost {
+        margin-left: auto;
+        color: rgba(220, 214, 248, 0.5);
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      }
+      .pc-adv-detail__notes {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+      }
+      .pc-adv-detail__note-row {
+        border-left: 2px solid rgba(167, 139, 250, 0.3);
+        padding-left: 10px;
+      }
+      .pc-adv-detail__note-meta {
+        font-size: 10px;
+        color: rgba(220, 214, 248, 0.5);
+        margin-bottom: 2px;
+      }
+      .pc-adv-detail__note {
+        margin: 0;
+        font-size: 12px;
+        line-height: 1.5;
+        white-space: pre-wrap;
+        color: #f7f5ff;
+      }
+      .pc-adv-detail__note-form {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        margin-top: 8px;
+      }
+      .pc-adv-detail__note-form textarea {
+        width: 100%;
+        resize: vertical;
+        padding: 6px 8px;
+        font: inherit;
+        font-size: 12px;
+        background: rgba(20, 18, 38, 0.96);
+        color: #f7f5ff;
+        border: 1px solid rgba(167, 139, 250, 0.24);
+        border-radius: 6px;
+      }
+      .pc-adv-detail__note-form button {
+        align-self: flex-start;
+        padding: 5px 12px;
+        font-size: 12px;
+        font-weight: 600;
+        background: rgba(20, 18, 38, 0.7);
+        color: #f7f5ff;
+        border: 1px solid rgba(167, 139, 250, 0.3);
+        border-radius: 6px;
+        cursor: pointer;
+      }
+      .pc-adv-detail__note-form button:disabled {
+        opacity: 0.45;
+        cursor: default;
       }
       .pc-adv-detail__code {
         margin: 0;
