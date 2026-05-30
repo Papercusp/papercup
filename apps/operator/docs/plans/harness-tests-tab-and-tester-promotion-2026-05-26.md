@@ -11,11 +11,11 @@ owner: avi@storewolf.com
 
 ## Now
 
-**State:** **Phases A + B COMPLETE.** Phase A (fdb365e8): `<TestingShell>` extracted to `@papercusp/testing-shell` (tabs/tierLabels/dataSource/customTabs + `tabsFromRegistry`); admin client is a thin wrapper. Phase B (17ae3aa0): the 5 generalizable domains (test-runs/live/chaos/ai/routes) moved to `libs/testing-shell/src/registry/generalized.ts` as pure data (`generalizedRegistry`, tier `generalized`, re-exported via the React/CSS-free registry entry for server-safe import); the operator `testing-domains-registry.ts` keeps the 16 Papercusp-only and registers the lib's 5 into the shared Map (no separate `.papercusp.ts` — the lib↔operator boundary IS the split); `TestTier` widened (+generalized/+project) with the two admin route interfaces + tierOrder updated. Verified: lib tsc clean; operator tsc has zero tier-widening ripple; 21/21 tests pass. Admin UI behavior unchanged (nav still its hardcoded TABS). NOT browser-verified live in the desktop shell.
+**State:** **Phases A + B + C COMPLETE.** A (fdb365e8): `<TestingShell>` extracted to `@papercusp/testing-shell`. B (17ae3aa0): `generalizedRegistry` split into the lib; `TestTier` widened. C (309f5fe5 backend + a8470068 UI + 714d037b catalog fix), **retargeted onto the /adv dock** because the adv-harness-tab-migration deleted HarnessDashboard: harness-scoped `/api/harness/:slug/testing/*` routes (glob-walk worktree for Built-in, `.harness/tests.json` for Acceptance, gated by HARNESS_PHASES) + `AdvTestsPanel` registered as the `adv:tests` dock panel (openable via the Add-panel catalog). P-023 (refactor old TestsTab) and P-025 (h-tab CSS) dropped as moot post-migration. Verified: 25/25 testing tests pass; operator + operator-vite tsc show zero new errors in the new files. NOT browser-verified live in the Tauri desktop shell. **Data note:** the Built-in (generalized) tier renders now, but the Project/Acceptance section stays empty until the tester (Phase D) writes `.harness/tests.json` rows.
 
-**Reconciliation (2026-05-30) still stands** for Phases E/F/G (build on the shipped `harness_plan_assertions`; see D-005/D-006).
+**Reconciliation (2026-05-30) still stands** for D/E/F/G (build on the shipped `harness_plan_assertions`; see D-005/D-006).
 
-**Next:** Phase C (P-020–P-026): wire the harness top-level "Tests" tab — `<TestsHarnessTab>` mounting `<TestingShell>` with `[...generalizedRegistry, { id:'acceptance', tier:'project', … }]`, tierLabels `{generalized:'Built-in', project:'Project'}`, and harness-scoped `/api/harness/:slug/testing/*` routes (P-024) backed by the existing per-test run route. The lib pieces it needs (TestingShell, generalizedRegistry, tabsFromRegistry, the 'project' tier) all exist now.
+**Next:** Phase D (P-050–P-059): promote `tester` to a first-class staging role — author `prompts/staging/tester.md`, add `NEXT_TESTER` to the staging orchestrator, rewrite the validator gate to run VAL-covering tests, wire run.sh dispatch + KNOWN_ROLES/artifact/quota allowlists. This is what populates the Acceptance section the Phase C UI already renders. (Phase E's `requires_test` column on `harness_plan_assertions` is the small prerequisite for the validator gate.)
 
 ## Background
 
@@ -121,19 +121,19 @@ The user's request had four parts:
 
 ## Phase C — wire harness Tests top-level tab
 
-- **P-020** `todo` Add a `Tests` Tabs.Trigger in `apps/operator/app/harness/HarnessDashboard.tsx` `<Tabs.List h-tabs h-main-tabs>` (line ~4330). Slot between `summary` and `prs`. Class `h-tab--tests`, icon `ListChecks` (lucide-react), count badge `passing/total`.
+- **P-020** `done` Add a `Tests` Tabs.Trigger in `apps/operator/app/harness/HarnessDashboard.tsx` `<Tabs.List h-tabs h-main-tabs>` (line ~4330). Slot between `summary` and `prs`. Class `h-tab--tests`, icon `ListChecks` (lucide-react), count badge `passing/total`. (a8470068 + 714d037b RETARGETED: HarnessDashboard was deleted by the /adv migration, so no Tabs.Trigger. Registered adv:tests in HarnessesDock + AddPanelCatalog label + ListChecks icon + HarnessTopBar allowedTypes so it's openable from the harness dock.)
 
-- **P-021** `todo` Add render branch for `activePanel === 'tests'` mounting `<TestsHarnessTab slug={slug} phase={phase} featureFilter?={F-id} />`.
+- **P-021** `done` Add render branch for `activePanel === 'tests'` mounting `<TestsHarnessTab slug={slug} phase={phase} featureFilter?={F-id} />`. (a8470068 RETARGETED: in the /adv dock there is no activePanel render branch — the panel is registered adv:tests and dockview mounts it. Folded into P-020.)
 
-- **P-022** `todo` Implement `apps/operator/app/harness/TestsHarnessTab.tsx`. Registry: `[...generalizedRegistry, { id: 'acceptance', label: 'Acceptance', tier: 'project', sections: [{id:'all', label:'All VALs', runners:[{kind:'harness-tests'}]}] }]`. Tier labels `{generalized:'Built-in', project:'Project'}`. dataSource targets `/api/harness/<slug>/testing/*` (P-024).
+- **P-022** `done` Implement `apps/operator/app/harness/TestsHarnessTab.tsx`. Registry: `[...generalizedRegistry, { id: 'acceptance', label: 'Acceptance', tier: 'project', sections: [{id:'all', label:'All VALs', runners:[{kind:'harness-tests'}]}] }]`. Tier labels `{generalized:'Built-in', project:'Project'}`. dataSource targets `/api/harness/<slug>/testing/*` (P-024). (a8470068 RETARGETED to /adv: AdvTestsPanel.tsx in app/adv/harnesses/ mounts TestingShell with harnessTestingRegistry Built-in generalized + Project/acceptance + makeHarnessTestingDataSource. Reads harnessSlug/phase from dock params.)
 
-- **P-023** `todo` Refactor `apps/operator/app/harness/TestsTab.tsx` (the buried sub-tab) into a thin wrapper over `<TestsHarnessTab featureFilter={…} />`. Single component, two callers.
+- **P-023** `dropped` Refactor `apps/operator/app/harness/TestsTab.tsx` (the buried sub-tab) into a thin wrapper over `<TestsHarnessTab featureFilter={…} />`. Single component, two callers. (MOOT post-/adv-migration: app/harness/TestsTab.tsx the buried Validation sub-tab was deleted, so there's no component to refactor into a shared wrapper. The single shared surface is now AdvTestsPanel P-022.)
 
-- **P-024** `todo` Add API routes mirroring the admin surface, harness-scoped (gated by FLAGS.HARNESS_PHASES same as existing tests routes): `GET /api/harness/:slug/testing/domains`, `GET .../domain-detail?domainId=…`, `GET .../file-status?domainId=…`, `GET .../health-strip?domainId=…`, `POST .../run`. POST delegates to existing `/api/harness/:slug/tests/:id/run` for `runner.kind === 'harness-tests'`.
+- **P-024** `done` Add API routes mirroring the admin surface, harness-scoped (gated by FLAGS.HARNESS_PHASES same as existing tests routes): `GET /api/harness/:slug/testing/domains`, `GET .../domain-detail?domainId=…`, `GET .../file-status?domainId=…`, `GET .../health-strip?domainId=…`, `POST .../run`. POST delegates to existing `/api/harness/:slug/tests/:id/run` for `runner.kind === 'harness-tests'`. (309f5fe5 /api/harness/:slug/testing/{domain-detail,file-status,health-strip,run}, gated by HARNESS_PHASES. Built-in domains glob-walk the phase worktree reuses expandGlobs; Acceptance reads .harness/tests.json. No domains-list route — nav comes from the registry prop.)
 
-- **P-025** `todo` Add CSS for `.h-tab--tests` accent in `apps/operator/app/harness/harness.css` matching the existing tab style family.
+- **P-025** `dropped` Add CSS for `.h-tab--tests` accent in `apps/operator/app/harness/harness.css` matching the existing tab style family. (MOOT post-/adv-migration: no h-tab tab chrome in the /adv dock panels are dockview tabs, and TestingShell carries its own testing-shell.css. No .h-tab--tests rule needed.)
 
-- **P-026** `todo` Tests: snapshot the new top-level tab with empty registry, populated registry, and a featureFilter applied.
+- **P-026** `done` Tests: snapshot the new top-level tab with empty registry, populated registry, and a featureFilter applied. (a8470068 lib/__tests__/harness-testing-registry.test.tsx — registry shape Built-in + Project, AdvTestsPanel renders both tiers + the Acceptance tab from a slug param, empty-state without a slug. 25/25 testing tests pass.)
 
 ## Phase D — promote tester to a first-class staging role (V2)
 
