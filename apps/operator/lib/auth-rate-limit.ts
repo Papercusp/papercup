@@ -55,7 +55,7 @@ const STALE_AFTER_MS = DEFAULT_STALE_AFTER_MS;
 const pgStore: BucketStore = {
   async read(key: string): Promise<StoredBucket> {
     const { sql } = getOrgPg();
-    const rows = await sql<{ payload: BucketPayload; updated_at: string }>`
+    const rows = await sql<{ payload: BucketPayload; updated_at: string }[]>`
       SELECT payload, updated_at FROM harness_shared.auth_rate_limit WHERE key = ${key} LIMIT 1
     `;
     return rows.length === 0 ? null : (rows[0].payload as StoredBucket);
