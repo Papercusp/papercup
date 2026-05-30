@@ -38,11 +38,18 @@ export const ADV_TABS: ReadonlyArray<{
   icon: ComponentType<{ size?: number; 'aria-hidden'?: boolean }>;
   accent: string;
   accentRgb: string;
+  /**
+   * Tab renders something meaningful under scope=all (workspace-wide):
+   * Plans + Sessions aggregate across every harness, and the Harness
+   * grid is itself a workspace overview. Every other tab is per-harness
+   * and is hidden from the strip when "All harnesses" is selected.
+   */
+  supportsAll?: boolean;
 }> = [
   { id: 'brainstorm', label: 'Brainstorm', icon: Lightbulb, accent: '#38bdf8', accentRgb: '56, 189, 248' },
-  { id: 'plans', label: 'Plans', icon: ListChecks, accent: '#f59e0b', accentRgb: '245, 158, 11' },
-  { id: 'sessions', label: 'Sessions', icon: Terminal, accent: '#f472b6', accentRgb: '244, 114, 182' },
-  { id: 'harnesses', label: 'Harness', icon: Boxes, accent: '#a78bfa', accentRgb: '167, 139, 250' },
+  { id: 'plans', label: 'Plans', icon: ListChecks, accent: '#f59e0b', accentRgb: '245, 158, 11', supportsAll: true },
+  { id: 'sessions', label: 'Sessions', icon: Terminal, accent: '#f472b6', accentRgb: '244, 114, 182', supportsAll: true },
+  { id: 'harnesses', label: 'Harness', icon: Boxes, accent: '#a78bfa', accentRgb: '167, 139, 250', supportsAll: true },
   { id: 'git', label: 'Git', icon: GitBranch, accent: '#22c55e', accentRgb: '34, 197, 94' },
   { id: 'docs', label: 'Docs', icon: BookOpen, accent: '#60a5fa', accentRgb: '96, 165, 250' },
   { id: 'insights', label: 'Insights', icon: TrendingUp, accent: '#14b8a6', accentRgb: '20, 184, 166' },
@@ -154,6 +161,17 @@ export default function AdvShell({
   const allMode = scopeMode === 'all';
   const singleSlug = allMode ? null : activeSlug;
 
+  // Under "all", only the workspace-wide tabs are shown. If a per-harness
+  // tab was active when "all" was picked (or someone deep-links
+  // ?tab=insights&scope=all), bounce to Plans so the strip selection
+  // stays valid and the body doesn't render a dead per-harness panel.
+  const visibleTabs = allMode ? ADV_TABS.filter((t) => t.supportsAll) : ADV_TABS;
+  useEffect(() => {
+    if (!allMode) return;
+    if (visibleTabs.some((t) => t.id === activeTab)) return;
+    void setActiveTab('plans');
+  }, [allMode, activeTab, visibleTabs, setActiveTab]);
+
   return (
     <div className="pc-advshell">
       <header className="pc-advshell__header">
@@ -229,7 +247,7 @@ export default function AdvShell({
         {/* Tab strip */}
         <Tabs.Root value={activeTab} onValueChange={(value) => void setActiveTab(value as AdvTabId)} className="pc-advshell__tabs">
           <Tabs.List ref={tablistRef} className="pc-advshell__tablist" aria-label="Adv sections">
-            {ADV_TABS.map((t) => {
+            {visibleTabs.map((t) => {
               const Icon = t.icon;
               return (
                 <Tabs.Trigger
