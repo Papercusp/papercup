@@ -1,7 +1,7 @@
 /**
  * Resolve the harness-admin Postgres URL the operator should connect to.
  *
- * Resolution order:
+ * Resolution order (delegated to @papercusp/embedded-pg-discovery):
  *   1. Explicit env (HARNESS_ADMIN_DATABASE_URL > DATABASE_URL > PAPERCUSP_PG_URL)
  *      — operator inside the desktop sidecar always hits this path because
  *      Tauri main injects HARNESS_ADMIN_DATABASE_URL with the embedded port.
@@ -9,12 +9,13 @@
  *      desktop's Rust main when embedded-pg comes up. Lets a `npm run dev`
  *      operator share state with a running desktop.
  *   3. Fallback: native PG on :5432 with the standard harness_admin creds.
- *      Same string as before; preserves zero-config dev for users who
- *      don't run the desktop.
+ *      Preserves zero-config dev for users who don't run the desktop.
+ *
+ * This module is the Papercusp-specific *configuration* of the generic
+ * @papercusp/embedded-pg-discovery resolver (P-003 of
+ * papercusp-systems-abstraction-2026-05-29) plus the in-process cache.
  */
-import * as fs from 'node:fs';
-import * as path from 'node:path';
-import * as os from 'node:os';
+import { resolvePgUrl } from '@papercusp/embedded-pg-discovery';
 
 const NATIVE_FALLBACK = 'postgresql://harness_admin:harness_admin_pwd@localhost:5432/papercusp';
 
@@ -27,28 +28,15 @@ export function getHarnessAdminUrl(): string {
 export function getHarnessAdminUrlWithSource(): { url: string; source: string } {
   if (cached) return cached;
 
-  const fromEnv =
-    process.env.HARNESS_ADMIN_DATABASE_URL ??
-    process.env.DATABASE_URL ??
-    process.env.PAPERCUSP_PG_URL;
-  if (fromEnv) {
-    cached = { url: fromEnv, source: 'env' };
-    return cached;
-  }
+  const { url, source } = resolvePgUrl({
+    envVars: ['HARNESS_ADMIN_DATABASE_URL', 'DATABASE_URL', 'PAPERCUSP_PG_URL'],
+    discoveryFile: { path: '.papercusp/embedded-pg.json' },
+    fallbackUrl: NATIVE_FALLBACK,
+  });
 
-  const discoveryPath = path.join(os.homedir(), '.papercusp', 'embedded-pg.json');
-  try {
-    const raw = fs.readFileSync(discoveryPath, 'utf8');
-    const parsed = JSON.parse(raw) as { url?: string; port?: number };
-    if (parsed?.url) {
-      cached = { url: parsed.url, source: 'discovery-file' };
-      return cached;
-    }
-  } catch {
-    // file missing or unparseable — fall through
-  }
-
-  cached = { url: NATIVE_FALLBACK, source: 'native-fallback' };
+  // Preserve the historical source label for the native fallback so any
+  // diagnostics/log assertions keyed on 'native-fallback' keep working.
+  cached = { url, source: source === 'fallback' ? 'native-fallback' : source };
   return cached;
 }
 

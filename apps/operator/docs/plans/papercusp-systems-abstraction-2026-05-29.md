@@ -33,10 +33,14 @@ one shared one. Out of scope (other teams): endpoint/`defineTool`
 ([[papercusp-tooldef-extraction-2026-05-29]]) and the chat system
 (`@restart/agent-chat` + `libs/papercup-shared/src/agent/chat-stream.ts`).
 
-**Next:** a human confirms bundling (P-000, needs-human). Then Phase 1 — the
-three genuinely-pure extractions (`rrf`, `embedded-pg-discovery`, `plan-parser`)
-that need **no** seam at all — can start immediately and in parallel; they are
-the proof-of-pattern. Everything else defines its own per-subsystem seam (D-010).
+**Next:** Phase 1 is **shipped** (P-002/P-003/P-022 — see Addendum) and P-001
+(the per-subsystem seam map) is **written** (final section). Phase 2 *code* work
+is now fully spec'd but gated on two things outside this plan: (1) the canonical
+checkout returning to `main` (it drifted onto `feat/psu-wrappers` during Phase 1),
+and (2) paperclip pausing, since the heavy moves (locks ~2.4K LOC, coordination
+~4.5K LOC) need a quiet checkout. Lowest-risk-first order once unblocked:
+`rate-limit` → `backup` → `ipc-framing`/`desktop-ipc` → `locks`/`coordination`/
+`search`/`memory`. P-000 (bundling) still needs a human but doesn't block.
 
 ## Background
 
@@ -222,12 +226,15 @@ two SEPARATE storage components**, not one dual-backend interface:
 - **P-000** `needs-human` Confirm the bundling decision (D-002): ship as ~4
   bundles vs. one package per system. This sets every package boundary
   downstream. → D-001 D-002
-- **P-001** `todo` Write the per-subsystem seam map (NOT one shared seam — that
+- **P-001** `done` Write the per-subsystem seam map (NOT one shared seam — that
   was refuted, D-003/D-010): for each Population-B target, the exact injection
   interface it needs. Define the one genuinely-shared optional primitive — a
   minimal `PgHandle { sql }` — for the `getOrgPg`-based consumers (backup,
-  auth-rate-limit, coord presence, memory side-effects). This is documentation +
-  one tiny type, NOT a blocking gate; Phase 1 does not depend on it. → D-003 D-010
+  auth-rate-limit, coord presence, memory side-effects). **Done** — see the
+  "P-001 — Per-subsystem seam map" section at the end of this plan; specs every
+  remaining seam (locks/coord/search/memory/backup/desktop-IPC/rate-limit) +
+  the `PgHandle` primitive, grounded in the real `FileClaimCoordinator` interface
+  (5 methods: acquire/release/extend/heartbeat/reap). → D-003 D-010
 
 ## Phase 1 — Pure extractions (no seam needed; can start now, in parallel)
 
@@ -244,13 +251,13 @@ two SEPARATE storage components**, not one dual-backend interface:
   rewires. Note: root `npm install` is blocked by a PRE-EXISTING
   `@blocknote/mantine` ERESOLVE — symlink `node_modules/@papercusp/rrf` directly
   or use `--legacy-peer-deps`. → D-001
-- **P-003** `todo` Extract `@papercusp/embedded-pg-discovery` from
+- **P-003** `done` Extract `@papercusp/embedded-pg-discovery` from
   `lib/embedded-pg-discovery.ts` (58 LOC, NONE coupling). **Audit correction:** it
   is NOT currently parameterizable — discovery path (`~/.papercusp/embedded-pg.json`),
   env-var names, and the native-fallback DB name (`papercusp`) are all hardcoded.
   Add a config/DI surface for those three; keep `getHarnessAdminUrl()` (used by
   11 call-sites) as the Papercusp-configured wrapper. → D-001
-- **P-022** `todo` Extract `@papercusp/plan-parser` — the **pure tier only**:
+- **P-022** `done` Extract `@papercusp/plan-parser` — the **pure tier only**:
   `parser.ts` + `effective-status.ts` + `content-hash.ts` (609 LOC, verified zero
   domain imports). **Audit correction:** `lint.ts` is NOT pure — it imports
   `source.ts` (harness file discovery), so lint stays in-app. The full lifecycle
@@ -483,3 +490,258 @@ injection interface.** The only genuinely shared artifacts are the `file-claim`
 `WorkspaceStore` that unlocks the cluster; P-001 is documentation of the per-
 subsystem seams, not a blocking gate, and Phase 1 (rrf / embedded-pg-discovery /
 plan-parser) needs no seam at all.
+
+## Addendum — Phase 1 shipped (2026-05-30) + impact on in-flight plans
+
+Phase 1 (the three no-seam pure extractions) is **done and on `main`**. This
+records exactly what changed and how it affects the four plans whose agents were
+paused for this extraction window.
+
+### What shipped
+
+| Item | Package | Commit | Approach | Consumer impact |
+|---|---|---|---|---|
+| **P-002** | `@papercusp/rrf` | `f7f39bf5` | move + rewire | `search/semantic.ts` and `endpoint-route/routes/user/search.ts` now import `rrfCombine`/`RRF_K_DEFAULT` from `@papercusp/rrf`; old `agent-tools/search/rrf.ts` **deleted** |
+| **P-003** | `@papercusp/embedded-pg-discovery` | `68e5116a` | wrapper | none — `lib/embedded-pg-discovery.ts` is now a thin wrapper around `resolvePgUrl({envVars,discoveryFile,fallbackUrl})`; all `getHarnessAdminUrl` callers untouched |
+| **P-022** | `@papercusp/plan-parser` | `e96f63f3` | move + re-export shim | none — `plans/{parser,effective-status,content-hash}.ts` are now one-line re-exports of the package; ~24 in-plans consumers resolve unchanged |
+
+17 package tests green (7 + 5 + 5); all three resolve from the operator. Pattern
+for all three: a new `packages/<name>/` with **src-as-entry** (no build step,
+mirrors `@papercusp/docs-engine`), the package owns its vitest suite, and
+`node_modules/<pkg>` is **symlinked directly** because root `npm install` is
+blocked by a **pre-existing `@blocknote/mantine` ERESOLVE** (unrelated to this
+work — don't chase it; use the symlink or `--legacy-peer-deps`).
+
+### Two known follow-ups (not blockers)
+
+- **P-013** (already in Phase 3): `search/semantic.ts` + `search.ts` read
+  `ctx.tx` unconditionally though it's optional — a latent null-deref. Untouched
+  by P-002 (import-only change); still owed before the search package extraction.
+- **P-023b** (new): rewire the ~24 `plan-parser` consumers to import
+  `@papercusp/plan-parser` directly and delete the three re-export shims.
+  Deferred because paperclip was actively `git add -A`-committing the shared
+  checkout during this window, making a 24-file rewire unsafe to land atomically.
+
+### Impact on the four paused plans
+
+- **`search-STATUS-2026-05-29`** — **directly affected**. RRF is no longer a
+  local module: any work on `search/semantic.ts` or
+  `endpoint-route/routes/user/search.ts` must import from `@papercusp/rrf` (not
+  `./rrf`, which is gone). The hybrid-search source-registry + embedder-DI +
+  `ctx.tx` cleanup remain this plan's territory — coordinate against P-013/P-020
+  here so we don't collide; RRF itself is now settled upstream.
+- **`scout-refactor-STATUS-2026-05-29`** and
+  **`data-fetch-surfaces-strategy-2026-05-29`** — search/retrieval-adjacent. No
+  files of theirs changed, but if either touches the search ranking path, the
+  same "import RRF from `@papercusp/rrf`" rule applies and the `ctx.tx` (P-013)
+  hazard is live in that surface.
+- **`papercusp-tooldef-extraction-2026-05-29`** (companion) — no conflict, and a
+  small upside: `@papercusp/embedded-pg-discovery` is now a clean PG-dep-free
+  package and `@papercusp/plan-parser` is importable without the operator, both
+  consistent with that plan's D-007 goal ("core has zero `@papercusp`/`@restart`/
+  PG deps").
+
+No edits were made to the four plans themselves; this addendum is the single
+source of truth for the cross-plan effect. Agents resuming those plans should
+read it first.
+
+## P-001 — Per-subsystem seam map (the Phase-2 contract specs)
+
+The corrected replacement for the refuted single-`WorkspaceStore` idea (D-003 →
+D-010). There is **no shared seam**; each remaining Population-B subsystem gets
+its **own** injection interface, derived from the per-component code audit. The
+signatures below are the *design target* — each extraction still re-reads its
+source before coding (the discipline that caught the keystone error), but this
+is the contract to build to.
+
+### The template (every seam follows it)
+
+`@papercusp/file-claim` is the proven shape, verified against
+`libs/papercusp/packages/file-claim/src/index.ts`:
+
+- A **vocabulary-only package** — types + a conformance suite, importing nothing
+  from any backend. Backends import *it*; the dependency is one-way, so a new
+  backend (Redis/etcd/in-memory) joins by satisfying the shape.
+- The real `FileClaimCoordinator` is **5 methods** — `acquire` / `release` /
+  `extend` / `heartbeat` / `reap` (verified directly in the source; an earlier
+  draft of this section wrongly "corrected" it to 4 with an invented `inspect` —
+  the sub-agent audit was right here. Quote the source, not your memory of it.)
+  Notable contract details from the header: `extend` returns a *fresh* claim
+  (never mutates the input), `release` is idempotent, empty-path acquire is legal,
+  `acquire` carries `waitMs` so blocking and try-only backends share one method.
+- Every extracted seam ships an **in-memory implementation** that passes the
+  *same* conformance suite as the production (PG/fs) one — that's the P-050 gate.
+
+### The one optional shared primitive — `PgHandle`
+
+Not a transaction/unit-of-work (that was the D-003 mistake). Just a query handle:
+
+```ts
+interface PgHandle { sql: <T = Row>(strings: TemplateStringsArray, ...vals: unknown[]) => Promise<T[]> }
+```
+
+Consumed by the four **mechanism-(c)** subsystems (raw `getOrgPg()`, no txn):
+backup settings, auth-rate-limit, coord `PresenceStore`, memory side-effects.
+The operator passes `{ sql: getOrgPg().sql }`; tests pass a Map-backed fake or a
+testcontainer handle. **Not** consumed by locks (own pool/DB) or memory-core
+(mem0 owns its connection).
+
+### locks → `@papercusp/locks` (P-010) — seam: NONE NEW
+
+Already `implements FileClaimCoordinator`. Extract **as-is**: keep the dedicated
+`papercusp_su` connection pool, the locks-local `inWorkspaceTxn`, and the
+`pg_advisory_xact_lock` serialization (mechanism (b)) — a shared handle *cannot*
+provide these. The caller supplies only an opaque `coordinationDomain: string`
+(today = workspace UUID). The `@papercusp/file-claim` conformance suite + the
+in-process `FileLockQueue` are the ready-made double. **Do not** inject a
+`PgHandle`/`WorkspaceStore`. Stays in operator: the `papercusp_su` bootstrap +
+identity→ownerId resolution.
+
+### coordination → `@papercusp/coordination` (P-011, P-012; D-009) — 3 pieces
+
+1. **`coord-core`** (pure, no seam): `resolveAgentIdentity`/`AgentIdentity`,
+   `CoordEnvelope`/`newMsgId`/`CoordKind`, and the protocol logic (handoff state
+   machine, escalation severities + resolve, watermark merge, `patternToRegex`,
+   thread graph traversal, inbox filter predicates). Zero I/O.
+2. **`CoordEventLog`** seam — the append-only channel surfaces:
+   ```ts
+   interface CoordEventLog {
+     append(surface: string, line: CoordEnvelope): Promise<void>;
+     readAll(surface: string): Promise<CoordEnvelope[]>;
+   }
+   ```
+   Ships `FsCoordLog` (default, portable — per-sender JSONL under `coord/`, the
+   detached-mode path) + an optional PG-backed log. Covers messages/acks/
+   handoffs/escalations/watermarks/subscriptions/plan-events. **Prereq P-012:**
+   migrate `escalations.resolveEscalation` from in-place mutation to an
+   `escalation_resolved` append so the log is cleanly append-only (and therefore
+   honestly PG-swappable).
+3. **`PresenceStore`** seam — the PG upsert + roster-join (mechanism (c), takes a
+   `PgHandle`), kept **separate** from the event log because it's a different
+   data model (D-009):
+   ```ts
+   interface PresenceStore {
+     write(identity: AgentIdentity, input: PresenceInput): Promise<void>; // upsert
+     touchHeartbeat(ownerId: string): Promise<void>;                      // UPDATE
+     clear(ownerId: string): Promise<void>;                               // DELETE
+     list(opts: { workspaceId?: string | null }): Promise<PresenceRecord[]>; // SELECT … LEFT JOIN roster
+     get(ownerId: string): Promise<PresenceRecord | null>;
+   }
+   ```
+   The roster table (`power_user_sessions`) is a config arg to the PG impl.
+   Stays in operator: `coord/` path resolution, roster ownership, MCP wiring.
+   Doubles: in-memory `CoordEventLog` (Map of arrays) + in-memory `PresenceStore`
+   (Map of rows).
+
+### search → `@papercusp/search` (P-013 prereq, P-020) — 3 seams
+
+**Prereq P-013:** fix the unconditional `ctx.tx` read (latent null-deref) so the
+package has a defined DB contract before extraction. Reuses the already-shipped
+`@papercusp/rrf` for fusion. Seams:
+
+1. **`SearchSource`** registry — replaces the 4 hardcoded `escalations/brainstorm/
+   turns/decisions` branches:
+   ```ts
+   interface SearchSource {
+     key: string;            // 'escalations'
+     table: string;          // 'harness_shared.harness_escalations'
+     tsvColumn: string;      // BM25 tsvector column
+     vecColumn?: string;     // pgvector column (omit → BM25-only for this source)
+     toHit: (row: Row) => Hit;
+   }
+   ```
+2. **`EmbedderProvider`** — `(text: string) => Promise<number[] | null>` (null →
+   BM25-only fallback). Replaces the hard-imported `readCredentials` +
+   `loadVoicePrefs` cascade.
+3. **`PgHandle`** — replaces `ctx.tx`.
+
+Stays in operator: the 4 concrete `SearchSource` registrations, the embedder-mode
+resolution, MCP wiring. Doubles: Map-backed `PgHandle` over fixture rows +
+identity embedder.
+
+### memory → `@papercusp/memory` (P-021) — 3 seams + 1 optional
+
+**Not** a `PgHandle`/`WorkspaceStore` for the core: mem0 (`mem0ai`, external dep)
+owns its own `pg.Client` at construction (mechanism (d)). Seams:
+
+1. **`PgDiscovery`** — `() => Promise<{host,port,user,password,database}>`
+   (replaces `getHarnessAdminUrl`; can be produced by `@papercusp/embedded-pg-discovery`).
+2. **`EmbedderProvider`** — OpenAI/local/disabled (same shape as search's → a
+   future shared `@papercusp/embedder` could serve both).
+3. **`VectorStoreProvider`** — canonical pgvector vs mem0 in-process.
+4. *(optional)* **`LlmJudge`** — dedup `(a, b) => Promise<boolean>`; default no-op
+   (feature-flagged off today, `PAPERCUSP_MEMORY_DEDUP`).
+
+Scoping (`user:`/`harness:`) is **caller-supplied, not a seam**. Stays in
+operator: `detect-harness-slug.ts`, the pre-turn `buildMemoryContextBlock`
+wiring, `getSessionUserOrDefault`. Doubles: in-memory VectorStoreProvider +
+identity embedder + no-op judge.
+
+### backup → `@papercusp/backup` (P-023, P-024) — seam is host-config, NOT a tx
+
+Dominant coupling is the **workspace-root filesystem path** (the kopia repo lives
+at `<workspaceRoot>/backups/kopia-repo`); PG access is raw `getOrgPg()` with no
+transaction (mechanism (c)). Seam:
+
+```ts
+interface BackupHost {
+  workspaceRoot: string;   // anchors kopia repo + pre-snapshot pglite hook
+  workspaceId: string;     // settings/event row key
+  pg: PgHandle;            // settings: harness_shared.workspace_backup_settings; events: backup_events
+  kopiaBin?: string;       // default 'kopia'
+}
+```
+
+**P-024:** externalize the `SnapshotTriggerReason` enum (`pre_destructive`/
+`post_run`/`plugin_install`/`secret_change`/…) into a caller-registered trigger
+registry so the package isn't bound to harness lifecycle events. **Keep** the
+load-bearing self-exclusion guard — `IGNORE_PATTERNS` must contain `backups`,
+enforced every snapshot by `assertSelfExclusionPolicy` (else the kopia repo
+recursively snapshots itself toward 1TB). Doubles: `PgHandle` fake + a temp
+`workspaceRoot`; kopia stubbed in unit, real in integration.
+
+### desktop-IPC → 3 packages (P-030; D-006)
+
+1. **`@papercusp/ipc-framing`** — `framing.ts`, pure binary codec, zero coupling,
+   no seam (property-test the encode/decode roundtrip).
+2. **`@papercusp/desktop-ipc`** — `desktop-bootstrap.ts` (`IpcEventSource`,
+   `ipcFetch`, `installDesktopIpcPolyfills`) + `ipc-fetch`/`ipc-event-source`/
+   `ipc-stream`. Verified zero Papercusp coupling; no seam (pure transport).
+3. **`@papercusp/ipc-endpoint-server`** — `endpoint-ipc/server.ts`, already
+   DI-shaped (`DispatchProjectedDeps`); needs **four** injected deps, not one:
+   ```ts
+   interface IpcEndpointServerDeps {
+     dispatch: typeof dispatchProjectedToolStream;
+     lookupByMcpName: (name: string) => ProjectedTool | undefined;
+     getWorkspaceId: () => string;
+     toolAllowlist: string[];
+   }
+   ```
+   This is the WebKitGTK/libsoup `max-conns-per-host=6` starvation fix.
+
+### auth-rate-limit → `@papercusp/rate-limit` (P-031) — lowest-risk
+
+Zero domain coupling, generic string keys, raw `getOrgPg()` no-txn (mechanism
+(c)). Seam:
+
+```ts
+interface RateLimitConfig {
+  pg: PgHandle;
+  table?: string;                                    // default 'harness_shared.auth_rate_limit'
+  soft?: { windowMs: number; capacity: number };     // default 10 / 60s per IP
+  hard?: { windowMs: number; capacity: number; lockoutMs: number }; // default 5 / 15m, 5m lockout
+}
+```
+
+`isLoopbackIp()` is reusable as-is. Double: Map-backed `PgHandle`.
+
+### Phase-2 readiness
+
+With this map, every remaining extraction has a defined target. The two gates
+before Phase-2 *code* work (not this doc) start: (1) the canonical checkout is
+back on `main` (it drifted onto `feat/psu-wrappers` during Phase 1 — see the
+Addendum), and (2) paperclip is paused, since locks (~2.4K LOC) and coordination
+(~4.5K LOC) are large multi-file moves that the `git add -A` sweeper would
+otherwise fragment. Lowest-risk first once unblocked: `rate-limit` → `backup` →
+the `ipc-framing`/`desktop-ipc` pair (all near-zero coupling), then the heavier
+`locks` / `coordination` / `search` / `memory`.

@@ -1,6 +1,7 @@
 'use client';
 
 import './harness.css';
+import { wsLocalKey } from '@/lib/browser-workspace';
 import { OperatorActionLog } from '../_components/OperatorActionLog';
 import { LazyDetails } from '../_components/LazyDetails';
 import { useShortcut } from '../../lib/hotkeys';
@@ -1678,6 +1679,76 @@ function ActiveAgentsBar({ slug, phase, runs, alive, onPillClick, onStart, onSto
  * plugin tab shows that single plugin's actions/capabilities/disable
  * controls — replaces the older single "Plugins" composite tab.
  */
+/**
+ * Config-panel tab button. Hoisted to module scope (NOT defined inline inside
+ * ConfigPanel) so its component identity is stable across renders. An inline
+ * component is a brand-new type every render, so React remounts the entire tab
+ * rail on each ConfigPanel re-render; the rail's `useAutoAnimate` then replays
+ * its enter animation every poll/state tick — which is the "Harness subtab
+ * keeps blinking" bug. `pane`/`setPane` are passed as props instead of closed
+ * over.
+ */
+function ConfigTabBtn({
+  id,
+  label,
+  icon,
+  missing,
+  pane,
+  setPane,
+}: {
+  id: string;
+  label: string;
+  icon: React.ReactNode;
+  missing?: string[];
+  pane: string;
+  setPane: (p: string) => void;
+}) {
+  const needsSetup = (missing?.length ?? 0) > 0;
+  const tooltip = needsSetup
+    ? `${missing!.map((f) => `${f} is empty`).join(' · ')}`
+    : label;
+  const selected = pane === id;
+  return (
+    <Tooltip label={tooltip}>
+      <button
+        type="button"
+        onClick={() => setPane(id)}
+        className={`h-tab h-config-tab${selected ? ' is-active' : ''}${needsSetup ? ' needs-setup' : ''}`}
+        aria-pressed={selected}
+        style={{
+          background: selected ? 'color-mix(in oklab, var(--accent), transparent 88%)' : 'transparent',
+          border: 0,
+          borderBottom: '2px solid',
+          borderBottomColor: selected ? 'var(--accent)' : 'transparent',
+          color: selected ? 'var(--fg)' : 'var(--fg-mute)',
+          padding: '6px 10px 5px',
+          fontSize: 11,
+          cursor: 'pointer',
+          display: 'inline-flex', alignItems: 'center', gap: 6,
+          borderRadius: 0,
+          whiteSpace: 'nowrap',
+          maxWidth: 190, overflow: 'hidden', textOverflow: 'ellipsis',
+          minHeight: 31,
+          boxShadow: 'none',
+          transition: 'background 120ms ease, border-color 120ms ease, color 120ms ease',
+        }}
+      >
+        {icon}
+        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{label}</span>
+        {needsSetup && (
+          <span
+            aria-label="needs setup"
+            style={{
+              display: 'inline-block', width: 6, height: 6, borderRadius: '50%',
+              background: 'var(--bad)', flex: '0 0 auto',
+            }}
+          />
+        )}
+      </button>
+    </Tooltip>
+  );
+}
+
 function ConfigPanel({
   harnessSlug, projectPath, alive, onClose,
   installedPlugins, enabledSlugs, onPluginsChange,
@@ -1728,53 +1799,6 @@ function ConfigPanel({
     if (!enabledManifests.some((p) => p.name === pane)) setPane(HARNESS_PANE);
   }, [pane, enabledManifests]);
 
-  const TabBtn = ({ id, label, icon, missing }: { id: string; label: string; icon: React.ReactNode; missing?: string[] }) => {
-    const needsSetup = (missing?.length ?? 0) > 0;
-    const tooltip = needsSetup
-      ? `${missing!.map((f) => `${f} is empty`).join(' · ')}`
-      : label;
-    const selected = pane === id;
-    return (
-      <Tooltip label={tooltip}>
-        <button
-          type="button"
-          onClick={() => setPane(id)}
-          className={`h-tab h-config-tab${selected ? ' is-active' : ''}${needsSetup ? ' needs-setup' : ''}`}
-          aria-pressed={selected}
-          style={{
-            background: selected ? 'color-mix(in oklab, var(--accent), transparent 88%)' : 'transparent',
-            border: 0,
-            borderBottom: '2px solid',
-            borderBottomColor: selected ? 'var(--accent)' : 'transparent',
-            color: selected ? 'var(--fg)' : 'var(--fg-mute)',
-            padding: '6px 10px 5px',
-            fontSize: 11,
-            cursor: 'pointer',
-            display: 'inline-flex', alignItems: 'center', gap: 6,
-            borderRadius: 0,
-            whiteSpace: 'nowrap',
-            maxWidth: 190, overflow: 'hidden', textOverflow: 'ellipsis',
-            minHeight: 31,
-            boxShadow: 'none',
-            transition: 'background 120ms ease, border-color 120ms ease, color 120ms ease',
-          }}
-        >
-          {icon}
-          <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{label}</span>
-          {needsSetup && (
-            <span
-              aria-label="needs setup"
-              style={{
-                display: 'inline-block', width: 6, height: 6, borderRadius: '50%',
-                background: 'var(--bad)', flex: '0 0 auto',
-              }}
-            />
-          )}
-        </button>
-      </Tooltip>
-    );
-  };
-
   const activePlugin = enabledManifests.find((p) => p.name === pane);
 
   return (
@@ -1786,18 +1810,20 @@ function ConfigPanel({
         overflowX: 'auto',
         minHeight: 32,
       }}>
-        <TabBtn id={HARNESS_PANE} label="Harness" icon={<SlidersHorizontal size={13} />} />
+        <ConfigTabBtn id={HARNESS_PANE} label="Harness" icon={<SlidersHorizontal size={13} />} pane={pane} setPane={setPane} />
         {enabledManifests.map((p) => {
           const tabIcon = p.dashboardTabs?.[0]?.icon ?? p.icon ?? null;
           // Display name: strip @scope/ prefix for compactness.
           const display = p.name.includes('/') ? p.name.split('/').pop()! : p.name;
           return (
-            <TabBtn
+            <ConfigTabBtn
               key={p.name}
               id={p.name}
               label={display}
               icon={<PluginIcon name={tabIcon} size={13} />}
               missing={pluginsMissing[p.name]}
+              pane={pane}
+              setPane={setPane}
             />
           );
         })}
@@ -2866,7 +2892,7 @@ export default function HarnessDashboard({ forcedPanel, embeddedPanelChrome = fa
         const fromQuery = projectQueryParam && nextProjects.find((p: ProjectEntry) => p.slug === projectQueryParam)
           ? projectQueryParam
           : null;
-        const saved = window.localStorage.getItem('harness.activeProject');
+        const saved = window.localStorage.getItem(wsLocalKey('harness.activeProject'));
         const savedProject = saved ? nextProjects.find((p: ProjectEntry) => p.slug === saved) : null;
         setActiveSlug((current) => {
           if (fromPath) return fromPath;
@@ -2880,7 +2906,7 @@ export default function HarnessDashboard({ forcedPanel, embeddedPanelChrome = fa
 
   useEffect(() => {
     if (!activeSlug) return;
-    try { window.localStorage.setItem('harness.activeProject', activeSlug); } catch {}
+    try { window.localStorage.setItem(wsLocalKey('harness.activeProject'), activeSlug); } catch {}
   }, [activeSlug]);
 
   useEffect(() => {
