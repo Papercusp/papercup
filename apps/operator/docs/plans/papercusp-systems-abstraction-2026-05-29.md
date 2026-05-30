@@ -311,7 +311,7 @@ two SEPARATE storage components**, not one dual-backend interface:
   `loadVoicePrefs`; lift to injected DI; (iii) **pg-handle** — pass a `PgHandle`
   instead of relying on `ctx.tx`. Depends on `rrf` (P-002) + the `ctx.tx` fix
   (P-013). blocked-by: P-002, P-013 → D-010
-- **P-021** `todo` Extract `@papercusp/memory`. **Audit correction:** mem0 is an
+- **P-021** `done` Extract `@papercusp/memory`. **Audit correction:** mem0 is an (@papercusp/memory extracted 28014805 — 6 store-core files moved mem0-client/connection/canonical-store/local-embedder-worker/reembed behind configureMemory seams; embedder lifted to operator as a pre-built fn mem0 always provider:custom; 26 consumers unchanged via shims; pgClientFields path preserved. pkg tsc0/vitest5, op tsc 779&lt;=781, op vitest 80/80)
   **external npm dep** (`mem0ai ^3.0.3`) that **owns its own `pg.Client`**
   (mechanism (d)) — so a `WorkspaceStore` cannot be injected. Real seams: (i)
   **PgDiscovery** (`async () => connFields`, replaces `getHarnessAdminUrl`);
