@@ -612,8 +612,12 @@ export async function rejectDraftPlan(
   const raw = plan.raw;
   const contentHash = plan.contentHash;
   if (!raw) return { ok: false, error: 'no_content' };
-  const updated = raw.replace(/^(status:\s*)draft\b/m, '$1superseded');
-  if (updated === raw) return { ok: false, error: 'status_not_draft' };
+  // Reject = supersede. Works on any non-terminal plan (draft / ready /
+  // active / blocked), not just drafts — so the "Reject Plan" button can
+  // sit next to Start for approved/running plans. shipped + superseded
+  // are terminal and left untouched.
+  const updated = raw.replace(/^(status:\s*)(?:draft|ready|active|blocked)\b/m, '$1superseded');
+  if (updated === raw) return { ok: false, error: 'status_not_rejectable' };
   const res = await setPlanContent({
     slug,
     content: updated,
@@ -625,51 +629,49 @@ export async function rejectDraftPlan(
 }
 
 /**
- * Flip the frontmatter `status:` line via a CAS set-content write — the
- * shared mechanism behind approve / demote (mirrors {@link rejectDraftPlan}).
- * `fromPattern` matches the current `status:` line with the prefix in
- * capture group 1; `to` is the new status token. Returns `{ ok: false,
- * error: notFound }` when the current status doesn't match (e.g. demoting
- * a plan that isn't ready).
+ * Drive the first-class `plans:set-plan-status` verb — the single
+ * server-side source of truth for plan-level lifecycle flips (the same
+ * verb agents call). The server does the frontmatter read-modify-write
+ * inside the SU lock and emits the `status_changed` plan-event, so the
+ * client no longer carries its own CAS/regex. `expectedCurrent` is an
+ * optional transition guard. Returns the UI's `{ ok, error }` shape.
  */
-async function flipPlanStatusLine(
+async function setPlanStatusVerb(
   slug: string,
-  fromPattern: RegExp,
-  to: string,
-  notFound: string,
-  harnessSlug?: string,
+  status: 'draft' | 'ready' | 'shipped' | 'superseded',
+  opts: { expectedCurrent?: PlanStatus; harnessSlug?: string } = {},
 ): Promise<{ ok: boolean; error?: string }> {
-  const plan = await fetchPlan(slug);
-  if ('error' in plan && plan.error) return { ok: false, error: plan.error };
-  const raw = plan.raw;
-  if (!raw) return { ok: false, error: 'no_content' };
-  const updated = raw.replace(fromPattern, `$1${to}`);
-  if (updated === raw) return { ok: false, error: notFound };
-  const res = await setPlanContent({
-    slug,
-    content: updated,
-    expectedHash: plan.contentHash,
-    ...(harnessSlug && { harness_slug: harnessSlug }),
-  } as SetContentArgs & { harness_slug?: string });
-  if ('ok' in res && res.ok) return { ok: true };
-  return { ok: false, error: writeErrorOf(res) ?? 'set_content_failed' };
+  try {
+    const r = await postJson<{ ok?: boolean; code?: string; error?: string }>('set-plan-status', {
+      slug,
+      status,
+      ...(opts.expectedCurrent ? { expectedCurrent: opts.expectedCurrent } : {}),
+      ...(opts.harnessSlug ? { harness_slug: opts.harnessSlug } : {}),
+    });
+    return r.ok ? { ok: true } : { ok: false, error: r.code ?? r.error ?? 'set_plan_status_failed' };
+  } catch (e) {
+    // busy (lock conflict) → non-2xx → postJson throws; surface it.
+    return { ok: false, error: e instanceof Error ? e.message : String(e) };
+  }
 }
 
 /**
- * Approve a draft plan: flip `status: draft` → `status: ready` via CAS.
+ * Approve a draft plan (draft → ready) via plans:set-plan-status.
  * Approval is the human gate that unlocks the Start button — it does NOT
- * start the plan. Mirrors {@link rejectDraftPlan}.
+ * start the plan. Guarded on `draft` so it never overwrites a non-draft.
  */
 export function approvePlan(slug: string, harnessSlug?: string) {
-  return flipPlanStatusLine(slug, /^(status:\s*)draft\b/m, 'ready', 'status_not_draft', harnessSlug);
+  return setPlanStatusVerb(slug, 'ready', { expectedCurrent: 'draft', harnessSlug });
 }
 
 /**
- * Demote an approved plan back to draft: flip `status: ready` (or legacy
- * `active`) → `status: draft` via CAS. Reverses {@link approvePlan}.
+ * Demote an approved plan back to draft (ready/active → draft) via
+ * plans:set-plan-status. Reverses {@link approvePlan}. Unguarded — the
+ * Demote button only renders for the ready bucket, so the current status
+ * is already ready/active.
  */
 export function demotePlanToDraft(slug: string, harnessSlug?: string) {
-  return flipPlanStatusLine(slug, /^(status:\s*)(?:ready|active)\b/m, 'draft', 'status_not_ready', harnessSlug);
+  return setPlanStatusVerb(slug, 'draft', { harnessSlug });
 }
 
 export function startPlan(slug: string) {
