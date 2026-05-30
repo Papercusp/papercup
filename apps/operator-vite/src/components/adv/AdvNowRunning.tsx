@@ -91,7 +91,11 @@ export default function AdvNowRunning({ slug }: Props) {
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({}),
       });
-      if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`);
+      if (!res.ok) {
+        let msg = `HTTP ${res.status}`;
+        try { const j = await res.json(); msg = j.hint ?? j.error ?? msg; } catch { /* use status */ }
+        throw new Error(msg);
+      }
       const d = await res.json();
       toast.success('Harness launched', { description: d.logPath });
       setTimeout(() => {
