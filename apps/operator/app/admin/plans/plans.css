@@ -247,6 +247,12 @@
 .pc-plans__view--actionable { --pc-view-accent: #34d399; }
 .pc-plans__view--triage { --pc-view-accent: #a78bfa; }
 
+/* Item-status filter views (PlansClient) — distinct accents like the
+   inbox/actionable/triage set above. */
+.pc-plans__view--needs-human { --pc-view-accent: #fbbf24; }
+.pc-plans__view--todo { --pc-view-accent: #38bdf8; }
+.pc-plans__view--blocked { --pc-view-accent: #fb7185; }
+
 .pc-plans__view:hover {
   color: var(--fg, #e7f7ff);
   background: color-mix(in oklab, var(--pc-view-accent), transparent 82%);

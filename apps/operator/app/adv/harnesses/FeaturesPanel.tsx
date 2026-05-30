@@ -45,6 +45,19 @@ const STATUS_ORDER: FeatureStatus[] = [
   'deprecated',
 ];
 
+// Per-view accent — each saved-view chip carries the canonical STATUS hue of
+// the status(es) it filters, so the chips colour-match the row stripes/pills.
+// 'all' stays the neutral sky accent.
+const VIEW_ACCENT: Record<ViewId, string> = {
+  all: 'var(--accent, #38bdf8)',
+  running: STATUS.in_progress.solid,
+  stuck: STATUS.failing.solid,
+  blocked: STATUS.blocked.solid,
+  todo: STATUS.todo.solid,
+  passed: STATUS.passed.solid,
+  deprecated: STATUS.deprecated.solid,
+};
+
 export default function FeaturesPanel({ params, api }: PanelComponentProps) {
   const slug = (params.harnessSlug as string) || '';
   // Phase 3: live data via Zero (REST bootstrap + Zero overlay), no polling.
@@ -208,7 +221,7 @@ export default function FeaturesPanel({ params, api }: PanelComponentProps) {
       key: 'id',
       header: 'ID',
       headerText: 'ID',
-      width: '64px',
+      width: '78px',
       toCopyText: (f) => f.id,
       // Status-coloured left accent stripe — the same canonical STATUS hue
       // the StatusPill uses, so a feature's status reads as one consistent
@@ -216,7 +229,11 @@ export default function FeaturesPanel({ params, api }: PanelComponentProps) {
       cellStyle: ({ row }) => ({
         boxShadow: `inset 3px 0 0 ${STATUS[row.status as HarnessStatus].solid}`,
       }),
-      render: ({ row }) => <span className="pc-adv-features__id">{row.id}</span>,
+      render: ({ row }) => (
+        <Tooltip label={row.id}>
+          <span className="pc-adv-features__id">{row.id}</span>
+        </Tooltip>
+      ),
     },
     {
       key: 'status',
@@ -383,6 +400,7 @@ export default function FeaturesPanel({ params, api }: PanelComponentProps) {
               role="tab"
               aria-selected={view === v.id}
               className={`pc-adv-features__view${view === v.id ? ' is-active' : ''}`}
+              style={{ '--chip-accent': VIEW_ACCENT[v.id] } as React.CSSProperties}
               onClick={() => void setView(v.id === 'all' ? null : v.id)}
             >
               {v.label}
@@ -474,6 +492,7 @@ export default function FeaturesPanel({ params, api }: PanelComponentProps) {
           flex-wrap: wrap;
         }
         .pc-adv-features__view {
+          --_a: var(--chip-accent, var(--accent, #38bdf8));
           display: inline-flex;
           gap: 6px;
           align-items: center;
@@ -482,7 +501,7 @@ export default function FeaturesPanel({ params, api }: PanelComponentProps) {
           font-weight: 600;
           color: var(--fg-dim, #b9d4e8);
           background: var(--bg-2, rgba(255, 255, 255, 0.045));
-          border: 1px solid var(--border, rgba(125, 211, 252, 0.15));
+          border: 1px solid color-mix(in oklab, var(--_a), transparent 68%);
           border-radius: 4px;
           cursor: pointer;
         }
@@ -492,15 +511,15 @@ export default function FeaturesPanel({ params, api }: PanelComponentProps) {
         }
         .pc-adv-features__view:hover {
           color: var(--fg, #e7f7ff);
-          border-color: var(--border-strong, rgba(125, 211, 252, 0.32));
+          border-color: color-mix(in oklab, var(--_a), transparent 45%);
         }
         .pc-adv-features__view.is-active {
           color: var(--fg, #e7f7ff);
-          background: color-mix(in oklab, var(--accent, #38bdf8), transparent 84%);
-          border-color: color-mix(in oklab, var(--accent, #38bdf8), transparent 55%);
+          background: color-mix(in oklab, var(--_a), transparent 80%);
+          border-color: color-mix(in oklab, var(--_a), transparent 42%);
         }
         .pc-adv-features__view.is-active span {
-          color: var(--accent-strong, #7dd3fc);
+          color: var(--fg, #e7f7ff);
         }
         .pc-adv-features__list {
           flex: 1;
@@ -516,10 +535,15 @@ export default function FeaturesPanel({ params, api }: PanelComponentProps) {
           outline-offset: -1px;
         }
         .pc-adv-features__id {
+          display: block;
+          max-width: 100%;
           font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
           color: var(--fg-mute, #7f9bb4);
           font-weight: 600;
           font-size: 11px;
+          white-space: nowrap;
+          overflow: hidden;
+          text-overflow: ellipsis;
         }
         .pc-adv-features__title {
           display: inline-flex;

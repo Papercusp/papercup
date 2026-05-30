@@ -26,6 +26,17 @@ const STATUS_FILTERS: Array<{ key: StatusFilter; label: string }> = [
   { key: 'wontfix', label: 'Won’t fix' },
 ];
 
+// Per-filter accent — each status-filter chip carries the canonical
+// ISSUE_STATUS hue it filters, matching the row severity stripes/status dots.
+const FILTER_ACCENT: Record<StatusFilter, string> = {
+  all: 'var(--accent, #38bdf8)',
+  open: ISSUE_STATUS.open.solid,
+  acknowledged: ISSUE_STATUS.acknowledged.solid,
+  fixing: ISSUE_STATUS.fixing.solid,
+  closed: ISSUE_STATUS.closed.solid,
+  wontfix: ISSUE_STATUS.wontfix.solid,
+};
+
 // Source → icon (validator/worker = Bot, human = User). Source carries no
 // color semantics, so it stays a local map; severity + status colors come
 // from the canonical theme.ts tables via the primitives.
@@ -169,7 +180,11 @@ export default function IssuesPanel({ params, api }: PanelComponentProps) {
       cellStyle: ({ row }) => ({
         boxShadow: `inset 3px 0 0 ${SEVERITY[row.severity as IssueSeverityKey].solid}`,
       }),
-      render: ({ row }) => <span className="pc-adv-issues__id">{row.id}</span>,
+      render: ({ row }) => (
+        <Tooltip label={row.id}>
+          <span className="pc-adv-issues__id">{row.id}</span>
+        </Tooltip>
+      ),
     },
     {
       key: 'severity',
@@ -343,6 +358,7 @@ export default function IssuesPanel({ params, api }: PanelComponentProps) {
               key={f.key}
               type="button"
               className={`pc-adv-issues__filter${filter === f.key ? ' is-active' : ''}`}
+              style={{ '--chip-accent': FILTER_ACCENT[f.key] } as React.CSSProperties}
               onClick={() => void setFilter(f.key === 'open' ? null : f.key)}
             >
               {f.label}
@@ -447,6 +463,7 @@ export default function IssuesPanel({ params, api }: PanelComponentProps) {
           align-items: center;
         }
         .pc-adv-issues__filter {
+          --_a: var(--chip-accent, var(--accent, #38bdf8));
           display: inline-flex;
           gap: 6px;
           align-items: center;
@@ -455,7 +472,7 @@ export default function IssuesPanel({ params, api }: PanelComponentProps) {
           font-weight: 600;
           color: var(--fg-dim, #b9d4e8);
           background: var(--bg-2, rgba(255, 255, 255, 0.045));
-          border: 1px solid var(--border, rgba(125, 211, 252, 0.15));
+          border: 1px solid color-mix(in oklab, var(--_a), transparent 68%);
           border-radius: 4px;
           cursor: pointer;
         }
@@ -465,15 +482,15 @@ export default function IssuesPanel({ params, api }: PanelComponentProps) {
         }
         .pc-adv-issues__filter:hover {
           color: var(--fg, #e7f7ff);
-          border-color: var(--border-strong, rgba(125, 211, 252, 0.32));
+          border-color: color-mix(in oklab, var(--_a), transparent 45%);
         }
         .pc-adv-issues__filter.is-active {
           color: var(--fg, #e7f7ff);
-          background: color-mix(in oklab, var(--accent, #38bdf8), transparent 84%);
-          border-color: color-mix(in oklab, var(--accent, #38bdf8), transparent 55%);
+          background: color-mix(in oklab, var(--_a), transparent 80%);
+          border-color: color-mix(in oklab, var(--_a), transparent 42%);
         }
         .pc-adv-issues__filter.is-active span {
-          color: var(--accent-strong, #7dd3fc);
+          color: var(--fg, #e7f7ff);
         }
         .pc-adv-issues__triage {
           display: flex;
@@ -523,10 +540,15 @@ export default function IssuesPanel({ params, api }: PanelComponentProps) {
           outline-offset: -1px;
         }
         .pc-adv-issues__id {
+          display: block;
+          max-width: 100%;
           font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
           color: var(--fg-mute, #7f9bb4);
           font-weight: 600;
           font-size: 11px;
+          white-space: nowrap;
+          overflow: hidden;
+          text-overflow: ellipsis;
         }
         .pc-adv-issues__title {
           display: inline-flex;
