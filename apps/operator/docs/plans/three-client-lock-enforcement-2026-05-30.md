@@ -1,0 +1,94 @@
+---
+title: Three-client file-lock enforcement (Claude · Codex · OMP)
+slug: three-client-lock-enforcement-2026-05-30
+created: 2026-05-30
+updated: 2026-05-30
+status: active
+---
+
+## Now
+
+**State:** Building. The SU-locks system (`apps/operator/lib/agent-tools/locks/`, PG-backed) works, but **no client is enforcing it today**: OMP's `coord-hook.ts` is built but not installed, Claude's `Pre/PostToolUse` shell hooks were deleted by the 2026-05-20 OMP-only decision, and Codex never had a hook. Meanwhile the prompts tell Claude/Codex agents the hook "handles it," so they skip manual `locks:acquire` entirely. Net: locking is advisory with zero live enforcement on any client.
+
+**Next:** recover + modernize the shared CC hook scripts, then wire all three clients in `install-standalone-mcp.sh`.
+
+---
+
+# Three-client file-lock enforcement
+
+## §0 Context — why this plan exists
+
+`file-locking-improvements-2026-05-20.md` made an **OMP-only** decision (§1 non-goal, item #2): drop Claude/Codex/Gemini integration, delete the Claude `Pre/PostToolUse` shell hooks (shipped in `9ebb499a`, deleted in `64b01fc9`), and route all enforcement through one OMP `tool_call` hook. That decision has since been **reversed in practice but not in code**: multi-client SU support returned — `papercusp-su.claude.md` / `.codex.md` / `.omp.md` overlays, `claude-su` / `codex-su` / `omp-su` wrappers, the four-client engineer playbook — yet enforcement never followed the clients back.
+
+The supported client set is now **Claude Code, Codex, and OMP** (Gemini is NOT supported; some prompt files still wrongly list it — drop it).
+
+## §1 Current state — all three clients non-enforcing
+
+| Client | Hook capability | What exists today | Enforcing? |
+|---|---|---|---|
+| **OMP** | `tool_call` TS hook (`return { block, reason }`) | `scripts/hooks/omp/coord-hook.ts` — built (51KB): acquire+block+release+fail-open+symlink-refusal+health-markers | **No** — not installed (`~/.omp/agent/hooks/` absent; `agent-bundle.ts` README says it serves `hooks: []`) |
+| **Claude Code** | `PreToolUse`/`PostToolUse`, `~/.claude/settings.json`, `hookSpecificOutput.permissionDecision: "deny"` | Shell hooks **deleted** in `64b01fc9`; recoverable from `9ebb499a` | **No** — deleted; prompt still claims they run |
+| **Codex** | `PreToolUse`/`PostToolUse`, `settings.json` — **same wire format as Claude** (binary defines `PreToolUseHookSpecificOutputWire`, `PostToolUseHookSpecificOutputWire`, `PreToolUsePermissionDecisionWire`; emits `Command blocked by PreToolUse hook:`; has a hook-trust model) | Never built | **No** |
+
+Verified by inspecting the Codex `0.135.0` native binary (`@openai/codex-linux-x64`), the deleted hooks in git, and the absent `~/.omp/agent/hooks/`.
+
+## §2 The unifying insight
+
+Claude and Codex implement the **same hook wire format**: both read `settings.json`, fire `PreToolUse`/`PostToolUse`, and honor `hookSpecificOutput.permissionDecision: "deny"` (whose `permissionDecisionReason` is fed back to the *model* so it can replan — unlike exit-code-2, which surfaces only to the user). So **one shared hook script pair serves both clients.** OMP is the only client needing its own implementation (TS module loaded in-process), and that already exists.
+
+**One hook core, three install paths** — not three builds.
+
+## §3 Build
+
+### §3.1 Shared CC hook core — `apps/operator/scripts/hooks/cc/`
+Recover `pretooluse-locks-acquire.sh` + `posttooluse-locks-release.sh` from `9ebb499a` and modernize:
+
+- **Refusal → JSON `permissionDecision: "deny"`** on stdout (old scripts used exit-2 + stderr, which today reaches only the user). Reason: `Held by <owner_label> until <expires_ts>: <intent>` — model sees it, pivots/yields.
+- **Repo root from stdin `cwd`** (not a hardcoded path — 10+ worktrees live in this workspace).
+- Port the OMP hook's **symlink refusal** (`detectSymlinkedPaths`) and **`last-error.json` / `last-success.json` health markers** (under `~/.papercusp/locks-cache/`) so every client degrades identically and visibly.
+- Keep the recovered strengths: fail-open if Papercusp absent / operator unreachable (exit 0); `tool_use_id → lock_id` FS cache for the release half (each Pre/Post fires as a separate subprocess, so the cache must be on disk, not in-memory); per-**session** owner identity (`session_id`) so two shells on one machine are distinct owners; `locks:acquire { wait: { max_sec: 0 } }` over MCP JSON-RPC (`/api/mcp?superuser=1`) with the bearer from `~/.papercusp/superuser-token`.
+
+### §3.2 Claude wiring — `install-standalone-mcp.sh`
+Write a `PreToolUse`/`PostToolUse` block (matcher `Edit|Write`) into `~/.claude/settings.json` pointing at the shared scripts. Owner = Claude `session_id`. Replaces the stale "if/when it ships" comment.
+
+### §3.3 Codex wiring — `install-standalone-mcp.sh`
+Write the same hook block into `$CODEX_HOME/settings.json`, plus:
+- **Establish hook trust** — Codex requires persisted hook trust before running hooks (preferred over shipping `--dangerously-bypass-hook-trust` in the wrapper).
+- Add/confirm the `codex-su` wrapper with the same overlay-splice treatment as `claude-su`/`omp-su`.
+- **Pre-req spike (verify before coding):** Codex's edit tool name(s) + `tool_input` shape (`apply_patch`/`shell` vs `Edit`/`Write`), the exact `settings.json` path under `CODEX_HOME`, and which field carries the per-session owner id.
+
+### §3.4 OMP wiring — install the hook that already exists
+Install `coord-hook.ts` into `~/.omp/agent/hooks/` (engineer path) and resolve the `agent-bundle.ts` vs README `hooks: []` contradiction so power-user sessions receive it. Verify it loads + blocks.
+
+### §3.5 Shared observability — hook-health route
+Build the `su-locks/hook-health` endpoint that `CoordDashboard.tsx` already references but which doesn't exist: reads the two marker files, returns `{ healthy, last_success_ts, last_error }`. One route covers all three clients. Banner = optional follow-up.
+
+### §3.6 Prompt truth-up
+- **Drop Gemini** from every file that lists the client set.
+- Align `locks:acquire` `guidance`, `papercusp-su-engineer.tools.md` §12, `papercusp-su-power.tools.md`, and the three client overlays to one **trigger-anchored decision tree** (acquire → edit → release; on busy retry/pivot/yield; declare-intent on new task; handoff; release `all_mine` at session end), in identical wording.
+- Frame the hook as a **backstop for incidental single-file edits**; deliberate multi-file work still needs a manual `acquire` held across the commit (the hook releases per-edit, so it does not cover the edit→commit window).
+
+### §3.7 Plan-doc update
+Record in `file-locking-improvements-2026-05-20.md` that the OMP-only decision is **reversed** — three-client enforcement is the design — so the next agent doesn't re-delete the CC hooks citing that doc.
+
+## §4 Verification
+
+- **Per client:** two `*-su` shells edit the same file → second is blocked with a *visible* reason; lock appears in `locks:queue` with distinct owners; kill operator mid-edit → `last-error.json` populates, edit fails open.
+- **Cross-client:** a Claude shell and an OMP shell contend on the same file → second blocks. They share one PG lock store, so this MUST work across clients, not just within one.
+- `su-lock-store` vitest suite stays green; `tools-md-sync.mjs` green after prompt edits.
+
+## §5 Risks / pre-reqs
+
+- **Codex spike first** — tool names, `tool_input` shape, `settings.json` path, hook-trust mechanics. Verify, don't guess (same discipline the prior locks plan's risk register demanded for OMP).
+- **OMP bundle wiring** — the README/code disagreement must be settled or OMP stays non-enforcing.
+- **Per-edit window** — the hook protects the edit instant, not edit→commit; manual claims remain the tool for deliberate multi-file work (reflected in the prompt).
+- **Hook-trust UX (Codex)** — a too-aggressive trust prompt on first edit could annoy; install-time trust persistence avoids per-edit friction.
+
+## §6 What's explicitly not changing
+
+- SU-locks stays PG-backed on `papercusp_su`; no new store.
+- Existing `locks:*` tool wire shapes stay the same.
+- OMP's `tool_call` hook implementation stays as the OMP-side source of truth; the CC scripts are a parallel implementation of the *same contract*, not a rewrite of it.
+- Gemini stays unsupported.
+
+End of plan.
