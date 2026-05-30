@@ -4,22 +4,13 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { parseAsString, parseAsStringEnum, useQueryState } from 'nuqs';
 import { toast } from 'sonner';
-import {
-  AlertOctagon,
-  AlertTriangle,
-  ArrowUpRight,
-  CheckCircle,
-  Circle,
-  Eye,
-  FileCode,
-  Hammer,
-  Info,
-  User,
-  Bot,
-  XCircle,
-} from 'lucide-react';
+import { ArrowUpRight, Bot, CheckCircle, Circle, Eye, FileCode, User, XCircle } from 'lucide-react';
+import { RichGrid, type ColumnDef } from '@restart/grid-core';
 import type { PanelComponentProps } from '../../harness/dock/panel-registry';
-import type { Issue, IssueSeverity, IssueSource, IssueStatus } from '../../harness/issues/types';
+import type { Issue, IssueSource, IssueStatus } from '../../harness/issues/types';
+import { SeverityPill, ISSUE_STATUS_ICON } from '../../harness/primitives';
+import { ISSUE_STATUS, type IssueStatusKey } from '../../harness/theme';
+import { Tooltip } from '../../harness/Tooltip';
 import PinMenu, { type PinMenuState } from './PinMenu';
 import { useHarnessIssues } from './useHarnessData';
 import { issueAction, issueActionStatus, type IssueActionKind } from './harness-actions';
@@ -35,40 +26,13 @@ const STATUS_FILTERS: Array<{ key: StatusFilter; label: string }> = [
   { key: 'wontfix', label: 'Won’t fix' },
 ];
 
-const SEVERITY_TONE: Record<IssueSeverity, { bg: string; fg: string }> = {
-  critical: { bg: 'rgba(239, 68, 68, 0.18)', fg: '#fca5a5' },
-  major: { bg: 'rgba(249, 115, 22, 0.16)', fg: '#fdba74' },
-  minor: { bg: 'rgba(250, 204, 21, 0.14)', fg: '#fde68a' },
-  nit: { bg: 'rgba(148, 163, 184, 0.14)', fg: '#cbd5e1' },
-};
-
-// Icon maps mirror the legacy IssuesList. Every lookup falls back to Circle
-// (`?? Circle`) — a missing/typo'd key returning undefined would otherwise
-// render `<undefined />` and crash the whole panel subtree.
-const SEVERITY_ICON: Record<IssueSeverity, typeof Circle> = {
-  critical: AlertOctagon,
-  major: AlertTriangle,
-  minor: Info,
-  nit: Circle,
-};
+// Source → icon (validator/worker = Bot, human = User). Source carries no
+// color semantics, so it stays a local map; severity + status colors come
+// from the canonical theme.ts tables via the primitives.
 const SOURCE_ICON: Record<IssueSource, typeof Circle> = {
   validator: Bot,
   worker: Bot,
   human: User,
-};
-const STATUS_ICON: Record<IssueStatus, typeof Circle> = {
-  open: Circle,
-  acknowledged: Eye,
-  fixing: Hammer,
-  closed: CheckCircle,
-  wontfix: XCircle,
-};
-const STATUS_COLOR: Record<IssueStatus, string> = {
-  open: '#fca5a5',
-  acknowledged: '#fde68a',
-  fixing: '#c4b5fd',
-  closed: '#86efac',
-  wontfix: '#71717a',
 };
 
 export default function IssuesPanel({ params, api }: PanelComponentProps) {
@@ -83,8 +47,9 @@ export default function IssuesPanel({ params, api }: PanelComponentProps) {
   const [selectedId, setSelectedId] = useQueryState('sel', parseAsString.withDefault(''));
   const [pinMenu, setPinMenu] = useState<PinMenuState | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [hoveredId, setHoveredId] = useState<string | null>(null);
   const [focusIdx, setFocusIdx] = useState(0);
-  const listRef = useRef<HTMLDivElement>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
   const [triaging, setTriaging] = useState(false);
 
@@ -145,11 +110,12 @@ export default function IssuesPanel({ params, api }: PanelComponentProps) {
     return c;
   }, [issues]);
 
-  // P-020: virtualize the row list (only the visible window mounts).
+  // P-020: virtualize via the caller-owned virtualizer fed into RichGrid's
+  // `virtualMode`. Only the visible window of rows mounts.
   const rowVirtualizer = useVirtualizer({
     count: filtered.length,
-    getScrollElement: () => listRef.current,
-    estimateSize: () => 44,
+    getScrollElement: () => scrollRef.current,
+    estimateSize: () => 40,
     overscan: 10,
   });
   useEffect(() => {
@@ -189,6 +155,156 @@ export default function IssuesPanel({ params, api }: PanelComponentProps) {
         break;
     }
   };
+
+  const columns = useMemo<ColumnDef<Issue>[]>(() => [
+    {
+      key: 'id',
+      header: 'ID',
+      headerText: 'ID',
+      width: '60px',
+      toCopyText: (i) => i.id,
+      render: ({ row }) => <span className="pc-adv-issues__id">{row.id}</span>,
+    },
+    {
+      key: 'severity',
+      header: 'Severity',
+      headerText: 'Severity',
+      width: '104px',
+      toCopyText: (i) => i.severity,
+      render: ({ row }) => <SeverityPill severity={row.severity} size="xs" />,
+    },
+    {
+      key: 'title',
+      header: 'Title',
+      headerText: 'Title',
+      width: 1,
+      toCopyText: (i) => i.title,
+      render: ({ row }) => {
+        const StatusIcon = ISSUE_STATUS_ICON[row.status as IssueStatusKey] ?? Circle;
+        const SrcIcon = SOURCE_ICON[row.source] ?? Circle;
+        const statusColor = ISSUE_STATUS[row.status as IssueStatusKey].solid;
+        return (
+          <span className="pc-adv-issues__title">
+            <Tooltip label={ISSUE_STATUS[row.status as IssueStatusKey].label}>
+              <span style={{ display: 'inline-flex', flexShrink: 0 }}>
+                <StatusIcon size={12} aria-label={row.status} style={{ color: statusColor }} />
+              </span>
+            </Tooltip>
+            <SrcIcon size={11} aria-label={row.source} style={{ color: 'var(--fg-mute, #7f9bb4)', flexShrink: 0 }} />
+            <span className="pc-adv-issues__titletext">{row.title}</span>
+          </span>
+        );
+      },
+    },
+    {
+      key: 'meta',
+      header: '',
+      width: '150px',
+      align: 'right',
+      render: ({ row }) => (
+        <span className="pc-adv-issues__meta">
+          {row.codePointer && (
+            <Tooltip label={row.codePointer}>
+              <span className="pc-adv-issues__pointer">
+                <FileCode size={10} aria-hidden /> {shortPointer(row.codePointer)}
+              </span>
+            </Tooltip>
+          )}
+          {row.linkedFeatureId && (
+            <Tooltip label={`Linked feature: ${row.linkedFeatureId}`}>
+              <span className="pc-adv-issues__link">
+                <ArrowUpRight size={10} aria-hidden /> {row.linkedFeatureId}
+              </span>
+            </Tooltip>
+          )}
+          {row.foundDuring && (
+            <Tooltip label={`Found during: ${row.foundDuring}`}>
+              <span className="pc-adv-issues__found">{row.foundDuring}</span>
+            </Tooltip>
+          )}
+        </span>
+      ),
+    },
+    {
+      key: 'actions',
+      header: '',
+      width: '116px',
+      align: 'right',
+      render: ({ row }) => {
+        const show = hoveredId === row.id || busyId === row.id;
+        const canPromote = !row.linkedFeatureId && row.status !== 'closed' && row.status !== 'wontfix';
+        return (
+          <span
+            className="pc-adv-issues__rowactions"
+            style={{ opacity: show ? 1 : 0 }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            {canPromote && (
+              <Tooltip label="Promote to a fix feature">
+                <button type="button" disabled={busyId === row.id} onClick={() => void handleAction(row, 'promote')} aria-label="Promote">
+                  <ArrowUpRight size={13} aria-hidden />
+                </button>
+              </Tooltip>
+            )}
+            {row.status !== 'acknowledged' && row.status !== 'closed' && (
+              <Tooltip label="Acknowledge">
+                <button type="button" disabled={busyId === row.id} onClick={() => void handleAction(row, 'acknowledge')} aria-label="Acknowledge">
+                  <Eye size={13} aria-hidden />
+                </button>
+              </Tooltip>
+            )}
+            {row.status !== 'closed' && (
+              <Tooltip label="Close">
+                <button type="button" disabled={busyId === row.id} onClick={() => void handleAction(row, 'close')} aria-label="Close">
+                  <CheckCircle size={13} aria-hidden />
+                </button>
+              </Tooltip>
+            )}
+            {row.status !== 'wontfix' && (
+              <Tooltip label="Won't fix">
+                <button type="button" disabled={busyId === row.id} onClick={() => void handleAction(row, 'wontfix')} aria-label="Won't fix">
+                  <XCircle size={13} aria-hidden />
+                </button>
+              </Tooltip>
+            )}
+          </span>
+        );
+      },
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  ], [hoveredId, busyId]);
+
+  const richRowProps = useMemo(
+    () => (ctx: { row: Issue; rowIndex: number }) => {
+      const isFocus = ctx.rowIndex === focusIdx;
+      const isActive = ctx.row.id === selectedId;
+      return {
+        className: `pc-adv-issues__row${isActive ? ' is-active' : ''}${isFocus ? ' is-focused' : ''}`,
+        tabIndex: 0,
+        'data-fidx': ctx.rowIndex,
+        'aria-label': `${ctx.row.id}: ${ctx.row.title} (${ctx.row.severity}, ${ctx.row.status})`,
+        onContextMenu: (e: React.MouseEvent) => {
+          e.preventDefault();
+          setPinMenu({
+            pos: { x: e.clientX, y: e.clientY },
+            itemId: ctx.row.id,
+            itemLabel: ctx.row.id,
+            harnessSlug: slug,
+          });
+        },
+      };
+    },
+    [focusIdx, selectedId, slug],
+  );
+
+  const richGetRowBg = useMemo(
+    () => (row: Issue) => {
+      if (row.id === selectedId) return 'color-mix(in oklab, var(--accent), transparent 86%)';
+      if (row.id === hoveredId) return 'var(--bg-3)';
+      return 'transparent';
+    },
+    [selectedId, hoveredId],
+  );
 
   if (!slug) {
     return <PanelMessage>Pick a harness to view its issues.</PanelMessage>;
@@ -234,113 +350,50 @@ export default function IssuesPanel({ params, api }: PanelComponentProps) {
           <span>
             <strong>{pendingCount}</strong> validator finding{pendingCount === 1 ? '' : 's'} pending triage
           </span>
-          <button
-            type="button"
-            className="pc-adv-issues__triage-btn"
-            disabled={triaging}
-            onClick={() => void runTriage()}
-            title="Merge pending validator findings into the issues list"
-          >
-            {triaging ? 'Triaging…' : `Triage ${pendingCount}`}
-          </button>
+          <Tooltip label="Merge pending validator findings into the issues list">
+            <button
+              type="button"
+              className="pc-adv-issues__triage-btn"
+              disabled={triaging}
+              onClick={() => void runTriage()}
+            >
+              {triaging ? 'Triaging…' : `Triage ${pendingCount}`}
+            </button>
+          </Tooltip>
         </div>
       )}
 
-      <div ref={listRef} className="pc-adv-issues__list" tabIndex={0} onKeyDown={onListKeyDown}>
-        {filtered.length === 0 ? (
-          <PanelMessage>No issues match the current filter.</PanelMessage>
-        ) : (
-          <div style={{ height: rowVirtualizer.getTotalSize(), position: 'relative', width: '100%' }}>
-            {rowVirtualizer.getVirtualItems().map((vi) => {
-            const i = filtered[vi.index];
-            const idx = vi.index;
-            const sevTone = SEVERITY_TONE[i.severity] ?? SEVERITY_TONE.minor;
-            const SevIcon = SEVERITY_ICON[i.severity] ?? Circle;
-            const SrcIcon = SOURCE_ICON[i.source] ?? Circle;
-            const StatusIcon = STATUS_ICON[i.status] ?? Circle;
-            const isActive = i.id === selectedId;
-            return (
-              <div
-                key={i.id}
-                data-index={idx}
-                data-fidx={idx}
-                ref={rowVirtualizer.measureElement}
-                className={`pc-adv-issues__row${isActive ? ' is-active' : ''}${idx === focusIdx ? ' is-focused' : ''}`}
-                style={{ position: 'absolute', top: 0, left: 0, width: '100%', transform: `translateY(${vi.start}px)` }}
-                onClick={() => void setSelectedId(i.id)}
-                onContextMenu={(e) => {
-                  e.preventDefault();
-                  setPinMenu({
-                    pos: { x: e.clientX, y: e.clientY },
-                    itemId: i.id,
-                    itemLabel: i.id,
-                    harnessSlug: slug,
-                  });
-                }}
-                role="button"
-                tabIndex={0}
-              >
-                <span className="pc-adv-issues__id">{i.id}</span>
-                <span
-                  className="pc-adv-issues__severity"
-                  style={{ background: sevTone.bg, color: sevTone.fg }}
-                >
-                  <SevIcon size={11} aria-hidden />
-                  {i.severity}
-                </span>
-                <span className="pc-adv-issues__title">
-                  <StatusIcon
-                    size={12}
-                    aria-label={i.status}
-                    style={{ color: STATUS_COLOR[i.status] ?? '#888', flexShrink: 0 }}
-                  />
-                  <SrcIcon size={11} aria-label={i.source} style={{ color: 'rgba(199, 188, 252, 0.6)', flexShrink: 0 }} />
-                  <span className="pc-adv-issues__titletext">{i.title}</span>
-                </span>
-                <span className="pc-adv-issues__meta">
-                  {i.codePointer && (
-                    <span className="pc-adv-issues__pointer" title={i.codePointer}>
-                      <FileCode size={10} aria-hidden /> {shortPointer(i.codePointer)}
-                    </span>
-                  )}
-                  {i.linkedFeatureId && (
-                    <span className="pc-adv-issues__link" title={`Linked feature: ${i.linkedFeatureId}`}>
-                      <ArrowUpRight size={10} aria-hidden /> {i.linkedFeatureId}
-                    </span>
-                  )}
-                  {i.foundDuring && (
-                    <span className="pc-adv-issues__found" title={`Found during: ${i.foundDuring}`}>
-                      {i.foundDuring}
-                    </span>
-                  )}
-                </span>
-                <span className="pc-adv-issues__rowactions" onClick={(e) => e.stopPropagation()}>
-                  {!i.linkedFeatureId && i.status !== 'closed' && i.status !== 'wontfix' && (
-                    <button type="button" disabled={busyId === i.id} onClick={() => void handleAction(i, 'promote')} title="Promote to a fix feature">
-                      Promote
-                    </button>
-                  )}
-                  {i.status !== 'acknowledged' && i.status !== 'closed' && (
-                    <button type="button" disabled={busyId === i.id} onClick={() => void handleAction(i, 'acknowledge')} title="Acknowledge">
-                      Ack
-                    </button>
-                  )}
-                  {i.status !== 'closed' && (
-                    <button type="button" disabled={busyId === i.id} onClick={() => void handleAction(i, 'close')} title="Close">
-                      Close
-                    </button>
-                  )}
-                  {i.status !== 'wontfix' && (
-                    <button type="button" disabled={busyId === i.id} onClick={() => void handleAction(i, 'wontfix')} title="Won't fix">
-                      Won&apos;t fix
-                    </button>
-                  )}
-                </span>
-              </div>
-            );
-            })}
-          </div>
-        )}
+      <div
+        ref={scrollRef}
+        className="pc-adv-issues__list"
+        tabIndex={0}
+        onKeyDown={onListKeyDown}
+      >
+        <RichGrid<Issue>
+          inline
+          virtualMode={{
+            virtualizer: rowVirtualizer,
+            totalRows: filtered.length,
+            rowAt: (i) => filtered[i],
+          }}
+          columns={columns}
+          getRowId={(i) => i.id}
+          onRowClick={(i) => void setSelectedId(i.id)}
+          onRowHover={(row) => setHoveredId(row?.id ?? null)}
+          rowProps={richRowProps}
+          getRowBg={richGetRowBg}
+          headerHeight={28}
+          rowMinHeight={40}
+          headerStyle={{
+            background: 'var(--bg-2, rgba(255,255,255,0.045))',
+            color: 'var(--fg-mute, #7f9bb4)',
+            borderBottom: '1px solid var(--border, rgba(125,211,252,0.15))',
+            fontSize: 10,
+            textTransform: 'uppercase',
+            letterSpacing: '0.06em',
+          }}
+          empty={<PanelMessage>No issues match the current filter.</PanelMessage>}
+        />
       </div>
       <div className="pc-adv-issues__footer">
         <span>{filtered.length}/{issues.length} shown</span>
@@ -352,14 +405,15 @@ export default function IssuesPanel({ params, api }: PanelComponentProps) {
           flex-direction: column;
           height: 100%;
           min-height: 0;
-          background: rgba(8, 10, 22, 0.6);
+          background: var(--bg-1, #0b1220);
+          color: var(--fg, #e7f7ff);
         }
         .pc-adv-issues__bar {
           display: flex;
           gap: 12px;
           align-items: center;
           padding: 8px 12px;
-          border-bottom: 1px solid rgba(167, 139, 250, 0.12);
+          border-bottom: 1px solid var(--border, rgba(125, 211, 252, 0.15));
           flex-wrap: wrap;
         }
         .pc-adv-issues__search {
@@ -367,11 +421,17 @@ export default function IssuesPanel({ params, api }: PanelComponentProps) {
           min-width: 160px;
           padding: 6px 8px;
           font-size: 12px;
-          background: rgba(20, 18, 38, 0.96);
-          color: #f7f5ff;
-          border: 1px solid rgba(167, 139, 250, 0.2);
+          background: var(--bg-2, rgba(255, 255, 255, 0.045));
+          color: var(--fg, #e7f7ff);
+          border: 1px solid var(--border-strong, rgba(125, 211, 252, 0.32));
           border-radius: 6px;
         }
+        .pc-adv-issues__search:focus {
+          outline: none;
+          border-color: var(--accent, #38bdf8);
+          box-shadow: 0 0 0 2px color-mix(in oklab, var(--accent, #38bdf8), transparent 78%);
+        }
+        .pc-adv-issues__search::placeholder { color: var(--fg-mute, #7f9bb4); }
         .pc-adv-issues__filters {
           display: flex;
           gap: 4px;
@@ -385,23 +445,27 @@ export default function IssuesPanel({ params, api }: PanelComponentProps) {
           padding: 4px 8px;
           font-size: 11px;
           font-weight: 600;
-          color: rgba(220, 214, 248, 0.66);
-          background: rgba(20, 18, 38, 0.6);
-          border: 1px solid rgba(167, 139, 250, 0.14);
+          color: var(--fg-dim, #b9d4e8);
+          background: var(--bg-2, rgba(255, 255, 255, 0.045));
+          border: 1px solid var(--border, rgba(125, 211, 252, 0.15));
           border-radius: 4px;
           cursor: pointer;
         }
         .pc-adv-issues__filter span {
-          color: rgba(220, 214, 248, 0.5);
+          color: var(--fg-mute, #7f9bb4);
           font-weight: 700;
         }
+        .pc-adv-issues__filter:hover {
+          color: var(--fg, #e7f7ff);
+          border-color: var(--border-strong, rgba(125, 211, 252, 0.32));
+        }
         .pc-adv-issues__filter.is-active {
-          color: #f7f5ff;
-          background: rgba(31, 23, 56, 0.96);
-          border-color: rgba(167, 139, 250, 0.4);
+          color: var(--fg, #e7f7ff);
+          background: color-mix(in oklab, var(--accent, #38bdf8), transparent 84%);
+          border-color: color-mix(in oklab, var(--accent, #38bdf8), transparent 55%);
         }
         .pc-adv-issues__filter.is-active span {
-          color: #c4b5fd;
+          color: var(--accent-strong, #7dd3fc);
         }
         .pc-adv-issues__triage {
           display: flex;
@@ -410,13 +474,13 @@ export default function IssuesPanel({ params, api }: PanelComponentProps) {
           margin: 8px 12px 0;
           padding: 6px 10px;
           font-size: 11px;
-          color: #fde68a;
-          background: rgba(250, 204, 21, 0.1);
-          border: 1px solid rgba(250, 204, 21, 0.28);
+          color: var(--warn, #fbbf24);
+          background: var(--warn-bg, rgba(251, 191, 36, 0.1));
+          border: 1px solid var(--warn-border, rgba(251, 191, 36, 0.35));
           border-radius: 6px;
         }
         .pc-adv-issues__triage strong {
-          color: #fef3c7;
+          color: var(--fg, #e7f7ff);
           font-weight: 800;
         }
         .pc-adv-issues__triage-btn {
@@ -424,14 +488,14 @@ export default function IssuesPanel({ params, api }: PanelComponentProps) {
           padding: 3px 10px;
           font-size: 11px;
           font-weight: 700;
-          color: #1a160a;
-          background: #fde68a;
+          color: var(--accent-ink, #051827);
+          background: var(--warn, #fbbf24);
           border: none;
           border-radius: 4px;
           cursor: pointer;
         }
         .pc-adv-issues__triage-btn:hover:not(:disabled) {
-          background: #fef3c7;
+          background: color-mix(in oklab, var(--warn, #fbbf24), white 12%);
         }
         .pc-adv-issues__triage-btn:disabled {
           opacity: 0.6;
@@ -440,94 +504,33 @@ export default function IssuesPanel({ params, api }: PanelComponentProps) {
         .pc-adv-issues__list {
           flex: 1;
           overflow: auto;
-          padding: 4px 0;
-        }
-        .pc-adv-issues__row {
-          position: relative;
-          display: grid;
-          grid-template-columns: 70px 92px 1fr auto;
-          gap: 10px;
-          align-items: center;
-          padding: 6px 12px;
-          font-size: 12px;
-          color: rgba(220, 214, 248, 0.86);
-          border-bottom: 1px solid rgba(167, 139, 250, 0.06);
-          cursor: pointer;
-          user-select: none;
-        }
-        .pc-adv-issues__rowactions {
-          position: absolute;
-          right: 10px;
-          top: 50%;
-          transform: translateY(-50%);
-          display: inline-flex;
-          gap: 4px;
-          opacity: 0;
-          transition: opacity 0.08s;
-          padding-left: 28px;
-          background: linear-gradient(90deg, transparent, rgba(13, 11, 26, 0.97) 26%);
-        }
-        .pc-adv-issues__row:hover .pc-adv-issues__rowactions {
-          opacity: 1;
-        }
-        .pc-adv-issues__rowactions button {
-          padding: 2px 8px;
-          font-size: 10px;
-          font-weight: 600;
-          color: rgba(220, 214, 248, 0.85);
-          background: rgba(31, 23, 56, 0.96);
-          border: 1px solid rgba(167, 139, 250, 0.3);
-          border-radius: 4px;
-          cursor: pointer;
-          white-space: nowrap;
-        }
-        .pc-adv-issues__rowactions button:hover:not(:disabled) {
-          color: #f7f5ff;
-          border-color: rgba(167, 139, 250, 0.6);
-        }
-        .pc-adv-issues__rowactions button:disabled {
-          opacity: 0.5;
-          cursor: default;
-        }
-        .pc-adv-issues__row:hover {
-          background: rgba(31, 23, 56, 0.45);
-        }
-        .pc-adv-issues__row.is-active {
-          background: rgba(167, 139, 250, 0.18);
-          border-left: 2px solid rgba(167, 139, 250, 0.78);
-          padding-left: 10px;
-        }
-        .pc-adv-issues__row.is-focused {
-          outline: 1px solid rgba(196, 181, 253, 0.55);
-          outline-offset: -1px;
+          min-height: 0;
         }
         .pc-adv-issues__list:focus,
         .pc-adv-issues__list:focus-visible {
           outline: none;
         }
+        .pc-adv-issues__row.is-active {
+          box-shadow: inset 2px 0 0 var(--accent, #38bdf8);
+        }
+        .pc-adv-issues__row.is-focused {
+          outline: 1px solid color-mix(in oklab, var(--accent, #38bdf8), white 12%);
+          outline-offset: -1px;
+        }
         .pc-adv-issues__id {
           font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-          color: rgba(199, 188, 252, 0.78);
+          color: var(--fg-mute, #7f9bb4);
           font-weight: 600;
-        }
-        .pc-adv-issues__severity {
-          display: inline-flex;
-          gap: 4px;
-          align-items: center;
-          padding: 1px 8px;
-          font-size: 10px;
-          font-weight: 700;
-          text-transform: uppercase;
-          letter-spacing: 0.05em;
-          border-radius: 999px;
+          font-size: 11px;
         }
         .pc-adv-issues__title {
           display: inline-flex;
           gap: 7px;
           align-items: center;
-          color: #f7f5ff;
+          color: var(--fg, #e7f7ff);
           overflow: hidden;
           min-width: 0;
+          width: 100%;
         }
         .pc-adv-issues__titletext {
           overflow: hidden;
@@ -538,7 +541,7 @@ export default function IssuesPanel({ params, api }: PanelComponentProps) {
           display: inline-flex;
           gap: 8px;
           align-items: center;
-          flex-shrink: 0;
+          justify-content: flex-end;
         }
         .pc-adv-issues__pointer,
         .pc-adv-issues__link {
@@ -547,13 +550,41 @@ export default function IssuesPanel({ params, api }: PanelComponentProps) {
           align-items: center;
           font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
           font-size: 10px;
-          color: rgba(199, 188, 252, 0.7);
+          color: var(--accent-strong, #7dd3fc);
+          white-space: nowrap;
         }
         .pc-adv-issues__found {
           font-size: 10px;
-          color: rgba(220, 214, 248, 0.45);
+          color: var(--fg-mute, #7f9bb4);
           text-transform: uppercase;
           letter-spacing: 0.05em;
+          white-space: nowrap;
+        }
+        .pc-adv-issues__rowactions {
+          display: inline-flex;
+          gap: 2px;
+          align-items: center;
+          justify-content: flex-end;
+          transition: opacity 0.1s var(--ease-out, ease);
+        }
+        .pc-adv-issues__rowactions button {
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          padding: 3px;
+          color: var(--fg-dim, #b9d4e8);
+          background: var(--bg-2, rgba(255, 255, 255, 0.045));
+          border: 1px solid var(--border, rgba(125, 211, 252, 0.15));
+          border-radius: 4px;
+          cursor: pointer;
+        }
+        .pc-adv-issues__rowactions button:hover:not(:disabled) {
+          color: var(--fg, #e7f7ff);
+          border-color: var(--accent, #38bdf8);
+        }
+        .pc-adv-issues__rowactions button:disabled {
+          opacity: 0.5;
+          cursor: default;
         }
         .pc-adv-issues__footer {
           flex-shrink: 0;
@@ -562,11 +593,11 @@ export default function IssuesPanel({ params, api }: PanelComponentProps) {
           gap: 12px;
           padding: 4px 12px;
           font-size: 10px;
-          color: rgba(220, 214, 248, 0.5);
-          border-top: 1px solid rgba(167, 139, 250, 0.08);
+          color: var(--fg-mute, #7f9bb4);
+          border-top: 1px solid var(--border, rgba(125, 211, 252, 0.15));
         }
         .pc-adv-issues__kbd {
-          opacity: 0.75;
+          opacity: 0.85;
           white-space: nowrap;
         }
       `}</style>
@@ -576,7 +607,7 @@ export default function IssuesPanel({ params, api }: PanelComponentProps) {
 }
 
 // Collapse a long code pointer (path:line) to the basename for the chip,
-// keeping the full value in the title attribute.
+// keeping the full value in the tooltip.
 function shortPointer(p: string): string {
   const base = p.split('/').pop() ?? p;
   return base.length > 28 ? `…${base.slice(-27)}` : base;
@@ -594,7 +625,7 @@ function PanelMessage({
       style={{
         padding: '24px',
         textAlign: 'center',
-        color: tone === 'error' ? '#fca5a5' : 'rgba(220, 214, 248, 0.6)',
+        color: tone === 'error' ? 'var(--bad, #fb7185)' : 'var(--fg-mute, #7f9bb4)',
         fontSize: 13,
         height: '100%',
         display: 'grid',

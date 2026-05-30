@@ -1,8 +1,10 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
-import { Activity, CheckCircle2, Coins, Network } from 'lucide-react';
+import { Activity, CheckCircle2, Coins, LayoutGrid, Network } from 'lucide-react';
 import { AddPanelCatalog } from '../../harness/dock/AddPanelCatalog';
+import { resetLayout } from '../../harness/dock/dock-actions';
+import { Tooltip } from '../../harness/Tooltip';
 import { toast } from 'sonner';
 import { StatCard } from '@restart/ui-primitives';
 import HealthBadge from '../../harness/HealthBadge';
@@ -153,6 +155,18 @@ export default function HarnessTopBar({ slug, projects }: Props) {
             className="pc-adv-topbar__add-panel"
           />
         )}
+        {slug && (
+          <Tooltip label="Reset this harness's panel layout to the default 3-pane split">
+            <button
+              type="button"
+              className="pc-adv-topbar__reset-layout"
+              onClick={() => resetLayout()}
+              aria-label="Reset layout"
+            >
+              <LayoutGrid size={13} aria-hidden /> Reset layout
+            </button>
+          </Tooltip>
+        )}
       </div>
 
       <style>{`
@@ -161,8 +175,8 @@ export default function HarnessTopBar({ slug, projects }: Props) {
           align-items: center;
           gap: 16px;
           padding: 10px 18px;
-          border-bottom: 1px solid rgba(167, 139, 250, 0.16);
-          background: linear-gradient(180deg, rgba(11, 13, 28, 0.92), rgba(8, 11, 24, 0.92));
+          border-bottom: 1px solid var(--border, rgba(125, 211, 252, 0.15));
+          background: var(--bg-2, rgba(255, 255, 255, 0.045));
           min-height: 48px;
         }
         .pc-adv-topbar__left {
@@ -181,7 +195,7 @@ export default function HarnessTopBar({ slug, projects }: Props) {
         }
         .pc-adv-topbar__path {
           font-size: 12px;
-          color: rgba(220, 214, 248, 0.66);
+          color: var(--fg-mute, #7f9bb4);
           font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
           white-space: nowrap;
           overflow: hidden;
@@ -191,10 +205,10 @@ export default function HarnessTopBar({ slug, projects }: Props) {
           display: flex;
           gap: 12px;
           font-size: 11px;
-          color: rgba(220, 214, 248, 0.74);
+          color: var(--fg-dim, #b9d4e8);
         }
         .pc-adv-topbar__progress strong {
-          color: #f7f5ff;
+          color: var(--fg, #e7f7ff);
           font-weight: 700;
         }
         .pc-adv-topbar__right {
@@ -204,21 +218,38 @@ export default function HarnessTopBar({ slug, projects }: Props) {
           flex-shrink: 0;
         }
         .pc-adv-topbar__loading {
-          color: rgba(220, 214, 248, 0.5);
+          color: var(--fg-mute, #7f9bb4);
           font-size: 12px;
           font-style: italic;
         }
         .pc-adv-topbar__add-panel {
-          background: rgba(167, 139, 250, 0.14);
-          color: #c4b5fd;
-          border: 1px solid rgba(167, 139, 250, 0.38);
+          background: color-mix(in oklab, var(--accent, #38bdf8), transparent 84%);
+          color: var(--accent-strong, #7dd3fc);
+          border: 1px solid color-mix(in oklab, var(--accent, #38bdf8), transparent 60%);
           border-radius: 999px;
           font-weight: 700;
           letter-spacing: 0.02em;
         }
         .pc-adv-topbar__add-panel:hover {
-          background: rgba(167, 139, 250, 0.26);
-          color: #e7f7ff;
+          background: color-mix(in oklab, var(--accent, #38bdf8), transparent 72%);
+          color: var(--fg, #e7f7ff);
+        }
+        .pc-adv-topbar__reset-layout {
+          display: inline-flex;
+          align-items: center;
+          gap: 5px;
+          padding: 4px 10px;
+          font-size: 11px;
+          font-weight: 600;
+          color: var(--fg-dim, #b9d4e8);
+          background: var(--bg-2, rgba(255, 255, 255, 0.045));
+          border: 1px solid var(--border, rgba(125, 211, 252, 0.15));
+          border-radius: 999px;
+          cursor: pointer;
+        }
+        .pc-adv-topbar__reset-layout:hover {
+          color: var(--fg, #e7f7ff);
+          border-color: var(--accent, #38bdf8);
         }
       `}</style>
     </div>
@@ -237,6 +268,7 @@ export default function HarnessTopBar({ slug, projects }: Props) {
 function RegisterSubsButton({ slug }: { slug: string }) {
   const [pending, setPending] = useState(false);
   return (
+    <Tooltip label="Scan this harness for git submodules and register them as sub-harnesses">
     <button
       type="button"
       className="pc-adv-topbar__register-subs"
@@ -269,7 +301,6 @@ function RegisterSubsButton({ slug }: { slug: string }) {
           setPending(false);
         }
       }}
-      title="Scan this harness for git submodules and register them as sub-harnesses"
       disabled={pending}
     >
       <Network size={13} aria-hidden />
@@ -298,5 +329,6 @@ function RegisterSubsButton({ slug }: { slug: string }) {
         }
       `}</style>
     </button>
+    </Tooltip>
   );
 }

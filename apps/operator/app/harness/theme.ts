@@ -67,6 +67,56 @@ export const BOARD_COLUMN_ORDER: HarnessStatus[] = [
   'todo', 'in_progress', 'validating', 'failing', 'blocked', 'passed', 'deprecated',
 ];
 
+// ─── Issue severity + status palettes ──────────────────────────────
+//
+// Issues carry their own `severity` (critical|major|minor|nit) and
+// `status` (open|acknowledged|fixing|closed|wontfix) axes — distinct from
+// the feature STATUS machine above. These are the SINGLE source for issue
+// coloring; the /adv Issues panel + Detail pane read them via the
+// <SeverityPill> / issue-status helpers in primitives.tsx instead of
+// re-declaring local tone maps. Hues align to the bluefrost semantic
+// family (red → amber → sky → grey) so issues stay on-theme; `minor` uses
+// the sky accent rather than the legacy yellow.
+//
+// Same Proxy fallback as STATUS — an unknown severity/status returns a
+// neutral grey rather than crashing the row subtree at render.
+
+const _SEVERITY_TABLE = {
+  critical: { solid: '#ef4444', bg: 'rgba(239,68,68,0.16)',   text: '#fca5a5', label: 'Critical' },
+  major:    { solid: '#f59e0b', bg: 'rgba(245,158,11,0.15)',  text: '#fcd34d', label: 'Major' },
+  minor:    { solid: '#38bdf8', bg: 'rgba(56,189,248,0.14)',  text: '#7dd3fc', label: 'Minor' },
+  nit:      { solid: '#94a3b8', bg: 'rgba(148,163,184,0.14)', text: '#cbd5e1', label: 'Nit' },
+} as const;
+
+const _STATUS_META_FALLBACK = { solid: '#6b7280', bg: 'rgba(107,114,128,0.15)', text: '#9ca3af', label: 'Unknown' } as const;
+
+export const SEVERITY = new Proxy(_SEVERITY_TABLE as Record<string, StatusMeta>, {
+  get(target, prop: string) {
+    return (target as any)[prop] ?? _STATUS_META_FALLBACK;
+  },
+}) as typeof _SEVERITY_TABLE;
+
+export type IssueSeverityKey = keyof typeof _SEVERITY_TABLE;
+
+// Severity ordering, most-urgent first — used to sort the Issues list.
+export const SEVERITY_ORDER: IssueSeverityKey[] = ['critical', 'major', 'minor', 'nit'];
+
+const _ISSUE_STATUS_TABLE = {
+  open:         { solid: '#ef4444', bg: 'rgba(239,68,68,0.15)',  text: '#fca5a5', label: 'Open' },
+  acknowledged: { solid: '#f59e0b', bg: 'rgba(245,158,11,0.15)', text: '#fcd34d', label: 'Acknowledged' },
+  fixing:       { solid: '#a855f7', bg: 'rgba(168,85,247,0.15)', text: '#d8b4fe', label: 'Fixing' },
+  closed:       { solid: '#10b981', bg: 'rgba(16,185,129,0.15)', text: '#6ee7b7', label: 'Closed' },
+  wontfix:      { solid: '#52525b', bg: 'rgba(82,82,91,0.18)',   text: '#a1a1aa', label: 'Won’t fix' },
+} as const;
+
+export const ISSUE_STATUS = new Proxy(_ISSUE_STATUS_TABLE as Record<string, StatusMeta>, {
+  get(target, prop: string) {
+    return (target as any)[prop] ?? _STATUS_META_FALLBACK;
+  },
+}) as typeof _ISSUE_STATUS_TABLE;
+
+export type IssueStatusKey = keyof typeof _ISSUE_STATUS_TABLE;
+
 /**
  * Canonical role color/label overrides. Roles not listed here get a
  * stable color derived from their name (see getRoleStyle below) — adding
