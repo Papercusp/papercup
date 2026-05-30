@@ -1,7 +1,7 @@
 ---
 title: Abstract Papercusp's reusable systems into standalone libraries — per-subsystem seams and the extraction backlog
 slug: papercusp-systems-abstraction-2026-05-29
-status: draft
+status: ready
 created: 2026-05-29
 updated: 2026-05-29
 owner: avi@storewolf.com
@@ -354,11 +354,31 @@ two SEPARATE storage components**, not one dual-backend interface:
   (`@tauri-apps/api`, `@restart/sse`, `@papercusp/tooldef`). Two shims
   (`transport-adapters/index.ts` + `desktop-bootstrap.ts` via a `./desktop-bootstrap`
   subpath export) keep all 4 consumers resolving unchanged — zero rewire.
-  (iii) **`@papercusp/ipc-endpoint-server` — REMAINING:** `endpoint-ipc/server.ts`,
-  the coupled one; needs MORE than "pluggable dispatch": inject
-  `dispatchProjectedToolStream` **and** `lookupByMcpName` **and** `getWorkspaceId`
-  **and** the tool allowlist (all already DI-shaped via `DispatchProjectedDeps`).
-  This is the libsoup pool-exhaustion fix. → D-006
+  (iii) **`@papercusp/ipc-endpoint-server` — REMAINING (one attempt reverted
+  2026-05-30):** `endpoint-ipc/server.ts` (399 LOC) + `sys-http.ts` (225 LOC,
+  self-contained). **Corrected design from the code read:** the runtime coupling
+  is only **3** injected fns, not the plan's "4" — `dispatchProjectedToolStream`,
+  `lookupByMcpName`, `getWorkspaceId` (wrapping `activeWorkspaceId`); the
+  `allowedTools` "4th" is already a caller *option*, not a coupling. Wire shape:
+  add a required `host: { lookupByMcpName, dispatchProjectedToolStream,
+  getWorkspaceId }` to `StartEndpointIpcServerOptions`; `UnifiedToolContext` /
+  `DispatchProjectedDeps` stay `import type` (no runtime dep); `./framing` →
+  `@papercusp/ipc-framing`. Package deps: `@papercusp/ipc-framing` + `@papercusp/agent-mcp`
+  (type-only) + `@papercusp/tooldef` (the test's `registerProjectedTool`/
+  `classifyEventWire` — already shipped). Consumers to rewire: the boot site
+  `instrumentation-node.ts` (~line 445, pass `host:` alongside the existing
+  `deps`/`allowedTools`), and a re-export shim at `endpoint-ipc/server.ts` for
+  `dev_ipc_echo_e2e.test.ts`. `sys-http.ts` has NO external consumer (only a
+  doc-comment mention) — moves cleanly. **Why the first attempt reverted:** I
+  `git mv`'d `sys-http.ts` out before wiring the shim, which left the original
+  `server.ts`'s `./sys-http` import dangling = main briefly broken; compounded by
+  the sandbox Read/Bash stalling on the 421-line `server.test.ts` (can't safely
+  edit a file I can't cleanly read). Cleanly reverted (`git checkout HEAD --
+  endpoint-ipc` + rm partial pkg); main restored, zero residue. Redo in a calm
+  tooling window: write the package files FIRST (server.ts already drafted with
+  the `host` seam), move sys-http+tests, add the shim, THEN rewire boot — never
+  leave the original importing a moved file. This is the libsoup pool-exhaustion
+  fix. → D-006
 - **P-031** `done` Extract `@papercusp/rate-limit` from `lib/auth-rate-limit.ts`
   (2-bucket, PG-durable; **verified zero domain coupling**, generic string keys).
   **Shipped** (`packages/rate-limit`, 8 unit tests, on `main`). **Seam deviation:**
