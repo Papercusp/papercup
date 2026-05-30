@@ -341,11 +341,16 @@ two SEPARATE storage components**, not one dual-backend interface:
   git/restore/plugin call-sites. Externalize as a caller-registered trigger
   registry (or accept a loose string list) so the extracted package isn't bound to
   harness events. blocked-by: P-023 → D-010
-- **P-030** `todo` Extract the Tauri IPC stack as **three pieces** (audit:
-  coupling is in `server.ts`, NOT the transport): (i) `@papercusp/ipc-framing` —
-  `framing.ts`, pure binary codec, zero coupling; (ii) `@papercusp/desktop-ipc` —
-  `desktop-bootstrap.ts` + `ipc-fetch.ts` + `ipc-event-source.ts` + `ipc-stream.ts`,
-  **verified zero Papercusp coupling**; (iii) `@papercusp/ipc-endpoint-server` —
+- **P-030** `wip` Extract the Tauri IPC stack as **three pieces** (audit:
+  coupling is in `server.ts`, NOT the transport): (i) **`@papercusp/ipc-framing`
+  — DONE** (`775fb24e`): `framing.ts` (145 LOC, zero imports) moved to
+  `packages/ipc-framing`, 16-test suite passing, `endpoint-ipc/framing.ts` left as
+  a re-export shim (6 consumers unchanged); (ii) `@papercusp/desktop-ipc` —
+  `desktop-bootstrap.ts` + `ipc-fetch.ts` + `ipc-event-source.ts` + `ipc-stream.ts`
+  in `lib/transport-adapters/`. **Re-scope note (2026-05-30):** that dir ALSO holds
+  `http-stream.ts`, `sse-parser.ts`, `types.ts`, `index.ts` (non-IPC); extract only
+  the 4 IPC files + their tests, leave the rest, and check `index.ts` barrel
+  re-exports before moving. (iii) `@papercusp/ipc-endpoint-server` —
   `endpoint-ipc/server.ts`, which needs MORE than "pluggable dispatch": inject
   `dispatchProjectedToolStream` **and** `lookupByMcpName` **and** `getWorkspaceId`
   **and** the tool allowlist (all already DI-shaped via `DispatchProjectedDeps`).
