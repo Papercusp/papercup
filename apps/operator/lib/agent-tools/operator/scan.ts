@@ -22,6 +22,7 @@
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { runAgentChat } from '@/lib/agent-chat-stream';
+import { selfUrl } from '@/lib/self-url';
 import { parseSuggestions, enrich } from '@/lib/operator-suggestion-parser';
 import { loadPreferences, type OperatorPreferences } from '@/lib/operator-preferences';
 import { NON_INTERACTIVE_AGENT_MCP_TOOLS } from '@/lib/operator-mcp-tools';
@@ -187,18 +188,21 @@ export default defineTool({
           mcpConfig: input.superuserToken
             ? {
                 mcpServers: {
+                  // Direct HTTP MCP — same shape operator:converse moved
+                  // to at 1083bfaf (2026-05-21). The old `npx
+                  // mcp-remote@latest` stdio bridge added a cold
+                  // npm-resolve + a proxy subprocess per scan and was the
+                  // flaky empty-turn culprit; the hardcoded :3055 also
+                  // dead-ended on the packaged desktop, whose operator
+                  // sidecar binds a dynamic port (never 3055), so the
+                  // scanner's tools never connected and it surfaced no
+                  // suggestions. selfUrl() resolves the host's own port
+                  // in dev (:3070) and the desktop sidecar port.
+                  // workspace= is required for state-channel scoping.
                   agentmcp: {
-                    type: 'stdio',
-                    command: 'npx',
-                    args: [
-                      '-y',
-                      'mcp-remote@latest',
-                      // workspace= required for state-channel scoping —
-                      // see operator/converse.ts audit4 comment.
-                      `http://127.0.0.1:3055/api/mcp?superuser=1&workspace=${encodeURIComponent(workspaceId)}`,
-                      '--header',
-                      `Authorization:Bearer ${input.superuserToken}`,
-                    ],
+                    type: 'http',
+                    url: `${selfUrl()}/api/mcp?superuser=1&workspace=${encodeURIComponent(workspaceId)}`,
+                    headers: { Authorization: `Bearer ${input.superuserToken}` },
                   },
                 },
               }
