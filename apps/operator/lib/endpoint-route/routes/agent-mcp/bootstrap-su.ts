@@ -20,7 +20,7 @@
  * 'public'` — requirePrincipal() inline, mirroring console-launch.ts.
  */
 import { defineTool } from '@papercusp/agent-mcp';
-import { activeWorkspaceId } from '@/lib/workspace-registry';
+import { activeWorkspaceId, readRegistry, workspaceById } from '@/lib/workspace-registry';
 import { buildConsoleEnvelope } from '@/lib/console-launcher';
 import { PrincipalCheckError, requirePrincipal } from '@/lib/auth/require-principal';
 import { recordAdvSession } from '@/lib/adv-sessions';
@@ -55,6 +55,8 @@ export interface BootstrapSuResult {
   /** adv_sessions row id; null if the insert failed (best-effort). */
   sessionId: number | null;
   agent: SuAgent;
+  /** Workspace the harness + session belong to. */
+  workspaceId: string;
   /** Working directory the launcher should exec the wrapper in. */
   cwd: string;
   harnessSlug: string | null;
@@ -90,12 +92,14 @@ const optionsForOptions = defineTool({
 /**
  * GET /api/agent-mcp/console/bootstrap-su/options
  *
- * Picker data for the `psu` launcher (and the /adv "Launch SU" modal):
- *   - no query        → { workspace, harnesses: [{ slug, path, status }] }
- *   - ?harness=<slug> → { harness, plans: [{ slug }] } (non-archived)
- *
- * Scoped to the active workspace (bootstrap-su uses activeWorkspaceId);
- * cross-workspace picking can come later.
+ * Picker data for the `psu` launcher (and the /adv "Launch SU" modal).
+ * Harnesses are workspace-scoped, so the picker walks workspace → harness
+ * → plan:
+ *   - no query                   → { activeWorkspace, workspace, workspaces:
+ *                                    [{ id, name }], harnesses: [{ slug, path, status }] }
+ *   - ?workspace=<id>            → harnesses for that workspace
+ *   - ?workspace=<id>&harness=<slug> → { plans: [{ slug }] } (non-archived)
+ * `workspace` defaults to the active workspace when omitted.
  */
 const optionsGet = defineTool({
   method: 'GET',
@@ -105,8 +109,9 @@ const optionsGet = defineTool({
     const denied = await gatePrincipal(req.headers);
     if (denied) return denied;
 
-    const workspace = activeWorkspaceId();
-    const harness = new URL(req.url).searchParams.get('harness')?.trim() || null;
+    const url = new URL(req.url);
+    const workspace = url.searchParams.get('workspace')?.trim() || activeWorkspaceId();
+    const harness = url.searchParams.get('harness')?.trim() || null;
 
     if (harness) {
       try {
@@ -115,6 +120,7 @@ const optionsGet = defineTool({
         const entries = await listPlanFiles({ plansDir: plans, archiveDir: archive });
         return jsonRes({
           status: 'ok',
+          workspace,
           harness,
           plans: entries.filter((e) => !e.archived).map((e) => ({ slug: e.slug })),
         });
@@ -129,7 +135,8 @@ const optionsGet = defineTool({
       path: h.path,
       status: h.status,
     }));
-    return jsonRes({ status: 'ok', workspace, harnesses });
+    const workspaces = readRegistry().workspaces.map((w) => ({ id: w.id, name: w.name }));
+    return jsonRes({ status: 'ok', activeWorkspace: activeWorkspaceId(), workspace, workspaces, harnesses });
   },
 });
 
@@ -143,6 +150,7 @@ const post = defineTool({
 
     let body: {
       agent?: string;
+      workspace?: string | null;
       harness_slug?: string | null;
       plan_slug?: string | null;
       label?: string | null;
@@ -161,16 +169,21 @@ const post = defineTool({
       );
     }
     const agent: SuAgent = body.agent;
+    const workspace = body.workspace?.trim() || activeWorkspaceId();
+    if (body.workspace?.trim() && !workspaceById(workspace)) {
+      return jsonRes({ status: 'error', error: `unknown workspace: ${workspace.slice(0, 48)}` }, 400);
+    }
     const harnessSlug = body.harness_slug?.trim() || null;
     const planSlug = body.plan_slug?.trim() || null;
 
     // Resolve cwd + context env from the existing console envelope builder
-    // (shell mode). We don't use its .mcp.json/launchCommand — the *-su
-    // wrapper carries its own MCP config + flags.
+    // (shell mode), scoped to the chosen workspace. We don't use its
+    // .mcp.json/launchCommand — the *-su wrapper carries its own MCP
+    // config + flags.
     let envelope;
     try {
       envelope = await buildConsoleEnvelope({
-        workspaceId: activeWorkspaceId(),
+        workspaceId: workspace,
         slug: harnessSlug,
         operatorBaseUrl: new URL(req.url).origin,
         mode: 'shell',
@@ -185,6 +198,7 @@ const post = defineTool({
     const sessionId = await recordAdvSession({
       planSlug,
       agent,
+      workspaceId: workspace,
       mode: agent === 'omp' ? 'omp' : 'console',
       cwd: envelope.cwd,
       label: body.label?.trim() || null,
@@ -200,6 +214,7 @@ const post = defineTool({
       status: 'ok',
       sessionId,
       agent,
+      workspaceId: workspace,
       cwd: envelope.cwd,
       harnessSlug,
       planSlug,

@@ -149,10 +149,10 @@ export async function buildConsoleEnvelope(
   let cwd: string;
   let stateDir: string | null = null;
   if (opts.slug) {
-    const projectDir = await resolveProjectDir(opts.slug);
+    const projectDir = await resolveProjectDir(opts.slug, opts.workspaceId);
     if (!projectDir) throw new Error(`unknown harness slug: ${opts.slug}`);
     cwd = projectDir;
-    stateDir = await resolveStateDir(opts.slug);
+    stateDir = await resolveStateDir(opts.slug, opts.workspaceId);
   } else {
     cwd = papercuspPath();
   }

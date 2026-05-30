@@ -12,6 +12,7 @@ describe('psu-launcher arg parsing', () => {
     expect(parseArgs([])).toEqual({
       picker: true,
       agent: null,
+      workspace: null,
       harness: null,
       plan: null,
       noPlan: false,
@@ -19,9 +20,12 @@ describe('psu-launcher arg parsing', () => {
   });
 
   it('parses the scripting-escape flags', () => {
-    expect(parseArgs(['--no-picker', '--agent=claude', '--harness=papercup', '--plan=my-plan'])).toEqual({
+    expect(
+      parseArgs(['--no-picker', '--agent=claude', '--workspace=ws1', '--harness=papercup', '--plan=my-plan']),
+    ).toEqual({
       picker: false,
       agent: 'claude',
+      workspace: 'ws1',
       harness: 'papercup',
       plan: 'my-plan',
       noPlan: false,
@@ -39,17 +43,21 @@ describe('psu-launcher arg parsing', () => {
     expect(planValue('real-plan')).toBe('real-plan');
   });
 
-  it('selectionsFromArgs resolves --no-plan to a null plan', () => {
-    expect(selectionsFromArgs({ agent: 'omp', harness: 'papercup', plan: null, noPlan: true })).toEqual({
+  it('selectionsFromArgs resolves --no-plan to a null plan + passes workspace', () => {
+    expect(
+      selectionsFromArgs({ agent: 'omp', workspace: 'ws1', harness: 'papercup', plan: null, noPlan: true }),
+    ).toEqual({
       agent: 'omp',
+      workspace: 'ws1',
       harness: 'papercup',
       plan: null,
     });
   });
 
-  it('selectionsFromArgs keeps --plan when --no-plan is absent', () => {
-    expect(selectionsFromArgs({ agent: 'codex', harness: null, plan: 'p', noPlan: false })).toEqual({
+  it('selectionsFromArgs keeps --plan when --no-plan is absent; null workspace when omitted', () => {
+    expect(selectionsFromArgs({ agent: 'codex', workspace: null, harness: null, plan: 'p', noPlan: false })).toEqual({
       agent: 'codex',
+      workspace: null,
       harness: null,
       plan: 'p',
     });

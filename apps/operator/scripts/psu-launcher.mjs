@@ -34,11 +34,12 @@ const OPERATOR_URL = process.env.PAPERCUSP_OPERATOR_URL || 'http://localhost:307
 
 /** Parse the scripting-escape flags. Pure — exported for tests. */
 export function parseArgs(argv) {
-  const out = { picker: true, agent: null, harness: null, plan: null, noPlan: false };
+  const out = { picker: true, agent: null, workspace: null, harness: null, plan: null, noPlan: false };
   for (const a of argv) {
     if (a === '--no-picker') out.picker = false;
     else if (a === '--no-plan') out.noPlan = true;
     else if (a.startsWith('--agent=')) out.agent = a.slice('--agent='.length);
+    else if (a.startsWith('--workspace=')) out.workspace = a.slice('--workspace='.length);
     else if (a.startsWith('--harness=')) out.harness = a.slice('--harness='.length);
     else if (a.startsWith('--plan=')) out.plan = a.slice('--plan='.length);
   }
@@ -57,6 +58,7 @@ export function selectionsFromArgs(args) {
   }
   return {
     agent: args.agent,
+    workspace: args.workspace || null,
     harness: args.harness || null,
     plan: args.noPlan ? null : (args.plan || null),
   };
@@ -113,16 +115,36 @@ async function pickAgent() {
   });
 }
 
+/** Pick a workspace. Harnesses are workspace-scoped, so this comes
+ *  before the harness picker. Auto-resolves (no prompt) when there's
+ *  0 or 1 workspace. Returns the workspace id (or null → active). */
+async function pickWorkspace() {
+  const { workspaces, activeWorkspace } = await api('/api/agent-mcp/console/bootstrap-su/options');
+  if (!Array.isArray(workspaces) || workspaces.length <= 1) {
+    return activeWorkspace ?? (workspaces && workspaces[0] ? workspaces[0].id : null);
+  }
+  const { select } = await import('@inquirer/prompts');
+  return select({
+    message: 'Workspace',
+    default: activeWorkspace ?? undefined,
+    choices: workspaces.map((w) => ({
+      name: w.id === activeWorkspace ? `${w.name}  (active)` : w.name,
+      value: w.id,
+    })),
+  });
+}
+
 function filterRows(rows, term) {
   const t = (term || '').toLowerCase();
   return t ? rows.filter((r) => r.name.toLowerCase().includes(t)) : rows;
 }
 
-async function pickHarness() {
+async function pickHarness(workspace) {
   const { search } = await import('@inquirer/prompts');
-  const { harnesses, workspace } = await api('/api/agent-mcp/console/bootstrap-su/options');
+  const q = workspace ? `?workspace=${encodeURIComponent(workspace)}` : '';
+  const { harnesses, workspace: ws } = await api(`/api/agent-mcp/console/bootstrap-su/options${q}`);
   const rows = [
-    { name: `· workspace root — no harness  [${workspace}]`, value: null },
+    { name: `· workspace root — no harness  [${ws}]`, value: null },
     ...harnesses.map((h) => ({ name: h.status ? `${h.slug}  (${h.status})` : h.slug, value: h.slug })),
   ];
   return search({
@@ -131,12 +153,14 @@ async function pickHarness() {
   });
 }
 
-async function pickPlan(harness) {
+async function pickPlan(workspace, harness) {
   const { search } = await import('@inquirer/prompts');
   let plans = [];
   if (harness) {
     try {
-      const r = await api(`/api/agent-mcp/console/bootstrap-su/options?harness=${encodeURIComponent(harness)}`);
+      const params = new URLSearchParams({ harness });
+      if (workspace) params.set('workspace', workspace);
+      const r = await api(`/api/agent-mcp/console/bootstrap-su/options?${params.toString()}`);
       plans = r.plans || [];
     } catch {
       plans = [];
@@ -174,9 +198,10 @@ async function main() {
   let selections;
   if (args.picker) {
     const agent = await pickAgent();
-    const harness = await pickHarness();
-    const plan = planValue(await pickPlan(harness));
-    selections = { agent, harness, plan };
+    const workspace = await pickWorkspace();
+    const harness = await pickHarness(workspace);
+    const plan = planValue(await pickPlan(workspace, harness));
+    selections = { agent, workspace, harness, plan };
   } else {
     selections = selectionsFromArgs(args);
   }
@@ -185,6 +210,7 @@ async function main() {
     method: 'POST',
     body: JSON.stringify({
       agent: selections.agent,
+      workspace: selections.workspace,
       harness_slug: selections.harness,
       plan_slug: selections.plan,
     }),

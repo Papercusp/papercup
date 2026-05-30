@@ -19,15 +19,17 @@ import { loadHarnessRegistry } from '@/lib/harness-registry';
 
 /**
  * Resolve a harness's filesystem project dir via the harness registry.
- * Returns null when the slug isn't registered.
+ * Returns null when the slug isn't registered. `workspaceId` scopes the
+ * lookup to a specific workspace (harnesses are workspace-scoped);
+ * omitted = the active workspace (preserves existing callers).
  */
-export async function resolveProjectDir(slug: string): Promise<string | null> {
-  return (await loadHarnessRegistry()).projects.find((p) => p.slug === slug)?.path ?? null;
+export async function resolveProjectDir(slug: string, workspaceId?: string): Promise<string | null> {
+  return (await loadHarnessRegistry(workspaceId)).projects.find((p) => p.slug === slug)?.path ?? null;
 }
 
 /** Resolve the harness's state directory (`<projectDir>/.harness`). */
-export async function resolveStateDir(slug: string): Promise<string | null> {
-  const projectDir = await resolveProjectDir(slug);
+export async function resolveStateDir(slug: string, workspaceId?: string): Promise<string | null> {
+  const projectDir = await resolveProjectDir(slug, workspaceId);
   if (!projectDir) return null;
   return join(projectDir, '.harness');
 }

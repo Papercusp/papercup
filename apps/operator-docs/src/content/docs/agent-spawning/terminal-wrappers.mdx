@@ -34,15 +34,19 @@ at launch). Plain `codex` (`CODEX_HOME=~/.codex`) is unaffected.
 
 ## `psu` — the plan-tracked launcher
 
-`psu` is one command that **picks an agent + harness + plan**, records a
-tracked session row, then `exec`s the matching `*-su` wrapper. The
-session shows up in the **`/adv` Sessions** tab — under its plan, or under
-the **"No plan"** group for ad-hoc sessions — labelled with its agent kind
-and resumable like any other session.
+`psu` is one command that **picks an agent + workspace + harness + plan**,
+records a tracked session row, then `exec`s the matching `*-su` wrapper.
+The session shows up in the **`/adv` Sessions** tab — under its plan, or
+under the **"No plan"** group for ad-hoc sessions — labelled with its agent
+kind and resumable like any other session.
 
 ```bash
-psu          # interactive: pick agent → harness → plan (or "▸ NO PLAN")
+psu          # interactive: pick agent → workspace → harness → plan (or "NO PLAN")
 ```
+
+Harnesses are **workspace-scoped**, so the picker asks for the workspace
+before the harness. When there's only one workspace it's chosen
+automatically (no prompt).
 
 Under the hood `psu` calls `POST /api/agent-mcp/console/bootstrap-su`,
 which creates the `adv_sessions` row (with `agent` + `plan_slug`, or a
@@ -57,13 +61,14 @@ Skip the prompts for shell scripts / CI:
 
 ```bash
 psu --no-picker --agent=claude --harness=papercup --plan=my-plan-slug
-psu --no-picker --agent=omp --harness=papercup --no-plan
-psu --no-picker --agent=codex --no-plan          # workspace root, no harness
+psu --no-picker --agent=omp --workspace=my-ws --harness=papercup --no-plan
+psu --no-picker --agent=codex --no-plan          # active workspace root, no harness
 ```
 
-`--agent` is required (`claude` | `omp` | `codex`); `--harness` defaults to
-the workspace root if omitted; pass `--no-plan` for an ad-hoc session or
-`--plan=<slug>` to bind one.
+`--agent` is required (`claude` | `omp` | `codex`); `--workspace` defaults
+to the active workspace; `--harness` defaults to the workspace root if
+omitted; pass `--no-plan` for an ad-hoc session or `--plan=<slug>` to bind
+one.
 
 ## Install
 

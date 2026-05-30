@@ -38,6 +38,8 @@ export interface AdvSessionRow {
 export interface RecordOpts {
   planSlug?: string | null;
   agent?: SuAgent | null;
+  /** Workspace to record the row in; defaults to the active workspace. */
+  workspaceId?: string;
   mode: 'omp' | 'console';
   terminalBin?: string | null;
   pid?: number | null;
@@ -96,7 +98,7 @@ export async function recordAdvSession(opts: RecordOpts): Promise<number | null>
       INSERT INTO harness_shared.adv_sessions
         (workspace_id, plan_slug, agent, mode, terminal_bin, pid, label, omp_thread_id, cwd)
       VALUES
-        (${activeWorkspaceId()}, ${opts.planSlug ?? null}, ${opts.agent ?? null}, ${opts.mode},
+        (${opts.workspaceId ?? activeWorkspaceId()}, ${opts.planSlug ?? null}, ${opts.agent ?? null}, ${opts.mode},
          ${opts.terminalBin ?? null}, ${opts.pid ?? null}, ${opts.label ?? null},
          ${opts.ompThreadId ?? null}, ${opts.cwd ?? null})
       RETURNING id

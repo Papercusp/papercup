@@ -17,7 +17,14 @@ vi.mock('@/lib/auth/require-principal', () => ({
     reason = 'denied';
   },
 }));
-vi.mock('@/lib/workspace-registry', () => ({ activeWorkspaceId: () => 'default' }));
+vi.mock('@/lib/workspace-registry', () => ({
+  activeWorkspaceId: () => 'default',
+  readRegistry: () => ({
+    current: 'default',
+    workspaces: [{ id: 'default', name: 'Default' }, { id: 'ws2', name: 'Second' }],
+  }),
+  workspaceById: (id: string) => (['default', 'ws2'].includes(id) ? { id, name: id } : undefined),
+}));
 vi.mock('@/lib/console-launcher', () => ({
   buildConsoleEnvelope: vi.fn(async (o: { slug: string | null }) => ({
     cwd: o.slug ? `/proj/${o.slug}` : '/workspace',
@@ -136,5 +143,25 @@ describe('bootstrap-su', () => {
     const json = await res.json();
     expect(json.harness).toBe('papercup');
     expect(json.plans).toEqual([{ slug: 'plan-a' }]);
+  });
+
+  it('options lists workspaces + the active one', async () => {
+    const json = await (await callGet()).json();
+    expect(json.activeWorkspace).toBe('default');
+    expect(json.workspaces).toEqual([{ id: 'default', name: 'Default' }, { id: 'ws2', name: 'Second' }]);
+  });
+
+  it('threads an explicit workspace to the session + result', async () => {
+    const res = await callPost({ agent: 'claude', workspace: 'ws2', harness_slug: 'papercup' });
+    const json = await res.json();
+    expect(json.status).toBe('ok');
+    expect(json.workspaceId).toBe('ws2');
+    expect(recordAdvSessionMock).toHaveBeenCalledWith(expect.objectContaining({ workspaceId: 'ws2' }));
+  });
+
+  it('rejects an unknown workspace (no session)', async () => {
+    const res = await callPost({ agent: 'claude', workspace: 'nope', harness_slug: 'papercup' });
+    expect(res.status).toBe(400);
+    expect(recordAdvSessionMock).not.toHaveBeenCalled();
   });
 });
