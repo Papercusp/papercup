@@ -89,7 +89,9 @@ function resolvePapercuspCli(): string {
   }
   let dir = process.cwd();
   for (let i = 0; i < 8; i++) {
-    const candidate = join(dir, 'papercusp', 'packages', 'cli', 'bin', 'papercusp');
+    // papercusp became a submodule under libs/ — the CLI bin lives at
+    // libs/papercusp/packages/cli/bin/papercusp (was papercusp/packages/...).
+    const candidate = join(dir, 'libs', 'papercusp', 'packages', 'cli', 'bin', 'papercusp');
     if (existsSync(candidate)) {
       cachedCli = candidate;
       return cachedCli;

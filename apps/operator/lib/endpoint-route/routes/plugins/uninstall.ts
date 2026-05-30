@@ -5,9 +5,10 @@
 import { spawn } from 'node:child_process';
 import { triggerSnapshotEvent } from '@/lib/backup';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
+import { resolvePapercuspCli } from '@/lib/papercusp-cli';
 import { defineTool } from '@papercusp/agent-mcp';
 
-const PAPERCUSP_BIN = process.env.PAPERCUSP_CLI ?? 'papercusp';
+const PAPERCUSP_BIN = resolvePapercuspCli();
 
 function run(cmd: string, args: string[]): Promise<{ code: number; stdout: string; stderr: string }> {
   return new Promise((resolve) => {

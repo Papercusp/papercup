@@ -12,9 +12,10 @@ import {
   resolveTemplateKind,
 } from '@/lib/template-kind';
 import { papercuspPath } from '@/lib/papercusp-root';
+import { resolvePapercuspCli } from '@/lib/papercusp-cli';
 import { defineTool } from '@papercusp/agent-mcp';
 
-const PAPERCUSP_BIN = process.env.PAPERCUSP_CLI ?? 'papercusp';
+const PAPERCUSP_BIN = resolvePapercuspCli();
 
 function run(cmd: string, args: string[]): Promise<{ code: number; stdout: string; stderr: string }> {
   return new Promise((resolve) => {

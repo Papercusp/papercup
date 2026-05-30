@@ -8,9 +8,10 @@
 import { spawn } from 'node:child_process';
 import { FLAGS } from '@papercusp/flags';
 import { gateApiRoute } from '@/lib/require-flag';
+import { resolvePapercuspCli } from '@/lib/papercusp-cli';
 import { defineTool } from '@papercusp/agent-mcp';
 
-const PAPERCUSP_BIN = process.env.PAPERCUSP_CLI ?? 'papercusp';
+const PAPERCUSP_BIN = resolvePapercuspCli();
 const SLUG_RE = /^[a-z0-9][a-z0-9._-]{0,63}$/i;
 
 function run(cmd: string, args: string[]): Promise<{ code: number; stdout: string; stderr: string }> {
