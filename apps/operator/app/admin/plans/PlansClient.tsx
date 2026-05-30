@@ -70,14 +70,6 @@ const ITEM_FILTER_LABEL: Record<ItemStatusFilter, string> = {
 
 const BUCKET_IDS: PlanBucket[] = PLAN_BUCKETS.map((b) => b.id);
 
-interface PlanStats {
-  total: number;
-  visible: number;
-  needsHuman: number;
-  actionable: number;
-  blocked: number;
-}
-
 export default function PlansClient() {
   // The OPEN-PLAN slug. Lives on `?plan=`, NOT `?slug=` — AdvShell owns
   // `?slug=` for the active harness (a global query param shared across
@@ -163,7 +155,6 @@ export default function PlansClient() {
     [planList, visiblePlans],
   );
 
-  const stats = useMemo(() => buildPlanStats(visiblePlans), [visiblePlans]);
   const harnessByPlan = useMemo(
     () => new Map((planList.data?.plans ?? []).map((p) => [p.slug, p.harness])),
     [planList.data],
@@ -221,6 +212,20 @@ export default function PlansClient() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [taggedItems, istatusKey, pBucketsKey, planBucketBySlug],
   );
+
+  // Per-status counts for the item-status chips — scoped by the active
+  // plan-status buckets (but NOT by the item-status selection, so each
+  // chip shows what selecting it would surface). Shrinks as you narrow
+  // the plan buckets.
+  const itemStatusCounts = useMemo(() => {
+    const acc: Record<ItemStatusFilter, number> = { 'needs-human': 0, todo: 0, blocked: 0 };
+    for (const e of taggedItems) {
+      if (pBuckets.length && !pBuckets.includes(planBucketBySlug.get(e.row.plan) ?? 'draft')) continue;
+      acc[e.category] += 1;
+    }
+    return acc;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [taggedItems, pBucketsKey, planBucketBySlug]);
 
   // The rail lists the plans that have matching items — a navigator +
   // per-plan filter (itemPlan) for the item list.
@@ -434,7 +439,7 @@ export default function PlansClient() {
                   title={f.hint}
                 >
                   <span className="pc-plans__view-label">{f.label}</span>
-                  <span className="pc-plans__view-count">{itemStatusCount(f.id, stats, planList.loading)}</span>
+                  <span className="pc-plans__view-count">{itemsLoading ? '…' : itemStatusCounts[f.id]}</span>
                 </button>
               );
             })}
@@ -501,28 +506,6 @@ export default function PlansClient() {
       </main>
     </div>
   );
-}
-
-function buildPlanStats(plans: PlanListRow[]): PlanStats {
-  return plans.reduce<PlanStats>(
-    (acc, plan) => {
-      const counts = plan.itemCounts ?? {};
-      acc.total += 1;
-      if (!plan.archived) acc.visible += 1;
-      acc.needsHuman += counts['needs-human'] ?? 0;
-      acc.actionable += counts.todo ?? 0;
-      acc.blocked += counts.blocked ?? 0;
-      return acc;
-    },
-    { total: 0, visible: 0, needsHuman: 0, actionable: 0, blocked: 0 },
-  );
-}
-
-function itemStatusCount(id: ItemStatusFilter, stats: PlanStats, loading: boolean): string {
-  if (loading) return '…';
-  if (id === 'needs-human') return String(stats.needsHuman);
-  if (id === 'todo') return String(stats.actionable);
-  return String(stats.blocked);
 }
 
 /* ── Keyboard shortcuts ───────────────────────────────────────────── */
