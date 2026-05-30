@@ -1,7 +1,7 @@
 ---
 title: ADV Harness Tab — port /harness queues into /adv
 slug: adv-harness-tab-migration-2026-05-30
-status: active
+status: shipped
 created: 2026-05-30
 updated: 2026-05-30
 owner: avi@storewolf.com
@@ -17,11 +17,11 @@ Phase 4 Detail richness shipped (`2e491ee6`, also cherry-picked to `main`): issu
 
 Phase 5 inline row actions shipped (`30138d81`, cherry-picked to `main`): feature rows Reset/Edit/Chat, issue rows Promote/Ack/Close/Won't-fix (hover-revealed, shared `harness-actions` helper). Feature rows verified live; issue rows contract-verified.
 
-Phase 6 keyboard nav + state polish shipped (`537662f4`, cherry-picked to `main`): J/K/↵/R/`/` panel-scoped shortcuts (focus ring + scroll-into-view), kbd-hint footer. Verified live (j → fidx 0→1, Enter → `?sel`). **P-020 (virtualization) deferred** — not verifiable on papercup's 3 rows.
+Phase 6 keyboard nav + state polish shipped (`537662f4`, cherry-picked to `main`): J/K/↵/R/`/` panel-scoped shortcuts (focus ring + scroll-into-view), kbd-hint footer. Verified live (j → fidx 0→1, Enter → `?sel`). (P-020 virtualization was deferred from this batch, then shipped — see below.)
 
-P-013 resolved (`d0d82699`, cherry-picked to `main`): tags folded into the feature search; legacy lifecycle/project filters intentionally not ported (redundant / multi-user / multi-project).
+P-013 resolved (`d0d82699`, cherry-picked to `main`): tags folded into the feature search; legacy lifecycle/project filters intentionally not ported (redundant / multi-user / multi-project). P-020 virtualization shipped (`c0283ca6`, cherry-picked to `main`): both lists windowed via `@tanstack/react-virtual`; verified at scale with a temporary 200-row scaffold (203 features → 31 DOM rows, 200 issues → 34 DOM rows), keyboard scroll switched to `scrollToIndex`.
 
-**Next:** P-020 (virtualize the lists, ideally against a 100+ row harness) — the only remaining item.
+**Next:** Plan complete — every item shipped. The `/adv` Harness tab is feature-complete versus the original `/harness` port goal.
 
 ## Background
 
@@ -71,7 +71,7 @@ Key files (live UI is the Vite SPA; components live in the Next tree and are con
 ## Phase 6 — Polish
 
 - **P-019** `done` Panel-scoped keyboard nav: J/K (or arrows) move a focus cursor (ring + scroll-into-view), ↵ opens (sets `?sel`), R resets the focused feature (features only), `/` focuses search, Esc blurs. X/multi-select dropped — the adv panels have no batch ops. Verified live (j → fidx 0→1, Enter → `?sel=F-DOGFOOD-002`). Shipped `537662f4`.
-- **P-020** `todo` Virtualize the lists (`@tanstack/react-virtual`) once a harness regularly exceeds ~100 rows. **Deferred from the Phase 6 batch:** papercup has 3 rows so the at-scale behavior isn't verifiable here, and it entangles with the new keyboard scroll-into-view + the absolute hover-action overlay (rows would become virtual-positioned). Do it against a 100+ row harness (e.g. `sheets`-scale data).
+- **P-020** `done` Virtualized both lists with `@tanstack/react-virtual` (`c0283ca6`): only the visible window mounts, `measureElement` for accurate heights, absolute `translateY` positioning; the keyboard scroll switched from `scrollIntoView` to `virtualizer.scrollToIndex` (focused row may not be mounted). The hover-action overlay still works (the absolute row remains its positioning context). Verified at scale via a temporary 200-row synthetic scaffold (papercup has 3 features / 0 issues): **203 features → 31 DOM rows, 200 issues → 34 DOM rows**; container heights correct; selection + keyboard intact; scaffold removed before commit.
 - **P-021** `done` Consistent loading/empty/error states across the panes + a kbd-hint footer (`J/K · ↵ · R · /`) that doubles as P-019 discoverability alongside the N/M-shown counter. Shipped `537662f4`.
 
 ## Decisions
