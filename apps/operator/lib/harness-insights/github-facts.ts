@@ -32,7 +32,7 @@ import type {
   ProjectCardLanguage,
 } from '../../app/harness/insights/ProjectCard';
 import { getOctokit } from '../identity/octokit-client';
-import { resolveHarnessForWorkspace } from '../harness-core';
+import { resolveProject } from '../harness-core';
 
 const execFileP = promisify(execFile);
 
@@ -167,11 +167,14 @@ export async function fetchGithubRepoFacts(
 }
 
 async function defaultResolveRepoPath(
-  workspaceId: string,
+  _workspaceId: string,
   slug: string,
 ): Promise<string | null> {
-  const resolved = await resolveHarnessForWorkspace(workspaceId, slug);
-  return resolved?.repoPath ?? null;
+  // resolveProject resolves the harness within the active workspace — the
+  // same context the insights endpoint runs its PG queries in. The git
+  // `origin` remote is shared across phase worktrees, so any path works.
+  const resolved = await resolveProject(slug);
+  return resolved?.path ?? null;
 }
 
 async function defaultOwnerName(
