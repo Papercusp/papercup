@@ -223,9 +223,9 @@ const OMP_MODEL_OPTIONS = [
 
 /** Agents the "Launch SU" button can spawn (via the psu launcher). */
 const SU_AGENT_OPTIONS = [
-  { value: 'claude', label: 'claude-su' },
-  { value: 'omp', label: 'omp-su' },
-  { value: 'codex', label: 'codex-su' },
+  { value: 'claude', label: 'claude' },
+  { value: 'omp', label: 'omp' },
+  { value: 'codex', label: 'codex' },
 ];
 
 export default function AdvSessionsClient() {
