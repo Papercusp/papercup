@@ -20,7 +20,49 @@ small (`@restart/db-org`, `@/lib/workspace-registry`,
 store with a large operator-specific curation pipeline.** Do not move the
 whole dir.
 
-## ⚠️ Scope FIRST — confirm the boundary before moving anything
+## ✅ Boundary already audited (2026-05-30) — use this, it's sharper than the original first-pass
+
+A read-only audit fixed the cut. It's **cleaner than feared** — the core is
+~1191 LOC / 5 files with a single external coupling, not a 5K-LOC tangle:
+
+**Core → `@papercusp/memory` (extract these 5):**
+| file | LOC | role |
+|---|---|---|
+| `mem0-connection.ts` | 58 | resolves PG for mem0ai's PGVector provider via `getHarnessAdminUrl` from `@/lib/embedded-pg-discovery` — **the one seam.** Exports `connectionString`, `pgFields`, `pgClientFields`. |
+| `mem0-client.ts` | 485 | the mem0ai wrapper (`getMemoryClient`, `getResolvedMode`, `invalidateMemoryClient`); imports `./canonical-store`. |
+| `canonical-store.ts` | 279 | the pgvector canonical store. |
+| `local-embedder-worker.ts` (+ `.script.mjs`) | 141 | local embedder. |
+| `reembed.ts` | 228 | re-embedding pass. |
+
+**Internal dep graph (within core):** `mem0-client → canonical-store`. Clean.
+
+**Seam (singular, narrow):** `mem0-connection` reaches `@/lib/embedded-pg-discovery`
+(`getHarnessAdminUrl`). mem0ai owns its own `pg.Client` (takes discrete fields),
+so inject a **PgDiscovery** seam (`() => Promise<string>` URL, or the discrete
+`pgFields`), wired by the operator to `getHarnessAdminUrl`/`pgFields`. Check
+whether the embedder cascade in `mem0-client` reads operator state
+(`credentials`/`voice-prefs`, like search's `buildQueryEmbedder` does) — if so,
+inject an **EmbedderProvider** seam too; otherwise it's self-contained.
+
+**Deep-import consumers needing operator shims** (keep these paths resolving):
+`@/lib/memory/mem0-client` (6), `@/lib/memory/mem0-connection` (3),
+`@/lib/memory/reembed` (2). NOTE: `pgClientFields` from `mem0-connection` is
+imported by **another lib's test** (`lib/backup/orphan-cleanup.test.ts`) — keep
+that export path working.
+
+**Everything else STAYS in the operator** (the curation pipeline — the big
+surface): `injection` (**20 consumers**), `learning`/`learning-shared`,
+`mcp-prelude`, `insights-index`, `feedback`, `anchors`/`persist-anchors`/
+`audit-anchors`, `conflict-check`, `detect-harness-slug`, `bump-last-surfaced`,
+`anthropic-judge`, `cleanup-worker`, `suite/`. These call INTO the core.
+
+The boundary is clean enough to proceed without a further scope check. Land the
+store-core package first (committable, inert), then the operator barrel/shims as
+a second commit. Verify via the live `memory:*` tools (note `memory_search` may
+report `mem0_unavailable` in some envs — confirm reachability so you can tell a
+regression from a pre-existing outage).
+
+## (original first-pass scoping notes — superseded by the audit above)
 
 The extractable `@papercusp/memory` is the **generic mem0 store/connection/
 embedder/vector-store wrapper**. The Papercusp *curation* logic stays in
