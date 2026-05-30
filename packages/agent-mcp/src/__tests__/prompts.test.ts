@@ -3,12 +3,12 @@
  */
 
 import { beforeEach, describe, expect, it } from 'vitest';
-import { definePrompt } from '../define-prompt';
+import { definePrompt } from '@papercusp/tooldef';
 import {
   _resetPromptCatalogForTests,
   getPromptCatalog,
   lookupPrompt,
-} from '../prompt-registry';
+} from '@papercusp/tooldef';
 
 describe('prompt registry', () => {
   beforeEach(() => {

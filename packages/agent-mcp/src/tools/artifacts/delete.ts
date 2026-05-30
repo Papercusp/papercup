@@ -11,7 +11,7 @@
 
 import { z } from 'zod';
 import { getOrgPg } from '@restart/db-org';
-import { defineTool } from '../../define-tool';
+import { defineTool } from '@papercusp/tooldef';
 
 const SLUG_RE = /^[a-z0-9._-]+$/i;
 

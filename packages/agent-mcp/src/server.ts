@@ -27,13 +27,13 @@ import {
 import { z } from 'zod';
 import { withWorkspace } from '@restart/db-org';
 import { resolveBearer } from './auth';
-import { getCatalog, lookup } from './registry';
+import { getCatalog, lookup } from '@papercusp/tooldef';
 import { applyToolManifest } from './tool-manifest';
 import {
   getResourceCatalog,
   matchResource,
-} from './resource-registry';
-import { getPromptCatalog, lookupPrompt } from './prompt-registry';
+} from '@papercusp/tooldef';
+import { getPromptCatalog, lookupPrompt } from '@papercusp/tooldef';
 import type {
   Principal,
   PromptContext,
@@ -44,7 +44,7 @@ import type {
   ToolContext,
   ToolDefinition,
   ToolResponse,
-} from './types';
+} from '@papercusp/tooldef';
 
 export interface DispatchOptions {
   toolName: string;

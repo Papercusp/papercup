@@ -2,8 +2,8 @@
  * Core types for the Agent MCP server.
  */
 
-import type { AgentRole, RolesQuota, ToolResult } from '@papercusp/plugin-sdk';
-import type { Sql } from 'postgres';
+import type { RolesQuota, ToolResult } from './wire';
+import type { AgentRole } from './host-types';
 import type { z, ZodTypeAny } from 'zod';
 import type { EventsSchema, UnifiedToolContext, UserEvents } from './tool-projection';
 
@@ -196,10 +196,12 @@ export interface RouteDefinition<TInputSchema extends ZodTypeAny | undefined = u
 export interface ToolContext {
   principal: Principal;
   /**
-   * Transaction-bound Sql client with `app.workspace_id` GUC set.
-   * Tools must use this; never reach for the bare-pool db.
+   * Host-supplied transaction handle. In Papercusp this is a workspace-scoped
+   * SQL client with the `app.workspace_id` GUC set. Typed `any` because the
+   * framework is storage-agnostic — the host narrows it. Phase 2 (P-010) makes
+   * ToolContext generic over the tx type.
    */
-  tx: Sql;
+  tx: any;
   /** Logger bound to the tool name + principal. */
   log: (level: 'info' | 'warn' | 'error', msg: string, meta?: Record<string, unknown>) => void;
 }

@@ -16,7 +16,7 @@ import {
   registerProjectedTool,
   classifyEventWire,
   type ProjectedTool,
-} from '@papercusp/agent-mcp/tool-projection';
+} from '@papercusp/tooldef';
 import {
   FrameType,
   FrameDecoder,

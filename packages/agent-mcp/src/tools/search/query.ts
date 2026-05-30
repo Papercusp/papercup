@@ -10,7 +10,7 @@
  */
 
 import { z } from 'zod';
-import { defineTool } from '../../define-tool';
+import { defineTool } from '@papercusp/tooldef';
 
 const KINDS = ['tasks', 'goals', 'projects', 'audit', 'messages'] as const;
 type Kind = (typeof KINDS)[number];

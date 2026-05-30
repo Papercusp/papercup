@@ -32,14 +32,14 @@ import {
   dispatchProjectedTool,
   type DispatchProjectedDeps,
   type DispatchProjectedResult,
-} from './dispatch-projected';
+} from '@papercusp/tooldef';
 import {
   emitToSseSink,
   lookupByHttpPath,
   type ProjectedTool,
   type UnifiedToolContext,
-} from './tool-projection';
-import { readBuffer as readReplayBuffer } from './replay-buffer';
+} from '@papercusp/tooldef';
+import { readReplayBuffer } from '@papercusp/tooldef';
 
 /* ─── Request context derivation ─────────────────────────────────────── */
 

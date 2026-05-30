@@ -20,14 +20,12 @@
 
 import { z, type ZodTypeAny } from 'zod';
 import type {
-  AgentRole,
-  Capability,
   EmitCallback,
-  PluginSpawn,
   ProgressCallback,
   RolesQuota,
   ToolResult,
-} from '@papercusp/plugin-sdk';
+} from './wire';
+import type { AgentRole, Capability, PluginSpawn } from './host-types';
 
 /* ─── Event schema types ─────────────────────────────────────────────── */
 

@@ -16,7 +16,7 @@ import {
   type UnifiedToolContext,
 } from './tool-projection';
 import { PASS_THROUGH } from './dispatch-projected';
-import type { ToolResult } from '@papercusp/plugin-sdk';
+import type { ToolResult } from './wire';
 
 const MAKE_CTX = (over: Partial<UnifiedToolContext> = {}): UnifiedToolContext => ({
   log: vi.fn(),

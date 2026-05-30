@@ -5,8 +5,8 @@
  * `audit:list` tool. Read-only snapshot of `harness_shared.audit_log`.
  */
 
-import { defineResource } from '../../define-resource';
-import type { ResourceContents } from '../../types';
+import { defineResource } from '@papercusp/tooldef';
+import type { ResourceContents } from '@papercusp/tooldef';
 
 export default defineResource({
   name: 'audit:recent',

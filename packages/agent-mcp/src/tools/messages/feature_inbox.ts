@@ -14,7 +14,7 @@
  */
 
 import { z } from 'zod';
-import { defineTool } from '../../define-tool';
+import { defineTool } from '@papercusp/tooldef';
 
 const SLUG_RE = /^[a-z0-9._-]+$/i;
 const FEATURE_ID_RE = /^[A-Z][A-Z0-9-]+(-[A-Z0-9-]+)?$/;

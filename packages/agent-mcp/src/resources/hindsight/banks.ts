@@ -9,8 +9,8 @@
 
 import { join } from 'node:path';
 import { getHostPlatform } from '@papercusp/host-platform';
-import { defineResource } from '../../define-resource';
-import type { ResourceContents } from '../../types';
+import { defineResource } from '@papercusp/tooldef';
+import type { ResourceContents } from '@papercusp/tooldef';
 
 interface WorkspaceRegistryEntry {
   id: string;

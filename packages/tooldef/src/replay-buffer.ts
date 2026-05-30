@@ -146,6 +146,9 @@ export function openBuffer(opts: {
   };
 }
 
+/** The writer handle `openBuffer` returns — the dispatcher pushes events to it. */
+export type ReplayBufferWriter = ReturnType<typeof openBuffer>;
+
 /**
  * Fetch buffered events with id > sinceId for replay. Returns null
  * if no buffer exists for the key (or it's expired). Empty array if

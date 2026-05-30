@@ -4,7 +4,7 @@
  */
 
 import { z } from 'zod';
-import { defineTool } from '../../define-tool';
+import { defineTool } from '@papercusp/tooldef';
 
 const SLUG_RE = /^[a-z0-9._-]+$/i;
 

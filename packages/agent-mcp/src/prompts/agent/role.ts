@@ -10,8 +10,8 @@
 
 import { join, resolve } from 'node:path';
 import { getHostPlatform } from '@papercusp/host-platform';
-import { definePrompt } from '../../define-prompt';
-import type { PromptResult } from '../../types';
+import { definePrompt } from '@papercusp/tooldef';
+import type { PromptResult } from '@papercusp/tooldef';
 
 const KNOWN_ROLES = [
   'architect',

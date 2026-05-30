@@ -12,11 +12,11 @@
  * (or running `startServer`) imports them all and populates the catalog.
  */
 
-export { defineTool } from './define-tool';
+export { defineTool } from '@papercusp/tooldef';
 export { defineUITool } from './define-ui-tool';
 export type { UIToolDefinitionInput, UIToolHandlerResult } from './define-ui-tool';
-export { defineResource } from './define-resource';
-export { definePrompt } from './define-prompt';
+export { defineResource } from '@papercusp/tooldef';
+export { definePrompt } from '@papercusp/tooldef';
 export {
   dispatch,
   getPrompt,
@@ -25,7 +25,7 @@ export {
   readResource,
   startServer,
 } from './server';
-export { getCatalog, lookup } from './registry';
+export { getCatalog, lookup } from '@papercusp/tooldef';
 export {
   applyToolManifest,
   reloadToolManifest,
@@ -35,38 +35,38 @@ export {
   getResourceCatalog,
   lookupResource,
   matchResource,
-} from './resource-registry';
-export { getPromptCatalog, lookupPrompt } from './prompt-registry';
+} from '@papercusp/tooldef';
+export { getPromptCatalog, lookupPrompt } from '@papercusp/tooldef';
 export { resolveBearer } from './auth';
 export {
   onWorkspaceSwitch,
   dispatchWorkspaceSwitch,
-} from './workspace-lifecycle';
-export type { WorkspaceSwitchCallback } from './workspace-lifecycle';
+} from '@papercusp/tooldef';
+export type { WorkspaceSwitchCallback } from '@papercusp/tooldef';
 export {
   openRun,
   closeRun,
   setOpenCards,
   setToolState,
   getSnapshot,
-  subscribe as subscribeStateChannel,
+  subscribeStateChannel,
   subscribeWorkspace,
   snapshotWorkspace,
   dropStateSnapshotsForWorkspaceSwitch,
-} from './state-channel';
+} from '@papercusp/tooldef';
 export type {
   StateSnapshot,
   VersionedSnapshot,
-} from './state-channel';
+} from '@papercusp/tooldef';
 export {
   registerCard,
   resolveCardResponse,
   cancelPendingCardsForRun,
   cancelPendingCardsForWorkspaceSwitch,
   _resetCardCorrelatorForTests,
-} from './card-correlator';
-export { _resetStateChannelForTests } from './state-channel';
-export { tierFor } from './capability-tiers';
+} from '@papercusp/tooldef';
+export { _resetStateChannelForTests } from '@papercusp/tooldef';
+export { tierFor } from '@papercusp/tooldef';
 
 // Per-spawn URL-param parser — used by both projected-tool transports
 // to extract harness/workspace/role/feature/chunk/run/spawn from the
@@ -98,7 +98,7 @@ export {
   type UnifiedToolContext,
   type MinimalEventSink,
   type PapercuspBinaryEnvelope,
-} from './tool-projection';
+} from '@papercusp/tooldef';
 
 export {
   dispatchProjectedTool,
@@ -111,7 +111,7 @@ export {
   type DispatchProjectedErrorCode,
   type DispatchStreamEvent,
   type ToolDispatchOverrideFn,
-} from './dispatch-projected';
+} from '@papercusp/tooldef';
 
 export {
   handleHttpToolRequest,
@@ -151,14 +151,14 @@ export type {
   CardPresentation,
   CardOption,
   OpenCardSnapshot,
-} from './types';
+} from '@papercusp/tooldef';
 
 export {
-  readBuffer as readReplayBuffer,
-  closeBuffer as closeReplayBuffer,
+  readReplayBuffer,
+  closeReplayBuffer,
   replayBufferStats,
-  type BufferedEvent as ReplayBufferedEvent,
-} from './replay-buffer';
+  type ReplayBufferedEvent,
+} from '@papercusp/tooldef';
 
 export {
   validatePluginEventSchema,
@@ -174,11 +174,11 @@ export {
   componentKey,
   standardResponseComponents,
   type OpenApiFragment,
-} from './openapi-fragments';
+} from '@papercusp/tooldef';
 export {
   assembleOpenApiDocument,
   toolOperationName,
   type OpenApiDocumentOptions,
-} from './openapi-assemble';
+} from '@papercusp/tooldef';
 
 import './bootstrap';

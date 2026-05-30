@@ -20,7 +20,7 @@
  * Plan ref: phase-4-endpoint-system-2026-05-12.md § T3.2.
  */
 
-import type { EventWireKind } from './tool-projection';
+import type { EventWireKind } from '@papercusp/tooldef';
 
 /** Reserved JSON-Schema keywords we explicitly support. */
 export const SUPPORTED_KEYWORDS = new Set<string>([

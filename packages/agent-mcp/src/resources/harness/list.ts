@@ -6,8 +6,8 @@
  * a tool call.
  */
 
-import { defineResource } from '../../define-resource';
-import type { ResourceContents } from '../../types';
+import { defineResource } from '@papercusp/tooldef';
+import type { ResourceContents } from '@papercusp/tooldef';
 
 export default defineResource({
   name: 'harness:list',

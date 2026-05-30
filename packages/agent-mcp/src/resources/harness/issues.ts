@@ -7,9 +7,9 @@
  * that the `issues:list` tool degraded out of.
  */
 
-import { defineResource } from '../../define-resource';
-import { matchResource } from '../../resource-registry';
-import type { ResourceContents, ResourceListEntry } from '../../types';
+import { defineResource } from '@papercusp/tooldef';
+import { matchResource } from '@papercusp/tooldef';
+import type { ResourceContents, ResourceListEntry } from '@papercusp/tooldef';
 
 export default defineResource({
   name: 'harness:issues',

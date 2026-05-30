@@ -28,13 +28,13 @@
 
 import type { ZodTypeAny } from 'zod';
 import { createUIResource } from '@mcp-ui/server';
-import { defineTool } from './define-tool';
+import { defineTool } from '@papercusp/tooldef';
 import type {
   ToolDefinition,
   ToolDefinitionInput,
   ToolResponse,
   UIResourceContent,
-} from './types';
+} from '@papercusp/tooldef';
 
 export interface UIToolHandlerResult<T = unknown> {
   data: T;
@@ -57,7 +57,7 @@ export interface UIToolDefinitionInput<TArgs extends ZodTypeAny = ZodTypeAny>
   extends Omit<ToolDefinitionInput<TArgs>, 'handler'> {
   handler: (
     args: import('zod').z.infer<TArgs>,
-    ctx: import('./types').ToolContext,
+    ctx: import('@papercusp/tooldef').ToolContext,
   ) => Promise<UIToolHandlerResult>;
 }
 

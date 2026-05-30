@@ -1,13 +1,13 @@
 import { describe, expect, it, beforeEach } from 'vitest';
 import { z } from 'zod';
-import { defineTool } from '../define-tool';
-import { _resetCatalogForTests, getCatalog, lookup } from '../registry';
-import { tierFor } from '../capability-tiers';
+import { defineTool } from '@papercusp/tooldef';
+import { _resetCatalogForTests, getCatalog, lookup } from '@papercusp/tooldef';
+import { tierFor } from '@papercusp/tooldef';
 import {
   _resetProjectionRegistryForTests,
   lookupByMcpName,
-} from '../tool-projection';
-import { dispatchProjectedTool } from '../dispatch-projected';
+} from '@papercusp/tooldef';
+import { dispatchProjectedTool } from '@papercusp/tooldef';
 
 describe('defineTool', () => {
   beforeEach(() => {
@@ -224,7 +224,7 @@ describe('tierFor', () => {
   });
 });
 
-import { lookupByMcpName, _resetProjectionRegistryForTests } from '../tool-projection';
+import { lookupByMcpName, _resetProjectionRegistryForTests } from '@papercusp/tooldef';
 
 describe('JSON schema flattening for OpenAI compat', () => {
   beforeEach(() => {

@@ -15,7 +15,7 @@ import {
   registerProjectedTool,
   _resetProjectionRegistryForTests,
   type ProjectedTool,
-} from './tool-projection';
+} from '@papercusp/tooldef';
 
 const makeTool = (over: Partial<ProjectedTool> = {}): ProjectedTool => ({
   pluginName: 'fixture',
@@ -419,7 +419,7 @@ describe('handleHttpToolRequestStreaming', () => {
     // Setup: register a streaming tool with replayBufferSize.
     // First connect emits 5 events into the buffer; we capture them
     // via dispatchProjectedTool which the streaming entrypoint wraps.
-    const { dispatchProjectedTool: dispatch } = await import('./dispatch-projected');
+    const { dispatchProjectedTool: dispatch } = await import('@papercusp/tooldef');
     const tool = makeTool({
       events: { delta: z.object({ text: z.string() }) },
       replayBufferSize: 10,

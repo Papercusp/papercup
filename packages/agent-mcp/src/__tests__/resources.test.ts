@@ -7,14 +7,14 @@
  */
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { defineResource } from '../define-resource';
+import { defineResource } from '@papercusp/tooldef';
 import {
   _resetResourceCatalogForTests,
   getResourceCatalog,
   lookupResource,
   matchResource,
-} from '../resource-registry';
-import type { ResourceContext } from '../types';
+} from '@papercusp/tooldef';
+import type { ResourceContext } from '@papercusp/tooldef';
 
 function fakeCtx(capabilities: string[] = []): ResourceContext {
   return {

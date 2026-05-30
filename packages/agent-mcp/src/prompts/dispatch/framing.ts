@@ -10,8 +10,8 @@
  * agents borrow the convention.
  */
 
-import { definePrompt } from '../../define-prompt';
-import type { PromptResult } from '../../types';
+import { definePrompt } from '@papercusp/tooldef';
+import type { PromptResult } from '@papercusp/tooldef';
 
 export default definePrompt({
   name: 'dispatch:framing',

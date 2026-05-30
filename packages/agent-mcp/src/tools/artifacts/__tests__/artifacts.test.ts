@@ -16,8 +16,8 @@ vi.mock('@restart/db-org', () => ({
   getOrgPg: () => ({ sql: sqlTag }),
 }));
 
-import { lookupByMcpName, type UnifiedToolContext } from '../../../tool-projection';
-import { dispatchProjectedTool } from '../../../dispatch-projected';
+import { lookupByMcpName, type UnifiedToolContext } from '@papercusp/tooldef';
+import { dispatchProjectedTool } from '@papercusp/tooldef';
 
 const MAKE_CTX = (over: Partial<UnifiedToolContext> = {}): UnifiedToolContext => ({
   log: vi.fn(),

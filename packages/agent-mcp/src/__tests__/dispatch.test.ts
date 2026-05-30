@@ -1,7 +1,7 @@
 import { describe, expect, it, beforeEach } from 'vitest';
 import { z } from 'zod';
-import { defineTool } from '../define-tool';
-import { _resetCatalogForTests, lookup } from '../registry';
+import { defineTool } from '@papercusp/tooldef';
+import { _resetCatalogForTests, lookup } from '@papercusp/tooldef';
 
 describe('tool registration and lookup', () => {
   beforeEach(() => {

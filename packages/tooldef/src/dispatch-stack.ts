@@ -20,7 +20,8 @@
  * so it stays co-located with the steps it observes.
  */
 
-import type { AgentRole, ToolResult } from '@papercusp/plugin-sdk';
+import type { ToolResult } from './wire';
+import type { AgentRole } from './host-types';
 import type { ProjectedTool, UnifiedToolContext } from './tool-projection';
 import {
   openBuffer as openReplayBuffer,

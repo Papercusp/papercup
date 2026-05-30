@@ -17,7 +17,7 @@
  * Spec: apps/operator/docs/plugin-mcp-host-design.md.
  */
 
-import type { ToolResult } from '@papercusp/plugin-sdk';
+import type { ToolResult } from './wire';
 import type { ProjectedTool, UnifiedToolContext } from './tool-projection';
 import {
   DEFAULT_DISPATCH_STACK,

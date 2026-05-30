@@ -15,8 +15,8 @@
 
 import { resolve } from 'node:path';
 import { getHostPlatform } from '@papercusp/host-platform';
-import { definePrompt } from '../../define-prompt';
-import type { PromptResult } from '../../types';
+import { definePrompt } from '@papercusp/tooldef';
+import type { PromptResult } from '@papercusp/tooldef';
 
 function findScannerMd(): { path: string; text: string } | null {
   const platform = getHostPlatform();

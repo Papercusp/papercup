@@ -20,7 +20,7 @@
 import { z } from 'zod';
 import { join } from 'node:path';
 import { getHostPlatform } from '@papercusp/host-platform';
-import { defineTool } from '../../define-tool';
+import { defineTool } from '@papercusp/tooldef';
 
 interface WorkspaceRegistryEntry {
   id: string;

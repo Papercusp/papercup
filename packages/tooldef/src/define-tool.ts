@@ -30,7 +30,7 @@ import type {
   ToolGuidance,
   ToolResponse,
 } from './types';
-import type { ToolResult } from '@papercusp/plugin-sdk';
+import type { ToolResult } from './wire';
 
 /**
  * Walk up the call stack to find the file that called defineTool, then
@@ -348,7 +348,7 @@ function registerLegacyAsProjected<TArgs extends ZodTypeAny>(def: ToolDefinition
       );
     }
     const legacyCtx: ToolContext = {
-      principal: ctx.principal as ToolContext['principal'],
+      principal: ctx.principal as unknown as ToolContext['principal'],
       tx: ctx.tx,
       log: (level, msg, meta) => ctx.log(`[${level}] ${msg}${meta ? ` ${JSON.stringify(meta)}` : ''}`),
     };

@@ -11,7 +11,7 @@ import { drizzle } from 'drizzle-orm/postgres-js';
 import { desc } from 'drizzle-orm';
 import { z } from 'zod';
 import { generated, schemaOf } from '@restart/db-org';
-import { defineTool } from '../../define-tool';
+import { defineTool } from '@papercusp/tooldef';
 
 const goals = generated.goalsInHarnessShared;
 const GoalSelect = schemaOf(goals).select;

@@ -18,7 +18,7 @@ import { parseSseStream } from '@restart/sse';
 // root entry re-exports `auth.ts` which pulls `@restart/db-org` → `postgres`
 // into the browser bundle (fails "Can't resolve 'fs'"). The subpath is
 // pure zod + the type guard. See packages/agent-mcp/package.json#exports.
-import { isPapercuspBinaryEnvelope } from '@papercusp/agent-mcp/tool-projection';
+import { isPapercuspBinaryEnvelope } from '@papercusp/tooldef';
 import type {
   EndpointStreamEvent,
   DispatchEndpointStreamOptions,

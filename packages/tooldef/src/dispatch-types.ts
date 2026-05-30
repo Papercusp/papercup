@@ -11,7 +11,7 @@
  * threaded in through `DispatchProjectedDeps` by the host.
  */
 
-import type { ToolResult } from '@papercusp/plugin-sdk';
+import type { ToolResult } from './wire';
 import type { UnifiedToolContext } from './tool-projection';
 
 /* ─── Quota window keying ────────────────────────────────────────────── */

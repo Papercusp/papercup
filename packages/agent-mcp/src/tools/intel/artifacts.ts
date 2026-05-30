@@ -9,7 +9,7 @@
  */
 
 import { z } from 'zod';
-import { defineTool } from '../../define-tool';
+import { defineTool } from '@papercusp/tooldef';
 
 export default defineTool({
   name: 'intel:artifacts',

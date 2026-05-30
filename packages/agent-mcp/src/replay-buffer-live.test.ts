@@ -22,8 +22,8 @@ import {
   registerProjectedTool,
   _resetProjectionRegistryForTests,
   type ProjectedTool,
-} from './tool-projection';
-import { dispatchProjectedTool } from './dispatch-projected';
+} from '@papercusp/tooldef';
+import { dispatchProjectedTool } from '@papercusp/tooldef';
 
 describe('Bug #34 — live replay flow via real sseResponse + SSE wire parsing', () => {
   beforeEach(() => _resetProjectionRegistryForTests());
