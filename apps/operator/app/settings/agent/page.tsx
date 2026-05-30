@@ -7,7 +7,7 @@
  *
  * Persisted to <papercuspRoot>/agent/config.json. Changes take effect
  * for in-process spawns immediately (the API route mirrors into
- * process.env). Headless run.sh invocations from a terminal don't
+ * process.env). Headless orchestrator invocations from a terminal don't
  * inherit; users have to set $AGENT_BACKEND themselves there.
  */
 import { useCallback, useEffect, useState } from 'react';
