@@ -18,6 +18,7 @@ export { InMemoryCoordLog } from './memory-log';
 export {
   PgCoordLog,
   ensureCoordEventLogTable,
+  DEFAULT_COORD_WORKSPACE,
   type PgCoordLogOptions,
 } from './pg-log';
 // NOTE: the conformance harness imports `vitest`, so it is deliberately NOT

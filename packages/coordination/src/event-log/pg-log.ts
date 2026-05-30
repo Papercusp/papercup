@@ -12,8 +12,20 @@
  *     hint is ignored — a single table has no rotation, exactly as the
  *     `ReadLinesOpts` contract permits.
  *   - EVENT surfaces (`handoffs`, `escalations`): one immutable record per
- *     `(surface, msg_id)`, enforced by a PARTIAL unique index + upsert. The
- *     predicate keeps pure-append line rows out of the uniqueness constraint.
+ *     `(workspace_id, surface, msg_id)`, enforced by a PARTIAL unique index +
+ *     upsert. The predicate keeps pure-append line rows out of the uniqueness
+ *     constraint.
+ *
+ * Every row carries a `workspace_id` scope, bound at construction (the
+ * operator instance serves one workspace) and filtered on every read/write.
+ * This is parity with `harness_shared.coord_presence.workspace_id` — the
+ * coord channels are agent-to-agent messaging whose roster IS presence, so
+ * the channel scope must equal the roster scope. It defaults to `'default'`
+ * (the same fallback presence uses), so it is a no-op in the one-workspace
+ * install of today and isolates channels cleanly if multiple installs ever
+ * share one database (coord-channels-pg-port D-007). The fs layout had no
+ * such column — the coord *directory* was the partition; under PG the bound
+ * `workspace_id` plays that role.
  *
  * Host couplings are injected, matching PgPresenceStore: the org PG handle
  * (`getSql`) and the table bootstrap (`ensureSchema`). The canonical DDL is
@@ -30,11 +42,21 @@ import type {
   ReadLinesOpts,
 } from './types';
 
+/** The coordination scope used when a host does not bind one. Matches the
+ *  `'default'` fallback `PgPresenceStore` writes for a workspace-less agent. */
+export const DEFAULT_COORD_WORKSPACE = 'default';
+
 export interface PgCoordLogOptions {
   /** The org Postgres handle (postgres-js tagged template). Called per use. */
   getSql: () => Sql;
   /** Ensure `harness_shared.coord_event_log` exists before first use. */
   ensureSchema: () => Promise<void>;
+  /**
+   * Coordination scope for every row this instance reads/writes — parity
+   * with `coord_presence.workspace_id`. Bound at construction because the
+   * surface methods carry no identity. Defaults to `'default'`.
+   */
+  workspaceId?: string;
 }
 
 /**
@@ -53,43 +75,62 @@ function parseBody(v: unknown): CoordEnvelope {
  * Create the `coord_event_log` table + indexes if absent. Idempotent. The
  * canonical schema for `PgCoordLog` — wire it into a host `ensureSchema` seam
  * (or call it directly in a conformance harness).
+ *
+ * The `workspace_id` column + the `ADD COLUMN`/`DROP INDEX` guards keep this
+ * idempotent across a schema that predates the scoping column (D-007): a
+ * fresh table gets the scoped definitions outright; a table left over from
+ * before the column existed is migrated in place (pre-alpha, test-only, so
+ * the index rebuild is safe — no production data on this table yet).
  */
 export async function ensureCoordEventLogTable(sql: Sql): Promise<void> {
   await sql`CREATE SCHEMA IF NOT EXISTS harness_shared`;
   await sql`
     CREATE TABLE IF NOT EXISTS harness_shared.coord_event_log (
-      id          bigserial   PRIMARY KEY,
-      surface     text        NOT NULL,
-      writer_key  text,
-      msg_id      text        NOT NULL,
-      body        jsonb       NOT NULL,
-      ts          timestamptz NOT NULL DEFAULT now()
+      id           bigserial   PRIMARY KEY,
+      workspace_id text        NOT NULL DEFAULT 'default',
+      surface      text        NOT NULL,
+      writer_key   text,
+      msg_id       text        NOT NULL,
+      body         jsonb       NOT NULL,
+      ts           timestamptz NOT NULL DEFAULT now()
     )
   `;
-  // EVENT surfaces are keyed: exactly one immutable record per (surface,
-  // msg_id). LINE surfaces (messages/plan-events) are pure append — the
-  // partial predicate keeps them out of the uniqueness constraint so the
-  // upsert below targets only the event rows.
+  // Migrate a pre-D-007 table that has no scoping column.
+  await sql`
+    ALTER TABLE harness_shared.coord_event_log
+      ADD COLUMN IF NOT EXISTS workspace_id text NOT NULL DEFAULT 'default'
+  `;
+  // EVENT surfaces are keyed: exactly one immutable record per (workspace_id,
+  // surface, msg_id). LINE surfaces (messages/plan-events) are pure append —
+  // the partial predicate keeps them out of the uniqueness constraint so the
+  // upsert below targets only the event rows. DROP-then-CREATE so a narrower
+  // pre-D-007 index (without workspace_id) is widened rather than kept.
+  await sql`DROP INDEX IF EXISTS harness_shared.coord_event_log_event_uq`;
   await sql`
     CREATE UNIQUE INDEX IF NOT EXISTS coord_event_log_event_uq
-      ON harness_shared.coord_event_log (surface, msg_id)
+      ON harness_shared.coord_event_log (workspace_id, surface, msg_id)
       WHERE surface IN ('handoffs', 'escalations')
   `;
+  await sql`DROP INDEX IF EXISTS harness_shared.coord_event_log_surface_id`;
   await sql`
     CREATE INDEX IF NOT EXISTS coord_event_log_surface_id
-      ON harness_shared.coord_event_log (surface, id)
+      ON harness_shared.coord_event_log (workspace_id, surface, id)
   `;
 }
 
 export class PgCoordLog implements CoordEventLog {
-  constructor(private readonly opts: PgCoordLogOptions) {}
+  private readonly ws: string;
+
+  constructor(private readonly opts: PgCoordLogOptions) {
+    this.ws = opts.workspaceId ?? DEFAULT_COORD_WORKSPACE;
+  }
 
   async appendLine(surface: LineSurface, writerKey: string, line: CoordEnvelope): Promise<void> {
     await this.opts.ensureSchema();
     const sql = this.opts.getSql();
     await sql`
-      INSERT INTO harness_shared.coord_event_log (surface, writer_key, msg_id, body)
-      VALUES (${surface}, ${writerKey}, ${line.msg_id}, ${JSON.stringify(line)}::jsonb)
+      INSERT INTO harness_shared.coord_event_log (workspace_id, surface, writer_key, msg_id, body)
+      VALUES (${this.ws}, ${surface}, ${writerKey}, ${line.msg_id}, ${JSON.stringify(line)}::jsonb)
     `;
   }
 
@@ -100,7 +141,7 @@ export class PgCoordLog implements CoordEventLog {
     // we read everything (the interface explicitly allows ignoring it).
     const rows = await sql<{ body: unknown }[]>`
       SELECT body FROM harness_shared.coord_event_log
-       WHERE surface = ${surface}
+       WHERE workspace_id = ${this.ws} AND surface = ${surface}
        ORDER BY id ASC
     `;
     return rows.map((r) => parseBody(r.body));
@@ -110,9 +151,9 @@ export class PgCoordLog implements CoordEventLog {
     await this.opts.ensureSchema();
     const sql = this.opts.getSql();
     await sql`
-      INSERT INTO harness_shared.coord_event_log (surface, writer_key, msg_id, body)
-      VALUES (${surface}, NULL, ${msgId}, ${JSON.stringify(record)}::jsonb)
-      ON CONFLICT (surface, msg_id) WHERE surface IN ('handoffs', 'escalations')
+      INSERT INTO harness_shared.coord_event_log (workspace_id, surface, writer_key, msg_id, body)
+      VALUES (${this.ws}, ${surface}, NULL, ${msgId}, ${JSON.stringify(record)}::jsonb)
+      ON CONFLICT (workspace_id, surface, msg_id) WHERE surface IN ('handoffs', 'escalations')
       DO UPDATE SET body = EXCLUDED.body, ts = now()
     `;
   }
@@ -122,7 +163,7 @@ export class PgCoordLog implements CoordEventLog {
     const sql = this.opts.getSql();
     const rows = await sql<{ body: unknown }[]>`
       SELECT body FROM harness_shared.coord_event_log
-       WHERE surface = ${surface}
+       WHERE workspace_id = ${this.ws} AND surface = ${surface}
        ORDER BY id ASC
     `;
     return rows.map((r) => parseBody(r.body));
@@ -133,7 +174,7 @@ export class PgCoordLog implements CoordEventLog {
     const sql = this.opts.getSql();
     const rows = await sql<{ body: unknown }[]>`
       SELECT body FROM harness_shared.coord_event_log
-       WHERE surface = ${surface} AND msg_id = ${msgId}
+       WHERE workspace_id = ${this.ws} AND surface = ${surface} AND msg_id = ${msgId}
        LIMIT 1
     `;
     return rows.length > 0 ? parseBody(rows[0].body) : null;

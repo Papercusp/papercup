@@ -15,7 +15,7 @@
  * `ensureCoordEventLogTable`, so the proof RUNS wherever PG is reachable —
  * live operator or CI testcontainer — and soft-skips only when no PG exists.
  */
-import { afterAll, describe } from 'vitest';
+import { afterAll, describe, expect, it } from 'vitest';
 import postgres, { type Sql } from 'postgres';
 import { PgCoordLog, ensureCoordEventLogTable } from '@papercusp/coordination/event-log';
 import { describeCoordEventLogConformance } from '@papercusp/coordination/event-log/conformance';
@@ -60,3 +60,35 @@ describeCoordEventLogConformance(
   },
   pgOk ? describe : describe.skip,
 );
+
+// D-007: two PgCoordLog instances bound to different workspace_ids share the
+// table but never see each other's rows — the scoping that makes the
+// multi-install case (Q-3) a non-event. Parity with coord_presence's
+// workspace_id filter.
+(pgOk ? describe : describe.skip)('PgCoordLog workspace_id isolation (D-007)', () => {
+  it('a row written in one workspace is invisible to another', async () => {
+    await sql!`DELETE FROM harness_shared.coord_event_log`;
+    const wsA = new PgCoordLog({ getSql: () => sql!, ensureSchema: async () => {}, workspaceId: 'wsA' });
+    const wsB = new PgCoordLog({ getSql: () => sql!, ensureSchema: async () => {}, workspaceId: 'wsB' });
+
+    // LINE surface: A's message must not appear in B's union read.
+    await wsA.appendLine('messages', 'agentA', {
+      ts: '2026-01-01T00:00:00.000Z', msg_id: 'm-a', kind: 'message', from: 'agentA', to: ['*'],
+    });
+    expect((await wsA.readLines('messages')).map((l) => l.msg_id)).toEqual(['m-a']);
+    expect(await wsB.readLines('messages')).toEqual([]);
+
+    // EVENT surface: the same msg_id in two workspaces are distinct rows
+    // (the unique index includes workspace_id), each visible only in its own.
+    await wsA.putEvent('escalations', 'shared-id', {
+      ts: '2026-01-01T00:00:00.000Z', msg_id: 'shared-id', kind: 'escalation', from: 'agentA', to: ['human'],
+    });
+    await wsB.putEvent('escalations', 'shared-id', {
+      ts: '2026-01-01T00:00:00.000Z', msg_id: 'shared-id', kind: 'escalation', from: 'agentB', to: ['human'],
+    });
+    expect((await wsA.getEvent('escalations', 'shared-id'))?.from).toBe('agentA');
+    expect((await wsB.getEvent('escalations', 'shared-id'))?.from).toBe('agentB');
+
+    await sql!`DELETE FROM harness_shared.coord_event_log`;
+  });
+});
