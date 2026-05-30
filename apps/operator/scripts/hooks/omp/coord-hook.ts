@@ -35,12 +35,13 @@
  * are in node_modules/@oh-my-pi/pi-coding-agent/src/extensibility/.
  * The adapter at the bottom is documented and trivial to reshape.
  *
- * Attached vs detached (agent-coordination-architecture-v2 §10): the
- * extension probes GET /api/health at session start. Attached → the
- * MCP path below. Detached (no operator) → it reads coord/ on the
- * filesystem directly. Locks and presence are PG-backed and stay
- * unavailable when detached; the inbox + watermark are filesystem and
- * keep working.
+ * Attached vs detached: the extension probes the operator at session
+ * start. Attached → the MCP path below. Detached (operator unreachable)
+ * → coord state is ALL PG-backed now — channels, watermarks, presence,
+ * and locks (coord-channels-pg-port D-001, P-010) — so there is no
+ * filesystem fallback: the turn-start coord injection is skipped for the
+ * turn (lock enforcement separately fails open with its own notice). The
+ * operator + PG are required for any coord surface.
  */
 
 import { promises as fsp, existsSync, realpathSync, statSync } from 'node:fs';
@@ -78,26 +79,17 @@ export interface ReminderInput {
   inbox: InboxEntry[];
   heldLocks: HeldLock[];
   changedPlans: PlanEventSummary[];
-  /** When 'detached', a header line warns that locks/presence are off. */
-  mode?: 'attached' | 'detached';
 }
 
 /**
  * Format the turn-start reminder shown to the model. Compact,
  * skimmable — does NOT dump full bodies; those are one tool call away.
- * Returns "" when there is nothing to surface (no reminder injected).
- * In detached mode, the detached warning is included only when another
- * coord surface is already being reported; injecting the header alone
- * creates a hidden no-op turn in OMP and can auto-continue forever.
+ * Returns "" when there is nothing to surface (no reminder injected) —
+ * which is also what a detached (operator-unreachable) turn produces,
+ * since coord state is all PG-backed now with no filesystem fallback.
  */
 export function formatTurnStartReminder(input: ReminderInput): string {
   const out: string[] = [];
-
-  const detachedNotice =
-    'Coordination: DETACHED (no operator). Inbox + plans work via the ' +
-    'filesystem; file locks and presence are unavailable — do not rely ' +
-    'on locks:* this session.';
-
 
   if (input.heldLocks.length > 0) {
     out.push(`You (${input.ownerId}) currently hold ${input.heldLocks.length} lock${input.heldLocks.length === 1 ? '' : 's'}:`);
@@ -139,10 +131,6 @@ export function formatTurnStartReminder(input: ReminderInput): string {
   }
 
   if (out.length === 0) return '';
-
-  if (input.mode === 'detached') {
-    out.unshift(detachedNotice);
-  }
 
   return `<system-reminder type="coord">\n${out.join('\n')}\n</system-reminder>`;
 }
@@ -355,98 +343,7 @@ export async function refreshMode(): Promise<CoordMode> {
   return _mode;
 }
 
-// ── Filesystem coord/ reader (detached mode) ─────────────────────────
-
-/**
- * Resolve the coord/ directory the same way the operator does:
- * PAPERCUSP_COORD_DIR if set, else the nearest ancestor of cwd with a
- * .git, else cwd/coord. Kept in lockstep with
- * apps/operator/lib/agent-tools/coordination/paths.ts:coordDir().
- */
-function coordDirFs(): string {
-  const env = process.env.PAPERCUSP_COORD_DIR;
-  if (env && env.length > 0) return env;
-  let cur = resolve(process.cwd());
-  for (let i = 0; i < 24; i++) {
-    if (existsSync(join(cur, '.git'))) return join(cur, 'coord');
-    const parent = dirname(cur);
-    if (parent === cur) break;
-    cur = parent;
-  }
-  return join(process.cwd(), 'coord');
-}
-
-/** ownerId → POSIX-safe filename stem (matches paths.ts sanitisation). */
-function sanitiseOwner(ownerId: string): string {
-  return ownerId.replace(/[^A-Za-z0-9._-]/g, '_');
-}
-
-/** Read + parse a JSONL file. Missing file or bad lines → []. */
-async function readJsonlFs(path: string): Promise<Array<Record<string, unknown>>> {
-  let buf: string;
-  try {
-    buf = await fsp.readFile(path, 'utf8');
-  } catch {
-    return [];
-  }
-  const out: Array<Record<string, unknown>> = [];
-  for (const ln of buf.split('\n')) {
-    const t = ln.trim();
-    if (!t) continue;
-    try {
-      const o = JSON.parse(t);
-      if (o && typeof o === 'object') out.push(o as Record<string, unknown>);
-    } catch {
-      /* skip malformed */
-    }
-  }
-  return out;
-}
-
-/**
- * Detached-mode inbox: scan coord/messages/*.jsonl directly, filtered
- * to entries addressed to `ownerId` (or '*'), newer than `sinceTs`,
- * excluding the agent's own outbox lines. Mirrors the operator's
- * readInbox() so the reminder is identical attached vs detached.
- */
-export async function readInboxFs(
-  ownerId: string,
-  sinceTs?: string,
-): Promise<InboxEntry[]> {
-  const dir = join(coordDirFs(), 'messages');
-  let files: string[];
-  try {
-    files = await fsp.readdir(dir);
-  } catch {
-    return [];
-  }
-  const sinceMs = sinceTs ? Date.parse(sinceTs) : 0;
-  const out: InboxEntry[] = [];
-  for (const f of files) {
-    if (!f.endsWith('.jsonl')) continue;
-    for (const l of await readJsonlFs(join(dir, f))) {
-      const to = l.to;
-      if (!Array.isArray(to)) continue;
-      if (!to.includes(ownerId) && !to.includes('*')) continue;
-      if (l.from === ownerId) continue;
-      const ts = typeof l.ts === 'string' ? l.ts : '';
-      if (sinceMs && ts && Date.parse(ts) <= sinceMs) continue;
-      out.push({
-        ts,
-        msg_id: typeof l.msg_id === 'string' ? l.msg_id : '',
-        from: typeof l.from === 'string' ? l.from : '',
-        kind: typeof l.kind === 'string' ? l.kind : '',
-        summary: typeof l.summary === 'string' ? l.summary : undefined,
-        plan_slug: typeof l.plan_slug === 'string' ? l.plan_slug : undefined,
-        related_msg_id:
-          typeof l.related_msg_id === 'string' ? l.related_msg_id : undefined,
-        severity: typeof l.severity === 'string' ? l.severity : undefined,
-      });
-    }
-  }
-  out.sort((a, b) => a.ts.localeCompare(b.ts) || a.msg_id.localeCompare(b.msg_id));
-  return out;
-}
+// ── Watermark staging type ───────────────────────────────────────────
 
 /** Last-read pointers the hook tracks — a subset of the operator's
  *  Watermark (messages + plan-events; escalations/subscriptions are
@@ -454,92 +351,6 @@ export async function readInboxFs(
 export interface HookWatermark {
   messages?: string;
   plan_events?: string;
-}
-
-/** Detached-mode watermark read: coord/watermarks/<ownerId>.json. */
-export async function readWatermarkFs(ownerId: string): Promise<HookWatermark> {
-  const file = join(coordDirFs(), 'watermarks', `${sanitiseOwner(ownerId)}.json`);
-  try {
-    const parsed = JSON.parse(await fsp.readFile(file, 'utf8')) as {
-      messages_since_ts?: unknown;
-      plan_events_since_ts?: unknown;
-    };
-    const out: HookWatermark = {};
-    if (typeof parsed.messages_since_ts === 'string' && parsed.messages_since_ts.length > 0) {
-      out.messages = parsed.messages_since_ts;
-    }
-    if (typeof parsed.plan_events_since_ts === 'string' && parsed.plan_events_since_ts.length > 0) {
-      out.plan_events = parsed.plan_events_since_ts;
-    }
-    return out;
-  } catch {
-    return {};
-  }
-}
-
-/**
- * Detached-mode watermark write: merge the supplied pointers into
- * coord/watermarks/<ownerId>.json (other fields preserved). Best-effort
- * — a write failure must not break the turn.
- */
-export async function writeWatermarkFs(
-  ownerId: string,
-  patch: HookWatermark,
-): Promise<void> {
-  const dir = join(coordDirFs(), 'watermarks');
-  const file = join(dir, `${sanitiseOwner(ownerId)}.json`);
-  let current: Record<string, unknown> = {};
-  try {
-    current = JSON.parse(await fsp.readFile(file, 'utf8')) as Record<string, unknown>;
-  } catch {
-    /* fresh */
-  }
-  if (patch.messages !== undefined) current.messages_since_ts = patch.messages;
-  if (patch.plan_events !== undefined) current.plan_events_since_ts = patch.plan_events;
-  try {
-    await fsp.mkdir(dir, { recursive: true });
-    await fsp.writeFile(file, JSON.stringify(current, null, 2), 'utf8');
-  } catch {
-    /* best-effort */
-  }
-}
-
-/**
- * Detached-mode plan-events read: scan coord/plan-events-*.jsonl (and
- * the legacy un-suffixed file) directly, newer than `sinceTs`. Mirrors
- * the operator's readPlanEvents() so the "plans changed" reminder
- * section is identical attached vs detached.
- */
-export async function readPlanEventsFs(sinceTs?: string): Promise<InboxEntry[]> {
-  const dir = coordDirFs();
-  let files: string[];
-  try {
-    files = await fsp.readdir(dir);
-  } catch {
-    return [];
-  }
-  const planEventFiles = files
-    .filter((f) => f === 'plan-events.jsonl' || /^plan-events-\d{4}-\d{2}\.jsonl$/.test(f))
-    .sort(); // legacy 'plan-events.jsonl' sorts before 'plan-events-YYYY-MM'
-  const sinceMs = sinceTs ? Date.parse(sinceTs) : 0;
-  const out: InboxEntry[] = [];
-  for (const f of planEventFiles) {
-    for (const l of await readJsonlFs(join(dir, f))) {
-      if (l.kind !== 'plan_event') continue;
-      const ts = typeof l.ts === 'string' ? l.ts : '';
-      if (sinceMs && ts && Date.parse(ts) <= sinceMs) continue;
-      out.push({
-        ts,
-        msg_id: typeof l.msg_id === 'string' ? l.msg_id : '',
-        from: typeof l.from === 'string' ? l.from : '',
-        kind: 'plan_event',
-        plan_slug: typeof l.plan_slug === 'string' ? l.plan_slug : undefined,
-        event: typeof l.event === 'string' ? l.event : undefined,
-      });
-    }
-  }
-  out.sort((a, b) => a.ts.localeCompare(b.ts) || a.msg_id.localeCompare(b.msg_id));
-  return out;
 }
 
 // ── Handlers ─────────────────────────────────────────────────────────
@@ -731,41 +542,22 @@ async function onTurnStartAttached(ownerId: string): Promise<TurnStartResult> {
       inbox,
       heldLocks,
       changedPlans,
-      mode: 'attached',
     }),
     degraded,
     mode: 'attached',
   };
 }
 
-/** Detached turn-start: assemble the reminder from coord/ on the
- *  filesystem. No operator — locks + presence are omitted; the inbox,
- *  plan-events, changed-plans and watermark are all filesystem-backed
- *  (plan §10). */
-async function onTurnStartDetached(ownerId: string): Promise<TurnStartResult> {
-  const wm = await readWatermarkFs(ownerId);
-  const inbox = await readInboxFs(ownerId, wm.messages);
-  const planEvents = await readPlanEventsFs(wm.plan_events);
-  const changedPlans = summarisePlanEvents(planEvents);
-
-  const inboxMax = maxTs(inbox);
-  const planEventsMax = maxTs(planEvents);
-  _pendingWatermark = {
-    ...(inboxMax.length > 0 ? { messages: inboxMax } : {}),
-    ...(planEventsMax.length > 0 ? { plan_events: planEventsMax } : {}),
-  };
-
-  return {
-    reminder: formatTurnStartReminder({
-      ownerId,
-      inbox,
-      heldLocks: [], // PG-backed — unavailable detached
-      changedPlans,
-      mode: 'detached',
-    }),
-    degraded: false, // detached is a supported mode, not a failure
-    mode: 'detached',
-  };
+/** Detached turn-start: the operator is unreachable, so coord state —
+ *  inbox, plan-events, watermarks, presence, locks — is ALL PG-backed and
+ *  cannot be read (no filesystem fallback; coord-channels-pg-port P-010 /
+ *  D-001). Inject nothing (a lone notice every turn risks an OMP
+ *  auto-continue loop — see formatTurnStartReminder) and stage no
+ *  watermark. The agent's lock hook separately fails open with its own
+ *  stderr notice. */
+function onTurnStartDetached(): TurnStartResult {
+  _pendingWatermark = {};
+  return { reminder: '', degraded: false, mode: 'detached' };
 }
 
 /** Fired once per turn start. Dispatches by mode. Recovery is
@@ -784,7 +576,7 @@ export async function onTurnStart(ctx?: unknown): Promise<TurnStartResult> {
       await refreshMode();
     }
     if (_mode === 'detached') {
-      return onTurnStartDetached(ownerId);
+      return onTurnStartDetached();
     }
     // Operator came back — fall through to the attached path.
   }
@@ -802,28 +594,26 @@ export async function onTurnStart(ctx?: unknown): Promise<TurnStartResult> {
   // look like dead code. The returned value is correctly typed.
   const reprobed = await refreshMode();
   if (reprobed === 'detached') {
-    return onTurnStartDetached(ownerId);
+    return onTurnStartDetached();
   }
   await linkAdvSessionFromContext(ctx);
   return attached; // operator is up — a genuine transient failure
 }
 
 /** Fired once per turn end. Persists the watermark pointers staged by
- *  onTurnStart — via coord:watermark-set when attached, or directly to
- *  coord/watermarks/ when detached. No-op when nothing was surfaced. */
+ *  onTurnStart via coord:watermark-set (attached only — a detached turn
+ *  stages nothing). No-op when nothing was surfaced. */
 export async function onTurnEnd(): Promise<void> {
   const wm = _pendingWatermark;
   _pendingWatermark = {};
   if (wm.messages === undefined && wm.plan_events === undefined) return;
-  if (_mode === 'detached') {
-    const ownerId = process.env.PAPERCUSP_AUTH_SESSION_ID ?? 'unknown';
-    await writeWatermarkFs(ownerId, wm);
-  } else {
-    await callMcpTool('coord:watermark-set', {
-      ...(wm.messages !== undefined ? { messages_since_ts: wm.messages } : {}),
-      ...(wm.plan_events !== undefined ? { plan_events_since_ts: wm.plan_events } : {}),
-    });
-  }
+  // Detached stages no watermark (onTurnStartDetached clears it), so reaching
+  // here means attached — persist via the operator. No filesystem fallback
+  // any more (coord-channels-pg-port P-010).
+  await callMcpTool('coord:watermark-set', {
+    ...(wm.messages !== undefined ? { messages_since_ts: wm.messages } : {}),
+    ...(wm.plan_events !== undefined ? { plan_events_since_ts: wm.plan_events } : {}),
+  });
 }
 
 /**

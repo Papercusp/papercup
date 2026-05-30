@@ -131,8 +131,8 @@ Only OMP has a turn-start coord-injection hook with FS-direct readers; Claude/Co
 
 ## Phase 3 — Detached-mode removal (OMP only)
 
-- **P-010** `todo` Remove the detached-mode FS readers (`coordDirFs`, `readInboxFs`, `readPlanEventsFs`, `readWatermarkFs`, `writeWatermarkFs`) from `scripts/hooks/omp/coord-hook.ts`; keep the attached MCP/HTTP turn-start injection; degrade to the "operator unreachable" marker when detached. Claude/Codex `cc/` hooks untouched. blocked-by: P-005
-- **P-011** `todo` Update the `coord-hook.ts` header/contract comments to state detached coord-channel reading is no longer supported. blocked-by: P-010
+- **P-010** `done` Remove the detached-mode FS readers (`coordDirFs`, `readInboxFs`, `readPlanEventsFs`, `readWatermarkFs`, `writeWatermarkFs`) from `scripts/hooks/omp/coord-hook.ts`; keep the attached MCP/HTTP turn-start injection; degrade to the "operator unreachable" marker when detached. Claude/Codex `cc/` hooks untouched. blocked-by: P-005
+- **P-011** `done` Update the `coord-hook.ts` header/contract comments to state detached coord-channel reading is no longer supported. blocked-by: P-010
 
 ## Phase 4 — Verify
 
