@@ -5,13 +5,14 @@
  *
  * Backs view=inbox (needs-human) and view=actionable (effective-todo,
  * all blockers cleared). The item fetch is lifted into PlansClient so a
- * single request feeds both this list and the PlanItemRail filter — this
- * component renders the rows it's handed.
+ * single request feeds both this list and the (filtered) PlanRail in the
+ * left sidebar — this component renders the rows it's handed.
  *
  * `planFilter` narrows the displayed groups to one plan. In inbox/
- * actionable views the left rail (PlanItemRail) sets it: clicking a plan
- * FILTERS the list instead of navigating, so it no longer loads a plan
- * tab you then have to switch to.
+ * actionable views the left rail (the same rich PlanRail as Browse, but
+ * narrowed to plans-with-items) sets it: clicking a plan FILTERS the list
+ * instead of navigating, so it no longer loads a plan tab you then have
+ * to switch to.
  *
  * inbox mode adds a one-click "Resolve" button per row that flips the
  * item to done and relaunches the harness loop.
@@ -145,84 +146,6 @@ export default function PlanItemsList({
           );
         })}
       </ul>
-    </div>
-  );
-}
-
-/**
- * PlanItemRail — left-rail filter for inbox/actionable views. Lists only
- * the plans that actually have items in the active bucket; clicking one
- * filters the main list to that plan (clicking again, or "All plans",
- * clears it). This replaces the full plan rail in these views so the
- * sidebar stays useful when many plans carry items, mirroring Browse's
- * rail-as-filter behaviour without the plan-open navigation.
- */
-export function PlanItemRail({
-  mode,
-  plans,
-  selected,
-  onSelect,
-  loading,
-  error,
-}: {
-  mode: 'inbox' | 'actionable';
-  plans: Array<{ slug: string; count: number; harness?: string }>;
-  selected: string | null;
-  onSelect: (slug: string | null) => void;
-  loading: boolean;
-  error: string | null;
-}) {
-  if (loading) {
-    return <p className="pc-plans__placeholder">Loading…</p>;
-  }
-  if (error) {
-    return (
-      <div className="pc-plans__placeholder pc-plans__placeholder--error">
-        <code>{error}</code>
-      </div>
-    );
-  }
-  if (!plans.length) {
-    return (
-      <p className="pc-plans__placeholder">
-        {mode === 'inbox' ? 'No plans need human input.' : 'No plans with actionable items.'}
-      </p>
-    );
-  }
-
-  const total = plans.reduce((n, p) => n + p.count, 0);
-
-  return (
-    <div
-      className="pc-item-rail"
-      role="list"
-      aria-label={mode === 'inbox' ? 'Plans needing human input' : 'Plans with actionable items'}
-    >
-      <button
-        type="button"
-        className={`pc-item-rail__entry pc-item-rail__entry--all${selected === null ? ' is-active' : ''}`}
-        onClick={() => onSelect(null)}
-        aria-current={selected === null ? 'true' : undefined}
-      >
-        <span className="pc-item-rail__name">All plans</span>
-        <span className="pc-item-rail__count">{total}</span>
-      </button>
-      {plans.map((p) => (
-        <button
-          key={p.slug}
-          type="button"
-          className={`pc-item-rail__entry${selected === p.slug ? ' is-active' : ''}`}
-          onClick={() => onSelect(selected === p.slug ? null : p.slug)}
-          aria-current={selected === p.slug ? 'true' : undefined}
-          title={p.harness ? `${p.slug} · ${p.harness}` : p.slug}
-        >
-          <span className="pc-item-rail__copy">
-            <span className="pc-item-rail__name">{p.slug}</span>
-            {p.harness ? <span className="pc-pill pc-pill--harness">{p.harness}</span> : null}
-          </span>
-          <span className="pc-item-rail__count">{p.count}</span>
-        </button>
-      ))}
     </div>
   );
 }

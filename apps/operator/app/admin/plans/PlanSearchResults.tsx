@@ -17,7 +17,13 @@ import { useEffect, useState } from 'react';
 import { useQueryState, parseAsStringEnum } from 'nuqs';
 import { usePlanSearch, type SearchScope } from './plans-api';
 
-type ScopeFilter = 'all' | SearchScope;
+// `title`/`now`/`items`/`decisions`/`prose` are search-MATCH-LOCATION
+// scopes (where the query text matched). `needs-human`/`needs-decision`
+// are item-STATUS filters layered on top: they narrow the hits to plans
+// that actually carry an item in that bucket (the same two buckets as
+// the Needs Human / Needs Decision views).
+type StatusFilter = 'needs-human' | 'needs-decision';
+type ScopeFilter = 'all' | SearchScope | StatusFilter;
 
 const SCOPE_FILTERS: ScopeFilter[] = [
   'all',
@@ -26,14 +32,26 @@ const SCOPE_FILTERS: ScopeFilter[] = [
   'items',
   'decisions',
   'prose',
+  'needs-human',
+  'needs-decision',
 ];
+
+/** Chip labels — defaults to the raw value (title/now/items/…). */
+const FILTER_LABELS: Partial<Record<ScopeFilter, string>> = {
+  'needs-human': 'needs human',
+  'needs-decision': 'needs decision',
+};
 
 interface Props {
   query: string;
   onPick: (slug: string) => void;
+  /** Plans with >=1 needs-human item — backs the `needs-human` chip. */
+  needsHumanPlans?: ReadonlySet<string>;
+  /** Plans with >=1 actionable (todo) item — backs the `needs-decision` chip. */
+  needsDecisionPlans?: ReadonlySet<string>;
 }
 
-export default function PlanSearchResults({ query, onPick }: Props) {
+export default function PlanSearchResults({ query, onPick, needsHumanPlans, needsDecisionPlans }: Props) {
   const debounced = useDebounced(query, 250);
   const { data, loading, error, refresh } = usePlanSearch(debounced);
   const [scope, setScope] = useQueryState(
@@ -45,12 +63,16 @@ export default function PlanSearchResults({ query, onPick }: Props) {
   const filtered =
     scope === 'all'
       ? hits
-      : hits
-          .map((h) => ({
-            ...h,
-            matches: h.matches.filter((m) => m.scope === scope),
-          }))
-          .filter((h) => h.matches.length > 0);
+      : scope === 'needs-human'
+        ? hits.filter((h) => needsHumanPlans?.has(h.plan))
+        : scope === 'needs-decision'
+          ? hits.filter((h) => needsDecisionPlans?.has(h.plan))
+          : hits
+              .map((h) => ({
+                ...h,
+                matches: h.matches.filter((m) => m.scope === scope),
+              }))
+              .filter((h) => h.matches.length > 0);
 
   const showSearching = loading || debounced !== query;
 
@@ -72,7 +94,7 @@ export default function PlanSearchResults({ query, onPick }: Props) {
             onClick={() => setScope(s)}
             aria-pressed={scope === s}
           >
-            {s}
+            {FILTER_LABELS[s] ?? s}
           </button>
         ))}
       </div>
@@ -93,7 +115,7 @@ export default function PlanSearchResults({ query, onPick }: Props) {
 
       {!error && !showSearching && !filtered.length ? (
         <div className="pc-search__empty">
-          No matches{scope !== 'all' ? ` in ${scope}` : ''}.
+          No matches{scope !== 'all' ? ` in ${FILTER_LABELS[scope] ?? scope}` : ''}.
         </div>
       ) : null}
 

@@ -252,10 +252,10 @@ export default function PlanActions({
         title={
           disabled
             ? disabledReason
-            : 'Add a task — one concrete work unit under a phase. Tracked by status (todo / wip / done / …). Gets a permanent P-NNN id.'
+            : 'Add an item — one concrete work unit under a phase. Tracked by status (todo / wip / done / …). Gets a permanent P-NNN id.'
         }
       >
-        + Task
+        + Item
       </button>
       <button
         type="button"
@@ -652,18 +652,17 @@ function AddItemDialog({
     <Modal
       open={open}
       onOpenChange={(o) => !o && onClose()}
-      title="Add task"
+      title="Add item"
       srOnlyTitle
       contentClassName="pc-plan-dialog"
     >
       <form onSubmit={onSubmit} className="pc-plan-dialog__form">
         <header className="pc-plan-dialog__head">
-          <h3>+ Task</h3>
+          <h3>+ Item</h3>
           <p>
-            A <strong>task</strong> (also called an <em>item</em> in plan
-            markdown) is one concrete work unit under a phase. Append{' '}
-            <code>{nextItemPreview}</code>; a new phase heading is created
-            if you type one that doesn't exist.
+            An <strong>item</strong> is one concrete work unit under a phase.
+            Append <code>{nextItemPreview}</code>; a new phase heading is
+            created if you type one that doesn't exist.
           </p>
         </header>
         <label className="pc-plan-dialog__field">
