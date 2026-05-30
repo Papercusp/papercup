@@ -9,21 +9,22 @@ companion-to: [papercusp-systems-abstraction-2026-05-29, BRIEF-RECIPE-shared-202
 
 # Brief: `@papercusp/memory` (P-021)
 
-Read **`BRIEF-RECIPE-shared-2026-05-30.md`** first. This is the
-memory-specific audit. **This is the largest and least-clean extraction
-in the set — the scoping is the hard part, not the moving.**
+Read **`BRIEF-RECIPE-shared-2026-05-30.md`** first.
 
-**Plan item:** P-021 (`todo`). Source: `apps/operator/lib/memory/`
-(~4970 LOC, ~30 files). 26 consumers. Coupling at the import level is
-small (`@restart/db-org`, `@/lib/workspace-registry`,
-`@/lib/embedded-pg-discovery`) but the directory **mixes a reusable mem0
-store with a large operator-specific curation pipeline.** Do not move the
-whole dir.
+**Plan item:** P-021. Source: `apps/operator/lib/memory/` (~4970 LOC,
+~30 files, 26 consumers). The directory mixes a small reusable mem0 store
+with a large operator-specific curation pipeline — **do not move the whole
+dir.** A read-only audit (2026-05-30) fixed the boundary, below; it's
+clean and narrow, so just execute it.
 
-## ✅ Boundary already audited (2026-05-30) — use this, it's sharper than the original first-pass
+> **⚠️ Check before you start:** a memory agent may already be underway —
+> `packages/memory/src/` and `lib/memory/configure.ts`/barrel may already
+> exist. `git log --oneline | grep -i mem0` and `ls packages/memory/src`
+> first. If so, continue that work, don't restart it.
 
-A read-only audit fixed the cut. It's **cleaner than feared** — the core is
-~1191 LOC / 5 files with a single external coupling, not a 5K-LOC tangle:
+## The boundary (audited)
+
+The core is ~1191 LOC / 5 files with a single external coupling:
 
 **Core → `@papercusp/memory` (extract these 5):**
 | file | LOC | role |
@@ -62,48 +63,25 @@ a second commit. Verify via the live `memory:*` tools (note `memory_search` may
 report `mem0_unavailable` in some envs — confirm reachability so you can tell a
 regression from a pre-existing outage).
 
-## (original first-pass scoping notes — superseded by the audit above)
+## Seams
 
-The extractable `@papercusp/memory` is the **generic mem0 store/connection/
-embedder/vector-store wrapper**. The Papercusp *curation* logic stays in
-the operator. A first-pass split from the audit:
+mem0ai **owns its own `pg.Client`** (it takes discrete connection fields),
+so unlike backup/search you do NOT inject a postgres-js `sql` handle.
+Inject instead:
 
-**Generic store core → `@papercusp/memory` (candidate):**
-- `mem0-client.ts`, `mem0-connection.ts` — the `mem0ai` wrapper + its own
-  `pg.Client` (mem0 owns the connection; **this is NOT a PgHandle seam** —
-  see below).
-- `canonical-store.ts` — the canonical/vector store ops.
-- `local-embedder-worker.ts` (+ `.script.mjs`) — the local embedder.
-- `reembed.ts` — re-embedding pass.
+1. **`PgDiscovery`** (the one that matters) — how mem0 finds its DB.
+   `mem0-connection.ts` currently calls `getHarnessAdminUrl` from
+   `@/lib/embedded-pg-discovery`. Inject a URL/`pgFields` resolver seam;
+   the operator wires it to `getHarnessAdminUrl`/`pgFields`.
+2. **`EmbedderProvider`** (only if needed) — `mem0-client`'s OpenAI-or-local
+   embedder cascade. If it reads operator state (`credentials`/`voice-prefs`,
+   the way search's `buildQueryEmbedder` does), inject it; if it's
+   env-only/self-contained, leave it in the package. Resolve this by reading
+   `mem0-client.ts` — don't guess.
 
-**Operator curation pipeline → STAYS in operator:**
-- `learning.ts`, `learning-shared.ts`, `injection.ts`, `mcp-prelude.ts`,
-  `insights-index.ts`, `feedback.ts`, `anchors.ts` / `persist-anchors.ts`
-  / `audit-anchors.ts`, `conflict-check.ts`, `detect-harness-slug.ts`,
-  `bump-last-surfaced.ts`, `anthropic-judge.ts`, `cleanup-worker.ts`.
-  These are the Papercusp-specific "what to remember / when to surface /
-  how to dedup / harness anchoring" policy built ON TOP of the store.
-
-This boundary is a judgment call with real money on it (4970 LOC). **Audit
-each file's imports + role, draw the line, and run it past the user
-(`AskUserQuestion`) before the heavy moves** — same as the backup PG-seam
-checkpoint. Don't extract 30 files on a guess.
-
-## Seams (per the plan)
-
-mem0 **owns its own `pg.Client`**, so unlike backup/search you do NOT
-inject a postgres-js `sql` handle. Inject instead:
-
-1. **`PgDiscovery`** — how mem0 finds its DB (currently
-   `@/lib/embedded-pg-discovery` + `@/lib/workspace-registry`). Inject a
-   connection-config/URL resolver seam, not a live client.
-2. **`EmbedderProvider`** — the embedder (OpenAI-or-local cascade; note
-   the search lib has the same cascade — consider sharing, but don't block
-   on it). Inject `(text) => Promise<number[]>` (+ batch).
-3. **`VectorStoreProvider`** — the pgvector store abstraction
-   (`canonical-store.ts`), if it's cleanly separable from the mem0 client.
-4. **Optional Claude dedup judge** — `anthropic-judge.ts`, **feature-
-   flagged OFF**. Inject as an optional seam; default no-op.
+`canonical-store.ts` is part of the moved core (internal to the package),
+NOT a seam. The Claude dedup judge (`anthropic-judge.ts`) is curation glue
+that **stays in the operator**, so it's not a core seam either.
 
 ## Operator side
 
