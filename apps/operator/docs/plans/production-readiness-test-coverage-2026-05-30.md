@@ -144,7 +144,7 @@ oracle 3 thin); **3** property + **1** bench; **0** coverage measurement.
   `packages/embedded-postgres-server`. Guards the migration-drift / silent-boot
   -failure risk flagged in prior sessions. blocked-by: P-002.
 
-- **P-008** `todo` Replace `makeMockPg` with a real testcontainer/embedded-PG
+- **P-008** `wip` Replace `makeMockPg` with a real testcontainer/embedded-PG (pattern established + 2 of ~7 modules covered vs real PG: run-chunks-pg 3e0b32b8, mission-state-pg b66d4da7. Remaining: dispatches/checkpoints/run-output/snapshots/chunk-plan)
   fixture for the engine `*-pg` modules (`mission-state-pg`, `checkpoints-pg`,
   `run-chunks-pg`, `dispatches-pg`, …). Catches data-corruption the string-matching
   mock cannot. blocked-by: P-002.
@@ -300,3 +300,12 @@ This is **not a ship-blocker**: the shipping desktop boots via seed-dump restore
 
 Decision: encode it as a **green tripwire** rather than a hard-red gate or a quarantined test. The tripwire asserts the current reality (empty→head rejects; the self-contained prefix applies) so the suite stays honestly green for a product that ships fine; it flips RED the moment migrations become self-contained, at which point the in-file STRICT SUCCESS GATE replaces it. This keeps "green ⇒ production-ready" intact while making the debt an active alarm. A separate effort (the baseline rebuild) is required to make empty→head actually pass — surfaced to the user as a finding, not silently fixed.
 Related: P-007
+
+### D-006 — Real-PG engine tests found a lanes-persistence bug; P-009 claim-race is Autobase-distributed (deferred)
+Date: 2026-05-30
+Two findings from starting P-008 (real-PG integration replacing makeMockPg):
+
+**1. `persistLanesPg` silently loses lane state (real bug, hidden by the mock).** `mission-state-pg.persistLanesPg` interpolates `${JSON.stringify(lanes)}` into the JSONB `lanes` column. postgres-js JSON-encodes the value *again* for a jsonb column, so the array lands as a jsonb **string scalar** (`jsonb_typeof = 'string'`), and `readMissionState` — which does `Array.isArray(r.lanes) ? r.lanes : []` — always returns `lanes: []`. Verified with a production-faithful client (`prepare:false` + the bigint type parser). So in production the orchestrator's lane pool never survives a persist→read round-trip. Fix: pass the array via the postgres-js json helper (`${ctx.pg.json(lanes)}`), not pre-stringified — a one-line change in `libs/papercusp/packages/orchestrator/src/mission-state-pg.ts` (a submodule, so it needs a submodule commit + parent pointer bump). Captured as a green tripwire in `mission-state-pg.integration.test.ts` (asserts the current broken behavior; flips RED when fixed). NOT fixed in this pass — surfaced to the user, since it's engine-internal submodule surgery beyond "write tests".
+
+**2. P-009 (concurrent claim race) deferred.** The orchestrator-side `distributed-claim-fetch` is only an HTTP client; the real "exactly one wins" arbitration is an **Autobase/Hyperbee distributed claim** (v5 §0.6), not a single-PG `FOR UPDATE SKIP LOCKED` race. The PG `feature_claims`/`claim_audit` tables are an audit mirror, not the arbiter. A faithful race test needs the P2P substrate stood up — out of scope for a quick integration test. Deferring P-009 rather than testing the wrong (PG-mirror) layer.
+Related: P-008, P-009
