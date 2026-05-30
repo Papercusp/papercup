@@ -24,14 +24,25 @@ endpoint goes live on the next operator sidecar restart (tsx, not hot-reloaded);
 (b) open desktop windows show stale CSS until reloaded (dev no-HMR). Neither
 hijacked the user's live window.
 
-**Next:** Phase 5 leak cleanup (long tail). **Batch 1 DONE** (`globals.css`
-`var(--sky-300)→var(--accent-strong)`, `var(--sky-400)→var(--accent)`, 707
-occurrences) — frost-safe *by construction* (`_semantic.css` aliases
-`--accent-strong: var(--sky-300)` / `--accent: var(--sky-400)`, and neither is
-redefined in `globals.css`), so frost computed values are unchanged and black is
-now monochrome for those. Remaining batches (literal sky hexes, `--accent-cool`
-mapping, ~80 component `.tsx` sites) are **visual-verification-dependent** — best
-done with the app in view, small per-area diffs, each checked against both themes.
+**Next:** Phase 5's **safe, mechanical, frost-safe-by-construction** cleanup is
+DONE (batches 1–3):
+- **B1** (`a6c7ddc5`) `globals.css` `var(--sky-300)→var(--accent-strong)` (601) +
+  `var(--sky-400)→var(--accent)` (106).
+- **B2** (`ffa67a92`) `globals.css` literal hexes `#38bdf8→var(--accent)` (17),
+  `#7dd3fc→var(--accent-strong)` (6), `#d7f3ff→var(--accent-cool)` (1).
+- **B3** (`937e072d`) real-UI component exact-match leaks → `var(--accent-strong,
+  #7dd3fc)` (OperatorChatSidebar ×2, AgentThinkingPopover). The component "leak"
+  survey was mostly already-correct `var(--token, #hex)` fallbacks, not leaks.
+
+All frost-safe by construction (no eyeball needed). **`globals.css` now has 0
+direct sky leaks.** What remains needs a DESIGN decision + visual verification, so
+it's deliberately not done blind:
+- **~202 component `rgba()` sky tints** (`rgba(125,211,252,α)` ×154,
+  `rgba(56,189,248,α)` ×48) at arbitrary alphas — no exact token exists; the right
+  fix is `color-mix(in oklab, var(--accent-strong), transparent N%)` or new
+  `--accent-tint-*` tokens. This is the bulk of the remaining work.
+- Low-value / non-themeable: `operator-mock` demo page; Chatwoot `widgetColor`
+  (3rd-party JS); `#0ea5e9` (sky-500) / `#57d7ff` (progress bar) — no token.
 
 ## Goal
 
@@ -149,11 +160,20 @@ than something a theme can hide.
   (batch 1, `a6c7ddc5`):** re-pointed to `--accent-strong` / `--accent`. Frost-safe by
   construction. A future refinement could split out `--accent-soft`/glow + tint
   tiers where a plain accent swap loses nuance, but the leak itself is closed.
-- `app/globals.css`: ~28 literal sky/cyan hexes (`#38bdf8`×17, `#7dd3fc`×6,
-  `#57d7ff`×3, `#d7f3ff`, `#0ea5e9`).
-- Component `.tsx` (~80 sites; top offenders): `app/operator-mock/page.tsx` (11),
-  `app/adv/harnesses/{HarnessesWorkspace,HarnessTopBar,DetailPanel,IssuesPanel,FeaturesPanel}.tsx`,
-  `app/project-docs/page.tsx` (9), `app/harness/dock/AddPanelCatalog.tsx` (6).
+- ~~`app/globals.css`: ~28 literal sky/cyan hexes~~ — **DONE (batch 2,
+  `ffa67a92`):** `#38bdf8→var(--accent)`, `#7dd3fc→var(--accent-strong)`,
+  `#d7f3ff→var(--accent-cool)`. Left `#57d7ff`×3 (progress bar) + `#0ea5e9` (sky-500)
+  — no semantic token.
+- ~~Component `.tsx` "~80 sites"~~ — **mostly NOT leaks:** the survey was largely
+  already-correct `var(--accent, #hex)` fallback patterns. Genuine exact-match
+  hardcoded leaks **DONE (batch 3, `937e072d`):** `OperatorChatSidebar` ×2,
+  `AgentThinkingPopover`. Left: `operator-mock` demo page (low value) + Chatwoot
+  `widgetColor` (3rd-party JS, not CSS).
+- **REMAINING (needs design + visual check):** ~202 component `rgba()` sky tints
+  (`rgba(125,211,252,α)` ×154, `rgba(56,189,248,α)` ×48) at arbitrary alphas →
+  introduce `--accent-tint-*` tokens or use `color-mix(in oklab, var(--accent-strong),
+  transparent N%)`, per occurrence. `globals.css` itself has **0** of these (it
+  flows through `var(--border)`/`var(--accent)` already).
 - NOT leaks for black: direct `var(--rose-400)` (127) / `--emerald-400` (77) /
   `--amber-400`/`--gold-400` are status hues the black theme intentionally keeps;
   defer unless a future theme needs to restyle status colors.
