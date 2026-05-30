@@ -11,13 +11,13 @@ owner: avi@storewolf.com
 
 ## Now
 
-**State:** Phase A landed — `## Promote` policy parser (`lib/agent-tools/plans/promote-policy.ts`) +
-zod schema + 8 unit tests green; typecheck clean. The pure `@papercusp/plan-parser` is untouched (parsing is
-operator-side off `ParsedPlan.raw`). First real dogfood is the `restart` `universal-schema-2026-05-30` plan
-(§9a), blocked on this mechanism.
+**State:** Phases A + B landed. (A) `## Promote` policy parser (`promote-policy.ts`) + zod + 8 tests. (B)
+migration `089-promote-waves.sql` — `wave` column on consolidated (back-written like `source_plan_slug`) +
+`current_wave` cursor on `harness_plan_status`. First real dogfood is the `restart`
+`universal-schema-2026-05-30` plan (§9a), blocked on this mechanism.
 
-**Next:** P-003 — schema migration (`wave` column on harness_features + `current_wave` cursor on
-harness_plan_status).
+**Next:** Phase C — extend `plans:promote` + `/features/import` to carry `wave` / `assigned_role` /
+`blocked_by` / `order`, and add the policy-driven promote (static + generative expansion).
 
 **Follow-up (small):** `yaml` is imported by the parser but is an undeclared (stable, lockfile-present,
 already-bundled) transitive dep — declare it as a direct operator dep when the lockfile is next reconciled
@@ -96,12 +96,15 @@ See the consuming plan's §9a for the full dogfood narrative: `Restart/docs/plan
 
 ## Phase B — feature wave tag + cursor (schema)
 
-- **P-003** `todo` Migration in `libs/papercusp/libs/db/sql/<NNN>-promote-waves.sql`: add `wave TEXT NULL` to
-  the per-harness `harness_features` (+ consolidated mirror via the existing trigger — confirm
-  `001-shared.sql` copies it or extend), and `current_wave TEXT NULL` to `harness_shared.harness_plan_status`
-  (the 086 table). Named `$body$` dollar-quotes in any DO blocks. Apply via embedded-pg migration runner.
-- **P-004** `todo` `ensure-schema` + readers awareness of `wave` / `current_wave`; back-compat (null wave =
-  un-waved feature, treated as wave `default`).
+- **P-003** `done` Migration `089-promote-waves.sql`: `wave TEXT` on
+  `harness_shared.harness_features_consolidated` (consolidated-only + back-written by the import handler,
+  exactly like `source_plan_slug` in 084 — NOT a per-harness ALTER; the sync trigger doesn't list it so
+  per-harness updates never clobber it) + a `(source_plan_slug, wave)` partial index for the drain-check;
+  and `current_wave TEXT` on `harness_shared.harness_plan_status`. Idempotent, no DO blocks. Applies via the
+  embedded-pg migration runner on boot. (D-006.)
+- **P-004** `done` Confirmed `ensure-schema.ts` does NOT redefine `harness_plan_status` /
+  `harness_features_consolidated` (they're migration-owned), so no ensure-schema change is needed. Null-wave
+  back-compat (un-waved feature → treated as the implicit wave) is handled in the reader/drain logic (Phase D).
 
 ## Phase C — extend `plans:promote` (payload + policy execution)
 
@@ -160,3 +163,7 @@ See the consuming plan's §9a for the full dogfood narrative: `Restart/docs/plan
   repeated-failures — do **not** build a new alert system. Per-wave progress reuses the existing readers.
 - **D-005** The `## Promote` policy lives **in the plan** (plan-as-source-of-truth); a promote agent honors it.
   Fine-grained control is authored by the human/architect in the plan, not hard-coded.
+- **D-006** `wave` is a **column on `harness_features_consolidated` only** (back-written by the import handler),
+  not a per-harness `harness_features` column and not a `metadata` key — following the `source_plan_slug`
+  precedent (migration 084). Avoids per-harness ALTERs; the sync trigger preserves it (not in its column list);
+  queryable + indexable for the drain-check.
