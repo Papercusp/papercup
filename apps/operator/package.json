@@ -89,6 +89,7 @@
     "@papercusp/plugin-loader": "file:../../packages/plugin-loader",
     "@papercusp/plugin-sdk": "file:../../packages/plugin-sdk",
     "@papercusp/publish-auth": "file:../../libs/papercusp-publish-auth",
+    "@papercusp/rate-limit": "file:../../packages/rate-limit",
     "@papercusp/rrf": "file:../../packages/rrf",
     "@picovoice/koala-web": "^3.0.0",
     "@picovoice/porcupine-web": "^4.0.0",
