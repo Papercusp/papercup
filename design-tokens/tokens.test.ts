@@ -138,3 +138,28 @@ describe('design tokens — black theme variant ([data-theme="black"])', () => {
     }
   });
 });
+
+describe('design tokens — frost is explicitly scopable ([data-theme="frost"])', () => {
+  // Frost is the :root default; the scoped block lets a subtree render frost under
+  // another active theme (preview swatches). It must carry the SAME color tokens
+  // as the base semantic color layer so the two never disagree.
+  const semanticColorKeys = Object.entries(
+    loadTokens('design-tokens/desktop.semantic.tokens.json'),
+  )
+    .map(([k]) => k.replace(/^color-/, ''))
+    .filter((k) => loadCss('apps/operator/app/_semantic.css')[k] !== undefined);
+  const frostCss = loadCss('apps/operator/app/_semantic.frost.css');
+
+  test('scoped to [data-theme="frost"], not :root', () => {
+    const css = readFileSync(join(REPO, 'apps/operator/app/_semantic.frost.css'), 'utf8');
+    expect(css).toContain('[data-theme="frost"]');
+    expect(css).not.toMatch(/:root\s*\{/);
+  });
+
+  test('carries every base color semantic token with a resolved (non-alias) value', () => {
+    for (const key of semanticColorKeys) {
+      expect(frostCss, `frost block missing "--${key}"`).toHaveProperty(key);
+      expect(frostCss[key]).not.toMatch(/^\{/);
+    }
+  });
+});

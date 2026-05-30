@@ -74,6 +74,18 @@ export default {
           options: { outputReferences: true, selector: ":root" },
           filter: isSemantic,
         },
+        // Frost as an EXPLICITLY scopable theme block. Frost is the :root default
+        // (the block above), but a `[data-theme="frost"]` selector lets a subtree
+        // render frost even when an ancestor (e.g. <html>) is on another theme —
+        // needed for the per-theme preview swatches in the settings picker and the
+        // Phase-4 custom-theme editor. Colors only (matches what themes override);
+        // literals (outputReferences:false) so the block is self-contained.
+        {
+          destination: "_semantic.frost.css",
+          format: "css/variables",
+          options: { outputReferences: false, selector: '[data-theme="frost"]' },
+          filter: (t) => isSemantic(t) && t.$type === "color",
+        },
       ],
     },
     // Black theme — semantic-override set emitted under [data-theme="black"].
