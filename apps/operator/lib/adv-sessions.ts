@@ -215,8 +215,7 @@ export async function listAdvSessions(limit = 100): Promise<AdvSessionRow[]> {
       SELECT id, workspace_id, plan_slug, mode, terminal_bin, pid,
              window_id, omp_thread_id, label, cwd, started_at, ended_at, exit_code
         FROM harness_shared.adv_sessions
-       WHERE workspace_id = ${activeWorkspaceId()}
-         AND NOT (
+       WHERE NOT (
            ended_at IS NOT NULL
            AND omp_thread_id IS NULL
            AND EXTRACT(EPOCH FROM (ended_at - started_at)) < 5
