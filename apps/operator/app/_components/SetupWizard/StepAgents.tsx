@@ -58,7 +58,11 @@ export function StepAgents() {
   const claudeOk = runtime?.claude ?? false;
   const ompOk = runtime?.omp ?? false;
   const meridianOk = runtime?.meridian ?? false;
-  const allOk = claudeOk && ompOk && meridianOk;
+  // A complete backend is EITHER Claude Code alone (claude-code: the
+  // orchestrator runs `claude`, stateless calls go direct to Anthropic — no
+  // omp/Meridian) OR oh-my-pi + Meridian (the multi-provider path).
+  const ompPathOk = ompOk && meridianOk;
+  const allOk = claudeOk || ompPathOk;
 
   const startInstall = async () => {
     setLastExitCode(null);
@@ -97,9 +101,11 @@ export function StepAgents() {
   return (
     <div className="pc-step">
       <p className="pc-step__lead">
-        Papercusp drives <strong>oh-my-pi + Claude Code + Meridian</strong> as a bundle. oh-my-pi
-        is the agent runtime, Claude Code is the model that writes code, Meridian routes Claude
-        traffic through your subscription. You need all three.
+        Papercusp needs an <strong>agent backend</strong>. The simplest is{' '}
+        <strong>Claude Code</strong> — just the <code>claude</code> CLI signed into
+        your Claude subscription; the orchestrator drives it and background calls go
+        straight to Anthropic. Or use <strong>oh-my-pi + Meridian</strong> to route
+        through other providers. You need <em>one</em> complete path, not all three.
       </p>
 
       {!loading && (
@@ -109,21 +115,19 @@ export function StepAgents() {
             {allOk ? (
               <>
                 <strong>Ready.</strong>
-                <span>oh-my-pi, Claude Code, and Meridian are all installed.</span>
+                <span>
+                  {claudeOk
+                    ? 'Claude Code is installed — you can run on the claude-code backend.'
+                    : 'oh-my-pi + Meridian are installed.'}
+                </span>
               </>
             ) : (
               <>
-                <strong>
-                  {[
-                    !claudeOk && 'Claude Code',
-                    !ompOk && 'oh-my-pi',
-                    !meridianOk && 'Meridian',
-                  ]
-                    .filter(Boolean)
-                    .join(' + ')}{' '}
-                  missing.
-                </strong>
-                <span>Click Install — runs the install commands here in the wizard.</span>
+                <strong>No agent backend yet.</strong>
+                <span>
+                  Install <strong>Claude Code</strong> (the <code>claude</code> CLI) — or
+                  oh-my-pi + Meridian. Click Install to run the commands here in the wizard.
+                </span>
               </>
             )}
           </div>
