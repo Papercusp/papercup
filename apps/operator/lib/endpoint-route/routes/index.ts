@@ -54,6 +54,7 @@ import backupsRestore from './backups/restore';
 import backupsSnapshots from './backups/snapshots';
 import harnessProjects from './harness/projects';
 import harnessJoinLink from './harness/join-link';
+import harnessShareFinalize from './harness/share-finalize';
 import harnessCupboardPublish from './harness/cupboard-publish';
 import harnessContributors from './harness/contributors';
 import harnessActivity from './harness/activity';
@@ -465,6 +466,7 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(backupsSnapshots as AnyRoute[]),
   ...flatten(harnessProjects as AnyRoute[]),
   ...flatten(harnessJoinLink as AnyRoute),
+  ...flatten(harnessShareFinalize as AnyRoute),
   ...flatten(harnessCupboardPublish as AnyRoute),
   ...flatten(harnessContributors as AnyRoute[]),
   ...flatten(harnessActivity as AnyRoute[]),
