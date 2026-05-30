@@ -1,12 +1,12 @@
 /**
  * LLM client for the sim-user + judge.
  *
- * Routes through the shared `runAgentChat` with `backend: 'meridian'`,
- * which talks to the user's local Meridian router at :3456 over the
- * Anthropic-format API (same path the operator brain uses for every
- * omp spawn). Per-call `x-meridian-agent` keeps each judge / sim-user
- * call in an isolated context — no cross-contamination (same lesson
- * as the operator-brain fix).
+ * Routes through the shared `runAgentChat` with `backend: 'meridian'` — a
+ * stateless Anthropic-format round-trip whose transport auto-resolves: a
+ * claude-code user goes DIRECT to Anthropic with their Claude session; an
+ * omp user routes via the local Meridian router at :3456 (per-call
+ * `x-meridian-agent` keeps each judge / sim-user call in an isolated
+ * context — no cross-contamination).
  *
  * Pricing + retry + auth + temperature-incompat all live in
  * `libs/papercup-shared/src/agent/chat-stream.ts`'s `meridian` branch
