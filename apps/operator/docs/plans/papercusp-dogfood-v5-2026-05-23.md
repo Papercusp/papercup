@@ -2,7 +2,7 @@
 title: Papercusp dogfood — make Papercusp collaborative-at-the-core (v5)
 slug: papercusp-dogfood-v5-2026-05-23
 date: 2026-05-23
-status: draft
+status: ready
 owners: [aviynw3]
 supersedes: papercusp-dogfood-v4-2026-05-23
 ---
