@@ -223,7 +223,7 @@ two SEPARATE storage components**, not one dual-backend interface:
 
 ## Phase 0 — Scope lock
 
-- **P-000** `needs-human` Confirm the bundling decision (D-002): ship as ~4
+- **P-000** `done` Confirm the bundling decision (D-002): ship as ~4 (DEFERRED 2026-05-30 user: bundling rationale was publishing, but P-040 settled all libs stay private:true no npm publish — so bundling is moot until/unless a publish decision is made. Revisit then; do not re-litigate.) (Human decision 2026-05-30: KEEP PER-PACKAGE, no bundling — D-002 resolved/rejected. No npm publish all 12 private:true obviates the "publish unit" premise; coupling is sparse 4 dep edges among 12, 8 independent; bundling would force-couple independents + add export-routing for zero gain. Packages stay individually-testable file: deps.)
   bundles vs. one package per system. This sets every package boundary
   downstream. → D-001 D-002
 - **P-001** `done` Write the per-subsystem seam map (NOT one shared seam — that
