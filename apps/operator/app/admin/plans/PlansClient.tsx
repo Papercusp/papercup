@@ -356,17 +356,8 @@ export default function PlansClient() {
             {launchingNewPlan ? 'Launching…' : '+ New plan'}
           </button>
         </div>
-        <PlansOverview stats={stats} loading={planList.loading} />
-
-        {/* ── PLANS group — view + filters that narrow the plan list. ── */}
+        {/* ── PLANS group — filters that narrow the plan list. ── */}
         <div className="pc-plans__group">
-          <span
-            className="pc-plans__group-label"
-            title="Browse and filter plans by lifecycle status (these act on plans, not items)."
-          >
-            Plans
-          </span>
-
           {harnessOptions.length > 1 ? (
             <div className="pc-plans__harness-filter">
               <label className="pc-plans__harness-filter-label" htmlFor="pc-plans-harness-filter">
@@ -421,7 +412,9 @@ export default function PlansClient() {
                 key={v.id}
                 type="button"
                 className={`pc-plans__view pc-plans__view--${v.id} ${view === v.id ? 'is-active' : ''}`}
-                onClick={() => navView(v.id)}
+                // Deselectable: clicking the active item view returns to Browse
+                // (the neutral default — no filter selected).
+                onClick={() => navView(view === v.id ? 'list' : v.id)}
                 aria-current={view === v.id ? 'page' : undefined}
                 title={v.hint}
               >
@@ -560,19 +553,6 @@ function viewCount(view: PlansView, stats: PlanStats, loading: boolean): string 
   if (view === 'inbox') return String(stats.needsHuman);
   if (view === 'actionable') return String(stats.actionable);
   return String(stats.blocked);
-}
-
-function PlansOverview({ stats, loading }: { stats: PlanStats; loading: boolean }) {
-  const total = loading ? '…' : stats.visible;
-  return (
-    <section className="pc-plans__overview" aria-label="Plans overview">
-      <span className="pc-plans__overview-kicker">Plan command center</span>
-      <div className="pc-plans__overview-main">
-        <strong>{total}</strong>
-        <span>current plans</span>
-      </div>
-    </section>
-  );
 }
 
 /* ── P-304 keyboard shortcuts ─────────────────────────────────────── */

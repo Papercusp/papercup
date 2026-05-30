@@ -75,25 +75,8 @@ export default function PlanBucketTabs({ plans, query, searchHitSlugs, isBrowse 
     return acc;
   }, [plans, date, owner, archived, legacy, inbox, actionable, query, searchHitSlugs]);
 
-  const total = BUCKET_IDS.reduce((n, id) => n + counts[id], 0);
-
   return (
     <div className="pc-plan-buckets" role="group" aria-label="Plan lifecycle buckets">
-      {/* "All" — no status filter; also the entry into the plan (Browse)
-          view. Sits to the left of Draft. */}
-      <button
-        type="button"
-        className={`pc-plans__view pc-plan-bucket pc-plan-bucket--all ${isBrowse && bucket === null ? 'is-active' : ''}`}
-        aria-pressed={isBrowse && bucket === null}
-        onClick={() => {
-          onBrowse?.();
-          void setBucket(null);
-        }}
-        title="Show all plans — no status filter"
-      >
-        <span className="pc-plans__view-label">All</span>
-        <span className="pc-plans__view-count">{total}</span>
-      </button>
       {PLAN_BUCKETS.map(({ id, label }) => {
         const active = isBrowse && bucket === id;
         return (
