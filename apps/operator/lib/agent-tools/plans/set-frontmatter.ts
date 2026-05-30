@@ -54,7 +54,7 @@ const argsSchema = z.object({
     .refine((s) => s.trim().length > 0, 'title cannot be blank')
     .describe('Human-readable plan title.'),
   status: z
-    .enum(['draft', 'active', 'shipped', 'superseded'])
+    .enum(['draft', 'ready', 'active', 'shipped', 'superseded'])
     .describe('Plan-level status.'),
   created: z
     .string()

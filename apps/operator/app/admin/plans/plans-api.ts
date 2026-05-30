@@ -16,7 +16,44 @@ import { useEffect, useState } from 'react';
 
 /* ── Wire types — mirror lib/agent-tools/plans/* return shapes ─────── */
 
-export type PlanStatus = 'draft' | 'active' | 'blocked' | 'shipped' | 'superseded' | 'unknown';
+export type PlanStatus = 'draft' | 'ready' | 'active' | 'blocked' | 'shipped' | 'superseded' | 'unknown';
+
+/**
+ * The five lifecycle buckets surfaced as filter tabs in the Plans tab.
+ * Every plan maps to exactly one via {@link bucketOf} — the forward
+ * lifecycle (draft → ready → running → shipped) plus the `rejected`
+ * off-ramp. Distinct from {@link PlanStatus}: `running` is derived from
+ * the operational start-state, not a frontmatter status, and legacy
+ * plans (status `unknown`) fold into `draft`.
+ */
+export type PlanBucket = 'draft' | 'ready' | 'running' | 'shipped' | 'rejected';
+
+export const PLAN_BUCKETS: ReadonlyArray<{ id: PlanBucket; label: string }> = [
+  { id: 'draft', label: 'Draft' },
+  { id: 'ready', label: 'Ready' },
+  { id: 'running', label: 'Running' },
+  { id: 'shipped', label: 'Shipped' },
+  { id: 'rejected', label: 'Rejected' },
+];
+
+const PLAN_BUCKET_IDS: readonly PlanBucket[] = PLAN_BUCKETS.map((b) => b.id);
+
+/**
+ * Total bucketing function — first match wins so the result is always
+ * exactly one bucket:
+ *   1. superseded            → rejected   (terminal off-ramp)
+ *   2. shipped               → shipped    (terminal success)
+ *   3. startStatus 'started' → running    (operationally running)
+ *   4. ready | active        → ready      (approved, not started; `active` is legacy-approved)
+ *   5. otherwise             → draft      (draft, legacy `unknown`, anything else)
+ */
+export function bucketOf(plan: Pick<PlanListRow, 'status' | 'startStatus'>): PlanBucket {
+  if (plan.status === 'superseded') return 'rejected';
+  if (plan.status === 'shipped') return 'shipped';
+  if (plan.startStatus === 'started') return 'running';
+  if (plan.status === 'ready' || plan.status === 'active') return 'ready';
+  return 'draft';
+}
 export type ItemStatus = 'todo' | 'wip' | 'blocked' | 'needs-human' | 'done' | 'dropped';
 export type PlanStartStatus = 'started' | 'paused' | 'done' | null;
 
@@ -571,6 +608,54 @@ export async function rejectDraftPlan(
   } as SetContentArgs & { harness_slug?: string });
   if ('ok' in res && res.ok) return { ok: true };
   return { ok: false, error: writeErrorOf(res) ?? 'set_content_failed' };
+}
+
+/**
+ * Flip the frontmatter `status:` line via a CAS set-content write — the
+ * shared mechanism behind approve / demote (mirrors {@link rejectDraftPlan}).
+ * `fromPattern` matches the current `status:` line with the prefix in
+ * capture group 1; `to` is the new status token. Returns `{ ok: false,
+ * error: notFound }` when the current status doesn't match (e.g. demoting
+ * a plan that isn't ready).
+ */
+async function flipPlanStatusLine(
+  slug: string,
+  fromPattern: RegExp,
+  to: string,
+  notFound: string,
+  harnessSlug?: string,
+): Promise<{ ok: boolean; error?: string }> {
+  const plan = await fetchPlan(slug);
+  if ('error' in plan && plan.error) return { ok: false, error: plan.error };
+  const raw = plan.raw;
+  if (!raw) return { ok: false, error: 'no_content' };
+  const updated = raw.replace(fromPattern, `$1${to}`);
+  if (updated === raw) return { ok: false, error: notFound };
+  const res = await setPlanContent({
+    slug,
+    content: updated,
+    expectedHash: plan.contentHash,
+    ...(harnessSlug && { harness_slug: harnessSlug }),
+  } as SetContentArgs & { harness_slug?: string });
+  if ('ok' in res && res.ok) return { ok: true };
+  return { ok: false, error: writeErrorOf(res) ?? 'set_content_failed' };
+}
+
+/**
+ * Approve a draft plan: flip `status: draft` → `status: ready` via CAS.
+ * Approval is the human gate that unlocks the Start button — it does NOT
+ * start the plan. Mirrors {@link rejectDraftPlan}.
+ */
+export function approvePlan(slug: string, harnessSlug?: string) {
+  return flipPlanStatusLine(slug, /^(status:\s*)draft\b/m, 'ready', 'status_not_draft', harnessSlug);
+}
+
+/**
+ * Demote an approved plan back to draft: flip `status: ready` (or legacy
+ * `active`) → `status: draft` via CAS. Reverses {@link approvePlan}.
+ */
+export function demotePlanToDraft(slug: string, harnessSlug?: string) {
+  return flipPlanStatusLine(slug, /^(status:\s*)(?:ready|active)\b/m, 'draft', 'status_not_ready', harnessSlug);
 }
 
 export function startPlan(slug: string) {

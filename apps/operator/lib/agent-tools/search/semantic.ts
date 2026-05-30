@@ -20,7 +20,7 @@
 
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
-import { rrfCombine, RRF_K_DEFAULT } from './rrf';
+import { rrfCombine, RRF_K_DEFAULT } from '@papercusp/rrf';
 
 const SCOPE_CHOICES = ['escalations', 'brainstorm', 'turns', 'decisions', 'all'] as const;
 const MODE_CHOICES = ['embeddings', 'hybrid'] as const;

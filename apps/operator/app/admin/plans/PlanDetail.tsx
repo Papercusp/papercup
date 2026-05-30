@@ -53,9 +53,12 @@ interface Props {
   startStatus?: PlanStartStatus;
   /** Called after a successful start/pause so the rail can refresh. */
   onStartStatusChange?: (newStatus: PlanStartStatus) => void;
+  /** Called after approve/demote (plan-level status flip) so the rail +
+   *  bucket-tab counts refresh — the plan moves bucket. */
+  onPlanStatusChange?: () => void;
 }
 
-export default function PlanDetail({ slug, onClose, onDirtyChange, startStatus, onStartStatusChange }: Props) {
+export default function PlanDetail({ slug, onClose, onDirtyChange, startStatus, onStartStatusChange, onPlanStatusChange }: Props) {
   const { data, loading, error, refresh } = usePlan(slug);
   const archived = data?.archived ?? false;
   const { data: lock } = usePlanLock(data ? slug : null, archived);
@@ -320,6 +323,7 @@ export default function PlanDetail({ slug, onClose, onDirtyChange, startStatus, 
           planStatus={planStatus}
           startStatus={startStatus}
           onStartStatusChange={onStartStatusChange}
+          onPlanStatusChange={onPlanStatusChange}
           onChanged={onChanged}
           onRejected={onClose}
           disabled={editing || locked}

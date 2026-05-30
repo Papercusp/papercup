@@ -19,7 +19,7 @@
  *     = true; callers (list/get) decide whether to surface them.
  */
 
-export const PLAN_STATUSES = ['draft', 'active', 'shipped', 'superseded'] as const;
+export const PLAN_STATUSES = ['draft', 'ready', 'active', 'shipped', 'superseded'] as const;
 export type PlanStatus = (typeof PLAN_STATUSES)[number];
 
 export const ITEM_STATUSES = [

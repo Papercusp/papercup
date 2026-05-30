@@ -15,8 +15,18 @@
 import { useQueryState, parseAsBoolean, parseAsString, parseAsStringEnum } from 'nuqs';
 import { forwardRef, useImperativeHandle, useMemo, useCallback, useState } from 'react';
 import { Play, Pause } from 'lucide-react';
-import { type AsyncResult, type PlanListRow, type ItemStatus, type PlanStatus, startPlan, pausePlan } from './plans-api';
-import { withinDateWindow, type DateWindow } from './PlanFilters';
+import {
+  bucketOf,
+  startPlan,
+  pausePlan,
+  type AsyncResult,
+  type PlanListRow,
+  type ItemStatus,
+  type PlanStatus,
+  type PlanBucket,
+} from './plans-api';
+import { type DateWindow } from './PlanFilters';
+import { applyPlanFilters } from './plan-filtering';
 import { Tooltip } from '@/app/harness/Tooltip';
 
 /** Imperative handle PlansClient uses for J/K keyboard navigation. */
@@ -27,22 +37,15 @@ export interface PlanRailHandle {
   prev: () => void;
 }
 
-const STATUS_FILTER_VALUES: PlanStatus[] = [
-  'active',
-  'draft',
-  'blocked',
-  'shipped',
-  'superseded',
-  'unknown',
-];
+const BUCKET_FILTER_VALUES: PlanBucket[] = ['draft', 'ready', 'running', 'shipped', 'rejected'];
 
-const STATUS_ORDER: Record<string, number> = {
-  active: 0,
-  draft: 1,
-  blocked: 2,
+/** Rail sort order: live/actionable buckets first, terminals last. */
+const BUCKET_ORDER: Record<PlanBucket, number> = {
+  running: 0,
+  ready: 1,
+  draft: 2,
   shipped: 3,
-  superseded: 4,
-  unknown: 5,
+  rejected: 4,
 };
 
 const COUNT_ORDER: Array<ItemStatus | 'unknown'> = [
@@ -88,9 +91,9 @@ const PlanRail = forwardRef<PlanRailHandle, Props>(function PlanRail(
   const { data, loading, error, refresh } = list;
 
   // Filter reads — PlanFilters owns the writes; same nuqs keys.
-  const [fStatus] = useQueryState(
-    'pStatus',
-    parseAsStringEnum<PlanStatus>(STATUS_FILTER_VALUES),
+  const [fBucket] = useQueryState(
+    'pBucket',
+    parseAsStringEnum<PlanBucket>(BUCKET_FILTER_VALUES),
   );
   const [fDate] = useQueryState(
     'pDate',
@@ -107,36 +110,20 @@ const PlanRail = forwardRef<PlanRailHandle, Props>(function PlanRail(
   // Apply structured filters → search filter → sort. Memoized so the
   // imperative-handle below sees the same list the body renders.
   const sorted = useMemo<PlanListRow[]>(() => {
-    let working: PlanListRow[] = plans;
-    if (fStatus) working = working.filter((p) => p.status === fStatus);
-    if (fOwner) working = working.filter((p) => p.owner === fOwner);
-    if (fDate) working = working.filter((p) => withinDateWindow(p.updated, fDate));
-    working = working.filter((p) => (fArchived ? p.archived : !p.archived));
-    if (fLegacy) working = working.filter((p) => p.isLegacy);
-    if (fInbox) {
-      working = working.filter(
-        (p) => ((p.itemCounts ?? {})['needs-human'] ?? 0) > 0,
-      );
-    }
-    if (fActionable) {
-      working = working.filter((p) => ((p.itemCounts ?? {}).todo ?? 0) > 0);
-    }
-    const needle = query.trim().toLowerCase();
-    const filtered = needle
-      ? working.filter(
-          (p) =>
-            (p.title ?? '').toLowerCase().includes(needle) ||
-            p.slug.toLowerCase().includes(needle) ||
-            (searchHitSlugs?.has(p.slug) ?? false),
-        )
-      : working;
-    return [...filtered].sort((a, b) => {
-      const sa = STATUS_ORDER[a.status] ?? 99;
-      const sb = STATUS_ORDER[b.status] ?? 99;
+    const filtered = applyPlanFilters(
+      plans,
+      { date: fDate, owner: fOwner, archived: fArchived, legacy: fLegacy, inbox: fInbox, actionable: fActionable },
+      query,
+      searchHitSlugs,
+    );
+    const bucketed = fBucket ? filtered.filter((p) => bucketOf(p) === fBucket) : filtered;
+    return [...bucketed].sort((a, b) => {
+      const sa = BUCKET_ORDER[bucketOf(a)] ?? 99;
+      const sb = BUCKET_ORDER[bucketOf(b)] ?? 99;
       if (sa !== sb) return sa - sb;
       return (b.updated ?? '').localeCompare(a.updated ?? '');
     });
-  }, [plans, fStatus, fOwner, fDate, fArchived, fLegacy, fInbox, fActionable, query, searchHitSlugs]);
+  }, [plans, fBucket, fOwner, fDate, fArchived, fLegacy, fInbox, fActionable, query, searchHitSlugs]);
 
   useImperativeHandle(
     ref,
@@ -182,7 +169,7 @@ const PlanRail = forwardRef<PlanRailHandle, Props>(function PlanRail(
     // search box, the rest are the PlanFilters keys.
     const q = query.trim();
     const filtersActive =
-      !!fStatus || !!fOwner || !!fDate || fArchived || fLegacy || fInbox || fActionable;
+      !!fBucket || !!fOwner || !!fDate || fArchived || fLegacy || fInbox || fActionable;
     const msg = q
       ? `No plans match “${q}”.`
       : filtersActive
@@ -257,6 +244,11 @@ function PlanRow({
   );
 
   const isStarted = plan.startStatus === 'started';
+  // Start/Pause only makes sense once a plan is approved — draft plans
+  // must be approved first (no start button), and shipped/rejected are
+  // terminal. So the inline toggle shows only for ready + running.
+  const bucket = bucketOf(plan);
+  const showStartToggle = bucket === 'ready' || bucket === 'running';
 
   return (
     <li className={`pc-plan-rail__item pc-plan-rail__item--${plan.status}${isStarted ? ' pc-plan-rail__item--started' : ''}`}>
@@ -274,17 +266,19 @@ function PlanRow({
           {source ? <SourcePill source={source} /> : null}
           {plan.harness ? <HarnessPill harness={plan.harness} /> : null}
           <StatusPill status={plan.status} />
-          <button
-            type="button"
-            className={`pc-plan-row__start-btn${isStarted ? ' is-started' : ''}`}
-            disabled={busy}
-            onClick={handleStartToggle}
-            title={isStarted ? 'Pause plan (orchestrator stops picking features)' : 'Start plan (orchestrator picks features from this plan)'}
-            aria-label={isStarted ? `Pause plan ${plan.slug}` : `Start plan ${plan.slug}`}
-          >
-            {isStarted ? <Pause size={11} /> : <Play size={11} />}
-            {isStarted ? 'Pause' : 'Start'}
-          </button>
+          {showStartToggle ? (
+            <button
+              type="button"
+              className={`pc-plan-row__start-btn${isStarted ? ' is-started' : ''}`}
+              disabled={busy}
+              onClick={handleStartToggle}
+              title={isStarted ? 'Pause plan (orchestrator stops picking features)' : 'Start plan (orchestrator picks features from this plan)'}
+              aria-label={isStarted ? `Pause plan ${plan.slug}` : `Start plan ${plan.slug}`}
+            >
+              {isStarted ? <Pause size={11} /> : <Play size={11} />}
+              {isStarted ? 'Pause' : 'Start'}
+            </button>
+          ) : null}
         </div>
         <div className="pc-plan-row__meta-line">
           <span className="pc-plan-row__slug">{plan.slug}</span>

@@ -7,8 +7,10 @@
  * state is shareable and survives reload. PlanRail reads the same
  * keys directly; this component owns the writes.
  *
+ * Lifecycle status is NOT filtered here — the five bucket tabs
+ * (PlanBucketTabs, `pBucket`) own that, rendered directly below.
+ *
  * Filters:
- *   - status:          pStatus       — plan-level status enum
  *   - date:            pDate         — `updated` recency window
  *   - owner:           pOwner        — frontmatter owner
  *   - has-needs-human: pInbox        — at least one needs-human item
@@ -24,17 +26,8 @@
 
 import { useMemo, type RefObject } from 'react';
 import { useQueryState, parseAsBoolean, parseAsString, parseAsStringEnum } from 'nuqs';
-import { type AsyncResult, type PlanListRow, type PlanStatus } from './plans-api';
+import { type AsyncResult, type PlanListRow } from './plans-api';
 import { Select } from '@/app/harness/Select';
-
-const STATUSES: PlanStatus[] = [
-  'active',
-  'draft',
-  'blocked',
-  'shipped',
-  'superseded',
-  'unknown',
-];
 
 export type DateWindow = 'today' | '7d' | '30d';
 const DATE_WINDOWS: Array<{ id: DateWindow; label: string }> = [
@@ -60,10 +53,6 @@ export default function PlanFilters({
   onQueryChange,
   searchRef,
 }: PlanFiltersProps) {
-  const [status, setStatus] = useQueryState(
-    'pStatus',
-    parseAsStringEnum<PlanStatus>(STATUSES),
-  );
   const [dateWindow, setDateWindow] = useQueryState(
     'pDate',
     parseAsStringEnum<DateWindow>(['today', '7d', '30d']),
@@ -96,7 +85,6 @@ export default function PlanFilters({
   }, [list.data]);
 
   const activeCount =
-    (status ? 1 : 0) +
     (dateWindow ? 1 : 0) +
     (owner ? 1 : 0) +
     (archivedOnly ? 1 : 0) +
@@ -105,7 +93,6 @@ export default function PlanFilters({
     (actionable ? 1 : 0);
 
   const activeTokens = [
-    status ? { key: 'status', label: `status: ${status}`, clear: () => setStatus(null) } : null,
     dateWindow ? { key: 'date', label: `updated: ${dateWindowLabel(dateWindow)}`, clear: () => setDateWindow(null) } : null,
     owner ? { key: 'owner', label: `owner: ${owner}`, clear: () => setOwner(null) } : null,
     inbox ? { key: 'needs-human', label: 'has needs-human', clear: () => setInbox(false) } : null,
@@ -115,7 +102,6 @@ export default function PlanFilters({
   ].flatMap((token) => (token ? [token] : []));
 
   const clearAll = () => {
-    setStatus(null);
     setDateWindow(null);
     setOwner(null);
     setArchivedOnly(false);
@@ -156,17 +142,6 @@ export default function PlanFilters({
           data-plan-search-input
         />
 
-        <Select
-          value={status ?? '_all'}
-          onChange={(v) => setStatus(v === '_all' ? null : (v as PlanStatus))}
-          options={[
-            { value: '_all', label: 'Status' },
-            ...STATUSES.map((s) => ({ value: s, label: s })),
-          ]}
-          ariaLabel="Plan status filter"
-          triggerClassName="pc-filters__select"
-        />
-
         {owners.length > 1 ? (
           <Select
             value={owner ?? '_all'}
@@ -193,7 +168,6 @@ export default function PlanFilters({
             {d.label}
           </button>
         ))}
-        <Toggle on={status === 'blocked'} onChange={(on) => setStatus(on ? 'blocked' : null)} label="blocked" />
         <Toggle on={inbox} onChange={setInbox} label="needs human" />
         <Toggle on={actionable} onChange={setActionable} label="actionable" />
         <Toggle on={legacyOnly} onChange={setLegacyOnly} label="legacy" />

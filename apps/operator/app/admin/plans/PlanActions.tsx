@@ -29,6 +29,9 @@ import { launchOmpAgent } from '@/lib/native-omp-launch';
 import {
   addPlanDecision,
   addPlanItem,
+  approvePlan,
+  bucketOf,
+  demotePlanToDraft,
   rejectDraftPlan,
   setPlanNow,
   promoteToHarness,
@@ -58,6 +61,9 @@ interface Props {
   startStatus?: PlanStartStatus;
   /** Called after a successful start/pause so the caller can refresh the list. */
   onStartStatusChange?: (newStatus: PlanStartStatus) => void;
+  /** Fired after approve/demote (a plan-level status flip) so the caller can
+   *  refresh the rail + bucket-tab counts — the plan changes bucket. */
+  onPlanStatusChange?: () => void;
   /** Fired after a successful write so the caller can refresh plan data. */
   onChanged: () => void;
   /** Fired after a successful rejection — caller closes the detail. */
@@ -78,6 +84,7 @@ export default function PlanActions({
   planStatus,
   startStatus,
   onStartStatusChange,
+  onPlanStatusChange,
   onChanged,
   onRejected,
   disabled,
@@ -86,8 +93,48 @@ export default function PlanActions({
   const [open, setOpen] = useState<Dialog>(null);
   const [launchingAgent, setLaunchingAgent] = useState(false);
   const [startPending, setStartPending] = useState(false);
+  const [approvePending, setApprovePending] = useState(false);
+  const [demotePending, setDemotePending] = useState(false);
 
   const isStarted = startStatus === 'started';
+  // The lifecycle bucket drives which primary action shows: draft →
+  // Approve (no start), ready → Start + Demote, running → Pause,
+  // shipped/rejected → none. Derived from the same bucketOf the rail uses.
+  const bucket = bucketOf({ status: planStatus ?? 'unknown', startStatus: startStatus ?? null });
+
+  const handleApprove = async () => {
+    if (approvePending) return;
+    setApprovePending(true);
+    try {
+      const r = await approvePlan(slug);
+      if (r.ok) {
+        toast.success('Plan approved — ready to start.');
+        onChanged();
+        onPlanStatusChange?.();
+      } else {
+        toast.error(`Approve failed: ${r.error ?? 'unknown error'}`);
+      }
+    } finally {
+      setApprovePending(false);
+    }
+  };
+
+  const handleDemote = async () => {
+    if (demotePending) return;
+    setDemotePending(true);
+    try {
+      const r = await demotePlanToDraft(slug);
+      if (r.ok) {
+        toast.success('Plan demoted to draft.');
+        onChanged();
+        onPlanStatusChange?.();
+      } else {
+        toast.error(`Demote failed: ${r.error ?? 'unknown error'}`);
+      }
+    } finally {
+      setDemotePending(false);
+    }
+  };
 
   const handleStartPause = async () => {
     if (startPending) return;
@@ -142,15 +189,39 @@ export default function PlanActions({
 
   return (
     <div className="pc-plan-actions">
-      <button
-        type="button"
-        className={`pc-plan-actions__btn pc-plan-actions__btn--start${isStarted ? ' pc-plan-actions__btn--started' : ''}`}
-        onClick={handleStartPause}
-        disabled={startPending}
-        title={isStarted ? 'Pause plan — orchestrator stops picking new features' : 'Start plan — orchestrator picks features from this plan'}
-      >
-        {startPending ? (isStarted ? 'Pausing…' : 'Starting…') : isStarted ? '⏸ Pause Plan' : '▶ Start Plan'}
-      </button>
+      {bucket === 'draft' ? (
+        <button
+          type="button"
+          className="pc-plan-actions__btn pc-plan-actions__btn--approve"
+          onClick={handleApprove}
+          disabled={approvePending}
+          title="Approve this draft — unlocks the Start button. Does not start the plan."
+        >
+          {approvePending ? 'Approving…' : '✓ Approve Plan'}
+        </button>
+      ) : null}
+      {bucket === 'ready' || bucket === 'running' ? (
+        <button
+          type="button"
+          className={`pc-plan-actions__btn pc-plan-actions__btn--start${isStarted ? ' pc-plan-actions__btn--started' : ''}`}
+          onClick={handleStartPause}
+          disabled={startPending}
+          title={isStarted ? 'Pause plan — orchestrator stops picking new features' : 'Start plan — orchestrator picks features from this plan'}
+        >
+          {startPending ? (isStarted ? 'Pausing…' : 'Starting…') : isStarted ? '⏸ Pause Plan' : '▶ Start Plan'}
+        </button>
+      ) : null}
+      {bucket === 'ready' ? (
+        <button
+          type="button"
+          className="pc-plan-actions__btn pc-plan-actions__btn--demote"
+          onClick={handleDemote}
+          disabled={demotePending}
+          title="Demote back to draft — reverses approval; the orchestrator won't pick this up."
+        >
+          {demotePending ? 'Demoting…' : '↩ Demote to Draft'}
+        </button>
+      ) : null}
       <button
         type="button"
         className="pc-plan-actions__btn"

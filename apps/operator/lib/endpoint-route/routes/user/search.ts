@@ -134,7 +134,7 @@ async function searchProseHybrid(q: string, limit: number): Promise<ProseHit[]> 
     await c.end();
   }
 
-  const { rrfCombine } = await import('@/lib/agent-tools/search/rrf');
+  const { rrfCombine } = await import('@papercusp/rrf');
   const bmRanked = bm.map((h) => ({ key: `${h.source}:${h.source_id}`, score: h.rank, row: h }));
   const embRanked = emb.map((h) => ({ key: `${h.source}:${h.source_id}`, score: h.rank, row: h }));
   const fused = rrfCombine([

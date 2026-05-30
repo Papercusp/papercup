@@ -24,6 +24,7 @@ import PlanRail, { type PlanRailHandle } from './PlanRail';
 import PlanDetail from './PlanDetail';
 import PlanItemsList from './PlanItemsList';
 import PlanFilters from './PlanFilters';
+import PlanBucketTabs from './PlanBucketTabs';
 import PlanSearchResults from './PlanSearchResults';
 import PlanTriage from './PlanTriage';
 import { usePlanList, usePlanSearch, type PlanListRow } from './plans-api';
@@ -324,6 +325,12 @@ export default function PlansClient() {
           searchRef={searchRef}
         />
 
+        <PlanBucketTabs
+          plans={visiblePlans}
+          query={q}
+          searchHitSlugs={searchHitSlugs}
+        />
+
         <div className="pc-plans__list" aria-label="Plan list">
           <PlanRail
             ref={railRef}
@@ -349,6 +356,7 @@ export default function PlansClient() {
             }}
             startStatus={visiblePlans.find((p) => p.slug === slug)?.startStatus ?? null}
             onStartStatusChange={() => planList.refresh()}
+            onPlanStatusChange={() => planList.refresh()}
           />
         )}
 
