@@ -11,10 +11,24 @@ companion-to: [papercusp-systems-abstraction-2026-05-29]
 
 ## Now
 
-**State:** 7 packages shipped on `main` (rrf, embedded-pg-discovery, plan-parser,
-rate-limit, ipc-framing, desktop-ipc, **ipc-endpoint-server**). **P-030 is now
-`done`** — all three IPC pieces are extracted (shipped `c74cbe70` + plan flip
-`7cac0a37`).
+> **2026-05-30 — remaining work is now split into per-lib briefs for parallel
+> agents (one agent per shared lib).** Read
+> `BRIEF-RECIPE-shared-2026-05-30.md` (the shared how-to) then your lib brief:
+> - **search (P-013/P-020)** — `BRIEF-search-extraction-2026-05-30.md`
+>   (package already built + committed `0332afba`; only operator wiring left).
+> - **memory (P-021)** — `BRIEF-memory-extraction-2026-05-30.md` (largest;
+>   scope the boundary first).
+> - **locks (P-010)** — `BRIEF-locks-extraction-2026-05-30.md`.
+> - **coordination (P-011/P-012)** — `BRIEF-coordination-extraction-2026-05-30.md`.
+>
+> **locks ↔ coordination share `identity` + `subscriptions`** — those two
+> agents must coordinate (both files stay operator-side; see either brief).
+> P-040 (publish already-clean libs) + P-050/P-051 (verification) remain after.
+
+**State:** 8 packages shipped on `main` (rrf, embedded-pg-discovery, plan-parser,
+rate-limit, ipc-framing, desktop-ipc, **ipc-endpoint-server**, **backup**) + a
+**WIP `@papercusp/search`** engine (committed `0332afba`, not yet wired). P-030
+(IPC, `c74cbe70`) and **P-023/P-024 (backup, `73fa053d`)** are `done`.
 
 P-030 pt3 was finished with a **simpler design than this brief sketched**: the
 package takes a required `host: IpcEndpointHost` (3 injected fns —
