@@ -31,11 +31,14 @@ Papercusp remotes (local-only pins, per the repo's existing convention).
 --permission-mode bypassPermissions`) pointed at the real papercusp MCP host on
 `:3070` loaded the config, connected, listed the tool surface, and **actually
 invoked** `mcp__papercusp__harness_list` (tool_use + tool_result in the
-stream-json). The remaining items are the two human rulings (P-007 Meridian,
-P-010 run.sh) and the deferred push of the submodules to the Papercusp remotes;
-P-009 (wizard) is **blocked on P-007** — if Meridian stays mandatory for the
-stateless paths, a claude-code user still needs omp+Meridian, so "standalone
-backend" framing would be wrong.
+stream-json). **P-007 is also done** (2026-05-30): per the user's ruling, the
+stateless paths now go direct to Anthropic with the Claude session for
+claude-code users (Meridian kept for omp) — so **a claude-code user needs no omp
+or Meridian auth at all**. Remaining: P-009 (wizard copy, now unblocked by P-007,
+needs the desktop to verify render); P-010 (retire `run.sh` — its orchestrator
+role is already dead, but 3 operator sites still source its bash function
+library; deletion = porting those to the TS `invoke()`); and the deferred push
+of the submodules to the Papercusp remotes.
 
 ## Progress log
 
@@ -102,6 +105,28 @@ spawn-**signed** URL whose params carry workspace/role. The full round-trip
 orchestrator `invoke()` spawning a claude worker with the signed-URL `.mcp.json`
 against a running desktop doing real harness work — each link of which is now
 independently verified.
+
+### 2026-05-30 — P-007 done (claude-direct stateless) + P-010 run.sh investigated
+
+**P-007** (submodule `papercup-shared@fb85c809`, superproject `69e94bd9`): the
+stateless `'meridian'` path now auto-routes via `resolveStatelessTransport()` —
+claude-code users hit api.anthropic.com directly with their Claude OAuth session;
+omp users keep the Meridian router. Probed first that the Claude OAuth token
+works direct (it does, no Claude-Code-usage gating), then verified the integrated
+path live (`AGENT_BACKEND=claude-code` → `runAgentChat backend:'meridian'` →
+`PONG`, real tokens + $0.0000376). A claude-code user now needs **zero** omp/
+Meridian auth. See D-004.
+
+**P-010 / run.sh** (investigation, no change yet): answer to "is run.sh used at
+all" — its **orchestrator main-loop role is dead** (`orchestrator/bin/run.ts`:
+`PAPERCUSP_USE_TS_ORCHESTRATOR=0` no longer honored; TS is the only loop since
+2026-05-08). But it is **not** deletable yet: three live operator sites still
+`source` run.sh's bash *function library* to spawn agents —
+`harness-scoper.ts:52`, `expert-dispatcher.ts:302`,
+`endpoint-route/routes/harness/spawn.ts:252` (and the retired web surface, which
+doesn't count). Full retirement = porting those onto the existing TS `invoke()`,
+a deliberate refactor with scoper/expert/spawn blast radius (PARITY.md). Left as
+P-010 `todo`, not rushed.
 
 ## Background
 
@@ -182,13 +207,14 @@ P-005.) The operator brain default is `'anthropic/claude-opus-4-7'`
 `claude-opus-4-7` or an alias. Both `invoke.ts` and chat-stream passed the id
 verbatim. (Now: normalized for claude in both paths.)
 
-**B3 — MEDIUM: stateless background paths are hard-pinned to Meridian.**
-(Test button **fixed** — P-008; summarizer/llm-testing **open** — P-007.)
-`haiku.ts:45` (summarizer) + `llm-testing/llm-client.ts:80` (judge/sim-user)
-still hardcode `backend:'meridian'`, which needs `~/.omp/agent/auth.json` — so a
-"claude-code-only" user still needs Meridian/omp auth for those. The "Test
-current backend" button (`agent-config/test.ts`) no longer hardcodes Meridian; it
-probes the selected backend.
+**B3 — MEDIUM: stateless background paths were hard-pinned to Meridian.**
+(**Resolved** — P-007 + P-008.) `haiku.ts` (summarizer) + `llm-client.ts`
+(judge/sim-user) routed `backend:'meridian'` through the Meridian router, which
+needs `~/.omp/agent/auth.json` — so a claude-code user still depended on omp
+auth. Now `resolveStatelessTransport()` sends a claude-code user's stateless
+calls direct to Anthropic with their Claude session; Meridian only for omp. The
+"Test current backend" button (`agent-config/test.ts`) probes the selected
+backend, not Meridian. A claude-code user now needs no omp/Meridian auth.
 
 **B4 — MEDIUM: bash `run.sh` has no MCP wiring for either backend.** (Open —
 P-010.) `run.sh` builds correct claude stream flags (`:1288`) but contains zero
@@ -196,9 +222,11 @@ P-010.) `run.sh` builds correct claude stream flags (`:1288`) but contains zero
 is default), so lower priority.
 
 **B5 — LOW (UX): SetupWizard frames the three tools as a mandatory bundle.**
-(Open — P-009.) `StepAgents.tsx:100` — *"oh-my-pi + Claude Code + Meridian as a
-bundle… You need all three"*; gates on `claudeOk && ompOk && meridianOk`
-(`:61`). Onboarding-only; the settings page already offers the real choice.
+(Open — P-009; unblocked by P-007.) `StepAgents.tsx:100` — *"oh-my-pi + Claude
+Code + Meridian as a bundle… You need all three"*; gates on `claudeOk && ompOk
+&& meridianOk` (`:61`). Now that a claude-code user needs neither omp nor
+Meridian (P-007), the wizard can gate on the chosen backend's deps. Onboarding-
+only; the settings page already offers the real choice.
 
 ### Effort
 
@@ -225,10 +253,10 @@ claude-code. **Shipped 2026-05-30** (see Progress log).
 
 Meridian coupling, the test button, the wizard, the bash fallback.
 
-- **P-007** `done` Rule on Meridian's role for the stateless one-shot paths (haiku summarizer, llm-testing). Option A: accept Meridian as the always-on stateless path (document that a claude-code user still needs omp/Meridian auth). Option B: add a claude-code/Anthropic-direct branch to `meridianAgentChat` so those paths can run without omp auth. (→ D-004)
+- **P-007** `done` Ruled (user 2026-05-30): keep Meridian for non-claude; claude-code users auth direct. Implemented `resolveStatelessTransport()` in chat-stream.ts — the stateless 'meridian' path (haiku, llm-testing) now goes DIRECT to api.anthropic.com with the Claude OAuth session for claude-code users (verified live: PONG + real cost; the OAuth token works against the API with `anthropic-beta: oauth-2025-04-20`), and via the Meridian router for omp. A claude-code user no longer needs omp auth. Submodule `papercup-shared@fb85c809`, pinned by `69e94bd9`. (→ D-004)
 - **P-008** `done` Test-current-backend now probes the *selected* backend (one-shot through the configured CLI via `effectiveBackend()`), not hardcoded `meridian`. `effectiveBackend` consolidated into `lib/agent-config.ts`; 4 unit tests. Commit `b6dc9411`.
-- **P-009** `todo` SetupWizard: present claude-code as a standalone backend alternative; gate readiness on the *chosen* backend's deps, not `claudeOk && ompOk && meridianOk` (StepAgents.tsx:61/100). NOTE: only correct if Meridian is NOT mandatory — blocked on the P-007 ruling. blocked-by: P-007
-- **P-010** `needs-human` Decide bash `run.sh`: document it as a legacy, tool-less fallback (recommended — TS orchestrator is the default) vs. port the MCP wiring into its `invoke()`. Affects both backends, not just claude-code.
+- **P-009** `todo` SetupWizard: present claude-code as a standalone backend; gate readiness on the *chosen* backend's deps, not `claudeOk && ompOk && meridianOk` (StepAgents.tsx:61/100). UNBLOCKED by P-007 — a claude-code user now needs only the `claude` CLI + a Claude session (no omp, no Meridian): the orchestrator runs claude-code and the stateless paths go direct. Needs the Tauri desktop to verify the wizard render.
+- **P-010** `todo` Retire bash `run.sh` entirely (user ruling 2026-05-30). Finding: its orchestrator main-loop role is ALREADY dead — `orchestrator/bin/run.ts` warns `PAPERCUSP_USE_TS_ORCHESTRATOR=0` is no longer honored (TS is the only loop since 2026-05-08). What blocks deletion: 3 live operator sites still `source` run.sh's bash *function library* (`invoke`/`log`/`config_get`/…) to spawn agents — `harness-scoper.ts:52`, `expert-dispatcher.ts:302`, `endpoint-route/routes/harness/spawn.ts:252`. Port those onto the TS `invoke()` (orchestrator/src/invoke.ts), then delete run.sh. Real refactor with scoper/expert/spawn blast radius (PARITY.md territory) — do deliberately + verify scoping still works.
 
 ## Decisions
 
@@ -246,7 +274,11 @@ Date: 2026-05-30
 Resolved to option A and shipped (P-004). The in-process chat surfaces each hand claude an explicit `allowedTools` allow-list, but the headless fleet has no equivalent — it relied on omp's own permissioning + path-discovery. claude -p will otherwise block on a permission prompt for every MCP tool call, which hangs a non-interactive spawn. Two options: (A) spawn claude with `--permission-mode bypassPermissions` so no allow-list is needed — the harness runs in an isolated worktree, so this is the pragmatic first cut; (B) derive a per-role allow-list from each role's tools.md surface (cleaner, more work, keeps a guardrail). Chose A for the first functional cut; B remains available as later hardening.
 Related: P-004, P-002
 
-### D-004 — Meridian likely stays the stateless one-shot path even under claude-code (open — human ruling)
+### D-004 — RESOLVED: keep Meridian for non-claude; claude users auth direct
 Date: 2026-05-30
-Open question (P-007). Three surfaces hardcode backend:'meridian' — the haiku summarizer (haiku.ts:45), llm-testing judge/sim-user (llm-client.ts:80), and the settings "Test current backend" button (agent-config/test.ts:41). Meridian is a subprocess-free Anthropic-format HTTP path that honors maxTokens/temperature/thinkingBudgetTokens — things the agent-loop CLIs (omp, claude-code) ignore. So even a user who picks claude-code as their agent backend still needs ~/.omp/agent/auth.json for these background calls. Recommendation: accept Meridian as the always-on stateless path and document the residual omp-auth dependency (Option A), rather than build an Anthropic-direct branch (Option B) just to let a claude-code user drop omp entirely. Independently of this ruling, the test button (P-008) should still probe the *selected* agent backend, since today it silently tests Meridian regardless of the user's choice.
+**User ruling (2026-05-30):** "Meridian only needed for non-claude now. Keep Meridian. They can auth with claude directly now." So the stateless one-shot paths (haiku summarizer, llm-testing) are now backend-aware rather than hard-pinned to Meridian — Option B, not A.
+
+Verified the premise before building: the Claude OAuth session token (`~/.claude/.credentials.json` → `claudeAiOauth.accessToken`) works **directly** against api.anthropic.com with `authorization: Bearer` + `anthropic-version: 2023-06-01` + `anthropic-beta: oauth-2025-04-20` — returns normally, no Claude-Code-shaped-usage gating (the thing that historically forced these through Meridian). It's the same Claude-Max OAuth credential Meridian was forwarding.
+
+Implemented as `resolveStatelessTransport()` in `chat-stream.ts` (P-007): when the effective agent backend is claude-code (or no Meridian token but a Claude session is present) the stateless path goes direct to Anthropic; otherwise it routes through the local Meridian router (omp's multi-provider path). Call sites (haiku, llm-client) are unchanged — they still pass `backend:'meridian'`; the routing is internal. Net: a claude-code user needs **no omp/Meridian auth at all**. The test button (P-008) independently already probes the selected backend.
 Related: P-007, P-008
