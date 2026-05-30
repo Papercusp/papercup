@@ -42,7 +42,7 @@ import {
   type PlanItemRow,
 } from './plans-api';
 import { launchOmpAgent } from '@/lib/native-omp-launch';
-import { resolveHarnessScope, type HarnessNodeForScope } from '@/lib/harness/scope';
+import { resolveHarnessScope, type HarnessNodeForScope, HARNESS_SCOPE_MODES, type HarnessScopeMode } from '@/lib/harness/scope';
 
 /** localStorage key AdvShell uses for the fallback active-harness slug. */
 const ACTIVE_HARNESS_KEY = 'harness.activeProject';
@@ -109,7 +109,7 @@ export default function PlansClient() {
   const [advActiveSlug] = useQueryState('slug', parseAsString);
   const [scopeMode] = useQueryState(
     'scope',
-    parseAsStringEnum<'expanded' | 'self'>(['expanded', 'self']).withDefault('expanded'),
+    parseAsStringEnum<HarnessScopeMode>([...HARNESS_SCOPE_MODES]).withDefault('expanded'),
   );
   const [registryProjects, setRegistryProjects] = useState<HarnessNodeForScope[]>([]);
   useEffect(() => {
@@ -125,6 +125,13 @@ export default function PlansClient() {
   }, []);
   const harnessSlugsForFetch = useMemo<readonly string[] | undefined>(() => {
     if (harnessFilter) return [harnessFilter];
+    // "All harnesses": fan out over every harness in the workspace. The
+    // plans server treats an omitted list as ctx-harness-only (NOT all),
+    // so we must pass every slug explicitly. Until the registry loads we
+    // fall back to undefined (ctx harness) and re-resolve once it arrives.
+    if (scopeMode === 'all') {
+      return registryProjects.length ? registryProjects.map((p) => p.slug) : undefined;
+    }
     if (!advActiveSlug) return undefined;
     if (scopeMode === 'self') return [advActiveSlug];
     if (registryProjects.length === 0) return [advActiveSlug];

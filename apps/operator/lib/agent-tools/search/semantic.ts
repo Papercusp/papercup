@@ -18,6 +18,7 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { runHybridSearch } from '@papercusp/search';
 import { SEARCH_SOURCES } from './sources';
 import { buildQueryEmbedder } from './embedder';
+import { rerankProseHits } from './rerank';
 
 const SCOPE_CHOICES = ['escalations', 'brainstorm', 'turns', 'decisions', 'all'] as const;
 const MODE_CHOICES = ['embeddings', 'hybrid'] as const;
@@ -71,6 +72,10 @@ export default defineTool({
       log: ctx.log,
     });
 
+    // Stage B: cross-encoder rerank the fused page. Fail-safe — no ZeroEntropy
+    // key → the RRF order unchanged (see ./rerank).
+    const reranked = await rerankProseHits(args.query, results, limit);
+
     return {
       content: [{
         type: 'text',
@@ -80,7 +85,7 @@ export default defineTool({
           embedder_available: embedderAvailable,
           scope,
           total_hits: totalHits,
-          results,
+          results: reranked,
         }),
       }],
     };

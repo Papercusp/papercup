@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState, type ComponentType, type CSSProperties } from 'react';
 import { wsLocalKey } from '@/lib/browser-workspace';
+import { HARNESS_SCOPE_MODES, type HarnessScopeMode } from '@/lib/harness/scope';
+import { HARNESS_SCOPE_MODES, type HarnessScopeMode } from '@/lib/harness/scope';
 import * as Tabs from '@radix-ui/react-tabs';
 import { parseAsBoolean, parseAsString, parseAsStringEnum, useQueryState } from 'nuqs';
 import {
@@ -60,6 +62,24 @@ type HarnessProjectLite = {
   harness_kind?: string | null;
 };
 
+/**
+ * Select display token for the "All harnesses" row. Widget-only: picking
+ * it sets `?scope=all`; it is NEVER written to `?slug=` (which always
+ * holds a real harness slug or null). Keeping the sentinel out of
+ * `?slug=` means every `?slug=` consumer stays sentinel-unaware — the
+ * "all" intent lives entirely on the orthogonal `?scope=` axis.
+ */
+const ALL_HARNESSES_OPTION = '__all__';
+
+/**
+ * Select display token for the "All harnesses" row. Widget-only: picking
+ * it sets `?scope=all`; it is NEVER written to `?slug=` (which always
+ * holds a real harness slug or null). Keeping the sentinel out of
+ * `?slug=` means every `?slug=` consumer stays sentinel-unaware — the
+ * "all" intent lives entirely on the orthogonal `?scope=` axis.
+ */
+const ALL_HARNESSES_OPTION = '__all__';
+
 export default function AdvShell({
   title = 'Advanced',
   children,
@@ -95,13 +115,14 @@ export default function AdvShell({
     }
   }, [activeTab]);
   const [activeSlug, setActiveSlug] = useQueryState('slug', parseAsString);
-  // P-015: scope toggle. 'expanded' (default) means consumers should
-  // UNION across the selected slug + its sub-harnesses; 'self' narrows
-  // to just the picked slug. URL-round-tripped so the choice survives
-  // refresh + tab switches.
+  // P-015: scope axis. 'expanded' (default) means consumers UNION the
+  // selected slug + its sub-harnesses; 'self' narrows to just the picked
+  // slug; 'all' spans every harness in the workspace (the selector's
+  // "All harnesses" option). URL-round-tripped so the choice survives
+  // refresh + tab switches. Enum is shared so all readers agree.
   const [scopeMode, setScopeMode] = useQueryState(
     'scope',
-    parseAsStringEnum<'expanded' | 'self'>(['expanded', 'self']).withDefault('expanded'),
+    parseAsStringEnum<HarnessScopeMode>([...HARNESS_SCOPE_MODES]).withDefault('expanded'),
   );
   const [projects, setProjects] = useState<HarnessProjectLite[]>([]);
   const [projectLoadError, setProjectLoadError] = useState<string | null>(null);
@@ -137,6 +158,12 @@ export default function AdvShell({
     };
   }, [activeSlug, setActiveSlug, refreshNonce]);
 
+  // "All harnesses" mode: list views (Plans, Sessions) span the whole
+  // workspace. The single-harness widgets (Share, now-running, Discord)
+  // have no single target, so blank them out.
+  const allMode = scopeMode === 'all';
+  const singleSlug = allMode ? null : activeSlug;
+
   return (
     <div className="pc-advshell">
       <header className="pc-advshell__header">
@@ -150,9 +177,18 @@ export default function AdvShell({
           <div className="pc-advshell__selector">
             <span className="pc-advshell__selector-label">Harness</span>
             <Select
-              value={activeSlug ?? ''}
+              value={allMode ? ALL_HARNESSES_OPTION : (activeSlug ?? '')}
               onChange={(next) => {
                 if (next === '__loading') return;
+                if (next === ALL_HARNESSES_OPTION) {
+                  // Route "all" to the scope axis — leave ?slug= holding the
+                  // last real harness so switching back is one click.
+                  void setScopeMode('all');
+                  return;
+                }
+                // Picking a concrete harness exits "all" mode, back to the
+                // sub-harness-union default so the choice actually scopes views.
+                if (allMode) void setScopeMode('expanded');
                 void setActiveSlug(next);
                 if (next && typeof window !== 'undefined') {
                   window.localStorage.setItem(wsLocalKey('harness.activeProject'), next);
@@ -164,14 +200,18 @@ export default function AdvShell({
               options={buildHarnessSelectOptions(projects, projectLoadError)}
               triggerClassName="pc-advshell__select-trigger"
             />
-            <label className="pc-advshell__scope-toggle" title="Include sub-harnesses in list views (plans, sessions). Editor views still focus a single harness.">
-              <input
-                type="checkbox"
-                checked={scopeMode === 'expanded'}
-                onChange={(e) => void setScopeMode(e.target.checked ? 'expanded' : 'self')}
-              />
-              <span>sub-harnesses</span>
-            </label>
+            {/* Sub-harness union is meaningless under "all" (everything is
+                already included), so the toggle only shows for a single pick. */}
+            {!allMode && (
+              <label className="pc-advshell__scope-toggle" title="Include sub-harnesses in list views (plans, sessions). Editor views still focus a single harness.">
+                <input
+                  type="checkbox"
+                  checked={scopeMode === 'expanded'}
+                  onChange={(e) => void setScopeMode(e.target.checked ? 'expanded' : 'self')}
+                />
+                <span>sub-harnesses</span>
+              </label>
+            )}
             <button
               type="button"
               className="pc-advshell__action pc-advshell__action--new"
@@ -180,7 +220,7 @@ export default function AdvShell({
             >
               <Plus size={13} aria-hidden /> New
             </button>
-            {activeSlug && (
+            {!allMode && activeSlug && (
               <button
                 type="button"
                 className="pc-advshell__action pc-advshell__action--share"
@@ -192,8 +232,8 @@ export default function AdvShell({
             )}
           </div>
           {/* Inline status: dot + label + pills + start/stop */}
-          <AdvNowRunning slug={activeSlug} />
-          <DiscordBadge slug={activeSlug} />
+          <AdvNowRunning slug={singleSlug} />
+          <DiscordBadge slug={singleSlug} />
         </div>
 
         {/* Tab strip */}
@@ -231,7 +271,7 @@ export default function AdvShell({
           }
         }}
       />
-      {shareOpen && activeSlug && (
+      {shareOpen && !allMode && activeSlug && (
         <ShareWizard
           open={shareOpen}
           onClose={() => void setShareOpen(false)}
@@ -564,11 +604,12 @@ export default function AdvShell({
 }
 
 /**
- * Build the harness selector option list as a tree: roots
- * alphabetically, each child (where parent_slug → root) listed under
- * it with a leading "  ↳ " marker. Picks remain single-slug; the
- * scope toggle decides whether downstream consumers UNION across the
- * subtree. Per `plans-newbutton-and-subharness-scope-2026-05-25` P-014.
+ * Build the harness selector option list as a tree: an "All harnesses"
+ * row first, then roots alphabetically, each child (where parent_slug →
+ * root) listed under it with a leading "  ↳ " marker. Concrete picks
+ * remain single-slug; the scope toggle decides whether downstream
+ * consumers UNION across the subtree, and the "All harnesses" row flips
+ * ?scope=all. Per `plans-newbutton-and-subharness-scope-2026-05-25` P-014.
  *
  * Exported for unit tests.
  */
@@ -612,7 +653,11 @@ export function buildHarnessSelectOptions(
     list.sort((a, b) => a.slug.localeCompare(b.slug));
   }
 
-  const out: Array<{ value: string; label: string; disabled?: boolean }> = [];
+  // "All harnesses" always leads the list (when there's anything to span).
+  // Selecting it flips ?scope=all rather than ?slug= — see AdvShell.onChange.
+  const out: Array<{ value: string; label: string; disabled?: boolean }> = [
+    { value: ALL_HARNESSES_OPTION, label: 'All harnesses' },
+  ];
   const visited = new Set<string>();
   function emit(node: HarnessProjectLite, depth: number): void {
     if (visited.has(node.slug)) return;

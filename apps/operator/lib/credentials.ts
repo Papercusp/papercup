@@ -12,6 +12,8 @@ import { readOperatorState, writeOperatorState } from './operator-state-pg';
 export interface Credentials {
   anthropic_api_key?: string;
   openai_api_key?: string;
+  /** ZeroEntropy cross-encoder rerank key (@papercusp/rerank). Absent → search reranking is a no-op RRF passthrough. */
+  zeroentropy_api_key?: string;
   github_pat?: string;
   updated_at?: string;
 }
@@ -40,6 +42,7 @@ export function maskCredentials(creds: Credentials) {
   return {
     anthropic_api_key: maskSecret(creds.anthropic_api_key),
     openai_api_key: maskSecret(creds.openai_api_key),
+    zeroentropy_api_key: maskSecret(creds.zeroentropy_api_key),
     github_pat: maskSecret(creds.github_pat),
     updated_at: creds.updated_at ?? null,
     path: 'harness_shared.operator_credentials',

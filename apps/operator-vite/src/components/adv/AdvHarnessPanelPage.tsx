@@ -1,5 +1,6 @@
 import { useEffect, useState, type ReactNode } from 'react';
-import { parseAsString, useQueryState } from 'nuqs';
+import { parseAsString, parseAsStringEnum, useQueryState } from 'nuqs';
+import { HARNESS_SCOPE_MODES, type HarnessScopeMode } from '@/lib/harness/scope';
 import type { AdvTabId } from './AdvShell';
 import AdvGitWorkspace from '@/app/adv/harnesses/AdvGitWorkspace';
 import { BrainstormFull } from '@/app/harness/brainstorm/BrainstormFull';
@@ -103,6 +104,25 @@ const PANEL_FILL_CSS = `
 
 export default function AdvHarnessPanelPage({ panel }: { panel: AdvHarnessPanel }) {
   const [activeSlug] = useQueryState('slug', parseAsString);
+  const [scopeMode] = useQueryState(
+    'scope',
+    parseAsStringEnum<HarnessScopeMode>([...HARNESS_SCOPE_MODES]).withDefault('expanded'),
+  );
+
+  // "All harnesses" has no single target, and these panels are inherently
+  // per-harness (one brainstorm canvas, one PR list, one git repo, one
+  // docs tree). Show a pick-one state instead of fetching /harness/all/….
+  // "All" is honored by the list views (Plans, Sessions), not here.
+  if (scopeMode === 'all') {
+    return (
+      <section className="pc-adv-harness-panel" aria-label={`ADV ${ADV_HARNESS_PANEL_LABELS[panel]} workspace`}>
+        <div className="pc-adv-harness-panel__empty">
+          {ADV_HARNESS_PANEL_LABELS[panel]} is a per-harness view — pick a single harness above. “All harnesses” applies to Plans and Sessions.
+        </div>
+        <style>{PANEL_FILL_CSS}</style>
+      </section>
+    );
+  }
 
   // Git is its own dockview dock (AdvGitWorkspace) — Git graph + Pull
   // requests as dock panels, mirroring the Harness tab. It owns its own

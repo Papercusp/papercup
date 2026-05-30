@@ -16,6 +16,8 @@
     "libs/zero-harness",
     "libs/sync",
     "libs/token-kit",
+    "libs/rerank",
+    "libs/search-core",
     "libs/testing-shell",
     "libs/host-platform",
     "libs/flags",

@@ -11,6 +11,7 @@ import { AuthSignInCards } from '@/app/_components/AuthSignInCards';
 interface MaskedCoreCredentials {
   anthropic_api_key: string | null;
   openai_api_key: string | null;
+  zeroentropy_api_key: string | null;
   github_pat: string | null;
   updated_at: string | null;
   path: string;
@@ -30,6 +31,7 @@ interface VoiceCredsSnapshot {
 const ApiKeysSchema = z.object({
   anthropic: z.string().optional().default(''),
   openai: z.string().optional().default(''),
+  zeroentropy: z.string().optional().default(''),
   github: z.string().optional().default(''),
 });
 type ApiKeysFormData = z.infer<typeof ApiKeysSchema>;
@@ -40,7 +42,7 @@ export default function ApiKeysPage() {
   const [loading, setLoading] = useState(true);
 
   const { register, submit, reset, errors, isSubmitting } = useFormWith(ApiKeysSchema, {
-    defaultValues: { anthropic: '', openai: '', github: '' },
+    defaultValues: { anthropic: '', openai: '', zeroentropy: '', github: '' },
   });
 
   useEffect(() => {
@@ -60,7 +62,7 @@ export default function ApiKeysPage() {
   }, []);
 
   const onSubmit = async (data: ApiKeysFormData) => {
-    if (!data.anthropic && !data.openai && !data.github) {
+    if (!data.anthropic && !data.openai && !data.zeroentropy && !data.github) {
       toast.message('Nothing to save — fill at least one field.');
       return;
     }
@@ -68,6 +70,7 @@ export default function ApiKeysPage() {
       const body: Record<string, string> = {};
       if (data.anthropic) body.anthropic_api_key = data.anthropic;
       if (data.openai) body.openai_api_key = data.openai;
+      if (data.zeroentropy) body.zeroentropy_api_key = data.zeroentropy;
       if (data.github) body.github_pat = data.github;
       const r = await fetch('/api/credentials', {
         method: 'POST',
@@ -77,7 +80,7 @@ export default function ApiKeysPage() {
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       const d: MaskedCoreCredentials = await r.json();
       setMasked(d);
-      reset({ anthropic: '', openai: '', github: '' });
+      reset({ anthropic: '', openai: '', zeroentropy: '', github: '' });
       toast.success(`Saved to ${d.path}`);
     } catch (err: any) {
       toast.error(`save failed: ${err?.message ?? err}`);
@@ -146,6 +149,16 @@ export default function ApiKeysPage() {
           loading={loading}
           register={register('openai')}
           error={errors.openai?.message}
+        />
+        <SecretField
+          label="ZeroEntropy API key (search rerank)"
+          help="Optional. Enables the cross-encoder rerank stage (zerank-2) over agent-memory search results. Without it, search returns the RRF-fused order unchanged — so this is purely a relevance upgrade that turns on the moment a key is set."
+          placeholder={masked?.zeroentropy_api_key ?? 'ze_…'}
+          masked={masked?.zeroentropy_api_key}
+          uses={['Search rerank']}
+          loading={loading}
+          register={register('zeroentropy')}
+          error={errors.zeroentropy?.message}
         />
         <SecretField
           label="GitHub personal access token"

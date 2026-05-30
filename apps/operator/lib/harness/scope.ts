@@ -13,6 +13,23 @@
  * `classify-tree`'s walk limit.
  */
 
+/**
+ * The harness scope axis for the /adv shell. Orthogonal to `?slug=`
+ * (WHICH harness is active); `?scope=` decides HOW WIDE list views read:
+ *   - `expanded` (default): UNION the active slug + its sub-harnesses.
+ *   - `self`: just the active slug.
+ *   - `all`: every harness in the workspace. The active `?slug=` is
+ *     ignored by list views (Plans, Sessions); single-harness editor
+ *     views show a per-harness empty state. This backs the harness
+ *     selector's "All harnesses" option.
+ *
+ * Single source of truth so every `?scope=` consumer (AdvShell writer,
+ * Plans + Sessions readers) parses the SAME enum. Adding a value here
+ * can't silently coerce-to-default in a consumer that forgot to list it.
+ */
+export const HARNESS_SCOPE_MODES = ['expanded', 'self', 'all'] as const;
+export type HarnessScopeMode = (typeof HARNESS_SCOPE_MODES)[number];
+
 export interface HarnessNodeForScope {
   slug: string;
   parent_slug?: string | null;

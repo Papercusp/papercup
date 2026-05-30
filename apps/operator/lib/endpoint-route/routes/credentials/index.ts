@@ -33,7 +33,7 @@ export default [
       }
       const existing = await readCredentials();
       const next = { ...existing };
-      for (const k of ['anthropic_api_key', 'openai_api_key', 'github_pat'] as const) {
+      for (const k of ['anthropic_api_key', 'openai_api_key', 'zeroentropy_api_key', 'github_pat'] as const) {
         if (k in body) {
           const v = (body as Record<string, unknown>)[k];
           if (typeof v === 'string') next[k] = v.trim() || undefined;

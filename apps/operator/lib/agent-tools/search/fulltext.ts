@@ -15,6 +15,7 @@ import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { runFullTextSearch } from '@papercusp/search';
 import { SEARCH_SOURCES } from './sources';
+import { rerankProseHits } from './rerank';
 
 const SCOPE_CHOICES = ['escalations', 'brainstorm', 'turns', 'decisions', 'all'] as const;
 
@@ -61,8 +62,12 @@ export default defineTool({
       log: ctx.log,
     });
 
+    // Stage B: cross-encoder rerank. Fail-safe — no ZeroEntropy key → the
+    // BM25 order unchanged (see ./rerank).
+    const reranked = await rerankProseHits(args.query, results, limit);
+
     // search:fulltext's output rows use `rank` (no score/rankers).
-    const top = results.map((r) => ({
+    const top = reranked.map((r) => ({
       source: r.source,
       source_id: r.source_id,
       ...(r.harness_slug ? { harness_slug: r.harness_slug } : {}),

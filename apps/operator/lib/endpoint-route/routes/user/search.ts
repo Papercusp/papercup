@@ -21,6 +21,7 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { runFullTextSearch, runHybridSearch, type SearchHit } from '@papercusp/search';
 import { SEARCH_SOURCES } from '@/lib/agent-tools/search/sources';
 import { buildQueryEmbedder } from '@/lib/agent-tools/search/embedder';
+import { rerankProseHits } from '@/lib/agent-tools/search/rerank';
 
 interface ProseHit {
   source: string;
@@ -56,13 +57,17 @@ async function searchProse(q: string, mode: 'bm25' | 'hybrid', limit: number): P
     harnessFilter: null,
     limit,
   };
+  let results: SearchHit[];
   if (mode === 'hybrid') {
     const embedder = await buildQueryEmbedder();
-    const { results } = await runHybridSearch(SEARCH_SOURCES, { ...ctx, mode: 'hybrid', embedder });
-    return results.map(toProseHit);
+    ({ results } = await runHybridSearch(SEARCH_SOURCES, { ...ctx, mode: 'hybrid', embedder }));
+  } else {
+    ({ results } = await runFullTextSearch(SEARCH_SOURCES, ctx));
   }
-  const { results } = await runFullTextSearch(SEARCH_SOURCES, ctx);
-  return results.map(toProseHit);
+  // Stage B: cross-encoder rerank. Fail-safe — no ZeroEntropy key → the RRF
+  // order unchanged (see lib/agent-tools/search/rerank).
+  const reranked = await rerankProseHits(q, results, limit);
+  return reranked.map(toProseHit);
 }
 
 async function searchMemories(q: string, userId: string, limit: number) {
