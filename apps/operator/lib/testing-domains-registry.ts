@@ -395,7 +395,7 @@ defineTestDomain({
   sections: [
     { id: 'sse', label: 'SSE', globs: ['libs/sse/**/*.test.ts'] },
     { id: 'ipc', label: 'IPC', globs: ['apps/operator/lib/endpoint-ipc/**/*.test.ts'] },
-    { id: 'adapters', label: 'Adapters', globs: ['apps/operator/lib/transport-adapters/**/*.test.ts'] },
+    { id: 'adapters', label: 'Adapters', globs: ['packages/desktop-ipc/src/**/*.test.ts'] },
   ],
 });
 
