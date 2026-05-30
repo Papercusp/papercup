@@ -146,7 +146,7 @@ than something a theme can hide.
 
 **Leak inventory (static, captured 2026-05-30 — these stay blue under black):**
 - ~~`app/globals.css`: 601× `var(--sky-300)`, 106× `var(--sky-400)`~~ — **DONE
-  (batch 1, `0b…`):** re-pointed to `--accent-strong` / `--accent`. Frost-safe by
+  (batch 1, `a6c7ddc5`):** re-pointed to `--accent-strong` / `--accent`. Frost-safe by
   construction. A future refinement could split out `--accent-soft`/glow + tint
   tiers where a plain accent swap loses nuance, but the leak itself is closed.
 - `app/globals.css`: ~28 literal sky/cyan hexes (`#38bdf8`×17, `#7dd3fc`×6,
