@@ -191,3 +191,18 @@ Per the user's "extract to a shared file" directive (the same pattern brainstorm
 
 Note: the plugin-only lucide imports `HarnessDashboard` no longer uses (post `PLUGIN_ICON_MAP` move) are left for a knip sweep.
 Related: P-022
+
+### D-014 — docs tab decoupled — HarnessDashboard fully removed from the live /adv dispatcher
+Date: 2026-05-30
+Closes the decoupling. The docs tab is the **@papercupai/starlight** plugin — an iframe to the per-harness Starlight docs viewer (`/project-docs?harness=<slug>`, serves HTTP 200) that `replaces:['docs','fumadocs']`. My earlier "no docs plugin / unverifiable" was wrong about the cause: the plugin exists globally; it just wasn't **enabled** for papercup.
+
+- **`8e3b464e`** — new `AdvDocsTab` resolves the plugin contribution (`/api/plugins/<slug>/contributions` → the tab whose `replaces` includes `docs`) and renders its `iframeUrl` directly; explicit empty-state when no docs plugin is enabled. Wired `docs` into the DIRECT dispatch and **removed the `HarnessDashboard` import + fallback** from the live dispatcher (`operator-vite/src/components/adv/AdvHarnessPanelPage.tsx`). Verified live: `/adv?tab=docs` renders the Starlight iframe with NO `.h-root`.
+
+**Result:** all 7 formerly-monolith-backed tabs (brainstorm/prs/settings/insights/git/config/docs) now render their own component. The **live `/adv` mounts `HarnessDashboard` nowhere.**
+
+**Findings surfaced along the way:**
+1. **Plugin enablement is broken in this dev env.** `/api/plugins/enable` shells out to a `papercusp` CLI binary that isn't on PATH (`spawn papercusp ENOENT`), so no plugin can be enabled/disabled via the UI/API here — affects config's enable/disable too, not just docs. I enabled starlight for papercup by writing `enabled-plugins.json` directly (the file the contributions endpoint reads) at `~/.papercusp-workspaces/default/.papercusp/harnesses/papercup/` (papercuspRoot fell back to `default` since `papercusp-workspace/.papercusp` doesn't exist). This is per-workspace runtime state, not committed.
+2. **Dead pre-Vite duplicates still import HarnessDashboard:** `apps/operator/app/adv/_components/AdvHarnessPanelPage.tsx` + the Next `apps/operator/app/adv/{docs,prs,insights,brainstorm,config,settings}/page.tsx` pages. The live SPA serves `/adv` via the operator-vite dispatcher, so these are unused — candidates for deletion in a cleanup pass.
+
+**Unblocks P-022:** with the live `/adv` free of `HarnessDashboard`, the remaining holders are the dead Next duplicates (delete) and the deferred `/harness/$slug` route. Once those are handled, the legacy-only `app/harness/*` page code can move to `_retired/`.
+Related: P-022
