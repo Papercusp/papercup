@@ -115,11 +115,11 @@ Only OMP has a turn-start coord-injection hook with FS-direct readers; Claude/Co
 
 ## Phase 1 — Schema + package stores
 
-- **P-001** `todo` Host `ensureSchema` wrapper for `harness_shared.coord_event_log` in `apps/operator/lib/ensure-schema.ts`, wrapping the package's `ensureCoordEventLogTable(getOrgPg().sql)`.
+- **P-001** `done` Host `ensureSchema` wrapper for `harness_shared.coord_event_log` in `apps/operator/lib/ensure-schema.ts`, wrapping the package's `ensureCoordEventLogTable(getOrgPg().sql)`.
 - **P-002** `done` Add `PgWatermarkStore` to `@papercusp/coordination` behind a `WatermarkStore` interface, with an in-memory double + conformance suite (mirror `PresenceStore`). Backing table `coord_watermarks`, carrying a construction-bound `workspace_id`.
 - **P-003** `done` Add `PgSubscriptionStore` to `@papercusp/coordination` behind a `SubscriptionStore` interface, with an in-memory double + conformance suite. Backing table `coord_subscriptions`, carrying a construction-bound `workspace_id`.
 - **P-019** `done` Add a construction-bound `workspace_id` (default `'default'`) to `PgCoordLog` + `ensureCoordEventLogTable`: column + widened uniqueness/read indexes, all reads/writes filtered by the bound id. Update the event-log conformance harness to construct with a domain. (Parity with `coord_presence`; D-007.)
-- **P-004** `todo` Host `ensureSchema` wrappers for `coord_watermarks` + `coord_subscriptions` in `ensure-schema.ts`. blocked-by: P-002, P-003
+- **P-004** `done` Host `ensureSchema` wrappers for `coord_watermarks` + `coord_subscriptions` in `ensure-schema.ts`. blocked-by: P-002, P-003
 
 ## Phase 2 — Host wiring (the swap)
 

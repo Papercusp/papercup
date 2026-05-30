@@ -16,6 +16,9 @@
  * lib/provision/operator-claims.ts) only works for harness_shared.
  */
 import { getOrgPg } from '@restart/db-org';
+import { ensureCoordEventLogTable as ensureCoordEventLogTableDdl } from '@papercusp/coordination/event-log';
+import { ensureCoordWatermarksTable as ensureCoordWatermarksTableDdl } from '@papercusp/coordination/watermark-store';
+import { ensureCoordSubscriptionsTable as ensureCoordSubscriptionsTableDdl } from '@papercusp/coordination/subscription-store';
 
 // Pin the "already-ensured" flags to globalThis so that instrumentation.ts's
 // pre-warm and the API route handlers share the same flag set even when
@@ -84,6 +87,9 @@ type _G = {
     backupEvents: boolean;
     powerUserSessions: boolean;
     coordPresence: boolean;
+    coordEventLog: boolean;
+    coordWatermarks: boolean;
+    coordSubscriptions: boolean;
     planRevisions: boolean;
     planRuns: boolean;
     planRunTurns: boolean;
@@ -153,6 +159,9 @@ const flags = _g.__ensureSchemaFlags ?? (_g.__ensureSchemaFlags = {
   backupEvents: false,
   powerUserSessions: false,
   coordPresence: false,
+  coordEventLog: false,
+  coordWatermarks: false,
+  coordSubscriptions: false,
   planRevisions: false,
   planRuns: false,
   planRunTurns: false,
@@ -1784,6 +1793,42 @@ export async function ensureCoordPresenceTable(): Promise<void> {
       ON harness_shared.coord_presence (workspace_id, heartbeat_at DESC);
   `);
   flags.coordPresence = true;
+}
+
+/**
+ * harness_shared.coord_event_log — the L3 append-only channel log
+ * (messages / plan-events / handoffs / escalations) for the agent
+ * coordination system. The canonical DDL lives with the store in
+ * @papercusp/coordination (PgCoordLog's `ensureCoordEventLogTable`); this
+ * flag-gates it so the per-call `ensureSchema` PgCoordLog invokes is a no-op
+ * after the first DDL run. coord-channels-pg-port P-001 / D-002 / D-007.
+ */
+export async function ensureCoordEventLogTable(): Promise<void> {
+  if (flags.coordEventLog) return;
+  await ensureCoordEventLogTableDdl(getOrgPg().sql);
+  flags.coordEventLog = true;
+}
+
+/**
+ * harness_shared.coord_watermarks — per-agent "last-read" cursors (L3).
+ * Canonical DDL in @papercusp/coordination/watermark-store. Flag-gated like
+ * the sibling coord tables. coord-channels-pg-port P-004.
+ */
+export async function ensureCoordWatermarksTable(): Promise<void> {
+  if (flags.coordWatermarks) return;
+  await ensureCoordWatermarksTableDdl(getOrgPg().sql);
+  flags.coordWatermarks = true;
+}
+
+/**
+ * harness_shared.coord_subscriptions — path/glob watches (L3 #5).
+ * Canonical DDL in @papercusp/coordination/subscription-store. Flag-gated
+ * like the sibling coord tables. coord-channels-pg-port P-004.
+ */
+export async function ensureCoordSubscriptionsTable(): Promise<void> {
+  if (flags.coordSubscriptions) return;
+  await ensureCoordSubscriptionsTableDdl(getOrgPg().sql);
+  flags.coordSubscriptions = true;
 }
 
 /**
