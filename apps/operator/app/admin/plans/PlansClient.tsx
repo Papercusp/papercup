@@ -17,6 +17,7 @@
  */
 
 import { useQueryState, parseAsString, parseAsStringEnum } from 'nuqs';
+import { wsLocalKey } from '@/lib/browser-workspace';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { toast } from 'sonner';
 import PlanRail, { type PlanRailHandle } from './PlanRail';
@@ -56,7 +57,11 @@ export default function PlansClient() {
     'view',
     parseAsStringEnum<PlansView>(['list', 'inbox', 'actionable', 'triage']).withDefault('list'),
   );
-  const [slug, setSlug] = useQueryState('slug', parseAsString);
+  // The OPEN-PLAN slug. Lives on `?plan=`, NOT `?slug=` — AdvShell owns
+  // `?slug=` for the active harness (a global query param shared across
+  // every /adv tab). Reading the harness slug as a plan slug 404s every
+  // plan-open click on /adv?tab=plans.
+  const [slug, setSlug] = useQueryState('plan', parseAsString);
   const [q, setQ] = useQueryState('q', parseAsString.withDefault(''));
   const [, setPane] = useQueryState(
     'pane',
@@ -225,7 +230,7 @@ export default function PlansClient() {
     if (activeHarnessSlug) return;
     if (typeof window === 'undefined') return;
     try {
-      setFallbackHarnessSlug(window.localStorage.getItem(ACTIVE_HARNESS_KEY));
+      setFallbackHarnessSlug(window.localStorage.getItem(wsLocalKey(ACTIVE_HARNESS_KEY)));
     } catch { /* ignore */ }
   }, [activeHarnessSlug]);
   const resolvedHarnessSlug = activeHarnessSlug ?? fallbackHarnessSlug;

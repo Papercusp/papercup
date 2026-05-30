@@ -46,7 +46,9 @@ export default function AdvPlansTabs({ children }: { children: React.ReactNode }
     'view',
     parseAsStringEnum<PlansView>(['list', 'inbox', 'actionable', 'triage']).withDefault('list'),
   );
-  const [slug, setSlug] = useQueryState('slug', parseAsString);
+  // The OPEN-PLAN slug. Lives on `?plan=`, NOT `?slug=` — `?slug=` is
+  // AdvShell's active-harness key, shared across every /adv tab.
+  const [slug, setSlug] = useQueryState('plan', parseAsString);
   const [q, setQ] = useQueryState('q', parseAsString.withDefault(''));
   const [, setPane] = useQueryState(
     'pane',
