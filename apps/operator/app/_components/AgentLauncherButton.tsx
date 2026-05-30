@@ -5,7 +5,7 @@
  * sibling to ConsoleLauncherButton.
  *
  * Where ConsoleLauncherButton opens a plain superuser shell, this opens
- * an OMP agent session scoped to the active workspace, pre-seeded with
+ * an agent session scoped to the active workspace, pre-seeded with
  * the Papercusp engineer-collaborator playbook (the @papercusp/omp
  * power-user path). See
  * apps/operator/docs/plans/omp-power-user-bundle-2026-05-20.md §4.4.
@@ -40,8 +40,8 @@ export function AgentLauncherButton() {
   const harnessSlug = extractHarnessSlug(pathname ?? '');
 
   const tooltip = harnessSlug
-    ? `Launch OMP agent in ${harnessSlug}`
-    : 'Launch OMP agent in workspace root';
+    ? `Launch agent in ${harnessSlug}`
+    : 'Launch agent in workspace root';
 
   async function attempt(): Promise<void> {
     setBusy(true);
@@ -49,7 +49,7 @@ export function AgentLauncherButton() {
       const result = await launchOmpAgent({ slug: harnessSlug });
       if (result.ok) {
         setInstallCmd(null);
-        toast.success('OMP agent launched.', { duration: 4000 });
+        toast.success('Agent launched.', { duration: 4000 });
       } else if (result.installCmd) {
         setInstallCmd(result.installCmd ?? DEFAULT_INSTALL_CMD);
       } else {

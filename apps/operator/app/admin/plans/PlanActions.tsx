@@ -51,7 +51,7 @@ interface Props {
   items: PlanItem[] | undefined;
   decisions: PlanDecision[] | undefined;
   currentNow: { state: string | null; next: string | null } | null | undefined;
-  /** Plan title — surfaced into the launched OMP session label so the
+  /** Plan title — surfaced into the launched agent session label so the
    *  /adv/sessions list reads naturally. */
   planTitle?: string | null;
   /** Plan status drives draft-only affordances (Reject button) so /adv/plans
@@ -163,7 +163,7 @@ export default function PlanActions({
       const label = planTitle?.trim() || slug;
       const result = await launchOmpAgent({ slug: null, planSlug: slug, label });
       if (result.ok) {
-        toast.success(`Launched OMP for ${slug}.`, { duration: 4000 });
+        toast.success(`Launched agent for ${slug}.`, { duration: 4000 });
       } else if (result.installCmd) {
         toast.error(
           `${result.error ?? 'OMP launch prerequisites are missing.'} Run: ${result.installCmd}`,
@@ -290,7 +290,7 @@ export default function PlanActions({
         className="pc-plan-actions__btn pc-plan-actions__btn--launch"
         onClick={onLaunchAgent}
         disabled={launchingAgent}
-        title={`Launch a power-user OMP agent terminal tagged with ${slug}; appears in /adv/sessions`}
+        title={`Launch a power-user agent terminal tagged with ${slug}; appears in /adv/sessions`}
       >
         {launchingAgent ? 'Launching…' : 'Launch agent'}
       </button>

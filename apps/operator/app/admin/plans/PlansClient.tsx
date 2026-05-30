@@ -312,7 +312,7 @@ export default function PlansClient() {
         kickoff: { kind: 'new-plan' },
       });
       if (result.ok) {
-        toast.success('OMP launched to draft a new plan.', { duration: 3000 });
+        toast.success('Agent launched to draft a new plan.', { duration: 3000 });
       } else if (result.installCmd) {
         toast.error(`${result.error ?? 'OMP launch prerequisites are missing.'} Run: ${result.installCmd}`);
       } else {
@@ -334,8 +334,8 @@ export default function PlansClient() {
             disabled={launchingNewPlan}
             title={
               resolvedHarnessSlug
-                ? `Launch an OMP session to draft a new plan in ${resolvedHarnessSlug}`
-                : 'Launch an OMP session to draft a new plan (no active harness — agent will ask)'
+                ? `Launch an agent session to draft a new plan in ${resolvedHarnessSlug}`
+                : 'Launch an agent session to draft a new plan (no active harness — agent will ask)'
             }
           >
             {launchingNewPlan ? 'Launching…' : '+ New plan'}

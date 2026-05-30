@@ -322,7 +322,7 @@ export default function AdvSessionsClient() {
   // selectedRow is a useMemo over rows so it gets a new reference on
   // every poll even when the underlying row didn't change. Depending
   // on the object made this effect re-run every 3s and flash a fresh
-  // "Loading OMP session state…" placeholder, which is exactly the
+  // "Loading session state…" placeholder, which is exactly the
   // flicker the user reported.
   const selectedRowId = selectedRow?.id ?? null;
   useEffect(() => {
@@ -440,7 +440,7 @@ export default function AdvSessionsClient() {
       });
       if (result.ok) {
         toast.success(
-          `OMP launched for ${label}${model ? ` (${model})` : ''}.`,
+          `Agent launched for ${label}${model ? ` (${model})` : ''}.`,
           { duration: 3000 },
         );
         setRefreshTick((t) => t + 1);
@@ -487,7 +487,7 @@ export default function AdvSessionsClient() {
       label: row.label ?? row.planSlug ?? `fresh-${row.id}`,
     });
     if (result.ok) {
-      toast.success('OMP launched (fresh session).', { duration: 3000 });
+      toast.success('Agent launched (fresh session).', { duration: 3000 });
       setRefreshTick((t) => t + 1);
     } else if (result.installCmd) {
       toast.error(`${result.error ?? 'OMP launch prerequisites are missing.'} Run: ${result.installCmd}`);
@@ -527,7 +527,7 @@ export default function AdvSessionsClient() {
     const id = resolveResumeId(row);
     if (!id) {
       toast.error(
-        'No OMP session id tracked for this row yet. Select the session first so the id can be loaded.',
+        'No agent session id tracked for this row yet. Select the session first so the id can be loaded.',
       );
       return;
     }
@@ -538,7 +538,7 @@ export default function AdvSessionsClient() {
       resumeSessionId: id,
     });
     if (result.ok) {
-      toast.success(`OMP resumed (${id.slice(0, 12)}…).`, { duration: 3000 });
+      toast.success(`Agent resumed (${id.slice(0, 12)}…).`, { duration: 3000 });
       setRefreshTick((t) => t + 1);
     } else if (result.installCmd) {
       toast.error(`${result.error ?? 'OMP launch prerequisites are missing.'} Run: ${result.installCmd}`);
@@ -630,7 +630,7 @@ export default function AdvSessionsClient() {
             View current and previous agent sessions, recover them or locate them on your desktop
           </p>
         </div>
-        <div className="pc-adv-sessions__launch-card" aria-label="Launch a new OMP session">
+        <div className="pc-adv-sessions__launch-card" aria-label="Launch a new agent session">
           <div className="pc-adv-sessions__launch-copy">
             <strong>Start from plan context</strong>
           </div>
@@ -773,20 +773,20 @@ export default function AdvSessionsClient() {
                               </button>
                             ) : (
                               <>
-                                <Tooltip label="Open a new OMP terminal at this plan (fresh conversation)">
+                                <Tooltip label="Open a new agent terminal at this plan (fresh conversation)">
                                   <button
                                     type="button"
                                     className="pc-adv-sessions__btn"
                                     onClick={() => freshRow(row)}
                                   >
-                                    Fresh OMP
+                                    Fresh agent
                                   </button>
                                 </Tooltip>
                                 {(() => {
                                   const resumeId = resolveResumeId(row);
                                   const resumeLabel = resumeId
-                                    ? `Resume OMP with this session's tracked id (${resumeId.slice(0, 12)}…)`
-                                    : 'No OMP session id tracked yet — select this session first.';
+                                    ? `Resume agent with this session's tracked id (${resumeId.slice(0, 12)}…)`
+                                    : 'No agent session id tracked yet — select this session first.';
                                   return (
                                     <Tooltip label={resumeLabel}>
                                       <span className="pc-adv-sessions__tooltip-trigger">
@@ -1725,7 +1725,7 @@ function SessionDetail({
       <aside className="pc-adv-sessions__detail">
         <div className="pc-adv-sessions__panel">
           <p className="pc-adv-sessions__placeholder">
-            Select a session to inspect its OMP transcript state, todos, tools, Hindsight config, and handoff context.
+            Select a session to inspect its transcript state, todos, tools, and handoff context.
           </p>
         </div>
       </aside>
@@ -1770,17 +1770,17 @@ function SessionDetail({
             stale content visible underneath instead of clearing the
             panel to a single line of text every time. */}
         {loading && !stateData ? (
-          <p className="pc-adv-sessions__placeholder">Loading OMP session state…</p>
+          <p className="pc-adv-sessions__placeholder">Loading session state…</p>
         ) : null}
-        {error ? <p className="pc-adv-sessions__error">Failed to load OMP state: {error}</p> : null}
+        {error ? <p className="pc-adv-sessions__error">Failed to load session state: {error}</p> : null}
         {!loading && !error && row.mode !== 'omp' ? (
           <p className="pc-adv-sessions__placeholder">
-            This is a console session, not an OMP transcript. Focus or resume controls still work; OMP state panels apply to OMP rows.
+            This is a console session, not an agent transcript. Focus or resume controls still work; transcript panels apply to agent sessions.
           </p>
         ) : null}
         {!loading && !error && row.mode === 'omp' && !state ? (
           <p className="pc-adv-sessions__placeholder">
-            No matching OMP JSONL session found yet. If this terminal just launched, wait for OMP to write its session header and refresh.
+            No matching agent transcript found yet. If this terminal just launched, wait for the agent to write its session header and refresh.
           </p>
         ) : null}
         {state ? (
@@ -1872,7 +1872,7 @@ function SessionPanelContent({
         </div>
       ) : null}
       <div className="pc-adv-sessions__section">
-        <h4>OMP session</h4>
+        <h4>Agent session</h4>
         <div className="pc-adv-sessions__snippet">
           <div className="pc-adv-sessions__snippet-meta">
             <span>{state.header.id}</span>
@@ -1917,7 +1917,7 @@ function ContextPanel({
         <h4>Successor context pointer</h4>
         <div className="pc-adv-sessions__snippet">
           <p className="pc-adv-sessions__snippet-text">
-            If the next agent needs context for a decision, search this origin OMP session before guessing.{'\n'}
+            If the next agent needs context for a decision, search this origin agent session before guessing.{'\n'}
             <span className="pc-adv-sessions__mono">{searchInstruction}</span>
           </p>
         </div>
@@ -1929,7 +1929,7 @@ function ContextPanel({
           <p className="pc-adv-sessions__snippet-text">
             adv row: #{row.id} · plan {row.planSlug ?? '(none)'} · pid {row.pid ?? '—'}{'\n'}
             stored omp_thread_id: <span className="pc-adv-sessions__mono">{effectiveAdv.ompThreadId ?? 'not linked yet'}</span>{'\n'}
-            current OMP id: <span className="pc-adv-sessions__mono">{state.header.id}</span>{'\n'}
+            current session id: <span className="pc-adv-sessions__mono">{state.header.id}</span>{'\n'}
             match: {match ? `${match.matchKind} · ${Math.round(match.timeDriftMs / 1000)}s drift` : 'direct id'}{'\n'}
             cwd: <span className="pc-adv-sessions__mono">{state.header.cwd}</span>{'\n'}
             file: <span className="pc-adv-sessions__mono">{state.filePath}</span>
@@ -2008,7 +2008,7 @@ function ToolsPanel({ tools }: { tools: OmpToolSummary[] }) {
 function MemoryPanel({ memory }: { memory: OmpMemoryState | undefined }) {
   if (!memory) return <p className="pc-adv-sessions__placeholder">Memory config unavailable.</p>;
   if (memory.ok === false) {
-    return <p className="pc-adv-sessions__error">Could not read OMP memory config: {memory.error}</p>;
+    return <p className="pc-adv-sessions__error">Could not read agent memory config: {memory.error}</p>;
   }
   const hindsight = memory.hindsight ?? {};
   return (
@@ -2054,8 +2054,8 @@ function HistoryPanel({
         <input
           value={query}
           onChange={(e) => onQueryChange(e.target.value)}
-          placeholder="Search this OMP transcript for decisions, errors, files…"
-          aria-label="Search OMP session history"
+          placeholder="Search this transcript for decisions, errors, files…"
+          aria-label="Search session history"
         />
       </div>
       {loading ? <p className="pc-adv-sessions__placeholder">Searching…</p> : null}
@@ -2157,7 +2157,7 @@ function RowUsagePills({
         </span>
       ) : null}
       {summary.totalCostUsd > 0 ? (
-        <span className="pc-adv-sessions__row-usage-pill pc-adv-sessions__row-usage-pill--cost" title="USD cost reported by OMP">
+        <span className="pc-adv-sessions__row-usage-pill pc-adv-sessions__row-usage-pill--cost" title="USD cost reported by the agent">
           {formatCostUsd(summary.totalCostUsd)}
         </span>
       ) : null}
