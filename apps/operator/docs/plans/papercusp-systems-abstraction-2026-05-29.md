@@ -266,7 +266,7 @@ two SEPARATE storage components**, not one dual-backend interface:
 
 ## Phase 2 — Locks + coordination (each its own seam)
 
-- **P-010** `todo` Extract `@papercusp/locks` from `agent-tools/locks/`,
+- **P-010** `done` Extract `@papercusp/locks` from `agent-tools/locks/`, (@papercusp/locks shipped 0779d8f2 — core coordinator/su-lock-store/in-workspace-txn/workspace-listener/path-normalize/sql extracted; operator keeps 5 wrappers+identity+configure shim; seam=configureLocks{getAdminBaseUrl}; identity+subscriptions stay operator-side package imports neither. Verify: pkg tsc 0 + 15/15; op tsc 0 new; live-PG 73/73; live dispatch healthy.)
   **AS-IS**. **Audit correction:** do NOT inject a `WorkspaceStore`. `SuLocksCoordinator`
   already fully `implements FileClaimCoordinator` (conformance-tested) and has its
   own connection pool, its own `papercusp_su` database, and `pg_advisory_xact_lock`
