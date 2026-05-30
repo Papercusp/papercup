@@ -13,10 +13,9 @@
  */
 
 import { spawn } from 'node:child_process';
-import { workspacesRoot } from '@/lib/workspace-registry';
 import { mkdir, access } from 'node:fs/promises';
 import { join } from 'node:path';
-import { getOrgPg } from '@restart/db-org';
+import { backupHost } from './config';
 import { deriveRepoPassword } from './password';
 import { runPreSnapshotHook } from './hook';
 import { decryptDestConfig, syncArgsFor, type DestinationType } from './destinations';
@@ -48,7 +47,7 @@ export class WorkspaceBackup {
   constructor(opts: WorkspaceBackupOpts) {
     this.workspaceId = opts.workspaceId;
     this.workspaceRoot = opts.workspaceRoot
-      ?? join(workspacesRoot(), opts.workspaceId);
+      ?? join(backupHost().workspacesRoot(), opts.workspaceId);
     this.repoPath = join(this.workspaceRoot, 'backups', 'kopia-repo');
   }
 
@@ -56,8 +55,7 @@ export class WorkspaceBackup {
     // Defensive: make sure the backup PG tables exist before the kopia
     // dance, in case the operator's pre-warm didn't run them yet.
     try {
-      const { ensureBackupTables } = await import('../ensure-schema');
-      await ensureBackupTables();
+      await backupHost().ensureSchema();
     } catch { /* tables already exist or PG not ready; non-fatal */ }
     await mkdir(this.repoPath, { recursive: true });
     const password = await deriveRepoPassword(this.workspaceId);
@@ -95,10 +93,9 @@ export class WorkspaceBackup {
 
   async getSettings(): Promise<BackupSettings> {
     try {
-      const { ensureBackupTables } = await import('../ensure-schema');
-      await ensureBackupTables();
+      await backupHost().ensureSchema();
     } catch { /* tables already exist or PG not ready; non-fatal */ }
-    const { sql } = getOrgPg();
+    const sql = backupHost().getSql();
     const rows = await sql<{
       enabled: boolean;
       cadence_mode: string;
@@ -148,7 +145,7 @@ export class WorkspaceBackup {
     type: BackupSettings['destinationType'],
     config: unknown | null,
   ): Promise<void> {
-    const { sql } = getOrgPg();
+    const sql = backupHost().getSql();
     let encrypted: string | null = null;
     if (type !== 'local' && config) {
       const { encryptDestConfig } = await import('./destinations');
@@ -167,7 +164,7 @@ export class WorkspaceBackup {
   }
 
   async testDestination(): Promise<{ ok: boolean; error?: string }> {
-    const { sql } = getOrgPg();
+    const sql = backupHost().getSql();
     const rows = await sql<{ destination_type: string; destination_config_encrypted: string | null }[]>`
       SELECT destination_type, destination_config_encrypted
       FROM harness_shared.workspace_backup_settings
@@ -193,7 +190,7 @@ export class WorkspaceBackup {
   }
 
   async snapshot(reason: SnapshotTriggerReason, context?: Record<string, unknown>): Promise<SnapshotResult> {
-    const { sql } = getOrgPg();
+    const sql = backupHost().getSql();
     await this.ensureRepo();
     const password = await deriveRepoPassword(this.workspaceId);
     const env = this.envWithPassword(password);
@@ -270,7 +267,7 @@ export class WorkspaceBackup {
   }
 
   private async syncToOffsite(baseEnv: NodeJS.ProcessEnv, snapshotRowId: number): Promise<void> {
-    const { sql } = getOrgPg();
+    const sql = backupHost().getSql();
     const rows = await sql<{ destination_type: string; destination_config_encrypted: string | null }[]>`
       SELECT destination_type, destination_config_encrypted
       FROM harness_shared.workspace_backup_settings
@@ -293,7 +290,7 @@ export class WorkspaceBackup {
   }
 
   private async event(snapshotId: number, kind: string, payload: Record<string, unknown>): Promise<void> {
-    const { sql } = getOrgPg();
+    const sql = backupHost().getSql();
     try {
       await sql`
         INSERT INTO harness_shared.backup_events (workspace_id, snapshot_id, kind, payload_json)
@@ -305,7 +302,7 @@ export class WorkspaceBackup {
   }
 
   async list(limit = 100): Promise<SnapshotInfo[]> {
-    const { sql } = getOrgPg();
+    const sql = backupHost().getSql();
     const rows = await sql<{
       id: number;
       kopia_snapshot_id: string | null;
@@ -344,7 +341,7 @@ export class WorkspaceBackup {
   }
 
   async stats(): Promise<RepoStats> {
-    const { sql } = getOrgPg();
+    const sql = backupHost().getSql();
     const [agg] = await sql<{
       total: string;
       bytes_added_sum: string | null;
@@ -389,7 +386,7 @@ export class WorkspaceBackup {
   }
 
   async updateSettings(partial: Partial<Omit<BackupSettings, 'workspaceId'>>): Promise<BackupSettings> {
-    const { sql } = getOrgPg();
+    const sql = backupHost().getSql();
     const current = await this.getSettings();
     const next: BackupSettings = { ...current, ...partial };
     await sql`
@@ -494,7 +491,7 @@ export class WorkspaceBackup {
   }
 
   private async detachedEvent(kind: string, payload: Record<string, unknown>): Promise<void> {
-    const { sql } = getOrgPg();
+    const sql = backupHost().getSql();
     try {
       await sql`
         INSERT INTO harness_shared.backup_events (workspace_id, snapshot_id, kind, payload_json)
@@ -610,7 +607,7 @@ export class WorkspaceBackup {
   }
 
   async recentFailures(limit = 50): Promise<SnapshotInfo[]> {
-    const { sql } = getOrgPg();
+    const sql = backupHost().getSql();
     const rows = await sql<{
       id: number; kopia_snapshot_id: string | null; started_at: string ; finished_at: string  | null;
       status: string; trigger_reason: string; trigger_context: unknown;

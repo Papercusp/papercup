@@ -33,7 +33,7 @@ interface HookContext {
 // Embedded PG port is no longer fixed — desktop picks at boot and writes
 // it to ~/.papercusp/embedded-pg.json (or honors PAPERCUSP_PG_PORT env).
 // Use the discovery helper instead of a hardcoded port.
-import { getHarnessAdminUrlWithSource } from '../embedded-pg-discovery';
+import { backupHost } from './config';
 
 /**
  * gzip args for the PG dump. `--rsyncable` inserts periodic flush
@@ -70,7 +70,7 @@ export async function runPreSnapshotHook(ctx: HookContext): Promise<void> {
   };
 
   // --- embedded-pg (port discovered at runtime) ---
-  const { url, source } = getHarnessAdminUrlWithSource();
+  const { url, source } = backupHost().getHarnessAdminUrl();
   await log(`embedded-pg URL source: ${source}`);
   const parsed = new URL(url);
   await dumpPg({

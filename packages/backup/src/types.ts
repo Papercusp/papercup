@@ -16,14 +16,18 @@ export const RETENTION_PRESETS: Record<Exclude<RetentionPreset, 'custom'>, Reten
   conservative: { keepLatest: 500, keepHourly: 96, keepDaily: 90,  keepWeekly: 26, keepMonthly: 36 },
 };
 
-export type SnapshotTriggerReason =
-  | 'manual'
-  | 'interval'
-  | 'pre_destructive'
-  | 'post_run'
-  | 'plugin_install'
-  | 'secret_change'
-  | 'startup';
+/**
+ * Why a snapshot was taken.
+ *
+ * `manual` and `interval` are intrinsic to this package — the scheduler
+ * produces them, and they're excluded from the event-trigger surface
+ * (see `scheduler.ts`). Every other reason is an EVENT trigger owned by
+ * the embedding application's lifecycle, so the type is left open
+ * (`string & {}`) rather than enumerating harness-specific reasons here
+ * (P-024). The operator's current event vocabulary: `pre_destructive`,
+ * `post_run`, `plugin_install`, `secret_change`, `startup`.
+ */
+export type SnapshotTriggerReason = 'manual' | 'interval' | (string & {});
 
 export interface SnapshotInfo {
   id: number;

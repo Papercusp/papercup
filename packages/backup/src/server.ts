@@ -13,7 +13,7 @@
  */
 
 import { spawn, type ChildProcess } from 'node:child_process';
-import { workspacesRoot } from '@/lib/workspace-registry';
+import { backupHost } from './config';
 import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { createServer } from 'node:net';
@@ -56,7 +56,7 @@ export async function startKopiaServer(workspaceId: string): Promise<KopiaServer
   const existing = RUNNING.get(workspaceId);
   if (existing && !existing.child.killed) return existing.info;
 
-  const workspaceRoot = join(workspacesRoot(), workspaceId);
+  const workspaceRoot = join(backupHost().workspacesRoot(), workspaceId);
   const backupsDir = join(workspaceRoot, 'backups');
   await mkdir(backupsDir, { recursive: true });
 

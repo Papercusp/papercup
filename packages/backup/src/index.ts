@@ -1,0 +1,57 @@
+/**
+ * @papercusp/backup — per-workspace kopia backup system.
+ *
+ * Each workspace gets its own kopia repository under
+ * `<workspaceRoot>/backups/kopia-repo`. The package shells out to the
+ * kopia CLI for snapshot/restore/verify/maintenance, stores snapshot +
+ * settings + destination metadata in SQL, runs a pre-snapshot DB-dump
+ * hook, schedules interval + event-triggered snapshots, and sweeps
+ * orphaned snapshot rows.
+ *
+ * It is host-agnostic: the org Postgres handle, the workspaces-root
+ * path, the schema bootstrap, and the embedded-pg admin URL are all
+ * injected via `configureBackup(host)` (see ./config). The package
+ * carries no `@papercusp/*` / `@restart/*` runtime dependency.
+ *
+ * The self-exclusion guard (`IGNORE_PATTERNS` must contain `backups`)
+ * is load-bearing — without it the kopia repo recursively snapshots its
+ * own pack files and balloons toward 1TB. See ./policy.
+ */
+
+export { configureBackup, type BackupHost } from './config';
+export { WorkspaceBackup, type WorkspaceBackupOpts } from './workspace-backup';
+export {
+  RETENTION_PRESETS,
+  type BackupSettings,
+  type CadenceMode,
+  type RepoStats,
+  type RestoreResult,
+  type RetentionPolicy,
+  type RetentionPreset,
+  type SnapshotInfo,
+  type SnapshotResult,
+  type SnapshotTriggerReason,
+  type VerifyResult,
+} from './types';
+export { deriveRepoPassword } from './password';
+export { workspaceBackupFor } from './singleton';
+export {
+  startKopiaServer,
+  stopKopiaServer,
+  kopiaServerStatus,
+  type KopiaServerInfo,
+} from './server';
+export {
+  startBackupScheduler,
+  stopBackupScheduler,
+  triggerSnapshotEvent,
+  getKopiaDetection,
+} from './scheduler';
+export {
+  sweepOrphanSnapshots,
+  startOrphanSweepWorker,
+  stopOrphanSweepWorker,
+  type SweepResult,
+} from './orphan-cleanup';
+export type { DestinationType, DestinationConfig } from './destinations';
+export { IGNORE_PATTERNS, diffPolicyIgnores } from './policy';

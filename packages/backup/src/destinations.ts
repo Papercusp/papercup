@@ -87,7 +87,7 @@ export async function decryptDestConfig(workspaceId: string, b64: string): Promi
 export function syncArgsFor(
   type: DestinationType,
   cfg: DestinationConfig,
-): { args: string[]; env: NodeJS.ProcessEnv } | null {
+): { args: string[]; env: Record<string, string> } | null {
   if (type === 'local') return null;
 
   if (type === 'local+s3') {
@@ -100,7 +100,7 @@ export function syncArgsFor(
       ...(c.region ? [`--region=${c.region}`] : []),
       '--delete-blobs=false',
     ];
-    const env: NodeJS.ProcessEnv = {
+    const env: Record<string, string> = {
       AWS_ACCESS_KEY_ID: c.accessKeyId,
       AWS_SECRET_ACCESS_KEY: c.secretAccessKey,
       ...(c.sessionToken ? { AWS_SESSION_TOKEN: c.sessionToken } : {}),
