@@ -258,10 +258,10 @@ export default function AdvShell({
         }
         .pc-advshell__header-top {
           display: flex;
-          align-items: flex-end;
+          align-items: center;
           gap: 14px;
           min-width: 0;
-          padding: 8px 12px 8px;
+          padding: 8px 12px;
         }
         .pc-advshell__copy { display: grid; gap: 4px; min-width: 0; }
         .pc-advshell__kicker {
@@ -336,14 +336,6 @@ export default function AdvShell({
           color: var(--fg-mute, #7f9bb4);
           cursor: default;
         }
-        .pc-advshell__now-running {
-          display: flex;
-          align-items: center;
-          gap: 6px;
-          min-width: 0;
-          max-width: 540px;
-          padding-bottom: 2px;
-        }
         .pc-advshell__action {
           display: inline-flex;
           align-items: center;
@@ -379,7 +371,6 @@ export default function AdvShell({
           background: rgba(239, 68, 68, 0.22);
         }
         .pc-advshell__action--new {
-          align-self: center;
           background: rgba(167, 139, 250, 0.16);
           color: #c4b5fd;
           border-color: rgba(167, 139, 250, 0.4);
@@ -389,7 +380,6 @@ export default function AdvShell({
           color: #e7f7ff;
         }
         .pc-advshell__action--share {
-          align-self: center;
           background: rgba(56, 189, 248, 0.14);
           color: #7dd3fc;
           border-color: rgba(56, 189, 248, 0.38);
