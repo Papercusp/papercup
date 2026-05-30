@@ -33,14 +33,22 @@ import { resolveHarnessScope, type HarnessNodeForScope } from '@/lib/harness/sco
 /** localStorage key AdvShell uses for the fallback active-harness slug. */
 const ACTIVE_HARNESS_KEY = 'harness.activeProject';
 
-type PlansView = 'list' | 'inbox' | 'actionable';
+// 'list' + 'superseded' are PLAN views (rail navigates to open a plan);
+// 'inbox' / 'actionable' / 'blocked' are ITEM views (cross-plan item
+// lists; the rail filters). Browse + Superseded share plan-nav behaviour.
+type PlansView = 'list' | 'inbox' | 'actionable' | 'blocked' | 'superseded';
+type ItemView = 'inbox' | 'actionable' | 'blocked';
 type PaneMode = 'read' | 'edit';
 type PlanDetailTab = 'editor' | 'revisions' | 'agents';
+
+const PLANS_VIEW_IDS = ['list', 'inbox', 'actionable', 'blocked', 'superseded'] as const;
 
 const VIEWS: Array<{ id: PlansView; label: string }> = [
   { id: 'list', label: 'Browse' },
   { id: 'inbox', label: 'Needs Human' },
   { id: 'actionable', label: 'Needs Decision' },
+  { id: 'blocked', label: 'Blocked' },
+  { id: 'superseded', label: 'Superseded' },
 ];
 
 interface PlanStats {
@@ -48,12 +56,14 @@ interface PlanStats {
   visible: number;
   needsHuman: number;
   actionable: number;
+  blocked: number;
+  superseded: number;
 }
 
 export default function PlansClient() {
   const [view, setView] = useQueryState(
     'view',
-    parseAsStringEnum<PlansView>(['list', 'inbox', 'actionable']).withDefault('list'),
+    parseAsStringEnum<PlansView>([...PLANS_VIEW_IDS]).withDefault('list'),
   );
   // The OPEN-PLAN slug. Lives on `?plan=`, NOT `?slug=` — AdvShell owns
   // `?slug=` for the active harness (a global query param shared across
@@ -149,14 +159,15 @@ export default function PlansClient() {
     [planList.data],
   );
 
-  // Inbox/actionable share one lifted cross-plan item fetch, which feeds
-  // both the main list (PlanItemsList) and the left rail. `enabled` keeps
-  // Browse from hitting the network.
-  const itemMode: 'inbox' | 'actionable' | null =
-    view === 'inbox' ? 'inbox' : view === 'actionable' ? 'actionable' : null;
+  // Item views (Needs Human / Needs Decision / Blocked) share one lifted
+  // cross-plan item fetch, which feeds both the main list (PlanItemsList)
+  // and the left rail. `enabled` keeps the plan views off the network.
+  const itemMode: ItemView | null =
+    view === 'inbox' || view === 'actionable' || view === 'blocked' ? view : null;
   const planItems = usePlanItems({
     needsHuman: view === 'inbox',
     actionable: view === 'actionable',
+    status: view === 'blocked' ? 'blocked' : undefined,
     enabled: itemMode !== null,
   });
   // The plans that actually have items in the active bucket. In item
@@ -166,10 +177,13 @@ export default function PlansClient() {
     () => new Set((planItems.data?.items ?? []).map((r) => r.plan)),
     [planItems.data],
   );
-  const railVisiblePlans = useMemo(
-    () => (itemMode ? visiblePlans.filter((p) => itemPlanSlugs.has(p.slug)) : visiblePlans),
-    [itemMode, visiblePlans, itemPlanSlugs],
-  );
+  // Rail plan set per view: item views → plans-with-items; Superseded →
+  // superseded plans; Browse → everything.
+  const railVisiblePlans = useMemo(() => {
+    if (itemMode) return visiblePlans.filter((p) => itemPlanSlugs.has(p.slug));
+    if (view === 'superseded') return visiblePlans.filter((p) => p.status === 'superseded');
+    return visiblePlans;
+  }, [itemMode, view, visiblePlans, itemPlanSlugs]);
   const railList = useMemo(
     () => ({
       ...filteredPlanList,
@@ -406,7 +420,11 @@ export default function PlansClient() {
               ? 'Plans needing human input'
               : itemMode === 'actionable'
                 ? 'Plans with actionable items'
-                : 'Plan list'
+                : itemMode === 'blocked'
+                  ? 'Plans with blocked items'
+                  : view === 'superseded'
+                    ? 'Superseded plans'
+                    : 'Plan list'
           }
         >
           <PlanRail
@@ -423,7 +441,8 @@ export default function PlansClient() {
       </aside>
 
       <main className="pc-plans__main">
-        {view === 'list' && slug && (
+        {/* Browse + Superseded are plan views: an open plan shows its detail. */}
+        {(view === 'list' || view === 'superseded') && slug && (
           <PlanDetail
             key={slug}
             slug={slug}
@@ -448,6 +467,16 @@ export default function PlansClient() {
 
         {view === 'list' && !slug && !q.trim() && (
           <EmptyState stats={stats} />
+        )}
+
+        {view === 'superseded' && !slug && (
+          <div className="pc-plans__empty">
+            <span className="pc-plans__empty-kicker">Superseded</span>
+            <h2>
+              {stats.superseded} superseded plan{stats.superseded === 1 ? '' : 's'}
+            </h2>
+            <p>Plans that were replaced or retired. Pick one from the rail to read it.</p>
+          </div>
         )}
 
         {itemMode && (
@@ -493,6 +522,8 @@ function buildPlanStats(plans: PlanListRow[]): PlanStats {
       if (!plan.archived) acc.visible += 1;
       acc.needsHuman += counts['needs-human'] ?? 0;
       acc.actionable += counts.todo ?? 0;
+      acc.blocked += counts.blocked ?? 0;
+      if (plan.status === 'superseded') acc.superseded += 1;
       return acc;
     },
     {
@@ -500,6 +531,8 @@ function buildPlanStats(plans: PlanListRow[]): PlanStats {
       visible: 0,
       needsHuman: 0,
       actionable: 0,
+      blocked: 0,
+      superseded: 0,
     },
   );
 }
@@ -508,7 +541,9 @@ function viewCount(view: PlansView, stats: PlanStats, loading: boolean): string 
   if (loading) return '…';
   if (view === 'list') return String(stats.visible);
   if (view === 'inbox') return String(stats.needsHuman);
-  return String(stats.actionable);
+  if (view === 'actionable') return String(stats.actionable);
+  if (view === 'blocked') return String(stats.blocked);
+  return String(stats.superseded);
 }
 
 function PlansOverview({ stats, loading }: { stats: PlanStats; loading: boolean }) {

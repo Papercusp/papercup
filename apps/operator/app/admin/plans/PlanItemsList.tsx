@@ -22,8 +22,10 @@ import { useState } from 'react';
 import { toast } from 'sonner';
 import { setItemStatus, type PlanItemRow } from './plans-api';
 
+type ItemMode = 'inbox' | 'actionable' | 'blocked';
+
 interface Props {
-  mode: 'inbox' | 'actionable';
+  mode: ItemMode;
   items: PlanItemRow[];
   loading: boolean;
   error: string | null;
@@ -74,7 +76,9 @@ export default function PlanItemsList({
       ? `No items in ${planFilter}.`
       : mode === 'inbox'
         ? 'No items waiting on human input.'
-        : 'No actionable items right now.';
+        : mode === 'blocked'
+          ? 'No blocked items right now.'
+          : 'No actionable items right now.';
     return (
       <div className={`pc-items pc-items--${mode}`}>
         <Heading mode={mode} count={0} groupCount={0} />
@@ -202,37 +206,51 @@ function ResolveButton({
   );
 }
 
+const HEADING_META: Record<ItemMode, { kicker: string; title: string; desc: string; note: string }> = {
+  inbox: {
+    kicker: 'Human review',
+    title: 'Needs Human',
+    desc: 'Items waiting on a human decision, grouped by plan.',
+    note: 'Resolve handled items or open one for context.',
+  },
+  actionable: {
+    kicker: 'Ready queue',
+    title: 'Needs Decision',
+    desc: 'Unblocked plan work that is ready to pick up now.',
+    note: 'Open an item to jump straight to the next task.',
+  },
+  blocked: {
+    kicker: 'Stuck',
+    title: 'Blocked',
+    desc: 'Items stuck on unresolved blockers or external waits, grouped by plan.',
+    note: 'Open an item to see what it is waiting on.',
+  },
+};
+
 function Heading({
   mode,
   count,
   groupCount,
 }: {
-  mode: 'inbox' | 'actionable';
+  mode: ItemMode;
   count: number | null;
   groupCount: number | null;
 }) {
+  const meta = HEADING_META[mode];
   return (
     <header className="pc-items__head">
       <div className="pc-items__head-copy">
-        <h2>{mode === 'inbox' ? 'Needs Human' : 'Needs Decision'}</h2>
-        <p>
-          {mode === 'inbox'
-            ? 'Items across every plan waiting on a human decision.'
-            : 'Items pickable right now — effective todo, all blockers cleared.'}
-        </p>
-        {count !== null && groupCount !== null ? (
-          <div className="pc-items__meta" aria-label="Items summary">
-            <span className="pc-items__meta-chip">{itemCountLabel(count)}</span>
-            <span className="pc-items__meta-chip">{groupCount} {groupCount === 1 ? 'plan' : 'plans'}</span>
-            <span className="pc-items__meta-chip pc-items__meta-chip--accent">
-              {mode === 'inbox'
-                ? 'Resolve marks done and resumes the harness loop'
-                : 'Open an item to continue the next available task'}
-            </span>
-          </div>
-        ) : null}
+        <span className="pc-items__kicker">{meta.kicker}</span>
+        <h2>{meta.title}</h2>
+        <p>{meta.desc}</p>
       </div>
-      {count !== null ? <span className="pc-items__count">{count}</span> : null}
+      {count !== null && groupCount !== null ? (
+        <div className="pc-items__summary-card" aria-label="Items summary">
+          <strong>{itemCountLabel(count)}</strong>
+          <span>{groupCount} {groupCount === 1 ? 'plan' : 'plans'}</span>
+          <span className="pc-items__summary-note">{meta.note}</span>
+        </div>
+      ) : null}
     </header>
   );
 }
