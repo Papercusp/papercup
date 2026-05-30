@@ -484,9 +484,16 @@ supplies the concrete one), `http-projection.ts` (→ eventually `tooldef-http`)
   `state-channel.test`, `replay-buffer*.test`, `ask-user.test`, `publish-state.test`,
   `workspace-lifecycle.test`. These are the safety net proving the seam didn't move
   behavior. blocked-by: P-042
-- **P-051** `todo` Write a ~40-line standalone example (`packages/tooldef/examples/`)
-  that defines a tool and serves it over HTTP+MCP with **zero** `@papercusp/*` /
-  `@restart/*` imports — the falsifiable proof of "anyone can use it." blocked-by: P-050
+- **P-051** `partial` The **in-process** form shipped early (2026-05-30):
+  `packages/tooldef/examples/standalone-inprocess.ts` registers a tool and dispatches
+  it through the full gate stack importing **only** `@papercusp/tooldef` — no
+  agent-mcp / host-platform / @restart / postgres / zod. Runs green via
+  `npx tsx examples/standalone-inprocess.ts` (`math.add(2,3) = 5`), exercising the
+  engine's generic defaults (role=`string`, quota=run/perRun, tier=`'low'`,
+  fail-closed gates). This is the falsifiable proof that Phase-2 decoupling achieved
+  standalone usability. The **HTTP+MCP-serving** form awaits the transport extraction
+  (Phase 4, P-030/P-031) — added then. blocked-by: P-050 (in-process form pulled
+  forward as the Phase-2 capstone)
 - **P-052** `todo` `README.md` + `TESTING.md` for `@papercusp/tooldef`; update
   `/internal/docs/endpoint-system/*` to point at the package boundary. blocked-by: P-050
 - **P-053** `todo` `npm run test:affected:integration` + `npm run lint:knip` clean.
