@@ -1,9 +1,11 @@
 /**
- * AddPanelCatalog — modal-ish picker for "+ Add panel".
+ * AddPanelCatalog — picker popover for "+ Add panel".
  *
  * Lists every registered panel type and opens the chosen one. Renders
  * as a popover anchored to the trigger button. Click outside or Esc
- * closes.
+ * closes. Each type carries an icon for quick scanning; a type that is
+ * already open in the dock is marked and re-focuses (rather than
+ * duplicating) on click.
  *
  * The catalog excludes the MissingPanel sentinel + the SamplePanel
  * stubs by default; pass `includeStubs` to show them too.
@@ -15,9 +17,29 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
-import { Plus, X } from 'lucide-react';
+import {
+  Bot,
+  BookOpen,
+  CircleAlert,
+  FileText,
+  GitBranch,
+  LayoutDashboard,
+  Lightbulb,
+  ListChecks,
+  MessageSquare,
+  Palette,
+  PanelRight,
+  Plus,
+  Puzzle,
+  ScrollText,
+  SlidersHorizontal,
+  SquareDashed,
+  TrendingUp,
+  X,
+  type LucideIcon,
+} from 'lucide-react';
 import { panelRegistry } from './panel-registry';
-import { openPanel, focusPanel } from './dock-actions';
+import { openPanel, focusPanel, listPanels } from './dock-actions';
 import { Popover } from '../Popover';
 
 interface AddPanelCatalogProps {
@@ -58,6 +80,33 @@ const HUMAN_LABELS: Record<string, string> = {
   'adv:overview': 'Overview',
 };
 
+// Per-type icon for at-a-glance scanning. Every lookup falls back to a
+// neutral glyph (`?? SquareDashed`) so a new/unmapped type can't render
+// `<undefined/>` and crash the catalog.
+const ICON_MAP: Record<string, LucideIcon> = {
+  'data:features': ListChecks,
+  'adv:features': ListChecks,
+  'data:issues': CircleAlert,
+  'adv:issues': CircleAlert,
+  'adv:detail': PanelRight,
+  'data:git': GitBranch,
+  'adv:git': GitBranch,
+  'data:agents': Bot,
+  'adv:agents': Bot,
+  'data:logs': ScrollText,
+  'adv:logs': ScrollText,
+  'adv:overview': LayoutDashboard,
+  'view:harness-overview': LayoutDashboard,
+  'view:dashboard-overview': LayoutDashboard,
+  'data:chat': MessageSquare,
+  'view:docs': BookOpen,
+  'view:design': Palette,
+  'view:proposals': Lightbulb,
+  'view:summary': FileText,
+  'view:insights': TrendingUp,
+  'view:config': SlidersHorizontal,
+};
+
 const STUB_TYPES = new Set([
   'view:dashboard-overview',
   'view:design',
@@ -82,6 +131,12 @@ function labelFor(type: string): string {
   return type;
 }
 
+function iconFor(type: string): LucideIcon {
+  if (ICON_MAP[type]) return ICON_MAP[type];
+  if (type.startsWith('plugin:')) return Puzzle;
+  return SquareDashed;
+}
+
 export function AddPanelCatalog({
   defaultSlug,
   className,
@@ -101,6 +156,20 @@ export function AddPanelCatalog({
       .filter((t) => !allowedTypes || allowedTypes.includes(t));
   }, [registryTick, includeStubs, allowedTypes]);
 
+  // Which panel types are already mounted in the dock — clicking one of
+  // these focuses the existing panel instead of opening a duplicate.
+  const openByType = useMemo(() => {
+    if (!open) return new Map<string, string>();
+    void registryTick;
+    const m = new Map<string, string>();
+    try {
+      for (const p of listPanels()) if (!m.has(p.type)) m.set(p.type, p.id);
+    } catch {
+      /* dock not hydrated yet */
+    }
+    return m;
+  }, [open, registryTick]);
+
   useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => {
@@ -113,6 +182,11 @@ export function AddPanelCatalog({
   const handleAdd = (type: string) => {
     setOpen(false);
     try {
+      const existingId = openByType.get(type);
+      if (existingId) {
+        focusPanel(existingId);
+        return;
+      }
       const id = openPanel({
         type,
         params: defaultSlug ? { harnessSlug: defaultSlug } : {},
@@ -129,7 +203,14 @@ export function AddPanelCatalog({
       open={open}
       onOpenChange={setOpen}
       align="end"
-      label="Panel catalog"
+      ariaLabel="Panel catalog"
+      contentStyle={{
+        background: 'var(--bg-popover, #0d1829)',
+        border: '1px solid var(--border-strong, rgba(125, 211, 252, 0.32))',
+        borderRadius: 12,
+        boxShadow: '0 18px 48px rgba(0, 0, 0, 0.5)',
+        overflow: 'hidden',
+      }}
       trigger={
         <button
           type="button"
@@ -142,63 +223,147 @@ export function AddPanelCatalog({
         </button>
       }
     >
-      <div style={{ minWidth: 240, maxHeight: 360, overflowY: 'auto', padding: 4 }}>
-        <div
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            padding: '6px 10px',
-            fontSize: 11,
-            color: 'var(--fg-mute)',
-            borderBottom: '1px solid var(--border)',
-            marginBottom: 2,
-          }}
-        >
-          <span>Open new panel</span>
-          <button
-            type="button"
-            onClick={() => setOpen(false)}
-            aria-label="Close"
-            style={{
-              marginLeft: 'auto',
-              background: 'transparent',
-              border: 0,
-              color: 'var(--fg-mute)',
-              display: 'inline-flex',
-              padding: 2,
-            }}
-          >
-            <X size={12} aria-hidden />
+      <div className="pc-add-panel">
+        <div className="pc-add-panel__head">
+          <span className="pc-add-panel__title">Open panel</span>
+          <button type="button" className="pc-add-panel__close" onClick={() => setOpen(false)} aria-label="Close">
+            <X size={13} aria-hidden />
           </button>
         </div>
-        {types.length === 0 ? (
-          <div style={{ padding: '8px 10px', fontSize: 12, color: 'var(--fg-mute)' }}>
-            No panel types registered.
-          </div>
-        ) : (
-          types.map((t) => (
-            <button
-              key={t}
-              type="button"
-              onClick={() => handleAdd(t)}
-              className="pc-btn-ghost"
-              style={{
-                display: 'block',
-                width: '100%',
-                textAlign: 'left',
-                padding: '6px 10px',
-                fontSize: 12,
-                color: 'var(--fg)',
-                borderRadius: 3,
-              }}
-            >
-              <div style={{ fontWeight: 500 }}>{labelFor(t)}</div>
-              <div style={{ fontSize: 10, color: 'var(--fg-mute)', fontFamily: 'ui-monospace, monospace' }}>
-                {t}
-              </div>
-            </button>
-          ))
-        )}
+        <div className="pc-add-panel__list">
+          {types.length === 0 ? (
+            <div className="pc-add-panel__empty">No panel types registered.</div>
+          ) : (
+            types.map((t) => {
+              const Icon = iconFor(t);
+              const isOpen = openByType.has(t);
+              return (
+                <button
+                  key={t}
+                  type="button"
+                  className="pc-add-panel__item"
+                  onClick={() => handleAdd(t)}
+                  title={isOpen ? 'Already open — focus it' : `Open ${labelFor(t)}`}
+                >
+                  <span className="pc-add-panel__icon">
+                    <Icon size={15} aria-hidden strokeWidth={1.75} />
+                  </span>
+                  <span className="pc-add-panel__text">
+                    <span className="pc-add-panel__label">{labelFor(t)}</span>
+                    <span className="pc-add-panel__type">{t}</span>
+                  </span>
+                  {isOpen ? (
+                    <span className="pc-add-panel__open" aria-label="already open">
+                      open
+                    </span>
+                  ) : (
+                    <Plus className="pc-add-panel__plus" size={13} aria-hidden />
+                  )}
+                </button>
+              );
+            })
+          )}
+        </div>
+        <style>{`
+          .pc-add-panel {
+            width: 252px;
+            max-height: 380px;
+            display: flex;
+            flex-direction: column;
+            color: var(--fg, #e7f7ff);
+            font-size: 12px;
+          }
+          .pc-add-panel__head {
+            display: flex;
+            align-items: center;
+            padding: 9px 12px;
+            border-bottom: 1px solid var(--border, rgba(125, 211, 252, 0.15));
+            background: var(--bg-2, rgba(255, 255, 255, 0.045));
+          }
+          .pc-add-panel__title {
+            font-size: 10px;
+            font-weight: 760;
+            letter-spacing: 0.1em;
+            text-transform: uppercase;
+            color: var(--fg-mute, #7f9bb4);
+          }
+          .pc-add-panel__close {
+            margin-left: auto;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            padding: 3px;
+            color: var(--fg-mute, #7f9bb4);
+            background: transparent;
+            border: 0;
+            border-radius: 5px;
+            cursor: pointer;
+          }
+          .pc-add-panel__close:hover { color: var(--fg, #e7f7ff); background: var(--bg-3, rgba(255, 255, 255, 0.075)); }
+          .pc-add-panel__list { overflow-y: auto; padding: 5px; min-height: 0; }
+          .pc-add-panel__empty { padding: 12px; font-size: 12px; color: var(--fg-mute, #7f9bb4); }
+          .pc-add-panel__item {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            width: 100%;
+            padding: 7px 8px;
+            text-align: left;
+            color: var(--fg, #e7f7ff);
+            background: transparent;
+            border: 1px solid transparent;
+            border-radius: 8px;
+            cursor: pointer;
+          }
+          .pc-add-panel__item:hover {
+            background: color-mix(in oklab, var(--accent, #38bdf8), transparent 88%);
+            border-color: color-mix(in oklab, var(--accent, #38bdf8), transparent 64%);
+          }
+          .pc-add-panel__item:focus-visible {
+            outline: none;
+            border-color: var(--accent, #38bdf8);
+          }
+          .pc-add-panel__icon {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 26px;
+            height: 26px;
+            flex-shrink: 0;
+            color: var(--accent-strong, #7dd3fc);
+            background: color-mix(in oklab, var(--accent, #38bdf8), transparent 86%);
+            border-radius: 7px;
+          }
+          .pc-add-panel__text { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+          .pc-add-panel__label { font-size: 12px; font-weight: 600; line-height: 1.25; }
+          .pc-add-panel__type {
+            font-size: 9.5px;
+            font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+            color: var(--fg-mute, #7f9bb4);
+            line-height: 1.2;
+          }
+          .pc-add-panel__open {
+            margin-left: auto;
+            flex-shrink: 0;
+            font-size: 9px;
+            font-weight: 700;
+            letter-spacing: 0.06em;
+            text-transform: uppercase;
+            color: var(--good, #4ade80);
+            background: color-mix(in oklab, var(--good, #4ade80), transparent 84%);
+            border: 1px solid color-mix(in oklab, var(--good, #4ade80), transparent 64%);
+            border-radius: 999px;
+            padding: 1px 7px;
+          }
+          .pc-add-panel__plus {
+            margin-left: auto;
+            flex-shrink: 0;
+            color: var(--fg-mute, #7f9bb4);
+            opacity: 0;
+            transition: opacity 0.1s var(--ease-out, ease);
+          }
+          .pc-add-panel__item:hover .pc-add-panel__plus { opacity: 1; color: var(--accent-strong, #7dd3fc); }
+        `}</style>
       </div>
     </Popover>
   );
