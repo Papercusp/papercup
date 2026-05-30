@@ -32,14 +32,16 @@ companion-to: [papercusp-systems-abstraction-2026-05-29]
 > agent is unblocked — those files are untouched.
 > **Arc essentially COMPLETE (2026-05-30).** Every extraction is done; Phase 6
 > verification (**P-050 + P-051**) is **done** (conformance parity + re-point
-> runtime suites green — see the P-050 plan note). The only open threads are
-> gated, not actionable autonomously: **P-000** (`needs-human`, the ~4-bundle
-> D-002 decision); **P-040** `wip` — only the git-graph `private:true`+desc
-> sliver remains, blocked by another agent's uncommitted `react-diff-view` edit
-> to that `package.json`; and a coordinated **push of the three local-only
-> P-040 submodule pins** (token-kit `e808c0d`, ui-primitives `8075a3c`,
-> papergrid `9eb01cb`) is owed (don't-push-without-asking). All libs stay
-> `private:true` — agents have private-repo access, no npm publish.
+> runtime suites green — see the P-050 plan note). **P-000 is now `done`**
+> (`62f20899`): human decision — **keep all 12 per-package, no bundling** (D-002
+> rejected; no npm publish obviates the publish-unit premise, coupling is sparse
+> — 4 dep edges among 12). The only remaining threads are **mechanical, not
+> design**: **P-040** `wip` — only the git-graph `private:true`+desc sliver
+> remains, blocked by another agent's uncommitted `react-diff-view` edit to that
+> `package.json`; and a coordinated **push of the three local-only P-040
+> submodule pins** (token-kit `e808c0d`, ui-primitives `8075a3c`, papergrid
+> `9eb01cb`) is owed (don't-push-without-asking). All libs stay `private:true` —
+> agents have private-repo access, no npm publish.
 
 **State:** 12 packages shipped on `main` (rrf, embedded-pg-discovery, plan-parser,
 rate-limit, ipc-framing, desktop-ipc, ipc-endpoint-server, backup, search,
