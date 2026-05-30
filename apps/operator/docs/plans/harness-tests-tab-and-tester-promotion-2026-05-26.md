@@ -11,11 +11,11 @@ owner: avi@storewolf.com
 
 ## Now
 
-**State:** **Phase A COMPLETE.** P-001 (266b25be: registry → @papercusp/testing-shell) + P-002 (ca24cbee: DomainTestPanel + injected TestingDataSource into the lib) done earlier. P-003/P-004/P-005 done (fdb365e8): `<TestingShell>` (left-rail + panel host) extracted to the lib, parameterized by `tabs` / `tierLabels` / `dataSource` / `customTabs` — the admin 3-tier grouping generalized to an arbitrary tierId→label map (key order = render order) so the harness can use Built-in/Project tiers; added `tabsFromRegistry(TestDomain[])` for registry-shaped callers; the shell chrome CSS moved into the lib (`testing-shell.css`) so it travels with the component. Admin `TestingClient` reduced to a thin wrapper (behavior identical). Verified: lib tsc clean; operator-vite 120 errors vs 121 original (net −1, zero new); 17/17 tests pass (4 new in `apps/operator/lib/__tests__/testing-shell.test.tsx` + 13 existing registry). NOT browser-verified live in the desktop shell yet.
+**State:** **Phases A + B COMPLETE.** Phase A (fdb365e8): `<TestingShell>` extracted to `@papercusp/testing-shell` (tabs/tierLabels/dataSource/customTabs + `tabsFromRegistry`); admin client is a thin wrapper. Phase B (17ae3aa0): the 5 generalizable domains (test-runs/live/chaos/ai/routes) moved to `libs/testing-shell/src/registry/generalized.ts` as pure data (`generalizedRegistry`, tier `generalized`, re-exported via the React/CSS-free registry entry for server-safe import); the operator `testing-domains-registry.ts` keeps the 16 Papercusp-only and registers the lib's 5 into the shared Map (no separate `.papercusp.ts` — the lib↔operator boundary IS the split); `TestTier` widened (+generalized/+project) with the two admin route interfaces + tierOrder updated. Verified: lib tsc clean; operator tsc has zero tier-widening ripple; 21/21 tests pass. Admin UI behavior unchanged (nav still its hardcoded TABS). NOT browser-verified live in the desktop shell.
 
-**Reconciliation (2026-05-30) still stands:** Phase E rewritten onto the shipped `harness_plan_assertions` (no new `validation_criteria` table); Phase G adds the plan↔test-via-VAL link (B-as-D). See D-005 / D-006.
+**Reconciliation (2026-05-30) still stands** for Phases E/F/G (build on the shipped `harness_plan_assertions`; see D-005/D-006).
 
-**Next:** Phase B (P-010–P-012): split `testing-domains-registry.ts` into `generalizedRegistry` (chaos/ai/live/routes/test-runs) vs the 16 Papercusp-only domains — the prerequisite for the harness Tests tab (Phase C). Optionally first: browser-verify /admin/testing renders identically post-extraction.
+**Next:** Phase C (P-020–P-026): wire the harness top-level "Tests" tab — `<TestsHarnessTab>` mounting `<TestingShell>` with `[...generalizedRegistry, { id:'acceptance', tier:'project', … }]`, tierLabels `{generalized:'Built-in', project:'Project'}`, and harness-scoped `/api/harness/:slug/testing/*` routes (P-024) backed by the existing per-test run route. The lib pieces it needs (TestingShell, generalizedRegistry, tabsFromRegistry, the 'project' tier) all exist now.
 
 ## Background
 
@@ -113,11 +113,11 @@ The user's request had four parts:
 
 ## Phase B — split generalized vs Papercusp-only declarations
 
-- **P-010** `todo` Split `apps/operator/lib/testing-domains-registry.ts`. Move `chaos` / `ai` / `live` / `routes` / `test-runs` declarations into `libs/testing-shell/src/registry/generalized.ts` (exports `generalizedRegistry: TestDomain[]`).
+- **P-010** `done` Split `apps/operator/lib/testing-domains-registry.ts`. Move `chaos` / `ai` / `live` / `routes` / `test-runs` declarations into `libs/testing-shell/src/registry/generalized.ts` (exports `generalizedRegistry: TestDomain[]`). (17ae3aa0 generalizedRegistry in libs/testing-shell/src/registry/generalized.ts as PURE DATA no defineTestDomain side-effect; re-exported via the React/CSS-free registry entry for server-safe import)
 
-- **P-011** `todo` Keep the 16 Papercusp-only domains (`harness`, `voice`, `papercusp-su`, `backup`, `plans`, `operator`, `design`, `plugins`, `snapshots`, `mobile`, `provisioning`, `memory`, `packaged`, `llm`, `docs`, `transport`) in `apps/operator/lib/testing-domains-registry.papercusp.ts`. Admin composes `[...generalizedRegistry, ...papercuspRegistry]`. All 21 admin tabs preserved.
+- **P-011** `done` Keep the 16 Papercusp-only domains (`harness`, `voice`, `papercusp-su`, `backup`, `plans`, `operator`, `design`, `plugins`, `snapshots`, `mobile`, `provisioning`, `memory`, `packaged`, `llm`, `docs`, `transport`) in `apps/operator/lib/testing-domains-registry.papercusp.ts`. Admin composes `[...generalizedRegistry, ...papercuspRegistry]`. All 21 admin tabs preserved. (17ae3aa0 DEVIATION: no separate `.papercusp.ts`. The 16 stay in testing-domains-registry.ts, which registers the lib's generalized 5 into the shared Map + exports papercuspRegistry/adminRegistry. The lib↔operator boundary IS the generalized↔Papercusp boundary, so a second operator file would be redundant.)
 
-- **P-012** `todo` Tier mapping: `generalized.ts` emits `tier: 'generalized'`. Admin folds `generalized → quick` for its 3-tier UI. Harness reads `generalized → Built-in`.
+- **P-012** `done` Tier mapping: `generalized.ts` emits `tier: 'generalized'`. Admin folds `generalized → quick` for its 3-tier UI. Harness reads `generalized → Built-in`. (17ae3aa0 TestTier widened +generalized,+project; generalized domains carry tier 'generalized'; listTestDomains tierOrder + the admin DomainDetail/DomainListEntry route interfaces widened. Admin nav unaffected uses hardcoded TABS, not registry tier.)
 
 ## Phase C — wire harness Tests top-level tab
 
