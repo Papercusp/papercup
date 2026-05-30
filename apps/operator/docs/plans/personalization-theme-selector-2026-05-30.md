@@ -24,25 +24,40 @@ endpoint goes live on the next operator sidecar restart (tsx, not hot-reloaded);
 (b) open desktop windows show stale CSS until reloaded (dev no-HMR). Neither
 hijacked the user's live window.
 
-**Next:** Phase 5's **safe, mechanical, frost-safe-by-construction** cleanup is
-DONE (batches 1–3):
-- **B1** (`a6c7ddc5`) `globals.css` `var(--sky-300)→var(--accent-strong)` (601) +
-  `var(--sky-400)→var(--accent)` (106).
-- **B2** (`ffa67a92`) `globals.css` literal hexes `#38bdf8→var(--accent)` (17),
-  `#7dd3fc→var(--accent-strong)` (6), `#d7f3ff→var(--accent-cool)` (1).
-- **B3** (`937e072d`) real-UI component exact-match leaks → `var(--accent-strong,
-  #7dd3fc)` (OperatorChatSidebar ×2, AgentThinkingPopover). The component "leak"
-  survey was mostly already-correct `var(--token, #hex)` fallbacks, not leaks.
+**Next:** Phase 5's **mechanical, frost-safe-by-construction** cleanup is DONE
+(batches 1–5, ~1740 conversions). Every batch maps a sky-300/400/cool reference
+to its semantic token (`--accent-strong`/`--accent`/`--accent-cool`); all are
+frost-identical because `_semantic.css` aliases the token to that exact primitive
+and the tokens aren't redefined where edited:
+- **B1** (`a6c7ddc5`) `globals.css` `var(--sky-300)`→`--accent-strong` (601) +
+  `var(--sky-400)`→`--accent` (106).
+- **B2** (`ffa67a92`) `globals.css` literal hexes `#38bdf8`/`#7dd3fc`/`#d7f3ff` →
+  accent/accent-strong/accent-cool (24).
+- **B3** (`937e072d`) real-UI exact-match component leaks (OperatorChatSidebar ×2,
+  AgentThinkingPopover). The "~80 component leaks" were mostly already-correct
+  `var(--token,#hex)` fallbacks.
+- **B4** (`9579b210`) **997** `rgba()` sky tints across 29 files →
+  `color-mix(in srgb, var(--accent-strong|accent), transparent N%)`. ENGINE-VERIFIED
+  byte-identical (color-mix-with-transparent in srgb = the exact rgba). Held a lock.
+- **B5** (`f6ded881`) cleanly-isolable stragglers: `adv-dock.css` (sky-300 +
+  sky-cool → fully theme-following), `admin-tables.css`, `h-proposals.css`.
 
-All frost-safe by construction (no eyeball needed). **`globals.css` now has 0
-direct sky leaks.** What remains needs a DESIGN decision + visual verification, so
-it's deliberately not done blind:
-- **~202 component `rgba()` sky tints** (`rgba(125,211,252,α)` ×154,
-  `rgba(56,189,248,α)` ×48) at arbitrary alphas — no exact token exists; the right
-  fix is `color-mix(in oklab, var(--accent-strong), transparent N%)` or new
-  `--accent-tint-*` tokens. This is the bulk of the remaining work.
-- Low-value / non-themeable: `operator-mock` demo page; Chatwoot `widgetColor`
-  (3rd-party JS); `#0ea5e9` (sky-500) / `#57d7ff` (progress bar) — no token.
+**STOP — remainder is a DESIGN frontier, not mechanical** (do NOT blind-convert):
+- **Decorative multi-hue rotations** — `harness.css` tab/log/git accents
+  (`nth-child(1)=#38bdf8`, `(2)=#f59e0b` amber, `(3)=#22d3ee` cyan, …) and
+  `plans.css` status palette (todo=sky, blocked=rose, …). Sky is one hue in an
+  intentional rainbow; treat like the kept status colors — **leave**.
+- **Cinematic HUD gradients** (`globals.css` ~8581+) mixing sky-cool + **sky-200
+  (×109), sky-500 (×19), sky-700 (×12)** which have **no semantic token**. Needs
+  (a) a product call — does black keep the cinematic blue HUD or go monochrome? —
+  and (b) new `--accent-tint-*` tokens for the untokened shades. Converting only
+  the tokened shades would make these multi-stop gradients inconsistent.
+- Low-value / non-themeable: `operator-mock` (demo), Chatwoot `widgetColor`
+  (3rd-party JS), `dev.css` (internal /dev page), `#0ea5e9`/`#57d7ff` (no token),
+  `plans.css` hero-cyan accent mix.
+
+Net: the black theme is monochrome across all primary chrome; residual blue is
+confined to the intentional rainbow accents + the cinematic HUD effects.
 
 ## Goal
 
