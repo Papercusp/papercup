@@ -222,6 +222,13 @@ const OMP_MODEL_OPTIONS = [
   { value: 'gpt-5.2', label: 'GPT-5.2' },
 ];
 
+/** Agents the "Launch SU" button can spawn (via the psu launcher). */
+const SU_AGENT_OPTIONS = [
+  { value: 'claude', label: 'claude-su' },
+  { value: 'omp', label: 'omp-su' },
+  { value: 'codex', label: 'codex-su' },
+];
+
 export default function AdvSessionsClient() {
   const [rows, setRows] = useState<SessionRow[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -242,6 +249,11 @@ export default function AdvSessionsClient() {
   const [panel, setPanel] = useQueryState('panel', parseAsString.withDefault('overview'));
   const [historyQuery, setHistoryQuery] = useQueryState('q', parseAsString.withDefault(''));
   const [launchingNew, setLaunchingNew] = useState(false);
+  const [suAgent, setSuAgent] = useQueryState(
+    'suAgent',
+    parseAsStringEnum<'claude' | 'omp' | 'codex'>(['claude', 'omp', 'codex']).withDefault('claude'),
+  );
+  const [launchingSu, setLaunchingSu] = useState(false);
   const [stateData, setStateData] = useState<SessionStateResponse | null>(null);
   const [stateLoading, setStateLoading] = useState(false);
   const [stateError, setStateError] = useState<string | null>(null);
@@ -465,6 +477,41 @@ export default function AdvSessionsClient() {
     }
   }, [launchModel, launchingNew, selectedLaunchPlan]);
 
+  // P-020: in-app "Launch SU" — server-spawns a terminal running
+  // `psu --no-picker …` for the chosen agent in the active harness, with
+  // the selected plan (or no plan). psu records the tracked adv_sessions
+  // row; it appears in the list via the live poll.
+  const launchSu = useCallback(async () => {
+    if (launchingSu) return;
+    setLaunchingSu(true);
+    try {
+      const r = await fetch('/api/adv/sessions/launch-su', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          agent: suAgent,
+          harness_slug: advActiveSlug ?? null,
+          plan_slug: launchPlanSlug ?? null,
+        }),
+      });
+      const data = (await r.json()) as { status?: string; code?: string; error?: string };
+      if (data.status === 'ok') {
+        toast.success(
+          `Launched ${suAgent}-su${launchPlanSlug ? ` for ${launchPlanSlug}` : ' (no plan)'} — it will appear in Sessions shortly.`,
+        );
+        window.setTimeout(() => setRefreshTick((t) => t + 1), 1500);
+      } else if (data.code === 'psu_not_installed') {
+        toast.error(data.error ?? 'psu is not installed.');
+      } else {
+        toast.error(`Launch failed: ${data.error ?? 'unknown error'}`);
+      }
+    } catch (e) {
+      toast.error(`Launch failed: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setLaunchingSu(false);
+    }
+  }, [launchingSu, suAgent, advActiveSlug, launchPlanSlug]);
+
   const focusRow = useCallback(async (row: SessionRow) => {
     if (!row.pid && !row.windowId) {
       toast.error('No pid or window id recorded for this session — cannot focus.');
@@ -683,6 +730,26 @@ export default function AdvSessionsClient() {
               disabled={launchingNew || !selectedLaunchPlan}
             >
               {launchingNew ? 'Launching…' : 'Create new session'}
+            </Button>
+            <Select
+              triggerClassName="pc-adv-sessions__select pc-adv-sessions__select--agent"
+              value={suAgent}
+              onChange={(value) => void setSuAgent(value as 'claude' | 'omp' | 'codex')}
+              ariaLabel="Agent for Launch SU"
+              options={SU_AGENT_OPTIONS}
+            />
+            <Button
+              variant="ghost"
+              className="pc-adv-sessions__btn pc-adv-sessions__launch-su-btn"
+              onClick={launchSu}
+              disabled={launchingSu}
+              title={
+                launchPlanSlug
+                  ? `Launch ${suAgent}-su for plan ${launchPlanSlug} in the active harness`
+                  : `Launch ${suAgent}-su (no plan) in the active harness`
+              }
+            >
+              {launchingSu ? 'Launching…' : `Launch SU${launchPlanSlug ? '' : ' (no plan)'}`}
             </Button>
             <button
               type="button"
