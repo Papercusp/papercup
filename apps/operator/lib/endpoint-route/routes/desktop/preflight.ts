@@ -11,7 +11,7 @@ import { existsSync } from 'node:fs';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import net from 'node:net';
-import { harnessRoot, harnessPath } from '@papercusp/harness/paths';
+import { harnessRoot } from '@papercusp/harness/paths';
 import { defineTool } from '@papercusp/agent-mcp';
 
 const MERIDIAN_BASE = process.env.MERIDIAN_BASE_URL ?? 'http://127.0.0.1:3456';
@@ -208,12 +208,11 @@ async function checkMeridian(): Promise<Check> {
 function checkHarnessDir(): Check {
   const harnessRootPath = harnessRoot();
   const orchBin = `${harnessRootPath}/../orchestrator/bin/run.ts`;
-  const runScript = harnessPath('run.sh');
-  if (!existsSync(orchBin) && !existsSync(runScript)) {
+  if (!existsSync(orchBin)) {
     return {
       name: 'harness',
       status: 'missing',
-      detail: `neither ${orchBin} nor ${runScript} found`,
+      detail: `orchestrator bin not found at ${orchBin}`,
       hint: 'Reinstall workspace deps (npm install) so @papercusp/orchestrator + @papercusp/harness resolve; PAPERCUSP_HARNESS_DIR overrides if set.',
     };
   }
