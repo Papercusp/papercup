@@ -1,7 +1,7 @@
 # Superuser mode
 URL: /internal/docs/endpoint-system/superuser-mode
 
-Give an OMP shell launched outside Papercusp full access to MCP tools across every workspace and harness, with a single token.
+Give an agent shell launched outside Papercusp full access to MCP tools across every workspace and harness, with a single token.
 
 import { Aside } from '@astrojs/starlight/components';
 
