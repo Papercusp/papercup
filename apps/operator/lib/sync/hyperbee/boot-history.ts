@@ -13,21 +13,13 @@
  * restarts. Test seams for time + reset.
  *
  * Event kinds:
- *   - 'boot_start'        — bootHarnessSubstrate called; corestore opening.
- *   - 'boot_ok'           — bootHarnessSubstrate returned successfully.
- *   - 'boot_fail'         — bootHarnessSubstrate threw.
- *   - 'close'             — handle.close() called.
- *   - 'peer_connected'    — a Hyperswarm peer connected for this harness.
- *   - 'swarm_join_failed' — joinHarnessSwarm threw (DHT unreachable / port blocked).
+ *   - 'boot_start'  — bootHarnessSubstrate called; corestore opening.
+ *   - 'boot_ok'     — bootHarnessSubstrate returned successfully.
+ *   - 'boot_fail'   — bootHarnessSubstrate threw.
+ *   - 'close'       — handle.close() called.
  */
 
-export type BootHistoryKind =
-  | 'boot_start'
-  | 'boot_ok'
-  | 'boot_fail'
-  | 'close'
-  | 'peer_connected'
-  | 'swarm_join_failed';
+export type BootHistoryKind = 'boot_start' | 'boot_ok' | 'boot_fail' | 'close';
 
 export interface BootHistoryEntry {
   ts: number;
