@@ -26,6 +26,11 @@
       "types": "./src/presence/index.ts",
       "import": "./src/presence/index.ts",
       "default": "./src/presence/index.ts"
+    },
+    "./presence/conformance": {
+      "types": "./src/presence/conformance.ts",
+      "import": "./src/presence/conformance.ts",
+      "default": "./src/presence/conformance.ts"
     }
   },
   "scripts": {

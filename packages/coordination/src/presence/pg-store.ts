@@ -44,8 +44,29 @@ interface CoordPresenceDbRow {
   revoked_at: string | null;
 }
 
+/**
+ * Normalize a `current_files` jsonb column to `string[]`. postgres-js
+ * returns jsonb as a PARSED array under the binary protocol but as a raw
+ * JSON STRING under the text protocol (`prepare: false`, which the org
+ * handle uses for cheap cold reconnects) — so we must handle both, or
+ * currentFiles silently drops to `[]`. (The pre-extraction presence.ts
+ * only handled the array case; the dual-impl conformance suite caught it.)
+ */
+function parseFiles(v: unknown): string[] {
+  if (Array.isArray(v)) return v as string[];
+  if (typeof v === 'string') {
+    try {
+      const parsed = JSON.parse(v);
+      return Array.isArray(parsed) ? (parsed as string[]) : [];
+    } catch {
+      return [];
+    }
+  }
+  return [];
+}
+
 function toRecord(r: CoordPresenceDbRow, now: number): PresenceRecord {
-  const files = Array.isArray(r.current_files) ? (r.current_files as string[]) : [];
+  const files = parseFiles(r.current_files);
   return {
     ownerId: r.owner_id,
     ownerLabel: r.owner_label,
