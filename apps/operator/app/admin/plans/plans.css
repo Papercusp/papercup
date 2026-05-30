@@ -1072,6 +1072,10 @@
   --pc-items-accent: color-mix(in oklab, var(--accent), var(--bad) 22%);
 }
 
+.pc-items--mixed {
+  --pc-items-accent: var(--accent);
+}
+
 .pc-items__head {
   display: grid;
   grid-template-columns: minmax(240px, 0.85fr) minmax(220px, 0.45fr);
