@@ -37,6 +37,7 @@ import { acceptOpVersion, type SchemaVersionAlert } from './schema-version';
 import { schemaVersionEvents } from './schema-version';
 import { registerAllHarnessProjections } from './projections/register-all';
 import { startBootstrapProgressPoller } from './bootstrap-progress-poller';
+import { startHyperbeeReadLoop, type ReadLoopHandle } from './read-loop';
 import { recordBootEvent } from './boot-history';
 import type Corestore from 'corestore';
 import {
@@ -161,6 +162,16 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
     base,
   });
 
+  // P-031 read side: replay the merged Autobase view back into PG so remote
+  // (and local) substrate ops actually land in PG / the UI — without this the
+  // substrate is write-only (applyHyperbeeOpToPg had no runtime caller). Runs
+  // for private AND swarmed harnesses; idempotent op-replay over the view log.
+  const readLoop: ReadLoopHandle = startHyperbeeReadLoop({
+    workspaceId: opts.workspaceId,
+    harnessSlug: opts.harnessSlug,
+    base,
+  });
+
   // ── Hyperswarm replication (final substrate piece) ──
   // Joins the swarm topic + plugs corestore.replicate into every
   // peer stream. Only fires for harnesses that pass swarmBinding;
@@ -206,6 +217,9 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       // autobase teardown trying to read .view.length on a closed
       // store.
       progressPoller.stop();
+      // Same for the read-loop — stop before the view closes (a get() against
+      // a closing store throws; the loop bails defensively, but stop cleanly).
+      readLoop.stop();
       // Leave the swarm before tearing down autobase/store so we
       // stop receiving peer replication onto an about-to-close
       // corestore.
