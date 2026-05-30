@@ -354,8 +354,9 @@ two SEPARATE storage components**, not one dual-backend interface:
   (`@tauri-apps/api`, `@restart/sse`, `@papercusp/tooldef`). Two shims
   (`transport-adapters/index.ts` + `desktop-bootstrap.ts` via a `./desktop-bootstrap`
   subpath export) keep all 4 consumers resolving unchanged — zero rewire.
-  (iii) **`@papercusp/ipc-endpoint-server` — REMAINING (two attempts, both
-  reverted clean; design DONE, blocked on a test-harness issue):**
+  (iii) **`@papercusp/ipc-endpoint-server` — REMAINING (three attempts, all
+  reverted clean; design DONE + package code correct, blocked ONLY on a
+  vitest sibling-resolution config — see "attempt 3 root cause" below):**
   `endpoint-ipc/server.ts` (399 LOC) + `sys-http.ts` (225 LOC,
   self-contained). **Corrected design from the code read:** the runtime coupling
   is only **3** injected fns, not the plan's "4" — `dispatchProjectedToolStream`,
@@ -399,14 +400,43 @@ two SEPARATE storage components**, not one dual-backend interface:
   - Reverted clean (cp originals untouched; `rm` the new pkg + symlink); main
     green, zero residue, 6 prior packages intact.
 
-  **Redo (turnkey):** rebuild the package as in attempt 2, but make the 2
-  registry-singleton integration tests run under the **operator's** vitest (single
-  tooldef instance via vite-tsconfig-paths) instead of standalone-with-alias — i.e.
-  keep `server.test.ts`'s dispatch/cancel cases in `apps/operator` (pointing at the
-  package), or resolve sibling packages via their node_modules symlink rather than a
-  path alias so tooldef stays one instance. The package + its non-registry tests
-  (sys-http, bind, allowlist) ship standalone fine. This is the libsoup
-  pool-exhaustion fix. → D-006
+  **Attempt 3 — ROOT CAUSE nailed (main NEVER broke; reverted clean incl. a
+  trial ipc-framing exports change):** the package built fine; the blocker is
+  purely standalone-vitest sibling resolution, and the precise mechanism is now
+  known:
+  - This is the FIRST extracted package whose **test files directly import two
+    sibling `@papercusp/*` `.ts` packages** (`ipc-framing` + `tooldef`).
+    `desktop-ipc` gets sibling resolution "for free" because it imports its one
+    sibling (`tooldef`) in **non-test src** that vite bundles, and it has **no
+    vitest.config** (pure vitest defaults).
+  - **Two distinct sub-issues, both confirmed by node-vs-vite tests:**
+    (1) `@papercusp/ipc-framing` uses **string-shorthand `exports`**
+    (`{".":"./src/index.ts"}`) which vite's resolver won't follow as a dependency
+    entry; switching it to the conditional-object form (like `tooldef`) fixed
+    `ipc-framing` resolution. (`docs-engine`/`rate-limit` also use the shorthand
+    but resolve in the operator via vite-tsconfig-paths, NOT standalone — so the
+    shorthand is a latent standalone-vitest footgun across our packages.)
+    (2) `@papercusp/tooldef` (object exports, node-resolvable, resolves fine for
+    `desktop-ipc`) still failed once I **added a custom `vitest.config.ts`** —
+    because a hand-written config **replaces** vitest's default resolution rather
+    than extending it. `node require.resolve('@papercusp/tooldef')` succeeds from
+    the package dir, so the symlink is correct; vite just needs the repo's base
+    resolver.
+  - **Turnkey redo (validated path):** create the package's `vitest.config.ts` by
+    **extending the repo base** — `import { defineVitestConfig } from
+    '@papercusp/test-config'` (or `mergeConfig` with it) the way `apps/operator`
+    does — instead of a bare `defineConfig`; that pulls in vite-tsconfig-paths +
+    `deps.inline` so both siblings resolve as a **single instance** (keeping
+    tooldef's registry shared, so the 2 streaming/cancel tests pass too). Pair
+    with switching `ipc-framing`'s `exports` to object form (its own 16 tests use
+    relative `./index` imports, so unaffected; the operator consumes it via the
+    shim, also unaffected — net-positive consistency fix). Fallback if base-config
+    resolution still fights: keep the registry-dependent `server.test.ts`
+    dispatch/cancel cases in `apps/operator` (operator vitest, single tooldef) and
+    ship the package with its standalone-safe tests (sys-http, bind, allowlist).
+  - **Do NOT** use `resolve.alias` for `tooldef` (forks its registry — the
+    attempt-2 failure) and do NOT hand-roll a config that drops the base resolver
+    (the attempt-3 failure). This is the libsoup pool-exhaustion fix. → D-006
 - **P-031** `done` Extract `@papercusp/rate-limit` from `lib/auth-rate-limit.ts`
   (2-bucket, PG-durable; **verified zero domain coupling**, generic string keys).
   **Shipped** (`packages/rate-limit`, 8 unit tests, on `main`). **Seam deviation:**
