@@ -52,7 +52,7 @@ const STATUS_TONE: Record<string, { bg: string; fg: string }> = {
 export default function FeaturesPanel({ params, api }: PanelComponentProps) {
   const slug = (params.harnessSlug as string) || '';
   // Phase 3: live data via Zero (REST bootstrap + Zero overlay), no polling.
-  const { features, loading, error } = useHarnessFeatures(slug);
+  const { features, loading, error, patchFeature } = useHarnessFeatures(slug);
   // Filter selection + search are user-meaningful → URL state (nuqs), not
   // useState, so the view is deep-linkable and agent-driveable. Keys are
   // feature-prefixed (fview/fq) so they don't collide with the Issues panel.
@@ -71,11 +71,14 @@ export default function FeaturesPanel({ params, api }: PanelComponentProps) {
 
   const handleReset = async (f: HarnessFeature) => {
     if (!window.confirm(`Reset ${f.id} back to todo?`)) return;
+    const prevAttempts = f.attempts;
+    patchFeature(f.id, { status: 'todo', attempts: 0 }); // optimistic
     setBusyId(f.id);
     try {
       await featureReset(slug, f.id);
       toast.success(`${f.id} reset`);
     } catch (e) {
+      patchFeature(f.id, { status: f.status, attempts: prevAttempts }); // rollback
       toast.error('Reset failed', { description: String(e) });
     } finally {
       setBusyId(null);

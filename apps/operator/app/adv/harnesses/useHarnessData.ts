@@ -14,7 +14,7 @@
 // There is no polling timer — the periodic 5–6s `setInterval` the panels
 // shipped with is gone; live freshness comes from Zero.
 
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useSyncQuery } from '@restart/sync';
 import type { Issue, IssueSeverity, IssueSource, IssueStatus } from '../../harness/issues/types';
 
@@ -83,6 +83,7 @@ export function useHarnessFeatures(slug: string): {
   features: HarnessFeature[] | null;
   loading: boolean;
   error: string | null;
+  patchFeature: (id: string, partial: Partial<HarnessFeature>) => void;
 } {
   const [features, setFeatures] = useState<HarnessFeature[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -147,7 +148,15 @@ export function useHarnessFeatures(slug: string): {
     );
   }, [zeroRows, loading]);
 
-  return { features, loading: features === null && !error, error };
+  // Optimistic local patch — merge a partial into one feature in the local
+  // state for instant feedback on a mutation. The Zero overlay reconciles to
+  // the authoritative value when it next pushes (or the patch stands if the
+  // harness isn't consolidated). No-op if the id isn't present.
+  const patchFeature = useCallback((id: string, partial: Partial<HarnessFeature>) => {
+    setFeatures((prev) => (prev ? prev.map((f) => (f.id === id ? { ...f, ...partial } : f)) : prev));
+  }, []);
+
+  return { features, loading: features === null && !error, error, patchFeature };
 }
 
 // ───────── Issues ─────────
@@ -199,6 +208,7 @@ export function useHarnessIssues(slug: string): {
   pendingCount: number;
   loading: boolean;
   error: string | null;
+  patchIssue: (id: string, partial: Partial<Issue>) => void;
 } {
   const [issues, setIssues] = useState<Issue[] | null>(null);
   const [restPending, setRestPending] = useState(0);
@@ -248,5 +258,10 @@ export function useHarnessIssues(slug: string): {
   });
   const pendingCount = Array.isArray(pendingRows) ? pendingRows.length : restPending;
 
-  return { issues, pendingCount, loading: issues === null && !error, error };
+  // Optimistic local patch (see patchFeature). Reconciled by the Zero overlay.
+  const patchIssue = useCallback((id: string, partial: Partial<Issue>) => {
+    setIssues((prev) => (prev ? prev.map((i) => (i.id === id ? { ...i, ...partial } : i)) : prev));
+  }, []);
+
+  return { issues, pendingCount, loading: issues === null && !error, error, patchIssue };
 }

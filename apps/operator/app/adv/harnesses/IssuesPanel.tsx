@@ -22,7 +22,7 @@ import type { PanelComponentProps } from '../../harness/dock/panel-registry';
 import type { Issue, IssueSeverity, IssueSource, IssueStatus } from '../../harness/issues/types';
 import PinMenu, { type PinMenuState } from './PinMenu';
 import { useHarnessIssues } from './useHarnessData';
-import { issueAction, type IssueActionKind } from './harness-actions';
+import { issueAction, issueActionStatus, type IssueActionKind } from './harness-actions';
 
 type StatusFilter = 'all' | IssueStatus;
 
@@ -74,7 +74,7 @@ const STATUS_COLOR: Record<IssueStatus, string> = {
 export default function IssuesPanel({ params, api }: PanelComponentProps) {
   const slug = (params.harnessSlug as string) || '';
   // Phase 3: live data via Zero (REST bootstrap + Zero overlay), no polling.
-  const { issues, pendingCount, loading, error } = useHarnessIssues(slug);
+  const { issues, pendingCount, loading, error, patchIssue } = useHarnessIssues(slug);
   // URL state (nuqs) so the filter/search are deep-linkable + agent-driveable.
   // Keys are issue-prefixed (ifilter/iq) to avoid colliding with the Features
   // panel's fview/fq.
@@ -88,11 +88,15 @@ export default function IssuesPanel({ params, api }: PanelComponentProps) {
   const searchRef = useRef<HTMLInputElement>(null);
 
   const handleAction = async (i: Issue, action: IssueActionKind) => {
+    const target = issueActionStatus(action); // null for promote (server-computed)
+    const prevStatus = i.status;
+    if (target) patchIssue(i.id, { status: target }); // optimistic
     setBusyId(i.id);
     try {
       await issueAction(slug, i.id, action);
       toast.success(`${i.id} → ${action}`);
     } catch (e) {
+      if (target) patchIssue(i.id, { status: prevStatus }); // rollback
       toast.error(`${action} failed`, { description: String(e) });
     } finally {
       setBusyId(null);

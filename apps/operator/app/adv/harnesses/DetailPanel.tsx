@@ -7,6 +7,7 @@ import { useSyncQuery } from '@restart/sync';
 import type { Issue, IssueNote, IssueSeverity } from '../../harness/issues/types';
 import type { PanelComponentProps } from '../../harness/dock/panel-registry';
 import { useHarnessFeatures, useHarnessIssues, type FeatureStatus, type HarnessFeature } from './useHarnessData';
+import { issueAction, issueActionStatus, type IssueActionKind } from './harness-actions';
 
 const FEATURE_STATUSES: FeatureStatus[] = [
   'todo',
@@ -80,8 +81,8 @@ export default function DetailPanel({ params, api }: PanelComponentProps) {
 
   // Phase 3: live data via Zero (REST bootstrap + Zero overlay), no polling.
   // The Features/Issues panels subscribe to the same queries → Zero dedups.
-  const { features } = useHarnessFeatures(slug);
-  const { issues } = useHarnessIssues(slug);
+  const { features, patchFeature } = useHarnessFeatures(slug);
+  const { issues, patchIssue } = useHarnessIssues(slug);
   const { data: runRows } = useSyncQuery<RunRow>({
     queryName: 'agentRunsConsolidated.bySlug',
     args: slug ? { harnessSlug: slug } : undefined,
@@ -173,11 +174,12 @@ export default function DetailPanel({ params, api }: PanelComponentProps) {
         runs={Array.isArray(runRows) ? runRows : []}
         onSelect={onSelect}
         onBack={onBack}
+        patchFeature={patchFeature}
       />
     );
   }
   if (issue) {
-    return <IssueDetail slug={slug} issue={issue} onSelect={onSelect} onBack={onBack} />;
+    return <IssueDetail slug={slug} issue={issue} onSelect={onSelect} onBack={onBack} patchIssue={patchIssue} />;
   }
   return null;
 }
@@ -198,6 +200,7 @@ function FeatureDetail({
   runs,
   onSelect,
   onBack,
+  patchFeature,
 }: {
   slug: string;
   feature: HarnessFeature;
@@ -205,6 +208,7 @@ function FeatureDetail({
   runs: RunRow[];
   onSelect: (id: string) => void;
   onBack?: () => void;
+  patchFeature: (id: string, partial: Partial<HarnessFeature>) => void;
 }) {
   const [working, setWorking] = useState<string | null>(null);
   const [notes, setNotes] = useState<string[] | null>(null);
@@ -265,6 +269,8 @@ function FeatureDetail({
 
   const setStatus = useCallback(
     async (next: FeatureStatus) => {
+      const prev = feature.status;
+      patchFeature(feature.id, { status: next }); // optimistic
       setWorking(`status:${next}`);
       try {
         await callJson(`/features/${feature.id}?phase=staging`, {
@@ -274,26 +280,30 @@ function FeatureDetail({
         });
         toast.success(`${feature.id} → ${next}`);
       } catch (e) {
+        patchFeature(feature.id, { status: prev }); // rollback
         toast.error('Status change failed', { description: String(e) });
       } finally {
         setWorking(null);
       }
     },
-    [callJson, feature.id],
+    [callJson, feature.id, feature.status, patchFeature],
   );
 
   const resetFeature = useCallback(async () => {
     if (!window.confirm(`Reset ${feature.id} back to todo?`)) return;
+    const prev = { status: feature.status, attempts: feature.attempts };
+    patchFeature(feature.id, { status: 'todo', attempts: 0 }); // optimistic
     setWorking('reset');
     try {
       await callJson(`/features/${feature.id}/reset?phase=staging`, { method: 'POST' });
       toast.success(`${feature.id} reset`);
     } catch (e) {
+      patchFeature(feature.id, prev); // rollback
       toast.error('Reset failed', { description: String(e) });
     } finally {
       setWorking(null);
     }
-  }, [callJson, feature.id]);
+  }, [callJson, feature.id, feature.status, feature.attempts, patchFeature]);
 
   return (
     <div className="pc-adv-detail">
@@ -438,11 +448,13 @@ function IssueDetail({
   issue,
   onSelect,
   onBack,
+  patchIssue,
 }: {
   slug: string;
   issue: Issue;
   onSelect: (id: string) => void;
   onBack?: () => void;
+  patchIssue: (id: string, partial: Partial<Issue>) => void;
 }) {
   const [working, setWorking] = useState<string | null>(null);
   const [note, setNote] = useState('');
@@ -457,31 +469,22 @@ function IssueDetail({
   const allNotes = useMemo(() => [...(issue.notes ?? []), ...extraNotes], [issue.notes, extraNotes]);
 
   const runAction = useCallback(
-    async (action: 'promote' | 'acknowledge' | 'close' | 'wontfix') => {
+    async (action: IssueActionKind) => {
+      const target = issueActionStatus(action); // null for promote (server-computed)
+      const prev = issue.status;
+      if (target) patchIssue(issue.id, { status: target }); // optimistic
       setWorking(action);
       try {
-        // 'close' → 'closed' (the action verb is not a valid IssueStatus).
-        const status = action === 'acknowledge' ? 'acknowledged' : action === 'close' ? 'closed' : 'wontfix';
-        const body = action === 'promote' ? {} : { status };
-        const res = await fetch(
-          `/api/harness/${encodeURIComponent(slug)}/issues/${encodeURIComponent(issue.id)}/${
-            action === 'promote' ? 'promote' : 'update'
-          }`,
-          {
-            method: 'POST',
-            headers: { 'content-type': 'application/json' },
-            body: JSON.stringify(body),
-          },
-        );
-        if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`);
+        await issueAction(slug, issue.id, action);
         toast.success(`${issue.id} → ${action}`);
       } catch (e) {
+        if (target) patchIssue(issue.id, { status: prev }); // rollback
         toast.error(`${action} failed`, { description: String(e) });
       } finally {
         setWorking(null);
       }
     },
-    [slug, issue.id],
+    [slug, issue.id, issue.status, patchIssue],
   );
 
   const addNote = useCallback(async () => {
