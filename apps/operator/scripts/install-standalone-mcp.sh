@@ -254,9 +254,15 @@ except json.JSONDecodeError:
 
 cfg.setdefault('mcpServers', {})
 profile_param = '&profile=power' if profile == 'power' else ''
+# Per-session identity: Claude Code expands ${VAR}/${VAR:-default} in the
+# mcp url at launch. The claude-su wrapper exports a per-launch
+# PAPERCUSP_SID, so each shell gets a DISTINCT ?client= (→ distinct coord
+# /lock owner — fixes the same-machine collapse). Plain `claude` (no env)
+# falls back to the static machine id → unchanged. NOTE: this ${...} form
+# is written only here (Claude); OMP/Codex don't do url env-interpolation.
 cfg['mcpServers']['papercusp-su'] = {
     'type': 'http',
-    'url': operator_url + '/api/mcp?superuser=1' + profile_param + '&client=' + agent_id,
+    'url': operator_url + '/api/mcp?superuser=1' + profile_param + '&client=${PAPERCUSP_SID:-' + agent_id + '}',
     'headers': {
         'Authorization': 'Bearer ' + token,
     },
@@ -444,6 +450,16 @@ cat > "$CLAUDE_WRAPPER_PATH" <<WRAPEOF
 # papercusp-su MCP server is already in ~/.claude.json, so all SU
 # tools are available either way.
 # To switch profiles, re-run: install-standalone-mcp.sh --profile=engineer|power
+# Per-session coordination identity. Mint a distinct id per launch so two
+# claude-su shells on one machine get DISTINCT coord/lock owners (fixes
+# the same-machine collapse where coord:inbox self-filtered peers). The
+# ~/.claude.json mcp url expands \${PAPERCUSP_SID:-<machine-id>}, and the
+# lock hook reads the same var — so a shell's interactive calls and its
+# hook share one owner. Reuse an inherited value if already set.
+if [ -z "\${PAPERCUSP_SID:-}" ]; then
+  PAPERCUSP_SID="claude-su-\$(uuidgen 2>/dev/null || cat /proc/sys/kernel/random/uuid 2>/dev/null || echo "\$\$-\${RANDOM}")"
+fi
+export PAPERCUSP_SID
 exec claude \\
   --append-system-prompt-file "${PLAYBOOK_DEST_CLAUDE}" \\
   "\$@"
@@ -558,6 +574,10 @@ else
 fi
 mkdir -p "$CODEX_WRAPPER_DIR"
 CODEX_WRAPPER_PATH="${CODEX_WRAPPER_DIR}/codex-su"
+# Base MCP url for the per-launch ?client override below (mirrors the
+# config.toml url, minus the &client= part the wrapper supplies per launch).
+CODEX_MCP_BASE="${OPERATOR_URL}/api/mcp?superuser=1"
+[ "$PROFILE" = "power" ] && CODEX_MCP_BASE="${CODEX_MCP_BASE}&profile=power"
 cat > "$CODEX_WRAPPER_PATH" <<WRAPEOF
 #!/usr/bin/env bash
 # papercusp ${PROFILE}-collaborator launcher for Codex CLI
@@ -570,12 +590,23 @@ if [ -z "\${PAPERCUSP_SU_TOKEN:-}" ] && [ -s "${TOKEN_PATH}" ]; then
   PAPERCUSP_SU_TOKEN="\$(cat "${TOKEN_PATH}")"
   export PAPERCUSP_SU_TOKEN
 fi
+# Per-session coordination identity. A distinct id per launch so two
+# codex-su shells on one machine get DISTINCT coord/lock owners. Codex
+# does NOT env-expand config.toml, so the mcp url is overridden per launch
+# via -c; the lock hook reads the same PAPERCUSP_SID, so a shell's
+# interactive calls and its hook share one owner. Reuse if inherited.
+if [ -z "\${PAPERCUSP_SID:-}" ]; then
+  PAPERCUSP_SID="codex-su-\$(uuidgen 2>/dev/null || cat /proc/sys/kernel/random/uuid 2>/dev/null || echo "\$\$-\${RANDOM}")"
+fi
+export PAPERCUSP_SID
 # --dangerously-bypass-hook-trust: Codex requires persisted trust before
 # running settings.json hooks. The ONLY hooks in this dedicated CODEX_HOME
 # are the SU-locks Pre/PostToolUse pair this installer wrote, so bypassing
 # the trust prompt is the documented "automation that vets its own hook
 # sources" path — not arbitrary third-party hooks.
-exec env CODEX_HOME="${CODEX_SU_HOME}" codex --dangerously-bypass-hook-trust "\$@"
+exec env CODEX_HOME="${CODEX_SU_HOME}" codex --dangerously-bypass-hook-trust \\
+  -c "mcp_servers.papercusp-su.url=\"${CODEX_MCP_BASE}&client=\${PAPERCUSP_SID}\"" \\
+  "\$@"
 WRAPEOF
 chmod 755 "$CODEX_WRAPPER_PATH"
 echo "✓ Installed $CODEX_WRAPPER_PATH"

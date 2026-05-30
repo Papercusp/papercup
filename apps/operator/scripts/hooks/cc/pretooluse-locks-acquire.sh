@@ -109,13 +109,22 @@ tool_input = payload.get('tool_input', {})
 tool_use_id = payload.get('tool_use_id', '') or ''
 cwd = payload.get('cwd') or os.getcwd()
 
-# Identity: per-SESSION owner, NOT the machine-wide su-agent-id. Two
-# shells on one machine share the baked su-agent-id, so keying on it
-# would collapse them to one owner and they'd never conflict. Both
-# Claude and Codex provide a per-session session_id; Pre and Post in the
-# same session share it, so release still matches acquire.
+# Identity: per-SESSION owner, NOT the machine-wide su-agent-id. The
+# `-su` wrapper exports PAPERCUSP_SID (distinct per launch) AND bakes the
+# same id into the interactive MCP `?client=`, so this hook and the
+# agent's own coord/lock tool calls resolve to ONE owner — that's what
+# lets a manual multi-file claim coexist with the per-edit hook instead
+# of self-blocking. Fallbacks: the client's per-session session_id, then
+# the machine-wide su-agent-id (two shells sharing only that collapse to
+# one owner — the bug PAPERCUSP_SID fixes). Pre + Post share the env, so
+# release still matches acquire.
+env_sid = os.environ.get('PAPERCUSP_SID')
 session_id = payload.get('session_id')
-owner = session_id if isinstance(session_id, str) and session_id else agent_id
+owner = (
+    env_sid if isinstance(env_sid, str) and env_sid
+    else session_id if isinstance(session_id, str) and session_id
+    else agent_id
+)
 
 
 def patch_text(ti):

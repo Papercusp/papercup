@@ -55,10 +55,15 @@ if not isinstance(tool_use_id, str) or not tool_use_id:
     sys.exit(0)
 
 # Identity MUST match the acquirer (the release owner-check requires
-# owner == acquirer). PreToolUse keyed on the per-session id, so do the
-# same here.
+# owner == acquirer). PreToolUse resolves PAPERCUSP_SID → session_id →
+# agent_id, in that order; mirror it exactly so release matches acquire.
+env_sid = os.environ.get('PAPERCUSP_SID')
 session_id = payload.get('session_id')
-owner = session_id if isinstance(session_id, str) and session_id else agent_id
+owner = (
+    env_sid if isinstance(env_sid, str) and env_sid
+    else session_id if isinstance(session_id, str) and session_id
+    else agent_id
+)
 
 cache_path = os.path.join(cache_dir, tool_use_id + '.lock')
 if not os.path.exists(cache_path):
