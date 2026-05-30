@@ -29,7 +29,9 @@ the still-trapped value (locks, coordination, search, memory, plans, backup) is
 `harness_shared.*` table names). Define one storage-adapter seam (P-001) and the
 whole cluster becomes extractable. `@papercusp/file-claim` already proves the
 shape. The coordination-storage question the audit raised is **resolved** below
-(D-004): the file+PG hybrid is deliberate, shipped architecture, not drift.
+(D-004): the file+PG hybrid is deliberate, shipped architecture — and the two
+sides are *different data models*, so coordination extracts as a shared pure core
+plus two separate storage components, NOT one dual-backend interface.
 
 **Next:** a human confirms the package-bundling decision (P-000, needs-human) —
 ship as ~4 bundles (D-002) vs. one-package-per-system — then an agent starts
@@ -89,7 +91,7 @@ PG locks code as one implementation.
 | System | Location | Coupling | Status | Verdict |
 |---|---|---|---|---|
 | **locks** | `agent-tools/locks/` (~4.7K LOC, own `papercusp_su` DB) | LOW | interface split to `file-claim` | Extract — top pick (P-010) |
-| **coordination** | `agent-tools/coordination/` (~4.5K LOC) | LOW→MED (storage) | not extracted | Extract — top pick (P-011) |
+| **coordination** | `agent-tools/coordination/` (~4.5K LOC) | LOW→MED (storage) | not extracted | Extract as core + 2 stores, NOT 1 iface (P-011, P-012; D-004) |
 | **search / rrf** | `agent-tools/search/` (`rrf.ts` pure) | LOW (rrf=NONE) | not extracted | rrf now (P-002); search w/ seam (P-020) |
 | **embedded-pg-discovery** | `lib/embedded-pg-discovery.ts` (~58 LOC) | NONE | not extracted | Extract now (P-003) |
 | **memory / mem0** | `lib/memory/` + `agent-tools/memory/` | MEDIUM | not extracted | Extract w/ store+embedder seam (P-021) |
@@ -113,7 +115,7 @@ PG locks code as one implementation.
 autoloop/goals, `zero-harness`, `papercup-shared` (shop domain), the nuqs
 UI-control surface (document only — already in `CLAUDE.md`).
 
-## The coordination-storage question — resolved (see D-004)
+## The coordination-storage question — resolved (see D-004, D-009)
 
 The audit surfaced an apparent conflict: one read found JSONL file-backed coord
 logs, another found `harness_shared.coord_*` PG tables. **Reading the code, both
@@ -145,29 +147,78 @@ durable roster — exactly what PG is for and files are not. (Note this is a
 not `kind`; v2 §3.2 documents the two-schema reality. This plan's coordination
 extraction governs the operator's typed-envelope files only.)
 
-**Recommendation:** extract coordination as a **dual-backend library by design,
-not by accident.** The `CoordStore` interface (P-011) has two implementations
-shipped in the box: a `FsCoordStore` (the portable JSONL path, default) for the
-channel/cursor surfaces, and the `WorkspaceStore`-backed PG presence path for
-the heartbeat surface. This is strictly *more* reusable than collapsing to one
-backend: consumers who want zero-infra multi-agent coordination get the file
-path; consumers who want live presence dashboards get the PG path; both are the
-same library. Do **not** "fix" the hybrid by forcing everything into PG — that
-would delete the detached-mode portability that is a stated, shipped goal.
+### Why these are NOT one logic over two storage engines (corrected 2026-05-29)
+
+A first pass proposed extracting coordination as a single `CoordStore` interface
+with two backends. **A line-by-line read of all eight modules shows that is
+wrong** — the two sides have fundamentally different *data models*, not the same
+operations over a swapped engine:
+
+| Dimension | File surfaces (messages, handoffs, escalations, watermarks, subscriptions) | Presence (`presence.ts`, PG) |
+|---|---|---|
+| Data model | **append-only event log**; state is derived by scanning + folding at read time | **mutable single-row-per-owner** current-state |
+| Read | union-scan files, filter/sort/graph-traverse in memory (`readInbox`, `readThread`, `listWatches`) | SQL `SELECT … LEFT JOIN power_user_sessions` (`listPresence`) |
+| Write | append a line / write a sibling file (one writer per file) | `INSERT … ON CONFLICT DO UPDATE` upsert, `UPDATE`, `DELETE` |
+| History | yes — the log *is* the state (acceptance/unsubscribe = new lines) | none — each heartbeat overwrites; reaped by staleness |
+| Concurrency | single-writer-per-file invariant → **no locks** | **many** concurrent writers → needs `ON CONFLICT` |
+| Portability | works fully detached, no server | requires operator + PG |
+| Relational | none | joins the durable roster table |
+
+An interface spanning both would need `append`+`scanAll` **and**
+`upsertRow`+`joinRoster` — two unrelated contracts bolted together, an
+abstraction in name only. Forcing presence into the file model loses the
+concurrent-heartbeat upsert and the roster join; forcing the channels into PG
+loses detached portability and the no-lock simplicity. They cannot honestly
+share one storage interface.
+
+**One internal inconsistency found:** the file surfaces are not even uniformly
+append-only. `handoffs.acceptHandoff` models acceptance as an append (a sibling
+`handoff_accepted` file), but `escalations.resolveEscalation` does a
+**read-modify-write in place** — despite `CoordKind` already defining an unused
+`escalation_resolved` value (`envelope.ts:28`). Escalation is the lone mutating
+file surface. See P-012.
+
+**Recommendation (corrected):** extract coordination as **a shared pure core plus
+two SEPARATE storage components**, not one dual-backend interface — which matches
+the actual seams in the code:
+
+- **`@papercusp/coord-core` (pure, storage-agnostic):** `identity`
+  (`resolveAgentIdentity` / `AgentIdentity` — the one primitive *both* sides
+  consume; the v2 doc's "one identity, four consumers" rule), `envelope`
+  (`CoordEnvelope`, `newMsgId`, the `kind` taxonomy), and the protocol logic
+  (handoff state machine, escalation severities + resolve semantics, watermark
+  merge, glob `patternToRegex`, thread graph traversal, inbox filter predicates).
+  Zero I/O.
+- **`CoordEventLog` (the genuinely swappable seam):** the append-only channel
+  surfaces. Its *only* operations are `append(line)` and `readAll(surface)` —
+  which a filesystem **or** an append-only PG table satisfy identically. This is
+  where "file default, optional PG backend" is honest and useful. FS impl is the
+  portable default (detached mode); a PG impl is a drop-in for operator-attached
+  deployments that want queryability.
+- **`PresenceStore` (PG-shaped, do NOT pretend it's swappable):** upsert +
+  roster-join. A file-backed presence would be lossy (no concurrent heartbeat,
+  no join) and pointless. It shares `identity` + `envelope` types with the rest;
+  it does not share a storage interface.
+
+So the dual-backend idea survives **only for the event log**, and presence stands
+beside it as its own component. Keep them separate; share the pure core — exactly
+the "share certain components" instinct, confirmed against the code.
 
 ## End state
 
 - `WorkspaceStore` (or similarly named) seam defined once; the trapped
   subsystems take it as a dependency instead of importing `inWorkspaceTxn`.
 - ~4 published bundles (per D-002): `@papercusp/agent-coord` (file-claim + locks
-  + coordination), `@papercusp/agent-retrieval` (rrf + search + memory +
+  + coord-core + CoordEventLog + PresenceStore), `@papercusp/agent-retrieval` (rrf + search + memory +
   docs-engine), `@papercusp/plan-kit` (pure parser + optional persistence),
   `@papercusp/desktop-runtime` (embedded-pg-discovery + IPC polyfill +
   endpoint-ipc; host-platform already exists).
 - Each extracted package: PG impl as default, an in-memory impl for tests, a
   conformance suite (the `file-claim` pattern), zero `@papercusp`-domain imports
   in core.
-- Coordination ships dual-backend (`FsCoordStore` + PG presence) as a feature.
+- Coordination ships as `coord-core` (pure) + `CoordEventLog` (fs default,
+  optional PG) + `PresenceStore` (PG) — three pieces, not one dual-backend
+  interface. The event log is the only swappable seam (D-009).
 - Orchestrator, roles, autoloop, prompt-assembly stay in-app (documented why).
 
 ## Phase 0 — Scope lock
@@ -199,13 +250,21 @@ would delete the detached-mode portability that is a stated, shipped goal.
   the SQL to the package; inject the `WorkspaceStore` instead of `inWorkspaceTxn`;
   keep the separate `papercusp_su` DB as a deployment detail, not a hard import.
   blocked-by: P-001 → D-003
-- **P-011** `todo` Extract `@papercusp/coordination` from
-  `agent-tools/coordination/` as a **dual-backend** library: a `CoordStore`
-  interface with a `FsCoordStore` (portable JSONL — the default, covers messages/
-  acks/handoffs/escalations/watermarks/subscriptions/plan-events) and a
-  `WorkspaceStore`-backed PG presence path (heartbeat + roster JOIN). Extract the
-  protocol (envelope, handoff state machine, escalation flow, watermark merge)
-  and the `resolveAgentIdentity` primitive. blocked-by: P-001 → D-004
+- **P-011** `todo` Extract `@papercusp/coordination` as **three pieces, not one
+  dual-backend interface** (D-009): (a) `coord-core` — pure `identity` +
+  `envelope` + protocol logic (handoff state machine, escalation severities +
+  resolve, watermark merge, `patternToRegex`, thread traversal, inbox filter),
+  zero I/O; (b) `CoordEventLog` — `append`/`readAll` over the append-only channel
+  surfaces (messages/acks/handoffs/watermarks/subscriptions/plan-events), with an
+  `FsCoordLog` default (portable, detached mode) and an optional PG-backed log;
+  (c) `PresenceStore` — the PG upsert+roster-join, NOT behind the event-log
+  interface. blocked-by: P-001 → D-004 D-009
+- **P-012** `todo` Before/while extracting, normalize the lone mutating file
+  surface: migrate `escalations.resolveEscalation` from read-modify-write-in-place
+  to emitting an `escalation_resolved` envelope (the `CoordKind` already exists,
+  `envelope.ts:28`), matching `handoffs`' append-a-sibling pattern. Makes
+  `CoordEventLog` cleanly append-only and therefore cleanly PG-swappable. Pre-
+  alpha, no users → safe to change the on-disk shape now. blocked-by: P-001 → D-009
 
 ## Phase 3 — The retrieval cluster (depends on the seam)
 
@@ -253,14 +312,14 @@ would delete the detached-mode portability that is a stated, shipped goal.
 
 ## Phase 6 — Verification
 
-- **P-050** `todo` Each extracted package: in-memory `WorkspaceStore`/`CoordStore`
-  passes the same conformance suite as the PG impl; the operator re-points at the
-  package with no behavior change; existing suites green. blocked-by: P-010,
-  P-011, P-020, P-021, P-022, P-023, P-030, P-031
+- **P-050** `todo` Each extracted package: in-memory `WorkspaceStore` /
+  `CoordEventLog` passes the same conformance suite as the PG/fs impl; the
+  operator re-points at the package with no behavior change; existing suites
+  green. blocked-by: P-010, P-011, P-012, P-020, P-021, P-022, P-023, P-030, P-031
 - **P-051** `todo` Proof-of-genericity: stand up one extracted package
-  (recommend `@papercusp/coordination` via `FsCoordStore`) in a throwaway non-
-  Papercusp script with zero operator/PG present, to prove detached mode works.
-  blocked-by: P-011
+  (recommend `@papercusp/coordination` via the `FsCoordLog` event-log) in a
+  throwaway non-Papercusp script with zero operator/PG present, to prove detached
+  mode works. blocked-by: P-011
 
 ## Decisions
 
@@ -288,17 +347,35 @@ inject it everywhere, and locks/coord-presence/search/memory/backup all extract
 with PG-default + swappable backends. `@papercusp/file-claim` already proves the
 interface+conformance shape; replicate it. This is the load-bearing decision.
 
-### D-004 — Coordination ships DUAL-backend; the file+PG hybrid is correct
+### D-004 — The file+PG hybrid is correct and deliberate
 Date: 2026-05-29
-Resolves the audit's open question. The hybrid is deliberate, shipped
-architecture (`agent-coordination-architecture-v2-2026-05-20.md`, §2/§4), not
-drift. L3 async channels + read-cursors are JSONL files (`coord/*`) so a
-detached OMP agent with no operator/PG still participates by direct fs I/O
-(stated portability goal); L1 live presence is PG (`harness_shared.coord_presence`)
-because it's many-writer heartbeat state that JOINs the durable
-`power_user_sessions` roster. Extract coordination as a `CoordStore` interface
-with BOTH a `FsCoordStore` (default, portable) and a PG presence path shipped in
-the box. Do NOT collapse to PG-only — that deletes detached-mode portability.
+Resolves the audit's open question on *why* there are two backends. The hybrid is
+deliberate, shipped architecture (`agent-coordination-architecture-v2-2026-05-20.md`,
+§2/§4), not drift. L3 async channels + read-cursors are JSONL files (`coord/*`) so
+a detached OMP agent with no operator/PG still participates by direct fs I/O
+(stated portability goal); L1 live presence is PG
+(`harness_shared.coord_presence`) because it's many-writer heartbeat state that
+JOINs the durable `power_user_sessions` roster. Do NOT collapse to PG-only — that
+deletes detached-mode portability. (How to *package* this is D-009, which
+supersedes this decision's first-draft "one dual-backend `CoordStore`" framing.)
+
+### D-009 — Coordination = pure core + TWO separate stores, not one interface
+Date: 2026-05-29
+A first draft proposed a single `CoordStore` interface with file and PG backends.
+A line-by-line read of all eight coordination modules refuted that: the file
+surfaces and presence are **different data models, not one logic over two
+engines.** File surfaces are an *append-only event log* (state derived by
+scanning + folding: `readInbox` union-scans outboxes, `readThread` graph-walks
+`related_msg_id`, `listWatches` folds subscribe−unsubscribe), single-writer-per-
+file, no locks, history-bearing, portable. Presence is a *mutable single-row-per-
+owner* table (`INSERT … ON CONFLICT DO UPDATE`, `UPDATE` heartbeat, `DELETE`),
+many concurrent writers, no history, relational (`LEFT JOIN power_user_sessions`).
+A shared interface would need `append`+`scanAll` AND `upsertRow`+`joinRoster` —
+two unrelated contracts in a trenchcoat. So extract as: (1) `coord-core` (pure
+identity + envelope + protocol), (2) `CoordEventLog` (the only honestly swappable
+seam — `append`/`readAll`, fs default + optional PG), (3) `PresenceStore` (PG,
+not behind the log interface). The user's "keep them separate, share certain
+components" instinct was correct; this decision records it against the code.
 
 ### D-005 — Plans: extract the pure parser only; lifecycle stays in-app
 Date: 2026-05-29
