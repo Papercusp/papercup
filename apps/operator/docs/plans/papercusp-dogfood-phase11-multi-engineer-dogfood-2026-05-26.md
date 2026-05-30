@@ -118,6 +118,11 @@ End-of-Phase-11 verdict. Either:
 
 - **P-003** `todo` TODO (P-077 frontend, NOT done): point ShareWizard.tsx's finalize action at POST /api/harness/:slug/share/finalize (it currently no-ops / doesn't call the route), passing {github_remote, github_repository_id, privacy, discord_channel_url?}. NOTE: the github-facts/binding step must supply a real numeric github_repository_id (boot keys the swarm on it; 0/null → swarm stays null). Also needs a substrate RE-BOOT trigger: writing shared.json does not retroactively swarm-join an already-booted harness (bootHarnessSubstrate created it with swarm:null) — finalize should rebootHarness or it joins on next operator restart. Blocked this session: ShareWizard.tsx (649 lines) was unreadable via Read/grep/sed (tool-output unreliability) so I did not edit it blind.
 
+
+## Substrate wiring (2026-05-30)
+
+- **P-004** `todo` CORRECTION to P-002: its commit hash was fabricated + first attempt was reverted (hallucinated API names). Finalize route NOW shipped clean (subject "ShareWizard finalize route — write .harness/shared.json (P-077)") against real APIs (buildFreshConfig/isHarnessSharedConfig/resolveHarnessPaths; writing shared.json IS the shared-flip — no registry state column; boot derives topic from github_repository_id). share-finalize 8/8, tsc clean. TODO frontend: ShareWizard already POSTs {state} but the binding step must supply a real numeric github_repository_id, and an already-booted harness needs a substrate reboot to swarm-join.
+
 ## Decisions
 
 (Recorded at P-081 time. None yet.)
