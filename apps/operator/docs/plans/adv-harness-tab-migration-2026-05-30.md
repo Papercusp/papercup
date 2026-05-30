@@ -176,3 +176,18 @@ Two-phase pass, committed `5091d985` (decouple) + `063114fa` (retire).
 
 **Still blocking full code retirement (P-022):** decouple `config` + `docs` from `HarnessDashboard` (lift plugin/spec resolution into a shared hook), and give `/adv` org/department + per-slug parity for `/harness/$slug`. Once no `/adv` tab renders `<HarnessDashboard/>` and `$slug` is covered, the legacy-only `app/harness/*` page code can move to `_retired/`.
 Related: P-022
+
+### D-013 — config tab decoupled from HarnessDashboard via shared-file extraction; docs is the last holdout
+Date: 2026-05-30
+Per the user's "extract to a shared file" directive (the same pattern brainstorm/prs/settings/insights already use — those components were already standalone files), decoupled the **config** tab from the 5,259-line `HarnessDashboard` in three committed steps:
+
+1. **`9038ac42`** — extracted shared plugin helpers (`PLUGIN_ICON_MAP`, `PluginIcon`, `pluginSlugFromPath`, `InstalledPluginInfo`/`InstalledPluginAction`/`EnabledPluginManifest`) into `app/harness/plugin-utils.tsx`; monolith imports them.
+2. **`e3460a4f`** — moved the config cluster verbatim into `app/harness/ConfigPanel.tsx` (`ManifestOrLegacySpecEditor`, `ConfigTabBtn`, `ConfigPanel`, `PluginPanelCard`, `PluginConfigEditor`, `renderPluginConfigInput` + style consts; ~810 lines). Editors switched from the local `dynamicWithRetry` to static imports. Monolith now `import { ConfigPanel }`. Behavior preserved (verified config still renders via the monolith's import).
+3. **`a1201c1b`** — new `AdvConfigTab` (`app/adv/harnesses/`) supplies `ConfigPanel`'s props the way the monolith did inline: `/status` (path/alive), `/api/plugins/global` (installed), Zero `pluginEnables.byWorkspace` (enabled slugs), Zero `pluginConfigs.byHarness` ∩ `configSchema.required` (the needs-setup map). `renderAdvTab` maps config → `AdvConfigTab`. **Verified live: `/adv?tab=config` renders the config rail + Harness pane + spec editor with NO `.h-root` — dashboard not mounted.**
+
+**Net /adv state:** of the original 7 HarnessDashboard-backed tabs, 6 now render their components directly (brainstorm/prs/settings/insights/git + config). **Only `docs` still mounts `<HarnessDashboard forcedPanel="docs"/>`.**
+
+**docs is deferred** because: (a) it's entirely plugin-contribution-driven — `?panel=docs` resolves to `plugin:<tabId>` via a plugin declaring `replaces:['docs']`, rendered by the monolith's inline plugin-tab dispatch (`PluginIframeWithLoader`/`PluginReactTab`/`InlinePiDock`); and (b) **papercup ships 0 dashboard-tab plugins**, so docs is empty here and its render path is unverifiable on this harness. Decoupling it = extracting that renderer cluster + a `usePluginTabs` hook, shipping unverified. Recommend doing it against a harness that actually ships a docs plugin, or as an explicit contract-only pass. Once docs is decoupled, NO `/adv` tab mounts `HarnessDashboard` and the legacy-only `app/harness/*` page code can move to `_retired/` (P-022).
+
+Note: the plugin-only lucide imports `HarnessDashboard` no longer uses (post `PLUGIN_ICON_MAP` move) are left for a knip sweep.
+Related: P-022
