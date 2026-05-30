@@ -123,11 +123,11 @@ Only OMP has a turn-start coord-injection hook with FS-direct readers; Claude/Co
 
 ## Phase 2 — Host wiring (the swap)
 
-- **P-005** `todo` Swap `log.ts` `FsCoordLog` to `PgCoordLog({ getSql: () => getOrgPg().sql, ensureSchema, workspaceId })`. Moves messages/plan-events/handoffs/escalations to PG in one change. Lands as a unit with P-008 (see Review hardening). blocked-by: P-001, P-019
-- **P-006** `todo` Repoint `watermarks.ts` (`readWatermark`/`writeWatermark`) from `fs` to `PgWatermarkStore`. blocked-by: P-002, P-004
-- **P-007** `todo` Repoint `subscriptions.ts` (`addWatch`/`removeWatch`/`listWatches`) from `fs` to `PgSubscriptionStore`. blocked-by: P-003, P-004
-- **P-008** `todo` Redirect `subscriptions.fireNotifications()` to `coordLog.appendLine('messages', watcher, env)` instead of the FS `appendCoordLine`, so notifies land in the same store as messages. Land in the same change as P-005. blocked-by: P-005
-- **P-009** `todo` Repoint `/api/coord` `readAllMessages()` (history + inbox endpoints) from direct `coord/messages/*.jsonl` reads to `coordLog.readLines('messages')`. blocked-by: P-005
+- **P-005** `done` Swap `log.ts` `FsCoordLog` to `PgCoordLog({ getSql: () => getOrgPg().sql, ensureSchema, workspaceId })`. Moves messages/plan-events/handoffs/escalations to PG in one change. Lands as a unit with P-008 (see Review hardening). blocked-by: P-001, P-019
+- **P-006** `done` Repoint `watermarks.ts` (`readWatermark`/`writeWatermark`) from `fs` to `PgWatermarkStore`. blocked-by: P-002, P-004
+- **P-007** `done` Repoint `subscriptions.ts` (`addWatch`/`removeWatch`/`listWatches`) from `fs` to `PgSubscriptionStore`. blocked-by: P-003, P-004
+- **P-008** `done` Redirect `subscriptions.fireNotifications()` to `coordLog.appendLine('messages', watcher, env)` instead of the FS `appendCoordLine`, so notifies land in the same store as messages. Land in the same change as P-005. blocked-by: P-005
+- **P-009** `done` Repoint `/api/coord` `readAllMessages()` (history + inbox endpoints) from direct `coord/messages/*.jsonl` reads to `coordLog.readLines('messages')`. blocked-by: P-005
 
 ## Phase 3 — Detached-mode removal (OMP only)
 

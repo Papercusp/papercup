@@ -18,32 +18,20 @@
  *   GET /api/coord/handoffs     list-only
  *   GET /api/coord/plan-events  list-only
  */
-import { promises as fs } from 'node:fs';
-import { join } from 'node:path';
 import { defineTool } from '@papercusp/agent-mcp';
 import { readPlanEvents } from '@/lib/agent-tools/coordination/plan-events';
 import { listEscalations } from '@/lib/agent-tools/coordination/escalations';
 import { listHandoffs } from '@/lib/agent-tools/coordination/handoffs';
-import { messagesDir } from '@/lib/agent-tools/coordination/paths';
-import { readCoordFile, type CoordEnvelope } from '@/lib/agent-tools/coordination/envelope';
+import { coordLog } from '@/lib/agent-tools/coordination/log';
+import { type CoordEnvelope } from '@/lib/agent-tools/coordination/envelope';
 
-/** Read every message envelope in coord/messages/*.jsonl, no filtering. */
+/**
+ * Read every message envelope from the coord event log, no filtering.
+ * Routes through `coordLog` (the PG-backed CoordEventLog) rather than the
+ * old direct `coord/messages/*.jsonl` read — coord-channels-pg-port P-009.
+ */
 async function readAllMessages(): Promise<CoordEnvelope[]> {
-  const dir = messagesDir();
-  let entries: string[];
-  try {
-    entries = await fs.readdir(dir);
-  } catch (e: unknown) {
-    if ((e as NodeJS.ErrnoException)?.code === 'ENOENT') return [];
-    throw e;
-  }
-  const out: CoordEnvelope[] = [];
-  for (const f of entries) {
-    if (!f.endsWith('.jsonl')) continue;
-    const lines = await readCoordFile(join(dir, f));
-    for (const l of lines) out.push(l);
-  }
-  return out;
+  return coordLog.readLines('messages');
 }
 
 interface HistoryItem {

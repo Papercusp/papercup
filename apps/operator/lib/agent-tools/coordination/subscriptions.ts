@@ -1,53 +1,49 @@
 /**
  * subscriptions.ts — watch / notify (L3 #5).
  *
- * agent-coordination-architecture-v2 §6.4 (#5). Per-watcher append-
- * only JSONL: each subscribe line declares a pattern + trigger; an
- * unsubscribe line cancels by `related_msg_id`. Active watches are
- * the subscribe lines without a matching unsubscribe and not past
- * their expires_ts.
+ * Backend: `PgSubscriptionStore` over the org embedded-pg handle —
+ * `harness_shared.coord_subscriptions`, workspace-scoped like the sibling
+ * coord tables. A watch is a mutable row: `addWatch` inserts, `removeWatch`
+ * sets `cancelled_at`, `listWatches` reads the active rows (not cancelled,
+ * not past expires_ts) — replacing the fs append-and-fold of
+ * subscribe/unsubscribe JSONL lines (coord-channels-pg-port P-007 / Q-2).
  *
- * Per-watcher file → one writer per file → no lock.
- *
- * Notifications fire when something matches a pattern. The integration
- * is `fireNotifications(from, paths, trigger)` — any callsite can
- * invoke it (the locks:acquire / plans:add-decision bolt-ons can plant
- * it once they land). Each match appends a typed `notify` envelope to
- * the watcher's outbox in coord/messages/.
+ * Notifications fire when something matches a pattern. `fireNotifications`
+ * appends a typed `notify` envelope to each matching watcher's inbox via the
+ * SAME CoordEventLog (`coordLog`) that holds messages — so a notify lands
+ * exactly where `readInbox` looks (coord-channels-pg-port P-008). Any
+ * callsite can invoke it (the locks:acquire / plans:* bolt-ons do).
  *
  * v1 pattern syntax (deliberate simplification — note in plan §18):
  *   `**` matches anything including `/`
  *   `*`  matches anything except `/`
  *   everything else literal
- * No brace expansion, no `?`. Good enough for common path globs;
- * upgrade to a real glob lib only when a real use case forces it.
+ * No brace expansion, no `?`. Good enough for common path globs.
  */
 
-import { promises as fs } from 'node:fs';
-import { join } from 'node:path';
+import { getOrgPg } from '@restart/db-org';
+import { ensureCoordSubscriptionsTable } from '@/lib/ensure-schema';
+import { PgSubscriptionStore } from '@papercusp/coordination/subscription-store';
 import {
-  appendCoordLine,
   newMsgId,
-  readCoordFile,
-  type CoordEnvelope,
-  type CoordKind,
-} from './envelope';
-import {
-  outboxFile,
-  subscriptionsDir,
-  subscriptionsFile,
-} from './paths';
-import type { AgentIdentity } from './identity';
-import {
   patternToRegex,
   matchesPattern,
+  type CoordEnvelope,
+  type CoordKind,
   type WatchTrigger,
 } from '@papercusp/coordination/core';
+import { coordLog } from './log';
+import type { AgentIdentity } from './identity';
 
-// The v1 path-glob matcher + WatchTrigger now live in coord-core;
-// re-exported so existing importers of this module stay unchanged.
+// The v1 path-glob matcher + WatchTrigger live in coord-core; re-exported so
+// existing importers of this module stay unchanged.
 export { patternToRegex, matchesPattern };
 export type { WatchTrigger };
+
+const store = new PgSubscriptionStore({
+  getSql: () => getOrgPg().sql,
+  ensureSchema: ensureCoordSubscriptionsTable,
+});
 
 export interface WatchInput {
   pattern: string;
@@ -64,96 +60,52 @@ export interface WatchEntry {
   expires_ts: string | null;
 }
 
-/** Add a new watch — appends a subscribe line to the watcher's file. */
+/** Add a new watch — inserts a subscription row for the watcher. */
 export async function addWatch(
   identity: AgentIdentity,
   input: WatchInput,
 ): Promise<WatchEntry> {
-  const expiresMs = input.ttl_sec ? Date.now() + input.ttl_sec * 1000 : null;
-  const expiresIso: string | null =
-    expiresMs != null ? new Date(expiresMs).toISOString() : null;
-  const env: CoordEnvelope = {
-    ts: new Date().toISOString(),
-    msg_id: newMsgId(),
-    from: identity.ownerId,
-    to: ['*'],
-    kind: 'subscribe',
+  const ts = new Date().toISOString();
+  const msg_id = newMsgId();
+  const trigger = (input.trigger ?? 'any') as WatchTrigger;
+  const expires_ts =
+    input.ttl_sec != null ? new Date(Date.now() + input.ttl_sec * 1000).toISOString() : null;
+  await store.add({
+    msg_id,
+    owner_id: identity.ownerId,
     pattern: input.pattern,
-    trigger: input.trigger ?? 'any',
-  };
-  if (expiresIso != null) env.expires_ts = expiresIso;
-  await appendCoordLine(subscriptionsFile(identity.ownerId), env);
-  return {
-    msg_id: env.msg_id,
-    owner: identity.ownerId,
-    pattern: input.pattern,
-    trigger: (input.trigger ?? 'any') as WatchTrigger,
-    ts: env.ts,
-    expires_ts: expiresIso,
-  };
+    trigger,
+    created_ts: ts,
+    expires_ts,
+  });
+  return { msg_id, owner: identity.ownerId, pattern: input.pattern, trigger, ts, expires_ts };
 }
 
-/** Cancel a watch — appends an unsubscribe line referencing the sub's msg_id. */
+/** Cancel a watch — sets cancelled_at on the watcher's own subscription row. */
 export async function removeWatch(
   identity: AgentIdentity,
   subscribeMsgId: string,
 ): Promise<void> {
-  const env: CoordEnvelope = {
-    ts: new Date().toISOString(),
-    msg_id: newMsgId(),
-    from: identity.ownerId,
-    to: ['*'],
-    kind: 'unsubscribe',
-    related_msg_id: subscribeMsgId,
-  };
-  await appendCoordLine(subscriptionsFile(identity.ownerId), env);
+  await store.cancel(identity.ownerId, subscribeMsgId);
 }
 
 /**
- * List active watches across all watcher files (or one). "Active" =
- * not cancelled by an unsubscribe and not past expires_ts.
+ * List active watches (not cancelled, not past expires_ts), optionally one
+ * owner. Sorted by (ts, msg_id) — the store already orders by
+ * (created_ts, msg_id).
  */
 export async function listWatches(
   opts: { owner?: string } = {},
 ): Promise<WatchEntry[]> {
-  const dir = subscriptionsDir();
-  let files: string[];
-  try {
-    files = await fs.readdir(dir);
-  } catch (e: unknown) {
-    if ((e as NodeJS.ErrnoException)?.code === 'ENOENT') return [];
-    throw e;
-  }
-  const now = Date.now();
-  const subs = new Map<string, WatchEntry>(); // msg_id → entry
-  const cancelled = new Set<string>();
-  for (const f of files) {
-    if (!f.endsWith('.jsonl')) continue;
-    const lines = await readCoordFile(join(dir, f));
-    for (const l of lines) {
-      if (opts.owner && l.from !== opts.owner) continue;
-      if (l.kind === 'subscribe' && typeof l.pattern === 'string') {
-        subs.set(l.msg_id, {
-          msg_id: l.msg_id,
-          owner: l.from,
-          pattern: l.pattern,
-          trigger: ((l.trigger as WatchTrigger | undefined) ?? 'any'),
-          ts: l.ts,
-          expires_ts: typeof l.expires_ts === 'string' ? l.expires_ts : null,
-        });
-      } else if (l.kind === 'unsubscribe' && l.related_msg_id) {
-        cancelled.add(l.related_msg_id);
-      }
-    }
-  }
-  const out: WatchEntry[] = [];
-  for (const sub of subs.values()) {
-    if (cancelled.has(sub.msg_id)) continue;
-    if (sub.expires_ts && new Date(sub.expires_ts).getTime() <= now) continue;
-    out.push(sub);
-  }
-  out.sort((a, b) => a.ts.localeCompare(b.ts) || a.msg_id.localeCompare(b.msg_id));
-  return out;
+  const recs = await store.listActive({ owner: opts.owner });
+  return recs.map((r) => ({
+    msg_id: r.msg_id,
+    owner: r.owner_id,
+    pattern: r.pattern,
+    trigger: r.trigger as WatchTrigger,
+    ts: r.created_ts,
+    expires_ts: r.expires_ts,
+  }));
 }
 
 export interface WatchMatch {
@@ -195,12 +147,10 @@ export async function findMatchingWatchers(
 }
 
 /**
- * Best-effort: fire `notify` entries into each matching watcher's
- * outbox. The notify is written to the matching watcher's coord/messages/
- * outbox (i.e. the watcher writes a line addressed to itself — same
- * single-writer-per-file invariant as everything else). Returns the
- * number of notifications written. Each individual write try/catches
- * so a single broken outbox cannot drop the rest.
+ * Best-effort: fire `notify` entries into each matching watcher's inbox.
+ * The notify is appended to the messages surface via `coordLog` — the same
+ * store `readInbox` reads — addressed `to: [watcher]`. Returns the number
+ * written. Each write try/catches so one failure cannot drop the rest.
  */
 export async function fireNotifications(
   source: AgentIdentity,
@@ -209,10 +159,9 @@ export async function fireNotifications(
 ): Promise<number> {
   const matches = await findMatchingWatchers(paths, trigger);
   // Dedup per (watcher, matched_path): a watcher with two overlapping
-  // patterns (e.g. `apps/**` and `apps/operator/**`) both matching one
-  // path would otherwise receive two identical notifies for the same
-  // path (audit B3). One notify per path is what the watcher needs;
-  // the first matching watch wins (its pattern lands in the envelope).
+  // patterns both matching one path would otherwise receive two identical
+  // notifies. One notify per path is what the watcher needs; the first
+  // matching watch wins (its pattern lands in the envelope).
   const seen = new Set<string>();
   let written = 0;
   for (const m of matches) {
@@ -232,12 +181,10 @@ export async function fireNotifications(
       summary: `notify: ${trigger} matched ${m.matched_path}`,
     };
     try {
-      // The watcher's outbox is the receiver — a notify is the only
-      // entry kind written into a file that is not the writer's own
-      // outbox. We accept that small asymmetry to keep notify delivery
-      // synchronous; for a strict one-writer invariant a future
-      // refactor could route notifies through coord/notifies/<watcher>.
-      await appendCoordLine(outboxFile(m.watcher), env);
+      // The watcher is the recipient; the writerKey is the watcher's own
+      // outbox key (one notify row per watcher), so it surfaces in the
+      // watcher's `readInbox` exactly like a directly-sent message.
+      await coordLog.appendLine('messages', m.watcher, env);
       written += 1;
     } catch {
       // best-effort
