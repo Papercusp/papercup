@@ -234,7 +234,7 @@ two SEPARATE storage components**, not one dual-backend interface:
   "P-001 — Per-subsystem seam map" section at the end of this plan; specs every
   remaining seam (locks/coord/search/memory/backup/desktop-IPC/rate-limit) +
   the `PgHandle` primitive, grounded in the real `FileClaimCoordinator` interface
-  (4 methods, not the audit's "5"). → D-003 D-010
+  (5 methods: acquire/release/extend/heartbeat/reap). → D-003 D-010
 
 ## Phase 1 — Pure extractions (no seam needed; can start now, in parallel)
 
@@ -562,10 +562,13 @@ is the contract to build to.
 - A **vocabulary-only package** — types + a conformance suite, importing nothing
   from any backend. Backends import *it*; the dependency is one-way, so a new
   backend (Redis/etcd/in-memory) joins by satisfying the shape.
-- The real `FileClaimCoordinator` is **4 methods** — `acquire` / `release` /
-  `heartbeat` / `inspect` (the earlier sub-agent audit said "extend/reap"; that
-  was inaccurate — those are at most impl extras, not the contract). Quote the
-  source, not the audit.
+- The real `FileClaimCoordinator` is **5 methods** — `acquire` / `release` /
+  `extend` / `heartbeat` / `reap` (verified directly in the source; an earlier
+  draft of this section wrongly "corrected" it to 4 with an invented `inspect` —
+  the sub-agent audit was right here. Quote the source, not your memory of it.)
+  Notable contract details from the header: `extend` returns a *fresh* claim
+  (never mutates the input), `release` is idempotent, empty-path acquire is legal,
+  `acquire` carries `waitMs` so blocking and try-only backends share one method.
 - Every extracted seam ships an **in-memory implementation** that passes the
   *same* conformance suite as the production (PG/fs) one — that's the P-050 gate.
 
