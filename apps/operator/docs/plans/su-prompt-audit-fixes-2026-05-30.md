@@ -33,22 +33,22 @@ The SU prompt is assembled by `install-standalone-mcp.sh` from a base playbook (
 - **P-004** `done` "audit rows + **Zero deltas**" → "audit rows + sync invalidation (SSE / `pg_notify`)". §"Where not to go".
 - **P-005** `done` Drop the hard "**~96**" count; fix the scope list (omits `coord:* locks:* plans:*` + `tasks:* flags:* backup:* design-phase:* roles:* cross_harness:*` …). Prefer "see `agent_tools:list`". §"What papercusp-su gives you".
 - **P-006** `done` (low-value) Clarify the API/MCP layer is **Hono** (`bin/hono-host.ts`, :3070), not "Next.js". Drop the "overmind" nit. §"What Papercusp is".
-- **P-007** `todo` Scan `agent-policies.mdx` for the same stale facts (role count, ports, bin/*). **Expected low-yield** (a grep found none).
+- **P-007** `done` Scan `agent-policies.mdx` for the same stale facts (role count, ports, bin/*). **Expected low-yield** (a grep found none). (Scanned agent-policies.mdx for the role count / :3055 / bin/prod|dev / ~96 / Zero-delta / overmind / spawns / per-role-persona claims — none present. Low-yield as predicted; no edit needed.)
 
 ## Phase 3 — Verification method + operator topology
 
-- **P-010** `todo` Give the verification mandate a method by **linking** (not re-specifying, per D-001): point at CLAUDE.md's four canonical test homes + `npm run test:affected` / `/internal/docs/testing`; power playbook → "verify via the project's own test command / TESTING.md".
-- **P-011** `todo` Document the operator runtime reality, scoped precisely (D-002): only the **:3070 Hono host** (server-side handlers + the `lib/**` they import) lacks hot-reload — restart to pick up changes; the **:3055 Next layer hot-reloads**. CLAUDE.md gets the general server-side-restart invariant; the box-specific `systemctl --user restart papercup-dev-api.service` + the "probe where the write lands" tell go in a memory note + an `agent-insights/` MDX scoped to the standing dev box. Engineer playbook → one-line pointer.
+- **P-010** `done` Give the verification mandate a method by **linking** (not re-specifying, per D-001): point at CLAUDE.md's four canonical test homes + `npm run test:affected` / `/internal/docs/testing`; power playbook → "verify via the project's own test command / TESTING.md".
+- **P-011** `done` Document the operator runtime reality, scoped precisely (D-002): only the **:3070 Hono host** (server-side handlers + the `lib/**` they import) lacks hot-reload — restart to pick up changes; the **:3055 Next layer hot-reloads**. CLAUDE.md gets the general server-side-restart invariant; the box-specific `systemctl --user restart papercup-dev-api.service` + the "probe where the write lands" tell go in a memory note + an `agent-insights/` MDX scoped to the standing dev box. Engineer playbook → one-line pointer. (CLAUDE.md general server-side-restart fact ✓, memory note ✓, engineer-playbook pointer ✓, agent-insight MDX operator-3070-host-no-hot-reload ✓ source. Docs-mirror public/internal/docs regenerates on the next astro build — not rebuilt this commit.)
 
 ## Phase 4 — Missing-system pointers (not duplication)
 
-- **P-012** `todo` Engineer-playbook pointer: "Working on the Papercusp codebase? The repo `CLAUDE.md` is authoritative for run-the-app (Tauri desktop; never browse `:3055`/`:3070`; verdict for browser checks), testing, storage policy, feature-flag gating, nuqs, and context7 — read it." No copying (D-001).
-- **P-013** `todo` Confirm P-012's pointer covers feature-flags + storage policy without duplication; add a one-liner only if insufficient. blocked-by: P-012
+- **P-012** `done` Engineer-playbook pointer: "Working on the Papercusp codebase? The repo `CLAUDE.md` is authoritative for run-the-app (Tauri desktop; never browse `:3055`/`:3070`; verdict for browser checks), testing, storage policy, feature-flag gating, nuqs, and context7 — read it." No copying (D-001).
+- **P-013** `done` Confirm P-012's pointer covers feature-flags + storage policy without duplication; add a one-liner only if insufficient. blocked-by: P-012 (Satisfied by P-012's pointer — it names feature-flag gating + storage policy as CLAUDE.md-authoritative; no playbook duplication needed.)
 
 ## Phase 5 — Verify + adjacent fixes
 
 - **P-014** `todo` Re-render the playbook (bash `render_playbook` + the shared TS helper `lib/desktop-install/splice-tooling-overlay.ts`, consumers `papercusp-files.ts`/`agent-bundle.ts` — don't re-DRY); run the Vitest **`apps/operator/lib/__tests__/tools-md-sync.test.ts`** (no `__tests__/integration/tools-md-sync.mjs`); confirm no backtick tool refs point at non-existent tools. Rebase all edit items on current prompt content (last edited today by `1241865a`). blocked-by: P-001, P-002, P-003, P-004, P-005, P-006, P-007, P-008, P-010, P-011, P-012, P-013
-- **P-015** `todo` Remove the stale `papercusp-su-*.tools.md.bak-*` backup files if confirmed dead.
+- **P-015** `done` Remove the stale `papercusp-su-*.tools.md.bak-*` backup files if confirmed dead.
 - **P-016** `done` Fix CLAUDE.md "Adding a tool" §5 (≈L448), which cites the dead `__tests__/integration/tools-md-sync.mjs` → point at the Vitest test.
 
 ## Phase 6 — Code fixes surfaced by the audit (separable PRs)

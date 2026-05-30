@@ -161,6 +161,12 @@ Use `cross_harness:docs_*` to read a different harness's docs.
 per-tool guidance. The catalog evolves — check it rather than trusting
 this file to be complete.
 
+#### Verify before claiming done
+
+A passing typecheck is not a working feature. Verify against the
+project's own test command / `TESTING.md` (its harness contract), and
+run it before you report a change as done.
+
 ## What NOT to do
 
 - **Don't make cross-workspace calls.** Your token is scoped to one

@@ -22,7 +22,7 @@ Your effective scope depends on how you were launched:
 - **`ctx.harnessSlug` is not set** — you're at operator scope (workspace root, no harness). Harness-scoped tools then need a harness: most **require an explicit `slug` arg and error without it** (`features:*`, `issues:*`, `agent_chats:*`, `experts:*`, `intel:*`, `harness:get/status/…`), `docs:*` errors at operator scope, and `plans:*` falls back to the primary harness. To work on a harness, pass its `slug` (find it via `harness:list`) or use `cross_harness:*` for reads. Workspace-global tools (`harness:list`, `search:*`, `memory:*`, `coord:*`, `locks:*`, `audit:*`, `flags:*`, …) work regardless. For Papercusp's own **framework** engineering docs at operator scope, read `apps/operator-docs/src/content/docs/**.mdx` or `curl :3070/llms-full.txt` (not `docs:*`).
 - This is the same model as `cross_harness:docs_*` vs `docs:*`, and `cross_harness:plans_*` vs `plans:*` — your context determines scope automatically.
 
-**If you are working on the Papercusp codebase itself** (subject of work is the Papercusp source, not an end-user project): you have read/write access to the repo (`apps/operator/`, `packages/agent-mcp/`, `libs/papercusp/`, `apps/operator-docs/`, `prompts/`, `papercusp-desktop/`), direct shell and PG access, and admin privileges across every workspace, harness, plugin, and tool surface. Read the source, run the tools, edit the code — the system is yours to work on, not just to query.
+**If you are working on the Papercusp codebase itself** (subject of work is the Papercusp source, not an end-user project): you have read/write access to the repo (`apps/operator/`, `packages/agent-mcp/`, `libs/papercusp/`, `apps/operator-docs/`, `prompts/`, `papercusp-desktop/`), direct shell and PG access, and admin privileges across every workspace, harness, plugin, and tool surface. Read the source, run the tools, edit the code — the system is yours to work on, not just to query. When the Papercusp repo is your cwd, its **`CLAUDE.md`** is authoritative for the repo conventions — how to run/test the app (Tauri desktop; never browse `:3055`/`:3070`; `verdict` for browser checks), the **server-side no-hot-reload rule** (the `:3070` Hono host must be restarted to pick up `lib/**` edits), the storage policy (PG-by-default + migrations dir), feature-flag gating, nuqs, and context7. Read it before changing code; this playbook deliberately points rather than duplicates.
 
 ## What Papercusp is
 
@@ -547,7 +547,11 @@ edits are picked up immediately.
   slug / feature id / workspace is the user telling you they didn't
   say enough yet. Ask.
 - **Don't ship without verification.** A passing typecheck is not a
-  working feature. See `/internal/docs/agent-policies`.
+  working feature. In the Papercusp repo, verify with `npm run test:affected`
+  + the four canonical test homes (Vitest / Playwright / Cargo / LLM
+  scenarios — see `CLAUDE.md` and `/internal/docs/testing`); on any other
+  harness, use that project's own test command / `TESTING.md`. See
+  `/internal/docs/agent-policies`.
 
 ## Mid-call interactivity
 
