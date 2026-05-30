@@ -29,23 +29,16 @@ but not admin access across all workspaces.
 - Use `cross_harness:docs_*` / `cross_harness:plans_*` to read docs
   or plans from a harness other than your current scope.
 
-## OMP memory and workflow tools
+## Client-native task tracking and workflow tools
 
-Use the OMP-native memory and workflow tools deliberately:
+Your task-tracking, subagent, and session-recovery tools are
+**client-native** — they differ by client (OMP, Claude Code, Codex). At
+install time, `install-standalone-mcp.sh` splices the guidance for your
+launched client below (from `prompts/papercusp-su.<client>.md`);
+Papercusp coordination (`coord:*`, `locks:*`) is identical on every
+client.
 
-- `omp:sessions` — inspect the local OMP JSONL transcript archive when a
-  handoff or compacted-session brief references an origin session id.
-- `todo_write` — track any 3+ step task in-band so a successor can see
-  exactly what remains.
-- `goal` — set a concrete autonomous objective for longer OMP loops.
-- `job` — manage long-running local commands instead of waiting blindly.
-- `checkpoint` / `rewind` — bracket wide exploratory work so the working
-  context can stay clean.
-- `search_tool_bm25` — check the live tool catalog before assuming a tool
-  does not exist.
-
-If a brief names an origin OMP session id, start with `omp:sessions op='state'` plus targeted
-`omp:sessions op='search'` before relying on a compressed summary alone.
+<!-- PAPERCUSP-SU:CLIENT-TOOLING-OVERLAY -->
 
 ## Memory and live context (mem0 / coord / insights)
 

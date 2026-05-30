@@ -7,11 +7,13 @@
 #   1. Generates a 32-byte random token
 #   2. Writes ~/.papercusp/superuser-token (mode 0600)
 #   3. MERGES a `papercusp-su` server entry into ~/.omp/agent/mcp.json
-#      (preserves any other MCP servers the user already has)
+#      AND ~/.claude.json (preserves any other MCP servers already
+#      configured in either client).
 #   4. Writes the engineer-collaborator playbook + coordination extension
-#      as standalone OPT-IN files under ~/.papercusp/, and installs an
-#      `omp-su` wrapper that launches OMP with them. Plain `omp` is left
-#      untouched — engineer-collaborator mode is no longer always-on.
+#      as standalone OPT-IN files under ~/.papercusp/, and installs the
+#      `omp-su` AND `claude-su` wrappers that launch each client with
+#      them. Plain `omp` / `claude` are left untouched — engineer-
+#      collaborator mode is no longer always-on.
 #   5. Verifies HTTP 200 against the running operator
 #
 # Re-running REUSES the existing token (so live shells keep working),
@@ -44,7 +46,38 @@ for arg in "$@"; do
   esac
 done
 
-PLAYBOOK_PATH="${SCRIPT_DIR}/../prompts/papercusp-su-${PROFILE}.tools.md"
+PROMPTS_DIR="${SCRIPT_DIR}/../prompts"
+PLAYBOOK_PATH="${PROMPTS_DIR}/papercusp-su-${PROFILE}.tools.md"
+# Per-client tooling overlays (profile-independent). The shared base
+# playbook carries client-neutral guidance; each client's native
+# task/workflow tooling (OMP vs Claude Code vs Codex) lives in its own
+# overlay, spliced into the base at the CLIENT-TOOLING-OVERLAY marker by
+# render_playbook below. This is what keeps OMP-only task-tool guidance
+# out of the Claude/Codex playbooks.
+OVERLAY_OMP="${PROMPTS_DIR}/papercusp-su.omp.md"
+OVERLAY_CLAUDE="${PROMPTS_DIR}/papercusp-su.claude.md"
+OVERLAY_CODEX="${PROMPTS_DIR}/papercusp-su.codex.md"
+
+# Splice a client overlay into the base playbook at the marker. Falls
+# back to appending if the marker is absent, or to base-only if the
+# overlay file is missing. One source of truth for the shared base.
+render_playbook() {
+  python3 - "$1" "$2" "$3" <<'PYEOF'
+import sys
+base_path, overlay_path, dest_path = sys.argv[1], sys.argv[2], sys.argv[3]
+marker = "<!-- PAPERCUSP-SU:CLIENT-TOOLING-OVERLAY -->"
+with open(base_path) as f:
+    base = f.read()
+try:
+    with open(overlay_path) as f:
+        overlay = f.read().rstrip("\n")
+except FileNotFoundError:
+    overlay = ""
+out = base.replace(marker, overlay) if marker in base else base.rstrip("\n") + "\n\n" + overlay + "\n"
+with open(dest_path, "w") as f:
+    f.write(out)
+PYEOF
+}
 
 # OMP looks for its MCP server config at ~/.omp/agent/mcp.json. The
 # directory may not exist on a fresh OMP install — create it.
@@ -129,6 +162,44 @@ PYEOF
 chmod 600 "$OMP_CONFIG_PATH"
 echo "✓ Merged 'papercusp-su' into $OMP_CONFIG_PATH (mode 0600)"
 
+# 3a. Merge the same `papercusp-su` entry into Claude Code's config.
+# Claude Code reads ~/.claude.json (per-user, global) for MCP servers
+# in addition to per-project .mcp.json files. We only touch it if the
+# file already exists — a missing ~/.claude.json means Claude Code has
+# never been launched on this machine, and creating one would seed
+# unrelated defaults the user didn't ask for. The merge preserves
+# every other MCP server already registered.
+CLAUDE_CONFIG_PATH="${HOME}/.claude.json"
+if [ -f "$CLAUDE_CONFIG_PATH" ]; then
+  python3 - "$CLAUDE_CONFIG_PATH" "$OPERATOR_URL" "$TOKEN" "$AGENT_ID" "$PROFILE" <<'PYEOF'
+import json, os, sys, time
+path, operator_url, token, agent_id, profile = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5]
+try:
+    with open(path) as f:
+        cfg = json.load(f)
+except json.JSONDecodeError:
+    print(f'! existing {path} is invalid JSON; backing up and starting fresh', file=sys.stderr)
+    os.rename(path, path + '.bak.' + str(int(time.time())))
+    cfg = {}
+
+cfg.setdefault('mcpServers', {})
+profile_param = '&profile=power' if profile == 'power' else ''
+cfg['mcpServers']['papercusp-su'] = {
+    'type': 'http',
+    'url': operator_url + '/api/mcp?superuser=1' + profile_param + '&client=' + agent_id,
+    'headers': {
+        'Authorization': 'Bearer ' + token,
+    },
+}
+with open(path, 'w') as f:
+    json.dump(cfg, f, indent=2)
+PYEOF
+  chmod 600 "$CLAUDE_CONFIG_PATH"
+  echo "✓ Merged 'papercusp-su' into $CLAUDE_CONFIG_PATH (mode 0600)"
+else
+  echo "· $CLAUDE_CONFIG_PATH not found — skipping Claude Code MCP merge (launch \`claude\` once then re-run to opt in)"
+fi
+
 # 3b. Enable OMP-native Hindsight memory. This is the first-class OMP
 # memory backend: it exposes recall/retain/reflect tools and auto-retains
 # session history every N turns. The server may be local Docker or Cloud;
@@ -149,23 +220,32 @@ set_omp_config "hindsight.scoping" "per-project-tagged"
 set_omp_config "hindsight.autoRecall" "true"
 set_omp_config "hindsight.autoRetain" "true"
 
-# 4. Install the profile-specific playbook as a standalone OPT-IN file.
-# It used to be injected as a managed block into OMP's always-loaded
-# context file (~/.omp/agent/CLAUDE.md), which made engineer-collaborator
-# mode unconditional on every `omp` launch. It now lives at
-# ~/.papercusp/<profile>-collaborator.md and is loaded only when the
-# `omp-su` wrapper (step 4d) passes it via `--append-system-prompt`.
+# 4. Render the per-client playbooks as standalone OPT-IN files.
+# The shared base playbook (papercusp-su-<profile>.tools.md) carries all
+# client-neutral guidance; the client-specific task/workflow tooling
+# (OMP vs Claude Code vs Codex) is spliced in from a small overlay so
+# that, e.g., OMP's "don't use the Claude task tools" guidance never
+# lands in the Claude or Codex playbook. These files are loaded only by
+# the -su wrappers; plain `omp`/`claude`/`codex` never see them.
 #
-# Profile destinations:
-#   engineer → ~/.papercusp/engineer-collaborator.md
-#   power    → ~/.papercusp/power-collaborator.md
+# Destinations:
+#   omp    → ~/.papercusp/${PROFILE}-collaborator.md         (omp-su, step 4d)
+#   claude → ~/.papercusp/${PROFILE}-collaborator.claude.md  (claude-su, step 4e)
+#   codex  → ~/.papercusp/codex-su-home/AGENTS.md            (codex-su, step 4f)
 PLAYBOOK_DEST="${HOME}/.papercusp/${PROFILE}-collaborator.md"
+PLAYBOOK_DEST_CLAUDE="${HOME}/.papercusp/${PROFILE}-collaborator.claude.md"
 if [ ! -f "$PLAYBOOK_PATH" ]; then
-  echo "! Expected playbook at $PLAYBOOK_PATH; skipping playbook install"
+  echo "! Expected base playbook at $PLAYBOOK_PATH; skipping playbook install"
 else
-  cp "$PLAYBOOK_PATH" "$PLAYBOOK_DEST"
+  for ov in "$OVERLAY_OMP" "$OVERLAY_CLAUDE" "$OVERLAY_CODEX"; do
+    [ -f "$ov" ] || echo "! Missing client overlay $(basename "$ov") — that playbook falls back to base-only"
+  done
+  render_playbook "$PLAYBOOK_PATH" "$OVERLAY_OMP" "$PLAYBOOK_DEST"
   chmod 644 "$PLAYBOOK_DEST"
-  echo "✓ Wrote ${PROFILE} playbook to $PLAYBOOK_DEST"
+  echo "✓ Wrote ${PROFILE} OMP playbook to $PLAYBOOK_DEST"
+  render_playbook "$PLAYBOOK_PATH" "$OVERLAY_CLAUDE" "$PLAYBOOK_DEST_CLAUDE"
+  chmod 644 "$PLAYBOOK_DEST_CLAUDE"
+  echo "✓ Wrote ${PROFILE} Claude Code playbook to $PLAYBOOK_DEST_CLAUDE"
 fi
 
 # 4a. Migration cleanup: strip the legacy always-on managed block from
@@ -250,6 +330,142 @@ case ":${PATH}:" in
   *) echo "! $WRAPPER_DIR is not on PATH — add it or invoke $WRAPPER_PATH by full path" ;;
 esac
 
+# 4e. Install the `claude-su` wrapper — Claude Code equivalent of omp-su.
+# Plain `claude` stays vanilla; `claude-su` launches Claude Code with
+# the playbook (--append-system-prompt-file). The papercusp-su MCP
+# server is already registered in ~/.claude.json (step 3a), so the SU
+# tool catalog is available either way — only the playbook injection
+# is opt-in.
+#
+# Hooks: Claude Code's hook system is settings.json-driven, not module-
+# loaded like OMP's `-e`. The papercusp coordination extension is OMP-
+# specific; the Claude Code locks-hook (if/when it ships) will live in
+# settings.json and is installed separately, not by this wrapper.
+if CLAUDE_BIN="$(command -v claude 2>/dev/null)"; then
+  CLAUDE_WRAPPER_DIR="$(dirname "$CLAUDE_BIN")"
+else
+  CLAUDE_WRAPPER_DIR="${HOME}/.local/bin"
+fi
+mkdir -p "$CLAUDE_WRAPPER_DIR"
+CLAUDE_WRAPPER_PATH="${CLAUDE_WRAPPER_DIR}/claude-su"
+cat > "$CLAUDE_WRAPPER_PATH" <<WRAPEOF
+#!/usr/bin/env bash
+# papercusp ${PROFILE}-collaborator launcher for Claude Code
+# (managed by install-standalone-mcp.sh --profile=${PROFILE}).
+# Plain \`claude\` is a vanilla Claude Code session; this wrapper opts
+# into the ${PROFILE} playbook (Claude-Code variant — OMP-only task-tool
+# guidance stripped out) via --append-system-prompt-file. The
+# papercusp-su MCP server is already in ~/.claude.json, so all SU
+# tools are available either way.
+# To switch profiles, re-run: install-standalone-mcp.sh --profile=engineer|power
+exec claude \\
+  --append-system-prompt-file "${PLAYBOOK_DEST_CLAUDE}" \\
+  "\$@"
+WRAPEOF
+chmod 755 "$CLAUDE_WRAPPER_PATH"
+echo "✓ Installed $CLAUDE_WRAPPER_PATH"
+case ":${PATH}:" in
+  *":${CLAUDE_WRAPPER_DIR}:"*) : ;;
+  *) echo "! $CLAUDE_WRAPPER_DIR is not on PATH — add it or invoke $CLAUDE_WRAPPER_PATH by full path" ;;
+esac
+
+# 4f. Install the `codex-su` wrapper — Codex CLI equivalent of omp-su.
+# Codex has no `--append-system-prompt`; it injects instructions through
+# AGENTS.md files within its CODEX_HOME. So codex-su runs Codex in a
+# DEDICATED CODEX_HOME (~/.papercusp/codex-su-home) whose AGENTS.md IS
+# the ${PROFILE} playbook. Plain `codex` (CODEX_HOME=~/.codex) stays
+# vanilla — it never sees the playbook or the papercusp-su server.
+#
+# Login is shared by symlinking ~/.codex/auth.json (no separate sign-in).
+# The papercusp-su MCP server is registered ONLY in this SU home and uses
+# a bearer-token ENV VAR — the codex-su wrapper reads the 0600 token file
+# at launch and exports it, so the token is never written into config.
+CODEX_SU_HOME="${HOME}/.papercusp/codex-su-home"
+mkdir -p "${CODEX_SU_HOME}/sessions"
+chmod 700 "$CODEX_SU_HOME"
+if [ ! -f "$PLAYBOOK_PATH" ]; then
+  echo "! Expected base playbook at $PLAYBOOK_PATH; skipping codex-su home"
+else
+  render_playbook "$PLAYBOOK_PATH" "$OVERLAY_CODEX" "${CODEX_SU_HOME}/AGENTS.md"
+  chmod 644 "${CODEX_SU_HOME}/AGENTS.md"
+  echo "✓ Wrote ${PROFILE} Codex playbook to ${CODEX_SU_HOME}/AGENTS.md"
+fi
+# Share login with the user's real Codex install.
+if [ -e "${HOME}/.codex/auth.json" ]; then
+  ln -sf "${HOME}/.codex/auth.json" "${CODEX_SU_HOME}/auth.json"
+  echo "✓ Linked ${CODEX_SU_HOME}/auth.json → ~/.codex/auth.json (shared login)"
+else
+  echo "· ~/.codex/auth.json not found — run \`codex\` once and sign in, then re-run to share login"
+fi
+# SU-home config.toml: papercusp-su MCP server + model/effort inherited
+# from ~/.codex/config.toml (top-level scalars only; snapshot, re-run to
+# refresh). The bearer token comes from PAPERCUSP_SU_TOKEN at runtime.
+python3 - "${CODEX_SU_HOME}/config.toml" "${HOME}/.codex/config.toml" "$OPERATOR_URL" "$AGENT_ID" "$PROFILE" <<'PYEOF'
+import re, sys
+dest, user_cfg, operator_url, agent_id, profile = sys.argv[1:6]
+model = effort = None
+try:
+    with open(user_cfg) as f:
+        for line in f:
+            s = line.strip()
+            if s.startswith('['):
+                break  # stop at the first table — only inherit top-level scalars
+            m = re.match(r'model\s*=\s*(.+)$', s)
+            if m: model = m.group(1).strip()
+            m = re.match(r'model_reasoning_effort\s*=\s*(.+)$', s)
+            if m: effort = m.group(1).strip()
+except FileNotFoundError:
+    pass
+profile_param = '&profile=power' if profile == 'power' else ''
+url = operator_url + '/api/mcp?superuser=1' + profile_param + '&client=' + agent_id
+lines = [
+    '# Papercusp codex-su home config (managed by install-standalone-mcp.sh).',
+    '# Applies ONLY when launched via the `codex-su` wrapper; plain `codex`',
+    '# (CODEX_HOME=~/.codex) is unaffected.',
+]
+if model:  lines.append(f'model = {model}')
+if effort: lines.append(f'model_reasoning_effort = {effort}')
+lines += [
+    '',
+    '[mcp_servers.papercusp-su]',
+    f'url = "{url}"',
+    'bearer_token_env_var = "PAPERCUSP_SU_TOKEN"',
+    '',
+]
+with open(dest, 'w') as f:
+    f.write('\n'.join(lines))
+PYEOF
+chmod 600 "${CODEX_SU_HOME}/config.toml"
+echo "✓ Wrote ${CODEX_SU_HOME}/config.toml (papercusp-su MCP, scoped to codex-su)"
+
+if CODEX_BIN="$(command -v codex 2>/dev/null)"; then
+  CODEX_WRAPPER_DIR="$(dirname "$CODEX_BIN")"
+else
+  CODEX_WRAPPER_DIR="${HOME}/.local/bin"
+fi
+mkdir -p "$CODEX_WRAPPER_DIR"
+CODEX_WRAPPER_PATH="${CODEX_WRAPPER_DIR}/codex-su"
+cat > "$CODEX_WRAPPER_PATH" <<WRAPEOF
+#!/usr/bin/env bash
+# papercusp ${PROFILE}-collaborator launcher for Codex CLI
+# (managed by install-standalone-mcp.sh --profile=${PROFILE}).
+# Codex has no --append-system-prompt, so this runs Codex in a dedicated
+# CODEX_HOME whose AGENTS.md is the ${PROFILE} playbook, with the
+# papercusp-su MCP server scoped to it. Plain \`codex\` is unaffected.
+# To switch profiles, re-run: install-standalone-mcp.sh --profile=engineer|power
+if [ -z "\${PAPERCUSP_SU_TOKEN:-}" ] && [ -s "${TOKEN_PATH}" ]; then
+  PAPERCUSP_SU_TOKEN="\$(cat "${TOKEN_PATH}")"
+  export PAPERCUSP_SU_TOKEN
+fi
+exec env CODEX_HOME="${CODEX_SU_HOME}" codex "\$@"
+WRAPEOF
+chmod 755 "$CODEX_WRAPPER_PATH"
+echo "✓ Installed $CODEX_WRAPPER_PATH"
+case ":${PATH}:" in
+  *":${CODEX_WRAPPER_DIR}:"*) : ;;
+  *) echo "! $CODEX_WRAPPER_DIR is not on PATH — add it or invoke $CODEX_WRAPPER_PATH by full path" ;;
+esac
+
 # 5. Verify the endpoint accepts the token.
 echo
 echo "→ Verifying loopback access at ${OPERATOR_URL}/api/mcp?superuser=1"
@@ -276,24 +492,36 @@ cat <<EOF
 
 Done.  Profile: ${PROFILE}
 
-  Plain OMP — vanilla coding assistant, no papercusp playbook:
+  Plain OMP / Claude Code — vanilla coding assistant, no playbook:
     \$ omp
+    \$ claude
 
-  ${PROFILE^}-collaborator mode — playbook + coordination extension:
-    \$ omp-su
+  ${PROFILE^}-collaborator mode — playbook injected, papercusp-su tools available:
+    \$ omp-su       # OMP + playbook + coordination extension
+    \$ claude-su    # Claude Code + playbook (no coord extension — OMP-only)
+    \$ codex-su     # Codex + playbook (dedicated CODEX_HOME, shared login)
     > call mcp__papercusp-su__papercusp:list_workspaces
 
-  One-off, without the wrapper:
-    \$ omp --append-system-prompt ${PLAYBOOK_DEST} \\
-          -e ~/.papercusp/papercusp-coord.ts
+  Each -su wrapper loads the SAME base playbook with its OWN client
+  tooling overlay spliced in, so OMP-only task-tool guidance never lands
+  in the Claude or Codex playbook.
+
+  One-off, without the wrappers:
+    \$ omp    --append-system-prompt ${PLAYBOOK_DEST} \\
+             -e ~/.papercusp/papercusp-coord.ts
+    \$ claude --append-system-prompt-file ${PLAYBOOK_DEST_CLAUDE}
+    \$ CODEX_HOME=${CODEX_SU_HOME} PAPERCUSP_SU_TOKEN=\$(cat ${TOKEN_PATH}) codex
 
   Switch profiles:
     \$ install-standalone-mcp.sh --profile=engineer   # full Papercusp-engineer playbook
     \$ install-standalone-mcp.sh --profile=power      # power-engineer subset (generic tools)
 
-The papercusp-su MCP server is registered for BOTH plain omp and omp-su
-(it lives in ~/.omp/agent/mcp.json) — only the playbook and the
-coordination extension are gated behind omp-su.
+The papercusp-su MCP server is registered for plain \`omp\`, \`omp-su\`,
+\`claude\`, and \`claude-su\` (entries in ~/.omp/agent/mcp.json and
+~/.claude.json) — only the playbook (and, for OMP, the coordination
+extension) are gated behind the -su wrappers. For Codex it is different:
+the server is registered ONLY in the codex-su home (${CODEX_SU_HOME}/config.toml),
+so plain \`codex\` is fully vanilla and only \`codex-su\` gets the SU tools.
 
 OMP-native Hindsight memory is enabled by this installer:
   memory.backend=hindsight
@@ -314,8 +542,12 @@ callers (rather than silently leaking Papercusp's docs).
 To rotate the token, delete $TOKEN_PATH and re-run. To revoke, delete:
   $TOKEN_PATH
   $PLAYBOOK_DEST
+  $PLAYBOOK_DEST_CLAUDE
   $COORD_EXT_DEST
   $WRAPPER_PATH
-  (and remove the 'papercusp-su' entry from $OMP_CONFIG_PATH)
+  $CLAUDE_WRAPPER_PATH
+  $CODEX_WRAPPER_PATH
+  $CODEX_SU_HOME   (the dedicated codex-su CODEX_HOME)
+  (and remove the 'papercusp-su' entry from both $OMP_CONFIG_PATH and $CLAUDE_CONFIG_PATH)
 
 EOF
