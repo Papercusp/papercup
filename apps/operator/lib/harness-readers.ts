@@ -216,12 +216,13 @@ export async function getHealth(
   const smokeFail = existsSync(join(harnessDir(project), 'smoke-failure.md'));
 
   const checks: Array<{ name: string; ok: boolean; detail?: string }> = [
-    { name: 'spec_present', ok: existsSync(join(project.path, 'SPEC.md')) },
+    // SPEC.md (spec_present) and validation-contract.md (contract_present)
+    // were dropped here: plans replaced both as the authoritative
+    // scope/acceptance surface (plans-central-harness-ux-2026-05-26,
+    // D-004/D-005). A plan-native harness has neither file, so gating
+    // health on them would flag every current harness unhealthy.
+    // features_present already covers "has this harness been given work".
     { name: 'features_present', ok: features.length > 0 },
-    {
-      name: 'contract_present',
-      ok: existsSync(join(harnessDir(project), 'validation-contract.md')),
-    },
     { name: 'not_escalated', ok: !escalated, detail: escalated ? 'see escalation.md' : undefined },
     {
       name: 'no_pending_checkpoints',

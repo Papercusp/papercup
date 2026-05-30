@@ -1,25 +1,30 @@
 /**
- * plans:promote — promote a plan into a harness as new SPEC.md
- * criteria + (separately) features.
+ * plans:promote — promote a plan into a harness as features (+ their
+ * inline VAL-* assertions).
  *
- * agent-coordination-architecture-v2 §11.
+ * agent-coordination-architecture-v2 §11, as amended by
+ * plans-central-harness-ux-2026-05-26 (D-004/D-005): plans replaced
+ * SPEC.md as the authoritative scope/acceptance document, so promote no
+ * longer writes SPEC.md — it extracts inline VAL-* assertions from the
+ * plan items and stores them as `feature.claims` + `harness_plan_assertions`.
  *
- *   - **Preview** (default, `apply: false`): computes the new SPEC.md
- *     body (current + new [SC-NNN]-tagged criteria with provenance) and
- *     the per-feature covers mapping. Returns the JSON for the caller
- *     to inspect — useful for dry-runs / agent-driven proposal review.
- *   - **Apply** (`apply: true`): in addition to preview, fetches the
- *     current SPEC from `/api/harness/<slug>/spec` (capturing its
- *     `version`), `PUT`s the new spec with `expected_version` for OCC
- *     (one rebase-retry on 409), `POST`s the features to
- *     `/features/import` so the server allocates F-AUTO-* ids, and —
- *     unless `mark_items: false` — marks each plan item listed in
- *     `from_items` as `done` via `withPlanLock` + `flipStatusInBody`.
+ *   - **Preview** (default, `apply: false`): parses the plan, lists the
+ *     VAL-* assertions that would be extracted for the named `from_items`,
+ *     and returns the per-feature summary for the caller to inspect —
+ *     useful for dry-runs / agent-driven proposal review.
+ *   - **Apply** (`apply: true`): `POST`s the features to
+ *     `/features/import` so the server allocates F-AUTO-* ids (carrying
+ *     `claims` + source-plan provenance), upserts the extracted VAL-*
+ *     assertions into `harness_plan_assertions`, and — unless
+ *     `mark_items: false` — marks each plan item listed in `from_items`
+ *     as `done` via `withPlanLock` + `flipStatusInBody`. It then writes a
+ *     `## Promoted` block + `## Now` status line back into the plan and
+ *     flips a `draft` plan to `active`.
  *   - **plan_event**: always emits a `kind=promoted` event so the
  *     history viewer surfaces it. The `after` payload differs between
  *     preview and apply.
  *
- * Reads the plan via `parsePlan` to validate the slug exists and to
+ * Reads the plan via `readPlanBySlug` to validate the slug exists and to
  * surface item IDs back in the preview / apply summary.
  */
 
@@ -219,13 +224,7 @@ export default defineTool({
     harness_slug: z
       .string()
       .min(1)
-      .describe('Target harness slug. SPEC.md lives at that harness root.'),
-    current_spec: z
-      .string()
-      .optional()
-      .describe(
-        'Optional: current contents of the target harness SPEC.md. When omitted and apply=false, the preview is computed against an empty spec. When apply=true, the tool fetches the live spec (and version) itself.',
-      ),
+      .describe('Target harness slug to import the promoted features into.'),
     features: z.array(FEATURE_INPUT).min(1).max(40),
     feature_ids: z
       .array(z.string().regex(/^F-[A-Za-z0-9-]+$/))
@@ -237,7 +236,7 @@ export default defineTool({
       .boolean()
       .optional()
       .default(false)
-      .describe('When true, write SPEC + import features + mark plan items. When false (default), preview-only.'),
+      .describe('When true, import features + store VAL-* assertions + mark plan items done. When false (default), preview-only.'),
     mark_items: z
       .boolean()
       .optional()

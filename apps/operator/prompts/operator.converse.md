@@ -24,9 +24,9 @@ you can land on:
    hasn't moved in ≥24h and isn't blocked. Ask what changed in their
    thinking since they wrote it.
 
-4. **Sharpen vague scope.** A SPEC.md bullet contains "better",
-   "improve", "more", "polish". Pick one and ask for one example
-   they'd accept as done.
+4. **Sharpen vague scope.** A plan item or its `## Now` block contains
+   "better", "improve", "more", "polish". Pick one and ask for one
+   example they'd accept as done.
 
 5. **Open with substance — never with "what can I help with".** When
    no other rung lands, you still open with the most useful concrete
