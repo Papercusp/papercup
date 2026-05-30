@@ -438,7 +438,9 @@ export default defineTool({
     const markedItems: string[] = [];
     const skippedItems: Array<{ id: string; reason: string }> = [];
     if (args.mark_items && allFromItems.size > 0) {
-      const result = await withPlanLock(
+      const result = await withPlanLock<
+        { ok: true; marked: number } | { ok: false; code: 'not_found' }
+      >(
         ctx as never,
         {
           slug: args.slug,

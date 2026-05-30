@@ -73,13 +73,13 @@ async function ensureSyntheticUsers(): Promise<{ userAId: string; userBId: strin
   const { sql } = getOrgPg();
   // Upsert idempotently so a prior crash mid-suite doesn't leave us stuck.
   // is_active=false hides them from the user picker.
-  const a = await sql<{ id: string }>`
+  const a = await sql<{ id: string }[]>`
     INSERT INTO harness_shared.users (username, display_name, is_active)
     VALUES (${USERNAME_A}, 'Memory Test User A', false)
     ON CONFLICT (username) DO UPDATE SET display_name = EXCLUDED.display_name
     RETURNING id
   `;
-  const b = await sql<{ id: string }>`
+  const b = await sql<{ id: string }[]>`
     INSERT INTO harness_shared.users (username, display_name, is_active)
     VALUES (${USERNAME_B}, 'Memory Test User B', false)
     ON CONFLICT (username) DO UPDATE SET display_name = EXCLUDED.display_name
@@ -749,7 +749,7 @@ async function checkFeedbackRecordedOnEdit(): Promise<CheckResult> {
     newText: `${original} REVISED`,
   });
   const { sql } = getOrgPg();
-  const rows = await sql<{ n: number }>`
+  const rows = await sql<{ n: number }[]>`
     SELECT COUNT(*)::int AS n
       FROM harness_shared.memory_feedback
      WHERE user_id = ${_state.userAId}

@@ -60,7 +60,7 @@ describe('memory:remember — anchor extraction (P-015)', () => {
       fakeCtx,
     );
 
-    expect(JSON.parse(res.content[0].text).ok).toBe(true);
+    expect(JSON.parse((res as { content: { text: string }[] }).content[0].text).ok).toBe(true);
 
     expect(c.add).toHaveBeenCalledTimes(1);
     const [, opts] = c.add.mock.calls[0];
@@ -137,7 +137,7 @@ describe('memory:remember — dedup-on-write (P-016)', () => {
       { content: 'Avi prefers short responses', kind: 'preference' },
       fakeCtx,
     );
-    const parsed = JSON.parse(res.content[0].text);
+    const parsed = JSON.parse((res as { content: { text: string }[] }).content[0].text);
 
     expect(parsed.ok).toBe(false);
     expect(parsed.reason).toBe('similar_exists');
@@ -156,7 +156,7 @@ describe('memory:remember — dedup-on-write (P-016)', () => {
       { content: 'New unrelated fact', kind: 'preference' },
       fakeCtx,
     );
-    expect(JSON.parse(res.content[0].text).ok).toBe(true);
+    expect(JSON.parse((res as { content: { text: string }[] }).content[0].text).ok).toBe(true);
     expect(c.add).toHaveBeenCalled();
   });
 
@@ -174,7 +174,7 @@ describe('memory:remember — dedup-on-write (P-016)', () => {
       },
       fakeCtx,
     );
-    expect(JSON.parse(res.content[0].text).ok).toBe(true);
+    expect(JSON.parse((res as { content: { text: string }[] }).content[0].text).ok).toBe(true);
     expect(c.add).toHaveBeenCalled();
     // search not invoked when force=true (no dedup check)
     expect(c.search).not.toHaveBeenCalled();
@@ -189,7 +189,7 @@ describe('memory:remember — dedup-on-write (P-016)', () => {
       { content: 'something', kind: 'preference' },
       fakeCtx,
     );
-    expect(JSON.parse(res.content[0].text).ok).toBe(true);
+    expect(JSON.parse((res as { content: { text: string }[] }).content[0].text).ok).toBe(true);
     expect(c.add).toHaveBeenCalled();
   });
 
@@ -208,7 +208,7 @@ describe('memory:remember — dedup-on-write (P-016)', () => {
       fakeCtx,
     );
     // With flag off, the high-similarity write should still succeed
-    expect(JSON.parse(res.content[0].text).ok).toBe(true);
+    expect(JSON.parse((res as { content: { text: string }[] }).content[0].text).ok).toBe(true);
     expect(c.search).not.toHaveBeenCalled();
     // restore for following tests
     process.env.PAPERCUSP_MEMORY_DEDUP = 'on';
@@ -236,7 +236,7 @@ describe('memory:remember — anchor table wiring (P-015)', () => {
       },
       fakeCtx,
     );
-    expect(JSON.parse(res.content[0].text).ok).toBe(true);
+    expect(JSON.parse((res as { content: { text: string }[] }).content[0].text).ok).toBe(true);
 
     // Fire-and-forget — yield once so the void IIFE's microtasks run.
     await new Promise((r) => setImmediate(r));

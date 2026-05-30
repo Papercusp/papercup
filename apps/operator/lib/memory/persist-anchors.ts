@@ -29,9 +29,14 @@
 
 import type { Anchor } from './anchors';
 
+// `values` is `any[]` (not `unknown[]`) so the real postgres-js `Sql`
+// handle from `getOrgPg().sql` is assignable here — its tagged-template
+// parameters are a constrained `ParameterOrFragment[]`, which a
+// `unknown[]` contravariantly rejects. Callers only ever pass `${...}`
+// interpolations, so the looseness is confined to this seam type.
 export type SqlTag = <T = unknown>(
   template: TemplateStringsArray,
-  ...values: unknown[]
+  ...values: any[]
 ) => Promise<T>;
 
 let tableMissing = false;

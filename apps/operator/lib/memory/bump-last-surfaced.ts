@@ -77,9 +77,12 @@ export async function bumpLastSurfaced(
  *
  * Same defensive posture as the node-pg variant.
  */
+// `values` is `any[]` (not `unknown[]`) so the real postgres-js `Sql`
+// from `getOrgPg().sql` is assignable — see the matching note in
+// persist-anchors.ts.
 export type SqlTag = <T = unknown>(
   template: TemplateStringsArray,
-  ...values: unknown[]
+  ...values: any[]
 ) => Promise<T>;
 
 export async function bumpLastSurfacedSql(
