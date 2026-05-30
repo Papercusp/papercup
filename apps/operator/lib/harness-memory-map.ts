@@ -29,12 +29,12 @@ export interface MemoryFileMeta {
 
 export const MEMORY_MAP: MemoryFileMeta[] = [
   // Project-root, human-authored
-  { path: 'SPEC.md',                              purpose: 'User intent — source of truth',            writtenBy: ['human', 'architect', 'reviewer'], readBy: ['scoper', 'architect', 'worker', 'validator'], tier: 'green',  language: 'markdown' },
+  // (SPEC.md removed — deprecated by plans (D-004); no agent reads it.)
   { path: 'AGENTS.md',                            purpose: 'Project conventions',                      writtenBy: ['human'],                     readBy: ['scoper', 'worker', 'validator', 'architect'], tier: 'green',  language: 'markdown', optional: true },
 
   // Harness state
   { path: '.harness/config.json',                 purpose: 'Models, timeouts, cost cap, memory map',   writtenBy: ['human'],                     readBy: ['run.sh'],                                       tier: 'green',  language: 'json' },
-  { path: '.harness/validation-contract.md',      purpose: 'Binding contract of claims',               writtenBy: ['scoper', 'architect'],       readBy: ['orchestrator', 'worker', 'validator', 'architect'], tier: 'yellow', language: 'markdown' },
+  // (validation-contract.md removed — deprecated by inline VAL-* assertions, D-005.)
 
   // NOTE: features.json, issues.md, issues.json, pending-issues.jsonl all
   // moved to Postgres in the 2026-04-26 → 2026-04-27 FS→PG migration arc.
@@ -46,7 +46,7 @@ export const MEMORY_MAP: MemoryFileMeta[] = [
 
   // Human loop
   { path: '.harness/supervisor-notes.md',         purpose: 'Human/architect guidance to orchestrator', writtenBy: ['human', 'architect'],        readBy: ['orchestrator', 'architect'],                   tier: 'green',  language: 'markdown', optional: true },
-  { path: '.harness/escalation.md',               purpose: 'Escalation state — resolve via UI flow',   writtenBy: ['orchestrator'],              readBy: ['human', 'curator'],                            tier: 'red',    language: 'markdown', optional: true },
+  // (escalation.md removed — escalations are needs-human plan items now, D-003/P-014.)
 
   // Scratch / user-authored
   { path: '.harness/worker-log.md',               purpose: 'Worker scratchpad',                        writtenBy: ['worker'],                    readBy: ['worker'],                                      tier: 'yellow', language: 'markdown', optional: true },
