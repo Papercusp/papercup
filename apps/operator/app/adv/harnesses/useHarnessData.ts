@@ -36,6 +36,7 @@ export interface HarnessFeature {
   needsReview?: boolean;
   claims?: string[];
   sourcePlanSlug?: string;
+  tags?: string[];
 }
 
 type RestFeature = {
@@ -45,6 +46,7 @@ type RestFeature = {
   attempts?: number;
   summary?: string;
   needs_human_review?: boolean;
+  tags?: string[];
 };
 
 // Consolidated row exported to Zero (camelCase). claims is a JSON-stringified
@@ -60,6 +62,7 @@ type ZeroFeatureRow = {
   sourcePlanSlug?: string | null;
   needsHumanReview?: boolean;
   needs_human_review?: boolean;
+  tags?: string[] | string | null;
 };
 
 function parseClaims(raw: unknown): string[] | undefined {
@@ -105,6 +108,7 @@ export function useHarnessFeatures(slug: string): {
             attempts: f.attempts,
             summary: f.summary,
             needsReview: f.needs_human_review,
+            tags: Array.isArray(f.tags) ? f.tags : undefined,
           }),
         );
         // Don't clobber a Zero overlay that already landed for this slug.
@@ -137,6 +141,7 @@ export function useHarnessFeatures(slug: string): {
           claims: parseClaims(zf.claims),
           sourcePlanSlug: zf.sourcePlanSlug ?? undefined,
           needsReview: zf.needsHumanReview ?? zf.needs_human_review ?? undefined,
+          tags: parseClaims(zf.tags),
         }),
       ),
     );
