@@ -11,21 +11,22 @@ owner: avi@storewolf.com
 
 ## Now
 
-**State:** Phase 1 committed (`3520c73a`) — theme apply mechanism (`lib/theme.ts`),
-a first hand-authored `[data-theme="black"]` block, and the pre-paint boot script
-in both `app/layout.tsx` (Next) and `apps/operator-vite/index.html` (the live SPA
-shell). No selector UI yet (Phase 3). Verified: typecheck clean for the new files;
-the boot script + inlined black block confirmed in the served Vite module graph.
-Not yet done: the on-screen frost↔black swap + leak inventory (deferred to avoid
-mutating the user's live window; the open `:3070` windows also need a reload since
-dev runs no-HMR). Note: the pre-existing `app/_lints/css-tokens.test.ts` failure
-(undefined tokens like `--accent-2`, `--fg-danger`, `--danger` used in unrelated
-components) is exactly the Phase 5 robustness backlog surfacing — not a regression.
+**State:** Phases 1 + 2 committed (`3520c73a`, `aa79e095`). Phase 1 = apply
+mechanism (`lib/theme.ts`), token contract, pre-paint boot script in both
+`app/layout.tsx` and `apps/operator-vite/index.html` (the live SPA shell). Phase 2 =
+black moved into the DTCG pipeline: `design-tokens/black.semantic.tokens.json` +
+a `css-semantic-black` Style Dictionary platform → generated
+`apps/operator/app/_semantic.black.css` (`[data-theme="black"]`); the hand-authored
+`_themes.css` is gone. Verified: `npm run tokens` clean, frost `_semantic.css`
+unchanged, `tokens.test` 7/7 (incl. a THEME-CONTRACT guard), `tokens:check` in sync,
+fresh Vite serve resolves `--bg: #000000`. No selector UI yet (Phase 3). Pre-existing
+`app/_lints/css-tokens.test.ts` failure (undefined `--accent-2`/`--fg-danger`/
+`--danger` in unrelated components) is Phase 5 backlog, not a regression.
 
-**Next:** Phase 2 — move the black theme into the DTCG token pipeline
-(`design-tokens/black.semantic.tokens.json` + a `css-semantic-black` Style
-Dictionary platform). Then Phase 3 (selector UI), at which point the on-screen
-swap + leak inventory get done with a real toggle.
+**Next:** Phase 3 — the **Theme** selector section in
+`app/settings/personalization/page.tsx` (built-ins from `BUILTIN_THEMES`, calls
+`writeActiveTheme`). That gives a real in-app toggle, at which point the on-screen
+frost↔black swap + the leak inventory get done.
 
 ## Goal
 
