@@ -36,7 +36,8 @@ import { createAutobaseHarness, type AutobaseHarnessHandle } from './autobase-se
 import { acceptOpVersion, type SchemaVersionAlert } from './schema-version';
 import { schemaVersionEvents } from './schema-version';
 import { registerAllHarnessProjections } from './projections/register-all';
-import { startBootstrapProgressPoller } from './bootstrap-progress-poller';
+import { startBootstrapProgressPoller } from './bootstrap-progress-poller'
+import { startHyperbeeReadLoop, type ReadLoopHandle } from './read-loop';
 import { recordBootEvent } from './boot-history';
 import type Corestore from 'corestore';
 import {
