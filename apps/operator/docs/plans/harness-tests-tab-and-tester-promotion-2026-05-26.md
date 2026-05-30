@@ -13,7 +13,9 @@ owner: avi@storewolf.com
 
 **State:** Phase A in progress. P-001 DONE (266b25be): registry → @papercusp/testing-shell, shim, 13/13 tests. P-002 DONE (ca24cbee): DomainTestPanel + domain-panel.css moved into the lib; backend access now via injected TestingDataSource (interface + wire types + default adminTestingDataSource in data-source.ts); TestingClient passes adminTestingDataSource — behavior preserved. Verified: lib tsc exits 0; 13/13 testing-domains tests pass; new import resolves under operator-vite tsc (117 baseline errors are pre-existing @-alias/JSX-namespace, none mention testing-shell); HEAD tree confirms all files incl. css committed at new paths, old paths removed; no dangling refs. NOT yet checked: live /admin/testing page render in a browser. Also committed ca24's prerequisite: 2dc54b4b recovered the prior session's uncommitted DomainTestPanel run-drawer/history work to give P-002 a clean base.
 
-**Next:** P-003: extract TestingClient → TestingShell in the lib (registry + tierLabels + dataSource props), then P-004 (operator-vite TestingClient becomes a thin wrapper) + P-005 (tests). Optional first: browser-verify /admin/testing still renders identically post-P-002.
+**Reconciliation (2026-05-30):** Phases E + F were written assuming VALs lived in `.harness/validation-contract.md` and would be promoted into a *new* `validation_criteria` table. That premise is **superseded** by `plans-central-harness-ux-2026-05-26` (shipped 2026-05-30, its D-005): VALs are already first-class PG rows in `harness_shared.harness_plan_assertions`, authored as inline `[VAL-…]` bullets inside plan items and populated by `plans:promote`; `validation-contract.md` is retired. Phase E is rewritten to *reconcile onto* that shipped store (no new table, no markdown backfill), and a new **Phase G** adds the actual plan↔test link as a rollup join through the VAL (decision B-as-D below). See new D-005 / D-006.
+
+**Next:** Finish Phase A (P-003 extract `TestingClient → TestingShell`; P-004 thin wrapper; P-005 tests; optional browser-verify /admin/testing post-P-002). Phase E/F/G work is gated on the reconciliation decisions below but needs no new VAL store — it builds on `harness_plan_assertions`.
 
 ## Background
 
@@ -155,62 +157,62 @@ P-056 todo Add quota tier `tester` to the rolesQuota configuration. Initial cap:
 
 P-057 todo Wire `NEXT_TESTER <F-ID> <VAL-ID>` dispatch in bash `run.sh`. Same mechanism as `NEXT_WORKER` / `NEXT_VALIDATOR`: parse the line, invoke `prompts/staging/tester.md` with `FEATURE_ID` + `VAL_ID` env vars.
 
-P-058 todo `coversVALs[]` write-time validation. `/api/internal/test-snapshot` rejects (or quarantines with `status: 'invalid_val_ref'`) any test row whose `coversVALs[]` references a VAL not present in `harness_<slug>.validation_criteria` (per D-002). 404 to the caller; bash run.sh surfaces as a test-write failure.
+P-058 todo `coversVALs[]` write-time validation. `/api/internal/test-snapshot` rejects (or quarantines with `status: 'invalid_val_ref'`) any test row whose `coversVALs[]` references a VAL not present in `harness_shared.harness_plan_assertions` for this `(workspace, harness)` (per D-005 — the assertion store is the shipped `harness_plan_assertions`, NOT a new `validation_criteria` table). 404 to the caller; bash run.sh surfaces as a test-write failure.
 
 P-059 todo Document the testing/ and production/ prompt-phase retirement as a separate sibling plan (out of scope here). This plan only stops *using* them; the actual file removal + code-path retirement is tracked separately.
 
-## Phase E — VALs become first-class PG rows (per D-002, Option 1)
+## Phase E — Reconcile the VAL store onto the shipped `harness_plan_assertions` (replaces the old "new `validation_criteria` table" approach — per D-005)
 
-P-060 todo Schema migration. Add to `libs/papercusp/libs/db/sql/002-per-harness-template.sql`:
+> **Superseded:** The original Phase E (P-060…P-067) proposed a new `{{SCHEMA}}.validation_criteria` table backfilled from `.harness/validation-contract.md`, plus a `bin/harness-vals` CLI, a `vals:create`/`vals:update` API, and a Zero mapping. **All dropped.** `plans-central-harness-ux-2026-05-26` (shipped) already makes VALs first-class PG rows in `harness_shared.harness_plan_assertions (workspace_id, harness_slug, val_id, plan_slug, item_id, verify_text, evidence_text, status)`, authored as inline `[VAL-…]` bullets in plan items and written by `plans:promote` (`apps/operator/lib/agent-tools/coordination/tools/promote.ts:413`); `validation-contract.md` is retired (D-005 of that plan). There is no new table, no markdown backfill, and no separate VAL-write API — authoring already happens in the plan. Phase E now only adds the one column the tester gate needs.
 
-```sql
-CREATE TABLE {{SCHEMA}}.validation_criteria (
-  val_id            TEXT PRIMARY KEY,
-  namespace         TEXT NOT NULL,
-  claim             TEXT NOT NULL,
-  how_to_verify     TEXT,
-  expected_evidence TEXT,
-  requires_test     BOOLEAN NOT NULL DEFAULT true,
-  source            TEXT,                       -- 'expert' | 'scoper' | 'human' | 'backfill'
-  created_ts        BIGINT NOT NULL,
-  updated_ts        BIGINT NOT NULL
-);
-CREATE INDEX vc_namespace_idx ON {{SCHEMA}}.validation_criteria(namespace);
-CREATE INDEX vc_requires_test_idx ON {{SCHEMA}}.validation_criteria(requires_test) WHERE NOT requires_test;
-```
+P-060 todo Add `requires_test BOOLEAN NOT NULL DEFAULT true` to `harness_shared.harness_plan_assertions`. Edit the canonical DDL `libs/papercusp/libs/db/sql/087-harness-plan-assertions.sql` AND the `ensureHarnessPlanAssertionsTable()` mirror in `apps/operator/lib/ensure-schema.ts` (~line 2050) — keep the two in sync (both must apply cleanly to a fresh embedded-pg). Add a partial index `ON (...) WHERE NOT requires_test` if the gate query needs it.
 
-P-061 todo Migration for installed harnesses. Add `bin/migrate-installed-harnesses-add-validation-criteria.sh` (matches the existing `migrate-installed-harnesses-add-*.sh` pattern in the codebase per the comment in `ensure-schema.ts`).
+P-061 todo Extend the inline VAL-* bullet format spec at `docs/spec/validation-assertion-format.md` with an optional `RequiresTest: false` sub-bullet (default `true` when absent). Update `plans:promote` (`promote.ts`) to parse it and populate the new column on INSERT/UPDATE of `harness_plan_assertions`. No change to `feature.claims` extraction.
 
-P-062 todo VAL parser + backfill CLI. New `bin/harness-vals` (read-only CLI matching the `harness-features` CLI pattern). First subcommand: `harness-vals migrate <slug>`. Parses each harness's `.harness/validation-contract.md`:
-- Walk headings `### VAL-<NS>-NNN: <claim>`.
-- Body captures `**Verify:** …` and `**Evidence:** …` sections.
-- Insert rows with `source='backfill'`. Failed parses still insert (with NULL `how_to_verify`/`expected_evidence`) so existing features that reference these VALs still gate properly; architect refines on next touch.
-- Idempotent: ON CONFLICT (val_id) DO NOTHING.
+P-062 todo `requires_test` UI toggle on the harness Tests tab **Project** section (per P-022): flipping it PATCHes `harness_plan_assertions.status`/`requires_test` for that `val_id`. Non-testable claims (e.g. "matches the design spec", "copy reads well") are set `false` so the tester/validator gate (P-051) skips them.
 
-P-063 todo Write API + tool. New endpoint `POST /api/harness/:slug/vals` (and matching MCP tool `vals:create` / `vals:update`) for architect/expert/scoper to write VALs. ID allocation inside a per-namespace lock — same idiom as `plans:add-decision` D-NNN. Updates set `updated_ts` and respect `requires_test`.
+P-063 todo Live read for the Tests tab. Surface `harness_plan_assertions` rows for the active plan via the harness `testing/*` dataSource (P-024) — poll or SSE, **not** Zero (`libs/zero-harness` is on the retirement path per repo CLAUDE.md). The "Acceptance / Project" section lists each VAL with its `status` and covering tests (Phase G).
 
-P-064 todo Update `expert.md` + `scoper.md` + `architect.md` prompts to write VALs via the new API instead of (or in addition to) editing `.harness/validation-contract.md`. Markdown becomes a generated read-only view: a file-watcher (or on-demand renderer) emits `validation-contract.md` from `validation_criteria` rows. Pre-existing markdown stays read-only; new writes go through the table.
+P-064 todo Tests: `requires_test` default + parse of the `RequiresTest:` sub-bullet round-trips through `plans:promote` into `harness_plan_assertions`; gate query correctly excludes `requires_test = false` VALs.
 
-P-065 todo `requires_test` defaults to `true`. Expert/architect explicitly set `false` for non-testable claims at write time. UI surface for toggling lives on the harness Tests tab Project section (per P-022).
+## Phase G — Link plans ↔ tests through the VAL (B-as-D — per D-006)
 
-P-066 todo Zero schema mapping. Add `validation_criteria` to `libs/zero-harness/src/schema.ts` so the Tests tab can subscribe via `useSyncQuery` rather than poll. Mirror the harness_tests pattern.
+> The link already exists structurally on both sides — plan item → inline VAL → `harness_plan_assertions (plan_slug, item_id, val_id)`, and test → `coversVALs[]`. Nothing joins them today, and `harness_plan_assertions.status` is never updated. Phase G is the join + the status loop + the UI surface. No new linking edge: the VAL stays the sole join key (we explicitly reject a direct `test → plan-item` column and inline `[TEST-…]` bullets — see D-006).
 
-P-067 todo Tests: VAL parser round-trip, ID allocation under contention, requires_test default, Zero sync.
+P-080 todo Materialize plan linkage onto test rows (the "D" in B-as-D). In `/api/internal/test-snapshot` (`apps/operator/lib/endpoint-route/routes/internal/test-snapshot.ts`), resolve each test's `coversVALs[]` against `harness_plan_assertions` and stamp the matched `plan_slug` + `item_id` onto the `harness_tests` row (new columns, or fields in `payload` JSONB). The snapshot is replace-all per phase, so this recomputes on every write — no staleness window. Rows with empty/unmatched `coversVALs` get NULL plan linkage (infra tests — see P-084).
 
-## Phase F — backfill + cutover (BLOCKED on Phase E)
+P-081 todo Close the assertion-status loop. Drive `harness_plan_assertions.status` from real test outcomes: on each run / snapshot, for every `val_id` a test covers, set `status` = `passed` (all covering tests pass), `failed` (any covering test fails), or `validating` (a covering test exists but hasn't run); `todo` stays the default when no test covers it yet. Today the column is INSERTed at `todo` by `plans:promote` and never moves. Writers: the snapshot endpoint (P-080) and the validator (P-052).
 
-P-070 todo Run `harness-vals migrate <slug>` against `papercup` (the only registered harness). Confirm row count matches `.harness/validation-contract.md` heading count.
+P-082 todo Rollup endpoint `GET /api/harness/:slug/plan-items-test-status?plan=:planSlug`, mirroring the existing feature-status endpoint `GET /api/harness/:slug/plan-items-status` (P-006 of plans-central; consumed by `decoratePlanItemBadges` in `plan-renderers.ts`). Joins `harness_tests` ⋈ `harness_plan_assertions` grouped by `item_id` → per-plan-item `{ valsTotal, valsRequiringTest, valsCovered, valsPassing }`. Polls every 10s while the plan is active.
 
-P-071 todo End-to-end: scope a small new feature with one claim VAL → architect commits plan → worker implements → tester writes test → validator runs test → feature `passed`. Capture round-trip cost + duration.
+P-083 todo Plans UI — per-item test-coverage badge alongside the existing feature-status badge. Extend `decoratePlanItemBadges` (`plan-renderers.ts`) to render `passing/required` (e.g. `3/4`), color-coded (green all-pass / amber partial / red any-fail / grey none). Clicking drills into the covering tests — reuse the `FeatureSlideOver` pattern (plans-central P-007) or open the Tests tab (P-020) filtered to that `item_id`.
 
-P-072 todo Documentation. Update agent insights at `apps/operator-docs/src/content/docs/agent-insights/` with the V2 flow + the `validation_criteria` table.
+P-084 todo No-VAL tests stay harness-level (the caveat that keeps the model honest). The generalized **Built-in** tier (lint / typecheck / smoke from `generalizedRegistry`, Phase B) has no `coversVALs`, hence no assertion and no plan-item rollup; it lives on the Tests tab Built-in section only. Ensure P-080/P-082 skip empty-`coversVALs` rows. Document the split: behavioral/**Project** tests link to plans via the VAL; infra/**Built-in** tests do not link to plans at all.
+
+P-085 todo Tests: the `coversVALs` ⋈ `harness_plan_assertions` join + rollup grouping; status-loop transitions (`todo → validating → passed/failed`) on simulated runs; denormalized plan linkage recomputed correctly on replace-all snapshot; empty-`coversVALs` rows excluded from rollup.
+
+## Phase F — Cutover + end-to-end (BLOCKED on Phase E + Phase G)
+
+P-070 todo End-to-end on `papercup`: author a new small feature as one plan item carrying one inline `[VAL-…]` bullet → `plans:promote` (writes `feature.claims` + a `harness_plan_assertions` row at `status=todo`) → worker implements → tester writes a test with `coversVALs=[that VAL]` → snapshot stamps plan linkage + flips the assertion to `validating` → validator runs it → assertion `passed`, the plan item shows a passing-test badge (P-083), feature `passed`. Capture round-trip cost + duration.
+
+P-071 todo Documentation. Add an agent insight at `apps/operator-docs/src/content/docs/agent-insights/` covering the V2 tester flow + the plan↔test-via-VAL link (the `harness_plan_assertions` join), explicitly noting that `validation_criteria` / `validation-contract.md` are NOT used (D-005).
 
 ## Resolved decisions
 
 D-001 — V2 (tester runs per-feature in staging; testing/production phases legacy). See plan_revisions decision history.
 
-D-002 — Option 1 (VALs become first-class rows in `harness_<slug>.validation_criteria`). See plan_revisions decision history.
+D-002 — ~~Option 1 (VALs become first-class rows in `harness_<slug>.validation_criteria`)~~ **SUPERSEDED by D-005 (2026-05-30):** no new `validation_criteria` table. VALs are already first-class PG rows in the shipped `harness_shared.harness_plan_assertions`, authored as inline plan-item bullets and written by `plans:promote`. See plan_revisions decision history.
 
 D-003 — Tier names: `Built-in` / `Project`.
 
 D-004 — `kind` taxonomy: keep `'contract' | 'edge'` on `harness_tests`. Adversarial probes (V2's `NEXT_PROBE`) stay ephemeral — they write to `harness_issues`, not `harness_tests`.
+
+D-005 — Reconcile onto `harness_plan_assertions`; do NOT build a new VAL store.
+Date: 2026-05-30
+`plans-central-harness-ux-2026-05-26` (shipped 2026-05-30, its D-005) already made VALs first-class PG rows in `harness_shared.harness_plan_assertions (workspace_id, harness_slug, val_id, plan_slug, item_id, verify_text, evidence_text, status)`, sourced from inline `[VAL-…]` bullets inside plan items via `plans:promote`, and retired `.harness/validation-contract.md`. This plan's original Phase E (a separate `{{SCHEMA}}.validation_criteria` table backfilled from the markdown, plus a `bin/harness-vals` CLI, a `vals:create`/`vals:update` API, and a Zero mapping) would have built a **third, competing VAL store** and reintroduced the parallel-document drift that plans-central just eliminated. It is dropped. Phase E now only adds the single `requires_test` column the tester gate needs. Authoring stays in the plan; the validator/tester read `harness_plan_assertions`.
+Related: P-058, P-060, P-061, P-062, P-063, P-064
+
+D-006 — Plans link to tests indirectly through the VAL (B-as-D); the VAL is the sole join key.
+Date: 2026-05-30
+The plan→test link is realized as a **rollup join through the VAL**, not a new edge: a plan item declares inline `[VAL-…]` bullets → `harness_plan_assertions(plan_slug, item_id, val_id)`; a test declares `coversVALs[]`; the link is the join on `val_id`, rolled up to the plan item by `item_id`. Chosen over the alternatives: a **direct `test → plan-item` column** (rejected — second linking axis competing with the VAL, wrong grain, reintroduces drift) and **inline `[TEST-…]` bullets in plan items** (rejected — tests are generated artifacts, not authored intent; putting generated state in the source doc breaks its declarative contract). For read performance we additionally **materialize `plan_slug`/`item_id` onto each `harness_tests` row** at snapshot time (the "D"), giving 1-hop UI reads while the VAL remains canonical. Tests with no VAL (the **Built-in** tier: lint/typecheck/smoke) do not link to any plan item — only behavioral/**Project** tests do.
+Related: P-080, P-081, P-082, P-083, P-084
