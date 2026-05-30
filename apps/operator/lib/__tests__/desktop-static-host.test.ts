@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { isStaticDesktopHost, shouldEnableSupportWidget, shouldFallbackToSupportRoute, shouldSuppressStaticDesktopReload } from '../ui/desktop-static-host';
+import { isStaticDesktopHost, isStaticPreviewHost, shouldEnableSupportWidget, shouldFallbackToSupportRoute, shouldSuppressStaticDesktopReload } from '../ui/desktop-static-host';
 
 describe('static desktop host detection', () => {
   it('matches the static desktop hosts', () => {
@@ -11,6 +11,17 @@ describe('static desktop host detection', () => {
 
   it('does not match the live HMR/web host', () => {
     expect(isStaticDesktopHost('http://localhost:3055')).toBe(false);
+  });
+
+  it('isStaticPreviewHost matches ONLY the backend-less preview host (:4173, not :3070)', () => {
+    expect(isStaticPreviewHost('http://localhost:4173')).toBe(true);
+    expect(isStaticPreviewHost('http://127.0.0.1:4173')).toBe(true);
+    expect(isStaticPreviewHost('http://localhost:4173/')).toBe(true);
+    expect(isStaticPreviewHost('http://127.0.0.1:4173/')).toBe(true);
+    // :3070 has a live backend — NOT a backend-less preview.
+    expect(isStaticPreviewHost('http://localhost:3070')).toBe(false);
+    expect(isStaticPreviewHost('http://127.0.0.1:3070')).toBe(false);
+    expect(isStaticPreviewHost('http://localhost:3055')).toBe(false);
   });
 
   it('enables support widget only on non-static support routes', () => {

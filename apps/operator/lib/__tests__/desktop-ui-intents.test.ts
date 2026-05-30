@@ -1,42 +1,23 @@
 import { describe, expect, it } from 'vitest';
-import { shouldEnableRemoteUiIntents, shouldMountRemoteUiControl } from '../ui/desktop-ui-intents';
+import { shouldMountRemoteUiControl } from '../ui/desktop-ui-intents';
 
-describe('desktop UI intents host policy', () => {
-  it('disables all remote UI control on static desktop hosts', () => {
-    expect(shouldEnableRemoteUiIntents('http://localhost:3070')).toBe(false);
-    expect(shouldEnableRemoteUiIntents('http://127.0.0.1:3070')).toBe(false);
-    expect(shouldEnableRemoteUiIntents('http://localhost:4173')).toBe(false);
-    expect(shouldEnableRemoteUiIntents('http://127.0.0.1:4173')).toBe(false);
+describe('remote UI control host policy', () => {
+  it('mounts on the operator host — dev Vite and the shipped desktop', () => {
+    // :3055 = Vite dev server; :3070 = operator host (dev + prod). Both
+    // front a live Hono backend, so the agent → UI control surface mounts.
+    expect(shouldMountRemoteUiControl('http://localhost:3055')).toBe(true);
+    expect(shouldMountRemoteUiControl('http://localhost:3070')).toBe(true);
+    expect(shouldMountRemoteUiControl('http://127.0.0.1:3070')).toBe(true);
+    expect(shouldMountRemoteUiControl('http://localhost:3070/')).toBe(true);
+    expect(shouldMountRemoteUiControl('http://127.0.0.1:3070/')).toBe(true);
   });
 
-  it('keeps remote UI intents enabled on the legacy HMR/web host', () => {
-    expect(shouldEnableRemoteUiIntents('http://localhost:3055')).toBe(true);
-  });
-  it('keeps UiPresenceProvider fully unmounted on static desktop hosts', () => {
-    expect(shouldMountRemoteUiControl('http://localhost:3070')).toBe(false);
-    expect(shouldMountRemoteUiControl('http://127.0.0.1:3070')).toBe(false);
+  it('stays off on the backend-less build-preview host (:4173)', () => {
+    // `vite preview` serves static dist with no /api backend — presence +
+    // intent SSE would 404, so the surface must not mount.
     expect(shouldMountRemoteUiControl('http://localhost:4173')).toBe(false);
     expect(shouldMountRemoteUiControl('http://127.0.0.1:4173')).toBe(false);
-    expect(shouldMountRemoteUiControl('http://localhost:3070/')).toBe(false);
     expect(shouldMountRemoteUiControl('http://localhost:4173/')).toBe(false);
-    expect(shouldMountRemoteUiControl('http://127.0.0.1:3070/')).toBe(false);
     expect(shouldMountRemoteUiControl('http://127.0.0.1:4173/')).toBe(false);
-    expect(shouldMountRemoteUiControl('http://localhost:3055')).toBe(true);
-  });
-  it('keeps both remote-ui policy helpers in sync for known hosts', () => {
-    const hosts = [
-      'http://localhost:3070',
-      'http://127.0.0.1:3070',
-      'http://localhost:4173',
-      'http://127.0.0.1:4173',
-      'http://localhost:3055',
-      'http://localhost:3070/',
-      'http://127.0.0.1:3070/',
-      'http://localhost:4173/',
-      'http://127.0.0.1:4173/',
-    ];
-    for (const host of hosts) {
-      expect(shouldMountRemoteUiControl(host)).toBe(shouldEnableRemoteUiIntents(host));
-    }
   });
 });
