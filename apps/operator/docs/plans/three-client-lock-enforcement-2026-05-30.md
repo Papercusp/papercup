@@ -3,14 +3,16 @@ title: Three-client file-lock enforcement (Claude · Codex · OMP)
 slug: three-client-lock-enforcement-2026-05-30
 created: 2026-05-30
 updated: 2026-05-30
-status: active
+status: shipped
 ---
 
 ## Now
 
-**State:** Building. The SU-locks system (`apps/operator/lib/agent-tools/locks/`, PG-backed) works, but **no client is enforcing it today**: OMP's `coord-hook.ts` is built but not installed, Claude's `Pre/PostToolUse` shell hooks were deleted by the 2026-05-20 OMP-only decision, and Codex never had a hook. Meanwhile the prompts tell Claude/Codex agents the hook "handles it," so they skip manual `locks:acquire` entirely. Net: locking is advisory with zero live enforcement on any client.
+**State:** **Shipped + activated.** All three clients now enforce SU-locks. Merged to `main` (merge `ab589a2d`) and the installer was run on this host: the shared `cc/` hooks live in `~/.papercusp/hooks/cc/`, wired into `~/.claude/settings.json` (Claude, matcher `Edit|Write|MultiEdit`) and the codex-su `CODEX_HOME/settings.json` (Codex, matcher `apply_patch|write_file|edit_file`, wrapper carries `--dangerously-bypass-hook-trust`); OMP via `omp-su -e`. Verified end-to-end against the live operator (acquire → contended `deny` → release for both `Edit` and `apply_patch` shapes; workspace scoping; fail-open) and the hook was observed blocking a real edit in a live session.
 
-**Next:** recover + modernize the shared CC hook scripts, then wire all three clients in `install-standalone-mcp.sh`.
+**Known issue found during activation — manual-claim vs hook self-contention.** A manual `locks:acquire` resolves to the agent's static/MCP owner id, but the hook acquires as the per-session id (deliberately, so two shells on one machine contend). They are different owners, so a manual multi-file claim **blocks the agent's own subsequent edits** through the hook. Net effect: the "acquire by hand for a multi-file change held across the commit" workflow currently self-deadlocks. Options to resolve (needs a decision): (a) unify the hook + manual-acquire owner identity (risks reintroducing the two-shells-don't-contend bug unless keyed on a shared per-session id both can see); (b) have the hook treat a lock held by the same `su-agent-id` family as same-owner (idempotent re-acquire); or (c) drop the manual-claim guidance and rely solely on per-edit hook locking, accepting the small edit→commit gap. **Until resolved, do not manually pre-acquire files you will then edit in the same session.**
+
+**Next:** decide the self-contention fix (a/b/c above). Lower priority: live `codex-su` smoke; make the OMP hook's `papercupRoot()` worktree-aware.
 
 ---
 
