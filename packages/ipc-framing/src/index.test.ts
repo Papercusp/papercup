@@ -9,7 +9,7 @@ import {
   encodeJsonFrame,
   encodeEventBinPayload,
   decodeEventBinPayload,
-} from './framing';
+} from './index';
 
 describe('encodeFrame', () => {
   it('writes [len BE u32][type u8][payload]', () => {
