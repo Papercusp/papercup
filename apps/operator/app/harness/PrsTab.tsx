@@ -12,7 +12,6 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { useQueryState, parseAsStringLiteral } from 'nuqs';
 import { toast } from 'sonner';
 import { GitPullRequest, RefreshCw } from 'lucide-react';
-import { COLORS, FONTS, RADIUS, SIZES } from './theme';
 import { PrRow, type PrRowData } from './PrRow';
 
 const PR_FILTERS = ['all', 'mine', 'awaiting-me', 'approved', 'merged'] as const;
@@ -107,68 +106,95 @@ export function PrsTab({
   });
 
   return (
-    <div style={{ padding: 20, fontFamily: FONTS.ui }}>
-      {/* Header */}
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <GitPullRequest size={16} color={COLORS.accent} />
-          <span style={{ fontSize: 14, fontWeight: 600, color: COLORS.text }}>Pull Requests</span>
-          {pollingFailed && (
-            <span style={{ fontSize: 11, color: COLORS.dangerText, marginLeft: 4 }}>
-              cannot reach GitHub
-            </span>
-          )}
+    <div className="pc-adv-prs">
+      <div className="pc-adv-prs__bar">
+        <span className="pc-adv-prs__title">
+          <GitPullRequest size={14} aria-hidden />
+          Pull requests
+          {pollingFailed && <span className="pc-adv-prs__warn">cannot reach GitHub</span>}
+        </span>
+        <div className="pc-adv-prs__filters" role="tablist" aria-label="PR filters">
+          {PR_FILTERS.map((f) => (
+            <button
+              key={f}
+              type="button"
+              role="tab"
+              aria-selected={filter === f}
+              className={`pc-adv-prs__chip${filter === f ? ' is-active' : ''}`}
+              onClick={() => void setFilter(f)}
+            >
+              {f}
+            </button>
+          ))}
         </div>
         <button
+          type="button"
+          className="pc-adv-prs__refresh"
           onClick={() => void load()}
-          style={{ background: 'none', border: 'none', cursor: 'pointer', color: COLORS.textMuted, padding: 4 }}
           aria-label="Refresh PRs"
         >
-          <RefreshCw size={14} />
+          <RefreshCw size={13} aria-hidden />
         </button>
       </div>
 
-      {/* Filter chips — P-043c */}
-      <div style={{ display: 'flex', gap: 6, marginBottom: 16, flexWrap: 'wrap' }}>
-        {PR_FILTERS.map((f) => (
-          <button
-            key={f}
-            onClick={() => void setFilter(f)}
-            style={{
-              fontSize: 12,
-              padding: '3px 10px',
-              borderRadius: 999,
-              border: `1px solid ${filter === f ? COLORS.accent : COLORS.border}`,
-              background: filter === f ? COLORS.accent : 'transparent',
-              color: filter === f ? '#fff' : COLORS.textMuted,
-              cursor: 'pointer',
-            }}
-          >
-            {f}
-          </button>
-        ))}
+      <div className="pc-adv-prs__list">
+        {loading ? (
+          <div className="pc-adv-prs__msg">Loading…</div>
+        ) : error ? (
+          <div className="pc-adv-prs__msg pc-adv-prs__msg--err">{error}</div>
+        ) : displayed.length === 0 ? (
+          <div className="pc-adv-prs__msg">No PRs match this filter.</div>
+        ) : (
+          displayed.map((pr) => (
+            <PrRow
+              key={`${pr.remote}#${pr.number}`}
+              pr={pr}
+              onApprove={(n) => void handleApprove(n, false)}
+              onApproveAndMerge={(n) => void handleApprove(n, true)}
+            />
+          ))
+        )}
       </div>
 
-      {/* PR list */}
-      {loading && (
-        <div style={{ color: COLORS.textMuted, fontSize: 13 }}>Loading…</div>
-      )}
-      {!loading && error && (
-        <div style={{ color: COLORS.dangerText, fontSize: 13 }}>{error}</div>
-      )}
-      {!loading && !error && displayed.length === 0 && (
-        <div style={{ color: COLORS.textMuted, fontSize: 13, textAlign: 'center', padding: '24px 0' }}>
-          No PRs match this filter.
-        </div>
-      )}
-      {!loading && !error && displayed.map((pr) => (
-        <PrRow
-          key={`${pr.remote}#${pr.number}`}
-          pr={pr}
-          onApprove={(n) => void handleApprove(n, false)}
-          onApproveAndMerge={(n) => void handleApprove(n, true)}
-        />
-      ))}
+      <style>{`
+        .pc-adv-prs { display: flex; flex-direction: column; height: 100%; min-height: 0; background: var(--bg-1, #0b1220); }
+        .pc-adv-prs__bar {
+          display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+          padding: 6px 10px; flex-shrink: 0;
+          border-bottom: 1px solid var(--border, rgba(125, 211, 252, 0.15));
+        }
+        .pc-adv-prs__title {
+          display: inline-flex; align-items: center; gap: 6px;
+          font-size: 12px; font-weight: 700; color: var(--fg, #e7f7ff);
+        }
+        .pc-adv-prs__title svg { color: var(--accent, #38bdf8); }
+        .pc-adv-prs__warn { font-size: 10px; font-weight: 600; color: var(--bad, #f87171); }
+        .pc-adv-prs__filters { display: inline-flex; gap: 4px; flex-wrap: wrap; }
+        .pc-adv-prs__chip {
+          font-size: 11px; padding: 2px 9px; border-radius: 999px;
+          border: 1px solid var(--border, rgba(125, 211, 252, 0.15));
+          background: transparent; color: var(--fg-mute, #7f9bb4); cursor: pointer;
+          text-transform: capitalize;
+          transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease;
+        }
+        .pc-adv-prs__chip:hover { color: var(--fg, #e7f7ff); border-color: var(--border-strong, rgba(125,211,252,0.32)); }
+        .pc-adv-prs__chip.is-active {
+          color: var(--fg, #e7f7ff);
+          background: color-mix(in oklab, var(--accent, #38bdf8), transparent 84%);
+          border-color: color-mix(in oklab, var(--accent, #38bdf8), transparent 45%);
+        }
+        .pc-adv-prs__refresh {
+          margin-left: auto; display: inline-flex; align-items: center; padding: 4px;
+          color: var(--fg-mute, #7f9bb4); background: transparent; border: 0; border-radius: 4px; cursor: pointer;
+        }
+        .pc-adv-prs__refresh:hover { color: var(--fg, #e7f7ff); }
+        .pc-adv-prs__list {
+          flex: 1; min-height: 0; overflow: auto;
+          padding: 10px 12px; display: grid; gap: 8px; align-content: start;
+        }
+        .pc-adv-prs__msg { color: var(--fg-mute, #7f9bb4); font-size: 13px; padding: 16px; text-align: center; }
+        .pc-adv-prs__msg--err { color: var(--bad, #f87171); }
+      `}</style>
     </div>
   );
 }

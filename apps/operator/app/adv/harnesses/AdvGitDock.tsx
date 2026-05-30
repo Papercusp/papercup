@@ -14,9 +14,16 @@
 import { useEffect } from 'react';
 import { HarnessDock } from '../../harness/dock/HarnessDock';
 import { panelRegistry } from '../../harness/dock/panel-registry';
-import { listPanels, onDockApiBind, setPanelParams } from '../../harness/dock/dock-actions';
+import { closePanel, listPanels, onDockApiBind, openPanel, setPanelParams } from '../../harness/dock/dock-actions';
 import AdvGitGraphPanel from './AdvGitGraphPanel';
 import AdvPrsPanel from './AdvPrsPanel';
+
+/** The git dock holds exactly these two panel types — nothing else. */
+const ALLOWED_TYPES = ['adv:git-graph', 'adv:prs'] as const;
+type AllowedType = (typeof ALLOWED_TYPES)[number];
+function isAllowed(type: string): type is AllowedType {
+  return (ALLOWED_TYPES as readonly string[]).includes(type);
+}
 
 let registered = false;
 function ensureRegistered() {
@@ -37,37 +44,77 @@ export default function AdvGitDock({ slug }: { slug: string }) {
   // defaultAdvGitLayout (git graph + PRs only).
   const layoutName = slug ? `adv-git2:${slug}` : 'adv-git2';
 
-  // Rebind each panel's harnessSlug when the active slug changes (same trick
-  // HarnessesDock uses) so panels refetch for the new harness.
+  // Two jobs on every dock bind:
+  //   1. Rebind each panel's harnessSlug when the active slug changes (same
+  //      trick HarnessesDock uses) so panels refetch for the new harness.
+  //   2. Enforce the git-dock invariant — only git-graph + PRs. The server
+  //      seed is authoritative when present, but a stale/legacy layout (e.g.
+  //      seeded as the dashboard layout before this dock existed) can hydrate
+  //      foreign panels; we prune them, dedupe, and open whichever of the two
+  //      git panels is missing. The dock's layout auto-save then persists the
+  //      corrected layout, so it self-heals after the first load. `normalize`
+  //      is debounced so it runs once after hydration settles, then converges
+  //      (re-running after its own opens is a no-op).
   useEffect(() => {
     if (!slug) return;
     let addPanelDispose: { dispose: () => void } | null = null;
+    let normTimer: number | null = null;
+
+    const patch = (p: { id: string; params: Record<string, unknown> }) => {
+      if (p.params.harnessSlug !== slug) {
+        setPanelParams(p.id, { ...p.params, harnessSlug: slug });
+      }
+    };
+
+    const normalize = () => {
+      try {
+        const seen = new Set<string>();
+        for (const p of listPanels()) {
+          if (!isAllowed(p.type) || seen.has(p.type)) {
+            closePanel(p.id); // foreign type OR duplicate
+          } else {
+            seen.add(p.type);
+          }
+        }
+        if (!seen.has('adv:git-graph')) {
+          openPanel({ type: 'adv:git-graph', params: { harnessSlug: slug }, title: 'Git graph' });
+        }
+        if (!seen.has('adv:prs')) {
+          openPanel({ type: 'adv:prs', params: { harnessSlug: slug }, title: 'Pull requests' });
+        }
+      } catch {
+        /* dock not hydrated yet; the next onDidAddPanel reschedules */
+      }
+    };
+    const scheduleNormalize = () => {
+      if (normTimer !== null) window.clearTimeout(normTimer);
+      normTimer = window.setTimeout(normalize, 250);
+    };
+
     const unbind = onDockApiBind((api) => {
       if (addPanelDispose) {
         addPanelDispose.dispose();
         addPanelDispose = null;
       }
       if (!api) return;
-      const patch = (p: { id: string; params: Record<string, unknown> }) => {
-        if (p.params.harnessSlug !== slug) {
-          setPanelParams(p.id, { ...p.params, harnessSlug: slug });
-        }
-      };
       try {
         for (const p of listPanels()) patch(p);
       } catch {
         /* dock not yet hydrated; onDidAddPanel covers it */
       }
+      scheduleNormalize();
       addPanelDispose = api.onDidAddPanel((panel) => {
         try {
           const found = listPanels().find((x) => x.id === panel.id);
-          if (found) patch(found);
+          if (found && isAllowed(found.type)) patch(found);
         } catch {
           /* ignore */
         }
+        scheduleNormalize();
       });
     });
     return () => {
+      if (normTimer !== null) window.clearTimeout(normTimer);
       if (addPanelDispose) addPanelDispose.dispose();
       unbind();
     };
