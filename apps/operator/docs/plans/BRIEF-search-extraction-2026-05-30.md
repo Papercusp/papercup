@@ -1,13 +1,18 @@
 ---
-title: Brief — finish @papercusp/search (P-013 / P-020)
+title: Brief — finish @papercusp/search (P-013 / P-020) — ✅ DONE
 slug: BRIEF-search-extraction-2026-05-30
-status: active
+status: done
 created: 2026-05-30
 owner: avi@storewolf.com
 companion-to: [papercusp-systems-abstraction-2026-05-29, HANDOFF-systems-abstraction-phase2-2026-05-30]
 ---
 
 # Brief: finish `@papercusp/search` (P-013 / P-020)
+
+> ✅ **COMPLETED 2026-05-30** — done inline (`0332afba` engine + `163d60b3`
+> wiring). P-013 + P-020 are `done`. This brief is kept as the record of how
+> it was done; no action remaining. The other three lib briefs (memory,
+> locks, coordination) are still open.
 
 You are one of several agents each finishing **one** shared-lib extraction
 from `papercusp-systems-abstraction-2026-05-29`. Yours is search. The
