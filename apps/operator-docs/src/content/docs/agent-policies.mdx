@@ -354,9 +354,11 @@ Specifically:
   `defineTool({ guidance })`**, prompt-assembly auto-reloads in dev
   (`PAPERCUSP_RELOAD_PROMPTS=1` is the dev default). No restart
   needed.
-- **After editing this page or `papercusp-su.tools.md`**, re-run
-  `install-standalone-mcp.sh` to refresh the managed block in each
-  host agent's context file.
+- **After editing this page, a `papercusp-su-<profile>.tools.md` base
+  playbook, or a `papercusp-su.<client>.md` overlay**, re-run
+  `install-standalone-mcp.sh` to re-render the per-client playbooks and
+  refresh the `omp-su` / `claude-su` / `codex-su` wrappers. (See
+  [Superuser mode → Per-client wrappers](/internal/docs/endpoint-system/superuser-mode#per-client-wrappers-and-playbooks).)
 
 ## 16. Commits, branches, PRs
 
