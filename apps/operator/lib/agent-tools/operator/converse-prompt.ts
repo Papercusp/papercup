@@ -73,6 +73,16 @@ export async function buildOperatorPrompt(
   const mayAskActive = !!input.mayAskActive;
   const audienceMode = input.audienceMode ?? 'engineer';
 
+  // Testing-only lean mode (OPERATOR_LEAN_PROMPT=1, default off). Drops
+  // the heavy system sections (persona, tool catalog, tools.md playbook,
+  // mem0 block) and keeps only the audience overlay + the converse
+  // tag-protocol — shrinking the ~14k-token system prompt to ~3.4k so a
+  // turn fits under tight per-minute input-token rate limits when testing
+  // with a low-tier API key. NOT for production: it changes operator
+  // behavior (no persona/tone, no tool guidance, no memory). Pairs with
+  // the matching OPERATOR_LEAN_PROMPT trim of allowedTools in converse.ts.
+  const leanMode = process.env.OPERATOR_LEAN_PROMPT === '1';
+
   // SYSTEM sections (stable persona spec — set as omp --system-prompt)
   const systemSections: string[] = [];
 
@@ -85,47 +95,50 @@ export async function buildOperatorPrompt(
   }
 
   systemSections.push(loadRoleConverse('operator'));
-  systemSections.push(loadRolePersona('operator'));
 
-  const operatorToolNames: string[] = [];
-  for (const fullName of ALL_AGENT_MCP_TOOLS) {
-    const stripped = fullName.replace(/^mcp__agentmcp__/, '');
-    operatorToolNames.push(stripped);
-    if (stripped.includes('_')) {
-      operatorToolNames.push(stripped.replace(/_/g, '.'));
+  if (!leanMode) {
+    systemSections.push(loadRolePersona('operator'));
+
+    const operatorToolNames: string[] = [];
+    for (const fullName of ALL_AGENT_MCP_TOOLS) {
+      const stripped = fullName.replace(/^mcp__agentmcp__/, '');
+      operatorToolNames.push(stripped);
+      if (stripped.includes('_')) {
+        operatorToolNames.push(stripped.replace(/_/g, '.'));
+      }
     }
+    // Phase 4 T3.1: pass modality so the catalog filters out tools
+    // that don't declare 'voice' support when this turn is voice-side.
+    // Today chat:ask_choice is the load-bearing example — buttons are
+    // invisible to a voice user, so the tool declares modality:['text']
+    // and gets dropped from the voice catalog automatically (replaces
+    // the manual NOTE in the trigger sections below).
+    const catalog = renderToolsCatalog('operator', operatorToolNames, modality);
+    if (catalog) systemSections.push(catalog);
+
+    const playbook = loadRoleToolsMd('operator');
+    if (playbook) systemSections.push(playbook);
+
+    // Operator memory pre-turn injection — best-effort, via the shared
+    // helper. Same source of truth as architect/brainstorm prompts +
+    // operator:delegate (each picks its own user/workspace scope).
+    // Falls through silently when mem0 is unavailable.
+    // Operator chat has no specific harness in scope, so fan out the
+    // memory recall across every harness in the workspace. Failures
+    // here are non-fatal — the injection helper is best-effort.
+    let harnessSlugs: string[] = [];
+    try {
+      const reg = await loadHarnessRegistry(activeWorkspaceId());
+      harnessSlugs = reg.projects.map((p) => p.slug);
+    } catch { /* leave empty — recall just skips the harness pool */ }
+    const memBlock = await buildMemoryContextBlock({
+      userId: sessionUser?.id ?? null,
+      workspaceId: activeWorkspaceId(),
+      harnessSlugs,
+      queryContext: lastUserContext(messages, 3),
+    });
+    if (memBlock) systemSections.push(memBlock);
   }
-  // Phase 4 T3.1: pass modality so the catalog filters out tools
-  // that don't declare 'voice' support when this turn is voice-side.
-  // Today chat:ask_choice is the load-bearing example — buttons are
-  // invisible to a voice user, so the tool declares modality:['text']
-  // and gets dropped from the voice catalog automatically (replaces
-  // the manual NOTE in the trigger sections below).
-  const catalog = renderToolsCatalog('operator', operatorToolNames, modality);
-  if (catalog) systemSections.push(catalog);
-
-  const playbook = loadRoleToolsMd('operator');
-  if (playbook) systemSections.push(playbook);
-
-  // Operator memory pre-turn injection — best-effort, via the shared
-  // helper. Same source of truth as architect/brainstorm prompts +
-  // operator:delegate (each picks its own user/workspace scope).
-  // Falls through silently when mem0 is unavailable.
-  // Operator chat has no specific harness in scope, so fan out the
-  // memory recall across every harness in the workspace. Failures
-  // here are non-fatal — the injection helper is best-effort.
-  let harnessSlugs: string[] = [];
-  try {
-    const reg = await loadHarnessRegistry(activeWorkspaceId());
-    harnessSlugs = reg.projects.map((p) => p.slug);
-  } catch { /* leave empty — recall just skips the harness pool */ }
-  const memBlock = await buildMemoryContextBlock({
-    userId: sessionUser?.id ?? null,
-    workspaceId: activeWorkspaceId(),
-    harnessSlugs,
-    queryContext: lastUserContext(messages, 3),
-  });
-  if (memBlock) systemSections.push(memBlock);
 
   // USER sections (this turn's context — sent as the positional message)
   const userSections: string[] = [];
