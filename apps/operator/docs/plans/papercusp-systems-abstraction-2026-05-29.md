@@ -275,7 +275,7 @@ two SEPARATE storage components**, not one dual-backend interface:
   `workspace-listener.ts` / `path-normalize.ts` / `sql/`, keep the internal txn +
   side-DB, expose `SuLocksCoordinator`. The caller supplies an opaque
   `coordinationDomain` string (today: workspace UUID). → D-010
-- **P-011** `todo` Extract `@papercusp/coordination` as **three pieces, not one
+- **P-011** `done` Extract `@papercusp/coordination` as **three pieces, not one (@papercusp/coordination shipped — coord-core pure + CoordEventLog fs/in-mem seam + PresenceStore PG/in-mem; operator host-adapter barrels, 0 consumer rewires; commits 2c1529ca + 3ef62102)
   dual-backend interface** (D-009): (a) `coord-core` — pure `identity` +
   `envelope` + protocol logic; (b) `CoordEventLog` — `append`/`readAll` over the
   append-only channel surfaces, `FsCoordLog` default + optional PG log;

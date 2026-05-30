@@ -19,7 +19,11 @@ companion-to: [papercusp-systems-abstraction-2026-05-29]
 > - ~~locks (P-010)~~ **DONE** (`0779d8f2` + flip `908238e6`) — off the list.
 > - **memory (P-021)** — `BRIEF-memory-extraction-2026-05-30.md` (largest;
 >   scope the boundary first).
-> - **coordination (P-011/P-012)** — `BRIEF-coordination-extraction-2026-05-30.md`.
+> - ~~coordination (P-011/P-012)~~ **DONE** (`f25af167` P-012 append-only +
+>   `2c1529ca`+`3ef62102` P-011) — `@papercusp/coordination` shipped as
+>   coord-core (pure) + CoordEventLog (fs/in-mem seam) + PresenceStore
+>   (PG/in-mem); operator host-adapter barrels, 0 consumer rewires;
+>   identity/subscriptions/watermarks stayed operator-side as agreed.
 >
 > **locks ↔ coordination shared `identity` + `subscriptions` — RESOLVED.** The
 > locks extraction did NOT move/delete `locks/identity.ts` or
