@@ -6,6 +6,7 @@ import { getOrgPg, generated } from '@restart/db-org';
 import { and, eq, notInArray, sql as dsql } from 'drizzle-orm';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
 import { notifySyncInvalidate } from '@/lib/sync-sse';
+import { ensureHarnessPlanAssertionsTable } from '@/lib/ensure-schema';
 import { defineTool } from '@papercusp/agent-mcp';
 
 const ti = generated.tokenIndexInHarnessShared;
@@ -25,7 +26,7 @@ export default defineTool({
     const m = authHeader.match(/^Bearer\s+(\S+)$/i);
     if (!m) return Response.json({ error: 'missing bearer' }, { status: 401 });
     const token = m[1];
-    const { db } = getOrgPg();
+    const { db, sql } = getOrgPg();
     const tokenRows = await db.select({ harness_slug: ti.harnessSlug }).from(ti).where(eq(ti.token, token)).limit(1);
     if (tokenRows.length === 0) return Response.json({ error: 'invalid bearer' }, { status: 401 });
     const slug = tokenRows[0].harness_slug;
@@ -59,6 +60,31 @@ export default defineTool({
           ? Number((payload as { last_run_ts: number }).last_run_ts)
           : null;
       keep.push({ testId: f.testId, name, status, durationMs, lastRunTs, payload });
+    }
+
+    // P-058: quarantine any test row whose `coversVALs` references a VAL
+    // that isn't a known plan assertion (harness_plan_assertions). Only
+    // enforced when the harness HAS assertions — harnesses not yet on the
+    // inline-VAL flow are left untouched. Fail-soft if the table is absent.
+    if (keep.length > 0) {
+      try {
+        await ensureHarnessPlanAssertionsTable();
+        const valRows = await sql<{ val_id: string }[]>`
+          SELECT val_id FROM harness_shared.harness_plan_assertions
+           WHERE workspace_id = ${ws} AND harness_slug = ${slug}`;
+        if (valRows.length > 0) {
+          const known = new Set(valRows.map((r) => r.val_id));
+          for (const k of keep) {
+            const raw = (k.payload as { coversVALs?: unknown }).coversVALs;
+            const covers = Array.isArray(raw) ? raw.filter((v): v is string => typeof v === 'string') : [];
+            if (covers.length > 0 && covers.some((v) => !known.has(v))) {
+              k.status = 'invalid_val_ref';
+            }
+          }
+        }
+      } catch {
+        /* assertions table unavailable — skip validation (fail-soft) */
+      }
     }
 
     if (keep.length === 0) {

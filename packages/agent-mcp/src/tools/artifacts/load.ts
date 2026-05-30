@@ -21,6 +21,7 @@ const ALL_ROLES = [
   'architect',
   'worker',
   'validator',
+  'tester',
   'reviewer',
   'debugger',
   'operator',

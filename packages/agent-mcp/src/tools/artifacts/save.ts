@@ -17,6 +17,7 @@ const WRITE_ROLES = [
   'scoper',
   'architect',
   'worker',
+  'tester',
   'debugger',
   'operator',
   'documenter',
@@ -40,6 +41,7 @@ export default defineTool({
   rolesQuota: {
     worker: { perChunk: 20 },
     architect: { perRun: 50 },
+    tester: { perRun: 50 },
     scoper: { perRun: 50 },
     operator: { perRun: 200 },
   },
