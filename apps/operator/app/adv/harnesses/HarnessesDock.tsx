@@ -19,6 +19,7 @@ import AdvChatPanel from './AdvChatPanel';
 import AdvAgentsPanel from './AdvAgentsPanel';
 import AdvLogsPanel from './AdvLogsPanel';
 import AdvOverviewPanel from './AdvOverviewPanel';
+import AdvTestsPanel from './AdvTestsPanel';
 
 const CHAT_PANEL_TYPE = 'adv:chat';
 
@@ -66,6 +67,7 @@ function ensureRegistered() {
   panelRegistry.register('adv:agents', AdvAgentsPanel, { title: 'Agents' });
   panelRegistry.register('adv:logs', AdvLogsPanel, { title: 'Run log' });
   panelRegistry.register('adv:overview', AdvOverviewPanel, { title: 'Overview' });
+  panelRegistry.register('adv:tests', AdvTestsPanel, { title: 'Tests' });
   // keepAlive: the chat keeps its SSE stream + transcript when its tab is
   // inactive. Multi-instance: several chat slots can coexist (the open-chat
   // drain fills the first free one).
