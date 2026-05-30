@@ -622,7 +622,7 @@ describe('onToolCall / onToolResult (file-locking #2)', () => {
       };
       calls.push({ name: body.params.name, args: body.params.arguments });
       const payload =
-        body.params.name === 'coord:locks:acquire'
+        body.params.name === 'locks:acquire'
           ? { ok: true, lock_id: 'L-1', expires_ts: 't', held: ['a.ts'] }
           : { ok: true };
       return {
@@ -646,11 +646,11 @@ describe('onToolCall / onToolResult (file-locking #2)', () => {
     });
     expect(r).toEqual({});
     expect(calls).toHaveLength(1);
-    expect(calls[0].name).toBe('coord:locks:acquire');
+    expect(calls[0].name).toBe('locks:acquire');
 
     await onToolResult({ type: 'tool_result', toolCallId: 'tc-1' });
     expect(calls).toHaveLength(2);
-    expect(calls[1].name).toBe('coord:locks:release');
+    expect(calls[1].name).toBe('locks:release');
     expect((calls[1].args as { lock_id: string }).lock_id).toBe('L-1');
 
     // Second release on the same toolCallId is a no-op (cache cleared).
@@ -1171,7 +1171,7 @@ describe('onSessionShutdown — defensive lock release (file-locking #2)', () =>
     _resetToolCallCacheForTests();
   });
 
-  it('calls coord:locks:release with all_mine:true', async () => {
+  it('calls locks:release with all_mine:true', async () => {
     process.env.PAPERCUSP_BUNDLE_URL = 'http://operator.test';
     const calls: Array<{ name: string; args: unknown }> = [];
     global.fetch = (async (_url: unknown, init: { body: string }) => {
@@ -1191,7 +1191,7 @@ describe('onSessionShutdown — defensive lock release (file-locking #2)', () =>
     }) as unknown as typeof fetch;
     await onSessionShutdown();
     expect(calls).toHaveLength(1);
-    expect(calls[0].name).toBe('coord:locks:release');
+    expect(calls[0].name).toBe('locks:release');
     expect(calls[0].args).toEqual({ all_mine: true });
   });
 });

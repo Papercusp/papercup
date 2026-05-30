@@ -11,7 +11,7 @@
  *                      (held locks, unread inbox, changed plans).
  *   turn_end         → persist the watermark pointers consumed.
  *   tool_call        → L2 file-lock enforcement — extract paths,
- *                      coord:locks:acquire, block on busy.
+ *                      locks:acquire, block on busy.
  *   tool_result      → release the lock acquired for that toolCallId.
  *   session_shutdown → defensive release of any locks still held.
  *
@@ -629,7 +629,7 @@ export async function onSessionStart(ctx?: unknown): Promise<void> {
  */
 export async function onSessionShutdown(): Promise<void> {
   acquiredLocks.clear();
-  await callMcpTool('coord:locks:release', { all_mine: true });
+  await callMcpTool('locks:release', { all_mine: true });
 }
 
 /**
@@ -837,7 +837,7 @@ export async function onTurnEnd(): Promise<void> {
  * shell hooks, with the same fail-open precedent):
  *   1. Extract repo-relative paths from the tool input (skip if the
  *      tool isn't a file-edit, or the path is outside the repo).
- *   2. Call coord:locks:acquire with wait={max_sec:0} (no queueing on
+ *   2. Call locks:acquire with wait={max_sec:0} (no queueing on
  *      the hook — block immediately so the agent can replan).
  *   3. On ok → cache lock_id by toolCallId for onToolResult to release.
  *   4. On busy → return { block: true, reason: <formatted refusal> }.
@@ -1176,7 +1176,7 @@ export function formatSymlinkRefusal(
   return lines.join('\n');
 }
 
-/** Busy-array entry as returned by coord:locks:acquire. */
+/** Busy-array entry as returned by locks:acquire. */
 interface BusyEntry {
   path: string;
   owner?: string;
@@ -1247,7 +1247,7 @@ export async function onToolCall(
     .map((t) => t.rel)
     .filter((x) => !(seen.has(x) || seen.add(x)));
 
-  const result = await callMcpTool('coord:locks:acquire', {
+  const result = await callMcpTool('locks:acquire', {
     paths,
     intent: `tool_call:${event.toolName}`,
     ttl_sec: 1200,
@@ -1260,12 +1260,12 @@ export async function onToolCall(
     // would wedge the agent. The persisted marker (file-locking #3)
     // lets the operator UI surface "enforcement offline."
     console.error(
-      '[su-locks] coord:locks:acquire unreachable; allowing tool_call (fail-open)',
+      '[su-locks] locks:acquire unreachable; allowing tool_call (fail-open)',
     );
     await recordHookError({
       handler: 'tool_call',
       phase: 'connect',
-      detail: 'coord:locks:acquire returned null (operator unreachable)',
+      detail: 'locks:acquire returned null (operator unreachable)',
     });
     return {};
   }
@@ -1297,7 +1297,7 @@ export async function onToolResult(event: ToolResultEvent): Promise<void> {
   acquiredLocks.delete(event.toolCallId);
   // Best-effort release. Missed releases are covered by the lock's
   // TTL (1200s) so a network blip does NOT leak a lock permanently.
-  await callMcpTool('coord:locks:release', { lock_id: lockId });
+  await callMcpTool('locks:release', { lock_id: lockId });
 }
 
 /** Test-only: reset the in-memory lock cache between cases. */
