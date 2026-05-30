@@ -1,9 +1,9 @@
 ---
 title: Abstract Papercusp's reusable systems into standalone libraries — per-subsystem seams and the extraction backlog
 slug: papercusp-systems-abstraction-2026-05-29
-status: draft
+status: ready
 created: 2026-05-29
-updated: 2026-05-29
+updated: 2026-05-30
 owner: avi@storewolf.com
 created-by-revision: R-001
 companion-to: [papercusp-tooldef-extraction-2026-05-29]
@@ -88,7 +88,7 @@ DB-access mechanisms (D-010):
 | (b) locks-local `inWorkspaceTxn()` + **own pool** + **own `papercusp_su` DB** + `pg_advisory_xact_lock` (not RLS) | **locks** | **NO** — different DB, pool, and serialization model |
 | (c) `getOrgPg()` raw admin client, no transaction | **backup, auth-rate-limit, memory side-effects** | partially — they want a `PgHandle{sql}`, not a tx unit-of-work |
 | (d) mem0-owned `pg.Client`, allocated at construction | **memory core** | **NO** — mem0 owns the connection before any seam can inject one |
-| (e) dispatcher `ctx.tx` from context-assembly (role-gated, **optional/unchecked**) | **search** | no — it's the dispatch pipeline, not a db-org call; and `ctx.tx` is used without a null-check (latent bug, P-013) |
+| (e) dispatcher `ctx.tx` from context-assembly (role-gated, optional — set only when a bearer resolves) | **search** | no — it's the dispatch pipeline, not a db-org call; reads are `try/catch`-guarded so an absent `ctx.tx` degrades to empty results, not a crash (P-013 makes it an explicit `PgHandle`) |
 
 So the load-bearing correction: **abstract each subsystem behind its own
 injection interface.** The only genuinely shared *discipline* (not a shared
@@ -289,12 +289,20 @@ two SEPARATE storage components**, not one dual-backend interface:
 
 ## Phase 3 — Retrieval cluster (search + memory; each its own seam)
 
-- **P-013** `todo` **Bug fix (audit-found), pre-req for P-020:** `fulltext.ts` and
-  `semantic.ts` read `ctx.tx` unconditionally, but it's optional (only populated
-  when a bearer token is present or the dispatcher wraps in `withWorkspace`). When
-  absent, search throws on `undefined.sql`. Add a null-check / explicit
-  pg-handle resolution before extraction so the extracted package has a defined
-  DB contract. → D-010
+- **P-013** `todo` **Hardening (pre-req for P-020) — re-verified 2026-05-30, NOT
+  a crash bug:** `fulltext.ts` (4×) and `semantic.ts` (8×) read `ctx.tx`, which is
+  optional — `http-projection.ts:331` sets it only when a bearer token resolves
+  (`requirePrincipal: false`, so no-bearer calls leave it undefined). **Correction
+  to the earlier audit:** it does NOT "throw on `undefined.sql`" — every one of the
+  12 uses is inside a `try/catch` that `ctx.log?.(…skipped…)` and continues, so an
+  absent `ctx.tx` degrades to **empty results per source**, not a crash. (Also:
+  `routes/user/search.ts` does NOT use `ctx.tx` at all — it opens its own
+  `pg.Client`; the earlier "search.ts:137 reads ctx.tx" was wrong, that line is the
+  rrf import.) The real gap is a *silent* empty result when unauthenticated, and an
+  *implicit* DB-access contract. Fix during P-020: inject an explicit `PgHandle`
+  (the seam) so the extracted package's DB dependency is declared, not smuggled via
+  an optional dispatcher field. Low urgency — pre-existing, graceful, and reworked
+  by P-020 anyway. → D-010
 - **P-020** `todo` Extract `@papercusp/search` (BM25 + pgvector hybrid). Three
   seams (mechanism (e) today): (i) **source registry** — the 4 surfaces
   (escalations/brainstorm/turns/decisions) are hardcoded literal branches, not a
@@ -318,7 +326,7 @@ two SEPARATE storage components**, not one dual-backend interface:
 
 ## Phase 4 — Backup + desktop IPC + rate-limit
 
-- **P-023** `todo` Extract `@papercusp/backup` (kopia wrapper, ~95% CLI
+- **P-023** `done` Extract `@papercusp/backup` (kopia wrapper, ~95% CLI (@papercusp/backup extracted behind configureBackup host seam 73fa053d)
   passthrough). **Audit correction:** the real seam is NOT a PG tx handle. Backup
   uses raw `getOrgPg()` with no transactions (mechanism (c)); its dominant
   coupling is the **workspace-root filesystem path** (the kopia repo lives at
@@ -327,26 +335,119 @@ two SEPARATE storage components**, not one dual-backend interface:
   **not** `workspace_backup_config` as the first draft said). Keep the load-bearing
   self-exclusion guard (`policy.ts` `IGNORE_PATTERNS` must contain `backups`;
   enforced on every `snapshot()` by `assertSelfExclusionPolicy`). → D-010
-- **P-024** `todo` Resolve backup's harness-lifecycle coupling: the
+- **P-024** `done` Resolve backup's harness-lifecycle coupling: the (SnapshotTriggerReason opened to 'manual'|'interval'|string&{}; event reasons no longer baked into package 73fa053d)
   `SnapshotTriggerReason` enum (`pre_destructive`/`post_run`/`plugin_install`/
   `secret_change`/…) is hardcoded and `triggerSnapshotEvent` is called from
   git/restore/plugin call-sites. Externalize as a caller-registered trigger
   registry (or accept a loose string list) so the extracted package isn't bound to
   harness events. blocked-by: P-023 → D-010
-- **P-030** `todo` Extract the Tauri IPC stack as **three pieces** (audit:
-  coupling is in `server.ts`, NOT the transport): (i) `@papercusp/ipc-framing` —
-  `framing.ts`, pure binary codec, zero coupling; (ii) `@papercusp/desktop-ipc` —
-  `desktop-bootstrap.ts` + `ipc-fetch.ts` + `ipc-event-source.ts` + `ipc-stream.ts`,
-  **verified zero Papercusp coupling**; (iii) `@papercusp/ipc-endpoint-server` —
-  `endpoint-ipc/server.ts`, which needs MORE than "pluggable dispatch": inject
-  `dispatchProjectedToolStream` **and** `lookupByMcpName` **and** `getWorkspaceId`
-  **and** the tool allowlist (all already DI-shaped via `DispatchProjectedDeps`).
-  This is the libsoup pool-exhaustion fix. → D-006
-- **P-031** `todo` Extract `@papercusp/rate-limit` from `lib/auth-rate-limit.ts`
+- **P-030** `done` Extract the Tauri IPC stack as **three pieces** — 2 of 3 DONE: (pt3 @papercusp/ipc-endpoint-server shipped c74cbe70 — host seam; all 3 IPC pieces done)
+  (i) **`@papercusp/ipc-framing` — DONE** (`775fb24e`): `framing.ts` (145 LOC, zero
+  imports) → `packages/ipc-framing`, 16 tests, `endpoint-ipc/framing.ts` is a
+  re-export shim (6 consumers unchanged). (ii) **`@papercusp/desktop-ipc` — DONE**
+  (`e8f2a1c7`): extracted the **whole** `lib/transport-adapters/` dir (13 files:
+  ipc-stream/ipc-fetch/ipc-event-source/desktop-bootstrap + http-stream +
+  sse-parser + types + index picker), **74 tests** passing incl. jsdom-env ones.
+  Corrected the earlier "extract only the 4 IPC files" note — that's NOT a clean
+  cut (the IPC files share `types.ts`+`sse-parser.ts` with the HTTP path and the
+  picker wires both), so the honest seam was the whole dir. Coupling external-only
+  (`@tauri-apps/api`, `@restart/sse`, `@papercusp/tooldef`). Two shims
+  (`transport-adapters/index.ts` + `desktop-bootstrap.ts` via a `./desktop-bootstrap`
+  subpath export) keep all 4 consumers resolving unchanged — zero rewire.
+  (iii) **`@papercusp/ipc-endpoint-server` — REMAINING (three attempts, all
+  reverted clean; design DONE + package code correct, blocked ONLY on a
+  vitest sibling-resolution config — see "attempt 3 root cause" below):**
+  `endpoint-ipc/server.ts` (399 LOC) + `sys-http.ts` (225 LOC,
+  self-contained). **Corrected design from the code read:** the runtime coupling
+  is only **3** injected fns, not the plan's "4" — `dispatchProjectedToolStream`,
+  `lookupByMcpName`, `getWorkspaceId` (wrapping `activeWorkspaceId`); the
+  `allowedTools` "4th" is already a caller *option*, not a coupling. Wire shape:
+  add a required `host: { lookupByMcpName, dispatchProjectedToolStream,
+  getWorkspaceId }` to `StartEndpointIpcServerOptions`; `UnifiedToolContext` /
+  `DispatchProjectedDeps` stay `import type` (no runtime dep); `./framing` →
+  `@papercusp/ipc-framing`. Package deps: `@papercusp/ipc-framing` + `@papercusp/agent-mcp`
+  (type-only) + `@papercusp/tooldef` (the test's `registerProjectedTool`/
+  `classifyEventWire` — already shipped). Consumers to rewire: the boot site
+  `instrumentation-node.ts` (~line 445, pass `host:` alongside the existing
+  `deps`/`allowedTools`), and a re-export shim at `endpoint-ipc/server.ts` for
+  `dev_ipc_echo_e2e.test.ts`. `sys-http.ts` has NO external consumer (only a
+  doc-comment mention) — moves cleanly.
+
+  **Attempt 1 reverted:** `git mv`'d sys-http out before the shim → original
+  `server.ts`'s `./sys-http` dangled = main briefly broken. Lesson applied in
+  attempt 2: use `cp` (originals stay intact until the end), write-package-first.
+
+  **Attempt 2 (cp-based, main NEVER broke) — got the package fully built + 31/33
+  tests passing, then reverted on a real harness artifact:**
+  - Built `packages/ipc-endpoint-server`: `server.ts` (host-seam DI), `sys-http.ts`
+    (verbatim, `./framing`→`@papercusp/ipc-framing`), `index.ts` barrel,
+    package.json (deps: `@papercusp/ipc-framing` + `@papercusp/tooldef`), README.
+  - **NEW resolution requirement discovered:** this is the FIRST extracted package
+    whose *tests* import sibling `@papercusp/*` packages, and standalone `vitest run`
+    in a bare package cannot resolve their raw-`.ts` entry points. Fix = a package
+    `vitest.config.ts` with BOTH `server.deps.inline: [/^@papercusp\//]` (tooldef
+    already has the inline half) AND `resolve.alias` mapping
+    `@papercusp/ipc-framing` + `@papercusp/tooldef` to `../<pkg>/src/index.ts`.
+    With that, resolution worked and **31 tests passed** (all 12 sys-http, binds,
+    allowlist, unknown-tool, errors).
+  - **The 2 remaining failures are a harness artifact, NOT a code defect:** the
+    streaming-dispatch + cancel integration tests register a synthetic tool via
+    `registerProjectedTool` and rely on `dispatchProjectedToolStream` reading the
+    SAME module-singleton registry. Aliasing `@papercusp/tooldef` instantiates a
+    SECOND tooldef module → the test's registry ≠ dispatch's registry → no stream.
+    The extracted `server.ts` is byte-identical to the working original (only the
+    framing import + host injection changed, both covered by the 31 green tests).
+  - Reverted clean (cp originals untouched; `rm` the new pkg + symlink); main
+    green, zero residue, 6 prior packages intact.
+
+  **Attempt 3 — ROOT CAUSE nailed (main NEVER broke; reverted clean incl. a
+  trial ipc-framing exports change):** the package built fine; the blocker is
+  purely standalone-vitest sibling resolution, and the precise mechanism is now
+  known:
+  - This is the FIRST extracted package whose **test files directly import two
+    sibling `@papercusp/*` `.ts` packages** (`ipc-framing` + `tooldef`).
+    `desktop-ipc` gets sibling resolution "for free" because it imports its one
+    sibling (`tooldef`) in **non-test src** that vite bundles, and it has **no
+    vitest.config** (pure vitest defaults).
+  - **Two distinct sub-issues, both confirmed by node-vs-vite tests:**
+    (1) `@papercusp/ipc-framing` uses **string-shorthand `exports`**
+    (`{".":"./src/index.ts"}`) which vite's resolver won't follow as a dependency
+    entry; switching it to the conditional-object form (like `tooldef`) fixed
+    `ipc-framing` resolution. (`docs-engine`/`rate-limit` also use the shorthand
+    but resolve in the operator via vite-tsconfig-paths, NOT standalone — so the
+    shorthand is a latent standalone-vitest footgun across our packages.)
+    (2) `@papercusp/tooldef` (object exports, node-resolvable, resolves fine for
+    `desktop-ipc`) still failed once I **added a custom `vitest.config.ts`** —
+    because a hand-written config **replaces** vitest's default resolution rather
+    than extending it. `node require.resolve('@papercusp/tooldef')` succeeds from
+    the package dir, so the symlink is correct; vite just needs the repo's base
+    resolver.
+  - **Turnkey redo (validated path):** create the package's `vitest.config.ts` by
+    **extending the repo base** — `import { defineVitestConfig } from
+    '@papercusp/test-config'` (or `mergeConfig` with it) the way `apps/operator`
+    does — instead of a bare `defineConfig`; that pulls in vite-tsconfig-paths +
+    `deps.inline` so both siblings resolve as a **single instance** (keeping
+    tooldef's registry shared, so the 2 streaming/cancel tests pass too). Pair
+    with switching `ipc-framing`'s `exports` to object form (its own 16 tests use
+    relative `./index` imports, so unaffected; the operator consumes it via the
+    shim, also unaffected — net-positive consistency fix). Fallback if base-config
+    resolution still fights: keep the registry-dependent `server.test.ts`
+    dispatch/cancel cases in `apps/operator` (operator vitest, single tooldef) and
+    ship the package with its standalone-safe tests (sys-http, bind, allowlist).
+  - **Do NOT** use `resolve.alias` for `tooldef` (forks its registry — the
+    attempt-2 failure) and do NOT hand-roll a config that drops the base resolver
+    (the attempt-3 failure). This is the libsoup pool-exhaustion fix. → D-006
+- **P-031** `done` Extract `@papercusp/rate-limit` from `lib/auth-rate-limit.ts`
   (2-bucket, PG-durable; **verified zero domain coupling**, generic string keys).
-  Mechanism (c): raw `getOrgPg()`, no `withWorkspace` — confirmed. Inject a
-  `PgHandle` + options (windows/capacities/table name); `isLoopbackIp()` is
-  reusable as-is. Ready to extract; lowest-risk of the seam'd ones. → D-010
+  **Shipped** (`packages/rate-limit`, 8 unit tests, on `main`). **Seam deviation:**
+  used an injected `BucketStore` (`read`/`write`/`delete`/`gcStale`/`clearPrefix`)
+  instead of the planned `PgHandle`+table — safer for security-sensitive login
+  code (parameterizing a schema-qualified table identifier into postgres-js tagged
+  SQL is error-prone); the operator keeps its exact `harness_shared.auth_rate_limit`
+  SQL verbatim inside a `BucketStore` impl while the package owns the algorithm.
+  `isLoopbackIp()` exported as a reusable helper. `auth-rate-limit.ts` is now a thin
+  host adapter; **zero consumer rewire** (login.ts + 2 test files unchanged). The
+  opaque-session `auth.ts` follow-on remains optional/lower-priority. → D-010
 
 ## Phase 5 — Promote what's already factored (Population A)
 
@@ -503,7 +604,7 @@ paused for this extraction window.
 |---|---|---|---|---|
 | **P-002** | `@papercusp/rrf` | `f7f39bf5` | move + rewire | `search/semantic.ts` and `endpoint-route/routes/user/search.ts` now import `rrfCombine`/`RRF_K_DEFAULT` from `@papercusp/rrf`; old `agent-tools/search/rrf.ts` **deleted** |
 | **P-003** | `@papercusp/embedded-pg-discovery` | `68e5116a` | wrapper | none — `lib/embedded-pg-discovery.ts` is now a thin wrapper around `resolvePgUrl({envVars,discoveryFile,fallbackUrl})`; all `getHarnessAdminUrl` callers untouched |
-| **P-022** | `@papercusp/plan-parser` | `e96f63f3` | move + re-export shim | none — `plans/{parser,effective-status,content-hash}.ts` are now one-line re-exports of the package; ~24 in-plans consumers resolve unchanged |
+| **P-022** | `@papercusp/plan-parser` | `e96f63f3` | move + re-export shim | none — `plans/{parser,effective-status,content-hash}.ts` are now one-line re-exports of the package; **33 import sites (all in `apps/operator/`)** resolve unchanged — verified repo-wide, zero in operator-vite/libs |
 
 17 package tests green (7 + 5 + 5); all three resolve from the operator. Pattern
 for all three: a new `packages/<name>/` with **src-as-entry** (no build step,
@@ -514,13 +615,16 @@ work — don't chase it; use the symlink or `--legacy-peer-deps`).
 
 ### Two known follow-ups (not blockers)
 
-- **P-013** (already in Phase 3): `search/semantic.ts` + `search.ts` read
-  `ctx.tx` unconditionally though it's optional — a latent null-deref. Untouched
-  by P-002 (import-only change); still owed before the search package extraction.
-- **P-023b** (new): rewire the ~24 `plan-parser` consumers to import
+- **P-013** (already in Phase 3): `search/semantic.ts` + `search/fulltext.ts` read
+  `ctx.tx`, which is optional. **Re-verified 2026-05-30:** NOT a null-deref — every
+  use is `try/catch`-guarded, so an absent `ctx.tx` (no-bearer call) degrades to
+  empty results, not a crash; `routes/user/search.ts` doesn't use `ctx.tx` at all.
+  Untouched by P-002 (import-only). The gap (silent-empty + implicit DB contract)
+  is fixed by injecting a `PgHandle` during the P-020 search extraction.
+- **P-023b** (new): rewire the 33 `plan-parser` consumers to import
   `@papercusp/plan-parser` directly and delete the three re-export shims.
   Deferred because paperclip was actively `git add -A`-committing the shared
-  checkout during this window, making a 24-file rewire unsafe to land atomically.
+  checkout during this window, making a 33-file rewire unsafe to land atomically.
 
 ### Impact on the four paused plans
 
@@ -635,9 +739,11 @@ identity→ownerId resolution.
 
 ### search → `@papercusp/search` (P-013 prereq, P-020) — 3 seams
 
-**Prereq P-013:** fix the unconditional `ctx.tx` read (latent null-deref) so the
-package has a defined DB contract before extraction. Reuses the already-shipped
-`@papercusp/rrf` for fusion. Seams:
+**Prereq P-013:** make the DB-access contract explicit. Today `ctx.tx` is an
+optional dispatcher field (undefined on no-bearer calls); the reads are
+`try/catch`-guarded so absence degrades to empty results (not a crash — see P-013).
+Replacing it with the injected `PgHandle` below removes the implicit dependency.
+Reuses the already-shipped `@papercusp/rrf` for fusion. Seams:
 
 1. **`SearchSource`** registry — replaces the 4 hardcoded `escalations/brainstorm/
    turns/decisions` branches:
@@ -706,7 +812,23 @@ recursively snapshots itself toward 1TB). Doubles: `PgHandle` fake + a temp
    no seam (property-test the encode/decode roundtrip).
 2. **`@papercusp/desktop-ipc`** — `desktop-bootstrap.ts` (`IpcEventSource`,
    `ipcFetch`, `installDesktopIpcPolyfills`) + `ipc-fetch`/`ipc-event-source`/
-   `ipc-stream`. Verified zero Papercusp coupling; no seam (pure transport).
+   `ipc-stream`. **Re-scoped 2026-05-30 — NOT a clean 4-file cut (deferred).**
+   The audit said "4 IPC files, zero coupling"; the actual import graph in
+   `lib/transport-adapters/` refutes a simple lift: the IPC files depend on
+   **shared siblings** — `ipc-stream.ts`→`types.ts`; `ipc-event-source.ts`→
+   `types.ts`+`sse-parser.ts`; `ipc-fetch.ts`→`ipc-stream.ts`+`types.ts` — and
+   `types.ts` + `sse-parser.ts` are ALSO consumed by the HTTP path
+   (`http-stream.ts`) and the `index.ts` transport-picker, which wires IPC+HTTP
+   together behind a Tauri feature-detect. So extracting "just the 4 IPC files"
+   would orphan or duplicate `types.ts`/`sse-parser.ts`. The honest seam is one
+   of: (a) extract the WHOLE `transport-adapters/` dir as `@papercusp/desktop-ipc`
+   (IPC **and** HTTP transport + shared types/sse-parser — it's a cohesive
+   "endpoint-stream transport" unit, arguably the right boundary), or (b) leave
+   it in-app. Decide (a) vs (b) before coding; do NOT do the 4-file cut. The
+   `ipc-framing` codec (piece 1) is already cleanly out, which was the genuinely
+   pure part. Coupling here is LOW (Tauri/`window` globals, no harness domain),
+   so (a) is viable — but it's a ~9-file move, not the "zero-coupling" trivial
+   one the audit implied.
 3. **`@papercusp/ipc-endpoint-server`** — `endpoint-ipc/server.ts`, already
    DI-shaped (`DispatchProjectedDeps`); needs **four** injected deps, not one:
    ```ts

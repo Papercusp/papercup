@@ -1,9 +1,9 @@
 ---
 title: T3.1 voice modality spike — memo
 slug: voice-modality-spike-2026-05-13
-status: active
+status: shipped
 created: 2026-05-13
-updated: 2026-05-20
+updated: 2026-05-30
 owner: pandawamble@gmail.com
 ---
 

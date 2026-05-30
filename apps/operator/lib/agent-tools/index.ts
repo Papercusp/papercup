@@ -208,6 +208,8 @@ import './plans/add-item';
 import './plans/set-content';
 import './plans/set-content-chunk';
 import './plans/set-frontmatter';
+// plan-level lifecycle flip (draft→ready approve / demote / ship / reject).
+import './plans/set-plan-status';
 // Q3 — git history surface promoted to plans:* tools so agents read it too.
 import './plans/history';
 import './plans/diff';

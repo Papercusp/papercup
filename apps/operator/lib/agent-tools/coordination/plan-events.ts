@@ -29,10 +29,9 @@ import {
 /**
  * The plan-event kinds that an actual `plans:*` verb emits. This is
  * deliberately exhaustive over emitters — every member here has a call
- * site (audit F-M3). When a plan-level status verb is added
- * (draft→active→shipped on the frontmatter), reintroduce a
- * `status_changed` / `completed` member here *together with* its
- * emitter — not before.
+ * site (audit F-M3). `status_changed` is emitted by
+ * `plans:set-plan-status` for plan-level lifecycle flips
+ * (draft→ready→shipped / →superseded on the frontmatter).
  *
  * `agent_launched` is emitted by `plans:launch` (plan-agent-launch
  * P-014) — not a document write, but a plan-scoped event the activity
@@ -46,6 +45,7 @@ export type PlanEventType =
   | 'decision_added'
   | 'item_added'
   | 'item_status_changed'
+  | 'status_changed'
   | 'promoted'
   | 'agent_launched';
 

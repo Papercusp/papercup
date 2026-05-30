@@ -19,7 +19,7 @@ import { PLAN_STATUSES } from '../parser';
 const HARNESS_SLUGS_MAX = 64;
 const argsSchema = z.object({
   status: z
-    .enum([...PLAN_STATUSES, 'unknown'] as [string, ...string[]])
+    .enum([...PLAN_STATUSES] as [string, ...string[]])
     .optional(),
   includeArchived: z.boolean().optional(),
   includeLegacy: z.boolean().optional(),

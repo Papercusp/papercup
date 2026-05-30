@@ -182,41 +182,83 @@
 .pc-plans__metric--bad { border-color: rgba(248, 113, 113, 0.22); }
 .pc-plans__metric--warn { border-color: rgba(250, 204, 21, 0.22); }
 
+/* Left-rail groups: a labeled "Plans" group (plan view + filters) and a
+   labeled "Items" group (cross-plan item views), so it's clear which
+   buttons act on plans vs items. */
+.pc-plans__group {
+  display: flex;
+  flex-direction: column;
+}
+
+.pc-plans__group-label {
+  padding: 12px 10px 6px;
+  text-align: center;
+  font-size: 12.5px;
+  font-weight: 800;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--pc-plans-fg-strong, #f4fbff);
+  cursor: help;
+}
+
 .pc-plans__views {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 4px;
-  padding: 7px 8px;
+  grid-template-columns: repeat(auto-fit, minmax(86px, 1fr));
+  gap: 6px;
+  padding: 8px 9px;
   border-bottom: 1px solid rgba(125, 211, 252, 0.1);
 }
 
 .pc-plans__view {
+  --pc-view-accent: var(--pc-plans-accent);
+  position: relative;
+  isolation: isolate;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 5px;
-  padding: 5px 6px;
-  border: 1px solid rgba(125, 211, 252, 0.14);
-  border-radius: 8px;
-  background: rgba(255, 255, 255, 0.02);
-  color: rgba(214, 236, 248, 0.74);
+  gap: 6px;
+  min-height: 36px;
+  padding: 7px 8px;
+  border: 1px solid color-mix(in oklab, var(--pc-view-accent), transparent 84%);
+  border-radius: 11px;
+  background: var(--bg-2, rgba(255, 255, 255, 0.045));
+  color: var(--fg-dim, #b9d4e8);
   text-align: left;
   cursor: pointer;
-  transition: background-color 120ms, border-color 120ms, color 120ms, transform 120ms;
+  transition:
+    background-color 120ms,
+    border-color 120ms,
+    color 120ms;
 }
 
+.pc-plans__views .pc-plans__view {
+  min-height: 50px;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  text-align: center;
+}
+
+.pc-plans__view--inbox { --pc-view-accent: #fbbf24; }
+.pc-plans__view--actionable { --pc-view-accent: #34d399; }
+.pc-plans__view--triage { --pc-view-accent: #a78bfa; }
+
 .pc-plans__view:hover {
-  color: #eff8ff;
-  background: rgba(12, 24, 38, 0.96);
-  border-color: rgba(125, 211, 252, 0.28);
+  color: var(--fg, #e7f7ff);
+  background: var(--bg-3, rgba(255, 255, 255, 0.075));
+  border-color: color-mix(in oklab, var(--pc-view-accent), transparent 62%);
+}
+
+.pc-plans__view:focus-visible {
+  outline: 2px solid color-mix(in oklab, var(--pc-view-accent), transparent 24%);
+  outline-offset: 2px;
 }
 
 .pc-plans__view.is-active {
-  color: #f7fdff;
-  background:
-    linear-gradient(180deg, rgba(17, 34, 53, 0.98), rgba(10, 20, 33, 0.99));
-  border-color: var(--pc-plans-border-strong);
-  box-shadow: inset 2px 0 0 rgba(103, 232, 249, 0.72);
+  color: var(--fg, #e7f7ff);
+  background: color-mix(in oklab, var(--pc-view-accent), transparent 82%);
+  border-color: color-mix(in oklab, var(--pc-view-accent), transparent 42%);
 }
 
 .pc-plans__view-copy {
@@ -229,25 +271,28 @@
   text-overflow: ellipsis;
   white-space: nowrap;
   font-size: 11px;
-  font-weight: 730;
+  font-weight: 760;
   letter-spacing: 0.01em;
 }
 
 .pc-plans__view-count {
-  min-width: 19px;
-  padding: 1px 5px;
+  min-width: 22px;
+  padding: 2px 6px;
+  border: 1px solid rgba(255, 255, 255, 0.055);
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.06);
-  color: rgba(214, 236, 248, 0.9);
+  background: rgba(255, 255, 255, 0.07);
+  color: rgba(214, 236, 248, 0.94);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 10px;
-  font-weight: 700;
+  font-size: 10.5px;
+  font-weight: 780;
+  line-height: 1.2;
   text-align: center;
 }
 
 .pc-plans__view.is-active .pc-plans__view-count {
-  background: rgba(103, 232, 249, 0.16);
-  color: #cffafe;
+  background: color-mix(in oklab, var(--pc-view-accent), transparent 82%);
+  border-color: color-mix(in oklab, var(--pc-view-accent), transparent 64%);
+  color: #f7fdff;
 }
 
 /* ── Lifecycle bucket tabs (Draft / Ready / Running / Shipped / Rejected) ──
@@ -256,14 +301,26 @@
 .pc-plan-buckets {
   display: grid;
   grid-template-columns: repeat(5, minmax(0, 1fr));
-  gap: 4px;
-  padding: 7px 8px;
+  gap: 5px;
+  padding: 8px 9px;
   border-bottom: 1px solid rgba(125, 211, 252, 0.1);
 }
 
 .pc-plan-bucket {
-  padding: 5px 5px;
+  min-height: 46px;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  padding: 6px 4px;
+  text-align: center;
 }
+
+.pc-plan-bucket--draft { --pc-view-accent: #38bdf8; }
+.pc-plan-bucket--ready { --pc-view-accent: #34d399; }
+.pc-plan-bucket--running { --pc-view-accent: #fbbf24; }
+.pc-plan-bucket--shipped { --pc-view-accent: #22c55e; }
+.pc-plan-bucket--rejected { --pc-view-accent: #fb7185; }
 
 .pc-plans__search {
   display: grid;
@@ -394,29 +451,88 @@
 .pc-filters__quick {
   display: flex;
   flex-wrap: wrap;
-  gap: 4px;
+  gap: 6px;
   align-items: center;
 }
 
-.pc-filter-chip {
+.pc-filter-chip,
+.pc-filter-toggle {
+  display: inline-flex;
+  align-items: center;
+  position: relative;
   flex: 0 0 auto;
-  padding: 3px 6px;
-  border: 1px solid rgba(125, 211, 252, 0.16);
-  border-radius: 7px;
-  background: transparent;
-  color: rgba(214, 236, 248, 0.72);
-  font-size: 10px;
+  min-height: 28px;
+  padding: 5px 9px;
+  border: 1px solid rgba(125, 211, 252, 0.17);
+  border-radius: 999px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.03), rgba(255, 255, 255, 0.01)),
+    rgba(4, 10, 18, 0.34);
+  color: rgba(214, 236, 248, 0.76);
+  font-size: 10.5px;
+  font-weight: 680;
+  line-height: 1;
   cursor: pointer;
-  transition: background-color 100ms, border-color 100ms, color 100ms;
+  transition:
+    background-color 100ms,
+    border-color 100ms,
+    box-shadow 100ms,
+    color 100ms,
+    transform 100ms;
 }
-.pc-filter-chip:hover {
+
+.pc-filter-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.pc-filter-toggle::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: rgba(125, 211, 252, 0.28);
+  box-shadow: 0 0 0 1px rgba(125, 211, 252, 0.12);
+}
+
+.pc-filter-chip:hover,
+.pc-filter-toggle:hover {
   color: #eff8ff;
-  border-color: rgba(125, 211, 252, 0.32);
+  border-color: rgba(125, 211, 252, 0.36);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.045), rgba(255, 255, 255, 0.015)),
+    rgba(12, 24, 38, 0.72);
 }
-.pc-filter-chip.is-on {
+
+.pc-filter-chip:focus-visible,
+.pc-filter-toggle:focus-visible {
+  outline: 2px solid rgba(103, 232, 249, 0.5);
+  outline-offset: 2px;
+}
+
+.pc-filter-chip:active,
+.pc-filter-toggle:active {
+  transform: translateY(1px);
+}
+
+.pc-filter-chip.is-on,
+.pc-filter-toggle.is-on {
   color: #f7fdff;
-  background: rgba(103, 232, 249, 0.16);
-  border-color: rgba(103, 232, 249, 0.45);
+  background:
+    radial-gradient(circle at 18% 0%, rgba(103, 232, 249, 0.28), transparent 60%),
+    rgba(103, 232, 249, 0.14);
+  border-color: rgba(103, 232, 249, 0.5);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.08),
+    0 0 0 1px rgba(103, 232, 249, 0.08);
+}
+
+.pc-filter-toggle.is-on::before {
+  background: #67e8f9;
+  box-shadow:
+    0 0 0 2px rgba(103, 232, 249, 0.16),
+    0 0 14px rgba(103, 232, 249, 0.38);
 }
 
 .pc-filters__active {
@@ -425,31 +541,25 @@
   gap: 4px;
 }
 
-.pc-filter-toggle,
 .pc-filters__token {
   display: inline-flex;
   align-items: center;
   gap: 5px;
   padding: 3px 7px;
-  border: 1px solid rgba(125, 211, 252, 0.16);
+  border: 1px solid rgba(103, 232, 249, 0.32);
   border-radius: 999px;
-  background: transparent;
-  color: rgba(214, 236, 248, 0.72);
+  background: rgba(103, 232, 249, 0.12);
+  color: #f7fdff;
   font-size: 10px;
   cursor: pointer;
   transition: background-color 100ms, border-color 100ms, color 100ms;
 }
-.pc-filter-toggle:hover,
+
 .pc-filters__token:hover {
   color: #eff8ff;
-  border-color: rgba(125, 211, 252, 0.32);
+  border-color: rgba(125, 211, 252, 0.44);
 }
-.pc-filter-toggle.is-on,
-.pc-filters__token {
-  color: #f7fdff;
-  background: rgba(103, 232, 249, 0.16);
-  border-color: rgba(103, 232, 249, 0.45);
-}
+
 .pc-filters__token strong {
   color: rgba(214, 236, 248, 0.72);
   font-size: 13px;
@@ -543,33 +653,32 @@
   font-weight: 700;
   line-height: 1.28;
   color: #f4fbff;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  /* Full title, no cut-off — wrap instead of ellipsis (the pills moved
+     to the meta line, so the title owns the first line). */
+  white-space: normal;
+  overflow-wrap: anywhere;
   min-width: 0;
 }
 
 .pc-plan-row__meta-line {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 8px;
+  flex-wrap: wrap;
+  gap: 6px;
   min-width: 0;
 }
 
-.pc-plan-row__slug,
 .pc-plan-row__updated {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 10px;
-  color: rgba(186, 230, 253, 0.52);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.pc-plan-row__updated {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
   flex-shrink: 0;
-  color: rgba(186, 230, 253, 0.42);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11.5px;
+  font-weight: 600;
+  white-space: nowrap;
+  color: rgba(186, 230, 253, 0.85);
 }
 
 /* ── Progress bar (P-023) ────────────────────────────────────────── */
@@ -932,61 +1041,120 @@
 
 /* ── Cross-plan item aggregations (P-108) ─────────────────────────── */
 .pc-items {
-  display: flex;
-  flex-direction: column;
+  /* Per-mode accent (set below) is a tint of the sky --accent, so the
+     three pages stay distinct but read as one theme — mirroring how the
+     Sessions tab (pc-adv-sessions) drives everything from --accent. */
+  --pc-items-accent: var(--accent);
+  display: grid;
+  align-content: start;
+  gap: 14px;
   min-height: 0;
-  height: 100%;
-  overflow: auto;
-  padding: 18px 24px 32px;
+  /* No own scroll — the enclosing .pc-plans__main scrolls and the detail
+     pane is sticky within it (mirrors the Sessions two-pane). */
+  padding: 18px;
+  color: var(--fg-dim);
+}
+
+/* Cool "sky arc": each accent is a tint of the sky --accent, so the
+   three pages read as one theme yet stay distinct — cyan → azure →
+   indigo (hues ~214° / 233° / 250°). The warm semantic tokens are NOT
+   used as accents here: mixing them toward sky lands on muddy grays
+   (amber is sky's near-complement), which breaks the shared-theme look. */
+.pc-items--inbox {
+  --pc-items-accent: color-mix(in oklab, var(--accent), var(--sky-hero) 55%);
+}
+
+.pc-items--actionable {
+  --pc-items-accent: var(--accent);
+}
+
+.pc-items--blocked {
+  --pc-items-accent: color-mix(in oklab, var(--accent), var(--bad) 22%);
+}
+
+.pc-items--mixed {
+  --pc-items-accent: var(--accent);
 }
 
 .pc-items__head {
-  display: flex;
-  align-items: center;
-  gap: 16px;
-  padding-bottom: 14px;
-  border-bottom: 1px solid rgba(125, 211, 252, 0.14);
-  margin-bottom: 14px;
+  display: grid;
+  grid-template-columns: minmax(240px, 0.85fr) minmax(220px, 0.45fr);
+  gap: 10px;
+  align-items: stretch;
+}
+
+.pc-items__head-copy,
+.pc-items__summary-card {
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background:
+    radial-gradient(circle at top left, color-mix(in oklab, var(--pc-items-accent), transparent 88%), transparent 28%),
+    linear-gradient(180deg, color-mix(in oklab, var(--bg-2), white 3%), color-mix(in oklab, var(--bg), transparent 5%));
 }
 
 .pc-items__head-copy {
-  flex: 1;
   min-width: 0;
   display: grid;
+  align-content: center;
   gap: 4px;
+  padding: 12px 14px;
+}
+
+.pc-items__kicker {
+  color: var(--pc-items-accent);
+  font-size: 10px;
+  font-weight: 760;
+  letter-spacing: 0.12em;
+  line-height: 1;
+  text-transform: uppercase;
 }
 
 .pc-items__head h2 {
   margin: 0;
   font-size: 18px;
-  font-weight: 760;
-  letter-spacing: -0.01em;
-  color: #f4fbff;
+  font-weight: 740;
+  letter-spacing: -0.02em;
+  line-height: 1.05;
+  color: var(--fg);
 }
 
 .pc-items__head p {
   margin: 0;
-  font-size: 12px;
-  color: rgba(186, 230, 253, 0.65);
+  max-width: 52ch;
+  font-size: 11px;
+  line-height: 1.35;
+  color: var(--fg-mute);
 }
 
-.pc-items__count {
-  align-self: center;
-  min-width: 38px;
-  padding: 4px 10px;
-  border: 1px solid rgba(103, 232, 249, 0.32);
-  border-radius: 999px;
-  background: rgba(17, 34, 53, 0.7);
-  color: #bae6fd;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+.pc-items__summary-card {
+  display: grid;
+  align-content: center;
+  gap: 6px;
+  padding: 12px 14px;
+}
+
+.pc-items__summary-card strong {
+  color: var(--fg);
+  font-size: 16px;
+  line-height: 1.1;
+}
+
+.pc-items__summary-card span {
+  color: var(--fg-mute);
   font-size: 12px;
-  text-align: center;
+}
+
+.pc-items__summary-note {
+  color: color-mix(in oklab, var(--pc-items-accent), white 34%) !important;
 }
 
 .pc-items__empty {
   margin: 0;
-  padding: 24px 0;
-  color: rgba(186, 230, 253, 0.55);
+  padding: 28px 20px;
+  border: 1px dashed var(--border);
+  border-radius: 16px;
+  background: color-mix(in oklab, var(--bg-2), white 2%);
+  color: var(--fg-mute);
   font-size: 13px;
 }
 
@@ -997,87 +1165,363 @@
   padding: 0;
 }
 
+.pc-items__groups {
+  display: grid;
+  gap: 10px;
+}
+
+/* ── Two-pane layout (list + read-only detail), mirroring Sessions ── */
+.pc-items__layout {
+  display: grid;
+  grid-template-columns: minmax(300px, 0.9fr) minmax(360px, 1.1fr);
+  gap: 16px;
+  align-items: start;
+  min-height: 0;
+}
+
+.pc-items__listpane {
+  min-width: 0;
+}
+
+/* Detail pane: sticky within the scrolling .pc-plans__main, scrolls its
+   own body. Same surface treatment as the Sessions detail pane. */
+.pc-items__detail {
+  position: sticky;
+  top: 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  max-height: calc(100vh - 150px);
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background:
+    linear-gradient(180deg, color-mix(in oklab, var(--bg-2), white 2%), color-mix(in oklab, var(--bg), transparent 4%));
+}
+
+.pc-items__detail-empty {
+  padding: 18px;
+  color: var(--fg-mute);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.pc-items__detail-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-shrink: 0;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+  background: color-mix(in oklab, var(--bg-2), white 2%);
+}
+
+.pc-items__view-full {
+  all: unset;
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 28px;
+  padding: 0 11px;
+  border-radius: 10px;
+  border: 1px solid color-mix(in oklab, var(--accent), transparent 48%);
+  background: color-mix(in oklab, var(--accent), var(--bg) 72%);
+  color: var(--fg);
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease;
+}
+.pc-items__view-full:hover {
+  border-color: color-mix(in oklab, var(--accent), transparent 28%);
+  background: color-mix(in oklab, var(--accent), var(--bg) 60%);
+}
+.pc-items__view-full:focus-visible {
+  outline: 2px solid color-mix(in oklab, var(--accent), transparent 28%);
+  outline-offset: 2px;
+}
+
+.pc-items__detail-body {
+  min-height: 0;
+  overflow: auto;
+  padding: 12px 14px;
+  scrollbar-width: thin;
+}
+
+/* Group is a plain wrapper (head card + rows below), matching the
+   Sessions tab's group / group-content structure. */
 .pc-items__group {
-  margin-bottom: 14px;
+  display: grid;
+  gap: 7px;
+}
+
+.pc-items__group-content {
+  display: grid;
+  gap: 7px;
+  padding-top: 7px;
+}
+
+.pc-items__group-chevron {
+  flex: 0 0 auto;
+  color: var(--fg-mute);
+  transition: transform 140ms ease, color 120ms ease;
+}
+.pc-items__plan-head[data-state="open"] .pc-items__group-chevron {
+  transform: rotate(90deg);
+  color: var(--pc-items-accent);
 }
 
 .pc-items__plan-head {
   display: flex;
   align-items: center;
-  gap: 8px;
+  justify-content: space-between;
+  gap: 9px;
   width: 100%;
-  padding: 6px 8px;
-  border: none;
-  border-radius: 6px;
-  background: transparent;
-  color: rgba(186, 230, 253, 0.7);
+  padding: 8px 11px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: color-mix(in oklab, var(--bg-2), white 1%);
+  color: var(--fg-dim);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 11.5px;
   text-align: left;
   cursor: pointer;
+  transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease;
 }
 
-.pc-items__plan-head:hover {
-  color: #eff8ff;
-  background: rgba(12, 24, 38, 0.7);
+.pc-items__plan-head:hover,
+.pc-items__plan-head:focus-visible {
+  color: var(--fg);
+  background: var(--bg-3);
+  border-color: var(--border-strong);
+}
+
+.pc-items__plan-head:focus-visible {
+  outline: 2px solid color-mix(in oklab, var(--pc-items-accent), transparent 28%);
+  outline-offset: 2px;
+}
+
+.pc-items__plan-copy {
+  flex: 1;
+  min-width: 0;
+  display: grid;
+  gap: 6px;
 }
 
 .pc-items__plan-name {
-  flex: 1;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  font-size: 12px;
+  font-weight: 760;
+  color: var(--fg);
+}
+
+.pc-items__plan-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
 }
 
 .pc-items__plan-count {
-  padding: 1px 6px;
+  flex-shrink: 0;
+  padding: 2px 9px;
+  border: 1px solid color-mix(in oklab, var(--pc-items-accent), transparent 56%);
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.05);
+  background: color-mix(in oklab, var(--pc-items-accent), transparent 86%);
+  color: var(--pc-items-accent);
   font-size: 10.5px;
+  font-weight: 750;
+  white-space: nowrap;
 }
 
 .pc-items__rows {
   display: grid;
-  gap: 3px;
-  padding-left: 4px;
+  gap: 7px;
+}
+
+.pc-items__row-wrap {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+  padding: 10px;
+  border: 1px solid color-mix(in oklab, var(--border), transparent 25%);
+  border-radius: 13px;
+  background: color-mix(in oklab, var(--bg), white 2%);
+  transition: background-color 120ms ease, border-color 120ms ease, transform 120ms ease;
+}
+
+.pc-items--actionable .pc-items__row-wrap {
+  grid-template-columns: 1fr;
+}
+
+.pc-items__row-wrap:hover,
+.pc-items__row-wrap:focus-within {
+  border-color: var(--border-strong);
+  background: color-mix(in oklab, var(--bg-3), var(--bg) 72%);
+}
+
+/* Selected row — its plan is open in the read-only detail pane. */
+.pc-items__row-wrap.is-selected {
+  border-color: color-mix(in oklab, var(--pc-items-accent), transparent 40%);
+  background: color-mix(in oklab, var(--pc-items-accent), transparent 90%);
+  box-shadow: 0 0 0 1px color-mix(in oklab, var(--pc-items-accent), transparent 68%) inset;
 }
 
 .pc-items__row {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 10px;
+  min-width: 0;
   width: 100%;
-  padding: 7px 10px;
-  border: 1px solid transparent;
-  border-radius: 6px;
+  padding: 0;
+  border: none;
   background: transparent;
-  color: rgba(214, 236, 248, 0.86);
+  color: var(--fg-dim);
   text-align: left;
   cursor: pointer;
-  transition: background-color 100ms, border-color 100ms;
 }
 
-.pc-items__row:hover {
-  background: rgba(12, 24, 38, 0.85);
-  border-color: rgba(125, 211, 252, 0.22);
+.pc-items__row:focus-visible {
+  outline: none;
 }
 
 .pc-items__id {
+  flex-shrink: 0;
+  min-width: 58px;
+  padding: 3px 7px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: color-mix(in oklab, var(--bg-2), white 2%);
+  color: var(--fg-dim);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 11px;
   font-weight: 700;
-  color: #a5e9f7;
-  min-width: 52px;
+  text-align: center;
 }
 
 .pc-items__text {
   flex: 1;
-  font-size: 12.5px;
-  color: rgba(230, 244, 251, 0.92);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  min-width: 0;
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--fg);
+  white-space: normal;
 }
+
+.pc-items__resolve {
+  flex-shrink: 0;
+  min-height: 30px;
+  padding: 0 12px;
+  border: 1px solid color-mix(in oklab, var(--good), transparent 56%);
+  border-radius: 999px;
+  background: color-mix(in oklab, var(--good), transparent 88%);
+  color: var(--good);
+  font-size: 11px;
+  font-weight: 760;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease, transform 120ms ease;
+}
+
+.pc-items__resolve:hover:not(:disabled) {
+  background: color-mix(in oklab, var(--good), transparent 80%);
+  border-color: color-mix(in oklab, var(--good), transparent 40%);
+}
+
+.pc-items__resolve:focus-visible {
+  outline: 2px solid color-mix(in oklab, var(--good), transparent 42%);
+  outline-offset: 2px;
+}
+
+.pc-items__resolve:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+.pc-items__resolve:disabled {
+  opacity: 0.7;
+  cursor: wait;
+}
+
+/* ── Needs-human item actions: Answer / Resolve / Drop ────────────── */
+.pc-items__actions {
+  display: flex;
+  flex-shrink: 0;
+  gap: 6px;
+  align-items: center;
+}
+
+.pc-items__action-btn {
+  flex-shrink: 0;
+  min-height: 30px;
+  padding: 0 12px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: color-mix(in oklab, var(--bg-2), white 2%);
+  color: var(--fg-dim);
+  font-size: 11px;
+  font-weight: 760;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease, transform 120ms ease;
+}
+.pc-items__action-btn:hover:not(:disabled) {
+  background: var(--bg-3);
+  border-color: var(--border-strong);
+  color: var(--fg);
+}
+.pc-items__action-btn:active:not(:disabled) { transform: translateY(1px); }
+.pc-items__action-btn:disabled { opacity: 0.7; cursor: wait; }
+
+.pc-items__action-btn--answer {
+  border-color: color-mix(in oklab, var(--accent), transparent 54%);
+  background: color-mix(in oklab, var(--accent), transparent 86%);
+  color: var(--accent);
+}
+.pc-items__action-btn--answer:hover:not(:disabled) {
+  background: color-mix(in oklab, var(--accent), transparent 78%);
+  border-color: color-mix(in oklab, var(--accent), transparent 40%);
+  color: var(--accent-strong);
+}
+.pc-items__action-btn--drop {
+  border-color: color-mix(in oklab, var(--bad), transparent 58%);
+  background: color-mix(in oklab, var(--bad), transparent 88%);
+  color: var(--bad);
+}
+.pc-items__action-btn--drop:hover:not(:disabled) {
+  background: color-mix(in oklab, var(--bad), transparent 80%);
+  border-color: color-mix(in oklab, var(--bad), transparent 42%);
+  color: var(--bad);
+}
+
+/* The inline answer composer spans the full row width below the item. */
+.pc-items__answer {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+}
+.pc-items__answer-input {
+  width: 100%;
+  resize: vertical;
+  padding: 8px 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: 10px;
+  background: color-mix(in oklab, var(--bg), white 2%);
+  color: var(--fg);
+  font-size: 13px;
+  line-height: 1.45;
+  font-family: inherit;
+}
+.pc-items__answer-input:focus {
+  outline: none;
+  border-color: color-mix(in oklab, var(--accent), transparent 30%);
+}
+.pc-items__answer-actions { display: flex; gap: 8px; }
 
 /* ── Cross-plan search results (P-104) ────────────────────────────── */
 .pc-search {
@@ -2721,6 +3165,7 @@
 /* ── P-203 Status-flip popover ───────────────────────────────────── */
 .pc-plan-status-popover {
   min-width: 220px;
+
   background: rgba(7, 16, 29, 0.98);
   border: 1px solid rgba(125, 211, 252, 0.28);
   border-radius: 8px;
@@ -2851,10 +3296,13 @@
   }
 
   .pc-plans__detail-head,
-  .pc-items__head,
   .pc-triage__head {
     align-items: stretch;
     flex-direction: column;
+  }
+
+  .pc-items__head {
+    grid-template-columns: 1fr;
   }
 
   .pc-plans__detail-spacer {
@@ -2864,6 +3312,19 @@
   .pc-plans__empty {
     margin: 20px;
     padding: 28px;
+  }
+
+  .pc-items__layout {
+    grid-template-columns: 1fr;
+  }
+
+  .pc-items__detail {
+    position: static;
+    max-height: none;
+  }
+
+  .pc-items__row-wrap {
+    grid-template-columns: 1fr;
   }
 }
 

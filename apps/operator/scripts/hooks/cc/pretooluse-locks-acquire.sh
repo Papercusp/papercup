@@ -1,0 +1,347 @@
+#!/usr/bin/env bash
+# PreToolUse hook — claim SU-locks before a file edit. SHARED by Claude
+# Code and Codex: both implement the same hook wire format (PreToolUse
+# stdin with tool_name/tool_input/tool_use_id/session_id/cwd, and a
+# `hookSpecificOutput.permissionDecision` decision contract).
+#
+# stdin (JSON) shapes we handle:
+#   Claude:  { "tool_name": "Edit"|"Write"|"MultiEdit",
+#              "tool_input": { "file_path": "..." }, ... }
+#   Codex:   { "tool_name": "apply_patch",
+#              "tool_input": <patch text or { ... patch text ... }>, ... }
+#   Codex:   { "tool_name": "write_file",
+#              "tool_input": { "path": "..." }, ... }
+#
+# Decision: we emit JSON on stdout. On contention we return
+#   { "hookSpecificOutput": { "hookEventName": "PreToolUse",
+#       "permissionDecision": "deny", "permissionDecisionReason": "..." } }
+# — `permissionDecisionReason` is fed back to the MODEL (on both clients),
+# so the agent learns *why* and can retry/pivot/yield. (The deleted
+# Claude shell hooks used exit-2 + stderr, which current clients surface
+# to the user, not the model — so the agent never saw it. That is the
+# one real modernization here.)
+#
+# On success we exit 0 with NO stdout — "no decision, proceed with the
+# client's normal flow" — and cache the lock_id by tool_use_id so the
+# matching PostToolUse hook can release it.
+#
+# Fail-open: if Papercusp isn't installed, or the operator is
+# unreachable / unparseable, we ALWAYS allow the edit (cooperative
+# discipline only works while the system is up) and drop a health
+# marker so /coord can surface "enforcement offline".
+
+set -euo pipefail
+
+OPERATOR_URL="${PAPERCUSP_OPERATOR_URL:-http://localhost:3070}"
+TOKEN_PATH="${HOME}/.papercusp/superuser-token"
+AGENT_ID_PATH="${HOME}/.papercusp/su-agent-id"
+CACHE_DIR="${PAPERCUSP_LOCKS_CACHE_DIR:-${HOME}/.papercusp/locks-cache}"
+
+# Bail out fast if Papercusp isn't installed — never break an edit for
+# someone who hasn't run install-standalone-mcp.sh.
+if [ ! -s "$TOKEN_PATH" ] || [ ! -s "$AGENT_ID_PATH" ]; then
+  exit 0
+fi
+
+mkdir -p "$CACHE_DIR"
+chmod 700 "$CACHE_DIR" 2>/dev/null || true
+
+TOKEN=$(cat "$TOKEN_PATH")
+AGENT_ID=$(cat "$AGENT_ID_PATH")
+INPUT=$(cat)
+
+python3 - "$INPUT" "$OPERATOR_URL" "$TOKEN" "$AGENT_ID" "$CACHE_DIR" <<'PYEOF'
+import json, os, re, sys, time, urllib.request, urllib.parse
+
+raw, operator_url, token, agent_id, cache_dir = sys.argv[1:6]
+
+
+def write_marker(name, value):
+    """Atomic-ish health marker write; never raises (a marker failure
+    must not wedge the edit). Mirrors the OMP hook's markers so one
+    /api/su-locks/hook-health endpoint serves every client."""
+    try:
+        path = os.path.join(cache_dir, name)
+        tmp = path + '.tmp-' + str(os.getpid())
+        with open(tmp, 'w') as f:
+            f.write(json.dumps(value))
+        os.replace(tmp, path)
+    except Exception:
+        pass
+
+
+def mark_success():
+    write_marker('last-success.json', {'ts': now_iso()})
+
+
+def mark_error(phase, detail):
+    write_marker('last-error.json', {
+        'ts': now_iso(), 'handler': 'pretooluse', 'phase': phase,
+        'detail': str(detail)[:200], 'operator_url': operator_url,
+    })
+
+
+def now_iso():
+    return time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
+
+
+def allow():
+    # Exit 0, no stdout → no decision, client proceeds with normal flow.
+    sys.exit(0)
+
+
+def deny(reason):
+    json.dump({'hookSpecificOutput': {
+        'hookEventName': 'PreToolUse',
+        'permissionDecision': 'deny',
+        'permissionDecisionReason': reason,
+    }}, sys.stdout)
+    sys.exit(0)
+
+
+try:
+    payload = json.loads(raw)
+except Exception:
+    allow()  # Malformed input — never block.
+
+tool_name = payload.get('tool_name', '') or ''
+tool_input = payload.get('tool_input', {})
+tool_use_id = payload.get('tool_use_id', '') or ''
+cwd = payload.get('cwd') or os.getcwd()
+
+# Identity: per-SESSION owner, NOT the machine-wide su-agent-id. The
+# `-su` wrapper exports PAPERCUSP_SID (distinct per launch) AND bakes the
+# same id into the interactive MCP `?client=`, so this hook and the
+# agent's own coord/lock tool calls resolve to ONE owner — that's what
+# lets a manual multi-file claim coexist with the per-edit hook instead
+# of self-blocking. Fallbacks: the client's per-session session_id, then
+# the machine-wide su-agent-id (two shells sharing only that collapse to
+# one owner — the bug PAPERCUSP_SID fixes). Pre + Post share the env, so
+# release still matches acquire.
+env_sid = os.environ.get('PAPERCUSP_SID')
+session_id = payload.get('session_id')
+owner = (
+    env_sid if isinstance(env_sid, str) and env_sid
+    else session_id if isinstance(session_id, str) and session_id
+    else agent_id
+)
+
+
+def patch_text(ti):
+    """Codex apply_patch input may arrive as a raw string or wrapped in
+    an object ({input|patch|...: <text>}). Be shape-robust: return any
+    string content that looks like a patch."""
+    if isinstance(ti, str):
+        return ti
+    if isinstance(ti, dict):
+        for v in ti.values():
+            if isinstance(v, str) and '*** ' in v:
+                return v
+        # Fall back: stringify the whole object and scan it.
+        try:
+            return json.dumps(ti)
+        except Exception:
+            return ''
+    return ''
+
+
+# ── Extract the file paths this tool will touch ────────────────────────
+raw_paths = []
+if tool_name in ('Edit', 'Write', 'MultiEdit'):
+    fp = tool_input.get('file_path') if isinstance(tool_input, dict) else None
+    if isinstance(fp, str) and fp:
+        raw_paths.append(fp)
+elif tool_name == 'apply_patch':
+    # Patch headers: "*** Add File: p", "*** Update File: p",
+    # "*** Delete File: p", and "*** Move to: p" (rename target).
+    for m in re.finditer(r'^\*\*\* (?:Add|Update|Delete) File: (.+)$',
+                         patch_text(tool_input), re.MULTILINE):
+        raw_paths.append(m.group(1).strip())
+    for m in re.finditer(r'^\*\*\* Move to: (.+)$',
+                         patch_text(tool_input), re.MULTILINE):
+        raw_paths.append(m.group(1).strip())
+elif tool_name in ('write_file', 'edit_file'):
+    p = tool_input.get('path') or tool_input.get('file_path') \
+        if isinstance(tool_input, dict) else None
+    if isinstance(p, str) and p:
+        raw_paths.append(p)
+else:
+    allow()  # Not a file-editing tool.
+
+if not raw_paths:
+    allow()
+
+
+def find_repo_root(abs_path):
+    """Walk up from a file (or its nearest existing parent) to the dir
+    holding a `.git` entry — file (worktree) or dir. Returns the repo
+    root or None. Deriving the root per-edit keeps the hook correct
+    across the many worktrees in this workspace (a hardcoded root would
+    mis-key locks in every checkout but one)."""
+    d = abs_path
+    if not os.path.isdir(d):
+        d = os.path.dirname(d)
+    while d and d != '/':
+        if os.path.exists(os.path.join(d, '.git')):
+            return d
+        d = os.path.dirname(d)
+    return None
+
+
+# Scope enforcement to the papercup workspace. Its worktrees (papercup,
+# papercup-<topic>, …) are direct children of WORKSPACE_ROOT. We compute
+# lock keys as paths RELATIVE TO each worktree root, so the same logical
+# file collides across worktrees AND with the OMP hook (which keys the
+# same way) — that's the cross-client/cross-worktree contention we want.
+# Anything outside this workspace (a plain `claude`/`codex` editing an
+# unrelated git repo) is left unguarded, so we never lock foreign repos
+# into the shared papercusp_su store.
+workspace_root = os.path.realpath(
+    os.environ.get('PAPERCUSP_WORKSPACE_ROOT')
+    or os.path.expanduser('~/papercupai-workspace')
+)
+
+# ── Resolve to repo-relative POSIX, refuse symlinked paths ─────────────
+repo_relative = []
+for p in raw_paths:
+    abs_p = p if os.path.isabs(p) else os.path.join(cwd, p)
+    abs_p = os.path.abspath(abs_p)
+
+    root = find_repo_root(abs_p)
+    if not root:
+        continue  # Outside any repo — the lock store is repo-scoped; allow.
+
+    if os.path.realpath(os.path.dirname(root)) != workspace_root:
+        continue  # A git repo, but not a papercup-workspace worktree.
+
+    rel = os.path.relpath(abs_p, root)
+    if rel.startswith('..'):
+        continue  # Escapes the repo — not coordinated.
+
+    # Symlink refusal (mirrors the OMP hook). The lock store keys on the
+    # path STRING, so a symlink alias and its target are two keys — two
+    # agents could "edit the same file" through different names and both
+    # acquire. We run ON the agent's filesystem (the operator doesn't),
+    # so we can catch it. REFUSE rather than silently rewrite to the
+    # canonical path (rewriting would hide the aliasing from the agent).
+    try:
+        real_root = os.path.realpath(root)
+        # For a not-yet-existent leaf (new file), realpath its parent so
+        # a symlinked *directory* component is still caught.
+        target = abs_p if os.path.exists(abs_p) else os.path.dirname(abs_p)
+        real_rel = os.path.relpath(os.path.realpath(target), real_root)
+        logical_rel = rel if os.path.exists(abs_p) else os.path.dirname(rel)
+        if real_rel != (logical_rel or '.'):
+            deny(
+                f"locks: refused — '{rel}' resolves through a symlink "
+                f"(real path '{real_rel}'). Edit the canonical path "
+                f"directly so the lock keys on one name."
+            )
+    except Exception:
+        pass  # realpath failure (broken link, EACCES) → leave to server.
+
+    repo_relative.append(rel)
+
+if not repo_relative:
+    allow()
+
+# Dedupe, keep order.
+seen = set()
+repo_relative = [x for x in repo_relative if not (x in seen or seen.add(x))]
+
+# ── Acquire (no server-side wait: block immediately so the agent can
+#    replan now rather than hang the edit). ──────────────────────────────
+body = json.dumps({
+    'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call',
+    'params': {'name': 'locks:acquire', 'arguments': {
+        'paths': repo_relative,
+        'intent': f'PreToolUse:{tool_name}',
+        'ttl_sec': 1200,
+        'wait': {'max_sec': 0},
+    }},
+}).encode()
+
+req = urllib.request.Request(
+    operator_url.rstrip('/') + '/api/mcp?superuser=1&client='
+    + urllib.parse.quote(owner, safe=''),
+    data=body,
+    headers={
+        'Authorization': 'Bearer ' + token,
+        'Content-Type': 'application/json',
+        'Accept': 'application/json, text/event-stream',
+    },
+    method='POST',
+)
+try:
+    resp = urllib.request.urlopen(req, timeout=10)
+    raw_resp = resp.read().decode('utf-8', errors='replace')
+except Exception as e:
+    mark_error('connect', e)
+    print(f'[locks] operator unreachable ({e}); allowing edit (fail-open)',
+          file=sys.stderr)
+    allow()
+
+# Parse the first JSON-RPC result out of a JSON or text/event-stream body.
+result = None
+for line in raw_resp.splitlines():
+    line = line.strip()
+    if not line or line.startswith('event:'):
+        continue
+    if line.startswith('data:'):
+        line = line[5:].strip()
+    try:
+        cand = json.loads(line)
+        if isinstance(cand, dict) and 'result' in cand:
+            result = cand['result']
+            break
+    except Exception:
+        pass
+
+if not result:
+    mark_error('parse', 'no JSON-RPC result in response')
+    allow()
+
+inner = None
+for item in (result.get('content') or []):
+    if item.get('type') == 'text':
+        try:
+            inner = json.loads(item['text'])
+            break
+        except Exception:
+            continue
+
+if not inner:
+    mark_error('parse', 'no text content in tool result')
+    allow()
+
+# We reached the operator and got a usable answer → enforcement healthy.
+mark_success()
+
+if inner.get('ok') is True:
+    lock_id = inner.get('lock_id')
+    if lock_id and tool_use_id:
+        try:
+            with open(os.path.join(cache_dir, tool_use_id + '.lock'), 'w') as f:
+                f.write(lock_id)
+        except Exception:
+            pass
+    allow()
+
+# Busy (or another refusal) → deny with a reason the agent can act on.
+busy = inner.get('busy') or []
+lines = []
+if inner.get('reason'):
+    lines.append(f"locks: refused — {inner['reason']}")
+else:
+    lines.append('locks: file(s) held by another agent:')
+for b in busy[:5]:
+    lines.append(
+        f"  - {b.get('path')}: {b.get('owner_label')} — "
+        f"{b.get('intent')!r} (until {b.get('expires_ts')})"
+    )
+if len(busy) > 5:
+    lines.append(f"  …and {len(busy) - 5} more")
+lines.append('Options: wait and retry, pivot to other work, or call '
+             'locks:acquire with wait={max_sec:300} to queue.')
+deny('\n'.join(lines))
+PYEOF

@@ -1,35 +1,19 @@
 'use client';
 
-import { useEffect, useState } from 'react';
-import { DEFAULT_WORKSPACE_ID } from './workspace-id-constant';
+import { useState } from 'react';
+import { getBrowserWorkspaceId } from './browser-workspace';
 
 /**
- * Read the active workspace id from the URL ?ws= param. Defaults to
- * DEFAULT_WORKSPACE_ID. Returns null during SSR (window is undefined)
- * and resolves to the real value on first effect tick.
+ * Read the active workspace id — the host-injected `window.__PAPERCUSP_WS__`,
+ * falling back to `?ws=` then `'default'` (see ./browser-workspace).
  *
- * Stays in sync with workspace switches: the workspace switcher navigates
- * to /harness?ws=<id>, which triggers a route change; this hook listens
- * to popstate + a synthetic 'workspacechange' event for in-app switches
- * without a full navigation.
+ * Desktop-only: a workspace switch is a full app restart (the Tauri shell
+ * calls `app.restart()`), so the id is constant for a process lifetime — no
+ * live re-sync is needed. The previous `popstate` / `'workspacechange'`
+ * listeners existed for in-app webapp switches without navigation; the webapp
+ * is retired, so they never fired and have been removed.
  */
 export function useWorkspaceId(): string {
-  const [ws, setWs] = useState<string>(() => {
-    if (typeof window === 'undefined') return DEFAULT_WORKSPACE_ID;
-    return new URL(window.location.href).searchParams.get('ws') ?? DEFAULT_WORKSPACE_ID;
-  });
-
-  useEffect(() => {
-    const update = () => {
-      setWs(new URL(window.location.href).searchParams.get('ws') ?? DEFAULT_WORKSPACE_ID);
-    };
-    window.addEventListener('popstate', update);
-    window.addEventListener('workspacechange', update);
-    return () => {
-      window.removeEventListener('popstate', update);
-      window.removeEventListener('workspacechange', update);
-    };
-  }, []);
-
+  const [ws] = useState<string>(() => getBrowserWorkspaceId());
   return ws;
 }

@@ -70,6 +70,8 @@ const READ_VERBS = new Set([
 const WRITE_VERBS = new Set([
   'set-status', 'set-now', 'add-decision', 'add-item', 'new',
   'set-content', 'set-frontmatter',
+  // plan-level lifecycle flip (approve/demote/ship/reject) — plans:set-plan-status.
+  'set-plan-status',
   // plan-feature-pipeline-unification P-016: promote a plan into a harness
   // as features — calls coordination/tools/promote.ts (plans:promote tool).
   'promote',
@@ -211,11 +213,11 @@ async function dispatchWrite(req: Request, ctx: RouteContext): Promise<Response>
     if (slug) {
       void notifySyncInvalidate('plans.get', { slug }).catch(() => {});
       void notifySyncInvalidate('plans.items', { slug }).catch(() => {});
-      if (verb === 'set-content' || verb === 'set-frontmatter' || verb === 'new') {
+      if (verb === 'set-content' || verb === 'set-frontmatter' || verb === 'new' || verb === 'set-plan-status') {
         void notifySyncInvalidate('plans.history', { slug }).catch(() => {});
         void notifySyncInvalidate('plans.revisions', { slug }).catch(() => {});
       }
-      if (verb === 'new' || verb === 'set-frontmatter' || verb === 'set-content') {
+      if (verb === 'new' || verb === 'set-frontmatter' || verb === 'set-content' || verb === 'set-plan-status') {
         // Any of these can change plan status (e.g. draft→active), which
         // affects ProposalsPanel's plansDrafts.bySlug subscription.
         // R2-D: also accept harness from the URL query (?harness=…) — this

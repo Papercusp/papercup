@@ -1,9 +1,9 @@
 ---
 title: LLM testing framework — handoff
 slug: llm-testing-handoff-2026-05-14
-status: active
+status: superseded
 created: 2026-05-14
-updated: 2026-05-20
+updated: 2026-05-30
 owner: pandawamble@gmail.com
 ---
 

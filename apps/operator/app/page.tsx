@@ -17,5 +17,5 @@ import { readOperatorState } from '@/lib/operator-state-pg';
 export default async function Page() {
   const state = await readOperatorState<{ finished_at?: string }>('setup_wizard_state');
   if (!state?.finished_at) redirect('/setup');
-  redirect('/harness');
+  redirect('/adv?tab=harnesses');
 }

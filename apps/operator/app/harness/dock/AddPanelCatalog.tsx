@@ -53,6 +53,9 @@ const HUMAN_LABELS: Record<string, string> = {
   'adv:issues': 'Issues',
   'adv:detail': 'Detail',
   'adv:git': 'Git',
+  'adv:agents': 'Agents',
+  'adv:logs': 'Run log',
+  'adv:overview': 'Overview',
 };
 
 const STUB_TYPES = new Set([

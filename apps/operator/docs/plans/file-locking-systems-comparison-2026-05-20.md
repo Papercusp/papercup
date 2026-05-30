@@ -1,9 +1,9 @@
 ---
 title: Two file-locking systems in Papercusp — a comparison
 slug: file-locking-systems-comparison-2026-05-20
-status: active
+status: shipped
 created: 2026-05-20
-updated: 2026-05-20
+updated: 2026-05-30
 owner: pandawamble@gmail.com
 ---
 

@@ -391,3 +391,43 @@ export function buildFeatureSummary(features: PromotedFeature[]): string | null 
     ? `${features.length} features: ${parts.join(' · ')}`
     : `${features.length} features`;
 }
+
+// ---------------------------------------------------------------------------
+// Scroll-to-item + frontmatter helpers (shared by PlanDetail's full view and
+// the PlanItemPreview read-only detail pane — one implementation, no drift).
+// ---------------------------------------------------------------------------
+
+/** Leading `---\nyaml\n---\n` YAML frontmatter — Vditor renders this as a
+ *  low-contrast paragraph in read mode. The parsed values are already
+ *  available via plans:get → data.frontmatter, so strip them from the prose. */
+export function stripFrontmatter(src: string): string {
+  const m = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?/.exec(src);
+  return m ? src.slice(m[0].length) : src;
+}
+
+/** Scroll a rendered plan body to a P-NNN item (`[data-plan-item]`) or a
+ *  D-NNN decision (heading id / heading text), with a brief highlight pulse.
+ *  Returns false if the anchor isn't in the DOM yet (caller retries). */
+export function scrollPlanTarget(scope: HTMLElement | null, id: string): boolean {
+  if (!scope) return false;
+  let dest: HTMLElement | null = null;
+  if (id.startsWith('P-')) {
+    dest = scope.querySelector<HTMLElement>(`[data-plan-item="${id}"]`);
+  } else {
+    dest =
+      (scope.querySelector(`#${CSS.escape(id)}`) as HTMLElement | null) ??
+      findHeadingByText(scope, id);
+  }
+  if (!dest) return false;
+  dest.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  dest.classList.add('pc-plan-highlight');
+  window.setTimeout(() => dest?.classList.remove('pc-plan-highlight'), 1500);
+  return true;
+}
+
+export function findHeadingByText(scope: HTMLElement, id: string): HTMLElement | null {
+  for (const h of Array.from(scope.querySelectorAll<HTMLElement>('h3'))) {
+    if ((h.textContent ?? '').trim().startsWith(id)) return h;
+  }
+  return null;
+}

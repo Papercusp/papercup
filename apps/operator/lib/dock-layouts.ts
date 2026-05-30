@@ -256,47 +256,69 @@ export function defaultDashboardLayout(harnessSlug = ''): LayoutDoc {
  * These pinned tabs ride alongside Detail and are arbitrarily resizable
  * / draggable / closable via dockview.
  */
+/**
+ * /adv Harness tab seed. Two rows:
+ *
+ *   ┌──────────────────────┬──────────────────────┐
+ *   │ Features        (50%)│ Issues          (50%)│   top row (50% height)
+ *   ├──────────────────────┴──────────────────────┤
+ *   │ Detail                       (full width)   │   bottom (50% height)
+ *   └─────────────────────────────────────────────┘
+ *
+ * Fractional sizes (0.5) — dockview rescales proportionally on mount.
+ * This is the user's preferred arrangement (Features | Issues stacked
+ * above a full-width Detail reader pane); existing saved layouts on the
+ * old flat 25/25/50 are force-reset to this by SQL migration
+ * 088-reset-adv-harness-dock-layouts.sql so every harness adopts it.
+ */
 export function defaultAdvHarnessesLayout(harnessSlug = ''): LayoutDoc {
   return {
     schemaVersion: 1,
     root: {
       kind: 'group',
       id: 'root',
-      direction: 'row',
-      // Sizes are pixel values relative to the grid's notional width
-      // (dockview rescales proportionally on mount against the actual
-      // container size). 400/400/800 = 1:1:2 → 25/25/50 split.
+      direction: 'col',
       children: [
+        // Top row: Features (left) + Issues (right), split 50/50.
         {
-          kind: 'tabs',
-          id: 'features-cell',
-          size: 400,
-          activePanelId: 'p-adv-features',
-          panels: [
+          kind: 'group',
+          id: 'adv-top-row',
+          direction: 'row',
+          size: 0.5,
+          children: [
             {
-              id: 'p-adv-features',
-              type: 'adv:features',
-              params: { harnessSlug },
+              kind: 'tabs',
+              id: 'features-cell',
+              size: 0.5,
+              activePanelId: 'p-adv-features',
+              panels: [
+                {
+                  id: 'p-adv-features',
+                  type: 'adv:features',
+                  params: { harnessSlug },
+                },
+              ],
+            },
+            {
+              kind: 'tabs',
+              id: 'issues-cell',
+              size: 0.5,
+              activePanelId: 'p-adv-issues',
+              panels: [
+                {
+                  id: 'p-adv-issues',
+                  type: 'adv:issues',
+                  params: { harnessSlug },
+                },
+              ],
             },
           ],
         },
-        {
-          kind: 'tabs',
-          id: 'issues-cell',
-          size: 400,
-          activePanelId: 'p-adv-issues',
-          panels: [
-            {
-              id: 'p-adv-issues',
-              type: 'adv:issues',
-              params: { harnessSlug },
-            },
-          ],
-        },
+        // Bottom: Detail reader pane, full width.
         {
           kind: 'tabs',
           id: 'detail-cell',
-          size: 800,
+          size: 0.5,
           activePanelId: 'p-adv-detail',
           panels: [
             {

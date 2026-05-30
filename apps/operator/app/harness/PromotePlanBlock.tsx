@@ -160,7 +160,7 @@ export function PromotePlanBlock({
         <div className="h-action-head-btns">
           {stage === 'applied' && createdSlug ? (
             <a
-              href={`/adv/plans?slug=${encodeURIComponent(createdSlug)}`}
+              href={`/adv/plans?${harnessSlug ? `slug=${encodeURIComponent(harnessSlug)}&` : ''}plan=${encodeURIComponent(createdSlug)}`}
               className="h-btn ghost"
               style={{ padding: '2px 8px', fontSize: 10, display: 'flex', alignItems: 'center', gap: 4 }}
             >

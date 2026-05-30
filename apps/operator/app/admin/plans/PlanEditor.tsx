@@ -43,6 +43,10 @@ export interface PlanEditorProps {
   onChange?: (next: string) => void;
   /** Read mode (default, D-007) vs raw-prose Edit mode. */
   readOnly?: boolean;
+  /** Outline panel position, or `false` to omit it. Defaults to 'left'.
+   *  The stripped read-only item-preview pane (PlanItemPreview) passes
+   *  `false` to drop the outline. */
+  outline?: 'left' | 'right' | false;
   /** Plan slug — used by decoration handlers and the toolbar buttons. */
   slug?: string;
   /** Parsed items from plans:get — drives the effective-status badge
@@ -74,6 +78,7 @@ export default function PlanEditor({
   value,
   onChange,
   readOnly = true,
+  outline = 'left',
   slug,
   items,
   promotedFeatures,
@@ -171,7 +176,7 @@ export default function PlanEditor({
   if (readOnly) {
     return (
       <div className="pc-plan-editor">
-        <MarkdownPreview value={value} outline="left" onParsed={handleParsed} />
+        <MarkdownPreview value={value} outline={outline} onParsed={handleParsed} />
       </div>
     );
   }
@@ -183,7 +188,7 @@ export default function PlanEditor({
         onChange={onChange}
         mode="ir"
         readOnly={false}
-        outline="left"
+        outline={outline}
         toolbar={PLAN_TOOLBAR}
         onInstance={handleInstance}
       />

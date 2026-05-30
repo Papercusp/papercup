@@ -1,7 +1,21 @@
 'use client';
 
 import { CSSProperties, ReactNode } from 'react';
-import { COLORS, FONTS, RADIUS, SIZES, STATUS, HarnessStatus, getRoleStyle } from './theme';
+import {
+  AlertOctagon,
+  AlertTriangle,
+  CheckCircle,
+  Circle,
+  Eye,
+  Hammer,
+  Info,
+  XCircle,
+  type LucideIcon,
+} from 'lucide-react';
+import {
+  COLORS, FONTS, RADIUS, SIZES, STATUS, HarnessStatus, getRoleStyle,
+  SEVERITY, ISSUE_STATUS, type IssueSeverityKey, type IssueStatusKey,
+} from './theme';
 import { Tooltip } from './Tooltip';
 
 /** Dot + label — Linear's status badge pattern. */
@@ -23,6 +37,80 @@ export function StatusPill({
       color: s.text,
       fontWeight: 500,
       whiteSpace: 'nowrap',
+    }}>
+      <span aria-hidden style={{
+        width: dotSize, height: dotSize, borderRadius: '50%',
+        background: s.solid, flexShrink: 0,
+      }} />
+      {showLabel && <span>{s.label}</span>}
+    </span>
+  );
+}
+
+// Severity → icon. Every panel that renders issue severity reads this map
+// (with a Circle fallback) so a missing/typo'd key can't render `<undefined/>`
+// and crash the row subtree.
+export const SEVERITY_ICON: Record<IssueSeverityKey, LucideIcon> = {
+  critical: AlertOctagon,
+  major: AlertTriangle,
+  minor: Info,
+  nit: Circle,
+};
+
+// Issue status → icon (open=Circle, ack=Eye, fixing=Hammer, closed=CheckCircle,
+// wontfix=XCircle). Same fallback discipline as SEVERITY_ICON.
+export const ISSUE_STATUS_ICON: Record<IssueStatusKey, LucideIcon> = {
+  open: Circle,
+  acknowledged: Eye,
+  fixing: Hammer,
+  closed: CheckCircle,
+  wontfix: XCircle,
+};
+
+/** Issue severity badge — icon + label, colored from the canonical SEVERITY table. */
+export function SeverityPill({
+  severity,
+  size = 'sm',
+  showLabel = true,
+}: {
+  severity: string;
+  size?: 'xs' | 'sm';
+  showLabel?: boolean;
+}) {
+  const s = SEVERITY[severity as IssueSeverityKey];
+  const Icon = SEVERITY_ICON[severity as IssueSeverityKey] ?? Circle;
+  const iconSize = size === 'xs' ? 10 : 11;
+  return (
+    <span style={{
+      display: 'inline-flex', alignItems: 'center', gap: 4,
+      padding: '1px 8px', borderRadius: 999,
+      fontSize: size === 'xs' ? 10 : SIZES.xs,
+      fontWeight: 700, letterSpacing: '0.05em', textTransform: 'uppercase',
+      color: s.text, background: s.bg, whiteSpace: 'nowrap',
+    }}>
+      <Icon size={iconSize} aria-hidden />
+      {showLabel && <span>{s.label}</span>}
+    </span>
+  );
+}
+
+/** Issue status badge — dot + label, colored from the canonical ISSUE_STATUS table. */
+export function IssueStatusPill({
+  status,
+  size = 'sm',
+  showLabel = true,
+}: {
+  status: string;
+  size?: 'xs' | 'sm';
+  showLabel?: boolean;
+}) {
+  const s = ISSUE_STATUS[status as IssueStatusKey];
+  const dotSize = size === 'xs' ? 6 : 8;
+  return (
+    <span style={{
+      display: 'inline-flex', alignItems: 'center', gap: 6,
+      fontSize: size === 'xs' ? SIZES.xs : SIZES.sm,
+      color: s.text, fontWeight: 500, whiteSpace: 'nowrap',
     }}>
       <span aria-hidden style={{
         width: dotSize, height: dotSize, borderRadius: '50%',

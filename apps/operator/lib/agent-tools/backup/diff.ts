@@ -6,11 +6,10 @@
 
 import { z } from 'zod';
 import { spawn } from 'node:child_process';
-import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { defineTool } from '@papercusp/agent-mcp';
 import { deriveRepoPassword } from '@/lib/backup';
-import { activeWorkspaceId } from '@/lib/workspace-registry';
+import { activeWorkspaceId, workspacesRoot } from '@/lib/workspace-registry';
 
 const ALL_ROLES = [
   'scoper', 'architect', 'worker', 'validator',
@@ -36,7 +35,7 @@ export default defineTool({
   }),
   async handler(args) {
     const workspaceId = activeWorkspaceId();
-    const backupsDir = join(homedir(), '.papercusp-workspaces', workspaceId, 'backups');
+    const backupsDir = join(workspacesRoot(), workspaceId, 'backups');
     const env: NodeJS.ProcessEnv = {
       ...process.env,
       KOPIA_PASSWORD: await deriveRepoPassword(workspaceId),

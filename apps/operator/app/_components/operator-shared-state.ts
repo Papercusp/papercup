@@ -1,5 +1,7 @@
 'use client';
 
+import { wsLocalKey } from '@/lib/browser-workspace';
+
 /**
  * Module-scoped shared state for the Operator chrome (button + panel +
  * background scanner). Single source of truth so a click on the button
@@ -112,7 +114,7 @@ const LEGACY_AUTO_SCAN_KEY = 'operator:autoScan';
 function readSavedAutoAccept(): AutoAcceptLevel | null {
   if (typeof window === 'undefined') return null;
   try {
-    const v = window.localStorage.getItem(AUTO_ACCEPT_KEY);
+    const v = window.localStorage.getItem(wsLocalKey(AUTO_ACCEPT_KEY));
     if (isAutoAcceptLevel(v)) return v;
     const legacy = window.localStorage.getItem(LEGACY_AUTO_SCAN_KEY);
     if (legacy === '0') return 'off';
@@ -122,7 +124,7 @@ function readSavedAutoAccept(): AutoAcceptLevel | null {
 }
 function saveAutoAccept(v: AutoAcceptLevel): void {
   if (typeof window === 'undefined') return;
-  try { window.localStorage.setItem(AUTO_ACCEPT_KEY, v); } catch { /* ignore */ }
+  try { window.localStorage.setItem(wsLocalKey(AUTO_ACCEPT_KEY), v); } catch { /* ignore */ }
   void fetch('/api/profile', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -198,7 +200,7 @@ export async function hydrateOperatorStateFromPg(): Promise<void> {
       pgValue = profile.auto_scan ? 'medium' : 'off';
     }
     if (pgValue && pgValue !== store.state.autoAccept) {
-      try { window.localStorage.setItem(AUTO_ACCEPT_KEY, pgValue); } catch { /* ignore */ }
+      try { window.localStorage.setItem(wsLocalKey(AUTO_ACCEPT_KEY), pgValue); } catch { /* ignore */ }
       store.state = { ...store.state, autoAccept: pgValue };
       sharedState = store.state;
       for (const fn of store.setters) fn({ autoAccept: pgValue });

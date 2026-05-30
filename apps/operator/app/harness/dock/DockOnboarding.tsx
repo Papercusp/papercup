@@ -15,6 +15,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import { wsLocalKey } from '@/lib/browser-workspace';
 import { X, MousePointer2 } from 'lucide-react';
 
 const STORAGE_KEY = 'papercusp:dock-onboarded';
@@ -25,7 +26,7 @@ export function DockOnboarding() {
   useEffect(() => {
     if (typeof window === 'undefined') return;
     try {
-      if (!window.localStorage.getItem(STORAGE_KEY)) {
+      if (!window.localStorage.getItem(wsLocalKey(STORAGE_KEY))) {
         setVisible(true);
       }
     } catch {
@@ -36,7 +37,7 @@ export function DockOnboarding() {
   const dismiss = () => {
     setVisible(false);
     try {
-      window.localStorage.setItem(STORAGE_KEY, '1');
+      window.localStorage.setItem(wsLocalKey(STORAGE_KEY), '1');
     } catch {
       /* ignore */
     }
@@ -115,7 +116,7 @@ export function DockOnboarding() {
 export function _resetDockOnboardingForTests(): void {
   if (typeof window === 'undefined') return;
   try {
-    window.localStorage.removeItem(STORAGE_KEY);
+    window.localStorage.removeItem(wsLocalKey(STORAGE_KEY));
   } catch {
     /* ignore */
   }

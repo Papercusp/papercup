@@ -19,6 +19,12 @@ jobs:
         with:
           fetch-depth: 0
           submodules: recursive
+          # Private Papercusp/* submodules need a credential to clone. Add a repo
+          # secret SUBMODULES_PAT (classic PAT with repo:read on the org, or a
+          # fine-grained PAT scoped to the submodule repos) — or switch to SSH
+          # deploy keys. Without it, `submodules: recursive` fails at checkout and
+          # the whole suite never runs (this was the root cause of CI being red).
+          token: ${{ secrets.SUBMODULES_PAT || github.token }}
 
       - uses: actions/setup-node@v4
         with:
@@ -50,6 +56,12 @@ jobs:
       - name: Lint plans
         working-directory: apps/operator
         run: npm run lint:plans
+
+      # Four-framework guard (admin-testing-tab-restructure P-038): fails on a new
+      # .mjs under __tests__/integration/ or a *-smoke.ts under scripts/.
+      - name: Lint tests (four-framework guard)
+        working-directory: apps/operator
+        run: npm run lint:tests
 
       # Drizzle drift: regenerate generated.ts from the live test PG and
       # fail if it differs from HEAD. Proves `.sql` is the source of
@@ -95,6 +107,12 @@ jobs:
         with:
           fetch-depth: 0
           submodules: recursive
+          # Private Papercusp/* submodules need a credential to clone. Add a repo
+          # secret SUBMODULES_PAT (classic PAT with repo:read on the org, or a
+          # fine-grained PAT scoped to the submodule repos) — or switch to SSH
+          # deploy keys. Without it, `submodules: recursive` fails at checkout and
+          # the whole suite never runs (this was the root cause of CI being red).
+          token: ${{ secrets.SUBMODULES_PAT || github.token }}
 
       - uses: actions/setup-node@v4
         with:
@@ -156,6 +174,12 @@ jobs:
         with:
           fetch-depth: 0
           submodules: recursive
+          # Private Papercusp/* submodules need a credential to clone. Add a repo
+          # secret SUBMODULES_PAT (classic PAT with repo:read on the org, or a
+          # fine-grained PAT scoped to the submodule repos) — or switch to SSH
+          # deploy keys. Without it, `submodules: recursive` fails at checkout and
+          # the whole suite never runs (this was the root cause of CI being red).
+          token: ${{ secrets.SUBMODULES_PAT || github.token }}
 
       - uses: actions/setup-node@v4
         with:

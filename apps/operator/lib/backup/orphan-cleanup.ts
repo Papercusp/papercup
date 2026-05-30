@@ -1,117 +1,18 @@
 /**
- * Backup-snapshot orphan sweep.
+ * Operator deep-path shim for `@/lib/backup/orphan-cleanup`.
  *
- * Marks `backup_snapshots` rows that have been stuck in status='running'
- * past a threshold as 'failed' with a clear error_text tag, so the UI
- * stops showing them as "in progress" indefinitely. This handles the
- * crash-of-snapshot-worker pattern (the scheduler's in-process state
- * resets on restart but PG rows linger).
- *
- * Step D (Tier-1 follow-up arc) — round-13 collateral. The scheduler
- * itself is unchanged; this is a sibling cleanup with its own boot
- * hook and admin route.
- *
- * Verified status set against migration 013:
- *   'running' | 'ok' | 'failed' | 'aborted'
- *
- * Only 'running' is swept. 'ok'/'failed'/'aborted' are terminal —
- * 'aborted' is user-initiated (Ctrl-C-on-backup or kopia process
- * killed), NOT an orphan.
+ * The orphan sweep now lives in `@papercusp/backup`. This shim re-exports
+ * its surface and imports `./configure` for its side-effect so consumers
+ * that import this path directly (the admin orphan-cleanup route, the
+ * boot worker, and orphan-cleanup.test.ts) get the host seams wired
+ * without going through `./index`.
  */
 
-import { getOrgPg } from '@restart/db-org';
+import './configure';
 
-/**
- * Default orphan threshold. A snapshot stuck in `running` for longer
- * than this is almost certainly orphaned (real snapshots usually run
- * seconds-to-minutes; kopia operations rarely exceed 30 min).
- */
-const DEFAULT_ORPHAN_THRESHOLD_MS = 60 * 60_000; // 1 hour
-
-export interface SweepResult {
-  swept: number;
-  sweptIds: string[];
-}
-
-/**
- * Find and mark stale `running` snapshots as `failed`.
- *
- * Atomic via a single `UPDATE ... RETURNING id`. Idempotent: calling
- * twice in parallel yields the same total but each call returns the
- * rows IT marked (Postgres row-level locking handles the interleave).
- */
-export async function sweepOrphanSnapshots(opts?: {
-  olderThanMs?: number;
-}): Promise<SweepResult> {
-  const olderThanMs = opts?.olderThanMs ?? DEFAULT_ORPHAN_THRESHOLD_MS;
-  const minutes = Math.round(olderThanMs / 60_000);
-  const cutoffIso = new Date(Date.now() - olderThanMs).toISOString();
-  const errorTag = `orphan-sweep: status='running' for >${minutes}min`;
-
-  const { sql } = getOrgPg();
-  const rows = await sql<{ id: string }>`
-    UPDATE harness_shared.backup_snapshots
-       SET status      = 'failed',
-           finished_at = now(),
-           error_text  = ${errorTag}
-     WHERE status = 'running'
-       AND started_at < ${cutoffIso}::timestamptz
-     RETURNING id::text AS id
-  `;
-  const sweptIds = rows.map((r) => r.id);
-  return { swept: sweptIds.length, sweptIds };
-}
-
-/* Internal scheduler-side state — prevents overlapping sweeps. */
-let _orphanSweepRunning = false;
-let _intervalHandle: NodeJS.Timeout | null = null;
-
-/**
- * Idempotent boot hook. First sweep fires 10s after start (to let the
- * stack settle); subsequent sweeps every 5 minutes. Guarded against
- * overlap so a slow query doesn't stack timers.
- *
- * Wire from `instrumentation-node.ts` alongside `startBackupScheduler()`.
- */
-export function startOrphanSweepWorker(): void {
-  if (_intervalHandle) return; // already running
-
-  const runOnce = async (): Promise<void> => {
-    if (_orphanSweepRunning) return;
-    // Step B2 (Tier-3 follow-up arc): battery-aware pause. The sweep
-    // hits a single indexed range scan + UPDATE on N≈0 rows in steady
-    // state — cheap — but defer when the user's on battery and below
-    // threshold to avoid waking the disk.
-    try {
-      const { shouldRun } = await import('../search/battery-policy');
-      if (shouldRun() === 'pause') return;
-    } catch {
-      // battery-policy unavailable — proceed.
-    }
-    _orphanSweepRunning = true;
-    try {
-      const { swept } = await sweepOrphanSnapshots();
-      if (swept > 0) {
-        // eslint-disable-next-line no-console
-        console.log(`[backup-orphan-sweep] marked ${swept} stale snapshot(s) as failed`);
-      }
-    } catch (err) {
-      // eslint-disable-next-line no-console
-      console.warn('[backup-orphan-sweep] error:', (err as Error).message);
-    } finally {
-      _orphanSweepRunning = false;
-    }
-  };
-
-  setTimeout(() => { void runOnce(); }, 10_000);
-  _intervalHandle = setInterval(() => { void runOnce(); }, 5 * 60_000);
-  if (typeof _intervalHandle.unref === 'function') _intervalHandle.unref();
-}
-
-/** Test seam. */
-export function stopOrphanSweepWorker(): void {
-  if (_intervalHandle) {
-    clearInterval(_intervalHandle);
-    _intervalHandle = null;
-  }
-}
+export {
+  sweepOrphanSnapshots,
+  startOrphanSweepWorker,
+  stopOrphanSweepWorker,
+  type SweepResult,
+} from '@papercusp/backup';

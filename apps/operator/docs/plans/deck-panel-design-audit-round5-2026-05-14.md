@@ -1,9 +1,9 @@
 ---
 title: Deck panel — design audit round 5
 slug: deck-panel-design-audit-round5-2026-05-14
-status: active
+status: shipped
 created: 2026-05-14
-updated: 2026-05-20
+updated: 2026-05-30
 owner: pandawamble@gmail.com
 supersedes: [deck-panel-design-audit-2026-05-14, deck-panel-design-audit-followup-2026-05-14, deck-panel-design-audit-round3-2026-05-14, deck-panel-design-audit-round4-2026-05-14]
 ---

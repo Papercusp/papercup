@@ -1,9 +1,9 @@
 ---
 title: UI control surface — implementation audit (2026-05-11)
 slug: ui-control-audit-2026-05-11
-status: active
+status: shipped
 created: 2026-05-11
-updated: 2026-05-20
+updated: 2026-05-30
 owner: pandawamble@gmail.com
 ---
 

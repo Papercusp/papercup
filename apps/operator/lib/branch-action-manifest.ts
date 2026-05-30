@@ -26,9 +26,9 @@
  */
 
 import { promises as fs } from 'node:fs';
+import { workspacesRoot } from '@/lib/workspace-registry';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
-import { homedir } from 'node:os';
 
 export type EnvSource =
   | { from: 'plugin'; plugin: string; field: string; required?: boolean; description?: string }
@@ -132,7 +132,7 @@ function harnessConfigDir(harnessSlug: string): string {
   if (env) return join(env, 'harnesses', harnessSlug);
   // Active workspace per registry.json
   try {
-    const idx = join(homedir(), '.papercusp-workspaces', 'registry.json');
+    const idx = join(workspacesRoot(), 'registry.json');
     if (existsSync(idx)) {
       // We don't parse registry.json here — keep dep-light. The caller
       // (route handler) already passes the harnesses dir down via the
@@ -141,7 +141,7 @@ function harnessConfigDir(harnessSlug: string): string {
   } catch { /* ignore */ }
   // eslint-disable-next-line @typescript-eslint/no-var-requires
   const { DEFAULT_WORKSPACE_ID } = require('./workspace-registry') as typeof import('./workspace-registry');
-  return join(homedir(), '.papercusp-workspaces', DEFAULT_WORKSPACE_ID, '.papercusp', 'harnesses', harnessSlug);
+  return join(workspacesRoot(), DEFAULT_WORKSPACE_ID, '.papercusp', 'harnesses', harnessSlug);
 }
 
 async function readJson<T>(path: string): Promise<T | null> {

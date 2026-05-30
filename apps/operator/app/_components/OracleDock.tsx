@@ -13,6 +13,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { wsLocalKey } from '@/lib/browser-workspace';
 import { useQueryState, parseAsBoolean, parseAsString } from 'nuqs';
 import gsap from 'gsap';
 import { useGSAP } from '@gsap/react';
@@ -290,7 +291,7 @@ function slugFromUrl(pathname: string | null, query: URLSearchParams | null): st
     if (q) return q;
   }
   try {
-    const v = typeof window !== 'undefined' ? window.localStorage.getItem('harness.activeProject') : null;
+    const v = typeof window !== 'undefined' ? window.localStorage.getItem(wsLocalKey('harness.activeProject')) : null;
     if (v) return v;
   } catch { /* ignore */ }
   return null;
@@ -520,11 +521,11 @@ export function OracleDock() {
     const savedActive = sessionStorage.getItem(ACTIVE_KEY);
     setActiveId(savedActive && restored.some((t) => t.id === savedActive) ? savedActive : restored[0].id);
 
-    const firstRun = !localStorage.getItem(SEEN_KEY);
-    const tutorialDone = !!localStorage.getItem(TUTORIAL_DONE_KEY);
+    const firstRun = !localStorage.getItem(wsLocalKey(SEEN_KEY));
+    const tutorialDone = !!localStorage.getItem(wsLocalKey(TUTORIAL_DONE_KEY));
     if (firstRun) {
       setOpen(true);
-      localStorage.setItem(SEEN_KEY, '1');
+      localStorage.setItem(wsLocalKey(SEEN_KEY), '1');
       if (!tutorialDone) {
         setTimeout(() => startTutorial(), 0);
       }
@@ -550,8 +551,8 @@ export function OracleDock() {
     const handler = () => startTutorial();
     window.addEventListener('oracle:start-tutorial', handler);
     try {
-      if (localStorage.getItem('papercusp.tutorial.intent') === '1') {
-        localStorage.removeItem('papercusp.tutorial.intent');
+      if (localStorage.getItem(wsLocalKey('papercusp.tutorial.intent')) === '1') {
+        localStorage.removeItem(wsLocalKey('papercusp.tutorial.intent'));
         setTimeout(() => startTutorial(), 0);
       }
     } catch { /* ignore */ }
@@ -593,7 +594,7 @@ export function OracleDock() {
     setInput('');
     setTutorialActive(true);
     if (typeof window !== 'undefined') {
-      try { localStorage.setItem(TUTORIAL_DONE_KEY, '1'); } catch { /* ignore */ }
+      try { localStorage.setItem(wsLocalKey(TUTORIAL_DONE_KEY), '1'); } catch { /* ignore */ }
     }
     setTabs((prev) => {
       const oracleTab = prev.find((t) => t.target.kind === 'oracle');

@@ -8,7 +8,7 @@ import { useGSAP } from '@gsap/react';
 import { useReducedMotion } from 'motion/react';
 import { useFancyEffectsEnabled } from '@/lib/visual-effects';
 import { OperatorButton, OperatorAutoScanToggle } from './OperatorChromeControls';
-import { OpsTargetMark, BrainMark } from './ChromeNavMarks';
+import { BrainMark } from './ChromeNavMarks';
 import { AriaLiveRegions } from './voice/AriaLiveRegions';
 import { VoiceLeaderBootstrap } from './voice/VoiceLeaderBootstrap';
 import { HostCheckBanner } from './HostCheckBanner';
@@ -24,11 +24,16 @@ import RouteLink from './RouteLink';
 import { FLAGS } from '@papercusp/flags';
 import { useFlag } from '@/lib/flag-hooks';
 import { isChromeShellNavActive } from './chrome-shell-nav';
+// The operator chat is the app's primary surface and must appear on first
+// paint, not pop in seconds later. Import it eagerly so it ships in the main
+// bundle and mounts immediately — a lazy() chunk fetch (or, in the Tauri dev
+// shell, an on-demand Turbopack compile of that chunk) is exactly what caused
+// the visible delay. The remaining docks below stay lazy/idle-deferred.
+import { OperatorChatSidebar } from './OperatorChatSidebar';
 
 // Heavy dock components — they run polling, subscriptions, and large
 // useEffects on mount. Not needed for first paint of any page; defer to
 // idle so the page becomes interactive faster.
-const OperatorChatSidebar = lazy(() => import('./OperatorChatSidebar').then(m => ({ default: m.OperatorChatSidebar })));
 const OracleDock = lazy(() => import('./OracleDock').then(m => ({ default: m.OracleDock })));
 const OperatorBackgroundScanner = lazy(() => import('./OperatorBackgroundScanner').then(m => ({ default: m.OperatorBackgroundScanner })));
 const VoiceAppBridge = lazy(() => import('./voice/VoiceAppBridge').then(m => ({ default: m.VoiceAppBridge })));
@@ -85,10 +90,8 @@ export default function ChromeShell() {
   const chromeless = CHROMELESS_PATH_PREFIXES.some(
     (p) => pathname === p || pathname.startsWith(`${p}/`),
   );
-  // When the user is already on a harness page, Ops is a no-op. Render a
-  // non-link span with `is-current` styling so it's visibly distinct from
-  // the active CTA elsewhere in the app.
-  const onHarness = isChromeShellNavActive(pathname, '/harness');
+  // When the user is already on /adv, the Ops CTA is a no-op (rendered as a
+  // non-link span with `is-current` styling).
   const onAdv = isChromeShellNavActive(pathname, '/adv');
   const snapshotsFlag = useFlag(FLAGS.SNAPSHOTS);
   const marketplaceFlag = useFlag(FLAGS.MARKETPLACE);
@@ -159,49 +162,32 @@ export default function ChromeShell() {
           {onAdv ? (
             <span
               className="pc-header-cta pc-header-cta--mission is-current"
-              aria-label="Adv (current page)"
-              aria-current="page"
-            >
-              <span className="pc-header-cta-orb" aria-hidden="true">
-                <BrainMark className="pc-header-cta-logo pc-header-cta-logo--adv" />
-              </span>
-              <span className="pc-header-cta-label">ADV</span>
-            </span>
-          ) : (
-            <RouteLink href="/adv" className="pc-header-cta pc-header-cta--mission" aria-label="Adv" {...mainNavJumpGateProps}>
-              <span className="pc-header-cta-orb" aria-hidden="true">
-                <BrainMark className="pc-header-cta-logo pc-header-cta-logo--adv" />
-              </span>
-              <span className="pc-header-cta-label">ADV</span>
-            </RouteLink>
-          )}
-          {onHarness ? (
-            <span
-              className="pc-header-cta pc-header-cta--mission is-current"
               aria-label="Ops (current page)"
               aria-current="page"
             >
               <span className="pc-header-cta-orb" aria-hidden="true">
-                <OpsTargetMark className="pc-header-cta-logo pc-header-cta-logo--ops" />
+                <BrainMark className="pc-header-cta-logo pc-header-cta-logo--adv" />
               </span>
               <span className="pc-header-cta-label">OPS</span>
             </span>
           ) : (
-            <RouteLink href="/harness" className="pc-header-cta pc-header-cta--mission" aria-label="Ops" {...mainNavJumpGateProps}>
+            <RouteLink href="/adv" className="pc-header-cta pc-header-cta--mission" aria-label="Ops" {...mainNavJumpGateProps}>
               <span className="pc-header-cta-orb" aria-hidden="true">
-                <OpsTargetMark className="pc-header-cta-logo pc-header-cta-logo--ops" />
+                <BrainMark className="pc-header-cta-logo pc-header-cta-logo--adv" />
               </span>
               <span className="pc-header-cta-label">OPS</span>
             </RouteLink>
           )}
           {testingFlag ? <OperatorButton /> : null}
-          <OperatorAutoScanToggle />
+          {testingFlag ? <OperatorAutoScanToggle /> : null}
         </div>
         <nav className="pc-header-right" aria-label="Primary navigation">
           {marketplaceFlag ? (
             <RouteLink href="/marketplace/" {...navLinkProps('/marketplace')}>Marketplace</RouteLink>
           ) : null}
-          <RouteLink href="/installed/plugins" {...navLinkProps('/installed/plugins')}>Plugins</RouteLink>
+          {testingFlag ? (
+            <RouteLink href="/installed/plugins" {...navLinkProps('/installed/plugins')}>Plugins</RouteLink>
+          ) : null}
           {snapshotsFlag ? (
             <RouteLink href="/installed/snapshots" {...navLinkProps('/installed/snapshots')}>Snapshots</RouteLink>
           ) : null}
@@ -228,15 +214,14 @@ export default function ChromeShell() {
       {/* Operator chat sidebar — fixed left, full-height, on every
           non-chromeless page. The sidebar shifts the rest of the app
           right via body.has-op-chat padding-left (set inside the
-          component). Mounted under <Suspense> with no fallback so the
-          page paints before the lazy chunk lands; the layout-shift on
-          mount is acceptable for now. Iframe-target routes (CHROMELESS
+          component). Imported eagerly (not lazy) so it mounts on first
+          paint and appears immediately — the width is already reserved
+          pre-hydration by the op-chat bootstrap script in layout.tsx, so
+          there is no layout shift. Iframe-target routes (CHROMELESS
           prefixes) skip ChromeShell entirely so the sidebar is absent
           there too — desired, those routes are embedded inside other
           pages that already host the sidebar. */}
-      <Suspense fallback={null}>
-        <OperatorChatSidebar />
-      </Suspense>
+      <OperatorChatSidebar />
       {!pathname.startsWith('/settings') && <DeferredDocks />}
     </>
   );

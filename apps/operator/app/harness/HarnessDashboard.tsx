@@ -2740,51 +2740,14 @@ export default function HarnessDashboard({ forcedPanel, embeddedPanelChrome = fa
   const [configPane, setConfigPane] = useQueryState('configPane', parseAsString.withDefault('harness'));
   const [topChromeCollapsed, setTopChromeCollapsed] = useQueryState('chromeCollapsed', parseAsBoolean.withDefault(false));
 
-  /**
-   * Empty-SPEC bootstrap: when the active harness has no SPEC.md (or just
-   * whitespace), the harness has nothing to plan against — surface a
-   * one-shot toast nudge so the user knows. We deliberately do NOT
-   * auto-switch the panel: hijacking the user's view to Config every
-   * time they land on /harness was confusing (their URL would always
-   * mutate to `?panel=config` on first visit). The toast points at the
-   * Config tab; the user clicks if they want to go.
-   */
-  const [specPromptShownFor, setSpecPromptShownFor] = useState<string | null>(null);
-  useEffect(() => {
-    if (!activeSlug || specPromptShownFor === activeSlug) return;
-    let cancelled = false;
-    (async () => {
-      try {
-        const r = await fetch(`/api/harness/${encodeURIComponent(activeSlug)}/spec`, { cache: 'no-store' });
-        if (!r.ok) return;
-        const d = await r.json() as { spec?: string | null };
-        if (cancelled) return;
-        const empty = !d.spec || !d.spec.trim();
-        setSpecPromptShownFor(activeSlug);
-        if (empty) {
-          // Use `notify` (not raw `toast`) so the action button is also
-          // captured in the Notification Center history. The `href`
-          // form encodes the destination as a URL — same panel state
-          // setActivePanel/setConfigPane would set, but reachable from
-          // the bell history hours later. The synthetic onClick keeps
-          // the in-session soft-navigation behavior.
-          notify.message(`Define ${activeSlug}'s goal`, {
-            description: 'SPEC.md is empty — open Config → Harness → SPEC.md to describe what this project should accomplish.',
-            duration: 8000,
-            action: {
-              label: 'Open Config',
-              href: `/harness?ws=default&slug=${encodeURIComponent(activeSlug)}&panel=config&configPane=harness`,
-              onClick: () => {
-                void setActivePanel('config');
-                void setConfigPane('harness');
-              },
-            },
-          });
-        }
-      } catch { /* network blip — try again next slug change */ }
-    })();
-    return () => { cancelled = true; };
-  }, [activeSlug, specPromptShownFor, setActivePanel, setConfigPane]);
+  // (Removed) Empty-SPEC bootstrap — previously fetched /spec and nudged the
+  // user to fill SPEC.md when empty, CTA'ing to Config → Harness → SPEC.md.
+  // SPEC.md is deprecated (plans-central-harness-ux-2026-05-26, D-004) and the
+  // SPEC.md editor tab is gone (P-017), so the nudge fired for every new
+  // (plan-native) harness and pointed at a removed surface. The positive
+  // replacement — a "create your first plan" onboarding nudge at the /adv
+  // Plans level — is a deliberate UX design task tracked as P-004/P-005 in
+  // spec-md-ui-deprecation-cleanup-2026-05-30, not a copy swap.
   /**
    * Map of pluginName → list of `required` field names that are absent
    * or empty in the user's per-harness config. Drives the red-tint on

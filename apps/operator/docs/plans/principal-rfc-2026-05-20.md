@@ -2,9 +2,16 @@
 title: Principal — unified auth subject RFC
 slug: principal-rfc-2026-05-20
 created: 2026-05-20
-updated: 2026-05-25
-status: draft
+updated: 2026-05-30
+status: shipped
 ---
+
+## Now
+
+**State:** gsda
+
+**Next:** dfrh
+
 
 # Principal — unified auth subject (RFC)
 

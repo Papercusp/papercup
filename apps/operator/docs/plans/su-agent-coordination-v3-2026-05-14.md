@@ -1,9 +1,9 @@
 ---
 title: SU agent coordination — v3 implementation plan
 slug: su-agent-coordination-v3-2026-05-14
-status: active
+status: shipped
 created: 2026-05-14
-updated: 2026-05-20
+updated: 2026-05-30
 owner: pandawamble@gmail.com
 ---
 

@@ -51,7 +51,7 @@ interface Props {
   items: PlanItem[] | undefined;
   decisions: PlanDecision[] | undefined;
   currentNow: { state: string | null; next: string | null } | null | undefined;
-  /** Plan title — surfaced into the launched OMP session label so the
+  /** Plan title — surfaced into the launched agent session label so the
    *  /adv/sessions list reads naturally. */
   planTitle?: string | null;
   /** Plan status drives draft-only affordances (Reject button) so /adv/plans
@@ -64,6 +64,10 @@ interface Props {
   /** Fired after approve/demote (a plan-level status flip) so the caller can
    *  refresh the rail + bucket-tab counts — the plan changes bucket. */
   onPlanStatusChange?: () => void;
+  /** Optimistic status setter — patches the open plan + rail row in place
+   *  (no refetch) for instant approve/demote. Passed the new status; the
+   *  caller flips it back if the server write fails. */
+  onOptimisticStatus?: (status: PlanStatus) => void;
   /** Fired after a successful write so the caller can refresh plan data. */
   onChanged: () => void;
   /** Fired after a successful rejection — caller closes the detail. */
@@ -85,6 +89,7 @@ export default function PlanActions({
   startStatus,
   onStartStatusChange,
   onPlanStatusChange,
+  onOptimisticStatus,
   onChanged,
   onRejected,
   disabled,
@@ -100,20 +105,29 @@ export default function PlanActions({
   // The lifecycle bucket drives which primary action shows: draft →
   // Approve (no start), ready → Start + Demote, running → Pause,
   // shipped/rejected → none. Derived from the same bucketOf the rail uses.
-  const bucket = bucketOf({ status: planStatus ?? 'unknown', startStatus: startStatus ?? null });
+  const bucket = bucketOf({ status: planStatus ?? 'draft', startStatus: startStatus ?? null });
 
+  // Approve/demote are pure plan-status flips. They apply optimistically
+  // (instant rail + button update, no full refetch) and roll the status
+  // back if the server write fails. Approval ONLY changes status — it does
+  // not start the plan (the orchestrator runs only explicitly-started plans).
   const handleApprove = async () => {
     if (approvePending) return;
+    const prev = planStatus;
     setApprovePending(true);
+    onOptimisticStatus?.('ready');
     try {
       const r = await approvePlan(slug);
       if (r.ok) {
         toast.success('Plan approved — ready to start.');
-        onChanged();
-        onPlanStatusChange?.();
       } else {
+        if (prev) onOptimisticStatus?.(prev);
+        else onPlanStatusChange?.();
         toast.error(`Approve failed: ${r.error ?? 'unknown error'}`);
       }
+    } catch (e) {
+      if (prev) onOptimisticStatus?.(prev);
+      toast.error(`Approve failed: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
       setApprovePending(false);
     }
@@ -121,16 +135,21 @@ export default function PlanActions({
 
   const handleDemote = async () => {
     if (demotePending) return;
+    const prev = planStatus;
     setDemotePending(true);
+    onOptimisticStatus?.('draft');
     try {
       const r = await demotePlanToDraft(slug);
       if (r.ok) {
         toast.success('Plan demoted to draft.');
-        onChanged();
-        onPlanStatusChange?.();
       } else {
+        if (prev) onOptimisticStatus?.(prev);
+        else onPlanStatusChange?.();
         toast.error(`Demote failed: ${r.error ?? 'unknown error'}`);
       }
+    } catch (e) {
+      if (prev) onOptimisticStatus?.(prev);
+      toast.error(`Demote failed: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
       setDemotePending(false);
     }
@@ -163,7 +182,7 @@ export default function PlanActions({
       const label = planTitle?.trim() || slug;
       const result = await launchOmpAgent({ slug: null, planSlug: slug, label });
       if (result.ok) {
-        toast.success(`Launched OMP for ${slug}.`, { duration: 4000 });
+        toast.success(`Launched agent for ${slug}.`, { duration: 4000 });
       } else if (result.installCmd) {
         toast.error(
           `${result.error ?? 'OMP launch prerequisites are missing.'} Run: ${result.installCmd}`,
@@ -211,6 +230,21 @@ export default function PlanActions({
           {startPending ? (isStarted ? 'Pausing…' : 'Starting…') : isStarted ? '⏸ Pause Plan' : '▶ Start Plan'}
         </button>
       ) : null}
+      {bucket !== 'shipped' && bucket !== 'rejected' ? (
+        <button
+          type="button"
+          className="pc-plan-actions__btn pc-plan-actions__btn--reject"
+          onClick={() => setOpen('reject')}
+          disabled={disabled}
+          title={
+            disabled
+              ? disabledReason
+              : 'Reject this plan — flips its status to superseded (kept, not deleted) and stops the orchestrator picking it up.'
+          }
+        >
+          Reject Plan
+        </button>
+      ) : null}
       {bucket === 'ready' ? (
         <button
           type="button"
@@ -252,10 +286,10 @@ export default function PlanActions({
         title={
           disabled
             ? disabledReason
-            : 'Add a task — one concrete work unit under a phase. Tracked by status (todo / wip / done / …). Gets a permanent P-NNN id.'
+            : 'Add an item — one concrete work unit under a phase. Tracked by status (todo / wip / done / …). Gets a permanent P-NNN id.'
         }
       >
-        + Task
+        + Item
       </button>
       <button
         type="button"
@@ -270,27 +304,12 @@ export default function PlanActions({
       >
         → Harness
       </button>
-      {planStatus === 'draft' ? (
-        <button
-          type="button"
-          className="pc-plan-actions__btn pc-plan-actions__btn--reject"
-          onClick={() => setOpen('reject')}
-          disabled={disabled}
-          title={
-            disabled
-              ? disabledReason
-              : 'Flip status: draft → superseded — removes the plan from ProposalsPanel without deleting it'
-          }
-        >
-          Reject
-        </button>
-      ) : null}
       <button
         type="button"
         className="pc-plan-actions__btn pc-plan-actions__btn--launch"
         onClick={onLaunchAgent}
         disabled={launchingAgent}
-        title={`Launch a power-user OMP agent terminal tagged with ${slug}; appears in /adv/sessions`}
+        title={`Launch a power-user agent terminal tagged with ${slug}; appears in /adv/sessions`}
       >
         {launchingAgent ? 'Launching…' : 'Launch agent'}
       </button>
@@ -347,6 +366,13 @@ export default function PlanActions({
         planTitle={planTitle ?? null}
         onSuccess={() => {
           setOpen(null);
+          // Rejecting a running plan must also stop the orchestrator —
+          // superseding the frontmatter alone leaves the 'started' row,
+          // and the orchestrator gates on that row, not the status.
+          if (isStarted) {
+            pausePlan(slug).catch(() => {});
+            onStartStatusChange?.('paused');
+          }
           toast.success(`Rejected "${planTitle ?? slug}".`, { duration: 4000 });
           onRejected?.();
           onChanged();
@@ -652,18 +678,17 @@ function AddItemDialog({
     <Modal
       open={open}
       onOpenChange={(o) => !o && onClose()}
-      title="Add task"
+      title="Add item"
       srOnlyTitle
       contentClassName="pc-plan-dialog"
     >
       <form onSubmit={onSubmit} className="pc-plan-dialog__form">
         <header className="pc-plan-dialog__head">
-          <h3>+ Task</h3>
+          <h3>+ Item</h3>
           <p>
-            A <strong>task</strong> (also called an <em>item</em> in plan
-            markdown) is one concrete work unit under a phase. Append{' '}
-            <code>{nextItemPreview}</code>; a new phase heading is created
-            if you type one that doesn't exist.
+            An <strong>item</strong> is one concrete work unit under a phase.
+            Append <code>{nextItemPreview}</code>; a new phase heading is
+            created if you type one that doesn't exist.
           </p>
         </header>
         <label className="pc-plan-dialog__field">

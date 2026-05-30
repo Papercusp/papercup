@@ -1,9 +1,9 @@
 ---
 title: Operator behavior tests — 2026-05-14 (v3, implemented)
 slug: operator-behavior-tests-2026-05-14
-status: active
+status: shipped
 created: 2026-05-14
-updated: 2026-05-25
+updated: 2026-05-30
 owner: pandawamble@gmail.com
 ---
 

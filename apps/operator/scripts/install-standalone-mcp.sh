@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # install-standalone-mcp.sh — set up papercusp's superuser MCP endpoint
-# for an OMP / Claude Code / Codex / Gemini shell launched outside
-# papercusp.
+# for an OMP / Claude Code / Codex shell launched outside papercusp.
+# (Gemini is NOT a supported client.)
 #
 # What this does:
 #   1. Generates a 32-byte random token
@@ -11,9 +11,15 @@
 #      configured in either client).
 #   4. Writes the engineer-collaborator playbook + coordination extension
 #      as standalone OPT-IN files under ~/.papercusp/, and installs the
-#      `omp-su` AND `claude-su` wrappers that launch each client with
-#      them. Plain `omp` / `claude` are left untouched — engineer-
-#      collaborator mode is no longer always-on.
+#      `omp-su`, `claude-su`, and `codex-su` wrappers that launch each
+#      client with them. Plain `omp` / `claude` / `codex` are left
+#      untouched — engineer-collaborator mode is no longer always-on.
+#   4b. Installs the SU-locks ENFORCEMENT hooks so an edit to a file
+#      another agent is holding is BLOCKED (not merely discouraged):
+#        - OMP    → coord-hook.ts, loaded by omp-su via `-e`.
+#        - Claude → Pre/PostToolUse hooks in ~/.claude/settings.json.
+#        - Codex  → Pre/PostToolUse hooks in the codex-su CODEX_HOME.
+#      Claude and Codex share one hook pair (same hook wire format).
 #   5. Verifies HTTP 200 against the running operator
 #
 # Re-running REUSES the existing token (so live shells keep working),
@@ -76,6 +82,70 @@ except FileNotFoundError:
 out = base.replace(marker, overlay) if marker in base else base.rstrip("\n") + "\n\n" + overlay + "\n"
 with open(dest_path, "w") as f:
     f.write(out)
+PYEOF
+}
+
+# Workspace root = the parent of this checkout. All papercup worktrees
+# (papercup, papercup-<topic>, …) are siblings under it; the lock hooks
+# scope enforcement to this dir so a plain `claude`/`codex` editing an
+# unrelated git repo never locks it into the shared store.
+WORKSPACE_ROOT="$(cd "${SCRIPT_DIR}/../../../.." && pwd)"
+
+# Shared Claude+Codex lock-enforcement hooks. Both clients implement the
+# same hook wire format (PreToolUse/PostToolUse, settings.json,
+# permissionDecision), so ONE script pair serves both. Installed to a
+# stable runtime location (the repo copy isn't on the agents' radar).
+CC_HOOK_SRC_DIR="${SCRIPT_DIR}/hooks/cc"
+CC_HOOK_DEST_DIR="${HOME}/.papercusp/hooks/cc"
+CC_PRE_HOOK="${CC_HOOK_DEST_DIR}/pretooluse-locks-acquire.sh"
+CC_POST_HOOK="${CC_HOOK_DEST_DIR}/posttooluse-locks-release.sh"
+
+# Merge our PreToolUse + PostToolUse lock hooks into a settings.json
+# (Claude's ~/.claude/settings.json or a codex-su CODEX_HOME). Idempotent
+# and non-destructive: removes any prior entry pointing at our two
+# scripts (so re-runs don't duplicate), preserves every other user hook,
+# then appends fresh entries with the given tool-name matcher.
+#   $1 = settings.json path   $2 = matcher regex (e.g. "Edit|Write")
+merge_lock_hooks() {
+  python3 - "$1" "$2" "$CC_PRE_HOOK" "$CC_POST_HOOK" "$WORKSPACE_ROOT" <<'PYEOF'
+import json, os, sys, time
+path, matcher, pre, post, workspace_root = sys.argv[1:6]
+try:
+    with open(path) as f:
+        cfg = json.load(f)
+    if not isinstance(cfg, dict):
+        raise ValueError
+except FileNotFoundError:
+    cfg = {}
+except (json.JSONDecodeError, ValueError):
+    os.rename(path, path + '.bak.' + str(int(time.time())))
+    cfg = {}
+
+ours = {pre, post, os.path.basename(pre), os.path.basename(post)}
+
+def is_ours(entry):
+    for h in (entry.get('hooks') or []):
+        cmd = h.get('command', '')
+        if any(o in cmd for o in ours):
+            return True
+    return False
+
+# Pass the workspace root through so the hook scopes correctly even on a
+# non-default layout. Claude/Codex run hook commands through a shell, so
+# an env prefix is honored.
+pre_cmd = f"PAPERCUSP_WORKSPACE_ROOT={workspace_root!r} {pre}"
+post_cmd = f"PAPERCUSP_WORKSPACE_ROOT={workspace_root!r} {post}"
+
+hooks = cfg.setdefault('hooks', {})
+for event, cmd in (('PreToolUse', pre_cmd), ('PostToolUse', post_cmd)):
+    arr = [e for e in hooks.get(event, []) if not is_ours(e)]  # drop stale ours
+    arr.append({'matcher': matcher,
+                'hooks': [{'type': 'command', 'command': cmd}]})
+    hooks[event] = arr
+
+os.makedirs(os.path.dirname(path), exist_ok=True)
+with open(path, 'w') as f:
+    json.dump(cfg, f, indent=2)
 PYEOF
 }
 
@@ -184,9 +254,15 @@ except json.JSONDecodeError:
 
 cfg.setdefault('mcpServers', {})
 profile_param = '&profile=power' if profile == 'power' else ''
+# Per-session identity: Claude Code expands ${VAR}/${VAR:-default} in the
+# mcp url at launch. The claude-su wrapper exports a per-launch
+# PAPERCUSP_SID, so each shell gets a DISTINCT ?client= (→ distinct coord
+# /lock owner — fixes the same-machine collapse). Plain `claude` (no env)
+# falls back to the static machine id → unchanged. NOTE: this ${...} form
+# is written only here (Claude); OMP/Codex don't do url env-interpolation.
 cfg['mcpServers']['papercusp-su'] = {
     'type': 'http',
-    'url': operator_url + '/api/mcp?superuser=1' + profile_param + '&client=' + agent_id,
+    'url': operator_url + '/api/mcp?superuser=1' + profile_param + '&client=${PAPERCUSP_SID:-' + agent_id + '}',
     'headers': {
         'Authorization': 'Bearer ' + token,
     },
@@ -297,6 +373,20 @@ if [ -f "$LEGACY_EXT" ]; then
   echo "✓ Removed legacy auto-discovered extension at $LEGACY_EXT"
 fi
 
+# 4c-bis. Install the shared Claude+Codex lock-enforcement hooks to a
+# stable runtime location. settings.json (Claude in step 4e, Codex in
+# step 4f) references these absolute paths. The OMP equivalent is the
+# coord extension above (loaded via `-e`); Claude/Codex use these.
+if [ -f "${CC_HOOK_SRC_DIR}/pretooluse-locks-acquire.sh" ]; then
+  mkdir -p "$CC_HOOK_DEST_DIR"
+  cp "${CC_HOOK_SRC_DIR}/pretooluse-locks-acquire.sh" "$CC_PRE_HOOK"
+  cp "${CC_HOOK_SRC_DIR}/posttooluse-locks-release.sh" "$CC_POST_HOOK"
+  chmod 755 "$CC_PRE_HOOK" "$CC_POST_HOOK"
+  echo "✓ Installed Claude/Codex lock hooks to $CC_HOOK_DEST_DIR"
+else
+  echo "! Expected CC lock hooks at $CC_HOOK_SRC_DIR; skipping (Claude/Codex lock enforcement inactive)"
+fi
+
 # 4d. Install the `omp-su` wrapper — engineer-collaborator mode as one
 # command. Plain `omp` stays vanilla; `omp-su` launches OMP with the
 # playbook (--append-system-prompt) + the coordination extension (-e).
@@ -338,9 +428,11 @@ esac
 # is opt-in.
 #
 # Hooks: Claude Code's hook system is settings.json-driven, not module-
-# loaded like OMP's `-e`. The papercusp coordination extension is OMP-
-# specific; the Claude Code locks-hook (if/when it ships) will live in
-# settings.json and is installed separately, not by this wrapper.
+# loaded like OMP's `-e`. The lock-enforcement Pre/PostToolUse hooks are
+# merged into ~/.claude/settings.json below (step 4e-hooks) — USER-level,
+# so they protect both `claude` and `claude-su`. They scope to the
+# papercup workspace and no-op when Papercusp isn't installed, so they
+# are safe globally; the playbook (this wrapper) stays the only opt-in.
 if CLAUDE_BIN="$(command -v claude 2>/dev/null)"; then
   CLAUDE_WRAPPER_DIR="$(dirname "$CLAUDE_BIN")"
 else
@@ -358,6 +450,16 @@ cat > "$CLAUDE_WRAPPER_PATH" <<WRAPEOF
 # papercusp-su MCP server is already in ~/.claude.json, so all SU
 # tools are available either way.
 # To switch profiles, re-run: install-standalone-mcp.sh --profile=engineer|power
+# Per-session coordination identity. Mint a distinct id per launch so two
+# claude-su shells on one machine get DISTINCT coord/lock owners (fixes
+# the same-machine collapse where coord:inbox self-filtered peers). The
+# ~/.claude.json mcp url expands \${PAPERCUSP_SID:-<machine-id>}, and the
+# lock hook reads the same var — so a shell's interactive calls and its
+# hook share one owner. Reuse an inherited value if already set.
+if [ -z "\${PAPERCUSP_SID:-}" ]; then
+  PAPERCUSP_SID="claude-su-\$(uuidgen 2>/dev/null || cat /proc/sys/kernel/random/uuid 2>/dev/null || echo "\$\$-\${RANDOM}")"
+fi
+export PAPERCUSP_SID
 exec claude \\
   --append-system-prompt-file "${PLAYBOOK_DEST_CLAUDE}" \\
   "\$@"
@@ -368,6 +470,20 @@ case ":${PATH}:" in
   *":${CLAUDE_WRAPPER_DIR}:"*) : ;;
   *) echo "! $CLAUDE_WRAPPER_DIR is not on PATH — add it or invoke $CLAUDE_WRAPPER_PATH by full path" ;;
 esac
+
+# 4e-hooks. Merge the SU-locks Pre/PostToolUse hooks into Claude Code's
+# USER settings (~/.claude/settings.json). User-level so both `claude`
+# and `claude-su` enforce locks; the matcher limits them to file edits,
+# and the hook itself scopes to the papercup workspace + no-ops when
+# Papercusp isn't installed.
+if [ -x "$CC_PRE_HOOK" ]; then
+  CLAUDE_SETTINGS="${HOME}/.claude/settings.json"
+  merge_lock_hooks "$CLAUDE_SETTINGS" "Edit|Write|MultiEdit"
+  chmod 600 "$CLAUDE_SETTINGS"
+  echo "✓ Merged SU-locks Pre/PostToolUse hooks into $CLAUDE_SETTINGS"
+else
+  echo "· Claude lock hooks not installed (no $CC_PRE_HOOK) — skipping settings merge"
+fi
 
 # 4f. Install the `codex-su` wrapper — Codex CLI equivalent of omp-su.
 # Codex has no `--append-system-prompt`; it injects instructions through
@@ -438,6 +554,19 @@ PYEOF
 chmod 600 "${CODEX_SU_HOME}/config.toml"
 echo "✓ Wrote ${CODEX_SU_HOME}/config.toml (papercusp-su MCP, scoped to codex-su)"
 
+# Merge the SAME lock hooks into the codex-su CODEX_HOME settings.json.
+# Codex 0.135 implements the Claude hook wire format, so the script pair
+# is shared; only the matcher differs — Codex edits via `apply_patch`
+# (and write_file/edit_file), not Edit/Write. Scoped to the codex-su
+# home (plain `codex` uses ~/.codex and is unaffected).
+if [ -x "$CC_PRE_HOOK" ]; then
+  merge_lock_hooks "${CODEX_SU_HOME}/settings.json" "apply_patch|write_file|edit_file"
+  chmod 600 "${CODEX_SU_HOME}/settings.json"
+  echo "✓ Merged SU-locks Pre/PostToolUse hooks into ${CODEX_SU_HOME}/settings.json"
+else
+  echo "· Codex lock hooks not installed (no $CC_PRE_HOOK) — skipping settings merge"
+fi
+
 if CODEX_BIN="$(command -v codex 2>/dev/null)"; then
   CODEX_WRAPPER_DIR="$(dirname "$CODEX_BIN")"
 else
@@ -445,6 +574,10 @@ else
 fi
 mkdir -p "$CODEX_WRAPPER_DIR"
 CODEX_WRAPPER_PATH="${CODEX_WRAPPER_DIR}/codex-su"
+# Base MCP url for the per-launch ?client override below (mirrors the
+# config.toml url, minus the &client= part the wrapper supplies per launch).
+CODEX_MCP_BASE="${OPERATOR_URL}/api/mcp?superuser=1"
+[ "$PROFILE" = "power" ] && CODEX_MCP_BASE="${CODEX_MCP_BASE}&profile=power"
 cat > "$CODEX_WRAPPER_PATH" <<WRAPEOF
 #!/usr/bin/env bash
 # papercusp ${PROFILE}-collaborator launcher for Codex CLI
@@ -457,7 +590,23 @@ if [ -z "\${PAPERCUSP_SU_TOKEN:-}" ] && [ -s "${TOKEN_PATH}" ]; then
   PAPERCUSP_SU_TOKEN="\$(cat "${TOKEN_PATH}")"
   export PAPERCUSP_SU_TOKEN
 fi
-exec env CODEX_HOME="${CODEX_SU_HOME}" codex "\$@"
+# Per-session coordination identity. A distinct id per launch so two
+# codex-su shells on one machine get DISTINCT coord/lock owners. Codex
+# does NOT env-expand config.toml, so the mcp url is overridden per launch
+# via -c; the lock hook reads the same PAPERCUSP_SID, so a shell's
+# interactive calls and its hook share one owner. Reuse if inherited.
+if [ -z "\${PAPERCUSP_SID:-}" ]; then
+  PAPERCUSP_SID="codex-su-\$(uuidgen 2>/dev/null || cat /proc/sys/kernel/random/uuid 2>/dev/null || echo "\$\$-\${RANDOM}")"
+fi
+export PAPERCUSP_SID
+# --dangerously-bypass-hook-trust: Codex requires persisted trust before
+# running settings.json hooks. The ONLY hooks in this dedicated CODEX_HOME
+# are the SU-locks Pre/PostToolUse pair this installer wrote, so bypassing
+# the trust prompt is the documented "automation that vets its own hook
+# sources" path — not arbitrary third-party hooks.
+exec env CODEX_HOME="${CODEX_SU_HOME}" codex --dangerously-bypass-hook-trust \\
+  -c "mcp_servers.papercusp-su.url=\"${CODEX_MCP_BASE}&client=\${PAPERCUSP_SID}\"" \\
+  "\$@"
 WRAPEOF
 chmod 755 "$CODEX_WRAPPER_PATH"
 echo "✓ Installed $CODEX_WRAPPER_PATH"
@@ -527,9 +676,18 @@ Done.  Profile: ${PROFILE}
 
   ${PROFILE^}-collaborator mode — playbook injected, papercusp-su tools available:
     \$ omp-su       # OMP + playbook + coordination extension
-    \$ claude-su    # Claude Code + playbook (no coord extension — OMP-only)
+    \$ claude-su    # Claude Code + playbook
     \$ codex-su     # Codex + playbook (dedicated CODEX_HOME, shared login)
     > call mcp__papercusp-su__papercusp:list_workspaces
+
+  SU-locks ENFORCEMENT is active on all three clients: an Edit/Write/
+  apply_patch to a file another SU agent holds is BLOCKED with the
+  holder's intent + expiry, so the agent can wait, pivot, or queue.
+    - OMP    → coord-hook.ts (omp-su, via \`-e\`)
+    - Claude → Pre/PostToolUse hooks in ~/.claude/settings.json (user-level)
+    - Codex  → Pre/PostToolUse hooks in the codex-su CODEX_HOME
+  Enforcement scopes to the papercup workspace and no-ops when the
+  operator is down (fail-open). /coord surfaces "enforcement offline".
 
   Each -su wrapper loads the SAME base playbook with its OWN client
   tooling overlay spliced in, so OMP-only task-tool guidance never lands
@@ -583,7 +741,9 @@ To rotate the token, delete $TOKEN_PATH and re-run. To revoke, delete:
   $CLAUDE_WRAPPER_PATH
   $CODEX_WRAPPER_PATH
   $PSU_PATH   (the tracked picker launcher)
-  $CODEX_SU_HOME   (the dedicated codex-su CODEX_HOME)
-  (and remove the 'papercusp-su' entry from both $OMP_CONFIG_PATH and $CLAUDE_CONFIG_PATH)
+  $CODEX_SU_HOME   (the dedicated codex-su CODEX_HOME — incl. its settings.json hooks)
+  $CC_HOOK_DEST_DIR   (the shared Claude/Codex lock hooks)
+  (remove the 'papercusp-su' entry from both $OMP_CONFIG_PATH and $CLAUDE_CONFIG_PATH,
+   and the SU-locks Pre/PostToolUse entries from ${HOME}/.claude/settings.json)
 
 EOF

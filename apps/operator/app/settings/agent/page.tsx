@@ -7,7 +7,7 @@
  *
  * Persisted to <papercuspRoot>/agent/config.json. Changes take effect
  * for in-process spawns immediately (the API route mirrors into
- * process.env). Headless run.sh invocations from a terminal don't
+ * process.env). Headless orchestrator invocations from a terminal don't
  * inherit; users have to set $AGENT_BACKEND themselves there.
  */
 import { useCallback, useEffect, useState } from 'react';
@@ -313,16 +313,16 @@ export default function AgentSettingsPage() {
       <section className="pc-card" style={{ padding: 16, marginTop: 16 }}>
         <h2>Headless harness runs</h2>
         <p style={{ fontSize: 13, margin: 0 }}>
-          When you run <code>~/autonomous-harness/run.sh</code> from a
-          terminal directly, it does NOT inherit settings from this page —
-          it reads <code>$AGENT_BACKEND</code>/<code>$AGENT_CMD</code> from
-          the shell instead. Either set them before invoking:
+          When you run the harness orchestrator from a terminal directly
+          (outside the operator), it does NOT inherit settings from this
+          page — it reads <code>$AGENT_BACKEND</code>/<code>$AGENT_CMD</code>{' '}
+          from the shell instead. Either set them before invoking:
         </p>
         <pre className="pc-code" style={{ marginTop: 8 }}>{`export AGENT_BACKEND=${watchBackend === 'auto' ? 'omp' : watchBackend}
 export AGENT_CMD='${watchBackend === 'omp' ? 'omp -p' : 'claude -p'}'`}</pre>
         <p style={{ fontSize: 12, color: 'var(--fg-mute)', margin: 0 }}>
-          …or rely on the binary auto-inference (the harness scripts
-          detect <code>omp</code>/<code>pi</code> in the command name).
+          …or rely on the binary auto-inference (the orchestrator detects{' '}
+          <code>omp</code>/<code>pi</code> in the command name).
         </p>
       </section>
     </div>

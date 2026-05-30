@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
+import { wsLocalKey } from '@/lib/browser-workspace';
 import { useQueryState, parseAsBoolean } from 'nuqs';
 import { Activity, X } from 'lucide-react';
 import { OperatorActionLog, prefetchRecentActions } from './OperatorActionLog';
@@ -37,7 +38,7 @@ function readActiveSlug(): string | null {
   // would always show "Pick a harness…" even though the dashboard
   // clearly has one selected.
   try {
-    const saved = window.localStorage.getItem('harness.activeProject');
+    const saved = window.localStorage.getItem(wsLocalKey('harness.activeProject'));
     if (isValid(saved)) return saved;
   } catch { /* ignore */ }
   return null;

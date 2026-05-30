@@ -1,5 +1,39 @@
 # Papercup — agent guide
 
+## ▶ Running / testing this app — it is the **Tauri DESKTOP app**, not a browser webapp
+
+> This is the most-ignored rule in the repo. Read it before you try to "open the app".
+
+**To run or test the app, launch the desktop shell — the ONLY supported way:**
+
+```bash
+cd /home/marsh-office/papercupai-workspace/papercusp-desktop && npm run dev
+```
+
+Then drive the **Tauri window** it opens (for agent-driven UI checks see
+`/internal/docs/testing/agent-e2e`).
+
+**Do NOT "launch the web version":**
+
+- **Never open `:3055` or `:3070` in a browser** (verdict / playwright / chrome /
+  `xdg-open`). Those ports are the desktop's *internal content source*, not a
+  standalone site — a browser view is the **retired** webapp and gives a
+  broken/misleading result. A `PreToolUse` hook blocks browser navigation to them
+  and points you back here.
+- **Never start `apps/operator` as a standalone server** (`next dev` / `next start`
+  / `bin/dev` / `bin/prod`). That standalone webapp is **retired** — `bin/dev` and
+  `bin/prod` are gone, and native PG was renamed `papercusp_legacy` so it fails
+  loud.
+- A `curl http://127.0.0.1:3070/...` for a quick **API** check (not a UI check) is
+  fine **while the desktop is running**.
+
+The operator's Next/Vite/Hono layer on `:3055`/`:3070` **is the desktop's content
+layer** — `papercusp-desktop` points its webview at `:3070` and spawns
+`npm --prefix ../papercup run dev:operator` itself. It is **not** a separable
+"webapp" and **cannot be moved to `_retired/`** without breaking the desktop. The
+retired thing is the *act of running/browsing it standalone* — see "Retired /
+preserved-not-active surfaces" below.
+
 ## Almost all state should be in nuqs
 
 **If a piece of state is reasonably user-meaningful, it goes in the URL via [nuqs](https://nuqs.dev), not `useState`.** This is non-negotiable. The agent → UI control surface (`ui:get_state`, `ui:dispatch`) reads/writes the URL — anything in `useState` is invisible to agents and undriveable without a per-feature intent.
@@ -63,6 +97,33 @@ Ports you may see internally (do not open these in a browser; let the desktop dr
 - Any code comment or memory note that says "Zero WS is primary everywhere" or "SSE is dead" predates 2026-05-07 and is wrong for desktop.
 
 **When designing new sync-touching features:** desktop SSE is the path that matters. Browser WS is a fallback that lets developers test in a normal browser. If a feature only works under WS, it's incomplete for production.
+
+## Retired / preserved-not-active surfaces
+
+Some code is **retired but deliberately kept** in the tree for reference — not
+deleted, not deployed, not tested, and not to be extended. Agents repeatedly
+mis-read these as active because they still look like workspaces, carry deploy
+config, or have recent commits. **Treat everything in this list as dead:** do not
+write tests for it, wire new code to it, or "revive" it without an explicit ask.
+
+| Surface | Location | Status | Restore |
+|---|---|---|---|
+| `@papercup/web` — papercupai.com public site | `_retired/papercup/` | Retired 2026-05-30. Dropped from the workspace glob + root scripts; `docker-compose.papercup.prod.yml` + `Dockerfile.papercup` bannered (preserved, not deployed). | `_retired/papercup/RESTORE.md` + git tag `papercup-web-retired-2026-05-30` |
+| Standalone operator webapp (`apps/operator` opened on `:3055` in a browser) | `apps/operator` — run **only** via the Tauri shell | Retired 2026-05-14; native PG renamed `papercusp_legacy` to fail loud. | n/a — the operator still ships, just not as a standalone webapp |
+| `libs/zero-harness` — Zero ZQL schema/queries | `libs/zero-harness` | On the Zero-retirement path; still imported by ~10 operator files. **Migrate off, don't add tests.** | n/a |
+| `libs/papercup-db` — fictional-org demo schema | `libs/papercup-db` | Demo data; only consumed by `_retired/papercup` + a vendored submodule. Deletion candidate. | n/a |
+| `libs/holepunch-spike` — P2P spike | `libs/holepunch-spike` | Phase-0 spike, zero importers. Deletion candidate. | n/a |
+| `libs/papercup-shared/**/*View.tsx` | `libs/papercup-shared` | The read-only `*View.tsx` components render the retired web surface; the non-view helpers (e.g. `_admin-paths`) are still shared and live. | n/a |
+
+**Convention for retiring-but-keeping a surface:** (1) move it under `_retired/`
+— this drops it from the `apps/*` / `packages/*` workspace globs so npm, the
+affected-test runner, knip, and nx stop treating it as live (the structural signal
+that fools agents, not a prose note); (2) remove its root `package.json` scripts
+and banner any deploy config — **preserve, don't delete**; (3) add a `RESTORE.md`
+in the moved directory with the exact re-wiring steps + the last-active commit, and
+cut a `git tag <name>-retired-<date>` restore point; (4) add a row to the table
+above. Restoration is then `git mv _retired/<x> <orig>` + re-apply the RESTORE.md
+steps.
 
 ## This app is in testing — there are no users yet
 

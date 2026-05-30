@@ -1,10 +1,17 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { useVirtualizer } from '@tanstack/react-virtual';
 import { parseAsString, parseAsStringEnum, useQueryState } from 'nuqs';
 import { toast } from 'sonner';
+import { MessageSquare, Pencil, RotateCcw } from 'lucide-react';
 import { openFeatureChat } from '@restart/papercup-shared';
+import { RichGrid, type ColumnDef } from '@restart/grid-core';
 import type { PanelComponentProps } from '../../harness/dock/panel-registry';
+import { StatusPill } from '../../harness/primitives';
+import { Tooltip } from '../../harness/Tooltip';
+import { useConfirmDialog } from '../../harness/useConfirmDialog';
+import type { HarnessStatus } from '../../harness/theme';
 import PinMenu, { type PinMenuState } from './PinMenu';
 import { useHarnessFeatures, type FeatureStatus, type HarnessFeature } from './useHarnessData';
 import { featureReset, openAdminFeature } from './harness-actions';
@@ -38,20 +45,10 @@ const STATUS_ORDER: FeatureStatus[] = [
   'deprecated',
 ];
 
-const STATUS_TONE: Record<string, { bg: string; fg: string }> = {
-  passed: { bg: 'rgba(34, 197, 94, 0.14)', fg: '#86efac' },
-  todo: { bg: 'rgba(148, 163, 184, 0.12)', fg: '#cbd5e1' },
-  in_progress: { bg: 'rgba(96, 165, 250, 0.18)', fg: '#93c5fd' },
-  failing: { bg: 'rgba(239, 68, 68, 0.16)', fg: '#fca5a5' },
-  validating: { bg: 'rgba(250, 204, 21, 0.16)', fg: '#fde68a' },
-  blocked: { bg: 'rgba(244, 114, 182, 0.16)', fg: '#f9a8d4' },
-  deprecated: { bg: 'rgba(113, 113, 122, 0.18)', fg: '#a1a1aa' },
-};
-
 export default function FeaturesPanel({ params, api }: PanelComponentProps) {
   const slug = (params.harnessSlug as string) || '';
   // Phase 3: live data via Zero (REST bootstrap + Zero overlay), no polling.
-  const { features, loading, error } = useHarnessFeatures(slug);
+  const { features, loading, error, patchFeature } = useHarnessFeatures(slug);
   // Filter selection + search are user-meaningful → URL state (nuqs), not
   // useState, so the view is deep-linkable and agent-driveable. Keys are
   // feature-prefixed (fview/fq) so they don't collide with the Issues panel.
@@ -60,18 +57,34 @@ export default function FeaturesPanel({ params, api }: PanelComponentProps) {
   const [selectedId, setSelectedId] = useQueryState('sel', parseAsString.withDefault(''));
   const [pinMenu, setPinMenu] = useState<PinMenuState | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [hoveredId, setHoveredId] = useState<string | null>(null);
+  const [focusIdx, setFocusIdx] = useState(0);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const searchRef = useRef<HTMLInputElement>(null);
+  const { confirm, element: confirmEl } = useConfirmDialog();
 
   useEffect(() => {
     if (features) api.setTitle(`Features · ${slug} (${features.length})`);
   }, [features, slug, api]);
 
   const handleReset = async (f: HarnessFeature) => {
-    if (!window.confirm(`Reset ${f.id} back to todo?`)) return;
+    if (
+      !(await confirm({
+        title: `Reset ${f.id}?`,
+        body: `Reset ${f.id} back to todo and clear its attempts. The worker will pick it up fresh.`,
+        destructive: true,
+        confirmLabel: 'Reset',
+      }))
+    )
+      return;
+    const prevAttempts = f.attempts;
+    patchFeature(f.id, { status: 'todo', attempts: 0 }); // optimistic
     setBusyId(f.id);
     try {
       await featureReset(slug, f.id);
       toast.success(`${f.id} reset`);
     } catch (e) {
+      patchFeature(f.id, { status: f.status, attempts: prevAttempts }); // rollback
       toast.error('Reset failed', { description: String(e) });
     } finally {
       setBusyId(null);
@@ -118,7 +131,8 @@ export default function FeaturesPanel({ params, api }: PanelComponentProps) {
       return (
         f.id.toLowerCase().includes(q) ||
         f.title.toLowerCase().includes(q) ||
-        (f.summary?.toLowerCase().includes(q) ?? false)
+        (f.summary?.toLowerCase().includes(q) ?? false) ||
+        (f.tags?.some((t) => t.toLowerCase().includes(q)) ?? false)
       );
     });
     return out.sort((a, b) => {
@@ -128,6 +142,195 @@ export default function FeaturesPanel({ params, api }: PanelComponentProps) {
       return a.id.localeCompare(b.id);
     });
   }, [features, activeView, search]);
+
+  // P-020: virtualize via the caller-owned virtualizer fed into RichGrid's
+  // `virtualMode`. RichGrid owns the scroll container (captured via
+  // scrollContainerRef); only the visible window of rows mounts.
+  const rowVirtualizer = useVirtualizer({
+    count: filtered.length,
+    getScrollElement: () => scrollRef.current,
+    estimateSize: () => 40,
+    overscan: 10,
+  });
+  useEffect(() => {
+    rowVirtualizer.measure();
+  }, [filtered, rowVirtualizer]);
+
+  // P-019 keyboard nav (panel-scoped): J/K move a focus cursor, ↵ opens
+  // (sets ?sel), R resets the focused feature, / focuses search. Fires only
+  // when the list (or a row in it) holds focus, so it never hijacks typing.
+  useEffect(() => {
+    setFocusIdx((i) => Math.min(i, Math.max(0, filtered.length - 1)));
+  }, [filtered.length]);
+  useEffect(() => {
+    // Virtualized: scroll the focused row into the window (the DOM node may
+    // not be mounted, so scrollToIndex is required, not scrollIntoView).
+    if (filtered.length > 0) rowVirtualizer.scrollToIndex(focusIdx, { align: 'auto' });
+  }, [focusIdx, filtered.length, rowVirtualizer]);
+  const onListKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    if (filtered.length === 0) return;
+    switch (e.key) {
+      case 'j':
+      case 'ArrowDown':
+        e.preventDefault();
+        setFocusIdx((i) => Math.min(filtered.length - 1, i + 1));
+        break;
+      case 'k':
+      case 'ArrowUp':
+        e.preventDefault();
+        setFocusIdx((i) => Math.max(0, i - 1));
+        break;
+      case 'Enter': {
+        e.preventDefault();
+        const f = filtered[focusIdx];
+        if (f) void setSelectedId(f.id);
+        break;
+      }
+      case 'r':
+      case 'R': {
+        e.preventDefault();
+        const f = filtered[focusIdx];
+        if (f) void handleReset(f);
+        break;
+      }
+      case '/':
+        e.preventDefault();
+        searchRef.current?.focus();
+        break;
+    }
+  };
+
+  const columns = useMemo<ColumnDef<HarnessFeature>[]>(() => [
+    {
+      key: 'id',
+      header: 'ID',
+      headerText: 'ID',
+      width: '64px',
+      toCopyText: (f) => f.id,
+      render: ({ row }) => <span className="pc-adv-features__id">{row.id}</span>,
+    },
+    {
+      key: 'status',
+      header: 'Status',
+      headerText: 'Status',
+      width: '116px',
+      toCopyText: (f) => f.status,
+      render: ({ row }) => <StatusPill status={row.status as HarnessStatus} size="xs" />,
+    },
+    {
+      key: 'title',
+      header: 'Title',
+      headerText: 'Title',
+      width: 1,
+      toCopyText: (f) => f.title,
+      render: ({ row }) => (
+        <span className="pc-adv-features__title">
+          {row.needsReview && (
+            <span className="pc-adv-features__review" aria-label="Needs human review" />
+          )}
+          <span className="pc-adv-features__titletext">{row.title}</span>
+        </span>
+      ),
+    },
+    {
+      key: 'meta',
+      header: '',
+      width: '136px',
+      align: 'right',
+      render: ({ row }) => {
+        const attempts = row.attempts ?? 0;
+        const claimsCount = row.claims?.length ?? 0;
+        return (
+          <span className="pc-adv-features__meta">
+            {row.sourcePlanSlug && (
+              <Tooltip label={`From plan: ${row.sourcePlanSlug}`}>
+                <a
+                  className="pc-adv-features__plan"
+                  href={`/adv/plans?slug=${encodeURIComponent(slug)}&plan=${encodeURIComponent(row.sourcePlanSlug)}`}
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  ↗ plan
+                </a>
+              </Tooltip>
+            )}
+            {claimsCount > 0 && (
+              <Tooltip label={row.claims?.join(', ') ?? ''}>
+                <span className="pc-adv-features__claims">{claimsCount} claim{claimsCount === 1 ? '' : 's'}</span>
+              </Tooltip>
+            )}
+            {attempts > 0 && (
+              <span className={`pc-adv-features__attempts${attempts >= 3 ? ' is-warn' : ''}`}>×{attempts}</span>
+            )}
+          </span>
+        );
+      },
+    },
+    {
+      key: 'actions',
+      header: '',
+      width: '92px',
+      align: 'right',
+      render: ({ row }) => {
+        const show = hoveredId === row.id || busyId === row.id;
+        return (
+          <span
+            className="pc-adv-features__rowactions"
+            style={{ opacity: show ? 1 : 0 }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <Tooltip label="Reset to todo">
+              <button type="button" disabled={busyId === row.id} onClick={() => void handleReset(row)} aria-label="Reset to todo">
+                <RotateCcw size={13} aria-hidden />
+              </button>
+            </Tooltip>
+            <Tooltip label="Edit in /admin/features">
+              <button type="button" onClick={() => openAdminFeature(slug, row.id)} aria-label="Edit feature">
+                <Pencil size={13} aria-hidden />
+              </button>
+            </Tooltip>
+            <Tooltip label="Open worker chat">
+              <button type="button" disabled={busyId === row.id} onClick={() => void handleChat(row)} aria-label="Open worker chat">
+                <MessageSquare size={13} aria-hidden />
+              </button>
+            </Tooltip>
+          </span>
+        );
+      },
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  ], [slug, hoveredId, busyId]);
+
+  const richRowProps = useMemo(
+    () => (ctx: { row: HarnessFeature; rowIndex: number }) => {
+      const isFocus = ctx.rowIndex === focusIdx;
+      const isActive = ctx.row.id === selectedId;
+      return {
+        className: `pc-adv-features__row${isActive ? ' is-active' : ''}${isFocus ? ' is-focused' : ''}`,
+        tabIndex: 0,
+        'data-fidx': ctx.rowIndex,
+        'aria-label': `${ctx.row.id}: ${ctx.row.title} (${ctx.row.status})`,
+        onContextMenu: (e: React.MouseEvent) => {
+          e.preventDefault();
+          setPinMenu({
+            pos: { x: e.clientX, y: e.clientY },
+            itemId: ctx.row.id,
+            itemLabel: ctx.row.id,
+            harnessSlug: slug,
+          });
+        },
+      };
+    },
+    [focusIdx, selectedId, slug],
+  );
+
+  const richGetRowBg = useMemo(
+    () => (row: HarnessFeature) => {
+      if (row.id === selectedId) return 'color-mix(in oklab, var(--accent), transparent 86%)';
+      if (row.id === hoveredId) return 'var(--bg-3)';
+      return 'transparent';
+    },
+    [selectedId, hoveredId],
+  );
 
   if (!slug) {
     return <PanelMessage>Pick a harness to view its features.</PanelMessage>;
@@ -145,10 +348,14 @@ export default function FeaturesPanel({ params, api }: PanelComponentProps) {
     <div className="pc-adv-features">
       <div className="pc-adv-features__bar">
         <input
+          ref={searchRef}
           className="pc-adv-features__search"
-          placeholder="Search features…"
+          placeholder="Search features or tags…"
           value={search}
           onChange={(e) => void setSearch(e.target.value || null)}
+          onKeyDown={(e) => {
+            if (e.key === 'Escape') e.currentTarget.blur();
+          }}
         />
         <div className="pc-adv-features__views" role="tablist" aria-label="Feature views">
           {SAVED_VIEWS.map((v) => (
@@ -166,105 +373,62 @@ export default function FeaturesPanel({ params, api }: PanelComponentProps) {
           ))}
         </div>
       </div>
-      <div className="pc-adv-features__list">
-        {filtered.length === 0 ? (
-          <PanelMessage>
-            {total === 0 ? 'No features yet — planner may still be running.' : 'No features match this view.'}
-          </PanelMessage>
-        ) : (
-          filtered.map((f) => {
-            const tone = STATUS_TONE[f.status] ?? STATUS_TONE.todo;
-            const isActive = f.id === selectedId;
-            const attempts = f.attempts ?? 0;
-            const claimsCount = f.claims?.length ?? 0;
-            return (
-              <div
-                key={f.id}
-                className={`pc-adv-features__row${isActive ? ' is-active' : ''}`}
-                onClick={() => void setSelectedId(f.id)}
-                onContextMenu={(e) => {
-                  e.preventDefault();
-                  setPinMenu({
-                    pos: { x: e.clientX, y: e.clientY },
-                    itemId: f.id,
-                    itemLabel: f.id,
-                    harnessSlug: slug,
-                  });
-                }}
-                role="button"
-                tabIndex={0}
-              >
-                <span className="pc-adv-features__id">{f.id}</span>
-                <span
-                  className="pc-adv-features__status"
-                  style={{ background: tone.bg, color: tone.fg }}
-                >
-                  {f.status}
-                </span>
-                <span className="pc-adv-features__title">
-                  {f.needsReview && (
-                    <span className="pc-adv-features__review" title="Needs human review" aria-label="Needs human review" />
-                  )}
-                  {f.title}
-                </span>
-                <span className="pc-adv-features__meta">
-                  {f.sourcePlanSlug && (
-                    <a
-                      className="pc-adv-features__plan"
-                      href={`/adv/plans?slug=${encodeURIComponent(slug)}&plan=${encodeURIComponent(f.sourcePlanSlug)}`}
-                      title={`From plan: ${f.sourcePlanSlug}`}
-                      onClick={(e) => e.stopPropagation()}
-                    >
-                      ↗ plan
-                    </a>
-                  )}
-                  {claimsCount > 0 && (
-                    <span className="pc-adv-features__claims" title={f.claims?.join(', ')}>
-                      {claimsCount} claim{claimsCount === 1 ? '' : 's'}
-                    </span>
-                  )}
-                  {attempts > 0 && (
-                    <span
-                      className={`pc-adv-features__attempts${attempts >= 3 ? ' is-warn' : ''}`}
-                      title={`${attempts} attempt${attempts === 1 ? '' : 's'}`}
-                    >
-                      ×{attempts}
-                    </span>
-                  )}
-                </span>
-                <span className="pc-adv-features__rowactions" onClick={(e) => e.stopPropagation()}>
-                  <button type="button" disabled={busyId === f.id} onClick={() => void handleReset(f)} title="Reset to todo">
-                    Reset
-                  </button>
-                  <button type="button" onClick={() => openAdminFeature(slug, f.id)} title="Edit in /admin/features">
-                    Edit
-                  </button>
-                  <button type="button" disabled={busyId === f.id} onClick={() => void handleChat(f)} title="Open worker chat">
-                    Chat
-                  </button>
-                </span>
-              </div>
-            );
-          })
-        )}
+      <div
+        ref={scrollRef}
+        className="pc-adv-features__list"
+        tabIndex={0}
+        onKeyDown={onListKeyDown}
+      >
+        <RichGrid<HarnessFeature>
+          inline
+          virtualMode={{
+            virtualizer: rowVirtualizer,
+            totalRows: filtered.length,
+            rowAt: (i) => filtered[i],
+          }}
+          columns={columns}
+          getRowId={(f) => f.id}
+          onRowClick={(f) => void setSelectedId(f.id)}
+          onRowHover={(row) => setHoveredId(row?.id ?? null)}
+          rowProps={richRowProps}
+          getRowBg={richGetRowBg}
+          headerHeight={28}
+          rowMinHeight={40}
+          headerStyle={{
+            background: 'var(--bg-2, rgba(255,255,255,0.045))',
+            color: 'var(--fg-mute, #7f9bb4)',
+            borderBottom: '1px solid var(--border, rgba(125,211,252,0.15))',
+            fontSize: 10,
+            textTransform: 'uppercase',
+            letterSpacing: '0.06em',
+          }}
+          empty={
+            <PanelMessage>
+              {total === 0 ? 'No features yet — planner may still be running.' : 'No features match this view.'}
+            </PanelMessage>
+          }
+        />
       </div>
       <div className="pc-adv-features__footer">
         <span>{filtered.length}/{total} shown</span>
+        <span className="pc-adv-features__kbd">J/K move · ↵ open · R reset · / search</span>
       </div>
+      {confirmEl}
       <style>{`
         .pc-adv-features {
           display: flex;
           flex-direction: column;
           height: 100%;
           min-height: 0;
-          background: rgba(8, 10, 22, 0.6);
+          background: var(--bg-1, #0b1220);
+          color: var(--fg, #e7f7ff);
         }
         .pc-adv-features__bar {
           display: flex;
           gap: 12px;
           align-items: center;
           padding: 8px 12px;
-          border-bottom: 1px solid rgba(167, 139, 250, 0.12);
+          border-bottom: 1px solid var(--border, rgba(125, 211, 252, 0.15));
           flex-wrap: wrap;
         }
         .pc-adv-features__search {
@@ -272,11 +436,17 @@ export default function FeaturesPanel({ params, api }: PanelComponentProps) {
           min-width: 160px;
           padding: 6px 8px;
           font-size: 12px;
-          background: rgba(20, 18, 38, 0.96);
-          color: #f7f5ff;
-          border: 1px solid rgba(167, 139, 250, 0.2);
+          background: var(--bg-2, rgba(255, 255, 255, 0.045));
+          color: var(--fg, #e7f7ff);
+          border: 1px solid var(--border-strong, rgba(125, 211, 252, 0.32));
           border-radius: 6px;
         }
+        .pc-adv-features__search:focus {
+          outline: none;
+          border-color: var(--accent, #38bdf8);
+          box-shadow: 0 0 0 2px color-mix(in oklab, var(--accent, #38bdf8), transparent 78%);
+        }
+        .pc-adv-features__search::placeholder { color: var(--fg-mute, #7f9bb4); }
         .pc-adv-features__views {
           display: flex;
           gap: 4px;
@@ -289,70 +459,60 @@ export default function FeaturesPanel({ params, api }: PanelComponentProps) {
           padding: 4px 8px;
           font-size: 11px;
           font-weight: 600;
-          color: rgba(220, 214, 248, 0.66);
-          background: rgba(20, 18, 38, 0.6);
-          border: 1px solid rgba(167, 139, 250, 0.14);
+          color: var(--fg-dim, #b9d4e8);
+          background: var(--bg-2, rgba(255, 255, 255, 0.045));
+          border: 1px solid var(--border, rgba(125, 211, 252, 0.15));
           border-radius: 4px;
           cursor: pointer;
         }
         .pc-adv-features__view span {
-          color: rgba(220, 214, 248, 0.5);
+          color: var(--fg-mute, #7f9bb4);
           font-weight: 700;
         }
+        .pc-adv-features__view:hover {
+          color: var(--fg, #e7f7ff);
+          border-color: var(--border-strong, rgba(125, 211, 252, 0.32));
+        }
         .pc-adv-features__view.is-active {
-          color: #f7f5ff;
-          background: rgba(31, 23, 56, 0.96);
-          border-color: rgba(167, 139, 250, 0.4);
+          color: var(--fg, #e7f7ff);
+          background: color-mix(in oklab, var(--accent, #38bdf8), transparent 84%);
+          border-color: color-mix(in oklab, var(--accent, #38bdf8), transparent 55%);
         }
         .pc-adv-features__view.is-active span {
-          color: #c4b5fd;
+          color: var(--accent-strong, #7dd3fc);
         }
         .pc-adv-features__list {
           flex: 1;
           overflow: auto;
-          padding: 4px 0;
+          min-height: 0;
         }
-        .pc-adv-features__row {
-          position: relative;
-          display: grid;
-          grid-template-columns: 78px 100px 1fr auto;
-          gap: 10px;
-          align-items: center;
-          padding: 6px 12px;
-          font-size: 12px;
-          color: rgba(220, 214, 248, 0.86);
-          border-bottom: 1px solid rgba(167, 139, 250, 0.06);
-          cursor: pointer;
-          user-select: none;
-        }
-        .pc-adv-features__row:hover {
-          background: rgba(31, 23, 56, 0.45);
+        .pc-adv-features__list:focus,
+        .pc-adv-features__list:focus-visible {
+          outline: none;
         }
         .pc-adv-features__row.is-active {
-          background: rgba(167, 139, 250, 0.18);
-          border-left: 2px solid rgba(167, 139, 250, 0.78);
-          padding-left: 10px;
+          box-shadow: inset 2px 0 0 var(--accent, #38bdf8);
+        }
+        .pc-adv-features__row.is-focused {
+          outline: 1px solid color-mix(in oklab, var(--accent, #38bdf8), white 12%);
+          outline-offset: -1px;
         }
         .pc-adv-features__id {
           font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-          color: rgba(199, 188, 252, 0.78);
+          color: var(--fg-mute, #7f9bb4);
           font-weight: 600;
-        }
-        .pc-adv-features__status {
-          display: inline-block;
-          padding: 1px 8px;
-          font-size: 10px;
-          font-weight: 700;
-          text-transform: uppercase;
-          letter-spacing: 0.06em;
-          border-radius: 999px;
-          text-align: center;
+          font-size: 11px;
         }
         .pc-adv-features__title {
           display: inline-flex;
           gap: 7px;
           align-items: center;
-          color: #f7f5ff;
+          color: var(--fg, #e7f7ff);
+          overflow: hidden;
+          min-width: 0;
+          width: 100%;
+        }
+        .pc-adv-features__titletext {
           overflow: hidden;
           text-overflow: ellipsis;
           white-space: nowrap;
@@ -361,29 +521,27 @@ export default function FeaturesPanel({ params, api }: PanelComponentProps) {
           width: 6px;
           height: 6px;
           border-radius: 50%;
-          background: #fbbf24;
+          background: var(--warn, #fbbf24);
           flex-shrink: 0;
-          box-shadow: 0 0 0 2px rgba(251, 191, 36, 0.2);
+          box-shadow: 0 0 0 2px color-mix(in oklab, var(--warn, #fbbf24), transparent 80%);
         }
         .pc-adv-features__meta {
           display: inline-flex;
           gap: 8px;
           align-items: center;
+          justify-content: flex-end;
         }
         .pc-adv-features__plan {
           font-size: 10px;
-          color: rgba(196, 181, 253, 0.85);
+          color: var(--accent-strong, #7dd3fc);
           text-decoration: none;
           white-space: nowrap;
         }
-        .pc-adv-features__plan:hover {
-          color: #ddd6fe;
-          text-decoration: underline;
-        }
+        .pc-adv-features__plan:hover { text-decoration: underline; }
         .pc-adv-features__claims {
           font-size: 10px;
-          color: rgba(220, 214, 248, 0.6);
-          background: rgba(20, 18, 38, 0.7);
+          color: var(--fg-dim, #b9d4e8);
+          background: var(--bg-2, rgba(255, 255, 255, 0.045));
           padding: 1px 6px;
           border-radius: 999px;
           white-space: nowrap;
@@ -391,42 +549,35 @@ export default function FeaturesPanel({ params, api }: PanelComponentProps) {
         .pc-adv-features__attempts {
           font-size: 10px;
           font-weight: 700;
-          color: rgba(220, 214, 248, 0.54);
+          color: var(--fg-mute, #7f9bb4);
         }
         .pc-adv-features__attempts.is-warn {
-          color: #fca5a5;
-          background: rgba(239, 68, 68, 0.14);
+          color: var(--bad, #fb7185);
+          background: color-mix(in oklab, var(--bad, #fb7185), transparent 84%);
           padding: 1px 6px;
           border-radius: 999px;
         }
         .pc-adv-features__rowactions {
-          position: absolute;
-          right: 10px;
-          top: 50%;
-          transform: translateY(-50%);
           display: inline-flex;
-          gap: 4px;
-          opacity: 0;
-          transition: opacity 0.08s;
-          padding-left: 28px;
-          background: linear-gradient(90deg, transparent, rgba(13, 11, 26, 0.97) 26%);
-        }
-        .pc-adv-features__row:hover .pc-adv-features__rowactions {
-          opacity: 1;
+          gap: 2px;
+          align-items: center;
+          justify-content: flex-end;
+          transition: opacity 0.1s var(--ease-out, ease);
         }
         .pc-adv-features__rowactions button {
-          padding: 2px 8px;
-          font-size: 10px;
-          font-weight: 600;
-          color: rgba(220, 214, 248, 0.85);
-          background: rgba(31, 23, 56, 0.96);
-          border: 1px solid rgba(167, 139, 250, 0.3);
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          padding: 3px;
+          color: var(--fg-dim, #b9d4e8);
+          background: var(--bg-2, rgba(255, 255, 255, 0.045));
+          border: 1px solid var(--border, rgba(125, 211, 252, 0.15));
           border-radius: 4px;
           cursor: pointer;
         }
         .pc-adv-features__rowactions button:hover:not(:disabled) {
-          color: #f7f5ff;
-          border-color: rgba(167, 139, 250, 0.6);
+          color: var(--fg, #e7f7ff);
+          border-color: var(--accent, #38bdf8);
         }
         .pc-adv-features__rowactions button:disabled {
           opacity: 0.5;
@@ -434,10 +585,17 @@ export default function FeaturesPanel({ params, api }: PanelComponentProps) {
         }
         .pc-adv-features__footer {
           flex-shrink: 0;
+          display: flex;
+          justify-content: space-between;
+          gap: 12px;
           padding: 4px 12px;
           font-size: 10px;
-          color: rgba(220, 214, 248, 0.5);
-          border-top: 1px solid rgba(167, 139, 250, 0.08);
+          color: var(--fg-mute, #7f9bb4);
+          border-top: 1px solid var(--border, rgba(125, 211, 252, 0.15));
+        }
+        .pc-adv-features__kbd {
+          opacity: 0.85;
+          white-space: nowrap;
         }
       `}</style>
       <PinMenu state={pinMenu} onClose={() => setPinMenu(null)} />
@@ -457,7 +615,7 @@ function PanelMessage({
       style={{
         padding: '24px',
         textAlign: 'center',
-        color: tone === 'error' ? '#fca5a5' : 'rgba(220, 214, 248, 0.6)',
+        color: tone === 'error' ? 'var(--bad, #fb7185)' : 'var(--fg-mute, #7f9bb4)',
         fontSize: 13,
         height: '100%',
         display: 'grid',

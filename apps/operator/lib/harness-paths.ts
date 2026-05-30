@@ -53,6 +53,24 @@ export function orchestratorRunBin(): string {
 }
 
 /**
+ * Absolute path to the orchestrator's single-invoke entry
+ * (`bin/invoke-once.ts`) — the TS replacement for the legacy
+ * `source <(awk ... run.sh); invoke <role>` shell-out that the
+ * scoper-background, expert-dispatcher, and /harness spawn route used.
+ * Resolved the same symlink-safe way as orchestratorRunBin().
+ */
+export function invokeOnceBin(): string {
+  const base = harnessPackageDir();
+  let real: string;
+  try {
+    real = realpathSync(base);
+  } catch {
+    real = base;
+  }
+  return join(real, '..', 'orchestrator', 'bin', 'invoke-once.ts');
+}
+
+/**
  * Absolute path to the `tsx` runner used to execute the orchestrator
  * entry point. Resolved via Node's module resolution from the
  * orchestrator package so we don't depend on the project's CWD having

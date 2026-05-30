@@ -1,5 +1,26 @@
-export { WorkspaceBackup } from './workspace-backup';
+/**
+ * Operator barrel for the backup system.
+ *
+ * The implementation lives in `@papercusp/backup` (extracted per
+ * papercusp-systems-abstraction-2026-05-29, P-023/P-024). This file
+ * wires the operator host seams (via the `./configure` side-effect) and
+ * re-exports the package surface so the `@/lib/backup` consumers resolve
+ * unchanged.
+ */
+
+import './configure';
+
 export {
+  WorkspaceBackup,
+  workspaceBackupFor,
+  deriveRepoPassword,
+  startKopiaServer,
+  stopKopiaServer,
+  kopiaServerStatus,
+  startBackupScheduler,
+  stopBackupScheduler,
+  triggerSnapshotEvent,
+  getKopiaDetection,
   RETENTION_PRESETS,
   type BackupSettings,
   type CadenceMode,
@@ -11,9 +32,7 @@ export {
   type SnapshotResult,
   type SnapshotTriggerReason,
   type VerifyResult,
-} from './types';
-export { deriveRepoPassword } from './password';
-export { workspaceBackupFor } from './singleton';
-export { startKopiaServer, stopKopiaServer, kopiaServerStatus, type KopiaServerInfo } from './server';
-export { startBackupScheduler, stopBackupScheduler, triggerSnapshotEvent, getKopiaDetection } from './scheduler';
-export type { DestinationType, DestinationConfig } from './destinations';
+  type KopiaServerInfo,
+  type DestinationType,
+  type DestinationConfig,
+} from '@papercusp/backup';

@@ -19,11 +19,12 @@
  */
 import { spawn } from 'node:child_process';
 import { existsSync, openSync, closeSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
-import { mkdirSync } from 'node:fs';
+import { mkdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { recordUserAction, updateUserAction } from './user-actions';
 import { harnessPackageDir } from './harness-paths';
+import { buildInvokeOnce } from './harness-invoke-once';
 import { getRole } from './role-registry';
 
 const LOCK_TTL_MS = 5 * 60 * 1000;
@@ -279,31 +280,6 @@ export async function dispatchExpert(
           // We pass it via env so the cleanup at the end can rm it.
         }
 
-        const promptShadowEnvAssign = (invokeRole !== role && promptShadowDir)
-          ? `export HARNESS_DIR='${promptShadowDir.replace(/'/g, "'\\''")}'`
-          : `export HARNESS_DIR='${harnessDirPkg}'`;
-
-        const cleanupPromptShadow = (invokeRole !== role && promptShadowDir)
-          ? `rm -rf '${promptShadowDir.replace(/'/g, "'\\''")}'`
-          : ':';
-
-        const wrapper = `
-          set -e
-          export PROJECT_DIR='${project.path}'
-          export STATE_DIR='${stateDir}'
-          ${promptShadowEnvAssign}
-          export LOG_DIR="$STATE_DIR/logs"
-          export EXPERT_ID='${expertId}'
-          export EXPERT_ROLE='${role}'
-          export EXPERT_REASON='${reason}'
-          export EXPERT_CONTEXT='${contextJson}'
-          export EXPERT_BUDGET_CENTS='${budgetCents ?? ''}'
-          mkdir -p "$LOG_DIR" '${resultsDir}'
-          source <(awk '/^(log|config_get|invoke|run_hook|snapshot_state|notify_event|harness_slug|fire_plugin_hook|check_cost_cap|prune_logs)\\(\\)/,/^}/' "${harnessDirPkg}/run.sh")
-          invoke ${invokeRole} "EXPERT_ID=${expertId}" "EXPERT_REASON=${reason}" 2>&1 | tee '${resultPath}'
-          ${cleanupPromptShadow}
-          echo "__EXPERT_DONE__" >> '${resultPath}'
-        `;
         // Decrypt search-provider keys from PG (Migration 047) and pass them
         // through as env vars so OMP's web_search providers see them.
         // Best-effort: PG unavailable / no keys → child runs without them.
@@ -312,20 +288,40 @@ export async function dispatchExpert(
           const { buildSpawnEnv } = await import('./search-provider-credentials');
           searchProviderEnv = await buildSpawnEnv();
         } catch { /* ignore */ }
-        const child = spawn('bash', ['-c', wrapper], {
-          cwd: project.path,
-          env: {
-            ...process.env,
+
+        // When a plugin role overlays a per-run prompt-shadow dir, point
+        // HARNESS_DIR at it (the parent removes it in finalise() once the run
+        // ends). invoke-once tees output to resultPath + appends
+        // __INVOCATION_DONE__, which the poll below watches for.
+        const spawnHarnessDir = (invokeRole !== role && promptShadowDir)
+          ? promptShadowDir
+          : harnessDirPkg;
+        const { command, args, env: invokeEnv } = buildInvokeOnce({
+          projectDir: project.path,
+          stateDir,
+          harnessDir: spawnHarnessDir,
+          role: invokeRole,
+          extras: [`EXPERT_ID=${expertId}`, `EXPERT_REASON=${reason}`],
+          resultPath,
+          extraEnv: {
             ...searchProviderEnv,
-            CLAUDE: process.env.AGENT_CMD ?? process.env.CLAUDE ?? 'omp -p',
+            EXPERT_ID: expertId,
+            EXPERT_ROLE: role,
+            EXPERT_REASON: reason,
+            EXPERT_CONTEXT: contextJson,
+            EXPERT_BUDGET_CENTS: budgetCents != null ? String(budgetCents) : '',
           },
+        });
+        const child = spawn(command, args, {
+          cwd: project.path,
+          env: invokeEnv,
           detached: true,
           stdio: ['ignore', 'ignore', 'ignore'],
         });
         child.unref();
 
         // The child runs in the background. We watch via a one-shot file
-        // poll (the `__EXPERT_DONE__` sentinel) and finalise the
+        // poll (the `__INVOCATION_DONE__` sentinel) and finalise the
         // user_actions row when it shows up. We also release the lock then.
         // Polling because the parent process owns no handle on a detached
         // child — same approach `invokeScoperBackground` would use if it
@@ -382,6 +378,11 @@ export async function dispatchExpert(
         };
 
         const finalise = async (status: 'succeeded' | 'failed', summary: string) => {
+          // Remove the per-run prompt-shadow overlay (was `rm -rf` in the old
+          // bash wrapper; now done here once the run is finalised).
+          if (invokeRole !== role && promptShadowDir) {
+            try { rmSync(promptShadowDir, { recursive: true, force: true }); } catch { /* best-effort */ }
+          }
           await appendSpecBulletsIfNeeded(status).catch(() => undefined);
           releaseLock(project.path, role);
           // Compute cost vs budget for telemetry. If we're over budget,
@@ -421,7 +422,7 @@ export async function dispatchExpert(
           let done = false;
           try {
             const txt = readFileSync(resultPath, 'utf8');
-            done = txt.includes('__EXPERT_DONE__');
+            done = txt.includes('__INVOCATION_DONE__');
           } catch { /* not yet */ }
 
           // Mid-run budget check (cheap; sums one or two .jsonl files).

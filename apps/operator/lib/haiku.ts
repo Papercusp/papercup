@@ -11,10 +11,12 @@
  *   - plan-revision rationale auto-summary (`plans/revision-summary.ts`,
  *     plan-agent-launch P-007).
  *
- * Routes through `runAgentChat` with `backend: 'meridian'` — stateless
- * HTTP to the local Meridian router, no omp/claude-code subprocess.
- * Background summaries never need the agent loop (no MCP, no tools),
- * so the subprocess spawn is pure overhead.
+ * Routes through `runAgentChat` with `backend: 'meridian'` — a stateless
+ * Anthropic-format HTTP round-trip, no omp/claude-code subprocess. The
+ * transport auto-resolves: claude-code users go DIRECT to Anthropic with
+ * their Claude session; omp users route via the local Meridian router.
+ * Background summaries never need the agent loop (no MCP, no tools), so a
+ * subprocess spawn would be pure overhead.
  */
 
 import { runAgentChat } from './agent-chat-stream';

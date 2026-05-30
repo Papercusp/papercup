@@ -1,9 +1,9 @@
 ---
 title: Handoff brief — 2026-05-14 E2E audit session
 slug: handoff-2026-05-14-e2e-audit
-status: active
+status: shipped
 created: 2026-05-14
-updated: 2026-05-20
+updated: 2026-05-30
 owner: pandawamble@gmail.com
 ---
 

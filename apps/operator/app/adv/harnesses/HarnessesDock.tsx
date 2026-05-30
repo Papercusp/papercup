@@ -8,6 +8,9 @@ import FeaturesPanel from './FeaturesPanel';
 import IssuesPanel from './IssuesPanel';
 import DetailPanel from './DetailPanel';
 import { AdvGitPanel } from './AdvGitPanel';
+import AdvAgentsPanel from './AdvAgentsPanel';
+import AdvLogsPanel from './AdvLogsPanel';
+import AdvOverviewPanel from './AdvOverviewPanel';
 
 let registered = false;
 function ensureRegistered() {
@@ -17,13 +20,17 @@ function ensureRegistered() {
   panelRegistry.register('adv:detail', DetailPanel, { title: 'Detail' });
   panelRegistry.register('adv:pinned', DetailPanel, { title: 'Pinned' });
   panelRegistry.register('adv:git', AdvGitPanel, { title: 'Git' });
+  panelRegistry.register('adv:agents', AdvAgentsPanel, { title: 'Agents' });
+  panelRegistry.register('adv:logs', AdvLogsPanel, { title: 'Run log' });
+  panelRegistry.register('adv:overview', AdvOverviewPanel, { title: 'Overview' });
   registered = true;
 }
 
 /**
  * Mounts the dockview shell for /adv/harnesses with a layout name
  * keyed by harness slug. The seed (`defaultAdvHarnessesLayout` in
- * lib/dock-layouts.ts) is a 50/50 split: Features left, Issues right.
+ * lib/dock-layouts.ts) is a three-pane 25/25/50 split: Features,
+ * Issues, and a persistent Detail pane.
  *
  * When the user switches slug, `listPanels()` is walked and each
  * panel's `harnessSlug` param is rebound — same trick `HarnessDockShell`

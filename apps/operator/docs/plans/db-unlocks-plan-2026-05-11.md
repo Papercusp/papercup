@@ -1,9 +1,9 @@
 ---
 title: Drizzle migration — post-migration unlocks plan
 slug: db-unlocks-plan-2026-05-11
-status: active
+status: shipped
 created: 2026-05-11
-updated: 2026-05-20
+updated: 2026-05-30
 owner: pandawamble@gmail.com
 ---
 

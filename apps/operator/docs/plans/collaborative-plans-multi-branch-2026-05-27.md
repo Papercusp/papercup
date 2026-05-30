@@ -1,9 +1,9 @@
 ---
 title: Collaborative plans — per-user branches, contribute model, build dropdown
 slug: collaborative-plans-multi-branch-2026-05-27
-status: active
+status: superseded
 created: 2026-05-27
-updated: 2026-05-27
+updated: 2026-05-30
 owner: avi@storewolf.com
 ---
 

@@ -267,8 +267,8 @@ test.describe('plan-agent-launch E2E (P-028)', () => {
     }
 
     // ── 10. Smoke: /admin/plans renders without 500 (the Agents tab
-    //       is reachable via ?tab=agents).
-    const res = await page.goto(`${baseURL}/admin/plans?slug=${slug}&tab=agents`, {
+    //       is reachable via ?ptab=agents).
+    const res = await page.goto(`${baseURL}/admin/plans?slug=${slug}&ptab=agents`, {
       waitUntil: 'load',
     });
     expect([200, 302, 307]).toContain(res?.status() ?? 0);

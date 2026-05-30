@@ -1,7 +1,7 @@
 ---
 title: ADV Harness Tab — port /harness queues into /adv
 slug: adv-harness-tab-migration-2026-05-30
-status: active
+status: shipped
 created: 2026-05-30
 updated: 2026-05-30
 owner: avi@storewolf.com
@@ -11,13 +11,9 @@ owner: avi@storewolf.com
 
 ## Now
 
-**State:** Phases 1–3 shipped and verified live in the Tauri webview (against `papercup`). Phase 1 verified + a real bug fixed (layout-adapter dropped leaf `size` on save → lopsided 3-panel split; `b02e2aea` + regression test, 178 dock tests green). Phase 2 visual & filter parity (`b46bb5d6`). Phase 3 live-data-via-Zero (`c94b4d9f`): new shared `useHarnessData` hook (REST bootstrap + `useSyncQuery` overlay for `featuresConsolidated`/`issuesConsolidated`/`harnessPendingIssues`), polling timers removed, claims chip + plan pill now live. Verified: 3 features render, row-click → Detail, no console errors, no provider error on `/adv`.
+**State:** Migration shipped + audit follow-ups + dock-panel ports (agents/logs/overview) done. This pass (D-012): (1) decoupled the brainstorm/prs/settings/insights/git /adv tabs from the 5,259-line HarnessDashboard — they now render their own panel components directly (commit 5091d985); only config + docs still mount the monolith. (2) Soft-retired /harness as a landing — home redirect, header CTA, and the root /harness route all now go to /adv; old /harness?panel=/?slug= URLs translate-redirect in (commit 063114fa). All verified live in Tauri. /harness/$slug (org/department + dock shell) intentionally left functional — no /adv parity yet.
 
-Phase 4 Detail richness shipped (`2e491ee6`, also cherry-picked to `main`): issues-filed-against-feature + recent-runs + steer-notes (feature), notes/add-note + clickable linked-feature (issue), and a selection-history Back chip. Feature-side + Back verified live; issue-side contract-verified (papercup has 0 issues).
-
-Phase 5 inline row actions shipped (`30138d81`, cherry-picked to `main`): feature rows Reset/Edit/Chat, issue rows Promote/Ack/Close/Won't-fix (hover-revealed, shared `harness-actions` helper). Feature rows verified live; issue rows contract-verified.
-
-**Next:** P-013 (fate of legacy lifecycle/project/tag filters), Phase 6 (keyboard shortcuts J/K/R/X// + virtualization).
+**Next:** To finish full retirement (P-022): decouple config + docs from HarnessDashboard (lift plugin-tab + spec resolution into a shared hook), then give /adv org/department + per-slug parity for /harness/$slug; once no /adv tab renders HarnessDashboard, move legacy-only app/harness/* page code to _retired/.
 
 ## Background
 
@@ -48,7 +44,7 @@ Key files (live UI is the Vite SPA; components live in the Next tree and are con
 - **P-010** `done` Features result counter ("N/M shown") + per-row parity: status pill colors, attempts pill (warn tint ≥3), needs-human-review dot (`b46bb5d6`). Claims chip + plan pill landed with Phase 3 (`c94b4d9f`) once `claims`/`sourcePlanSlug` became available via the Zero consolidated row.
 - **P-011** `done` Issues per-row parity: severity icon+color, source icon (Bot/User), status icon (Circle/Eye/Hammer/CheckCircle/XCircle), code-pointer chip (FileCode + basename), linked-feature pill (ArrowUpRight), `foundDuring` chip. All icon maps use `?? Circle` fallback so a missing key can't crash the subtree. Shipped `b46bb5d6`.
 - **P-012** `done` Issues pending-validator triage banner above the list when `pending.length > 0`. **Note:** rendered as an informational banner, not a "Triage N" button — the legacy Triage action opens `TriageQueue` (`?triage=true`), which isn't ported to `/adv` yet; wiring it is deferred until the triage flow lands. Shipped `b46bb5d6`.
-- **P-013** `todo` Decide fate of legacy lifecycle chips (mine / working / available / shipped) and project/tag filters — keep only if used in practice; default to cutting `mine` (needs viewer github id) on first pass.
+- **P-013** `done` **Decided + implemented (`d0d82699`):** legacy lifecycle chips (working/available/shipped) are redundant with the Phase 2 saved views (Running/Todo/Passed) → not ported. `mine` (queue membership) needs a viewer github-id + multi-user queue data → deferred. Project filter is multi-project/sub-harness-only (own plan) → not ported. **Tag filter folded into the feature search** — `tags` now carried through `useHarnessData` (REST + Zero) and matched in search ("Search features or tags…"). Verified live (tag term filters the list).
 
 ## Phase 3 — Live data via Zero
 
@@ -66,9 +62,16 @@ Key files (live UI is the Vite SPA; components live in the Next tree and are con
 
 ## Phase 6 — Polish
 
-- **P-019** `todo` Keyboard shortcuts scoped to the focused panel: J/K move, ↵ open (sets `?sel`), R reset, X select, / search. Mirror `useShortcut('feature.*')` registrations.
-- **P-020** `todo` Virtualize the lists (`@tanstack/react-virtual`) once a harness regularly exceeds ~100 rows.
-- **P-021** `todo` Empty-state + loading-state refinement across all three panes.
+- **P-019** `done` Panel-scoped keyboard nav: J/K (or arrows) move a focus cursor (ring + scroll-into-view), ↵ opens (sets `?sel`), R resets the focused feature (features only), `/` focuses search, Esc blurs. X/multi-select dropped — the adv panels have no batch ops. Verified live (j → fidx 0→1, Enter → `?sel=F-DOGFOOD-002`). Shipped `537662f4`.
+- **P-020** `done` Virtualized both lists with `@tanstack/react-virtual` (`c0283ca6`): only the visible window mounts, `measureElement` for accurate heights, absolute `translateY` positioning; the keyboard scroll switched from `scrollIntoView` to `virtualizer.scrollToIndex` (focused row may not be mounted). The hover-action overlay still works (the absolute row remains its positioning context). Verified at scale via a temporary 200-row synthetic scaffold (papercup has 3 features / 0 issues): **203 features → 31 DOM rows, 200 issues → 34 DOM rows**; container heights correct; selection + keyboard intact; scaffold removed before commit.
+- **P-021** `done` Consistent loading/empty/error states across the panes + a kbd-hint footer (`J/K · ↵ · R · /`) that doubles as P-019 discoverability alongside the N/M-shown counter. Shipped `537662f4`.
+
+
+## Phase 7 — Deferred follow-ups
+
+- **P-022** `todo` **/harness route retirement (multi-step, needs human sign-off).** See D-010 for why a `_retired/` move is not possible today. Prep: (a) extract shared substrate (`dock/`, `Button`/`Select`/`Tooltip`, `HealthBadge`, `HarnessDashboard`, `CreateHarnessPicker`, `issues/types`) out of `app/harness/` into a neutral home so `/adv` imports survive; (b) re-point home redirects (`routes/index.tsx:31`, `app/page.tsx:20`) → `/adv`; (c) re-point ~18 inbound links + header "Ops" CTA; (d) port remaining `/harness`-only surfaces (proposals/summary/consoles/modals/banners) into `/adv`; (e) then move the residual route page to `_retired/` + RESTORE.md + git tag.
+- **P-023** `todo` **#4 Richer recent-activity runs (P-015 enhancement) — deferred, blocked on data.** Wanted: a result/outcome line + click-to-open-session in DetailPanel's "Recent activity". Blocked because `harness_shared.agent_runs_consolidated` has **no outcome/result column** (only role, ts, cost_usd, tokens, duration_ms, `running`) and **no session pointer** (run_id only, no session_id/omp_session_id) — so neither the result line nor the session link has a field to bind to. Also papercup has 0 agent runs, so any change is unverifiable here. Unblock: add an outcome/result + session-id projection to the consolidated row (or join the run→session source), then render + verify against a harness that actually has runs.
+
 
 ## Decisions
 
@@ -111,3 +114,65 @@ DockviewReact's `.dv-shell` sizes via `height:100%`, which WebKitGTK (the Tauri 
 Date: 2026-05-30
 
 The originating session killed `hono-host` to pick up a `lib/*.ts` change and the replacement bound to an empty workspace (`/api/harness/projects/lite` → `[]`), breaking every panel. Lesson: UI-only changes only need the Vite build-watcher (no hono restart); for a `lib/dock-layouts.ts` change, restart the **Tauri desktop** (which re-runs the embedded-PG handshake) rather than hand-restarting `hono-host`. Already in agent memory.
+
+### D-009 — Optimistic UI updates — hand-rolled now, Zero mutators later
+Date: 2026-05-30
+Date: 2026-05-30
+
+An audit found mutations (feature status-change/reset, issue ack/close/won't-fix) POSTed + toasted but did **not** update the UI until a Zero push or reload — most visibly the Detail status `<select>` snapping back. Fixed (`e1f12917`): `useHarnessData` now exposes `patchFeature`/`patchIssue`; each action site does snapshot → optimistic patch → POST → rollback-on-error, and the Zero overlay reconciles when it pushes.
+
+**Why hand-rolled, not Zero mutators:** per the Restart `data-fetch-surfaces-strategy-2026-05-29` plan, the *proper* end-state for synced-entity CRUD is **Zero custom mutators** (`@restart/sync` `zero.mutate.*` — optimistic apply + auto-rollback + reconcile + self-updating read cache). But that path is **not built**: the `@restart/sync` client is constructed without `mutators` (confirmed in `libs/sync/src` — no `mutators`/`zero.mutate`/`useSyncMutate`), it's the **WS** transport, and papercup desktop is **SSE**. The Restart plan itself states "No optimistic Zero writes happen today … today's optimistic UX is hand-rolled component state." So hand-rolled optimistic is the correct interim — it matches the legacy papercup panels (`IssuesList` `setIssues(prev.map(...))`) and Restart's current reality, and is forward-compatible: when the Zero-mutator path lands (Restart P4 — thread `mutators` through `SyncProvider`, expose `useSyncMutate`, + an SSE-mutate fallback), these sites swap to `zero.mutate.*`.
+
+**Known limitation:** the patch is per-hook-instance, so only the *firing* pane updates instantly (Detail when you change status there; the list row when you act on a row). The other pane reconciles via Zero. True cross-pane instant coherence is exactly what the shared Zero store (mutators) gives — deferred with the convergence. Promote stays non-optimistic (server-assigned `linkedFeatureId` isn't client-predictable).
+
+### D-010 — /harness is NOT a retirable leaf — retirement deferred, not executed
+Date: 2026-05-30
+Asked to "delete the legacy /harness route" (move it under `_retired/`). Investigated against the code — it is **not** a retirable leaf and the move was **not** executed, because it would break the very `/adv` view this plan built, plus the home page.
+
+**Why it can't move to `_retired/` today:**
+
+1. **`/adv` is built ON `app/harness/`.** `/adv/harnesses/*` statically imports from it: the entire dock framework (`dock/HarnessDock`, `panel-registry`, `dock-actions`, `AddPanelCatalog`), shared UI (`@/app/harness/Button`,`Select`,`Tooltip`), `HealthBadge`, `HarnessDashboard`, `CreateHarnessPicker`, and `issues/types`. Moving `app/harness/` under `_retired/` (which drops it from the workspace globs) breaks `/adv`'s build. The migration *reused* the substrate; it did not replace it.
+2. **`/harness` is the home redirect** in two places: `apps/operator-vite/src/routes/index.tsx:31` (`redirect({ to: '/harness' })`) and `apps/operator/app/page.tsx:20` (`redirect('/harness')`). Retiring it 404s the home page.
+3. **~18 files link to `/harness`** (header "Ops" CTA in `ChromeShell`, `not-found.tsx`, `SetupWizard`, `snapshots/SnapshotsClient`, route-pending helpers, many tests).
+4. **Unported surfaces** still live only in `/harness` (proposals / summary / consoles / modals / banners).
+
+The `_retired/` convention fits **separable leaf surfaces** (e.g. `_retired/papercup/` public site). `app/harness/` is a route **plus** the shared component/dock library `/adv` depends on — not separable as-is.
+
+**Prep checklist to make it retirable later (see P-022):** (a) extract the shared substrate out of `app/harness/` into a neutral home (`app/_harness-shared/` or a lib) so `/adv`'s imports survive; (b) re-point the two home redirects `/harness` → `/adv`; (c) re-point the ~18 inbound links + the header "Ops" CTA; (d) port the remaining `/harness`-only surfaces into `/adv`; (e) only then is the residual route page a leaf that can move to `_retired/`.
+
+### D-011 — Ported Agents / Run log / Overview dock panels + fixed the catalog add-panel bug
+Date: 2026-05-30
+Per the user's directive to "continue migrating the rest of the panels (run-log, recent agents, …) before retiring the old view," ported three legacy `Real*Panel` dock panels into `/adv` as new panel types (committed `7597e7a9`):
+
+- **adv:overview** (`AdvOverviewPanel`) ← `RealHarnessOverviewPanel`: phase tabs (staging/testing/production, persisted via `/harness-phase-last-used`), alive/escalated/smoke badges, progress bar, status-bucket counts, iteration + mission cost.
+- **adv:agents** (`AdvAgentsPanel`) ← `RealAgentsPanel`: running-dot + role accent + runId + size + age, Running/All toggle. Live via Zero `agentRunsConsolidated.bySlug` overlay + REST `/agents` bootstrap (no 5s poll).
+- **adv:logs** (`AdvLogsPanel`) ← `RealLogsPanel`: `run.log.jsonl` tail with level chips + source filter (one-shot read + manual Refresh, no 3s poll).
+
+New shared hooks `useHarnessAgents` / `useHarnessLogs` in `useHarnessData.ts`. Registered in `HarnessesDock`; added to `AddPanelCatalog` labels + the `/adv` `allowedTypes`. Token-clean (blue-frost vars) + library-compliant (aria-pressed toggles, lucide icons).
+
+**Pre-existing dock bug fixed along the way:** `HarnessDock.useComponentsForLayout` built dockview component bridges from *only the current layout's types*, so the "Add panel" catalog threw `"Only React.memo/ForwardRef/functional components are accepted"` for ANY type not in the seed — `adv:git` was already broken this way, never noticed because it was never opened via the catalog. Now bridges every *registered* type (the `registryTick` subscription that was already wired finally does something). All four catalog panels verified opening live in the Tauri webview against papercup; layout reset back to the 3-pane seed afterward.
+
+**Still unported before retirement (P-022):** the legacy `view:proposals` and `data:chat` dock panels. The `view:docs/insights/config/summary` surfaces are already top-level `/adv` tabs (docs/insights/config/plans/sessions), not harness-dock panels, and `summary` ≈ the new `adv:overview`.
+Related: P-022
+
+### D-012 — Decoupled 4 /adv tabs from HarnessDashboard + soft-retired /harness as a landing
+Date: 2026-05-30
+Two-phase pass, committed `5091d985` (decouple) + `063114fa` (retire).
+
+**Phase 1 — decouple tabs from the monolith.** Previously 7 `/adv` tabs rendered the entire 5,259-line `HarnessDashboard` via `AdvHarnessPanelPage` (forcedPanel + CSS-hidden chrome) just to show one panel. The panel bodies are already self-contained components the dashboard lazy-loads, so `AdvHarnessPanelPage` now references them directly:
+- `brainstorm` → `<BrainstormFull slug/>`; `prs` → `<PrsTab harnessSlug/>`; `settings` → `<HarnessSettingsPanel slug phase/>`; `insights` → `<AdvInsightsTab slug/>` (tiny wrapper fetches `/status` → `<InsightsPanel/>`); `git` → native `RealGitPanel` + `<PrsTab/>` pane.
+- `config` + `docs` still fall back to `<HarnessDashboard forcedPanel embeddedPanelChrome/>` — their bodies need the dashboard's plugin-tab + spec resolution; decoupling those is the remaining work.
+- Added `harness.css` to the `/adv` shell (`__root.tsx`) so directly-rendered panels keep `h-*` styling without the monolith.
+- Verified live: brainstorm/prs/settings/insights render with NO `.h-root` (dashboard not mounted); config still mounts it.
+
+**Phase 2 — soft-retire `/harness` as a landing.** `/adv` is now the sole entry; old `/harness` URLs redirect in. No code deleted (HarnessDashboard still backs config/docs).
+- Home redirect (`routes/index.tsx` + `app/page.tsx`) → `/adv?tab=harnesses`.
+- Header "Ops" CTA: dropped the legacy `/harness` block, single `/adv` OPS remains.
+- `routes/harness/index.tsx` → translating redirect to `/adv` (`?slug=`/`?project=`→slug, `?panel=`→tab map).
+- `NotFound` + `wiki/missing` "return to dashboard" → `/adv`.
+- Verified live: `/`, `/harness`, `/harness?panel=brainstorm`, `/harness?slug=papercup&panel=prs` all land on the right `/adv` tab; header has one OPS → `/adv`, no `/harness` link.
+
+**Deferred:** `/harness/$slug` + sub-routes (`spec`/`insights`/`projects`/`dock-preview`) are NOT redirected — they render org/department dashboards + the dock shell, which `/adv` has no parity for. Functional, reached only via deep links.
+
+**Still blocking full code retirement (P-022):** decouple `config` + `docs` from `HarnessDashboard` (lift plugin/spec resolution into a shared hook), and give `/adv` org/department + per-slug parity for `/harness/$slug`. Once no `/adv` tab renders `<HarnessDashboard/>` and `$slug` is covered, the legacy-only `app/harness/*` page code can move to `_retired/`.
+Related: P-022

@@ -1,22 +1,21 @@
 /**
  * POST /api/agent-config/test
  *
- * Fires a one-shot PONG prompt at the Meridian router to verify the
- * stateless LLM path works (auth token + reachability). Returns
- * { ok, finalText, durationMs, costUsd, error? }.
+ * Fires a one-shot PONG prompt at the **backend the user actually
+ * selected** (claude-code or omp — resolved via effectiveBackend) to
+ * verify that agent CLI is installed, reachable, and authenticated.
+ * Returns { ok, finalText, durationMs, costUsd, error?, backend }.
  *
- * NOTE: this probes the **meridian** backend specifically, not the
- * user-configured omp/claude-code CLI subprocess. Meridian is what
- * llm-testing + haiku + most non-MCP-bearing callers go through; the
- * subprocess CLIs are still used for agent-loop turns (operator brain,
- * oracle, delegate, scan, plans), and those validate themselves the
- * first time they run. A "Meridian unreachable" failure here means the
- * background summary path is broken; the brain may still work.
+ * Why the selected backend and not Meridian: this is the "Test current
+ * backend" button. Probing omp implicitly exercises Meridian too (omp
+ * routes through it); probing claude-code exercises the local claude
+ * session / Anthropic key. The earlier version hard-pinned `meridian`,
+ * so the button validated the background-summary path regardless of the
+ * user's choice — green even when their selected agent CLI was broken.
  */
 import { runAgentChat } from '@/lib/agent-chat-stream';
+import { readAgentConfig, effectiveBackend } from '@/lib/agent-config';
 import { defineTool } from '@papercusp/agent-mcp';
-
-const TEST_MODEL = process.env.PAPERCUSP_AGENT_TEST_MODEL ?? 'claude-haiku-4-5';
 
 export default defineTool({
   method: 'POST',
@@ -25,6 +24,7 @@ export default defineTool({
   timeoutSec: 45, // handler self-bounds at 30s; give the route-stack headroom
   async handler() {
     const started = Date.now();
+    const backend = effectiveBackend(await readAgentConfig()); // 'claude-code' | 'omp'
     let finalText = '';
     let costUsd = 0;
     let errorMsg: string | undefined;
@@ -37,14 +37,14 @@ export default defineTool({
         ac.abort();
       }, 30_000);
       try {
+        // No model override: test the configured CLI's default so this
+        // validates auth/reachability, not a specific per-role model.
         for await (const ev of runAgentChat({
-          backend: 'meridian',
-          model: TEST_MODEL,
+          backend,
           promptText: 'Reply with exactly the four characters: PONG',
-          maxTokens: 16,
           signal: ac.signal,
         })) {
-          if (ev.type === 'delta') finalText = ev.text;
+          if (ev.type === 'delta') finalText += ev.text; // CLI backends stream incrementally
           else if (ev.type === 'result') {
             if (ev.finalText) finalText = ev.finalText;
             costUsd = ev.costUsd;
@@ -60,11 +60,13 @@ export default defineTool({
     }
     if (timedOut && !errorMsg) {
       errorMsg =
-        'timed out after 30s — Meridian likely unreachable or unauthenticated (run `omp` once, or check ~/.omp/agent/auth.json)';
+        `timed out after 30s — the ${backend} CLI is slow, not installed, or not authenticated ` +
+        (backend === 'omp'
+          ? '(run `omp` once, or check ~/.omp/agent/auth.json)'
+          : '(check the `claude` binary + a Claude session, or set an Anthropic key)');
     }
     if (!errorMsg && finalText.trim().length === 0) {
-      errorMsg =
-        'meridian returned cleanly but produced no output — check that the model is available in Meridian routing';
+      errorMsg = `${backend} returned cleanly but produced no output`;
     }
 
     const trimmed = finalText.trim();
@@ -74,6 +76,7 @@ export default defineTool({
       durationMs: Date.now() - started,
       costUsd,
       error: errorMsg ?? null,
+      backend,
     });
   },
 });

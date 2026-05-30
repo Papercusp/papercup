@@ -1,3 +1,10 @@
+# ⛔ RETIRED 2026-05-30 — @papercup/web (the papercupai.com public site) is retired.
+# Its code is preserved at _retired/papercup/ (not a workspace, not deployed).
+# This Dockerfile is kept for reference only and is NOT built. The COPY paths below
+# still say apps/papercup on purpose: restoring the app via
+# _retired/papercup/RESTORE.md moves it back to apps/papercup and these paths work
+# again. Do not "fix" them to _retired/.
+#
 # Dockerfile.papercup — apps/papercup → papercupai.com
 #
 # Multi-stage build:

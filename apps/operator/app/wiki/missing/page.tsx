@@ -83,7 +83,7 @@ export default async function WikiMissingPage({
       )}
 
       <div className="pc-wiki-missing-back" style={{ marginTop: 32 }}>
-        <RouteLink href="/harness" className="pc-wiki-missing-link pc-wiki-missing-link--back" style={{ color: '#6ab0ff' }}>← Back to harness dashboard</RouteLink>
+        <RouteLink href="/adv?tab=harnesses" className="pc-wiki-missing-link pc-wiki-missing-link--back" style={{ color: '#6ab0ff' }}>← Back to harness dashboard</RouteLink>
       </div>
     </div>
   );

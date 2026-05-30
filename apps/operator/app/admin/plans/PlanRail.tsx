@@ -12,9 +12,9 @@
  * done / dropped), the `## Now` Next: line, last-updated date.
  */
 
-import { useQueryState, parseAsBoolean, parseAsString, parseAsStringEnum } from 'nuqs';
+import { useQueryState, parseAsArrayOf, parseAsBoolean, parseAsString, parseAsStringEnum } from 'nuqs';
 import { forwardRef, useImperativeHandle, useMemo, useCallback, useState } from 'react';
-import { Play, Pause } from 'lucide-react';
+import { Play, Pause, Clock } from 'lucide-react';
 import {
   bucketOf,
   startPlan,
@@ -90,11 +90,13 @@ const PlanRail = forwardRef<PlanRailHandle, Props>(function PlanRail(
 ) {
   const { data, loading, error, refresh } = list;
 
-  // Filter reads — PlanFilters owns the writes; same nuqs keys.
-  const [fBucket] = useQueryState(
-    'pBucket',
-    parseAsStringEnum<PlanBucket>(BUCKET_FILTER_VALUES),
+  // Filter reads — PlanFilters / PlanBucketTabs own the writes; same keys.
+  // Plan-status is now multi-select (`?pBuckets=`); empty = all buckets.
+  const [fBuckets] = useQueryState(
+    'pBuckets',
+    parseAsArrayOf(parseAsStringEnum<PlanBucket>(BUCKET_FILTER_VALUES)).withDefault([]),
   );
+  const fBucketsKey = fBuckets.join('|');
   const [fDate] = useQueryState(
     'pDate',
     parseAsStringEnum<DateWindow>(['today', '7d', '30d']),
@@ -116,14 +118,17 @@ const PlanRail = forwardRef<PlanRailHandle, Props>(function PlanRail(
       query,
       searchHitSlugs,
     );
-    const bucketed = fBucket ? filtered.filter((p) => bucketOf(p) === fBucket) : filtered;
+    const bucketed = fBuckets.length
+      ? filtered.filter((p) => fBuckets.includes(bucketOf(p)))
+      : filtered;
     return [...bucketed].sort((a, b) => {
       const sa = BUCKET_ORDER[bucketOf(a)] ?? 99;
       const sb = BUCKET_ORDER[bucketOf(b)] ?? 99;
       if (sa !== sb) return sa - sb;
       return (b.updated ?? '').localeCompare(a.updated ?? '');
     });
-  }, [plans, fBucket, fOwner, fDate, fArchived, fLegacy, fInbox, fActionable, query, searchHitSlugs]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [plans, fBucketsKey, fOwner, fDate, fArchived, fLegacy, fInbox, fActionable, query, searchHitSlugs]);
 
   useImperativeHandle(
     ref,
@@ -169,7 +174,7 @@ const PlanRail = forwardRef<PlanRailHandle, Props>(function PlanRail(
     // search box, the rest are the PlanFilters keys.
     const q = query.trim();
     const filtersActive =
-      !!fBucket || !!fOwner || !!fDate || fArchived || fLegacy || fInbox || fActionable;
+      fBuckets.length > 0 || !!fOwner || !!fDate || fArchived || fLegacy || fInbox || fActionable;
     const msg = q
       ? `No plans match “${q}”.`
       : filtersActive
@@ -260,12 +265,7 @@ function PlanRow({
         aria-current={active ? 'page' : undefined}
       >
         <div className="pc-plan-row__head">
-          <Tooltip label={title}>
-            <span className="pc-plan-row__title">{title}</span>
-          </Tooltip>
-          {source ? <SourcePill source={source} /> : null}
-          {plan.harness ? <HarnessPill harness={plan.harness} /> : null}
-          <StatusPill status={plan.status} />
+          <span className="pc-plan-row__title">{title}</span>
           {showStartToggle ? (
             <button
               type="button"
@@ -281,9 +281,17 @@ function PlanRow({
           ) : null}
         </div>
         <div className="pc-plan-row__meta-line">
-          <span className="pc-plan-row__slug">{plan.slug}</span>
+          {source ? <SourcePill source={source} /> : null}
+          {plan.harness ? <HarnessPill harness={plan.harness} /> : null}
+          <StatusPill status={plan.status} />
           {plan.updated ? (
-            <span className="pc-plan-row__updated">updated {formatUpdated(plan.updated)}</span>
+            <span
+              className="pc-plan-row__updated"
+              title={`Last updated ${formatUpdated(plan.updated)}`}
+            >
+              <Clock size={12} aria-hidden />
+              {formatUpdatedShort(plan.updated)}
+            </span>
           ) : null}
         </div>
         {plan.itemCounts ? <PlanProgressBar counts={plan.itemCounts} /> : null}
@@ -350,6 +358,15 @@ import { formatRelativeUpdated } from '@/lib/format/relative-time';
  */
 function formatUpdated(updated: string): string {
   return formatRelativeUpdated(updated);
+}
+
+/**
+ * Bare relative time for the row's last-updated chip — drops the
+ * trailing " ago" so it reads as a compact "4d" / "today" next to the
+ * clock icon (the full "4d ago" stays in the title attribute).
+ */
+function formatUpdatedShort(updated: string): string {
+  return formatRelativeUpdated(updated).replace(/\s*ago$/, '');
 }
 
 /** P-023: segmented progress bar showing done / active / remaining proportions. */

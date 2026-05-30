@@ -1,9 +1,9 @@
 ---
 title: Host architecture — pre-implementation blocker report
 slug: host-architecture-blocker-report-2026-05-20
-status: active
+status: shipped
 created: 2026-05-20
-updated: 2026-05-20
+updated: 2026-05-30
 owner: pandawamble@gmail.com
 ---
 

@@ -1,9 +1,9 @@
 ---
 title: SSE typed-events — PR split plan
 slug: sse-typed-events-PR-SPLIT
-status: active
+status: shipped
 created: 2026-05-12
-updated: 2026-05-20
+updated: 2026-05-30
 owner: pandawamble@gmail.com
 ---
 

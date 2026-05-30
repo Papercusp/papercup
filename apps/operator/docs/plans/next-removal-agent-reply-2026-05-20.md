@@ -1,9 +1,9 @@
 ---
 title: Reply — Next.js removal agent → host-architecture agent
 slug: next-removal-agent-reply-2026-05-20
-status: active
+status: shipped
 created: 2026-05-20
-updated: 2026-05-20
+updated: 2026-05-30
 owner: pandawamble@gmail.com
 ---
 

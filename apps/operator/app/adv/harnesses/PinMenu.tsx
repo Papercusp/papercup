@@ -71,8 +71,8 @@ export default function PinMenu({ state, onClose }: Props) {
         left: state.pos.x,
         top: state.pos.y,
         zIndex: 9000,
-        background: 'rgba(20, 18, 38, 0.98)',
-        border: '1px solid rgba(167, 139, 250, 0.34)',
+        background: 'var(--bg-popover, #0d1829)',
+        border: '1px solid var(--border-strong, rgba(125, 211, 252, 0.32))',
         borderRadius: 6,
         padding: 4,
         minWidth: 200,
@@ -90,13 +90,13 @@ export default function PinMenu({ state, onClose }: Props) {
           gap: 8,
           padding: '8px 10px',
           background: 'transparent',
-          color: '#f7f5ff',
+          color: 'var(--fg, #e7f7ff)',
           border: 'none',
           textAlign: 'left',
           cursor: 'pointer',
           borderRadius: 4,
         }}
-        onMouseEnter={(e) => (e.currentTarget.style.background = 'rgba(167, 139, 250, 0.18)')}
+        onMouseEnter={(e) => (e.currentTarget.style.background = 'color-mix(in oklab, var(--accent, #38bdf8), transparent 84%)')}
         onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
       >
         <Pin size={12} aria-hidden />

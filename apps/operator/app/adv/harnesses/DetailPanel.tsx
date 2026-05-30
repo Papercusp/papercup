@@ -3,10 +3,17 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { parseAsString, useQueryState } from 'nuqs';
 import { toast } from 'sonner';
+import { ArrowUpRight } from 'lucide-react';
 import { useSyncQuery } from '@restart/sync';
-import type { Issue, IssueNote, IssueSeverity } from '../../harness/issues/types';
+import type { Issue, IssueNote } from '../../harness/issues/types';
 import type { PanelComponentProps } from '../../harness/dock/panel-registry';
+import { StatusPill, SeverityPill, IssueStatusPill } from '../../harness/primitives';
+import { SEVERITY, type HarnessStatus, type IssueSeverityKey } from '../../harness/theme';
+import { Select } from '../../harness/Select';
+import { Tooltip } from '../../harness/Tooltip';
+import { useConfirmDialog } from '../../harness/useConfirmDialog';
 import { useHarnessFeatures, useHarnessIssues, type FeatureStatus, type HarnessFeature } from './useHarnessData';
+import { issueAction, issueActionStatus, type IssueActionKind } from './harness-actions';
 
 const FEATURE_STATUSES: FeatureStatus[] = [
   'todo',
@@ -17,23 +24,6 @@ const FEATURE_STATUSES: FeatureStatus[] = [
   'blocked',
   'deprecated',
 ];
-
-const STATUS_TONE: Record<string, { bg: string; fg: string }> = {
-  passed: { bg: 'rgba(34, 197, 94, 0.16)', fg: '#86efac' },
-  todo: { bg: 'rgba(148, 163, 184, 0.14)', fg: '#cbd5e1' },
-  in_progress: { bg: 'rgba(96, 165, 250, 0.18)', fg: '#93c5fd' },
-  failing: { bg: 'rgba(239, 68, 68, 0.18)', fg: '#fca5a5' },
-  validating: { bg: 'rgba(250, 204, 21, 0.16)', fg: '#fde68a' },
-  blocked: { bg: 'rgba(244, 114, 182, 0.16)', fg: '#f9a8d4' },
-  deprecated: { bg: 'rgba(113, 113, 122, 0.18)', fg: '#a1a1aa' },
-};
-
-const SEVERITY_TONE: Record<IssueSeverity, { bg: string; fg: string }> = {
-  critical: { bg: 'rgba(239, 68, 68, 0.22)', fg: '#fca5a5' },
-  major: { bg: 'rgba(249, 115, 22, 0.2)', fg: '#fdba74' },
-  minor: { bg: 'rgba(250, 204, 21, 0.18)', fg: '#fde68a' },
-  nit: { bg: 'rgba(148, 163, 184, 0.16)', fg: '#cbd5e1' },
-};
 
 // Consolidated agent-run row (camelCase Zero export).
 type RunRow = {
@@ -80,8 +70,8 @@ export default function DetailPanel({ params, api }: PanelComponentProps) {
 
   // Phase 3: live data via Zero (REST bootstrap + Zero overlay), no polling.
   // The Features/Issues panels subscribe to the same queries → Zero dedups.
-  const { features } = useHarnessFeatures(slug);
-  const { issues } = useHarnessIssues(slug);
+  const { features, patchFeature } = useHarnessFeatures(slug);
+  const { issues, patchIssue } = useHarnessIssues(slug);
   const { data: runRows } = useSyncQuery<RunRow>({
     queryName: 'agentRunsConsolidated.bySlug',
     args: slug ? { harnessSlug: slug } : undefined,
@@ -173,11 +163,12 @@ export default function DetailPanel({ params, api }: PanelComponentProps) {
         runs={Array.isArray(runRows) ? runRows : []}
         onSelect={onSelect}
         onBack={onBack}
+        patchFeature={patchFeature}
       />
     );
   }
   if (issue) {
-    return <IssueDetail slug={slug} issue={issue} onSelect={onSelect} onBack={onBack} />;
+    return <IssueDetail slug={slug} issue={issue} onSelect={onSelect} onBack={onBack} patchIssue={patchIssue} />;
   }
   return null;
 }
@@ -185,9 +176,11 @@ export default function DetailPanel({ params, api }: PanelComponentProps) {
 function BackChip({ onBack }: { onBack?: () => void }) {
   if (!onBack) return null;
   return (
-    <button type="button" className="pc-adv-detail__back" onClick={onBack} title="Back to previous selection">
-      ← Back
-    </button>
+    <Tooltip label="Back to previous selection">
+      <button type="button" className="pc-adv-detail__back" onClick={onBack}>
+        ← Back
+      </button>
+    </Tooltip>
   );
 }
 
@@ -198,6 +191,7 @@ function FeatureDetail({
   runs,
   onSelect,
   onBack,
+  patchFeature,
 }: {
   slug: string;
   feature: HarnessFeature;
@@ -205,12 +199,37 @@ function FeatureDetail({
   runs: RunRow[];
   onSelect: (id: string) => void;
   onBack?: () => void;
+  patchFeature: (id: string, partial: Partial<HarnessFeature>) => void;
 }) {
   const [working, setWorking] = useState<string | null>(null);
   const [notes, setNotes] = useState<string[] | null>(null);
   const [notesOpen, setNotesOpen] = useState(false);
+  const [steerNote, setSteerNote] = useState('');
+  const { confirm, element: confirmEl } = useConfirmDialog();
 
-  const tone = STATUS_TONE[feature.status] ?? STATUS_TONE.todo;
+  // Add a steer note for the worker — POSTs a block to .harness/notes/<id>.md
+  // (the OperatorNoteForm contract). Optimistically appends to the local list.
+  const addSteerNote = useCallback(async () => {
+    const content = steerNote.trim();
+    if (!content) return;
+    setWorking('steer');
+    try {
+      const res = await fetch(`/api/harness/${encodeURIComponent(slug)}/features/${encodeURIComponent(feature.id)}/notes`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ content }),
+      });
+      if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`);
+      setNotes((prev) => [...(prev ?? []), content]); // optimistic append
+      setSteerNote('');
+      setNotesOpen(true);
+      toast.success('Steer note added');
+    } catch (e) {
+      toast.error('Add steer note failed', { description: String(e) });
+    } finally {
+      setWorking(null);
+    }
+  }, [slug, feature.id, steerNote]);
 
   // Issues filed against this feature: linked as the fix (linkedFeatureId) or
   // found while working on it (foundDuring).
@@ -265,6 +284,8 @@ function FeatureDetail({
 
   const setStatus = useCallback(
     async (next: FeatureStatus) => {
+      const prev = feature.status;
+      patchFeature(feature.id, { status: next }); // optimistic
       setWorking(`status:${next}`);
       try {
         await callJson(`/features/${feature.id}?phase=staging`, {
@@ -274,26 +295,38 @@ function FeatureDetail({
         });
         toast.success(`${feature.id} → ${next}`);
       } catch (e) {
+        patchFeature(feature.id, { status: prev }); // rollback
         toast.error('Status change failed', { description: String(e) });
       } finally {
         setWorking(null);
       }
     },
-    [callJson, feature.id],
+    [callJson, feature.id, feature.status, patchFeature],
   );
 
   const resetFeature = useCallback(async () => {
-    if (!window.confirm(`Reset ${feature.id} back to todo?`)) return;
+    if (
+      !(await confirm({
+        title: `Reset ${feature.id}?`,
+        body: `Reset ${feature.id} back to todo and clear its attempts. The worker will pick it up fresh.`,
+        destructive: true,
+        confirmLabel: 'Reset',
+      }))
+    )
+      return;
+    const prev = { status: feature.status, attempts: feature.attempts };
+    patchFeature(feature.id, { status: 'todo', attempts: 0 }); // optimistic
     setWorking('reset');
     try {
       await callJson(`/features/${feature.id}/reset?phase=staging`, { method: 'POST' });
       toast.success(`${feature.id} reset`);
     } catch (e) {
+      patchFeature(feature.id, prev); // rollback
       toast.error('Reset failed', { description: String(e) });
     } finally {
       setWorking(null);
     }
-  }, [callJson, feature.id]);
+  }, [callJson, feature.id, feature.status, feature.attempts, patchFeature, confirm]);
 
   return (
     <div className="pc-adv-detail">
@@ -302,16 +335,14 @@ function FeatureDetail({
         <div className="pc-adv-detail__id">{feature.id}</div>
         <div className="pc-adv-detail__title">{feature.title}</div>
         <div className="pc-adv-detail__meta">
-          <span className="pc-adv-detail__pill" style={{ background: tone.bg, color: tone.fg }}>
-            {feature.status}
-          </span>
+          <StatusPill status={feature.status as HarnessStatus} />
           {typeof feature.attempts === 'number' && feature.attempts > 0 && (
             <span className="pc-adv-detail__attempts">{feature.attempts}× attempts</span>
           )}
           {feature.sourcePlanSlug && (
-            <span className="pc-adv-detail__plan" title={`From plan: ${feature.sourcePlanSlug}`}>
-              ↗ {feature.sourcePlanSlug}
-            </span>
+            <Tooltip label={`From plan: ${feature.sourcePlanSlug}`}>
+              <span className="pc-adv-detail__plan">↗ {feature.sourcePlanSlug}</span>
+            </Tooltip>
           )}
         </div>
       </header>
@@ -329,18 +360,17 @@ function FeatureDetail({
         <div className="pc-adv-detail__section">
           <h3>Status</h3>
           <div className="pc-adv-detail__status-row">
-            <select
+            <Select
               value={feature.status}
-              onChange={(e) => void setStatus(e.target.value as FeatureStatus)}
+              onChange={(v) => void setStatus(v as FeatureStatus)}
               disabled={working !== null}
-              aria-label="Change status"
-            >
-              {FEATURE_STATUSES.map((s) => (
-                <option key={s} value={s}>
-                  {s}
-                </option>
-              ))}
-            </select>
+              ariaLabel="Change status"
+              triggerClassName="pc-adv-detail__select"
+              options={FEATURE_STATUSES.map((s) => ({
+                value: s,
+                label: <StatusPill status={s as HarnessStatus} size="xs" />,
+              }))}
+            />
           </div>
         </div>
 
@@ -348,22 +378,22 @@ function FeatureDetail({
           <div className="pc-adv-detail__section">
             <h3>Issues ({relatedIssues.length})</h3>
             <div className="pc-adv-detail__related">
-              {relatedIssues.map((i) => {
-                const t = SEVERITY_TONE[i.severity] ?? SEVERITY_TONE.minor;
-                return (
+              {relatedIssues.map((i) => (
+                <Tooltip key={i.id} label={i.title}>
                   <button
-                    key={i.id}
                     type="button"
                     className="pc-adv-detail__related-row"
                     onClick={() => onSelect(i.id)}
-                    title={i.title}
                   >
                     <span className="pc-adv-detail__related-id">{i.id}</span>
-                    <span className="pc-adv-detail__related-dot" style={{ background: t.fg }} />
+                    <span
+                      className="pc-adv-detail__related-dot"
+                      style={{ background: SEVERITY[i.severity as IssueSeverityKey].solid }}
+                    />
                     <span className="pc-adv-detail__related-title">{i.title}</span>
                   </button>
-                );
-              })}
+                </Tooltip>
+              ))}
             </div>
           </div>
         )}
@@ -387,24 +417,38 @@ function FeatureDetail({
           )}
         </div>
 
-        {notes && notes.length > 0 && (
-          <div className="pc-adv-detail__section">
-            <h3>
-              <button type="button" className="pc-adv-detail__collapse" onClick={() => setNotesOpen((o) => !o)}>
-                {notesOpen ? '▾' : '▸'} Steer notes ({notes.length})
-              </button>
-            </h3>
-            {notesOpen && (
-              <div className="pc-adv-detail__notes">
-                {notes.map((n, idx) => (
-                  <p key={idx} className="pc-adv-detail__note">
-                    {n}
-                  </p>
-                ))}
+        <div className="pc-adv-detail__section">
+          <h3>
+            <button type="button" className="pc-adv-detail__collapse" onClick={() => setNotesOpen((o) => !o)}>
+              {notesOpen ? '▾' : '▸'} Steer notes{notes && notes.length > 0 ? ` (${notes.length})` : ''}
+            </button>
+          </h3>
+          {notesOpen && (
+            <>
+              {notes && notes.length > 0 && (
+                <div className="pc-adv-detail__notes">
+                  {notes.map((n, idx) => (
+                    <p key={idx} className="pc-adv-detail__note">
+                      {n}
+                    </p>
+                  ))}
+                </div>
+              )}
+              <div className="pc-adv-detail__note-form">
+                <textarea
+                  value={steerNote}
+                  onChange={(e) => setSteerNote(e.target.value)}
+                  placeholder="Add a steer note for the worker…"
+                  rows={2}
+                  aria-label="Add a steer note"
+                />
+                <button type="button" disabled={working !== null || !steerNote.trim()} onClick={() => void addSteerNote()}>
+                  Add steer note
+                </button>
               </div>
-            )}
-          </div>
-        )}
+            </>
+          )}
+        </div>
 
         <div className="pc-adv-detail__section">
           <h3>Actions</h3>
@@ -428,6 +472,7 @@ function FeatureDetail({
           </div>
         </div>
       </section>
+      {confirmEl}
       <DetailStyles />
     </div>
   );
@@ -438,16 +483,17 @@ function IssueDetail({
   issue,
   onSelect,
   onBack,
+  patchIssue,
 }: {
   slug: string;
   issue: Issue;
   onSelect: (id: string) => void;
   onBack?: () => void;
+  patchIssue: (id: string, partial: Partial<Issue>) => void;
 }) {
   const [working, setWorking] = useState<string | null>(null);
   const [note, setNote] = useState('');
   const [extraNotes, setExtraNotes] = useState<IssueNote[]>([]);
-  const sevTone = SEVERITY_TONE[issue.severity] ?? SEVERITY_TONE.minor;
 
   // Reset optimistic notes when the selected issue changes.
   useEffect(() => {
@@ -457,29 +503,22 @@ function IssueDetail({
   const allNotes = useMemo(() => [...(issue.notes ?? []), ...extraNotes], [issue.notes, extraNotes]);
 
   const runAction = useCallback(
-    async (action: 'promote' | 'acknowledge' | 'close' | 'wontfix') => {
+    async (action: IssueActionKind) => {
+      const target = issueActionStatus(action); // null for promote (server-computed)
+      const prev = issue.status;
+      if (target) patchIssue(issue.id, { status: target }); // optimistic
       setWorking(action);
       try {
-        const body = action === 'promote' ? {} : { status: action === 'acknowledge' ? 'acknowledged' : action };
-        const res = await fetch(
-          `/api/harness/${encodeURIComponent(slug)}/issues/${encodeURIComponent(issue.id)}/${
-            action === 'promote' ? 'promote' : 'update'
-          }`,
-          {
-            method: 'POST',
-            headers: { 'content-type': 'application/json' },
-            body: JSON.stringify(body),
-          },
-        );
-        if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`);
+        await issueAction(slug, issue.id, action);
         toast.success(`${issue.id} → ${action}`);
       } catch (e) {
+        if (target) patchIssue(issue.id, { status: prev }); // rollback
         toast.error(`${action} failed`, { description: String(e) });
       } finally {
         setWorking(null);
       }
     },
-    [slug, issue.id],
+    [slug, issue.id, issue.status, patchIssue],
   );
 
   const addNote = useCallback(async () => {
@@ -511,19 +550,18 @@ function IssueDetail({
         <div className="pc-adv-detail__id">{issue.id}</div>
         <div className="pc-adv-detail__title">{issue.title}</div>
         <div className="pc-adv-detail__meta">
-          <span className="pc-adv-detail__pill" style={{ background: sevTone.bg, color: sevTone.fg }}>
-            {issue.severity}
-          </span>
-          <span className="pc-adv-detail__status">{issue.status}</span>
+          <SeverityPill severity={issue.severity} />
+          <IssueStatusPill status={issue.status} />
           {issue.linkedFeatureId && (
-            <button
-              type="button"
-              className="pc-adv-detail__link pc-adv-detail__link-btn"
-              title={`Go to linked feature ${issue.linkedFeatureId}`}
-              onClick={() => onSelect(issue.linkedFeatureId!)}
-            >
-              ↗ {issue.linkedFeatureId}
-            </button>
+            <Tooltip label={`Go to linked feature ${issue.linkedFeatureId}`}>
+              <button
+                type="button"
+                className="pc-adv-detail__link pc-adv-detail__link-btn"
+                onClick={() => onSelect(issue.linkedFeatureId!)}
+              >
+                <ArrowUpRight size={11} aria-hidden /> {issue.linkedFeatureId}
+              </button>
+            </Tooltip>
           )}
         </div>
       </header>
@@ -620,7 +658,7 @@ function Empty({ children, tone }: { children: React.ReactNode; tone?: 'error' }
         display: 'grid',
         placeItems: 'center',
         padding: 24,
-        color: tone === 'error' ? '#fca5a5' : 'rgba(220, 214, 248, 0.6)',
+        color: tone === 'error' ? 'var(--bad, #fb7185)' : 'var(--fg-mute, #7f9bb4)',
         fontSize: 13,
         textAlign: 'center',
       }}
@@ -638,42 +676,43 @@ function DetailStyles() {
         flex-direction: column;
         height: 100%;
         min-height: 0;
-        background: rgba(8, 10, 22, 0.6);
-        color: rgba(220, 214, 248, 0.92);
+        background: var(--bg-1, #0b1220);
+        color: var(--fg-dim, #b9d4e8);
       }
       .pc-adv-detail__header {
         flex-shrink: 0;
         padding: 14px 18px 12px;
-        border-bottom: 1px solid rgba(167, 139, 250, 0.14);
+        border-bottom: 1px solid var(--border, rgba(125, 211, 252, 0.15));
       }
       .pc-adv-detail__back {
-        display: inline-block;
+        display: inline-flex;
+        align-items: center;
         margin-bottom: 8px;
         padding: 2px 8px;
         font-size: 11px;
         font-weight: 600;
-        color: rgba(199, 188, 252, 0.85);
-        background: rgba(20, 18, 38, 0.7);
-        border: 1px solid rgba(167, 139, 250, 0.24);
+        color: var(--accent-strong, #7dd3fc);
+        background: var(--bg-2, rgba(255, 255, 255, 0.045));
+        border: 1px solid var(--border-strong, rgba(125, 211, 252, 0.32));
         border-radius: 999px;
         cursor: pointer;
       }
       .pc-adv-detail__back:hover {
-        background: rgba(31, 23, 56, 0.96);
-        border-color: rgba(167, 139, 250, 0.5);
+        background: var(--bg-3, rgba(255, 255, 255, 0.075));
+        border-color: var(--accent, #38bdf8);
       }
       .pc-adv-detail__id {
         font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
         font-size: 11px;
         font-weight: 700;
-        color: rgba(199, 188, 252, 0.78);
+        color: var(--fg-mute, #7f9bb4);
         letter-spacing: 0.04em;
       }
       .pc-adv-detail__title {
         font-size: 16px;
         font-weight: 700;
         line-height: 1.3;
-        color: #f7f5ff;
+        color: var(--fg, #e7f7ff);
         margin-top: 4px;
       }
       .pc-adv-detail__meta {
@@ -683,28 +722,20 @@ function DetailStyles() {
         margin-top: 10px;
         flex-wrap: wrap;
       }
-      .pc-adv-detail__pill {
-        display: inline-block;
-        padding: 2px 9px;
-        font-size: 10px;
-        font-weight: 700;
-        text-transform: uppercase;
-        letter-spacing: 0.06em;
-        border-radius: 999px;
+      .pc-adv-detail__attempts {
+        font-size: 11px;
+        color: var(--fg-mute, #7f9bb4);
       }
-      .pc-adv-detail__attempts,
       .pc-adv-detail__plan,
-      .pc-adv-detail__status,
       .pc-adv-detail__link {
         font-size: 11px;
-        color: rgba(220, 214, 248, 0.66);
-      }
-      .pc-adv-detail__plan,
-      .pc-adv-detail__link {
-        color: rgba(199, 188, 252, 0.78);
+        color: var(--accent-strong, #7dd3fc);
         font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
       }
       .pc-adv-detail__link-btn {
+        display: inline-flex;
+        align-items: center;
+        gap: 3px;
         background: none;
         border: none;
         padding: 0;
@@ -713,7 +744,7 @@ function DetailStyles() {
         text-underline-offset: 2px;
       }
       .pc-adv-detail__link-btn:hover {
-        color: #ddd6fe;
+        color: var(--fg, #e7f7ff);
       }
       .pc-adv-detail__body {
         flex: 1;
@@ -729,7 +760,7 @@ function DetailStyles() {
         font-weight: 700;
         text-transform: uppercase;
         letter-spacing: 0.11em;
-        color: rgba(199, 188, 252, 0.72);
+        color: var(--fg-mute, #7f9bb4);
       }
       .pc-adv-detail__collapse {
         background: none;
@@ -738,7 +769,7 @@ function DetailStyles() {
         font: inherit;
         text-transform: uppercase;
         letter-spacing: 0.11em;
-        color: rgba(199, 188, 252, 0.72);
+        color: var(--fg-mute, #7f9bb4);
         cursor: pointer;
       }
       .pc-adv-detail__prose {
@@ -746,13 +777,13 @@ function DetailStyles() {
         font-size: 13px;
         line-height: 1.55;
         white-space: pre-wrap;
-        color: #f7f5ff;
+        color: var(--fg, #e7f7ff);
       }
       .pc-adv-detail__muted {
         margin: 0;
         font-size: 12px;
         font-style: italic;
-        color: rgba(220, 214, 248, 0.5);
+        color: var(--fg-mute, #7f9bb4);
       }
       .pc-adv-detail__related {
         display: flex;
@@ -767,20 +798,20 @@ function DetailStyles() {
         padding: 5px 8px;
         font-size: 12px;
         text-align: left;
-        color: rgba(220, 214, 248, 0.86);
-        background: rgba(20, 18, 38, 0.6);
-        border: 1px solid rgba(167, 139, 250, 0.14);
+        color: var(--fg-dim, #b9d4e8);
+        background: var(--bg-2, rgba(255, 255, 255, 0.045));
+        border: 1px solid var(--border, rgba(125, 211, 252, 0.15));
         border-radius: 6px;
         cursor: pointer;
       }
       .pc-adv-detail__related-row:hover {
-        background: rgba(31, 23, 56, 0.9);
-        border-color: rgba(167, 139, 250, 0.4);
+        background: var(--bg-3, rgba(255, 255, 255, 0.075));
+        border-color: var(--border-strong, rgba(125, 211, 252, 0.32));
       }
       .pc-adv-detail__related-id {
         font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
         font-size: 11px;
-        color: rgba(199, 188, 252, 0.78);
+        color: var(--fg-mute, #7f9bb4);
       }
       .pc-adv-detail__related-dot {
         width: 7px;
@@ -791,7 +822,7 @@ function DetailStyles() {
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
-        color: #f7f5ff;
+        color: var(--fg, #e7f7ff);
       }
       .pc-adv-detail__runs {
         display: flex;
@@ -806,15 +837,15 @@ function DetailStyles() {
       }
       .pc-adv-detail__run-role {
         font-weight: 600;
-        color: #c4b5fd;
+        color: var(--accent-strong, #7dd3fc);
         min-width: 80px;
       }
       .pc-adv-detail__run-time {
-        color: rgba(220, 214, 248, 0.55);
+        color: var(--fg-mute, #7f9bb4);
       }
       .pc-adv-detail__run-cost {
         margin-left: auto;
-        color: rgba(220, 214, 248, 0.5);
+        color: var(--fg-mute, #7f9bb4);
         font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
       }
       .pc-adv-detail__notes {
@@ -823,12 +854,12 @@ function DetailStyles() {
         gap: 8px;
       }
       .pc-adv-detail__note-row {
-        border-left: 2px solid rgba(167, 139, 250, 0.3);
+        border-left: 2px solid var(--border-strong, rgba(125, 211, 252, 0.32));
         padding-left: 10px;
       }
       .pc-adv-detail__note-meta {
         font-size: 10px;
-        color: rgba(220, 214, 248, 0.5);
+        color: var(--fg-mute, #7f9bb4);
         margin-bottom: 2px;
       }
       .pc-adv-detail__note {
@@ -836,7 +867,7 @@ function DetailStyles() {
         font-size: 12px;
         line-height: 1.5;
         white-space: pre-wrap;
-        color: #f7f5ff;
+        color: var(--fg, #e7f7ff);
       }
       .pc-adv-detail__note-form {
         display: flex;
@@ -850,21 +881,29 @@ function DetailStyles() {
         padding: 6px 8px;
         font: inherit;
         font-size: 12px;
-        background: rgba(20, 18, 38, 0.96);
-        color: #f7f5ff;
-        border: 1px solid rgba(167, 139, 250, 0.24);
+        background: var(--bg-2, rgba(255, 255, 255, 0.045));
+        color: var(--fg, #e7f7ff);
+        border: 1px solid var(--border-strong, rgba(125, 211, 252, 0.32));
         border-radius: 6px;
+      }
+      .pc-adv-detail__note-form textarea:focus {
+        outline: none;
+        border-color: var(--accent, #38bdf8);
+        box-shadow: 0 0 0 2px color-mix(in oklab, var(--accent, #38bdf8), transparent 78%);
       }
       .pc-adv-detail__note-form button {
         align-self: flex-start;
         padding: 5px 12px;
         font-size: 12px;
         font-weight: 600;
-        background: rgba(20, 18, 38, 0.7);
-        color: #f7f5ff;
-        border: 1px solid rgba(167, 139, 250, 0.3);
+        background: var(--bg-2, rgba(255, 255, 255, 0.045));
+        color: var(--fg, #e7f7ff);
+        border: 1px solid var(--border-strong, rgba(125, 211, 252, 0.32));
         border-radius: 6px;
         cursor: pointer;
+      }
+      .pc-adv-detail__note-form button:hover:not(:disabled) {
+        border-color: var(--accent, #38bdf8);
       }
       .pc-adv-detail__note-form button:disabled {
         opacity: 0.45;
@@ -875,10 +914,10 @@ function DetailStyles() {
         padding: 10px;
         font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
         font-size: 11px;
-        background: rgba(20, 18, 38, 0.85);
-        border: 1px solid rgba(167, 139, 250, 0.18);
+        background: var(--bg-2, rgba(255, 255, 255, 0.045));
+        border: 1px solid var(--border, rgba(125, 211, 252, 0.15));
         border-radius: 6px;
-        color: #f7f5ff;
+        color: var(--fg, #e7f7ff);
         white-space: pre-wrap;
         word-break: break-word;
         max-height: 240px;
@@ -888,18 +927,24 @@ function DetailStyles() {
         font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
         font-size: 11px;
         padding: 3px 8px;
-        background: rgba(20, 18, 38, 0.85);
+        background: var(--bg-2, rgba(255, 255, 255, 0.045));
         border-radius: 4px;
-        color: #f7f5ff;
+        color: var(--fg, #e7f7ff);
       }
-      .pc-adv-detail__status-row select {
-        padding: 6px 10px;
-        font-size: 12px;
-        background: rgba(20, 18, 38, 0.96);
-        color: #f7f5ff;
-        border: 1px solid rgba(167, 139, 250, 0.3);
-        border-radius: 6px;
+      .pc-adv-detail__select {
+        display: inline-flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
         min-width: 160px;
+        min-height: 32px;
+        padding: 0 10px;
+        font-size: 12px;
+        background: var(--bg-2, rgba(255, 255, 255, 0.045));
+        color: var(--fg, #e7f7ff);
+        border: 1px solid var(--border-strong, rgba(125, 211, 252, 0.32));
+        border-radius: 6px;
+        cursor: pointer;
       }
       .pc-adv-detail__actions {
         display: flex;
@@ -910,15 +955,15 @@ function DetailStyles() {
         padding: 6px 12px;
         font-size: 12px;
         font-weight: 600;
-        background: rgba(20, 18, 38, 0.7);
-        color: #f7f5ff;
-        border: 1px solid rgba(167, 139, 250, 0.3);
+        background: var(--bg-2, rgba(255, 255, 255, 0.045));
+        color: var(--fg, #e7f7ff);
+        border: 1px solid var(--border-strong, rgba(125, 211, 252, 0.32));
         border-radius: 6px;
         cursor: pointer;
       }
       .pc-adv-detail__actions button:hover:not(:disabled) {
-        background: rgba(31, 23, 56, 0.96);
-        border-color: rgba(167, 139, 250, 0.5);
+        background: var(--bg-3, rgba(255, 255, 255, 0.075));
+        border-color: var(--accent, #38bdf8);
       }
       .pc-adv-detail__actions button:disabled {
         opacity: 0.45;

@@ -1,9 +1,9 @@
 ---
 title: Silence-nudge reliability + EL idle teardown — 2026-05-14 (v3)
 slug: silence-nudge-reliability-2026-05-14
-status: active
+status: shipped
 created: 2026-05-14
-updated: 2026-05-20
+updated: 2026-05-30
 owner: pandawamble@gmail.com
 ---
 

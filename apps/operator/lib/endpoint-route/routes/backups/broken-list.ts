@@ -4,9 +4,8 @@
  * Ported from app/api/backups/broken-list/route.ts. `auth: 'public'`.
  */
 import { readdir, stat } from 'node:fs/promises';
-import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { activeWorkspaceId } from '@/lib/workspace-registry';
+import { activeWorkspaceId, workspacesRoot } from '@/lib/workspace-registry';
 import { defineTool } from '@papercusp/agent-mcp';
 
 export default defineTool({
@@ -15,7 +14,7 @@ export default defineTool({
   auth: 'public',
   async handler() {
     try {
-      const root = join(homedir(), '.papercusp-workspaces', activeWorkspaceId());
+      const root = join(workspacesRoot(), activeWorkspaceId());
       const entries = await readdir(root, { withFileTypes: true }).catch(() => []);
       const broken: { path: string; createdAt: string; sizeMb: number | null }[] = [];
       for (const e of entries) {

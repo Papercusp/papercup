@@ -6,10 +6,9 @@
 import { statfs } from 'node:fs';
 import { promisify } from 'node:util';
 import { join } from 'node:path';
-import { homedir } from 'node:os';
 import { workspaceBackupFor } from '@/lib/backup';
 import { getKopiaDetection } from '@/lib/backup/scheduler';
-import { activeWorkspaceId } from '@/lib/workspace-registry';
+import { activeWorkspaceId, workspacesRoot } from '@/lib/workspace-registry';
 import { defineTool } from '@papercusp/agent-mcp';
 
 const statfsP = promisify(statfs);
@@ -39,7 +38,7 @@ export default defineTool({
 
       let freeDiskBytes: number | null = null;
       try {
-        const fs = await statfsP(join(homedir(), '.papercusp-workspaces'));
+        const fs = await statfsP(workspacesRoot());
         freeDiskBytes = Number(fs.bavail) * fs.bsize;
       } catch { /* optional */ }
 

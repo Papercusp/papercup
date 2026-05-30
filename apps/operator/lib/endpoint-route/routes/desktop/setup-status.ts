@@ -154,8 +154,11 @@ export default defineTool({
     // workspace: registry has at least one entry.
     const workspaceOk = readRegistry().workspaces.length > 0;
 
-    // agents: need claude + omp + meridian all installed.
-    const agentsOk = claudeOk && ompOk && meridianOk;
+    // agents: a complete backend is EITHER Claude Code alone (claude-code:
+    // the orchestrator runs `claude` and stateless calls go direct to
+    // Anthropic — no omp/Meridian needed) OR oh-my-pi + Meridian (the
+    // multi-provider path). Either one satisfies the step.
+    const agentsOk = claudeOk || (ompOk && meridianOk);
 
     // keys: any of openai/anthropic/github saved.
     const keysOk = Boolean(

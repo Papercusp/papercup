@@ -2,8 +2,8 @@
 title: Papercusp dogfood — Phase 5b (Hyperbee UI integration + clobber-toast)
 slug: papercusp-dogfood-phase5b-hyperbee-ui-integration-2026-05-24
 created: 2026-05-24
-updated: 2026-05-25
-status: draft
+updated: 2026-05-30
+status: shipped
 ---
 
 # Papercusp dogfood — Phase 5b (Hyperbee UI integration + clobber-toast)

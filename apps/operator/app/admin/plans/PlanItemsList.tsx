@@ -1,44 +1,96 @@
 'use client';
 
 /**
- * PlanItemsList — flat, cross-plan items aggregation.
+ * PlanItemsList — flat, cross-plan items aggregation (presentational).
  *
- * P-108 deliverable. Backs both view=inbox (needs-human) and
- * view=actionable (effective-todo with all blockers cleared). Items
- * grouped under their parent plan; clicking a row (or the plan head)
- * navigates to the plan in detail view.
+ * Renders the items it's handed, already filtered by PlansClient via the
+ * additive filter model: item-status (Needs Human / Needs Decision /
+ * Blocked, OR within) AND plan-status buckets (OR within). The list is
+ * therefore mixed-status, so per-item affordances key off each item's own
+ * status (needs-human items get the Answer/Resolve/Drop toolkit).
  *
- * P-013: inbox mode adds a one-click "Mark resolved" button per row
- * that flips the item to done and optionally relaunches the harness loop.
+ * `planFilter` narrows the displayed groups to one plan (the left rail
+ * sets it). Plans are collapsible groups; a row selects the item into the
+ * right-hand PlanItemPreview rather than navigating away.
  */
 
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import { parseAsArrayOf, parseAsString, useQueryState } from 'nuqs';
+import * as Collapsible from '@radix-ui/react-collapsible';
+import { ChevronRight } from 'lucide-react';
 import { toast } from 'sonner';
-import { usePlanItems, setItemStatus, type PlanItemRow } from './plans-api';
+import { setItemStatus, addPlanDecision, type PlanItemRow } from './plans-api';
+import PlanItemPreview from './PlanItemPreview';
 
 interface Props {
-  mode: 'inbox' | 'actionable';
+  items: PlanItemRow[];
+  loading: boolean;
+  error: string | null;
+  refresh: () => void;
   onPick: (slug: string, targetId?: string) => void;
-  /** plan-slug → harness-slug map; required for inbox mode to relaunch the loop. */
+  /** plan-slug → harness-slug map; lets needs-human rows relaunch the loop. */
   harnessByPlan?: Map<string, string>;
+  /** When set, show only this plan's items (the rail acts as a filter). */
+  planFilter?: string | null;
+  /** Heading title + one-line summary of the active filter (from PlansClient). */
+  title: string;
+  subtitle: string;
 }
 
-export default function PlanItemsList({ mode, onPick, harnessByPlan }: Props) {
-  const args = mode === 'inbox' ? { needsHuman: true } : { actionable: true };
-  const { data, loading, error, refresh } = usePlanItems(args);
+export default function PlanItemsList({
+  items,
+  loading,
+  error,
+  refresh,
+  onPick,
+  harnessByPlan,
+  planFilter,
+  title,
+  subtitle,
+}: Props) {
+  // Selected item for the read-only detail pane, encoded
+  // "<planSlug>::<itemId>". Distinct from PlansClient's `?plan=` (which
+  // opens the FULL PlanDetail) — this only drives the right-hand preview.
+  const [selectedItem, setSelectedItem] = useQueryState('item', parseAsString);
+  // Expanded plan groups (Radix Collapsible), URL-pinned like Sessions.
+  const [expandedGroups, setExpandedGroups] = useQueryState(
+    'expand',
+    parseAsArrayOf(parseAsString).withDefault([]),
+  );
+
+  const [selectedPlan, selectedItemId] = splitItemKey(selectedItem);
+
+  // Auto-expand the selected item's group (mirrors the Sessions tab). The
+  // ref token stops us reopening a group the user just collapsed while the
+  // selection stays put.
+  const autoExpandRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!selectedPlan || !selectedItemId || planFilter) {
+      autoExpandRef.current = null;
+      return;
+    }
+    const token = `${selectedItemId}:${selectedPlan}`;
+    if (expandedGroups.includes(selectedPlan)) {
+      autoExpandRef.current = token;
+      return;
+    }
+    if (autoExpandRef.current === token) return;
+    autoExpandRef.current = token;
+    void setExpandedGroups([...expandedGroups, selectedPlan]);
+  }, [selectedPlan, selectedItemId, planFilter, expandedGroups, setExpandedGroups]);
 
   if (loading) {
     return (
-      <div className="pc-items">
-        <Heading mode={mode} count={null} />
+      <div className="pc-items pc-items--mixed">
+        <Heading title={title} subtitle={subtitle} count={null} groupCount={null} />
         <p className="pc-plans__placeholder">Loading…</p>
       </div>
     );
   }
   if (error) {
     return (
-      <div className="pc-items">
-        <Heading mode={mode} count={null} />
+      <div className="pc-items pc-items--mixed">
+        <Heading title={title} subtitle={subtitle} count={null} groupCount={null} />
         <div className="pc-plans__placeholder pc-plans__placeholder--error">
           <p>Failed to load items:</p>
           <code>{error}</code>
@@ -50,15 +102,12 @@ export default function PlanItemsList({ mode, onPick, harnessByPlan }: Props) {
     );
   }
 
-  const rows = data?.items ?? [];
+  const rows = planFilter ? items.filter((r) => r.plan === planFilter) : items;
   if (!rows.length) {
-    const empty =
-      mode === 'inbox'
-        ? 'No items waiting on human input.'
-        : 'No actionable items right now.';
+    const empty = planFilter ? `No items in ${planFilter}.` : 'No items match the current filters.';
     return (
-      <div className="pc-items">
-        <Heading mode={mode} count={0} />
+      <div className="pc-items pc-items--mixed">
+        <Heading title={title} subtitle={subtitle} count={0} groupCount={0} />
         <div className="pc-items__empty">{empty}</div>
       </div>
     );
@@ -72,54 +121,131 @@ export default function PlanItemsList({ mode, onPick, harnessByPlan }: Props) {
     groups.get(r.plan)!.push(r);
   }
 
-  return (
-    <div className="pc-items">
-      <Heading mode={mode} count={rows.length} />
-      <ul className="pc-items__groups" role="list">
-        {[...groups.entries()].map(([planSlug, planRows]) => (
-          <li key={planSlug} className="pc-items__group">
+  const groupCount = groups.size;
+
+  // The rows for one plan — shared by the bare (rail-filtered) and the
+  // collapsible group renders. Clicking a row selects it into the detail
+  // pane; it no longer redirects to the full plan tab. Per-item actions
+  // key off the item's own status, since the list is mixed-status.
+  const renderRows = (planSlug: string, planRows: PlanItemRow[], harnessSlug: string | undefined) => (
+    <ul className="pc-items__rows" role="list">
+      {planRows.map((r) => {
+        const isSel = selectedItem === itemKey(planSlug, r.item.id);
+        return (
+          <li key={r.item.id} className={`pc-items__row-wrap${isSel ? ' is-selected' : ''}`}>
             <button
               type="button"
-              className="pc-items__plan-head"
-              onClick={() => onPick(planSlug)}
-              aria-label={`Open plan ${planSlug}`}
+              className="pc-items__row"
+              aria-current={isSel ? 'true' : undefined}
+              onClick={() => void setSelectedItem(itemKey(planSlug, r.item.id))}
             >
-              <span className="pc-items__plan-name">{planSlug}</span>
-              <span className="pc-items__plan-count">{planRows.length}</span>
+              <span className="pc-items__id">{r.item.id}</span>
+              <span className={`pc-count pc-count--${r.item.storedStatus}`}>
+                {r.item.storedStatus}
+              </span>
+              <span className="pc-items__text">{r.item.text}</span>
             </button>
-            <ul className="pc-items__rows" role="list">
-              {planRows.map((r) => (
-                <li key={r.item.id} className="pc-items__row-wrap">
-                  <button
-                    type="button"
-                    className="pc-items__row"
-                    onClick={() => onPick(planSlug, r.item.id)}
-                  >
-                    <span className="pc-items__id">{r.item.id}</span>
-                    <span className={`pc-count pc-count--${r.item.storedStatus}`}>
-                      {r.item.storedStatus}
-                    </span>
-                    <span className="pc-items__text">{r.item.text}</span>
-                  </button>
-                  {mode === 'inbox' && (
-                    <ResolveButton
-                      planSlug={planSlug}
-                      itemId={r.item.id}
-                      harnessSlug={harnessByPlan?.get(planSlug)}
-                      onResolved={refresh}
-                    />
-                  )}
-                </li>
-              ))}
-            </ul>
+            {r.item.storedStatus === 'needs-human' && (
+              <InboxItemActions
+                planSlug={planSlug}
+                itemId={r.item.id}
+                harnessSlug={harnessSlug}
+                onResolved={refresh}
+              />
+            )}
           </li>
-        ))}
-      </ul>
+        );
+      })}
+    </ul>
+  );
+
+  return (
+    <div className="pc-items pc-items--mixed">
+      <Heading title={title} subtitle={subtitle} count={rows.length} groupCount={groupCount} />
+      <div className="pc-items__layout">
+        <div className="pc-items__listpane">
+          <ul className="pc-items__groups" role="list">
+            {[...groups.entries()].map(([planSlug, planRows]) => {
+              const harnessSlug = harnessByPlan?.get(planSlug);
+              // When the left rail has filtered to one plan, don't repeat
+              // its title here — render the items bare (the plan name is
+              // already shown, selected, in the rail).
+              if (planFilter) {
+                return (
+                  <li key={planSlug} className="pc-items__group pc-items__group--bare">
+                    {renderRows(planSlug, planRows, harnessSlug)}
+                  </li>
+                );
+              }
+              const isExpanded = expandedGroups.includes(planSlug);
+              return (
+                <li key={planSlug} className="pc-items__group">
+                  <Collapsible.Root
+                    open={isExpanded}
+                    onOpenChange={(open) =>
+                      void setExpandedGroups(
+                        open
+                          ? Array.from(new Set([...expandedGroups, planSlug]))
+                          : expandedGroups.filter((k) => k !== planSlug),
+                      )
+                    }
+                  >
+                    <Collapsible.Trigger asChild>
+                      <button type="button" className="pc-items__plan-head">
+                        <ChevronRight className="pc-items__group-chevron" size={13} aria-hidden />
+                        <span className="pc-items__plan-copy">
+                          <span className="pc-items__plan-name">{planSlug}</span>
+                          {harnessSlug ? (
+                            <span className="pc-items__plan-meta">
+                              <span className="pc-pill pc-pill--harness">{harnessSlug}</span>
+                            </span>
+                          ) : null}
+                        </span>
+                        <span className="pc-items__plan-count">{itemCountLabel(planRows.length)}</span>
+                      </button>
+                    </Collapsible.Trigger>
+                    <Collapsible.Content className="pc-items__group-content">
+                      {renderRows(planSlug, planRows, harnessSlug)}
+                    </Collapsible.Content>
+                  </Collapsible.Root>
+                </li>
+              );
+            })}
+          </ul>
+        </div>
+
+        <PlanItemPreview
+          planSlug={selectedPlan}
+          itemId={selectedItemId}
+          onViewFullPlan={onPick}
+        />
+      </div>
     </div>
   );
 }
 
-function ResolveButton({
+/** Encode / decode the `?item=` selection key ("<planSlug>::<itemId>"). */
+function itemKey(planSlug: string, itemId: string): string {
+  return `${planSlug}::${itemId}`;
+}
+function splitItemKey(key: string | null): readonly [string | null, string | null] {
+  if (!key) return [null, null];
+  const idx = key.indexOf('::');
+  if (idx === -1) return [null, null];
+  return [key.slice(0, idx), key.slice(idx + 2)];
+}
+
+/**
+ * InboxItemActions — the human's response toolkit for a needs-human item.
+ * A needs-human item is the agent blocked on a decision, so a lone
+ * "Resolve" was too thin. Three moves:
+ *   - Answer  → record the decision (plans:add-decision, D-NNN, refs the
+ *               item) so the agent reads it next, mark the item done, and
+ *               resume the loop. This is the real "I answered you".
+ *   - Resolve → quick "done, proceed" with no recorded answer + resume.
+ *   - Drop    → decline: item → dropped, loop NOT resumed.
+ */
+function InboxItemActions({
   planSlug,
   itemId,
   harnessSlug,
@@ -131,21 +257,24 @@ function ResolveButton({
   onResolved: () => void;
 }) {
   const [busy, setBusy] = useState(false);
+  const [answering, setAnswering] = useState(false);
+  const [answer, setAnswer] = useState('');
+
+  const resumeLoop = () => {
+    if (!harnessSlug) return;
+    fetch(`/api/harness/${encodeURIComponent(harnessSlug)}/launch?phase=staging`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({}),
+    }).catch(() => {});
+  };
 
   const handleResolve = async () => {
     setBusy(true);
     try {
       const result = await setItemStatus({ slug: planSlug, itemId, status: 'done' });
-      if (!result.ok) throw new Error(result.detail ?? 'unknown error');
-
-      if (harnessSlug) {
-        fetch(`/api/harness/${encodeURIComponent(harnessSlug)}/launch?phase=staging`, {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({}),
-        }).catch(() => {});
-      }
-
+      if ('error' in result) throw new Error(result.error ?? 'unknown error');
+      resumeLoop();
       toast.success(`${itemId} resolved`, {
         description: harnessSlug ? `Harness loop resumed for ${harnessSlug}.` : undefined,
       });
@@ -157,38 +286,148 @@ function ResolveButton({
     }
   };
 
+  const handleDrop = async () => {
+    setBusy(true);
+    try {
+      const result = await setItemStatus({ slug: planSlug, itemId, status: 'dropped' });
+      if ('error' in result) throw new Error(result.error ?? 'unknown error');
+      toast.success(`${itemId} dropped`, { description: "Marked won't-do; loop not resumed." });
+      onResolved();
+    } catch (e) {
+      toast.error('Drop failed', { description: String(e) });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleAnswer = async () => {
+    const body = answer.trim();
+    if (!body) return;
+    setBusy(true);
+    try {
+      const dec = await addPlanDecision({
+        slug: planSlug,
+        title: `Answer to ${itemId}`,
+        body,
+        refs: [itemId],
+      });
+      if ('error' in dec) throw new Error(dec.error ?? 'unknown error');
+      const result = await setItemStatus({ slug: planSlug, itemId, status: 'done' });
+      if ('error' in result) throw new Error(result.error ?? 'unknown error');
+      resumeLoop();
+      toast.success(`Answered ${itemId}`, {
+        description: 'Recorded as a plan decision; harness loop resumed.',
+      });
+      setAnswering(false);
+      setAnswer('');
+      onResolved();
+    } catch (e) {
+      toast.error('Answer failed', { description: String(e) });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (answering) {
+    return (
+      <div className="pc-items__answer">
+        <textarea
+          className="pc-items__answer-input"
+          value={answer}
+          onChange={(e) => setAnswer(e.target.value)}
+          placeholder="Your decision / answer — recorded as a plan decision (D-NNN) the agent reads next."
+          rows={3}
+          autoFocus
+          disabled={busy}
+        />
+        <div className="pc-items__answer-actions">
+          <button
+            type="button"
+            className="pc-items__resolve"
+            onClick={handleAnswer}
+            disabled={busy || !answer.trim()}
+          >
+            {busy ? '…' : 'Send answer'}
+          </button>
+          <button
+            type="button"
+            className="pc-items__action-btn"
+            onClick={() => {
+              setAnswering(false);
+              setAnswer('');
+            }}
+            disabled={busy}
+          >
+            Cancel
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   return (
-    <button
-      type="button"
-      className="pc-items__resolve"
-      onClick={handleResolve}
-      disabled={busy}
-      aria-label={`Mark ${itemId} resolved`}
-      title="Mark resolved — flips item to done and resumes the harness loop"
-    >
-      {busy ? '…' : '✓ Resolve'}
-    </button>
+    <div className="pc-items__actions">
+      <button
+        type="button"
+        className="pc-items__action-btn pc-items__action-btn--answer"
+        onClick={() => setAnswering(true)}
+        disabled={busy}
+        title="Answer the question — records a decision the agent reads, marks the item done, and resumes the loop"
+      >
+        ✍ Answer
+      </button>
+      <button
+        type="button"
+        className="pc-items__resolve"
+        onClick={handleResolve}
+        disabled={busy}
+        aria-label={`Mark ${itemId} resolved`}
+        title="Mark done and resume the loop — no recorded answer"
+      >
+        {busy ? '…' : '✓ Resolve'}
+      </button>
+      <button
+        type="button"
+        className="pc-items__action-btn pc-items__action-btn--drop"
+        onClick={handleDrop}
+        disabled={busy}
+        title="Drop — won't do (item → dropped); the loop is not resumed"
+      >
+        ✕ Drop
+      </button>
+    </div>
   );
 }
 
 function Heading({
-  mode,
+  title,
+  subtitle,
   count,
+  groupCount,
 }: {
-  mode: 'inbox' | 'actionable';
+  title: string;
+  subtitle: string;
   count: number | null;
+  groupCount: number | null;
 }) {
   return (
     <header className="pc-items__head">
       <div className="pc-items__head-copy">
-        <h2>{mode === 'inbox' ? 'Needs human' : 'Actionable'}</h2>
-        <p>
-          {mode === 'inbox'
-            ? 'Items across every plan waiting on a human decision.'
-            : 'Items pickable right now — effective todo, all blockers cleared.'}
-        </p>
+        <span className="pc-items__kicker">Filtered items</span>
+        <h2>{title}</h2>
+        <p>{subtitle}</p>
       </div>
-      {count !== null ? <span className="pc-items__count">{count}</span> : null}
+      {count !== null && groupCount !== null ? (
+        <div className="pc-items__summary-card" aria-label="Items summary">
+          <strong>{itemCountLabel(count)}</strong>
+          <span>{groupCount} {groupCount === 1 ? 'plan' : 'plans'}</span>
+          <span className="pc-items__summary-note">Open an item for details; answer needs-human ones inline.</span>
+        </div>
+      ) : null}
     </header>
   );
+}
+
+function itemCountLabel(count: number): string {
+  return `${count} ${count === 1 ? 'item' : 'items'}`;
 }

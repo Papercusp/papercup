@@ -12,6 +12,8 @@
  * pruneEligible() before composing.
  */
 
+import { wsLocalKey } from '@/lib/browser-workspace';
+
 const SESSION_KEY = 'papercusp.backstory.session';
 const RECENT_KEY = 'papercusp.backstory.recent';
 
@@ -33,21 +35,21 @@ function getLocalStorage(): Storage | null {
 function readKey(kind: 'session' | 'recent'): string | null {
   const s = kind === 'session' ? getSessionStorage() : getLocalStorage();
   if (s) {
-    try { return s.getItem(kind === 'session' ? SESSION_KEY : RECENT_KEY); } catch { /* fall through */ }
+    try { return s.getItem(kind === 'session' ? SESSION_KEY : wsLocalKey(RECENT_KEY)); } catch { /* fall through */ }
   }
   return memStore[kind];
 }
 function writeKey(kind: 'session' | 'recent', value: string): void {
   const s = kind === 'session' ? getSessionStorage() : getLocalStorage();
   if (s) {
-    try { s.setItem(kind === 'session' ? SESSION_KEY : RECENT_KEY, value); return; } catch { /* fall through */ }
+    try { s.setItem(kind === 'session' ? SESSION_KEY : wsLocalKey(RECENT_KEY), value); return; } catch { /* fall through */ }
   }
   memStore[kind] = value;
 }
 function removeKey(kind: 'session' | 'recent'): void {
   const s = kind === 'session' ? getSessionStorage() : getLocalStorage();
   if (s) {
-    try { s.removeItem(kind === 'session' ? SESSION_KEY : RECENT_KEY); } catch { /* fall through */ }
+    try { s.removeItem(kind === 'session' ? SESSION_KEY : wsLocalKey(RECENT_KEY)); } catch { /* fall through */ }
   }
   memStore[kind] = null;
 }

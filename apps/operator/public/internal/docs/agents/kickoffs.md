@@ -1,9 +1,9 @@
 # Agent kickoffs
 URL: /internal/docs/agents/kickoffs
 
-How a UI button can launch an OMP session pre-loaded with a task-specific brief.
+How a UI button can launch an agent session pre-loaded with a task-specific brief.
 
-A **kickoff** is a curated, task-specific system-prompt brief layered on top of the engineer-collaborator playbook when the operator UI spawns a power-user OMP session. The button that launches the session names a *kind*; the server writes the matching brief into a temp file and appends `--append-system-prompt=<path>` to the `omp` invocation. The launched session opens already framed for the task.
+A **kickoff** is a curated, task-specific system-prompt brief layered on top of the engineer-collaborator playbook when the operator UI spawns a power-user agent session. The button that launches the session names a *kind*; the server writes the matching brief into a temp file and appends `--append-system-prompt=<path>` to the `omp` invocation. The launched session opens already framed for the task.
 
 Per [`plans-newbutton-and-subharness-scope-2026-05-25`](/internal/docs/plans/plans-newbutton-and-subharness-scope-2026-05-25), kickoffs ride the `--append-system-prompt` channel — they are not first-user messages. This keeps them in scope for the whole conversation and matches the existing engineer-collaborator brief and PTY feature-pi brief.
 

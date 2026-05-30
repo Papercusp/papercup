@@ -1,9 +1,9 @@
 ---
 title: Papercusp-SU memory: replace PLUR with layered mem0 + coord + insights
 slug: papercusp-su-memory-2026-05-25
-status: draft
+status: shipped
 created: 2026-05-25
-updated: 2026-05-25
+updated: 2026-05-30
 owner: avi@storewolf.com
 ---
 

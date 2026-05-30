@@ -1,9 +1,9 @@
 ---
 title: Plans as Central Harness UX
 slug: plans-central-harness-ux-2026-05-26
-status: active
+status: shipped
 created: 2026-05-26
-updated: 2026-05-26
+updated: 2026-05-30
 ---
 
 # Plans as Central Harness UX

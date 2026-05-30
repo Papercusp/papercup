@@ -9,7 +9,7 @@
  *    rail and the tab count-badges share; it must NOT filter by bucket.
  */
 import { describe, expect, it } from 'vitest';
-import { bucketOf, type PlanListRow, type PlanStatus, type PlanStartStatus } from './plans-api';
+import { bucketOf, type PlanListRow, type PlanStartStatus } from './plans-api';
 import { applyPlanFilters, type PlanFilterState } from './plan-filtering';
 
 function row(overrides: Partial<PlanListRow> = {}): PlanListRow {
@@ -52,8 +52,8 @@ describe('bucketOf', () => {
     expect(bucketOf(row({ status: 'active', startStatus: 'started' }))).toBe('running');
   });
 
-  it('legacy / unknown plans fold into draft', () => {
-    expect(bucketOf(row({ status: 'unknown' as PlanStatus }))).toBe('draft');
+  it('blocked / unhandled statuses fold into draft', () => {
+    expect(bucketOf(row({ status: 'blocked' }))).toBe('draft');
   });
 
   it('terminal status wins over the started-state (precedence)', () => {

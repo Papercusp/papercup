@@ -2,8 +2,8 @@
 title: Harness finish-line — last 20 routes, _hono/ delete, no-raw-routes lint
 slug: harness-finish-line-2026-05-21
 created: 2026-05-21
-updated: 2026-05-25
-status: draft
+updated: 2026-05-30
+status: shipped
 ---
 
 ## Now

@@ -1,9 +1,9 @@
 ---
 title: SSE typed-events + endpoint-system + IPC
 slug: sse-typed-events-2026-05-12
-status: active
+status: shipped
 created: 2026-05-12
-updated: 2026-05-20
+updated: 2026-05-30
 owner: pandawamble@gmail.com
 ---
 

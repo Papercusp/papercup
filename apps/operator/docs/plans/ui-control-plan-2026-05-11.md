@@ -1,9 +1,9 @@
 ---
 title: UI control surface for agents
 slug: ui-control-plan-2026-05-11
-status: active
+status: shipped
 created: 2026-05-11
-updated: 2026-05-20
+updated: 2026-05-30
 owner: pandawamble@gmail.com
 ---
 

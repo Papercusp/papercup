@@ -1,9 +1,9 @@
 ---
 title: Route audit — Phase 4 opening deliverable
 slug: route-audit-2026-05-20
-status: active
+status: shipped
 created: 2026-05-20
-updated: 2026-05-20
+updated: 2026-05-30
 owner: pandawamble@gmail.com
 companion-to: [host-architecture-2026-05-20-v2]
 ---

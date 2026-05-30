@@ -8,6 +8,7 @@ import {
   CURRENT_LAYOUT_SCHEMA_VERSION,
   LayoutValidationError,
   OPAQUE_SCHEMA_VERSION,
+  defaultAdvHarnessesLayout,
   defaultDashboardLayout,
   defaultPiTerminalsLayout,
   validateLayoutDoc,
@@ -189,6 +190,49 @@ describe('default seeds', () => {
       }
     }
     walk(seed.root);
+    expect(new Set(ids).size).toBe(ids.length);
+  });
+
+  it('defaultAdvHarnessesLayout is the two-row Features|Issues-over-Detail shape', () => {
+    const seed = defaultAdvHarnessesLayout('papercup');
+    expect(() => validateLayoutDoc(seed)).not.toThrow();
+    expect(seed.schemaVersion).toBe(CURRENT_LAYOUT_SCHEMA_VERSION);
+    // Root is a column: [ top row, detail ].
+    expect(seed.root.kind).toBe('group');
+    if (seed.root.kind !== 'group') throw new Error('root not a group');
+    expect(seed.root.direction).toBe('col');
+    expect(seed.root.children).toHaveLength(2);
+
+    // Top: a row group containing Features (left) + Issues (right).
+    const [topRow, detail] = seed.root.children;
+    expect(topRow.kind).toBe('group');
+    if (topRow.kind !== 'group') throw new Error('top not a group');
+    expect(topRow.direction).toBe('row');
+    const topTypes = topRow.children.map((c) => (c.kind === 'tabs' ? c.panels[0]?.type : null));
+    expect(topTypes).toEqual(['adv:features', 'adv:issues']);
+
+    // Bottom: Detail, full width.
+    expect(detail.kind).toBe('tabs');
+    if (detail.kind !== 'tabs') throw new Error('detail not tabs');
+    expect(detail.panels[0]?.type).toBe('adv:detail');
+  });
+
+  it('defaultAdvHarnessesLayout propagates harnessSlug + has unique ids', () => {
+    const seed = defaultAdvHarnessesLayout('papercup');
+    const slugs: string[] = [];
+    const ids: string[] = [];
+    function walk(n: typeof seed.root): void {
+      if (n.kind === 'tabs') {
+        for (const p of n.panels) {
+          ids.push(p.id);
+          if (p.params && 'harnessSlug' in p.params) slugs.push(p.params.harnessSlug as string);
+        }
+      } else {
+        for (const c of n.children) walk(c);
+      }
+    }
+    walk(seed.root);
+    expect(slugs).toEqual(['papercup', 'papercup', 'papercup']);
     expect(new Set(ids).size).toBe(ids.length);
   });
 });

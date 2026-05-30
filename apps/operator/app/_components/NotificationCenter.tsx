@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { wsLocalKey } from '@/lib/browser-workspace';
 import { useQueryState, parseAsBoolean } from 'nuqs';
 import { Bell, X, Trash2 } from 'lucide-react';
 import { useSyncQuery } from '@restart/sync';
@@ -49,7 +50,7 @@ export function NotificationCenter() {
   // is newer (so the unread count is consistent across devices).
   const [lastSeen, setLastSeen] = useState<number>(() => {
     if (typeof window === 'undefined') return 0;
-    return Number(localStorage.getItem('papercusp.toastLog.lastSeen') ?? '0') || 0;
+    return Number(localStorage.getItem(wsLocalKey('papercusp.toastLog.lastSeen')) ?? '0') || 0;
   });
   useEffect(() => {
     void fetch('/api/profile')
@@ -58,7 +59,7 @@ export function NotificationCenter() {
         const pg = typeof p?.toast_last_seen_ms === 'number' ? p.toast_last_seen_ms : 0;
         if (pg > lastSeen) {
           setLastSeen(pg);
-          try { localStorage.setItem('papercusp.toastLog.lastSeen', String(pg)); } catch { /* ignore */ }
+          try { localStorage.setItem(wsLocalKey('papercusp.toastLog.lastSeen'), String(pg)); } catch { /* ignore */ }
         }
       })
       .catch(() => { /* offline / no session — localStorage already loaded */ });
@@ -100,7 +101,7 @@ export function NotificationCenter() {
     const now = Date.now();
     setLastSeen(now);
     try {
-      localStorage.setItem('papercusp.toastLog.lastSeen', String(now));
+      localStorage.setItem(wsLocalKey('papercusp.toastLog.lastSeen'), String(now));
     } catch { /* ignore */ }
     void fetch('/api/profile', {
       method: 'POST',

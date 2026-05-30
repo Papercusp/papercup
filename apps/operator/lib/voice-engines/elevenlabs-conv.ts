@@ -24,6 +24,7 @@
  */
 
 import { Conversation, type VoiceConversation } from '@elevenlabs/client';
+import { wsLocalKey } from '@/lib/browser-workspace';
 import { runCommand, runQuery, list } from '../commands/registry';
 import type { CommandContext, Definition } from '../commands/types';
 import { OPERATOR_PERSONA_PROMPT } from '../operator-persona';
@@ -141,7 +142,7 @@ export async function startElevenLabsConv(args: StartArgs): Promise<ElevenLabsHa
   // set localStorage.harnessElShellMode = '0'.
   const shellMode =
     typeof window !== 'undefined'
-      ? window.localStorage.getItem('harnessElShellMode') !== '0'
+      ? window.localStorage.getItem(wsLocalKey('harnessElShellMode')) !== '0'
       : true;
   let sessionsContext = '';
   if (!bareMode && !shellMode) {

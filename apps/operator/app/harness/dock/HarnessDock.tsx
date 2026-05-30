@@ -99,6 +99,14 @@ function useComponentsForLayout(layout: LayoutDoc | null): Record<string, PanelC
     void registryTick; // dependency to refresh on registry change
     const types = new Set<string>();
     if (layout) collectTypes(layout, types);
+    // Include every *registered* type, not just the ones in the current
+    // layout. dockview needs a component entry at addPanel() time, and the
+    // "Add panel" catalog opens types that aren't in the seed yet (e.g.
+    // adv:agents/logs/overview, adv:git). Without this, openPanel('<type>')
+    // hits an undefined component and dockview throws "Only React.memo / …
+    // functional components are accepted". The registryTick subscription
+    // above is what keeps this fresh as panels register.
+    for (const t of panelRegistry.list()) types.add(t);
     // Always include the missing-fallback alias so dockview can ask for it.
     types.add('__missing__');
     const map: Record<string, PanelComponent> = {};

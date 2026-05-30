@@ -1,9 +1,9 @@
 ---
 title: Plans new-button + ADV subharness-aware scope
 slug: plans-newbutton-and-subharness-scope-2026-05-25
-status: draft
+status: shipped
 created: 2026-05-25
-updated: 2026-05-26
+updated: 2026-05-30
 owner: avi@storewolf.com
 ---
 

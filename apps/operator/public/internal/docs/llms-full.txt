@@ -1846,6 +1846,36 @@ For modules whose only PG interaction is `SELECT` or `UPDATE` (no DDL), the unit
 * [`idempotent-pg-ensure`](/internal/docs/agent-insights/idempotent-pg-ensure/) — the module-side pattern this sentinel verifies.
 * [`pg-migrations-dollar-quote`](/internal/docs/agent-insights/pg-migrations-dollar-quote/) — the shell-quoting hazard the sentinel also catches as a side effect.
 
+# The MCP tool surface dominates prompt-cache cost via Meridian
+
+> Every Anthropic call through Meridian inlines all connected MCP tool schemas (~62k tokens, mostly papercusp-su). That base is re-created on any cache miss — the dominant token cost. Defer tools and pin the tools/list manifest.
+
+## What
+
+[Section titled “What”](#what)
+
+Agents reach Anthropic as `OMP → Meridian (:3456) → @anthropic-ai/claude-agent-sdk → api.anthropic.com`. Meridian holds the conversation as an SDK session and, **per turn, expands the request \~5×**: the client sends \~17k tokens, but the SDK inlines Claude Code’s \~30k-char system prompt **plus every connected MCP tool schema** — measured at **288 tools ≈ 62k tokens, of which 246 are `papercusp-su`** (its full endpoint catalog, projected via `?superuser=1`). This \~62k base rides on **every** request, even a one-line follow-up.
+
+The captured base (62,272 tok) matches the recurring `cache_read = 62,011` fingerprint in Meridian’s `/telemetry/requests`.
+
+## Why it matters
+
+[Section titled “Why it matters”](#why-it-matters)
+
+Cost is driven by cache **creation** (writes), not request size. In a real 24h sample, **\~5 of 22 turns = \~75% of spend**, each reusing the \~62k base from cache but **re-creating 150–380k tokens** of accumulated history on top. A cache write costs \~12.5× a read, so concentrated busts dwarf everything else.
+
+Busts are **reconnect-driven**: the SDK fetches `tools/list` once per connection, so when the operator hot-reloads while you’re adding tools, the SDK reconnects, re-fetches a now-larger catalog, the inlined catalog bytes shift, and the whole prefix re-creates. (`papercusp-su` correctly does *not* emit `tools/list_changed`, so it’s not notification-driven.)
+
+Ruled out — a red herring: the `x-anthropic-billing-header` `cch=` hash in `system[0]` changes every request, but Anthropic excludes that block from the cache key, so it does **not** bust.
+
+## How to apply
+
+[Section titled “How to apply”](#how-to-apply)
+
+1. **Keep the MCP surface lean and stable.** Each tool schema is a permanent per-request tax; a flapping/reconnecting server re-creates the entire base. Don’t hot-reload the operator during an expensive live session.
+2. **Defer tools.** The Claude Agent SDK supports `ENABLE_TOOL_SEARCH=true` (only names inline, schemas fetched on demand) — measured **67.8k → 24.8k tok/request (−63%)**. Note: Meridian hardcodes this to `"false"` on the non-passthrough path, *suppressing* the SDK’s own deferral.
+3. **Pin the `tools/list` manifest** (commit `955ce391`): `packages/agent-mcp/src/tool-manifest.ts` freezes the exposed surface so a reconnect returns byte-identical bytes — adding tools during dev no longer busts a live session. Regenerate deliberately with `packages/agent-mcp/snapshot-tools.sh`, then restart the operator. Set `$AGENT_MCP_TOOL_MANIFEST` or `~/.papercusp/tool-manifest.json`; absent ⇒ expose all (no-op). Hand-edit the manifest down to curate the surface and shrink the base further.
+
 # Mobile endpoints are a defineRoute flag, not a separate router
 
 > The mobile API moved off the bespoke _hono/mobile.ts router onto defineRoute + a `mobile: true` flag. Device JWTs resolve through requirePrincipal; isRevoked treats unknown devices as revoked, which bites synthetic test JWTs.
@@ -3937,6 +3967,58 @@ When a plan says “emit a row to X table” but X’s schema doesn’t fit, tha
 * `apps/operator/lib/harness/completion-ref-verifier.ts` — P-016’s artifact, the canonical example.
 * `libs/papercusp/libs/db/sql/082-completion-ref-verifier-columns.sql` — the schema additions.
 
+# The workspaces root lives above the HOME-remap boundary
+
+> The packaged desktop spawns the operator sidecar with HOME remapped to the active workspace dir, so any TS code resolving ~/.papercusp-workspaces via homedir() lands in a nested per-workspace registry that disagrees with the Rust shell. Resolve the root from PAPERCUSP_WORKSPACES_ROOT instead.
+
+## The trap
+
+[Section titled “The trap”](#the-trap)
+
+`~/.papercusp-workspaces/` holds the workspace **registry.json** plus every per-workspace directory. It is **bootstrap state that lives above the per-workspace isolation boundary** — there is exactly one of it per install, shared by every workspace.
+
+But the packaged desktop spawns the operator sidecar with `HOME` **remapped to the active workspace dir** (`main.rs`: `.env("HOME", &workspace_home_str)`, where `workspace_home = ~/.papercusp-workspaces/<current>`). So inside the sidecar:
+
+```ts
+import { homedir } from 'node:os';
+join(homedir(), '.papercusp-workspaces', 'registry.json')
+// → ~/.papercusp-workspaces/<current>/.papercusp-workspaces/registry.json
+//   a NESTED registry, one level inside the active workspace
+```
+
+The Rust shell is **never** remapped, so its `switch()` / `ensure_initialized()` read the real top-level `~/.papercusp-workspaces/registry.json`. The two disagree. Symptoms:
+
+* A nested junk registry appears at `~/.papercusp-workspaces/<ws>/.papercusp-workspaces/registry.json` (and nested `backups/`, `db-dumps/`, `clones/` if those resolvers were affected too).
+* Entries the operator-side bootstrap writes (e.g. `ensurePapercuspWorkspace`) never reach the registry the Rust `switch()` consults — surfacing as `switch failed: workspace dir for <id> missing`.
+
+It is **invisible in dev**: `npm run dev` runs the operator with the real `HOME`, so `homedir()` happens to resolve correctly. The bug only bites in the packaged build.
+
+## The rule
+
+[Section titled “The rule”](#the-rule)
+
+Resolve the workspaces root from the explicit env the desktop passes, not from `homedir()`:
+
+lib/workspace-registry.ts
+
+```ts
+export function workspacesRoot(): string {
+  const env = process.env.PAPERCUSP_WORKSPACES_ROOT;
+  if (env && env.trim()) return env;
+  return join(homedir(), '.papercusp-workspaces'); // dev fallback — HOME not remapped
+}
+```
+
+`main.rs` passes `PAPERCUSP_WORKSPACES_ROOT = workspaces::workspaces_root()` (the real root) to the sidecar. The `homedir()` fallback keeps dev behavior identical, so migrating call sites is a no-op in dev and a fix in packaged mode.
+
+**Any path that resolves `~/.papercusp-workspaces` must go through `workspacesRoot()`** — registry, per-workspace dirs, `clones/`, `backups/`, hyperbee stores. A bare `join(homedir(), '.papercusp-workspaces', …)` is the smell.
+
+## Related invariant
+
+[Section titled “Related invariant”](#related-invariant)
+
+A registry entry and its on-disk directory are **two halves of one invariant**: the Rust `switch()` guard refuses to switch to a registered workspace whose dir is missing. Any code that adds a registry entry must also provision the dir (`ensureWorkspaceDir`). See also \[\[forward-defined-registry-entries]].
+
 # Agent policies
 
 > Binding rules for engineer-collaborator agents working on Papercusp. Plan first, verify before claiming done, scope discipline, and when to update docs.
@@ -4185,7 +4267,7 @@ Three layers per project — unit, integration, E2E. Conventions and which runne
 
 * **After editing a role’s `persona.md` / `tools.md` / `defineTool({ guidance })`**, prompt-assembly auto-reloads in dev (`PAPERCUSP_RELOAD_PROMPTS=1` is the dev default). No restart needed.
 
-* **After editing this page or `papercusp-su.tools.md`**, re-run `install-standalone-mcp.sh` to refresh the managed block in each host agent’s context file.
+* **After editing this page, a `papercusp-su-<profile>.tools.md` base playbook, or a `papercusp-su.<client>.md` overlay**, re-run `install-standalone-mcp.sh` to re-render the per-client playbooks and refresh the `omp-su` / `claude-su` / `codex-su` wrappers. (See [Superuser mode → Per-client wrappers](/internal/docs/endpoint-system/superuser-mode#per-client-wrappers-and-playbooks).)
 
 ## 16. Commits, branches, PRs
 
@@ -6783,9 +6865,9 @@ If the docs are wrong or missing, surface the gap via a supervisor note or by li
 
 # Agent kickoffs
 
-> How a UI button can launch an OMP session pre-loaded with a task-specific brief.
+> How a UI button can launch an agent session pre-loaded with a task-specific brief.
 
-A **kickoff** is a curated, task-specific system-prompt brief layered on top of the engineer-collaborator playbook when the operator UI spawns a power-user OMP session. The button that launches the session names a *kind*; the server writes the matching brief into a temp file and appends `--append-system-prompt=<path>` to the `omp` invocation. The launched session opens already framed for the task.
+A **kickoff** is a curated, task-specific system-prompt brief layered on top of the engineer-collaborator playbook when the operator UI spawns a power-user agent session. The button that launches the session names a *kind*; the server writes the matching brief into a temp file and appends `--append-system-prompt=<path>` to the `omp` invocation. The launched session opens already framed for the task.
 
 Per [`plans-newbutton-and-subharness-scope-2026-05-25`](/internal/docs/plans/plans-newbutton-and-subharness-scope-2026-05-25), kickoffs ride the `--append-system-prompt` channel — they are not first-user messages. This keeps them in scope for the whole conversation and matches the existing engineer-collaborator brief and PTY feature-pi brief.
 
@@ -9923,6 +10005,47 @@ The library set documented here was chosen, installed, and applied across the ha
 
 8. **Never hand-roll a `<table>` for tabular data.** Use the appropriate component from `@restart/grid-core` — see the next section for which one. Hand-rolled tables miss out on consistent dark-theme styling, shared sort UX (`applySort`), virtualization (free in `RichGrid` and `DataGridShell`), and the conventions other panels follow (sticky header, alt-row striping, hover state). Exception: Markdown content rendering (`MarkdownPreview`) — those are content-author tables, not UI tables.
 
+9. **Buttons are flat — no 3D.** In-page action buttons and pills are flat: a solid (or `color-mix`-tinted) background, a 1px border, readable text. Do **not** give them an embossed bevel (`box-shadow: inset 0 1px 0 …`), a raised drop-shadow / glow (`box-shadow: 0 8px … rgba(0,0,0,…)`), a hover-lift or press (`transform: translateY(…)`), or a vertical “sheen” gradient fill (`linear-gradient(180deg, rgba(255,255,255,.05), …)`) — those read as 3D and hurt legibility. Hover/active = change the background/border colour, not the elevation. Keyboard focus rings (`:focus-visible`) are the one box-shadow/outline that stays. *Carve-out: the large top-level **page/tab nav** (e.g. the `/adv` tab strip) is a different category — it may keep its accent treatment.* See [buttons](#buttons) below for the flat recipe.
+
+## Buttons
+
+[Section titled “Buttons”](#buttons)
+
+Buttons are **flat**. The look is a solid or `color-mix`-tinted surface, a 1px border, and readable text — no embossing, no elevation, no sheen.
+
+```css
+/* Flat button recipe — neutral in-page action button */
+.my-btn {
+  padding: 6px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-2);
+  color: var(--fg-dim);
+  cursor: pointer;
+  /* No box-shadow. No background gradient. No transform on hover/active. */
+}
+.my-btn:hover { color: var(--fg); border-color: var(--accent); }   /* colour, not lift */
+.my-btn.is-active,                                                 /* selected = tinted fill */
+.my-btn[aria-pressed="true"] {
+  color: var(--fg);
+  background: color-mix(in oklab, var(--accent), transparent 84%);
+  border-color: color-mix(in oklab, var(--accent), transparent 55%);
+}
+.my-btn:focus-visible { outline: 1px solid var(--accent); outline-offset: -1px; } /* the one ring that stays */
+```
+
+**Anti-patterns** (these are what “3D” means — don’t):
+
+* `box-shadow: inset 0 1px 0 rgba(255,255,255,…)` — top bevel/emboss.
+* `box-shadow: 0 8px 18px rgba(0,0,0,…)` / `… rgba(<accent>,…)` — raised drop-shadow or glow.
+* `transform: translateY(-1px)` on hover / `translateY(1px)` on active — lift / press.
+* `background: linear-gradient(180deg, rgba(255,255,255,.05), …)` — vertical “sheen” fill.
+* Low-contrast text on a tinted fill (e.g. `rgba(214,236,248,0.78)`) — use `var(--fg-dim)` → `var(--fg)`.
+
+**Reach for the wrapper:** `<Button>` from `app/harness/Button.tsx` for emphasis variants; a bare `<button>` inherits the flat baseline. Token reference: [design tokens](/internal/docs/design/tokens#the-bluefrost-semantic-scale).
+
+**`/adv` enforcement:** the `/adv` shell flattens every in-page button for free — a scoped rule on `.pc-advshell__body` strips `box-shadow` (non-focus) and hover/active `transform` so a stray bespoke 3D button can’t slip through. The large top **tab strip** (`.pc-advshell__header`) is exempt — it’s page-level nav, a different category. Still author buttons flat at the source; the scoped rule is a backstop, not a licence to ship embossed CSS.
+
 ## Soft rules (judgment calls)
 
 [Section titled “Soft rules (judgment calls)”](#soft-rules-judgment-calls)
@@ -11947,6 +12070,10 @@ Radix Select reserves `value=""` to mean “no value selected”. If your busine
 ## `<Button>` wrapper + native baseline
 
 [Section titled “\<Button> wrapper + native baseline”](#button-wrapper--native-baseline)
+
+Buttons are flat — no 3D
+
+In-page buttons get a solid/tinted fill, a 1px border, and readable text — **no** embossed bevel, raised drop-shadow/glow, hover-lift, or “sheen” gradient. Hover/active changes colour, not elevation. See [Buttons](/internal/docs/design#buttons) for the recipe and anti-patterns (this is hard rule 9). On `/adv` a scoped `.pc-advshell__body` rule enforces it; the top tab strip is exempt.
 
 **What:** `globals.css` adds a baseline for native `<button>` so unwrapped action buttons (Save, Add override, Clear, Cancel, +Filter, etc.) pick up the same dark-theme look as the `<Select>` trigger. The `<Button>` wrapper at `app/harness/Button.tsx` layers on three variants for the cases where more emphasis is needed:
 
@@ -14563,6 +14690,103 @@ Three more cheap wins:
 * Did not edit any settings; observations are from the pages as they rendered.
 * Screenshots: `/tmp/set-personalization.png`, `/tmp/set-oracle.png`, `/tmp/set-operator.png`, `/tmp/set-voice.png`, `/tmp/set-api-keys.png`, `/tmp/set-agent.png`, `/tmp/set-meridian.png`, `/tmp/set-orchestrator.png`, `/tmp/set-profile.png`, `/tmp/set-publishing.png`, `/tmp/set-plugin-runtime.png`, `/tmp/set-mobile.png`, `/tmp/set-shortcuts.png`.
 
+# Design tokens — the bluefrost theme
+
+> How the DTCG token pipeline generates the bluefrost CSS variables, the semantic scale, and the canonical status-color tables.
+
+The operator UI is themed by a single set of CSS custom properties — the **bluefrost** palette (deep sky-tinted dark surfaces, frost-white text, a sky accent). Those variables are **generated from DTCG token JSON**, not written by hand. This page is the reference for what exists and how to change it.
+
+Never hand-edit the generated CSS
+
+`apps/operator/app/_brand-primitives.css` and `apps/operator/app/_semantic.css` both start with `/** Do not edit directly, this file was auto-generated. */`. Edit the token JSON and re-run the build — a hand edit is overwritten on the next `pnpm tokens`.
+
+## The pipeline
+
+[Section titled “The pipeline”](#the-pipeline)
+
+```plaintext
+design-tokens/*.tokens.json        ← source of truth (DTCG)
+        │  pnpm tokens  (Style Dictionary v4 — design-tokens/style-dictionary.config.mjs)
+        ▼
+apps/operator/app/_brand-primitives.css   ← primitives tier  (--sky-400, --emerald-400, …)
+apps/operator/app/_semantic.css           ← semantic tier    (--bg, --fg, --accent, …)
+        │  imported at the top of
+        ▼
+apps/operator/app/globals.css      → every operator + /adv surface
+```
+
+Source files under `design-tokens/`:
+
+| File                           | Tier      | What it holds                                                                                                                     |
+| ------------------------------ | --------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| `primitives.tokens.json`       | primitive | Raw brand palette — `sky` / `emerald` / `amber` / `gold` / `rose` / `slate`. Canonical for **all** platforms (mobile mirrors it). |
+| `desktop.semantic.tokens.json` | semantic  | Desktop `--bg` / `--fg` / `--accent` / `--warn` etc., aliased to primitives.                                                      |
+| `desktop.motion.tokens.json`   | semantic  | `--ease-*` / `--dur-*` easing + duration tokens.                                                                                  |
+| `style-dictionary.config.mjs`  | build     | SD v4 config that emits the two CSS files.                                                                                        |
+
+Regenerate after editing any token JSON (the dev server does **not** auto-run it):
+
+```bash
+pnpm tokens     # re-emit _brand-primitives.css + _semantic.css
+```
+
+If you change a **primitive** (a brand color), also re-mirror mobile (`make tokens` in `papercup-rust-mobile/`). Changing only a desktop **semantic** needs no mobile touch. Full guide: `design-tokens/README.md`.
+
+## The bluefrost semantic scale
+
+[Section titled “The bluefrost semantic scale”](#the-bluefrost-semantic-scale)
+
+These are the variables new UI should use — never a raw hex. Each has a fallback baked in (`var(--bg, #07101d)`) so a component renders correctly even outside the themed tree.
+
+| Token                                        | Value                               | Use for                                                                                          |
+| -------------------------------------------- | ----------------------------------- | ------------------------------------------------------------------------------------------------ |
+| `--bg`                                       | `#07101d`                           | Page / app background (deepest).                                                                 |
+| `--bg-1`                                     | `#0b1220`                           | Panel background — one step up from the page.                                                    |
+| `--bg-2` `--bg-3` `--bg-4`                   | translucent white 4.5% / 7.5% / 12% | Surface tiers: inputs, chips, hover, raised.                                                     |
+| `--bg-popover`                               | `#0d1829`                           | Solid elevated surface for menus / hover cards / popovers.                                       |
+| `--fg`                                       | `#e7f7ff`                           | Primary text.                                                                                    |
+| `--fg-dim`                                   | `#b9d4e8`                           | Secondary text.                                                                                  |
+| `--fg-mute`                                  | `#7f9bb4`                           | Tertiary / metadata text.                                                                        |
+| `--border` `--border-strong`                 | sky-300 @ 0.15 / 0.32               | Hairline / emphasized borders (sky-tinted, the bluefrost signature).                             |
+| `--accent` `--accent-strong` `--accent-cool` | sky-400 / sky-300 / sky-cool        | Interactive accent, hover, soft accent.                                                          |
+| `--accent-ink`                               | `#051827`                           | Text **on** an accent-filled background.                                                         |
+| `--good` `--warn` `--bad`                    | emerald / amber / rose              | Semantic status (success / warning / danger).                                                    |
+| `--warn-bg` `--warn-border`                  | amber @ 0.1 / 0.35                  | Warning banner fill + border.                                                                    |
+| `--ease-out` `--dur-fast` …                  | see `_semantic.css`                 | Motion — pair with `[data-anim]` per the [performance rules](/internal/docs/design/performance). |
+
+**Tinting pattern.** Derive accent washes with `color-mix` rather than a new hardcoded rgba — it tracks the accent automatically:
+
+```css
+background: color-mix(in oklab, var(--accent), transparent 86%); /* selected row */
+border-color: color-mix(in oklab, var(--accent), transparent 55%);
+```
+
+## Status colors — one canonical source
+
+[Section titled “Status colors — one canonical source”](#status-colors--one-canonical-source)
+
+Per-status coloring (feature status, issue severity, issue status) is **not** a per-component decision. It lives in three Proxy-guarded tables in `apps/operator/app/harness/theme.ts` and is rendered through the pills in `apps/operator/app/harness/primitives.tsx`:
+
+| Table          | Keys                                                                                    | Pill                             |
+| -------------- | --------------------------------------------------------------------------------------- | -------------------------------- |
+| `STATUS`       | `todo` · `in_progress` · `validating` · `failing` · `blocked` · `passed` · `deprecated` | `<StatusPill status={…} />`      |
+| `SEVERITY`     | `critical` · `major` · `minor` · `nit`                                                  | `<SeverityPill severity={…} />`  |
+| `ISSUE_STATUS` | `open` · `acknowledged` · `fixing` · `closed` · `wontfix`                               | `<IssueStatusPill status={…} />` |
+
+Each entry is `{ solid, bg, text, label }`. The hues are semantic (red → amber → sky → grey for severity, etc.) and chosen to read on the bluefrost dark surfaces — `SEVERITY.minor` uses the sky accent rather than a legacy yellow to stay on-theme. The same tables back the legacy `/harness` route, so `/adv` and `/harness` show identical status coloring.
+
+Do / don't
+
+**Do** reach for a `var(--…)` semantic token and the `STATUS`/`SEVERITY`/`ISSUE_STATUS` pills. **Don’t** declare a local `STATUS_TONE` / `SEVERITY_TONE` map or a raw hex in a component — that’s the exact drift this single source exists to prevent (three divergent copies had crept into the `/adv` Harness panels before the 2026-05-30 redesign consolidated them).
+
+## See also
+
+[Section titled “See also”](#see-also)
+
+* [Library reference](/internal/docs/design/libraries) — the component wrappers (`StatusPill`, `Tooltip`, `Select`, `RichGrid`, …) that consume these tokens.
+* [Design — UI library guide](/internal/docs/design) — the hard rules for which library to reach for.
+* `design-tokens/README.md` — the full token-editing + mobile-mirror workflow.
+
 # Dev modes — HMR vs. rebuild-watch vs. prod-preview
 
 > Three ways to run the Tauri desktop in dev. Pick the one whose tradeoffs match what you're doing.
@@ -16467,7 +16691,7 @@ For a tool that mixes a state-shaped result (`results`) with an append-only side
 
 [Section titled “What this is”](#what-this-is)
 
-A way to point any `omp` shell — running in any directory, on any of your workspaces — at Papercusp’s MCP server. Plugin tools (Repomix, GitNexus, Firecrawl, Phase 9 spawn primitive, …) and built-ins (intel:*, artifacts:*, …) all become available. The agent picks the workspace per call.
+A way to point any `omp`, `claude`, or `codex` shell — running in any directory, on any of your workspaces — at Papercusp’s MCP server. Plugin tools (Repomix, GitNexus, Firecrawl, Phase 9 spawn primitive, …) and built-ins (intel:*, artifacts:*, …) all become available. The agent picks the workspace per call.
 
 This is the opposite of the orchestrator’s per-spawn URL: instead of locking the agent into one (workspace, harness, role, run, spawn), the agent gets superuser access and chooses workspace per tool invocation.
 
@@ -16494,10 +16718,29 @@ The script:
 
 1. Generates a 32-byte random token
 2. Writes it to `~/.papercusp/superuser-token` (mode 0600, owned by you)
-3. Writes `~/.omp/agent/mcp.json` with the operator URL + `Authorization: Bearer <token>`
-4. Verifies the operator is running and accepts the token
+3. Registers the `papercusp-su` MCP server for OMP (`~/.omp/agent/mcp.json`) and Claude Code (`~/.claude.json`), each with the operator URL + `Authorization: Bearer <token>`
+4. Installs the per-client playbooks and the `omp-su` / `claude-su` / `codex-su` wrappers (see [below](#per-client-wrappers-and-playbooks))
+5. Verifies the operator is running and accepts the token
 
-Re-run any time to rotate the token. The operator picks up the new token without restart (file mtime triggers cache refresh).
+Re-run any time to rotate the token (or refresh the playbooks/wrappers). The operator picks up the new token without restart (file mtime triggers cache refresh). Add `--profile=power` for the power-engineer subset.
+
+## Per-client wrappers and playbooks
+
+[Section titled “Per-client wrappers and playbooks”](#per-client-wrappers-and-playbooks)
+
+The MCP registration above makes the SU tools *available*; a second, opt-in layer injects the **engineer-collaborator playbook** so a shell knows how to use them. The installer creates one wrapper per supported client. Plain `omp` / `claude` / `codex` stay vanilla — only the `-su` wrappers load the playbook.
+
+| Wrapper     | Launches                              | Playbook injection                                                          |
+| ----------- | ------------------------------------- | --------------------------------------------------------------------------- |
+| `omp-su`    | OMP + the coordination extension      | `--append-system-prompt ~/.papercusp/<profile>-collaborator.md`             |
+| `claude-su` | Claude Code                           | `--append-system-prompt-file ~/.papercusp/<profile>-collaborator.claude.md` |
+| `codex-su`  | Codex CLI in a dedicated `CODEX_HOME` | `~/.papercusp/codex-su-home/AGENTS.md`                                      |
+
+**One base, per-client overlays.** The shared base playbook (`prompts/papercusp-su-<profile>.tools.md`) carries all client-neutral guidance. The client-specific task/workflow tooling — which differs by client (OMP `todo_write` / `omp:sessions`; Claude Code `TodoWrite` / `Task`; Codex `update_plan`) — lives in a small overlay (`papercusp-su.{omp,claude,codex}.md`) that is spliced into the base at a `<!-- PAPERCUSP-SU:CLIENT-TOOLING-OVERLAY -->` marker at install time. This keeps one source of truth for the base and prevents, e.g., OMP-only “don’t use the Claude task tools” guidance from landing in the Claude or Codex playbook.
+
+**Codex is special.** Codex has no `--append-system-prompt`; it injects instructions through `AGENTS.md` within its `CODEX_HOME`. So `codex-su` runs Codex in a dedicated `CODEX_HOME` (`~/.papercusp/codex-su-home`) whose `AGENTS.md` *is* the playbook, sharing your real login via a symlinked `auth.json`. The `papercusp-su` server is registered only in that home, with the bearer token supplied at launch from the 0600 token file via `PAPERCUSP_SU_TOKEN` — so plain `codex` never sees the server, and the token is never written into config.
+
+Re-run `install-standalone-mcp.sh` (optionally `--profile=power`) any time to refresh every wrapper and playbook.
 
 ## How the request flows
 

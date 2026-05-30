@@ -2,11 +2,20 @@
 title: File-locking improvements — SU-locks + FileLockQueue
 slug: file-locking-improvements-2026-05-20
 created: 2026-05-20
-updated: 2026-05-25
-status: draft
+updated: 2026-05-30
+status: shipped
 ---
 
 ## Now
+
+> **OMP-only decision REVERSED (2026-05-30).** §1's non-goal "Do not build
+> Claude Code / Codex / Gemini integration" and item #2's deletion of the
+> Claude `Pre/PostToolUse` shell hooks are **superseded**. Supported clients
+> are Claude Code, Codex, and OMP (NOT Gemini), and all three now enforce
+> SU-locks: OMP via `coord-hook.ts`, Claude + Codex via a restored,
+> modernized shared hook pair at `apps/operator/scripts/hooks/cc/`. See
+> `three-client-lock-enforcement-2026-05-30.md`. Do not re-delete the `cc/`
+> hooks citing this plan.
 
 **State:** **Shipped.** All 12 items implemented and committed. A 2026-05-21 item-by-item audit found gaps in #1/#2/#3/#4/#7/#11; all were closed in follow-up batches A–F (per-process OMP owner-id minting + `session_shutdown` handler, shared `path-normalize.ts`, the #3 marker/route contract reshape, janitor relocation to `workspace-listener.ts`, MCP `heartbeat` dispatch through `SuLocksCoordinator`, symlink refusal in the OMP hook, and the two-OMP `su-locks-omp-smoke.ts`). All items + audit follow-ups verified green.
 
@@ -44,7 +53,7 @@ The plan is intentionally *not* a single monolithic change — improvements are 
 - **Do not migrate FileLockQueue to PG.** Persistence buys nothing when the orchestrator process death takes every worker with it. The "no persistence" property is correct.
 - **Do not extend SU-locks to multi-workspace until needed.** `workspace_id = 'default'` everywhere today; future-proofing without a user is overdesign.
 - **Do not replace `pg_advisory_xact_lock`.** It's the right primitive. Keep it.
-- **Do not build Claude Code / Codex / Gemini integration.** Per the 2026-05-20 OMP-only decision, OMP is the sole engineer-collaborator harness; users who want Claude, GPT, or Gemini models run them *through* OMP. The Claude Code PreToolUse shell hooks shipped in `9ebb499a` (`pretooluse-locks-acquire.sh`, `posttooluse-locks-release.sh`) become dead code and are deleted as part of #2.
+- ~~**Do not build Claude Code / Codex / Gemini integration.**~~ **SUPERSEDED 2026-05-30 (see ## Now banner).** This non-goal drove the deletion (in `64b01fc9`) of the Claude `pretooluse-locks-acquire.sh` / `posttooluse-locks-release.sh` shell hooks. Multi-client SU support has since returned, so the hooks were restored + modernized into a shared Claude+Codex pair at `apps/operator/scripts/hooks/cc/` (recovered from `9ebb499a`). Supported clients: Claude Code, Codex, OMP — **not** Gemini. Tracked by `three-client-lock-enforcement-2026-05-30.md`.
 
 ### What "done" looks like for the plan as a whole
 

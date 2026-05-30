@@ -1,9 +1,9 @@
 ---
 title: Endpoint system — Phase 4+ implementation
 slug: phase-4-endpoint-system-2026-05-12
-status: active
+status: shipped
 created: 2026-05-12
-updated: 2026-05-20
+updated: 2026-05-30
 owner: pandawamble@gmail.com
 ---
 
