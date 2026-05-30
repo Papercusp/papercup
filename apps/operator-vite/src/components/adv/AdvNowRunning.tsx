@@ -178,9 +178,6 @@ export default function AdvNowRunning({ slug }: Props) {
         </div>
       )}
 
-      {/* Spacer */}
-      <div style={{ flex: 1 }} />
-
       {/* Start (when stopped) / Stop (when active) */}
       {alive !== true && (
         <button
