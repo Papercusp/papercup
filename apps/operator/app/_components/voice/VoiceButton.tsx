@@ -18,6 +18,7 @@ import {
   getVoiceState,
   initVoiceMode,
   setAudioReceiving,
+  setMicCaptureError,
   setVoiceMode,
   startPushToTalk,
   stopPushToTalk,
@@ -258,7 +259,7 @@ export function VoiceButton(): ReactElement {
   const analyserActive =
     (pttHeld || (micActive && !vs.micOwnedByFullAgent)) &&
     vs.status !== 'connecting';
-  const { ref: micRef } = useMicLevel(analyserActive, setAudioReceiving);
+  const { ref: micRef } = useMicLevel(analyserActive, setAudioReceiving, setMicCaptureError);
 
   // Phase-specific label so the user can tell apart the 5 visible
   // states. Order matters: speaking > awaiting > processing > pressed-

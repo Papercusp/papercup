@@ -24,6 +24,10 @@ const RECEIVING_OFF = 0.04;
 export function useMicLevel(
   active: boolean,
   onReceivingChange?: (receiving: boolean) => void,
+  // Reports the getUserMedia outcome so callers can explain a silent
+  // capture failure. Called with the error on rejection, and with `null`
+  // on a successful acquire so a prior error doesn't linger.
+  onCaptureError?: (err: unknown | null) => void,
 ): {
   ref: React.RefObject<HTMLElement>;
 } {
@@ -48,6 +52,9 @@ export function useMicLevel(
           stream.getTracks().forEach((t) => t.stop());
           return;
         }
+        // Mic acquired — clear any prior capture error so a stale failure
+        // from an earlier attempt doesn't mislabel this session.
+        onCaptureError?.(null);
         streamRef.current = stream;
         const Ctx: typeof AudioContext = (window as any).AudioContext || (window as any).webkitAudioContext;
         if (!Ctx) return;
@@ -99,8 +106,11 @@ export function useMicLevel(
           rafRef.current = requestAnimationFrame(tick);
         };
         rafRef.current = requestAnimationFrame(tick);
-      } catch {
-        /* permission denied / device busy — silent fallback */
+      } catch (err) {
+        // permission denied / device busy / no device. Report it so the
+        // PTT "no audio" path can name the actual cause; the visualization
+        // itself still fails open (no ring animation).
+        if (!cancelled) onCaptureError?.(err);
       }
     })();
 
@@ -115,7 +125,7 @@ export function useMicLevel(
       if (ref.current) ref.current.style.setProperty('--mic-level', '0');
       onReceivingChange?.(false);
     };
-  }, [active, onReceivingChange]);
+  }, [active, onReceivingChange, onCaptureError]);
 
   return { ref };
 }

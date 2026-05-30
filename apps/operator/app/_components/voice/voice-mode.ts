@@ -158,6 +158,21 @@ export function setAudioReceiving(receiving: boolean): void {
   setState({ audioReceiving: receiving });
 }
 
+/**
+ * Last error thrown by the visualization getUserMedia in useMicLevel.
+ * Previously swallowed silently, so every capture failure — permission
+ * denied, device busy, no device — collapsed into the same opaque "No
+ * audio detected" toast. Recording it here lets stopPushToTalk's no-audio
+ * branch say something the user can actually act on. A nullish value
+ * clears it (called on each successful acquire so stale errors don't leak).
+ */
+let lastMicError: { name: string; message: string } | null = null;
+export function setMicCaptureError(err: unknown): void {
+  if (!err) { lastMicError = null; return; }
+  const e = err as { name?: string; message?: string };
+  lastMicError = { name: e?.name ?? '', message: e?.message ?? String(err) };
+}
+
 // Timeouts for the two "stuck" phases. Each phase has a soft warning
 // at the end of its timer — clears the phase flag, fires a toast, so
 // the user understands "this should have happened by now and didn't"
@@ -1731,10 +1746,20 @@ export function stopPushToTalk(): void {
   if (heardAudio) {
     beginProcessingTranscript();
   } else if (typeof window !== 'undefined') {
+    // Tailor the message to the real getUserMedia failure (captured by
+    // useMicLevel) so "no audio" stops being a guessing game. All cases
+    // keep phase:'no-audio' so the toast still links to mic permissions.
+    const errStr = lastMicError ? `${lastMicError.name} ${lastMicError.message}` : '';
+    let message = 'No audio detected — check your microphone and try again.';
+    if (/NotAllowedError|SecurityError|Permission|denied/i.test(errStr)) {
+      message = 'Microphone access is blocked — grant permission and try again.';
+    } else if (/NotReadableError|NotFoundError|OverconstrainedError|AbortError|busy|in use|device/i.test(errStr)) {
+      message = `Microphone unavailable${lastMicError?.name ? ` (${lastMicError.name})` : ''} — make sure it isn't muted or used by another app, and that the right input device is selected.`;
+    }
     try {
       window.dispatchEvent(
         new CustomEvent('papercusp:voiceTimeout', {
-          detail: { phase: 'no-audio', message: 'No audio detected — check mic permissions and try again.' },
+          detail: { phase: 'no-audio', message },
         }),
       );
     } catch { /* ignore */ }
