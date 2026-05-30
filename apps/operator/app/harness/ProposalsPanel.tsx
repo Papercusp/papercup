@@ -233,7 +233,7 @@ function CardDetail({
         {card.kind === 'draft-plan' && (
           <div className="h-proposal-detail-actions">
             <a
-              href={`/adv/plans?slug=${encodeURIComponent(card.id)}`}
+              href={`/adv/plans?slug=${encodeURIComponent(harnessSlug)}&plan=${encodeURIComponent(card.id)}`}
               className="h-proposal-btn ghost"
               style={{ textDecoration: 'none' }}
             >

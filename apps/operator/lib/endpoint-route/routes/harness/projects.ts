@@ -10,6 +10,7 @@
  * A4 batch 44 — the final batch; harness.ts itself is empty after this).
  */
 import { existsSync, statSync } from 'node:fs';
+import { workspacesRoot } from '@/lib/workspace-registry';
 import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -113,7 +114,7 @@ const list = defineTool({
 
     let sig = `n=${reg.projects.length}|slugs=${reg.projects.map((p) => p.slug).join(',')}`;
     try {
-      const wsPath = join(homedir(), '.papercusp-workspaces', 'registry.json');
+      const wsPath = join(workspacesRoot(), 'registry.json');
       const legacyPath = join(homedir(), '.restart-harness-projects.json');
       if (existsSync(wsPath)) sig += `|m=${statSync(wsPath).mtimeMs}`;
       if (existsSync(legacyPath)) sig += `|lm=${statSync(legacyPath).mtimeMs}`;

@@ -5,6 +5,7 @@
  * Ported from app/api/desktop/workspace-validate/route.ts. `auth: {}`.
  */
 import { promises as fs } from 'node:fs';
+import { workspacesRoot } from '@/lib/workspace-registry';
 import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, resolve, dirname } from 'node:path';
@@ -50,7 +51,7 @@ export default defineTool({
       });
     }
 
-    const reserved = join(homedir(), '.papercusp-workspaces');
+    const reserved = workspacesRoot();
     if (normalized === reserved || normalized.startsWith(reserved + '/')) {
       return Response.json({
         ok: false,

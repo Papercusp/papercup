@@ -88,7 +88,7 @@ DB-access mechanisms (D-010):
 | (b) locks-local `inWorkspaceTxn()` + **own pool** + **own `papercusp_su` DB** + `pg_advisory_xact_lock` (not RLS) | **locks** | **NO** — different DB, pool, and serialization model |
 | (c) `getOrgPg()` raw admin client, no transaction | **backup, auth-rate-limit, memory side-effects** | partially — they want a `PgHandle{sql}`, not a tx unit-of-work |
 | (d) mem0-owned `pg.Client`, allocated at construction | **memory core** | **NO** — mem0 owns the connection before any seam can inject one |
-| (e) dispatcher `ctx.tx` from context-assembly (role-gated, **optional/unchecked**) | **search** | no — it's the dispatch pipeline, not a db-org call; and `ctx.tx` is used without a null-check (latent bug, P-013) |
+| (e) dispatcher `ctx.tx` from context-assembly (role-gated, optional — set only when a bearer resolves) | **search** | no — it's the dispatch pipeline, not a db-org call; reads are `try/catch`-guarded so an absent `ctx.tx` degrades to empty results, not a crash (P-013 makes it an explicit `PgHandle`) |
 
 So the load-bearing correction: **abstract each subsystem behind its own
 injection interface.** The only genuinely shared *discipline* (not a shared
@@ -289,12 +289,20 @@ two SEPARATE storage components**, not one dual-backend interface:
 
 ## Phase 3 — Retrieval cluster (search + memory; each its own seam)
 
-- **P-013** `todo` **Bug fix (audit-found), pre-req for P-020:** `fulltext.ts` and
-  `semantic.ts` read `ctx.tx` unconditionally, but it's optional (only populated
-  when a bearer token is present or the dispatcher wraps in `withWorkspace`). When
-  absent, search throws on `undefined.sql`. Add a null-check / explicit
-  pg-handle resolution before extraction so the extracted package has a defined
-  DB contract. → D-010
+- **P-013** `todo` **Hardening (pre-req for P-020) — re-verified 2026-05-30, NOT
+  a crash bug:** `fulltext.ts` (4×) and `semantic.ts` (8×) read `ctx.tx`, which is
+  optional — `http-projection.ts:331` sets it only when a bearer token resolves
+  (`requirePrincipal: false`, so no-bearer calls leave it undefined). **Correction
+  to the earlier audit:** it does NOT "throw on `undefined.sql`" — every one of the
+  12 uses is inside a `try/catch` that `ctx.log?.(…skipped…)` and continues, so an
+  absent `ctx.tx` degrades to **empty results per source**, not a crash. (Also:
+  `routes/user/search.ts` does NOT use `ctx.tx` at all — it opens its own
+  `pg.Client`; the earlier "search.ts:137 reads ctx.tx" was wrong, that line is the
+  rrf import.) The real gap is a *silent* empty result when unauthenticated, and an
+  *implicit* DB-access contract. Fix during P-020: inject an explicit `PgHandle`
+  (the seam) so the extracted package's DB dependency is declared, not smuggled via
+  an optional dispatcher field. Low urgency — pre-existing, graceful, and reworked
+  by P-020 anyway. → D-010
 - **P-020** `todo` Extract `@papercusp/search` (BM25 + pgvector hybrid). Three
   seams (mechanism (e) today): (i) **source registry** — the 4 surfaces
   (escalations/brainstorm/turns/decisions) are hardcoded literal branches, not a
@@ -503,7 +511,7 @@ paused for this extraction window.
 |---|---|---|---|---|
 | **P-002** | `@papercusp/rrf` | `f7f39bf5` | move + rewire | `search/semantic.ts` and `endpoint-route/routes/user/search.ts` now import `rrfCombine`/`RRF_K_DEFAULT` from `@papercusp/rrf`; old `agent-tools/search/rrf.ts` **deleted** |
 | **P-003** | `@papercusp/embedded-pg-discovery` | `68e5116a` | wrapper | none — `lib/embedded-pg-discovery.ts` is now a thin wrapper around `resolvePgUrl({envVars,discoveryFile,fallbackUrl})`; all `getHarnessAdminUrl` callers untouched |
-| **P-022** | `@papercusp/plan-parser` | `e96f63f3` | move + re-export shim | none — `plans/{parser,effective-status,content-hash}.ts` are now one-line re-exports of the package; ~24 in-plans consumers resolve unchanged |
+| **P-022** | `@papercusp/plan-parser` | `e96f63f3` | move + re-export shim | none — `plans/{parser,effective-status,content-hash}.ts` are now one-line re-exports of the package; **33 import sites (all in `apps/operator/`)** resolve unchanged — verified repo-wide, zero in operator-vite/libs |
 
 17 package tests green (7 + 5 + 5); all three resolve from the operator. Pattern
 for all three: a new `packages/<name>/` with **src-as-entry** (no build step,
@@ -514,13 +522,16 @@ work — don't chase it; use the symlink or `--legacy-peer-deps`).
 
 ### Two known follow-ups (not blockers)
 
-- **P-013** (already in Phase 3): `search/semantic.ts` + `search.ts` read
-  `ctx.tx` unconditionally though it's optional — a latent null-deref. Untouched
-  by P-002 (import-only change); still owed before the search package extraction.
-- **P-023b** (new): rewire the ~24 `plan-parser` consumers to import
+- **P-013** (already in Phase 3): `search/semantic.ts` + `search/fulltext.ts` read
+  `ctx.tx`, which is optional. **Re-verified 2026-05-30:** NOT a null-deref — every
+  use is `try/catch`-guarded, so an absent `ctx.tx` (no-bearer call) degrades to
+  empty results, not a crash; `routes/user/search.ts` doesn't use `ctx.tx` at all.
+  Untouched by P-002 (import-only). The gap (silent-empty + implicit DB contract)
+  is fixed by injecting a `PgHandle` during the P-020 search extraction.
+- **P-023b** (new): rewire the 33 `plan-parser` consumers to import
   `@papercusp/plan-parser` directly and delete the three re-export shims.
   Deferred because paperclip was actively `git add -A`-committing the shared
-  checkout during this window, making a 24-file rewire unsafe to land atomically.
+  checkout during this window, making a 33-file rewire unsafe to land atomically.
 
 ### Impact on the four paused plans
 
@@ -635,9 +646,11 @@ identity→ownerId resolution.
 
 ### search → `@papercusp/search` (P-013 prereq, P-020) — 3 seams
 
-**Prereq P-013:** fix the unconditional `ctx.tx` read (latent null-deref) so the
-package has a defined DB contract before extraction. Reuses the already-shipped
-`@papercusp/rrf` for fusion. Seams:
+**Prereq P-013:** make the DB-access contract explicit. Today `ctx.tx` is an
+optional dispatcher field (undefined on no-bearer calls); the reads are
+`try/catch`-guarded so absence degrades to empty results (not a crash — see P-013).
+Replacing it with the injected `PgHandle` below removes the implicit dependency.
+Reuses the already-shipped `@papercusp/rrf` for fusion. Seams:
 
 1. **`SearchSource`** registry — replaces the 4 hardcoded `escalations/brainstorm/
    turns/decisions` branches:

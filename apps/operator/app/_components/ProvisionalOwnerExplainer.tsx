@@ -18,12 +18,13 @@
  */
 
 import { useEffect, type CSSProperties, type ReactNode } from 'react';
+import { wsLocalKey } from '@/lib/browser-workspace';
 
 const FLAG_KEY = 'papercusp.provisionalOwner.shown.v1';
 
 function hasSeenLocally(): boolean {
   try {
-    return globalThis.localStorage?.getItem(FLAG_KEY) === '1';
+    return globalThis.localStorage?.getItem(wsLocalKey(FLAG_KEY)) === '1';
   } catch {
     return false;
   }
@@ -31,7 +32,7 @@ function hasSeenLocally(): boolean {
 
 function markSeenLocally(): void {
   try {
-    globalThis.localStorage?.setItem(FLAG_KEY, '1');
+    globalThis.localStorage?.setItem(wsLocalKey(FLAG_KEY), '1');
   } catch {
     // ignore — explainer just re-shows on next share, low harm
   }

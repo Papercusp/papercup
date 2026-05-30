@@ -22,16 +22,23 @@ export default function AdvHarnessPanelPage({ panel }: { panel: AdvHarnessPanel 
     return (
       <section className="pc-adv-harness-panel pc-adv-harness-panel--git" aria-label="ADV Git workspace">
         {activeSlug ? (
-          <RealGitPanel
-            panelId="adv-git"
-            panelType="data:git"
-            params={{ harnessSlug: activeSlug }}
-            api={{
-              setParams: () => {},
-              setTitle: () => {},
-              close: () => {},
-            }}
-          />
+          <div className="pc-adv-git-split">
+            <div className="pc-adv-git-split__pane" aria-label="Git graph">
+              <RealGitPanel
+                panelId="adv-git"
+                panelType="data:git"
+                params={{ harnessSlug: activeSlug }}
+                api={{
+                  setParams: () => {},
+                  setTitle: () => {},
+                  close: () => {},
+                }}
+              />
+            </div>
+            <div className="pc-adv-git-split__pane pc-adv-git-split__pane--prs" aria-label="Pull requests">
+              <HarnessDashboard forcedPanel="prs" embeddedPanelChrome />
+            </div>
+          </div>
         ) : (
           <div className="pc-adv-harness-panel__empty">Select a harness to view its git graph.</div>
         )}
@@ -46,6 +53,39 @@ export default function AdvHarnessPanelPage({ panel }: { panel: AdvHarnessPanel 
             padding: 10px;
           }
           .pc-adv-harness-panel--git > * {
+            flex: 1;
+            min-height: 0;
+          }
+          /* Two panes side by side: git graph (left) + PRs (right). */
+          .pc-adv-git-split {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+            min-height: 0;
+          }
+          .pc-adv-git-split__pane {
+            min-width: 0;
+            min-height: 0;
+            display: flex;
+            flex-direction: column;
+            border: 1px solid var(--border, rgba(125, 211, 252, 0.15));
+            border-radius: 10px;
+            overflow: hidden;
+            background: var(--bg-2, rgba(255, 255, 255, 0.02));
+          }
+          .pc-adv-git-split__pane > * {
+            flex: 1;
+            min-height: 0;
+          }
+          /* Hide the embedded HarnessDashboard chrome inside the PR pane —
+             same suppression the non-git panels use. */
+          .pc-adv-git-split__pane--prs .h-root--embedded-panel .h-header,
+          .pc-adv-git-split__pane--prs .h-root--embedded-panel .h-tab-strip,
+          .pc-adv-git-split__pane--prs .h-root--embedded-panel .h-active-agents-row,
+          .pc-adv-git-split__pane--prs .h-root--embedded-panel .h-guide-strip {
+            display: none !important;
+          }
+          .pc-adv-git-split__pane--prs .h-root--embedded-panel .h-main-shell {
             flex: 1;
             min-height: 0;
           }

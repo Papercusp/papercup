@@ -6,7 +6,7 @@
  * returns degraded for those workspaces.
  */
 
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
@@ -23,8 +23,27 @@ export interface WorkspaceRegistry {
   workspaces: WorkspaceEntry[];
 }
 
+/**
+ * Absolute path to the workspaces root (`~/.papercusp-workspaces`).
+ *
+ * This directory holds the registry + every per-workspace dir, and it
+ * lives ABOVE the per-workspace isolation boundary. In the packaged
+ * desktop the operator sidecar runs with `HOME` remapped to the *active
+ * workspace dir*, so `homedir()` points INSIDE a workspace — resolving
+ * the root via `homedir()` would land in a nested per-workspace registry
+ * that disagrees with the one the Rust shell owns (the cause of the
+ * "switch failed: workspace dir ... missing" class of bug). The desktop
+ * passes the real root as `PAPERCUSP_WORKSPACES_ROOT`; prefer it. The
+ * `homedir()` fallback is correct in dev, where HOME is not remapped.
+ */
+export function workspacesRoot(): string {
+  const env = process.env.PAPERCUSP_WORKSPACES_ROOT;
+  if (env && env.trim()) return env;
+  return join(homedir(), '.papercusp-workspaces');
+}
+
 function registryPath(): string {
-  return join(homedir(), '.papercusp-workspaces', 'registry.json');
+  return join(workspacesRoot(), 'registry.json');
 }
 
 export function readRegistry(): WorkspaceRegistry {
@@ -48,7 +67,12 @@ export function writeRegistry(reg: WorkspaceRegistry): void {
  * should import from './workspace-id-constant' directly to avoid
  * pulling node:fs into client chunks.
  */
-export { DEFAULT_WORKSPACE_ID } from './workspace-id-constant';
+// Import the local binding (used by `activeWorkspaceId` below) AND re-export
+// it, so legacy importers from this path keep working. A bare
+// `export { X } from './y'` re-export does NOT create a local binding, which
+// left `activeWorkspaceId`'s fallback referencing an undefined name.
+import { DEFAULT_WORKSPACE_ID } from './workspace-id-constant';
+export { DEFAULT_WORKSPACE_ID };
 
 export function activeWorkspaceId(): string {
   const reg = readRegistry();
@@ -57,6 +81,27 @@ export function activeWorkspaceId(): string {
 
 export function workspaceById(id: string): WorkspaceEntry | undefined {
   return readRegistry().workspaces.find((w) => w.id === id);
+}
+
+/**
+ * Absolute path to a workspace's data dir — the directory the desktop
+ * sidecar is spawned with as HOME (see papercusp-desktop workspaces.rs
+ * `workspace_dir`). Mirrors the Rust layout: `<root>/<id>`.
+ */
+export function workspaceDir(id: string): string {
+  return join(workspacesRoot(), id);
+}
+
+/**
+ * Ensure a workspace's data dir exists on disk. The desktop `switch()`
+ * guard refuses to switch to a registered workspace whose directory is
+ * missing, so any code path that adds a registry entry MUST also provision
+ * the directory. Idempotent. Returns the dir path.
+ */
+export function ensureWorkspaceDir(id: string): string {
+  const dir = workspaceDir(id);
+  mkdirSync(dir, { recursive: true });
+  return dir;
 }
 
 export function setCompanyId(workspaceId: string, companyId: string | null): void {

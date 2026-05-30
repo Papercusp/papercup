@@ -5,7 +5,7 @@
  *
  * Tab model:
  *   - `index` (pinned, leftmost, not closeable) — the rail + browse/
- *     inbox/actionable/triage views; mounts when slug is null and q
+ *     inbox/actionable views; mounts when slug is null and q
  *     is empty.
  *   - `search` (pinned, not closeable) — auto-focused whenever the
  *     query input becomes non-empty; mounts PlanSearchResults via
@@ -31,7 +31,7 @@ import {
 } from 'nuqs';
 import { usePlanList } from '../../admin/plans/plans-api';
 
-type PlansView = 'list' | 'inbox' | 'actionable' | 'triage';
+type PlansView = 'list' | 'inbox' | 'actionable';
 type PaneMode = 'read' | 'edit';
 
 interface Tab {
@@ -44,7 +44,7 @@ interface Tab {
 export default function AdvPlansTabs({ children }: { children: React.ReactNode }) {
   const [view, setView] = useQueryState(
     'view',
-    parseAsStringEnum<PlansView>(['list', 'inbox', 'actionable', 'triage']).withDefault('list'),
+    parseAsStringEnum<PlansView>(['list', 'inbox', 'actionable']).withDefault('list'),
   );
   // The OPEN-PLAN slug. Lives on `?plan=`, NOT `?slug=` — `?slug=` is
   // AdvShell's active-harness key, shared across every /adv tab.

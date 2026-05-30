@@ -8,6 +8,7 @@
  */
 
 import { useEffect, useState, useCallback, useRef, type ReactElement } from 'react';
+import { wsLocalKey } from '@/lib/browser-workspace';
 import { Settings2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { Tooltip } from '../../harness/Tooltip';
@@ -75,11 +76,11 @@ export function VoiceButton(): ReactElement {
   const [wakeWord, setWakeWord] = useState(() => getVoiceConfig().wakeWord);
   const [wakeHintSeen, setWakeHintSeen] = useState(() => {
     if (typeof window === 'undefined') return false;
-    return window.localStorage.getItem(WAKE_HINT_SEEN_KEY) === '1';
+    return window.localStorage.getItem(wsLocalKey(WAKE_HINT_SEEN_KEY)) === '1';
   });
   const [pttHintSeen, setPttHintSeen] = useState(() => {
     if (typeof window === 'undefined') return false;
-    return window.localStorage.getItem(PTT_HINT_SEEN_KEY) === '1';
+    return window.localStorage.getItem(wsLocalKey(PTT_HINT_SEEN_KEY)) === '1';
   });
   const [pttHeld, setPttHeld] = useState(false);
 
@@ -119,7 +120,7 @@ export function VoiceButton(): ReactElement {
     setWakeHintSeen(true);
     if (typeof window !== 'undefined') {
       try {
-        window.localStorage.setItem(WAKE_HINT_SEEN_KEY, '1');
+        window.localStorage.setItem(wsLocalKey(WAKE_HINT_SEEN_KEY), '1');
       } catch {
         /* ignore storage issues */
       }
@@ -131,7 +132,7 @@ export function VoiceButton(): ReactElement {
     setPttHintSeen(true);
     if (typeof window !== 'undefined') {
       try {
-        window.localStorage.setItem(PTT_HINT_SEEN_KEY, '1');
+        window.localStorage.setItem(wsLocalKey(PTT_HINT_SEEN_KEY), '1');
       } catch {
         /* ignore storage issues */
       }

@@ -3,6 +3,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { wsLocalKey } from '@/lib/browser-workspace';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { OperatorChatSidebar } from '../OperatorChatSidebar';
 import { OPERATOR_CHAT_COLLAPSED_WIDTH } from '../operator-chat-layout';
@@ -104,7 +105,7 @@ afterEach(() => {
 
 describe('OperatorChatSidebar collapse behavior', () => {
   it('collapses to a slim rail and can be expanded again', async () => {
-    window.localStorage.setItem('papercusp.operatorChat.width', '420');
+    window.localStorage.setItem(wsLocalKey('papercusp.operatorChat.width'), '420');
 
     render(<OperatorChatSidebar />);
 

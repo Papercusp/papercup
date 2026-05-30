@@ -5,13 +5,14 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { wsLocalKey } from '@/lib/browser-workspace';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import {
   ProvisionalOwnerExplainer,
   shouldShowProvisionalOwnerExplainer,
 } from '../ProvisionalOwnerExplainer';
 
-const FLAG_KEY = 'papercusp.provisionalOwner.shown.v1';
+const FLAG_KEY = wsLocalKey('papercusp.provisionalOwner.shown.v1');
 
 // This project's jsdom env ships a localStorage shell whose methods
 // throw. Install a real in-memory Storage so the component's

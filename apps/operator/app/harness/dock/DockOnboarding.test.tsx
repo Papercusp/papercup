@@ -3,6 +3,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { wsLocalKey } from '@/lib/browser-workspace';
 import { render, screen, cleanup, fireEvent } from '@testing-library/react';
 import { DockOnboarding, _resetDockOnboardingForTests } from './DockOnboarding';
 
@@ -40,18 +41,18 @@ describe('DockOnboarding', () => {
   });
 
   it('does not render when localStorage flag is set', () => {
-    window.localStorage.setItem('papercusp:dock-onboarded', '1');
+    window.localStorage.setItem(wsLocalKey('papercusp:dock-onboarded'), '1');
     render(<DockOnboarding />);
     expect(screen.queryByRole('status')).toBeNull();
   });
 
   it('dismiss button hides bubble + writes flag', () => {
     render(<DockOnboarding />);
-    expect(window.localStorage.getItem('papercusp:dock-onboarded')).toBeNull();
+    expect(window.localStorage.getItem(wsLocalKey('papercusp:dock-onboarded'))).toBeNull();
     const btn = screen.getByLabelText('Dismiss onboarding');
     fireEvent.click(btn);
     expect(screen.queryByRole('status')).toBeNull();
-    expect(window.localStorage.getItem('papercusp:dock-onboarded')).toBe('1');
+    expect(window.localStorage.getItem(wsLocalKey('papercusp:dock-onboarded'))).toBe('1');
   });
 
   it('stays dismissed after re-mount', () => {

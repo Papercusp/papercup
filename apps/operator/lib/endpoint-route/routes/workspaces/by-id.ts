@@ -3,11 +3,12 @@
  * Ported from app/api/workspaces/[id]/route.ts. `auth: 'public'`.
  */
 import { existsSync, promises as fs } from 'node:fs';
+import { workspacesRoot } from '@/lib/workspace-registry';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { defineTool } from '@papercusp/agent-mcp';
 
-const REGISTRY_PATH = join(homedir(), '.papercusp-workspaces', 'registry.json');
+const REGISTRY_PATH = join(workspacesRoot(), 'registry.json');
 
 interface Workspace {
   id: string;
@@ -80,7 +81,7 @@ export default [
       reg.workspaces = reg.workspaces.filter((w) => w.id !== id);
       await writeRegistry(reg);
 
-      const dir = join(homedir(), '.papercusp-workspaces', id);
+      const dir = join(workspacesRoot(), id);
       let archived: string | null = null;
       let archiveError: string | null = null;
       try {
@@ -93,7 +94,7 @@ export default [
             '.archive',
             `${id}-${ts}`,
           );
-          await fs.mkdir(join(homedir(), '.papercusp-workspaces', '.archive'), {
+          await fs.mkdir(join(workspacesRoot(), '.archive'), {
             recursive: true,
           });
           await fs.rename(backupsDir, archiveDir);

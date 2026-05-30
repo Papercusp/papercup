@@ -1,6 +1,7 @@
 'use client';
 
 import { useSyncExternalStore } from 'react';
+import { wsLocalKey } from '@/lib/browser-workspace';
 
 export type VisualEffectsMode = 'system' | 'full' | 'minimal';
 export type EffectiveVisualEffects = 'full' | 'minimal';
@@ -23,7 +24,7 @@ function getReducedMotionPreference(): boolean {
 export function readVisualEffectsMode(): VisualEffectsMode {
   if (typeof window === 'undefined') return 'system';
   try {
-    const stored = window.localStorage.getItem(VISUAL_EFFECTS_STORAGE_KEY);
+    const stored = window.localStorage.getItem(wsLocalKey(VISUAL_EFFECTS_STORAGE_KEY));
     return isVisualEffectsMode(stored) ? stored : 'system';
   } catch {
     return 'system';
@@ -48,7 +49,7 @@ export function writeVisualEffectsMode(mode: VisualEffectsMode): void {
   const safeMode = isVisualEffectsMode(mode) ? mode : 'system';
   if (typeof window !== 'undefined') {
     try {
-      window.localStorage.setItem(VISUAL_EFFECTS_STORAGE_KEY, safeMode);
+      window.localStorage.setItem(wsLocalKey(VISUAL_EFFECTS_STORAGE_KEY), safeMode);
     } catch {
       // localStorage can be unavailable in private/embedded contexts; still apply in-memory.
     }
@@ -72,7 +73,7 @@ export function subscribeVisualEffects(listener: () => void): () => void {
   };
 
   const handleStorage = (event: StorageEvent) => {
-    if (event.key === VISUAL_EFFECTS_STORAGE_KEY) sync();
+    if (event.key === wsLocalKey(VISUAL_EFFECTS_STORAGE_KEY)) sync();
   };
 
   window.addEventListener(VISUAL_EFFECTS_CHANGE_EVENT, sync);

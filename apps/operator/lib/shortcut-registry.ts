@@ -22,6 +22,7 @@
  *   - Spaces are insignificant; `mod + k` and `mod+k` are equivalent.
  */
 import type { ActionOptions } from './shortcut-bus';
+import { wsLocalKey } from '@/lib/browser-workspace';
 
 export type ShortcutCategory = 'global' | 'navigation' | 'feature-list' | 'editor' | 'palette';
 
@@ -248,7 +249,7 @@ export type OverrideMap = Record<string, string>;
 export function loadOverrides(): OverrideMap {
   if (typeof window === 'undefined') return {};
   try {
-    const raw = window.localStorage.getItem(STORAGE_KEY);
+    const raw = window.localStorage.getItem(wsLocalKey(STORAGE_KEY));
     if (!raw) return {};
     const parsed = JSON.parse(raw);
     return parsed && typeof parsed === 'object' ? (parsed as OverrideMap) : {};
@@ -266,7 +267,7 @@ export function saveOverride(id: string, combo: string): void {
   } else {
     all[id] = trimmed;
   }
-  window.localStorage.setItem(STORAGE_KEY, JSON.stringify(all));
+  window.localStorage.setItem(wsLocalKey(STORAGE_KEY), JSON.stringify(all));
   // Notify in-page listeners. localStorage events normally fire only in
   // OTHER tabs; emit a synthetic event so our own components re-bind.
   window.dispatchEvent(new CustomEvent('papercusp:shortcuts-changed'));
@@ -278,7 +279,7 @@ export function resetOverride(id: string): void {
 
 export function resetAllOverrides(): void {
   if (typeof window === 'undefined') return;
-  window.localStorage.removeItem(STORAGE_KEY);
+  window.localStorage.removeItem(wsLocalKey(STORAGE_KEY));
   window.dispatchEvent(new CustomEvent('papercusp:shortcuts-changed'));
 }
 

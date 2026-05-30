@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
+import { wsLocalKey } from '@/lib/browser-workspace';
 import { useQuery } from '@tanstack/react-query';
 import { useSyncQuery } from '@restart/sync';
 import { useWorkspaceId } from '@/lib/use-workspace-id';
@@ -30,7 +31,7 @@ interface Commit {
   ts: number;
 }
 
-const GIT_LAST_SEEN_KEY = (slug: string) => `harness.git.lastSeen.${slug}`;
+const GIT_LAST_SEEN_KEY = (slug: string) => wsLocalKey(`harness.git.lastSeen.${slug}`);
 
 export function CollapsedGitRail({ slug, onExpand }: { slug: string; onExpand: () => void }) {
   const [lastSeen, setLastSeen] = useState<number>(0);

@@ -146,10 +146,13 @@ const list = defineTool({
     // and out as the summaries arrived.
     //
     // Filter rule (only applies to OMP rows):
-    //   - If the row has ended and recorded 0 user messages → drop.
-    //   - If the row has ended and we couldn't find its JSONL → drop.
-    //   - If the row is still active (no endedAt), keep it regardless.
-    //     A brand-new launch may not have written its JSONL header yet.
+    //   - If the JSONL is found AND has 0 user messages → drop (truly empty).
+    //   - A missing JSONL (summary === null) is NOT proof of emptiness —
+    //     the file may have been in a different path, cleaned up, or the
+    //     ompThreadId hasn't been lazily resolved yet. Keep these rows.
+    //   - The DB-level filter already removes truly dead-on-arrival rows
+    //     (ended in <5s with no ompThreadId), so no additional startup-
+    //     grace check is needed here.
     const withSummary = await Promise.all(
       rows.map(async (row) => {
         if (row.mode !== 'omp') return { row, summary: null };
@@ -163,16 +166,20 @@ const list = defineTool({
     const now = Date.now();
     const filtered = withSummary.filter(({ row, summary }) => {
       if (row.mode !== 'omp') return true;
-      // Summary present + user typed at least once → real session.
+      // JSONL found with real content → definitely keep.
       if (summary && summary.userMessages > 0) return true;
-      // Otherwise the row is either dead-on-arrival or a zombie
-      // (PG says active but JSONL is gone — operator restart can
-      // leave these behind). Give it 60s of startup grace so a
-      // brand-new launch isn't filtered out mid-spawn.
-      const startedMs = Date.parse(row.startedAt);
-      const inStartupGrace =
-        Number.isFinite(startedMs) && now - startedMs < STARTUP_GRACE_MS;
-      return inStartupGrace;
+      // JSONL found but confirmed empty (0 user messages) → drop unless
+      // the session is fresh enough to still be initializing.
+      if (summary !== null && summary.userMessages === 0) {
+        const startedMs = Date.parse(row.startedAt);
+        const inStartupGrace =
+          Number.isFinite(startedMs) && now - startedMs < STARTUP_GRACE_MS;
+        return inStartupGrace;
+      }
+      // summary === null: JSONL missing or ompThreadId not yet resolved.
+      // Keep — the UI shows "state unavailable" gracefully; hiding the
+      // row entirely loses the row from the user's session history.
+      return true;
     });
     const responseRows = filtered.map(({ row, summary }) => ({
       ...row,
