@@ -354,8 +354,9 @@ two SEPARATE storage components**, not one dual-backend interface:
   (`@tauri-apps/api`, `@restart/sse`, `@papercusp/tooldef`). Two shims
   (`transport-adapters/index.ts` + `desktop-bootstrap.ts` via a `./desktop-bootstrap`
   subpath export) keep all 4 consumers resolving unchanged — zero rewire.
-  (iii) **`@papercusp/ipc-endpoint-server` — REMAINING (one attempt reverted
-  2026-05-30):** `endpoint-ipc/server.ts` (399 LOC) + `sys-http.ts` (225 LOC,
+  (iii) **`@papercusp/ipc-endpoint-server` — REMAINING (two attempts, both
+  reverted clean; design DONE, blocked on a test-harness issue):**
+  `endpoint-ipc/server.ts` (399 LOC) + `sys-http.ts` (225 LOC,
   self-contained). **Corrected design from the code read:** the runtime coupling
   is only **3** injected fns, not the plan's "4" — `dispatchProjectedToolStream`,
   `lookupByMcpName`, `getWorkspaceId` (wrapping `activeWorkspaceId`); the
@@ -369,16 +370,43 @@ two SEPARATE storage components**, not one dual-backend interface:
   `instrumentation-node.ts` (~line 445, pass `host:` alongside the existing
   `deps`/`allowedTools`), and a re-export shim at `endpoint-ipc/server.ts` for
   `dev_ipc_echo_e2e.test.ts`. `sys-http.ts` has NO external consumer (only a
-  doc-comment mention) — moves cleanly. **Why the first attempt reverted:** I
-  `git mv`'d `sys-http.ts` out before wiring the shim, which left the original
-  `server.ts`'s `./sys-http` import dangling = main briefly broken; compounded by
-  the sandbox Read/Bash stalling on the 421-line `server.test.ts` (can't safely
-  edit a file I can't cleanly read). Cleanly reverted (`git checkout HEAD --
-  endpoint-ipc` + rm partial pkg); main restored, zero residue. Redo in a calm
-  tooling window: write the package files FIRST (server.ts already drafted with
-  the `host` seam), move sys-http+tests, add the shim, THEN rewire boot — never
-  leave the original importing a moved file. This is the libsoup pool-exhaustion
-  fix. → D-006
+  doc-comment mention) — moves cleanly.
+
+  **Attempt 1 reverted:** `git mv`'d sys-http out before the shim → original
+  `server.ts`'s `./sys-http` dangled = main briefly broken. Lesson applied in
+  attempt 2: use `cp` (originals stay intact until the end), write-package-first.
+
+  **Attempt 2 (cp-based, main NEVER broke) — got the package fully built + 31/33
+  tests passing, then reverted on a real harness artifact:**
+  - Built `packages/ipc-endpoint-server`: `server.ts` (host-seam DI), `sys-http.ts`
+    (verbatim, `./framing`→`@papercusp/ipc-framing`), `index.ts` barrel,
+    package.json (deps: `@papercusp/ipc-framing` + `@papercusp/tooldef`), README.
+  - **NEW resolution requirement discovered:** this is the FIRST extracted package
+    whose *tests* import sibling `@papercusp/*` packages, and standalone `vitest run`
+    in a bare package cannot resolve their raw-`.ts` entry points. Fix = a package
+    `vitest.config.ts` with BOTH `server.deps.inline: [/^@papercusp\//]` (tooldef
+    already has the inline half) AND `resolve.alias` mapping
+    `@papercusp/ipc-framing` + `@papercusp/tooldef` to `../<pkg>/src/index.ts`.
+    With that, resolution worked and **31 tests passed** (all 12 sys-http, binds,
+    allowlist, unknown-tool, errors).
+  - **The 2 remaining failures are a harness artifact, NOT a code defect:** the
+    streaming-dispatch + cancel integration tests register a synthetic tool via
+    `registerProjectedTool` and rely on `dispatchProjectedToolStream` reading the
+    SAME module-singleton registry. Aliasing `@papercusp/tooldef` instantiates a
+    SECOND tooldef module → the test's registry ≠ dispatch's registry → no stream.
+    The extracted `server.ts` is byte-identical to the working original (only the
+    framing import + host injection changed, both covered by the 31 green tests).
+  - Reverted clean (cp originals untouched; `rm` the new pkg + symlink); main
+    green, zero residue, 6 prior packages intact.
+
+  **Redo (turnkey):** rebuild the package as in attempt 2, but make the 2
+  registry-singleton integration tests run under the **operator's** vitest (single
+  tooldef instance via vite-tsconfig-paths) instead of standalone-with-alias — i.e.
+  keep `server.test.ts`'s dispatch/cancel cases in `apps/operator` (pointing at the
+  package), or resolve sibling packages via their node_modules symlink rather than a
+  path alias so tooldef stays one instance. The package + its non-registry tests
+  (sys-http, bind, allowlist) ship standalone fine. This is the libsoup
+  pool-exhaustion fix. → D-006
 - **P-031** `done` Extract `@papercusp/rate-limit` from `lib/auth-rate-limit.ts`
   (2-bucket, PG-durable; **verified zero domain coupling**, generic string keys).
   **Shipped** (`packages/rate-limit`, 8 unit tests, on `main`). **Seam deviation:**
