@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { parseAsString, parseAsStringEnum, useQueryState } from 'nuqs';
 import { toast } from 'sonner';
 import {
@@ -82,6 +82,9 @@ export default function IssuesPanel({ params, api }: PanelComponentProps) {
   const [selectedId, setSelectedId] = useQueryState('sel', parseAsString.withDefault(''));
   const [pinMenu, setPinMenu] = useState<PinMenuState | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [focusIdx, setFocusIdx] = useState(0);
+  const listRef = useRef<HTMLDivElement>(null);
+  const searchRef = useRef<HTMLInputElement>(null);
 
   const handleAction = async (i: Issue, action: IssueActionKind) => {
     setBusyId(i.id);
@@ -121,6 +124,41 @@ export default function IssuesPanel({ params, api }: PanelComponentProps) {
     return c;
   }, [issues]);
 
+  // P-019 keyboard nav (panel-scoped): J/K move a focus cursor, ↵ opens
+  // (sets ?sel), / focuses search. Fires only when the list holds focus.
+  useEffect(() => {
+    setFocusIdx((idx) => Math.min(idx, Math.max(0, filtered.length - 1)));
+  }, [filtered.length]);
+  useEffect(() => {
+    const el = listRef.current?.querySelector(`[data-fidx="${focusIdx}"]`) as HTMLElement | null;
+    el?.scrollIntoView({ block: 'nearest' });
+  }, [focusIdx]);
+  const onListKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    if (filtered.length === 0) return;
+    switch (e.key) {
+      case 'j':
+      case 'ArrowDown':
+        e.preventDefault();
+        setFocusIdx((idx) => Math.min(filtered.length - 1, idx + 1));
+        break;
+      case 'k':
+      case 'ArrowUp':
+        e.preventDefault();
+        setFocusIdx((idx) => Math.max(0, idx - 1));
+        break;
+      case 'Enter': {
+        e.preventDefault();
+        const it = filtered[focusIdx];
+        if (it) void setSelectedId(it.id);
+        break;
+      }
+      case '/':
+        e.preventDefault();
+        searchRef.current?.focus();
+        break;
+    }
+  };
+
   if (!slug) {
     return <PanelMessage>Pick a harness to view its issues.</PanelMessage>;
   }
@@ -135,10 +173,14 @@ export default function IssuesPanel({ params, api }: PanelComponentProps) {
     <div className="pc-adv-issues">
       <div className="pc-adv-issues__bar">
         <input
+          ref={searchRef}
           className="pc-adv-issues__search"
           placeholder="Search issues…"
           value={search}
           onChange={(e) => void setSearch(e.target.value || null)}
+          onKeyDown={(e) => {
+            if (e.key === 'Escape') e.currentTarget.blur();
+          }}
         />
         <div className="pc-adv-issues__filters">
           {STATUS_FILTERS.map((f) => (
@@ -164,11 +206,11 @@ export default function IssuesPanel({ params, api }: PanelComponentProps) {
         </div>
       )}
 
-      <div className="pc-adv-issues__list">
+      <div ref={listRef} className="pc-adv-issues__list" tabIndex={0} onKeyDown={onListKeyDown}>
         {filtered.length === 0 ? (
           <PanelMessage>No issues match the current filter.</PanelMessage>
         ) : (
-          filtered.map((i) => {
+          filtered.map((i, idx) => {
             const sevTone = SEVERITY_TONE[i.severity] ?? SEVERITY_TONE.minor;
             const SevIcon = SEVERITY_ICON[i.severity] ?? Circle;
             const SrcIcon = SOURCE_ICON[i.source] ?? Circle;
@@ -177,7 +219,8 @@ export default function IssuesPanel({ params, api }: PanelComponentProps) {
             return (
               <div
                 key={i.id}
-                className={`pc-adv-issues__row${isActive ? ' is-active' : ''}`}
+                data-fidx={idx}
+                className={`pc-adv-issues__row${isActive ? ' is-active' : ''}${idx === focusIdx ? ' is-focused' : ''}`}
                 onClick={() => void setSelectedId(i.id)}
                 onContextMenu={(e) => {
                   e.preventDefault();
@@ -251,6 +294,10 @@ export default function IssuesPanel({ params, api }: PanelComponentProps) {
             );
           })
         )}
+      </div>
+      <div className="pc-adv-issues__footer">
+        <span>{filtered.length}/{issues.length} shown</span>
+        <span className="pc-adv-issues__kbd">J/K move · ↵ open · / search</span>
       </div>
       <style>{`
         .pc-adv-issues {
@@ -385,6 +432,14 @@ export default function IssuesPanel({ params, api }: PanelComponentProps) {
           border-left: 2px solid rgba(167, 139, 250, 0.78);
           padding-left: 10px;
         }
+        .pc-adv-issues__row.is-focused {
+          outline: 1px solid rgba(196, 181, 253, 0.55);
+          outline-offset: -1px;
+        }
+        .pc-adv-issues__list:focus,
+        .pc-adv-issues__list:focus-visible {
+          outline: none;
+        }
         .pc-adv-issues__id {
           font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
           color: rgba(199, 188, 252, 0.78);
@@ -434,6 +489,20 @@ export default function IssuesPanel({ params, api }: PanelComponentProps) {
           color: rgba(220, 214, 248, 0.45);
           text-transform: uppercase;
           letter-spacing: 0.05em;
+        }
+        .pc-adv-issues__footer {
+          flex-shrink: 0;
+          display: flex;
+          justify-content: space-between;
+          gap: 12px;
+          padding: 4px 12px;
+          font-size: 10px;
+          color: rgba(220, 214, 248, 0.5);
+          border-top: 1px solid rgba(167, 139, 250, 0.08);
+        }
+        .pc-adv-issues__kbd {
+          opacity: 0.75;
+          white-space: nowrap;
         }
       `}</style>
       <PinMenu state={pinMenu} onClose={() => setPinMenu(null)} />
