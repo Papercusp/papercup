@@ -139,3 +139,54 @@ export function getWorkerState(): {
     pendingCount: _pending.size,
   };
 }
+
+const LOCAL_EMBEDDER_MODEL = 'Xenova/bge-small-en-v1.5';
+const TRANSFORMERS_PACKAGE = '@huggingface/transformers';
+
+type TransformersModule = {
+  pipeline: (task: string, model: string) => Promise<Pipeline>;
+};
+type Pipeline = (text: string, opts: unknown) => Promise<{ data: Float32Array }>;
+
+// Dodge the bundler's static analysis so the optional @huggingface
+// dependency is only required when local mode is actually selected.
+const dynamicImport = new Function(
+  'specifier',
+  'return import(specifier)',
+) as <T>(specifier: string) => Promise<T>;
+
+/**
+ * Build a local (free, offline) BGE-small embedder.
+ *
+ * Prefers the worker-thread isolated path (`embedViaWorker`) so ONNX
+ * inference doesn't block the main event loop; falls back to an inline
+ * main-thread pipeline when worker_threads is unavailable or the worker
+ * fails to spawn (older Node, some vitest environments). The fallback is
+ * sticky per returned closure — once a worker spawn fails we stop
+ * retrying it for that embedder instance.
+ */
+export async function buildLocalEmbedder(): Promise<(text: string) => Promise<number[]>> {
+  let pipelinePromise: Promise<Pipeline> | null = null;
+  let workerDisabled = false;
+
+  return async (text: string): Promise<number[]> => {
+    if (!workerDisabled) {
+      try {
+        return await embedViaWorker(text);
+      } catch {
+        // Worker spawn or embedding failed — disable for subsequent
+        // calls on this closure and fall through to inline.
+        workerDisabled = true;
+      }
+    }
+
+    // Inline (main-thread) fallback path.
+    if (!pipelinePromise) {
+      const transformers = await dynamicImport<TransformersModule>(TRANSFORMERS_PACKAGE);
+      pipelinePromise = transformers.pipeline('feature-extraction', LOCAL_EMBEDDER_MODEL);
+    }
+    const pipe = await pipelinePromise;
+    const result = await pipe(text, { pooling: 'mean', normalize: true });
+    return Array.from(result.data);
+  };
+}

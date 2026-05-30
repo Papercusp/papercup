@@ -90,6 +90,7 @@
     "@papercusp/ipc-endpoint-server": "file:../../packages/ipc-endpoint-server",
     "@papercusp/ipc-framing": "file:../../packages/ipc-framing",
     "@papercusp/locks": "file:../../packages/locks",
+    "@papercusp/memory": "file:../../packages/memory",
     "@papercusp/orchestrator": "file:../../libs/papercusp/packages/orchestrator",
     "@papercusp/plan-parser": "file:../../packages/plan-parser",
     "@papercusp/plugin-loader": "file:../../packages/plugin-loader",
