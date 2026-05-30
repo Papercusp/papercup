@@ -119,7 +119,8 @@ export interface BuiltSpawnContext {
    * in two ways: `workspaceId` is clamped to the verified token's
    * claim (never the URL), and the quota gate is NOT bypassed —
    * workspace quotas apply to power-users. See dispatch-stack.ts
-   * quotaStep and dispatch-types.ts computeProjectedQuotaWindowKey.
+   * quotaStep and the host quota policy (agent-mcp quota-policy.ts
+   * papercuspComputeQuotaWindow, wired via PROJECTED_DEPS).
    */
   isPowerUser?: boolean;
   /**

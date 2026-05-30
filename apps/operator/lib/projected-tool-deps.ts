@@ -20,6 +20,7 @@
 import { getOrgPg } from '@restart/db-org';
 import {
   PASS_THROUGH,
+  papercuspComputeQuotaWindow,
   type DispatchProjectedDeps,
   type ToolDispatchOverrideFn,
   type UnifiedToolContext,
@@ -166,6 +167,9 @@ const overrideToolImpl: ToolDispatchOverrideFn = (toolName, args, ctx) => {
 /** Shared deps singleton. Same object reference is safe to pass to
  *  multiple dispatchers — the impls are stateless. */
 export const PROJECTED_DEPS: DispatchProjectedDeps = {
+  // Papercusp quota windowing: workers→chunk/perChunk, power-user→session,
+  // everyone else→run/perRun (plan P-011, formerly baked in the engine).
+  computeQuotaWindow: papercuspComputeQuotaWindow,
   readQuotaState: readQuotaStateImpl,
   recordInvocation: recordInvocationImpl,
   overrideTool: overrideToolImpl,

@@ -13,18 +13,20 @@ companion-to: [endpoint-unification-2026-05-21, endpoint-route-migration-2026-05
 ## Now
 
 **State:** Phase 1 (carve the pure core) **shipped** 2026-05-29. **P-010 (role
-genericization, the first Phase-2 item) shipped** 2026-05-30 — `AgentRole` is no
-longer a baked `string` stand-in: the core exposes an augmentable `RoleRegistry`
-seam and the Papercusp host registers its built-in roles via declaration merging
-(`packages/agent-mcp/src/role-config.ts`), with `ToolContext` now generic over
-`Tx`. Verified: tooldef typecheck clean + 188 tests green; agent-mcp typecheck 19
-errors (all pre-existing baseline — **0 new, 0 lost** vs. P-010) + 105 pass / 1
-pre-existing fail; augmentation cross-module merge empirically proven. See the
-**Progress log** (2026-05-30) for the design rationale (why a `RoleRegistry`
-config object, not a threaded `<Role>` generic) and follow-ups.
+genericization) and P-011 (quota windowing) shipped** 2026-05-30 — two of the six
+Phase-2 baked-rule injections are done. P-010: `AgentRole` is no longer a baked
+`string` stand-in — the core exposes an augmentable `RoleRegistry` seam, the host
+registers its roles via declaration merging (`agent-mcp/src/role-config.ts`), and
+`ToolContext` is generic over `Tx`. P-011: the worker/chunk + power-user quota
+logic left the engine for a host-injected `computeQuotaWindow(ctx, roleQuota) =>
+{ key, limit }` seam (`agent-mcp/src/quota-policy.ts`, wired into `PROJECTED_DEPS`);
+the core ships a generic run-scoped/`perRun` default and no longer knows `'worker'`,
+`'chunk:'`, or `perChunk`. Verified: tooldef typecheck clean + 188 tests; agent-mcp
+typecheck 19 errors (pre-existing baseline — **0 new, 0 lost** across both items) +
+111 pass / 1 pre-existing fail. See the **Progress log** (2026-05-30) for design
+rationale + follow-ups.
 
-**Next:** the remaining Phase-2 baked-rule injections — **P-011** (`computeWindowKey`,
-which also un-bakes the `role === 'worker'`/power-user logic), **P-012** (`tierFor`),
+**Next:** the remaining Phase-2 baked-rule injections — **P-012** (`tierFor`),
 **P-013** (`SigningProvider` + `contextSchema`), **P-014** (`resolvePrincipal`),
 **P-015** (persistence interfaces). **Phase 3** (Standard Schema — the public-API-
 shaping change) can run in parallel. A generic `Tx` parameterization of
@@ -32,6 +34,56 @@ shaping change) can run in parallel. A generic `Tx` parameterization of
 `ToolContext` was parameterized in P-010 (see Progress log).
 
 ## Progress log
+
+### 2026-05-30 — P-011 shipped (quota windowing → host-injected)
+
+Second Phase-2 item. Files: `packages/tooldef/src/{dispatch-types,dispatch-stack,
+dispatch-projected,index}.ts` + `dispatch-projected.test.ts`;
+`packages/agent-mcp/src/{quota-policy.ts (new),quota-policy.test.ts (new),index.ts,
+http-projection.test.ts}`; `apps/operator/lib/projected-tool-deps.ts`;
+`apps/operator/lib/endpoint-route/routes/transport/_mcp-handler.ts` (comment).
+
+**Design — one `computeQuotaWindow(ctx, roleQuota) => { key, limit }` seam, not the
+plan's sketched `computeWindowKey(ctx) => string | null`.** Found that the window
+key and the ceiling are inseparable: the worker→`chunk:`/`perChunk` vs.
+everyone-else→`run:`/`perRun` choice is one decision, and a `string`-only return
+can't carry the limit — which would have left the `role === 'worker' ? perChunk :
+perRun` branch baked in the core. Returning `{ key, limit }` moves *both* out, so the
+engine no longer references `'worker'`, `'chunk:'`, `'power-user:'`, or the
+`perChunk`/`perRun` field names at all (it treats `RolesQuota` opaquely, passing it
+to the host policy). The window key also feeds telemetry (`recordInvocation`), so the
+seam is resolved once in `initExecution` for every call — quota'd or not.
+
+Verified the universal convention that makes the split clean: across all ~30
+`rolesQuota` declarations, `worker` only ever sets `perChunk` and every other role
+only `perRun` — never both.
+
+**Shipped:**
+- **Core** `dispatch-types.ts`: deleted `computeProjectedQuotaWindowKey`; added the
+  `QuotaWindow` type + `defaultComputeQuotaWindow` (run-scoped, `perRun`) + the
+  optional `computeQuotaWindow` dep on `DispatchProjectedDeps`.
+- **Core** `dispatch-stack.ts`: `initExecution` resolves `{ windowKey, quotaLimit }`
+  via `deps.computeQuotaWindow ?? defaultComputeQuotaWindow`; the quota step enforces
+  `count >= quotaLimit` with no role/field knowledge. (`AgentRole` is still imported
+  for the role-allowlist step — unrelated to quota.)
+- **Host** `agent-mcp/src/quota-policy.ts` (new): `papercuspComputeQuotaWindow`
+  carries the worker/chunk + power-user/session + run logic verbatim; exported from
+  `agent-mcp/index.ts` and wired into `PROJECTED_DEPS.computeQuotaWindow`.
+- **Safety:** the only dispatch sites that observe the window key are the
+  `PROJECTED_DEPS` ones (quota + telemetry); the `{}`-deps streaming sites
+  (operator-converse, oracle, …) compute it but never read it, so the core-default
+  change is a no-op there. Worker/power-user quotas all flow through `PROJECTED_DEPS`.
+
+**Tests:** the 5 `computeProjectedQuotaWindowKey` cases moved to
+`agent-mcp/src/quota-policy.test.ts` (now testing the host impl, + limit assertions);
+the core keeps `defaultComputeQuotaWindow` tests + a new "honors a host-supplied
+computeQuotaWindow" e2e case; the HTTP-transport 429 test now supplies the real
+`papercuspComputeQuotaWindow` (proves the policy reaches the HTTP path). tooldef
+188/188; agent-mcp 111 pass (+6) / 1 pre-existing fail.
+
+**Follow-up:** the `isSuperuser && !isPowerUser` quota *bypass* still lives in the
+core quota step (reads core ctx auth flags) — that's auth-tier territory (P-014),
+not window keying, so it stayed.
 
 ### 2026-05-30 — P-010 shipped (role genericization + ToolContext<Tx>)
 
@@ -270,10 +322,15 @@ supplies the concrete one), `http-projection.ts` (→ eventually `tooldef-http`)
   (`AGENT_ROLES`). `ToolContext<Tx = any>` rides along (D-009). plugin-sdk's stale
   union deleted in favor of re-exporting the core seam. Shipped 2026-05-30.
   blocked-by: P-003 → D-005
-- **P-011** `todo` Promote `computeProjectedQuotaWindowKey` to a host-supplied
-  `computeWindowKey(ctx) => string | null` on `DispatchProjectedDeps`; default
-  impl = `run:<runId>`. Move the worker/chunk + power-user logic into the Papercusp
-  adapter. blocked-by: P-003 → D-006
+- **P-011** `done` Promoted `computeProjectedQuotaWindowKey` to a host-supplied
+  seam on `DispatchProjectedDeps` — landed as `computeQuotaWindow(ctx, roleQuota) =>
+  { key, limit }` rather than `computeWindowKey(ctx) => string | null` (window key
+  and ceiling are inseparable; the richer return also un-bakes the
+  `role === 'worker' ? perChunk : perRun` branch — see Progress log 2026-05-30).
+  Core default = run-scoped/`perRun` (`defaultComputeQuotaWindow`); the
+  worker/chunk + power-user logic moved to `agent-mcp/src/quota-policy.ts`
+  (`papercuspComputeQuotaWindow`), wired into `PROJECTED_DEPS`. Shipped 2026-05-30.
+  blocked-by: P-003 → D-006
 - **P-012** `todo` Make `tierFor(capability)` a host-supplied function; core ships an
   identity/`'low'` default. blocked-by: P-003 → D-006
 - **P-013** `todo` Define a `SigningProvider` strategy + a configurable `contextSchema`
@@ -396,13 +453,23 @@ not the 9 named here — confirming the set is open and a hard union was the wro
 Full rationale in the Progress log (2026-05-30).
 
 ### D-006 — Host-injected business rules
-Date: 2026-05-29
+Date: 2026-05-29 (**quota windowing realized 2026-05-30, P-011**)
 Four Papercusp-specific rules become functions on the DI surface, each with a
-sensible core default: quota window keying (`computeWindowKey`, default
-`run:<id>`), capability→tier (`tierFor`, default `'low'`), spawn-context signing
-(`SigningProvider`, default no-op/loopback), and principal resolution
-(`resolvePrincipal`, default bearer-or-none). Papercusp supplies the real impls in
-Phase 5.
+sensible core default: quota window keying, capability→tier (`tierFor`, default
+`'low'`), spawn-context signing (`SigningProvider`, default no-op/loopback), and
+principal resolution (`resolvePrincipal`, default bearer-or-none). Papercusp
+supplies the real impls in Phase 5.
+
+**Quota windowing realized 2026-05-30 (P-011) as `computeQuotaWindow(ctx,
+roleQuota) => { key, limit }`, not the sketched `computeWindowKey(ctx) =>
+string`.** The window key and the per-role ceiling (`perChunk` vs `perRun`) are a
+single inseparable decision, and the window key is needed for telemetry too — so
+one function returns both, resolved once per call. Core default
+`defaultComputeQuotaWindow` = run-scoped/`perRun`; the host
+(`papercuspComputeQuotaWindow`) carries worker→chunk/`perChunk`, power-user→session,
+else→run/`perRun`. The engine now references none of `'worker'`/`'chunk:'`/
+`perChunk` — it treats `RolesQuota` opaquely. The remaining `tierFor`/
+`SigningProvider`/`resolvePrincipal` rules are P-012/P-013/P-014.
 
 ### D-007 — Core has zero `@papercusp`/`@restart`/PG deps
 Date: 2026-05-29

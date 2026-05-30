@@ -16,6 +16,7 @@ import {
   _resetProjectionRegistryForTests,
   type ProjectedTool,
 } from '@papercusp/tooldef';
+import { papercuspComputeQuotaWindow } from './quota-policy';
 
 const makeTool = (over: Partial<ProjectedTool> = {}): ProjectedTool => ({
   pluginName: 'fixture',
@@ -186,6 +187,8 @@ describe('handleHttpToolRequest', () => {
       }),
       MAKE_EXTRAS({
         deps: {
+          // Real Papercusp policy: worker → chunk:<id> window, perChunk cap.
+          computeQuotaWindow: papercuspComputeQuotaWindow,
           readQuotaState: vi.fn(async () => ({ count: 1 })),
         },
       }),

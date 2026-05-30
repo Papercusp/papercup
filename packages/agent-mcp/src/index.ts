@@ -110,15 +110,19 @@ export {
 export {
   dispatchProjectedTool,
   dispatchProjectedToolStream,
-  computeProjectedQuotaWindowKey,
+  defaultComputeQuotaWindow,
   UnauthorizedToolError,
   PASS_THROUGH,
+  type QuotaWindow,
   type DispatchProjectedDeps,
   type DispatchProjectedResult,
   type DispatchProjectedErrorCode,
   type DispatchStreamEvent,
   type ToolDispatchOverrideFn,
 } from '@papercusp/tooldef';
+// Papercusp's quota windowing policy (plan P-011) — the host impl of
+// tooldef's `computeQuotaWindow` seam. Wired into PROJECTED_DEPS.
+export { papercuspComputeQuotaWindow } from './quota-policy';
 
 export {
   handleHttpToolRequest,
