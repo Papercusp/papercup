@@ -4,14 +4,13 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import * as Collapsible from '@radix-ui/react-collapsible';
 import * as Tabs from '@radix-ui/react-tabs';
 import { ChevronRight } from 'lucide-react';
-import { parseAsArrayOf, parseAsString, parseAsStringEnum, useQueryState } from 'nuqs';
+import { parseAsArrayOf, parseAsString, useQueryState } from 'nuqs';
 import { toast } from 'sonner';
 import { Button } from '@/app/harness/Button';
 import { Select } from '@/app/harness/Select';
 import { Tooltip } from '@/app/harness/Tooltip';
 import { launchOmpAgent } from '@/lib/native-omp-launch';
 import { formatRelativeUpdated } from '@/lib/format/relative-time';
-import { resolveHarnessScope, type HarnessNodeForScope } from '@/lib/harness/scope';
 import { usePlanList, type PlanListRow } from '../../admin/plans/plans-api';
 
 interface ServerRowSummary {
@@ -563,29 +562,14 @@ export default function AdvSessionsClient() {
     [harnessByPlanSlug],
   );
   const [sessionHarnessFilter, setSessionHarnessFilter] = useQueryState('h', parseAsString);
-  const [scopeMode] = useQueryState(
-    'scope',
-    parseAsStringEnum<'expanded' | 'self'>(['expanded', 'self']).withDefault('expanded'),
-  );
-  const [registryProjects, setRegistryProjects] = useState<HarnessNodeForScope[]>([]);
-  useEffect(() => {
-    let cancelled = false;
-    fetch('/api/harness/projects/lite', { cache: 'no-store' })
-      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
-      .then((d) => {
-        if (cancelled) return;
-        setRegistryProjects(Array.isArray(d?.projects) ? d.projects : []);
-      })
-      .catch(() => { /* fall back to per-row plan join */ });
-    return () => { cancelled = true; };
-  }, []);
+  // Sessions tab shows all sessions by default. The harness filter
+  // dropdown (`h` param) is the only filtering mechanism — the AdvShell
+  // harness selector drives harness-specific panels (brainstorm, git…)
+  // but should not narrow the session list without an explicit user opt-in.
   const scopeSlugs = useMemo<Set<string> | null>(() => {
     if (sessionHarnessFilter) return new Set([sessionHarnessFilter]);
-    if (!advActiveSlug) return null;
-    if (scopeMode === 'self') return new Set([advActiveSlug]);
-    if (registryProjects.length === 0) return new Set([advActiveSlug]);
-    return new Set(resolveHarnessScope(advActiveSlug, registryProjects));
-  }, [sessionHarnessFilter, advActiveSlug, scopeMode, registryProjects]);
+    return null;
+  }, [sessionHarnessFilter]);
   const sessionHarnessOptions = useMemo<string[]>(() => {
     const set = new Set<string>();
     for (const r of rows ?? []) {
