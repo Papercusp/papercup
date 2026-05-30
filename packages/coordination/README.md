@@ -42,3 +42,16 @@ the same conformance suites as the production impls — the swappability
 Tests: `npm test` (vitest). The PG presence impl is exercised by the
 operator's live `coord:presence` dispatch (it needs a real
 `harness_shared` schema); the package suite pins the in-memory double.
+
+## Detached-mode proof (P-051)
+
+`examples/detached-mode.ts` stands the whole substrate up with **zero
+operator and zero Postgres** — it imports only `core` + `event-log` and
+runs the full L3 loop (messages/inbox, thread fold, handoff accept,
+append-only escalation resolve, plan-events) over an OS temp dir, proving
+the portability claim (D-004): a detached agent participates purely over
+the filesystem. Run it:
+
+```
+npx tsx packages/coordination/examples/detached-mode.ts   # exits 0 on PASS
+```
