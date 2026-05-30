@@ -19,7 +19,9 @@ Phase 5 inline row actions shipped (`30138d81`, cherry-picked to `main`): featur
 
 Phase 6 keyboard nav + state polish shipped (`537662f4`, cherry-picked to `main`): J/K/↵/R/`/` panel-scoped shortcuts (focus ring + scroll-into-view), kbd-hint footer. Verified live (j → fidx 0→1, Enter → `?sel`). **P-020 (virtualization) deferred** — not verifiable on papercup's 3 rows.
 
-**Next:** P-013 (fate of legacy lifecycle/project/tag filters), then P-020 (virtualize against a 100+ row harness).
+P-013 resolved (`d0d82699`, cherry-picked to `main`): tags folded into the feature search; legacy lifecycle/project filters intentionally not ported (redundant / multi-user / multi-project).
+
+**Next:** P-020 (virtualize the lists, ideally against a 100+ row harness) — the only remaining item.
 
 ## Background
 
@@ -50,7 +52,7 @@ Key files (live UI is the Vite SPA; components live in the Next tree and are con
 - **P-010** `done` Features result counter ("N/M shown") + per-row parity: status pill colors, attempts pill (warn tint ≥3), needs-human-review dot (`b46bb5d6`). Claims chip + plan pill landed with Phase 3 (`c94b4d9f`) once `claims`/`sourcePlanSlug` became available via the Zero consolidated row.
 - **P-011** `done` Issues per-row parity: severity icon+color, source icon (Bot/User), status icon (Circle/Eye/Hammer/CheckCircle/XCircle), code-pointer chip (FileCode + basename), linked-feature pill (ArrowUpRight), `foundDuring` chip. All icon maps use `?? Circle` fallback so a missing key can't crash the subtree. Shipped `b46bb5d6`.
 - **P-012** `done` Issues pending-validator triage banner above the list when `pending.length > 0`. **Note:** rendered as an informational banner, not a "Triage N" button — the legacy Triage action opens `TriageQueue` (`?triage=true`), which isn't ported to `/adv` yet; wiring it is deferred until the triage flow lands. Shipped `b46bb5d6`.
-- **P-013** `todo` Decide fate of legacy lifecycle chips (mine / working / available / shipped) and project/tag filters — keep only if used in practice; default to cutting `mine` (needs viewer github id) on first pass.
+- **P-013** `done` **Decided + implemented (`d0d82699`):** legacy lifecycle chips (working/available/shipped) are redundant with the Phase 2 saved views (Running/Todo/Passed) → not ported. `mine` (queue membership) needs a viewer github-id + multi-user queue data → deferred. Project filter is multi-project/sub-harness-only (own plan) → not ported. **Tag filter folded into the feature search** — `tags` now carried through `useHarnessData` (REST + Zero) and matched in search ("Search features or tags…"). Verified live (tag term filters the list).
 
 ## Phase 3 — Live data via Zero
 
