@@ -9,6 +9,7 @@
 
 import { useEffect, useState, useCallback, useRef, type ReactElement } from 'react';
 import { wsLocalKey } from '@/lib/browser-workspace';
+import { navigateClient } from '@/lib/client-navigation';
 import { Settings2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { Tooltip } from '../../harness/Tooltip';
@@ -62,6 +63,12 @@ const PTT_HINT_SEEN_KEY = 'pc-voice-ptt-hint-seen-v1';
 const PTT_SHORTCUT_CODE = 'Backquote';
 const PTT_SHORTCUT_LABEL = '`';
 
+// Deep link to the OS-permissions step of the setup wizard — the canonical
+// place to grant microphone access, pick the input device, and watch a live
+// level meter. `/settings/voice` is engine/voice config, not permissions, so
+// the "no audio detected" toast points here instead.
+const MIC_PERMISSIONS_HREF = '/settings/setup-wizard?step=os-permissions';
+
 function isEditableTarget(target: EventTarget | null): boolean {
   if (!(target instanceof Element)) return false;
   // contenteditable elements: any "true"/"" value, plus inherited via [contenteditable=inherit]
@@ -97,8 +104,20 @@ export function VoiceButton(): ReactElement {
     const onTimeout = (e: Event) => {
       const detail = (e as CustomEvent<{ phase: string; message: string }>).detail;
       if (!detail?.message) return;
-      const isError = detail.phase === 'no-audio';
-      (isError ? toast.error : toast.warning)(detail.message);
+      // 'no-audio' means getUserMedia never delivered audio (permission
+      // denied / wrong device / muted). Give the user a one-click path to
+      // the mic-permissions page instead of a dead-end "check mic
+      // permissions" string they can't act on.
+      if (detail.phase === 'no-audio') {
+        toast.error(detail.message, {
+          action: {
+            label: 'Mic permissions',
+            onClick: () => navigateClient(MIC_PERMISSIONS_HREF),
+          },
+        });
+        return;
+      }
+      toast.warning(detail.message);
     };
     window.addEventListener('papercusp:voiceTimeout', onTimeout as EventListener);
     return () => window.removeEventListener('papercusp:voiceTimeout', onTimeout as EventListener);
