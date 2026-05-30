@@ -1,23 +1,24 @@
 'use client';
 
 /**
- * PlanBucketTabs — the five lifecycle filter tabs that sit directly
- * under PlanFilters: Draft / Ready / Running / Shipped / Rejected.
+ * PlanBucketTabs — plan lifecycle filter chips (Draft / Ready / Running /
+ * Shipped / Superseded).
  *
- * Each plan maps to exactly one bucket via `bucketOf` (plans-api), so
- * the tabs partition every visible plan. The active tab is a togglable
- * filter on the `?pBucket=` nuqs key — clicking the active tab clears
- * it (back to "all buckets"). PlanRail reads the same key.
- *
- * Count badges reflect the CURRENT view: they apply the search box +
- * every other active filter (date/owner/legacy/archived/needs-human/
- * actionable) via the shared `applyPlanFilters`, then group by bucket.
- * So the badge on a tab is exactly how many rows the rail would show if
- * that tab were selected.
+ * Multi-select + additive: each chip toggles its bucket in the
+ * `?pBuckets=` array. Selecting several is an OR *within* the plan-status
+ * facet, and the selection scopes which plans' items appear in the main
+ * list (PlansClient AND-s it with the item-status filters). None selected
+ * = all buckets. Count badges reflect the live search/filter state.
  */
 
 import { useMemo } from 'react';
-import { useQueryState, parseAsBoolean, parseAsString, parseAsStringEnum } from 'nuqs';
+import {
+  useQueryState,
+  parseAsArrayOf,
+  parseAsBoolean,
+  parseAsString,
+  parseAsStringEnum,
+} from 'nuqs';
 import {
   bucketOf,
   PLAN_BUCKETS,
@@ -36,17 +37,12 @@ interface Props {
   query: string;
   /** Server-side cross-plan body-search hits, unioned into the query match. */
   searchHitSlugs?: ReadonlySet<string>;
-  /** True when the plan (Browse) view is active — chips highlight only then. */
-  isBrowse?: boolean;
-  /** Enter the plan (Browse) view. Fired on any chip click so selecting a
-   *  status from an item view returns to browsing plans. */
-  onBrowse?: () => void;
 }
 
-export default function PlanBucketTabs({ plans, query, searchHitSlugs, isBrowse = true, onBrowse }: Props) {
-  const [bucket, setBucket] = useQueryState(
-    'pBucket',
-    parseAsStringEnum<PlanBucket>(BUCKET_IDS),
+export default function PlanBucketTabs({ plans, query, searchHitSlugs }: Props) {
+  const [buckets, setBuckets] = useQueryState(
+    'pBuckets',
+    parseAsArrayOf(parseAsStringEnum<PlanBucket>(BUCKET_IDS)).withDefault([]),
   );
 
   // Same filter keys PlanRail reads — so the badges track the live view.
@@ -75,21 +71,23 @@ export default function PlanBucketTabs({ plans, query, searchHitSlugs, isBrowse 
     return acc;
   }, [plans, date, owner, archived, legacy, inbox, actionable, query, searchHitSlugs]);
 
+  const toggle = (id: PlanBucket) => {
+    const has = buckets.includes(id);
+    void setBuckets(has ? buckets.filter((b) => b !== id) : [...buckets, id]);
+  };
+
   return (
-    <div className="pc-plan-buckets" role="group" aria-label="Plan lifecycle buckets">
+    <div className="pc-plan-buckets" role="group" aria-label="Plan status filters">
       {PLAN_BUCKETS.map(({ id, label }) => {
-        const active = isBrowse && bucket === id;
+        const active = buckets.includes(id);
         return (
           <button
             key={id}
             type="button"
             className={`pc-plans__view pc-plan-bucket pc-plan-bucket--${id} ${active ? 'is-active' : ''}`}
             aria-pressed={active}
-            onClick={() => {
-              onBrowse?.();
-              void setBucket(active ? null : id);
-            }}
-            title={active ? `Showing ${label} — click to show all buckets` : `Filter to ${label} plans`}
+            onClick={() => toggle(id)}
+            title={active ? `${label}: on — click to remove from the filter` : `Add ${label} plans to the filter`}
           >
             <span className="pc-plans__view-label">{label}</span>
             <span className="pc-plans__view-count">{counts[id]}</span>

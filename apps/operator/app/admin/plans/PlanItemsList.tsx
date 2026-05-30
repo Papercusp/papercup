@@ -3,19 +3,15 @@
 /**
  * PlanItemsList — flat, cross-plan items aggregation (presentational).
  *
- * Backs view=inbox (needs-human) and view=actionable (effective-todo,
- * all blockers cleared). The item fetch is lifted into PlansClient so a
- * single request feeds both this list and the (filtered) PlanRail in the
- * left sidebar — this component renders the rows it's handed.
+ * Renders the items it's handed, already filtered by PlansClient via the
+ * additive filter model: item-status (Needs Human / Needs Decision /
+ * Blocked, OR within) AND plan-status buckets (OR within). The list is
+ * therefore mixed-status, so per-item affordances key off each item's own
+ * status (needs-human items get the Answer/Resolve/Drop toolkit).
  *
- * `planFilter` narrows the displayed groups to one plan. In inbox/
- * actionable views the left rail (the same rich PlanRail as Browse, but
- * narrowed to plans-with-items) sets it: clicking a plan FILTERS the list
- * instead of navigating, so it no longer loads a plan tab you then have
- * to switch to.
- *
- * inbox mode adds a one-click "Resolve" button per row that flips the
- * item to done and relaunches the harness loop.
+ * `planFilter` narrows the displayed groups to one plan (the left rail
+ * sets it). Plans are collapsible groups; a row selects the item into the
+ * right-hand PlanItemPreview rather than navigating away.
  */
 
 import { useEffect, useRef, useState } from 'react';
@@ -26,23 +22,22 @@ import { toast } from 'sonner';
 import { setItemStatus, addPlanDecision, type PlanItemRow } from './plans-api';
 import PlanItemPreview from './PlanItemPreview';
 
-type ItemMode = 'inbox' | 'actionable' | 'blocked';
-
 interface Props {
-  mode: ItemMode;
   items: PlanItemRow[];
   loading: boolean;
   error: string | null;
   refresh: () => void;
   onPick: (slug: string, targetId?: string) => void;
-  /** plan-slug → harness-slug map; required for inbox mode to relaunch the loop. */
+  /** plan-slug → harness-slug map; lets needs-human rows relaunch the loop. */
   harnessByPlan?: Map<string, string>;
   /** When set, show only this plan's items (the rail acts as a filter). */
   planFilter?: string | null;
+  /** Heading title + one-line summary of the active filter (from PlansClient). */
+  title: string;
+  subtitle: string;
 }
 
 export default function PlanItemsList({
-  mode,
   items,
   loading,
   error,
@@ -50,6 +45,8 @@ export default function PlanItemsList({
   onPick,
   harnessByPlan,
   planFilter,
+  title,
+  subtitle,
 }: Props) {
   // Selected item for the read-only detail pane, encoded
   // "<planSlug>::<itemId>". Distinct from PlansClient's `?plan=` (which
@@ -84,16 +81,16 @@ export default function PlanItemsList({
 
   if (loading) {
     return (
-      <div className={`pc-items pc-items--${mode}`}>
-        <Heading mode={mode} count={null} groupCount={null} />
+      <div className="pc-items pc-items--mixed">
+        <Heading title={title} subtitle={subtitle} count={null} groupCount={null} />
         <p className="pc-plans__placeholder">Loading…</p>
       </div>
     );
   }
   if (error) {
     return (
-      <div className={`pc-items pc-items--${mode}`}>
-        <Heading mode={mode} count={null} groupCount={null} />
+      <div className="pc-items pc-items--mixed">
+        <Heading title={title} subtitle={subtitle} count={null} groupCount={null} />
         <div className="pc-plans__placeholder pc-plans__placeholder--error">
           <p>Failed to load items:</p>
           <code>{error}</code>
@@ -107,16 +104,10 @@ export default function PlanItemsList({
 
   const rows = planFilter ? items.filter((r) => r.plan === planFilter) : items;
   if (!rows.length) {
-    const empty = planFilter
-      ? `No items in ${planFilter}.`
-      : mode === 'inbox'
-        ? 'No items waiting on human input.'
-        : mode === 'blocked'
-          ? 'No blocked items right now.'
-          : 'No actionable items right now.';
+    const empty = planFilter ? `No items in ${planFilter}.` : 'No items match the current filters.';
     return (
-      <div className={`pc-items pc-items--${mode}`}>
-        <Heading mode={mode} count={0} groupCount={0} />
+      <div className="pc-items pc-items--mixed">
+        <Heading title={title} subtitle={subtitle} count={0} groupCount={0} />
         <div className="pc-items__empty">{empty}</div>
       </div>
     );
@@ -134,7 +125,8 @@ export default function PlanItemsList({
 
   // The rows for one plan — shared by the bare (rail-filtered) and the
   // collapsible group renders. Clicking a row selects it into the detail
-  // pane; it no longer redirects to the full plan tab.
+  // pane; it no longer redirects to the full plan tab. Per-item actions
+  // key off the item's own status, since the list is mixed-status.
   const renderRows = (planSlug: string, planRows: PlanItemRow[], harnessSlug: string | undefined) => (
     <ul className="pc-items__rows" role="list">
       {planRows.map((r) => {
@@ -153,7 +145,7 @@ export default function PlanItemsList({
               </span>
               <span className="pc-items__text">{r.item.text}</span>
             </button>
-            {mode === 'inbox' && (
+            {r.item.storedStatus === 'needs-human' && (
               <InboxItemActions
                 planSlug={planSlug}
                 itemId={r.item.id}
@@ -168,16 +160,16 @@ export default function PlanItemsList({
   );
 
   return (
-    <div className={`pc-items pc-items--${mode}`}>
-      <Heading mode={mode} count={rows.length} groupCount={groupCount} />
+    <div className="pc-items pc-items--mixed">
+      <Heading title={title} subtitle={subtitle} count={rows.length} groupCount={groupCount} />
       <div className="pc-items__layout">
         <div className="pc-items__listpane">
           <ul className="pc-items__groups" role="list">
             {[...groups.entries()].map(([planSlug, planRows]) => {
               const harnessSlug = harnessByPlan?.get(planSlug);
-              // Point 4: when the left rail has filtered to one plan, don't
-              // repeat its title here — render the items bare (the plan name
-              // is already shown, selected, in the rail).
+              // When the left rail has filtered to one plan, don't repeat
+              // its title here — render the items bare (the plan name is
+              // already shown, selected, in the rail).
               if (planFilter) {
                 return (
                   <li key={planSlug} className="pc-items__group pc-items__group--bare">
@@ -407,49 +399,29 @@ function InboxItemActions({
   );
 }
 
-const HEADING_META: Record<ItemMode, { kicker: string; title: string; desc: string; note: string }> = {
-  inbox: {
-    kicker: 'Human review',
-    title: 'Needs Human',
-    desc: 'Items waiting on a human decision, grouped by plan.',
-    note: 'Resolve handled items or open one for context.',
-  },
-  actionable: {
-    kicker: 'Ready queue',
-    title: 'Needs Decision',
-    desc: 'Unblocked plan work that is ready to pick up now.',
-    note: 'Open an item to jump straight to the next task.',
-  },
-  blocked: {
-    kicker: 'Stuck',
-    title: 'Blocked',
-    desc: 'Items stuck on unresolved blockers or external waits, grouped by plan.',
-    note: 'Open an item to see what it is waiting on.',
-  },
-};
-
 function Heading({
-  mode,
+  title,
+  subtitle,
   count,
   groupCount,
 }: {
-  mode: ItemMode;
+  title: string;
+  subtitle: string;
   count: number | null;
   groupCount: number | null;
 }) {
-  const meta = HEADING_META[mode];
   return (
     <header className="pc-items__head">
       <div className="pc-items__head-copy">
-        <span className="pc-items__kicker">{meta.kicker}</span>
-        <h2>{meta.title}</h2>
-        <p>{meta.desc}</p>
+        <span className="pc-items__kicker">Filtered items</span>
+        <h2>{title}</h2>
+        <p>{subtitle}</p>
       </div>
       {count !== null && groupCount !== null ? (
         <div className="pc-items__summary-card" aria-label="Items summary">
           <strong>{itemCountLabel(count)}</strong>
           <span>{groupCount} {groupCount === 1 ? 'plan' : 'plans'}</span>
-          <span className="pc-items__summary-note">{meta.note}</span>
+          <span className="pc-items__summary-note">Open an item for details; answer needs-human ones inline.</span>
         </div>
       ) : null}
     </header>

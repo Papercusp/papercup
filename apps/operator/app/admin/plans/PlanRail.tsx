@@ -12,7 +12,7 @@
  * done / dropped), the `## Now` Next: line, last-updated date.
  */
 
-import { useQueryState, parseAsBoolean, parseAsString, parseAsStringEnum } from 'nuqs';
+import { useQueryState, parseAsArrayOf, parseAsBoolean, parseAsString, parseAsStringEnum } from 'nuqs';
 import { forwardRef, useImperativeHandle, useMemo, useCallback, useState } from 'react';
 import { Play, Pause, Clock } from 'lucide-react';
 import {
@@ -90,11 +90,13 @@ const PlanRail = forwardRef<PlanRailHandle, Props>(function PlanRail(
 ) {
   const { data, loading, error, refresh } = list;
 
-  // Filter reads — PlanFilters owns the writes; same nuqs keys.
-  const [fBucket] = useQueryState(
-    'pBucket',
-    parseAsStringEnum<PlanBucket>(BUCKET_FILTER_VALUES),
+  // Filter reads — PlanFilters / PlanBucketTabs own the writes; same keys.
+  // Plan-status is now multi-select (`?pBuckets=`); empty = all buckets.
+  const [fBuckets] = useQueryState(
+    'pBuckets',
+    parseAsArrayOf(parseAsStringEnum<PlanBucket>(BUCKET_FILTER_VALUES)).withDefault([]),
   );
+  const fBucketsKey = fBuckets.join('|');
   const [fDate] = useQueryState(
     'pDate',
     parseAsStringEnum<DateWindow>(['today', '7d', '30d']),
@@ -116,14 +118,17 @@ const PlanRail = forwardRef<PlanRailHandle, Props>(function PlanRail(
       query,
       searchHitSlugs,
     );
-    const bucketed = fBucket ? filtered.filter((p) => bucketOf(p) === fBucket) : filtered;
+    const bucketed = fBuckets.length
+      ? filtered.filter((p) => fBuckets.includes(bucketOf(p)))
+      : filtered;
     return [...bucketed].sort((a, b) => {
       const sa = BUCKET_ORDER[bucketOf(a)] ?? 99;
       const sb = BUCKET_ORDER[bucketOf(b)] ?? 99;
       if (sa !== sb) return sa - sb;
       return (b.updated ?? '').localeCompare(a.updated ?? '');
     });
-  }, [plans, fBucket, fOwner, fDate, fArchived, fLegacy, fInbox, fActionable, query, searchHitSlugs]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [plans, fBucketsKey, fOwner, fDate, fArchived, fLegacy, fInbox, fActionable, query, searchHitSlugs]);
 
   useImperativeHandle(
     ref,
@@ -169,7 +174,7 @@ const PlanRail = forwardRef<PlanRailHandle, Props>(function PlanRail(
     // search box, the rest are the PlanFilters keys.
     const q = query.trim();
     const filtersActive =
-      !!fBucket || !!fOwner || !!fDate || fArchived || fLegacy || fInbox || fActionable;
+      fBuckets.length > 0 || !!fOwner || !!fDate || fArchived || fLegacy || fInbox || fActionable;
     const msg = q
       ? `No plans match “${q}”.`
       : filtersActive
