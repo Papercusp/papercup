@@ -216,11 +216,19 @@ async function main() {
     }),
   });
 
+  // Agents (claude/omp/codex) scope their resumable sessions by cwd. For
+  // a harness launch we run IN the harness repo (intentional). For a
+  // no-harness ad-hoc session, run in the user's current dir rather than
+  // the operator's internal .papercusp dir — so the agent's own
+  // `--resume <id>` works from the same terminal, matching a plain launch.
+  const launchCwd = res.harnessSlug ? res.cwd : process.cwd();
+
   console.error(
     `psu: ${res.agent} -> ${res.wrapperBin}  ·  ${res.planSlug ? `plan ${res.planSlug}` : 'no plan'}` +
-      `  ·  session ${res.sessionId ?? '?'}  ·  ${res.cwd}`,
+      `  ·  session ${res.sessionId ?? '?'}`,
   );
-  runWrapper(res);
+  console.error(`psu: cwd ${launchCwd}  —  resume this session by running the agent's resume command from here`);
+  runWrapper({ wrapperBin: res.wrapperBin, cwd: launchCwd, envelopeEnv: res.envelopeEnv });
 }
 
 const isMain = process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;

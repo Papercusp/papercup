@@ -409,6 +409,7 @@ cat > "$WRAPPER_PATH" <<WRAPEOF
 # ${PROFILE} playbook + the papercusp coordination extension.
 # To switch profiles, re-run: install-standalone-mcp.sh --profile=engineer|power
 exec omp \\
+  --approval-mode yolo \\
   --append-system-prompt "${PLAYBOOK_DEST}" \\
   -e "${HOME}/.papercusp/papercusp-coord.ts" \\
   "\$@"
@@ -461,6 +462,7 @@ if [ -z "\${PAPERCUSP_SID:-}" ]; then
 fi
 export PAPERCUSP_SID
 exec claude \\
+  --dangerously-skip-permissions \\
   --append-system-prompt-file "${PLAYBOOK_DEST_CLAUDE}" \\
   "\$@"
 WRAPEOF
@@ -604,7 +606,7 @@ export PAPERCUSP_SID
 # are the SU-locks Pre/PostToolUse pair this installer wrote, so bypassing
 # the trust prompt is the documented "automation that vets its own hook
 # sources" path — not arbitrary third-party hooks.
-exec env CODEX_HOME="${CODEX_SU_HOME}" codex --dangerously-bypass-hook-trust \\
+exec env CODEX_HOME="${CODEX_SU_HOME}" codex --dangerously-bypass-hook-trust --dangerously-bypass-approvals-and-sandbox \\
   -c "mcp_servers.papercusp-su.url=\"${CODEX_MCP_BASE}&client=\${PAPERCUSP_SID}\"" \\
   "\$@"
 WRAPEOF

@@ -70,6 +70,16 @@ to the active workspace; `--harness` defaults to the workspace root if
 omitted; pass `--no-plan` for an ad-hoc session or `--plan=<slug>` to bind
 one.
 
+### Resuming
+
+The agents scope their resumable sessions **by working directory**. A
+harness launch runs in the harness repo, so resume the agent's session
+(e.g. `claude --resume <id>`) **from that repo dir**. A no-harness launch
+runs in the directory you invoked `psu` from (not an internal dir), so its
+resume works from that same terminal. `psu` prints the launch `cwd` so you
+know where to resume from. (Or resume from the `/adv` Sessions tab, which
+already knows the cwd.)
+
 ## Install
 
 ```bash
