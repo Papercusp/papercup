@@ -15,7 +15,10 @@ import { getOrgPg } from '@restart/db-org';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
 import { defineTool } from '@papercusp/agent-mcp';
 import { loadHarnessInsights } from '@/lib/harness-insights/load-all';
-import { loadProjectCardFromGithub } from '@/lib/harness-insights/github-facts';
+import {
+  loadProjectCardFromGithub,
+  loadGithubContributorCommits,
+} from '@/lib/harness-insights/github-facts';
 import { getSessionUserOrDefault } from '@/lib/auth';
 
 async function viewerGithubUserId(): Promise<number> {
@@ -64,12 +67,18 @@ const get = defineTool({
       workspaceId,
       harnessSlug: slug,
     });
+    // Tier-A GitHub commit counts merged onto the People card (P-073c).
+    const peopleCommits = await loadGithubContributorCommits({
+      workspaceId,
+      harnessSlug: slug,
+    });
     const props = await loadHarnessInsights({
       workspace_id: workspaceId,
       harness_slug: slug,
       viewer_github_user_id: viewerId,
       runQuery,
       project,
+      peopleCommits,
       activityLimit,
     });
     return Response.json({ insights: props });

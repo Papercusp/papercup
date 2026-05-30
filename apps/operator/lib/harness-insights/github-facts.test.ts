@@ -11,6 +11,8 @@ import {
   mapRepoFactsToProjectCard,
   parseGithubRemote,
   loadProjectCardFromGithub,
+  mapContributorsToCommitCounts,
+  loadGithubContributorCommits,
   _clearGithubFactsCacheForTests,
   type GithubRepoResponse,
 } from './github-facts';
@@ -145,5 +147,75 @@ describe('loadProjectCardFromGithub', () => {
     // After the TTL, it re-fetches.
     await loadProjectCardFromGithub({ ...base, now: () => 1000 + 2 * 60 * 60 * 1000 });
     expect(get).toHaveBeenCalledTimes(2);
+  });
+});
+
+function fakeContribOctokit(
+  list: Array<{ login?: string | null; contributions?: number }>,
+) {
+  const listContributors = vi.fn(async () => ({ data: list }));
+  return {
+    octokit: { rest: { repos: { listContributors } } } as any,
+    listContributors,
+  };
+}
+
+describe('mapContributorsToCommitCounts', () => {
+  it('keys by lowercased login with contribution counts', () => {
+    expect(
+      mapContributorsToCommitCounts([
+        { login: 'Alice', contributions: 120 },
+        { login: 'bob', contributions: 5 },
+      ]),
+    ).toEqual({ alice: 120, bob: 5 });
+  });
+  it('skips anon/loginless entries and defaults missing counts to 0', () => {
+    expect(
+      mapContributorsToCommitCounts([
+        { login: null, contributions: 99 },
+        { login: 'carol' },
+      ]),
+    ).toEqual({ carol: 0 });
+  });
+});
+
+describe('loadGithubContributorCommits', () => {
+  it('returns per-login commit counts via injected octokit', async () => {
+    _clearGithubFactsCacheForTests();
+    const { octokit } = fakeContribOctokit([{ login: 'Alice', contributions: 7 }]);
+    const r = await loadGithubContributorCommits({
+      workspaceId: 'ws',
+      harnessSlug: 'papercup',
+      octokit,
+      resolveRepoPath: async () => '/r',
+      ownerName: async () => ({ owner: 'O', name: 'R' }),
+      now: () => 1000,
+    });
+    expect(r).toEqual({ alice: 7 });
+  });
+  it('returns undefined with no token, and caches per repo', async () => {
+    _clearGithubFactsCacheForTests();
+    expect(
+      await loadGithubContributorCommits({
+        workspaceId: 'ws',
+        harnessSlug: 'x',
+        octokit: null,
+        resolveRepoPath: async () => '/r',
+        ownerName: async () => ({ owner: 'O', name: 'R' }),
+      }),
+    ).toBeUndefined();
+    const { octokit, listContributors } = fakeContribOctokit([
+      { login: 'a', contributions: 1 },
+    ]);
+    const base = {
+      workspaceId: 'ws',
+      harnessSlug: 'x',
+      octokit,
+      resolveRepoPath: async () => '/r',
+      ownerName: async () => ({ owner: 'O', name: 'R' }),
+    };
+    await loadGithubContributorCommits({ ...base, now: () => 1000 });
+    await loadGithubContributorCommits({ ...base, now: () => 1000 + 60_000 });
+    expect(listContributors).toHaveBeenCalledTimes(1);
   });
 });

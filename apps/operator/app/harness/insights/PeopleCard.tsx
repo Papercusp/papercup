@@ -99,6 +99,12 @@ const LOGIN: CSSProperties = {
   whiteSpace: 'nowrap',
 };
 
+const COMMITS: CSSProperties = {
+  fontSize: 11,
+  color: 'var(--accent, #4CAF50)',
+  whiteSpace: 'nowrap',
+};
+
 const MORE_PILL: CSSProperties = {
   width: 48,
   height: 48,
@@ -124,6 +130,8 @@ export interface PeopleCardPerson {
   avatar_url?: string | null;
   /** Verified binding status — drives the corner badge. */
   binding_status: 'verified' | 'pending' | 'unverified';
+  /** Tier-A GitHub commit count (verifiable via the GitHub API). */
+  commitCount?: number | null;
 }
 
 export interface PeopleCardProps {
@@ -194,6 +202,15 @@ export function PeopleCard(props: PeopleCardProps): ReactNode {
                 </div>
               </div>
               <div style={LOGIN}>@{p.login}</div>
+              {typeof p.commitCount === 'number' ? (
+                <div
+                  style={COMMITS}
+                  title={`${p.commitCount} commits on GitHub (tier-A, verified)`}
+                  data-testid={`people-card-commits-${p.github_user_id}`}
+                >
+                  ✓ {p.commitCount.toLocaleString()}
+                </div>
+              ) : null}
             </a>
           ))}
           {overflow > 0 ? (

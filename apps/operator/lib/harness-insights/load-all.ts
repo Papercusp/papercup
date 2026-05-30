@@ -19,6 +19,7 @@ import type {
 import type {
   HowItWorksHereCardProps,
 } from '../../app/harness/insights/HowItWorksHereCard';
+import type { PeopleCardPerson } from '../../app/harness/insights/PeopleCard';
 import { loadHarnessActivity } from '../harness-activity/load';
 import { loadHarnessPeople } from './load-people';
 import { loadYourPlace } from './load-your-place';
@@ -37,6 +38,20 @@ export interface LoadHarnessInsightsOpts {
   /** Limits */
   activityLimit?: number;
   peopleLimit?: number;
+  /** Tier-A per-login GitHub commit counts, merged into People rows. */
+  peopleCommits?: Record<string, number>;
+}
+
+/** Merge tier-A GitHub commit counts onto People rows (matched by login). */
+function mergePeopleCommits(
+  people: PeopleCardPerson[],
+  commits: Record<string, number> | undefined,
+): PeopleCardPerson[] {
+  if (!commits) return people;
+  return people.map((p) => {
+    const c = commits[p.login.toLowerCase()];
+    return typeof c === 'number' ? { ...p, commitCount: c } : p;
+  });
 }
 
 function fallbackProject(
@@ -120,7 +135,7 @@ export async function loadHarnessInsights(
   return {
     project: fallbackProject(harness_slug, opts.project),
     activity: { events: activityEvents },
-    people: { people: peopleRows },
+    people: { people: mergePeopleCommits(peopleRows, opts.peopleCommits) },
     yourPlace: yourPlaceProps,
     howItWorks: fallbackHowItWorks(harness_slug, opts.howItWorks),
     spend: spendProps,

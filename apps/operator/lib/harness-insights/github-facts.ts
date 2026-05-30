@@ -243,7 +243,86 @@ export async function loadProjectCardFromGithub(
   }
 }
 
-/** Test-only: clear the module cache between cases. */
+// ── Contributor commit counts (tier-A) ─────────────────────────────
+
+export interface GithubContributorEntry {
+  login?: string | null;
+  contributions?: number;
+}
+
+/** PURE: GitHub /contributors list → { lowercased-login: commit-count }. */
+export function mapContributorsToCommitCounts(
+  list: GithubContributorEntry[] | null | undefined,
+): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const c of list ?? []) {
+    if (!c || typeof c.login !== 'string' || c.login.length === 0) continue;
+    out[c.login.toLowerCase()] =
+      typeof c.contributions === 'number' ? c.contributions : 0;
+  }
+  return out;
+}
+
+/** Fetch contributor commit counts for one repo via an injected Octokit. */
+export async function fetchGithubContributorCommits(
+  owner: string,
+  name: string,
+  octokit: Octokit,
+): Promise<Record<string, number> | null> {
+  try {
+    const res = await octokit.rest.repos.listContributors({
+      owner,
+      repo: name,
+      per_page: 100,
+    });
+    return mapContributorsToCommitCounts(res.data as GithubContributorEntry[]);
+  } catch {
+    return null;
+  }
+}
+
+const commitsCache = new Map<
+  string,
+  { value: Record<string, number> | null; expiresAt: number }
+>();
+
+/**
+ * Resolve the harness's GitHub repo and return per-login commit counts
+ * (tier-A — verifiable via the GitHub API), keyed by lowercased login.
+ * Same resolution + 1h cache + graceful degradation as the ProjectCard
+ * loader. Returns undefined to leave People rows commit-count-less.
+ */
+export async function loadGithubContributorCommits(
+  opts: LoadProjectCardOpts,
+): Promise<Record<string, number> | undefined> {
+  try {
+    const now = (opts.now ?? Date.now)();
+    const resolveRepoPath = opts.resolveRepoPath ?? defaultResolveRepoPath;
+    const ownerName = opts.ownerName ?? defaultOwnerName;
+
+    const repoPath = await resolveRepoPath(opts.workspaceId, opts.harnessSlug);
+    if (!repoPath) return undefined;
+    const on = await ownerName(repoPath);
+    if (!on) return undefined;
+
+    const key = `${on.owner}/${on.name}`.toLowerCase();
+    const hit = commitsCache.get(key);
+    if (hit && hit.expiresAt > now) return hit.value ?? undefined;
+
+    const octokit =
+      opts.octokit !== undefined ? opts.octokit : await getOctokit();
+    if (!octokit) return undefined;
+
+    const commits = await fetchGithubContributorCommits(on.owner, on.name, octokit);
+    commitsCache.set(key, { value: commits, expiresAt: now + TTL_MS });
+    return commits ?? undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Test-only: clear the module caches between cases. */
 export function _clearGithubFactsCacheForTests(): void {
   cache.clear();
+  commitsCache.clear();
 }
