@@ -189,6 +189,15 @@ function gridNodeToNode(
       id: n.data.id,
       activePanelId: n.data.activeView ?? n.data.views[0] ?? '',
       panels: n.data.views.map((id) => dvPanelToInstance(id, panels[id])),
+      // Carry the leaf size back through the save path. toDockviewJson's
+      // leafFromTabs emits `size` (the forward direction, fixed in 26fac5cd),
+      // but this reverse direction previously dropped it — so dockview.toJSON
+      // → toLayoutDoc → persist lost every per-pane width, and the next load
+      // gave the first sibling leaves min-width (100px) + remainder to the
+      // last. Capturing it here makes the round-trip symmetric so a seeded
+      // 25/25/50 split (e.g. /adv harness Features/Issues/Detail) survives a
+      // save/reload instead of collapsing.
+      size: n.size,
     };
   }
   const childDir: 'row' | 'col' = currentDir === 'row' ? 'col' : 'row';

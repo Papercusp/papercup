@@ -160,6 +160,32 @@ describe('layout-adapter', () => {
     }
   });
 
+  it('preserves leaf (tabs) size across round-trip — the /adv harness 3-panel split', () => {
+    // Regression: toLayoutDoc previously dropped leaf size, so a seeded
+    // 400/400/800 (=25/25/50) split persisted with no per-pane size and
+    // reloaded with the first two panes at min-width (100px). Mirrors
+    // defaultAdvHarnessesLayout's shape.
+    const doc: LayoutDoc = {
+      schemaVersion: 1,
+      root: {
+        kind: 'group',
+        id: 'root',
+        direction: 'row',
+        children: [
+          { kind: 'tabs', id: 'features-cell', size: 400, activePanelId: 'f', panels: [{ id: 'f', type: 'adv:features' }] },
+          { kind: 'tabs', id: 'issues-cell', size: 400, activePanelId: 'i', panels: [{ id: 'i', type: 'adv:issues' }] },
+          { kind: 'tabs', id: 'detail-cell', size: 800, activePanelId: 'd', panels: [{ id: 'd', type: 'adv:detail' }] },
+        ],
+      },
+    };
+    const back = roundTrip(doc);
+    expect(back.root.kind).toBe('group');
+    if (back.root.kind === 'group') {
+      const sizes = back.root.children.map((c) => c.size);
+      expect(sizes).toEqual([400, 400, 800]);
+    }
+  });
+
   it('builds a usable dockview JSON for the dashboard seed', () => {
     const doc = defaultDashboardLayout('sheets');
     const dv = toDockviewJson(doc);
