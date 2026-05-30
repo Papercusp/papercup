@@ -11,9 +11,9 @@ owner: avi@storewolf.com
 
 ## Now
 
-**State:** Migration shipped (Phases 1–6, P-001..P-021) and audit-verified. Three post-audit follow-ups completed this session and committed to main (5cab6af8): the feature **steer-note add form** in DetailPanel (verified end-to-end against papercup — note round-trips through harness_shared.harness_feature_notes), the pending-issue **Triage** button in IssuesPanel (P-012), and optimistic updates + the close→'closed' fix via the shared issueActionStatus() helper. The **issue side was verified against real data**: created a throwaway pending issue → Triaged it → confirmed render/Detail/Acknowledge/Close all work and the close→'closed' fix persists, then restored the pristine state (no issues.json, 0 consolidated/pending rows). Two items are deferred with reasons: P-022 (/harness retirement — not a retirable leaf, see D-010) and P-023 (#4 richer runs — no outcome/session field in agent_runs_consolidated).
+**State:** Migration shipped (Phases 1–6) + audit follow-ups (#1/#2/#3) done earlier. This session ported the remaining mission-control dock panels into /adv as new panel types — adv:overview, adv:agents, adv:logs (commit 7597e7a9, see D-011) — with new useHarnessAgents/useHarnessLogs hooks, catalog + allowedTypes wiring, and a fix to a pre-existing HarnessDock bug that prevented the "Add panel" catalog from opening any non-seed type (adv:git included). All four catalog panels verified opening live in Tauri against papercup; the default layout is the clean 3-pane (Features/Issues/Detail) seed. Before retiring /harness (P-022), the legacy view:proposals + data:chat dock panels remain unported; the docs/insights/config/summary surfaces are already /adv tabs (summary ≈ adv:overview).
 
-**Next:** Human decision on P-022 (the /harness-retirement prep project per D-010) — it cannot be a folder move and needs sign-off before the substrate extraction begins.
+**Next:** Confirm with the user whether to also port the proposals + chat dock panels, then proceed to the /harness retirement prep (P-022).
 
 ## Background
 
@@ -139,3 +139,18 @@ Asked to "delete the legacy /harness route" (move it under `_retired/`). Investi
 The `_retired/` convention fits **separable leaf surfaces** (e.g. `_retired/papercup/` public site). `app/harness/` is a route **plus** the shared component/dock library `/adv` depends on — not separable as-is.
 
 **Prep checklist to make it retirable later (see P-022):** (a) extract the shared substrate out of `app/harness/` into a neutral home (`app/_harness-shared/` or a lib) so `/adv`'s imports survive; (b) re-point the two home redirects `/harness` → `/adv`; (c) re-point the ~18 inbound links + the header "Ops" CTA; (d) port the remaining `/harness`-only surfaces into `/adv`; (e) only then is the residual route page a leaf that can move to `_retired/`.
+
+### D-011 — Ported Agents / Run log / Overview dock panels + fixed the catalog add-panel bug
+Date: 2026-05-30
+Per the user's directive to "continue migrating the rest of the panels (run-log, recent agents, …) before retiring the old view," ported three legacy `Real*Panel` dock panels into `/adv` as new panel types (committed `7597e7a9`):
+
+- **adv:overview** (`AdvOverviewPanel`) ← `RealHarnessOverviewPanel`: phase tabs (staging/testing/production, persisted via `/harness-phase-last-used`), alive/escalated/smoke badges, progress bar, status-bucket counts, iteration + mission cost.
+- **adv:agents** (`AdvAgentsPanel`) ← `RealAgentsPanel`: running-dot + role accent + runId + size + age, Running/All toggle. Live via Zero `agentRunsConsolidated.bySlug` overlay + REST `/agents` bootstrap (no 5s poll).
+- **adv:logs** (`AdvLogsPanel`) ← `RealLogsPanel`: `run.log.jsonl` tail with level chips + source filter (one-shot read + manual Refresh, no 3s poll).
+
+New shared hooks `useHarnessAgents` / `useHarnessLogs` in `useHarnessData.ts`. Registered in `HarnessesDock`; added to `AddPanelCatalog` labels + the `/adv` `allowedTypes`. Token-clean (blue-frost vars) + library-compliant (aria-pressed toggles, lucide icons).
+
+**Pre-existing dock bug fixed along the way:** `HarnessDock.useComponentsForLayout` built dockview component bridges from *only the current layout's types*, so the "Add panel" catalog threw `"Only React.memo/ForwardRef/functional components are accepted"` for ANY type not in the seed — `adv:git` was already broken this way, never noticed because it was never opened via the catalog. Now bridges every *registered* type (the `registryTick` subscription that was already wired finally does something). All four catalog panels verified opening live in the Tauri webview against papercup; layout reset back to the 3-pane seed afterward.
+
+**Still unported before retirement (P-022):** the legacy `view:proposals` and `data:chat` dock panels. The `view:docs/insights/config/summary` surfaces are already top-level `/adv` tabs (docs/insights/config/plans/sessions), not harness-dock panels, and `summary` ≈ the new `adv:overview`.
+Related: P-022
