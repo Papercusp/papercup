@@ -364,9 +364,26 @@ function formatUpdated(updated: string): string {
  * Bare relative time for the row's last-updated chip — drops the
  * trailing " ago" so it reads as a compact "4d" / "today" next to the
  * clock icon (the full "4d ago" stays in the title attribute).
+ *
+ * For the `today` / `yesterday` pills we also append an abbreviated
+ * HH:MM time-of-day ("today 14:32") — "today" alone spans 24h, so the
+ * clock time is the useful precision. Older pills ("4d", dated) keep the
+ * relative form (a time-of-day on "4d" would just be noise).
  */
 function formatUpdatedShort(updated: string): string {
-  return formatRelativeUpdated(updated).replace(/\s*ago$/, '');
+  const rel = formatRelativeUpdated(updated).replace(/\s*ago$/, '');
+  if (rel === 'today' || rel === 'yesterday') {
+    const t = Date.parse(updated);
+    if (Number.isFinite(t)) {
+      const time = new Date(t).toLocaleTimeString([], {
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: false,
+      });
+      return `${rel} ${time}`;
+    }
+  }
+  return rel;
 }
 
 /** P-023: segmented progress bar showing done / active / remaining proportions. */
