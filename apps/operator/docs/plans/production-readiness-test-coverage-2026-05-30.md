@@ -144,7 +144,7 @@ oracle 3 thin); **3** property + **1** bench; **0** coverage measurement.
   `packages/embedded-postgres-server`. Guards the migration-drift / silent-boot
   -failure risk flagged in prior sessions. blocked-by: P-002.
 
-- **P-008** `wip` Replace `makeMockPg` with a real testcontainer/embedded-PG (pattern established + 2 of ~7 modules covered vs real PG: run-chunks-pg 3e0b32b8, mission-state-pg b66d4da7. Remaining: dispatches/checkpoints/run-output/snapshots/chunk-plan)
+- **P-008** `done` Replace `makeMockPg` with a real testcontainer/embedded-PG (pattern established + 2 of ~7 modules covered vs real PG: run-chunks-pg 3e0b32b8, mission-state-pg b66d4da7. Remaining: dispatches/checkpoints/run-output/snapshots/chunk-plan) (all 7 engine *-pg modules covered vs real PG run-chunks/mission-state/checkpoints/run-output/dispatches/snapshots/chunk-plan + shared _pg-helpers fixture; 40/40 green. Commits 3e0b32b8, b66d4da7, 857587e9, 28db29a3)
   fixture for the engine `*-pg` modules (`mission-state-pg`, `checkpoints-pg`,
   `run-chunks-pg`, `dispatches-pg`, …). Catches data-corruption the string-matching
   mock cannot. blocked-by: P-002.
@@ -309,3 +309,26 @@ Two findings from starting P-008 (real-PG integration replacing makeMockPg):
 
 **2. P-009 (concurrent claim race) deferred.** The orchestrator-side `distributed-claim-fetch` is only an HTTP client; the real "exactly one wins" arbitration is an **Autobase/Hyperbee distributed claim** (v5 §0.6), not a single-PG `FOR UPDATE SKIP LOCKED` race. The PG `feature_claims`/`claim_audit` tables are an audit mirror, not the arbiter. A faithful race test needs the P2P substrate stood up — out of scope for a quick integration test. Deferring P-009 rather than testing the wrong (PG-mirror) layer.
 Related: P-008, P-009
+
+### D-007 — JSONB double-encode confirmed SYSTEMIC across the orchestrator — definitive root cause + fix
+Date: 2026-05-30
+The P-008 real-PG tests + a decisive probe (in chunk-plan-pg git history) nailed the bug first seen in mission-state lanes (D-006). It is **systemic, not a one-off**, and the exact fix is now known.
+
+**Root cause.** Every orchestrator JSONB write that interpolates `${JSON.stringify(value)}` into a jsonb column double-encodes: postgres-js JSON-encodes the (already-stringified) string *again*, so the value lands as a jsonb **string scalar** (`jsonb_typeof = 'string'`), not the array/object. The probe tested four forms against a production-faithful client (`prepare:false` + bigint parser):
+
+```
+${JSON.stringify(x)}          → 'string'  (bug)
+${JSON.stringify(x)}::jsonb   → 'string'  (bug — the ::jsonb cast does NOT help)
+${sql.json(x)}                → 'array'   ✓
+${sql.json(x)}::jsonb         → 'array'   ✓
+```
+
+So `::jsonb` is NOT a fix (chunk-plan uses it and is still broken); `sql.json()` is.
+
+**Affected call sites (all in the `libs/papercusp/packages/orchestrator` submodule):**
+- `mission-state-pg.ts` → `persistLanesPg` (lanes never persist; readMissionState returns []).
+- `dispatches-pg.ts` → `recordDispatchPg` (result_body audit corrupt).
+- `chunk-plan-pg.ts` → `persistPlan` + `updateChunkPlan` (chunk `files` stored as a string, not string[] — readPlan returns a string typed as string[], so resume-on-restart logic that iterates files is broken).
+
+**Fix:** replace `${JSON.stringify(x)}` with `${ctx.pg.json(x)}` at those 4 sites. Ripple: `OrchestratorPg` (invoke.ts) needs a `json()` member (or a localized cast), and the 3 `makeMockPg` unit mocks need a `.json` stub. ~6-8 files, submodule commit + parent pointer bump. NOT done here (engine-internal submodule surgery beyond "write tests") — captured as green tripwires in the mission-state / dispatches / chunk-plan integration tests (each asserts the current broken `jsonb_typeof='string'` and flips RED when fixed). **Recommend the user authorize this fix** — it is real durable-state corruption with a definitive one-pattern remedy.
+Related: P-008
