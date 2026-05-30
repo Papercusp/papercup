@@ -244,13 +244,13 @@ two SEPARATE storage components**, not one dual-backend interface:
   rewires. Note: root `npm install` is blocked by a PRE-EXISTING
   `@blocknote/mantine` ERESOLVE — symlink `node_modules/@papercusp/rrf` directly
   or use `--legacy-peer-deps`. → D-001
-- **P-003** `todo` Extract `@papercusp/embedded-pg-discovery` from
+- **P-003** `done` Extract `@papercusp/embedded-pg-discovery` from
   `lib/embedded-pg-discovery.ts` (58 LOC, NONE coupling). **Audit correction:** it
   is NOT currently parameterizable — discovery path (`~/.papercusp/embedded-pg.json`),
   env-var names, and the native-fallback DB name (`papercusp`) are all hardcoded.
   Add a config/DI surface for those three; keep `getHarnessAdminUrl()` (used by
   11 call-sites) as the Papercusp-configured wrapper. → D-001
-- **P-022** `todo` Extract `@papercusp/plan-parser` — the **pure tier only**:
+- **P-022** `done` Extract `@papercusp/plan-parser` — the **pure tier only**:
   `parser.ts` + `effective-status.ts` + `content-hash.ts` (609 LOC, verified zero
   domain imports). **Audit correction:** `lint.ts` is NOT pure — it imports
   `source.ts` (harness file discovery), so lint stays in-app. The full lifecycle
@@ -483,3 +483,57 @@ injection interface.** The only genuinely shared artifacts are the `file-claim`
 `WorkspaceStore` that unlocks the cluster; P-001 is documentation of the per-
 subsystem seams, not a blocking gate, and Phase 1 (rrf / embedded-pg-discovery /
 plan-parser) needs no seam at all.
+
+## Addendum — Phase 1 shipped (2026-05-30) + impact on in-flight plans
+
+Phase 1 (the three no-seam pure extractions) is **done and on `main`**. This
+records exactly what changed and how it affects the four plans whose agents were
+paused for this extraction window.
+
+### What shipped
+
+| Item | Package | Commit | Approach | Consumer impact |
+|---|---|---|---|---|
+| **P-002** | `@papercusp/rrf` | `f7f39bf5` | move + rewire | `search/semantic.ts` and `endpoint-route/routes/user/search.ts` now import `rrfCombine`/`RRF_K_DEFAULT` from `@papercusp/rrf`; old `agent-tools/search/rrf.ts` **deleted** |
+| **P-003** | `@papercusp/embedded-pg-discovery` | `68e5116a` | wrapper | none — `lib/embedded-pg-discovery.ts` is now a thin wrapper around `resolvePgUrl({envVars,discoveryFile,fallbackUrl})`; all `getHarnessAdminUrl` callers untouched |
+| **P-022** | `@papercusp/plan-parser` | `e96f63f3` | move + re-export shim | none — `plans/{parser,effective-status,content-hash}.ts` are now one-line re-exports of the package; ~24 in-plans consumers resolve unchanged |
+
+17 package tests green (7 + 5 + 5); all three resolve from the operator. Pattern
+for all three: a new `packages/<name>/` with **src-as-entry** (no build step,
+mirrors `@papercusp/docs-engine`), the package owns its vitest suite, and
+`node_modules/<pkg>` is **symlinked directly** because root `npm install` is
+blocked by a **pre-existing `@blocknote/mantine` ERESOLVE** (unrelated to this
+work — don't chase it; use the symlink or `--legacy-peer-deps`).
+
+### Two known follow-ups (not blockers)
+
+- **P-013** (already in Phase 3): `search/semantic.ts` + `search.ts` read
+  `ctx.tx` unconditionally though it's optional — a latent null-deref. Untouched
+  by P-002 (import-only change); still owed before the search package extraction.
+- **P-023b** (new): rewire the ~24 `plan-parser` consumers to import
+  `@papercusp/plan-parser` directly and delete the three re-export shims.
+  Deferred because paperclip was actively `git add -A`-committing the shared
+  checkout during this window, making a 24-file rewire unsafe to land atomically.
+
+### Impact on the four paused plans
+
+- **`search-STATUS-2026-05-29`** — **directly affected**. RRF is no longer a
+  local module: any work on `search/semantic.ts` or
+  `endpoint-route/routes/user/search.ts` must import from `@papercusp/rrf` (not
+  `./rrf`, which is gone). The hybrid-search source-registry + embedder-DI +
+  `ctx.tx` cleanup remain this plan's territory — coordinate against P-013/P-020
+  here so we don't collide; RRF itself is now settled upstream.
+- **`scout-refactor-STATUS-2026-05-29`** and
+  **`data-fetch-surfaces-strategy-2026-05-29`** — search/retrieval-adjacent. No
+  files of theirs changed, but if either touches the search ranking path, the
+  same "import RRF from `@papercusp/rrf`" rule applies and the `ctx.tx` (P-013)
+  hazard is live in that surface.
+- **`papercusp-tooldef-extraction-2026-05-29`** (companion) — no conflict, and a
+  small upside: `@papercusp/embedded-pg-discovery` is now a clean PG-dep-free
+  package and `@papercusp/plan-parser` is importable without the operator, both
+  consistent with that plan's D-007 goal ("core has zero `@papercusp`/`@restart`/
+  PG deps").
+
+No edits were made to the four plans themselves; this addendum is the single
+source of truth for the cross-plan effect. Agents resuming those plans should
+read it first.
