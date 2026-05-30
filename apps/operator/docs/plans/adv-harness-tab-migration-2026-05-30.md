@@ -115,3 +115,13 @@ DockviewReact's `.dv-shell` sizes via `height:100%`, which WebKitGTK (the Tauri 
 Date: 2026-05-30
 
 The originating session killed `hono-host` to pick up a `lib/*.ts` change and the replacement bound to an empty workspace (`/api/harness/projects/lite` → `[]`), breaking every panel. Lesson: UI-only changes only need the Vite build-watcher (no hono restart); for a `lib/dock-layouts.ts` change, restart the **Tauri desktop** (which re-runs the embedded-PG handshake) rather than hand-restarting `hono-host`. Already in agent memory.
+
+### D-009 — Optimistic UI updates — hand-rolled now, Zero mutators later
+Date: 2026-05-30
+Date: 2026-05-30
+
+An audit found mutations (feature status-change/reset, issue ack/close/won't-fix) POSTed + toasted but did **not** update the UI until a Zero push or reload — most visibly the Detail status `<select>` snapping back. Fixed (`e1f12917`): `useHarnessData` now exposes `patchFeature`/`patchIssue`; each action site does snapshot → optimistic patch → POST → rollback-on-error, and the Zero overlay reconciles when it pushes.
+
+**Why hand-rolled, not Zero mutators:** per the Restart `data-fetch-surfaces-strategy-2026-05-29` plan, the *proper* end-state for synced-entity CRUD is **Zero custom mutators** (`@restart/sync` `zero.mutate.*` — optimistic apply + auto-rollback + reconcile + self-updating read cache). But that path is **not built**: the `@restart/sync` client is constructed without `mutators` (confirmed in `libs/sync/src` — no `mutators`/`zero.mutate`/`useSyncMutate`), it's the **WS** transport, and papercup desktop is **SSE**. The Restart plan itself states "No optimistic Zero writes happen today … today's optimistic UX is hand-rolled component state." So hand-rolled optimistic is the correct interim — it matches the legacy papercup panels (`IssuesList` `setIssues(prev.map(...))`) and Restart's current reality, and is forward-compatible: when the Zero-mutator path lands (Restart P4 — thread `mutators` through `SyncProvider`, expose `useSyncMutate`, + an SSE-mutate fallback), these sites swap to `zero.mutate.*`.
+
+**Known limitation:** the patch is per-hook-instance, so only the *firing* pane updates instantly (Detail when you change status there; the list row when you act on a row). The other pane reconciles via Zero. True cross-pane instant coherence is exactly what the shared Zero store (mutators) gives — deferred with the convergence. Promote stays non-optimistic (server-assigned `linkedFeatureId` isn't client-predictable).
