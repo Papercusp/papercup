@@ -654,32 +654,30 @@
   font-weight: 700;
   line-height: 1.28;
   color: #f4fbff;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  /* Full title, no cut-off — wrap instead of ellipsis (the pills moved
+     to the meta line, so the title owns the first line). */
+  white-space: normal;
+  overflow-wrap: anywhere;
   min-width: 0;
 }
 
 .pc-plan-row__meta-line {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 8px;
+  flex-wrap: wrap;
+  gap: 6px;
   min-width: 0;
 }
 
-.pc-plan-row__slug,
 .pc-plan-row__updated {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  margin-left: auto;
+  flex-shrink: 0;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 10px;
-  color: rgba(186, 230, 253, 0.52);
-  overflow: hidden;
-  text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.pc-plan-row__updated {
-  flex-shrink: 0;
   color: rgba(186, 230, 253, 0.42);
 }
 

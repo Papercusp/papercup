@@ -14,7 +14,7 @@
 
 import { useQueryState, parseAsBoolean, parseAsString, parseAsStringEnum } from 'nuqs';
 import { forwardRef, useImperativeHandle, useMemo, useCallback, useState } from 'react';
-import { Play, Pause } from 'lucide-react';
+import { Play, Pause, Clock } from 'lucide-react';
 import {
   bucketOf,
   startPlan,
@@ -260,12 +260,7 @@ function PlanRow({
         aria-current={active ? 'page' : undefined}
       >
         <div className="pc-plan-row__head">
-          <Tooltip label={title}>
-            <span className="pc-plan-row__title">{title}</span>
-          </Tooltip>
-          {source ? <SourcePill source={source} /> : null}
-          {plan.harness ? <HarnessPill harness={plan.harness} /> : null}
-          <StatusPill status={plan.status} />
+          <span className="pc-plan-row__title">{title}</span>
           {showStartToggle ? (
             <button
               type="button"
@@ -281,9 +276,17 @@ function PlanRow({
           ) : null}
         </div>
         <div className="pc-plan-row__meta-line">
-          <span className="pc-plan-row__slug">{plan.slug}</span>
+          {source ? <SourcePill source={source} /> : null}
+          {plan.harness ? <HarnessPill harness={plan.harness} /> : null}
+          <StatusPill status={plan.status} />
           {plan.updated ? (
-            <span className="pc-plan-row__updated">updated {formatUpdated(plan.updated)}</span>
+            <span
+              className="pc-plan-row__updated"
+              title={`Last updated ${formatUpdated(plan.updated)}`}
+            >
+              <Clock size={10} aria-hidden />
+              {formatUpdatedShort(plan.updated)}
+            </span>
           ) : null}
         </div>
         {plan.itemCounts ? <PlanProgressBar counts={plan.itemCounts} /> : null}
@@ -350,6 +353,15 @@ import { formatRelativeUpdated } from '@/lib/format/relative-time';
  */
 function formatUpdated(updated: string): string {
   return formatRelativeUpdated(updated);
+}
+
+/**
+ * Bare relative time for the row's last-updated chip — drops the
+ * trailing " ago" so it reads as a compact "4d" / "today" next to the
+ * clock icon (the full "4d ago" stays in the title attribute).
+ */
+function formatUpdatedShort(updated: string): string {
+  return formatRelativeUpdated(updated).replace(/\s*ago$/, '');
 }
 
 /** P-023: segmented progress bar showing done / active / remaining proportions. */
