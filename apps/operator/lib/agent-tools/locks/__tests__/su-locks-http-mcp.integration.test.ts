@@ -15,7 +15,10 @@
  * §11 Zod input validation
  * §12 Per-session identity (Mcp-Session-Id header)
  *
- * §7 (hook scripts) omitted — pretooluse-locks-acquire.sh does not exist.
+ * §7 (hook scripts): the Claude/Codex hook scripts (restored at
+ * apps/operator/scripts/hooks/cc/) are covered by their own spawn-based
+ * suite, scripts/hooks/cc/__tests__/cc-hooks.test.ts; the OMP hook by
+ * scripts/hooks/omp/__tests__/coord-hook.test.ts.
  *
  * All live tests are skipped when the operator is not reachable.
  */
