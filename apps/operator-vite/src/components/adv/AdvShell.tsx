@@ -140,7 +140,7 @@ export default function AdvShell({
   return (
     <div className="pc-advshell">
       <header className="pc-advshell__header">
-        {/* Top row: title, harness selector, action buttons */}
+        {/* Combined row: title · selector · status bar · action buttons */}
         <div className="pc-advshell__header-top">
           <div className="pc-advshell__copy">
             <span className="pc-advshell__kicker">Advanced orchestration</span>
@@ -174,6 +174,8 @@ export default function AdvShell({
               triggerClassName="pc-advshell__select-trigger"
             />
           </div>
+          {/* Inline status: dot + label + pills + start/stop */}
+          <AdvNowRunning slug={activeSlug} />
           <button
             type="button"
             className="pc-advshell__action pc-advshell__action--new"
@@ -194,9 +196,6 @@ export default function AdvShell({
           )}
           <DiscordBadge slug={activeSlug} />
         </div>
-
-        {/* Harness status bar — active/stopped indicator + start/stop + agent pills */}
-        <AdvNowRunning slug={activeSlug} />
 
         {/* Tab strip */}
         <Tabs.Root value={activeTab} onValueChange={(value) => void setActiveTab(value as AdvTabId)} className="pc-advshell__tabs">
@@ -446,30 +445,21 @@ export default function AdvShell({
           white-space: nowrap;
         }
 
-        /* ── Harness status bar ──────────────────────────────────────── */
+        /* ── Harness status bar (inline in header row) ───────────────── */
         .pc-advshell__harness-bar {
           display: flex;
           align-items: center;
-          gap: 10px;
-          padding: 5px 12px;
-          border-top: 1px solid var(--border, rgba(125, 211, 252, 0.12));
-          min-height: 34px;
-          transition: background 200ms ease;
-        }
-        .pc-advshell__harness-bar--is-active {
-          background: rgba(34, 197, 94, 0.06);
-          border-top-color: rgba(34, 197, 94, 0.18);
-        }
-        .pc-advshell__harness-bar--is-stopped {
-          background: rgba(148, 163, 184, 0.04);
-        }
-        .pc-advshell__harness-bar--is-checking {
-          background: transparent;
+          gap: 8px;
+          flex: 1;
+          min-width: 0;
+          padding-left: 10px;
+          margin-left: 2px;
+          border-left: 1px solid var(--border, rgba(125, 211, 252, 0.18));
         }
         .pc-advshell__harness-status {
           display: flex;
           align-items: center;
-          gap: 7px;
+          gap: 6px;
           flex-shrink: 0;
         }
         .pc-advshell__harness-dot {
@@ -477,11 +467,11 @@ export default function AdvShell({
           height: 7px;
           border-radius: 50%;
           flex-shrink: 0;
-          background: #64748b;
+          background: #475569;
         }
         .pc-advshell__harness-bar--is-active .pc-advshell__harness-dot {
           background: #4ade80;
-          box-shadow: 0 0 8px rgba(74, 222, 128, 0.55);
+          box-shadow: 0 0 7px rgba(74, 222, 128, 0.5);
           animation: pc-advshell-pulse 2s ease-in-out infinite;
         }
         .pc-advshell__harness-label {
