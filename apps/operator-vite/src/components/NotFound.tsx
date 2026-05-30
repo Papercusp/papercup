@@ -180,7 +180,7 @@ export default function NotFound() {
             </p>
 
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12, marginTop: 26 }}>
-              <Link to="/harness" className="pc-button primary">
+              <Link to="/adv" search={{ tab: 'harnesses' }} className="pc-button primary">
                 Return to Mission Control
               </Link>
               <Link to="/marketplace" className="pc-button ghost">

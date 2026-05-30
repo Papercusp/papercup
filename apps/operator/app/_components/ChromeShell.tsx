@@ -8,7 +8,7 @@ import { useGSAP } from '@gsap/react';
 import { useReducedMotion } from 'motion/react';
 import { useFancyEffectsEnabled } from '@/lib/visual-effects';
 import { OperatorButton, OperatorAutoScanToggle } from './OperatorChromeControls';
-import { OpsTargetMark, BrainMark } from './ChromeNavMarks';
+import { BrainMark } from './ChromeNavMarks';
 import { AriaLiveRegions } from './voice/AriaLiveRegions';
 import { VoiceLeaderBootstrap } from './voice/VoiceLeaderBootstrap';
 import { HostCheckBanner } from './HostCheckBanner';
@@ -90,10 +90,8 @@ export default function ChromeShell() {
   const chromeless = CHROMELESS_PATH_PREFIXES.some(
     (p) => pathname === p || pathname.startsWith(`${p}/`),
   );
-  // When the user is already on a harness page, Ops is a no-op. Render a
-  // non-link span with `is-current` styling so it's visibly distinct from
-  // the active CTA elsewhere in the app.
-  const onHarness = isChromeShellNavActive(pathname, '/harness');
+  // When the user is already on /adv, the Ops CTA is a no-op (rendered as a
+  // non-link span with `is-current` styling).
   const onAdv = isChromeShellNavActive(pathname, '/adv');
   const snapshotsFlag = useFlag(FLAGS.SNAPSHOTS);
   const marketplaceFlag = useFlag(FLAGS.MARKETPLACE);
@@ -180,25 +178,6 @@ export default function ChromeShell() {
               <span className="pc-header-cta-label">OPS</span>
             </RouteLink>
           )}
-          {testingFlag && (onHarness ? (
-            <span
-              className="pc-header-cta pc-header-cta--mission is-current"
-              aria-label="Ops (current page)"
-              aria-current="page"
-            >
-              <span className="pc-header-cta-orb" aria-hidden="true">
-                <OpsTargetMark className="pc-header-cta-logo pc-header-cta-logo--ops" />
-              </span>
-              <span className="pc-header-cta-label">OPS</span>
-            </span>
-          ) : (
-            <RouteLink href="/harness" className="pc-header-cta pc-header-cta--mission" aria-label="Ops" {...mainNavJumpGateProps}>
-              <span className="pc-header-cta-orb" aria-hidden="true">
-                <OpsTargetMark className="pc-header-cta-logo pc-header-cta-logo--ops" />
-              </span>
-              <span className="pc-header-cta-label">OPS</span>
-            </RouteLink>
-          ))}
           {testingFlag ? <OperatorButton /> : null}
           {testingFlag ? <OperatorAutoScanToggle /> : null}
         </div>
