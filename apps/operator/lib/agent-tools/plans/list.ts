@@ -6,7 +6,8 @@
  * by effectiveStatus, the `## Now` next-action line.
  *
  * Hides archive/ by default. Legacy plans (no/malformed frontmatter)
- * surface with status: 'unknown' and no item counts.
+ * surface with status: 'draft' (the isLegacy flag marks them) and no
+ * item counts.
  */
 
 import { z } from 'zod';
@@ -35,9 +36,9 @@ const ALL_ROLES = [
 
 const argsSchema = z.object({
   status: z
-    .enum([...PLAN_STATUSES, 'unknown'] as [string, ...string[]])
+    .enum([...PLAN_STATUSES] as [string, ...string[]])
     .optional()
-    .describe('Filter by plan-level status. "unknown" returns legacy plans only.'),
+    .describe('Filter by plan-level status. Legacy plans (no frontmatter) report status "draft"; use includeLegacy + the isLegacy flag to find them.'),
   includeArchived: z
     .boolean()
     .optional()
@@ -91,7 +92,7 @@ type ListRow = {
 export default defineTool({
   name: 'plans:list',
   description:
-    'List SU plans under apps/operator/docs/plans/. One row per plan with title, status, item counts by effectiveStatus, and the ## Now next-action line. Legacy plans (no frontmatter) surface as status="unknown".',
+    'List SU plans under apps/operator/docs/plans/. One row per plan with title, status, item counts by effectiveStatus, and the ## Now next-action line. Legacy plans (no frontmatter) surface as status="draft" (flagged via isLegacy).',
   guidance: {
     when: 'You need a directory of plans — "what plans exist", "what plans are active", or the entry point before plans:get.',
     notWhen:
@@ -168,7 +169,10 @@ export default defineTool({
           itemCounts = counts;
         }
 
-        const status = parsed.frontmatter.status ?? (parsed.isLegacy ? 'unknown' : 'draft');
+        // No frontmatter status (incl. legacy/unparseable plans) → 'draft'.
+        // 'unknown' was retired as a status; the isLegacy flag still marks
+        // frontmatter-less plans for callers that care.
+        const status = parsed.frontmatter.status ?? 'draft';
 
         if (args.status && status !== args.status) continue;
 

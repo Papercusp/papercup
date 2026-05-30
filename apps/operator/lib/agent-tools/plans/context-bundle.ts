@@ -118,7 +118,7 @@ function formatRationaleEntry(r: PlanBundleRationale): string {
 export function assemblePlanContextBundleText(input: PlanBundleInput): string {
   const headerLines = [
     `THE PLAN — ${input.title}`,
-    `slug: ${input.slug}   ·   status: ${input.status ?? 'unknown'}`,
+    `slug: ${input.slug}   ·   status: ${input.status ?? 'draft'}`,
   ];
   if (input.status === 'superseded') {
     headerLines.push(

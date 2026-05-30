@@ -16,7 +16,7 @@ import { useEffect, useState } from 'react';
 
 /* ── Wire types — mirror lib/agent-tools/plans/* return shapes ─────── */
 
-export type PlanStatus = 'draft' | 'ready' | 'active' | 'blocked' | 'shipped' | 'superseded' | 'unknown';
+export type PlanStatus = 'draft' | 'ready' | 'active' | 'blocked' | 'shipped' | 'superseded';
 
 /**
  * The five lifecycle buckets surfaced as filter tabs in the Plans tab.
@@ -24,7 +24,7 @@ export type PlanStatus = 'draft' | 'ready' | 'active' | 'blocked' | 'shipped' | 
  * lifecycle (draft → ready → running → shipped) plus the `rejected`
  * off-ramp. Distinct from {@link PlanStatus}: `running` is derived from
  * the operational start-state, not a frontmatter status, and legacy
- * plans (status `unknown`) fold into `draft`.
+ * plans (no frontmatter status, defaulted to `draft`) fold into `draft`.
  */
 export type PlanBucket = 'draft' | 'ready' | 'running' | 'shipped' | 'rejected';
 
@@ -45,7 +45,7 @@ const PLAN_BUCKET_IDS: readonly PlanBucket[] = PLAN_BUCKETS.map((b) => b.id);
  *   2. shipped               → shipped    (terminal success)
  *   3. startStatus 'started' → running    (operationally running)
  *   4. ready | active        → ready      (approved, not started; `active` is legacy-approved)
- *   5. otherwise             → draft      (draft, legacy `unknown`, anything else)
+ *   5. otherwise             → draft      (draft, blocked, anything else)
  */
 export function bucketOf(plan: Pick<PlanListRow, 'status' | 'startStatus'>): PlanBucket {
   if (plan.status === 'superseded') return 'rejected';

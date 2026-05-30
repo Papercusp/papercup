@@ -100,7 +100,7 @@ export default function PlanActions({
   // The lifecycle bucket drives which primary action shows: draft →
   // Approve (no start), ready → Start + Demote, running → Pause,
   // shipped/rejected → none. Derived from the same bucketOf the rail uses.
-  const bucket = bucketOf({ status: planStatus ?? 'unknown', startStatus: startStatus ?? null });
+  const bucket = bucketOf({ status: planStatus ?? 'draft', startStatus: startStatus ?? null });
 
   const handleApprove = async () => {
     if (approvePending) return;
