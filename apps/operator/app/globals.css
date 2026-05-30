@@ -235,8 +235,8 @@ section[aria-label*="Notifications"][aria-live] {
 
 /* Proposals view tabs (Proposals / SPEC.md preview). */
 .h-proposals-view-tab[data-state="active"] {
-  background: color-mix(in oklab, var(--accent, #38bdf8), transparent 78%) !important;
-  color: var(--accent, #38bdf8) !important;
+  background: color-mix(in oklab, var(--accent, var(--accent)), transparent 78%) !important;
+  color: var(--accent, var(--accent)) !important;
 }
 .h-proposals-view-tab:hover:not([data-state="active"]) {
   background: color-mix(in oklab, var(--bg-2, #131722), white 8%) !important;
@@ -266,7 +266,7 @@ section[aria-label*="Notifications"][aria-live] {
 .notif-bell:hover {
   background: color-mix(in oklab, var(--bg-2, #131722), white 6%);
   color: var(--fg, #e2e8f0);
-  border-color: color-mix(in oklab, var(--accent, #38bdf8), transparent 60%);
+  border-color: color-mix(in oklab, var(--accent, var(--accent)), transparent 60%);
 }
 .notif-badge {
   position: absolute;
@@ -327,7 +327,7 @@ section[aria-label*="Notifications"][aria-live] {
   cursor: pointer;
 }
 .notif-panel-action:hover {
-  background: color-mix(in oklab, var(--accent, #38bdf8), transparent 86%);
+  background: color-mix(in oklab, var(--accent, var(--accent)), transparent 86%);
   color: var(--fg, #e2e8f0);
 }
 .notif-panel-body {
@@ -377,11 +377,11 @@ section[aria-label*="Notifications"][aria-live] {
 .notif-level--error   { background: color-mix(in oklab, var(--bad,  #f87171), transparent 78%); color: var(--bad,  #f87171); }
 .notif-level--warning { background: color-mix(in oklab, var(--warn, #fbbf24), transparent 80%); color: var(--warn, #fbbf24); }
 .notif-level--success { background: color-mix(in oklab, var(--good, #34d399), transparent 80%); color: var(--good, #34d399); }
-.notif-level--info    { background: color-mix(in oklab, var(--accent,#38bdf8), transparent 80%); color: var(--accent,#38bdf8); }
+.notif-level--info    { background: color-mix(in oklab, var(--accent,var(--accent)), transparent 80%); color: var(--accent,var(--accent)); }
 /* Recent-actions log shares the same chip palette as toasts. Map the
    action statuses (running / succeeded / failed / cancelled) onto the
    same accent / good / bad / dim colors used by toast levels. */
-.notif-level--running   { background: color-mix(in oklab, var(--accent, #38bdf8), transparent 78%); color: var(--accent, #38bdf8); }
+.notif-level--running   { background: color-mix(in oklab, var(--accent, var(--accent)), transparent 78%); color: var(--accent, var(--accent)); }
 .notif-level--succeeded { background: color-mix(in oklab, var(--good,   #34d399), transparent 80%); color: var(--good,   #34d399); }
 .notif-level--failed    { background: color-mix(in oklab, var(--bad,    #f87171), transparent 78%); color: var(--bad,    #f87171); }
 .notif-level--cancelled { background: color-mix(in oklab, var(--fg-dim, #64748b), transparent 70%); color: var(--fg-mute, #94a3b8); }
@@ -439,16 +439,16 @@ section[aria-label*="Notifications"][aria-live] {
   margin-top: 6px;
   padding: 3px 8px;
   border-radius: 5px;
-  background: color-mix(in oklab, var(--accent, #38bdf8), transparent 80%);
-  color: var(--accent, #38bdf8);
+  background: color-mix(in oklab, var(--accent, var(--accent)), transparent 80%);
+  color: var(--accent, var(--accent));
   font-size: 11.5px;
   font-weight: 700;
   text-decoration: none;
-  border: 1px solid color-mix(in oklab, var(--accent, #38bdf8), transparent 60%);
+  border: 1px solid color-mix(in oklab, var(--accent, var(--accent)), transparent 60%);
   transition: background 120ms ease;
 }
 .notif-action:hover {
-  background: color-mix(in oklab, var(--accent, #38bdf8), transparent 65%);
+  background: color-mix(in oklab, var(--accent, var(--accent)), transparent 65%);
   text-decoration: none;
 }
 
@@ -727,7 +727,7 @@ html[data-route-pending="true"] .pc-header::after {
     100deg,
     #6f8799 0%,
     #e7fbff 15%,
-    #7dd3fc 27%,
+    var(--accent-strong) 27%,
     #f8fafc 39%,
     #b88932 49%,
     #fff4c2 56%,
@@ -793,7 +793,7 @@ html[data-route-pending="true"] .pc-header::after {
   background:
     radial-gradient(circle at 16% 18%, rgba(255, 255, 255, 0.92), transparent 24%),
     linear-gradient(180deg, rgba(255, 255, 255, 0.55), rgba(255, 255, 255, 0.14) 42%, rgba(255, 255, 255, 0.02) 100%),
-    linear-gradient(135deg, #ecfeff 0%, #a5f3fc 30%, #38bdf8 66%, #2dd4bf 100%);
+    linear-gradient(135deg, #ecfeff 0%, #a5f3fc 30%, var(--accent) 66%, #2dd4bf 100%);
   box-shadow:
     0 14px 34px rgba(14, 165, 233, 0.32),
     0 0 0 1px rgb(from var(--accent) r g b / 0.14),
@@ -1049,14 +1049,14 @@ p {
 }
 
 .pc-button.primary {
-  background: linear-gradient(135deg, #b9edff, #38bdf8 55%, #0ea5e9);
+  background: linear-gradient(135deg, #b9edff, var(--accent) 55%, #0ea5e9);
   border-color: rgba(186, 230, 253, 0.55);
   color: #04131f;
   box-shadow: 0 16px 34px rgba(14, 165, 233, 0.32);
 }
 
 .pc-button.primary:hover {
-  background: linear-gradient(135deg, #d7f7ff, #7dd3fc 48%, #38bdf8);
+  background: linear-gradient(135deg, #d7f7ff, var(--accent-strong) 48%, var(--accent));
   color: #04131f;
 }
 
@@ -4709,7 +4709,7 @@ body.h-harness-top-collapsed .pc-header {
   font-size: 10px;
   line-height: 1;
   background:
-    radial-gradient(circle at 38% 32%, #f8feff 0 9%, #7dd3fc 10% 24%, #0f172a 25% 62%, #020617 63% 100%);
+    radial-gradient(circle at 38% 32%, #f8feff 0 9%, var(--accent-strong) 10% 24%, #0f172a 25% 62%, #020617 63% 100%);
   border: 1px solid rgba(186, 230, 253, 0.58);
   box-shadow:
     0 0 0 2px rgba(2, 6, 12, 0.72),
@@ -6465,7 +6465,7 @@ body.h-harness-top-collapsed .pc-header {
   align-items: center;
   gap: 8px;
   --pc-voice-icon: #f8fdff;
-  --pc-voice-icon-fill: #38bdf8;
+  --pc-voice-icon-fill: var(--accent);
   color: #effbff;
   border: 1px solid rgb(from var(--accent-strong) r g b / 0.34);
   border-radius: 999px;
@@ -17887,7 +17887,7 @@ body:has(.pc-settings-nav-link[href="/settings/shortcuts"][aria-current="page"])
 }
 
 .pc-kpi-stat-value {
-  background: linear-gradient(135deg, #e7faff, #7dd3fc 48%, #34d399);
+  background: linear-gradient(135deg, #e7faff, var(--accent-strong) 48%, #34d399);
   -webkit-background-clip: text;
   background-clip: text;
   color: transparent;
@@ -18927,7 +18927,7 @@ body:has(.pc-settings-nav-link[href="/settings/shortcuts"][aria-current="page"])
 
 .pc-wiki-missing-link:hover,
 .pc-wiki-missing-link:focus-visible {
-  color: #d7f3ff !important;
+  color: var(--accent-cool) !important;
   outline: none;
   filter: drop-shadow(0 0 10px rgb(from var(--accent-strong) r g b / 0.24));
 }
@@ -20861,7 +20861,7 @@ body:has(.operator-panel) {
   transition: border-color 120ms ease, color 120ms ease, background 120ms ease;
 }
 .pc-header-cta-mini:hover {
-  border-color: color-mix(in oklab, var(--accent, #38bdf8), transparent 50%);
+  border-color: color-mix(in oklab, var(--accent, var(--accent)), transparent 50%);
   color: var(--fg, #e2e8f0);
 }
 .pc-header-cta-mini.is-on {
@@ -24522,7 +24522,7 @@ body:has(.operator-panel) {
   border-radius: 12px;
   border: 1px solid rgb(from var(--accent-strong) r g b / 0.16);
   background: rgb(from var(--accent) r g b / 0.10);
-  color: #7dd3fc;
+  color: var(--accent-strong);
 }
 
 .ask-choice-option-icon[data-style="danger"] {
@@ -24837,7 +24837,7 @@ body:has(.operator-panel) {
   width: 5px;
   height: 5px;
   opacity: 0.75;
-  background: #7dd3fc;
+  background: var(--accent-strong);
   box-shadow: 0 0 8px rgb(from var(--accent-strong) r g b / 0.45);
 }
 

@@ -31,3 +31,9 @@
 [submodule "libs/sse"]
 	path = libs/sse
 	url = https://github.com/Papercusp/sse.git
+[submodule "libs/rerank"]
+	path = libs/rerank
+	url = https://github.com/Papercusp/rerank.git
+[submodule "libs/search-core"]
+	path = libs/search-core
+	url = https://github.com/Papercusp/search-core.git
