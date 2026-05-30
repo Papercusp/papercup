@@ -88,7 +88,7 @@ DB-access mechanisms (D-010):
 | (b) locks-local `inWorkspaceTxn()` + **own pool** + **own `papercusp_su` DB** + `pg_advisory_xact_lock` (not RLS) | **locks** | **NO** — different DB, pool, and serialization model |
 | (c) `getOrgPg()` raw admin client, no transaction | **backup, auth-rate-limit, memory side-effects** | partially — they want a `PgHandle{sql}`, not a tx unit-of-work |
 | (d) mem0-owned `pg.Client`, allocated at construction | **memory core** | **NO** — mem0 owns the connection before any seam can inject one |
-| (e) dispatcher `ctx.tx` from context-assembly (role-gated, **optional/unchecked**) | **search** | no — it's the dispatch pipeline, not a db-org call; and `ctx.tx` is used without a null-check (latent bug, P-013) |
+| (e) dispatcher `ctx.tx` from context-assembly (role-gated, optional — set only when a bearer resolves) | **search** | no — it's the dispatch pipeline, not a db-org call; reads are `try/catch`-guarded so an absent `ctx.tx` degrades to empty results, not a crash (P-013 makes it an explicit `PgHandle`) |
 
 So the load-bearing correction: **abstract each subsystem behind its own
 injection interface.** The only genuinely shared *discipline* (not a shared
