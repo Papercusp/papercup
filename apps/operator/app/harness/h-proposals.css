@@ -2469,7 +2469,7 @@
   background: rgba(255,255,255,0.06);
 }
 .h-proposals-panel .h-proposal-toolbar-titleline::after {
-  content: "Pending needs review · Applied is in SPEC.md · Rejected stays out";
+  content: "Pending needs review · Applied is in the plan · Rejected stays out";
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;

@@ -307,7 +307,7 @@ export default function FeatureEditor({ slug, feature, onClose, onSaved }: Props
               <textarea
                 value={deprecationReason}
                 onChange={(e) => setDeprecationReason(e.target.value)}
-                placeholder="e.g. SPEC.md no longer asks for JWT cookie rotation; replaced by F-AUTH-012 (session cookies)."
+                placeholder="e.g. The plan no longer asks for JWT cookie rotation; replaced by F-AUTH-012 (session cookies)."
                 rows={3}
                 style={{
                   width: '100%', boxSizing: 'border-box',
