@@ -28,7 +28,7 @@ const isPrimitive = (t) => t.path[0] === "color";
 // which share the desktop CSS-var namespace.
 const isSemantic = (t) => t.path[0] !== "color" && !t.path[0].startsWith("_");
 
-const sharedTransforms = ["attribute/cti", "restart/srgb", "restart/name"];
+const sharedTransforms = ["attribute/cti", "tokenkit/srgb", "tokenkit/name"];
 
 export default {
   source: ["design-tokens/*.tokens.json"],
