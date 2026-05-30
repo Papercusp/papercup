@@ -29,9 +29,11 @@ Papercusp remotes (local-only pins, per the repo's existing convention).
 **Next:** P-006 end-to-end — with the Tauri desktop running and
 `AGENT_BACKEND=claude-code`, spawn a real worker and confirm it connects to the
 papercusp MCP server and invokes a live tool (e.g. `features:get`) — the
-unit-level coverage is in but the real-spawn check is still owed. Then Phase 2
-(P-008 test button, P-009 wizard) and the two human rulings (P-007 Meridian,
-P-010 run.sh).
+unit-level coverage is in but the real-spawn check is still owed. P-008 (test
+button) also shipped 2026-05-30. The remaining Phase 2 items are the two human
+rulings (P-007 Meridian, P-010 run.sh); P-009 (wizard) is **blocked on P-007** —
+if Meridian stays mandatory for the stateless paths, a claude-code user still
+needs omp+Meridian, so "standalone backend" framing would be wrong.
 
 ## Progress log
 
@@ -58,6 +60,16 @@ lock-claimed via `locks:*`.
   (6), `normalizeModelForClaude` (3), spawn-mcp `type:'http'` guard — all green.
   The live "spawn a real claude worker and watch it call a tool" check still owed
   (needs the Tauri desktop + a claude session) — item kept `wip`.
+
+### 2026-05-30 — P-008 shipped (Test-current-backend probes the selected backend)
+
+Superproject commit `b6dc9411` (apps/operator — not a submodule). The
+`/agent-config/test` route hard-pinned `backend:'meridian'`, so the settings
+"Test current backend" button validated the background-summary path regardless
+of the user's choice. Now it resolves `effectiveBackend()` and fires the one-shot
+PONG at that CLI (claude-code or omp). `effectiveBackend` was consolidated into
+`lib/agent-config.ts` (was a private copy in the route's `index.ts`); 4 unit
+tests added. This is independent of the P-007 Meridian ruling.
 
 **Landing logistics (for the next agent):** this code lives in the
 `libs/papercusp` + `libs/papercup-shared` **git submodules**, whose pinned
@@ -148,12 +160,13 @@ P-005.) The operator brain default is `'anthropic/claude-opus-4-7'`
 `claude-opus-4-7` or an alias. Both `invoke.ts` and chat-stream passed the id
 verbatim. (Now: normalized for claude in both paths.)
 
-**B3 — MEDIUM: stateless background paths are hard-pinned to Meridian.** (Open —
-P-007/P-008.) `haiku.ts:45` (summarizer), `llm-testing/llm-client.ts:80`
-(judge/sim-user), and the "Test current backend" button (`agent-config/test.ts:41`)
-all hardcode `backend:'meridian'`, which needs `~/.omp/agent/auth.json`.
-Consequences: (a) a "claude-code-only" user still needs Meridian/omp auth for
-summaries; (b) the test button validates Meridian, not the selected backend.
+**B3 — MEDIUM: stateless background paths are hard-pinned to Meridian.**
+(Test button **fixed** — P-008; summarizer/llm-testing **open** — P-007.)
+`haiku.ts:45` (summarizer) + `llm-testing/llm-client.ts:80` (judge/sim-user)
+still hardcode `backend:'meridian'`, which needs `~/.omp/agent/auth.json` — so a
+"claude-code-only" user still needs Meridian/omp auth for those. The "Test
+current backend" button (`agent-config/test.ts`) no longer hardcodes Meridian; it
+probes the selected backend.
 
 **B4 — MEDIUM: bash `run.sh` has no MCP wiring for either backend.** (Open —
 P-010.) `run.sh` builds correct claude stream flags (`:1288`) but contains zero
@@ -191,8 +204,8 @@ claude-code. **Shipped 2026-05-30** (see Progress log).
 Meridian coupling, the test button, the wizard, the bash fallback.
 
 - **P-007** `needs-human` Rule on Meridian's role for the stateless one-shot paths (haiku summarizer, llm-testing). Option A: accept Meridian as the always-on stateless path (document that a claude-code user still needs omp/Meridian auth). Option B: add a claude-code/Anthropic-direct branch to `meridianAgentChat` so those paths can run without omp auth. (→ D-004)
-- **P-008** `todo` Fix the "Test current backend" button to probe the *selected* backend (one-shot through the configured CLI), not the hardcoded `backend:'meridian'` (agent-config/test.ts:41). Keep a separate Meridian reachability check if useful.
-- **P-009** `todo` SetupWizard: present claude-code as a standalone backend alternative; gate readiness on the *chosen* backend's deps, not `claudeOk && ompOk && meridianOk` (StepAgents.tsx:61/100).
+- **P-008** `done` Test-current-backend now probes the *selected* backend (one-shot through the configured CLI via `effectiveBackend()`), not hardcoded `meridian`. `effectiveBackend` consolidated into `lib/agent-config.ts`; 4 unit tests. Commit `b6dc9411`.
+- **P-009** `todo` SetupWizard: present claude-code as a standalone backend alternative; gate readiness on the *chosen* backend's deps, not `claudeOk && ompOk && meridianOk` (StepAgents.tsx:61/100). NOTE: only correct if Meridian is NOT mandatory — blocked on the P-007 ruling. blocked-by: P-007
 - **P-010** `needs-human` Decide bash `run.sh`: document it as a legacy, tool-less fallback (recommended — TS orchestrator is the default) vs. port the MCP wiring into its `invoke()`. Affects both backends, not just claude-code.
 
 ## Decisions
