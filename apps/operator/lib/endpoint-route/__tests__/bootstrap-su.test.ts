@@ -29,6 +29,18 @@ vi.mock('@/lib/console-launcher', () => ({
   })),
 }));
 vi.mock('@/lib/adv-sessions', () => ({ recordAdvSession: recordAdvSessionMock }));
+vi.mock('@/lib/device-harnesses', () => ({
+  listHarnessesFor: vi.fn(async () => [
+    { slug: 'papercup', path: '/repo', harness_kind: null, has_state: true, status: 'active', iteration: 1, last_active_ts: null },
+  ]),
+}));
+vi.mock('@/lib/agent-tools/plans/source', () => ({
+  resolveHarnessPlansDir: vi.fn(async () => ({ harnessSlug: 'papercup', plans: '/repo/plans', archive: '/repo/plans/archive' })),
+  listPlanFiles: vi.fn(async () => [
+    { slug: 'plan-a', filePath: '/repo/plans/plan-a.md', archived: false },
+    { slug: 'plan-archived', filePath: '/repo/plans/archive/plan-archived.md', archived: true },
+  ]),
+}));
 
 const CTX: RouteContext = {
   principal: null,
@@ -38,16 +50,29 @@ const CTX: RouteContext = {
   signal: new AbortController().signal,
 };
 
-async function callPost(body: unknown): Promise<Response> {
+type Route = { method: string; handler: (req: Request, ctx: RouteContext) => Promise<Response> };
+
+async function routesOf(): Promise<Route[]> {
   const mod = await import('../routes/agent-mcp/bootstrap-su');
-  const routes = mod.default as Array<{ handler: (req: Request, ctx: RouteContext) => Promise<Response> }>;
-  const post = routes[1]; // [options, post]
+  return mod.default as Route[];
+}
+
+async function callPost(body: unknown): Promise<Response> {
+  const post = (await routesOf()).find((r) => r.method === 'POST')!;
   const req = new Request('http://localhost:3070/api/agent-mcp/console/bootstrap-su', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(body),
   });
   return post.handler(req, CTX);
+}
+
+async function callGet(query = ''): Promise<Response> {
+  const get = (await routesOf()).find((r) => r.method === 'GET')!;
+  const req = new Request(`http://localhost:3070/api/agent-mcp/console/bootstrap-su/options${query}`, {
+    method: 'GET',
+  });
+  return get.handler(req, CTX);
 }
 
 beforeEach(() => {
@@ -95,5 +120,21 @@ describe('bootstrap-su', () => {
     const res = await callPost({ agent: 'gemini', harness_slug: 'papercup' });
     expect(res.status).toBe(400);
     expect(recordAdvSessionMock).not.toHaveBeenCalled();
+  });
+
+  it('options (no harness) lists the active-workspace harnesses', async () => {
+    const res = await callGet();
+    expect(res.status).toBe(200);
+    const json = await res.json();
+    expect(json.status).toBe('ok');
+    expect(json.workspace).toBe('default');
+    expect(json.harnesses).toEqual([{ slug: 'papercup', path: '/repo', status: 'active' }]);
+  });
+
+  it('options?harness lists non-archived plan slugs', async () => {
+    const res = await callGet('?harness=papercup');
+    const json = await res.json();
+    expect(json.harness).toBe('papercup');
+    expect(json.plans).toEqual([{ slug: 'plan-a' }]);
   });
 });

@@ -28,7 +28,7 @@ import { SU_WRAPPER_BIN, isSuAgent, type SuAgent } from '@/lib/su-agents';
 
 const CORS_HEADERS: Record<string, string> = {
   'access-control-allow-origin': '*',
-  'access-control-allow-methods': 'POST, OPTIONS',
+  'access-control-allow-methods': 'GET, POST, OPTIONS',
   'access-control-allow-headers': 'content-type, accept, authorization',
 };
 
@@ -75,6 +75,61 @@ const options = defineTool({
   auth: 'public',
   handler() {
     return new Response(null, { status: 204, headers: CORS_HEADERS });
+  },
+});
+
+const optionsForOptions = defineTool({
+  method: 'OPTIONS',
+  path: '/agent-mcp/console/bootstrap-su/options',
+  auth: 'public',
+  handler() {
+    return new Response(null, { status: 204, headers: CORS_HEADERS });
+  },
+});
+
+/**
+ * GET /api/agent-mcp/console/bootstrap-su/options
+ *
+ * Picker data for the `psu` launcher (and the /adv "Launch SU" modal):
+ *   - no query        → { workspace, harnesses: [{ slug, path, status }] }
+ *   - ?harness=<slug> → { harness, plans: [{ slug }] } (non-archived)
+ *
+ * Scoped to the active workspace (bootstrap-su uses activeWorkspaceId);
+ * cross-workspace picking can come later.
+ */
+const optionsGet = defineTool({
+  method: 'GET',
+  path: '/agent-mcp/console/bootstrap-su/options',
+  auth: 'public',
+  async handler(req) {
+    const denied = await gatePrincipal(req.headers);
+    if (denied) return denied;
+
+    const workspace = activeWorkspaceId();
+    const harness = new URL(req.url).searchParams.get('harness')?.trim() || null;
+
+    if (harness) {
+      try {
+        const { resolveHarnessPlansDir, listPlanFiles } = await import('@/lib/agent-tools/plans/source');
+        const { plans, archive } = await resolveHarnessPlansDir(harness, { workspaceId: workspace });
+        const entries = await listPlanFiles({ plansDir: plans, archiveDir: archive });
+        return jsonRes({
+          status: 'ok',
+          harness,
+          plans: entries.filter((e) => !e.archived).map((e) => ({ slug: e.slug })),
+        });
+      } catch (e: any) {
+        return jsonRes({ status: 'error', error: e?.message ?? 'plans listing failed' }, 400);
+      }
+    }
+
+    const { listHarnessesFor } = await import('@/lib/device-harnesses');
+    const harnesses = (await listHarnessesFor(workspace)).map((h) => ({
+      slug: h.slug,
+      path: h.path,
+      status: h.status,
+    }));
+    return jsonRes({ status: 'ok', workspace, harnesses });
   },
 });
 
@@ -155,4 +210,4 @@ const post = defineTool({
   },
 });
 
-export default [options, post];
+export default [options, optionsForOptions, post, optionsGet];
