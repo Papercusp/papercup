@@ -206,3 +206,16 @@ Closes the decoupling. The docs tab is the **@papercupai/starlight** plugin — 
 
 **Unblocks P-022:** with the live `/adv` free of `HarnessDashboard`, the remaining holders are the dead Next duplicates (delete) and the deferred `/harness/$slug` route. Once those are handled, the legacy-only `app/harness/*` page code can move to `_retired/`.
 Related: P-022
+
+### D-015 — Cleanup: deleted dead Next /adv tree (a) + fixed papercusp-CLI resolution (b)
+Date: 2026-05-30
+Two follow-ups after the docs decoupling.
+
+**(a) `1d0dbe96`** — deleted the dead pre-Vite Next `app/adv/` route tree (`page.tsx`/`layout.tsx` + `_components/{AdvShell,AdvHarnessPanelPage}.tsx` + the 9 per-tab `*/page.tsx`). The live `/adv` is the operator-vite SPA (its `routes/adv/*` own those paths; per-tab routes redirect to `/adv?tab=`). These Next pages were superseded, never served, and the last importers of `HarnessDashboard` under `app/adv`. Kept every live component the SPA imports via `@/app/adv/*` (harnesses/*, plans/AdvPlansTabs, sessions/AdvSessionsClient). operator-vite build green; zero `HarnessDashboard` imports remain under `app/adv`.
+
+**(b) `19cc9b2b`** — fixed plugin enablement (`spawn papercusp ENOENT`). The enable/disable + marketplace install/uninstall routes spawned `process.env.PAPERCUSP_CLI ?? 'papercusp'`; with no PATH/env linkage in the dev env, bare `papercusp` ENOENTs and the UI's plugin toggle silently fails. New shared resolver `apps/operator/lib/papercusp-cli.ts` (PAPERCUSP_CLI env → in-repo `libs/papercusp/packages/cli/bin/papercusp` via walk-up → bare `papercusp`), wired into plugins/enable, plugins/uninstall, marketplace/install-plugin, marketplace/uninstall. `marketplace/install.ts` had its own resolver with a **stale path** (`papercusp/packages/cli`, missing the `libs/` prefix added when papercusp became a submodule) — fixed. Verified the resolver returns the in-repo bin from the operator's cwd and that the bin runs (`papercusp --help` → exit 0). The running operator loads endpoint routes once at startup, so the fix takes effect on the next restart (verified out-of-band, didn't restart the live session).
+
+Also: enabled `@papercupai/starlight` for papercup by writing `enabled-plugins.json` directly (runtime state, not committed) so the docs tab has a real plugin to render — papercup now shows its Starlight docs in /adv.
+
+**P-022 status:** the live `/adv` is fully free of `HarnessDashboard`. Remaining holder of the legacy page code is the deferred `/harness/$slug` route; once that's handled, `app/harness/*` page-only code can move to `_retired/`.
+Related: P-022
