@@ -2,9 +2,12 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { parseAsString, parseAsStringEnum, useQueryState } from 'nuqs';
+import { toast } from 'sonner';
+import { openFeatureChat } from '@restart/papercup-shared';
 import type { PanelComponentProps } from '../../harness/dock/panel-registry';
 import PinMenu, { type PinMenuState } from './PinMenu';
 import { useHarnessFeatures, type FeatureStatus, type HarnessFeature } from './useHarnessData';
+import { featureReset, openAdminFeature } from './harness-actions';
 
 // Saved views mirror the legacy FeatureList BUILT_IN_VIEWS. Each view is a
 // predicate over a feature; counts are computed client-side. "Running" and
@@ -56,10 +59,37 @@ export default function FeaturesPanel({ params, api }: PanelComponentProps) {
   const [search, setSearch] = useQueryState('fq', parseAsString.withDefault(''));
   const [selectedId, setSelectedId] = useQueryState('sel', parseAsString.withDefault(''));
   const [pinMenu, setPinMenu] = useState<PinMenuState | null>(null);
+  const [busyId, setBusyId] = useState<string | null>(null);
 
   useEffect(() => {
     if (features) api.setTitle(`Features · ${slug} (${features.length})`);
   }, [features, slug, api]);
+
+  const handleReset = async (f: HarnessFeature) => {
+    if (!window.confirm(`Reset ${f.id} back to todo?`)) return;
+    setBusyId(f.id);
+    try {
+      await featureReset(slug, f.id);
+      toast.success(`${f.id} reset`);
+    } catch (e) {
+      toast.error('Reset failed', { description: String(e) });
+    } finally {
+      setBusyId(null);
+    }
+  };
+  const handleChat = async (f: HarnessFeature) => {
+    setBusyId(f.id);
+    try {
+      const res = await openFeatureChat({ slug, role: 'worker', featureId: f.id, title: f.summary || f.title });
+      if (res && typeof res === 'object' && 'error' in res) {
+        throw new Error(String((res as { error: unknown }).error));
+      }
+    } catch (e) {
+      toast.error('Open chat failed', { description: String(e) });
+    } finally {
+      setBusyId(null);
+    }
+  };
 
   const activeView = SAVED_VIEWS.find((v) => v.id === view) ?? SAVED_VIEWS[0];
 
@@ -202,6 +232,17 @@ export default function FeaturesPanel({ params, api }: PanelComponentProps) {
                     </span>
                   )}
                 </span>
+                <span className="pc-adv-features__rowactions" onClick={(e) => e.stopPropagation()}>
+                  <button type="button" disabled={busyId === f.id} onClick={() => void handleReset(f)} title="Reset to todo">
+                    Reset
+                  </button>
+                  <button type="button" onClick={() => openAdminFeature(slug, f.id)} title="Edit in /admin/features">
+                    Edit
+                  </button>
+                  <button type="button" disabled={busyId === f.id} onClick={() => void handleChat(f)} title="Open worker chat">
+                    Chat
+                  </button>
+                </span>
               </div>
             );
           })
@@ -272,6 +313,7 @@ export default function FeaturesPanel({ params, api }: PanelComponentProps) {
           padding: 4px 0;
         }
         .pc-adv-features__row {
+          position: relative;
           display: grid;
           grid-template-columns: 78px 100px 1fr auto;
           gap: 10px;
@@ -356,6 +398,39 @@ export default function FeaturesPanel({ params, api }: PanelComponentProps) {
           background: rgba(239, 68, 68, 0.14);
           padding: 1px 6px;
           border-radius: 999px;
+        }
+        .pc-adv-features__rowactions {
+          position: absolute;
+          right: 10px;
+          top: 50%;
+          transform: translateY(-50%);
+          display: inline-flex;
+          gap: 4px;
+          opacity: 0;
+          transition: opacity 0.08s;
+          padding-left: 28px;
+          background: linear-gradient(90deg, transparent, rgba(13, 11, 26, 0.97) 26%);
+        }
+        .pc-adv-features__row:hover .pc-adv-features__rowactions {
+          opacity: 1;
+        }
+        .pc-adv-features__rowactions button {
+          padding: 2px 8px;
+          font-size: 10px;
+          font-weight: 600;
+          color: rgba(220, 214, 248, 0.85);
+          background: rgba(31, 23, 56, 0.96);
+          border: 1px solid rgba(167, 139, 250, 0.3);
+          border-radius: 4px;
+          cursor: pointer;
+        }
+        .pc-adv-features__rowactions button:hover:not(:disabled) {
+          color: #f7f5ff;
+          border-color: rgba(167, 139, 250, 0.6);
+        }
+        .pc-adv-features__rowactions button:disabled {
+          opacity: 0.5;
+          cursor: default;
         }
         .pc-adv-features__footer {
           flex-shrink: 0;
