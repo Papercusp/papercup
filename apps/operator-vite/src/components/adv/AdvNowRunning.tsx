@@ -133,22 +133,19 @@ export default function AdvNowRunning({ slug }: Props) {
 
   const isIdle = runs.length === 0;
   const isLoading = alive === null;
-
-  const statusLabel = isLoading
-    ? 'Checking…'
-    : alive
-      ? isIdle ? 'Active — idle' : `Active — ${runs.length} agent${runs.length === 1 ? '' : 's'} running`
-      : 'Stopped';
-
   const stateClass = isLoading ? 'is-checking' : alive ? 'is-active' : 'is-stopped';
 
   return (
     <div className={`pc-advshell__harness-bar pc-advshell__harness-bar--${stateClass}`} aria-label="Harness status">
-      {/* Status indicator */}
-      <div className="pc-advshell__harness-status">
-        <span className="pc-advshell__harness-dot" aria-hidden />
-        <span className="pc-advshell__harness-label">{statusLabel}</span>
-      </div>
+      {/* Active status indicator — only shown when running */}
+      {alive === true && (
+        <div className="pc-advshell__harness-status">
+          <span className="pc-advshell__harness-dot" aria-hidden />
+          <span className="pc-advshell__harness-label">
+            {isIdle ? 'Active — idle' : `Active — ${runs.length} agent${runs.length === 1 ? '' : 's'} running`}
+          </span>
+        </div>
+      )}
 
       {/* Agent pills */}
       {runs.length > 0 && (
@@ -184,13 +181,13 @@ export default function AdvNowRunning({ slug }: Props) {
       {/* Spacer */}
       <div style={{ flex: 1 }} />
 
-      {/* Start / Stop */}
-      {alive === false && (
+      {/* Start (when stopped) / Stop (when active) */}
+      {alive !== true && (
         <button
           type="button"
           className="pc-advshell__action pc-advshell__action--start"
           onClick={launchHarness}
-          disabled={starting}
+          disabled={starting || isLoading}
           title="Start harness (staging phase)"
         >
           <Play size={11} aria-hidden />
