@@ -57,6 +57,27 @@ export function defineVitestConfig(opts: DefineVitestConfigOptions): UserConfig 
       // Per testing-spec §1.9: integration retry=0 (deterministic via testcontainers
       // per worker); unit retry=0; E2E (Playwright config) handles its own retries.
       retry: 0,
+      // Coverage is TRACKED, not gated (testing-spec §1.13) — no thresholds here.
+      // Inert unless `--coverage` is passed (e.g. the nightly full run), so this
+      // never slows routine `test:affected`. Each workspace writes its own
+      // ./coverage; the nightly job aggregates them into one report.
+      coverage: {
+        provider: 'v8',
+        reporter: ['text-summary', 'json', 'html', 'lcov'],
+        reportsDirectory: './coverage',
+        exclude: [
+          ...baseExclude,
+          '**/*.test.*',
+          '**/*.spec.*',
+          '**/*.bench.*',
+          '**/*.config.*',
+          '**/*.d.ts',
+          '**/test/**',
+          '**/e2e/**',
+          '**/__tests__/**',
+          '**/__mocks__/**',
+        ],
+      },
     },
   });
 }

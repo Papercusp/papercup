@@ -25,6 +25,7 @@
     "substrate:status": "tsx scripts/substrate-status.ts",
     "lint:el-tools": "node scripts/el-tools-check.mjs",
     "lint:plans": "tsx scripts/lint-plans.ts",
+    "lint:tests": "tsx scripts/lint-tests.ts",
     "storybook": "storybook dev -p 6009",
     "build-storybook": "storybook build -o storybook-static",
     "lostpixel": "lost-pixel",

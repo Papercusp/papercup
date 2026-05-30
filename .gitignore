@@ -6,6 +6,10 @@ package-lock.json
 *.tsbuildinfo
 .DS_Store
 *.log
+
+# Vitest coverage output (published as CI artifacts, never committed — spec §1.13)
+coverage/
+**/coverage/
 .env
 .env.local
 .source/
