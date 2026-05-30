@@ -34,10 +34,16 @@ shared submodules (`sse`, `sync`, `agent-chat`, `papercusp`), and pushing the
 `libs/sse` `name` change forces Restart lockstep (Restart's `@restart/sse` +
 6 `chat-protocol` consumers must migrate simultaneously).
 
-**Next:** execute P-001 (in-tree `@restart/sse` → `@papercusp/sse` rename, dual-
-symlink transition, local-only — safe and reversible). Then the gated steps
-(P-002 submodules, P-003 Phase 6, P-004 sse-pin fork, P-005 divergent-pin
-reconcile) on user authorization, batched into one coordinated cross-repo push.
+**Progress (2026-05-30):** P-001 (in-tree rename), P-002 (sync/agent-chat
+submodule refs), P-004 (sse pin-fork reconcile + push), and P-005 (4 shared-lib
+pins pushed FF; P-040 owed pushes discharged) are **DONE**. The full sse rename is
+consistent across papercup + all `Papercusp/*` remotes + Restart `feat/scout-unify`.
+Only **P-003 (Phase 6 chat-protocol adoption)** and **P-006 (optional)** remain.
+
+**Next:** P-003 — rename `@restart/chat-protocol` → `@papercusp/chat-protocol` +
+add the 4 optional wire fields (D-003) in the shared repo, add it as a papercup
+submodule, and wire papercup's SSE/state-channel emit path to the shared
+`ChatEvent` + `OpenCardSnapshot` (D-002, option A).
 
 ## Background
 
@@ -141,13 +147,20 @@ every in-tree AND submodule ref is migrated.
   `@papercusp/chat-protocol` (shared repo + Restart's 6 consumers); papercup
   imports `ChatEvent` + `OpenCardSnapshot` for the wire/state-channel emit path,
   keeping `tooldef` generics internal. Blocked-by: D-001 rename landing.
-- **P-004** `todo` (gated) — Reconcile the `libs/sse` pin fork: land `fdda003` +
-  `415f191` both on `Papercusp/sse` main, re-pin papercup. Fold into the P-002
-  coordinated push.
-- **P-005** `todo` (gated) — Reconcile the 4 divergent submodule pins
-  (`git-graph`/`sync`/`ui-primitives` local-only; `agent-chat` reachable). Same
-  batch as systems-abstraction `P-040`'s owed push. Owner reconcile + authorized
-  push.
+- **P-004** `done` — sse pin fork reconciled + pushed. Rebased the local chain
+  (`fdda003` type-fix + the rename) onto the remote `.gitignore` (`415f191`) →
+  linear `Papercusp/sse` main = **`305e084`** (nothing dropped). papercup re-pinned
+  (`d646d2bc`); Restart re-pinned `415f191→305e084` + 3 consumers + tsconfig paths
+  migrated (`d2b657a7` on `feat/scout-unify`, pushed). Both superprojects now
+  consume `@papercusp/sse` consistently — no rename trap.
+- **P-005** `done` — All 4 shared-lib pins were **clean fast-forwards** on the
+  `Papercusp/*` remotes (the brief's "divergent" warning was about Restart's
+  legacy `papercupai/*` pins, not papercup's). Pushed: `git-graph` `0c16d63..cf32460`,
+  `ui-primitives` `77a93b0..8075a3c`, `sync` `41665f3..6b29966`, `agent-chat`
+  `c538393..dd2511c`. papercup is now fresh-cloneable; this also discharges
+  systems-abstraction `P-040`'s owed git-graph + ui-primitives pushes. NOTE: these
+  are pushes to the SHARED submodule remotes only — papercup's superproject `main`
+  (89 ahead) is unchanged; its wholesale push remains the separate user-managed event.
 - **P-006** `todo` (optional, deferred) — Upstream a Node/Express `sseResponseNode()`
   adapter into `@papercusp/sse` so the server transport is shared, not just the
   wire format + client. No one blocked; low priority.
