@@ -298,7 +298,6 @@ two SEPARATE storage components**, not one dual-backend interface:
   `memory_*` tables, no harness/feature nouns). Leave `detect-harness-slug.ts` +
   pre-turn injection (`buildMemoryContextBlock` is generic but stays wired in
   operator). → D-010
-- **P-022** moved to Phase 1 (it needs no seam).
 
 ## Phase 4 — Backup + desktop IPC + rate-limit
 
