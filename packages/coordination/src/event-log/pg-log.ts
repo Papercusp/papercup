@@ -1,0 +1,141 @@
+/**
+ * pg-log.ts — PgCoordLog: a single-table Postgres CoordEventLog. The
+ * optional production-grade swappable backend alongside FsCoordLog (the
+ * portable default) and InMemoryCoordLog (the test double). It satisfies
+ * the SAME `CoordEventLog` conformance suite (the P-050 swappability gate)
+ * — see `event-log/conformance.ts`.
+ *
+ * One append-only table, `harness_shared.coord_event_log`, holds every
+ * channel:
+ *   - LINE surfaces (`messages`, `plan-events`): append a row, read ordered
+ *     by the serial `id` (append order). The fs-only `filesBack` rotation
+ *     hint is ignored — a single table has no rotation, exactly as the
+ *     `ReadLinesOpts` contract permits.
+ *   - EVENT surfaces (`handoffs`, `escalations`): one immutable record per
+ *     `(surface, msg_id)`, enforced by a PARTIAL unique index + upsert. The
+ *     predicate keeps pure-append line rows out of the uniqueness constraint.
+ *
+ * Host couplings are injected, matching PgPresenceStore: the org PG handle
+ * (`getSql`) and the table bootstrap (`ensureSchema`). The canonical DDL is
+ * exported as `ensureCoordEventLogTable` so a host's `ensureSchema` seam (and
+ * the conformance harness) can create the table without duplicating schema.
+ */
+
+import type { Sql } from 'postgres';
+import type { CoordEnvelope } from '../core/envelope';
+import type {
+  CoordEventLog,
+  EventSurface,
+  LineSurface,
+  ReadLinesOpts,
+} from './types';
+
+export interface PgCoordLogOptions {
+  /** The org Postgres handle (postgres-js tagged template). Called per use. */
+  getSql: () => Sql;
+  /** Ensure `harness_shared.coord_event_log` exists before first use. */
+  ensureSchema: () => Promise<void>;
+}
+
+/**
+ * Normalize a `jsonb` body to the envelope. postgres-js returns a jsonb
+ * column inserted as `${JSON.stringify(x)}::jsonb` as the raw TEXT it was
+ * cast from (not an auto-parsed object) under the prod handle's options
+ * (`prepare: false`), so parse a string defensively — same posture as
+ * PgPresenceStore's `parseFiles`.
+ */
+function parseBody(v: unknown): CoordEnvelope {
+  if (typeof v === 'string') return JSON.parse(v) as CoordEnvelope;
+  return v as CoordEnvelope;
+}
+
+/**
+ * Create the `coord_event_log` table + indexes if absent. Idempotent. The
+ * canonical schema for `PgCoordLog` — wire it into a host `ensureSchema` seam
+ * (or call it directly in a conformance harness).
+ */
+export async function ensureCoordEventLogTable(sql: Sql): Promise<void> {
+  await sql`CREATE SCHEMA IF NOT EXISTS harness_shared`;
+  await sql`
+    CREATE TABLE IF NOT EXISTS harness_shared.coord_event_log (
+      id          bigserial   PRIMARY KEY,
+      surface     text        NOT NULL,
+      writer_key  text,
+      msg_id      text        NOT NULL,
+      body        jsonb       NOT NULL,
+      ts          timestamptz NOT NULL DEFAULT now()
+    )
+  `;
+  // EVENT surfaces are keyed: exactly one immutable record per (surface,
+  // msg_id). LINE surfaces (messages/plan-events) are pure append — the
+  // partial predicate keeps them out of the uniqueness constraint so the
+  // upsert below targets only the event rows.
+  await sql`
+    CREATE UNIQUE INDEX IF NOT EXISTS coord_event_log_event_uq
+      ON harness_shared.coord_event_log (surface, msg_id)
+      WHERE surface IN ('handoffs', 'escalations')
+  `;
+  await sql`
+    CREATE INDEX IF NOT EXISTS coord_event_log_surface_id
+      ON harness_shared.coord_event_log (surface, id)
+  `;
+}
+
+export class PgCoordLog implements CoordEventLog {
+  constructor(private readonly opts: PgCoordLogOptions) {}
+
+  async appendLine(surface: LineSurface, writerKey: string, line: CoordEnvelope): Promise<void> {
+    await this.opts.ensureSchema();
+    const sql = this.opts.getSql();
+    await sql`
+      INSERT INTO harness_shared.coord_event_log (surface, writer_key, msg_id, body)
+      VALUES (${surface}, ${writerKey}, ${line.msg_id}, ${JSON.stringify(line)}::jsonb)
+    `;
+  }
+
+  async readLines(surface: LineSurface, _opts: ReadLinesOpts = {}): Promise<CoordEnvelope[]> {
+    await this.opts.ensureSchema();
+    const sql = this.opts.getSql();
+    // `filesBack` is an fs-rotation hint; a single table has no rotation, so
+    // we read everything (the interface explicitly allows ignoring it).
+    const rows = await sql<{ body: unknown }[]>`
+      SELECT body FROM harness_shared.coord_event_log
+       WHERE surface = ${surface}
+       ORDER BY id ASC
+    `;
+    return rows.map((r) => parseBody(r.body));
+  }
+
+  async putEvent(surface: EventSurface, msgId: string, record: CoordEnvelope): Promise<void> {
+    await this.opts.ensureSchema();
+    const sql = this.opts.getSql();
+    await sql`
+      INSERT INTO harness_shared.coord_event_log (surface, writer_key, msg_id, body)
+      VALUES (${surface}, NULL, ${msgId}, ${JSON.stringify(record)}::jsonb)
+      ON CONFLICT (surface, msg_id) WHERE surface IN ('handoffs', 'escalations')
+      DO UPDATE SET body = EXCLUDED.body, ts = now()
+    `;
+  }
+
+  async readEvents(surface: EventSurface): Promise<CoordEnvelope[]> {
+    await this.opts.ensureSchema();
+    const sql = this.opts.getSql();
+    const rows = await sql<{ body: unknown }[]>`
+      SELECT body FROM harness_shared.coord_event_log
+       WHERE surface = ${surface}
+       ORDER BY id ASC
+    `;
+    return rows.map((r) => parseBody(r.body));
+  }
+
+  async getEvent(surface: EventSurface, msgId: string): Promise<CoordEnvelope | null> {
+    await this.opts.ensureSchema();
+    const sql = this.opts.getSql();
+    const rows = await sql<{ body: unknown }[]>`
+      SELECT body FROM harness_shared.coord_event_log
+       WHERE surface = ${surface} AND msg_id = ${msgId}
+       LIMIT 1
+    `;
+    return rows.length > 0 ? parseBody(rows[0].body) : null;
+  }
+}

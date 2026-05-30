@@ -1,71 +1,28 @@
 /**
- * Conformance suite for CoordEventLog — run against BOTH FsCoordLog and
- * InMemoryCoordLog. A passing in-memory impl against the same suite is
- * the swappability proof (P-050).
+ * Runs the shared CoordEventLog conformance suite (conformance.ts) against
+ * the two host-free backends — InMemoryCoordLog and FsCoordLog. A passing
+ * in-memory impl against the SAME suite is the swappability proof (P-050).
+ * The PG backend (PgCoordLog) runs the same suite from the operator's
+ * live-PG integration test.
  */
 
 import { promises as fs } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import type { CoordEnvelope } from '../core/envelope';
-import type { CoordEventLog } from './types';
+import { describe, expect, it } from 'vitest';
+import {
+  describeCoordEventLogConformance,
+  envelope as env,
+} from './conformance';
 import { FsCoordLog } from './fs-log';
 import { InMemoryCoordLog } from './memory-log';
 
-function env(p: Partial<CoordEnvelope> & Pick<CoordEnvelope, 'msg_id' | 'kind' | 'from'>): CoordEnvelope {
-  return { ts: '2026-01-01T00:00:00.000Z', to: ['*'], ...p } as CoordEnvelope;
-}
-
-function suite(name: string, make: () => Promise<{ log: CoordEventLog; cleanup: () => Promise<void> }>) {
-  describe(name, () => {
-    let log: CoordEventLog;
-    let cleanup: () => Promise<void>;
-    beforeEach(async () => {
-      ({ log, cleanup } = await make());
-    });
-    afterEach(async () => {
-      await cleanup();
-    });
-
-    it('messages: per-writer append + union read', async () => {
-      await log.appendLine('messages', 'A', env({ msg_id: 'a1', kind: 'message', from: 'A', to: ['B'] }));
-      await log.appendLine('messages', 'B', env({ msg_id: 'b1', kind: 'message', from: 'B', to: ['A'] }));
-      const lines = await log.readLines('messages');
-      expect(lines.map((l) => l.msg_id).sort()).toEqual(['a1', 'b1']);
-    });
-
-    it('plan-events: append + read', async () => {
-      await log.appendLine('plan-events', 'system', env({ msg_id: 'p1', kind: 'plan_event', from: 'system', plan_slug: 'x' }));
-      const lines = await log.readLines('plan-events');
-      expect(lines.map((l) => l.msg_id)).toEqual(['p1']);
-    });
-
-    it('handoffs: putEvent + getEvent + readEvents', async () => {
-      await log.putEvent('handoffs', 'h1', env({ msg_id: 'h1', kind: 'handoff', from: 'A' }));
-      expect((await log.getEvent('handoffs', 'h1'))?.msg_id).toBe('h1');
-      expect((await log.readEvents('handoffs')).map((r) => r.msg_id)).toEqual(['h1']);
-    });
-
-    it('escalations: putEvent round-trips and getEvent misses null', async () => {
-      await log.putEvent('escalations', 'e1', env({ msg_id: 'e1', kind: 'escalation', from: 'A', to: ['human'] }));
-      expect((await log.getEvent('escalations', 'e1'))?.kind).toBe('escalation');
-      expect(await log.getEvent('escalations', 'nope')).toBeNull();
-    });
-
-    it('empty surfaces read as []', async () => {
-      expect(await log.readLines('messages')).toEqual([]);
-      expect(await log.readEvents('handoffs')).toEqual([]);
-    });
-  });
-}
-
-suite('InMemoryCoordLog', async () => ({
+describeCoordEventLogConformance('InMemoryCoordLog', async () => ({
   log: new InMemoryCoordLog(),
   cleanup: async () => {},
 }));
 
-suite('FsCoordLog', async () => {
+describeCoordEventLogConformance('FsCoordLog', async () => {
   const dir = await fs.mkdtemp(join(tmpdir(), 'coord-log-'));
   return {
     log: new FsCoordLog({ coordDir: () => dir }),

@@ -1,8 +1,10 @@
 /**
  * @papercusp/coordination/event-log — the swappable append-only channel
- * log seam (D-009). `FsCoordLog` is the portable default; `InMemoryCoordLog`
- * is the test double / detached proof. A future PG-backed log satisfies
- * the same `CoordEventLog` interface.
+ * log seam (D-009). Three interchangeable backends satisfy `CoordEventLog`
+ * and pass the SAME conformance suite (the P-050 gate):
+ *   - `FsCoordLog`        — the portable default (detached agents, no PG).
+ *   - `InMemoryCoordLog`  — the test double / detached proof.
+ *   - `PgCoordLog`        — the optional single-table Postgres backend.
  */
 
 export {
@@ -13,3 +15,12 @@ export {
 } from './types';
 export { FsCoordLog, type FsCoordLogOptions } from './fs-log';
 export { InMemoryCoordLog } from './memory-log';
+export {
+  PgCoordLog,
+  ensureCoordEventLogTable,
+  type PgCoordLogOptions,
+} from './pg-log';
+// NOTE: the conformance harness imports `vitest`, so it is deliberately NOT
+// re-exported here (this barrel is imported by production code). Test code
+// imports it from the dedicated `@papercusp/coordination/event-log/conformance`
+// subpath — mirroring `@papercusp/coordination/presence/conformance`.
