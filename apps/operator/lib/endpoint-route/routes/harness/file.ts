@@ -36,8 +36,8 @@ async function loadAllowlist(projectPath: string): Promise<string[]> {
   const cfg = (manifest?.configFiles as ConfigFile[] | undefined) ?? [];
   if (cfg.length > 0) return cfg.map((c) => c.path);
   return [
-    'SPEC.md', 'AGENTS.md',
-    '.harness/validation-contract.md', '.harness/config.json',
+    // SPEC.md + validation-contract.md dropped — deprecated (D-004/D-005).
+    'AGENTS.md', '.harness/config.json',
     '.mcp.json', '.claude/settings.json',
     '.harness/supervisor-notes.md', '.harness/knowledge.md',
     '.env',
