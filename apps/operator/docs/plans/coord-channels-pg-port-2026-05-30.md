@@ -12,9 +12,9 @@ related: [agent-coordination-architecture-v2-2026-05-20, BRIEF-coordination-extr
 
 ## Now
 
-**State:** Drafted, peer-reviewed, awaiting human sign-off. Move the L3 coordination channels (messages/acks/threads, plan-events, handoffs, escalations, subscriptions/watches, watermarks) off the filesystem and onto Postgres, reversing the original portability decision. The hard part is already built: the `CoordEventLog` seam, `PgCoordLog`, and `PgPresenceStore` exist (P-011) and pass a shared conformance suite, so the event-log channels are a wiring swap; only subscriptions + watermarks are net-new PG stores. Decisions locked: PG-only (detached mode dropped, D-001), target `harness_shared` in the main `papercusp` DB (D-002), full scope (D-003), and a `workspace_id` scoping column on all coord tables for parity with `coord_presence` (D-007).
+**State:** Phases 1 & 2 shipped on main (commits 164abb55, 87f98889, 4d897dba, 16955277, 3fb42f00, 75fb8468). The FS→PG cutover is code-complete: PgCoordLog is workspace_id-scoped (P-019/D-007); PgWatermarkStore + PgSubscriptionStore added with in-memory doubles + conformance (P-002/P-003); host ensureSchema wrappers wired (P-001/P-004); log.ts/watermarks.ts/subscriptions.ts/`/api/coord` cut over to PG (P-005..P-009). Verified: all three coord PG stores pass conformance against the live embedded PG (event-log 7/7 incl. workspace isolation, watermark 4/4, subscription 4/4); operator tsc 725 (down from the 727 pre-existing baseline), zero errors in changed files. NOT YET LIVE: the running :3070 operator (`tsx bin/hono-host.ts`, no file-watch) still serves the old FsCoordLog — a probe coord:send landed in coord/*.jsonl, not PG — so P-013's live cross-shell check is blocked on an operator restart (which also resets the papercusp-su MCP session). Phase 3 (P-010/P-011, remove the OMP coord-hook detached FS readers) and Phase 5 (gated by P-014) remain.
 
-**Next:** human approves this plan, then an agent starts Phase 1 (P-001/P-002/P-003/P-019 — schema + the two new package stores + the event-log scoping column).
+**Next:** Human restarts the :3070 operator (tsx bin/hono-host.ts) so it loads the PgCoordLog cutover, then an agent runs the P-013 live cross-shell check; in parallel an agent can do Phase 3 (P-010/P-011, OMP hook) which is independent pure code.
 
 ## Background
 
@@ -136,8 +136,8 @@ Only OMP has a turn-start coord-injection hook with FS-direct readers; Claude/Co
 
 ## Phase 4 — Verify
 
-- **P-012** `todo` Package conformance suites green (event-log incl. the new domain-scoped construction, presence, new watermark + subscription stores); `npm run test:affected`. blocked-by: P-002, P-003, P-005, P-006, P-007, P-019
-- **P-013** `todo` Live cross-shell check: two `claude-su` shells `coord:send`/`coord:inbox` through the running operator confirm messages flow via PG; `psql` shows rows in `harness_shared.coord_event_log`. blocked-by: P-008, P-009
+- **P-012** `done` Package conformance suites green (event-log incl. the new domain-scoped construction, presence, new watermark + subscription stores); `npm run test:affected`. blocked-by: P-002, P-003, P-005, P-006, P-007, P-019 (All three coord PG stores pass conformance against the live embedded PG event-log 7/7 incl. workspace isolation, watermark 4/4, subscription 4/4; in-memory suites green; operator tsc 725 down from 727 baseline, zero in changed files. Full test:affected closure not run heavy; targeted conformance + tsc cover the change.)
+- **P-013** `blocked` Live cross-shell check: two `claude-su` shells `coord:send`/`coord:inbox` through the running operator confirm messages flow via PG; `psql` shows rows in `harness_shared.coord_event_log`. blocked-by: P-008, P-009 (External: the :3070 operator is `tsx bin/hono-host.ts`, a no-watch long-running process still serving the pre-cutover FsCoordLog proven — a live coord:send landed in coord/messages/*.jsonl, not PG. Needs an operator restart to load the PgCoordLog cutover; restarting also resets the papercusp-su MCP session, so it is the user's call.)
 
 ## Phase 5 — Cleanup + docs (gated)
 
