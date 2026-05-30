@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useState, type CSSProperties } from 'react';
+import { useQueryState, parseAsString } from 'nuqs';
 import { toast } from 'sonner';
 import { Select } from '../../harness/Select';
 import {
@@ -10,7 +11,19 @@ import {
   writeVisualEffectsMode,
   type VisualEffectsMode,
 } from '@/lib/visual-effects';
-import { BUILTIN_THEMES, useActiveTheme, writeActiveTheme } from '@/lib/theme';
+import {
+  CUSTOM_PREFIX,
+  DEFAULT_THEME_ID,
+  customThemeSlug,
+  deleteCustomTheme,
+  fetchCustomThemes,
+  findCustomTheme,
+  themeList,
+  useActiveTheme,
+  writeActiveTheme,
+  type CustomTheme,
+} from '@/lib/theme';
+import ThemeEditor from './ThemeEditor';
 
 const VISUAL_EFFECTS_OPTIONS: Array<{ value: VisualEffectsMode; label: string; description: string }> = [
   {
@@ -35,13 +48,8 @@ const THEME_DESCRIPTIONS: Record<string, string> = {
   black: 'Pure-black surfaces with neutral greys and a white accent. High contrast, minimal color.',
 };
 
-/**
- * A small live preview of a theme. The wrapper carries `data-theme={id}`, so its
- * subtree resolves that theme's tokens regardless of the page's active theme —
- * this is why the frost/black blocks are both explicitly scopable (see
- * design-tokens/style-dictionary.config.mjs). All colors come from real tokens,
- * so previews can never drift from the themes themselves.
- */
+/** Live mini-preview of a theme, scoped via `data-theme={id}` so it renders that
+ * theme's real tokens regardless of the page's active theme. */
 function ThemePreview({ themeId }: { themeId: string }) {
   return (
     <div
@@ -82,6 +90,11 @@ function ThemePreview({ themeId }: { themeId: string }) {
 export default function PersonalizationSettingsPage() {
   const [visualEffectsMode, setVisualEffectsMode] = useState<VisualEffectsMode>('system');
   const activeTheme = useActiveTheme();
+  const [customThemes, setCustomThemes] = useState<CustomTheme[]>([]);
+  // Editor open-state in the URL (repo nuqs rule): null = closed, 'new' = create
+  // (seed from active), 'custom:<id>' = edit that theme.
+  const [themeEdit, setThemeEdit] = useQueryState('themeEdit', parseAsString);
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
 
   useEffect(() => {
     const syncVisualEffects = () => {
@@ -89,12 +102,22 @@ export default function PersonalizationSettingsPage() {
       setVisualEffectsMode(mode);
       applyVisualEffectsMode(mode);
     };
-
     syncVisualEffects();
-    return subscribeVisualEffects(() => {
-      setVisualEffectsMode(readVisualEffectsMode());
-    });
+    return subscribeVisualEffects(() => setVisualEffectsMode(readVisualEffectsMode()));
   }, []);
+
+  const reloadCustomThemes = useCallback(async () => {
+    try {
+      setCustomThemes(await fetchCustomThemes());
+    } catch {
+      // The themes endpoint is unavailable until the operator restarts after a
+      // fresh install; built-ins still work, so fail quietly.
+    }
+  }, []);
+
+  useEffect(() => {
+    void reloadCustomThemes();
+  }, [reloadCustomThemes]);
 
   const setVisualEffectsPreference = useCallback((value: string) => {
     const mode = (VISUAL_EFFECTS_OPTIONS.some((opt) => opt.value === value) ? value : 'system') as VisualEffectsMode;
@@ -103,13 +126,51 @@ export default function PersonalizationSettingsPage() {
     toast.success('Visual effects preference saved');
   }, []);
 
-  const selectTheme = useCallback((id: string) => {
-    writeActiveTheme(id);
-    const label = BUILTIN_THEMES.find((t) => t.id === id)?.label ?? id;
-    toast.success(`Theme set to ${label}`);
-  }, []);
-
+  const themes = themeList(customThemes);
   const selectedVisualEffects = VISUAL_EFFECTS_OPTIONS.find((opt) => opt.value === visualEffectsMode) ?? VISUAL_EFFECTS_OPTIONS[0];
+
+  const selectTheme = useCallback(
+    (id: string) => {
+      writeActiveTheme(id);
+      const label = themes.find((t) => t.id === id)?.label ?? id;
+      toast.success(`Theme set to ${label}`);
+    },
+    [themes],
+  );
+
+  const onDelete = useCallback(
+    async (id: string) => {
+      const slug = customThemeSlug(id);
+      if (!slug) return;
+      try {
+        await deleteCustomTheme(slug);
+        if (activeTheme === id) writeActiveTheme(DEFAULT_THEME_ID);
+        if (themeEdit === id) void setThemeEdit(null);
+        toast.success('Theme deleted');
+        await reloadCustomThemes();
+      } catch (err) {
+        toast.error((err as Error).message);
+      } finally {
+        setConfirmDeleteId(null);
+      }
+    },
+    [activeTheme, themeEdit, setThemeEdit, reloadCustomThemes],
+  );
+
+  const onSaved = useCallback(
+    async (theme: CustomTheme) => {
+      await reloadCustomThemes();
+      writeActiveTheme(`${CUSTOM_PREFIX}${theme.id}`);
+      void setThemeEdit(null);
+    },
+    [reloadCustomThemes, setThemeEdit],
+  );
+
+  const editorSeedId = themeEdit === 'new' ? activeTheme : themeEdit ?? activeTheme;
+  const editorExisting = themeEdit && themeEdit !== 'new' ? findCustomTheme(themeEdit, customThemes) : null;
+  const descriptionText =
+    THEME_DESCRIPTIONS[activeTheme] ??
+    (findCustomTheme(activeTheme, customThemes) ? 'Your custom theme.' : 'Custom theme.');
 
   return (
     <div>
@@ -122,12 +183,13 @@ export default function PersonalizationSettingsPage() {
         <h2>Theme</h2>
         <p className="pc-settings-hint" style={{ margin: '0 0 12px' }}>
           Recolors the entire interface on this device. A theme changes only the high-level color
-          tokens — surfaces, text, borders, and accents.
+          tokens — surfaces, text, borders, and accents. Custom themes are saved to a local file.
         </p>
         <div role="radiogroup" aria-label="Theme" style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
-          {BUILTIN_THEMES.map((t) => {
+          {themes.map((t) => {
             const selected = t.id === activeTheme;
             const cardStyle: CSSProperties = {
+              position: 'relative',
               display: 'flex',
               flexDirection: 'column',
               gap: 8,
@@ -152,18 +214,93 @@ export default function PersonalizationSettingsPage() {
               >
                 <ThemePreview themeId={t.id} />
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
-                  <strong style={{ fontSize: 13, color: 'var(--fg)' }}>{t.label}</strong>
-                  {selected && (
-                    <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--accent)' }}>● Active</span>
-                  )}
+                  <strong style={{ fontSize: 13, color: 'var(--fg)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {t.label}
+                  </strong>
+                  {selected && <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--accent)' }}>● Active</span>}
                 </div>
+                {!t.builtin && (
+                  <div style={{ display: 'flex', gap: 10 }}>
+                    <span
+                      role="button"
+                      tabIndex={0}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        void setThemeEdit(t.id);
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' || e.key === ' ') {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          void setThemeEdit(t.id);
+                        }
+                      }}
+                      style={{ fontSize: 11, color: 'var(--fg-mute)', cursor: 'pointer' }}
+                    >
+                      Edit
+                    </span>
+                    <span
+                      role="button"
+                      tabIndex={0}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        if (confirmDeleteId === t.id) void onDelete(t.id);
+                        else setConfirmDeleteId(t.id);
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' || e.key === ' ') {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          if (confirmDeleteId === t.id) void onDelete(t.id);
+                          else setConfirmDeleteId(t.id);
+                        }
+                      }}
+                      style={{ fontSize: 11, color: confirmDeleteId === t.id ? 'var(--bad)' : 'var(--fg-mute)', cursor: 'pointer', fontWeight: confirmDeleteId === t.id ? 600 : 400 }}
+                    >
+                      {confirmDeleteId === t.id ? 'Confirm?' : 'Delete'}
+                    </span>
+                  </div>
+                )}
               </button>
             );
           })}
+
+          <button
+            type="button"
+            onClick={() => setThemeEdit('new')}
+            aria-label="Create a new theme"
+            style={{
+              width: 172,
+              minHeight: 110,
+              borderRadius: 10,
+              border: '1px dashed var(--border-strong)',
+              background: 'transparent',
+              color: 'var(--fg-mute)',
+              cursor: 'pointer',
+              fontSize: 13,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              gap: 6,
+            }}
+          >
+            <span style={{ fontSize: 18, lineHeight: 1 }}>+</span> New theme
+          </button>
         </div>
+
         <p className="pc-settings-hint" style={{ marginTop: 10, maxWidth: 560 }}>
-          {THEME_DESCRIPTIONS[activeTheme] ?? 'Custom theme.'}
+          {descriptionText}
         </p>
+
+        {themeEdit != null && (
+          <ThemeEditor
+            key={themeEdit}
+            seedThemeId={editorSeedId}
+            existing={editorExisting}
+            onSaved={onSaved}
+            onCancel={() => void setThemeEdit(null)}
+          />
+        )}
       </section>
 
       <section className="pc-settings-section">
