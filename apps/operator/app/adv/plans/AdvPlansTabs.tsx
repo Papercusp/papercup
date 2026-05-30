@@ -198,7 +198,7 @@ export default function AdvPlansTabs({ children }: { children: React.ReactNode }
           gap: 3px;
           overflow-x: auto;
           padding: 6px 10px 0;
-          border-bottom: 1px solid var(--border, rgba(125, 211, 252, 0.15));
+          border-bottom: 1px solid var(--border, color-mix(in srgb, var(--accent-strong), transparent 85%));
           background: var(--bg-2, rgba(255, 255, 255, 0.045));
           scrollbar-width: thin;
         }
@@ -209,7 +209,7 @@ export default function AdvPlansTabs({ children }: { children: React.ReactNode }
           min-height: 28px;
           max-width: 240px;
           padding: 0 6px 0 10px;
-          border: 1px solid var(--border, rgba(125, 211, 252, 0.15));
+          border: 1px solid var(--border, color-mix(in srgb, var(--accent-strong), transparent 85%));
           border-bottom-color: transparent;
           border-radius: 8px 8px 0 0;
           background: color-mix(in oklab, var(--bg-2, rgba(255, 255, 255, 0.045)), transparent 25%);

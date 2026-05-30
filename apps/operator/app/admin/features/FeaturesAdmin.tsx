@@ -283,7 +283,7 @@ export default function FeaturesAdmin() {
           flex-direction: column;
           gap: 10px;
           padding: 18px 18px 20px;
-          border: 1px solid rgba(125, 211, 252, 0.14);
+          border: 1px solid color-mix(in srgb, var(--accent-strong), transparent 86%);
           border-radius: 16px;
           background:
             linear-gradient(180deg, rgba(10, 20, 33, 0.94), rgba(7, 14, 24, 0.98));
@@ -311,7 +311,7 @@ export default function FeaturesAdmin() {
           padding: 18px 16px; min-height: 110px;
           border-radius: 14px;
           background: rgba(6, 12, 22, 0.92);
-          border: 1px solid rgba(125, 211, 252, 0.16);
+          border: 1px solid color-mix(in srgb, var(--accent-strong), transparent 84%);
           color: #eff8ff;
           text-align: left;
           cursor: pointer;
@@ -340,7 +340,7 @@ export default function FeaturesAdmin() {
           padding: 14px 16px;
           border-radius: 14px;
           background: rgba(6, 12, 22, 0.88);
-          border: 1px solid rgba(125, 211, 252, 0.14);
+          border: 1px solid color-mix(in srgb, var(--accent-strong), transparent 86%);
           box-shadow: inset 0 1px 0 rgba(255,255,255,0.025);
         }
         .fa-master-text,
@@ -365,12 +365,12 @@ export default function FeaturesAdmin() {
           padding: 2px;
           border-radius: 999px;
           background: rgba(255,255,255,0.08);
-          border: 1px solid rgba(125, 211, 252, 0.18);
+          border: 1px solid color-mix(in srgb, var(--accent-strong), transparent 82%);
           position: relative; cursor: pointer;
           transition: background 120ms, border-color 120ms, transform 120ms;
         }
         .fa-toggle.on {
-          background: rgba(56, 189, 248, 0.34);
+          background: color-mix(in srgb, var(--accent), transparent 66%);
           border-color: rgba(103, 232, 249, 0.46);
         }
         .fa-toggle:hover:not(:disabled) {
@@ -390,7 +390,7 @@ export default function FeaturesAdmin() {
         .fa-spinner {
           padding: 16px 18px;
           border-radius: 14px;
-          border: 1px solid rgba(125, 211, 252, 0.14);
+          border: 1px solid color-mix(in srgb, var(--accent-strong), transparent 86%);
           background: rgba(8, 16, 28, 0.94);
         }
         .fa-error { color: #fda4af; }

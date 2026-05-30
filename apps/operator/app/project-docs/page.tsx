@@ -206,7 +206,7 @@ const linkIdle: React.CSSProperties = { ...linkBaseStyle, color: 'var(--fg-dim, 
 const linkActive: React.CSSProperties = {
   ...linkBaseStyle,
   color: 'var(--accent-strong, #7dd3fc)',
-  background: 'rgba(56, 189, 248, 0.10)',
+  background: 'color-mix(in srgb, var(--accent), transparent 90%)',
   borderLeftColor: 'var(--accent, #38bdf8)',
 };
 const article: React.CSSProperties = {
@@ -224,7 +224,7 @@ const breadcrumb: React.CSSProperties = {
   fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
 };
 const projectDocsCss = `
-  .project-docs-sidebar { scrollbar-color: rgba(125, 211, 252, 0.30) transparent; }
+  .project-docs-sidebar { scrollbar-color: color-mix(in srgb, var(--accent-strong), transparent 70%) transparent; }
   .project-docs-sidebar,
   .project-docs-article {
     scrollbar-gutter: stable;
@@ -232,7 +232,7 @@ const projectDocsCss = `
   }
   .project-docs-sidebar section + section {
     padding-top: 4px;
-    border-top: 1px solid rgba(125, 211, 252, 0.07);
+    border-top: 1px solid color-mix(in srgb, var(--accent-strong), transparent 93%);
   }
   .project-docs-project-header { backdrop-filter: blur(10px); }
   .project-docs-project-header strong { display: block; font-size: 14px; letter-spacing: .01em; }
@@ -246,9 +246,9 @@ const projectDocsCss = `
     align-items: center;
     width: fit-content;
     padding: 2px 8px;
-    border: 1px solid rgba(125, 211, 252, 0.12);
+    border: 1px solid color-mix(in srgb, var(--accent-strong), transparent 88%);
     border-radius: 999px;
-    background: rgba(125, 211, 252, 0.055);
+    background: color-mix(in srgb, var(--accent-strong), transparent 94.5%);
     max-width: min(100%, 72ch);
     overflow: hidden;
     text-overflow: ellipsis;
@@ -266,11 +266,11 @@ const projectDocsCss = `
   .project-docs-nav-link:hover,
   .project-docs-nav-link:focus-visible {
     color: var(--accent-cool, #d7f3ff) !important;
-    background: rgba(125, 211, 252, 0.08);
+    background: color-mix(in srgb, var(--accent-strong), transparent 92%);
     outline: none;
   }
   .project-docs-nav-link:focus-visible { box-shadow: inset 3px 0 0 var(--accent, #38bdf8); }
-  .project-docs-article { scrollbar-color: rgba(125, 211, 252, 0.30) transparent; }
+  .project-docs-article { scrollbar-color: color-mix(in srgb, var(--accent-strong), transparent 70%) transparent; }
   .project-docs-article > div:not(.project-docs-breadcrumb) {
     display: block !important;
     width: 100%;
@@ -283,7 +283,7 @@ const projectDocsCss = `
     margin: 0 0 18px !important;
     padding: 0 0 10px !important;
     border-right: 0 !important;
-    border-bottom: 1px solid rgba(125, 211, 252, 0.12);
+    border-bottom: 1px solid color-mix(in srgb, var(--accent-strong), transparent 88%);
   }
   .project-docs-article .pc-md-outline ul {
     display: flex;
@@ -302,7 +302,7 @@ const projectDocsCss = `
   .project-docs-article .vditor-reset > :first-child { margin-top: 0; }
   .project-docs-article .vditor-reset > :last-child { margin-bottom: 0; }
   .project-docs-article .vditor-reset ::selection {
-    background: rgba(56, 189, 248, 0.28);
+    background: color-mix(in srgb, var(--accent), transparent 72%);
     color: var(--fg, #e7f7ff);
   }
   .project-docs-article :where(h1, h2, h3) {
@@ -321,14 +321,14 @@ const projectDocsCss = `
     margin: 30px 0 12px;
     padding-top: 2px;
     font-size: clamp(1.55rem, 2.6vw, 2.2rem);
-    border-bottom: 1px solid rgba(125, 211, 252, 0.18);
+    border-bottom: 1px solid color-mix(in srgb, var(--accent-strong), transparent 82%);
     padding-bottom: 8px;
   }
   .project-docs-article h3 { margin: 22px 0 10px; font-size: 1.25rem; }
   .project-docs-article :where(h1, h2, h3):target {
     border-radius: 8px;
-    background: linear-gradient(90deg, rgba(56, 189, 248, 0.10), transparent 68%);
-    outline: 1px solid rgba(125, 211, 252, 0.16);
+    background: linear-gradient(90deg, color-mix(in srgb, var(--accent), transparent 90%), transparent 68%);
+    outline: 1px solid color-mix(in srgb, var(--accent-strong), transparent 84%);
     outline-offset: 4px;
   }
   .project-docs-article :where(h1, h2, h3) a {
@@ -352,7 +352,7 @@ const projectDocsCss = `
   .project-docs-article hr {
     margin: 10px 0 16px;
     border: 0;
-    border-top: 1px solid var(--border-strong, rgba(125, 211, 252, 0.32));
+    border-top: 1px solid var(--border-strong, color-mix(in srgb, var(--accent-strong), transparent 68%));
   }
   .project-docs-article table {
     width: 100%;
@@ -360,7 +360,7 @@ const projectDocsCss = `
     margin: 16px 0 28px;
     border-collapse: separate;
     border-spacing: 0;
-    border: 1px solid var(--border, rgba(125, 211, 252, 0.15));
+    border: 1px solid var(--border, color-mix(in srgb, var(--accent-strong), transparent 85%));
     border-radius: 10px;
     overflow: hidden;
     background: rgba(255,255,255,0.025);
@@ -373,20 +373,20 @@ const projectDocsCss = `
   .project-docs-article td {
     padding: 7px 12px;
     border: 0;
-    border-bottom: 1px solid rgba(125, 211, 252, 0.10);
+    border-bottom: 1px solid color-mix(in srgb, var(--accent-strong), transparent 90%);
     vertical-align: top;
     line-height: 1.45;
     text-align: left;
   }
   .project-docs-article th + th,
   .project-docs-article td + td {
-    border-left: 1px solid rgba(125, 211, 252, 0.08);
+    border-left: 1px solid color-mix(in srgb, var(--accent-strong), transparent 92%);
   }
   .project-docs-article th {
     color: var(--fg, #e7f7ff);
     font-size: 11px;
     letter-spacing: .04em;
-    background: rgba(125, 211, 252, 0.075);
+    background: color-mix(in srgb, var(--accent-strong), transparent 92.5%);
     position: sticky;
     top: 0;
     z-index: 1;
@@ -401,7 +401,7 @@ const projectDocsCss = `
   }
   .project-docs-article tbody tr:last-child td { border-bottom: 0; }
   .project-docs-article tbody tr { transition: background-color 120ms ease; }
-  .project-docs-article tbody tr:hover { background: rgba(125, 211, 252, 0.045); }
+  .project-docs-article tbody tr:hover { background: color-mix(in srgb, var(--accent-strong), transparent 95.5%); }
   .project-docs-article tbody tr:nth-child(even) { background: rgba(255, 255, 255, 0.012); }
   .project-docs-article th:first-child,
   .project-docs-article td:first-child,
@@ -443,7 +443,7 @@ const projectDocsCss = `
   .project-docs-article a { text-underline-offset: 0.16em; }
   .project-docs-article td:nth-child(4) a:hover,
   .project-docs-article td:nth-child(4) a:focus-visible {
-    background: rgba(125, 211, 252, 0.08);
+    background: color-mix(in srgb, var(--accent-strong), transparent 92%);
     text-decoration: none;
   }
   .project-docs-article a { color: var(--accent-strong, #7dd3fc); }
@@ -455,13 +455,13 @@ const projectDocsCss = `
   }
   .project-docs-article a:focus-visible {
     border-radius: 4px;
-    box-shadow: 0 0 0 2px rgba(56, 189, 248, 0.20);
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent), transparent 80%);
   }
   .project-docs-article :not(pre) > code {
     padding: 0.08rem 0.28rem;
-    border: 1px solid rgba(125, 211, 252, 0.14);
+    border: 1px solid color-mix(in srgb, var(--accent-strong), transparent 86%);
     border-radius: 5px;
-    background: rgba(125, 211, 252, 0.08);
+    background: color-mix(in srgb, var(--accent-strong), transparent 92%);
     color: #d9f3ff;
     white-space: nowrap !important;
   }
@@ -488,8 +488,8 @@ const projectDocsCss = `
   .project-docs-article kbd {
     display: inline-block;
     padding: 0.08rem 0.34rem;
-    border: 1px solid rgba(125, 211, 252, 0.20);
-    border-bottom-color: rgba(125, 211, 252, 0.32);
+    border: 1px solid color-mix(in srgb, var(--accent-strong), transparent 80%);
+    border-bottom-color: color-mix(in srgb, var(--accent-strong), transparent 68%);
     border-radius: 5px;
     background: rgba(3, 9, 18, 0.62);
     color: var(--fg, #e7f7ff);
@@ -502,7 +502,7 @@ const projectDocsCss = `
     color: var(--fg, #e7f7ff);
   }
   .project-docs-article abbr[title] {
-    text-decoration: underline dotted rgba(125, 211, 252, 0.55);
+    text-decoration: underline dotted color-mix(in srgb, var(--accent-strong), transparent 45%);
     text-underline-offset: 0.18em;
     cursor: help;
   }
@@ -524,7 +524,7 @@ const projectDocsCss = `
   .project-docs-article dd {
     margin: 4px 0 12px 16px;
     padding-left: 12px;
-    border-left: 1px solid rgba(125, 211, 252, 0.14);
+    border-left: 1px solid color-mix(in srgb, var(--accent-strong), transparent 86%);
   }
   .project-docs-article input[type="checkbox"] {
     accent-color: var(--accent, #38bdf8);
@@ -537,14 +537,14 @@ const projectDocsCss = `
     padding: 10px 14px;
     border-left: 2px solid var(--accent, #38bdf8);
     border-radius: 0 8px 8px 0;
-    background: rgba(125, 211, 252, 0.06);
+    background: color-mix(in srgb, var(--accent-strong), transparent 94%);
     color: var(--fg-dim, #b9d4e8);
   }
   .project-docs-article pre {
     max-width: 100%;
     margin: 18px 0 22px;
     padding: 12px 14px;
-    border: 1px solid rgba(125, 211, 252, 0.16);
+    border: 1px solid color-mix(in srgb, var(--accent-strong), transparent 84%);
     border-radius: 10px;
     background: rgba(3, 9, 18, 0.58);
     box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.035);
@@ -561,8 +561,8 @@ const projectDocsCss = `
     tab-size: 2;
   }
   .project-docs-article .vditor-yml-front-matter {
-    background: rgba(125, 211, 252, 0.045);
-    border-color: rgba(125, 211, 252, 0.16);
+    background: color-mix(in srgb, var(--accent-strong), transparent 95.5%);
+    border-color: color-mix(in srgb, var(--accent-strong), transparent 84%);
   }
   .project-docs-article figure {
     max-width: 100%;
@@ -571,7 +571,7 @@ const projectDocsCss = `
   .project-docs-article img {
     max-width: 100%;
     height: auto;
-    border: 1px solid rgba(125, 211, 252, 0.16);
+    border: 1px solid color-mix(in srgb, var(--accent-strong), transparent 84%);
     border-radius: 10px;
     background: rgba(255, 255, 255, 0.03);
     box-shadow: 0 12px 30px rgba(0, 0, 0, 0.16);
@@ -591,7 +591,7 @@ const projectDocsCss = `
     max-width: none;
     margin-top: 34px;
     padding-top: 14px;
-    border-top: 1px solid rgba(125, 211, 252, 0.16);
+    border-top: 1px solid color-mix(in srgb, var(--accent-strong), transparent 84%);
     color: var(--fg-mute, #7f9bb4);
     font-size: 13px;
   }
@@ -602,7 +602,7 @@ const projectDocsCss = `
   .project-docs-article .footnote-ref a {
     padding: 0 0.2rem;
     border-radius: 999px;
-    background: rgba(125, 211, 252, 0.08);
+    background: color-mix(in srgb, var(--accent-strong), transparent 92%);
     text-decoration: none;
   }
   .project-docs-article a[data-footnote-backref] {
@@ -613,9 +613,9 @@ const projectDocsCss = `
   .project-docs-article details {
     max-width: none;
     margin: 18px 0;
-    border: 1px solid rgba(125, 211, 252, 0.14);
+    border: 1px solid color-mix(in srgb, var(--accent-strong), transparent 86%);
     border-radius: 10px;
-    background: rgba(125, 211, 252, 0.045);
+    background: color-mix(in srgb, var(--accent-strong), transparent 95.5%);
     overflow: hidden;
   }
   .project-docs-article summary {
@@ -625,7 +625,7 @@ const projectDocsCss = `
     font-weight: 650;
   }
   .project-docs-article details[open] summary {
-    border-bottom: 1px solid rgba(125, 211, 252, 0.12);
+    border-bottom: 1px solid color-mix(in srgb, var(--accent-strong), transparent 88%);
   }
   .project-docs-article details > :not(summary) {
     margin-left: 12px;

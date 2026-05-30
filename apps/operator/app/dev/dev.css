@@ -13,13 +13,13 @@
 .pc-dev-left,
 .pc-dev-right {
   background: rgba(255, 255, 255, 0.02);
-  border-right: 1px solid var(--border, rgba(125, 211, 252, 0.15));
+  border-right: 1px solid var(--border, color-mix(in srgb, var(--accent-strong), transparent 85%));
   padding: 16px 12px;
   overflow-y: auto;
 }
 .pc-dev-right {
   border-right: none;
-  border-left: 1px solid var(--border, rgba(125, 211, 252, 0.15));
+  border-left: 1px solid var(--border, color-mix(in srgb, var(--accent-strong), transparent 85%));
 }
 
 .pc-dev-section {
@@ -48,10 +48,10 @@
   cursor: pointer;
 }
 .pc-dev-tab:hover {
-  background: rgba(125, 211, 252, 0.08);
+  background: color-mix(in srgb, var(--accent-strong), transparent 92%);
 }
 .pc-dev-tab.is-active {
-  background: rgba(56, 189, 248, 0.16);
+  background: color-mix(in srgb, var(--accent), transparent 84%);
   color: #7dd3fc;
   font-weight: 600;
 }
@@ -87,7 +87,7 @@
 
 .pc-dev-input {
   background: rgba(0, 0, 0, 0.3);
-  border: 1px solid var(--border, rgba(125, 211, 252, 0.20));
+  border: 1px solid var(--border, color-mix(in srgb, var(--accent-strong), transparent 80%));
   color: inherit;
   padding: 4px 8px;
   border-radius: 4px;
@@ -139,7 +139,7 @@
   flex-direction: column;
   gap: 8px;
   padding-bottom: 12px;
-  border-bottom: 1px solid var(--border, rgba(125, 211, 252, 0.10));
+  border-bottom: 1px solid var(--border, color-mix(in srgb, var(--accent-strong), transparent 90%));
   margin-bottom: 12px;
 }
 .pc-dev-toggles {
@@ -183,10 +183,10 @@
   cursor: pointer;
 }
 .pc-dev-api-tool:hover {
-  background: rgba(125, 211, 252, 0.08);
+  background: color-mix(in srgb, var(--accent-strong), transparent 92%);
 }
 .pc-dev-api-tool.is-active {
-  background: rgba(56, 189, 248, 0.14);
+  background: color-mix(in srgb, var(--accent), transparent 86%);
   color: #7dd3fc;
   font-weight: 600;
 }
@@ -230,7 +230,7 @@
 
 .pc-dev-api-ctx,
 .pc-dev-api-args {
-  border: 1px solid var(--border, rgba(125, 211, 252, 0.15));
+  border: 1px solid var(--border, color-mix(in srgb, var(--accent-strong), transparent 85%));
   border-radius: 6px;
   padding: 12px 14px;
   margin-bottom: 16px;
@@ -294,7 +294,7 @@
 
 .pc-dev-api-response {
   background: rgba(0, 0, 0, 0.4);
-  border: 1px solid var(--border, rgba(125, 211, 252, 0.10));
+  border: 1px solid var(--border, color-mix(in srgb, var(--accent-strong), transparent 90%));
   border-radius: 4px;
   padding: 12px;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace;
@@ -373,7 +373,7 @@
 .pc-dev-table td {
   text-align: left;
   padding: 4px 8px;
-  border-bottom: 1px solid var(--border, rgba(125, 211, 252, 0.08));
+  border-bottom: 1px solid var(--border, color-mix(in srgb, var(--accent-strong), transparent 92%));
 }
 .pc-dev-table th {
   font-size: 10px;
@@ -383,7 +383,7 @@
   color: var(--fg-mute, #94a3b8);
 }
 .pc-dev-table tbody tr:hover {
-  background: rgba(125, 211, 252, 0.04);
+  background: color-mix(in srgb, var(--accent-strong), transparent 96%);
 }
 .pc-dev-slug {
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace;
@@ -418,7 +418,7 @@
   flex-direction: column;
   gap: 1px;
   padding-bottom: 6px;
-  border-bottom: 1px solid var(--border, rgba(125, 211, 252, 0.06));
+  border-bottom: 1px solid var(--border, color-mix(in srgb, var(--accent-strong), transparent 94%));
 }
 .pc-dev-activity-name {
   display: flex;
@@ -468,7 +468,7 @@
   cursor: pointer;
 }
 .pc-dev-row-expand:hover {
-  background: rgba(125, 211, 252, 0.06);
+  background: color-mix(in srgb, var(--accent-strong), transparent 94%);
 }
 .pc-dev-detail-row > td {
   background: rgba(0, 0, 0, 0.25);
@@ -493,7 +493,7 @@
 }
 .pc-dev-pre {
   background: rgba(0, 0, 0, 0.4);
-  border: 1px solid var(--border, rgba(125, 211, 252, 0.10));
+  border: 1px solid var(--border, color-mix(in srgb, var(--accent-strong), transparent 90%));
   border-radius: 4px;
   padding: 8px;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace;
@@ -520,7 +520,7 @@
 
 .pc-dev-btn-mini {
   background: transparent;
-  border: 1px solid var(--border, rgba(125, 211, 252, 0.20));
+  border: 1px solid var(--border, color-mix(in srgb, var(--accent-strong), transparent 80%));
   color: #7dd3fc;
   border-radius: 3px;
   padding: 2px 8px;
@@ -528,8 +528,8 @@
   cursor: pointer;
 }
 .pc-dev-btn-mini:hover {
-  background: rgba(56, 189, 248, 0.16);
-  border-color: rgba(56, 189, 248, 0.50);
+  background: color-mix(in srgb, var(--accent), transparent 84%);
+  border-color: color-mix(in srgb, var(--accent), transparent 50%);
 }
 
 /* ---- /dev backups tab ---- */
@@ -561,8 +561,8 @@
 .pc-dev-backups-metric-value { font-size: 16px; font-weight: 600; }
 .pc-dev-backups-actions { display: flex; flex-wrap: wrap; gap: 6px; }
 .pc-dev-backups-actions button {
-  background: rgba(56,189,248,0.08);
-  border: 1px solid rgba(56,189,248,0.30);
+  background: color-mix(in srgb, var(--accent), transparent 92%);
+  border: 1px solid color-mix(in srgb, var(--accent), transparent 70%);
   color: rgba(255,255,255,0.95);
   padding: 6px 10px;
   border-radius: 6px;
@@ -570,8 +570,8 @@
   cursor: pointer;
 }
 .pc-dev-backups-actions button:hover:not(:disabled) {
-  background: rgba(56,189,248,0.16);
-  border-color: rgba(56,189,248,0.50);
+  background: color-mix(in srgb, var(--accent), transparent 84%);
+  border-color: color-mix(in srgb, var(--accent), transparent 50%);
 }
 .pc-dev-backups-iframe {
   width: 100%;
@@ -664,7 +664,7 @@
 }
 .pc-dev-modal {
   background: #0f1419;
-  border: 1px solid var(--border, rgba(125, 211, 252, 0.20));
+  border: 1px solid var(--border, color-mix(in srgb, var(--accent-strong), transparent 80%));
   border-radius: 6px;
   padding: 18px 22px;
   min-width: 480px;
@@ -734,7 +734,7 @@
   line-height: 1.6;
 }
 .pc-studio-state-body code {
-  background: rgba(125, 211, 252, 0.08);
+  background: color-mix(in srgb, var(--accent-strong), transparent 92%);
   padding: 1px 5px;
   border-radius: 3px;
   font-size: 12px;
@@ -786,7 +786,7 @@
   align-items: center;
   gap: 10px;
   padding: 6px 14px;
-  border-bottom: 1px solid var(--border, rgba(125, 211, 252, 0.12));
+  border-bottom: 1px solid var(--border, color-mix(in srgb, var(--accent-strong), transparent 88%));
   background: rgba(255, 255, 255, 0.015);
   flex-shrink: 0;
   font-size: 12px;
@@ -811,12 +811,12 @@
   border-radius: 4px;
   transition: background 120ms;
 }
-.pc-studio-toolbar-link:hover { background: rgba(125, 211, 252, 0.10); }
+.pc-studio-toolbar-link:hover { background: color-mix(in srgb, var(--accent-strong), transparent 90%); }
 .pc-studio-toolbar-btn {
   padding: 4px 12px;
   border-radius: 4px;
   background: transparent;
-  border: 1px solid var(--border, rgba(125, 211, 252, 0.20));
+  border: 1px solid var(--border, color-mix(in srgb, var(--accent-strong), transparent 80%));
   color: var(--fg, #e2e8f0);
   font-size: 12px;
   cursor: pointer;
@@ -846,19 +846,19 @@
 .pc-tables-sidebar {
   display: flex;
   flex-direction: column;
-  border-right: 1px solid var(--border, rgba(125, 211, 252, 0.12));
+  border-right: 1px solid var(--border, color-mix(in srgb, var(--accent-strong), transparent 88%));
   background: rgba(255, 255, 255, 0.015);
   min-height: 0;
 }
 .pc-tables-search {
   padding: 10px 12px;
-  border-bottom: 1px solid var(--border, rgba(125, 211, 252, 0.12));
+  border-bottom: 1px solid var(--border, color-mix(in srgb, var(--accent-strong), transparent 88%));
 }
 .pc-tables-search input {
   width: 100%;
   padding: 6px 10px;
   background: rgba(255, 255, 255, 0.04);
-  border: 1px solid var(--border, rgba(125, 211, 252, 0.16));
+  border: 1px solid var(--border, color-mix(in srgb, var(--accent-strong), transparent 84%));
   border-radius: 4px;
   color: var(--fg, #e2e8f0);
   font-size: 12px;
@@ -897,9 +897,9 @@
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   transition: background 80ms;
 }
-.pc-tables-row:hover { background: rgba(125, 211, 252, 0.06); }
+.pc-tables-row:hover { background: color-mix(in srgb, var(--accent-strong), transparent 94%); }
 .pc-tables-row.is-active {
-  background: rgba(125, 211, 252, 0.14);
+  background: color-mix(in srgb, var(--accent-strong), transparent 86%);
   color: #7dd3fc;
 }
 .pc-tables-row-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -929,7 +929,7 @@
   font-size: 12px;
 }
 .pc-tables-empty code {
-  background: rgba(125, 211, 252, 0.08);
+  background: color-mix(in srgb, var(--accent-strong), transparent 92%);
   padding: 1px 5px;
   border-radius: 3px;
   font-size: 11px;
@@ -939,7 +939,7 @@
   align-items: center;
   justify-content: space-between;
   padding-bottom: 8px;
-  border-bottom: 1px solid var(--border, rgba(125, 211, 252, 0.10));
+  border-bottom: 1px solid var(--border, color-mix(in srgb, var(--accent-strong), transparent 90%));
 }
 .pc-tables-header h2 {
   margin: 0;
@@ -964,7 +964,7 @@
   margin-left: 6px;
   padding: 3px 6px;
   background: rgba(255, 255, 255, 0.04);
-  border: 1px solid var(--border, rgba(125, 211, 252, 0.16));
+  border: 1px solid var(--border, color-mix(in srgb, var(--accent-strong), transparent 84%));
   border-radius: 4px;
   color: var(--fg, #e2e8f0);
   font-size: 11px;
@@ -997,7 +997,7 @@
   text-transform: uppercase;
   letter-spacing: 0.04em;
   color: var(--fg-mute, #94a3b8);
-  border-bottom: 1px solid var(--border, rgba(125, 211, 252, 0.10));
+  border-bottom: 1px solid var(--border, color-mix(in srgb, var(--accent-strong), transparent 90%));
 }
 .pc-tables-coltable td {
   padding: 4px 8px;
@@ -1005,7 +1005,7 @@
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 11.5px;
 }
-.pc-tables-coltable tr.is-pk td { background: rgba(125, 211, 252, 0.04); }
+.pc-tables-coltable tr.is-pk td { background: color-mix(in srgb, var(--accent-strong), transparent 96%); }
 .pc-tables-coltable td code {
   font-size: inherit;
   background: transparent;
@@ -1019,7 +1019,7 @@
   font-size: 10px;
   padding: 0 5px;
   margin-right: 4px;
-  background: rgba(125, 211, 252, 0.10);
+  background: color-mix(in srgb, var(--accent-strong), transparent 90%);
   border-radius: 3px;
   color: #7dd3fc;
 }
@@ -1065,7 +1065,7 @@
 .pc-tables-paginate button {
   padding: 3px 10px;
   background: transparent;
-  border: 1px solid var(--border, rgba(125, 211, 252, 0.20));
+  border: 1px solid var(--border, color-mix(in srgb, var(--accent-strong), transparent 80%));
   color: var(--fg, #e2e8f0);
   border-radius: 4px;
   font-size: 11px;
@@ -1077,7 +1077,7 @@
 .pc-tables-rowgrid-scroll {
   overflow: auto;
   max-height: 60vh;
-  border: 1px solid var(--border, rgba(125, 211, 252, 0.10));
+  border: 1px solid var(--border, color-mix(in srgb, var(--accent-strong), transparent 90%));
   border-radius: 4px;
 }
 .pc-tables-rowgrid {
@@ -1097,7 +1097,7 @@
   text-transform: uppercase;
   letter-spacing: 0.04em;
   color: var(--fg-mute, #94a3b8);
-  border-bottom: 1px solid var(--border, rgba(125, 211, 252, 0.16));
+  border-bottom: 1px solid var(--border, color-mix(in srgb, var(--accent-strong), transparent 84%));
   white-space: nowrap;
 }
 .pc-tables-rowgrid td {
@@ -1109,7 +1109,7 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.pc-tables-rowgrid tr:hover td { background: rgba(125, 211, 252, 0.04); }
+.pc-tables-rowgrid tr:hover td { background: color-mix(in srgb, var(--accent-strong), transparent 96%); }
 .pc-tables-empty-rows {
   color: var(--fg-mute, #94a3b8);
   font-style: italic;
@@ -1133,7 +1133,7 @@
   background: transparent;
   padding: 0;
   font-size: inherit;
-  color: rgba(125, 211, 252, 0.85);
+  color: color-mix(in srgb, var(--accent-strong), transparent 15%);
 }
 .pc-tables-fkmark {
   color: #7dd3fc;
@@ -1165,8 +1165,8 @@
   align-items: center;
   gap: 14px;
   padding: 8px 14px;
-  background: rgba(125, 211, 252, 0.08);
-  border: 1px solid rgba(125, 211, 252, 0.25);
+  background: color-mix(in srgb, var(--accent-strong), transparent 92%);
+  border: 1px solid color-mix(in srgb, var(--accent-strong), transparent 75%);
   border-radius: 6px;
   margin-bottom: 2px;
   font-size: 12px;
@@ -1183,7 +1183,7 @@
 }
 .pc-tables-filter-clear {
   background: transparent;
-  border: 1px solid rgba(125, 211, 252, 0.30);
+  border: 1px solid color-mix(in srgb, var(--accent-strong), transparent 70%);
   color: #7dd3fc;
   padding: 3px 10px;
   border-radius: 4px;
@@ -1192,7 +1192,7 @@
   font-family: inherit;
 }
 .pc-tables-filter-clear:hover {
-  background: rgba(125, 211, 252, 0.10);
+  background: color-mix(in srgb, var(--accent-strong), transparent 90%);
 }
 
 /* ── WHERE composer + filter chips ──────────────────── */
@@ -1200,8 +1200,8 @@
 .pc-tables-add-filter {
   padding: 4px 12px;
   border-radius: 4px;
-  background: rgba(125, 211, 252, 0.10);
-  border: 1px solid rgba(125, 211, 252, 0.30);
+  background: color-mix(in srgb, var(--accent-strong), transparent 90%);
+  border: 1px solid color-mix(in srgb, var(--accent-strong), transparent 70%);
   color: #7dd3fc;
   font-size: 12px;
   cursor: pointer;
@@ -1209,7 +1209,7 @@
   transition: background 80ms;
 }
 .pc-tables-add-filter:hover {
-  background: rgba(125, 211, 252, 0.18);
+  background: color-mix(in srgb, var(--accent-strong), transparent 82%);
 }
 .pc-tables-filter-chip {
   display: inline-flex;
@@ -1217,7 +1217,7 @@
   gap: 4px;
   padding: 2px 4px 2px 8px;
   background: rgba(255, 255, 255, 0.06);
-  border: 1px solid var(--border, rgba(125, 211, 252, 0.20));
+  border: 1px solid var(--border, color-mix(in srgb, var(--accent-strong), transparent 80%));
   border-radius: 12px;
   font-size: 11px;
 }
@@ -1249,8 +1249,8 @@
   align-items: center;
   gap: 8px;
   padding: 10px 14px;
-  background: rgba(125, 211, 252, 0.04);
-  border: 1px solid rgba(125, 211, 252, 0.20);
+  background: color-mix(in srgb, var(--accent-strong), transparent 96%);
+  border: 1px solid color-mix(in srgb, var(--accent-strong), transparent 80%);
   border-radius: 6px;
   font-size: 12px;
 }
@@ -1269,7 +1269,7 @@
 .pc-tables-composer input {
   padding: 4px 8px;
   background: rgba(255, 255, 255, 0.04);
-  border: 1px solid var(--border, rgba(125, 211, 252, 0.20));
+  border: 1px solid var(--border, color-mix(in srgb, var(--accent-strong), transparent 80%));
   border-radius: 4px;
   color: var(--fg, #e2e8f0);
   font-size: 12px;
@@ -1295,7 +1295,7 @@
 .pc-tables-composer-cancel {
   padding: 4px 12px;
   background: transparent;
-  border: 1px solid var(--border, rgba(125, 211, 252, 0.20));
+  border: 1px solid var(--border, color-mix(in srgb, var(--accent-strong), transparent 80%));
   color: var(--fg, #e2e8f0);
   border-radius: 4px;
   font-size: 12px;
@@ -1363,7 +1363,7 @@
   align-items: center;
   gap: 14px;
   padding: 8px 14px;
-  border-bottom: 1px solid var(--border, rgba(125, 211, 252, 0.12));
+  border-bottom: 1px solid var(--border, color-mix(in srgb, var(--accent-strong), transparent 88%));
   background: rgba(255, 255, 255, 0.015);
   font-size: 12px;
 }
@@ -1385,7 +1385,7 @@
 .pc-sql-role select {
   padding: 3px 6px;
   background: rgba(255, 255, 255, 0.04);
-  border: 1px solid var(--border, rgba(125, 211, 252, 0.16));
+  border: 1px solid var(--border, color-mix(in srgb, var(--accent-strong), transparent 84%));
   border-radius: 4px;
   color: var(--fg, #e2e8f0);
   font-size: 11px;
@@ -1414,7 +1414,7 @@
 }
 .pc-sql-results {
   min-height: 0;
-  border-top: 1px solid var(--border, rgba(125, 211, 252, 0.12));
+  border-top: 1px solid var(--border, color-mix(in srgb, var(--accent-strong), transparent 88%));
   overflow: auto;
   padding: 8px 14px;
 }
@@ -1436,7 +1436,7 @@
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 .pc-sql-grid-scroll {
-  border: 1px solid var(--border, rgba(125, 211, 252, 0.10));
+  border: 1px solid var(--border, color-mix(in srgb, var(--accent-strong), transparent 90%));
   border-radius: 4px;
   overflow: auto;
   max-height: 100%;
@@ -1458,7 +1458,7 @@
   text-transform: uppercase;
   letter-spacing: 0.04em;
   color: var(--fg-mute, #94a3b8);
-  border-bottom: 1px solid var(--border, rgba(125, 211, 252, 0.16));
+  border-bottom: 1px solid var(--border, color-mix(in srgb, var(--accent-strong), transparent 84%));
   white-space: nowrap;
 }
 .pc-sql-grid td {
@@ -1470,7 +1470,7 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.pc-sql-grid tr:hover td { background: rgba(125, 211, 252, 0.04); }
+.pc-sql-grid tr:hover td { background: color-mix(in srgb, var(--accent-strong), transparent 96%); }
 
 /* ── Usability pass: dense, readable, developer-first ─────────────── */
 
@@ -1479,16 +1479,16 @@
   --pc-dev-panel: rgba(10, 17, 27, 0.92);
   --pc-dev-panel-2: rgba(13, 23, 35, 0.82);
   --pc-dev-panel-3: rgba(16, 27, 41, 0.72);
-  --pc-dev-border: rgba(125, 211, 252, 0.16);
-  --pc-dev-border-strong: rgba(125, 211, 252, 0.30);
+  --pc-dev-border: color-mix(in srgb, var(--accent-strong), transparent 84%);
+  --pc-dev-border-strong: color-mix(in srgb, var(--accent-strong), transparent 70%);
   --pc-dev-accent: #38bdf8;
-  --pc-dev-accent-soft: rgba(56, 189, 248, 0.12);
+  --pc-dev-accent-soft: color-mix(in srgb, var(--accent), transparent 88%);
   --pc-dev-ok: #34d399;
   --pc-dev-warn: #fbbf24;
   --pc-dev-danger: #f87171;
   --pc-dev-muted: #8ea4b8;
   --pc-dev-row: rgba(255, 255, 255, 0.018);
-  --pc-dev-row-hover: rgba(125, 211, 252, 0.065);
+  --pc-dev-row-hover: color-mix(in srgb, var(--accent-strong), transparent 93.5%);
   --pc-dev-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
   grid-template-columns: minmax(224px, 248px) minmax(0, 1fr) minmax(280px, 320px);
   height: calc(100vh - 60px);
@@ -1513,7 +1513,7 @@
   min-height: 0;
   background: linear-gradient(180deg, rgba(11, 18, 29, 0.96), rgba(7, 12, 20, 0.98));
   border-color: var(--pc-dev-border);
-  scrollbar-color: rgba(125, 211, 252, 0.26) transparent;
+  scrollbar-color: color-mix(in srgb, var(--accent-strong), transparent 74%) transparent;
 }
 
 .pc-dev-left {
@@ -1533,7 +1533,7 @@
 
 .pc-dev-left > .pc-dev-section:first-child {
   padding-bottom: 12px;
-  border-bottom: 1px solid rgba(125, 211, 252, 0.10);
+  border-bottom: 1px solid color-mix(in srgb, var(--accent-strong), transparent 90%);
 }
 
 .pc-dev-section-label,
@@ -1572,12 +1572,12 @@
 
 .pc-dev-tab:hover {
   background: var(--pc-dev-row-hover);
-  border-color: rgba(125, 211, 252, 0.12);
+  border-color: color-mix(in srgb, var(--accent-strong), transparent 88%);
 }
 
 .pc-dev-tab.is-active {
-  background: rgba(56, 189, 248, 0.10);
-  border-color: rgba(56, 189, 248, 0.24);
+  background: color-mix(in srgb, var(--accent), transparent 90%);
+  border-color: color-mix(in srgb, var(--accent), transparent 76%);
   border-left-color: var(--pc-dev-accent);
   color: #eaf8ff;
 }
@@ -1614,17 +1614,17 @@
   gap: 10px;
   margin-top: auto;
   padding: 8px 10px;
-  border: 1px solid rgba(125, 211, 252, 0.18);
+  border: 1px solid color-mix(in srgb, var(--accent-strong), transparent 82%);
   border-radius: 7px;
-  background: rgba(125, 211, 252, 0.045);
+  background: color-mix(in srgb, var(--accent-strong), transparent 95.5%);
   color: #d8e5ef;
   cursor: pointer;
   font: inherit;
 }
 
 .pc-dev-rail-toggle:hover {
-  background: rgba(125, 211, 252, 0.10);
-  border-color: rgba(125, 211, 252, 0.34);
+  background: color-mix(in srgb, var(--accent-strong), transparent 90%);
+  border-color: color-mix(in srgb, var(--accent-strong), transparent 66%);
 }
 
 .pc-dev-rail-toggle strong {
@@ -1703,7 +1703,7 @@
 .pc-tables-composer input,
 .pc-sql-role select {
   background: rgba(3, 8, 15, 0.82);
-  border-color: rgba(125, 211, 252, 0.18);
+  border-color: color-mix(in srgb, var(--accent-strong), transparent 82%);
   color: #edf6ff;
 }
 
@@ -1712,7 +1712,7 @@
 .pc-tables-composer select:focus,
 .pc-tables-composer input:focus,
 .pc-sql-role select:focus {
-  outline: 1px solid rgba(56, 189, 248, 0.45);
+  outline: 1px solid color-mix(in srgb, var(--accent), transparent 55%);
   border-color: var(--pc-dev-accent);
 }
 
@@ -1742,7 +1742,7 @@
 .pc-tables-filter-clear,
 .pc-tables-add-filter,
 .pc-tables-composer-cancel {
-  border-color: rgba(125, 211, 252, 0.22);
+  border-color: color-mix(in srgb, var(--accent-strong), transparent 78%);
   color: #b9e7ff;
 }
 
@@ -1753,14 +1753,14 @@
 .pc-tables-filter-clear:hover,
 .pc-tables-add-filter:hover,
 .pc-tables-composer-cancel:hover {
-  background: rgba(125, 211, 252, 0.10);
-  border-color: rgba(125, 211, 252, 0.40);
+  background: color-mix(in srgb, var(--accent-strong), transparent 90%);
+  border-color: color-mix(in srgb, var(--accent-strong), transparent 60%);
 }
 
 .pc-dev-table {
   border-collapse: separate;
   border-spacing: 0;
-  border: 1px solid rgba(125, 211, 252, 0.10);
+  border: 1px solid color-mix(in srgb, var(--accent-strong), transparent 90%);
   border-radius: 8px;
   overflow: hidden;
   font-variant-numeric: tabular-nums;
@@ -1769,7 +1769,7 @@
 .pc-dev-table th,
 .pc-dev-table td {
   padding: 5px 9px;
-  border-bottom-color: rgba(125, 211, 252, 0.075);
+  border-bottom-color: color-mix(in srgb, var(--accent-strong), transparent 92.5%);
   vertical-align: top;
 }
 
@@ -1817,8 +1817,8 @@
 
 .pc-dev-detail-row > td {
   background: rgba(7, 12, 20, 0.84);
-  border-left: 3px solid rgba(56, 189, 248, 0.45);
-  box-shadow: inset 0 1px 0 rgba(125, 211, 252, 0.08);
+  border-left: 3px solid color-mix(in srgb, var(--accent), transparent 55%);
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--accent-strong), transparent 92%);
 }
 
 .pc-dev-session-detail {
@@ -1834,7 +1834,7 @@
 .pc-sql-err,
 .pc-tables-err {
   background: rgba(3, 8, 15, 0.88);
-  border-color: rgba(125, 211, 252, 0.14);
+  border-color: color-mix(in srgb, var(--accent-strong), transparent 86%);
   border-radius: 7px;
 }
 
@@ -1864,7 +1864,7 @@
 .pc-dev-api-group-count,
 .pc-dev-api-req-count,
 .pc-dev-api-tool-stats {
-  border: 1px solid rgba(125, 211, 252, 0.16);
+  border: 1px solid color-mix(in srgb, var(--accent-strong), transparent 84%);
   border-radius: 999px;
   padding: 0 6px;
   color: var(--pc-dev-muted);
@@ -1884,7 +1884,7 @@
 }
 
 .pc-dev-api-tool.is-active {
-  background: rgba(56, 189, 248, 0.12);
+  background: color-mix(in srgb, var(--accent), transparent 88%);
   border-left-color: var(--pc-dev-accent);
 }
 
@@ -1909,7 +1909,7 @@
 .pc-dev-api-header {
   margin-bottom: 14px;
   padding-bottom: 12px;
-  border-bottom: 1px solid rgba(125, 211, 252, 0.12);
+  border-bottom: 1px solid color-mix(in srgb, var(--accent-strong), transparent 88%);
 }
 
 .pc-dev-api-title {
@@ -1932,7 +1932,7 @@
 
 .pc-dev-rail-block {
   padding: 10px 11px;
-  border: 1px solid rgba(125, 211, 252, 0.10);
+  border: 1px solid color-mix(in srgb, var(--accent-strong), transparent 90%);
   border-radius: 9px;
   background: rgba(255, 255, 255, 0.018);
 }
@@ -1946,7 +1946,7 @@
 .pc-dev-rail-stats > div,
 .pc-dev-build > div {
   padding: 7px 8px;
-  border: 1px solid rgba(125, 211, 252, 0.09);
+  border: 1px solid color-mix(in srgb, var(--accent-strong), transparent 91%);
   border-radius: 7px;
   background: rgba(3, 8, 15, 0.38);
 }
@@ -1999,7 +1999,7 @@
 }
 
 .pc-tables-row.is-active {
-  background: rgba(56, 189, 248, 0.12);
+  background: color-mix(in srgb, var(--accent), transparent 88%);
   border-left-color: var(--pc-dev-accent);
   color: #eaf8ff;
 }
@@ -2063,14 +2063,14 @@
 
 .pc-tables-rowgrid-scroll,
 .pc-sql-grid-scroll {
-  border-color: rgba(125, 211, 252, 0.14);
+  border-color: color-mix(in srgb, var(--accent-strong), transparent 86%);
   border-radius: 8px;
 }
 
 .pc-tables-filter-bar,
 .pc-tables-composer {
-  background: rgba(56, 189, 248, 0.07);
-  border-color: rgba(56, 189, 248, 0.22);
+  background: color-mix(in srgb, var(--accent), transparent 93%);
+  border-color: color-mix(in srgb, var(--accent), transparent 78%);
 }
 
 /* SQL tab */
@@ -2178,26 +2178,26 @@
 
 .pc-dev-backups-metric {
   background: rgba(255, 255, 255, 0.022);
-  border-color: rgba(125, 211, 252, 0.12);
+  border-color: color-mix(in srgb, var(--accent-strong), transparent 88%);
 }
 
 .pc-dev-backups-actions button,
 .pc-dev-backups-terminal header button {
-  background: rgba(125, 211, 252, 0.055);
-  border: 1px solid rgba(125, 211, 252, 0.22);
+  background: color-mix(in srgb, var(--accent-strong), transparent 94.5%);
+  border: 1px solid color-mix(in srgb, var(--accent-strong), transparent 78%);
   color: #dceefa;
 }
 
 .pc-dev-backups-actions button:hover:not(:disabled),
 .pc-dev-backups-terminal header button:hover:not(:disabled) {
-  background: rgba(125, 211, 252, 0.12);
-  border-color: rgba(125, 211, 252, 0.40);
+  background: color-mix(in srgb, var(--accent-strong), transparent 88%);
+  border-color: color-mix(in srgb, var(--accent-strong), transparent 60%);
 }
 
 .pc-dev-backups-iframe {
   min-height: 520px;
   height: min(68vh, 820px);
-  border-color: rgba(125, 211, 252, 0.16);
+  border-color: color-mix(in srgb, var(--accent-strong), transparent 84%);
   border-radius: 9px;
 }
 
@@ -2205,7 +2205,7 @@
 .pc-dev-backups-failures,
 .pc-dev-backups-events,
 .pc-dev-backups-terminal {
-  border-top-color: rgba(125, 211, 252, 0.12);
+  border-top-color: color-mix(in srgb, var(--accent-strong), transparent 88%);
 }
 
 .pc-dev-backups-events table {

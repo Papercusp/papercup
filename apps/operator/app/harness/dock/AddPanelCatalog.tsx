@@ -212,7 +212,7 @@ export function AddPanelCatalog({
       ariaLabel="Panel catalog"
       contentStyle={{
         background: 'var(--bg-popover, #0d1829)',
-        border: '1px solid var(--border-strong, rgba(125, 211, 252, 0.32))',
+        border: '1px solid var(--border-strong, color-mix(in srgb, var(--accent-strong), transparent 68%))',
         borderRadius: 12,
         boxShadow: '0 18px 48px rgba(0, 0, 0, 0.5)',
         overflow: 'hidden',
@@ -283,7 +283,7 @@ export function AddPanelCatalog({
             display: flex;
             align-items: center;
             padding: 9px 12px;
-            border-bottom: 1px solid var(--border, rgba(125, 211, 252, 0.15));
+            border-bottom: 1px solid var(--border, color-mix(in srgb, var(--accent-strong), transparent 85%));
             background: var(--bg-2, rgba(255, 255, 255, 0.045));
           }
           .pc-add-panel__title {

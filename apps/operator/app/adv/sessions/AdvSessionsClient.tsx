@@ -1239,7 +1239,7 @@ export default function AdvSessionsClient() {
         .pc-adv-sessions__harness-chip {
           padding: 1px 6px;
           border-radius: 999px;
-          background: rgba(125, 211, 252, 0.12);
+          background: color-mix(in srgb, var(--accent-strong), transparent 88%);
           color: #bae6fd;
           font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
           font-size: 10px;

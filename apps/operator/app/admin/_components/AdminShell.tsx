@@ -50,7 +50,7 @@ export default function AdminShell({
           flex-direction: column;
           min-height: calc(100vh - 56px);
           background:
-            radial-gradient(circle at top left, rgba(56, 189, 248, 0.06), transparent 28%),
+            radial-gradient(circle at top left, color-mix(in srgb, var(--accent), transparent 94%), transparent 28%),
             linear-gradient(180deg, rgba(5, 12, 22, 0.99), rgba(4, 10, 18, 1));
         }
         .pc-adminshell__header {
@@ -58,7 +58,7 @@ export default function AdminShell({
           align-items: flex-end;
           gap: 16px;
           padding: 14px 18px 12px;
-          border-bottom: 1px solid rgba(125, 211, 252, 0.14);
+          border-bottom: 1px solid color-mix(in srgb, var(--accent-strong), transparent 86%);
           background:
             linear-gradient(180deg, rgba(7, 16, 29, 0.98), rgba(6, 13, 24, 0.98));
           box-shadow: inset 0 -1px 0 rgba(255, 255, 255, 0.02);
@@ -100,8 +100,8 @@ export default function AdminShell({
           align-items: center;
           min-height: 34px;
           padding: 0 12px;
-          border: 1px solid rgba(125, 211, 252, 0.14);
-          border-bottom-color: rgba(125, 211, 252, 0.08);
+          border: 1px solid color-mix(in srgb, var(--accent-strong), transparent 86%);
+          border-bottom-color: color-mix(in srgb, var(--accent-strong), transparent 92%);
           border-radius: 10px 10px 0 0;
           background: rgba(255, 255, 255, 0.02);
           color: rgba(214, 236, 248, 0.72);
@@ -114,7 +114,7 @@ export default function AdminShell({
         .pc-adminshell__tab:hover {
           color: #eff8ff;
           background: rgba(12, 24, 38, 0.96);
-          border-color: rgba(125, 211, 252, 0.28);
+          border-color: color-mix(in srgb, var(--accent-strong), transparent 72%);
           text-decoration: none !important;
         }
         .pc-adminshell__tab[aria-selected="true"] {
@@ -134,7 +134,7 @@ export default function AdminShell({
         .pc-adminshell__host {
           align-self: center;
           padding: 5px 10px;
-          border: 1px solid rgba(125, 211, 252, 0.12);
+          border: 1px solid color-mix(in srgb, var(--accent-strong), transparent 88%);
           border-radius: 999px;
           background: rgba(255, 255, 255, 0.025);
           color: rgba(186, 230, 253, 0.68);

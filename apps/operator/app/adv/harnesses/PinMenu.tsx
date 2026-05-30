@@ -72,7 +72,7 @@ export default function PinMenu({ state, onClose }: Props) {
         top: state.pos.y,
         zIndex: 9000,
         background: 'var(--bg-popover, #0d1829)',
-        border: '1px solid var(--border-strong, rgba(125, 211, 252, 0.32))',
+        border: '1px solid var(--border-strong, color-mix(in srgb, var(--accent-strong), transparent 68%))',
         borderRadius: 6,
         padding: 4,
         minWidth: 200,

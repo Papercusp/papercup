@@ -1284,14 +1284,14 @@
   background: color-mix(in oklab, var(--bad), transparent 93%);
 }
 .h-proposals-panel .h-proposals-workbench {
-  border-top: 1px solid rgba(125, 211, 252, 0.10);
+  border-top: 1px solid color-mix(in srgb, var(--accent-strong), transparent 90%);
 }
 .h-proposals-panel .h-proposals-sidebar {
   flex-basis: clamp(360px, 35vw, 456px);
   background: linear-gradient(180deg, rgba(255, 255, 255, 0.026), rgba(255, 255, 255, 0.008)), color-mix(in oklab, var(--bg-2), transparent 8%);
 }
 .h-proposals-panel .h-proposal-toolbar {
-  background: linear-gradient(180deg, rgba(125, 211, 252, 0.050), rgba(255, 255, 255, 0.010)), color-mix(in oklab, var(--bg-2), white 1.5%);
+  background: linear-gradient(180deg, color-mix(in srgb, var(--accent-strong), transparent 95%), rgba(255, 255, 255, 0.010)), color-mix(in oklab, var(--bg-2), white 1.5%);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.045);
 }
 .h-proposals-panel .h-proposal-search,
@@ -1304,14 +1304,14 @@
 .h-proposals-panel .h-proposal-sort:hover,
 .h-proposals-panel .h-proposal-filter:hover,
 .h-proposals-panel .h-proposal-mini:hover:not(:disabled) {
-  border-color: rgba(125, 211, 252, 0.30);
-  background: rgba(125, 211, 252, 0.055);
+  border-color: color-mix(in srgb, var(--accent-strong), transparent 70%);
+  background: color-mix(in srgb, var(--accent-strong), transparent 94.5%);
 }
 .h-proposals-panel .h-proposal-search:focus,
 .h-proposals-panel .h-proposal-sort:focus-within {
-  border-color: rgba(125, 211, 252, 0.52);
-  background: rgba(125, 211, 252, 0.075);
-  box-shadow: 0 0 0 1px rgba(125, 211, 252, 0.14);
+  border-color: color-mix(in srgb, var(--accent-strong), transparent 48%);
+  background: color-mix(in srgb, var(--accent-strong), transparent 92.5%);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent-strong), transparent 86%);
 }
 .h-proposals-panel .h-proposal-sort [aria-label="Sort proposals"] {
   width: 100% !important;
@@ -1330,7 +1330,7 @@
 }
 .h-proposals-panel .h-proposal-item {
   margin-bottom: 6px;
-  border-color: rgba(125, 211, 252, 0.055);
+  border-color: color-mix(in srgb, var(--accent-strong), transparent 94.5%);
   background: rgba(255, 255, 255, 0.014);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.020);
 }
@@ -1338,24 +1338,24 @@
   transform: translateY(-1px);
 }
 .h-proposals-panel .h-proposal-item.is-active {
-  border-color: rgba(125, 211, 252, 0.42);
-  background: linear-gradient(90deg, rgba(125, 211, 252, 0.115), rgba(125, 211, 252, 0.035) 42%, rgba(255, 255, 255, 0.016));
-  box-shadow: inset 0 0 0 1px rgba(125, 211, 252, 0.14), inset 0 1px 0 rgba(255, 255, 255, 0.045), 0 8px 18px rgba(0, 0, 0, 0.16);
+  border-color: color-mix(in srgb, var(--accent-strong), transparent 58%);
+  background: linear-gradient(90deg, color-mix(in srgb, var(--accent-strong), transparent 88.5%), color-mix(in srgb, var(--accent-strong), transparent 96.5%) 42%, rgba(255, 255, 255, 0.016));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent-strong), transparent 86%), inset 0 1px 0 rgba(255, 255, 255, 0.045), 0 8px 18px rgba(0, 0, 0, 0.16);
 }
 .h-proposals-panel .h-proposal-item.is-active::before {
   width: 4px;
   opacity: 1;
-  box-shadow: 0 0 12px rgba(125, 211, 252, 0.46);
+  box-shadow: 0 0 12px color-mix(in srgb, var(--accent-strong), transparent 54%);
 }
 .h-proposals-panel .h-proposal-row-button {
   padding-block: 9px;
 }
 .h-proposals-panel .h-proposal-detail-head {
-  background: linear-gradient(90deg, rgba(125, 211, 252, 0.060), rgba(255, 255, 255, 0.014) 52%, transparent), color-mix(in oklab, var(--bg), transparent 16%);
+  background: linear-gradient(90deg, color-mix(in srgb, var(--accent-strong), transparent 94%), rgba(255, 255, 255, 0.014) 52%, transparent), color-mix(in oklab, var(--bg), transparent 16%);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.040);
 }
 .h-proposals-panel .h-proposal-detail-metrics span {
-  border-color: rgba(125, 211, 252, 0.18);
+  border-color: color-mix(in srgb, var(--accent-strong), transparent 82%);
   background: rgba(255, 255, 255, 0.026);
 }
 .h-proposals-panel .h-proposal-outline {
@@ -1365,7 +1365,7 @@
   padding: 14px;
 }
 .h-proposals-panel .h-proposal-doc {
-  border-color: rgba(125, 211, 252, 0.16);
+  border-color: color-mix(in srgb, var(--accent-strong), transparent 84%);
   background: linear-gradient(180deg, rgba(255, 255, 255, 0.040), rgba(255, 255, 255, 0.010)), color-mix(in oklab, var(--bg), black 3%);
   box-shadow: 0 12px 26px rgba(0, 0, 0, 0.24), inset 0 1px 0 rgba(255, 255, 255, 0.040);
   font-size: 12.5px;
@@ -1377,13 +1377,13 @@
   }
 }
 .h-proposals-panel .h-proposals-goal {
-  border-bottom-color: rgba(125, 211, 252, 0.16);
+  border-bottom-color: color-mix(in srgb, var(--accent-strong), transparent 84%);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.035);
 }
 .h-proposals-panel .h-proposals-goal-head > span:first-child,
 .h-proposals-panel .h-proposal-toolbar-title {
   color: color-mix(in oklab, var(--fg), white 8%);
-  text-shadow: 0 0 12px rgba(125, 211, 252, 0.12);
+  text-shadow: 0 0 12px color-mix(in srgb, var(--accent-strong), transparent 88%);
 }
 .h-proposals-panel .h-proposals-goal-preview {
   color: color-mix(in oklab, var(--fg-dim), white 12%);
@@ -1391,24 +1391,24 @@
 .h-proposals-panel .h-proposal-toolbar-count,
 .h-proposals-panel .h-proposal-toolbar-index,
 .h-proposals-panel .h-proposal-short-count {
-  border-color: rgba(125, 211, 252, 0.18);
+  border-color: color-mix(in srgb, var(--accent-strong), transparent 82%);
   background: rgba(255, 255, 255, 0.024);
 }
 .h-proposals-panel .h-proposal-filter[data-state="active"],
 .h-proposals-panel .h-proposal-filter[aria-selected="true"] {
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.045), 0 0 0 1px rgba(125, 211, 252, 0.07);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.045), 0 0 0 1px color-mix(in srgb, var(--accent-strong), transparent 93%);
 }
 .h-proposals-panel .h-proposal-filter b {
   color: color-mix(in oklab, var(--fg), white 6%);
 }
 .h-proposals-panel .h-proposal-select-all {
-  border-top: 1px solid rgba(125, 211, 252, 0.06);
-  border-bottom-color: rgba(125, 211, 252, 0.12);
-  background: linear-gradient(90deg, rgba(125, 211, 252, 0.040), rgba(255, 255, 255, 0.010));
+  border-top: 1px solid color-mix(in srgb, var(--accent-strong), transparent 94%);
+  border-bottom-color: color-mix(in srgb, var(--accent-strong), transparent 88%);
+  background: linear-gradient(90deg, color-mix(in srgb, var(--accent-strong), transparent 96%), rgba(255, 255, 255, 0.010));
 }
 .h-proposals-panel .h-proposal-bulkbar {
   border-bottom-color: rgba(250, 204, 21, 0.20);
-  background: linear-gradient(90deg, rgba(250, 204, 21, 0.105), rgba(125, 211, 252, 0.025));
+  background: linear-gradient(90deg, rgba(250, 204, 21, 0.105), color-mix(in srgb, var(--accent-strong), transparent 97.5%));
 }
 .h-proposals-panel .h-proposal-badge {
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.045);
@@ -1427,7 +1427,7 @@
   filter: saturate(1.08);
 }
 .h-proposals-panel .h-proposal-pin {
-  border-color: rgba(125, 211, 252, 0.08);
+  border-color: color-mix(in srgb, var(--accent-strong), transparent 92%);
 }
 .h-proposals-panel .h-proposal-pin:hover,
 .h-proposals-panel .h-proposal-pin:focus-visible {
@@ -1435,7 +1435,7 @@
 }
 .h-proposals-panel .h-proposal-detail-title h3 {
   color: #f8fcff;
-  text-shadow: 0 0 18px rgba(125, 211, 252, 0.11);
+  text-shadow: 0 0 18px color-mix(in srgb, var(--accent-strong), transparent 89%);
 }
 .h-proposals-panel .h-proposal-detail-title p,
 .h-proposals-panel .h-proposal-review-summary {
@@ -1443,8 +1443,8 @@
 }
 .h-proposals-panel .h-proposal-detail-actions .h-proposal-btn:hover:not(:disabled),
 .h-proposals-panel .h-proposal-detail-actions .h-proposal-btn:focus-visible {
-  border-color: rgba(125, 211, 252, 0.36);
-  background: rgba(125, 211, 252, 0.060);
+  border-color: color-mix(in srgb, var(--accent-strong), transparent 64%);
+  background: color-mix(in srgb, var(--accent-strong), transparent 94%);
   outline: none;
 }
 .h-proposals-panel .h-proposal-outline b,
@@ -1458,14 +1458,14 @@
 }
 .h-proposals-panel .h-proposal-doc::selection {
   color: #03101a;
-  background: rgba(125, 211, 252, 0.78);
+  background: color-mix(in srgb, var(--accent-strong), transparent 22%);
 }
 .h-proposals-panel .h-proposal-search:focus-visible,
 .h-proposals-panel .h-proposal-filter:focus-visible,
 .h-proposals-panel .h-proposal-mini:focus-visible,
 .h-proposals-panel .h-proposal-btn:focus-visible,
 .h-proposals-panel .h-proposal-pin:focus-visible {
-  outline: 1px solid rgba(125, 211, 252, 0.62);
+  outline: 1px solid color-mix(in srgb, var(--accent-strong), transparent 38%);
   outline-offset: 1px;
 }
 .h-proposals-panel .h-proposal-toolbar-controls {
@@ -1474,13 +1474,13 @@
 .h-proposals-panel .h-proposal-list,
 .h-proposals-panel .h-proposal-doc-shell,
 .h-proposals-panel .h-proposal-outline {
-  scrollbar-color: rgba(125, 211, 252, 0.32) transparent;
+  scrollbar-color: color-mix(in srgb, var(--accent-strong), transparent 68%) transparent;
 }
 .h-proposals-panel .h-proposal-list > [role="row"] {
   margin: 0 0 6px;
-  border: 1px solid rgba(125, 211, 252, 0.12) !important;
+  border: 1px solid color-mix(in srgb, var(--accent-strong), transparent 88%) !important;
   border-radius: 10px 10px 7px 7px;
-  background: linear-gradient(180deg, rgba(125, 211, 252, 0.055), rgba(255, 255, 255, 0.010)), rgba(7, 14, 25, 0.96) !important;
+  background: linear-gradient(180deg, color-mix(in srgb, var(--accent-strong), transparent 94.5%), rgba(255, 255, 255, 0.010)), rgba(7, 14, 25, 0.96) !important;
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.045), 0 8px 18px rgba(0, 0, 0, 0.10);
   overflow: hidden;
 }
@@ -1491,7 +1491,7 @@
 }
 .h-proposals-panel .h-proposal-list .h-proposal-item {
   overflow: hidden;
-  border: 1px solid rgba(125, 211, 252, 0.075) !important;
+  border: 1px solid color-mix(in srgb, var(--accent-strong), transparent 92.5%) !important;
   border-radius: 11px !important;
   background: linear-gradient(180deg, rgba(255, 255, 255, 0.020), rgba(255, 255, 255, 0.006)), rgba(12, 18, 31, 0.90) !important;
 }
@@ -1503,14 +1503,14 @@
   padding-inline: 6px !important;
 }
 .h-proposals-panel .h-proposal-list .h-proposal-item:not(.is-active):hover {
-  border-color: rgba(125, 211, 252, 0.24) !important;
-  background: linear-gradient(180deg, rgba(125, 211, 252, 0.055), rgba(255, 255, 255, 0.010)), rgba(13, 21, 36, 0.94) !important;
+  border-color: color-mix(in srgb, var(--accent-strong), transparent 76%) !important;
+  background: linear-gradient(180deg, color-mix(in srgb, var(--accent-strong), transparent 94.5%), rgba(255, 255, 255, 0.010)), rgba(13, 21, 36, 0.94) !important;
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.040), 0 8px 18px rgba(0, 0, 0, 0.12);
 }
 .h-proposals-panel .h-proposal-list .h-proposal-item.is-active {
-  border-color: rgba(125, 211, 252, 0.52) !important;
-  background: linear-gradient(90deg, rgba(45, 212, 191, 0.15), rgba(125, 211, 252, 0.075) 44%, rgba(255, 255, 255, 0.012)), rgba(10, 17, 30, 0.98) !important;
-  box-shadow: inset 0 0 0 1px rgba(125, 211, 252, 0.16), inset 0 1px 0 rgba(255, 255, 255, 0.060), 0 10px 22px rgba(0, 0, 0, 0.20);
+  border-color: color-mix(in srgb, var(--accent-strong), transparent 48%) !important;
+  background: linear-gradient(90deg, rgba(45, 212, 191, 0.15), color-mix(in srgb, var(--accent-strong), transparent 92.5%) 44%, rgba(255, 255, 255, 0.012)), rgba(10, 17, 30, 0.98) !important;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent-strong), transparent 84%), inset 0 1px 0 rgba(255, 255, 255, 0.060), 0 10px 22px rgba(0, 0, 0, 0.20);
 }
 .h-proposals-panel .h-proposal-list .h-proposal-item.is-active > div {
   background: transparent !important;
@@ -1532,26 +1532,26 @@
   text-align: right;
 }
 .h-proposals-panel .h-proposal-detail-head.status-applied {
-  background: linear-gradient(90deg, rgba(45, 212, 191, 0.085), rgba(125, 211, 252, 0.030) 58%, transparent), color-mix(in oklab, var(--bg), transparent 14%);
+  background: linear-gradient(90deg, rgba(45, 212, 191, 0.085), color-mix(in srgb, var(--accent-strong), transparent 97%) 58%, transparent), color-mix(in oklab, var(--bg), transparent 14%);
 }
 .h-proposals-panel .h-proposal-detail-head.status-pending {
-  background: linear-gradient(90deg, rgba(250, 204, 21, 0.092), rgba(125, 211, 252, 0.026) 58%, transparent), color-mix(in oklab, var(--bg), transparent 14%);
+  background: linear-gradient(90deg, rgba(250, 204, 21, 0.092), color-mix(in srgb, var(--accent-strong), transparent 97.4%) 58%, transparent), color-mix(in oklab, var(--bg), transparent 14%);
 }
 .h-proposals-panel .h-proposal-outline {
-  border-bottom-color: rgba(125, 211, 252, 0.14);
+  border-bottom-color: color-mix(in srgb, var(--accent-strong), transparent 86%);
 }
 .h-proposals-panel .h-proposal-doc-shell {
-  background: radial-gradient(circle at 12% 0%, rgba(125, 211, 252, 0.040), transparent 26rem), color-mix(in oklab, var(--bg), black 3%);
+  background: radial-gradient(circle at 12% 0%, color-mix(in srgb, var(--accent-strong), transparent 96%), transparent 26rem), color-mix(in oklab, var(--bg), black 3%);
 }
 .h-proposals-panel .h-proposal-doc {
   border-radius: 14px;
   text-shadow: 0 1px 0 rgba(0, 0, 0, 0.24);
 }
 .h-proposals-panel .h-proposals-workbench {
-  background: linear-gradient(90deg, rgba(125, 211, 252, 0.030), transparent 18%, transparent 82%, rgba(125, 211, 252, 0.018));
+  background: linear-gradient(90deg, color-mix(in srgb, var(--accent-strong), transparent 97%), transparent 18%, transparent 82%, color-mix(in srgb, var(--accent-strong), transparent 98.2%));
 }
 .h-proposals-panel .h-proposals-sidebar {
-  box-shadow: inset -1px 0 0 rgba(125, 211, 252, 0.13);
+  box-shadow: inset -1px 0 0 color-mix(in srgb, var(--accent-strong), transparent 87%);
 }
 .h-proposals-panel .h-proposal-toolbar {
   position: relative;
@@ -1564,7 +1564,7 @@
   bottom: -1px;
   height: 1px;
   pointer-events: none;
-  background: linear-gradient(90deg, transparent, rgba(125, 211, 252, 0.34), transparent);
+  background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--accent-strong), transparent 66%), transparent);
   opacity: 0.68;
 }
 .h-proposals-panel .h-proposal-search {
@@ -1627,27 +1627,27 @@
   box-shadow: inset 0 1px 0 rgba(255,255,255,0.055), 0 0 12px rgba(250, 204, 21, 0.08);
 }
 .h-proposals-panel .h-proposal-row-button .h-proposal-badge.review-accept {
-  border-color: rgba(125, 211, 252, 0.30);
+  border-color: color-mix(in srgb, var(--accent-strong), transparent 70%);
 }
 .h-proposals-panel .h-proposal-detail {
-  background: radial-gradient(circle at 6% 0%, rgba(125, 211, 252, 0.032), transparent 24rem), color-mix(in oklab, var(--bg), transparent 7%);
+  background: radial-gradient(circle at 6% 0%, color-mix(in srgb, var(--accent-strong), transparent 96.8%), transparent 24rem), color-mix(in oklab, var(--bg), transparent 7%);
 }
 .h-proposals-panel .h-proposal-detail-metrics span:hover {
-  border-color: rgba(125, 211, 252, 0.34);
-  background: rgba(125, 211, 252, 0.055);
+  border-color: color-mix(in srgb, var(--accent-strong), transparent 66%);
+  background: color-mix(in srgb, var(--accent-strong), transparent 94.5%);
 }
 .h-proposals-panel .h-proposal-outline b:hover,
 .h-proposals-panel .h-proposal-outline em:hover {
   color: color-mix(in oklab, var(--fg), white 4%);
-  border-color: rgba(125, 211, 252, 0.28);
-  background: rgba(125, 211, 252, 0.055);
+  border-color: color-mix(in srgb, var(--accent-strong), transparent 72%);
+  background: color-mix(in srgb, var(--accent-strong), transparent 94.5%);
 }
 .h-proposals-panel .h-proposal-doc {
   padding: 16px 18px;
   box-shadow: 0 14px 30px rgba(0,0,0,0.28), inset 0 1px 0 rgba(255,255,255,0.050), inset 0 0 0 1px rgba(255,255,255,0.010);
 }
 .h-proposals-panel {
-  --proposal-cyan-soft: rgba(125, 211, 252, 0.115);
+  --proposal-cyan-soft: color-mix(in srgb, var(--accent-strong), transparent 88.5%);
   --proposal-teal-soft: rgba(45, 212, 191, 0.105);
   --proposal-ink-glass: rgba(7, 14, 25, 0.68);
 }
@@ -1656,7 +1656,7 @@
 }
 .h-proposals-panel .h-proposals-goal-meta {
   padding: 2px 6px;
-  border: 1px solid rgba(125, 211, 252, 0.13);
+  border: 1px solid color-mix(in srgb, var(--accent-strong), transparent 87%);
   border-radius: 999px;
   background: rgba(255, 255, 255, 0.018);
 }
@@ -1673,7 +1673,7 @@
 .h-proposals-panel .h-proposal-toolbar-index b,
 .h-proposals-panel .h-proposal-toolbar-count,
 .h-proposals-panel .h-proposal-short-count {
-  text-shadow: 0 0 10px rgba(125, 211, 252, 0.13);
+  text-shadow: 0 0 10px color-mix(in srgb, var(--accent-strong), transparent 87%);
 }
 .h-proposals-panel .h-proposal-mini.ghost:not(:disabled),
 .h-proposals-panel .h-proposal-btn.ghost:not(:disabled) {
@@ -1684,20 +1684,20 @@
   color: color-mix(in oklab, var(--fg), white 4%);
 }
 .h-proposals-panel .h-proposal-btn.primary:not(:disabled) {
-  box-shadow: 0 6px 14px rgba(56, 189, 248, 0.14), inset 0 1px 0 rgba(255,255,255,0.16);
+  box-shadow: 0 6px 14px color-mix(in srgb, var(--accent), transparent 86%), inset 0 1px 0 rgba(255,255,255,0.16);
 }
 .h-proposals-panel .h-proposal-btn.primary:not(:disabled):hover {
   filter: saturate(1.04) brightness(1.03);
 }
 .h-proposals-panel .h-proposal-hotkeys {
   padding: 2px 4px;
-  border: 1px solid rgba(125, 211, 252, 0.10);
+  border: 1px solid color-mix(in srgb, var(--accent-strong), transparent 90%);
   border-radius: 999px;
   background: rgba(255, 255, 255, 0.018);
 }
 .h-proposals-panel .h-proposal-hotkeys kbd {
-  border-color: rgba(125, 211, 252, 0.28);
-  background: rgba(125, 211, 252, 0.085);
+  border-color: color-mix(in srgb, var(--accent-strong), transparent 72%);
+  background: color-mix(in srgb, var(--accent-strong), transparent 91.5%);
   box-shadow: inset 0 1px 0 rgba(255,255,255,0.055);
 }
 .h-proposals-panel .h-proposal-list {
@@ -1707,7 +1707,7 @@
   backdrop-filter: saturate(122%);
 }
 .h-proposals-panel .h-proposal-list .h-proposal-item:not(.is-active) .h-proposal-row-button:hover {
-  background: rgba(125, 211, 252, 0.028);
+  background: color-mix(in srgb, var(--accent-strong), transparent 97.2%);
 }
 .h-proposals-panel .h-proposal-pin.on {
   box-shadow: 0 0 14px rgba(250, 204, 21, 0.13), inset 0 1px 0 rgba(255,255,255,0.065);
@@ -1724,7 +1724,7 @@
   bottom: 0;
   height: 1px;
   pointer-events: none;
-  background: linear-gradient(90deg, transparent, rgba(125, 211, 252, 0.22), transparent);
+  background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--accent-strong), transparent 78%), transparent);
 }
 .h-proposals-panel .h-proposal-detail-head > * {
   position: relative;
@@ -1764,17 +1764,17 @@
 }
 .h-proposals-panel .h-proposal-doc {
   background:
-    linear-gradient(90deg, rgba(125, 211, 252, 0.018) 1px, transparent 1px) 0 0 / 32px 32px,
+    linear-gradient(90deg, color-mix(in srgb, var(--accent-strong), transparent 98.2%) 1px, transparent 1px) 0 0 / 32px 32px,
     linear-gradient(180deg, rgba(255, 255, 255, 0.042), rgba(255, 255, 255, 0.010)),
     color-mix(in oklab, var(--bg), black 3%);
 }
 .h-proposals-panel .h-proposal-loading {
-  border: 1px dashed rgba(125, 211, 252, 0.18);
+  border: 1px dashed color-mix(in srgb, var(--accent-strong), transparent 82%);
   border-radius: 14px;
   background: rgba(255,255,255,0.016);
 }
 .h-proposals-panel .h-proposals-goal {
-  background: linear-gradient(180deg, rgba(125, 211, 252, 0.030), rgba(255,255,255,0.006)), color-mix(in oklab, var(--bg), transparent 38%);
+  background: linear-gradient(180deg, color-mix(in srgb, var(--accent-strong), transparent 97%), rgba(255,255,255,0.006)), color-mix(in oklab, var(--bg), transparent 38%);
 }
 .h-proposals-panel .h-proposals-goal-preview {
   text-shadow: 0 1px 0 rgba(0,0,0,0.22);
@@ -1787,7 +1787,7 @@
 }
 .h-proposals-panel .h-proposal-sort [aria-label="Sort proposals"] svg {
   color: color-mix(in oklab, var(--accent-cool, var(--accent)), white 12%);
-  filter: drop-shadow(0 0 7px rgba(125, 211, 252, 0.18));
+  filter: drop-shadow(0 0 7px color-mix(in srgb, var(--accent-strong), transparent 82%));
 }
 .h-proposals-panel .h-proposal-filter {
   position: relative;
@@ -1804,7 +1804,7 @@
 }
 .h-proposals-panel .h-proposal-filter[data-state="active"]::after,
 .h-proposals-panel .h-proposal-filter[aria-selected="true"]::after {
-  background: linear-gradient(90deg, transparent, rgba(125, 211, 252, 0.54), transparent);
+  background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--accent-strong), transparent 46%), transparent);
 }
 .h-proposals-panel .h-proposal-filter.status-applied[data-state="active"]::after,
 .h-proposals-panel .h-proposal-filter.status-applied[aria-selected="true"]::after {
@@ -1829,7 +1829,7 @@
 .h-proposals-panel .h-proposal-list .h-proposal-item:not(.is-active):hover::before {
   width: 3px;
   opacity: 0.95;
-  box-shadow: 0 0 10px rgba(125, 211, 252, 0.22);
+  box-shadow: 0 0 10px color-mix(in srgb, var(--accent-strong), transparent 78%);
 }
 .h-proposals-panel .h-proposal-list .h-proposal-item.status-pending:not(.is-active):hover::before {
   box-shadow: 0 0 10px rgba(250, 204, 21, 0.22);
@@ -1872,11 +1872,11 @@
   scroll-padding: 18px;
 }
 .h-proposals-panel .h-proposal-doc {
-  border-color: rgba(125, 211, 252, 0.20);
+  border-color: color-mix(in srgb, var(--accent-strong), transparent 80%);
   background-position: 0 0, 0 0, 0 0;
 }
 .h-proposals-panel .h-proposal-detail-empty {
-  border: 1px dashed rgba(125, 211, 252, 0.16);
+  border: 1px dashed color-mix(in srgb, var(--accent-strong), transparent 84%);
   border-radius: 14px;
   background: rgba(255,255,255,0.014);
 }
@@ -2007,7 +2007,7 @@
 }
 .h-proposals-panel .h-proposal-toolbar-main {
   padding: 2px;
-  border: 1px solid rgba(125, 211, 252, 0.075);
+  border: 1px solid color-mix(in srgb, var(--accent-strong), transparent 92.5%);
   background: rgba(255, 255, 255, 0.010);
 }
 .h-proposals-panel .h-proposal-toolbar-titleline {
@@ -2019,7 +2019,7 @@
 }
 .h-proposals-panel .h-proposal-search {
   height: 28px;
-  border-color: rgba(125, 211, 252, 0.20);
+  border-color: color-mix(in srgb, var(--accent-strong), transparent 80%);
   background: rgba(2, 8, 16, 0.46);
 }
 .h-proposals-panel .h-proposal-search:hover,
@@ -2045,7 +2045,7 @@
 .h-proposals-panel .h-proposal-toolbar-controls .h-proposal-sort {
   flex-basis: 146px;
   min-width: 146px;
-  border-color: rgba(125, 211, 252, 0.20);
+  border-color: color-mix(in srgb, var(--accent-strong), transparent 80%);
   background: rgba(255, 255, 255, 0.020);
 }
 .h-proposals-panel .h-proposal-sort > span {
@@ -2056,7 +2056,7 @@
 }
 .h-proposals-panel .h-proposal-toolbar-controls .h-proposal-mini {
   padding-inline: 9px;
-  border-color: rgba(125, 211, 252, 0.14);
+  border-color: color-mix(in srgb, var(--accent-strong), transparent 86%);
 }
 .h-proposals-panel .h-proposal-toolbar-controls .h-proposal-hotkeys {
   order: 20;
@@ -2110,7 +2110,7 @@
 .h-proposals-panel .h-proposal-list .h-proposal-item [role="checkbox"] {
   position: relative;
   z-index: 2;
-  box-shadow: 0 0 0 1px rgba(125, 211, 252, 0.12), inset 0 1px 0 rgba(255,255,255,0.045);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent-strong), transparent 88%), inset 0 1px 0 rgba(255,255,255,0.045);
 }
 .h-proposals-panel .h-proposal-item-spacer {
   width: 14px !important;
@@ -2142,8 +2142,8 @@
 }
 .h-proposals-panel .h-proposal-list .h-proposal-item [role="checkbox"]:hover,
 .h-proposals-panel .h-proposal-list .h-proposal-item [role="checkbox"]:focus-visible {
-  border-color: rgba(125, 211, 252, 0.58) !important;
-  box-shadow: 0 0 0 2px rgba(125, 211, 252, 0.14), inset 0 1px 0 rgba(255,255,255,0.060);
+  border-color: color-mix(in srgb, var(--accent-strong), transparent 42%) !important;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent-strong), transparent 86%), inset 0 1px 0 rgba(255,255,255,0.060);
 }
 .h-proposals-panel .h-proposal-list .h-proposal-item::before {
   left: 2px;
@@ -2189,8 +2189,8 @@
 }
 .h-proposals-panel .h-proposal-list .h-proposal-item [role="checkbox"][data-state="checked"],
 .h-proposals-panel .h-proposal-list .h-proposal-item [role="checkbox"][data-state="indeterminate"] {
-  border-color: rgba(125, 211, 252, 0.62) !important;
-  background: rgba(125, 211, 252, 0.16) !important;
+  border-color: color-mix(in srgb, var(--accent-strong), transparent 38%) !important;
+  background: color-mix(in srgb, var(--accent-strong), transparent 84%) !important;
 }
 .h-proposals-panel .h-proposal-pin {
   width: 20px;
@@ -2223,13 +2223,13 @@
   margin-left: 1px;
 }
 .h-root .h-main-shell.embed > .h-proposals-panel .h-proposal-item {
-  border-color: rgba(125, 211, 252, 0.105) !important;
+  border-color: color-mix(in srgb, var(--accent-strong), transparent 89.5%) !important;
   background: linear-gradient(180deg, rgba(6, 17, 30, 0.70), rgba(3, 10, 20, 0.82)) !important;
 }
 .h-root .h-main-shell.embed > .h-proposals-panel .h-proposal-item.is-active {
-  border-color: rgba(56, 189, 248, 0.58) !important;
+  border-color: color-mix(in srgb, var(--accent), transparent 42%) !important;
   background: linear-gradient(90deg, rgba(14, 116, 144, 0.22), rgba(5, 20, 35, 0.88)) !important;
-  box-shadow: inset 3px 0 0 rgba(56, 189, 248, 0.78), 0 0 24px rgba(56, 189, 248, 0.08) !important;
+  box-shadow: inset 3px 0 0 color-mix(in srgb, var(--accent), transparent 22%), 0 0 24px color-mix(in srgb, var(--accent), transparent 92%) !important;
 }
 .h-proposals-panel .h-proposal-list {
   padding: 4px !important;
@@ -2253,7 +2253,7 @@
 .h-proposals-panel .h-proposal-badge {
   min-height: 16px !important;
   padding-inline: 6px !important;
-  border-color: rgba(125, 211, 252, 0.22) !important;
+  border-color: color-mix(in srgb, var(--accent-strong), transparent 78%) !important;
   background:
     radial-gradient(circle at 18% 14%, rgba(255, 255, 255, 0.15), transparent 32%),
     linear-gradient(180deg, rgba(18, 38, 56, 0.88), rgba(4, 12, 22, 0.94)) !important;
@@ -2297,7 +2297,7 @@
 .h-proposals-panel .h-proposal-filter,
 .h-proposals-panel .h-proposal-mini,
 .h-proposals-panel .h-proposal-btn {
-  border-color: rgba(125, 211, 252, 0.24) !important;
+  border-color: color-mix(in srgb, var(--accent-strong), transparent 76%) !important;
   background:
     radial-gradient(circle at 18% 12%, rgba(255, 255, 255, 0.13), transparent 32%),
     linear-gradient(180deg, rgba(12, 30, 48, 0.90), rgba(3, 10, 20, 0.96)) !important;
@@ -2309,7 +2309,7 @@
 .h-proposals-panel .h-proposal-filter:hover,
 .h-proposals-panel .h-proposal-mini:hover:not(:disabled),
 .h-proposals-panel .h-proposal-btn:hover:not(:disabled) {
-  border-color: rgba(125, 211, 252, 0.40) !important;
+  border-color: color-mix(in srgb, var(--accent-strong), transparent 60%) !important;
   background:
     radial-gradient(circle at 18% 12%, rgba(255, 255, 255, 0.18), transparent 34%),
     linear-gradient(180deg, rgba(18, 43, 65, 0.96), rgba(5, 15, 28, 0.98)) !important;
@@ -2321,7 +2321,7 @@
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.11),
     inset 0 -1px 0 rgba(0, 0, 0, 0.34),
-    0 0 18px rgba(56, 189, 248, 0.12) !important;
+    0 0 18px color-mix(in srgb, var(--accent), transparent 88%) !important;
 }
 .h-proposals-panel .h-proposal-btn.good,
 .h-proposals-panel .h-proposal-mini.good {
@@ -2376,7 +2376,7 @@
   flex: 0 0 16px !important;
   margin: 0 auto !important;
   padding: 0 !important;
-  border: 1px solid rgba(125, 211, 252, 0.46) !important;
+  border: 1px solid color-mix(in srgb, var(--accent-strong), transparent 54%) !important;
   border-radius: 5px !important;
   color: #e0f7ff !important;
   background:
@@ -2384,7 +2384,7 @@
     linear-gradient(180deg, rgba(22, 54, 76, 0.82), rgba(3, 12, 24, 0.96)) !important;
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.12),
-    0 0 14px rgba(56, 189, 248, 0.14) !important;
+    0 0 14px color-mix(in srgb, var(--accent), transparent 86%) !important;
 }
 .h-proposals-panel .h-proposal-list .h-proposal-item input.h-proposal-check[type="checkbox"] {
   appearance: none;
@@ -2394,13 +2394,13 @@
 .h-proposals-panel .h-proposal-check[data-state="checked"],
 .h-proposals-panel .h-proposal-check[data-state="indeterminate"],
 .h-proposals-panel .h-proposal-list .h-proposal-item input.h-proposal-check[type="checkbox"]:checked {
-  border-color: rgba(56, 189, 248, 0.76) !important;
+  border-color: color-mix(in srgb, var(--accent), transparent 24%) !important;
   background:
     radial-gradient(circle at 30% 18%, rgba(255, 255, 255, 0.28), transparent 34%),
     linear-gradient(180deg, rgba(25, 98, 132, 0.82), rgba(5, 28, 44, 0.98)) !important;
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.16),
-    0 0 20px rgba(56, 189, 248, 0.24) !important;
+    0 0 20px color-mix(in srgb, var(--accent), transparent 76%) !important;
 }
 .h-proposals-panel .h-proposal-list .h-proposal-item input.h-proposal-check[type="checkbox"]:checked {
   background-image:
@@ -2413,13 +2413,13 @@
 }
 .h-proposals-panel .h-proposal-list .h-proposal-item .h-proposal-check[role="checkbox"][data-state="checked"],
 .h-proposals-panel .h-proposal-list .h-proposal-item .h-proposal-check[role="checkbox"][data-state="indeterminate"] {
-  border-color: rgba(56, 189, 248, 0.76) !important;
+  border-color: color-mix(in srgb, var(--accent), transparent 24%) !important;
   background:
     radial-gradient(circle at 30% 18%, rgba(255, 255, 255, 0.28), transparent 34%),
     linear-gradient(180deg, rgba(25, 98, 132, 0.82), rgba(5, 28, 44, 0.98)) !important;
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.16),
-    0 0 20px rgba(56, 189, 248, 0.24) !important;
+    0 0 20px color-mix(in srgb, var(--accent), transparent 76%) !important;
 }
 .h-proposals-panel .h-proposals-blurb {
   max-width: 720px;
@@ -2431,7 +2431,7 @@
 .h-proposals-panel .h-proposals-view-tab[aria-selected="true"] {
   color: color-mix(in oklab, var(--fg), #7dd3fc 12%) !important;
   background: linear-gradient(180deg, rgba(18, 53, 73, 0.90), rgba(5, 18, 31, 0.98)) !important;
-  box-shadow: inset 0 1px 0 rgba(255,255,255,0.085), 0 0 14px rgba(56,189,248,0.10);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.085), 0 0 14px color-mix(in srgb, var(--accent), transparent 90%);
 }
 .h-proposals-panel .h-proposal-filter {
   min-height: 38px !important;
@@ -2510,10 +2510,10 @@
   max-width: min(100%, 520px);
   margin-top: 1px;
   padding: 6px 9px;
-  border: 1px solid rgba(125, 211, 252, 0.14);
+  border: 1px solid color-mix(in srgb, var(--accent-strong), transparent 86%);
   border-radius: 9px;
   color: color-mix(in oklab, var(--fg-dim), white 12%);
-  background: linear-gradient(90deg, rgba(125, 211, 252, 0.046), rgba(255,255,255,0.012));
+  background: linear-gradient(90deg, color-mix(in srgb, var(--accent-strong), transparent 95.4%), rgba(255,255,255,0.012));
   box-shadow: inset 0 1px 0 rgba(255,255,255,0.04);
   font-size: 11px;
   font-weight: 620;
@@ -2522,15 +2522,15 @@
 }
 .h-proposals-panel .h-proposal-action-hint.status-pending {
   border-color: rgba(250, 204, 21, 0.24);
-  background: linear-gradient(90deg, rgba(250, 204, 21, 0.060), rgba(125, 211, 252, 0.020));
+  background: linear-gradient(90deg, rgba(250, 204, 21, 0.060), color-mix(in srgb, var(--accent-strong), transparent 98%));
 }
 .h-proposals-panel .h-proposal-action-hint.status-applied {
   border-color: rgba(34, 197, 94, 0.24);
-  background: linear-gradient(90deg, rgba(34, 197, 94, 0.060), rgba(125, 211, 252, 0.018));
+  background: linear-gradient(90deg, rgba(34, 197, 94, 0.060), color-mix(in srgb, var(--accent-strong), transparent 98.2%));
 }
 .h-proposals-panel .h-proposal-action-hint.status-rejected {
   border-color: rgba(248, 113, 113, 0.24);
-  background: linear-gradient(90deg, rgba(248, 113, 113, 0.055), rgba(125, 211, 252, 0.016));
+  background: linear-gradient(90deg, rgba(248, 113, 113, 0.055), color-mix(in srgb, var(--accent-strong), transparent 98.4%));
 }
 .h-proposals-panel .h-proposal-detail-actions .h-proposal-btn {
   min-height: 30px;
@@ -2642,7 +2642,7 @@
 
 .h-proposals-panel .h-proposal-pin:not(.on) {
   color: color-mix(in oklab, var(--fg-faint), white 12%) !important;
-  border-color: rgba(125, 211, 252, 0.18) !important;
+  border-color: color-mix(in srgb, var(--accent-strong), transparent 82%) !important;
   background:
     radial-gradient(circle at 28% 18%, rgba(255, 255, 255, 0.12), transparent 34%),
     linear-gradient(180deg, rgba(22, 38, 56, 0.50), rgba(5, 12, 22, 0.92)) !important;
@@ -2756,7 +2756,7 @@
   flex: 0 0 auto;
   gap: 4px;
   padding: 2px;
-  border: 1px solid rgba(125, 211, 252, 0.12);
+  border: 1px solid color-mix(in srgb, var(--accent-strong), transparent 88%);
   border-radius: 10px;
   background: rgba(255, 255, 255, 0.018);
 }
@@ -2784,7 +2784,7 @@
 }
 
 .h-proposals-panel .h-proposal-item {
-  border-color: rgba(125, 211, 252, 0.12) !important;
+  border-color: color-mix(in srgb, var(--accent-strong), transparent 88%) !important;
 }
 
 .h-proposals-panel .h-proposal-list .h-proposal-item {
@@ -2893,7 +2893,7 @@
   min-width: 132px;
   height: 28px;
   box-sizing: border-box;
-  border-color: rgba(125, 211, 252, 0.20);
+  border-color: color-mix(in srgb, var(--accent-strong), transparent 80%);
   background: rgba(255, 255, 255, 0.020);
 }
 
@@ -2914,10 +2914,10 @@
   gap: 4px;
   margin: 4px 0 12px;
   padding: 3px;
-  border: 1px solid rgba(125, 211, 252, 0.22);
+  border: 1px solid color-mix(in srgb, var(--accent-strong), transparent 78%);
   border-radius: 12px;
   background:
-    radial-gradient(circle at 16% 0%, rgba(125, 211, 252, 0.12), transparent 42%),
+    radial-gradient(circle at 16% 0%, color-mix(in srgb, var(--accent-strong), transparent 88%), transparent 42%),
     linear-gradient(180deg, rgba(8, 24, 40, 0.86), rgba(3, 10, 20, 0.96));
 }
 
@@ -2937,20 +2937,20 @@
 .h-proposals-panel .h-proposals-view-tab:hover,
 .h-proposals-panel .h-proposals-view-tab:focus-visible {
   color: color-mix(in oklab, var(--fg), #7dd3fc 8%);
-  border-color: rgba(125, 211, 252, 0.24);
+  border-color: color-mix(in srgb, var(--accent-strong), transparent 76%);
   outline: none;
 }
 
 .h-proposals-panel .h-proposals-view-tab[data-state="active"],
 .h-proposals-panel .h-proposals-view-tab[aria-selected="true"] {
   color: color-mix(in oklab, var(--fg), #7dd3fc 16%) !important;
-  border-color: rgba(125, 211, 252, 0.44);
+  border-color: color-mix(in srgb, var(--accent-strong), transparent 56%);
   background:
     radial-gradient(circle at 20% 0%, rgba(255, 255, 255, 0.16), transparent 34%),
     linear-gradient(180deg, rgba(23, 71, 96, 0.92), rgba(5, 20, 34, 0.98)) !important;
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.13),
-    0 0 18px rgba(56, 189, 248, 0.16) !important;
+    0 0 18px color-mix(in srgb, var(--accent), transparent 84%) !important;
 }
 /* Fixed-column proposal rows: text flexes, scalar badges keep stable widths. */
 .h-proposals-panel .h-proposal-row-button {
@@ -3010,14 +3010,14 @@
 
 .h-proposals-panel .h-proposal-item:nth-of-type(even) {
   background:
-    linear-gradient(180deg, rgba(125, 211, 252, 0.038), rgba(255, 255, 255, 0.006)),
+    linear-gradient(180deg, color-mix(in srgb, var(--accent-strong), transparent 96.2%), rgba(255, 255, 255, 0.006)),
     rgba(11, 25, 42, 0.94) !important;
 }
 
 .h-proposals-panel .h-proposal-item:hover,
 .h-proposals-panel .h-proposal-item.is-active {
   background:
-    linear-gradient(180deg, rgba(125, 211, 252, 0.105), rgba(255, 255, 255, 0.014)),
+    linear-gradient(180deg, color-mix(in srgb, var(--accent-strong), transparent 89.5%), rgba(255, 255, 255, 0.014)),
     rgba(10, 25, 45, 0.98) !important;
 }
 
@@ -3026,7 +3026,7 @@
   box-sizing: border-box;
   display: block;
   padding: 2px 7px;
-  border: 1px solid rgba(125, 211, 252, 0.16);
+  border: 1px solid color-mix(in srgb, var(--accent-strong), transparent 84%);
   border-radius: 999px;
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.026), rgba(255, 255, 255, 0.006)),
@@ -3037,7 +3037,7 @@
 
 .h-proposals-panel .h-proposal-row-subtitle,
 .h-proposals-panel .h-proposal-row-age {
-  border-color: rgba(125, 211, 252, 0.17) !important;
+  border-color: color-mix(in srgb, var(--accent-strong), transparent 83%) !important;
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.022), rgba(255, 255, 255, 0.004)),
     rgba(1, 6, 14, 0.84) !important;
@@ -3059,9 +3059,9 @@
 }
 
 .h-proposals-panel .h-proposal-btn {
-  border-color: rgba(56, 189, 248, 0.48) !important;
+  border-color: color-mix(in srgb, var(--accent), transparent 52%) !important;
   background:
-    linear-gradient(180deg, rgba(56, 189, 248, 0.28), rgba(14, 116, 144, 0.18)),
+    linear-gradient(180deg, color-mix(in srgb, var(--accent), transparent 72%), rgba(14, 116, 144, 0.18)),
     rgba(5, 18, 31, 0.96) !important;
   color: color-mix(in oklab, #e0f7ff, var(--fg) 20%) !important;
   box-shadow:
@@ -3071,9 +3071,9 @@
 }
 
 .h-proposals-panel .h-proposal-btn:hover:not(:disabled) {
-  border-color: rgba(125, 211, 252, 0.76) !important;
+  border-color: color-mix(in srgb, var(--accent-strong), transparent 24%) !important;
   background:
-    linear-gradient(180deg, rgba(125, 211, 252, 0.36), rgba(14, 116, 144, 0.26)),
+    linear-gradient(180deg, color-mix(in srgb, var(--accent-strong), transparent 64%), rgba(14, 116, 144, 0.26)),
     rgba(7, 26, 43, 0.98) !important;
   color: #ffffff !important;
 }

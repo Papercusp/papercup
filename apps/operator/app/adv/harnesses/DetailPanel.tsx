@@ -735,7 +735,7 @@ function DetailStyles() {
       .pc-adv-detail__header {
         flex-shrink: 0;
         padding: 14px 18px 12px;
-        border-bottom: 1px solid var(--border, rgba(125, 211, 252, 0.15));
+        border-bottom: 1px solid var(--border, color-mix(in srgb, var(--accent-strong), transparent 85%));
       }
       .pc-adv-detail__back {
         display: inline-flex;
@@ -746,7 +746,7 @@ function DetailStyles() {
         font-weight: 600;
         color: var(--accent-strong, #7dd3fc);
         background: var(--bg-2, rgba(255, 255, 255, 0.045));
-        border: 1px solid var(--border-strong, rgba(125, 211, 252, 0.32));
+        border: 1px solid var(--border-strong, color-mix(in srgb, var(--accent-strong), transparent 68%));
         border-radius: 999px;
         cursor: pointer;
       }
@@ -853,13 +853,13 @@ function DetailStyles() {
         text-align: left;
         color: var(--fg-dim, #b9d4e8);
         background: var(--bg-2, rgba(255, 255, 255, 0.045));
-        border: 1px solid var(--border, rgba(125, 211, 252, 0.15));
+        border: 1px solid var(--border, color-mix(in srgb, var(--accent-strong), transparent 85%));
         border-radius: 6px;
         cursor: pointer;
       }
       .pc-adv-detail__related-row:hover {
         background: var(--bg-3, rgba(255, 255, 255, 0.075));
-        border-color: var(--border-strong, rgba(125, 211, 252, 0.32));
+        border-color: var(--border-strong, color-mix(in srgb, var(--accent-strong), transparent 68%));
       }
       .pc-adv-detail__related-id {
         font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
@@ -907,7 +907,7 @@ function DetailStyles() {
         gap: 8px;
       }
       .pc-adv-detail__note-row {
-        border-left: 2px solid var(--border-strong, rgba(125, 211, 252, 0.32));
+        border-left: 2px solid var(--border-strong, color-mix(in srgb, var(--accent-strong), transparent 68%));
         padding-left: 10px;
       }
       .pc-adv-detail__note-meta {
@@ -936,7 +936,7 @@ function DetailStyles() {
         font-size: 12px;
         background: var(--bg-2, rgba(255, 255, 255, 0.045));
         color: var(--fg, #e7f7ff);
-        border: 1px solid var(--border-strong, rgba(125, 211, 252, 0.32));
+        border: 1px solid var(--border-strong, color-mix(in srgb, var(--accent-strong), transparent 68%));
         border-radius: 6px;
       }
       .pc-adv-detail__note-form textarea:focus {
@@ -951,7 +951,7 @@ function DetailStyles() {
         font-weight: 600;
         background: var(--bg-2, rgba(255, 255, 255, 0.045));
         color: var(--fg, #e7f7ff);
-        border: 1px solid var(--border-strong, rgba(125, 211, 252, 0.32));
+        border: 1px solid var(--border-strong, color-mix(in srgb, var(--accent-strong), transparent 68%));
         border-radius: 6px;
         cursor: pointer;
       }
@@ -968,7 +968,7 @@ function DetailStyles() {
         font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
         font-size: 11px;
         background: var(--bg-2, rgba(255, 255, 255, 0.045));
-        border: 1px solid var(--border, rgba(125, 211, 252, 0.15));
+        border: 1px solid var(--border, color-mix(in srgb, var(--accent-strong), transparent 85%));
         border-radius: 6px;
         color: var(--fg, #e7f7ff);
         white-space: pre-wrap;
@@ -995,7 +995,7 @@ function DetailStyles() {
         font-size: 12px;
         background: var(--bg-2, rgba(255, 255, 255, 0.045));
         color: var(--fg, #e7f7ff);
-        border: 1px solid var(--border-strong, rgba(125, 211, 252, 0.32));
+        border: 1px solid var(--border-strong, color-mix(in srgb, var(--accent-strong), transparent 68%));
         border-radius: 6px;
         cursor: pointer;
       }
@@ -1010,7 +1010,7 @@ function DetailStyles() {
         font-weight: 600;
         background: var(--bg-2, rgba(255, 255, 255, 0.045));
         color: var(--fg, #e7f7ff);
-        border: 1px solid var(--border-strong, rgba(125, 211, 252, 0.32));
+        border: 1px solid var(--border-strong, color-mix(in srgb, var(--accent-strong), transparent 68%));
         border-radius: 6px;
         cursor: pointer;
       }

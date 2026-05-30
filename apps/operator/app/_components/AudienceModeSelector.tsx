@@ -86,7 +86,7 @@ const CSS = `
   display: inline-flex;
   align-items: center;
   border-radius: 8px;
-  border: 1px solid var(--border, rgba(125, 211, 252, 0.20));
+  border: 1px solid var(--border, color-mix(in srgb, var(--accent-strong), transparent 80%));
   overflow: hidden;
   flex-shrink: 0;
 }
@@ -105,14 +105,14 @@ const CSS = `
   white-space: nowrap;
 }
 .audience-mode-btn + .audience-mode-btn {
-  border-left: 1px solid var(--border, rgba(125, 211, 252, 0.20));
+  border-left: 1px solid var(--border, color-mix(in srgb, var(--accent-strong), transparent 80%));
 }
 .audience-mode-btn:hover {
-  background: rgba(125, 211, 252, 0.08);
+  background: color-mix(in srgb, var(--accent-strong), transparent 92%);
   color: var(--fg, #e7eef7);
 }
 .audience-mode-btn--active {
-  background: rgba(56, 189, 248, 0.14);
+  background: color-mix(in srgb, var(--accent), transparent 86%);
   color: var(--accent-strong, #7dd3fc);
 }
 `;

@@ -176,7 +176,7 @@ export default function HarnessTopBar({ slug, projects }: Props) {
           align-items: center;
           gap: 16px;
           padding: 10px 18px;
-          border-bottom: 1px solid var(--border, rgba(125, 211, 252, 0.15));
+          border-bottom: 1px solid var(--border, color-mix(in srgb, var(--accent-strong), transparent 85%));
           background: var(--bg-2, rgba(255, 255, 255, 0.045));
           min-height: 48px;
         }
@@ -244,7 +244,7 @@ export default function HarnessTopBar({ slug, projects }: Props) {
           font-weight: 600;
           color: var(--fg-dim, #b9d4e8);
           background: var(--bg-2, rgba(255, 255, 255, 0.045));
-          border: 1px solid var(--border, rgba(125, 211, 252, 0.15));
+          border: 1px solid var(--border, color-mix(in srgb, var(--accent-strong), transparent 85%));
           border-radius: 999px;
           cursor: pointer;
         }

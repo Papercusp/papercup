@@ -239,7 +239,7 @@ export default function MarketplaceList({ kind, catalog, installedTemplates, ins
         );
 
       const sweep = gsap.to(q('.pc-marketplace-card'), {
-        boxShadow: '0 20px 42px rgba(0, 0, 0, 0.22), 0 0 0 1px rgba(125, 211, 252, 0.06)',
+        boxShadow: '0 20px 42px rgba(0, 0, 0, 0.22), 0 0 0 1px color-mix(in srgb, var(--accent-strong), transparent 94%)',
         duration: 2.4,
         ease: 'sine.inOut',
         repeat: -1,

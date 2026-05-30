@@ -1025,7 +1025,7 @@ export function OracleDock() {
         { xPercent: 24, autoAlpha: 0.48, duration: 2.6, ease: 'sine.inOut', repeat: -1, yoyo: true },
       ),
       gsap.to(q('.oracle-tab.is-active'), {
-        boxShadow: '0 0 0 1px rgba(125, 211, 252, 0.16), 0 0 24px rgba(34, 211, 238, 0.18)',
+        boxShadow: '0 0 0 1px color-mix(in srgb, var(--accent-strong), transparent 84%), 0 0 24px rgba(34, 211, 238, 0.18)',
         duration: 1.2,
         ease: 'sine.inOut',
         repeat: -1,

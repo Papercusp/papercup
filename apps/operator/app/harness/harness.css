@@ -6764,7 +6764,7 @@ body:has(.h-top-collapse-inline) main {
   border-top: 1px solid color-mix(in oklab, var(--border), transparent 38%) !important;
   border-bottom: 1px solid color-mix(in oklab, var(--border), transparent 32%) !important;
   background:
-    radial-gradient(circle at 18% 0%, rgba(56, 189, 248, 0.10), transparent 34%),
+    radial-gradient(circle at 18% 0%, color-mix(in srgb, var(--accent), transparent 90%), transparent 34%),
     linear-gradient(180deg, color-mix(in oklab, var(--bg-2), white 4%), color-mix(in oklab, var(--bg-2), transparent 8%)) !important;
   box-shadow: inset 0 1px 0 rgba(255,255,255,0.035) !important;
   overflow-x: auto !important;
@@ -6820,7 +6820,7 @@ body:has(.h-top-collapse-inline) main {
   padding: 5px 9px !important;
   border: 1px solid color-mix(in oklab, var(--accent), transparent 68%) !important;
   border-radius: 11px !important;
-  background: linear-gradient(180deg, rgba(56, 189, 248, 0.12), rgba(56, 189, 248, 0.055)) !important;
+  background: linear-gradient(180deg, color-mix(in srgb, var(--accent), transparent 88%), color-mix(in srgb, var(--accent), transparent 94.5%)) !important;
   color: var(--fg) !important;
   box-shadow: 0 9px 22px rgba(0,0,0,0.18), inset 0 1px 0 rgba(255,255,255,0.045) !important;
   cursor: pointer !important;
@@ -6831,7 +6831,7 @@ body:has(.h-top-collapse-inline) main {
 .h-quick-action-btn:hover {
   transform: translateY(-1px) !important;
   border-color: color-mix(in oklab, var(--accent), transparent 42%) !important;
-  background: linear-gradient(180deg, rgba(56, 189, 248, 0.18), rgba(56, 189, 248, 0.075)) !important;
+  background: linear-gradient(180deg, color-mix(in srgb, var(--accent), transparent 82%), color-mix(in srgb, var(--accent), transparent 92.5%)) !important;
 }
 
 .h-quick-action-btn:active {
@@ -7895,11 +7895,11 @@ body:has(.h-top-collapse-inline) main {
   background:
     radial-gradient(circle at 18% 0%, rgba(224, 247, 255, 0.18), transparent 34%),
     linear-gradient(180deg, rgba(15, 35, 55, 0.92), rgba(6, 15, 28, 0.96)) !important;
-  border: 1px solid rgba(125, 211, 252, 0.36) !important;
+  border: 1px solid color-mix(in srgb, var(--accent-strong), transparent 64%) !important;
   box-shadow:
     0 12px 30px rgba(0, 0, 0, 0.42),
     0 0 0 1px rgba(3, 8, 16, 0.48),
-    0 0 22px rgba(56, 189, 248, 0.10),
+    0 0 22px color-mix(in srgb, var(--accent), transparent 90%),
     inset 0 1px 0 rgba(255, 255, 255, 0.11),
     inset 0 -1px 0 rgba(3, 8, 16, 0.42) !important;
   font-size: 10px !important;
@@ -7940,7 +7940,7 @@ body:has(.h-top-collapse-inline) main {
   pointer-events: none !important;
   background:
     linear-gradient(110deg, transparent 0 28%, rgba(255, 255, 255, 0.12) 42%, transparent 58%),
-    radial-gradient(circle at 50% 100%, rgba(56, 189, 248, 0.16), transparent 48%) !important;
+    radial-gradient(circle at 50% 100%, color-mix(in srgb, var(--accent), transparent 84%), transparent 48%) !important;
   opacity: 0.82 !important;
   transition: transform 180ms ease, opacity 150ms ease !important;
 }
@@ -7955,8 +7955,8 @@ body:has(.h-top-collapse-inline) main {
   height: 1px !important;
   border-radius: 999px !important;
   pointer-events: none !important;
-  background: rgba(125, 211, 252, 0.72) !important;
-  box-shadow: 0 0 18px rgba(56, 189, 248, 0.32) !important;
+  background: color-mix(in srgb, var(--accent-strong), transparent 28%) !important;
+  box-shadow: 0 0 18px color-mix(in srgb, var(--accent), transparent 68%) !important;
 }
 
 .h-top-collapse-btn:hover {
@@ -7967,8 +7967,8 @@ body:has(.h-top-collapse-inline) main {
     linear-gradient(180deg, rgba(20, 47, 72, 0.96), rgba(7, 19, 34, 0.98)) !important;
   box-shadow:
     0 16px 38px rgba(0, 0, 0, 0.46),
-    0 0 0 1px rgba(56, 189, 248, 0.16),
-    0 0 28px rgba(56, 189, 248, 0.18),
+    0 0 0 1px color-mix(in srgb, var(--accent), transparent 84%),
+    0 0 28px color-mix(in srgb, var(--accent), transparent 82%),
     inset 0 1px 0 rgba(255, 255, 255, 0.14),
     inset 0 -1px 0 rgba(3, 8, 16, 0.40) !important;
 }
@@ -7987,7 +7987,7 @@ body:has(.h-top-collapse-inline) main {
 }
 
 .h-top-collapse-btn:focus-visible {
-  outline: 2px solid rgba(125, 211, 252, 0.74) !important;
+  outline: 2px solid color-mix(in srgb, var(--accent-strong), transparent 26%) !important;
   outline-offset: 3px !important;
 }
 
@@ -8008,9 +8008,9 @@ body:has(.h-top-collapse-inline) main {
   padding: 2px !important;
   border-radius: 999px !important;
   color: #d7f3ff !important;
-  background: rgba(56, 189, 248, 0.16) !important;
-  border: 1px solid rgba(125, 211, 252, 0.26) !important;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.10), 0 0 12px rgba(56, 189, 248, 0.14) !important;
+  background: color-mix(in srgb, var(--accent), transparent 84%) !important;
+  border: 1px solid color-mix(in srgb, var(--accent-strong), transparent 74%) !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.10), 0 0 12px color-mix(in srgb, var(--accent), transparent 86%) !important;
   opacity: 0.96 !important;
 }
 
@@ -8351,7 +8351,7 @@ body:has(.h-top-collapse-inline) main {
 
 /* Brainstorm tab usability polish: clearer writing surface, tabs, and partner panel without changing workflow. */
 .h-main-shell.brainstorm-full {
-  background: radial-gradient(circle at 16% 0%, rgba(56, 189, 248, 0.075), transparent 28%);
+  background: radial-gradient(circle at 16% 0%, color-mix(in srgb, var(--accent), transparent 92.5%), transparent 28%);
 }
 
 .h-bsfull-grid,
@@ -8360,19 +8360,19 @@ body:has(.h-top-collapse-inline) main {
 }
 
 .h-bsfull-panel {
-  border-color: rgba(125, 211, 252, 0.26);
+  border-color: color-mix(in srgb, var(--accent-strong), transparent 74%);
   box-shadow:
     0 16px 38px rgba(0, 0, 0, 0.26),
     inset 0 1px 0 rgba(255, 255, 255, 0.055);
 }
 
 .h-bsfull-head {
-  border-bottom-color: rgba(125, 211, 252, 0.20);
+  border-bottom-color: color-mix(in srgb, var(--accent-strong), transparent 80%);
 }
 
 .h-bsfull-panel.primary .h-bsfull-head {
   background:
-    linear-gradient(90deg, rgba(56, 189, 248, 0.16), transparent 56%),
+    linear-gradient(90deg, color-mix(in srgb, var(--accent), transparent 84%), transparent 56%),
     rgba(10, 22, 37, 0.82);
 }
 
@@ -8389,7 +8389,7 @@ body:has(.h-top-collapse-inline) main {
 .h-bsfull-subtabs {
   gap: 5px;
   padding: 3px;
-  border: 1px solid rgba(125, 211, 252, 0.14);
+  border: 1px solid color-mix(in srgb, var(--accent-strong), transparent 86%);
   border-radius: 10px;
   background: rgba(4, 10, 20, 0.34);
 }
@@ -8405,20 +8405,20 @@ body:has(.h-top-collapse-inline) main {
 
 .h-bsfull-sub:hover {
   color: var(--fg);
-  background: rgba(125, 211, 252, 0.08);
+  background: color-mix(in srgb, var(--accent-strong), transparent 92%);
 }
 
 .h-bsfull-sub[data-state="active"],
 .h-bsfull-sub.on {
   color: var(--fg);
-  border-color: rgba(125, 211, 252, 0.30);
-  background: linear-gradient(180deg, rgba(125, 211, 252, 0.16), rgba(125, 211, 252, 0.06));
+  border-color: color-mix(in srgb, var(--accent-strong), transparent 70%);
+  background: linear-gradient(180deg, color-mix(in srgb, var(--accent-strong), transparent 84%), color-mix(in srgb, var(--accent-strong), transparent 94%));
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08);
 }
 
 .h-bsfull-main {
   background:
-    radial-gradient(circle at 14% 0%, rgba(56, 189, 248, 0.10), transparent 18rem),
+    radial-gradient(circle at 14% 0%, color-mix(in srgb, var(--accent), transparent 90%), transparent 18rem),
     rgba(4, 10, 20, 0.18);
 }
 
@@ -8444,7 +8444,7 @@ body:has(.h-top-collapse-inline) main {
   width: min(100%, 960px);
   margin: 0 auto;
   padding: 18px 22px 28px;
-  border: 1px solid rgba(125, 211, 252, 0.18);
+  border: 1px solid color-mix(in srgb, var(--accent-strong), transparent 82%);
   border-radius: 14px;
   background: rgba(255, 255, 255, 0.035);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.045);
@@ -8455,24 +8455,24 @@ body:has(.h-top-collapse-inline) main {
 }
 
 .h-bsfull-partner-body .h-chat-empty {
-  border-color: rgba(125, 211, 252, 0.22);
-  background: rgba(125, 211, 252, 0.055);
+  border-color: color-mix(in srgb, var(--accent-strong), transparent 78%);
+  background: color-mix(in srgb, var(--accent-strong), transparent 94.5%);
 }
 
 .h-bsfull-partner-body .h-chat-composer {
-  border-top: 1px solid rgba(125, 211, 252, 0.18);
+  border-top: 1px solid color-mix(in srgb, var(--accent-strong), transparent 82%);
   background: linear-gradient(180deg, rgba(255, 255, 255, 0.035), rgba(4, 10, 20, 0.40));
 }
 
 .h-bsfull-partner-body .h-chat-input {
-  border-color: rgba(125, 211, 252, 0.24);
+  border-color: color-mix(in srgb, var(--accent-strong), transparent 76%);
   background: rgba(4, 10, 20, 0.58);
 }
 
 .h-bsfull-partner-body .h-chat-input:focus,
 .h-bsfull-partner-body .h-chat-input:focus-within {
-  border-color: rgba(125, 211, 252, 0.58);
-  box-shadow: 0 0 0 2px rgba(56, 189, 248, 0.14);
+  border-color: color-mix(in srgb, var(--accent-strong), transparent 42%);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent), transparent 86%);
 }
 
 @media (max-width: 760px) {
@@ -8494,9 +8494,9 @@ body:has(.h-top-collapse-inline) main {
 
 /* Top-bar usability polish: clearer grouping and contrast without increasing height. */
 .h-header {
-  border-bottom-color: rgba(125, 211, 252, 0.22);
+  border-bottom-color: color-mix(in srgb, var(--accent-strong), transparent 78%);
   background:
-    radial-gradient(circle at 18% 0%, rgba(125, 211, 252, 0.12), transparent 32%),
+    radial-gradient(circle at 18% 0%, color-mix(in srgb, var(--accent-strong), transparent 88%), transparent 32%),
     linear-gradient(135deg, rgba(13, 27, 43, 0.96), rgba(8, 18, 31, 0.96));
   box-shadow: 0 16px 34px rgba(0, 0, 0, 0.20);
 }
@@ -8506,7 +8506,7 @@ body:has(.h-top-collapse-inline) main {
 }
 
 .h-project-card {
-  border-color: rgba(125, 211, 252, 0.24);
+  border-color: color-mix(in srgb, var(--accent-strong), transparent 76%);
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.065), rgba(255, 255, 255, 0.020)),
     rgba(9, 20, 34, 0.82);
@@ -8516,15 +8516,15 @@ body:has(.h-top-collapse-inline) main {
 }
 
 .h-project {
-  border-color: rgba(125, 211, 252, 0.24);
+  border-color: color-mix(in srgb, var(--accent-strong), transparent 76%);
   background: rgba(255, 255, 255, 0.050);
 }
 
 .h-project:hover,
 .h-project:focus,
 .h-project:focus-visible {
-  border-color: rgba(125, 211, 252, 0.54);
-  box-shadow: 0 0 0 2px rgba(56, 189, 248, 0.14);
+  border-color: color-mix(in srgb, var(--accent-strong), transparent 46%);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent), transparent 86%);
 }
 
 .h-project-path,
@@ -8538,7 +8538,7 @@ body:has(.h-top-collapse-inline) main {
 }
 
 .h-stat {
-  border-color: rgba(125, 211, 252, 0.20);
+  border-color: color-mix(in srgb, var(--accent-strong), transparent 80%);
   background: rgba(255, 255, 255, 0.045);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
 }
@@ -8548,17 +8548,17 @@ body:has(.h-top-collapse-inline) main {
 }
 
 .h-header-actions .h-btn {
-  border-color: rgba(125, 211, 252, 0.22);
+  border-color: color-mix(in srgb, var(--accent-strong), transparent 78%);
   background: rgba(255, 255, 255, 0.035);
 }
 
 .h-header-actions .h-btn:hover {
-  border-color: rgba(125, 211, 252, 0.40);
-  background: rgba(125, 211, 252, 0.075);
+  border-color: color-mix(in srgb, var(--accent-strong), transparent 60%);
+  background: color-mix(in srgb, var(--accent-strong), transparent 92.5%);
 }
 
 .h-running-strip {
-  border-color: rgba(125, 211, 252, 0.18);
+  border-color: color-mix(in srgb, var(--accent-strong), transparent 82%);
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.05), rgba(255, 255, 255, 0.018)),
     rgba(9, 19, 32, 0.80);
@@ -8570,7 +8570,7 @@ body:has(.h-top-collapse-inline) main {
 }
 
 .h-running-lane {
-  border-color: rgba(125, 211, 252, 0.18);
+  border-color: color-mix(in srgb, var(--accent-strong), transparent 82%);
   background: rgba(255, 255, 255, 0.040);
 }
 
@@ -8587,7 +8587,7 @@ body:has(.h-top-collapse-inline) main {
 .h-focus-card,
 .h-status-distribution,
 .h-overview-action {
-  border-color: rgba(125, 211, 252, 0.22);
+  border-color: color-mix(in srgb, var(--accent-strong), transparent 78%);
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.055), rgba(255, 255, 255, 0.018)),
     rgba(8, 18, 31, 0.76);
@@ -8608,14 +8608,14 @@ body:has(.h-top-collapse-inline) main {
 .h-overview-action:focus-visible,
 .h-focus-card:hover:not(:disabled),
 .h-focus-card:focus-visible {
-  border-color: rgba(125, 211, 252, 0.38);
+  border-color: color-mix(in srgb, var(--accent-strong), transparent 62%);
 }
 
 .h-quick-action-row {
-  border-top-color: rgba(125, 211, 252, 0.20) !important;
-  border-bottom-color: rgba(125, 211, 252, 0.20) !important;
+  border-top-color: color-mix(in srgb, var(--accent-strong), transparent 80%) !important;
+  border-bottom-color: color-mix(in srgb, var(--accent-strong), transparent 80%) !important;
   background:
-    radial-gradient(circle at 18% 0%, rgba(56, 189, 248, 0.12), transparent 34%),
+    radial-gradient(circle at 18% 0%, color-mix(in srgb, var(--accent), transparent 88%), transparent 34%),
     linear-gradient(180deg, rgba(255, 255, 255, 0.060), rgba(255, 255, 255, 0.020)) !important;
 }
 
@@ -8624,19 +8624,19 @@ body:has(.h-top-collapse-inline) main {
 }
 
 .h-quick-action-btn {
-  border-color: rgba(125, 211, 252, 0.30) !important;
-  background: linear-gradient(180deg, rgba(56, 189, 248, 0.16), rgba(56, 189, 248, 0.070)) !important;
+  border-color: color-mix(in srgb, var(--accent-strong), transparent 70%) !important;
+  background: linear-gradient(180deg, color-mix(in srgb, var(--accent), transparent 84%), color-mix(in srgb, var(--accent), transparent 93%)) !important;
 }
 
 .h-quick-action-btn:hover {
-  border-color: rgba(125, 211, 252, 0.48) !important;
-  background: linear-gradient(180deg, rgba(56, 189, 248, 0.22), rgba(56, 189, 248, 0.09)) !important;
+  border-color: color-mix(in srgb, var(--accent-strong), transparent 52%) !important;
+  background: linear-gradient(180deg, color-mix(in srgb, var(--accent), transparent 78%), color-mix(in srgb, var(--accent), transparent 91%)) !important;
 }
 
 /* Continued top-bar polish: stronger grouping in the compact strips, same height. */
 .h-phase-plan-row {
-  border-top: 1px solid rgba(125, 211, 252, 0.16) !important;
-  border-bottom: 1px solid rgba(125, 211, 252, 0.16) !important;
+  border-top: 1px solid color-mix(in srgb, var(--accent-strong), transparent 84%) !important;
+  border-bottom: 1px solid color-mix(in srgb, var(--accent-strong), transparent 84%) !important;
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.045), rgba(255, 255, 255, 0.012)),
     rgba(8, 18, 31, 0.70) !important;
@@ -8644,7 +8644,7 @@ body:has(.h-top-collapse-inline) main {
 }
 
 .h-phase-plan-row .h-phase-plan-focus {
-  border-color: rgba(125, 211, 252, 0.24) !important;
+  border-color: color-mix(in srgb, var(--accent-strong), transparent 76%) !important;
   background: rgba(255, 255, 255, 0.045) !important;
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.045) !important;
 }
@@ -8663,24 +8663,24 @@ body:has(.h-top-collapse-inline) main {
 
 .h-phase-plan-row .h-phase-plan-review,
 .h-phase-plan-row .h-plan-review-banner.compact {
-  border-color: rgba(125, 211, 252, 0.26) !important;
+  border-color: color-mix(in srgb, var(--accent-strong), transparent 74%) !important;
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04) !important;
 }
 
 .h-phase-plan-actions .h-btn {
-  border-color: rgba(125, 211, 252, 0.22) !important;
+  border-color: color-mix(in srgb, var(--accent-strong), transparent 78%) !important;
   background: rgba(255, 255, 255, 0.035) !important;
 }
 
 .h-phase-plan-actions .h-btn:hover {
-  border-color: rgba(125, 211, 252, 0.38) !important;
-  background: rgba(125, 211, 252, 0.075) !important;
+  border-color: color-mix(in srgb, var(--accent-strong), transparent 62%) !important;
+  background: color-mix(in srgb, var(--accent-strong), transparent 92.5%) !important;
 }
 
 .h-decision-chip {
-  border-color: rgba(125, 211, 252, 0.34) !important;
+  border-color: color-mix(in srgb, var(--accent-strong), transparent 66%) !important;
   background:
-    linear-gradient(180deg, rgba(56, 189, 248, 0.18), rgba(56, 189, 248, 0.06)),
+    linear-gradient(180deg, color-mix(in srgb, var(--accent), transparent 82%), color-mix(in srgb, var(--accent), transparent 94%)),
     rgba(7, 18, 32, 0.88) !important;
   box-shadow: 0 10px 24px rgba(0, 0, 0, 0.20), inset 0 1px 0 rgba(255, 255, 255, 0.06) !important;
 }
@@ -8690,8 +8690,8 @@ body:has(.h-top-collapse-inline) main {
 }
 
 .h-tabs.h-main-tabs {
-  border-top: 1px solid rgba(125, 211, 252, 0.14);
-  border-bottom-color: rgba(125, 211, 252, 0.18);
+  border-top: 1px solid color-mix(in srgb, var(--accent-strong), transparent 86%);
+  border-bottom-color: color-mix(in srgb, var(--accent-strong), transparent 82%);
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.05), rgba(255, 255, 255, 0.016)),
     rgba(7, 17, 29, 0.78);
@@ -8704,14 +8704,14 @@ body:has(.h-top-collapse-inline) main {
 
 .h-main-tabs .h-tab:hover {
   color: var(--fg);
-  background: rgba(125, 211, 252, 0.06);
+  background: color-mix(in srgb, var(--accent-strong), transparent 94%);
 }
 
 .h-main-tabs .h-tab.on,
 .h-main-tabs .h-tab[aria-selected="true"] {
-  border-color: rgba(125, 211, 252, 0.24);
+  border-color: color-mix(in srgb, var(--accent-strong), transparent 76%);
   background:
-    linear-gradient(180deg, rgba(125, 211, 252, 0.15), rgba(125, 211, 252, 0.05)),
+    linear-gradient(180deg, color-mix(in srgb, var(--accent-strong), transparent 85%), color-mix(in srgb, var(--accent-strong), transparent 95%)),
     rgba(8, 18, 31, 0.80);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.07);
 }
@@ -8721,7 +8721,7 @@ body:has(.h-top-collapse-inline) main {
 }
 
 .h-quick-action-btn {
-  border-color: rgba(125, 211, 252, 0.34) !important;
+  border-color: color-mix(in srgb, var(--accent-strong), transparent 66%) !important;
   box-shadow: 0 8px 20px rgba(0,0,0,0.16), inset 0 1px 0 rgba(255,255,255,0.05) !important;
 }
 
@@ -8736,10 +8736,10 @@ body:has(.h-top-collapse-inline) main {
 /* Final density-preserving top-bar refinements: contrast, focus, and active-state clarity only. */
 .h-header {
   background:
-    radial-gradient(circle at 18% 0%, rgba(125, 211, 252, 0.105), transparent 31rem),
+    radial-gradient(circle at 18% 0%, color-mix(in srgb, var(--accent-strong), transparent 89.5%), transparent 31rem),
     linear-gradient(180deg, rgba(255, 255, 255, 0.035), rgba(255, 255, 255, 0.008)),
     color-mix(in oklab, var(--bg-2), black 3%) !important;
-  border-bottom-color: rgba(125, 211, 252, 0.18) !important;
+  border-bottom-color: color-mix(in srgb, var(--accent-strong), transparent 82%) !important;
   box-shadow: 0 10px 28px rgba(0, 0, 0, 0.22), inset 0 1px 0 rgba(255, 255, 255, 0.045) !important;
 }
 
@@ -8747,13 +8747,13 @@ body:has(.h-top-collapse-inline) main {
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.055), rgba(255, 255, 255, 0.014)),
     rgba(8, 18, 31, 0.70) !important;
-  border-color: rgba(125, 211, 252, 0.22) !important;
+  border-color: color-mix(in srgb, var(--accent-strong), transparent 78%) !important;
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.055), 0 8px 22px rgba(0, 0, 0, 0.16) !important;
 }
 
 .h-project-card:focus-within {
-  border-color: rgba(125, 211, 252, 0.42) !important;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.07), 0 0 0 1px rgba(125, 211, 252, 0.12), 0 8px 22px rgba(0, 0, 0, 0.16) !important;
+  border-color: color-mix(in srgb, var(--accent-strong), transparent 58%) !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.07), 0 0 0 1px color-mix(in srgb, var(--accent-strong), transparent 88%), 0 8px 22px rgba(0, 0, 0, 0.16) !important;
 }
 
 .h-project-phases .h-phase-item {
@@ -8762,28 +8762,28 @@ body:has(.h-top-collapse-inline) main {
 }
 
 .h-project-phases .h-phase-item:not(.disabled):hover {
-  background: rgba(125, 211, 252, 0.08) !important;
-  border-color: rgba(125, 211, 252, 0.34) !important;
+  background: color-mix(in srgb, var(--accent-strong), transparent 92%) !important;
+  border-color: color-mix(in srgb, var(--accent-strong), transparent 66%) !important;
 }
 
 .h-project-phases .h-phase-item.active {
-  background: linear-gradient(180deg, rgba(125, 211, 252, 0.15), rgba(125, 211, 252, 0.045)) !important;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.07), 0 0 0 1px rgba(125, 211, 252, 0.08) !important;
+  background: linear-gradient(180deg, color-mix(in srgb, var(--accent-strong), transparent 85%), color-mix(in srgb, var(--accent-strong), transparent 95.5%)) !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.07), 0 0 0 1px color-mix(in srgb, var(--accent-strong), transparent 92%) !important;
 }
 
 .h-stat {
   background: linear-gradient(180deg, rgba(255, 255, 255, 0.055), rgba(255, 255, 255, 0.018)) !important;
-  border-color: rgba(125, 211, 252, 0.20) !important;
+  border-color: color-mix(in srgb, var(--accent-strong), transparent 80%) !important;
 }
 
 .h-stat-button:hover .h-stat,
 .h-stat-button:focus-visible .h-stat {
-  border-color: rgba(125, 211, 252, 0.42) !important;
-  background: rgba(125, 211, 252, 0.08) !important;
+  border-color: color-mix(in srgb, var(--accent-strong), transparent 58%) !important;
+  background: color-mix(in srgb, var(--accent-strong), transparent 92%) !important;
 }
 
 .h-phase-plan-row .h-phase-plan-focus {
-  box-shadow: inset 2px 0 0 rgba(125, 211, 252, 0.46), inset 0 1px 0 rgba(255, 255, 255, 0.045) !important;
+  box-shadow: inset 2px 0 0 color-mix(in srgb, var(--accent-strong), transparent 54%), inset 0 1px 0 rgba(255, 255, 255, 0.045) !important;
 }
 
 .h-phase-plan-row .h-phase-plan-focus.failing,
@@ -8796,8 +8796,8 @@ body:has(.h-top-collapse-inline) main {
 }
 
 .h-top-collapse-btn:hover {
-  border-color: rgba(125, 211, 252, 0.42) !important;
-  background: linear-gradient(180deg, rgba(125, 211, 252, 0.16), rgba(8, 18, 31, 0.86)) !important;
+  border-color: color-mix(in srgb, var(--accent-strong), transparent 58%) !important;
+  background: linear-gradient(180deg, color-mix(in srgb, var(--accent-strong), transparent 84%), rgba(8, 18, 31, 0.86)) !important;
 }
 
 .h-main-tabs .h-tab {
@@ -8820,7 +8820,7 @@ body:has(.h-top-collapse-inline) main {
 .h-main-tabs .h-tab.on::after,
 .h-main-tabs .h-tab[aria-selected="true"]::after {
   background: linear-gradient(90deg, var(--accent-cool), var(--accent));
-  box-shadow: 0 0 12px rgba(125, 211, 252, 0.42);
+  box-shadow: 0 0 12px color-mix(in srgb, var(--accent-strong), transparent 58%);
 }
 
 .h-project:focus-visible,
@@ -8828,7 +8828,7 @@ body:has(.h-top-collapse-inline) main {
 .h-project-phases .h-phase-item:focus-visible,
 .h-phase-plan-row button:focus-visible,
 .h-main-tabs .h-tab:focus-visible {
-  outline: 1px solid rgba(125, 211, 252, 0.62) !important;
+  outline: 1px solid color-mix(in srgb, var(--accent-strong), transparent 38%) !important;
   outline-offset: -2px !important;
 }
 
@@ -8875,7 +8875,7 @@ body:has(.h-top-collapse-inline) main {
 .h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log {
   scrollbar-gutter: stable;
   tab-size: 2;
-  background: linear-gradient(180deg, rgba(125, 211, 252, 0.034), rgba(125, 211, 252, 0) 34%), color-mix(in oklab, var(--bg), white 1%);
+  background: linear-gradient(180deg, color-mix(in srgb, var(--accent-strong), transparent 96.6%), color-mix(in srgb, var(--accent-strong), transparent 100%) 34%), color-mix(in oklab, var(--bg), white 1%);
 }
 
 .h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-line {
@@ -8913,8 +8913,8 @@ body:has(.h-top-collapse-inline) main {
 
 /* run.log second-pass polish: slightly clearer hierarchy, hover/focus states, and scan anchors. */
 .h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-panel-head {
-  background: linear-gradient(90deg, rgba(125, 211, 252, 0.052), rgba(255, 255, 255, 0.012) 48%, transparent);
-  border-bottom-color: rgba(125, 211, 252, 0.14);
+  background: linear-gradient(90deg, color-mix(in srgb, var(--accent-strong), transparent 94.8%), rgba(255, 255, 255, 0.012) 48%, transparent);
+  border-bottom-color: color-mix(in srgb, var(--accent-strong), transparent 86%);
 }
 
 .h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-panel-title {
@@ -8932,7 +8932,7 @@ body:has(.h-top-collapse-inline) main {
 .h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-tab:hover,
 .h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-toolbar-btn:hover,
 .h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-pause-toggle:hover {
-  background: rgba(125, 211, 252, 0.070);
+  background: color-mix(in srgb, var(--accent-strong), transparent 93%);
 }
 
 .h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-tab:focus-visible,
@@ -8943,7 +8943,7 @@ body:has(.h-top-collapse-inline) main {
 .h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-bookmark-chip:focus-visible,
 .h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-load-older:focus-visible,
 .h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-unseen-pill:focus-visible {
-  outline: 1px solid rgba(125, 211, 252, 0.62);
+  outline: 1px solid color-mix(in srgb, var(--accent-strong), transparent 38%);
   outline-offset: 2px;
 }
 
@@ -8961,7 +8961,7 @@ body:has(.h-top-collapse-inline) main {
 
 .h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-line:hover,
 .h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-line:focus-within {
-  background: linear-gradient(90deg, rgba(125, 211, 252, 0.082), rgba(125, 211, 252, 0.030) 44%, rgba(255, 255, 255, 0.012));
+  background: linear-gradient(90deg, color-mix(in srgb, var(--accent-strong), transparent 91.8%), color-mix(in srgb, var(--accent-strong), transparent 97%) 44%, rgba(255, 255, 255, 0.012));
 }
 
 .h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-pin {
@@ -8998,12 +8998,12 @@ body:has(.h-top-collapse-inline) main {
 .h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log {
   font-variant-ligatures: none;
   overscroll-behavior: contain;
-  scrollbar-color: rgba(125, 211, 252, 0.28) transparent;
+  scrollbar-color: color-mix(in srgb, var(--accent-strong), transparent 72%) transparent;
 }
 
 .h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log::selection,
 .h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log *::selection {
-  background: rgba(125, 211, 252, 0.22);
+  background: color-mix(in srgb, var(--accent-strong), transparent 78%);
   color: var(--fg);
 }
 
@@ -9033,20 +9033,20 @@ body:has(.h-top-collapse-inline) main {
 
 .h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-link {
   text-decoration-thickness: 1px;
-  text-decoration-color: rgba(125, 211, 252, 0.46);
+  text-decoration-color: color-mix(in srgb, var(--accent-strong), transparent 54%);
 }
 
 .h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-link:hover {
-  background: rgba(125, 211, 252, 0.070);
+  background: color-mix(in srgb, var(--accent-strong), transparent 93%);
   border-radius: 3px;
 }
 
 .h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-load-older {
-  background: linear-gradient(180deg, rgba(125, 211, 252, 0.035), rgba(255, 255, 255, 0.006)), color-mix(in oklab, var(--bg-2), black 4%);
+  background: linear-gradient(180deg, color-mix(in srgb, var(--accent-strong), transparent 96.5%), rgba(255, 255, 255, 0.006)), color-mix(in oklab, var(--bg-2), black 4%);
 }
 
 .h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-bookmarks {
-  background: linear-gradient(180deg, rgba(125, 211, 252, 0.034), rgba(255, 255, 255, 0.006)), color-mix(in oklab, var(--bg-2), black 4%);
+  background: linear-gradient(180deg, color-mix(in srgb, var(--accent-strong), transparent 96.6%), rgba(255, 255, 255, 0.006)), color-mix(in oklab, var(--bg-2), black 4%);
 }
 
 .h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-bookmark-chip {
@@ -9063,7 +9063,7 @@ body:has(.h-top-collapse-inline) main {
 }
 
 .h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-tab-count {
-  border: 1px solid rgba(125, 211, 252, 0.12);
+  border: 1px solid color-mix(in srgb, var(--accent-strong), transparent 88%);
   line-height: 1.35;
 }
 
@@ -9095,7 +9095,7 @@ body:has(.h-top-collapse-inline) main {
 }
 
 .h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-line.kind-decision {
-  box-shadow: inset 0 0 0 1px rgba(125, 211, 252, 0.10);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent-strong), transparent 90%);
 }
 
 .h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-collapse-badge {
@@ -9108,7 +9108,7 @@ body:has(.h-top-collapse-inline) main {
 }
 
 .h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-empty {
-  background: linear-gradient(180deg, rgba(125, 211, 252, 0.028), rgba(255, 255, 255, 0.006));
+  background: linear-gradient(180deg, color-mix(in srgb, var(--accent-strong), transparent 97.2%), rgba(255, 255, 255, 0.006));
 }
 
 @media (max-width: 760px) {
@@ -9156,11 +9156,11 @@ body:has(.h-top-collapse-inline) main {
 }
 
 .h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-bookmark-chip:hover {
-  border-color: rgba(125, 211, 252, 0.46);
+  border-color: color-mix(in srgb, var(--accent-strong), transparent 54%);
 }
 
 .h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-load-older:hover:not(:disabled) {
-  border-bottom-color: rgba(125, 211, 252, 0.22);
+  border-bottom-color: color-mix(in srgb, var(--accent-strong), transparent 78%);
 }
 
 @media (max-width: 760px) {
@@ -9185,7 +9185,7 @@ body:has(.h-top-collapse-inline) main {
 }
 
 .h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-tab.active .h-log-tab-count {
-  border-color: rgba(125, 211, 252, 0.24);
+  border-color: color-mix(in srgb, var(--accent-strong), transparent 76%);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.040);
 }
 
@@ -9195,7 +9195,7 @@ body:has(.h-top-collapse-inline) main {
 
 .h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-line:hover .h-log-source,
 .h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-line:focus-within .h-log-source {
-  border-color: rgba(125, 211, 252, 0.36);
+  border-color: color-mix(in srgb, var(--accent-strong), transparent 64%);
 }
 
 .h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-line:hover .h-log-tag,
@@ -9233,7 +9233,7 @@ body:has(.h-top-collapse-inline) main {
 
 /* run.log seventh-pass polish: grouped controls, severity context, and bookmark readability. */
 .h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-tabs {
-  box-shadow: inset 0 -1px 0 rgba(125, 211, 252, 0.075);
+  box-shadow: inset 0 -1px 0 color-mix(in srgb, var(--accent-strong), transparent 92.5%);
 }
 
 .h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-toolbar {
@@ -9259,7 +9259,7 @@ body:has(.h-top-collapse-inline) main {
 }
 
 .h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-pin.active {
-  text-shadow: 0 0 10px rgba(125, 211, 252, 0.32);
+  text-shadow: 0 0 10px color-mix(in srgb, var(--accent-strong), transparent 68%);
 }
 
 .h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-collapse-badge {
@@ -9317,7 +9317,7 @@ body:has(.h-top-collapse-inline) main {
 
 .h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-link:focus-visible {
   border-radius: 3px;
-  outline: 1px solid rgba(125, 211, 252, 0.62);
+  outline: 1px solid color-mix(in srgb, var(--accent-strong), transparent 38%);
   outline-offset: 2px;
 }
 
@@ -9336,7 +9336,7 @@ body:has(.h-top-collapse-inline) main {
 
 .h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-bookmarks::-webkit-scrollbar-thumb,
 .h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-tabs::-webkit-scrollbar-thumb {
-  background: rgba(125, 211, 252, 0.20);
+  background: color-mix(in srgb, var(--accent-strong), transparent 80%);
   border-radius: 999px;
 }
 
@@ -9380,12 +9380,12 @@ body:has(.h-top-collapse-inline) main {
 }
 
 .h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-link-app:hover {
-  background: rgba(125, 211, 252, 0.075);
+  background: color-mix(in srgb, var(--accent-strong), transparent 92.5%);
 }
 
 .h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-load-older:focus-visible,
 .h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-bookmark-chip:focus-visible {
-  box-shadow: 0 0 0 2px rgba(125, 211, 252, 0.12);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent-strong), transparent 88%);
 }
 
 .h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-bookmarks::-webkit-scrollbar-track,
@@ -9402,12 +9402,12 @@ body:has(.h-top-collapse-inline) main {
 
 /* run.log tenth-pass polish: ultra-small spacing, chip hover, and tail-state clarity. */
 .h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-tab:hover .h-log-tab-count {
-  border-color: rgba(125, 211, 252, 0.28);
+  border-color: color-mix(in srgb, var(--accent-strong), transparent 72%);
 }
 
 .h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-toolbar-btn:focus-visible,
 .h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-pause-toggle:focus-visible {
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.045), 0 0 0 2px rgba(125, 211, 252, 0.10);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.045), 0 0 0 2px color-mix(in srgb, var(--accent-strong), transparent 90%);
 }
 
 .h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-line:hover .h-log-source {
@@ -9448,7 +9448,7 @@ body:has(.h-top-collapse-inline) main {
 /* Second top-bar pass: refine hierarchy and affordances without adding vertical space. */
 .h-brand-kicker {
   color: color-mix(in oklab, var(--accent-cool), white 12%) !important;
-  text-shadow: 0 0 16px rgba(125, 211, 252, 0.20) !important;
+  text-shadow: 0 0 16px color-mix(in srgb, var(--accent-strong), transparent 80%) !important;
 }
 
 .h-title {
@@ -9457,13 +9457,13 @@ body:has(.h-top-collapse-inline) main {
 }
 
 .h-project {
-  border-color: rgba(125, 211, 252, 0.26) !important;
+  border-color: color-mix(in srgb, var(--accent-strong), transparent 74%) !important;
   background: linear-gradient(180deg, rgba(255, 255, 255, 0.060), rgba(255, 255, 255, 0.018)) !important;
 }
 
 .h-project:hover {
-  border-color: rgba(125, 211, 252, 0.46) !important;
-  background: rgba(125, 211, 252, 0.075) !important;
+  border-color: color-mix(in srgb, var(--accent-strong), transparent 54%) !important;
+  background: color-mix(in srgb, var(--accent-strong), transparent 92.5%) !important;
 }
 
 .h-project-path {
@@ -9472,8 +9472,8 @@ body:has(.h-top-collapse-inline) main {
 
 .h-project-progress {
   color: color-mix(in oklab, var(--accent-cool), white 8%) !important;
-  border-color: rgba(125, 211, 252, 0.30) !important;
-  background: rgba(125, 211, 252, 0.070) !important;
+  border-color: color-mix(in srgb, var(--accent-strong), transparent 70%) !important;
+  background: color-mix(in srgb, var(--accent-strong), transparent 93%) !important;
 }
 
 .h-status-chip.idle,
@@ -9493,7 +9493,7 @@ body:has(.h-top-collapse-inline) main {
 
 .h-project-topline-statuses .h-overview-pulse,
 .h-project-topline-statuses .h-overview-lanes {
-  border-color: rgba(125, 211, 252, 0.18) !important;
+  border-color: color-mix(in srgb, var(--accent-strong), transparent 82%) !important;
   background: rgba(255, 255, 255, 0.035) !important;
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04) !important;
 }
@@ -9533,11 +9533,11 @@ body:has(.h-top-collapse-inline) main {
 
 .h-quick-action-row {
   background:
-    radial-gradient(circle at 24% 0%, rgba(56, 189, 248, 0.13), transparent 28rem),
+    radial-gradient(circle at 24% 0%, color-mix(in srgb, var(--accent), transparent 87%), transparent 28rem),
     linear-gradient(180deg, rgba(255, 255, 255, 0.052), rgba(255, 255, 255, 0.014)),
     rgba(8, 18, 31, 0.78) !important;
-  border-top-color: rgba(125, 211, 252, 0.18) !important;
-  border-bottom-color: rgba(125, 211, 252, 0.22) !important;
+  border-top-color: color-mix(in srgb, var(--accent-strong), transparent 82%) !important;
+  border-bottom-color: color-mix(in srgb, var(--accent-strong), transparent 78%) !important;
 }
 
 .h-quick-action-copy span {
@@ -9549,17 +9549,17 @@ body:has(.h-top-collapse-inline) main {
 }
 
 .h-quick-action-btn {
-  border-color: rgba(125, 211, 252, 0.38) !important;
-  background: linear-gradient(180deg, rgba(56, 189, 248, 0.18), rgba(56, 189, 248, 0.070)) !important;
+  border-color: color-mix(in srgb, var(--accent-strong), transparent 62%) !important;
+  background: linear-gradient(180deg, color-mix(in srgb, var(--accent), transparent 82%), color-mix(in srgb, var(--accent), transparent 93%)) !important;
 }
 
 .h-quick-action-btn:focus-visible {
-  outline: 1px solid rgba(125, 211, 252, 0.64) !important;
+  outline: 1px solid color-mix(in srgb, var(--accent-strong), transparent 36%) !important;
   outline-offset: -2px !important;
 }
 
 .h-tabs.h-main-tabs {
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04), inset 0 -1px 0 rgba(125, 211, 252, 0.10) !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04), inset 0 -1px 0 color-mix(in srgb, var(--accent-strong), transparent 90%) !important;
 }
 
 .h-main-tabs .h-tab svg,
@@ -9574,14 +9574,14 @@ body:has(.h-top-collapse-inline) main {
 
 .h-main-tabs .h-tab-count {
   border: 0 !important;
-  background: rgba(125, 211, 252, 0.070) !important;
-  box-shadow: inset 0 0 0 1px rgba(125, 211, 252, 0.18) !important;
+  background: color-mix(in srgb, var(--accent-strong), transparent 93%) !important;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent-strong), transparent 82%) !important;
 }
 
 .h-main-tabs .h-tab[aria-selected="true"] .h-tab-count {
   color: color-mix(in oklab, var(--accent-cool), white 10%) !important;
-  background: rgba(125, 211, 252, 0.13) !important;
-  box-shadow: inset 0 0 0 1px rgba(125, 211, 252, 0.34) !important;
+  background: color-mix(in srgb, var(--accent-strong), transparent 87%) !important;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent-strong), transparent 66%) !important;
 }
 
 /* Proposals tab second pass: subtle scanability and keyboard-focus refinements only. */
@@ -9595,9 +9595,9 @@ body:has(.h-top-collapse-inline) main {
 
 .h-top-collapse-btn.h-top-collapse-inline {
   color: color-mix(in oklab, var(--fg), white 8%) !important;
-  border-color: rgba(125, 211, 252, 0.36) !important;
+  border-color: color-mix(in srgb, var(--accent-strong), transparent 64%) !important;
   background: linear-gradient(180deg, rgba(20, 43, 61, 0.94), rgba(8, 18, 31, 0.94)) !important;
-  box-shadow: 0 9px 24px rgba(0, 0, 0, 0.36), 0 0 0 1px rgba(125, 211, 252, 0.08), inset 0 1px 0 rgba(255,255,255,0.08) !important;
+  box-shadow: 0 9px 24px rgba(0, 0, 0, 0.36), 0 0 0 1px color-mix(in srgb, var(--accent-strong), transparent 92%), inset 0 1px 0 rgba(255,255,255,0.08) !important;
 }
 
 .h-top-collapse-btn .h-top-collapse-icon {
@@ -9610,7 +9610,7 @@ body:has(.h-top-collapse-inline) main {
   inset: 0;
   border-radius: inherit;
   pointer-events: none;
-  background: linear-gradient(90deg, rgba(125, 211, 252, 0.10), transparent 24%, transparent 76%, rgba(125, 211, 252, 0.055));
+  background: linear-gradient(90deg, color-mix(in srgb, var(--accent-strong), transparent 90%), transparent 24%, transparent 76%, color-mix(in srgb, var(--accent-strong), transparent 94.5%));
   opacity: 0.72;
 }
 
@@ -9628,7 +9628,7 @@ body:has(.h-top-collapse-inline) main {
 }
 
 .h-project-phases .h-phase-open {
-  box-shadow: inset 0 0 0 1px rgba(125, 211, 252, 0.14) !important;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent-strong), transparent 86%) !important;
 }
 
 .h-phase-plan-row,
@@ -9647,18 +9647,18 @@ body:has(.h-top-collapse-inline) main {
   top: 0;
   height: 1px;
   pointer-events: none;
-  background: linear-gradient(90deg, transparent, rgba(125, 211, 252, 0.30), transparent);
+  background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--accent-strong), transparent 70%), transparent);
   opacity: 0.68;
 }
 
 .h-quick-action-btn:hover {
-  border-color: rgba(125, 211, 252, 0.52) !important;
-  box-shadow: 0 9px 22px rgba(0, 0, 0, 0.18), 0 0 0 1px rgba(125, 211, 252, 0.08), inset 0 1px 0 rgba(255,255,255,0.08) !important;
+  border-color: color-mix(in srgb, var(--accent-strong), transparent 48%) !important;
+  box-shadow: 0 9px 22px rgba(0, 0, 0, 0.18), 0 0 0 1px color-mix(in srgb, var(--accent-strong), transparent 92%), inset 0 1px 0 rgba(255,255,255,0.08) !important;
 }
 
 .h-main-tabs .h-tab[aria-selected="true"] {
   color: color-mix(in oklab, var(--fg), white 7%) !important;
-  text-shadow: 0 0 14px rgba(125, 211, 252, 0.15) !important;
+  text-shadow: 0 0 14px color-mix(in srgb, var(--accent-strong), transparent 85%) !important;
 }
 
 .h-main-tabs .h-tab[disabled] {
@@ -9666,7 +9666,7 @@ body:has(.h-top-collapse-inline) main {
 }
 
 .h-main-tabs .h-tab:not([disabled]):not([aria-selected="true"]):hover::after {
-  background: rgba(125, 211, 252, 0.22);
+  background: color-mix(in srgb, var(--accent-strong), transparent 78%);
   box-shadow: none;
 }
 
@@ -9681,11 +9681,11 @@ body:has(.h-top-collapse-inline) main {
 }
 
 .h-brand-kicker svg {
-  filter: drop-shadow(0 0 7px rgba(125, 211, 252, 0.30)) !important;
+  filter: drop-shadow(0 0 7px color-mix(in srgb, var(--accent-strong), transparent 70%)) !important;
 }
 
 .h-project-card {
-  outline: 1px solid rgba(125, 211, 252, 0.055) !important;
+  outline: 1px solid color-mix(in srgb, var(--accent-strong), transparent 94.5%) !important;
   outline-offset: -2px !important;
 }
 
@@ -9722,7 +9722,7 @@ body:has(.h-top-collapse-inline) main {
 
 .h-stat[aria-live],
 .h-stat:hover {
-  box-shadow: inset 0 1px 0 rgba(255,255,255,0.060), 0 0 0 1px rgba(125, 211, 252, 0.045) !important;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.060), 0 0 0 1px color-mix(in srgb, var(--accent-strong), transparent 95.5%) !important;
 }
 
 .h-phase-plan-row .h-plan-review-banner.compact {
@@ -9730,14 +9730,14 @@ body:has(.h-top-collapse-inline) main {
 }
 
 .h-phase-plan-row .h-plan-review-banner.compact button {
-  box-shadow: inset 0 0 0 1px rgba(125, 211, 252, 0.14) !important;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent-strong), transparent 86%) !important;
 }
 
 .h-phase-plan-row .h-phase-plan-focus:hover,
 .h-phase-plan-row .h-phase-plan-focus:focus-visible,
 .h-phase-plan-row .h-phase-plan-review:hover,
 .h-phase-plan-row .h-phase-plan-review:focus-visible {
-  box-shadow: inset 2px 0 0 rgba(125, 211, 252, 0.68), inset 0 1px 0 rgba(255,255,255,0.065), 0 0 0 1px rgba(125, 211, 252, 0.070) !important;
+  box-shadow: inset 2px 0 0 color-mix(in srgb, var(--accent-strong), transparent 32%), inset 0 1px 0 rgba(255,255,255,0.065), 0 0 0 1px color-mix(in srgb, var(--accent-strong), transparent 93%) !important;
 }
 
 .h-phase-plan-row .h-phase-plan-focus.blocked:hover,
@@ -9747,7 +9747,7 @@ body:has(.h-top-collapse-inline) main {
 }
 
 .h-quick-action-btn svg {
-  filter: drop-shadow(0 0 8px rgba(125, 211, 252, 0.20)) !important;
+  filter: drop-shadow(0 0 8px color-mix(in srgb, var(--accent-strong), transparent 80%)) !important;
 }
 
 .h-quick-action-btn:hover span,
@@ -9807,7 +9807,7 @@ body:has(.h-top-collapse-inline) main {
 
 .h-project-topline-statuses .h-overview-pulse:hover,
 .h-project-topline-statuses .h-overview-lanes:hover {
-  box-shadow: inset 0 1px 0 rgba(255,255,255,0.06), 0 0 0 1px rgba(125, 211, 252, 0.055) !important;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.06), 0 0 0 1px color-mix(in srgb, var(--accent-strong), transparent 94.5%) !important;
 }
 
 .h-stat {
@@ -9820,7 +9820,7 @@ body:has(.h-top-collapse-inline) main {
   position: absolute;
   inset: 0;
   pointer-events: none;
-  background: radial-gradient(circle at 18% 0%, rgba(125, 211, 252, 0.12), transparent 62%);
+  background: radial-gradient(circle at 18% 0%, color-mix(in srgb, var(--accent-strong), transparent 88%), transparent 62%);
   opacity: 0.52;
 }
 
@@ -9842,7 +9842,7 @@ body:has(.h-top-collapse-inline) main {
 }
 
 .h-phase-plan-row .h-btn svg {
-  filter: drop-shadow(0 0 6px rgba(125, 211, 252, 0.16)) !important;
+  filter: drop-shadow(0 0 6px color-mix(in srgb, var(--accent-strong), transparent 84%)) !important;
 }
 
 .h-phase-plan-row .h-btn.primary svg {
@@ -9861,7 +9861,7 @@ body:has(.h-top-collapse-inline) main {
   bottom: 0;
   height: 1px;
   pointer-events: none;
-  background: linear-gradient(90deg, transparent, rgba(8, 18, 31, 0.74), rgba(125, 211, 252, 0.22), rgba(8, 18, 31, 0.74), transparent);
+  background: linear-gradient(90deg, transparent, rgba(8, 18, 31, 0.74), color-mix(in srgb, var(--accent-strong), transparent 78%), rgba(8, 18, 31, 0.74), transparent);
   opacity: 0.72;
 }
 
@@ -9876,12 +9876,12 @@ body:has(.h-top-collapse-inline) main {
 
 .h-main-tabs .h-tab[aria-selected="true"] svg,
 .h-main-tabs .h-tab[aria-selected="true"] .h-tab-count {
-  filter: drop-shadow(0 0 8px rgba(125, 211, 252, 0.24)) !important;
+  filter: drop-shadow(0 0 8px color-mix(in srgb, var(--accent-strong), transparent 76%)) !important;
 }
 
 .h-main-tabs .h-tab:not([disabled]):hover .h-tab-count {
   color: color-mix(in oklab, var(--fg), white 5%) !important;
-  box-shadow: inset 0 0 0 1px rgba(125, 211, 252, 0.28) !important;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent-strong), transparent 72%) !important;
 }
 
 /* Proposals tab fifth pass: control affordance and reader-surface polish, still CSS-only. */
@@ -9912,7 +9912,7 @@ body:has(.h-top-collapse-inline) main {
   bottom: -1px;
   height: 1px;
   pointer-events: none;
-  background: linear-gradient(90deg, transparent, rgba(125, 211, 252, 0.16), transparent);
+  background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--accent-strong), transparent 84%), transparent);
   opacity: 0.62;
 }
 
@@ -9928,7 +9928,7 @@ body:has(.h-top-collapse-inline) main {
   bottom: 0;
   height: 1px;
   pointer-events: none;
-  background: linear-gradient(90deg, transparent, rgba(125, 211, 252, 0.22), transparent);
+  background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--accent-strong), transparent 78%), transparent);
   opacity: 0.62;
 }
 
@@ -9987,7 +9987,7 @@ body:has(.h-top-collapse-inline) main {
 
 .h-quick-action-btn:not(.missing):hover svg,
 .h-quick-action-btn:not(.missing):focus-visible svg {
-  filter: drop-shadow(0 0 10px rgba(125, 211, 252, 0.32)) !important;
+  filter: drop-shadow(0 0 10px color-mix(in srgb, var(--accent-strong), transparent 68%)) !important;
 }
 
 .h-main-tabs .h-tab[aria-selected="true"] {
@@ -9995,7 +9995,7 @@ body:has(.h-top-collapse-inline) main {
 }
 
 .h-main-tabs .h-tab:not([disabled]):hover {
-  text-shadow: 0 0 12px rgba(125, 211, 252, 0.14) !important;
+  text-shadow: 0 0 12px color-mix(in srgb, var(--accent-strong), transparent 86%) !important;
 }
 
 /* Proposals tab sixth pass: final small readability and state-clarity refinements. */
@@ -10003,7 +10003,7 @@ body:has(.h-top-collapse-inline) main {
 /* ── Config tab polish ───────────────────────────────────────── */
 .h-config-panel {
   background:
-    radial-gradient(circle at 50% 0%, rgba(125, 211, 252, 0.035), transparent 34%),
+    radial-gradient(circle at 50% 0%, color-mix(in srgb, var(--accent-strong), transparent 96.5%), transparent 34%),
     var(--bg);
 }
 
@@ -10142,7 +10142,7 @@ body:has(.h-top-collapse-inline) main {
 
 .h-top-collapse-btn:hover .h-top-collapse-icon,
 .h-top-collapse-btn:focus-visible .h-top-collapse-icon {
-  filter: drop-shadow(0 0 8px rgba(125, 211, 252, 0.42)) !important;
+  filter: drop-shadow(0 0 8px color-mix(in srgb, var(--accent-strong), transparent 58%)) !important;
 }
 
 .h-project-card:focus-within::before,
@@ -10196,7 +10196,7 @@ body:has(.h-top-collapse-inline) main {
 
 .h-phase-plan-row .h-btn:hover svg,
 .h-phase-plan-row .h-btn:focus-visible svg {
-  filter: drop-shadow(0 0 9px rgba(125, 211, 252, 0.28)) !important;
+  filter: drop-shadow(0 0 9px color-mix(in srgb, var(--accent-strong), transparent 72%)) !important;
 }
 
 .h-quick-action-row:hover .h-quick-action-copy span {
@@ -10218,7 +10218,7 @@ body:has(.h-top-collapse-inline) main {
 }
 
 .h-main-tabs .h-tab[aria-selected="true"]::after {
-  filter: drop-shadow(0 0 7px rgba(125, 211, 252, 0.40)) !important;
+  filter: drop-shadow(0 0 7px color-mix(in srgb, var(--accent-strong), transparent 60%)) !important;
 }
 
 /* Proposals toolbar follow-up: stack dense controls so search/select never collide. */
@@ -10263,7 +10263,7 @@ body:has(.h-top-collapse-inline) main {
 
 .h-stat:hover svg,
 .h-stat-button:focus-visible .h-stat svg {
-  filter: drop-shadow(0 0 7px rgba(125, 211, 252, 0.26)) !important;
+  filter: drop-shadow(0 0 7px color-mix(in srgb, var(--accent-strong), transparent 74%)) !important;
 }
 
 .h-phase-plan-row .h-phase-plan-focus:hover strong,
@@ -10291,7 +10291,7 @@ body:has(.h-top-collapse-inline) main {
 }
 
 .h-main-tabs .h-tab[aria-selected="true"] {
-  text-shadow: 0 0 15px rgba(125, 211, 252, 0.18), 0 1px 0 rgba(0, 0, 0, 0.24) !important;
+  text-shadow: 0 0 15px color-mix(in srgb, var(--accent-strong), transparent 82%), 0 1px 0 rgba(0, 0, 0, 0.24) !important;
 }
 
 .h-main-tabs .h-tab[aria-selected="true"] .h-tab-count {
@@ -10301,7 +10301,7 @@ body:has(.h-top-collapse-inline) main {
 .h-main-tabs .h-add-plugin-tab:hover,
 .h-main-tabs .h-add-plugin-tab:focus-visible {
   color: color-mix(in oklab, var(--accent-cool), white 12%) !important;
-  text-shadow: 0 0 13px rgba(125, 211, 252, 0.20) !important;
+  text-shadow: 0 0 13px color-mix(in srgb, var(--accent-strong), transparent 80%) !important;
 }
 
 /* Proposals toolbar/detail follow-up: clearer grouped controls and less title truncation. */
@@ -10466,12 +10466,12 @@ body:has(.h-top-collapse-inline) main {
 .h-running-head,
 .h-overline,
 .h-quick-action-copy span {
-  text-shadow: 0 0 12px rgba(125, 211, 252, 0.12) !important;
+  text-shadow: 0 0 12px color-mix(in srgb, var(--accent-strong), transparent 88%) !important;
 }
 
 .h-project-card:hover .h-project-path,
 .h-project-card:focus-within .h-project-path {
-  text-shadow: 0 0 10px rgba(125, 211, 252, 0.10) !important;
+  text-shadow: 0 0 10px color-mix(in srgb, var(--accent-strong), transparent 90%) !important;
 }
 
 .h-project-phases .h-phase-item.active,
@@ -10824,20 +10824,20 @@ body:has(.h-top-collapse-inline) main {
 
 
 .h-top-collapse-label {
-  text-shadow: 0 0 10px rgba(125, 211, 252, 0.16), 0 1px 0 rgba(0,0,0,0.35) !important;
+  text-shadow: 0 0 10px color-mix(in srgb, var(--accent-strong), transparent 84%), 0 1px 0 rgba(0,0,0,0.35) !important;
 }
 
 .h-project-card:hover,
 .h-project-card:focus-within {
-  box-shadow: inset 0 1px 0 rgba(255,255,255,0.070), 0 0 0 1px rgba(125, 211, 252, 0.080), 0 8px 22px rgba(0, 0, 0, 0.16) !important;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.070), 0 0 0 1px color-mix(in srgb, var(--accent-strong), transparent 92%), 0 8px 22px rgba(0, 0, 0, 0.16) !important;
 }
 
 .h-project-phases .h-phase-item:not(.disabled):hover {
-  box-shadow: inset 0 1px 0 rgba(255,255,255,0.070), 0 0 0 1px rgba(125, 211, 252, 0.080) !important;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.070), 0 0 0 1px color-mix(in srgb, var(--accent-strong), transparent 92%) !important;
 }
 
 .h-project-phases .h-phase-item.active {
-  box-shadow: inset 0 1px 0 rgba(255,255,255,0.085), 0 0 0 1px rgba(125, 211, 252, 0.105), 0 0 14px rgba(125, 211, 252, 0.045) !important;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.085), 0 0 0 1px color-mix(in srgb, var(--accent-strong), transparent 89.5%), 0 0 14px color-mix(in srgb, var(--accent-strong), transparent 95.5%) !important;
 }
 
 .h-project-count.blocked:hover {
@@ -10850,17 +10850,17 @@ body:has(.h-top-collapse-inline) main {
 
 .h-stat:hover,
 .h-stat-button:focus-visible .h-stat {
-  box-shadow: inset 0 1px 0 rgba(255,255,255,0.072), 0 0 0 1px rgba(125, 211, 252, 0.075) !important;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.072), 0 0 0 1px color-mix(in srgb, var(--accent-strong), transparent 92.5%) !important;
 }
 
 .h-phase-plan-row .h-phase-plan-focus:hover,
 .h-phase-plan-row .h-phase-plan-focus:focus-visible {
-  background: rgba(125, 211, 252, 0.060) !important;
+  background: color-mix(in srgb, var(--accent-strong), transparent 94%) !important;
 }
 
 .h-phase-plan-row .h-btn.ghost:hover,
 .h-phase-plan-row .h-btn.ghost:focus-visible {
-  background: rgba(125, 211, 252, 0.070) !important;
+  background: color-mix(in srgb, var(--accent-strong), transparent 93%) !important;
 }
 
 .h-phase-plan-row .h-btn.primary:hover,
@@ -10870,11 +10870,11 @@ body:has(.h-top-collapse-inline) main {
 
 .h-quick-action-btn:not(.missing):hover,
 .h-quick-action-btn:not(.missing):focus-visible {
-  box-shadow: 0 8px 20px rgba(0,0,0,0.16), 0 0 0 1px rgba(125, 211, 252, 0.12), inset 0 1px 0 rgba(255,255,255,0.075) !important;
+  box-shadow: 0 8px 20px rgba(0,0,0,0.16), 0 0 0 1px color-mix(in srgb, var(--accent-strong), transparent 88%), inset 0 1px 0 rgba(255,255,255,0.075) !important;
 }
 
 .h-main-tabs .h-tab[aria-selected="true"] {
-  box-shadow: inset 0 1px 0 rgba(255,255,255,0.080), 0 0 0 1px rgba(125, 211, 252, 0.070) !important;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.080), 0 0 0 1px color-mix(in srgb, var(--accent-strong), transparent 93%) !important;
 }
 
 .h-main-tabs .h-tab:not([disabled]):hover {
@@ -10898,8 +10898,8 @@ body:has(.h-top-collapse-inline) main {
   margin-bottom: -1px !important;
   min-height: 30px !important;
   padding: 5px 10px 6px !important;
-  border: 1px solid rgba(125, 211, 252, 0.13) !important;
-  border-bottom: 1px solid rgba(125, 211, 252, 0.10) !important;
+  border: 1px solid color-mix(in srgb, var(--accent-strong), transparent 87%) !important;
+  border-bottom: 1px solid color-mix(in srgb, var(--accent-strong), transparent 90%) !important;
   border-radius: 8px 8px 0 0 !important;
   background:
     linear-gradient(180deg, rgba(255,255,255,0.032), rgba(255,255,255,0.006)),
@@ -10908,20 +10908,20 @@ body:has(.h-top-collapse-inline) main {
 }
 .h-config-tab:hover {
   background:
-    linear-gradient(180deg, rgba(125, 211, 252, 0.095), rgba(125, 211, 252, 0.026)),
+    linear-gradient(180deg, color-mix(in srgb, var(--accent-strong), transparent 90.5%), color-mix(in srgb, var(--accent-strong), transparent 97.4%)),
     rgba(8, 18, 31, 0.56) !important;
-  border-color: rgba(125, 211, 252, 0.28) !important;
-  border-bottom-color: rgba(125, 211, 252, 0.12) !important;
+  border-color: color-mix(in srgb, var(--accent-strong), transparent 72%) !important;
+  border-bottom-color: color-mix(in srgb, var(--accent-strong), transparent 88%) !important;
   color: var(--text-1) !important;
 }
 
 .h-config-tab.is-active {
   background:
-    linear-gradient(180deg, rgba(125, 211, 252, 0.16), rgba(125, 211, 252, 0.055)),
+    linear-gradient(180deg, color-mix(in srgb, var(--accent-strong), transparent 84%), color-mix(in srgb, var(--accent-strong), transparent 94.5%)),
     color-mix(in oklab, var(--bg-2), white 2%) !important;
-  border-color: rgba(125, 211, 252, 0.38) !important;
+  border-color: color-mix(in srgb, var(--accent-strong), transparent 62%) !important;
   border-bottom-color: color-mix(in oklab, var(--bg-2), white 2%) !important;
-  box-shadow: inset 0 1px 0 rgba(255,255,255,0.060), 0 0 0 1px rgba(125, 211, 252, 0.050) !important;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.060), 0 0 0 1px color-mix(in srgb, var(--accent-strong), transparent 95%) !important;
 }
 
 .h-config-tab.is-active::after {
@@ -10975,12 +10975,12 @@ body:has(.h-top-collapse-inline) main {
 
 .h-project-card:hover .h-project,
 .h-project-card:focus-within .h-project {
-  box-shadow: inset 0 1px 0 rgba(255,255,255,0.075), 0 0 0 1px rgba(125, 211, 252, 0.060) !important;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.075), 0 0 0 1px color-mix(in srgb, var(--accent-strong), transparent 94%) !important;
 }
 
 .h-project-phases .h-phase-item:not(.disabled):hover .h-phase-name,
 .h-project-phases .h-phase-item.active .h-phase-name {
-  text-shadow: 0 0 10px rgba(125, 211, 252, 0.16) !important;
+  text-shadow: 0 0 10px color-mix(in srgb, var(--accent-strong), transparent 84%) !important;
 }
 
 .h-project-count,
@@ -10992,32 +10992,32 @@ body:has(.h-top-collapse-inline) main {
 
 .h-stat:hover .h-stat-value svg,
 .h-stat-button:focus-visible .h-stat-value svg {
-  filter: drop-shadow(0 0 9px rgba(125, 211, 252, 0.32)) brightness(1.08) !important;
+  filter: drop-shadow(0 0 9px color-mix(in srgb, var(--accent-strong), transparent 68%)) brightness(1.08) !important;
 }
 
 .h-phase-plan-row .h-phase-plan-focus:hover .h-overline,
 .h-phase-plan-row .h-phase-plan-focus:focus-visible .h-overline {
-  text-shadow: 0 0 10px rgba(125, 211, 252, 0.20) !important;
+  text-shadow: 0 0 10px color-mix(in srgb, var(--accent-strong), transparent 80%) !important;
 }
 
 .h-phase-plan-row .h-btn:hover,
 .h-phase-plan-row .h-btn:focus-visible {
-  text-shadow: 0 0 11px rgba(125, 211, 252, 0.14), 0 1px 0 rgba(0,0,0,0.22) !important;
+  text-shadow: 0 0 11px color-mix(in srgb, var(--accent-strong), transparent 86%), 0 1px 0 rgba(0,0,0,0.22) !important;
 }
 
 .h-quick-action-btn:not(.missing):hover span,
 .h-quick-action-btn:not(.missing):focus-visible span {
-  text-shadow: 0 0 10px rgba(125, 211, 252, 0.20) !important;
+  text-shadow: 0 0 10px color-mix(in srgb, var(--accent-strong), transparent 80%) !important;
 }
 
 .h-quick-action-btn:not(.missing):hover em,
 .h-quick-action-btn:not(.missing):focus-visible em {
-  text-shadow: 0 0 9px rgba(125, 211, 252, 0.12) !important;
+  text-shadow: 0 0 9px color-mix(in srgb, var(--accent-strong), transparent 88%) !important;
 }
 
 .h-main-tabs .h-tab:not([disabled]):hover svg,
 .h-main-tabs .h-tab:focus-visible svg {
-  filter: drop-shadow(0 0 9px rgba(125, 211, 252, 0.28)) brightness(1.08) !important;
+  filter: drop-shadow(0 0 9px color-mix(in srgb, var(--accent-strong), transparent 72%)) brightness(1.08) !important;
 }
 
 .h-main-tabs .h-tab[aria-selected="true"]::after {
@@ -11051,7 +11051,7 @@ body:has(.h-top-collapse-inline) main {
 .h-main-tabs .h-tab:focus-visible {
   outline: 1px solid rgba(186, 230, 253, 0.72) !important;
   outline-offset: -2px !important;
-  box-shadow: 0 0 0 2px rgba(125, 211, 252, 0.10), inset 0 1px 0 rgba(255, 255, 255, 0.065) !important;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent-strong), transparent 90%), inset 0 1px 0 rgba(255, 255, 255, 0.065) !important;
 }
 
 .h-project-card {
@@ -11064,30 +11064,30 @@ body:has(.h-top-collapse-inline) main {
 
 .h-phase-plan-row .h-phase-plan-focus,
 .h-phase-plan-row .h-plan-review-banner.compact {
-  border-color: rgba(125, 211, 252, 0.24) !important;
-  background: linear-gradient(180deg, rgba(125, 211, 252, 0.070), rgba(255, 255, 255, 0.018)) !important;
+  border-color: color-mix(in srgb, var(--accent-strong), transparent 76%) !important;
+  background: linear-gradient(180deg, color-mix(in srgb, var(--accent-strong), transparent 93%), rgba(255, 255, 255, 0.018)) !important;
 }
 
 .h-quick-action-btn {
-  border-color: rgba(125, 211, 252, 0.30) !important;
-  background: linear-gradient(180deg, rgba(56, 189, 248, 0.125), rgba(56, 189, 248, 0.050)) !important;
+  border-color: color-mix(in srgb, var(--accent-strong), transparent 70%) !important;
+  background: linear-gradient(180deg, color-mix(in srgb, var(--accent), transparent 87.5%), color-mix(in srgb, var(--accent), transparent 95%)) !important;
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.055), 0 6px 16px rgba(0, 0, 0, 0.14) !important;
 }
 
 .h-quick-action-btn:not(.missing):hover,
 .h-quick-action-btn:not(.missing):focus-visible {
-  border-color: rgba(125, 211, 252, 0.48) !important;
-  background: linear-gradient(180deg, rgba(56, 189, 248, 0.165), rgba(56, 189, 248, 0.065)) !important;
+  border-color: color-mix(in srgb, var(--accent-strong), transparent 52%) !important;
+  background: linear-gradient(180deg, color-mix(in srgb, var(--accent), transparent 83.5%), color-mix(in srgb, var(--accent), transparent 93.5%)) !important;
 }
 
 .h-main-tabs .h-tab[aria-selected="true"] {
-  background: linear-gradient(180deg, rgba(125, 211, 252, 0.135), rgba(125, 211, 252, 0.045)), color-mix(in oklab, var(--bg-2), white 3%) !important;
+  background: linear-gradient(180deg, color-mix(in srgb, var(--accent-strong), transparent 86.5%), color-mix(in srgb, var(--accent-strong), transparent 95.5%)), color-mix(in oklab, var(--bg-2), white 3%) !important;
 }
 
 .h-phase-plan-row,
 .h-quick-action-row,
 .h-tabs.h-main-tabs {
-  scrollbar-color: rgba(125, 211, 252, 0.30) transparent;
+  scrollbar-color: color-mix(in srgb, var(--accent-strong), transparent 70%) transparent;
 }
 
 .h-phase-plan-row::after,
@@ -11112,7 +11112,7 @@ body:has(.h-top-collapse-inline) main {
 
 /* Spacing-preserving main-tab affordance polish: clearer tab button edges without changing height. */
 .h-main-tabs .h-tab[role="tab"] {
-  border-color: rgba(125, 211, 252, 0.14) !important;
+  border-color: color-mix(in srgb, var(--accent-strong), transparent 86%) !important;
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.035), rgba(255, 255, 255, 0.006)),
     rgba(8, 18, 31, 0.42) !important;
@@ -11122,27 +11122,27 @@ body:has(.h-top-collapse-inline) main {
 .h-main-tabs .h-tab[role="tab"]:not([disabled]):not([aria-selected="true"]):hover,
 .h-main-tabs .h-tab[role="tab"]:not([disabled]):not(.on):hover {
   transform: none !important;
-  border-color: rgba(125, 211, 252, 0.28) !important;
+  border-color: color-mix(in srgb, var(--accent-strong), transparent 72%) !important;
   background:
-    linear-gradient(180deg, rgba(125, 211, 252, 0.105), rgba(125, 211, 252, 0.030)),
+    linear-gradient(180deg, color-mix(in srgb, var(--accent-strong), transparent 89.5%), color-mix(in srgb, var(--accent-strong), transparent 97%)),
     rgba(8, 18, 31, 0.58) !important;
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.055) !important;
 }
 
 .h-main-tabs .h-tab[role="tab"].on,
 .h-main-tabs .h-tab[role="tab"][aria-selected="true"] {
-  border-color: rgba(125, 211, 252, 0.38) !important;
+  border-color: color-mix(in srgb, var(--accent-strong), transparent 62%) !important;
   border-bottom-color: rgba(8, 18, 31, 0.96) !important;
   background:
-    linear-gradient(180deg, rgba(125, 211, 252, 0.18), rgba(125, 211, 252, 0.070)),
+    linear-gradient(180deg, color-mix(in srgb, var(--accent-strong), transparent 82%), color-mix(in srgb, var(--accent-strong), transparent 93%)),
     rgba(8, 18, 31, 0.96) !important;
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.075),
-    0 0 0 1px rgba(125, 211, 252, 0.060) !important;
+    0 0 0 1px color-mix(in srgb, var(--accent-strong), transparent 94%) !important;
 }
 
 .h-main-tabs .h-tab[role="tab"][disabled] {
-  border-color: rgba(125, 211, 252, 0.08) !important;
+  border-color: color-mix(in srgb, var(--accent-strong), transparent 92%) !important;
   background: rgba(8, 18, 31, 0.22) !important;
 }
 
@@ -11157,8 +11157,8 @@ body:has(.h-top-collapse-inline) main {
 .h-project-phases .h-phase-item.active,
 .h-project-phases .h-phase-item:not(.disabled):hover,
 .h-project-phases .h-phase-item:not(.disabled):focus-visible {
-  background: rgba(125, 211, 252, 0.078) !important;
-  border-color: rgba(125, 211, 252, 0.28) !important;
+  background: color-mix(in srgb, var(--accent-strong), transparent 92.2%) !important;
+  border-color: color-mix(in srgb, var(--accent-strong), transparent 72%) !important;
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.055) !important;
 }
 
@@ -11176,14 +11176,14 @@ body:has(.h-top-collapse-inline) main {
 
 .h-stat-button:hover .h-stat,
 .h-stat-button:focus-visible .h-stat {
-  background: linear-gradient(180deg, rgba(125, 211, 252, 0.080), rgba(255, 255, 255, 0.018)) !important;
+  background: linear-gradient(180deg, color-mix(in srgb, var(--accent-strong), transparent 92%), rgba(255, 255, 255, 0.018)) !important;
 }
 
 .h-phase-plan-row .h-phase-plan-focus strong,
 .h-phase-plan-row .h-phase-plan-focus .h-focus-title,
 .h-phase-plan-row .h-plan-review-banner.compact strong {
   color: color-mix(in oklab, var(--fg), white 8%) !important;
-  text-shadow: 0 0 12px rgba(125, 211, 252, 0.14) !important;
+  text-shadow: 0 0 12px color-mix(in srgb, var(--accent-strong), transparent 86%) !important;
 }
 
 .h-phase-plan-row .h-btn.ghost,
@@ -11197,12 +11197,12 @@ body:has(.h-top-collapse-inline) main {
 }
 
 .h-quick-action-btn svg {
-  filter: drop-shadow(0 0 8px rgba(125, 211, 252, 0.24));
+  filter: drop-shadow(0 0 8px color-mix(in srgb, var(--accent-strong), transparent 76%));
 }
 
 .h-quick-action-btn:not(.missing):hover svg,
 .h-quick-action-btn:not(.missing):focus-visible svg {
-  filter: drop-shadow(0 0 10px rgba(125, 211, 252, 0.34)) brightness(1.08);
+  filter: drop-shadow(0 0 10px color-mix(in srgb, var(--accent-strong), transparent 66%)) brightness(1.08);
 }
 
 .h-main-tabs .h-tab {
@@ -11211,12 +11211,12 @@ body:has(.h-top-collapse-inline) main {
 
 .h-main-tabs .h-tab:not([disabled]):hover,
 .h-main-tabs .h-tab:focus-visible {
-  background: rgba(125, 211, 252, 0.075) !important;
+  background: color-mix(in srgb, var(--accent-strong), transparent 92.5%) !important;
 }
 
 .h-main-tabs .h-tab[aria-selected="true"] {
-  border-color: rgba(125, 211, 252, 0.32) !important;
-  box-shadow: inset 0 1px 0 rgba(255,255,255,0.090), 0 0 0 1px rgba(125, 211, 252, 0.090), 0 -8px 18px rgba(125, 211, 252, 0.035) !important;
+  border-color: color-mix(in srgb, var(--accent-strong), transparent 68%) !important;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.090), 0 0 0 1px color-mix(in srgb, var(--accent-strong), transparent 91%), 0 -8px 18px color-mix(in srgb, var(--accent-strong), transparent 96.5%) !important;
 }
 
 .h-main-tabs .h-tab[aria-selected="true"] .h-tab-count,
@@ -11246,7 +11246,7 @@ body:has(.h-top-collapse-inline) main {
   font-weight: 850 !important;
   letter-spacing: 0.08em !important;
   color: color-mix(in oklab, var(--accent-cool), white 18%) !important;
-  border-color: rgba(125, 211, 252, 0.34) !important;
+  border-color: color-mix(in srgb, var(--accent-strong), transparent 66%) !important;
   background:
     linear-gradient(180deg, rgba(255,255,255,0.13), rgba(255,255,255,0.025) 42%, rgba(0,0,0,0.18)),
     repeating-linear-gradient(100deg, rgba(255,255,255,0.04) 0 1px, transparent 1px 5px),
@@ -11254,7 +11254,7 @@ body:has(.h-top-collapse-inline) main {
   box-shadow:
     0 7px 18px rgba(0, 0, 0, 0.42),
     0 0 0 1px rgba(2, 6, 12, 0.70),
-    0 0 14px rgba(56, 189, 248, 0.14),
+    0 0 14px color-mix(in srgb, var(--accent), transparent 86%),
     inset 0 1px 0 rgba(255, 255, 255, 0.16),
     inset 0 -1px 0 rgba(0, 0, 0, 0.68) !important;
 }
@@ -11273,7 +11273,7 @@ body:has(.h-top-collapse-inline) main {
 .h-top-collapse-btn::before {
   background:
     linear-gradient(105deg, transparent 0 28%, rgba(255, 255, 255, 0.12) 42%, transparent 58%),
-    radial-gradient(circle at 50% 105%, rgba(56, 189, 248, 0.18), transparent 52%) !important;
+    radial-gradient(circle at 50% 105%, color-mix(in srgb, var(--accent), transparent 82%), transparent 52%) !important;
   opacity: 0.72 !important;
 }
 
@@ -11290,8 +11290,8 @@ body:has(.h-top-collapse-inline) main {
   height: 11px !important;
   padding: 1px !important;
   border-width: 1px !important;
-  background: rgba(56, 189, 248, 0.12) !important;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.10), 0 0 8px rgba(56, 189, 248, 0.13) !important;
+  background: color-mix(in srgb, var(--accent), transparent 88%) !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.10), 0 0 8px color-mix(in srgb, var(--accent), transparent 87%) !important;
 }
 
 .h-top-collapse-label {
@@ -11359,15 +11359,15 @@ body:has(.h-top-collapse-inline) main {
 .h-project-topline-statuses {
   margin-left: auto !important;
   padding-left: 10px !important;
-  border-left: 1px solid rgba(125, 211, 252, 0.14) !important;
+  border-left: 1px solid color-mix(in srgb, var(--accent-strong), transparent 86%) !important;
 }
 
 .h-header-side .h-stats {
   padding: 3px 0 3px 10px !important;
   gap: 6px !important;
-  border-left: 1px solid rgba(125, 211, 252, 0.14) !important;
+  border-left: 1px solid color-mix(in srgb, var(--accent-strong), transparent 86%) !important;
   border-radius: 10px !important;
-  background: linear-gradient(90deg, rgba(125, 211, 252, 0.040), rgba(255, 255, 255, 0.010)) !important;
+  background: linear-gradient(90deg, color-mix(in srgb, var(--accent-strong), transparent 96%), rgba(255, 255, 255, 0.010)) !important;
 }
 
 .h-stat-label {
@@ -11414,7 +11414,7 @@ body:has(.h-top-collapse-inline) main {
   padding: 0 8px;
   color: color-mix(in oklab, var(--fg-dim), white 16%);
   font-size: 10px;
-  border: 1px solid rgba(125, 211, 252, 0.16);
+  border: 1px solid color-mix(in srgb, var(--accent-strong), transparent 84%);
   border-radius: 999px;
   background: rgba(255, 255, 255, 0.034);
   box-shadow: inset 0 1px 0 rgba(255,255,255,0.035);
@@ -11608,7 +11608,7 @@ body:has(.h-top-collapse-inline) main {
   isolation: isolate;
   backdrop-filter: none !important;
   background: linear-gradient(180deg, #0d1829 0%, #07101d 100%) !important;
-  border: 1px solid rgba(125, 211, 252, 0.26) !important;
+  border: 1px solid color-mix(in srgb, var(--accent-strong), transparent 74%) !important;
   border-radius: 7px !important;
   padding: 6px !important;
   min-width: 190px !important;
@@ -11621,22 +11621,22 @@ body:has(.h-top-collapse-inline) main {
 }
 
 .h-phase-action-menu-item:hover {
-  background: rgba(125, 211, 252, 0.060) !important;
+  background: color-mix(in srgb, var(--accent-strong), transparent 94%) !important;
 }
 
 .h-phase-action-menu-btn {
   min-height: 30px;
   justify-content: space-between;
   padding: 6px 9px !important;
-  background: linear-gradient(180deg, rgba(125, 211, 252, 0.105), rgba(125, 211, 252, 0.045)) !important;
-  border: 1px solid rgba(125, 211, 252, 0.28) !important;
+  background: linear-gradient(180deg, color-mix(in srgb, var(--accent-strong), transparent 89.5%), color-mix(in srgb, var(--accent-strong), transparent 95.5%)) !important;
+  border: 1px solid color-mix(in srgb, var(--accent-strong), transparent 72%) !important;
   border-radius: 6px !important;
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.060);
 }
 
 .h-phase-action-menu-btn:not(:disabled):hover {
-  background: linear-gradient(180deg, rgba(125, 211, 252, 0.155), rgba(125, 211, 252, 0.065)) !important;
-  border-color: rgba(125, 211, 252, 0.44) !important;
+  background: linear-gradient(180deg, color-mix(in srgb, var(--accent-strong), transparent 84.5%), color-mix(in srgb, var(--accent-strong), transparent 93.5%)) !important;
+  border-color: color-mix(in srgb, var(--accent-strong), transparent 56%) !important;
   color: var(--fg) !important;
 }
 
@@ -11645,7 +11645,7 @@ body:has(.h-top-collapse-inline) main {
 }
 
 .h-phase-action-menu-btn:focus-visible {
-  outline: 1px solid rgba(125, 211, 252, 0.68);
+  outline: 1px solid color-mix(in srgb, var(--accent-strong), transparent 32%);
   outline-offset: 2px;
 }
 
@@ -11956,16 +11956,16 @@ body:has(.h-top-collapse-inline) main {
   --h-topbar-surface: rgba(6, 14, 24, 0.92);
   --h-topbar-surface-soft: rgba(8, 18, 31, 0.88);
   --h-topbar-surface-strong: rgba(10, 23, 38, 0.94);
-  --h-topbar-border: rgba(125, 211, 252, 0.30);
-  --h-topbar-border-strong: rgba(125, 211, 252, 0.46);
+  --h-topbar-border: color-mix(in srgb, var(--accent-strong), transparent 70%);
+  --h-topbar-border-strong: color-mix(in srgb, var(--accent-strong), transparent 54%);
 }
 
 .h-header {
   background:
-    radial-gradient(circle at 18% 0%, rgba(125, 211, 252, 0.12), transparent 31rem),
+    radial-gradient(circle at 18% 0%, color-mix(in srgb, var(--accent-strong), transparent 88%), transparent 31rem),
     linear-gradient(180deg, rgba(255, 255, 255, 0.03), rgba(255, 255, 255, 0.006)),
     var(--h-topbar-surface) !important;
-  border-bottom-color: rgba(125, 211, 252, 0.22) !important;
+  border-bottom-color: color-mix(in srgb, var(--accent-strong), transparent 78%) !important;
   box-shadow: 0 12px 30px rgba(0, 0, 0, 0.28), inset 0 1px 0 rgba(255, 255, 255, 0.05) !important;
 }
 
@@ -11999,7 +11999,7 @@ body:has(.h-top-collapse-inline) main {
     var(--h-topbar-surface-strong) !important;
   box-shadow:
     0 10px 24px rgba(0, 0, 0, 0.18),
-    inset 0 0 0 1px rgba(125, 211, 252, 0.08),
+    inset 0 0 0 1px color-mix(in srgb, var(--accent-strong), transparent 92%),
     inset 0 1px 0 rgba(255, 255, 255, 0.055) !important;
 }
 
@@ -12009,7 +12009,7 @@ body:has(.h-top-collapse-inline) main {
     var(--h-topbar-surface-strong) !important;
   box-shadow:
     0 8px 20px rgba(0, 0, 0, 0.18),
-    inset 0 0 0 1px rgba(125, 211, 252, 0.10),
+    inset 0 0 0 1px color-mix(in srgb, var(--accent-strong), transparent 90%),
     inset 0 1px 0 rgba(255, 255, 255, 0.05) !important;
 }
 
@@ -12018,7 +12018,7 @@ body:has(.h-top-collapse-inline) main {
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.045), rgba(255, 255, 255, 0.012)),
     rgba(9, 21, 36, 0.90) !important;
-  border-color: rgba(125, 211, 252, 0.26) !important;
+  border-color: color-mix(in srgb, var(--accent-strong), transparent 74%) !important;
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.055), 0 8px 18px rgba(0, 0, 0, 0.16) !important;
 }
 
@@ -12027,7 +12027,7 @@ body:has(.h-top-collapse-inline) main {
 .h-main-tabs .h-tab[aria-selected="true"] {
   border-color: var(--h-topbar-border-strong) !important;
   background:
-    linear-gradient(180deg, rgba(125, 211, 252, 0.18), rgba(125, 211, 252, 0.05)),
+    linear-gradient(180deg, color-mix(in srgb, var(--accent-strong), transparent 82%), color-mix(in srgb, var(--accent-strong), transparent 95%)),
     rgba(8, 20, 34, 0.94) !important;
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.075), 0 10px 24px rgba(0, 0, 0, 0.2) !important;
 }
@@ -12190,7 +12190,7 @@ body:has(.h-top-collapse-inline) main {
 .h-inbox-shell,
 .h-git-panel {
   background:
-    radial-gradient(circle at 0% 0%, rgba(125, 211, 252, 0.10), transparent 34%),
+    radial-gradient(circle at 0% 0%, color-mix(in srgb, var(--accent-strong), transparent 90%), transparent 34%),
     linear-gradient(180deg, rgba(255, 255, 255, 0.026), rgba(255, 255, 255, 0.008)),
     rgba(7, 17, 29, 0.84) !important;
 }
@@ -12199,7 +12199,7 @@ body:has(.h-top-collapse-inline) main {
 .h-inbox-command,
 .h-git-command,
 .h-git-summary {
-  border-color: rgba(125, 211, 252, 0.22) !important;
+  border-color: color-mix(in srgb, var(--accent-strong), transparent 78%) !important;
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.04), rgba(255, 255, 255, 0.012)),
     rgba(8, 20, 34, 0.92) !important;
@@ -12217,7 +12217,7 @@ body:has(.h-top-collapse-inline) main {
 .h-inbox-row,
 .h-agent-row,
 .h-git-row {
-  border-color: rgba(125, 211, 252, 0.16) !important;
+  border-color: color-mix(in srgb, var(--accent-strong), transparent 84%) !important;
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.022), rgba(255, 255, 255, 0.006)),
     rgba(9, 19, 33, 0.82) !important;
@@ -12234,15 +12234,15 @@ body:has(.h-top-collapse-inline) main {
 .h-agent-row:focus-visible,
 .h-git-row:hover,
 .h-git-row:focus-visible {
-  border-color: rgba(125, 211, 252, 0.30) !important;
+  border-color: color-mix(in srgb, var(--accent-strong), transparent 70%) !important;
   background:
-    linear-gradient(180deg, rgba(125, 211, 252, 0.075), rgba(255, 255, 255, 0.012)),
+    linear-gradient(180deg, color-mix(in srgb, var(--accent-strong), transparent 92.5%), rgba(255, 255, 255, 0.012)),
     rgba(10, 22, 37, 0.88) !important;
 }
 
 .h-inbox-metric,
 .h-git-summary span {
-  border-color: rgba(125, 211, 252, 0.18) !important;
+  border-color: color-mix(in srgb, var(--accent-strong), transparent 82%) !important;
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.03), rgba(255, 255, 255, 0.01)),
     rgba(9, 20, 34, 0.90) !important;
@@ -12615,7 +12615,7 @@ body:has(.h-top-collapse-inline) main {
 .h-agent-row:nth-of-type(even),
 .h-git-row:nth-child(even) {
   background:
-    linear-gradient(180deg, rgba(125, 211, 252, 0.038), rgba(255, 255, 255, 0.006)),
+    linear-gradient(180deg, color-mix(in srgb, var(--accent-strong), transparent 96.2%), rgba(255, 255, 255, 0.006)),
     rgba(11, 25, 42, 0.94) !important;
 }
 
@@ -12640,7 +12640,7 @@ body:has(.h-top-collapse-inline) main {
 .h-git-row:hover,
 .h-git-row:focus-visible {
   background:
-    linear-gradient(180deg, rgba(125, 211, 252, 0.105), rgba(255, 255, 255, 0.014)),
+    linear-gradient(180deg, color-mix(in srgb, var(--accent-strong), transparent 89.5%), rgba(255, 255, 255, 0.014)),
     rgba(10, 25, 45, 0.98) !important;
 }
 
@@ -12650,7 +12650,7 @@ body:has(.h-top-collapse-inline) main {
 .h-inbox-row-sub,
 .h-git-subject {
   box-sizing: border-box;
-  border: 1px solid rgba(125, 211, 252, 0.16) !important;
+  border: 1px solid color-mix(in srgb, var(--accent-strong), transparent 84%) !important;
   border-radius: 999px;
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.026), rgba(255, 255, 255, 0.006)),
@@ -12687,7 +12687,7 @@ body:has(.h-top-collapse-inline) main {
 .h-git-meta span,
 .h-git-meta time,
 .h-git-ref {
-  border-color: rgba(125, 211, 252, 0.17) !important;
+  border-color: color-mix(in srgb, var(--accent-strong), transparent 83%) !important;
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.022), rgba(255, 255, 255, 0.004)),
     rgba(1, 6, 14, 0.84) !important;
@@ -12705,7 +12705,7 @@ body:has(.h-top-collapse-inline) main {
   align-items: center;
   min-height: 17px;
   padding: 1px 6px;
-  border: 1px solid rgba(125, 211, 252, 0.17);
+  border: 1px solid color-mix(in srgb, var(--accent-strong), transparent 83%);
   border-radius: 999px;
   line-height: 1;
 }
@@ -12868,9 +12868,9 @@ body:has(.h-top-collapse-inline) main {
 .h-inbox-action,
 .h-proposal-btn,
 .h-git-actions button {
-  border-color: rgba(56, 189, 248, 0.48) !important;
+  border-color: color-mix(in srgb, var(--accent), transparent 52%) !important;
   background:
-    linear-gradient(180deg, rgba(56, 189, 248, 0.28), rgba(14, 116, 144, 0.18)),
+    linear-gradient(180deg, color-mix(in srgb, var(--accent), transparent 72%), rgba(14, 116, 144, 0.18)),
     rgba(5, 18, 31, 0.96) !important;
   color: color-mix(in oklab, #e0f7ff, var(--fg) 20%) !important;
   box-shadow:
@@ -12884,9 +12884,9 @@ body:has(.h-top-collapse-inline) main {
 .h-inbox-action:hover:not(:disabled),
 .h-proposal-btn:hover:not(:disabled),
 .h-git-actions button:hover:not(:disabled) {
-  border-color: rgba(125, 211, 252, 0.76) !important;
+  border-color: color-mix(in srgb, var(--accent-strong), transparent 24%) !important;
   background:
-    linear-gradient(180deg, rgba(125, 211, 252, 0.36), rgba(14, 116, 144, 0.26)),
+    linear-gradient(180deg, color-mix(in srgb, var(--accent-strong), transparent 64%), rgba(14, 116, 144, 0.26)),
     rgba(7, 26, 43, 0.98) !important;
   color: #ffffff !important;
 }
@@ -13010,10 +13010,10 @@ body:has(.h-top-collapse-inline) main {
 .h-hud-overlay__grid {
   inset: 0;
   background:
-    radial-gradient(circle at 18% 0%, rgba(125, 211, 252, 0.12), transparent 26rem),
+    radial-gradient(circle at 18% 0%, color-mix(in srgb, var(--accent-strong), transparent 88%), transparent 26rem),
     radial-gradient(circle at 82% 12%, rgba(45, 212, 191, 0.08), transparent 24rem),
-    repeating-linear-gradient(90deg, rgba(125, 211, 252, 0.04) 0 1px, transparent 1px 88px),
-    repeating-linear-gradient(180deg, rgba(125, 211, 252, 0.028) 0 1px, transparent 1px 68px);
+    repeating-linear-gradient(90deg, color-mix(in srgb, var(--accent-strong), transparent 96%) 0 1px, transparent 1px 88px),
+    repeating-linear-gradient(180deg, color-mix(in srgb, var(--accent-strong), transparent 97.2%) 0 1px, transparent 1px 68px);
   opacity: 0.34;
   /* Static grid — animating background-position forces main-thread paint
    * per frame at 60fps and saturates the main thread (~60 long-tasks/5s).
@@ -13033,7 +13033,7 @@ body:has(.h-top-collapse-inline) main {
   inset: 0;
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.032), rgba(255, 255, 255, 0)),
-    radial-gradient(circle at 50% 18%, rgba(125, 211, 252, 0.1), transparent 28rem),
+    radial-gradient(circle at 50% 18%, color-mix(in srgb, var(--accent-strong), transparent 90%), transparent 28rem),
     radial-gradient(circle at 50% 100%, rgba(34, 211, 238, 0.06), transparent 26rem);
   opacity: 0.44;
 }
@@ -13094,7 +13094,7 @@ body:has(.h-top-collapse-inline) main {
   inset: 40px;
   border-radius: 50%;
   background: radial-gradient(circle, rgba(255,255,255,0.08), rgba(34, 211, 238, 0.06) 58%, transparent 100%);
-  box-shadow: inset 0 0 24px rgba(125, 211, 252, 0.12), 0 0 22px rgba(34, 211, 238, 0.12);
+  box-shadow: inset 0 0 24px color-mix(in srgb, var(--accent-strong), transparent 88%), 0 0 22px rgba(34, 211, 238, 0.12);
   animation: h-hud-pulse 2.8s ease-in-out infinite;
 }
 .h-hud-dial-frame {
@@ -13109,7 +13109,7 @@ body:has(.h-top-collapse-inline) main {
   position: absolute;
   inset: 0;
   background:
-    linear-gradient(90deg, transparent 0 18%, rgba(255, 255, 255, 0.08) 28%, transparent 38%, rgba(125, 211, 252, 0.08) 52%, transparent 64%, rgba(45, 212, 191, 0.1) 80%, transparent 100%);
+    linear-gradient(90deg, transparent 0 18%, rgba(255, 255, 255, 0.08) 28%, transparent 38%, color-mix(in srgb, var(--accent-strong), transparent 92%) 52%, transparent 64%, rgba(45, 212, 191, 0.1) 80%, transparent 100%);
   opacity: 0.48;
   pointer-events: none;
 }
@@ -13122,14 +13122,14 @@ body:has(.h-top-collapse-inline) main {
   content: "";
   position: absolute;
   inset: 0;
-  background: linear-gradient(90deg, transparent, rgba(125, 211, 252, 0.12), transparent);
+  background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--accent-strong), transparent 88%), transparent);
   opacity: 0.28;
   pointer-events: none;
   animation: h-hud-scanline 3.8s ease-in-out infinite;
 }
 .h-root--maximal-hud .h-running-lane.live {
   box-shadow:
-    0 0 0 1px rgba(125, 211, 252, 0.16),
+    0 0 0 1px color-mix(in srgb, var(--accent-strong), transparent 84%),
     0 0 24px rgba(34, 211, 238, 0.18),
     inset 0 1px 0 rgba(255,255,255,0.06);
 }
@@ -13167,7 +13167,7 @@ body:has(.h-top-collapse-inline) main {
   content: "";
   position: absolute;
   inset: 0;
-  border: 1px solid rgba(125, 211, 252, 0.08);
+  border: 1px solid color-mix(in srgb, var(--accent-strong), transparent 92%);
   clip-path: polygon(14px 0, calc(100% - 14px) 0, 100% 14px, 100% 100%, 0 100%, 0 14px);
   pointer-events: none;
 }
@@ -13177,7 +13177,7 @@ body:has(.h-top-collapse-inline) main {
   inset: 0;
   background:
     linear-gradient(120deg, transparent 0 34%, rgba(255,255,255,0.08) 44%, transparent 52%) -120% 0 / 34% 100% no-repeat,
-    linear-gradient(180deg, rgba(125, 211, 252, 0.05), rgba(255,255,255,0.01));
+    linear-gradient(180deg, color-mix(in srgb, var(--accent-strong), transparent 95%), rgba(255,255,255,0.01));
   opacity: 0.72;
   pointer-events: none;
   animation: h-hud-scanline 3.6s ease-in-out infinite;
@@ -13276,12 +13276,12 @@ body:has(.h-top-collapse-inline) main {
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.018), rgba(255, 255, 255, 0.004)),
     rgba(7, 17, 29, 0.88) !important;
-  border-color: rgba(125, 211, 252, 0.20) !important;
+  border-color: color-mix(in srgb, var(--accent-strong), transparent 80%) !important;
   box-shadow: 0 14px 30px rgba(0, 0, 0, 0.20), inset 0 1px 0 rgba(255, 255, 255, 0.03) !important;
 }
 
 .h-dashboard-left-pane > div:first-child {
-  border-bottom-color: rgba(125, 211, 252, 0.22) !important;
+  border-bottom-color: color-mix(in srgb, var(--accent-strong), transparent 78%) !important;
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.04), rgba(255, 255, 255, 0.012)),
     rgba(8, 20, 34, 0.94) !important;
@@ -13293,7 +13293,7 @@ body:has(.h-top-collapse-inline) main {
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.045), rgba(255, 255, 255, 0.012)),
     rgba(9, 21, 36, 0.90) !important;
-  border-color: rgba(125, 211, 252, 0.22) !important;
+  border-color: color-mix(in srgb, var(--accent-strong), transparent 78%) !important;
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05), 0 8px 18px rgba(0, 0, 0, 0.14) !important;
 }
 
@@ -13301,9 +13301,9 @@ body:has(.h-top-collapse-inline) main {
 .h-dashboard-left-pane > div:first-child button:focus-visible,
 .h-dashboard-left-pane > div:first-child button[aria-selected="true"] {
   color: color-mix(in oklab, var(--fg), white 6%) !important;
-  border-color: rgba(125, 211, 252, 0.34) !important;
+  border-color: color-mix(in srgb, var(--accent-strong), transparent 66%) !important;
   background:
-    linear-gradient(180deg, rgba(125, 211, 252, 0.14), rgba(125, 211, 252, 0.04)),
+    linear-gradient(180deg, color-mix(in srgb, var(--accent-strong), transparent 86%), color-mix(in srgb, var(--accent-strong), transparent 96%)),
     rgba(8, 20, 34, 0.96) !important;
 }
 
@@ -13318,7 +13318,7 @@ body:has(.h-top-collapse-inline) main {
 .h-git-clear,
 .h-git-limit,
 .h-git-filter {
-  border-color: rgba(125, 211, 252, 0.20) !important;
+  border-color: color-mix(in srgb, var(--accent-strong), transparent 80%) !important;
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.032), rgba(255, 255, 255, 0.010)),
     rgba(9, 20, 34, 0.92) !important;
@@ -13328,16 +13328,16 @@ body:has(.h-top-collapse-inline) main {
 .h-inbox-filter.on,
 .h-inbox-kind-chip.on,
 .h-git-filter.on {
-  border-color: rgba(125, 211, 252, 0.34) !important;
+  border-color: color-mix(in srgb, var(--accent-strong), transparent 66%) !important;
   background:
-    linear-gradient(180deg, rgba(125, 211, 252, 0.12), rgba(125, 211, 252, 0.035)),
+    linear-gradient(180deg, color-mix(in srgb, var(--accent-strong), transparent 88%), color-mix(in srgb, var(--accent-strong), transparent 96.5%)),
     rgba(8, 20, 34, 0.96) !important;
 }
 
 .h-inbox-empty {
-  border-color: rgba(125, 211, 252, 0.18) !important;
+  border-color: color-mix(in srgb, var(--accent-strong), transparent 82%) !important;
   background:
-    radial-gradient(circle at 50% 0%, rgba(125, 211, 252, 0.09), transparent 48%),
+    radial-gradient(circle at 50% 0%, color-mix(in srgb, var(--accent-strong), transparent 91%), transparent 48%),
     linear-gradient(180deg, rgba(255, 255, 255, 0.024), rgba(255, 255, 255, 0.008)),
     rgba(9, 20, 34, 0.90) !important;
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.035) !important;
@@ -13363,14 +13363,14 @@ body:has(.h-top-collapse-inline) main {
 
 .h-root--maximal-hud .h-tabs.h-main-tabs {
   background:
-    radial-gradient(circle at 50% -120%, rgba(125, 211, 252, 0.18), transparent 68%),
+    radial-gradient(circle at 50% -120%, color-mix(in srgb, var(--accent-strong), transparent 82%), transparent 68%),
     linear-gradient(90deg, rgba(8, 20, 34, 0.74), rgba(4, 13, 25, 0.92) 42%, rgba(8, 20, 34, 0.78)),
     var(--h-topbar-surface-soft) !important;
-  border-top-color: rgba(125, 211, 252, 0.22) !important;
-  border-bottom-color: rgba(125, 211, 252, 0.26) !important;
+  border-top-color: color-mix(in srgb, var(--accent-strong), transparent 78%) !important;
+  border-bottom-color: color-mix(in srgb, var(--accent-strong), transparent 74%) !important;
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.055),
-    inset 0 -1px 0 rgba(125, 211, 252, 0.18),
+    inset 0 -1px 0 color-mix(in srgb, var(--accent-strong), transparent 82%),
     0 12px 28px rgba(0, 0, 0, 0.14) !important;
 }
 
@@ -13382,9 +13382,9 @@ body:has(.h-top-collapse-inline) main {
   pointer-events: none;
   z-index: 0;
   background:
-    repeating-linear-gradient(90deg, transparent 0 78px, rgba(125, 211, 252, 0.12) 79px 80px, transparent 81px 156px),
+    repeating-linear-gradient(90deg, transparent 0 78px, color-mix(in srgb, var(--accent-strong), transparent 88%) 79px 80px, transparent 81px 156px),
     linear-gradient(90deg, transparent, rgba(52, 211, 153, 0.11), transparent),
-    linear-gradient(180deg, rgba(255, 255, 255, 0.055), transparent 52%, rgba(125, 211, 252, 0.060));
+    linear-gradient(180deg, rgba(255, 255, 255, 0.055), transparent 52%, color-mix(in srgb, var(--accent-strong), transparent 94%));
   opacity: 0.58;
   mask-image: linear-gradient(90deg, transparent 0, #000 7%, #000 93%, transparent 100%);
   animation: hHudTabRailMatrix 9s linear infinite;
@@ -13442,8 +13442,8 @@ body:has(.h-top-collapse-inline) main {
 .h-root--maximal-hud .h-main-tabs .h-tab.on {
   box-shadow:
     inset 0 1px 0 rgba(255,255,255,0.12),
-    inset 0 -10px 18px rgba(56, 189, 248, 0.050),
-    0 0 0 1px rgba(125, 211, 252, 0.16),
+    inset 0 -10px 18px color-mix(in srgb, var(--accent), transparent 95%),
+    0 0 0 1px color-mix(in srgb, var(--accent-strong), transparent 84%),
     0 0 24px rgba(34, 211, 238, 0.10) !important;
 }
 
@@ -13468,26 +13468,26 @@ body:has(.h-top-collapse-inline) main {
 .h-root {
   --h-topbar-control-base: rgba(5, 13, 24, 0.98);
   --h-topbar-control-base-soft: rgba(7, 17, 30, 0.96);
-  --h-topbar-control-border: rgba(125, 211, 252, 0.34);
+  --h-topbar-control-border: color-mix(in srgb, var(--accent-strong), transparent 66%);
 }
 
 body:has(.h-root) .pc-header {
-  border-bottom-color: rgba(125, 211, 252, 0.24) !important;
+  border-bottom-color: color-mix(in srgb, var(--accent-strong), transparent 76%) !important;
   background:
-    radial-gradient(circle at 50% -80%, rgba(125, 211, 252, 0.16), transparent 36rem),
+    radial-gradient(circle at 50% -80%, color-mix(in srgb, var(--accent-strong), transparent 84%), transparent 36rem),
     linear-gradient(180deg, rgba(5, 13, 24, 0.96), rgba(5, 12, 22, 0.91)) !important;
   box-shadow:
     0 14px 34px rgba(0, 0, 0, 0.34),
-    inset 0 -1px 0 rgba(125, 211, 252, 0.13),
+    inset 0 -1px 0 color-mix(in srgb, var(--accent-strong), transparent 87%),
     inset 0 1px 0 rgba(255, 255, 255, 0.045) !important;
 }
 
 .h-root .h-project-card,
 .h-root .h-phase-plan-row,
 .h-root .h-quick-action-row {
-  border-color: rgba(125, 211, 252, 0.24) !important;
+  border-color: color-mix(in srgb, var(--accent-strong), transparent 76%) !important;
   background:
-    radial-gradient(circle at 18% 0%, rgba(125, 211, 252, 0.10), transparent 30rem),
+    radial-gradient(circle at 18% 0%, color-mix(in srgb, var(--accent-strong), transparent 90%), transparent 30rem),
     linear-gradient(180deg, rgba(255, 255, 255, 0.030), rgba(255, 255, 255, 0.007)),
     rgba(5, 14, 25, 0.94) !important;
   box-shadow:
@@ -13653,22 +13653,22 @@ body:has(.h-root) .pc-header .pc-voice-btn:focus-visible {
 .h-root {
   --h-topbar-control-base: rgba(3, 10, 20, 0.99);
   --h-topbar-control-base-soft: rgba(5, 15, 27, 0.98);
-  --h-topbar-control-border: rgba(125, 211, 252, 0.40);
+  --h-topbar-control-border: color-mix(in srgb, var(--accent-strong), transparent 60%);
 }
 
 .h-root .h-project-card,
 .h-root .h-phase-plan-row,
 .h-root .h-quick-action-row,
 .h-root .h-tabs.h-main-tabs {
-  border-color: rgba(125, 211, 252, 0.29) !important;
+  border-color: color-mix(in srgb, var(--accent-strong), transparent 71%) !important;
   background:
-    radial-gradient(circle at 16% -40%, rgba(125, 211, 252, 0.115), transparent 28rem),
+    radial-gradient(circle at 16% -40%, color-mix(in srgb, var(--accent-strong), transparent 88.5%), transparent 28rem),
     linear-gradient(180deg, rgba(255, 255, 255, 0.024), rgba(255, 255, 255, 0.004)),
     rgba(4, 13, 25, 0.965) !important;
   box-shadow:
     0 16px 34px rgba(0, 0, 0, 0.30),
     inset 0 1px 0 rgba(255, 255, 255, 0.050),
-    inset 0 -1px 0 rgba(125, 211, 252, 0.085) !important;
+    inset 0 -1px 0 color-mix(in srgb, var(--accent-strong), transparent 91.5%) !important;
 }
 
 .h-root .h-project-topline-statuses .h-overview-pulse,
@@ -13681,14 +13681,14 @@ body:has(.h-root) .pc-header .pc-voice-btn:focus-visible {
 .h-root .h-feature-search,
 .h-root .h-feature-mode,
 .h-root .h-feature-add {
-  border-color: rgba(125, 211, 252, 0.32) !important;
+  border-color: color-mix(in srgb, var(--accent-strong), transparent 68%) !important;
   background:
-    radial-gradient(circle at 12% 0%, rgba(125, 211, 252, 0.105), transparent 76%),
+    radial-gradient(circle at 12% 0%, color-mix(in srgb, var(--accent-strong), transparent 89.5%), transparent 76%),
     linear-gradient(180deg, rgba(255, 255, 255, 0.040), rgba(255, 255, 255, 0.008)),
     rgba(5, 15, 27, 0.98) !important;
   box-shadow:
     0 10px 22px rgba(0, 0, 0, 0.24),
-    0 0 0 1px rgba(125, 211, 252, 0.075),
+    0 0 0 1px color-mix(in srgb, var(--accent-strong), transparent 92.5%),
     inset 0 1px 0 rgba(255, 255, 255, 0.060) !important;
 }
 
@@ -13697,7 +13697,7 @@ body:has(.h-root) .pc-header .pc-voice-btn:focus-visible {
 .h-root .h-feature-toolbar-title strong,
 .h-root .h-stat-value {
   color: color-mix(in oklab, var(--fg), white 12%) !important;
-  text-shadow: 0 0 14px rgba(125, 211, 252, 0.16);
+  text-shadow: 0 0 14px color-mix(in srgb, var(--accent-strong), transparent 84%);
 }
 
 .h-root .h-running-lane.idle,
@@ -13742,9 +13742,9 @@ body:has(.h-root) .pc-header .pc-voice-btn:focus-visible {
 
 .h-root .h-guide-strip,
 .h-root .h-header-empty {
-  border-color: rgba(125, 211, 252, 0.34) !important;
+  border-color: color-mix(in srgb, var(--accent-strong), transparent 66%) !important;
   background:
-    radial-gradient(circle at 3% 0%, rgba(125, 211, 252, 0.12), transparent 32rem),
+    radial-gradient(circle at 3% 0%, color-mix(in srgb, var(--accent-strong), transparent 88%), transparent 32rem),
     linear-gradient(180deg, rgba(255, 255, 255, 0.032), rgba(255, 255, 255, 0.006)),
     rgba(5, 15, 27, 0.96) !important;
   box-shadow:
@@ -13821,7 +13821,7 @@ body:has(.h-root) .pc-header .pc-voice-btn:focus-visible {
 }
 
 .h-root .h-main-tabs .h-tab {
-  --h-topbar-control-tone: rgba(125, 211, 252, 0.88);
+  --h-topbar-control-tone: color-mix(in srgb, var(--accent-strong), transparent 12%);
   border-color: color-mix(in oklab, var(--h-topbar-control-tone), transparent 66%) !important;
   background:
     linear-gradient(180deg, color-mix(in oklab, var(--h-topbar-control-tone), transparent 93%), rgba(3, 10, 20, 0.98)) !important;
@@ -13852,7 +13852,7 @@ body:has(.h-root) .pc-header .pc-voice-btn:focus-visible {
 
 .h-root .h-feature-toolbar-title,
 .h-root .h-quick-action-copy {
-  outline-color: rgba(125, 211, 252, 0.20) !important;
+  outline-color: color-mix(in srgb, var(--accent-strong), transparent 80%) !important;
   box-shadow:
     0 11px 24px rgba(0, 0, 0, 0.25),
     inset 0 1px 0 rgba(255, 255, 255, 0.065),
@@ -14012,15 +14012,15 @@ body:has(.h-root) .pc-header .pc-voice-btn:focus-visible {
 .h-root .h-project-topline-statuses .h-overview-pulse {
   --h-topbar-control-tone: #38bdf8;
   color: color-mix(in oklab, var(--h-topbar-control-tone), white 44%) !important;
-  border-color: rgba(56, 189, 248, 0.42) !important;
+  border-color: color-mix(in srgb, var(--accent), transparent 58%) !important;
   background:
-    radial-gradient(circle at 12% 0%, rgba(56, 189, 248, 0.34), transparent 72%),
-    linear-gradient(180deg, rgba(56, 189, 248, 0.22), rgba(4, 16, 31, 0.98)) !important;
-  outline-color: rgba(125, 211, 252, 0.32) !important;
+    radial-gradient(circle at 12% 0%, color-mix(in srgb, var(--accent), transparent 66%), transparent 72%),
+    linear-gradient(180deg, color-mix(in srgb, var(--accent), transparent 78%), rgba(4, 16, 31, 0.98)) !important;
+  outline-color: color-mix(in srgb, var(--accent-strong), transparent 68%) !important;
   box-shadow:
     0 13px 30px rgba(0, 0, 0, 0.34),
-    0 0 0 1px rgba(56, 189, 248, 0.18),
-    0 0 24px rgba(56, 189, 248, 0.12),
+    0 0 0 1px color-mix(in srgb, var(--accent), transparent 82%),
+    0 0 24px color-mix(in srgb, var(--accent), transparent 88%),
     inset 0 1px 0 rgba(255, 255, 255, 0.12),
     inset 0 -1px 0 rgba(0, 0, 0, 0.30) !important;
 }
@@ -14029,7 +14029,7 @@ body:has(.h-root) .pc-header .pc-voice-btn:focus-visible {
   color: #e0faff !important;
   font-weight: 950 !important;
   letter-spacing: 0.16em !important;
-  text-shadow: 0 0 14px rgba(56, 189, 248, 0.46);
+  text-shadow: 0 0 14px color-mix(in srgb, var(--accent), transparent 54%);
 }
 
 .h-root .h-project-pulse > div > div {
@@ -14039,7 +14039,7 @@ body:has(.h-root) .pc-header .pc-voice-btn:focus-visible {
 
 .h-root .h-project-pulse > div > div span {
   color: color-mix(in oklab, #bae6fd, white 16%) !important;
-  text-shadow: 0 0 12px rgba(56, 189, 248, 0.22);
+  text-shadow: 0 0 12px color-mix(in srgb, var(--accent), transparent 78%);
 }
 
 .h-root .h-project-pulse > div > div span:first-child,
@@ -14050,21 +14050,21 @@ body:has(.h-root) .pc-header .pc-voice-btn:focus-visible {
 
 .h-root .h-stats > :first-child .h-stat {
   --h-topbar-control-tone: #38bdf8;
-  border-color: rgba(56, 189, 248, 0.52) !important;
+  border-color: color-mix(in srgb, var(--accent), transparent 48%) !important;
   background:
-    radial-gradient(circle at 18% 0%, rgba(56, 189, 248, 0.34), transparent 72%),
-    linear-gradient(180deg, rgba(56, 189, 248, 0.25), rgba(4, 16, 31, 0.99)) !important;
+    radial-gradient(circle at 18% 0%, color-mix(in srgb, var(--accent), transparent 66%), transparent 72%),
+    linear-gradient(180deg, color-mix(in srgb, var(--accent), transparent 75%), rgba(4, 16, 31, 0.99)) !important;
   box-shadow:
     0 13px 30px rgba(0, 0, 0, 0.34),
-    0 0 0 1px rgba(56, 189, 248, 0.24),
-    0 0 24px rgba(56, 189, 248, 0.13),
+    0 0 0 1px color-mix(in srgb, var(--accent), transparent 76%),
+    0 0 24px color-mix(in srgb, var(--accent), transparent 87%),
     inset 0 1px 0 rgba(255, 255, 255, 0.12) !important;
 }
 
 .h-root .h-stats > :first-child .h-stat-label,
 .h-root .h-stats > :first-child .h-stat-value {
   color: #e0faff !important;
-  text-shadow: 0 0 14px rgba(56, 189, 248, 0.40);
+  text-shadow: 0 0 14px color-mix(in srgb, var(--accent), transparent 60%);
 }
 
 .h-root .h-project-topline-statuses .h-project-lanes {
@@ -14131,8 +14131,8 @@ body:has(.h-root) .pc-header .pc-voice-btn:focus-visible {
 
 /* Harness top-bar contrast continuation v6: stronger Pulse / Now running / available lane / idle readability. */
 .h-root .h-project-topline-statuses {
-  background: linear-gradient(90deg, rgba(56, 189, 248, 0.030), rgba(34, 211, 238, 0.045), transparent) !important;
-  border-left-color: rgba(125, 211, 252, 0.28) !important;
+  background: linear-gradient(90deg, color-mix(in srgb, var(--accent), transparent 97%), rgba(34, 211, 238, 0.045), transparent) !important;
+  border-left-color: color-mix(in srgb, var(--accent-strong), transparent 72%) !important;
 }
 
 .h-root .h-project-pulse {
@@ -14140,14 +14140,14 @@ body:has(.h-root) .pc-header .pc-voice-btn:focus-visible {
 }
 
 .h-root .h-project-pulse > div {
-  border: 1px solid rgba(56, 189, 248, 0.58) !important;
+  border: 1px solid color-mix(in srgb, var(--accent), transparent 42%) !important;
   border-radius: 999px !important;
   background:
     radial-gradient(circle at 8% 0%, rgba(224, 250, 255, 0.18), transparent 46%),
-    linear-gradient(180deg, rgba(56, 189, 248, 0.32), rgba(4, 16, 31, 0.98)) !important;
+    linear-gradient(180deg, color-mix(in srgb, var(--accent), transparent 68%), rgba(4, 16, 31, 0.98)) !important;
   box-shadow:
-    0 0 0 1px rgba(56, 189, 248, 0.18),
-    0 0 22px rgba(56, 189, 248, 0.18),
+    0 0 0 1px color-mix(in srgb, var(--accent), transparent 82%),
+    0 0 22px color-mix(in srgb, var(--accent), transparent 82%),
     inset 0 1px 0 rgba(255, 255, 255, 0.18),
     inset 0 -1px 0 rgba(0, 0, 0, 0.34) !important;
 }
@@ -14156,12 +14156,12 @@ body:has(.h-root) .pc-header .pc-voice-btn:focus-visible {
   color: #f0fdff !important;
   font-weight: 1000 !important;
   opacity: 1 !important;
-  text-shadow: 0 0 16px rgba(125, 211, 252, 0.62);
+  text-shadow: 0 0 16px color-mix(in srgb, var(--accent-strong), transparent 38%);
 }
 
 .h-root .h-project-pulse > div > div > span {
   color: #dffbff !important;
-  border: 1px solid rgba(125, 211, 252, 0.28);
+  border: 1px solid color-mix(in srgb, var(--accent-strong), transparent 72%);
   border-radius: 999px;
   background: rgba(3, 10, 20, 0.34);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08);
@@ -14290,23 +14290,23 @@ body:has(.h-root) .pc-header .pc-voice-btn:focus-visible {
 .h-root .h-header-actions > .h-btn.ghost:nth-last-child(2) {
   --h-topbar-control-tone: #38bdf8;
   color: #e0faff !important;
-  border-color: rgba(56, 189, 248, 0.56) !important;
+  border-color: color-mix(in srgb, var(--accent), transparent 44%) !important;
   background:
     radial-gradient(circle at 16% 0%, rgba(224, 250, 255, 0.18), transparent 46%),
-    linear-gradient(180deg, rgba(56, 189, 248, 0.30), rgba(4, 16, 31, 0.96)) !important;
+    linear-gradient(180deg, color-mix(in srgb, var(--accent), transparent 70%), rgba(4, 16, 31, 0.96)) !important;
   box-shadow:
-    0 0 0 1px rgba(56, 189, 248, 0.16),
-    0 0 18px rgba(56, 189, 248, 0.12),
+    0 0 0 1px color-mix(in srgb, var(--accent), transparent 84%),
+    0 0 18px color-mix(in srgb, var(--accent), transparent 88%),
     inset 0 1px 0 rgba(255, 255, 255, 0.14),
     inset 0 -1px 0 rgba(0, 0, 0, 0.28) !important;
 }
 
 .h-root .h-header-actions > .h-btn.ghost:nth-last-child(2):hover,
 .h-root .h-header-actions > .h-btn.ghost:nth-last-child(2):focus-visible {
-  border-color: rgba(125, 211, 252, 0.76) !important;
+  border-color: color-mix(in srgb, var(--accent-strong), transparent 24%) !important;
   background:
     radial-gradient(circle at 16% 0%, rgba(240, 249, 255, 0.24), transparent 48%),
-    linear-gradient(180deg, rgba(56, 189, 248, 0.42), rgba(6, 24, 42, 0.98)) !important;
+    linear-gradient(180deg, color-mix(in srgb, var(--accent), transparent 58%), rgba(6, 24, 42, 0.98)) !important;
 }
 
 .h-root .h-header-actions > .h-btn.ghost:last-child {
@@ -14335,30 +14335,30 @@ body:has(.h-root) .pc-header .pc-voice-btn:focus-visible {
 .h-root .h-stats .h-save-template-btn {
   --h-topbar-control-tone: #38bdf8;
   color: #e0faff !important;
-  border-color: rgba(56, 189, 248, 0.66) !important;
+  border-color: color-mix(in srgb, var(--accent), transparent 34%) !important;
   background:
     radial-gradient(circle at 18% 0%, rgba(224, 250, 255, 0.22), transparent 46%),
-    linear-gradient(180deg, rgba(56, 189, 248, 0.34), rgba(4, 16, 31, 0.98)) !important;
+    linear-gradient(180deg, color-mix(in srgb, var(--accent), transparent 66%), rgba(4, 16, 31, 0.98)) !important;
   box-shadow:
-    inset 3px 0 0 rgba(125, 211, 252, 0.52),
+    inset 3px 0 0 color-mix(in srgb, var(--accent-strong), transparent 48%),
     inset 0 1px 0 rgba(255, 255, 255, 0.16),
     inset 0 -1px 0 rgba(0, 0, 0, 0.30),
-    0 0 0 1px rgba(56, 189, 248, 0.18),
-    0 0 18px rgba(56, 189, 248, 0.13) !important;
+    0 0 0 1px color-mix(in srgb, var(--accent), transparent 82%),
+    0 0 18px color-mix(in srgb, var(--accent), transparent 87%) !important;
 }
 
 .h-root .h-stats .h-save-template-btn:hover,
 .h-root .h-stats .h-save-template-btn:focus-visible {
-  border-color: rgba(125, 211, 252, 0.84) !important;
+  border-color: color-mix(in srgb, var(--accent-strong), transparent 16%) !important;
   background:
     radial-gradient(circle at 18% 0%, rgba(240, 249, 255, 0.28), transparent 48%),
-    linear-gradient(180deg, rgba(56, 189, 248, 0.46), rgba(6, 24, 42, 0.99)) !important;
+    linear-gradient(180deg, color-mix(in srgb, var(--accent), transparent 54%), rgba(6, 24, 42, 0.99)) !important;
   box-shadow:
     inset 3px 0 0 rgba(186, 230, 253, 0.70),
     inset 0 1px 0 rgba(255, 255, 255, 0.18),
     inset 0 -1px 0 rgba(0, 0, 0, 0.30),
-    0 0 0 1px rgba(56, 189, 248, 0.24),
-    0 0 24px rgba(56, 189, 248, 0.18) !important;
+    0 0 0 1px color-mix(in srgb, var(--accent), transparent 76%),
+    0 0 24px color-mix(in srgb, var(--accent), transparent 82%) !important;
 }
 
 .h-root .h-stats .h-save-snapshot-btn {
@@ -14547,21 +14547,21 @@ body:has(.h-root) .pc-header .pc-voice-btn:focus-visible {
 .h-root .h-project-topline-statuses .h-project-lanes {
   box-shadow:
     0 12px 28px rgba(0, 0, 0, 0.34),
-    0 0 0 1px rgba(125, 211, 252, 0.12),
+    0 0 0 1px color-mix(in srgb, var(--accent-strong), transparent 88%),
     inset 0 1px 0 rgba(255, 255, 255, 0.12),
     inset 0 -1px 0 rgba(0, 0, 0, 0.34) !important;
 }
 
 .h-root .h-project-pulse > div {
-  border-color: rgba(56, 189, 248, 0.48) !important;
+  border-color: color-mix(in srgb, var(--accent), transparent 52%) !important;
   background:
     radial-gradient(circle at 8% 0%, rgba(224, 250, 255, 0.10), transparent 46%),
-    linear-gradient(180deg, rgba(56, 189, 248, 0.20), rgba(4, 16, 31, 0.995)) !important;
+    linear-gradient(180deg, color-mix(in srgb, var(--accent), transparent 80%), rgba(4, 16, 31, 0.995)) !important;
 }
 
 .h-root .h-project-pulse > div > div > span {
   background: rgba(3, 10, 20, 0.50) !important;
-  border-color: rgba(125, 211, 252, 0.22) !important;
+  border-color: color-mix(in srgb, var(--accent-strong), transparent 78%) !important;
 }
 
 .h-root .h-project-topline-statuses .h-project-lanes {
@@ -14598,21 +14598,21 @@ body:has(.h-root) .pc-header .pc-voice-btn:focus-visible {
 /* Dashboard chrome contrast v9: shorter issues header, darker issues/agents frames, clearer run.log tabs. */
 .h-root .h-dashboard-panel-anchor[data-dashboard-panel="issues"] > .h-panel,
 .h-root .h-dashboard-panel-anchor[data-dashboard-panel="agents"] > .h-panel {
-  border-color: rgba(125, 211, 252, 0.22) !important;
+  border-color: color-mix(in srgb, var(--accent-strong), transparent 78%) !important;
   background:
-    radial-gradient(circle at 12% 0%, rgba(125, 211, 252, 0.045), transparent 54%),
+    radial-gradient(circle at 12% 0%, color-mix(in srgb, var(--accent-strong), transparent 95.5%), transparent 54%),
     linear-gradient(180deg, rgba(5, 18, 31, 0.98), rgba(3, 10, 20, 0.99)) !important;
   box-shadow:
     0 12px 30px rgba(0, 0, 0, 0.34),
-    0 0 0 1px rgba(125, 211, 252, 0.07),
+    0 0 0 1px color-mix(in srgb, var(--accent-strong), transparent 93%),
     inset 0 1px 0 rgba(255, 255, 255, 0.045) !important;
 }
 
 .h-root .h-dashboard-panel-anchor[data-dashboard-panel="issues"] .h-panel-head,
 .h-root .h-dashboard-panel-anchor[data-dashboard-panel="agents"] .h-panel-head {
-  border-bottom-color: rgba(125, 211, 252, 0.18) !important;
+  border-bottom-color: color-mix(in srgb, var(--accent-strong), transparent 82%) !important;
   background:
-    linear-gradient(90deg, rgba(125, 211, 252, 0.070), rgba(56, 189, 248, 0.026) 42%, rgba(255, 255, 255, 0.010)),
+    linear-gradient(90deg, color-mix(in srgb, var(--accent-strong), transparent 93%), color-mix(in srgb, var(--accent), transparent 97.4%) 42%, rgba(255, 255, 255, 0.010)),
     rgba(3, 10, 20, 0.94) !important;
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.060),
@@ -14622,7 +14622,7 @@ body:has(.h-root) .pc-header .pc-voice-btn:focus-visible {
 .h-root .h-dashboard-panel-anchor[data-dashboard-panel="issues"] .h-panel-title,
 .h-root .h-dashboard-panel-anchor[data-dashboard-panel="agents"] .h-panel-title {
   color: color-mix(in oklab, var(--fg), #7dd3fc 16%) !important;
-  text-shadow: 0 0 12px rgba(125, 211, 252, 0.16);
+  text-shadow: 0 0 12px color-mix(in srgb, var(--accent-strong), transparent 84%);
 }
 
 .h-root .h-dashboard-panel-anchor[data-dashboard-panel="issues"] .h-panel-count,
@@ -14643,8 +14643,8 @@ body:has(.h-root) .pc-header .pc-voice-btn:focus-visible {
 .h-root .h-dashboard-panel-anchor[data-dashboard-panel="issues"] .h-panel-actions .h-tab {
   min-height: 22px !important;
   padding: 2px 8px 3px !important;
-  border: 1px solid rgba(125, 211, 252, 0.16) !important;
-  border-bottom-color: rgba(125, 211, 252, 0.08) !important;
+  border: 1px solid color-mix(in srgb, var(--accent-strong), transparent 84%) !important;
+  border-bottom-color: color-mix(in srgb, var(--accent-strong), transparent 92%) !important;
   border-radius: 7px 7px 0 0 !important;
   background: rgba(3, 10, 20, 0.50) !important;
   line-height: 1.15 !important;
@@ -14652,18 +14652,18 @@ body:has(.h-root) .pc-header .pc-voice-btn:focus-visible {
 
 .h-root .h-dashboard-panel-anchor[data-dashboard-panel="issues"] .h-panel-actions .h-tab.on {
   color: #e0faff !important;
-  border-color: rgba(125, 211, 252, 0.38) !important;
+  border-color: color-mix(in srgb, var(--accent-strong), transparent 62%) !important;
   border-bottom-color: rgba(4, 16, 28, 0.96) !important;
   background:
-    radial-gradient(circle at 18% 0%, rgba(125, 211, 252, 0.18), transparent 72%),
-    linear-gradient(180deg, rgba(56, 189, 248, 0.15), rgba(4, 16, 28, 0.96)) !important;
-  box-shadow: inset 0 2px 0 rgba(125, 211, 252, 0.48), 0 0 14px rgba(56, 189, 248, 0.10) !important;
+    radial-gradient(circle at 18% 0%, color-mix(in srgb, var(--accent-strong), transparent 82%), transparent 72%),
+    linear-gradient(180deg, color-mix(in srgb, var(--accent), transparent 85%), rgba(4, 16, 28, 0.96)) !important;
+  box-shadow: inset 0 2px 0 color-mix(in srgb, var(--accent-strong), transparent 52%), 0 0 14px color-mix(in srgb, var(--accent), transparent 90%) !important;
 }
 
 .h-root .h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-tabs {
   padding: 5px 6px 0 !important;
   gap: 4px !important;
-  border-bottom-color: rgba(125, 211, 252, 0.20) !important;
+  border-bottom-color: color-mix(in srgb, var(--accent-strong), transparent 80%) !important;
   background:
     linear-gradient(180deg, rgba(6, 20, 34, 0.98), rgba(3, 10, 20, 0.99)) !important;
 }
@@ -14672,11 +14672,11 @@ body:has(.h-root) .pc-header .pc-voice-btn:focus-visible {
   position: relative !important;
   min-height: 25px !important;
   padding: 4px 10px 5px !important;
-  border: 1px solid rgba(125, 211, 252, 0.18) !important;
-  border-bottom-color: rgba(125, 211, 252, 0.11) !important;
+  border: 1px solid color-mix(in srgb, var(--accent-strong), transparent 82%) !important;
+  border-bottom-color: color-mix(in srgb, var(--accent-strong), transparent 89%) !important;
   border-radius: 8px 8px 0 0 !important;
   background:
-    linear-gradient(180deg, rgba(125, 211, 252, 0.060), rgba(255, 255, 255, 0.010)),
+    linear-gradient(180deg, color-mix(in srgb, var(--accent-strong), transparent 94%), rgba(255, 255, 255, 0.010)),
     rgba(5, 15, 27, 0.84) !important;
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.060),
@@ -14692,29 +14692,29 @@ body:has(.h-root) .pc-header .pc-voice-btn:focus-visible {
   top: 3px;
   height: 1px;
   border-radius: 999px;
-  background: linear-gradient(90deg, transparent, rgba(125, 211, 252, 0.42), transparent);
+  background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--accent-strong), transparent 58%), transparent);
   opacity: 0.45;
   pointer-events: none;
 }
 
 .h-root .h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-tab:hover {
   color: #e0faff !important;
-  border-color: rgba(125, 211, 252, 0.32) !important;
+  border-color: color-mix(in srgb, var(--accent-strong), transparent 68%) !important;
   background:
-    linear-gradient(180deg, rgba(125, 211, 252, 0.10), rgba(255, 255, 255, 0.014)),
+    linear-gradient(180deg, color-mix(in srgb, var(--accent-strong), transparent 90%), rgba(255, 255, 255, 0.014)),
     rgba(7, 20, 34, 0.92) !important;
 }
 
 .h-root .h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-tab.active {
   color: #f0fdff !important;
-  border-color: rgba(125, 211, 252, 0.42) !important;
+  border-color: color-mix(in srgb, var(--accent-strong), transparent 58%) !important;
   border-bottom-color: rgba(5, 18, 31, 0.99) !important;
   background:
-    radial-gradient(circle at 50% 0%, rgba(125, 211, 252, 0.18), transparent 70%),
-    linear-gradient(180deg, rgba(56, 189, 248, 0.15), rgba(5, 18, 31, 0.99)) !important;
+    radial-gradient(circle at 50% 0%, color-mix(in srgb, var(--accent-strong), transparent 82%), transparent 70%),
+    linear-gradient(180deg, color-mix(in srgb, var(--accent), transparent 85%), rgba(5, 18, 31, 0.99)) !important;
   box-shadow:
-    inset 0 2px 0 rgba(125, 211, 252, 0.62),
-    0 -1px 16px rgba(56, 189, 248, 0.12),
+    inset 0 2px 0 color-mix(in srgb, var(--accent-strong), transparent 38%),
+    0 -1px 16px color-mix(in srgb, var(--accent), transparent 88%),
     inset 0 1px 0 rgba(255, 255, 255, 0.090) !important;
 }
 
@@ -14730,14 +14730,14 @@ body:has(.h-root) .pc-header .pc-voice-btn:focus-visible {
 }
 
 .h-root .h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-tab-count {
-  border: 1px solid rgba(125, 211, 252, 0.18);
+  border: 1px solid color-mix(in srgb, var(--accent-strong), transparent 82%);
   background: rgba(3, 10, 20, 0.48) !important;
 }
 
 .h-root .h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-tab.active .h-log-tab-count {
   color: #f0fdff !important;
-  border-color: rgba(125, 211, 252, 0.36);
-  background: rgba(56, 189, 248, 0.18) !important;
+  border-color: color-mix(in srgb, var(--accent-strong), transparent 64%);
+  background: color-mix(in srgb, var(--accent), transparent 82%) !important;
 }
 
 /* Harness topbar text sharpness v10: keep contrast in chrome, not text blur. */
@@ -15105,21 +15105,21 @@ html body .h-root.h-root :is(
 .h-root .h-main-shell.brainstorm-full {
   position: relative;
   background:
-    radial-gradient(circle at 14% -8%, rgba(125, 211, 252, 0.050), transparent 30rem),
+    radial-gradient(circle at 14% -8%, color-mix(in srgb, var(--accent-strong), transparent 95%), transparent 30rem),
     radial-gradient(circle at 88% 0%, rgba(167, 139, 250, 0.034), transparent 24rem),
     linear-gradient(180deg, rgba(3, 12, 24, 0.98), rgba(2, 8, 18, 0.995)) !important;
 }
 
 .h-root .h-main-shell.embed > *,
 .h-root .h-main-shell.brainstorm-full > .h-bsfull-panel {
-  border: 1px solid rgba(125, 211, 252, 0.20);
+  border: 1px solid color-mix(in srgb, var(--accent-strong), transparent 80%);
   border-radius: 16px;
   background:
-    radial-gradient(circle at 12% 0%, rgba(125, 211, 252, 0.060), transparent 54%),
+    radial-gradient(circle at 12% 0%, color-mix(in srgb, var(--accent-strong), transparent 94%), transparent 54%),
     linear-gradient(180deg, rgba(6, 20, 34, 0.985), rgba(3, 10, 20, 0.995)) !important;
   box-shadow:
     0 18px 44px rgba(0, 0, 0, 0.32),
-    0 0 0 1px rgba(125, 211, 252, 0.05),
+    0 0 0 1px color-mix(in srgb, var(--accent-strong), transparent 95%),
     inset 0 1px 0 rgba(255, 255, 255, 0.05) !important;
 }
 
@@ -15137,9 +15137,9 @@ html body .h-root.h-root :is(
 .h-root .h-main-shell.embed > .h-config-panel .h-config-rail,
 .h-root .h-main-shell.embed > .experts-panel > div:first-child,
 .h-root .h-main-shell.brainstorm-full .h-bsfull-head {
-  border-bottom-color: rgba(125, 211, 252, 0.18) !important;
+  border-bottom-color: color-mix(in srgb, var(--accent-strong), transparent 82%) !important;
   background:
-    linear-gradient(90deg, rgba(125, 211, 252, 0.070), rgba(56, 189, 248, 0.026) 42%, rgba(255, 255, 255, 0.010)),
+    linear-gradient(90deg, color-mix(in srgb, var(--accent-strong), transparent 93%), color-mix(in srgb, var(--accent), transparent 97.4%) 42%, rgba(255, 255, 255, 0.010)),
     rgba(3, 10, 20, 0.94) !important;
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.060),
@@ -15164,18 +15164,18 @@ html body .h-root.h-root :is(
 
 .h-root .h-plugin-embed-loading {
   background:
-    radial-gradient(circle at 12% 0%, rgba(125, 211, 252, 0.09), transparent 48%),
+    radial-gradient(circle at 12% 0%, color-mix(in srgb, var(--accent-strong), transparent 91%), transparent 48%),
     linear-gradient(180deg, rgba(6, 20, 34, 0.985), rgba(3, 10, 20, 0.995)) !important;
 }
 
 .h-root .h-dashboard-panel-anchor[data-dashboard-panel="logs"] > .h-panel {
-  border-color: rgba(125, 211, 252, 0.22) !important;
+  border-color: color-mix(in srgb, var(--accent-strong), transparent 78%) !important;
   background:
-    radial-gradient(circle at 12% 0%, rgba(125, 211, 252, 0.045), transparent 54%),
+    radial-gradient(circle at 12% 0%, color-mix(in srgb, var(--accent-strong), transparent 95.5%), transparent 54%),
     linear-gradient(180deg, rgba(5, 18, 31, 0.98), rgba(3, 10, 20, 0.99)) !important;
   box-shadow:
     0 12px 30px rgba(0, 0, 0, 0.34),
-    0 0 0 1px rgba(125, 211, 252, 0.07),
+    0 0 0 1px color-mix(in srgb, var(--accent-strong), transparent 93%),
     inset 0 1px 0 rgba(255, 255, 255, 0.045) !important;
 }
 
@@ -15183,9 +15183,9 @@ html body .h-root.h-root :is(
   min-height: 28px !important;
   padding: 4px 8px 3px !important;
   gap: 6px !important;
-  border-bottom-color: rgba(125, 211, 252, 0.18) !important;
+  border-bottom-color: color-mix(in srgb, var(--accent-strong), transparent 82%) !important;
   background:
-    linear-gradient(90deg, rgba(125, 211, 252, 0.070), rgba(56, 189, 248, 0.026) 42%, rgba(255, 255, 255, 0.010)),
+    linear-gradient(90deg, color-mix(in srgb, var(--accent-strong), transparent 93%), color-mix(in srgb, var(--accent), transparent 97.4%) 42%, rgba(255, 255, 255, 0.010)),
     rgba(3, 10, 20, 0.94) !important;
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.060),
@@ -15203,11 +15203,11 @@ html body .h-root.h-root :is(
 /* Harness non-dashboard chrome v13: continue the dashboard metallic language across the other tabs. */
 .h-root .h-main-shell.embed,
 .h-root .h-main-shell.brainstorm-full {
-  --h-tab-metal-border: rgba(125, 211, 252, 0.28);
-  --h-tab-metal-border-soft: rgba(125, 211, 252, 0.16);
+  --h-tab-metal-border: color-mix(in srgb, var(--accent-strong), transparent 72%);
+  --h-tab-metal-border-soft: color-mix(in srgb, var(--accent-strong), transparent 84%);
   --h-tab-metal-surface: rgba(3, 10, 20, 0.985);
   --h-tab-metal-surface-2: rgba(6, 18, 32, 0.965);
-  --h-tab-metal-highlight: rgba(125, 211, 252, 0.085);
+  --h-tab-metal-highlight: color-mix(in srgb, var(--accent-strong), transparent 91.5%);
   --h-tab-metal-violet: rgba(167, 139, 250, 0.050);
 }
 
@@ -15228,7 +15228,7 @@ html body .h-root.h-root :is(
     linear-gradient(180deg, var(--h-tab-metal-surface-2), var(--h-tab-metal-surface)) !important;
   box-shadow:
     0 22px 54px rgba(0, 0, 0, 0.38),
-    0 0 0 1px rgba(125, 211, 252, 0.065),
+    0 0 0 1px color-mix(in srgb, var(--accent-strong), transparent 93.5%),
     inset 0 1px 0 rgba(255, 255, 255, 0.065),
     inset 0 -1px 0 rgba(0, 0, 0, 0.38) !important;
 }
@@ -15241,7 +15241,7 @@ html body .h-root.h-root :is(
   z-index: 1;
   height: 1px;
   pointer-events: none;
-  background: linear-gradient(90deg, transparent, rgba(125, 211, 252, 0.46), rgba(255, 255, 255, 0.14), transparent);
+  background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--accent-strong), transparent 54%), rgba(255, 255, 255, 0.14), transparent);
 }
 
 .h-root .h-main-shell.embed > .h-proposals-panel .h-proposals-goal,
@@ -15253,12 +15253,12 @@ html body .h-root.h-root :is(
 .h-root .h-main-shell.brainstorm-full .h-bsfull-head {
   border-bottom-color: var(--h-tab-metal-border-soft) !important;
   background:
-    linear-gradient(90deg, rgba(125, 211, 252, 0.105), rgba(56, 189, 248, 0.040) 42%, rgba(255, 255, 255, 0.014)),
+    linear-gradient(90deg, color-mix(in srgb, var(--accent-strong), transparent 89.5%), color-mix(in srgb, var(--accent), transparent 96%) 42%, rgba(255, 255, 255, 0.014)),
     linear-gradient(180deg, rgba(8, 23, 38, 0.98), rgba(3, 10, 20, 0.98)) !important;
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.070),
     inset 0 -1px 0 rgba(0, 0, 0, 0.42),
-    0 1px 0 rgba(125, 211, 252, 0.035) !important;
+    0 1px 0 color-mix(in srgb, var(--accent-strong), transparent 96.5%) !important;
 }
 
 .h-root .h-main-shell.embed > .h-proposals-panel .h-proposals-workbench,
@@ -15270,7 +15270,7 @@ html body .h-root.h-root :is(
 .h-root .h-main-shell.brainstorm-full .h-bsfull-main,
 .h-root .h-main-shell.brainstorm-full .h-bsfull-partner-body {
   background:
-    radial-gradient(circle at 18% 0%, rgba(125, 211, 252, 0.044), transparent 28rem),
+    radial-gradient(circle at 18% 0%, color-mix(in srgb, var(--accent-strong), transparent 95.6%), transparent 28rem),
     linear-gradient(180deg, rgba(3, 12, 24, 0.82), rgba(2, 8, 18, 0.92)) !important;
 }
 
@@ -15282,9 +15282,9 @@ html body .h-root.h-root :is(
 .h-root .h-main-shell.embed > .experts-panel .experts-spec-md pre,
 .h-root .h-main-shell.embed > .h-insights-panel .h-insights-kpi,
 .h-root .h-main-shell.embed > .h-insights-panel .h-insights-mini-card {
-  border-color: rgba(125, 211, 252, 0.19) !important;
+  border-color: color-mix(in srgb, var(--accent-strong), transparent 81%) !important;
   background:
-    radial-gradient(circle at 14% 0%, rgba(125, 211, 252, 0.052), transparent 18rem),
+    radial-gradient(circle at 14% 0%, color-mix(in srgb, var(--accent-strong), transparent 94.8%), transparent 18rem),
     linear-gradient(180deg, rgba(8, 20, 34, 0.91), rgba(3, 10, 20, 0.96)) !important;
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.055),
@@ -15293,14 +15293,14 @@ html body .h-root.h-root :is(
 
 .h-root .h-main-shell.embed > .h-config-panel .h-config-tab,
 .h-root .h-main-shell.brainstorm-full .h-bsfull-sub {
-  border-color: rgba(125, 211, 252, 0.16) !important;
+  border-color: color-mix(in srgb, var(--accent-strong), transparent 84%) !important;
   background: linear-gradient(180deg, rgba(10, 25, 41, 0.90), rgba(3, 10, 20, 0.94)) !important;
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.055);
 }
 
 .h-root .h-main-shell.embed > .h-config-panel .h-config-tab:hover,
 .h-root .h-main-shell.brainstorm-full .h-bsfull-sub:hover {
-  border-color: rgba(125, 211, 252, 0.34) !important;
+  border-color: color-mix(in srgb, var(--accent-strong), transparent 66%) !important;
   background: linear-gradient(180deg, rgba(14, 35, 54, 0.96), rgba(5, 15, 28, 0.98)) !important;
 }
 
@@ -15310,11 +15310,11 @@ html body .h-root.h-root :is(
 .h-root .h-main-shell.brainstorm-full .h-bsfull-sub[data-state="active"],
 .h-root .h-main-shell.brainstorm-full .h-bsfull-sub[aria-selected="true"] {
   color: color-mix(in oklab, var(--fg), #7dd3fc 15%) !important;
-  border-color: rgba(56, 189, 248, 0.52) !important;
+  border-color: color-mix(in srgb, var(--accent), transparent 48%) !important;
   background: linear-gradient(180deg, rgba(18, 53, 73, 0.92), rgba(5, 18, 31, 0.98)) !important;
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.08),
-    0 0 18px rgba(56, 189, 248, 0.10) !important;
+    0 0 18px color-mix(in srgb, var(--accent), transparent 90%) !important;
 }
 
 .h-root .h-plugin-embed-shell,
@@ -15337,7 +15337,7 @@ html body .h-root.h-root :is(
 }
 
 .h-issues-filter.h-issues-filter--all {
-  border-color: rgba(56, 189, 248, 0.18);
+  border-color: color-mix(in srgb, var(--accent), transparent 82%);
   background: linear-gradient(180deg, rgba(11, 24, 36, 0.88), rgba(3, 10, 20, 0.96));
 }
 
@@ -15356,7 +15356,7 @@ html body .h-root.h-root :is(
 
 .h-issues-filter.h-issues-filter--all.on {
   color: color-mix(in oklab, var(--accent-cool, #7dd3fc), white 18%) !important;
-  border-color: rgba(56, 189, 248, 0.42) !important;
+  border-color: color-mix(in srgb, var(--accent), transparent 58%) !important;
   background:
     radial-gradient(circle at 18% 10%, rgba(255,255,255,0.14), transparent 34%),
     linear-gradient(180deg, rgba(18, 53, 73, 0.58), rgba(5, 18, 31, 0.96)) !important;
@@ -15377,7 +15377,7 @@ html body .h-root.h-root :is(
 }
 
 .h-issues-toolbar .h-issues-filter.h-issues-filter--all:not(.on) {
-  border-color: rgba(56, 189, 248, 0.22) !important;
+  border-color: color-mix(in srgb, var(--accent), transparent 78%) !important;
   background: linear-gradient(180deg, rgba(11, 24, 36, 0.88), rgba(3, 10, 20, 0.96)) !important;
 }
 
@@ -15563,7 +15563,7 @@ html body .h-root.h-root :is(
   font-size: 14px;
   font-weight: 750;
   line-height: 1.08;
-  text-shadow: 0 1px 10px rgba(125, 211, 252, 0.12);
+  text-shadow: 0 1px 10px color-mix(in srgb, var(--accent-strong), transparent 88%);
 }
 
 .h-active-agents-row.is-idle .h-active-agents-idle {
@@ -15689,7 +15689,7 @@ html body .h-root.h-root :is(
 .h-feature-peek-overlay,
 .h-issue-detail-overlay {
   background:
-    radial-gradient(circle at 75% 18%, rgba(56, 189, 248, 0.16), transparent 30rem),
+    radial-gradient(circle at 75% 18%, color-mix(in srgb, var(--accent), transparent 84%), transparent 30rem),
     radial-gradient(circle at 82% 84%, rgba(45, 212, 191, 0.10), transparent 28rem),
     rgba(2, 8, 16, 0.72) !important;
   backdrop-filter: blur(9px) saturate(135%);
@@ -15739,7 +15739,7 @@ html body .h-root.h-root :is(
 .h-feature-peek-drawer > div:nth-of-type(2),
 .h-issue-detail-drawer > div:nth-of-type(2) {
   background:
-    linear-gradient(180deg, rgba(125, 211, 252, 0.030), transparent 16rem),
+    linear-gradient(180deg, color-mix(in srgb, var(--accent-strong), transparent 97%), transparent 16rem),
     linear-gradient(90deg, rgba(255, 255, 255, 0.018), transparent 34%),
     transparent !important;
   scrollbar-color: color-mix(in oklab, var(--h-popout-accent), transparent 45%) transparent;
@@ -15787,7 +15787,7 @@ html body .h-root.h-root :is(
   padding: 6px 9px;
   border: 1px solid color-mix(in oklab, var(--h-popout-accent), transparent 78%);
   border-radius: 999px;
-  background: rgba(125, 211, 252, 0.045);
+  background: color-mix(in srgb, var(--accent-strong), transparent 95.5%);
 }
 
 .h-feature-peek-drawer pre,
@@ -15859,7 +15859,7 @@ html body .h-root.h-root :is(
 .h-issue-detail-overlay {
   z-index: 1760 !important;
   background:
-    radial-gradient(circle at 72% 14%, rgba(56, 189, 248, 0.18), transparent 24rem),
+    radial-gradient(circle at 72% 14%, color-mix(in srgb, var(--accent), transparent 82%), transparent 24rem),
     radial-gradient(circle at 78% 82%, rgba(45, 212, 191, 0.12), transparent 24rem),
     rgba(1, 7, 14, 0.84) !important;
   backdrop-filter: blur(14px) saturate(150%);
@@ -15914,7 +15914,7 @@ html body .h-root.h-root :is(
   border-color: color-mix(in oklab, var(--h-popout-accent), transparent 70%) !important;
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.058), rgba(255, 255, 255, 0.012)),
-    linear-gradient(135deg, rgba(125, 211, 252, 0.05), transparent 42%),
+    linear-gradient(135deg, color-mix(in srgb, var(--accent-strong), transparent 95%), transparent 42%),
     rgba(6, 14, 25, 0.92) !important;
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.075),
@@ -15956,7 +15956,7 @@ html body .h-root.h-root :is(
 
 .h-issue-detail-drawer .h-issue-id {
   border: 1px solid color-mix(in oklab, var(--h-popout-accent), transparent 68%);
-  background: rgba(125, 211, 252, 0.05);
+  background: color-mix(in srgb, var(--accent-strong), transparent 95%);
 }
 
 .h-feature-peek-drawer button,
@@ -16009,7 +16009,7 @@ html body .h-root.h-root :is(
   border-radius: 999px;
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.036), rgba(255, 255, 255, 0.008)),
-    rgba(125, 211, 252, 0.04) !important;
+    color-mix(in srgb, var(--accent-strong), transparent 96%) !important;
 }
 
 .h-feature-peek-drawer > div:nth-of-type(2) > div:first-child,
@@ -16165,7 +16165,7 @@ html body .h-root.h-root :is(
   padding: 2px 8px;
   border: 1px solid color-mix(in oklab, var(--h-popout-accent), transparent 82%);
   border-radius: 999px;
-  background: rgba(125, 211, 252, 0.045);
+  background: color-mix(in srgb, var(--accent-strong), transparent 95.5%);
 }
 
 .h-feature-status-controls {
@@ -16246,17 +16246,17 @@ html body .h-root.h-root :is(
 
 .h-root .h-dashboard-panel-anchor[data-dashboard-panel="issues"] .h-issues-filter.h-issues-filter--all:not(.on) {
   color: color-mix(in oklab, #7dd3fc, white 8%) !important;
-  border-color: rgba(56, 189, 248, 0.34) !important;
+  border-color: color-mix(in srgb, var(--accent), transparent 66%) !important;
   background:
     radial-gradient(circle at 18% 12%, rgba(186, 230, 253, 0.12), transparent 34%),
     linear-gradient(180deg, rgba(10, 36, 56, 0.94), rgba(3, 10, 20, 0.98)) !important;
 }
 
 .h-root .h-dashboard-panel-anchor[data-dashboard-panel="issues"] .h-issues-filter.h-issues-filter--all.on {
-  border-color: rgba(56, 189, 248, 0.56) !important;
+  border-color: color-mix(in srgb, var(--accent), transparent 44%) !important;
   box-shadow:
     inset 0 1px 0 rgba(255,255,255,0.10),
-    0 0 18px rgba(56, 189, 248, 0.16) !important;
+    0 0 18px color-mix(in srgb, var(--accent), transparent 84%) !important;
 }
 
 .h-root .h-dashboard-panel-anchor[data-dashboard-panel="issues"] .h-issues-filter.h-issues-filter--closed:not(.on) {
@@ -16494,7 +16494,7 @@ html body .h-root.h-root :is(
 .h-insights-panel {
   background:
     radial-gradient(circle at 12% 0%, rgba(45, 212, 191, 0.12), transparent 28rem),
-    radial-gradient(circle at 90% 12%, rgba(125, 211, 252, 0.09), transparent 22rem),
+    radial-gradient(circle at 90% 12%, color-mix(in srgb, var(--accent-strong), transparent 91%), transparent 22rem),
     linear-gradient(180deg, rgba(4, 13, 25, 0.98), rgba(2, 8, 18, 0.98)) !important;
 }
 
@@ -16590,10 +16590,10 @@ html body .h-root.h-root :is(
 
 .h-insights-panel .h-insights-section {
   padding: 14px;
-  border: 1px solid rgba(125, 211, 252, 0.16);
+  border: 1px solid color-mix(in srgb, var(--accent-strong), transparent 84%);
   border-radius: 15px;
   background:
-    radial-gradient(circle at 10% 0%, rgba(125, 211, 252, 0.07), transparent 22rem),
+    radial-gradient(circle at 10% 0%, color-mix(in srgb, var(--accent-strong), transparent 93%), transparent 22rem),
     linear-gradient(180deg, rgba(8, 22, 36, 0.78), rgba(3, 10, 20, 0.88));
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.055),
@@ -16667,7 +16667,7 @@ html body .h-root.h-root :is(
   grid-template-columns: minmax(106px, 0.34fr) minmax(0, 1fr) 48px !important;
   min-height: 32px;
   padding: 5px 7px;
-  border: 1px solid rgba(125, 211, 252, 0.085);
+  border: 1px solid color-mix(in srgb, var(--accent-strong), transparent 91.5%);
   border-radius: 10px;
   background: rgba(255, 255, 255, 0.018);
 }
@@ -16691,7 +16691,7 @@ html body .h-root.h-root :is(
 
 .h-insights-panel .h-insights-status-fill {
   border-radius: inherit;
-  box-shadow: inset 0 1px 0 rgba(255,255,255,0.22), 0 0 16px rgba(125, 211, 252, 0.10);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.22), 0 0 16px color-mix(in srgb, var(--accent-strong), transparent 90%);
 }
 
 .h-insights-panel .h-insights-status-count {
@@ -16758,7 +16758,7 @@ html body .h-root.h-root :is(
   overflow: hidden;
   color: var(--fg);
   background:
-    radial-gradient(circle at 18% 0%, rgba(56, 189, 248, 0.16), transparent 28%),
+    radial-gradient(circle at 18% 0%, color-mix(in srgb, var(--accent), transparent 84%), transparent 28%),
     radial-gradient(circle at 86% 12%, rgba(251, 191, 36, 0.065), transparent 26%),
     linear-gradient(180deg, rgba(255,255,255,0.030), rgba(255,255,255,0.010)),
     var(--bg);
@@ -16781,7 +16781,7 @@ html body .h-root.h-root :is(
   padding: 12px 16px;
   border-bottom: 1px solid var(--border);
   background:
-    radial-gradient(circle at 14% 0%, rgba(125, 211, 252, 0.13), transparent 14rem),
+    radial-gradient(circle at 14% 0%, color-mix(in srgb, var(--accent-strong), transparent 87%), transparent 14rem),
     linear-gradient(180deg, rgba(13, 24, 41, 0.96), rgba(6, 13, 24, 0.90));
   box-shadow: 0 18px 42px rgba(0,0,0,0.30), inset 0 1px rgba(255,255,255,0.06);
 }
@@ -16914,9 +16914,9 @@ html body .h-root.h-root :is(
   color: var(--accent-cool) !important;
   border-color: color-mix(in oklab, var(--accent), white 10%) !important;
   background:
-    radial-gradient(circle at 50% 0%, rgba(56,189,248,0.24), transparent 60%),
-    rgba(56,189,248,0.10) !important;
-  box-shadow: inset 0 1px rgba(255,255,255,0.10), 0 0 16px rgba(56,189,248,0.08);
+    radial-gradient(circle at 50% 0%, color-mix(in srgb, var(--accent), transparent 76%), transparent 60%),
+    color-mix(in srgb, var(--accent), transparent 90%) !important;
+  box-shadow: inset 0 1px rgba(255,255,255,0.10), 0 0 16px color-mix(in srgb, var(--accent), transparent 92%);
 }
 
 .d-shell {
@@ -16986,7 +16986,7 @@ html body .h-root.h-root :is(
   gap: 6px;
   padding: 10px 11px;
   text-align: left;
-  border: 1px solid rgba(125, 211, 252, 0.10);
+  border: 1px solid color-mix(in srgb, var(--accent-strong), transparent 90%);
   border-radius: 12px;
   background: rgba(255,255,255,0.025);
   color: var(--fg);
@@ -16996,11 +16996,11 @@ html body .h-root.h-root :is(
 .d-feature-row:hover,
 .d-feature-row[data-active="true"] {
   background:
-    linear-gradient(90deg, rgba(56,189,248,0.105), rgba(45,212,191,0.035)),
+    linear-gradient(90deg, color-mix(in srgb, var(--accent), transparent 89.5%), rgba(45,212,191,0.035)),
     rgba(255,255,255,0.035);
   border-color: color-mix(in oklab, var(--accent), transparent 54%);
   transform: translateY(-1px);
-  box-shadow: 0 10px 22px rgba(0,0,0,0.20), inset 3px 0 rgba(56,189,248,0.55);
+  box-shadow: 0 10px 22px rgba(0,0,0,0.20), inset 3px 0 color-mix(in srgb, var(--accent), transparent 45%);
 }
 
 .d-feature-title {
@@ -17038,7 +17038,7 @@ html body .h-root.h-root :is(
   border: 1px solid var(--border);
   border-radius: 16px;
   background:
-    radial-gradient(circle at 0% 0%, rgba(125, 211, 252, 0.10), transparent 12rem),
+    radial-gradient(circle at 0% 0%, color-mix(in srgb, var(--accent-strong), transparent 90%), transparent 12rem),
     linear-gradient(135deg, rgba(251,191,36,0.045), transparent 38%, rgba(45,212,191,0.055)),
     var(--frost),
     rgba(8, 20, 34, 0.82);
@@ -17093,7 +17093,7 @@ html body .h-root.h-root :is(
 .d-chip--pending {
   color: color-mix(in oklab, var(--accent-strong), white 12%);
   border-color: color-mix(in oklab, var(--accent), transparent 58%);
-  background: rgba(56,189,248,0.10);
+  background: color-mix(in srgb, var(--accent), transparent 90%);
 }
 
 .d-chip--pending {
@@ -17145,8 +17145,8 @@ html body .h-root.h-root :is(
   border: 1px solid var(--border-strong);
   border-radius: 16px;
   color: var(--accent-strong);
-  background: rgba(56,189,248,0.10);
-  box-shadow: 0 0 24px rgba(56,189,248,0.12);
+  background: color-mix(in srgb, var(--accent), transparent 90%);
+  box-shadow: 0 0 24px color-mix(in srgb, var(--accent), transparent 88%);
   font-size: 24px;
 }
 
@@ -17161,7 +17161,7 @@ html body .h-root.h-root :is(
 .d-token-card,
 .d-registry-row,
 .d-memo-row {
-  border: 1px solid rgba(125, 211, 252, 0.11);
+  border: 1px solid color-mix(in srgb, var(--accent-strong), transparent 89%);
   border-radius: 12px;
   background: rgba(2, 8, 16, 0.34);
   box-shadow: inset 0 1px rgba(255,255,255,0.04);
@@ -17241,7 +17241,7 @@ html body .h-root.h-root :is(
   text-overflow: ellipsis;
   white-space: nowrap;
   padding: 3px 8px;
-  border: 1px solid rgba(125, 211, 252, 0.14);
+  border: 1px solid color-mix(in srgb, var(--accent-strong), transparent 86%);
   border-radius: 999px;
   background: rgba(2, 8, 16, 0.46);
   color: var(--fg-mute);
@@ -17327,7 +17327,7 @@ html body .h-root.h-root :is(
 
 .d-search-input:focus {
   border-color: var(--accent);
-  box-shadow: 0 0 0 3px rgba(56,189,248,0.14);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent), transparent 86%);
 }
 
 .d-registry-row {
@@ -17374,7 +17374,7 @@ html body .h-root.h-root :is(
 .d-state-row--info {
   color: color-mix(in oklab, var(--accent-strong), white 12%);
   border-color: color-mix(in oklab, var(--accent), transparent 60%);
-  background: rgba(56,189,248,0.08);
+  background: color-mix(in srgb, var(--accent), transparent 92%);
 }
 
 .d-state-row--bad {
@@ -17426,7 +17426,7 @@ html body .h-root.h-root :is(
 .d-content input:focus {
   outline: none !important;
   border-color: var(--accent) !important;
-  box-shadow: 0 0 0 3px rgba(56,189,248,0.14) !important;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent), transparent 86%) !important;
 }
 
 .d-content button {
@@ -17531,7 +17531,7 @@ html body .h-root.h-root :is(
   box-shadow:
     0 12px 30px rgba(0, 0, 0, 0.38),
     0 0 0 1px rgba(7, 15, 27, 0.78),
-    0 0 22px rgba(56, 189, 248, 0.18),
+    0 0 22px color-mix(in srgb, var(--accent), transparent 82%),
     inset 0 1px 0 rgba(255, 255, 255, 0.22),
     inset 0 -1px 0 rgba(0, 0, 0, 0.40) !important;
   backdrop-filter: blur(12px) saturate(1.12);
@@ -17546,7 +17546,7 @@ html body .h-root.h-root :is(
 .h-top-collapse-btn.h-top-collapse-inline::before {
   background:
     linear-gradient(105deg, transparent 0 26%, rgba(255, 255, 255, 0.14) 42%, transparent 58%),
-    radial-gradient(circle at 50% 108%, rgba(56, 189, 248, 0.20), transparent 54%) !important;
+    radial-gradient(circle at 50% 108%, color-mix(in srgb, var(--accent), transparent 80%), transparent 54%) !important;
   opacity: 0.82 !important;
 }
 
@@ -17567,8 +17567,8 @@ html body .h-root.h-root :is(
     linear-gradient(180deg, rgba(12, 24, 40, 0.98), rgba(7, 14, 25, 0.99)) !important;
   box-shadow:
     0 12px 28px rgba(0, 0, 0, 0.34),
-    0 0 0 1px rgba(125, 211, 252, 0.14),
-    0 0 22px rgba(56, 189, 248, 0.18),
+    0 0 0 1px color-mix(in srgb, var(--accent-strong), transparent 86%),
+    0 0 22px color-mix(in srgb, var(--accent), transparent 82%),
     inset 0 1px 0 rgba(255, 255, 255, 0.18) !important;
 }
 
@@ -17582,8 +17582,8 @@ html body .h-root.h-root :is(
   padding: 2px !important;
   border-width: 1px !important;
   border-color: rgba(103, 232, 249, 0.42) !important;
-  background: rgba(56, 189, 248, 0.18) !important;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.18), 0 0 12px rgba(56, 189, 248, 0.20) !important;
+  background: color-mix(in srgb, var(--accent), transparent 82%) !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.18), 0 0 12px color-mix(in srgb, var(--accent), transparent 80%) !important;
 }
 
 .h-top-collapse-btn.h-top-collapse-inline .h-top-collapse-label {
@@ -17622,8 +17622,8 @@ html body .h-root.h-root :is(
 }
 
 .h-top-collapse-btn[data-collapsed="false"] .h-top-collapse-state {
-  border-color: rgba(125, 211, 252, 0.30);
-  background: rgba(56, 189, 248, 0.12);
+  border-color: color-mix(in srgb, var(--accent-strong), transparent 70%);
+  background: color-mix(in srgb, var(--accent), transparent 88%);
   color: color-mix(in oklab, #dbeafe, white 6%) !important;
 }
 
@@ -17714,7 +17714,7 @@ body > .h-top-collapse-btn.h-top-collapse-inline .h-top-collapse-state {
 .h-feature-peek-overlay,
 .h-issue-detail-overlay {
   background:
-    radial-gradient(circle at 68% 10%, rgba(56, 189, 248, 0.20), transparent 26rem),
+    radial-gradient(circle at 68% 10%, color-mix(in srgb, var(--accent), transparent 80%), transparent 26rem),
     radial-gradient(circle at 86% 78%, rgba(45, 212, 191, 0.14), transparent 24rem),
     linear-gradient(90deg, rgba(2, 8, 16, 0.55), rgba(2, 8, 16, 0.88)) !important;
   backdrop-filter: blur(16px) saturate(155%) brightness(0.82) !important;
@@ -17754,8 +17754,8 @@ body > .h-top-collapse-btn.h-top-collapse-inline .h-top-collapse-state {
   pointer-events: none;
   opacity: 0.34;
   background-image:
-    linear-gradient(rgba(125, 211, 252, 0.055) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(125, 211, 252, 0.045) 1px, transparent 1px);
+    linear-gradient(color-mix(in srgb, var(--accent-strong), transparent 94.5%) 1px, transparent 1px),
+    linear-gradient(90deg, color-mix(in srgb, var(--accent-strong), transparent 95.5%) 1px, transparent 1px);
   background-size: 56px 56px;
   mask-image: linear-gradient(90deg, rgba(0,0,0,0.84), rgba(0,0,0,0.20));
 }
@@ -17814,7 +17814,7 @@ body > .h-top-collapse-btn.h-top-collapse-inline .h-top-collapse-state {
 .h-issue-detail-drawer .h-drawer-body {
   padding: 20px 22px 24px !important;
   background:
-    linear-gradient(180deg, rgba(125, 211, 252, 0.035), transparent 14rem),
+    linear-gradient(180deg, color-mix(in srgb, var(--accent-strong), transparent 96.5%), transparent 14rem),
     transparent !important;
   scrollbar-color: color-mix(in oklab, var(--h-popout-accent), transparent 38%) transparent !important;
 }

@@ -214,18 +214,18 @@ const TOGGLE_CSS = `
   letter-spacing: 0.04em;
   text-transform: uppercase;
   background: rgba(255,255,255,0.04);
-  border: 1px solid var(--border, rgba(125, 211, 252, 0.20));
+  border: 1px solid var(--border, color-mix(in srgb, var(--accent-strong), transparent 80%));
   color: var(--fg-mute, #94a3b8);
   cursor: pointer;
   transition: background 140ms ease, border-color 140ms ease, color 140ms ease;
 }
 .op-active-toggle:hover {
-  background: rgba(125, 211, 252, 0.10);
+  background: color-mix(in srgb, var(--accent-strong), transparent 90%);
   color: var(--fg, #e7eef7);
 }
 .op-active-toggle--active {
-  background: rgba(56, 189, 248, 0.14);
-  border-color: rgba(56, 189, 248, 0.50);
+  background: color-mix(in srgb, var(--accent), transparent 86%);
+  border-color: color-mix(in srgb, var(--accent), transparent 50%);
   color: var(--accent-strong, #7dd3fc);
 }
 .op-active-toggle--passive {
@@ -253,12 +253,12 @@ const TOGGLE_CSS = `
 }
 .op-active-toggle-dot--pulsing {
   animation: op-active-pulse 1.25s ease-in-out infinite;
-  box-shadow: 0 0 0 0 rgba(56, 189, 248, 0.6);
+  box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent), transparent 40%);
 }
 @keyframes op-active-pulse {
-  0%   { box-shadow: 0 0 0 0 rgba(56, 189, 248, 0.55); transform: scale(1); }
-  60%  { box-shadow: 0 0 0 6px rgba(56, 189, 248, 0);  transform: scale(1.06); }
-  100% { box-shadow: 0 0 0 0 rgba(56, 189, 248, 0);    transform: scale(1); }
+  0%   { box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent), transparent 45%); transform: scale(1); }
+  60%  { box-shadow: 0 0 0 6px color-mix(in srgb, var(--accent), transparent 100%);  transform: scale(1.06); }
+  100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent), transparent 100%);    transform: scale(1); }
 }
 @media (prefers-reduced-motion: reduce) {
   .op-active-toggle-dot--pulsing { animation: none; }

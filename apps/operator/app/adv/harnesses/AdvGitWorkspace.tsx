@@ -50,7 +50,7 @@ export default function AdvGitWorkspace() {
           gap: 8px;
           padding: 6px 10px;
           flex-shrink: 0;
-          border-bottom: 1px solid var(--border, rgba(125, 211, 252, 0.15));
+          border-bottom: 1px solid var(--border, color-mix(in srgb, var(--accent-strong), transparent 85%));
         }
         .pc-adv-git__dock {
           flex: 1;

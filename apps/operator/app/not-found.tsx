@@ -7,10 +7,10 @@ const frostCard: CSSProperties = {
   width: 'min(100%, 760px)',
   margin: '0 auto 0 0',
   padding: 'clamp(22px, 4vw, 38px)',
-  border: '1px solid rgba(125, 211, 252, 0.26)',
+  border: '1px solid color-mix(in srgb, var(--accent-strong), transparent 74%)',
   borderRadius: 30,
   background:
-    'radial-gradient(circle at 18% 10%, rgba(125, 211, 252, 0.16), transparent 32%), linear-gradient(180deg, rgba(255,255,255,0.070), rgba(255,255,255,0.024)), rgba(7, 16, 29, 0.78)',
+    'radial-gradient(circle at 18% 10%, color-mix(in srgb, var(--accent-strong), transparent 84%), transparent 32%), linear-gradient(180deg, rgba(255,255,255,0.070), rgba(255,255,255,0.024)), rgba(7, 16, 29, 0.78)',
   boxShadow:
     '0 28px 90px rgba(0, 0, 0, 0.38), inset 0 1px 0 rgba(255,255,255,0.08)',
 };
@@ -34,7 +34,7 @@ export default function NotFound() {
             position: 'absolute',
             inset: 0,
             background:
-              'linear-gradient(120deg, rgba(255,255,255,0.055), transparent 28%, rgba(125,211,252,0.06) 58%, transparent 78%)',
+              'linear-gradient(120deg, rgba(255,255,255,0.055), transparent 28%, color-mix(in srgb, var(--accent-strong), transparent 94%) 58%, transparent 78%)',
             pointerEvents: 'none',
           }}
         />
@@ -65,7 +65,7 @@ export default function NotFound() {
                   inset: '8%',
                   borderRadius: '50%',
                   background:
-                    'radial-gradient(circle, rgba(186,230,253,0.38), rgba(56,189,248,0.10) 48%, transparent 70%)',
+                    'radial-gradient(circle, rgba(186,230,253,0.38), color-mix(in srgb, var(--accent), transparent 90%) 48%, transparent 70%)',
                   filter: 'blur(6px)',
                 }}
               />
@@ -76,8 +76,8 @@ export default function NotFound() {
                   inset: '15% 10% auto',
                   height: 82,
                   borderRadius: '999px',
-                  border: '1px solid rgba(125, 211, 252, 0.24)',
-                  background: 'rgba(125, 211, 252, 0.08)',
+                  border: '1px solid color-mix(in srgb, var(--accent-strong), transparent 76%)',
+                  background: 'color-mix(in srgb, var(--accent-strong), transparent 92%)',
                   transform: 'rotate(-8deg)',
                 }}
               />
@@ -93,7 +93,7 @@ export default function NotFound() {
                   width: 'min(156px, 48vw)',
                   height: 'auto',
                   filter:
-                    'drop-shadow(0 22px 34px rgba(0,0,0,0.34)) drop-shadow(0 0 20px rgba(125,211,252,0.22))',
+                    'drop-shadow(0 22px 34px rgba(0,0,0,0.34)) drop-shadow(0 0 20px color-mix(in srgb, var(--accent-strong), transparent 78%))',
                 }}
               />
               <span
@@ -103,7 +103,7 @@ export default function NotFound() {
                   right: '5%',
                   top: '14%',
                   padding: '6px 10px',
-                  border: '1px solid rgba(125, 211, 252, 0.28)',
+                  border: '1px solid color-mix(in srgb, var(--accent-strong), transparent 72%)',
                   borderRadius: 999,
                   background: 'rgba(7, 16, 29, 0.78)',
                   color: 'var(--accent-cool)',
@@ -139,7 +139,7 @@ export default function NotFound() {
                 lineHeight: 0.98,
                 fontWeight: 900,
                 letterSpacing: '-0.045em',
-                textShadow: '0 0 26px rgba(125, 211, 252, 0.14)',
+                textShadow: '0 0 26px color-mix(in srgb, var(--accent-strong), transparent 86%)',
               }}
             >
               This page slipped past the cusp.
@@ -194,8 +194,8 @@ const chipStyle: CSSProperties = {
   alignItems: 'center',
   minHeight: 26,
   padding: '4px 9px',
-  border: '1px solid rgba(125, 211, 252, 0.18)',
+  border: '1px solid color-mix(in srgb, var(--accent-strong), transparent 82%)',
   borderRadius: 999,
-  background: 'rgba(125, 211, 252, 0.07)',
+  background: 'color-mix(in srgb, var(--accent-strong), transparent 93%)',
   boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.035)',
 };

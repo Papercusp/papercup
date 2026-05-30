@@ -172,7 +172,7 @@ export default function AdvLogsPanel({ params }: PanelComponentProps) {
             headerStyle={{
               background: 'var(--bg-2, rgba(255,255,255,0.045))',
               color: 'var(--fg-mute, #7f9bb4)',
-              borderBottom: '1px solid var(--border, rgba(125,211,252,0.15))',
+              borderBottom: '1px solid var(--border, color-mix(in srgb, var(--accent-strong), transparent 85%))',
               fontSize: 10,
               textTransform: 'uppercase',
               letterSpacing: '0.06em',
@@ -191,12 +191,12 @@ export default function AdvLogsPanel({ params }: PanelComponentProps) {
         .pc-adv-logs__bar {
           display: flex; align-items: center; gap: 4px;
           padding: 6px 8px; flex-shrink: 0;
-          border-bottom: 1px solid var(--border, rgba(125, 211, 252, 0.15));
+          border-bottom: 1px solid var(--border, color-mix(in srgb, var(--accent-strong), transparent 85%));
         }
         .pc-adv-logs__chip {
           padding: 2px 8px; font-size: 11px; color: var(--fg);
           background: transparent;
-          border: 1px solid var(--border, rgba(125, 211, 252, 0.15));
+          border: 1px solid var(--border, color-mix(in srgb, var(--accent-strong), transparent 85%));
           border-radius: 999px; cursor: pointer; text-transform: lowercase;
         }
         .pc-adv-logs__chip[aria-pressed="true"] {
@@ -207,7 +207,7 @@ export default function AdvLogsPanel({ params }: PanelComponentProps) {
           margin-left: 6px; flex: 1; min-width: 80px;
           padding: 2px 8px; font-size: 11px; color: var(--fg);
           background: var(--bg-2, rgba(255, 255, 255, 0.045));
-          border: 1px solid var(--border, rgba(125, 211, 252, 0.15));
+          border: 1px solid var(--border, color-mix(in srgb, var(--accent-strong), transparent 85%));
           border-radius: 6px;
         }
         .pc-adv-logs__source::placeholder { color: var(--fg-mute); }

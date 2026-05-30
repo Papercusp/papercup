@@ -22,7 +22,7 @@
 .pc-ops-intro {
   margin: 0 0 18px;
   padding: 16px 18px;
-  border: 1px solid rgba(125, 211, 252, 0.14);
+  border: 1px solid color-mix(in srgb, var(--accent-strong), transparent 86%);
   border-radius: 16px;
   background:
     linear-gradient(180deg, rgba(10, 20, 33, 0.94), rgba(7, 14, 24, 0.98));
@@ -62,7 +62,7 @@
 }
 .pc-ops-empty {
   background: rgba(8, 16, 28, 0.94);
-  border: 1px dashed rgba(125, 211, 252, 0.18);
+  border: 1px dashed color-mix(in srgb, var(--accent-strong), transparent 82%);
   border-radius: 14px;
   padding: 18px;
   color: rgba(214, 236, 248, 0.68);
@@ -77,7 +77,7 @@
 .pc-ops-card {
   background:
     linear-gradient(180deg, rgba(10, 20, 33, 0.94), rgba(7, 14, 24, 0.99));
-  border: 1px solid rgba(125, 211, 252, 0.14);
+  border: 1px solid color-mix(in srgb, var(--accent-strong), transparent 86%);
   border-radius: 16px;
   padding: 16px;
   display: flex;
@@ -120,7 +120,7 @@
 }
 .pc-ops-card-cmd {
   background: rgba(2, 6, 16, 0.94);
-  border: 1px solid rgba(125, 211, 252, 0.12);
+  border: 1px solid color-mix(in srgb, var(--accent-strong), transparent 88%);
   border-radius: 12px;
   padding: 10px 12px;
   font-size: 11px;
@@ -135,7 +135,7 @@
 
 .pc-ops-btn {
   appearance: none;
-  border: 1px solid rgba(125, 211, 252, 0.22);
+  border: 1px solid color-mix(in srgb, var(--accent-strong), transparent 78%);
   background: rgba(255, 255, 255, 0.04);
   color: #eff8ff;
   padding: 6px 12px;
@@ -152,11 +152,11 @@
 }
 .pc-ops-btn:active { transform: translateY(1px); }
 .pc-ops-btn-run {
-  background: rgba(56, 189, 248, 0.26);
+  background: color-mix(in srgb, var(--accent), transparent 74%);
   color: #f4fbff;
   border-color: rgba(103, 232, 249, 0.42);
 }
-.pc-ops-btn-run:hover { background: rgba(56, 189, 248, 0.34); }
+.pc-ops-btn-run:hover { background: color-mix(in srgb, var(--accent), transparent 66%); }
 .pc-ops-btn-stop {
   background: rgba(220, 38, 38, 0.22);
   color: #fff;
@@ -166,7 +166,7 @@
 .pc-ops-btn-ghost {
   background: transparent;
   color: rgba(214, 236, 248, 0.72);
-  border-color: rgba(125, 211, 252, 0.14);
+  border-color: color-mix(in srgb, var(--accent-strong), transparent 86%);
 }
 .pc-ops-btn-mini { padding: 3px 8px; font-size: 11px; }
 
@@ -190,7 +190,7 @@
 }
 .pc-ops-pill-idle { background: rgba(148, 163, 184, 0.16); color: rgba(214, 236, 248, 0.70); }
 .pc-ops-pill-running {
-  background: rgba(56, 189, 248, 0.18);
+  background: color-mix(in srgb, var(--accent), transparent 82%);
   color: #93ecff;
   position: relative;
   padding-left: 18px;
@@ -238,7 +238,7 @@
 
 .pc-ops-log-box {
   background: rgba(2, 6, 16, 0.94);
-  border: 1px solid rgba(125, 211, 252, 0.12);
+  border: 1px solid color-mix(in srgb, var(--accent-strong), transparent 88%);
   border-radius: 12px;
   padding: 10px 12px;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;

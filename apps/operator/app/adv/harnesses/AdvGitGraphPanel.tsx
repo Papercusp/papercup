@@ -255,7 +255,7 @@ export default function AdvGitGraphPanel({ params }: PanelComponentProps) {
             headerStyle={{
               background: 'var(--bg-2, rgba(255,255,255,0.045))',
               color: 'var(--fg-mute, #7f9bb4)',
-              borderBottom: '1px solid var(--border, rgba(125,211,252,0.15))',
+              borderBottom: '1px solid var(--border, color-mix(in srgb, var(--accent-strong), transparent 85%))',
               fontSize: 10,
               textTransform: 'uppercase',
               letterSpacing: '0.06em',
@@ -281,20 +281,20 @@ export default function AdvGitGraphPanel({ params }: PanelComponentProps) {
         .pc-adv-gitgrid__bar {
           display: flex; align-items: center; gap: 8px;
           padding: 6px 8px; flex-shrink: 0;
-          border-bottom: 1px solid var(--border, rgba(125, 211, 252, 0.15));
+          border-bottom: 1px solid var(--border, color-mix(in srgb, var(--accent-strong), transparent 85%));
         }
         .pc-adv-gitgrid__search {
           flex: 1; min-width: 0; min-height: 26px;
           padding: 0 9px; font: inherit; font-size: 12px;
           color: var(--fg); background: color-mix(in oklab, var(--bg-2), white 2%);
-          border: 1px solid var(--border, rgba(125, 211, 252, 0.15)); border-radius: 8px;
+          border: 1px solid var(--border, color-mix(in srgb, var(--accent-strong), transparent 85%)); border-radius: 8px;
           outline: none;
         }
-        .pc-adv-gitgrid__search:focus { border-color: var(--border-strong, rgba(125,211,252,0.32)); }
+        .pc-adv-gitgrid__search:focus { border-color: var(--border-strong, color-mix(in srgb, var(--accent-strong), transparent 68%)); }
         .pc-adv-gitgrid__limit {
           min-height: 26px; font: inherit; font-size: 12px; color: var(--fg);
           background: color-mix(in oklab, var(--bg-2), white 2%);
-          border: 1px solid var(--border, rgba(125,211,252,0.15)); border-radius: 8px;
+          border: 1px solid var(--border, color-mix(in srgb, var(--accent-strong), transparent 85%)); border-radius: 8px;
           padding: 0 6px; cursor: pointer;
         }
         .pc-adv-gitgrid__count { font-size: 10px; color: var(--fg-mute); font-variant-numeric: tabular-nums; }
@@ -333,7 +333,7 @@ export default function AdvGitGraphPanel({ params }: PanelComponentProps) {
         .pc-adv-gitgrid__ref {
           flex-shrink: 0; padding: 1px 6px; border-radius: 999px; font-size: 9.5px; font-weight: 650;
           font-family: ui-monospace, SFMono-Regular, Menlo, monospace; white-space: nowrap;
-          border: 1px solid var(--border, rgba(125,211,252,0.15));
+          border: 1px solid var(--border, color-mix(in srgb, var(--accent-strong), transparent 85%));
           color: var(--fg-dim);
         }
         .pc-adv-gitgrid__ref.is-head {
@@ -359,7 +359,7 @@ export default function AdvGitGraphPanel({ params }: PanelComponentProps) {
         .pc-adv-gitgrid__time { font-size: 10px; color: var(--fg-mute); font-variant-numeric: tabular-nums; }
         .pc-adv-gitgrid__detail {
           flex-shrink: 0; max-height: 46%; min-height: 0; overflow: auto;
-          border-top: 1px solid var(--border, rgba(125,211,252,0.15));
+          border-top: 1px solid var(--border, color-mix(in srgb, var(--accent-strong), transparent 85%));
           background: color-mix(in oklab, var(--bg-2), white 1%);
         }
         .pc-adv-gitgrid__empty { padding: 16px; font-size: 13px; color: var(--fg-mute); }

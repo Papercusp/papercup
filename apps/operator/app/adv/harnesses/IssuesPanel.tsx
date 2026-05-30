@@ -412,7 +412,7 @@ export default function IssuesPanel({ params, api }: PanelComponentProps) {
           headerStyle={{
             background: 'var(--bg-2, rgba(255,255,255,0.045))',
             color: 'var(--fg-mute, #7f9bb4)',
-            borderBottom: '1px solid var(--border, rgba(125,211,252,0.15))',
+            borderBottom: '1px solid var(--border, color-mix(in srgb, var(--accent-strong), transparent 85%))',
             fontSize: 10,
             textTransform: 'uppercase',
             letterSpacing: '0.06em',
@@ -438,7 +438,7 @@ export default function IssuesPanel({ params, api }: PanelComponentProps) {
           gap: 12px;
           align-items: center;
           padding: 8px 12px;
-          border-bottom: 1px solid var(--border, rgba(125, 211, 252, 0.15));
+          border-bottom: 1px solid var(--border, color-mix(in srgb, var(--accent-strong), transparent 85%));
           flex-wrap: wrap;
         }
         .pc-adv-issues__search {
@@ -448,7 +448,7 @@ export default function IssuesPanel({ params, api }: PanelComponentProps) {
           font-size: 12px;
           background: var(--bg-2, rgba(255, 255, 255, 0.045));
           color: var(--fg, #e7f7ff);
-          border: 1px solid var(--border-strong, rgba(125, 211, 252, 0.32));
+          border: 1px solid var(--border-strong, color-mix(in srgb, var(--accent-strong), transparent 68%));
           border-radius: 6px;
         }
         .pc-adv-issues__search:focus {
@@ -602,7 +602,7 @@ export default function IssuesPanel({ params, api }: PanelComponentProps) {
           padding: 3px;
           color: var(--fg-dim, #b9d4e8);
           background: var(--bg-2, rgba(255, 255, 255, 0.045));
-          border: 1px solid var(--border, rgba(125, 211, 252, 0.15));
+          border: 1px solid var(--border, color-mix(in srgb, var(--accent-strong), transparent 85%));
           border-radius: 4px;
           cursor: pointer;
         }
@@ -622,7 +622,7 @@ export default function IssuesPanel({ params, api }: PanelComponentProps) {
           padding: 4px 12px;
           font-size: 10px;
           color: var(--fg-mute, #7f9bb4);
-          border-top: 1px solid var(--border, rgba(125, 211, 252, 0.15));
+          border-top: 1px solid var(--border, color-mix(in srgb, var(--accent-strong), transparent 85%));
         }
         .pc-adv-issues__kbd {
           opacity: 0.85;
