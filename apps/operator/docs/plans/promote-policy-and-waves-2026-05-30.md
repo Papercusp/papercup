@@ -11,11 +11,17 @@ owner: avi@storewolf.com
 
 ## Now
 
-**State:** Just created. The design is settled (see Background/Design); first implementation step is the
-`## Promote` policy parser (Phase A). First real dogfood is the `restart` harness's
-`universal-schema-2026-05-30` plan (in the Restart repo, §9a) — which is blocked on this mechanism.
+**State:** Phase A landed — `## Promote` policy parser (`lib/agent-tools/plans/promote-policy.ts`) +
+zod schema + 8 unit tests green; typecheck clean. The pure `@papercusp/plan-parser` is untouched (parsing is
+operator-side off `ParsedPlan.raw`). First real dogfood is the `restart` `universal-schema-2026-05-30` plan
+(§9a), blocked on this mechanism.
 
-**Next:** P-001 — define + parse the `## Promote` policy block in the plan parser.
+**Next:** P-003 — schema migration (`wave` column on harness_features + `current_wave` cursor on
+harness_plan_status).
+
+**Follow-up (small):** `yaml` is imported by the parser but is an undeclared (stable, lockfile-present,
+already-bundled) transitive dep — declare it as a direct operator dep when the lockfile is next reconciled
+(adding to package.json now without a matching lockfile update would break `npm ci`).
 
 ## Background
 
@@ -78,13 +84,15 @@ See the consuming plan's §9a for the full dogfood narrative: `Restart/docs/plan
 
 ## Phase A — `## Promote` policy parser
 
-- **P-001** `todo` Define the `## Promote` policy schema (zod) + parse the block in the plan parser
-  (`apps/operator/lib/agent-tools/plans/parser.ts`) → `parsed.promote`: `{ target_harness?, defaults?,
-  waves: Array<{ id, blocked_by?, features?: StaticFeature[], generate?: { for_each, feature_template } }> }`.
-  StaticFeature = `{ title, from_items?, acceptance?, body?, assigned_role?, blocked_by?, order? }`. Tolerate
-  absence (no `## Promote` → `parsed.promote = null`); never throw on a malformed block (collect lint warnings).
-- **P-002** `todo` Parser unit tests: static-only wave, generative wave, blocked_by chains, malformed block →
-  warning not throw, no-block → null. Plus a `plans:lint` rule that validates a present `## Promote` block.
+- **P-001** `done` zod schema + `parsePromotePolicy(planRaw)` in
+  `apps/operator/lib/agent-tools/plans/promote-policy.ts` (operator-side, off `ParsedPlan.raw` — the pure
+  `@papercusp/plan-parser` is left dep-free). Extracts the `## Promote` section's fenced ```yaml|json block →
+  `{ target_harness?, defaults?, waves: [{ id, blocked_by?, features?, generate? }] }`. Fail-safe: no block →
+  null/no-warning; malformed → null + warnings (never throws). Validates unique wave ids + blocked_by refs.
+- **P-002** `done` 8 unit tests (`promote-policy.test.ts`): static/generative/blocked_by, unfenced + JSON
+  bodies, empty-wave + dup-id + bad-ref warnings, malformed-YAML no-throw, numbered heading. (Caught a real
+  bug: JS regex has no `\Z` — was truncating sections at a literal "Z".) A `plans:lint` rule for the block is
+  deferred to when lint touches promote (low priority — the parser already collects warnings).
 
 ## Phase B — feature wave tag + cursor (schema)
 

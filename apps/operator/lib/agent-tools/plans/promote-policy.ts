@@ -1,0 +1,171 @@
+/**
+ * `## Promote` policy — the plan-resident, fine-grained control over how a plan
+ * is promoted into a harness as features (promote-policy-and-waves-2026-05-30).
+ *
+ * The pure `@papercusp/plan-parser` is left untouched (it deliberately avoids a
+ * YAML dependency for its flat frontmatter); promote-policy parsing lives here,
+ * operator-side, and reads the full plan source (`ParsedPlan.raw`) to extract a
+ * `## Promote` section's fenced YAML block.
+ *
+ * Format (a fenced ```yaml block under `## Promote`):
+ *
+ *   ## Promote
+ *   ```yaml
+ *   target_harness: restart
+ *   waves:
+ *     - id: tier1
+ *       features:
+ *         - title: "Fix marketplace schema fetchers"
+ *           from_items: [P-001]
+ *           assigned_role: worker
+ *     - id: tier2
+ *       blocked_by: tier1
+ *       generate:
+ *         for_each: universal_type        # a named runtime set the promote step queries
+ *         feature_template:
+ *           title: "Universal schema: {item}"
+ *           acceptance: ["validates vs asinDetails for {item}"]
+ *   ```
+ *
+ * FAIL-SAFE: a missing block → `null` (no warning); a malformed block → `null`
+ * plus a warning. Never throws — a bad policy must not break plan parsing.
+ */
+import { z } from 'zod';
+import { parse as parseYaml } from 'yaml';
+
+// ── Schema ────────────────────────────────────────────────────────────────
+
+/** A statically-declared feature within a wave. */
+export const StaticFeatureSchema = z.object({
+  title: z.string().min(1).max(200),
+  /** Plan item ids this feature covers (marked done on promote). */
+  from_items: z.array(z.string().regex(/^P-\d{3,}$/, 'P-NNN form')).optional(),
+  acceptance: z.array(z.string().min(1)).optional(),
+  body: z.string().optional(),
+  /** Pipeline role hint carried into the feature import (worker/architect/…). */
+  assigned_role: z.string().optional(),
+  /** Within-wave ordering: titles/ids of features that must finish first. */
+  blocked_by: z.array(z.string().min(1)).optional(),
+  order: z.number().int().optional(),
+});
+export type StaticFeature = z.infer<typeof StaticFeatureSchema>;
+
+/** A generative rule: one feature per item in a runtime-resolved set. */
+export const GenerateRuleSchema = z.object({
+  /** Named runtime set the promote step resolves (e.g. 'universal_type'). */
+  for_each: z.string().min(1),
+  feature_template: z.object({
+    /** May contain `{item}` placeholders, substituted per generated feature. */
+    title: z.string().min(1),
+    acceptance: z.array(z.string().min(1)).optional(),
+    body: z.string().optional(),
+    assigned_role: z.string().optional(),
+    agent_hint: z.string().optional(),
+  }),
+});
+export type GenerateRule = z.infer<typeof GenerateRuleSchema>;
+
+export const WaveSchema = z
+  .object({
+    id: z.string().min(1),
+    /** Prior wave id this wave is blocked by (must drain before this promotes). */
+    blocked_by: z.string().optional(),
+    features: z.array(StaticFeatureSchema).optional(),
+    generate: GenerateRuleSchema.optional(),
+  })
+  .refine((w) => (w.features?.length ?? 0) > 0 || !!w.generate, {
+    message: 'a wave must declare features[] and/or generate',
+  });
+export type PromoteWave = z.infer<typeof WaveSchema>;
+
+export const PromotePolicySchema = z
+  .object({
+    /** Default target harness (a promote call may still override). */
+    target_harness: z.string().min(1).optional(),
+    defaults: z
+      .object({
+        assigned_role: z.string().optional(),
+        mark_items: z.boolean().optional(),
+      })
+      .optional(),
+    waves: z.array(WaveSchema).min(1),
+  })
+  .superRefine((p, ctx) => {
+    const ids = new Set<string>();
+    for (const w of p.waves) {
+      if (ids.has(w.id)) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, message: `duplicate wave id: ${w.id}` });
+      }
+      ids.add(w.id);
+    }
+    for (const w of p.waves) {
+      if (w.blocked_by && !ids.has(w.blocked_by)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `wave ${w.id} blocked_by unknown wave: ${w.blocked_by}`,
+        });
+      }
+    }
+  });
+export type PromotePolicy = z.infer<typeof PromotePolicySchema>;
+
+// ── Extraction ──────────────────────────────────────────────────────────────
+
+/**
+ * Extract the raw text body of the `## Promote` section from a plan's markdown,
+ * or null if absent. Section runs from the heading to the next `## ` or EOF.
+ */
+export function extractPromoteSection(planRaw: string): string | null {
+  // (JS regex has no `\Z`; find the heading then slice to the next `## ` or EOF.)
+  const heading = /^##\s+(?:\d+(?:\.\d+)?[a-z]?\.\s+)?Promote\b.*$/m.exec(planRaw);
+  if (!heading) return null;
+  const rest = planRaw.slice(heading.index + heading[0].length);
+  const next = /^##\s/m.exec(rest);
+  return next ? rest.slice(0, next.index) : rest;
+}
+
+/** Pull the first fenced ```yaml|yml|json block out of a section; else the
+ *  whole section body (YAML is a superset of JSON, so both parse). */
+function extractFencedBody(section: string): string {
+  const fence = /```(?:ya?ml|json)?\s*\n([\s\S]*?)```/m.exec(section);
+  return (fence ? fence[1] : section).trim();
+}
+
+export interface ParsePromoteResult {
+  policy: PromotePolicy | null;
+  warnings: string[];
+}
+
+/**
+ * Parse a plan's `## Promote` policy from its full markdown source. Fail-safe:
+ * returns `{ policy: null, warnings: [] }` when there is no `## Promote` section,
+ * and `{ policy: null, warnings: [...] }` (never throws) on a malformed one.
+ */
+export function parsePromotePolicy(planRaw: string): ParsePromoteResult {
+  const section = extractPromoteSection(planRaw);
+  if (section === null) return { policy: null, warnings: [] };
+
+  const body = extractFencedBody(section);
+  if (!body) return { policy: null, warnings: ['`## Promote` section is empty'] };
+
+  let raw: unknown;
+  try {
+    raw = parseYaml(body);
+  } catch (e) {
+    return { policy: null, warnings: [`\`## Promote\` YAML parse error: ${e instanceof Error ? e.message : String(e)}`] };
+  }
+
+  const parsed = PromotePolicySchema.safeParse(raw);
+  if (!parsed.success) {
+    return {
+      policy: null,
+      warnings: parsed.error.issues.map((i) => `\`## Promote\` invalid: ${i.path.join('.') || '(root)'}: ${i.message}`),
+    };
+  }
+  return { policy: parsed.data, warnings: [] };
+}
+
+/** Convenience: the policy or null, discarding warnings. */
+export function getPromotePolicy(planRaw: string): PromotePolicy | null {
+  return parsePromotePolicy(planRaw).policy;
+}
