@@ -10,6 +10,15 @@
  */
 
 import type { ComponentType } from 'react';
+// Wire types — the transport-facing shapes — are owned by the tool framework.
+// Imported for local use; re-exported below so plugin-sdk consumers are
+// unaffected. Dependency inversion: plan papercusp-tooldef-extraction (D-004).
+import type {
+  RolesQuota,
+  ToolResult,
+  ProgressCallback,
+  EmitCallback,
+} from '@papercusp/tooldef';
 
 /* ─────────────────────────────────────────────────────────────────────
  * Capabilities — declarative permission strings.
@@ -953,85 +962,11 @@ export type AgentRole =
   | 'operator'
   | (string & {}); // custom plugin-registered roles
 
-/**
- * Per-role quota windows. Workers run in chunks (small unit of work
- * within a feature), so their quota is keyed `perChunk`. Other roles
- * run per-orchestrator-run, so their quota is keyed `perRun`. Both
- * roles can additionally have `perDay` global caps.
- */
-export interface RolesQuota {
-  /** Worker quota window — calls allowed within one chunk. */
-  perChunk?: number;
-  /** Non-worker quota window — calls allowed within one orchestrator run. */
-  perRun?: number;
-  /** Global cap, regardless of role/window. */
-  perDay?: number;
-}
-
-/**
- * MCP-style tool result. Mirrors the MCP spec's `content[]` shape so
- * handlers can return text, images, or resource references.
- */
-export interface ToolResult {
-  content: Array<
-    | { type: 'text'; text: string }
-    | { type: 'image'; data: string; mimeType: string }
-    | { type: 'resource'; resource: { uri: string; mimeType?: string; text?: string } }
-  >;
-  /** Marks this tool call as failed for protocol purposes (handler may still throw). */
-  isError?: boolean;
-  /** Structured metadata returned alongside content (not shown to the model). */
-  _meta?: Record<string, unknown>;
-  /**
-   * Path to a scratch-dir artifact this tool produced. Recorded into
-   * `harness_shared.tool_invocations.output_ref` by the dispatcher; feeds
-   * the Intel panel's Pack/Diff sub-tabs and the artifacts query view.
-   *
-   * Tools that return large outputs (repomix.pack, code2prompt.diff,
-   * gitnexus.query when streaming a big result) should set this so the UI
-   * can deep-link to the file rather than re-rendering megabytes inline.
-   */
-  outputRef?: string;
-  /**
-   * Size in bytes of the artifact pointed to by `outputRef`. Falls back
-   * to `JSON.stringify(content).length` if `outputRef` is unset.
-   */
-  outputSize?: number;
-}
-
-/**
- * Progress callback passed to every tool handler. Calling this emits
- * an MCP `notifications/progress` event back through the agent's
- * MCP session and (in parallel) to the operator UI's Intel tab.
- *
- * `pct` is 0–100; pass `undefined` for indeterminate progress
- * (spinner-style). `msg` is a one-line human-readable status.
- *
- * Streaming is built-in to v1; tools that don't care simply never
- * call `progress()`. No manifest opt-in required.
- */
-export type ProgressCallback = (pct: number | undefined, msg?: string) => void;
-
-/**
- * Typed-event streaming callback. Tools call `ctx.emit(name, data)` to
- * fan a named event over the active transport:
- *   - HTTP/SSE → `event: <name>\ndata: <JSON(data)>` via @restart/sse
- *   - MCP → `notifications/papercusp/event` JSON-RPC notification
- *   - In-process → next value of an async iterator (when called via
- *     `tool.fnStream`)
- *
- * No-op when the transport has no event channel attached (e.g. a
- * non-streaming HTTP request, or an MCP client that didn't supply a
- * progressToken).
- *
- * `ctx.progress` is a thin alias over `ctx.emit('progress', ...)`.
- *
- * Reserved event names: `'done' | 'progress' | 'heartbeat' | 'result'`.
- * Tools using `defineTool({ events: {...} })` get compile-time errors
- * if they declare a reserved name. The runtime tolerates emits with
- * reserved names from old code paths but logs a warning.
- */
-export type EmitCallback = (name: string, data: unknown) => void;
+// `RolesQuota`, `ToolResult`, `ProgressCallback`, and `EmitCallback` now live
+// in `@papercusp/tooldef` (imported at the top of this file). Re-exported here
+// so existing `@papercusp/plugin-sdk` consumers keep importing them unchanged.
+// See plan papercusp-tooldef-extraction-2026-05-29 (D-003 no-shim, D-004 invert).
+export type { RolesQuota, ToolResult, ProgressCallback, EmitCallback };
 
 /**
  * Per-invocation context passed to every tool handler. Different from

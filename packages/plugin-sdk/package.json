@@ -15,5 +15,8 @@
       "import": "./src/iframe.ts",
       "default": "./src/iframe.ts"
     }
+  },
+  "dependencies": {
+    "@papercusp/tooldef": "*"
   }
 }
