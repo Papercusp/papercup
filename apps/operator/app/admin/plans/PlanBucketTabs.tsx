@@ -36,9 +36,14 @@ interface Props {
   query: string;
   /** Server-side cross-plan body-search hits, unioned into the query match. */
   searchHitSlugs?: ReadonlySet<string>;
+  /** True when the plan (Browse) view is active — chips highlight only then. */
+  isBrowse?: boolean;
+  /** Enter the plan (Browse) view. Fired on any chip click so selecting a
+   *  status from an item view returns to browsing plans. */
+  onBrowse?: () => void;
 }
 
-export default function PlanBucketTabs({ plans, query, searchHitSlugs }: Props) {
+export default function PlanBucketTabs({ plans, query, searchHitSlugs, isBrowse = true, onBrowse }: Props) {
   const [bucket, setBucket] = useQueryState(
     'pBucket',
     parseAsStringEnum<PlanBucket>(BUCKET_IDS),
@@ -70,17 +75,37 @@ export default function PlanBucketTabs({ plans, query, searchHitSlugs }: Props) 
     return acc;
   }, [plans, date, owner, archived, legacy, inbox, actionable, query, searchHitSlugs]);
 
+  const total = BUCKET_IDS.reduce((n, id) => n + counts[id], 0);
+
   return (
     <div className="pc-plan-buckets" role="group" aria-label="Plan lifecycle buckets">
+      {/* "All" — no status filter; also the entry into the plan (Browse)
+          view. Sits to the left of Draft. */}
+      <button
+        type="button"
+        className={`pc-plans__view pc-plan-bucket pc-plan-bucket--all ${isBrowse && bucket === null ? 'is-active' : ''}`}
+        aria-pressed={isBrowse && bucket === null}
+        onClick={() => {
+          onBrowse?.();
+          void setBucket(null);
+        }}
+        title="Show all plans — no status filter"
+      >
+        <span className="pc-plans__view-label">All</span>
+        <span className="pc-plans__view-count">{total}</span>
+      </button>
       {PLAN_BUCKETS.map(({ id, label }) => {
-        const active = bucket === id;
+        const active = isBrowse && bucket === id;
         return (
           <button
             key={id}
             type="button"
             className={`pc-plans__view pc-plan-bucket pc-plan-bucket--${id} ${active ? 'is-active' : ''}`}
             aria-pressed={active}
-            onClick={() => setBucket(active ? null : id)}
+            onClick={() => {
+              onBrowse?.();
+              void setBucket(active ? null : id);
+            }}
             title={active ? `Showing ${label} — click to show all buckets` : `Filter to ${label} plans`}
           >
             <span className="pc-plans__view-label">{label}</span>

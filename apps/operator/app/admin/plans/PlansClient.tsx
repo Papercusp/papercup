@@ -44,11 +44,8 @@ type PlanDetailTab = 'editor' | 'revisions' | 'agents';
 
 const PLANS_VIEW_IDS = ['list', 'inbox', 'actionable', 'blocked'] as const;
 
-/** Plan view — the "Plans" group. Superseded is NOT a view; it's a
- *  plan-status chip in PlanBucketTabs (after Shipped). */
-const PLAN_VIEWS: Array<{ id: PlansView; label: string; hint: string }> = [
-  { id: 'list', label: 'Browse', hint: 'Browse every plan; narrow by status with the chips below.' },
-];
+// Plan view ('list' / Browse) has no dedicated button — the "All" chip in
+// PlanBucketTabs (left of Draft) is the entry into it.
 
 /** Cross-plan item views — the "Items" group. */
 const ITEM_VIEWS: Array<{ id: ItemView; label: string; hint: string }> = [
@@ -369,21 +366,6 @@ export default function PlansClient() {
           >
             Plans
           </span>
-          <nav className="pc-plans__views" aria-label="Plan views">
-            {PLAN_VIEWS.map((v) => (
-              <button
-                key={v.id}
-                type="button"
-                className={`pc-plans__view pc-plans__view--${v.id} ${view === v.id ? 'is-active' : ''}`}
-                onClick={() => navView(v.id)}
-                aria-current={view === v.id ? 'page' : undefined}
-                title={v.hint}
-              >
-                <span className="pc-plans__view-label">{v.label}</span>
-                <span className="pc-plans__view-count">{viewCount(v.id, stats, planList.loading)}</span>
-              </button>
-            ))}
-          </nav>
 
           {harnessOptions.length > 1 ? (
             <div className="pc-plans__harness-filter">
@@ -420,6 +402,8 @@ export default function PlansClient() {
             plans={railVisiblePlans}
             query={q}
             searchHitSlugs={searchHitSlugs}
+            isBrowse={view === 'list'}
+            onBrowse={() => navView('list')}
           />
         </div>
 
