@@ -81,6 +81,7 @@
     "@octokit/rest": "^22.0.0",
     "@openai/agents-realtime": "^0.8.5",
     "@papercusp/backup": "file:../../packages/backup",
+    "@papercusp/coordination": "file:../../packages/coordination",
     "@papercusp/desktop-ipc": "file:../../packages/desktop-ipc",
     "@papercusp/docs-engine": "file:../../packages/docs-engine",
     "@papercusp/embedded-pg-discovery": "file:../../packages/embedded-pg-discovery",

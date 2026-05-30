@@ -38,12 +38,16 @@ import {
   subscriptionsFile,
 } from './paths';
 import type { AgentIdentity } from './identity';
+import {
+  patternToRegex,
+  matchesPattern,
+  type WatchTrigger,
+} from '@papercusp/coordination/core';
 
-export type WatchTrigger =
-  | 'lock_acquired'
-  | 'file_edited'
-  | 'plan_referenced'
-  | 'any';
+// The v1 path-glob matcher + WatchTrigger now live in coord-core;
+// re-exported so existing importers of this module stay unchanged.
+export { patternToRegex, matchesPattern };
+export type { WatchTrigger };
 
 export interface WatchInput {
   pattern: string;
@@ -150,23 +154,6 @@ export async function listWatches(
   }
   out.sort((a, b) => a.ts.localeCompare(b.ts) || a.msg_id.localeCompare(b.msg_id));
   return out;
-}
-
-/** Convert a v1 path-glob pattern to a regex. See module header for syntax. */
-export function patternToRegex(pattern: string): RegExp {
-  // Escape regex specials except *
-  const escaped = pattern.replace(/[.+^${}()|[\]\\]/g, '\\$&');
-  // Single pass: ** (crosses '/') -> .*  |  * (within a segment) -> [^/]*.
-  // The alternation tries ** first, so no placeholder byte is needed —
-  // earlier code used a literal \x01 sentinel, which made this whole
-  // source file register as binary to grep/diff tools.
-  const re = escaped.replace(/\*\*|\*/g, (m) => (m === '**' ? '.*' : '[^/]*'));
-  return new RegExp('^' + re + '$');
-}
-
-/** True if `path` matches the glob `pattern` (v1 syntax). */
-export function matchesPattern(pattern: string, path: string): boolean {
-  return patternToRegex(pattern).test(path);
 }
 
 export interface WatchMatch {

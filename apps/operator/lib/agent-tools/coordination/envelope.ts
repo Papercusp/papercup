@@ -1,88 +1,29 @@
 /**
- * envelope.ts — the typed line shape every coord/*.jsonl file written
- * by the new coordination tools shares.
+ * envelope.ts — operator-side re-export of the coordination envelope
+ * vocabulary, now owned by @papercusp/coordination/core (P-011).
  *
- * agent-coordination-architecture-v2 §6.2 / §6.3. This envelope
- * applies to NEW coord files only — the legacy rust-port `coord/*.jsonl`
- * lines (different schema: `kind` vs `action`) are out of scope and
- * are not parsed by this module.
- *
- * Append discipline (§6.2): each *.jsonl file has exactly one writer
- * (the per-agent outbox is the agent itself; plan-events.jsonl has
- * the operator route). With one writer there is no contention and
- * `fs.appendFile` is sufficient — no lock needed.
+ * `CoordKind` / `CoordEnvelope` / `newMsgId` come from the package. The
+ * two generic file-line primitives (`appendCoordLine` / `readCoordFile`)
+ * stay here because the host-side surfaces that DON'T go through the
+ * CoordEventLog seam — subscriptions (stays host-side per the locks
+ * agreement) and the /api/coord raw-file reader — use them directly on
+ * arbitrary paths. The extracted channels (messages/handoffs/
+ * escalations/plan-events) use the `coordLog` seam instead (see log.ts).
  */
 
 import { promises as fs } from 'node:fs';
 import { dirname } from 'node:path';
-import { randomUUID } from 'node:crypto';
 
-export type CoordKind =
-  | 'message'
-  | 'ack'
-  | 'subscribe'
-  | 'unsubscribe'
-  | 'notify'
-  | 'handoff'
-  | 'handoff_accepted'
-  | 'escalation'
-  | 'escalation_resolved'
-  | 'contract'
-  | 'plan_event';
-
-export interface CoordEnvelope {
-  /** ISO-8601 UTC. */
-  ts: string;
-  /** Time-prefixed unique id; sortable lexicographically. */
-  msg_id: string;
-  /** AgentIdentity.ownerId of the writer. */
-  from: string;
-  /** Recipients. ['*'] = broadcast; ownerIds otherwise; ['human'] = surface to the user. */
-  to: string[];
-  kind: CoordKind;
-  summary?: string;
-  body?: string;
-  files?: string[];
-  /** Head SHA at write time. */
-  commit?: string;
-  plan_slug?: string;
-  /** For acks / replies / resolutions — points at the originating msg_id. */
-  related_msg_id?: string;
-  /** Kind-specific extras (e.g. subscribe.pattern, escalation.options). */
-  [key: string]: unknown;
-}
+export {
+  type CoordKind,
+  type CoordEnvelope,
+  newMsgId,
+} from '@papercusp/coordination/core';
+import type { CoordEnvelope } from '@papercusp/coordination/core';
 
 /**
- * Generate a coord msg_id. Format: `<ms-base36>-<seq-base36>-<hex>` —
- * lex-monotonic by construction within one process even across
- * multiple ids minted in the same millisecond, so a downstream sort
- * by (ts, msg_id) is deterministic.
- *
- * v1 deviation from plan: the plan says "ULID". This uses a process-
- * local counter + UUIDv4 suffix instead of a real ULID encoder. The
- * field name is stable; future code can switch encoders without
- * changing readers.
- */
-let _lastMs = 0;
-let _seq = 0;
-export function newMsgId(): string {
-  const now = Date.now();
-  if (now === _lastMs) {
-    _seq += 1;
-  } else {
-    _lastMs = now;
-    _seq = 0;
-  }
-  const ms = now.toString(36).padStart(8, '0');
-  const seq = _seq.toString(36).padStart(4, '0');
-  const rnd = randomUUID().replace(/-/g, '');
-  return `${ms}-${seq}-${rnd}`;
-}
-
-/**
- * Append a typed envelope to a coord file. Creates the parent
- * directory lazily. Caller's responsibility: only call from the file's
- * one writer (e.g. the agent's own outbox).
+ * Append a typed envelope to a coord file. Creates the parent directory
+ * lazily. Caller's responsibility: only call from the file's one writer.
  */
 export async function appendCoordLine(
   filepath: string,
@@ -94,9 +35,8 @@ export async function appendCoordLine(
 }
 
 /**
- * Read all envelopes from a coord file. Malformed lines are skipped
- * (the reader is forgiving). Missing file returns []. Order: file
- * order = write order = time order (per-writer monotonic).
+ * Read all envelopes from a coord file. Malformed lines are skipped.
+ * Missing file returns []. Order: file order = write order = time order.
  */
 export async function readCoordFile(
   filepath: string,
@@ -116,7 +56,7 @@ export async function readCoordFile(
       const obj = JSON.parse(trimmed);
       if (obj && typeof obj === 'object') out.push(obj as CoordEnvelope);
     } catch {
-      // Skip malformed lines. Logged at the call site if needed.
+      // Skip malformed lines.
     }
   }
   return out;
