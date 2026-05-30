@@ -75,7 +75,10 @@ export default function CoordDashboard() {
 
 interface HookErrorRecord {
   ts: string;
-  handler: 'tool_call' | 'tool_result';
+  // OMP coord-hook: 'tool_call' | 'tool_result'. Claude/Codex cc/ hooks:
+  // 'pretooluse' | 'posttooluse'. Same marker file, either source — keep in
+  // sync with the route union in routes/su-locks/hook-health.ts.
+  handler: 'tool_call' | 'tool_result' | 'pretooluse' | 'posttooluse';
   phase: 'connect' | 'http' | 'parse';
   detail: string;
   operator_url: string;
@@ -89,9 +92,9 @@ interface HookHealthResponse {
 const STALE_WINDOW_MS = 5 * 60_000;
 
 /**
- * Renders a banner ONLY when the OMP tool_call hook is currently
- * failing open (unhealthy AND the error happened within the last
- * 5 minutes). Silent otherwise — no banner spam during normal
+ * Renders a banner ONLY when a lock-enforcement hook (OMP coord-hook or
+ * the Claude/Codex cc hooks) is currently failing open (unhealthy AND the
+ * error happened within the last 5 minutes). Silent otherwise — no banner spam during normal
  * operation.
  *
  * Polls /api/su-locks/hook-health every 15s; cheap (small JSON, no
