@@ -41,7 +41,8 @@ cooperative until their hook recipes land.
 - **Database:** `papercusp_su` (separate from `papercusp` main db, same
   embedded PG instance, same `harness_admin` role).
 - **Bootstrap:** Lazy on first `locks:*` call. Creates the db if absent,
-  applies SQL migrations from `sql/NNN-*.sql` under
+  applies SQL migrations from `@papercusp/locks`'s
+  `packages/locks/src/sql/NNN-*.sql` under
   `LOCK TABLE su_meta IN SHARE UPDATE EXCLUSIVE MODE` to serialize
   concurrent migration runners.
 - **Schema:** `agent_file_locks`, `agent_lock_waiters`, both with
@@ -76,8 +77,9 @@ inWorkspaceTxn(workspaceId, ownerId, async (tx) => {
 ```
 
 The advisory key `101` is reserved for SU locks in
-[`sql/advisory-lock-keys.md`](sql/advisory-lock-keys.md). Two-arg form
-prevents collision with any future feature using advisory locks.
+[`packages/locks/src/sql/advisory-lock-keys.md`](../../../../../packages/locks/src/sql/advisory-lock-keys.md).
+Two-arg form prevents collision with any future feature using advisory
+locks.
 
 ## Canonical-path contract
 
@@ -190,9 +192,10 @@ Two pragmatic adjustments:
 1. **Same `harness_admin` role, not a new `papercusp_su` role.**
    Embedded PG has no external network surface; the grant-isolation
    benefit doesn't justify the password-file complexity.
-2. **Migrations live at `apps/operator/lib/agent-tools/locks/sql/`**,
-   not `libs/papercusp/libs/db/sql/su-locks/`. Keeps the feature
-   self-contained; the main DB's migration system targets a different
-   database anyway.
+2. **Migrations live with the package at `packages/locks/src/sql/`**
+   (moved there from `apps/operator/lib/agent-tools/locks/sql/` in the
+   P-010 extraction), not `libs/papercusp/libs/db/sql/su-locks/`. Keeps
+   the feature self-contained; the main DB's migration system targets a
+   different database anyway.
 
 Everything else follows the v3.3 plan.

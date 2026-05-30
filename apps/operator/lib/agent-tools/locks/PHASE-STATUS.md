@@ -157,9 +157,10 @@ Documented in `README.md`:
 1. **Same `harness_admin` role**, not a new `papercusp_su` role. Embedded
    PG has no external network surface; the grant-isolation benefit
    doesn't justify password-file complexity.
-2. **Migrations live at `apps/operator/lib/agent-tools/locks/sql/`**,
-   not `libs/papercusp/libs/db/sql/su-locks/`. Self-contained; the main
-   DB's migration system targets a different database anyway.
+2. **Migrations live with the package at `packages/locks/src/sql/`**
+   (moved from `apps/operator/lib/agent-tools/locks/sql/` in the P-010
+   extraction), not `libs/papercusp/libs/db/sql/su-locks/`. Self-contained;
+   the main DB's migration system targets a different database anyway.
 3. **`pg_stat_statements` is optional** (superuser-only on this PG
    install). README documents how to enable it.
 
