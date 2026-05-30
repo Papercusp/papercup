@@ -20,7 +20,7 @@
 
 import { useState } from 'react';
 import { toast } from 'sonner';
-import { setItemStatus, type PlanItemRow } from './plans-api';
+import { setItemStatus, addPlanDecision, type PlanItemRow } from './plans-api';
 
 type ItemMode = 'inbox' | 'actionable' | 'blocked';
 
@@ -136,7 +136,7 @@ export default function PlanItemsList({
                       <span className="pc-items__text">{r.item.text}</span>
                     </button>
                     {mode === 'inbox' && (
-                      <ResolveButton
+                      <InboxItemActions
                         planSlug={planSlug}
                         itemId={r.item.id}
                         harnessSlug={harnessSlug}
@@ -154,7 +154,17 @@ export default function PlanItemsList({
   );
 }
 
-function ResolveButton({
+/**
+ * InboxItemActions — the human's response toolkit for a needs-human item.
+ * A needs-human item is the agent blocked on a decision, so a lone
+ * "Resolve" was too thin. Three moves:
+ *   - Answer  → record the decision (plans:add-decision, D-NNN, refs the
+ *               item) so the agent reads it next, mark the item done, and
+ *               resume the loop. This is the real "I answered you".
+ *   - Resolve → quick "done, proceed" with no recorded answer + resume.
+ *   - Drop    → decline: item → dropped, loop NOT resumed.
+ */
+function InboxItemActions({
   planSlug,
   itemId,
   harnessSlug,
@@ -166,21 +176,24 @@ function ResolveButton({
   onResolved: () => void;
 }) {
   const [busy, setBusy] = useState(false);
+  const [answering, setAnswering] = useState(false);
+  const [answer, setAnswer] = useState('');
+
+  const resumeLoop = () => {
+    if (!harnessSlug) return;
+    fetch(`/api/harness/${encodeURIComponent(harnessSlug)}/launch?phase=staging`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({}),
+    }).catch(() => {});
+  };
 
   const handleResolve = async () => {
     setBusy(true);
     try {
       const result = await setItemStatus({ slug: planSlug, itemId, status: 'done' });
       if ('error' in result) throw new Error(result.error ?? 'unknown error');
-
-      if (harnessSlug) {
-        fetch(`/api/harness/${encodeURIComponent(harnessSlug)}/launch?phase=staging`, {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({}),
-        }).catch(() => {});
-      }
-
+      resumeLoop();
       toast.success(`${itemId} resolved`, {
         description: harnessSlug ? `Harness loop resumed for ${harnessSlug}.` : undefined,
       });
@@ -192,17 +205,116 @@ function ResolveButton({
     }
   };
 
+  const handleDrop = async () => {
+    setBusy(true);
+    try {
+      const result = await setItemStatus({ slug: planSlug, itemId, status: 'dropped' });
+      if ('error' in result) throw new Error(result.error ?? 'unknown error');
+      toast.success(`${itemId} dropped`, { description: "Marked won't-do; loop not resumed." });
+      onResolved();
+    } catch (e) {
+      toast.error('Drop failed', { description: String(e) });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleAnswer = async () => {
+    const body = answer.trim();
+    if (!body) return;
+    setBusy(true);
+    try {
+      const dec = await addPlanDecision({
+        slug: planSlug,
+        title: `Answer to ${itemId}`,
+        body,
+        refs: [itemId],
+      });
+      if ('error' in dec) throw new Error(dec.error ?? 'unknown error');
+      const result = await setItemStatus({ slug: planSlug, itemId, status: 'done' });
+      if ('error' in result) throw new Error(result.error ?? 'unknown error');
+      resumeLoop();
+      toast.success(`Answered ${itemId}`, {
+        description: 'Recorded as a plan decision; harness loop resumed.',
+      });
+      setAnswering(false);
+      setAnswer('');
+      onResolved();
+    } catch (e) {
+      toast.error('Answer failed', { description: String(e) });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (answering) {
+    return (
+      <div className="pc-items__answer">
+        <textarea
+          className="pc-items__answer-input"
+          value={answer}
+          onChange={(e) => setAnswer(e.target.value)}
+          placeholder="Your decision / answer — recorded as a plan decision (D-NNN) the agent reads next."
+          rows={3}
+          autoFocus
+          disabled={busy}
+        />
+        <div className="pc-items__answer-actions">
+          <button
+            type="button"
+            className="pc-items__resolve"
+            onClick={handleAnswer}
+            disabled={busy || !answer.trim()}
+          >
+            {busy ? '…' : 'Send answer'}
+          </button>
+          <button
+            type="button"
+            className="pc-items__action-btn"
+            onClick={() => {
+              setAnswering(false);
+              setAnswer('');
+            }}
+            disabled={busy}
+          >
+            Cancel
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   return (
-    <button
-      type="button"
-      className="pc-items__resolve"
-      onClick={handleResolve}
-      disabled={busy}
-      aria-label={`Mark ${itemId} resolved`}
-      title="Mark resolved — flips item to done and resumes the harness loop"
-    >
-      {busy ? '…' : '✓ Resolve'}
-    </button>
+    <div className="pc-items__actions">
+      <button
+        type="button"
+        className="pc-items__action-btn pc-items__action-btn--answer"
+        onClick={() => setAnswering(true)}
+        disabled={busy}
+        title="Answer the question — records a decision the agent reads, marks the item done, and resumes the loop"
+      >
+        ✍ Answer
+      </button>
+      <button
+        type="button"
+        className="pc-items__resolve"
+        onClick={handleResolve}
+        disabled={busy}
+        aria-label={`Mark ${itemId} resolved`}
+        title="Mark done and resume the loop — no recorded answer"
+      >
+        {busy ? '…' : '✓ Resolve'}
+      </button>
+      <button
+        type="button"
+        className="pc-items__action-btn pc-items__action-btn--drop"
+        onClick={handleDrop}
+        disabled={busy}
+        title="Drop — won't do (item → dropped); the loop is not resumed"
+      >
+        ✕ Drop
+      </button>
+    </div>
   );
 }
 
