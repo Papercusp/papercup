@@ -1,7 +1,7 @@
 ---
 title: Papercusp dogfood — execution-plan index
 slug: papercusp-dogfood-execution-plan-index-2026-05-24
-status: draft
+status: ready
 created: 2026-05-24
 updated: 2026-05-24
 owner: avi@storewolf.com
@@ -14,6 +14,19 @@ owner: avi@storewolf.com
 **State:** **navigation index** for the per-phase execution plans split out of `papercusp-dogfood-v5-2026-05-23.md`. **All 11 phase execution plans written** as of 2026-05-24 (Phase 3 deliberately has none — substantially done in-tree). Implementation can now proceed phase-by-phase against these plans.
 
 **Next action:** authors update status fields here as work moves through PASS/PARTIAL/DONE. Plan-doc edits land in their own commits; index status edits ride alongside.
+
+> **⚠️ 2026-05-30 code-truth audit — the Status column below OVERSTATES reality.** A full
+> item-by-item audit against the codebase (see [`../dogfood-audit-2026-05-30.md`](../dogfood-audit-2026-05-30.md))
+> found that several phases marked ✅/🟢 have real, unit-tested modules that are **not wired
+> end-to-end**. Corrected headline status:
+> - **Phase 1a** ✅ → tests FAIL on stale counts (classify-tree 9 vs 11 submodules; reactive-tables 13 vs 16).
+> - **Phase 1b** ✅ → modules real but pipeline disconnected (UI join sends empty OAuth token; binding/attest gist/claim have no production callers; P-068 not wired into the create route; verification never persisted).
+> - **Phase 2** ✅ → INERT: nothing ever writes `completion_ref`, so the verifier + UI card + tier-B "shipped ✓" stat are permanently empty.
+> - **Phase 5a** ✅ → substrate primitives shipped (flag-gated) but the **Hyperbee→PG read-loop does not exist** (`applyHyperbeeOpToPg` has zero callers); P-070 usage-events runtime absent; 9 projections, not 8.
+> - **Phase 8** 🟡 → Contributors tab + Phase-8 Insights tab are built but **not mounted** in the live HarnessDashboard; P-049 + P-069 are disconnected shells.
+> - **Phase 9** 🟡 → NOT code-complete: cupboard listings proxy path bug (`/api/harnesses` vs `/harnesses`), no navbar item, Discord outbound-webhook is dead code; P-051b was actually already deployed.
+> - **Phase 4** 🟡 → P-026 BLOCKED by a real bug: `resolveProject` reads the active workspace but papercup lives only in the `papercusp-workspace` sentinel → 404. Nothing has run e2e (19 features, all todo, 0 attempts).
+> - **Phase 11** 🔴 → swarm-replication *wiring* is real but gated off + starved (ShareWizard `/share/finalize` route missing → no harness ever goes shared).
 
 ## Start here if you're new
 
