@@ -84,7 +84,7 @@ describe('assemblePlanContextBundleText', () => {
     expect(text).toContain('⚠ This plan is superseded');
   });
 
-  it('renders an unknown status when none is set, with no superseded warning', () => {
+  it('defaults a null status to draft, with no superseded warning', () => {
     const text = assemblePlanContextBundleText({
       title: 'Untyped',
       slug: 'untyped',
@@ -92,7 +92,9 @@ describe('assemblePlanContextBundleText', () => {
       planMarkdown: '# Untyped',
       rationales: [],
     });
-    expect(text).toContain('status: unknown');
+    // 'unknown' status was retired in favor of 'draft' (commit 471f4695);
+    // a null status now renders as the draft default.
+    expect(text).toContain('status: draft');
     expect(text).not.toContain('⚠ This plan is superseded');
   });
 
