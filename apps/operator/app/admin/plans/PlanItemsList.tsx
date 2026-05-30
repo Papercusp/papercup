@@ -18,9 +18,13 @@
  * item to done and relaunches the harness loop.
  */
 
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import { parseAsArrayOf, parseAsString, useQueryState } from 'nuqs';
+import * as Collapsible from '@radix-ui/react-collapsible';
+import { ChevronRight } from 'lucide-react';
 import { toast } from 'sonner';
 import { setItemStatus, addPlanDecision, type PlanItemRow } from './plans-api';
+import PlanItemPreview from './PlanItemPreview';
 
 type ItemMode = 'inbox' | 'actionable' | 'blocked';
 
@@ -47,6 +51,37 @@ export default function PlanItemsList({
   harnessByPlan,
   planFilter,
 }: Props) {
+  // Selected item for the read-only detail pane, encoded
+  // "<planSlug>::<itemId>". Distinct from PlansClient's `?plan=` (which
+  // opens the FULL PlanDetail) — this only drives the right-hand preview.
+  const [selectedItem, setSelectedItem] = useQueryState('item', parseAsString);
+  // Expanded plan groups (Radix Collapsible), URL-pinned like Sessions.
+  const [expandedGroups, setExpandedGroups] = useQueryState(
+    'expand',
+    parseAsArrayOf(parseAsString).withDefault([]),
+  );
+
+  const [selectedPlan, selectedItemId] = splitItemKey(selectedItem);
+
+  // Auto-expand the selected item's group (mirrors the Sessions tab). The
+  // ref token stops us reopening a group the user just collapsed while the
+  // selection stays put.
+  const autoExpandRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!selectedPlan || !selectedItemId || planFilter) {
+      autoExpandRef.current = null;
+      return;
+    }
+    const token = `${selectedItemId}:${selectedPlan}`;
+    if (expandedGroups.includes(selectedPlan)) {
+      autoExpandRef.current = token;
+      return;
+    }
+    if (autoExpandRef.current === token) return;
+    autoExpandRef.current = token;
+    void setExpandedGroups([...expandedGroups, selectedPlan]);
+  }, [selectedPlan, selectedItemId, planFilter, expandedGroups, setExpandedGroups]);
+
   if (loading) {
     return (
       <div className={`pc-items pc-items--${mode}`}>
@@ -97,61 +132,115 @@ export default function PlanItemsList({
 
   const groupCount = groups.size;
 
+  // The rows for one plan — shared by the bare (rail-filtered) and the
+  // collapsible group renders. Clicking a row selects it into the detail
+  // pane; it no longer redirects to the full plan tab.
+  const renderRows = (planSlug: string, planRows: PlanItemRow[], harnessSlug: string | undefined) => (
+    <ul className="pc-items__rows" role="list">
+      {planRows.map((r) => {
+        const isSel = selectedItem === itemKey(planSlug, r.item.id);
+        return (
+          <li key={r.item.id} className={`pc-items__row-wrap${isSel ? ' is-selected' : ''}`}>
+            <button
+              type="button"
+              className="pc-items__row"
+              aria-current={isSel ? 'true' : undefined}
+              onClick={() => void setSelectedItem(itemKey(planSlug, r.item.id))}
+            >
+              <span className="pc-items__id">{r.item.id}</span>
+              <span className={`pc-count pc-count--${r.item.storedStatus}`}>
+                {r.item.storedStatus}
+              </span>
+              <span className="pc-items__text">{r.item.text}</span>
+            </button>
+            {mode === 'inbox' && (
+              <InboxItemActions
+                planSlug={planSlug}
+                itemId={r.item.id}
+                harnessSlug={harnessSlug}
+                onResolved={refresh}
+              />
+            )}
+          </li>
+        );
+      })}
+    </ul>
+  );
+
   return (
     <div className={`pc-items pc-items--${mode}`}>
       <Heading mode={mode} count={rows.length} groupCount={groupCount} />
-      <ul className="pc-items__groups" role="list">
-        {[...groups.entries()].map(([planSlug, planRows]) => {
-          const harnessSlug = harnessByPlan?.get(planSlug);
-          return (
-            <li key={planSlug} className="pc-items__group">
-              <button
-                type="button"
-                className="pc-items__plan-head"
-                onClick={() => onPick(planSlug)}
-                aria-label={`Open plan ${planSlug}`}
-              >
-                <span className="pc-items__plan-copy">
-                  <span className="pc-items__plan-name">{planSlug}</span>
-                  {harnessSlug ? (
-                    <span className="pc-items__plan-meta">
-                      <span className="pc-pill pc-pill--harness">{harnessSlug}</span>
-                    </span>
-                  ) : null}
-                </span>
-                <span className="pc-items__plan-count">{itemCountLabel(planRows.length)}</span>
-              </button>
-              <ul className="pc-items__rows" role="list">
-                {planRows.map((r) => (
-                  <li key={r.item.id} className="pc-items__row-wrap">
-                    <button
-                      type="button"
-                      className="pc-items__row"
-                      onClick={() => onPick(planSlug, r.item.id)}
-                    >
-                      <span className="pc-items__id">{r.item.id}</span>
-                      <span className={`pc-count pc-count--${r.item.storedStatus}`}>
-                        {r.item.storedStatus}
-                      </span>
-                      <span className="pc-items__text">{r.item.text}</span>
-                    </button>
-                    {mode === 'inbox' && (
-                      <InboxItemActions
-                        planSlug={planSlug}
-                        itemId={r.item.id}
-                        harnessSlug={harnessSlug}
-                        onResolved={refresh}
-                      />
-                    )}
+      <div className="pc-items__layout">
+        <div className="pc-items__listpane">
+          <ul className="pc-items__groups" role="list">
+            {[...groups.entries()].map(([planSlug, planRows]) => {
+              const harnessSlug = harnessByPlan?.get(planSlug);
+              // Point 4: when the left rail has filtered to one plan, don't
+              // repeat its title here — render the items bare (the plan name
+              // is already shown, selected, in the rail).
+              if (planFilter) {
+                return (
+                  <li key={planSlug} className="pc-items__group pc-items__group--bare">
+                    {renderRows(planSlug, planRows, harnessSlug)}
                   </li>
-                ))}
-              </ul>
-            </li>
-          );
-        })}
-      </ul>
+                );
+              }
+              const isExpanded = expandedGroups.includes(planSlug);
+              return (
+                <li key={planSlug} className="pc-items__group">
+                  <Collapsible.Root
+                    open={isExpanded}
+                    onOpenChange={(open) =>
+                      void setExpandedGroups(
+                        open
+                          ? Array.from(new Set([...expandedGroups, planSlug]))
+                          : expandedGroups.filter((k) => k !== planSlug),
+                      )
+                    }
+                  >
+                    <Collapsible.Trigger asChild>
+                      <button type="button" className="pc-items__plan-head">
+                        <ChevronRight className="pc-items__group-chevron" size={13} aria-hidden />
+                        <span className="pc-items__plan-copy">
+                          <span className="pc-items__plan-name">{planSlug}</span>
+                          {harnessSlug ? (
+                            <span className="pc-items__plan-meta">
+                              <span className="pc-pill pc-pill--harness">{harnessSlug}</span>
+                            </span>
+                          ) : null}
+                        </span>
+                        <span className="pc-items__plan-count">{itemCountLabel(planRows.length)}</span>
+                      </button>
+                    </Collapsible.Trigger>
+                    <Collapsible.Content className="pc-items__group-content">
+                      {renderRows(planSlug, planRows, harnessSlug)}
+                    </Collapsible.Content>
+                  </Collapsible.Root>
+                </li>
+              );
+            })}
+          </ul>
+        </div>
+
+        <PlanItemPreview
+          planSlug={selectedPlan}
+          itemId={selectedItemId}
+          onViewFullPlan={onPick}
+        />
+      </div>
     </div>
   );
+}
+
+/** Encode / decode the `?item=` selection key ("<planSlug>::<itemId>"). */
+function itemKey(planSlug: string, itemId: string): string {
+  return `${planSlug}::${itemId}`;
+}
+function splitItemKey(key: string | null): readonly [string | null, string | null] {
+  if (!key) return [null, null];
+  const idx = key.indexOf('::');
+  if (idx === -1) return [null, null];
+  return [key.slice(0, idx), key.slice(idx + 2)];
 }
 
 /**

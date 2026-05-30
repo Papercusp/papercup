@@ -25,7 +25,7 @@ import {
   writeErrorOf,
 } from './plans-api';
 import PlanEditor from './PlanEditor';
-import { buildFeatureSummary, type PromotedFeature } from './plan-renderers';
+import { buildFeatureSummary, scrollPlanTarget, stripFrontmatter, type PromotedFeature } from './plan-renderers';
 import PlanJumpToItem from './PlanJumpToItem';
 import LockBanner from './LockBanner';
 import LintBanner from './LintBanner';
@@ -710,15 +710,6 @@ function TabButton({
   );
 }
 
-/** Leading `---\nyaml\n---\n` YAML frontmatter — Vditor renders this as
- *  a low-contrast paragraph in read mode. The parsed values are already
- *  available via plans:get → data.frontmatter, so we strip them from
- *  the prose and render them in FrontmatterCard instead. */
-function stripFrontmatter(src: string): string {
-  const m = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?/.exec(src);
-  return m ? src.slice(m[0].length) : src;
-}
-
 function FrontmatterCard({
   slug,
   frontmatter,
@@ -814,30 +805,6 @@ function NowHero({
       ) : null}
     </section>
   );
-}
-
-function scrollPlanTarget(scope: HTMLElement | null, id: string): boolean {
-  if (!scope) return false;
-  let dest: HTMLElement | null = null;
-  if (id.startsWith('P-')) {
-    dest = scope.querySelector<HTMLElement>(`[data-plan-item="${id}"]`);
-  } else {
-    dest =
-      (scope.querySelector(`#${CSS.escape(id)}`) as HTMLElement | null) ??
-      findHeadingByText(scope, id);
-  }
-  if (!dest) return false;
-  dest.scrollIntoView({ block: 'center', behavior: 'smooth' });
-  dest.classList.add('pc-plan-highlight');
-  window.setTimeout(() => dest?.classList.remove('pc-plan-highlight'), 1500);
-  return true;
-}
-
-function findHeadingByText(scope: HTMLElement, id: string): HTMLElement | null {
-  for (const h of Array.from(scope.querySelectorAll<HTMLElement>('h3'))) {
-    if ((h.textContent ?? '').trim().startsWith(id)) return h;
-  }
-  return null;
 }
 
 // ---------------------------------------------------------------------------
