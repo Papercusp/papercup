@@ -1214,10 +1214,34 @@
   align-items: center;
   justify-content: space-between;
   gap: 10px;
+  flex-wrap: wrap;
   flex-shrink: 0;
   padding: 10px 12px;
   border-bottom: 1px solid var(--border);
   background: color-mix(in oklab, var(--bg-2), white 2%);
+}
+
+/* The per-item action cluster in the detail-pane toolbar: needs-human
+   Answer/Resolve/Drop (InboxItemActions) + Chat with agent, left of the
+   View-full button. Wraps so the Answer textarea (.pc-items__answer,
+   width:100%) gets its own row when active. */
+.pc-items__detail-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.pc-items__action-btn--chat {
+  border-color: color-mix(in oklab, var(--accent), transparent 48%);
+  color: color-mix(in oklab, var(--accent), var(--fg) 30%);
+}
+.pc-items__action-btn--chat:hover:not(:disabled) {
+  border-color: color-mix(in oklab, var(--accent), transparent 24%);
+  background: color-mix(in oklab, var(--accent), var(--bg) 70%);
+  color: var(--fg);
 }
 
 .pc-items__view-full {

@@ -127,7 +127,11 @@ export default function PlanItemsList({
   // collapsible group renders. Clicking a row selects it into the detail
   // pane; it no longer redirects to the full plan tab. Per-item actions
   // key off the item's own status, since the list is mixed-status.
-  const renderRows = (planSlug: string, planRows: PlanItemRow[], harnessSlug: string | undefined) => (
+  // Rows are plain selectable buttons. The per-item actions (Answer /
+  // Resolve / Drop for needs-human, Chat with agent) live in the right-hand
+  // PlanItemPreview toolbar — rendering them inline in the row broke the
+  // layout and crowded the answer textarea.
+  const renderRows = (planSlug: string, planRows: PlanItemRow[]) => (
     <ul className="pc-items__rows" role="list">
       {planRows.map((r) => {
         const isSel = selectedItem === itemKey(planSlug, r.item.id);
@@ -146,14 +150,6 @@ export default function PlanItemsList({
               </span>
               <span className="pc-items__text">{r.item.text}</span>
             </button>
-            {r.item.storedStatus === 'needs-human' && (
-              <InboxItemActions
-                planSlug={planSlug}
-                itemId={r.item.id}
-                harnessSlug={harnessSlug}
-                onResolved={refresh}
-              />
-            )}
           </li>
         );
       })}
@@ -174,7 +170,7 @@ export default function PlanItemsList({
               if (planFilter) {
                 return (
                   <li key={planSlug} className="pc-items__group pc-items__group--bare">
-                    {renderRows(planSlug, planRows, harnessSlug)}
+                    {renderRows(planSlug, planRows)}
                   </li>
                 );
               }
@@ -206,7 +202,7 @@ export default function PlanItemsList({
                       </button>
                     </Collapsible.Trigger>
                     <Collapsible.Content className="pc-items__group-content">
-                      {renderRows(planSlug, planRows, harnessSlug)}
+                      {renderRows(planSlug, planRows)}
                     </Collapsible.Content>
                   </Collapsible.Root>
                 </li>
@@ -218,6 +214,8 @@ export default function PlanItemsList({
         <PlanItemPreview
           planSlug={selectedPlan}
           itemId={selectedItemId}
+          harnessSlug={selectedPlan ? harnessByPlan?.get(selectedPlan) ?? null : null}
+          onResolved={refresh}
           onViewFullPlan={onPick}
         />
       </div>
@@ -246,7 +244,7 @@ function splitItemKey(key: string | null): readonly [string | null, string | nul
  *   - Resolve → quick "done, proceed" with no recorded answer + resume.
  *   - Drop    → decline: item → dropped, loop NOT resumed.
  */
-function InboxItemActions({
+export function InboxItemActions({
   planSlug,
   itemId,
   harnessSlug,
