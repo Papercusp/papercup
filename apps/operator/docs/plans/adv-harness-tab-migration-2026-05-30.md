@@ -11,9 +11,9 @@ owner: avi@storewolf.com
 
 ## Now
 
-**State:** Phase 1 (3-panel Features/Issues/Detail + pin-to-panel) shipped as `402c80da` but was never verified — the originating OMP session (`019e60b2`, 2026-05-25/26) broke the dev API server while testing and ended by asking the user to restart Tauri. Re-verifying now against the `papercup` harness (the workspace no longer has `sheets`; `papercup` has features but 0 issues).
+**State:** Phase 1 verified live in the Tauri webview (against `papercup`) and one real bug found+fixed during verification: the layout-adapter save path dropped leaf `size`, so the 3-panel split reloaded lopsided (panes at 100px) — fixed in `b02e2aea` (+ regression test, 178 dock tests green). Phase 2 (visual & filter parity) shipped in `b46bb5d6` and verified: Features saved-view chips + counts + result counter; Issues severity/source/status icons + code-pointer/linked/foundDuring chips + pending-triage banner; filter/search on nuqs.
 
-**Next:** (B) verify v1 renders in the live Tauri webview via `tauri-agent-tools`; then (C) build Phase 2 — visual & filter parity in the Features/Issues panels.
+**Next:** Phase 3 — replace the 5–6s REST polling with Zero `useSyncQuery` (also unlocks the claims chip + plan pill deferred from P-010, which aren't in the REST `/status` payload).
 
 ## Background
 
@@ -36,14 +36,14 @@ Key files (live UI is the Vite SPA; components live in the Next tree and are con
 - **P-005** `done` `DetailPanel` — swap mode reads `?sel=<id>` (F-* → feature, I-* → issue); pinned mode locks to `params.itemId` and ignores `?sel=`. Minimal content: header + description + status changer + Reset/Edit (features); evidence/repro/suggested-fix/code-pointer + Promote/Ack/Close/Won't-fix (issues).
 - **P-006** `done` Row click → `?sel=<id>` (active-row highlight); right-click → `PinMenu` "Pin to new panel" → spawns an `adv:pinned` dock tab.
 - **P-007** `done` WebKitGTK height-collapse fix: dock wrapped in `position:absolute; inset:0` (height:100% through a flex parent collapses to 0 in WebKit) + `layout-adapter` carries leaf `size` so the seed split applies (commit `26fac5cd`).
-- **P-008** `todo` Verify Phase 1 end-to-end in the live Tauri webview (`tauri-agent-tools`): Harness tab visible, 3 panes render with non-zero height, Features list populated for `papercup`, row-click drives Detail, right-click pins a panel, no console errors. (This is task B.)
+- **P-008** `done` Verified Phase 1 end-to-end in the live Tauri webview (`tauri-agent-tools`, against `papercup`): Harness tab renders, `.dv-shell` full-height (no WebKit collapse), 3 feature rows, row-click → `?sel` → Detail shows the feature. Found+fixed the lopsided-split bug (P-007 follow-up): `toLayoutDoc` dropped leaf `size` on save → reload gave panes 100px; fixed in `b02e2aea` + regression test (178 dock tests green); stale `adv-harnesses:papercup` layout row cleared so it reseeds 25/25/50 (verified Features 301 / Issues 301 / Detail 602).
 
 ## Phase 2 — Visual & filter parity
 
-- **P-009** `todo` Features saved-view chips with counts: All / Running (in_progress+validating) / Stuck (attempts ≥3) / Blocked (blocked+failing) / Todo / Passed / Deprecated. Mirror `BUILT_IN_VIEWS` from `FeatureList.tsx`. Replaces the current flat status filter.
-- **P-010** `todo` Features result counter ("N/M shown") and per-row parity: status pill colors, attempts pill (warning tint at ≥3), claims chip, plan pill (`↗ plan` linking to `/adv/plans?slug&plan=<sourcePlanSlug>`).
-- **P-011** `todo` Issues per-row parity: severity icon+color, source icon (validator/worker/human → Bot/User), status icon (Hammer when fixing, CheckCircle when closed…), code-pointer chip (FileCode), linked-feature pill (ArrowUpRight), `foundDuring` chip.
-- **P-012** `todo` Issues pending-validator triage: pending banner + "Triage N" button above the list when pending findings exist.
+- **P-009** `done` Features saved-view chips with counts: All / Running / Stuck (≥3) / Blocked / Todo / Passed / Deprecated, mirroring `BUILT_IN_VIEWS`; deprecated hidden from every view except Deprecated. Shipped `b46bb5d6`.
+- **P-010** `done` Features result counter ("N/M shown") + per-row parity: status pill colors, attempts pill (warn tint ≥3), needs-human-review dot. **Deferred to Phase 3:** claims chip + plan pill — `claims`/`sourcePlanSlug` are not in the REST `/status` payload (they arrive via Zero), so the UI would be dead until P-014. Shipped `b46bb5d6`.
+- **P-011** `done` Issues per-row parity: severity icon+color, source icon (Bot/User), status icon (Circle/Eye/Hammer/CheckCircle/XCircle), code-pointer chip (FileCode + basename), linked-feature pill (ArrowUpRight), `foundDuring` chip. All icon maps use `?? Circle` fallback so a missing key can't crash the subtree. Shipped `b46bb5d6`.
+- **P-012** `done` Issues pending-validator triage banner above the list when `pending.length > 0`. **Note:** rendered as an informational banner, not a "Triage N" button — the legacy Triage action opens `TriageQueue` (`?triage=true`), which isn't ported to `/adv` yet; wiring it is deferred until the triage flow lands. Shipped `b46bb5d6`.
 - **P-013** `todo` Decide fate of legacy lifecycle chips (mine / working / available / shipped) and project/tag filters — keep only if used in practice; default to cutting `mine` (needs viewer github id) on first pass.
 
 ## Phase 3 — Live data via Zero
