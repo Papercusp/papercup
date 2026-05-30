@@ -80,6 +80,7 @@
     "@octokit/rest": "^22.0.0",
     "@openai/agents-realtime": "^0.8.5",
     "@papercusp/docs-engine": "file:../../packages/docs-engine",
+    "@papercusp/embedded-pg-discovery": "file:../../packages/embedded-pg-discovery",
     "@papercusp/file-claim": "file:../../libs/papercusp/packages/file-claim",
     "@papercusp/flags": "file:../../libs/flags",
     "@papercusp/harness": "file:../../libs/papercusp/packages/harness",
