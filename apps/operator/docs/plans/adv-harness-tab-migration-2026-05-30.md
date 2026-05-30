@@ -15,7 +15,9 @@ owner: avi@storewolf.com
 
 Phase 4 Detail richness shipped (`2e491ee6`, also cherry-picked to `main`): issues-filed-against-feature + recent-runs + steer-notes (feature), notes/add-note + clickable linked-feature (issue), and a selection-history Back chip. Feature-side + Back verified live; issue-side contract-verified (papercup has 0 issues).
 
-**Next:** P-013 (decide fate of legacy lifecycle/project/tag filters), Phase 5 (inline row actions), Phase 6 (keyboard shortcuts + virtualization).
+Phase 5 inline row actions shipped (`30138d81`, cherry-picked to `main`): feature rows Reset/Edit/Chat, issue rows Promote/Ack/Close/Won't-fix (hover-revealed, shared `harness-actions` helper). Feature rows verified live; issue rows contract-verified.
+
+**Next:** P-013 (fate of legacy lifecycle/project/tag filters), Phase 6 (keyboard shortcuts J/K/R/X// + virtualization).
 
 ## Background
 
@@ -59,8 +61,8 @@ Key files (live UI is the Vite SPA; components live in the Next tree and are con
 
 ## Phase 5 — Inline row actions
 
-- **P-017** `todo` Features rows: Reset / Edit / Chat / Steer inline (reuse `OperatorNoteForm` + `openFeatureChat` via alias where cheap).
-- **P-018** `todo` Issues rows: Promote / Acknowledge / Close / Won't-fix inline (the Detail pane already has these; surface on the row too).
+- **P-017** `done` Features rows: hover actions Reset / Edit / Chat (`openFeatureChat` worker chat via `@restart/papercup-shared`). Shipped `30138d81`. **Deferred:** Steer-inline — the Detail pane shows steer notes read-only; a feature note-add needs the operator-notes write contract (follow-up, pairs with a feature add-note in Detail).
+- **P-018** `done` Issues rows: hover actions Promote / Acknowledge / Close / Won't-fix (status-conditional, mirroring the Detail pane), via the shared `harness-actions` helper. Shipped `30138d81`. Feature rows verified live; issue rows contract-verified (no issues on papercup).
 
 ## Phase 6 — Polish
 
