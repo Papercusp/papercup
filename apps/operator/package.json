@@ -85,6 +85,7 @@
     "@papercusp/flags": "file:../../libs/flags",
     "@papercusp/harness": "file:../../libs/papercusp/packages/harness",
     "@papercusp/orchestrator": "file:../../libs/papercusp/packages/orchestrator",
+    "@papercusp/plan-parser": "file:../../packages/plan-parser",
     "@papercusp/plugin-loader": "file:../../packages/plugin-loader",
     "@papercusp/plugin-sdk": "file:../../packages/plugin-sdk",
     "@papercusp/publish-auth": "file:../../libs/papercusp-publish-auth",
