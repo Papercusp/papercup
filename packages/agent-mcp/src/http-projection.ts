@@ -40,6 +40,7 @@ import {
   type UnifiedToolContext,
 } from '@papercusp/tooldef';
 import { readReplayBuffer } from '@papercusp/tooldef';
+import { papercuspGateBypass } from './gate-bypass';
 
 /* ─── Request context derivation ─────────────────────────────────────── */
 
@@ -306,6 +307,10 @@ async function resolveToolAndContext(
     transport: 'http',
     ...spawnCtx,
     isSuperuser,
+    // Neutral gate-bypass signal the dispatcher reads (P-014). HTTP only ever
+    // grants superuser (no power-user tier on this transport), so quota is
+    // bypassed too when isSuperuser.
+    gateBypass: papercuspGateBypass({ isSuperuser }),
     ...(extras.spawn ? { spawn: extras.spawn } : {}),
     ...(extras.secret ? { secret: extras.secret } : {}),
   };

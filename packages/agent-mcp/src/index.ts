@@ -132,6 +132,10 @@ export {
 // Papercusp's quota windowing policy (plan P-011) — the host impl of
 // tooldef's `computeQuotaWindow` seam. Wired into PROJECTED_DEPS.
 export { papercuspComputeQuotaWindow } from './quota-policy';
+// Papercusp's auth-tier → gate-bypass mapping (plan P-014) — the host impl of
+// tooldef's neutral `ctx.gateBypass`, set by the HTTP + MCP transports.
+export { papercuspGateBypass } from './gate-bypass';
+export type { GateBypass } from '@papercusp/tooldef';
 
 export {
   handleHttpToolRequest,

@@ -12,28 +12,77 @@ companion-to: [endpoint-unification-2026-05-21, endpoint-route-migration-2026-05
 
 ## Now
 
-**State:** Phase 1 (carve the pure core) **shipped** 2026-05-29. **P-010 (role),
-P-011 (quota windowing), and P-012 (capability tiers) shipped** 2026-05-30 — three
-of the six Phase-2 baked-rule injections are done. P-010: augmentable `RoleRegistry`
-seam + host role config (`agent-mcp/src/role-config.ts`) + `ToolContext<Tx>`. P-011:
-host-injected `computeQuotaWindow(ctx, roleQuota) => { key, limit }`
-(`agent-mcp/src/quota-policy.ts`) — engine no longer knows `'worker'`/`'chunk:'`/
-`perChunk`. P-012: `tierFor` is now a pluggable resolver (`setCapabilityTierResolver`,
-engine default `'low'`); the Papercusp capability→tier table moved to
-`agent-mcp/src/capability-tiers-papercusp.ts`, registered before tools self-register.
-Verified across all three: tooldef typecheck clean + 188 tests; agent-mcp typecheck
-19 errors (pre-existing baseline — **0 new, 0 lost**) + 111 pass / 1 pre-existing
-fail. See the **Progress log** (2026-05-30) for design rationale + follow-ups.
+**State:** Phase 1 (carve the pure core) **shipped** 2026-05-29. **Phase 2 core
+decoupling is complete** as of 2026-05-30 — P-010, P-011, P-012, **P-014** shipped;
+**P-013** re-scoped to Phase 4 and **P-015** deferred (rationale below). The engine
+now carries no Papercusp role / quota / tier / auth-tier knowledge.
+- **P-010** (role): augmentable `RoleRegistry` seam + host role config
+  (`agent-mcp/src/role-config.ts`) + `ToolContext<Tx>`.
+- **P-011** (quota): host-injected `computeQuotaWindow(ctx, roleQuota) => { key,
+  limit }` (`agent-mcp/src/quota-policy.ts`) — engine lost `'worker'`/`'chunk:'`/`perChunk`.
+- **P-012** (tiers): pluggable `setCapabilityTierResolver` (engine default `'low'`);
+  table → `agent-mcp/src/capability-tiers-papercusp.ts`.
+- **P-014** (auth tiers): the dispatcher's role/capability/quota gates read a neutral
+  `ctx.gateBypass` (`{ role?, capability?, quota? }`); the superuser/power-user→bypass
+  matrix moved to `agent-mcp/src/gate-bypass.ts` (`papercuspGateBypass`), set by the
+  HTTP + MCP transports. Engine no longer reads `isSuperuser`/`isPowerUser` for gating.
 
-**Next:** the two remaining Phase-2 injections — **P-013** (`SigningProvider` +
-`contextSchema` for spawn context) and **P-014** (`resolvePrincipal`) — both touch
-**security-sensitive** surfaces (HMAC spawn-URL signing, auth-tier/principal
-resolution), so they warrant a checkpoint before landing. **P-015** (persistence
-interfaces for card/state/replay) is non-sensitive. **Phase 3** (Standard Schema)
-can run in parallel. Follow-up: a generic `Tx` parameterization of
-`UnifiedToolContext` (dispatch path) — only the legacy `ToolContext` got it in P-010.
+Verified across all four: tooldef typecheck clean + **191** tests; agent-mcp typecheck
+19 errors (pre-existing baseline — **0 new, 0 lost**) + **111 pass / 1 pre-existing
+fail**. See the **Progress log** (2026-05-30) for design rationale + follow-ups.
+
+**Next:** **Phase 5** (re-home the host adapter, P-040+) is now unblocked — all the
+DI seams exist. **Phase 3** (Standard Schema) can run in parallel. **Phase 4**
+(transport extraction) now also carries the formal `SigningProvider`/`contextSchema`
+work (was P-013 — see below). Follow-up: a generic `Tx` parameterization of
+`UnifiedToolContext` (dispatch path) — only the legacy `ToolContext` got it in P-010;
+and `isSuperuser`/`isPowerUser` remain as host-populated ctx *metadata* (read by
+profile resolution + agent_tools:list/docs adapters), no longer by the engine's gates
+— a cosmetic move to a host-extension bag is possible later.
 
 ## Progress log
+
+### 2026-05-30 — P-014 shipped + P-013/P-015 re-scoped (Phase-2 core decoupling complete)
+
+Files: `packages/tooldef/src/{tool-projection,dispatch-stack,index}.ts` +
+`dispatch-projected.test.ts`; `packages/agent-mcp/src/{gate-bypass.ts (new),
+http-projection.ts,index.ts}`; `apps/operator/lib/endpoint-route/routes/transport/_mcp-handler.ts`.
+
+**Extraction reality reframed P-013/P-014.** The plan's pre-extraction "6 couplings"
+table assumed signing + principal resolution lived in the core. They don't: Phase 1
+kept `http-projection.ts`, `spawn-context.ts`, principal resolution
+(`resolvePrincipalAndTx`), and HMAC signing entirely **host-side** in agent-mcp. So:
+
+- **P-014 (shipped)** — the *only* residual auth coupling in the engine was three
+  dispatch gates reading `ctx.isSuperuser`/`ctx.isPowerUser`. Replaced with a neutral
+  `ctx.gateBypass: { role?, capability?, quota? }` the engine reads; the
+  superuser/power-user→bypass matrix moved to `agent-mcp/src/gate-bypass.ts`
+  (`papercuspGateBypass`). Wired at the two real dispatch transports only —
+  `http-projection.ts` (superuser) and `_mcp-handler.ts`'s `buildMcpToolContext`
+  (all tiers, computed once from `spawn.isSuperuser/isPowerUser`). **Fail-closed**:
+  absent `gateBypass` ⇒ every gate enforces. Audited the other dispatch sites —
+  the `{}`-deps streaming sites (operator-converse, oracle, …) set no `isSuperuser`
+  and dispatch ungated/principal-less ctxs; the `_audit-write`/`_smoke` scripts call
+  `tool.handler` directly (no dispatcher) — so none needed changes. Mapping verified
+  identical to the old baked logic at every site. `isSuperuser`/`isPowerUser` stay as
+  host ctx *metadata* (profile resolution, agent_tools:list, docs adapters).
+- **P-013 (re-scoped → Phase 4)** — signing is *already* host-side; the core has zero
+  signing code, so a `SigningProvider`/`contextSchema` interface has no core consumer
+  today. It belongs with the transport extraction (P-030, `@papercusp/tooldef-http`),
+  where a Web-standard adapter actually needs a pluggable verifier. Folded there;
+  not a punt (see Open questions / D-006).
+- **P-015 (deferred)** — the card-correlator / state-channel / replay-buffer already
+  ship working in-memory defaults, so the core is fully standalone-usable without a
+  persistence interface (the P-051 falsifiable test needs nothing here). Exposing a
+  swappable persistence seam with **no consumer** is speculation the repo ethos says
+  to avoid ("don't build for a future not yet built"). Do it when a host actually
+  needs durable cards/state.
+
+**Verified:** tooldef typecheck clean + **191** tests (+3 gateBypass cases — role,
+capability, quota each bypassed only with the flag); agent-mcp typecheck 19 = baseline
++ 111 pass / 1 pre-existing fail (http-projection 429/403 auth tests still green);
+operator full typecheck **615 errors = pre-existing baseline, 0 new** (gateBypass /
+`_mcp-handler` clean — confirms the P-011/P-012/P-014 operator touches added nothing).
 
 ### 2026-05-30 — P-012 shipped (capability tiers → injectable resolver)
 
@@ -368,13 +417,25 @@ supplies the concrete one), `http-projection.ts` (→ eventually `tooldef-http`)
   at the top of `agent-mcp/index.ts` before `bootstrap` (registration must precede
   tool self-registration since `tier` is stamped eagerly — see Progress log
   2026-05-30). Shipped 2026-05-30. blocked-by: P-003 → D-006
-- **P-013** `todo` Define a `SigningProvider` strategy + a configurable `contextSchema`
-  for spawn context; core ships a no-op (loopback-only) provider. Papercusp's
-  HMAC-over-PG-secret becomes one provider impl. blocked-by: P-003 → D-006
-- **P-014** `todo` Define `resolvePrincipal(req) => { principal, bypassGates }`;
-  superuser/power-user become host strategies, not core branches. blocked-by: P-003 → D-006
-- **P-015** `todo` Expose persistence interfaces for card-correlator / state-channel /
-  replay-buffer with the current in-memory impls as defaults. blocked-by: P-003
+- **P-013** `deferred→P-030` Define a `SigningProvider` strategy + configurable
+  `contextSchema`. Re-scoped to Phase 4 (transport extraction) 2026-05-30: signing +
+  spawn-context parsing are already entirely host-side (`spawn-context.ts`,
+  orchestrator) — the core has **no** signing code, so the interface has no core
+  consumer until the Web-standard HTTP adapter (`@papercusp/tooldef-http`, P-030)
+  needs a pluggable verifier. Folded into P-030. blocked-by: P-003 → D-006
+- **P-014** `done` De-baked the superuser/power-user auth tiers from the engine. The
+  dispatch role/capability/quota gates now read a neutral `ctx.gateBypass`
+  (`{ role?, capability?, quota? }`, fail-closed when absent); the tier→bypass matrix
+  moved to `agent-mcp/src/gate-bypass.ts` (`papercuspGateBypass`), set by the HTTP +
+  MCP transports. (Principal *resolution* was already host-side since Phase 1 —
+  `HttpToolHostExtras.resolvePrincipalAndTx` — so only the gate-bypass branches
+  remained in core.) `isSuperuser`/`isPowerUser` stay as host ctx metadata. Shipped
+  2026-05-30. blocked-by: P-003 → D-006
+- **P-015** `deferred` Expose persistence interfaces for card-correlator /
+  state-channel / replay-buffer. Deferred 2026-05-30: the in-memory defaults already
+  make the core standalone-usable (nothing in P-051 needs swappable persistence);
+  exposing a seam with no consumer is speculative. Revisit when a host needs durable
+  cards/state. blocked-by: P-003
 
 ## Phase 3 — Standard Schema adoption
 
@@ -393,7 +454,11 @@ supplies the concrete one), `http-projection.ts` (→ eventually `tooldef-http`)
 
 - **P-030** `todo` Extract `http-projection.ts` into `@papercusp/tooldef-http` as a
   Web-standard `Request → Response` core (the route-shaped path already is) with a
-  thin Next.js shim; agent-mcp consumes the shim. blocked-by: P-005 → D-008
+  thin Next.js shim; agent-mcp consumes the shim. **Also lands the formal
+  `SigningProvider` + `contextSchema` seam (absorbs P-013):** the Web-standard adapter
+  needs a pluggable spawn-context verifier (no-op/loopback default; Papercusp's
+  HMAC-over-PG-secret as one impl) — that's the first real core consumer of the
+  interface. blocked-by: P-005 → D-008
 - **P-031** `todo` Extract the `mcp-handler` bridge into `@papercusp/tooldef-mcp`.
   blocked-by: P-005 → D-008
 - **P-032** `todo` Extract the IPC adapter into `@papercusp/tooldef-ipc`. blocked-by: P-005
@@ -402,8 +467,11 @@ supplies the concrete one), `http-projection.ts` (→ eventually `tooldef-http`)
 
 - **P-040** `todo` In `packages/agent-mcp`, construct the `DispatchProjectedDeps` +
   `HttpToolHostExtras` from the real impls: `withWorkspace`/`tx`, `recordInvocation`
-  → `tool_invocations`, role config, HMAC `SigningProvider`, tier map,
-  superuser/power resolvers, harness path resolver. blocked-by: P-010, P-011, P-012, P-013, P-014
+  → `tool_invocations`, role config, tier map, `computeQuotaWindow`, `gateBypass`,
+  harness path resolver. (Several of these — quota windowing, tier resolver, gate
+  bypass — already landed incrementally in P-011/P-012/P-014's host wiring; P-040 is
+  now mostly consolidation.) The HMAC `SigningProvider` rides with P-030, not here.
+  blocked-by: P-010, P-011, P-012, P-014
 - **P-041** `todo` Repoint `bootstrap.ts`, `server-entry.ts`, `provisioning.ts`,
   `auth.ts` at `@papercusp/tooldef`. blocked-by: P-040
 - **P-042** `todo` Update `apps/operator` import sites (`@papercusp/agent-mcp` →
@@ -503,8 +571,24 @@ one function returns both, resolved once per call. Core default
 `defaultComputeQuotaWindow` = run-scoped/`perRun`; the host
 (`papercuspComputeQuotaWindow`) carries worker→chunk/`perChunk`, power-user→session,
 else→run/`perRun`. The engine now references none of `'worker'`/`'chunk:'`/
-`perChunk` — it treats `RolesQuota` opaquely. The remaining `tierFor`/
-`SigningProvider`/`resolvePrincipal` rules are P-012/P-013/P-014.
+`perChunk` — it treats `RolesQuota` opaquely.
+
+**Tier realized 2026-05-30 (P-012)** as a module-level resolver
+(`setCapabilityTierResolver`, default `'low'`; Papercusp table = `papercuspTierFor`)
+— module-load injection, not per-dispatch, because `tier` is stamped eagerly.
+
+**Auth tiers realized 2026-05-30 (P-014)** — but *not* as the sketched
+`resolvePrincipal(req) => { principal, bypassGates }`. Principal resolution was
+already host-side since Phase 1 (`HttpToolHostExtras.resolvePrincipalAndTx`), so the
+only thing left in the engine was the gate-bypass *branches*. Landed as a neutral
+`ctx.gateBypass: { role?, capability?, quota? }` the engine reads, with the
+superuser/power-user matrix in the host (`papercuspGateBypass`). Fail-closed.
+
+**Signing (`SigningProvider`) deferred to Phase 4 (P-030).** It was never in the
+core — `spawn-context.ts` + the orchestrator do HMAC host-side. The interface has no
+core consumer until the Web-standard HTTP adapter is extracted, so it lands there.
+Of D-006's four rules: quota + tier + auth-bypass shipped (P-011/P-012/P-014);
+signing rides Phase 4.
 
 ### D-007 — Core has zero `@papercusp`/`@restart`/PG deps
 Date: 2026-05-29

@@ -38,6 +38,7 @@ import {
   listMcpProjections,
   applyToolManifest,
   dispatchProjectedTool,
+  papercuspGateBypass,
   type UnifiedToolContext,
 } from '@papercusp/agent-mcp';
 import type { AgentRole } from '@papercusp/plugin-sdk';
@@ -211,6 +212,7 @@ async function tryBuildSpawnContext(extra: unknown): Promise<TrySpawnContextResu
         uiClientId: suIdentity.length > 0 ? suIdentity : null,
         planRunSessionId,
         isSuperuser: true,
+        // gateBypass is computed in buildMcpToolContext from isSuperuser/isPowerUser.
         // SU callers testing the power profile pass ?profile=power.
         profile: url.searchParams.get('profile') === 'power' ? 'power' : 'engineer',
       },
@@ -268,6 +270,8 @@ async function tryBuildSpawnContext(extra: unknown): Promise<TrySpawnContextResu
         // above is the security boundary that distinguishes the tiers.
         isSuperuser: true,
         isPowerUser: true,
+        // gateBypass (role+cap, NOT quota for power-user) is computed in
+        // buildMcpToolContext from isSuperuser/isPowerUser.
         // Power-user tokens always imply the power profile.
         profile: 'power',
       },
@@ -491,6 +495,10 @@ async function buildMcpToolContext(
     planRunSessionId: spawn.planRunSessionId ?? null,
     isSuperuser: spawn.isSuperuser ?? false,
     isPowerUser: spawn.isPowerUser ?? false,
+    gateBypass: papercuspGateBypass({
+      isSuperuser: spawn.isSuperuser ?? false,
+      isPowerUser: spawn.isPowerUser ?? false,
+    }),
     profile: spawn.profile ?? 'engineer',
     log: (msg) => {
       // eslint-disable-next-line no-console
