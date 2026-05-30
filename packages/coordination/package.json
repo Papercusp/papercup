@@ -1,0 +1,38 @@
+{
+  "name": "@papercusp/coordination",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Agent coordination substrate, extracted as three host-agnostic pieces: coord-core (pure envelope types + identity-free fold/merge/glob protocol logic), CoordEventLog (the swappable append-only channel-log seam — fs default + in-memory double, covers messages/handoffs/escalations/plan-events), and PresenceStore (the live-presence seam over an injected PgHandle). No @papercusp/@restart runtime deps; identity, subscriptions, and watermark persistence stay host-side by design.",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "import": "./src/index.ts",
+      "default": "./src/index.ts"
+    },
+    "./core": {
+      "types": "./src/core/index.ts",
+      "import": "./src/core/index.ts",
+      "default": "./src/core/index.ts"
+    },
+    "./event-log": {
+      "types": "./src/event-log/index.ts",
+      "import": "./src/event-log/index.ts",
+      "default": "./src/event-log/index.ts"
+    },
+    "./presence": {
+      "types": "./src/presence/index.ts",
+      "import": "./src/presence/index.ts",
+      "default": "./src/presence/index.ts"
+    }
+  },
+  "scripts": {
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "postgres": "^3.4.5",
+    "vitest": "^4.1.4"
+  }
+}

@@ -1,0 +1,149 @@
+/**
+ * pg-store.ts — PgPresenceStore: the production presence store over an
+ * injected postgres-js handle.
+ *
+ * The SQL is kept VERBATIM from the operator's original presence.ts
+ * (schema-qualified `harness_shared.coord_presence` + the
+ * `power_user_sessions` roster LEFT JOIN) — zero behavior change, and no
+ * schema-qualified-identifier interpolation (the hazard the rate-limit
+ * extraction flagged). The two host couplings are injected: the org PG
+ * handle (`getSql`) and the table bootstrap (`ensureSchema`). A
+ * different schema is a sibling store satisfying `PresenceStore`, not a
+ * config knob here.
+ */
+
+import type { Sql } from 'postgres';
+import {
+  PRESENCE_STALE_MS,
+  type PresenceIdentity,
+  type PresenceInput,
+  type PresenceRecord,
+  type PresenceStore,
+} from './types';
+
+export interface PgPresenceStoreOptions {
+  /** The org Postgres handle (postgres-js tagged template). Called per use. */
+  getSql: () => Sql;
+  /** Ensure harness_shared.coord_presence exists before first use. */
+  ensureSchema: () => Promise<void>;
+}
+
+interface CoordPresenceDbRow {
+  owner_id: string;
+  owner_label: string;
+  workspace_id: string;
+  source: string;
+  intent: string;
+  current_plan_slug: string | null;
+  current_files: unknown;
+  host: string;
+  pid: number | null;
+  started_at: string;
+  heartbeat_at: string;
+  user_id: string | null;
+  revoked_at: string | null;
+}
+
+function toRecord(r: CoordPresenceDbRow, now: number): PresenceRecord {
+  const files = Array.isArray(r.current_files) ? (r.current_files as string[]) : [];
+  return {
+    ownerId: r.owner_id,
+    ownerLabel: r.owner_label,
+    workspaceId: r.workspace_id,
+    source: r.source,
+    intent: r.intent,
+    currentPlanSlug: r.current_plan_slug,
+    currentFiles: files,
+    host: r.host,
+    pid: r.pid,
+    startedAt: r.started_at,
+    heartbeatAt: r.heartbeat_at,
+    stale: now - new Date(r.heartbeat_at).getTime() > PRESENCE_STALE_MS,
+    userId: r.user_id,
+    revoked: r.revoked_at != null,
+  };
+}
+
+export class PgPresenceStore implements PresenceStore {
+  constructor(private readonly opts: PgPresenceStoreOptions) {}
+
+  async write(identity: PresenceIdentity, input: PresenceInput = {}): Promise<void> {
+    await this.opts.ensureSchema();
+    const sql = this.opts.getSql();
+    await sql`
+      INSERT INTO harness_shared.coord_presence
+        (owner_id, owner_label, workspace_id, source, intent,
+         current_plan_slug, current_files, host, pid, heartbeat_at)
+      VALUES (
+        ${identity.ownerId}, ${identity.ownerLabel},
+        ${identity.workspaceId ?? 'default'}, ${identity.source},
+        ${input.intent ?? ''}, ${input.currentPlanSlug ?? null},
+        ${JSON.stringify(input.currentFiles ?? [])}::jsonb,
+        ${input.host ?? ''}, ${input.pid ?? null}, now()
+      )
+      ON CONFLICT (owner_id) DO UPDATE SET
+        owner_label       = EXCLUDED.owner_label,
+        workspace_id      = EXCLUDED.workspace_id,
+        source            = EXCLUDED.source,
+        intent            = EXCLUDED.intent,
+        current_plan_slug = EXCLUDED.current_plan_slug,
+        current_files     = EXCLUDED.current_files,
+        host              = EXCLUDED.host,
+        pid               = EXCLUDED.pid,
+        heartbeat_at      = now()
+    `;
+  }
+
+  async touchHeartbeat(ownerId: string): Promise<void> {
+    await this.opts.ensureSchema();
+    const sql = this.opts.getSql();
+    await sql`
+      UPDATE harness_shared.coord_presence
+         SET heartbeat_at = now()
+       WHERE owner_id = ${ownerId}
+    `;
+  }
+
+  async clear(ownerId: string): Promise<void> {
+    await this.opts.ensureSchema();
+    const sql = this.opts.getSql();
+    await sql`
+      DELETE FROM harness_shared.coord_presence WHERE owner_id = ${ownerId}
+    `;
+  }
+
+  async list(opts: { workspaceId?: string | null } = {}): Promise<PresenceRecord[]> {
+    await this.opts.ensureSchema();
+    const sql = this.opts.getSql();
+    const ws = opts.workspaceId ?? null;
+    const rows = await sql<CoordPresenceDbRow[]>`
+      SELECT cp.owner_id, cp.owner_label, cp.workspace_id, cp.source,
+             cp.intent, cp.current_plan_slug, cp.current_files,
+             cp.host, cp.pid, cp.started_at, cp.heartbeat_at,
+             pus.user_id, pus.revoked_at
+        FROM harness_shared.coord_presence cp
+        LEFT JOIN harness_shared.power_user_sessions pus
+          ON pus.auth_session_id = cp.owner_id
+       WHERE ${ws == null ? sql`TRUE` : sql`cp.workspace_id = ${ws}`}
+       ORDER BY cp.heartbeat_at DESC
+    `;
+    const now = Date.now();
+    return rows.map((r) => toRecord(r, now));
+  }
+
+  async get(ownerId: string): Promise<PresenceRecord | null> {
+    await this.opts.ensureSchema();
+    const sql = this.opts.getSql();
+    const rows = await sql<CoordPresenceDbRow[]>`
+      SELECT cp.owner_id, cp.owner_label, cp.workspace_id, cp.source,
+             cp.intent, cp.current_plan_slug, cp.current_files,
+             cp.host, cp.pid, cp.started_at, cp.heartbeat_at,
+             pus.user_id, pus.revoked_at
+        FROM harness_shared.coord_presence cp
+        LEFT JOIN harness_shared.power_user_sessions pus
+          ON pus.auth_session_id = cp.owner_id
+       WHERE cp.owner_id = ${ownerId}
+    `;
+    return rows.length > 0 ? toRecord(rows[0], Date.now()) : null;
+  }
+}
