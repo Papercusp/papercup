@@ -1,7 +1,7 @@
 ---
 title: Scout/SSE convergence — papercup-side loose ends
 slug: scout-convergence-papercup-2026-05-30
-status: active
+status: shipped
 created: 2026-05-30
 updated: 2026-05-30
 owner: avi@storewolf.com
@@ -41,16 +41,16 @@ D-003 optional fields + Restart lockstep, pushed). **Item 2 (org rename) is full
 done for both shared libs; items 3 & 4 done.** The sse + chat-protocol renames are
 consistent across papercup + all `Papercusp/*` remotes + Restart `feat/scout-unify`.
 
-**Remaining:** **P-003b** — the papercup emit-path adoption (option A wiring), a
-design-sensitive refactor of the LIVE card/voice/SSE system (flat-vs-discriminated
-`CardPresentation` + a `date` `min/max` string-vs-number conflict needing one more
-shared-type widening). Deliberately left as a focused, tested pass rather than
-rushed — full spec in the P-003b item. **P-006** (optional `sseResponse` adapter)
-deferred; no one blocked.
+**ALL BRIEF ITEMS COMPLETE** (P-001…P-005, P-003a/b). The Scout/SSE convergence is
+done across all three repos: papercup adopts the shared `@papercusp/sse` +
+`@papercusp/chat-protocol` wire contract, all pins are pushed & fresh-cloneable, and
+Restart consumes the same renamed packages. The chosen adoption (extend the shared
+wire type, keep papercup's rich discriminated types) achieved option A with zero
+consumer churn — better than the flat-presentation rewrite the original spec feared.
+Only **P-006** (optional `sseResponse` Node adapter) remains deferred; no one blocked.
 
-**Next:** P-003b per its spec (resolve the `min/max: number|string` widening in the
-shared repo first, then add the papercup submodule + map at `pendingToOpenCard` +
-update the ~7 `.presentation` consumers + run the card/voice/state tests).
+**Next:** nothing required. Optional follow-ups: P-006; and rewire the 33
+`plan-parser` shim consumers (a separate systems-abstraction tail, unrelated).
 
 ## Background
 
@@ -157,9 +157,25 @@ every in-tree AND submodule ref is migrated.
   lockstep: 5 consumers + tsconfig path + symlink + pin (`80bcdd25` on
   `feat/scout-unify`, pushed). Item 2 (org rename) is now fully done for BOTH
   shared libs; the shared chat-protocol types are adoption-ready.
-- **P-003b** `todo` — papercup emit-path adoption (option A). The remaining,
-  design-sensitive piece — touches the LIVE card/voice/SSE system, so it warrants
-  a focused, tested pass. Spec:
+- **P-003b** `done` — papercup emit-path adoption (option A), shipped & verified.
+  Added `Papercusp/chat-protocol` as papercup submodule `libs/chat-protocol`
+  (`abedf9c`) + symlink + `@papercusp/chat-protocol` dep in `packages/tooldef`.
+  `packages/tooldef/src/types.ts` now re-exports the shared `ChatEvent` and makes
+  `OpenCardSnapshot` **extend** the shared wire type (`Omit`-ing `presentation` +
+  `dataSchemaJson`, keeping papercup's richer discriminated `CardPresentation` +
+  required `dataSchemaJson`). A compile-time `_AssertWireCompatible<OpenCardSnapshot>`
+  proves papercup's snapshot is a valid shared wire snapshot (a future drift fails
+  the build). **Zero consumer churn** — the discriminated presentation is preserved.
+  Shared-type reconciliation done in lockstep across `Papercusp/chat-protocol`
+  (`50a066e→01f947f→abedf9c`: added `hint`/`style`/`voiceAnswerable`/`dataSchemaJson`,
+  widened `min/max`→`number|string`, added `multiline`, made `presentation`
+  optional — all back-compat) + Restart (`ef6744cc`: re-pin + 3 `?.` guards in shop
+  RecommenderChat). Verified: tooldef wire-compat assertion passes; tooldef tsc 0
+  new errors; state-channel + card-correlator 31/31; operator voice-cards +
+  state-snapshot 55/55. (Pre-existing unrelated failure observed:
+  `operator-state-snapshot.test.ts` file-load fails on a `@papercusp/backup` seam
+  mock missing `workspacesRoot` — not chat-protocol-related.)
+  Original spec retained below for reference:
   1. Add `Papercusp/chat-protocol` as a papercup submodule at `libs/chat-protocol`
      + `node_modules/@papercusp/chat-protocol` symlink + `package.json` dep
      (papercup resolves scoped pkgs by symlink, no tsconfig path needed).

@@ -37,3 +37,6 @@
 [submodule "libs/search-core"]
 	path = libs/search-core
 	url = https://github.com/Papercusp/search-core.git
+[submodule "libs/chat-protocol"]
+	path = libs/chat-protocol
+	url = https://github.com/Papercusp/chat-protocol.git
