@@ -164,4 +164,17 @@ describe('bootstrap-su', () => {
     expect(res.status).toBe(400);
     expect(recordAdvSessionMock).not.toHaveBeenCalled();
   });
+
+  it('no-harness launch uses the caller cwd (resume-friendly), not the internal dir', async () => {
+    const res = await callPost({ agent: 'claude', harness_slug: null, cwd: '/home/me/work' });
+    const json = await res.json();
+    expect(json.cwd).toBe('/home/me/work');
+    expect(recordAdvSessionMock).toHaveBeenCalledWith(expect.objectContaining({ cwd: '/home/me/work' }));
+  });
+
+  it('harness launch ignores the caller cwd (uses the harness repo)', async () => {
+    const res = await callPost({ agent: 'claude', harness_slug: 'papercup', cwd: '/home/me/work' });
+    const json = await res.json();
+    expect(json.cwd).toBe('/proj/papercup');
+  });
 });

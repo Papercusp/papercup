@@ -154,6 +154,9 @@ const post = defineTool({
       harness_slug?: string | null;
       plan_slug?: string | null;
       label?: string | null;
+      /** The launcher's own cwd — used for no-harness launches so the
+       *  agent's cwd-scoped session resume works from the user's terminal. */
+      cwd?: string | null;
     } = {};
     try {
       const text = await req.text();
@@ -175,6 +178,7 @@ const post = defineTool({
     }
     const harnessSlug = body.harness_slug?.trim() || null;
     const planSlug = body.plan_slug?.trim() || null;
+    const callerCwd = body.cwd?.trim() || null;
 
     // Resolve cwd + context env from the existing console envelope builder
     // (shell mode), scoped to the chosen workspace. We don't use its
@@ -192,6 +196,13 @@ const post = defineTool({
       return jsonRes({ status: 'error', error: e?.message ?? 'envelope build failed' }, 400);
     }
 
+    // cwd: a harness launch runs in the harness repo (envelope.cwd). A
+    // no-harness launch prefers the launcher's own cwd (the user's
+    // terminal) over the internal .papercusp dir — agents scope their
+    // resumable sessions by cwd, so this makes `--resume` work from where
+    // the user is. Recorded + returned + exec'd consistently.
+    const cwd = harnessSlug ? envelope.cwd : (callerCwd || envelope.cwd);
+
     // Record the tracked session. plan_slug null → a "No plan" row (D-005).
     // mode mirrors the agent kind for the legacy omp|console CHECK; the
     // new `agent` column carries the precise kind.
@@ -200,7 +211,7 @@ const post = defineTool({
       agent,
       workspaceId: workspace,
       mode: agent === 'omp' ? 'omp' : 'console',
-      cwd: envelope.cwd,
+      cwd,
       label: body.label?.trim() || null,
     });
 
@@ -215,7 +226,7 @@ const post = defineTool({
       sessionId,
       agent,
       workspaceId: workspace,
-      cwd: envelope.cwd,
+      cwd,
       harnessSlug,
       planSlug,
       wrapperBin: SU_WRAPPER_BIN[agent],

@@ -213,22 +213,22 @@ async function main() {
       workspace: selections.workspace,
       harness_slug: selections.harness,
       plan_slug: selections.plan,
+      // Our cwd — the server uses it for a no-harness launch (so the
+      // agent's cwd-scoped session resume works from the user's terminal,
+      // not the internal .papercusp dir). Ignored for harness launches.
+      cwd: process.cwd(),
     }),
   });
 
-  // Agents (claude/omp/codex) scope their resumable sessions by cwd. For
-  // a harness launch we run IN the harness repo (intentional). For a
-  // no-harness ad-hoc session, run in the user's current dir rather than
-  // the operator's internal .papercusp dir — so the agent's own
-  // `--resume <id>` works from the same terminal, matching a plain launch.
-  const launchCwd = res.harnessSlug ? res.cwd : process.cwd();
-
+  // res.cwd is server-decided: the harness repo for a harness launch, or
+  // our cwd (above) for a no-harness one. Agents scope resumable sessions
+  // by cwd, so resume works from res.cwd.
   console.error(
     `psu: ${res.agent} -> ${res.wrapperBin}  ·  ${res.planSlug ? `plan ${res.planSlug}` : 'no plan'}` +
       `  ·  session ${res.sessionId ?? '?'}`,
   );
-  console.error(`psu: cwd ${launchCwd}  —  resume this session by running the agent's resume command from here`);
-  runWrapper({ wrapperBin: res.wrapperBin, cwd: launchCwd, envelopeEnv: res.envelopeEnv });
+  console.error(`psu: cwd ${res.cwd}  —  resume this session by running the agent's resume command from here`);
+  runWrapper({ wrapperBin: res.wrapperBin, cwd: res.cwd, envelopeEnv: res.envelopeEnv });
 }
 
 const isMain = process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
