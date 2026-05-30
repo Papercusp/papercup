@@ -451,7 +451,7 @@ two SEPARATE storage components**, not one dual-backend interface:
 
 ## Phase 5 — Promote what's already factored (Population A)
 
-- **P-040** `wip` Publish/promote the already-clean libs (audit confirmed all (READMEs added for host-platform + docs-engine 97b5c755; all 9 libs now have READMEs. Remaining is cosmetic + submodule-gated: git-graph/ui-primitives private:false→true + desc, papergrid desc+version, token-kit v0.0.0 bump live in submodules → needs commit+pointer-bump no-push-without-asking. agent-chat excluded chat, D-001.)
+- **P-040** `wip` Publish/promote the already-clean libs (audit confirmed all (ALL LIBS STAY private:true — agents have private-repo access, no npm publish [user 2026-05-30]. READMEs added host-platform+docs-engine 97b5c755; all 9 have READMEs. Submodule packaging DONE 2026-05-30: token-kit→0.1.0 (e808c0d), ui-primitives private:true+desc (8075a3c), papergrid version+desc (9eb01cb); superproject pointers bumped e5736201 — LOCAL-ONLY, not pushed (don't-push-without-asking; coordinated submodule push still owed). REMAINING: only git-graph private:true+desc — its package.json has another agent's uncommitted react-diff-view edit, so a clean P-040-only commit isn't possible; do it when that lands. agent-chat excluded chat, D-001.)
   nine carry zero domain imports): `@restart/sse`, `@papercusp/token-kit`,
   `@papercusp/host-platform`, `@papercusp/docs-engine`, `@papercusp/file-claim`,
   the four React libs, `@papercusp/flags`. Packaging only (versioning, README).
