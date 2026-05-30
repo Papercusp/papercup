@@ -343,7 +343,9 @@ export default function FeaturesPanel({ params, api }: PanelComponentProps) {
     () => (row: HarnessFeature) => {
       if (row.id === selectedId) return 'color-mix(in oklab, var(--accent), transparent 80%)';
       if (row.id === hoveredId) return 'var(--bg-3)';
-      return 'transparent';
+      // undefined → RichGrid's default alternating row stripe (zebra),
+      // matching the run-log + agents panels.
+      return undefined;
     },
     [selectedId, hoveredId],
   );
