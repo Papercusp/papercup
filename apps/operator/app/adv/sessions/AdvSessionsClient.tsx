@@ -4,7 +4,7 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import * as Collapsible from '@radix-ui/react-collapsible';
 import * as Tabs from '@radix-ui/react-tabs';
 import { ChevronRight } from 'lucide-react';
-import { parseAsArrayOf, parseAsString, useQueryState } from 'nuqs';
+import { parseAsArrayOf, parseAsString, parseAsStringEnum, useQueryState } from 'nuqs';
 import { toast } from 'sonner';
 import { Button } from '@/app/harness/Button';
 import { Select } from '@/app/harness/Select';
