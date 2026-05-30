@@ -40,6 +40,14 @@ burn extra budget. Track work with `todo_write` instead.
   especially when a handoff or successor brief references an origin
   session id.
 
+File-lock enforcement is **automatic here**: the coordination extension
+(`papercusp-coord.ts`, loaded by `omp-su` via `-e`) claims a lock on each
+file edit through its `tool_call` hook and **blocks the edit (with the
+holder's intent) when another agent holds the file**. When blocked,
+pivot/retry/yield — don't route around it. Hand-call `locks:acquire`
+only for a multi-file change held across the commit (see the base
+playbook's "File locking is ENFORCED" section).
+
 For compaction-sensitive work, write successor briefs that name the
 origin OMP session id and the relevant plan/session state. The next
 agent should start by calling `omp:sessions op='state'` and targeted

@@ -105,20 +105,32 @@ insights = "how things work". Spec in plan
 
 ### Tool patterns
 
-#### Claim files before editing
+#### File locking is enforced
 
-Multiple agents may be active at once. Before editing any file:
+Multiple agents may edit this workspace at once, so locking is
+**enforced**: every client (Claude Code, OMP, Codex) runs a hook that
+locks each `Edit`/`Write`/`apply_patch` and **blocks it when another
+agent holds that file**, releasing after the edit. You don't hand-lock
+single edits. When the hook blocks you — it names the holder + intent +
+expiry — **pivot** to other work, **retry**, or **yield to the user**
+with both intents. Never route around a block.
+
+Call `locks:acquire` BY HAND only for a deliberate multi-file change you
+must hold across several edits and the commit (the per-edit hook can't
+span that window):
 
 ```
 locks:acquire {
   paths: ['<repo-relative path>', ...],
   intent: '<one-line what you are doing>',
-  ttl_sec: 600,
-  wait: { max_sec: 60 }
+  ttl_sec: 1200,
+  wait: { max_sec: 300 }
 }
 ```
 
-Release when done: `locks:release { lock_id }`.
+Then edit → commit → `locks:release { lock_id }`. The hook fails open
+(operator down → edit allowed, flagged at `/coord`), so it never wedges
+you on an infra blip.
 
 #### List → get chaining
 

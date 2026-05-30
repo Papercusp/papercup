@@ -264,48 +264,56 @@ from earlier shouldn't carry across topics — engineering work moves
 fast, intent shifts fast. See `/internal/docs/agent-policies` for the exact
 rule.
 
-### Before editing any file, claim it
+### File locking is ENFORCED — how to work with it
 
-Multiple SU shells (Claude Code, OMP, Codex, Gemini) may be open at
-once. Coordination is mandatory:
+Multiple SU shells (Claude Code, OMP, Codex) may edit this workspace at
+once, so file locking is **enforced, not advisory**. Every client runs a
+hook that, before each `Edit` / `Write` / `apply_patch`, claims a lock on
+the target file and **blocks the edit when another agent holds it** —
+then releases automatically once the edit lands. You do NOT hand-lock
+individual edits; the hook does it for you.
 
-1. **Acquire** the file set you're about to edit:
-   ```
-   locks:acquire {
-     paths: ['<repo-rel-path>', ...],
-     intent: '<one-line what you're doing>',
-     ttl_sec: 1200,
-     wait: { max_sec: 300 }
-   }
-   ```
-2. **On `ok: true`**: edit, commit, then `locks:release { lock_id }`.
-   For edits >15 min, heartbeat at the halfway mark.
-3. **On `ok: false`** (timed out / immediate busy): the response
-   carries `busy` with the holder's `owner_label`, `intent`, and
-   `expires_ts`. Options:
-   - **Retry** — call acquire again, get a new spot in the queue.
-   - **Pivot** — do other work in the meantime.
-   - **Yield to user**: name BOTH intents (yours and the holder's)
-     so the user can decide. "Agent X has `lib/foo.ts` for 'fix
-     typo'; I want 'refactor entire auth module' — wait, pivot, or
-     coordinate?"
-4. **`reason: 'waiter_cap_exceeded'`**: you have 10 active waits
-   already; something is wrong with your loop. Audit via
-   `locks:queue { owner: <self> }` and cancel stale tickets.
-5. **`cancel_wait` returning `cancelled: false`**: a grant raced
-   your cancel. You hold a lock you didn't want — immediately
-   `locks:release { all_mine: true }`.
-6. **Crash safety**: locks expire on TTL (default 1200s). If you
-   forget to release, the next agent's acquire steals it cleanly
-   after expiry.
-7. **`locks:queue`** is public — read it if the user asks what
-   other agents are doing.
+**When the hook blocks you** — the tool result names the holder, their
+intent, and the expiry. Choose:
+- **Pivot** — do other work while they finish. Best default.
+- **Retry** — re-attempt; it goes through once they release.
+- **Yield to the user** — if your work and theirs truly conflict, name
+  BOTH intents and let them decide: "Agent X holds `lib/foo.ts` for 'fix
+  typo'; I need it to 'refactor auth' — wait, pivot, or coordinate?"
 
-For Claude Code users, a `PreToolUse` hook installed by
-`install-standalone-mcp.sh` runs `locks:acquire` automatically
-before every `Edit/Write/MultiEdit`. You'll see a stderr message
-naming the holder if a file is contested; you must redirect the
-work, not retry the same edit.
+Never route around a block (renaming, editing a copy, `--force`). The
+lock is the other agent's in-flight work; stomping it is the bug this
+whole system exists to prevent.
+
+**When to `locks:acquire` BY HAND** — only for the one case the per-edit
+hook can't cover: a deliberate change across several files that you must
+hold **across multiple edits and the commit** (the hook releases after
+each single edit, so it won't protect that window):
+```
+locks:acquire {
+  paths: ['<repo-rel-path>', ...],
+  intent: '<one-line what you're doing>',
+  ttl_sec: 1200,
+  wait: { max_sec: 300 }
+}
+```
+On `ok`: make all the edits → commit → `locks:release { lock_id }`. For a
+set held >15 min, `locks:heartbeat` at the halfway mark.
+
+**Operational corners:**
+- `ok: false` busy → same retry / pivot / yield choice as a hook block.
+- `reason: 'waiter_cap_exceeded'` → you have 10 active waits; your loop
+  is wrong. Audit `locks:queue { owner: <self> }`, cancel stale tickets.
+- `cancel_wait` → `cancelled: false` means a grant raced your cancel —
+  you hold a lock you didn't want; `locks:release { all_mine: true }`.
+- Crash safety: locks expire on TTL (default 1200s); a forgotten lock is
+  stolen cleanly after expiry. On session end / context loss, call
+  `locks:release { all_mine: true }`.
+- `locks:queue` is public — read it to see what other agents hold.
+
+The hook **fails open**: if the operator is unreachable it allows the
+edit and records the failure (surfaced at `/coord` as "enforcement
+offline"). Enforcement is real, but an infra blip never wedges you.
 
 ## Named workflows
 

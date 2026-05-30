@@ -2,10 +2,13 @@
  * GET /api/su-locks/hook-health — Phase E13 (endpoint-unification-2026-05-21).
  * Ported off the legacy `_hono/su-locks.ts` Hono sub-app onto `defineTool`.
  *
- * Surfaces the OMP `tool_call` hook's persisted health markers so the
- * `/coord` UI can show "enforcement offline" when the hook is failing
- * open. The hook writes `last-error.json` / `last-success.json` into
- * `~/.papercusp/locks-cache/` (override: `PAPERCUSP_LOCKS_CACHE_DIR`).
+ * Surfaces the lock-enforcement hooks' persisted health markers so the
+ * `/coord` UI can show "enforcement offline" when a hook is failing
+ * open. ALL THREE clients write the same `last-error.json` /
+ * `last-success.json` into `~/.papercusp/locks-cache/` (override:
+ * `PAPERCUSP_LOCKS_CACHE_DIR`): OMP's `coord-hook.ts` (`tool_call` /
+ * `tool_result`) and the Claude/Codex `cc/` hooks (`pretooluse` /
+ * `posttooluse`). One marker set = one machine-wide health signal.
  *
  * `auth: 'public'` — the legacy sub-app carried no auth middleware; the
  * UI fetches it unauthenticated and it is loopback-protected by the host
@@ -17,7 +20,9 @@ import { defineTool } from '@papercusp/agent-mcp';
 
 interface HookErrorRecord {
   ts: string;
-  handler: 'tool_call' | 'tool_result';
+  // OMP hook: 'tool_call' | 'tool_result'. Claude/Codex cc/ hooks:
+  // 'pretooluse' | 'posttooluse'. Same marker file, either source.
+  handler: 'tool_call' | 'tool_result' | 'pretooluse' | 'posttooluse';
   phase: 'connect' | 'http' | 'parse';
   detail: string;
   operator_url: string;

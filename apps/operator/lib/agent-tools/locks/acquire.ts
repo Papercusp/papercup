@@ -96,10 +96,10 @@ export default defineTool({
   description:
     'Claim a set of files for exclusive editing. Returns ok+lock_id on success, or busy+contention details on failure. Set wait={max_sec:N} (≤300) to queue server-side until the locks free. Paths MUST be repo-relative POSIX (no leading ./, no //, no trailing /, no .., no backslashes, no absolute paths) — the server canonicalizes equivalent spellings to one lock key but rejects malformed ones; resolve symlinks caller-side before claiming.',
   guidance: {
-    when: 'Before any Edit/Write/MultiEdit of files in the operator codebase. Call once per logical edit set; release when done.',
+    when: 'For a DELIBERATE multi-file claim you hold across several edits AND the commit — acquire once for the whole set, release after committing. Per-edit locking is already automatic on every client (the PreToolUse/tool_call hook acquires + releases around each individual Edit/Write/apply_patch), so the gap this fills is the edit→commit window the hook cannot cover.',
     notWhen:
-      'For read-only inspection, no claim needed. For a single trivial edit (<3 lines, contention vanishingly unlikely), the PreToolUse hook handles it — only call directly for plans/refactors touching >1 file.',
-    chaining: 'On ok: edit → locks:release { lock_id }. On busy: read intent + expires_ts and decide retry/pivot/yield. With wait: blocks server-side; cancel_wait to abort.',
+      'Read-only inspection needs no claim. A single incidental edit needs no manual call — the hook covers it. Do NOT wrap every edit in acquire/release; that duplicates the hook and churns the lock.',
+    chaining: 'On ok: make your edits → commit → locks:release { lock_id }. On busy: read holder intent + expires_ts, decide retry/pivot/yield. With wait: blocks server-side; cancel_wait to abort.',
   },
   capability: 'locks:write',
   // Framework default per-tool timeoutSec is 60s. wait.max_sec can

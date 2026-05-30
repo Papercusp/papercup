@@ -25,3 +25,10 @@ Papercusp coordination is the same on every client: use `coord:*` and
 authority for presence, handoffs, escalations, and file claims. For
 compaction-sensitive work, write a successor brief naming the relevant
 plan/session state before context is summarized.
+
+File-lock enforcement is **automatic here**: a `PreToolUse` hook in
+`~/.claude/settings.json` claims a lock before each `Edit`/`Write` and
+**blocks it (with the holder's intent) when another agent holds the
+file**. When blocked, pivot/retry/yield — don't route around it. Hand-
+call `locks:acquire` only for a multi-file change held across the
+commit (see the base playbook's "File locking is ENFORCED" section).
