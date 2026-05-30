@@ -41,6 +41,9 @@ export type TabStrip = {
   id: string;
   activePanelId: string;
   panels: PanelInstance[];
+  /** Fractional split size (0–1) when this strip is a child of a GroupNode —
+   *  the seed layouts set it on tab cells just like on GroupNode children. */
+  size?: number;
 };
 
 export type GroupNode = {
@@ -335,6 +338,50 @@ export function defaultAdvHarnessesLayout(harnessSlug = ''): LayoutDoc {
 }
 
 /**
+ * Seed layout for the /adv Git dock (AdvGitWorkspace): the RichGrid git
+ * graph on the left, pull requests on the right, split ~58/42.
+ */
+export function defaultAdvGitLayout(harnessSlug = ''): LayoutDoc {
+  return {
+    schemaVersion: 1,
+    root: {
+      kind: 'group',
+      id: 'root',
+      direction: 'row',
+      children: [
+        {
+          kind: 'tabs',
+          id: 'git-graph-cell',
+          size: 0.58,
+          activePanelId: 'p-adv-git-graph',
+          panels: [
+            {
+              id: 'p-adv-git-graph',
+              type: 'adv:git-graph',
+              params: { harnessSlug },
+            },
+          ],
+        },
+        {
+          kind: 'tabs',
+          id: 'prs-cell',
+          size: 0.42,
+          activePanelId: 'p-adv-prs',
+          panels: [
+            {
+              id: 'p-adv-prs',
+              type: 'adv:prs',
+              params: { harnessSlug },
+            },
+          ],
+        },
+      ],
+    },
+    floating: [],
+  };
+}
+
+/**
  * Pi-tab-specific seed for Phase 2. The pi tab today owns its own
  * localStorage layout; this seeds the PG-backed replacement.
  */
@@ -520,17 +567,22 @@ export async function getLayout(
   // with empty slug and fetches fail.
   const isPi = name === 'pi' || name.startsWith('pi:');
   const isAdvHarnesses = name === 'adv-harnesses' || name.startsWith('adv-harnesses:');
+  const isAdvGit = name === 'adv-git' || name.startsWith('adv-git:');
   let seededSlug = '';
   if (name.startsWith('dashboard:')) {
     seededSlug = name.slice('dashboard:'.length);
   } else if (name.startsWith('adv-harnesses:')) {
     seededSlug = name.slice('adv-harnesses:'.length);
+  } else if (name.startsWith('adv-git:')) {
+    seededSlug = name.slice('adv-git:'.length);
   }
   const seed: LayoutDoc = isPi
     ? ({ schemaVersion: OPAQUE_SCHEMA_VERSION, dockviewJson: null } as unknown as LayoutDoc)
-    : isAdvHarnesses
-      ? defaultAdvHarnessesLayout(seededSlug)
-      : defaultDashboardLayout(seededSlug);
+    : isAdvGit
+      ? defaultAdvGitLayout(seededSlug)
+      : isAdvHarnesses
+        ? defaultAdvHarnessesLayout(seededSlug)
+        : defaultDashboardLayout(seededSlug);
   return saveLayout(principal, name, seed);
 }
 
@@ -640,12 +692,15 @@ export async function resetLayout(
   let seededSlug = '';
   if (name.startsWith('dashboard:')) seededSlug = name.slice('dashboard:'.length);
   else if (name.startsWith('adv-harnesses:')) seededSlug = name.slice('adv-harnesses:'.length);
+  else if (name.startsWith('adv-git:')) seededSlug = name.slice('adv-git:'.length);
   const seed =
     name === 'pi' || name.startsWith('pi:')
       ? defaultPiTerminalsLayout()
-      : name === 'adv-harnesses' || name.startsWith('adv-harnesses:')
-        ? defaultAdvHarnessesLayout(seededSlug)
-        : defaultDashboardLayout(seededSlug);
+      : name === 'adv-git' || name.startsWith('adv-git:')
+        ? defaultAdvGitLayout(seededSlug)
+        : name === 'adv-harnesses' || name.startsWith('adv-harnesses:')
+          ? defaultAdvHarnessesLayout(seededSlug)
+          : defaultDashboardLayout(seededSlug);
   return saveLayout(principal, name, seed);
 }
 

@@ -1,7 +1,7 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import { parseAsString, useQueryState } from 'nuqs';
 import type { AdvTabId } from './AdvShell';
-import { RealGitPanel } from '@/app/harness/dock/RealGitPanel';
+import AdvGitWorkspace from '@/app/adv/harnesses/AdvGitWorkspace';
 import { BrainstormFull } from '@/app/harness/brainstorm/BrainstormFull';
 import PrsTab from '@/app/harness/PrsTab';
 import HarnessSettingsPanel from '@/app/harness/HarnessSettingsPanel';
@@ -104,62 +104,11 @@ const PANEL_FILL_CSS = `
 export default function AdvHarnessPanelPage({ panel }: { panel: AdvHarnessPanel }) {
   const [activeSlug] = useQueryState('slug', parseAsString);
 
-  // Git keeps its bespoke two-pane layout: native git graph + a PRs pane.
-  // The PRs pane now renders <PrsTab/> directly instead of an embedded
-  // HarnessDashboard.
+  // Git is its own dockview dock (AdvGitWorkspace) — Git graph + Pull
+  // requests as dock panels, mirroring the Harness tab. It owns its own
+  // slug handling via ?slug=, so no activeSlug plumbing here.
   if (panel === 'git') {
-    return (
-      <section className="pc-adv-harness-panel pc-adv-harness-panel--git" aria-label="ADV Git workspace">
-        {activeSlug ? (
-          <div className="pc-adv-git-split">
-            <div className="pc-adv-git-split__pane" aria-label="Git graph">
-              <RealGitPanel
-                panelId="adv-git"
-                panelType="data:git"
-                params={{ harnessSlug: activeSlug }}
-                api={{
-                  setParams: () => {},
-                  setTitle: () => {},
-                  close: () => {},
-                }}
-              />
-            </div>
-            <div className="pc-adv-git-split__pane pc-adv-git-split__pane--prs" aria-label="Pull requests">
-              <PrsTab harnessSlug={activeSlug} />
-            </div>
-          </div>
-        ) : (
-          <div className="pc-adv-harness-panel__empty">Select a harness to view its git graph.</div>
-        )}
-        <style>{`
-          .pc-adv-harness-panel--git {
-            padding: 10px;
-          }
-          /* Two panes side by side: git graph (left) + PRs (right). */
-          .pc-adv-git-split {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 10px;
-            min-height: 0;
-          }
-          .pc-adv-git-split__pane {
-            min-width: 0;
-            min-height: 0;
-            display: flex;
-            flex-direction: column;
-            border: 1px solid var(--border, rgba(125, 211, 252, 0.15));
-            border-radius: 10px;
-            overflow: hidden;
-            background: var(--bg-2, rgba(255, 255, 255, 0.02));
-          }
-          .pc-adv-git-split__pane > * {
-            flex: 1;
-            min-height: 0;
-          }
-          ${PANEL_FILL_CSS}
-        `}</style>
-      </section>
-    );
+    return <AdvGitWorkspace />;
   }
 
   // Decoupled tabs: render the panel component directly.

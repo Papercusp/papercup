@@ -16,7 +16,6 @@ import FeaturesPanel from './FeaturesPanel';
 import IssuesPanel from './IssuesPanel';
 import DetailPanel from './DetailPanel';
 import AdvChatPanel from './AdvChatPanel';
-import { AdvGitPanel } from './AdvGitPanel';
 import AdvAgentsPanel from './AdvAgentsPanel';
 import AdvLogsPanel from './AdvLogsPanel';
 import AdvOverviewPanel from './AdvOverviewPanel';
@@ -62,7 +61,8 @@ function ensureRegistered() {
   panelRegistry.register('adv:issues', IssuesPanel, { title: 'Issues' });
   panelRegistry.register('adv:detail', DetailPanel, { title: 'Detail' });
   panelRegistry.register('adv:pinned', DetailPanel, { title: 'Pinned' });
-  panelRegistry.register('adv:git', AdvGitPanel, { title: 'Git' });
+  // Git is no longer a Harness-page panel — it has its own /adv Git dock
+  // (AdvGitDock registers adv:git-graph + adv:prs).
   panelRegistry.register('adv:agents', AdvAgentsPanel, { title: 'Agents' });
   panelRegistry.register('adv:logs', AdvLogsPanel, { title: 'Run log' });
   panelRegistry.register('adv:overview', AdvOverviewPanel, { title: 'Overview' });
