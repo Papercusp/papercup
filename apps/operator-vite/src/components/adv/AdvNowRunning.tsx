@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Square } from 'lucide-react';
+import { Square, Play } from 'lucide-react';
 import { toast } from 'sonner';
 import AgentThinkingPopover from '@/app/harness/AgentThinkingPopover';
 
@@ -30,33 +30,23 @@ interface Props {
 const PHASE = 'staging';
 
 /**
- * Lives in the AdvShell header next to the harness selector. Three jobs:
- *   1. Start / Stop the selected harness (replacing the legacy
- *      "START THE HARNESS" button on /harness).
- *   2. Show one pill per in-flight agent_runs row with role · featureId ·
- *      elapsed time.
- *   3. Hover a pill → live "thinking" SSE popover via the existing
- *      AgentThinkingPopover (ported wholesale from /harness).
+ * Full-width harness status bar rendered above the tab strip in AdvShell.
+ * Shows harness active/stopped state, start/stop controls, and one pill
+ * per in-flight agent run. Ported from ActiveAgentsBar in HarnessDashboard.
  *
- * Polls /api/harness/:slug/agents (filtered to running=true) every 4s.
- * Status check is a separate /status poll because the agents endpoint
- * doesn't expose alive.
+ * Polls /api/harness/:slug/agents + /status every 4 s.
  */
 export default function AdvNowRunning({ slug }: Props) {
   const [runs, setRuns] = useState<AgentRun[]>([]);
   const [alive, setAlive] = useState<boolean | null>(null);
   const [now, setNow] = useState(() => Math.floor(Date.now() / 1000));
+  const [starting, setStarting] = useState(false);
 
-  // Hover popover state — same dwell/transit semantics as the legacy
-  // ActiveAgentsBar so the cursor can travel pill → popover without flicker.
   const [hovered, setHovered] = useState<{ run: AgentRun; rect: DOMRect } | null>(null);
   const enterTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const closeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const cancelClose = () => {
-    if (closeTimer.current) {
-      clearTimeout(closeTimer.current);
-      closeTimer.current = null;
-    }
+    if (closeTimer.current) { clearTimeout(closeTimer.current); closeTimer.current = null; }
   };
   const scheduleClose = () => {
     cancelClose();
@@ -64,11 +54,7 @@ export default function AdvNowRunning({ slug }: Props) {
   };
 
   useEffect(() => {
-    if (!slug) {
-      setRuns([]);
-      setAlive(null);
-      return;
-    }
+    if (!slug) { setRuns([]); setAlive(null); return; }
     let cancelled = false;
     const refresh = () => {
       Promise.all([
@@ -81,20 +67,13 @@ export default function AdvNowRunning({ slug }: Props) {
       ]).then(([agents, status]) => {
         if (cancelled) return;
         const live = (agents?.runs ?? []).filter((r) => r.running);
-        setRuns(
-          live
-            .map((r) => parseRun(r))
-            .sort((a, b) => a.ts - b.ts),
-        );
+        setRuns(live.map(parseRun).sort((a, b) => a.ts - b.ts));
         setAlive(status ? !!status.alive : null);
       });
     };
     refresh();
     const id = window.setInterval(refresh, 4000);
-    return () => {
-      cancelled = true;
-      window.clearInterval(id);
-    };
+    return () => { cancelled = true; window.clearInterval(id); };
   }, [slug]);
 
   useEffect(() => {
@@ -103,16 +82,41 @@ export default function AdvNowRunning({ slug }: Props) {
     return () => window.clearInterval(id);
   }, [runs.length]);
 
+  const launchHarness = useCallback(async () => {
+    if (!slug || starting) return;
+    setStarting(true);
+    try {
+      const res = await fetch(`/api/harness/${encodeURIComponent(slug)}/launch?phase=${PHASE}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({}),
+      });
+      if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`);
+      const d = await res.json();
+      toast.success('Harness launched', { description: d.logPath });
+      setTimeout(() => {
+        fetch(`/api/harness/${encodeURIComponent(slug)}/status?phase=${PHASE}`)
+          .then((r) => r.json())
+          .then((s: StatusResponse) => setAlive(!!s.alive))
+          .catch(() => {});
+      }, 2000);
+    } catch (e) {
+      toast.error('Launch failed', { description: String(e) });
+    } finally {
+      setStarting(false);
+    }
+  }, [slug, starting]);
+
   const stopHarness = useCallback(async () => {
     if (!slug) return;
     if (!window.confirm(`Stop harness ${slug}? In-flight work will be interrupted.`)) return;
     try {
-      const res = await fetch(`/api/harness/${encodeURIComponent(slug)}/stop?phase=${PHASE}`, {
-        method: 'POST',
-      });
+      const res = await fetch(`/api/harness/${encodeURIComponent(slug)}/stop?phase=${PHASE}`, { method: 'POST' });
       if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`);
       const d = (await res.json()) as { killed?: unknown[] };
       toast.success(`Stopped ${d.killed?.length ?? 0} process(es)`);
+      setAlive(false);
+      setRuns([]);
     } catch (e) {
       toast.error('Stop failed', { description: String(e) });
     }
@@ -127,19 +131,26 @@ export default function AdvNowRunning({ slug }: Props) {
     return m > 0 ? `${m}:${String(r).padStart(2, '0')}` : `0:${String(r).padStart(2, '0')}`;
   };
 
+  const isIdle = runs.length === 0;
+  const isLoading = alive === null;
+
+  const statusLabel = isLoading
+    ? 'Checking…'
+    : alive
+      ? isIdle ? 'Active — idle' : `Active — ${runs.length} agent${runs.length === 1 ? '' : 's'} running`
+      : 'Stopped';
+
+  const stateClass = isLoading ? 'is-checking' : alive ? 'is-active' : 'is-stopped';
+
   return (
-    <div className="pc-advshell__now-running" aria-label="Now running">
-      {alive === true ? (
-        <button
-          type="button"
-          className="pc-advshell__action pc-advshell__action--stop"
-          onClick={stopHarness}
-          title="Stop harness (SIGTERM)"
-        >
-          <Square size={11} />
-          Stop
-        </button>
-      ) : null}
+    <div className={`pc-advshell__harness-bar pc-advshell__harness-bar--${stateClass}`} aria-label="Harness status">
+      {/* Status indicator */}
+      <div className="pc-advshell__harness-status">
+        <span className="pc-advshell__harness-dot" aria-hidden />
+        <span className="pc-advshell__harness-label">{statusLabel}</span>
+      </div>
+
+      {/* Agent pills */}
       {runs.length > 0 && (
         <div className="pc-advshell__pills" data-count={runs.length}>
           {runs.map((r) => {
@@ -158,10 +169,7 @@ export default function AdvNowRunning({ slug }: Props) {
                   enterTimer.current = setTimeout(() => setHovered({ run: r, rect }), 250);
                 }}
                 onMouseLeave={() => {
-                  if (enterTimer.current) {
-                    clearTimeout(enterTimer.current);
-                    enterTimer.current = null;
-                  }
+                  if (enterTimer.current) { clearTimeout(enterTimer.current); enterTimer.current = null; }
                   scheduleClose();
                 }}
               >
@@ -172,6 +180,35 @@ export default function AdvNowRunning({ slug }: Props) {
           })}
         </div>
       )}
+
+      {/* Spacer */}
+      <div style={{ flex: 1 }} />
+
+      {/* Start / Stop */}
+      {alive === false && (
+        <button
+          type="button"
+          className="pc-advshell__action pc-advshell__action--start"
+          onClick={launchHarness}
+          disabled={starting}
+          title="Start harness (staging phase)"
+        >
+          <Play size={11} aria-hidden />
+          {starting ? 'Starting…' : 'Start harness'}
+        </button>
+      )}
+      {alive === true && (
+        <button
+          type="button"
+          className="pc-advshell__action pc-advshell__action--stop"
+          onClick={stopHarness}
+          title="Stop harness (SIGTERM)"
+        >
+          <Square size={11} aria-hidden />
+          Stop harness
+        </button>
+      )}
+
       {hovered && (
         <AgentThinkingPopover
           slug={slug}
@@ -189,17 +226,9 @@ export default function AdvNowRunning({ slug }: Props) {
 }
 
 function parseRun(r: { runId: string; role: string; ts: number }): AgentRun {
-  // runId shape: <startedAtSec>-<role>[-<featureId>]
   const after = r.runId.split('-').slice(1).join('-');
   const remainder = after.startsWith(`${r.role}-`)
     ? after.slice(r.role.length + 1)
-    : after === r.role
-      ? ''
-      : after;
-  return {
-    runId: r.runId,
-    role: r.role,
-    featureId: remainder || null,
-    ts: r.ts,
-  };
+    : after === r.role ? '' : after;
+  return { runId: r.runId, role: r.role, featureId: remainder || null, ts: r.ts };
 }

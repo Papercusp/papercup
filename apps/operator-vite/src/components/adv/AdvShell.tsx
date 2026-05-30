@@ -140,58 +140,65 @@ export default function AdvShell({
   return (
     <div className="pc-advshell">
       <header className="pc-advshell__header">
-        <div className="pc-advshell__copy">
-          <span className="pc-advshell__kicker">Advanced orchestration</span>
-          <h1>{title}</h1>
-        </div>
-        <div className="pc-advshell__selector">
-          <div className="pc-advshell__selector-head">
-            <span>Harness</span>
-            <label className="pc-advshell__scope-toggle" title="Include sub-harnesses in list views (plans, sessions). Editor views still focus a single harness.">
-              <input
-                type="checkbox"
-                checked={scopeMode === 'expanded'}
-                onChange={(e) => void setScopeMode(e.target.checked ? 'expanded' : 'self')}
-              />
-              <span>sub-harnesses</span>
-            </label>
+        {/* Top row: title, harness selector, action buttons */}
+        <div className="pc-advshell__header-top">
+          <div className="pc-advshell__copy">
+            <span className="pc-advshell__kicker">Advanced orchestration</span>
+            <h1>{title}</h1>
           </div>
-          <Select
-            value={activeSlug ?? ''}
-            onChange={(next) => {
-              if (next === '__loading') return;
-              void setActiveSlug(next);
-              if (next && typeof window !== 'undefined') {
-                window.localStorage.setItem(wsLocalKey('harness.activeProject'), next);
-              }
-            }}
-            disabled={projects.length === 0}
-            ariaLabel="Select harness"
-            placeholder={projectLoadError ? 'Failed to load harnesses' : 'Select harness'}
-            options={buildHarnessSelectOptions(projects, projectLoadError)}
-            triggerClassName="pc-advshell__select-trigger"
-          />
-        </div>
-        <button
-          type="button"
-          className="pc-advshell__action pc-advshell__action--new"
-          title="Create or add a new harness"
-          onClick={() => void setCreateOpen(true)}
-        >
-          <Plus size={13} aria-hidden /> New
-        </button>
-        {activeSlug && (
+          <div className="pc-advshell__selector">
+            <div className="pc-advshell__selector-head">
+              <span>Harness</span>
+              <label className="pc-advshell__scope-toggle" title="Include sub-harnesses in list views (plans, sessions). Editor views still focus a single harness.">
+                <input
+                  type="checkbox"
+                  checked={scopeMode === 'expanded'}
+                  onChange={(e) => void setScopeMode(e.target.checked ? 'expanded' : 'self')}
+                />
+                <span>sub-harnesses</span>
+              </label>
+            </div>
+            <Select
+              value={activeSlug ?? ''}
+              onChange={(next) => {
+                if (next === '__loading') return;
+                void setActiveSlug(next);
+                if (next && typeof window !== 'undefined') {
+                  window.localStorage.setItem(wsLocalKey('harness.activeProject'), next);
+                }
+              }}
+              disabled={projects.length === 0}
+              ariaLabel="Select harness"
+              placeholder={projectLoadError ? 'Failed to load harnesses' : 'Select harness'}
+              options={buildHarnessSelectOptions(projects, projectLoadError)}
+              triggerClassName="pc-advshell__select-trigger"
+            />
+          </div>
           <button
             type="button"
-            className="pc-advshell__action pc-advshell__action--share"
-            title={`Share ${activeSlug} — publish to GitHub + invite collaborators`}
-            onClick={() => void setShareOpen(true)}
+            className="pc-advshell__action pc-advshell__action--new"
+            title="Create or add a new harness"
+            onClick={() => void setCreateOpen(true)}
           >
-            <Share2 size={13} aria-hidden /> Share
+            <Plus size={13} aria-hidden /> New
           </button>
-        )}
-        <DiscordBadge slug={activeSlug} />
+          {activeSlug && (
+            <button
+              type="button"
+              className="pc-advshell__action pc-advshell__action--share"
+              title={`Share ${activeSlug} — publish to GitHub + invite collaborators`}
+              onClick={() => void setShareOpen(true)}
+            >
+              <Share2 size={13} aria-hidden /> Share
+            </button>
+          )}
+          <DiscordBadge slug={activeSlug} />
+        </div>
+
+        {/* Harness status bar — active/stopped indicator + start/stop + agent pills */}
         <AdvNowRunning slug={activeSlug} />
+
+        {/* Tab strip */}
         <Tabs.Root value={activeTab} onValueChange={(value) => void setActiveTab(value as AdvTabId)} className="pc-advshell__tabs">
           <Tabs.List ref={tablistRef} className="pc-advshell__tablist" aria-label="Adv sections">
             {ADV_TABS.map((t) => {
@@ -245,13 +252,17 @@ export default function AdvShell({
         }
         .pc-advshell__header {
           display: flex;
-          align-items: flex-end;
-          gap: 14px;
-          min-width: 0;
-          padding: 8px 12px;
+          flex-direction: column;
           border-bottom: 1px solid var(--border, rgba(125, 211, 252, 0.15));
           background: var(--bg-2, rgba(255, 255, 255, 0.045));
           box-shadow: inset 0 -1px 0 rgba(255, 255, 255, 0.025);
+        }
+        .pc-advshell__header-top {
+          display: flex;
+          align-items: flex-end;
+          gap: 14px;
+          min-width: 0;
+          padding: 8px 12px 8px;
         }
         .pc-advshell__copy { display: grid; gap: 4px; min-width: 0; }
         .pc-advshell__kicker {
@@ -434,7 +445,56 @@ export default function AdvShell({
           color: rgba(220, 214, 248, 0.5);
           white-space: nowrap;
         }
-        .pc-advshell__tabs { flex: 1; min-width: 0; display: flex; align-items: flex-end; }
+
+        /* ── Harness status bar ──────────────────────────────────────── */
+        .pc-advshell__harness-bar {
+          display: flex;
+          align-items: center;
+          gap: 10px;
+          padding: 5px 12px;
+          border-top: 1px solid var(--border, rgba(125, 211, 252, 0.12));
+          min-height: 34px;
+          transition: background 200ms ease;
+        }
+        .pc-advshell__harness-bar--is-active {
+          background: rgba(34, 197, 94, 0.06);
+          border-top-color: rgba(34, 197, 94, 0.18);
+        }
+        .pc-advshell__harness-bar--is-stopped {
+          background: rgba(148, 163, 184, 0.04);
+        }
+        .pc-advshell__harness-bar--is-checking {
+          background: transparent;
+        }
+        .pc-advshell__harness-status {
+          display: flex;
+          align-items: center;
+          gap: 7px;
+          flex-shrink: 0;
+        }
+        .pc-advshell__harness-dot {
+          width: 7px;
+          height: 7px;
+          border-radius: 50%;
+          flex-shrink: 0;
+          background: #64748b;
+        }
+        .pc-advshell__harness-bar--is-active .pc-advshell__harness-dot {
+          background: #4ade80;
+          box-shadow: 0 0 8px rgba(74, 222, 128, 0.55);
+          animation: pc-advshell-pulse 2s ease-in-out infinite;
+        }
+        .pc-advshell__harness-label {
+          font-size: 11px;
+          font-weight: 650;
+          color: var(--fg-mute, #7f9bb4);
+          white-space: nowrap;
+        }
+        .pc-advshell__harness-bar--is-active .pc-advshell__harness-label {
+          color: #86efac;
+        }
+
+        .pc-advshell__tabs { min-width: 0; display: flex; align-items: flex-end; padding: 0 12px; }
         .pc-advshell__tab-label { display: inline; }
         .pc-advshell__tablist {
           display: inline-flex;
