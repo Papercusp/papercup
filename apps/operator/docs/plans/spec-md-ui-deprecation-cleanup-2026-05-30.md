@@ -11,9 +11,9 @@ owner: avi@storewolf.com
 
 ## Now
 
-**State:** The backend + agent-prompt half of the SPEC.md/validation-contract.md deprecation (`plans-central-harness-ux-2026-05-26`, D-004/D-005, P-015/16/17) was finished this session — commits `30bc9eeb` (dead `plans:promote` SPEC mutator, `getHealth()` checks, agent prompts) and `3bf3acf2` (SpecEditor save-filter token, support FAQ). The SPEC.md *editor tab* was already gone. What's left is the live `/adv` `HarnessDashboard` UI and a **second** file-presence health subsystem (`HealthBadge` + fs-watcher + PG columns) that still reference the tombstones — including a live empty-state that tells users to write SPEC.md and ~10 scoper-action labels claiming the scoper reads SPEC.md (it reads plans now).
+**State:** Phase 1 (P-001/P-002/P-003 — scoper action labels + Config tooltip) and Phase 4 P-008 (h-proposals.css legend + FeatureEditor placeholder) are **done on `main`** (commits `b7df2326`, `dee76475`); the backend/prompt half landed earlier (`30bc9eeb`, `3bf3acf2`), and the SPEC.md editor tab was already gone. Remaining: Phase 3 (HealthBadge `contract_present` + the fs-watcher / `ensure-schema` PG-column schema migration) and Phase 2 (onboarding empty-state, gated on D-002). **Env note:** this round was done via a `papercup-main` git worktree because the canonical checkout was parked on `feat/psu-wrappers` by another active agent; P-002's HarnessDashboard edits also exist (bundled) in that branch's `65e6b901` and converge on merge.
 
-**Next:** human decision needed on D-002 (the post-SPEC.md onboarding empty-state). Once that's settled, an agent picks up P-001 (audit the scoper actions) → P-002. Phase 1 (label fixes) can start independently of D-002.
+**Next:** human decision on D-002 (onboarding empty-state). Then P-006/P-007 (health subsystem) — note P-007 is a schema migration; run it once the canonical checkout is back on `main` and the env is settled, not while a refactor is mid-flight.
 
 ## Background
 
@@ -23,9 +23,9 @@ All line numbers are against `apps/operator/app/harness/HarnessDashboard.tsx` (5
 
 ## Phase 1 — Misleading scoper + config labels
 
-- **P-001** `todo` Audit the Propose / Replan / Cleanup scoper actions surfaced in HarnessDashboard — confirm each one's *current* plan-based behavior (which scoper modes still exist, what they read now) so the replacement copy is accurate rather than a blind find-replace. Record the mapping in D-001.
-- **P-002** `todo` Rewrite the ~10 scoper-action tooltips/labels that say the scoper reads / folds "SPEC.md bullets" (lines ~3504, 3525, 3536, 3546, 3780, 3788, 4259, 4264, 4269, 4362) to reference plan items instead. blocked-by: P-001
-- **P-003** `todo` Fix the Config-button tooltip (line 4417, "Edit SPEC.md / AGENTS.md / config.json") — drop SPEC.md; the Config tab no longer has a SPEC.md sub-tab.
+- **P-001** `done` Audit the Propose / Replan / Cleanup scoper actions surfaced in HarnessDashboard — confirm each one's *current* plan-based behavior (which scoper modes still exist, what they read now) so the replacement copy is accurate rather than a blind find-replace. Record the mapping in D-001.
+- **P-002** `done` Rewrite the ~10 scoper-action tooltips/labels that say the scoper reads / folds "SPEC.md bullets" (lines ~3504, 3525, 3536, 3546, 3780, 3788, 4259, 4264, 4269, 4362) to reference plan items instead. blocked-by: P-001
+- **P-003** `done` Fix the Config-button tooltip (line 4417, "Edit SPEC.md / AGENTS.md / config.json") — drop SPEC.md; the Config tab no longer has a SPEC.md sub-tab.
 
 ## Phase 2 — Onboarding empty-state (needs a UX call)
 
@@ -39,7 +39,7 @@ All line numbers are against `apps/operator/app/harness/HarnessDashboard.tsx` (5
 
 ## Phase 4 — Minor stale strings + redirect routes
 
-- **P-008** `todo` Minor stale copy: `apps/operator/app/harness/h-proposals.css:2472` ("Applied is in SPEC.md") and the `FeatureEditor.tsx:310` placeholder example mentioning SPEC.md.
+- **P-008** `done` Minor stale copy: `apps/operator/app/harness/h-proposals.css:2472` ("Applied is in SPEC.md") and the `FeatureEditor.tsx:310` placeholder example mentioning SPEC.md.
 - **P-009** `todo` The friendly `/harness/<slug>/spec` redirect routes (`app/harness/[slug]/spec/page.tsx` + `apps/operator-vite/src/routes/harness/$slug/spec.tsx`) still target the removed `specTab=spec` (coerces to the AGENTS.md default — stale but harmless). Default: let `adv-harness-tab-migration-2026-05-30` delete them when it removes the `/harness` route; only act here if that migration stalls.
 
 ## Phase 5 — Templates (out of scope — own plan)
