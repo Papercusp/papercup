@@ -86,6 +86,22 @@ export default function IssuesPanel({ params, api }: PanelComponentProps) {
   const [focusIdx, setFocusIdx] = useState(0);
   const listRef = useRef<HTMLDivElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
+  const [triaging, setTriaging] = useState(false);
+
+  // P-012: run the curator-style merge of pending validator findings → issues.
+  const runTriage = async () => {
+    setTriaging(true);
+    try {
+      const res = await fetch(`/api/harness/${encodeURIComponent(slug)}/triage`, { method: 'POST' });
+      const d = (await res.json().catch(() => ({}))) as { merged?: number; deduped?: number; error?: string };
+      if (!res.ok || d.error) throw new Error(d.error ?? `HTTP ${res.status}`);
+      toast.success(`Triaged: +${d.merged ?? 0} new, ${d.deduped ?? 0} deduped`);
+    } catch (e) {
+      toast.error('Triage failed', { description: String(e) });
+    } finally {
+      setTriaging(false);
+    }
+  };
 
   const handleAction = async (i: Issue, action: IssueActionKind) => {
     const target = issueActionStatus(action); // null for promote (server-computed)
@@ -218,6 +234,15 @@ export default function IssuesPanel({ params, api }: PanelComponentProps) {
           <span>
             <strong>{pendingCount}</strong> validator finding{pendingCount === 1 ? '' : 's'} pending triage
           </span>
+          <button
+            type="button"
+            className="pc-adv-issues__triage-btn"
+            disabled={triaging}
+            onClick={() => void runTriage()}
+            title="Merge pending validator findings into the issues list"
+          >
+            {triaging ? 'Triaging…' : `Triage ${pendingCount}`}
+          </button>
         </div>
       )}
 
@@ -393,6 +418,24 @@ export default function IssuesPanel({ params, api }: PanelComponentProps) {
         .pc-adv-issues__triage strong {
           color: #fef3c7;
           font-weight: 800;
+        }
+        .pc-adv-issues__triage-btn {
+          margin-left: auto;
+          padding: 3px 10px;
+          font-size: 11px;
+          font-weight: 700;
+          color: #1a160a;
+          background: #fde68a;
+          border: none;
+          border-radius: 4px;
+          cursor: pointer;
+        }
+        .pc-adv-issues__triage-btn:hover:not(:disabled) {
+          background: #fef3c7;
+        }
+        .pc-adv-issues__triage-btn:disabled {
+          opacity: 0.6;
+          cursor: default;
         }
         .pc-adv-issues__list {
           flex: 1;

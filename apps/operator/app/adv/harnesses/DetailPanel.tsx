@@ -213,8 +213,33 @@ function FeatureDetail({
   const [working, setWorking] = useState<string | null>(null);
   const [notes, setNotes] = useState<string[] | null>(null);
   const [notesOpen, setNotesOpen] = useState(false);
+  const [steerNote, setSteerNote] = useState('');
 
   const tone = STATUS_TONE[feature.status] ?? STATUS_TONE.todo;
+
+  // Add a steer note for the worker — POSTs a block to .harness/notes/<id>.md
+  // (the OperatorNoteForm contract). Optimistically appends to the local list.
+  const addSteerNote = useCallback(async () => {
+    const content = steerNote.trim();
+    if (!content) return;
+    setWorking('steer');
+    try {
+      const res = await fetch(`/api/harness/${encodeURIComponent(slug)}/features/${encodeURIComponent(feature.id)}/notes`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ content }),
+      });
+      if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`);
+      setNotes((prev) => [...(prev ?? []), content]); // optimistic append
+      setSteerNote('');
+      setNotesOpen(true);
+      toast.success('Steer note added');
+    } catch (e) {
+      toast.error('Add steer note failed', { description: String(e) });
+    } finally {
+      setWorking(null);
+    }
+  }, [slug, feature.id, steerNote]);
 
   // Issues filed against this feature: linked as the fix (linkedFeatureId) or
   // found while working on it (foundDuring).
@@ -397,24 +422,38 @@ function FeatureDetail({
           )}
         </div>
 
-        {notes && notes.length > 0 && (
-          <div className="pc-adv-detail__section">
-            <h3>
-              <button type="button" className="pc-adv-detail__collapse" onClick={() => setNotesOpen((o) => !o)}>
-                {notesOpen ? '▾' : '▸'} Steer notes ({notes.length})
-              </button>
-            </h3>
-            {notesOpen && (
-              <div className="pc-adv-detail__notes">
-                {notes.map((n, idx) => (
-                  <p key={idx} className="pc-adv-detail__note">
-                    {n}
-                  </p>
-                ))}
+        <div className="pc-adv-detail__section">
+          <h3>
+            <button type="button" className="pc-adv-detail__collapse" onClick={() => setNotesOpen((o) => !o)}>
+              {notesOpen ? '▾' : '▸'} Steer notes{notes && notes.length > 0 ? ` (${notes.length})` : ''}
+            </button>
+          </h3>
+          {notesOpen && (
+            <>
+              {notes && notes.length > 0 && (
+                <div className="pc-adv-detail__notes">
+                  {notes.map((n, idx) => (
+                    <p key={idx} className="pc-adv-detail__note">
+                      {n}
+                    </p>
+                  ))}
+                </div>
+              )}
+              <div className="pc-adv-detail__note-form">
+                <textarea
+                  value={steerNote}
+                  onChange={(e) => setSteerNote(e.target.value)}
+                  placeholder="Add a steer note for the worker…"
+                  rows={2}
+                  aria-label="Add a steer note"
+                />
+                <button type="button" disabled={working !== null || !steerNote.trim()} onClick={() => void addSteerNote()}>
+                  Add steer note
+                </button>
               </div>
-            )}
-          </div>
-        )}
+            </>
+          )}
+        </div>
 
         <div className="pc-adv-detail__section">
           <h3>Actions</h3>
