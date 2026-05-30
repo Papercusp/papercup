@@ -14,7 +14,7 @@
  */
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { mkdtemp, mkdir, writeFile, rm, symlink } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, rm, symlink, realpath } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -29,6 +29,7 @@ try {
 const itLive = pgAvailable ? it : it.skip;
 
 describe('su-locks OMP two-agent coordination', () => {
+  let wsRoot: string;
   let repoRoot: string;
   let wsId: string;
   let ownerA: string;
@@ -46,10 +47,15 @@ describe('su-locks OMP two-agent coordination', () => {
     inWorkspaceTxn = txn.inWorkspaceTxn;
     hook = await import('../coord-hook');
 
-    repoRoot = await mkdtemp(join(tmpdir(), 'omp-smoke-repo-'));
+    // A papercup-style workspace with one `.git` worktree: the hook keys
+    // locks by walking up to `.git`, gated on the worktree being a direct
+    // child of PAPERCUSP_WORKSPACE_ROOT (mirrors the cc hook).
+    wsRoot = await realpath(await mkdtemp(join(tmpdir(), 'omp-smoke-ws-')));
+    repoRoot = join(wsRoot, 'papercup');
+    await mkdir(join(repoRoot, '.git'), { recursive: true });
     await mkdir(join(repoRoot, 'apps'), { recursive: true });
     await writeFile(join(repoRoot, 'apps', 'target.ts'), '// smoke\n');
-    process.env.PAPERCUSP_REPO_ROOT = repoRoot;
+    process.env.PAPERCUSP_WORKSPACE_ROOT = wsRoot;
     delete process.env.PAPERCUSP_BUNDLE_URL;
     delete process.env.PAPERCUSP_OPERATOR_URL;
 
@@ -68,7 +74,7 @@ describe('su-locks OMP two-agent coordination', () => {
 
   afterAll(async () => {
     if (!pgAvailable) return;
-    if (repoRoot) await rm(repoRoot, { recursive: true, force: true }).catch(() => {});
+    if (wsRoot) await rm(wsRoot, { recursive: true, force: true }).catch(() => {});
     await store?._resetForTests?.().catch(() => {});
   });
 

@@ -33,6 +33,31 @@ import {
   type InboxEntry,
 } from '../coord-hook';
 
+/**
+ * Build a temp papercup-style workspace with one `.git` worktree and a
+ * cleanup fn. The hook resolves a path's worktree by walking up to
+ * `.git`, gated on that worktree being a direct child of
+ * PAPERCUSP_WORKSPACE_ROOT (mirrors the cc hook), so fixtures need a real
+ * on-disk `.git`. The base is realpath'd so the dirname/workspace
+ * comparison is symlink-stable (macOS tmpdir is symlinked).
+ */
+async function makeWorktreeFixture(): Promise<{
+  workspace: string;
+  repo: string;
+  cleanup: () => Promise<void>;
+}> {
+  const base = await fs.realpath(
+    await fs.mkdtemp(join(tmpdir(), 'omp-hook-ws-')),
+  );
+  const repo = join(base, 'papercup');
+  await fs.mkdir(join(repo, '.git'), { recursive: true });
+  return {
+    workspace: base,
+    repo,
+    cleanup: () => fs.rm(base, { recursive: true, force: true }),
+  };
+}
+
 describe('formatTurnStartReminder', () => {
   it('returns "" when there is nothing to surface', () => {
     expect(
@@ -383,54 +408,89 @@ describe('detached filesystem reads (F-H4c)', () => {
 // ────────────────────────────────────────────────────────────────────
 
 describe('extractPathsFromToolInput (file-locking #2)', () => {
-  const prevRoot = process.env.PAPERCUSP_REPO_ROOT;
-  beforeEach(() => {
-    process.env.PAPERCUSP_REPO_ROOT = '/repo';
+  const prevWs = process.env.PAPERCUSP_WORKSPACE_ROOT;
+  let fx: Awaited<ReturnType<typeof makeWorktreeFixture>>;
+  let repo: string;
+  beforeEach(async () => {
+    fx = await makeWorktreeFixture();
+    repo = fx.repo;
+    process.env.PAPERCUSP_WORKSPACE_ROOT = fx.workspace;
   });
-  afterEach(() => {
-    if (prevRoot === undefined) delete process.env.PAPERCUSP_REPO_ROOT;
-    else process.env.PAPERCUSP_REPO_ROOT = prevRoot;
+  afterEach(async () => {
+    if (prevWs === undefined) delete process.env.PAPERCUSP_WORKSPACE_ROOT;
+    else process.env.PAPERCUSP_WORKSPACE_ROOT = prevWs;
+    await fx.cleanup();
   });
 
   it('claims `path` from a write tool input', () => {
-    expect(extractPathsFromToolInput('write', { path: '/repo/a.ts' })).toEqual([
-      'a.ts',
-    ]);
+    expect(
+      extractPathsFromToolInput('write', { path: join(repo, 'a.ts') }),
+    ).toEqual(['a.ts']);
   });
 
   it('accepts path | file_path | filePath for edit', () => {
     expect(
-      extractPathsFromToolInput('edit', { path: '/repo/a.ts' }),
+      extractPathsFromToolInput('edit', { path: join(repo, 'a.ts') }),
     ).toEqual(['a.ts']);
     expect(
-      extractPathsFromToolInput('edit', { file_path: '/repo/b.ts' }),
+      extractPathsFromToolInput('edit', { file_path: join(repo, 'b.ts') }),
     ).toEqual(['b.ts']);
     expect(
-      extractPathsFromToolInput('edit', { filePath: '/repo/c.ts' }),
+      extractPathsFromToolInput('edit', { filePath: join(repo, 'c.ts') }),
     ).toEqual(['c.ts']);
   });
 
   it('claims every literal path from ast_edit, drops globs', () => {
     expect(
       extractPathsFromToolInput('ast_edit', {
-        paths: ['/repo/a.ts', '/repo/dir/*.ts', '/repo/b.ts', '/repo/x?.ts'],
+        paths: [
+          join(repo, 'a.ts'),
+          join(repo, 'dir/*.ts'),
+          join(repo, 'b.ts'),
+          join(repo, 'x?.ts'),
+        ],
         ops: [],
       }),
     ).toEqual(['a.ts', 'b.ts']);
   });
 
-  it('drops paths outside the repo root', () => {
+  it('drops paths outside any coordinated worktree', () => {
+    // No git repo above /etc on this host.
     expect(
       extractPathsFromToolInput('write', { path: '/etc/passwd' }),
     ).toEqual([]);
+    // The worktree root itself is never claimed.
+    expect(extractPathsFromToolInput('write', { path: repo })).toEqual([]);
+  });
+
+  it('keys sibling worktrees by the same repo-relative path (cross-worktree contention)', async () => {
+    const repo2 = join(fx.workspace, 'papercup-topic');
+    await fs.mkdir(join(repo2, '.git'), { recursive: true });
+    const k1 = extractPathsFromToolInput('write', {
+      path: join(repo, 'apps/foo.ts'),
+    });
+    const k2 = extractPathsFromToolInput('write', {
+      path: join(repo2, 'apps/foo.ts'),
+    });
+    expect(k1).toEqual(['apps/foo.ts']);
+    expect(k2).toEqual(['apps/foo.ts']); // same key → the two edits contend
+  });
+
+  it('drops a git repo that is NOT a direct child of the workspace (e.g. a submodule)', async () => {
+    // Nearest `.git` is the nested repo, whose parent is not the
+    // workspace — left unguarded, matching the cc hook's gate.
+    const nested = join(repo, 'libs', 'sub');
+    await fs.mkdir(join(nested, '.git'), { recursive: true });
     expect(
-      extractPathsFromToolInput('write', { path: '/repo' }),
+      extractPathsFromToolInput('write', { path: join(nested, 'x.ts') }),
     ).toEqual([]);
   });
 
   it('returns [] for non-file-editing tools', () => {
     expect(extractPathsFromToolInput('bash', { command: 'ls' })).toEqual([]);
-    expect(extractPathsFromToolInput('read', { path: '/repo/a.ts' })).toEqual([]);
+    expect(
+      extractPathsFromToolInput('read', { path: join(repo, 'a.ts') }),
+    ).toEqual([]);
   });
 
   it('returns [] for malformed input (non-string path)', () => {
@@ -476,28 +536,33 @@ describe('formatBusyRefusal (file-locking #2)', () => {
 
 describe('onToolCall / onToolResult (file-locking #2)', () => {
   const originalFetch = global.fetch;
-  const prevRoot = process.env.PAPERCUSP_REPO_ROOT;
+  const prevWs = process.env.PAPERCUSP_WORKSPACE_ROOT;
   const prevBundle = process.env.PAPERCUSP_BUNDLE_URL;
   const prevToken = process.env.PAPERCUSP_BUNDLE_ACCESS_TOKEN;
   const prevSid = process.env.PAPERCUSP_AUTH_SESSION_ID;
+  let fx: Awaited<ReturnType<typeof makeWorktreeFixture>>;
+  let repo: string;
 
-  beforeEach(() => {
-    process.env.PAPERCUSP_REPO_ROOT = '/repo';
+  beforeEach(async () => {
+    fx = await makeWorktreeFixture();
+    repo = fx.repo;
+    process.env.PAPERCUSP_WORKSPACE_ROOT = fx.workspace;
     process.env.PAPERCUSP_BUNDLE_URL = 'http://operator.test';
     process.env.PAPERCUSP_BUNDLE_ACCESS_TOKEN = 't';
     process.env.PAPERCUSP_AUTH_SESSION_ID = 'pus-test';
     _resetToolCallCacheForTests();
   });
-  afterEach(() => {
+  afterEach(async () => {
     global.fetch = originalFetch;
-    if (prevRoot === undefined) delete process.env.PAPERCUSP_REPO_ROOT;
-    else process.env.PAPERCUSP_REPO_ROOT = prevRoot;
+    if (prevWs === undefined) delete process.env.PAPERCUSP_WORKSPACE_ROOT;
+    else process.env.PAPERCUSP_WORKSPACE_ROOT = prevWs;
     if (prevBundle === undefined) delete process.env.PAPERCUSP_BUNDLE_URL;
     else process.env.PAPERCUSP_BUNDLE_URL = prevBundle;
     if (prevToken === undefined) delete process.env.PAPERCUSP_BUNDLE_ACCESS_TOKEN;
     else process.env.PAPERCUSP_BUNDLE_ACCESS_TOKEN = prevToken;
     if (prevSid === undefined) delete process.env.PAPERCUSP_AUTH_SESSION_ID;
     else process.env.PAPERCUSP_AUTH_SESSION_ID = prevSid;
+    await fx.cleanup();
   });
 
   function mockMcpResponse(payload: unknown): typeof fetch {
@@ -577,7 +642,7 @@ describe('onToolCall / onToolResult (file-locking #2)', () => {
       type: 'tool_call',
       toolName: 'write',
       toolCallId: 'tc-1',
-      input: { path: '/repo/a.ts', content: 'x' },
+      input: { path: join(repo, 'a.ts'), content: 'x' },
     });
     expect(r).toEqual({});
     expect(calls).toHaveLength(1);
@@ -610,7 +675,7 @@ describe('onToolCall / onToolResult (file-locking #2)', () => {
       type: 'tool_call',
       toolName: 'write',
       toolCallId: 'tc-2',
-      input: { path: '/repo/a.ts', content: 'x' },
+      input: { path: join(repo, 'a.ts'), content: 'x' },
     });
     expect(r.block).toBe(true);
     expect(r.reason).toMatch(/a\.ts/);
@@ -632,7 +697,7 @@ describe('onToolCall / onToolResult (file-locking #2)', () => {
         type: 'tool_call',
         toolName: 'write',
         toolCallId: 'tc-3',
-        input: { path: '/repo/a.ts', content: 'x' },
+        input: { path: join(repo, 'a.ts'), content: 'x' },
       });
       expect(r).toEqual({}); // fail open
       expect(errs.some((e) => String(e).includes('fail-open'))).toBe(true);
@@ -729,13 +794,17 @@ describe('recordHookSuccess / recordHookError (file-locking #3)', () => {
 
 describe('onToolCall writes the health markers (file-locking #3)', () => {
   const originalFetch = global.fetch;
-  const prevRoot = process.env.PAPERCUSP_REPO_ROOT;
+  const prevWs = process.env.PAPERCUSP_WORKSPACE_ROOT;
   const prevBundle = process.env.PAPERCUSP_BUNDLE_URL;
   const prevDir = process.env.PAPERCUSP_LOCKS_CACHE_DIR;
   let dir: string;
+  let fx: Awaited<ReturnType<typeof makeWorktreeFixture>>;
+  let repo: string;
 
   beforeEach(async () => {
-    process.env.PAPERCUSP_REPO_ROOT = '/repo';
+    fx = await makeWorktreeFixture();
+    repo = fx.repo;
+    process.env.PAPERCUSP_WORKSPACE_ROOT = fx.workspace;
     process.env.PAPERCUSP_BUNDLE_URL = 'http://operator.test';
     dir = await fs.mkdtemp(join(tmpdir(), 'su-locks-cache-flow-'));
     process.env.PAPERCUSP_LOCKS_CACHE_DIR = dir;
@@ -743,13 +812,14 @@ describe('onToolCall writes the health markers (file-locking #3)', () => {
   });
   afterEach(async () => {
     global.fetch = originalFetch;
-    if (prevRoot === undefined) delete process.env.PAPERCUSP_REPO_ROOT;
-    else process.env.PAPERCUSP_REPO_ROOT = prevRoot;
+    if (prevWs === undefined) delete process.env.PAPERCUSP_WORKSPACE_ROOT;
+    else process.env.PAPERCUSP_WORKSPACE_ROOT = prevWs;
     if (prevBundle === undefined) delete process.env.PAPERCUSP_BUNDLE_URL;
     else process.env.PAPERCUSP_BUNDLE_URL = prevBundle;
     if (prevDir === undefined) delete process.env.PAPERCUSP_LOCKS_CACHE_DIR;
     else process.env.PAPERCUSP_LOCKS_CACHE_DIR = prevDir;
     await fs.rm(dir, { recursive: true, force: true });
+    await fx.cleanup();
   });
 
   it('writes last-success.json on a successful acquire', async () => {
@@ -778,7 +848,7 @@ describe('onToolCall writes the health markers (file-locking #3)', () => {
       type: 'tool_call',
       toolName: 'write',
       toolCallId: 'tc-ok',
-      input: { path: '/repo/a.ts', content: 'x' },
+      input: { path: join(repo, 'a.ts'), content: 'x' },
     });
     const rec = JSON.parse(
       await fs.readFile(join(dir, 'last-success.json'), 'utf8'),
@@ -801,7 +871,7 @@ describe('onToolCall writes the health markers (file-locking #3)', () => {
         type: 'tool_call',
         toolName: 'write',
         toolCallId: 'tc-err',
-        input: { path: '/repo/a.ts', content: 'x' },
+        input: { path: join(repo, 'a.ts'), content: 'x' },
       });
     } finally {
       console.error = origErr;
@@ -1127,38 +1197,56 @@ describe('onSessionShutdown — defensive lock release (file-locking #2)', () =>
 });
 
 describe('extractPathsFromToolInput backslash consistency (file-locking #2)', () => {
-  const prevRoot = process.env.PAPERCUSP_REPO_ROOT;
-  beforeEach(() => {
-    process.env.PAPERCUSP_REPO_ROOT = '/repo';
+  const prevWs = process.env.PAPERCUSP_WORKSPACE_ROOT;
+  let fx: Awaited<ReturnType<typeof makeWorktreeFixture>>;
+  let repo: string;
+  beforeEach(async () => {
+    fx = await makeWorktreeFixture();
+    repo = fx.repo;
+    process.env.PAPERCUSP_WORKSPACE_ROOT = fx.workspace;
   });
-  afterEach(() => {
-    if (prevRoot === undefined) delete process.env.PAPERCUSP_REPO_ROOT;
-    else process.env.PAPERCUSP_REPO_ROOT = prevRoot;
+  afterEach(async () => {
+    if (prevWs === undefined) delete process.env.PAPERCUSP_WORKSPACE_ROOT;
+    else process.env.PAPERCUSP_WORKSPACE_ROOT = prevWs;
+    await fx.cleanup();
   });
 
   it('skips backslash paths (the server rejects them — path-normalize.ts)', () => {
     expect(
-      extractPathsFromToolInput('write', { path: '/repo/apps\\foo.ts' }),
+      extractPathsFromToolInput('write', { path: `${repo}/apps\\foo.ts` }),
     ).toEqual([]);
   });
 
   it('still canonicalizes ./ // and trailing slash via resolve()', () => {
     expect(
-      extractPathsFromToolInput('write', { path: '/repo/./apps//foo.ts' }),
+      extractPathsFromToolInput('write', { path: `${repo}/./apps//foo.ts` }),
     ).toEqual(['apps/foo.ts']);
   });
 });
 
 describe('detectSymlinkedPaths / formatSymlinkRefusal (file-locking #1)', () => {
   let root: string;
+  let wsBase: string;
+  const prevWs = process.env.PAPERCUSP_WORKSPACE_ROOT;
 
   beforeEach(async () => {
-    root = await fs.mkdtemp(join(tmpdir(), 'su-symlink-'));
+    // `root` is a worktree (has .git) under a workspace base, so the
+    // onToolCall test below resolves it through the same find_repo_root
+    // + workspace gate as production; the direct detectSymlinkedPaths
+    // tests only need `root` to be a real dir.
+    wsBase = await fs.realpath(
+      await fs.mkdtemp(join(tmpdir(), 'su-symlink-ws-')),
+    );
+    root = join(wsBase, 'papercup');
+    await fs.mkdir(join(root, '.git'), { recursive: true });
     await fs.mkdir(join(root, 'apps'), { recursive: true });
     await fs.writeFile(join(root, 'apps', 'real.ts'), 'x');
+    process.env.PAPERCUSP_WORKSPACE_ROOT = wsBase;
   });
   afterEach(async () => {
-    await fs.rm(root, { recursive: true, force: true });
+    if (prevWs === undefined) delete process.env.PAPERCUSP_WORKSPACE_ROOT;
+    else process.env.PAPERCUSP_WORKSPACE_ROOT = prevWs;
+    await fs.rm(wsBase, { recursive: true, force: true });
   });
 
   it('passes a plain non-symlinked path', () => {
@@ -1229,8 +1317,8 @@ describe('detectSymlinkedPaths / formatSymlinkRefusal (file-locking #1)', () => 
       join(root, 'apps', 'real.ts'),
       join(root, 'apps', 'link.ts'),
     );
-    const prevRoot = process.env.PAPERCUSP_REPO_ROOT;
-    process.env.PAPERCUSP_REPO_ROOT = root;
+    // PAPERCUSP_WORKSPACE_ROOT is set by beforeEach so `root` resolves as
+    // a coordinated worktree.
     const origFetch = global.fetch;
     let fetched = false;
     global.fetch = (async () => {
@@ -1249,8 +1337,6 @@ describe('detectSymlinkedPaths / formatSymlinkRefusal (file-locking #1)', () => 
       expect(fetched).toBe(false);
     } finally {
       global.fetch = origFetch;
-      if (prevRoot === undefined) delete process.env.PAPERCUSP_REPO_ROOT;
-      else process.env.PAPERCUSP_REPO_ROOT = prevRoot;
     }
   });
 });

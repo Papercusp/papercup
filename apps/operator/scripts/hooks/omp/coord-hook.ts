@@ -43,9 +43,9 @@
  * keep working.
  */
 
-import { promises as fsp, existsSync, realpathSync } from 'node:fs';
+import { promises as fsp, existsSync, realpathSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { basename, dirname, join, resolve } from 'node:path';
+import { basename, dirname, join, relative, resolve } from 'node:path';
 
 // ── Pure helpers (unit-tested) ───────────────────────────────────────
 
@@ -946,20 +946,65 @@ export async function recordHookError(
   await writeMarker(resolve(locksCacheDir(), 'last-error.json'), rec);
 }
 
-/** Repo root the hook restricts itself to. Override with
- *  PAPERCUSP_REPO_ROOT for non-standard layouts. */
-function papercupRoot(): string {
-  return (
-    process.env.PAPERCUSP_REPO_ROOT ??
-    resolve(process.env.HOME ?? '/tmp', 'papercupai-workspace/papercup')
-  );
+/** The workspace whose direct-child worktrees this hook coordinates.
+ *  Mirrors the cc hook's WORKSPACE_ROOT — override with
+ *  PAPERCUSP_WORKSPACE_ROOT; default ~/papercupai-workspace. Realpath'd
+ *  so the dirname comparison in extractLockTargets is symlink-stable. */
+function workspaceRoot(): string {
+  const raw =
+    process.env.PAPERCUSP_WORKSPACE_ROOT ??
+    resolve(process.env.HOME ?? '/tmp', 'papercupai-workspace');
+  try {
+    return realpathSync(raw);
+  } catch {
+    return raw;
+  }
+}
+
+/** Walk up from a path (or its nearest existing parent) to the dir
+ *  holding a `.git` entry — file (worktree) or dir. Mirrors the cc
+ *  hook's find_repo_root so OMP and cc key locks identically across the
+ *  many worktrees in this workspace; a single hardcoded root mis-keys in
+ *  every checkout but one. Returns the repo root, or null if none. */
+function findRepoRoot(absPath: string): string | null {
+  let d = absPath;
+  let isDir = false;
+  try {
+    isDir = statSync(d).isDirectory();
+  } catch {
+    isDir = false;
+  }
+  if (!isDir) d = dirname(d);
+  while (d && d !== dirname(d)) {
+    if (existsSync(join(d, '.git'))) return d;
+    d = dirname(d);
+  }
+  return null;
+}
+
+/** A file the hook will claim: its worktree `root` plus the lock key
+ *  `rel` (path relative to that root). */
+export interface LockTarget {
+  root: string;
+  rel: string;
 }
 
 /**
- * Pull file paths to claim out of a tool's input. Repo-relative;
- * anything outside the repo, or any wildcard/glob, is silently
- * dropped (the lock store is workspace-scoped; non-repo paths are not
- * coordinated, globs would over-claim).
+ * Pull the files a tool will edit and resolve each to its worktree root
+ * + repo-relative lock key. Anything outside a coordinated worktree, any
+ * wildcard/glob, or any backslash path is silently dropped (the lock
+ * store is workspace-scoped; non-repo paths are not coordinated, globs
+ * would over-claim).
+ *
+ * Worktree resolution MIRRORS the cc hook
+ * (`pretooluse-locks-acquire.sh` `find_repo_root` + workspace gate):
+ * walk up from each path to the dir holding `.git`, and keep it only
+ * when that root is a direct child of `workspaceRoot()`. The key is
+ * RELATIVE TO that worktree root, so the same logical file collides
+ * across sibling worktrees AND with a cc edit (which keys the same
+ * way) — that's the cross-client / cross-worktree contention this buys.
+ * The old single fixed `papercupRoot()` silently dropped every
+ * sibling-worktree edit (it only matched the canonical checkout).
  *
  * Tool-name coverage matches OMP's file-edit surface:
  *   - write       → input.path
@@ -971,18 +1016,17 @@ function papercupRoot(): string {
  * `apps/operator/lib/agent-tools/locks/path-normalize.ts` — that file
  * is the source of truth. The hook MUST duplicate them rather than
  * import the module because it ships as a single self-contained file
- * copied into `~/.omp/agent/extensions/`. `node:path.resolve()`
- * already collapses `.`, `..`, `//` and trailing `/` and the
- * repo-prefix slice drops absolute / outside-repo paths; the explicit
- * backslash skip below covers the one rule resolve() does NOT enforce
- * on POSIX (a `\` is a literal filename char there, but the server
- * rejects it). `coord-hook.test.ts` asserts this stays consistent
- * with `normalizePaths()`.
+ * copied into `~/.papercusp/`. `node:path.resolve()` already collapses
+ * `.`, `..`, `//` and trailing `/`; the explicit backslash skip below
+ * covers the one rule resolve() does NOT enforce on POSIX (a `\` is a
+ * literal filename char there, but the server rejects it).
+ * `coord-hook.test.ts` asserts this stays consistent with
+ * `normalizePaths()`.
  */
-export function extractPathsFromToolInput(
+export function extractLockTargets(
   toolName: string,
   input: Record<string, unknown>,
-): string[] {
+): LockTarget[] {
   const raw: string[] = [];
   if (toolName === 'write' || toolName === 'edit') {
     for (const k of ['path', 'file_path', 'filePath'] as const) {
@@ -999,19 +1043,46 @@ export function extractPathsFromToolInput(
       }
     }
   }
-  const root = papercupRoot();
-  const prefix = root.endsWith('/') ? root : root + '/';
-  const out: string[] = [];
+  const ws = workspaceRoot();
+  const out: LockTarget[] = [];
   for (const p of raw) {
     // Backslash: the server's validatePath rejects it outright. Skip
     // here so the hook never asks the operator to claim a path the
     // operator would refuse (consistency with path-normalize.ts).
     if (p.includes('\\')) continue;
     const abs = resolve(p);
+    const root = findRepoRoot(abs);
+    if (root === null) continue; // outside any git repo — not coordinated
     if (abs === root) continue; // never claim the repo root itself
-    if (abs.startsWith(prefix)) out.push(abs.slice(prefix.length));
+    // Coordinate only worktrees that are direct children of the
+    // papercup workspace (papercup, papercup-<topic>, …). A git repo
+    // elsewhere (a plain session editing an unrelated project) is left
+    // unguarded so we never lock foreign repos into papercusp_su.
+    let parent: string;
+    try {
+      parent = realpathSync(dirname(root));
+    } catch {
+      parent = dirname(root);
+    }
+    if (parent !== ws) continue;
+    const rel = relative(root, abs);
+    if (rel === '' || rel.startsWith('..')) continue;
+    out.push({ root, rel });
   }
   return out;
+}
+
+/**
+ * Repo-relative lock keys for a tool's edits — the `rel` of each
+ * {@link LockTarget}. Kept as the simple projection for callers/tests
+ * that only need the keys; the worktree roots (needed for symlink
+ * detection) come from {@link extractLockTargets}.
+ */
+export function extractPathsFromToolInput(
+  toolName: string,
+  input: Record<string, unknown>,
+): string[] {
+  return extractLockTargets(toolName, input).map((t) => t.rel);
 }
 
 /**
@@ -1144,18 +1215,37 @@ export async function onToolCall(
         'Do not use Claude task-panel or subagent Task tools in OMP. Use todo_write for task tracking instead.',
     };
   }
-  const paths = extractPathsFromToolInput(event.toolName, event.input);
-  if (paths.length === 0) return {};
+  const targets = extractLockTargets(event.toolName, event.input);
+  if (targets.length === 0) return {};
 
   // Symlink refusal (file-locking #1) — runs BEFORE the acquire. The
   // operator keys locks on the path string and cannot see that two
   // strings alias one file; the hook, running on the agent's
-  // filesystem, can. A local decision: no operator round-trip, so no
-  // health marker (like the paths.length === 0 short-circuit above).
-  const symlinked = detectSymlinkedPaths(paths, papercupRoot());
+  // filesystem, can. Detection is grouped by worktree root: a key is
+  // relative to its own root, so realpath-ing it needs that root (a
+  // single tool call may, in principle, span more than one worktree).
+  // A local decision: no operator round-trip, so no health marker (like
+  // the targets.length === 0 short-circuit above).
+  const byRoot = new Map<string, string[]>();
+  for (const t of targets) {
+    const rels = byRoot.get(t.root);
+    if (rels) rels.push(t.rel);
+    else byRoot.set(t.root, [t.rel]);
+  }
+  const symlinked: Array<{ given: string; real: string }> = [];
+  for (const [root, rels] of byRoot) {
+    symlinked.push(...detectSymlinkedPaths(rels, root));
+  }
   if (symlinked.length > 0) {
     return { block: true, reason: formatSymlinkRefusal(symlinked) };
   }
+
+  // Lock keys are worktree-relative, so the same file claimed through
+  // two worktrees collapses to one key — dedupe, preserving order.
+  const seen = new Set<string>();
+  const paths = targets
+    .map((t) => t.rel)
+    .filter((x) => !(seen.has(x) || seen.add(x)));
 
   const result = await callMcpTool('coord:locks:acquire', {
     paths,
