@@ -17,13 +17,6 @@
         "*.bench.ts"
       ]
     },
-    "apps/papercup": {
-      "entry": [
-        "app/**/{page,layout,loading,error,not-found,template,default,route}.{ts,tsx}",
-        "lib/**/*.{ts,tsx}",
-        "next.config.*"
-      ]
-    },
     "libs/**": {
       "entry": [
         "src/index.{ts,tsx}",

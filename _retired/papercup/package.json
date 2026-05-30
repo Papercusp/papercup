@@ -1,4 +1,5 @@
 {
+  "//retired": "RETIRED 2026-05-30 — papercupai.com public site, preserved not active. NOT a workspace, NOT deployed, NOT tested. To restore see ./RESTORE.md (git tag papercup-web-retired-2026-05-30).",
   "name": "@papercup/web",
   "version": "0.0.1",
   "private": true,

@@ -1,3 +1,7 @@
+# ⛔ RETIRED 2026-05-30 — @papercup/web (the papercupai.com public site) is retired.
+# Preserved for reference, NOT deployed. The app code now lives at _retired/papercup/.
+# Restore via _retired/papercup/RESTORE.md (git tag: papercup-web-retired-2026-05-30).
+#
 # papercupai.com — production deployment on Hetzner via Coolify.
 #
 # Three services:
