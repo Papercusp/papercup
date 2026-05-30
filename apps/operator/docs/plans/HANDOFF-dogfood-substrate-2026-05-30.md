@@ -102,13 +102,20 @@ GitHub repo before claiming sharing works.
 ### 2. Re-boot after finalize so an already-booted harness joins the swarm  [backend, small]
 `bootSingleHarness` (`boot-all.ts:161`) caches handles and returns `already-booted`
 if one exists (`handles.has(k)`, line 171) — so writing shared.json does NOT
-retroactively swarm-join a harness that booted earlier as `swarm: null`. There is a
-purpose-built helper: **`rebootHarness(workspaceId, harnessSlug, opts)`** at
-`boot-all.ts:242` — doc-comment: "used after shared.json changes so the new swarm
-binding takes effect. Closes then re-boots; safe if not currently booted." Consider
-having the finalize route call it after writing the file (only meaningful when the
-substrate flag is on). Decide whether finalize should trigger the reboot or just
-document "restart to go online."
+retroactively swarm-join a harness that booted earlier as `swarm: null`. There is
+**no single `rebootHarness` helper** (an earlier draft of this brief claimed one at
+`boot-all.ts:242` — that was wrong; do not look for it). The real exported helpers
+(verified `grep -nE '^export (async )?function' boot-all.ts` on 2026-05-30) are:
+`closeBootedHarness(workspaceId, harnessSlug)` at `boot-all.ts:265` (deletes the
+handle from the map at line 272 then `await handle.close()` at 274) and
+`bootSingleHarness(...)` at 161. So the reboot path is: `await closeBootedHarness(ws,
+slug); await bootSingleHarness(ws, slug);` (the close removes the cache entry so the
+re-boot actually re-resolves the swarm binding instead of returning `already-booted`).
+Decide whether the finalize route triggers that sequence after writing the file (only
+meaningful when `PAPERCUSP_DOGFOOD_SUBSTRATE_ENABLE=1`) or just documents "restart to
+go online." Other boot-all exports for reference: `getBootedHarness` (130),
+`defaultResolveSwarmBinding` (144), `bootAllHarnessesForActiveWorkspace` (238),
+`closeAllBootedHarnesses` (282), `listBootedHandles` (308).
 
 ### 3. BootHistoryKind type drift  [backend, small — was attempted + reverted]
 `boot.ts` emits two event kinds NOT in the union:
