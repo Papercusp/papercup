@@ -67,7 +67,6 @@ const prev = generated.pendingReviewsInHarnessShared;
 const hps = generated.harnessProposalsSharedInHarnessShared;
 const hph = generated.harnessPhasesInHarnessShared;
 const hgl = generated.harnessGitLogInHarnessShared;
-const hh = generated.harnessHealthInHarnessShared;
 const hba = generated.harnessBranchActionsInHarnessShared;
 const ocharter = generated.orgCharterInHarnessShared;
 const odept = generated.orgDepartmentsInHarnessShared;
@@ -182,8 +181,6 @@ function watchedPaths(p: ProjectEntry): string[] {
   }
   // Git-log: chokidar dispatch retired. Refresh now happens at 60s
   // reconcile cadence + on explicit UI request. No fs.watch on .git/.
-  // SPEC.md / validation-contract.md: dispatch retired; reconcile
-  // sweep refreshes harness_health at 60s.
   // Org-root: charter.md / departments.json / projects.json live at the
   // PROJECT root (not .harness/) for harness_kind='org' projects.
   if (p.harness_kind === 'org') {
@@ -657,51 +654,6 @@ async function deleteGitLogAll(slug: string): Promise<void> {
   const result = await db.delete(hgl).where(eq(hgl.harnessSlug, slug)).returning({ sha: hgl.sha });
   if (result.length > 0) {
     await notifySyncInvalidate('harnessGitLog.byHarness', { harnessSlug: slug });
-  }
-}
-
-// ── Mirror 7j: harness_health (file-presence checks for HealthBadge) ──
-//
-// Tracks SPEC.md (project root) and validation-contract.md (.harness/)
-// presence. Other HealthBadge inputs (features, escalated, alive, ghosts,
-// pendingCheckpoints, smokeFail) all already have Zero queries; the panel
-// derives the aggregate client-side from this row + the existing queries.
-
-async function upsertHarnessHealth(slug: string, projectPath: string): Promise<void> {
-  const specPresent = existsSync(join(projectPath, 'SPEC.md'));
-  const contractPresent = existsSync(join(projectPath, '.harness', 'validation-contract.md'));
-  const { db } = getOrgPg();
-  const ws = activeWorkspaceId();
-  const nowMs = Date.now();
-  const before = await db
-    .select({ spec_present: hh.specPresent, contract_present: hh.contractPresent })
-    .from(hh)
-    .where(eq(hh.harnessSlug, slug))
-    .limit(1);
-  await db
-    .insert(hh)
-    .values({
-      harnessSlug: slug,
-      specPresent: specPresent,
-      contractPresent: contractPresent,
-      lastCheckMs: nowMs,
-      workspaceId: ws,
-    })
-    .onConflictDoUpdate({
-      target: hh.harnessSlug,
-      set: {
-        specPresent: dsql`EXCLUDED.spec_present`,
-        contractPresent: dsql`EXCLUDED.contract_present`,
-        lastCheckMs: dsql`EXCLUDED.last_check_ms`,
-        workspaceId: dsql`EXCLUDED.workspace_id`,
-      },
-    });
-  const prev = before[0];
-  const changed = !prev
-    || prev.spec_present !== specPresent
-    || prev.contract_present !== contractPresent;
-  if (changed) {
-    await notifySyncInvalidate('harnessHealth.byHarness', { harnessSlug: slug });
   }
 }
 
@@ -1198,13 +1150,6 @@ function classifyAndDispatch(
   // velocity. UI also has an explicit refresh button if the user
   // wants immediate sync.
 
-  // SPEC.md / validation-contract.md presence: chokidar dispatch
-  // retired. The reconcileAll() sweep below refreshes harness_health
-  // at 60s cadence, which is acceptable for "is the file present"
-  // structural state. Operator endpoints that create/delete these
-  // files can call upsertHarnessHealth() directly when sub-60s
-  // freshness matters.
-
   const match = phaseForPath(state, path);
   if (!match) return;
   const { project, phase, harnessDir: hd } = match;
@@ -1437,11 +1382,6 @@ async function reconcileAll(state: WatcherState): Promise<void> {
         await deleteGitLogAll(proj.slug);
       }
     } catch {}
-
-    // HealthBadge file-presence (SPEC.md, validation-contract.md). Cheap
-    // existsSync calls; refreshed on every reconcile so panel state stays
-    // current after edits.
-    try { await upsertHarnessHealth(proj.slug, proj.path); } catch {}
 
     // Branch actions: recompute all 3 branches per project. This is the
     // catch-all for plugin-config / global-manifest changes that aren't
