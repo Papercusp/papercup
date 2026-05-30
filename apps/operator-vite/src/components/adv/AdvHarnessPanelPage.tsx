@@ -5,7 +5,7 @@ import { RealGitPanel } from '@/app/harness/dock/RealGitPanel';
 import { BrainstormFull } from '@/app/harness/brainstorm/BrainstormFull';
 import PrsTab from '@/app/harness/PrsTab';
 import HarnessSettingsPanel from '@/app/harness/HarnessSettingsPanel';
-import InsightsPanel from '@/app/harness/InsightsPanel';
+import { InsightsTab, type InsightsTabProps } from '@/app/harness/insights/InsightsTab';
 import AdvConfigTab from '@/app/adv/harnesses/AdvConfigTab';
 import AdvDocsTab from '@/app/adv/harnesses/AdvDocsTab';
 
@@ -26,44 +26,44 @@ export const ADV_HARNESS_PANEL_LABELS: Record<AdvHarnessPanel, string> = {
 const ADV_PHASE = 'staging';
 
 /**
- * Insights wrapper. InsightsPanel needs the harness `status` payload (feature
- * list + mission cost/tokens/iteration); the legacy dashboard handed it down
- * from its own poll. Here we fetch `/status` ourselves so the panel mounts
- * standalone — no HarnessDashboard. Mirrors the props HarnessDashboard passed.
+ * Insights tab — Phase 8 six-card InsightsTab (P-073): Project, Activity feed,
+ * People, Your place, How it works here, Spend. This is the same surface the
+ * standalone `/harness/$slug/insights` route renders; we mirror its
+ * fetch-then-render here so the live /adv Insights tab shows it too (replacing
+ * the legacy cost/tokens InsightsPanel that the now-deleted HarnessDashboard
+ * used to host). The endpoint returns `{ insights: InsightsTabProps }` —
+ * pre-computed per-card props from loadHarnessInsights — so this is a thin
+ * fetch wrapper.
  */
 function AdvInsightsTab({ slug }: { slug: string }) {
-  // status is a loose JSON blob from /status; the legacy caller also treats
-  // `status.features` as `any`.
-  const [status, setStatus] = useState<any>(null);
+  const [insights, setInsights] = useState<InsightsTabProps | null>(null);
+  const [error, setError] = useState<string | null>(null);
   useEffect(() => {
     let cancel = false;
-    setStatus(null);
-    fetch(`/api/harness/${encodeURIComponent(slug)}/status?phase=${ADV_PHASE}`)
-      .then((r) => (r.ok ? r.json() : null))
-      .then((j) => {
-        if (!cancel) setStatus(j);
+    setInsights(null);
+    setError(null);
+    fetch(`/api/harness/${encodeURIComponent(slug)}/insights`, { cache: 'no-store' })
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
+      .then((body: { insights?: InsightsTabProps }) => {
+        if (cancel) return;
+        if (body?.insights) setInsights(body.insights);
+        else setError('insights payload missing');
       })
-      .catch(() => {
-        if (!cancel) setStatus(null);
+      .catch((e: unknown) => {
+        if (!cancel) setError(e instanceof Error ? e.message : String(e));
       });
     return () => {
       cancel = true;
     };
   }, [slug]);
 
-  if (!status) return <div className="pc-adv-harness-panel__empty">Loading insights…</div>;
-  return (
-    <InsightsPanel
-      inline
-      slug={slug}
-      features={status.features ?? []}
-      totalCostUsd={status.missionCostUsd ?? 0}
-      totalInputTokens={status.missionInputTokens ?? 0}
-      totalOutputTokens={status.missionOutputTokens ?? 0}
-      iteration={status.iteration ?? 0}
-      onClose={() => {}}
-    />
-  );
+  if (error) {
+    return <div className="pc-adv-harness-panel__empty">Could not load insights: {error}</div>;
+  }
+  if (!insights) {
+    return <div className="pc-adv-harness-panel__empty">Loading insights…</div>;
+  }
+  return <InsightsTab {...insights} />;
 }
 
 /**
