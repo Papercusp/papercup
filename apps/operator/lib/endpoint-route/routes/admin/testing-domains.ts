@@ -15,7 +15,7 @@
 
 import { defineTool } from '@papercusp/agent-mcp';
 import '@/lib/testing-domains-registry';
-import { listTestDomains } from '@/lib/testing-domains';
+import { listTestDomains, type TestTier } from '@/lib/testing-domains';
 
 interface SectionListEntry {
   id: string;
@@ -29,7 +29,7 @@ interface DomainListEntry {
   id: string;
   label: string;
   description: string;
-  tier: 'quick' | 'domain' | 'surface';
+  tier: TestTier;
   sections: SectionListEntry[];
 }
 

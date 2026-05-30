@@ -6,7 +6,8 @@
 
 import { describe, expect, it } from 'vitest';
 import './_loads-registry'; // side-effect import to populate the registry
-import { listTestDomains } from '../testing-domains';
+import { listTestDomains, generalizedRegistry } from '../testing-domains';
+import { papercuspRegistry, adminRegistry } from '../testing-domains-registry';
 
 describe('testing-domains-registry', () => {
   const domains = listTestDomains();
@@ -70,5 +71,32 @@ describe('testing-domains-registry', () => {
       'apps/operator/app/_components/__tests__/RouteLink.test.ts',
       'apps/operator/app/_components/__tests__/RouteProgressProvider.test.ts',
     ]));
+  });
+});
+
+describe('Phase B — generalized vs Papercusp split (P-010/P-011/P-012)', () => {
+  it('generalizedRegistry is the 5 generalizable domains, all tier "generalized"', () => {
+    expect(generalizedRegistry.map((d) => d.id).sort()).toEqual(
+      ['ai', 'chaos', 'live', 'routes', 'test-runs'],
+    );
+    expect(generalizedRegistry.every((d) => d.tier === 'generalized')).toBe(true);
+  });
+
+  it('papercuspRegistry is the 16 Papercusp-only domains, none generalized', () => {
+    expect(papercuspRegistry.length).toBe(16);
+    expect(papercuspRegistry.some((d) => d.tier === 'generalized')).toBe(false);
+    // the generalized 5 are NOT in the Papercusp set
+    const papercuspIds = new Set(papercuspRegistry.map((d) => d.id));
+    for (const g of generalizedRegistry) expect(papercuspIds.has(g.id)).toBe(false);
+  });
+
+  it('adminRegistry composes both into the full 21', () => {
+    expect(adminRegistry.length).toBe(21);
+    expect(adminRegistry.length).toBe(generalizedRegistry.length + papercuspRegistry.length);
+  });
+
+  it('the generalized domains registered into the shared Map (admin getTestDomain sees them)', () => {
+    const ids = new Set(listTestDomains().map((d) => d.id));
+    for (const g of generalizedRegistry) expect(ids.has(g.id)).toBe(true);
   });
 });

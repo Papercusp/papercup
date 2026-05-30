@@ -15,7 +15,7 @@
 
 import { defineTool } from '@papercusp/agent-mcp';
 import '@/lib/testing-domains-registry';
-import { getTestDomain, type TestSection, type TestRunner } from '@/lib/testing-domains';
+import { getTestDomain, type TestSection, type TestRunner, type TestTier } from '@/lib/testing-domains';
 import { expandGlobs, inferWorkspaceRoot, type FileHit } from '@/lib/testing-domain-glob';
 
 interface ResolvedSection {
@@ -30,7 +30,7 @@ interface DomainDetail {
   id: string;
   label: string;
   description: string;
-  tier: 'quick' | 'domain' | 'surface';
+  tier: TestTier;
   sections: ResolvedSection[];
   totalFiles: number;
 }

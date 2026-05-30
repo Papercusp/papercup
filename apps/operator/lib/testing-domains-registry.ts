@@ -1,57 +1,39 @@
 /**
- * testing-domains-registry.ts — every /admin/testing subtab declaration.
+ * testing-domains-registry.ts — the operator's /admin/testing registry barrel.
  *
- * Plan: admin-testing-tab-restructure-2026-05-24, P-002.
+ * Plan: admin-testing-tab-restructure-2026-05-24 (P-002); split in Phase B
+ * (P-010/P-011) of harness-tests-tab-and-tester-promotion-2026-05-26.
  *
- * Importing this module side-effect-registers all 21 domains into the
- * `defineTestDomain` registry. Server route (P-003) and SPA tab list
- * (P-006) both import this file to populate themselves.
+ * The GENERALIZED domains (test-runs / live / chaos / ai / routes) — the
+ * ones that apply to any coding harness — now live in
+ * `@papercusp/testing-shell` as `generalizedRegistry` (pure data). This
+ * file registers them into the shared `defineTestDomain` Map and declares
+ * the 16 Papercusp-only domains inline. The lib↔operator boundary IS the
+ * generalized↔Papercusp boundary — there is no separate `.papercusp.ts`.
  *
- * Eight existing tabs (test-runs, live, memory, chaos, ai, routes,
- * packaged, llm) are declared here for routing/labeling only — their
- * bespoke React lives in operator-vite, wired via `customId` lookup
- * inside the SPA (P-006a). The 13 new tabs render via <DomainTestPanel>.
+ * Importing this module side-effect-registers all 21 domains. The four
+ * /admin/testing endpoint routes (P-003) side-effect-import it to populate
+ * getTestDomain / listTestDomains; the SPA's left-rail tab list is
+ * hardcoded in operator-vite's TestingClient (P-006a) and does not read
+ * this file.
  *
- * Globs are repo-relative POSIX. Glob walk happens server-side at
- * request time (P-003) — no checked-in catalog to drift.
+ * Globs are repo-relative POSIX. Glob walk happens server-side at request
+ * time (P-003) — no checked-in catalog to drift.
  *
- * Tier groupings:
- *   - quick:   one-click suite runners, observers, packaged build
- *   - domain:  per-domain test surfaces (12 new + memory + llm)
- *   - surface: cross-cutting transports (routes, transport, docs)
+ * Tier groupings (the 16 here): `quick` (memory, packaged), `domain`
+ * (per-domain surfaces + llm), `surface` (transport, docs). The
+ * generalized 5 carry tier `generalized`.
  */
 
-import { defineTestDomain } from './testing-domains';
+import { defineTestDomain, getTestDomain, generalizedRegistry, type TestDomain } from './testing-domains';
+
+// Register the lib-provided generalized domains into the shared Map so
+// /admin/testing's getTestDomain / listTestDomains see all 21 (P-010).
+for (const d of generalizedRegistry) defineTestDomain(d);
 
 /* ---------------------------------------------------------------- *
- * Tier 1 — quick runs (existing tabs, custom-rendered in operator-vite)
+ * Papercusp-only domains (16). Generalized ones live in the lib.
  * ---------------------------------------------------------------- */
-
-defineTestDomain({
-  id: 'test-runs',
-  label: 'Test Runs',
-  description: 'Suite orchestrator: start / poll / cancel named suites.',
-  tier: 'quick',
-  // Placeholder section — custom UI in operator-vite via P-006a.
-  sections: [
-    {
-      id: 'all',
-      label: 'Suites',
-      description: 'All admin-test-suite runs.',
-      runners: [{ kind: 'admin-suite', suiteId: 'desktop-health' }],
-    },
-  ],
-});
-
-defineTestDomain({
-  id: 'live',
-  label: 'Live',
-  description: 'Passive observer: interactions, console, layout, unhandled errors.',
-  tier: 'quick',
-  sections: [
-    { id: 'all', label: 'Observers', globs: ['apps/operator/app/admin/testing/_lib/vitals-*.test.ts'] },
-  ],
-});
 
 defineTestDomain({
   id: 'memory',
@@ -60,44 +42,6 @@ defineTestDomain({
   tier: 'quick',
   sections: [
     { id: 'core', label: 'Health', globs: ['apps/operator/lib/memory/**/*.test.ts'] },
-  ],
-});
-
-defineTestDomain({
-  id: 'chaos',
-  label: 'Chaos',
-  description: 'Autonomous clicker that drives the Tauri shell looking for crashes.',
-  tier: 'quick',
-  sections: [
-    { id: 'host', label: 'Recorder host', globs: ['apps/operator/app/admin/testing/_lib/chaos-*.test.ts'] },
-  ],
-});
-
-defineTestDomain({
-  id: 'ai',
-  label: 'AI Explore',
-  description: 'Stagehand LLM walk over admin routes.',
-  tier: 'quick',
-  sections: [
-    {
-      id: 'prompts',
-      label: 'Prompts',
-      runners: [{ kind: 'admin-suite', suiteId: 'ai-explore-prompts' }],
-    },
-  ],
-});
-
-defineTestDomain({
-  id: 'routes',
-  label: 'Routes',
-  description: 'Per-route INP rollup + Hono endpoint test surface.',
-  tier: 'surface',
-  sections: [
-    {
-      id: 'endpoint-tests',
-      label: 'Endpoint tests',
-      globs: ['apps/operator/lib/endpoint-route/__tests__/**/*.test.ts'],
-    },
   ],
 });
 
@@ -456,3 +400,24 @@ defineTestDomain({
     { id: 'adapters', label: 'Adapters', globs: ['apps/operator/lib/agent-tools/cross_harness/docs*.test.ts'] },
   ],
 });
+
+/* ---------------------------------------------------------------- *
+ * Composed views (P-011). `papercuspRegistry` = the 16 declared above
+ * (read back from the Map by id); `adminRegistry` = generalized + papercusp
+ * = the full /admin/testing set. The SPA nav order is TestingClient's own
+ * TABS, not these arrays.
+ * ---------------------------------------------------------------- */
+
+const PAPERCUSP_IDS = [
+  'memory', 'packaged', 'llm', 'harness', 'voice', 'papercusp-su', 'backup',
+  'plans', 'operator', 'design', 'plugins', 'transport', 'snapshots', 'mobile',
+  'provisioning', 'docs',
+] as const;
+
+export const papercuspRegistry: TestDomain[] = PAPERCUSP_IDS.map((id) => {
+  const d = getTestDomain(id);
+  if (!d) throw new Error(`testing-domains-registry: papercusp domain '${id}' not registered`);
+  return d;
+});
+
+export const adminRegistry: TestDomain[] = [...generalizedRegistry, ...papercuspRegistry];
