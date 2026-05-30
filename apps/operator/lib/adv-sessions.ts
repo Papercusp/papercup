@@ -240,6 +240,48 @@ export async function listAdvSessions(limit = 100): Promise<AdvSessionRow[]> {
   }
 }
 
+/**
+ * Recent psu-tracked sessions (agent + cwd present), most-recent first,
+ * across ALL workspaces — the data the `psu --resume` picker walks. Unlike
+ * listAdvSessions this is NOT workspace-scoped (you may want to resume a
+ * session launched in a different workspace) and includes ended rows
+ * (resume revives them).
+ */
+export async function listResumableSessions(limit = 30): Promise<AdvSessionRow[]> {
+  try {
+    await ensureAdvSessionsTable();
+    const { sql } = getOrgPg();
+    const rows = await sql<Array<{
+      id: number;
+      workspace_id: string;
+      plan_slug: string | null;
+      agent: string | null;
+      mode: 'omp' | 'console';
+      terminal_bin: string | null;
+      pid: number | null;
+      window_id: string | null;
+      omp_thread_id: string | null;
+      label: string | null;
+      cwd: string | null;
+      started_at: string | Date;
+      ended_at: string | Date | null;
+      exit_code: number | null;
+    }>>`
+      SELECT id, workspace_id, plan_slug, agent, mode, terminal_bin, pid,
+             window_id, omp_thread_id, label, cwd, started_at, ended_at, exit_code
+        FROM harness_shared.adv_sessions
+       WHERE agent IS NOT NULL
+         AND cwd IS NOT NULL
+       ORDER BY started_at DESC
+       LIMIT ${limit}
+    `;
+    return rows.map(mapAdvSessionRow);
+  } catch (e) {
+    console.warn('[adv-sessions] listResumableSessions failed:', (e as Error).message);
+    return [];
+  }
+}
+
 export async function getAdvSession(id: number): Promise<AdvSessionRow | null> {
   try {
     await ensureAdvSessionsTable();

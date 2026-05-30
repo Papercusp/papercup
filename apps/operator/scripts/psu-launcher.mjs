@@ -34,9 +34,10 @@ const OPERATOR_URL = process.env.PAPERCUSP_OPERATOR_URL || 'http://localhost:307
 
 /** Parse the scripting-escape flags. Pure — exported for tests. */
 export function parseArgs(argv) {
-  const out = { picker: true, agent: null, workspace: null, harness: null, plan: null, noPlan: false };
+  const out = { picker: true, resume: false, agent: null, workspace: null, harness: null, plan: null, noPlan: false };
   for (const a of argv) {
     if (a === '--no-picker') out.picker = false;
+    else if (a === '--resume') out.resume = true;
     else if (a === '--no-plan') out.noPlan = true;
     else if (a.startsWith('--agent=')) out.agent = a.slice('--agent='.length);
     else if (a.startsWith('--workspace=')) out.workspace = a.slice('--workspace='.length);
@@ -44,6 +45,23 @@ export function parseArgs(argv) {
     else if (a.startsWith('--plan=')) out.plan = a.slice('--plan='.length);
   }
   return out;
+}
+
+/**
+ * Per-agent resume command. Pure — exported for tests. Returns the
+ * `*-su` wrapper to exec + the resume args. Semantics: claude/omp
+ * continue the most recent conversation in the session's cwd (omp can
+ * target an exact thread when one was captured); codex resumes its most
+ * recent session.
+ */
+export function resumeArgsFor(session) {
+  const wrapperBin = { claude: 'claude-su', omp: 'omp-su', codex: 'codex-su' }[session.agent];
+  if (!wrapperBin) throw new Error(`unknown agent: ${session.agent}`);
+  let args;
+  if (session.agent === 'omp') args = session.ompThreadId ? ['-r', session.ompThreadId] : ['-c'];
+  else if (session.agent === 'codex') args = ['resume', '--last'];
+  else args = ['--continue'];
+  return { wrapperBin, args };
 }
 
 /** Map a plan picker value to the bootstrap-su `plan_slug` (NO_PLAN → null). Pure. */
@@ -176,8 +194,8 @@ async function pickPlan(workspace, harness) {
   });
 }
 
-function runWrapper({ wrapperBin, cwd, envelopeEnv }) {
-  const child = spawn(wrapperBin, [], {
+function runWrapper({ wrapperBin, args = [], cwd, envelopeEnv }) {
+  const child = spawn(wrapperBin, args, {
     cwd,
     env: { ...process.env, ...envelopeEnv },
     stdio: 'inherit',
@@ -193,8 +211,58 @@ function runWrapper({ wrapperBin, cwd, envelopeEnv }) {
   });
 }
 
+function fmtAge(iso) {
+  const t = Date.parse(iso);
+  if (!Number.isFinite(t)) return '';
+  const ms = Date.now() - t;
+  const m = 60_000, h = 3_600_000, d = 86_400_000;
+  if (ms < 2 * m) return 'just now';
+  if (ms < h) return `${Math.floor(ms / m)}m ago`;
+  if (ms < d) return `${Math.floor(ms / h)}h ago`;
+  return `${Math.floor(ms / d)}d ago`;
+}
+
+// `psu --resume`: pick a recent tracked session, cd to its recorded cwd,
+// and resume the agent there — so resume works no matter where the
+// session was launched from.
+async function resumeFlow() {
+  const { search } = await import('@inquirer/prompts');
+  const data = await api('/api/adv/sessions/resumable');
+  const sessions = (data.sessions || []).filter((s) => s.agent && s.cwd);
+  if (sessions.length === 0) {
+    console.error('psu: no resumable sessions found — launch one with `psu` first.');
+    process.exit(1);
+  }
+  const rows = sessions.map((s) => ({
+    name:
+      `${s.agent}  ·  ${s.planSlug ? `plan ${s.planSlug}` : 'no plan'}  ·  ${s.cwd}  ·  ${fmtAge(s.startedAt)}` +
+      `${s.endedAt ? '' : '  · active'}`,
+    value: s,
+  }));
+  const picked = await search({
+    message: 'Resume which session?',
+    source: async (term) => filterRows(rows, term),
+  });
+
+  const { wrapperBin, args } = resumeArgsFor(picked);
+  console.error(`psu: resuming ${picked.agent} in ${picked.cwd}  (${wrapperBin} ${args.join(' ')})`);
+  runWrapper({
+    wrapperBin,
+    args,
+    cwd: picked.cwd,
+    envelopeEnv: {
+      PAPERCUSP_AGENT: picked.agent,
+      ...(picked.id != null ? { PAPERCUSP_ADV_SESSION_ID: String(picked.id) } : {}),
+    },
+  });
+}
+
 async function main() {
   const args = parseArgs(process.argv.slice(2));
+  if (args.resume) {
+    await resumeFlow();
+    return;
+  }
   let selections;
   if (args.picker) {
     const agent = await pickAgent();

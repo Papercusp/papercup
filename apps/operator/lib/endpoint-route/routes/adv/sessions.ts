@@ -15,6 +15,7 @@ import {
   focusWindowId,
   getAdvSession,
   listAdvSessions,
+  listResumableSessions,
   resolveWindowIdForPid,
   resolveWindowIdForTitleFragment,
   setAdvSessionOmpThreadId,
@@ -326,4 +327,21 @@ const search = defineTool({
   },
 });
 
-export default [list, focus, alive, state, search];
+/**
+ * GET /api/adv/sessions/resumable — recent psu-tracked sessions (agent +
+ * cwd present), cross-workspace, most-recent first. Feeds the
+ * `psu --resume` picker, which `cd`s to each row's cwd and resumes the
+ * agent there.
+ */
+const resumable = defineTool({
+  method: 'GET',
+  path: '/adv/sessions/resumable',
+  auth: 'public',
+  async handler(req) {
+    const limit = Number(new URL(req.url).searchParams.get('limit') ?? 30);
+    const sessions = await listResumableSessions(Number.isFinite(limit) && limit > 0 ? limit : 30);
+    return new Response(JSON.stringify({ sessions }), { status: 200, headers: JSON_HEADERS });
+  },
+});
+
+export default [list, focus, alive, state, search, resumable];
