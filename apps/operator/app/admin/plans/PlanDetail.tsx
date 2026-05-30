@@ -94,8 +94,12 @@ export default function PlanDetail({ slug, onClose, onDirtyChange, startStatus, 
   // 'editor' = the markdown editor; 'revisions' = the Revisions
   // panel (P-017); 'agents' = the Agents tab (P-021). nuqs-backed so
   // a tab + a deep-link (?rev= / ?convo= / ?run=) survive reload.
+  // `ptab` (plan-detail tab), NOT `tab` — on /adv the top-level AdvShell
+  // owns `?tab=` for its tab strip (plans/sessions/brainstorm/…). Sharing
+  // the key meant opening a plan (which sets this to 'editor') clobbered
+  // `tab=plans` → AdvShell saw an invalid id and fell back to brainstorm.
   const [tab, setTab] = useQueryState(
-    'tab',
+    'ptab',
     parseAsStringEnum(['editor', 'revisions', 'agents']).withDefault('editor'),
   );
   const [itemView, setItemView] = useQueryState(

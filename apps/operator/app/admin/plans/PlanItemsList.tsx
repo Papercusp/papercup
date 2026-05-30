@@ -29,16 +29,16 @@ export default function PlanItemsList({ mode, onPick, harnessByPlan }: Props) {
 
   if (loading) {
     return (
-      <div className="pc-items">
-        <Heading mode={mode} count={null} />
+      <div className={`pc-items pc-items--${mode}`}>
+        <Heading mode={mode} count={null} groupCount={null} />
         <p className="pc-plans__placeholder">Loading…</p>
       </div>
     );
   }
   if (error) {
     return (
-      <div className="pc-items">
-        <Heading mode={mode} count={null} />
+      <div className={`pc-items pc-items--${mode}`}>
+        <Heading mode={mode} count={null} groupCount={null} />
         <div className="pc-plans__placeholder pc-plans__placeholder--error">
           <p>Failed to load items:</p>
           <code>{error}</code>
@@ -57,8 +57,8 @@ export default function PlanItemsList({ mode, onPick, harnessByPlan }: Props) {
         ? 'No items waiting on human input.'
         : 'No actionable items right now.';
     return (
-      <div className="pc-items">
-        <Heading mode={mode} count={0} />
+      <div className={`pc-items pc-items--${mode}`}>
+        <Heading mode={mode} count={0} groupCount={0} />
         <div className="pc-items__empty">{empty}</div>
       </div>
     );
@@ -72,48 +72,60 @@ export default function PlanItemsList({ mode, onPick, harnessByPlan }: Props) {
     groups.get(r.plan)!.push(r);
   }
 
+  const groupCount = groups.size;
+
   return (
-    <div className="pc-items">
-      <Heading mode={mode} count={rows.length} />
+    <div className={`pc-items pc-items--${mode}`}>
+      <Heading mode={mode} count={rows.length} groupCount={groupCount} />
       <ul className="pc-items__groups" role="list">
-        {[...groups.entries()].map(([planSlug, planRows]) => (
-          <li key={planSlug} className="pc-items__group">
-            <button
-              type="button"
-              className="pc-items__plan-head"
-              onClick={() => onPick(planSlug)}
-              aria-label={`Open plan ${planSlug}`}
-            >
-              <span className="pc-items__plan-name">{planSlug}</span>
-              <span className="pc-items__plan-count">{planRows.length}</span>
-            </button>
-            <ul className="pc-items__rows" role="list">
-              {planRows.map((r) => (
-                <li key={r.item.id} className="pc-items__row-wrap">
-                  <button
-                    type="button"
-                    className="pc-items__row"
-                    onClick={() => onPick(planSlug, r.item.id)}
-                  >
-                    <span className="pc-items__id">{r.item.id}</span>
-                    <span className={`pc-count pc-count--${r.item.storedStatus}`}>
-                      {r.item.storedStatus}
+        {[...groups.entries()].map(([planSlug, planRows]) => {
+          const harnessSlug = harnessByPlan?.get(planSlug);
+          return (
+            <li key={planSlug} className="pc-items__group">
+              <button
+                type="button"
+                className="pc-items__plan-head"
+                onClick={() => onPick(planSlug)}
+                aria-label={`Open plan ${planSlug}`}
+              >
+                <span className="pc-items__plan-copy">
+                  <span className="pc-items__plan-name">{planSlug}</span>
+                  {harnessSlug ? (
+                    <span className="pc-items__plan-meta">
+                      <span className="pc-pill pc-pill--harness">{harnessSlug}</span>
                     </span>
-                    <span className="pc-items__text">{r.item.text}</span>
-                  </button>
-                  {mode === 'inbox' && (
-                    <ResolveButton
-                      planSlug={planSlug}
-                      itemId={r.item.id}
-                      harnessSlug={harnessByPlan?.get(planSlug)}
-                      onResolved={refresh}
-                    />
-                  )}
-                </li>
-              ))}
-            </ul>
-          </li>
-        ))}
+                  ) : null}
+                </span>
+                <span className="pc-items__plan-count">{itemCountLabel(planRows.length)}</span>
+              </button>
+              <ul className="pc-items__rows" role="list">
+                {planRows.map((r) => (
+                  <li key={r.item.id} className="pc-items__row-wrap">
+                    <button
+                      type="button"
+                      className="pc-items__row"
+                      onClick={() => onPick(planSlug, r.item.id)}
+                    >
+                      <span className="pc-items__id">{r.item.id}</span>
+                      <span className={`pc-count pc-count--${r.item.storedStatus}`}>
+                        {r.item.storedStatus}
+                      </span>
+                      <span className="pc-items__text">{r.item.text}</span>
+                    </button>
+                    {mode === 'inbox' && (
+                      <ResolveButton
+                        planSlug={planSlug}
+                        itemId={r.item.id}
+                        harnessSlug={harnessSlug}
+                        onResolved={refresh}
+                      />
+                    )}
+                  </li>
+                ))}
+              </ul>
+            </li>
+          );
+        })}
       </ul>
     </div>
   );
@@ -174,21 +186,38 @@ function ResolveButton({
 function Heading({
   mode,
   count,
+  groupCount,
 }: {
   mode: 'inbox' | 'actionable';
   count: number | null;
+  groupCount: number | null;
 }) {
   return (
     <header className="pc-items__head">
       <div className="pc-items__head-copy">
-        <h2>{mode === 'inbox' ? 'Needs human' : 'Actionable'}</h2>
+        <h2>{mode === 'inbox' ? 'Needs Human' : 'Needs Decision'}</h2>
         <p>
           {mode === 'inbox'
             ? 'Items across every plan waiting on a human decision.'
             : 'Items pickable right now — effective todo, all blockers cleared.'}
         </p>
+        {count !== null && groupCount !== null ? (
+          <div className="pc-items__meta" aria-label="Items summary">
+            <span className="pc-items__meta-chip">{itemCountLabel(count)}</span>
+            <span className="pc-items__meta-chip">{groupCount} {groupCount === 1 ? 'plan' : 'plans'}</span>
+            <span className="pc-items__meta-chip pc-items__meta-chip--accent">
+              {mode === 'inbox'
+                ? 'Resolve marks done and resumes the harness loop'
+                : 'Open an item to continue the next available task'}
+            </span>
+          </div>
+        ) : null}
       </div>
       {count !== null ? <span className="pc-items__count">{count}</span> : null}
     </header>
   );
+}
+
+function itemCountLabel(count: number): string {
+  return `${count} ${count === 1 ? 'item' : 'items'}`;
 }

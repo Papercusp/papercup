@@ -9,7 +9,7 @@
  *
  * Navigation guard (Bug-1 fix): PlanDetail reports unsaved-edit state
  * via `onDirtyChange`; every path that leaves the open plan (rail
- * click, view switch, search pick, inbox/actionable/triage pick, back
+ * click, view switch, search pick, inbox/actionable pick, back
  * button, keyboard nav) runs through `leaveGuard()` first — a confirm
  * if the plan has unsaved edits. PlanDetail is also keyed on `slug` so
  * a confirmed switch fully remounts it: no draft / hash / conflict
@@ -26,7 +26,6 @@ import PlanItemsList from './PlanItemsList';
 import PlanFilters from './PlanFilters';
 import PlanBucketTabs from './PlanBucketTabs';
 import PlanSearchResults from './PlanSearchResults';
-import PlanTriage from './PlanTriage';
 import { usePlanList, usePlanSearch, type PlanListRow } from './plans-api';
 import { launchOmpAgent } from '@/lib/native-omp-launch';
 import { resolveHarnessScope, type HarnessNodeForScope } from '@/lib/harness/scope';
@@ -34,21 +33,19 @@ import { resolveHarnessScope, type HarnessNodeForScope } from '@/lib/harness/sco
 /** localStorage key AdvShell uses for the fallback active-harness slug. */
 const ACTIVE_HARNESS_KEY = 'harness.activeProject';
 
-type PlansView = 'list' | 'inbox' | 'actionable' | 'triage';
+type PlansView = 'list' | 'inbox' | 'actionable';
 type PaneMode = 'read' | 'edit';
 type PlanDetailTab = 'editor' | 'revisions' | 'agents';
 
 const VIEWS: Array<{ id: PlansView; label: string }> = [
   { id: 'list', label: 'Browse' },
-  { id: 'inbox', label: 'Inbox' },
-  { id: 'actionable', label: 'Actionable' },
-  { id: 'triage', label: 'Triage' },
+  { id: 'inbox', label: 'Needs Human' },
+  { id: 'actionable', label: 'Needs Decision' },
 ];
 
 interface PlanStats {
   total: number;
   visible: number;
-  legacy: number;
   needsHuman: number;
   actionable: number;
 }
@@ -56,7 +53,7 @@ interface PlanStats {
 export default function PlansClient() {
   const [view, setView] = useQueryState(
     'view',
-    parseAsStringEnum<PlansView>(['list', 'inbox', 'actionable', 'triage']).withDefault('list'),
+    parseAsStringEnum<PlansView>(['list', 'inbox', 'actionable']).withDefault('list'),
   );
   // The OPEN-PLAN slug. Lives on `?plan=`, NOT `?slug=` — AdvShell owns
   // `?slug=` for the active harness (a global query param shared across
@@ -68,8 +65,10 @@ export default function PlansClient() {
     'pane',
     parseAsStringEnum<PaneMode>(['read', 'edit']).withDefault('read'),
   );
+  // `ptab` (plan-detail tab), NOT `tab` — AdvShell owns `?tab=` on /adv
+  // (see PlanDetail for the full rationale). Must match PlanDetail's key.
   const [, setTab] = useQueryState(
-    'tab',
+    'ptab',
     parseAsStringEnum<PlanDetailTab>(['editor', 'revisions', 'agents']).withDefault('editor'),
   );
   const [, setJump] = useQueryState('jump', parseAsString);
@@ -140,6 +139,11 @@ export default function PlansClient() {
   );
 
   const stats = useMemo(() => buildPlanStats(visiblePlans), [visiblePlans]);
+  const harnessByPlan = useMemo(
+    () => new Map((planList.data?.plans ?? []).map((p) => [p.slug, p.harness])),
+    [planList.data],
+  );
+
 
   // Lift cross-plan search up so PlanRail can union its hits into the
   // rail filter — otherwise the rail does a substring match on
@@ -284,7 +288,7 @@ export default function PlansClient() {
             <button
               key={v.id}
               type="button"
-              className={`pc-plans__view ${view === v.id ? 'is-active' : ''}`}
+              className={`pc-plans__view pc-plans__view--${v.id} ${view === v.id ? 'is-active' : ''}`}
               onClick={() => navView(v.id)}
               aria-current={view === v.id ? 'page' : undefined}
             >
@@ -372,18 +376,17 @@ export default function PlansClient() {
           <PlanItemsList
             mode="inbox"
             onPick={navPlanTarget}
-            harnessByPlan={useMemo(
-              () => new Map((planList.data?.plans ?? []).map((p) => [p.slug, p.harness])),
-              [planList.data],
-            )}
+            harnessByPlan={harnessByPlan}
           />
         )}
 
         {view === 'actionable' && (
-          <PlanItemsList mode="actionable" onPick={navPlanTarget} />
+          <PlanItemsList
+            mode="actionable"
+            onPick={navPlanTarget}
+            harnessByPlan={harnessByPlan}
+          />
         )}
-
-        {view === 'triage' && <PlanTriage onPick={(s) => navSlug(s)} />}
       </main>
     </div>
   );
@@ -413,7 +416,6 @@ function buildPlanStats(plans: PlanListRow[]): PlanStats {
       const counts = plan.itemCounts ?? {};
       acc.total += 1;
       if (!plan.archived) acc.visible += 1;
-      if (plan.isLegacy) acc.legacy += 1;
       acc.needsHuman += counts['needs-human'] ?? 0;
       acc.actionable += counts.todo ?? 0;
       return acc;
@@ -421,7 +423,6 @@ function buildPlanStats(plans: PlanListRow[]): PlanStats {
     {
       total: 0,
       visible: 0,
-      legacy: 0,
       needsHuman: 0,
       actionable: 0,
     },
@@ -432,8 +433,7 @@ function viewCount(view: PlansView, stats: PlanStats, loading: boolean): string 
   if (loading) return '…';
   if (view === 'list') return String(stats.visible);
   if (view === 'inbox') return String(stats.needsHuman);
-  if (view === 'actionable') return String(stats.actionable);
-  return String(stats.legacy);
+  return String(stats.actionable);
 }
 
 function PlansOverview({ stats, loading }: { stats: PlanStats; loading: boolean }) {
