@@ -40,13 +40,13 @@ describe('injectionEnabled', () => {
 
   it('default on in NODE_ENV=development', () => {
     delete process.env.PAPERCUSP_SU_MEMORY_INJECTION;
-    process.env.NODE_ENV = 'development';
+    (process.env as Record<string, string | undefined>).NODE_ENV = 'development';
     expect(_testing.injectionEnabled()).toBe(true);
   });
 
   it('default off when no env vars', () => {
     delete process.env.PAPERCUSP_SU_MEMORY_INJECTION;
-    process.env.NODE_ENV = 'production';
+    (process.env as Record<string, string | undefined>).NODE_ENV = 'production';
     expect(_testing.injectionEnabled()).toBe(false);
   });
 });
@@ -69,6 +69,7 @@ describe('buildMcpPrelude — harness slug resolution', () => {
       userId: 'u1',
       workspaceId: 'w1',
       harnessSlugs: ['sheets'],
+      queryContext: '',
     });
     expect(r?.sources.harnessSlug).toBe('sheets');
     expect(r?.sources.harnessSource).toBe('env');
@@ -80,7 +81,8 @@ describe('buildMcpPrelude — harness slug resolution', () => {
     expect(buildMemoryContextBlock).toHaveBeenCalledWith({
       userId: 'u1',
       workspaceId: 'w1',
-      harnessSlugs: undefined,
+      harnessSlugs: [],
+      queryContext: '',
     });
     expect(r?.sources.harnessSlug).toBeNull();
   });

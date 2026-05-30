@@ -112,7 +112,13 @@ export async function buildMcpPrelude(
     memoryBlock = await buildMemoryContextBlock({
       userId: input.userId,
       workspaceId: input.workspaceId,
-      harnessSlugs: harnessSlug ? [harnessSlug] : undefined,
+      harnessSlugs: harnessSlug ? [harnessSlug] : [],
+      // No turn content at prelude time (PreludeInput carries no query),
+      // so the recall query is empty — buildMemoryContextBlock returns
+      // null for an empty queryContext. Passing '' makes that explicit
+      // (and type-correct) instead of relying on the try/catch to swallow
+      // a `undefined.trim()` throw.
+      queryContext: '',
     });
     // We can't introspect buildMemoryContextBlock's result to tell which
     // scope contributed without reshaping it; treat presence as

@@ -102,7 +102,10 @@ function* walkUp(cwd: string): Generator<string> {
  */
 export function detectHarnessSlugSync(opts: {
   cwd: string;
-  env?: NodeJS.ProcessEnv;
+  // Only `PAPERCUSP_HARNESS_SLUG` is read — a plain env record (not the
+  // full `NodeJS.ProcessEnv`, which requires `NODE_ENV`) so callers/tests
+  // can pass a partial `{ PAPERCUSP_HARNESS_SLUG }` map.
+  env?: Record<string, string | undefined>;
 }): DetectResult {
   const env = opts.env ?? process.env;
 
@@ -140,7 +143,8 @@ export function detectHarnessSlugSync(opts: {
  */
 export async function detectHarnessSlug(opts: {
   cwd: string;
-  env?: NodeJS.ProcessEnv;
+  // Plain env record (not full NodeJS.ProcessEnv) — see detectHarnessSlugSync.
+  env?: Record<string, string | undefined>;
   registryLookup?: (cwd: string) => Promise<string | null>;
 }): Promise<DetectResult> {
   const sync = detectHarnessSlugSync(opts);
