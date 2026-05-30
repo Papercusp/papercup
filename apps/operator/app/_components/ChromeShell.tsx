@@ -24,11 +24,16 @@ import RouteLink from './RouteLink';
 import { FLAGS } from '@papercusp/flags';
 import { useFlag } from '@/lib/flag-hooks';
 import { isChromeShellNavActive } from './chrome-shell-nav';
+// The operator chat is the app's primary surface and must appear on first
+// paint, not pop in seconds later. Import it eagerly so it ships in the main
+// bundle and mounts immediately — a lazy() chunk fetch (or, in the Tauri dev
+// shell, an on-demand Turbopack compile of that chunk) is exactly what caused
+// the visible delay. The remaining docks below stay lazy/idle-deferred.
+import { OperatorChatSidebar } from './OperatorChatSidebar';
 
 // Heavy dock components — they run polling, subscriptions, and large
 // useEffects on mount. Not needed for first paint of any page; defer to
 // idle so the page becomes interactive faster.
-const OperatorChatSidebar = lazy(() => import('./OperatorChatSidebar').then(m => ({ default: m.OperatorChatSidebar })));
 const OracleDock = lazy(() => import('./OracleDock').then(m => ({ default: m.OracleDock })));
 const OperatorBackgroundScanner = lazy(() => import('./OperatorBackgroundScanner').then(m => ({ default: m.OperatorBackgroundScanner })));
 const VoiceAppBridge = lazy(() => import('./voice/VoiceAppBridge').then(m => ({ default: m.VoiceAppBridge })));
@@ -230,15 +235,14 @@ export default function ChromeShell() {
       {/* Operator chat sidebar — fixed left, full-height, on every
           non-chromeless page. The sidebar shifts the rest of the app
           right via body.has-op-chat padding-left (set inside the
-          component). Mounted under <Suspense> with no fallback so the
-          page paints before the lazy chunk lands; the layout-shift on
-          mount is acceptable for now. Iframe-target routes (CHROMELESS
+          component). Imported eagerly (not lazy) so it mounts on first
+          paint and appears immediately — the width is already reserved
+          pre-hydration by the op-chat bootstrap script in layout.tsx, so
+          there is no layout shift. Iframe-target routes (CHROMELESS
           prefixes) skip ChromeShell entirely so the sidebar is absent
           there too — desired, those routes are embedded inside other
           pages that already host the sidebar. */}
-      <Suspense fallback={null}>
-        <OperatorChatSidebar />
-      </Suspense>
+      <OperatorChatSidebar />
       {!pathname.startsWith('/settings') && <DeferredDocks />}
     </>
   );
