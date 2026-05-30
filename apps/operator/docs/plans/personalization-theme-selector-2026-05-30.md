@@ -11,24 +11,27 @@ owner: avi@storewolf.com
 
 ## Now
 
-**State:** Phases 1–3 committed (`3520c73a`, `aa79e095`, `198a2921`). Phase 1 =
-apply mechanism (`lib/theme.ts`) + token contract + pre-paint boot script (Next
-layout + `operator-vite/index.html`). Phase 2 = black moved into the DTCG pipeline
-(`black.semantic.tokens.json` + `css-semantic-black` → generated `_semantic.black.css`
-under `[data-theme="black"]`; hand-authored `_themes.css` deleted). Phase 3 = the
-**Theme** card picker in `app/settings/personalization/page.tsx`
-(`useActiveTheme`/`writeActiveTheme`, per-card live preview swatches scoped via
-`data-theme`); frost is now an explicitly scopable `[data-theme="frost"]` block too
-(`_semantic.frost.css`) so nested previews render correctly under any active theme.
-Verified: `tsc` clean for changed files, `tokens.test` 9/9 (incl. THEME-CONTRACT
-guard), `tokens:check` in sync, page compiles in the Vite graph. The on-screen
-frost↔black swap is one window-reload away (dev is no-HMR; not hijacked the user's
-window) — selector renders + persists; the mechanism is proven.
+**State:** Phases 1–4 committed (`3520c73a`, `aa79e095`, `198a2921`, `611655b0`,
+`65d82040`) — **all four original requirements delivered.** Selector + per-theme
+live previews (P3), built-in black via the DTCG pipeline (P2), the
+semantic-only token contract enforced in code + tests (P1/P2), and the
+custom-theme creator that saves to a per-workspace local file (P4:
+`lib/theme-tokens.ts` shared contract, `lib/custom-themes.ts` file persistence,
+`routes/themes` GET/PUT/DELETE, `ThemeEditor.tsx`, boot-cache FOUC avoidance).
+Verified: `tsc` clean for all new files, `tokens.test` 9/9, `theme-tokens` unit
+9/9, route-stack/shadowing 20/20. Two known runtime caveats: (a) the `/api/themes`
+endpoint goes live on the next operator sidecar restart (tsx, not hot-reloaded);
+(b) open desktop windows show stale CSS until reloaded (dev no-HMR). Neither
+hijacked the user's live window.
 
-**Next:** Phase 4 — custom-theme creator (color-pick the semantic tokens, live
-preview, save to a local file via an endpoint-system route at
-`papercuspPath('themes', …)`, append to the picker). Phase 5 — work the leak
-backlog below so black is pixel-clean.
+**Next:** Phase 5 leak cleanup (long tail). **Batch 1 DONE** (`globals.css`
+`var(--sky-300)→var(--accent-strong)`, `var(--sky-400)→var(--accent)`, 707
+occurrences) — frost-safe *by construction* (`_semantic.css` aliases
+`--accent-strong: var(--sky-300)` / `--accent: var(--sky-400)`, and neither is
+redefined in `globals.css`), so frost computed values are unchanged and black is
+now monochrome for those. Remaining batches (literal sky hexes, `--accent-cool`
+mapping, ~80 component `.tsx` sites) are **visual-verification-dependent** — best
+done with the app in view, small per-area diffs, each checked against both themes.
 
 ## Goal
 
@@ -142,9 +145,10 @@ than something a theme can hide.
   harness, cards, …), each verified against **both** frost and black.
 
 **Leak inventory (static, captured 2026-05-30 — these stay blue under black):**
-- `app/globals.css`: **601× `var(--sky-300)`**, **106× `var(--sky-400)`** — the bulk;
-  re-point to `--accent-strong` / `--accent` (introduce `--accent-soft`/glow + tint
-  tiers where a plain accent swap loses nuance).
+- ~~`app/globals.css`: 601× `var(--sky-300)`, 106× `var(--sky-400)`~~ — **DONE
+  (batch 1, `0b…`):** re-pointed to `--accent-strong` / `--accent`. Frost-safe by
+  construction. A future refinement could split out `--accent-soft`/glow + tint
+  tiers where a plain accent swap loses nuance, but the leak itself is closed.
 - `app/globals.css`: ~28 literal sky/cyan hexes (`#38bdf8`×17, `#7dd3fc`×6,
   `#57d7ff`×3, `#d7f3ff`, `#0ea5e9`).
 - Component `.tsx` (~80 sites; top offenders): `app/operator-mock/page.tsx` (11),
