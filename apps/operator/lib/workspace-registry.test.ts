@@ -8,6 +8,7 @@ import {
   workspaceById,
   setCompanyId,
   companyIdFor,
+  workspacesRoot,
 } from './workspace-registry';
 
 const REGISTRY_DIR = join(homedir(), '.papercusp-workspaces');
@@ -64,5 +65,32 @@ describe('workspace-registry', () => {
 
   it('setCompanyId throws on unknown workspace', () => {
     expect(() => setCompanyId('unknown-workspace-xxx', 'foo')).toThrow(/unknown workspace/);
+  });
+});
+
+describe('workspacesRoot', () => {
+  const KEY = 'PAPERCUSP_WORKSPACES_ROOT';
+  let prev: string | undefined;
+  beforeEach(() => {
+    prev = process.env[KEY];
+  });
+  afterEach(() => {
+    if (prev === undefined) delete process.env[KEY];
+    else process.env[KEY] = prev;
+  });
+
+  it('prefers PAPERCUSP_WORKSPACES_ROOT when set (the desktop-remapped-HOME fix)', () => {
+    process.env[KEY] = '/real/home/.papercusp-workspaces';
+    expect(workspacesRoot()).toBe('/real/home/.papercusp-workspaces');
+  });
+
+  it('falls back to homedir()/.papercusp-workspaces when the env is unset (dev parity)', () => {
+    delete process.env[KEY];
+    expect(workspacesRoot()).toBe(join(homedir(), '.papercusp-workspaces'));
+  });
+
+  it('ignores an empty/whitespace env value', () => {
+    process.env[KEY] = '   ';
+    expect(workspacesRoot()).toBe(join(homedir(), '.papercusp-workspaces'));
   });
 });

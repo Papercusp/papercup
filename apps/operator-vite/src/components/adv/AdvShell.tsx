@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type ComponentType, type CSSProperties } from 'react';
+import { wsLocalKey } from '@/lib/browser-workspace';
 import * as Tabs from '@radix-ui/react-tabs';
 import { parseAsBoolean, parseAsString, parseAsStringEnum, useQueryState } from 'nuqs';
 import {
@@ -37,10 +38,10 @@ export const ADV_TABS: ReadonlyArray<{
   accent: string;
   accentRgb: string;
 }> = [
-  { id: 'harnesses', label: 'Harness', icon: Boxes, accent: '#a78bfa', accentRgb: '167, 139, 250' },
   { id: 'brainstorm', label: 'Brainstorm', icon: Lightbulb, accent: '#38bdf8', accentRgb: '56, 189, 248' },
   { id: 'plans', label: 'Plans', icon: ListChecks, accent: '#f59e0b', accentRgb: '245, 158, 11' },
   { id: 'sessions', label: 'Sessions', icon: Terminal, accent: '#f472b6', accentRgb: '244, 114, 182' },
+  { id: 'harnesses', label: 'Harness', icon: Boxes, accent: '#a78bfa', accentRgb: '167, 139, 250' },
   { id: 'git', label: 'Git', icon: GitBranch, accent: '#22c55e', accentRgb: '34, 197, 94' },
   { id: 'docs', label: 'Docs', icon: BookOpen, accent: '#60a5fa', accentRgb: '96, 165, 250' },
   { id: 'insights', label: 'Insights', icon: TrendingUp, accent: '#14b8a6', accentRgb: '20, 184, 166' },
@@ -124,7 +125,7 @@ export default function AdvShell({
         setProjectLoadError(null);
         if (!nextProjects.length) return;
         if (activeSlug && nextProjects.some((p: HarnessProjectLite) => p.slug === activeSlug)) return;
-        const saved = typeof window !== 'undefined' ? window.localStorage.getItem('harness.activeProject') : null;
+        const saved = typeof window !== 'undefined' ? window.localStorage.getItem(wsLocalKey('harness.activeProject')) : null;
         const savedProject = saved ? nextProjects.find((p: HarnessProjectLite) => p.slug === saved) : null;
         void setActiveSlug(savedProject?.slug ?? nextProjects[0]!.slug);
       })
@@ -143,15 +144,25 @@ export default function AdvShell({
           <span className="pc-advshell__kicker">Advanced orchestration</span>
           <h1>{title}</h1>
         </div>
-        <label className="pc-advshell__selector">
-          <span>Harness</span>
+        <div className="pc-advshell__selector">
+          <div className="pc-advshell__selector-head">
+            <span>Harness</span>
+            <label className="pc-advshell__scope-toggle" title="Include sub-harnesses in list views (plans, sessions). Editor views still focus a single harness.">
+              <input
+                type="checkbox"
+                checked={scopeMode === 'expanded'}
+                onChange={(e) => void setScopeMode(e.target.checked ? 'expanded' : 'self')}
+              />
+              <span>sub-harnesses</span>
+            </label>
+          </div>
           <Select
             value={activeSlug ?? ''}
             onChange={(next) => {
               if (next === '__loading') return;
               void setActiveSlug(next);
               if (next && typeof window !== 'undefined') {
-                window.localStorage.setItem('harness.activeProject', next);
+                window.localStorage.setItem(wsLocalKey('harness.activeProject'), next);
               }
             }}
             disabled={projects.length === 0}
@@ -160,7 +171,7 @@ export default function AdvShell({
             options={buildHarnessSelectOptions(projects, projectLoadError)}
             triggerClassName="pc-advshell__select-trigger"
           />
-        </label>
+        </div>
         <button
           type="button"
           className="pc-advshell__action pc-advshell__action--new"
@@ -180,14 +191,6 @@ export default function AdvShell({
           </button>
         )}
         <DiscordBadge slug={activeSlug} />
-        <label className="pc-advshell__scope-toggle" title="Include sub-harnesses in list views (plans, sessions). Editor views still focus a single harness.">
-          <input
-            type="checkbox"
-            checked={scopeMode === 'expanded'}
-            onChange={(e) => void setScopeMode(e.target.checked ? 'expanded' : 'self')}
-          />
-          <span>Include sub-harnesses</span>
-        </label>
         <AdvNowRunning slug={activeSlug} />
         <Tabs.Root value={activeTab} onValueChange={(value) => void setActiveTab(value as AdvTabId)} className="pc-advshell__tabs">
           <Tabs.List ref={tablistRef} className="pc-advshell__tablist" aria-label="Adv sections">
@@ -219,7 +222,7 @@ export default function AdvShell({
           setRefreshNonce((n) => n + 1);
           void setActiveSlug(slug);
           if (typeof window !== 'undefined') {
-            window.localStorage.setItem('harness.activeProject', slug);
+            window.localStorage.setItem(wsLocalKey('harness.activeProject'), slug);
           }
         }}
       />
@@ -277,6 +280,30 @@ export default function AdvShell({
           letter-spacing: 0.09em;
           line-height: 1;
           text-transform: uppercase;
+        }
+        .pc-advshell__selector-head {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 8px;
+        }
+        .pc-advshell__scope-toggle {
+          display: inline-flex;
+          align-items: center;
+          gap: 4px;
+          text-transform: none;
+          letter-spacing: normal;
+          font-size: 9.5px;
+          font-weight: 600;
+          color: var(--fg-mute, #7f9bb4);
+          cursor: pointer;
+        }
+        .pc-advshell__scope-toggle input {
+          margin: 0;
+          width: 12px;
+          height: 12px;
+          cursor: pointer;
+          accent-color: var(--accent, #38bdf8);
         }
         .pc-advshell__select-trigger {
           display: inline-flex;

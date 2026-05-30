@@ -13,8 +13,8 @@
  */
 
 import { spawn } from 'node:child_process';
+import { workspacesRoot } from '@/lib/workspace-registry';
 import { mkdir, access } from 'node:fs/promises';
-import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { getOrgPg } from '@restart/db-org';
 import { deriveRepoPassword } from './password';
@@ -48,7 +48,7 @@ export class WorkspaceBackup {
   constructor(opts: WorkspaceBackupOpts) {
     this.workspaceId = opts.workspaceId;
     this.workspaceRoot = opts.workspaceRoot
-      ?? join(homedir(), '.papercusp-workspaces', opts.workspaceId);
+      ?? join(workspacesRoot(), opts.workspaceId);
     this.repoPath = join(this.workspaceRoot, 'backups', 'kopia-repo');
   }
 

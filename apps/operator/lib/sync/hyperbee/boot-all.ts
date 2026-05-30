@@ -31,7 +31,7 @@
  */
 
 import { existsSync, readdirSync, statSync } from 'node:fs';
-import { homedir } from 'node:os';
+import { workspacesRoot } from '@/lib/workspace-registry';
 import { join } from 'node:path';
 import {
   bootHarnessSubstrate,
@@ -54,7 +54,7 @@ function key(workspaceId: string, harnessSlug: string): string {
  * lands in the right place.
  */
 function workspaceRootForId(workspaceId: string): string {
-  return join(homedir(), '.papercusp-workspaces', workspaceId);
+  return join(workspacesRoot(), workspaceId);
 }
 
 /** True if the workspace dir holds at least one `harnesses/<slug>/` entry. */
@@ -334,7 +334,7 @@ export function _setHandleForTests(
 
 function readRegistryWorkspaceIds(): string[] {
   try {
-    const path = join(homedir(), '.papercusp-workspaces', 'registry.json');
+    const path = join(workspacesRoot(), 'registry.json');
     if (!existsSync(path)) return [];
     // Use require-style read so the function stays small + sync.
     // eslint-disable-next-line @typescript-eslint/no-var-requires

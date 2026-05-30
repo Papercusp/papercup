@@ -1,6 +1,7 @@
 'use client';
 
 import { OracleLogoMark } from './OracleLogoMark';
+import { wsLocalKey } from '@/lib/browser-workspace';
 import { Tooltip } from '../harness/Tooltip';
 
 // OracleDock is lazy-loaded behind a `ready` gate in ChromeShell, so a click
@@ -11,7 +12,7 @@ const TUTORIAL_INTENT_KEY = 'papercusp.tutorial.intent';
 
 export default function TutorialButton() {
   const onClick = () => {
-    try { localStorage.setItem(TUTORIAL_INTENT_KEY, '1'); } catch { /* quota / safari private */ }
+    try { localStorage.setItem(wsLocalKey(TUTORIAL_INTENT_KEY), '1'); } catch { /* quota / safari private */ }
     window.dispatchEvent(new CustomEvent('oracle:start-tutorial'));
   };
   return (

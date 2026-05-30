@@ -28,6 +28,7 @@
  */
 
 import { execFile as _execFile } from 'node:child_process';
+import { workspacesRoot } from '@/lib/workspace-registry';
 import { existsSync } from 'node:fs';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
@@ -234,7 +235,7 @@ export async function step2_cloneRepo(opts: {
   const exF = opts.execFileFn ?? defaultExecFile;
   const mkF = opts.mkdirFn ?? ((p, o) => mkdir(p, o ?? {}));
 
-  const clonesBase = resolve(homedir(), '.papercusp-workspaces', 'clones');
+  const clonesBase = resolve(workspacesRoot(), 'clones');
   const cloneDir = join(clonesBase, slug);
 
   if (existsSync(cloneDir)) {

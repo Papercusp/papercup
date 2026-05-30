@@ -4,11 +4,11 @@
  * Ported from app/api/workspaces/route.ts. `auth: 'public'`.
  */
 import { existsSync, promises as fs } from 'node:fs';
-import { homedir } from 'node:os';
+import { workspacesRoot } from '@/lib/workspace-registry';
 import { join } from 'node:path';
 import { defineTool } from '@papercusp/agent-mcp';
 
-const REGISTRY_PATH = join(homedir(), '.papercusp-workspaces', 'registry.json');
+const REGISTRY_PATH = join(workspacesRoot(), 'registry.json');
 
 interface Workspace {
   id: string;
@@ -30,7 +30,7 @@ async function readRegistry(): Promise<Registry> {
 }
 
 async function writeRegistry(reg: Registry): Promise<void> {
-  await fs.mkdir(join(homedir(), '.papercusp-workspaces'), { recursive: true });
+  await fs.mkdir(workspacesRoot(), { recursive: true });
   await fs.writeFile(REGISTRY_PATH, JSON.stringify(reg, null, 2) + '\n', 'utf8');
 }
 
@@ -79,7 +79,7 @@ export default [
       while (reg.workspaces.some((w) => w.id === candidate)) candidate = `${id}-${n++}`;
       id = candidate;
 
-      const dir = join(homedir(), '.papercusp-workspaces', id);
+      const dir = join(workspacesRoot(), id);
       await fs.mkdir(join(dir, '.papercusp'), { recursive: true });
       const ws: Workspace = { id, name, createdAt: Date.now() };
       reg.workspaces.push(ws);

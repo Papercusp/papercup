@@ -9,12 +9,12 @@
  * Ported from app/api/workspaces/switch/route.ts. `auth: 'public'`.
  */
 import { existsSync, promises as fs } from 'node:fs';
-import { homedir } from 'node:os';
+import { workspacesRoot } from '@/lib/workspace-registry';
 import { join } from 'node:path';
 import { dispatchWorkspaceSwitch } from '@papercusp/agent-mcp';
 import { defineTool } from '@papercusp/agent-mcp';
 
-const REGISTRY_PATH = join(homedir(), '.papercusp-workspaces', 'registry.json');
+const REGISTRY_PATH = join(workspacesRoot(), 'registry.json');
 
 interface Registry {
   current: string;

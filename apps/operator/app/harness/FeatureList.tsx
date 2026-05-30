@@ -577,7 +577,7 @@ function ListView({
                 )}
                 {row.sourcePlanSlug && (
                   <a
-                    href={`/adv/plans?slug=${encodeURIComponent(row.sourcePlanSlug)}`}
+                    href={`/adv/plans?slug=${encodeURIComponent(slug)}&plan=${encodeURIComponent(row.sourcePlanSlug)}`}
                     className="h-feature-plan-pill"
                     title={`From plan: ${row.sourcePlanSlug}`}
                     onClick={(e) => e.stopPropagation()}
@@ -602,7 +602,7 @@ function ListView({
             )}
             {row.sourcePlanSlug && (
               <a
-                href={`/adv/plans?slug=${encodeURIComponent(row.sourcePlanSlug)}`}
+                href={`/adv/plans?slug=${encodeURIComponent(slug)}&plan=${encodeURIComponent(row.sourcePlanSlug)}`}
                 className="h-feature-plan-pill"
                 title={`From plan: ${row.sourcePlanSlug}`}
                 onClick={(e) => e.stopPropagation()}

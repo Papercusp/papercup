@@ -13,6 +13,7 @@
  * pane spawns a fresh pty).
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { wsLocalKey } from '@/lib/browser-workspace';
 import {
   DockviewReact,
   type DockviewApi,
@@ -44,7 +45,7 @@ interface ChatPanelParams {
 const LAYOUT_STORAGE_PREFIX = 'papercusp:pi-dock-layout:';
 
 function layoutKey(slug: string): string {
-  return `${LAYOUT_STORAGE_PREFIX}${slug}`;
+  return wsLocalKey(`${LAYOUT_STORAGE_PREFIX}${slug}`);
 }
 
 /**

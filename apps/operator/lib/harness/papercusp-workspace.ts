@@ -19,13 +19,24 @@
  *
  * Behavior on ensure:
  *   - Creates the registry entry if missing. Idempotent.
+ *   - Provisions the workspace's data directory if missing. The desktop
+ *     `switch()` guard refuses to switch to a registered workspace whose
+ *     directory is absent, so the registry entry and the on-disk dir are
+ *     two halves of one invariant — they must be created together. This
+ *     also self-heals a sentinel that was registered before provisioning
+ *     existed (the "switch failed: workspace dir ... missing" bug).
  *   - NEVER changes `registry.current` — leaves whatever the user has
  *     selected alone. Boot-time bootstrap may add the sentinel without
  *     hijacking the user's active workspace.
  *   - Returns the entry (existing or newly-created).
  */
 
-import { readRegistry, writeRegistry, type WorkspaceEntry } from '@/lib/workspace-registry';
+import {
+  ensureWorkspaceDir,
+  readRegistry,
+  writeRegistry,
+  type WorkspaceEntry,
+} from '@/lib/workspace-registry';
 
 /** The literal id + name of the sentinel workspace. */
 export const PAPERCUSP_WORKSPACE_ID = 'papercusp-workspace' as const;
@@ -42,19 +53,27 @@ export function isPapercuspWorkspace(id: string | null | undefined): boolean {
  */
 export function ensurePapercuspWorkspace(): WorkspaceEntry {
   const reg = readRegistry();
-  const existing = reg.workspaces.find((w) => w.id === PAPERCUSP_WORKSPACE_ID);
-  if (existing) return existing;
+  let entry = reg.workspaces.find((w) => w.id === PAPERCUSP_WORKSPACE_ID);
 
-  const entry: WorkspaceEntry = {
-    id: PAPERCUSP_WORKSPACE_ID,
-    name: PAPERCUSP_WORKSPACE_ID,
-    createdAt: Date.now(),
-  };
-  reg.workspaces.push(entry);
-  // If the registry was previously empty (fresh install), this is the
-  // first workspace — set it as current so the user lands somewhere
-  // valid. If there's already a `current` selection, leave it alone.
-  if (!reg.current) reg.current = PAPERCUSP_WORKSPACE_ID;
-  writeRegistry(reg);
+  if (!entry) {
+    entry = {
+      id: PAPERCUSP_WORKSPACE_ID,
+      name: PAPERCUSP_WORKSPACE_ID,
+      createdAt: Date.now(),
+    };
+    reg.workspaces.push(entry);
+    // If the registry was previously empty (fresh install), this is the
+    // first workspace — set it as current so the user lands somewhere
+    // valid. If there's already a `current` selection, leave it alone.
+    if (!reg.current) reg.current = PAPERCUSP_WORKSPACE_ID;
+    writeRegistry(reg);
+  }
+
+  // Provision the data directory whether the entry was just created or
+  // already existed — the desktop `switch()` guard requires it, and an
+  // entry registered before this provisioning existed would otherwise be
+  // permanently un-switchable. Idempotent.
+  ensureWorkspaceDir(PAPERCUSP_WORKSPACE_ID);
+
   return entry;
 }

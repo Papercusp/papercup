@@ -13,8 +13,8 @@
  */
 
 import { spawn, type ChildProcess } from 'node:child_process';
+import { workspacesRoot } from '@/lib/workspace-registry';
 import { mkdir } from 'node:fs/promises';
-import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { createServer } from 'node:net';
 import { deriveRepoPassword } from './password';
@@ -56,7 +56,7 @@ export async function startKopiaServer(workspaceId: string): Promise<KopiaServer
   const existing = RUNNING.get(workspaceId);
   if (existing && !existing.child.killed) return existing.info;
 
-  const workspaceRoot = join(homedir(), '.papercusp-workspaces', workspaceId);
+  const workspaceRoot = join(workspacesRoot(), workspaceId);
   const backupsDir = join(workspaceRoot, 'backups');
   await mkdir(backupsDir, { recursive: true });
 

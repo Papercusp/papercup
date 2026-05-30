@@ -34,9 +34,9 @@
  */
 
 import { execFile } from 'node:child_process';
+import { workspacesRoot } from '@/lib/workspace-registry';
 import { existsSync } from 'node:fs';
 import { mkdir, rm } from 'node:fs/promises';
-import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { promisify } from 'node:util';
 
@@ -100,7 +100,7 @@ export function parseGithubUrl(url: string): ParsedGithubUrl | null {
  * destructive-action gesture) or rename.
  */
 export function defaultClonesDir(): string {
-  return join(homedir(), '.papercusp-workspaces', 'clones');
+  return join(workspacesRoot(), 'clones');
 }
 
 export interface CloneResult {

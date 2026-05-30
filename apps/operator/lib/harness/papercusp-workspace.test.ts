@@ -94,4 +94,42 @@ describe('ensurePapercuspWorkspace', () => {
     ensurePapercuspWorkspace();
     expect(existsSync(join(tmpHome, '.papercusp-workspaces', 'registry.json'))).toBe(true);
   });
+
+  it('provisions the workspace directory so switch() can succeed', async () => {
+    const { ensurePapercuspWorkspace } = await import('./papercusp-workspace');
+    ensurePapercuspWorkspace();
+    expect(
+      existsSync(join(tmpHome, '.papercusp-workspaces', 'papercusp-workspace')),
+    ).toBe(true);
+  });
+
+  it('self-heals: entry present in registry but directory missing', async () => {
+    // Reproduce the reported bug — a registry entry that was written
+    // (e.g. by an older bootstrap) without ever provisioning its dir.
+    const regPath = join(tmpHome, '.papercusp-workspaces', 'registry.json');
+    await writeFile(
+      regPath,
+      JSON.stringify({
+        current: 'default',
+        workspaces: [
+          { id: 'default', name: 'Default', createdAt: 1 },
+          { id: 'papercusp-workspace', name: 'papercusp-workspace', createdAt: 2 },
+        ],
+      }),
+    );
+    const sentinelDir = join(tmpHome, '.papercusp-workspaces', 'papercusp-workspace');
+    expect(existsSync(sentinelDir)).toBe(false);
+
+    const { ensurePapercuspWorkspace } = await import('./papercusp-workspace');
+    const e = ensurePapercuspWorkspace();
+
+    // Dir now exists; entry untouched; current left alone; no duplicate.
+    expect(existsSync(sentinelDir)).toBe(true);
+    expect(e.createdAt).toBe(2);
+    const reg = JSON.parse(readFileSync(regPath, 'utf8'));
+    expect(reg.current).toBe('default');
+    expect(
+      reg.workspaces.filter((w: { id: string }) => w.id === 'papercusp-workspace'),
+    ).toHaveLength(1);
+  });
 });

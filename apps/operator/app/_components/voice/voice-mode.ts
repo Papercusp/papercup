@@ -17,6 +17,7 @@
  */
 
 import { stripWakeWordAndPrefix } from '../../../lib/wake-word';
+import { getBrowserWorkspaceId, wsLocalKey } from '@/lib/browser-workspace';
 import { createOperatorVoiceTagObserver } from '../../../lib/operator-converse-voice';
 import { persistOperatorVoiceTurn } from '../../../lib/operator-conversation-client';
 // Statically imported — neither sibling imports voice-mode, so there is no
@@ -287,7 +288,7 @@ function setState(patch: Partial<VoiceState>) {
 function loadConfig(): VoiceConfig {
   if (typeof localStorage === 'undefined') return { ...DEFAULT_CONFIG };
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
+    const raw = localStorage.getItem(wsLocalKey(STORAGE_KEY));
     if (!raw) return { ...DEFAULT_CONFIG };
     const parsed = JSON.parse(raw);
     return { ...DEFAULT_CONFIG, ...parsed };
@@ -299,7 +300,7 @@ function loadConfig(): VoiceConfig {
 function saveConfig() {
   if (typeof localStorage === 'undefined') return;
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(config));
+    localStorage.setItem(wsLocalKey(STORAGE_KEY), JSON.stringify(config));
   } catch {
     /* storage full / disabled */
   }
@@ -1292,19 +1293,8 @@ function getOrAssignTabId(): string {
   return id;
 }
 
-/**
- * Browser-side workspace lookup. Reads the `ws` query-string param the
- * workspace switcher writes; falls back to 'default'. Avoids importing
- * lib/workspace-registry (node:fs) into the client bundle.
- */
-function getBrowserWorkspaceId(): string {
-  if (typeof window === 'undefined') return 'default';
-  try {
-    const ws = new URL(window.location.href).searchParams.get('ws');
-    if (ws) return ws;
-  } catch { /* ignore */ }
-  return 'default';
-}
+// getBrowserWorkspaceId now lives in @/lib/browser-workspace (imported above)
+// — it additionally prefers the host-injected window.__PAPERCUSP_WS__ global.
 
 // Best-effort sonner toast — sonner only ships in the browser bundle, so
 // a dynamic import keeps the SSR build clean.

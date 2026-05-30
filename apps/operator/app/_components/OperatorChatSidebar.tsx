@@ -20,6 +20,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { wsLocalKey } from '@/lib/browser-workspace';
 import { ChevronLeft, ChevronRight } from 'lucide-react';
 import { parseAsBoolean, useQueryState } from 'nuqs';
 import { OperatorChat } from './OperatorChat';
@@ -45,7 +46,7 @@ const STORAGE_KEY = 'papercusp.operatorChat.width';
 function readStoredWidth(): number {
   if (typeof window === 'undefined') return OPERATOR_CHAT_DEFAULT_WIDTH;
   try {
-    const raw = window.localStorage.getItem(STORAGE_KEY);
+    const raw = window.localStorage.getItem(wsLocalKey(STORAGE_KEY));
     if (!raw) return OPERATOR_CHAT_DEFAULT_WIDTH;
     const n = Number(raw);
     return clampOperatorChatWidth(n, window.innerWidth);
@@ -76,7 +77,7 @@ export function OperatorChatSidebar() {
     document.body.classList.add('has-op-chat');
     document.body.classList.toggle('op-chat-collapsed', !chatOpen);
     try {
-      window.localStorage.setItem(STORAGE_KEY, String(width));
+      window.localStorage.setItem(wsLocalKey(STORAGE_KEY), String(width));
     } catch { /* sandbox / quota */ }
     return () => { /* leave the classes in place across re-renders */ };
   }, [chatOpen, hydrated, width]);

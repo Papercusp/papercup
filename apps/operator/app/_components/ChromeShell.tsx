@@ -159,23 +159,23 @@ export default function ChromeShell() {
           {onAdv ? (
             <span
               className="pc-header-cta pc-header-cta--mission is-current"
-              aria-label="Adv (current page)"
+              aria-label="Ops (current page)"
               aria-current="page"
             >
               <span className="pc-header-cta-orb" aria-hidden="true">
                 <BrainMark className="pc-header-cta-logo pc-header-cta-logo--adv" />
               </span>
-              <span className="pc-header-cta-label">ADV</span>
+              <span className="pc-header-cta-label">OPS</span>
             </span>
           ) : (
-            <RouteLink href="/adv" className="pc-header-cta pc-header-cta--mission" aria-label="Adv" {...mainNavJumpGateProps}>
+            <RouteLink href="/adv" className="pc-header-cta pc-header-cta--mission" aria-label="Ops" {...mainNavJumpGateProps}>
               <span className="pc-header-cta-orb" aria-hidden="true">
                 <BrainMark className="pc-header-cta-logo pc-header-cta-logo--adv" />
               </span>
-              <span className="pc-header-cta-label">ADV</span>
+              <span className="pc-header-cta-label">OPS</span>
             </RouteLink>
           )}
-          {onHarness ? (
+          {testingFlag && (onHarness ? (
             <span
               className="pc-header-cta pc-header-cta--mission is-current"
               aria-label="Ops (current page)"
@@ -193,15 +193,17 @@ export default function ChromeShell() {
               </span>
               <span className="pc-header-cta-label">OPS</span>
             </RouteLink>
-          )}
+          ))}
           {testingFlag ? <OperatorButton /> : null}
-          <OperatorAutoScanToggle />
+          {testingFlag ? <OperatorAutoScanToggle /> : null}
         </div>
         <nav className="pc-header-right" aria-label="Primary navigation">
           {marketplaceFlag ? (
             <RouteLink href="/marketplace/" {...navLinkProps('/marketplace')}>Marketplace</RouteLink>
           ) : null}
-          <RouteLink href="/installed/plugins" {...navLinkProps('/installed/plugins')}>Plugins</RouteLink>
+          {testingFlag ? (
+            <RouteLink href="/installed/plugins" {...navLinkProps('/installed/plugins')}>Plugins</RouteLink>
+          ) : null}
           {snapshotsFlag ? (
             <RouteLink href="/installed/snapshots" {...navLinkProps('/installed/snapshots')}>Snapshots</RouteLink>
           ) : null}

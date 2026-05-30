@@ -21,6 +21,7 @@
  * workspace served data from it until the operator was restarted.
  */
 import { existsSync, readFileSync, statSync } from 'node:fs';
+import { workspacesRoot } from '@/lib/workspace-registry';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
@@ -32,7 +33,7 @@ interface CacheKey {
 let cached: { key: CacheKey; value: string } | null = null;
 
 function currentKey(): CacheKey {
-  const idx = join(homedir(), '.papercusp-workspaces', 'registry.json');
+  const idx = join(workspacesRoot(), 'registry.json');
   let mtime = 0;
   let content: string | null = null;
   try {
@@ -62,12 +63,12 @@ export function _resetPapercuspRootForTests(): void {
 function resolve(): string {
   if (process.env.PAPERCUSP_HOME) return process.env.PAPERCUSP_HOME;
 
-  const wsIndex = join(homedir(), '.papercusp-workspaces', 'registry.json');
+  const wsIndex = join(workspacesRoot(), 'registry.json');
   if (existsSync(wsIndex)) {
     try {
       const parsed = JSON.parse(readFileSync(wsIndex, 'utf8')) as { current?: string };
       if (parsed.current) {
-        const cand = join(homedir(), '.papercusp-workspaces', parsed.current, '.papercusp');
+        const cand = join(workspacesRoot(), parsed.current, '.papercusp');
         if (existsSync(cand)) return cand;
       }
     } catch { /* fall through */ }
@@ -75,7 +76,7 @@ function resolve(): string {
 
   // eslint-disable-next-line @typescript-eslint/no-var-requires
   const { DEFAULT_WORKSPACE_ID } = require('./workspace-registry') as typeof import('./workspace-registry');
-  const def = join(homedir(), '.papercusp-workspaces', DEFAULT_WORKSPACE_ID, '.papercusp');
+  const def = join(workspacesRoot(), DEFAULT_WORKSPACE_ID, '.papercusp');
   if (existsSync(def)) return def;
 
   return join(homedir(), '.papercusp');

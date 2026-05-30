@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
+import { wsLocalKey } from '@/lib/browser-workspace';
 import {
   loadVoicePrefsClient,
   setVoicePrefsClient,
@@ -14,7 +15,7 @@ const LS_KEY = 'pc:audienceMode';
 
 async function saveAudienceMode(mode: AudienceMode): Promise<void> {
   // Broadcast to other tabs before the fetch so the storage event fires promptly.
-  try { localStorage.setItem(LS_KEY, mode); } catch { /* private browsing */ }
+  try { localStorage.setItem(wsLocalKey(LS_KEY), mode); } catch { /* private browsing */ }
   const r = await fetch('/api/agent-mcp/operator-voice-prefs', {
     method: 'PUT',
     headers: { 'content-type': 'application/json' },
@@ -37,7 +38,7 @@ export function AudienceModeSelector() {
     });
     // Cross-tab sync: fires when another tab writes LS_KEY.
     const onStorage = (e: StorageEvent) => {
-      if (e.key === LS_KEY && (e.newValue === 'engineer' || e.newValue === 'novice')) {
+      if (e.key === wsLocalKey(LS_KEY) && (e.newValue === 'engineer' || e.newValue === 'novice')) {
         setMode(e.newValue);
       }
     };

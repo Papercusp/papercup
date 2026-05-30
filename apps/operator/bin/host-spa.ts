@@ -23,6 +23,7 @@
 import { Hono } from 'hono';
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { extname, join, resolve, sep } from 'node:path';
+import { activeWorkspaceId } from '../lib/workspace-registry';
 
 /**
  * Vite SPA `dist/` root. In dev (host run via `tsx` from source) this
@@ -70,6 +71,31 @@ function serveFile(absPath: string, status = 200): Response {
   return new Response(body, { status, headers: { 'content-type': contentType } });
 }
 
+/**
+ * Serve the SPA shell with the active workspace id injected as a pre-hydration
+ * global. The browser namespaces per-workspace localStorage off this, so it
+ * must be set before the deferred module bundle runs — and independent of the
+ * URL, which doesn't reliably carry `?ws=` (workspace-localstorage-isolation-
+ * 2026-05-27, D-001). The operator process is workspace-specific (HOME-remapped),
+ * so `activeWorkspaceId()` is the right source.
+ */
+function serveIndexHtmlWithWorkspace(indexPath: string): Response {
+  let html = readFileSync(indexPath, 'utf-8');
+  let wsId = 'default';
+  try {
+    wsId = activeWorkspaceId();
+  } catch {
+    /* registry unreadable — fall back to 'default' */
+  }
+  const inject = `<script>window.__PAPERCUSP_WS__=${JSON.stringify(wsId)};</script>`;
+  // Insert right after <head> so it runs before the deferred module bundle.
+  html = html.includes('<head>') ? html.replace('<head>', `<head>${inject}`) : inject + html;
+  return new Response(html, {
+    status: 200,
+    headers: { 'content-type': 'text/html; charset=utf-8' },
+  });
+}
+
 /** Resolve `rel` under `dist/`, guarding against path traversal. */
 function safeDistPath(rel: string): string | null {
   const abs = resolve(SPA_DIST_ROOT, rel);
@@ -101,7 +127,7 @@ spaRoutes.get('*', (c) => {
   // (2) Extensionless → SPA shell. Client router (TSR) owns the route,
   //     including its own not-found component, so this is always 200.
   const indexPath = join(SPA_DIST_ROOT, 'index.html');
-  if (existsSync(indexPath)) return serveFile(indexPath, 200);
+  if (existsSync(indexPath)) return serveIndexHtmlWithWorkspace(indexPath);
 
   // dist/ not built — actionable 503 rather than a bare crash.
   return new Response(

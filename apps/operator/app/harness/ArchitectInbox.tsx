@@ -1,6 +1,7 @@
 'use client';
 
 import { memo, useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
+import { wsLocalKey } from '@/lib/browser-workspace';
 import { useConfirmDialog } from './useConfirmDialog';
 import { useQueryState, parseAsString, parseAsStringEnum } from 'nuqs';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
@@ -91,7 +92,7 @@ function matchesThread(thread: Thread, needle: string): boolean {
   return `${thread.title} ${thread.id}`.toLowerCase().includes(needle);
 }
 
-const THREADS_KEY = (slug: string) => `harness.threads.${slug}`;
+const THREADS_KEY = (slug: string) => wsLocalKey(`harness.threads.${slug}`);
 
 const IDEA_TEMPLATES = [
   'Clarify the current blocker and propose the smallest unblock path',

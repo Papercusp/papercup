@@ -1,4 +1,5 @@
 import { existsSync } from 'node:fs';
+import { wsLocalKey } from '@/lib/browser-workspace';
 import { readdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
@@ -996,7 +997,7 @@ async function getDesktopState(ctx: SuiteContext): Promise<DesktopState> {
         href: location.href,
         title: document.title,
         hasTauri: Boolean(window.__TAURI_INTERNALS__),
-        activeSlug: url.searchParams.get('slug') || localStorage.getItem('harness.activeProject') || 'sheets',
+        activeSlug: url.searchParams.get('slug') || localStorage.getItem(wsLocalKey('harness.activeProject')) || 'sheets',
       };
     })()`,
   );
