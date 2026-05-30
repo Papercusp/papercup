@@ -13,7 +13,9 @@ owner: avi@storewolf.com
 
 **State:** Phases 1–3 shipped and verified live in the Tauri webview (against `papercup`). Phase 1 verified + a real bug fixed (layout-adapter dropped leaf `size` on save → lopsided 3-panel split; `b02e2aea` + regression test, 178 dock tests green). Phase 2 visual & filter parity (`b46bb5d6`). Phase 3 live-data-via-Zero (`c94b4d9f`): new shared `useHarnessData` hook (REST bootstrap + `useSyncQuery` overlay for `featuresConsolidated`/`issuesConsolidated`/`harnessPendingIssues`), polling timers removed, claims chip + plan pill now live. Verified: 3 features render, row-click → Detail, no console errors, no provider error on `/adv`.
 
-**Next:** Phase 4 — Detail richness (last-3 runs, issues-filed-against-feature, notes). Then P-013 (decide fate of legacy lifecycle/project/tag filters), Phase 5 (inline row actions), Phase 6 (keyboard shortcuts + virtualization).
+Phase 4 Detail richness shipped (`2e491ee6`, also cherry-picked to `main`): issues-filed-against-feature + recent-runs + steer-notes (feature), notes/add-note + clickable linked-feature (issue), and a selection-history Back chip. Feature-side + Back verified live; issue-side contract-verified (papercup has 0 issues).
+
+**Next:** P-013 (decide fate of legacy lifecycle/project/tag filters), Phase 5 (inline row actions), Phase 6 (keyboard shortcuts + virtualization).
 
 ## Background
 
@@ -52,8 +54,8 @@ Key files (live UI is the Vite SPA; components live in the Next tree and are con
 
 ## Phase 4 — Detail richness
 
-- **P-015** `todo` Feature Detail: last 3 agent runs (result line; click → opens the session), "Issues filed against this feature" (1-line each, click → swaps `?sel` to the issue), steer notes (collapsed unless populated).
-- **P-016** `todo` Issue Detail: add-note form + existing notes (collapsed); linked-feature pill click → swaps `?sel` to the feature; selection-history "Back" affordance.
+- **P-015** `done` Feature Detail: "Issues" section (issues where `linkedFeatureId`/`foundDuring` == this feature, click → swaps `?sel`), "Recent activity" (last 3 agent runs for the feature from `agentRunsConsolidated.bySlug` — role · time · cost), and collapsed "Steer notes" (`GET /features/<id>/notes`). Shipped `2e491ee6`. **Deferred:** the run "result line" + click-to-open-session — the consolidated run row has no result column (it's in the run jsonl), and there's no adv run-viewer yet; runs are read-only role·time·cost for now.
+- **P-016** `done` Issue Detail: linked-feature pill is now a button (→ swaps `?sel` to the feature) + a Notes section with an add-note form (`POST /issues/<id>/update {note, by:'human'}`, optimistic append). Selection-history "Back" chip retraces feature↔issue cross-links (module-scoped stack, swap panel only). Shipped `2e491ee6`. Feature-side + Back verified live; issue-side contract-verified (no issues on papercup, no DELETE endpoint → a throwaway wasn't worth the PG cruft).
 
 ## Phase 5 — Inline row actions
 
