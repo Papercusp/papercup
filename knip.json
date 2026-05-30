@@ -6,6 +6,7 @@
       "project": ["scripts/**/*.mjs"]
     },
     "apps/operator": {
+      "vitest": false,
       "entry": [
         "app/**/{page,layout,loading,error,not-found,template,default,route}.{ts,tsx}",
         "app/**/{generateStaticParams,generateMetadata,sitemap,robots,manifest}.{ts,tsx}",
@@ -14,6 +15,9 @@
         "vitest.config.ts",
         "vitest.integration.config.ts",
         "test/**/*.{ts,tsx}",
+        "vitest-shims/**/*.{ts,tsx}",
+        "**/*.test.{ts,tsx}",
+        "**/*.spec.{ts,tsx}",
         "*.bench.ts"
       ]
     },
