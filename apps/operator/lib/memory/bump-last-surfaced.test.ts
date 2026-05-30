@@ -65,13 +65,13 @@ describe('bumpLastSurfaced', () => {
 
 describe('bumpLastSurfacedSql (postgres-js template variant)', () => {
   it('no-ops on empty', async () => {
-    const sql = vi.fn(async () => undefined);
+    const sql = vi.fn(async (..._args: unknown[]) => undefined);
     expect(await bumpLastSurfacedSql(sql as unknown as Parameters<typeof bumpLastSurfacedSql>[0], [])).toBe(true);
     expect(sql).not.toHaveBeenCalled();
   });
 
   it('runs UPDATE for valid uuid ids', async () => {
-    const sql = vi.fn(async () => undefined);
+    const sql = vi.fn(async (..._args: unknown[]) => undefined);
     const ok = await bumpLastSurfacedSql(
       sql as unknown as Parameters<typeof bumpLastSurfacedSql>[0],
       ['123e4567-e89b-12d3-a456-426614174000'],
