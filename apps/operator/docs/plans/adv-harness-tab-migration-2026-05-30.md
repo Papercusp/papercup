@@ -11,9 +11,9 @@ owner: avi@storewolf.com
 
 ## Now
 
-**State:** Migration shipped + audit follow-ups + dock-panel ports (agents/logs/overview) done. This pass (D-012): (1) decoupled the brainstorm/prs/settings/insights/git /adv tabs from the 5,259-line HarnessDashboard — they now render their own panel components directly (commit 5091d985); only config + docs still mount the monolith. (2) Soft-retired /harness as a landing — home redirect, header CTA, and the root /harness route all now go to /adv; old /harness?panel=/?slug= URLs translate-redirect in (commit 063114fa). All verified live in Tauri. /harness/$slug (org/department + dock shell) intentionally left functional — no /adv parity yet.
+**State:** Migration shipped + /adv fully decoupled from HarnessDashboard (all 7 tabs render their own components) + /harness retired as the landing (home/CTA/root redirect) + dead pre-Vite Next route trees deleted for BOTH /adv and /harness + the papercusp-CLI plugin-enable bug fixed (shared resolver). HarnessDashboard now has just 3 importers: ProposalsPanel + DesignDashboard (symbol imports) and the live coding /harness/$slug render. The full _retired move is feature-gated (see D-016), not cleanup-gated.
 
-**Next:** To finish full retirement (P-022): decouple config + docs from HarnessDashboard (lift plugin-tab + spec resolution into a shared hook), then give /adv org/department + per-slug parity for /harness/$slug; once no /adv tab renders HarnessDashboard, move legacy-only app/harness/* page code to _retired/.
+**Next:** Human decision: pick the next P-022 project — (A) build /adv org/department-coordination parity (to retire the department /harness/$slug flavor), and/or (B+C) lift SingleSubpanelHeader out of HarnessDashboard + redirect coding /harness/$slug → /adv, which makes the 5,259-line monolith unused so it + the legacy-only panels can move to _retired/.
 
 ## Background
 
@@ -218,4 +218,21 @@ Two follow-ups after the docs decoupling.
 Also: enabled `@papercupai/starlight` for papercup by writing `enabled-plugins.json` directly (runtime state, not committed) so the docs tab has a real plugin to render — papercup now shows its Starlight docs in /adv.
 
 **P-022 status:** the live `/adv` is fully free of `HarnessDashboard`. Remaining holder of the legacy page code is the deferred `/harness/$slug` route; once that's handled, `app/harness/*` page-only code can move to `_retired/`.
+Related: P-022
+
+### D-016 — Retirement terminal state: dead Next /harness tree deleted; full _retired move is feature-gated on /adv org/department parity
+Date: 2026-05-30
+Deleted the dead pre-Vite Next `/harness` route tree (`app/harness/{page,layout}.tsx` + `[slug]/**/page.tsx` — 8 files), parallel to the `/adv` deletion. The live `/harness` is the operator-vite SPA (`routes/harness/index.tsx` redirects to `/adv`; `routes/harness/$slug/*` render). Each deleted Next entry had a live Vite counterpart. operator-vite build green. (Footgun: the staged `git rm` got swept into a concurrent agent's commit `b4c64b38` rather than my own — deletions are correct, attribution is wrong.)
+
+**`HarnessDashboard` now has exactly 3 importers** (down from the whole app):
+1. `app/harness/ProposalsPanel.tsx` — imports the `SingleSubpanelHeader` *symbol* (legacy-only; not used by /adv).
+2. `app/design/[slug]/DesignDashboard.tsx` — imports a *symbol* (design tab; flag-gated).
+3. `apps/operator-vite/src/routes/harness/$slug/index.tsx` — the live coding-flavor render (`<HarnessDashboard/>`).
+
+**The retirement is now feature-gated, not cleanup-gated.** To move the legacy-only `app/harness/*` page code to `_retired/`, three things remain, none a quick safe win:
+- **(A, feature) /adv org/department-coordination parity.** `/harness/$slug` for *department* harnesses renders `DepartmentHarnessDashboard` — a full org UI (departments, inbox/outbox messaging, mandates, memory). /adv has hierarchy *awareness* (the picker groups sub-harnesses via parent_slug/harness_kind) but NOT that coordination UI. Retiring the department flavor needs it built in /adv.
+- **(B, extraction) Lift shared symbols out of HarnessDashboard.** `SingleSubpanelHeader` (+ any others) used by ProposalsPanel/DesignDashboard must move to a neutral module so those panels don't import from the monolith.
+- **(C, behavior) Redirect the coding `/harness/$slug` flavor → /adv** (coding has /adv parity; keeps department + ?dock=1 on the legacy route). Removes the last live HarnessDashboard *render*.
+
+Sequencing to actually delete the 5,259-line monolith: B + C make HarnessDashboard unused → retire it + the legacy-only panels (ProposalsPanel, ExpertsPanel, SummaryPanel, etc.). A is needed independently to retire DepartmentHarnessDashboard + HarnessDockShell (the remaining `/harness/$slug` flavors). Each is a deliberate next project, not in-scope cleanup.
 Related: P-022
