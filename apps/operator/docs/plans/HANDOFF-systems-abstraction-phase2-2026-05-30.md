@@ -9,6 +9,19 @@ companion-to: [papercusp-systems-abstraction-2026-05-29]
 
 # Handoff: papercusp-systems-abstraction Phase 2
 
+## Now
+
+**State:** 6 packages shipped on `main` (rrf, embedded-pg-discovery, plan-parser,
+rate-limit, ipc-framing, desktop-ipc). P-030 pt3 (`ipc-endpoint-server`) is `wip`
+— code correct, attempted 3× and reverted clean each time, blocked only on a
+standalone-vitest sibling-resolution config (root-caused below). Package is NOT
+on disk; `apps/operator/lib/endpoint-ipc/` has its 4 originals intact.
+
+**Next:** finish P-030 pt3 using the turnkey fix in the "blocker" section
+(extend `@papercusp/test-config`'s `defineVitestConfig`; switch `ipc-framing`
+`exports` to object form), then the backlog in lowest-risk order
+(backup → search → memory → locks → coordination).
+
 Read this, then the full plan: `papercusp-systems-abstraction-2026-05-29.md`
 (via `plans:get`). Everything below is verified against the repo at the time of
 writing — but **re-verify before acting** (other agents commit to `main`
@@ -48,11 +61,16 @@ node_modules/@papercusp/<name>`). All six symlinks are present.
 | P-030 pt1 | `@papercusp/ipc-framing` | move + shim | `endpoint-ipc/framing.ts` is a 1-line shim; 6 in-dir consumers unchanged |
 | P-030 pt2 | `@papercusp/desktop-ipc` | whole-dir move + 2 shims | extracted ALL of `lib/transport-adapters/`; `index.ts` + `desktop-bootstrap.ts` are shims (incl. a `./desktop-bootstrap` subpath export); 4 consumers unchanged |
 
-**Add-commits (for reference; re-confirm with `git log`):** rrf `6a39e84e`,
-embedded-pg-discovery `68e5116a`, plan-parser `e96f63f3`, rate-limit `bc75a0d9`,
-ipc-framing `775fb24e`, desktop-ipc `e8f2a1c7`. (Note: rate-limit landed across
-two commits — the package files in a follow-up after the first commit captured
-only package.json; net result on disk is correct.)
+**Add-commits — VERIFIED via `git log --diff-filter=A -- packages/<p>/package.json`
+(re-confirm yourself; HEAD moves):** rrf `591eaf28` (the package.json was swept
+into an unrelated commit by paperclip's `git add -A`; the rrf source+rewire landed
+in follow-up commits — net result on disk is correct), embedded-pg-discovery
+`68e5116a`, plan-parser `e96f63f3`, rate-limit `bc75a0d9` (also a paperclip-swept
+commit; package files landed in a follow-up — net correct), ipc-framing
+`775fb24e`, desktop-ipc `e6055e94`. These are the commits that first added each
+`package.json`; some are NOT the clean feat-commit you'd expect, because
+paperclip's timer swept staged files mid-extraction. The packages on disk are
+correct regardless — trust the disk state + tests, not the commit messages.
 
 Design corrections made vs. the original plan audit (all in the plan body):
 - **rate-limit (P-031):** uses an injected `BucketStore` seam, NOT the planned
