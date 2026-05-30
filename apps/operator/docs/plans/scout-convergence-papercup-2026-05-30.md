@@ -127,11 +127,15 @@ every in-tree AND submodule ref is migrated.
   symlinks resolve, targeted typecheck clean. Commit locally.
 ## Phase 2 — Gated cross-repo (on user push authorization)
 
-- **P-002** `todo` (gated) — Migrate the 4 submodule `@restart/sse` refs +
-  2 submodule package.json deps (`sync`, `agent-chat`, `papercusp`, `sse` self) as
-  per-submodule commits; then drop the `@restart/sse` symlink. Pushing the
-  `libs/sse` `name` rename forces Restart lockstep. Blocked-by: P-001 + user push
-  authorization. Coordinate with P-005.
+- **P-002** `done` (local) — Migrated the live shared-lib submodule refs:
+  `libs/sync` (`6b29966`) + `libs/agent-chat` (`dd2511c`) now consume
+  `@papercusp/sse` (package.json + src). **Did NOT touch `libs/papercusp`** — its
+  only ref is in the being-removed `apps/web/HarnessDashboard.tsx` (`@papercusp/web`,
+  retired surface) and committing into the 2 MB orchestrator submodule would churn
+  a pin other plans actively manage for zero value. So the **`@restart/sse`
+  node_modules symlink is RETAINED** as a transitional alias covering that one
+  lingering ref; it drops when the HarnessDashboard removal lands. Push of these
+  submodule pins is folded into the P-005 coordinated push.
 - **P-003** `todo` (gated) — Phase 6 option A: add the 4 optional wire fields to
   shared chat-protocol types; rename `@restart/chat-protocol` →
   `@papercusp/chat-protocol` (shared repo + Restart's 6 consumers); papercup
