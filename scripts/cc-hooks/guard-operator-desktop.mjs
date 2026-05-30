@@ -63,14 +63,18 @@ if (/^mcp__/.test(tool) && /(browser_navigate|navigate|tabs_create_mcp)/i.test(t
   allow();
 }
 
-// 2) Bash → block browser-launchers pointed at an operator port (curl/wget are
-//    NOT in the launcher list, so API checks pass through).
-if (tool === 'Bash') {
-  const cmd = String(input.command || '');
-  const opensBrowser =
-    /\b(xdg-open|google-chrome|chromium(?:-browser)?|chrome|chrome-headless-shell|firefox|playwright|puppeteer)\b/i.test(cmd) ||
-    /\bopen\s+https?:\/\//i.test(cmd);
-  if (opensBrowser && URL_PORTS.test(cmd)) block();
+// 2) verdict skill (the mandated browser tool) pointed at the operator ports.
+//    Scoped to skill === 'verdict' so it can't false-positive on unrelated work.
+//    NOTE: Bash is deliberately NOT matched — text-scanning bash commands blocks
+//    anything that merely MENTIONS the ports (commit messages, greps, editing
+//    these docs). The loud CLAUDE.md directive covers the rare `chromium :3055`
+//    bash case; this hook only blocks the unambiguous browser-navigation vectors.
+if (tool === 'Skill') {
+  const skill = String(input.skill || input.name || '');
+  if (/verdict/i.test(skill)) {
+    const args = JSON.stringify(input.args ?? input.arguments ?? input ?? '');
+    if (URL_PORTS.test(args)) block();
+  }
   allow();
 }
 
