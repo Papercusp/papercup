@@ -148,6 +148,31 @@ v5 §9.0: pinned-top sidebar tab; post-install default landing; six cards. **Blo
 - **P-073f** — Spend (⏱): local `tool_invocations`-derived total + viewer's share-of-harness rough number. Banner with proxy-witness deferral text from v5 addendum-2.
 - **P-073g** — Force-route on first visit per LOCAL `insights_first_visit` (Phase 1a P-074). Dismiss sets `seen_at_ts`.
 
+
+## GitHub enrichment (2026-05-30)
+
+- **P-001** `todo` ✅ SHIPPED (`b862dd5e`+`476d0d7a`): Insights ProjectCard rendered from real GitHub repo facts. New `lib/harness-insights/github-facts.ts` resolves the harness repo via its git `origin` remote + authenticated Octokit and fills description / owner / license / top-3 languages (linguist colors) + a tier-A stats row (★ stars, forks, open issues, last-push). 1h cache; degrades to slug fallback (no token/remote/match). Extends P-073a.
+
+
+## GitHub enrichment (2026-05-30)
+
+- **P-002** `todo` ✅ SHIPPED (`7cbf34d2`): Insights PeopleCard tier-A GitHub commit counts. `loadGithubContributorCommits` fetches GET /contributors and merges per-login commit counts onto People rows (pure merge in loadHarnessInsights; endpoint does the fetch). Card renders a `✓ N` tier-A marker per contributor. Extends P-073c / P-071a.
+
+
+## GitHub enrichment (2026-05-30)
+
+- **P-003** `todo` TODO: ActivityFeedCard tier-A merged-PR + commit events. Surface GitHub merged PRs (and recent commits) as tier-A `✓` events alongside the tier-C Hyperbee-claimed events. Extends P-073b / P-071a. Largest GH-enrichment item — touches the PR-poll data + the activity event stream + tier labeling. Ties to the Phase-2 completion_ref work (merged-PR SHA is the tier-B anchor).
+
+
+## GitHub enrichment (2026-05-30)
+
+- **P-004** `todo` TODO: HowItWorksHereCard renders the repo README (GET /repos/:owner/:repo/readme) for new-joiner orientation. Closes P-073e (currently slug-derived placeholder). Needs a read-only markdown renderer in the card.
+
+
+## GitHub enrichment (2026-05-30)
+
+- **P-005** `todo` TODO: ProjectCard extras — repo topics (pills) + latest release tag/date (GET /repos/:owner/:repo/releases/latest). Small follow-up to the shipped P-073a GitHub facts; reuses github-facts.ts.
+
 ## Decisions
 
 (None yet. Phase 8a/8b split decision goes here as D-001 when made.)

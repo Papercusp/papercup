@@ -3,7 +3,7 @@ title: Papercusp dogfood — Phase 2 (`completion_ref` + status verification)
 slug: papercusp-dogfood-phase2-completion-ref-2026-05-24
 status: shipped
 created: 2026-05-24
-updated: 2026-05-25
+updated: 2026-05-30
 owner: avi@storewolf.com
 ---
 
@@ -99,6 +99,29 @@ v5 one-liner: *"Surface in PlanDetail / FeatureDetail UI: `completion_ref` + ver
 ## Decisions
 
 (No execution-time decisions yet.)
+
+
+### D-001 — completion_ref writer belongs in prs.ts reviewPr, gated on a feature_id-linkage gap (P-016 follow-up)
+Date: 2026-05-30
+Audit + investigation (2026-05-30) pinned down WHY `completion_ref` is never written and where the writer must go. Recorded so the next pass implements it correctly (an attempt this session targeted the wrong file and was reverted).
+
+**Where the writer goes:** NOT `pr-host/poll-daemon.ts` — that daemon only lists OPEN PRs and has zero production callers (dead code). The real merge happens in `apps/operator/lib/endpoint-route/routes/harness/prs.ts` `reviewPr` (the `approve_and_merge` action → `tryAutoMerge`, ~line 207). `tryAutoMerge` returns `{ action:'merged', mergeCommitSha, prNumber }`; `remote` is already in scope (prs.ts:164); the PR runtime object is the flat shape (`base_branch`, `html_url`, `number`).
+
+**The blocker (feature_id linkage):** `harness_features_consolidated` PK is `(harness_slug, feature_id)`, but `reviewPr` has only `slug` + PR `number` — NOT `feature_id`. The PR→feature map is `harness_shared.harness_feature_prs` (keyed by pr_url, NO pr_number column), populated ONLY by the Hyperbee projection `sync/hyperbee/projections/prs.ts`, which is gated behind `PAPERCUSP_DOGFOOD_SUBSTRATE_ENABLE=1` (off by default) — so by default that table is empty and PR→feature can't be resolved. Fix: thread `feature_id` from the PrsTab POST body (the UI knows it; the route already takes `reviewer_github_id`/`reviewer_login` body fields), with a `harness_feature_prs` lookup-by-pr_url fallback. Stamp only when feature_id resolves; skip silently otherwise.
+
+**The write (mirror the verifier's PG pattern, completion-ref-verifier.ts:262-297):**
+`const { sql } = getOrgPg();` then
+`UPDATE harness_shared.harness_features_consolidated SET completion_ref = ${JSON.stringify(buildCompletionRef({remote, branch: base_branch, commit_sha: mergeCommitSha.toLowerCase(), pr_url: html_url, pr_number}))}::jsonb, status = 'shipped', updated_ts = ${Date.now()} WHERE harness_slug = ${slug} AND feature_id = ${featureId} AND completion_ref IS NULL`.
+Scope by (harness_slug, feature_id) only — NO workspace_id (that's only on harness_feature_prs). Guard against empty merge SHA (github.ts returns `?? ''` which would make buildCompletionRef throw). Idempotent via `completion_ref IS NULL`.
+
+**Why status='shipped' is required:** the verifier's select (completion-ref-verifier.ts:250-259) is `completion_ref IS NOT NULL AND (status='pending_done' OR (status='shipped' AND updated_ts within 24h))`. So the stamp MUST also set status='shipped' + bump updated_ts, or the verifier never picks it up and the tier-B "shipped ✓" stat stays 0.
+
+**Branch/SHA caveat:** recording (base_ref, merge_commit_sha) verifies via `git ls-remote refs/heads/<branch>` only until the base branch advances past the merge commit. Follow-up: teach the verifier to check ancestry (`git merge-base --is-ancestor`) rather than exact head for merged refs.
+
+**Trigger caveat:** confirm the `sync_features_consolidated` trigger (001-shared.sql ~95-120) doesn't clobber a direct `status` write from a later per-harness feature mutation (low risk since 'shipped' is terminal, but verify).
+
+Status: the writer is a real, well-scoped change but is BLOCKED on the feature_id-threading prerequisite (UI + route-body). Not landed this session.
+Related: P-016
 
 ## Named fallback rollout
 
