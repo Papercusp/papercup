@@ -26,6 +26,9 @@ interface SessionRow {
   id: number;
   workspaceId: string;
   planSlug: string | null;
+  /** Which agent CLI backs this session (psu-launched rows); null for
+   *  legacy/pre-*-su rows. More specific than `mode`. */
+  agent: 'claude' | 'omp' | 'codex' | null;
   mode: 'omp' | 'console';
   terminalBin: string | null;
   pid: number | null;
@@ -271,12 +274,19 @@ export default function AdvSessionsClient() {
   // "active" with a Focus button that doesn't work. 3s feels alive
   // without hammering. Stops polling when no active rows are visible.
   useEffect(() => {
-    if (!rows) return;
-    const hasActive = rows.some((r) => r.endedAt == null);
-    if (!hasActive) return;
-    const id = window.setInterval(() => fetchRows(), 3000);
+    // Poll every 3s while the tab is visible. Covers BOTH detecting a
+    // terminal close (active row → ended, server marks it in PG) AND a
+    // brand-new launch — including a terminal `psu` session — appearing
+    // in an otherwise-idle list within a few seconds without a manual
+    // refresh (psu-wrappers plan P-022). Pauses when the tab is hidden
+    // so it doesn't poll in the background.
+    const tick = () => {
+      if (typeof document !== 'undefined' && document.hidden) return;
+      void fetchRows();
+    };
+    const id = window.setInterval(tick, 3000);
     return () => window.clearInterval(id);
-  }, [rows, fetchRows]);
+  }, [fetchRows]);
 
   // Lazy-load token/cost/model summary for each OMP row so the main
   // Row-summary fields (model, tokens, cost, user-message count,
@@ -728,7 +738,7 @@ export default function AdvSessionsClient() {
                   <button type="button" className="pc-adv-sessions__group-head">
                     <ChevronRight className="pc-adv-sessions__group-chevron" size={13} aria-hidden />
                     <span className="pc-adv-sessions__group-title">
-                      {group.planSlug ?? '(no plan)'}
+                      {group.planSlug ?? 'No plan · ad-hoc SU sessions'}
                     </span>
                     <span className="pc-adv-sessions__group-count">{group.rows.length}</span>
                     {activeCount > 0 ? (
@@ -760,8 +770,11 @@ export default function AdvSessionsClient() {
                             onClick={() => void setSelectedSessionId(String(row.id))}
                           >
                             <span className="pc-adv-sessions__row-meta">
-                              <span className={`pc-adv-sessions__badge pc-adv-sessions__badge--${row.mode}`}>
-                                {row.mode}
+                              <span
+                                className={`pc-adv-sessions__badge pc-adv-sessions__badge--${row.mode}`}
+                                title={row.agent ? `agent: ${row.agent}` : `mode: ${row.mode}`}
+                              >
+                                {row.agent ?? row.mode}
                               </span>
                               {harnessForRow(row) ? (
                                 <span className="pc-adv-sessions__harness-chip" title={`harness: ${harnessForRow(row)}`}>
