@@ -3,7 +3,7 @@ title: Abstract Papercusp's reusable systems into standalone libraries — per-s
 slug: papercusp-systems-abstraction-2026-05-29
 status: ready
 created: 2026-05-29
-updated: 2026-05-29
+updated: 2026-05-30
 owner: avi@storewolf.com
 created-by-revision: R-001
 companion-to: [papercusp-tooldef-extraction-2026-05-29]
@@ -341,7 +341,7 @@ two SEPARATE storage components**, not one dual-backend interface:
   git/restore/plugin call-sites. Externalize as a caller-registered trigger
   registry (or accept a loose string list) so the extracted package isn't bound to
   harness events. blocked-by: P-023 → D-010
-- **P-030** `wip` Extract the Tauri IPC stack as **three pieces** — 2 of 3 DONE:
+- **P-030** `done` Extract the Tauri IPC stack as **three pieces** — 2 of 3 DONE: (pt3 @papercusp/ipc-endpoint-server shipped c74cbe70 — host seam; all 3 IPC pieces done)
   (i) **`@papercusp/ipc-framing` — DONE** (`775fb24e`): `framing.ts` (145 LOC, zero
   imports) → `packages/ipc-framing`, 16 tests, `endpoint-ipc/framing.ts` is a
   re-export shim (6 consumers unchanged). (ii) **`@papercusp/desktop-ipc` — DONE**
