@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState, type ComponentType, type CSSProperties } from 'react';
 import { wsLocalKey } from '@/lib/browser-workspace';
 import { HARNESS_SCOPE_MODES, type HarnessScopeMode } from '@/lib/harness/scope';
-import { HARNESS_SCOPE_MODES, type HarnessScopeMode } from '@/lib/harness/scope';
 import * as Tabs from '@radix-ui/react-tabs';
 import { parseAsBoolean, parseAsString, parseAsStringEnum, useQueryState } from 'nuqs';
 import {
@@ -61,15 +60,6 @@ type HarnessProjectLite = {
   parent_slug?: string | null;
   harness_kind?: string | null;
 };
-
-/**
- * Select display token for the "All harnesses" row. Widget-only: picking
- * it sets `?scope=all`; it is NEVER written to `?slug=` (which always
- * holds a real harness slug or null). Keeping the sentinel out of
- * `?slug=` means every `?slug=` consumer stays sentinel-unaware — the
- * "all" intent lives entirely on the orthogonal `?scope=` axis.
- */
-const ALL_HARNESSES_OPTION = '__all__';
 
 /**
  * Select display token for the "All harnesses" row. Widget-only: picking
