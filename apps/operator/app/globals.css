@@ -13,7 +13,10 @@
  * Component-scoped vars (h-tab, h-button, etc.) remain inline below. */
 @import './_brand-primitives.css';
 @import './_semantic.css';
-@import './_themes.css';
+/* Theme variants — generated [data-theme="<name>"] override blocks (DTCG, via
+ * design-tokens/<name>.semantic.tokens.json). Imported AFTER _semantic.css so a
+ * theme block wins over :root on equal specificity. One @import per built-in. */
+@import './_semantic.black.css';
 
 :root {
   color-scheme: dark;

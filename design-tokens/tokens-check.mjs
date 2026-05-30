@@ -12,6 +12,7 @@ import { execSync } from "node:child_process";
 const OUTPUTS = [
   "apps/operator/app/_brand-primitives.css",
   "apps/operator/app/_semantic.css",
+  "apps/operator/app/_semantic.black.css",
   "design-tokens/primitives.tokens.json",
 ];
 

@@ -1,0 +1,19 @@
+{
+  "_doc-black": {
+    "$description": "Black theme — a semantic-layer override set. Emitted by the css-semantic-black Style Dictionary platform into apps/operator/app/_semantic.black.css under the [data-theme=\"black\"] selector. THEME CONTRACT: every key here MUST be a base semantic token (it overrides the :root value from desktop.semantic.tokens.json); never a brand primitive (color.*) or a raw literal var. Only tokens that DIFFER from frost are listed — everything else (the bg-2/3/4 white-alpha tiers, --frost, status hues, --card-shadow) inherits :root, which is theme-neutral on black. Mirrors THEME_TOKENS in apps/operator/lib/theme.ts."
+  },
+  "black": {
+    "bg":            { "$value": "#000000", "$type": "color", "$description": "Pure black page background" },
+    "bg-1":          { "$value": "#0A0A0A", "$type": "color", "$description": "Near-black base surface (tier 1)" },
+    "bg-popover":    { "$value": "#121212", "$type": "color", "$description": "Solid elevated surface for popovers/menus" },
+    "fg":            { "$value": "#F5F5F5", "$type": "color", "$description": "Near-white primary text" },
+    "fg-dim":        { "$value": "#B8B8B8", "$type": "color", "$description": "Dimmed text" },
+    "fg-mute":       { "$value": "#808080", "$type": "color", "$description": "Muted text" },
+    "border":        { "$value": "rgba(255, 255, 255, 0.14)", "$type": "color", "$description": "Neutral border (replaces the sky-tinted frost border)" },
+    "border-strong": { "$value": "rgba(255, 255, 255, 0.30)", "$type": "color", "$description": "Neutral strong border" },
+    "accent":        { "$value": "#E6E6E6", "$type": "color", "$description": "Light-grey accent so interactive chrome stays visible on black" },
+    "accent-strong": { "$value": "#FFFFFF", "$type": "color", "$description": "White strong accent" },
+    "accent-cool":   { "$value": "#B0B0B0", "$type": "color", "$description": "Cool grey accent" },
+    "accent-ink":    { "$value": "#000000", "$type": "color", "$description": "Black text drawn on top of an accent fill" }
+  }
+}

@@ -1,0 +1,18 @@
+/**
+ * Do not edit directly, this file was auto-generated.
+ */
+
+[data-theme="black"] {
+  --bg: #000000; /** Pure black page background */
+  --bg-1: #0a0a0a; /** Near-black base surface (tier 1) */
+  --bg-popover: #121212; /** Solid elevated surface for popovers/menus */
+  --fg: #f5f5f5; /** Near-white primary text */
+  --fg-dim: #b8b8b8; /** Dimmed text */
+  --fg-mute: #808080; /** Muted text */
+  --border: rgba(255, 255, 255, 0.14); /** Neutral border (replaces the sky-tinted frost border) */
+  --border-strong: rgba(255, 255, 255, 0.3); /** Neutral strong border */
+  --accent: #e6e6e6; /** Light-grey accent so interactive chrome stays visible on black */
+  --accent-strong: #ffffff; /** White strong accent */
+  --accent-cool: #b0b0b0; /** Cool grey accent */
+  --accent-ink: #000000; /** Black text drawn on top of an accent fill */
+}

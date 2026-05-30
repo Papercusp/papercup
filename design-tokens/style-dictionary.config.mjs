@@ -20,15 +20,34 @@ preflight(globSync("design-tokens/*.tokens.json"));
 
 for (const t of transforms) StyleDictionary.registerTransform(t);
 
+// Theme-variant name transform. Theme platforms (css-semantic-<theme>) are each
+// filtered to a single namespace (e.g. `black.*`), so dropping the leading path
+// segment makes their tokens emit the SAME var names as the base semantic layer
+// (`black.bg` → `--bg`). That's what lets a `[data-theme]` block override the
+// `:root` values rather than introduce parallel `--black-bg` vars.
+StyleDictionary.registerTransform({
+  name: "tokenkit/name-theme",
+  type: "name",
+  transform: (t) => t.path.slice(1).join("-").toLowerCase(),
+});
+
+// Theme namespaces — each is a top-level key holding a semantic-override set,
+// emitted to its own `[data-theme="<name>"]` block. Frost is NOT here: it is the
+// base `:root` layer (top-level semantic keys), not a variant.
+const THEME_NAMESPACES = ["black"];
+const isThemeToken = (t) => THEME_NAMESPACES.includes(t.path[0]);
+
 // Filter: primitives layer only (anything under `color.*`).
 const isPrimitive = (t) => t.path[0] === "color";
 
-// Filter: semantic layer — top-level non-color, non-meta keys. Includes
-// motion tokens (ease/dur), elevation (card-shadow), and overlays (frost),
-// which share the desktop CSS-var namespace.
-const isSemantic = (t) => t.path[0] !== "color" && !t.path[0].startsWith("_");
+// Filter: base semantic layer — top-level non-color, non-meta, non-theme keys.
+// Includes motion tokens (ease/dur), elevation (card-shadow), and overlays
+// (frost), which share the desktop CSS-var namespace. Theme namespaces are
+// excluded so they only flow to their own css-semantic-<theme> platform.
+const isSemantic = (t) => t.path[0] !== "color" && !t.path[0].startsWith("_") && !isThemeToken(t);
 
 const sharedTransforms = ["attribute/cti", "tokenkit/srgb", "tokenkit/name"];
+const themeTransforms = ["attribute/cti", "tokenkit/srgb", "tokenkit/name-theme"];
 
 export default {
   source: ["design-tokens/*.tokens.json"],
@@ -54,6 +73,21 @@ export default {
           format: "css/variables",
           options: { outputReferences: true, selector: ":root" },
           filter: isSemantic,
+        },
+      ],
+    },
+    // Black theme — semantic-override set emitted under [data-theme="black"].
+    // outputReferences:false because the black values are literals (no aliases);
+    // name-theme strips the `black.` namespace so vars match the base layer.
+    "css-semantic-black": {
+      transforms: themeTransforms,
+      buildPath: "apps/operator/app/",
+      files: [
+        {
+          destination: "_semantic.black.css",
+          format: "css/variables",
+          options: { outputReferences: false, selector: '[data-theme="black"]' },
+          filter: (t) => t.path[0] === "black",
         },
       ],
     },

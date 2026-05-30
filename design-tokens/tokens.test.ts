@@ -95,3 +95,46 @@ describe('design tokens — DTCG source ↔ generated CSS', () => {
     }
   });
 });
+
+describe('design tokens — black theme variant ([data-theme="black"])', () => {
+  // Black tokens live under the `black.*` namespace, so loadTokens keys are
+  // `black-bg`, `black-fg`, …; the css-semantic-black platform strips that
+  // namespace, so the generated vars are `--bg`, `--fg`, … (overriding :root).
+  const black = loadTokens('design-tokens/black.semantic.tokens.json');
+  const blackCss = loadCss('apps/operator/app/_semantic.black.css');
+
+  // Allowed override targets = the base semantic + motion layers (the "high
+  // tokens"). This encodes the THEME CONTRACT: a theme may only override base
+  // semantic tokens, never brand primitives or invented names.
+  const baseSemantic = loadTokens('design-tokens/desktop.semantic.tokens.json');
+  const baseMotion = loadTokens('design-tokens/desktop.motion.tokens.json');
+  const allowed = new Set(
+    [...Object.keys(baseSemantic), ...Object.keys(baseMotion)].map((k) =>
+      k.replace(/^motion-/, '').replace(/^shadow-/, '').replace(/^overlay-/, ''),
+    ),
+  );
+
+  test('every black token is emitted into _semantic.black.css with a resolved value', () => {
+    expect(Object.keys(black).length).toBeGreaterThan(0);
+    for (const key of Object.keys(black)) {
+      const cssKey = key.replace(/^black-/, '');
+      expect(blackCss, `black token "${cssKey}" not emitted`).toHaveProperty(cssKey);
+      expect(blackCss[cssKey]).not.toMatch(/^\{/); // no unresolved alias leaked into CSS
+    }
+  });
+
+  test('the generated block is scoped to [data-theme="black"], not :root', () => {
+    const css = readFileSync(join(REPO, 'apps/operator/app/_semantic.black.css'), 'utf8');
+    expect(css).toContain('[data-theme="black"]');
+    expect(css).not.toMatch(/:root\s*\{/);
+  });
+
+  test('THEME CONTRACT — black only overrides base semantic tokens (never primitives/invented names)', () => {
+    for (const cssKey of Object.keys(blackCss)) {
+      expect(
+        allowed.has(cssKey),
+        `black overrides "--${cssKey}", which is not a base semantic token — themes may only override the high (semantic) layer`,
+      ).toBe(true);
+    }
+  });
+});
