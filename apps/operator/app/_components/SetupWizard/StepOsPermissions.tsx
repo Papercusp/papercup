@@ -227,6 +227,10 @@ export function StepOsPermissions() {
       const Ctx = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
       const ctx = new Ctx();
       audioCtxRef.current = ctx;
+      // WebKitGTK / autoplay policy start the context 'suspended'; an
+      // unresumed context never feeds the analyser, so the live meter
+      // would sit at zero even with a working mic.
+      if (ctx.state === 'suspended') { try { await ctx.resume(); } catch { /* best effort */ } }
       const src = ctx.createMediaStreamSource(stream);
       const analyser = ctx.createAnalyser();
       analyser.fftSize = 1024;
@@ -301,28 +305,38 @@ export function StepOsPermissions() {
       const Ctx = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
       const ctx: AudioContext = new Ctx();
       toneCtxRef.current = ctx;
-      const dest = ctx.createMediaStreamDestination();
+      // Suspended-by-default on WebKitGTK / under autoplay policy — resume
+      // or nothing ever sounds.
+      if (ctx.state === 'suspended') { try { await ctx.resume(); } catch { /* best effort */ } }
       const osc = ctx.createOscillator();
       const gain = ctx.createGain();
       osc.frequency.value = 440;
       gain.gain.value = 0.12;
-      osc.connect(gain).connect(dest);
       osc.start();
 
-      const audio = new Audio();
-      audio.srcObject = dest.stream;
-      if (selectedOutput && typeof audio.setSinkId === 'function') {
-        try {
-          await audio.setSinkId(selectedOutput);
-        } catch {
-          // Fall back to default speaker if sink isn't reachable.
-        }
+      // Output routing. Routing a MediaStream through an <audio> element +
+      // setSinkId is silent on WebKitGTK (the desktop shell) — it exposes
+      // no output devices and no setSinkId. So only take that path when
+      // setSinkId is actually supported AND the user picked a specific
+      // non-default sink; otherwise play straight to ctx.destination, which
+      // honours the system default speaker and is the only path that makes
+      // sound on WebKitGTK.
+      let audio: HTMLAudioElement | null = null;
+      const routeToSink = sinkIdSupported && !!selectedOutput && selectedOutput !== 'default';
+      if (routeToSink) {
+        const dest = ctx.createMediaStreamDestination();
+        osc.connect(gain).connect(dest);
+        audio = new Audio();
+        audio.srcObject = dest.stream;
+        try { await audio.setSinkId(selectedOutput); } catch { /* sink gone — still audible on default */ }
+        try { await audio.play(); } catch { /* tone is already scheduled on the graph */ }
+      } else {
+        osc.connect(gain).connect(ctx.destination);
       }
-      await audio.play();
+
       setTimeout(() => {
         osc.stop();
-        audio.pause();
-        audio.srcObject = null;
+        if (audio) { audio.pause(); audio.srcObject = null; }
         void ctx.close();
         setTonePlaying(false);
       }, 1000);
@@ -442,20 +456,34 @@ export function StepOsPermissions() {
 
           <label className="pc-field">
             <span className="pc-field__label">Output (speaker)</span>
-            <Select
-              value={selectedOutput}
-              onChange={setSelectedOutput}
-              options={outputs.map((d) => ({
-                value: d.deviceId,
-                label: d.label || `Speaker (${d.deviceId.slice(0, 6)}…)`,
-              }))}
-              ariaLabel="Output speaker"
-            />
-            {!sinkIdSupported && (
-              <span className="pc-field__hint">
-                This platform doesn't support per-element output routing — playback uses the
-                system default speaker regardless of selection.
-              </span>
+            {sinkIdSupported && outputs.length > 0 ? (
+              <Select
+                value={selectedOutput}
+                onChange={setSelectedOutput}
+                options={outputs.map((d) => ({
+                  value: d.deviceId,
+                  label: d.label || `Speaker (${d.deviceId.slice(0, 6)}…)`,
+                }))}
+                ariaLabel="Output speaker"
+              />
+            ) : (
+              // WebKitGTK (the desktop shell) enumerates no audiooutput
+              // devices and has no setSinkId, so a real <Select> would just
+              // render blank. Show the only truth there is — playback goes
+              // to the system default speaker — instead of an empty dropdown.
+              <>
+                <Select
+                  value="__system_default__"
+                  onChange={() => {}}
+                  options={[{ value: '__system_default__', label: 'System default speaker' }]}
+                  ariaLabel="Output speaker"
+                  disabled
+                />
+                <span className="pc-field__hint">
+                  This platform doesn't expose individual output devices — playback uses your
+                  system's default speaker. Pick it in your OS sound settings.
+                </span>
+              </>
             )}
           </label>
 
