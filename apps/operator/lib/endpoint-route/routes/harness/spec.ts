@@ -1,6 +1,9 @@
 /**
  * GET/PUT /api/harness/:slug/spec — read/write the per-harness project
- * files (SPEC.md, AGENTS.md, validation-contract.md, config.json).
+ * files. SPEC.md (D-004) and validation-contract.md (D-005) are deprecated —
+ * no longer read from or written to disk here; only AGENTS.md + config.json
+ * are mirrored. The spec/contract fields stay in the GET/PUT shape only to
+ * surface whatever legacy data PG still holds.
  *
  * PG canonical (Migration 034), with disk mirrors for editor convenience.
  * Optimistic concurrency: PUT accepts `expected_version` and returns 409
@@ -31,9 +34,11 @@ const getSpec = defineTool({
     if (!project) return Response.json({ error: 'unknown project' }, { status: 404 });
     const pg = await loadProjectFiles(slug);
     return Response.json({
-      spec: pg.spec ?? safeRead(join(project.path, 'SPEC.md')),
+      // spec/contract are deprecated — return only what PG still holds for
+      // legacy harnesses; don't fall back to reading the tombstone disk files.
+      spec: pg.spec ?? null,
       agents: pg.agents ?? safeRead(join(project.path, 'AGENTS.md')),
-      contract: pg.contract ?? safeRead(join(harnessDir(project), 'validation-contract.md')),
+      contract: pg.contract ?? null,
       config: pg.config ?? safeRead(join(harnessDir(project), 'config.json')),
       version: pg.version,
     });
@@ -70,10 +75,10 @@ const putSpec = defineTool({
       throw err;
     }
 
+    // SPEC.md + validation-contract.md disk mirrors dropped — both deprecated
+    // (D-004/D-005); only AGENTS.md / config.json are mirrored to disk now.
     const targets: Array<{ path: string; content: string | undefined; label: string }> = [
-      { path: join(project.path, 'SPEC.md'), content: body.spec, label: 'spec' },
       { path: join(project.path, 'AGENTS.md'), content: body.agents, label: 'agents' },
-      { path: join(harnessDir(project), 'validation-contract.md'), content: body.contract, label: 'contract' },
       { path: join(harnessDir(project), 'config.json'), content: body.config, label: 'config' },
     ];
 

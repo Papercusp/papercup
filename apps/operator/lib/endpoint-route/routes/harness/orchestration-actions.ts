@@ -2,10 +2,12 @@
  * Independent orchestration actions:
  *
  *   POST /api/harness/:slug/smoke-test/run     — exec service-smoke-test.sh; capture combined stdout+stderr
- *   POST /api/harness/:slug/architect/apply    — write a body to SPEC.md or append to supervisor-notes.md (target switch)
+ *   POST /api/harness/:slug/architect/apply    — append a body to supervisor-notes.md
  *
- * Note: 'contract' (validation-contract.md) target removed — assertions are now
- * inline VAL-* bullets in plan items (plans-central-harness-ux-2026-05-26 P-014).
+ * Note: the 'SPEC.md' (D-004) and 'contract' / validation-contract.md (D-005)
+ * targets were removed — both are deprecated; intent lives in plans and
+ * acceptance is inline VAL-* bullets in plan items
+ * (plans-central-harness-ux-2026-05-26).
  *
  * Two unrelated POSTs with no shared helpers — bundled into one batch
  * to keep the file count manageable.
@@ -14,7 +16,7 @@
  * A4 batch 33).
  */
 import { existsSync } from 'node:fs';
-import { appendFile, rename, writeFile } from 'node:fs/promises';
+import { appendFile } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import { join } from 'node:path';
 import { resolveProject, resolvePhasedProject, harnessDir } from '@/lib/harness-core';
@@ -60,24 +62,17 @@ const architectApply = defineTool({
     const body = (await req.json()) as { target: string; content: string };
     if (!body.content) return Response.json({ error: 'content required' }, { status: 400 });
 
-    let path: string;
-    switch (body.target) {
-      case 'SPEC.md': path = join(project.path, 'SPEC.md'); break;
-      case 'supervisor-notes': {
-        const notesPath = join(harnessDir(project), 'supervisor-notes.md');
-        const block = `\n## architect ${new Date().toISOString()}\n\n${body.content}\n`;
-        const { appendTextArtifact } = await import('@/lib/text-artifacts');
-        await appendTextArtifact(slug, 'supervisor-notes.md', block);
-        try { await appendFile(notesPath, block, 'utf8'); } catch {}
-        return Response.json({ ok: true, appended: 'supervisor-notes.md' });
-      }
-      default: return Response.json({ error: 'unknown target' }, { status: 400 });
+    // supervisor-notes.md is the only remaining target. The 'SPEC.md' target
+    // was removed (D-004) — the architect shapes plans now, not SPEC.md.
+    if (body.target === 'supervisor-notes') {
+      const notesPath = join(harnessDir(project), 'supervisor-notes.md');
+      const block = `\n## architect ${new Date().toISOString()}\n\n${body.content}\n`;
+      const { appendTextArtifact } = await import('@/lib/text-artifacts');
+      await appendTextArtifact(slug, 'supervisor-notes.md', block);
+      try { await appendFile(notesPath, block, 'utf8'); } catch {}
+      return Response.json({ ok: true, appended: 'supervisor-notes.md' });
     }
-
-    const tmp = `${path}.tmp.${Date.now()}`;
-    await writeFile(tmp, body.content, 'utf8');
-    await rename(tmp, path);
-    return Response.json({ ok: true, written: path });
+    return Response.json({ error: 'unknown target' }, { status: 400 });
   },
 });
 
