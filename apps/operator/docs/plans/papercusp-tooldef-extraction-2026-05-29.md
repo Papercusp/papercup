@@ -1,9 +1,9 @@
 ---
 title: Extract the endpoint system into @papercusp/tooldef — a standalone, schema-agnostic tool framework
 slug: papercusp-tooldef-extraction-2026-05-29
-status: draft
+status: active
 created: 2026-05-29
-updated: 2026-05-29
+updated: 2026-05-30
 owner: pandawamble@gmail.com
 companion-to: [endpoint-unification-2026-05-21, endpoint-route-migration-2026-05-20, phase-4-endpoint-system-2026-05-12, principal-rfc-2026-05-20]
 ---
@@ -12,19 +12,80 @@ companion-to: [endpoint-unification-2026-05-21, endpoint-route-migration-2026-05
 
 ## Now
 
-**State:** Draft. Design ratified in conversation 2026-05-29: package name
-`@papercusp/tooldef`, in-repo monorepo package (separate-repo/publish deferred),
-**Standard Schema** for validation (not Zod-locked), no-shim in-place migration.
-The investigation confirmed the engine is already ~80% decoupled — the dispatcher
-does zero host I/O (`DispatchProjectedDeps` injects all of it) and the core
-dispatch/projection files import only *types* from `@papercusp/plugin-sdk`. The
-work is: invert the type dependency, replace 6 baked-in business rules with
-injected interfaces, swap Zod for Standard Schema, and re-home what's left of
-`packages/agent-mcp` as the Papercusp *profile* of the new core.
+**State:** Phase 1 (carve the pure core) **shipped** 2026-05-29 — commits
+`9b1620b2` (scaffold + wire-type inversion) and `8f3c950a` (engine move, 82 files
+recorded as renames). `@papercusp/tooldef` now exists as a **zero-dependency**
+package owning the dispatcher, registries, `defineTool`, tool-projection, the
+state/card/replay channels, and the core types; `@papercusp/agent-mcp` is the host
+adapter that re-exports the engine (its public surface byte-preserved, so the ~601
+`import { defineTool } from '@papercusp/agent-mcp'` consumers are untouched).
+Verified: tooldef typecheck clean + 188 tests green; agent-mcp typecheck 20 errors
+(all pre-existing baseline, **down from 22**) + 105 tests; plugin-sdk 13 tests. See
+the **Progress log** for what shipped vs. the original map and the known follow-ups.
 
-**Next:** an agent should start Phase 1 (P-001) — scaffold `packages/tooldef`
-and move the pure files, with the plugin-sdk type dependency inverted — once a
-human has confirmed the Phase-1 file-move map (P-000, needs-human).
+**Next:** an agent starts **Phase 2** (P-010) — genericize `AgentRole` from the
+transitional `string` stand-in (`packages/tooldef/src/host-types.ts`) into a real
+generic `Role` param / host role-config, then host-inject the remaining baked rules
+(`computeWindowKey`, `tierFor`, `SigningProvider`, `resolvePrincipal`). **Phase 3**
+(Standard Schema — the public-API-shaping change) can run in parallel.
+
+## Progress log
+
+### 2026-05-29 — Phase 1 shipped (P-000…P-005)
+
+Commits `9b1620b2`, `8f3c950a` (both on `main`, committed via scoped pathspec in a
+shared multi-agent checkout). Every edit was lock-claimed via `locks:*`.
+
+**Shipped:**
+- **P-000** gate cleared by the user ("do it on main, use the locking system").
+- **P-001** `packages/tooldef` scaffolded (package.json, tsconfig(.build), vitest
+  config, README) — **zero** runtime deps.
+- **P-003** wire types (`ToolResult` / `RolesQuota` / `ProgressCallback` /
+  `EmitCallback`) now owned by tooldef; `@papercusp/plugin-sdk` imports + re-exports
+  them (type-only, erased at runtime; local defs deleted — no shim, per D-003).
+- **P-002** engine moved (30 files via `git mv`, history preserved): defineTool /
+  defineResource / definePrompt, registry + projected-tool registry, dispatch-stack
+  / -projected / -types, tool-projection, state-channel, card-correlator,
+  replay-buffer, workspace-lifecycle, capability-tiers, openapi-assemble /
+  -fragments, core types. 48 internal relative imports + 1 dynamic import + 2
+  external `/tool-projection` consumers repointed to `@papercusp/tooldef`; 3 dead
+  subpath exports dropped. agent-mcp re-exports the engine (D-010).
+- **P-004** done implicitly: tooldef has **zero** `dependencies` — `postgres`,
+  `@papercusp/host-platform`, `@restart/*` never entered it (verified: no
+  papercusp/restart/postgres import in tooldef source *or* tests). The legacy
+  `ToolContext.tx` was widened to `any` to shed `postgres` (D-009).
+- **P-005** the core is already `@restart/sse`-import-free (tool-projection uses the
+  existing `MinimalEventSink` seam). A formal standalone `EventSink` host-injection
+  interface is **not** yet broken out; treating the "core drops @restart/sse" goal
+  as met and folding the formal interface into Phase 4. The live-SSE integration
+  test (`replay-buffer-live.test.ts`) was moved **back** to agent-mcp since it
+  exercises the HTTP transport, not the core.
+
+**Deviations from the original P-000 file-move map:**
+- `ask-user.ts` does not exist as a source file — the `ctx.askUser` impl lives in
+  card-correlator/state-channel; only `ask-user.test.ts` moved.
+- `workspace-lifecycle.ts` kept its name (the "→ run-lifecycle" rename is deferred,
+  cosmetic).
+- `capability-tiers.ts` moved as-is; converting `tierFor` to a host-injected
+  function is Phase 2 (P-012), not done in the move.
+- `http-projection.test.ts` and `plugin-events.test.ts` stayed with their host
+  source files (they test host modules, not the engine).
+
+**Drive-by fixes** (pre-existing errors that rode in with the moved files — this is
+why the agent-mcp typecheck baseline dropped 22 → 20):
+- `replay-buffer.ts`: exported `ReplayBufferWriter` (was a dangling `TS2305` import
+  in `dispatch-stack.ts`).
+- `define-tool.ts`: `as unknown as` on the legacy-ctx principal cast (`TS2352`).
+
+**Known follow-ups (none blocking; tracked here):**
+- Declare `zod` (+ `zod-to-json-schema`) in `tooldef/package.json` — resolves via
+  workspace hoist today; folds into Phase 3 when Standard Schema lands.
+- Declare `@papercusp/tooldef` in `apps/operator/package.json` — resolves via hoist.
+- Move `replay-buffer-live.test.ts` into the http-adapter package in Phase 4.
+- Pre-existing failing test `prompts.test "rejects collision on duplicate name"`
+  (proven pre-existing: `prompt-registry.ts`/`define-prompt.ts` byte-identical to
+  HEAD; test differs from HEAD only in import specifiers). Decide separately whether
+  to fix the test or the same-capability HMR-replace logic in `registerPrompt`.
 
 ## Background
 
@@ -100,7 +161,7 @@ packages/agent-mcp             ← the Papercusp *profile* of tooldef. Supplies 
 
 ## Phase 0 — Scope lock (done)
 
-- **P-000** `needs-human` Confirm the Phase-1 file-move map below before any code moves: which `packages/agent-mcp/src/*` files leave for `@papercusp/tooldef` vs stay as the host adapter. → D-001 D-002 D-003
+- **P-000** `done` Confirm the Phase-1 file-move map below before any code moves: which `packages/agent-mcp/src/*` files leave for `@papercusp/tooldef` vs stay as the host adapter. Cleared by user 2026-05-29 ("do it on main"). → D-001 D-002 D-003
 
 ### Phase-1 file-move map (for P-000 sign-off)
 
@@ -122,20 +183,21 @@ supplies the concrete one), `http-projection.ts` (→ eventually `tooldef-http`)
 
 ## Phase 1 — Carve the pure core package
 
-- **P-001** `todo` Scaffold `packages/tooldef` (`@papercusp/tooldef`): `package.json`,
-  `tsconfig.build.json`, `src/index.ts`, vitest config mirroring agent-mcp. blocked-by: P-000
-- **P-002** `todo` Move the pure files (see map) + their tests; fix relative imports.
-  blocked-by: P-001
-- **P-003** `todo` **Invert the plugin-sdk type dependency.** Define `ToolResult`,
+- **P-001** `done` Scaffold `packages/tooldef` (`@papercusp/tooldef`): `package.json`,
+  `tsconfig.build.json`, `src/index.ts`, vitest config mirroring agent-mcp. Commit `9b1620b2`. blocked-by: P-000
+- **P-002** `done` Move the pure files (see map) + their tests; fix relative imports.
+  30 files via `git mv`; 48 internal + 1 dynamic + 2 external consumers repointed. Commit `8f3c950a`. blocked-by: P-001
+- **P-003** `done` **Invert the plugin-sdk type dependency.** Define `ToolResult`,
   `EmitCallback`, `ProgressCallback`, `RolesQuota` in `@papercusp/tooldef`; make
   `@papercusp/plugin-sdk` re-export from it. Per the no-shim rule, this is a clean
-  move, not a duplicate. blocked-by: P-002 → D-004
-- **P-004** `todo` Strip non-portable deps from core `package.json`:
-  remove `@papercusp/host-platform`, `postgres`, `@restart/papercusp-db`. The
-  unified ctx already types `tx` as `any`, so PG leaves cleanly. blocked-by: P-002 → D-007
-- **P-005** `todo` Make the SSE/event encoder injectable so core drops `@restart/sse`:
-  define an `EventSink` interface; the current `@restart/sse` writer becomes the
-  host-supplied default. blocked-by: P-002 → D-007
+  move, not a duplicate. Commit `9b1620b2`. blocked-by: P-002 → D-004
+- **P-004** `done` Strip non-portable deps from core `package.json`:
+  `@papercusp/host-platform`, `postgres`, `@restart/papercusp-db` never entered
+  tooldef (`dependencies: {}`); legacy ctx `tx` widened to `any`. blocked-by: P-002 → D-007 D-009
+- **P-005** `wip` Core is already `@restart/sse`-import-free via the existing
+  `MinimalEventSink` seam (goal met). A formal standalone `EventSink` host-injection
+  interface is **not** yet broken out — folded into Phase 4 (P-030). The live-SSE
+  test moved back to agent-mcp. blocked-by: P-002 → D-007
 
 ## Phase 2 — Replace the 6 baked rules with injected interfaces
 
@@ -280,6 +342,28 @@ Web-standard `Request → Response`. The HTTP adapter's core (`@papercusp/toolde
 is Web-standard; Next.js/Hono/Express are thin shims on top. The MCP adapter keeps
 Vercel's `mcp-handler` (rebuilding the MCP transport is weeks for no win — see
 `/internal/docs/endpoint-system/function-as-truth` §"Why we kept mcp-handler").
+
+### D-009 — Phase-1 transitional seams: `string` stand-ins + `tx: any`
+Date: 2026-05-29
+The engine move (P-002) widened the still-coupled types to neutral seams rather
+than fully genericizing them, to keep the move green and bounded. In
+`packages/tooldef/src/host-types.ts`: `AgentRole` and `Capability` are `string`,
+and `PluginSpawn` is a generic subprocess type. The legacy `ToolContext.tx` is
+typed `any`. Every concrete Papercusp value is assignable to these, so the ~601
+consumers stay green. Phase 2 (P-010) promotes `AgentRole` to a real generic `Role`
+parameter / role-config; a generic `Tx` parameterization of `ToolContext` rides
+with it. This is the *how* of D-005's role decision, applied incrementally.
+
+### D-010 — agent-mcp re-exports the engine (a bundle, not a shim)
+Date: 2026-05-29
+With ~601 `import … from '@papercusp/agent-mcp'` consumers, P-002 kept agent-mcp's
+public export surface byte-preserved by re-exporting the engine from
+`@papercusp/tooldef` (`export … from '@papercusp/tooldef'` in `index.ts`). This is
+the Papercusp host bundle legitimately re-exporting its own engine — **not** a
+deprecation alias — so it doesn't conflict with D-003's no-shim rule. Phase 5
+(P-042) *may* repoint consumers directly at `@papercusp/tooldef`, but the re-export
+is a fine permanent arrangement for the bundle either way. The only true shims
+removed were plugin-sdk's duplicate wire-type definitions (D-004).
 
 ## Verification
 
