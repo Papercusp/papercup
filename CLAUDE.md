@@ -1,5 +1,39 @@
 # Papercup — agent guide
 
+## ▶ Running / testing this app — it is the **Tauri DESKTOP app**, not a browser webapp
+
+> This is the most-ignored rule in the repo. Read it before you try to "open the app".
+
+**To run or test the app, launch the desktop shell — the ONLY supported way:**
+
+```bash
+cd /home/marsh-office/papercupai-workspace/papercusp-desktop && npm run dev
+```
+
+Then drive the **Tauri window** it opens (for agent-driven UI checks see
+`/internal/docs/testing/agent-e2e`).
+
+**Do NOT "launch the web version":**
+
+- **Never open `:3055` or `:3070` in a browser** (verdict / playwright / chrome /
+  `xdg-open`). Those ports are the desktop's *internal content source*, not a
+  standalone site — a browser view is the **retired** webapp and gives a
+  broken/misleading result. A `PreToolUse` hook blocks browser navigation to them
+  and points you back here.
+- **Never start `apps/operator` as a standalone server** (`next dev` / `next start`
+  / `bin/dev` / `bin/prod`). That standalone webapp is **retired** — `bin/dev` and
+  `bin/prod` are gone, and native PG was renamed `papercusp_legacy` so it fails
+  loud.
+- A `curl http://127.0.0.1:3070/...` for a quick **API** check (not a UI check) is
+  fine **while the desktop is running**.
+
+The operator's Next/Vite/Hono layer on `:3055`/`:3070` **is the desktop's content
+layer** — `papercusp-desktop` points its webview at `:3070` and spawns
+`npm --prefix ../papercup run dev:operator` itself. It is **not** a separable
+"webapp" and **cannot be moved to `_retired/`** without breaking the desktop. The
+retired thing is the *act of running/browsing it standalone* — see "Retired /
+preserved-not-active surfaces" below.
+
 ## Almost all state should be in nuqs
 
 **If a piece of state is reasonably user-meaningful, it goes in the URL via [nuqs](https://nuqs.dev), not `useState`.** This is non-negotiable. The agent → UI control surface (`ui:get_state`, `ui:dispatch`) reads/writes the URL — anything in `useState` is invisible to agents and undriveable without a per-feature intent.
