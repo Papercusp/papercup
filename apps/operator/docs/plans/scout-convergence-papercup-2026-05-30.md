@@ -47,10 +47,13 @@ done across all three repos: papercup adopts the shared `@papercusp/sse` +
 Restart consumes the same renamed packages. The chosen adoption (extend the shared
 wire type, keep papercup's rich discriminated types) achieved option A with zero
 consumer churn — better than the flat-presentation rewrite the original spec feared.
-Only **P-006** (optional `sseResponse` Node adapter) remains deferred; no one blocked.
+**Every brief item (1–5) is complete, including the optional P-006** (`sseResponseToNode`
+shared into `@papercusp/sse`, Scout refactored onto it).
 
-**Next:** nothing required. Optional follow-ups: P-006; and rewire the 33
-`plan-parser` shim consumers (a separate systems-abstraction tail, unrelated).
+**Next:** nothing required — the brief is fully discharged. Unrelated follow-ups left
+for their owners: the `operator-state-snapshot.test.ts` `@papercusp/backup` mock gap
+(`workspacesRoot`), and rewiring the 33 `plan-parser` shim consumers (a separate
+systems-abstraction tail).
 
 ## Background
 
@@ -213,6 +216,13 @@ every in-tree AND submodule ref is migrated.
   systems-abstraction `P-040`'s owed git-graph + ui-primitives pushes. NOTE: these
   are pushes to the SHARED submodule remotes only — papercup's superproject `main`
   (89 ahead) is unchanged; its wholesale push remains the separate user-managed event.
-- **P-006** `todo` (optional, deferred) — Upstream a Node/Express `sseResponseNode()`
-  adapter into `@papercusp/sse` so the server transport is shared, not just the
-  wire format + client. No one blocked; low priority.
+- **P-006** `done` — Upstreamed `sseResponseToNode(webRes, res, extraHeaders?)` into
+  `@papercusp/sse` (`228592d`): copies status+headers and pumps the Web
+  `ReadableStream` body to a structural `NodeResponseLike` (Express `res` satisfies
+  it). **Deps-free** — Web reader API, no `node:stream` — so the package stays
+  dependency-free. Scout's controller now uses it in place of the hand-rolled
+  `Readable.fromWeb(...).pipe(res)` (`3d35a104` on `feat/scout-unify`); papercup
+  re-pinned. Server transport is now shared too, not just wire format + client.
+  Verified: sse lib tsc clean (compiles under its DOM-only/vitest-globals config);
+  smoke-test streams body + headers; scout-service tsc 0 new errors (Express `res`
+  satisfies `NodeResponseLike`).
