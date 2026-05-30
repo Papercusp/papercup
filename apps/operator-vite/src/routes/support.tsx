@@ -69,7 +69,7 @@ bun add -g @oh-my-pi/pi-coding-agent`}</pre>
         </p>
         <ul>
           <li><strong>Cost cap hit</strong> — default <code>maxCostUsd: 10</code>. Raise in <code>~/.papercusp/projects/&lt;name&gt;/.harness/config.json</code> and re-run.</li>
-          <li><strong>Validator rejection loop</strong> — same feature failing 3 attempts. The dashboard shows the failed feature in red; click it to see validator output and either edit your SPEC.md or accept the proposal manually.</li>
+          <li><strong>Validator rejection loop</strong> — same feature failing 3 attempts. The dashboard shows the failed feature in red; click it to see validator output and either refine the owning plan (its items / acceptance criteria) or accept the proposal manually.</li>
         </ul>
         <p>For deeper debugging, the embedded <em>pi</em> tab (omp terminal) lets you ask the harness questions directly.</p>
       </>

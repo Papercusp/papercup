@@ -189,8 +189,9 @@ export default function SpecEditor({ slug, projectPath, alive, onClose, inline =
     try {
       const written: string[] = [];
 
-      // /spec handles spec/agents/contract/config in one call
-      const specDirty = dirty.filter((t) => ['spec', 'agents', 'contract', 'config'].includes(t));
+      // /spec handles agents/contract/config in one call (the SPEC.md tab
+      // was removed when plans replaced SPEC.md — plans-central-harness-ux-2026-05-26)
+      const specDirty = dirty.filter((t) => ['agents', 'contract', 'config'].includes(t));
       if (specDirty.length > 0) {
         const body: Record<string, string> = {};
         for (const t of specDirty) body[t] = draft[t];
