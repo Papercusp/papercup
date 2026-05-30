@@ -1,13 +1,13 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import { parseAsString, useQueryState } from 'nuqs';
 import type { AdvTabId } from './AdvShell';
-import HarnessDashboard from '@/app/harness/HarnessDashboard';
 import { RealGitPanel } from '@/app/harness/dock/RealGitPanel';
 import { BrainstormFull } from '@/app/harness/brainstorm/BrainstormFull';
 import PrsTab from '@/app/harness/PrsTab';
 import HarnessSettingsPanel from '@/app/harness/HarnessSettingsPanel';
 import InsightsPanel from '@/app/harness/InsightsPanel';
 import AdvConfigTab from '@/app/adv/harnesses/AdvConfigTab';
+import AdvDocsTab from '@/app/adv/harnesses/AdvDocsTab';
 
 type AdvHarnessPanel = Extract<AdvTabId, 'brainstorm' | 'prs' | 'insights' | 'config' | 'settings' | 'docs' | 'git'>;
 
@@ -67,12 +67,10 @@ function AdvInsightsTab({ slug }: { slug: string }) {
 }
 
 /**
- * Tabs whose body is a self-contained harness panel component. These render
- * the component DIRECTLY — the legacy `HarnessDashboard` monolith is never
- * mounted for them. Only `docs` is NOT listed here; it falls back to the
- * dashboard bridge below because it's entirely plugin-contribution-driven
- * (resolving `?panel=docs` → `plugin:<tabId>` + the plugin tab renderer),
- * which still lives in the monolith. config now renders via AdvConfigTab.
+ * Tabs whose body is a self-contained harness panel component. Every panel
+ * renders its component DIRECTLY — the legacy `HarnessDashboard` monolith is
+ * no longer mounted anywhere in /adv. (git has its own two-pane branch below;
+ * docs renders the plugin's docs tab via AdvDocsTab.)
  */
 const DIRECT: Partial<Record<AdvHarnessPanel, (slug: string) => ReactNode>> = {
   brainstorm: (slug) => <BrainstormFull slug={slug} />,
@@ -80,6 +78,7 @@ const DIRECT: Partial<Record<AdvHarnessPanel, (slug: string) => ReactNode>> = {
   settings: (slug) => <HarnessSettingsPanel slug={slug} phase={ADV_PHASE} />,
   insights: (slug) => <AdvInsightsTab slug={slug} />,
   config: (slug) => <AdvConfigTab slug={slug} />,
+  docs: (slug) => <AdvDocsTab slug={slug} />,
 };
 
 const PANEL_FILL_CSS = `
@@ -174,28 +173,13 @@ export default function AdvHarnessPanelPage({ panel }: { panel: AdvHarnessPanel 
     );
   }
 
-  // Fallback (docs only): still backed by HarnessDashboard with its chrome
-  // hidden, until the plugin-tab resolution + renderer is lifted out.
+  // Every panel in the union is handled above (git branch + DIRECT registry),
+  // so this is unreachable — a defensive guard that, crucially, never mounts
+  // HarnessDashboard. /adv no longer depends on the monolith at all.
   return (
     <section className="pc-adv-harness-panel" aria-label={`ADV ${ADV_HARNESS_PANEL_LABELS[panel]} workspace`}>
-      <HarnessDashboard forcedPanel={panel} embeddedPanelChrome />
-      <style>{`
-        ${PANEL_FILL_CSS}
-        .pc-adv-harness-panel > .h-root {
-          flex: 1;
-          min-height: 0;
-        }
-        .pc-adv-harness-panel .h-root--embedded-panel .h-header,
-        .pc-adv-harness-panel .h-root--embedded-panel .h-tab-strip,
-        .pc-adv-harness-panel .h-root--embedded-panel .h-active-agents-row,
-        .pc-adv-harness-panel .h-root--embedded-panel .h-guide-strip {
-          display: none !important;
-        }
-        .pc-adv-harness-panel .h-root--embedded-panel .h-main-shell {
-          flex: 1;
-          min-height: 0;
-        }
-      `}</style>
+      <div className="pc-adv-harness-panel__empty">Unknown panel: {panel}</div>
+      <style>{PANEL_FILL_CSS}</style>
     </section>
   );
 }
