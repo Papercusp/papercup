@@ -16,7 +16,7 @@ import { useSyncQuery } from '@restart/sync';
 type ProjectFilesRow = { harnessSlug: string; spec: string | null; agents: string | null; contract: string | null; config: string | null; updatedAt: number };
 type TextArtifactRow = { harnessSlug: string; relPath: string; content: string; updatedAt: number };
 
-type SimpleTab = 'agents' | 'contract' | 'config' | 'knowledge' | 'mcp' | 'supervisor' | 'claudeSettings' | 'env';
+type SimpleTab = 'agents' | 'config' | 'knowledge' | 'mcp' | 'supervisor' | 'claudeSettings' | 'env';
 type Tab = SimpleTab | 'skills';
 
 type TabKind = 'file' | 'collection';
@@ -26,7 +26,6 @@ type Section = 'settings' | 'memory' | 'prompts';
 
 const TABS: Array<{ id: Tab; label: string; filename: string; path: (projectPath: string) => string; language: 'markdown' | 'json'; kind: TabKind; sensitivity?: Sensitivity }> = [
   { id: 'agents',          label: 'AGENTS.md',               filename: 'AGENTS.md',            path: (p) => `${p}/AGENTS.md`,                      language: 'markdown', kind: 'file' },
-  { id: 'contract',        label: 'validation-contract.md',  filename: 'validation-contract.md', path: (p) => `${p}/.harness/validation-contract.md`, language: 'markdown', kind: 'file' },
   { id: 'config',          label: 'config.json',             filename: 'config.json',          path: (p) => `${p}/.harness/config.json`,            language: 'json',    kind: 'file' },
   { id: 'mcp',             label: '.mcp.json',               filename: '.mcp.json',            path: (p) => `${p}/.mcp.json`,                       language: 'json',    kind: 'file' },
   { id: 'claudeSettings',  label: '.claude/settings.json',   filename: 'settings.json',        path: (p) => `${p}/.claude/settings.json`,           language: 'json',    kind: 'file', sensitivity: 'warn' },
@@ -36,7 +35,7 @@ const TABS: Array<{ id: Tab; label: string; filename: string; path: (projectPath
   { id: 'env',             label: '.env',                    filename: '.env',                 path: (p) => `${p}/.env`,                            language: 'markdown', kind: 'file', sensitivity: 'secret' },
 ];
 
-const SIMPLE_TABS: readonly SimpleTab[] = ['agents', 'contract', 'config', 'knowledge', 'mcp', 'supervisor', 'claudeSettings', 'env'] as const;
+const SIMPLE_TABS: readonly SimpleTab[] = ['agents', 'config', 'knowledge', 'mcp', 'supervisor', 'claudeSettings', 'env'] as const;
 
 interface Props {
   slug: string;
@@ -53,10 +52,10 @@ export default function SpecEditor({ slug, projectPath, alive, onClose, inline =
   );
   const [tab, setTab] = useQueryState(
     'specTab',
-    parseAsStringEnum<Tab>(['agents', 'contract', 'config', 'knowledge', 'mcp', 'supervisor', 'claudeSettings', 'env', 'skills']).withDefault('agents'),
+    parseAsStringEnum<Tab>(['agents', 'config', 'knowledge', 'mcp', 'supervisor', 'claudeSettings', 'env', 'skills']).withDefault('agents'),
   );
-  const [original, setOriginal] = useState<Record<SimpleTab, string | null>>({ agents: null, contract: null, config: null, knowledge: null, mcp: null, supervisor: null, claudeSettings: null, env: null });
-  const [draft, setDraft] = useState<Record<SimpleTab, string>>({ agents: '', contract: '', config: '', knowledge: '', mcp: '', supervisor: '', claudeSettings: '', env: '' });
+  const [original, setOriginal] = useState<Record<SimpleTab, string | null>>({ agents: null, config: null, knowledge: null, mcp: null, supervisor: null, claudeSettings: null, env: null });
+  const [draft, setDraft] = useState<Record<SimpleTab, string>>({ agents: '', config: '', knowledge: '', mcp: '', supervisor: '', claudeSettings: '', env: '' });
   const [envRevealed, setEnvRevealed] = useQueryState('showEnv', parseAsBoolean.withDefault(false));
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -88,7 +87,7 @@ export default function SpecEditor({ slug, projectPath, alive, onClose, inline =
   }, []);
 
   // Eager Zero subscriptions — replaces 5 sequential REST fetches that
-  // ran on mount. spec/agents/contract/config come from the project-files
+  // ran on mount. agents/config come from the project-files
   // table (one row per harness, four columns); knowledge/mcp/supervisor/
   // claudeSettings come from text-artifacts (one row per rel_path).
   // .env stays REST — file is sensitive, not eagerly synced.
@@ -139,7 +138,6 @@ export default function SpecEditor({ slug, projectPath, alive, onClose, inline =
     const apply = () => {
       const o: Record<SimpleTab, string | null> = {
         agents: projectFilesRow?.agents ?? null,
-        contract: projectFilesRow?.contract ?? null,
         config: projectFilesRow?.config ?? null,
         knowledge,
         mcp,
@@ -150,7 +148,6 @@ export default function SpecEditor({ slug, projectPath, alive, onClose, inline =
       setOriginal(o);
       setDraft({
         agents: o.agents ?? '',
-        contract: o.contract ?? '',
         config: o.config ?? '',
         knowledge: o.knowledge ?? '',
         mcp: o.mcp ?? '',
@@ -189,9 +186,10 @@ export default function SpecEditor({ slug, projectPath, alive, onClose, inline =
     try {
       const written: string[] = [];
 
-      // /spec handles agents/contract/config in one call (the SPEC.md tab
-      // was removed when plans replaced SPEC.md — plans-central-harness-ux-2026-05-26)
-      const specDirty = dirty.filter((t) => ['agents', 'contract', 'config'].includes(t));
+      // /spec handles agents/config in one call. The SPEC.md tab was removed
+      // when plans replaced SPEC.md, and the validation-contract.md tab when
+      // VAL-* assertions replaced it (plans-central-harness-ux-2026-05-26).
+      const specDirty = dirty.filter((t) => ['agents', 'config'].includes(t));
       if (specDirty.length > 0) {
         const body: Record<string, string> = {};
         for (const t of specDirty) body[t] = draft[t];

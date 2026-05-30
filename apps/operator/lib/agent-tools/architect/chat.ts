@@ -7,7 +7,7 @@
  *
  * Self-contained as of the IPC-allowlist migration (2026-05-12): the
  * tool resolves the project + composes the role-specific prompt
- * (SPEC.md, features list, brainstorm scratchpad, etc.) inside the
+ * (features list, issues, brainstorm scratchpad, etc.) inside the
  * handler. The Hono routes at /:slug/architect/chat and
  * /:slug/brainstorm/chat are thin shims that forward the raw chat
  * args + slug. This unblocks the IPC fast-path: the webview can call
