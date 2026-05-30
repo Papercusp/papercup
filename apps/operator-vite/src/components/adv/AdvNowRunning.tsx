@@ -41,6 +41,10 @@ export default function AdvNowRunning({ slug }: Props) {
   const [alive, setAlive] = useState<boolean | null>(null);
   const [now, setNow] = useState(() => Math.floor(Date.now() / 1000));
   const [starting, setStarting] = useState(false);
+  // Optimistic post-launch state: a run takes a poll cycle (a couple of
+  // seconds) before the agents endpoint reports the first running agent.
+  // While true we show "waiting for agent…" and poll faster.
+  const [awaitingAgent, setAwaitingAgent] = useState(false);
 
   const [hovered, setHovered] = useState<{ run: AgentRun; rect: DOMRect } | null>(null);
   const enterTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -67,20 +71,33 @@ export default function AdvNowRunning({ slug }: Props) {
       ]).then(([agents, status]) => {
         if (cancelled) return;
         const live = (agents?.runs ?? []).filter((r) => r.running);
-        setRuns(live.map(parseRun).sort((a, b) => a.ts - b.ts));
+        const liveRuns = live.map(parseRun).sort((a, b) => a.ts - b.ts);
+        setRuns(liveRuns);
         setAlive(status ? !!status.alive : null);
+        // First real run arrived — drop the optimistic "waiting" state.
+        if (liveRuns.length > 0) setAwaitingAgent(false);
       });
     };
     refresh();
-    const id = window.setInterval(refresh, 4000);
+    // Poll faster while optimistically waiting for the first agent post-launch.
+    const id = window.setInterval(refresh, awaitingAgent ? 1200 : 4000);
     return () => { cancelled = true; window.clearInterval(id); };
-  }, [slug]);
+  }, [slug, awaitingAgent]);
 
   useEffect(() => {
     if (runs.length === 0) return;
     const id = window.setInterval(() => setNow(Math.floor(Date.now() / 1000)), 1000);
     return () => window.clearInterval(id);
   }, [runs.length]);
+
+  // Safety net: if no agent appears within 20s of launch (e.g. a harness with
+  // no started plan has nothing eligible to pick), stop "waiting" and fall
+  // back to "Active — idle".
+  useEffect(() => {
+    if (!awaitingAgent) return;
+    const id = window.setTimeout(() => setAwaitingAgent(false), 20_000);
+    return () => window.clearTimeout(id);
+  }, [awaitingAgent]);
 
   const launchHarness = useCallback(async () => {
     if (!slug || starting) return;
@@ -98,12 +115,10 @@ export default function AdvNowRunning({ slug }: Props) {
       }
       const d = await res.json();
       toast.success('Harness launched', { description: d.logPath });
-      setTimeout(() => {
-        fetch(`/api/harness/${encodeURIComponent(slug)}/status?phase=${PHASE}`)
-          .then((r) => r.json())
-          .then((s: StatusResponse) => setAlive(!!s.alive))
-          .catch(() => {});
-      }, 2000);
+      // Optimistic: flip to active + "waiting for agent…" immediately; the
+      // faster poll (driven by the awaitingAgent dep) takes over from here.
+      setAlive(true);
+      setAwaitingAgent(true);
     } catch (e) {
       toast.error('Launch failed', { description: String(e) });
     } finally {
@@ -120,6 +135,7 @@ export default function AdvNowRunning({ slug }: Props) {
       const d = (await res.json()) as { killed?: unknown[] };
       toast.success(`Stopped ${d.killed?.length ?? 0} process(es)`);
       setAlive(false);
+      setAwaitingAgent(false);
       setRuns([]);
     } catch (e) {
       toast.error('Stop failed', { description: String(e) });
@@ -135,18 +151,24 @@ export default function AdvNowRunning({ slug }: Props) {
     return m > 0 ? `${m}:${String(r).padStart(2, '0')}` : `0:${String(r).padStart(2, '0')}`;
   };
 
-  const isIdle = runs.length === 0;
-  const isLoading = alive === null;
-  const stateClass = isLoading ? 'is-checking' : alive ? 'is-active' : 'is-stopped';
+  // Treat a just-launched harness (and one with live runs) as active for
+  // display, so the bar flips immediately rather than waiting for a poll.
+  const effectivelyAlive = alive === true || awaitingAgent || runs.length > 0;
+  const isLoading = alive === null && !awaitingAgent;
+  const stateClass = isLoading ? 'is-checking' : effectivelyAlive ? 'is-active' : 'is-stopped';
 
   return (
     <div className={`pc-advshell__harness-bar pc-advshell__harness-bar--${stateClass}`} aria-label="Harness status">
       {/* Active status indicator — only shown when running */}
-      {alive === true && (
+      {effectivelyAlive && (
         <div className="pc-advshell__harness-status">
           <span className="pc-advshell__harness-dot" aria-hidden />
           <span className="pc-advshell__harness-label">
-            {isIdle ? 'Active — idle' : `Active — ${runs.length} agent${runs.length === 1 ? '' : 's'} running`}
+            {runs.length > 0
+              ? `Active — ${runs.length} agent${runs.length === 1 ? '' : 's'} running`
+              : awaitingAgent
+                ? 'Active — waiting for agent…'
+                : 'Active — idle'}
           </span>
         </div>
       )}
@@ -183,7 +205,7 @@ export default function AdvNowRunning({ slug }: Props) {
       )}
 
       {/* Start (when stopped) / Stop (when active) */}
-      {alive !== true && (
+      {!effectivelyAlive && (
         <button
           type="button"
           className="pc-advshell__action pc-advshell__action--start"
@@ -195,7 +217,7 @@ export default function AdvNowRunning({ slug }: Props) {
           {starting ? 'Starting…' : 'Start harness'}
         </button>
       )}
-      {alive === true && (
+      {effectivelyAlive && (
         <button
           type="button"
           className="pc-advshell__action pc-advshell__action--stop"
