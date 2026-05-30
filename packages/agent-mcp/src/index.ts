@@ -12,6 +12,12 @@
  * (or running `startServer`) imports them all and populates the catalog.
  */
 
+// Register Papercusp's capability→tier policy (plan P-012) BEFORE anything
+// imports `defineTool` and self-registers — `tier` is stamped eagerly at
+// registration. Must stay above `import './bootstrap'` (and is reached first
+// by operator tools, which import `defineTool` from this index).
+import './capability-tiers-papercusp';
+
 export { defineTool } from '@papercusp/tooldef';
 // Papercusp's role config (plan P-010): exporting AGENT_ROLES pulls in
 // role-config.ts, whose `declare module` augmentation registers the built-in
@@ -73,7 +79,10 @@ export {
   _resetCardCorrelatorForTests,
 } from '@papercusp/tooldef';
 export { _resetStateChannelForTests } from '@papercusp/tooldef';
-export { tierFor } from '@papercusp/tooldef';
+export { tierFor, setCapabilityTierResolver } from '@papercusp/tooldef';
+// Papercusp's capability→tier policy (plan P-012) — the host impl registered
+// as tooldef's tier resolver (see capability-tiers-papercusp.ts).
+export { papercuspTierFor } from './capability-tiers-papercusp';
 
 // Per-spawn URL-param parser — used by both projected-tool transports
 // to extract harness/workspace/role/feature/chunk/run/spawn from the

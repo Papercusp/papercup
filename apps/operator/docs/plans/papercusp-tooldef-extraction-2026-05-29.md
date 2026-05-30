@@ -12,28 +12,58 @@ companion-to: [endpoint-unification-2026-05-21, endpoint-route-migration-2026-05
 
 ## Now
 
-**State:** Phase 1 (carve the pure core) **shipped** 2026-05-29. **P-010 (role
-genericization) and P-011 (quota windowing) shipped** 2026-05-30 — two of the six
-Phase-2 baked-rule injections are done. P-010: `AgentRole` is no longer a baked
-`string` stand-in — the core exposes an augmentable `RoleRegistry` seam, the host
-registers its roles via declaration merging (`agent-mcp/src/role-config.ts`), and
-`ToolContext` is generic over `Tx`. P-011: the worker/chunk + power-user quota
-logic left the engine for a host-injected `computeQuotaWindow(ctx, roleQuota) =>
-{ key, limit }` seam (`agent-mcp/src/quota-policy.ts`, wired into `PROJECTED_DEPS`);
-the core ships a generic run-scoped/`perRun` default and no longer knows `'worker'`,
-`'chunk:'`, or `perChunk`. Verified: tooldef typecheck clean + 188 tests; agent-mcp
-typecheck 19 errors (pre-existing baseline — **0 new, 0 lost** across both items) +
-111 pass / 1 pre-existing fail. See the **Progress log** (2026-05-30) for design
-rationale + follow-ups.
+**State:** Phase 1 (carve the pure core) **shipped** 2026-05-29. **P-010 (role),
+P-011 (quota windowing), and P-012 (capability tiers) shipped** 2026-05-30 — three
+of the six Phase-2 baked-rule injections are done. P-010: augmentable `RoleRegistry`
+seam + host role config (`agent-mcp/src/role-config.ts`) + `ToolContext<Tx>`. P-011:
+host-injected `computeQuotaWindow(ctx, roleQuota) => { key, limit }`
+(`agent-mcp/src/quota-policy.ts`) — engine no longer knows `'worker'`/`'chunk:'`/
+`perChunk`. P-012: `tierFor` is now a pluggable resolver (`setCapabilityTierResolver`,
+engine default `'low'`); the Papercusp capability→tier table moved to
+`agent-mcp/src/capability-tiers-papercusp.ts`, registered before tools self-register.
+Verified across all three: tooldef typecheck clean + 188 tests; agent-mcp typecheck
+19 errors (pre-existing baseline — **0 new, 0 lost**) + 111 pass / 1 pre-existing
+fail. See the **Progress log** (2026-05-30) for design rationale + follow-ups.
 
-**Next:** the remaining Phase-2 baked-rule injections — **P-012** (`tierFor`),
-**P-013** (`SigningProvider` + `contextSchema`), **P-014** (`resolvePrincipal`),
-**P-015** (persistence interfaces). **Phase 3** (Standard Schema — the public-API-
-shaping change) can run in parallel. A generic `Tx` parameterization of
-`UnifiedToolContext` (dispatch path) was left as a follow-up — only the legacy
-`ToolContext` was parameterized in P-010 (see Progress log).
+**Next:** the two remaining Phase-2 injections — **P-013** (`SigningProvider` +
+`contextSchema` for spawn context) and **P-014** (`resolvePrincipal`) — both touch
+**security-sensitive** surfaces (HMAC spawn-URL signing, auth-tier/principal
+resolution), so they warrant a checkpoint before landing. **P-015** (persistence
+interfaces for card/state/replay) is non-sensitive. **Phase 3** (Standard Schema)
+can run in parallel. Follow-up: a generic `Tx` parameterization of
+`UnifiedToolContext` (dispatch path) — only the legacy `ToolContext` got it in P-010.
 
 ## Progress log
+
+### 2026-05-30 — P-012 shipped (capability tiers → injectable resolver)
+
+Third Phase-2 item. Files: `packages/tooldef/src/{capability-tiers,index}.ts`;
+`packages/agent-mcp/src/{capability-tiers-papercusp.ts (new),index.ts,vitest.config.ts}`,
+`src/__tests__/{define-tool.test.ts,test-setup.ts (new)}`.
+
+**The wrinkle vs. the other seams: `tierFor` runs at module-load, not per-request.**
+`defineTool`/`defineResource`/`definePrompt` stamp `def.tier = tierFor(capability)`
+eagerly at registration, so this can't be a `DispatchProjectedDeps` (per-dispatch)
+injection like P-011 — the resolver must be registered *before* any tool
+self-registers. Solved with a module-level resolver in the engine
+(`setCapabilityTierResolver`, default `() => 'low'`) and a load-time registration in
+the host: `agent-mcp/src/capability-tiers-papercusp.ts` exports `papercuspTierFor`
+(the moved EXACT/PREFIX table, `'medium'` fallback) and calls
+`setCapabilityTierResolver(papercuspTierFor)` on import. That import sits at the
+**top of `agent-mcp/index.ts`, above `bootstrap`** — robust because (verified) all
+186 operator tools import `defineTool` from `@papercusp/agent-mcp` (so the full
+index, incl. this registration, evaluates before their `defineTool` runs), and
+agent-mcp's own 27 tools load via `bootstrap` (imported last). `tier` is descriptive
+metadata — the dispatcher does **not** gate on it — so the worst case of a missed
+registration is a wrong descriptive tier, never a security gap.
+
+**Tests:** the `tierFor` table cases moved to assert `papercuspTierFor` directly in
+`define-tool.test.ts`. Three agent-mcp test files (`define-tool`, `dispatch`,
+`prompts`) assert tier stamping via `defineTool`/`definePrompt`; rather than scatter
+side-effect imports, a vitest `setupFiles` (`__tests__/test-setup.ts`) registers the
+host resolver for every agent-mcp test — mirroring production, where importing the
+package always activates it. tooldef 188/188 (engine default `'low'`, no tier
+assertions there); agent-mcp 111 pass / 1 pre-existing fail; typecheck 19 = baseline.
 
 ### 2026-05-30 — P-011 shipped (quota windowing → host-injected)
 
@@ -331,8 +361,13 @@ supplies the concrete one), `http-projection.ts` (→ eventually `tooldef-http`)
   worker/chunk + power-user logic moved to `agent-mcp/src/quota-policy.ts`
   (`papercuspComputeQuotaWindow`), wired into `PROJECTED_DEPS`. Shipped 2026-05-30.
   blocked-by: P-003 → D-006
-- **P-012** `todo` Make `tierFor(capability)` a host-supplied function; core ships an
-  identity/`'low'` default. blocked-by: P-003 → D-006
+- **P-012** `done` `tierFor` is now a pluggable module-level resolver
+  (`setCapabilityTierResolver`); the engine default classifies everything `'low'`.
+  The Papercusp table moved to `agent-mcp/src/capability-tiers-papercusp.ts`
+  (`papercuspTierFor`, `'medium'` fallback) and registers itself on import, wired in
+  at the top of `agent-mcp/index.ts` before `bootstrap` (registration must precede
+  tool self-registration since `tier` is stamped eagerly — see Progress log
+  2026-05-30). Shipped 2026-05-30. blocked-by: P-003 → D-006
 - **P-013** `todo` Define a `SigningProvider` strategy + a configurable `contextSchema`
   for spawn context; core ships a no-op (loopback-only) provider. Papercusp's
   HMAC-over-PG-secret becomes one provider impl. blocked-by: P-003 → D-006

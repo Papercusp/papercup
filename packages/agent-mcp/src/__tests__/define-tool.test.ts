@@ -2,7 +2,10 @@ import { describe, expect, it, beforeEach } from 'vitest';
 import { z } from 'zod';
 import { defineTool } from '@papercusp/tooldef';
 import { _resetCatalogForTests, getCatalog, lookup } from '@papercusp/tooldef';
-import { tierFor } from '@papercusp/tooldef';
+// Importing this registers papercuspTierFor as tooldef's tier resolver (load-
+// time side effect), so the `defineTool(...).tier` assertions below classify
+// against the real Papercusp table rather than the engine's 'low' default.
+import { papercuspTierFor } from '../capability-tiers-papercusp';
 import {
   _resetProjectionRegistryForTests,
   lookupByMcpName,
@@ -208,19 +211,19 @@ describe('defineTool', () => {
   });
 });
 
-describe('tierFor', () => {
+describe('papercuspTierFor', () => {
   it('handles exact matches', () => {
-    expect(tierFor('tasks:read')).toBe('low');
-    expect(tierFor('tasks:write')).toBe('medium');
-    expect(tierFor('audit:read')).toBe('high');
+    expect(papercuspTierFor('tasks:read')).toBe('low');
+    expect(papercuspTierFor('tasks:write')).toBe('medium');
+    expect(papercuspTierFor('audit:read')).toBe('high');
   });
   it('handles wildcards', () => {
-    expect(tierFor('secrets:read:OPENAI_KEY')).toBe('high');
-    expect(tierFor('http:fetch:youtube.com')).toBe('high');
-    expect(tierFor('events:emit:foo')).toBe('medium');
+    expect(papercuspTierFor('secrets:read:OPENAI_KEY')).toBe('high');
+    expect(papercuspTierFor('http:fetch:youtube.com')).toBe('high');
+    expect(papercuspTierFor('events:emit:foo')).toBe('medium');
   });
   it('defaults to medium for unknown', () => {
-    expect(tierFor('frob:nicate')).toBe('medium');
+    expect(papercuspTierFor('frob:nicate')).toBe('medium');
   });
 });
 
