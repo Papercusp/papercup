@@ -292,10 +292,22 @@ export function usePlanItems(params?: {
   status?: ItemStatus;
   actionable?: boolean;
   needsHuman?: boolean;
+  /** Skip the fetch (return empty) when false — lets a caller mount the
+   *  hook unconditionally but only hit the network for the active view. */
+  enabled?: boolean;
 }) {
+  const enabled = params?.enabled ?? true;
   return useAsyncJson(
-    () => fetchPlanItems(params),
-    [params?.slug, params?.status, params?.actionable, params?.needsHuman],
+    () =>
+      enabled
+        ? fetchPlanItems({
+            slug: params?.slug,
+            status: params?.status,
+            actionable: params?.actionable,
+            needsHuman: params?.needsHuman,
+          })
+        : Promise.resolve({ items: [] as PlanItemRow[] }),
+    [params?.slug, params?.status, params?.actionable, params?.needsHuman, enabled],
   );
 }
 

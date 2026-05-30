@@ -22,11 +22,11 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { toast } from 'sonner';
 import PlanRail, { type PlanRailHandle } from './PlanRail';
 import PlanDetail from './PlanDetail';
-import PlanItemsList from './PlanItemsList';
+import PlanItemsList, { PlanItemRail } from './PlanItemsList';
 import PlanFilters from './PlanFilters';
 import PlanBucketTabs from './PlanBucketTabs';
 import PlanSearchResults from './PlanSearchResults';
-import { usePlanList, usePlanSearch, type PlanListRow } from './plans-api';
+import { usePlanList, usePlanItems, usePlanSearch, type PlanListRow } from './plans-api';
 import { launchOmpAgent } from '@/lib/native-omp-launch';
 import { resolveHarnessScope, type HarnessNodeForScope } from '@/lib/harness/scope';
 
@@ -72,6 +72,11 @@ export default function PlansClient() {
     parseAsStringEnum<PlanDetailTab>(['editor', 'revisions', 'agents']).withDefault('editor'),
   );
   const [, setJump] = useQueryState('jump', parseAsString);
+  // Plan filter for the inbox/actionable views — the rail in those views
+  // lists only plans-with-items and sets this to scope the main list to
+  // one plan (clicking filters, it does NOT open the plan). Distinct from
+  // `plan` (the open-plan slug) and `h` (the harness filter).
+  const [itemPlan, setItemPlan] = useQueryState('itemPlan', parseAsString);
   const railRef = useRef<PlanRailHandle | null>(null);
   const searchRef = useRef<HTMLInputElement | null>(null);
 
@@ -144,6 +149,28 @@ export default function PlansClient() {
     [planList.data],
   );
 
+  // Inbox/actionable share one lifted cross-plan item fetch, which feeds
+  // both the main list (PlanItemsList) and the left filter rail
+  // (PlanItemRail). `enabled` keeps Browse from hitting the network.
+  const itemMode: 'inbox' | 'actionable' | null =
+    view === 'inbox' ? 'inbox' : view === 'actionable' ? 'actionable' : null;
+  const planItems = usePlanItems({
+    needsHuman: view === 'inbox',
+    actionable: view === 'actionable',
+    enabled: itemMode !== null,
+  });
+  // Plans that actually have items in the active bucket, with per-plan
+  // counts — the rail's filter entries. Insertion order = server order.
+  const itemRailPlans = useMemo(() => {
+    const m = new Map<string, { slug: string; count: number; harness?: string }>();
+    for (const r of planItems.data?.items ?? []) {
+      const e = m.get(r.plan);
+      if (e) e.count += 1;
+      else m.set(r.plan, { slug: r.plan, count: 1, harness: harnessByPlan.get(r.plan) ?? undefined });
+    }
+    return [...m.values()];
+  }, [planItems.data, harnessByPlan]);
+
 
   // Lift cross-plan search up so PlanRail can union its hits into the
   // rail filter — otherwise the rail does a substring match on
@@ -190,26 +217,30 @@ export default function PlansClient() {
       setPane('read');
       setTab('editor');
       setJump(targetId ?? null);
+      setItemPlan(null);
       setView('list');
       setSlug(next);
     },
-    [leaveGuard, setJump, setPane, setSlug, setTab, setView],
+    [leaveGuard, setJump, setPane, setSlug, setTab, setView, setItemPlan],
   );
 
   // Switch the top-level view. Guards only when the switch abandons an
-  // open plan (i.e. moving off `list`, which clears `slug`).
+  // open plan (i.e. moving off `list`, which clears `slug`). Always
+  // clears the item-view plan filter so it never leaks across views.
   const navView = useCallback(
     (next: PlansView) => {
       if (next !== 'list') {
         if (!leaveGuard()) return;
         setPane('read');
+        setItemPlan(null);
         setView(next);
         setSlug(null);
         return;
       }
+      setItemPlan(null);
       setView('list');
     },
-    [leaveGuard, setPane, setView, setSlug],
+    [leaveGuard, setPane, setView, setSlug, setItemPlan],
   );
 
   // P-304 keyboard shortcuts. `navView` / `navSlug` are the guarded
@@ -298,55 +329,73 @@ export default function PlansClient() {
           ))}
         </nav>
 
-        {harnessOptions.length > 1 ? (
-          <div className="pc-plans__harness-filter">
-            <label className="pc-plans__harness-filter-label" htmlFor="pc-plans-harness-filter">
-              Harness
-            </label>
-            <select
-              id="pc-plans-harness-filter"
-              className="pc-plans__harness-filter-select"
-              value={harnessFilter ?? ''}
-              onChange={(e) => void setHarnessFilter(e.target.value || null)}
-            >
-              <option value="">All ({planList.data?.plans.length ?? 0})</option>
-              {harnessOptions.map((h) => {
-                const count = (planList.data?.plans ?? []).filter((p) => p.harness === h).length;
-                return (
-                  <option key={h} value={h}>
-                    {h} ({count})
-                  </option>
-                );
-              })}
-            </select>
+        {itemMode === null ? (
+          <>
+            {harnessOptions.length > 1 ? (
+              <div className="pc-plans__harness-filter">
+                <label className="pc-plans__harness-filter-label" htmlFor="pc-plans-harness-filter">
+                  Harness
+                </label>
+                <select
+                  id="pc-plans-harness-filter"
+                  className="pc-plans__harness-filter-select"
+                  value={harnessFilter ?? ''}
+                  onChange={(e) => void setHarnessFilter(e.target.value || null)}
+                >
+                  <option value="">All ({planList.data?.plans.length ?? 0})</option>
+                  {harnessOptions.map((h) => {
+                    const count = (planList.data?.plans ?? []).filter((p) => p.harness === h).length;
+                    return (
+                      <option key={h} value={h}>
+                        {h} ({count})
+                      </option>
+                    );
+                  })}
+                </select>
+              </div>
+            ) : null}
+
+            <PlanFilters
+              list={filteredPlanList}
+              query={q}
+              onQueryChange={setQ}
+              searchRef={searchRef}
+            />
+
+            <PlanBucketTabs
+              plans={visiblePlans}
+              query={q}
+              searchHitSlugs={searchHitSlugs}
+            />
+
+            <div className="pc-plans__list" aria-label="Plan list">
+              <PlanRail
+                ref={railRef}
+                list={filteredPlanList}
+                selectedSlug={slug}
+                query={q}
+                searchHitSlugs={searchHitSlugs}
+                onSelect={navSlug}
+                onStartToggle={() => planList.refresh()}
+                harnessSlug={harnessFilter ?? advActiveSlug}
+              />
+            </div>
+          </>
+        ) : (
+          <div
+            className="pc-plans__list"
+            aria-label={itemMode === 'inbox' ? 'Plans needing human input' : 'Plans with actionable items'}
+          >
+            <PlanItemRail
+              mode={itemMode}
+              plans={itemRailPlans}
+              selected={itemPlan}
+              onSelect={(s) => void setItemPlan(s)}
+              loading={planItems.loading}
+              error={planItems.error}
+            />
           </div>
-        ) : null}
-
-        <PlanFilters
-          list={filteredPlanList}
-          query={q}
-          onQueryChange={setQ}
-          searchRef={searchRef}
-        />
-
-        <PlanBucketTabs
-          plans={visiblePlans}
-          query={q}
-          searchHitSlugs={searchHitSlugs}
-        />
-
-        <div className="pc-plans__list" aria-label="Plan list">
-          <PlanRail
-            ref={railRef}
-            list={filteredPlanList}
-            selectedSlug={slug}
-            query={q}
-            searchHitSlugs={searchHitSlugs}
-            onSelect={navSlug}
-            onStartToggle={() => planList.refresh()}
-            harnessSlug={harnessFilter ?? advActiveSlug}
-          />
-        </div>
+        )}
       </aside>
 
       <main className="pc-plans__main">
@@ -372,19 +421,16 @@ export default function PlansClient() {
           <EmptyState stats={stats} />
         )}
 
-        {view === 'inbox' && (
+        {itemMode && (
           <PlanItemsList
-            mode="inbox"
+            mode={itemMode}
+            items={planItems.data?.items ?? []}
+            loading={planItems.loading}
+            error={planItems.error}
+            refresh={planItems.refresh}
             onPick={navPlanTarget}
             harnessByPlan={harnessByPlan}
-          />
-        )}
-
-        {view === 'actionable' && (
-          <PlanItemsList
-            mode="actionable"
-            onPick={navPlanTarget}
-            harnessByPlan={harnessByPlan}
+            planFilter={itemPlan}
           />
         )}
       </main>
