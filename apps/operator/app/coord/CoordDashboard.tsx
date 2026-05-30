@@ -133,7 +133,7 @@ function HookHealthBanner() {
   const phase = data.last_error.phase;
   const label =
     phase === 'connect'
-      ? 'operator unreachable from an OMP session'
+      ? 'operator unreachable from an agent session'
       : `hook ${data.last_error.handler} error (${phase})`;
   const minutes = Math.max(1, Math.round(ageMs / 60_000));
   return (

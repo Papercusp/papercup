@@ -125,7 +125,7 @@ export default function PlanItemPreview({
             className="pc-items__action-btn pc-items__action-btn--chat"
             onClick={handleChat}
             disabled={launching}
-            title="Chat with a plan-context agent about this item (interactive OMP session scoped to the plan)"
+            title="Chat with a plan-context agent about this item (interactive agent session scoped to the plan)"
           >
             {launching ? 'Launching…' : '💬 Chat with agent'}
           </button>
