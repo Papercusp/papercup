@@ -255,7 +255,7 @@ function Entry({ entry }: { entry: TimelineEntry }) {
   if (entry.kind === 'tool_use') {
     return (
       <div style={{ margin: '0 0 8px', padding: '4px 6px', background: 'rgba(56, 189, 248, 0.08)', border: '1px solid rgba(56, 189, 248, 0.18)', borderRadius: 3 }}>
-        <div style={{ color: '#7dd3fc', fontSize: 10.5, marginBottom: 2 }}>
+        <div style={{ color: 'var(--accent-strong, #7dd3fc)', fontSize: 10.5, marginBottom: 2 }}>
           ▸ tool_use: <strong>{entry.toolName}</strong>
         </div>
         <pre style={{ margin: 0, fontSize: 10.5, color: 'var(--fg-mute)', whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>

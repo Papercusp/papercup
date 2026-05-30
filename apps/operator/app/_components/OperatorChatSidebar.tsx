@@ -309,7 +309,7 @@ const OP_CHAT_SIDEBAR_CSS = `
   border-radius: 14px;
   border: 1px solid rgba(125, 211, 252, 0.24);
   background: radial-gradient(circle at 35% 25%, rgba(255,255,255,0.18), transparent 24%), rgba(56, 189, 248, 0.12);
-  color: #7dd3fc;
+  color: var(--accent-strong, #7dd3fc);
   box-shadow: inset 0 1px 0 rgba(255,255,255,0.06), 0 12px 28px rgba(2, 8, 23, 0.24);
 }
 
@@ -376,7 +376,7 @@ const OP_CHAT_SIDEBAR_CSS = `
   border-radius: 14px;
   border: 1px solid rgba(125, 211, 252, 0.20);
   background: radial-gradient(circle at 35% 25%, rgba(255,255,255,0.18), transparent 24%), rgba(56, 189, 248, 0.10);
-  color: #7dd3fc;
+  color: var(--accent-strong, #7dd3fc);
   box-shadow: inset 0 1px 0 rgba(255,255,255,0.06), 0 12px 28px rgba(2, 8, 23, 0.28);
 }
 
