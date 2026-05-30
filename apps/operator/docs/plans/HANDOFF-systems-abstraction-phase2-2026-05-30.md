@@ -11,16 +11,32 @@ companion-to: [papercusp-systems-abstraction-2026-05-29]
 
 ## Now
 
-**State:** 6 packages shipped on `main` (rrf, embedded-pg-discovery, plan-parser,
-rate-limit, ipc-framing, desktop-ipc). P-030 pt3 (`ipc-endpoint-server`) is `wip`
-— code correct, attempted 3× and reverted clean each time, blocked only on a
-standalone-vitest sibling-resolution config (root-caused below). Package is NOT
-on disk; `apps/operator/lib/endpoint-ipc/` has its 4 originals intact.
+**State:** 7 packages shipped on `main` (rrf, embedded-pg-discovery, plan-parser,
+rate-limit, ipc-framing, desktop-ipc, **ipc-endpoint-server**). **P-030 is now
+`done`** — all three IPC pieces are extracted (shipped `c74cbe70` + plan flip
+`7cac0a37`).
 
-**Next:** finish P-030 pt3 using the turnkey fix in the "blocker" section
-(extend `@papercusp/test-config`'s `defineVitestConfig`; switch `ipc-framing`
-`exports` to object form), then the backlog in lowest-risk order
-(backup → search → memory → locks → coordination).
+P-030 pt3 was finished with a **simpler design than this brief sketched**: the
+package takes a required `host: IpcEndpointHost` (3 injected fns —
+`lookupByMcpName`, `dispatchProjectedToolStream`, `getWorkspaceId`), and
+`apps/operator/lib/endpoint-ipc/server.ts` became the thin **operator host
+adapter** that injects the host and re-exports a bound `startEndpointIpcServer`.
+Because the boot site + `dev_ipc_echo_e2e.test.ts` call the bound adapter, those
+call sites were left UNCHANGED (no `host` at the call site). The moved
+`server.test.ts` wires its OWN `@papercusp/tooldef` lookup/dispatch into `host`,
+so the dual-registry failure mode that blocked attempts 2–3 is structurally
+impossible — no vitest.config / `deps.inline` / alias gymnastics were needed
+(the package has NO vitest.config at all, matching the ipc-framing recipe). The
+only config change required was the `ipc-framing` `exports` → object-form fix
+(#1 below). Bonus: the operator's `server.test.ts` was **already red on main**
+(its synthetic `ProjectedTool` fixture used the pre-tooldef-extraction shape:
+`args`/`requiresPrincipal` + `classifyEventWire`, which isn't exported from
+`@papercusp/tooldef`); the moved+fixed fixture (`description` + `inputSchema` +
+literal `eventWireKinds`) un-breaks it without touching the tooldef package.
+
+**Next:** the backlog in lowest-risk-first order — start with **P-023 / P-024**
+(`@papercusp/backup`, kopia wrapper), then P-013 → P-020 (search) → P-021
+(memory) → P-010 (locks) → P-011/P-012 (coordination) → P-040 → P-050/P-051.
 
 Read this, then the full plan: `papercusp-systems-abstraction-2026-05-29.md`
 (via `plans:get`). Everything below is verified against the repo at the time of
@@ -83,10 +99,21 @@ Design corrections made vs. the original plan audit (all in the plan body):
 - **plan-parser (P-022):** pure tier only (`parser` + `effective-status` +
   `content-hash`); `lint.ts` is NOT pure (imports `source.ts`) — stays in-app.
 
-## What's IN PROGRESS / BLOCKED — P-030 pt3 (start here)
+## ✅ DONE — P-030 pt3 (`@papercusp/ipc-endpoint-server`), shipped `c74cbe70`
 
-**`@papercusp/ipc-endpoint-server`** — the last IPC piece. **Plan item P-030 is
-`wip`.** Attempted 3× this session, **all reverted clean** (main never left
+> Resolved. The original design notes below are kept as historical context.
+> What actually shipped differs (and is simpler): see the updated **## Now**
+> at the top. Key deltas from the sketch below: (a) full `host` injection means
+> the package has NO runtime `@papercusp/tooldef` import, so the dual-registry
+> risk is structurally impossible and **no vitest.config was needed** (the
+> package has none, like ipc-framing); (b) only the `ipc-framing` `exports`
+> object-form fix (#1) was required, not the `defineVitestConfig` extension;
+> (c) `apps/operator/lib/endpoint-ipc/server.ts` is a host *adapter* (injects
+> host, re-exports a bound `startEndpointIpcServer`) so the boot site + e2e test
+> call sites are unchanged — the boot site was NOT rewired.
+
+**`@papercusp/ipc-endpoint-server`** — the last IPC piece. **Plan item P-030 was
+`wip`.** Attempted 3× in the prior session, **all reverted clean** (main never left
 broken on attempts 2–3; attempt 1 briefly broke it and was fixed). The
 **package does not exist on disk right now** (`packages/ipc-endpoint-server`
 absent — verified) and `apps/operator/lib/endpoint-ipc/` still has the 4
