@@ -34,16 +34,23 @@ shared submodules (`sse`, `sync`, `agent-chat`, `papercusp`), and pushing the
 `libs/sse` `name` change forces Restart lockstep (Restart's `@restart/sse` +
 6 `chat-protocol` consumers must migrate simultaneously).
 
-**Progress (2026-05-30):** P-001 (in-tree rename), P-002 (sync/agent-chat
-submodule refs), P-004 (sse pin-fork reconcile + push), and P-005 (4 shared-lib
-pins pushed FF; P-040 owed pushes discharged) are **DONE**. The full sse rename is
+**Progress (2026-05-30):** DONE — P-001 (in-tree sse rename), P-002 (sync/agent-chat
+submodule refs), P-004 (sse pin-fork reconcile + push), P-005 (4 shared-lib pins
+pushed FF; P-040 owed pushes discharged), and **P-003a** (chat-protocol org rename +
+D-003 optional fields + Restart lockstep, pushed). **Item 2 (org rename) is fully
+done for both shared libs; items 3 & 4 done.** The sse + chat-protocol renames are
 consistent across papercup + all `Papercusp/*` remotes + Restart `feat/scout-unify`.
-Only **P-003 (Phase 6 chat-protocol adoption)** and **P-006 (optional)** remain.
 
-**Next:** P-003 — rename `@restart/chat-protocol` → `@papercusp/chat-protocol` +
-add the 4 optional wire fields (D-003) in the shared repo, add it as a papercup
-submodule, and wire papercup's SSE/state-channel emit path to the shared
-`ChatEvent` + `OpenCardSnapshot` (D-002, option A).
+**Remaining:** **P-003b** — the papercup emit-path adoption (option A wiring), a
+design-sensitive refactor of the LIVE card/voice/SSE system (flat-vs-discriminated
+`CardPresentation` + a `date` `min/max` string-vs-number conflict needing one more
+shared-type widening). Deliberately left as a focused, tested pass rather than
+rushed — full spec in the P-003b item. **P-006** (optional `sseResponse` adapter)
+deferred; no one blocked.
+
+**Next:** P-003b per its spec (resolve the `min/max: number|string` widening in the
+shared repo first, then add the papercup submodule + map at `pendingToOpenCard` +
+update the ~7 `.presentation` consumers + run the card/voice/state tests).
 
 ## Background
 
@@ -142,11 +149,40 @@ every in-tree AND submodule ref is migrated.
   node_modules symlink is RETAINED** as a transitional alias covering that one
   lingering ref; it drops when the HarnessDashboard removal lands. Push of these
   submodule pins is folded into the P-005 coordinated push.
-- **P-003** `todo` (gated) — Phase 6 option A: add the 4 optional wire fields to
-  shared chat-protocol types; rename `@restart/chat-protocol` →
-  `@papercusp/chat-protocol` (shared repo + Restart's 6 consumers); papercup
-  imports `ChatEvent` + `OpenCardSnapshot` for the wire/state-channel emit path,
-  keeping `tooldef` generics internal. Blocked-by: D-001 rename landing.
+- **P-003a** `done` — chat-protocol org rename + D-003 field additions, shipped &
+  pushed. `Papercusp/chat-protocol` main `524a446→50a066e`: renamed
+  `@restart/chat-protocol → @papercusp/chat-protocol` + added `hint`/`style`
+  (CardOption), `voiceAnswerable` (CardPresentation), `dataSchemaJson`
+  (OpenCardSnapshot) — all OPTIONAL, back-compat for Scout's consumers. Restart
+  lockstep: 5 consumers + tsconfig path + symlink + pin (`80bcdd25` on
+  `feat/scout-unify`, pushed). Item 2 (org rename) is now fully done for BOTH
+  shared libs; the shared chat-protocol types are adoption-ready.
+- **P-003b** `todo` — papercup emit-path adoption (option A). The remaining,
+  design-sensitive piece — touches the LIVE card/voice/SSE system, so it warrants
+  a focused, tested pass. Spec:
+  1. Add `Papercusp/chat-protocol` as a papercup submodule at `libs/chat-protocol`
+     + `node_modules/@papercusp/chat-protocol` symlink + `package.json` dep
+     (papercup resolves scoped pkgs by symlink, no tsconfig path needed).
+  2. Make papercup's WIRE `OpenCardSnapshot` the shared type: in
+     `packages/tooldef/src/card-correlator.ts:pendingToOpenCard` (the single build
+     site) emit the shared shape; keep `tooldef`'s generic, zod-driven `CardSpec`/
+     `CardResponse` (discriminated `CardPresentation`) as the internal source of
+     truth and MAP discriminated→flat at emit. `dataSchemaJson` already produced
+     via `zodToJsonSchema`.
+  3. **Design crux (must resolve first):** papercup's `date` presentation uses
+     `min/max: string`; the shared flat `CardPresentation` uses `min/max: number`.
+     A discriminated→flat assignment won't typecheck. Resolve by widening the
+     shared `CardPresentation.min/max` to `number | string` (optional, back-compat
+     — Scout uses number for slider, papercup uses string date bounds) — which is
+     ANOTHER `Papercusp/chat-protocol` commit + push + Restart re-pin. (CardOption
+     is already compatible: papercup's `{id,label,hint?,style?}` ⊆ the augmented
+     shared `{id,label,description?,hint?,style?}`.)
+  4. Update the ~7 consumers that read `.presentation` and rely on discriminant
+     narrowing (`voice-cards/{compose-ambiguity-prompt,match-voice-answer}.ts`,
+     `app/_components/chat/PendingCardsBar.tsx`, `use-state-snapshots.ts`) to treat
+     `options?` etc. as optional on the flat type; re-run the voice-cards +
+     `state-channel` + `operator-state-snapshot` tests.
+  Blocked-by: nothing external — all prerequisites (rename, fields, pushes) are done.
 - **P-004** `done` — sse pin fork reconciled + pushed. Rebased the local chain
   (`fdda003` type-fix + the rename) onto the remote `.gitignore` (`415f191`) →
   linear `Papercusp/sse` main = **`305e084`** (nothing dropped). papercup re-pinned
