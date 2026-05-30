@@ -96,6 +96,7 @@
     "@papercusp/publish-auth": "file:../../libs/papercusp-publish-auth",
     "@papercusp/rate-limit": "file:../../packages/rate-limit",
     "@papercusp/rrf": "file:../../packages/rrf",
+    "@papercusp/search": "file:../../packages/search",
     "@picovoice/koala-web": "^3.0.0",
     "@picovoice/porcupine-web": "^4.0.0",
     "@picovoice/web-voice-processor": "^4.0.10",
