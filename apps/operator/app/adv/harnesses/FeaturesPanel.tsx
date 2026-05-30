@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { useVirtualizer } from '@tanstack/react-virtual';
 import { parseAsString, parseAsStringEnum, useQueryState } from 'nuqs';
 import { toast } from 'sonner';
 import { openFeatureChat } from '@restart/papercup-shared';
@@ -133,6 +134,19 @@ export default function FeaturesPanel({ params, api }: PanelComponentProps) {
     });
   }, [features, activeView, search]);
 
+  // P-020: virtualize the row list (only the visible window mounts), so a
+  // 100+ feature harness doesn't pay the full DOM/layout cost. Fixed-ish row
+  // height with measureElement for accuracy. measure() on filter/search change.
+  const rowVirtualizer = useVirtualizer({
+    count: filtered.length,
+    getScrollElement: () => listRef.current,
+    estimateSize: () => 49,
+    overscan: 10,
+  });
+  useEffect(() => {
+    rowVirtualizer.measure();
+  }, [filtered, rowVirtualizer]);
+
   // P-019 keyboard nav (panel-scoped): J/K move a focus cursor, ↵ opens
   // (sets ?sel), R resets the focused feature, / focuses search. Fires only
   // when the list (or a row in it) holds focus, so it never hijacks typing.
@@ -140,9 +154,10 @@ export default function FeaturesPanel({ params, api }: PanelComponentProps) {
     setFocusIdx((i) => Math.min(i, Math.max(0, filtered.length - 1)));
   }, [filtered.length]);
   useEffect(() => {
-    const el = listRef.current?.querySelector(`[data-fidx="${focusIdx}"]`) as HTMLElement | null;
-    el?.scrollIntoView({ block: 'nearest' });
-  }, [focusIdx]);
+    // Virtualized: scroll the focused row into the window (the DOM node may
+    // not be mounted, so scrollToIndex is required, not scrollIntoView).
+    if (filtered.length > 0) rowVirtualizer.scrollToIndex(focusIdx, { align: 'auto' });
+  }, [focusIdx, filtered.length, rowVirtualizer]);
   const onListKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
     if (filtered.length === 0) return;
     switch (e.key) {
@@ -223,7 +238,10 @@ export default function FeaturesPanel({ params, api }: PanelComponentProps) {
             {total === 0 ? 'No features yet — planner may still be running.' : 'No features match this view.'}
           </PanelMessage>
         ) : (
-          filtered.map((f, idx) => {
+          <div style={{ height: rowVirtualizer.getTotalSize(), position: 'relative', width: '100%' }}>
+            {rowVirtualizer.getVirtualItems().map((vi) => {
+            const f = filtered[vi.index];
+            const idx = vi.index;
             const tone = STATUS_TONE[f.status] ?? STATUS_TONE.todo;
             const isActive = f.id === selectedId;
             const attempts = f.attempts ?? 0;
@@ -231,8 +249,11 @@ export default function FeaturesPanel({ params, api }: PanelComponentProps) {
             return (
               <div
                 key={f.id}
+                data-index={idx}
                 data-fidx={idx}
+                ref={rowVirtualizer.measureElement}
                 className={`pc-adv-features__row${isActive ? ' is-active' : ''}${idx === focusIdx ? ' is-focused' : ''}`}
+                style={{ position: 'absolute', top: 0, left: 0, width: '100%', transform: `translateY(${vi.start}px)` }}
                 onClick={() => void setSelectedId(f.id)}
                 onContextMenu={(e) => {
                   e.preventDefault();
@@ -297,7 +318,8 @@ export default function FeaturesPanel({ params, api }: PanelComponentProps) {
                 </span>
               </div>
             );
-          })
+            })}
+          </div>
         )}
       </div>
       <div className="pc-adv-features__footer">
