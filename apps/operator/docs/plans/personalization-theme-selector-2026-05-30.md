@@ -11,22 +11,24 @@ owner: avi@storewolf.com
 
 ## Now
 
-**State:** Phases 1 + 2 committed (`3520c73a`, `aa79e095`). Phase 1 = apply
-mechanism (`lib/theme.ts`), token contract, pre-paint boot script in both
-`app/layout.tsx` and `apps/operator-vite/index.html` (the live SPA shell). Phase 2 =
-black moved into the DTCG pipeline: `design-tokens/black.semantic.tokens.json` +
-a `css-semantic-black` Style Dictionary platform → generated
-`apps/operator/app/_semantic.black.css` (`[data-theme="black"]`); the hand-authored
-`_themes.css` is gone. Verified: `npm run tokens` clean, frost `_semantic.css`
-unchanged, `tokens.test` 7/7 (incl. a THEME-CONTRACT guard), `tokens:check` in sync,
-fresh Vite serve resolves `--bg: #000000`. No selector UI yet (Phase 3). Pre-existing
-`app/_lints/css-tokens.test.ts` failure (undefined `--accent-2`/`--fg-danger`/
-`--danger` in unrelated components) is Phase 5 backlog, not a regression.
+**State:** Phases 1–3 committed (`3520c73a`, `aa79e095`, `198a2921`). Phase 1 =
+apply mechanism (`lib/theme.ts`) + token contract + pre-paint boot script (Next
+layout + `operator-vite/index.html`). Phase 2 = black moved into the DTCG pipeline
+(`black.semantic.tokens.json` + `css-semantic-black` → generated `_semantic.black.css`
+under `[data-theme="black"]`; hand-authored `_themes.css` deleted). Phase 3 = the
+**Theme** card picker in `app/settings/personalization/page.tsx`
+(`useActiveTheme`/`writeActiveTheme`, per-card live preview swatches scoped via
+`data-theme`); frost is now an explicitly scopable `[data-theme="frost"]` block too
+(`_semantic.frost.css`) so nested previews render correctly under any active theme.
+Verified: `tsc` clean for changed files, `tokens.test` 9/9 (incl. THEME-CONTRACT
+guard), `tokens:check` in sync, page compiles in the Vite graph. The on-screen
+frost↔black swap is one window-reload away (dev is no-HMR; not hijacked the user's
+window) — selector renders + persists; the mechanism is proven.
 
-**Next:** Phase 3 — the **Theme** selector section in
-`app/settings/personalization/page.tsx` (built-ins from `BUILTIN_THEMES`, calls
-`writeActiveTheme`). That gives a real in-app toggle, at which point the on-screen
-frost↔black swap + the leak inventory get done.
+**Next:** Phase 4 — custom-theme creator (color-pick the semantic tokens, live
+preview, save to a local file via an endpoint-system route at
+`papercuspPath('themes', …)`, append to the picker). Phase 5 — work the leak
+backlog below so black is pixel-clean.
 
 ## Goal
 
@@ -138,6 +140,22 @@ than something a theme can hide.
   demand (e.g. an accent-glow token + accent-tint tiers for blue `rgba()` tints,
   analogous to `--bg-2/3/4`), convert hardcoded hexes. Small per-area diffs (nav,
   harness, cards, …), each verified against **both** frost and black.
+
+**Leak inventory (static, captured 2026-05-30 — these stay blue under black):**
+- `app/globals.css`: **601× `var(--sky-300)`**, **106× `var(--sky-400)`** — the bulk;
+  re-point to `--accent-strong` / `--accent` (introduce `--accent-soft`/glow + tint
+  tiers where a plain accent swap loses nuance).
+- `app/globals.css`: ~28 literal sky/cyan hexes (`#38bdf8`×17, `#7dd3fc`×6,
+  `#57d7ff`×3, `#d7f3ff`, `#0ea5e9`).
+- Component `.tsx` (~80 sites; top offenders): `app/operator-mock/page.tsx` (11),
+  `app/adv/harnesses/{HarnessesWorkspace,HarnessTopBar,DetailPanel,IssuesPanel,FeaturesPanel}.tsx`,
+  `app/project-docs/page.tsx` (9), `app/harness/dock/AddPanelCatalog.tsx` (6).
+- NOT leaks for black: direct `var(--rose-400)` (127) / `--emerald-400` (77) /
+  `--amber-400`/`--gold-400` are status hues the black theme intentionally keeps;
+  defer unless a future theme needs to restyle status colors.
+- Also: the pre-existing `app/_lints/css-tokens.test.ts` failures (undefined
+  `--accent-2`, `--fg-danger`, `--bad-bg`, `--danger`, …) belong to this cleanup —
+  define them in the semantic layer or replace with existing tokens.
 
 ## Acceptance criteria
 
