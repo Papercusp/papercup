@@ -4,7 +4,7 @@
  * cookies (the one HTTP-only step), budget pre-flight, forwards the rest.
  * Ported from app/api/agent-mcp/operator-converse/route.ts. `auth: 'public'`.
  */
-import { sseResponse } from '@restart/sse';
+import { sseResponse } from '@papercusp/sse';
 import {
   dispatchProjectedToolStream,
   emitToSseSink,

@@ -9,7 +9,7 @@
  * subscribes via subscribe(). Pure in-memory fan-out — no DB, no
  * filesystem, sub-ms latency.
  *
- * Internals migrated to @restart/sse's getChannel (2026-05-11). Public
+ * Internals migrated to @papercusp/sse's getChannel (2026-05-11). Public
  * surface preserved verbatim:
  *   - publish(runId, seq, data) — caller-supplied seq (NOT bus-assigned)
  *   - closeChannel(runId) — fires done() + starts 5min GC
@@ -21,7 +21,7 @@
  * arrival order at the bus. The previous bus passed seq through; this
  * one does the same. The channel's auto-id (id) is discarded.
  */
-import { getChannel, _resetChannelsForTest, listChannels, dropChannel } from '@restart/sse';
+import { getChannel, _resetChannelsForTest, listChannels, dropChannel } from '@papercusp/sse';
 
 export interface ChunkEnvelope {
   runId: string;

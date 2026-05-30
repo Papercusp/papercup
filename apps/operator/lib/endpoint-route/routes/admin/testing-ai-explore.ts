@@ -8,7 +8,7 @@
 import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import path from 'node:path';
-import { sseResponse } from '@restart/sse';
+import { sseResponse } from '@papercusp/sse';
 import { readCredentials } from '@/lib/credentials';
 import { defineTool } from '@papercusp/agent-mcp';
 

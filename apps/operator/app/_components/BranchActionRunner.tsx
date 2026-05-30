@@ -9,7 +9,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import '@xterm/xterm/css/xterm.css';
-import { useEventSource } from '@restart/sse/react';
+import { useEventSource } from '@papercusp/sse/react';
 import { Modal } from '../harness/Modal';
 
 interface Props {

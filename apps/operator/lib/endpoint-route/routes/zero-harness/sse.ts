@@ -6,7 +6,7 @@
  *
  * Ported from app/api/zero-harness/sse/route.ts. `auth: 'public'`.
  */
-import { sseResponse, parseLastEventId, type SyncSseEventVocabulary } from '@restart/sse';
+import { sseResponse, parseLastEventId, type SyncSseEventVocabulary } from '@papercusp/sse';
 import { subscribe, backfillSince, type SyncEvent } from '@/lib/sync-sse';
 import { defineTool } from '@papercusp/agent-mcp';
 

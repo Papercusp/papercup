@@ -17,7 +17,7 @@
  * boots one harness per process.
  */
 
-import { sseResponse } from '@restart/sse';
+import { sseResponse } from '@papercusp/sse';
 import { defineTool } from '@papercusp/agent-mcp';
 import { clobberEvents, type ClobberEvent } from '@/lib/sync/hyperbee/clobber-events';
 

@@ -17,7 +17,7 @@
  * pure browser-side component.
  */
 import { useEffect, useRef, useState, useCallback } from 'react';
-import { createResilientEventSource } from '@restart/sse';
+import { createResilientEventSource } from '@papercusp/sse';
 import { useQueryState, parseAsBoolean } from 'nuqs';
 import '@xterm/xterm/css/xterm.css';
 import { Loader2 } from 'lucide-react';

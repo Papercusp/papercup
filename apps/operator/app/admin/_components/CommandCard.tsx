@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { createResilientEventSource } from '@restart/sse';
+import { createResilientEventSource } from '@papercusp/sse';
 import { Tooltip } from '@/app/harness/Tooltip';
 import { Checkbox } from '@/app/harness/Checkbox';
 

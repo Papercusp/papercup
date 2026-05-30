@@ -12,7 +12,7 @@
  */
 import { join } from 'node:path';
 import { openSync, readSync, closeSync, statSync } from 'node:fs';
-import { sseResponse } from '@restart/sse';
+import { sseResponse } from '@papercusp/sse';
 import { defineTool } from '@papercusp/agent-mcp';
 import { DEVICE_AUTH, devicePrincipal } from './_shared';
 import { listHarnessesFor, harnessExistsInWorkspace } from '@/lib/device-harnesses';

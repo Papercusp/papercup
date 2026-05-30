@@ -6,12 +6,12 @@
  * /api/harness/<slug>/branch/<branch>/action-stream subscribes via
  * subscribe() — sub-millisecond fan-out, no 250ms polling.
  *
- * Internals migrated to @restart/sse's getChannel (2026-05-11). The
+ * Internals migrated to @papercusp/sse's getChannel (2026-05-11). The
  * public surface (publish/subscribe/ActionEnvelope) is preserved so
  * call-sites don't need to change.
  */
 
-import { getChannel } from '@restart/sse';
+import { getChannel } from '@papercusp/sse';
 
 export type ActionEventKind = 'output' | 'stderr' | 'started' | 'completed' | 'failed';
 

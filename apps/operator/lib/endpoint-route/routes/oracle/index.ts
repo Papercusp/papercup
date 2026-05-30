@@ -14,7 +14,7 @@
  *
  * `auth: 'public'` — the legacy router gated only on the flag.
  */
-import { sseResponse } from '@restart/sse';
+import { sseResponse } from '@papercusp/sse';
 import { dispatchProjectedToolStream, lookupByMcpName } from '@papercusp/agent-mcp';
 import { defineTool } from '@papercusp/agent-mcp';
 import { activeWorkspaceId } from '@/lib/workspace-registry';

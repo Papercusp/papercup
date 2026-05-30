@@ -19,7 +19,7 @@ vi.mock('@/lib/auth/require-principal', () => ({
   },
 }));
 vi.mock('../telemetry', () => ({ recordRouteInvocation: vi.fn() }));
-vi.mock('@restart/sse', () => ({
+vi.mock('@papercusp/sse', () => ({
   sseResponse: vi.fn(() => new Response('event: x\n\n', {
     status: 200, headers: { 'content-type': 'text/event-stream' },
   })),

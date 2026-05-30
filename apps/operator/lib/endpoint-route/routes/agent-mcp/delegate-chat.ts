@@ -2,7 +2,7 @@
  * GET /api/agent-mcp/delegate-chat — SSE shim into operator:delegate tool.
  * Ported from app/api/agent-mcp/delegate-chat/route.ts. `auth: 'public'`.
  */
-import { sseResponse } from '@restart/sse';
+import { sseResponse } from '@papercusp/sse';
 import {
   dispatchProjectedToolStream,
   emitToSseSink,

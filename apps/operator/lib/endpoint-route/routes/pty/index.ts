@@ -27,7 +27,7 @@ import {
 import { homedir } from 'node:os';
 import { basename, join } from 'node:path';
 import { spawn as spawnChild } from 'node:child_process';
-import { sseResponse } from '@restart/sse';
+import { sseResponse } from '@papercusp/sse';
 import {
   killPty, markActive, resizePty, spawnPty, writePty, getPty, getPtyMeta, getHistory, PtyError,
 } from '@/lib/pty-bridge';

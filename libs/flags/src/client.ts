@@ -5,7 +5,7 @@
 // SSR pages may inject the initial payload via window.__PAPERCUSP_FLAGS__.
 // Live updates arrive on /api/flags/stream (SSE).
 
-import { createResilientEventSource } from "@restart/sse";
+import { createResilientEventSource } from "@papercusp/sse";
 import {
   FLAG_DEFAULTS,
   type FlagKey,

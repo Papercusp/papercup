@@ -19,7 +19,7 @@ import {
   lookupByHttpPath,
   type HttpToolHostExtras,
 } from '@papercusp/agent-mcp';
-import { sseResponse } from '@restart/sse';
+import { sseResponse } from '@papercusp/sse';
 import { dispatchPluginApiRoute } from '@/lib/plugin-api-mount';
 import { pluginSpawnImpl, secretImpl } from '@/lib/plugin-spawn-impl';
 import { resolveHarnessPaths } from '@/lib/resolve-harness-paths';

@@ -7,7 +7,7 @@
  * route-stack passes it through unchanged. sampleRate 0: streaming
  * demo endpoint, no telemetry value.
  */
-import { sseResponse } from '@restart/sse';
+import { sseResponse } from '@papercusp/sse';
 import { defineTool } from '@papercusp/agent-mcp';
 
 export default defineTool({

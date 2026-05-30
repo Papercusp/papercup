@@ -29,7 +29,7 @@ import { existsSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { join, basename } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { parseSseStream } from '@restart/sse';
+import { parseSseStream } from '@papercusp/sse';
 import { selfUrl } from './self-url';
 import {
   type ActionManifest,
@@ -529,7 +529,7 @@ async function runButtonAction(args: {
         const ct = res.headers.get('content-type') ?? '';
         if (ct.includes('text/event-stream') && res.body) {
           // Forward SSE data lines to the log verbatim. Skip heartbeat
-          // frames the @restart/sse server emits as keepalives — those
+          // frames the @papercusp/sse server emits as keepalives — those
           // are transport noise, not button output. Forward every other
           // event (name-agnostic) so future plugins emitting named
           // events ('progress', 'line', etc.) still flow through.

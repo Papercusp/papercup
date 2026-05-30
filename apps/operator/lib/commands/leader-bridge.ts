@@ -11,7 +11,7 @@
  * See plan §3.3 (multi-tab arbitration).
  */
 
-import { createResilientEventSource } from '@restart/sse';
+import { createResilientEventSource } from '@papercusp/sse';
 import { runCommand, runQuery, get } from './registry';
 import type { AgentId, CommandContext, CommandResult } from './types';
 

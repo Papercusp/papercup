@@ -2,7 +2,7 @@
  * GET /api/agent-mcp/run-command/sse — leader-tab SSE channel for browser commands.
  * Ported from app/api/agent-mcp/run-command/sse/route.ts. `auth: 'public'`.
  */
-import { sseResponse } from '@restart/sse';
+import { sseResponse } from '@papercusp/sse';
 import {
   registerSession,
   unregisterSession,

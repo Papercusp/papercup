@@ -1,10 +1,10 @@
 /**
  * /dev Terminal tab — minimal xterm.js terminal driven by the operator's
- * existing pty API. Doubles as a live exercise of the @restart/sse stack:
+ * existing pty API. Doubles as a live exercise of the @papercusp/sse stack:
  *
  *   spawn pty → server pty (node-pty)
  *               ↓
- *               SSE via @restart/sse (sseResponse + sink.eventRaw)
+ *               SSE via @papercusp/sse (sseResponse + sink.eventRaw)
  *               ↓
  *               createResilientEventSource here in the browser
  *               ↓
@@ -20,7 +20,7 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { createResilientEventSource } from '@restart/sse';
+import { createResilientEventSource } from '@papercusp/sse';
 import '@xterm/xterm/css/xterm.css';
 
 interface PtyHandle {
@@ -136,7 +136,7 @@ export default function TerminalTab(): JSX.Element {
       }
     });
 
-    // SSE subscribe via @restart/sse — proves the full migration end-to-end.
+    // SSE subscribe via @papercusp/sse — proves the full migration end-to-end.
     setStatus('connecting');
     const source = createResilientEventSource({
       url: `/api/harness/${slug}/pty/${handle.id}/stream`,

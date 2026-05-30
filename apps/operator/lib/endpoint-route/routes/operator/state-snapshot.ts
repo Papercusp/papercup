@@ -7,7 +7,7 @@
  * Ported from app/api/operator/state-snapshot/route.ts. `auth: 'public'` —
  * session-cookie check inline (preserves the 401 response shape).
  */
-import { sseResponse } from '@restart/sse';
+import { sseResponse } from '@papercusp/sse';
 import {
   snapshotWorkspace,
   subscribeWorkspace,

@@ -2,7 +2,7 @@
  * GET /api/agent-mcp/events — SSE stream of pending_events for active workspace.
  * Ported from app/api/agent-mcp/events/route.ts. `auth: 'public'`.
  */
-import { sseResponse } from '@restart/sse';
+import { sseResponse } from '@papercusp/sse';
 import { onPendingEventInserted } from '@/lib/pending-events-listener';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
 import { defineTool } from '@papercusp/agent-mcp';

@@ -23,7 +23,7 @@
  */
 
 import { useEffect, useRef, useState } from 'react';
-import { createResilientEventSource } from '@restart/sse';
+import { createResilientEventSource } from '@papercusp/sse';
 import '@xterm/xterm/css/xterm.css';
 
 export interface ProvisionStreamProps {

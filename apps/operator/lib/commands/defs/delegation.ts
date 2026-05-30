@@ -6,7 +6,7 @@
  * + the session-management decisions in §10 (#17).
  */
 import { z } from 'zod';
-import { parseSseStream, type ParsedSseEvent } from '@restart/sse';
+import { parseSseStream, type ParsedSseEvent } from '@papercusp/sse';
 import { register } from '../registry';
 import type { CommandDef, QueryDef } from '../types';
 

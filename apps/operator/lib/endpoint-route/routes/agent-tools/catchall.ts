@@ -24,7 +24,7 @@ import {
   type Principal,
   type UnifiedToolContext,
 } from '@papercusp/agent-mcp';
-import { sseResponse } from '@restart/sse';
+import { sseResponse } from '@papercusp/sse';
 import { getOrgPg } from '@restart/db-org';
 
 // Side-effect: register operator-side first-party tools (defineTool calls).

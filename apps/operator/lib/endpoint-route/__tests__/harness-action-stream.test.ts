@@ -19,7 +19,7 @@ vi.mock('@/lib/endpoint-route/telemetry', () => ({
 
 import { Hono } from 'hono';
 import { publish } from '@/lib/branch-action-bus';
-import { _resetChannelsForTest, listChannels } from '@restart/sse';
+import { _resetChannelsForTest, listChannels } from '@papercusp/sse';
 import { registerAllRoutes } from '../register';
 
 let app: Hono;

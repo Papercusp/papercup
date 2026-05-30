@@ -18,7 +18,7 @@
 'use client';
 
 import { useEffect, useState, useMemo } from 'react';
-import { createResilientEventSource } from '@restart/sse';
+import { createResilientEventSource } from '@papercusp/sse';
 
 import type { OpenCardSnapshot } from '@papercusp/agent-mcp';
 
@@ -70,7 +70,7 @@ export function useStateSnapshots(): {
       onError: () => setConnected(false),
       handlers: {
         snapshot: (raw) => {
-          // @restart/sse hands handlers the raw event data string; parse here.
+          // @papercusp/sse hands handlers the raw event data string; parse here.
           let parsed: unknown;
           try { parsed = JSON.parse(raw); }
           catch {

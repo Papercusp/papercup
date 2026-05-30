@@ -46,7 +46,7 @@ vi.mock('@/lib/papercusp-root', () => ({
   // Point at a dir that does not exist so `run`'s readJson resolves null.
   papercuspPath: vi.fn((s: string) => `/tmp/__no_such_provision_dir__/${s}`),
 }));
-vi.mock('@restart/sse', () => ({
+vi.mock('@papercusp/sse', () => ({
   sseResponse: vi.fn(() => new Response('event: x\n\n', {
     status: 200,
     headers: { 'content-type': 'text/event-stream' },

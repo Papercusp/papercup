@@ -16,7 +16,7 @@
  */
 
 import { useEffect } from 'react';
-import { createResilientEventSource } from '@restart/sse';
+import { createResilientEventSource } from '@papercusp/sse';
 import { getOrCreateClientId } from './client-id';
 import { lookupIntent } from './intent-registry';
 import { registerBuiltInIntents } from './built-in-intents';

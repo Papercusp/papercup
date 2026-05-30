@@ -251,7 +251,7 @@ describe('handleHttpToolRequest', () => {
 
 /* ─── Streaming variant ──────────────────────────────────────────────── */
 
-import type { SseSink } from '@restart/sse';
+import type { SseSink } from '@papercusp/sse';
 
 interface RecordedEvent { event: string; data: unknown }
 

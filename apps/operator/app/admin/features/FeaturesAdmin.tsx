@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
-import { createResilientEventSource } from '@restart/sse';
+import { createResilientEventSource } from '@papercusp/sse';
 import { ALL_FLAG_KEYS, FLAGS, type FlagKey, type FlagValues } from '@papercusp/flags';
 import { Tooltip } from '@/app/harness/Tooltip';
 import { toast } from 'sonner';

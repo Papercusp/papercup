@@ -2,7 +2,7 @@
  * GET /api/plugins/host/events — SSE event stream for iframe plugin surfaces.
  * Ported from app/api/plugins/host/events/route.ts. `auth: 'public'`.
  */
-import { sseResponse } from '@restart/sse';
+import { sseResponse } from '@papercusp/sse';
 import { getPluginHost } from '@/lib/plugin-host-runtime';
 import { defineTool } from '@papercusp/agent-mcp';
 

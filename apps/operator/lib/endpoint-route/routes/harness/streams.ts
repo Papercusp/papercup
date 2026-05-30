@@ -8,11 +8,11 @@
  * Relocated from `_hono/harness.ts` (endpoint-hono-elimination-2026-05-21
  * A4 batch 38). All three share the `activeStreams` registry from
  * `lib/harness-active-streams.ts` (carved out in b36) and use the
- * `@restart/sse` `sseResponse` helper.
+ * `@papercusp/sse` `sseResponse` helper.
  */
 import { join } from 'node:path';
 import { statSync, readFileSync, openSync, readSync, closeSync } from 'node:fs';
-import { sseResponse } from '@restart/sse';
+import { sseResponse } from '@papercusp/sse';
 import { resolvePhasedProject, harnessDir, parseFeatures } from '@/lib/harness-core';
 import { phasePhaseLabel } from '@/lib/harness-phases';
 import {

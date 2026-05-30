@@ -6,7 +6,7 @@
  * Ported from app/api/ui/intents/stream/route.ts. `auth: 'public'` —
  * loopback inline.
  */
-import { sseResponse } from '@restart/sse';
+import { sseResponse } from '@papercusp/sse';
 import { getOrgPg } from '@restart/db-org';
 import { isLoopbackRequest } from '@/lib/superuser-token';
 import { ensureUiIntentsTable } from '@/lib/ensure-schema';

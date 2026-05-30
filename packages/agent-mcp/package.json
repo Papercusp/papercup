@@ -20,7 +20,7 @@
     "@modelcontextprotocol/sdk": "*",
     "@papercusp/host-platform": "file:../../libs/host-platform",
     "@papercusp/tooldef": "*",
-    "@restart/sse": "file:../../libs/sse",
+    "@papercusp/sse": "file:../../libs/sse",
     "postgres": "*",
     "zod": "*",
     "zod-to-json-schema": "*"

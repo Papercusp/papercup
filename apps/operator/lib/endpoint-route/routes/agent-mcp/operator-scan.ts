@@ -3,7 +3,7 @@
  * Thin shim: principal resolution, rate-limit, idle short-circuit, dispatch.
  * Ported from app/api/agent-mcp/operator-scan/route.ts. `auth: 'public'`.
  */
-import { sseResponse } from '@restart/sse';
+import { sseResponse } from '@papercusp/sse';
 import {
   dispatchProjectedToolStream,
   emitToSseSink,

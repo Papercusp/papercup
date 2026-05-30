@@ -7,7 +7,7 @@
  * `auth: 'public'`.
  */
 import { promises as fs } from 'node:fs';
-import { sseResponse } from '@restart/sse';
+import { sseResponse } from '@papercusp/sse';
 import { loadHarnessRegistry } from '@/lib/harness-registry';
 import { isBranch, runLogPath } from '@/lib/branch-actions';
 import { subscribe as subscribeAction } from '@/lib/branch-action-bus';

@@ -27,7 +27,7 @@
  */
 
 import type { AgentRole } from '@papercusp/plugin-sdk';
-import type { SseSink } from '@restart/sse';
+import type { SseSink } from '@papercusp/sse';
 import {
   dispatchProjectedTool,
   type DispatchProjectedDeps,
@@ -379,7 +379,7 @@ export async function handleHttpToolRequest(
  * call to a sink event. The legacy `ctx.progress` is reshaped as
  * a thin alias over `ctx.emit('progress', { progress, total, message? })`.
  *
- * Caller is responsible for opening the SSE response (via @restart/sse's
+ * Caller is responsible for opening the SSE response (via @papercusp/sse's
  * `sseResponse({ setup: (sink) => handleHttpToolRequestStreaming(...) })`).
  * This function closes the sink before returning.
  */

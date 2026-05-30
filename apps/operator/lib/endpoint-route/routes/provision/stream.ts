@@ -13,7 +13,7 @@
  * fires against the long-lived stream (it's cleared once the stack
  * returns); the stream's own lifecycle is tied to `req.signal`.
  */
-import { sseResponse } from '@restart/sse';
+import { sseResponse } from '@papercusp/sse';
 import { readAudit, type AuditEntry } from '@/lib/provision/audit-log';
 import { subscribe as subscribeAudit } from '@/lib/provision-audit-bus';
 import { defineTool } from '@papercusp/agent-mcp';

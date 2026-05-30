@@ -3,7 +3,7 @@
  *
  * Where `http-projection.test.ts` exercises `handleHttpToolRequestStreaming`
  * against a mock SseSink, this test goes one layer wider: it builds a real
- * `sseResponse()` from `@restart/sse`, parses the actual SSE wire bytes the
+ * `sseResponse()` from `@papercusp/sse`, parses the actual SSE wire bytes the
  * browser would receive, then makes a SECOND request with `Last-Event-ID`
  * to verify the replay path produces the correct wire-format events.
  *
@@ -12,7 +12,7 @@
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { z } from 'zod';
-import { sseResponse } from '@restart/sse';
+import { sseResponse } from '@papercusp/sse';
 import {
   handleHttpToolRequestStreaming,
   type HttpToolHostExtras,

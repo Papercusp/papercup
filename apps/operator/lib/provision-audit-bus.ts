@@ -6,10 +6,10 @@
  * subscribes via subscribe() so the UI sees events sub-millisecond
  * after they're recorded — no file polling, no fs.watch.
  *
- * Internals migrated to @restart/sse's getChannel (2026-05-11). Public
+ * Internals migrated to @papercusp/sse's getChannel (2026-05-11). Public
  * surface (publish/subscribe/AuditEnvelope) preserved verbatim.
  */
-import { getChannel } from '@restart/sse';
+import { getChannel } from '@papercusp/sse';
 
 export interface AuditEnvelope {
   channelKey: string;

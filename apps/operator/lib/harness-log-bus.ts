@@ -13,10 +13,10 @@
  * Both surfaces are typically written together by the same log() call,
  * so both publish from a single POST.
  *
- * Internals migrated to @restart/sse's getChannel (2026-05-11). Public
+ * Internals migrated to @papercusp/sse's getChannel (2026-05-11). Public
  * surface (publish/subscribe/LogEnvelope) preserved verbatim.
  */
-import { getChannel, _resetChannelsForTest } from '@restart/sse';
+import { getChannel, _resetChannelsForTest } from '@papercusp/sse';
 
 export interface LogEnvelope {
   channelKey: string;

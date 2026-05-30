@@ -3,14 +3,14 @@
  *
  * The PostHog webhook endpoint (POST /api/flags/webhook) writes to this
  * channel; the SSE stream (GET /api/flags/stream) reads from it. Sub-
- * millisecond fan-out via @restart/sse's getChannel.
+ * millisecond fan-out via @papercusp/sse's getChannel.
  *
  * Also handles one-time backend initialization: on first import the
  * module reads ~/.papercusp/posthog.json (or env overrides) and calls
  * initFlagBackend(). If no config is present, the backend stays in
  * fallback mode and every evaluation returns FLAG_DEFAULTS.
  */
-import { getChannel } from '@restart/sse';
+import { getChannel } from '@papercusp/sse';
 
 import {
   emitFlagChange,

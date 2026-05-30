@@ -6,7 +6,7 @@
  *
  * Ported from app/api/flags/stream/route.ts. `auth: 'public'`.
  */
-import { bridgeChannel, parseLastEventId, sseResponse } from '@restart/sse';
+import { bridgeChannel, parseLastEventId, sseResponse } from '@papercusp/sse';
 
 import { getFlagBus, type FlagChangeEnvelope } from '@/lib/flag-bus';
 import { defineTool } from '@papercusp/agent-mcp';
