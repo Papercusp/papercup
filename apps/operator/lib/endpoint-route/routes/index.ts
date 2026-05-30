@@ -174,6 +174,7 @@ import pluginsCatchall from './plugins/catchall';
 import agentMcp_agents from './agent-mcp/agents';
 import agentMcp_consoleLaunch from './agent-mcp/console-launch';
 import agentMcp_consoleResolve from './agent-mcp/console-resolve';
+import agentMcp_bootstrapSu from './agent-mcp/bootstrap-su';
 import agentMcp_decisions from './agent-mcp/decisions';
 import agentMcp_delegateChat from './agent-mcp/delegate-chat';
 import agentMcp_delegateInbox from './agent-mcp/delegate-inbox';
@@ -285,6 +286,7 @@ import adminDogfoodSubstrateStatus from './admin/dogfood-substrate-status';
 import adminDogfoodSubstrateHealth from './admin/dogfood-substrate-health';
 import adminDogfoodSubstrateBootHistory from './admin/dogfood-substrate-boot-history';
 import advSessions from './adv/sessions';
+import advLaunchSu from './adv/launch-su';
 import adminPlanGit from './admin/plan-git';
 import adminPruneExecutedActions from './admin/prune-executed-actions';
 import adminRotateToken from './admin/rotate-token';
@@ -373,6 +375,7 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(agentMcp_agents as AnyRoute),
   ...flatten(agentMcp_consoleLaunch as AnyRoute[]),
   ...flatten(agentMcp_consoleResolve as AnyRoute),
+  ...flatten(agentMcp_bootstrapSu as AnyRoute[]),
   ...flatten(agentMcp_decisions as AnyRoute),
   ...flatten(agentMcp_delegateChat as AnyRoute),
   ...flatten(agentMcp_delegateInbox as AnyRoute[]),
@@ -643,6 +646,7 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(adminDogfoodSubstrateHealth as AnyRoute[]),
   ...flatten(adminDogfoodSubstrateBootHistory as AnyRoute[]),
   ...flatten(advSessions as unknown as AnyRoute[]),
+  ...flatten(advLaunchSu as unknown as AnyRoute[]),
   ...flatten(adminPlanGit as AnyRoute),
   ...flatten(adminPruneExecutedActions as AnyRoute),
   ...flatten(adminRotateToken as AnyRoute),

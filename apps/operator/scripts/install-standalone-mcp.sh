@@ -615,6 +615,35 @@ case ":${PATH}:" in
   *) echo "! $CODEX_WRAPPER_DIR is not on PATH — add it or invoke $CODEX_WRAPPER_PATH by full path" ;;
 esac
 
+# 4g. Install the `psu` command — the plan-tracked picker launcher.
+# Unlike the *-su wrappers (direct, untracked), `psu` prompts for
+# agent + harness + plan, records a tracked /adv session via the
+# operator's bootstrap-su endpoint, then exec's the chosen *-su wrapper.
+# It's a thin shim over the Node launcher in the repo (which resolves
+# @inquirer/prompts from the operator's node_modules). Scripting escape:
+#   psu --no-picker --agent=<claude|omp|codex> --harness=<slug> [--plan=<slug>|--no-plan]
+PSU_LAUNCHER="${SCRIPT_DIR}/psu-launcher.mjs"
+PSU_BIN_DIR="${HOME}/.local/bin"
+PSU_PATH="${PSU_BIN_DIR}/psu"
+if [ -f "$PSU_LAUNCHER" ]; then
+  mkdir -p "$PSU_BIN_DIR"
+  cat > "$PSU_PATH" <<WRAPEOF
+#!/usr/bin/env bash
+# papercusp tracked SU launcher (managed by install-standalone-mcp.sh).
+# Picks agent + harness + plan, records a tracked /adv session, then
+# launches the matching *-su wrapper. The plain *-su wrappers stay direct.
+exec node "${PSU_LAUNCHER}" "\$@"
+WRAPEOF
+  chmod 755 "$PSU_PATH"
+  echo "✓ Installed $PSU_PATH (tracked picker launcher)"
+  case ":${PATH}:" in
+    *":${PSU_BIN_DIR}:"*) : ;;
+    *) echo "! $PSU_BIN_DIR is not on PATH — add it or invoke $PSU_PATH by full path" ;;
+  esac
+else
+  echo "! psu launcher not found at $PSU_LAUNCHER; skipping psu install"
+fi
+
 # 5. Verify the endpoint accepts the token.
 echo
 echo "→ Verifying loopback access at ${OPERATOR_URL}/api/mcp?superuser=1"
@@ -664,6 +693,12 @@ Done.  Profile: ${PROFILE}
   tooling overlay spliced in, so OMP-only task-tool guidance never lands
   in the Claude or Codex playbook.
 
+  Plan-tracked launch — pick agent + harness + plan; the session shows up
+  in /adv (under its plan, or the "No plan" group). \`psu\` exec's the
+  matching -su wrapper, so it's the same engineer mode, just tracked:
+    \$ psu                                                       # interactive picker
+    \$ psu --no-picker --agent=claude --harness=papercup --no-plan   # scripting
+
   One-off, without the wrappers:
     \$ omp    --append-system-prompt ${PLAYBOOK_DEST} \\
              -e ~/.papercusp/papercusp-coord.ts
@@ -705,6 +740,7 @@ To rotate the token, delete $TOKEN_PATH and re-run. To revoke, delete:
   $WRAPPER_PATH
   $CLAUDE_WRAPPER_PATH
   $CODEX_WRAPPER_PATH
+  $PSU_PATH   (the tracked picker launcher)
   $CODEX_SU_HOME   (the dedicated codex-su CODEX_HOME — incl. its settings.json hooks)
   $CC_HOOK_DEST_DIR   (the shared Claude/Codex lock hooks)
   (remove the 'papercusp-su' entry from both $OMP_CONFIG_PATH and $CLAUDE_CONFIG_PATH,
