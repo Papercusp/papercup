@@ -54,6 +54,10 @@ function fallbackProject(
     githubUrl:
       override.githubUrl ?? `https://github.com/${harness_slug}`,
     discordUrl: override.discordUrl ?? null,
+    stars: override.stars ?? null,
+    forks: override.forks ?? null,
+    openIssues: override.openIssues ?? null,
+    lastActivityIso: override.lastActivityIso ?? null,
   };
 }
 

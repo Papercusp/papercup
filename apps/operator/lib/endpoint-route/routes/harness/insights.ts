@@ -15,6 +15,7 @@ import { getOrgPg } from '@restart/db-org';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
 import { defineTool } from '@papercusp/agent-mcp';
 import { loadHarnessInsights } from '@/lib/harness-insights/load-all';
+import { loadProjectCardFromGithub } from '@/lib/harness-insights/github-facts';
 import { getSessionUserOrDefault } from '@/lib/auth';
 
 async function viewerGithubUserId(): Promise<number> {
@@ -56,11 +57,19 @@ const get = defineTool({
     ): Promise<T[]> => {
       return (await sql.unsafe(query, paramsArr as never)) as unknown as T[];
     };
+    // Tier-A ProjectCard facts from the harness's GitHub repo (P-073a).
+    // Degrades to the slug-derived fallback when there's no token / remote /
+    // repo, and never throws.
+    const project = await loadProjectCardFromGithub({
+      workspaceId,
+      harnessSlug: slug,
+    });
     const props = await loadHarnessInsights({
       workspace_id: workspaceId,
       harness_slug: slug,
       viewer_github_user_id: viewerId,
       runQuery,
+      project,
       activityLimit,
     });
     return Response.json({ insights: props });

@@ -95,6 +95,33 @@ const LINK: CSSProperties = {
   textDecoration: 'none',
 };
 
+const STATS_ROW: CSSProperties = {
+  display: 'flex',
+  flexWrap: 'wrap',
+  gap: 14,
+  fontSize: 12,
+  color: 'var(--fg-dim, #888)',
+};
+
+/** Coarse "x ago" for the repo's last-push timestamp. */
+function relativeTime(iso: string): string {
+  const then = Date.parse(iso);
+  if (!Number.isFinite(then)) return iso;
+  const secs = Math.max(0, Math.floor((Date.now() - then) / 1000));
+  const units: Array<[number, string]> = [
+    [86400 * 365, 'y'],
+    [86400 * 30, 'mo'],
+    [86400 * 7, 'w'],
+    [86400, 'd'],
+    [3600, 'h'],
+    [60, 'm'],
+  ];
+  for (const [s, label] of units) {
+    if (secs >= s) return `${Math.floor(secs / s)}${label} ago`;
+  }
+  return 'just now';
+}
+
 export interface ProjectCardLanguage {
   name: string;
   /** Hex color matching the language. */
@@ -122,6 +149,14 @@ export interface ProjectCardProps {
   githubUrl: string;
   /** Optional — Discord server URL if §11 is set. */
   discordUrl?: string | null;
+  /** GitHub stars (tier-A — verifiable via the GitHub API). */
+  stars?: number | null;
+  /** GitHub fork count. */
+  forks?: number | null;
+  /** Open issues on GitHub. */
+  openIssues?: number | null;
+  /** ISO timestamp of the repo's last push (GitHub `pushed_at`). */
+  lastActivityIso?: string | null;
 }
 
 export function ProjectCard(props: ProjectCardProps): ReactNode {
@@ -135,9 +170,18 @@ export function ProjectCard(props: ProjectCardProps): ReactNode {
     languages,
     githubUrl,
     discordUrl,
+    stars,
+    forks,
+    openIssues,
+    lastActivityIso,
   } = props;
 
   const topLanguages = (languages ?? []).slice(0, 3);
+  const hasStats =
+    typeof stars === 'number' ||
+    typeof forks === 'number' ||
+    typeof openIssues === 'number' ||
+    !!lastActivityIso;
 
   return (
     <div style={CARD} data-testid="insights-project-card">
@@ -176,6 +220,23 @@ export function ProjectCard(props: ProjectCardProps): ReactNode {
           </>
         ) : null}
       </div>
+
+      {hasStats ? (
+        <div style={STATS_ROW} data-testid="project-card-stats">
+          {typeof stars === 'number' ? (
+            <span title="GitHub stars">★ {stars.toLocaleString()}</span>
+          ) : null}
+          {typeof forks === 'number' ? (
+            <span title="Forks">⑂ {forks.toLocaleString()}</span>
+          ) : null}
+          {typeof openIssues === 'number' ? (
+            <span title="Open issues">{openIssues.toLocaleString()} open issues</span>
+          ) : null}
+          {lastActivityIso ? (
+            <span title={lastActivityIso}>Updated {relativeTime(lastActivityIso)}</span>
+          ) : null}
+        </div>
+      ) : null}
 
       <div style={LINK_ROW}>
         <a
