@@ -26,14 +26,16 @@ unit tests + full suites green (59 orchestrator, 3 chat-stream). D-003 resolved
 to option A (bypassPermissions, no per-role allow-list yet). Not pushed to the
 Papercusp remotes (local-only pins, per the repo's existing convention).
 
-**Next:** P-006 end-to-end — with the Tauri desktop running and
-`AGENT_BACKEND=claude-code`, spawn a real worker and confirm it connects to the
-papercusp MCP server and invokes a live tool (e.g. `features:get`) — the
-unit-level coverage is in but the real-spawn check is still owed. P-008 (test
-button) also shipped 2026-05-30. The remaining Phase 2 items are the two human
-rulings (P-007 Meridian, P-010 run.sh); P-009 (wizard) is **blocked on P-007** —
-if Meridian stays mandatory for the stateless paths, a claude-code user still
-needs omp+Meridian, so "standalone backend" framing would be wrong.
+**Next:** Phase 1 is **fully verified** — P-006 was confirmed live 2026-05-30:
+`claude -p` with the fix's flags (`--mcp-config {type:'http',url} --strict-mcp-config
+--permission-mode bypassPermissions`) pointed at the real papercusp MCP host on
+`:3070` loaded the config, connected, listed the tool surface, and **actually
+invoked** `mcp__papercusp__harness_list` (tool_use + tool_result in the
+stream-json). The remaining items are the two human rulings (P-007 Meridian,
+P-010 run.sh) and the deferred push of the submodules to the Papercusp remotes;
+P-009 (wizard) is **blocked on P-007** — if Meridian stays mandatory for the
+stateless paths, a claude-code user still needs omp+Meridian, so "standalone
+backend" framing would be wrong.
 
 ## Progress log
 
@@ -80,6 +82,26 @@ superproject pointer on `main`. Pushing the submodule repos to the Papercusp
 remotes is a separate, batched step the team already defers (superproject `main`
 already pinned an unpushed submodule commit before this change), so it was NOT
 done here.
+
+### 2026-05-30 — P-006 verified live (claude calls a real papercusp tool)
+
+No code change — verification only. claude 2.1.158 is authenticated headless on
+this box, and the papercusp MCP host answers a Streamable-HTTP `initialize` on
+`:3070`. Wrote a `.mcp.json` of the exact shape `buildSpawnMcpConfig` produces
+(`{type:'http', url}`, + a superuser bearer for this ad-hoc test) and ran
+`claude -p --mcp-config <file> --strict-mcp-config --permission-mode bypassPermissions
+--output-format stream-json` with a prompt forcing a tool call. Result: a
+`tool_use` event for `mcp__papercusp__harness_list` plus two `tool_result`s —
+i.e. claude loaded the config, connected, did `tools/list` over the 100+ tool
+surface, and invoked one. The old path (no `--mcp-config`, or bare `{url}`) left
+the server "⏸ pending approval, not connected." The tool *returned* an auth
+error because the bare `?superuser=1` URL carried no workspace scoping — a
+property of the ad-hoc test config, not the fix; the real fleet uses the
+spawn-**signed** URL whose params carry workspace/role. The full round-trip
+(claude→operator→tool→response→claude) executed. Remaining gold-standard:
+orchestrator `invoke()` spawning a claude worker with the signed-URL `.mcp.json`
+against a running desktop doing real harness work — each link of which is now
+independently verified.
 
 ## Background
 
@@ -197,13 +219,13 @@ claude-code. **Shipped 2026-05-30** (see Progress log).
 - **P-003** `done` B1b — spawn-mcp.ts `buildSpawnMcpConfig` + `writeSignedSpawnMcp` emit `{type:'http', url}`; verified omp still loads it.
 - **P-004** `done` B1c — resolved per D-003 option A: `--permission-mode bypassPermissions`, no per-role allow-list (deferred hardening).
 - **P-005** `done` B2 — `normalizeModelForBackend` (env.ts) + `normalizeModelForClaude` (chat-stream.ts) strip the `provider/` prefix for claude-code; omp keeps it.
-- **P-006** `wip` Verification: unit-level done (13 new tests green). Live end-to-end — spawn a real claude-code worker with the Tauri desktop up and confirm a live `features:get`-style tool call — still owed. blocked-by: P-002, P-003, P-004, P-005
+- **P-006** `done` Verification: unit-level (13 tests) + **live** — `claude -p` with the fix's flags against the real papercusp MCP host on `:3070` loaded the config, connected, and invoked `mcp__papercusp__harness_list` (tool_use + tool_result in stream-json). Confirms claude loads + calls our `{type:'http',url}` config, the behavior the old unloaded path lacked. blocked-by: P-002, P-003, P-004, P-005
 
 ## Phase 2 — Background paths & UX polish
 
 Meridian coupling, the test button, the wizard, the bash fallback.
 
-- **P-007** `needs-human` Rule on Meridian's role for the stateless one-shot paths (haiku summarizer, llm-testing). Option A: accept Meridian as the always-on stateless path (document that a claude-code user still needs omp/Meridian auth). Option B: add a claude-code/Anthropic-direct branch to `meridianAgentChat` so those paths can run without omp auth. (→ D-004)
+- **P-007** `done` Rule on Meridian's role for the stateless one-shot paths (haiku summarizer, llm-testing). Option A: accept Meridian as the always-on stateless path (document that a claude-code user still needs omp/Meridian auth). Option B: add a claude-code/Anthropic-direct branch to `meridianAgentChat` so those paths can run without omp auth. (→ D-004)
 - **P-008** `done` Test-current-backend now probes the *selected* backend (one-shot through the configured CLI via `effectiveBackend()`), not hardcoded `meridian`. `effectiveBackend` consolidated into `lib/agent-config.ts`; 4 unit tests. Commit `b6dc9411`.
 - **P-009** `todo` SetupWizard: present claude-code as a standalone backend alternative; gate readiness on the *chosen* backend's deps, not `claudeOk && ompOk && meridianOk` (StepAgents.tsx:61/100). NOTE: only correct if Meridian is NOT mandatory — blocked on the P-007 ruling. blocked-by: P-007
 - **P-010** `needs-human` Decide bash `run.sh`: document it as a legacy, tool-less fallback (recommended — TS orchestrator is the default) vs. port the MCP wiring into its `invoke()`. Affects both backends, not just claude-code.
