@@ -1,8 +1,9 @@
 /**
  * coord:resolve — record the human's choice on an escalation.
  *
- * Read-modify-writes the per-event file in place. Idempotent on a
- * resolved escalation (returns already_resolved).
+ * Append-only: writes a sibling `escalation_resolved` event; the open
+ * escalation file is never mutated. Idempotent on an already-resolved
+ * escalation (returns already_resolved without appending).
  */
 
 import { z } from 'zod';
@@ -14,7 +15,7 @@ import { COORD_ROLES } from '../roles';
 export default defineTool({
   name: 'coord:resolve',
   description:
-    'Resolve an escalation by msg_id. Records the chosen option id (or arbitrary string) and optional note on the escalation file in place.',
+    'Resolve an escalation by msg_id. Records the chosen option id (or arbitrary string) and optional note as an append-only escalation_resolved event.',
   guidance: {
     when: 'The human (or an authorised agent acting on their behalf) has decided how to proceed on an open escalation.',
     notWhen: 'Acknowledging without deciding — use coord:ack. The escalation file is the human-resolution surface.',

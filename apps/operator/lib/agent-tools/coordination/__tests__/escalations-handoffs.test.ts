@@ -92,6 +92,48 @@ describe('escalations', () => {
     // First resolution sticks; second is rejected.
     expect(round?.resolved?.choice).toBe('first');
   });
+
+  it('resolveEscalation appends an escalation_resolved sibling and leaves the open file immutable', async () => {
+    const A = id('A');
+    const e = await openEscalation(A, { severity: 'blocker', summary: 'need a call' });
+    const openPath = join(tmp, 'escalations', `${e.msg_id}.json`);
+    const openBytesBefore = await fs.readFile(openPath, 'utf8');
+
+    const out = await resolveEscalation({
+      msg_id: e.msg_id,
+      choice: 'go',
+      note: 'approved',
+      resolver: 'human',
+    });
+    if (typeof out === 'string') throw new Error(`expected record, got ${out}`);
+    expect(out.resolved?.choice).toBe('go');
+    expect(out.resolved?.note).toBe('approved');
+    expect(out.resolved?.by).toBe('human');
+
+    // Append-only: the open escalation file is byte-for-byte unchanged.
+    const openBytesAfter = await fs.readFile(openPath, 'utf8');
+    expect(openBytesAfter).toBe(openBytesBefore);
+    expect(JSON.parse(openBytesAfter).resolved).toBeNull();
+
+    // A single sibling escalation_resolved event exists, linked by related_msg_id.
+    const files = await fs.readdir(join(tmp, 'escalations'));
+    const events: Array<Record<string, unknown>> = [];
+    for (const f of files) {
+      const rec = JSON.parse(await fs.readFile(join(tmp, 'escalations', f), 'utf8'));
+      if (rec.kind === 'escalation_resolved') events.push(rec);
+    }
+    expect(events).toHaveLength(1);
+    expect(events[0]?.related_msg_id).toBe(e.msg_id);
+    expect(events[0]?.choice).toBe('go');
+
+    // Read-time fold reflects the resolution.
+    const round = await getEscalation(e.msg_id);
+    expect(round?.resolved?.choice).toBe('go');
+    expect((await listEscalations({ status: 'resolved' })).map((x) => x.msg_id)).toEqual([
+      e.msg_id,
+    ]);
+    expect(await listEscalations({ status: 'open' })).toEqual([]);
+  });
 });
 
 describe('handoffs', () => {
