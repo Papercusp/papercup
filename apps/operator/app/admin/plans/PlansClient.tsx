@@ -26,7 +26,7 @@ import PlanItemsList from './PlanItemsList';
 import PlanFilters from './PlanFilters';
 import PlanBucketTabs from './PlanBucketTabs';
 import PlanSearchResults from './PlanSearchResults';
-import { usePlanList, usePlanItems, usePlanSearch, type PlanListRow } from './plans-api';
+import { usePlanList, usePlanItems, usePlanSearch, type PlanListRow, type PlanStatus } from './plans-api';
 import { launchOmpAgent } from '@/lib/native-omp-launch';
 import { resolveHarnessScope, type HarnessNodeForScope } from '@/lib/harness/scope';
 
@@ -452,7 +452,19 @@ export default function PlansClient() {
             }}
             startStatus={visiblePlans.find((p) => p.slug === slug)?.startStatus ?? null}
             onStartStatusChange={() => planList.refresh()}
-            onPlanStatusChange={() => planList.refresh()}
+            onPlanStatusChange={(status?: PlanStatus) => {
+              // Optimistic: patch the row's status in place so the rail +
+              // bucket counts update instantly, no list refetch (= no flash).
+              if (status && planList.setData) {
+                planList.setData((prev) =>
+                  prev
+                    ? { ...prev, plans: prev.plans.map((p) => (p.slug === slug ? { ...p, status } : p)) }
+                    : prev,
+                );
+              } else {
+                planList.refresh();
+              }
+            }}
           />
         )}
 

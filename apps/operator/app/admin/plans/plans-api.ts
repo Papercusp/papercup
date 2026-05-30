@@ -12,7 +12,7 @@
  * change, plus an explicit `refresh()`. No SSE/live-sync in v1.
  */
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type Dispatch, type SetStateAction } from 'react';
 
 /* ── Wire types — mirror lib/agent-tools/plans/* return shapes ─────── */
 
@@ -232,6 +232,8 @@ export interface AsyncResult<T> {
   loading: boolean;
   error: string | null;
   refresh: () => void;
+  /** Patch cached data in place (optimistic updates) without a refetch. */
+  setData?: Dispatch<SetStateAction<T | null>>;
 }
 
 function useAsyncJson<T>(fetcher: () => Promise<T>, deps: unknown[]): AsyncResult<T> {
@@ -260,7 +262,7 @@ function useAsyncJson<T>(fetcher: () => Promise<T>, deps: unknown[]): AsyncResul
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [...deps, tick]);
 
-  return { data, loading, error, refresh: () => setTick((t) => t + 1) };
+  return { data, loading, error, refresh: () => setTick((t) => t + 1), setData };
 }
 
 export function usePlanList(params?: {

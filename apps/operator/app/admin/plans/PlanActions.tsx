@@ -64,6 +64,10 @@ interface Props {
   /** Fired after approve/demote (a plan-level status flip) so the caller can
    *  refresh the rail + bucket-tab counts — the plan changes bucket. */
   onPlanStatusChange?: () => void;
+  /** Optimistic status setter — patches the open plan + rail row in place
+   *  (no refetch) for instant approve/demote. Passed the new status; the
+   *  caller flips it back if the server write fails. */
+  onOptimisticStatus?: (status: PlanStatus) => void;
   /** Fired after a successful write so the caller can refresh plan data. */
   onChanged: () => void;
   /** Fired after a successful rejection — caller closes the detail. */
@@ -85,6 +89,7 @@ export default function PlanActions({
   startStatus,
   onStartStatusChange,
   onPlanStatusChange,
+  onOptimisticStatus,
   onChanged,
   onRejected,
   disabled,
@@ -102,18 +107,27 @@ export default function PlanActions({
   // shipped/rejected → none. Derived from the same bucketOf the rail uses.
   const bucket = bucketOf({ status: planStatus ?? 'draft', startStatus: startStatus ?? null });
 
+  // Approve/demote are pure plan-status flips. They apply optimistically
+  // (instant rail + button update, no full refetch) and roll the status
+  // back if the server write fails. Approval ONLY changes status — it does
+  // not start the plan (the orchestrator runs only explicitly-started plans).
   const handleApprove = async () => {
     if (approvePending) return;
+    const prev = planStatus;
     setApprovePending(true);
+    onOptimisticStatus?.('ready');
     try {
       const r = await approvePlan(slug);
       if (r.ok) {
         toast.success('Plan approved — ready to start.');
-        onChanged();
-        onPlanStatusChange?.();
       } else {
+        if (prev) onOptimisticStatus?.(prev);
+        else onPlanStatusChange?.();
         toast.error(`Approve failed: ${r.error ?? 'unknown error'}`);
       }
+    } catch (e) {
+      if (prev) onOptimisticStatus?.(prev);
+      toast.error(`Approve failed: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
       setApprovePending(false);
     }
@@ -121,16 +135,21 @@ export default function PlanActions({
 
   const handleDemote = async () => {
     if (demotePending) return;
+    const prev = planStatus;
     setDemotePending(true);
+    onOptimisticStatus?.('draft');
     try {
       const r = await demotePlanToDraft(slug);
       if (r.ok) {
         toast.success('Plan demoted to draft.');
-        onChanged();
-        onPlanStatusChange?.();
       } else {
+        if (prev) onOptimisticStatus?.(prev);
+        else onPlanStatusChange?.();
         toast.error(`Demote failed: ${r.error ?? 'unknown error'}`);
       }
+    } catch (e) {
+      if (prev) onOptimisticStatus?.(prev);
+      toast.error(`Demote failed: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
       setDemotePending(false);
     }

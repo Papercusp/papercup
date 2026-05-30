@@ -55,11 +55,11 @@ interface Props {
   onStartStatusChange?: (newStatus: PlanStartStatus) => void;
   /** Called after approve/demote (plan-level status flip) so the rail +
    *  bucket-tab counts refresh — the plan moves bucket. */
-  onPlanStatusChange?: () => void;
+  onPlanStatusChange?: (status?: PlanStatus) => void;
 }
 
 export default function PlanDetail({ slug, onClose, onDirtyChange, startStatus, onStartStatusChange, onPlanStatusChange }: Props) {
-  const { data, loading, error, refresh } = usePlan(slug);
+  const { data, loading, error, refresh, setData } = usePlan(slug);
   const archived = data?.archived ?? false;
   const { data: lock } = usePlanLock(data ? slug : null, archived);
   const [writeTick, setWriteTick] = useState(0);
@@ -132,6 +132,24 @@ export default function PlanDetail({ slug, onClose, onDirtyChange, startStatus, 
   const onChanged = () => {
     refresh();
     setWriteTick((t) => t + 1);
+  };
+
+  // Optimistic plan-status flip (approve/demote): patch the open plan's
+  // frontmatter status + raw status line in place and tell the rail to
+  // patch its row — no refetch, so the detail + editor don't reload.
+  const onOptimisticStatus = (status: PlanStatus) => {
+    setData?.((prev) =>
+      prev
+        ? {
+            ...prev,
+            frontmatter: prev.frontmatter
+              ? { ...prev.frontmatter, status }
+              : prev.frontmatter,
+            raw: prev.raw ? prev.raw.replace(/^(status:\s*)\S+/m, `$1${status}`) : prev.raw,
+          }
+        : prev,
+    );
+    onPlanStatusChange?.(status);
   };
 
   const raw = data?.raw ?? data?.prose ?? '';
@@ -328,6 +346,7 @@ export default function PlanDetail({ slug, onClose, onDirtyChange, startStatus, 
           startStatus={startStatus}
           onStartStatusChange={onStartStatusChange}
           onPlanStatusChange={onPlanStatusChange}
+          onOptimisticStatus={onOptimisticStatus}
           onChanged={onChanged}
           onRejected={onClose}
           disabled={editing || locked}
