@@ -121,7 +121,8 @@ export default function FeaturesPanel({ params, api }: PanelComponentProps) {
       return (
         f.id.toLowerCase().includes(q) ||
         f.title.toLowerCase().includes(q) ||
-        (f.summary?.toLowerCase().includes(q) ?? false)
+        (f.summary?.toLowerCase().includes(q) ?? false) ||
+        (f.tags?.some((t) => t.toLowerCase().includes(q)) ?? false)
       );
     });
     return out.sort((a, b) => {
@@ -193,7 +194,7 @@ export default function FeaturesPanel({ params, api }: PanelComponentProps) {
         <input
           ref={searchRef}
           className="pc-adv-features__search"
-          placeholder="Search features…"
+          placeholder="Search features or tags…"
           value={search}
           onChange={(e) => void setSearch(e.target.value || null)}
           onKeyDown={(e) => {
