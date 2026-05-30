@@ -7,9 +7,10 @@
  * as the kopia side-effect. Kopia is the source of truth for snapshot
  * contents; PG is the source of truth for settings + metadata + UI state.
  *
- * Phase 1 implements: ensureRepo, snapshot, list, stats, verify, settings
- * read/write. Restore + maintenance + mount + stream are stubbed for
- * Phase 2/3/5.
+ * Implements the full kopia lifecycle: ensureRepo, snapshot, list, stats,
+ * verify, maintenance, restore (to-clone + in-place), promote/rollback of a
+ * restore, and settings read/write. (Earlier revisions stubbed restore +
+ * maintenance for a later phase; they are implemented now.)
  */
 
 import { spawn } from 'node:child_process';
