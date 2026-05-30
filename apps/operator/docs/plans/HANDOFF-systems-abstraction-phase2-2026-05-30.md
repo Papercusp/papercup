@@ -16,19 +16,24 @@ companion-to: [papercusp-systems-abstraction-2026-05-29]
 > `BRIEF-RECIPE-shared-2026-05-30.md` (the shared how-to) then your lib brief:
 > - ~~search (P-013/P-020)~~ **DONE** (`0332afba` + `163d60b3`) — done inline,
 >   off the list.
+> - ~~locks (P-010)~~ **DONE** (`0779d8f2` + flip `908238e6`) — off the list.
 > - **memory (P-021)** — `BRIEF-memory-extraction-2026-05-30.md` (largest;
 >   scope the boundary first).
-> - **locks (P-010)** — `BRIEF-locks-extraction-2026-05-30.md`.
 > - **coordination (P-011/P-012)** — `BRIEF-coordination-extraction-2026-05-30.md`.
 >
-> **locks ↔ coordination share `identity` + `subscriptions`** — those two
-> agents must coordinate (both files stay operator-side; see either brief).
+> **locks ↔ coordination shared `identity` + `subscriptions` — RESOLVED.** The
+> locks extraction did NOT move/delete `locks/identity.ts` or
+> `coordination/subscriptions.ts`; `@papercusp/locks` imports neither
+> (`fireNotificationsForCaller` is called from the `acquire` wrapper, which
+> stays operator-side, so no `onAcquired` seam was needed). The coordination
+> agent is unblocked — those files are untouched.
 > P-040 (publish already-clean libs) + P-050/P-051 (verification) remain after.
 
-**State:** 9 packages shipped on `main` (rrf, embedded-pg-discovery, plan-parser,
+**State:** 10 packages shipped on `main` (rrf, embedded-pg-discovery, plan-parser,
 rate-limit, ipc-framing, desktop-ipc, **ipc-endpoint-server**, **backup**,
-**search**). `done`: P-030 (IPC, `c74cbe70`), P-023/P-024 (backup, `73fa053d`),
-**P-013/P-020 (search, `0332afba`+`163d60b3`)**.
+**search**, **locks**). `done`: P-030 (IPC, `c74cbe70`), P-023/P-024 (backup,
+`73fa053d`), **P-013/P-020 (search, `0332afba`+`163d60b3`)**, **P-010 (locks,
+`0779d8f2`)**.
 
 P-030 pt3 was finished with a **simpler design than this brief sketched**: the
 package takes a required `host: IpcEndpointHost` (3 injected fns —
@@ -48,10 +53,9 @@ only config change required was the `ipc-framing` `exports` → object-form fix
 `@papercusp/tooldef`); the moved+fixed fixture (`description` + `inputSchema` +
 literal `eventWireKinds`) un-breaks it without touching the tooldef package.
 
-**Next:** the backlog in lowest-risk-first order. **P-023 / P-024 are now `done`**
-(`@papercusp/backup`, shipped `73fa053d` + flip `2bb372de`). Start at **P-013 →
-P-020 (search)**, then P-021 (memory) → P-010 (locks) → P-011/P-012 (coordination)
-→ P-040 → P-050/P-051.
+**Next:** the backlog in lowest-risk-first order. **search (P-013/P-020) and
+locks (P-010) are now `done`.** Remaining: **P-021 (memory)** → **P-011/P-012
+(coordination)** → P-040 → P-050/P-051.
 
 **P-023/P-024 notes (what actually shipped, vs the audit below):** the audit
 called the DB seam a "settings-table accessor" — it's actually the org-PG `sql`
@@ -250,10 +254,18 @@ Two distinct sub-issues, both confirmed:
 - **P-021** — `@papercusp/memory`. mem0 (`mem0ai`) owns its own `pg.Client`, so
   NOT a PgHandle — seams are PgDiscovery + EmbedderProvider + VectorStoreProvider
   (+ optional Claude dedup judge, feature-flagged off). Coupling LOW.
-- **P-010** — `@papercusp/locks`. Extract AS-IS behind the `@papercusp/file-claim`
-  interface it ALREADY implements (`SuLocksCoordinator`); keep its own
-  `papercusp_su` DB + pool + `pg_advisory_xact_lock`. Do NOT inject a shared tx
-  handle. Caller passes opaque `coordinationDomain` string.
+- **P-010** — `@papercusp/locks`. ✅ **DONE (`0779d8f2`).** Extracted AS-IS behind
+  the `@papercusp/file-claim` interface it ALREADY implements
+  (`SuLocksCoordinator`); kept its own `papercusp_su` DB + pools +
+  `pg_advisory_xact_lock`; no shared tx (D-010). Seam = one module-level
+  `configureLocks({ getAdminBaseUrl })`; `coordinationDomain` stays opaque.
+  Operator core modules became thin `import './configure'; export * from
+  '@papercusp/locks'` shims; the 5 wrappers + `identity.ts` unchanged. The
+  brief's anticipated `onAcquired` seam was NOT needed —
+  `fireNotificationsForCaller` is called from the `acquire` WRAPPER (operator-
+  side), not the core. `sql/` moved into the package; `SQL_DIR` now resolves via
+  `import.meta.url` (see recipe gotcha). Verify: pkg tsc 0 + 15/15; op tsc 0 new;
+  live-PG 73/73; live dispatch healthy.
 - **P-011 / P-012** — `@papercusp/coordination` as 3 pieces (D-009): `coord-core`
   (pure) + `CoordEventLog` (fs default + optional PG, the only swappable seam) +
   `PresenceStore` (PG, separate). P-012 first: migrate

@@ -114,3 +114,15 @@ call, leave the tool wrapper thin. The agent-mcp coupling does not move.
 - Keep load-bearing security/safety guards intact and call them out (e.g.
   backup's self-exclusion `IGNORE_PATTERNS`).
 - Stale doc-comments referencing moved files: fix the path.
+- A package that READS ITS OWN FILES at runtime (locks ships its `sql/`
+  migrations) must resolve them relative to the MODULE, not `process.cwd()`
+  — cwd is the embedding app's root, which no longer holds them post-move.
+  Use `path.dirname(fileURLToPath(import.meta.url))`. This survived dev
+  (src-as-entry), standalone `tsc`/`vitest`, and the operator's live-PG run
+  (the migration runner read `sql/` fine) because node_modules packages are
+  external server-side, so `import.meta.url` points at the real symlinked
+  file. If a future consumer bundles the package server-side, keep it
+  external (add to Next `serverExternalPackages`) so `fs` + `import.meta.url`
+  still resolve. Keep migration FILENAMES identical across the move — the
+  runner keys idempotency on `migration:<file>`, so a rename re-applies on a
+  live DB.
