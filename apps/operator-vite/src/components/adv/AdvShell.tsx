@@ -146,18 +146,9 @@ export default function AdvShell({
             <span className="pc-advshell__kicker">Advanced orchestration</span>
             <h1>{title}</h1>
           </div>
+          {/* Harness label + selector + sub-harness toggle + New + Share — all inline */}
           <div className="pc-advshell__selector">
-            <div className="pc-advshell__selector-head">
-              <span>Harness</span>
-              <label className="pc-advshell__scope-toggle" title="Include sub-harnesses in list views (plans, sessions). Editor views still focus a single harness.">
-                <input
-                  type="checkbox"
-                  checked={scopeMode === 'expanded'}
-                  onChange={(e) => void setScopeMode(e.target.checked ? 'expanded' : 'self')}
-                />
-                <span>sub-harnesses</span>
-              </label>
-            </div>
+            <span className="pc-advshell__selector-label">Harness</span>
             <Select
               value={activeSlug ?? ''}
               onChange={(next) => {
@@ -173,27 +164,35 @@ export default function AdvShell({
               options={buildHarnessSelectOptions(projects, projectLoadError)}
               triggerClassName="pc-advshell__select-trigger"
             />
+            <label className="pc-advshell__scope-toggle" title="Include sub-harnesses in list views (plans, sessions). Editor views still focus a single harness.">
+              <input
+                type="checkbox"
+                checked={scopeMode === 'expanded'}
+                onChange={(e) => void setScopeMode(e.target.checked ? 'expanded' : 'self')}
+              />
+              <span>sub-harnesses</span>
+            </label>
+            <button
+              type="button"
+              className="pc-advshell__action pc-advshell__action--new"
+              title="Create or add a new harness"
+              onClick={() => void setCreateOpen(true)}
+            >
+              <Plus size={13} aria-hidden /> New
+            </button>
+            {activeSlug && (
+              <button
+                type="button"
+                className="pc-advshell__action pc-advshell__action--share"
+                title={`Share ${activeSlug} — publish to GitHub + invite collaborators`}
+                onClick={() => void setShareOpen(true)}
+              >
+                <Share2 size={13} aria-hidden /> Share
+              </button>
+            )}
           </div>
           {/* Inline status: dot + label + pills + start/stop */}
           <AdvNowRunning slug={activeSlug} />
-          <button
-            type="button"
-            className="pc-advshell__action pc-advshell__action--new"
-            title="Create or add a new harness"
-            onClick={() => void setCreateOpen(true)}
-          >
-            <Plus size={13} aria-hidden /> New
-          </button>
-          {activeSlug && (
-            <button
-              type="button"
-              className="pc-advshell__action pc-advshell__action--share"
-              title={`Share ${activeSlug} — publish to GitHub + invite collaborators`}
-              onClick={() => void setShareOpen(true)}
-            >
-              <Share2 size={13} aria-hidden /> Share
-            </button>
-          )}
           <DiscordBadge slug={activeSlug} />
         </div>
 
@@ -281,21 +280,20 @@ export default function AdvShell({
           color: var(--fg, #e7f7ff);
         }
         .pc-advshell__selector {
-          display: grid;
-          gap: 5px;
-          min-width: 190px;
-          color: var(--fg-dim, #b9d4e8);
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          flex-shrink: 0;
+        }
+        .pc-advshell__selector-label {
+          color: var(--fg-mute, #7f9bb4);
           font-size: 10px;
           font-weight: 760;
           letter-spacing: 0.09em;
           line-height: 1;
           text-transform: uppercase;
-        }
-        .pc-advshell__selector-head {
-          display: flex;
-          align-items: center;
-          justify-content: space-between;
-          gap: 8px;
+          white-space: nowrap;
+          flex-shrink: 0;
         }
         .pc-advshell__scope-toggle {
           display: inline-flex;
@@ -488,7 +486,6 @@ export default function AdvShell({
           scrollbar-width: none;
           -webkit-overflow-scrolling: touch;
           padding: 0;
-          mask-image: linear-gradient(90deg, #000 calc(100% - 18px), transparent);
         }
         .pc-advshell__tablist::-webkit-scrollbar {
           display: none;
