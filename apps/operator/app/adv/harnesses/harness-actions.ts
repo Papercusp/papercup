@@ -23,7 +23,12 @@ export async function issueAction(slug: string, id: string, action: IssueActionK
   if (action === 'promote') {
     await post(`${base}/promote`, {});
   } else {
-    await post(`${base}/update`, { status: action === 'acknowledge' ? 'acknowledged' : action });
+    // Map the action verb to the IssueStatus enum value: 'close' → 'closed'
+    // (the action name itself is not a valid status). Mirrors the legacy
+    // IssuesList; sending 'close' would store an invalid status that never
+    // matches the "Closed" filter/count.
+    const status = action === 'acknowledge' ? 'acknowledged' : action === 'close' ? 'closed' : 'wontfix';
+    await post(`${base}/update`, { status });
   }
 }
 

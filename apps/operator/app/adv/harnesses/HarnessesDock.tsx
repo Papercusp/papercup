@@ -23,7 +23,8 @@ function ensureRegistered() {
 /**
  * Mounts the dockview shell for /adv/harnesses with a layout name
  * keyed by harness slug. The seed (`defaultAdvHarnessesLayout` in
- * lib/dock-layouts.ts) is a 50/50 split: Features left, Issues right.
+ * lib/dock-layouts.ts) is a three-pane 25/25/50 split: Features,
+ * Issues, and a persistent Detail pane.
  *
  * When the user switches slug, `listPanels()` is walked and each
  * panel's `harnessSlug` param is rebound — same trick `HarnessDockShell`

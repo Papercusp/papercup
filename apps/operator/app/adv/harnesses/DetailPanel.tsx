@@ -460,7 +460,9 @@ function IssueDetail({
     async (action: 'promote' | 'acknowledge' | 'close' | 'wontfix') => {
       setWorking(action);
       try {
-        const body = action === 'promote' ? {} : { status: action === 'acknowledge' ? 'acknowledged' : action };
+        // 'close' → 'closed' (the action verb is not a valid IssueStatus).
+        const status = action === 'acknowledge' ? 'acknowledged' : action === 'close' ? 'closed' : 'wontfix';
+        const body = action === 'promote' ? {} : { status };
         const res = await fetch(
           `/api/harness/${encodeURIComponent(slug)}/issues/${encodeURIComponent(issue.id)}/${
             action === 'promote' ? 'promote' : 'update'
