@@ -209,6 +209,8 @@ npm run dev
 
 If you need to iterate on a server-side handler or API route and you don't want to wait for the Tauri webview to repaint, you can still reload the desktop window (Ctrl+R in the Tauri shell) or hit endpoints directly at `127.0.0.1:3055` and `127.0.0.1:3070` *while the desktop is running*. Do not try to start `apps/operator` on its own — it will fail at the first PG query because native PG was renamed to `papercusp_legacy`.
 
+**Server-side code has no hot-reload — restart to pick it up.** The `:3070` **Hono host** (`bin/hono-host.ts` — the MCP tools, the `lib/endpoint-route` handlers, and everything in `apps/operator/lib/**` they import) runs under `tsx` with no file-watch, so edits there do **not** go live until the host process is restarted: reload the Tauri shell, or — on the standing systemd dev box — `systemctl --user restart papercup-dev-api.service`. (The `:3055` Next layer *does* hot-reload its own routes/components.) The tell that you're testing stale server code: a probe lands in the *old* place — e.g. during the coord FS→PG cutover a `coord:send` kept writing `coord/*.jsonl` instead of Postgres because the host hadn't reloaded. Probe where the write actually lands; if it's stale, restart and re-probe before trusting any result.
+
 ## Read this before changing code
 
 Performance regressions in this repo have repeatedly come from the same
@@ -445,7 +447,7 @@ call (or plugin manifest entry). When you ship a new tool:
 2. **Add `import './<group>/<verb>';`** to `apps/operator/lib/agent-tools/index.ts`.
 3. **Add `guidance: { when, notWhen?, chaining?, byRole? }`** to the `defineTool` call. `when` is the most important field — author it first.
 4. **If exposed on a chat surface**: add `mcp__agentmcp__<group>:<verb>` to that surface's `allowedTools` array (operator-converse: `apps/operator/lib/operator-mcp-tools.ts`; oracle: `apps/operator/app/api/_hono/oracle.ts`).
-5. **Run** `node apps/operator/__tests__/integration/tools-md-sync.mjs` — must be green before commit.
+5. **Run** the Vitest sync test `apps/operator/lib/__tests__/tools-md-sync.test.ts` (e.g. `cd apps/operator && npx vitest run tools-md-sync`) — must be green before commit.
 
 The CI test validates:
 - Every tool in the role's surface has `guidance.when` (warn-only through Phase 4; fail after Phase 5 backfill lands).
