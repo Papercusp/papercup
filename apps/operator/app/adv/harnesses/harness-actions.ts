@@ -45,11 +45,3 @@ export async function issueAction(slug: string, id: string, action: IssueActionK
     await post(`${base}/update`, { status: issueActionStatus(action) });
   }
 }
-
-export function openAdminFeature(slug: string, id: string): void {
-  window.open(
-    `/admin/features?slug=${encodeURIComponent(slug)}&id=${encodeURIComponent(id)}`,
-    '_blank',
-    'noopener',
-  );
-}

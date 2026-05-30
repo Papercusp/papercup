@@ -14,7 +14,7 @@ import { useConfirmDialog } from '../../harness/useConfirmDialog';
 import { STATUS, type HarnessStatus } from '../../harness/theme';
 import PinMenu, { type PinMenuState } from './PinMenu';
 import { useHarnessFeatures, type FeatureStatus, type HarnessFeature } from './useHarnessData';
-import { featureReset, openAdminFeature } from './harness-actions';
+import { featureReset } from './harness-actions';
 
 // Saved views mirror the legacy FeatureList BUILT_IN_VIEWS. Each view is a
 // predicate over a feature; counts are computed client-side. "Running" and
@@ -55,6 +55,9 @@ export default function FeaturesPanel({ params, api }: PanelComponentProps) {
   const [view, setView] = useQueryState('fview', parseAsStringEnum<ViewId>(SAVED_VIEWS.map((v) => v.id)).withDefault('all'));
   const [search, setSearch] = useQueryState('fq', parseAsString.withDefault(''));
   const [selectedId, setSelectedId] = useQueryState('sel', parseAsString.withDefault(''));
+  // Opening the editor = select the feature + set ?edit=<id> so the Detail
+  // pane renders the embedded FeatureEditor (see DetailPanel).
+  const [, setEditId] = useQueryState('edit', parseAsString.withDefault(''));
   const [pinMenu, setPinMenu] = useState<PinMenuState | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [hoveredId, setHoveredId] = useState<string | null>(null);
@@ -289,8 +292,15 @@ export default function FeaturesPanel({ params, api }: PanelComponentProps) {
                 <RotateCcw size={13} aria-hidden />
               </button>
             </Tooltip>
-            <Tooltip label="Edit in /admin/features">
-              <button type="button" onClick={() => openAdminFeature(slug, row.id)} aria-label="Edit feature">
+            <Tooltip label="Edit feature">
+              <button
+                type="button"
+                onClick={() => {
+                  void setSelectedId(row.id);
+                  void setEditId(row.id);
+                }}
+                aria-label="Edit feature"
+              >
                 <Pencil size={13} aria-hidden />
               </button>
             </Tooltip>
@@ -394,7 +404,10 @@ export default function FeaturesPanel({ params, api }: PanelComponentProps) {
           }}
           columns={columns}
           getRowId={(f) => f.id}
-          onRowClick={(f) => void setSelectedId(f.id)}
+          onRowClick={(f) => {
+            void setSelectedId(f.id);
+            void setEditId(null); // navigating = view mode, not edit
+          }}
           onRowHover={(row) => setHoveredId(row?.id ?? null)}
           rowProps={richRowProps}
           getRowBg={richGetRowBg}

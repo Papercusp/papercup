@@ -12,6 +12,7 @@ import { SEVERITY, type HarnessStatus, type IssueSeverityKey } from '../../harne
 import { Select } from '../../harness/Select';
 import { Tooltip } from '../../harness/Tooltip';
 import { useConfirmDialog } from '../../harness/useConfirmDialog';
+import FeatureEditor from '../../harness/FeatureEditor';
 import { useHarnessFeatures, useHarnessIssues, type FeatureStatus, type HarnessFeature } from './useHarnessData';
 import { issueAction, issueActionStatus, type IssueActionKind } from './harness-actions';
 
@@ -66,6 +67,9 @@ export default function DetailPanel({ params, api }: PanelComponentProps) {
   const slug = (params.harnessSlug as string) || '';
   const pinnedId = (params.itemId as string) || null;
   const [urlSel, setUrlSel] = useQueryState('sel', parseAsString.withDefault(''));
+  // `?edit=<featureId>` opens the embedded FeatureEditor for that feature in
+  // this pane. Navigating to another item clears it (back to the read view).
+  const [editId, setEditId] = useQueryState('edit', parseAsString.withDefault(''));
   const selectedId = pinnedId ?? urlSel;
 
   // Phase 3: live data via Zero (REST bootstrap + Zero overlay), no polling.
@@ -80,7 +84,13 @@ export default function DetailPanel({ params, api }: PanelComponentProps) {
 
   // Select-from-Detail (related issue/feature cross-links) drives the global
   // ?sel so the swap panel follows, even when invoked from a pinned panel.
-  const onSelect = useCallback((id: string) => void setUrlSel(id || null), [setUrlSel]);
+  const onSelect = useCallback(
+    (id: string) => {
+      void setUrlSel(id || null);
+      void setEditId(null); // navigating away exits edit mode
+    },
+    [setUrlSel, setEditId],
+  );
 
   // Selection history: push the previous ?sel whenever it changes (swap panel
   // only), so a Back affordance can retrace feature↔issue cross-links.
@@ -164,6 +174,9 @@ export default function DetailPanel({ params, api }: PanelComponentProps) {
         onSelect={onSelect}
         onBack={onBack}
         patchFeature={patchFeature}
+        isEditing={!pinnedId && editId === feature.id}
+        onStartEdit={() => void setEditId(feature.id)}
+        onCloseEdit={() => void setEditId(null)}
       />
     );
   }
@@ -192,6 +205,9 @@ function FeatureDetail({
   onSelect,
   onBack,
   patchFeature,
+  isEditing,
+  onStartEdit,
+  onCloseEdit,
 }: {
   slug: string;
   feature: HarnessFeature;
@@ -200,6 +216,9 @@ function FeatureDetail({
   onSelect: (id: string) => void;
   onBack?: () => void;
   patchFeature: (id: string, partial: Partial<HarnessFeature>) => void;
+  isEditing: boolean;
+  onStartEdit: () => void;
+  onCloseEdit: () => void;
 }) {
   const [working, setWorking] = useState<string | null>(null);
   const [notes, setNotes] = useState<string[] | null>(null);
@@ -327,6 +346,25 @@ function FeatureDetail({
       setWorking(null);
     }
   }, [callJson, feature.id, feature.status, feature.attempts, patchFeature, confirm]);
+
+  // Edit mode — render the full FeatureEditor inline in this pane.
+  if (isEditing) {
+    return (
+      <FeatureEditor
+        embedded
+        slug={slug}
+        feature={{
+          id: feature.id,
+          title: feature.title,
+          claims: feature.claims,
+          status: feature.status,
+          attempts: feature.attempts ?? 0,
+        }}
+        onClose={onCloseEdit}
+        onSaved={() => {}}
+      />
+    );
+  }
 
   return (
     <div className="pc-adv-detail">
@@ -456,17 +494,7 @@ function FeatureDetail({
             <button type="button" disabled={working !== null} onClick={resetFeature}>
               Reset
             </button>
-            <button
-              type="button"
-              disabled={working !== null}
-              onClick={() => {
-                // /admin/features/<F-NN> is the canonical editor surface.
-                window.open(
-                  `/admin/features?slug=${encodeURIComponent(slug)}&id=${encodeURIComponent(feature.id)}`,
-                  '_blank',
-                );
-              }}
-            >
+            <button type="button" disabled={working !== null} onClick={onStartEdit}>
               Edit
             </button>
           </div>

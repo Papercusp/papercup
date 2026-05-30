@@ -29,9 +29,15 @@ interface Props {
   feature: Feature | null;  // null = create mode
   onClose: () => void;
   onSaved: () => void;
+  /**
+   * When true, render the editor inline (filling its container) instead of
+   * inside a centered <Modal>. Used by the /adv Detail panel so "Edit" opens
+   * the editor in the same reader pane that shows features + issues.
+   */
+  embedded?: boolean;
 }
 
-export default function FeatureEditor({ slug, feature, onClose, onSaved }: Props) {
+export default function FeatureEditor({ slug, feature, onClose, onSaved, embedded = false }: Props) {
   const isCreate = feature === null;
   const [id, setId] = useState(feature?.id ?? '');
   const [title, setTitle] = useState(feature?.title ?? '');
@@ -156,15 +162,8 @@ export default function FeatureEditor({ slug, feature, onClose, onSaved }: Props
     return () => window.removeEventListener('keydown', h);
   }, [save]);
 
-  return (
-    <Modal
-      open
-      onOpenChange={(o) => { if (!o) onClose(); }}
-      title={`Edit feature`}
-      srOnlyTitle
-      zIndex={120}
-      contentStyle={{ background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 6, width: '70vw', maxWidth: 720, height: '65vh', display: 'flex', flexDirection: 'column', overflow: 'hidden', fontFamily: 'system-ui, sans-serif' }}
-    >
+  const content = (
+    <>
         {confirmEl}
         {/* Header */}
         <div style={{ padding: '0.75rem 1rem', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
@@ -372,6 +371,37 @@ export default function FeatureEditor({ slug, feature, onClose, onSaved }: Props
             </Collapsible.Root>
           )}
         </div>
-      </Modal>
+    </>
+  );
+
+  if (embedded) {
+    return (
+      <div
+        style={{
+          height: '100%',
+          minHeight: 0,
+          display: 'flex',
+          flexDirection: 'column',
+          overflow: 'hidden',
+          background: 'var(--bg-1, #0b1220)',
+          fontFamily: 'system-ui, sans-serif',
+        }}
+      >
+        {content}
+      </div>
+    );
+  }
+
+  return (
+    <Modal
+      open
+      onOpenChange={(o) => { if (!o) onClose(); }}
+      title={`Edit feature`}
+      srOnlyTitle
+      zIndex={120}
+      contentStyle={{ background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 6, width: '70vw', maxWidth: 720, height: '65vh', display: 'flex', flexDirection: 'column', overflow: 'hidden', fontFamily: 'system-ui, sans-serif' }}
+    >
+      {content}
+    </Modal>
   );
 }
