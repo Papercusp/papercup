@@ -5,9 +5,11 @@
  * - DomainTestPanel: the shared subtab shell, parameterized by dataSource (P-002)
  * - data-source: the TestingDataSource interface + wire types + the
  *   default adminTestingDataSource (P-002)
- *
- * <TestingShell> (the left-rail + panel host) lands in P-003.
+ * - TestingShell: the left-rail + panel host, parameterized by tabs /
+ *   tierLabels / dataSource / customTabs (P-003)
  */
 export * from './registry';
 export * from './data-source';
 export { default as DomainTestPanel } from './DomainTestPanel';
+export { default as TestingShell, tabsFromRegistry } from './TestingShell';
+export type { TestingShellTab, TestingShellProps } from './TestingShell';

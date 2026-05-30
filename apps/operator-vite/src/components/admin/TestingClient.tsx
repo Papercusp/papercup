@@ -1,4 +1,4 @@
-import { useQueryState, parseAsStringEnum } from 'nuqs';
+import type { ReactElement } from 'react';
 import ChaosTab from '@/app/admin/testing/_components/ChaosTab';
 import AIExploreTab from '@/app/admin/testing/_components/AIExploreTab';
 import LiveMetricsTab from '@/app/admin/testing/_components/LiveMetricsTab';
@@ -7,21 +7,31 @@ import PackagedBuildTab from '@/app/admin/testing/_components/PackagedBuildTab';
 import LlmTab from '@/app/admin/testing/_components/LlmTab';
 import TestRunsTab from '@/app/admin/testing/_components/TestRunsTab';
 import MemoryTab from '@/app/admin/testing/_components/MemoryTab';
-import { DomainTestPanel, adminTestingDataSource } from '@papercusp/testing-shell';
+import {
+  TestingShell,
+  adminTestingDataSource,
+  type TestingShellTab,
+} from '@papercusp/testing-shell';
 
 /**
- * Testing-admin client.
+ * Testing-admin client — now a thin wrapper over the shared
+ * <TestingShell> (@papercusp/testing-shell). The shell (left-rail +
+ * panel host) was extracted in P-003 of
+ * harness-tests-tab-and-tester-promotion-2026-05-26; this file supplies
+ * the admin-specific tab list, tier labels, data source, and the 8
+ * bespoke React tabs that can't live in the lib.
  *
- * Plan: admin-testing-tab-restructure-2026-05-24, Phase 1.
+ * Original plan: admin-testing-tab-restructure-2026-05-24, Phase 1.
  *
  * 21 tabs in three tiers:
  *  - quick:   one-click suite runners + observers (existing 8 + packaged)
  *  - domain:  per-domain test surfaces (12 of 13 new tabs)
  *  - surface: cross-cutting transports (routes, transport, docs)
  *
- * Existing 8 tabs (test-runs, live, memory, chaos, ai, routes, packaged,
- * llm) keep their bespoke React; the new 13 tabs render via shared
- * <DomainTestPanel> driven by the testing-domains registry.
+ * The 8 existing tabs (test-runs, live, memory, chaos, ai, routes,
+ * packaged, llm) keep their bespoke React via `customTabs`; the new 13
+ * tabs render via the shell's <DomainTestPanel> driven by the
+ * testing-domains registry (server-side).
  *
  * Testing tools are eagerly imported on purpose: this is the route used
  * to measure and orchestrate performance suites, so lazy chunk
@@ -54,14 +64,12 @@ type TabId =
   | 'transport'
   | 'docs';
 
-interface TabEntry {
+interface AdminTab extends TestingShellTab {
   id: TabId;
-  label: string;
-  hint: string;
   tier: 'quick' | 'domain' | 'surface';
 }
 
-const TABS: TabEntry[] = [
+const TABS: AdminTab[] = [
   // ── Tier 1: Quick runs ──
   { id: 'test-runs', label: 'Test Runs', hint: 'suite orchestrator', tier: 'quick' },
   { id: 'live', label: 'Live metrics', hint: 'passive observer', tier: 'quick' },
@@ -90,9 +98,7 @@ const TABS: TabEntry[] = [
   { id: 'docs', label: 'Docs', hint: 'engine, outline, search', tier: 'surface' },
 ];
 
-const TAB_IDS = TABS.map((t) => t.id) as [TabId, ...TabId[]];
-
-const TIER_LABELS: Record<TabEntry['tier'], string> = {
+const TIER_LABELS: Record<AdminTab['tier'], string> = {
   quick: 'Quick runs',
   domain: 'Domains',
   surface: 'Surfaces',
@@ -100,9 +106,9 @@ const TIER_LABELS: Record<TabEntry['tier'], string> = {
 
 /**
  * Lookup from existing-tab id → bespoke React component (P-006a).
- * Tabs not listed render via <DomainTestPanel domainId={tab}/>.
+ * Tabs not listed render via the shell's <DomainTestPanel>.
  */
-const CUSTOM_TABS: Partial<Record<TabId, () => JSX.Element>> = {
+const CUSTOM_TABS: Partial<Record<TabId, () => ReactElement>> = {
   'test-runs': TestRunsTab,
   live: LiveMetricsTab,
   memory: MemoryTab,
@@ -113,58 +119,14 @@ const CUSTOM_TABS: Partial<Record<TabId, () => JSX.Element>> = {
   llm: LlmTab,
 };
 
-function groupedTabs(): Array<{ tier: TabEntry['tier']; tabs: TabEntry[] }> {
-  const groups: Array<{ tier: TabEntry['tier']; tabs: TabEntry[] }> = [];
-  for (const tier of ['quick', 'domain', 'surface'] as const) {
-    const tabs = TABS.filter((t) => t.tier === tier);
-    if (tabs.length) groups.push({ tier, tabs });
-  }
-  return groups;
-}
-
-export default function TestingClient() {
-  const [tab, setTab] = useQueryState(
-    'tab',
-    parseAsStringEnum<TabId>(TAB_IDS).withDefault('test-runs'),
-  );
-
-  const CustomComponent = CUSTOM_TABS[tab];
-
+export default function TestingClient(): ReactElement {
   return (
-    <div className="pc-test-shell">
-      <aside className="pc-test-left">
-        <h2 className="pc-test-section-label">Testing</h2>
-        <nav aria-label="Testing tabs">
-          {groupedTabs().map(({ tier, tabs }) => (
-            <div key={tier} className="pc-test-tab-group" data-tier={tier}>
-              <div className="pc-test-tier-label">
-                <span>{TIER_LABELS[tier]}</span>
-                <span className="pc-test-tier-count">{tabs.length}</span>
-              </div>
-              {tabs.map((t) => {
-                const active = tab === t.id;
-                return (
-                  <button
-                    key={t.id}
-                    type="button"
-                    className={`pc-test-tab ${active ? 'is-active' : ''}`}
-                    data-tier={tier}
-                    aria-current={active ? 'page' : undefined}
-                    aria-pressed={active}
-                    onClick={() => setTab(t.id)}
-                  >
-                    <span className="pc-test-tab-label">{t.label}</span>
-                    <span className="pc-test-tab-hint">{t.hint}</span>
-                  </button>
-                );
-              })}
-            </div>
-          ))}
-        </nav>
-      </aside>
-      <main className="pc-test-main">
-        {CustomComponent ? <CustomComponent /> : <DomainTestPanel domainId={tab} dataSource={adminTestingDataSource} />}
-      </main>
-    </div>
+    <TestingShell
+      tabs={TABS}
+      tierLabels={TIER_LABELS}
+      dataSource={adminTestingDataSource}
+      customTabs={CUSTOM_TABS}
+      defaultTabId="test-runs"
+    />
   );
 }
