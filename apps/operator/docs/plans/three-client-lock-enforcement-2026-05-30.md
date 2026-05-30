@@ -16,7 +16,7 @@ status: shipped
 
 **OMP↔cc worktree-scope inconsistency (deferred, assessed 2026-05-30 — flagged, not changed):** the cc hook keys lock paths relative to *any* direct-child worktree of `~/papercupai-workspace` (it walks up to `.git` per edit, then workspace-scopes), but the OMP `coord-hook.ts` keys on a SINGLE `papercupRoot()` (`coord-hook.ts:951`, default `~/papercupai-workspace/papercup` / `PAPERCUSP_REPO_ROOT`). So cross-client contention works when OMP runs in the canonical `papercup` checkout (same repo-relative key as a cc edit) but is LOST when an OMP agent edits a *sibling* worktree (OMP skips it; a cc client there would lock it). Narrow (OMP agents usually run in the canonical checkout). **Decision: not changed unilaterally** — `coord-hook.ts` is the `file-locking-improvements-2026-05-20` plan's artifact with its own path-normalization tests (`coord-hook.test.ts`) and careful identity design; broadening its scoping risks regressing that. Fix = mirror the cc hook's per-edit `find_repo_root` + workspace-scope in `coord-hook.ts`, with that plan owner's sign-off + test updates.
 
-**Next:** the in-vivo verification handoff below, then OMP interactive per-session id, then (low) the OMP↔cc worktree-scope unification above.
+**Next:** OMP interactive per-session id (the in-vivo verification handoff is CLOSED — Claude + Codex both verified live; see D-001/D-002, plus the fresh re-run from a genuine *interactive* claude-su session in D-003), then (low) the OMP↔cc worktree-scope unification above.
 
 ---
 
@@ -126,3 +126,47 @@ Record in `file-locking-improvements-2026-05-20.md` that the OMP-only decision i
 - Gemini stays unsupported.
 
 End of plan.
+
+## Decisions
+
+### D-001 — In-vivo verification executed (2026-05-30): Claude PASS end-to-end; Codex blocked on CLI auth
+Date: 2026-05-30
+Ran the "## Handoff — live in-vivo verification" procedure against real `*-su` processes on this host (live operator :3070).
+
+**Claude — PASS (all 5 steps, real `claude-su -p` processes):**
+- Deterministic SID: exported `PAPERCUSP_SID=claude-su-invivoA-2e0957d9`, launched real `claude-su`, `coord:whoami` → ownerId **exactly** `claude-su-invivoA-2e0957d9`. Proves the full chain wrapper env-export → `~/.claude.json` `${PAPERCUSP_SID:-…}` interpolation → MCP `?client=` → distinct owner (the one link never observed live before). Corollary: a *plain* `claude` (this session, SID unset) resolved to the `:-` fallback `28dbf719…`, NOT the literal `${…}` string — independently confirming Claude Code honors the interpolation.
+- Pure mint (no preset SID): real `claude-su` → ownerId `claude-su-8ff1e771-…`, distinct from both the machine id and run A → two shells get distinct owners.
+- Cross-shell coord (the headline bug): shell A `claude-su-coordA-9253c0b0` broadcast `invivo-A 9253c0b0` to `['*']`; shell B `claude-su-coordB-9253c0b0` `coord:inbox` → **SEEN=yes**; shell A `coord:inbox` → **SELF=no** (self-filter intact). Third-party corroboration: the machine-id (28dbf719) inbox shows the message with `from: claude-su-coordA-9253c0b0` — owner proven server-side via the `from` field, not just self-report.
+
+**Codex — BLOCKED (not a lock-identity defect):** real `codex-su exec` 401'd with `refresh_token_reused` / `token_invalidated` from chatgpt.com before the owner could be read. The codex CLI's ChatGPT login is invalidated. `codex-su-home/auth.json` is a **symlink** to the real `~/.codex/auth.json` (mtime 2026-05-28 20:43, mode 600) — my runs did NOT write it (mtime unchanged) and a reused-refresh-token attempt consumes nothing new server-side, so this was pre-existing, not caused/worsened by the test. The Codex `-c mcp_servers.papercusp-su.url=…&client=$PAPERCUSP_SID` override path remains verified-by-construction (wrapper + config.toml read correct); the live owner read needs a Codex re-login (`codex login`) to complete. Note: codex non-interactive form is `codex exec --skip-git-repo-check "<prompt>"` with stdin closed.
+
+**Net:** Claude branch of the per-session-identity fix (`3761b32b`) is now verified live end-to-end. Remaining handoff item: re-run the Codex step after the user re-authenticates Codex.
+
+### D-002 — Codex in-vivo verification now PASSES (supersedes D-001's "blocked"); headless codex exec needs --dangerously-bypass-approvals-and-sandbox for MCP tools
+Date: 2026-05-30
+Follow-up to D-001 after the user re-authenticated Codex (`codex login`). The Codex branch of the per-session-identity fix is now verified live, so **both** CC clients are confirmed end-to-end.
+
+**Codex — PASS:** real `codex-su exec` with `PAPERCUSP_SID=codex-su-invivo-be2d8ae4` → `coord:whoami` returned ownerId **exactly** `codex-su-invivo-be2d8ae4`. Independent server-side corroboration: the machine-id (28dbf719) inbox shows its broadcast with `from: codex-su-invivo-be2d8ae4`. Proves the Codex chain wrapper-mint → `-c mcp_servers.papercusp-su.url=…&client=$PAPERCUSP_SID` override → MCP `?client=` → distinct owner. (The D-001 block was purely a stale ChatGPT login — `refresh_token_reused` — not a lock/identity defect.)
+
+**Operational gotcha discovered (headless codex + MCP):** in non-interactive `codex exec`, papercusp-su MCP tool calls fire an MCP-tool-call **approval elicitation** (`ResolveElicitation { request_id: "mcp_tool_call_approval_…" }`). With no interactive user, codex auto-resolves it `Cancel` → the call shows `(failed)` / "user cancelled MCP tool call". This is SEPARATE from `approval_policy`/`-a never` (which only governs shell commands) — setting that did NOT help. The fix for headless runs is `--dangerously-bypass-approvals-and-sandbox` (an `exec`-level flag). Interactive `codex-su` TUI sessions are unaffected: the user simply approves the elicitation, and the identity mechanism works the same. So this constrains headless automation of codex-su, not real engineer sessions.
+
+Working headless form: `codex-su exec --skip-git-repo-check --dangerously-bypass-approvals-and-sandbox "<prompt>" < /dev/null` (the git-repo-check skip is needed outside a trusted dir; close stdin or it blocks reading it).
+
+**Net handoff status:** the "## Handoff — live in-vivo verification" item is COMPLETE for both Claude (D-001) and Codex (this). Remaining plan items unchanged: OMP interactive per-session id; (low) OMP↔cc worktree-scope unification.
+
+### D-003 — In-vivo verification re-run from a GENUINE interactive claude-su session — Claude PASS (closes the one caveat D-001/D-002 left: real interactive shell, not headless -p)
+Date: 2026-05-30
+Date: 2026-05-30
+Re-ran the "## Handoff — live in-vivo verification" Claude procedure, this time with **shell A being a real interactive `claude-su` engineer session** (this session) rather than a headless `claude-su -p` run. The handoff explicitly flagged that the building session "couldn't drive a second interactive client" — this run closes that exact gap. The fix under test is unchanged (`3761b32b`).
+
+**Claude — PASS (all applicable steps):**
+- **Step 2 (shell A owner):** `coord:whoami` from this live interactive session → ownerId `claude-su-b9596222-fbd4-404a-9cec-a2a35f32457c` — starts with `claude-su-`, NOT the machine id `28dbf719…`. First confirmation of the wrapper→`~/.claude.json` `${PAPERCUSP_SID:-…}` interp→`?client=`→owner chain from a *genuine interactive* shell (prior D-001 used `claude-su -p`). The `claude-su` wrapper at `~/.local/bin/claude-su` was re-confirmed to mint `PAPERCUSP_SID=claude-su-$(uuidgen)` per launch and export it.
+- **Step 3 (broadcast):** shell A `coord:send {to:['*'], summary:'invivoA-682fc933 …'}` → `msg_id mpskq2f5-…`, server-attributed `from: claude-su-b9596222…`.
+- **Step 4 (cross-shell visibility):** launched a SECOND real `claude-su` shell B via `env -u PAPERCUSP_SID claude-su -p …` (unset the inherited SID so B mints its OWN owner). B reported `OWNER=claude-su-fc1515fe-07e9-4f8c-b4e3-91fbb33f62cf` (distinct from A → two real shells get distinct owners) and `SEEN=yes` (B's `coord:inbox` contained A's `invivoA-682fc933` — the headline cross-shell bug is fixed; B is an independent third-party witness).
+- **Step 5 (self-filter):** shell A `coord:inbox` since the broadcast → empty; A does NOT see its own `invivoA-682fc933` (`excludeOwn` correct).
+
+**Pass criteria (all met):** distinct `claude-su-*` owner per shell (A=…b9596222, B=…fc1515fe); peer broadcast visible cross-shell (SEEN=yes); self-filtered for the sender (SELF=no).
+
+**Codex:** unchanged from D-002 (PASS). NOT re-probed here — per `feedback_codex_auth_probe_hazard`, avoid touching Codex auth without need; D-002 already verified it live after the user's re-login.
+
+**Net:** the in-vivo verification handoff is now fully closed, including the real-interactive-session case. No code change; this is corroborating evidence only.
