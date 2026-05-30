@@ -29,7 +29,8 @@ import {
   harnessDir,
 } from '@/lib/harness-core';
 import { phasePhaseLabel } from '@/lib/harness-phases';
-import { harnessPath, harnessPackageDir } from '@/lib/harness-paths';
+import { harnessPackageDir } from '@/lib/harness-paths';
+import { buildInvokeOnce } from '@/lib/harness-invoke-once';
 import { launchRun } from '@/lib/harness-launch';
 import { firePluginLifecycle, firePluginEvent } from '@/lib/plugin-host-runtime';
 import { defineTool } from '@papercusp/agent-mcp';
@@ -196,9 +197,6 @@ const invoke = defineTool({
       ? (body as any).extra.filter((s: any) => typeof s === 'string')
       : [];
 
-    const runScript = harnessPath('run.sh');
-    if (!existsSync(runScript)) return Response.json({ error: 'run.sh missing' }, { status: 500 });
-
     // Phase 7: write pending_events for the role to read at $STATE_DIR/pending-events.jsonl.
     if (role === 'orchestrator') {
       try {
@@ -228,38 +226,19 @@ const invoke = defineTool({
       }
     }
 
-    const harnessDirPath = harnessPackageDir();
-    const escapedExtra = [role, ...extra]
-      .map((s) => `'${String(s).replace(/'/g, "'\\''")}'`)
-      .join(' ');
-    const wrapper = `
-    set -e
-    export PROJECT_DIR="${project.path}"
-    export STATE_DIR="${project.path}/.harness"
-    export HARNESS_DIR="${harnessDirPath}"
-    export LOG_DIR="$STATE_DIR/logs"
-    mkdir -p "$STATE_DIR" "$LOG_DIR"
-    if [ -f "$STATE_DIR/config.json" ]; then
-      export HARNESS_PHASE="$(CONFIG="$STATE_DIR/config.json" python3 -c '
-import json, os
-try:
-    d = json.load(open(os.environ["CONFIG"]))
-    print(d.get("phase", "staging"))
-except Exception:
-    print("staging")
-')"
-    fi
-    source <(awk '/^(log|config_get|invoke|run_hook|snapshot_state|notify_event|harness_slug|fire_plugin_hook|auto_screenshot_post_worker|notify_event|check_cost_cap|prune_logs)\\(\\)/,/^}/' $HARNESS_DIR/run.sh)
-    invoke ${escapedExtra}
-  `;
+    // Single synchronous TS invoke via invoke-once (HARNESS_PHASE is read
+    // from config.json inside invoke-once, so no shell-side phase probe).
+    const { command, args, env: invokeEnv } = buildInvokeOnce({
+      projectDir: project.path,
+      stateDir: join(project.path, '.harness'),
+      harnessDir: harnessPackageDir(),
+      role,
+      extras: extra,
+    });
     return new Promise<Response>((resolve) => {
-      const child = spawn('bash', ['-c', wrapper], {
+      const child = spawn(command, args, {
         cwd: project.path,
-        env: {
-          ...process.env,
-          CLAUDE: process.env.AGENT_CMD ?? process.env.CLAUDE ?? 'omp -p',
-          MAX_ITERATIONS: '1',
-        },
+        env: invokeEnv,
       });
       let stdout = '', stderr = '';
       let timedOut = false;
