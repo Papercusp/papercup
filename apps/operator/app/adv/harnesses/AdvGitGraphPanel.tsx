@@ -21,9 +21,9 @@
  * carried over here.
  */
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
-import { RefreshCw } from 'lucide-react';
+import { RefreshCw, Star } from 'lucide-react';
 import { RichGrid, type ColumnDef } from '@restart/grid-core';
 import {
   CommitDetail,
@@ -33,11 +33,44 @@ import {
   getCachedGitLog,
   type Commit,
   type LaidOutCommit,
+  type Worktree,
 } from '@restart/git-graph';
 import type { PanelComponentProps } from '../../harness/dock/panel-registry';
 import { crossOriginUrl } from '@/lib/cross-origin-url';
 
 const LIMITS = [100, 300, 500, 1000] as const;
+type GitFilter = 'all' | 'refs' | 'merges' | 'bookmarked';
+
+const GIT_FILTERS: { id: GitFilter; label: string }[] = [
+  { id: 'all', label: 'All' },
+  { id: 'refs', label: 'Refs' },
+  { id: 'merges', label: 'Merges' },
+  { id: 'bookmarked', label: 'Stars' },
+];
+
+/* Per-scope commit bookmarks (stars), persisted to localStorage — ported
+ * verbatim from the lib's GitGraphPanel so stars survive reloads. */
+function bookmarkKey(scope: string): string {
+  return `gitBookmarks.${scope}`;
+}
+function readBookmarks(scope: string): Set<string> {
+  if (typeof window === 'undefined') return new Set();
+  try {
+    const raw = window.localStorage.getItem(bookmarkKey(scope));
+    const parsed = raw ? JSON.parse(raw) : [];
+    return new Set(Array.isArray(parsed) ? parsed.filter((s) => typeof s === 'string') : []);
+  } catch {
+    return new Set();
+  }
+}
+function writeBookmarks(scope: string, set: Set<string>): void {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.setItem(bookmarkKey(scope), JSON.stringify([...set]));
+  } catch {
+    /* quota / private mode — ignore */
+  }
+}
 
 function formatAge(ts: number): string {
   const diff = Math.max(0, Date.now() - ts);
@@ -70,27 +103,55 @@ export default function AdvGitGraphPanel({ params }: PanelComponentProps) {
 
   const [limit, setLimit] = useState<number>(300);
   const [query, setQuery] = useState('');
+  const [filter, setFilter] = useState<GitFilter>('all');
   const [reloadTick, setReloadTick] = useState(0);
   const [selectedSha, setSelectedSha] = useState<string | null>(null);
   const [hoveredSha, setHoveredSha] = useState<string | null>(null);
+  // Worktree filter (ported from the lib): scopes the log to one worktree's
+  // branch/head. null = all worktrees.
+  const [worktree, setWorktree] = useState<string | null>(null);
+  const [worktrees, setWorktrees] = useState<Worktree[] | null>(null);
+  const [bookmarked, setBookmarked] = useState<Set<string>>(() => readBookmarks(scope));
   const [commits, setCommits] = useState<Commit[] | null>(() =>
-    slug ? getCachedGitLog(scope, limit, null) : null,
+    slug ? getCachedGitLog(scope, limit, worktree) : null,
   );
   const [error, setError] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
 
-  const logUrl = `/api/harness/${slug}/git/log?limit=${limit}`;
+  const logUrl = `/api/harness/${slug}/git/log?limit=${limit}${
+    worktree ? `&ref=${encodeURIComponent(worktree)}` : ''
+  }`;
 
   useEffect(() => {
     if (!slug) return;
     let cancelled = false;
-    setCommits(getCachedGitLog(scope, limit, null));
+    setCommits(getCachedGitLog(scope, limit, worktree));
     setError(null);
-    fetchGitLog(scope, limit, logUrl)
+    fetchGitLog(scope, limit, logUrl, worktree)
       .then((c) => { if (!cancelled) setCommits(c); })
       .catch((e) => { if (!cancelled) setError(String(e?.message ?? e)); });
     return () => { cancelled = true; };
-  }, [scope, slug, limit, reloadTick, logUrl]);
+  }, [scope, slug, limit, reloadTick, logUrl, worktree]);
+
+  // Worktrees for the dropdown (refreshed on a slow timer, like the lib).
+  const worktreesUrl = `/api/harness/${slug}/git/worktrees`;
+  useEffect(() => {
+    if (!slug) return;
+    let stop = false;
+    const load = () => {
+      fetch(worktreesUrl)
+        .then((r) => (r.ok ? r.json() : Promise.reject()))
+        .then((d) => { if (!stop && Array.isArray(d?.worktrees)) setWorktrees(d.worktrees); })
+        .catch(() => { /* dropdown stays empty */ });
+    };
+    load();
+    const t = window.setInterval(load, 30_000);
+    return () => { stop = true; window.clearInterval(t); };
+  }, [slug, worktreesUrl]);
+
+  // Persist + prune bookmarks per scope.
+  useEffect(() => { setBookmarked(readBookmarks(scope)); }, [scope]);
+  useEffect(() => { writeBookmarks(scope, bookmarked); }, [scope, bookmarked]);
 
   const laidOut = useMemo(() => (commits ? assignLanes(commits) : []), [commits]);
   const laneCount = useMemo(
@@ -99,11 +160,39 @@ export default function AdvGitGraphPanel({ params }: PanelComponentProps) {
   );
   const railWidth = Math.max(18, laneCount * 10);
 
+  const mergeCount = useMemo(() => laidOut.filter((c) => c.parents.length > 1).length, [laidOut]);
+  const refCount = useMemo(() => laidOut.filter((c) => c.refs.length > 0).length, [laidOut]);
+  const uniqueRefs = useMemo(() => {
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const c of laidOut) for (const r of c.refs) { if (!seen.has(r)) { seen.add(r); out.push(r); } }
+    return out;
+  }, [laidOut]);
+  const topAuthors = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const c of laidOut) counts.set(c.author, (counts.get(c.author) ?? 0) + 1);
+    return [...counts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).slice(0, 4);
+  }, [laidOut]);
+
   const needle = query.trim().toLowerCase();
   const visible = useMemo(
-    () => laidOut.filter((c) => matchesCommit(c, needle)),
-    [laidOut, needle],
+    () => laidOut
+      .filter((c) => filter !== 'refs' || c.refs.length > 0)
+      .filter((c) => filter !== 'merges' || c.parents.length > 1)
+      .filter((c) => filter !== 'bookmarked' || bookmarked.has(c.sha))
+      .filter((c) => matchesCommit(c, needle)),
+    [laidOut, filter, bookmarked, needle],
   );
+
+  const toggleBookmark = useCallback((sha: string) => {
+    setBookmarked((prev) => {
+      const next = new Set(prev);
+      if (next.has(sha)) next.delete(sha); else next.add(sha);
+      return next;
+    });
+  }, []);
+  const resetFilters = useCallback(() => { setQuery(''); setFilter('all'); }, []);
+  const applyQuery = useCallback((q: string) => { setQuery(q); setFilter('all'); }, []);
 
   const rowVirtualizer = useVirtualizer<HTMLDivElement, HTMLDivElement>({
     count: visible.length,
@@ -127,6 +216,27 @@ export default function AdvGitGraphPanel({ params }: PanelComponentProps) {
   );
 
   const columns = useMemo<ColumnDef<LaidOutCommit>[]>(() => [
+    {
+      key: 'star',
+      header: '',
+      headerText: '',
+      width: '30px',
+      cellStyle: { overflow: 'visible' },
+      render: ({ row }) => {
+        const on = bookmarked.has(row.sha);
+        return (
+          <button
+            type="button"
+            className={`pc-adv-gitgrid__star${on ? ' is-on' : ''}`}
+            aria-label={on ? 'Remove bookmark' : 'Bookmark commit'}
+            aria-pressed={on}
+            onClick={(e) => { e.stopPropagation(); toggleBookmark(row.sha); }}
+          >
+            <Star size={12} aria-hidden fill={on ? 'currentColor' : 'none'} />
+          </button>
+        );
+      },
+    },
     {
       key: 'graph',
       header: '',
@@ -196,7 +306,7 @@ export default function AdvGitGraphPanel({ params }: PanelComponentProps) {
         </span>
       ),
     },
-  ], [laneCount, railWidth]);
+  ], [laneCount, railWidth, bookmarked, toggleBookmark]);
 
   if (!slug) {
     return <div className="pc-adv-gitgrid__empty">No harness slug in params.</div>;
@@ -205,13 +315,38 @@ export default function AdvGitGraphPanel({ params }: PanelComponentProps) {
   return (
     <div className="pc-adv-gitgrid">
       <div className="pc-adv-gitgrid__bar">
+        {worktrees && worktrees.length > 0 ? (
+          <select
+            className="pc-adv-gitgrid__limit pc-adv-gitgrid__worktree"
+            value={worktree ?? '_all'}
+            onChange={(e) => setWorktree(e.target.value === '_all' ? null : e.target.value)}
+            aria-label="Filter commits by worktree"
+          >
+            <option value="_all">All worktrees ({worktrees.length})</option>
+            {worktrees.map((w) => {
+              const v = w.branch ?? w.head;
+              if (!v) return null;
+              const label =
+                (w.branch ?? `${w.head.slice(0, 8)} (detached)`) +
+                (w.bare ? ' (bare)' : '') +
+                (w.locked ? ' 🔒' : '') +
+                (w.prunable ? ' ⚠' : '');
+              return <option key={v} value={v}>{label}</option>;
+            })}
+          </select>
+        ) : null}
         <input
           type="search"
           className="pc-adv-gitgrid__search"
-          placeholder="Search commits…"
+          placeholder="Search SHA, message, author, ref…"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
         />
+        {query || filter !== 'all' ? (
+          <button type="button" className="pc-adv-gitgrid__clear" onClick={resetFilters}>
+            clear
+          </button>
+        ) : null}
         <select
           className="pc-adv-gitgrid__limit"
           value={limit}
@@ -230,6 +365,60 @@ export default function AdvGitGraphPanel({ params }: PanelComponentProps) {
           <RefreshCw size={12} aria-hidden />
         </button>
       </div>
+
+      <div className="pc-adv-gitgrid__filters" role="tablist" aria-label="Commit filter">
+        {GIT_FILTERS.map((f) => {
+          const count =
+            f.id === 'all' ? laidOut.length
+            : f.id === 'refs' ? refCount
+            : f.id === 'merges' ? mergeCount
+            : bookmarked.size;
+          return (
+            <button
+              key={f.id}
+              type="button"
+              role="tab"
+              aria-selected={filter === f.id}
+              className={`pc-adv-gitgrid__filter${filter === f.id ? ' is-active' : ''}`}
+              onClick={() => setFilter(f.id)}
+            >
+              {f.label}<span className="pc-adv-gitgrid__filter-count">{count}</span>
+            </button>
+          );
+        })}
+      </div>
+
+      {uniqueRefs.length > 0 ? (
+        <div className="pc-adv-gitgrid__refrail" aria-label="Refs">
+          {uniqueRefs.slice(0, 8).map((ref) => (
+            <button
+              key={ref}
+              type="button"
+              className={`pc-adv-gitgrid__ref is-${refClass(ref)}`}
+              onClick={() => applyQuery(ref)}
+              title={`Filter by ${ref}`}
+            >
+              {refLabel(ref)}
+            </button>
+          ))}
+        </div>
+      ) : null}
+
+      {topAuthors.length > 1 ? (
+        <div className="pc-adv-gitgrid__authors" aria-label="Top authors">
+          {topAuthors.map(([author, count]) => (
+            <button
+              key={author}
+              type="button"
+              className="pc-adv-gitgrid__author-chip"
+              onClick={() => applyQuery(author)}
+              title={`Filter by ${author}`}
+            >
+              <span>{author}</span><b>{count}</b>
+            </button>
+          ))}
+        </div>
+      ) : null}
 
       <div ref={scrollRef} className="pc-adv-gitgrid__list">
         {error ? (
@@ -303,6 +492,56 @@ export default function AdvGitGraphPanel({ params }: PanelComponentProps) {
           color: var(--fg-mute); background: transparent; border: 0; border-radius: 4px; cursor: pointer;
         }
         .pc-adv-gitgrid__refresh:hover { color: var(--fg); }
+        .pc-adv-gitgrid__worktree { max-width: 160px; }
+        .pc-adv-gitgrid__clear {
+          font-size: 11px; padding: 0 9px; min-height: 26px;
+          color: var(--fg-mute); background: transparent;
+          border: 1px solid var(--border, rgba(125,211,252,0.15)); border-radius: 8px; cursor: pointer;
+        }
+        .pc-adv-gitgrid__clear:hover { color: var(--fg); border-color: var(--border-strong, rgba(125,211,252,0.32)); }
+        .pc-adv-gitgrid__filters {
+          display: flex; gap: 4px; flex-wrap: wrap; flex-shrink: 0;
+          padding: 6px 8px; border-bottom: 1px solid var(--border, rgba(125,211,252,0.15));
+        }
+        .pc-adv-gitgrid__filter {
+          display: inline-flex; align-items: center; gap: 5px;
+          font-size: 11px; padding: 2px 9px; border-radius: 999px;
+          border: 1px solid var(--border, rgba(125,211,252,0.15)); background: transparent;
+          color: var(--fg-mute); cursor: pointer;
+          transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease;
+        }
+        .pc-adv-gitgrid__filter:hover { color: var(--fg); border-color: var(--border-strong, rgba(125,211,252,0.32)); }
+        .pc-adv-gitgrid__filter.is-active {
+          color: var(--fg);
+          background: color-mix(in oklab, var(--accent, #38bdf8), transparent 84%);
+          border-color: color-mix(in oklab, var(--accent, #38bdf8), transparent 45%);
+        }
+        .pc-adv-gitgrid__filter-count { font-size: 9.5px; color: var(--fg-mute); font-variant-numeric: tabular-nums; }
+        .pc-adv-gitgrid__filter.is-active .pc-adv-gitgrid__filter-count { color: var(--accent-strong, #7dd3fc); }
+        .pc-adv-gitgrid__refrail, .pc-adv-gitgrid__authors {
+          display: flex; gap: 5px; flex-wrap: wrap; flex-shrink: 0;
+          padding: 6px 8px; border-bottom: 1px solid var(--border, rgba(125,211,252,0.15));
+          overflow-x: auto; scrollbar-width: thin;
+        }
+        .pc-adv-gitgrid__refrail .pc-adv-gitgrid__ref { cursor: pointer; }
+        .pc-adv-gitgrid__author-chip {
+          display: inline-flex; align-items: center; gap: 5px;
+          font-size: 10.5px; padding: 2px 8px; border-radius: 999px;
+          border: 1px solid var(--border, rgba(125,211,252,0.15));
+          background: color-mix(in oklab, var(--bg-2), white 2%);
+          color: var(--fg-dim); cursor: pointer; white-space: nowrap;
+          transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease;
+        }
+        .pc-adv-gitgrid__author-chip:hover { color: var(--fg); border-color: var(--border-strong, rgba(125,211,252,0.32)); }
+        .pc-adv-gitgrid__author-chip b { color: var(--fg-mute); font-variant-numeric: tabular-nums; }
+        .pc-adv-gitgrid__star {
+          all: unset; box-sizing: border-box;
+          display: inline-flex; align-items: center; justify-content: center;
+          width: 100%; height: 100%; min-height: 24px; cursor: pointer;
+          color: var(--fg-mute); transition: color 120ms ease;
+        }
+        .pc-adv-gitgrid__star:hover { color: var(--warn, #fbbf24); }
+        .pc-adv-gitgrid__star.is-on { color: var(--warn, #fbbf24); }
         .pc-adv-gitgrid__list { flex: 1; min-height: 0; overflow: auto; }
         .pc-adv-gitgrid__rail { position: relative; display: block; height: 100%; min-height: 40px; flex-shrink: 0; }
         .pc-adv-gitgrid__lane {
