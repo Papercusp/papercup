@@ -15,11 +15,14 @@
 import { getOrgPg } from '@restart/db-org';
 import { ensureAdvSessionsTable } from './ensure-schema';
 import { activeWorkspaceId } from './workspace-registry';
+import type { SuAgent } from './su-agents';
 
 export interface AdvSessionRow {
   id: number;
   workspaceId: string;
   planSlug: string | null;
+  /** Which agent CLI backs this session; null for pre-*-su rows. */
+  agent: SuAgent | null;
   mode: 'omp' | 'console';
   terminalBin: string | null;
   pid: number | null;
@@ -34,6 +37,7 @@ export interface AdvSessionRow {
 
 export interface RecordOpts {
   planSlug?: string | null;
+  agent?: SuAgent | null;
   mode: 'omp' | 'console';
   terminalBin?: string | null;
   pid?: number | null;
@@ -54,6 +58,7 @@ function mapAdvSessionRow(r: {
   id: number;
   workspace_id: string;
   plan_slug: string | null;
+  agent: string | null;
   mode: 'omp' | 'console';
   terminal_bin: string | null;
   pid: number | null;
@@ -69,6 +74,7 @@ function mapAdvSessionRow(r: {
     id: r.id,
     workspaceId: r.workspace_id,
     planSlug: r.plan_slug,
+    agent: (r.agent as SuAgent | null) ?? null,
     mode: r.mode,
     terminalBin: r.terminal_bin,
     pid: r.pid,
@@ -88,9 +94,9 @@ export async function recordAdvSession(opts: RecordOpts): Promise<number | null>
     const { sql } = getOrgPg();
     const rows = await sql<{ id: number }[]>`
       INSERT INTO harness_shared.adv_sessions
-        (workspace_id, plan_slug, mode, terminal_bin, pid, label, omp_thread_id, cwd)
+        (workspace_id, plan_slug, agent, mode, terminal_bin, pid, label, omp_thread_id, cwd)
       VALUES
-        (${activeWorkspaceId()}, ${opts.planSlug ?? null}, ${opts.mode},
+        (${activeWorkspaceId()}, ${opts.planSlug ?? null}, ${opts.agent ?? null}, ${opts.mode},
          ${opts.terminalBin ?? null}, ${opts.pid ?? null}, ${opts.label ?? null},
          ${opts.ompThreadId ?? null}, ${opts.cwd ?? null})
       RETURNING id
@@ -201,6 +207,7 @@ export async function listAdvSessions(limit = 100): Promise<AdvSessionRow[]> {
       id: number;
       workspace_id: string;
       plan_slug: string | null;
+      agent: string | null;
       mode: 'omp' | 'console';
       terminal_bin: string | null;
       pid: number | null;
@@ -212,7 +219,7 @@ export async function listAdvSessions(limit = 100): Promise<AdvSessionRow[]> {
       ended_at: string | Date | null;
       exit_code: number | null;
     }>>`
-      SELECT id, workspace_id, plan_slug, mode, terminal_bin, pid,
+      SELECT id, workspace_id, plan_slug, agent, mode, terminal_bin, pid,
              window_id, omp_thread_id, label, cwd, started_at, ended_at, exit_code
         FROM harness_shared.adv_sessions
        WHERE workspace_id = ${activeWorkspaceId()}
@@ -239,6 +246,7 @@ export async function getAdvSession(id: number): Promise<AdvSessionRow | null> {
       id: number;
       workspace_id: string;
       plan_slug: string | null;
+      agent: string | null;
       mode: 'omp' | 'console';
       terminal_bin: string | null;
       pid: number | null;
@@ -250,7 +258,7 @@ export async function getAdvSession(id: number): Promise<AdvSessionRow | null> {
       ended_at: string | Date | null;
       exit_code: number | null;
     }>>`
-      SELECT id, workspace_id, plan_slug, mode, terminal_bin, pid,
+      SELECT id, workspace_id, plan_slug, agent, mode, terminal_bin, pid,
              window_id, omp_thread_id, label, cwd, started_at, ended_at, exit_code
         FROM harness_shared.adv_sessions
        WHERE workspace_id = ${activeWorkspaceId()}
