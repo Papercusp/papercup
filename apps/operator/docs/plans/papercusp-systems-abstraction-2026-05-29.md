@@ -503,7 +503,7 @@ paused for this extraction window.
 |---|---|---|---|---|
 | **P-002** | `@papercusp/rrf` | `f7f39bf5` | move + rewire | `search/semantic.ts` and `endpoint-route/routes/user/search.ts` now import `rrfCombine`/`RRF_K_DEFAULT` from `@papercusp/rrf`; old `agent-tools/search/rrf.ts` **deleted** |
 | **P-003** | `@papercusp/embedded-pg-discovery` | `68e5116a` | wrapper | none — `lib/embedded-pg-discovery.ts` is now a thin wrapper around `resolvePgUrl({envVars,discoveryFile,fallbackUrl})`; all `getHarnessAdminUrl` callers untouched |
-| **P-022** | `@papercusp/plan-parser` | `e96f63f3` | move + re-export shim | none — `plans/{parser,effective-status,content-hash}.ts` are now one-line re-exports of the package; ~24 in-plans consumers resolve unchanged |
+| **P-022** | `@papercusp/plan-parser` | `e96f63f3` | move + re-export shim | none — `plans/{parser,effective-status,content-hash}.ts` are now one-line re-exports of the package; **33 import sites (all in `apps/operator/`)** resolve unchanged — verified repo-wide, zero in operator-vite/libs |
 
 17 package tests green (7 + 5 + 5); all three resolve from the operator. Pattern
 for all three: a new `packages/<name>/` with **src-as-entry** (no build step,
@@ -517,10 +517,10 @@ work — don't chase it; use the symlink or `--legacy-peer-deps`).
 - **P-013** (already in Phase 3): `search/semantic.ts` + `search.ts` read
   `ctx.tx` unconditionally though it's optional — a latent null-deref. Untouched
   by P-002 (import-only change); still owed before the search package extraction.
-- **P-023b** (new): rewire the ~24 `plan-parser` consumers to import
+- **P-023b** (new): rewire the 33 `plan-parser` consumers to import
   `@papercusp/plan-parser` directly and delete the three re-export shims.
   Deferred because paperclip was actively `git add -A`-committing the shared
-  checkout during this window, making a 24-file rewire unsafe to land atomically.
+  checkout during this window, making a 33-file rewire unsafe to land atomically.
 
 ### Impact on the four paused plans
 
