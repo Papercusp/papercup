@@ -60,6 +60,22 @@ export function useMicLevel(
         if (!Ctx) return;
         const ctx = new Ctx();
         ctxRef.current = ctx;
+        // WebKitGTK (the Tauri desktop webview) and Chrome's autoplay
+        // policy both start an AudioContext in the 'suspended' state. A
+        // suspended context never advances its clock, so the AnalyserNode
+        // is fed nothing and every RMS read is flat — the mic level stays
+        // 0 and `audioReceiving` never flips, which surfaces to the user as
+        // "No audio detected" on a perfectly live mic. resume() transitions
+        // it to 'running' and is permitted here without a fresh user
+        // gesture (verified on this WebKitGTK build).
+        if (ctx.state === 'suspended') {
+          try { await ctx.resume(); } catch { /* best effort — leave flat */ }
+        }
+        if (cancelled) {
+          stream.getTracks().forEach((t) => t.stop());
+          try { await ctx.close(); } catch { /* ignore */ }
+          return;
+        }
         const src = ctx.createMediaStreamSource(stream);
         const analyser = ctx.createAnalyser();
         analyser.fftSize = 512;
