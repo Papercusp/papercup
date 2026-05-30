@@ -74,6 +74,35 @@
       })();
     </script>
     <!--
+      Color theme (pre-paint).
+
+      Mirrors apps/operator/app/layout.tsx's themeBootstrapScript. This SPA is
+      client-rendered, so without this the page would paint frost then flip to
+      the saved theme once React mounts the selector. Sets data-theme on <html>
+      synchronously from the wsLocalKey-scoped value (pc:ws:<id>:papercusp.theme),
+      using the same getBrowserWorkspaceId() resolution as lib/theme.ts so this
+      read and the React lib always agree on the key. Frost is the :root default.
+    -->
+    <script>
+      (() => {
+        const KEY = 'papercusp.theme';
+        const DEFAULT = 'frost';
+        const wsId = () => {
+          try { if (window.__PAPERCUSP_WS__ && String(window.__PAPERCUSP_WS__).trim()) return window.__PAPERCUSP_WS__; } catch (e) {}
+          try { const ws = new URL(window.location.href).searchParams.get('ws'); if (ws && ws.trim()) return ws; } catch (e) {}
+          return 'default';
+        };
+        const valid = (v) => typeof v === 'string' && (v === 'frost' || v === 'black' || (v.indexOf('custom:') === 0 && v.length > 7));
+        try {
+          let id = window.localStorage.getItem('pc:ws:' + wsId() + ':' + KEY);
+          if (!valid(id)) id = DEFAULT;
+          document.documentElement.dataset.theme = id;
+        } catch (e) {
+          document.documentElement.dataset.theme = DEFAULT;
+        }
+      })();
+    </script>
+    <!--
       Operator-chat sidebar width reservation (pre-paint).
 
       The steady-state copy of these rules lives in OperatorChatSidebar's

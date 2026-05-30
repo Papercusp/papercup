@@ -47,6 +47,32 @@ const visualEffectsBootstrapScript = `
 })();
 `;
 
+// Set the color theme pre-paint so the first paint matches the saved selection
+// (no frost→black flash on reload). Replicates lib/theme.ts: the same
+// wsLocalKey scoping (pc:ws:<id>:papercusp.theme) and getBrowserWorkspaceId()
+// resolution, so this boot read and the React lib always agree on the key.
+// Frost is the :root default; only black (and, from Phase 4, custom:<id>) need
+// a data-theme attribute, but we set it unconditionally for symmetry.
+const themeBootstrapScript = `
+(() => {
+  const KEY = 'papercusp.theme';
+  const DEFAULT = 'frost';
+  const wsId = () => {
+    try { if (window.__PAPERCUSP_WS__ && String(window.__PAPERCUSP_WS__).trim()) return window.__PAPERCUSP_WS__; } catch (e) {}
+    try { const ws = new URL(window.location.href).searchParams.get('ws'); if (ws && ws.trim()) return ws; } catch (e) {}
+    return 'default';
+  };
+  const valid = (v) => typeof v === 'string' && (v === 'frost' || v === 'black' || (v.indexOf('custom:') === 0 && v.length > 7));
+  try {
+    let id = window.localStorage.getItem('pc:ws:' + wsId() + ':' + KEY);
+    if (!valid(id)) id = DEFAULT;
+    document.documentElement.dataset.theme = id;
+  } catch (e) {
+    document.documentElement.dataset.theme = DEFAULT;
+  }
+})();
+`;
+
 // Bootstrap the operator-chat sidebar offset pre-hydration so the body
 // padding (and the .pc-header left/width override) is set before the
 // first paint. Without this, every page first paints under the sidebar,
@@ -219,6 +245,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
         <script id="papercusp-console-patch" dangerouslySetInnerHTML={{ __html: consolePatchScript }} />
         <script id="papercusp-flags-bootstrap" dangerouslySetInnerHTML={{ __html: flagBootstrapScript }} />
         <script id="papercusp-visual-effects-bootstrap" dangerouslySetInnerHTML={{ __html: visualEffectsBootstrapScript }} />
+        <script id="papercusp-theme-bootstrap" dangerouslySetInnerHTML={{ __html: themeBootstrapScript }} />
         <script id="papercusp-op-chat-bootstrap" dangerouslySetInnerHTML={{ __html: operatorChatBootstrapScript }} />
       </head>
       {/* suppressHydrationWarning on <body>: the operator-chat

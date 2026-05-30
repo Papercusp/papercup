@@ -13,6 +13,7 @@
  * Component-scoped vars (h-tab, h-button, etc.) remain inline below. */
 @import './_brand-primitives.css';
 @import './_semantic.css';
+@import './_themes.css';
 
 :root {
   color-scheme: dark;
