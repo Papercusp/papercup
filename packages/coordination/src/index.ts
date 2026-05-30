@@ -14,3 +14,5 @@
 export * from './core/index';
 export * from './event-log/index';
 export * from './presence/index';
+export * from './watermark-store/index';
+export * from './subscription-store/index';

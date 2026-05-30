@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Agent coordination substrate, extracted as three host-agnostic pieces: coord-core (pure envelope types + identity-free fold/merge/glob protocol logic), CoordEventLog (the swappable append-only channel-log seam — fs default + in-memory double + optional single-table Postgres backend, all passing one conformance suite; covers messages/handoffs/escalations/plan-events), and PresenceStore (the live-presence seam over an injected PgHandle, with in-memory double). No @papercusp/@restart runtime deps; identity, subscriptions, and watermark persistence stay host-side by design.",
+  "description": "Agent coordination substrate, extracted as host-agnostic seams: coord-core (pure envelope types + identity-free fold/merge/glob protocol logic), CoordEventLog (the swappable append-only channel-log seam — fs default + in-memory double + workspace-scoped single-table Postgres backend; covers messages/handoffs/escalations/plan-events), PresenceStore (live presence), WatermarkStore (per-agent read cursors), and SubscriptionStore (path/glob watches) — each over an injected PgHandle with an in-memory double, all passing one conformance suite. No @papercusp/@restart runtime deps; identity resolution stays host-side by design.",
   "main": "./src/index.ts",
   "types": "./src/index.ts",
   "exports": {
@@ -36,6 +36,26 @@
       "types": "./src/presence/conformance.ts",
       "import": "./src/presence/conformance.ts",
       "default": "./src/presence/conformance.ts"
+    },
+    "./watermark-store": {
+      "types": "./src/watermark-store/index.ts",
+      "import": "./src/watermark-store/index.ts",
+      "default": "./src/watermark-store/index.ts"
+    },
+    "./watermark-store/conformance": {
+      "types": "./src/watermark-store/conformance.ts",
+      "import": "./src/watermark-store/conformance.ts",
+      "default": "./src/watermark-store/conformance.ts"
+    },
+    "./subscription-store": {
+      "types": "./src/subscription-store/index.ts",
+      "import": "./src/subscription-store/index.ts",
+      "default": "./src/subscription-store/index.ts"
+    },
+    "./subscription-store/conformance": {
+      "types": "./src/subscription-store/conformance.ts",
+      "import": "./src/subscription-store/conformance.ts",
+      "default": "./src/subscription-store/conformance.ts"
     }
   },
   "scripts": {
