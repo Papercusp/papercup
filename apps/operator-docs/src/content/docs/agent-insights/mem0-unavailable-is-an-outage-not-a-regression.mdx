@@ -1,0 +1,126 @@
+---
+title: "`mem0_unavailable` is almost always an outage, not a regression"
+description: When the memory:* tools return { ok:false, reason:'mem0_unavailable' }, it nearly always means an environmental gap (no LLM key, no embedder, unreachable PG) — not broken code. The wrappers prove this by design, and you can verify the moved storage core without an LLM.
+discovered: 2026-05-30
+tags: [memory, mem0, postgres, debugging, verification]
+status: active
+sidebar:
+  order: 64
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+## The symptom
+
+Every `memory:*` tool (`remember` / `search` / `list` / `forget` /
+`update`) can return:
+
+```json
+{ "ok": false, "reason": "mem0_unavailable" }
+```
+
+This looks alarming after you've just refactored `lib/memory/` or the
+`@papercusp/memory` package — but it is **almost never a code
+regression**. It is the documented graceful-degradation path, and the
+wrappers are wired so that a *real* wiring break looks completely
+different.
+
+## The decisive tell — why `mem0_unavailable` ⇒ the wiring is fine
+
+The verb wrappers (`lib/agent-tools/memory/*.ts`) call the store
+**without** a try/catch:
+
+```ts
+const client = await getMemoryClient();   // NOT wrapped
+if (!client) {
+  return { /* ...reason: 'mem0_unavailable' */ };
+}
+```
+
+So the two failure modes are cleanly separable:
+
+| You see | Means |
+|---|---|
+| A thrown **MCP error** (`@papercusp/memory is not configured…`, a module-resolution error, a stack trace) | The seam is genuinely broken — `configureMemory()` never ran, or an import path is wrong. **This is a regression.** |
+| A clean `{ ok:false, reason:'mem0_unavailable' }` | `getMemoryClient()` ran end-to-end, every injected seam fired, and the store **chose** to return `null`. **This is an outage, not a regression.** |
+
+If you get the structured `mem0_unavailable`, the extraction/wiring is
+intact by construction. Stop suspecting your diff.
+
+## The three `null` gates inside `getMemoryClient()`
+
+`tryLoad()` in `packages/memory/src/mem0-client.ts` returns `null`
+(→ `mem0_unavailable`) at exactly three points, in order:
+
+1. **Embedder disabled** — `resolveEmbedder()` returned
+   `{ mode:'disabled' }`. Happens when the user set
+   `memoryEmbedderMode: 'disabled'`, or `auto` found no OpenAI key
+   **and** `@huggingface/transformers` isn't installed.
+2. **PG fields unresolved** — `mem0-connection`'s `pgFields()` threw
+   (admin URL unreachable / unparseable).
+3. **No LLM key** — neither an Anthropic nor an OpenAI key is present
+   in operator-credentials or env. mem0 needs an LLM for its
+   **`add()`-time fact extraction**, so the client can't be built
+   without one. *This is the most common cause in superuser / headless
+   envs* — credentials are stored **encrypted** (`harness_shared.operator_credentials.payload_ct`),
+   so a shell that can't decrypt them, or a workspace where no key was
+   ever configured, hits this gate.
+
+Note gate 3 is reached only *after* the embedder and PG resolve — so
+seeing `mem0_unavailable` often means the admin-URL seam and embedder
+seam both worked, and you're just missing an API key.
+
+<Aside type="caution">
+The native-fallback PG (`postgresql://harness_admin:…@localhost:5432/papercusp`)
+may actually be **provisioned** (pgvector + `harness_shared.memory_canonical`
+/ `memory_vec_*`) even when the desktop isn't booted, because
+`getHarnessAdminUrl()` falls back to it. So "desktop not running" is
+*not* automatically the cause — check the LLM-key gate too. See
+[`embedded-pg-discovery`](/internal/docs/agent-insights/embedded-pg-discovery/).
+</Aside>
+
+## Verify the moved storage core WITHOUT an LLM
+
+The LLM is needed only for mem0's `add()`. The actual storage code —
+`CanonicalVectorStore` (the heart of the `@papercusp/memory`
+extraction) — needs only PG + a pre-computed vector, both injectable.
+So you can prove the moved code round-trips the live schema without any
+API key or billed call:
+
+```ts
+import { CanonicalVectorStore } from '@papercusp/memory'; // or the abs src path
+const store = new CanonicalVectorStore({
+  host: '127.0.0.1', port: 5432, user: 'harness_admin',
+  password: 'harness_admin_pwd', dbname: 'papercusp',
+  vecTable: 'memory_vec_local', embeddingModelDims: 384,
+});
+const vec = Array.from({ length: 384 }, (_, i) => Math.sin(i * 0.137 + 1));
+await store.insert([vec], ['<uuid>'], [{ user_id: 'verify-DELETEME', data: 'x' }]);
+const hits = await store.search(vec, 5, { user_id: 'verify-DELETEME' }); // score ~1.0
+await store.delete('<uuid>'); // FK-cascades the vec row
+```
+
+This exercises the real moved SQL (insert into `memory_canonical` +
+`memory_vec_local`, the pgvector `<=>` cosine search + canonical↔vec
+JOIN, the `payload->>'user_id'` filter, the cascade delete) against the
+populated schema. Gotcha: `memory_canonical.id` is a **UUID** column —
+use a valid UUID, not a free-form marker string. Always scope the test
+to a throwaway `user_id` and delete it.
+
+## Checklist — is it a regression?
+
+1. Is the tool response a **thrown error** or a clean
+   `mem0_unavailable`? Clean ⇒ not a regression.
+2. Does `packages/memory` tsc + vitest pass? (`npx tsc -p tsconfig.json
+   --noEmit && npx vitest run`)
+3. Does the operator tsc add **zero** new errors in the extracted +
+   shim files?
+4. Does the `CanonicalVectorStore` round-trip above pass against live
+   PG? If yes, the moved storage code is sound — any remaining
+   `mem0_unavailable` is purely the LLM-key / embedder / desktop-boot
+   environment.
+
+## See also
+
+- [`embedded-pg-discovery`](/internal/docs/agent-insights/embedded-pg-discovery/) — how `getHarnessAdminUrl()` resolves (env → discovery file → native fallback).
+- [`live-pg-regression-sentinel`](/internal/docs/agent-insights/live-pg-regression-sentinel/) — the broader "verify against a live PG, not just unit tests" pattern.
