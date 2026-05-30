@@ -17,8 +17,7 @@ companion-to: [papercusp-systems-abstraction-2026-05-29]
 > - ~~search (P-013/P-020)~~ **DONE** (`0332afba` + `163d60b3`) — done inline,
 >   off the list.
 > - ~~locks (P-010)~~ **DONE** (`0779d8f2` + flip `908238e6`) — off the list.
-> - **memory (P-021)** — `BRIEF-memory-extraction-2026-05-30.md` (largest;
->   scope the boundary first).
+> - ~~memory (P-021)~~ **DONE** (`28014805`) — off the list.
 > - ~~coordination (P-011/P-012)~~ **DONE** (`f25af167` P-012 append-only +
 >   `2c1529ca`+`3ef62102` P-011) — `@papercusp/coordination` shipped as
 >   coord-core (pure) + CoordEventLog (fs/in-mem seam) + PresenceStore
@@ -31,13 +30,23 @@ companion-to: [papercusp-systems-abstraction-2026-05-29]
 > (`fireNotificationsForCaller` is called from the `acquire` wrapper, which
 > stays operator-side, so no `onAcquired` seam was needed). The coordination
 > agent is unblocked — those files are untouched.
-> P-040 (publish already-clean libs) + P-050/P-051 (verification) remain after.
+> **Arc essentially COMPLETE (2026-05-30).** Every extraction is done; Phase 6
+> verification (**P-050 + P-051**) is **done** (conformance parity + re-point
+> runtime suites green — see the P-050 plan note). The only open threads are
+> gated, not actionable autonomously: **P-000** (`needs-human`, the ~4-bundle
+> D-002 decision); **P-040** `wip` — only the git-graph `private:true`+desc
+> sliver remains, blocked by another agent's uncommitted `react-diff-view` edit
+> to that `package.json`; and a coordinated **push of the three local-only
+> P-040 submodule pins** (token-kit `e808c0d`, ui-primitives `8075a3c`,
+> papergrid `9eb01cb`) is owed (don't-push-without-asking). All libs stay
+> `private:true` — agents have private-repo access, no npm publish.
 
-**State:** 10 packages shipped on `main` (rrf, embedded-pg-discovery, plan-parser,
-rate-limit, ipc-framing, desktop-ipc, **ipc-endpoint-server**, **backup**,
-**search**, **locks**). `done`: P-030 (IPC, `c74cbe70`), P-023/P-024 (backup,
-`73fa053d`), **P-013/P-020 (search, `0332afba`+`163d60b3`)**, **P-010 (locks,
-`0779d8f2`)**.
+**State:** 12 packages shipped on `main` (rrf, embedded-pg-discovery, plan-parser,
+rate-limit, ipc-framing, desktop-ipc, ipc-endpoint-server, backup, search,
+**locks**, **memory**, **coordination**). `done`: P-030 (IPC, `c74cbe70`),
+P-023/P-024 (backup, `73fa053d`), P-013/P-020 (search, `0332afba`+`163d60b3`),
+**P-010 (locks, `0779d8f2`)**, **P-021 (memory, `28014805`)**, **P-011/P-012
+(coordination, `2c1529ca`+`3ef62102`+`f25af167`)**, **P-050/P-051 (verification)**.
 
 P-030 pt3 was finished with a **simpler design than this brief sketched**: the
 package takes a required `host: IpcEndpointHost` (3 injected fns —
@@ -57,9 +66,10 @@ only config change required was the `ipc-framing` `exports` → object-form fix
 `@papercusp/tooldef`); the moved+fixed fixture (`description` + `inputSchema` +
 literal `eventWireKinds`) un-breaks it without touching the tooldef package.
 
-**Next:** the backlog in lowest-risk-first order. **search (P-013/P-020),
-locks (P-010), and memory (P-021) are now `done`.** Remaining: **P-011/P-012
-(coordination)** → P-040 → P-050/P-051. (memory: commit `28014805` — 6
+**Next:** the extraction + verification arc is **complete** — every P-0XX is
+`done` except **P-000** (`needs-human`, D-002 bundling) and **P-040** (`wip` —
+only the git-graph private-flag sliver, blocked). search/locks/memory/
+coordination all done; Phase 6 (P-050/P-051) verified. (memory: commit `28014805` — 6
 store-core files behind `configureMemory()` seams; the embedder is a
 pre-built `(text)=>number[]` fn injected from the operator, so mem0 always
 uses `provider:'custom'`; deep-path shims keep all 26 consumers unchanged.)
