@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { useVirtualizer } from '@tanstack/react-virtual';
 import { parseAsString, parseAsStringEnum, useQueryState } from 'nuqs';
 import { toast } from 'sonner';
 import {
@@ -124,15 +125,25 @@ export default function IssuesPanel({ params, api }: PanelComponentProps) {
     return c;
   }, [issues]);
 
+  // P-020: virtualize the row list (only the visible window mounts).
+  const rowVirtualizer = useVirtualizer({
+    count: filtered.length,
+    getScrollElement: () => listRef.current,
+    estimateSize: () => 44,
+    overscan: 10,
+  });
+  useEffect(() => {
+    rowVirtualizer.measure();
+  }, [filtered, rowVirtualizer]);
+
   // P-019 keyboard nav (panel-scoped): J/K move a focus cursor, ↵ opens
   // (sets ?sel), / focuses search. Fires only when the list holds focus.
   useEffect(() => {
     setFocusIdx((idx) => Math.min(idx, Math.max(0, filtered.length - 1)));
   }, [filtered.length]);
   useEffect(() => {
-    const el = listRef.current?.querySelector(`[data-fidx="${focusIdx}"]`) as HTMLElement | null;
-    el?.scrollIntoView({ block: 'nearest' });
-  }, [focusIdx]);
+    if (filtered.length > 0) rowVirtualizer.scrollToIndex(focusIdx, { align: 'auto' });
+  }, [focusIdx, filtered.length, rowVirtualizer]);
   const onListKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
     if (filtered.length === 0) return;
     switch (e.key) {
@@ -210,7 +221,10 @@ export default function IssuesPanel({ params, api }: PanelComponentProps) {
         {filtered.length === 0 ? (
           <PanelMessage>No issues match the current filter.</PanelMessage>
         ) : (
-          filtered.map((i, idx) => {
+          <div style={{ height: rowVirtualizer.getTotalSize(), position: 'relative', width: '100%' }}>
+            {rowVirtualizer.getVirtualItems().map((vi) => {
+            const i = filtered[vi.index];
+            const idx = vi.index;
             const sevTone = SEVERITY_TONE[i.severity] ?? SEVERITY_TONE.minor;
             const SevIcon = SEVERITY_ICON[i.severity] ?? Circle;
             const SrcIcon = SOURCE_ICON[i.source] ?? Circle;
@@ -219,8 +233,11 @@ export default function IssuesPanel({ params, api }: PanelComponentProps) {
             return (
               <div
                 key={i.id}
+                data-index={idx}
                 data-fidx={idx}
+                ref={rowVirtualizer.measureElement}
                 className={`pc-adv-issues__row${isActive ? ' is-active' : ''}${idx === focusIdx ? ' is-focused' : ''}`}
+                style={{ position: 'absolute', top: 0, left: 0, width: '100%', transform: `translateY(${vi.start}px)` }}
                 onClick={() => void setSelectedId(i.id)}
                 onContextMenu={(e) => {
                   e.preventDefault();
@@ -292,7 +309,8 @@ export default function IssuesPanel({ params, api }: PanelComponentProps) {
                 </span>
               </div>
             );
-          })
+            })}
+          </div>
         )}
       </div>
       <div className="pc-adv-issues__footer">
