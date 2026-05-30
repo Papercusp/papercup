@@ -1,6 +1,7 @@
 'use client';
 
 import './harness.css';
+import { wsLocalKey } from '@/lib/browser-workspace';
 import { OperatorActionLog } from '../_components/OperatorActionLog';
 import { LazyDetails } from '../_components/LazyDetails';
 import { useShortcut } from '../../lib/hotkeys';
@@ -1678,6 +1679,76 @@ function ActiveAgentsBar({ slug, phase, runs, alive, onPillClick, onStart, onSto
  * plugin tab shows that single plugin's actions/capabilities/disable
  * controls — replaces the older single "Plugins" composite tab.
  */
+/**
+ * Config-panel tab button. Hoisted to module scope (NOT defined inline inside
+ * ConfigPanel) so its component identity is stable across renders. An inline
+ * component is a brand-new type every render, so React remounts the entire tab
+ * rail on each ConfigPanel re-render; the rail's `useAutoAnimate` then replays
+ * its enter animation every poll/state tick — which is the "Harness subtab
+ * keeps blinking" bug. `pane`/`setPane` are passed as props instead of closed
+ * over.
+ */
+function ConfigTabBtn({
+  id,
+  label,
+  icon,
+  missing,
+  pane,
+  setPane,
+}: {
+  id: string;
+  label: string;
+  icon: React.ReactNode;
+  missing?: string[];
+  pane: string;
+  setPane: (p: string) => void;
+}) {
+  const needsSetup = (missing?.length ?? 0) > 0;
+  const tooltip = needsSetup
+    ? `${missing!.map((f) => `${f} is empty`).join(' · ')}`
+    : label;
+  const selected = pane === id;
+  return (
+    <Tooltip label={tooltip}>
+      <button
+        type="button"
+        onClick={() => setPane(id)}
+        className={`h-tab h-config-tab${selected ? ' is-active' : ''}${needsSetup ? ' needs-setup' : ''}`}
+        aria-pressed={selected}
+        style={{
+          background: selected ? 'color-mix(in oklab, var(--accent), transparent 88%)' : 'transparent',
+          border: 0,
+          borderBottom: '2px solid',
+          borderBottomColor: selected ? 'var(--accent)' : 'transparent',
+          color: selected ? 'var(--fg)' : 'var(--fg-mute)',
+          padding: '6px 10px 5px',
+          fontSize: 11,
+          cursor: 'pointer',
+          display: 'inline-flex', alignItems: 'center', gap: 6,
+          borderRadius: 0,
+          whiteSpace: 'nowrap',
+          maxWidth: 190, overflow: 'hidden', textOverflow: 'ellipsis',
+          minHeight: 31,
+          boxShadow: 'none',
+          transition: 'background 120ms ease, border-color 120ms ease, color 120ms ease',
+        }}
+      >
+        {icon}
+        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{label}</span>
+        {needsSetup && (
+          <span
+            aria-label="needs setup"
+            style={{
+              display: 'inline-block', width: 6, height: 6, borderRadius: '50%',
+              background: 'var(--bad)', flex: '0 0 auto',
+            }}
+          />
+        )}
+      </button>
+    </Tooltip>
+  );
+}
+
 function ConfigPanel({
   harnessSlug, projectPath, alive, onClose,
   installedPlugins, enabledSlugs, onPluginsChange,
@@ -1728,53 +1799,6 @@ function ConfigPanel({
     if (!enabledManifests.some((p) => p.name === pane)) setPane(HARNESS_PANE);
   }, [pane, enabledManifests]);
 
-  const TabBtn = ({ id, label, icon, missing }: { id: string; label: string; icon: React.ReactNode; missing?: string[] }) => {
-    const needsSetup = (missing?.length ?? 0) > 0;
-    const tooltip = needsSetup
-      ? `${missing!.map((f) => `${f} is empty`).join(' · ')}`
-      : label;
-    const selected = pane === id;
-    return (
-      <Tooltip label={tooltip}>
-        <button
-          type="button"
-          onClick={() => setPane(id)}
-          className={`h-tab h-config-tab${selected ? ' is-active' : ''}${needsSetup ? ' needs-setup' : ''}`}
-          aria-pressed={selected}
-          style={{
-            background: selected ? 'color-mix(in oklab, var(--accent), transparent 88%)' : 'transparent',
-            border: 0,
-            borderBottom: '2px solid',
-            borderBottomColor: selected ? 'var(--accent)' : 'transparent',
-            color: selected ? 'var(--fg)' : 'var(--fg-mute)',
-            padding: '6px 10px 5px',
-            fontSize: 11,
-            cursor: 'pointer',
-            display: 'inline-flex', alignItems: 'center', gap: 6,
-            borderRadius: 0,
-            whiteSpace: 'nowrap',
-            maxWidth: 190, overflow: 'hidden', textOverflow: 'ellipsis',
-            minHeight: 31,
-            boxShadow: 'none',
-            transition: 'background 120ms ease, border-color 120ms ease, color 120ms ease',
-          }}
-        >
-          {icon}
-          <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{label}</span>
-          {needsSetup && (
-            <span
-              aria-label="needs setup"
-              style={{
-                display: 'inline-block', width: 6, height: 6, borderRadius: '50%',
-                background: 'var(--bad)', flex: '0 0 auto',
-              }}
-            />
-          )}
-        </button>
-      </Tooltip>
-    );
-  };
-
   const activePlugin = enabledManifests.find((p) => p.name === pane);
 
   return (
@@ -1786,18 +1810,20 @@ function ConfigPanel({
         overflowX: 'auto',
         minHeight: 32,
       }}>
-        <TabBtn id={HARNESS_PANE} label="Harness" icon={<SlidersHorizontal size={13} />} />
+        <ConfigTabBtn id={HARNESS_PANE} label="Harness" icon={<SlidersHorizontal size={13} />} pane={pane} setPane={setPane} />
         {enabledManifests.map((p) => {
           const tabIcon = p.dashboardTabs?.[0]?.icon ?? p.icon ?? null;
           // Display name: strip @scope/ prefix for compactness.
           const display = p.name.includes('/') ? p.name.split('/').pop()! : p.name;
           return (
-            <TabBtn
+            <ConfigTabBtn
               key={p.name}
               id={p.name}
               label={display}
               icon={<PluginIcon name={tabIcon} size={13} />}
               missing={pluginsMissing[p.name]}
+              pane={pane}
+              setPane={setPane}
             />
           );
         })}
@@ -2866,7 +2892,7 @@ export default function HarnessDashboard({ forcedPanel, embeddedPanelChrome = fa
         const fromQuery = projectQueryParam && nextProjects.find((p: ProjectEntry) => p.slug === projectQueryParam)
           ? projectQueryParam
           : null;
-        const saved = window.localStorage.getItem('harness.activeProject');
+        const saved = window.localStorage.getItem(wsLocalKey('harness.activeProject'));
         const savedProject = saved ? nextProjects.find((p: ProjectEntry) => p.slug === saved) : null;
         setActiveSlug((current) => {
           if (fromPath) return fromPath;
@@ -2880,7 +2906,7 @@ export default function HarnessDashboard({ forcedPanel, embeddedPanelChrome = fa
 
   useEffect(() => {
     if (!activeSlug) return;
-    try { window.localStorage.setItem('harness.activeProject', activeSlug); } catch {}
+    try { window.localStorage.setItem(wsLocalKey('harness.activeProject'), activeSlug); } catch {}
   }, [activeSlug]);
 
   useEffect(() => {
@@ -3475,7 +3501,7 @@ export default function HarnessDashboard({ forcedPanel, embeddedPanelChrome = fa
       if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`);
       const d = await res.json();
       toast.success('Replan started', {
-        description: 'Scoper is folding new SPEC.md bullets into the work queue. Updates will appear in a few minutes.',
+        description: 'Scoper is folding new plan items into the work queue. Updates will appear in a few minutes.',
       });
       if (d.invocationId) {
         // Poll fires completion narration when the scoper finishes,
@@ -3496,7 +3522,7 @@ export default function HarnessDashboard({ forcedPanel, embeddedPanelChrome = fa
       const res = await fetch(`/api/harness/${activeSlug}/product-review`, { method: 'POST' });
       if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`);
       toast.success('Propose started', {
-        description: 'Scoper is reading SPEC.md and drafting proposals. New cards will appear in the Proposals tab in a few minutes.',
+        description: 'Scoper is reading the active plan and drafting proposals. New cards will appear in the Proposals tab in a few minutes.',
       });
     } catch (e) {
       toast.error('Propose failed', { description: String(e) });
@@ -3507,7 +3533,7 @@ export default function HarnessDashboard({ forcedPanel, embeddedPanelChrome = fa
     if (!activeSlug) return;
     if (!await askConfirm({
       title: 'Run cleanup?',
-      body: 'Scoper will deprecate features whose claims no longer match SPEC.md and modify partial-matches. No new features will be added. Code is not auto-removed.',
+      body: 'Scoper will deprecate features whose claims no longer match the active plan and modify partial-matches. No new features will be added. Code is not auto-removed.',
       confirmLabel: 'Run cleanup',
     })) return;
     const { announceOpStart, announceOpEnd } = await import('@/lib/voice-narration');
@@ -3517,7 +3543,7 @@ export default function HarnessDashboard({ forcedPanel, embeddedPanelChrome = fa
       if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`);
       const d = await res.json();
       toast.success('Cleanup started', {
-        description: 'Scoper is comparing existing features against SPEC.md. Updates will appear in a few minutes.',
+        description: 'Scoper is comparing existing features against the active plan. Updates will appear in a few minutes.',
       });
       if (d.invocationId) {
         void pollScoperResult(activeSlug, d.invocationId, 'Cleanup', 'cleanup', handle);
@@ -3751,20 +3777,20 @@ export default function HarnessDashboard({ forcedPanel, embeddedPanelChrome = fa
       cs.push({
         id: 'replan',
         section: 'Control',
-        title: 'Replan — fold new SPEC.md bullets into the work queue',
+        title: 'Replan — fold new plan items into the work queue',
         icon: '🔄',
-        keywords: 'replan rescope refresh queue spec scoper',
+        keywords: 'replan rescope refresh queue plan scoper',
         perform: replanHarness,
       });
       cs.push({
         id: 'cleanup',
         section: 'Control',
-        title: 'Cleanup — deprecate or modify features that no longer match SPEC.md',
+        title: 'Cleanup — deprecate or modify features that no longer match the active plan',
         icon: '🧹',
         keywords: 'cleanup deprecate prune retire scoper stale orphan',
         perform: cleanupHarness,
       });
-      cs.push({ id: 'config', section: 'Control', title: 'Edit config / spec', icon: '✎', keywords: 'spec agents contract', perform: () => setActivePanel('config') });
+      cs.push({ id: 'config', section: 'Control', title: 'Edit config', icon: '✎', keywords: 'config agents contract json', perform: () => setActivePanel('config') });
       cs.push({ id: 'vscode', section: 'Control', title: 'Open current project in VSCode', icon: '</>', keywords: 'vscode code editor open folder', perform: () => openInVSCode(status.project.path) });
       cs.push({ id: 'triage', section: 'Control', title: 'Triage — stuck/blocked/failing features', icon: '🔺', keywords: 'escalation blocked', perform: () => setShowTriage(true) });
       cs.push({ id: 'insights', section: 'Control', title: 'Insights — analytics', icon: '📊', keywords: 'analytics histogram', perform: () => setActivePanel('insights') });
@@ -4230,17 +4256,17 @@ export default function HarnessDashboard({ forcedPanel, embeddedPanelChrome = fa
                     <AlertTriangle size={13} /> triage{triageCount > 0 ? ` · ${triageCount}` : ''}
                   </button>
                 </Tooltip>
-                <Tooltip label="Propose — run the scoper agent (MODE=proposal) to read SPEC.md and suggest scoped features in the Proposals tab">
+                <Tooltip label="Propose — run the scoper agent (MODE=proposal) to read the active plan and suggest scoped features in the Proposals tab">
                   <button className="h-btn ghost" onClick={proposeHarness}>
                     <Lightbulb size={13} /> propose
                   </button>
                 </Tooltip>
-                <Tooltip label="Replan — fold new SPEC.md bullets into the work queue without restarting the harness">
+                <Tooltip label="Replan — fold new plan items into the work queue without restarting the harness">
                   <button className="h-btn ghost" onClick={replanHarness}>
                     <RefreshCw size={13} /> replan
                   </button>
                 </Tooltip>
-                <Tooltip label="Cleanup — deprecate or modify existing features that no longer match SPEC.md (won't add new ones)">
+                <Tooltip label="Cleanup — deprecate or modify existing features that no longer match the active plan (won't add new ones)">
                   <button className="h-btn ghost" onClick={cleanupHarness}>
                     <Wrench size={13} /> cleanup
                   </button>
@@ -4333,7 +4359,7 @@ export default function HarnessDashboard({ forcedPanel, embeddedPanelChrome = fa
               <Lightbulb size={13} /> brainstorm
             </Tabs.Trigger>
           </Tooltip>
-          <Tooltip label={activeSlug ? `Product proposals — scope expansion from SPEC.md${pendingProposals > 0 ? ` · ${pendingProposals} pending` : ''}` : 'Select a project to view proposals'}>
+          <Tooltip label={activeSlug ? `Product proposals — scope expansion from the active plan${pendingProposals > 0 ? ` · ${pendingProposals} pending` : ''}` : 'Select a project to view proposals'}>
             <Tabs.Trigger value="proposals" className="h-tab h-tab--proposals" disabled={!activeSlug}>
               🪄 proposals
               {pendingProposals > 0 && <span className="h-tab-count">{pendingProposals}</span>}
@@ -4388,7 +4414,7 @@ export default function HarnessDashboard({ forcedPanel, embeddedPanelChrome = fa
               <TrendingUp size={13} /> insights
             </Tabs.Trigger>
           </Tooltip>
-          <Tooltip label={activeSlug ? 'Edit SPEC.md / AGENTS.md / config.json' : 'Select a project to edit config'}>
+          <Tooltip label={activeSlug ? 'Edit AGENTS.md / config.json' : 'Select a project to edit config'}>
             <Tabs.Trigger value="config" className="h-tab h-tab--config" disabled={!activeSlug}>
               <SlidersHorizontal size={13} /> config
             </Tabs.Trigger>
