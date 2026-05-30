@@ -231,9 +231,19 @@ two SEPARATE storage components**, not one dual-backend interface:
 
 ## Phase 1 — Pure extractions (no seam needed; can start now, in parallel)
 
-- **P-002** `todo` Extract `@papercusp/rrf` from `agent-tools/search/rrf.ts`
-  (45 LOC, **zero imports**, verified pure — reciprocal rank fusion). Ship with
-  its existing `rrf.test.ts`. Lift wholesale; proves the publish pipeline. → D-001
+- **P-002** `done` Extract `@papercusp/rrf` from `agent-tools/search/rrf.ts`
+  (45 LOC, **zero imports**, verified pure — reciprocal rank fusion). Shipped at
+  `f7f39bf5`: `packages/rrf` holds the verbatim `rrfCombine`/`RRF_K_DEFAULT`/
+  `RankedItem<T>`/`FusedItem<T>` API (zero behavior change) + its 7-test suite
+  (`src/index.test.ts`, passing). Both consumers rewired —
+  `search/semantic.ts:23` AND `endpoint-route/routes/user/search.ts:137` (the
+  audit's "sole consumer" was wrong; there were two) — and the `@papercusp/rrf`
+  workspace dep declared. Lesson logged: a stray `git add -A` from paperclip
+  swept the in-progress files into an unrelated commit (591eaf28) mid-extraction,
+  leaving main briefly build-broken; recovered by committing the correct API +
+  rewires. Note: root `npm install` is blocked by a PRE-EXISTING
+  `@blocknote/mantine` ERESOLVE — symlink `node_modules/@papercusp/rrf` directly
+  or use `--legacy-peer-deps`. → D-001
 - **P-003** `todo` Extract `@papercusp/embedded-pg-discovery` from
   `lib/embedded-pg-discovery.ts` (58 LOC, NONE coupling). **Audit correction:** it
   is NOT currently parameterizable — discovery path (`~/.papercusp/embedded-pg.json`),

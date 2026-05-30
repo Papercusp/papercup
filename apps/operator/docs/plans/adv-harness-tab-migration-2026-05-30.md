@@ -11,9 +11,9 @@ owner: avi@storewolf.com
 
 ## Now
 
-**State:** Phase 1 verified live in the Tauri webview (against `papercup`) and one real bug found+fixed during verification: the layout-adapter save path dropped leaf `size`, so the 3-panel split reloaded lopsided (panes at 100px) — fixed in `b02e2aea` (+ regression test, 178 dock tests green). Phase 2 (visual & filter parity) shipped in `b46bb5d6` and verified: Features saved-view chips + counts + result counter; Issues severity/source/status icons + code-pointer/linked/foundDuring chips + pending-triage banner; filter/search on nuqs.
+**State:** Phases 1–3 shipped and verified live in the Tauri webview (against `papercup`). Phase 1 verified + a real bug fixed (layout-adapter dropped leaf `size` on save → lopsided 3-panel split; `b02e2aea` + regression test, 178 dock tests green). Phase 2 visual & filter parity (`b46bb5d6`). Phase 3 live-data-via-Zero (`c94b4d9f`): new shared `useHarnessData` hook (REST bootstrap + `useSyncQuery` overlay for `featuresConsolidated`/`issuesConsolidated`/`harnessPendingIssues`), polling timers removed, claims chip + plan pill now live. Verified: 3 features render, row-click → Detail, no console errors, no provider error on `/adv`.
 
-**Next:** Phase 3 — replace the 5–6s REST polling with Zero `useSyncQuery` (also unlocks the claims chip + plan pill deferred from P-010, which aren't in the REST `/status` payload).
+**Next:** Phase 4 — Detail richness (last-3 runs, issues-filed-against-feature, notes). Then P-013 (decide fate of legacy lifecycle/project/tag filters), Phase 5 (inline row actions), Phase 6 (keyboard shortcuts + virtualization).
 
 ## Background
 
@@ -41,14 +41,14 @@ Key files (live UI is the Vite SPA; components live in the Next tree and are con
 ## Phase 2 — Visual & filter parity
 
 - **P-009** `done` Features saved-view chips with counts: All / Running / Stuck (≥3) / Blocked / Todo / Passed / Deprecated, mirroring `BUILT_IN_VIEWS`; deprecated hidden from every view except Deprecated. Shipped `b46bb5d6`.
-- **P-010** `done` Features result counter ("N/M shown") + per-row parity: status pill colors, attempts pill (warn tint ≥3), needs-human-review dot. **Deferred to Phase 3:** claims chip + plan pill — `claims`/`sourcePlanSlug` are not in the REST `/status` payload (they arrive via Zero), so the UI would be dead until P-014. Shipped `b46bb5d6`.
+- **P-010** `done` Features result counter ("N/M shown") + per-row parity: status pill colors, attempts pill (warn tint ≥3), needs-human-review dot (`b46bb5d6`). Claims chip + plan pill landed with Phase 3 (`c94b4d9f`) once `claims`/`sourcePlanSlug` became available via the Zero consolidated row.
 - **P-011** `done` Issues per-row parity: severity icon+color, source icon (Bot/User), status icon (Circle/Eye/Hammer/CheckCircle/XCircle), code-pointer chip (FileCode + basename), linked-feature pill (ArrowUpRight), `foundDuring` chip. All icon maps use `?? Circle` fallback so a missing key can't crash the subtree. Shipped `b46bb5d6`.
 - **P-012** `done` Issues pending-validator triage banner above the list when `pending.length > 0`. **Note:** rendered as an informational banner, not a "Triage N" button — the legacy Triage action opens `TriageQueue` (`?triage=true`), which isn't ported to `/adv` yet; wiring it is deferred until the triage flow lands. Shipped `b46bb5d6`.
 - **P-013** `todo` Decide fate of legacy lifecycle chips (mine / working / available / shipped) and project/tag filters — keep only if used in practice; default to cutting `mine` (needs viewer github id) on first pass.
 
 ## Phase 3 — Live data via Zero
 
-- **P-014** `todo` Replace the 5–6s REST `setInterval` polling in FeaturesPanel / IssuesPanel / DetailPanel with `useSyncQuery` against the same query names the legacy uses (`featuresConsolidated`, `issuesConsolidated.bySlug`, `harnessPendingIssues.byHarness`). Drop the polling timers. On desktop the transport is SSE (per CLAUDE.md). Stops the periodic flicker.
+- **P-014** `done` Replaced the 5–6s REST `setInterval` polling with `useSyncQuery` via a shared `useHarnessData` hook (`featuresConsolidated.bySlug`, `issuesConsolidated.bySlug`, `harnessPendingIssues.byHarness`). Polling timers gone. **Design:** one-shot REST bootstrap + Zero overlay (apply Zero only when it returns a non-empty array) rather than pure-Zero — REST reads `harness_features` while Zero reads the separate `harness_features_consolidated`, which can lag; the hybrid (mirrors HarnessDashboard) is robust whether or not a harness is consolidated. `RootSyncProvider` wraps `/adv` so the harness queries resolve there. Shipped `c94b4d9f`.
 
 ## Phase 4 — Detail richness
 
