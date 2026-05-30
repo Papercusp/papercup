@@ -567,14 +567,14 @@ export async function getLayout(
   // with empty slug and fetches fail.
   const isPi = name === 'pi' || name.startsWith('pi:');
   const isAdvHarnesses = name === 'adv-harnesses' || name.startsWith('adv-harnesses:');
-  const isAdvGit = name === 'adv-git' || name.startsWith('adv-git:');
+  const isAdvGit = name === 'adv-git2' || name.startsWith('adv-git2:');
   let seededSlug = '';
   if (name.startsWith('dashboard:')) {
     seededSlug = name.slice('dashboard:'.length);
   } else if (name.startsWith('adv-harnesses:')) {
     seededSlug = name.slice('adv-harnesses:'.length);
-  } else if (name.startsWith('adv-git:')) {
-    seededSlug = name.slice('adv-git:'.length);
+  } else if (name.startsWith('adv-git2:')) {
+    seededSlug = name.slice('adv-git2:'.length);
   }
   const seed: LayoutDoc = isPi
     ? ({ schemaVersion: OPAQUE_SCHEMA_VERSION, dockviewJson: null } as unknown as LayoutDoc)
@@ -692,11 +692,11 @@ export async function resetLayout(
   let seededSlug = '';
   if (name.startsWith('dashboard:')) seededSlug = name.slice('dashboard:'.length);
   else if (name.startsWith('adv-harnesses:')) seededSlug = name.slice('adv-harnesses:'.length);
-  else if (name.startsWith('adv-git:')) seededSlug = name.slice('adv-git:'.length);
+  else if (name.startsWith('adv-git2:')) seededSlug = name.slice('adv-git2:'.length);
   const seed =
     name === 'pi' || name.startsWith('pi:')
       ? defaultPiTerminalsLayout()
-      : name === 'adv-git' || name.startsWith('adv-git:')
+      : name === 'adv-git2' || name.startsWith('adv-git2:')
         ? defaultAdvGitLayout(seededSlug)
         : name === 'adv-harnesses' || name.startsWith('adv-harnesses:')
           ? defaultAdvHarnessesLayout(seededSlug)

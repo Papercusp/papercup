@@ -72,6 +72,7 @@ export default function AdvGitGraphPanel({ params }: PanelComponentProps) {
   const [query, setQuery] = useState('');
   const [reloadTick, setReloadTick] = useState(0);
   const [selectedSha, setSelectedSha] = useState<string | null>(null);
+  const [hoveredSha, setHoveredSha] = useState<string | null>(null);
   const [commits, setCommits] = useState<Commit[] | null>(() =>
     slug ? getCachedGitLog(scope, limit, null) : null,
   );
@@ -107,12 +108,23 @@ export default function AdvGitGraphPanel({ params }: PanelComponentProps) {
   const rowVirtualizer = useVirtualizer<HTMLDivElement, HTMLDivElement>({
     count: visible.length,
     getScrollElement: () => scrollRef.current,
-    estimateSize: () => 38,
+    estimateSize: () => 40,
     overscan: 14,
   });
   useEffect(() => {
     rowVirtualizer.measure();
   }, [visible, rowVirtualizer]);
+
+  // Row backgrounds match the Features/Issues grids: selected → accent tint,
+  // hovered → bg-3, otherwise undefined (RichGrid's default zebra stripe).
+  const richGetRowBg = useMemo(
+    () => (row: LaidOutCommit) => {
+      if (row.sha === selectedSha) return 'color-mix(in oklab, var(--accent), transparent 80%)';
+      if (row.sha === hoveredSha) return 'var(--bg-3)';
+      return undefined;
+    },
+    [selectedSha, hoveredSha],
+  );
 
   const columns = useMemo<ColumnDef<LaidOutCommit>[]>(() => [
     {
@@ -227,6 +239,7 @@ export default function AdvGitGraphPanel({ params }: PanelComponentProps) {
         ) : (
           <RichGrid<LaidOutCommit>
             inline
+            resizableColumns
             virtualMode={{
               virtualizer: rowVirtualizer,
               totalRows: visible.length,
@@ -235,8 +248,10 @@ export default function AdvGitGraphPanel({ params }: PanelComponentProps) {
             columns={columns}
             getRowId={(r) => r.sha}
             onRowClick={(r) => setSelectedSha(r.sha)}
-            headerHeight={26}
-            rowMinHeight={36}
+            onRowHover={(r) => setHoveredSha(r?.sha ?? null)}
+            getRowBg={richGetRowBg}
+            headerHeight={28}
+            rowMinHeight={40}
             headerStyle={{
               background: 'var(--bg-2, rgba(255,255,255,0.045))',
               color: 'var(--fg-mute, #7f9bb4)',
@@ -289,7 +304,7 @@ export default function AdvGitGraphPanel({ params }: PanelComponentProps) {
         }
         .pc-adv-gitgrid__refresh:hover { color: var(--fg); }
         .pc-adv-gitgrid__list { flex: 1; min-height: 0; overflow: auto; }
-        .pc-adv-gitgrid__rail { position: relative; display: block; height: 100%; min-height: 36px; flex-shrink: 0; }
+        .pc-adv-gitgrid__rail { position: relative; display: block; height: 100%; min-height: 40px; flex-shrink: 0; }
         .pc-adv-gitgrid__lane {
           position: absolute; top: 0; bottom: 0; width: 2px; opacity: 0.4;
         }

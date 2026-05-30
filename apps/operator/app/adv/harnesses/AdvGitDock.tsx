@@ -31,7 +31,11 @@ export default function AdvGitDock({ slug }: { slug: string }) {
     ensureRegistered();
   }, []);
 
-  const layoutName = slug ? `adv-git:${slug}` : 'adv-git';
+  // `adv-git2` (bumped from `adv-git`): a git layout persisted before the
+  // seed wiring existed fell back to the dashboard layout (features/issues/
+  // agents/logs). The new name has no such row, so it seeds fresh from
+  // defaultAdvGitLayout (git graph + PRs only).
+  const layoutName = slug ? `adv-git2:${slug}` : 'adv-git2';
 
   // Rebind each panel's harnessSlug when the active slug changes (same trick
   // HarnessesDock uses) so panels refetch for the new harness.
