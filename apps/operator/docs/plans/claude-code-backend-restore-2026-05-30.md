@@ -1,7 +1,7 @@
 ---
 title: Restore claude-code as a fully-supported agent backend
 slug: claude-code-backend-restore-2026-05-30
-status: active
+status: shipped
 created: 2026-05-30
 updated: 2026-05-30
 owner: avi@storewolf.com
@@ -34,11 +34,16 @@ invoked** `mcp__papercusp__harness_list` (tool_use + tool_result in the
 stream-json). **P-007 is also done** (2026-05-30): per the user's ruling, the
 stateless paths now go direct to Anthropic with the Claude session for
 claude-code users (Meridian kept for omp) — so **a claude-code user needs no omp
-or Meridian auth at all**. Remaining: P-009 (wizard copy, now unblocked by P-007,
-needs the desktop to verify render); P-010 (retire `run.sh` — its orchestrator
-role is already dead, but 3 operator sites still source its bash function
-library; deletion = porting those to the TS `invoke()`); and the deferred push
-of the submodules to the Papercusp remotes.
+or Meridian auth at all**. **P-008, P-009, and P-010 are now all done too**:
+the test button probes the selected backend; the setup wizard treats claude-code
+as a standalone backend; and **`run.sh` has been retired entirely** (deleted,
+−2,328 lines — its 3 live consumers ported to the orchestrator's `invoke-once.ts`,
+the 2 file-readers cleaned). **Every plan item P-001…P-010 is complete.** The
+only thing left is the deferred **push of the submodules to the Papercusp
+remotes** — held back deliberately because `papercusp` local main is 20 commits
+ahead of origin and `papercup-shared` 9 ahead, almost all of it *other agents'*
+accumulated local-only work; pushing is a batched release action, not a
+"push-my-changes" one, so it needs explicit human go-ahead.
 
 ## Progress log
 
@@ -127,6 +132,31 @@ all" — its **orchestrator main-loop role is dead** (`orchestrator/bin/run.ts`:
 doesn't count). Full retirement = porting those onto the existing TS `invoke()`,
 a deliberate refactor with scoper/expert/spawn blast radius (PARITY.md). Left as
 P-010 `todo`, not rushed.
+
+### 2026-05-30 — P-008 + P-009 + P-010 done (plan complete)
+
+- **P-008** (`b6dc9411`): "Test current backend" probes the selected backend via
+  `effectiveBackend()`, not hardcoded Meridian.
+- **P-009** (`cb79e5cc`): the setup wizard treats claude-code as a standalone
+  backend — agents step satisfied by Claude Code alone OR oh-my-pi + Meridian,
+  aligned across `setup-status.ts` (sidebar badge) + `StepAgents.tsx` (card).
+  Logic + copy; not render-verified headless.
+- **P-010** — **run.sh retired** (`c6ad0d47` port + `7e3e05f0`/`4b7e162`
+  deletion). The 3 live function-library consumers (scoper-background,
+  expert-dispatcher, `/harness/:slug/invoke`) now spawn the orchestrator's
+  `invoke-once.ts` via a shared `buildInvokeOnce()` helper + `invokeOnceBin()`
+  path resolver; run.sh deleted (−2,328 lines). Its orchestrator role was already
+  dead (`PAPERCUSP_USE_TS_ORCHESTRATOR=0` unhonored since 2026-05-08). File-readers
+  (`known-hooks.ts`, `preflight.ts`) repointed at the TS orchestrator; user text
+  (settings, SPEC template, package desc) updated. invoke-once verified live via
+  the production `node <tsx-cli> bin` launch.
+
+**Deferred (not done):** pushing the submodules to the Papercusp remotes.
+`papercusp` local main is 20 commits ahead of origin, `papercup-shared` 9 ahead —
+almost entirely *other agents'* accumulated local-only work. Pushing fast-forwards
+origin/main (no conflicts) but publishes that whole backlog, so it's a batched
+release action the team owns, not a "push-my-changes" step. Left for explicit
+human go-ahead.
 
 ## Background
 
@@ -255,8 +285,8 @@ Meridian coupling, the test button, the wizard, the bash fallback.
 
 - **P-007** `done` Ruled (user 2026-05-30): keep Meridian for non-claude; claude-code users auth direct. Implemented `resolveStatelessTransport()` in chat-stream.ts — the stateless 'meridian' path (haiku, llm-testing) now goes DIRECT to api.anthropic.com with the Claude OAuth session for claude-code users (verified live: PONG + real cost; the OAuth token works against the API with `anthropic-beta: oauth-2025-04-20`), and via the Meridian router for omp. A claude-code user no longer needs omp auth. Submodule `papercup-shared@fb85c809`, pinned by `69e94bd9`. (→ D-004)
 - **P-008** `done` Test-current-backend now probes the *selected* backend (one-shot through the configured CLI via `effectiveBackend()`), not hardcoded `meridian`. `effectiveBackend` consolidated into `lib/agent-config.ts`; 4 unit tests. Commit `b6dc9411`.
-- **P-009** `todo` SetupWizard: present claude-code as a standalone backend; gate readiness on the *chosen* backend's deps, not `claudeOk && ompOk && meridianOk` (StepAgents.tsx:61/100). UNBLOCKED by P-007 — a claude-code user now needs only the `claude` CLI + a Claude session (no omp, no Meridian): the orchestrator runs claude-code and the stateless paths go direct. Needs the Tauri desktop to verify the wizard render.
-- **P-010** `todo` Retire bash `run.sh` entirely (user ruling 2026-05-30). Finding: its orchestrator main-loop role is ALREADY dead — `orchestrator/bin/run.ts` warns `PAPERCUSP_USE_TS_ORCHESTRATOR=0` is no longer honored (TS is the only loop since 2026-05-08). What blocks deletion: 3 live operator sites still `source` run.sh's bash *function library* (`invoke`/`log`/`config_get`/…) to spawn agents — `harness-scoper.ts:52`, `expert-dispatcher.ts:302`, `endpoint-route/routes/harness/spawn.ts:252`. Port those onto the TS `invoke()` (orchestrator/src/invoke.ts), then delete run.sh. Real refactor with scoper/expert/spawn blast radius (PARITY.md territory) — do deliberately + verify scoping still works.
+- **P-009** `done` SetupWizard now treats claude-code as a standalone backend: the agents step is satisfied by EITHER Claude Code alone OR oh-my-pi + Meridian, aligned across `setup-status.ts` (`agentsOk = claudeOk || (ompOk && meridianOk)`, the sidebar badge) and `StepAgents.tsx` (card gating + lead/status copy). Commit `cb79e5cc`. UI: logic + copy only, render not verified headless (needs the Tauri shell).
+- **P-010** `done` Bash `run.sh` **retired** (deleted, −2,328 lines; submodule `4b7e162`, pinned by `7e3e05f0`). Its 3 live consumers (`harness-scoper.ts`, `expert-dispatcher.ts`, `/harness/:slug/invoke`) were ported to the orchestrator's `invoke-once.ts` via a shared `buildInvokeOnce()` (commit `c6ad0d47`). The 2 file-readers (`known-hooks.ts`, desktop `preflight.ts`) cleaned to use the TS orchestrator only; user-facing text (settings page, SPEC template, package desc) updated. invoke-once verified live via the production `node <tsx-cli> bin` launch. The retired `@papercusp/web` (out of the root workspace) still references run.sh but isn't built.
 
 ## Decisions
 

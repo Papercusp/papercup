@@ -67,9 +67,8 @@ const launch = defineTool({
       if (!hasStartedPlan) {
         return Response.json(
           {
-            error: 'SPEC.md not found',
-            hint: 'Either create SPEC.md in the project directory, or start a plan via the Plans tab to use plan-based orchestration.',
-            path: specPath,
+            error: 'no started plan',
+            hint: 'Start a plan in the Plans tab to begin orchestration for this harness.',
           },
           { status: 400 },
         );
@@ -176,8 +175,9 @@ async function dispatchActionsBlockFromOutput(
 
 /**
  * Single-role invocation — used by NEXT_HARNESS dispatch from a parent
- * harness's coordinator. Synchronously runs `bash run.sh invoke <role>` in
- * the child harness's project dir and returns the captured stdout.
+ * harness's coordinator. Synchronously runs the TS orchestrator's
+ * `invoke-once` (`invoke <role>`) in the child harness's project dir and
+ * returns the captured stdout.
  */
 const invoke = defineTool({
   method: 'POST',
