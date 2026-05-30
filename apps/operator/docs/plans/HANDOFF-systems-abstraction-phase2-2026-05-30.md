@@ -34,9 +34,26 @@ only config change required was the `ipc-framing` `exports` → object-form fix
 `@papercusp/tooldef`); the moved+fixed fixture (`description` + `inputSchema` +
 literal `eventWireKinds`) un-breaks it without touching the tooldef package.
 
-**Next:** the backlog in lowest-risk-first order — start with **P-023 / P-024**
-(`@papercusp/backup`, kopia wrapper), then P-013 → P-020 (search) → P-021
-(memory) → P-010 (locks) → P-011/P-012 (coordination) → P-040 → P-050/P-051.
+**Next:** the backlog in lowest-risk-first order. **P-023 / P-024 are now `done`**
+(`@papercusp/backup`, shipped `73fa053d` + flip `2bb372de`). Start at **P-013 →
+P-020 (search)**, then P-021 (memory) → P-010 (locks) → P-011/P-012 (coordination)
+→ P-040 → P-050/P-051.
+
+**P-023/P-024 notes (what actually shipped, vs the audit below):** the audit
+called the DB seam a "settings-table accessor" — it's actually the org-PG `sql`
+handle used at 13+ sites, injected as `getSql()`. Final seam set (module-level
+`configureBackup(host)`): `getSql`, `workspacesRoot`, `ensureSchema`,
+`getHarnessAdminUrl`, + optional `shouldPauseSweep` (battery-policy; a 5th coupling
+the audit missed — it was a *dynamic* `import('../search/battery-policy')` in
+orphan-cleanup, invisible to a static-import grep). `apps/operator/lib/backup/` is
+now configure.ts + index barrel + two deep-path shims (scheduler, orphan-cleanup);
+all ~28 consumers unchanged. `orphan-cleanup.test.ts` stayed operator-side (live-PG
+integration) and tests through the shim. P-024 opened `SnapshotTriggerReason` to
+`'manual' | 'interval' | (string & {})`. The package has ZERO `@papercusp/@restart`
+runtime deps. Verified: package tsc + 11/11; operator orphan-cleanup 7/7 + admin
+18/18; operator tsc 785→781 (−4, two latent bugs fixed). The host-adapter-barrel +
+`configureBackup` module-seam pattern is the template for the remaining
+PG-touching extractions (search/memory).
 
 Read this, then the full plan: `papercusp-systems-abstraction-2026-05-29.md`
 (via `plans:get`). Everything below is verified against the repo at the time of
