@@ -28,7 +28,20 @@ export interface LocksHost {
   getAdminBaseUrl: () => string;
 }
 
-let _host: LocksHost | null = null;
+// The host lives on a process-global slot keyed by Symbol.for, NOT a
+// module-level `let`. This package is consumed via a node_modules SYMLINK
+// (node_modules/@papercusp/locks → packages/locks) and tsx's ESM loader
+// resolves the symlink inconsistently — some import sites get the symlink
+// path, others the realpath — so a module-level singleton FORKS into two
+// instances: configureLocks() (the operator's lib/agent-tools/locks/configure.ts)
+// sets it on one, while the package's su-lock-store reads locksHost() from the
+// other → "configureLocks() must be called" and locks (file coordination
+// across agents) is dead at runtime. The Symbol.for registry is shared across
+// every forked instance. (Same fix as @papercusp/memory's config.ts;
+// require.resolve canonicalises to one realpath, which is why this only bites
+// the ESM/tsx path, not CJS.)
+const HOST_KEY = Symbol.for('@papercusp/locks:host');
+type HostGlobal = typeof globalThis & { [HOST_KEY]?: LocksHost | null };
 
 /**
  * Wire the host seam. The embedding application calls this once at startup,
@@ -36,15 +49,16 @@ let _host: LocksHost | null = null;
  * at module load — see `apps/operator/lib/agent-tools/locks/configure.ts`).
  */
 export function configureLocks(host: LocksHost): void {
-  _host = host;
+  (globalThis as HostGlobal)[HOST_KEY] = host;
 }
 
 /** Internal: read the configured host, throwing if unconfigured. */
 export function locksHost(): LocksHost {
-  if (!_host) {
+  const host = (globalThis as HostGlobal)[HOST_KEY];
+  if (!host) {
     throw new Error(
       '@papercusp/locks: configureLocks() must be called before using the locks API',
     );
   }
-  return _host;
+  return host;
 }
