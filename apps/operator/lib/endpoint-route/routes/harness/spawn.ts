@@ -46,34 +46,11 @@ const launch = defineTool({
       phasePhaseLabel(url.searchParams.get('phase') ?? undefined),
     );
     if (!project) return Response.json({ error: 'unknown project' }, { status: 404 });
-    const specPath = join(project.path, 'SPEC.md');
-    if (!existsSync(specPath)) {
-      // Plan-based harnesses don't use SPEC.md — check for started plans before rejecting.
-      let hasStartedPlan = false;
-      try {
-        const { sql } = getOrgPg();
-        const { activeWorkspaceId } = await import('@/lib/workspace-registry');
-        const wid = activeWorkspaceId();
-        const rows = await sql<{ plan_slug: string }[]>`
-          SELECT plan_slug FROM harness_shared.harness_plan_status
-           WHERE workspace_id = ${wid}
-             AND harness_slug  = ${project.slug}
-             AND status        = 'started'
-           LIMIT 1
-        `;
-        hasStartedPlan = rows.length > 0;
-      } catch { /* table absent in older installs — fall through */ }
-
-      if (!hasStartedPlan) {
-        return Response.json(
-          {
-            error: 'no started plan',
-            hint: 'Start a plan in the Plans tab to begin orchestration for this harness.',
-          },
-          { status: 400 },
-        );
-      }
-    }
+    // No gate: a harness can always be launched. SPEC.md is deprecated
+    // (plans-central-harness-ux-2026-05-26, D-004) and a started plan is not
+    // required to launch — with none, the orchestrator simply finds no
+    // plan-scoped features eligible to pick and idles, rather than the launch
+    // being rejected.
     const body = await req.json().catch(() => ({}));
     const extra = typeof (body as any).extra === 'string' ? (body as any).extra : '';
     const result = await launchRun(project, extra);
