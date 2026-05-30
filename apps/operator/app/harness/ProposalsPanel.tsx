@@ -6,7 +6,7 @@ import { useQueryState, parseAsString, parseAsBoolean } from 'nuqs';
 import * as Dialog from '@radix-ui/react-dialog';
 import { useSyncQuery } from '@restart/sync';
 import { Group as PanelGroup, Panel as RPanel, Separator } from 'react-resizable-panels';
-import { SingleSubpanelHeader } from './HarnessDashboard';
+import { SingleSubpanelHeader } from './SingleSubpanelHeader';
 import { CollapsedInboxRail } from './CollapsedRails';
 import ArchitectChat from './ArchitectChat';
 import { useConfirmDialog } from './useConfirmDialog';

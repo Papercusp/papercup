@@ -27,6 +27,7 @@ import {
   type EnabledPluginManifest,
 } from './plugin-utils';
 import { ConfigPanel } from './ConfigPanel';
+import { SingleSubpanelHeader } from './SingleSubpanelHeader';
 
 import { Activity as ReactActivity, type CSSProperties, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
@@ -4207,38 +4208,8 @@ function RecentAgentsTable({
 // uppercase tab pill in a bordered top bar — so the parent panel still
 // has the visual "subpanel inside parent panel" structure even though
 // the inbox/git toggle has been removed (each is now its own parent).
-export function SingleSubpanelHeader({ id, label }: { id: 'inbox' | 'git'; label: string }) {
-  const Icon = id === 'inbox' ? Inbox : GitBranch;
-  return (
-    <div style={{
-      display: 'flex', alignItems: 'center', gap: 2,
-      padding: '4px 6px',
-      borderBottom: '1px solid var(--border)',
-      background: 'var(--bg-2)',
-      flexShrink: 0,
-    }}>
-      <span
-        style={{
-          display: 'inline-flex',
-          alignItems: 'center',
-          gap: 6,
-          padding: '4px 10px',
-          fontSize: 10.5,
-          fontWeight: 600,
-          letterSpacing: 0.4,
-          textTransform: 'uppercase',
-          color: 'var(--fg)',
-          background: 'var(--bg-3)',
-          border: '1px solid var(--border)',
-          borderRadius: 4,
-        }}
-      >
-        <Icon size={12} />
-        {label}
-      </span>
-    </div>
-  );
-}
+// SingleSubpanelHeader moved to ./SingleSubpanelHeader (imported above) so
+// ProposalsPanel no longer imports this monolith for it.
 
 // ─── Tabbed Issues panel ──────────────────────────────────────────
 
