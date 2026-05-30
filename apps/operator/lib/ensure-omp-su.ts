@@ -213,16 +213,13 @@ export async function ensureOmpSuInstalled(): Promise<void> {
       dlog('source dir not found; skipping (cwd=' + process.cwd() + ')');
       return;
     }
-    const playbookSrc = join(sourceDir, 'prompts', 'papercusp-su-engineer.tools.md');
+    // The playbook is written (with the client-tooling overlay SPLICED in
+    // at the marker) by installPapercuspFiles() above — the canonical
+    // writer. Do NOT raw-copy it here: a raw copy would ship the base with
+    // its literal CLIENT-TOOLING-OVERLAY marker and no task/workflow tooling
+    // section. If installPapercuspFiles couldn't write it, a missing
+    // playbook (logged above) is preferable to a marker-broken one.
     const coordSrc = join(sourceDir, 'scripts', 'hooks', 'omp', 'coord-hook.ts');
-
-    if (existsSync(playbookSrc)) {
-      if (ensureFileCopy(playbookSrc, playbookDest)) {
-        dlog(`installed playbook → ${playbookDest}`);
-      }
-    } else {
-      dlog(`playbook source missing at ${playbookSrc}; skipping`);
-    }
 
     if (existsSync(coordSrc)) {
       if (ensureFileCopy(coordSrc, coordDest)) {

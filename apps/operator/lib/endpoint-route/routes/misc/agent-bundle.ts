@@ -12,6 +12,7 @@ import { getOrgPg } from '@restart/db-org';
 import { verifyAccessToken } from '@/lib/power-user-token';
 import { getActivePowerUserSession } from '@/lib/power-user-sessions';
 import { workspaceById } from '@/lib/workspace-registry';
+import { spliceToolingOverlay } from '@/lib/desktop-install/splice-tooling-overlay';
 import { defineTool } from '@papercusp/agent-mcp';
 
 interface BundleFile {
@@ -110,17 +111,12 @@ export default defineTool({
     // literal marker comment with NO task/workflow tooling section — the
     // 2026-05-30 marker-split regression, which was fixed on the
     // desktop/installer paths but not this bundle path.
-    const TOOLING_OVERLAY_MARKER = '<!-- PAPERCUSP-SU:CLIENT-TOOLING-OVERLAY -->';
     const baseToolsmd = readFileSync(join(promptsDir, 'papercusp-su-power.tools.md'), 'utf8');
     const ompOverlayPath = join(promptsDir, 'papercusp-su.omp.md');
     const ompOverlay = existsSync(ompOverlayPath)
       ? readFileSync(ompOverlayPath, 'utf8').replace(/\n+$/, '')
       : '';
-    const toolsmd = baseToolsmd.includes(TOOLING_OVERLAY_MARKER)
-      ? baseToolsmd.split(TOOLING_OVERLAY_MARKER).join(ompOverlay) // replace ALL
-      : ompOverlay
-        ? `${baseToolsmd.replace(/\n+$/, '')}\n\n${ompOverlay}\n`
-        : baseToolsmd;
+    const toolsmd = spliceToolingOverlay(baseToolsmd, ompOverlay);
     const personaPath = join(promptsDir, 'papercusp-su.persona.md');
     const persona = existsSync(personaPath) ? readFileSync(personaPath, 'utf8') : '';
     const skills = readDirFiles(join(promptsDir, 'power-user-skills'), ['.md']);

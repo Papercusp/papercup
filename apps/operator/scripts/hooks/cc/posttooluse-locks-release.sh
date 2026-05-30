@@ -24,7 +24,9 @@ TOKEN=$(cat "$TOKEN_PATH")
 AGENT_ID=$(cat "$AGENT_ID_PATH")
 INPUT=$(cat)
 
-python3 - "$INPUT" "$OPERATOR_URL" "$TOKEN" "$AGENT_ID" "$CACHE_DIR" <<'PYEOF'
+# Fail-open backstop: release is best-effort (TTL covers a missed one), so
+# never let a Python error exit non-zero from this hook.
+python3 - "$INPUT" "$OPERATOR_URL" "$TOKEN" "$AGENT_ID" "$CACHE_DIR" <<'PYEOF' || exit 0
 import json, os, sys, time, urllib.request, urllib.parse
 
 raw, operator_url, token, agent_id, cache_dir = sys.argv[1:6]

@@ -18,6 +18,7 @@ import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import * as os from 'node:os';
 import * as crypto from 'node:crypto';
+import { spliceToolingOverlay } from './splice-tooling-overlay';
 
 export interface InstallPaths {
   /** ~/.papercusp/ — created if missing. */
@@ -120,18 +121,6 @@ async function copyIfExists(src: string, dst: string): Promise<boolean> {
   }
 }
 
-/**
- * The marker the base playbook carries where the per-client tooling
- * overlay is spliced in. The base alone is NOT a complete playbook —
- * raw-copying it ships a literal marker comment with no task/workflow
- * tooling section (the regression from the 2026-05-30 marker split).
- * This consumer produces the OMP/desktop-console playbook
- * (`engineer-collaborator.md`), so it splices the OMP overlay
- * (`papercusp-su.omp.md`) — exactly as `render_playbook` does in
- * install-standalone-mcp.sh for the same destination.
- */
-const CLIENT_TOOLING_OVERLAY_MARKER = '<!-- PAPERCUSP-SU:CLIENT-TOOLING-OVERLAY -->';
-
 /** Read the OMP overlay beside the base playbook; missing → '' (the
  *  marker is still removed, never shipped literally). */
 async function readOmpOverlay(baseSrc: string): Promise<string> {
@@ -159,14 +148,7 @@ async function writeSplicedPlaybook(baseSrc: string, dst: string): Promise<boole
     throw e;
   }
   const overlay = await readOmpOverlay(baseSrc);
-  let out: string;
-  if (base.includes(CLIENT_TOOLING_OVERLAY_MARKER)) {
-    out = base.split(CLIENT_TOOLING_OVERLAY_MARKER).join(overlay); // replace ALL, like Python str.replace
-  } else if (overlay) {
-    out = base.replace(/\n+$/, '') + '\n\n' + overlay + '\n'; // pre-marker base + overlay → append
-  } else {
-    out = base; // pre-marker base, no overlay → verbatim
-  }
+  const out = spliceToolingOverlay(base, overlay);
   await fs.writeFile(dst, out, { mode: 0o644 });
   await fs.chmod(dst, 0o644);
   return true;

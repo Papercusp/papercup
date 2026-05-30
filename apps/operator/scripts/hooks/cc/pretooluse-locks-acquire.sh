@@ -50,7 +50,12 @@ TOKEN=$(cat "$TOKEN_PATH")
 AGENT_ID=$(cat "$AGENT_ID_PATH")
 INPUT=$(cat)
 
-python3 - "$INPUT" "$OPERATOR_URL" "$TOKEN" "$AGENT_ID" "$CACHE_DIR" <<'PYEOF'
+# Fail-open backstop: should the Python body ever exit non-zero from an
+# error not caught inside (e.g. an OSError from realpath on a pathological
+# path), ALLOW the edit rather than risk blocking it. The deny path emits
+# its JSON then exits 0, so this guard only fires on an actual crash —
+# never on a legitimate refusal.
+python3 - "$INPUT" "$OPERATOR_URL" "$TOKEN" "$AGENT_ID" "$CACHE_DIR" <<'PYEOF' || { echo '[locks] hook error — allowing edit (fail-open)' >&2; exit 0; }
 import json, os, re, sys, time, urllib.request, urllib.parse
 
 raw, operator_url, token, agent_id, cache_dir = sys.argv[1:6]

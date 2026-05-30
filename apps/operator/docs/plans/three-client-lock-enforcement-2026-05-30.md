@@ -14,7 +14,9 @@ status: shipped
 
 **OMP deferred:** OMP doesn't env-interpolate `~/.omp/agent/mcp.json`, so its interactive coord/lock calls still use the static machine id (OMP's *hook* already mints a per-session id, so OMP locks contend correctly; only OMP↔OMP *coord messaging* between same-machine shells stays collapsed). Wire when an OMP per-launch mcp-url override is confirmed.
 
-**Next:** the in-vivo verification handoff below, then OMP interactive per-session id, then (low) OMP-hook worktree-awareness.
+**OMP↔cc worktree-scope inconsistency (deferred, assessed 2026-05-30 — flagged, not changed):** the cc hook keys lock paths relative to *any* direct-child worktree of `~/papercupai-workspace` (it walks up to `.git` per edit, then workspace-scopes), but the OMP `coord-hook.ts` keys on a SINGLE `papercupRoot()` (`coord-hook.ts:951`, default `~/papercupai-workspace/papercup` / `PAPERCUSP_REPO_ROOT`). So cross-client contention works when OMP runs in the canonical `papercup` checkout (same repo-relative key as a cc edit) but is LOST when an OMP agent edits a *sibling* worktree (OMP skips it; a cc client there would lock it). Narrow (OMP agents usually run in the canonical checkout). **Decision: not changed unilaterally** — `coord-hook.ts` is the `file-locking-improvements-2026-05-20` plan's artifact with its own path-normalization tests (`coord-hook.test.ts`) and careful identity design; broadening its scoping risks regressing that. Fix = mirror the cc hook's per-edit `find_repo_root` + workspace-scope in `coord-hook.ts`, with that plan owner's sign-off + test updates.
+
+**Next:** the in-vivo verification handoff below, then OMP interactive per-session id, then (low) the OMP↔cc worktree-scope unification above.
 
 ---
 
@@ -81,11 +83,11 @@ Recover `pretooluse-locks-acquire.sh` + `posttooluse-locks-release.sh` from `9eb
 - Keep the recovered strengths: fail-open if Papercusp absent / operator unreachable (exit 0); `tool_use_id → lock_id` FS cache for the release half (each Pre/Post fires as a separate subprocess, so the cache must be on disk, not in-memory); per-**session** owner identity (`session_id`) so two shells on one machine are distinct owners; `locks:acquire { wait: { max_sec: 0 } }` over MCP JSON-RPC (`/api/mcp?superuser=1`) with the bearer from `~/.papercusp/superuser-token`.
 
 ### §3.2 Claude wiring — `install-standalone-mcp.sh`
-Write a `PreToolUse`/`PostToolUse` block (matcher `Edit|Write`) into `~/.claude/settings.json` pointing at the shared scripts. Owner = Claude `session_id`. Replaces the stale "if/when it ships" comment.
+Write a `PreToolUse`/`PostToolUse` block into `~/.claude/settings.json` pointing at the shared scripts. **As shipped:** matcher is `Edit|Write|MultiEdit` (MultiEdit covered too), and the owner is the per-launch `PAPERCUSP_SID` (see the Now block's per-session-identity fix), falling back to Claude `session_id` then the machine id. Replaces the stale "if/when it ships" comment.
 
 ### §3.3 Codex wiring — `install-standalone-mcp.sh`
 Write the same hook block into `$CODEX_HOME/settings.json`, plus:
-- **Establish hook trust** — Codex requires persisted hook trust before running hooks (preferred over shipping `--dangerously-bypass-hook-trust` in the wrapper).
+- **Hook trust** — Codex requires persisted hook trust before running hooks. **As shipped:** the codex-su wrapper passes `--dangerously-bypass-hook-trust` rather than persisting trust. The dedicated codex-su `CODEX_HOME` contains only the two hooks this installer wrote, so this is the documented "automation that vets its own hook sources" path; persisted-trust was the original preference but the bypass was chosen as simpler for a fully-managed home.
 - Add/confirm the `codex-su` wrapper with the same overlay-splice treatment as `claude-su`/`omp-su`.
 - **Pre-req spike (verify before coding):** Codex's edit tool name(s) + `tool_input` shape (`apply_patch`/`shell` vs `Edit`/`Write`), the exact `settings.json` path under `CODEX_HOME`, and which field carries the per-session owner id.
 
