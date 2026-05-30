@@ -349,6 +349,32 @@ PYEOF
   fi
 fi
 
+# 4a-bis. Same migration cleanup for ~/.claude/AGENTS.md: an earlier version
+# wrote an always-on managed playbook block here too. Strip it so the playbook
+# reaches Claude ONLY via the claude-su wrapper's --append-system-prompt-file
+# (not as an always-on copy that drifts — it had gone stale to the pre-Starlight
+# fumadocs layout). Idempotent; content outside the BEGIN/END markers preserved.
+CLAUDE_CTX="${HOME}/.claude/AGENTS.md"
+if [ -f "$CLAUDE_CTX" ]; then
+  STRIPPED_CLAUDE="$(python3 - "$CLAUDE_CTX" <<'PYEOF'
+import re, sys
+path = sys.argv[1]
+begin = "<!-- BEGIN papercusp-su playbook (managed by install-standalone-mcp.sh) -->"
+end = "<!-- END papercusp-su playbook -->"
+with open(path) as f:
+    text = f.read()
+pattern = re.compile(re.escape(begin) + r".*?" + re.escape(end) + r"\n?", re.DOTALL)
+if pattern.search(text):
+    with open(path, "w") as f:
+        f.write(pattern.sub("", text).lstrip("\n"))
+    print("stripped")
+PYEOF
+)"
+  if [ "$STRIPPED_CLAUDE" = "stripped" ]; then
+    echo "✓ Removed legacy always-on playbook block from $CLAUDE_CTX"
+  fi
+fi
+
 # 4c. Install the coordination extension as a standalone OPT-IN file.
 #
 # OMP loads `pi.on(...)` factory modules via the extension runner and

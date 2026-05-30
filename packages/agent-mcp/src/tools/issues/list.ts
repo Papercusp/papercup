@@ -12,7 +12,7 @@ export default defineTool({
   profile: 'engineer',
   capability: 'issues:read',
   guidance: {
-    when: 'User asks "any open issues?", "what bugs are tracked", "what\'s wrong with X", or "what\'s outstanding?". Pass a slug to scope; omit for cross-harness. The dedicated problem-side view.',
+    when: 'User asks "any open issues?", "what bugs are tracked", or "what\'s outstanding?". NOTE: this is a v1 stub — issues live in per-harness schemas (`harness_<slug>.issues`) with no cross-harness consolidation yet, so it returns an empty `degraded` list. Until consolidation lands, use `harness:status`, which surfaces a harness\'s recent issues.',
     notWhen: 'For LIVE phase + activity counts (not problems), use `harness:status`. For static facts about the harness, use `harness:get`.',
   },
   args: z.object({
