@@ -112,7 +112,7 @@ export default defineTool({
     notWhen:
       "Flipping a P-NNN item's status — use plans:set-status. Converting a legacy plan that has no valid frontmatter — use plans:set-frontmatter first (this verb refuses it with no_status_line).",
     chaining:
-      "plans:get (read current status) → plans:set-plan-status { slug, status: 'ready', expectedCurrent: 'draft' } to approve. The orchestrator only starts approved (ready) plans.",
+      "plans:get (read current status) → plans:set-plan-status { slug, status: 'ready', expectedCurrent: 'draft' } to approve. Approving is optional before plans:start — starting a draft auto-approves it (draft→ready).",
   },
   capability: 'plans:write',
   requirePrincipal: false,

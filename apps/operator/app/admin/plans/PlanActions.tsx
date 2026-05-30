@@ -230,6 +230,21 @@ export default function PlanActions({
           {startPending ? (isStarted ? 'Pausing…' : 'Starting…') : isStarted ? '⏸ Pause Plan' : '▶ Start Plan'}
         </button>
       ) : null}
+      {bucket !== 'shipped' && bucket !== 'rejected' ? (
+        <button
+          type="button"
+          className="pc-plan-actions__btn pc-plan-actions__btn--reject"
+          onClick={() => setOpen('reject')}
+          disabled={disabled}
+          title={
+            disabled
+              ? disabledReason
+              : 'Reject this plan — flips its status to superseded (kept, not deleted) and stops the orchestrator picking it up.'
+          }
+        >
+          Reject Plan
+        </button>
+      ) : null}
       {bucket === 'ready' ? (
         <button
           type="button"
@@ -289,21 +304,6 @@ export default function PlanActions({
       >
         → Harness
       </button>
-      {planStatus === 'draft' ? (
-        <button
-          type="button"
-          className="pc-plan-actions__btn pc-plan-actions__btn--reject"
-          onClick={() => setOpen('reject')}
-          disabled={disabled}
-          title={
-            disabled
-              ? disabledReason
-              : 'Flip status: draft → superseded — removes the plan from ProposalsPanel without deleting it'
-          }
-        >
-          Reject
-        </button>
-      ) : null}
       <button
         type="button"
         className="pc-plan-actions__btn pc-plan-actions__btn--launch"
@@ -366,6 +366,13 @@ export default function PlanActions({
         planTitle={planTitle ?? null}
         onSuccess={() => {
           setOpen(null);
+          // Rejecting a running plan must also stop the orchestrator —
+          // superseding the frontmatter alone leaves the 'started' row,
+          // and the orchestrator gates on that row, not the status.
+          if (isStarted) {
+            pausePlan(slug).catch(() => {});
+            onStartStatusChange?.('paused');
+          }
           toast.success(`Rejected "${planTitle ?? slug}".`, { duration: 4000 });
           onRejected?.();
           onChanged();

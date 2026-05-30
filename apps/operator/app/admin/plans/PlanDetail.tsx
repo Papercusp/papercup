@@ -788,9 +788,12 @@ function NowHero({
   featureSummary?: string | null;
 }) {
   if (!state && !next) return null;
+  // The `## Now` block has a **State** (where things stand) and a **Next**
+  // (the next action). We label the State row "Now" — it IS the current
+  // state — instead of a bare "Now" eyebrow that reads as an empty field
+  // above a separate "State". So the strip is just: Now: … / Next: ….
   return (
     <section className="pc-now-hero" aria-label="Now">
-      <span className="pc-now-hero__kicker">Now</span>
       {featureSummary ? (
         <div className="pc-now-hero__row">
           <span className="pc-now-hero__label">Features</span>
@@ -799,7 +802,7 @@ function NowHero({
       ) : null}
       {state ? (
         <div className="pc-now-hero__row">
-          <span className="pc-now-hero__label">State</span>
+          <span className="pc-now-hero__label">Now</span>
           <p>{state}</p>
         </div>
       ) : null}

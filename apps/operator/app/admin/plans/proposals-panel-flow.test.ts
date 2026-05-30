@@ -92,11 +92,13 @@ updated: 2026-05-24
     expect(((setBody as unknown as Record<string, unknown>).content as string)).toContain('title: My plan');
   });
 
-  it('returns ok:false with status_not_draft when plan is not draft', async () => {
+  it('returns ok:false with status_not_rejectable when plan is terminal', async () => {
+    // Reject now works on any non-terminal status (draft/ready/active/
+    // blocked); only the terminal statuses (shipped/superseded) refuse.
     const raw = `---
 title: My plan
 slug: my-plan-2026-05-24
-status: active
+status: shipped
 created: 2026-05-24
 updated: 2026-05-24
 ---
@@ -110,7 +112,7 @@ updated: 2026-05-24
 
     const { rejectDraftPlan } = await import('./plans-api');
     const result = await rejectDraftPlan('my-plan-2026-05-24');
-    expect(result).toEqual({ ok: false, error: 'status_not_draft' });
+    expect(result).toEqual({ ok: false, error: 'status_not_rejectable' });
   });
 
   it('returns ok:false when fetchPlan returns an error field', async () => {
