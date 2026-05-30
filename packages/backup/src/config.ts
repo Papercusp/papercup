@@ -34,36 +34,22 @@ export interface BackupHost {
   shouldPauseSweep?: () => boolean;
 }
 
-// The host lives on a process-global slot keyed by Symbol.for, NOT a
-// module-level `let`. This package is consumed via a node_modules SYMLINK
-// (node_modules/@papercusp/backup → packages/backup) and tsx's ESM loader
-// resolves the symlink inconsistently — some import sites get the symlink
-// path, others the realpath — so a module-level singleton FORKS into two
-// instances: configureBackup() (the operator's lib/backup/configure.ts) sets
-// it on one, while the package's own host reads (scheduler/workspace-backup,
-// some reached via internal `await import('./…')`) read from the other →
-// "configureBackup() must be called" and backup is dead at runtime. The
-// Symbol.for registry is shared across every forked instance. (Same fix as
-// @papercusp/memory's config.ts; require.resolve canonicalises to one
-// realpath, which is why this only bites the ESM/tsx path, not CJS.)
-const HOST_KEY = Symbol.for('@papercusp/backup:host');
-type HostGlobal = typeof globalThis & { [HOST_KEY]?: BackupHost | null };
+let _host: BackupHost | null = null;
 
 /**
  * Wire the host seams. The embedding application calls this once at
  * startup, before any backup API is used.
  */
 export function configureBackup(host: BackupHost): void {
-  (globalThis as HostGlobal)[HOST_KEY] = host;
+  _host = host;
 }
 
 /** Internal: read the configured host, throwing if unconfigured. */
 export function backupHost(): BackupHost {
-  const host = (globalThis as HostGlobal)[HOST_KEY];
-  if (!host) {
+  if (!_host) {
     throw new Error(
       '@papercusp/backup: configureBackup() must be called before using the backup API',
     );
   }
-  return host;
+  return _host;
 }
