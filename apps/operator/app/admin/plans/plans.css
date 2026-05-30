@@ -672,13 +672,14 @@
 .pc-plan-row__updated {
   display: inline-flex;
   align-items: center;
-  gap: 3px;
+  gap: 4px;
   margin-left: auto;
   flex-shrink: 0;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 10px;
+  font-size: 11.5px;
+  font-weight: 600;
   white-space: nowrap;
-  color: rgba(186, 230, 253, 0.42);
+  color: rgba(186, 230, 253, 0.85);
 }
 
 /* ── Progress bar (P-023) ────────────────────────────────────────── */

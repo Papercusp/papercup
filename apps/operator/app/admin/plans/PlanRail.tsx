@@ -284,7 +284,7 @@ function PlanRow({
               className="pc-plan-row__updated"
               title={`Last updated ${formatUpdated(plan.updated)}`}
             >
-              <Clock size={10} aria-hidden />
+              <Clock size={12} aria-hidden />
               {formatUpdatedShort(plan.updated)}
             </span>
           ) : null}
