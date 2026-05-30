@@ -28,3 +28,6 @@
 [submodule "libs/token-kit"]
 	path = libs/token-kit
 	url = https://github.com/Papercusp/token-kit.git
+[submodule "libs/sse"]
+	path = libs/sse
+	url = https://github.com/Papercusp/sse.git
