@@ -5,41 +5,20 @@
 //   _brand-primitives.css  — workspace brand palette as CSS variables (--sky-400 etc.)
 //   _semantic.css          — desktop's semantic + ink layer as CSS variables (--bg, --accent etc.)
 //
+// Tooling (transforms + preflight) comes from @papercusp/token-kit — generic,
+// brand-value-free, shared with Restart's @restart/design-tokens. Only the
+// papercup-specific *.tokens.json values + the platform wiring below live here.
+//
 // Mobile mirrors primitives.tokens.json (see Phase 4); each platform's
 // semantic/component layers stay local.
 
 import { globSync } from "node:fs";
 import StyleDictionary from "style-dictionary";
-import { preflight } from "./_preflight.mjs";
+import { transforms, preflight } from "@papercusp/token-kit";
 
 preflight(globSync("design-tokens/*.tokens.json"));
 
-// Hex normalizer: emit CSS hex with shortest form (3/6/8 digits preserved).
-StyleDictionary.registerTransform({
-  name: "color/cssHex",
-  type: "value",
-  filter: (t) => t.$type === "color",
-  transform: (t) => {
-    const raw = String(t.$value).trim();
-    const m = /^#?([0-9a-f]{6}|[0-9a-f]{8})$/i.exec(raw);
-    if (!m) {
-      // Allow rgba()/named/other — pass through unchanged.
-      return raw;
-    }
-    return `#${m[1].toLowerCase()}`;
-  },
-});
-
-// Skip leaf "color." prefix in var names. color.sky.400 → --sky-400.
-// Names without a "color." prefix pass through as-is (--bg, --accent).
-StyleDictionary.registerTransform({
-  name: "name/cssKebabNoColor",
-  type: "name",
-  transform: (t) => {
-    const parts = t.path[0] === "color" ? t.path.slice(1) : t.path;
-    return parts.join("-").toLowerCase();
-  },
-});
+for (const t of transforms) StyleDictionary.registerTransform(t);
 
 // Filter: primitives layer only (anything under `color.*`).
 const isPrimitive = (t) => t.path[0] === "color";
@@ -49,11 +28,13 @@ const isPrimitive = (t) => t.path[0] === "color";
 // which share the desktop CSS-var namespace.
 const isSemantic = (t) => t.path[0] !== "color" && !t.path[0].startsWith("_");
 
+const sharedTransforms = ["attribute/cti", "restart/srgb", "restart/name"];
+
 export default {
   source: ["design-tokens/*.tokens.json"],
   platforms: {
     "css-primitives": {
-      transforms: ["attribute/cti", "color/cssHex", "name/cssKebabNoColor"],
+      transforms: sharedTransforms,
       buildPath: "apps/operator/app/",
       files: [
         {
@@ -65,7 +46,7 @@ export default {
       ],
     },
     "css-semantic": {
-      transforms: ["attribute/cti", "color/cssHex", "name/cssKebabNoColor"],
+      transforms: sharedTransforms,
       buildPath: "apps/operator/app/",
       files: [
         {

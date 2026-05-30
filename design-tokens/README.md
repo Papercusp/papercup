@@ -28,6 +28,22 @@ pnpm tokens                     # regenerate the two CSS files
 
 `pnpm dev:operator` does NOT auto-run this — re-run `pnpm tokens` after editing any token JSON.
 
+## Tooling
+
+Style Dictionary transforms (`restart/srgb`, `restart/name`) and the
+preflight guards come from **[`@papercusp/token-kit`](../libs/token-kit/)** —
+a generic, brand-value-free shared library co-owned with Restart's
+`@restart/design-tokens`. Only the papercup-specific token JSON values + the
+SD platform wiring (in `style-dictionary.config.mjs`) live here.
+
+To pick up upstream kit changes:
+
+```bash
+git submodule update --remote libs/token-kit
+npm install
+pnpm tokens         # re-emit and visually verify the diff
+```
+
 ## Editing brand colors
 
 The same brand palette is used by mobile via mirror. To retune:

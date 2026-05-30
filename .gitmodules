@@ -25,3 +25,6 @@
 [submodule "libs/sync"]
 	path = libs/sync
 	url = https://github.com/Papercusp/sync.git
+[submodule "libs/token-kit"]
+	path = libs/token-kit
+	url = https://github.com/Papercusp/token-kit.git

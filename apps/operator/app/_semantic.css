@@ -24,7 +24,7 @@
   --border: rgba(125, 211, 252, 0.15); /** #7dd3fc @ 0.15 */
   --border-strong: rgba(125, 211, 252, 0.32); /** #7dd3fc @ 0.32 */
   --accent-ink: #051827; /** Text color on accent backgrounds */
-  --warn-bg: rgba(251, 191, 36, 0.10); /** #fbbf24 @ 0.10 */
+  --warn-bg: rgba(251, 191, 36, 0.1); /** #fbbf24 @ 0.1 */
   --warn-border: rgba(251, 191, 36, 0.35); /** #fbbf24 @ 0.35 */
   --accent: var(--sky-400);
   --accent-strong: var(--sky-300);

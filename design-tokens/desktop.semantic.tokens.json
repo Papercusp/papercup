@@ -17,6 +17,6 @@
   "good":            { "$value": "{color.emerald.400}", "$type": "color" },
   "warn":            { "$value": "{color.amber.400}",   "$type": "color" },
   "bad":             { "$value": "{color.rose.400}",    "$type": "color" },
-  "warn-bg":         { "$value": "rgba(251, 191, 36, 0.10)", "$type": "color", "$description": "{color.amber.400} @ 0.10" },
+  "warn-bg":         { "$value": "rgba(251, 191, 36, 0.1)", "$type": "color", "$description": "{color.amber.400} @ 0.1" },
   "warn-border":     { "$value": "rgba(251, 191, 36, 0.35)", "$type": "color", "$description": "{color.amber.400} @ 0.35" }
 }
