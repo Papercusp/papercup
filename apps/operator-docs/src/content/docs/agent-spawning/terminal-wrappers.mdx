@@ -1,0 +1,90 @@
+---
+title: Terminal wrappers + psu
+description: The *-su engineer-collaborator wrappers and the psu plan-tracked launcher.
+sidebar:
+  order: 7
+---
+
+Papercusp installs two kinds of terminal entry point for launching a CLI
+agent in **engineer-collaborator mode** (the full `papercusp-su` tool
+catalog + playbook): the per-agent **`*-su` wrappers** (direct), and the
+**`psu`** command (a picker that records a tracked `/adv` session).
+
+Both are installed by `apps/operator/scripts/install-standalone-mcp.sh`
+(or the desktop's per-harness install). Plain `omp` / `claude` / `codex`
+stay vanilla — engineer mode is opt-in.
+
+## The `*-su` wrappers — direct
+
+| Wrapper | Launches | Playbook injection | Skip-permissions |
+|---|---|---|---|
+| `omp-su` | `omp` | `--append-system-prompt` + `-e` coord extension | `--approval-mode yolo` |
+| `claude-su` | `claude` | `--append-system-prompt-file` | `--dangerously-skip-permissions` |
+| `codex-su` | `codex` | dedicated `CODEX_HOME` whose `AGENTS.md` is the playbook | `--dangerously-bypass-approvals-and-sandbox` |
+
+Each opts into the engineer playbook + the `papercusp-su` MCP server and
+pre-bypasses tool approvals. They run wherever you launch them and are
+**not** tracked — use them for a quick ad-hoc SU shell.
+
+Codex is the odd one out: it has no `--append-system-prompt` flag, so
+`codex-su` runs Codex in a dedicated `CODEX_HOME` (`~/.papercusp/codex-su-home`)
+whose `AGENTS.md` is the playbook and whose `config.toml` scopes the
+`papercusp-su` MCP server to that home (bearer read from `PAPERCUSP_SU_TOKEN`
+at launch). Plain `codex` (`CODEX_HOME=~/.codex`) is unaffected.
+
+## `psu` — the plan-tracked launcher
+
+`psu` is one command that **picks an agent + harness + plan**, records a
+tracked session row, then `exec`s the matching `*-su` wrapper. The
+session shows up in the **`/adv` Sessions** tab — under its plan, or under
+the **"No plan"** group for ad-hoc sessions — labelled with its agent kind
+and resumable like any other session.
+
+```bash
+psu          # interactive: pick agent → harness → plan (or "▸ NO PLAN")
+```
+
+Under the hood `psu` calls `POST /api/agent-mcp/console/bootstrap-su`,
+which creates the `adv_sessions` row (with `agent` + `plan_slug`, or a
+null `plan_slug` for "No plan") and returns the cwd + tracking env; `psu`
+then `exec`s the chosen `*-su` wrapper in the harness directory. The
+wrapper still supplies the playbook + skip-permissions + MCP — `psu` only
+adds the picker and the tracking.
+
+### Scripting escape
+
+Skip the prompts for shell scripts / CI:
+
+```bash
+psu --no-picker --agent=claude --harness=papercup --plan=my-plan-slug
+psu --no-picker --agent=omp --harness=papercup --no-plan
+psu --no-picker --agent=codex --no-plan          # workspace root, no harness
+```
+
+`--agent` is required (`claude` | `omp` | `codex`); `--harness` defaults to
+the workspace root if omitted; pass `--no-plan` for an ad-hoc session or
+`--plan=<slug>` to bind one.
+
+## Install
+
+```bash
+bash apps/operator/scripts/install-standalone-mcp.sh
+```
+
+This mints the superuser token, merges `papercusp-su` into each client's
+MCP config, writes the playbook + the three `*-su` wrappers, and installs
+`psu` (a shim that `exec`s the in-repo launcher so it resolves
+`@inquirer/prompts` from the operator's `node_modules`). Re-run to refresh;
+to revoke, delete the listed files (the installer prints them).
+
+## How tracking flows
+
+```
+psu  ──pick──▶  bootstrap-su  ──records──▶  adv_sessions row (agent, plan_slug|null)
+  │                                              │
+  └──exec──▶  <agent>-su wrapper                 └──▶ /adv Sessions (live, ~3s refresh)
+                (playbook + MCP + skip-perms)          under plan / "No plan" group
+```
+
+The `*-su` wrappers used directly are **not** tracked (no row); only `psu`
+launches appear in `/adv`.
