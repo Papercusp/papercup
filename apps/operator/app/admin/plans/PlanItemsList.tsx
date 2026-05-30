@@ -137,6 +137,7 @@ export default function PlanItemsList({
               type="button"
               className="pc-items__row"
               aria-current={isSel ? 'true' : undefined}
+              title={r.item.text}
               onClick={() => void setSelectedItem(itemKey(planSlug, r.item.id))}
             >
               <span className="pc-items__id">{r.item.id}</span>

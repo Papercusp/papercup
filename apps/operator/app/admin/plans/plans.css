@@ -1409,7 +1409,15 @@
   font-size: 13px;
   line-height: 1.45;
   color: var(--fg);
-  white-space: normal;
+  /* Clamp to a 2-line title preview — item text is one logical line in
+     the markdown but can be a long paragraph (e.g. a multi-step task);
+     without this it renders as a full blob instead of a card title.
+     Full text is available via the row's title= tooltip. */
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
 }
 
 .pc-items__resolve {
