@@ -120,6 +120,58 @@ async function copyIfExists(src: string, dst: string): Promise<boolean> {
   }
 }
 
+/**
+ * The marker the base playbook carries where the per-client tooling
+ * overlay is spliced in. The base alone is NOT a complete playbook —
+ * raw-copying it ships a literal marker comment with no task/workflow
+ * tooling section (the regression from the 2026-05-30 marker split).
+ * This consumer produces the OMP/desktop-console playbook
+ * (`engineer-collaborator.md`), so it splices the OMP overlay
+ * (`papercusp-su.omp.md`) — exactly as `render_playbook` does in
+ * install-standalone-mcp.sh for the same destination.
+ */
+const CLIENT_TOOLING_OVERLAY_MARKER = '<!-- PAPERCUSP-SU:CLIENT-TOOLING-OVERLAY -->';
+
+/** Read the OMP overlay beside the base playbook; missing → '' (the
+ *  marker is still removed, never shipped literally). */
+async function readOmpOverlay(baseSrc: string): Promise<string> {
+  const overlayPath = path.join(path.dirname(baseSrc), 'papercusp-su.omp.md');
+  try {
+    return (await fs.readFile(overlayPath, 'utf8')).replace(/\n+$/, '');
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === 'ENOENT') return '';
+    throw e;
+  }
+}
+
+/**
+ * Write the base playbook with the OMP tooling overlay spliced in at
+ * the marker (or appended, if a pre-marker base is ever encountered).
+ * Node port of `render_playbook` from install-standalone-mcp.sh.
+ * Returns false when the base source is missing (matches copyIfExists).
+ */
+async function writeSplicedPlaybook(baseSrc: string, dst: string): Promise<boolean> {
+  let base: string;
+  try {
+    base = await fs.readFile(baseSrc, 'utf8');
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === 'ENOENT') return false;
+    throw e;
+  }
+  const overlay = await readOmpOverlay(baseSrc);
+  let out: string;
+  if (base.includes(CLIENT_TOOLING_OVERLAY_MARKER)) {
+    out = base.split(CLIENT_TOOLING_OVERLAY_MARKER).join(overlay); // replace ALL, like Python str.replace
+  } else if (overlay) {
+    out = base.replace(/\n+$/, '') + '\n\n' + overlay + '\n'; // pre-marker base + overlay → append
+  } else {
+    out = base; // pre-marker base, no overlay → verbatim
+  }
+  await fs.writeFile(dst, out, { mode: 0o644 });
+  await fs.chmod(dst, 0o644);
+  return true;
+}
+
 function resolveOperatorAppRoot(): string {
   // Source layout (tsx dev): this file lives at
   // <operatorApp>/lib/desktop-install/papercusp-files.ts. Walk up two
@@ -204,7 +256,10 @@ export async function installPapercuspFiles(opts: InstallOpts = {}): Promise<Ins
   const token = await ensureSecret(paths.tokenPath, mintToken);
   const agentId = await ensureSecret(paths.agentIdPath, mintAgentId);
 
-  const playbookWritten = playbookSource ? await copyIfExists(playbookSource, paths.playbookPath) : false;
+  // Playbook: splice the OMP overlay at the marker (NOT a raw copy —
+  // the marker-model base is incomplete on its own). Extension: raw
+  // copy (coord-hook.ts has no overlay).
+  const playbookWritten = playbookSource ? await writeSplicedPlaybook(playbookSource, paths.playbookPath) : false;
   const extensionWritten = extensionSource ? await copyIfExists(extensionSource, paths.extensionPath) : false;
 
   return {

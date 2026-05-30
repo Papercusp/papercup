@@ -119,6 +119,45 @@ describe('installPapercuspFiles', () => {
     expect(result.playbookWritten).toBe(true);
   });
 
+  it('splices the OMP overlay into a marker-model base playbook', async () => {
+    // Regression guard (2026-05-30 marker split): the base carries a
+    // CLIENT-TOOLING-OVERLAY marker, NOT the tooling section. The
+    // desktop/OMP playbook must have the OMP overlay spliced in — not
+    // be raw-copied with a literal marker + no tooling.
+    const MARKER = '<!-- PAPERCUSP-SU:CLIENT-TOOLING-OVERLAY -->';
+    await fs.writeFile(
+      path.join(tmpAppRoot, 'prompts', 'papercusp-su-engineer.tools.md'),
+      `# Base\n\n${MARKER}\n\n## Tail\n`,
+    );
+    await fs.writeFile(
+      path.join(tmpAppRoot, 'prompts', 'papercusp-su.omp.md'),
+      '## OMP tooling\nUse omp:sessions etc.',
+    );
+
+    const result = await installPapercuspFiles({ home: tmpHome, operatorAppRoot: tmpAppRoot });
+    const playbook = await fs.readFile(result.playbookPath, 'utf8');
+
+    expect(playbook).not.toContain(MARKER); // literal marker never ships
+    expect(playbook).toContain('## OMP tooling'); // overlay spliced in
+    expect(playbook).toContain('# Base');
+    expect(playbook).toContain('## Tail');
+  });
+
+  it('marker base with NO overlay file: marker is removed, not shipped literally', async () => {
+    const MARKER = '<!-- PAPERCUSP-SU:CLIENT-TOOLING-OVERLAY -->';
+    await fs.writeFile(
+      path.join(tmpAppRoot, 'prompts', 'papercusp-su-engineer.tools.md'),
+      `# Base\n${MARKER}\n## Tail\n`,
+    );
+    // No papercusp-su.omp.md written.
+
+    const result = await installPapercuspFiles({ home: tmpHome, operatorAppRoot: tmpAppRoot });
+    const playbook = await fs.readFile(result.playbookPath, 'utf8');
+    expect(playbook).not.toContain(MARKER);
+    expect(playbook).toContain('# Base');
+    expect(playbook).toContain('## Tail');
+  });
+
   it('resolveInstallPaths returns expected layout', () => {
     const p = resolveInstallPaths('/tmp/somehome');
     expect(p.papercuspDir).toBe('/tmp/somehome/.papercusp');
