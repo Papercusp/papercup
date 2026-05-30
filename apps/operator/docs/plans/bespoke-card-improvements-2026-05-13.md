@@ -1,9 +1,9 @@
 ---
 title: Bespoke card-system improvements — 2026-05-13 (v2)
 slug: bespoke-card-improvements-2026-05-13
-status: active
+status: shipped
 created: 2026-05-13
-updated: 2026-05-20
+updated: 2026-05-30
 owner: pandawamble@gmail.com
 ---
 

@@ -1,9 +1,9 @@
 ---
 title: Brief — Next.js removal agent (coordination with host-architecture plan)
 slug: next-removal-agent-brief-2026-05-20
-status: active
+status: shipped
 created: 2026-05-20
-updated: 2026-05-20
+updated: 2026-05-30
 owner: pandawamble@gmail.com
 ---
 

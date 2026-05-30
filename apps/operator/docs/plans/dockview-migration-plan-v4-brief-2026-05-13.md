@@ -1,9 +1,9 @@
 ---
 title: Dockview migration plan — v4 audit brief (handoff)
 slug: dockview-migration-plan-v4-brief-2026-05-13
-status: active
+status: superseded
 created: 2026-05-13
-updated: 2026-05-20
+updated: 2026-05-30
 owner: pandawamble@gmail.com
 ---
 

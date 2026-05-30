@@ -2,8 +2,8 @@
 title: Fumadocs To Starlight
 slug: fumadocs-to-starlight-2026-05-20
 created: 2026-05-20
-updated: 2026-05-25
-status: draft
+updated: 2026-05-30
+status: shipped
 ---
 
 ## Now

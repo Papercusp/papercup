@@ -1,9 +1,9 @@
 ---
 title: Design-spec migration — deferred fixes (2026-05-13)
 slug: design-migration-deferred-2026-05-13
-status: active
+status: shipped
 created: 2026-05-13
-updated: 2026-05-20
+updated: 2026-05-30
 owner: pandawamble@gmail.com
 ---
 

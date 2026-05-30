@@ -1,7 +1,7 @@
 ---
 title: PSU Wrapper Trio (claude/omp/codex) + Plan-Tracked Terminal Launcher
 slug: psu-wrapper-trio-and-terminal-launcher-2026-05-29
-status: draft
+status: superseded
 created: 2026-05-30
 updated: 2026-05-30
 owner: avi@storewolf.com

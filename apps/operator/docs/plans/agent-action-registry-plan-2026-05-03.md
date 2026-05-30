@@ -1,9 +1,9 @@
 ---
 title: Agent Action Registry — Implementation Plan v5 (final, implementation-ready)
 slug: agent-action-registry-plan-2026-05-03
-status: active
+status: shipped
 created: 2026-05-03
-updated: 2026-05-20
+updated: 2026-05-30
 owner: pandawamble@gmail.com
 ---
 

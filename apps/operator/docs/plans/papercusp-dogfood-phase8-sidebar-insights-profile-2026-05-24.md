@@ -2,8 +2,8 @@
 title: Papercusp dogfood — Phase 8 (sidebar tabs + Insights + contributor stats + user profile)
 slug: papercusp-dogfood-phase8-sidebar-insights-profile-2026-05-24
 created: 2026-05-24
-updated: 2026-05-25
-status: draft
+updated: 2026-05-30
+status: active
 ---
 
 # Papercusp dogfood — Phase 8 (sidebar tabs + Insights + contributor stats + user profile)

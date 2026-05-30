@@ -1,9 +1,9 @@
 ---
 title: Papercusp dogfood — Phase 4 (single-engineer dogfood — papercup as state:private)
 slug: papercusp-dogfood-phase4-single-engineer-dogfood-2026-05-24
-status: draft
+status: active
 created: 2026-05-24
-updated: 2026-05-26
+updated: 2026-05-30
 owner: avi@storewolf.com
 ---
 

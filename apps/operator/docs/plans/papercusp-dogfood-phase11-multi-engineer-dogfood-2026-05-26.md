@@ -2,8 +2,8 @@
 title: Papercusp dogfood — Phase 11 (multi-engineer dogfood)
 slug: papercusp-dogfood-phase11-multi-engineer-dogfood-2026-05-26
 created: 2026-05-26
-updated: 2026-05-26
-status: draft
+updated: 2026-05-30
+status: active
 owner: avi@storewolf.com
 ---
 

@@ -1,9 +1,9 @@
 ---
 title: Plan — Next.js removal from `apps/operator`
 slug: next-removal-plan-2026-05-20
-status: active
+status: superseded
 created: 2026-05-20
-updated: 2026-05-20
+updated: 2026-05-30
 owner: pandawamble@gmail.com
 ---
 

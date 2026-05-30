@@ -1,9 +1,9 @@
 ---
 title: Operator Audience Mode (Engineer vs Novice)
 slug: operator-audience-mode-2026-05-27
-status: draft
+status: shipped
 created: 2026-05-27
-updated: 2026-05-27
+updated: 2026-05-30
 owner: aviynw10@gmail.com
 ---
 

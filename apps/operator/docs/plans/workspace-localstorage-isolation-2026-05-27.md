@@ -1,9 +1,9 @@
 ---
 title: Workspace-scoped localStorage isolation (corrected)
 slug: workspace-localstorage-isolation-2026-05-27
-status: draft
+status: shipped
 created: 2026-05-27
-updated: 2026-05-27
+updated: 2026-05-30
 owner: avi@storewolf.com
 ---
 

@@ -1,9 +1,9 @@
 ---
 title: SSE typed-events — rebase notes from main
 slug: sse-typed-events-rebase-note-from-main
-status: active
+status: shipped
 created: 2026-05-12
-updated: 2026-05-20
+updated: 2026-05-30
 owner: pandawamble@gmail.com
 ---
 

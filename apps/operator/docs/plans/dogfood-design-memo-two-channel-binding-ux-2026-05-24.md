@@ -2,8 +2,8 @@
 title: Papercusp dogfood — design memo — two-channel binding verifier UX
 slug: dogfood-design-memo-two-channel-binding-ux-2026-05-24
 created: 2026-05-24
-updated: 2026-05-25
-status: draft
+updated: 2026-05-30
+status: shipped
 ---
 
 # Design memo — two-channel binding verifier UX

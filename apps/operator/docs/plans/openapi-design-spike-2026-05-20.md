@@ -2,9 +2,16 @@
 title: OpenAPI surface — design spike
 slug: openapi-design-spike-2026-05-20
 created: 2026-05-20
-updated: 2026-05-25
-status: draft
+updated: 2026-05-30
+status: shipped
 ---
+
+## Now
+
+**State:** aafdsg
+
+**Next:** dsgds
+
 
 # OpenAPI surface — design spike
 
