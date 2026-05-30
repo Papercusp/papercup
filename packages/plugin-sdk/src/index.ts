@@ -14,6 +14,7 @@ import type { ComponentType } from 'react';
 // Imported for local use; re-exported below so plugin-sdk consumers are
 // unaffected. Dependency inversion: plan papercusp-tooldef-extraction (D-004).
 import type {
+  AgentRole,
   RolesQuota,
   ToolResult,
   ProgressCallback,
@@ -946,27 +947,19 @@ export interface PluginOAuthRequirement {
  * Spec: apps/operator/docs/plugin-mcp-host-design.md.
  * ───────────────────────────────────────────────────────────────────── */
 
-/**
- * The seven core agent roles in Papercusp. Tool manifests use these
- * literals in `roles` allowlists and `rolesQuota` keys. Plugins may
- * contribute custom roles via `roles:register:<name>` capability;
- * those names appear here as `string` rather than the literal union.
- */
-export type AgentRole =
-  | 'scoper'
-  | 'architect'
-  | 'worker'
-  | 'validator'
-  | 'reviewer'
-  | 'debugger'
-  | 'operator'
-  | (string & {}); // custom plugin-registered roles
-
-// `RolesQuota`, `ToolResult`, `ProgressCallback`, and `EmitCallback` now live
-// in `@papercusp/tooldef` (imported at the top of this file). Re-exported here
-// so existing `@papercusp/plugin-sdk` consumers keep importing them unchanged.
-// See plan papercusp-tooldef-extraction-2026-05-29 (D-003 no-shim, D-004 invert).
-export type { RolesQuota, ToolResult, ProgressCallback, EmitCallback };
+// `AgentRole` is owned by `@papercusp/tooldef` and configured by the host
+// (plan P-010 / D-005). The framework keeps it `string`-assignable; the
+// Papercusp host registers its built-in roles (scoper…curator, operator,
+// experts) via `RoleRegistry` augmentation in `@papercusp/agent-mcp`, which
+// shapes the autocomplete suggestions program-wide. Plugins still contribute
+// custom roles at runtime (namespaced `<plugin>:<role>`), typed as `string`.
+// plugin-sdk no longer hand-maintains a (perpetually stale) literal union —
+// it re-exports the framework's seam. See D-003 (no-shim) / D-004 (invert).
+//
+// `RolesQuota`, `ToolResult`, `ProgressCallback`, and `EmitCallback` likewise
+// live in `@papercusp/tooldef`; re-exported here so existing plugin-sdk
+// consumers keep importing them unchanged.
+export type { AgentRole, RolesQuota, ToolResult, ProgressCallback, EmitCallback };
 
 /**
  * Per-invocation context passed to every tool handler. Different from

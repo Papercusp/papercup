@@ -13,6 +13,13 @@
  */
 
 export { defineTool } from '@papercusp/tooldef';
+// Papercusp's role config (plan P-010): exporting AGENT_ROLES pulls in
+// role-config.ts, whose `declare module` augmentation registers the built-in
+// roles with tooldef's `RoleRegistry` — so the re-exported `AgentRole` below
+// resolves to Papercusp's suggestion-union program-wide.
+export { AGENT_ROLES } from './role-config';
+export type { BuiltinAgentRole } from './role-config';
+export type { AgentRole, RoleRegistry } from '@papercusp/tooldef';
 export { defineUITool } from './define-ui-tool';
 export type { UIToolDefinitionInput, UIToolHandlerResult } from './define-ui-tool';
 export { defineResource } from '@papercusp/tooldef';

@@ -12,24 +12,85 @@ companion-to: [endpoint-unification-2026-05-21, endpoint-route-migration-2026-05
 
 ## Now
 
-**State:** Phase 1 (carve the pure core) **shipped** 2026-05-29 — commits
-`9b1620b2` (scaffold + wire-type inversion) and `8f3c950a` (engine move, 82 files
-recorded as renames). `@papercusp/tooldef` now exists as a **zero-dependency**
-package owning the dispatcher, registries, `defineTool`, tool-projection, the
-state/card/replay channels, and the core types; `@papercusp/agent-mcp` is the host
-adapter that re-exports the engine (its public surface byte-preserved, so the ~601
-`import { defineTool } from '@papercusp/agent-mcp'` consumers are untouched).
-Verified: tooldef typecheck clean + 188 tests green; agent-mcp typecheck 20 errors
-(all pre-existing baseline, **down from 22**) + 105 tests; plugin-sdk 13 tests. See
-the **Progress log** for what shipped vs. the original map and the known follow-ups.
+**State:** Phase 1 (carve the pure core) **shipped** 2026-05-29. **P-010 (role
+genericization, the first Phase-2 item) shipped** 2026-05-30 — `AgentRole` is no
+longer a baked `string` stand-in: the core exposes an augmentable `RoleRegistry`
+seam and the Papercusp host registers its built-in roles via declaration merging
+(`packages/agent-mcp/src/role-config.ts`), with `ToolContext` now generic over
+`Tx`. Verified: tooldef typecheck clean + 188 tests green; agent-mcp typecheck 19
+errors (all pre-existing baseline — **0 new, 0 lost** vs. P-010) + 105 pass / 1
+pre-existing fail; augmentation cross-module merge empirically proven. See the
+**Progress log** (2026-05-30) for the design rationale (why a `RoleRegistry`
+config object, not a threaded `<Role>` generic) and follow-ups.
 
-**Next:** an agent starts **Phase 2** (P-010) — genericize `AgentRole` from the
-transitional `string` stand-in (`packages/tooldef/src/host-types.ts`) into a real
-generic `Role` param / host role-config, then host-inject the remaining baked rules
-(`computeWindowKey`, `tierFor`, `SigningProvider`, `resolvePrincipal`). **Phase 3**
-(Standard Schema — the public-API-shaping change) can run in parallel.
+**Next:** the remaining Phase-2 baked-rule injections — **P-011** (`computeWindowKey`,
+which also un-bakes the `role === 'worker'`/power-user logic), **P-012** (`tierFor`),
+**P-013** (`SigningProvider` + `contextSchema`), **P-014** (`resolvePrincipal`),
+**P-015** (persistence interfaces). **Phase 3** (Standard Schema — the public-API-
+shaping change) can run in parallel. A generic `Tx` parameterization of
+`UnifiedToolContext` (dispatch path) was left as a follow-up — only the legacy
+`ToolContext` was parameterized in P-010 (see Progress log).
 
 ## Progress log
+
+### 2026-05-30 — P-010 shipped (role genericization + ToolContext<Tx>)
+
+First Phase-2 item. Files: `packages/tooldef/src/{host-types,types,index}.ts`,
+`packages/agent-mcp/src/{role-config.ts (new),index.ts}`,
+`packages/plugin-sdk/src/index.ts`.
+
+**Design decision — `RoleRegistry` config object, NOT a threaded `<Role>` generic.**
+D-005 left both open; chose the config-object arm for concrete reasons found in the
+code:
+- Roles **must** stay `string`-assignable. Plugins register arbitrary custom roles
+  at runtime (`apps/operator/lib/role-registry.ts` is fully dynamic; plugin-sdk's old
+  union used `(string & {})`), so a *closed* union is impossible.
+- A threaded `<Role extends string = string>` param would default to `string` at all
+  ~601 `defineTool` consumers (none would ever pass it), delivering **zero**
+  host-config benefit for large type-noise — and the core-defined fields
+  (`ToolDefinition.roles`, `byRole`, `rolesQuota`) can't pick up host suggestions from
+  a generic the host never specifies.
+- The augmentation pattern (the TanStack `Register` / i18next `CustomTypeOptions`
+  idiom) lets the host register roles **once**; that shapes the core-defined fields'
+  autocomplete program-wide while staying `string`-assignable, and falls back to bare
+  `string` for any consumer that registers nothing (the standalone P-051 example).
+
+**Shipped:**
+- **Core** (`host-types.ts`): `AgentRole = string` → an augmentable
+  `export interface RoleRegistry {}` + `AgentRole = [RegisteredRole] extends [never] ?
+  string : RegisteredRole | (string & {})`. `RoleRegistry` exported from `index.ts`.
+- **Core** (`types.ts`): `ToolContext` → `ToolContext<Tx = any>` with `tx: Tx`
+  (D-009's "generic Tx rides with it"). Default `any` keeps the ~601 `ctx.tx.<…>()`
+  consumers green; a host binds `ToolContext<SqlClient>` for a checked `tx`.
+- **Host** (`agent-mcp/src/role-config.ts`, new): `declare module '@papercusp/tooldef'
+  { interface RoleRegistry extends Record<BuiltinAgentRole, true> {} }`, the
+  augmentation *derived from* a single runtime `AGENT_ROLES` const (19 built-in roles,
+  the real working set grepped from tool `roles:`/`byRole` usage — pipeline + chat +
+  cross-cutting expert roles). Re-exported from `agent-mcp/index.ts` (exporting the
+  value pulls the augmentation into the program).
+- **plugin-sdk**: deleted its hand-maintained 7-role union (stale — missing
+  `documenter`/`curator`, with an "update both when canonical changes" drift comment)
+  and re-exports the core's `AgentRole`. plugin-sdk is now role-set-agnostic; the host
+  owns the role config (the plan's end-state).
+
+**Verified:** tooldef `tsc` clean + **188/188** tests; agent-mcp `tsc` **19** errors
+(identical set to the pre-P-010 baseline — diffed line-by-line, **0 new, 0 resolved**)
++ **105 pass / 1 fail** (the documented pre-existing `prompts.test` collision case —
+untouched by this change). Cross-module augmentation merge proven with a throwaway
+type probe (`keyof RoleRegistry` resolves to the built-in union in the host program,
+not `never` and not widened-to-`string`), then deleted.
+
+**Follow-ups (none blocking):**
+- `UnifiedToolContext.tx` (the dispatch-path ctx in `tool-projection.ts`) is still
+  `any` — only the legacy `ToolContext` got the `<Tx>` param. Threading `Tx` through
+  `UnifiedToolContext` → `ProjectedTool` → `ToolFn` → dispatch is a larger, separate
+  change; deferred.
+- `apps/operator/lib/prompt-assembly.ts`'s local `Role` union (10 roles) is a separate
+  hand-kept list with its own "mirrors AGENT_ROLES / update both" comment — a candidate
+  to point at `AGENT_ROLES`, but it deliberately avoids dragging a workspace-aware enum
+  into the prompt layer. Left as-is.
+- `role === 'worker'` / power-user quota branching in `dispatch-stack.ts` +
+  `computeProjectedQuotaWindowKey` is still baked — that's P-011's job, not P-010's.
 
 ### 2026-05-29 — Phase 1 shipped (P-000…P-005)
 
@@ -201,9 +262,14 @@ supplies the concrete one), `http-projection.ts` (→ eventually `tooldef-http`)
 
 ## Phase 2 — Replace the 6 baked rules with injected interfaces
 
-- **P-010** `todo` Genericize role: parameterize the core over `Role extends string`
-  (or a `RoleRegistry` config); remove the `AgentRole` import. Papercusp passes its
-  9-role config. blocked-by: P-003 → D-005
+- **P-010** `done` Genericize role: the core exposes an augmentable `RoleRegistry`
+  config object (chosen over a threaded `<Role>` generic — see Progress log
+  2026-05-30); `AgentRole` resolves to the host's registered roles as a
+  `string`-assignable suggestion-union, or bare `string` when unaugmented. Papercusp
+  registers its built-in roles in `packages/agent-mcp/src/role-config.ts`
+  (`AGENT_ROLES`). `ToolContext<Tx = any>` rides along (D-009). plugin-sdk's stale
+  union deleted in favor of re-exporting the core seam. Shipped 2026-05-30.
+  blocked-by: P-003 → D-005
 - **P-011** `todo` Promote `computeProjectedQuotaWindowKey` to a host-supplied
   `computeWindowKey(ctx) => string | null` on `DispatchProjectedDeps`; default
   impl = `run:<runId>`. Move the worker/chunk + power-user logic into the Papercusp
@@ -313,10 +379,21 @@ direction was already type-only and one-way (plugin-sdk → consumed by core); w
 invert it so the framework, not a plugin SDK, is the type authority.
 
 ### D-005 — Role is generic/config, not a baked union
-Date: 2026-05-29
-The core is parameterized over `Role extends string` (or a `RoleRegistry` config
-object). Papercusp's 9-role set (scoper, architect, worker, validator, reviewer,
-debugger, operator, documenter, curator) becomes adapter config, not a core enum.
+Date: 2026-05-29 (**resolved 2026-05-30, P-010**)
+The core is parameterized over a role config. Papercusp's role set becomes adapter
+config, not a core enum.
+
+**Resolved 2026-05-30 — the `RoleRegistry` config-object arm, not the threaded
+`<Role>` generic arm.** Roles must remain `string`-assignable (plugins register
+custom roles at runtime), so a closed union is impossible; and a defaulted `<Role>`
+generic delivers no host-config benefit because the ~601 consumers never pass it and
+the core-defined `roles:`/`byRole`/`rolesQuota` fields can't pick up host suggestions
+from an unspecified generic. The host augments `RoleRegistry` via declaration merging
+(TanStack-`Register` idiom); `AgentRole` resolves to a `string`-assignable
+suggestion-union of the host's roles, or bare `string` when unaugmented. The
+canonical role set turned out to be ~19 (the real `roles:`-allowlist working set),
+not the 9 named here — confirming the set is open and a hard union was the wrong shape.
+Full rationale in the Progress log (2026-05-30).
 
 ### D-006 — Host-injected business rules
 Date: 2026-05-29
