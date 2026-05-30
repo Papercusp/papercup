@@ -33,7 +33,9 @@ export const PLAN_BUCKETS: ReadonlyArray<{ id: PlanBucket; label: string }> = [
   { id: 'ready', label: 'Ready' },
   { id: 'running', label: 'Running' },
   { id: 'shipped', label: 'Shipped' },
-  { id: 'rejected', label: 'Rejected' },
+  // The only way a plan lands in the 'rejected' bucket is status:superseded
+  // (reject = supersede), so the chip reads "Superseded".
+  { id: 'rejected', label: 'Superseded' },
 ];
 
 const PLAN_BUCKET_IDS: readonly PlanBucket[] = PLAN_BUCKETS.map((b) => b.id);

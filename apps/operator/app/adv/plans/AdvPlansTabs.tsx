@@ -31,7 +31,7 @@ import {
 } from 'nuqs';
 import { usePlanList } from '../../admin/plans/plans-api';
 
-type PlansView = 'list' | 'inbox' | 'actionable' | 'blocked' | 'superseded';
+type PlansView = 'list' | 'inbox' | 'actionable' | 'blocked';
 type PaneMode = 'read' | 'edit';
 
 interface Tab {
@@ -44,7 +44,7 @@ interface Tab {
 export default function AdvPlansTabs({ children }: { children: React.ReactNode }) {
   const [view, setView] = useQueryState(
     'view',
-    parseAsStringEnum<PlansView>(['list', 'inbox', 'actionable', 'blocked', 'superseded']).withDefault('list'),
+    parseAsStringEnum<PlansView>(['list', 'inbox', 'actionable', 'blocked']).withDefault('list'),
   );
   // The OPEN-PLAN slug. Lives on `?plan=`, NOT `?slug=` — `?slug=` is
   // AdvShell's active-harness key, shared across every /adv tab.

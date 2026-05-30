@@ -33,22 +33,28 @@ import { resolveHarnessScope, type HarnessNodeForScope } from '@/lib/harness/sco
 /** localStorage key AdvShell uses for the fallback active-harness slug. */
 const ACTIVE_HARNESS_KEY = 'harness.activeProject';
 
-// 'list' + 'superseded' are PLAN views (rail navigates to open a plan);
-// 'inbox' / 'actionable' / 'blocked' are ITEM views (cross-plan item
-// lists; the rail filters). Browse + Superseded share plan-nav behaviour.
-type PlansView = 'list' | 'inbox' | 'actionable' | 'blocked' | 'superseded';
+// 'list' (Browse) is the PLAN view — the rail navigates to open a plan,
+// and the plan-status chips (Draft…Superseded, in PlanBucketTabs) filter
+// it. 'inbox' / 'actionable' / 'blocked' are ITEM views — cross-plan item
+// lists where the rail acts as a per-plan filter.
+type PlansView = 'list' | 'inbox' | 'actionable' | 'blocked';
 type ItemView = 'inbox' | 'actionable' | 'blocked';
 type PaneMode = 'read' | 'edit';
 type PlanDetailTab = 'editor' | 'revisions' | 'agents';
 
-const PLANS_VIEW_IDS = ['list', 'inbox', 'actionable', 'blocked', 'superseded'] as const;
+const PLANS_VIEW_IDS = ['list', 'inbox', 'actionable', 'blocked'] as const;
 
-const VIEWS: Array<{ id: PlansView; label: string }> = [
-  { id: 'list', label: 'Browse' },
-  { id: 'inbox', label: 'Needs Human' },
-  { id: 'actionable', label: 'Needs Decision' },
-  { id: 'blocked', label: 'Blocked' },
-  { id: 'superseded', label: 'Superseded' },
+/** Plan view — the "Plans" group. Superseded is NOT a view; it's a
+ *  plan-status chip in PlanBucketTabs (after Shipped). */
+const PLAN_VIEWS: Array<{ id: PlansView; label: string; hint: string }> = [
+  { id: 'list', label: 'Browse', hint: 'Browse every plan; narrow by status with the chips below.' },
+];
+
+/** Cross-plan item views — the "Items" group. */
+const ITEM_VIEWS: Array<{ id: ItemView; label: string; hint: string }> = [
+  { id: 'inbox', label: 'Needs Human', hint: 'Items across all plans waiting on a human decision.' },
+  { id: 'actionable', label: 'Needs Decision', hint: 'Items ready to pick up now — effective todo, all blockers cleared.' },
+  { id: 'blocked', label: 'Blocked', hint: 'Items stuck on unresolved blockers or external waits.' },
 ];
 
 interface PlanStats {
@@ -57,7 +63,6 @@ interface PlanStats {
   needsHuman: number;
   actionable: number;
   blocked: number;
-  superseded: number;
 }
 
 export default function PlansClient() {
@@ -177,13 +182,12 @@ export default function PlansClient() {
     () => new Set((planItems.data?.items ?? []).map((r) => r.plan)),
     [planItems.data],
   );
-  // Rail plan set per view: item views → plans-with-items; Superseded →
-  // superseded plans; Browse → everything.
-  const railVisiblePlans = useMemo(() => {
-    if (itemMode) return visiblePlans.filter((p) => itemPlanSlugs.has(p.slug));
-    if (view === 'superseded') return visiblePlans.filter((p) => p.status === 'superseded');
-    return visiblePlans;
-  }, [itemMode, view, visiblePlans, itemPlanSlugs]);
+  // Rail plan set: item views → plans-with-items; Browse → everything
+  // (the plan-status chips do any further narrowing).
+  const railVisiblePlans = useMemo(
+    () => (itemMode ? visiblePlans.filter((p) => itemPlanSlugs.has(p.slug)) : visiblePlans),
+    [itemMode, visiblePlans, itemPlanSlugs],
+  );
   const railList = useMemo(
     () => ({
       ...filteredPlanList,
@@ -357,61 +361,92 @@ export default function PlansClient() {
         </div>
         <PlansOverview stats={stats} loading={planList.loading} />
 
-        <nav className="pc-plans__views" aria-label="Plans views">
-          {VIEWS.map((v) => (
-            <button
-              key={v.id}
-              type="button"
-              className={`pc-plans__view pc-plans__view--${v.id} ${view === v.id ? 'is-active' : ''}`}
-              onClick={() => navView(v.id)}
-              aria-current={view === v.id ? 'page' : undefined}
-            >
-              <span className="pc-plans__view-label">{v.label}</span>
-              <span className="pc-plans__view-count">{viewCount(v.id, stats, planList.loading)}</span>
-            </button>
-          ))}
-        </nav>
+        {/* ── PLANS group — view + filters that narrow the plan list. ── */}
+        <div className="pc-plans__group">
+          <span
+            className="pc-plans__group-label"
+            title="Browse and filter plans by lifecycle status (these act on plans, not items)."
+          >
+            Plans
+          </span>
+          <nav className="pc-plans__views" aria-label="Plan views">
+            {PLAN_VIEWS.map((v) => (
+              <button
+                key={v.id}
+                type="button"
+                className={`pc-plans__view pc-plans__view--${v.id} ${view === v.id ? 'is-active' : ''}`}
+                onClick={() => navView(v.id)}
+                aria-current={view === v.id ? 'page' : undefined}
+                title={v.hint}
+              >
+                <span className="pc-plans__view-label">{v.label}</span>
+                <span className="pc-plans__view-count">{viewCount(v.id, stats, planList.loading)}</span>
+              </button>
+            ))}
+          </nav>
 
-        {/* Same left side in every view (Browse + item views). In item
-            views the rail list is narrowed to plans-with-items and a
-            click FILTERS the main list (setItemPlan) rather than opening
-            the plan — otherwise it's the identical rich PlanRail. */}
-        {harnessOptions.length > 1 ? (
-          <div className="pc-plans__harness-filter">
-            <label className="pc-plans__harness-filter-label" htmlFor="pc-plans-harness-filter">
-              Harness
-            </label>
-            <select
-              id="pc-plans-harness-filter"
-              className="pc-plans__harness-filter-select"
-              value={harnessFilter ?? ''}
-              onChange={(e) => void setHarnessFilter(e.target.value || null)}
-            >
-              <option value="">All ({planList.data?.plans.length ?? 0})</option>
-              {harnessOptions.map((h) => {
-                const count = (planList.data?.plans ?? []).filter((p) => p.harness === h).length;
-                return (
-                  <option key={h} value={h}>
-                    {h} ({count})
-                  </option>
-                );
-              })}
-            </select>
-          </div>
-        ) : null}
+          {harnessOptions.length > 1 ? (
+            <div className="pc-plans__harness-filter">
+              <label className="pc-plans__harness-filter-label" htmlFor="pc-plans-harness-filter">
+                Harness
+              </label>
+              <select
+                id="pc-plans-harness-filter"
+                className="pc-plans__harness-filter-select"
+                value={harnessFilter ?? ''}
+                onChange={(e) => void setHarnessFilter(e.target.value || null)}
+              >
+                <option value="">All ({planList.data?.plans.length ?? 0})</option>
+                {harnessOptions.map((h) => {
+                  const count = (planList.data?.plans ?? []).filter((p) => p.harness === h).length;
+                  return (
+                    <option key={h} value={h}>
+                      {h} ({count})
+                    </option>
+                  );
+                })}
+              </select>
+            </div>
+          ) : null}
 
-        <PlanFilters
-          list={filteredPlanList}
-          query={q}
-          onQueryChange={setQ}
-          searchRef={searchRef}
-        />
+          <PlanFilters
+            list={filteredPlanList}
+            query={q}
+            onQueryChange={setQ}
+            searchRef={searchRef}
+          />
 
-        <PlanBucketTabs
-          plans={railVisiblePlans}
-          query={q}
-          searchHitSlugs={searchHitSlugs}
-        />
+          <PlanBucketTabs
+            plans={railVisiblePlans}
+            query={q}
+            searchHitSlugs={searchHitSlugs}
+          />
+        </div>
+
+        {/* ── ITEMS group — cross-plan item views by status. ── */}
+        <div className="pc-plans__group">
+          <span
+            className="pc-plans__group-label"
+            title="Cross-plan items grouped by status — these act on individual items, not whole plans."
+          >
+            Items
+          </span>
+          <nav className="pc-plans__views" aria-label="Item views">
+            {ITEM_VIEWS.map((v) => (
+              <button
+                key={v.id}
+                type="button"
+                className={`pc-plans__view pc-plans__view--${v.id} ${view === v.id ? 'is-active' : ''}`}
+                onClick={() => navView(v.id)}
+                aria-current={view === v.id ? 'page' : undefined}
+                title={v.hint}
+              >
+                <span className="pc-plans__view-label">{v.label}</span>
+                <span className="pc-plans__view-count">{viewCount(v.id, stats, planList.loading)}</span>
+              </button>
+            ))}
+          </nav>
+        </div>
 
         <div
           className="pc-plans__list"
@@ -422,9 +457,7 @@ export default function PlansClient() {
                 ? 'Plans with actionable items'
                 : itemMode === 'blocked'
                   ? 'Plans with blocked items'
-                  : view === 'superseded'
-                    ? 'Superseded plans'
-                    : 'Plan list'
+                  : 'Plan list'
           }
         >
           <PlanRail
@@ -441,8 +474,8 @@ export default function PlansClient() {
       </aside>
 
       <main className="pc-plans__main">
-        {/* Browse + Superseded are plan views: an open plan shows its detail. */}
-        {(view === 'list' || view === 'superseded') && slug && (
+        {/* Browse is the plan view: an open plan shows its detail. */}
+        {view === 'list' && slug && (
           <PlanDetail
             key={slug}
             slug={slug}
@@ -479,16 +512,6 @@ export default function PlansClient() {
 
         {view === 'list' && !slug && !q.trim() && (
           <EmptyState stats={stats} />
-        )}
-
-        {view === 'superseded' && !slug && (
-          <div className="pc-plans__empty">
-            <span className="pc-plans__empty-kicker">Superseded</span>
-            <h2>
-              {stats.superseded} superseded plan{stats.superseded === 1 ? '' : 's'}
-            </h2>
-            <p>Plans that were replaced or retired. Pick one from the rail to read it.</p>
-          </div>
         )}
 
         {itemMode && (
@@ -535,7 +558,6 @@ function buildPlanStats(plans: PlanListRow[]): PlanStats {
       acc.needsHuman += counts['needs-human'] ?? 0;
       acc.actionable += counts.todo ?? 0;
       acc.blocked += counts.blocked ?? 0;
-      if (plan.status === 'superseded') acc.superseded += 1;
       return acc;
     },
     {
@@ -544,7 +566,6 @@ function buildPlanStats(plans: PlanListRow[]): PlanStats {
       needsHuman: 0,
       actionable: 0,
       blocked: 0,
-      superseded: 0,
     },
   );
 }
@@ -554,8 +575,7 @@ function viewCount(view: PlansView, stats: PlanStats, loading: boolean): string 
   if (view === 'list') return String(stats.visible);
   if (view === 'inbox') return String(stats.needsHuman);
   if (view === 'actionable') return String(stats.actionable);
-  if (view === 'blocked') return String(stats.blocked);
-  return String(stats.superseded);
+  return String(stats.blocked);
 }
 
 function PlansOverview({ stats, loading }: { stats: PlanStats; loading: boolean }) {
