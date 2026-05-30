@@ -9,18 +9,9 @@
  * Ported from app/api/agent-config/route.ts. `auth: 'public'` preserves
  * the original (un-authed) behavior.
  */
-import { readAgentConfig, writeAgentConfig, type AgentConfig } from '@/lib/agent-config';
+import { readAgentConfig, writeAgentConfig, effectiveBackend, type AgentConfig } from '@/lib/agent-config';
 import { detectBinaries } from '@/lib/agent-bin-detect';
 import { defineTool } from '@papercusp/agent-mcp';
-
-function effectiveBackend(cfg: AgentConfig): 'claude-code' | 'omp' {
-  if (cfg.backend !== 'auto') return cfg.backend;
-  const cmd = (cfg.cmd || process.env.AGENT_CMD || process.env.CLAUDE_CMD || 'omp').trim();
-  const first = cmd.split(/\s+/).filter(Boolean)[0] ?? '';
-  if (/(?:^|\/)(omp|pi)$/.test(first)) return 'omp';
-  if (/(?:^|\/)claude$/.test(first)) return 'claude-code';
-  return 'omp';
-}
 
 export default [
   defineTool({

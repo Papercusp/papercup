@@ -139,3 +139,22 @@ function validBackend(v: unknown): AgentConfig['backend'] | undefined {
   if (v === 'claude-code' || v === 'omp' || v === 'auto') return v;
   return undefined;
 }
+
+/**
+ * Resolve the backend that would actually be driven right now, collapsing
+ * `'auto'` to a concrete `'claude-code' | 'omp'` the same way the harness's
+ * `resolveAgentBackend` does: explicit config wins; otherwise infer from the
+ * binary name in `cmd` / $AGENT_CMD / $CLAUDE_CMD, defaulting to omp.
+ *
+ * Shared by the /agent-config GET snapshot and the /agent-config/test probe
+ * so the "Test current backend" button exercises the same backend the user
+ * actually selected.
+ */
+export function effectiveBackend(cfg: AgentConfig): 'claude-code' | 'omp' {
+  if (cfg.backend !== 'auto') return cfg.backend;
+  const cmd = (cfg.cmd || process.env.AGENT_CMD || process.env.CLAUDE_CMD || 'omp').trim();
+  const first = cmd.split(/\s+/).filter(Boolean)[0] ?? '';
+  if (/(?:^|\/)(omp|pi)$/.test(first)) return 'omp';
+  if (/(?:^|\/)claude$/.test(first)) return 'claude-code';
+  return 'omp';
+}
