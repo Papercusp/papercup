@@ -4,29 +4,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { parseAsString, parseAsStringEnum, useQueryState } from 'nuqs';
 import type { PanelComponentProps } from '../../harness/dock/panel-registry';
 import PinMenu, { type PinMenuState } from './PinMenu';
-
-type FeatureStatus =
-  | 'todo'
-  | 'in_progress'
-  | 'validating'
-  | 'passed'
-  | 'failing'
-  | 'deprecated'
-  | 'blocked';
-
-interface Feature {
-  id: string;
-  title: string;
-  status: FeatureStatus;
-  attempts?: number;
-  summary?: string;
-  needs_human_review?: boolean;
-}
-
-interface StatusResponse {
-  features: Feature[];
-  counts: Record<string, number>;
-}
+import { useHarnessFeatures, type FeatureStatus, type HarnessFeature } from './useHarnessData';
 
 // Saved views mirror the legacy FeatureList BUILT_IN_VIEWS. Each view is a
 // predicate over a feature; counts are computed client-side. "Running" and
@@ -35,7 +13,7 @@ interface StatusResponse {
 // those. Deprecated features are hidden from every view except Deprecated.
 type ViewId = 'all' | 'running' | 'stuck' | 'blocked' | 'todo' | 'passed' | 'deprecated';
 
-const SAVED_VIEWS: Array<{ id: ViewId; label: string; match: (f: Feature) => boolean }> = [
+const SAVED_VIEWS: Array<{ id: ViewId; label: string; match: (f: HarnessFeature) => boolean }> = [
   { id: 'all', label: 'All', match: () => true },
   { id: 'running', label: 'Running', match: (f) => f.status === 'in_progress' || f.status === 'validating' },
   { id: 'stuck', label: 'Stuck', match: (f) => (f.attempts ?? 0) >= 3 },
@@ -69,8 +47,8 @@ const STATUS_TONE: Record<string, { bg: string; fg: string }> = {
 
 export default function FeaturesPanel({ params, api }: PanelComponentProps) {
   const slug = (params.harnessSlug as string) || '';
-  const [data, setData] = useState<StatusResponse | null>(null);
-  const [error, setError] = useState<Error | null>(null);
+  // Phase 3: live data via Zero (REST bootstrap + Zero overlay), no polling.
+  const { features, loading, error } = useHarnessFeatures(slug);
   // Filter selection + search are user-meaningful → URL state (nuqs), not
   // useState, so the view is deep-linkable and agent-driveable. Keys are
   // feature-prefixed (fview/fq) so they don't collide with the Issues panel.
@@ -80,41 +58,14 @@ export default function FeaturesPanel({ params, api }: PanelComponentProps) {
   const [pinMenu, setPinMenu] = useState<PinMenuState | null>(null);
 
   useEffect(() => {
-    if (!slug) {
-      setData(null);
-      return;
-    }
-    let cancel = false;
-    const load = () => {
-      setError(null);
-      fetch(`/api/harness/${encodeURIComponent(slug)}/status?phase=staging`)
-        .then((r) => {
-          if (!r.ok) throw new Error(`status ${r.status}`);
-          return r.json() as Promise<StatusResponse>;
-        })
-        .then((j) => {
-          if (cancel) return;
-          setData(j);
-          api.setTitle(`Features · ${slug} (${j.features.length})`);
-        })
-        .catch((e: Error) => {
-          if (cancel) return;
-          setError(e);
-        });
-    };
-    load();
-    const id = window.setInterval(load, 5000);
-    return () => {
-      cancel = true;
-      window.clearInterval(id);
-    };
-  }, [slug, api]);
+    if (features) api.setTitle(`Features · ${slug} (${features.length})`);
+  }, [features, slug, api]);
 
   const activeView = SAVED_VIEWS.find((v) => v.id === view) ?? SAVED_VIEWS[0];
 
   // Per-view counts (deprecated hidden everywhere except the Deprecated view).
   const viewCounts = useMemo(() => {
-    const feats = data?.features ?? [];
+    const feats = features ?? [];
     const out: Record<ViewId, number> = {
       all: 0, running: 0, stuck: 0, blocked: 0, todo: 0, passed: 0, deprecated: 0,
     };
@@ -125,12 +76,12 @@ export default function FeaturesPanel({ params, api }: PanelComponentProps) {
       }).length;
     }
     return out;
-  }, [data]);
+  }, [features]);
 
   const filtered = useMemo(() => {
-    if (!data) return [];
+    if (!features) return [];
     const q = search.trim().toLowerCase();
-    const out = data.features.filter((f) => {
+    const out = features.filter((f) => {
       if (activeView.id !== 'deprecated' && f.status === 'deprecated') return false;
       if (!activeView.match(f)) return false;
       if (!q) return true;
@@ -146,19 +97,19 @@ export default function FeaturesPanel({ params, api }: PanelComponentProps) {
       if (ai !== bi) return ai - bi;
       return a.id.localeCompare(b.id);
     });
-  }, [data, activeView, search]);
+  }, [features, activeView, search]);
 
   if (!slug) {
     return <PanelMessage>Pick a harness to view its features.</PanelMessage>;
   }
-  if (error) {
-    return <PanelMessage tone="error">Failed to load features: {error.message}</PanelMessage>;
+  if (error && !features) {
+    return <PanelMessage tone="error">Failed to load features: {error}</PanelMessage>;
   }
-  if (!data) {
-    return <PanelMessage>Loading features…</PanelMessage>;
+  if (!features) {
+    return <PanelMessage>{loading ? 'Loading features…' : 'No features.'}</PanelMessage>;
   }
 
-  const total = data.features.length;
+  const total = features.length;
 
   return (
     <div className="pc-adv-features">
@@ -195,6 +146,7 @@ export default function FeaturesPanel({ params, api }: PanelComponentProps) {
             const tone = STATUS_TONE[f.status] ?? STATUS_TONE.todo;
             const isActive = f.id === selectedId;
             const attempts = f.attempts ?? 0;
+            const claimsCount = f.claims?.length ?? 0;
             return (
               <div
                 key={f.id}
@@ -220,19 +172,36 @@ export default function FeaturesPanel({ params, api }: PanelComponentProps) {
                   {f.status}
                 </span>
                 <span className="pc-adv-features__title">
-                  {f.needs_human_review && (
+                  {f.needsReview && (
                     <span className="pc-adv-features__review" title="Needs human review" aria-label="Needs human review" />
                   )}
                   {f.title}
                 </span>
-                {attempts > 0 && (
-                  <span
-                    className={`pc-adv-features__attempts${attempts >= 3 ? ' is-warn' : ''}`}
-                    title={`${attempts} attempt${attempts === 1 ? '' : 's'}`}
-                  >
-                    ×{attempts}
-                  </span>
-                )}
+                <span className="pc-adv-features__meta">
+                  {f.sourcePlanSlug && (
+                    <a
+                      className="pc-adv-features__plan"
+                      href={`/adv/plans?slug=${encodeURIComponent(slug)}&plan=${encodeURIComponent(f.sourcePlanSlug)}`}
+                      title={`From plan: ${f.sourcePlanSlug}`}
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      ↗ plan
+                    </a>
+                  )}
+                  {claimsCount > 0 && (
+                    <span className="pc-adv-features__claims" title={f.claims?.join(', ')}>
+                      {claimsCount} claim{claimsCount === 1 ? '' : 's'}
+                    </span>
+                  )}
+                  {attempts > 0 && (
+                    <span
+                      className={`pc-adv-features__attempts${attempts >= 3 ? ' is-warn' : ''}`}
+                      title={`${attempts} attempt${attempts === 1 ? '' : 's'}`}
+                    >
+                      ×{attempts}
+                    </span>
+                  )}
+                </span>
               </div>
             );
           })
@@ -353,6 +322,29 @@ export default function FeaturesPanel({ params, api }: PanelComponentProps) {
           background: #fbbf24;
           flex-shrink: 0;
           box-shadow: 0 0 0 2px rgba(251, 191, 36, 0.2);
+        }
+        .pc-adv-features__meta {
+          display: inline-flex;
+          gap: 8px;
+          align-items: center;
+        }
+        .pc-adv-features__plan {
+          font-size: 10px;
+          color: rgba(196, 181, 253, 0.85);
+          text-decoration: none;
+          white-space: nowrap;
+        }
+        .pc-adv-features__plan:hover {
+          color: #ddd6fe;
+          text-decoration: underline;
+        }
+        .pc-adv-features__claims {
+          font-size: 10px;
+          color: rgba(220, 214, 248, 0.6);
+          background: rgba(20, 18, 38, 0.7);
+          padding: 1px 6px;
+          border-radius: 999px;
+          white-space: nowrap;
         }
         .pc-adv-features__attempts {
           font-size: 10px;

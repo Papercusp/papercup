@@ -5,26 +5,7 @@ import { parseAsString, useQueryState } from 'nuqs';
 import { toast } from 'sonner';
 import type { PanelComponentProps } from '../../harness/dock/panel-registry';
 import type { Issue, IssueSeverity, IssueStatus } from '../../harness/issues/types';
-
-type FeatureStatus = 'todo' | 'validating' | 'passed' | 'failing' | 'deprecated' | 'blocked' | 'in_progress';
-
-interface Feature {
-  id: string;
-  title: string;
-  status: FeatureStatus;
-  attempts?: number;
-  summary?: string;
-  claims?: string[];
-  sourcePlanSlug?: string;
-}
-
-interface StatusResp {
-  features: Feature[];
-  counts?: Record<string, number>;
-}
-interface IssuesResp {
-  issues: Issue[];
-}
+import { useHarnessFeatures, useHarnessIssues, type FeatureStatus, type HarnessFeature } from './useHarnessData';
 
 const FEATURE_STATUSES: FeatureStatus[] = [
   'todo',
@@ -69,37 +50,10 @@ export default function DetailPanel({ params, api }: PanelComponentProps) {
   const [urlSel] = useQueryState('sel', parseAsString.withDefault(''));
   const selectedId = pinnedId ?? urlSel;
 
-  const [features, setFeatures] = useState<Feature[]>([]);
-  const [issues, setIssues] = useState<Issue[]>([]);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (!slug) return;
-    let cancelled = false;
-    const load = () => {
-      Promise.all([
-        fetch(`/api/harness/${encodeURIComponent(slug)}/status?phase=staging`).then((r) =>
-          r.ok ? (r.json() as Promise<StatusResp>) : null,
-        ),
-        fetch(`/api/harness/${encodeURIComponent(slug)}/issues-list?phase=staging`).then((r) =>
-          r.ok ? (r.json() as Promise<IssuesResp>) : null,
-        ),
-      ])
-        .then(([s, i]) => {
-          if (cancelled) return;
-          setFeatures(s?.features ?? []);
-          setIssues(i?.issues ?? []);
-          setError(null);
-        })
-        .catch((e: Error) => !cancelled && setError(e.message));
-    };
-    load();
-    const id = window.setInterval(load, 6000);
-    return () => {
-      cancelled = true;
-      window.clearInterval(id);
-    };
-  }, [slug]);
+  // Phase 3: live data via Zero (REST bootstrap + Zero overlay), no polling.
+  // The Features/Issues panels subscribe to the same queries → Zero dedups.
+  const { features } = useHarnessFeatures(slug);
+  const { issues } = useHarnessIssues(slug);
 
   // Resolve the selected item. F-* → feature, I-* → issue.
   const kind: 'feature' | 'issue' | null = useMemo(() => {
@@ -110,11 +64,11 @@ export default function DetailPanel({ params, api }: PanelComponentProps) {
   }, [selectedId]);
 
   const feature = useMemo(
-    () => (kind === 'feature' ? features.find((f) => f.id === selectedId) ?? null : null),
+    () => (kind === 'feature' ? (features ?? []).find((f) => f.id === selectedId) ?? null : null),
     [kind, features, selectedId],
   );
   const issue = useMemo(
-    () => (kind === 'issue' ? issues.find((i) => i.id === selectedId) ?? null : null),
+    () => (kind === 'issue' ? (issues ?? []).find((i) => i.id === selectedId) ?? null : null),
     [kind, issues, selectedId],
   );
 
@@ -139,9 +93,9 @@ export default function DetailPanel({ params, api }: PanelComponentProps) {
   }
 
   if (selectedId && !feature && !issue) {
-    // The id is in the URL but the lists haven't loaded yet (or it's a
-    // stale selection). Show a brief loading state.
-    if (features.length === 0 && issues.length === 0 && !error) {
+    // The id is in the URL but the lists haven't settled yet (or it's a
+    // stale selection). Show a brief loading state until both lists load.
+    if (features === null || issues === null) {
       return <Empty>Loading {selectedId}…</Empty>;
     }
     return <Empty tone="error">No item found for {selectedId}.</Empty>;
@@ -152,7 +106,7 @@ export default function DetailPanel({ params, api }: PanelComponentProps) {
   return null;
 }
 
-function FeatureDetail({ slug, feature }: { slug: string; feature: Feature }) {
+function FeatureDetail({ slug, feature }: { slug: string; feature: HarnessFeature }) {
   const [working, setWorking] = useState<string | null>(null);
 
   const tone = STATUS_TONE[feature.status] ?? STATUS_TONE.todo;

@@ -17,14 +17,9 @@ import {
   XCircle,
 } from 'lucide-react';
 import type { PanelComponentProps } from '../../harness/dock/panel-registry';
-import type { Issue, IssueSeverity, IssueSource, IssueStatus } from '../../harness/issues/types';
+import type { IssueSeverity, IssueSource, IssueStatus } from '../../harness/issues/types';
 import PinMenu, { type PinMenuState } from './PinMenu';
-
-interface IssuesListResponse {
-  issues: Issue[];
-  nextId?: number;
-  pending?: Array<Partial<Issue> & { title: string }>;
-}
+import { useHarnessIssues } from './useHarnessData';
 
 type StatusFilter = 'all' | IssueStatus;
 
@@ -75,8 +70,8 @@ const STATUS_COLOR: Record<IssueStatus, string> = {
 
 export default function IssuesPanel({ params, api }: PanelComponentProps) {
   const slug = (params.harnessSlug as string) || '';
-  const [data, setData] = useState<IssuesListResponse | null>(null);
-  const [error, setError] = useState<Error | null>(null);
+  // Phase 3: live data via Zero (REST bootstrap + Zero overlay), no polling.
+  const { issues, pendingCount, loading, error } = useHarnessIssues(slug);
   // URL state (nuqs) so the filter/search are deep-linkable + agent-driveable.
   // Keys are issue-prefixed (ifilter/iq) to avoid colliding with the Features
   // panel's fview/fq.
@@ -86,40 +81,13 @@ export default function IssuesPanel({ params, api }: PanelComponentProps) {
   const [pinMenu, setPinMenu] = useState<PinMenuState | null>(null);
 
   useEffect(() => {
-    if (!slug) {
-      setData(null);
-      return;
-    }
-    let cancel = false;
-    const load = () => {
-      setError(null);
-      fetch(`/api/harness/${encodeURIComponent(slug)}/issues-list?phase=staging`)
-        .then((r) => {
-          if (!r.ok) throw new Error(`issues-list ${r.status}`);
-          return r.json() as Promise<IssuesListResponse>;
-        })
-        .then((j) => {
-          if (cancel) return;
-          setData(j);
-          api.setTitle(`Issues · ${slug} (${j.issues?.length ?? 0})`);
-        })
-        .catch((e: Error) => {
-          if (cancel) return;
-          setError(e);
-        });
-    };
-    load();
-    const id = window.setInterval(load, 6000);
-    return () => {
-      cancel = true;
-      window.clearInterval(id);
-    };
-  }, [slug, api]);
+    if (issues) api.setTitle(`Issues · ${slug} (${issues.length})`);
+  }, [issues, slug, api]);
 
   const filtered = useMemo(() => {
-    if (!data?.issues) return [];
+    if (!issues) return [];
     const q = search.trim().toLowerCase();
-    return data.issues.filter((i) => {
+    return issues.filter((i) => {
       if (filter !== 'all' && i.status !== filter) return false;
       if (!q) return true;
       return (
@@ -128,26 +96,24 @@ export default function IssuesPanel({ params, api }: PanelComponentProps) {
         (i.evidence?.toLowerCase().includes(q) ?? false)
       );
     });
-  }, [data, filter, search]);
+  }, [issues, filter, search]);
 
   const counts = useMemo(() => {
-    const c: Record<string, number> = { all: data?.issues.length ?? 0 };
-    for (const i of data?.issues ?? []) {
+    const c: Record<string, number> = { all: issues?.length ?? 0 };
+    for (const i of issues ?? []) {
       c[i.status] = (c[i.status] ?? 0) + 1;
     }
     return c;
-  }, [data]);
-
-  const pendingCount = data?.pending?.length ?? 0;
+  }, [issues]);
 
   if (!slug) {
     return <PanelMessage>Pick a harness to view its issues.</PanelMessage>;
   }
-  if (error) {
-    return <PanelMessage tone="error">Failed to load issues: {error.message}</PanelMessage>;
+  if (error && !issues) {
+    return <PanelMessage tone="error">Failed to load issues: {error}</PanelMessage>;
   }
-  if (!data) {
-    return <PanelMessage>Loading issues…</PanelMessage>;
+  if (!issues) {
+    return <PanelMessage>{loading ? 'Loading issues…' : 'No issues.'}</PanelMessage>;
   }
 
   return (
