@@ -25,7 +25,6 @@ interface Props { slug: string }
 
 // Row shapes for queries used here. Loosely typed because the fields we
 // pluck are stable.
-type HealthFiles = { specPresent: boolean; contractPresent: boolean };
 type Phase = { alive: boolean; phase: string };
 type Escalation = { escalation?: string | null };
 type Decision = { isGhost: boolean };
@@ -36,12 +35,6 @@ type AgentRun = { harnessSlug?: string; ts: number };
 
 function HealthBadgeInner({ slug }: Props) {
   const workspaceId = useWorkspaceId();
-
-  // File presence (SPEC.md, validation-contract.md) — small mirror table.
-  const filesQ = useSyncQuery<HealthFiles>({
-    queryName: 'harnessHealth.byHarness',
-    args: { harnessSlug: slug },
-  });
 
   // Process liveness via the existing harness_phases mirror (staging row).
   const phasesQ = useSyncQuery<Phase>({
@@ -100,9 +93,8 @@ function HealthBadgeInner({ slug }: Props) {
   const data = useMemo<DerivedHealth | null>(() => {
     // Wait for the small queries to land before producing a verdict.
     // (featuresOrg/agentRunsOrg can be empty without blocking the badge.)
-    if (filesQ.loading) return null;
+    if (phasesQ.loading) return null;
 
-    const files = filesQ.data?.[0] ?? { specPresent: false, contractPresent: false };
     const stagingPhase = (phasesQ.data ?? []).find((p) => p.phase === 'staging');
     const alive = !!stagingPhase?.alive;
     const escalation = escalationsQ.data?.[0]?.escalation;
@@ -127,7 +119,6 @@ function HealthBadgeInner({ slug }: Props) {
 
     const checks: HealthCheck[] = [
       { name: 'features_present',    ok: total > 0 },
-      { name: 'contract_present',    ok: files.contractPresent },
       { name: 'not_escalated',       ok: !escalated, detail: escalated ? 'see escalation.md' : undefined },
       { name: 'no_pending_checkpoints', ok: pendingCheckpoints === 0,
         detail: pendingCheckpoints > 0 ? `${pendingCheckpoints} awaiting grant` : undefined },
@@ -147,8 +138,7 @@ function HealthBadgeInner({ slug }: Props) {
       checks,
     };
   }, [
-    filesQ.data, filesQ.loading,
-    phasesQ.data,
+    phasesQ.data, phasesQ.loading,
     escalationsQ.data,
     decisionsQ.data,
     checkpointsQ.data,

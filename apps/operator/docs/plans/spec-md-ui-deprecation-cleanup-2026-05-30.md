@@ -13,7 +13,7 @@ owner: avi@storewolf.com
 
 **State:** Phase 1 (P-001/P-002/P-003 — scoper action labels + Config tooltip) and Phase 4 P-008 (h-proposals.css legend + FeatureEditor placeholder) are **done on `main`** (commits `b7df2326`, `dee76475`); the backend/prompt half landed earlier (`30bc9eeb`, `3bf3acf2`), and the SPEC.md editor tab was already gone. Remaining: Phase 3 (HealthBadge `contract_present` + the fs-watcher / `ensure-schema` PG-column schema migration) and Phase 2 (onboarding empty-state, gated on D-002). **Env note:** this round was done via a `papercup-main` git worktree because the canonical checkout was parked on `feat/psu-wrappers` by another active agent; P-002's HarnessDashboard edits also exist (bundled) in that branch's `65e6b901` and converge on merge.
 
-**Next:** human decision on D-002 (onboarding empty-state). Then P-006/P-007 (health subsystem) — note P-007 is a schema migration; run it once the canonical checkout is back on `main` and the env is settled, not while a refactor is mid-flight.
+**Next:** human decision on D-002 (onboarding empty-state). P-007 (schema migration dropping the `spec_present`/`contract_present` columns) is unblocked by P-006 but DEFERRED until the env settles — main is currently being concurrently mutated by another agent's psu-wrappers refactor, so new work is going onto branch `spec-md-cleanup-followup` (off main) to merge cleanly once that agent stops and the canonical checkout is flipped back to main (coordination request already sent via coord:send). P-009 (redirect routes) stays deferred to the /harness→/adv migration.
 
 ## Background
 
@@ -34,7 +34,7 @@ All line numbers are against `apps/operator/app/harness/HarnessDashboard.tsx` (5
 
 ## Phase 3 — File-presence health subsystem
 
-- **P-006** `todo` `HealthBadge.tsx` client checks (lines 128-137): drop `contract_present` (validation-contract.md, deprecated D-005). `spec_present` is already gone here. Note: `no_pending_checkpoints` (line 132) is also stale (checkpoints removed in D-003/P-009 of the parent plan) — fix in the same pass or split it out if it needs separate sign-off.
+- **P-006** `done` `HealthBadge.tsx` client checks: dropped `contract_present` (validation-contract.md, deprecated D-005) **and** the now-dead `harnessHealth.byHarness` query (`filesQ`/`HealthFiles`/`files`) that only fed it — `spec_present` was already gone and `specPresent` was unused; loading sentinel re-gated on `phasesQ`. Removing the query is the prerequisite that lets P-007 drop the PG mirror table. Split out (NOT done here): `no_pending_checkpoints` (D-003 checkpoint concern; HarnessDashboard still renders a checkpoints stat, so removing one without the other would be inconsistent — its own follow-up). Landed on branch `spec-md-cleanup-followup`, not main directly (see Now).
 - **P-007** `todo` Stop the fs-watcher writing the tombstone columns: `harness-fs-watcher.ts` (lines 677-702) + the `spec_present` / `contract_present` columns in `ensure-schema.ts` (lines 1068-1069). Drop the columns via a migration in `libs/papercusp/libs/db/sql/<NNN>-*.sql` (embedded-pg applies it on boot). blocked-by: P-006
 
 ## Phase 4 — Minor stale strings + redirect routes
