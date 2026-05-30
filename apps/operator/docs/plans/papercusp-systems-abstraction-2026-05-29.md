@@ -463,7 +463,7 @@ two SEPARATE storage components**, not one dual-backend interface:
   same conformance suite as the production impl; the operator re-points at the
   package with no behavior change; existing suites green. blocked-by: P-010,
   P-011, P-012, P-013, P-020, P-021, P-022, P-023, P-024, P-030, P-031
-- **P-051** `todo` Proof-of-genericity: stand up one extracted package (recommend
+- **P-051** `done` Proof-of-genericity: stand up one extracted package (recommend (Detached proof: throwaway /tmp script outside the repo imported @papercusp/coordination by absolute path and exercised core + FsCoordLogtempdir + InMemoryCoordLog + InMemoryPresenceStore — 13/13 checks pass with operator AND postgres absent. Any hidden @/operator coupling would have failed to resolve. Confirms genuine host-agnostic / detached mode.)
   `@papercusp/coordination` via the `FsCoordLog` event-log) in a throwaway
   non-Papercusp script with zero operator/PG present, to prove detached mode
   works. blocked-by: P-011
