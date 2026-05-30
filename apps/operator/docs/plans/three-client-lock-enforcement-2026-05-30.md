@@ -14,7 +14,35 @@ status: shipped
 
 **OMP deferred:** OMP doesn't env-interpolate `~/.omp/agent/mcp.json`, so its interactive coord/lock calls still use the static machine id (OMP's *hook* already mints a per-session id, so OMP locks contend correctly; only OMP↔OMP *coord messaging* between same-machine shells stays collapsed). Wire when an OMP per-launch mcp-url override is confirmed.
 
-**Next:** OMP interactive per-session id (above). Lower priority: live `codex-su`/`claude-su` two-shell coord smoke; make the OMP hook's `papercupRoot()` worktree-aware.
+**Next:** the in-vivo verification handoff below, then OMP interactive per-session id, then (low) OMP-hook worktree-awareness.
+
+---
+
+## Handoff — live in-vivo verification (next agent)
+
+**Why this is open.** The per-session identity fix (`3761b32b`) is verified at the **hook layer** (two `PAPERCUSP_SID`s contend even with identical `session_id`) and the **coord layer** (direct MCP calls with two distinct `?client=` values: A's broadcast is visible to B and self-filtered from A). The one thing NOT yet observed is a **real `claude-su` / `codex-su` process** resolving to its `PAPERCUSP_SID` end-to-end — the full chain *wrapper env-export → client config (`${PAPERCUSP_SID:-…}` interp for Claude / `-c` url override for Codex) → MCP `?client=` → distinct owner*. The building session couldn't drive a second interactive client headlessly. This is belt-and-suspenders (each link is independently verified), but worth one real run.
+
+**Pre-req.** New wrappers + `~/.claude.json` are installed (done as of `3761b32b` + the post-commit installer re-run). If unsure: `bash apps/operator/scripts/install-standalone-mcp.sh`.
+
+**Procedure — Claude:**
+1. Launch a `claude-su` shell (its wrapper exports `PAPERCUSP_SID=claude-su-<uuid>`).
+2. Have it call `coord:whoami` → **`ownerId` must start with `claude-su-`**, NOT `28dbf719…`. That one check proves the wrapper→config→`?client=` chain.
+3. Have it `coord:send { to:['*'], summary:'invivo-A <nonce>' }`.
+4. Launch a SECOND `claude-su` shell; call `coord:inbox` → it **must list `invivo-A`** (cross-shell visibility — the bug that started this arc).
+5. Back in shell A, `coord:inbox` → must **NOT** show its own `invivo-A` (self-filter).
+
+**Procedure — Codex:** same via `codex-su`; step-2 `ownerId` should start with `codex-su-`. Codex gets the id from the wrapper's `-c mcp_servers.papercusp-su.url=…&client=$PAPERCUSP_SID`.
+
+**Pass criteria:** distinct `claude-su-*` / `codex-su-*` owner per shell; peer broadcast visible cross-shell; self-filtered for the sender.
+
+**If owner is still `28dbf719…` (fail):** Claude — confirm `~/.claude.json` papercusp-su `url` contains the literal `${PAPERCUSP_SID:-…}` and the session actually had `PAPERCUSP_SID` exported; verify env-interpolation is honored on that Claude Code version. Codex — confirm the `-c` override reached + was honored.
+
+**Gotchas:**
+- **Do NOT** probe Codex by copying `~/.codex/auth.json` into a throwaway `CODEX_HOME` — it rotates/invalidates the user's real Codex login. Use the real `codex-su`. (See `agent-insights` / the `feedback_codex_auth_probe_hazard` memory.)
+- A *plain* `claude`/`codex` (no `-su`) has no `PAPERCUSP_SID` → resolves to the machine id. Expected, not a failure.
+- `coord:inbox` is the file-log scan with self-exclusion (`excludeOwn`) — that filter is correct; the fix is the distinct owner, not the filter.
+
+**Artifacts:** fix `3761b32b`; wrappers + config writes in `apps/operator/scripts/install-standalone-mcp.sh`; owner resolution in `apps/operator/scripts/hooks/cc/{pretooluse-locks-acquire,posttooluse-locks-release}.sh`; identity resolver (unchanged) `apps/operator/lib/agent-tools/coordination/identity.ts`.
 
 ---
 
