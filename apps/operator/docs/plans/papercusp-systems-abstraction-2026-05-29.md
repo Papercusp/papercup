@@ -477,14 +477,24 @@ the endpoint/`defineTool` system ([[papercusp-tooldef-extraction-2026-05-29]])
 and the chat system (`@restart/agent-chat` + `chat-stream.ts`). Those are owned
 by other agents; duplicating them here would collide. User framing, 2026-05-29.
 
-### D-002 — Bundle into ~4 packages, not ~12 micro-libs (proposed, needs P-000)
-Date: 2026-05-29
-The systems cluster by shared dependency, so the recommendation is ~4 bundles —
+### D-002 — Bundle into ~4 packages, not ~12 micro-libs (REJECTED — keep per-package, P-000)
+Date: 2026-05-29 · **Resolved 2026-05-30 (P-000): REJECTED — keep per-package.**
+The systems cluster by shared dependency, so the recommendation *was* ~4 bundles —
 `@papercusp/agent-coord`, `@papercusp/agent-retrieval`, `@papercusp/plan-kit`,
 `@papercusp/desktop-runtime`. Note (post-audit) these bundles are **internally
 heterogeneous** — e.g. `agent-coord` contains a self-contained side-DB lock
 package (locks) next to a fs-default event log (coord); the bundle is a publish
 unit, not a shared-architecture claim. Final call gated on P-000.
+
+**Resolution (P-000, human, 2026-05-30): keep all 12 per-package — do NOT bundle.**
+The "publish unit" premise is dead: the user ruled **no npm publish** (all 12 are
+`private:true`, consumed as `file:` workspace deps). With nothing to publish, a
+bundle buys nothing and costs coupling — inter-package coupling is **sparse** (only
+4 thin dep edges among 12: `desktop-ipc→tooldef`, `ipc-endpoint-server→ipc-framing`,
+`search→rrf`, `locks→file-claim`; the other 8 are fully independent), so bundling
+would force-couple independents (a memory-only consumer pulling search+rrf) and add
+an export-routing layer for zero gain. The packages stay individually-testable,
+clear-boundaried `file:` deps. This is the final package boundary.
 
 ### D-003 — REFUTED: there is no single storage seam (superseded by D-010)
 Date: 2026-05-29
