@@ -350,11 +350,17 @@ two SEPARATE storage components**, not one dual-backend interface:
   `dispatchProjectedToolStream` **and** `lookupByMcpName` **and** `getWorkspaceId`
   **and** the tool allowlist (all already DI-shaped via `DispatchProjectedDeps`).
   This is the libsoup pool-exhaustion fix. → D-006
-- **P-031** `todo` Extract `@papercusp/rate-limit` from `lib/auth-rate-limit.ts`
+- **P-031** `done` Extract `@papercusp/rate-limit` from `lib/auth-rate-limit.ts`
   (2-bucket, PG-durable; **verified zero domain coupling**, generic string keys).
-  Mechanism (c): raw `getOrgPg()`, no `withWorkspace` — confirmed. Inject a
-  `PgHandle` + options (windows/capacities/table name); `isLoopbackIp()` is
-  reusable as-is. Ready to extract; lowest-risk of the seam'd ones. → D-010
+  **Shipped** (`packages/rate-limit`, 8 unit tests, on `main`). **Seam deviation:**
+  used an injected `BucketStore` (`read`/`write`/`delete`/`gcStale`/`clearPrefix`)
+  instead of the planned `PgHandle`+table — safer for security-sensitive login
+  code (parameterizing a schema-qualified table identifier into postgres-js tagged
+  SQL is error-prone); the operator keeps its exact `harness_shared.auth_rate_limit`
+  SQL verbatim inside a `BucketStore` impl while the package owns the algorithm.
+  `isLoopbackIp()` exported as a reusable helper. `auth-rate-limit.ts` is now a thin
+  host adapter; **zero consumer rewire** (login.ts + 2 test files unchanged). The
+  opaque-session `auth.ts` follow-on remains optional/lower-priority. → D-010
 
 ## Phase 5 — Promote what's already factored (Population A)
 
