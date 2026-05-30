@@ -130,12 +130,12 @@ conditional on the user confirming it is still the live public site.
 
 ## Phase C — @papercup/web public surface (active-but-thin; conditional — see D-004)
 
-- **P-017** `todo` `apps/papercup/app/api/_hono/public-sanitize.test.ts` —
+- **P-017** `dropped` `apps/papercup/app/api/_hono/public-sanitize.test.ts` — (@papercup/web confirmed retired 2026-05-30, moved to _retired/papercup — see D-006)
   **unit** (no live deps): `scrub` / `scrubFreeText` / `capBody` strip IDs/PII/
   tokens. This is the public attack surface; the sanitizer is worth pinning even if
   the UI pages are not.
 
-- **P-018** `todo` `apps/papercup/app/api/_hono/public-papercup.test.ts` —
+- **P-018** `dropped` `apps/papercup/app/api/_hono/public-papercup.test.ts` — (@papercup/web confirmed retired 2026-05-30, moved to _retired/papercup — see D-006)
   **integration**: per-IP daily cap + the global $0.50/day cost-cap both return 429.
   blocked-by: P-017.
 
@@ -229,3 +229,12 @@ Date: 2026-05-30
 Consistent with the critical-path plan (its D-002): this session produces the audit
 + backlog and stops. No test code is written until the user reviews this plan and
 greenlights a phase. Status is `draft` for that reason.
+
+### D-006 — @papercup/web confirmed retired — Phase C dropped, code moved to _retired/
+Date: 2026-05-30
+Resolves the D-004 ambiguity: the user confirmed `@papercup/web` (the papercupai.com public site) is **already retired** — kept only so the code isn't lost. Phase C (P-017/P-018) is therefore **dropped**; we don't add tests to retired code (D-002).
+
+Handled 2026-05-30 (commit `de593b4e`): moved `apps/papercup` → `_retired/papercup` (out of the `apps/*` workspace glob, so npm / `affected-tests.mjs` / knip / nx stop treating it as live — the structural signal that made two census agents disagree about active-vs-dead). Removed the `dev:papercup`/`build:papercup` root scripts + the `apps/papercup` knip block; bannered `docker-compose.papercup.prod.yml` + `Dockerfile.papercup` (preserved, not deployed). Added `_retired/papercup/RESTORE.md` (exact re-wiring checklist + last-active commit `509f7267`), a `package.json` `//retired` marker, an `_retired/README.md`, and a "Retired / preserved-not-active surfaces" roster + retire/restore convention in the root `CLAUDE.md`. Restore point: annotated git tag `papercup-web-retired-2026-05-30`.
+
+The CLAUDE.md roster also names the other preserved-dead surfaces this plan's D-002 excludes (zero-harness, papercup-db, holepunch-spike, papercup-shared `*View.tsx`), so the exclude list now has one authoritative home agents read on session start.
+Related: P-017, P-018
