@@ -11,9 +11,9 @@ owner: avi@storewolf.com
 
 ## Now
 
-**State:** Migration shipped (Phases 1–6) + audit follow-ups (#1/#2/#3) done earlier. This session ported the remaining mission-control dock panels into /adv as new panel types — adv:overview, adv:agents, adv:logs (commit 7597e7a9, see D-011) — with new useHarnessAgents/useHarnessLogs hooks, catalog + allowedTypes wiring, and a fix to a pre-existing HarnessDock bug that prevented the "Add panel" catalog from opening any non-seed type (adv:git included). All four catalog panels verified opening live in Tauri against papercup; the default layout is the clean 3-pane (Features/Issues/Detail) seed. Before retiring /harness (P-022), the legacy view:proposals + data:chat dock panels remain unported; the docs/insights/config/summary surfaces are already /adv tabs (summary ≈ adv:overview).
+**State:** Migration shipped + audit follow-ups + dock-panel ports (agents/logs/overview) done. This pass (D-012): (1) decoupled the brainstorm/prs/settings/insights/git /adv tabs from the 5,259-line HarnessDashboard — they now render their own panel components directly (commit 5091d985); only config + docs still mount the monolith. (2) Soft-retired /harness as a landing — home redirect, header CTA, and the root /harness route all now go to /adv; old /harness?panel=/?slug= URLs translate-redirect in (commit 063114fa). All verified live in Tauri. /harness/$slug (org/department + dock shell) intentionally left functional — no /adv parity yet.
 
-**Next:** Confirm with the user whether to also port the proposals + chat dock panels, then proceed to the /harness retirement prep (P-022).
+**Next:** To finish full retirement (P-022): decouple config + docs from HarnessDashboard (lift plugin-tab + spec resolution into a shared hook), then give /adv org/department + per-slug parity for /harness/$slug; once no /adv tab renders HarnessDashboard, move legacy-only app/harness/* page code to _retired/.
 
 ## Background
 
@@ -153,4 +153,26 @@ New shared hooks `useHarnessAgents` / `useHarnessLogs` in `useHarnessData.ts`. R
 **Pre-existing dock bug fixed along the way:** `HarnessDock.useComponentsForLayout` built dockview component bridges from *only the current layout's types*, so the "Add panel" catalog threw `"Only React.memo/ForwardRef/functional components are accepted"` for ANY type not in the seed — `adv:git` was already broken this way, never noticed because it was never opened via the catalog. Now bridges every *registered* type (the `registryTick` subscription that was already wired finally does something). All four catalog panels verified opening live in the Tauri webview against papercup; layout reset back to the 3-pane seed afterward.
 
 **Still unported before retirement (P-022):** the legacy `view:proposals` and `data:chat` dock panels. The `view:docs/insights/config/summary` surfaces are already top-level `/adv` tabs (docs/insights/config/plans/sessions), not harness-dock panels, and `summary` ≈ the new `adv:overview`.
+Related: P-022
+
+### D-012 — Decoupled 4 /adv tabs from HarnessDashboard + soft-retired /harness as a landing
+Date: 2026-05-30
+Two-phase pass, committed `5091d985` (decouple) + `063114fa` (retire).
+
+**Phase 1 — decouple tabs from the monolith.** Previously 7 `/adv` tabs rendered the entire 5,259-line `HarnessDashboard` via `AdvHarnessPanelPage` (forcedPanel + CSS-hidden chrome) just to show one panel. The panel bodies are already self-contained components the dashboard lazy-loads, so `AdvHarnessPanelPage` now references them directly:
+- `brainstorm` → `<BrainstormFull slug/>`; `prs` → `<PrsTab harnessSlug/>`; `settings` → `<HarnessSettingsPanel slug phase/>`; `insights` → `<AdvInsightsTab slug/>` (tiny wrapper fetches `/status` → `<InsightsPanel/>`); `git` → native `RealGitPanel` + `<PrsTab/>` pane.
+- `config` + `docs` still fall back to `<HarnessDashboard forcedPanel embeddedPanelChrome/>` — their bodies need the dashboard's plugin-tab + spec resolution; decoupling those is the remaining work.
+- Added `harness.css` to the `/adv` shell (`__root.tsx`) so directly-rendered panels keep `h-*` styling without the monolith.
+- Verified live: brainstorm/prs/settings/insights render with NO `.h-root` (dashboard not mounted); config still mounts it.
+
+**Phase 2 — soft-retire `/harness` as a landing.** `/adv` is now the sole entry; old `/harness` URLs redirect in. No code deleted (HarnessDashboard still backs config/docs).
+- Home redirect (`routes/index.tsx` + `app/page.tsx`) → `/adv?tab=harnesses`.
+- Header "Ops" CTA: dropped the legacy `/harness` block, single `/adv` OPS remains.
+- `routes/harness/index.tsx` → translating redirect to `/adv` (`?slug=`/`?project=`→slug, `?panel=`→tab map).
+- `NotFound` + `wiki/missing` "return to dashboard" → `/adv`.
+- Verified live: `/`, `/harness`, `/harness?panel=brainstorm`, `/harness?slug=papercup&panel=prs` all land on the right `/adv` tab; header has one OPS → `/adv`, no `/harness` link.
+
+**Deferred:** `/harness/$slug` + sub-routes (`spec`/`insights`/`projects`/`dock-preview`) are NOT redirected — they render org/department dashboards + the dock shell, which `/adv` has no parity for. Functional, reached only via deep links.
+
+**Still blocking full code retirement (P-022):** decouple `config` + `docs` from `HarnessDashboard` (lift plugin/spec resolution into a shared hook), and give `/adv` org/department + per-slug parity for `/harness/$slug`. Once no `/adv` tab renders `<HarnessDashboard/>` and `$slug` is covered, the legacy-only `app/harness/*` page code can move to `_retired/`.
 Related: P-022
