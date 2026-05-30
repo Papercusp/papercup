@@ -1074,16 +1074,21 @@
   color: var(--fg-dim);
 }
 
+/* Cool "sky arc": each accent is a tint of the sky --accent, so the
+   three pages read as one theme yet stay distinct — cyan → azure →
+   indigo (hues ~214° / 233° / 250°). The warm semantic tokens are NOT
+   used as accents here: mixing them toward sky lands on muddy grays
+   (amber is sky's near-complement), which breaks the shared-theme look. */
 .pc-items--inbox {
-  --pc-items-accent: color-mix(in oklab, var(--warn), var(--accent) 50%);
+  --pc-items-accent: color-mix(in oklab, var(--accent), var(--sky-hero) 55%);
 }
 
 .pc-items--actionable {
-  --pc-items-accent: color-mix(in oklab, var(--good), var(--accent) 45%);
+  --pc-items-accent: var(--accent);
 }
 
 .pc-items--blocked {
-  --pc-items-accent: color-mix(in oklab, var(--bad), var(--accent) 35%);
+  --pc-items-accent: color-mix(in oklab, var(--accent), var(--bad) 22%);
 }
 
 .pc-items__head {
