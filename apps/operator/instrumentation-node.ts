@@ -489,7 +489,8 @@ async function maybeStartEndpointIpcServer(): Promise<void> {
       // fetch/EventSource polyfills. Not a defineTool projection; the
       // IPC server special-cases this name and dispatches into the
       // operator's own loopback HTTP port. Allowlist entry is uniform
-      // gating, not a tool resolution. See lib/endpoint-ipc/sys-http.ts.
+      // gating, not a tool resolution. See the sys:http bridge in
+      // @papercusp/ipc-endpoint-server (packages/ipc-endpoint-server/src/sys-http.ts).
       allowedTools: [
         'dev:ipc_echo',
         'operator:scan',

@@ -35,7 +35,7 @@
  * that sidesteps the browser's per-host connection pool entirely.
  */
 
-import { FrameType, encodeEventBinPayload, type FrameTypeValue } from './framing';
+import { FrameType, encodeEventBinPayload, type FrameTypeValue } from '@papercusp/ipc-framing';
 
 // RFC 7230 hop-by-hop headers + h2 forbidden headers — must not be
 // forwarded across the bridge in either direction.

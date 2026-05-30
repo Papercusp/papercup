@@ -6,7 +6,9 @@
  *   - the /dev page's IPC verification button — confirms the
  *     webview→Tauri→Node round-trip works without touching real
  *     production routes;
- *   - the integration tests in lib/endpoint-ipc/server.test.ts.
+ *   - the wire-protocol tests in
+ *     packages/ipc-endpoint-server/src/server.test.ts, and the
+ *     real-tool E2E in lib/endpoint-ipc/dev_ipc_echo_e2e.test.ts.
  *
  * Wire shape (schema-inferred):
  *   delta:    JSON   { text: string }

@@ -14,7 +14,8 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import { z } from 'zod';
 import {
   registerProjectedTool,
-  classifyEventWire,
+  lookupByMcpName,
+  dispatchProjectedToolStream,
   type ProjectedTool,
 } from '@papercusp/tooldef';
 import {
@@ -24,8 +25,22 @@ import {
   encodeJsonFrame,
   encodeFrame,
   type Frame,
-} from './framing';
-import { startEndpointIpcServer, type EndpointIpcServer } from './server';
+} from '@papercusp/ipc-framing';
+import {
+  startEndpointIpcServer,
+  type EndpointIpcServer,
+  type IpcEndpointHost,
+} from './server';
+
+// The host seam, built from this test's OWN @papercusp/tooldef imports.
+// Because the registry functions wired in here are the same module
+// instance `registerProjectedTool` (below) writes to, dispatch always
+// sees the synthetic tool — no second registry instance is possible.
+const host: IpcEndpointHost = {
+  lookupByMcpName,
+  dispatchProjectedToolStream,
+  getWorkspaceId: () => 'test-workspace',
+};
 
 const SYNTHETIC_TOOL_NAME = 'ipc_test:synth';
 
@@ -93,19 +108,21 @@ beforeAll(async () => {
   // Register the synthetic tool once per file run.
   const tool: ProjectedTool = {
     pluginName: 'ipc_test',
+    description: 'synthetic tool exercising the IPC wire protocol',
+    // Permissive input schema — the wire-protocol tests don't exercise
+    // input validation; `fn` reads `text` / `mode` off the raw input.
+    inputSchema: { type: 'object' },
     capabilities: [],
-    requiresPrincipal: false,
-    args: z.object({
-      text: z.string().optional(),
-      mode: z.enum(['ok', 'error', 'binary', 'slow']).optional(),
-    }),
     events: {
       delta: z.object({ text: z.string() }),
       bin: z.instanceof(Uint8Array),
     },
+    // Wire kinds are fixed for this synthetic tool: a JSON object event
+    // and a binary event. Stated as literals so the test fixture doesn't
+    // depend on tooldef's internal `classifyEventWire` helper.
     eventWireKinds: {
-      delta: classifyEventWire(z.object({ text: z.string() })),
-      bin: classifyEventWire(z.instanceof(Uint8Array)),
+      delta: 'json',
+      bin: 'binary',
     },
     timeoutSec: 30,
     expose: { mcp: { name: SYNTHETIC_TOOL_NAME } },
@@ -142,6 +159,7 @@ beforeAll(async () => {
   socketPath = tmpSocketPath('main');
   server = await startEndpointIpcServer({
     socketPath,
+    host,
     allowedTools: [SYNTHETIC_TOOL_NAME],
     logger: { info: () => {}, warn: () => {} },
   });
@@ -404,6 +422,7 @@ describe('startEndpointIpcServer — bind error', () => {
     const dupPath = tmpSocketPath('dup');
     const a = await startEndpointIpcServer({
       socketPath: dupPath,
+      host,
       logger: { info: () => {}, warn: () => {} },
     });
     try {

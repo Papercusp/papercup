@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { FrameType, decodeEventBinPayload, type FrameTypeValue } from './framing';
+import { FrameType, decodeEventBinPayload, type FrameTypeValue } from '@papercusp/ipc-framing';
 import { handleSysHttp, type SysHttpDeps } from './sys-http';
 
 interface Captured {

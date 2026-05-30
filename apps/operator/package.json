@@ -86,6 +86,7 @@
     "@papercusp/file-claim": "file:../../libs/papercusp/packages/file-claim",
     "@papercusp/flags": "file:../../libs/flags",
     "@papercusp/harness": "file:../../libs/papercusp/packages/harness",
+    "@papercusp/ipc-endpoint-server": "file:../../packages/ipc-endpoint-server",
     "@papercusp/ipc-framing": "file:../../packages/ipc-framing",
     "@papercusp/orchestrator": "file:../../libs/papercusp/packages/orchestrator",
     "@papercusp/plan-parser": "file:../../packages/plan-parser",
