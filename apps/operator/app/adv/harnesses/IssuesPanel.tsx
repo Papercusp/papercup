@@ -395,6 +395,7 @@ export default function IssuesPanel({ params, api }: PanelComponentProps) {
       >
         <RichGrid<Issue>
           inline
+          resizableColumns
           virtualMode={{
             virtualizer: rowVirtualizer,
             totalRows: filtered.length,

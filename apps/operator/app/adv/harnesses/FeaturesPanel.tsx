@@ -417,6 +417,7 @@ export default function FeaturesPanel({ params, api }: PanelComponentProps) {
       >
         <RichGrid<HarnessFeature>
           inline
+          resizableColumns
           virtualMode={{
             virtualizer: rowVirtualizer,
             totalRows: filtered.length,
