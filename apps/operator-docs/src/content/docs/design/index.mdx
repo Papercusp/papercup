@@ -70,6 +70,45 @@ The library set documented here was chosen, installed, and applied across the ha
 
 8. **Never hand-roll a `<table>` for tabular data.** Use the appropriate component from `@restart/grid-core` — see the next section for which one. Hand-rolled tables miss out on consistent dark-theme styling, shared sort UX (`applySort`), virtualization (free in `RichGrid` and `DataGridShell`), and the conventions other panels follow (sticky header, alt-row striping, hover state). Exception: Markdown content rendering (`MarkdownPreview`) — those are content-author tables, not UI tables.
 
+9. **Buttons are flat — no 3D.** In-page action buttons and pills are flat: a solid (or `color-mix`-tinted) background, a 1px border, readable text. Do **not** give them an embossed bevel (`box-shadow: inset 0 1px 0 …`), a raised drop-shadow / glow (`box-shadow: 0 8px … rgba(0,0,0,…)`), a hover-lift or press (`transform: translateY(…)`), or a vertical "sheen" gradient fill (`linear-gradient(180deg, rgba(255,255,255,.05), …)`) — those read as 3D and hurt legibility. Hover/active = change the background/border colour, not the elevation. Keyboard focus rings (`:focus-visible`) are the one box-shadow/outline that stays. *Carve-out: the large top-level **page/tab nav** (e.g. the `/adv` tab strip) is a different category — it may keep its accent treatment.* See [buttons](#buttons) below for the flat recipe.
+
+## Buttons
+
+Buttons are **flat**. The look is a solid or `color-mix`-tinted surface, a 1px border, and readable text — no embossing, no elevation, no sheen.
+
+```css
+/* Flat button recipe — neutral in-page action button */
+.my-btn {
+  padding: 6px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-2);
+  color: var(--fg-dim);
+  cursor: pointer;
+  /* No box-shadow. No background gradient. No transform on hover/active. */
+}
+.my-btn:hover { color: var(--fg); border-color: var(--accent); }   /* colour, not lift */
+.my-btn.is-active,                                                 /* selected = tinted fill */
+.my-btn[aria-pressed="true"] {
+  color: var(--fg);
+  background: color-mix(in oklab, var(--accent), transparent 84%);
+  border-color: color-mix(in oklab, var(--accent), transparent 55%);
+}
+.my-btn:focus-visible { outline: 1px solid var(--accent); outline-offset: -1px; } /* the one ring that stays */
+```
+
+**Anti-patterns** (these are what "3D" means — don't):
+
+- `box-shadow: inset 0 1px 0 rgba(255,255,255,…)` — top bevel/emboss.
+- `box-shadow: 0 8px 18px rgba(0,0,0,…)` / `… rgba(<accent>,…)` — raised drop-shadow or glow.
+- `transform: translateY(-1px)` on hover / `translateY(1px)` on active — lift / press.
+- `background: linear-gradient(180deg, rgba(255,255,255,.05), …)` — vertical "sheen" fill.
+- Low-contrast text on a tinted fill (e.g. `rgba(214,236,248,0.78)`) — use `var(--fg-dim)` → `var(--fg)`.
+
+**Reach for the wrapper:** `<Button>` from `app/harness/Button.tsx` for emphasis variants; a bare `<button>` inherits the flat baseline. Token reference: [design tokens](/internal/docs/design/tokens#the-bluefrost-semantic-scale).
+
+**`/adv` enforcement:** the `/adv` shell flattens every in-page button for free — a scoped rule on `.pc-advshell__body` strips `box-shadow` (non-focus) and hover/active `transform` so a stray bespoke 3D button can't slip through. The large top **tab strip** (`.pc-advshell__header`) is exempt — it's page-level nav, a different category. Still author buttons flat at the source; the scoped rule is a backstop, not a licence to ship embossed CSS.
+
 ## Soft rules (judgment calls)
 
 - **Tooltips on grid-cell text.** When you're rendering thousands of rows in `RichGrid` and want truncation tooltips, `title="…"` on the cell `<span>` is fine. Wrapping each row in a Radix Tooltip mounts thousands of portals and listeners — bad perf. The "no native title=" rule is for *action elements*, not data cells.

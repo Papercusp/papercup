@@ -221,19 +221,14 @@
   padding: 7px 8px;
   border: 1px solid color-mix(in oklab, var(--pc-view-accent), transparent 84%);
   border-radius: 11px;
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.035), rgba(255, 255, 255, 0.012)),
-    rgba(4, 10, 18, 0.42);
-  color: rgba(214, 236, 248, 0.78);
+  background: var(--bg-2, rgba(255, 255, 255, 0.045));
+  color: var(--fg-dim, #b9d4e8);
   text-align: left;
   cursor: pointer;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.035);
   transition:
     background-color 120ms,
     border-color 120ms,
-    box-shadow 120ms,
-    color 120ms,
-    transform 120ms;
+    color 120ms;
 }
 
 .pc-plans__views .pc-plans__view {
@@ -250,14 +245,9 @@
 .pc-plans__view--triage { --pc-view-accent: #a78bfa; }
 
 .pc-plans__view:hover {
-  color: #eff8ff;
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.055), rgba(255, 255, 255, 0.018)),
-    rgba(12, 24, 38, 0.92);
+  color: var(--fg, #e7f7ff);
+  background: var(--bg-3, rgba(255, 255, 255, 0.075));
   border-color: color-mix(in oklab, var(--pc-view-accent), transparent 62%);
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.055),
-    0 8px 18px rgba(0, 0, 0, 0.16);
 }
 
 .pc-plans__view:focus-visible {
@@ -265,20 +255,10 @@
   outline-offset: 2px;
 }
 
-.pc-plans__view:active {
-  transform: translateY(1px);
-}
-
 .pc-plans__view.is-active {
-  color: #f7fdff;
-  background:
-    radial-gradient(circle at 18% 0%, color-mix(in oklab, var(--pc-view-accent), transparent 74%), transparent 64%),
-    linear-gradient(180deg, rgba(17, 34, 53, 0.98), rgba(10, 20, 33, 0.99));
+  color: var(--fg, #e7f7ff);
+  background: color-mix(in oklab, var(--pc-view-accent), transparent 82%);
   border-color: color-mix(in oklab, var(--pc-view-accent), transparent 42%);
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.07),
-    inset 0 -2px 0 color-mix(in oklab, var(--pc-view-accent), transparent 28%),
-    0 10px 24px color-mix(in oklab, var(--pc-view-accent), transparent 88%);
 }
 
 .pc-plans__view-copy {
@@ -1069,8 +1049,8 @@
   align-content: start;
   gap: 14px;
   min-height: 0;
-  height: 100%;
-  overflow: auto;
+  /* No own scroll — the enclosing .pc-plans__main scrolls and the detail
+     pane is sticky within it (mirrors the Sessions two-pane). */
   padding: 18px;
   color: var(--fg-dim);
 }
@@ -1186,11 +1166,107 @@
   gap: 10px;
 }
 
+/* ── Two-pane layout (list + read-only detail), mirroring Sessions ── */
+.pc-items__layout {
+  display: grid;
+  grid-template-columns: minmax(300px, 0.9fr) minmax(360px, 1.1fr);
+  gap: 16px;
+  align-items: start;
+  min-height: 0;
+}
+
+.pc-items__listpane {
+  min-width: 0;
+}
+
+/* Detail pane: sticky within the scrolling .pc-plans__main, scrolls its
+   own body. Same surface treatment as the Sessions detail pane. */
+.pc-items__detail {
+  position: sticky;
+  top: 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  max-height: calc(100vh - 150px);
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background:
+    linear-gradient(180deg, color-mix(in oklab, var(--bg-2), white 2%), color-mix(in oklab, var(--bg), transparent 4%));
+}
+
+.pc-items__detail-empty {
+  padding: 18px;
+  color: var(--fg-mute);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.pc-items__detail-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-shrink: 0;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+  background: color-mix(in oklab, var(--bg-2), white 2%);
+}
+
+.pc-items__view-full {
+  all: unset;
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 28px;
+  padding: 0 11px;
+  border-radius: 10px;
+  border: 1px solid color-mix(in oklab, var(--accent), transparent 48%);
+  background: color-mix(in oklab, var(--accent), var(--bg) 72%);
+  color: var(--fg);
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease;
+}
+.pc-items__view-full:hover {
+  border-color: color-mix(in oklab, var(--accent), transparent 28%);
+  background: color-mix(in oklab, var(--accent), var(--bg) 60%);
+}
+.pc-items__view-full:focus-visible {
+  outline: 2px solid color-mix(in oklab, var(--accent), transparent 28%);
+  outline-offset: 2px;
+}
+
+.pc-items__detail-body {
+  min-height: 0;
+  overflow: auto;
+  padding: 12px 14px;
+  scrollbar-width: thin;
+}
+
 /* Group is a plain wrapper (head card + rows below), matching the
    Sessions tab's group / group-content structure. */
 .pc-items__group {
   display: grid;
   gap: 7px;
+}
+
+.pc-items__group-content {
+  display: grid;
+  gap: 7px;
+  padding-top: 7px;
+}
+
+.pc-items__group-chevron {
+  flex: 0 0 auto;
+  color: var(--fg-mute);
+  transition: transform 140ms ease, color 120ms ease;
+}
+.pc-items__plan-head[data-state="open"] .pc-items__group-chevron {
+  transform: rotate(90deg);
+  color: var(--pc-items-accent);
 }
 
 .pc-items__plan-head {
@@ -1282,6 +1358,13 @@
 .pc-items__row-wrap:focus-within {
   border-color: var(--border-strong);
   background: color-mix(in oklab, var(--bg-3), var(--bg) 72%);
+}
+
+/* Selected row — its plan is open in the read-only detail pane. */
+.pc-items__row-wrap.is-selected {
+  border-color: color-mix(in oklab, var(--pc-items-accent), transparent 40%);
+  background: color-mix(in oklab, var(--pc-items-accent), transparent 90%);
+  box-shadow: 0 0 0 1px color-mix(in oklab, var(--pc-items-accent), transparent 68%) inset;
 }
 
 .pc-items__row {
@@ -3227,18 +3310,17 @@
     padding: 28px;
   }
 
-  .pc-items__plan-head {
-    align-items: flex-start;
-    flex-direction: column;
+  .pc-items__layout {
+    grid-template-columns: 1fr;
+  }
+
+  .pc-items__detail {
+    position: static;
+    max-height: none;
   }
 
   .pc-items__row-wrap {
     grid-template-columns: 1fr;
-  }
-
-  .pc-items__plan-count,
-  .pc-items__resolve {
-    align-self: flex-start;
   }
 }
 

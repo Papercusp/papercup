@@ -91,6 +91,10 @@ Radix Select reserves `value=""` to mean "no value selected". If your business l
 
 ## `<Button>` wrapper + native baseline
 
+<Aside type="caution" title="Buttons are flat — no 3D">
+In-page buttons get a solid/tinted fill, a 1px border, and readable text — **no** embossed bevel, raised drop-shadow/glow, hover-lift, or "sheen" gradient. Hover/active changes colour, not elevation. See [Buttons](/internal/docs/design#buttons) for the recipe and anti-patterns (this is hard rule 9). On `/adv` a scoped `.pc-advshell__body` rule enforces it; the top tab strip is exempt.
+</Aside>
+
 **What:** `globals.css` adds a baseline for native `<button>` so unwrapped action buttons (Save, Add override, Clear, Cancel, +Filter, etc.) pick up the same dark-theme look as the `<Select>` trigger. The `<Button>` wrapper at `app/harness/Button.tsx` layers on three variants for the cases where more emphasis is needed:
 
 - `variant="primary"` — filled accent for the page's primary CTA

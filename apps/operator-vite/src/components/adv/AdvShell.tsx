@@ -544,6 +544,20 @@ export default function AdvShell({
           box-shadow: 0 0 14px color-mix(in oklab, var(--h-main-tab-accent), transparent 54%);
         }
         .pc-advshell__body { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+
+        /* Flat in-page buttons. Action buttons / pills inside the page body
+           get NO embossed bevel, raised drop-shadow, glow, or hover-lift —
+           those "3D" treatments are hard to read. The large top tab strip
+           lives in .pc-advshell__header (page-level nav, a different
+           category) and is intentionally NOT affected. Focus-visible rings
+           are preserved for keyboard a11y. See /internal/docs/design#buttons. */
+        .pc-advshell__body :is(button, [role="button"]):not(:focus-visible) {
+          box-shadow: none !important;
+        }
+        .pc-advshell__body :is(button, [role="button"]):hover,
+        .pc-advshell__body :is(button, [role="button"]):active {
+          transform: none !important;
+        }
       `}</style>
     </div>
   );
