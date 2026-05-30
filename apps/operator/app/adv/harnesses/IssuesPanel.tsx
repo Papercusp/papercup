@@ -9,7 +9,7 @@ import { RichGrid, type ColumnDef } from '@restart/grid-core';
 import type { PanelComponentProps } from '../../harness/dock/panel-registry';
 import type { Issue, IssueSource, IssueStatus } from '../../harness/issues/types';
 import { SeverityPill, ISSUE_STATUS_ICON } from '../../harness/primitives';
-import { ISSUE_STATUS, type IssueStatusKey } from '../../harness/theme';
+import { ISSUE_STATUS, SEVERITY, type IssueStatusKey, type IssueSeverityKey } from '../../harness/theme';
 import { Tooltip } from '../../harness/Tooltip';
 import PinMenu, { type PinMenuState } from './PinMenu';
 import { useHarnessIssues } from './useHarnessData';
@@ -163,6 +163,12 @@ export default function IssuesPanel({ params, api }: PanelComponentProps) {
       headerText: 'ID',
       width: '60px',
       toCopyText: (i) => i.id,
+      // Severity-coloured left accent stripe — same canonical SEVERITY hue as
+      // the SeverityPill, so an issue's severity reads as one consistent
+      // colour across the stripe, the pill, and the Detail pane.
+      cellStyle: ({ row }) => ({
+        boxShadow: `inset 3px 0 0 ${SEVERITY[row.severity as IssueSeverityKey].solid}`,
+      }),
       render: ({ row }) => <span className="pc-adv-issues__id">{row.id}</span>,
     },
     {
@@ -299,7 +305,7 @@ export default function IssuesPanel({ params, api }: PanelComponentProps) {
 
   const richGetRowBg = useMemo(
     () => (row: Issue) => {
-      if (row.id === selectedId) return 'color-mix(in oklab, var(--accent), transparent 86%)';
+      if (row.id === selectedId) return 'color-mix(in oklab, var(--accent), transparent 80%)';
       if (row.id === hoveredId) return 'var(--bg-3)';
       return 'transparent';
     },
@@ -509,9 +515,6 @@ export default function IssuesPanel({ params, api }: PanelComponentProps) {
         .pc-adv-issues__list:focus,
         .pc-adv-issues__list:focus-visible {
           outline: none;
-        }
-        .pc-adv-issues__row.is-active {
-          box-shadow: inset 2px 0 0 var(--accent, #38bdf8);
         }
         .pc-adv-issues__row.is-focused {
           outline: 1px solid color-mix(in oklab, var(--accent, #38bdf8), white 12%);

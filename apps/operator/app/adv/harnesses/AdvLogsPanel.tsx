@@ -4,21 +4,30 @@
 // peers) via /log/history. Ports the legacy RealLogsPanel: terminal-style
 // time/level/source/message rows, level filter chips + source text filter.
 // One-shot read + manual Refresh (no 3s auto-poll, per the /adv ethos).
+//
+// Rendered on @restart/grid-core RichGrid in LEGACY (non-virtual) mode: the
+// feed is bounded (≤300 events from useHarnessLogs) and the message column
+// wraps to multiple lines, so auto-height rows are simpler + read better than
+// a fixed-height virtualized window.
 
-import { useMemo, useState } from 'react';
+import { useMemo } from 'react';
 import { parseAsString, parseAsStringEnum, useQueryState } from 'nuqs';
 import { RefreshCw } from 'lucide-react';
+import { RichGrid, type ColumnDef } from '@restart/grid-core';
 import type { PanelComponentProps } from '../../harness/dock/panel-registry';
+import { Tooltip } from '../../harness/Tooltip';
 import { useHarnessLogs, type HarnessLogEvent } from './useHarnessData';
 
 const LEVEL_FILTERS = ['all', 'error', 'warn', 'info'] as const;
 type LevelFilter = (typeof LEVEL_FILTERS)[number];
 
-// Per-level accent — token-first with hex fallbacks (see AdvAgentsPanel).
+// Per-level accent — token-first with hex fallbacks. Log levels are a
+// distinct axis from feature/issue status; these map to the shared semantic
+// tokens (--bad / --warn / sky) so they stay on-theme.
 const LEVEL_ACCENT: Record<string, string> = {
   error: 'var(--bad, #f87171)',
   warn: 'var(--warn, #fbbf24)',
-  info: 'var(--sky-300, #7dd3fc)',
+  info: 'var(--accent-strong, #7dd3fc)',
   debug: 'var(--fg-mute)',
   trace: 'color-mix(in oklab, var(--fg-mute), transparent 35%)',
 };
@@ -42,6 +51,8 @@ function messageOf(e: HarnessLogEvent): string {
   }
 }
 
+type LogRow = { id: string; ev: HarnessLogEvent };
+
 export default function AdvLogsPanel({ params }: PanelComponentProps) {
   const slug = (params.harnessSlug as string) || (params.slug as string) || '';
   const { events, loading, error, refresh } = useHarnessLogs(slug);
@@ -51,7 +62,7 @@ export default function AdvLogsPanel({ params }: PanelComponentProps) {
   );
   const [sourceFilter, setSourceFilter] = useQueryState('logSource', parseAsString.withDefault(''));
 
-  const filtered = useMemo<HarnessLogEvent[]>(() => {
+  const rows = useMemo<LogRow[]>(() => {
     if (!events) return [];
     let xs = events;
     if (filter !== 'all') xs = xs.filter((e) => levelOf(e) === filter);
@@ -59,8 +70,57 @@ export default function AdvLogsPanel({ params }: PanelComponentProps) {
       const q = sourceFilter.toLowerCase();
       xs = xs.filter((e) => String(e.source ?? '').toLowerCase().includes(q));
     }
-    return xs;
+    return xs.map((ev, i) => ({ id: `${i}:${ev.ts ?? ''}`, ev }));
   }, [events, filter, sourceFilter]);
+
+  const columns = useMemo<ColumnDef<LogRow>[]>(() => [
+    {
+      key: 'time',
+      header: 'Time',
+      headerText: 'Time',
+      width: '76px',
+      toCopyText: (r) => {
+        const t = new Date(r.ev.ts);
+        return isNaN(t.getTime()) ? '' : t.toLocaleTimeString();
+      },
+      render: ({ row }) => {
+        const t = new Date(row.ev.ts);
+        return <span className="pc-adv-logs__time">{isNaN(t.getTime()) ? '' : t.toLocaleTimeString()}</span>;
+      },
+    },
+    {
+      key: 'level',
+      header: 'Lvl',
+      headerText: 'Level',
+      width: '52px',
+      toCopyText: (r) => levelOf(r.ev),
+      render: ({ row }) => {
+        const lvl = levelOf(row.ev);
+        return <span className="pc-adv-logs__level" style={{ color: LEVEL_ACCENT[lvl] ?? 'var(--fg-mute)' }}>{lvl}</span>;
+      },
+    },
+    {
+      key: 'source',
+      header: 'Source',
+      headerText: 'Source',
+      width: '150px',
+      toCopyText: (r) => String(r.ev.source ?? ''),
+      render: ({ row }) =>
+        row.ev.source ? (
+          <Tooltip label={String(row.ev.source)}>
+            <span className="pc-adv-logs__src">{String(row.ev.source)}</span>
+          </Tooltip>
+        ) : null,
+    },
+    {
+      key: 'msg',
+      header: 'Message',
+      headerText: 'Message',
+      width: 1,
+      toCopyText: (r) => messageOf(r.ev),
+      render: ({ row }) => <span className="pc-adv-logs__msg">{messageOf(row.ev)}</span>,
+    },
+  ], []);
 
   if (!slug) {
     return <div className="pc-adv-logs__empty">No harness slug in params.</div>;
@@ -89,15 +149,11 @@ export default function AdvLogsPanel({ params }: PanelComponentProps) {
           placeholder="source filter"
           aria-label="Filter log events by source"
         />
-        <button
-          type="button"
-          className="pc-adv-logs__refresh"
-          onClick={() => refresh()}
-          aria-label="Refresh log"
-          title="Refresh"
-        >
-          <RefreshCw size={12} aria-hidden />
-        </button>
+        <Tooltip label="Refresh log">
+          <button type="button" className="pc-adv-logs__refresh" onClick={() => refresh()} aria-label="Refresh log">
+            <RefreshCw size={12} aria-hidden />
+          </button>
+        </Tooltip>
       </div>
 
       <div className="pc-adv-logs__body">
@@ -105,45 +161,42 @@ export default function AdvLogsPanel({ params }: PanelComponentProps) {
           <div className="pc-adv-logs__empty pc-adv-logs__empty--err">Failed: {error}</div>
         ) : loading ? (
           <div className="pc-adv-logs__empty">Loading {slug}…</div>
-        ) : filtered.length === 0 ? (
-          <div className="pc-adv-logs__empty">{events && events.length ? 'No events match the filter.' : 'No log events yet.'}</div>
         ) : (
-          <ul className="pc-adv-logs__rows">
-            {filtered.map((e, idx) => {
-              const t = new Date(e.ts);
-              const time = isNaN(t.getTime()) ? '' : t.toLocaleTimeString();
-              const lvl = levelOf(e);
-              return (
-                <li key={`${e.ts}-${idx}`} className="pc-adv-logs__row">
-                  <span className="pc-adv-logs__time">{time}</span>
-                  <span className="pc-adv-logs__level" style={{ color: LEVEL_ACCENT[lvl] ?? 'var(--fg-mute)' }}>
-                    {lvl}
-                  </span>
-                  {e.source ? (
-                    <span className="pc-adv-logs__src" title={String(e.source)}>
-                      {String(e.source)}
-                    </span>
-                  ) : null}
-                  <span className="pc-adv-logs__msg">{messageOf(e)}</span>
-                </li>
-              );
-            })}
-          </ul>
+          <RichGrid<LogRow>
+            inline
+            rows={rows}
+            columns={columns}
+            getRowId={(r) => r.id}
+            headerHeight={26}
+            rowMinHeight={24}
+            headerStyle={{
+              background: 'var(--bg-2, rgba(255,255,255,0.045))',
+              color: 'var(--fg-mute, #7f9bb4)',
+              borderBottom: '1px solid var(--border, rgba(125,211,252,0.15))',
+              fontSize: 10,
+              textTransform: 'uppercase',
+              letterSpacing: '0.06em',
+            }}
+            empty={
+              <div className="pc-adv-logs__empty">
+                {events && events.length ? 'No events match the filter.' : 'No log events yet.'}
+              </div>
+            }
+          />
         )}
       </div>
 
       <style>{`
-        .pc-adv-logs { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+        .pc-adv-logs { display: flex; flex-direction: column; height: 100%; min-height: 0; background: var(--bg-1, #0b1220); }
         .pc-adv-logs__bar {
           display: flex; align-items: center; gap: 4px;
           padding: 6px 8px; flex-shrink: 0;
-          border-bottom: 1px solid color-mix(in oklab, var(--border), transparent 25%);
-          background: color-mix(in oklab, var(--bg-2, #0f1722), transparent 25%);
+          border-bottom: 1px solid var(--border, rgba(125, 211, 252, 0.15));
         }
         .pc-adv-logs__chip {
           padding: 2px 8px; font-size: 11px; color: var(--fg);
           background: transparent;
-          border: 1px solid color-mix(in oklab, var(--border), transparent 25%);
+          border: 1px solid var(--border, rgba(125, 211, 252, 0.15));
           border-radius: 999px; cursor: pointer; text-transform: lowercase;
         }
         .pc-adv-logs__chip[aria-pressed="true"] {
@@ -153,8 +206,8 @@ export default function AdvLogsPanel({ params }: PanelComponentProps) {
         .pc-adv-logs__source {
           margin-left: 6px; flex: 1; min-width: 80px;
           padding: 2px 8px; font-size: 11px; color: var(--fg);
-          background: transparent;
-          border: 1px solid color-mix(in oklab, var(--border), transparent 25%);
+          background: var(--bg-2, rgba(255, 255, 255, 0.045));
+          border: 1px solid var(--border, rgba(125, 211, 252, 0.15));
           border-radius: 6px;
         }
         .pc-adv-logs__source::placeholder { color: var(--fg-mute); }
@@ -163,28 +216,23 @@ export default function AdvLogsPanel({ params }: PanelComponentProps) {
           color: var(--fg-mute); background: transparent; border: 0;
           border-radius: 4px; cursor: pointer;
         }
-        .pc-adv-logs__refresh:hover { color: var(--fg); background: color-mix(in oklab, var(--fg), transparent 90%); }
+        .pc-adv-logs__refresh:hover { color: var(--fg); }
         .pc-adv-logs__body {
           flex: 1; min-height: 0; overflow: auto;
           font-family: ui-monospace, monospace; font-size: 11px;
-          background: color-mix(in oklab, var(--bg, #0a0f16), black 18%);
         }
-        .pc-adv-logs__rows { margin: 0; padding: 0; list-style: none; }
-        .pc-adv-logs__row {
-          display: flex; gap: 8px; padding: 2px 10px;
-          border-bottom: 1px solid color-mix(in oklab, var(--border), transparent 70%);
-          color: color-mix(in oklab, var(--fg), transparent 18%);
+        .pc-adv-logs__time { color: var(--fg-mute); font-family: ui-monospace, monospace; }
+        .pc-adv-logs__level { text-transform: uppercase; font-family: ui-monospace, monospace; }
+        .pc-adv-logs__src {
+          color: var(--accent-strong, #7dd3fc); font-family: ui-monospace, monospace;
+          overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: inline-block; max-width: 100%;
+        }
+        .pc-adv-logs__msg {
+          color: color-mix(in oklab, var(--fg), transparent 12%);
+          font-family: ui-monospace, monospace;
           white-space: pre-wrap; word-break: break-word;
         }
-        .pc-adv-logs__time { color: var(--fg-mute); flex-shrink: 0; min-width: 68px; }
-        .pc-adv-logs__level { flex-shrink: 0; min-width: 38px; text-transform: uppercase; }
-        .pc-adv-logs__src {
-          color: color-mix(in oklab, var(--fg-mute), var(--accent, #38bdf8) 25%);
-          flex-shrink: 0; min-width: 72px; max-width: 168px;
-          overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-        }
-        .pc-adv-logs__msg { flex: 1; min-width: 0; }
-        .pc-adv-logs__empty { padding: 16px; font-size: 13px; color: var(--fg-mute); font-family: var(--font, system-ui); }
+        .pc-adv-logs__empty { padding: 16px; font-size: 13px; color: var(--fg-mute); font-family: system-ui; }
         .pc-adv-logs__empty--err { color: var(--bad, #f87171); }
       `}</style>
     </div>

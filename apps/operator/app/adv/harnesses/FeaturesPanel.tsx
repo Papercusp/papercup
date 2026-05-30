@@ -11,7 +11,7 @@ import type { PanelComponentProps } from '../../harness/dock/panel-registry';
 import { StatusPill } from '../../harness/primitives';
 import { Tooltip } from '../../harness/Tooltip';
 import { useConfirmDialog } from '../../harness/useConfirmDialog';
-import type { HarnessStatus } from '../../harness/theme';
+import { STATUS, type HarnessStatus } from '../../harness/theme';
 import PinMenu, { type PinMenuState } from './PinMenu';
 import { useHarnessFeatures, type FeatureStatus, type HarnessFeature } from './useHarnessData';
 import { featureReset, openAdminFeature } from './harness-actions';
@@ -207,6 +207,12 @@ export default function FeaturesPanel({ params, api }: PanelComponentProps) {
       headerText: 'ID',
       width: '64px',
       toCopyText: (f) => f.id,
+      // Status-coloured left accent stripe — the same canonical STATUS hue
+      // the StatusPill uses, so a feature's status reads as one consistent
+      // colour across the row stripe, the pill, and the Detail pane.
+      cellStyle: ({ row }) => ({
+        boxShadow: `inset 3px 0 0 ${STATUS[row.status as HarnessStatus].solid}`,
+      }),
       render: ({ row }) => <span className="pc-adv-features__id">{row.id}</span>,
     },
     {
@@ -325,7 +331,7 @@ export default function FeaturesPanel({ params, api }: PanelComponentProps) {
 
   const richGetRowBg = useMemo(
     () => (row: HarnessFeature) => {
-      if (row.id === selectedId) return 'color-mix(in oklab, var(--accent), transparent 86%)';
+      if (row.id === selectedId) return 'color-mix(in oklab, var(--accent), transparent 80%)';
       if (row.id === hoveredId) return 'var(--bg-3)';
       return 'transparent';
     },
@@ -489,9 +495,6 @@ export default function FeaturesPanel({ params, api }: PanelComponentProps) {
         .pc-adv-features__list:focus,
         .pc-adv-features__list:focus-visible {
           outline: none;
-        }
-        .pc-adv-features__row.is-active {
-          box-shadow: inset 2px 0 0 var(--accent, #38bdf8);
         }
         .pc-adv-features__row.is-focused {
           outline: 1px solid color-mix(in oklab, var(--accent, #38bdf8), white 12%);

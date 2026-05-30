@@ -7,6 +7,7 @@ import { resetLayout } from '../../harness/dock/dock-actions';
 import { Tooltip } from '../../harness/Tooltip';
 import { toast } from 'sonner';
 import { StatCard } from '@restart/ui-primitives';
+import { STATUS } from '../../harness/theme';
 import HealthBadge from '../../harness/HealthBadge';
 import type { AdvProjectEntry } from './HarnessesWorkspace';
 
@@ -94,13 +95,13 @@ export default function HarnessTopBar({ slug, projects }: Props) {
             <span className="pc-adv-topbar__progress">
               <span>{progressPct}% complete</span>
               <span>
-                <strong>{todoCount}</strong> todo
+                <strong style={{ color: STATUS.todo.text }}>{todoCount}</strong> todo
               </span>
               <span>
-                <strong>{blockedCount}</strong> blocked
+                <strong style={{ color: STATUS.blocked.text }}>{blockedCount}</strong> blocked
               </span>
               <span>
-                <strong>{passedCount}</strong> passed
+                <strong style={{ color: STATUS.passed.text }}>{passedCount}</strong> passed
               </span>
             </span>
           )}
