@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { parseAsString, parseAsStringEnum, useQueryState } from 'nuqs';
+import { toast } from 'sonner';
 import {
   AlertOctagon,
   AlertTriangle,
@@ -17,9 +18,10 @@ import {
   XCircle,
 } from 'lucide-react';
 import type { PanelComponentProps } from '../../harness/dock/panel-registry';
-import type { IssueSeverity, IssueSource, IssueStatus } from '../../harness/issues/types';
+import type { Issue, IssueSeverity, IssueSource, IssueStatus } from '../../harness/issues/types';
 import PinMenu, { type PinMenuState } from './PinMenu';
 import { useHarnessIssues } from './useHarnessData';
+import { issueAction, type IssueActionKind } from './harness-actions';
 
 type StatusFilter = 'all' | IssueStatus;
 
@@ -79,6 +81,19 @@ export default function IssuesPanel({ params, api }: PanelComponentProps) {
   const [search, setSearch] = useQueryState('iq', parseAsString.withDefault(''));
   const [selectedId, setSelectedId] = useQueryState('sel', parseAsString.withDefault(''));
   const [pinMenu, setPinMenu] = useState<PinMenuState | null>(null);
+  const [busyId, setBusyId] = useState<string | null>(null);
+
+  const handleAction = async (i: Issue, action: IssueActionKind) => {
+    setBusyId(i.id);
+    try {
+      await issueAction(slug, i.id, action);
+      toast.success(`${i.id} → ${action}`);
+    } catch (e) {
+      toast.error(`${action} failed`, { description: String(e) });
+    } finally {
+      setBusyId(null);
+    }
+  };
 
   useEffect(() => {
     if (issues) api.setTitle(`Issues · ${slug} (${issues.length})`);
@@ -210,6 +225,28 @@ export default function IssuesPanel({ params, api }: PanelComponentProps) {
                     </span>
                   )}
                 </span>
+                <span className="pc-adv-issues__rowactions" onClick={(e) => e.stopPropagation()}>
+                  {!i.linkedFeatureId && i.status !== 'closed' && i.status !== 'wontfix' && (
+                    <button type="button" disabled={busyId === i.id} onClick={() => void handleAction(i, 'promote')} title="Promote to a fix feature">
+                      Promote
+                    </button>
+                  )}
+                  {i.status !== 'acknowledged' && i.status !== 'closed' && (
+                    <button type="button" disabled={busyId === i.id} onClick={() => void handleAction(i, 'acknowledge')} title="Acknowledge">
+                      Ack
+                    </button>
+                  )}
+                  {i.status !== 'closed' && (
+                    <button type="button" disabled={busyId === i.id} onClick={() => void handleAction(i, 'close')} title="Close">
+                      Close
+                    </button>
+                  )}
+                  {i.status !== 'wontfix' && (
+                    <button type="button" disabled={busyId === i.id} onClick={() => void handleAction(i, 'wontfix')} title="Won't fix">
+                      Won&apos;t fix
+                    </button>
+                  )}
+                </span>
               </div>
             );
           })
@@ -294,6 +331,7 @@ export default function IssuesPanel({ params, api }: PanelComponentProps) {
           padding: 4px 0;
         }
         .pc-adv-issues__row {
+          position: relative;
           display: grid;
           grid-template-columns: 70px 92px 1fr auto;
           gap: 10px;
@@ -304,6 +342,40 @@ export default function IssuesPanel({ params, api }: PanelComponentProps) {
           border-bottom: 1px solid rgba(167, 139, 250, 0.06);
           cursor: pointer;
           user-select: none;
+        }
+        .pc-adv-issues__rowactions {
+          position: absolute;
+          right: 10px;
+          top: 50%;
+          transform: translateY(-50%);
+          display: inline-flex;
+          gap: 4px;
+          opacity: 0;
+          transition: opacity 0.08s;
+          padding-left: 28px;
+          background: linear-gradient(90deg, transparent, rgba(13, 11, 26, 0.97) 26%);
+        }
+        .pc-adv-issues__row:hover .pc-adv-issues__rowactions {
+          opacity: 1;
+        }
+        .pc-adv-issues__rowactions button {
+          padding: 2px 8px;
+          font-size: 10px;
+          font-weight: 600;
+          color: rgba(220, 214, 248, 0.85);
+          background: rgba(31, 23, 56, 0.96);
+          border: 1px solid rgba(167, 139, 250, 0.3);
+          border-radius: 4px;
+          cursor: pointer;
+          white-space: nowrap;
+        }
+        .pc-adv-issues__rowactions button:hover:not(:disabled) {
+          color: #f7f5ff;
+          border-color: rgba(167, 139, 250, 0.6);
+        }
+        .pc-adv-issues__rowactions button:disabled {
+          opacity: 0.5;
+          cursor: default;
         }
         .pc-adv-issues__row:hover {
           background: rgba(31, 23, 56, 0.45);
