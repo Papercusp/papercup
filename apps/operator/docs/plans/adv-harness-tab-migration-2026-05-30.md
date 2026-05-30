@@ -17,7 +17,9 @@ Phase 4 Detail richness shipped (`2e491ee6`, also cherry-picked to `main`): issu
 
 Phase 5 inline row actions shipped (`30138d81`, cherry-picked to `main`): feature rows Reset/Edit/Chat, issue rows Promote/Ack/Close/Won't-fix (hover-revealed, shared `harness-actions` helper). Feature rows verified live; issue rows contract-verified.
 
-**Next:** P-013 (fate of legacy lifecycle/project/tag filters), Phase 6 (keyboard shortcuts J/K/R/X// + virtualization).
+Phase 6 keyboard nav + state polish shipped (`537662f4`, cherry-picked to `main`): J/K/↵/R/`/` panel-scoped shortcuts (focus ring + scroll-into-view), kbd-hint footer. Verified live (j → fidx 0→1, Enter → `?sel`). **P-020 (virtualization) deferred** — not verifiable on papercup's 3 rows.
+
+**Next:** P-013 (fate of legacy lifecycle/project/tag filters), then P-020 (virtualize against a 100+ row harness).
 
 ## Background
 
@@ -66,9 +68,9 @@ Key files (live UI is the Vite SPA; components live in the Next tree and are con
 
 ## Phase 6 — Polish
 
-- **P-019** `todo` Keyboard shortcuts scoped to the focused panel: J/K move, ↵ open (sets `?sel`), R reset, X select, / search. Mirror `useShortcut('feature.*')` registrations.
-- **P-020** `todo` Virtualize the lists (`@tanstack/react-virtual`) once a harness regularly exceeds ~100 rows.
-- **P-021** `todo` Empty-state + loading-state refinement across all three panes.
+- **P-019** `done` Panel-scoped keyboard nav: J/K (or arrows) move a focus cursor (ring + scroll-into-view), ↵ opens (sets `?sel`), R resets the focused feature (features only), `/` focuses search, Esc blurs. X/multi-select dropped — the adv panels have no batch ops. Verified live (j → fidx 0→1, Enter → `?sel=F-DOGFOOD-002`). Shipped `537662f4`.
+- **P-020** `todo` Virtualize the lists (`@tanstack/react-virtual`) once a harness regularly exceeds ~100 rows. **Deferred from the Phase 6 batch:** papercup has 3 rows so the at-scale behavior isn't verifiable here, and it entangles with the new keyboard scroll-into-view + the absolute hover-action overlay (rows would become virtual-positioned). Do it against a 100+ row harness (e.g. `sheets`-scale data).
+- **P-021** `done` Consistent loading/empty/error states across the panes + a kbd-hint footer (`J/K · ↵ · R · /`) that doubles as P-019 discoverability alongside the N/M-shown counter. Shipped `537662f4`.
 
 ## Decisions
 
