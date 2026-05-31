@@ -18,30 +18,19 @@
  * are handled separately (D-001/P-015); this is the request/fetch path only.
  */
 import { getBrowserWorkspaceId } from '../browser-workspace';
+import { isOperatorApiUrl } from './workspace-api-target';
 
 const WORKSPACE_HEADER = 'x-papercusp-workspace';
 const WRAPPED_MARK = '__pcWorkspaceHeaderWrapped__';
 
-function isOperatorApi(input: RequestInfo | URL): boolean {
-  try {
-    const raw =
-      typeof input === 'string'
-        ? input
-        : input instanceof URL
-          ? input.href
-          : input instanceof Request
-            ? input.url
-            : String(input);
-    const u = new URL(raw, window.location.href);
-    if (!u.pathname.startsWith('/api/')) return false;
-    if (u.origin === window.location.origin) return true;
-    // Dev runs the SPA and the API on different loopback ports (:3055/:3070);
-    // accept loopback + the Tauri webview host, but nothing truly external.
-    const h = u.hostname;
-    return h === 'localhost' || h === '127.0.0.1' || h === '::1' || h.endsWith('.localhost');
-  } catch {
-    return false;
-  }
+function rawUrlOf(input: RequestInfo | URL): string {
+  return typeof input === 'string'
+    ? input
+    : input instanceof URL
+      ? input.href
+      : input instanceof Request
+        ? input.url
+        : String(input);
 }
 
 /**
@@ -57,7 +46,7 @@ export function installWorkspaceHeaderFetch(): void {
 
   const wrapped = ((input: RequestInfo | URL, init?: RequestInit) => {
     try {
-      if (isOperatorApi(input)) {
+      if (isOperatorApiUrl(rawUrlOf(input))) {
         const headers = new Headers(
           init?.headers ?? (input instanceof Request ? input.headers : undefined),
         );

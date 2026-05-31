@@ -72,4 +72,26 @@ describe('workspaceContextMiddleware (per-window-workspace-context P-011)', () =
     expect(res.status).toBe(200);
     expect((await res.json()).ws).toBe('default');
   });
+
+  // Streams (EventSource/WS) can't set a custom header, so the workspace
+  // rides as a ?ws= query param on connect (per-window-workspace-context P-015).
+  it('falls back to the ?ws= query param when no header is present (stream connect)', async () => {
+    const res = await makeApp().request('/probe?ws=ws-known');
+    expect(res.status).toBe(200);
+    expect((await res.json()).ws).toBe('ws-known');
+  });
+
+  it('rejects an unknown ?ws= query param too (D-007)', async () => {
+    const res = await makeApp().request('/probe?ws=ws-bogus');
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toBe('unknown_workspace');
+  });
+
+  it('the header wins over ?ws= when both are present', async () => {
+    const res = await makeApp().request('/probe?ws=ws-default', {
+      headers: { 'x-papercusp-workspace': 'ws-known' },
+    });
+    expect(res.status).toBe(200);
+    expect((await res.json()).ws).toBe('ws-known');
+  });
 });

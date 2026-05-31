@@ -3,6 +3,7 @@ import type { ReactNode } from 'react';
 import { HarnessZeroProvider } from '../../providers/HarnessZeroProvider';
 import { installDesktopIpcPolyfills } from '../../lib/transport-adapters/desktop-bootstrap';
 import { installWorkspaceHeaderFetch } from '../../lib/transport-adapters/workspace-header-fetch';
+import { installWorkspaceParamEventSource } from '../../lib/transport-adapters/workspace-eventsource';
 
 /**
  * Root sync provider. Wraps the app in `HarnessZeroProvider` and, on
@@ -18,15 +19,20 @@ import { installWorkspaceHeaderFetch } from '../../lib/transport-adapters/worksp
  * `new EventSource(...)` call. See
  * `lib/transport-adapters/desktop-bootstrap.ts` for the install rules.
  *
- * `installWorkspaceHeaderFetch` runs immediately after, so it wraps whatever
- * `window.fetch` now is — `ipcFetch` on desktop, native fetch in the dev
- * browser — stamping `x-papercusp-workspace` on operator API calls so the
- * backend resolves per-window, not against the global `reg.current`
- * (per-window-workspace-context-2026-05-31, P-013).
+ * `installWorkspaceHeaderFetch` + `installWorkspaceParamEventSource` run
+ * immediately after, wrapping whatever `window.fetch` / `window.EventSource` now
+ * are — `ipcFetch`/`IpcEventSource` on desktop, native in the dev browser. The
+ * fetch wrapper stamps `x-papercusp-workspace`; the EventSource wrapper appends
+ * `?ws=` (streams can't set headers). Both make the backend resolve per-window
+ * rather than against the global `reg.current`
+ * (per-window-workspace-context-2026-05-31, P-013/P-015). They must install
+ * after the IPC polyfills (to wrap the IPC transports) but before any component
+ * opens a stream — module-eval ordering guarantees that.
  */
 if (typeof window !== 'undefined') {
   installDesktopIpcPolyfills();
   installWorkspaceHeaderFetch();
+  installWorkspaceParamEventSource();
 }
 
 export function RootSyncProvider({ children }: { children: ReactNode }) {
