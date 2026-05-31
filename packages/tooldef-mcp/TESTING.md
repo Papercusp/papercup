@@ -19,6 +19,17 @@ Together with `@papercusp/tooldef-http`'s standalone example and the engine's
 in-process example, the success/denial mapping here is the MCP leg of the
 "usable standalone across all three caller shapes" proof (plan P-051).
 
+## Standalone example (doubles as a smoke test)
+
+[`examples/standalone-mcp.ts`](./examples/standalone-mcp.ts) imports only the
+engine + this package and exercises the extractors plus the success/denial
+mapping end-to-end (and runs under real `tsx`, the CJS/ESM resolution the bundled
+vitest suite doesn't — see the agent-insight *new-package CJS-family type:module trap*):
+
+```bash
+npx tsx examples/standalone-mcp.ts
+```
+
 ## What's NOT covered here
 
 - **The MCP server assembly + spawn-context auth** — that's host code (see the

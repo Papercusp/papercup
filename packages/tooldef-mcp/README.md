@@ -32,6 +32,19 @@ const res = await dispatchProjectedToolToMcp(tool, toolName, args, ctx, deps);
 // gate denial / handler error → { isError: true, content: [{ type:'text', text:'<code>: <message>' }] }
 ```
 
+## Standalone example
+
+[`examples/standalone-mcp.ts`](./examples/standalone-mcp.ts) exercises both jobs
+importing only `@papercusp/tooldef` + this package — the extractors over a
+hand-built `extra`, plus the mapper on a success (`math.add → "5"`) and a gate
+denial (an anonymous call to a `requireRoles`-gated tool → `{ isError: true }`).
+It's the MCP leg of the "three caller shapes, each proven standalone" proof
+(alongside the engine's in-process example and `tooldef-http`'s HTTP example):
+
+```bash
+npx tsx examples/standalone-mcp.ts
+```
+
 ## What is deliberately NOT here
 
 The MCP server **assembly** — `tools/list` / `tools/call` wiring, spawn-context
