@@ -110,9 +110,9 @@ write tests for it, wire new code to it, or "revive" it without an explicit ask.
 |---|---|---|---|
 | `@papercup/web` — papercupai.com public site | `_retired/papercup/` | Retired 2026-05-30. Dropped from the workspace glob + root scripts; `docker-compose.papercup.prod.yml` + `Dockerfile.papercup` bannered (preserved, not deployed). | `_retired/papercup/RESTORE.md` + git tag `papercup-web-retired-2026-05-30` |
 | Standalone operator webapp (`apps/operator` opened on `:3055` in a browser) | `apps/operator` — run **only** via the Tauri shell | Retired 2026-05-14; native PG renamed `papercusp_legacy` to fail loud. | n/a — the operator still ships, just not as a standalone webapp |
-| `libs/zero-harness` — Zero ZQL schema/queries | `libs/zero-harness` | On the Zero-retirement path; still imported by ~10 operator files. **Migrate off, don't add tests.** | n/a |
+| `libs/zero-harness` — Zero ZQL schema/queries | `libs/zero-harness` | On the Zero-retirement path; the ZQL package now has **0 live importers** (only dead surfaces reference it: `libs/papercup-shared/**/*View.tsx` + the retired `@papercusp/web`). **Migrate off, don't add tests.** | n/a |
 | `libs/papercup-db` — fictional-org demo schema | `libs/papercup-db` | Demo data; only consumed by `_retired/papercup` + a vendored submodule. Deletion candidate. | n/a |
-| `libs/holepunch-spike` — P2P spike | `libs/holepunch-spike` | Phase-0 spike, zero importers. Deletion candidate. | n/a |
+| `libs/holepunch-spike` — P2P spike | `libs/holepunch-spike` | Phase-0 spike. **NOT zero-importers** — its `holepunch.d.ts` shim surface is implemented by `apps/operator/lib/sync/hyperbee/swarm.ts` and wired into ~10 orchestrator files (feature-claim, distributed-claim, instrumentation-node, …), so it is not a safe delete as-is. | n/a |
 | `libs/papercup-shared/**/*View.tsx` | `libs/papercup-shared` | The read-only `*View.tsx` components render the retired web surface; the non-view helpers (e.g. `_admin-paths`) are still shared and live. | n/a |
 
 **Convention for retiring-but-keeping a surface:** (1) move it under `_retired/`
