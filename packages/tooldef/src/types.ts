@@ -710,6 +710,15 @@ export interface CardSpec<TSchema extends StandardSchemaV1 = StandardSchemaV1> {
   idempotencyKey?: string;
   /** When false, the renderer hides any decline affordance. Default true. */
   allowDecline?: boolean;
+  /**
+   * Fired synchronously once the card is registered, with the freshly-minted
+   * `correlationId` (and the run/workspace it's scoped to). Lets a caller link
+   * the live card to an external durable record — e.g. inbox-cards-unification
+   * Phase D writes a coord escalation carrying this id so the inbox and the
+   * live card resolve each other. Optional; existing callers are unaffected.
+   * NOT called on an idempotency-cache hit (no card is registered).
+   */
+  onCard?: (info: { correlationId: string; runId: string; workspaceId: string }) => void;
 }
 
 /**

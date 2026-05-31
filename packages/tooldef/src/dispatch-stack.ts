@@ -426,7 +426,17 @@ const ctxBindingsStep: DispatchStep = {
       askUser = async <TSchema extends StandardSchemaV1>(
         spec: CardSpec<TSchema>,
       ): Promise<CardResponse<TSchema>> => {
-        const { result } = registerCard({ workspaceId: wsId, runId, spec });
+        const { correlationId, result } = registerCard({ workspaceId: wsId, runId, spec });
+        // Surface the freshly-minted id so a caller can link an external
+        // durable record (Phase D). Skip an idempotency-cache hit (no card was
+        // registered — correlationId is the 'idempotent' sentinel).
+        if (spec.onCard && correlationId !== 'idempotent') {
+          try {
+            spec.onCard({ correlationId, runId, workspaceId: wsId });
+          } catch {
+            /* onCard must never break the card flow */
+          }
+        }
         return await new Promise<CardResponse<TSchema>>((resolve) => {
           const onAbort = () => {
             exec.abort.signal.removeEventListener('abort', onAbort);
