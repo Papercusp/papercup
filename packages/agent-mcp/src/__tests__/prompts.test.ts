@@ -47,9 +47,14 @@ describe('prompt registry', () => {
     expect(r.messages[0].content.text).toBe('hi world');
   });
 
-  it('rejects collision on duplicate name', () => {
+  it('rejects collision on duplicate name with a different capability', () => {
+    // registerPrompt's contract (tooldef/src/prompt-registry.ts): a duplicate
+    // name with the SAME capability is treated as HMR re-evaluation and
+    // replaced silently; only a DIFFERENT capability is a real authoring
+    // collision that throws. Exercise the throw path with mismatched caps.
     definePrompt({
       name: 'fixture:dup',
+      capability: 'fixture:a',
       async render() {
         return { messages: [] };
       },
@@ -57,11 +62,31 @@ describe('prompt registry', () => {
     expect(() =>
       definePrompt({
         name: 'fixture:dup',
+        capability: 'fixture:b',
         async render() {
           return { messages: [] };
         },
       }),
     ).toThrow(/Prompt name collision/);
+  });
+
+  it('re-registering the same name + same capability is a silent HMR replace', () => {
+    definePrompt({
+      name: 'fixture:hmr',
+      capability: 'fixture:a',
+      async render() {
+        return { messages: [] };
+      },
+    });
+    expect(() =>
+      definePrompt({
+        name: 'fixture:hmr',
+        capability: 'fixture:a',
+        async render() {
+          return { messages: [{ role: 'user', content: { type: 'text', text: 'v2' } }] };
+        },
+      }),
+    ).not.toThrow();
   });
 
   it('catalog returns all registered prompts', () => {
