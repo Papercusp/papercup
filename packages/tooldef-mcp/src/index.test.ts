@@ -54,7 +54,7 @@ describe('dispatchProjectedToolToMcp', () => {
     expect(r.content[0]).toEqual({ type: 'text', text: 'ok' });
   });
   it('maps a gate denial to { isError, content:"<code>: <msg>" }', async () => {
-    const r = await dispatchProjectedToolToMcp(tool({ roles: ['architect'] }), 'fix.tool', {}, ctx({ role: 'worker' }), {});
+    const r = await dispatchProjectedToolToMcp(tool({ agentRoles: ['architect'] }), 'fix.tool', {}, ctx({ role: 'worker' }), {});
     expect(r.isError).toBe(true);
     expect((r.content[0] as { text: string }).text).toMatch(/^role_not_allowed: /);
   });
