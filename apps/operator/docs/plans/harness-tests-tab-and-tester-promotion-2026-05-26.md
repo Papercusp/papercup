@@ -212,3 +212,10 @@ Related: P-058, P-060, P-061, P-062, P-063, P-064
 Date: 2026-05-30
 The plan→test link is realized as a **rollup join through the VAL**, not a new edge: a plan item declares inline `[VAL-…]` bullets → `harness_plan_assertions(plan_slug, item_id, val_id)`; a test declares `coversVALs[]`; the link is the join on `val_id`, rolled up to the plan item by `item_id`. Chosen over the alternatives: a **direct `test → plan-item` column** (rejected — second linking axis competing with the VAL, wrong grain, reintroduces drift) and **inline `[TEST-…]` bullets in plan items** (rejected — tests are generated artifacts, not authored intent; putting generated state in the source doc breaks its declarative contract). For read performance we additionally **materialize `plan_slug`/`item_id` onto each `harness_tests` row** at snapshot time (the "D"), giving 1-hop UI reads while the VAL remains canonical. Tests with no VAL (the **Built-in** tier: lint/typecheck/smoke) do not link to any plan item — only behavioral/**Project** tests do.
 Related: P-080, P-081, P-082, P-083, P-084
+
+### D-007 — Harness Tests tab decoupled from FLAGS.HARNESS_PHASES
+Date: 2026-05-31
+Date: 2026-05-30
+
+Supersedes P-024's "gated by FLAGS.HARNESS_PHASES, same as the existing tests routes." Per the user, the harness `/api/harness/:slug/testing/*` routes (domain-detail, file-status, health-strip, run, assertions, plan-items-test-status) are NO LONGER gated by `HARNESS_PHASES` — the `phasesEnabled()` helper + its 7 gate checks were removed (commit 6def160f). Rationale: `HARNESS_PHASES` gates the staging/testing/production PHASE system, which is a separate concern from surfacing a harness's tests; coupling the Tests tab to it was wrong. The flag itself is unchanged — still off by default, still gating PhaseTabs and the legacy `/harness/:slug/tests` routes. The Tests tab now functions regardless of the flag.
+Related: P-024
