@@ -3,7 +3,7 @@ title: Harness Tests tab + tester role promotion + admin/testing shell extractio
 slug: harness-tests-tab-and-tester-promotion-2026-05-26
 status: active
 created: 2026-05-26
-updated: 2026-05-30
+updated: 2026-05-31
 owner: avi@storewolf.com
 ---
 
@@ -11,11 +11,11 @@ owner: avi@storewolf.com
 
 ## Now
 
-**State:** **Phases A–D complete; Phase E mechanism complete (P-060/061/064).** `requires_test` now flows end-to-end: column on `harness_plan_assertions` (migration 088 in libs/papercusp 9ab34d9 + ensure-schema mirror), parsed from an optional `RequiresTest:` inline sub-bullet by `plans:promote` (default true), exposed by `/assertion/:valId`, and honored by the staging orchestrator C0 + validator gate (a `requires_test:false` VAL is exempt — verified by inspection, not a covering test). Superproject 7a7d4d31 (pointer bump) + submodule 9ab34d9. Verified: val-assertions 4/4, promote 4/4, promote-pipeline 16/16; operator tsc zero new errors. **Pre-existing bug spotted (not fixed, scope): `flags.harnessPlanAssertions` is missing from the flags type in ensure-schema.ts (3 tsc errors).** Behavioral gate-skip is prompt logic — needs a live harness run to confirm.
+**State:** **Phases A–E COMPLETE.** The harness testing system is built end-to-end: shared `TestingShell` (A) → generalized/Papercusp registry split (B) → harness Tests tab + `/testing/*` routes on the /adv dock (C) → tester role activated + test-gated approval (D) → `requires_test` exemption authored→stored→exposed→gated, plus the Acceptance tab (VAL list + `requires_test` toggle) (E). Phase E UI shipped 9ad78785: `GET/POST /testing/assertions` + `AcceptancePanel` (custom Project tab). Verified: 7/7 Tests-tab tests, val-assertions 4/4, promote 4/4; operator + operator-vite tsc zero new errors. Submodule (libs/papercusp) commits 17641ee + 9ab34d9 are local (not pushed). **Caveats unchanged:** behavioral pieces (tester firing, validator gate, requires_test skip) need a live autonomous harness run to confirm; the Acceptance section is empty until a plan with inline VALs is promoted.
 
-**Remaining in this plan:** P-062/P-063 (Phase E UI — surface assertion rows + a `requires_test` toggle in the harness Tests tab), Phase F (e2e cutover on papercup), Phase G (plan↔test-via-VAL rollup + status loop + per-item coverage badge).
+**Remaining:** Phase F (e2e cutover on `papercup` — one feature through the full inline-VAL → promote → worker → tester → validator loop) and Phase G (the plan↔test-via-VAL rollup + assertion-status loop + per-plan-item coverage badge — the original question #1/#2).
 
-**Next:** Phase E UI (P-062/P-063): add a harness route listing `harness_plan_assertions` for the active plan + a PATCH for `requires_test`, and surface them in AdvTestsPanel's Project/Acceptance section (each VAL with status + a requires_test toggle). Then Phase G (the plan↔test rollup + assertion-status loop) and Phase F (e2e on papercup).
+**Next:** Phase G (P-080–P-085): materialize plan_slug/item_id onto harness_tests at snapshot time, drive harness_plan_assertions.status from real test outcomes, add the plan-items-test-status rollup endpoint + the per-plan-item coverage badge in the Plans UI — the actual plan↔test link. (Phase F e2e is best run live by the user once an inline-VAL plan exists.)
 
 ## Background
 
@@ -165,9 +165,9 @@ The user's request had four parts:
 
 - **P-061** `done` Extend the inline VAL-* bullet format spec at `docs/spec/validation-assertion-format.md` with an optional `RequiresTest: false` sub-bullet (default `true` when absent). Update `plans:promote` (`promote.ts`) to parse it and populate the new column on INSERT/UPDATE of `harness_plan_assertions`. No change to `feature.claims` extraction. (9ab34d9 + 7a7d4d31 val-assertions parses optional `RequiresTest:` sub-bullet default true; plans:promote persists requires_test into harness_plan_assertions; /assertion/:valId returns it gate reads it; format spec documents the field + example.)
 
-- **P-062** `todo` `requires_test` UI toggle on the harness Tests tab **Project** section (per P-022): flipping it PATCHes `harness_plan_assertions.status`/`requires_test` for that `val_id`. Non-testable claims (e.g. "matches the design spec", "copy reads well") are set `false` so the tester/validator gate (P-051) skips them.
+- **P-062** `done` `requires_test` UI toggle on the harness Tests tab **Project** section (per P-022): flipping it PATCHes `harness_plan_assertions.status`/`requires_test` for that `val_id`. Non-testable claims (e.g. "matches the design spec", "copy reads well") are set `false` so the tester/validator gate (P-051) skips them. (9ad78785 POST /api/harness/:slug/testing/assertions/:valId flips requires_test; AcceptancePanel renders a per-VAL requires_test toggle optimistic + revert-on-error. Non-testable claims set exempt so the tester/validator gate skips them.)
 
-- **P-063** `todo` Live read for the Tests tab. Surface `harness_plan_assertions` rows for the active plan via the harness `testing/*` dataSource (P-024) — poll or SSE, **not** Zero (`libs/zero-harness` is on the retirement path per repo CLAUDE.md). The "Acceptance / Project" section lists each VAL with its `status` and covering tests (Phase G).
+- **P-063** `done` Live read for the Tests tab. Surface `harness_plan_assertions` rows for the active plan via the harness `testing/*` dataSource (P-024) — poll or SSE, **not** Zero (`libs/zero-harness` is on the retirement path per repo CLAUDE.md). The "Acceptance / Project" section lists each VAL with its `status` and covering tests (Phase G). (9ad78785 GET /api/harness/:slug/testing/assertions lists harness_plan_assertions fail-soft; AcceptancePanel renders them in the Tests tab's Project section VAL + verify + status. Surfaced via the testing/* dataSource, not Zero. Per-VAL covering-test rollup is Phase G.)
 
 - **P-064** `done` Tests: `requires_test` default + parse of the `RequiresTest:` sub-bullet round-trips through `plans:promote` into `harness_plan_assertions`; gate query correctly excludes `requires_test = false` VALs. (7a7d4d31 lib/agent-tools/plans/__tests__/val-assertions.test.ts — RequiresTest defaulttrue/false/true round-trip through extractAssertions; 4/4 pass. The orchestrator/validator gate-skip on requires_test=false is prompt logic verifiable only by a live harness run.)
 
