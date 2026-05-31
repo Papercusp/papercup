@@ -90,6 +90,71 @@ then confirm which are actually in the renderer chunk by grepping the built
 `identity/keychain.ts`, and `flags/preset.ts` — fix them if the migration ever
 pulls them client-side.
 
+## Root cause: one value-import of a const drags the whole server subtree
+
+The lazy-fix above stops the *crash*, but the deeper bug is that server code is
+in the renderer bundle at all. The entire leak (postgres driver + db-encryption
+
+* papercusp-root + workspace-registry + agent-config) traced back to **one
+  line** — `app/settings/agent/page.tsx` value-importing the runtime const
+  `SURFACE_KEYS` from the server-only `agent-config.ts`:
+
+```ts
+import { SURFACE_KEYS, type SurfaceKey } from '@/lib/agent-config'; // ❌ drags the whole module
+```
+
+`SURFACE_KEYS` is just a string tuple, but importing *any value* from a module
+pulls that module's entire static-import subtree. `agent-config.ts` imports
+`node:fs/promises` and `operator-state-pg → db-encryption → @papercusp/db-org →
+connection.ts → postgres`. Types (`SurfaceKey`) are erased; **only the value
+import bites**.
+
+**Fix pattern — extract client-safe constants/types into a leaf module** with
+zero Node/server imports, and re-export from the server module for back-compat
+(mirrors `workspace-id-constant.ts`):
+
+```ts
+// agent-config-constants.ts  — leaf, no node/server imports
+export const SURFACE_KEYS = [...] as const;
+export type SurfaceKey = (typeof SURFACE_KEYS)[number];
+// agent-config.ts (server) — re-export so existing server callers are unaffected
+export { SURFACE_KEYS } from './agent-config-constants';
+// the client page imports from the leaf instead:
+import { SURFACE_KEYS } from '@/lib/agent-config-constants'; // ✅
+```
+
+### Diagnose it in 30 seconds
+
+The production build prints the authoritative leak surface — one line per
+server module pulled into the bundle:
+
+```bash
+npm run build:operator 2>&1 | grep "externalized for browser compatibility"
+```
+
+Each `imported by "<file>"` is a module in the renderer bundle that touches a
+Node built-in. An empty list = clean eager graph. To find the *client* root of
+a chain, BFS importers UP to a `apps/operator/app/**/*.tsx` or
+`apps/operator-vite/src/**` entry, following **only value edges** — `import
+type` and `await import()` don't eagerly bundle.
+
+### Acceptable residue: guarded dual-mode `await import()`
+
+After the fix the build still lists `connection.ts` + `postgres` — but only
+inside a **lazy** chunk (`delegates-*.js`), never the eager entry. That comes
+from commands that run in both browser and server and are correctly guarded:
+
+```ts
+if (typeof window !== 'undefined') { return fetch('/api/agent-mcp/delegates'…); }
+const { listDelegates } = await import('../../delegates'); // server-only branch
+```
+
+The browser returns before the dynamic import, so the chunk is **emitted but
+never fetched** in the renderer. This is fine — don't "fix" it by deleting the
+server branch (it's the in-process server path). The rule is **zero server
+modules in the *eager* entry chunk**, not zero in the whole `dist/`. Verify with:
+`grep -lF getOrgPg apps/operator-vite/dist/assets/index-*.js` → must be empty.
+
 ## The trap that hides it: the desktop serves built `dist`, not live src
 
 `dev:operator` → `dev:nohmr` → **`vite build --watch`**, and the desktop loads

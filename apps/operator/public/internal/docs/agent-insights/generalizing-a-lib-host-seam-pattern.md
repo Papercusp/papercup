@@ -100,6 +100,26 @@ a Papercusp tie-in by decision even though they have a host seam.
   submodule + repoint every `node_modules/@papercusp/*` symlink + rewrite
   workspace globs + regen the catalog). It is **safe because consumers
   import by package name, not path**. It self-aborts unless the operator
-  is stopped (a live `:3070`/`:3055` process would re-resolve a moved
-  module mid-flight) and every target submodule is clean. Run with
-  `--execute` in a quiet maintenance window.
+  is stopped and every target submodule is clean. **Executed 2026-05-31**
+  (plan D-012) — the 9 borrowable submodules now live at `libs/generic/`.
+
+Repointing `node_modules/@papercusp/*` symlinks makes the *running*
+operator resolve fine, but it is **not** the whole job:
+
+1. **Path refs beyond symlinks go stale.** Repointing symlinks + the root
+   workspace globs is not enough — a path move must also rewrite: `file:`
+   workspace deps (`apps/operator/package.json`, `packages/agent-mcp/package.json`
+   declare `"@papercusp/x": "file:../../libs/x"` — breaks a fresh `npm install`),
+   `.github/workflows` working-dirs, `scripts/scaffold-tests.mjs` dirs, docs
+   `--workspace` paths, **`Dockerfile` `COPY` lines**, and **test-discovery
+   globs** (`apps/operator/lib/testing-domains-registry.ts`). Grep every file
+   type, not just `*.json`/`*.yml`. (Skip refs that are example harness sub-slugs
+   like `papercup/libs/sync`, and `Dockerfile.papercup` — bannered "do not fix".)
+2. **The operator services are transient `systemd-run --user` units**
+   (`papercup-dev-api` = :3070 host, CWD `apps/operator`; `papercup-dev` =
+   operator-vite watcher, CWD repo root). `systemctl --user stop` **destroys**
+   a transient unit — you can't `start` it back. Recreate with
+   `systemd-run --user --unit=<name> --working-directory=<dir> --property=Restart=always /usr/bin/bash -c '<exec>'`.
+3. **Shared-index commit hazard:** `git commit` commits the whole index — in
+   this multi-agent checkout another session may have left files staged.
+   **Always `git diff --cached --name-only` before committing.**
