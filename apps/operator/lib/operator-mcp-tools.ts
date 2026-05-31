@@ -15,6 +15,7 @@
 export const ALL_AGENT_MCP_TOOLS: readonly string[] = [
   // Read-only world model
   'mcp__agentmcp__harness:list',
+  'mcp__agentmcp__harness:membership',
   'mcp__agentmcp__harness:get',
   'mcp__agentmcp__harness:status',
   'mcp__agentmcp__tasks:list',

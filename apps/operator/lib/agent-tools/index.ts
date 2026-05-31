@@ -70,6 +70,7 @@ import './harness/escalation';
 import './harness/pending_reviews';
 import './harness/health';
 import './harness/list_features';
+import './harness/membership';
 import './cross_harness/docs_outline';
 import './cross_harness/docs_get';
 import './cross_harness/docs_search';
