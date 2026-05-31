@@ -154,6 +154,22 @@ Web research (2026-05-31) against the Hyperswarm README + libp2p's DoS-mitigatio
 Sources: github.com/holepunchto/hyperswarm README; npmjs.com/package/hyperswarm; docs.libp2p.io/concepts/security/dos-mitigation; libp2p.io go-libp2p v0.42 release notes (per-IP rate limiting); github.com/holepunchto/autobase README (apply `interrupt` is the only built-in escape hatch — no op-rate-limit).
 Related: P-001, P-004, P-005
 
+
+### D-004 — Library vs roll-our-own: reuse @papercusp/rate-limit; no 3rd-party dep; in-memory store for the swarm path
+Date: 2026-05-31
+Evaluated (web research 2026-05-31): (a) a Hyperswarm-specific rate-limit/DoS wrapper, (b) a 3rd-party rate-limit lib (rate-limiter-flexible).
+
+**(a) No Hyperswarm wrapper exists.** There is no npm package that wraps Hyperswarm with rate-limiting / firewall / ban glue — confirmed by search. So the Hyperswarm-specific work (firewall predicate, TTL ban-list, `socket.destroy()` on live flooders, the per-writer op/byte limit at the Autobase→PG projection) is **bespoke no matter what** — no library removes it.
+
+**(b) Don't add a 3rd-party rate-limit lib.** The rate-limit *algorithm* is the easy, well-understood part, and we already own it: `@papercusp/rate-limit` provides windowed soft+hard buckets with `lockedUntilMs` (block/cooldown built in) and a **pluggable `BucketStore`** — i.e. exactly the "N events/window → block for cooldown" pattern P-004/P-005 need, already extracted + tested + in production via `auth-rate-limit.ts`. `rate-limiter-flexible` (the leading 3rd-party) offers the same surface (per-key consume, `blockDuration`, swappable stores) — it would **overlap @papercusp/rate-limit entirely** while adding a dependency + a second rate-limit abstraction + supply-chain/maintenance surface, for ~zero reduction in the bespoke glue. Net negative. ("Roll our own" was never the choice — reuse the in-house primitive is.)
+
+**Implementation refinement (the one real adjustment):** the swarm connection-rate path (P-005) and the per-writer op path (P-006) are **high-frequency + ephemeral** — they must NOT use the PG-backed `BucketStore` that `auth-rate-limit` uses (auth is low-frequency + durable). Implement a small **in-memory `BucketStore`** (a `Map` + TTL) behind the same `@papercusp/rate-limit` interface, so a connection flood causes zero PG writes. This is consistent with libp2p's design (its per-IP connection limiter is in-process, not durable).
+
+Conclusion: reuse `@papercusp/rate-limit` + a new in-memory `BucketStore`; no new third-party dependency; the Hyperswarm glue stays ours because nothing provides it. Reinforces D-002.
+
+Sources: npmjs.com/package/rate-limiter-flexible; npmjs.com/package/hyperswarm (no built-in/wrapper); the @papercusp/rate-limit source (libs/generic/rate-limit) + apps/operator/lib/auth-rate-limit.ts.
+Related: P-005, P-006
+
 ## Cross-references
 - `papercusp-trust-model-2026-05-31` §12 — anti-flood funnel + the recorded gap (canonical design rationale).
 - `apps/operator/lib/sync/hyperbee/swarm.ts` — `getSharedSwarm()` (Phase 1/2 constructor opts + firewall) + `joinHarnessSwarm` connection handler (Phase 2 PeerInfo, Phase 3 conn rate-limit).
