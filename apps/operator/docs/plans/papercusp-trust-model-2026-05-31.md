@@ -368,3 +368,108 @@ handler).
 **Note:** the paid-cloud-attestation cost-gate (cents/PR → spam costs an attacker real money)
 is a useful PR-spam *deterrent* but does **not** replace per-writer rate-limits (local-lane
 signers pay no $), so rate-limits are required regardless of lane.
+
+---
+
+# Addendum B (2026-05-31) — verifiable-inference landscape + remaining insights
+
+Captures the rest of the design discussion not in §1–§12: the verifiable-inference research,
+cloud-LLM attestation state, the two review-execution models, and several clarifications.
+
+## 13. Verifiable-inference maturity — what can make an LLM verdict trustworthy
+
+| Tech | Trust assumption | LLM-scale today | Overhead | Verdict |
+|---|---|---|---|---|
+| **zkML** (EZKL, Lagrange DeepProve) | trustless math | **No** — DeepProve proved *GPT-2* full inference (Aug 2025); ~hours / 100–10,000× for an 8B model | huge | watch, don't build on |
+| **TEE / confidential-GPU** (NVIDIA CC H100/H200/Blackwell, Intel TDX, AWS Nitro, Apple PCC) | trust-the-silicon-vendor | **Yes** — production, buyable on-demand now | ~2–10% | **the practical certainty path** |
+| **opML** (ORA) | economic / optimistic | deterministic-only + delayed finality | low | doesn't fit (LLM sampling non-deterministic) |
+| **"Hashing" / activation-fingerprint** (TOPLOC, Hyperbolic SVIP) | probabilistic, open-weights | partial | 5–20% | cheap middle spot-check |
+| **Provenance signing** (OpenSSF Model Signing v1.0, Sigstore, in-toto/SLSA, GitHub artifact attestations) | trust-the-signed-claim | n/a | ~0 | a *claim*, not proof-of-inference |
+| **FHE** (Zama) | confidentiality only | No (minutes/token) | 10⁴–10⁶× | wrong tool (privacy, not proof) |
+
+**Tier ladder for our codegen/review provenance:** Tier 0 (now, ~free) = signed in-toto/SLSA
+claim → Tier 1 (now, hardware certainty) = attested confidential-GPU TEE (trust silicon, not
+operator) → Tier 2 (watch) = zkML trustless, infeasible at LLM scale.
+
+**Not achievable today:** *trustless* proof of a real code-gen LLM's inference in interactive
+time. Root cause: LLM inference is **non-reproducible** (sampling, opaque/updated weights,
+float nondeterminism), which kills naive recompute-and-compare. TEE/zkML sidestep it by
+attesting/proving the computation that *actually occurred*. And **nothing proves the code is
+good/safe** — attestation proves *what ran*, never that the verdict is *correct*.
+
+## 14. Cloud-LLM attestation state (2026) + the "provider-signed review" pattern
+
+- **Anthropic Confidential Inference** (Trusted VMs, SEV-SNP/TDX + H100/H200 CC, pub. Jun 2025):
+  real but **select-customer, not GA**; oriented to *data confidentiality* + a *live mutual-
+  attestation handshake* — **not** an exportable, third-party-verifiable per-inference receipt.
+  The only Messages-API signature (the extended-thinking token) is for replaying thinking
+  blocks, not this.
+- **Verifiable today:** Phala (`x-phala-receipt-sig` + `x-phala-compose-hash`, chains to TDX
+  root + on-chain build, **offline-verifiable**) and NEAR AI (`/v1/attestation/report`).
+  Claude BYOK = provider-trust only. Exportable request→output attestation for hosted APIs is
+  an active 2026 research line (AEX, DiFR, TensorCommitments), not a productized feature.
+- **The "require a paid provider-signed review per PR" pattern (good, with conditions):**
+  authority comes from the *provider's signature, not the submitter* → an untrusted user's own
+  account is fine; and the paid attestation **doubles as an anti-spam cost-gate** (≠ a
+  replacement for rate-limits). Conditions: the review prompt must be **pinned/canonical (not
+  user-chosen)**, and the receipt must **bind hash(prompt‖diff)+output+build, verified
+  offline**. It replaces the **authenticity** half of the trusted peer (a real, unforged review
+  happened), **not** the **judgment/policy** half — the owner still sets the canonical prompt +
+  merge policy, Claude's verdict is fallible, keep a human for high-risk (so the trusted-signer
+  role shrinks from per-PR reviewer to *policy-setter*).
+
+## 15. Where the review runs — the two models (key fork)
+
+**Model A — GitHub-side (owner-centralized).** Review runs as an **owner-installed GitHub App /
+Action**, enforced by branch protection as a required check.
+- Trust = GitHub + the owner-configured app. **No attestation needed** — GitHub's required-check
+  *is* the anchor; the submitter never runs it and can't forge/bypass it.
+- **Owner-controlled by design:** installing an App + setting required checks are **admin-only**
+  — a write-access collaborator can't, the submitter can't. Anyone may run their *own* copy
+  against their *own* fork, but that's not the authoritative gate.
+- Managed reviewers (CodeRabbit, Greptile, Qodo Merge, Copilot review) live here and **replace**
+  (not augment) the cloud-signer attestation in this model. Qodo/Copilot can hard-gate;
+  CodeRabbit is advisory. Cost = owner/app plan. Simplest; rides existing GitHub auth.
+
+**Model B — submitter-side attested (decentralized).** The submitter runs+pays the review
+(confidential cloud Phala/NEAR, or local TEE) and submits an attested receipt the gate verifies.
+- Trust = hardware attestation. Needed only when you want **any participant to verify
+  independently** and the **submitter to bear the cost** ("support your own harness"), rather
+  than route trust through one repo-owner. Managed SaaS reviewers don't fit here.
+
+**Hybrid (recommended default):** deterministic checks (Semgrep/CodeQL/tests) as GitHub Actions
+(sound, model-free, always) **+** a managed reviewer GitHub-side for advisory quality **+** the
+attested submitter-side lane offered only for harnesses that want the P2P cost model.
+Managed-reviewer-as-required-check is dramatically simpler and "good enough" for most harnesses
+because it rides the GitHub-is-authority spine; the attestation machinery is the **price of
+decentralizing the review cost onto the submitter**.
+
+## 16. Two axes (avoid the "submitter-side = local" confusion)
+
+- **Where the silicon is:** Phala/NEAR = **cloud** (no local GPU; pay per call); **local-TEE** =
+  the user's own machine (the *only* lane with GPU churn — a 7–14B code model ≈ 30 s–2 min near-
+  100%, a ¢ of electricity); GitHub-side = GitHub/vendor cloud.
+- **Who procures/pays/submits:** an untrusted submitter can pay+submit (their own Phala/NEAR/
+  Claude account) and it's still trustworthy because the *receipt is hardware-signed, not
+  submitter-signed*. "Submitter-side" = who pays, **not** where it runs. **The verifiable cloud
+  lane needs no GPU from anyone.**
+
+## 17. TEE checks = execution, not judgment
+
+A TEE certifies *which measured program ran on which input → which output, unmodified* — never
+that "malicious"/"high-quality" is *true*.
+- **Deterministic checks** (tests, SAST/Semgrep/CodeQL, secret/dep scan, policy) → attested
+  *facts*, sound for their scope, model-free, run in a cheap **CPU TEE** / signed CI (no GPU).
+  The load-bearing layer.
+- **LLM judge** → attested *opinion*, fallible.
+- Residuals even in a TEE: the **checker's own build must be measured/known-good** (a TEE
+  faithfully runs a backdoored checker), and the **input must be bound to the real PR diff**.
+
+## 18. `completion_ref` — decision (supersedes the Phase-2 design)
+
+The original design (worker self-reports `{remote, branch, sha}`; a `git ls-remote` verifier) is
+**superseded**: ls-remote proves a SHA is an *advertised ref tip* (existence) — not merged-to-
+default, authorized, or good — and the ref is author-self-reported. The trustworthy "shipped"
+signal is **GitHub-derived (tier A)** — read merge state from GitHub. (`completion_ref` is about
+*features/code*, not plan docs; and existence-verification ≠ authorization ≠ implementation
+correctness.) Record as a decision on `papercusp-dogfood-phase2-completion-ref-*`.
