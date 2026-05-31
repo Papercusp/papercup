@@ -24,6 +24,7 @@ import {
 } from './harness/harness-shared-config-types';
 
 import { loadHarnessRegistry, type ProjectEntry } from './harness-registry';
+import { readRegistry } from './workspace-registry';
 import { type Phase, phasePath } from './harness-phases';
 
 /* ─────────────────────────────────────────────────────────────────────
@@ -208,7 +209,29 @@ export async function resolveProject(
   // workspace rather than the volatile active one — the active workspace can
   // switch mid-flight (desktop UI), which would otherwise break in-flight runs.
   const reg = await loadHarnessRegistry(workspaceId);
-  return reg.projects.find((p) => p.slug === slug) ?? null;
+  const hit = reg.projects.find((p) => p.slug === slug);
+  if (hit) return hit;
+
+  // Cross-workspace fallback (resolution safety net). A harness is registered in
+  // a SPECIFIC workspace, but the active workspace flaps — multiple SU agents +
+  // the desktop switch `registry.current` under us, and each harness typically
+  // lives in only ONE workspace. Resolving a NAMED slug must not silently 404
+  // just because the active workspace happens not to carry it: every harness
+  // route (status / prompts / features / run / …) funnels through here, so
+  // without this the operator can only ever touch the *currently-active*
+  // workspace's harnesses. Safe because results + the on-disk folder are SHARED
+  // by slug (D-1, link-not-move) — whichever workspace carries the slug resolves
+  // the same path. Skipped when the caller PINNED a workspace (durable pipelines
+  // pass workspaceId): those must stay in their fixed workspace, miss and all.
+  if (workspaceId !== undefined) return null;
+  try {
+    for (const ws of readRegistry().workspaces) {
+      const other = await loadHarnessRegistry(ws.id);
+      const match = other.projects.find((p) => p.slug === slug);
+      if (match) return match;
+    }
+  } catch { /* registry unreadable → fall through to null */ }
+  return null;
 }
 
 export function harnessDir(project: ProjectEntry): string {
