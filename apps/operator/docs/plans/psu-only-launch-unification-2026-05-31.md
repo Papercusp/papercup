@@ -171,3 +171,16 @@ CONCLUSION: hook-based SU-locks enforcement has NEVER worked for codex su (stati
 
 Re-frames the D-003 gate for codex from "preserve hard lock enforcement" (never existed) to "no regression" (satisfied). Options for actual codex coordination: (B) soft — playbook instructs codex to call locks:* voluntarily (status quo); (D-future) a codex-native sandbox/edit-gate or a new codex hook event. NEEDS HUMAN: accept soft coordination for codex (unblocks Phase 4) vs hold codex retirement for a future hard-enforcement mechanism.</body>
 Related: P-053, P-031, P-040
+
+### D-009 — D-009 (sandbox-as-lock investigation): codex's built-in sandbox can't do dynamic per-file locks; options are a custom shim, interactive-hook (unverified), or soft coord
+Date: 2026-05-31
+Investigated the user-requested "wire codex's OS sandbox to the lock store" angle.
+
+- codex's Linux sandbox is bundled bubblewrap (bwrap) + landlock, configured ONCE at process launch (sandbox mode read-only | workspace-write | danger-full-access, plus static writable_roots). It is root/dir-COARSE and STATIC — it cannot consult a lock store that changes mid-session, so it can't deny writes to dynamically-locked files. Confirmed empirically: read-only sandbox + approval=on-request escalated an edit but auto-rejected it ("rejected by user approval settings") in exec mode WITHOUT firing any PreToolUse or PermissionRequest hook.
+- A truly dynamic OS-level gate would need a custom interposition layer — a FUSE overlay over the workspace, or an LD_PRELOAD/landlock shim — that queries the lock store per open(O_WRONLY). HIGH effort, fragile, and complicated by codex nesting its OWN bwrap sandbox (interposition on the parent process may not catch the sandboxed child's writes).
+
+Avenues NOT yet exhausted:
+- INTERACTIVE codex (what psu launches; my tests used `codex exec`) MIGHT fire the PermissionRequest hook on the approval UI — but a stdlib-pty driver failed to render/drive the TUI here (no output captured). Cheap to verify MANUALLY: run a real psu codex su session, hold a lock on a file via locks:acquire, try to edit it, watch for a hook/approval. If the PermissionRequest hook fires + can auto-decide, codex locks become a config + hook-script change (drop --dangerously-bypass, use -s + approval on-request + a lock-checking PermissionRequest hook).
+
+Recommendation: try the cheap manual interactive test first; if hooks don't fire there either, accept soft coordination for codex (D-008 option B) rather than build a FUSE/shim. NEEDS HUMAN.</body>
+Related: P-053
