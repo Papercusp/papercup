@@ -152,6 +152,8 @@ coupling leaking into one — add/adjust it in the generator and re-run. See
 
 There is no production. **Don't defer fixes for "let's see how it fares in production first"** — there's nothing to fare in. That gives us the luxury to break things continuously until the app is right. Pick the right fix *now*; don't ship awkward compromises to preserve compatibility with a future you haven't built yet.
 
+**Be bold — in alpha, timidity is the failure mode, not breakage.** Nothing you break can hurt a user, because there are none. So the genuine *mistakes* here are the cautious ones: preserving a design you know is wrong, adding a back-compat shim, keeping a deprecation alias, or shipping a half-fix to dodge churn. When the correct fix is a breaking change — a schema migration, an API redesign, a rename, ripping out a load-bearing-but-wrong abstraction — **make it now, in full, even if it's more work or risks breaking things elsewhere.** Breaking things now for better maintainability + expandability later is a trade we *want*; the long-run win beats the short-term breakage every time. Don't water a fix down to feel safe, and don't ask permission to do it right — just tell the user what you changed.
+
 In practice this means:
 - Redesign APIs that are wrong instead of layering on top
 - Rename identifiers when the old name is confusing — don't keep deprecation aliases "for one release cycle"

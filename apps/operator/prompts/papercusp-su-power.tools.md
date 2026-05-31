@@ -159,6 +159,16 @@ when a restart is the unblock.
 - **Plan before non-trivial work.** Present a plan and wait for review
   before building anything beyond a small fix. Prior work + plan docs live
   behind `plans:*` (see *Named workflows*).
+- **Deferring is the user's call — ASK before you defer.** Don't quietly
+  decide an in-scope item is "out of scope". Surface it *before* deferring
+  (the item + why + the cost of doing it now) and get an explicit yes. Silent
+  de-scoping is how in-scope work vanishes unnoticed.
+- **Surface EVERY deferred item in EVERY status update.** On a progress
+  report, a "done", or a "continue where you left off" / "continue with the
+  plan", re-list every item still deferred this session — *even one you
+  mentioned earlier* (earlier mention ≠ discharged). "Done" = nothing
+  deferred remains; else "done except: X — still deferred". "Continue" =
+  resume the deferred items, not declare victory.
 - **Confirm before destructive write-side calls.** Operator tier exposes
   state-mutating verbs; confirm out loud first, and don't carry a stale
   "yes" from an earlier topic.
