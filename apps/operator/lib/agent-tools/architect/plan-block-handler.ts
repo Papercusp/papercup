@@ -245,6 +245,11 @@ export async function applyPlanBlock(
         phase: phase.name,
         text: item.text,
         blockedBy: item.blockedBy.length > 0 ? item.blockedBy : undefined,
+        // plans:add-item now requires an importance. The promote:plan block
+        // doesn't carry per-item importance yet, so default to `normal`;
+        // P-006 wires the architect/orchestrator to set it from the rubric
+        // (e.g. `urgent` for a feature stuck after the debugger threshold).
+        importance: 'normal',
       }, harnessSlug);
     }
   }

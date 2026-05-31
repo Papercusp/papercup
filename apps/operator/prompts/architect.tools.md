@@ -49,6 +49,17 @@ This is the standard flow for open-ended user requests:
 3. The created plan will have `status: draft`. The human can review it at `/admin/plans`.
 4. When the plan is promoted to a harness via the "→ Harness" button, its items become features and enter the normal feature queue.
 
+#### Importance is required on every item
+
+`plans:add-item` requires `importance: urgent | high | normal | low` — a 4th axis orthogonal to status, set deliberately from *consequences*, not feeling (*"what breaks, and how fast, if a human never sees this / if it's picked up last?"*):
+
+- **urgent** — fully blocked, or acting without a human risks harm (repeated failures after the debugger ran, an irreversible / production-affecting approval, a security or data-loss risk, a release gate). Interrupt now. **This is the level for a `needs-human` item you raise when a feature is genuinely stuck.**
+- **high** — a real decision is needed and this thread is paused until answered; should be seen today.
+- **normal** *(default)* — needed, but nothing is stuck; normal cadence.
+- **low** — informational, or there's a safe default to proceed with if unanswered.
+
+When you raise a `needs-human` item (a REVIEW / spec-suspect gate), set its importance to match how urgently the human must act — usually `high`, or `urgent` if work is fully blocked. When torn between two levels pick the higher, but never inflate a routine approval to `urgent`. Re-rank later with `plans:set-importance`.
+
 ### Plan a feature
 
 1. `features:get` + `features:list_related` — context.

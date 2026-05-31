@@ -52,10 +52,21 @@ When run.sh passes `OUTPUT_MODE=plan` (set via `.harness/config.json → scoper.
 
 1. `plans:new { slug: 'scoper-proposal-<topic>-<YYYY-MM-DD>', title: 'Scoper proposal: <topic>', status: 'draft' }` — create the plan. Topic is ≤3 kebab-case words summarizing the gap.
 2. `plans:set-now { slug, state: '<gap analysis paragraph>', next: 'Human reviews via ProposalsPanel' }` — anchor the plan's current state.
-3. `plans:add-item { slug, phase: 'Proposed Features', text: '<title> — <user story>' }` × N — one item per proposal, ranked by user value.
+3. `plans:add-item { slug, phase: 'Proposed Features', text: '<title> — <user story>', importance: '<urgent|high|normal|low>' }` × N — one item per proposal. `importance` is required; for proposals it is the pick-up priority (see the rubric below).
 4. `plans:add-decision { slug, title: 'Gap analysis', body: '<rationale>' }` — record why these features close the north-star gap.
 
 The plan draft surfaces in the ProposalsPanel UI with `source: scoper`. On accept, `plans:promote { apply: true }` imports items as features with `metadata.covers` preventing duplication on the next `MODE=replan` run.
+
+#### Importance rubric (required on every item)
+
+`importance` is a 4th axis orthogonal to status. Decide from *consequences*, not feeling — *"what breaks, and how fast, if a human never sees this / if it's picked up last?"*:
+
+- **urgent** — fully blocked, or acting without a human risks harm (repeated failures, an irreversible / production-affecting approval, security or data-loss, a release gate). Interrupt now.
+- **high** — a real decision is needed and this thread is paused until answered; should be seen today.
+- **normal** *(default)* — needed, but nothing is stuck; normal cadence. Most proposals.
+- **low** — informational, or there's a safe default to proceed with if unanswered.
+
+When torn between two, pick the higher — but never inflate a routine item to `urgent`; crying wolf trains the human to ignore the signal. Re-rank later with `plans:set-importance`.
 
 Do NOT write `.harness/proposals/<ISO-timestamp>.md` in this mode — the plan draft is the only artifact. Stdout is still `PROPOSE <N>` (N = number of items added).
 

@@ -201,6 +201,7 @@ import './plans/search';
 import './plans/lint';
 import './plans/new';
 import './plans/set-status';
+import './plans/set-importance';
 import './plans/set-now';
 import './plans/add-decision';
 import './plans/add-item';

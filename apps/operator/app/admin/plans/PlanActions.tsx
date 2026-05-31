@@ -43,6 +43,8 @@ import {
   type PlanStartStatus,
   type PromoteToHarnessResult,
   type WriteResult,
+  type Importance,
+  IMPORTANCE_LEVELS,
 } from './plans-api';
 
 interface Props {
@@ -636,6 +638,7 @@ function AddItemDialog({
   const [phase, setPhase] = useState(phases[0] ?? '');
   const [text, setText] = useState('');
   const [blockedByRaw, setBlockedByRaw] = useState('');
+  const [importance, setImportance] = useState<Importance>('normal');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -643,6 +646,7 @@ function AddItemDialog({
     setPhase(phases[0] ?? '');
     setText('');
     setBlockedByRaw('');
+    setImportance('normal');
     setError(null);
   });
 
@@ -663,6 +667,7 @@ function AddItemDialog({
         phase: phase.trim(),
         text: text.trim(),
         blockedBy: parsedBlockedBy.length ? parsedBlockedBy : undefined,
+        importance,
       });
       const err = writeError(r);
       if (err) setError(err);
@@ -730,6 +735,21 @@ function AddItemDialog({
               Unknown item IDs: {unknownBlockers.join(', ')}
             </span>
           ) : null}
+        </label>
+        <label className="pc-plan-dialog__field">
+          <span>Importance</span>
+          <select
+            value={importance}
+            onChange={(e) => setImportance(e.target.value as Importance)}
+          >
+            {IMPORTANCE_LEVELS.map((lvl) => (
+              <option key={lvl} value={lvl}>{lvl}</option>
+            ))}
+          </select>
+          <span className="pc-plan-dialog__hint">
+            How much this matters — urgent (interrupt now / pick up first) · high
+            (today) · normal (default) · low (safe to defer).
+          </span>
         </label>
         <DialogFooter
           error={error}

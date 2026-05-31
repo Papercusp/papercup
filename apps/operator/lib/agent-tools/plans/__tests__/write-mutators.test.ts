@@ -10,6 +10,7 @@
 
 import { describe, expect, it } from 'vitest';
 import { flipStatusInBody } from '../set-status';
+import { setImportanceInBody } from '../set-importance';
 import { replaceNowBlock } from '../set-now';
 import {
   allocateNextDecisionId,
@@ -304,6 +305,40 @@ describe('item id allocation + append', () => {
       '- **P-004** `todo` Fourth item blocked-by: P-002 importance: urgent',
     );
     expect(buildItemLine('P-005', 'Solo', [], 'high')).toBe('- **P-005** `todo` Solo importance: high');
+  });
+});
+
+describe('setImportanceInBody', () => {
+  it('adds an importance keyword to an item that had none', () => {
+    const { newBody, found, oldImportance } = setImportanceInBody(BASE, 'P-001', 'urgent');
+    expect(found).toBe(true);
+    expect(oldImportance).toBe('normal');
+    expect(newBody).toContain('- **P-001** `done` First item. importance: urgent');
+  });
+
+  it('preserves blocked-by and appends importance after it', () => {
+    const { newBody } = setImportanceInBody(BASE, 'P-003', 'high');
+    expect(newBody).toContain('- **P-003** `todo` Third item. blocked-by: P-002 importance: high');
+  });
+
+  it('replaces an existing importance value', () => {
+    const doc = BASE + `\n- **P-009** \`todo\` Tunable. importance: low\n`;
+    const { newBody, oldImportance } = setImportanceInBody(doc, 'P-009', 'urgent');
+    expect(oldImportance).toBe('low');
+    expect(newBody).toContain('- **P-009** `todo` Tunable. importance: urgent');
+    expect(newBody).not.toContain('importance: low');
+  });
+
+  it('removes the keyword when set back to normal', () => {
+    const doc = BASE + `\n- **P-009** \`todo\` Tunable. importance: high\n`;
+    const { newBody, oldImportance } = setImportanceInBody(doc, 'P-009', 'normal');
+    expect(oldImportance).toBe('high');
+    expect(newBody).toContain('- **P-009** `todo` Tunable.');
+    expect(newBody).not.toMatch(/P-009.*importance:/);
+  });
+
+  it('returns found=false for unknown items', () => {
+    expect(setImportanceInBody(BASE, 'P-999', 'high').found).toBe(false);
   });
 });
 

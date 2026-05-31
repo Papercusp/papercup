@@ -46,9 +46,8 @@ const argsSchema = z.object({
     .describe('Item IDs that must complete before this one can effectively start.'),
   importance: z
     .enum([...IMPORTANCE_LEVELS] as [string, ...string[]])
-    .optional()
     .describe(
-      'Item importance — urgent|high|normal|low (default normal). urgent = interrupt the human now / pick up first; high = should be seen today; normal = usual cadence; low = safe to defer. Set it deliberately per the importance rubric. (Becomes required once the rubric ships to agent prompts — P-005.)',
+      'REQUIRED. Item importance — urgent|high|normal|low. urgent = interrupt the human now / pick up first; high = should be seen today; normal = usual cadence; low = safe to defer. No silent default: choose it deliberately from the importance rubric (decide from consequences — "what breaks, and how fast, if this is never seen / picked up last?"). Most routine items are `normal`.',
     ),
   rationale: z
     .string()
@@ -215,7 +214,7 @@ export default defineTool({
           itemId,
           args.text,
           args.blockedBy ?? [],
-          (args.importance as Importance | undefined) ?? 'normal',
+          args.importance as Importance,
         );
         const { newBody, createdPhase } = appendItemToBody(current, args.phase, itemLine);
         const final = bumpUpdatedDate(newBody);

@@ -57,6 +57,12 @@ export function bucketOf(plan: Pick<PlanListRow, 'status' | 'startStatus'>): Pla
   return 'draft';
 }
 export type ItemStatus = 'todo' | 'wip' | 'blocked' | 'needs-human' | 'done' | 'dropped';
+
+/** Per-item importance — a 4th axis orthogonal to status. Mirrors
+ *  @papercusp/plan-parser's IMPORTANCE_LEVELS; kept local here per this
+ *  module's decoupled wire-type pattern. Ordered most → least. */
+export type Importance = 'urgent' | 'high' | 'normal' | 'low';
+export const IMPORTANCE_LEVELS: readonly Importance[] = ['urgent', 'high', 'normal', 'low'];
 export type PlanStartStatus = 'started' | 'paused' | 'done' | null;
 
 export interface PlanListRow {
@@ -373,6 +379,8 @@ export interface AddItemArgs {
   phase: string;
   text: string;
   blockedBy?: string[];
+  /** Required by plans:add-item — urgent|high|normal|low. */
+  importance: Importance;
 }
 
 export interface NewPlanArgs {
