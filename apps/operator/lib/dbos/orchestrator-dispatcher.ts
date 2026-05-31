@@ -18,12 +18,14 @@
  * wholesale on recovery (we WANT a fresh re-scan, not a cached replay — hence the
  * scheduled workflow calls the tick directly rather than through steps).
  */
+import { join } from 'node:path';
 import { DBOS } from '@dbos-inc/dbos-sdk';
 import postgres from 'postgres';
-import { readFeaturesPg } from '@papercusp/orchestrator';
+import { readFeaturesPg, readConfig, evaluateCostCap } from '@papercusp/orchestrator';
 import { getHarnessAdminUrl } from '@/lib/embedded-pg-discovery';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
 import { listAllHarnesses } from '@/lib/dev-data';
+import { resolveProject } from '@/lib/harness-core';
 import { ensureFeaturePipeline } from './orchestrator-start';
 
 /**
@@ -105,6 +107,24 @@ function maxPipelines(): number {
   return Number.isInteger(n) && n > 0 ? n : DEFAULT_CAP;
 }
 
+/**
+ * Whether a harness is over its configured `maxCostUsd` (P-004). Resolves the
+ * project to read `.harness/config.json` + sum the run-log spend via the legacy
+ * `evaluateCostCap` (FS variant). No cap configured → false (the common case);
+ * any resolution/read failure → false (advisory gate must not strand work).
+ */
+async function harnessOverCostCap(slug: string, workspaceId: string): Promise<boolean> {
+  try {
+    const project = await resolveProject(slug, workspaceId);
+    if (!project) return false;
+    const stateDir = join(project.path, '.harness');
+    const logDir = join(stateDir, 'logs');
+    return evaluateCostCap(readConfig(stateDir), logDir, stateDir).overCap;
+  } catch {
+    return false;
+  }
+}
+
 /** Count live (PENDING/ENQUEUED) pipelines for one harness. */
 async function liveCountFor(harnessSlug: string): Promise<number> {
   const live = await DBOS.listWorkflows({
@@ -142,11 +162,14 @@ export async function runDispatchTick(): Promise<DispatchTickResult[]> {
     try {
       const eligible = await readFeaturesPg({ pg: pg as never, workspaceId, harnessSlug: slug });
       const liveCount = await liveCountFor(slug);
+      const overCostCap = await harnessOverCostCap(slug, workspaceId);
       const toStart = selectFeaturesToDispatch(
         eligible.map((f) => ({ id: f.id, status: f.status })),
         liveCount,
         cap,
+        overCostCap,
       );
+      if (overCostCap) console.log(`[dbos-dispatch] ${slug} over maxCostUsd — skipping new pipelines`);
       const started: string[] = [];
       for (const fid of toStart) {
         const r = await ensureFeaturePipeline(slug, fid);

@@ -11,9 +11,9 @@ owner: avi@storewolf.com
 
 ## Now
 
-**State:** Plan created from the user's directive to roll DBOS out to ALL harnesses + retire the legacy main loop, sequenced "close the gaps first" (D-001). Code map complete: the DBOS per-feature pipeline (orchestrator-workflow.ts) + director.md are a deliberate PARTIAL replacement — the director emits only NEXT_WORKER/ARCHITECT/VALIDATOR/DONE/ESCALATE, the workflow returns on DONE without finalization, and the legacy main loop is the designed fallback for curator/documenter/archive (handleDone), the ESCALATE curator, cost-cap, and the extra global verbs. Phase F closes those gaps; Phase G flips default-all + deletes legacy after live-validating on sheets. No code written yet.
+**State:** Phase F (close the coverage gaps) is essentially COMPLETE + committed: P-001/P-002 finalization (curator/documenter/archive/afterDone on DONE; on-escalate+curator on ESCALATE) via a pure planFinalization + injected executor; P-003 full verb coverage via pure classifyDecision (fixed NEXT_SECURITY→security-reviewer; global-only verbs→unsupported); P-006 all-harnesses dispatch via '*' + listAllHarnesses; P-004 cost-cap as a dispatcher gate (D-002). P-005 (director prompt) + P-007 (per-turn hooks) resolved as deliberate no-build decisions (D-003/D-004). 58 dbos unit tests green, tsc clean. Live rollout levers still untouched (DISPATCH_HARNESSES blank).
 
-**Next:** Implement P-001 (DONE finalization step) TDD-first: a new dbos/orchestrator-finalize module porting handleDone (needs-human gate → smoke gate → curator → documenter → archive → afterDone hook), wired into orchestrator-workflow's terminal-DONE branch, with stub-runner unit tests.
+**Next:** P-008: restart papercup-dev-api to load the new lib/dbos code (no hot-reload), then controlled live validation on the sheets harness — manually trigger ONE sheets feature via POST /api/admin/dbos/pipeline/start and watch it reach DONE → curator + documenter → SUCCESS in /admin/dbos. Gate for P-009 (flip default-all + delete legacy).
 
 ## Background
 
@@ -81,3 +81,18 @@ Parent `dbos-orchestrator-durability` left DBOS validated + rollout-ready but op
 User decision: **do not flip the default or delete anything until DBOS is a COMPLETE replacement.** Sequence: (Phase F) close the gaps → unit-validate → live-validate on the **sheets** harness → (Phase G) flip default-on-for-all-harnesses + delete the legacy loop in one move. No live rollout until Phase F is green.
 
 Scope calls (per-feature pipeline model): cross-feature/cross-harness concerns move to the DISPATCHER, not the per-feature pipeline. Deliberately CUT for the per-feature pipeline (global-orchestrator-only): `NEXT_HARNESS`, `NEXT_WORKER_CEO_MODE`, parallel `NEXT_WORKER N=k`, competition-mode + synthesizer. Cross-engineer distributed claim is a separate axis (parent D-016/P-011) — out of scope. Chunk-loop is a worker-side concern inside invoke(), not the orchestrator loop — verify it still runs under the durable runner; do not reimplement.
+
+### D-002 — D-002 — cost-cap enforced as a dispatcher gate (not per-turn); in-flight hard-stop deferred
+Date: 2026-05-31
+P-004 implemented as a per-harness gate in `runDispatchTick`: before selecting features, `harnessOverCostCap(slug)` resolves the project → reads `.harness/config.json` → `evaluateCostCap` (legacy FS variant); when over `maxCostUsd`, `selectFeaturesToDispatch(..., overCostCap=true)` returns [] (no NEW pipelines; in-flight ones finish). This is cleaner than the legacy per-iteration check (single location, no per-turn fs churn across N concurrent pipelines) and enforces the cap for the auto-dispatch rollout. `maxCostUsd` is config-gated-off for ~all harnesses (sheets included) → zero impact on the live validation. Deferred: hard-stopping an IN-FLIGHT pipeline mid-run when the cap trips (legacy exit-6) — a per-turn pipeline guard; low value since the dispatcher stops new spend and pipelines are short. Tracked as a follow-up if a real harness sets a tight cap.
+Related: P-004
+
+### D-003 — D-003 — director.md left minimal; classifier supports quality verbs defensively (P-005 deferred)
+Date: 2026-05-31
+P-005 (extend director.md to emit NEXT_TESTER/NEXT_SECURITY post-validation) is deliberately NOT done. Reason: making the per-feature director emit those verbs would spawn `tester` / `security-reviewer` roles that a given harness may not have configured (e.g. sheets) → spurious failures. The classifier (orchestrator-decide.ts) already maps those verbs to the correct role+extras IF emitted, so the capability exists defensively without forcing it. Extending the director is optional polish (a per-harness/phase prompt concern), not a replacement-completeness gap — the core lifecycle (worker→validator→DONE) is fully driven by the current director.md. Revisit per-harness if/when a harness wants tester/security in its durable loop.
+Related: P-005
+
+### D-004 — D-004 — finalization hooks wired; per-turn lifecycle hooks not ported (no consumer)
+Date: 2026-05-31
+P-007 resolved by audit: the finalizer fires the terminal hooks the legacy loop fires — `afterDone` (firePluginHook) on DONE and `on-escalate` (runHook) on ESCALATE. The per-turn hooks (onPostWorker/onPostValidator/onPostOrchestrator) are NOT ported: a grep of installed plugins (~/.papercusp/global-plugins/* + harness plugins: cloudflare-pages, jira-sync, linear-sync, notion-export, slack-notifier, …) found ZERO consumers of those hook names, and no harness ships the matching `.harness/hooks/onPost*.sh`. Porting unused per-turn hook plumbing would be speculative complexity (YAGNI). If a plugin later needs a per-turn hook, fire it inside the dispatch step in orchestrator-workflow.
+Related: P-007
