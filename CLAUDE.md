@@ -160,8 +160,18 @@ In practice this means:
 - Take schema migrations now if they're correct, not when usage forces your hand
 - Refactor architecture when foundational decisions are wrong, not when they're load-bearing
 - Pick the *best* tool/library, not the safe one — license + compatibility are footnotes, not vetoes
+- Prefer a maintained library or an existing internal surface over rolling your own; lift anything general into a shared/generic lib rather than leaving it inline
 
 Surface what you're changing so the user knows; don't ask permission to do it well.
+
+---
+
+## Deferring is the user's call — never defer silently
+
+Work that gets quietly dropped is invisible to the user until much later, and it's a recurring failure: an agent decides something in scope is too hard/big/risky, sets it aside, and never says so. Two hard rules:
+
+- **Ask before you defer.** When you're about to push an in-scope item out of the current pass, surface it *first* — name the item, why you'd defer it, and the cost of doing it now — and get the user's explicit yes. Don't unilaterally re-scope.
+- **Re-surface every deferred/outstanding item in EVERY status update — even if you mentioned it earlier.** An earlier mention does **not** discharge it; "I said it before" is not "the user is tracking it". When you report progress, claim "done", or answer **"continue where you left off"** / **"continue with the plan"**, you must re-list everything still deferred this session. "Done" means *nothing deferred remains* — otherwise say "done except: X, Y — still deferred". "Continue" means *resume the deferred items*, never "the last explicit instruction is finished, so there's nothing left."
 
 ---
 
