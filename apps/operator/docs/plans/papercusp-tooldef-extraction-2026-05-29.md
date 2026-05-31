@@ -589,10 +589,21 @@ supplies the concrete one), `http-projection.ts` (→ eventually `tooldef-http`)
   — there's no spawn-URL *verification* in the HTTP adapter today (it reads `X-Papercusp-*`
   + bearer), so the seam belongs where verification actually happens; not blocking.
   blocked-by: P-005 → D-008
-- **P-031** `todo` Extract the `mcp-handler` bridge into `@papercusp/tooldef-mcp`.
-  Harder than P-030: the bridge (`apps/operator/.../transport/_mcp-handler.ts`) is
-  operator-coupled + auth-critical (BuiltSpawnContext, superuser/power-user synthesis,
-  spawn-context verification). Keeps Vercel's `mcp-handler` (D-008). blocked-by: P-005 → D-008
+- **P-031** `todo` (assessed 2026-05-30 — **needs a focused, runtime-verified pass; not
+  safe to rush**) Extract the `mcp-handler` bridge into `@papercusp/tooldef-mcp`. Unlike
+  P-030's self-contained adapter (everything already injected via `HttpToolHostExtras`),
+  the bridge `apps/operator/.../transport/_mcp-handler.ts` is **865 lines and deeply
+  operator-coupled** — it's the host's MCP **auth/spawn gateway**, importing
+  `@/lib/superuser-token` (loopback + bearer), `@/lib/power-user-token` (`verifyAccessToken`),
+  `@/lib/spawn-signing` (**`verifySpawnParams` — the HMAC spawn-URL verification, i.e. the
+  P-013 `SigningProvider` itself**), `@/lib/resolve-harness-paths`, `@/lib/plugin-spawn-impl`,
+  and `PROJECTED_DEPS`. The generic mcp↔dispatcher glue (~30%) is interleaved with this
+  auth slab (~70%). A clean extraction must invert superuser/power-user admission +
+  spawn-URL verification into injected strategies (this is where `SigningProvider`/P-013
+  finally lands) and a `tooldef-mcp` keeping Vercel's `mcp-handler` (D-008). Because this
+  is the **main agent-spawn path**, it should be done with the operator running so the auth
+  path (superuser, power-user, HMAC spawn verification) is end-to-end verified — not on a
+  typecheck alone. blocked-by: P-005 → D-008
 - **P-032** `done` The IPC adapter is already its own package —
   **`@papercusp/ipc-endpoint-server`** (`packages/ipc-endpoint-server`, src-as-entry).
   It consumes the engine via `dispatchProjectedToolStream`. (A cosmetic rename to
