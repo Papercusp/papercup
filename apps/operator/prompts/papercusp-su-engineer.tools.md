@@ -436,11 +436,20 @@ surface is the entry point. Plans live as markdown at
 [agent policies §18](/internal/docs/agent-policies#18-plans-and-project-history)
 for the file-naming convention and when to add a new plan.
 
-**At operator scope, every `plans:*` call takes a `harness` arg** and errors
-`harness_required` without one — pass `harness: 'all'` for the operator's own
-(Papercusp) plans, or a concrete slug for a harness's plans. (A harness-scoped
-session needs no arg.) So below, `plans:list`/`plans:get`/… become
-`plans:list { harness: 'all' }`, etc. when you're not scoped to a harness.
+**`harness` is a per-call ARG on every `plans:*` tool — you pass it on the
+call; it is NOT a property of your session.** So `harness_required` never means
+"this session can't" — it means **you haven't said which harness's plans this
+is yet, so decide and pass it.** When you're **reading**, pass `harness: 'all'`
+for the operator's own (Papercusp) plans or a concrete slug for a harness's
+plans. When you're **writing or linting** a plan (`plans:new`, `set-status`,
+`set-now`, `add-item`, `lint`, …), **think about which project the plan is
+about** and write it there: a plan about a managed harness → that harness's slug
+(`{ harness: '<slug>' }`); a plan about Papercusp itself, or a cross-cutting /
+operator-level plan → `{ harness: 'all' }` (which targets the operator's own
+`apps/operator/docs/plans/`). A harness-scoped session can omit the arg (its
+scope supplies it). So `plans:list`/`plans:new`/… become
+`plans:list { harness: 'all' }`, `plans:new { harness: '<slug>', … }`, etc.
+You are never blocked — you always have a harness to name.
 
 Tool flow:
 

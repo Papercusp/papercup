@@ -76,9 +76,12 @@ export function resolveHarnessScope(
 
 /** Shared detail string for the `harness_required` error every gated tool returns. */
 export const HARNESS_REQUIRED_DETAIL =
-  "No harness in scope. Pass `harness: '<slug>'` for a specific harness, " +
-  "`harness: 'all'` for operator / cross-harness scope (e.g. Papercusp's own), " +
-  'or launch this session scoped to a harness.';
+  "No harness specified. `harness` is a per-call arg — pass it on THIS call " +
+  "(you don't need a differently-scoped session): a concrete slug for that " +
+  "harness, or `harness: 'all'` for operator / cross-harness scope (e.g. " +
+  "Papercusp's own plans/docs). Writing a plan? Decide which project it's " +
+  'about and pass that harness. (A harness-scoped session supplies this ' +
+  'automatically.)';
 
 /**
  * For tools that resolve their harness through a **ctx-taking** helper (the
