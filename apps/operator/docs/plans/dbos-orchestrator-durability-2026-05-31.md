@@ -11,9 +11,9 @@ owner: avi@storewolf.com
 
 ## Now
 
-**State:** **Durable-pipeline MECHANISM complete + wired + verified-in-isolation** (D-010). Built this session: the durable workflow (resumes mid-pipeline), the real invoke runner (spawns `invoke-once` with the idempotency key — headless copy of the proven `/invoke` route), idempotency end-to-end, flag-gated `PAPERCUSP_DBOS_ORCHESTRATOR` with the legacy main loop as default + fallback. P-001/P-003/P-004/P-005/P-007/P-009 done; P-006 version-pin. All committed (operator + `libs/papercusp` submodule); live orchestrator untouched, flag default-off.
+**State:** The durable-pipeline MECHANISM is complete, wired, flag-gated (`PAPERCUSP_DBOS_ORCHESTRATOR`, default off), and verified-in-isolation (gate6 mid-pipeline resume; invoke idempotency unit + 52 orchestrator tests green). The feature-ownership/routing design is now DECIDED — D-011 (Option A: the main loop delegates each feature's role-sequence to a durable pipeline; the live DBOS workflow is the ownership claim). Designing it on paper surfaced one code-level defect in the shipped mechanism — a feature-forever workflow ID let a feature run exactly one pipeline lifetime ever — now FIXED (commit 83d9eeed: `PipelineInput.epoch` → `pipeline:<slug>:<feature>:e<epoch>`, tsc-clean). The whole arc's non-obvious findings are captured as the agent-insight `dbos-durable-execution-gotchas`. Everything Phase-3 is default-off; the live orchestrator is untouched. The remainder is live-only: wiring D-011 into the real dispatch + validating with agents.
 
-**Next:** Live-integration (the remainder, needs the live path): design the **feature-ownership/routing** so a feature is worked by EITHER the main loop OR a durable pipeline (workflow ID as claim token — avoid double-dispatch, P-016/P-017); then **live-validate** one feature under `PAPERCUSP_DBOS_ORCHESTRATOR=1` in a dev harness — a fake `AGENT_CMD` validates the wiring cost-free, then a real agent. Then reconcile `harness_lanes`/`spawned_agents`/reaper/claim (P-008/P-010/P-011).
+**Next:** Live-wire D-011: in the main-loop dispatch, gate on `PAPERCUSP_DBOS_ORCHESTRATOR` — when on, check `retrieveWorkflow(pipeline:<slug>:<feature>:e<epoch>).getStatus()` and either skip (live owner) or `startFeaturePipeline` (epoch sourced from PG); then live-validate one feature in a dev harness with a fake `AGENT_CMD` (cost-free) then a real agent — confirm crash/resume + no double-dispatch (P-012/P-013); then add the reaper "owned-by-a-live-workflow?" guard (P-010) and repoint `/claim-feature` to the workflow status (P-011).
 
 ## Background
 
@@ -125,6 +125,26 @@ The full durable-pipeline **mechanism** is built, wired, and verified-in-isolati
 
 The mechanism build is complete. The remainder is the ownership/routing **design** + **live validation** — which I'm not doing blind (a wrong routing hook double-runs agents on the live product) or with unprompted real-agent runs. Everything built is flag-gated default-off; the live orchestrator is untouched.
 Related: P-004, P-009
+
+
+### D-011 — Feature-ownership = main loop delegates to a durable pipeline; the live workflow is the claim; the workflow ID needs an epoch
+Date: 2026-05-31
+**Problem (P-004/P-008/P-011, the "routing/ownership" the Now flagged):** under `PAPERCUSP_DBOS_ORCHESTRATOR=1` a feature must be worked by EITHER the legacy main loop OR a durable pipeline, never both — double-dispatch = two agents on one feature = duplicate commits.
+
+**Two models considered:**
+- **Option A (CHOSEN) — main loop delegates the inner dispatch.** The main loop stays the feature *picker/scheduler* (its battle-tested feature-selection logic is untouched); when it decides feature F needs work, instead of inline `invoke(nextRole)` it calls `startFeaturePipeline({slug, featureId: F, epoch})`. The durable workflow then owns F's whole role-sequence until DONE/UNSUPPORTED. Lowest-risk, cleanest A/B: flip the flag and the loop either inline-dispatches (legacy) or starts-a-pipeline (durable), per feature.
+- **Option B (REJECTED for now) — a durable scanner replaces the main loop.** One scheduled DBOS workflow scans for features needing work + starts pipelines; the legacy loop stands down when the flag is on. Conceptually cleaner (all-durable) but it ports the feature-picking logic into a durable scanner = a bigger rewrite + bigger blast radius. Defer; Option A can graduate to it later.
+
+**Claim/ownership mechanism (Option A):** the live DBOS workflow IS the claim. Before the loop starts a pipeline for F it checks `DBOS.retrieveWorkflow(<id>).getStatus()`:
+- PENDING/ENQUEUED → the pipeline owns F; the loop SKIPS F (no inline dispatch, no second pipeline).
+- SUCCESS/ERROR/absent → no live owner; if F still needs work, `startFeaturePipeline` (the `deduplicationID` collapses a concurrent double-start).
+
+**The wrinkle designing-on-paper surfaced (now FIXED in code, commit 83d9eeed):** the ID `pipeline:<slug>:<feature>` is feature-forever, but DBOS will not re-enqueue a *completed* workflow ID — so a feature-forever ID lets F run exactly ONE pipeline lifetime, ever; after the first SUCCESS, F can never be re-pipelined (reopen, failed-validation retry, a later edit). Fix shipped: `pipeline:<slug>:<feature>:e<epoch>`, epoch = a monotonic per-feature counter the live caller sources from PG. `deduplicationID` still guards concurrent starts *within* an epoch; the epoch enables re-pipelining across lifetimes. `PipelineInput.epoch` (default 0) is in place — P-004's live caller just supplies the real epoch.
+
+**Reconciliation implications (P-008/P-010/P-011):** the pipeline spawns the SAME `invoke-once`, so `harness_lanes`/`spawned_agents` keep being written by the existing invoke path — no new writer, no double-ownership of those rows. P-011's `/claim-feature` becomes "is there a live `pipeline:<slug>:<feature>:e*` workflow?" — the workflow status replaces the ad-hoc claim row. P-010's `harness-status-sweep` reaper must treat a live DBOS workflow as authoritative: it must NOT reap an `agent_runs.running`/lane row whose owning workflow is PENDING, or it kills a legitimately-resuming pipeline. The reaper gains an "owned by a live workflow?" guard.
+
+**Live-only remainder:** wiring this into the actual main-loop dispatch + validating no double-dispatch with fake-then-real agents (P-012/P-013) is the live step; this decision is the design it implements.
+Related: P-004, P-008, P-010, P-011
 
 ## Phase A — invoke() idempotency hardening (finish P-015)
 
