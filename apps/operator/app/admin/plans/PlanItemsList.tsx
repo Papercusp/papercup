@@ -52,8 +52,6 @@ export default function PlanItemsList({
   onPick,
   harnessByPlan,
   planFilter,
-  title,
-  subtitle,
 }: Props) {
   // Selected item for the read-only detail pane, encoded
   // "<planSlug>::<itemId>". Distinct from PlansClient's `?plan=` (which
@@ -89,7 +87,6 @@ export default function PlanItemsList({
   if (loading) {
     return (
       <div className="pc-items pc-items--mixed">
-        <Heading title={title} subtitle={subtitle} count={null} groupCount={null} />
         <p className="pc-plans__placeholder">Loading…</p>
       </div>
     );
@@ -97,7 +94,6 @@ export default function PlanItemsList({
   if (error) {
     return (
       <div className="pc-items pc-items--mixed">
-        <Heading title={title} subtitle={subtitle} count={null} groupCount={null} />
         <div className="pc-plans__placeholder pc-plans__placeholder--error">
           <p>Failed to load items:</p>
           <code>{error}</code>
@@ -114,7 +110,6 @@ export default function PlanItemsList({
     const empty = planFilter ? `No items in ${planFilter}.` : 'No items match the current filters.';
     return (
       <div className="pc-items pc-items--mixed">
-        <Heading title={title} subtitle={subtitle} count={0} groupCount={0} />
         <div className="pc-items__empty">{empty}</div>
       </div>
     );
@@ -127,8 +122,6 @@ export default function PlanItemsList({
     if (!groups.has(r.plan)) groups.set(r.plan, []);
     groups.get(r.plan)!.push(r);
   }
-
-  const groupCount = groups.size;
 
   // The rows for one plan — shared by the bare (rail-filtered) and the
   // collapsible group renders. Clicking a row selects it into the detail
@@ -173,7 +166,6 @@ export default function PlanItemsList({
 
   return (
     <div className="pc-items pc-items--mixed">
-      <Heading title={title} subtitle={subtitle} count={rows.length} groupCount={groupCount} />
       <div className="pc-items__layout">
         <div className="pc-items__listpane">
           <ul className="pc-items__groups" role="list">
@@ -410,35 +402,6 @@ export function InboxItemActions({
         ✕ Drop
       </button>
     </div>
-  );
-}
-
-function Heading({
-  title,
-  subtitle,
-  count,
-  groupCount,
-}: {
-  title: string;
-  subtitle: string;
-  count: number | null;
-  groupCount: number | null;
-}) {
-  return (
-    <header className="pc-items__head">
-      <div className="pc-items__head-copy">
-        <span className="pc-items__kicker">Filtered items</span>
-        <h2>{title}</h2>
-        <p>{subtitle}</p>
-      </div>
-      {count !== null && groupCount !== null ? (
-        <div className="pc-items__summary-card" aria-label="Items summary">
-          <strong>{itemCountLabel(count)}</strong>
-          <span>{groupCount} {groupCount === 1 ? 'plan' : 'plans'}</span>
-          <span className="pc-items__summary-note">Open an item for details; answer needs-human ones inline.</span>
-        </div>
-      ) : null}
-    </header>
   );
 }
 

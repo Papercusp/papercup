@@ -28,6 +28,7 @@ import PlanRail, { type PlanRailHandle } from './PlanRail';
 import PlanDetail from './PlanDetail';
 import PlanItemsList from './PlanItemsList';
 import PlanOtherList from './PlanOtherList';
+import { Plus, ClipboardList, Inbox } from 'lucide-react';
 import PlanFilters from './PlanFilters';
 import PlanBucketTabs from './PlanBucketTabs';
 import PlanSearchResults from './PlanSearchResults';
@@ -482,22 +483,25 @@ export default function PlansClient() {
                 : 'Launch an agent session to draft a new plan (no active harness — agent will ask)'
             }
           >
-            {launchingNewPlan ? 'Launching…' : '+ New plan'}
+            <Plus size={14} aria-hidden />
+            {launchingNewPlan ? 'Launching…' : 'New plan'}
           </button>
           <button
             type="button"
-            className={`pc-plans__plans-btn${view === 'plans' && !slug ? ' is-active' : ''}`}
+            className={`pc-plans__plans-btn${view === 'plans' ? ' is-active' : ''}`}
             onClick={goPlans}
             title="Browse plans — open one to view/edit it. (Plan-status & harness filters stay applied.)"
           >
+            <ClipboardList size={14} aria-hidden />
             Plans
           </button>
           <button
             type="button"
-            className={`pc-plans__inbox-btn${view === 'inbox' && !slug ? ' is-active' : ''}`}
+            className={`pc-plans__inbox-btn${view === 'inbox' ? ' is-active' : ''}`}
             onClick={goInbox}
             title="Open the Inbox — every item & attention surface across plans, with item filters cleared (plan filters stay)."
           >
+            <Inbox size={14} aria-hidden />
             <span className="pc-plans__inbox-btn-label">Inbox</span>
             {inboxTotal > 0 ? <span className="pc-plans__inbox-btn-count">{inboxTotal}</span> : null}
           </button>

@@ -109,7 +109,9 @@ export function coordMessageToAttention(m: CoordMessageInput): AttentionItem {
     itemRef: null,
     title: clip(m.summary || m.body || 'Message'),
     body: m.body?.trim() || m.summary || '',
-    status: 'unread',
+    // Neutral status — there is no real read/ack tracking yet, so don't
+    // imply one with an "unread" badge.
+    status: 'message',
     importance: 'normal',
     needsHuman: true,
     actions: [{ id: 'ack', label: 'Acknowledge', primary: true }, CHAT],

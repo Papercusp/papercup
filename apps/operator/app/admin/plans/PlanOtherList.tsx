@@ -51,7 +51,7 @@ function otherOnly(groups: AttentionGroup[], allowKinds: AttentionKind[]): Atten
     .filter((g) => g.items.length > 0);
 }
 
-export default function PlanOtherList({ groups, loading, error, refresh, title, subtitle, kinds }: Props) {
+export default function PlanOtherList({ groups, loading, error, refresh, kinds }: Props) {
   const [selected, setSelected] = useQueryState('other', parseAsString);
 
   const otherGroups = otherOnly(groups, kinds ?? []);
@@ -61,7 +61,6 @@ export default function PlanOtherList({ groups, loading, error, refresh, title, 
   if (loading) {
     return (
       <div className="pc-items pc-items--mixed">
-        <OtherHeading title={title} subtitle={subtitle} count={null} />
         <p className="pc-plans__placeholder">Loading…</p>
       </div>
     );
@@ -69,7 +68,6 @@ export default function PlanOtherList({ groups, loading, error, refresh, title, 
   if (error) {
     return (
       <div className="pc-items pc-items--mixed">
-        <OtherHeading title={title} subtitle={subtitle} count={null} />
         <div className="pc-plans__placeholder pc-plans__placeholder--error">
           <p>Failed to load attention items:</p>
           <code>{error}</code>
@@ -83,7 +81,6 @@ export default function PlanOtherList({ groups, loading, error, refresh, title, 
   if (!allItems.length) {
     return (
       <div className="pc-items pc-items--mixed">
-        <OtherHeading title={title} subtitle={subtitle} count={0} />
         <div className="pc-items__empty">Nothing else needs attention right now.</div>
       </div>
     );
@@ -91,7 +88,6 @@ export default function PlanOtherList({ groups, loading, error, refresh, title, 
 
   return (
     <div className="pc-items pc-items--mixed">
-      <OtherHeading title={title} subtitle={subtitle} count={allItems.length} />
       <div className="pc-items__layout">
         <div className="pc-items__listpane">
           <ul className="pc-items__groups" role="list">
@@ -183,21 +179,3 @@ function OtherDetail({ item }: { item: AttentionItem | null }) {
   );
 }
 
-function OtherHeading({ title, subtitle, count }: { title: string; subtitle: string; count: number | null }) {
-  return (
-    <header className="pc-items__head">
-      <div className="pc-items__head-copy">
-        <span className="pc-items__kicker">Other attention</span>
-        <h2>{title}</h2>
-        <p>{subtitle}</p>
-      </div>
-      {count !== null ? (
-        <div className="pc-items__summary-card" aria-label="Other items summary">
-          <strong>{count}</strong>
-          <span>{count === 1 ? 'item' : 'items'}</span>
-          <span className="pc-items__summary-note">Escalations, smoke-fails, reviews, messages.</span>
-        </div>
-      ) : null}
-    </header>
-  );
-}
