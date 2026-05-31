@@ -11,9 +11,9 @@ owner: avi@storewolf.com
 
 ## Now
 
-**State:** Phase 0 substantially done. The P-002 cross-version resume **gate PASSED** against a real embedded-postgres-server PG16 (D-013): DBOS creates its `dbos` schema, completed steps aren't re-run on resume, an unpinned app-version change leaves prior workflows PENDING, and pinning recovers them. P-001 integration code is **committed (0443ccb7)** — `lib/dbos/bootstrap.ts` + `hello-workflow.ts` + a default-off, dynamic-import `PAPERCUSP_DBOS_ENABLE=1` boot block in `instrumentation-node.ts` + the `@dbos-inc/dbos-sdk` dep. In-operator activation is **blocked** on an unrelated workspace breakage: `@papercusp/chat-protocol` is unpublished and fails `npm install` (another agent's in-flight rename).
+**State:** Blocker cleared (b437af64 — registered the `libs/chat-protocol` workspace); `npm install` is healthy and `@dbos-inc/dbos-sdk` is installed in the operator. **Phase 0**: cross-version resume gate PASSED + integration committed (0443ccb7). **Phase 1 committed (5c9bb737)**: the AutoLoop ticker as a DBOS scheduled workflow (skip-missed, D-009) + a per-(harness,role) dedup-keyed fire queue (D-010), reusing the now-exported `autoloop.ts` helpers; flag-gated by `PAPERCUSP_DBOS_AUTOLOOP=1` (D-011) with the legacy ticker standing down. Mechanics verified in isolation (dedup single-fire + scheduled cadence, `gate2.mjs`); `tsc` clean against the installed SDK. Findings folded in: `runAdminServer:false` (DBOS admin :3001 collides with Restart), scheduled fns must also be registered workflows.
 
-**Next:** Once the `@papercusp/chat-protocol` install breakage clears: `npm install`, reconcile the lockfile, set `PAPERCUSP_DBOS_ENABLE=1`, verify the `dbos` schema + `helloWorkflow` boot in-operator — then start Phase 1 (P-003 AutoLoop migration).
+**Next:** In-operator smoke (now unblocked): restart the dev API with `PAPERCUSP_DBOS_ENABLE=1` (+ `PAPERCUSP_DBOS_AUTOLOOP=1`), confirm the `dbos` schema + `helloWorkflow` + AutoLoop ticks land — then P-007 (the `/admin` DBOS events tab) and P-006 (retry/recovery-cap mapping).
 
 ## Background
 
@@ -169,6 +169,22 @@ Two findings that revise earlier assumptions: v4.18 config exposes **`useListenN
 
 **BLOCKER:** in-operator activation (workspace `npm install` + lockfile reconciliation + flip-the-flag boot verify) is gated on an **unrelated** breakage — `@papercusp/chat-protocol` (referenced by `packages/tooldef` + `libs/chat-protocol`, another agent's in-flight scout-convergence rename) is unpublished, so `npm install` fails E404. The committed boot block is dynamic-import + default-off, so it is fully inert until that clears.
 Related: P-001, P-002
+
+
+### D-014 — Install unblocked; Phase 1 (AutoLoop) mechanics verified + integration written
+Date: 2026-05-31
+**Blocker cleared:** `libs/chat-protocol` (a committed submodule, `@papercusp/chat-protocol`, required by `packages/tooldef`) was missing from the root `workspaces` array → npm hit the registry and 404'd, blocking ALL installs. Registered it (commit `b437af64`); `npm install` now succeeds and `@dbos-inc/dbos-sdk` is installed in the operator. (`package-lock.json` is gitignored here, so only the workspaces entry is committed.)
+
+**Phase 1 mechanics verified** (isolated `gate2.mjs` against embedded PG16):
+- **P-004 single-fire** — two enqueues with the same `deduplicationID` collapse to ONE execution (1 rejected with `DBOSQueueDuplicatedError`, 1 actual fire). Confirms D-010: single-fire is the dedup ID, not `concurrency=1`.
+- **P-003 scheduled** — a `DBOS.registerScheduled` workflow fires on cadence (4 ticks in ~4.5s at 1/s) in the **default skip-missed mode** (no `ExactlyOncePerInterval`), i.e. no backfill storm (D-009).
+
+**Two integration findings** (folded into the code): a scheduled fn must ALSO be registered as a workflow (`registerScheduled(registerWorkflow(fn))`), and DBOS's admin server defaults to **:3001** (collides with Restart's shop-api) → set `runAdminServer: false`.
+
+**Phase 1 integration written:** `lib/dbos/autoloop-workflow.ts` — a scheduled tick (skip-missed) that enqueues a per-`(harness, role)` **dedup-keyed** (`autoloop:<slug>:<role>`) fire workflow (record→fire→record as durable steps), reusing the real `autoloop.ts` helpers (now exported). Flag-gated by `PAPERCUSP_DBOS_AUTOLOOP=1` (D-011); the legacy `startAutoLoopOnce` ticker **stands down** when that flag is set, so exactly one implementation fires (instant A/B revert). `bootstrap.ts` updated (`runAdminServer:false` + conditional autoloop registration before launch).
+
+Remaining: in-operator boot verify (now unblocked — flip `PAPERCUSP_DBOS_ENABLE=1` [+ `PAPERCUSP_DBOS_AUTOLOOP=1`], restart the dev API, watch the `dbos` schema + ticks) and P-006/P-007 (retry-cap mapping + the `/admin` DBOS tab).
+Related: P-003, P-004, P-005
 
 ## Phase 0 — Spike & validation (GATE)
 
