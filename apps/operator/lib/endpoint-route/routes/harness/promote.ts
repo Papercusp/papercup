@@ -266,7 +266,6 @@ const confirmPromotion = defineTool({
     }
 
     try {
-      const contract = safeRead(join(fromPath, '.harness', 'validation-contract.md')) ?? '';
       const feats = await parseFeatures({ ...project, path: fromPath });
       const passed = feats.filter((f: any) => f.status === 'passed');
       const handoff = [
@@ -278,9 +277,11 @@ const confirmPromotion = defineTool({
         '',
         ...passed.map((f: any) => `- \`${f.id}\` — ${f.summary ?? f.title}`),
         ``,
-        `## Validation contract (authoritative for this phase)`,
+        `## Validation`,
         ``,
-        contract,
+        // validation-contract.md is deprecated (D-005); acceptance is now each
+        // feature's inline VAL-* assertions (harness_plan_assertions).
+        `Each feature's acceptance is its inline VAL-* assertions — resolve via GET /api/harness/${project.slug}/assertion/:valId.`,
       ].join('\n');
       await writeFile(join(toPath, '.harness', 'promotion-handoff.md'), handoff, 'utf8');
     } catch { /* best-effort handoff */ }

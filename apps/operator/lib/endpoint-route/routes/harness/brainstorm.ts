@@ -180,9 +180,11 @@ const putMindmap = defineTool({
 });
 
 /**
- * Brainstorm promote — routes brainstorm content into features.json
- * (F-IDEA-### entry), SPEC.md (under `## Brainstormed`), or
- * issues.json (new I-#### row). Was deferred in batch 18 because it
+ * Brainstorm promote — routes brainstorm content into a feature
+ * (F-IDEA-### row in harness_features) or an issue (new I-#### row).
+ * The `spec` target (append to SPEC.md) was removed when SPEC.md was
+ * deprecated (D-004); promoting brainstorm content into a plan is a
+ * separate follow-up. Was deferred in batch 18 because it
  * depended on `auditFeatureChange` + `loadIssuesOrSeed` + `saveIssues`
  * that still lived in harness.ts; ships now that 25a + 26a relocated
  * those helpers to lib/.
@@ -195,7 +197,7 @@ const promote = defineTool({
     const project = await resolvePhasedProject(ctx.params.slug as string, phaseFromReq(req));
     if (!project) return Response.json({ error: 'unknown project' }, { status: 404 });
     const body = await req.json().catch(() => ({} as any));
-    const target = body.target as 'feature' | 'spec' | 'issue';
+    const target = body.target as 'feature' | 'issue';
     const content = typeof body.content === 'string' ? body.content : '';
     if (!target || !content.trim()) {
       return Response.json({ error: 'target + content required' }, { status: 400 });
@@ -238,24 +240,6 @@ const promote = defineTool({
       return Response.json({ ok: true, id, target });
     }
 
-    if (target === 'spec') {
-      const specPath = join(project.path, 'SPEC.md');
-      const existing = safeRead(specPath) ?? '';
-      const SECTION = '## Brainstormed';
-      const stamp = new Date().toISOString();
-      const block = `\n\n### ${stamp}\n\n${content.trim()}\n`;
-      let next: string;
-      if (existing.includes(SECTION)) {
-        const idx = existing.indexOf(SECTION);
-        const nextSectionIdx = existing.indexOf('\n## ', idx + SECTION.length);
-        const insertAt = nextSectionIdx === -1 ? existing.length : nextSectionIdx;
-        next = existing.slice(0, insertAt) + block + existing.slice(insertAt);
-      } else {
-        next = existing.replace(/\s*$/, '') + `\n\n${SECTION}\n${block}`;
-      }
-      await writeFile(specPath, next, 'utf8');
-      return Response.json({ ok: true, target, sectionAdded: !existing.includes(SECTION) });
-    }
 
     if (target === 'issue') {
       const file = loadIssuesOrSeed(project);

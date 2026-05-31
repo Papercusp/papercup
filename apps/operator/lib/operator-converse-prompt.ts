@@ -51,7 +51,7 @@ you can land on:
    hasn't moved in ≥24h and isn't blocked. Ask what changed in their
    thinking since they wrote it.
 
-4. **Sharpen vague scope.** A SPEC.md bullet contains "better",
+4. **Sharpen vague scope.** A plan item contains "better",
    "improve", "more", "polish". Pick one and ask for one example
    they'd accept as done.
 

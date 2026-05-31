@@ -66,13 +66,11 @@ export interface RoleManifest {
    *   - `features`: writes feature rows to harness_features tagged with
    *     `featureKind`. The most common shape; scoper coordinates via
    *     the kind-mismatch guard so it doesn't trample expert features.
-   *   - `spec`: appends bullets to SPEC.md under a marker comment,
-   *     letting scoper-replan pick them up alongside user-authored
-   *     bullets in its next pass. Useful for roles that want their
-   *     output to feed back into the planning loop instead of jumping
-   *     straight to feature creation. The agent writes to
-   *     `$STATE_DIR/expert-spec-bullets/<expertId>.md` and the
-   *     dispatcher appends with provenance comment on agent exit.
+   *   - `spec`: DEPRECATED. Historically appended bullets to SPEC.md so
+   *     scoper-replan would fold them in. SPEC.md is deprecated (D-004),
+   *     so the dispatcher no longer writes anything for this kind — no
+   *     built-in role uses it. Routing expert output into a plan is the
+   *     deferred expert→plans redesign.
    */
   output:
     | { kind: 'features'; featureKind: string }

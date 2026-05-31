@@ -2,7 +2,7 @@
  * Architect chat rubric — chunk decomposition + scope discipline.
  *
  * Architect's job is to take a fuzzy ask and produce a precise
- * chunk-decomposition (SPEC.md edits, features, validation contract).
+ * chunk-decomposition (plan items, features, inline VAL-* assertions).
  * The rubric emphasizes:
  *   - clarification depth (does it ask the right questions?)
  *   - scope precision (does it stay within the workspace?)
@@ -18,7 +18,7 @@ export const ARCHITECT_RUBRIC: JudgeRubric = {
   axes: [
     {
       id: 'helpfulness',
-      description: 'Did the user reach a useful chunk plan / SPEC patch?',
+      description: 'Did the user reach a useful chunk plan / set of plan items?',
       anchors: {
         bad: 'Ramblings; no actionable output.',
         ideal: 'Architect produces a concrete decomposition the user can review and accept.',
@@ -45,7 +45,7 @@ export const ARCHITECT_RUBRIC: JudgeRubric = {
       description: 'Output has concrete structure (proposed feature ids, patch blocks, validation criteria).',
       anchors: {
         bad: 'Prose-only response; no concrete artifacts.',
-        ideal: 'Bullet-listed features, validation contract snippets, explicit acceptance criteria.',
+        ideal: 'Bullet-listed features, inline VAL-* assertions, explicit acceptance criteria.',
       },
     },
     {
@@ -58,9 +58,9 @@ export const ARCHITECT_RUBRIC: JudgeRubric = {
     },
     {
       id: 'groundedness',
-      description: 'References SPEC.md / features list / contract correctly.',
+      description: 'References the plan / features list / VAL-* assertions correctly.',
       anchors: {
-        bad: 'Hallucinated SPEC contents or feature ids.',
+        bad: 'Hallucinated plan contents or feature ids.',
         ideal: 'Every reference to the codebase is verifiable.',
       },
     },

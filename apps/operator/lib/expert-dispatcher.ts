@@ -358,24 +358,11 @@ export async function dispatchExpert(
           } catch { return 0; }
         };
 
-        // For `output.kind === 'spec'` roles, the agent writes its
-        // bullets to a known per-expert file. On success, we append them
-        // to the project's SPEC.md under a marker comment. The next
-        // scoper-replan picks them up alongside user-authored bullets.
-        const appendSpecBulletsIfNeeded = async (status: 'succeeded' | 'failed') => {
-          if (status !== 'succeeded') return;
-          if (roleManifest?.output?.kind !== 'spec') return;
-          const fs = require('node:fs');
-          const bulletsPath = join(stateDir, 'expert-spec-bullets', `${expertId}.md`);
-          let bullets = '';
-          try { bullets = fs.readFileSync(bulletsPath, 'utf8').trim(); } catch { /* nothing to append */ }
-          if (!bullets) return;
-          const specPath = join(project.path, 'SPEC.md');
-          if (!fs.existsSync(specPath)) return;
-          const section = (roleManifest.output as { specSection?: string }).specSection ?? `expert:${role}`;
-          const block = `\n<!-- appended by ${role} (${expertId}) at ${new Date().toISOString()} — section: ${section} -->\n${bullets}\n`;
-          try { fs.appendFileSync(specPath, block, 'utf8'); } catch { /* best-effort */ }
-        };
+        // NOTE: the legacy `output.kind === 'spec'` feedback path (expert
+        // bullets appended to the project's SPEC.md, then re-read by
+        // scoper-replan) was removed when SPEC.md was deprecated (D-004).
+        // No built-in role uses `kind:'spec'`; redirecting expert output
+        // into a plan is the deferred expert→plans redesign.
 
         const finalise = async (status: 'succeeded' | 'failed', summary: string) => {
           // Remove the per-run prompt-shadow overlay (was `rm -rf` in the old
@@ -383,7 +370,6 @@ export async function dispatchExpert(
           if (invokeRole !== role && promptShadowDir) {
             try { rmSync(promptShadowDir, { recursive: true, force: true }); } catch { /* best-effort */ }
           }
-          await appendSpecBulletsIfNeeded(status).catch(() => undefined);
           releaseLock(project.path, role);
           // Compute cost vs budget for telemetry. If we're over budget,
           // append a warning to the summary so the OperatorActionLog row

@@ -54,7 +54,7 @@ const replan = defineTool({
     const body = (await req.json().catch(() => ({}))) as { overwrite?: boolean };
     if (!body.overwrite) {
       // Non-destructive: scoper MODE=replan as a background invocation;
-      // delta-merges new SPEC.md bullets into the existing queue.
+      // delta-merges new plan items into the existing queue.
       const invocationId = await recordUserAction(slug, 'replan', async () => {
         const r = invokeScoperBackground(project, 'replan');
         return {

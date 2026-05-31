@@ -25,7 +25,7 @@ export default function BrainstormChat({ slug }: Props) {
       endpoint="brainstorm/chat"
       storageKey={`harness.brainstorm-chat.${slug}`}
       placeholder="Pitch an idea…  (⌘↵ to send)"
-      emptyHint="Brainstorm partner here — I'll help explore ideas, challenge assumptions, and suggest analogues. When an idea matures, I can promote it to a feature, SPEC note, or issue."
+      emptyHint="Brainstorm partner here — I'll help explore ideas, challenge assumptions, and suggest analogues. When an idea matures, I can promote it to a feature or an issue."
       renderActionBlock={renderActionBlock}
     />
   );

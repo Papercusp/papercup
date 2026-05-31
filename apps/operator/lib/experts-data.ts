@@ -157,8 +157,8 @@ export async function getExpertSpec(
 // ── assertions content only ────────────────────────────────────────
 // Mirror of getExpertSpec for the assertions_content column added in
 // libs/db/sql/057-expert-assertions.sql. Experts write this during
-// finalization; phase-2 scoper merges them into validation-contract.md
-// verbatim (instead of re-deriving assertions from prose).
+// finalization; the scoper folds them into the plan's inline VAL-*
+// assertions verbatim (instead of re-deriving assertions from prose).
 
 export async function getExpertAssertions(
   slug: string,
