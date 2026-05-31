@@ -35,6 +35,7 @@ import { COORD_ROLES } from '../roles';
 import { findUnknownFromItems, type PromoteFeatureInput } from '../promote';
 import { emitPlanEventForCaller } from '../plan-events';
 import { readPlanBySlug } from '../../plans/source';
+import { parsePromotePolicy, buildWaveFeatures, type BuiltFeature } from '../../plans/promote-policy';
 import { withPlanLock, bumpUpdatedDate } from '../../plans/with-plan-lock';
 import { flipStatusInBody } from '../../plans/set-status';
 import { extractAssertions } from '../../plans/val-assertions';
@@ -229,8 +230,13 @@ export default defineTool({
     harness_slug: z
       .string()
       .min(1)
-      .describe('Target harness slug to import the promoted features into.'),
-    features: z.array(FEATURE_INPUT).min(1).max(40),
+      .optional()
+      .describe('Target harness slug. Optional in policy-mode — falls back to the `## Promote` target_harness.'),
+    features: z
+      .array(FEATURE_INPUT)
+      .max(40)
+      .optional()
+      .describe('Explicit features. Omit + pass `wave` to derive them from the plan\'s `## Promote` policy.'),
     feature_ids: z
       .array(z.string().regex(/^F-[A-Za-z0-9-]+$/))
       .optional()
@@ -251,6 +257,10 @@ export default defineTool({
       .string()
       .optional()
       .describe('Promote-policy wave these features belong to — stamped on each feature (consolidated.wave) for the deterministic wave-drain advance.'),
+    generate_items: z
+      .array(z.string())
+      .optional()
+      .describe('Policy-mode: the runtime set a generative wave\'s `for_each` expands over (e.g. the discovered universal types).'),
   }),
   async handler(args, ctx) {
     const identity = resolveAgentIdentity(ctx);
@@ -275,12 +285,40 @@ export default defineTool({
     const planTitle =
       (planFile.parsed.frontmatter as { title?: string } | null)?.title ?? args.slug;
 
+    // Resolve features / harness / wave — explicit (caller-supplied) or
+    // policy-driven: when `features` is omitted and a `wave` is given, read the
+    // plan's `## Promote` policy and build that wave's features (P-006).
+    const fail = (error: string, detail?: string) => ({
+      content: [{ type: 'text' as const, text: JSON.stringify({ ok: false, error, detail }) }],
+      isError: true as const,
+    });
+    const { features: explicitFeatures, harness_slug: explicitHarness, wave: explicitWave } = args;
+    let promoteFeatures: BuiltFeature[] = (explicitFeatures ?? []) as BuiltFeature[];
+    let harnessSlug = explicitHarness;
+    let waveId = explicitWave;
+    if (promoteFeatures.length === 0) {
+      if (!waveId) return fail('promote_input', 'provide features[] or a wave (policy-mode) to promote');
+      const { policy, warnings } = parsePromotePolicy(planFile.parsed.raw);
+      if (!policy) {
+        return fail('no_promote_policy', `plan ${args.slug} has no valid \`## Promote\` policy${warnings.length ? ': ' + warnings.join('; ') : ''}`);
+      }
+      const w = policy.waves.find((x) => x.id === waveId);
+      if (!w) return fail('unknown_wave', `wave "${waveId}" is not in the \`## Promote\` policy`);
+      const built = buildWaveFeatures(w, { generateItems: args.generate_items });
+      if (built.features.length === 0) {
+        return fail('empty_wave', `wave "${waveId}" resolved to 0 features${built.warnings.length ? ': ' + built.warnings.join('; ') : ''}`);
+      }
+      promoteFeatures = built.features;
+      harnessSlug = harnessSlug ?? policy.target_harness;
+    }
+    if (!harnessSlug) return fail('harness_slug_required', 'harness_slug is required (or set target_harness in the `## Promote` policy)');
+
     // Validate every from_items P-NNN against the plan's actual items
     // (audit B2). A typo'd id would otherwise be silently dropped during
     // the mark step — the caller would believe it covered an item that
     // does not exist. Fail fast, in both preview and apply mode.
     const unknownItems = findUnknownFromItems(
-      args.features,
+      promoteFeatures,
       (planFile.parsed.items as Array<{ id: string }>).map((i) => i.id),
     );
     if (unknownItems.length > 0) {
@@ -300,7 +338,7 @@ export default defineTool({
       };
     }
 
-    const features: PromoteFeatureInput[] = args.features.map((f) => ({
+    const features: PromoteFeatureInput[] = promoteFeatures.map((f) => ({
       title: f.title,
       body: f.body,
       acceptance: f.acceptance,
@@ -310,7 +348,7 @@ export default defineTool({
     // Preview path: emit plan event + return per-feature covers + assertion preview.
     if (!args.apply) {
       const previewItemIds = new Set<string>();
-      for (const f of args.features) {
+      for (const f of promoteFeatures) {
         for (const id of f.from_items ?? []) previewItemIds.add(id);
       }
       const previewAssertions = previewItemIds.size > 0
@@ -321,12 +359,12 @@ export default defineTool({
         planSlug: args.slug,
         event: 'promoted',
         after: {
-          harness_slug: args.harness_slug,
-          feature_count: args.features.length,
+          harness_slug: harnessSlug,
+          feature_count: promoteFeatures.length,
           assertion_count: previewAssertions.length,
           mode: 'preview',
         },
-        detail: `previewed promote to ${args.harness_slug}: ${args.features.length} feature(s), ${previewAssertions.length} assertion(s)`,
+        detail: `previewed promote to ${harnessSlug}: ${promoteFeatures.length} feature(s), ${previewAssertions.length} assertion(s)`,
       });
 
       return {
@@ -338,12 +376,12 @@ export default defineTool({
               mode: 'preview',
               plan_title: planTitle,
               preview: {
-                feature_count: args.features.length,
+                feature_count: promoteFeatures.length,
                 assertion_count: previewAssertions.length,
                 assertions: previewAssertions.map((a) => ({ val_id: a.valId, item_id: a.itemId, verify: a.verifyText })),
               },
               apply_hint: {
-                features_import_endpoint: `/api/harness/${args.harness_slug}/features/import`,
+                features_import_endpoint: `/api/harness/${harnessSlug}/features/import`,
                 note: 'Re-call with apply=true to import features + store assertions + mark plan items.',
               },
             }),
@@ -356,7 +394,7 @@ export default defineTool({
     // claims can be included in the SQLite INSERT (the import endpoint only
     // sets claims on INSERT, not UPDATE, so they must arrive with the row).
     const allItemIds = new Set<string>();
-    for (const f of args.features) {
+    for (const f of promoteFeatures) {
       for (const id of f.from_items ?? []) allItemIds.add(id);
     }
     // assertions keyed by item_id for O(1) lookup during payload construction.
@@ -373,7 +411,7 @@ export default defineTool({
     // POST features to /features/import. Server allocates F-AUTO-* ids.
     // metadata.source_plan + metadata.covers carry provenance forward.
     // claims is populated from extracted VAL-* assertions for this feature's items.
-    const importPayload = args.features.map((f, idx) => {
+    const importPayload = promoteFeatures.map((f, idx) => {
       const metadata: Record<string, unknown> = {
         source_plan: args.slug,
       };
@@ -402,7 +440,7 @@ export default defineTool({
         source_plan_slug: args.slug,
         source_plan_item_ids: f.from_items ?? [],
         ...(featureClaims.length > 0 && { claims: featureClaims }),
-        ...(args.wave && { wave: args.wave }),
+        ...(waveId && { wave: waveId }),
       };
       if (f.body) out.summary = f.body;
       if (args.feature_ids && args.feature_ids[idx]) {
@@ -410,7 +448,7 @@ export default defineTool({
       }
       return out;
     });
-    const importRes = await postFeaturesImport(args.harness_slug, importPayload);
+    const importRes = await postFeaturesImport(harnessSlug, importPayload);
 
     // Store assertions in harness_plan_assertions (PG). Best-effort — features
     // are already imported with their claims, so assertion lookup failures
@@ -428,7 +466,7 @@ export default defineTool({
               INSERT INTO harness_shared.harness_plan_assertions
                 (workspace_id, harness_slug, val_id, plan_slug, item_id, verify_text, evidence_text, status, requires_test)
               VALUES
-                (${workspaceId}, ${args.harness_slug}, ${a.valId}, ${args.slug}, ${a.itemId},
+                (${workspaceId}, ${harnessSlug}, ${a.valId}, ${args.slug}, ${a.itemId},
                  ${a.verifyText}, ${a.evidenceText}, ${a.status}, ${a.requiresTest})
               ON CONFLICT (workspace_id, harness_slug, val_id) DO UPDATE SET
                 plan_slug     = EXCLUDED.plan_slug,
@@ -503,7 +541,7 @@ export default defineTool({
       const rows = await sql<{ status: string }[]>`
         SELECT status FROM harness_shared.harness_features_consolidated
          WHERE source_plan_slug = ${args.slug}
-           AND harness_slug     = ${args.harness_slug}
+           AND harness_slug     = ${harnessSlug}
       `;
       let passed = 0;
       let inflight = 0;
@@ -532,13 +570,13 @@ export default defineTool({
       async (current): Promise<{ newBody: string | null; value: null }> => {
         if (current === null) return { newBody: null, value: null };
         const featureRows = importRes.ids.map((fid, idx) => {
-          const feat = args.features[idx];
+          const feat = promoteFeatures[idx];
           const itemRef = feat?.from_items?.[0] ? ` <!-- ${feat.from_items[0]} -->` : '';
           return `- [ ] ${fid} — ${feat?.title ?? fid}${itemRef}`;
         });
         let newBody = upsertPromotedBlock(current, featureRows);
         if (statusCounts) {
-          newBody = upsertPromoteStatusLine(newBody, args.harness_slug, statusCounts);
+          newBody = upsertPromoteStatusLine(newBody, harnessSlug, statusCounts);
         }
         // Promote-on-draft: flip status to active. Only the literal
         // `status: draft` line in frontmatter is rewritten — does not
@@ -552,13 +590,13 @@ export default defineTool({
       planSlug: args.slug,
       event: 'promoted',
       after: {
-        harness_slug: args.harness_slug,
-        feature_count: args.features.length,
+        harness_slug: harnessSlug,
+        feature_count: promoteFeatures.length,
         feature_ids: importRes.ids,
         marked_items: markedItems,
         mode: 'apply',
       },
-      detail: `applied promote to ${args.harness_slug}: ${args.features.length} feature(s) → ids [${importRes.ids.join(', ')}], ${markedItems.length} item(s) marked done`,
+      detail: `applied promote to ${harnessSlug}: ${promoteFeatures.length} feature(s) → ids [${importRes.ids.join(', ')}], ${markedItems.length} item(s) marked done`,
     });
 
     return {

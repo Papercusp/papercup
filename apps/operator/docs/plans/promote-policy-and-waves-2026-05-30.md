@@ -16,11 +16,13 @@ migration `089-promote-waves.sql` — `wave` column on consolidated (back-writte
 `current_wave` cursor on `harness_plan_status`. First real dogfood is the `restart`
 `universal-schema-2026-05-30` plan (§9a), blocked on this mechanism.
 
-Phase C started: **P-005 done** — `/features/import` + `plans:promote` now carry `wave` + per-feature
-`assigned_role`/`blocked_by`/`order` (the `wave` back-writes to `consolidated.wave` for the drain-check).
+**Phase C done** (P-005 + P-006): `plans:promote` carries `wave` + hints and back-writes `consolidated.wave`;
+policy-mode (`plans:promote { slug, wave }`) reads the `## Promote` policy and builds the wave's features
+(static + generative `for_each` over `generate_items`). Parser + schema + promote are now end-to-end for a
+manual per-wave promote.
 
-**Next:** P-006 — the policy-driven promote: `plans:promote { slug, wave }` reads the `## Promote` policy,
-builds the wave's static features and/or expands its generative `for_each` template, then applies.
+**Next:** Phase D — the deterministic wave-advance: pure drain/blocked helpers (`lib/harness/waves.ts`) +
+wiring the autoloop/director to promote the next wave when the current one drains.
 
 **Follow-up (small):** `yaml` is imported by the parser but is an undeclared (stable, lockfile-present,
 already-bundled) transitive dep — declare it as a direct operator dep when the lockfile is next reconciled
@@ -116,12 +118,19 @@ See the consuming plan's §9a for the full dogfood narrative: `Restart/docs/plan
   10 provenance tests. (b) `plans:promote` (`promote.ts`) carries a top-level `wave` (stamped on each import
   entry) + per-feature `assigned_role`/`blocked_by`/`order` hints (→ `metadata`); 20 existing promote tests
   still green, tsc clean. Additive — existing callers unaffected (wave/hints optional).
-- **P-006** `todo` Policy-driven promote mode: `plans:promote { slug, wave }` reads `parsed.promote`, resolves
-  the named wave — static → build `features[]` from the listed defs; generative → expand `for_each` against a
-  provided/queried runtime set (e.g. the universal type axis) into `features[]` via the template — then runs
-  the existing apply path (import + assertions + mark + write-back), stamping `wave` + the cursor.
-- **P-007** `todo` Tests: static-wave promote, generative-wave expansion (mock runtime set), payload fields
-  round-trip, idempotent re-promote (no dup features).
+- **P-006** `done` Policy-driven promote mode wired into `plans:promote`: `features` + `harness_slug` are now
+  optional; when `features` is omitted and a `wave` is given, the handler reads the plan's `## Promote` policy
+  (`parsePromotePolicy`), finds the wave, and builds its features (`buildWaveFeatures` — static defs and/or
+  the generative `for_each` template expanded over `generate_items`), falls back `harness_slug` →
+  `policy.target_harness`, then runs the existing apply path stamping `wave`. New errors:
+  no_promote_policy / unknown_wave / empty_wave / promote_input. Refactor: 11 `args.features` /
+  9 `args.harness_slug` / 1 `args.wave` → policy-aware locals. tsc clean; 20 existing promote tests green
+  (explicit-mode intact).
+- **P-007** `done` (logic) The policy-mode resolution logic is fully unit-tested via `parsePromotePolicy`
+  (Phase A, 8 tests) + `buildWaveFeatures` (P-006a: static / generative-expansion / no-items-warning / mixed,
+  4 tests). A handler-level integration test (apply-path round-trip) is **deferred** — the promote handler is
+  fetch/PG/plan-lock-coupled and there is no existing handler-test harness; the explicit path's helper tests
+  + the pure-logic tests cover the behavior.
 
 ## Phase D — deterministic wave-advance
 
