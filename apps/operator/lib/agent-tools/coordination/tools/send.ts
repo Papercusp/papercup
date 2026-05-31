@@ -2,8 +2,9 @@
  * coord:send — send a typed message (or coord broadcast) to one or
  * more other agents. agent-coordination-architecture-v2 §6.4 (#6).
  *
- * Appends to the caller's outbox at coord/messages/<ownerId>.jsonl —
- * one writer per file, so no lock. Recipients see it via coord:inbox.
+ * Persists to the `messages` surface of the CoordEventLog (the operator
+ * backs it with Postgres — harness_shared.coord_event_log). Recipients
+ * see it via coord:inbox.
  */
 
 import { z } from 'zod';

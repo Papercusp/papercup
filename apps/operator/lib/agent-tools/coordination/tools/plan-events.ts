@@ -1,9 +1,9 @@
 /**
  * coord:plan-events — read the plan-event history feed.
  *
- * agent-coordination-architecture-v2 §8. plan_event lines live in
- * coord/plan-events-<YYYY-MM>.jsonl, NOT in coord/messages/ — so
- * coord:inbox does not surface them. This tool is the read surface the
+ * agent-coordination-architecture-v2 §8. plan_event records live on the
+ * `plan-events` surface of the CoordEventLog (Postgres), NOT the
+ * `messages` surface — so coord:inbox does not surface them. This tool is the read surface the
  * OMP turn-start extension uses to assemble the "plans changed since
  * you last read" reminder section (scoped by the watermark's
  * plan_events_since_ts pointer).

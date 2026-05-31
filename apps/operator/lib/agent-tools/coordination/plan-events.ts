@@ -3,16 +3,13 @@
  * feed.
  *
  * Event types + the read filter live in @papercusp/coordination/core; the
- * append + monthly-rotation I/O lives behind the CoordEventLog seam
- * (coordLog). `planEventsFile` / `listPlanEventsFiles` remain exported
- * (diagnostics + tests); they recompute the same fs layout the seam uses.
+ * append + read I/O lives behind the CoordEventLog seam (coordLog), which
+ * the operator backs with Postgres (harness_shared.coord_event_log).
  *
  * agent-coordination-architecture-v2 §8. Emission is BEST-EFFORT — a
  * failure must never break a plan write (emitPlanEventForCaller swallows).
  */
 
-import { promises as fs } from 'node:fs';
-import { join } from 'node:path';
 import {
   newMsgId,
   filterPlanEvents,
@@ -20,7 +17,6 @@ import {
   type PlanEventType,
   type ReadPlanEventsOpts,
 } from '@papercusp/coordination/core';
-import { coordDir } from './paths';
 import { coordLog } from './log';
 import {
   resolveAgentIdentity,
@@ -37,40 +33,6 @@ export interface EmitPlanEventOpts {
   before?: unknown;
   after?: unknown;
   detail?: string;
-}
-
-const PLAN_EVENTS_MONTHLY_RE = /^plan-events-\d{4}-\d{2}\.jsonl$/;
-
-/**
- * The plan-events file for a given month (default: current). Monthly
- * rotation (`coord/plan-events-<YYYY-MM>.jsonl`) keeps any single file
- * bounded; reads concatenate across files.
- */
-export function planEventsFile(date: Date = new Date()): string {
-  const ym = `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, '0')}`;
-  return join(coordDir(), `plan-events-${ym}.jsonl`);
-}
-
-/**
- * All plan-events files in coord/, oldest→newest: the legacy un-suffixed
- * file first (pre-rotation history), then the monthly files in lexical
- * (= chronological) order.
- */
-export async function listPlanEventsFiles(): Promise<string[]> {
-  const dir = coordDir();
-  let entries: string[];
-  try {
-    entries = await fs.readdir(dir);
-  } catch (e: unknown) {
-    if ((e as NodeJS.ErrnoException)?.code === 'ENOENT') return [];
-    throw e;
-  }
-  const out: string[] = [];
-  if (entries.includes('plan-events.jsonl')) out.push(join(dir, 'plan-events.jsonl'));
-  for (const f of entries.filter((x) => PLAN_EVENTS_MONTHLY_RE.test(x)).sort()) {
-    out.push(join(dir, f));
-  }
-  return out;
 }
 
 /** Append one plan_event line. Throws on fs failure — prefer
