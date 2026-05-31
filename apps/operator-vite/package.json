@@ -7,7 +7,8 @@
     "dev": "vite",
     "dev:nohmr": "vite build --watch --mode development",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test": "vitest run"
   },
   "dependencies": {
     "@hono/node-server": "^2.0.3",
@@ -18,11 +19,13 @@
     "react-dom": "^19.2.6"
   },
   "devDependencies": {
+    "@papercusp/test-config": "*",
     "@tanstack/router-plugin": "^1.168.9",
     "@types/react": "^19.2.15",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^6.0.2",
     "typescript": "^6.0.3",
-    "vite": "^8.0.13"
+    "vite": "^8.0.13",
+    "vitest": "^4.1.4"
   }
 }
