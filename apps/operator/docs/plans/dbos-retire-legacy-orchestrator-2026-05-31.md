@@ -11,9 +11,9 @@ owner: avi@storewolf.com
 
 ## Now
 
-**State:** P-009 SHIPPED (D-007): DBOS is now the default orchestrator for all harnesses, the legacy main loop is retired (reversibly — it was already out of the live path), all flag-gated default-on (revert: PAPERCUSP_DBOS_ORCHESTRATOR=0). Phase F + the two root-cause fixes (HARNESS_SLUG schema, P-010 empty-run resilience) are committed + validated (director does real calls; durability survives restarts). The full green end-to-end run (DONE→curator+documenter) was never observed — blocked by this shared box's restart churn (concurrent agents restart the dev-api ~every 2 min, killing the multi-minute worker) — but the user opted to ship P-009 on the validated mechanisms. Dev box opted out of dispatch (DISPATCH_HARNESSES=none) to avoid flooding the contended box.
+**State:** DONE + VALIDATED. P-009 shipped (DBOS is the default orchestrator for all harnesses; legacy loop retired, reversible) AND a GREEN RUN confirmed it (D-008): the durable pipeline drove sheets/F-FIX-027 end-to-end — real worker commit (59a6876), validator PASS, feature→passed, DONE→finalize→SUCCESS, surviving 6 recoveries. The whole arc (HARNESS_SLUG fix, P-010 resilience, durable workflow, finalization) is validated on a real harness. One open finding: the needs-human DONE-gate is over-broad (plans-items API ignores harness_slugs), so curator/documenter were gate-skipped this run (execution path otherwise proven + unit-tested).
 
-**Next:** Confirm the green run on a QUIET single-user box: set PAPERCUSP_DBOS_DISPATCH_HARNESSES to a slug (or '*') with PAPERCUSP_DBOS_ENABLE=1, watch a feature reach DONE→curator+documenter→SUCCESS via /admin/dbos. If DBOS proves unable to complete runs in production, the instant revert is PAPERCUSP_DBOS_ORCHESTRATOR=0 (restores the legacy path). Once confirmed stable, hard-delete the retired legacy files (main-loop.ts/run.ts/pre-loop.ts/lanes.ts) per the retire-but-keep convention.
+**Next:** Decide the needs-human gate fix (harness-scope the finalizer's check, or fix the plans-items API filter) so the finalizer's curator+documenter actually run on DONE — then optionally re-validate to watch them fire. Cleanup: revert the dev .env.local PAPERCUSP_WORKSPACE_ID=default pin (restore the desktop's papercusp-workspace). Once confident, hard-delete the retired legacy files (main-loop.ts/run.ts/pre-loop.ts/lanes.ts).
 
 ## Background
 
@@ -145,4 +145,17 @@ DELIBERATELY NOT FLIPPED: the master boot switch PAPERCUSP_DBOS_ENABLE stays exp
 DEV-BOX SAFETY: the shared dev box .env.local sets DISPATCH_HARNESSES=none (opt-out) so the now-default-all dispatcher doesn't flood the contended box (restarting ~every 2 min from concurrent agents) or collide with the agents editing papercup/restart. The rollout to a live harness should run on a quiet single-user box (set DISPATCH to a slug or '*').
 
 STATUS: 66 dbos + 7 state-pg + 4 idempotency tests green; tsc clean for the changed files (pre-existing ctx.pg<> generic + zero-harness tsc errors are unrelated). P-008's full green run remains environmentally blocked (box churn); the mechanisms (director, P-010 resilience, durability) are validated. REVERT: set PAPERCUSP_DBOS_ORCHESTRATOR=0 everywhere → legacy path + carve-out-off + autoloop ticker back.
+Related: P-008, P-009
+
+### D-008 — D-008 — GREEN RUN achieved: full durable pipeline completed a real feature end-to-end (P-008/P-009 VALIDATED)
+Date: 2026-05-31
+On the now-quiet box, the durable pipeline pipeline:sheets:F-FIX-027:e1 reached SUCCESS with the COMPLETE step sequence: decide-0 → invoke-worker-0 → decide-1 → invoke-worker-1 → decide-2 → invoke-validator-2 → decide-3 → finalize-done. Real work, airtight:
+- worker:t1 ran 578s and made a REAL commit in sheets-clone: `59a6876 feat(F-FIX-027): make autofit column/row resize undoable`.
+- validator:t2 ran 314s and PASSED: "VALIDATOR F-FIX-027 round 1: passed — 1 pass, 0 fail".
+- director decided DONE → finalize-done step ran → SUCCESS. Feature F-FIX-027 → status `passed`.
+- Survived 6 DBOS recoveries (host restarts during the churny period) and still completed — durability proven in the strongest possible way.
+
+This validates the ENTIRE arc end-to-end on a real harness: the HARNESS_SLUG fix (D-006), P-010 empty-run resilience (worker:t0 was an empty 4.5s but the pipeline recovered → worker:t1 did real work), the durable workflow, and the DONE finalization path. So P-009 (DBOS as the default orchestrator) is now VALIDATED, not just shipped-on-faith.
+
+ONE FINDING (pre-existing, ported from legacy handleDone): the needs-human DONE-gate is OVER-BROAD. `/api/admin/plans/items?needsHuman=true&harness_slugs=<slug>` IGNORES harness_slugs — querying a nonexistent slug returns the same 4 operator-level items (coord-channels-pg-port P-014, harness-tests-tab P-070, spec-md-ui-deprecation P-004/010) as `sheets`. None are sheets-harness items. So ANY open operator-level needs-human item blocks EVERY harness's DONE finalization → curator + documenter were SKIPPED this run (the gate fired correctly given the API's response, but the API over-returns). The curator/documenter EXECUTION path is otherwise proven: it's the same spawnInvokeOnce + buildPipelineExtraEnv that director/worker/validator used successfully in this very run, and planFinalization is unit-tested. Fix options: (a) scope the finalizer's needs-human check to the harness's own started plans (harness_plan_status), or (b) fix the plans-items API harness_slugs filter (affects the legacy gate + Plans UI too) — needs a product call on whether needs-human is harness-scoped or operator-global.
 Related: P-008, P-009
