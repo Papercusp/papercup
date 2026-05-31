@@ -81,9 +81,17 @@ red suite is headless-env timeouts + a peer's `@papercusp/db-org` rename + today
 in-tree-vs-mirror + public-promotion decision, owned by the user (handled separately).
 **P-015** `deferred` — a persistence seam for card-correlator/state-channel/replay-buffer;
 YAGNI (no consumer; in-memory defaults already make the core standalone-usable), revisit
-when a host needs durable cards/state. **The extraction itself is complete.** Follow-up
-nicety: generic `Tx` on `UnifiedToolContext`; `isSuperuser`/`isPowerUser` remain host ctx
-*metadata*.
+when a host needs durable cards/state. **The extraction itself is complete.**
+
+**Assessed + declined 2026-05-31 (won't-do, YAGNI):** generic `Tx` on
+`UnifiedToolContext`. `ToolContext<Tx = any>` is *already* generic, yet a repo-wide
+grep finds **zero** callers that thread a concrete `Tx` (the only `ToolContext<…>`
+hit is the doc-comment describing the capability); the host reads `ctx.tx` untyped
+across ~96 tools via tagged-template SQL. Parameterizing `UnifiedToolContext`
+(35 files / 125 references — the engine's hottest type) for a type argument no one
+would supply is the same speculative-seam YAGNI as P-015. Left as `tx?: any`; a host
+that wants typed storage can already re-export `ToolContext<MyClient>`.
+`isSuperuser`/`isPowerUser` remain host ctx *metadata*.
 
 > ℹ️ **Resolved 2026-05-30:** the `@papercusp/chat-protocol` build break (from commit
 > `4a5ac215`) was the submodule's `package.json` declaring its entry only via `exports`
