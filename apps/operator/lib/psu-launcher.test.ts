@@ -17,6 +17,7 @@ describe('psu-launcher arg parsing', () => {
     expect(parseArgs([])).toEqual({
       picker: true,
       resume: false,
+      resumeId: null,
       agent: null,
       role: null,
       feature: null,
@@ -36,6 +37,7 @@ describe('psu-launcher arg parsing', () => {
     ).toEqual({
       picker: false,
       resume: false,
+      resumeId: null,
       agent: 'claude',
       role: null,
       feature: null,
@@ -49,8 +51,22 @@ describe('psu-launcher arg parsing', () => {
     });
   });
 
-  it('parses --resume', () => {
-    expect(parseArgs(['--resume']).resume).toBe(true);
+  it('parses --resume (picker mode — no id)', () => {
+    const a = parseArgs(['--resume']);
+    expect(a.resume).toBe(true);
+    expect(a.resumeId).toBeNull();
+  });
+
+  it('parses --resume=<id> (direct, skip picker)', () => {
+    const a = parseArgs(['--resume=42']);
+    expect(a.resume).toBe(true);
+    expect(a.resumeId).toBe('42');
+  });
+
+  it('parses a bare positional id after --resume', () => {
+    const a = parseArgs(['--resume', '57']);
+    expect(a.resume).toBe(true);
+    expect(a.resumeId).toBe('57');
   });
 
   it('parses --no-plan', () => {

@@ -34,10 +34,14 @@ const OPERATOR_URL = process.env.PAPERCUSP_OPERATOR_URL || 'http://localhost:307
 
 /** Parse the scripting-escape flags. Pure — exported for tests. */
 export function parseArgs(argv) {
-  const out = { picker: true, resume: false, agent: null, role: null, feature: null, workspace: null, harness: null, plan: null, noPlan: false, model: null, resumeSession: null, launchContext: null };
+  const out = { picker: true, resume: false, resumeId: null, agent: null, role: null, feature: null, workspace: null, harness: null, plan: null, noPlan: false, model: null, resumeSession: null, launchContext: null };
   for (const a of argv) {
     if (a === '--no-picker') out.picker = false;
+    // `--resume` alone → pick from the recent-session list. `--resume=<id>`
+    // (or a bare id after `--resume`) → resume THAT adv_session directly,
+    // no picker. The id is the /adv adv_sessions row id.
     else if (a === '--resume') out.resume = true;
+    else if (a.startsWith('--resume=')) { out.resume = true; out.resumeId = a.slice('--resume='.length) || null; }
     else if (a === '--no-plan') out.noPlan = true;
     else if (a.startsWith('--agent=')) out.agent = a.slice('--agent='.length);
     else if (a.startsWith('--role=')) out.role = a.slice('--role='.length);
@@ -51,6 +55,8 @@ export function parseArgs(argv) {
     else if (a.startsWith('--model=')) out.model = a.slice('--model='.length);
     else if (a.startsWith('--resume-session=')) out.resumeSession = a.slice('--resume-session='.length);
     else if (a.startsWith('--launch-context=')) out.launchContext = a.slice('--launch-context='.length);
+    // Bare positional id after `--resume` (ergonomic `psu --resume 42` form).
+    else if (!a.startsWith('--') && out.resume && !out.resumeId) out.resumeId = a;
   }
   return out;
 }
@@ -399,20 +405,52 @@ function fmtAge(iso) {
   return `${Math.floor(ms / d)}d ago`;
 }
 
-// `psu --resume`: pick a recent tracked session, cd to its recorded cwd,
-// and resume the agent there — so resume works no matter where the
-// session was launched from.
-async function resumeFlow() {
-  const { search } = await import('@inquirer/prompts');
+/** Resume a resolved session: cd to its recorded cwd + run the agent's
+ *  resume command there, so resume works no matter where it was launched. */
+function launchResume(session) {
+  const { wrapperBin, args } = resumeArgsFor(session);
+  console.error(`psu: resuming ${session.agent} in ${session.cwd}  (${wrapperBin} ${args.join(' ')})`);
+  runWrapper({
+    wrapperBin,
+    args,
+    cwd: session.cwd,
+    envelopeEnv: {
+      PAPERCUSP_AGENT: session.agent,
+      ...(session.id != null ? { PAPERCUSP_ADV_SESSION_ID: String(session.id) } : {}),
+    },
+  });
+}
+
+// `psu --resume` (picker) or `psu --resume=<id>` / `psu --resume <id>`
+// (direct): resume a recent tracked session — cd to its recorded cwd and
+// run the agent there.
+async function resumeFlow(args = {}) {
   const data = await api('/api/adv/sessions/resumable');
   const sessions = (data.sessions || []).filter((s) => s.agent && s.cwd);
   if (sessions.length === 0) {
     console.error('psu: no resumable sessions found — launch one with `psu` first.');
     process.exit(1);
   }
+
+  // Direct resume by id — skip the picker.
+  if (args.resumeId) {
+    const target = sessions.find((s) => String(s.id) === String(args.resumeId));
+    if (!target) {
+      const ids = sessions.map((s) => s.id).filter((x) => x != null).join(', ');
+      console.error(
+        `psu: no resumable session with id "${args.resumeId}" (resumable ids: ${ids || 'none'}). ` +
+          `A session needs a recorded agent + cwd to resume.`,
+      );
+      process.exit(1);
+    }
+    launchResume(target);
+    return;
+  }
+
+  const { search } = await import('@inquirer/prompts');
   const rows = sessions.map((s) => ({
     name:
-      `${s.agent}  ·  ${s.planSlug ? `plan ${s.planSlug}` : 'no plan'}  ·  ${s.cwd}  ·  ${fmtAge(s.startedAt)}` +
+      `${s.id != null ? `#${s.id}  ·  ` : ''}${s.agent}  ·  ${s.planSlug ? `plan ${s.planSlug}` : 'no plan'}  ·  ${s.cwd}  ·  ${fmtAge(s.startedAt)}` +
       `${s.endedAt ? '' : '  · active'}`,
     value: s,
   }));
@@ -420,18 +458,7 @@ async function resumeFlow() {
     message: 'Resume which session?',
     source: async (term) => filterRows(rows, term),
   });
-
-  const { wrapperBin, args } = resumeArgsFor(picked);
-  console.error(`psu: resuming ${picked.agent} in ${picked.cwd}  (${wrapperBin} ${args.join(' ')})`);
-  runWrapper({
-    wrapperBin,
-    args,
-    cwd: picked.cwd,
-    envelopeEnv: {
-      PAPERCUSP_AGENT: picked.agent,
-      ...(picked.id != null ? { PAPERCUSP_ADV_SESSION_ID: String(picked.id) } : {}),
-    },
-  });
+  launchResume(picked);
 }
 
 // `psu --role=<role>` (or picking a non-su role): an interactive,
@@ -491,7 +518,7 @@ export function agentInvalidForRole(agent) {
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   if (args.resume) {
-    await resumeFlow();
+    await resumeFlow(args);
     return;
   }
 
