@@ -19,9 +19,9 @@ and the order to do it in.
 
 ## Now
 
-**State:** Generalization arc complete: 10 libs generalized + double-audited, grouped under libs/generic/, 9 in-repo packages promoted to private Papercusp/* repos, Restart↔Papercusp submodule sync reconciled (incl. selective papergrid reconciliation). @restart retirement now landed for Papercup (D-014): the scope was renamed (not deleted) so Papercup is already 0-@restart and old imports already fail to resolve; a GATING CI guard (scripts/check-no-restart-imports.mjs, npm lint:no-restart, in test.yml) makes that permanent + loud. Remaining for a true "retire ALL": the sibling Restart project still has 357 @restart imports / 52 deps and must run its own @restart->@papercusp sweep before @restart can be broken there — that breaks an active project, so it needs an explicit owner.
+**State:** Papercup @restart retirement done + guarded (D-014). Investigated the Restart sweep (D-015): it is NOT a flat 357-import rename — it's a submodule-pin bump on a LIVE storefront. ~270 of the imports are Restart-owned (@restart/db, ui, shop-sdk, universal-schema, com, ...) and stay @restart forever; only ~96 are migratable shared libs, and all are gated on submodule bumps: papergrid family (76 imports — clean FF bump b1ad70c->main, pulls brand-agnostic theme, needs a configureGridColors shim) and sync (20 imports — deliberately pinned via restart-pin/restart-prod-pin, high risk). Stopped before mutating Restart and surfaced the per-lib decision rather than risk the storefront.
 
-**Next:** Decide whether to drive Restart's @restart->@papercusp import migration (357 imports) — needed before @restart can be retired Restart-side; until then Papercup is fully retired + guarded.
+**Next:** User to decide per-lib: approve the papergrid bump+rename in Restart (clean FF, needs grid-colors shim) and whether to bump sync off its deliberate pin (recommend: keep pinned, leave @restart/sync) — ideally in a Restart-scoped session with services manageable.
 
 ## Background
 
@@ -642,6 +642,22 @@ Goal: "retire all the restart versions safely so that (1) no code is deleted, (2
 **Restart — NOT retired; do not break autonomously.** The sibling Restart project (`/home/marsh-office/Restart`) still has 357 `@restart/*` imports, 52 package.json deps, and a full `node_modules/@restart/*` tree. The shared repos are `@papercusp/*` on `main` but carry `restart-pin-*` branches (e.g. `Papercusp/ui-primitives@restart-pin-d31ac5df`) where Restart pins its versions. Making `@restart/*` fail globally would break Restart until it migrates all 357 imports — that's a Restart-side migration decision, out of scope for an autonomous Papercup pass. The same guard script can be dropped into Restart once Restart finishes its own `@restart -> @papercusp` import sweep.
 
 **Net:** retirement is enforced per-project. Papercup is done + guarded; Restart's migration is the remaining "all" work and needs an explicit owner/decision because it temporarily breaks an active project.
+
+
+### D-015 — Restart @restart sweep is a submodule-pin bump on a live storefront, NOT a flat 357-import rename — ~96 real imports, sync deliberately pinned
+Date: 2026-05-31
+Investigated the Restart side of the @restart retirement (user: "do the Restart sweep now"). The "357 imports" figure was raw substring matching (counts comments/strings/docs). Ground-truth analysis:
+
+**Real imports = 365 total, only ~96 migratable.** Using a real-import matcher (from/require/import('@restart/X')):
+- **Restart-OWNED, stay @restart forever (~270):** db (95), grid... see below, ui (32), shop-sdk (31), universal-schema (33), com (4, explicitly first-class per Restart AGENTS.md), mongo, redis, typesense, zero, request-origin, marketplace-adapters, catalog-search, startup, api-auth, db-org, data-fetch.
+- **Migratable shared libs, ALL gated on submodule-pin bumps (~96):**
+  - papergrid family = 76: grid (42), bloom-grid (22), grid-core (7), kv-persist (3), kv-persist-indexeddb (2). Restart pins libs/papergrid at b1ad70c; latest Papercusp/papergrid main (9ec71bc, = my reconciliation) is a CLEAN fast-forward (ahead 8, behind 0) where every sub-package is now @papercusp/* — INCLUDING `grid` (so @restart/grid's 42 imports also migrate). Bump pulls the brand-agnostic theme + de-coupled persistence -> Restart grids go neutral-gray unless Restart adds a configureGridColors() shim (mirror of apps/operator-vite/src/grid-colors.ts). API-drift risk on the heavily-used grid package.
+  - sync = 20: Restart pins 8531a782 via local branch restart-p4-optimistic-mutators; remote has deliberate restart-pin-8531a782 + restart-prod-pin markers. Bumping off a DELIBERATE pin -> high risk of pulling/losing divergent work.
+- **Already @papercusp in Restart (ui-primitives, agent-chat, rerank, test-config): ZERO real imports** — only stale comments/strings. Nothing mechanical to do.
+
+**Why I did NOT execute autonomously:** (1) No zero-risk partial — every rename requires first bumping a submodule pin + node_modules relink + build verification. (2) Restart is a LIVE STOREFRONT with running overmind services (AGENTS.md documents a 2026-04-19 outage from service disruption) — Papercup's "break freely, no users" rule does not apply. (3) sync is deliberately pinned; bumping it is exactly what those pins exist to prevent. Surfaced to the user for a per-lib decision instead.
+
+**Recommended safe path (per-lib, ideally in a Restart-scoped session):** (a) papergrid first — bump submodule b1ad70c->main (reversible FF), add a Restart configureGridColors() shim, rename the 76 imports + ~9 package.json deps, npm install to relink, typecheck affected. (b) sync — only after an explicit decision on the restart-pin/restart-prod-pin strategy; likely keep pinned (leave @restart/sync) until Restart is ready to adopt mainline sync. Until then @restart/sync legitimately stays.
 
 ## Addendum — Phase 1 shipped (2026-05-30) + impact on in-flight plans
 
