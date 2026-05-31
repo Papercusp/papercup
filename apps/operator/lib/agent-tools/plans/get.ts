@@ -30,6 +30,7 @@ const ALL_ROLES = [
   'operator',
   'documenter',
   'curator',
+  'promote', // the promote agent reads its plan's `## Promote` policy via plans:get
 ] as const;
 
 const argsSchema = z.object({

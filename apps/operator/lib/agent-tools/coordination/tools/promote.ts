@@ -224,7 +224,10 @@ export default defineTool({
   },
   capability: 'coord:write',
   requirePrincipal: false,
-  agentRoles: [...COORD_ROLES],
+  // The `promote` role's whole job IS to call this tool (wave-advance sweep →
+  // invoke promote → plans:promote), so it must be in the allowlist alongside
+  // the coordination roles.
+  agentRoles: [...COORD_ROLES, 'promote'],
   args: z.object({
     slug: z.string().min(1).describe('Plan slug to promote.'),
     harness_slug: z
