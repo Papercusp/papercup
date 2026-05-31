@@ -61,7 +61,11 @@ export function buildInvokeOnce(spec: InvokeOnceSpec): {
     // so invoke-route/scoper/expert agents hit the SAME Postgres the operator
     // uses. `??` keeps any explicit override (e.g. tests forcing in-memory).
     PAPERCUSP_USE_PG_STATE: process.env.PAPERCUSP_USE_PG_STATE ?? '1',
-    DATABASE_URL: process.env.DATABASE_URL ?? getHarnessAdminUrl(),
+    // `||` (not `??`): an EMPTY-string DATABASE_URL must fall through to the
+    // resolved admin URL, not mask it — an empty value reaches the agent as
+    // `DATABASE_URL=''`, which spawn-mcp reads as "no PG DSN" and refuses to sign
+    // the MCP URL (observed breaking a durable-pipeline director invoke).
+    DATABASE_URL: process.env.DATABASE_URL || getHarnessAdminUrl(),
   };
   if (spec.resultPath) env.RESULT_PATH = spec.resultPath;
   for (const [k, v] of Object.entries(spec.extraEnv ?? {})) {

@@ -212,6 +212,21 @@ Closing the loop on the remaining Phase-3 items after reading the actual code.
 mechanism (workflow + runner + idempotency) → carve-out → start-side → endpoint → auto-dispatcher → per-feature director.md, with validation across gate7 (real DBOS, 9/9), the proven-code runner (= the live `/invoke` route + 52 tests), the director-vs-real-LLM (4/4), and buildPrompt-scoping (code-confirmed). The only remaining item is the OPTIONAL gold-standard: one FULL simultaneous real-agent pipeline run (director→worker→validator on a throwaway repo) — a human-supervised confidence step, since every link is already proven separately. Production rollout = flip `PAPERCUSP_DBOS_ORCHESTRATOR=1` + opt a harness in via `PAPERCUSP_DBOS_DISPATCH_HARNESSES`, then watch `/admin/dbos`.
 Related: P-008, P-010, P-011, P-012, P-013
 
+### D-017 — Gold-standard FULL real-agent run SUCCEEDED; two real bugs found + fixed; rollout-ready
+Date: 2026-05-31
+Ran the full durable pipeline with REAL agents through the LIVE operator (flag flipped + host restarted), against an isolated throwaway harness `dbostest` (git repo at /tmp/dbos-real-proj + a trivial "create hello.txt" feature).
+
+**GOLD STANDARD ✅ (pipeline `pipeline:dbostest:F-1:e0`):** director (real agent, **52s**, `dbostest:F-1:director:t0` exit 0) decided `NEXT_WORKER F-1` → worker (real agent) **created `hello.txt` + committed `b6f5e07`** → director (turn 1) decided DONE → workflow **SUCCESS**, 3 checkpointed steps (`decide-0` → `invoke-worker-0` → `decide-1`). Also proven live: **epoch progression** (e0 done → e1 fresh, director correctly judged the already-done feature → DONE in one call), **idempotency keys** end-to-end, **completed-not-re-run** (crashing the host on a SUCCESS workflow left it SUCCESS, recovery_attempts=1), and the **auto-dispatcher** scheduled workflow firing every 30s (no-op with no harnesses opted in). Mid-flight resume stays gate7-proven (the real runs completed faster than a reliable crash window).
+
+**BUG 1 — false-SUCCESS on a failed invoke (FIXED, commit 714b79aa, validated live).** A transient director-invoke failure produced empty output → `parseDecision('')`=null → the loop broke → workflow reported **SUCCESS with no work done**. Fix: the decide step throws on `exit!=0 || empty output`, so DBOS retries it (3×, 5s backoff×2) and a persistent failure **ERRORs** the workflow. Confirmed in the host log: F-2 retried 3× then ERRORed where it previously false-SUCCESS'd.
+
+**BUG 2 — spawn-mcp DSN gap.** invoke-once's `spawn-mcp` URL signing needs `DATABASE_URL`/`PAPERCUSP_PG_DSN` in env; the dev host lacked it and `buildInvokeOnce`'s `?? getHarnessAdminUrl()` fallback was intermittently empty → `no PG DSN` → director invoke fails. Pinned `DATABASE_URL` in the host `.env.local` (dev-box config; production resolves it via embedded-pg discovery). NOTE: a code-level hardening (guard the empty-string fallback) is worth a follow-up.
+
+**Setup quirk (not Phase 3):** the hand-registered throwaway harness entry didn't persist (the registry is rebuilt from a canonical source that excluded it) → later runs got `resolveProject`=null → ERROR. Cleaned up: dropped the dbostest schema, features, run-output, dbos workflows, and the repo.
+
+**Rollout state:** `PAPERCUSP_DBOS_ORCHESTRATOR=1` left ON on the live operator = **rollout-ready** (workflow + runner + dispatcher registered, manual trigger `POST /api/admin/dbos/pipeline/start` live, dispatcher fires no-op, carve-out returns empty for all real harnesses → their orchestration is unchanged). **No real harness is opted into auto-dispatch** (`PAPERCUSP_DBOS_DISPATCH_HARNESSES` empty) — recommend hardening the spawn-mcp DSN reliability (BUG 2 code follow-up) before opting a real harness into unattended auto-dispatch.
+Related: P-012, P-013
+
 ## Phase A — invoke() idempotency hardening (finish P-015)
 
 - **P-001** `todo` Dedicated idempotent-hit unit test: mock `ctx.pg`'s `readRunOutputPg` to return a
