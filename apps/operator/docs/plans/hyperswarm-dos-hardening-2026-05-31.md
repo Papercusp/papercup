@@ -136,6 +136,24 @@ delegates per-op handling to the apply handler (no built-in op-rate limit). Reus
 `@papercusp/rate-limit` + the `auth-rate-limit.ts` pattern rather than authoring a new
 limiter, with injected clocks so the limits are deterministically unit-testable.
 
+
+### D-003 — Prior-art check (Hyperswarm built-ins + libp2p) — three corrections to the items
+Date: 2026-05-31
+Web research (2026-05-31) against the Hyperswarm README + libp2p's DoS-mitigation guidance confirms the plan's shape is right but corrects three specifics:
+
+**What Hyperswarm actually gives (built-in, "use what's there"):** `maxPeers` (total connection cap, default unlimited); `firewall(remotePublicKey) => bool` (reject pre-handshake, default allow-all; the handshake payload also carries the remote IP); the `connection` event's second arg `PeerInfo` with `.publicKey` (Noise key) + `.ban(bool)`. NOT built in: per-IP/per-peer connection rate-limiting, op-rate-limiting, or resource scopes — so Phases 3-4 ("ours") are correctly ours.
+
+**Correction 1 (P-001):** `maxClientConnections`/`maxServerConnections` are NOT documented Hyperswarm constructor options (they exist on the DHT server / @hyperswarm/seeders, not the swarm). Use **`maxPeers`** as the documented hard cap; drop the client/server-split claim.
+
+**Correction 2 (P-004):** `PeerInfo.ban(true)` prevents *future reconnection* but explicitly **does NOT close the existing connection** ("Banning will prevent any future reconnection attempts, but it will not close any existing connections"). To drop a live flooder immediately we must ALSO `socket.destroy()` — ban() alone is insufficient.
+
+**Correction 3 (P-005):** rate-limit on the **remote IP** (exposed in the firewall's handshake payload), not just the Noise `publicKey`. Noise keys are free to generate, so a Sybil flooder rotates keys to evade per-key limits; libp2p rate-limits per-IP/subnet for exactly this reason (go-libp2p default: ~1 conn / 5s / IP, burst 16). Per-key is still useful for ban-targeting, but the rate axis should be IP/subnet.
+
+**Layered-backstop note (matches libp2p philosophy):** per-IP and per-key limits are speed-bumps — NAT/CGNAT shares IPs and keys rotate. The real backstops are the hard `maxPeers` cap (bounds concurrency regardless of identity) and the per-writer op/byte limit at the projection (P-006, bounds *damage* regardless of identity). libp2p's analogues: ConnManager high/low-watermark trimming, the per-peer resource scope (memory/FD/inbound-conn), and ConnectionGater.InterceptAccept (= Hyperswarm's `firewall`).
+
+Sources: github.com/holepunchto/hyperswarm README; npmjs.com/package/hyperswarm; docs.libp2p.io/concepts/security/dos-mitigation; libp2p.io go-libp2p v0.42 release notes (per-IP rate limiting); github.com/holepunchto/autobase README (apply `interrupt` is the only built-in escape hatch — no op-rate-limit).
+Related: P-001, P-004, P-005
+
 ## Cross-references
 - `papercusp-trust-model-2026-05-31` §12 — anti-flood funnel + the recorded gap (canonical design rationale).
 - `apps/operator/lib/sync/hyperbee/swarm.ts` — `getSharedSwarm()` (Phase 1/2 constructor opts + firewall) + `joinHarnessSwarm` connection handler (Phase 2 PeerInfo, Phase 3 conn rate-limit).
