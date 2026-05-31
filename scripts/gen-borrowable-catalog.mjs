@@ -30,6 +30,8 @@ const BORROWABLE = [
   ['libs/generic/embedded-pg-discovery',      'Pure utilities & infra'],
   ['libs/generic/plan-parser',                'Pure utilities & infra'],
   ['libs/generic/rate-limit',                 'Pure utilities & infra'],
+  ['libs/generic/papergrid/kv-persist',           'Pure utilities & infra'],
+  ['libs/generic/papergrid/kv-persist-indexeddb', 'Pure utilities & infra'],
   ['libs/papercusp/packages/file-claim',  'Pure utilities & infra'],
   ['libs/generic/token-kit',                      'Pure utilities & infra'],
   ['libs/generic/search',                     'Search & retrieval'],

@@ -1,6 +1,9 @@
 // First import, before any route module or dependency evaluates: install
 // the `Buffer` global that Vite (unlike Next's webpack) does not provide.
 import './buffer-polyfill';
+// Inject Papercup's grid palette before any grid renders (grid-core went
+// brand-agnostic; see grid-colors.ts).
+import './grid-colors';
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { RouterProvider, createRouter } from '@tanstack/react-router';

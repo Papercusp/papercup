@@ -38,7 +38,9 @@
     "libs/generic/ipc-endpoint-server",
     "libs/generic/desktop-ipc",
     "libs/generic/search",
-    "libs/generic/memory"
+    "libs/generic/memory",
+    "libs/generic/papergrid/kv-persist",
+    "libs/generic/papergrid/kv-persist-indexeddb"
   ],
   "scripts": {
     "tokens": "style-dictionary build --config design-tokens/style-dictionary.config.mjs",
