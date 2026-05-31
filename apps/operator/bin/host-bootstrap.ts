@@ -205,4 +205,23 @@ export function runBootstrap(): void {
       }
     })();
   }
+
+  // DBOS Transact durable-jobs substrate (dbos-durable-jobs-2026-05-31).
+  // Gated by PAPERCUSP_DBOS_ENABLE=1; default OFF. Dynamic import so the host
+  // doesn't require @dbos-inc/dbos-sdk when the flag is off. This is the LIVE
+  // boot path (the Hono host) — the retired instrumentation-node.ts also has
+  // this block, but startDbos() is globalThis-idempotent so a double-call is a
+  // no-op. startDbos() itself conditionally loads the AutoLoop (PAPERCUSP_DBOS_AUTOLOOP)
+  // and periodic-timer (PAPERCUSP_DBOS_TIMERS) workflows; the legacy setInterval
+  // workers stand down via their own guards.
+  if (process.env.PAPERCUSP_DBOS_ENABLE === '1') {
+    void (async () => {
+      try {
+        const { startDbos } = await import('../lib/dbos/bootstrap');
+        await startDbos();
+      } catch (err) {
+        console.warn('[dbos] boot failed (non-fatal):', err instanceof Error ? err.message : err);
+      }
+    })();
+  }
 }
