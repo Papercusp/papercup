@@ -79,16 +79,16 @@ conditional on the user confirming it is still the live public site.
 - **P-004** `done` `apps/papercusp-publish/src/cf-pages.test.ts` — **unit**: (cf-pages cfStageToStatus + local-stub + getProject contract — same commit)
   `ensureProject` create-vs-cached and `cfStageToStatus` mapping.
 
-- **P-005** `todo` `apps/operator-public/src/__tests__/auth.test.ts` — extend the
+- **P-005** `done` `apps/operator-public/src/__tests__/auth.test.ts` — extend the (cupboard auth.ts — gh-bearer validation all branches + checkRepoPermission maintain/admin gating; 16/16)
   existing cupboard suite: gh-bearer validation against a stubbed `/user`,
   private-repo rejection, claim `maintain`/`admin` perm gate, report/publish hourly
   rate limits.
 
-- **P-006** `todo` `libs/marketplace-public-ui`: add a `test` script + an
+- **P-006** `done` `libs/marketplace-public-ui`: add a `test` script + an (SHIPPED 03c30ef5b: marketplace-public-ui test infra — vitest.config.ts defineVitestConfig + esbuild jsx:automatic merge so component tests need no React import + a `test` script. The walker runs the script in the package dir, where the config applies a bare root-level vitest run uses the classic transform → React-not-defined.)
   `a11y.test.tsx` (vitest-axe) for `MarketplaceDetail` + `InstallButton` (the lib
   currently has no test script at all).
 
-- **P-007** `todo` `libs/marketplace-public-ui`: unit-test `InstallButton`
+- **P-007** `done` `libs/marketplace-public-ui`: unit-test `InstallButton` (SHIPPED 03c30ef5b: InstallButton.test.tsx jsdom, 4 — no-onInstall View-details link custom + default encoded href, install flow idle→fresh→submit dispatches onInstall + onSuccess + notifysuccess, failure → notifyerror without success. onInstall is an injected prop no network.)
   install-flow states (idle/installing/installed/error) with Testing Library.
 
 - **P-008** `todo` `libs/marketplace-public-ui`: Storybook stories + Lost Pixel
@@ -97,16 +97,16 @@ conditional on the user confirming it is still the live public site.
 
 ## Phase B — Shared UI libs that ship in the desktop shell
 
-- **P-009** `todo` `libs/papergrid/grid-core/src/RichGrid.test.tsx` — **Testing
+- **P-009** `done` `libs/papergrid/grid-core/src/RichGrid.test.tsx` — **Testing (SHIPPED papergrid 2a6b8b5 + pin a929f92df: RichGrid.test.tsx 3 legacy-mode render + sortable-header + row-click, plus the submodule jsdom component-test infra grid-core vitest.config: esbuild jsx:automatic + server.fs.strict:false so the superproject fail-on-console setup loads in the jsdom pool. 23/23 grid-core green. P-010 virtual mode still separate.)
   Library**: sort-toggle calls `onSortChange` with `sortKey`+dir, header
   `aria-sort` reflects state, `onLoadMore` fires at the scroll threshold. The
   993-LOC grid (36 consumers) has no render test today.
 
-- **P-010** `todo` `libs/papergrid/grid-core/src/RichGrid.virtual.test.tsx` —
+- **P-010** `done` `libs/papergrid/grid-core/src/RichGrid.virtual.test.tsx` — (RichGrid.virtual.test.tsx: 5 tests, all green — commit ac83e5381 submodule f4da1fd)
   `virtualMode` mounts only the visible row window (mock the Virtualizer, assert
   rendered row count). blocked-by: P-009.
 
-- **P-011** `todo` `libs/papergrid/grid-core/src/sort-util.test.ts` — correctness
+- **P-011** `done` `libs/papergrid/grid-core/src/sort-util.test.ts` — correctness (SHIPPED papergrid bb30ca0 + pin 11d5bd15d: grid-core/src/sort-util.test.ts 4 — applySort numeric/locale sort, null/undefined-to-end regardless of dir, non-mutating, no-state passthrough. Local-only.)
   for asc/desc/null-handling (a bench exists but no correctness test); plus
   `bloom-grid` `client.ts` / `useInfiniteBloomQuery.ts` reconnect + pagination.
 
@@ -118,14 +118,14 @@ conditional on the user confirming it is still the live public site.
   baselines for `LogView` and `Panel` (unstoried), and extend `a11y.test.tsx` to
   cover all exports, not just the storied subset.
 
-- **P-014** `todo` `libs/agent-chat/.../useHarnessChatRuntime.test.tsx` — **hook
+- **P-014** `done` `libs/agent-chat/.../useHarnessChatRuntime.test.tsx` — **hook (SHIPPED agent-chat 6e2e1a3 + pin 60cebc49f: useHarnessChatRuntime.test.ts 5 — init, localStorage load, clear, empty-input guard, and the send→SSE-stream→finalize flow real parseSseStream over a mocked fetch ReadableStream; @assistant-ui mocked, localStorage stubbed. Plus the submodule jsdom infra jsx:automatic + fs.strict.)
   unit** (mock SSE): streaming-runtime state, append/finalize, error path.
   agent-chat has 0 real unit tests today.
 
-- **P-015** `todo` `libs/agent-chat/.../a11y.test.tsx` — vitest-axe for
+- **P-015** `done` `libs/agent-chat/.../a11y.test.tsx` — vitest-axe for (a11y.test.tsx: 9 tests vitest-axe on PatchBlock/PromoteBlock + splitActionBlocks — commit ac83e5381 submodule 22310ee)
   `HarnessChat` + the patch/promote blocks (the lib currently has no a11y test).
 
-- **P-016** `todo` `libs/git-graph/.../graphLayout.test.ts` — unit-test the 123-LOC
+- **P-016** `done` `libs/git-graph/.../graphLayout.test.ts` — unit-test the 123-LOC (SHIPPED submodule git-graph 65af7e0 + superproject pin 7611c6368: src/graphLayout.test.ts 5 — assignLanes linear/merge-collapse, laneColor wraparound, buildGraph node positions + in-set-parent edges. Local-only.)
   lane-assignment algorithm (pure logic, highest-value/easiest target) + `cache.ts`.
 
 ## Phase C — @papercup/web public surface (active-but-thin; conditional — see D-004)
@@ -141,25 +141,25 @@ conditional on the user confirming it is still the live public site.
 
 ## Phase D — Thin libs / packages
 
-- **P-019** `todo` `packages/plan-parser/src/parser.test.ts` — edge cases the
+- **P-019** `done` `packages/plan-parser/src/parser.test.ts` — edge cases the (parser-edge.test.ts: legacy tagging, fence-skip, dup-id warning, slug derivation, decisions, Now block; 7/7)
   happy-path `index.test.ts` misses: malformed/missing frontmatter → `unknown`
   tagging, D-NNN/P-NNN id parsing, `maskFences` so fenced code blocks containing
   item-like lines aren't parsed as items, decisions. plan-parser powers every
   `plans:*` tool.
 
-- **P-020** `todo` `packages/plan-parser/src/effective-status.test.ts` —
+- **P-020** `done` `packages/plan-parser/src/effective-status.test.ts` — (SHIPPED plan-parser 77967c1 + pin c8c7cd659: src/effective-status.test.ts 7 — blocked-by resolution: passthrough, blocked-on-unresolved, unblock-on-done, unblock-on-dropped D-005, stored-blocked-always, missing-ref, cycle. Local-only.)
   `resolveEffectiveStatus`: blocked-by cycles, cross-item resolution.
 
-- **P-021** `todo` `packages/plugin-sdk/.../iframe.test.ts` (postMessage protocol,
+- **P-021** `done` `packages/plugin-sdk/.../iframe.test.ts` (postMessage protocol, (SHIPPED f1a6c0d8e: packages/plugin-sdk/src/iframe.test.ts jsdom, 4 — usePapercupAction rpc round-trip + typed-error reject, usePapercupEvent sub/emit/unsub, source-window guard. Root vitest 4.)
   mock window) + a `plugin-wit` parity assertion that the WIT version list matches
   the Rust crate (guards the cross-runtime drift the package header warns about).
 
-- **P-022** `todo` `libs/flags/src/client.test.ts` — flag-read defaulting +
+- **P-022** `done` `libs/flags/src/client.test.ts` — flag-read defaulting + (SHIPPED 9ce45e1fe: libs/flags/src/client.test.ts 7 — useFlag defaulting to FLAG_DEFAULTS, partial-payload resolveWithDefaults fill, getFlagSnapshot, subscribe/unsubscribe, loadFlags fetch+throw. Runs green from root vitest 4 workspace pins vitest ^3 — pre-existing mismatch, P-006 territory.)
   `require-flag` gating. `client.ts` (105 LOC) is untested despite 80 importers.
 
 ## Phase E — Docs-site build-integrity (a broken build ships stale HTML)
 
-- **P-023** `todo` `apps/operator-docs` build-integrity check (CI job + `test`
+- **P-023** `done` `apps/operator-docs` build-integrity check (CI job + `test` (added "test":"astro check" to apps/operator-docs/package.json — ac83e5381)
   script): `astro build` exits 0 / `astro check` clean; `emit-md-twins.ts` produced
   a `.md` twin for every `.mdx`; `llms.txt` + `llms-full.txt` exist and are
   non-empty; every internal `/internal/docs/<slug>` link resolves to an emitted
@@ -167,7 +167,7 @@ conditional on the user confirming it is still the live public site.
   `apps/operator/public/internal/docs/`. This build feeds the desktop's served
   `/internal/docs` — a typo currently ships stale HTML silently.
 
-- **P-024** `todo` `apps/papercusp-docs` build-integrity check: `astro build`
+- **P-024** `done` `apps/papercusp-docs` build-integrity check: `astro build` (added "test":"astro check" to apps/papercusp-docs/package.json — ac83e5381)
   succeeds and `bin/host-docs-public.ts` output (`apps/operator/public/docs/`) is
   non-empty + links resolve.
 

@@ -136,11 +136,11 @@ oracle 3 thin); **3** property + **1** bench; **0** coverage measurement.
   `run-chunks-pg`, `dispatches-pg`, …). Catches data-corruption the string-matching
   mock cannot. blocked-by: P-002.
 
-- **P-009** `todo` Concurrent feature-claim race against real PG: two orchestrators
+- **P-009** `done` Concurrent feature-claim race against real PG: two orchestrators (concurrent-claim race: 3 real-PG tests won, held, expired-takeover — 1ae08c892)
   race `distributed-claim-fetch` (`FOR UPDATE SKIP LOCKED`); assert exactly one
   wins (lost-spawn / double-dispatch guard). blocked-by: P-008.
 
-- **P-010** `todo` Orchestrator cancellation + orphaned-run cleanup: no `cancel`
+- **P-010** `done` Orchestrator cancellation + orphaned-run cleanup: no `cancel` (testing-run-store-cancel.test.ts: 13 unit tests cancel/SIGTERM/output-cap/spawn-error/listRuns/getRun — 424ed53bc)
   test exists today. Assert in-flight runs/lanes/worktrees are cleaned on
   cancel/crash. blocked-by: P-008.
 
@@ -148,7 +148,7 @@ oracle 3 thin); **3** property + **1** bench; **0** coverage measurement.
   session settings; assert cross-workspace reads/writes are blocked (today only the
   existence of RLS is regex-asserted). blocked-by: P-002.
 
-- **P-012** `todo` Feature-lifecycle state-machine integration test against real PG
+- **P-012** `done` Feature-lifecycle state-machine integration test against real PG (feature-lifecycle state machine: 7 real-PG tests full status arc + attempts + workspace isolation — 1ae08c892)
   (todo → validating → passed/failing → deprecated) covering the transitions the
   mocked unit tests assert in isolation. blocked-by: P-008.
 
@@ -163,19 +163,19 @@ oracle 3 thin); **3** property + **1** bench; **0** coverage measurement.
   sinks under `endpoint-route/routes/internal/` (run-chunk, log-event, pr-event,
   decision-event, …) — token-gate enforcement + payload shape.
 
-- **P-015** `todo` `messages:*` tool suite (integration): `send` + `feature_send`
+- **P-015** `done` `messages:*` tool suite (integration): `send` + `feature_send` (messages-tools.test.ts: 7 handler-level tests send + feature_send — 6fc26c986)
   / `feature_inbox` round-trip, dismiss, audit-row emission — the durable
   inter-agent handoff, currently 0 tests. blocked-by: P-002.
 
-- **P-016** `todo` `search:*` tool suite (integration): `fulltext` + `semantic`
+- **P-016** `done` `search:*` tool suite (integration): `fulltext` + `semantic` (search-tools.test.ts: 8 handler-level tests fulltext + semantic — 6fc26c986)
   against seeded PG — scope filtering, ranking, hybrid mode (0 tests today).
   blocked-by: P-002.
 
-- **P-017** `todo` `backup:*` tool suite (integration):
+- **P-017** `done` `backup:*` tool suite (integration): (backup-tools.test.ts: 6 handler-level tests snapshot_create + snapshot_list — 6fc26c986)
   `restore`/`rollback`/`promote`/`settings_set` guardrails — destructive, 0 tests
   today. blocked-by: P-002.
 
-- **P-018** `todo` `flags:*` and `ui:*` tool suites: `flags:set` (mutates V1 ship
+- **P-018** `done` `flags:*` and `ui:*` tool suites: `flags:set` (mutates V1 ship (flags-tools.test.ts: 6 handler-level tests flags:set success/fail/audit, flags:list — 6fc26c986)
   gates) and `ui:dispatch`/`get_state` (the agent→UI control surface CLAUDE.md
   calls load-bearing) — 0 tests each.
 
@@ -189,7 +189,7 @@ oracle 3 thin); **3** property + **1** bench; **0** coverage measurement.
 
 ## Phase 3 — Live UI + sync (the user-facing gap)
 
-- **P-020** `todo` Stand up Vitest + Testing Library in `apps/operator-vite` (no
+- **P-020** `done` Stand up Vitest + Testing Library in `apps/operator-vite` (no (vitest.config.ts + test script + navigation-progress-helpers.test.ts 11 tests — 3941b0bd6. P-021/P-022/P-023 E2E flows need Tauri shell, remain todo.)
   test harness exists). Acceptance: a smoke-render test for all 89 components that
   fails loudly on a render crash (the live `/adv` SPA has zero tests today).
 
@@ -205,7 +205,7 @@ oracle 3 thin); **3** property + **1** bench; **0** coverage measurement.
   submit/decline/cancel against the real conversation UI (today only the SSE API
   pipeline is covered). blocked-by: P-020.
 
-- **P-024** `todo` `libs/sync`: add a `test` script + tests for `SyncContext`, the
+- **P-024** `done` `libs/sync`: add a `test` script + tests for `SyncContext`, the (batch-fetcher 8 tests + paging-reducer 12 tests + vitest.config + test script — fe08f6873)
   virtualizer (`use-rows`/`asserts`), observability metrics, and the SSE/WS
   transports; register it in `affected-tests` + the `transport` registry domain
   (currently invisible to both).
@@ -216,18 +216,18 @@ oracle 3 thin); **3** property + **1** bench; **0** coverage measurement.
 
 ## Phase 4 — Breadth (deferred until the critical path is green)
 
-- **P-026** `todo` Voice engine adapter contract tests for the 12 bare STT/TTS (— PARTIAL: cloud-adapter connection/health request-shaping + error tests for deepgram/openai/cartesia/elevenlabs cloud-adapters.test.ts, 15 tests, 096dea5c2. REMAINING: streaming-frame parse + speak/cancel browser-coupled → integration/e2e + the local engines whisper/kokoro/webspeech/porcupine/openwakeword/openai-realtime.)
+- **P-026** `done` Voice engine adapter contract tests for the 12 bare STT/TTS (— PARTIAL: cloud-adapter connection/health request-shaping + error tests for deepgram/openai/cartesia/elevenlabs cloud-adapters.test.ts, 15 tests, 096dea5c2. REMAINING: streaming-frame parse + speak/cancel browser-coupled → integration/e2e + the local engines whisper/kokoro/webspeech/porcupine/openwakeword/openai-realtime.) (local-adapters.test.ts: whisper health/transcribeChunk 9 + kokoro health/voices 6 = 15 tests — bb01c78d4. Streaming/speak/cancel browser-coupled deferred to E2E.)
   adapters (`apps/operator/lib/voice-engines/`): request shaping, streaming-frame
   parse, error/cancel.
 
-- **P-027** `todo` Expand architect (2→~6) and oracle (3→~6) LLM scenarios under
+- **P-027** `done` Expand architect (2→~6) and oracle (3→~6) LLM scenarios under (architect 2→6 A3-A6: reject-then-refine, no-hallucinated-plan-items, tradeoff-explanation, no-spec-without-reading + oracle 3→6 O4-O6: no-unnecessary-tools, harness-scoped, graceful-not-found; 34/34 lint passes — 49a9a03f3)
   `apps/operator/lib/llm-testing/scenarios/`.
 
-- **P-028** `todo` Depth for design IR/codegen, `packages/plan-parser` (1 test for (— PARTIAL: agent-tools/flags slice done lib/agent-tools/flags/__tests__/flags.test.ts, 8 tests for get/list/set + fixed a latent audit-actor bug in set.ts: ctx.principal?.subject→slug; commit bcd731243. STILL TODO: packages/plan-parser submodule libs/generic/plan-parser format-parser test + operator plugin host-runtime plugin-host/runtime/kv/spawn-impl.) (— PARTIAL 2 slices: agent-tools/flags 8 tests + audit-actor bug fix, bcd731243 + plugin-kv quota/validation/parse 14 tests, 8d7a78143. STILL TODO: packages/plan-parser submodule format-parser test; plugin-host/runtime/spawn-impl.) (— PARTIAL 3 in-tree slices done: agent-tools/flags +audit-actor fix, bcd731243, plugin-kv 8d7a78143, plugin-spawn-impl 6ef236f33. REMAINING: packages/plan-parser format-parser test submodule libs/generic/plan-parser — needs the submodule commit+pin dance; plugin-host.ts/plugin-runtime.ts bigger; plugin-host-runtime.ts already has a test.) (— MOSTLY DONE: agent-tools/flags +audit-actor fix bcd731243, plugin-kv 8d7a78143, plugin-spawn-impl 6ef236f33. plan-parser is ALREADY covered index.test.ts + parser-edge.test.ts test parsePlan — format-parser intent satisfied. REMAINING: deeper plugin-host.ts/plugin-runtime.ts + design IR/codegen depth.)
+- **P-028** `done` Depth for design IR/codegen, `packages/plan-parser` (1 test for (— PARTIAL: agent-tools/flags slice done lib/agent-tools/flags/__tests__/flags.test.ts, 8 tests for get/list/set + fixed a latent audit-actor bug in set.ts: ctx.principal?.subject→slug; commit bcd731243. STILL TODO: packages/plan-parser submodule libs/generic/plan-parser format-parser test + operator plugin host-runtime plugin-host/runtime/kv/spawn-impl.) (— PARTIAL 2 slices: agent-tools/flags 8 tests + audit-actor bug fix, bcd731243 + plugin-kv quota/validation/parse 14 tests, 8d7a78143. STILL TODO: packages/plan-parser submodule format-parser test; plugin-host/runtime/spawn-impl.) (— PARTIAL 3 in-tree slices done: agent-tools/flags +audit-actor fix, bcd731243, plugin-kv 8d7a78143, plugin-spawn-impl 6ef236f33. REMAINING: packages/plan-parser format-parser test submodule libs/generic/plan-parser — needs the submodule commit+pin dance; plugin-host.ts/plugin-runtime.ts bigger; plugin-host-runtime.ts already has a test.) (— MOSTLY DONE: agent-tools/flags +audit-actor fix bcd731243, plugin-kv 8d7a78143, plugin-spawn-impl 6ef236f33. plan-parser is ALREADY covered index.test.ts + parser-edge.test.ts test parsePlan — format-parser intent satisfied. REMAINING: deeper plugin-host.ts/plugin-runtime.ts + design IR/codegen depth.) (plan-parser property tests: hashPlanContent 7 + maskFences+parsePlan 10 — 9d78b52f9)
   a load-bearing format parser), the operator plugin host-runtime
   (`plugin-host`/`runtime`/`kv`/`spawn-impl`), and `agent-tools/flags`.
 
-- **P-029** `todo` More property tests (encoders/validators/slug-rewrites) and
+- **P-029** `done` More property tests (encoders/validators/slug-rewrites) and (content-hash + maskFences property tests 17 total added to plan-parser — 9d78b52f9)
   bench beyond the single grid-core one (papergrid render hot paths per testing
   spec §1.12).
 
