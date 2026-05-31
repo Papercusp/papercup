@@ -8,24 +8,28 @@ import {
   ACCEPTANCE_DOMAIN_ID,
 } from '@/lib/harness-testing-registry';
 import { type TestDomain } from '@/lib/testing-domains';
+import { TESTING_CUSTOM_TABS } from '@/app/admin/testing/testing-custom-tabs';
 import { makeHarnessTestingDataSource } from './harness-testing-data-source';
 import AcceptancePanel from './AcceptancePanel';
 
 /**
- * <HarnessTestsView> — the harness Tests surface: the shared <TestingShell>
- * with the dataSource pointed at /api/harness/:slug/testing/*.
+ * <HarnessTestsView> — the harness Tests tab. This is the SAME UI as
+ * /admin/testing (the shared <TestingShell> + the same 8 bespoke panels from
+ * `TESTING_CUSTOM_TABS`), just DRIVEN FROM THE HARNESS CONFIG instead of the
+ * admin-global one:
  *
- * The domain nav is HARNESS-OWNED data, not hard-wired in the operator: it is
- * fetched from GET /api/harness/:slug/testing/domains, which reads the harness's
- * own `<worktree>/.harness/testing-domains.json` contract (falling back to the
- * generic Built-in + Acceptance set when a harness declares none). The papercup
- * dogfood harness ships that file generated from the operator's adminRegistry,
- * so its Tests tab surfaces every test domain through the same path any harness
- * would — the place a harness's test data naturally lives.
+ *   - nav comes from the harness's own `.harness/testing-domains.json`
+ *     (GET /api/harness/:slug/testing/domains; falls back to the generic
+ *     generalized+Acceptance set), not a hard-wired operator registry;
+ *   - the file-list domains read through `makeHarnessTestingDataSource(slug)`
+ *     → /api/harness/:slug/testing/* (glob-walks the harness worktree);
+ *   - the 8 bespoke panels (Test Runs, Live, Chaos, …) are reused verbatim
+ *     from /admin — for the papercup dogfood harness (which IS the operator
+ *     repo) their /api/admin/testing/* surface is the correct data;
+ *   - plus the harness-only Acceptance panel.
  *
- * Rendered as the top-level /adv "Tests" tab via AdvHarnessPanelPage's DIRECT
- * registry. `slug` is the /adv global active harness; phase is the staging
- * default. The active subtab is URL-backed under `testsTab`.
+ * Renders nothing-special until the harness registry resolves — it shows the
+ * fallback nav immediately (no blocking spinner) and swaps in the full set.
  */
 export default function HarnessTestsView({ slug }: { slug: string }) {
   const [declared, setDeclared] = useState<
@@ -34,20 +38,17 @@ export default function HarnessTestsView({ slug }: { slug: string }) {
 
   useEffect(() => {
     let cancelled = false;
-    setDeclared(null);
     fetch(`/api/harness/${encodeURIComponent(slug)}/testing/domains?phase=staging`)
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`domains ${r.status}`))))
       .then((d) => {
-        if (cancelled) return;
-        const domains =
-          Array.isArray(d?.domains) && d.domains.length
-            ? (d.domains as TestDomain[])
-            : harnessTestingRegistry;
-        setDeclared({ domains, tierLabels: d?.tierLabels ?? HARNESS_TESTING_TIER_LABELS });
+        if (cancelled || !Array.isArray(d?.domains) || !d.domains.length) return;
+        setDeclared({
+          domains: d.domains as TestDomain[],
+          tierLabels: d?.tierLabels ?? HARNESS_TESTING_TIER_LABELS,
+        });
       })
       .catch(() => {
-        if (!cancelled)
-          setDeclared({ domains: harnessTestingRegistry, tierLabels: HARNESS_TESTING_TIER_LABELS });
+        /* keep the static fallback nav */
       });
     return () => {
       cancelled = true;
@@ -58,23 +59,14 @@ export default function HarnessTestsView({ slug }: { slug: string }) {
   const tierLabels = declared?.tierLabels ?? HARNESS_TESTING_TIER_LABELS;
   const tabs = useMemo(() => tabsFromRegistry(domains), [domains]);
   const dataSource = useMemo(() => makeHarnessTestingDataSource(slug, 'staging'), [slug]);
+  // Reuse the SAME bespoke panels as /admin, plus the harness Acceptance panel.
   const customTabs = useMemo(
-    () => ({ [ACCEPTANCE_DOMAIN_ID]: () => <AcceptancePanel slug={slug} /> }),
+    () => ({
+      ...TESTING_CUSTOM_TABS,
+      [ACCEPTANCE_DOMAIN_ID]: () => <AcceptancePanel slug={slug} />,
+    }),
     [slug],
   );
-  // Land on the first useful (non-generalized) tab. The generalized "Built-in"
-  // tier is mostly empty / non-functional in the harness context (its
-  // admin-suite runners aren't wired into the harness data-source).
-  const defaultTabId = useMemo(
-    () => (domains.find((d) => d.tier !== 'generalized') ?? domains[0])?.id,
-    [domains],
-  );
-
-  // Gate render until the harness's domains resolve, so TestingShell doesn't
-  // lock a fallback default tab into the URL before the real nav arrives.
-  if (!declared) {
-    return <div style={{ padding: 16, color: 'var(--fg-mute)', fontSize: 13 }}>Loading tests…</div>;
-  }
 
   return (
     <TestingShell
@@ -82,7 +74,7 @@ export default function HarnessTestsView({ slug }: { slug: string }) {
       tierLabels={tierLabels}
       dataSource={dataSource}
       customTabs={customTabs}
-      defaultTabId={defaultTabId}
+      defaultTabId="test-runs"
       sectionLabel="Tests"
       queryKey="testsTab"
     />

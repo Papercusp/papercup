@@ -1,12 +1,6 @@
 import type { ReactElement } from 'react';
-import ChaosTab from '@/app/admin/testing/_components/ChaosTab';
-import AIExploreTab from '@/app/admin/testing/_components/AIExploreTab';
-import LiveMetricsTab from '@/app/admin/testing/_components/LiveMetricsTab';
-import RoutesTab from '@/app/admin/testing/_components/RoutesTab';
-import PackagedBuildTab from '@/app/admin/testing/_components/PackagedBuildTab';
-import LlmTab from '@/app/admin/testing/_components/LlmTab';
-import TestRunsTab from '@/app/admin/testing/_components/TestRunsTab';
-import MemoryTab from '@/app/admin/testing/_components/MemoryTab';
+// Shared id→bespoke-panel map (also used by the /adv harness Tests tab).
+import { TESTING_CUSTOM_TABS } from '@/app/admin/testing/testing-custom-tabs';
 import {
   TestingShell,
   adminTestingDataSource,
@@ -104,28 +98,13 @@ const TIER_LABELS: Record<AdminTab['tier'], string> = {
   surface: 'Surfaces',
 };
 
-/**
- * Lookup from existing-tab id → bespoke React component (P-006a).
- * Tabs not listed render via the shell's <DomainTestPanel>.
- */
-const CUSTOM_TABS: Partial<Record<TabId, () => ReactElement>> = {
-  'test-runs': TestRunsTab,
-  live: LiveMetricsTab,
-  memory: MemoryTab,
-  chaos: ChaosTab,
-  ai: AIExploreTab,
-  routes: RoutesTab,
-  packaged: PackagedBuildTab,
-  llm: LlmTab,
-};
-
 export default function TestingClient(): ReactElement {
   return (
     <TestingShell
       tabs={TABS}
       tierLabels={TIER_LABELS}
       dataSource={adminTestingDataSource}
-      customTabs={CUSTOM_TABS}
+      customTabs={TESTING_CUSTOM_TABS}
       defaultTabId="test-runs"
     />
   );
