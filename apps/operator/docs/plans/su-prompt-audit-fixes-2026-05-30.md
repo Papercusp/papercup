@@ -1,7 +1,7 @@
 ---
 title: SU agent prompt audit fixes
 slug: su-prompt-audit-fixes-2026-05-30
-status: draft
+status: shipped
 created: 2026-05-30
 updated: 2026-05-31
 owner: avi@storewolf.com
@@ -47,7 +47,7 @@ The SU prompt is assembled by `install-standalone-mcp.sh` from a base playbook (
 
 ## Phase 5 — Verify + adjacent fixes
 
-- **P-014** `todo` Re-render the playbook (bash `render_playbook` + the shared TS helper `lib/desktop-install/splice-tooling-overlay.ts`, consumers `papercusp-files.ts`/`agent-bundle.ts` — don't re-DRY); run the Vitest **`apps/operator/lib/__tests__/tools-md-sync.test.ts`** (no `__tests__/integration/tools-md-sync.mjs`); confirm no backtick tool refs point at non-existent tools. Rebase all edit items on current prompt content (last edited today by `1241865a`). blocked-by: P-001, P-002, P-003, P-004, P-005, P-006, P-007, P-008, P-010, P-011, P-012, P-013
+- **P-014** `done` Re-render the playbook (bash `render_playbook` + the shared TS helper `lib/desktop-install/splice-tooling-overlay.ts`, consumers `papercusp-files.ts`/`agent-bundle.ts` — don't re-DRY); run the Vitest **`apps/operator/lib/__tests__/tools-md-sync.test.ts`** (no `__tests__/integration/tools-md-sync.mjs`); confirm no backtick tool refs point at non-existent tools. Rebase all edit items on current prompt content (last edited today by `1241865a`). blocked-by: P-001, P-002, P-003, P-004, P-005, P-006, P-007, P-008, P-010, P-011, P-012, P-013 (engineer playbook re-rendered to ~/.papercusp current; tools-md-sync green 42/42. Power-profile re-render tracked as a profile-switch decision in su-prompt-audit-round2 D-004)
 - **P-015** `done` Remove the stale `papercusp-su-*.tools.md.bak-*` backup files if confirmed dead.
 - **P-016** `done` Fix CLAUDE.md "Adding a tool" §5 (≈L448), which cites the dead `__tests__/integration/tools-md-sync.mjs` → point at the Vitest test.
 
