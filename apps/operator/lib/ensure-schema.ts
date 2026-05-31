@@ -96,6 +96,7 @@ type _G = {
     advSessions: boolean;
     advSessionsCwd: boolean;
     advSessionsAgent: boolean;
+    advSessionsRole: boolean;
   };
 };
 const _g = globalThis as unknown as _G;
@@ -168,6 +169,7 @@ const flags = _g.__ensureSchemaFlags ?? (_g.__ensureSchemaFlags = {
   advSessions: false,
   advSessionsCwd: false,
   advSessionsAgent: false,
+  advSessionsRole: false,
   harnessPlanAssertions: false,
 });
 
@@ -1961,7 +1963,7 @@ export async function ensureBackupTables(): Promise<void> {
  * Canonical SQL: libs/papercusp/libs/db/sql/079-adv-sessions.sql.
  */
 export async function ensureAdvSessionsTable(): Promise<void> {
-  if (flags.advSessions && flags.advSessionsCwd && flags.advSessionsAgent) return;
+  if (flags.advSessions && flags.advSessionsCwd && flags.advSessionsAgent && flags.advSessionsRole) return;
   const { sql } = getOrgPg();
   await sql.unsafe(`
     CREATE TABLE IF NOT EXISTS harness_shared.adv_sessions (
@@ -1985,6 +1987,13 @@ export async function ensureAdvSessionsTable(): Promise<void> {
     -- legacy rows recorded before the *-su tracked launcher (psu-wrappers plan).
     ALTER TABLE harness_shared.adv_sessions
       ADD COLUMN IF NOT EXISTS agent TEXT NULL;
+    -- Pipeline role this session runs as (worker/validator/…); NULL = a
+    -- plain SU/engineer session. feature = the feature it is scoped to
+    -- (for feature-consuming roles). agent-launch-unification (psu --role).
+    ALTER TABLE harness_shared.adv_sessions
+      ADD COLUMN IF NOT EXISTS role TEXT NULL;
+    ALTER TABLE harness_shared.adv_sessions
+      ADD COLUMN IF NOT EXISTS feature TEXT NULL;
     CREATE INDEX IF NOT EXISTS adv_sessions_workspace_active_idx
       ON harness_shared.adv_sessions(workspace_id, started_at DESC)
       WHERE ended_at IS NULL;
@@ -1997,6 +2006,7 @@ export async function ensureAdvSessionsTable(): Promise<void> {
   flags.advSessions = true;
   flags.advSessionsCwd = true;
   flags.advSessionsAgent = true;
+  flags.advSessionsRole = true;
 }
 
 /**

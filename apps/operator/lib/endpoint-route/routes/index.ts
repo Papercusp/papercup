@@ -178,6 +178,7 @@ import agentMcp_agents from './agent-mcp/agents';
 import agentMcp_consoleLaunch from './agent-mcp/console-launch';
 import agentMcp_consoleResolve from './agent-mcp/console-resolve';
 import agentMcp_bootstrapSu from './agent-mcp/bootstrap-su';
+import agentMcp_bootstrapRole from './agent-mcp/bootstrap-role';
 import agentMcp_decisions from './agent-mcp/decisions';
 import agentMcp_delegateChat from './agent-mcp/delegate-chat';
 import agentMcp_delegateInbox from './agent-mcp/delegate-inbox';
@@ -380,6 +381,7 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(agentMcp_consoleLaunch as AnyRoute[]),
   ...flatten(agentMcp_consoleResolve as AnyRoute),
   ...flatten(agentMcp_bootstrapSu as AnyRoute[]),
+  ...flatten(agentMcp_bootstrapRole as AnyRoute[]),
   ...flatten(agentMcp_decisions as AnyRoute),
   ...flatten(agentMcp_delegateChat as AnyRoute),
   ...flatten(agentMcp_delegateInbox as AnyRoute[]),
