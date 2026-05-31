@@ -37,7 +37,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { defineTool } from '@papercusp/agent-mcp';
 import { runAgentChat } from '@/lib/agent-chat-stream';
-import { readAgentConfig, surfaceBackend } from '@/lib/agent-config';
+import { readAgentConfig, surfaceBackend, surfaceModel } from '@/lib/agent-config';
 import { selfUrl } from '@/lib/self-url';
 import { checkBudget, recordSpend } from '@/lib/operator-budget';
 import { parseOperatorTurn } from '@/lib/operator-converse-tags';
@@ -260,6 +260,10 @@ export default defineTool({
     // Per-surface backend override (/settings/agent). undefined → inherit the
     // global $AGENT_BACKEND that applyToProcessEnv mirrors from agent-config.
     const operatorBackend = await surfaceBackend('operator');
+    // Per-surface model override (OQ3) wins over the pinned brain default
+    // — needed when the per-surface backend is one the default model id
+    // (anthropic/claude-opus-4-7) doesn't resolve on (e.g. codex).
+    const operatorModel = (await surfaceModel('operator')) ?? brainModel;
 
     // The agent backend (omp → codex/anthropic) intermittently produces
     // an empty turn: a transient upstream model error, or omp exiting 0
@@ -273,7 +277,7 @@ export default defineTool({
         for await (const ev of runAgentChat({
           promptText: userPromptText,
           systemPromptText,
-          model: brainModel,
+          model: operatorModel,
           backend: operatorBackend,
           mcpConfig,
           allowedTools: [...allowedTools],

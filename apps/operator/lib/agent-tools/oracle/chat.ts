@@ -24,7 +24,7 @@
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { runAgentChat } from '@/lib/agent-chat-stream';
-import { surfaceBackend } from '@/lib/agent-config';
+import { surfaceBackend, surfaceModel } from '@/lib/agent-config';
 import {
   composeOraclePrompt,
   buildOracleMcpConfig,
@@ -92,9 +92,11 @@ async function oracleHandler(input: Args, ctx: ChatCtx) {
   let finalText = '';
   // per-surface backend override (/settings/agent); undefined → global
   const oracleBackend = await surfaceBackend('oracle');
+  const oracleModel = await surfaceModel('oracle'); // OQ3: undefined → backend default
   try {
     for await (const ev of runAgentChat({
       promptText,
+      ...(oracleModel ? { model: oracleModel } : {}),
       backend: oracleBackend,
       mcpConfig,
       allowedTools: [...ORACLE_ALLOWED_TOOLS],

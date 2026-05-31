@@ -31,7 +31,7 @@ import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { runAgentChat, type ChatEvent } from '@/lib/agent-chat-stream';
-import { surfaceBackend } from '@/lib/agent-config';
+import { surfaceBackend, surfaceModel } from '@/lib/agent-config';
 import { selfUrl } from '@/lib/self-url';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
 import { NON_INTERACTIVE_AGENT_MCP_TOOLS } from '@/lib/operator-mcp-tools';
@@ -265,7 +265,7 @@ export async function* runPlanAgent(
   yield* runAgentChat({
     promptText: opts.promptText,
     systemPromptText: opts.systemPromptText,
-    model: PLAN_AGENT_MODEL,
+    model: (await surfaceModel('plans')) ?? PLAN_AGENT_MODEL, // OQ3 override
     backend: plansBackend,
     mcpConfig,
     allowedTools: [...PLAN_AGENT_ALLOWED_TOOLS],

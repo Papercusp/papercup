@@ -27,7 +27,7 @@
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { runAgentChat } from '@/lib/agent-chat-stream';
-import { surfaceBackend } from '@/lib/agent-config';
+import { surfaceBackend, surfaceModel } from '@/lib/agent-config';
 
 const ArgsSchema = z.object({
   promptText: z.string().min(1),
@@ -57,10 +57,12 @@ async function agentChatsHandler(input: Args, ctx: ChatCtx) {
 
   // per-surface backend override (/settings/agent); undefined → global
   const agentChatsBackend = await surfaceBackend('agent_chats');
+  const agentChatsModel = await surfaceModel('agent_chats'); // OQ3: undefined → backend default
   try {
     for await (const ev of runAgentChat({
       promptText: input.promptText,
       cwd: input.cwd,
+      ...(agentChatsModel ? { model: agentChatsModel } : {}),
       backend: agentChatsBackend,
       signal: ctx.signal,
     })) {

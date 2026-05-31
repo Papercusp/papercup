@@ -31,7 +31,7 @@
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { runAgentChat } from '@/lib/agent-chat-stream';
-import { surfaceBackend, type SurfaceKey } from '@/lib/agent-config';
+import { surfaceBackend, surfaceModel, type SurfaceKey } from '@/lib/agent-config';
 import {
   composeArchitectPrompt,
   composeBrainstormPrompt,
@@ -95,10 +95,12 @@ async function streamPrompt(
   let finalText = '';
   // per-surface backend override (/settings/agent); undefined → global
   const backend = await surfaceBackend(surface);
+  const model = await surfaceModel(surface); // OQ3: undefined → backend default
   try {
     for await (const ev of runAgentChat({
       promptText,
       cwd,
+      ...(model ? { model } : {}),
       backend,
       // Caller-side cancellation: dispatcher's wrapped signal fires on
       // client disconnect / wall-clock timeout / idle timeout. Forward
