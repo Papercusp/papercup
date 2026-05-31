@@ -160,18 +160,29 @@ async function tryBuildSpawnContext(extra: unknown): Promise<TrySpawnContextResu
     const wsParam = (url.searchParams.get('workspace') ?? '').trim();
     const harnessParam = (url.searchParams.get('harness') ?? '').trim();
     const clientParam = (url.searchParams.get('client') ?? '').trim();
-    // Per-session identity for SU agents (su-locks coordination).
-    // `?client=` is baked once per machine by install-standalone-mcp.sh,
-    // so two SU shells on one host share it — which would make the
-    // file-lock system treat them as the same owner. The Streamable-HTTP
-    // MCP transport assigns a distinct `Mcp-Session-Id` per client
-    // connection; prefer it so each shell gets a unique lock owner.
-    // Hook-driven calls (PreToolUse/PostToolUse) are one-shot POSTs with
-    // no MCP session — they instead pass the per-session id directly in
-    // `?client=`, so the clientParam fallback is already per-session for
-    // that path.
+    // Per-session identity for SU agents (su-locks coordination), sourced
+    // in precedence order:
+    //   1. `x-papercusp-client` header — the per-launch PAPERCUSP_SID.
+    //      Claude/Codex bake the SID into `?client=` directly (they can
+    //      env-interpolate the MCP url); OMP can't interpolate its url, but
+    //      it DOES resolve header values at connect time, so its mcp.json
+    //      carries `x-papercusp-client: !printf %s "$PAPERCUSP_SID"`
+    //      (install-standalone-mcp.sh). This is the deliberate, stable
+    //      per-launch owner — and it's the SAME PAPERCUSP_SID the OMP/cc
+    //      lock hook reads, so a shell's interactive calls + its hook share
+    //      one owner (no manual-claim-vs-hook self-deadlock). Header-first
+    //      so it overrides OMP's static per-machine `?client=`.
+    //   2. `Mcp-Session-Id` — the Streamable-HTTP transport's per-connection
+    //      id, if the server assigned one. Kept as a fallback, but it is
+    //      per-CONNECTION (interactive calls and the hook are separate
+    //      connections → different ids → would re-introduce the self-
+    //      deadlock), which is why the explicit SID header outranks it.
+    //   3. `?client=` — the per-machine baked id; also what the channel
+    //      hooks (one-shot POSTs, no MCP session) use to pass a per-session
+    //      id directly.
+    const headerClient = (headers.get('x-papercusp-client') ?? '').trim();
     const mcpSessionId = (headers.get('mcp-session-id') ?? '').trim();
-    const suIdentity = mcpSessionId || clientParam;
+    const suIdentity = headerClient || mcpSessionId || clientParam;
     const buf = new Uint8Array(8);
     globalThis.crypto.getRandomValues(buf);
     return {
@@ -214,6 +225,10 @@ async function tryBuildSpawnContext(extra: unknown): Promise<TrySpawnContextResu
     }
     const harnessParam = (url.searchParams.get('harness') ?? '').trim();
     const clientParam = (url.searchParams.get('client') ?? '').trim();
+    // Same per-session source as the superuser path (highest precedence):
+    // an OMP power-user launch carries its PAPERCUSP_SID via the
+    // x-papercusp-client header (it can't interpolate the SID into the url).
+    const headerClient = (headers.get('x-papercusp-client') ?? '').trim();
     const buf = new Uint8Array(8);
     globalThis.crypto.getRandomValues(buf);
     return {
@@ -242,7 +257,7 @@ async function tryBuildSpawnContext(extra: unknown): Promise<TrySpawnContextResu
         // (from the verified token) is. So an explicit `?client=` is
         // safe to honor: it relabels the owner, it cannot escalate.
         uiClientId:
-          clientParam.length > 0 ? clientParam : claims.authSessionId,
+          headerClient || (clientParam.length > 0 ? clientParam : claims.authSessionId),
         planRunSessionId,
         // Dispatch-layer parity with superuser (operator-tier catalog
         // + synthesized system principal + workspace tx). The clamp

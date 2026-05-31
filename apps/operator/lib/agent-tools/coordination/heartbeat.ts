@@ -20,6 +20,7 @@ import type { Pool } from 'pg';
 export const SID_HEARTBEAT_TTL_MS = 90_000;
 
 let injectedPool: Pool | null = null;
+let fallbackPool: Pool | null = null;
 
 /** Test seam: inject the pg Pool the heartbeat helpers run against. */
 export function configureHeartbeatPool(pool: Pool | null): void {
@@ -28,10 +29,11 @@ export function configureHeartbeatPool(pool: Pool | null): void {
 
 async function hbPool(): Promise<Pool> {
 	if (injectedPool) return injectedPool;
-	const mod = await import('../../harness-pg-pool');
-	const getHarnessAdminPool =
-		(mod as any).getHarnessAdminPool ?? (mod as any).default;
-	return getHarnessAdminPool();
+	if (fallbackPool) return fallbackPool;
+	const { connectionString } = await import('../../memory/mem0-connection');
+	const { Pool } = await import('pg');
+	fallbackPool = new Pool({ connectionString: await connectionString() });
+	return fallbackPool;
 }
 
 export interface HeartbeatRow {

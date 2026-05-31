@@ -31,6 +31,7 @@ import { decideResume, type ResumeAction } from './resume-decision';
 import { SID_HEARTBEAT_TTL_MS } from './heartbeat';
 
 let injectedPool: Pool | null = null;
+let fallbackPool: Pool | null = null;
 
 /** Test seam: inject the pg Pool the resume helpers run against. */
 export function configureSpawnPool(pool: Pool | null): void {
@@ -39,11 +40,14 @@ export function configureSpawnPool(pool: Pool | null): void {
 
 async function spawnPool(): Promise<Pool> {
 	if (injectedPool) return injectedPool;
-	// Lazy import so unit/pure tests never pull the embedded-pg admin path.
-	const mod = await import('../../harness-pg-pool');
-	const getHarnessAdminPool =
-		(mod as any).getHarnessAdminPool ?? (mod as any).default;
-	return getHarnessAdminPool();
+	if (fallbackPool) return fallbackPool;
+	// Lazy imports so unit/pure tests never pull the embedded-pg path. The
+	// DSN is resolved the same way mem0 / the coord conformance suites do —
+	// via the embedded-pg discovery file (never a hardcoded localhost:5432).
+	const { connectionString } = await import('../../memory/mem0-connection');
+	const { Pool } = await import('pg');
+	fallbackPool = new Pool({ connectionString: await connectionString() });
+	return fallbackPool;
 }
 
 export interface SpawnRow {
