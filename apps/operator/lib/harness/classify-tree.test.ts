@@ -241,7 +241,7 @@ describe('walkHarnessTree — integration against papercup`s real libs/', () => 
   const isPapercupCheckout = existsSync(join(papercupRoot, '.gitmodules'));
 
   it.skipIf(!isPapercupCheckout)(
-    'matches the plan: 9 submodules + 8 plain in libs/ (papercup itself)',
+    'matches the libs/ layout: 5 submodules + 9 plain (borrowable submodules regrouped under libs/generic/)',
     () => {
       // Walk just libs/ — not the whole repo — to keep the test fast and
       // scoped to the documented assertion.
@@ -257,13 +257,16 @@ describe('walkHarnessTree — integration against papercup`s real libs/', () => 
       // Note: we don't assert on `worktrees` or `standalone` here because
       // libs/ isn't expected to contain either; if one shows up that's a
       // signal worth investigating (and this test will catch it).
+      // 5 direct-child submodules + 9 plain dirs (incl. `generic/`, which now
+      // holds the 20 regrouped borrowable submodules — see CLAUDE.md /
+      // BORROWABLE.md). Pre-regrouping this was 9 subs + 8 plain.
       expect({ subs: summary.submodules, plain: summary.plain }).toEqual({
-        subs: 9,
-        plain: 8,
+        subs: 5,
+        plain: 9,
       });
       expect(summary.worktrees).toBe(0);
       expect(summary.standalone).toBe(0);
-      expect(summary.total).toBe(17);
+      expect(summary.total).toBe(14);
 
       // Sanity: each submodule has a qualified slug rooted at papercup.
       for (const n of nodes) {
@@ -287,19 +290,18 @@ describe('walkHarnessTree — integration against papercup`s real libs/', () => 
         .filter((n): n is ClassifiedNode & { kind: 'submodule' } => n.kind === 'submodule')
         .map((n) => n.relPath)
         .sort();
-      // The 9 .gitmodules entries in papercup as of v5 write-time.
-      // If a libs/* submodule is added or removed, both this list and
-      // the plan doc (§2 + Decided-first gate) need updating in sync.
+      // The 5 .gitmodules entries DIRECTLY under libs/. The borrowable
+      // submodules (git-graph, papergrid, sync, ui-primitives, + others) were
+      // regrouped under libs/generic/* (CLAUDE.md / BORROWABLE.md), so they are
+      // no longer direct children of libs/ and `generic/` shows up as a plain
+      // dir above. If a direct libs/* submodule is added or removed, update
+      // this list in sync.
       expect(submoduleRelPaths).toEqual(
         [
           'agent-chat',
-          'git-graph',
           'papercup-db',
           'papercup-shared',
           'papercusp',
-          'papergrid',
-          'sync',
-          'ui-primitives',
           'zero-harness',
         ].sort(),
       );
