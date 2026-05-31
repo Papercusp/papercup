@@ -41,9 +41,16 @@ psu (yes, Phase 4).
   require unifying autonomous-vs-chat context injection (a behavior change) —
   deferred, not needed for psu. 3 tests green.
 
-**Next:** Phase 2 (codex in the orchestrator pipeline) — or jump to Phase 3
-(psu role sessions, which only needs Phase 1's `consumes` + `buildRoleLaunchSpec`,
-both done) if interactive role sessions are the priority over codex pipeline agents.
+**✅ Phase 3 DONE (psu interactive role sessions):**
+- **P-020** — `adv_sessions.role` + `.feature` columns (ensure-schema + adv-sessions.ts). Commit `bbfe92a1`.
+- **P-021** — `POST /api/agent-mcp/console/bootstrap-role`: composes `buildRoleLaunchSpec`, writes the signed role-scoped `.mcp.json` + the role prompt file, records the `adv_sessions` row (role+feature+agent), feature-gates via `roleConsumes`. codex role sessions 400 (deferred to Phase 2). Commit `bbfe92a1`.
+- **P-022/P-023** — `psu --role`: role-first picker (role → backend(claude/omp) → workspace → harness → feature-iff-consumed) + `roleLaunchArgs` exec'ing the raw backend with the role prompt + signed `.mcp.json` (claude `--strict-mcp-config` = true tool-scoping). Options endpoint gains `?features=1` + `roles`. `--role`/`--feature` preselectable. Commit `3b47eb34`.
+
+**Remaining:** Phase 2 (codex in the orchestrator pipeline — also unlocks codex
+interactive role sessions), Phase 4 (migrate legacy console-launch onto psu),
+Phase 5 (/adv role+feature surfacing + per-surface model coupling + docs).
+Manual e2e for Phase 3 (P-024) is gated on an operator reload (the
+bootstrap-role + options routes register at boot).
 
 **Reference (do not duplicate — read these):** the handoff brief
 `agent-backend-refactor-handoff-2026-05-30.md` is the canonical reference for
