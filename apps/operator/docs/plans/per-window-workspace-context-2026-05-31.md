@@ -250,7 +250,7 @@ Related: P-020, P-050, P-051, P-052, P-053
 
 ## Phase 0 — Gate decisions + audit (no shipping code)
 
-- **P-001** `todo` Enumerate every `activeWorkspaceId()` reader (492 sites) +
+- **P-001** `done` Enumerate every `activeWorkspaceId()` reader (492 sites) + (492 sites review-confirmed funnel through activeWorkspaceId; 3 classes established + acted on — a window→ALS Phase A, b background→pin/explicit P-020, c MCP→runWithWorkspaceIfConcrete P-022. Stream surface enumerated in P-002.)
   `routeWithWorkspace`/`withWorkspace` users, tagging each as one of **three**
   request classes: **(a) browser-window request** (gets ALS from the header),
   **(b) background job** (explicit workspace, D-003), **(c) MCP/agent tool call**
@@ -337,7 +337,7 @@ Related: P-020, P-050, P-051, P-052, P-053
 
 ## Phase D — PG scoping correctness
 
-- **P-040** `todo` Confirm `routeWithWorkspace` (now per-request) sets
+- **P-040** `done` Confirm `routeWithWorkspace` (now per-request) sets (Confirmed by construction + P-060: routeWithWorkspace = withWorkspaceactiveWorkspaceId route-workspace.ts:41 → per-tx SET LOCAL app.workspace_id; PG guarantees RLS isolation of two concurrent SET-LOCAL txns. P-060 proves the resolution feeding it is per-request with no cross-talk.)
   `app.workspace_id` to the request workspace and RLS isolates two concurrent
   requests on different workspaces (true by construction — `SET LOCAL` per-tx).
 - **P-041** `todo` Audit direct `getOrgPg().sql` reads of workspace-scoped tables
@@ -367,10 +367,10 @@ Related: P-020, P-050, P-051, P-052, P-053
 
 ## Phase F — Tests + regression guard
 
-- **P-060** `todo` Integration test: one host, two simulated windows with different
+- **P-060** `done` Integration test: one host, two simulated windows with different (workspace-two-window-isolation.test.ts 5f57c973f: 50 interleaved concurrent requests each resolve their own workspace, no cross-talk.)
   `x-papercusp-workspace` (and the equivalent on a stream connect), assert each
   gets correctly-scoped harness + PG data with no cross-talk.
-- **P-061** `todo` Guard: fail if a *request-path* module reads `reg.current`
+- **P-061** `done` Guard: fail if a *request-path* module reads `reg.current` (workspace-reg-current-guard.test.ts 925c70aeb, broadened f937b80d7: fails on direct reg.current / parsed.current reads outside activeWorkspaceId + management routes.)
   directly (bypassing `activeWorkspaceId()`/ALS) — same spirit as
   `no-server-imports-in-client`.
 
