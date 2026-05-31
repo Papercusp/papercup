@@ -54,7 +54,23 @@ const STATE = new Map<string, WorkspaceTickState>();
 
 let timer: NodeJS.Timeout | null = null;
 
+/**
+ * One backup cadence tick: ensure kopia is detected, then fire snapshots for
+ * any workspace whose interval cadence is due. Exposed for the DBOS
+ * scheduled-workflow migration (dbos-durable-jobs-2026-05-31 Phase 2, P-011) —
+ * the per-workspace dueness + in-flight dedup + PG cadence floor live in tick(),
+ * so a DBOS schedule just needs to call this each minute.
+ */
+export async function runBackupSchedulerTick(): Promise<void> {
+  if (!kopiaDetection) kopiaDetection = detectKopia();
+  if (!kopiaDetection.ok) return;
+  await tick();
+}
+
 export function startBackupScheduler(): void {
+  // Phase 2 A/B (dbos-durable-jobs-2026-05-31 D-011): DBOS owns the schedule
+  // when PAPERCUSP_DBOS_TIMERS=1, so the legacy timer stands down.
+  if (process.env.PAPERCUSP_DBOS_TIMERS === '1') return;
   if (timer) return;
   kopiaDetection = detectKopia();
   if (!kopiaDetection.ok) {

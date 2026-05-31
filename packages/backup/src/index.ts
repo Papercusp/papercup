@@ -43,6 +43,7 @@ export {
 } from './server';
 export {
   startBackupScheduler,
+  runBackupSchedulerTick,
   stopBackupScheduler,
   triggerSnapshotEvent,
   getKopiaDetection,

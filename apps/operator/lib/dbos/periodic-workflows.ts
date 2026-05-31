@@ -21,6 +21,7 @@ import { runScratchGc } from '@/lib/scratch-gc';
 import { runMemoryCleanupOnce } from '@/lib/memory/cleanup-worker';
 import { runCompletionRefVerifierOnce } from '@/lib/harness/completion-ref-verifier';
 import { runEmbedBackfillOnce } from '@/lib/search/embed-backfill';
+import { runBackupSchedulerTick } from '@papercusp/backup';
 import { readRegistry } from '@/lib/workspace-registry';
 
 // Hourly: drain the telemetry ring buffer → archive, forward to PostHog (gated),
@@ -76,3 +77,14 @@ const embedBackfillWorkflow = DBOS.registerWorkflow(embedBackfillTick, {
   name: 'embedBackfill', maxRecoveryAttempts: 5,
 });
 DBOS.registerScheduled(embedBackfillWorkflow, { name: 'embedBackfill', crontab: '0 */5 * * * *' });
+
+// Every minute: backup cadence tick — fires kopia snapshots for any workspace
+// whose interval cadence is due (per-workspace dueness + in-flight dedup + PG
+// cadence floor are inside the tick). P-011.
+async function backupTick(): Promise<void> {
+  await DBOS.runStep(() => runBackupSchedulerTick(), { name: 'backup-cadence' });
+}
+const backupWorkflow = DBOS.registerWorkflow(backupTick, {
+  name: 'backupCadence', maxRecoveryAttempts: 5,
+});
+DBOS.registerScheduled(backupWorkflow, { name: 'backupCadence', crontab: '0 * * * * *' });
