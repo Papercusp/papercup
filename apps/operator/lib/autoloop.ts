@@ -234,10 +234,13 @@ function bootstrapState(): { lastAttempt: number; armed: boolean } {
 }
 
 export function startAutoLoopOnce(): void {
-  // Phase 1 A/B (dbos-durable-jobs-2026-05-31 D-011): when the DBOS AutoLoop
-  // is active, the legacy in-process ticker stands down so the two never
-  // double-fire. Flip PAPERCUSP_DBOS_AUTOLOOP to switch implementations.
+  // Phase 1 A/B (D-011) + P-009: the legacy in-process ticker stands down when
+  // the DBOS AutoLoop is active OR the DBOS orchestrator is the default (the
+  // dispatcher now drives per-feature pipelines; this ticker's fire-and-forget
+  // director invokes are a no-op — their decisions were discarded). Re-enable
+  // only via the legacy-revert PAPERCUSP_DBOS_ORCHESTRATOR=0.
   if (process.env.PAPERCUSP_DBOS_AUTOLOOP === '1') return;
+  if (process.env.PAPERCUSP_DBOS_ORCHESTRATOR !== '0') return;
   if (started) return;
   started = true;
   const state = bootstrapState();

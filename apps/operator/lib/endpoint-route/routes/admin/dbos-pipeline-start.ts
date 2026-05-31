@@ -19,11 +19,11 @@ export default defineTool({
   path: '/admin/dbos/pipeline/start',
   auth: { trust: ['trusted'] },
   async handler(req): Promise<Response> {
-    if (process.env.PAPERCUSP_DBOS_ORCHESTRATOR !== '1') {
+    if (process.env.PAPERCUSP_DBOS_ORCHESTRATOR === '0') {
       return Response.json(
         {
           error: 'orchestrator_disabled',
-          message: 'Set PAPERCUSP_DBOS_ORCHESTRATOR=1 and restart the operator to enable durable pipelines.',
+          message: 'The durable orchestrator is explicitly disabled (PAPERCUSP_DBOS_ORCHESTRATOR=0). Unset it (default-on since P-009) + ensure DBOS is enabled (PAPERCUSP_DBOS_ENABLE=1) to use durable pipelines.',
         },
         { status: 409 },
       );

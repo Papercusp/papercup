@@ -60,29 +60,35 @@ export function selectFeaturesToDispatch(
     .map((f) => f.id);
 }
 
+/** Explicit opt-out sentinels (e.g. the shared dev box, to avoid flooding it). */
+const DISPATCH_OFF = new Set(['none', 'off']);
+
 /**
  * Resolve which harnesses the dispatcher serves from the env value + the full
- * workspace harness list (P-006). Pure (testable):
- *   - `'*'` → ALL harnesses in the workspace (the default-on-for-all rollout);
- *   - an explicit comma list → that allowlist (scoped testing override);
- *   - empty / unset → none (safe until the Phase-G flip makes `'*'` the default).
+ * workspace harness list (P-006/P-009). Pure (testable). Since P-009, DBOS is the
+ * DEFAULT orchestrator for every harness:
+ *   - empty / unset / `'*'` → ALL harnesses in the workspace (the default);
+ *   - `'none'` / `'off'` → disabled (explicit opt-out — the legacy path is retired,
+ *     so this just means "don't auto-dispatch here", e.g. a contended shared box);
+ *   - an explicit comma list → that allowlist (scoped override).
  */
 export function resolveDispatchHarnesses(
   envRaw: string | undefined,
   allSlugs: string[],
 ): string[] {
   const v = (envRaw ?? '').trim();
-  if (v === '*') return allSlugs;
+  if (DISPATCH_OFF.has(v.toLowerCase())) return [];
+  if (v === '' || v === '*') return allSlugs;
   return v
     .split(',')
     .map((s) => s.trim())
     .filter(Boolean);
 }
 
-/** Whether to arm the 30s scheduled tick: all-mode (`'*'`) or a non-empty allowlist. */
+/** Whether to arm the 30s scheduled tick: anything but an explicit opt-out (P-009). */
 export function shouldScheduleDispatch(envRaw: string | undefined): boolean {
   const v = (envRaw ?? '').trim();
-  return v === '*' || v.split(',').some((s) => s.trim().length > 0);
+  return !DISPATCH_OFF.has(v.toLowerCase());
 }
 
 /**

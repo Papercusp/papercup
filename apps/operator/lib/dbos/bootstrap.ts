@@ -81,10 +81,12 @@ export async function startDbos(): Promise<void> {
     // scheduled workflows; their legacy setInterval workers stand down.
     await import('./periodic-workflows');
   }
-  if (process.env.PAPERCUSP_DBOS_ORCHESTRATOR === '1') {
-    // Phase 3: the agent pipeline as a durable workflow (default off; the legacy
-    // main loop is the A/B fallback). Register the workflow + wire the real
-    // invoke runner (spawns invoke-once with IDEMPOTENCY_KEY).
+  if (process.env.PAPERCUSP_DBOS_ORCHESTRATOR !== '0') {
+    // Phase 3 / P-009: the agent pipeline as a durable workflow is now the DEFAULT
+    // orchestrator (on unless PAPERCUSP_DBOS_ORCHESTRATOR=0). The legacy main loop
+    // is retired (already out of the live path); set =0 for the instant revert.
+    // Register the workflow + wire the real invoke runner (spawns invoke-once with
+    // IDEMPOTENCY_KEY).
     await import('./orchestrator-workflow');
     const { wireOrchestratorInvokeRunner } = await import('./orchestrator-runner');
     wireOrchestratorInvokeRunner();
