@@ -24,6 +24,7 @@ vi.mock('@/lib/spawn-config', () => ({
 }));
 
 import { buildRoleLaunchSpec } from '@/lib/role-launch-spec';
+import { resolveProjectDir } from '@/lib/spawn-config';
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -43,9 +44,11 @@ describe('buildRoleLaunchSpec', () => {
       featureId: 'F-001',
     });
 
-    // prompt comes from the shared assembler, in chat mode.
+    // prompt comes from the shared assembler, in chat mode, WITH the
+    // in-process workspace-aware projectDir (so the assembler skips its
+    // workspace-blind lookupProjectDir / curl-to-:3055 fallback).
     expect(assembleRolePromptMock).toHaveBeenCalledWith(
-      expect.objectContaining({ slug: 'papercup', role: 'worker', mode: 'chat', featureId: 'F-001' }),
+      expect.objectContaining({ slug: 'papercup', role: 'worker', mode: 'chat', featureId: 'F-001', projectDir: '/registry/papercup' }),
     );
     expect(spec.promptText).toBe('WORKER PROMPT BODY');
     expect(spec.runId).toBe('worker-F-001-123');
@@ -91,5 +94,16 @@ describe('buildRoleLaunchSpec', () => {
     await expect(
       buildRoleLaunchSpec({ role: 'worker', workspaceId: 'default', harnessSlug: 'ghost', operatorBaseUrl: 'http://x' }),
     ).rejects.toThrow(/not registered/);
+  });
+
+  it('throws (before calling the assembler) when the harness is not in the workspace', async () => {
+    // resolveProjectDir → null means the harness isn't registered in this
+    // workspace; we must surface that in-process, not let the assembler fall
+    // back to its workspace-blind lookup.
+    vi.mocked(resolveProjectDir).mockResolvedValueOnce(null);
+    await expect(
+      buildRoleLaunchSpec({ role: 'scoper', workspaceId: 'papercusp-workspace', harnessSlug: 'papercup', operatorBaseUrl: 'http://x' }),
+    ).rejects.toThrow(/not registered in workspace "papercusp-workspace"/);
+    expect(assembleRolePromptMock).not.toHaveBeenCalled();
   });
 });

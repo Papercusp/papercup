@@ -83,11 +83,28 @@ export async function buildRoleLaunchSpec(
   const spawnId = randomUUID();
   const featureId = input.featureId?.trim() || null;
 
+  // 0. Resolve the project dir IN-PROCESS, workspace-aware. The operator is
+  //    the workspace authority (PG/registry-backed `resolveProjectDir`), so
+  //    we resolve here and hand it to `assembleRolePrompt` — otherwise the
+  //    assembler falls back to its workspace-BLIND `lookupProjectDir`, which
+  //    (a) can't see an active non-`default` workspace's harnesses and
+  //    (b) makes the :3070 host synchronously curl :3055 (itself) mid-request,
+  //    which fails for harnesses absent from the legacy registry. Null here
+  //    means the harness isn't registered in this workspace — surface it.
+  const projectDir = await resolveProjectDir(input.harnessSlug, input.workspaceId);
+  if (!projectDir) {
+    throw new Error(
+      `buildRoleLaunchSpec: harness "${input.harnessSlug}" is not registered in workspace "${input.workspaceId}"`,
+    );
+  }
+
   // 1. Prompt (chat mode — a human drives this session). Same shared
-  //    assembler the orchestrator's prompt path + operator brains use.
+  //    assembler the orchestrator's prompt path + operator brains use, but
+  //    with the in-process projectDir so it skips the blind lookup.
   const assembled = assembleRolePrompt({
     slug: input.harnessSlug,
     role: input.role,
+    projectDir,
     mode: 'chat',
     featureId: featureId ?? undefined,
     extras: input.extras,
@@ -95,12 +112,8 @@ export async function buildRoleLaunchSpec(
   });
   const runId = assembled.meta.runId;
 
-  // 2. cwd — the harness's project dir. (A future refinement can prefer
-  //    an existing feature worktree; worktree creation stays orchestrator-owned.)
-  const cwd =
-    assembled.meta.projectDir ||
-    (await resolveProjectDir(input.harnessSlug, input.workspaceId)) ||
-    process.cwd();
+  // 2. cwd — the harness's project dir (resolved above).
+  const cwd = assembled.meta.projectDir || projectDir || process.cwd();
 
   // 3. Signed role-scoped MCP URL — same param set + signing key the
   //    orchestrator's writeSignedSpawnMcp uses, so the MCP handler's
