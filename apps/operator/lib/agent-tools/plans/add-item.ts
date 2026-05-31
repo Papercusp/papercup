@@ -33,7 +33,7 @@ const SU_ROLES = [
   'curator',
 ] as const;
 
-const argsSchema = z.object({
+export const argsSchema = z.object({
   slug: z.string().min(1),
   phase: z
     .string()

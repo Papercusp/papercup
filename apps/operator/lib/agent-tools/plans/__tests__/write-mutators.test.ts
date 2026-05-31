@@ -21,6 +21,7 @@ import {
   allocateNextItemId,
   appendItemToBody,
   buildItemLine,
+  argsSchema as addItemArgsSchema,
 } from '../add-item';
 import { bumpUpdatedDate } from '../with-plan-lock';
 
@@ -305,6 +306,24 @@ describe('item id allocation + append', () => {
       '- **P-004** `todo` Fourth item blocked-by: P-002 importance: urgent',
     );
     expect(buildItemLine('P-005', 'Solo', [], 'high')).toBe('- **P-005** `todo` Solo importance: high');
+  });
+});
+
+describe('plans:add-item importance enforcement (P-004/P-007)', () => {
+  const base = { slug: 's', phase: 'Phase 1 — X', text: 'do a thing' };
+
+  it('rejects when importance is missing (no silent default)', () => {
+    expect(addItemArgsSchema.safeParse(base).success).toBe(false);
+  });
+
+  it('accepts each valid importance level', () => {
+    for (const lvl of ['urgent', 'high', 'normal', 'low'] as const) {
+      expect(addItemArgsSchema.safeParse({ ...base, importance: lvl }).success).toBe(true);
+    }
+  });
+
+  it('rejects an out-of-vocabulary importance', () => {
+    expect(addItemArgsSchema.safeParse({ ...base, importance: 'critical' }).success).toBe(false);
   });
 });
 

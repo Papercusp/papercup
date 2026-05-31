@@ -68,7 +68,7 @@ const READ_VERBS = new Set([
 // promotes a plan INTO a harness — creating features. Both are intentionally
 // exposed here under different verbs ('set-frontmatter' vs 'promote').
 const WRITE_VERBS = new Set([
-  'set-status', 'set-now', 'add-decision', 'add-item', 'new',
+  'set-status', 'set-importance', 'set-now', 'add-decision', 'add-item', 'new',
   'set-content', 'set-frontmatter',
   // plan-level lifecycle flip (approve/demote/ship/reject) — plans:set-plan-status.
   'set-plan-status',
