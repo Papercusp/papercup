@@ -106,6 +106,40 @@ that wants typed storage can already re-export `ToolContext<MyClient>`.
 
 ## Progress log
 
+### 2026-05-31 — P-054 conversion ATTEMPTED then REVERTED (in-tree restored, build green)
+
+Per avi's "drive it now" go-ahead I executed the Option B conversion. It did **not** land —
+reverted cleanly; `packages/tooldef` is back in-tree and the build is green (tooldef tsc 0 /
+219, tooldef-mcp 5, tooldef-http 3, agent-mcp resolves). What happened + the lessons:
+
+- **Shared-repo sync push was REJECTED (non-fast-forward).** A fresh `git subtree split` of
+  `packages/tooldef` pushed to `Papercusp/tooldef main` was rejected — the shared main
+  (`60d6cc38`) is ahead of the split base. **Nothing landed on the shared repo** (no `--force`
+  was ever used — that discipline prevented clobbering a repo Restart depends on). So the shared
+  repo is intact + still peer-owned, and the "sync first" precondition is still **unmet**.
+- **The in-tree surgery got half-committed by a peer sweep.** I ran `git rm -r packages/tooldef`
+  + `git submodule add libs/generic/tooldef`, but the **four build-config edits failed to apply**
+  (Edit "file not read first" precondition). Before I caught it, the *staged* git-rm+submodule-add
+  was swept into a peer's `git commit` (the shared-tree commit model — "your staged work lands in
+  someone else's commit"), leaving `main` momentarily with `@papercusp/tooldef` unresolvable
+  (package gone, configs still pointing at the old path).
+- **Recovery:** restored `packages/tooldef` from a pre-surgery tag (`tooldef-preconvert-restore`
+  = `307c5d53b`, includes the `agentRoles` fix), removed the `libs/generic/tooldef` submodule
+  (deinit + rm + `.git/modules` cleanup), restored `.gitmodules`, re-pointed the
+  `node_modules/@papercusp/tooldef` symlink in-tree, and committed. Verified stable across a
+  later merge: `packages/tooldef` 143 files tracked, submodule gone, 0 uncommitted, build green.
+
+**Lessons for the retry (do NOT skip):** (1) the conversion's destructive steps cannot be left
+*staged-but-uncommitted* on this shared tree — a peer commit will sweep a half-state; stage the
+**whole** atomic change (rm + submodule + all 4 config edits) and commit it in one shot, or do it
+in a quiet window. (2) `git submodule add` for `tooldef-http` needs `Papercusp/tooldef-http` to
+exist first (it doesn't). (3) the shared `Papercusp/tooldef` must be reconciled to in-tree HEAD
+**before** the submodule is pinned (it's non-FF now — the peer owns that). (4) the 4 config refs
+to rewrite are exactly: `tsconfig.base.json` (×2), `apps/operator/vitest.config.ts` (×2),
+`scripts/affected-tests.mjs`, `knip.json` (see D-011). The conversion mechanics themselves
+verified clean (engine moved, all consumers resolved, build green) before the sweep — the move is
+sound; only the shared-tree choreography failed.
+
 ### 2026-05-31 — P-054 decided (Option B / mirror) + tooldef-mcp test regression fixed
 
 Resuming the extraction arc (session 2d4d8d29). Two things:
