@@ -19,32 +19,9 @@ and the order to do it in.
 
 ## Now
 
-**State:** **SHIPPED — code-verified 2026-05-30.** All 17 items (P-000…P-051)
-are done and were re-verified directly against the code (not docs/coord/memory):
-every claimed `@papercusp/*` package exists in `packages/`, is `private:true`, is
-symlinked into `node_modules`, and its operator consumers are rewired. All 12
-extracted-package test suites pass **with no live PG/desktop** (203 tests total:
-rrf 7, embedded-pg-discovery 6, plan-parser 13, rate-limit 8, ipc-framing 16,
-desktop-ipc 44, ipc-endpoint-server 22, search 9, coordination 46, locks 15,
-memory 6, backup 11) — confirming the in-memory conformance doubles (the P-050
-swappability gate) genuinely work detached. The original keystone correction still
-holds: no single `WorkspaceStore` seam (D-003 refuted) → five DB-access mechanisms
-→ each subsystem behind its **own** injection seam (D-010). Out of scope (other
-teams): endpoint/`defineTool` ([[papercusp-tooldef-extraction-2026-05-29]]) and
-the chat system (`@restart/agent-chat` + `chat-stream.ts`).
+**State:** Generalization follow-on (D-011/D-012) COMPLETE and hardened: 10 libs generalized, audited twice, all coupling fixed; catalogued, documented, and grouped under libs/generic/; operator verified healthy; post-move QA 13/13 suites green.
 
-**Next:** Nothing blocking — the extraction plan is complete. Two optional,
-non-item follow-ups remain: (1) **P-023b** — delete the three `plans/{parser,
-effective-status,content-hash}.ts` re-export shims and point the ~10 operator
-importers at `@papercusp/plan-parser` directly (deferred during the paperclip
-window; the shims work, so this is cosmetic); (2) the opaque-session `auth.ts`
-follow-on noted under P-031 (lower priority). **Separately** (NOT part of this
-plan — see the new "Out of plan: @restart → @papercusp scope migration" note):
-many libs Papercusp consumes are still npm-scoped `@restart/*` (`@restart/db-org`
-×431, papergrid trio, `@restart/sync`, `@restart/ui-primitives`,
-`@restart/git-graph`, etc.) even though their submodule repos already live under
-`github.com/Papercusp/`. P-040 was packaging-only and deliberately did not rename
-scopes; the scope migration is its own initiative.
+**Next:** Nothing pending. Optional future step needing human go-ahead: promote the in-repo packages/* generic libs to their own repos under libs/generic/.
 
 ## Background
 
@@ -639,6 +616,21 @@ Three gotchas worth recording for any future path move of submodules:
 3. **Shared-index commit hazard:** a `git commit` after `git add <my files>` swept ~264 extra files another (ended) session had left STAGED in the shared index (a pending operator-docs rebuild whose source had already landed). Non-destructive + local-only, message amended to be honest. Lesson: in this multi-agent checkout, ALWAYS `git diff --cached --name-only` before committing.
 
 Plan is now fully complete: 10 libs generalized + audited twice + all coupling fixed, catalogued + discoverable + documented, and physically grouped under libs/generic/.
+
+
+### D-013 — In-repo generic packages promoted to private repos + libs/generic submodules (2026-05-31)
+Date: 2026-05-31
+User authorized the final optional step ("do this, keep private"). The 9 borrowable in-repo packages — rrf, embedded-pg-discovery, plan-parser, rate-limit, ipc-framing, ipc-endpoint-server, desktop-ipc, search, memory — are now each their OWN private repo under github.com/Papercusp/ (history preserved via `git subtree split`) consumed as a submodule at libs/generic/<name>. Done with the operator UP via the safe add→repoint-symlink→remove sequence (no stop needed). All 9 repos private=true; catalog now shows them as repos; 142 tests pass from the new homes; operator healthy (:3070 + :3055 both 200).
+
+Per-package procedure: gh repo create --private; git subtree split --prefix=packages/<name> -b split-<name> + push split-<name>:main; git submodule add the https URL at libs/generic/<name>; repoint node_modules/@papercusp/<name> symlink; git rm packages/<name>; update apps/operator file: deps + root workspaces + catalog generator path.
+
+Gotchas hit (for any future promotion):
+1. `git subtree split` WITHOUT `-b` + capturing stdout `$sha` failed to push (empty/garbled SHA). Use the `-b <branch>` form and push `<branch>:main` — that's what worked.
+2. rrf's tsconfig extended the monorepo `../../tsconfig.base.json`; at libs/generic/rrf (one level deeper) that path broke AND it shouldn't reference the monorepo at all. Self-contained the tsconfig in the rrf repo + pushed. The other 8 were already self-contained.
+3. `git rm -r packages/<name>` leaves the dir if it has UNTRACKED content (node_modules) — removed the 9 leftover dirs after committing.
+4. Running `npx vitest` inside each fresh submodule created untracked node_modules → dirtied the parent. Added a `.gitignore` (node_modules/dist) to each repo + pushed, so a clone-and-install workflow stays clean.
+
+This is the LAST item — the whole generalization + grouping + promotion arc is complete. Only the SEAMED/kept-tie-in libs (locks, coordination, backup, docs-engine in packages/; host-platform in libs/) and file-claim remain in-repo, by design.
 
 ## Addendum — Phase 1 shipped (2026-05-30) + impact on in-flight plans
 
