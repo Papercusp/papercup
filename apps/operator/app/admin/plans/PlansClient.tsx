@@ -27,12 +27,14 @@ import { toast } from 'sonner';
 import PlanRail, { type PlanRailHandle } from './PlanRail';
 import PlanDetail from './PlanDetail';
 import PlanItemsList from './PlanItemsList';
+import PlanOtherList from './PlanOtherList';
 import PlanFilters from './PlanFilters';
 import PlanBucketTabs from './PlanBucketTabs';
 import PlanSearchResults from './PlanSearchResults';
 import {
   usePlanList,
   usePlanItems,
+  usePlanAttention,
   usePlanSearch,
   bucketOf,
   PLAN_BUCKETS,
@@ -52,20 +54,22 @@ type PlanDetailTab = 'editor' | 'revisions' | 'agents';
 
 // Additive filter model: item-status facet (OR within) AND plan-status
 // bucket facet (OR within). Each item maps to one item-status category.
-type ItemStatusFilter = 'needs-human' | 'todo' | 'blocked';
-const ITEM_STATUS_IDS = ['needs-human', 'todo', 'blocked'] as const;
+type ItemStatusFilter = 'needs-human' | 'todo' | 'blocked' | 'other';
+const ITEM_STATUS_IDS = ['needs-human', 'todo', 'blocked', 'other'] as const;
 
 /** Item-status filter toggles — the "Items" group. */
 const ITEM_FILTERS: Array<{ id: ItemStatusFilter; label: string; hint: string }> = [
   { id: 'needs-human', label: 'Needs Human', hint: 'Items waiting on a human decision.' },
   { id: 'todo', label: 'ToDos', hint: 'Agent-actionable work — effective todo, all blockers cleared. Sorted by importance.' },
   { id: 'blocked', label: 'Blocked', hint: 'Items stuck on unresolved blockers or external waits.' },
+  { id: 'other', label: 'Other', hint: 'Other surfaces needing attention — coord escalations, smoke-test failures, plans awaiting review, messages — that aren\'t plan items.' },
 ];
 
 const ITEM_FILTER_LABEL: Record<ItemStatusFilter, string> = {
   'needs-human': 'Needs Human',
   todo: 'ToDos',
   blocked: 'Blocked',
+  other: 'Other',
 };
 
 const BUCKET_IDS: PlanBucket[] = PLAN_BUCKETS.map((b) => b.id);
@@ -181,10 +185,14 @@ export default function PlansClient() {
   const itemsBlocked = usePlanItems({ status: 'blocked' });
   const itemsLoading = itemsNeedsHuman.loading || itemsActionable.loading || itemsBlocked.loading;
   const itemsError = itemsNeedsHuman.error ?? itemsActionable.error ?? itemsBlocked.error;
+  // The "Other" facet: non-plan-item attention surfaces (coord escalations,
+  // smoke-fails, plan reviews, messages) from the plans:attention reader.
+  const attention = usePlanAttention();
   const refreshItems = () => {
     itemsNeedsHuman.refresh();
     itemsActionable.refresh();
     itemsBlocked.refresh();
+    attention.refresh();
   };
 
   const taggedItems = useMemo(() => {
@@ -203,6 +211,16 @@ export default function PlansClient() {
     }
     return dedup;
   }, [itemsNeedsHuman.data, itemsActionable.data, itemsBlocked.data]);
+
+  const otherItems = useMemo(
+    () => (attention.data?.groups ?? []).flatMap((g) => g.items).filter((i) => i.kind !== 'plan-item'),
+    [attention.data],
+  );
+  // Show the Other section when its facet is active (or no item-status
+  // facet is selected = "all"). `onlyOther` hides the plan-item list so a
+  // bare "Other" selection isn't paired with an empty plan-item list.
+  const showOther = istatus.length === 0 || istatus.includes('other');
+  const onlyOther = istatus.length === 1 && istatus[0] === 'other';
 
   const istatusKey = istatus.join('|');
   const pBucketsKey = pBuckets.join('|');
@@ -225,14 +243,15 @@ export default function PlansClient() {
   // chip shows what selecting it would surface). Shrinks as you narrow
   // the plan buckets.
   const itemStatusCounts = useMemo(() => {
-    const acc: Record<ItemStatusFilter, number> = { 'needs-human': 0, todo: 0, blocked: 0 };
+    const acc: Record<ItemStatusFilter, number> = { 'needs-human': 0, todo: 0, blocked: 0, other: 0 };
     for (const e of taggedItems) {
       if (pBuckets.length && !pBuckets.includes(planBucketBySlug.get(e.row.plan) ?? 'draft')) continue;
       acc[e.category] += 1;
     }
+    acc.other = otherItems.length;
     return acc;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [taggedItems, pBucketsKey, planBucketBySlug]);
+  }, [taggedItems, pBucketsKey, planBucketBySlug, otherItems]);
 
   // The rail lists the plans that have matching items — a navigator +
   // per-plan filter (itemPlan) for the item list.
@@ -498,17 +517,31 @@ export default function PlansClient() {
             needsDecisionPlans={needsDecisionPlans}
           />
         ) : (
-          <PlanItemsList
-            items={filteredItems}
-            loading={itemsLoading}
-            error={itemsError}
-            refresh={refreshItems}
-            onPick={navPlanTarget}
-            harnessByPlan={harnessByPlan}
-            planFilter={itemPlan}
-            title={itemTitle}
-            subtitle={itemSubtitle}
-          />
+          <>
+            {showOther ? (
+              <PlanOtherList
+                groups={attention.data?.groups ?? []}
+                loading={attention.loading}
+                error={attention.error}
+                refresh={attention.refresh}
+                title="Other"
+                subtitle={itemSubtitle}
+              />
+            ) : null}
+            {!onlyOther ? (
+              <PlanItemsList
+                items={filteredItems}
+                loading={itemsLoading}
+                error={itemsError}
+                refresh={refreshItems}
+                onPick={navPlanTarget}
+                harnessByPlan={harnessByPlan}
+                planFilter={itemPlan}
+                title={itemTitle}
+                subtitle={itemSubtitle}
+              />
+            ) : null}
+          </>
         )}
       </main>
     </div>

@@ -798,6 +798,30 @@
 .pc-imp--high   { background: rgba(250, 204, 21, 0.18); color: #fef3c7; }
 .pc-imp--low    { background: rgba(148, 163, 184, 0.14); color: #cbd5e1; }
 
+/* Kind badge — the AttentionItem kind for "Other" rows (escalation,
+   message, smoke, review). Distinguishes non-plan-item surfaces. */
+.pc-kind {
+  display: inline-block;
+  padding: 0 4px;
+  border-radius: 4px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 9.5px;
+  line-height: 16px;
+  letter-spacing: 0.03em;
+  white-space: nowrap;
+  background: rgba(255, 255, 255, 0.05);
+  color: rgba(214, 236, 248, 0.7);
+}
+.pc-kind--coord-escalation { background: rgba(250, 204, 21, 0.16); color: #fde68a; }
+.pc-kind--coord-message    { background: color-mix(in oklab, var(--accent, #38bdf8), transparent 82%); color: #bae6fd; }
+.pc-kind--smoke-fail       { background: rgba(248, 113, 113, 0.18); color: #fecaca; }
+.pc-kind--plan-review      { background: rgba(167, 139, 250, 0.18); color: #ddd6fe; }
+
+/* Non-interactive group head for the Other list (a div, not a Collapsible
+   trigger) — drop the button affordances. */
+.pc-items__plan-head--static { cursor: default; }
+.pc-items__plan-head--static:hover { background: transparent; }
+
 .pc-plans__placeholder--error {
   display: grid;
   gap: 6px;

@@ -110,6 +110,50 @@ export interface PlanItemRow {
   item: PlanItem;
 }
 
+/* ── Attention feed (plans:attention) — wire types mirroring
+   lib/attention/types.ts, kept local per this module's decoupling. ── */
+
+export type AttentionKind =
+  | 'plan-item'
+  | 'coord-escalation'
+  | 'coord-message'
+  | 'smoke-fail'
+  | 'plan-review';
+
+export type AttentionActionId = 'chat' | 'resolve' | 'mark-done' | 'view-log' | 'open' | 'ack';
+
+export interface AttentionAction {
+  id: AttentionActionId;
+  label: string;
+  primary?: boolean;
+}
+
+export interface AttentionItem {
+  id: string;
+  kind: AttentionKind;
+  source: string;
+  harnessSlug: string | null;
+  planSlug: string | null;
+  itemRef: string | null;
+  title: string;
+  body: string;
+  status: string;
+  importance: Importance;
+  needsHuman: boolean;
+  actions: AttentionAction[];
+  ref: { kind: AttentionKind } & Record<string, unknown>;
+}
+
+export interface AttentionGroup {
+  key: string;
+  kind: 'plan' | 'alerts';
+  planSlug: string | null;
+  harnessSlug: string | null;
+  title: string;
+  items: AttentionItem[];
+  maxImportance: Importance;
+}
+
 export interface PlanDecision {
   id: string;
   title?: string | null;
@@ -240,6 +284,10 @@ export function searchPlans(params: { query: string }) {
   return getJson<{ hits: PlanSearchHit[] }>('search', params);
 }
 
+export function fetchPlanAttention(params?: { harnessSlug?: string; includeArchived?: boolean }) {
+  return getJson<{ groups: AttentionGroup[] }>('attention', params);
+}
+
 /* ── Hooks ─────────────────────────────────────────────────────────── */
 
 export interface AsyncResult<T> {
@@ -325,6 +373,21 @@ export function usePlanItems(params?: {
           })
         : Promise.resolve({ items: [] as PlanItemRow[] }),
     [params?.slug, params?.status, params?.actionable, params?.needsHuman, enabled],
+  );
+}
+
+export function usePlanAttention(params?: {
+  harnessSlug?: string;
+  includeArchived?: boolean;
+  enabled?: boolean;
+}) {
+  const enabled = params?.enabled ?? true;
+  return useAsyncJson<{ groups: AttentionGroup[] }>(
+    () =>
+      enabled
+        ? fetchPlanAttention({ harnessSlug: params?.harnessSlug, includeArchived: params?.includeArchived })
+        : Promise.resolve({ groups: [] as AttentionGroup[] }),
+    [params?.harnessSlug, params?.includeArchived, enabled],
   );
 }
 
