@@ -288,6 +288,33 @@ export function fetchPlanAttention(params?: { harnessSlug?: string; includeArchi
   return getJson<{ groups: AttentionGroup[] }>('attention', params);
 }
 
+/* ── Other-item actions (coord:* via the /api/admin/coord proxy) ─────── */
+
+async function postCoord<T>(verb: string, body: Record<string, unknown>): Promise<T> {
+  const r = await fetch(`/api/admin/coord/${verb}`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  const text = await r.text();
+  if (!r.ok) throw new Error(`coord:${verb} → ${r.status}: ${text.slice(0, 200)}`);
+  try {
+    return JSON.parse(text) as T;
+  } catch {
+    return {} as T;
+  }
+}
+
+/** Resolve a coord escalation by msg_id, recording the chosen option id. */
+export function resolveEscalation(args: { msg_id: string; choice: string; note?: string }) {
+  return postCoord<{ ok?: boolean; error?: string }>('resolve', args);
+}
+
+/** Acknowledge a coord message addressed to the human. */
+export function ackCoordMessage(args: { msg_id: string }) {
+  return postCoord<{ ok?: boolean; error?: string }>('ack', args);
+}
+
 /* ── Hooks ─────────────────────────────────────────────────────────── */
 
 export interface AsyncResult<T> {

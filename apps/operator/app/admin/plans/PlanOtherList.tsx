@@ -11,15 +11,18 @@
  * importance-sorted, master-detail like PlanItemsList: pick a row, its
  * message + per-kind action buttons show in the right pane.
  *
- * Action dispatch (Resolve via coord:resolve, Ack, View-log, Open) is
- * P-017; the buttons render here and report which action they'll carry
- * out until that lands.
+ * Action dispatch (P-017): Resolve (coord:resolve, choosing the escalation's
+ * option) and Ack (coord:ack) round-trip through the /api/admin/coord proxy
+ * and refresh on success — the first human-facing way to clear an escalation
+ * (until now only agents could, via the MCP tools). View-log / Open are
+ * read-only and live in the source harness view, so they point there.
  */
 
-import { useState } from 'react';
+import { Fragment, useState } from 'react';
 import { parseAsString, useQueryState } from 'nuqs';
 import { toast } from 'sonner';
 import PlanChatModal from './PlanChatModal';
+import { ackCoordMessage, resolveEscalation } from './plans-api';
 import type { AttentionGroup, AttentionItem, AttentionKind } from './plans-api';
 
 const KIND_LABEL: Record<AttentionKind, string> = {
@@ -157,14 +160,21 @@ export default function PlanOtherList({ groups, loading, error, refresh, kinds, 
           </ul>
         </div>
 
-        <OtherDetail item={selItem} />
+        <OtherDetail
+          item={selItem}
+          onResolved={() => {
+            void setSelected(null);
+            refresh();
+          }}
+        />
       </div>
     </div>
   );
 }
 
-function OtherDetail({ item }: { item: AttentionItem | null }) {
+function OtherDetail({ item, onResolved }: { item: AttentionItem | null; onResolved: () => void }) {
   const [chatOpen, setChatOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
 
   if (!item) {
     return (
@@ -175,6 +185,44 @@ function OtherDetail({ item }: { item: AttentionItem | null }) {
   }
 
   const kindLabel = KIND_LABEL[item.kind];
+  const ref = item.ref;
+
+  const runResolve = async (choice: string) => {
+    if (busy || ref.kind !== 'coord-escalation') return;
+    setBusy(true);
+    try {
+      const res = await resolveEscalation({ msg_id: String(ref.msgId), choice });
+      if (res?.error) throw new Error(res.error);
+      toast.success(`Escalation resolved (${choice}).`);
+      onResolved();
+    } catch (e) {
+      toast.error('Resolve failed', { description: e instanceof Error ? e.message : String(e) });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const runAck = async () => {
+    if (busy || ref.kind !== 'coord-message') return;
+    setBusy(true);
+    try {
+      const res = await ackCoordMessage({ msg_id: String(ref.msgId) });
+      if (res?.error) throw new Error(res.error);
+      toast.success('Message acknowledged.');
+      onResolved();
+    } catch (e) {
+      toast.error('Ack failed', { description: e instanceof Error ? e.message : String(e) });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  // Escalation options become individual Resolve buttons (one per option the
+  // escalating agent offered); a no-option escalation gets a single Resolve.
+  const escOptions =
+    ref.kind === 'coord-escalation' && Array.isArray(ref.options)
+      ? (ref.options as { id: string; label: string }[])
+      : [];
 
   return (
     <aside className="pc-items__detail">
@@ -193,31 +241,87 @@ function OtherDetail({ item }: { item: AttentionItem | null }) {
           <span className={`pc-imp pc-imp--${item.importance}`}>{item.importance}</span>
         ) : null}
         <div className="pc-items__detail-actions">
-          {item.actions.map((a) =>
-            a.id === 'chat' ? (
+          {item.actions.map((a) => {
+            if (a.id === 'chat') {
+              return (
+                <button
+                  key={a.id}
+                  type="button"
+                  className="pc-items__action-btn pc-items__action-btn--chat"
+                  onClick={() => setChatOpen(true)}
+                  title={`Open an in-app, context-scoped agent chat about this ${kindLabel}`}
+                >
+                  {`💬 ${a.label}`}
+                </button>
+              );
+            }
+            if (a.id === 'resolve' && ref.kind === 'coord-escalation') {
+              if (escOptions.length) {
+                return (
+                  <Fragment key={a.id}>
+                    {escOptions.map((o) => (
+                      <button
+                        key={o.id}
+                        type="button"
+                        className="pc-items__resolve"
+                        disabled={busy}
+                        onClick={() => void runResolve(o.id)}
+                        title={`Resolve this escalation as: ${o.label}`}
+                      >
+                        {`✓ ${o.label}`}
+                      </button>
+                    ))}
+                  </Fragment>
+                );
+              }
+              return (
+                <button
+                  key={a.id}
+                  type="button"
+                  className="pc-items__resolve"
+                  disabled={busy}
+                  onClick={() => void runResolve('resolved')}
+                  title="Resolve this escalation"
+                >
+                  {a.label}
+                </button>
+              );
+            }
+            if (a.id === 'ack' && ref.kind === 'coord-message') {
+              return (
+                <button
+                  key={a.id}
+                  type="button"
+                  className={a.primary ? 'pc-items__resolve' : 'pc-items__action-btn'}
+                  disabled={busy}
+                  onClick={() => void runAck()}
+                  title="Acknowledge this message"
+                >
+                  {a.label}
+                </button>
+              );
+            }
+            // view-log / open / fallback — read-only navigations whose source
+            // of truth is the harness view (smoke panel, pending reviews).
+            // No crisp in-Plans target, so point the human there.
+            return (
               <button
                 key={a.id}
                 type="button"
-                className="pc-items__action-btn pc-items__action-btn--chat"
-                onClick={() => setChatOpen(true)}
-                title={`Open an in-app, context-scoped agent chat about this ${kindLabel}`}
-              >
-                {`💬 ${a.label}`}
-              </button>
-            ) : (
-              <button
-                key={a.id}
-                type="button"
-                className={a.primary ? 'pc-items__resolve' : 'pc-items__action-btn'}
+                className="pc-items__action-btn"
                 onClick={() =>
-                  toast.info(`"${a.label}" — ${KIND_LABEL[item.kind]} action wiring lands in P-017.`)
+                  toast.info(
+                    `${a.label}: this ${kindLabel} lives in its harness view${
+                      item.harnessSlug ? ` (${item.harnessSlug})` : ''
+                    }; the detail below mirrors it.`,
+                  )
                 }
-                title={`${a.label} — coord wiring (coord:resolve / coord:ack / open) is deferred to P-017`}
+                title={a.label}
               >
                 {a.label}
               </button>
-            ),
-          )}
+            );
+          })}
         </div>
       </div>
       <div className="pc-items__detail-body">
