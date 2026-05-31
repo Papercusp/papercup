@@ -39,16 +39,22 @@ commit-frequent, additive-first):
   /adv harness topbar — popover with Link / Move here / Remove over the
   membership endpoints; `CreateHarnessPicker` "Existing local repo" now states
   the folder is linked in place (not moved/copied). Bridge-verified: button +
-  popover render, endpoint returns correct data. **Still TODO in Phase 4:** the
-  D-6 prompt reset-to-default buttons need a /adv prompts panel first (the
-  `PromptsTab` editor is a retired-/harness component, not surfaced in /adv).
+  popover render, endpoint returns correct data.
+- ✅ D-6 reset buttons DONE (`bdcaf077a`): the prompt editor (`PromptsTab`) is
+  ALREADY reachable in /adv via Config tab → `ConfigPanel` → `SpecEditor` — no
+  new panel needed (earlier "not in /adv" note was wrong). Added the per-group
+  "reset all" button (→ `POST /prompts/reset-all`) + relabeled the existing
+  per-role override-DELETE to "reset to default". reset-all verified end-to-end
+  on `sheets` (net-zero). **Phase 4 essentially complete.** (Note: `papercup`,
+  the repo-itself harness, 404s on `/prompts` via `resolvePhasedProject` — a
+  pre-existing special-case; all real harnesses resolve 200.)
 - 🛑 Phase 2 (cross-workspace addressing) + Phase 2b (desktop PG consolidation,
   Rust) **DEFERRED by the owner (2026-05-31)** — switch-then-operate covers the
   real use case; revisit only if cross-workspace dashboards / simultaneous
   cross-workspace operation are wanted.
-- ⭐ CORE OF THE PLAN COMPLETE — see the build-status section above for what's
-  done vs the remaining items (Phase 4 prompt-reset UI, 091 apply, live
-  harness-run e2e; Phase 2 + 2b deferred).
+- ⭐ PLAN ESSENTIALLY COMPLETE — Phases 1, 1b, 3, 4 done + verified; D-6/D-7
+  closed. Remaining: 091 applies on next embedded-pg boot (latent, non-blocking);
+  Phase 2 + 2b deferred by owner. No open build work.
 Net shape: one embedded-pg per install, RLS-scoped by workspace; a harness = a
 linked folder in N workspaces; each workspace owns config (3-tier) + settings;
 run data shared by slug.
@@ -153,13 +159,16 @@ deliberately not attempted autonomously to avoid risking the running system):**
    for cross-workspace dashboards / simultaneous cross-workspace operation.
 5. **Phase 2b · desktop PG consolidation (Rust)** — 🛑 DEFERRED (owner, 2026-05-31).
    `workspaces.rs`/`main.rs`; can't build/verify the Tauri shell autonomously.
-6. **Phase 4 · UX** — ✅ link-in-place labeling + membership affordance (Link /
-   Move / Remove) shipped `fe6de2d51` (bridge-verified render + endpoint data).
-   ⏳ REMAINING: the D-6 prompt reset-to-default buttons, which first need a
-   /adv prompts panel (`PromptsTab` is a retired-/harness component). Browser/
-   bridge verification of data-driven popovers is currently blocked on this dev
-   box by a Tauri-webview→`localhost:3070` relative-fetch stall (only absolute
-   `127.0.0.1` resolves in-webview; the app's own polling fetches tolerate it).
+6. **Phase 4 · UX** — ✅ DONE. link-in-place labeling + membership affordance
+   (Link / Move / Remove) shipped `fe6de2d51`; D-6 reset buttons (per-role
+   "reset to default" + per-group "reset all") shipped `bdcaf077a` in the
+   already-/adv-reachable `PromptsTab` (Config tab → `ConfigPanel` →
+   `SpecEditor`). Membership ops + reset-all verified end-to-end via curl
+   round-trips; renders bridge-verified. NOTE: bridge verification of
+   *data-driven* popovers/lists is blocked on this dev box by a Tauri-webview→
+   `localhost:3070` relative-fetch stall (only absolute `127.0.0.1` resolves
+   in-webview; the app's own polling fetches tolerate it) — so live data-render
+   was verified via the endpoints, not the webview DOM.
 
 `project_id` (D-2): on reflection the **canonical path is the stable identity**
 (`workspacesForHarness(slug)` already answers "which workspaces"); a separate
