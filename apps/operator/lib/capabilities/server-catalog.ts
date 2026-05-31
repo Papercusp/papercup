@@ -38,6 +38,13 @@ function principalAllows(
  */
 export function getServerCapabilities(opts: {
   principal: Pick<Principal, 'capabilities'>;
+  /**
+   * Agent persona the palette invokes as (the run-tool ctx uses `operator`).
+   * When set, tools whose `agentRoles` allowlist excludes it are filtered out
+   * so the listing matches invocability — a tool that would 403 at dispatch
+   * never appears. Tools with no allowlist are available to every role.
+   */
+  role?: string;
   catalog?: readonly ToolDefinitionMeta[];
 }): ServerCapability[] {
   const defs: readonly ToolDefinitionMeta[] = opts.catalog ?? getCatalog();
@@ -45,6 +52,14 @@ export function getServerCapabilities(opts: {
   for (const def of defs) {
     if (!principalAllows(opts.principal, def.capability)) continue;
     const cap = toolDefinitionToCapability(def);
+    if (
+      opts.role &&
+      cap.gating.agentRoles &&
+      cap.gating.agentRoles.length > 0 &&
+      !cap.gating.agentRoles.includes(opts.role)
+    ) {
+      continue;
+    }
     const eligibility = paletteEligibility(cap);
     if (eligibility === 'exclude') continue;
     out.push({ ...cap, eligibility });

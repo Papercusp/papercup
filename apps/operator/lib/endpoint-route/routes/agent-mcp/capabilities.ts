@@ -27,7 +27,9 @@ export default defineTool({
     const principal = await tryResolvePrincipal(req.headers);
     if (!principal) return Response.json({ capabilities: [] });
 
-    const capabilities = getServerCapabilities({ principal });
+    // Filter to the role the palette invokes as (run-tool dispatches as
+    // `operator`), so the listing matches invocability.
+    const capabilities = getServerCapabilities({ principal, role: 'operator' });
     return Response.json({ capabilities });
   },
 });

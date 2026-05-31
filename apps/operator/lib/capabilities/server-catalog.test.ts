@@ -35,6 +35,19 @@ describe('getServerCapabilities', () => {
     expect(caps.map((c) => c.id)).toEqual(['harness:list']); // plans:read / backup:write not held
   });
 
+  it('filters by role so the listing matches invocability (no-allowlist tools always pass)', () => {
+    const cat: ToolDefinitionMeta[] = [
+      { name: 'harness:list', capability: 'harness:read', description: 'List.', tier: 'low', args: z.object({}) }, // no roles → always
+      { name: 'worker:only', capability: 'worker:read', description: 'W.', tier: 'low', args: z.object({}), roles: ['worker'] },
+      { name: 'ops:thing', capability: 'ops:read', description: 'O.', tier: 'low', args: z.object({}), roles: ['operator', 'worker'] },
+    ];
+    const ids = getServerCapabilities({ principal: superuser, role: 'operator', catalog: cat }).map((c) => c.id);
+    expect(ids).toEqual(['harness:list', 'ops:thing']); // worker:only excluded for operator
+    // Without a role, no role filtering.
+    const all = getServerCapabilities({ principal: superuser, catalog: cat }).map((c) => c.id);
+    expect(all).toContain('worker:only');
+  });
+
   it('every returned capability is non-excluded and runs server-side', () => {
     const caps = getServerCapabilities({ principal: superuser, catalog: CATALOG });
     for (const c of caps) {
