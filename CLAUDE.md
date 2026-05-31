@@ -78,7 +78,7 @@ npm run dev
 That single command boots embedded Postgres (writes `~/.papercusp/embedded-pg.json` discovery file), starts the operator sidecar against it, applies pending SQL migrations, and opens the Tauri webview. There is no longer a "just the webapp" mode.
 
 Ports you may see internally (do not open these in a browser; let the desktop drive them):
-- `:3055` — Next.js dev server consumed by the Tauri webview as its content source.
+- `:3055` — the operator's **Vite** dev server (TanStack-Router SPA, `@papercusp/operator-vite`) consumed by the Tauri webview as its content source. **Next.js is retired** for the operator (`next dev`/`next start` blocked; `apps/operator/app/**` is dead code).
 - `:3070` — operator harness sidecar API + internal engineering docs at `/internal/docs` (Starlight static output; only when the desktop is up).
 
 **Implications for any agent making transport / persistence / sync decisions:**
@@ -220,7 +220,7 @@ Files paperclip is most likely to rewrite:
 
 ## Running the operator: `npm run dev` from `papercusp-desktop/`
 
-`apps/operator/bin/dev` and `apps/operator/bin/prod` are **retired** as standalone entry points. The Tauri dev shell is the only supported way to bring up the operator — it spawns the same Next.js process under the hood with embedded PG attached.
+`apps/operator/bin/dev` and `apps/operator/bin/prod` are **retired** as standalone entry points. The Tauri dev shell is the only supported way to bring up the operator — it spawns the same Vite SPA (`:3055`) + Hono host (`:3070`) under the hood with embedded PG attached (Next.js is retired).
 
 ```bash
 cd /home/marsh-office/papercupai-workspace/papercusp-desktop
