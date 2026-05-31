@@ -15,6 +15,7 @@ import {
 } from '@papercusp/docs-engine';
 import { loadHarnessRegistry } from '@/lib/harness-registry';
 import { engineeringAdapter } from './_engineering-adapter';
+import { HARNESS_REQUIRED_DETAIL, resolveHarnessScope } from '../_harness-scope';
 
 const ALL_ROLES = [
   'scoper',
@@ -83,6 +84,13 @@ export async function resolveAdapter(
 const argsSchema = z.object({
   query: z.string().min(2).max(200).describe('Keyword query. Whitespace-separated tokens; tokens <2 chars dropped.'),
   limit: z.number().int().min(1).max(20).default(8).describe('Max hits returned. Default 8.'),
+  harness: z
+    .string()
+    .optional()
+    .describe(
+      "Harness slug whose docs to search. Pass 'all' for Papercusp's own framework docs / your project docs (operator scope). " +
+        "Omit only when the session is already scoped to a harness — otherwise you'll get harness_required.",
+    ),
 });
 
 export default defineTool({
@@ -113,7 +121,15 @@ export default defineTool({
       metadata?: (d: Record<string, unknown>) => void;
       progress?: (pct: number, msg: string) => void;
     };
-    const resolved = await resolveAdapter(ctxAny.harnessSlug, { isSuperuser: ctxAny.isSuperuser });
+    const scope = resolveHarnessScope(args.harness, ctxAny);
+    if (scope.kind === 'none') {
+      return {
+        content: [{ type: 'text' as const, text: JSON.stringify({ error: 'harness_required', detail: HARNESS_REQUIRED_DETAIL }) }],
+        isError: true,
+      };
+    }
+    const effectiveSlug = scope.kind === 'all' ? '*' : scope.slug;
+    const resolved = await resolveAdapter(effectiveSlug, { isSuperuser: ctxAny.isSuperuser });
     if (resolved.error) {
       return {
         content: [
@@ -122,7 +138,7 @@ export default defineTool({
         isError: true,
       };
     }
-    ctxAny.metadata?.({ surface: resolved.surface, ...(ctxAny.harnessSlug ? { harness_slug: ctxAny.harnessSlug } : {}) });
+    ctxAny.metadata?.({ surface: resolved.surface, ...(scope.kind === 'harness' ? { harness_slug: scope.slug } : {}) });
 
     const response = await searchDocs(resolved.adapter, args, {
       ...(ctxAny.signal && { signal: ctxAny.signal }),

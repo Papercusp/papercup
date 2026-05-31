@@ -1,0 +1,64 @@
+/**
+ * Explicit harness-scope resolution for harness-scoped tools.
+ *
+ * Background (su-prompt-audit-fixes / the all-sentinel design): harness-scoped
+ * readers (`docs:*`, `plans:*`) used to SILENTLY fall back to Papercusp's own
+ * docs/plans when no harness was in context — so a caller who simply forgot to
+ * scope got the wrong data with no signal. We make "operate without a specific
+ * harness" an EXPLICIT choice instead: a caller passes the `all` sentinel (or a
+ * concrete slug) deliberately; omitting it at operator scope is an error.
+ *
+ * The crux is the `'*'` auto-default: `http-projection` sets
+ * `ctx.harnessSlug = '*'` for every superuser/operator-scope call. That makes
+ * "no harness picked" indistinguishable from "all" at the ctx level — so we
+ * treat a bare ctx `'*'` (or unset) as **no explicit choice** (`'none'`), and
+ * require the caller to pass `all`/`'*'` as an explicit ARG to opt into
+ * operator/cross-harness scope. A session launched scoped to a real harness
+ * (concrete `ctx.harnessSlug`) resolves to that harness with no arg needed.
+ *
+ * Pure + returning (no throw) so each tool maps the result onto its own error
+ * shape — `docs:*` return `{ error: { code: 'harness_required' } }`; the plans
+ * resolvers wrap this and throw `HarnessRequiredError` for the dispatcher.
+ */
+
+/** Canonical "all harnesses / operator scope" sentinel. `'*'` can't collide
+ *  with a real slug; `'all'` is an accepted friendly alias. */
+export const HARNESS_ALL = '*';
+
+/** True when a value is the explicit all/operator-scope sentinel. */
+export function isAllHarnessSentinel(v: string | null | undefined): boolean {
+  const s = v?.trim().toLowerCase();
+  return s === '*' || s === 'all';
+}
+
+export type HarnessScope =
+  | { kind: 'harness'; slug: string }
+  | { kind: 'all' }
+  | { kind: 'none' };
+
+/**
+ * Resolve harness scope from an explicit per-call `harness` arg + the session
+ * ctx. Precedence:
+ *   1. explicit arg `all`/`'*'`            → `{ kind: 'all' }`   (deliberate operator/cross scope)
+ *   2. explicit arg concrete slug          → `{ kind: 'harness', slug }`
+ *   3. no arg, concrete `ctx.harnessSlug`  → `{ kind: 'harness', slug }`   (scoped session)
+ *   4. no arg, ctx `'*'`/`'all'`/unset     → `{ kind: 'none' }`   (caller must opt in)
+ */
+export function resolveHarnessScope(
+  argHarness: string | null | undefined,
+  ctx: { harnessSlug?: string } | null | undefined,
+): HarnessScope {
+  const arg = argHarness?.trim();
+  if (arg) {
+    return isAllHarnessSentinel(arg) ? { kind: 'all' } : { kind: 'harness', slug: arg };
+  }
+  const c = ctx?.harnessSlug?.trim();
+  if (c && !isAllHarnessSentinel(c)) return { kind: 'harness', slug: c };
+  return { kind: 'none' };
+}
+
+/** Shared detail string for the `harness_required` error every gated tool returns. */
+export const HARNESS_REQUIRED_DETAIL =
+  "No harness in scope. Pass `harness: '<slug>'` for a specific harness, " +
+  "`harness: 'all'` for operator / cross-harness scope (e.g. Papercusp's own), " +
+  'or launch this session scoped to a harness.';

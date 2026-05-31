@@ -151,9 +151,12 @@ user.
 
 #### `docs:*` scope
 
-`docs:*` tools serve your harness's docs when `ctx.harnessSlug` is set,
-or your project's docs root when `PAPERCUSP_PROJECT_DOCS_ROOT` is set.
-Use `cross_harness:docs_*` to read a different harness's docs.
+`docs:*` tools serve your harness's docs when the session is scoped to one.
+At workspace scope (no harness) they take a `harness` arg and error
+`harness_required` without it — pass `harness: 'all'` for your project's
+docs root (`PAPERCUSP_PROJECT_DOCS_ROOT`), or a concrete slug for a
+specific harness. Use `cross_harness:docs_*` to read a different harness's
+docs from within a scoped session.
 
 #### Check the design docs before UI work
 
