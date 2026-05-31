@@ -146,6 +146,15 @@ export {
   type ToolDispatchOverrideFn,
 } from './dispatch-projected';
 
+/* ─── Resource authorization (RFC tooldef-auth-rfc Phase 1 — contract only) ─── */
+export { ownerOnly } from './authz';
+export type {
+  AuthzQuery,
+  AuthDecision,
+  PolicyDecisionPoint,
+  AuthAuditEvent,
+} from './authz';
+
 /* ─── Core types ─────────────────────────────────────────────────────── */
 export type {
   Principal,
