@@ -135,12 +135,16 @@ accepts. Fixes claude/omp role sessions in non-default workspaces too (same code
 path). **Lesson: verify role/launch paths against a harness in the ACTIVE
 non-default workspace, not just an isolated/legacy-registered one.**
 
-**Truly remaining: ONLY the codex interactive TUI human-at-keyboard step** — a
-person runs `psu --role=<role> --agent=codex` in a real terminal and types. Every
-mechanical layer beneath it (HTTP round-trip, CODEX_HOME on disk, codex
-acceptance, MCP connect + tool_call via P-013, the `codex
---dangerously-bypass-approvals-and-sandbox` exec) is proven. Nothing for an agent
-left to verify here. (Plus P-032 — correctly deferred, see below.)
+**codex interactive TUI — VERIFIED BY THE USER (2026-05-31).** Ran
+`psu --role=scoper --agent=codex --workspace=papercusp-workspace
+--harness=papercup` in a real terminal: the codex **TUI opened** (no "not
+registered" — the workspace-blind fix holds live), called `agent_tools:list` over
+the role-scoped MCP, and reported **`callerRole: scoper, isSuperuser: false`**.
+That was the last human-in-the-loop check.
+
+**The entire agent-launch-unification arc is now verified end-to-end. The ONLY
+open item is P-032 — deliberately deferred with documented unmet preconditions
+(see below).**
 
 ---
 

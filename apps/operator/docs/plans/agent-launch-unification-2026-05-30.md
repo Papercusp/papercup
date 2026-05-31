@@ -16,11 +16,14 @@ preconditions (see its entry).** Everything verifiable by an agent is verified
 live: Phase 3 launch plumbing, P-013 codex worker, P-041 settings UI, D-001
 tool-scoping, the Phase-4 launch button (in-webview via a fresh Xvfb instance →
 `launch-su`), and the codex role HTTP round-trip (`bootstrap-role agent=codex` →
-200 + a correct on-disk CODEX_HOME; `codex mcp get` accepts it). The single
-truly-open sliver is a human typing in the codex **TUI** (inherent — every
-mechanical layer beneath it is proven). Details in the e2e handoff brief
-(sessions 2 / 2b / 2c). Unified the agent-backend refactor handoff + psu role
-sessions:
+200 + a correct on-disk CODEX_HOME; `codex mcp get` accepts it). The codex interactive **TUI** was also USER-VERIFIED 2026-05-31 (`psu
+--role=scoper --agent=codex --workspace=papercusp-workspace --harness=papercup`
+→ TUI opened, role-scoped MCP, `callerRole: scoper, isSuperuser: false`) — after
+fixing a workspace-blind role-launch bug it surfaced (resolve projectDir
+in-process; orchestrator `f888638` + superproject `f67fe4494`). **The whole arc
+is verified end-to-end; the only open item is P-032 (deliberately deferred,
+unmet preconditions).** Details in the e2e handoff brief (sessions 2 / 2b / 2c /
+2d). Unified the agent-backend refactor handoff + psu role sessions:
 - **Phase 1** (shared spine): P-001 unify `AGENT_BACKENDS` + drift guard;
   P-002 `consumes` single-source; P-003 `buildRoleLaunchSpec`.
 - **Phase 2** (codex orchestrator pipeline): P-010/P-011/P-012 — codex spawn
