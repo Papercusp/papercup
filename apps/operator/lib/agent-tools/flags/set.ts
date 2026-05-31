@@ -57,7 +57,7 @@ export default defineTool({
           INSERT INTO harness_shared.audit_log (ts, actor, action, subject, details)
           VALUES (
             ${Date.now()},
-            ${ctx.principal?.subject ?? 'agent'},
+            ${ctx.principal?.slug ?? 'agent'},
             'flag:set',
             ${args.key},
             ${ctx.tx.json({ enabled: args.enabled, reason: args.reason })}
