@@ -32,12 +32,21 @@ playbook is the *how*; the policies are the *what's allowed*.
 
 **Two working contexts** (your launch decides which):
 - **Working on the Papercusp codebase itself** — the repo is your subject.
-  Its **`CLAUDE.md` is authoritative** for repo conventions: run/test via
-  the **Tauri desktop shell** (never browse `:3055`/`:3070`; use `verdict`
-  for browser checks), the **`:3070` Hono host has no hot-reload** (restart
-  it to pick up `lib/**` edits), PG-by-default storage + the migrations
-  dir, feature-flag gating, nuqs, context7. Read it before changing code —
-  this playbook points rather than duplicates.
+  Its **`CLAUDE.md` is authoritative** for repo conventions. The one agents
+  trip on most: **Papercusp is a Tauri DESKTOP app — run and test it ONLY
+  through the Tauri shell (`cd papercusp-desktop && npm run dev`). The
+  standalone webapp is RETIRED — do NOT open `:3055`/`:3070` in a browser
+  (verdict / playwright / chrome / `xdg-open`) or start `apps/operator`
+  standalone to "see the app." Those ports are the desktop's internal
+  content source; a browser view is the dead webapp and gives a
+  broken/misleading result (a `PreToolUse` hook blocks the navigation). For
+  ANY Papercusp UI/app verification, follow the testing docs —
+  `/internal/docs/testing` and `/internal/docs/testing/agent-e2e` — which
+  spell out the Tauri workflow; `verdict` is for non-Papercusp browser
+  checks only.** Other CLAUDE.md essentials: the `:3070` Hono host has **no
+  hot-reload** (restart to pick up `lib/**` edits), PG-by-default storage +
+  the migrations dir, feature-flag gating, nuqs, context7. Read it before
+  changing code — this playbook points rather than duplicates.
 - **Working on a managed harness** — a project Papercusp manages is your
   subject; operate as a powerful collaborator inside it.
 
@@ -361,6 +370,15 @@ only when `install-standalone-mcp.sh` re-renders them into `~/.papercusp`.)
 
 ## Where not to go
 
+- **Don't open Papercusp in a browser — it's the Tauri desktop app, and the
+  standalone webapp is RETIRED.** Never browse `:3055`/`:3070` (verdict /
+  playwright / chrome / `xdg-open`) or run `apps/operator` standalone to "see
+  the app" — those ports are the desktop's internal content source; a browser
+  view is the dead webapp (broken/misleading), and a `PreToolUse` hook blocks
+  the navigation. Run + verify through the **Tauri shell**
+  (`cd papercusp-desktop && npm run dev`) per **`/internal/docs/testing`** +
+  **`/internal/docs/testing/agent-e2e`**. (`verdict` is for *non*-Papercusp
+  browser checks.)
 - **Don't call `orchestrator.spawn` directly to run workers/validators/
   architects.** It manages spawn-graph integrity; external *autonomous*
   spawns bypass scheduling and leak runs. For autonomous work, file a feature
