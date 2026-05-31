@@ -15,7 +15,7 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { resolveCtxHarnessSlug } from './_ctx-opts';
 import { harnessArg, harnessScopedCtx } from '../_harness-scope';
 import { withPlanLock, bumpUpdatedDate } from './with-plan-lock';
-import { ITEM_STATUSES, maskFences } from './parser';
+import { ITEM_STATUSES, maskFences, type Importance } from './parser';
 import { emitPlanEventForCaller } from '../coordination/plan-events';
 import { fireNotificationsForCaller } from '../coordination/subscriptions';
 import { planRevisionCapture, type PlanRevisionCtx } from './revisions';
@@ -50,8 +50,42 @@ const argsSchema = z.object({
  *  type argument below rather than inferred from a union-returning
  *  mutator (which TS narrows to the first branch, leaving `T` unknown). */
 type SetStatusValue =
-  | { ok: true; oldStatus: string | null; newStatus: string; itemId: string }
+  | { ok: true; oldStatus: string | null; newStatus: string; itemId: string; importance: Importance }
   | { ok: false; code: 'not_found' | 'item_not_found' };
+
+/**
+ * Extract one item's `importance` from the plan body, glyph-agnostically,
+ * the same way the parser does (the `importance:` keyword on the item line,
+ * default `normal`). Used only on the needs-human transition to decide the
+ * push gate, so the cost is bounded to that rare flip.
+ */
+export function itemImportance(body: string, itemId: string): Importance {
+  const re = new RegExp(
+    String.raw`^\s*[-*]\s+\*\*\s*` + itemId.replace(/-/g, '\\-') + String.raw`\s*\*\*[^\n]*$`,
+    'm',
+  );
+  const m = re.exec(maskFences(body));
+  if (!m) return 'normal';
+  const im = /\bimportance:\s*(urgent|high|normal|low)\b/i.exec(m[0]);
+  return im ? (im[1]!.toLowerCase() as Importance) : 'normal';
+}
+
+/**
+ * P-020 push gate: notify only when an item TRANSITIONS into needs-human
+ * (not a re-set of an already-needs-human item) and its importance is at
+ * least `high`. Pure so it's unit-testable without the lock/IO path.
+ */
+export function shouldPushNeedsHuman(
+  oldStatus: string | null,
+  newStatus: string,
+  importance: Importance,
+): boolean {
+  return (
+    newStatus === 'needs-human' &&
+    oldStatus !== 'needs-human' &&
+    (importance === 'urgent' || importance === 'high')
+  );
+}
 
 export function flipStatusInBody(
   body: string,
@@ -133,10 +167,16 @@ export default defineTool({
         if (!found) {
           return { newBody: null, value: { ok: false, code: 'item_not_found' } };
         }
+        // Read importance only on a transition INTO needs-human — the sole
+        // case the push gate cares about — so routine flips skip the parse.
+        const importance: Importance =
+          args.status === 'needs-human' && oldStatus !== 'needs-human'
+            ? itemImportance(current, args.itemId)
+            : 'normal';
         const finalBody = bumpUpdatedDate(newBody);
         return {
           newBody: finalBody,
-          value: { ok: true, oldStatus, newStatus: args.status, itemId: args.itemId },
+          value: { ok: true, oldStatus, newStatus: args.status, itemId: args.itemId, importance },
         };
       },
     );
@@ -183,6 +223,36 @@ export default defineTool({
       [`apps/operator/docs/plans/${args.slug}.md`],
       'plan_referenced',
     );
+
+    // P-020 (planning-attention-importance): push a notification when an
+    // item transitions INTO needs-human at importance >= high — the
+    // urgent/high human-decision signal that has no push trigger today (the
+    // device-intervention-watcher only covers escalation / smoke / plan-
+    // review, which are all already high-importance). Additive: a plan item
+    // is a source the watcher never polls, so there's no overlap and no
+    // double-fire. Transition-gated (a re-set of an already-needs-human item
+    // won't re-push) and fully fail-safe (a push error never fails the
+    // status flip). Reuses the proven mobile notifyWorkspace delivery, which
+    // is a no-op when no device is paired. Retiring the watcher's 60s poll
+    // in favour of producer-time emits for its own triggers is P-021; a
+    // desktop-native Tauri notification channel is D-007 — both still open.
+    const v = result.value;
+    if (shouldPushNeedsHuman(v.oldStatus, v.newStatus, v.importance)) {
+      void (async () => {
+        const [{ notifyWorkspace }, { activeWorkspaceId }] = await Promise.all([
+          import('@/lib/device-push-dispatcher'),
+          import('@/lib/workspace-registry'),
+        ]);
+        await notifyWorkspace(activeWorkspaceId(), {
+          title: v.importance === 'urgent' ? 'Urgent: needs your decision' : 'Needs your attention',
+          body: `${args.slug} · ${args.itemId} (${v.importance}) is waiting on you.`,
+          data: { kind: 'intervention', plan: args.slug, item: args.itemId, importance: v.importance },
+          category: 'intervention',
+        });
+      })().catch((e) =>
+        console.warn('[plans:set-status] needs-human push failed:', (e as Error)?.message ?? e),
+      );
+    }
 
     return {
       content: [
