@@ -11,9 +11,9 @@ owner: avi@storewolf.com
 
 ## Now
 
-**State:** Phases 0, 1, 2 complete + committed. **Phase 3 P-014 spike done** (D-019, non-destructive): a dynamic-dispatch durable workflow resumes mid-pipeline without re-running completed roles (D-004 ✅), and the spike surfaced the integration crux — an **interrupted** step re-executes, so wrapping `invoke()` means a crash mid-agent-run re-spawns that agent → **`invoke()` steps must be idempotent** (D-005). Concrete integration design recorded: wrap `invoke()` as the step, keep `dispatchDecision` deterministic, move Date.now/randomUUID/distributed-claim/mutable-reads into checkpointed steps, reconcile the in-memory lane pool + reaper + claim to the DBOS workflow.
+**State:** Phases 0, 1, 2 complete; **live-service boot VALIDATED** (D-020) — DBOS launches in the live Hono host, full `dbos` schema in `:5432/papercusp`; fixed the PG probe (5dc572fd) + wired into the real boot path `host-bootstrap.ts` (e65b863c, instrumentation-node is retired). Phase 3 P-014 spike done (D-019). **Now starting the Phase 3 integration** (P-015): wrap `invoke()` as an idempotent DBOS step — the spike proved a crash mid-step re-spawns the agent, so check-before-spawn on `(feature, role, attempt)` is the prerequisite before wrapping the pipeline.
 
-**Next:** Phase 3 integration (P-015–P-017) — the gated, higher-risk step: edit the orchestrator submodule to wrap `invoke()` as an idempotent DBOS step (check-before-spawn on (feature, role, attempt)), adopt the D-008 `patched()` versioning discipline, and reconcile lane pool / harness-status-sweep reaper / spawned_agents / distributed claim to the workflow. Separately, the live-service boot validates Phases 1–2 in the running operator (restart dev API with the flags).
+**Next:** Phase 3 integration, idempotency-first: implement the invoke check-before-spawn (so a re-invoke detects a prior run for `(feature, role, attempt)` instead of re-spawning), in the `libs/papercusp/packages/orchestrator/` submodule. Then wrap the pipeline as a DBOS workflow + the D-008 patched() versioning discipline + reconcile lane pool / harness-status-sweep / spawned_agents / claim (P-016/P-017).
 
 ## Background
 
@@ -263,6 +263,16 @@ Ran the P-014 spike (isolated, non-destructive — no orchestrator edits). A DBO
 
 This is the spike only. The integration (editing the orchestrator submodule, P-015–P-017) is the next, gated, higher-risk step — it carries the idempotency rework above plus the D-008 `patched()` versioning discipline.
 Related: P-014, P-015, P-016, P-017
+
+
+### D-020 — Live-service boot VALIDATED + two wiring fixes (probe; host-bootstrap is the live path)
+Date: 2026-05-31
+Live-boot done. Set `PAPERCUSP_DBOS_ENABLE=1` in `apps/operator/.env.local`, restarted the **Hono host** (`papercup-dev-api.service`), and confirmed DBOS launched in the real long-running operator: the `dbos` schema with all **14 system tables** is now present in the live `:5432/papercusp` DB (only a successful `DBOS.launch()` creates them). `/admin/dbos` route is live (auth-gated). ENABLE-only — no `TIMERS`/`AUTOLOOP`, so no legacy stand-down and no agent spawns; the maintenance/AutoLoop scheduled workflows are a flag-flip away but fire real work, so left off.
+
+Two real fixes the live-boot forced:
+1. **`5dc572fd` — probe, don't refuse the label.** `bootstrap.ts` skipped DBOS whenever `source==='native-fallback'`, but on this dev box native `:5432/papercusp` IS the live operator DB. Replaced the label check with a connect-test: launch when the resolved PG answers `SELECT 1`, skip cleanly when not — correct for both the desktop product (dead `:5432/papercusp_legacy` → skip) and dev (live `:5432` → launch).
+2. **`e65b863c` — wired into the wrong (retired) file.** DBOS was only in `instrumentation-node.ts`, which `host-bootstrap.ts` itself labels the **"(retired) Next instrumentation"**. The live boot path is the Hono host calling `runBootstrap()` in `bin/host-bootstrap.ts` (where `startAutoLoopOnce()` actually boots). Added the flag-gated `startDbos()` there; it's globalThis-idempotent so the leftover instrumentation-node block is a harmless no-op. (Note: the maintenance timers I migrated — telemetry/scratch-gc/etc. — live in the retired instrumentation-node, so they may be dormant in the current architecture; the DBOS `TIMERS` path would actually *restore* them. AutoLoop is the one timer host-bootstrap boots live.)
+Related: P-001
 
 ## Phase 0 — Spike & validation (GATE)
 
