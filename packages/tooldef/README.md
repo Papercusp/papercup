@@ -27,18 +27,20 @@ What makes it reusable outside Papercusp:
 
 ## Status
 
-Phases 1–4 of the extraction are **complete**:
+The extraction is **complete** (Phases 1–6 — engine carve-out, host-injection
+seams, Standard Schema adoption, transport extraction, re-home, verification):
 - **Engine** (this package): dispatcher, registry, `defineTool`, tool-projection,
   state/card/replay channels, OpenAPI assembly, core types — carved out,
   host-agnostic, and validator-agnostic.
 - **Transports extracted:** HTTP → [`@papercusp/tooldef-http`](../tooldef-http),
-  IPC → [`@papercusp/ipc-endpoint-server`](../ipc-endpoint-server), and the
+  IPC → [`@papercusp/ipc-endpoint-server`](../../libs/generic/ipc-endpoint-server), and the
   host-agnostic MCP bridge primitives → [`@papercusp/tooldef-mcp`](../tooldef-mcp)
   (the MCP auth/spawn *assembly* stays in the host by design — see that package's
   notes). The Papercusp host adapter is `@papercusp/agent-mcp`.
 
-Remaining: P-053 (lint/affected-test sweep) and P-054 (needs-human: whether to
-consume the standalone repo in-tree vs as a mirror). Tracking plan:
+Remaining: only **P-054** (needs-human: whether to consume the standalone repo
+in-tree vs as a mirror) — owned by the maintainer, separate from the engine
+work. Tracking plan:
 [`papercusp-tooldef-extraction-2026-05-29.md`](../../apps/operator/docs/plans/papercusp-tooldef-extraction-2026-05-29.md).
 
 ## Quickstart (in-process)
