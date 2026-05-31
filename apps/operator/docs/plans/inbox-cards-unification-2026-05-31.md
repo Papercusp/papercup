@@ -12,7 +12,9 @@ updated: 2026-05-31
 
 **State:** Core **COMPLETE** — Phases A, B, C + cross-cutting all shipped (commits b3760b866 → 743613c30). The Planning inbox now renders every human-facing item through the shared `AskChoiceCard`: terminal picks dispatch via `resolveAttentionAction` (parity-tested against the old handlers), `answer` reveals an inline `InputCard`, `chat` expands an inline `PlanChat`. `InboxItemActions` + `PlanChatModal` retired. Verified: 68 unit tests green (renderer/adapter/mapper/dispatch parity) + typecheck clean + a live Tauri check (the Other/escalation detail renders the card with the right question + Resolve + Chat). Agent insight written (`agent-insights/inbox-cards.mdx`); P-017 back-annotated.
 
-**Next:** human review. Only **Phase D** (P-030 — make `ctx.askUser` ALSO write a durable escalation) remains, deliberately **deferred**: it's stretch scope and touches the live agent-blocking runtime, so it shouldn't ship unsupervised — spin it into its own plan if wanted. Optional follow-up: a fuller in-desktop e2e of the needs-human plan-item + Answer flow (unit-tested, not yet click-tested live).
+**Phase D** (convergence) — **spike DONE** (P-030): feasibility confirmed against the code and an implementation-ready design written ("Phase D — spike findings"), with build-out items P-031..P-036 scoped behind a default-off `inboxDurableEscalations` flag. The implementation itself is **gated on a supervised session** — it changes the live `ctx.askUser` handshake (an API addition) + cross-channel resolution that can't be integration-tested headless, so a senior-eng call is NOT to ship that unattended. Flip the flag work on when you can drive a live agent run.
+
+**Next (for the human):** (a) decide whether to green-light P-031..P-036 (supervised); (b) optional 30-sec spot-check of the needs-human plan-item + Answer flow in the desktop (unit-tested, not click-tested live).
 
 ## Background
 
@@ -130,7 +132,46 @@ P-023 done Manual e2e in the Tauri desktop: an escalation, a message, a needs-hu
 
 ## Phase D — Convergence: durable escalation cards (stretch / separate)
 
-P-030 deferred Spike (DEFERRED — stretch; touches the live ctx.askUser agent-blocking path, out of core scope, not done unsupervised): when an agent calls `ctx.askUser` for a *decision* (not a quick UI choice), ALSO write a durable coord escalation so the human can answer it live in chat OR later from the inbox — and either path resolves the same record. One card UI, two entry points. Keep behind a flag; do not block Phases A–C. blocked-by:P-023
+P-030 done Spike COMPLETE — feasibility confirmed and an implementation-ready design produced (see "Phase D — spike findings" below). Implementation itself is **held for a supervised session**: it changes the live `ctx.askUser` agent↔human handshake (incl. an API addition) and the cross-channel resolution can't be integration-tested headless, so it shouldn't ship in an unattended loop. The build-out items P-031..P-036 are scoped and ready. blocked-by:P-023
+
+### Phase D — spike findings (implementation design)
+
+**Goal.** When an agent raises a *decision* card (`chat:ask_choice` →
+`ctx.askUser`), ALSO write a durable coord escalation, so the human can answer
+it **live in chat** OR **later from the inbox** — and either path resolves the
+same record. One card UI, two entry points.
+
+**Mechanism (verified against the code).** `ctx.askUser({presentation})`
+publishes a card on the state-channel keyed by an internally-generated
+`correlationId` and `await`s a deferred held in `@papercusp/agent-mcp`'s PENDING
+map. `/card-response` → `resolveCardResponse({correlationId, workspaceId,
+action, payload})` resolves that deferred (the agent unblocks). Coord
+escalations are an **event-sourced** store (`coordination/escalations.ts`):
+`openEscalation(input)` appends an `escalation` event (with `msgId`, `severity`,
+`options`); `resolveEscalation({msg_id, choice})` appends an
+`escalation_resolved` event (idempotent — returns `'already_resolved'` on a
+second call). So the two records already exist; convergence is **linking them by
+`correlationId`** and making each resolve path fan out to the other.
+
+**Design (all behind a default-OFF flag `inboxDurableEscalations`, so the live
+path is 100% unchanged when off):**
+
+P-031 todo Flag `inboxDurableEscalations` (default false) in the flags system (`libs/flags`), gated like the other V1-cut surfaces. Every Phase-D branch checks it; off ⇒ zero behavior change.
+P-032 todo `ctx.askUser` API addition: surface the generated `correlationId` to the caller (e.g. an `onCard(correlationId)` callback or returning it alongside the promise). Needed because the tool must write the linked escalation but the id is minted inside `askUser`. Keep additive/optional so existing callers are untouched.
+P-033 todo `EscalationRecord` gains optional `cardCorrelationId` + `cardWorkspaceId` (`coordination/escalations.ts` types + `openEscalation`). Carries the link; absent on every existing/flag-off escalation (so P-035's branch is a no-op for them — the safety property).
+P-034 todo In `chat:ask_choice` (tool layer, NOT the core capability — smaller blast radius), when the flag is on and the card is a genuine decision: `openEscalation({summary: question, options, severity:'question', cardCorrelationId, cardWorkspaceId})` around the `await ctx.askUser(...)`; in `finally`, if the card resolved live, append `escalation_resolved` so the inbox copy clears. Dedup via the store's `already_resolved` guard.
+P-035 todo `coord:resolve` (→ `resolveEscalation`): after recording the resolution, if the folded record has a `cardCorrelationId`, call `resolveCardResponse({correlationId, workspaceId, action:'submit', payload:{picks:[choice]}})` to unblock the live agent. No-op when absent (flag-off escalations have none).
+P-036 todo Cancel/cleanup: on run-cancel (`run-cancel.ts` / the askUser `cancel` path) append `escalation_resolved` (choice `'cancelled'`) for the linked record so a dead run doesn't leave an orphan escalation in the inbox. Unit-test all of P-034/P-035/P-036 with mocked `resolveCardResponse` + escalation store; integration-test (live agent, flag on) is the supervised gate.
+
+**Risk register.** (1) Hot-path: P-034 adds a flag-check + optional write to the
+chat decision path — flag-off short-circuits before any new work. (2) Resolution
+fan-out: P-035 touches `coord:resolve`, which the shipped inbox already uses —
+but it only acts when `cardCorrelationId` is present, which only happens under
+the flag, so flag-off escalations (all of today's) are unaffected. (3)
+Double-resolve: the store's `already_resolved` guard + the PENDING map's
+idempotent resolve make both directions safe to fire. (4) Unverifiable headless:
+the live agent↔human round-trip can't be exercised without a real run — hence
+the supervised-implementation gate.
 
 ## Cross-cutting
 
