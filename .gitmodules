@@ -43,3 +43,27 @@
 [submodule "libs/generic/rrf"]
 	path = libs/generic/rrf
 	url = https://github.com/Papercusp/rrf.git
+[submodule "libs/generic/embedded-pg-discovery"]
+	path = libs/generic/embedded-pg-discovery
+	url = https://github.com/Papercusp/embedded-pg-discovery.git
+[submodule "libs/generic/plan-parser"]
+	path = libs/generic/plan-parser
+	url = https://github.com/Papercusp/plan-parser.git
+[submodule "libs/generic/rate-limit"]
+	path = libs/generic/rate-limit
+	url = https://github.com/Papercusp/rate-limit.git
+[submodule "libs/generic/ipc-framing"]
+	path = libs/generic/ipc-framing
+	url = https://github.com/Papercusp/ipc-framing.git
+[submodule "libs/generic/ipc-endpoint-server"]
+	path = libs/generic/ipc-endpoint-server
+	url = https://github.com/Papercusp/ipc-endpoint-server.git
+[submodule "libs/generic/desktop-ipc"]
+	path = libs/generic/desktop-ipc
+	url = https://github.com/Papercusp/desktop-ipc.git
+[submodule "libs/generic/search"]
+	path = libs/generic/search
+	url = https://github.com/Papercusp/search.git
+[submodule "libs/generic/memory"]
+	path = libs/generic/memory
+	url = https://github.com/Papercusp/memory.git

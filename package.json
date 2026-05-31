@@ -30,7 +30,15 @@
     "libs/papercusp/packages/embedded-postgres-server",
     "libs/test-config",
     "libs/generic/papergrid/bloom-grid",
-    "libs/generic/rrf"
+    "libs/generic/rrf",
+    "libs/generic/embedded-pg-discovery",
+    "libs/generic/plan-parser",
+    "libs/generic/rate-limit",
+    "libs/generic/ipc-framing",
+    "libs/generic/ipc-endpoint-server",
+    "libs/generic/desktop-ipc",
+    "libs/generic/search",
+    "libs/generic/memory"
   ],
   "scripts": {
     "tokens": "style-dictionary build --config design-tokens/style-dictionary.config.mjs",
