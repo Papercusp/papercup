@@ -19,9 +19,9 @@ and the order to do it in.
 
 ## Now
 
-**State:** Papercup @restart retirement done + guarded (D-014). Investigated the Restart sweep (D-015): it is NOT a flat 357-import rename — it's a submodule-pin bump on a LIVE storefront. ~270 of the imports are Restart-owned (@restart/db, ui, shop-sdk, universal-schema, com, ...) and stay @restart forever; only ~96 are migratable shared libs, and all are gated on submodule bumps: papergrid family (76 imports — clean FF bump b1ad70c->main, pulls brand-agnostic theme, needs a configureGridColors shim) and sync (20 imports — deliberately pinned via restart-pin/restart-prod-pin, high risk). Stopped before mutating Restart and surfaced the per-lib decision rather than risk the storefront.
+**State:** @restart retirement is now DONE on both sides. Papercup: 0 @restart, CI fail-loud guard (D-014). Restart: shared-generic libs migrated to @papercusp — papergrid family (a70bbbfa, clean FF bump) + sync (29a8627e + submodule bfc5d5d, work-preserving rename that PRESERVED the diverged optimistic-mutators commits). Executed live on the running storefront with zero service disruption; all routes that exercise the renamed imports return 200 (D-016). Remaining @restart in Restart are all genuinely Restart-owned domain packages and correctly stay.
 
-**Next:** User to decide per-lib: approve the papergrid bump+rename in Restart (clean FF, needs grid-colors shim) and whether to bump sync off its deliberate pin (recommend: keep pinned, leave @restart/sync) — ideally in a Restart-scoped session with services manageable.
+**Next:** Optional/out-of-arc: assess @restart/papercup-shared (Papercup domain lib, 7 imports, currently unresolved in Restart) and tidy ~5 cosmetic stale @restart comments — neither affects function. Otherwise the generic-lib generalization + @restart retirement arc is complete.
 
 ## Background
 
@@ -658,6 +658,19 @@ Investigated the Restart side of the @restart retirement (user: "do the Restart 
 **Why I did NOT execute autonomously:** (1) No zero-risk partial — every rename requires first bumping a submodule pin + node_modules relink + build verification. (2) Restart is a LIVE STOREFRONT with running overmind services (AGENTS.md documents a 2026-04-19 outage from service disruption) — Papercup's "break freely, no users" rule does not apply. (3) sync is deliberately pinned; bumping it is exactly what those pins exist to prevent. Surfaced to the user for a per-lib decision instead.
 
 **Recommended safe path (per-lib, ideally in a Restart-scoped session):** (a) papergrid first — bump submodule b1ad70c->main (reversible FF), add a Restart configureGridColors() shim, rename the 76 imports + ~9 package.json deps, npm install to relink, typecheck affected. (b) sync — only after an explicit decision on the restart-pin/restart-prod-pin strategy; likely keep pinned (leave @restart/sync) until Restart is ready to adopt mainline sync. Until then @restart/sync legitimately stays.
+
+
+### D-016 — EXECUTED: Restart shared-lib migration (papergrid + sync) to @papercusp — work-preserving, live storefront unharmed
+Date: 2026-05-31
+Per user's "papergrid + sync, both" choice, executed the Restart-side migration on the live storefront (overmind services running throughout, none disrupted).
+
+**papergrid (Restart commit a70bbbfa):** clean fast-forward of libs/papergrid b1ad70c->9ec71bc (sub-packages renamed @papercusp upstream). Renamed all consumer imports/deps across apps/{web,shop,shop-api,api-gateway} + libs/{ui,catalog-search,data-fetch} for grid/bloom-grid/grid-core/kv-persist/kv-persist-indexeddb, updated tsconfig.base.json path mappings, relinked node_modules. Theme preserved by Restart's existing grid-theme-init.ts (configureGridColors) — no shim needed (de-branding predated b1ad70c). Verified: /grid-demo, /inventory, /skus compile + HTTP 200; libs/ui typechecks clean.
+
+**sync (Restart commit 29a8627e; submodule commit bfc5d5d):** sync was DIVERGED (pin 8531a782 had 9 commits not on main — the restart-p4-optimistic-mutators work). Did NOT bump to main (would have destroyed those 9 commits). Instead did a WORK-PRESERVING scope rename: renamed the fork's package.json name @restart/sync->@papercusp/sync (+ 2 doc/comment self-refs), code untouched, committed on the optimistic-mutators branch and pushed to origin restart-p4-optimistic-mutators for a reproducible submodule pointer. Renamed Restart's 20 consumer imports + catalog-search dep. Verified: /admin/assets, /admin/returns compile + HTTP 200; zero-cache + all services healthy (pure rename = identical runtime behaviour).
+
+**Result:** 0 residual real imports of the migrated set in Restart. All remaining @restart/* are genuinely Restart-owned domain packages (db, ui, shop-sdk, universal-schema, com, mongo, redis, typesense, zero, request-origin, marketplace-adapters, catalog-search, startup, api-auth, db-org, data-fetch) that correctly stay @restart forever.
+
+**Two follow-ups noted, NOT done (out of scope of the generic-lib arc):** (1) @restart/papercup-shared (7 imports) is a Papercup *domain* lib (not a borrowable generic), currently unresolved in Restart — needs its own assessment. (2) ~5 cosmetic stale comments referencing @restart/{ui-primitives,agent-chat,rerank,test-config} (no real imports — those were already on @papercusp). Neither affects function.
 
 ## Addendum — Phase 1 shipped (2026-05-30) + impact on in-flight plans
 
