@@ -314,6 +314,7 @@ import adminTestingRun from './admin/testing-run';
 import adminTestingRunById from './admin/testing-run-by-id';
 import adminTestingFileHistory from './admin/testing-file-history';
 import adminTestingHealthStrip from './admin/testing-health-strip';
+import adminDbosStatus from './admin/dbos-status';
 import workspaces from './workspaces/index';
 import workspaceById from './workspaces/by-id';
 import workspaceSwitch from './workspaces/switch';
@@ -674,6 +675,7 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(adminTestingMemoryProbe as AnyRoute),
   ...flatten(adminTestingDomains as AnyRoute),
   ...flatten(adminTestingDomainDetail as AnyRoute),
+  ...flatten(adminDbosStatus as AnyRoute),
   ...flatten(adminTestingFileStatus as AnyRoute),
   ...flatten(adminTestingRun as AnyRoute),
   ...flatten(adminTestingRunById as AnyRoute[]),
