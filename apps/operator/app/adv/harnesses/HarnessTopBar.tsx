@@ -8,6 +8,7 @@ import { Tooltip } from '../../harness/Tooltip';
 import { toast } from 'sonner';
 import { StatCard } from '@papercusp/ui-primitives';
 import HealthBadge from '../../harness/HealthBadge';
+import HarnessWorkspacesButton from './HarnessWorkspacesButton';
 
 interface StatusPayload {
   iteration: number;
@@ -125,6 +126,7 @@ export default function HarnessTopBar({ slug }: Props) {
       </div>
 
       <div className="pc-adv-topbar__actions">
+        {slug && <HarnessWorkspacesButton slug={slug} />}
         {slug && <RegisterSubsButton slug={slug} />}
         {slug && (
           <AddPanelCatalog

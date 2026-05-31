@@ -235,7 +235,7 @@ function ExistingLocalForm({ onBack, onSuccess }: { onBack: () => void; onSucces
         return;
       }
       const data: CreateResult = await res.json();
-      toast.success(`Harness '${data.project.slug}' added from ${data.project.path}`);
+      toast.success(`Harness '${data.project.slug}' linked in place — ${data.project.path} (folder not moved)`);
       onSuccess(data.project.slug);
     } catch (err: unknown) {
       setError((err as Error).message ?? 'Network error');
@@ -248,6 +248,23 @@ function ExistingLocalForm({ onBack, onSuccess }: { onBack: () => void; onSucces
       <BackBtn onBack={onBack} />
       <h2 style={{ margin: '0 0 16px', fontSize: 15, fontWeight: 600 }}>Existing local repo</h2>
       {error && <ErrorBanner message={error} />}
+      <div
+        style={{
+          background: 'var(--bg-2)',
+          border: '1px solid var(--border)',
+          borderRadius: 8,
+          padding: '10px 12px',
+          marginBottom: 16,
+          fontSize: 12.5,
+          lineHeight: 1.5,
+          color: 'var(--fg-dim)',
+        }}
+      >
+        <span style={{ marginRight: 6 }}>🔗</span>
+        <strong style={{ color: 'var(--fg)' }}>Links the folder in place</strong> — your repo stays exactly
+        where it is; nothing is moved or copied. The workspace just records a pointer to this path. The same
+        folder can be linked into more than one workspace (e.g. to try different prompts on it).
+      </div>
       <Label>
         <FieldLabel>Harness slug</FieldLabel>
         <input ref={slugRef} type="text" placeholder="my-project" style={inputStyle} autoFocus pattern="[a-z0-9][a-z0-9-]*" title="lowercase alphanumeric, hyphens OK" />
@@ -256,7 +273,7 @@ function ExistingLocalForm({ onBack, onSuccess }: { onBack: () => void; onSucces
       <Label>
         <FieldLabel>Path to repo</FieldLabel>
         <input ref={pathRef} type="text" placeholder="/home/user/projects/my-project" style={inputStyle} />
-        <HintText>Absolute path to an existing git repository or project directory.</HintText>
+        <HintText>Absolute path to an existing git repository or project directory. Stays where it is — linked, not moved.</HintText>
       </Label>
       <SubmitRow busy={busy} label="Add harness" onBack={onBack} />
     </form>
