@@ -83,13 +83,65 @@ export interface PromoteWaveLike {
  * or names an unknown wave (don't guess). The caller gates the *advance* on
  * `isWaveDrained(cursor)` — this only computes topological order.
  */
-export function nextWaveToPromote(
-  waves: PromoteWaveLike[],
+export function nextWaveToPromote<T extends { id: string }>(
+  waves: T[],
   currentWave: string | null,
-): PromoteWaveLike | null {
+): T | null {
   if (waves.length === 0) return null;
   if (currentWave == null) return waves[0];
   const idx = waves.findIndex((w) => w.id === currentWave);
   if (idx < 0) return null;
   return waves[idx + 1] ?? null;
+}
+
+// ── Per-plan advance decision (P-009 core; deterministic, pure) ──────────────
+
+export interface WaveForAdvance {
+  id: string;
+  /** Wave has a generative `for_each` → the promoter must resolve a runtime set. */
+  needsItems: boolean;
+}
+
+export type WaveAdvanceAction =
+  | { kind: 'none'; reason: string }
+  | { kind: 'blocked'; wave: string }
+  | { kind: 'promote'; wave: string; needsItems: boolean };
+
+/**
+ * The deterministic per-plan wave decision. Given the policy's ordered waves, the
+ * plan's `current_wave` cursor, and its features → the action to take:
+ *  - cursor null → promote the first wave (plan started, nothing promoted yet).
+ *  - current wave not yet populated (0 features) → none (a promote is in flight) —
+ *    this guard makes the advance **idempotent**: after a promote is launched and
+ *    the cursor set, the next tick sees an un-populated wave and waits.
+ *  - current wave blocked → blocked (surface; never advance past a stuck wave).
+ *  - current wave not all-terminal → none (still working).
+ *  - drained → promote the next wave, or none (plan complete).
+ */
+export function decideWaveAdvance(opts: {
+  waves: WaveForAdvance[];
+  currentWave: string | null;
+  features: WaveFeature[];
+}): WaveAdvanceAction {
+  const { waves, currentWave, features } = opts;
+  if (waves.length === 0) return { kind: 'none', reason: 'no waves in policy' };
+
+  if (currentWave == null) {
+    return { kind: 'promote', wave: waves[0].id, needsItems: waves[0].needsItems };
+  }
+  const cur = waves.find((w) => w.id === currentWave);
+  if (!cur) return { kind: 'none', reason: `cursor names unknown wave: ${currentWave}` };
+
+  if (waveCounts(features, currentWave).total === 0) {
+    return { kind: 'none', reason: `wave ${currentWave} not yet populated (promote in flight)` };
+  }
+  if (isWaveBlocked(features, currentWave)) {
+    return { kind: 'blocked', wave: currentWave };
+  }
+  if (!isWaveDrained(features, currentWave)) {
+    return { kind: 'none', reason: `wave ${currentWave} still in progress` };
+  }
+  const next = nextWaveToPromote(waves, currentWave);
+  if (!next) return { kind: 'none', reason: 'all waves drained (plan complete)' };
+  return { kind: 'promote', wave: next.id, needsItems: next.needsItems };
 }

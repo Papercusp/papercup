@@ -21,10 +21,13 @@ policy-mode (`plans:promote { slug, wave }`) reads the `## Promote` policy and b
 (static + generative `for_each` over `generate_items`). Parser + schema + promote are now end-to-end for a
 manual per-wave promote.
 
-Phase D started: **P-008 done** — pure `lib/harness/waves.ts` (drain/blocked/counts/next-wave, 15 tests).
+Phase D: **P-008 + the P-009 decision core done** — `lib/harness/waves.ts` now also has the pure
+`decideWaveAdvance` (cursor null→promote first; un-populated wave→wait [idempotency guard]; blocked→surface;
+in-progress→wait; drained→promote next; complete→none). 22 tests, tsc clean.
 
-**Next:** P-009 — wire the drain-advance into the autoloop/director: per started plan with a `## Promote`
-policy, if `current_wave` drained (+ not blocked) → promote the next wave (P-006) + bump the cursor.
+**Next:** the **P-009 sweep wiring** — a periodic `wave-advance-sweep` (mirroring `harness-status-sweep`):
+per started plan with a `## Promote` policy, query features → `decideWaveAdvance` → launch the promote agent
+for a `promote` action (sets the cursor) / raise an issue for `blocked`. The risky live-integration half.
 
 **Follow-up (small):** `yaml` is imported by the parser but is an undeclared (stable, lockfile-present,
 already-bundled) transitive dep — declare it as a direct operator dep when the lockfile is next reconciled
