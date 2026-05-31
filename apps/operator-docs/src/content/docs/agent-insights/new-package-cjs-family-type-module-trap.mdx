@@ -1,0 +1,79 @@
+---
+title: "A new package in a CJS family must not set type:module (and needs main+types, not just exports)"
+description: "Two packaging traps that bite when you add a workspace package to the src-as-entry tooldef family. (1) Setting \"type\": \"module\" on a package that CJS siblings re-export from breaks the operator's tsx host with 'does not provide an export named X' — vitest/esbuild mask it, so unit tests stay green while the real host would fail on reload. (2) A package.json with only \"exports\" and no top-level \"main\"/\"types\" is unresolvable under classic moduleResolution: node. Both surfaced during the @papercusp/tooldef extraction."
+discovered: 2026-05-31
+tags: [packaging, cjs, esm, tsx, tooldef, type-module, module-resolution, monorepo, exports, vitest]
+status: active
+---
+
+When you scaffold a **new** workspace package and wire it into the
+`@papercusp/tooldef` family (src-as-entry packages — `main`/`types`/`exports`
+all point at `./src/index.ts`, consumed via a direct `node_modules/@papercusp/<pkg>`
+symlink), two `package.json` fields decide whether the **operator host** can load
+it at runtime. Both default to the wrong thing, and both are **masked by the test
+runner**, so green unit tests are not proof the host works.
+
+## Trap 1 — `"type": "module"` in a CJS family
+
+`@papercusp/tooldef` and `@papercusp/agent-mcp` are **CommonJS** (their
+`tsconfig.build.json` emits CJS; no `type` field → Node treats `.js`/`.ts` as CJS).
+The operator's `:3070` Hono host runs under **`tsx`**, which honours `type`.
+
+If you give a new sibling (`@papercusp/tooldef-http`, `@papercusp/tooldef-mcp`,
+…) `"type": "module"`, then the moment a **CJS** package (`agent-mcp`) re-exports
+from your **ESM** package, the tsx host throws:
+
+```
+SyntaxError: The requested module '@papercusp/tooldef' does not provide an
+export named 'dispatchProjectedTool'
+```
+
+— the classic CJS↔ESM named-export interop break. The named binding isn't
+statically visible across the boundary.
+
+**Why it hides:** `vitest`/`esbuild` transpile everything to a single module
+graph and don't enforce the CJS/ESM boundary, so the package's own test suite
+passes 100%. The break only appears when something runs under real Node/tsx
+module resolution — i.e. the operator host on reload, or a `npx tsx examples/…`
+script. During the extraction the bug was invisible until a standalone
+`examples/standalone-http.ts` proof ran it under tsx.
+
+**Rule:** a new package that any CJS package re-exports from (or that the tsx
+host imports) must **not** set `"type": "module"`. Match the family — omit
+`type` (CJS). If you genuinely need ESM, the whole re-export chain has to move
+together, which the family deliberately hasn't done.
+
+## Trap 2 — `"exports"` without top-level `"main"`/`"types"`
+
+The operator + several consumers compile under **classic `moduleResolution:
+node`** (not `node16`/`bundler`). Classic resolution **ignores the `exports`
+map** and looks only at top-level `"main"`/`"types"`. A `package.json` like:
+
+```jsonc
+{ "exports": { ".": { "types": "./src/index.ts", "import": "./src/index.ts" } } }
+```
+
+resolves fine under `tsx`/bundler but fails a consumer's `tsc` with
+`Cannot find module '@papercusp/<pkg>'`. This is exactly why
+`@papercusp/chat-protocol` "didn't exist" until its submodule `package.json`
+gained top-level `main`/`types`.
+
+**Rule:** every src-as-entry package ships **both** — top-level
+`"main": "./src/index.ts"` + `"types": "./src/index.ts"` **and** the `exports`
+map. Belt and suspenders covers both resolver modes.
+
+## How to actually verify (don't trust the test suite)
+
+The package's own `vitest` is necessary but **not sufficient**. Before claiming a
+new package works in the host:
+
+1. Write a `examples/standalone-*.ts` that imports only the package(s) under test
+   and run it with `npx tsx examples/<x>.ts`. This exercises real Node/tsx
+   resolution and the CJS/ESM boundary the bundler hides.
+2. If it's on the host's import path, reload the Tauri shell (server-side code
+   has no hot-reload) and exercise the route — a green tsc + green vitest can
+   still ship a host that won't boot.
+
+See also [`generalizing-a-lib-host-seam-pattern`](/agent-insights/generalizing-a-lib-host-seam-pattern)
+for the src-as-entry + symlink recipe these packages follow, and the plan
+`papercusp-tooldef-extraction-2026-05-29` (P-051) for the commit that fixed it.
