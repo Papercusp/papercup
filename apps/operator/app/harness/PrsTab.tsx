@@ -8,7 +8,7 @@
  * P-043c: filter chips — all, mine, awaiting-me, approved, merged.
  */
 
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useQueryState, parseAsStringLiteral } from 'nuqs';
 import { toast } from 'sonner';
 import { GitPullRequest, RefreshCw } from 'lucide-react';
@@ -68,17 +68,20 @@ export function PrsTab({
   const [pollingFailed, setPollingFailed] = useState(false);
   const [noRemote, setNoRemote] = useState(false);
 
+  // Fetch RAW prs only — keyed solely on harnessSlug. The per-row `trusted` /
+  // `reviewerRoleEnabled` enrichment is intentionally NOT done here: folding it
+  // into `load` made `load` depend on `trustedAuthorIds`, whose default value
+  // (`new Set()`) is a fresh reference every render, so `useEffect([load])`
+  // re-fired on every render — an infinite reload loop that stormed
+  // /api/harness/<slug>/prs (observed: 194 requests from a single mount) and
+  // wedged the webview connection pool, leaving the panel stuck on "Loading…".
+  // Enrichment now lives in the `displayed` memo below, off the fetch path.
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
       const resp = await fetchPrs(harnessSlug);
-      const enriched = resp.prs.map((pr) => ({
-        ...pr,
-        trusted: trustedAuthorIds.has(pr.author_github_id),
-        reviewerRoleEnabled,
-      }));
-      setPrs(enriched);
+      setPrs(resp.prs);
       setPollingFailed(!!resp.pollingFailedAt);
       setNoRemote(!!resp.noRemote);
     } catch (e) {
@@ -86,7 +89,7 @@ export function PrsTab({
     } finally {
       setLoading(false);
     }
-  }, [harnessSlug, trustedAuthorIds, reviewerRoleEnabled]);
+  }, [harnessSlug]);
 
   useEffect(() => { void load(); }, [load]);
 
@@ -100,14 +103,28 @@ export function PrsTab({
     }
   }, [harnessSlug, load]);
 
-  const displayed = prs.filter((pr) => {
-    if (filter === 'all') return pr.state !== 'gone';
-    if (filter === 'mine') return pr.author_github_id === viewerGithubId && pr.state === 'open';
-    if (filter === 'awaiting-me') return pr.review_decision === 'none' && pr.state === 'open';
-    if (filter === 'approved') return pr.review_decision === 'approved';
-    if (filter === 'merged') return pr.state === 'merged';
-    return true;
-  });
+  // Filter + enrich at render time (cheap, no setState/fetch — so a fresh
+  // `trustedAuthorIds` reference each render only recomputes this memo, it never
+  // re-triggers the loader). Enrichment stamps the per-row `trusted` /
+  // `reviewerRoleEnabled` fields PrRow needs.
+  const displayed = useMemo(
+    () =>
+      prs
+        .filter((pr) => {
+          if (filter === 'all') return pr.state !== 'gone';
+          if (filter === 'mine') return pr.author_github_id === viewerGithubId && pr.state === 'open';
+          if (filter === 'awaiting-me') return pr.review_decision === 'none' && pr.state === 'open';
+          if (filter === 'approved') return pr.review_decision === 'approved';
+          if (filter === 'merged') return pr.state === 'merged';
+          return true;
+        })
+        .map((pr) => ({
+          ...pr,
+          trusted: trustedAuthorIds.has(pr.author_github_id),
+          reviewerRoleEnabled,
+        })),
+    [prs, filter, viewerGithubId, trustedAuthorIds, reviewerRoleEnabled],
+  );
 
   return (
     <div className="pc-adv-prs">
