@@ -134,12 +134,14 @@ domain onto that seam in the operator, so the lib itself names no consuming app.
 
 **The catalog is `BORROWABLE.md` at the repo root** (generated — `npm run
 gen:borrowable`; source of truth `scripts/gen-borrowable-catalog.mjs`). It lists
-each borrowable lib (in `packages/*` in-repo, or `libs/*` as a standalone
-submodule under `github.com/Papercusp/`) with its description + repo, grouped by
-domain, plus a "reusable with host wiring" section for libs that keep a Papercusp
-tie-in by design (`locks`, `coordination`, `backup`, `docs-engine`,
-`host-platform`). When you make a lib generic — or notice domain coupling leaking
-into one — add/adjust it in the generator and re-run. See
+each borrowable lib (in `packages/*` in-repo, or grouped under `libs/generic/*`
+as standalone submodules under `github.com/Papercusp/`) with its description +
+repo, grouped by domain, plus a "reusable with host wiring" section for libs that
+keep a Papercusp tie-in by design (`locks`, `coordination`, `backup`,
+`docs-engine`, `host-platform`). The borrowable submodules were physically
+regrouped into `libs/generic/` on 2026-05-31 (consumers import by package name,
+so nothing broke). When you make a lib generic — or notice domain coupling
+leaking into one — add/adjust it in the generator and re-run. See
 `papercusp-systems-abstraction-2026-05-29`.
 
 ## This app is in testing — there are no users yet
