@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { existsSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
@@ -11,8 +11,9 @@ import {
   setCompanyId,
   companyIdFor,
   workspacesRoot,
+  __resetWorkspaceFallbackWarnings,
 } from './workspace-registry';
-import { runWithWorkspace } from './workspace-als';
+import { runWithWorkspace, runInRequestScope } from './workspace-als';
 
 const REGISTRY_DIR = join(homedir(), '.papercusp-workspaces');
 const REGISTRY_PATH = join(REGISTRY_DIR, 'registry.json');
@@ -99,6 +100,52 @@ describe('activeWorkspaceId — request-scoped precedence (per-window-workspace-
   it('falls back to the PAPERCUSP_WORKSPACE_ID process pin outside any request', () => {
     process.env[PIN] = 'pinned-ws';
     expect(activeWorkspaceId()).toBe('pinned-ws');
+  });
+});
+
+describe('activeWorkspaceId — P-021 in-request global-fallback diagnostic', () => {
+  const PIN = 'PAPERCUSP_WORKSPACE_ID';
+  let prevPin: string | undefined;
+  beforeEach(() => {
+    prevPin = process.env[PIN];
+    delete process.env[PIN]; // force the global-fallback branch
+    vi.stubEnv('NODE_ENV', 'development'); // enable the dev-only diagnostic
+    __resetWorkspaceFallbackWarnings();
+  });
+  afterEach(() => {
+    if (prevPin === undefined) delete process.env[PIN];
+    else process.env[PIN] = prevPin;
+    vi.unstubAllEnvs();
+    vi.restoreAllMocks();
+  });
+
+  it('warns when activeWorkspaceId falls to the global INSIDE a request scope', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const id = runInRequestScope(() => activeWorkspaceId());
+    expect(id).toBeTruthy();
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(String(warn.mock.calls[0]?.[0])).toContain('INSIDE a');
+  });
+
+  it('does NOT warn outside any request scope (background / CLI)', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    activeWorkspaceId();
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it('does NOT warn when the request scope carries a workspace', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    runWithWorkspace('ws-present', () => activeWorkspaceId());
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it('dedupes repeat fall-throughs from the same call site', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const call = () => runInRequestScope(() => activeWorkspaceId());
+    call();
+    call();
+    call();
+    expect(warn).toHaveBeenCalledTimes(1);
   });
 });
 

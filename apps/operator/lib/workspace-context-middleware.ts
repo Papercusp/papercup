@@ -22,7 +22,7 @@
  *   - present and known → wrap the handler in `runWithWorkspace`.
  */
 import type { MiddlewareHandler } from 'hono';
-import { runWithWorkspace } from './workspace-als';
+import { runWithWorkspace, runInRequestScope } from './workspace-als';
 import { isKnownWorkspace } from './workspace-registry';
 
 export const WORKSPACE_HEADER = 'x-papercusp-workspace';
@@ -32,8 +32,10 @@ export const workspaceContextMiddleware: MiddlewareHandler = async (c, next) => 
   const raw = c.req.header(WORKSPACE_HEADER) ?? c.req.query('ws');
   const ws = raw?.trim();
   if (!ws) {
-    // No workspace signal → global fallback (background/legacy callers).
-    return next();
+    // No workspace signal → still establish a request scope (no concrete
+    // workspace) so activeWorkspaceId()'s global fallback can be flagged in dev
+    // (P-021). Resolution behavior is unchanged — global fallback applies.
+    return runInRequestScope(next);
   }
   if (!isKnownWorkspace(ws)) {
     return c.json({ error: 'unknown_workspace', workspace: ws }, 400);

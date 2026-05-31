@@ -14,7 +14,8 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 
 interface WorkspaceRequestContext {
-  workspaceId: string;
+  /** Absent when a request/tool scope was established but carried no workspace. */
+  workspaceId?: string;
 }
 
 const workspaceCtx = new AsyncLocalStorage<WorkspaceRequestContext>();
@@ -24,9 +25,29 @@ export function currentRequestWorkspaceId(): string | undefined {
   return workspaceCtx.getStore()?.workspaceId;
 }
 
+/**
+ * True when executing inside a request/tool scope (with or without a concrete
+ * workspace). Lets `activeWorkspaceId()` tell "background work, global is fine"
+ * apart from "a request that should have carried a workspace but didn't" — the
+ * P-021 diagnostic.
+ */
+export function isInRequestScope(): boolean {
+  return workspaceCtx.getStore() !== undefined;
+}
+
 /** Run `fn` with `workspaceId` attached to its async stack. */
 export function runWithWorkspace<T>(workspaceId: string, fn: () => T): T {
   return workspaceCtx.run({ workspaceId }, fn);
+}
+
+/**
+ * Establish a request/tool scope WITHOUT a concrete workspace — used when a
+ * request carried no `x-papercusp-workspace`/`?ws=`. `activeWorkspaceId()` still
+ * falls back to the global, but `isInRequestScope()` is now true, so the P-021
+ * diagnostic can flag the fall-through.
+ */
+export function runInRequestScope<T>(fn: () => T): T {
+  return workspaceCtx.run({}, fn);
 }
 
 /**

@@ -2,6 +2,8 @@ import { describe, it, expect } from 'vitest';
 import {
   runWithWorkspace,
   runWithWorkspaceIfConcrete,
+  runInRequestScope,
+  isInRequestScope,
   currentRequestWorkspaceId,
 } from './workspace-als';
 
@@ -69,5 +71,29 @@ describe('runWithWorkspaceIfConcrete', () => {
       return currentRequestWorkspaceId();
     });
     expect(v).toBe('ws-y');
+  });
+});
+
+describe('runInRequestScope / isInRequestScope', () => {
+  it('isInRequestScope is false outside any scope', () => {
+    expect(isInRequestScope()).toBe(false);
+  });
+
+  it('marks a request scope with no concrete workspace (missing header)', () => {
+    const r = runInRequestScope(() => ({
+      inScope: isInRequestScope(),
+      ws: currentRequestWorkspaceId(),
+    }));
+    expect(r.inScope).toBe(true);
+    expect(r.ws).toBeUndefined();
+  });
+
+  it('a workspace scope also counts as a request scope', () => {
+    const r = runWithWorkspace('ws-z', () => ({
+      inScope: isInRequestScope(),
+      ws: currentRequestWorkspaceId(),
+    }));
+    expect(r.inScope).toBe(true);
+    expect(r.ws).toBe('ws-z');
   });
 });

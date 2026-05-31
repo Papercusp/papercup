@@ -73,7 +73,31 @@ export function writeRegistry(reg: WorkspaceRegistry): void {
 // left `activeWorkspaceId`'s fallback referencing an undefined name.
 import { DEFAULT_WORKSPACE_ID } from './workspace-id-constant';
 export { DEFAULT_WORKSPACE_ID };
-import { currentRequestWorkspaceId } from './workspace-als';
+import { currentRequestWorkspaceId, isInRequestScope } from './workspace-als';
+
+// P-021 diagnostic dedupe — warn once per call site so a hot path can't flood
+// the dev console. Module-global; reset in tests via the export below.
+const warnedRequestFallbackSites = new Set<string>();
+
+/** Test-only: clear the P-021 fall-through warning dedupe set. */
+export function __resetWorkspaceFallbackWarnings(): void {
+  warnedRequestFallbackSites.clear();
+}
+
+function warnGlobalFallbackInRequest(global: string): void {
+  // Frame [3] of the stack is the caller of activeWorkspaceId() (the site that
+  // resolved the global inside a request) — [0]=Error [1]=this [2]=activeWorkspaceId.
+  const site = (new Error().stack ?? '').split('\n')[3]?.trim() ?? 'unknown';
+  if (warnedRequestFallbackSites.has(site)) return;
+  warnedRequestFallbackSites.add(site);
+  // eslint-disable-next-line no-console
+  console.warn(
+    `[workspace] activeWorkspaceId() fell back to the global '${global}' INSIDE a ` +
+      `request scope — the request carried no x-papercusp-workspace/?ws=, so it resolved ` +
+      `the process-global workspace, not the window's. This is the silent-wrong-workspace ` +
+      `mode per-window-workspace-context exists to kill (P-021). Site: ${site}`,
+  );
+}
 
 export function activeWorkspaceId(): string {
   // Precedence (per-window-workspace-context-2026-05-31, D-002/D-005):
@@ -91,7 +115,17 @@ export function activeWorkspaceId(): string {
   // 3. Global default — the workspace a new window opens into / background work
   //    uses when not told otherwise. No longer authoritative for request work.
   const reg = readRegistry();
-  return reg.current ?? reg.workspaces[0]?.id ?? DEFAULT_WORKSPACE_ID;
+  const global = reg.current ?? reg.workspaces[0]?.id ?? DEFAULT_WORKSPACE_ID;
+  // P-021: if we landed here while INSIDE a request/tool scope, the request
+  // failed to carry its workspace. Surface it when developing (NODE_ENV
+  // 'development', or an explicit opt-in) — never in 'test' (would trip
+  // fail-on-console) or 'production' (no log spam).
+  const warnEnabled =
+    process.env.NODE_ENV === 'development' || process.env.PAPERCUSP_DEBUG_WORKSPACE === '1';
+  if (warnEnabled && isInRequestScope()) {
+    warnGlobalFallbackInRequest(global);
+  }
+  return global;
 }
 
 export function workspaceById(id: string): WorkspaceEntry | undefined {
