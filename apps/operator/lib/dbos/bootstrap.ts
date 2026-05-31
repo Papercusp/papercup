@@ -38,11 +38,24 @@ export async function startDbos(): Promise<void> {
   if (G.__papercuspDbosStarted) return;
 
   const { url, source } = getHarnessAdminUrlWithSource();
-  if (source === 'native-fallback') {
-    console.warn(
-      '[dbos] refusing to launch against the native-fallback PG (no embedded-pg discovery — desktop not running). Skipping.',
-    );
-    return;
+  // Probe the resolved PG before launching. The source label can't distinguish
+  // a *dead* native-fallback (desktop product: :5432 is the retired
+  // papercusp_legacy) from a *live* one (dev box: :5432 IS the operator DB) —
+  // so connect-test instead: launch when reachable, skip cleanly when not.
+  {
+    const postgres = (await import('postgres')).default;
+    const probe = postgres(url, { max: 1, connect_timeout: 5, prepare: false });
+    try {
+      await probe`SELECT 1`;
+    } catch (err) {
+      console.warn(
+        `[dbos] resolved PG not reachable (source=${source}) — skipping DBOS launch:`,
+        err instanceof Error ? err.message : err,
+      );
+      await probe.end({ timeout: 2 }).catch(() => {});
+      return;
+    }
+    await probe.end({ timeout: 2 }).catch(() => {});
   }
 
   const { DBOS } = await import('@dbos-inc/dbos-sdk');
