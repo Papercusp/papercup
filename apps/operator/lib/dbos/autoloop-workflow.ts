@@ -44,13 +44,32 @@ const autoLoopQueue = new WorkflowQueue('autoloop', { concurrency: 4 });
 // mid-fire resumes; the dedup ID on enqueue guards single-fire.
 async function fireRoleImpl(slug: string, role: string): Promise<void> {
   await DBOS.runStep(() => recordFire(slug, role, 'firing', false), { name: 'record-firing' });
-  const res = await DBOS.runStep(() => fireDirector(operatorBase(), slug, role), { name: 'fire' });
-  await DBOS.runStep(
-    () => recordFire(slug, role, res.ok ? 'ok' : `error: ${res.detail}`, !res.ok),
-    { name: 'record-result' },
-  );
+  try {
+    // P-006: throw on a failed fire so DBOS retries the step with exponential
+    // backoff (3 attempts, 2s → 4s). fireDirector swallows its own errors into
+    // { ok: false }, so we re-raise to engage the retry contract.
+    await DBOS.runStep(async () => {
+      const res = await fireDirector(operatorBase(), slug, role);
+      if (!res.ok) throw new Error(res.detail || 'fire failed');
+    }, { name: 'fire', retriesAllowed: true, maxAttempts: 3, intervalSeconds: 2, backoffRate: 2 });
+    await DBOS.runStep(() => recordFire(slug, role, 'ok', false), { name: 'record-ok' });
+  } catch (e) {
+    // Retries exhausted: record the error (bumps consecutive_errors for triage)
+    // and let the next scheduled tick re-fire per shouldFire(). We do NOT
+    // rethrow — a transient downstream fire failure shouldn't drive the
+    // workflow into recovery; maxRecoveryAttempts (below) is the cap for the
+    // genuine crash-loop case.
+    const detail = String(e instanceof Error ? e.message : e).slice(0, 180);
+    await DBOS.runStep(() => recordFire(slug, role, `error: ${detail}`, true), { name: 'record-error' });
+  }
 }
-export const fireRoleWorkflow = DBOS.registerWorkflow(fireRoleImpl, { name: 'autoLoopFireRole' });
+// maxRecoveryAttempts is the dead-letter cap (P-006 / D-006): a fire workflow
+// that keeps crashing *during execution* lands in MAX_RECOVERY_ATTEMPTS_EXCEEDED
+// for triage rather than looping forever.
+export const fireRoleWorkflow = DBOS.registerWorkflow(fireRoleImpl, {
+  name: 'autoLoopFireRole',
+  maxRecoveryAttempts: 5,
+});
 
 // The scheduled tick: enumerate harnesses, enqueue a deduped fire per due role.
 // Mirrors autoloop.ts tickOnce(), but enqueues durable workflows instead of
