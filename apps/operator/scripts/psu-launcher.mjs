@@ -57,8 +57,12 @@ export function parseArgs(argv) {
  *
  * claude gets `--strict-mcp-config` so it's restricted to ONLY the
  * role-scoped server (true tool-scoping); omp path-discovers the cwd's
- * `.mcp.json`. codex is rejected upstream (bootstrap-role 400) — its
- * interactive role path needs a per-session CODEX_HOME (Phase 2).
+ * `.mcp.json`. codex has no --mcp-config / --append-system-prompt flags,
+ * so bootstrap-role mints a per-session CODEX_HOME (AGENTS.md = role
+ * prompt, config.toml = role-scoped MCP) and exports it via
+ * `envelopeEnv.CODEX_HOME`; the launcher just execs `codex` with the
+ * approvals/sandbox bypass MCP tool calls need (mirrors the codex-su
+ * wrapper).
  */
 export function roleLaunchArgs(backend, { promptFile, mcpJsonPath }) {
   if (backend === 'claude') {
@@ -77,7 +81,14 @@ export function roleLaunchArgs(backend, { promptFile, mcpJsonPath }) {
     // omp path-discovers <cwd>/.mcp.json; --append-system-prompt takes a file path.
     return { bin: 'omp', args: ['--approval-mode', 'yolo', '--append-system-prompt', promptFile] };
   }
-  throw new Error(`roleLaunchArgs: backend '${backend}' has no interactive role launch (use claude or omp)`);
+  if (backend === 'codex') {
+    // CODEX_HOME (with AGENTS.md + role-scoped config.toml) is supplied via
+    // envelopeEnv. --dangerously-bypass-approvals-and-sandbox lets the
+    // session call MCP tools without per-call approval (codex CANCELS MCP
+    // tool calls under the default sandbox — see the orchestrator codex path).
+    return { bin: 'codex', args: ['--dangerously-bypass-approvals-and-sandbox'] };
+  }
+  throw new Error(`roleLaunchArgs: backend '${backend}' has no interactive role launch`);
 }
 
 /**
@@ -276,8 +287,8 @@ async function pickRole() {
   return { role, roles: known };
 }
 
-/** Role sessions support claude + omp interactively (codex needs a
- *  per-session CODEX_HOME — Phase 2). */
+/** Role sessions support claude, omp, and codex interactively. codex
+ *  runs in a per-session CODEX_HOME (bootstrap-role mints it). */
 async function pickRoleBackend() {
   const { select } = await import('@inquirer/prompts');
   return select({
@@ -285,6 +296,7 @@ async function pickRoleBackend() {
     choices: [
       { name: 'claude', value: 'claude' },
       { name: 'omp', value: 'omp' },
+      { name: 'codex', value: 'codex' },
     ],
   });
 }
@@ -410,7 +422,7 @@ async function roleFlow(args, role, rolesMeta) {
     else feature = await pickFeature(workspace, harness, consumes.feature);
   } else {
     if (agentInvalidForRole(args.agent)) {
-      throw new Error('--agent must be claude or omp for a role session (codex not yet supported)');
+      throw new Error('--agent must be claude, omp, or codex for a role session');
     }
     if (!args.harness) throw new Error('--harness is required for a role session');
     agent = args.agent;
@@ -436,9 +448,9 @@ async function roleFlow(args, role, rolesMeta) {
   runWrapper({ wrapperBin: bin, args: launchArgs, cwd: res.cwd, envelopeEnv: res.envelopeEnv });
 }
 
-/** True when an --agent value can't back a role session (only claude/omp can). */
+/** True when an --agent value can't back a role session (claude/omp/codex can). */
 export function agentInvalidForRole(agent) {
-  return agent !== 'claude' && agent !== 'omp';
+  return agent !== 'claude' && agent !== 'omp' && agent !== 'codex';
 }
 
 async function main() {

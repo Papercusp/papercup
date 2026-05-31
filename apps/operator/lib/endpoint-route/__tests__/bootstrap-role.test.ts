@@ -16,6 +16,7 @@ process.env.PAPERCUSP_LAUNCH_CONTEXT_DIR = LC_DIR;
 const recordAdvSessionMock = vi.fn(async (_o: unknown) => 7 as number | null);
 const buildRoleLaunchSpecMock = vi.fn();
 const roleConsumesMock = vi.fn();
+const writeRoleCodexHomeMock = vi.fn();
 
 vi.mock('@/lib/auth/require-principal', () => ({
   requirePrincipal: vi.fn(async () => {}),
@@ -28,6 +29,7 @@ vi.mock('@/lib/workspace-registry', () => ({
 vi.mock('@/lib/adv-sessions', () => ({ recordAdvSession: recordAdvSessionMock }));
 vi.mock('@/lib/role-registry', () => ({ roleConsumes: (...a: unknown[]) => roleConsumesMock(...a) }));
 vi.mock('@/lib/role-launch-spec', () => ({ buildRoleLaunchSpec: (...a: unknown[]) => buildRoleLaunchSpecMock(...a) }));
+vi.mock('@/lib/role-codex-home', () => ({ writeRoleCodexHome: (...a: unknown[]) => writeRoleCodexHomeMock(...a) }));
 
 const CTX: RouteContext = { principal: null, input: undefined, params: {}, log: () => {}, signal: new AbortController().signal };
 
@@ -45,6 +47,11 @@ beforeEach(() => {
   vi.clearAllMocks();
   recordAdvSessionMock.mockResolvedValue(7);
   roleConsumesMock.mockReturnValue({ feature: 'required', plan: 'none' });
+  writeRoleCodexHomeMock.mockReturnValue({
+    codexHome: '/tmp/role-codex-homes/session-7',
+    agentsPath: '/tmp/role-codex-homes/session-7/AGENTS.md',
+    configPath: '/tmp/role-codex-homes/session-7/config.toml',
+  });
   buildRoleLaunchSpecMock.mockResolvedValue({
     role: 'worker', runId: 'worker-F-001-1', spawnId: 'sp-1', harnessSlug: 'papercup', featureId: 'F-001',
     cwd: LC_DIR, promptText: 'WORKER PROMPT', promptFile: '/h/prompts/worker.md',
@@ -96,10 +103,25 @@ describe('bootstrap-role', () => {
     expect(json.feature).toBeNull();
   });
 
-  it('rejects codex (interactive role sessions not supported yet)', async () => {
+  it('codex → per-session CODEX_HOME, exported via envelopeEnv.CODEX_HOME', async () => {
     const res = await callPost({ role: 'worker', agent: 'codex', harness_slug: 'papercup', feature: 'F-001' });
-    expect(res.status).toBe(400);
-    expect((await res.json()).code).toBe('codex_role_unsupported');
+    expect(res.status).toBe(200);
+    const json = await res.json();
+    expect(json.status).toBe('ok');
+    expect(json.agent).toBe('codex');
+    expect(json.codexHome).toBe('/tmp/role-codex-homes/session-7');
+    // codex's prompt + MCP live INSIDE the CODEX_HOME (AGENTS.md + config.toml).
+    expect(json.promptFile).toBe('/tmp/role-codex-homes/session-7/AGENTS.md');
+    expect(json.mcpJsonPath).toBe('/tmp/role-codex-homes/session-7/config.toml');
+    expect(json.envelopeEnv.CODEX_HOME).toBe('/tmp/role-codex-homes/session-7');
+    // The CODEX_HOME is built from the SAME signed role-scoped url as claude/omp.
+    expect(writeRoleCodexHomeMock).toHaveBeenCalledWith(
+      expect.objectContaining({ mcpUrl: 'http://localhost:3070/api/mcp?role=worker&sig=x', promptText: 'WORKER PROMPT' }),
+    );
+    // No .mcp.json written into the harness cwd for codex.
+    expect(recordAdvSessionMock).toHaveBeenCalledWith(
+      expect.objectContaining({ role: 'worker', feature: 'F-001', agent: 'codex' }),
+    );
   });
 
   it('requires a harness slug', async () => {

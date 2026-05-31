@@ -31,6 +31,7 @@ import { recordAdvSession } from '@/lib/adv-sessions';
 import { isSuAgent, type SuAgent } from '@/lib/su-agents';
 import { roleConsumes } from '@/lib/role-registry';
 import { buildRoleLaunchSpec } from '@/lib/role-launch-spec';
+import { writeRoleCodexHome } from '@/lib/role-codex-home';
 import { launchContextDir, launchContextPathFor } from '@/lib/su-launch-context';
 
 const CORS_HEADERS: Record<string, string> = {
@@ -69,10 +70,23 @@ export interface BootstrapRoleResult {
   feature: string | null;
   /** Working directory the launcher should exec the agent in. */
   cwd: string;
-  /** File holding the role prompt — the launcher feeds it as the system prompt. */
+  /**
+   * File holding the role prompt — the launcher feeds it as the system
+   * prompt. claude/omp: a launch-context `.md`. codex: the CODEX_HOME
+   * `AGENTS.md` (codex has no per-launch system-prompt flag).
+   */
   promptFile: string;
-  /** The signed role-scoped `.mcp.json` written into cwd. */
+  /**
+   * The signed role-scoped MCP config the agent discovers. claude/omp: a
+   * `.mcp.json` written into cwd. codex: the CODEX_HOME `config.toml`.
+   */
   mcpJsonPath: string;
+  /**
+   * Per-session CODEX_HOME for a codex role session (AGENTS.md +
+   * config.toml + auth symlink). null for claude/omp. Also surfaced in
+   * `envelopeEnv.CODEX_HOME` for the launcher.
+   */
+  codexHome: string | null;
   /** Non-secret env the launcher exports into the child. */
   envelopeEnv: Record<string, string>;
 }
@@ -112,16 +126,10 @@ const post = defineTool({
     if (!ROLE_RE.test(role)) {
       return jsonRes({ status: 'error', error: `invalid role: ${role.slice(0, 32)}` }, 400);
     }
-    // Codex interactive role sessions need a per-session CODEX_HOME (no
-    // --append-system-prompt / --mcp-config flags); deferred until the
-    // codex spawn machinery from Phase 2 is reusable. claude/omp now.
     if (!isSuAgent(body.agent)) {
       return jsonRes({ status: 'error', error: `agent must be one of claude|omp|codex (got ${String(body.agent).slice(0, 24)})` }, 400);
     }
     const agent: SuAgent = body.agent;
-    if (agent === 'codex') {
-      return jsonRes({ status: 'error', code: 'codex_role_unsupported', error: 'codex interactive role sessions are not supported yet — use claude or omp (codex pipeline support is Phase 2).' }, 400);
-    }
 
     const workspace = body.workspace?.trim() || activeWorkspaceId();
     if (body.workspace?.trim() && !workspaceById(workspace)) {
@@ -164,29 +172,53 @@ const post = defineTool({
       label: feature ? `${role} · ${feature}` : role,
     });
 
-    // Write the signed role-scoped .mcp.json into cwd (back up any existing
-    // one, mirroring console-launch). omp path-discovers it; claude is
-    // pointed at it via --mcp-config by the launcher.
+    // Materialize the launch artifacts. claude/omp consume a `.mcp.json` +
+    // a launch-context prompt file; codex (no --mcp-config /
+    // --append-system-prompt flags) consumes a per-session CODEX_HOME whose
+    // AGENTS.md is the role prompt and config.toml the role-scoped MCP. All
+    // three carry the SAME signed role-scoped url (spec.mcpUrl).
+    const sessionKey = sessionId ?? `role-${Date.now()}`;
     let mcpJsonPath = '';
-    try {
-      mcpJsonPath = join(spec.cwd, '.mcp.json');
-      if (existsSync(mcpJsonPath)) {
-        const bak = `${mcpJsonPath}.papercusp.bak`;
-        if (!existsSync(bak)) renameSync(mcpJsonPath, bak);
-      }
-      writeFileSync(mcpJsonPath, spec.mcpJsonContents, { mode: 0o600 });
-    } catch (e: any) {
-      return jsonRes({ status: 'error', error: `write .mcp.json: ${e?.message}` }, 500);
-    }
+    let promptFile = '';
+    let codexHome: string | null = null;
 
-    // Write the role prompt to a launch-context file the launcher injects
-    // as the system prompt (NOT the engineer playbook the *-su wrappers use).
-    const promptFile = launchContextPathFor(sessionId ?? `role-${Date.now()}`);
-    try {
-      mkdirSync(launchContextDir(), { recursive: true });
-      writeFileSync(promptFile, spec.promptText, { mode: 0o600 });
-    } catch (e: any) {
-      return jsonRes({ status: 'error', error: `write role prompt: ${e?.message}` }, 500);
+    if (agent === 'codex') {
+      try {
+        const ch = writeRoleCodexHome({
+          sessionKey,
+          mcpUrl: spec.mcpUrl,
+          promptText: spec.promptText,
+        });
+        codexHome = ch.codexHome;
+        mcpJsonPath = ch.configPath; // config.toml — diagnostics
+        promptFile = ch.agentsPath; // AGENTS.md — diagnostics
+      } catch (e: any) {
+        return jsonRes({ status: 'error', error: `write codex home: ${e?.message}` }, 500);
+      }
+    } else {
+      // Write the signed role-scoped .mcp.json into cwd (back up any existing
+      // one, mirroring console-launch). omp path-discovers it; claude is
+      // pointed at it via --mcp-config by the launcher.
+      try {
+        mcpJsonPath = join(spec.cwd, '.mcp.json');
+        if (existsSync(mcpJsonPath)) {
+          const bak = `${mcpJsonPath}.papercusp.bak`;
+          if (!existsSync(bak)) renameSync(mcpJsonPath, bak);
+        }
+        writeFileSync(mcpJsonPath, spec.mcpJsonContents, { mode: 0o600 });
+      } catch (e: any) {
+        return jsonRes({ status: 'error', error: `write .mcp.json: ${e?.message}` }, 500);
+      }
+
+      // Write the role prompt to a launch-context file the launcher injects
+      // as the system prompt (NOT the engineer playbook the *-su wrappers use).
+      promptFile = launchContextPathFor(sessionKey);
+      try {
+        mkdirSync(launchContextDir(), { recursive: true });
+        writeFileSync(promptFile, spec.promptText, { mode: 0o600 });
+      } catch (e: any) {
+        return jsonRes({ status: 'error', error: `write role prompt: ${e?.message}` }, 500);
+      }
     }
 
     const result: BootstrapRoleResult = {
@@ -200,9 +232,11 @@ const post = defineTool({
       cwd: spec.cwd,
       promptFile,
       mcpJsonPath,
+      codexHome,
       envelopeEnv: {
         PAPERCUSP_AGENT: agent,
         PAPERCUSP_ROLE: role,
+        ...(codexHome ? { CODEX_HOME: codexHome } : {}),
         ...(feature ? { PAPERCUSP_FEATURE_ID: feature } : {}),
         ...(sessionId != null ? { PAPERCUSP_ADV_SESSION_ID: String(sessionId) } : {}),
       },

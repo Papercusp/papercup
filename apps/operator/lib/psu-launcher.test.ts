@@ -181,14 +181,21 @@ describe('roleLaunchArgs (interactive role session)', () => {
     expect(args).toEqual(['--approval-mode', 'yolo', '--append-system-prompt', '/lc/session-7.md']);
   });
 
-  it('codex: no interactive role launch (throws)', () => {
-    expect(() => roleLaunchArgs('codex', files)).toThrow();
+  it('codex: raw codex, approvals/sandbox bypass (CODEX_HOME via envelopeEnv)', () => {
+    const { bin, args } = roleLaunchArgs('codex', files);
+    expect(bin).toBe('codex');
+    expect(args).toEqual(['--dangerously-bypass-approvals-and-sandbox']);
   });
 
-  it('agentInvalidForRole accepts only claude/omp', () => {
+  it('unknown backend: throws', () => {
+    expect(() => roleLaunchArgs('gemini', files)).toThrow();
+  });
+
+  it('agentInvalidForRole accepts claude/omp/codex', () => {
     expect(agentInvalidForRole('claude')).toBe(false);
     expect(agentInvalidForRole('omp')).toBe(false);
-    expect(agentInvalidForRole('codex')).toBe(true);
+    expect(agentInvalidForRole('codex')).toBe(false);
     expect(agentInvalidForRole(null)).toBe(true);
+    expect(agentInvalidForRole('gemini')).toBe(true);
   });
 });
