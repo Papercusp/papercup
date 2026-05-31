@@ -79,7 +79,7 @@ role launches + `writeRoleCodexHome` work). Key code:
 - **P-030** `done` Extend the codex per-session CODEX_HOME builder (`writeRoleCodexHome` + the su equivalent) to install the SU-locks Pre/PostToolUse hooks (`settings.json` in the CODEX_HOME) + `--dangerously-bypass-hook-trust`, so per-session codex keeps the lock enforcement the static `codex-su` home provided. blocked-by: P-002 (Per-session codex home su+role installs lock-hook settings.json + hook-trust bypass — install is correct. But D-007: codex 0.135 file_change isn't PreToolUse-hookable so the hooks never fire separate gap, new item.)
 - **P-031** `blocked` GATE — verify lock enforcement live on all three agents launched via psu (no wrapper): edit a locked file from a psu claude/omp/codex session and confirm the PreToolUse lock hook acquires/blocks exactly as before. NO wrapper deletion until green. blocked-by: P-030, P-020, P-021 (PARTIAL: claude lock = user-level Edit|Write hooks unchanged, fire. codex lock = RED — D-007: codex 0.135 file_change not PreToolUse-hookable, hooks never fire verified with catch-all matcher. omp -e not re-verified. Blocks Phase 4 wrapper deletion until codex lock solved.)
 - **P-032** `wip` GATE — verify coord identity: a psu su session appears in `coord:presence` with a per-session `PAPERCUSP_SID` owner, and two concurrent psu sessions get distinct owners (no self-contention — the bug the per-session SID originally fixed). blocked-by: P-022 (PAPERCUSP_SID minted per-session + in envelopeEnv verified in bootstrap-su responses; distinct su-<uuid> per call. Full coord:presence two-session distinctness check still owed.)
-- **P-053** `todo` Solve codex 0.135 lock enforcement (D-007): codex edits via a native `file_change` item that is NOT PreToolUse-hookable (verified — a catch-all `.*` matcher never fired), so the SU-locks Pre/PostToolUse hooks are dead for codex. Options: (a) a codex edit/patch-approval hook event that fires on file_change, (b) route codex edits through a hookable tool, (c) accept no hard locks for codex and coordinate via `coord:declare-intent`. Until resolved, codex su has NO lock enforcement and Phase 4 stays blocked for all three (the gate is a set). blocked-by: P-030
+- **P-053** `needs-human` Solve codex 0.135 lock enforcement (D-007): codex edits via a native `file_change` item that is NOT PreToolUse-hookable (verified — a catch-all `.*` matcher never fired), so the SU-locks Pre/PostToolUse hooks are dead for codex. Options: (a) a codex edit/patch-approval hook event that fires on file_change, (b) route codex edits through a hookable tool, (c) accept no hard locks for codex and coordinate via `coord:declare-intent`. Until resolved, codex su has NO lock enforcement and Phase 4 stays blocked for all three (the gate is a set). blocked-by: P-030 (D-008: codex edits are unhookable sandbox-gated, not hook-gated; static codex-su never enforced locks either. Decision needed: accept soft coord for codex unblocks Phase 4 vs hold for a future codex hard-enforcement mechanism.)
 
 ## Phase 4 — Retire the wrappers + shrink the installer
 
@@ -158,3 +158,16 @@ Consequences:
 
 New work item added for the codex lock mechanism.
 Related: P-030, P-031
+
+### D-008 — D-008 (P-053 investigation): codex edits are unhookable; static codex-su never enforced locks either → retiring it is no regression
+Date: 2026-05-31
+Investigated codex 0.135 hook capability (binary strings + 4 live tests). Findings:
+
+1. codex's hook events (from the native binary) are the Claude set: PreToolUse, PermissionRequest, PostToolUse, PreCompact, PostCompact, SessionStart, SubagentStart, SubagentStop. There is NO dedicated file-edit/patch hook event.
+2. codex file edits are a native `file_change` turn item gated by codex's OS-LEVEL sandbox (landlock/seccomp), NOT by the hook system. A catch-all `.*` PreToolUse+PermissionRequest hook NEVER fired on a file_change (4 tests: with full bypass, with -s workspace-write, with/without approval escalation; the sandbox either allowed silently or OS-denied the write — no hook in the path).
+3. `--dangerously-bypass-approvals-and-sandbox` (used by BOTH psu's codex launch AND the static codex-su wrapper §4f) suppresses the hook checkpoints entirely — PreToolUse didn't fire even for a plain shell `echo`.
+
+CONCLUSION: hook-based SU-locks enforcement has NEVER worked for codex su (static wrapper included) — the matcher was stale AND the bypass flag disabled hooks AND file_change isn't a hookable tool. So writeSuCodexHome installing settings.json hooks is harmless-but-inert, and retiring the codex-su wrapper for psu does NOT regress codex lock enforcement (both are equally unenforced).
+
+Re-frames the D-003 gate for codex from "preserve hard lock enforcement" (never existed) to "no regression" (satisfied). Options for actual codex coordination: (B) soft — playbook instructs codex to call locks:* voluntarily (status quo); (D-future) a codex-native sandbox/edit-gate or a new codex hook event. NEEDS HUMAN: accept soft coordination for codex (unblocks Phase 4) vs hold codex retirement for a future hard-enforcement mechanism.</body>
+Related: P-053, P-031, P-040
