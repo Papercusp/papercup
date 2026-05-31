@@ -13,6 +13,7 @@
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { resolveCtxHarnessSlug } from './_ctx-opts';
+import { harnessArg, harnessScopedCtx } from '../_harness-scope';
 import { withPlanLock, bumpUpdatedDate } from './with-plan-lock';
 import { ITEM_STATUSES, maskFences } from './parser';
 import { emitPlanEventForCaller } from '../coordination/plan-events';
@@ -32,6 +33,7 @@ const SU_ROLES = [
 ] as const;
 
 const argsSchema = z.object({
+  harness: harnessArg,
   slug: z.string().min(1),
   itemId: z.string().regex(/^P-\d{3,}$/, 'P-NNN form required'),
   status: z.enum([...ITEM_STATUSES] as [string, ...string[]]),
@@ -102,7 +104,8 @@ export default defineTool({
   modality: ['text'],
   args: argsSchema,
   async handler(args, ctx) {
-    const harnessSlug = resolveCtxHarnessSlug(ctx);
+    const sctx = harnessScopedCtx(args.harness, ctx);
+    const harnessSlug = resolveCtxHarnessSlug(sctx);
     const rev = planRevisionCapture(
       ctx as PlanRevisionCtx,
       args.slug,

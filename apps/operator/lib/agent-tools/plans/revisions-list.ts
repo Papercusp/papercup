@@ -17,6 +17,7 @@
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { resolveCtxHarnessSlug } from './_ctx-opts';
+import { harnessArg, harnessScopedCtx } from '../_harness-scope';
 import { listPlanRevisions } from './revisions';
 
 const ALL_ROLES = [
@@ -36,6 +37,7 @@ const argsSchema = z.object({
     .string()
     .min(1)
     .describe('Plan slug (filename stem) whose revision chain to read.'),
+  harness: harnessArg,
 });
 
 export default defineTool({
@@ -56,7 +58,8 @@ export default defineTool({
   args: argsSchema,
   async handler(args, ctx) {
     const ctxAny = ctx as { metadata?: (d: Record<string, unknown>) => void };
-    const harnessSlug = resolveCtxHarnessSlug(ctx);
+    const sctx = harnessScopedCtx(args.harness, ctx);
+    const harnessSlug = resolveCtxHarnessSlug(sctx);
     try {
       const revisions = await listPlanRevisions(args.slug, harnessSlug ? { harnessSlug } : {});
       ctxAny.metadata?.({ slug: args.slug, revisionCount: revisions.length });

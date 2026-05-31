@@ -13,6 +13,7 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { withWorkspace } from '@papercusp/db-org';
 import { readPlanBySlug } from './source';
 import { ctxToPlanSourceOpts, resolveCtxHarnessSlug } from './_ctx-opts';
+import { harnessArg, harnessScopedCtx } from '../_harness-scope';
 import { resolveEffectiveStatus } from './effective-status';
 import { hashPlanContent } from './content-hash';
 import { DEFAULT_WORKSPACE_ID } from '../../workspace-registry';
@@ -32,6 +33,7 @@ const ALL_ROLES = [
 ] as const;
 
 const argsSchema = z.object({
+  harness: harnessArg,
   slug: z
     .string()
     .min(1)
@@ -55,7 +57,8 @@ export default defineTool({
   args: argsSchema,
   async handler(args, ctx) {
     const ctxAny = ctx as { metadata?: (d: Record<string, unknown>) => void };
-    const opts = await ctxToPlanSourceOpts(ctx);
+    const sctx = harnessScopedCtx(args.harness, ctx);
+    const opts = await ctxToPlanSourceOpts(sctx);
     const result = await readPlanBySlug(args.slug, opts);
     if (!result) {
       return {
@@ -90,7 +93,7 @@ export default defineTool({
 
     // P-006: Build a map of plan-item-id → { featureId, status } so the UI
     // can show live feature status badges next to each P-NNN item.
-    const harnessSlug = resolveCtxHarnessSlug(ctx) ?? 'papercup';
+    const harnessSlug = resolveCtxHarnessSlug(sctx) ?? 'papercup';
     let linkedFeatures: Record<string, { featureId: string; status: string; harnessSlug: string }> = {};
     try {
       const rows = await withWorkspace(DEFAULT_WORKSPACE_ID, async (tx) => {

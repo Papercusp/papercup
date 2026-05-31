@@ -22,6 +22,7 @@
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { resolveCtxHarnessSlug } from './_ctx-opts';
+import { harnessArg, harnessScopedCtx } from '../_harness-scope';
 import { listPlanRuns, sweepPlanRuns } from './runs';
 
 const ALL_ROLES = [
@@ -41,6 +42,7 @@ const argsSchema = z.object({
     .string()
     .min(1)
     .describe('Plan slug (filename stem) whose run history to read.'),
+  harness: harnessArg,
 });
 
 export default defineTool({
@@ -72,7 +74,8 @@ export default defineTool({
             (e instanceof Error ? e.message : String(e)),
         );
       });
-      const harnessSlug = resolveCtxHarnessSlug(ctx);
+      const sctx = harnessScopedCtx(args.harness, ctx);
+      const harnessSlug = resolveCtxHarnessSlug(sctx);
       const runs = await listPlanRuns(args.slug, harnessSlug ? { harnessSlug } : {});
       ctxAny.metadata?.({ slug: args.slug, runCount: runs.length });
       return {

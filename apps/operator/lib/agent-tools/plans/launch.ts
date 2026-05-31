@@ -26,6 +26,7 @@
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { resolveCtxHarnessSlug } from './_ctx-opts';
+import { harnessArg, harnessScopedCtx } from '../_harness-scope';
 import { buildPlanContextBundle } from './context-bundle';
 import { getRepoRoot } from './source';
 import { insertPlanRun } from './runs';
@@ -46,6 +47,7 @@ const SU_ROLES = [
 ] as const;
 
 const argsSchema = z.object({
+  harness: harnessArg,
   slug: z
     .string()
     .min(1)
@@ -120,7 +122,8 @@ type LaunchCtx = ResolveIdentityCtx & {
 
 async function launchHandler(input: LaunchArgs, ctx: LaunchCtx) {
   // 1. Assemble the launch seed (plan doc + rationale digest — P-009).
-  const __ctxHarness = resolveCtxHarnessSlug(ctx);
+  const sctx = harnessScopedCtx(input.harness, ctx);
+  const __ctxHarness = resolveCtxHarnessSlug(sctx);
   const bundle = await buildPlanContextBundle(
     input.slug,
     __ctxHarness ? { harnessSlug: __ctxHarness } : {},
@@ -160,7 +163,7 @@ async function launchHandler(input: LaunchArgs, ctx: LaunchCtx) {
   const note = (input.note ?? '').trim() || null;
 
   // 4. Insert the plan_runs row — the canonical record of the launch.
-  const launchHarnessSlug = resolveCtxHarnessSlug(ctx);
+  const launchHarnessSlug = resolveCtxHarnessSlug(sctx);
   const runId = await insertPlanRun({
     planSlug: input.slug,
     ...(launchHarnessSlug ? { harnessSlug: launchHarnessSlug } : {}),

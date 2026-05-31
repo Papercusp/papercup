@@ -21,11 +21,26 @@
  * resolvers wrap this and throw `HarnessRequiredError` for the dispatcher.
  */
 
+import { z } from 'zod';
 import { HarnessRequiredError } from '@papercusp/agent-mcp';
 
 /** Canonical "all harnesses / operator scope" sentinel. `'*'` can't collide
  *  with a real slug; `'all'` is an accepted friendly alias. */
 export const HARNESS_ALL = '*';
+
+/**
+ * Reusable optional `harness` arg for harness-scoped tools — keeps the
+ * description identical everywhere it's spread into an args schema
+ * (`args: z.object({ harness: harnessArg, … })`).
+ */
+export const harnessArg = z
+  .string()
+  .optional()
+  .describe(
+    "Harness slug to operate on. Pass 'all' for operator / cross-harness scope " +
+      "(e.g. Papercusp's own plans). Omit only when the session is already scoped " +
+      "to a harness — otherwise you'll get harness_required.",
+  );
 
 /** True when a value is the explicit all/operator-scope sentinel. */
 export function isAllHarnessSentinel(v: string | null | undefined): boolean {

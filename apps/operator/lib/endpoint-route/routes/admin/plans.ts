@@ -161,13 +161,19 @@ async function dispatchRead(req: Request, ctx: RouteContext): Promise<Response> 
     );
   }
   const url = new URL(req.url);
+  const body = bodyFromSearchParams(url.searchParams) as Record<string, unknown>;
+  // /adv is the operator's own plan UI, working at operator scope on Papercusp's
+  // plans. The plans:* tools now require an explicit harness (the all-sentinel
+  // gate); default it to 'all' (→ papercup) so /adv keeps its pre-gate behavior,
+  // unless the caller passed one (?harness=…).
+  if (body.harness == null) body.harness = 'all';
   const result = await handleHttpToolRequest(
     {
       method: 'POST',
       pathname: `/api/agent-tools/plans/${verb}`,
       searchParams: adminSearchParams(url.searchParams),
       headers: collectHeaders(req),
-      body: bodyFromSearchParams(url.searchParams),
+      body,
     },
     HOST_EXTRAS,
   );
@@ -192,6 +198,9 @@ async function dispatchWrite(req: Request, ctx: RouteContext): Promise<Response>
       { status: 400 },
     );
   }
+  // Same /adv default as dispatchRead: operator-scope writes target Papercusp's
+  // own plans, so default the harness gate to 'all' (→ papercup) unless given.
+  if (body.harness == null) body.harness = 'all';
   const url = new URL(req.url);
   const result = await handleHttpToolRequest(
     {

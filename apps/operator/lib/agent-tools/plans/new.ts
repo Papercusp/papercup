@@ -15,6 +15,7 @@
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { resolveCtxHarnessSlug } from './_ctx-opts';
+import { harnessArg, harnessScopedCtx } from '../_harness-scope';
 import * as fs from 'node:fs/promises';
 import { withPlanLock } from './with-plan-lock';
 import { PLAN_STATUSES } from './parser';
@@ -35,6 +36,7 @@ const SU_ROLES = [
 ] as const;
 
 const argsSchema = z.object({
+  harness: harnessArg,
   slug: z
     .string()
     .min(3)
@@ -135,7 +137,8 @@ export default defineTool({
     // appends today's date when the caller didn't already include one.
     const slug = ensureDatedSlug(args.slug, date);
 
-    const harnessSlug = resolveCtxHarnessSlug(ctx);
+    const sctx = harnessScopedCtx(args.harness, ctx);
+    const harnessSlug = resolveCtxHarnessSlug(sctx);
     const rev = planRevisionCapture(
       ctx as PlanRevisionCtx,
       slug,

@@ -175,8 +175,11 @@ them produces off-system UI that gets redone.
 
 #### `plans:*` scope
 
-`plans:*` tools operate on `<harness.path>/docs/plans/`. Use
-`cross_harness:plans_*` to read another harness's plans read-only.
+`plans:*` tools (reads **and** writes) operate on `<harness.path>/docs/plans/`.
+Like `docs:*`, at workspace scope (no harness) they take a `harness` arg and
+**error `harness_required` without it** — pass `harness: 'all'` for the
+operator's own plans, or a concrete slug; a harness-scoped session needs no
+arg. Use `cross_harness:plans_*` to read another harness's plans read-only.
 
 #### Recall older context
 

@@ -27,6 +27,7 @@
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { resolveCtxHarnessSlug } from './_ctx-opts';
+import { harnessArg, harnessScopedCtx } from '../_harness-scope';
 import { withPlanLock } from './with-plan-lock';
 import { parsePlan } from './parser';
 import { planRevisionCapture, type PlanRevisionCtx } from './revisions';
@@ -46,6 +47,7 @@ const SU_ROLES = [
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
 const argsSchema = z.object({
+  harness: harnessArg,
   slug: z.string().min(1).describe('Plan slug (filename stem). Written into the frontmatter.'),
   title: z
     .string()
@@ -129,7 +131,8 @@ export default defineTool({
   async handler(args, ctx) {
     const today = new Date().toISOString().slice(0, 10);
 
-    const harnessSlug = resolveCtxHarnessSlug(ctx);
+    const sctx = harnessScopedCtx(args.harness, ctx);
+    const harnessSlug = resolveCtxHarnessSlug(sctx);
     const rev = planRevisionCapture(
       ctx as PlanRevisionCtx,
       args.slug,

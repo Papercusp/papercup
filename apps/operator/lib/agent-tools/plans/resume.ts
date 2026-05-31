@@ -29,6 +29,7 @@
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { resolveCtxHarnessSlug } from './_ctx-opts';
+import { harnessArg, harnessScopedCtx } from '../_harness-scope';
 import { buildPlanContextBundle } from './context-bundle';
 import { getRepoRoot } from './source';
 import { getPlanRun, markPlanRunResumed } from './runs';
@@ -71,6 +72,7 @@ const argsSchema = z.object({
         'turn runs in the background and writes turns + final status ' +
         'asynchronously. Default true.',
     ),
+  harness: harnessArg,
 });
 
 type ResumeArgs = z.infer<typeof argsSchema>;
@@ -127,7 +129,8 @@ async function resumeHandler(input: ResumeArgs, ctx: ResumeCtx) {
   if (!run) return notFound('runId', input.runId);
 
   // 2. Re-assemble the launch seed from the *current* plan state.
-  const resumeHarnessSlug = resolveCtxHarnessSlug(ctx);
+  const sctx = harnessScopedCtx(input.harness, ctx);
+  const resumeHarnessSlug = resolveCtxHarnessSlug(sctx);
   const bundle = await buildPlanContextBundle(
     run.planSlug,
     resumeHarnessSlug ? { harnessSlug: resumeHarnessSlug } : {},

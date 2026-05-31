@@ -35,6 +35,7 @@
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { resolveCtxHarnessSlug } from './_ctx-opts';
+import { harnessArg, harnessScopedCtx } from '../_harness-scope';
 import { withPlanLock } from './with-plan-lock';
 import { parsePlan } from './parser';
 import { lintParsed, type LintFinding } from './lint';
@@ -55,6 +56,7 @@ const SU_ROLES = [
 
 const argsSchema = z.object({
   slug: z.string().min(1),
+  harness: harnessArg,
   content: z
     .string()
     .min(1)
@@ -151,7 +153,8 @@ export default defineTool({
   async handler(args, ctx) {
     // Append a plan_revisions row after the write, while the lock is
     // still held — so `seq` allocation is race-free (P-002 / D-003).
-    const harnessSlug = resolveCtxHarnessSlug(ctx);
+    const sctx = harnessScopedCtx(args.harness, ctx);
+    const harnessSlug = resolveCtxHarnessSlug(sctx);
     const rev = planRevisionCapture(
       ctx as PlanRevisionCtx,
       args.slug,

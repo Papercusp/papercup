@@ -16,6 +16,7 @@ import * as path from 'node:path';
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { resolveCtxHarnessSlug } from './_ctx-opts';
+import { harnessArg, harnessScopedCtx } from '../_harness-scope';
 import { withPlanLock } from './with-plan-lock';
 import { evaluateSetContent, type SetContentValue } from './set-content';
 import { planRevisionCapture, type PlanRevisionCtx } from './revisions';
@@ -38,6 +39,7 @@ const DRAFT_DIR = path.join(os.tmpdir(), 'papercusp-plan-content-drafts');
 
 const argsSchema = z.object({
   slug: z.string().min(1),
+  harness: harnessArg,
   op: z.enum(['begin', 'append', 'commit', 'abort']),
   draftId: z
     .string()
@@ -197,7 +199,8 @@ export default defineTool({
   modality: ['text'],
   args: argsSchema,
   async handler(args, ctx) {
-    const harnessSlug = resolveCtxHarnessSlug(ctx);
+    const sctx = harnessScopedCtx(args.harness, ctx);
+    const harnessSlug = resolveCtxHarnessSlug(sctx);
 
     if (args.op === 'begin') {
       const value = await createDraft(args, harnessSlug);

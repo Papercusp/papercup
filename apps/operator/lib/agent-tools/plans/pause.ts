@@ -16,6 +16,7 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { withWorkspace } from '@papercusp/db-org';
 import { DEFAULT_WORKSPACE_ID } from '../../workspace-registry';
 import { resolveCtxHarnessSlug } from './_ctx-opts';
+import { harnessArg, harnessScopedCtx } from '../_harness-scope';
 
 const SU_ROLES = [
   'scoper',
@@ -31,6 +32,7 @@ const SU_ROLES = [
 
 const argsSchema = z.object({
   slug: z.string().min(1).describe('Plan slug to pause.'),
+  harness: harnessArg,
 });
 
 export default defineTool({
@@ -50,7 +52,8 @@ export default defineTool({
   args: argsSchema,
   async handler(args, ctx) {
     const ctxAny = ctx as { metadata?: (d: Record<string, unknown>) => void };
-    const harnessSlug = resolveCtxHarnessSlug(ctx) ?? 'papercup';
+    const sctx = harnessScopedCtx(args.harness, ctx);
+    const harnessSlug = resolveCtxHarnessSlug(sctx) ?? 'papercup';
     const now = new Date().toISOString();
 
     const rows = await withWorkspace(DEFAULT_WORKSPACE_ID, async (tx) => {

@@ -17,6 +17,7 @@ import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { readAllPlans } from './source';
 import { ctxToPlanSourceOpts } from './_ctx-opts';
+import { harnessArg, harnessScopedCtx } from '../_harness-scope';
 
 const ALL_ROLES = [
   'scoper',
@@ -42,6 +43,7 @@ const argsSchema = z.object({
   limit: z.number().int().min(1).max(50).optional().describe('Max results. Default 20.'),
   includeArchived: z.boolean().optional().describe('Search archived plans too. Default true (the dispersal problem was *unfindable*).'),
   includeLegacy: z.boolean().optional().describe('Search legacy plans (prose only). Default true.'),
+  harness: harnessArg,
 });
 
 interface Hit {
@@ -113,7 +115,8 @@ export default defineTool({
       };
     }
 
-    const opts = await ctxToPlanSourceOpts(ctx);
+    const sctx = harnessScopedCtx(args.harness, ctx);
+    const opts = await ctxToPlanSourceOpts(sctx);
     const parsedPlans = await readAllPlans({ includeArchived, ...opts });
     const hits: Hit[] = [];
 

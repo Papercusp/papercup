@@ -14,6 +14,7 @@ import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { listPlanFiles, readPlanBySlug, resolveHarnessPlansDir } from './source';
 import { ctxToPlanSourceOpts } from './_ctx-opts';
+import { harnessArg, harnessScopedCtx } from '../_harness-scope';
 import { resolveEffectiveStatus } from './effective-status';
 import { ITEM_STATUSES, PLAN_STATUSES } from './parser';
 import { withWorkspace } from '@papercusp/db-org';
@@ -67,6 +68,7 @@ const argsSchema = z.object({
     .pipe(z.array(z.string().min(1)).max(HARNESS_SLUGS_MAX, { message: `harness_slugs capped at ${HARNESS_SLUGS_MAX}` }))
     .optional()
     .describe('Optional explicit fan-out across multiple harnesses (overrides ctx harness).'),
+  harness: harnessArg,
 });
 
 type ListRow = {
@@ -136,7 +138,7 @@ export default defineTool({
         }
       }
     } else {
-      const one = await ctxToPlanSourceOpts(ctx);
+      const one = await ctxToPlanSourceOpts(harnessScopedCtx(args.harness, ctx));
       perHarnessOpts.push({
         harnessSlug: one.harnessSlug,
         plansDir: one.plansDir ?? '',

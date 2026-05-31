@@ -25,6 +25,7 @@ import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { listPlanFiles, readPlanBySlug, type PlanSourceOpts } from './source';
 import { ctxToPlanSourceOpts } from './_ctx-opts';
+import { harnessArg, harnessScopedCtx } from '../_harness-scope';
 import { resolveEffectiveStatus } from './effective-status';
 import { IMPORTANCE_LEVELS } from './parser';
 import type { ParsedPlan } from './parser';
@@ -45,6 +46,7 @@ const ALL_ROLES = [
 const argsSchema = z.object({
   slug: z.string().optional().describe('Lint one plan. Omit for all plans.'),
   includeArchived: z.boolean().optional().describe('Lint plans under archive/. Default false.'),
+  harness: harnessArg,
 });
 
 export interface LintFinding {
@@ -336,7 +338,8 @@ export default defineTool({
   args: argsSchema,
   async handler(args, ctx) {
     const ctxAny = ctx as { metadata?: (d: Record<string, unknown>) => void };
-    const opts = await ctxToPlanSourceOpts(ctx);
+    const sctx = harnessScopedCtx(args.harness, ctx);
+    const opts = await ctxToPlanSourceOpts(sctx);
 
     let reports: PlanLintReport[];
     if (args.slug) {

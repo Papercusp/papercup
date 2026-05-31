@@ -18,6 +18,7 @@ import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { readAllPlans, readPlanBySlug } from './source';
 import { ctxToPlanSourceOpts } from './_ctx-opts';
+import { harnessArg, harnessScopedCtx } from '../_harness-scope';
 import { resolveEffectiveStatus, type ResolvedItem } from './effective-status';
 import { ITEM_STATUSES, IMPORTANCE_LEVELS } from './parser';
 
@@ -55,6 +56,7 @@ const argsSchema = z.object({
     .boolean()
     .optional()
     .describe('Include items from plans under archive/. Default false.'),
+  harness: harnessArg,
 });
 
 interface ItemRow {
@@ -81,7 +83,8 @@ export default defineTool({
   args: argsSchema,
   async handler(args, ctx) {
     const ctxAny = ctx as { metadata?: (d: Record<string, unknown>) => void };
-    const opts = await ctxToPlanSourceOpts(ctx);
+    const sctx = harnessScopedCtx(args.harness, ctx);
+    const opts = await ctxToPlanSourceOpts(sctx);
     const includeArchived = args.includeArchived === true;
 
     let parsedPlans: Array<{ parsed: import('./parser').ParsedPlan; archived: boolean }> = [];

@@ -27,6 +27,7 @@ import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { readAllPlans } from './source';
 import { ctxToPlanSourceOpts } from './_ctx-opts';
+import { harnessArg, harnessScopedCtx } from '../_harness-scope';
 import {
   coordEscalationToAttention,
   coordMessageToAttention,
@@ -56,6 +57,7 @@ const argsSchema = z.object({
     .optional()
     .describe('Restrict the harness-scoped sources (smoke-fails, plan-reviews) to one harness. Omit for workspace-wide.'),
   includeArchived: z.boolean().optional().describe('Include items from archived plans. Default false.'),
+  harness: harnessArg,
 });
 
 export default defineTool({
@@ -75,7 +77,8 @@ export default defineTool({
   args: argsSchema,
   async handler(args, ctx) {
     const ctxAny = ctx as { metadata?: (d: Record<string, unknown>) => void };
-    const opts = await ctxToPlanSourceOpts(ctx);
+    const sctx = harnessScopedCtx(args.harness, ctx);
+    const opts = await ctxToPlanSourceOpts(sctx);
     const harnessFilter = args.harnessSlug ?? null;
     const includeArchived = args.includeArchived === true;
     const items: AttentionItem[] = [];
