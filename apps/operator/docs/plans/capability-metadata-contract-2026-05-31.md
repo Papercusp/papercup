@@ -1,7 +1,7 @@
 ---
 title: One capability-metadata contract — unify palette/voice/shortcut commands with the agent (MCP) tool catalog
 slug: capability-metadata-contract-2026-05-31
-status: active
+status: shipped
 created: 2026-05-31
 updated: 2026-05-31
 owner: avi@storewolf.com
@@ -12,9 +12,9 @@ related: [agent-action-registry-plan-2026-05-03, tooldef-auth-rfc-2026-05-31, pa
 
 ## Now
 
-**State:** Phase 1 COMPLETE; the only open thread is the final execution smoke. The :3070 host reloaded and run-tool went live, so I ran the P-005 smoke — which CAUGHT A REAL BUG: the dispatch capability gate is a literal has(cap) and ignores the loopback principal's '*', so tools failed missing_capability. Fixed (D-007): run-tool now runs at operator tier (gateBypass capability+quota, role enforced) — aligning invoke with the role-filtered listing; §3 + confirm + audit intact. LIVE-VERIFIED already: GET /capabilities (8 tools, gated, no leaks), and run-tool routing — 409 confirm-required, 403 not-eligible(required-arg), 404 unknown, 400 missing-name all exactly correct. The cap-tier fix is code-correct (dispatch-stack.ts:212 skips the gate on gateBypass.capability; pre-fix smoke proved that was the only blocker) + tsc clean, but its live "tools actually execute" confirmation needs the NEXT :3070 reload (the host isn't a live watcher — it reloaded once, between commits).
+**State:** SHIPPED + live-verified. The command palette (Ctrl+P) now spans the Action-Registry commands AND the agent (MCP) tool catalog, unified at the projection layer by the `lib/capabilities` Capability contract + adapters — no merge of the two definition systems (D-001/D-008). Live-verified end-to-end after the :3070 reload: GET /capabilities (gated, §3-filtered, role-aware, no leaks) and POST /run-tool executing real tools (harness/goals/issues/audit:list, dev:hello-card) through the full gated dispatch — operator-tier (capability+quota bypass, role enforced, D-007), §3 safety filter, confirm-for-destructive, audit. Contract correct (409/403/404/400). 22 unit tests + route-invariant suite green; tsc + vite build clean. Decisions D-001..D-008 recorded; agent-insight doc written.
 
-**Next:** Loop is watching for the next :3070 reload; on it, re-run the run-tool execution smoke (papercusp:list_workspaces / harness:list should return data, not missing_capability) → then P-005 done. P-009 (end-state) stays needs-human; Phase 2 optional (D-006).
+**Next:** Nothing required. Two things for the human to optionally review (both reversible): D-008 (end-state = keep both registries + adapter; override toward a full merge if desired) and D-007 (run-tool security posture = loopback + §3 + confirm + audit; harden with session-auth/operator-principal before any non-loopback exposure). Phase 2 (P-006/P-008/P-012) is dropped-as-optional, build-on-demand. Separately flagged to peers: papercusp:list_workspaces has a pre-existing SQL bug (column harness_slug) unrelated to this work.
 
 ## 1. Problem (grounded in code)
 
@@ -119,19 +119,19 @@ Nothing is ripped out on day one; each phase is independently shippable and reve
 - **P-011** `done` Implement the palette-execution safety filter from §3 (`destructive`/`tier`/streaming/interactive/arg-shape) + `getPalettePrincipal()` per D-004, with unit tests. blocked-by: P-002 → D-004 (Safety filter shipped + tested safety-filter.ts: paletteEligibility fire-and-toast|confirm|exclude. getPalettePrincipal still pending — lands with P-004 where dispatch wiring needs it.) (Safety filter shipped + tested safety-filter.ts, server-catalog.ts. getPalettePrincipal dropped per D-005 use the standard request principal. 17 tests green.)
 - **P-003** `done` Read-only adapter projecting BOTH registries into `Capability[]`: tooldef catalog → `runsIn:'server'`; `lib/commands` defs → `runsIn` from `browser` (`required`→browser, `none`→server, `optional`→hybrid), `paletteEntry`→`surfaces.palette`, `agents`→`agentRoles`/`surfaces`, `promptDescription`→`agentDescription`. No definitions move. blocked-by: P-002 (Adapters shipped + unit-tested: from-action-registry.ts browser/hybrid/server via CommandDef.browser; agents→agentRoles; paletteEntry→surfaces.palette + from-tooldef.ts pure structural mapper; tier/destructive/streaming/interactive heuristics. Live catalog enumeration + HTTP projection deferred to P-004.)
 - **P-004** `done` Palette surfaces the agent tool catalog: `GlobalCommandPalette` reads the unified `Capability[]`, lists the §3-eligible, principal-gated server caps (confirm-gated for destructive/tier:high), executes via the dispatch+toast shim. blocked-by: P-003, P-011 (Read side landed: getServerCapabilities + GET /api/agent-mcp/capabilities principal-gated, §3-filtered, wired into routes/index.ts. Remaining: the gated invoke endpoint POST run-tool, server-side safety re-check + dispatch-stack + audit and the GlobalCommandPalette UI wiring fetch catalog, render, confirm step, execute+toast.) (Full impl shipped: catalog endpoint LIVE-VERIFIED — 8 §3-eligible tools, no leaks, audit:list tier=high→confirm, invoke endpoint built/registered/unit-tested, client wiring GlobalCommandPalette + useServerCapabilityCommands; tsc + vite build clean.)
-- **P-005** `blocked` Verify: gated/destructive/streaming/interactive tools behave per §3 (absent, or confirm-gated, never fire-and-toast); existing 6 palette commands + voice + shortcuts unaffected; human invocations audit as the human Principal and consume no agent quota (D-004). blocked-by: P-004 (VERIFIED: read endpoint live correct §3 filtering + gating + destructive→confirm, no leaks; 21 unit tests; tsc + full vite build clean. BLOCKED on a :3070 host restart not forced autonomously — shared service to make POST /run-tool live for the invoke/palette-UI end-to-end smoke audit-as-principal, no agent quota, confirm round-trip.)
+- **P-005** `done` Verify: gated/destructive/streaming/interactive tools behave per §3 (absent, or confirm-gated, never fire-and-toast); existing 6 palette commands + voice + shortcuts unaffected; human invocations audit as the human Principal and consume no agent quota (D-004). blocked-by: P-004 (VERIFIED: read endpoint live correct §3 filtering + gating + destructive→confirm, no leaks; 21 unit tests; tsc + full vite build clean. BLOCKED on a :3070 host restart not forced autonomously — shared service to make POST /run-tool live for the invoke/palette-UI end-to-end smoke audit-as-principal, no agent quota, confirm round-trip.) (LIVE-VERIFIED after :3070 reload: run-tool executes via gated dispatch harness/goals/issues/audit:list + dev:hello-card return real data; §3 contract correct 409/403/404/400; audit:list confirm-flow works; calls audited, no quota. list_workspaces 500s on a PRE-EXISTING SQL bug — reproduces via canonical MCP; flagged to peers.)
 
 ## Phase 2 — Authoring convergence (opt-in annotations)
 
-- **P-006** `todo` Add optional `surfaces` annotations to `defineTool` (a server tool opts into palette/voice in its own definition, replacing the read-only mapping for migrated tools). blocked-by: P-001
+- **P-006** `dropped` Add optional `surfaces` annotations to `defineTool` (a server tool opts into palette/voice in its own definition, replacing the read-only mapping for migrated tools). blocked-by: P-001 (Optional D-006 — the read-only adapter already unifies projection; per-tool surface annotations are build-on-demand via an operator-side overlay, not needed now. Revisit on a concrete curation need.)
 - **P-007** `dropped` Add `runsIn` + `CapabilityGate` to Action-Registry `CommandDef`; complete the `agents`→`agentRoles`/`surfaces` reconciliation per §4 (resolve OQ-2's remaining mechanics for the conversational members). blocked-by: P-001 → D-003, D-004 (Dropped per D-006 — the adapter derives runsIn from CommandDef.browser; an explicit field is redundant + drift-prone.)
-- **P-008** `todo` Collapse parallel metadata onto the descriptor — keep **two** description fields (`description` human, `agentDescription` model); do NOT fold `guidance.when` into the human subtitle (the review's #5). blocked-by: P-006, P-007
-- **P-012** `todo` Palette arg-prompt + streaming/`askUser` hosting so complex-arg / interactive / streaming caps become palette-eligible (lifts the Phase-1 §3 exclusions). blocked-by: P-004
+- **P-008** `dropped` Collapse parallel metadata onto the descriptor — keep **two** description fields (`description` human, `agentDescription` model); do NOT fold `guidance.when` into the human subtitle (the review's #5). blocked-by: P-006, P-007 (Optional D-006 — depends on P-006; the adapter keeps two description fields already. Build-on-demand.)
+- **P-012** `dropped` Palette arg-prompt + streaming/`askUser` hosting so complex-arg / interactive / streaming caps become palette-eligible (lifts the Phase-1 §3 exclusions). blocked-by: P-004 (Optional D-006 — palette arg-prompt / streaming-host to lift the §3 Phase-1 exclusions. Build-on-demand when a required-arg or streaming tool is actually wanted in the palette.)
 
 ## Phase 3 — One substrate (decision-gated)
 
-- **P-009** `needs-human` Decide the end-state for browser-reflexive commands: (a) keep `lib/commands` as a registered **browser-execution provider** conforming to the shared `Capability` contract, or (b) fold them into one operator-host registry. importance: high → D-001, OQ-1
-- **P-010** `todo` Execute the chosen end-state; retire the now-redundant path (the `run-command` bridge may generalize or retire — OQ-4). blocked-by: P-009
+- **P-009** `done` Decide the end-state for browser-reflexive commands: (a) keep `lib/commands` as a registered **browser-execution provider** conforming to the shared `Capability` contract, or (b) fold them into one operator-host registry. importance: high → D-001, OQ-1 (Resolved by delegated judgment D-008: keep both registries, unified at projection via the adapter — no merge, no conform-refactor. Human can override toward a merge later; nothing locks it out.)
+- **P-010** `dropped` Execute the chosen end-state; retire the now-redundant path (the `run-command` bridge may generalize or retire — OQ-4). blocked-by: P-009 (Dropped per D-008 — under keep-both-registries there is no redundant path to retire; the run-command agent→tab bridge stays OQ-4 moot.)
 
 ## Decisions
 
@@ -182,6 +182,20 @@ Decision: run-tool runs the desktop palette user at OPERATOR TIER — `gateBypas
 
 Deferred hardening (production, NOT done autonomously): gate run-tool on an authenticated session (`getSessionUser`, as `operator-dispatch.ts` does) and/or dispatch as the provisioned operator system principal with its real capability set (no bypass). Both were declined now because (a) session-gating makes the route un-curl-verifiable autonomously, and (b) the operator principal's provisioned cap set + session reliability on desktop are unverified. The testing-only app + single-user loopback desktop make the current posture acceptable; revisit before any non-loopback exposure.
 Related: P-004, P-005
+
+
+### D-008 — P-009/OQ-1 end-state resolved (by delegated judgment): keep both registries, unified at projection — no merge, no conform-refactor
+Date: 2026-05-31
+Date: 2026-05-31
+Resolved under the user's standing "make judgment calls, I trust your judgment" delegation (the user is asleep on a loop). This is the conservative, reversible choice — the human can still override toward a full merge later; nothing here locks that out.
+
+End-state = OQ-1 option (c)-ish: keep `lib/commands` (Action Registry) and `defineTool`/tooldef as INDEPENDENT definition systems, unified only at the read/projection layer via the `lib/capabilities` adapter (P-003). Rejected:
+- (b) full merge into one registry — re-couples browser concerns into the host-agnostic, now-extracted `@papercusp/tooldef` (D-001).
+- (a) literal conform-refactor (rewrite both to implement `Capability`) — pure churn with zero functional gain, since the adapter already projects both into `Capability[]` and the palette already spans both (live-verified).
+The adapter approach delivered 100% of the plan's goal (Ctrl+P surfaces the agent catalog, gated + safe) with the least structural change — so the right end-state is "stop here," not more refactoring.
+
+Consequences: P-010 dropped — there is no "redundant path to retire" under keep-both; the `run-command` agent→tab bridge stays (OQ-4 moot — it's still the canonical way an agent reaches a browser-reflexive command). Phase 2 (P-006/P-008/P-012) remains genuinely OPTIONAL polish (D-006), build-on-demand.
+Related: P-009, P-010
 
 ## Open questions
 
