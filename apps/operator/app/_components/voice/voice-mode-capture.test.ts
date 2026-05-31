@@ -207,6 +207,26 @@ describe('setVoiceMode', () => {
     expect(mod.getVoiceState().mode).toBe('off');
     expect(mod.getVoiceState().status).toBe('off');
   });
+
+  it('push-to-talk goes straight to idle — never the stuck "connecting" state', async () => {
+    const mod = await loadVoiceMode();
+    mod.setVoiceMode('push-to-talk');
+    expect(mod.getVoiceState().mode).toBe('push-to-talk');
+    // PTT has no session to connect to — it must be ready immediately so the
+    // button shows "PUSH TT", not a permanent "Connecting…".
+    expect(mod.getVoiceState().status).toBe('idle');
+    expect(mod.getVoiceState().micOwnedByFullAgent).toBe(false);
+  });
+
+  it('always-on enters the optimistic connecting state on toggle', async () => {
+    const mod = await loadVoiceMode();
+    mod.setVoiceMode('always-on');
+    // Synchronously optimistic (a watchdog + non-leader/no-engine resets
+    // guarantee it resolves; here fetch is mocked-rejecting so it would fall
+    // back asynchronously).
+    expect(mod.getVoiceState().status).toBe('connecting');
+    expect(mod.getVoiceState().micOwnedByFullAgent).toBe(true);
+  });
 });
 
 describe('shouldSkipVoicemodeWhisperOnThisRuntime', () => {

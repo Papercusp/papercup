@@ -180,6 +180,10 @@ export function setMicCaptureError(err: unknown): void {
 // rather than staring at a spinning indicator forever.
 let processingTranscriptTimer: ReturnType<typeof setTimeout> | null = null;
 let awaitingResponseTimer: ReturnType<typeof setTimeout> | null = null;
+// Safety net for the optimistic always-on 'connecting' status: if no
+// full-agent session (or fallback capture) has materialized shortly after a
+// mode change, resolve to a usable state instead of a permanent "Connecting…".
+let connectingWatchdog: ReturnType<typeof setTimeout> | null = null;
 
 /**
  * Mark "the user just released PTT — we're transcribing whatever was
@@ -555,6 +559,33 @@ function voiceForRole(roleOrComposite: string): string | null {
  * Set voice mode. 'off' fully disables; 'push-to-talk' arms STT on
  * explicit invocation; 'always-on' listens for the wake word.
  */
+function clearConnectingWatchdog(): void {
+  if (connectingWatchdog) {
+    clearTimeout(connectingWatchdog);
+    connectingWatchdog = null;
+  }
+}
+
+/**
+ * Arm a watchdog that resolves a stuck optimistic 'connecting' status. Fires
+ * only if we're still 'connecting' with no realtime session attached and no
+ * full-agent start in flight — i.e. nothing is actually going to come up, so
+ * the spinner would otherwise hang forever (the cross-window / no-engine bug).
+ */
+function armConnectingWatchdog(): void {
+  clearConnectingWatchdog();
+  if (typeof window === 'undefined') return;
+  connectingWatchdog = setTimeout(() => {
+    connectingWatchdog = null;
+    if (state.status === 'connecting' && !realtimeSession && !fullAgentStarting) {
+      setState({
+        status: state.mode === 'off' ? 'off' : 'idle',
+        micOwnedByFullAgent: false,
+      });
+    }
+  }, 4000);
+}
+
 export function setVoiceMode(mode: VoiceMode): void {
   if (mode === state.mode) return;
   if (recognition) {
@@ -571,17 +602,30 @@ export function setVoiceMode(mode: VoiceMode): void {
   if (mode === 'off') {
     cancelAllSpeech();
     stopWhisperCaptureIfRunning();
+    clearConnectingWatchdog();
     setState({ mode, status: 'off', micOwnedByFullAgent: false });
     return;
   }
-  // Claim mic ownership SYNCHRONOUSLY in the same setState that flips
-  // the mode. Without this, React renders once with mode='always-on'
-  // but micOwnedByFullAgent=false → useMicLevel opens getUserMedia → a
-  // microtask later maybeStartFullAgent flips the flag → useMicLevel
-  // tears down its stream — and EL has now also opened getUserMedia in
-  // parallel on top of the cleanup, getting a silent track. Setting
-  // both flags in one render eliminates the window entirely.
-  setState({ mode, status: 'connecting', micOwnedByFullAgent: true });
+  if (mode === 'push-to-talk') {
+    // Push-to-talk is button-driven — there is no persistent session to
+    // "connect" to, so it must NOT enter the optimistic 'connecting' state
+    // (which only makes sense for the full-agent EL/Realtime engines and
+    // otherwise sticks as a permanent "Connecting…"). Go straight to 'idle'
+    // (ready); capture happens on hold via startPushToTalk.
+    clearConnectingWatchdog();
+    setState({ mode, status: 'idle', micOwnedByFullAgent: false });
+  } else {
+    // always-on: claim mic ownership SYNCHRONOUSLY in the same setState that
+    // flips the mode. Without this, React renders once with mode='always-on'
+    // but micOwnedByFullAgent=false → useMicLevel opens getUserMedia → a
+    // microtask later maybeStartFullAgent flips the flag → useMicLevel tears
+    // down its stream — and EL has now also opened getUserMedia in parallel
+    // on top of the cleanup, getting a silent track. Setting both flags in
+    // one render eliminates the window. A watchdog guarantees this optimistic
+    // 'connecting' always resolves even if no full-agent engine materializes.
+    setState({ mode, status: 'connecting', micOwnedByFullAgent: true });
+    armConnectingWatchdog();
+  }
   // User-clicked-voice-on is also a "take voice over here" gesture.
   // Request the lead so any other tab currently running EL/STT yields.
   // No-op if we're already leader, or if BroadcastChannel is unavailable
@@ -629,10 +673,24 @@ function syncSttToLeader(): void {
       try { recognition.stop(); } catch { /* ignore */ }
       recognition = null;
     }
+    // Another tab owns voice — clear the optimistic 'connecting' so this tab
+    // doesn't sit on a permanent spinner (the original bug: a follower window
+    // toggled voice on, bailed here, and never reset the status).
+    if (state.status === 'connecting') {
+      clearConnectingWatchdog();
+      setState({ status: 'idle', micOwnedByFullAgent: false });
+    }
     return;
   }
-  // Full-agent mode (OpenAI Realtime) takes precedence over the STT
-  // pipeline — it bundles STT + LLM + TTS + intent dispatch.
+  // Push-to-talk captures on demand (button hold), so there is nothing to
+  // start here — and no full-agent session (those engines are conversational
+  // / always-listening). Just make sure no leftover realtime session lingers.
+  if (state.mode === 'push-to-talk') {
+    stopRealtimeSession();
+    return;
+  }
+  // Always-on: full-agent mode (EL Conv / OpenAI Realtime) takes precedence
+  // over the STT pipeline — it bundles STT + LLM + TTS + intent dispatch.
   void maybeStartFullAgent().then((started) => {
     if (started) return;
     void maybeStartWhisperCapture(state.mode).catch(() => {
@@ -1588,18 +1646,22 @@ async function maybeStartWhisperCapture(mode: VoiceMode): Promise<void> {
       startWakeWordListening();
       return;
     }
-    if (shouldSkipVoicemodeWhisperOnThisRuntime()) {
-      startWakeWordListening();
-      return;
-    }
     // Detect whisper endpoint.
-    const probe = await fetch('http://localhost:2022/health', { signal: AbortSignal.timeout(2000) }).catch(() => null);
+    const probe = await fetch(`${VOICEMODE_WHISPER_URL}/health`, { signal: AbortSignal.timeout(2000) }).catch(() => null);
     if (!probe?.ok) {
       startWakeWordListening();
       return;
     }
+    if (shouldSkipVoicemodeWhisperOnThisRuntime()) {
+      // Silero VAD (onnxruntime-web threaded WASM → SharedArrayBuffer) can't
+      // run on the WebKitGTK desktop webview. Use energy-gated raw capture
+      // instead so always-on actually listens here, transcribing each speech
+      // segment via the same local whisper server.
+      await startEnergyVadAlwaysOn();
+      return;
+    }
     const { startWhisperCapture } = await import('./stt-voicemode');
-    whisperCapture = await startWhisperCapture('http://localhost:2022', {
+    whisperCapture = await startWhisperCapture(VOICEMODE_WHISPER_URL, {
       onFinal: (text) => {
         setState({ lastTranscript: text });
         onUtteranceFinal(text);
@@ -1607,6 +1669,44 @@ async function maybeStartWhisperCapture(mode: VoiceMode): Promise<void> {
     });
   } catch {
     startWakeWordListening();
+  }
+}
+
+/**
+ * Always-on capture via energy-gated VAD (the WebKitGTK-safe path). Segments
+ * speech by RMS energy, then resamples → WAV-encodes → POSTs each utterance to
+ * the local whisper server, dispatching transcripts the same way the Silero
+ * path does. The handle is stored in `whisperCapture` so stopWhisperCaptureIfRunning
+ * tears it down on mode change.
+ */
+async function startEnergyVadAlwaysOn(): Promise<void> {
+  const [{ startEnergyVadCapture }, { f32ToWav }, { transcribeChunk }, { isBlankTranscript }] =
+    await Promise.all([
+      import('./energy-vad-capture'),
+      import('./f32-to-wav'),
+      import('../../../lib/voice-engines/whisper'),
+      import('./ptt-capture'),
+    ]);
+  whisperCapture = await startEnergyVadCapture({
+    onSpeechStart: () => setAudioReceiving(true),
+    onSpeechEnd: () => setAudioReceiving(false),
+    onUtterance: async (pcm16k) => {
+      // Drop sub-0.2s blips (16kHz → 3200 samples) that slipped the VAD.
+      if (pcm16k.length < 3200) return;
+      try {
+        const text = (await transcribeChunk(VOICEMODE_WHISPER_URL, f32ToWav(pcm16k, 16000))).trim();
+        if (!isBlankTranscript(text)) {
+          setState({ lastTranscript: text });
+          onUtteranceFinal(text);
+        }
+      } catch { /* network blip / whisper down — drop this utterance */ }
+    },
+  });
+  // Capture is live; clear the optimistic 'connecting' to the listening-ready
+  // state (mode label shows "Always-on"; audioReceiving drives the hearing UI).
+  if (state.status === 'connecting') {
+    clearConnectingWatchdog();
+    setState({ status: 'idle', micOwnedByFullAgent: false });
   }
 }
 
