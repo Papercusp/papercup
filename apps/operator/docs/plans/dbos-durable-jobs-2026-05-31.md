@@ -11,9 +11,9 @@ owner: avi@storewolf.com
 
 ## Now
 
-**State:** Phases 0, 1, 2 complete; **live-service boot VALIDATED** (D-020) — DBOS launches in the live Hono host, full `dbos` schema in `:5432/papercusp`; fixed the PG probe (5dc572fd) + wired into the real boot path `host-bootstrap.ts` (e65b863c, instrumentation-node is retired). Phase 3 P-014 spike done (D-019). **Now starting the Phase 3 integration** (P-015): wrap `invoke()` as an idempotent DBOS step — the spike proved a crash mid-step re-spawns the agent, so check-before-spawn on `(feature, role, attempt)` is the prerequisite before wrapping the pipeline.
+**State:** Phases 0, 1, 2 complete + live-boot validated (D-020). Phase 3: P-014 spike done (D-019); **P-015 first piece landed** — `invoke()` opt-in `idempotencyKey` + check-before-spawn so a re-run of a completed agent invoke can't double-spawn (orchestrator submodule `c4c897a`, pointer `c798261e`; 50 tests green; opt-in → all current callers unchanged). The careful remainder (in-flight-run policy, wrapping the pipeline as a durable workflow with determinism + `patched()` versioning discipline, lane-pool/reaper/claim reconciliation, live validation) is scoped in the **sub-plan `dbos-orchestrator-durability-2026-05-31`**.
 
-**Next:** Phase 3 integration, idempotency-first: implement the invoke check-before-spawn (so a re-invoke detects a prior run for `(feature, role, attempt)` instead of re-spawning), in the `libs/papercusp/packages/orchestrator/` submodule. Then wrap the pipeline as a DBOS workflow + the D-008 patched() versioning discipline + reconcile lane pool / harness-status-sweep / spawned_agents / claim (P-016/P-017).
+**Next:** Continue in the sub-plan `dbos-orchestrator-durability-2026-05-31`: P-001 (dedicated idempotent-hit test) + P-003 (`needs-human`: the in-flight-run policy — re-spawn-fresh vs reuse-partial, the deepest semantic) before wrapping the pipeline (P-004). All flag-gated by `PAPERCUSP_DBOS_ORCHESTRATOR` with the legacy main loop as the A/B fallback.
 
 ## Background
 
