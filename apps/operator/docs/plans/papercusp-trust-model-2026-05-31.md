@@ -473,3 +473,82 @@ default, authorized, or good — and the ref is author-self-reported. The trustw
 signal is **GitHub-derived (tier A)** — read merge state from GitHub. (`completion_ref` is about
 *features/code*, not plan docs; and existence-verification ≠ authorization ≠ implementation
 correctness.) Record as a decision on `papercusp-dogfood-phase2-completion-ref-*`.
+
+# Addendum C (2026-05-31) — Substrate write-model: multi-writer Autobase vs per-peer single-writer logs
+
+This addendum makes **explicit** a choice that has so far been implicit — and
+that is the *root cause* of two of this memo's biggest threat classes. Prompted
+by the DoS-hardening plan (`hyperswarm-dos-hardening-2026-05-31`), where the
+per-writer op-rate-limit raised the question: **why are we multi-writer-into-a-
+shared-store at all, given the substrate is advisory?**
+
+## C.1 The two models
+
+- **(A) Multi-writer Autobase → one shared merged view (what we run today).**
+  N writer-cores (one per device) → a deterministic `apply()` merges them into a
+  single materialized view → projected to each peer's PG. Every peer writes into
+  the *shared* structure. This is the deliberate-*minority* Hypercore pattern
+  (Keet uses it).
+  - **Buys:** a single canonical, consistent coordination view, and — crucially —
+    a deterministic **merge order**, which is the basis of distributed-claim
+    arbitration (Phase-6 D-002, "who claimed F-042 first").
+  - **Costs:** it *creates* the two threat classes this memo exists to fight —
+    (1) **forged ops** (the unsigned-write gap: any topic-joined peer can append
+    into the shared view) and (2) **multi-writer flood** (the per-writer
+    op-rate-limit, hyperswarm-dos Phase 4). Both are direct consequences of
+    letting every peer write into one shared structure.
+
+- **(B) Single-writer-per-peer logs + read-time aggregate (the *dominant*
+  Hyperswarm pattern).** Each peer appends only its **own** Hypercore; consumers
+  read-replicate the others and aggregate **locally**. No shared merged structure.
+  - **Buys:** the two threat classes above largely **dissolve** — a flooder bloats
+    only its *own* log (consumers cap/drop a noisy author at read time), and there
+    is **no shared structure to forge into** (a peer can only write "facts about
+    itself"; each consumer decides whether to believe them). This is *why* most
+    Hyperswarm apps need neither op-rate-limits nor op-signing.
+  - **Costs:** **no canonical merge order** → eventual per-peer divergence; claim
+    arbitration must be solved another way.
+
+## C.2 The advisory-state pivot
+
+This memo's central finding — **GitHub is the hard authority; peer state is
+advisory and re-derivable from GitHub** — **weakens model A's main benefit**: if
+the queue / claims / contributor-list are *coordination hints*, a
+Byzantine-consistent canonical merge is over-engineering, and eventual divergence
+between peers is tolerable. Symmetrically it **strengthens B**: per-author logs
+each consumer interprets locally is a natural fit for advisory hints anchored to
+GitHub truth.
+
+## C.3 What only A buys — and whether it's re-homeable
+
+The one capability A provides that B does not is **deterministic distributed-claim
+arbitration** (a single agreed "Bravo got it first"). Even that is re-homeable:
+- **GitHub-anchored claim** — represent "claimed" as a GitHub fact (assignee /
+  draft PR / branch), so the hard authority arbitrates it too — consistent with
+  the §18 `completion_ref` decision (the trustworthy signal is GitHub-derived).
+- **LWW advisory claim** — accept last-writer-wins hints, with the **clobber-toast
+  already built** (Phase-5b P-035) surfacing contention; no canonical merge needed.
+
+## C.4 Decision
+
+**Model A is load-bearing today** — Phases 5a/5b/6 are built on it; switching to B
+is a real migration, not free. So the pragmatic default is **keep A and pay its
+mitigation cost** (the trust layer for forged ops + the DoS op-rate-limit for
+flood), *justified by* wanting a consistent shared view + canonical claim
+arbitration.
+
+But this is now **on the record as a choice, not an assumption**, with an explicit
+re-evaluation trigger:
+
+- **If** the only load-bearing reason for A turns out to be claim arbitration,
+  **then** evaluate re-homing it (C.3) and dropping to model B — which deletes the
+  forged-op *and* multi-writer-flood threat classes **wholesale**, retiring large
+  parts of both the trust layer and the DoS op-limit rather than mitigating them.
+- **Forced sign-off:** **A (keep + harden)** vs **spike B (per-peer logs + GitHub/
+  LWW claims)**. Owner decides; default A unless a B-spike is greenlit.
+
+Net: the per-writer op-rate-limit and the per-op-authentication work are **not
+unconditional requirements — they are the price of model A.** Model B is the
+dominant pattern precisely because it avoids that price. Choosing A must be worth
+canonical-claim-arbitration + a consistent view; if it isn't, B is lighter and
+safer.
