@@ -554,6 +554,20 @@ re-evaluation trigger:
 - **Forced sign-off:** **A (keep + harden)** vs **spike B (per-peer logs + GitHub/
   LWW claims)**. Owner decides; default A unless a B-spike is greenlit.
 
+**DECIDED 2026-05-31 — model B.** Owner chose B: the smaller trust surface +
+safety win, accepting the cost of building the read-merge and anchoring ordering
+to GitHub / LWW. Consequences:
+- **(a)** The substrate migrates Autobase → per-peer single-writer logs — a
+  *separate* rewrite plan (not yet written; today's Phases 5a/5b/6 are built on A).
+- **(b)** The Hyperswarm **connection-layer** hardening (`hyperswarm-dos-hardening`
+  Phases 1-3 + 5) is model-independent and **proceeds now** (it lives at the
+  transport, below the A-vs-B data layer).
+- **(c)** `hyperswarm-dos` Phase 4 (per-writer op-limit at the shared `apply`) is
+  reshaped — under B there is no shared apply, so it becomes a **per-author
+  replication/ingest cap**, folded into the B substrate rewrite.
+- **(d)** The firewall hook (Phase 2) becomes B's natural **read-admission seam**
+  — aggregate only GitHub-verified collaborators' logs.
+
 Net: the per-writer op-rate-limit and the per-op-authentication work are **not
 unconditional requirements — they are the price of model A.** Model B is the
 dominant pattern precisely because it avoids that price. Choosing A must be worth
