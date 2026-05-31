@@ -4,11 +4,11 @@
  * CreateHarnessPicker — modal picker for adding a new harness to the workspace.
  *
  * Implements Phase 1a P-012 (papercusp-dogfood-phase1a-workspace-ui-shell-2026-05-24):
- *   P-012a  4-entry picker renders with Phase 1b placeholders
+ *   P-012a  4-entry picker renders with coming-soon placeholders
  *   P-012b  Entry 1 (New local directory) happy path
  *   P-012c  Entry 3 (Existing local repo) happy path
  *   P-012d  Per-error-code error messages
- *   P-012e  Phase 1b placeholder entries link out
+ *   P-012e  Coming-soon placeholder entry (GitHub URL)
  *
  * Entries are grouped under "Local" (new / existing local) and "Shared"
  * (GitHub URL, Harness link). GitHub URL still routes to a coming-soon
@@ -282,27 +282,19 @@ function ExistingLocalForm({ onBack, onSuccess }: { onBack: () => void; onSucces
   );
 }
 
-// ── Phase 1b placeholder ───────────────────────────────────────────────────
+// ── Coming-soon placeholder ────────────────────────────────────────────────
 
-function Phase1bStub({ title, onBack }: { title: string; onBack: () => void }) {
+function ComingSoonStub({ title, onBack }: { title: string; onBack: () => void }) {
   return (
     <div>
       <BackBtn onBack={onBack} />
       <h2 style={{ margin: '0 0 12px', fontSize: 15, fontWeight: 600 }}>{title}</h2>
       <div style={{ background: 'var(--bg-2)', border: '1px solid var(--border)', borderRadius: 8, padding: 20, textAlign: 'center' }}>
         <span style={{ fontSize: 28, display: 'block', marginBottom: 10 }}>🚧</span>
-        <p style={{ margin: '0 0 8px', fontWeight: 600, fontSize: 14 }}>Available in Phase 1b</p>
-        <p style={{ margin: '0 0 16px', color: 'var(--fg-dim)', fontSize: 13, lineHeight: 1.5 }}>
-          This entry type requires GitHub authentication and repository cloning, which ships in Phase 1b.
+        <p style={{ margin: '0 0 8px', fontWeight: 600, fontSize: 14 }}>Coming soon</p>
+        <p style={{ margin: 0, color: 'var(--fg-dim)', fontSize: 13, lineHeight: 1.5 }}>
+          This entry type requires GitHub authentication and repository cloning, which isn&rsquo;t available yet.
         </p>
-        <a
-          href="/internal/docs/agent-insights"
-          target="_blank"
-          rel="noopener noreferrer"
-          style={{ color: 'var(--accent)', fontSize: 13, textDecoration: 'underline' }}
-        >
-          View Phase 1b plan →
-        </a>
       </div>
       <div style={{ marginTop: 16, textAlign: 'right' }}>
         <button
@@ -487,7 +479,7 @@ export function CreateHarnessPicker({ open, onOpenChange, onCreated }: CreateHar
         {step === 'picker' && <PickerStep onSelect={setStep} />}
         {step === 'new-local' && <NewLocalForm onBack={goBack} onSuccess={handleSuccess} />}
         {step === 'existing-local' && <ExistingLocalForm onBack={goBack} onSuccess={handleSuccess} />}
-        {step === 'github-url-stub' && <Phase1bStub title="GitHub URL" onBack={goBack} />}
+        {step === 'github-url-stub' && <ComingSoonStub title="GitHub URL" onBack={goBack} />}
         {step === 'harness-link-stub' && (
           <EntryHarnessLinkForm
             onBack={goBack}

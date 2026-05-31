@@ -189,14 +189,14 @@ describe('P-012d — error messages', () => {
   });
 });
 
-// ── P-012e — Phase 1b stubs ───────────────────────────────────────────────
+// ── P-012e — Coming-soon stubs ─────────────────────────────────────────────
 
-describe('P-012e — Phase 1b stubs', () => {
-  it('GitHub URL card shows Phase 1b stub on click', async () => {
+describe('P-012e — Coming-soon stubs', () => {
+  it('GitHub URL card shows coming-soon stub on click', async () => {
     const user = userEvent.setup();
     renderPicker();
     await user.click(screen.getByText('GitHub URL'));
-    screen.getByText('Available in Phase 1b');
+    screen.getByText('Coming soon');
   });
 
   it('Harness link card opens the EntryHarnessLinkForm (no longer a stub)', async () => {
@@ -204,10 +204,10 @@ describe('P-012e — Phase 1b stubs', () => {
     renderPicker();
     await user.click(screen.getByText('Harness link'));
     // EntryHarnessLinkForm renders an input for the harness link.
-    expect(screen.queryByText('Available in Phase 1b')).toBeNull();
+    expect(screen.queryByText('Coming soon')).toBeNull();
   });
 
-  it('Phase 1b stub has a back button that returns to picker', async () => {
+  it('coming-soon stub has a back button that returns to picker', async () => {
     const user = userEvent.setup();
     renderPicker();
     await user.click(screen.getByText('GitHub URL'));
