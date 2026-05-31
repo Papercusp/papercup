@@ -63,6 +63,13 @@ jobs:
         working-directory: apps/operator
         run: npm run lint:tests
 
+      # @restart retirement guard: the shared libs were renamed @restart/* ->
+      # @papercusp/* (papercusp-systems-abstraction-2026-05-29). GATING — fails
+      # the build with a "use @papercusp/<name>" message if any @restart/* import
+      # or dep reappears, so a straggler never silently resolves.
+      - name: Lint no-restart imports
+        run: npm run lint:no-restart
+
       # Drizzle drift: regenerate generated.ts from the live test PG and
       # fail if it differs from HEAD. Proves `.sql` is the source of
       # truth (PRs that forget to re-run pull-schema fail here).
