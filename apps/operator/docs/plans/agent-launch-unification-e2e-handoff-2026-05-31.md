@@ -31,7 +31,51 @@ paths are the unverified surface.
 
 ---
 
-## Already verified live (2026-05-31, do NOT redo)
+## Session 2 (2026-05-31, after the user re-authed codex + said "do it") — most gates now CLOSED
+
+The user re-authed codex and cleared me to spawn processes + drive the desktop.
+With that, the bulk of the e2e backlog is now **verified or built**:
+
+- **Phase 3 launch plumbing — VERIFIED.** `bootstrap-role` happy path against a
+  real (isolated) harness wrote a signed `role=scoper` `.mcp.json` + role prompt;
+  then `claude -p` launched with exactly `roleLaunchArgs` (+`-p`) **connected to
+  the papercusp MCP** and reported `callerRole: "scoper", isSuperuser: false`,
+  188 tools. Same code path as `psu --role` minus the interactive TUI.
+- **P-013 codex worker — VERIFIED.** `codex exec --json` with the orchestrator's
+  exact flags + a per-spawn CODEX_HOME (signed role-scoped url + auth symlink)
+  **connected to the papercusp MCP**, **fired an `mcp_tool_call`** to
+  `agent_tools:list`, and **streamed a result** (`callerRole: scoper`). Clean
+  JSONL that `extractResult` parses. codex auth verified intact afterward
+  (symlink, not copy — no logout).
+- **codex interactive role sessions — BUILT (commit `39902a89`).** Lifted the
+  `codex_role_unsupported` 400; `bootstrap-role` now mints a per-session
+  CODEX_HOME (`writeRoleCodexHome`: AGENTS.md=role prompt, config.toml=signed
+  role-scoped MCP, auth symlink) and exports `CODEX_HOME` via envelopeEnv; psu
+  `roleLaunchArgs` codex branch execs `codex --dangerously-bypass-approvals-and-sandbox`.
+  31/31 unit tests green. The interactive **TUI launch itself** is the only
+  unverified sliver (it's a TUI — inherent human step); the CODEX_HOME→MCP
+  connection is proven by P-013 and the builder output is unit-tested.
+- **P-041 settings UI — VERIFIED end-to-end via the Tauri bridge.** Navigated
+  `/settings/agent`, confirmed 8 per-surface model inputs render, a
+  pre-set value loads into its input, then **typed a value + clicked Save +
+  confirmed it persisted** via the API. Full load→render→edit→save→persist
+  round-trip through the real webview.
+- **Phase 4 launch buttons — unit + endpoint verified; live UI inspection NOT
+  done.** 6 `launchAgent` dispatch tests + the launch-su endpoint test cover the
+  wiring, and the omp path is byte-identical (no regression). I did **not**
+  click-spawn a real agent on the user's desktop, and the stale leftover window I
+  was driving wedged its bridge — so the "button renders + onClick wired" sliver
+  is still unconfirmed in-webview. **Next time drive a fresh Xvfb Tauri instance,
+  not a live window** (bridge `navigate` doesn't hydrate this SPA — needs
+  `location.reload()`; repeated reloads can wedge the bridge).
+
+**Remaining after session 2:** (a) the codex interactive TUI launch (human at a
+terminal — inherent); (b) Phase 4 launch-button render/click in-webview (fresh
+Xvfb instance); (c) P-032 (see below).
+
+---
+
+## Already verified live (2026-05-31 session 1, do NOT redo)
 
 The build session's desktop was up on this exact code (host PID started
 *after* every relevant commit — confirmed by start-time vs commit-time). The

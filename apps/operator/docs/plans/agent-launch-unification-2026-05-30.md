@@ -22,7 +22,25 @@ live e2e.** Unified the agent-backend refactor handoff + psu role sessions:
 - **Phase 5** (surfacing + coupling + docs): P-040 /adv role+feature chips;
   P-041 `surfaceModels` foundation (OQ3); P-042 docs + memory note.
 
-**Partial live verification DONE (2026-05-31, desktop up on this code):**
+**Session 2 (2026-05-31, codex re-authed + spawn/UI cleared) — most gates CLOSED:**
+- **Phase 3 launch plumbing VERIFIED** — bootstrap-role happy path (real isolated
+  harness) → `claude -p` w/ roleLaunchArgs connected to the papercusp MCP,
+  `callerRole=scoper, isSuperuser=false`.
+- **P-013 codex worker VERIFIED** — `codex exec --json` + per-spawn CODEX_HOME
+  connected, fired an `mcp_tool_call`, streamed a parseable result. codex auth
+  intact after (symlink).
+- **codex interactive role sessions BUILT** (commit `39902a89`) — lifted the
+  `codex_role_unsupported` 400; `writeRoleCodexHome` mints a per-session
+  CODEX_HOME; psu codex branch. 31/31 tests. Only the codex TUI launch (inherent
+  human step) unverified.
+- **P-041 settings UI VERIFIED end-to-end** via the Tauri bridge (8 model inputs
+  render, persisted value loads, type+Save+persist round-trip).
+- **Phase 4 launch buttons** — unit (6) + endpoint tested + omp byte-identical;
+  in-webview button render/click NOT inspected (drove a stale leftover window
+  that wedged; use a fresh Xvfb instance next time, not the user's live window).
+Details in the e2e handoff brief "Session 2".
+
+**Partial live verification DONE (2026-05-31 session 1, desktop up on this code):**
 45 unit tests green (guardrail set + psu-launcher/adv-sessions); **P-041 backend
 round-trip** confirmed via `/api/agent-config` (set `surfaceModels.oracle` → GET
 → reset); **bootstrap-role route mounted + principal-gated** with all negative
