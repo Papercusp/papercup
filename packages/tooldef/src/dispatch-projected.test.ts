@@ -885,3 +885,38 @@ describe('role-requirement gate (RFC tooldef-auth Phase 2 — declarative RBAC)'
     expect(r.ok).toBe(true);
   });
 });
+
+describe('default-deny gate (RFC tooldef-auth Phase 3 — opt-in fail-closed posture)', () => {
+  it('off (default): an ungated tool is allowed (no behavior change)', async () => {
+    const tool = makeTool({ capabilities: [] }); // declares no gate
+    const r = await dispatchProjectedTool(tool, 'fix.tool', {}, MAKE_CTX(), MAKE_DEPS());
+    expect(r.ok).toBe(true);
+  });
+
+  it('on: an ungated, non-public tool is denied (ungated)', async () => {
+    const tool = makeTool({ capabilities: [] });
+    const r = await dispatchProjectedTool(tool, 'fix.tool', {}, MAKE_CTX(), MAKE_DEPS({ defaultDeny: true }));
+    expect(r.ok).toBe(false);
+    expect(r.error?.code).toBe('ungated');
+  });
+
+  it('on: an ungated tool marked public is allowed (the [AllowAnonymous] equivalent)', async () => {
+    const tool = makeTool({ capabilities: [], public: true });
+    const r = await dispatchProjectedTool(tool, 'fix.tool', {}, MAKE_CTX(), MAKE_DEPS({ defaultDeny: true }));
+    expect(r.ok).toBe(true);
+  });
+
+  it('on: a tool declaring a capability gate is allowed (not ungated)', async () => {
+    const tool = makeTool({ capabilities: ['x'] }); // no principal → capability gate skips, but a gate IS declared
+    const r = await dispatchProjectedTool(tool, 'fix.tool', {}, MAKE_CTX(), MAKE_DEPS({ defaultDeny: true }));
+    expect(r.ok).toBe(true);
+  });
+
+  it('on: a tool gated only by agent roles is allowed (declares a gate)', async () => {
+    const tool = makeTool({ capabilities: [], roles: ['worker'] });
+    const r = await dispatchProjectedTool(
+      tool, 'fix.tool', {}, MAKE_CTX({ role: 'worker' }), MAKE_DEPS({ defaultDeny: true }),
+    );
+    expect(r.ok).toBe(true);
+  });
+});

@@ -65,6 +65,7 @@ export type DispatchProjectedErrorCode =
   | 'invalid_input'
   | 'handler_error'
   | 'authorization_denied'
+  | 'ungated'
   | 'timeout';
 
 /**
@@ -162,4 +163,13 @@ export interface DispatchProjectedDeps {
    * unset = decisions are not persisted (the host opted out of the audit trail).
    */
   auditAuth?(event: AuthAuditEvent): void;
+  /**
+   * Default-deny posture (RFC tooldef-auth Phase 3). When true, the dispatcher denies any
+   * tool that declares NO gate (no capabilities/roles/requireRoles/authorize) and is not
+   * marked `public` — the fail-closed "forgot to gate ⇒ deny" baseline. Default off
+   * (opt-in) during the migration: a host flips it once every tool (incl. plugins)
+   * declares a gate or is explicitly public. defineTool requires `capability`, so
+   * first-party tools are never ungated; the targets are plugin / direct registrations.
+   */
+  defaultDeny?: boolean;
 }

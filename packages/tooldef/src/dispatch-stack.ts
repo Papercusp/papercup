@@ -22,7 +22,7 @@
 
 import type { ToolResult } from './wire';
 import type { AgentRole } from './host-types';
-import type { ProjectedTool, UnifiedToolContext } from './tool-projection';
+import { toolDeclaresGate, type ProjectedTool, type UnifiedToolContext } from './tool-projection';
 import {
   openBuffer as openReplayBuffer,
   type ReplayBufferWriter,
@@ -46,6 +46,7 @@ import {
 /* ─── Step names ─────────────────────────────────────────────────────── */
 
 export type DispatchStepName =
+  | 'default-deny'
   | 'role-allowlist'
   | 'capability-check'
   | 'role-requirement'
@@ -157,6 +158,35 @@ export interface DispatchStep {
 }
 
 /* ─── Steps ──────────────────────────────────────────────────────────── */
+
+/**
+ * Default-deny gate (RFC tooldef-auth Phase 3, decision D1). Runs first.
+ *
+ * Opt-in via `deps.defaultDeny` (off = the legacy allow-by-omission posture, no behavior
+ * change). When on, a tool that declares NO gate — no capabilities, no agent `roles`, no
+ * `requireRoles`, no `authorize` — is denied as `ungated` UNLESS it sets `public: true`
+ * (the explicit `[AllowAnonymous]` equivalent). This is the fail-closed "forgot to gate ⇒
+ * deny" baseline the §8 audit (D1) committed to. NOT bypassable: an ungated tool is a
+ * declaration gap regardless of caller — the fix is to declare a gate or mark it public.
+ * `defineTool` requires `capability`, so first-party tools are never ungated; the targets
+ * are plugin / direct registrations.
+ */
+const defaultDenyStep: DispatchStep = {
+  name: 'default-deny',
+  async run(exec) {
+    const { tool, toolName, deps } = exec;
+    if (!deps.defaultDeny || tool.public) return null;
+    if (toolDeclaresGate(tool)) return null;
+    return {
+      ok: false,
+      error: {
+        code: 'ungated' as DispatchProjectedErrorCode,
+        message: `Tool "${toolName}" declares no auth gate (capability/roles/requireRoles/authorize) and is not marked public; denied under default-deny`,
+        meta: { tool: toolName },
+      },
+    };
+  },
+};
 
 const roleAllowlistStep: DispatchStep = {
   name: 'role-allowlist',
@@ -599,6 +629,7 @@ const authorizeStep: DispatchStep = {
  *   - `invoke` is always terminal.
  */
 export const DEFAULT_DISPATCH_STACK: ReadonlyArray<DispatchStep> = Object.freeze([
+  defaultDenyStep,
   roleAllowlistStep,
   capabilityCheckStep,
   roleRequirementStep,

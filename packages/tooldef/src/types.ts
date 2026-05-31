@@ -334,6 +334,8 @@ export interface ToolDefinition<TArgs extends StandardSchemaV1 = StandardSchemaV
   authorize?: Authorizer<StandardSchemaV1.InferOutput<TArgs>, UnifiedToolContext, UnifiedToolContext['principal']>;
   /** RBAC role requirement (RFC tooldef-auth Phase 2): caller's `principal.roles` must include one of these (any-of). See `ProjectedTool.requireRoles`. */
   requireRoles?: readonly string[];
+  /** Opt out of default-deny (RFC tooldef-auth Phase 3): a tool that intentionally needs no auth gate (the `[AllowAnonymous]` equivalent). See `ProjectedTool.public`. */
+  public?: boolean;
   /** TSDoc-derived description for MCP `tools/list`. */
   description: string;
   /** Capability gate (e.g. `"tasks:read"`). One per tool. */
@@ -364,6 +366,8 @@ export interface ToolDefinitionInput<TArgs extends StandardSchemaV1 = StandardSc
   authorize?: Authorizer<StandardSchemaV1.InferOutput<TArgs>, UnifiedToolContext, UnifiedToolContext['principal']>;
   /** RBAC role requirement (RFC tooldef-auth Phase 2): caller's `principal.roles` must include one of these (any-of). See `ProjectedTool.requireRoles`. */
   requireRoles?: readonly string[];
+  /** Opt out of default-deny (RFC tooldef-auth Phase 3): a tool that intentionally needs no auth gate (the `[AllowAnonymous]` equivalent). See `ProjectedTool.public`. */
+  public?: boolean;
   /** Optional explicit description; defaults to caller's TSDoc. */
   description?: string;
   capability: string;
@@ -443,6 +447,8 @@ export interface RoleToolDefinition<
   authorize?: Authorizer<StandardSchemaV1.InferOutput<TArgs>, UnifiedToolContext, UnifiedToolContext['principal']>;
   /** RBAC role requirement (RFC tooldef-auth Phase 2): caller's `principal.roles` must include one of these (any-of). See `ProjectedTool.requireRoles`. */
   requireRoles?: readonly string[];
+  /** Opt out of default-deny (RFC tooldef-auth Phase 3): a tool that intentionally needs no auth gate (the `[AllowAnonymous]` equivalent). See `ProjectedTool.public`. */
+  public?: boolean;
   description: string;
   /** Capability string for tier classification + descriptive listings. Not enforced. */
   capability: string;
@@ -521,6 +527,8 @@ export interface RoleToolDefinitionInput<
   authorize?: Authorizer<StandardSchemaV1.InferOutput<TArgs>, UnifiedToolContext, UnifiedToolContext['principal']>;
   /** RBAC role requirement (RFC tooldef-auth Phase 2): caller's `principal.roles` must include one of these (any-of). See `ProjectedTool.requireRoles`. */
   requireRoles?: readonly string[];
+  /** Opt out of default-deny (RFC tooldef-auth Phase 3): a tool that intentionally needs no auth gate (the `[AllowAnonymous]` equivalent). See `ProjectedTool.public`. */
+  public?: boolean;
   description?: string;
   capability: string;
   /** Visibility profile gate — see RoleToolDefinition.profile. */

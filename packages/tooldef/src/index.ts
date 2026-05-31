@@ -111,6 +111,8 @@ export {
 export {
   registerProjectedTool,
   unregisterProjectedToolsForPlugin,
+  toolDeclaresGate,
+  listUngatedProjectedTools,
   lookupByMcpName,
   lookupByHttpPath,
   listAllProjectedTools,

@@ -619,6 +619,15 @@ export interface ProjectedTool {
    * `requireStaff`-style checks.
    */
   requireRoles?: readonly string[];
+  /**
+   * Opt out of default-deny (RFC tooldef-auth Phase 3). When the host enables
+   * `deps.defaultDeny`, a tool that declares NO gate (no capabilities, roles,
+   * requireRoles, or authorize) is denied as `ungated` UNLESS it sets `public: true` —
+   * the explicit "this tool intentionally needs no auth" marker (the `[AllowAnonymous]`
+   * equivalent). Default-deny is NOT bypassable: an ungated tool is a declaration gap
+   * regardless of caller, so the fix is to declare a gate or mark it public.
+   */
+  public?: boolean;
   /** Per-call wall-clock timeout, default 60s. */
   timeoutSec?: number;
   /**
@@ -920,6 +929,33 @@ export function lookupByHttpPath(path: string): ProjectedTool | undefined {
 /** Snapshot of all registered projected tools. */
 export function listAllProjectedTools(): readonly ProjectedTool[] {
   return Array.from(REGISTRY.values());
+}
+
+/**
+ * True if a tool declares ANY auth gate — a capability, an agent-role allowlist, an RBAC
+ * role requirement, or an `authorize` hook. The single predicate behind both the
+ * default-deny dispatch gate and `listUngatedProjectedTools` (RFC tooldef-auth Phase 3),
+ * so the enforcement and the migration aid can't drift.
+ */
+export function toolDeclaresGate(
+  tool: Pick<ProjectedTool, 'capabilities' | 'roles' | 'requireRoles' | 'authorize'>,
+): boolean {
+  return (
+    tool.capabilities.length > 0 ||
+    (tool.roles?.length ?? 0) > 0 ||
+    (tool.requireRoles?.length ?? 0) > 0 ||
+    !!tool.authorize
+  );
+}
+
+/**
+ * Tools that would be denied once `deps.defaultDeny` is flipped on: they declare no gate
+ * and are not marked `public`. The migration aid for RFC tooldef-auth Phase 3 (§8 D1) —
+ * run it (with the full tool registry loaded) BEFORE enabling default-deny, triage each
+ * (declare a gate or mark `public`), then flip. Empty result = safe to flip.
+ */
+export function listUngatedProjectedTools(): readonly ProjectedTool[] {
+  return Array.from(REGISTRY.values()).filter((t) => !t.public && !toolDeclaresGate(t));
 }
 
 /**
