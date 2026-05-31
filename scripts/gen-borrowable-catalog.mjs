@@ -40,7 +40,7 @@ const BORROWABLE = [
   ['packages/ipc-endpoint-server',        'IPC, transport & sync'],
   ['packages/desktop-ipc',                'IPC, transport & sync'],
   ['libs/sse',                            'IPC, transport & sync'],
-  ['libs/sync',                           'IPC, transport & sync', 'Schema-agnostic Zero + SSE sync transports with reconnect/backpressure handling.'],
+  ['libs/sync',                           'IPC, transport & sync'],
   ['libs/chat-protocol',                  'IPC, transport & sync'],
   ['libs/ui-primitives',                  'UI components'],
   ['libs/git-graph',                      'UI components'],
