@@ -1,9 +1,9 @@
 ---
 title: Test coverage — the rest: non-desktop-critical surfaces (public marketplace, shared UI libs, web, docs sites)
 slug: test-coverage-rest-non-critical-2026-05-30
-status: draft
+status: ready
 created: 2026-05-30
-updated: 2026-05-30
+updated: 2026-05-31
 owner: aviynw3@gmail.com
 companion-to: [production-readiness-test-coverage-2026-05-30, admin-testing-tab-restructure-2026-05-24]
 ---
@@ -61,22 +61,22 @@ conditional on the user confirming it is still the live public site.
 
 ## Phase A — Public marketplace / publish path (live external surface, signing, 0 tests)
 
-- **P-001** `todo` `apps/papercusp-publish/src/jwt-middleware.test.ts` —
+- **P-001** `done` `apps/papercusp-publish/src/jwt-middleware.test.ts` — (publish jwt-middleware JTI replay + tenant gating — commit 6d61e753)
   **integration** (Hono `app.request()` + FakeStore D1, mirror cupboard's harness):
   missing/invalid/expired token, unknown/suspended tenant, **JTI replay rejection**
   (`consumeJti`), audit-on-fail. The signing primitives are covered upstream in
   `@papercusp/publish-auth`; the gap is worker glue.
 
-- **P-002** `todo` `apps/papercusp-publish/src/routes/publish-start.test.ts` —
+- **P-002** `done` `apps/papercusp-publish/src/routes/publish-start.test.ts` — (publish-start integrity sha256-match + caps — commit 1de256a7)
   **integration**: JCS re-canonicalize → sha256 mismatch vs JWT `claims.sha256`
   rejects; file-count/byte caps; idempotent re-POST returns the existing
   `deploymentId` and only the missing files.
 
-- **P-003** `todo` `apps/papercusp-publish/src/routes/publish-finalize.test.ts` —
+- **P-003** `done` `apps/papercusp-publish/src/routes/publish-finalize.test.ts` — (publish-finalize cross-tenant 403, incomplete 409, CF-fail 502 — commit 4c... this turn)
   **integration**: rejects when any file is not yet uploaded; happy path calls
   `createDeployment` (CF Pages stubbed) + R2 `writeManifest`.
 
-- **P-004** `todo` `apps/papercusp-publish/src/cf-pages.test.ts` — **unit**:
+- **P-004** `done` `apps/papercusp-publish/src/cf-pages.test.ts` — **unit**: (cf-pages cfStageToStatus + local-stub + getProject contract — same commit)
   `ensureProject` create-vs-cached and `cfStageToStatus` mapping.
 
 - **P-005** `todo` `apps/operator-public/src/__tests__/auth.test.ts` — extend the
