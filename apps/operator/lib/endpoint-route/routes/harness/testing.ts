@@ -8,9 +8,16 @@
  *   GET  /api/harness/:slug/testing/file-status?domainId=…&phase=…
  *   GET  /api/harness/:slug/testing/health-strip?domainId=…&phase=…
  *   POST /api/harness/:slug/testing/run         (body: { runner })
+ *   GET  /api/harness/:slug/testing/domains            — the harness's domains + tier labels
  *
- * No `domains` list route: the SPA's nav comes from the registry prop
- * (harnessTestingRegistry), same as /admin/testing's hardcoded TABS.
+ * The harness's test DOMAINS are harness-owned data, declared in the harness's
+ * own contract surface at `<worktree>/.harness/testing-domains.json`
+ * (`{ domains: TestDomain[], tierLabels?: Record<string,string> }`). A harness
+ * that declares none falls back to the generic `harnessTestingRegistry`
+ * (Built-in generalized + Acceptance). This keeps the operator from hard-wiring
+ * a per-harness registry: the papercup dogfood harness ships its own
+ * `.harness/testing-domains.json` (generated from the operator's adminRegistry),
+ * the same place a harness's test data naturally lives.
  *
  * Built-in (generalized) domains are glob-walked against the worktree
  * (`expandGlobs(phasePath(...), globs)`, reused from the admin path).
@@ -29,7 +36,7 @@ import { resolvePhasedProject, safeRead } from '@/lib/harness-core';
 import { type ProjectEntry } from '@/lib/harness-registry';
 import { type Phase, phasePhaseLabel, phasePath } from '@/lib/harness-phases';
 import { expandGlobs } from '@/lib/testing-domain-glob';
-import { harnessTestingRegistry, ACCEPTANCE_DOMAIN_ID } from '@/lib/harness-testing-registry';
+import { harnessTestingRegistry, HARNESS_TESTING_TIER_LABELS, ACCEPTANCE_DOMAIN_ID } from '@/lib/harness-testing-registry';
 import { type TestDomain, type ChipStatus, type FileStatusEntry } from '@/lib/testing-domains';
 import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
@@ -57,8 +64,32 @@ function readHarnessTests(project: ProjectEntry, phase: Phase): HarnessTestRow[]
   }
 }
 
-function findDomain(id: string): TestDomain | undefined {
-  return harnessTestingRegistry.find((d) => d.id === id);
+/**
+ * Load the harness's declared test domains from its own contract surface
+ * (`<worktree>/.harness/testing-domains.json`), falling back to the generic
+ * generalized+Acceptance registry. Harness-owned data, not operator-hardwired.
+ */
+function loadHarnessDomains(root: string): { domains: TestDomain[]; tierLabels: Record<string, string> } {
+  const raw = safeRead(join(root, '.harness', 'testing-domains.json'));
+  if (raw) {
+    try {
+      const parsed = JSON.parse(raw) as { domains?: unknown; tierLabels?: unknown };
+      if (Array.isArray(parsed.domains) && parsed.domains.length > 0) {
+        return {
+          domains: parsed.domains as TestDomain[],
+          tierLabels:
+            (parsed.tierLabels as Record<string, string> | undefined) ?? HARNESS_TESTING_TIER_LABELS,
+        };
+      }
+    } catch {
+      /* malformed → fall back */
+    }
+  }
+  return { domains: harnessTestingRegistry, tierLabels: HARNESS_TESTING_TIER_LABELS };
+}
+
+function findDomain(id: string, root: string): TestDomain | undefined {
+  return loadHarnessDomains(root).domains.find((d) => d.id === id);
 }
 
 function chipFromStatus(s: HarnessTestRow['status']): ChipStatus {
@@ -83,12 +114,13 @@ const domainDetail = defineTool({
   async handler(req, ctx) {
     const url = new URL(req.url);
     const domainId = url.searchParams.get('domainId') ?? '';
-    const domain = findDomain(domainId);
-    if (!domain) return Response.json({ error: 'unknown_domain', domainId }, { status: 404 });
 
     const resolved = await resolveCtx(ctx.params.slug as string, url.searchParams.get('phase'));
     if (resolved instanceof Response) return resolved;
     const { project, phase, root } = resolved;
+
+    const domain = findDomain(domainId, root);
+    if (!domain) return Response.json({ error: 'unknown_domain', domainId }, { status: 404 });
 
     let sections;
     if (domainId === ACCEPTANCE_DOMAIN_ID) {
@@ -124,6 +156,18 @@ const domainDetail = defineTool({
       sections,
       totalFiles,
     });
+  },
+});
+
+const listDomains = defineTool({
+  method: 'GET',
+  path: '/harness/:slug/testing/domains',
+  auth: 'public',
+  async handler(req, ctx) {
+    const resolved = await resolveCtx(ctx.params.slug as string, new URL(req.url).searchParams.get('phase'));
+    if (resolved instanceof Response) return resolved;
+    const { domains, tierLabels } = loadHarnessDomains(resolved.root);
+    return Response.json({ domains, tierLabels });
   },
 });
 
@@ -336,4 +380,4 @@ const planItemsTestStatus = defineTool({
   },
 });
 
-export default [domainDetail, fileStatus, healthStrip, run, listAssertions, patchAssertion, planItemsTestStatus];
+export default [domainDetail, listDomains, fileStatus, healthStrip, run, listAssertions, patchAssertion, planItemsTestStatus];
