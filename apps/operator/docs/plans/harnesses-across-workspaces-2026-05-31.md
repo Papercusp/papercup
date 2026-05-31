@@ -35,6 +35,49 @@ run data shared by slug.
 
 ---
 
+## Build status — autonomous run 2026-05-31 (what's DONE vs GATED)
+
+**DONE, safe, tested, committed (8 commits):**
+- Phase 1 · migration **091** — slug uniqueness → composite `(workspace_id, slug)`
+  on `token_index` + `projects` (`libs/papercusp a1a0345`, parent `eb10d1fee`).
+  Fixes the operator-principal-in-2nd-workspace bug; unblocks multi-membership.
+  *Applies on next embedded-pg boot* — needs a desktop reboot to go live.
+- Phase 3 · membership — `lib/harness-membership.ts` (add/remove/move, 12/12),
+  HTTP `GET /harness/:slug/workspaces` + `POST /harness/:slug/membership`,
+  and the `harness:membership` MCP tool (operator can move harnesses
+  conversationally). The user's primary goal — usable now (post-reboot).
+- Phase 1b · config machinery — `lib/harness-prompt-overrides.ts` (PG store,
+  live-verified) + `lib/harness-prompt-resolve.ts` (3-tier resolver w/ on-disk
+  fallback + D-6 seed/reset, 11/11). Additive — changes no live behavior yet.
+
+**VERIFICATION-GATED remainder (NOT done — each needs the user / live verify;
+deliberately not attempted autonomously to avoid risking the running system):**
+1. **Apply migration 091 live** — reboot the desktop (boot migration-runner
+   applies it as `postgres_app`), then the operator principal can be provisioned
+   in any workspace. *Next step: reboot + re-run a `harness:membership` move.*
+2. **Orchestrator prompt-build cutover** — make harness pipeline agents read the
+   per-(workspace,harness,role) override from the PG store via the resolver
+   (with the on-disk fallback = no regression). Gated because: it touches the
+   `@papercusp/orchestrator` submodule + needs the spawn-path investigated
+   (resolve in apps/operator and pass into `buildPrompt`, vs orchestrator-side
+   PG read) + can only be verified by spawning a real harness agent. *Next step:
+   trace where `buildPrompt`/`promptOverrides` is read on the live spawn path.*
+3. **PromptsTab write cutover** — point `/api/harness/:slug/prompts` writes at the
+   store; couple with #2 (write+read must move together or overrides stop
+   reaching agents). Add reset endpoints for the D-6 buttons.
+4. **Phase 2 · `(workspace,slug)` addressing** — ~30 `activeWorkspaceId()` sites;
+   behavior change across harness routes; needs live verification.
+5. **Phase 2b · desktop PG consolidation (Rust)** — `workspaces.rs`/`main.rs`;
+   can't build/verify the Tauri shell autonomously.
+6. **Phase 4 · UX** — link-in-place labeling, members affordance, move/copy
+   actions, the D-6 reset buttons; browser verification needed.
+
+`project_id` (D-2): on reflection the **canonical path is the stable identity**
+(`workspacesForHarness(slug)` already answers "which workspaces"); a separate
+`project_id` column was deemed unnecessary unless slug-collision UX later needs it.
+
+---
+
 # Harnesses across workspaces
 
 ## 1. The goal (user's framing)
