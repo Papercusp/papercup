@@ -10,9 +10,9 @@ updated: 2026-05-31
 
 ## Now
 
-**State:** Phases 0-4 done. psu is the only launcher; wrappers retired.
+**State:** Phases 0-5 essentially complete. psu is the only launcher (fresh + resume raw-CLI); wrappers retired from installer + boot + code; codex soft-coord (hooks.json ready). Resume live-verified (claude). Only open: P-031 (codex hard locks, blocked upstream #20204) + P-023 (psu --profile, minor).
 
-**Next:** Phase 5: P-050 surgical cleanup, then P-052 docs.
+**Next:** Optional: P-023 (psu --profile=engineer|power). P-031 waits on upstream codex hook fix.
 
 ## Background
 
@@ -89,9 +89,9 @@ role launches + `writeRoleCodexHome` work). Key code:
 
 ## Phase 5 — Cleanup, tests, docs
 
-- **P-050** `todo` Delete now-dead wrapper helpers (`omp-su-wrapper.ts`, the codex-su-home installer bits, and `ensure-omp-su` IF only the wrapper used it — keep boot-used pieces); knip-check. blocked-by: P-040 (CAUTION: NOT a wholesale delete. ensure-omp-su.ts boot: instrumentation-node + host-bootstrap AND omp-integration.ts live route ALSO set up ~/.omp/agent/mcp.json papercusp-su psu's raw omp depends on it + coord + Hindsight. Strip ONLY the omp-su wrapper-install bits + delete omp-su-wrapper.ts; KEEP the MCP/coord/hindsight setup. Boot still recreates the harmless unused omp-su until then.)
-- **P-051** `todo` Unit tests: `buildLaunchSpec` su variant (playbook prompt + superuser MCP); psu su-flow launch args per agent; resume args; update/retire wrapper-specific tests. blocked-by: P-020
-- **P-052** `todo` Docs + memory: rewrite `agent-spawning/terminal-wrappers.mdx` (psu is the only launcher; su is the operator role at superuser tier; per-launch playbook + profile); update install docs; memory note that the `*-su` wrappers are retired and there's one `psu`/`buildLaunchSpec` path. blocked-by: P-040
+- **P-050** `done` Delete now-dead wrapper helpers (`omp-su-wrapper.ts`, the codex-su-home installer bits, and `ensure-omp-su` IF only the wrapper used it — keep boot-used pieces); knip-check. blocked-by: P-040 (CAUTION: NOT a wholesale delete. ensure-omp-su.ts boot: instrumentation-node + host-bootstrap AND omp-integration.ts live route ALSO set up ~/.omp/agent/mcp.json papercusp-su psu's raw omp depends on it + coord + Hindsight. Strip ONLY the omp-su wrapper-install bits + delete omp-su-wrapper.ts; KEEP the MCP/coord/hindsight setup. Boot still recreates the harmless unused omp-su until then.) (Surgical aca28ceb1: deleted omp-su-wrapper.ts; removed wrapper-write from ensure-omp-su.ts + omp-integration.ts; KEPT their omp MCP/coord/hindsight setup psu's raw omp needs it + uninstall's stale-wrapper removal. Tests updated. 0 new tsc errors. Settings UI still renders cosmetic copy refresh deferred.)
+- **P-051** `done` Unit tests: `buildLaunchSpec` su variant (playbook prompt + superuser MCP); psu su-flow launch args per agent; resume args; update/retire wrapper-specific tests. blocked-by: P-020 (Done incrementally: buildLaunchSpec su+role tests, renderSuPlaybook, suLaunchArgs per agent, resumeArgsFor raw-CLI, writeSuCodexHome, bootstrap-su; wrapper-specific tests su-agents, ensure-omp-su, omp-integration updated for retirement. ~115 launcher/install tests green.)
+- **P-052** `done` Docs + memory: rewrite `agent-spawning/terminal-wrappers.mdx` (psu is the only launcher; su is the operator role at superuser tier; per-launch playbook + profile); update install docs; memory note that the `*-su` wrappers are retired and there's one `psu`/`buildLaunchSpec` path. blocked-by: P-040 (terminal-wrappers.mdx rewritten to psu-only 97c1043e2: buildLaunchSpec per-launch model, per-agent MCP/lock table, codex soft-coord + #20204, raw-CLI resume, wrapper-free install. Memory updated. P-023 psu --profile still open; minor.)
 
 
 ## Decisions
