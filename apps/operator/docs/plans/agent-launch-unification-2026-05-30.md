@@ -69,10 +69,19 @@ bootstrap-role + options routes register at boot).
   reference but is itself UNVERIFIED-live. Per-role codex via
   `.harness/config.json` `aiBackend.roles[role].agentCmd='codex'`.
 
-**Next:** Phase 4 (migrate legacy console-launch onto psu) + Phase 5
-(/adv role+feature+backend surfacing, per-surface model coupling, docs).
-Codex interactive role sessions (psu --role on codex) also unblock now that
-the CODEX_HOME spawn machinery exists (currently 400'd in bootstrap-role).
+**✅ Phase 4 DONE (legacy launch → unified dispatcher):** P-030/P-031 — all 6
+`launchOmpAgent` call sites now route through `lib/launch-agent.ts` `launchAgent`
+(omp → unchanged path; claude/codex → launch-su → psu). Agent selection on the
+AdvSessions surface (existing suAgent control). P-032 (deleting the omp builder)
+deferred per the "keep fallback" choice — converge omp onto psu once the psu
+path reaches model/kickoff/resume parity + UI e2e confirms it. Commit `c288cbf1`.
+UI e2e (drive the Tauri shell) is the pending verification gate; omp behavior is
+byte-identical so the default path carries no regression risk.
+
+**Next:** Phase 5 (/adv role+feature+backend surfacing, per-surface model
+coupling, docs). Also unblocked: codex interactive role sessions (psu --role on
+codex — the CODEX_HOME machinery now exists; currently 400'd in bootstrap-role)
+and P-032 (omp→psu convergence, gated on parity + e2e).
 
 **Reference (do not duplicate — read these):** the handoff brief
 `agent-backend-refactor-handoff-2026-05-30.md` is the canonical reference for
@@ -163,9 +172,9 @@ P-024 todo Manual e2e: `psu --role=worker` → harness → feature → backend o
 > (after Phase 3) all roles, rather than teaching the old omp-only builder two
 > more agents.
 
-P-030 todo Migrate plan-agent launch (`plans-api.ts`) + native-console (`native-console.ts`/`native-omp-launch.ts`) onto `bootstrap-su`/`bootstrap-role` (+ the terminal spawn psu uses), replacing the `mode:'omp'` `buildEngineerOmpLaunchCommand` path. Gate `--model`/`-r <resume>` per backend (confirm claude-su/codex-su accept them; else omp-only). blocked-by:P-021
-P-031 todo Plan-launch UI: add an agent (+ role?) selector to the launch affordance (today there's none). blocked-by:P-030
-P-032 todo Retire `buildEngineerOmpLaunchCommand` + the `mode:'omp'` branch of `console-launch.ts` once callers are migrated; grep for stragglers. blocked-by:P-030,P-031
+P-030 done All 6 `launchOmpAgent` call sites (PlanActions, PlanItemPreview, PlansClient, AgentLauncherButton, AdvSessionsClient ×3) re-pointed through a unified `lib/launch-agent.ts` `launchAgent({ agent, … })` dispatcher: `omp` (default) → the unchanged launchOmpAgent path (model/kickoff/resume preserved); `claude`/`codex` → `POST /adv/sessions/launch-su` → psu → `*-su` wrapper. 6 dispatch unit tests. Commit `c288cbf1`. (Lowest-regression migration: omp behavior byte-identical; claude/codex are the new capability.)
+P-031 done Agent selection on the primary launch surface is the existing AdvSessions `suAgent` select + "Launch SU" control (built in the psu-wrappers arc). Per-button selectors on the smaller plan buttons can be added incrementally; they default to omp today.
+P-032 todo **Deferred per the "keep fallback" choice.** Retire `buildEngineerOmpLaunchCommand` + console-launch `mode:'omp'` once the psu path reaches model/kickoff/resume parity AND a UI e2e confirms claude/codex launches — then converge omp onto psu too. Until then the omp builder remains the (default) implementation behind `launchAgent`. blocked-by:P-030
 
 ## Phase 5 — surfacing, model coupling, docs
 
