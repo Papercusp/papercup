@@ -86,23 +86,40 @@ After these: the full chain **sweep decision → promoteWave → /invoke → res
 invoke-once → PG connected → promote prompt built (`role=promote total=5510`) → omp spawns `rc=0` → omp loads
 papercusp tools** is verified live. Every papercusp-side layer works.
 
-**Remaining (one gap, orthogonal to the wave mechanism + papercusp — agent-runtime layer):**
-- **The spawned agent doesn't complete the task** (`rc=0`, empty output, no features) — for two different
-  backend reasons, neither in the wave mechanism:
-  - **omp:** its default model `openai-codex/gpt-5.5:high` (`~/.omp/agent/config.yml`) can't connect here
-    (`Codex websocket prewarm failed … chatgpt.com/backend-api/codex`) → no LLM → no-op.
-  - **claude-code** (switched to via `.env.local` `AGENT_CMD="claude -p"` + `AGENT_BACKEND="claude-code"`, on
-    request): claude-code itself **works** — verified in isolation with the *exact* spawn flags
-    (`--output-format stream-json --verbose --include-partial-messages --mcp-config <signed> --strict-mcp-config
-    --permission-mode bypassPermissions`), the `/api/mcp` config (loads `mcp__papercusp` tools), the harness
-    cwd, OAuth auth, AND the exact service env — all complete `"is_error":false`. But the orchestrator's
-    `invoke()` spawn (`invoke.ts:1151`, `spawn(claude, …, {stdio:[pipe,pipe,pipe]})`) returns in ~3.5s having
-    captured **zero** stdout (no `<runId>.jsonl`), while an orphaned `claude` child runs ~20s — i.e. the
-    claude-code path forks/detaches and `invoke()` never sees its output. This is a subtle bug in the
-    **orchestrator's claude-code spawn mechanics** (rarely exercised — omp is the default), not the wave
-    wiring. Resolve by instrumenting `invoke()` to log the exact argv + reproduce the spawn 1:1 (the pieces all
-    pass individually). Once an agent backend completes, re-run `POST /api/harness/<slug>/invoke?role=promote`
-    with `extra:[PLAN_SLUG,WAVE,NEEDS_ITEMS]` for the live P-015 dogfood (`restart` is registered in `default`).
+Switched to the **claude-code** backend per request (`.env.local` `AGENT_CMD="claude -p"` +
+`AGENT_BACKEND="claude-code"`). Two more agent-layer fixes landed after that:
+- **Route timeout** (`spawn.ts`, committed): `/harness/:slug/invoke` used the route-stack 30s default
+  (`route-stack.ts:155`) and **aborted the agent mid-run** — an LLM invocation needs far longer. Raised
+  `timeoutSec` to 310 (the handler already caps the child at ≤300s).
+- **Tool-role grant** (`promote.ts` + `plans/get.ts`, committed): the promote agent reported `plans:promote is
+  not available` — `plans:promote`'s `agentRoles` was `[...COORD_ROLES]` and `plans:get`'s was a local
+  `ALL_ROLES`, **neither included `promote`**, so `/api/mcp?role=promote` exposed every group EXCEPT plans.
+  Added `'promote'` to both. After this the agent **does call `mcp__papercusp__plans_promote`** (verified —
+  `toolCalls: ["mcp__papercusp__plans_promote"]`).
+
+**Final blocker — an auth-model design gap (NOT the wave mechanism; needs a human decision):**
+- `plans:promote` (+ 13 other coord tools: `coord:send`, `coord:ack`, …) call `resolveAgentIdentity(ctx)`,
+  which requires a stable **`isSuperuser` / `isPowerUser` / `principal`** identity (and, by design
+  `identity.ts:35`, must NEVER use `spawnId`/`runId`). The MCP request-context builder
+  (`_mcp-handler.ts`) sets those ONLY on the explicit **superuser** (`?superuser=1` + loopback + valid superuser
+  bearer, branch 1) and **power-user** (`?power_user=1` + HMAC token, branch 1b) paths. A **plain signed-spawn**
+  URL (`?harness=&role=&run=&spawn=&sig=`, branch 2/3 at `:328-344`) builds a ctx with role/run/spawn/uiClientId
+  but **no `isSuperuser`/`principal`**. So the invoke-route promote agent (plain `claude -p` → plain signed
+  spawn) gets **no identity** → `plans:promote` returns `resolveAgentIdentity … no power-user/superuser/
+  principal identity` → **0 features**. Normal harness agents avoid this because they run under the
+  `claude-su`/`omp` **su-wrappers**, which connect with `?superuser=1` + the superuser bearer (branch 1).
+  **Fix (user's call — security-sensitive):** make the invoke-route-spawned agents take the su-path like normal
+  harness agents — either (a) point `AGENT_CMD` at the `claude-su` wrapper (not plain `claude -p`) so its MCP
+  connection carries `?superuser=1` + bearer; or (b) have `spawn-mcp`/the invoke route mint a `?superuser=1`
+  (or `?power_user=1`) URL for operator-initiated, loopback spawns; or (c) give `resolveAgentIdentity` a branch
+  that accepts a verified-signature spawn (attributed to the stable harness slug). Once wired, the live P-015
+  dogfood completes (`restart` is registered in `default`). The whole rest of the chain — including the agent
+  **calling `mcp__papercusp__plans_promote`** — is verified live.
+
+Everything up to that point is fixed + verified live: **sweep decision → /invoke (route timeout ok) →
+resolveProject → buildInvokeOnce (PG + bun) → invoke-once → PG connected → promote prompt → claude-code spawns
+→ loads papercusp tools incl. plans:promote → CALLS plans:promote**. (Also hit a transient Anthropic `429`
+during testing — operational, from rapid repeated runs, not a code issue.)
 
 **Follow-up (small):** `yaml` is imported by the parser but is an undeclared (stable, lockfile-present,
 already-bundled) transitive dep — declare it as a direct operator dep when the lockfile is next reconciled
