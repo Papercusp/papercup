@@ -21,8 +21,10 @@ policy-mode (`plans:promote { slug, wave }`) reads the `## Promote` policy and b
 (static + generative `for_each` over `generate_items`). Parser + schema + promote are now end-to-end for a
 manual per-wave promote.
 
-**Next:** Phase D — the deterministic wave-advance: pure drain/blocked helpers (`lib/harness/waves.ts`) +
-wiring the autoloop/director to promote the next wave when the current one drains.
+Phase D started: **P-008 done** — pure `lib/harness/waves.ts` (drain/blocked/counts/next-wave, 15 tests).
+
+**Next:** P-009 — wire the drain-advance into the autoloop/director: per started plan with a `## Promote`
+policy, if `current_wave` drained (+ not blocked) → promote the next wave (P-006) + bump the cursor.
 
 **Follow-up (small):** `yaml` is imported by the parser but is an undeclared (stable, lockfile-present,
 already-bundled) transitive dep — declare it as a direct operator dep when the lockfile is next reconciled
@@ -134,9 +136,10 @@ See the consuming plan's §9a for the full dogfood narrative: `Restart/docs/plan
 
 ## Phase D — deterministic wave-advance
 
-- **P-008** `todo` Pure helpers in `lib/harness/waves.ts`: `isWaveDrained(features, wave)` (no non-terminal),
-  `currentWave(plan)` / `nextWave(policy, cursor)`, `isWaveBlocked(features, wave)` (`failing>0 &&
-  inProgress===0`). 100% unit tests.
+- **P-008** `done` Pure helpers in `lib/harness/waves.ts`: `isWaveDrained` (every in-wave feature terminal),
+  `isWaveBlocked` (`failing>0 && inProgress===0`, or attempts≥threshold on a non-terminal), `waveCounts`
+  (per-wave progress), `nextWaveToPromote(waves, cursor)` (null cursor→first, else the next; unknown→null).
+  Status vocab matches harness-readers. **15 unit tests**, tsc clean.
 - **P-009** `todo` Wire the drain-advance into the autoloop/director: each tick, for each `started` plan with a
   `## Promote` policy, if `current_wave` is drained and a next wave exists → promote it (P-006) + bump
   `current_wave`. Idempotent (cursor guard). Document where it sits relative to the director invoke.
