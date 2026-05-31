@@ -11,9 +11,9 @@ owner: avi@storewolf.com
 
 ## Now
 
-**State:** **Phase 3 core built + verified** (D-009). The agent pipeline runs as a DBOS durable workflow (`orchestrator-workflow.ts`) that resumes mid-pipeline without re-running completed roles (proven end-to-end); the idempotency-key path is complete end-to-end (`invoke()` check-before-spawn + `invoke-once` `IDEMPOTENCY_KEY`); flag-gated `PAPERCUSP_DBOS_ORCHESTRATOR` with the legacy main loop as the default + A/B fallback. Done: P-001, P-002 (moot), P-003, P-004, P-005, P-007 (+ P-006 version-pin). All committed (submodule + operator); live orchestrator untouched.
+**State:** **Durable-pipeline MECHANISM complete + wired + verified-in-isolation** (D-010). Built this session: the durable workflow (resumes mid-pipeline), the real invoke runner (spawns `invoke-once` with the idempotency key — headless copy of the proven `/invoke` route), idempotency end-to-end, flag-gated `PAPERCUSP_DBOS_ORCHESTRATOR` with the legacy main loop as default + fallback. P-001/P-003/P-004/P-005/P-007/P-009 done; P-006 version-pin. All committed (operator + `libs/papercusp` submodule); live orchestrator untouched, flag default-off.
 
-**Next:** Live-wire + validate **together** (needs a dev harness + REAL agents, so not done autonomously): wire the real invoke runner (spawn `invoke-once` with `IDEMPOTENCY_KEY`) + route eligible features to `startFeaturePipeline`, then run a real feature's pipeline under `PAPERCUSP_DBOS_ORCHESTRATOR=1`, confirming crash/resume + no double-spawn/double-commit (P-012/P-013). Decide **P-009** (lane-pool redesign) before parallel features; then Phase C reconciliation (P-008/P-010/P-011).
+**Next:** Live-integration (the remainder, needs the live path): design the **feature-ownership/routing** so a feature is worked by EITHER the main loop OR a durable pipeline (workflow ID as claim token — avoid double-dispatch, P-016/P-017); then **live-validate** one feature under `PAPERCUSP_DBOS_ORCHESTRATOR=1` in a dev harness — a fake `AGENT_CMD` validates the wiring cost-free, then a real agent. Then reconcile `harness_lanes`/`spawned_agents`/reaper/claim (P-008/P-010/P-011).
 
 ## Background
 
@@ -107,6 +107,24 @@ Autonomous build complete for the **verifiable** scope:
 
 I (autonomous) stopped here deliberately: the rest requires **real agent runs** (LLM cost + irreversible git side effects — not run unprompted) and the **P-009 design call**. Everything built is flag-gated default-off; the live orchestrator is untouched.
 Related: P-004, P-005, P-006, P-007
+
+
+### D-010 — Durable-pipeline MECHANISM complete + wired; live-integration (routing/ownership + validation) is the remainder
+Date: 2026-05-31
+The full durable-pipeline **mechanism** is built, wired, and verified-in-isolation:
+- **Workflow** (`orchestrator-workflow.ts`, P-004, 317c0cb2) — verified resume mid-pipeline (crash mid-worker → SUCCESS, deterministic dispatch).
+- **Real runner** (`orchestrator-runner.ts`, 03289ce6) — headless copy of the proven `/harness/:slug/invoke` route: `resolveProject(slug)` → `buildInvokeOnce(role, FEATURE_ID, IDEMPOTENCY_KEY)` → spawn → strip log lines. tsc-clean, regex-verified.
+- **Idempotency end-to-end** — `invoke()` check-before-spawn (P-001) + `invoke-once` `IDEMPOTENCY_KEY` (de50c8e0).
+- **Flag-gated** `PAPERCUSP_DBOS_ORCHESTRATOR`; bootstrap registers the workflow + wires the runner; legacy main loop is the default + fallback.
+- **P-009 decided** — sequential-only; parallel `NEXT_WORKER N=k` → legacy (the workflow breaks on `parsed.n != null`), so no lane-pool redesign now.
+
+**Remaining = live-integration (needs the live path against a real harness; not buildable-blind safely):**
+- **Routing / feature-ownership (P-016/P-017)** — the deep one: a feature must be worked by EITHER the legacy main loop OR a durable pipeline, never both. A naive "call `startFeaturePipeline`" hook would **double-dispatch**. So the trigger needs the ownership design: the workflow ID as the claim/ownership token, gating the legacy loop off a feature the durable pipeline owns (and vice-versa). This is design + live work, entangled with the distributed claim.
+- **Reconciliation (P-008/P-010/P-011)** — `harness_lanes` / `spawned_agents` / the `harness-status-sweep` reaper / the claim, once the live path runs.
+- **Live validation (P-012/P-013)** — run a real feature's pipeline under the flag in a dev harness: a **fake agent** (`AGENT_CMD` → a stub emitting structured decisions) validates the full wiring cost-free; a **real agent** validates true behavior. Confirm crash/resume + no double-spawn/double-commit.
+
+The mechanism build is complete. The remainder is the ownership/routing **design** + **live validation** — which I'm not doing blind (a wrong routing hook double-runs agents on the live product) or with unprompted real-agent runs. Everything built is flag-gated default-off; the live orchestrator is untouched.
+Related: P-004, P-009
 
 ## Phase A — invoke() idempotency hardening (finish P-015)
 
