@@ -2,7 +2,6 @@ import { describe, expect, it, vi } from 'vitest';
 
 vi.mock('./operator-dismissed-cache', () => ({
   isOnCooldown: async () => false,
-  refreshDismissedFromPg: async () => {},
 }));
 
 vi.mock('./operator-plugin-tier', () => ({

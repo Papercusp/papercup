@@ -42,7 +42,6 @@ import { record503, recordSuccess } from '@/lib/operator-rate-limit';
 import { writeSnapshot } from '@/lib/operator-idle-snapshot';
 import { fingerprint, readTriggerState } from '@/lib/operator-trigger-state';
 import { resolvePluginAwareTier } from '@/lib/operator-plugin-tier';
-import { refreshDismissedFromPg } from '@/lib/operator-dismissed-cache';
 import { gatherPluginSuggestions } from '@/lib/operator-plugin-suggestions';
 
 const ArgsSchema = z.object({
@@ -150,7 +149,6 @@ export default defineTool({
       });
       const preferences: OperatorPreferences = await loadPreferences();
       await resolvePluginAwareTier('__warm__').catch(() => {});
-      await refreshDismissedFromPg().catch(() => {});
 
       const useResume = isScannerResumeEnabled();
       const scannerSessionId = useResume ? await getOrCreateScannerSessionId() : null;

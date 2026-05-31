@@ -18,15 +18,17 @@ interface DocCandidate {
   title: string;
 }
 
+// The operator's internal docs moved to Starlight (fumadocs→Starlight
+// migration); the old apps/operator/content/{docs,internal-docs} roots were
+// removed, so this is the only docs corpus now.
 const DOCS_ROOTS = [
-  'apps/operator/content/internal-docs/spec',
-  'apps/operator/content/docs',
+  'apps/operator-docs/src/content/docs',
 ];
 
 function repoRoot(): string {
   let dir = process.cwd();
   for (let i = 0; i < 6; i++) {
-    if (existsSync(join(dir, 'apps', 'operator', 'content', 'docs'))) return dir;
+    if (existsSync(join(dir, 'apps', 'operator-docs', 'src', 'content', 'docs'))) return dir;
     const parent = join(dir, '..');
     if (parent === dir) break;
     dir = parent;
@@ -64,7 +66,7 @@ function walk(absDir: string, relDir: string, out: DocCandidate[]): void {
     } catch { continue; }
     const title = extractTitle(body) ?? basename(e.name, e.name.endsWith('.mdx') ? '.mdx' : '.md');
     out.push({
-      slug: rel.replace(/\.mdx?$/, '').replace(/^apps\/operator\/content\/docs\//, ''),
+      slug: rel.replace(/\.mdx?$/, '').replace(/^apps\/operator-docs\/src\/content\/docs\//, ''),
       path: abs,
       body,
       title,

@@ -22,13 +22,31 @@
 import { randomBytes } from 'node:crypto';
 import postgres from 'postgres';
 import { createInterface } from 'node:readline';
+import { readFileSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 
 const args = new Set(process.argv.slice(2));
 const yes = args.has('--yes') || args.has('-y');
 
-const dsn = process.env.DATABASE_URL
-  ?? process.env.PAPERCUSP_PG_DSN
-  ?? 'postgresql://harness_admin:harness_admin_pwd@localhost:5432/papercusp';
+// Resolve the admin DSN the same way getHarnessAdminUrl does (this is a plain
+// .mjs, so it can't import the TS resolver): env → ~/.papercusp/embedded-pg.json
+// `.url` → native fallback. Native PG `papercusp` was renamed `papercusp_legacy`,
+// so the bare :5432 default only works on a non-desktop dev box.
+function resolveDsn() {
+  for (const name of ['HARNESS_ADMIN_DATABASE_URL', 'DATABASE_URL', 'PAPERCUSP_PG_DSN', 'PAPERCUSP_PG_URL']) {
+    if (process.env[name]) return process.env[name];
+  }
+  try {
+    const url = JSON.parse(readFileSync(join(homedir(), '.papercusp', 'embedded-pg.json'), 'utf8'))?.url;
+    if (url) return url;
+  } catch {
+    // discovery file absent (desktop not running) — fall through
+  }
+  return 'postgresql://harness_admin:harness_admin_pwd@localhost:5432/papercusp';
+}
+
+const dsn = resolveDsn();
 
 const sql = postgres(dsn);
 

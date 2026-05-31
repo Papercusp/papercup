@@ -10,9 +10,7 @@
  * PG is the source of truth, the file is gone. Calls become async.
  *
  * Multi-machine sync was the reason PG existed at all; flipping primary
- * to PG means a 2nd device sees dismissals immediately rather than only
- * after `refreshDismissedFromPg` (which is now a no-op shim kept for
- * source-compat with the operator-scan route's existing call site).
+ * to PG means a 2nd device sees dismissals immediately.
  */
 
 import { withWorkspace } from '@papercusp/db-org';
@@ -66,14 +64,4 @@ export async function listDismissed(): Promise<DismissedEntry[]> {
     id: r.card_id,
     dismissedAt: new Date(r.dismissed_at).toISOString(),
   }));
-}
-
-/**
- * No-op shim. Was previously the "pull PG-backed dismissed rows into the
- * local file cache" hook called by operator-scan; now PG is primary and
- * there's nothing to refresh. Kept for source-compat with the existing
- * call site in operator-scan/route.ts.
- */
-export async function refreshDismissedFromPg(): Promise<void> {
-  /* no-op: PG is now primary */
 }

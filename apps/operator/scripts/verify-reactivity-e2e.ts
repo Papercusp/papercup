@@ -22,11 +22,15 @@
  */
 import { readFileSync } from 'node:fs';
 import postgres from 'postgres';
+import { getHarnessAdminUrl } from '../lib/embedded-pg-discovery';
 
 const MIGRATION_PATH =
   '/home/marsh-office/papercupai-workspace/papercup/libs/papercusp/libs/db/sql/078-emit-change-notify.sql';
 
-const PG_URL = 'postgresql://harness_admin:harness_admin_pwd@localhost:5432/papercusp';
+// Resolve via embedded-pg discovery (env → ~/.papercusp/embedded-pg.json →
+// native fallback). Native PG `papercusp` was renamed `papercusp_legacy`, so
+// a hardcoded :5432 DSN no longer works against the desktop's embedded-pg.
+const PG_URL = getHarnessAdminUrl();
 
 function tableName(): string {
   return `reactivity_e2e_${Date.now()}_${Math.floor(Math.random() * 1e6)}`;
