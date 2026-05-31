@@ -39,6 +39,11 @@ vi.mock('./user-actions', () => ({
 // find the harness's run.sh in the temp dir.
 vi.mock('./harness-paths', () => ({
   harnessPackageDir: () => '/tmp/nonexistent-harness-dir',
+  // buildInvokeOnce (harness-invoke-once.ts, added by the run.sh→TS port
+  // c6ad0d47) calls these; fake paths keep the spawned `node <tsx> <bin>`
+  // exiting quickly (module-not-found), matching the test's design.
+  tsxBin: () => '/tmp/nonexistent-tsx',
+  invokeOnceBin: () => '/tmp/nonexistent-invoke-once.ts',
 }));
 
 // Mock the role-registry so we can inject budgetCents per-role for the
