@@ -181,7 +181,7 @@ describe('handleHttpToolRequest', () => {
   });
 
   it('returns 403 for role_not_allowed', async () => {
-    registerProjectedTool(makeTool({ roles: ['architect'] }));
+    registerProjectedTool(makeTool({ agentRoles: ['architect'] }));
     const res = await handleHttpToolRequest(
       MAKE_REQ({ headers: { 'x-papercusp-role': 'worker' } }),
       MAKE_EXTRAS(),

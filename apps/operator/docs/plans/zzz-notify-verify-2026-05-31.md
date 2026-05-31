@@ -32,6 +32,8 @@ single id, status token, free text, optional blocked-by.)
 - **P-004** `needs-human` Fourth throwaway item — fire with SSE confirmed open post-reload. importance: urgent (verification probe 4 — SSE confirmed open)
 - **P-005** `todo` Fifth throwaway item — replica-handler end-to-end proof. importance: urgent (replica proof) (reset to re-fire as P-006 equivalent)
 - **P-006** `needs-human` Sixth throwaway item — clean reload, no probes, durable-toast-history check. importance: urgent (clean test)
+- **P-007** `needs-human` Seventh — fire after notifier has had 40s+ to connect post-reload. importance: urgent (durable probe armed)
+
 
 
 
