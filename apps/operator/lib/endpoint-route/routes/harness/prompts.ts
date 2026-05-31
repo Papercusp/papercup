@@ -1,19 +1,21 @@
 /**
- * Per-harness prompt overrides (`.harness/prompts/<role>.md`):
+ * Per-harness prompt overrides — WORKSPACE-OWNED (PG), D-7 / decision (c).
  *
- *   GET    /api/harness/:slug/prompts         — role list + which have overrides
- *   GET    /api/harness/:slug/prompts/:role   — override + global prompt content
- *   PUT    /api/harness/:slug/prompts/:role   — write override + register in config.json
- *   DELETE /api/harness/:slug/prompts/:role   — remove override + un-register
+ *   GET    /api/harness/:slug/prompts            — role list + which have a workspace override
+ *   GET    /api/harness/:slug/prompts/:role      — effective override + base + committed default
+ *   PUT    /api/harness/:slug/prompts/:role      — set the workspace override (PG)
+ *   DELETE /api/harness/:slug/prompts/:role      — clear the override = reset that role to default
+ *   POST   /api/harness/:slug/prompts/reset-all  — clear all overrides = reset every role
  *
- * The override is registered in `.harness/config.json` under
- * `promptOverrides[role]` so run.sh's invoke() picks it up.
- *
- * Relocated from `_hono/harness.ts` (endpoint-hono-elimination-2026-05-21
- * A4 batch 17).
+ * The live per-(workspace,harness,role) override lives in the PG store
+ * (harness_prompt_overrides), scoped to the ACTIVE workspace. The committed
+ * `.harness/prompts/<role>.md` (if a harness ships one) is the immutable DEFAULT
+ * — the app never writes it, so the harness repo's git tree stays clean and a
+ * "reset" simply clears the PG override (the orchestrator's PG→file fallback then
+ * yields the committed default, or the base role prompt when none is committed).
+ * Standalone/CLI harness runs keep using the committed file directly. See
+ * orchestrator resolvePromptOverrideWithStore for the read side.
  */
-import { existsSync, readdirSync, readFileSync } from 'node:fs';
-import { mkdir, writeFile, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import { resolvePhasedProject, harnessDir, safeRead } from '@/lib/harness-core';
 import { phasePhaseLabel } from '@/lib/harness-phases';
@@ -21,14 +23,22 @@ import { harnessPath } from '@/lib/harness-paths';
 import { getKnownRoles } from '@/lib/known-roles';
 import type { ProjectEntry } from '@/lib/harness-registry';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
-import { setPromptOverride, deletePromptOverride } from '@/lib/harness-prompt-overrides';
+import {
+  getPromptOverride,
+  setPromptOverride,
+  deletePromptOverride,
+  listPromptOverrides,
+  clearAllPromptOverrides,
+} from '@/lib/harness-prompt-overrides';
 import { defineTool } from '@papercusp/agent-mcp';
 
 function phaseFromReq(req: Request) {
   return phasePhaseLabel(new URL(req.url).searchParams.get('phase') ?? undefined);
 }
 
-const promptsDir = (p: ProjectEntry) => join(harnessDir(p), 'prompts');
+/** Committed repo default for a role (`.harness/prompts/<role>.md`), or null. */
+const committedDefault = (p: ProjectEntry, role: string): string | null =>
+  safeRead(join(harnessDir(p), 'prompts', `${role}.md`));
 
 function safeRole(role: string): string | null {
   if (!getKnownRoles().includes(role)) return null;
@@ -42,17 +52,13 @@ const getPrompts = defineTool({
   async handler(req, ctx) {
     const project = await resolvePhasedProject(ctx.params.slug as string, phaseFromReq(req));
     if (!project) return Response.json({ error: 'unknown project' }, { status: 404 });
-    const dir = promptsDir(project);
     let overrides: string[] = [];
     try {
-      if (existsSync(dir)) {
-        overrides = readdirSync(dir)
-          .filter((f) => f.endsWith('.md'))
-          .map((f) => f.replace(/\.md$/, ''))
-          .filter((r) => getKnownRoles().includes(r))
-          .sort();
-      }
-    } catch {}
+      overrides = (await listPromptOverrides(activeWorkspaceId(), project.slug))
+        .map((o) => o.role)
+        .filter((r) => getKnownRoles().includes(r))
+        .sort();
+    } catch { /* store unavailable → report none */ }
     return Response.json({ roles: getKnownRoles(), overrides });
   },
 });
@@ -66,13 +72,18 @@ const getPromptByRole = defineTool({
     if (!project) return Response.json({ error: 'unknown project' }, { status: 404 });
     const role = safeRole(ctx.params.role as string);
     if (!role) return Response.json({ error: 'unknown role' }, { status: 400 });
-    const overridePath = join(promptsDir(project), `${role}.md`);
+
+    let stored: string | null = null;
+    try { stored = await getPromptOverride(activeWorkspaceId(), project.slug, role); } catch {}
+    const def = committedDefault(project, role); // immutable repo default (or null)
     const globalPath = harnessPath('prompts', `${role}.md`);
     return Response.json({
       role,
-      content: safeRead(overridePath) ?? '',
-      overrideExists: existsSync(overridePath),
-      globalContent: safeRead(globalPath) ?? '',
+      // effective value the editor shows: workspace override → committed default → ''
+      content: stored ?? def ?? '',
+      overrideExists: stored !== null, // a workspace override is set (→ show "reset")
+      defaultContent: def ?? '', // what a reset restores (committed repo default)
+      globalContent: safeRead(globalPath) ?? '', // base role prompt
     });
   },
 });
@@ -89,30 +100,9 @@ const putPrompt = defineTool({
     const body = await req.json().catch(() => ({} as any));
     if (typeof body.content !== 'string') return Response.json({ error: 'content required' }, { status: 400 });
 
-    const dir = promptsDir(project);
-    if (!existsSync(dir)) await mkdir(dir, { recursive: true });
-    const overridePath = join(dir, `${role}.md`);
-    await writeFile(overridePath, body.content, 'utf8');
-
-    // Register the override in .harness/config.json so run.sh's invoke()
-    // picks it up via promptOverrides[role] = "prompts/<role>.md".
-    const configPath = join(harnessDir(project), 'config.json');
-    let cfg: any = {};
-    try { cfg = JSON.parse(readFileSync(configPath, 'utf8')); } catch {}
-    if (!cfg.promptOverrides) cfg.promptOverrides = {};
-    cfg.promptOverrides[role] = `prompts/${role}.md`;
-    await writeFile(configPath, JSON.stringify(cfg, null, 2), 'utf8');
-
-    // Dual-write to the workspace-owned PG store (D-7 transition): the file +
-    // config.json remain the orchestrator's current read path (no regression),
-    // and the store is populated for the read-side cutover. Best-effort — a
-    // store failure must not fail the file-based write.
-    try {
-      await setPromptOverride(activeWorkspaceId(), project.slug, role, body.content);
-    } catch (e) {
-      console.warn('[prompts] PG override dual-write failed (file write succeeded):', e);
-    }
-
+    // PG-only (decision c): the workspace owns the live override; the harness
+    // folder is never modified, so the repo git tree stays clean.
+    await setPromptOverride(activeWorkspaceId(), project.slug, role, body.content);
     return Response.json({ ok: true, role });
   },
 });
@@ -126,25 +116,23 @@ const deletePrompt = defineTool({
     if (!project) return Response.json({ error: 'unknown project' }, { status: 404 });
     const role = safeRole(ctx.params.role as string);
     if (!role) return Response.json({ error: 'unknown role' }, { status: 400 });
-    try { await unlink(join(promptsDir(project), `${role}.md`)); } catch {}
-
-    // Un-register from config.json.
-    const configPath = join(harnessDir(project), 'config.json');
-    let cfg: any = {};
-    try { cfg = JSON.parse(readFileSync(configPath, 'utf8')); } catch {}
-    if (cfg.promptOverrides && cfg.promptOverrides[role]) {
-      delete cfg.promptOverrides[role];
-      if (Object.keys(cfg.promptOverrides).length === 0) delete cfg.promptOverrides;
-      await writeFile(configPath, JSON.stringify(cfg, null, 2), 'utf8');
-    }
-    // Mirror the removal into the workspace-owned PG store (D-7). Best-effort.
-    try {
-      await deletePromptOverride(activeWorkspaceId(), project.slug, role);
-    } catch (e) {
-      console.warn('[prompts] PG override dual-delete failed (file delete succeeded):', e);
-    }
-    return Response.json({ ok: true });
+    // Clearing the workspace override IS "reset to default": the orchestrator's
+    // PG→file fallback then yields the committed default (or the base prompt).
+    const existed = await deletePromptOverride(activeWorkspaceId(), project.slug, role);
+    return Response.json({ ok: true, reset: existed });
   },
 });
 
-export default [getPrompts, getPromptByRole, putPrompt, deletePrompt];
+const resetAllPrompts = defineTool({
+  method: 'POST',
+  path: '/harness/:slug/prompts/reset-all',
+  auth: 'public',
+  async handler(req, ctx) {
+    const project = await resolvePhasedProject(ctx.params.slug as string, phaseFromReq(req));
+    if (!project) return Response.json({ error: 'unknown project' }, { status: 404 });
+    const cleared = await clearAllPromptOverrides(activeWorkspaceId(), project.slug);
+    return Response.json({ ok: true, cleared });
+  },
+});
+
+export default [getPrompts, getPromptByRole, putPrompt, deletePrompt, resetAllPrompts];

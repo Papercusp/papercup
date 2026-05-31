@@ -84,6 +84,22 @@ export async function deletePromptOverride(
   return rows.length > 0;
 }
 
+/** Remove ALL overrides for a harness in a workspace (D-6 reset-all = clear →
+    the orchestrator falls back to the committed repo default). Returns the count. */
+export async function clearAllPromptOverrides(
+  workspaceId: string,
+  harnessSlug: string,
+): Promise<number> {
+  await ensureHarnessPromptOverridesTable();
+  const { sql } = getOrgPg();
+  const rows = await sql`
+    DELETE FROM harness_shared.harness_prompt_overrides
+     WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug}
+     RETURNING role
+  `;
+  return rows.length;
+}
+
 /** All overrides for a harness in a workspace, by role. */
 export async function listPromptOverrides(
   workspaceId: string,
