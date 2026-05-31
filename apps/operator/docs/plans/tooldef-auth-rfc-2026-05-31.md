@@ -189,6 +189,80 @@ export interface Principal<TKind extends string = PrincipalKind> {
 - **D-E** Reconcile principal RBAC `roles` ↔ agent `tool.roles` — keep-distinct-and-rename (recommended) vs unify.
 - **D-F** `GateBypass` ↔ PDP composition — add `gateBypass.policy`; decide whether `authorize` also honors `role`/`capability` bypass.
 
+## 8. Audit — our design vs the field (divergences + verdicts)
+
+Decision-by-decision against MCP / gRPC / tRPC / GraphQL / NestJS / OPA·Cedar·OpenFGA·
+Cerbos / AuthZEN / capability-security / break-glass best practice (2026-05-31 survey).
+
+**Aligned with the field:**
+
+| Our choice | Field standard | Verdict |
+|---|---|---|
+| Framework = PEP, ships no engine | AuthZEN/OPA/Cedar/OpenFGA externalize; framework-as-PEP is standard | ✅ aligned |
+| Two-tier: declarative coarse gate + pluggable fine-grained PDP | tRPC protected-procedures / NestJS `@Roles` / GraphQL directives (coarse) + business-logic/PDP (fine) | ✅ aligned |
+| `AuthzQuery`/`AuthDecision` + `obligations` | AuthZEN 1.0 subject/action/resource; XACML/AuthZEN obligations | ✅ aligned (forward-compat) |
+| Audit every allow + deny | OPA decision logs; break-glass "log everything immutably" | ✅ aligned (and **mandatory** for D2) |
+| capabilities↔scopes + separate RBAC roles | OAuth scopes + RBAC | ✅ aligned |
+| Generic `Principal<TKind=PrincipalKind>` | generic identity context (gRPC/tRPC) | ✅ aligned (keeps exhaustiveness) |
+| `workspaceId` REQUIRED (no global principals) | multi-tenant isolation best practice | ✅ aligned — deliberately *stricter* (good) |
+| confused-deputy: inbound=framework / outbound=host | MCP RFC 8707 inbound + OAuth token-exchange outbound | ✅ aligned |
+
+**Divergences + verdicts:**
+
+- **D1 — default-deny deferred (Phase 3).** Field: default-deny/fail-closed is the
+  baseline ("forget to add authz ⇒ deny"). We currently *don't* deny a `capability`-only
+  tool that sets no `auth`. *Reason:* ~200 existing capability-only tools. **Verdict:
+  good but conditional** — the field confirms migrating-to-default-deny is "much more
+  involved than building it right" and needs telemetry + per-tool work. Legitimate ONLY
+  as a *committed* migration (audit every tool → `auth`/`'public'`; telemetry to surface
+  unguarded tools), targeting the ASP.NET "require-auth-globally + explicit
+  `[AllowAnonymous]`" shape (= our `'public'`). **Not an indefinite punt** → Phase 3 gets
+  a concrete default-deny migration, not just "defer."
+- **D2 — `GateBypass` is a framework-level PDP bypass (D-F).** Field: break-glass /
+  privileged-bypass must be **policy-governed + MANDATORILY audited** — *"not an
+  uncontrolled framework override"* (immutable logging of every privileged op). *Reason
+  for the divergence:* `GateBypass` is papercup's pre-existing policy-agnostic privilege
+  primitive (it already bypasses role/capability/quota); routing superuser through every
+  host's PDP would push superuser-knowledge into every policy. **Verdict: acceptable
+  ONLY if audited + explicit + opt-in.** My D-F choice (default-off, per-call) gives
+  explicit+opt-in; **the audit adds the missing requirement — every `gateBypass.policy`
+  skip MUST emit an `AuthAuditEvent` (the bypass is logged, never silent), or it becomes
+  the "uncontrolled override" the standard forbids.** Note: the *purer* path stays open —
+  a host preferring "admin access is a policy" simply doesn't set `gateBypass.policy` and
+  returns allow for superuser in its PDP. We offer the audited bypass as a convenience;
+  we don't force it.
+- **D3 — ship an `ownerOnly` in-proc helper.** Field: most engines ship no policy
+  (Casbin *is* the engine). **Verdict: fine** — opt-in, not an engine, and ownership is
+  the single most common rule (a reasonable floor).
+- **D4 — AuthZEN shape adopted, engine wiring deferred.** **Verdict: fine** — shaping ≠
+  wiring; cheap forward-compat to avoid reshaping later.
+- **D5 — two roles axes (agent `tool.roles` vs principal RBAC `roles`).** Field: usually
+  one roles concept. *Reason:* genuinely different layers (orchestration allowlist vs
+  authz RBAC), cf. K8s RBAC vs admission control. **Verdict: defensible; mitigate via the
+  D-E rename.**
+
+**Gap the audit surfaces (under-specified, not wrong):**
+
+- **G1 — how `AuthzQuery.resource` gets its data (the "authz needs data" problem).** Oso:
+  "you often need data not on the object"; the two patterns are *fetch* (per-request
+  lookup) and *data-filtering* (return a filter for list endpoints). The RFC doesn't say
+  who populates `resource.attributes` (e.g. `ownerId`). **This is where our in-proc
+  `authorize` hook BEATS an external PDP** (the GraphQL/Oso "authorize close to the data"
+  lesson): the hook has `input` + `ctx`, so it loads/derives the resource itself, and
+  `obligations` carries the data-filter pattern for lists. **Action (Phase 1b/docs):**
+  the hook loads the resource (or the host pre-loads into `ctx`, shared with the handler
+  to avoid a double-load); for list endpoints, return `obligations` (a filter) rather
+  than per-row checks.
+- **G2 — decision caching/batching** for an external PDP: already a Phase-3 prereq. OK.
+- **G3 — role hierarchy:** our roles are flat any-of; RBAC often supports hierarchy.
+  Hosts model hierarchy in role-assignment or their PDP. Minor; noted.
+
+**Bottom line:** the design is well-aligned with the field on every major axis. The two
+real divergences are *justified but conditional* — default-deny deferral demands a
+committed migration (D1), and the `GateBypass` PDP-bypass demands **mandatory auditing of
+the bypass** (D2, which changes Phase 1b). The one genuine gap (G1) is where our in-proc
+hook is *stronger* than the external-PDP norm; we just document the contract.
+
 ## Confused-deputy note (corrected scope)
 Rev 1 listed RFC 8707 confused-deputy prevention as a "framework invariant" — overstated.
 tooldef holds a *pre-resolved* principal and makes no downstream calls, so **outbound** token
