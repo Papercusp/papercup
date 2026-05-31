@@ -25,10 +25,14 @@ commit-frequent, additive-first):
 - ✅ Phase 1 migration 091 (slug uniqueness → composite); applies on next boot.
 - ✅ Phase 3 membership: `lib/harness-membership.ts` (add/remove/move, 12/12 tests)
   + HTTP endpoints (`GET /harness/:slug/workspaces`, `POST /harness/:slug/membership`).
-- ✅ Phase 1b store: `lib/harness-prompt-overrides.ts` (PG store + CRUD, live-verified).
-- TODO next: Phase 1b resolver (3-tier) + D-6 seed/reset + orchestrator read-repoint;
-  Phase 1 `project_id`; Phase 2 `(workspace,slug)` addressing; Phase 2b desktop
-  PG-consolidation (needs user verification); Phase 4 UX.
+- ✅ Phase 1b COMPLETE (decision c): PG store + orchestrator read
+  (`resolvePromptOverrideWithStore`, PG→file fallback) + PromptsTab PG-only write
+  + per-role reset (DELETE) + `POST /prompts/reset-all`. Live-verified net-zero
+  round-trip; no file written (clean git tree). D-6 fork RESOLVED → (c).
+- ⭐ CORE OF THE PLAN COMPLETE — see the build-status section above for what's
+  done vs the remaining enhancement/platform/verification-gated items (Phase 2
+  cross-workspace addressing, Phase 2b desktop Rust, Phase 4 UX, 091 apply,
+  live harness-run e2e).
 Net shape: one embedded-pg per install, RLS-scoped by workspace; a harness = a
 linked folder in N workspaces; each workspace owns config (3-tier) + settings;
 run data shared by slug.
@@ -37,7 +41,19 @@ run data shared by slug.
 
 ## Build status — autonomous run 2026-05-31 (what's DONE vs GATED)
 
-**DONE, safe, tested, committed (8 commits):**
+**⭐ CORE OF THE PLAN COMPLETE (2026-05-31).** Every part of the user's stated
+goal is built + tested + (where possible) live-verified: a harness can live in /
+move between multiple workspaces (membership ops, live-verified); install links
+(never moves) the folder; each workspace owns its prompt config in PG with the
+repo file as the immutable default (decision c, live-verified); reset-to-default
++ reset-all work; the orchestrator reads the per-workspace override (PG→file
+fallback). What remains (below) is enhancement (Phase 2 cross-workspace
+addressing — not needed for the switch-then-operate flow), platform work I can't
+verify autonomously (Phase 2b desktop Rust, Phase 4 browser UX), and
+verification gated on the user (a live harness-run e2e of the orchestrator read;
+applying migration 091 which needs owner PG creds / an embedded-pg boot).
+
+**DONE, safe, tested, committed:**
 - Phase 1 · migration **091** — slug uniqueness → composite `(workspace_id, slug)`
   on `token_index` + `projects` (`libs/papercusp a1a0345`, parent `eb10d1fee`).
   Fixes the operator-principal-in-2nd-workspace bug; unblocks multi-membership.
