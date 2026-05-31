@@ -13,6 +13,8 @@ import {
   loadProjectCardFromGithub,
   mapContributorsToCommitCounts,
   loadGithubContributorCommits,
+  decodeGithubReadme,
+  loadRepoReadme,
   _clearGithubFactsCacheForTests,
   type GithubRepoResponse,
   type GithubReleaseResponse,
@@ -261,5 +263,83 @@ describe('loadGithubContributorCommits', () => {
     await loadGithubContributorCommits({ ...base, now: () => 1000 });
     await loadGithubContributorCommits({ ...base, now: () => 1000 + 60_000 });
     expect(listContributors).toHaveBeenCalledTimes(1);
+  });
+});
+
+function fakeReadmeOctokit(content: string | null, encoding = 'base64') {
+  const getReadme = vi.fn(async () => {
+    if (content === null) throw new Error('404'); // repo with no README
+    return { data: { content, encoding } };
+  });
+  return { octokit: { rest: { repos: { getReadme } } } as any, getReadme };
+}
+
+describe('decodeGithubReadme', () => {
+  it('decodes base64 content to utf8 markdown', () => {
+    const b64 = Buffer.from('# Hello\n\nworld', 'utf8').toString('base64');
+    expect(decodeGithubReadme({ content: b64, encoding: 'base64' })).toBe('# Hello\n\nworld');
+  });
+  it('returns null for empty / missing / whitespace-only content', () => {
+    expect(decodeGithubReadme(null)).toBeNull();
+    expect(decodeGithubReadme({ content: '' })).toBeNull();
+    expect(decodeGithubReadme({})).toBeNull();
+    const blank = Buffer.from('   \n', 'utf8').toString('base64');
+    expect(decodeGithubReadme({ content: blank, encoding: 'base64' })).toBeNull();
+  });
+});
+
+describe('loadRepoReadme', () => {
+  it('returns decoded README via injected octokit', async () => {
+    _clearGithubFactsCacheForTests();
+    const b64 = Buffer.from('# Papercup', 'utf8').toString('base64');
+    const { octokit } = fakeReadmeOctokit(b64);
+    const md = await loadRepoReadme({
+      workspaceId: 'ws',
+      harnessSlug: 'papercup',
+      octokit,
+      resolveRepoPath: async () => '/r',
+      ownerName: async () => ({ owner: 'O', name: 'R' }),
+      now: () => 1000,
+    });
+    expect(md).toBe('# Papercup');
+  });
+
+  it('returns undefined when the repo has no README (getReadme 404s)', async () => {
+    _clearGithubFactsCacheForTests();
+    const { octokit } = fakeReadmeOctokit(null);
+    const md = await loadRepoReadme({
+      workspaceId: 'ws',
+      harnessSlug: 'x',
+      octokit,
+      resolveRepoPath: async () => '/r',
+      ownerName: async () => ({ owner: 'O', name: 'R' }),
+      now: () => 1000,
+    });
+    expect(md).toBeUndefined();
+  });
+
+  it('returns undefined with no token, and caches per repo', async () => {
+    _clearGithubFactsCacheForTests();
+    expect(
+      await loadRepoReadme({
+        workspaceId: 'ws',
+        harnessSlug: 'x',
+        octokit: null,
+        resolveRepoPath: async () => '/r',
+        ownerName: async () => ({ owner: 'O', name: 'R' }),
+      }),
+    ).toBeUndefined();
+    const b64 = Buffer.from('readme body', 'utf8').toString('base64');
+    const { octokit, getReadme } = fakeReadmeOctokit(b64);
+    const base = {
+      workspaceId: 'ws',
+      harnessSlug: 'x',
+      octokit,
+      resolveRepoPath: async () => '/r',
+      ownerName: async () => ({ owner: 'O', name: 'R' }),
+    };
+    await loadRepoReadme({ ...base, now: () => 1000 });
+    await loadRepoReadme({ ...base, now: () => 1000 + 60_000 });
+    expect(getReadme).toHaveBeenCalledTimes(1);
   });
 });

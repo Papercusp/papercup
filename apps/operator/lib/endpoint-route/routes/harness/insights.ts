@@ -18,6 +18,7 @@ import { loadHarnessInsights } from '@/lib/harness-insights/load-all';
 import {
   loadProjectCardFromGithub,
   loadGithubContributorCommits,
+  loadRepoReadme,
 } from '@/lib/harness-insights/github-facts';
 import { getSessionUserOrDefault } from '@/lib/auth';
 
@@ -72,6 +73,9 @@ const get = defineTool({
       workspaceId,
       harnessSlug: slug,
     });
+    // Tier-A repo README for the HowItWorksHere card's orientation (P-004).
+    // Same degrade-to-fallback contract: undefined when no token / remote / README.
+    const readme = await loadRepoReadme({ workspaceId, harnessSlug: slug });
     const props = await loadHarnessInsights({
       workspace_id: workspaceId,
       harness_slug: slug,
@@ -79,6 +83,7 @@ const get = defineTool({
       runQuery,
       project,
       peopleCommits,
+      howItWorks: { readme },
       activityLimit,
     });
     return Response.json({ insights: props });

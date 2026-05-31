@@ -93,6 +93,7 @@ function fallbackHowItWorks(
       branch_policy: 'feature-branch',
     },
     customWelcome: override.customWelcome ?? null,
+    readme: override.readme ?? null,
   };
 }
 

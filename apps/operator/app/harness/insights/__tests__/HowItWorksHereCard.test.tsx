@@ -46,6 +46,37 @@ describe('HowItWorksHereCard — P-073e', () => {
     );
   });
 
+  it('renders the README section as markdown when a readme is provided (P-004)', () => {
+    render(
+      <HowItWorksHereCard
+        harnessName="papercup"
+        config={makeConfig()}
+        readme={'# Papercup\n\nA multi-agent coding harness.'}
+      />,
+    );
+    const sec = screen.getByTestId('how-it-works-readme');
+    expect(sec).toBeTruthy();
+    // react-markdown renders synchronously: heading + prose appear as DOM,
+    // not raw '#' markdown.
+    expect(sec.querySelector('h1')?.textContent).toBe('Papercup');
+    expect(sec.textContent).toContain('A multi-agent coding harness.');
+  });
+
+  it('omits the README section when no readme / blank readme (P-004)', () => {
+    const { rerender } = render(
+      <HowItWorksHereCard harnessName="papercup" config={makeConfig()} />,
+    );
+    expect(screen.queryByTestId('how-it-works-readme')).toBeNull();
+    rerender(
+      <HowItWorksHereCard
+        harnessName="papercup"
+        config={makeConfig()}
+        readme={'   \n  '}
+      />,
+    );
+    expect(screen.queryByTestId('how-it-works-readme')).toBeNull();
+  });
+
   it('with orchestrator: step 1 mentions orchestrator', () => {
     render(
       <HowItWorksHereCard

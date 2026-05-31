@@ -364,8 +364,82 @@ export async function loadGithubContributorCommits(
   }
 }
 
+// ── Repo README (tier-A orientation, P-004) ─────────────────────────
+
+/**
+ * PURE: decode a GitHub `GET /repos/:owner/:repo/readme` response body
+ * (base64-encoded markdown) to text. null when there's nothing usable.
+ */
+export function decodeGithubReadme(
+  data: { content?: string | null; encoding?: string | null } | null | undefined,
+): string | null {
+  if (!data || typeof data.content !== 'string' || data.content.length === 0) {
+    return null;
+  }
+  try {
+    const enc: BufferEncoding =
+      !data.encoding || data.encoding === 'base64' ? 'base64' : 'utf8';
+    const text = Buffer.from(data.content, enc).toString('utf8').trim();
+    return text.length > 0 ? text : null;
+  } catch {
+    return null;
+  }
+}
+
+const readmeCache = new Map<
+  string,
+  { value: string | null; expiresAt: number }
+>();
+
+/**
+ * Resolve the harness's GitHub repo and return its README markdown (tier-A —
+ * straight from GitHub, the hard authority), or undefined to leave the
+ * HowItWorksHere card README-less. Same resolution + 1h cache + graceful
+ * degradation as loadProjectCardFromGithub. Never throws.
+ */
+export async function loadRepoReadme(
+  opts: LoadProjectCardOpts,
+): Promise<string | undefined> {
+  try {
+    const now = (opts.now ?? Date.now)();
+    const resolveRepoPath = opts.resolveRepoPath ?? defaultResolveRepoPath;
+    const ownerName = opts.ownerName ?? defaultOwnerName;
+
+    const repoPath = await resolveRepoPath(opts.workspaceId, opts.harnessSlug);
+    if (!repoPath) return undefined;
+    const on = await ownerName(repoPath);
+    if (!on) return undefined;
+
+    const key = `${on.owner}/${on.name}`.toLowerCase();
+    const hit = readmeCache.get(key);
+    if (hit && hit.expiresAt > now) return hit.value ?? undefined;
+
+    const octokit =
+      opts.octokit !== undefined ? opts.octokit : await getOctokit();
+    if (!octokit) return undefined;
+
+    let md: string | null = null;
+    try {
+      const res = await octokit.rest.repos.getReadme({
+        owner: on.owner,
+        repo: on.name,
+      });
+      md = decodeGithubReadme(
+        res.data as { content?: string; encoding?: string },
+      );
+    } catch {
+      md = null; // 404 (no README) / API error → degrade to README-less
+    }
+    readmeCache.set(key, { value: md, expiresAt: now + TTL_MS });
+    return md ?? undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /** Test-only: clear the module caches between cases. */
 export function _clearGithubFactsCacheForTests(): void {
   cache.clear();
   commitsCache.clear();
+  readmeCache.clear();
 }

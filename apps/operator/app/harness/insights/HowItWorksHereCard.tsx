@@ -25,6 +25,11 @@
  */
 
 import type { CSSProperties, ReactNode } from 'react';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
+
+/** Bound the rendered README so a giant one can't blow up the card's DOM. */
+const README_MAX_CHARS = 12_000;
 
 const CARD: CSSProperties = {
   border: '1px solid var(--border, #2a2a2a)',
@@ -87,6 +92,24 @@ const STEP_SUB: CSSProperties = {
   color: 'var(--fg-dim, #888)',
 };
 
+const README_SECTION: CSSProperties = {
+  marginTop: 4,
+  borderTop: '1px solid var(--border, #2a2a2a)',
+  paddingTop: 12,
+  display: 'flex',
+  flexDirection: 'column',
+  gap: 8,
+};
+
+const README_BODY: CSSProperties = {
+  maxHeight: 360,
+  overflowY: 'auto',
+  fontSize: 12.5,
+  lineHeight: 1.55,
+  color: 'var(--fg-dim, #aaa)',
+  wordBreak: 'break-word',
+};
+
 export type BranchPolicy =
   | 'feature-branch'
   | 'main-fast-forward'
@@ -106,6 +129,12 @@ export interface HowItWorksHereCardProps {
   config: HowItWorksHereConfig;
   /** Optional override of the templated intro paragraph. */
   customWelcome?: string | null;
+  /**
+   * The repo's README markdown (tier-A — fetched from GitHub), rendered
+   * read-only below the workflow steps for new-joiner orientation (P-004).
+   * Omitted/null → the README section doesn't render.
+   */
+  readme?: string | null;
 }
 
 function describeClaim(cfg: HowItWorksHereConfig): string {
@@ -154,13 +183,20 @@ function describeShipped(cfg: HowItWorksHereConfig): string {
 export function HowItWorksHereCard(
   props: HowItWorksHereCardProps,
 ): ReactNode {
-  const { harnessName, config, customWelcome } = props;
+  const { harnessName, config, customWelcome, readme } = props;
 
   const intro =
     customWelcome ??
     `Here's how work flows in ${harnessName}. Three steps, customized to this harness's config.`;
 
   const prDesc = describePR(config);
+
+  const readmeMd =
+    readme && readme.trim().length > 0
+      ? readme.length > README_MAX_CHARS
+        ? `${readme.slice(0, README_MAX_CHARS)}\n\n…`
+        : readme
+      : null;
 
   return (
     <div style={CARD} data-testid="insights-how-it-works-card">
@@ -192,6 +228,28 @@ export function HowItWorksHereCard(
           <div style={STEP_BODY}>{describeShipped(config)}</div>
         </div>
       </div>
+
+      {readmeMd ? (
+        <div style={README_SECTION} data-testid="how-it-works-readme">
+          <div style={TITLE}>Project README</div>
+          <div style={README_BODY} className="pc-readme-md">
+            <ReactMarkdown
+              remarkPlugins={[remarkGfm]}
+              components={{
+                a({ children, href }) {
+                  return (
+                    <a href={href} target="_blank" rel="noreferrer">
+                      {children}
+                    </a>
+                  );
+                },
+              }}
+            >
+              {readmeMd}
+            </ReactMarkdown>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }
