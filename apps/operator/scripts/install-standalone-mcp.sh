@@ -10,22 +10,27 @@
 #      AND ~/.claude.json (preserves any other MCP servers already
 #      configured in either client).
 #   4. Writes the engineer-collaborator playbook + coordination extension
-#      as standalone OPT-IN files under ~/.papercusp/, and installs the
-#      `omp-su`, `claude-su`, and `codex-su` wrappers that launch each
-#      client with them. Plain `omp` / `claude` / `codex` are left
-#      untouched — engineer-collaborator mode is no longer always-on.
-#   4b. Installs the SU-locks ENFORCEMENT hooks so an edit to a file
-#      another agent is holding is BLOCKED (not merely discouraged):
-#        - OMP    → coord-hook.ts, loaded by omp-su via `-e`.
-#        - Claude → Pre/PostToolUse hooks in ~/.claude/settings.json.
-#        - Codex  → Pre/PostToolUse hooks in the codex-su CODEX_HOME.
-#      Claude and Codex share one hook pair (same hook wire format).
+#      as standalone OPT-IN files under ~/.papercusp/, and installs `psu`
+#      (the one launcher). The `*-su` wrappers are RETIRED — `psu` →
+#      `bootstrap-su` → `buildLaunchSpec` assembles the playbook + MCP +
+#      flags per-launch and execs the RAW CLI. Plain `omp` / `claude` /
+#      `codex` are left untouched.
+#   4b. Installs the SU-locks ENFORCEMENT hook scripts + wires them where
+#      the client actually reads them:
+#        - Claude → Pre/PostToolUse in ~/.claude/settings.json (USER-level,
+#          automatic — survives a raw `claude`/`psu` launch).
+#        - OMP    → coord-hook.ts, loaded per-launch by psu via `-e`.
+#        - Codex  → hooks.json in the per-session CODEX_HOME psu mints.
+#          NOTE: codex does not currently fire PreToolUse on edits (upstream
+#          openai/codex #20204), so codex coordination is voluntary
+#          (playbook-driven `locks:*`) until that lands.
+#      Claude and Codex share one hook-script pair (same hook wire format).
 #   5. Verifies HTTP 200 against the running operator
 #
 # Re-running REUSES the existing token (so live shells keep working),
 # updates the MCP entry, and refreshes the playbook, the coordination
-# extension, and the omp-su wrapper. To rotate the token deliberately,
-# delete ~/.papercusp/superuser-token first, then re-run.
+# extension, and `psu`. To rotate the token deliberately, delete
+# ~/.papercusp/superuser-token first, then re-run.
 #
 # Threat model: friction, not enforcement. Any process running as the
 # same user can read ~/.papercusp/superuser-token. See
@@ -413,113 +418,6 @@ else
   echo "! Expected CC lock hooks at $CC_HOOK_SRC_DIR; skipping (Claude/Codex lock enforcement inactive)"
 fi
 
-# 4d. Install the `omp-su` wrapper — engineer-collaborator mode as one
-# command. Plain `omp` stays vanilla; `omp-su` launches OMP with the
-# playbook (--append-system-prompt) + the coordination extension (-e).
-# The wrapper is co-located with the `omp` binary so it lands on the
-# same PATH; it falls back to ~/.local/bin if `omp` can't be located.
-if OMP_BIN="$(command -v omp 2>/dev/null)"; then
-  WRAPPER_DIR="$(dirname "$OMP_BIN")"
-else
-  WRAPPER_DIR="${HOME}/.local/bin"
-fi
-mkdir -p "$WRAPPER_DIR"
-WRAPPER_PATH="${WRAPPER_DIR}/omp-su"
-# Write the wrapper with the profile-specific playbook path baked in.
-# PLAYBOOK_DEST is expanded here (not single-quoted) so the installed
-# path is concrete — the wrapper has no dependency on env vars at runtime.
-cat > "$WRAPPER_PATH" <<WRAPEOF
-#!/usr/bin/env bash
-# papercusp ${PROFILE}-collaborator launcher (managed by install-standalone-mcp.sh --profile=${PROFILE}).
-# Plain \`omp\` is a vanilla coding assistant; this wrapper opts into the
-# ${PROFILE} playbook + the papercusp coordination extension.
-# To switch profiles, re-run: install-standalone-mcp.sh --profile=engineer|power
-# Launch-context addendum (harness scope + bound-plan \`## Now\`), composed by
-# bootstrap-su and passed via PAPERCUSP_LAUNCH_CONTEXT_FILE when launched
-# through \`psu\`. OMP's --append-system-prompt is single-valued (last wins),
-# so a second flag would clobber the playbook — instead combine the playbook
-# + launch-context into one file (keyed off the per-launch context path, so
-# no races/leaks). A plain \`omp-su\` launch has no such env var → playbook only.
-APPEND_SP="${PLAYBOOK_DEST}"
-if [ -n "\${PAPERCUSP_LAUNCH_CONTEXT_FILE:-}" ] && [ -f "\${PAPERCUSP_LAUNCH_CONTEXT_FILE}" ]; then
-  APPEND_SP="\${PAPERCUSP_LAUNCH_CONTEXT_FILE%.md}.combined.md"
-  cat "${PLAYBOOK_DEST}" "\${PAPERCUSP_LAUNCH_CONTEXT_FILE}" > "\${APPEND_SP}" 2>/dev/null || APPEND_SP="${PLAYBOOK_DEST}"
-fi
-exec omp \\
-  --approval-mode yolo \\
-  --append-system-prompt "\${APPEND_SP}" \\
-  -e "${HOME}/.papercusp/papercusp-coord.ts" \\
-  "\$@"
-WRAPEOF
-chmod 755 "$WRAPPER_PATH"
-echo "✓ Installed $WRAPPER_PATH"
-case ":${PATH}:" in
-  *":${WRAPPER_DIR}:"*) : ;;
-  *) echo "! $WRAPPER_DIR is not on PATH — add it or invoke $WRAPPER_PATH by full path" ;;
-esac
-
-# 4e. Install the `claude-su` wrapper — Claude Code equivalent of omp-su.
-# Plain `claude` stays vanilla; `claude-su` launches Claude Code with
-# the playbook (--append-system-prompt-file). The papercusp-su MCP
-# server is already registered in ~/.claude.json (step 3a), so the SU
-# tool catalog is available either way — only the playbook injection
-# is opt-in.
-#
-# Hooks: Claude Code's hook system is settings.json-driven, not module-
-# loaded like OMP's `-e`. The lock-enforcement Pre/PostToolUse hooks are
-# merged into ~/.claude/settings.json below (step 4e-hooks) — USER-level,
-# so they protect both `claude` and `claude-su`. They scope to the
-# papercup workspace and no-op when Papercusp isn't installed, so they
-# are safe globally; the playbook (this wrapper) stays the only opt-in.
-if CLAUDE_BIN="$(command -v claude 2>/dev/null)"; then
-  CLAUDE_WRAPPER_DIR="$(dirname "$CLAUDE_BIN")"
-else
-  CLAUDE_WRAPPER_DIR="${HOME}/.local/bin"
-fi
-mkdir -p "$CLAUDE_WRAPPER_DIR"
-CLAUDE_WRAPPER_PATH="${CLAUDE_WRAPPER_DIR}/claude-su"
-cat > "$CLAUDE_WRAPPER_PATH" <<WRAPEOF
-#!/usr/bin/env bash
-# papercusp ${PROFILE}-collaborator launcher for Claude Code
-# (managed by install-standalone-mcp.sh --profile=${PROFILE}).
-# Plain \`claude\` is a vanilla Claude Code session; this wrapper opts
-# into the ${PROFILE} playbook (Claude-Code variant — OMP-only task-tool
-# guidance stripped out) via --append-system-prompt-file. The
-# papercusp-su MCP server is already in ~/.claude.json, so all SU
-# tools are available either way.
-# To switch profiles, re-run: install-standalone-mcp.sh --profile=engineer|power
-# Per-session coordination identity. Mint a distinct id per launch so two
-# claude-su shells on one machine get DISTINCT coord/lock owners (fixes
-# the same-machine collapse where coord:inbox self-filtered peers). The
-# ~/.claude.json mcp url expands \${PAPERCUSP_SID:-<machine-id>}, and the
-# lock hook reads the same var — so a shell's interactive calls and its
-# hook share one owner. Reuse an inherited value if already set.
-if [ -z "\${PAPERCUSP_SID:-}" ]; then
-  PAPERCUSP_SID="claude-su-\$(uuidgen 2>/dev/null || cat /proc/sys/kernel/random/uuid 2>/dev/null || echo "\$\$-\${RANDOM}")"
-fi
-export PAPERCUSP_SID
-# Launch-context addendum (harness scope + bound-plan \`## Now\`), composed by
-# bootstrap-su and passed via PAPERCUSP_LAUNCH_CONTEXT_FILE when launched
-# through \`psu\`. Appended as a SECOND system-prompt file — claude's
-# --append-system-prompt-file is repeatable. A plain \`claude-su\` launch has
-# no such env var, so no extra flag is added.
-LAUNCH_CTX_ARGS=()
-if [ -n "\${PAPERCUSP_LAUNCH_CONTEXT_FILE:-}" ] && [ -f "\${PAPERCUSP_LAUNCH_CONTEXT_FILE}" ]; then
-  LAUNCH_CTX_ARGS=(--append-system-prompt-file "\${PAPERCUSP_LAUNCH_CONTEXT_FILE}")
-fi
-exec claude \\
-  --dangerously-skip-permissions \\
-  --append-system-prompt-file "${PLAYBOOK_DEST_CLAUDE}" \\
-  "\${LAUNCH_CTX_ARGS[@]}" \\
-  "\$@"
-WRAPEOF
-chmod 755 "$CLAUDE_WRAPPER_PATH"
-echo "✓ Installed $CLAUDE_WRAPPER_PATH"
-case ":${PATH}:" in
-  *":${CLAUDE_WRAPPER_DIR}:"*) : ;;
-  *) echo "! $CLAUDE_WRAPPER_DIR is not on PATH — add it or invoke $CLAUDE_WRAPPER_PATH by full path" ;;
-esac
-
 # 4e-hooks. Merge the SU-locks Pre/PostToolUse hooks into Claude Code's
 # USER settings (~/.claude/settings.json). User-level so both `claude`
 # and `claude-su` enforce locks; the matcher limits them to file edits,
@@ -534,148 +432,12 @@ else
   echo "· Claude lock hooks not installed (no $CC_PRE_HOOK) — skipping settings merge"
 fi
 
-# 4f. Install the `codex-su` wrapper — Codex CLI equivalent of omp-su.
-# Codex has no `--append-system-prompt`; it injects instructions through
-# AGENTS.md files within its CODEX_HOME. So codex-su runs Codex in a
-# DEDICATED CODEX_HOME (~/.papercusp/codex-su-home) whose AGENTS.md IS
-# the ${PROFILE} playbook. Plain `codex` (CODEX_HOME=~/.codex) stays
-# vanilla — it never sees the playbook or the papercusp-su server.
-#
-# Login is shared by symlinking ~/.codex/auth.json (no separate sign-in).
-# The papercusp-su MCP server is registered ONLY in this SU home and uses
-# a bearer-token ENV VAR — the codex-su wrapper reads the 0600 token file
-# at launch and exports it, so the token is never written into config.
-CODEX_SU_HOME="${HOME}/.papercusp/codex-su-home"
-mkdir -p "${CODEX_SU_HOME}/sessions"
-chmod 700 "$CODEX_SU_HOME"
-if [ ! -f "$PLAYBOOK_PATH" ]; then
-  echo "! Expected base playbook at $PLAYBOOK_PATH; skipping codex-su home"
-else
-  render_playbook "$PLAYBOOK_PATH" "$OVERLAY_CODEX" "${CODEX_SU_HOME}/AGENTS.md"
-  chmod 644 "${CODEX_SU_HOME}/AGENTS.md"
-  echo "✓ Wrote ${PROFILE} Codex playbook to ${CODEX_SU_HOME}/AGENTS.md"
-fi
-# Share login with the user's real Codex install.
-if [ -e "${HOME}/.codex/auth.json" ]; then
-  ln -sf "${HOME}/.codex/auth.json" "${CODEX_SU_HOME}/auth.json"
-  echo "✓ Linked ${CODEX_SU_HOME}/auth.json → ~/.codex/auth.json (shared login)"
-else
-  echo "· ~/.codex/auth.json not found — run \`codex\` once and sign in, then re-run to share login"
-fi
-# SU-home config.toml: papercusp-su MCP server + model/effort inherited
-# from ~/.codex/config.toml (top-level scalars only; snapshot, re-run to
-# refresh). The bearer token comes from PAPERCUSP_SU_TOKEN at runtime.
-python3 - "${CODEX_SU_HOME}/config.toml" "${HOME}/.codex/config.toml" "$OPERATOR_URL" "$AGENT_ID" "$PROFILE" <<'PYEOF'
-import re, sys
-dest, user_cfg, operator_url, agent_id, profile = sys.argv[1:6]
-model = effort = None
-try:
-    with open(user_cfg) as f:
-        for line in f:
-            s = line.strip()
-            if s.startswith('['):
-                break  # stop at the first table — only inherit top-level scalars
-            m = re.match(r'model\s*=\s*(.+)$', s)
-            if m: model = m.group(1).strip()
-            m = re.match(r'model_reasoning_effort\s*=\s*(.+)$', s)
-            if m: effort = m.group(1).strip()
-except FileNotFoundError:
-    pass
-profile_param = '&profile=power' if profile == 'power' else ''
-url = operator_url + '/api/mcp?superuser=1' + profile_param + '&client=' + agent_id
-lines = [
-    '# Papercusp codex-su home config (managed by install-standalone-mcp.sh).',
-    '# Applies ONLY when launched via the `codex-su` wrapper; plain `codex`',
-    '# (CODEX_HOME=~/.codex) is unaffected.',
-]
-if model:  lines.append(f'model = {model}')
-if effort: lines.append(f'model_reasoning_effort = {effort}')
-lines += [
-    '',
-    '[mcp_servers.papercusp-su]',
-    f'url = "{url}"',
-    'bearer_token_env_var = "PAPERCUSP_SU_TOKEN"',
-    '',
-]
-with open(dest, 'w') as f:
-    f.write('\n'.join(lines))
-PYEOF
-chmod 600 "${CODEX_SU_HOME}/config.toml"
-echo "✓ Wrote ${CODEX_SU_HOME}/config.toml (papercusp-su MCP, scoped to codex-su)"
-
-# Merge the SAME lock hooks into the codex-su CODEX_HOME settings.json.
-# Codex 0.135 implements the Claude hook wire format, so the script pair
-# is shared; only the matcher differs — Codex edits via `apply_patch`
-# (and write_file/edit_file), not Edit/Write. Scoped to the codex-su
-# home (plain `codex` uses ~/.codex and is unaffected).
-if [ -x "$CC_PRE_HOOK" ]; then
-  merge_lock_hooks "${CODEX_SU_HOME}/settings.json" "apply_patch|write_file|edit_file"
-  chmod 600 "${CODEX_SU_HOME}/settings.json"
-  echo "✓ Merged SU-locks Pre/PostToolUse hooks into ${CODEX_SU_HOME}/settings.json"
-else
-  echo "· Codex lock hooks not installed (no $CC_PRE_HOOK) — skipping settings merge"
-fi
-
-if CODEX_BIN="$(command -v codex 2>/dev/null)"; then
-  CODEX_WRAPPER_DIR="$(dirname "$CODEX_BIN")"
-else
-  CODEX_WRAPPER_DIR="${HOME}/.local/bin"
-fi
-mkdir -p "$CODEX_WRAPPER_DIR"
-CODEX_WRAPPER_PATH="${CODEX_WRAPPER_DIR}/codex-su"
-# Base MCP url for the per-launch ?client override below (mirrors the
-# config.toml url, minus the &client= part the wrapper supplies per launch).
-CODEX_MCP_BASE="${OPERATOR_URL}/api/mcp?superuser=1"
-[ "$PROFILE" = "power" ] && CODEX_MCP_BASE="${CODEX_MCP_BASE}&profile=power"
-cat > "$CODEX_WRAPPER_PATH" <<WRAPEOF
-#!/usr/bin/env bash
-# papercusp ${PROFILE}-collaborator launcher for Codex CLI
-# (managed by install-standalone-mcp.sh --profile=${PROFILE}).
-# Codex has no --append-system-prompt, so this runs Codex in a dedicated
-# CODEX_HOME whose AGENTS.md is the ${PROFILE} playbook, with the
-# papercusp-su MCP server scoped to it. Plain \`codex\` is unaffected.
-# To switch profiles, re-run: install-standalone-mcp.sh --profile=engineer|power
-#
-# Launch-context (PAPERCUSP_LAUNCH_CONTEXT_FILE) is composed by bootstrap-su
-# and consumed by claude-su/omp-su as an extra system prompt. Codex has no
-# per-launch system-prompt flag (only a static CODEX_HOME/AGENTS.md or a
-# positional user PROMPT), so it is NOT injected here yet — the env var is
-# still present for a future per-launch CODEX_HOME overlay. (P-021/P-022 deferral.)
-if [ -z "\${PAPERCUSP_SU_TOKEN:-}" ] && [ -s "${TOKEN_PATH}" ]; then
-  PAPERCUSP_SU_TOKEN="\$(cat "${TOKEN_PATH}")"
-  export PAPERCUSP_SU_TOKEN
-fi
-# Per-session coordination identity. A distinct id per launch so two
-# codex-su shells on one machine get DISTINCT coord/lock owners. Codex
-# does NOT env-expand config.toml, so the mcp url is overridden per launch
-# via -c; the lock hook reads the same PAPERCUSP_SID, so a shell's
-# interactive calls and its hook share one owner. Reuse if inherited.
-if [ -z "\${PAPERCUSP_SID:-}" ]; then
-  PAPERCUSP_SID="codex-su-\$(uuidgen 2>/dev/null || cat /proc/sys/kernel/random/uuid 2>/dev/null || echo "\$\$-\${RANDOM}")"
-fi
-export PAPERCUSP_SID
-# --dangerously-bypass-hook-trust: Codex requires persisted trust before
-# running settings.json hooks. The ONLY hooks in this dedicated CODEX_HOME
-# are the SU-locks Pre/PostToolUse pair this installer wrote, so bypassing
-# the trust prompt is the documented "automation that vets its own hook
-# sources" path — not arbitrary third-party hooks.
-exec env CODEX_HOME="${CODEX_SU_HOME}" codex --dangerously-bypass-hook-trust --dangerously-bypass-approvals-and-sandbox \\
-  -c "mcp_servers.papercusp-su.url=\"${CODEX_MCP_BASE}&client=\${PAPERCUSP_SID}\"" \\
-  "\$@"
-WRAPEOF
-chmod 755 "$CODEX_WRAPPER_PATH"
-echo "✓ Installed $CODEX_WRAPPER_PATH"
-case ":${PATH}:" in
-  *":${CODEX_WRAPPER_DIR}:"*) : ;;
-  *) echo "! $CODEX_WRAPPER_DIR is not on PATH — add it or invoke $CODEX_WRAPPER_PATH by full path" ;;
-esac
-
-# 4g. Install the `psu` command — the plan-tracked picker launcher.
-# Unlike the *-su wrappers (direct, untracked), `psu` prompts for
-# agent + harness + plan, records a tracked /adv session via the
-# operator's bootstrap-su endpoint, then exec's the chosen *-su wrapper.
-# It's a thin shim over the Node launcher in the repo (which resolves
-# @inquirer/prompts from the operator's node_modules). Scripting escape:
+# 4g. Install the `psu` command — THE launcher (the *-su wrappers are gone).
+# `psu` prompts for agent + harness + plan, records a tracked /adv session
+# via the operator's bootstrap-su endpoint, then execs the RAW CLI with the
+# playbook + MCP + flags assembled per-launch (buildLaunchSpec). It's a thin
+# shim over the Node launcher in the repo (which resolves @inquirer/prompts
+# from the operator's node_modules). Scripting escape:
 #   psu --no-picker --agent=<claude|omp|codex> --harness=<slug> [--plan=<slug>|--no-plan]
 PSU_LAUNCHER="${SCRIPT_DIR}/psu-launcher.mjs"
 PSU_BIN_DIR="${HOME}/.local/bin"
@@ -685,8 +447,8 @@ if [ -f "$PSU_LAUNCHER" ]; then
   cat > "$PSU_PATH" <<WRAPEOF
 #!/usr/bin/env bash
 # papercusp tracked SU launcher (managed by install-standalone-mcp.sh).
-# Picks agent + harness + plan, records a tracked /adv session, then
-# launches the matching *-su wrapper. The plain *-su wrappers stay direct.
+# Picks agent + harness + plan, records a tracked /adv session, then execs
+# the raw agent CLI with the playbook + MCP + flags assembled per-launch.
 exec node "${PSU_LAUNCHER}" "\$@"
 WRAPEOF
   chmod 755 "$PSU_PATH"
@@ -725,51 +487,47 @@ cat <<EOF
 
 Done.  Profile: ${PROFILE}
 
-  Plain OMP / Claude Code — vanilla coding assistant, no playbook:
-    \$ omp
-    \$ claude
+  Plain OMP / Claude Code / Codex — vanilla coding assistant, no playbook:
+    \$ omp     \$ claude     \$ codex
 
-  ${PROFILE^}-collaborator mode — playbook injected, papercusp-su tools available:
-    \$ omp-su       # OMP + playbook + coordination extension
-    \$ claude-su    # Claude Code + playbook
-    \$ codex-su     # Codex + playbook (dedicated CODEX_HOME, shared login)
-    > call mcp__papercusp-su__papercusp:list_workspaces
+  ${PROFILE^}-collaborator mode is launched by ONE command — \`psu\` (the
+  *-su wrappers are retired). \`psu\` records a tracked /adv session, then
+  execs the RAW CLI per-launch with the playbook + papercusp-su MCP + the
+  right flags assembled for the chosen agent:
+    \$ psu                                                          # interactive picker
+    \$ psu --no-picker --agent=claude --harness=papercup --no-plan  # scripting
+    \$ psu --resume          # or --resume=<session-id> / --resume <id>
+    \$ psu --role=<role> --harness=<slug> [--feature=<id>]          # role-scoped session
 
-  SU-locks ENFORCEMENT is active on all three clients: an Edit/Write/
-  apply_patch to a file another SU agent holds is BLOCKED with the
-  holder's intent + expiry, so the agent can wait, pivot, or queue.
-    - OMP    → coord-hook.ts (omp-su, via \`-e\`)
-    - Claude → Pre/PostToolUse hooks in ~/.claude/settings.json (user-level)
-    - Codex  → Pre/PostToolUse hooks in the codex-su CODEX_HOME
-  Enforcement scopes to the papercup workspace and no-ops when the
-  operator is down (fail-open). /coord surfaces "enforcement offline".
+  SU-locks coordination — an edit to a file another SU agent holds:
+    - Claude → Pre/PostToolUse hooks in ~/.claude/settings.json (user-level,
+      automatic — BLOCKS the edit with the holder's intent + expiry).
+    - OMP    → coord-hook.ts loaded via \`-e\` by psu's omp launch (automatic).
+    - Codex  → NO automatic hook (codex doesn't fire PreToolUse on edits —
+      upstream openai/codex #20204). Codex coordinates by calling \`locks:*\`
+      itself, as its playbook instructs. The per-session CODEX_HOME ships a
+      hooks.json that activates automatically once codex fixes hook emission.
+  Enforcement scopes to the papercup workspace + fails open when the
+  operator is down. /coord surfaces "enforcement offline".
 
-  Each -su wrapper loads the SAME base playbook with its OWN client
-  tooling overlay spliced in, so OMP-only task-tool guidance never lands
-  in the Claude or Codex playbook.
+  psu assembles the SAME base playbook with each client's tooling overlay
+  spliced in, so OMP-only task-tool guidance never lands in the Claude or
+  Codex playbook.
 
-  Plan-tracked launch — pick agent + harness + plan; the session shows up
-  in /adv (under its plan, or the "No plan" group). \`psu\` exec's the
-  matching -su wrapper, so it's the same engineer mode, just tracked:
-    \$ psu                                                       # interactive picker
-    \$ psu --no-picker --agent=claude --harness=papercup --no-plan   # scripting
-
-  One-off, without the wrappers:
-    \$ omp    --append-system-prompt ${PLAYBOOK_DEST} \\
+  One-off, by hand (psu does this for you):
+    \$ omp    --approval-mode yolo --append-system-prompt ${PLAYBOOK_DEST} \\
              -e ~/.papercusp/papercusp-coord.ts
-    \$ claude --append-system-prompt-file ${PLAYBOOK_DEST_CLAUDE}
-    \$ CODEX_HOME=${CODEX_SU_HOME} PAPERCUSP_SU_TOKEN=\$(cat ${TOKEN_PATH}) codex
+    \$ claude --dangerously-skip-permissions --append-system-prompt-file ${PLAYBOOK_DEST_CLAUDE}
 
   Switch profiles:
     \$ install-standalone-mcp.sh --profile=engineer   # full Papercusp-engineer playbook
     \$ install-standalone-mcp.sh --profile=power      # power-engineer subset (generic tools)
 
-The papercusp-su MCP server is registered for plain \`omp\`, \`omp-su\`,
-\`claude\`, and \`claude-su\` (entries in ~/.omp/agent/mcp.json and
-~/.claude.json) — only the playbook (and, for OMP, the coordination
-extension) are gated behind the -su wrappers. For Codex it is different:
-the server is registered ONLY in the codex-su home (${CODEX_SU_HOME}/config.toml),
-so plain \`codex\` is fully vanilla and only \`codex-su\` gets the SU tools.
+The papercusp-su MCP server is registered user-level for \`omp\` + \`claude\`
+(entries in ~/.omp/agent/mcp.json and ~/.claude.json) so a raw launch sees
+the SU tools; psu adds the playbook (+ for OMP the coordination extension)
+per-launch. For Codex, psu mints a per-session CODEX_HOME with the superuser
+MCP — plain \`codex\` (CODEX_HOME=~/.codex) stays fully vanilla.
 
 OMP-native Hindsight memory is enabled by this installer:
   memory.backend=hindsight
@@ -780,9 +538,8 @@ Start a local server if you are not using Hindsight Cloud:
 
 Project docs — point the docs:* tools at YOUR project's docs (instead
 of Papercusp engineering docs) by setting the env var below before
-launching omp-su (or any omp session):
+launching a session:
     \$ export PAPERCUSP_PROJECT_DOCS_ROOT=\$PWD/docs
-    \$ omp-su
 The docs:* tools (outline/get/search) then read from that dir on every
 no-harness call. Unset → docs:* returns no_docs_source for non-SU
 callers (rather than silently leaking Papercusp's docs).
@@ -792,12 +549,9 @@ To rotate the token, delete $TOKEN_PATH and re-run. To revoke, delete:
   $PLAYBOOK_DEST
   $PLAYBOOK_DEST_CLAUDE
   $COORD_EXT_DEST
-  $WRAPPER_PATH
-  $CLAUDE_WRAPPER_PATH
-  $CODEX_WRAPPER_PATH
   $PSU_PATH   (the tracked picker launcher)
-  $CODEX_SU_HOME   (the dedicated codex-su CODEX_HOME — incl. its settings.json hooks)
   $CC_HOOK_DEST_DIR   (the shared Claude/Codex lock hooks)
+  ~/.papercusp/su-codex-homes   (per-session codex homes psu minted, if any)
   (remove the 'papercusp-su' entry from both $OMP_CONFIG_PATH and $CLAUDE_CONFIG_PATH,
    and the SU-locks Pre/PostToolUse entries from ${HOME}/.claude/settings.json)
 
