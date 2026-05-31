@@ -124,7 +124,7 @@ export function Popover({
                 padding: '6px 10px',
                 fontSize: 12,
                 lineHeight: 1.45,
-                background: 'rgba(20,20,22,0.96)',
+                background: 'color-mix(in srgb, var(--bg-1), transparent 4%)',
                 color: '#f5f5f7',
                 border: '1px solid rgba(255,255,255,0.1)',
                 borderRadius: 6,
@@ -133,7 +133,7 @@ export function Popover({
               }}
             >
               {tooltipLabel}
-              <RT.Arrow style={{ fill: 'rgba(20,20,22,0.96)' }} width={10} height={5} />
+              <RT.Arrow style={{ fill: 'color-mix(in srgb, var(--bg-1), transparent 4%)' }} width={10} height={5} />
             </RT.Content>
           </RT.Portal>
         </RT.Root>

@@ -367,7 +367,7 @@ function MapInner({ slug }: Props) {
         <MiniMap
           nodeColor={(n) => kindAccent(((n.data as MapNodeData)?.kind) ?? 'idea')}
           maskColor="rgba(0,0,0,0.5)"
-          style={{ background: 'rgba(15, 23, 32, 0.85)' }}
+          style={{ background: 'color-mix(in srgb, var(--bg-popover), transparent 15%)' }}
           pannable
         />
       </ReactFlow>

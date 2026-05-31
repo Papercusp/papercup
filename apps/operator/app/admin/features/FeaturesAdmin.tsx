@@ -286,7 +286,7 @@ export default function FeaturesAdmin() {
           border: 1px solid color-mix(in srgb, var(--accent-strong), transparent 86%);
           border-radius: 16px;
           background:
-            linear-gradient(180deg, rgba(10, 20, 33, 0.94), rgba(7, 14, 24, 0.98));
+            linear-gradient(180deg, color-mix(in srgb, var(--bg-1), transparent 6%), color-mix(in srgb, var(--bg-deep), transparent 2%));
           box-shadow:
             inset 0 1px 0 rgba(255,255,255,0.035),
             0 18px 34px rgba(0,0,0,0.18);
@@ -310,7 +310,7 @@ export default function FeaturesAdmin() {
           display: flex; flex-direction: column; gap: 6px;
           padding: 18px 16px; min-height: 110px;
           border-radius: 14px;
-          background: rgba(6, 12, 22, 0.92);
+          background: color-mix(in srgb, var(--bg-deep), transparent 8%);
           border: 1px solid color-mix(in srgb, var(--accent-strong), transparent 84%);
           color: #eff8ff;
           text-align: left;
@@ -319,12 +319,12 @@ export default function FeaturesAdmin() {
           transition: background 120ms, border-color 120ms, transform 120ms;
         }
         .fa-preset:hover:not(:disabled) {
-          background: rgba(10, 20, 33, 0.98);
+          background: color-mix(in srgb, var(--bg-1), transparent 2%);
           border-color: rgba(103, 232, 249, 0.30);
           transform: translateY(-1px);
         }
         .fa-preset.active {
-          background: linear-gradient(180deg, rgba(16, 35, 55, 0.98), rgba(8, 18, 31, 0.99));
+          background: linear-gradient(180deg, rgba(16, 35, 55, 0.98), color-mix(in srgb, var(--bg-1), transparent 1%));
           border-color: rgba(103, 232, 249, 0.42);
         }
         .fa-preset:disabled { opacity: 0.62; cursor: progress; }
@@ -339,7 +339,7 @@ export default function FeaturesAdmin() {
           gap: 16px;
           padding: 14px 16px;
           border-radius: 14px;
-          background: rgba(6, 12, 22, 0.88);
+          background: color-mix(in srgb, var(--bg-deep), transparent 12%);
           border: 1px solid color-mix(in srgb, var(--accent-strong), transparent 86%);
           box-shadow: inset 0 1px 0 rgba(255,255,255,0.025);
         }
@@ -391,7 +391,7 @@ export default function FeaturesAdmin() {
           padding: 16px 18px;
           border-radius: 14px;
           border: 1px solid color-mix(in srgb, var(--accent-strong), transparent 86%);
-          background: rgba(8, 16, 28, 0.94);
+          background: color-mix(in srgb, var(--bg), transparent 6%);
         }
         .fa-error { color: #fda4af; }
         .fa-spinner { color: rgba(214, 236, 248, 0.72); }

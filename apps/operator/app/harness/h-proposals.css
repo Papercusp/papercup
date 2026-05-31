@@ -1457,7 +1457,7 @@
   tab-size: 2;
 }
 .h-proposals-panel .h-proposal-doc::selection {
-  color: #03101a;
+  color: var(--bg-deep);
   background: color-mix(in srgb, var(--accent-strong), transparent 22%);
 }
 .h-proposals-panel .h-proposal-search:focus-visible,
@@ -1480,7 +1480,7 @@
   margin: 0 0 6px;
   border: 1px solid color-mix(in srgb, var(--accent-strong), transparent 88%) !important;
   border-radius: 10px 10px 7px 7px;
-  background: linear-gradient(180deg, color-mix(in srgb, var(--accent-strong), transparent 94.5%), rgba(255, 255, 255, 0.010)), rgba(7, 14, 25, 0.96) !important;
+  background: linear-gradient(180deg, color-mix(in srgb, var(--accent-strong), transparent 94.5%), rgba(255, 255, 255, 0.010)), color-mix(in srgb, var(--bg-deep), transparent 4%) !important;
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.045), 0 8px 18px rgba(0, 0, 0, 0.10);
   overflow: hidden;
 }
@@ -1493,7 +1493,7 @@
   overflow: hidden;
   border: 1px solid color-mix(in srgb, var(--accent-strong), transparent 92.5%) !important;
   border-radius: 11px !important;
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.020), rgba(255, 255, 255, 0.006)), rgba(12, 18, 31, 0.90) !important;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.020), rgba(255, 255, 255, 0.006)), color-mix(in srgb, var(--bg-1), transparent 10%) !important;
 }
 .h-proposals-panel .h-proposal-list .h-proposal-item > div {
   min-height: 44px !important;
@@ -1504,12 +1504,12 @@
 }
 .h-proposals-panel .h-proposal-list .h-proposal-item:not(.is-active):hover {
   border-color: color-mix(in srgb, var(--accent-strong), transparent 76%) !important;
-  background: linear-gradient(180deg, color-mix(in srgb, var(--accent-strong), transparent 94.5%), rgba(255, 255, 255, 0.010)), rgba(13, 21, 36, 0.94) !important;
+  background: linear-gradient(180deg, color-mix(in srgb, var(--accent-strong), transparent 94.5%), rgba(255, 255, 255, 0.010)), color-mix(in srgb, var(--bg-popover), transparent 6%) !important;
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.040), 0 8px 18px rgba(0, 0, 0, 0.12);
 }
 .h-proposals-panel .h-proposal-list .h-proposal-item.is-active {
   border-color: color-mix(in srgb, var(--accent-strong), transparent 48%) !important;
-  background: linear-gradient(90deg, rgba(45, 212, 191, 0.15), color-mix(in srgb, var(--accent-strong), transparent 92.5%) 44%, rgba(255, 255, 255, 0.012)), rgba(10, 17, 30, 0.98) !important;
+  background: linear-gradient(90deg, rgba(45, 212, 191, 0.15), color-mix(in srgb, var(--accent-strong), transparent 92.5%) 44%, rgba(255, 255, 255, 0.012)), color-mix(in srgb, var(--bg-1), transparent 2%) !important;
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent-strong), transparent 84%), inset 0 1px 0 rgba(255, 255, 255, 0.060), 0 10px 22px rgba(0, 0, 0, 0.20);
 }
 .h-proposals-panel .h-proposal-list .h-proposal-item.is-active > div {
@@ -1649,7 +1649,7 @@
 .h-proposals-panel {
   --proposal-cyan-soft: color-mix(in srgb, var(--accent-strong), transparent 88.5%);
   --proposal-teal-soft: rgba(45, 212, 191, 0.105);
-  --proposal-ink-glass: rgba(7, 14, 25, 0.68);
+  --proposal-ink-glass: color-mix(in srgb, var(--bg-deep), transparent 32%);
 }
 .h-proposals-panel .h-proposals-goal-head {
   border-radius: 9px;
@@ -1760,7 +1760,7 @@
   height: 0;
   z-index: 1;
   pointer-events: none;
-  box-shadow: 0 12px 24px 24px rgba(7, 14, 25, 0.36);
+  box-shadow: 0 12px 24px 24px color-mix(in srgb, var(--bg-deep), transparent 64%);
 }
 .h-proposals-panel .h-proposal-doc {
   background:
@@ -2020,11 +2020,11 @@
 .h-proposals-panel .h-proposal-search {
   height: 28px;
   border-color: color-mix(in srgb, var(--accent-strong), transparent 80%);
-  background: rgba(2, 8, 16, 0.46);
+  background: color-mix(in srgb, var(--bg-deepest), transparent 54%);
 }
 .h-proposals-panel .h-proposal-search:hover,
 .h-proposals-panel .h-proposal-search:focus {
-  background: rgba(6, 18, 31, 0.74);
+  background: color-mix(in srgb, var(--bg), transparent 26%);
 }
 .h-proposals-panel .h-proposal-toolbar-controls {
   padding: 1px 2px 0;
@@ -2224,11 +2224,11 @@
 }
 .h-root .h-main-shell.embed > .h-proposals-panel .h-proposal-item {
   border-color: color-mix(in srgb, var(--accent-strong), transparent 89.5%) !important;
-  background: linear-gradient(180deg, rgba(6, 17, 30, 0.70), rgba(3, 10, 20, 0.82)) !important;
+  background: linear-gradient(180deg, color-mix(in srgb, var(--bg), transparent 30%), color-mix(in srgb, var(--bg-deeper), transparent 18%)) !important;
 }
 .h-root .h-main-shell.embed > .h-proposals-panel .h-proposal-item.is-active {
   border-color: color-mix(in srgb, var(--accent), transparent 42%) !important;
-  background: linear-gradient(90deg, rgba(14, 116, 144, 0.22), rgba(5, 20, 35, 0.88)) !important;
+  background: linear-gradient(90deg, rgba(14, 116, 144, 0.22), color-mix(in srgb, var(--bg-1), transparent 12%)) !important;
   box-shadow: inset 3px 0 0 color-mix(in srgb, var(--accent), transparent 22%), 0 0 24px color-mix(in srgb, var(--accent), transparent 92%) !important;
 }
 .h-proposals-panel .h-proposal-list {
@@ -2256,7 +2256,7 @@
   border-color: color-mix(in srgb, var(--accent-strong), transparent 78%) !important;
   background:
     radial-gradient(circle at 18% 14%, rgba(255, 255, 255, 0.15), transparent 32%),
-    linear-gradient(180deg, rgba(18, 38, 56, 0.88), rgba(4, 12, 22, 0.94)) !important;
+    linear-gradient(180deg, rgba(18, 38, 56, 0.88), color-mix(in srgb, var(--bg-deep), transparent 6%)) !important;
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.10),
     inset 0 -1px 0 rgba(0, 0, 0, 0.36),
@@ -2277,7 +2277,7 @@
   border-color: rgba(34, 197, 94, 0.44) !important;
   background:
     radial-gradient(circle at 18% 14%, rgba(255, 255, 255, 0.16), transparent 32%),
-    linear-gradient(180deg, rgba(18, 82, 52, 0.55), rgba(4, 24, 17, 0.92)) !important;
+    linear-gradient(180deg, rgba(18, 82, 52, 0.55), color-mix(in srgb, var(--bg-deep), transparent 8%)) !important;
 }
 .h-proposals-panel .h-proposal-badge.status-rejected,
 .h-proposals-panel .h-proposal-filter.status-rejected,
@@ -2292,7 +2292,7 @@
   border-color: rgba(148, 163, 184, 0.34) !important;
   background:
     radial-gradient(circle at 18% 14%, rgba(255, 255, 255, 0.12), transparent 32%),
-    linear-gradient(180deg, rgba(36, 48, 64, 0.58), rgba(8, 14, 24, 0.92)) !important;
+    linear-gradient(180deg, rgba(36, 48, 64, 0.58), color-mix(in srgb, var(--bg-deep), transparent 8%)) !important;
 }
 .h-proposals-panel .h-proposal-filter,
 .h-proposals-panel .h-proposal-mini,
@@ -2300,7 +2300,7 @@
   border-color: color-mix(in srgb, var(--accent-strong), transparent 76%) !important;
   background:
     radial-gradient(circle at 18% 12%, rgba(255, 255, 255, 0.13), transparent 32%),
-    linear-gradient(180deg, rgba(12, 30, 48, 0.90), rgba(3, 10, 20, 0.96)) !important;
+    linear-gradient(180deg, color-mix(in srgb, var(--bg-popover), transparent 10%), color-mix(in srgb, var(--bg-deeper), transparent 4%)) !important;
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.08),
     inset 0 -1px 0 rgba(0, 0, 0, 0.34),
@@ -2312,7 +2312,7 @@
   border-color: color-mix(in srgb, var(--accent-strong), transparent 60%) !important;
   background:
     radial-gradient(circle at 18% 12%, rgba(255, 255, 255, 0.18), transparent 34%),
-    linear-gradient(180deg, rgba(18, 43, 65, 0.96), rgba(5, 15, 28, 0.98)) !important;
+    linear-gradient(180deg, rgba(18, 43, 65, 0.96), color-mix(in srgb, var(--bg), transparent 2%)) !important;
 }
 .h-proposals-panel .h-proposal-filter[data-state="active"],
 .h-proposals-panel .h-proposal-filter[aria-selected="true"],
@@ -2329,7 +2329,7 @@
   border-color: rgba(34, 197, 94, 0.48) !important;
   background:
     radial-gradient(circle at 18% 12%, rgba(255, 255, 255, 0.18), transparent 34%),
-    linear-gradient(180deg, rgba(19, 91, 57, 0.62), rgba(4, 27, 18, 0.96)) !important;
+    linear-gradient(180deg, rgba(19, 91, 57, 0.62), color-mix(in srgb, var(--bg), transparent 4%)) !important;
 }
 .h-proposals-panel .h-proposal-btn.danger,
 .h-proposals-panel .h-proposal-mini.bad {
@@ -2381,7 +2381,7 @@
   color: #e0f7ff !important;
   background:
     radial-gradient(circle at 30% 18%, rgba(255, 255, 255, 0.20), transparent 34%),
-    linear-gradient(180deg, rgba(22, 54, 76, 0.82), rgba(3, 12, 24, 0.96)) !important;
+    linear-gradient(180deg, rgba(22, 54, 76, 0.82), color-mix(in srgb, var(--bg-deep), transparent 4%)) !important;
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.12),
     0 0 14px color-mix(in srgb, var(--accent), transparent 86%) !important;
@@ -2397,7 +2397,7 @@
   border-color: color-mix(in srgb, var(--accent), transparent 24%) !important;
   background:
     radial-gradient(circle at 30% 18%, rgba(255, 255, 255, 0.28), transparent 34%),
-    linear-gradient(180deg, rgba(25, 98, 132, 0.82), rgba(5, 28, 44, 0.98)) !important;
+    linear-gradient(180deg, rgba(25, 98, 132, 0.82), color-mix(in srgb, var(--bg-popover), transparent 2%)) !important;
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.16),
     0 0 20px color-mix(in srgb, var(--accent), transparent 76%) !important;
@@ -2406,7 +2406,7 @@
   background-image:
     url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath fill='none' stroke='%23e0f7ff' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round' d='M2.2 6.4 4.8 9l5-6'/%3E%3C/svg%3E"),
     radial-gradient(circle at 30% 18%, rgba(255, 255, 255, 0.28), transparent 34%),
-    linear-gradient(180deg, rgba(25, 98, 132, 0.82), rgba(5, 28, 44, 0.98)) !important;
+    linear-gradient(180deg, rgba(25, 98, 132, 0.82), color-mix(in srgb, var(--bg-popover), transparent 2%)) !important;
   background-position: center, center, center;
   background-repeat: no-repeat;
   background-size: 11px 11px, auto, auto;
@@ -2416,7 +2416,7 @@
   border-color: color-mix(in srgb, var(--accent), transparent 24%) !important;
   background:
     radial-gradient(circle at 30% 18%, rgba(255, 255, 255, 0.28), transparent 34%),
-    linear-gradient(180deg, rgba(25, 98, 132, 0.82), rgba(5, 28, 44, 0.98)) !important;
+    linear-gradient(180deg, rgba(25, 98, 132, 0.82), color-mix(in srgb, var(--bg-popover), transparent 2%)) !important;
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.16),
     0 0 20px color-mix(in srgb, var(--accent), transparent 76%) !important;
@@ -2430,7 +2430,7 @@
 .h-proposals-panel .h-proposals-view-tab[data-state="active"],
 .h-proposals-panel .h-proposals-view-tab[aria-selected="true"] {
   color: color-mix(in oklab, var(--fg), var(--accent-strong) 12%) !important;
-  background: linear-gradient(180deg, rgba(18, 53, 73, 0.90), rgba(5, 18, 31, 0.98)) !important;
+  background: linear-gradient(180deg, rgba(18, 53, 73, 0.90), color-mix(in srgb, var(--bg), transparent 2%)) !important;
   box-shadow: inset 0 1px 0 rgba(255,255,255,0.085), 0 0 14px color-mix(in srgb, var(--accent), transparent 90%);
 }
 .h-proposals-panel .h-proposal-filter {
@@ -2645,7 +2645,7 @@
   border-color: color-mix(in srgb, var(--accent-strong), transparent 82%) !important;
   background:
     radial-gradient(circle at 28% 18%, rgba(255, 255, 255, 0.12), transparent 34%),
-    linear-gradient(180deg, rgba(22, 38, 56, 0.50), rgba(5, 12, 22, 0.92)) !important;
+    linear-gradient(180deg, rgba(22, 38, 56, 0.50), color-mix(in srgb, var(--bg-deep), transparent 8%)) !important;
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.07), 0 4px 10px rgba(0, 0, 0, 0.10) !important;
 }
 
@@ -2661,17 +2661,17 @@
 
 .h-root .h-main-shell.embed > .h-proposals-panel .h-proposal-item.status-pending:not(.is-active) {
   border-color: rgba(250, 204, 21, 0.30) !important;
-  background: linear-gradient(90deg, rgba(250, 204, 21, 0.105), rgba(6, 17, 30, 0.78) 34%, rgba(3, 10, 20, 0.84)) !important;
+  background: linear-gradient(90deg, rgba(250, 204, 21, 0.105), color-mix(in srgb, var(--bg), transparent 22%) 34%, color-mix(in srgb, var(--bg-deeper), transparent 16%)) !important;
 }
 
 .h-root .h-main-shell.embed > .h-proposals-panel .h-proposal-item.status-applied:not(.is-active) {
   border-color: rgba(34, 197, 94, 0.18) !important;
-  background: linear-gradient(90deg, rgba(34, 197, 94, 0.050), rgba(6, 17, 30, 0.72) 28%, rgba(3, 10, 20, 0.82)) !important;
+  background: linear-gradient(90deg, rgba(34, 197, 94, 0.050), color-mix(in srgb, var(--bg), transparent 28%) 28%, color-mix(in srgb, var(--bg-deeper), transparent 18%)) !important;
 }
 
 .h-root .h-main-shell.embed > .h-proposals-panel .h-proposal-item.status-rejected:not(.is-active) {
   border-color: rgba(248, 113, 113, 0.22) !important;
-  background: linear-gradient(90deg, rgba(248, 113, 113, 0.070), rgba(6, 17, 30, 0.70) 30%, rgba(3, 10, 20, 0.82)) !important;
+  background: linear-gradient(90deg, rgba(248, 113, 113, 0.070), color-mix(in srgb, var(--bg), transparent 30%) 30%, color-mix(in srgb, var(--bg-deeper), transparent 18%)) !important;
 }
 
 .h-proposals-panel .h-proposal-list .h-proposal-item.status-pending::before {
@@ -2918,7 +2918,7 @@
   border-radius: 12px;
   background:
     radial-gradient(circle at 16% 0%, color-mix(in srgb, var(--accent-strong), transparent 88%), transparent 42%),
-    linear-gradient(180deg, rgba(8, 24, 40, 0.86), rgba(3, 10, 20, 0.96));
+    linear-gradient(180deg, color-mix(in srgb, var(--bg-popover), transparent 14%), color-mix(in srgb, var(--bg-deeper), transparent 4%));
 }
 
 .h-proposals-panel .h-proposals-view-tab {
@@ -2947,7 +2947,7 @@
   border-color: color-mix(in srgb, var(--accent-strong), transparent 56%);
   background:
     radial-gradient(circle at 20% 0%, rgba(255, 255, 255, 0.16), transparent 34%),
-    linear-gradient(180deg, rgba(23, 71, 96, 0.92), rgba(5, 20, 34, 0.98)) !important;
+    linear-gradient(180deg, rgba(23, 71, 96, 0.92), color-mix(in srgb, var(--bg-1), transparent 2%)) !important;
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.13),
     0 0 18px color-mix(in srgb, var(--accent), transparent 84%) !important;
@@ -3005,20 +3005,20 @@
 .h-proposals-panel .h-proposal-item:nth-of-type(odd) {
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.012), rgba(255, 255, 255, 0.002)),
-    rgba(4, 10, 20, 0.92) !important;
+    color-mix(in srgb, var(--bg-deeper), transparent 8%) !important;
 }
 
 .h-proposals-panel .h-proposal-item:nth-of-type(even) {
   background:
     linear-gradient(180deg, color-mix(in srgb, var(--accent-strong), transparent 96.2%), rgba(255, 255, 255, 0.006)),
-    rgba(11, 25, 42, 0.94) !important;
+    color-mix(in srgb, var(--bg-popover), transparent 6%) !important;
 }
 
 .h-proposals-panel .h-proposal-item:hover,
 .h-proposals-panel .h-proposal-item.is-active {
   background:
     linear-gradient(180deg, color-mix(in srgb, var(--accent-strong), transparent 89.5%), rgba(255, 255, 255, 0.014)),
-    rgba(10, 25, 45, 0.98) !important;
+    color-mix(in srgb, var(--bg-popover), transparent 2%) !important;
 }
 
 .h-proposals-panel .h-proposal-row-title,
@@ -3030,7 +3030,7 @@
   border-radius: 999px;
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.026), rgba(255, 255, 255, 0.006)),
-    rgba(1, 6, 14, 0.88) !important;
+    color-mix(in srgb, var(--bg-deepest), transparent 12%) !important;
   color: color-mix(in oklab, var(--fg), white 8%) !important;
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.035);
 }
@@ -3040,7 +3040,7 @@
   border-color: color-mix(in srgb, var(--accent-strong), transparent 83%) !important;
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.022), rgba(255, 255, 255, 0.004)),
-    rgba(1, 6, 14, 0.84) !important;
+    color-mix(in srgb, var(--bg-deepest), transparent 16%) !important;
   color: color-mix(in oklab, var(--fg-dim), white 16%) !important;
 }
 
@@ -3062,7 +3062,7 @@
   border-color: color-mix(in srgb, var(--accent), transparent 52%) !important;
   background:
     linear-gradient(180deg, color-mix(in srgb, var(--accent), transparent 72%), rgba(14, 116, 144, 0.18)),
-    rgba(5, 18, 31, 0.96) !important;
+    color-mix(in srgb, var(--bg), transparent 4%) !important;
   color: color-mix(in oklab, #e0f7ff, var(--fg) 20%) !important;
   box-shadow:
     0 6px 14px rgba(0, 0, 0, 0.22),
@@ -3074,7 +3074,7 @@
   border-color: color-mix(in srgb, var(--accent-strong), transparent 24%) !important;
   background:
     linear-gradient(180deg, color-mix(in srgb, var(--accent-strong), transparent 64%), rgba(14, 116, 144, 0.26)),
-    rgba(7, 26, 43, 0.98) !important;
+    color-mix(in srgb, var(--bg-popover), transparent 2%) !important;
   color: #ffffff !important;
 }
 

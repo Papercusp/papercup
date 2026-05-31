@@ -2,9 +2,9 @@
  * Palette matches AdminShell: deep blue-black ground, cyan accents. */
 
 .pc-plans {
-  --pc-plans-bg: rgba(4, 10, 18, 1);
-  --pc-plans-surface: rgba(7, 16, 29, 0.78);
-  --pc-plans-surface-strong: rgba(12, 24, 38, 0.96);
+  --pc-plans-bg: color-mix(in srgb, var(--bg-deeper), transparent 0%);
+  --pc-plans-surface: color-mix(in srgb, var(--bg), transparent 22%);
+  --pc-plans-surface-strong: color-mix(in srgb, var(--bg-popover), transparent 4%);
   --pc-plans-border: color-mix(in srgb, var(--accent-strong), transparent 86%);
   --pc-plans-border-strong: rgba(103, 232, 249, 0.38);
   --pc-plans-fg: #dceaf4;
@@ -19,7 +19,7 @@
   color: var(--pc-plans-fg);
   background:
     radial-gradient(circle at 20% 0%, rgba(103, 232, 249, 0.08), transparent 32%),
-    linear-gradient(180deg, rgba(5, 12, 22, 0.94), var(--pc-plans-bg));
+    linear-gradient(180deg, color-mix(in srgb, var(--bg-deep), transparent 6%), var(--pc-plans-bg));
 }
 
 /* ── Rail ───────────────────────────────────────────────────────── */
@@ -30,7 +30,7 @@
   min-height: 0;
   border-right: 1px solid var(--pc-plans-border);
   background:
-    linear-gradient(180deg, rgba(7, 16, 29, 0.88), rgba(4, 10, 18, 0.78));
+    linear-gradient(180deg, color-mix(in srgb, var(--bg), transparent 12%), color-mix(in srgb, var(--bg-deeper), transparent 22%));
 }
 
 .pc-plans__rail-actions {
@@ -224,7 +224,7 @@
   height: 17px;
   border-radius: 999px;
   background: #eefcff;
-  color: #052033;
+  color: var(--bg-popover);
   font-size: 11px;
   font-weight: 900;
   line-height: 1;
@@ -244,7 +244,7 @@
   height: 14px;
   border-radius: 999px;
   background: #eefcff;
-  color: #052033;
+  color: var(--bg-popover);
   font-size: 9px;
   font-weight: 900;
   line-height: 1;
@@ -591,7 +591,7 @@
   padding: 5px 8px;
   border: 1px solid color-mix(in srgb, var(--accent-strong), transparent 82%);
   border-radius: 8px;
-  background: rgba(4, 10, 18, 0.85);
+  background: color-mix(in srgb, var(--bg-deeper), transparent 15%);
   color: #eaf4fb;
   font-size: 11.5px;
 }
@@ -692,7 +692,7 @@
   padding: 5px 8px;
   border: 1px solid color-mix(in srgb, var(--accent-strong), transparent 82%);
   border-radius: 8px;
-  background: rgba(4, 10, 18, 0.85);
+  background: color-mix(in srgb, var(--bg-deeper), transparent 15%);
   color: #eaf4fb;
   font-size: 11.5px;
   font-family: inherit;
@@ -722,7 +722,7 @@
   border-radius: 999px;
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.03), rgba(255, 255, 255, 0.01)),
-    rgba(4, 10, 18, 0.34);
+    color-mix(in srgb, var(--bg-deeper), transparent 66%);
   color: rgba(214, 236, 248, 0.76);
   font-size: 10.5px;
   font-weight: 680;
@@ -757,7 +757,7 @@
   border-color: color-mix(in srgb, var(--accent-strong), transparent 64%);
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.045), rgba(255, 255, 255, 0.015)),
-    rgba(12, 24, 38, 0.72);
+    color-mix(in srgb, var(--bg-popover), transparent 28%);
 }
 
 .pc-filter-chip:focus-visible,
@@ -843,7 +843,7 @@
   border: 1px solid color-mix(in srgb, var(--accent-strong), transparent 92%);
   border-left-width: 4px;
   border-radius: 10px;
-  background: rgba(7, 16, 29, 0.52);
+  background: color-mix(in srgb, var(--bg), transparent 48%);
   color: rgba(214, 236, 248, 0.88);
   text-align: left;
   cursor: pointer;
@@ -851,13 +851,13 @@
 }
 
 .pc-plan-row:hover {
-  background: rgba(12, 24, 38, 0.86);
+  background: color-mix(in srgb, var(--bg-popover), transparent 14%);
   border-color: color-mix(in srgb, var(--accent-strong), transparent 76%);
 }
 
 .pc-plan-row.is-active {
   background:
-    linear-gradient(180deg, rgba(17, 34, 53, 0.96), rgba(10, 20, 33, 0.98));
+    linear-gradient(180deg, rgba(17, 34, 53, 0.96), color-mix(in srgb, var(--bg-1), transparent 2%));
   /* Loud "selected/filtering" treatment: accent border + a 2px accent ring.
      (The status-colored left border is preserved by the more-specific
      .pc-plan-rail__item--<status> rules below.) */
@@ -1121,7 +1121,7 @@
   display: flex;
   flex-direction: column;
   background:
-    linear-gradient(180deg, rgba(8, 18, 32, 0.38), rgba(4, 10, 18, 0.20));
+    linear-gradient(180deg, color-mix(in srgb, var(--bg-1), transparent 62%), color-mix(in srgb, var(--bg-deeper), transparent 80%));
 }
 
 .pc-plans__detail {
@@ -1141,7 +1141,7 @@
   padding: 14px 20px;
   border-bottom: 1px solid color-mix(in srgb, var(--accent-strong), transparent 86%);
   background:
-    linear-gradient(180deg, rgba(7, 16, 29, 0.98), rgba(7, 16, 29, 0.92));
+    linear-gradient(180deg, color-mix(in srgb, var(--bg), transparent 2%), color-mix(in srgb, var(--bg), transparent 8%));
   backdrop-filter: blur(12px);
 }
 
@@ -1219,7 +1219,7 @@
   padding: 10px 12px;
   border: 1px solid color-mix(in srgb, var(--accent-strong), transparent 76%);
   border-radius: 12px;
-  background: rgba(4, 10, 18, 0.94) !important;
+  background: color-mix(in srgb, var(--bg-deeper), transparent 6%) !important;
 }
 
 .pc-plan-editor .pc-md-editor-host.vditor--dark :is(
@@ -1251,7 +1251,7 @@
 .pc-plans__back:hover {
   color: #eff8ff;
   border-color: color-mix(in srgb, var(--accent-strong), transparent 68%);
-  background: rgba(12, 24, 38, 0.82);
+  background: color-mix(in srgb, var(--bg-popover), transparent 18%);
 }
 
 .pc-plans__detail-slug {
@@ -1315,7 +1315,7 @@
   border: 1px solid rgba(103, 232, 249, 0.22);
   border-radius: 10px;
   background:
-    linear-gradient(180deg, rgba(17, 34, 53, 0.78), rgba(10, 20, 33, 0.66));
+    linear-gradient(180deg, rgba(17, 34, 53, 0.78), color-mix(in srgb, var(--bg-1), transparent 34%));
 }
 
 .pc-now-hero__kicker {
@@ -1851,7 +1851,7 @@
   padding: 10px 12px;
   border: 1px solid color-mix(in srgb, var(--accent-strong), transparent 86%);
   border-radius: 8px;
-  background: rgba(7, 16, 29, 0.65);
+  background: color-mix(in srgb, var(--bg), transparent 35%);
   color: rgba(214, 236, 248, 0.86);
   text-align: left;
   cursor: pointer;
@@ -1859,7 +1859,7 @@
 }
 
 .pc-search__hit:hover {
-  background: linear-gradient(180deg, rgba(17, 34, 53, 0.96), rgba(10, 20, 33, 0.98));
+  background: linear-gradient(180deg, rgba(17, 34, 53, 0.96), color-mix(in srgb, var(--bg-1), transparent 2%));
   border-color: rgba(103, 232, 249, 0.38);
 }
 
@@ -1955,7 +1955,7 @@
   border: 1px solid color-mix(in srgb, var(--accent-strong), transparent 86%);
   border-radius: 18px;
   background:
-    linear-gradient(180deg, rgba(17, 34, 53, 0.58), rgba(7, 16, 29, 0.62));
+    linear-gradient(180deg, rgba(17, 34, 53, 0.58), color-mix(in srgb, var(--bg), transparent 38%));
   text-align: left;
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.035);
 }
@@ -2009,7 +2009,7 @@
   padding: 1px 5px;
   border: 1px solid color-mix(in srgb, var(--accent-strong), transparent 82%);
   border-radius: 5px;
-  background: rgba(4, 10, 18, 0.82);
+  background: color-mix(in srgb, var(--bg-deeper), transparent 18%);
   color: #eaf4fb;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 10px;
@@ -2023,7 +2023,7 @@
   padding: 5px 14px;
   border: 1px solid color-mix(in srgb, var(--accent-strong), transparent 72%);
   border-radius: 999px;
-  background: rgba(8, 18, 32, 0.85);
+  background: color-mix(in srgb, var(--bg-1), transparent 15%);
   color: rgba(214, 236, 248, 0.92);
   font-size: 11.5px;
   font-weight: 650;
@@ -2049,7 +2049,7 @@
   padding: 8px 12px;
   border: 1px solid rgba(103, 232, 249, 0.28);
   border-radius: 8px;
-  background: rgba(12, 24, 38, 0.7);
+  background: color-mix(in srgb, var(--bg-popover), transparent 30%);
 }
 .pc-editbar__row {
   display: flex;
@@ -2099,7 +2099,7 @@
 
 .pc-editbar__rationale {
   flex: 1;
-  background: rgba(8, 18, 26, 0.7);
+  background: color-mix(in srgb, var(--bg), transparent 30%);
   color: #d6ecf8;
   border: 1px solid rgba(165, 233, 247, 0.18);
   border-radius: 6px;
@@ -2167,7 +2167,7 @@
   overflow: auto;
   border: 1px solid color-mix(in srgb, var(--accent-strong), transparent 86%);
   border-radius: 7px;
-  background: rgba(4, 10, 18, 0.85);
+  background: color-mix(in srgb, var(--bg-deeper), transparent 15%);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 11.5px;
   line-height: 1.5;
@@ -2286,7 +2286,7 @@
   justify-content: center;
   border: 1px solid color-mix(in srgb, var(--accent-strong), transparent 72%);
   border-radius: 4px;
-  background: rgba(4, 10, 18, 0.85);
+  background: color-mix(in srgb, var(--bg-deeper), transparent 15%);
   color: #eaf4fb;
   cursor: pointer;
 }
@@ -2309,7 +2309,7 @@
   padding: 4px 7px;
   border: 1px solid color-mix(in srgb, var(--accent-strong), transparent 82%);
   border-radius: 5px;
-  background: rgba(4, 10, 18, 0.85);
+  background: color-mix(in srgb, var(--bg-deeper), transparent 15%);
   color: #eaf4fb;
   font-size: 11.5px;
   font-family: inherit;
@@ -2335,7 +2335,7 @@
   padding: 4px 7px;
   border: 1px solid color-mix(in srgb, var(--accent-strong), transparent 82%);
   border-radius: 5px;
-  background: rgba(4, 10, 18, 0.85);
+  background: color-mix(in srgb, var(--bg-deeper), transparent 15%);
   color: #eaf4fb;
   font-size: 11.5px;
   font-family: inherit;
@@ -2364,7 +2364,7 @@
   padding: 5px 12px;
   border: 1px solid color-mix(in srgb, var(--accent-strong), transparent 78%);
   border-radius: 999px;
-  background: rgba(8, 18, 32, 0.85);
+  background: color-mix(in srgb, var(--bg-1), transparent 15%);
   color: rgba(214, 236, 248, 0.92);
   font-size: 11.5px;
   font-weight: 600;
@@ -2435,7 +2435,7 @@
   flex-direction: column;
   border: 1px solid rgba(103, 232, 249, 0.32);
   border-radius: 12px;
-  background: linear-gradient(180deg, #0f1e2e, #08131f);
+  background: linear-gradient(180deg, var(--bg-popover), var(--bg-1));
   color: #eaf4fb;
   box-shadow: 0 24px 56px rgba(0, 0, 0, 0.6);
   overflow: hidden;
@@ -2497,7 +2497,7 @@
   padding: 7px 10px;
   border: 1px solid color-mix(in srgb, var(--accent-strong), transparent 80%);
   border-radius: 7px;
-  background: rgba(4, 10, 18, 0.85);
+  background: color-mix(in srgb, var(--bg-deeper), transparent 15%);
   color: #eaf4fb;
   font-size: 12.5px;
   font-family: inherit;
@@ -2581,7 +2581,7 @@
   padding: 10px 12px;
   border: 1px solid color-mix(in srgb, var(--accent-strong), transparent 86%);
   border-radius: 8px;
-  background: rgba(7, 16, 29, 0.6);
+  background: color-mix(in srgb, var(--bg), transparent 40%);
   color: rgba(214, 236, 248, 0.86);
   font-size: 11.5px;
 }
@@ -2657,7 +2657,7 @@
   background: transparent;
 }
 .pc-revision-row:hover {
-  background: rgba(12, 24, 38, 0.6);
+  background: color-mix(in srgb, var(--bg-popover), transparent 40%);
   border-color: color-mix(in srgb, var(--accent-strong), transparent 82%);
 }
 
@@ -2794,7 +2794,7 @@
   max-height: 84vh;
   display: flex;
   flex-direction: column;
-  background: #0c1a23;
+  background: var(--bg-popover);
   color: #d6ecf8;
   border: 1px solid rgba(165, 233, 247, 0.18);
   border-radius: 10px;
@@ -2832,7 +2832,7 @@
 .pc-rev-convo__query {
   width: 100%;
   padding: 6px 10px;
-  background: rgba(8, 18, 26, 0.7);
+  background: color-mix(in srgb, var(--bg), transparent 30%);
   color: #d6ecf8;
   border: 1px solid rgba(165, 233, 247, 0.2);
   border-radius: 6px;
@@ -2916,7 +2916,7 @@
   flex-direction: column;
   border: 1px solid rgba(103, 232, 249, 0.32);
   border-radius: 12px;
-  background: #08131f;
+  background: var(--bg-1);
   color: #eaf4fb;
   box-shadow: 0 24px 56px rgba(0, 0, 0, 0.6);
   overflow: hidden;
@@ -2971,7 +2971,7 @@
   overflow: auto;
   display: grid;
   gap: 12px;
-  background: linear-gradient(180deg, #08131f 0%, #0a1522 100%);
+  background: linear-gradient(180deg, var(--bg-1) 0%, var(--bg-1) 100%);
 }
 
 .pc-git-diff__parse-warning,
@@ -2981,7 +2981,7 @@
   padding: 14px 16px;
   border: 1px solid color-mix(in srgb, var(--accent-strong), transparent 86%);
   border-radius: 12px;
-  background: #0b1624;
+  background: var(--bg-1);
   color: #d7e6f3;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 11px;
@@ -3002,7 +3002,7 @@
 .pc-git-diff-file {
   border: 1px solid color-mix(in srgb, var(--accent-strong), transparent 88%);
   border-radius: 12px;
-  background: #0c1726;
+  background: var(--bg-popover);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.02);
   overflow: hidden;
 }
@@ -3015,8 +3015,8 @@
   padding: 10px 14px;
   border-bottom: 1px solid color-mix(in srgb, var(--accent-strong), transparent 90%);
   background:
-    linear-gradient(180deg, rgba(15, 23, 42, 0.92), rgba(10, 18, 30, 0.88)),
-    #0b1522;
+    linear-gradient(180deg, color-mix(in srgb, var(--bg-popover), transparent 8%), color-mix(in srgb, var(--bg-1), transparent 12%)),
+    var(--bg-1);
 }
 
 .pc-git-diff-file__path {
@@ -3057,7 +3057,7 @@
 
 .pc-git-diff-file__type {
   border: 1px solid rgba(148, 163, 184, 0.22);
-  background: rgba(15, 23, 42, 0.9);
+  background: color-mix(in srgb, var(--bg-popover), transparent 10%);
   color: #d9e8f4;
 }
 
@@ -3083,7 +3083,7 @@
 
 .pc-git-diff-file__table {
   overflow: auto;
-  background: #09111b;
+  background: var(--bg);
   --diff-background-color: transparent;
   --diff-text-color: #d9e8f4;
   --diff-font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
@@ -3266,7 +3266,7 @@
   padding: 7px 11px;
   border: 1px solid color-mix(in srgb, var(--accent-strong), transparent 82%);
   border-radius: 8px;
-  background: rgba(4, 10, 18, 0.85);
+  background: color-mix(in srgb, var(--bg-deeper), transparent 15%);
   color: #eaf4fb;
   font-size: 12px;
 }
@@ -3295,7 +3295,7 @@
   padding: 4px;
   border: 1px solid rgba(103, 232, 249, 0.32);
   border-radius: 8px;
-  background: rgba(7, 16, 29, 0.98);
+  background: color-mix(in srgb, var(--bg), transparent 2%);
   box-shadow: 0 12px 28px rgba(0, 0, 0, 0.55);
   display: grid;
   gap: 2px;
@@ -3425,7 +3425,7 @@
 .pc-plan-status-popover {
   min-width: 220px;
 
-  background: rgba(7, 16, 29, 0.98);
+  background: color-mix(in srgb, var(--bg), transparent 2%);
   border: 1px solid color-mix(in srgb, var(--accent-strong), transparent 72%);
   border-radius: 8px;
   padding: 10px;
@@ -3751,7 +3751,7 @@
   padding: 10px 12px;
   border: 1px solid rgba(165, 233, 247, 0.12);
   border-radius: 8px;
-  background: rgba(8, 18, 26, 0.55);
+  background: color-mix(in srgb, var(--bg), transparent 45%);
   display: flex;
   flex-direction: column;
   gap: 4px;
@@ -3829,7 +3829,7 @@
   width: 100%;
   min-height: 60px;
   padding: 8px 10px;
-  background: rgba(8, 18, 26, 0.7);
+  background: color-mix(in srgb, var(--bg), transparent 30%);
   color: #d6ecf8;
   border: 1px solid rgba(165, 233, 247, 0.18);
   border-radius: 6px;
@@ -3874,7 +3874,7 @@
 }
 
 .pc-agents-compose__submit {
-  color: #0c1a23;
+  color: var(--bg-popover);
   background: #a5e9f7;
   border-color: #a5e9f7;
 }

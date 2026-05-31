@@ -3,6 +3,9 @@
  */
 
 [data-theme="frost"] {
+  --bg-deepest: #02060c; /** Surface depth scale — deepest (gradient bottoms, deep shadows). Darker than --bg. */
+  --bg-deeper: #030a14; /** Surface depth scale — deep surfaces. Darker than --bg. */
+  --bg-deep: #050d18; /** Surface depth scale — sub-base. Just below --bg. */
   --bg: #07101d; /** Page background — slate-deeper than sky-950 */
   --bg-1: #0b1220;
   --bg-2: rgba(255, 255, 255, 0.045); /** Translucent surface tier 2 */

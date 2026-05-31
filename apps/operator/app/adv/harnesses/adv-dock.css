@@ -10,7 +10,7 @@
  * !important to win over dockview's bundled vendor CSS. */
 
 .pc-adv-dock .dockview-theme-dark {
-  --dv-group-view-background-color: rgba(7, 16, 29, 0.92);
+  --dv-group-view-background-color: color-mix(in srgb, var(--bg), transparent 8%);
   --dv-tabs-and-actions-container-background-color: transparent;
   --dv-activegroup-visiblepanel-tab-background-color: transparent;
   --dv-inactivegroup-visiblepanel-tab-background-color: transparent;
@@ -33,7 +33,7 @@
   background:
     radial-gradient(ellipse at 50% -10%, color-mix(in srgb, var(--accent-cool), transparent 94%), transparent 60%),
     var(--frost),
-    rgba(9, 19, 34, 0.55) !important;
+    color-mix(in srgb, var(--bg-1), transparent 45%) !important;
 }
 
 /* Panel headers (every panel) — frosted glass strip + sky hairline. */
@@ -41,7 +41,7 @@
   background:
     radial-gradient(ellipse at 50% 0%, color-mix(in srgb, var(--accent-cool), transparent 91.5%), transparent 68%),
     var(--frost),
-    rgba(9, 19, 34, 0.62) !important;
+    color-mix(in srgb, var(--bg-1), transparent 38%) !important;
   border-bottom: 1px solid rgb(from var(--accent-strong) r g b / 0.16);
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.06),

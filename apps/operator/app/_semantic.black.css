@@ -3,6 +3,9 @@
  */
 
 [data-theme="black"] {
+  --bg-deepest: #000000; /** Deep surface tiers collapse to pure black on the black page */
+  --bg-deeper: #000000;
+  --bg-deep: #000000;
   --bg: #000000; /** Pure black page background */
   --bg-1: #0a0a0a; /** Near-black base surface (tier 1) */
   --bg-popover: #121212; /** Solid elevated surface for popovers/menus */

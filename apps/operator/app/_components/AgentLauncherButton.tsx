@@ -110,7 +110,7 @@ function OmpInstallHintModal(props: {
       style={{
         position: 'fixed',
         inset: 0,
-        background: 'rgba(2, 8, 18, 0.62)',
+        background: 'color-mix(in srgb, var(--bg-deeper), transparent 38%)',
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
@@ -120,7 +120,7 @@ function OmpInstallHintModal(props: {
       <div
         onClick={(e) => e.stopPropagation()}
         style={{
-          background: 'var(--surface, #0b1019)',
+          background: 'var(--surface, var(--bg))',
           border: '1px solid var(--border, #1e2a3a)',
           borderRadius: 10,
           padding: '20px 22px',
@@ -139,7 +139,7 @@ function OmpInstallHintModal(props: {
         </p>
         <pre
           style={{
-            background: '#020812',
+            background: 'var(--bg-deeper)',
             border: '1px solid var(--border, #1e2a3a)',
             borderRadius: 6,
             padding: '10px 12px',
@@ -194,7 +194,7 @@ function btnStyle(primary: boolean): React.CSSProperties {
     cursor: 'pointer',
     border: '1px solid var(--border, #1e2a3a)',
     background: primary ? 'var(--accent, #2f81f7)' : 'transparent',
-    color: primary ? '#021016' : 'var(--text, #d7e2ee)',
+    color: primary ? 'var(--bg-deep)' : 'var(--text, #d7e2ee)',
   };
 }
 

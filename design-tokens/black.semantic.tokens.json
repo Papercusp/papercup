@@ -3,6 +3,9 @@
     "$description": "Black theme — a semantic-layer override set. Emitted by the css-semantic-black Style Dictionary platform into apps/operator/app/_semantic.black.css under the [data-theme=\"black\"] selector. THEME CONTRACT: every key here MUST be a base semantic token (it overrides the :root value from desktop.semantic.tokens.json); never a brand primitive (color.*) or a raw literal var. Only tokens that DIFFER from frost are listed — everything else (the bg-2/3/4 white-alpha tiers, --frost, status hues, --card-shadow) inherits :root, which is theme-neutral on black. Mirrors THEME_TOKENS in apps/operator/lib/theme.ts."
   },
   "black": {
+    "bg-deepest":    { "$value": "#000000", "$type": "color", "$description": "Deep surface tiers collapse to pure black on the black page" },
+    "bg-deeper":     { "$value": "#000000", "$type": "color" },
+    "bg-deep":       { "$value": "#000000", "$type": "color" },
     "bg":            { "$value": "#000000", "$type": "color", "$description": "Pure black page background" },
     "bg-1":          { "$value": "#0A0A0A", "$type": "color", "$description": "Near-black base surface (tier 1)" },
     "bg-popover":    { "$value": "#121212", "$type": "color", "$description": "Solid elevated surface for popovers/menus" },

@@ -56,7 +56,7 @@ const TRIGGER_DEFAULT_STYLE: CSSProperties = {
 };
 
 const CONTENT_STYLE: CSSProperties = {
-  background: 'rgba(5, 11, 19, 0.98)',
+  background: 'color-mix(in srgb, var(--bg-deeper), transparent 2%)',
   color: 'var(--fg)',
   border: '1px solid color-mix(in oklab, var(--accent), transparent 62%)',
   borderRadius: 10,

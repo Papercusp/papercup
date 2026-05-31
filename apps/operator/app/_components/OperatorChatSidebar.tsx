@@ -267,7 +267,7 @@ const OP_CHAT_SIDEBAR_CSS = `
   border-right: 1px solid color-mix(in srgb, var(--accent-strong), transparent 82%);
   background:
     radial-gradient(circle at 50% -12%, color-mix(in srgb, var(--accent), transparent 84%), transparent 34%),
-    linear-gradient(180deg, #07101d 0%, #050b14 100%);
+    linear-gradient(180deg, var(--bg) 0%, var(--bg-deeper) 100%);
   color: var(--fg, #e7eef7);
   display: flex;
   flex-direction: column;
@@ -310,7 +310,7 @@ const OP_CHAT_SIDEBAR_CSS = `
   border: 1px solid color-mix(in srgb, var(--accent-strong), transparent 76%);
   background: radial-gradient(circle at 35% 25%, rgba(255,255,255,0.18), transparent 24%), color-mix(in srgb, var(--accent), transparent 88%);
   color: var(--accent-strong, #7dd3fc);
-  box-shadow: inset 0 1px 0 rgba(255,255,255,0.06), 0 12px 28px rgba(2, 8, 23, 0.24);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.06), 0 12px 28px color-mix(in srgb, var(--bg-deeper), transparent 76%);
 }
 
 .op-chat-expand-logo {
@@ -355,8 +355,8 @@ const OP_CHAT_SIDEBAR_CSS = `
   padding: 10px 12px 8px;
   border-bottom: 1px solid color-mix(in srgb, var(--accent-strong), transparent 86%);
   background:
-    linear-gradient(180deg, rgba(11, 25, 42, 0.84), rgba(7, 16, 29, 0.94)),
-    #07101d;
+    linear-gradient(180deg, color-mix(in srgb, var(--bg-popover), transparent 16%), color-mix(in srgb, var(--bg), transparent 6%)),
+    var(--bg);
 }
 
 .op-chat-header-main {
@@ -377,7 +377,7 @@ const OP_CHAT_SIDEBAR_CSS = `
   border: 1px solid color-mix(in srgb, var(--accent-strong), transparent 80%);
   background: radial-gradient(circle at 35% 25%, rgba(255,255,255,0.18), transparent 24%), color-mix(in srgb, var(--accent), transparent 90%);
   color: var(--accent-strong, #7dd3fc);
-  box-shadow: inset 0 1px 0 rgba(255,255,255,0.06), 0 12px 28px rgba(2, 8, 23, 0.28);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.06), 0 12px 28px color-mix(in srgb, var(--bg-deeper), transparent 72%);
 }
 
 .op-chat-header-logo {
@@ -416,7 +416,7 @@ const OP_CHAT_SIDEBAR_CSS = `
   justify-content: center;
   border: 1px solid color-mix(in srgb, var(--accent-strong), transparent 78%);
   border-radius: 999px;
-  background: rgba(9, 19, 31, 0.94);
+  background: color-mix(in srgb, var(--bg-1), transparent 6%);
   color: #eef8ff;
   box-shadow: inset 0 1px 0 rgba(255,255,255,0.04);
   cursor: pointer;
@@ -429,7 +429,7 @@ const OP_CHAT_SIDEBAR_CSS = `
 
 .op-chat-expand-rail:hover,
 .op-chat-toggle:hover {
-  background: rgba(12, 28, 44, 0.98);
+  background: color-mix(in srgb, var(--bg-popover), transparent 2%);
   border-color: color-mix(in srgb, var(--accent-strong), transparent 66%);
 }
 
@@ -510,7 +510,7 @@ const OP_CHAT_SIDEBAR_CSS = `
 
 .op-chat-sidebar .oracle-body {
   background:
-    linear-gradient(180deg, rgba(6, 13, 24, 0.96), rgba(4, 9, 17, 0.98)) !important;
+    linear-gradient(180deg, color-mix(in srgb, var(--bg-deep), transparent 4%), color-mix(in srgb, var(--bg-deeper), transparent 2%)) !important;
   padding: 14px 13px;
   gap: 12px;
   scrollbar-color: color-mix(in srgb, var(--accent-strong), transparent 78%) transparent;
@@ -543,13 +543,13 @@ const OP_CHAT_SIDEBAR_CSS = `
 
 .op-chat-sidebar .oracle-msg-content {
   border-color: color-mix(in srgb, var(--accent-strong), transparent 87%);
-  background: rgba(7, 16, 29, 0.92) !important;
+  background: color-mix(in srgb, var(--bg), transparent 8%) !important;
   box-shadow: inset 0 1px 0 rgba(255,255,255,0.035), 0 10px 22px rgba(0,0,0,0.16);
 }
 
 .op-chat-sidebar .oracle-msg-user .oracle-msg-content {
   border-color: color-mix(in srgb, var(--accent), transparent 72%);
-  background: linear-gradient(180deg, rgba(17, 44, 69, 0.98), rgba(9, 31, 52, 0.98)) !important;
+  background: linear-gradient(180deg, rgba(17, 44, 69, 0.98), color-mix(in srgb, var(--bg-popover), transparent 2%)) !important;
 }
 
 .op-chat-sidebar .oracle-msg-content:empty,
@@ -564,7 +564,7 @@ const OP_CHAT_SIDEBAR_CSS = `
 
 .op-chat-sidebar .oracle-form {
   border-top-color: color-mix(in srgb, var(--accent-strong), transparent 86%);
-  background: linear-gradient(180deg, rgba(7, 16, 29, 0.92), rgba(5, 11, 20, 0.98)) !important;
+  background: linear-gradient(180deg, color-mix(in srgb, var(--bg), transparent 8%), color-mix(in srgb, var(--bg-deeper), transparent 2%)) !important;
   padding: 12px;
 }
 
@@ -620,7 +620,7 @@ body.has-op-chat .pc-header {
   background:
     radial-gradient(circle at 16% 0%, color-mix(in srgb, var(--accent-strong), transparent 84%), transparent 22%),
     radial-gradient(circle at 82% 12%, rgba(255,255,255,0.06), transparent 16%),
-    linear-gradient(180deg, #08111d 0%, #040913 58%, #03070f 100%);
+    linear-gradient(180deg, var(--bg) 0%, var(--bg-deeper) 58%, var(--bg-deepest) 100%);
   box-shadow:
     inset -1px 0 0 rgba(255,255,255,0.03),
     inset 0 1px 0 rgba(255,255,255,0.04),
@@ -658,8 +658,8 @@ body.has-op-chat .pc-header {
   backdrop-filter: blur(12px);
   background:
     radial-gradient(circle at 12% 12%, color-mix(in srgb, var(--accent-strong), transparent 88%), transparent 18%),
-    linear-gradient(180deg, rgba(10, 23, 39, 0.96), rgba(6, 14, 25, 0.98)),
-    #07101d;
+    linear-gradient(180deg, color-mix(in srgb, var(--bg-popover), transparent 4%), color-mix(in srgb, var(--bg-deep), transparent 2%)),
+    var(--bg);
   box-shadow: inset 0 -1px 0 color-mix(in srgb, var(--accent-strong), transparent 92%);
 }
 .op-chat-header-main {
@@ -724,12 +724,12 @@ body.has-op-chat .pc-header {
   position: relative;
   z-index: 1;
   background:
-    linear-gradient(180deg, rgba(7, 14, 24, 0.96), rgba(4, 9, 17, 0.985)) !important;
+    linear-gradient(180deg, color-mix(in srgb, var(--bg-deep), transparent 4%), color-mix(in srgb, var(--bg-deeper), transparent 1.5%)) !important;
 }
 
 .op-chat-sidebar .oracle-msg-content {
   background:
-    linear-gradient(180deg, rgba(9, 19, 31, 0.97), rgba(6, 12, 22, 0.99)) !important;
+    linear-gradient(180deg, color-mix(in srgb, var(--bg-1), transparent 3%), color-mix(in srgb, var(--bg-deep), transparent 1%)) !important;
   box-shadow:
     inset 0 1px 0 rgba(255,255,255,0.04),
     inset 0 -1px 0 rgba(0,0,0,0.18),
@@ -738,11 +738,11 @@ body.has-op-chat .pc-header {
 
 .op-chat-sidebar .oracle-msg-user .oracle-msg-content {
   background:
-    linear-gradient(180deg, rgba(20, 53, 82, 0.99), rgba(9, 31, 52, 0.99)) !important;
+    linear-gradient(180deg, rgba(20, 53, 82, 0.99), color-mix(in srgb, var(--bg-popover), transparent 1%)) !important;
   box-shadow:
     inset 0 1px 0 rgba(255,255,255,0.05),
     inset 0 -1px 0 rgba(0,0,0,0.18),
-    0 14px 28px rgba(2, 8, 23, 0.22);
+    0 14px 28px color-mix(in srgb, var(--bg-deeper), transparent 78%);
 }
 
 .op-chat-sidebar .oracle-form {
@@ -770,7 +770,7 @@ body.has-op-chat .pc-header {
   background: linear-gradient(180deg, rgba(71, 198, 255, 0.22), color-mix(in srgb, var(--accent), transparent 88%));
   box-shadow:
     inset 0 1px 0 rgba(255,255,255,0.06),
-    0 8px 18px rgba(2, 8, 23, 0.18);
+    0 8px 18px color-mix(in srgb, var(--bg-deeper), transparent 82%);
   transition: transform 120ms ease, box-shadow 120ms ease, border-color 120ms ease, background 120ms ease;
 }
 
@@ -780,7 +780,7 @@ body.has-op-chat .pc-header {
   background: linear-gradient(180deg, rgba(103, 232, 249, 0.26), color-mix(in srgb, var(--accent), transparent 84%));
   box-shadow:
     inset 0 1px 0 rgba(255,255,255,0.08),
-    0 10px 20px rgba(2, 8, 23, 0.22);
+    0 10px 20px color-mix(in srgb, var(--bg-deeper), transparent 78%);
 }
 
 .op-chat-sidebar .oracle-send-button::after {
@@ -823,7 +823,7 @@ body.has-op-chat .pc-header {
    rhythm, and give the composer more useful text space. */
 .op-chat-sidebar {
   background:
-    linear-gradient(180deg, rgba(6, 14, 24, 0.99), rgba(3, 8, 15, 0.99)) !important;
+    linear-gradient(180deg, color-mix(in srgb, var(--bg-deep), transparent 1%), color-mix(in srgb, var(--bg-deepest), transparent 1%)) !important;
   box-shadow:
     inset -1px 0 0 rgba(255,255,255,0.035),
     14px 0 34px rgba(0, 0, 0, 0.18) !important;
@@ -846,7 +846,7 @@ body.has-op-chat .pc-header {
 
 .op-chat-header {
   padding: 8px 10px 7px !important;
-  background: rgba(5, 13, 23, 0.96) !important;
+  background: color-mix(in srgb, var(--bg-deep), transparent 4%) !important;
   box-shadow: inset 0 -1px 0 color-mix(in srgb, var(--accent-strong), transparent 90%) !important;
   backdrop-filter: none !important;
 }
@@ -893,7 +893,7 @@ body.has-op-chat .pc-header {
 .op-chat-sidebar .oracle-body {
   padding: 8px 8px 9px !important;
   gap: 7px !important;
-  background: rgba(3, 8, 15, 0.98) !important;
+  background: color-mix(in srgb, var(--bg-deepest), transparent 2%) !important;
 }
 
 .op-chat-sidebar .oracle-msg {
@@ -926,7 +926,7 @@ body.has-op-chat .pc-header {
 .op-chat-sidebar .oracle-msg-content {
   padding: 9px 10px !important;
   border-radius: 12px !important;
-  background: rgba(7, 15, 27, 0.94) !important;
+  background: color-mix(in srgb, var(--bg), transparent 6%) !important;
   box-shadow: none !important;
   font-size: 13px !important;
   line-height: 1.5 !important;
@@ -956,7 +956,7 @@ body.has-op-chat .pc-header {
 .op-chat-sidebar .oracle-form {
   padding: 8px !important;
   gap: 6px !important;
-  background: rgba(5, 12, 22, 0.98) !important;
+  background: color-mix(in srgb, var(--bg-deep), transparent 2%) !important;
 }
 
 .op-chat-sidebar .oracle-input-shell {
@@ -985,14 +985,14 @@ body.has-op-chat .pc-header {
 /* Contrast follow-up: separate chat surfaces from the sidebar background so
    reading requires less effort at a glance. */
 .op-chat-sidebar .oracle-body {
-  background: rgba(2, 7, 13, 0.99) !important;
+  background: color-mix(in srgb, var(--bg-deepest), transparent 1%) !important;
 }
 
 .op-chat-controls .op-active-toggle,
 .op-chat-controls .pc-voice-btn,
 .op-chat-controls .pc-voice-settings-link {
   border-color: color-mix(in srgb, var(--accent-strong), transparent 74%) !important;
-  background: rgba(9, 19, 31, 0.96) !important;
+  background: color-mix(in srgb, var(--bg-1), transparent 4%) !important;
   color: #eef8ff !important;
 }
 
@@ -1015,7 +1015,7 @@ body.has-op-chat .pc-header {
 
 .op-chat-sidebar .oracle-msg-content {
   border: 1px solid rgba(148, 163, 184, 0.22) !important;
-  background: linear-gradient(180deg, rgba(14, 27, 41, 0.98), rgba(9, 17, 29, 0.99)) !important;
+  background: linear-gradient(180deg, color-mix(in srgb, var(--bg-popover), transparent 2%), color-mix(in srgb, var(--bg), transparent 1%)) !important;
   color: #f3f9ff !important;
 }
 
@@ -1027,7 +1027,7 @@ body.has-op-chat .pc-header {
 
 .op-chat-sidebar .oracle-input-shell {
   border-color: color-mix(in srgb, var(--accent-strong), transparent 76%) !important;
-  background: rgba(9, 18, 30, 0.98) !important;
+  background: color-mix(in srgb, var(--bg-1), transparent 2%) !important;
 }
 
 .op-chat-sidebar .oracle-input-shell input {
@@ -1052,7 +1052,7 @@ body.has-op-chat .pc-header {
 
 .op-chat-sidebar .ask-choice-card {
   border-color: color-mix(in srgb, var(--accent-strong), transparent 82%) !important;
-  background: rgba(8, 18, 31, 0.98) !important;
+  background: color-mix(in srgb, var(--bg-1), transparent 2%) !important;
 }
 
 .op-chat-sidebar .ask-choice-option {
@@ -1111,7 +1111,7 @@ body.has-op-chat .pc-header {
 
 .op-chat-sidebar .op-chat-empty-panel {
   border-color: color-mix(in srgb, var(--accent-strong), transparent 78%) !important;
-  background: rgba(8, 18, 31, 0.98) !important;
+  background: color-mix(in srgb, var(--bg-1), transparent 2%) !important;
 }
 
 .op-chat-sidebar .op-chat-empty-panel-label {
@@ -1193,7 +1193,7 @@ body.has-op-chat .pc-header {
   gap: 3px !important;
   padding: 9px 10px !important;
   border-color: color-mix(in srgb, var(--accent-strong), transparent 80%) !important;
-  background: rgba(12, 24, 38, 0.98) !important;
+  background: color-mix(in srgb, var(--bg-popover), transparent 2%) !important;
 }
 
 .op-chat-sidebar .op-chat-empty-row-title {
@@ -1216,7 +1216,7 @@ body.has-op-chat .pc-header {
 
 .op-chat-sidebar .ask-choice-option {
   border-color: color-mix(in srgb, var(--accent-strong), transparent 82%) !important;
-  background: rgba(10, 22, 36, 0.92) !important;
+  background: color-mix(in srgb, var(--bg-1), transparent 8%) !important;
 }
 
 .op-chat-sidebar .ask-choice-option:hover:not([data-disabled="true"]) {
@@ -1249,13 +1249,13 @@ body.has-op-chat .pc-header {
   position: relative;
   z-index: 4;
   border-top-color: color-mix(in srgb, var(--accent-strong), transparent 76%) !important;
-  background: rgba(6, 13, 24, 0.99) !important;
+  background: color-mix(in srgb, var(--bg-deep), transparent 1%) !important;
   box-shadow: 0 -14px 26px rgba(0, 0, 0, 0.24) !important;
 }
 
 .op-chat-sidebar .oracle-input-shell {
   border-color: color-mix(in srgb, var(--accent-strong), transparent 70%) !important;
-  background: rgba(10, 20, 33, 0.99) !important;
+  background: color-mix(in srgb, var(--bg-1), transparent 1%) !important;
 }
 
 .op-chat-sidebar .oracle-input-shell::before {
@@ -1265,12 +1265,12 @@ body.has-op-chat .pc-header {
 
 .op-chat-sidebar .oracle-input-shell:hover {
   border-color: color-mix(in srgb, var(--accent-strong), transparent 58%) !important;
-  background: rgba(12, 24, 38, 0.99) !important;
+  background: color-mix(in srgb, var(--bg-popover), transparent 1%) !important;
 }
 
 .op-chat-sidebar .oracle-input-shell:focus-within {
   border-color: rgba(103, 232, 249, 0.58) !important;
-  background: rgba(12, 25, 40, 0.99) !important;
+  background: color-mix(in srgb, var(--bg-popover), transparent 1%) !important;
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.04),
     0 0 16px color-mix(in srgb, var(--accent), transparent 84%) !important;
@@ -1424,14 +1424,14 @@ body.has-op-chat .pc-header {
   padding: 9px 11px !important;
   border-radius: 13px !important;
   border-color: rgba(148, 163, 184, 0.36) !important;
-  background: linear-gradient(180deg, rgba(13, 26, 40, 0.99), rgba(8, 17, 29, 0.995)) !important;
+  background: linear-gradient(180deg, color-mix(in srgb, var(--bg-popover), transparent 1%), color-mix(in srgb, var(--bg), transparent 0.5%)) !important;
   color: #f7fbff !important;
   line-height: 1.56 !important;
 }
 
 .op-chat-sidebar .oracle-msg-assistant .oracle-msg-content {
   border-color: color-mix(in srgb, var(--accent-strong), transparent 72%) !important;
-  background: linear-gradient(180deg, rgba(14, 29, 44, 0.995), rgba(8, 17, 29, 0.995)) !important;
+  background: linear-gradient(180deg, color-mix(in srgb, var(--bg-popover), transparent 0.5%), color-mix(in srgb, var(--bg), transparent 0.5%)) !important;
 }
 
 .op-chat-sidebar .oracle-msg-user .oracle-msg-content {
@@ -1439,7 +1439,7 @@ body.has-op-chat .pc-header {
   background: linear-gradient(180deg, rgba(24, 78, 113, 0.99), rgba(10, 56, 87, 0.995)) !important;
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.055),
-    0 8px 18px rgba(2, 8, 23, 0.20) !important;
+    0 8px 18px color-mix(in srgb, var(--bg-deeper), transparent 80%) !important;
 }
 
 .op-chat-sidebar .oracle-msg-system .oracle-msg-content {
@@ -1475,7 +1475,7 @@ body.has-op-chat .pc-header {
   margin: 4px 8px 12px 30px !important;
   border-color: rgba(103, 232, 249, 0.34) !important;
   border-radius: 13px !important;
-  background: rgba(10, 20, 33, 0.98) !important;
+  background: color-mix(in srgb, var(--bg-1), transparent 2%) !important;
   color: #dff6ff !important;
   overflow: visible !important;
 }
@@ -1494,7 +1494,7 @@ body:has(.operator-panel) .op-chat-sidebar * {
 body:has(.operator-panel) .op-chat-sidebar {
   background:
     radial-gradient(circle at 50% -12%, color-mix(in srgb, var(--accent), transparent 84%), transparent 34%),
-    linear-gradient(180deg, #07101d 0%, #050b14 100%),
-    #050b14 !important;
+    linear-gradient(180deg, var(--bg) 0%, var(--bg-deeper) 100%),
+    var(--bg-deeper) !important;
 }
 `;

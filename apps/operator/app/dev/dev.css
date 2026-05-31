@@ -5,7 +5,7 @@
   grid-template-columns: 240px 1fr 320px;
   gap: 0;
   min-height: calc(100vh - 60px);
-  background: var(--bg, #0a0e14);
+  background: var(--bg, var(--bg-deep));
   color: var(--fg, #e7eef7);
   font-size: 13px;
 }
@@ -106,7 +106,7 @@
 
 .pc-dev-btn-primary {
   background: #38bdf8;
-  color: #0a0e14;
+  color: var(--bg-deep);
   border: none;
   border-radius: 4px;
   padding: 6px 14px;
@@ -663,7 +663,7 @@
   z-index: 1000;
 }
 .pc-dev-modal {
-  background: #0f1419;
+  background: var(--bg-1);
   border: 1px solid var(--border, color-mix(in srgb, var(--accent-strong), transparent 80%));
   border-radius: 6px;
   padding: 18px 22px;
@@ -717,7 +717,7 @@
   padding: 24px;
   color: var(--fg-mute, #94a3b8);
   font-size: 14px;
-  background: #0a0d10;
+  background: var(--bg-deep);
 }
 .pc-studio-state-text { color: var(--fg-mute, #94a3b8); }
 .pc-studio-state-icon { font-size: 40px; line-height: 1; }
@@ -779,7 +779,7 @@
   flex-direction: column;
   width: 100%;
   height: 100%;
-  background: #0a0d10;
+  background: var(--bg-deep);
 }
 .pc-studio-toolbar {
   display: flex;
@@ -829,7 +829,7 @@
   min-height: 0;
   border: none;
   display: block;
-  background: #0a0d10;
+  background: var(--bg-deep);
 }
 
 /* ── /dev Tables tab ───────────────────────────────── */
@@ -839,7 +839,7 @@
   grid-template-columns: 280px 1fr;
   width: 100%;
   height: 100%;
-  background: #0a0d10;
+  background: var(--bg-deep);
   color: var(--fg, #e2e8f0);
   font-size: 13px;
 }
@@ -1089,7 +1089,7 @@
 .pc-tables-rowgrid th {
   position: sticky;
   top: 0;
-  background: rgba(10, 13, 16, 0.96);
+  background: color-mix(in srgb, var(--bg-deep), transparent 4%);
   text-align: left;
   padding: 5px 10px;
   font-weight: 600;
@@ -1356,7 +1356,7 @@
   grid-template-rows: auto 1fr 1fr;
   height: 100%;
   width: 100%;
-  background: #0a0d10;
+  background: var(--bg-deep);
 }
 .pc-sql-toolbar {
   display: flex;
@@ -1450,7 +1450,7 @@
 .pc-sql-grid th {
   position: sticky;
   top: 0;
-  background: rgba(10, 13, 16, 0.96);
+  background: color-mix(in srgb, var(--bg-deep), transparent 4%);
   text-align: left;
   padding: 5px 10px;
   font-weight: 600;
@@ -1475,10 +1475,10 @@
 /* ── Usability pass: dense, readable, developer-first ─────────────── */
 
 .pc-dev-shell {
-  --pc-dev-bg: #070b12;
-  --pc-dev-panel: rgba(10, 17, 27, 0.92);
-  --pc-dev-panel-2: rgba(13, 23, 35, 0.82);
-  --pc-dev-panel-3: rgba(16, 27, 41, 0.72);
+  --pc-dev-bg: var(--bg-deeper);
+  --pc-dev-panel: color-mix(in srgb, var(--bg), transparent 8%);
+  --pc-dev-panel-2: color-mix(in srgb, var(--bg-popover), transparent 18%);
+  --pc-dev-panel-3: color-mix(in srgb, var(--bg-popover), transparent 28%);
   --pc-dev-border: color-mix(in srgb, var(--accent-strong), transparent 84%);
   --pc-dev-border-strong: color-mix(in srgb, var(--accent-strong), transparent 70%);
   --pc-dev-accent: #38bdf8;
@@ -1495,7 +1495,7 @@
   min-height: 560px;
   overflow: hidden;
   background:
-    linear-gradient(180deg, rgba(12, 20, 32, 0.92), rgba(6, 10, 17, 0.98)),
+    linear-gradient(180deg, color-mix(in srgb, var(--bg-1), transparent 8%), color-mix(in srgb, var(--bg-deeper), transparent 2%)),
     var(--pc-dev-bg);
   color: #e6edf5;
   font-size: 12px;
@@ -1511,7 +1511,7 @@
 .pc-dev-right {
   height: 100%;
   min-height: 0;
-  background: linear-gradient(180deg, rgba(11, 18, 29, 0.96), rgba(7, 12, 20, 0.98));
+  background: linear-gradient(180deg, color-mix(in srgb, var(--bg-1), transparent 4%), color-mix(in srgb, var(--bg-deep), transparent 2%));
   border-color: var(--pc-dev-border);
   scrollbar-color: color-mix(in srgb, var(--accent-strong), transparent 74%) transparent;
 }
@@ -1639,7 +1639,7 @@
   min-height: 0;
   padding: 0;
   overflow: hidden;
-  background: rgba(2, 6, 13, 0.30);
+  background: color-mix(in srgb, var(--bg-deepest), transparent 70%);
 }
 
 .pc-dev-api,
@@ -1673,7 +1673,7 @@
   margin: -16px -18px 14px;
   padding: 10px 18px;
   border-bottom: 1px solid var(--pc-dev-border);
-  background: rgba(7, 12, 20, 0.96);
+  background: color-mix(in srgb, var(--bg-deep), transparent 4%);
   backdrop-filter: blur(8px);
 }
 
@@ -1702,7 +1702,7 @@
 .pc-tables-composer select,
 .pc-tables-composer input,
 .pc-sql-role select {
-  background: rgba(3, 8, 15, 0.82);
+  background: color-mix(in srgb, var(--bg-deepest), transparent 18%);
   border-color: color-mix(in srgb, var(--accent-strong), transparent 82%);
   color: #edf6ff;
 }
@@ -1722,7 +1722,7 @@
 .pc-tables-composer-apply {
   background: var(--pc-dev-accent);
   border: 1px solid color-mix(in srgb, var(--accent-soft), transparent 82%);
-  color: #031018;
+  color: var(--bg-deep);
   font-weight: 750;
   box-shadow: none;
 }
@@ -1777,7 +1777,7 @@
   position: sticky;
   top: 42px;
   z-index: 2;
-  background: #0a111b;
+  background: var(--bg);
   color: #9db0c1;
   font-size: 10px;
 }
@@ -1816,7 +1816,7 @@
 }
 
 .pc-dev-detail-row > td {
-  background: rgba(7, 12, 20, 0.84);
+  background: color-mix(in srgb, var(--bg-deep), transparent 16%);
   border-left: 3px solid color-mix(in srgb, var(--accent), transparent 55%);
   box-shadow: inset 0 1px 0 color-mix(in srgb, var(--accent-strong), transparent 92%);
 }
@@ -1833,7 +1833,7 @@
 .pc-dev-api-response,
 .pc-sql-err,
 .pc-tables-err {
-  background: rgba(3, 8, 15, 0.88);
+  background: color-mix(in srgb, var(--bg-deepest), transparent 12%);
   border-color: color-mix(in srgb, var(--accent-strong), transparent 86%);
   border-radius: 7px;
 }
@@ -1850,7 +1850,7 @@
   z-index: 3;
   margin: 0 0 12px;
   padding: 0 0 12px;
-  background: rgba(7, 12, 20, 0.96);
+  background: color-mix(in srgb, var(--bg-deep), transparent 4%);
 }
 
 .pc-dev-api-group-label {
@@ -1948,7 +1948,7 @@
   padding: 7px 8px;
   border: 1px solid color-mix(in srgb, var(--accent-strong), transparent 91%);
   border-radius: 7px;
-  background: rgba(3, 8, 15, 0.38);
+  background: color-mix(in srgb, var(--bg-deepest), transparent 62%);
 }
 
 .pc-dev-rail-stats strong {
@@ -1972,7 +1972,7 @@
 }
 
 .pc-tables-sidebar {
-  background: rgba(7, 12, 20, 0.64);
+  background: color-mix(in srgb, var(--bg-deep), transparent 36%);
   border-right-color: var(--pc-dev-border);
 }
 
@@ -1980,7 +1980,7 @@
   position: sticky;
   top: 0;
   z-index: 4;
-  background: rgba(7, 12, 20, 0.96);
+  background: color-mix(in srgb, var(--bg-deep), transparent 4%);
 }
 
 .pc-tables-group-label {
@@ -2015,7 +2015,7 @@
   z-index: 5;
   margin: -14px -18px 0;
   padding: 11px 18px;
-  background: rgba(7, 12, 20, 0.96);
+  background: color-mix(in srgb, var(--bg-deep), transparent 4%);
   backdrop-filter: blur(8px);
 }
 
@@ -2040,7 +2040,7 @@
 .pc-tables-coltable th,
 .pc-tables-rowgrid th,
 .pc-sql-grid th {
-  background: #0a111b;
+  background: var(--bg);
   color: #9db0c1;
 }
 
@@ -2090,7 +2090,7 @@
 .pc-studio-toolbar {
   min-height: 46px;
   padding: 8px 14px;
-  background: rgba(7, 12, 20, 0.96);
+  background: color-mix(in srgb, var(--bg-deep), transparent 4%);
   border-bottom-color: var(--pc-dev-border);
 }
 

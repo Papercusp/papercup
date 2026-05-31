@@ -125,7 +125,7 @@ export function OperatorButton(): ReactElement {
           // from it, or make it non-interactive while Deck is open.
           overlayStyle={{
             left: 'var(--op-chat-w, 0px)',
-            background: 'rgba(0, 2, 6, 0.84)',
+            background: 'color-mix(in srgb, var(--bg-deepest), transparent 16%)',
             backdropFilter: 'blur(6px) saturate(0.6)',
             WebkitBackdropFilter: 'blur(6px) saturate(0.6)',
           }}

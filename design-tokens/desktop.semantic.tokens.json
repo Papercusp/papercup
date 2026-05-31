@@ -1,4 +1,7 @@
 {
+  "bg-deepest":      { "$value": "#02060C", "$type": "color", "$description": "Surface depth scale — deepest (gradient bottoms, deep shadows). Darker than --bg." },
+  "bg-deeper":       { "$value": "#030A14", "$type": "color", "$description": "Surface depth scale — deep surfaces. Darker than --bg." },
+  "bg-deep":         { "$value": "#050D18", "$type": "color", "$description": "Surface depth scale — sub-base. Just below --bg." },
   "bg":              { "$value": "#07101D", "$type": "color", "$description": "Page background — slate-deeper than sky-950" },
   "bg-1":            { "$value": "#0B1220", "$type": "color" },
   "bg-2":            { "$value": "rgba(255, 255, 255, 0.045)", "$type": "color", "$description": "Translucent surface tier 2" },

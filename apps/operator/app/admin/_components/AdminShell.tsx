@@ -52,7 +52,7 @@ export default function AdminShell({
           min-height: calc(100vh - 56px);
           background:
             radial-gradient(circle at top left, color-mix(in srgb, var(--accent), transparent 94%), transparent 28%),
-            linear-gradient(180deg, rgba(5, 12, 22, 0.99), rgba(4, 10, 18, 1));
+            linear-gradient(180deg, color-mix(in srgb, var(--bg-deep), transparent 1%), color-mix(in srgb, var(--bg-deeper), transparent 0%));
         }
         .pc-adminshell__header {
           display: flex;
@@ -61,7 +61,7 @@ export default function AdminShell({
           padding: 14px 18px 12px;
           border-bottom: 1px solid color-mix(in srgb, var(--accent-strong), transparent 86%);
           background:
-            linear-gradient(180deg, rgba(7, 16, 29, 0.98), rgba(6, 13, 24, 0.98));
+            linear-gradient(180deg, color-mix(in srgb, var(--bg), transparent 2%), color-mix(in srgb, var(--bg-deep), transparent 2%));
           box-shadow: inset 0 -1px 0 rgba(255, 255, 255, 0.02);
         }
         .pc-adminshell__copy {
@@ -114,16 +114,16 @@ export default function AdminShell({
         }
         .pc-adminshell__tab:hover {
           color: #eff8ff;
-          background: rgba(12, 24, 38, 0.96);
+          background: color-mix(in srgb, var(--bg-popover), transparent 4%);
           border-color: color-mix(in srgb, var(--accent-strong), transparent 72%);
           text-decoration: none !important;
         }
         .pc-adminshell__tab[aria-selected="true"] {
           color: #f7fdff;
           background:
-            linear-gradient(180deg, rgba(17, 34, 53, 0.98), rgba(10, 20, 33, 0.99));
+            linear-gradient(180deg, rgba(17, 34, 53, 0.98), color-mix(in srgb, var(--bg-1), transparent 1%));
           border-color: rgba(103, 232, 249, 0.38);
-          border-bottom-color: rgba(7, 16, 29, 0.98);
+          border-bottom-color: color-mix(in srgb, var(--bg), transparent 2%);
           box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.035);
           transform: translateY(1px);
         }

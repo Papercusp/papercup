@@ -41,7 +41,7 @@
   align-items: flex-start;
   justify-content: center;
   padding-top: 12vh;
-  background: radial-gradient(circle at 50% 8%, color-mix(in oklab, var(--accent), transparent 80%), transparent 28rem), rgba(2, 6, 14, 0.72);
+  background: radial-gradient(circle at 50% 8%, color-mix(in oklab, var(--accent), transparent 80%), transparent 28rem), color-mix(in srgb, var(--bg-deepest), transparent 28%);
   backdrop-filter: blur(10px);
 }
 

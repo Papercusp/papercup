@@ -169,7 +169,7 @@ const layout: React.CSSProperties = {
   display: 'grid',
   gridTemplateColumns: 'minmax(220px, 248px) minmax(0, 1fr)',
   height: '100vh',
-  background: 'linear-gradient(180deg, rgba(8, 19, 34, 0.98), var(--bg-1, #0b1220))',
+  background: 'linear-gradient(180deg, color-mix(in srgb, var(--bg-1), transparent 2%), var(--bg-1, var(--bg-1)))',
   color: 'var(--fg, #ddd)',
   fontFamily: 'system-ui, -apple-system, "Segoe UI", sans-serif',
 };
@@ -183,7 +183,7 @@ const projectHeader: React.CSSProperties = {
   position: 'sticky',
   top: 0,
   zIndex: 2,
-  background: 'rgba(15, 28, 45, 0.96)',
+  background: 'color-mix(in srgb, var(--bg-popover), transparent 4%)',
   padding: '0 16px 14px',
   borderBottom: '1px solid var(--border, #2a2a2a)',
   marginBottom: 10,
@@ -491,7 +491,7 @@ const projectDocsCss = `
     border: 1px solid color-mix(in srgb, var(--accent-strong), transparent 80%);
     border-bottom-color: color-mix(in srgb, var(--accent-strong), transparent 68%);
     border-radius: 5px;
-    background: rgba(3, 9, 18, 0.62);
+    background: color-mix(in srgb, var(--bg-deeper), transparent 38%);
     color: var(--fg, #e7f7ff);
     box-shadow: inset 0 -1px 0 rgba(255, 255, 255, 0.045);
   }
@@ -546,7 +546,7 @@ const projectDocsCss = `
     padding: 12px 14px;
     border: 1px solid color-mix(in srgb, var(--accent-strong), transparent 84%);
     border-radius: 10px;
-    background: rgba(3, 9, 18, 0.58);
+    background: color-mix(in srgb, var(--bg-deeper), transparent 42%);
     box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.035);
     overflow-x: auto;
   }

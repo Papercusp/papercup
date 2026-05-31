@@ -10,7 +10,7 @@ const frostCard: CSSProperties = {
   border: '1px solid color-mix(in srgb, var(--accent-strong), transparent 74%)',
   borderRadius: 30,
   background:
-    'radial-gradient(circle at 18% 10%, color-mix(in srgb, var(--accent-strong), transparent 84%), transparent 32%), linear-gradient(180deg, rgba(255,255,255,0.070), rgba(255,255,255,0.024)), rgba(7, 16, 29, 0.78)',
+    'radial-gradient(circle at 18% 10%, color-mix(in srgb, var(--accent-strong), transparent 84%), transparent 32%), linear-gradient(180deg, rgba(255,255,255,0.070), rgba(255,255,255,0.024)), color-mix(in srgb, var(--bg), transparent 22%)',
   boxShadow:
     '0 28px 90px rgba(0, 0, 0, 0.38), inset 0 1px 0 rgba(255,255,255,0.08)',
 };
@@ -105,7 +105,7 @@ export default function NotFound() {
                   padding: '6px 10px',
                   border: '1px solid color-mix(in srgb, var(--accent-strong), transparent 72%)',
                   borderRadius: 999,
-                  background: 'rgba(7, 16, 29, 0.78)',
+                  background: 'color-mix(in srgb, var(--bg), transparent 22%)',
                   color: 'var(--accent-cool)',
                   fontSize: 13,
                   fontWeight: 850,

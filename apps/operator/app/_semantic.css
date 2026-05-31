@@ -12,6 +12,9 @@
   --dur-slow: 360ms;
   --card-shadow: 0 24px 70px rgba(0, 0, 0, 0.32);
   --frost: linear-gradient(180deg, rgba(255,255,255,0.068), rgba(255,255,255,0.024)); /** Glass overlay gradient — semantically a gradient, but DTCG gradient type is awkward for this single-stop case */
+  --bg-deepest: #02060c; /** Surface depth scale — deepest (gradient bottoms, deep shadows). Darker than --bg. */
+  --bg-deeper: #030a14; /** Surface depth scale — deep surfaces. Darker than --bg. */
+  --bg-deep: #050d18; /** Surface depth scale — sub-base. Just below --bg. */
   --bg: #07101d; /** Page background — slate-deeper than sky-950 */
   --bg-1: #0b1220;
   --bg-2: rgba(255, 255, 255, 0.045); /** Translucent surface tier 2 */

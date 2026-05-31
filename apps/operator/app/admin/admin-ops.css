@@ -25,7 +25,7 @@
   border: 1px solid color-mix(in srgb, var(--accent-strong), transparent 86%);
   border-radius: 16px;
   background:
-    linear-gradient(180deg, rgba(10, 20, 33, 0.94), rgba(7, 14, 24, 0.98));
+    linear-gradient(180deg, color-mix(in srgb, var(--bg-1), transparent 6%), color-mix(in srgb, var(--bg-deep), transparent 2%));
   box-shadow:
     inset 0 1px 0 rgba(255,255,255,0.035),
     0 18px 34px rgba(0,0,0,0.18);
@@ -61,7 +61,7 @@
   margin: 0 0 10px;
 }
 .pc-ops-empty {
-  background: rgba(8, 16, 28, 0.94);
+  background: color-mix(in srgb, var(--bg), transparent 6%);
   border: 1px dashed color-mix(in srgb, var(--accent-strong), transparent 82%);
   border-radius: 14px;
   padding: 18px;
@@ -76,7 +76,7 @@
 
 .pc-ops-card {
   background:
-    linear-gradient(180deg, rgba(10, 20, 33, 0.94), rgba(7, 14, 24, 0.99));
+    linear-gradient(180deg, color-mix(in srgb, var(--bg-1), transparent 6%), color-mix(in srgb, var(--bg-deep), transparent 1%));
   border: 1px solid color-mix(in srgb, var(--accent-strong), transparent 86%);
   border-radius: 16px;
   padding: 16px;
@@ -119,7 +119,7 @@
   flex-wrap: wrap;
 }
 .pc-ops-card-cmd {
-  background: rgba(2, 6, 16, 0.94);
+  background: color-mix(in srgb, var(--bg-deepest), transparent 6%);
   border: 1px solid color-mix(in srgb, var(--accent-strong), transparent 88%);
   border-radius: 12px;
   padding: 10px 12px;
@@ -237,7 +237,7 @@
 .pc-ops-checkbox input { margin: 0; cursor: pointer; }
 
 .pc-ops-log-box {
-  background: rgba(2, 6, 16, 0.94);
+  background: color-mix(in srgb, var(--bg-deepest), transparent 6%);
   border: 1px solid color-mix(in srgb, var(--accent-strong), transparent 88%);
   border-radius: 12px;
   padding: 10px 12px;
