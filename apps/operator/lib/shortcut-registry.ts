@@ -24,7 +24,7 @@
 import type { ActionOptions } from './shortcut-bus';
 import { wsLocalKey } from '@/lib/browser-workspace';
 
-export type ShortcutCategory = 'global' | 'navigation' | 'feature-list' | 'editor' | 'palette';
+export type ShortcutCategory = 'global' | 'navigation' | 'history' | 'feature-list' | 'editor' | 'palette';
 
 export interface ShortcutDef {
   /** Stable id used for storage + the settings UI. Dotted convention. */
@@ -107,6 +107,29 @@ export const SHORTCUTS: readonly ShortcutDef[] = [
     defaultCombo: 'mod+s',
     category: 'editor',
     options: { enableOnFormTags: ['INPUT', 'TEXTAREA'] },
+  },
+
+  // ── Browser history (back / forward) ────────────────────────────
+  // Mirror the universal browser shortcuts. The Tauri webview does NOT
+  // wire these by default — without an explicit binding, Alt+Left /
+  // Alt+Right are dead keys in the desktop shell. We bind them to the
+  // app router's history (Next App Router uses real window.history, so
+  // `history.back()` / `history.forward()` traverse the route stack).
+  // `enableOnFormTags` so they still navigate while focus sits in an
+  // input/textarea — the browser default does the same.
+  {
+    id: 'navigation.back',
+    description: 'Go back (browser history)',
+    defaultCombo: 'alt+ArrowLeft',
+    category: 'history',
+    options: { enableOnFormTags: ['INPUT', 'TEXTAREA', 'SELECT'] },
+  },
+  {
+    id: 'navigation.forward',
+    description: 'Go forward (browser history)',
+    defaultCombo: 'alt+ArrowRight',
+    category: 'history',
+    options: { enableOnFormTags: ['INPUT', 'TEXTAREA', 'SELECT'] },
   },
 
   // ── Tab navigation (Linear-style 2-stroke `g d` / `g s` / …) ────

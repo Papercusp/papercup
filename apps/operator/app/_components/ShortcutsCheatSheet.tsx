@@ -16,6 +16,7 @@ const CATEGORY_LABELS: Record<ShortcutCategory, string> = {
   global: 'Global',
   palette: 'Quick actions',
   navigation: 'Navigation',
+  history: 'Back / forward',
   'feature-list': 'Feature list',
   editor: 'Editors',
 };
@@ -24,6 +25,7 @@ const CATEGORY_ORDER: ShortcutCategory[] = [
   'palette',
   'global',
   'navigation',
+  'history',
   'feature-list',
   'editor',
 ];
@@ -82,7 +84,7 @@ export default function ShortcutsCheatSheet({ open, onClose }: { open: boolean; 
   const overrides = useShortcutOverrides();
 
   const grouped: Record<ShortcutCategory, typeof SHORTCUTS[number][]> = {
-    global: [], palette: [], navigation: [], 'feature-list': [], editor: [],
+    global: [], palette: [], navigation: [], history: [], 'feature-list': [], editor: [],
   };
   for (const s of SHORTCUTS) grouped[s.category].push(s);
 

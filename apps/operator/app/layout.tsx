@@ -9,6 +9,8 @@ import { OperatorConversationProvider } from './_components/OperatorConversation
 import { PostHogProvider } from './_components/PostHogProvider';
 import WslOnboardingGate from './_components/WslOnboardingGate';
 import GlobalShortcutDispatcher from './_components/GlobalShortcutDispatcher';
+import GlobalNavShortcuts from './_components/GlobalNavShortcuts';
+import GlobalCommandPalette from './_components/GlobalCommandPalette';
 import RouteProgressProvider from './_components/RouteProgressProvider';
 import RouteTransitionProvider from './_components/RouteTransitionProvider';
 import { ToasterSelectionFix } from './_components/ToasterSelectionFix';
@@ -26,6 +28,9 @@ import {
 import { getAllFlags } from '@papercusp/flags/server';
 import '@/lib/flag-bus';
 import './globals.css';
+// App-wide command-palette chrome (⌘K / Ctrl+P). Global CSS must be
+// imported from a layout, not the client component that uses it.
+import './command-palette.css';
 
 const visualEffectsBootstrapScript = `
 (() => {
@@ -290,6 +295,13 @@ export default async function RootLayout({ children }: { children: React.ReactNo
                       built-in `set_url` intent triggers nuqs's URL
                       subscription. See docs/ui-control-plan.md. */}
                   <UiPresenceProvider />
+                  {/* App-wide keyboard surfaces. Both sit inside
+                      <NuqsAdapter> (the palette stores its open state in
+                      the URL) and above ChromeShell so they're mounted on
+                      EVERY route — including /settings and chromeless
+                      iframe targets that ChromeShell itself skips. */}
+                  <GlobalNavShortcuts />
+                  <GlobalCommandPalette />
                   <RouteTransitionProvider>
                     <WslOnboardingGate>
                       {/* OperatorConversationProvider owns the
