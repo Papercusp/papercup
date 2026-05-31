@@ -86,15 +86,23 @@ After these: the full chain **sweep decision → promoteWave → /invoke → res
 invoke-once → PG connected → promote prompt built (`role=promote total=5510`) → omp spawns `rc=0` → omp loads
 papercusp tools** is verified live. Every papercusp-side layer works.
 
-**Remaining (one gap, orthogonal to the wave mechanism + papercusp):**
-- **omp model provider.** With tools loaded, the agent still produced empty output + no features because omp's
-  default model `openai-codex/gpt-5.5:high` (`~/.omp/agent/config.yml`) can't connect on this box
-  (`Codex websocket prewarm failed … wss://chatgpt.com/backend-api/codex/responses`). No working LLM → the agent
-  runs `rc=0` but does nothing. This is **omp's own model/auth config**, not the wave mechanism, the papercusp
-  app, or the agent wiring (all verified above). To finish the live P-015 dogfood: give omp a reachable model
-  for invoke-spawned agents (e.g. its `slow: anthropic/claude-opus-4-6` fallback, or fix codex auth), then
-  re-run `POST /api/harness/<slug>/invoke?role=promote` with `extra:[PLAN_SLUG,WAVE,NEEDS_ITEMS]` — the agent
-  will read the plan + run `plans:promote`. (`restart` is a registered harness in `default` for the real plan.)
+**Remaining (one gap, orthogonal to the wave mechanism + papercusp — agent-runtime layer):**
+- **The spawned agent doesn't complete the task** (`rc=0`, empty output, no features) — for two different
+  backend reasons, neither in the wave mechanism:
+  - **omp:** its default model `openai-codex/gpt-5.5:high` (`~/.omp/agent/config.yml`) can't connect here
+    (`Codex websocket prewarm failed … chatgpt.com/backend-api/codex`) → no LLM → no-op.
+  - **claude-code** (switched to via `.env.local` `AGENT_CMD="claude -p"` + `AGENT_BACKEND="claude-code"`, on
+    request): claude-code itself **works** — verified in isolation with the *exact* spawn flags
+    (`--output-format stream-json --verbose --include-partial-messages --mcp-config <signed> --strict-mcp-config
+    --permission-mode bypassPermissions`), the `/api/mcp` config (loads `mcp__papercusp` tools), the harness
+    cwd, OAuth auth, AND the exact service env — all complete `"is_error":false`. But the orchestrator's
+    `invoke()` spawn (`invoke.ts:1151`, `spawn(claude, …, {stdio:[pipe,pipe,pipe]})`) returns in ~3.5s having
+    captured **zero** stdout (no `<runId>.jsonl`), while an orphaned `claude` child runs ~20s — i.e. the
+    claude-code path forks/detaches and `invoke()` never sees its output. This is a subtle bug in the
+    **orchestrator's claude-code spawn mechanics** (rarely exercised — omp is the default), not the wave
+    wiring. Resolve by instrumenting `invoke()` to log the exact argv + reproduce the spawn 1:1 (the pieces all
+    pass individually). Once an agent backend completes, re-run `POST /api/harness/<slug>/invoke?role=promote`
+    with `extra:[PLAN_SLUG,WAVE,NEEDS_ITEMS]` for the live P-015 dogfood (`restart` is registered in `default`).
 
 **Follow-up (small):** `yaml` is imported by the parser but is an undeclared (stable, lockfile-present,
 already-bundled) transitive dep — declare it as a direct operator dep when the lockfile is next reconciled
