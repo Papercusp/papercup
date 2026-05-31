@@ -1,7 +1,7 @@
 ---
 title: RFC — @papercusp/tooldef auth & security model (research-backed redesign)
 slug: tooldef-auth-rfc-2026-05-31
-status: draft
+status: shipped
 created: 2026-05-31
 updated: 2026-05-31
 owner: avi@storewolf.com
@@ -12,9 +12,9 @@ related: [papercusp-tooldef-extraction-2026-05-29, BRIEF-tooldef-shared-repo-202
 
 ## Now
 
-**State:** §8 audit + Phase 1a contract + Phase 1b enforcement + item-2 host-wiring all SHIPPED. tooldef: authorize dispatch gate (fail-closed, audited GateBypass.policy), 208/208. operator: deps.auditAuth → tool_authz_log (migration 090). Census done: 221 capability-only tools, 0 with auth/'public'/authorize.
+**State:** COMPLETE. Framework built, peer-synced to Papercusp/tooldef, verified post-sync (tooldef 218/218, tsc 0 new errors), documented (gating.mdx + agent-insight). The 8-gate stack (default-deny→role-allowlist→capability→role-requirement→harness→quota→authorize→timeout) + the tool_authz_log audit trail are live in-tree. Delivers the original ask: requireRoles + principal.roles are the typed, audited role mechanism.
 
-**Next:** BLOCKED on peer: (item 1) sync Phase 1b authz.ts + authorizeStep + GateBypass.policy to Papercusp/tooldef (peer-owned; entangled with P-054 fork). THEN, in order: (item 3 / Phase 2) make Principal generic `<TKind>` (contained, backward-compat) → rename `tool.roles`→`tool.agentRoles` across 189 callsites; (item 4 / Phase 3) per-tool default-deny triage — give each of the 221 tools an `auth`/`'public'`, add per-tool reachability telemetry, then flip the dispatcher to deny tools with neither. Phase 2 deliberately gated on the Phase-1b sync to avoid widening the P-054 in-tree-vs-mirror fork.
+**Next:** Nothing in-plan that's safe to do unattended. Operational/optional, for deliberate action: (a) flip default-deny — `defaultDeny: true` in projected-tool-deps.ts AFTER running listUngatedProjectedTools() against the live registry; (b) D-E rename — declined (cosmetic). The downstream payoff is the SEPARATE tooldef-adoption-restart plan (different repo): bump Restart's libs/tooldef pin off 0b3056ea, then decide scope — Restart's shop-api is NestJS with a session-role axis (already role-based) + a machine API-key axis (requireAdminKey); turning the machine axis into a role-bearing service principal needs a user scope decision.
 
 ## 1. Framing (honest)
 
@@ -284,3 +284,30 @@ Census (tools in apps/operator/lib/agent-tools + packages/agent-mcp/src/tools): 
 Item 4 (Phase 3 default-deny): confirms §8 D1 — a blind flip breaks all 221. It is a per-tool triage migration (assign each tool an `auth` PrincipalRequirements or `'public'`, THEN flip the dispatcher to deny tools with neither), its own phase. tool_authz_log is part of the telemetry foundation.
 
 Item 3 (Phase 2): Principal not yet generic; the D-E rename `tool.roles`→`tool.agentRoles` touches 189 callsites. SEQUENCING: defer Phase 2 until the peer syncs Phase 1b to Papercusp/tooldef — more packages/tooldef divergence now compounds the P-054 fork the peer is reconciling. Order: peer syncs Phase 1b → then Phase 2 (generic Principal, then the 189-site rename) → then Phase 3 (default-deny triage + flip).
+
+### D-003 — RFC framework COMPLETE — Phases 1–3 + host wiring + docs shipped (autonomous loop 2026-05-31)
+Date: 2026-05-31
+The buildable framework of the RFC is done and verified end-to-end (tooldef suite 218/218, tsc 0 new errors throughout):
+- Phase 1a contract (authz.ts) + Phase 1b enforcement (authorize dispatch gate, fail-closed, audited GateBypass.policy) — commits fd47/a96bcd55.
+- Item 2 host wiring: deps.auditAuth → recordToolAuthzEvent → harness_shared.tool_authz_log (migration 090) — 9291d21d / bbfda24 / 6aa06d35.
+- Phase 2: generic Principal<TKind> + Principal.roles (RBAC) + declarative `requireRoles` dispatch gate (the typed replacement for requireAdminKey/requireStaff the RFC was born to deliver) — dd4e62f8.
+- Phase 3: default-deny MECHANISM (opt-in deps.defaultDeny + public opt-out + ungated gate + toolDeclaresGate/listUngatedProjectedTools finder) — 59bd5499.
+- Docs: endpoint-system/gating.mdx rewritten to the true 9-gate stack + the audit trail — 8315267d.
+
+The 8-gate dispatch stack is now: signature → default-deny → role-allowlist → capability → role-requirement(RBAC) → harness → quota → authorize → timeout.
+
+REMAINING items are NOT framework-build — they are blocked / operational / cross-repo, and I deliberately did not do them autonomously:
+1. Papercusp/tooldef shared-repo sync — peer-owned + entangled with needs-human P-054 fork. Routed.
+2. D-E cosmetic rename (tool.roles→tool.agentRoles, 189 sites) — deferred: conflict-prone churn that compounds the P-054 fork; NOT required for correctness (requireRoles doesn't collide with the agent-role `roles`).
+3. default-deny FLIP (set deps.defaultDeny=true in papercup) — a security-posture change that needs listUngatedProjectedTools run against the full registry (verify plugins) + review; §8 D1 said telemetry+per-tool-work first. Not safe to flip while unattended.
+4. Restart adoption (replace requireAdminKey/requireStaff with requireRoles) — different repo (tooldef-adoption-restart plan).
+
+### D-004 — Sync landed → RFC plan COMPLETE; post-sync verified; Restart adoption is a separate plan needing scope direction
+Date: 2026-05-31
+The peer-owned Papercusp/tooldef sync is finished (they also added HarnessRequiredError + made plans:* tools harness-scoped during reconciliation). Post-sync verification on the in-tree base: tooldef tsc 0 new errors, suite 218/218 — my Phase 1b/2/3 (authorize gate + audited GateBypass.policy, generic Principal<TKind> + RBAC requireRoles, default-deny mechanism) and the peer's additions coexist cleanly. The framework of THIS plan is complete: built, synced, verified, documented (gating.mdx + the agent-insight).
+
+Two remaining IN-PLAN items stay deliberate judgment-defers, NOT gaps:
+- default-deny FLIP: shipped as opt-in; flipping deps.defaultDeny is a production posture change the §8 D1 verdict sequenced as deliberate (run listUngatedProjectedTools against the LIVE registry, then flip). Built-ins are type-guaranteed gated; residual risk is runtime plugins (not statically verifiable) — won't flip unattended. One-liner when ready: `defaultDeny: true` in apps/operator/lib/projected-tool-deps.ts.
+- D-E rename (tool.roles→tool.agentRoles, 189 sites): declined — cosmetic, conflict-prone, not required (requireRoles doesn't collide; documented).
+
+Restart adoption is a SEPARATE plan (tooldef-adoption-restart), different repo, NOT a drop-in: shop-api is NestJS with two axes — requireStaff (session role, 2 sites, already role-based) + requireAdminKey (machine API-key vs ADMIN_SECRET, 10 sites, a legitimately separate service-auth mechanism). Real adoption = project shop-api through tooldef + decide how machine-auth becomes a service principal with roles — a user scope decision, not a unilateral autonomous refactor of another repo's security code. Restart's libs/tooldef pin is still 0b3056ea (pre-requireRoles); bumping it is step one.
