@@ -256,7 +256,7 @@ If a column's `header` is JSX, also provide `headerText: 'Plain header'` so the 
 
 **Virtual mode caveat:** in `virtualMode` the print mirror needs the full dataset, which the virtualizer doesn't have. Pass `printRows={fullDataset}` to enable; otherwise the print mirror is skipped silently.
 
-**Internals:** print mirror CSS is injected once globally per page on first mount; the helpers live in `libs/papergrid/grid-core/src/copy-payloads.ts` and have unit tests covering header text resolution, HTML escaping, TSV escaping, and the full payload build.
+**Internals:** print mirror CSS is injected once globally per page on first mount; the helpers live in `libs/generic/papergrid/grid-core/src/copy-payloads.ts` and have unit tests covering header text resolution, HTML escaping, TSV escaping, and the full payload build.
 
 ## `sonner`
 

@@ -92,8 +92,8 @@ Ports you may see internally (do not open these in a browser; let the desktop dr
 | Override for tests | `localStorage.harnessSyncTransport = 'SSE'` to force desktop path in browser | `'WEBSOCKETS'` to force browser path |
 
 **Stale docs to mistrust** (cross-checked 2026-05-11):
-- `libs/sync/PASS_2_1_DECISION.md` (2026-05-06) declared "stop SSE" — **SUPERSEDED 2026-05-07** by the HarnessZeroProvider decision to make SSE primary on desktop. The doc has a header banner now but is otherwise frozen.
-- `libs/sync/src/transports/sse/SSEAdapter.tsx`'s old header claimed "no current consumer, preserved-but-frozen" — corrected to reflect production use.
+- `libs/generic/sync/PASS_2_1_DECISION.md` (2026-05-06) declared "stop SSE" — **SUPERSEDED 2026-05-07** by the HarnessZeroProvider decision to make SSE primary on desktop. The doc has a header banner now but is otherwise frozen.
+- `libs/generic/sync/src/transports/sse/SSEAdapter.tsx`'s old header claimed "no current consumer, preserved-but-frozen" — corrected to reflect production use.
 - Any code comment or memory note that says "Zero WS is primary everywhere" or "SSE is dead" predates 2026-05-07 and is wrong for desktop.
 
 **When designing new sync-touching features:** desktop SSE is the path that matters. Browser WS is a fallback that lets developers test in a normal browser. If a feature only works under WS, it's incomplete for production.
