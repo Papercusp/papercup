@@ -16,6 +16,7 @@ import {
   defaultResolveSwarmBinding,
   getBootedHarness,
   listBootedHandles,
+  rebootHarness,
   type SwarmBindingResolver,
 } from '../boot-all';
 import type { BootedHarnessHandle } from '../boot';
@@ -91,16 +92,48 @@ describe('boot-all — substrate orchestrator', () => {
   });
 
   it('bootSingleHarness surfaces boot errors as failed', async () => {
-    // No fake handle set, real boot would touch FS — kill it fast via
-    // a 1ms timeout. corestore initialisation will fail or hang;
-    // either way the timeout race resolves with `failed`.
+    // Force a failure via a throwing swarm-binding resolver: bootSingleHarness
+    // catches it BEFORE ever calling the real bootHarnessSubstrate, so we
+    // exercise the failure→'failed' mapping deterministically without spinning
+    // up corestore/hypercore native threads. (The prior version raced a 1ms
+    // timeout against a real boot, which left native threads that crashed on
+    // worker teardown when this file shared a vitest worker with another.)
     const result = await bootSingleHarness('ws-bogus', 'definitely-not-real', {
-      workspaceRoot: '/tmp/nonexistent-substrate-boot-test',
-      timeoutMs: 1,
+      resolveSwarmBinding: async () => {
+        throw new Error('boot blew up');
+      },
     });
     expect(result.state).toBe('failed');
     expect(result.error).toBeTruthy();
     expect(getBootedHarness('ws-bogus', 'definitely-not-real')).toBeNull();
+  });
+
+  // A resolver that throws makes bootSingleHarness fail BEFORE it ever calls
+  // the real bootHarnessSubstrate — so these tests exercise the close+reboot
+  // composition without spinning up corestore/hypercore native threads (which
+  // crash on teardown when raced by a 1ms boot timeout).
+  const throwingResolver: SwarmBindingResolver = async () => {
+    throw new Error('skip-real-boot');
+  };
+
+  it('rebootHarness closes the existing handle then re-boots', async () => {
+    const h = fakeHandle('ws-1', 'papercup');
+    _setHandleForTests('ws-1', 'papercup', h);
+    const r = await rebootHarness('ws-1', 'papercup', {
+      resolveSwarmBinding: throwingResolver,
+    });
+    expect(r.closed).toBe(true); // stale handle was torn down
+    expect(h.close).toHaveBeenCalledOnce();
+    expect(r.boot.state).toBe('failed'); // re-boot attempted (resolver threw)
+    expect(getBootedHarness('ws-1', 'papercup')).toBeNull();
+  });
+
+  it('rebootHarness on a not-booted harness reports closed=false and still boots', async () => {
+    const r = await rebootHarness('ws-1', 'never-booted', {
+      resolveSwarmBinding: throwingResolver,
+    });
+    expect(r.closed).toBe(false);
+    expect(r.boot.state).toBe('failed');
   });
 
   it('bootAllHarnessesForActiveWorkspace returns 0 attempts for empty workspace list', async () => {

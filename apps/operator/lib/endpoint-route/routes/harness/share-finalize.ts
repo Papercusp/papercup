@@ -17,9 +17,21 @@
  * NOTE the topic in shared.json is for the human `papercusp://harness?...` link
  * + diagnostics only — boot DERIVES its swarm topic from github_repository_id
  * (derive-swarm-topic.ts), so what matters for going online is a valid config
- * with the right repo id. Gotcha: an already-booted harness won't swarm-join
- * until it re-boots (bootSingleHarness caches handles); finalize writes the file
- * so the join happens on the next substrate boot.
+ * with the right repo id.
+ *
+ * Going online without a host restart: an already-booted harness caches its
+ * handle (`bootSingleHarness` returns `already-booted` and never re-resolves
+ * the swarm binding), so just writing the file wouldn't make a running harness
+ * join the swarm. When the substrate is enabled
+ * (PAPERCUSP_DOGFOOD_SUBSTRATE_ENABLE=1) this route therefore reboots the
+ * harness after the write (`rebootHarness` = closeBootedHarness +
+ * bootSingleHarness) so the next boot re-resolves the now-present config and
+ * joins the derived topic. This is safe in-process: the finalize route and the
+ * booted-handle map both live in the hono-host (`bin/host-bootstrap.ts` boots
+ * the substrate there; the Next process carries no flag). The reboot is
+ * best-effort — a failure never fails the write; the file is the source of
+ * truth and a host restart would still bring it online. When the flag is off,
+ * the write happens and the harness goes online on the next enabled boot.
  */
 
 import { writeFile, mkdir } from 'node:fs/promises';
@@ -45,10 +57,26 @@ export interface FinalizeShareInput {
   discord_channel?: string;
 }
 
+/** Outcome of the post-write substrate reboot (when the flag is on). */
+export interface FinalizeShareSwarm {
+  /** True if a reboot was actually attempted (substrate enabled). */
+  rebooted: boolean;
+  /** The (re)boot state — 'booted' | 'already-booted' | 'failed'. */
+  state?: 'booted' | 'already-booted' | 'failed';
+  /** Boot/reboot error message, if any. */
+  error?: string;
+}
+
 export interface FinalizeShareResult {
   ok: true;
   shared_config: HarnessSharedConfig;
   path: string;
+  /**
+   * Present when a substrate reboot was attempted after the write. Tells the
+   * ShareWizard whether the harness is now joining the swarm in-process
+   * (rebooted, state 'booted') or whether a host restart is still needed.
+   */
+  swarm?: FinalizeShareSwarm;
 }
 
 export interface FinalizeShareDeps {
@@ -57,6 +85,14 @@ export interface FinalizeShareDeps {
   mkdirp: (dir: string) => Promise<void>;
   writeFileUtf8: (absPath: string, contents: string) => Promise<void>;
   now: () => number;
+  /**
+   * Optional: re-boot the harness substrate after the file is written so an
+   * already-booted (swarm: null) harness joins the swarm without a host
+   * restart. Best-effort — a throw is caught and reported as
+   * `{ rebooted: false, error }`. Omit to skip (realDeps's impl no-ops when
+   * the substrate flag is off, returning `{ rebooted: false }`).
+   */
+  reboot?: (slug: string) => Promise<FinalizeShareSwarm>;
 }
 
 /** Raised on bad input / unknown harness; the handler maps it to a 4xx. */
@@ -118,7 +154,19 @@ export async function finalizeShare(
   const absPath = join(projectDir, HARNESS_SHARED_CONFIG_REL_PATH);
   await deps.writeFileUtf8(absPath, JSON.stringify(config, null, 2));
 
-  return { ok: true, shared_config: config, path: absPath };
+  // Going-online side effect (best-effort): reboot the harness so an already-
+  // booted handle re-resolves its swarm binding from the file we just wrote.
+  // Never fails the finalize — the file is written and authoritative.
+  let swarm: FinalizeShareSwarm | undefined;
+  if (deps.reboot) {
+    try {
+      swarm = await deps.reboot(input.slug);
+    } catch (e) {
+      swarm = { rebooted: false, error: e instanceof Error ? e.message : String(e) };
+    }
+  }
+
+  return { ok: true, shared_config: config, path: absPath, ...(swarm ? { swarm } : {}) };
 }
 
 const realDeps: FinalizeShareDeps = {
@@ -128,6 +176,21 @@ const realDeps: FinalizeShareDeps = {
   },
   writeFileUtf8: (absPath, contents) => writeFile(absPath, contents, 'utf8'),
   now: () => Date.now(),
+  // Reboot the harness in-process so it joins the swarm immediately. Reads the
+  // flag at call time (the host sets it at startup); a no-op when disabled so a
+  // flag-off host never boots a substrate it deliberately left down.
+  reboot: async (slug) => {
+    if (process.env.PAPERCUSP_DOGFOOD_SUBSTRATE_ENABLE !== '1') {
+      return { rebooted: false };
+    }
+    const { rebootHarness } = await import('@/lib/sync/hyperbee/boot-all');
+    const r = await rebootHarness(activeWorkspaceId(), slug);
+    return {
+      rebooted: true,
+      state: r.boot.state,
+      ...(r.boot.error ? { error: r.boot.error } : {}),
+    };
+  },
 };
 
 /** Map the ShareWizard `{ state }` body onto FinalizeShareInput. */

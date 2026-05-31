@@ -278,6 +278,43 @@ export async function closeBootedHarness(
   return true;
 }
 
+export interface RebootHarnessResult {
+  /** True if a live handle was torn down before re-booting. */
+  closed: boolean;
+  /** Result of the (re)boot attempt. */
+  boot: BootSingleResult;
+}
+
+/**
+ * Tear down a harness's substrate handle (if booted) and boot it fresh.
+ *
+ * Why this exists: `bootSingleHarness` short-circuits to `already-booted`
+ * for a cached handle and never re-resolves the swarm binding. So after a
+ * harness writes `.harness/shared.json` (the "go shared" flip), nothing
+ * makes the already-booted, `swarm: null` handle actually join the swarm.
+ * `rebootHarness` closes the stale handle — which drops it from the map —
+ * then boots again, so the boot re-runs `defaultResolveSwarmBinding`
+ * against the now-present config and joins the derived Hyperswarm topic.
+ *
+ * Idempotent + safe when not booted: `closeBootedHarness` no-ops (returns
+ * false) and `bootSingleHarness` boots fresh. Callers should only invoke
+ * this when the substrate is enabled (PAPERCUSP_DOGFOOD_SUBSTRATE_ENABLE=1)
+ * — otherwise it would boot a substrate the host deliberately left down.
+ */
+export async function rebootHarness(
+  workspaceId: string,
+  harnessSlug: string,
+  opts: {
+    workspaceRoot?: string;
+    timeoutMs?: number;
+    resolveSwarmBinding?: SwarmBindingResolver;
+  } = {},
+): Promise<RebootHarnessResult> {
+  const closed = await closeBootedHarness(workspaceId, harnessSlug);
+  const boot = await bootSingleHarness(workspaceId, harnessSlug, opts);
+  return { closed, boot };
+}
+
 /** Tear down every cached handle. For test cleanup + process shutdown. */
 export async function closeAllBootedHarnesses(): Promise<number> {
   const entries = Array.from(handles.entries());

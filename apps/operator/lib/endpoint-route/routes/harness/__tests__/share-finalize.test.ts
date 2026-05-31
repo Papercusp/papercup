@@ -114,4 +114,41 @@ describe('finalizeShare', () => {
     await expect(finalizeShare(INPUT, d)).rejects.toMatchObject({ status: 404 });
     expect(writeFileUtf8).not.toHaveBeenCalled();
   });
+
+  it('calls reboot(slug) after a successful write and surfaces it as swarm', async () => {
+    const reboot = vi.fn(async (_slug: string) => ({
+      rebooted: true as const,
+      state: 'booted' as const,
+    }));
+    const { d, writeFileUtf8 } = deps({ reboot });
+    const r = await finalizeShare(INPUT, d);
+    expect(writeFileUtf8).toHaveBeenCalledTimes(1);
+    expect(reboot).toHaveBeenCalledWith('papercup');
+    expect(r.swarm).toEqual({ rebooted: true, state: 'booted' });
+  });
+
+  it('does NOT reboot when the write is rejected (bad input)', async () => {
+    const reboot = vi.fn(async () => ({ rebooted: true as const, state: 'booted' as const }));
+    const { d } = deps({ reboot });
+    await expect(finalizeShare({ ...INPUT, topic: 'not-hex' }, d)).rejects.toMatchObject({
+      status: 400,
+    });
+    expect(reboot).not.toHaveBeenCalled();
+  });
+
+  it('swallows a reboot throw — finalize still succeeds with swarm.rebooted=false', async () => {
+    const reboot = vi.fn(async () => {
+      throw new Error('boom');
+    });
+    const { d } = deps({ reboot });
+    const r = await finalizeShare(INPUT, d);
+    expect(r.ok).toBe(true);
+    expect(r.swarm).toMatchObject({ rebooted: false, error: 'boom' });
+  });
+
+  it('omits swarm when no reboot dep is provided', async () => {
+    const { d } = deps();
+    const r = await finalizeShare(INPUT, d);
+    expect(r.swarm).toBeUndefined();
+  });
 });
