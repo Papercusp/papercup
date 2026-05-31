@@ -1,0 +1,91 @@
+/**
+ * Coverage for buildInvokeOnce — assembles the `node <tsx> <invoke-once.ts>`
+ * command + env that three operator sites use to spawn a one-shot TS agent.
+ * Locks in the documented, previously-bug-causing env nuances:
+ *   - CLAUDE = AGENT_CMD ?? CLAUDE ?? 'omp -p'
+ *   - DATABASE_URL uses `||` so an EMPTY string falls through to the admin URL
+ *     (an empty value reaching the agent reads as "no PG DSN" and breaks spawn-mcp)
+ *   - PAPERCUSP_USE_PG_STATE uses `??` so an explicit '0' override survives
+ */
+import { afterEach, describe, expect, it, vi } from 'vitest';
+
+vi.mock('@/lib/harness-paths', () => ({
+  tsxBin: () => '/bin/tsx-cli',
+  invokeOnceBin: () => '/bin/invoke-once.ts',
+}));
+vi.mock('@/lib/embedded-pg-discovery', () => ({
+  getHarnessAdminUrl: () => 'postgres://admin/resolved',
+}));
+
+import { buildInvokeOnce, type InvokeOnceSpec } from './harness-invoke-once';
+
+const spec = (over: Partial<InvokeOnceSpec> = {}): InvokeOnceSpec => ({
+  projectDir: '/proj',
+  stateDir: '/proj/.harness',
+  harnessDir: '/harness-pkg',
+  role: 'worker',
+  extras: ['MODE=proposal', 'FEATURE_ID=F-1'],
+  ...over,
+});
+
+afterEach(() => vi.unstubAllEnvs());
+
+describe('buildInvokeOnce — command + core env', () => {
+  it('runs node with the tsx cli + invoke-once bin', () => {
+    const { command, args } = buildInvokeOnce(spec());
+    expect(command).toBe('node');
+    expect(args).toEqual(['/bin/tsx-cli', '/bin/invoke-once.ts']);
+  });
+
+  it('threads the project/state/harness dirs, role, and JSON-encoded extras', () => {
+    const { env } = buildInvokeOnce(spec());
+    expect(env.PROJECT_DIR).toBe('/proj');
+    expect(env.STATE_DIR).toBe('/proj/.harness');
+    expect(env.HARNESS_DIR).toBe('/harness-pkg');
+    expect(env.LOG_DIR).toBe('/proj/.harness/logs');
+    expect(env.ROLE).toBe('worker');
+    expect(env.EXTRAS_JSON).toBe(JSON.stringify(['MODE=proposal', 'FEATURE_ID=F-1']));
+  });
+
+  it('sets RESULT_PATH only when a resultPath is given', () => {
+    expect(buildInvokeOnce(spec()).env.RESULT_PATH).toBeUndefined();
+    expect(buildInvokeOnce(spec({ resultPath: '/tmp/r.out' })).env.RESULT_PATH).toBe('/tmp/r.out');
+  });
+
+  it('merges extraEnv and skips undefined values', () => {
+    const { env } = buildInvokeOnce(spec({ extraEnv: { SCOPER_MODE: 'x', SKIP: undefined } }));
+    expect(env.SCOPER_MODE).toBe('x');
+    expect(env.SKIP).toBeUndefined();
+  });
+});
+
+describe('buildInvokeOnce — env-resolution nuances', () => {
+  it("CLAUDE defaults to 'omp -p' when neither AGENT_CMD nor CLAUDE is set", () => {
+    vi.stubEnv('AGENT_CMD', undefined as unknown as string);
+    vi.stubEnv('CLAUDE', undefined as unknown as string);
+    expect(buildInvokeOnce(spec()).env.CLAUDE).toBe('omp -p');
+  });
+
+  it('CLAUDE prefers AGENT_CMD over CLAUDE', () => {
+    vi.stubEnv('AGENT_CMD', 'claude -p');
+    vi.stubEnv('CLAUDE', 'should-not-win');
+    expect(buildInvokeOnce(spec()).env.CLAUDE).toBe('claude -p');
+  });
+
+  it('DATABASE_URL: an EMPTY string falls through to the resolved admin URL (|| not ??)', () => {
+    vi.stubEnv('DATABASE_URL', '');
+    expect(buildInvokeOnce(spec()).env.DATABASE_URL).toBe('postgres://admin/resolved');
+  });
+
+  it('DATABASE_URL: an explicit value is kept', () => {
+    vi.stubEnv('DATABASE_URL', 'postgres://explicit/db');
+    expect(buildInvokeOnce(spec()).env.DATABASE_URL).toBe('postgres://explicit/db');
+  });
+
+  it("PAPERCUSP_USE_PG_STATE defaults to '1' but an explicit '0' override survives (??)", () => {
+    vi.stubEnv('PAPERCUSP_USE_PG_STATE', undefined as unknown as string);
+    expect(buildInvokeOnce(spec()).env.PAPERCUSP_USE_PG_STATE).toBe('1');
+    vi.stubEnv('PAPERCUSP_USE_PG_STATE', '0');
+    expect(buildInvokeOnce(spec()).env.PAPERCUSP_USE_PG_STATE).toBe('0');
+  });
+});
