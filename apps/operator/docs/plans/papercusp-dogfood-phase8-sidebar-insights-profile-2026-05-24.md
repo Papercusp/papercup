@@ -10,9 +10,9 @@ status: active
 
 ## Now
 
-**State:** GitHub-enrichment cards advanced 2026-05-31: P-001/P-002 already shipped (bookkeeping corrected from stale `todo`); P-004 (HowItWorksHereCard renders the repo README via loadRepoReadme — `a8a005078`) and P-005 (ProjectCard topics pills + latest release — `4828a9806`) done. The Insights tab itself is now mounted in the live /adv shell as the `adv:insights` dock panel (`a03398d7d`) — it had been built+tested but had no in-shell consumer. Remaining Phase 8: **P-003** (ActivityFeedCard tier-A merged-PR/commit events) — DEFERRED as security-adjacent: it ties into the completion_ref / trust-tier provenance model still under design (see papercusp-trust-model-2026-05-31). **P-047c** (feature detail panel) is still open and security-independent. P-038 still gated on the `working_users` Hyperbee projection (Phase 5b follow-up).
+**State:** GitHub-enrichment cards advanced 2026-05-31: P-001/P-002 already shipped (bookkeeping corrected from stale `todo`); P-004 (HowItWorksHereCard renders the repo README via loadRepoReadme — `a8a005078`) and P-005 (ProjectCard topics pills + latest release — `4828a9806`) done. The Insights tab itself is now mounted in the live /adv shell as the `adv:insights` dock panel (`a03398d7d`) — it had been built+tested but had no in-shell consumer. **No clean security-independent Phase-8 code items remain open:** P-047c (feature detail panel) is largely covered by the existing 1028-line `app/adv/harnesses/DetailPanel.tsx` (description + steer-notes + status/reset/chat + embedded FeatureEditor; audit-log/current-PR completeness unverified). The only tracked-open card item is **P-003** (ActivityFeedCard tier-A merged-PR/commit events), DEFERRED as security-adjacent — it ties into the completion_ref / trust-tier provenance model still under design (papercusp-trust-model-2026-05-31). P-038 still gated on the `working_users` Hyperbee projection (Phase 5b follow-up).
 
-**Next:** P-047c (feature detail panel) is the next security-independent UI item; P-003 waits on the trust-model decision.
+**Next:** Phase 8's independent work is done; remaining items (P-003, P-038) are blocked on the trust-model decision / a Phase-5b projection. Pick up P-003 once the security layer lands.
 
 ## Background
 
