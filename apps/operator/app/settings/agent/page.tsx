@@ -14,6 +14,10 @@ import { useCallback, useEffect, useState } from 'react';
 import { toast } from 'sonner';
 import { z } from 'zod';
 import { useFormWith, FormField, SubmitButton } from '@/lib/forms';
+import { SURFACE_KEYS, type SurfaceKey, type AgentBackend } from '@/lib/agent-config';
+
+/** Local select value: a concrete backend, or 'inherit' = omit from the map. */
+type SurfaceChoice = 'inherit' | AgentBackend;
 
 const ConfigSchema = z.object({
   backend: z.enum(['auto', 'claude-code', 'omp']),
@@ -28,6 +32,7 @@ interface AgentConfig {
   backend: 'auto' | 'claude-code' | 'omp';
   cmd: string;
   models: Record<string, string>;
+  backends?: Partial<Record<SurfaceKey, AgentBackend>>;
 }
 interface DetectedBinaries {
   claude: string | null;
@@ -56,6 +61,12 @@ export default function AgentSettingsPage() {
   const [testResult, setTestResult] = useState<TestResult | null>(null);
   const [testing, setTesting] = useState(false);
   const [loading, setLoading] = useState(true);
+  // Per-surface backend overrides. 'inherit' means "omit from the map" (use
+  // the global backend above). Mid-edit draft, so plain useState rather than
+  // nuqs — it's wiped on reload from the fetched config like the other fields.
+  const [surfaceBackends, setSurfaceBackends] = useState<Record<SurfaceKey, SurfaceChoice>>(
+    () => Object.fromEntries(SURFACE_KEYS.map((k) => [k, 'inherit'])) as Record<SurfaceKey, SurfaceChoice>,
+  );
 
   const { register, submit, reset, isSubmitting, watch } = useFormWith(ConfigSchema, {
     defaultValues: { backend: 'omp', cmd: '', modelsJson: '' },
@@ -75,6 +86,12 @@ export default function AgentSettingsPage() {
           ? JSON.stringify(d.config.models, null, 2)
           : '',
       });
+      const fetched = d.config.backends ?? {};
+      setSurfaceBackends(
+        Object.fromEntries(
+          SURFACE_KEYS.map((k) => [k, fetched[k] ?? 'inherit']),
+        ) as Record<SurfaceKey, SurfaceChoice>,
+      );
     } catch (err) {
       toast.error(`load failed: ${(err as Error).message}`);
     } finally {
@@ -103,11 +120,18 @@ export default function AgentSettingsPage() {
         return;
       }
     }
+    // Only surfaces set to a concrete backend go in the map; 'inherit' ones
+    // are omitted so they fall back to the global backend.
+    const backends: Partial<Record<SurfaceKey, AgentBackend>> = {};
+    for (const k of SURFACE_KEYS) {
+      const choice = surfaceBackends[k];
+      if (choice !== 'inherit') backends[k] = choice;
+    }
     try {
       const r = await fetch('/api/agent-config', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ backend: data.backend, cmd: data.cmd ?? '', models }),
+        body: JSON.stringify({ backend: data.backend, cmd: data.cmd ?? '', models, backends }),
       });
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       toast.success('Saved. In-process spawns now use the new backend.');
@@ -267,6 +291,37 @@ export default function AgentSettingsPage() {
             style={{ fontFamily: 'monospace', fontSize: 12 }}
             {...register('modelsJson')}
           />
+        </FormField>
+
+        <FormField
+          label="Per-surface backend"
+          description="Override which CLI runs each in-app brain. 'Inherit global' uses the backend above."
+        >
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            {SURFACE_KEYS.map((surface) => (
+              <label
+                key={surface}
+                style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 13 }}
+              >
+                <code style={{ minWidth: 110 }}>{surface}</code>
+                <select
+                  className="pc-input"
+                  style={{ fontSize: 13, padding: '2px 6px', width: 'auto' }}
+                  value={surfaceBackends[surface]}
+                  onChange={(e) =>
+                    setSurfaceBackends((prev) => ({
+                      ...prev,
+                      [surface]: e.target.value as SurfaceChoice,
+                    }))
+                  }
+                >
+                  <option value="inherit">Inherit global</option>
+                  <option value="omp">omp</option>
+                  <option value="claude-code">claude-code</option>
+                </select>
+              </label>
+            ))}
+          </div>
         </FormField>
 
         <div style={{ display: 'flex', gap: 8 }}>
