@@ -374,8 +374,13 @@ links.
 workflows) > `<role>.persona.md` (behavior). In dev
 (`PAPERCUSP_RELOAD_PROMPTS=1`, default in `NODE_ENV=development`) edits load
 immediately. (Note: the SU playbooks themselves are
-`apps/operator/prompts/papercusp-su-{engineer,power}.tools.md` and go live
-only when `install-standalone-mcp.sh` re-renders them into `~/.papercusp`.)
+`apps/operator/prompts/papercusp-su-{engineer,power}.tools.md`. They render
+**per-launch** — `psu` → `bootstrap-su` → `renderSuPlaybook` reads the
+source file fresh on every launch — so **committing the source IS the
+deploy**; no `install-standalone-mcp.sh` re-render and no `:3070` restart
+are needed for prompt edits to go live on the next psu session. The
+`~/.papercusp/*-collaborator*.md` files the installer writes are a
+vestigial fallback, not read on a psu launch.)
 
 ## Where not to go
 
