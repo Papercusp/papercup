@@ -49,6 +49,15 @@ describe('docs:outline resolveAdapter', () => {
     expect(result.error).toBeUndefined();
   });
 
+  it("SU wildcard slug '*' → engineering surface, not harness_not_registered", async () => {
+    mockEmptyRegistry();
+    const mod = await import('../outline');
+    const result = await mod.resolveAdapter('*', { isSuperuser: true });
+    expect(result.surface).toBe('engineering');
+    expect(result.scope).toBe('_engineering');
+    expect(result.error).toBeUndefined();
+  });
+
   it('env var set → project surface (wins over isSuperuser)', async () => {
     process.env.PAPERCUSP_PROJECT_DOCS_ROOT = '/tmp/my-project-docs';
     mockEmptyRegistry();
@@ -103,6 +112,14 @@ describe('docs:get resolveAdapter', () => {
     expect(result.error).toBeUndefined();
   });
 
+  it("SU wildcard slug '*' → engineering surface, not harness_not_registered", async () => {
+    mockEmptyRegistry();
+    const mod = await import('../get');
+    const result = await mod.resolveAdapter('*', { isSuperuser: true });
+    expect(result.surface).toBe('engineering');
+    expect(result.error).toBeUndefined();
+  });
+
   it('env var set → project surface', async () => {
     process.env.PAPERCUSP_PROJECT_DOCS_ROOT = '/tmp/my-project-docs';
     mockEmptyRegistry();
@@ -140,6 +157,14 @@ describe('docs:search resolveAdapter', () => {
     const mod = await import('../search');
     const result = await mod.resolveAdapter(undefined, { isSuperuser: true });
     expect(result.surface).toBe('engineering');
+  });
+
+  it("SU wildcard slug '*' → engineering surface, not harness_not_registered", async () => {
+    mockEmptyRegistry();
+    const mod = await import('../search');
+    const result = await mod.resolveAdapter('*', { isSuperuser: true });
+    expect(result.surface).toBe('engineering');
+    expect(result.error).toBeUndefined();
   });
 
   it('env var set → project surface', async () => {

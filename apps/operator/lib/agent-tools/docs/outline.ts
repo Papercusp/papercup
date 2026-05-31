@@ -50,7 +50,13 @@ export async function resolveAdapter(
   surface: 'harness' | 'engineering' | 'project';
   error?: { code: string; slug?: string; detail?: string };
 }> {
-  if (!harnessSlug) {
+  // SU mode passes harnessSlug='*' as a wildcard sentinel (set by
+  // http-projection.ts when an admin calls with ?superuser=1 and no harness).
+  // Treat it the same as "no harness" so the project/engineering branch is
+  // reached — matching plans/source.ts, plans/_ctx-opts.ts, projects/list.ts.
+  // Without this, '*' falls through to the registry lookup and returns a
+  // bogus harness_not_registered{slug:'*'} for every SU/engineer caller.
+  if (!harnessSlug || harnessSlug === '*') {
     // D-001 / P-004: project-docs branch via env var (set by omp-su wrapper).
     const projectDocsRoot = process.env.PAPERCUSP_PROJECT_DOCS_ROOT?.trim();
     if (projectDocsRoot) {
