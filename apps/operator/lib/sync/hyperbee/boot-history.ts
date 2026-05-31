@@ -19,6 +19,11 @@
  *   - 'close'             — handle.close() called.
  *   - 'peer_connected'    — a Hyperswarm peer connected to a swarmed harness.
  *   - 'swarm_join_failed' — swarm join threw; harness stays local-only.
+ *   - 'peer_rejected'     — a banned peer's connection was dropped (DoS guard;
+ *                           most banned keys are firewall-rejected pre-handshake
+ *                           and never recorded here — this is in-flight/IP-ban).
+ *   - 'peer_rate_limited' — a peer tripped the per-peer connection-rate limit and
+ *                           was banned + dropped (DoS guard).
  *
  * Keep this union in sync with the second declaration in
  * `app/harness/insights/BootHistoryTable.tsx` (+ its KIND_COLOR / KIND_MARK
@@ -32,7 +37,9 @@ export type BootHistoryKind =
   | 'boot_fail'
   | 'close'
   | 'peer_connected'
-  | 'swarm_join_failed';
+  | 'swarm_join_failed'
+  | 'peer_rejected'
+  | 'peer_rate_limited';
 
 export interface BootHistoryEntry {
   ts: number;

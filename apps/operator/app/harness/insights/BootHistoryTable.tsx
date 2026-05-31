@@ -24,7 +24,9 @@ export type BootHistoryKind =
   | 'boot_fail'
   | 'close'
   | 'peer_connected'
-  | 'swarm_join_failed';
+  | 'swarm_join_failed'
+  | 'peer_rejected'
+  | 'peer_rate_limited';
 
 export interface BootHistoryEntry {
   ts: number;
@@ -47,6 +49,8 @@ const KIND_COLOR: Record<BootHistoryKind, string> = {
   close: 'var(--fg-dim, #888)',
   peer_connected: 'var(--fg-link, #4a9eff)',
   swarm_join_failed: 'var(--fg-warning, #ff9800)',
+  peer_rejected: 'var(--fg-warning, #ff9800)',
+  peer_rate_limited: 'var(--fg-danger, #f44336)',
 };
 
 const KIND_MARK: Record<BootHistoryKind, string> = {
@@ -56,6 +60,8 @@ const KIND_MARK: Record<BootHistoryKind, string> = {
   close: '×',
   peer_connected: '⇄',
   swarm_join_failed: '⚠',
+  peer_rejected: '⛔',
+  peer_rate_limited: '🛑',
 };
 
 const TABLE: CSSProperties = {

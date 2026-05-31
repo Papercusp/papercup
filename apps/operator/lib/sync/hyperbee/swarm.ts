@@ -63,6 +63,14 @@ export interface JoinHarnessSwarmOpts {
   /** DoS guard (ban-list + connection rate-limit). Defaults to the process-global
    *  guard (the same one the shared swarm's firewall reads). Injectable for tests. */
   guard?: SwarmGuard;
+  /** Fires when a connection is dropped because the peer was already banned
+   *  (P-007 observability). NOTE: the constructor firewall rejects most banned
+   *  *keys* pre-handshake — those never reach this handler, so this only sees
+   *  in-flight/IP-ban drops. */
+  onPeerRejected?: (remotePublicKeyHex?: string, remoteIp?: string) => void;
+  /** Fires when a connection trips the per-peer connection-rate limit and is
+   *  banned + dropped (P-007 observability). */
+  onPeerRateLimited?: (remotePublicKeyHex?: string, remoteIp?: string) => void;
 }
 
 /**
@@ -85,6 +93,20 @@ function destroySocket(socket: unknown): void {
     (socket as { destroy?: () => void } | null | undefined)?.destroy?.();
   } catch {
     // best-effort; a peer we're dropping doesn't get to crash us
+  }
+}
+
+/** Invoke an optional diagnostic callback without letting it crash the handler. */
+function fireSafely(
+  cb: ((keyHex?: string, ip?: string) => void) | undefined,
+  keyHex?: string,
+  ip?: string,
+): void {
+  if (!cb) return;
+  try {
+    cb(keyHex, ip);
+  } catch {
+    // diagnostic-only callback; swallow
   }
 }
 
@@ -133,6 +155,7 @@ export async function joinHarnessSwarm(
       (remoteIp && guard.isBannedIp(remoteIp))
     ) {
       destroySocket(socket);
+      fireSafely(opts.onPeerRejected, remotePublicKeyHex, remoteIp);
       return;
     }
 
@@ -143,7 +166,10 @@ export async function joinHarnessSwarm(
     void guard
       .recordConnection(remotePublicKeyHex, remoteIp)
       .then((v) => {
-        if (!v.allow) destroySocket(socket);
+        if (v.allow) return;
+        destroySocket(socket);
+        const cb = v.reason === 'rate_limited' ? opts.onPeerRateLimited : opts.onPeerRejected;
+        fireSafely(cb, remotePublicKeyHex, remoteIp);
       })
       .catch(() => {});
 

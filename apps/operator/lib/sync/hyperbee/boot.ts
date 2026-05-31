@@ -51,6 +51,15 @@ import {
   type SwarmHandle,
 } from './swarm';
 
+/** Short human label for a dropped peer, for the boot-history message field.
+ *  Truncates the (long) Noise key to its first 8 hex chars. */
+function peerLabel(keyHex?: string, ip?: string): string {
+  const parts: string[] = [];
+  if (keyHex) parts.push(`key=${keyHex.slice(0, 8)}`);
+  if (ip) parts.push(`ip=${ip}`);
+  return parts.join(' ') || 'unknown peer';
+}
+
 export interface BootHarnessOpts {
   workspaceRoot: string;
   workspaceId: string;
@@ -190,6 +199,22 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
         swarm,
         onPeerConnected: () => {
           recordBootEvent(opts.workspaceId, opts.harnessSlug, 'peer_connected');
+        },
+        onPeerRejected: (keyHex, ip) => {
+          recordBootEvent(
+            opts.workspaceId,
+            opts.harnessSlug,
+            'peer_rejected',
+            peerLabel(keyHex, ip),
+          );
+        },
+        onPeerRateLimited: (keyHex, ip) => {
+          recordBootEvent(
+            opts.workspaceId,
+            opts.harnessSlug,
+            'peer_rate_limited',
+            peerLabel(keyHex, ip),
+          );
         },
       });
     } catch (e) {

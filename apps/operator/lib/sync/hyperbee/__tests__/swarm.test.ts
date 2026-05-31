@@ -175,12 +175,13 @@ describe('joinHarnessSwarm — DoS guard (P-003/P-004/P-005)', () => {
   const BANNED_KEY = '11'.repeat(32);
   const BANNED_IP = '198.51.100.9';
 
-  it('drops a banned-key peer before replicating + destroys the socket', async () => {
+  it('drops a banned-key peer before replicating + destroys + fires onPeerRejected', async () => {
     const { swarm, emit } = fakeSwarm();
     const { store, replicateCalls } = fakeStore();
     const guard = createSwarmGuard();
     guard.banKey(BANNED_KEY);
-    await joinHarnessSwarm({ store, topic: topic32(), swarm, guard });
+    const onPeerRejected = vi.fn();
+    await joinHarnessSwarm({ store, topic: topic32(), swarm, guard, onPeerRejected });
 
     const socket = { pipe: vi.fn(), destroy: vi.fn() };
     emit('connection', socket, { publicKey: Buffer.from(BANNED_KEY, 'hex') });
@@ -188,6 +189,7 @@ describe('joinHarnessSwarm — DoS guard (P-003/P-004/P-005)', () => {
     expect(replicateCalls).toEqual([]); // never replicated
     expect(socket.pipe).not.toHaveBeenCalled();
     expect(socket.destroy).toHaveBeenCalledTimes(1);
+    expect(onPeerRejected).toHaveBeenCalledWith(BANNED_KEY, undefined);
   });
 
   it('drops a banned-IP peer (the key-only firewall cannot see IPs)', async () => {
@@ -195,13 +197,48 @@ describe('joinHarnessSwarm — DoS guard (P-003/P-004/P-005)', () => {
     const { store, replicateCalls } = fakeStore();
     const guard = createSwarmGuard();
     guard.banIp(BANNED_IP);
-    await joinHarnessSwarm({ store, topic: topic32(), swarm, guard });
+    const onPeerRejected = vi.fn();
+    await joinHarnessSwarm({ store, topic: topic32(), swarm, guard, onPeerRejected });
 
     const socket = { pipe: vi.fn(), destroy: vi.fn(), rawStream: { remoteHost: BANNED_IP } };
     emit('connection', socket); // no peerInfo → no key, only the IP
 
     expect(replicateCalls).toEqual([]);
     expect(socket.destroy).toHaveBeenCalledTimes(1);
+    expect(onPeerRejected).toHaveBeenCalledWith(undefined, BANNED_IP);
+  });
+
+  it('fires onPeerRateLimited + destroys when a connection trips the rate limit', async () => {
+    const { swarm, emit } = fakeSwarm();
+    const { store } = fakeStore();
+    // Stub guard: not banned (pre-check passes → replicate), but recordConnection
+    // reports the connection tripped the rate limit.
+    const guard = {
+      firewall: () => false,
+      isBannedKey: () => false,
+      isBannedIp: () => false,
+      banKey: () => {},
+      banIp: () => {},
+      recordConnection: async () => ({ allow: false, reason: 'rate_limited' as const }),
+    };
+    const onPeerRateLimited = vi.fn();
+    const onPeerRejected = vi.fn();
+    await joinHarnessSwarm({
+      store,
+      topic: topic32(),
+      swarm,
+      guard,
+      onPeerRateLimited,
+      onPeerRejected,
+    });
+
+    const socket = { pipe: vi.fn(), destroy: vi.fn(), rawStream: { remoteHost: '203.0.113.8' } };
+    emit('connection', socket, { publicKey: Buffer.from('33'.repeat(32), 'hex') });
+    await new Promise((r) => setTimeout(r, 0)); // let the fire-and-forget settle
+
+    expect(socket.destroy).toHaveBeenCalledTimes(1);
+    expect(onPeerRateLimited).toHaveBeenCalledTimes(1);
+    expect(onPeerRejected).not.toHaveBeenCalled();
   });
 
   it('replicates a non-banned peer + does not destroy it', async () => {

@@ -110,13 +110,13 @@ describe('recordConnection (P-004/P-005)', () => {
   it('denies a peer whose key is already banned (no rate-limit round-trip)', async () => {
     const g = createSwarmGuard();
     g.banKey(KEY);
-    expect(await g.recordConnection(KEY, IP)).toEqual({ allow: false });
+    expect(await g.recordConnection(KEY, IP)).toEqual({ allow: false, reason: 'banned' });
   });
 
   it('denies a peer whose IP is already banned', async () => {
     const g = createSwarmGuard();
     g.banIp(IP);
-    expect(await g.recordConnection(KEY, IP)).toEqual({ allow: false });
+    expect(await g.recordConnection(KEY, IP)).toEqual({ allow: false, reason: 'banned' });
   });
 
   it('over the connection-rate ceiling → bans the key + IP and denies', async () => {
@@ -125,7 +125,7 @@ describe('recordConnection (P-004/P-005)', () => {
       expect((await g.recordConnection(KEY, IP)).allow).toBe(true);
     }
     // The (capacity+1)th connection trips the soft bucket.
-    expect((await g.recordConnection(KEY, IP)).allow).toBe(false);
+    expect(await g.recordConnection(KEY, IP)).toEqual({ allow: false, reason: 'rate_limited' });
     expect(g.isBannedKey(KEY)).toBe(true);
     expect(g.isBannedIp(IP)).toBe(true);
     // …and the firewall now rejects that key pre-handshake.

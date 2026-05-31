@@ -68,8 +68,13 @@ export interface SwarmGuard {
   banKey(keyHex: string, ttlMs?: number): void;
   banIp(ip: string, ttlMs?: number): void;
   /** Per-connection accounting. Resolves `{ allow:false }` when the peer is
-   *  banned OR just tripped the connection-rate limit (the caller drops it). */
-  recordConnection(keyHex?: string, ip?: string): Promise<{ allow: boolean }>;
+   *  already banned (`reason:'banned'`) or just tripped the connection-rate
+   *  limit (`reason:'rate_limited'`, which also bans it) — the caller drops the
+   *  socket and can record the reason for observability (P-007). */
+  recordConnection(
+    keyHex?: string,
+    ip?: string,
+  ): Promise<{ allow: boolean; reason?: 'banned' | 'rate_limited' }>;
 }
 
 export interface SwarmGuardOpts {
@@ -114,13 +119,13 @@ export function createSwarmGuard(opts: SwarmGuardOpts = {}): SwarmGuard {
     },
     async recordConnection(keyHex, ip) {
       if ((keyHex && isBannedKey(keyHex)) || (ip && isBannedIp(ip))) {
-        return { allow: false };
+        return { allow: false, reason: 'banned' };
       }
       const res = await limiter.checkSoft(`conn:${ip ?? keyHex ?? 'unknown'}`);
       if (!res.ok) {
         if (keyHex) banKey(keyHex);
         if (ip) banIp(ip);
-        return { allow: false };
+        return { allow: false, reason: 'rate_limited' };
       }
       return { allow: true };
     },
