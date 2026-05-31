@@ -125,6 +125,23 @@ cut a `git tag <name>-retired-<date>` restore point; (4) add a row to the table
 above. Restoration is then `git mv _retired/<x> <orig>` + re-apply the RESTORE.md
 steps.
 
+## Borrowable libraries — generic, domain-free, reusable anywhere
+
+A growing set of our libraries carry **zero Papercusp/Restart domain coupling** —
+any project can borrow them. Where a host-specific value is needed it's injected
+through a small seam (a `configure*()` call or a prop); Papercusp maps its own
+domain onto that seam in the operator, so the lib itself names no consuming app.
+
+**The catalog is `BORROWABLE.md` at the repo root** (generated — `npm run
+gen:borrowable`; source of truth `scripts/gen-borrowable-catalog.mjs`). It lists
+each borrowable lib (in `packages/*` in-repo, or `libs/*` as a standalone
+submodule under `github.com/Papercusp/`) with its description + repo, grouped by
+domain, plus a "reusable with host wiring" section for libs that keep a Papercusp
+tie-in by design (`locks`, `coordination`, `backup`, `docs-engine`,
+`host-platform`). When you make a lib generic — or notice domain coupling leaking
+into one — add/adjust it in the generator and re-run. See
+`papercusp-systems-abstraction-2026-05-29`.
+
 ## This app is in testing — there are no users yet
 
 There is no production. **Don't defer fixes for "let's see how it fares in production first"** — there's nothing to fare in. That gives us the luxury to break things continuously until the app is right. Pick the right fix *now*; don't ship awkward compromises to preserve compatibility with a future you haven't built yet.
