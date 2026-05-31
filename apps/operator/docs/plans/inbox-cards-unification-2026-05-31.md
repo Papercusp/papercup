@@ -1,7 +1,7 @@
 ---
 title: Inbox-as-cards — one card UI for chat + every human-facing alert
 slug: inbox-cards-unification-2026-05-31
-status: draft
+status: ready
 created: 2026-05-31
 updated: 2026-05-31
 ---
@@ -10,9 +10,9 @@ updated: 2026-05-31
 
 ## Now
 
-**State:** Approach reviewed. D-006 (Chat = **inline**) and D-007 (reuse the **endpoint-system coord proxy**, no new route) resolved 2026-05-31. One open question left: **D-005** — inbox layout (master-detail vs card stack) — a mock was produced (`/tmp/inbox-mock.png`) for the human to choose.
+**State:** Approved — all open questions resolved (D-005 Option A master-detail, D-006 inline chat, D-007 endpoint-system coord proxy). Starting **Phase A**: add an additive `terminal` flag + `navigate` action to the shared `AskChoiceCard` (backward-compatible — existing chat callers unaffected).
 
-**Next:** human picks D-005 (Option A master-detail / Option B card stack) from the mock; then flip to `ready` and start Phase A (renderer extraction + a `terminal` option flag).
+**Next:** finish Phase A (renderer flag + CSS + tests), then Phase B (AttentionItem→CardSpec adapter + durable dispatch via the existing coord helpers).
 
 ## Background
 
@@ -107,7 +107,7 @@ P-013 todo Integration test: each kind's terminal action calls the right backend
 
 P-020 todo Replace `OtherDetail` (in `PlanOtherList.tsx`) body+buttons with `AskChoiceCard` fed by `attentionItemToCardSpec(item)`; wire `onResponse` → `resolveAttentionAction` for terminal picks; for the `chat` navigate action, expand a `ChatPanel` INLINE beneath the card (D-006), retiring `PlanChatModal` for this surface. Delete the bespoke per-action `toast`/button code. blocked-by:P-010,P-011,P-003
 P-021 todo Do the same for needs-human plan items: render `PlanItemPreview` / `InboxItemActions` via the shared card (Answer becomes an `InputCard` text card; Resolve/Drop are terminal options; Chat expands the inline `ChatPanel`). Retire `InboxItemActions` bespoke buttons. blocked-by:P-020
-P-022 todo Decide + apply the inbox layout (see D-005): either keep master-detail with the card in the detail pane, or render the list itself as a vertical stack of compact cards (a durable `PendingCardsBar`). blocked-by:P-020
+P-022 todo Apply the master-detail layout (D-005): keep the compact list; render the selected item as the shared card in the detail pane, with the inline chat (D-006) expanding inside that pane beneath the card. No card-stack rewrite. blocked-by:P-020
 P-023 todo Manual e2e in the Tauri desktop: an escalation, a message, a needs-human item, a smoke-fail, and a review each render as a card; the terminal action resolves the underlying record and the item leaves the inbox; "💬 Chat" opens the chat without resolving. blocked-by:P-021,P-022
 
 ## Phase D — Convergence: durable escalation cards (stretch / separate)
@@ -150,13 +150,14 @@ The action shape already matches the option shape. `primary:true` →
 `style:'primary'`; a `drop` action → `style:'danger'`; everything else
 default. "Resolve" and "💬 Chat" become card options with no new data model.
 
-### D-005 — OPEN: inbox layout — master-detail vs card list
+### D-005 — Inbox layout: master-detail, card in the detail pane (RESOLVED 2026-05-31)
 
-Two viable shapes: (a) keep the current master-detail list and render the
-card in the detail pane; (b) render the inbox as a vertical stack of compact
-cards (a durable cousin of `PendingCardsBar`). (a) is the smaller change and
-preserves the list/preview muscle memory; (b) is the more thorough
-unification. **Needs a human call.**
+Option A. Keep the current compact master-detail list (rows scan fast, one
+item open at a time) and render the SELECTED item as the shared `AskChoiceCard`
+in the right-hand detail pane (`PlanItemPreview` / `OtherDetail`). The inline
+chat (D-006) expands inside that detail pane beneath the card. Smaller change
+than a full card-stack rewrite; preserves the list/preview muscle memory.
+(Human call, 2026-05-31, chosen from the mock `/tmp/inbox-mock.png`.)
 
 ### D-006 — "Chat" opens INLINE (RESOLVED 2026-05-31)
 
