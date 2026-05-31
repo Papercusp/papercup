@@ -11,9 +11,9 @@ owner: avi@storewolf.com
 
 ## Now
 
-**State:** **Phase 0 + Phase 1 COMPLETE**, all committed on `main`, every mechanism verified against real embedded PG16. P-001 bootstrap (0443ccb7) + module-level in-operator boot smoke (helloWorkflow SUCCESS); P-002 cross-version resume gate; P-003/P-004/P-005 scheduled+dedup AutoLoop (5c9bb737); P-006 retries+recovery-cap (958a7a59, verified); P-007 /admin DBOS events tab + route (685d4903, SQL verified). Workspace install fixed (b437af64). One open caveat: P-007's route registration adds 3 `RouteDefinition↔RoleToolDefinition` tsc errors that are part of the in-flight `@restart→@papercusp` rename (tree at ~606 tsc errors mid-rename), runtime unaffected — re-verify they clear once the rename settles.
+**State:** **Phases 0 + 1 COMPLETE** + **P-008 done** (Phase-2 timer classification, D-016), all committed on `main`, every mechanism verified against real embedded PG16. Commits: P-001 (0443ccb7), workspace fix (b437af64), P-003/04/05 (5c9bb737), P-006 (958a7a59), P-007 /admin tab (685d4903). The remaining Phase-2 migrations (P-009 scanner / P-010 embeddings / P-011 backups) and the live-service end-to-end boot are **both gated on the in-flight `@restart→@papercusp` rename settling** — the operator tree is at ~606 tsc errors / 28 dirty files mid-rename, and the migrations edit those churning worker files. Landing into a moving tree would sweep rename changes + add tsc-cascade noise.
 
-**Next:** Once the `@restart→@papercusp` rename settles: restart the dev API with `PAPERCUSP_DBOS_ENABLE=1 PAPERCUSP_DBOS_AUTOLOOP=1`, open `/admin/dbos` to confirm AutoLoop ticks + workflows land in the running operator (full end-to-end), and confirm the 3 tsc cascade errors cleared. Then Phase 2 — P-008 (enumerate every timer) → migrate scanner / embeddings / snapshots.
+**Next:** Wait for the `@restart→@papercusp` rename to finish (or be reverted) so the operator tree typechecks consistently — that cleanup is not part of this plan. Then: (1) live-boot verify (restart dev API with `PAPERCUSP_DBOS_ENABLE=1 PAPERCUSP_DBOS_AUTOLOOP=1`, open `/admin/dbos`); (2) confirm P-007's 3 tsc cascade errors cleared; (3) Phase 2 migrations per the D-016 table (export each worker's tick fn + stand-down guard → scheduled workflow).
 
 ## Background
 
@@ -195,6 +195,30 @@ Caveat: registering the route surfaces **3 type-cascade errors** in `routes/inde
 
 **Phase 1 (P-003–P-007) is complete and verified.** Remaining for full closure: the live-service end-to-end boot (flip the flags + restart the dev API) once the rename settles, then Phase 2 (migrate the remaining timers).
 Related: P-007
+
+
+### D-016 — P-008 — background-timer inventory + migrate/stay classification (Phase 2 DoD)
+Date: 2026-05-31
+Every operator background timer, enumerated (grep-verified) and classified. This is the definition-of-done for Phase 2; each migrate-row becomes a DBOS scheduled workflow (skip-missed) + legacy stand-down, exactly like AutoLoop.
+
+| Worker (apps/operator/lib) | Mechanism | Cadence | Decision |
+| --- | --- | --- | --- |
+| `autoloop.ts` | setInterval | 30s | ✅ MIGRATED (Phase 1) |
+| `telemetry-flush.ts` | setInterval | hourly | MIGRATE → scheduled drain |
+| `scratch-gc.ts` | setInterval | 24h | MIGRATE → scheduled GC |
+| `memory/cleanup-worker.ts` | setInterval | 6h | MIGRATE → scheduled GC |
+| `harness/completion-ref-verifier.ts` | setInterval | ~10–60s poll | MIGRATE → scheduled `git ls-remote` poll |
+| operator scanner (`operator-scanner-*`) | periodic | per-config | MIGRATE → scheduled + dedup mutual-exclusion (P-009) |
+| embeddings / `search/embed-backfill.ts` | setTimeout (one-shot, ~5min post-boot) | one-shot | MIGRATE → rate-limited queue job (P-010) |
+| `backup/index.ts` (snapshot scheduler) | cadence | per-workspace | MIGRATE → scheduled (at-most-one catch-up, D-009) (P-011) |
+| `backup/orphan-cleanup.ts` (snapshot reaper) | sweep | periodic | MIGRATE → scheduled sweep (P-011) |
+| `harness-status-sweep.ts` (agent-run reaper) | setInterval | 30s | **DEFER to Phase 3 (P-016)** — it's orchestrator run-state, reconciled with the lane pool / `spawned_agents`, not a plain timer |
+| `harness-fs-watcher.ts` | chokidar `watch()` | event-driven | **STAY event-driven** — must NOT become a poller |
+
+Each migration requires exporting the worker's single-run tick function and adding a `PAPERCUSP_DBOS_TIMERS` stand-down guard to its `start*` function (mirroring `startAutoLoopOnce`).
+
+**Gate:** the migrations (P-009/010/011) edit these worker files — which are currently being churned by the in-flight `@restart→@papercusp` rename (operator tree at ~606 tsc errors, 28 dirty files). Landing edits into them now risks commit-sweeping rename changes + more tsc-cascade noise. So P-009+ and the live-service boot both **wait for the rename to settle (or be finished/reverted)** — that cleanup is not part of this DBOS plan. P-008 (this classification) is complete.
+Related: P-008, P-009, P-010, P-011
 
 ## Phase 0 — Spike & validation (GATE)
 
