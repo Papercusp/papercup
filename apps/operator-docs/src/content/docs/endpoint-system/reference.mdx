@@ -114,25 +114,32 @@ Null window means no quota check (and no telemetry insert path that requires the
 
 ## File map
 
+> The engine was extracted into **`@papercusp/tooldef`** (plan
+> `papercusp-tooldef-extraction-2026-05-29`); the HTTP adapter into
+> **`@papercusp/tooldef-http`**; IPC is **`@papercusp/ipc-endpoint-server`**.
+> `@papercusp/agent-mcp` is the Papercusp host adapter (supplies the injected
+> deps + re-exports the engine surface). Paths below reflect that split.
+
 ### Dispatcher / projection / transports
 
 | Concern | Module |
 |---|---|
-| Projection registry (3 Maps) | `packages/agent-mcp/src/tool-projection.ts` |
-| Built-in `defineTool` + auto-projection | `packages/agent-mcp/src/define-tool.ts` |
+| Projection registry (3 Maps) | `packages/tooldef/src/tool-projection.ts` |
+| Built-in `defineTool` + auto-projection | `packages/tooldef/src/define-tool.ts` |
 | Plugin loader + `registerPluginTools` | `packages/plugin-loader/src/index.ts` |
 | Plugin host + lifecycle | `apps/operator/lib/plugin-host-runtime.ts` |
 | HTTP catch-all (plugins) | `apps/operator/app/api/plugins/[...path]/route.ts` |
 | HTTP catch-all (built-ins) | `apps/operator/app/api/agent-tools/[...path]/route.ts` |
-| MCP transport (both pipelines) | `apps/operator/app/api/[transport]/route.ts` |
-| Dispatcher (gates + record) | `packages/agent-mcp/src/dispatch-projected.ts` |
-| HTTP request → context builder | `packages/agent-mcp/src/http-projection.ts` |
-| Replay buffer (Last-Event-ID resume) | `packages/agent-mcp/src/replay-buffer.ts` |
+| MCP transport (both pipelines) | `apps/operator/lib/endpoint-route/routes/transport/_mcp-handler.ts` |
+| Dispatcher (gates + record) | `packages/tooldef/src/dispatch-projected.ts` (+ `dispatch-stack.ts`) |
+| HTTP request → context builder | `packages/tooldef-http/src/http-projection.ts` |
+| Replay buffer (Last-Event-ID resume) | `packages/tooldef/src/replay-buffer.ts` |
 | Spawn-mcp `.mcp.json` writer | `libs/papercusp/packages/orchestrator/src/spawn-mcp.ts` |
 | Per-spawn URL → ctx parser | `packages/agent-mcp/src/spawn-context.ts` |
+| Host deps (PG quota/telemetry, policies) | `apps/operator/lib/projected-tool-deps.ts` + `packages/agent-mcp/src/{quota-policy,capability-tiers-papercusp,gate-bypass,role-config}.ts` |
 | Shared subprocess + secret impls | `apps/operator/lib/plugin-spawn-impl.ts` |
 | Harness path resolver (PG-backed) | `apps/operator/lib/resolve-harness-paths.ts` |
-| Desktop Tauri IPC sidecar (Unix socket / named pipe) | `apps/operator/lib/endpoint-ipc/` (`server.ts`, `framing.ts`, `PROTOCOL.md`) |
+| IPC adapter (Unix socket / named pipe) | `packages/ipc-endpoint-server/` + `apps/operator/lib/endpoint-ipc/` |
 
 ### Cards + state channel (bespoke-card-improvements arc)
 
