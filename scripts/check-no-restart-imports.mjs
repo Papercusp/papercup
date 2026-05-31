@@ -12,16 +12,23 @@
  *
  *   node scripts/check-no-restart-imports.mjs
  *
- * Scope: tracked code (ts/tsx/mjs/cjs/js) + package.json files. Excludes
- * node_modules, dist, _retired, and historical docs/plans (prose mentions
- * of the old names are history, not live imports).
+ * Scope: tracked code (ts/tsx/mjs/cjs/js) + json (package.json deps, tsconfig
+ * path maps, build-config arrays like next transpilePackages / astro noExternal,
+ * command tables). Excludes node_modules, dist, _retired, the auto-generated
+ * package-lock.json, and historical docs/plans (prose mentions of the old names
+ * are history, not live references).
+ *
+ * Matches ANY @restart/<pkg> reference, not just import syntax — bare config
+ * strings are a real miss-class (they pass a running dev server, which cached
+ * the old config, but break a fresh build). Learned migrating Restart's sibling
+ * libs (Restart scripts/check-migrated-scope.mjs caught exactly these).
  */
 import { execSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 
 const ROOT = new URL('..', import.meta.url).pathname;
 
-const tracked = execSync('git ls-files', { cwd: ROOT, encoding: 'utf8' })
+const tracked = execSync('git ls-files', { cwd: ROOT, encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 })
   .split('\n')
   .filter(Boolean);
 
@@ -31,19 +38,17 @@ const isExcluded = (f) =>
   f.includes('/dist/') ||
   f.startsWith('apps/operator/docs/plans/') ||
   f.startsWith('apps/operator/public/internal/docs/') ||
+  f === 'package-lock.json' ||
+  f.endsWith('/package-lock.json') ||
   f === 'scripts/check-no-restart-imports.mjs';
 
-// Live-import patterns: `from '@restart/…'`, require/import('@restart/…'),
-// and package.json dependency keys "@restart/…".
-const IMPORT_RE = /\b(?:from|import|require)\s*\(?\s*['"]@restart\/[^'"]+['"]/;
-const PKG_DEP_RE = /"@restart\/[^"]+"\s*:/;
+// Any @restart/<pkg> reference (imports, deps, tsconfig paths, config strings).
+const RE = /@restart\/[a-z0-9-]+/;
 
 const offenders = [];
 for (const f of tracked) {
   if (isExcluded(f)) continue;
-  const isCode = /\.(ts|tsx|mjs|cjs|js)$/.test(f);
-  const isPkg = f.endsWith('package.json');
-  if (!isCode && !isPkg) continue;
+  if (!/\.(ts|tsx|mjs|cjs|js|json)$/.test(f)) continue;
   let text;
   try {
     text = readFileSync(new URL(f, `file://${ROOT}`), 'utf8');
@@ -51,9 +56,8 @@ for (const f of tracked) {
     continue;
   }
   if (!text.includes('@restart/')) continue;
-  const re = isPkg ? PKG_DEP_RE : IMPORT_RE;
   text.split('\n').forEach((line, i) => {
-    if (re.test(line)) offenders.push(`${f}:${i + 1}  ${line.trim().slice(0, 100)}`);
+    if (RE.test(line)) offenders.push(`${f}:${i + 1}  ${line.trim().slice(0, 100)}`);
   });
 }
 
