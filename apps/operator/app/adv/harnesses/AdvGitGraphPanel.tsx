@@ -379,7 +379,7 @@ export default function AdvGitGraphPanel({ params }: PanelComponentProps) {
               type="button"
               role="tab"
               aria-selected={filter === f.id}
-              className={`pc-adv-gitgrid__filter${filter === f.id ? ' is-active' : ''}`}
+              className={`pc-adv-gitgrid__filter pc-adv-gitgrid__filter--${f.id}${filter === f.id ? ' is-active' : ''}`}
               onClick={() => setFilter(f.id)}
             >
               {f.label}<span className="pc-adv-gitgrid__filter-count">{count}</span>
@@ -503,21 +503,29 @@ export default function AdvGitGraphPanel({ params }: PanelComponentProps) {
           display: flex; gap: 4px; flex-wrap: wrap; flex-shrink: 0;
           padding: 6px 8px; border-bottom: 1px solid var(--border, rgba(125,211,252,0.15));
         }
+        /* Per-filter tints: each chip carries a --chip-tint (faint on the idle
+           border, strong fill when active) so the git filters are colour-coded —
+           sky=all, teal=refs, violet=merges, amber=stars. */
         .pc-adv-gitgrid__filter {
+          --chip-tint: var(--accent, #38bdf8);
           display: inline-flex; align-items: center; gap: 5px;
           font-size: 11px; padding: 2px 9px; border-radius: 999px;
-          border: 1px solid var(--border, rgba(125,211,252,0.15)); background: transparent;
+          border: 1px solid color-mix(in oklab, var(--chip-tint), transparent 80%); background: transparent;
           color: var(--fg-mute); cursor: pointer;
           transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease;
         }
-        .pc-adv-gitgrid__filter:hover { color: var(--fg); border-color: var(--border-strong, rgba(125,211,252,0.32)); }
+        .pc-adv-gitgrid__filter--all { --chip-tint: #7dd3fc; }
+        .pc-adv-gitgrid__filter--refs { --chip-tint: #2dd4bf; }
+        .pc-adv-gitgrid__filter--merges { --chip-tint: #a78bfa; }
+        .pc-adv-gitgrid__filter--bookmarked { --chip-tint: #f59e0b; }
+        .pc-adv-gitgrid__filter:hover { color: var(--fg); border-color: color-mix(in oklab, var(--chip-tint), transparent 45%); }
         .pc-adv-gitgrid__filter.is-active {
           color: var(--fg);
-          background: color-mix(in oklab, var(--accent, #38bdf8), transparent 84%);
-          border-color: color-mix(in oklab, var(--accent, #38bdf8), transparent 45%);
+          background: color-mix(in oklab, var(--chip-tint), transparent 82%);
+          border-color: color-mix(in oklab, var(--chip-tint), transparent 40%);
         }
         .pc-adv-gitgrid__filter-count { font-size: 9.5px; color: var(--fg-mute); font-variant-numeric: tabular-nums; }
-        .pc-adv-gitgrid__filter.is-active .pc-adv-gitgrid__filter-count { color: var(--accent-strong, #7dd3fc); }
+        .pc-adv-gitgrid__filter.is-active .pc-adv-gitgrid__filter-count { color: color-mix(in oklab, var(--chip-tint), white 22%); }
         .pc-adv-gitgrid__refrail, .pc-adv-gitgrid__authors {
           display: flex; gap: 5px; flex-wrap: wrap; flex-shrink: 0;
           padding: 6px 8px; border-bottom: 1px solid var(--border, rgba(125,211,252,0.15));

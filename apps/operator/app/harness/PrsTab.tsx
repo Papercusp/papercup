@@ -120,7 +120,7 @@ export function PrsTab({
               type="button"
               role="tab"
               aria-selected={filter === f}
-              className={`pc-adv-prs__chip${filter === f ? ' is-active' : ''}`}
+              className={`pc-adv-prs__chip pc-adv-prs__chip--${f}${filter === f ? ' is-active' : ''}`}
               onClick={() => void setFilter(f)}
             >
               {f}
@@ -170,18 +170,27 @@ export function PrsTab({
         .pc-adv-prs__title svg { color: var(--accent, #38bdf8); }
         .pc-adv-prs__warn { font-size: 10px; font-weight: 600; color: var(--bad, #f87171); }
         .pc-adv-prs__filters { display: inline-flex; gap: 4px; flex-wrap: wrap; }
+        /* Per-filter tints: each chip carries a --chip-tint (faint on the idle
+           border, strong fill when active) so the PR filters are colour-coded —
+           sky=all, blue=mine, amber=awaiting, green=approved, violet=merged. */
         .pc-adv-prs__chip {
+          --chip-tint: var(--accent, #38bdf8);
           font-size: 11px; padding: 2px 9px; border-radius: 999px;
-          border: 1px solid var(--border, rgba(125, 211, 252, 0.15));
+          border: 1px solid color-mix(in oklab, var(--chip-tint), transparent 80%);
           background: transparent; color: var(--fg-mute, #7f9bb4); cursor: pointer;
           text-transform: capitalize;
           transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease;
         }
-        .pc-adv-prs__chip:hover { color: var(--fg, #e7f7ff); border-color: var(--border-strong, rgba(125,211,252,0.32)); }
+        .pc-adv-prs__chip--all { --chip-tint: #7dd3fc; }
+        .pc-adv-prs__chip--mine { --chip-tint: #38bdf8; }
+        .pc-adv-prs__chip--awaiting-me { --chip-tint: #f59e0b; }
+        .pc-adv-prs__chip--approved { --chip-tint: #22c55e; }
+        .pc-adv-prs__chip--merged { --chip-tint: #a78bfa; }
+        .pc-adv-prs__chip:hover { color: var(--fg, #e7f7ff); border-color: color-mix(in oklab, var(--chip-tint), transparent 45%); }
         .pc-adv-prs__chip.is-active {
           color: var(--fg, #e7f7ff);
-          background: color-mix(in oklab, var(--accent, #38bdf8), transparent 84%);
-          border-color: color-mix(in oklab, var(--accent, #38bdf8), transparent 45%);
+          background: color-mix(in oklab, var(--chip-tint), transparent 80%);
+          border-color: color-mix(in oklab, var(--chip-tint), transparent 38%);
         }
         .pc-adv-prs__refresh {
           margin-left: auto; display: inline-flex; align-items: center; padding: 4px;
