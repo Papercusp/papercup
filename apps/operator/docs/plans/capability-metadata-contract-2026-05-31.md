@@ -12,9 +12,9 @@ related: [agent-action-registry-plan-2026-05-03, tooldef-auth-rfc-2026-05-31, pa
 
 ## Now
 
-**State:** Phase 1 COMPLETE + verified; this is the plan's substantive value and it's shipped. Done: Capability contract (P-002), both adapters (P-003), §3 safety filter (P-011), full palette↔agent-catalog unification (P-004 — GET /capabilities LIVE-VERIFIED, POST /run-tool built+gated, GlobalCommandPalette wired), role-aware listing, and an agent-insight doc. 22 unit tests + the route-invariant suite (shadowing/loopback/destructive-public/route-stack) pass; tsc + full vite build clean. The one regression-suite failure (auth-posture on /admin/* routes) is pre-existing on HEAD and unrelated (flagged by the dogfood agent earlier — none are these /agent-mcp/* routes). Decisions D-001..D-006 settle direction, principal, and Phase-2 scope.
+**State:** Phase 1 COMPLETE; the only open thread is the final execution smoke. The :3070 host reloaded and run-tool went live, so I ran the P-005 smoke — which CAUGHT A REAL BUG: the dispatch capability gate is a literal has(cap) and ignores the loopback principal's '*', so tools failed missing_capability. Fixed (D-007): run-tool now runs at operator tier (gateBypass capability+quota, role enforced) — aligning invoke with the role-filtered listing; §3 + confirm + audit intact. LIVE-VERIFIED already: GET /capabilities (8 tools, gated, no leaks), and run-tool routing — 409 confirm-required, 403 not-eligible(required-arg), 404 unknown, 400 missing-name all exactly correct. The cap-tier fix is code-correct (dispatch-stack.ts:212 skips the gate on gateBypass.capability; pre-fix smoke proved that was the only blocker) + tsc clean, but its live "tools actually execute" confirmation needs the NEXT :3070 reload (the host isn't a live watcher — it reloaded once, between commits).
 
-**Next:** Only non-autonomous work remains: P-005 — a :3070 host restart makes POST /run-tool live for the final invoke/palette end-to-end smoke (the loop is now watching for that restart on a long interval; will run the smoke when it lands). P-009 — the human end-state decision (conform vs merge). Phase 2 (P-006/P-008/P-012) is optional polish (D-006), build-on-demand.
+**Next:** Loop is watching for the next :3070 reload; on it, re-run the run-tool execution smoke (papercusp:list_workspaces / harness:list should return data, not missing_capability) → then P-005 done. P-009 (end-state) stays needs-human; Phase 2 optional (D-006).
 
 ## 1. Problem (grounded in code)
 
@@ -171,6 +171,17 @@ More importantly: P-003's read-only adapter already unifies projection WITHOUT a
 - P-007 (explicit `runsIn` on `CommandDef`) is dropped: the adapter derives `runsIn` from `CommandDef.browser`; an explicit field is redundant and drift-prone.
 - P-006/P-008 stay open but optional — build the overlay only when a concrete curation need arises (YAGNI), not speculatively.
 Related: P-006, P-007, P-008
+
+
+### D-007 — run-tool security posture: loopback + operator-tier (capability/quota bypass, role enforced) + §3 + confirm + audit
+Date: 2026-05-31
+Date: 2026-05-31
+Live smoke (after the :3070 host picked up run-tool) surfaced that the dispatch capability gate (`dispatch-stack.ts:214`) is a literal `principal.capabilities.has(cap)` — it does NOT honor the loopback principal's `'*'`. So a no-bypass loopback principal failed every gated tool with `missing_capability`. (The loopback resolver SETS caps `Set(['*'])` with intent "every cap", but only the `gateBypass` path actually realizes that — the `'*'` is otherwise vestigial.)
+
+Decision: run-tool runs the desktop palette user at OPERATOR TIER — `gateBypass: { capability: true, quota: true }`, but the ROLE gate stays enforced (`role: 'operator'`). Rationale: the loopback desktop caller IS the operator (the same trust the MCP `?superuser=1`/operator-tier path grants on loopback); capability scoping is an agent-budget concern, not a desktop-owner one; quota is bypassed because palette actions are human-initiated, not agent budget (D-004). Keeping the role gate enforced aligns invoke exactly with the role-filtered `/capabilities` listing, so listed ⟺ runnable. `authorize` (resource PDP), the §3 guard (exclude streaming/interactive/required-arg; confirm-for-destructive/high), and PROJECTED_DEPS audit all still apply. Net posture: **loopback origin + §3 + confirm + audit**, scoped in practice to benign operator-role reads (destructive/high → confirm).
+
+Deferred hardening (production, NOT done autonomously): gate run-tool on an authenticated session (`getSessionUser`, as `operator-dispatch.ts` does) and/or dispatch as the provisioned operator system principal with its real capability set (no bypass). Both were declined now because (a) session-gating makes the route un-curl-verifiable autonomously, and (b) the operator principal's provisioned cap set + session reliability on desktop are unverified. The testing-only app + single-user loopback desktop make the current posture acceptable; revisit before any non-loopback exposure.
+Related: P-004, P-005
 
 ## Open questions
 
