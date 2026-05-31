@@ -30,7 +30,19 @@ import { join, dirname } from 'node:path';
 import { randomBytes } from 'node:crypto';
 
 const ENV_VAR = 'PAPERCUSP_DB_ENCRYPTION_KEY';
-const KEY_FILE = join(homedir(), '.papercusp', 'db-encryption-key');
+
+/**
+ * Resolve the key-file path lazily. This MUST NOT run at module-eval time:
+ * this module is transitively pulled into the operator-vite renderer bundle
+ * (via `operator-state-pg.ts` → `ENCRYPTED_TABLES`), where `node:os` is an
+ * empty browser stub and `homedir()` is `undefined` — a top-level call threw
+ * "homedir is not a function" on chunk load. Deferring it means importing the
+ * module is side-effect-free; the fs/os work only runs server-side when
+ * `getDbEncryptionKey()` is actually called.
+ */
+function keyFile(): string {
+  return join(homedir(), '.papercusp', 'db-encryption-key');
+}
 
 let _cachedKey: string | null = null;
 
@@ -63,6 +75,7 @@ export function getDbEncryptionKey(): string {
     return _cachedKey;
   }
 
+  const KEY_FILE = keyFile();
   if (existsSync(KEY_FILE)) {
     const raw = readFileSync(KEY_FILE, 'utf8').trim();
     if (raw) {

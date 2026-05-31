@@ -28,7 +28,14 @@ import { loadHarnessRegistry } from './harness-registry';
 
 const sa = generated.spawnedAgentsInHarnessShared;
 
-const SESSIONS_ROOT = join(homedir(), '.omp', 'agent', 'sessions');
+// Lazy: this module is transitively bundled into the operator-vite renderer
+// (via server-side agent-tools / endpoint routes), where `node:os` is a stub
+// and a top-level `homedir()` call throws "homedir is not a function" on chunk
+// load. Defer it so importing the module is side-effect-free.
+let _sessionsRoot: string | null = null;
+function sessionsRoot(): string {
+  return (_sessionsRoot ??= join(homedir(), '.omp', 'agent', 'sessions'));
+}
 
 const DEFAULT_SESSION_LIMIT = 500;
 const MAX_SESSION_LIMIT = 5000;
@@ -181,7 +188,7 @@ interface SessionFileRecord {
 }
 
 export function ompSessionsRoot(): string {
-  return SESSIONS_ROOT;
+  return sessionsRoot();
 }
 
 function clampLimit(value: number | undefined, fallback: number, max: number): number {
@@ -211,7 +218,7 @@ function readHeader(filePath: string): SessionHeader | null {
 
 function sessionsRootRealPath(): string | null {
   try {
-    return realpathSync(SESSIONS_ROOT);
+    return realpathSync(sessionsRoot());
   } catch {
     return null;
   }
@@ -230,10 +237,10 @@ function isSafeSessionFilePath(filePath: string): boolean {
 }
 
 export function listAllSessionFiles(): string[] {
-  if (!existsSync(SESSIONS_ROOT)) return [];
+  if (!existsSync(sessionsRoot())) return [];
   const out: string[] = [];
-  for (const dir of readdirSync(SESSIONS_ROOT)) {
-    const dirPath = join(SESSIONS_ROOT, dir);
+  for (const dir of readdirSync(sessionsRoot())) {
+    const dirPath = join(sessionsRoot(), dir);
     try {
       if (!statSync(dirPath).isDirectory()) continue;
     } catch {
