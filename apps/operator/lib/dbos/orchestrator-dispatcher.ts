@@ -136,7 +136,15 @@ export const orchestratorDispatchWorkflow = DBOS.registerWorkflow(dispatchTickWo
 
 // Every 30s (6-field crontab with seconds). Skip-missed by default — a closed
 // desktop doesn't stampede a backlog of ticks on reboot.
-DBOS.registerScheduled(orchestratorDispatchWorkflow, {
-  name: 'orchestratorDispatch',
-  crontab: '*/30 * * * * *',
-});
+//
+// Only SCHEDULE the tick when at least one harness is opted in — otherwise the
+// no-op tick would still record a SUCCESS workflow row every 30s, cluttering the
+// DBOS system DB / `/admin/dbos`. With the orchestrator flag on but no harnesses
+// opted in (the rollout-ready state), the workflow stays registered (so the
+// manual trigger + recovery work) but nothing fires on a timer.
+if (dispatchHarnesses().length > 0) {
+  DBOS.registerScheduled(orchestratorDispatchWorkflow, {
+    name: 'orchestratorDispatch',
+    crontab: '*/30 * * * * *',
+  });
+}
