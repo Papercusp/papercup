@@ -28,3 +28,19 @@ export function currentRequestWorkspaceId(): string | undefined {
 export function runWithWorkspace<T>(workspaceId: string, fn: () => T): T {
   return workspaceCtx.run({ workspaceId }, fn);
 }
+
+/**
+ * Run `fn` inside the workspace ALS when `workspaceId` is a *concrete* id, else
+ * run it unscoped. For transports that resolve a caller workspace from a
+ * non-request source (MCP tool calls, IPC) — `'*'` / `''` / `undefined` mean
+ * "no concrete workspace" (e.g. a superuser call without `?workspace=`) and must
+ * NOT pin one, so `activeWorkspaceId()` keeps its normal fallback.
+ * (per-window-workspace-context-2026-05-31, P-022.)
+ */
+export function runWithWorkspaceIfConcrete<T>(
+  workspaceId: string | undefined,
+  fn: () => T,
+): T {
+  if (workspaceId && workspaceId !== '*') return runWithWorkspace(workspaceId, fn);
+  return fn();
+}

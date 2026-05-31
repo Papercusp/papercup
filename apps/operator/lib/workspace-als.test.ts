@@ -1,5 +1,9 @@
 import { describe, it, expect } from 'vitest';
-import { runWithWorkspace, currentRequestWorkspaceId } from './workspace-als';
+import {
+  runWithWorkspace,
+  runWithWorkspaceIfConcrete,
+  currentRequestWorkspaceId,
+} from './workspace-als';
 
 describe('workspace-als', () => {
   it('returns undefined outside any runWithWorkspace scope', () => {
@@ -42,5 +46,28 @@ describe('workspace-als', () => {
     });
     expect(result.inner).toBe('inner');
     expect(result.afterInner).toBe('outer');
+  });
+});
+
+describe('runWithWorkspaceIfConcrete', () => {
+  it('pins the workspace for a concrete id', () => {
+    expect(runWithWorkspaceIfConcrete('ws-x', () => currentRequestWorkspaceId())).toBe('ws-x');
+  });
+
+  it('does NOT pin for the wildcard "*" (superuser without a chosen workspace)', () => {
+    expect(runWithWorkspaceIfConcrete('*', () => currentRequestWorkspaceId())).toBeUndefined();
+  });
+
+  it('does NOT pin for empty / undefined', () => {
+    expect(runWithWorkspaceIfConcrete('', () => currentRequestWorkspaceId())).toBeUndefined();
+    expect(runWithWorkspaceIfConcrete(undefined, () => currentRequestWorkspaceId())).toBeUndefined();
+  });
+
+  it('returns the callback value and preserves it across an await', async () => {
+    const v = await runWithWorkspaceIfConcrete('ws-y', async () => {
+      await Promise.resolve();
+      return currentRequestWorkspaceId();
+    });
+    expect(v).toBe('ws-y');
   });
 });

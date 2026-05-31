@@ -50,6 +50,7 @@ import {
   dispatchProjectedToolToMcp,
 } from '@papercusp/tooldef-mcp';
 import { withWorkspace } from '@papercusp/db-org';
+import { runWithWorkspaceIfConcrete } from '@/lib/workspace-als';
 import { isLoopbackRequest, isValidSuperuserBearer } from '@/lib/superuser-token';
 import { logVerificationFailure, verifySpawnParams } from '@/lib/spawn-signing';
 import { verifyAccessToken } from '@/lib/power-user-token';
@@ -725,21 +726,30 @@ const handler = createMcpHandler(
               content: Array<{ type: 'text'; text: string } | Record<string, unknown>>;
               isError?: boolean;
             }>;
+          // Establish the request-scoped workspace ALS for the duration of the
+          // tool call (P-022) so handlers that resolve via `activeWorkspaceId()`
+          // — harness resolution, not just the PG GUC `withWorkspace` sets — see
+          // the CALLER's workspace, not the process-global `reg.current`. '*'
+          // (superuser with no chosen workspace) stays unpinned.
           if (needsTx) {
-            return await withWorkspace(spawnRes.ctx.workspaceId, async (tx) => {
-              const ctx: UnifiedToolContext = {
-                ...baseCtx,
-                tx,
-                principal: {
-                  slug: 'system:operator',
-                  workspaceId: spawnRes.ctx.workspaceId,
-                  capabilities: new Set<string>(),
-                },
-              };
-              return await runDispatch(ctx);
-            });
+            return await runWithWorkspaceIfConcrete(spawnRes.ctx.workspaceId, () =>
+              withWorkspace(spawnRes.ctx.workspaceId, async (tx) => {
+                const ctx: UnifiedToolContext = {
+                  ...baseCtx,
+                  tx,
+                  principal: {
+                    slug: 'system:operator',
+                    workspaceId: spawnRes.ctx.workspaceId,
+                    capabilities: new Set<string>(),
+                  },
+                };
+                return await runDispatch(ctx);
+              }),
+            );
           }
-          return await runDispatch(baseCtx);
+          return await runWithWorkspaceIfConcrete(spawnRes.ctx.workspaceId, () =>
+            runDispatch(baseCtx),
+          );
         }
 
         // Legacy bearer-only fallback (no spawn ctx supplied).
