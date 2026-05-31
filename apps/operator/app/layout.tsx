@@ -18,6 +18,7 @@ import { ToastHistoryRecorder } from './_components/ToastHistoryRecorder';
 import PerfObserverProvider from './admin/testing/_components/PerfObserverProvider';
 import RecorderHost from './admin/testing/_components/RecorderHost';
 import DevReloadGate from './_components/DevReloadGate';
+import DesktopAttentionNotifier from './_components/DesktopAttentionNotifier';
 import { UiPresenceProvider } from './_components/UiPresenceProvider';
 import {
   OPERATOR_CHAT_COLLAPSED_WIDTH,
@@ -336,6 +337,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
                   />
                   <ToasterSelectionFix />
                   <ToastHistoryRecorder />
+                  <DesktopAttentionNotifier />
                   <PerfObserverProvider />
                   <RecorderHost />
                   <DevReloadGate />
