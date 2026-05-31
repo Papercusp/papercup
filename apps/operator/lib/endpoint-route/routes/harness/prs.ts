@@ -22,6 +22,10 @@ import { promisify } from 'node:util';
 import { defineTool } from '@papercusp/agent-mcp';
 import { resolveProject } from '@/lib/harness-core';
 import { createGitHubPrHost } from '@/lib/pr-host/github';
+import {
+  resolveMergedPrFeatureId,
+  stampCompletionRefOnMerge,
+} from '@/lib/harness/completion-ref-writer';
 
 const execFileP = promisify(execFile);
 
@@ -176,6 +180,10 @@ const reviewPr = defineTool({
       action?: string;
       reviewer_github_id?: number;
       reviewer_login?: string;
+      /** Phase 2 D-001: a feature-context review supplies the feature id so the
+       *  completion_ref stamp resolves without the (substrate-gated)
+       *  harness_feature_prs fallback. */
+      feature_id?: string;
     };
     const action = body.action;
     if (action !== 'approve' && action !== 'approve_and_merge') {
@@ -239,6 +247,32 @@ const reviewPr = defineTool({
       const mergeResult = await tryAutoMerge(host, prForMerge, mergeCtx);
       if (mergeResult.action === 'error') {
         return Response.json({ error: mergeResult.detail }, { status: 502 });
+      }
+      // Phase 2 (D-001): on an ACTUAL merge, stamp completion_ref +
+      // status='shipped' so the verifier daemon + the tier-B "shipped ✓" stat
+      // activate. Only the 'merged' variant carries a mergeCommitSha — a skipped
+      // merge (disabled / checks-failing / not-approved) has nothing to stamp.
+      // Best-effort: the merge already succeeded, so a stamp failure must never
+      // fail the response.
+      if (mergeResult.action === 'merged') {
+        try {
+          const featureId = await resolveMergedPrFeatureId({
+            harnessSlug: slug,
+            prUrl: flatPr.html_url,
+            bodyFeatureId: body.feature_id,
+          });
+          await stampCompletionRefOnMerge({
+            harnessSlug: slug,
+            featureId,
+            remote,
+            branch: flatPr.base_branch,
+            mergeCommitSha: mergeResult.mergeCommitSha,
+            prUrl: flatPr.html_url,
+            prNumber,
+          });
+        } catch {
+          // best-effort; the merge already succeeded.
+        }
       }
     }
 
