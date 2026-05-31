@@ -15,6 +15,7 @@ import {
   loadGithubContributorCommits,
   _clearGithubFactsCacheForTests,
   type GithubRepoResponse,
+  type GithubReleaseResponse,
 } from './github-facts';
 
 const REPO: GithubRepoResponse = {
@@ -72,6 +73,39 @@ describe('mapRepoFactsToProjectCard', () => {
     expect(p.languages).toEqual([]);
     expect(p.stars).toBeNull();
   });
+
+  it('maps repo topics (cleaned + clamped to 8) and the latest release', () => {
+    const p = mapRepoFactsToProjectCard(
+      { ...REPO, topics: ['p2p', 'agents', '', 'typescript'] },
+      { TypeScript: 100 },
+      {
+        tag_name: 'v1.2.0',
+        published_at: '2026-05-29T00:00:00Z',
+        html_url: 'https://github.com/Papercusp/papercup/releases/tag/v1.2.0',
+      },
+    );
+    expect(p.topics).toEqual(['p2p', 'agents', 'typescript']);
+    expect(p.latestRelease).toEqual({
+      tag: 'v1.2.0',
+      publishedAtIso: '2026-05-29T00:00:00Z',
+      url: 'https://github.com/Papercusp/papercup/releases/tag/v1.2.0',
+    });
+  });
+
+  it('defaults topics to [] and latestRelease to undefined when absent', () => {
+    const p = mapRepoFactsToProjectCard(REPO, {});
+    expect(p.topics).toEqual([]);
+    expect(p.latestRelease).toBeUndefined();
+  });
+
+  it('falls back to release `name` when tag_name is empty, else undefined', () => {
+    expect(
+      mapRepoFactsToProjectCard(REPO, {}, { name: 'Nightly', published_at: null }).latestRelease,
+    ).toEqual({ tag: 'Nightly', publishedAtIso: null, url: null });
+    expect(
+      mapRepoFactsToProjectCard(REPO, {}, { tag_name: '', name: '' }).latestRelease,
+    ).toBeUndefined();
+  });
 });
 
 describe('parseGithubRemote', () => {
@@ -86,10 +120,20 @@ describe('parseGithubRemote', () => {
   });
 });
 
-function fakeOctokit(getData: GithubRepoResponse, langs: Record<string, number>) {
+function fakeOctokit(
+  getData: GithubRepoResponse,
+  langs: Record<string, number>,
+  release: GithubReleaseResponse | null = null,
+) {
   const get = vi.fn(async () => ({ data: getData }));
   const listLanguages = vi.fn(async () => ({ data: langs }));
-  return { octokit: { rest: { repos: { get, listLanguages } } } as any, get, listLanguages };
+  const getLatestRelease = vi.fn(async () => ({ data: release }));
+  return {
+    octokit: { rest: { repos: { get, listLanguages, getLatestRelease } } } as any,
+    get,
+    listLanguages,
+    getLatestRelease,
+  };
 }
 
 describe('loadProjectCardFromGithub', () => {

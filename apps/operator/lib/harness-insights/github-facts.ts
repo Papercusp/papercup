@@ -85,6 +85,40 @@ export interface GithubRepoResponse {
   forks_count?: number;
   open_issues_count?: number;
   pushed_at?: string | null;
+  /** Repo topics — included by default since the `mercy` preview graduated. */
+  topics?: string[] | null;
+}
+
+/** Subset of the GitHub `GET /repos/:owner/:repo/releases/latest` response. */
+export interface GithubReleaseResponse {
+  tag_name?: string | null;
+  name?: string | null;
+  published_at?: string | null;
+  html_url?: string | null;
+}
+
+/** PURE: GitHub `topics` → a cleaned, length-clamped list (max 8). */
+function cleanTopics(topics: string[] | null | undefined): string[] {
+  if (!Array.isArray(topics)) return [];
+  return topics.filter((t) => typeof t === 'string' && t.length > 0).slice(0, 8);
+}
+
+/**
+ * PURE: a `releases/latest` response → the ProjectCard `latestRelease` slot.
+ * `undefined` (not the empty object) when there's no usable tag, so the
+ * per-field merge leaves the card's default (null) in place.
+ */
+function mapLatestRelease(
+  release: GithubReleaseResponse | null | undefined,
+): ProjectCardProps['latestRelease'] {
+  if (!release) return undefined;
+  const tag = (release.tag_name || release.name || '').trim();
+  if (!tag) return undefined;
+  return {
+    tag,
+    publishedAtIso: release.published_at ?? null,
+    url: release.html_url ?? null,
+  };
 }
 
 function topLanguages(
@@ -112,6 +146,7 @@ function topLanguages(
 export function mapRepoFactsToProjectCard(
   repo: GithubRepoResponse,
   languageBytes: Record<string, number> | null | undefined,
+  release?: GithubReleaseResponse | null,
 ): Partial<ProjectCardProps> {
   const spdx = repo.license?.spdx_id;
   const license = spdx && spdx !== 'NOASSERTION' ? spdx : null;
@@ -128,6 +163,8 @@ export function mapRepoFactsToProjectCard(
     forks: typeof repo.forks_count === 'number' ? repo.forks_count : null,
     openIssues: typeof repo.open_issues_count === 'number' ? repo.open_issues_count : null,
     lastActivityIso: repo.pushed_at ?? null,
+    topics: cleanTopics(repo.topics),
+    latestRelease: mapLatestRelease(release),
   };
 }
 
@@ -151,15 +188,21 @@ export async function fetchGithubRepoFacts(
   octokit: Octokit,
 ): Promise<Partial<ProjectCardProps> | null> {
   try {
-    const [repoRes, langRes] = await Promise.all([
+    const [repoRes, langRes, relRes] = await Promise.all([
       octokit.rest.repos.get({ owner, repo: name }),
       octokit.rest.repos
         .listLanguages({ owner, repo: name })
         .catch(() => ({ data: {} as Record<string, number> })),
+      // A repo with no releases 404s here — degrade to "no release" rather
+      // than failing the whole fetch.
+      octokit.rest.repos
+        .getLatestRelease({ owner, repo: name })
+        .catch(() => ({ data: null as GithubReleaseResponse | null })),
     ]);
     return mapRepoFactsToProjectCard(
       repoRes.data as GithubRepoResponse,
       langRes.data as Record<string, number>,
+      relRes.data as GithubReleaseResponse | null,
     );
   } catch {
     return null;

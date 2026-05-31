@@ -73,6 +73,8 @@ function fallbackProject(
     forks: override.forks ?? null,
     openIssues: override.openIssues ?? null,
     lastActivityIso: override.lastActivityIso ?? null,
+    topics: override.topics ?? [],
+    latestRelease: override.latestRelease ?? null,
   };
 }
 

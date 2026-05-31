@@ -84,6 +84,20 @@ const LANG_DOT: CSSProperties = {
   flexShrink: 0,
 };
 
+const TOPICS_ROW: CSSProperties = {
+  display: 'flex',
+  flexWrap: 'wrap',
+  gap: 6,
+};
+
+const TOPIC_PILL: CSSProperties = {
+  padding: '2px 8px',
+  borderRadius: 12,
+  fontSize: 12,
+  background: 'var(--surface-2, #2a2a2a)',
+  color: 'var(--fg-dim, #aaa)',
+};
+
 const LINK_ROW: CSSProperties = {
   display: 'flex',
   gap: 12,
@@ -157,6 +171,14 @@ export interface ProjectCardProps {
   openIssues?: number | null;
   /** ISO timestamp of the repo's last push (GitHub `pushed_at`). */
   lastActivityIso?: string | null;
+  /** Repo topics (GitHub `topics`), rendered as pills. */
+  topics?: string[];
+  /** Latest GitHub release (tag + publish date), if any. */
+  latestRelease?: {
+    tag: string;
+    publishedAtIso?: string | null;
+    url?: string | null;
+  } | null;
 }
 
 export function ProjectCard(props: ProjectCardProps): ReactNode {
@@ -174,14 +196,17 @@ export function ProjectCard(props: ProjectCardProps): ReactNode {
     forks,
     openIssues,
     lastActivityIso,
+    latestRelease,
   } = props;
 
   const topLanguages = (languages ?? []).slice(0, 3);
+  const topics = (props.topics ?? []).slice(0, 8);
   const hasStats =
     typeof stars === 'number' ||
     typeof forks === 'number' ||
     typeof openIssues === 'number' ||
-    !!lastActivityIso;
+    !!lastActivityIso ||
+    !!latestRelease;
 
   return (
     <div style={CARD} data-testid="insights-project-card">
@@ -221,6 +246,16 @@ export function ProjectCard(props: ProjectCardProps): ReactNode {
         ) : null}
       </div>
 
+      {topics.length > 0 ? (
+        <div style={TOPICS_ROW} data-testid="project-card-topics">
+          {topics.map((t) => (
+            <span key={t} style={TOPIC_PILL}>
+              {t}
+            </span>
+          ))}
+        </div>
+      ) : null}
+
       {hasStats ? (
         <div style={STATS_ROW} data-testid="project-card-stats">
           {typeof stars === 'number' ? (
@@ -234,6 +269,21 @@ export function ProjectCard(props: ProjectCardProps): ReactNode {
           ) : null}
           {lastActivityIso ? (
             <span title={lastActivityIso}>Updated {relativeTime(lastActivityIso)}</span>
+          ) : null}
+          {latestRelease ? (
+            <span
+              title={
+                latestRelease.publishedAtIso
+                  ? `Released ${latestRelease.publishedAtIso}`
+                  : 'Latest release'
+              }
+              data-testid="project-card-release"
+            >
+              🏷 {latestRelease.tag}
+              {latestRelease.publishedAtIso
+                ? ` · ${relativeTime(latestRelease.publishedAtIso)}`
+                : ''}
+            </span>
           ) : null}
         </div>
       ) : null}
