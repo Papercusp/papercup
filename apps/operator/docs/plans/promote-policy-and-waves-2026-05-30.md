@@ -34,6 +34,12 @@ Phase F started: **P-014 done** — promote-role prompt (`harness/prompts/promot
 registration. The mechanism is now **authored end-to-end** (parser → schema → promote → waves → sweep →
 role), ~60 unit tests + tsc-clean on all new code.
 
+**P-010 done** (`5c1de763`-adjacent): the tick test-suite (`wave-advance-sweep.test.ts`, 7 tests) covers all
+four required cases — drain→advance, hard-block→no-advance, cursor idempotency, generative needsItems
+propagation — 29 green with `waves.test.ts`. **Every non-host item is now done.** Documenter task also done:
+the plan-format spec (`/internal/docs/spec/plan-format`) now has a `## Promote` policy (waves) section (commit
+`5c1de763`) — closes the gap an SU engineer hits authoring a waves plan.
+
 **Remaining — host-only (can't be built/verified without a running harness):**
 - **P-014 run-verification** — confirm `invoke promote` runs the role + receives EXTRAS as the sweep sends.
 - **Phase E** — `onBlocked` → a `harness_issues` row (currently logs) → scanner.
@@ -165,8 +171,12 @@ See the consuming plan's §9a for the full dogfood narrative: `Restart/docs/plan
   doesn't exist yet (**Phase F**) — until then it 4xx's, the tick logs + doesn't advance (retries);
   `onBlocked` logs rather than raising a `harness_issues` row (**Phase E**). The sweep is a **no-op for every
   policy-less plan**, so wiring it is safe. Runtime not yet exercised against a live harness.
-- **P-010** `todo` Tests: drain → advance, failing feature → no advance (hard-block), cursor idempotency,
-  generative next-wave triggers expansion.
+- **P-010** `done` Tests (`wave-advance-sweep.test.ts`, 7 tick tests + `waves.test.ts`, 22 = 29 green): drain
+  → advance (`current wave drained → promotes the next wave`), failing feature → no advance/hard-block
+  (`blocked current wave → onBlocked, no promote`), cursor idempotency (`cursor null → promotes THEN sets
+  cursor` + `a failed promote does NOT advance the cursor`), in-flight guard (`un-populated current wave →
+  waits`), and generative next-wave triggers expansion (the tick carries `needsItems`; the template×items
+  expansion itself is covered by `buildWaveFeatures` under P-007).
 
 ## Phase E — blocked-wave detection + surfacing (reuse scanner/issues)
 
