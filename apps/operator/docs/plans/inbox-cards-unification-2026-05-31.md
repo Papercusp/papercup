@@ -41,10 +41,14 @@ items, smoke-test failures, plans awaiting review. Each item already carries
 `title`/`body` + an `actions[]` array (`{id, label, primary}`) + a typed `ref`
 (`apps/operator/lib/attention/{adapters,types}.ts`). Today they render with
 bespoke buttons in `PlanOtherList.tsx` (`OtherDetail`), `PlanItemsList.tsx`
-(`InboxItemActions`), and `PlanItemPreview.tsx`; the action wiring
-(`coord:resolve` / `setItemStatus` / `coord:ack` / open-log / open-review /
-`PlanChatModal`) is the "P-017" work from the
-`planning-attention-importance-2026-05-31` plan, currently half-wired.
+(`InboxItemActions`), and `PlanItemPreview.tsx`; that action wiring (P-017 in
+`planning-attention-importance-2026-05-31`, now **COMPLETE**) is **fully
+implemented** — Resolve→`coord:resolve`, Ack→`coord:ack`, plan-item
+Answer/Resolve/Drop→`addPlanDecision`/`setItemStatus` (+`resumeLoop`),
+Chat→`PlanChatModal`; only View-log/Open are intentional placeholders that
+point at the harness source view. **So Phase B/C is a refactor** that
+centralizes this working code behind the shared card — gated on parity tests
+(P-013) — not finishing half-done work. (Corrected after review, 2026-05-31.)
 
 **The core question (from the human):** should every human-facing inbox item
 use the same card system as chat, and can "Resolve" / "💬 Chat" become card
@@ -70,14 +74,27 @@ shared `AskChoiceCard` and dispatches the response to the item's own backend.
   attention items through it would mean pinning agents alive blocking on a
   human — wrong for async work. Keep durable backends (`coord:resolve`, etc.)
   as the resolution path.
-- **`AttentionItem.actions` ≈ `AskChoiceOption`.** `{id:'resolve',
-  label:'Resolve', primary:true}` → `{id:'resolve', label:'Resolve',
-  style:'primary'}`. Drop → `style:'danger'`; the rest → default.
-- **Terminal vs navigational actions.** Resolve / Ack / Drop are *terminal*
-  (they answer and disable the card). Chat / View-log / Review are
-  *navigational* (they open a sub-surface and the card should stay open).
-  `AskChoiceCard` today commits-and-disables on any single-select click —
-  this is the one real renderer change needed.
+- **`AttentionItem.actions` ≈ `AskChoiceOption` — but the action MODEL must
+  grow first (review gap).** `AttentionActionId` today is
+  `chat|resolve|mark-done|view-log|open|ack` — there is **no `answer` and no
+  `drop`** — and a needs-human item's `actions[]` is only
+  `[mark-done("Resolve"), chat]`. The Answer/Resolve/Drop toolkit is
+  **hard-coded in `InboxItemActions`**, not derived from `actions[]`. So an
+  `actions[]`-driven mapper would silently lose Answer + Drop. **P-009 extends
+  the adapter to emit the full set** before the mapper is written.
+- **Terminal vs navigational, by id:**
+  - *terminal* (commit + disable; handled by `resolveAttentionAction`):
+    `mark-done`/`resolve` (→ resolve **+ `resumeLoop`**), `drop` (→
+    `setItemStatus dropped`, **no resume** — preserve today's distinction),
+    `ack` (→ `coord:ack`).
+  - *navigate* (`terminal:false`; handled by the component): `chat` (→ inline
+    `ChatPanel`), `answer` (→ inline `InputCard` → `addPlanDecision` +
+    `setItemStatus done` **+ `resumeLoop`**), `view-log`/`open` (→ harness
+    source view). The Phase-A `terminal` flag is what carries this.
+- **Durable cards have no "Skip".** Inbox cards render with
+  `allowDecline={false}` — `decline` is undefined for a durable record (it
+  isn't keyed in `resolveAttentionAction`). A real dismiss/snooze can come
+  later as an explicit action, not the chat "Skip". (D-008.)
 - **No users yet (CLAUDE.md):** prefer collapsing the two surfaces now over
   maintaining bespoke inbox buttons alongside the card UI.
 
@@ -96,17 +113,18 @@ P-002 done Add an optional `terminal?: boolean` (default `true`) to `AskChoiceOp
 P-003 done Render non-terminal options as a distinct secondary affordance (e.g. a quiet right-aligned action row / link style) so "💬 Chat" and "View log" read as "open this" rather than "answer this". CSS only; reuse the existing ask-choice option styles. blocked-by:P-002
 P-004 done Unit tests for the renderer: terminal click → submit + disabled; non-terminal click → navigate, card stays live; multi-select unaffected; decline still works. blocked-by:P-002
 
-## Phase B — AttentionItem → CardSpec adapter + durable dispatch
+## Phase B — Close the action-model gap, then adapter + durable dispatch
 
-P-010 todo Pure mapper `attentionItemToCardSpec(item)` (new, `apps/operator/lib/attention/to-card-spec.ts`): `title`/`body` → question; `actions[]` → options (primary→`style:'primary'`, `drop`→`style:'danger'`, `chat`/`view-log`/`open`→`terminal:false`). Colocated unit test covering every kind. blocked-by:P-002
-P-011 todo Durable dispatch map `resolveAttentionAction(item, optionId)` (new, `apps/operator/lib/attention/resolve-action.ts`) keyed by `(ref.kind, optionId)`, calling the EXISTING client helpers (D-007): coord-escalation/<option>→`resolveEscalation({msg_id, choice})`, coord-message/ack→`ackCoordMessage({msg_id})`, plan-item/resolve→`setItemStatus done`, plan-item/drop→`setItemStatus dropped`, smoke-fail/view-log + plan-review/open→navigate (non-terminal). Returns `{ resolved: boolean }` so the card knows whether to mark answered. This is the P-017 action wiring, centralized. blocked-by:P-010
-P-012 todo Escalation options: when `ref.options` is non-empty, the card's terminal options ARE those named options and each pick passes its `option_id` as `choice` to `resolveEscalation`; when empty, a single generic "Resolve" records acknowledgement. No new endpoint — `/api/admin/coord/:verb` already exists (D-007). blocked-by:P-011
-P-013 todo Integration test: each kind's terminal action calls the right backend and the underlying record changes (escalation closed / item status flipped / message acked). blocked-by:P-011
+P-009 todo **Prerequisite (review gap):** extend `AttentionActionId` with `answer` and `drop`, and have `planItemToAttention` (`adapters.ts`) emit the FULL needs-human set so `actions[]` is the single source of truth: `[answer (terminal:false), mark-done/"Resolve" (primary, terminal), drop (danger, terminal), chat (terminal:false)]`. Keeps the existing agent-facing `plans:attention` payload coherent. Adapter unit tests assert each kind's action set. blocked-by:P-002
+P-010 todo Pure mapper `attentionItemToCardSpec(item)` (new, `apps/operator/lib/attention/to-card-spec.ts`): `title`/`body` → question; `actions[]` → options — `primary`→`style:'primary'`, `drop`→`style:'danger'`, and `chat`/`answer`/`view-log`/`open`→`terminal:false`; emits `allowDecline:false` (D-008). Colocated unit test covering every kind (asserts Answer + Drop survive for needs-human, per P-009). blocked-by:P-009
+P-011 todo Durable dispatch `resolveAttentionAction(item, optionId)` (new, `apps/operator/lib/attention/resolve-action.ts`) for the TERMINAL ids only, calling the EXISTING helpers (D-007): coord-escalation/<option>→`resolveEscalation({msg_id, choice})`, coord-message/`ack`→`ackCoordMessage({msg_id})`, plan-item/`mark-done`→`setItemStatus done` **then `resumeLoop`**, plan-item/`drop`→`setItemStatus dropped` **(no resume)**. Returns `{ resolved: boolean }`. The navigate ids (`chat`/`answer`/`view-log`/`open`) are NOT handled here — the component owns them. blocked-by:P-010
+P-012 todo Escalation options: when `ref.options` is non-empty, the card's terminal options ARE those named options and each pick passes its `option_id` as `choice` to `resolveEscalation`; when empty, a single generic "Resolve". No new endpoint — `/api/admin/coord/:verb` already exists (D-007). blocked-by:P-011
+P-013 todo **Parity tests** (this is a refactor of working code, not new wiring): assert `resolveAttentionAction` reproduces today's `InboxItemActions`/`OtherDetail` behavior for every (kind, action) — same backend call, same args, AND the `resumeLoop`-on-resolve / no-resume-on-drop distinction. Only then delete the old per-action button code. blocked-by:P-011
 
 ## Phase C — Render the inbox through the card UI
 
 P-020 todo Replace `OtherDetail` (in `PlanOtherList.tsx`) body+buttons with `AskChoiceCard` fed by `attentionItemToCardSpec(item)`; wire `onResponse` → `resolveAttentionAction` for terminal picks; for the `chat` navigate action, expand a `ChatPanel` INLINE beneath the card (D-006), retiring `PlanChatModal` for this surface. Delete the bespoke per-action `toast`/button code. blocked-by:P-010,P-011,P-003
-P-021 todo Do the same for needs-human plan items: render `PlanItemPreview` / `InboxItemActions` via the shared card (Answer becomes an `InputCard` text card; Resolve/Drop are terminal options; Chat expands the inline `ChatPanel`). Retire `InboxItemActions` bespoke buttons. blocked-by:P-020
+P-021 todo Do the same for needs-human plan items via the shared card. Card composition (review gap #3): Resolve + Drop are terminal options; `answer` and `chat` are `terminal:false` navigate options. Clicking **Answer** reveals an inline `InputCard` beneath the card (mirroring the inline-chat pattern, D-006); its submit runs `addPlanDecision` + `setItemStatus done` + `resumeLoop` — i.e. one detail pane composes an `AskChoiceCard` (the options) with an on-demand `InputCard` (the answer). Retire the hard-coded `InboxItemActions` toolkit. blocked-by:P-020
 P-022 todo Apply the master-detail layout (D-005): keep the compact list; render the selected item as the shared card in the detail pane, with the inline chat (D-006) expanding inside that pane beneath the card. No card-stack rewrite. blocked-by:P-020
 P-023 todo Manual e2e in the Tauri desktop: an escalation, a message, a needs-human item, a smoke-fail, and a review each render as a card; the terminal action resolves the underlying record and the item leaves the inbox; "💬 Chat" opens the chat without resolving. blocked-by:P-021,P-022
 
@@ -116,7 +134,7 @@ P-030 todo Spike: when an agent calls `ctx.askUser` for a *decision* (not a quic
 
 ## Cross-cutting
 
-P-050 todo Update the `planning-attention-importance-2026-05-31` plan: mark its P-017 "action wiring" as subsumed by this plan's Phase B, with a pointer. blocked-by:P-011
+P-050 todo Back-annotation only (P-017 is already done + that plan is COMPLETE): add a "superseded-by → inbox-cards-unification Phase B" pointer next to P-017, NOT a live hand-off. blocked-by:P-013
 P-051 todo Agent insight at `apps/operator-docs/src/content/docs/agent-insights/inbox-cards.mdx`: the renderer-vs-lifecycle split, the durable third emitter, and the terminal/navigate option convention — so the next agent doesn't try to route the inbox through `ctx.askUser`. blocked-by:P-023
 
 ## Decisions
@@ -144,11 +162,15 @@ navigational (`terminal:false`) — they open a sub-surface and leave the card
 live. This is the one real change to the shared renderer and it also enriches
 chat cards (an option that escalates into a full chat).
 
-### D-004 — Map `AttentionItem.actions` → `AskChoiceOption`
+### D-004 — Map `AttentionItem.actions` → `AskChoiceOption` (REVISED after review)
 
-The action shape already matches the option shape. `primary:true` →
-`style:'primary'`; a `drop` action → `style:'danger'`; everything else
-default. "Resolve" and "💬 Chat" become card options with no new data model.
+The shapes match (`{id,label,primary}` → `{id,label,style}`), BUT the action
+*set* must grow first: `AttentionActionId` has no `answer`/`drop` today and the
+needs-human `actions[]` is only `[mark-done, chat]` — Answer/Drop are hard-coded
+in `InboxItemActions`. So this is **not** "no new data model": P-009 adds
+`answer`+`drop` to the union and emits them from the adapter, making `actions[]`
+the single source the mapper reads. Then `primary`→`style:'primary'`,
+`drop`→`style:'danger'`, `chat`/`answer`/`view-log`/`open`→`terminal:false`.
 
 ### D-005 — Inbox layout: master-detail, card in the detail pane (RESOLVED 2026-05-31)
 
@@ -163,8 +185,10 @@ than a full card-stack rewrite; preserves the list/preview muscle memory.
 
 The card's `chat` navigate action expands a `ChatPanel` **inline beneath the
 card** (a sub-conversation), not the current `PlanChatModal`. The card stays
-live above the chat; resolving the item collapses the chat. `PlanChatModal`
-is retired for this surface. (Human call, 2026-05-31.)
+live above the chat; resolving the item collapses the chat. `PlanChatModal`'s
+only consumers are `OtherDetail` + `PlanItemPreview` (both inbox surfaces,
+verified), so this **retires `PlanChatModal` entirely** — delete the component
+in Phase C, don't leave it dead. (Human call, 2026-05-31.)
 
 ### D-007 — Use the existing endpoint-system coord proxy, NO new route (RESOLVED 2026-05-31)
 
@@ -174,3 +198,12 @@ proxy, with the ready-made helpers `resolveEscalation({msg_id, choice, note})`
 and `ackCoordMessage({msg_id})` in `plans-api.ts`. Phase B's dispatch calls
 those (plus `setItemStatus` for plan items) — no bespoke REST route to write.
 (Human call, 2026-05-31: "can't our defineTool take care of that?" — yes.)
+
+### D-008 — No "Skip" on durable inbox cards (from review)
+
+`AskChoiceCard` shows a Skip affordance by default (`allowDecline=true`) firing
+`{action:'decline'}`. For a *durable* inbox record that's undefined — `decline`
+isn't keyed in `resolveAttentionAction`, so Skip would either no-op or hide the
+card while the backend record stays open. Inbox cards therefore render with
+`allowDecline={false}`. If a "dismiss/snooze" is wanted later it's an explicit
+action (local UI state), not the chat Skip. (From review, 2026-05-31.)
