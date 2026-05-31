@@ -10,9 +10,9 @@ updated: 2026-05-31
 
 ## Now
 
-**State:** Approved — all open questions resolved (D-005 Option A master-detail, D-006 inline chat, D-007 endpoint-system coord proxy). Starting **Phase A**: add an additive `terminal` flag + `navigate` action to the shared `AskChoiceCard` (backward-compatible — existing chat callers unaffected).
+**State:** Phase A **DONE** (commit `b3760b866`) — `AskChoiceCard` now has the additive `terminal` flag + `navigate` action + nav-row CSS; 6 new tests, all chat-card tests green, zero behavior change for the existing chat surface. All open questions resolved (D-005/006/007).
 
-**Next:** finish Phase A (renderer flag + CSS + tests), then Phase B (AttentionItem→CardSpec adapter + durable dispatch via the existing coord helpers).
+**Next:** Phase B — `attentionItemToCardSpec` mapper + `resolveAttentionAction` dispatch (reusing the existing `resolveEscalation`/`ackCoordMessage`/`setItemStatus` helpers, D-007). Then Phase C wires the inbox detail pane to the card (master-detail, D-005).
 
 ## Background
 
@@ -91,10 +91,10 @@ shared `AskChoiceCard` and dispatches the response to the item's own backend.
 
 ## Phase A — Shared renderer + non-terminal action flag
 
-P-001 todo Confirm `AskChoiceCard` / `InputCard` are usable outside a live chat run (no hidden coupling to `ctx.askUser` / conversation state). Document the minimal prop surface a non-chat host must supply (`args`, `answered`, `onResponse`).
-P-002 todo Add an optional `terminal?: boolean` (default `true`) to `AskChoiceOption`. A non-terminal option click fires `onResponse({action:'navigate', option_id})` and does NOT mark the card answered/disabled. Extend `AskChoiceResponse` with the `navigate` action. blocked-by:P-001
-P-003 todo Render non-terminal options as a distinct secondary affordance (e.g. a quiet right-aligned action row / link style) so "💬 Chat" and "View log" read as "open this" rather than "answer this". CSS only; reuse the existing ask-choice option styles. blocked-by:P-002
-P-004 todo Unit tests for the renderer: terminal click → submit + disabled; non-terminal click → navigate, card stays live; multi-select unaffected; decline still works. blocked-by:P-002
+P-001 done Confirm `AskChoiceCard` / `InputCard` are usable outside a live chat run (no hidden coupling to `ctx.askUser` / conversation state). Document the minimal prop surface a non-chat host must supply (`args`, `answered`, `onResponse`).
+P-002 done Add an optional `terminal?: boolean` (default `true`) to `AskChoiceOption`. A non-terminal option click fires `onResponse({action:'navigate', option_id})` and does NOT mark the card answered/disabled. Extend `AskChoiceResponse` with the `navigate` action. blocked-by:P-001
+P-003 done Render non-terminal options as a distinct secondary affordance (e.g. a quiet right-aligned action row / link style) so "💬 Chat" and "View log" read as "open this" rather than "answer this". CSS only; reuse the existing ask-choice option styles. blocked-by:P-002
+P-004 done Unit tests for the renderer: terminal click → submit + disabled; non-terminal click → navigate, card stays live; multi-select unaffected; decline still works. blocked-by:P-002
 
 ## Phase B — AttentionItem → CardSpec adapter + durable dispatch
 
