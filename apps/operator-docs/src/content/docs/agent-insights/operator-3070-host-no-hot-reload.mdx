@@ -20,9 +20,11 @@ It loaded the old module graph (including module-level singletons like
 `coordLog`) at startup and won't pick up `lib/**` edits until the process
 restarts.
 
-The `:3055` Next layer *does* hot-reload its own routes/components — so a
-frontend change goes live while an identical-feeling server-side change
-silently does not. That asymmetry is what makes this confusing.
+The `:3055` Vite dev server (`@papercusp/operator-vite`) *does* hot-reload its
+own routes/components — so a frontend change goes live while an
+identical-feeling server-side change silently does not. That asymmetry is what
+makes this confusing. (Next.js is retired for the operator; `:3055` is the
+Vite SPA, not a Next dev server.)
 
 ## Restart it
 
