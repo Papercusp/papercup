@@ -381,11 +381,24 @@ changes.
 
 ## Browser checks — use `verdict`
 
-For any browser verification (clicks, fills, screenshots, CSS
-inspection, accessibility), use the `verdict` skill, **not** Playwright
-MCP tools and **not** ad-hoc Puppeteer scripts. We do not maintain a
-checked-in Playwright suite in v1; verdict is the entire browser
-testing surface. See per-project `TESTING.md` for what's covered.
+For **ad-hoc / exploratory** browser verification during development
+(clicks, fills, screenshots, CSS inspection, accessibility), use the
+`verdict` skill, **not** the Playwright MCP tools and **not** ad-hoc
+Puppeteer scripts.
+
+This is distinct from the committed, CI-run browser-E2E suite at
+`apps/operator/e2e/*.spec.ts` (26 Playwright specs) — that suite **is**
+maintained and is the automated browser-E2E framework (see the "four
+canonical frameworks" section below). The rule governs *how you do an
+interactive check*: reach for `verdict`, and use Playwright only to run
+or extend those existing `*.spec.ts` files. See per-project `TESTING.md`
+for what's covered.
+
+`verdict` is for **arbitrary/external** pages. The **operator UI**
+(`:3055`/`:3070`) renders correctly only inside the **Tauri shell** — so
+verify operator/app behavior there via `tauri-agent-tools` per
+`/internal/docs/testing/agent-e2e`, **not** by pointing `verdict` at those
+ports (see the run/testing rule at the top of this file).
 
 ## Per-project TESTING.md
 
