@@ -506,8 +506,13 @@ shared-store at all, given the substrate is advisory?**
     is **no shared structure to forge into** (a peer can only write "facts about
     itself"; each consumer decides whether to believe them). This is *why* most
     Hyperswarm apps need neither op-rate-limits nor op-signing.
-  - **Costs:** **no canonical merge order** → eventual per-peer divergence; claim
-    arbitration must be solved another way.
+  - **Costs:** no canonical **total order of events**. (State still *converges* —
+    a CRDT / LWW-register read-merge over the same replicated logs reaches the same
+    value on every peer; **divergence is NOT the problem** — verified 2026-05-31 vs
+    the CRDT/local-first literature, correcting an earlier overstatement.) What is
+    actually lost: a *free global ordering* (queue position, activity-feed order,
+    first-claim), and you take on CRDT / relational modelling (document-CRDTs aren't
+    relational) instead of one `apply()` + a relational projection.
 
 ## C.2 The advisory-state pivot
 
@@ -521,8 +526,10 @@ GitHub truth.
 
 ## C.3 What only A buys — and whether it's re-homeable
 
-The one capability A provides that B does not is **deterministic distributed-claim
-arbitration** (a single agreed "Bravo got it first"). Even that is re-homeable:
+The capability A provides that B does not is a **global total order of events**
+(B converges *state* but not a single agreed event ordering) — whose headline use
+is **deterministic distributed-claim arbitration** (a single agreed "Bravo got it
+first"). Even that is re-homeable:
 - **GitHub-anchored claim** — represent "claimed" as a GitHub fact (assignee /
   draft PR / branch), so the hard authority arbitrates it too — consistent with
   the §18 `completion_ref` decision (the trustworthy signal is GitHub-derived).
