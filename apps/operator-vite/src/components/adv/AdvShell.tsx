@@ -6,6 +6,7 @@ import { parseAsBoolean, parseAsString, parseAsStringEnum, useQueryState } from 
 import {
   BookOpen,
   Boxes,
+  FlaskConical,
   GitBranch,
   Lightbulb,
   ListChecks,
@@ -22,7 +23,7 @@ import { ShareWizard } from '@/app/harness/ShareWizard';
 import AdvNowRunning from './AdvNowRunning';
 import DiscordBadge from './DiscordBadge';
 
-const ADV_TAB_IDS = ['harnesses', 'brainstorm', 'prs', 'insights', 'config', 'settings', 'docs', 'git', 'plans', 'sessions'] as const;
+const ADV_TAB_IDS = ['harnesses', 'brainstorm', 'prs', 'insights', 'config', 'settings', 'docs', 'git', 'testing', 'plans', 'sessions'] as const;
 export type AdvTabId = (typeof ADV_TAB_IDS)[number];
 
 /**
@@ -51,6 +52,7 @@ export const ADV_TABS: ReadonlyArray<{
   { id: 'sessions', label: 'Sessions', icon: Terminal, accent: '#f472b6', accentRgb: '244, 114, 182', supportsAll: true },
   { id: 'harnesses', label: 'Harness', icon: Boxes, accent: '#a78bfa', accentRgb: '167, 139, 250', supportsAll: true },
   { id: 'git', label: 'Git', icon: GitBranch, accent: '#22c55e', accentRgb: '34, 197, 94' },
+  { id: 'testing', label: 'Tests', icon: FlaskConical, accent: '#84cc16', accentRgb: '132, 204, 22' },
   { id: 'docs', label: 'Docs', icon: BookOpen, accent: '#60a5fa', accentRgb: '96, 165, 250' },
   { id: 'insights', label: 'Insights', icon: TrendingUp, accent: '#14b8a6', accentRgb: '20, 184, 166' },
   { id: 'config', label: 'Config', icon: SlidersHorizontal, accent: '#e879f9', accentRgb: '232, 121, 249' },

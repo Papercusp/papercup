@@ -9,8 +9,9 @@ import HarnessSettingsPanel from '@/app/harness/HarnessSettingsPanel';
 import { InsightsTab, type InsightsTabProps } from '@/app/harness/insights/InsightsTab';
 import AdvConfigTab from '@/app/adv/harnesses/AdvConfigTab';
 import AdvDocsTab from '@/app/adv/harnesses/AdvDocsTab';
+import HarnessTestsView from '@/app/adv/harnesses/HarnessTestsView';
 
-type AdvHarnessPanel = Extract<AdvTabId, 'brainstorm' | 'prs' | 'insights' | 'config' | 'settings' | 'docs' | 'git'>;
+type AdvHarnessPanel = Extract<AdvTabId, 'brainstorm' | 'prs' | 'insights' | 'config' | 'settings' | 'docs' | 'git' | 'testing'>;
 
 export const ADV_HARNESS_PANEL_LABELS: Record<AdvHarnessPanel, string> = {
   brainstorm: 'Brainstorm',
@@ -20,6 +21,7 @@ export const ADV_HARNESS_PANEL_LABELS: Record<AdvHarnessPanel, string> = {
   settings: 'Settings',
   docs: 'Docs',
   git: 'Git',
+  testing: 'Tests',
 };
 
 // The /adv harness tab uses the staging phase throughout (mirrors the rest of
@@ -80,6 +82,7 @@ const DIRECT: Partial<Record<AdvHarnessPanel, (slug: string) => ReactNode>> = {
   insights: (slug) => <AdvInsightsTab slug={slug} />,
   config: (slug) => <AdvConfigTab slug={slug} />,
   docs: (slug) => <AdvDocsTab slug={slug} />,
+  testing: (slug) => <HarnessTestsView slug={slug} />,
 };
 
 const PANEL_FILL_CSS = `

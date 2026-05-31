@@ -4,8 +4,8 @@
  * Harness Tests tab — P-026 of harness-tests-tab-and-tester-promotion-2026-05-26.
  *
  * Covers the harness registry shape (Built-in generalized + Project
- * acceptance) and that <AdvTestsPanel> renders <TestingShell> with those
- * two tiers from a dock `harnessSlug` param.
+ * acceptance) and that <HarnessTestsView> renders <TestingShell> with those
+ * two tiers for a harness slug.
  */
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -17,20 +17,12 @@ import {
   ACCEPTANCE_DOMAIN_ID,
 } from '../harness-testing-registry';
 import { generalizedRegistry } from '../testing-domains';
-import AdvTestsPanel from '../../app/adv/harnesses/AdvTestsPanel';
+import HarnessTestsView from '../../app/adv/harnesses/HarnessTestsView';
 import AcceptancePanel from '../../app/adv/harnesses/AcceptancePanel';
 
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
-});
-
-/** Full PanelComponentProps for the dock-mounted panel (only `params` is read). */
-const panelProps = (params: Record<string, unknown>) => ({
-  panelId: 'test-panel',
-  panelType: 'adv:tests',
-  params,
-  api: { setParams: () => {}, setTitle: () => {}, close: () => {} },
 });
 
 describe('harnessTestingRegistry', () => {
@@ -50,8 +42,8 @@ describe('harnessTestingRegistry', () => {
   });
 });
 
-describe('<AdvTestsPanel>', () => {
-  it('renders TestingShell with Built-in + Project tiers from the harnessSlug param', async () => {
+describe('<HarnessTestsView>', () => {
+  it('renders TestingShell with Built-in + Project tiers for a harness slug', async () => {
     // Minimal stub so DomainTestPanel's detail fetch resolves; the nav
     // (tier headings + tabs) comes from the registry and renders regardless.
     vi.stubGlobal(
@@ -66,7 +58,7 @@ describe('<AdvTestsPanel>', () => {
       })) as unknown as typeof fetch,
     );
 
-    render(<AdvTestsPanel {...panelProps({ harnessSlug: 'demo' })} />, {
+    render(<HarnessTestsView slug="demo" />, {
       wrapper: withNuqsTestingAdapter({ searchParams: '' }),
     });
 
@@ -76,13 +68,8 @@ describe('<AdvTestsPanel>', () => {
     // …and the Acceptance tab is present.
     screen.getByText('Acceptance');
   });
-
-  it('shows an empty state when no harnessSlug is in params', () => {
-    render(<AdvTestsPanel {...panelProps({})} />, {
-      wrapper: withNuqsTestingAdapter({ searchParams: '' }),
-    });
-    screen.getByText('No harness slug in params.');
-  });
+  // (The no-slug empty state now lives in AdvHarnessPanelPage — "Select a
+  // harness" — not in HarnessTestsView, which is always given a slug.)
 });
 
 describe('<AcceptancePanel> (P-062/P-063)', () => {

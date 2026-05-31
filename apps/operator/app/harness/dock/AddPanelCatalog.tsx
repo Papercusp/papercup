@@ -80,7 +80,6 @@ const HUMAN_LABELS: Record<string, string> = {
   'adv:agents': 'Agents',
   'adv:logs': 'Run log',
   'adv:overview': 'Overview',
-  'adv:tests': 'Tests',
 };
 
 // Per-type icon for at-a-glance scanning. Every lookup falls back to a
@@ -101,7 +100,6 @@ const ICON_MAP: Record<string, LucideIcon> = {
   'data:logs': ScrollText,
   'adv:logs': ScrollText,
   'adv:overview': LayoutDashboard,
-  'adv:tests': ListChecks,
   'view:harness-overview': LayoutDashboard,
   'view:dashboard-overview': LayoutDashboard,
   'data:chat': MessageSquare,
