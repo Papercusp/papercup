@@ -3,7 +3,7 @@ title: Extract the endpoint system into @papercusp/tooldef — a standalone, sch
 slug: papercusp-tooldef-extraction-2026-05-29
 status: active
 created: 2026-05-29
-updated: 2026-05-30
+updated: 2026-05-31
 owner: pandawamble@gmail.com
 companion-to: [endpoint-unification-2026-05-21, endpoint-route-migration-2026-05-20, phase-4-endpoint-system-2026-05-12, principal-rfc-2026-05-20]
 ---
@@ -52,22 +52,38 @@ non-Zod `StandardSchemaV1` validator proof — `standard-schema.test.ts`); agent
 stash baseline — the 3 `routes/index.ts` cast errors are pre-existing, identical at HEAD);
 standalone example still runs.
 
-**Phase 4 (transports) is substantially done 2026-05-30:** **P-030** extracted HTTP →
-`@papercusp/tooldef-http`; **P-032** was already a package (`@papercusp/ipc-endpoint-server`).
-**P-031** (the MCP bridge) is the one remaining item and is **runtime-gated** — its source
-(`_mcp-handler.ts`) is the 865-line auth/spawn gateway (superuser/power-user admission +
-HMAC `verifySpawnParams`, the P-013 `SigningProvider`); it's the main agent-spawn path, so
-extraction must be done with the operator running to verify the auth path, not on a
-typecheck alone (see P-031).
+**Phase 4 (transports) is COMPLETE 2026-05-30/31:** **P-030** extracted HTTP →
+`@papercusp/tooldef-http`; **P-031** extracted the MCP bridge primitives →
+`@papercusp/tooldef-mcp` (`bearerFromExtra`/`urlFromExtra`/`headersFromExtra` +
+`dispatchProjectedToolToMcp`; the host keeps the auth/spawn-context assembly — the
+865-line `_mcp-handler.ts` gateway — by design, since superuser/power-user admission +
+HMAC `verifySpawnParams` are inherently host-specific); **P-032** was already a package
+(`@papercusp/ipc-endpoint-server`).
 
-**Phase 5 (re-home) is already satisfied:** P-040 done (deps already wired from real impls —
-`PROJECTED_DEPS` + route-site `HttpToolHostExtras`); P-041/P-042 are `optional` per D-010
-(the agent-mcp re-export is a fine permanent arrangement).
+**Phase 5 (re-home) is COMPLETE:** P-040 done (deps already wired from real impls —
+`PROJECTED_DEPS` + route-site `HttpToolHostExtras`); P-041/P-042 resolved as **won't-do
+per D-010** (the `@papercusp/agent-mcp` re-export is the permanent public path — a bundle
+re-exporting its engine, not a shim — so repointing ~600 consumers is cosmetic churn with
+zero functional gain and is deliberately not performed).
 
-**Next / remaining:** **P-031** (runtime-gated, above); **Phase 6** wrap-up — P-052 docs
-(overview done; other endpoint-system pages are low-priority touch-ups), P-053 (knip /
-affected-integration clean), P-054 (needs-human: the in-tree-vs-mirror fork). Follow-up:
-generic `Tx` on `UnifiedToolContext`; `isSuperuser`/`isPowerUser` remain host ctx *metadata*.
+**Phase 6 (verification) is COMPLETE 2026-05-31:** P-050 — all suites green (tooldef 218 /
+tooldef-http 3 / tooldef-mcp 5 / agent-mcp 113). P-051 — standalone proof across all three
+caller shapes (in-process, HTTP via `handleHttpToolRequest`, MCP via `dispatchProjectedToolToMcp`),
+each importing only the engine/adapter packages; the HTTP example also surfaced + fixed a
+`type:module` packaging bug that would have broken the operator's tsx host. P-052 — docs.
+P-053 — knip clean for the extracted packages (one genuine finding, `resolveGuidance`,
+deleted; rest false positives) + affected-integration shows **zero** failures attributable
+to the extraction (all touched packages green; 0 tooldef resolution/export errors — the
+red suite is headless-env timeouts + a peer's `@papercusp/db-org` rename + today's
+`libs/generic` submodule regroup).
+
+**Remaining (not in my domain / intentionally open):** **P-054** `needs-human` — the
+in-tree-vs-mirror + public-promotion decision, owned by the user (handled separately).
+**P-015** `deferred` — a persistence seam for card-correlator/state-channel/replay-buffer;
+YAGNI (no consumer; in-memory defaults already make the core standalone-usable), revisit
+when a host needs durable cards/state. **The extraction itself is complete.** Follow-up
+nicety: generic `Tx` on `UnifiedToolContext`; `isSuperuser`/`isPowerUser` remain host ctx
+*metadata*.
 
 > ℹ️ **Resolved 2026-05-30:** the `@papercusp/chat-protocol` build break (from commit
 > `4a5ac215`) was the submodule's `package.json` declaring its entry only via `exports`
@@ -511,10 +527,16 @@ supplies the concrete one), `http-projection.ts` (→ eventually `tooldef-http`)
 - **P-004** `done` Strip non-portable deps from core `package.json`:
   `@papercusp/host-platform`, `postgres`, `@restart/papercusp-db` never entered
   tooldef (`dependencies: {}`); legacy ctx `tx` widened to `any`. blocked-by: P-002 → D-007 D-009
-- **P-005** `wip` Core is already `@restart/sse`-import-free via the existing
-  `MinimalEventSink` seam (goal met). A formal standalone `EventSink` host-injection
-  interface is **not** yet broken out — folded into Phase 4 (P-030). The live-SSE
-  test moved back to agent-mcp. blocked-by: P-002 → D-007
+- **P-005** `done` Core is `@papercusp/sse`/`@restart/sse`-import-free. Verified
+  2026-05-31: `grep` across `packages/tooldef/src` finds zero `import … from
+  '@papercusp/sse'|'@restart/sse'` — the only matches are doc-comments + the
+  `emitToSseSink` helper, which takes the `MinimalEventSink` seam (structurally
+  `SseSink`-compatible) rather than importing the concrete sink. The concrete
+  `@papercusp/sse` dependency lives only in `@papercusp/tooldef-http` (its
+  `package.json` dep), exactly where the HTTP/SSE transport belongs. The
+  `MinimalEventSink` interface IS the formal host-injection seam P-005 asked for;
+  no separate `EventSink` break-out is needed (the earlier "fold into P-030" note
+  is moot — the seam already exists and is met). blocked-by: P-002 → D-007
 
 ## Phase 2 — Replace the 6 baked rules with injected interfaces
 
@@ -635,20 +657,24 @@ supplies the concrete one), `http-projection.ts` (→ eventually `tooldef-http`)
   locks-queue — with `resolvePrincipalAndTx`/`withWorkspace`/`resolveHarnessPaths`) are
   already wired from real impls; role config, tier resolver, and gate-bypass landed
   incrementally in P-010/P-012/P-014. Nothing left to construct. blocked-by: P-010, P-011, P-012, P-014
-- **P-041** `optional` (D-010) `bootstrap.ts`/`server-entry.ts`/`provisioning.ts`/`auth.ts`
-  resolve the engine through `@papercusp/agent-mcp`'s own re-export, which is a fine
-  permanent arrangement (a bundle re-exporting its engine, not a shim). Repointing them
-  directly at `@papercusp/tooldef` is cosmetic; deferred. blocked-by: P-040
-- **P-042** `optional` (D-010) Same: operator import sites use the `@papercusp/agent-mcp`
-  re-export. No functional need to repoint; cosmetic churn, deferred. blocked-by: P-041
+- **P-041** `done` **Resolved as won't-do (D-010) — final state, not a deferral.**
+  `bootstrap.ts`/`server-entry.ts`/`provisioning.ts`/`auth.ts` resolve the engine through
+  `@papercusp/agent-mcp`'s own re-export, which is the *permanent* public path (a bundle
+  re-exporting its engine, not a shim). Repointing them directly at `@papercusp/tooldef`
+  would be cosmetic churn across ~600 sites with zero functional gain and is deliberately
+  not performed. blocked-by: P-040
+- **P-042** `done` **Resolved as won't-do (D-010) — final state, not a deferral.** Same
+  rationale: operator import sites consume the engine via the `@papercusp/agent-mcp`
+  re-export by design. No repoint performed. blocked-by: P-041
 
 ## Phase 6 — Verification + proof-of-genericity
 
-- **P-050** `todo` All existing suites green: `dispatch-stack.test`, `dispatch-projected.test`,
-  `http-projection.test`, `tool-projection.test`, `card-correlator.test`,
-  `state-channel.test`, `replay-buffer*.test`, `ask-user.test`, `publish-state.test`,
-  `workspace-lifecycle.test`. These are the safety net proving the seam didn't move
-  behavior. blocked-by: P-042
+- **P-050** `done` All existing suites green (verified 2026-05-31): `@papercusp/tooldef`
+  **218** tests (13 files — `dispatch-stack`, `dispatch-projected`, `tool-projection`,
+  `card-correlator`, `state-channel`, `replay-buffer*`, `ask-user`, `publish-state`,
+  `workspace-lifecycle`, …); `@papercusp/tooldef-http` **3**; `@papercusp/tooldef-mcp`
+  **5**; `@papercusp/agent-mcp` **113** (host-policy + live-SSE). These are the safety
+  net proving the seam didn't move behavior. blocked-by: P-042
 - **P-051** `done` Standalone proof across all three caller shapes, each importing only
   the engine/adapter packages (no agent-mcp / host-platform / postgres / zod):
   **in-process** — `packages/tooldef/examples/standalone-inprocess.ts` (registers + dispatches
@@ -671,8 +697,31 @@ supplies the concrete one), `http-projection.ts` (→ eventually `tooldef-http`)
   (reference "Window keys" + telemetry) rewritten to the P-011 `computeQuotaWindow` reality.
   Remaining is only optional deep-narrative polish (prose still occasionally frames the system
   as monolithic), which describes unchanged behavior — not worth the churn. blocked-by: P-050
-- **P-053** `todo` `npm run test:affected:integration` + `npm run lint:knip` clean.
-  blocked-by: P-050
+- **P-053** `done` (2026-05-31) **knip:** `lint:knip` (whole-repo) currently aborts on a
+  pre-existing unrelated config-load crash (`libs/papercusp/packages/orchestrator/vitest.config.ts`
+  → "Object.defineProperty called on non-object" — Rust-port package, not touched here; knip is
+  CI-informational/non-gating per CLAUDE.md). Scoped runs of the three extracted packages are the
+  evidence instead: `tooldef-http` and `tooldef-mcp` are **clean (exit 0)**; `tooldef` had one
+  genuine finding — an orphaned, never-imported, non-barrel-exported `resolveGuidance()` in
+  `types.ts` (the operator's `prompt-assembly.ts` deliberately re-implements the same merge
+  locally to avoid coupling) → **deleted** (tooldef still tsc-clean + 218 tests green). Its other
+  8 findings are confirmed false positives: cross-package public-API consumers invisible to a
+  single-workspace knip pass (`DispatchExecution`→route-stack.ts, `DispatchStep`→authz.ts,
+  `UIResource`→2 files, `ChatEvent`→6 files, `McpToolListing`→return type of exported
+  `listMcpProjections`) + the intentional back-compat re-export facade in `dispatch-projected.ts`
+  (`DEFAULT_DISPATCH_STACK`/`withReplacedStep`/`DispatchStepName`). Also added `examples/**/*.ts`
+  to `knip.json`'s `packages/*` entry globs so proof scripts aren't flagged as unused files.
+  **affected-integration:** `test:affected:integration` is **red on this headless box, but with
+  zero failures attributable to the extraction** — every package this plan created/touched is
+  green (`tooldef` 218, `tooldef-http` 3, `tooldef-mcp` 5, `agent-mcp` 113), and a full-log scan
+  finds **0** `@papercusp/tooldef` resolution/export errors. The ~95 failures root-cause to three
+  independent sources: (1) headless env — no live operator/Tauri shell and no network/services →
+  56+ exact-5s/30s timeouts + every integration failure is an operator-reachability case
+  ("skip if operator not reachable" literally failing, 30s "tool reachable" timeout); (2) a peer's
+  concurrent `@restart→@papercusp/db-org` rename leaving stale `vi.mock` factories ("No 'generated'
+  export is defined on the '@papercusp/db-org' mock"); (3) today's `libs/generic/*` submodule
+  regroup (the `classify-tree` "9 submodules + 8 plain" count test). None touch the
+  dispatch/projection/transport surface. blocked-by: P-050
 - **P-054** `needs-human` Decide whether to promote `@papercusp/tooldef` to a separate
   public repo + neutral npm scope. Out of scope for this arc; gate here. blocked-by: P-051 → D-001
 

@@ -305,27 +305,6 @@ export interface ToolGuidance {
   byRole?: Partial<Record<AgentRole, Partial<Omit<ToolGuidance, 'byRole'>>>>;
 }
 
-/**
- * Resolve a per-role view of `ToolGuidance` by merging `byRole[<role>]`
- * over the base fields. Returns `null` when the base has no guidance and
- * the role has no override (signals "render description only").
- */
-export function resolveGuidance(
-  guidance: ToolGuidance | undefined,
-  role: AgentRole | null,
-): { when?: string; notWhen?: string; chaining?: string } | null {
-  if (!guidance) return null;
-  const base = {
-    when: guidance.when,
-    notWhen: guidance.notWhen,
-    chaining: guidance.chaining,
-  };
-  const override = role ? guidance.byRole?.[role] : undefined;
-  const merged = override ? { ...base, ...override } : base;
-  if (!merged.when && !merged.notWhen && !merged.chaining) return null;
-  return merged;
-}
-
 /** Tool definition produced by `defineTool`. */
 export interface ToolDefinition<TArgs extends StandardSchemaV1 = StandardSchemaV1> {
   /** Tool name, e.g. `"tasks:list"`. Defaults to file-path-derived. */

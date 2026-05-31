@@ -34,6 +34,7 @@
       "entry": [
         "src/index.{ts,tsx}",
         "src/**/*.test.{ts,tsx}",
+        "examples/**/*.ts",
         "vitest.config.ts"
       ]
     }
