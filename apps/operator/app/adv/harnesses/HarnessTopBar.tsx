@@ -7,9 +7,7 @@ import { resetLayout } from '../../harness/dock/dock-actions';
 import { Tooltip } from '../../harness/Tooltip';
 import { toast } from 'sonner';
 import { StatCard } from '@papercusp/ui-primitives';
-import { STATUS } from '../../harness/theme';
 import HealthBadge from '../../harness/HealthBadge';
-import type { AdvProjectEntry } from './HarnessesWorkspace';
 
 interface StatusPayload {
   iteration: number;
@@ -25,25 +23,20 @@ interface LanesPayload {
 
 interface Props {
   slug: string;
-  projects: AdvProjectEntry[];
 }
 
 /**
- * /adv/harnesses top bar — pulse, lanes, passed/total, $ spent, health,
- * plus the working-directory path + progress chips on the left.
+ * /adv/harnesses top bar — color-accented stat cards (pulse, lanes,
+ * passed/total, $ spent, health) on the left, panel/layout actions on
+ * the right.
  *
  * The harness selector + Start/Stop + running-agents-thinking pills now
  * live in the AdvShell header (one global instance shared across every
  * /adv tab), so they are intentionally absent here.
  */
-export default function HarnessTopBar({ slug, projects }: Props) {
+export default function HarnessTopBar({ slug }: Props) {
   const [status, setStatus] = useState<StatusPayload | null>(null);
   const [lanes, setLanes] = useState<LanesPayload | null>(null);
-
-  const activeProject = useMemo(
-    () => projects.find((p) => p.slug === slug) ?? null,
-    [projects, slug],
-  );
 
   useEffect(() => {
     if (!slug) {
@@ -75,8 +68,6 @@ export default function HarnessTopBar({ slug, projects }: Props) {
   }, [slug]);
 
   const passedCount = status?.counts?.passed ?? 0;
-  const todoCount = status?.counts?.todo ?? 0;
-  const blockedCount = status?.counts?.blocked ?? 0;
   const totalCount = useMemo(
     () => Object.values(status?.counts ?? {}).reduce((acc, n) => acc + (n ?? 0), 0),
     [status?.counts],
@@ -86,36 +77,15 @@ export default function HarnessTopBar({ slug, projects }: Props) {
 
   return (
     <div className="pc-adv-topbar">
-      <div className="pc-adv-topbar__left">
-        <div className="pc-adv-topbar__meta">
-          <span className="pc-adv-topbar__path" title={activeProject?.path ?? ''}>
-            {activeProject?.path ?? '—'}
-          </span>
-          {status && totalCount > 0 && (
-            <span className="pc-adv-topbar__progress">
-              <span>{progressPct}% complete</span>
-              <span>
-                <strong style={{ color: STATUS.todo.text }}>{todoCount}</strong> todo
-              </span>
-              <span>
-                <strong style={{ color: STATUS.blocked.text }}>{blockedCount}</strong> blocked
-              </span>
-              <span>
-                <strong style={{ color: STATUS.passed.text }}>{passedCount}</strong> passed
-              </span>
-            </span>
-          )}
-        </div>
-      </div>
-
-      <div className="pc-adv-topbar__right">
+      <div className="pc-adv-topbar__stats">
         {status && (
           <>
-            <div title={`Total pulses: ${status.iteration}`}>
+            <div className="pc-adv-stat pc-adv-stat--pulse" title={`Total pulses: ${status.iteration}`}>
               <StatCard label="pulse" value={`#${status.iteration}`} icon={<Activity size={13} />} />
             </div>
             {lanes && (
               <div
+                className="pc-adv-stat pc-adv-stat--lanes"
                 title={
                   activeLanes.length > 0
                     ? `Active lanes:\n${activeLanes
@@ -127,7 +97,7 @@ export default function HarnessTopBar({ slug, projects }: Props) {
                 <StatCard label="Lanes" value={`${activeLanes.length}/${lanes.max}`} />
               </div>
             )}
-            <div title={`${passedCount} passed out of ${totalCount} features`}>
+            <div className="pc-adv-stat pc-adv-stat--passed" title={`${passedCount} passed out of ${totalCount} features`}>
               <StatCard
                 label="passed"
                 value={`${passedCount}/${totalCount}`}
@@ -136,7 +106,7 @@ export default function HarnessTopBar({ slug, projects }: Props) {
               />
             </div>
             {typeof status.missionCostUsd === 'number' && status.missionCostUsd > 0 && (
-              <div title="$ spent on this harness">
+              <div className="pc-adv-stat pc-adv-stat--cost" title="$ spent on this harness">
                 <StatCard
                   label="$ spent"
                   value={status.missionCostUsd.toFixed(2)}
@@ -144,10 +114,17 @@ export default function HarnessTopBar({ slug, projects }: Props) {
                 />
               </div>
             )}
-            {slug && <HealthBadge slug={slug} />}
+            {slug && (
+              <div className="pc-adv-stat pc-adv-stat--health">
+                <HealthBadge slug={slug} />
+              </div>
+            )}
           </>
         )}
         {!status && slug && <span className="pc-adv-topbar__loading">loading…</span>}
+      </div>
+
+      <div className="pc-adv-topbar__actions">
         {slug && <RegisterSubsButton slug={slug} />}
         {slug && (
           <AddPanelCatalog
@@ -180,44 +157,53 @@ export default function HarnessTopBar({ slug, projects }: Props) {
           background: var(--bg-2, rgba(255, 255, 255, 0.045));
           min-height: 48px;
         }
-        .pc-adv-topbar__left {
+        .pc-adv-topbar__stats {
           display: flex;
-          align-items: center;
-          gap: 16px;
+          align-items: stretch;
+          gap: 8px;
           min-width: 0;
-          flex: 1;
+          flex-wrap: wrap;
         }
-        .pc-adv-topbar__meta {
-          display: flex;
-          flex-direction: column;
-          gap: 4px;
-          min-width: 0;
-          flex: 1;
-        }
-        .pc-adv-topbar__path {
-          font-size: 12px;
-          color: var(--fg-mute, #7f9bb4);
-          font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-          white-space: nowrap;
-          overflow: hidden;
-          text-overflow: ellipsis;
-        }
-        .pc-adv-topbar__progress {
-          display: flex;
-          gap: 12px;
-          font-size: 11px;
-          color: var(--fg-dim, #b9d4e8);
-        }
-        .pc-adv-topbar__progress strong {
-          color: var(--fg, #e7f7ff);
-          font-weight: 700;
-        }
-        .pc-adv-topbar__right {
+        .pc-adv-topbar__actions {
           display: flex;
           align-items: center;
           gap: 8px;
           flex-shrink: 0;
+          margin-left: auto;
         }
+
+        /* Color-accented stat cards. Each card carries its own --stat-accent;
+           the shared shell tints the border + background, colors the label and
+           icon, and colors the value unless a semantic tone class already owns
+           it (passed/health use .good/.warn/.bad). */
+        .pc-adv-stat {
+          --stat-accent: var(--accent, #38bdf8);
+          border: 1px solid color-mix(in oklab, var(--stat-accent), transparent 62%);
+          background: color-mix(in oklab, var(--stat-accent), transparent 88%);
+          border-radius: 8px;
+          display: flex;
+          align-items: center;
+        }
+        .pc-adv-stat .h-stat {
+          border-left: none;
+          min-width: 52px;
+          padding: 4px 12px;
+        }
+        .pc-adv-stat .h-stat-label {
+          color: color-mix(in oklab, var(--stat-accent), var(--fg-dim, #b9d4e8) 45%);
+        }
+        .pc-adv-stat .h-stat-value svg {
+          color: var(--stat-accent);
+        }
+        .pc-adv-stat .h-stat-value:not(.good):not(.warn):not(.bad):not(.info) {
+          color: var(--stat-accent);
+        }
+        .pc-adv-stat--pulse  { --stat-accent: #38bdf8; }
+        .pc-adv-stat--lanes  { --stat-accent: #a855f7; }
+        .pc-adv-stat--passed { --stat-accent: #10b981; }
+        .pc-adv-stat--cost   { --stat-accent: #f59e0b; }
+        .pc-adv-stat--health { --stat-accent: #f472b6; }
+
         .pc-adv-topbar__loading {
           color: var(--fg-mute, #7f9bb4);
           font-size: 12px;

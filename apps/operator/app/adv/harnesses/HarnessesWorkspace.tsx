@@ -59,7 +59,7 @@ export default function HarnessesWorkspace() {
 
   return (
     <div className="pc-adv-harnesses pc-adv-dock">
-      <HarnessTopBar slug={slug} projects={projects} />
+      <HarnessTopBar slug={slug} />
       <div className="pc-adv-harnesses__dock">
         {slug ? (
           <HarnessesDock slug={slug} />
