@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Tooltip } from './Tooltip';
 import { useConfirmDialog } from './useConfirmDialog';
 import { MarkdownEditor } from '../_components/MarkdownEditor';
-import { Trash2, Loader2, Globe, User } from 'lucide-react';
+import { RotateCcw, Loader2, Globe, User } from 'lucide-react';
 import { toast } from 'sonner';
 import { useShortcut } from '../../lib/hotkeys';
 import { useSyncQuery } from '@papercusp/sync';
@@ -35,6 +35,7 @@ export default function PromptsTab({ slug, alive }: Props) {
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [resettingAll, setResettingAll] = useState(false);
   const { confirm: askConfirm, element: confirmEl } = useConfirmDialog();
 
   const reloadList = useCallback(async () => {
@@ -131,26 +132,55 @@ export default function PromptsTab({ slug, alive }: Props) {
   const deleteOverride = useCallback(async () => {
     if (!selected || selected.scope !== 'override' || !data?.overrideExists) return;
     if (!await askConfirm({
-      title: `Delete ${selected.role} override?`,
-      body: 'Reverts this role to the global base prompt for this harness.',
-      confirmLabel: 'Delete override',
+      title: `Reset ${selected.role} to default?`,
+      body: 'Reverts this role to the global base prompt for this harness (clears the project override).',
+      confirmLabel: 'Reset to default',
       destructive: true,
     })) return;
     setDeleting(true);
     try {
       const r = await fetch(`/api/harness/${slug}/prompts/${selected.role}`, { method: 'DELETE' });
       if (!r.ok) throw new Error(await r.text());
-      toast.success(`deleted ${selected.role} override`);
+      toast.success(`reset ${selected.role} to default`);
       setData((d) => d ? { ...d, content: '', overrideExists: false } : d);
       setDraft('');
       setOriginalOverride('');
       reloadList();
     } catch (e: any) {
-      toast.error(`delete failed: ${e.message ?? e}`);
+      toast.error(`reset failed: ${e.message ?? e}`);
     } finally {
       setDeleting(false);
     }
   }, [slug, selected, data, reloadList, askConfirm]);
+
+  // D-6: per-group "reset all to default" — clears every project override for
+  // this harness in the active workspace, reverting all roles to their global
+  // base. Wired to POST /prompts/reset-all (workspace-owned PG store).
+  const resetAll = useCallback(async () => {
+    if (overrides.length === 0) return;
+    if (!await askConfirm({
+      title: `Reset all ${overrides.length} override${overrides.length === 1 ? '' : 's'} to default?`,
+      body: 'Reverts every role in this harness to its global base prompt, clearing all project overrides for the active workspace. This cannot be undone.',
+      confirmLabel: 'Reset all to default',
+      destructive: true,
+    })) return;
+    setResettingAll(true);
+    try {
+      const r = await fetch(`/api/harness/${slug}/prompts/reset-all`, { method: 'POST' });
+      if (!r.ok) throw new Error(await r.text());
+      const j = await r.json().catch(() => ({} as { cleared?: number }));
+      toast.success(`reset ${j.cleared ?? overrides.length} override${(j.cleared ?? overrides.length) === 1 ? '' : 's'} to default`);
+      // Clear the open editor if it was showing an override.
+      setData((d) => (d ? { ...d, content: '', overrideExists: false } : d));
+      setDraft('');
+      setOriginalOverride('');
+      reloadList();
+    } catch (e: any) {
+      toast.error(`reset all failed: ${e.message ?? e}`);
+    } finally {
+      setResettingAll(false);
+    }
+  }, [slug, overrides.length, reloadList, askConfirm]);
 
   // Ctrl/Cmd+S saves when on override scope. Sourced from the registry
   // so /settings/shortcuts can rebind it.
@@ -193,6 +223,20 @@ export default function PromptsTab({ slug, alive }: Props) {
           scope="override"
           overrides={overrides}
           onSelect={(role) => setSelected({ role, scope: 'override' })}
+          headerAction={
+            overrides.length > 0 ? (
+              <Tooltip label="Reset every role in this harness to its global base prompt">
+                <button
+                  className="h-btn ghost"
+                  onClick={resetAll}
+                  disabled={resettingAll}
+                  style={{ marginLeft: 'auto', fontSize: 10, padding: '2px 6px', display: 'inline-flex', alignItems: 'center', gap: 4 }}
+                >
+                  <RotateCcw size={10} /> {resettingAll ? 'resetting…' : 'reset all'}
+                </button>
+              </Tooltip>
+            ) : null
+          }
         />
       </div>
 
@@ -228,9 +272,9 @@ export default function PromptsTab({ slug, alive }: Props) {
               )}
               <div style={{ marginLeft: 'auto', display: 'flex', gap: 4 }}>
                 {scope === 'override' && data?.overrideExists && (
-                  <Tooltip label="Delete override → revert to global base">
+                  <Tooltip label="Reset this role to the global base prompt (clears its override)">
                     <button className="h-btn ghost" onClick={deleteOverride} disabled={deleting}>
-                      <Trash2 size={11} /> delete override
+                      <RotateCcw size={11} /> reset to default
                     </button>
                   </Tooltip>
                 )}
@@ -279,7 +323,7 @@ export default function PromptsTab({ slug, alive }: Props) {
 }
 
 function SidebarSection({
-  title, icon, roles, selected, scope, overrides, onSelect,
+  title, icon, roles, selected, scope, overrides, onSelect, headerAction,
 }: {
   title: string;
   icon: React.ReactNode;
@@ -288,6 +332,7 @@ function SidebarSection({
   scope: Scope;
   overrides: string[];
   onSelect: (role: string) => void;
+  headerAction?: React.ReactNode;
 }) {
   return (
     <div style={{ borderBottom: '1px solid var(--border)' }}>
@@ -298,6 +343,7 @@ function SidebarSection({
         display: 'flex', alignItems: 'center', gap: 6,
       }}>
         {icon} {title}
+        {headerAction}
       </div>
       {roles.map((role) => {
         const isActive = selected?.role === role && selected?.scope === scope;
