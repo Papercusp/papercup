@@ -12,6 +12,11 @@ export const FLAGS = {
   HARNESS_PHASES: "papercusp-harness-phases",
   DESIGN: "papercusp-design",
   TESTING: "papercusp-testing",
+  // inbox-cards-unification Phase D (P-031): when on, a chat decision card
+  // (chat:ask_choice / ctx.askUser) ALSO writes a durable coord escalation so
+  // the human can answer it live OR later from the inbox; either path resolves
+  // the same record. Default off — the live ctx.askUser path is unchanged.
+  INBOX_DURABLE_ESCALATIONS: "papercusp-inbox-durable-escalations",
 } as const;
 
 export type FlagKey = (typeof FLAGS)[keyof typeof FLAGS];
@@ -26,6 +31,7 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   [FLAGS.HARNESS_PHASES]: false,
   [FLAGS.DESIGN]: false,
   [FLAGS.TESTING]: false,
+  [FLAGS.INBOX_DURABLE_ESCALATIONS]: false,
 };
 
 export const ALL_FLAG_KEYS: readonly FlagKey[] = Object.values(FLAGS);
