@@ -30,6 +30,8 @@ vi.mock('@/lib/adv-sessions', () => ({ recordAdvSession: recordAdvSessionMock })
 vi.mock('@/lib/role-registry', () => ({ roleConsumes: (...a: unknown[]) => roleConsumesMock(...a) }));
 vi.mock('@/lib/role-launch-spec', () => ({ buildRoleLaunchSpec: (...a: unknown[]) => buildRoleLaunchSpecMock(...a) }));
 vi.mock('@/lib/role-codex-home', () => ({ writeRoleCodexHome: (...a: unknown[]) => writeRoleCodexHomeMock(...a) }));
+const getPlanContextBySlugMock = vi.fn(async () => '## Source Plan Context\n\n**Plan:** `p1`');
+vi.mock('@/lib/plan-context-for-feature', () => ({ getPlanContextBySlug: (...a: unknown[]) => getPlanContextBySlugMock(...a) }));
 
 const CTX: RouteContext = { principal: null, input: undefined, params: {}, log: () => {}, signal: new AbortController().signal };
 
@@ -47,6 +49,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   recordAdvSessionMock.mockResolvedValue(7);
   roleConsumesMock.mockReturnValue({ feature: 'required', plan: 'none' });
+  getPlanContextBySlugMock.mockResolvedValue('## Source Plan Context\n\n**Plan:** `p1`');
   writeRoleCodexHomeMock.mockReturnValue({
     codexHome: '/tmp/role-codex-homes/session-7',
     agentsPath: '/tmp/role-codex-homes/session-7/AGENTS.md',
@@ -101,6 +104,40 @@ describe('bootstrap-role', () => {
     const json = await res.json();
     expect(json.role).toBe('scoper');
     expect(json.feature).toBeNull();
+  });
+
+  it('plan-consuming role (scoper, consumes.plan=optional) → fetches + injects plan context', async () => {
+    roleConsumesMock.mockReturnValue({ feature: 'none', plan: 'optional' });
+    buildRoleLaunchSpecMock.mockResolvedValue({
+      role: 'scoper', runId: 'scoper-1', spawnId: 'sp-3', harnessSlug: 'papercup', featureId: null,
+      cwd: LC_DIR, promptText: 'SCOPER PROMPT', promptFile: '/h/prompts/scoper.md',
+      mcpUrl: 'http://localhost:3070/api/mcp?role=scoper&sig=z', mcpJsonContents: '{}',
+    });
+    const res = await callPost({ role: 'scoper', agent: 'omp', harness_slug: 'papercup', plan: 'my-plan' });
+    expect(res.status).toBe(200);
+    const json = await res.json();
+    expect(json.planSlug).toBe('my-plan');
+    expect(getPlanContextBySlugMock).toHaveBeenCalledWith('my-plan');
+    // planContext is forwarded to the spec builder...
+    expect(buildRoleLaunchSpecMock).toHaveBeenCalledWith(
+      expect.objectContaining({ role: 'scoper', planContext: expect.stringContaining('Source Plan Context') }),
+    );
+    // ...and recorded on the session.
+    expect(recordAdvSessionMock).toHaveBeenCalledWith(
+      expect.objectContaining({ role: 'scoper', planSlug: 'my-plan' }),
+    );
+  });
+
+  it('ignores a plan for a non-plan-consuming role (consumes.plan=none)', async () => {
+    roleConsumesMock.mockReturnValue({ feature: 'required', plan: 'none' });
+    const res = await callPost({ role: 'worker', agent: 'claude', harness_slug: 'papercup', feature: 'F-001', plan: 'my-plan' });
+    expect(res.status).toBe(200);
+    const json = await res.json();
+    expect(json.planSlug).toBeNull();
+    expect(getPlanContextBySlugMock).not.toHaveBeenCalled();
+    expect(buildRoleLaunchSpecMock).toHaveBeenCalledWith(
+      expect.not.objectContaining({ planContext: expect.anything() }),
+    );
   });
 
   it('codex → per-session CODEX_HOME, exported via envelopeEnv.CODEX_HOME', async () => {

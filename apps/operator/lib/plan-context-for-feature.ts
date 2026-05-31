@@ -175,4 +175,47 @@ export async function getPlanContextsForFeatures(
   }
 }
 
+/**
+ * Returns a `## Source Plan Context` section for a plan referenced directly
+ * by slug (not via a feature's provenance). Used by interactive role
+ * sessions for plan-consuming roles (`scoper`, `reviewer` — `consumes.plan`
+ * !== 'none') launched against a chosen plan rather than a feature.
+ *
+ * Returns null when the plan can't be read. Same Now-block + last-3-decisions
+ * shape and char budget as the feature-keyed variant.
+ */
+export async function getPlanContextBySlug(
+  planSlug: string,
+): Promise<string | null> {
+  if (!planSlug) return null;
+  let planResult: Awaited<ReturnType<typeof readPlanBySlug>>;
+  try {
+    planResult = await readPlanBySlug(planSlug);
+  } catch {
+    planResult = null;
+  }
+  if (!planResult) return null;
+
+  const { parsed } = planResult;
+  const parts: string[] = [PLAN_CONTEXT_HEADING, ''];
+  const planTitle = parsed.frontmatter.title ?? planSlug;
+  parts.push(`**Plan:** \`${planSlug}\` — ${planTitle}`, '');
+
+  if (parsed.now) {
+    parts.push('### Current State', '', parsed.now.state, '', `**Next:** ${parsed.now.next}`);
+  }
+  const recentDecisions = parsed.decisions.slice(-3).reverse();
+  if (recentDecisions.length > 0) {
+    parts.push('', '### Recent Decisions', '');
+    for (const d of recentDecisions) {
+      const body = d.body.slice(0, 300);
+      parts.push(`**${d.id} — ${d.title}**\n${body}${d.body.length > 300 ? '…' : ''}`);
+    }
+  }
+  parts.push('');
+
+  const { text } = truncate(parts.join('\n'), PLAN_CONTEXT_CHAR_BUDGET);
+  return text;
+}
+
 export { ROLES_RECEIVING_CONTEXT };

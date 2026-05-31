@@ -412,7 +412,7 @@ async function resumeFlow() {
 // the role prompt + signed role-scoped .mcp.json (NOT a *-su wrapper).
 async function roleFlow(args, role, rolesMeta) {
   const consumes = (rolesMeta || []).find((r) => r.id === role)?.consumes ?? { feature: 'none', plan: 'none' };
-  let agent, workspace, harness, feature;
+  let agent, workspace, harness, feature, plan;
   if (args.picker) {
     agent = args.agent || (await pickRoleBackend());
     workspace = args.workspace || (await pickWorkspace());
@@ -420,6 +420,12 @@ async function roleFlow(args, role, rolesMeta) {
     if (args.feature) feature = args.feature;
     else if (consumes.feature === 'none') feature = null;
     else feature = await pickFeature(workspace, harness, consumes.feature);
+    // Plan context for plan-consuming roles (scoper/reviewer). --plan/--no-plan
+    // preselect; otherwise offer the plan picker (it has a "NO PLAN" row).
+    if (args.noPlan) plan = null;
+    else if (args.plan) plan = args.plan;
+    else if (consumes.plan === 'none') plan = null;
+    else plan = planValue(await pickPlan(workspace, harness));
   } else {
     if (agentInvalidForRole(args.agent)) {
       throw new Error('--agent must be claude, omp, or codex for a role session');
@@ -429,11 +435,12 @@ async function roleFlow(args, role, rolesMeta) {
     workspace = args.workspace || null;
     harness = args.harness;
     feature = args.feature || null;
+    plan = args.noPlan ? null : (args.plan || null);
   }
 
   const res = await api('/api/agent-mcp/console/bootstrap-role', {
     method: 'POST',
-    body: JSON.stringify({ role, agent, workspace, harness_slug: harness, feature }),
+    body: JSON.stringify({ role, agent, workspace, harness_slug: harness, feature, plan }),
   });
 
   const { bin, args: launchArgs } = roleLaunchArgs(res.agent, {
@@ -441,7 +448,7 @@ async function roleFlow(args, role, rolesMeta) {
     mcpJsonPath: res.mcpJsonPath,
   });
   console.error(
-    `psu: ${res.role} on ${res.agent}  ·  ${res.feature ? `feature ${res.feature}` : 'no feature'}` +
+    `psu: ${res.role} on ${res.agent}  ·  ${res.feature ? `feature ${res.feature}` : (res.planSlug ? `plan ${res.planSlug}` : 'no feature')}` +
       `  ·  harness ${res.harnessSlug}  ·  session ${res.sessionId ?? '?'}`,
   );
   console.error(`psu: cwd ${res.cwd}  —  role-scoped MCP (${res.role}); resume from here`);

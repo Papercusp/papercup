@@ -31,6 +31,7 @@ import { recordAdvSession } from '@/lib/adv-sessions';
 import { isSuAgent, type SuAgent } from '@/lib/su-agents';
 import { roleConsumes } from '@/lib/role-registry';
 import { buildRoleLaunchSpec } from '@/lib/role-launch-spec';
+import { getPlanContextBySlug } from '@/lib/plan-context-for-feature';
 import { writeRoleCodexHome } from '@/lib/role-codex-home';
 import { launchContextDir, launchContextPathFor } from '@/lib/su-launch-context';
 
@@ -68,6 +69,8 @@ export interface BootstrapRoleResult {
   workspaceId: string;
   harnessSlug: string;
   feature: string | null;
+  /** Plan whose context was injected (plan-consuming roles), else null. */
+  planSlug: string | null;
   /** Working directory the launcher should exec the agent in. */
   cwd: string;
   /**
@@ -114,6 +117,7 @@ const post = defineTool({
       workspace?: string | null;
       harness_slug?: string | null;
       feature?: string | null;
+      plan?: string | null;
     } = {};
     try {
       const text = await req.text();
@@ -140,11 +144,21 @@ const post = defineTool({
       return jsonRes({ status: 'error', error: 'role sessions are harness-scoped — harness_slug is required' }, 400);
     }
     const feature = body.feature?.trim() || null;
+    const plan = body.plan?.trim() || null;
 
-    // Feature gating from the single source (roleConsumes / consumes).
+    // Feature + plan gating from the single source (roleConsumes / consumes).
     const consumes = roleConsumes(role, harnessSlug);
     if (consumes.feature === 'required' && !feature) {
       return jsonRes({ status: 'error', code: 'feature_required', error: `role '${role}' requires a feature (consumes.feature=required)` }, 400);
+    }
+
+    // Plan context for plan-consuming roles (scoper/reviewer: consumes.plan
+    // !== 'none'). Honors the `consumes` single source the same way feature
+    // does: only fetch+inject when the role actually consumes a plan AND one
+    // was chosen. Best-effort — an unreadable plan just yields no section.
+    let planContext: string | undefined;
+    if (plan && consumes.plan !== 'none') {
+      planContext = (await getPlanContextBySlug(plan).catch(() => null)) ?? undefined;
     }
 
     // Build the shared spec: role prompt + signed role-scoped MCP URL + cwd.
@@ -154,6 +168,7 @@ const post = defineTool({
         role,
         workspaceId: workspace,
         harnessSlug,
+        ...(planContext ? { planContext } : {}),
         operatorBaseUrl: new URL(req.url).origin,
         featureId: feature,
       });
@@ -167,9 +182,10 @@ const post = defineTool({
       role,
       feature,
       agent,
+      planSlug: planContext ? plan : null,
       mode: agent === 'omp' ? 'omp' : 'console',
       cwd: spec.cwd,
-      label: feature ? `${role} · ${feature}` : role,
+      label: feature ? `${role} · ${feature}` : (planContext ? `${role} · ${plan}` : role),
     });
 
     // Materialize the launch artifacts. claude/omp consume a `.mcp.json` +
@@ -229,6 +245,7 @@ const post = defineTool({
       workspaceId: workspace,
       harnessSlug,
       feature,
+      planSlug: planContext ? plan : null,
       cwd: spec.cwd,
       promptFile,
       mcpJsonPath,
