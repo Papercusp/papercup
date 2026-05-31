@@ -183,6 +183,47 @@ P-006 gold-standard (orchestrator `invoke()` spawning a real claude worker
 doing real harness work, watched end-to-end) and P-009 wizard render. Optional:
 D-003 option B (per-role allowed-tools instead of blanket bypassPermissions).
 
+### 2026-05-31 — P-004 option B shipped: headless fleet runs under a closed whitelist
+
+User chose the whitelist over a deny-list. A from-scratch empirical audit of
+claude 2.1.158 (real spawn flags, external file side-effects, pristine config)
+overturned the premise of the original A/B framing — see D-003 (rewritten) for
+the full verified permission model. Net implementation (submodule `papercusp`
+commits `97a4f58` whitelist + `63c042d` pre-push hook):
+
+- `claudeMcpArgs()` now emits `--permission-mode dontAsk --allowed-tools
+  "mcp__papercusp Read Edit Write Bash Glob Grep WebFetch WebSearch"
+  --disallowed-tools <11 dangerous exempt tools> "Bash(sudo:*)" "Bash(git push:*)"`
+  instead of the blanket `--permission-mode bypassPermissions`. Honors any
+  permission flag the user set in `AGENT_CMD` (defers the whole posture).
+  `FLEET_ALLOWED_TOOLS` / `FLEET_DISALLOWED_TOOLS` exported + unit-tested.
+- The `mcp__papercusp` wildcard rides the already-role-scoped server surface
+  (belt-and-suspenders: `listMcpProjections` + dispatch `role-allowlist`), so no
+  per-role allow-list is hand-derived. Built-ins are a uniform safe floor;
+  per-role built-in *tightening* is a deferred follow-up (needs per-role
+  real-spawn verification — withholding a needed built-in silently breaks a role).
+- **Key correction caught by verifying:** `dontAsk` gating is non-uniform — a
+  class of session-local tools (`CronCreate`, `EnterWorktree`, …) BYPASSES the
+  allow-list, so the dangerous ones are hard-removed via `--disallowed-tools`
+  (which removes a tool entirely, wins over allow-list + bypass). Without this
+  the old fleet spawn could create cron jobs, spawn sub-fleets, manipulate
+  worktrees, fire remote triggers.
+- **No-push enforcement:** a spawn-env-scoped pre-push hook (injected via
+  `GIT_CONFIG_* core.hooksPath` into the spawn env only — shared repo config +
+  the user's/other agents' pushes untouched) is the real block; the
+  `Bash(git push:*)` deny is the evadable backstop.
+- **Verified:** 60 orchestrator unit tests; a representative role task run under
+  the exact flag set (read/edit/bash/mcp all work; `CronCreate` unavailable;
+  `git push` denied; no hang); and a real `git push` under the code's actual
+  hook dir blocked (0 refs reach the remote, commits still work).
+- **Honest limits recorded:** defense-in-depth, not a sandbox — cred reads
+  (allow-listed `Read`) and egress (allow-listed `WebFetch`) are NOT closed
+  (would need a network/fs sandbox); worktree isolation is conditional
+  (`invoke.ts:714` falls back to the shared `ctx.projectDir`). Both noted in
+  D-003 + the agent-insight, not papered over.
+
+Runbook for the next agent: agent-insight `claude-code-headless-permissions`.
+
 ## Background
 
 The user asked: "we made the agent backend selectable between omp and others like
@@ -298,9 +339,9 @@ shim. Shipped 2026-05-30. B3/B4/B5 are correctness/UX polish around it.
 Makes the autonomous fleet actually run with tools + the right model on
 claude-code. **Shipped 2026-05-30** (see Progress log).
 
-- **P-002** `done` B1a — invoke.ts `claudeMcpArgs()` appends `--mcp-config <cwd>/.mcp.json --strict-mcp-config --permission-mode bypassPermissions` on the claude-code path so spawned fleet agents load + trust the per-spawn signed `.mcp.json`.
+- **P-002** `done` B1a — invoke.ts `claudeMcpArgs()` appends `--mcp-config <cwd>/.mcp.json --strict-mcp-config` + the permission posture (see P-004) on the claude-code path so spawned fleet agents load + trust the per-spawn signed `.mcp.json`.
 - **P-003** `done` B1b — spawn-mcp.ts `buildSpawnMcpConfig` + `writeSignedSpawnMcp` emit `{type:'http', url}`; verified omp still loads it.
-- **P-004** `done` B1c — resolved per D-003 option A: `--permission-mode bypassPermissions`, no per-role allow-list (deferred hardening).
+- **P-004** `done` B1c — **option B implemented 2026-05-31** (was shipped as option A, bypassPermissions, on 2026-05-30; the user later chose the whitelist). The headless fleet now runs under `--permission-mode dontAsk --allowed-tools "<mcp__papercusp wildcard + safe dev kit>" --disallowed-tools "<dangerous exempt tools + Bash command patterns>"`, plus a spawn-env-scoped pre-push hook. See D-003 (rewritten with the verified permission model) and the 2026-05-31 progress entry. Submodule `papercusp@63c042d`.
 - **P-005** `done` B2 — `normalizeModelForBackend` (env.ts) + `normalizeModelForClaude` (chat-stream.ts) strip the `provider/` prefix for claude-code; omp keeps it.
 - **P-006** `done` Verification: unit-level (13 tests) + **live** — `claude -p` with the fix's flags against the real papercusp MCP host on `:3070` loaded the config, connected, and invoked `mcp__papercusp__harness_list` (tool_use + tool_result in stream-json). Confirms claude loads + calls our `{type:'http',url}` config, the behavior the old unloaded path lacked. blocked-by: P-002, P-003, P-004, P-005
 
@@ -324,10 +365,20 @@ Date: 2026-05-30
 There are two spawn mechanisms and they are in very different states. The in-process chat path (runAgentChat in chat-stream.ts) already drives claude-code correctly — every caller (converse, oracle, scan, delegate, plans-runner) passes mcpConfig + allowedTools + permissionMode:'bypassPermissions', and the claude branch turns those into real CLI flags. So the operator brain, oracle, scan, delegate and plan agents would already function on claude-code today (modulo the model-id format, D below). The headless orchestrator path (invoke.ts) is the broken one: it writes a per-spawn .mcp.json designed for omp's path-based auto-discovery but never passes --mcp-config/--allowed-tools to claude, so a claude-code worker/validator/scoper/etc. boots tool-less. Therefore the critical-path work (P-002…P-005) lives almost entirely in invoke.ts + spawn-mcp.ts; do not rewrite the chat path.
 Related: P-002, P-003
 
-### D-003 — Headless allowed-tools: ship bypassPermissions first, derive per-role later
-Date: 2026-05-30
-Resolved to option A and shipped (P-004). The in-process chat surfaces each hand claude an explicit `allowedTools` allow-list, but the headless fleet has no equivalent — it relied on omp's own permissioning + path-discovery. claude -p will otherwise block on a permission prompt for every MCP tool call, which hangs a non-interactive spawn. Two options: (A) spawn claude with `--permission-mode bypassPermissions` so no allow-list is needed — the harness runs in an isolated worktree, so this is the pragmatic first cut; (B) derive a per-role allow-list from each role's tools.md surface (cleaner, more work, keeps a guardrail). Chose A for the first functional cut; B remains available as later hardening.
-Related: P-004, P-002
+### D-003 — Headless permission posture: shipped bypassPermissions, then moved to a closed whitelist (option B)
+Date: 2026-05-30 (option A) → 2026-05-31 (option B)
+Originally shipped as **option A** (`--permission-mode bypassPermissions`, no allow-list — pragmatic first cut). On 2026-05-31 the user chose the whitelist, and a from-scratch empirical audit of claude 2.1.158 (the real spawn path, file side-effects, pristine config) **overturned the premise the original A/B framing rested on**. The verified permission model — every claim below tested, not assumed:
+
+- **The per-role MCP boundary already exists server-side**, belt-and-suspenders: `tools/list` is surface-filtered by `listMcpProjections(role)` (`packages/tooldef/src/tool-projection.ts:1031`) AND call-time-denied by the dispatch stack's `role-allowlist` step (`dispatch-stack.ts:193`, skipped only for `gateBypass.role` = superuser). A fleet worker only ever sees/calls its role's MCP tools regardless of client permission mode. So `bypassPermissions` never widened the MCP surface.
+- **`--allowed-tools` is NOT a whitelist by itself.** Under `bypassPermissions` it is ignored entirely (verified: Bash wrote a file with only `Read` allow-listed). Under `--permission-mode default` it doesn't gate *which tools run* either — instead `default` applies a **sandbox** that blocks filesystem-writes-outside-workdir + network (verified: a CWD write was blocked). `default` therefore breaks file-writing roles → unusable for the fleet.
+- **`--permission-mode dontAsk` makes `--allowed-tools` a true default-deny whitelist** for *gated* tools (an un-listed gated tool is denied, the model is told, it continues — no hang) and, unlike `default`, does **not** sandbox the allowed tools (writes work). This is the posture we use.
+- **Gating under `dontAsk` is NON-uniform.** A class of session-local / meta built-ins is **exempt** from the allow-list — verified: with the exact allow-list, `CronCreate` still created a job and `EnterWorktree` still ran. A `claude -p` spawn on this box carries 250+ tools including `CronCreate/Delete/List`, `Workflow`, `Enter/ExitWorktree`, `RemoteTrigger`, `PushNotification`, `Monitor`, `ScheduleWakeup`, `Task`, `Skill`, `LSP`. So the allow-list alone is **not** a complete boundary.
+- **`--disallowed-tools` is the hard block.** It removes a tool entirely ("No such tool exists in this environment"), wins over the allow-list AND over `bypassPermissions`, and supports command-granularity (`Bash(git push:*)` blocks `git push` while `echo` runs). This is what closes the dangerous *exempt* tools and dangerous Bash *commands*.
+
+**Implemented posture (option B):** `dontAsk` + `--allowed-tools "mcp__papercusp Read Edit Write Bash Glob Grep WebFetch WebSearch"` (wildcard grants the already-role-scoped MCP surface; safe dev kit for built-ins) + `--disallowed-tools` enumerating the dangerous exempt tools + `Bash(sudo:*)`/`Bash(git push:*)`. `mcp__papercusp` wildcard handles the per-role MCP surface (server-enforced), so we did NOT hand-derive per-role allow-lists from tools.md — that would duplicate + drift from the server's authority. Built-ins are a uniform safe floor; per-role *tightening* of built-ins is a deferred follow-up (needs per-role real-spawn verification — withholding a needed built-in silently breaks a role).
+
+**Honest limits (recorded so they're not mistaken for containment):** this is defense-in-depth, not a sandbox. Credential reads (the allow-listed `Read` reaches any path) and network egress (allow-listed `WebFetch`) are NOT closed — true containment needs a network/fs sandbox. And `worktree isolation` is conditional: `invoke.ts:714` falls back to `ctx.projectDir` (the shared main checkout) when there's no feature-worktree, so "contained" is not universally true.
+Related: P-004, P-002. Full runbook: agent-insight `claude-code-headless-permissions`.
 
 ### D-004 — RESOLVED: keep Meridian for non-claude; claude users auth direct
 Date: 2026-05-30
