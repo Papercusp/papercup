@@ -31,6 +31,7 @@ import {
 import { phasePhaseLabel } from '@/lib/harness-phases';
 import { harnessPackageDir } from '@/lib/harness-paths';
 import { buildInvokeOnce } from '@/lib/harness-invoke-once';
+import { SUPERUSER_TOKEN_PATH } from '@/lib/superuser-token';
 import { launchRun } from '@/lib/harness-launch';
 import { firePluginLifecycle, firePluginEvent } from '@/lib/plugin-host-runtime';
 import { defineTool } from '@papercusp/agent-mcp';
@@ -213,6 +214,17 @@ const invoke = defineTool({
       }
     }
 
+    // This route is operator-initiated + loopback-gated (requireLoopbackOr403
+    // above), so the spawned agent connects to the agent-mcp via the
+    // `?superuser=1` door — giving it the isSuperuser identity that
+    // resolveAgentIdentity-gated coord tools (plans:promote, coord:*) require.
+    // A plain signed-spawn ctx has no principal, so those tools 4xx. The bearer
+    // is read here and threaded to spawn-mcp (writeSignedSpawnMcp) via env.
+    const suBearer = (() => {
+      try { return readFileSync(SUPERUSER_TOKEN_PATH, 'utf8').trim() || undefined; }
+      catch { return undefined; }
+    })();
+
     // Single synchronous TS invoke via invoke-once (HARNESS_PHASE is read
     // from config.json inside invoke-once, so no shell-side phase probe).
     const { command, args, env: invokeEnv } = buildInvokeOnce({
@@ -221,6 +233,7 @@ const invoke = defineTool({
       harnessDir: harnessPackageDir(),
       role,
       extras: extra,
+      extraEnv: suBearer ? { PAPERCUSP_SPAWN_SU_BEARER: suBearer } : undefined,
     });
     return new Promise<Response>((resolve) => {
       const child = spawn(command, args, {
