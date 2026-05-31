@@ -38,6 +38,7 @@ import {
   type PipelineFinalizer,
 } from './orchestrator-workflow';
 import { planFinalization } from './orchestrator-finalize';
+import { buildPipelineExtraEnv } from './orchestrator-spawn-env';
 
 const INVOKE_TIMEOUT_MS = Number(process.env.PAPERCUSP_DBOS_INVOKE_TIMEOUT_MS ?? 600_000);
 
@@ -101,12 +102,15 @@ const realRunner: PipelineInvokeRunner = async (harnessSlug, role, _featureId, i
     // Unknown harness → empty output (the workflow parses '' → terminal → stops).
     return { output: '', exitCode: 1 };
   }
-  return spawnInvokeOnce(project.path, role, extras, {
-    IDEMPOTENCY_KEY: idempotencyKey,
-    // Pin the agent's workspace too (orchestrator activeWorkspaceId() reads this
-    // env first), so its feature reads stay in the pipeline's workspace.
-    ...(workspaceId ? { PAPERCUSP_WORKSPACE_ID: workspaceId } : {}),
-  });
+  // HARNESS_SLUG = the registry slug (not basename(project.path)) so invoke-once's
+  // pg-bootstrap resolves harness_<slug> correctly; PAPERCUSP_WORKSPACE_ID pins the
+  // agent's feature reads to the pipeline's captured workspace.
+  return spawnInvokeOnce(
+    project.path,
+    role,
+    extras,
+    buildPipelineExtraEnv({ harnessSlug, idempotencyKey, workspaceId }),
+  );
 };
 
 /**
@@ -144,7 +148,9 @@ const realFinalizer: PipelineFinalizer = async ({ harnessSlug, workspaceId, outc
   const stateDir = join(projectDir, '.harness');
   const logDir = join(stateDir, 'logs');
   const cfg = readConfig(stateDir);
-  const extraEnv: Record<string, string> = workspaceId ? { PAPERCUSP_WORKSPACE_ID: workspaceId } : {};
+  // Curator/documenter run with the registry slug too (correct schema) + the
+  // pipeline's workspace; no idempotency key (they run once at finalization).
+  const extraEnv = buildPipelineExtraEnv({ harnessSlug, workspaceId });
 
   // Gates only apply to DONE; ESCALATE always distills memory.
   const blocked = outcome === 'done' ? await needsHumanOpen(harnessSlug) : false;
