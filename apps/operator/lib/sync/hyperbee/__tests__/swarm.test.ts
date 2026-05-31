@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   joinHarnessSwarm,
+  swarmConstructorOpts,
+  extractPublicKeyHex,
   type HyperswarmLike,
   _setSharedSwarmForTests,
   _peekSharedSwarmForTests,
@@ -17,7 +19,7 @@ interface FakeSwarmState {
   listeners: Map<string, Array<(socket: unknown, info?: unknown) => void>>;
 }
 
-function fakeSwarm(): { swarm: HyperswarmLike; state: FakeSwarmState; emit: (event: string, socket: unknown) => void } {
+function fakeSwarm(): { swarm: HyperswarmLike; state: FakeSwarmState; emit: (event: string, socket: unknown, info?: unknown) => void } {
   const state: FakeSwarmState = { joins: [], leaves: [], listeners: new Map() };
   const swarm: HyperswarmLike = {
     join(topic, opts) {
@@ -45,9 +47,9 @@ function fakeSwarm(): { swarm: HyperswarmLike; state: FakeSwarmState; emit: (eve
   return {
     swarm,
     state,
-    emit(event, socket) {
+    emit(event, socket, info?: unknown) {
       const arr = state.listeners.get(event) ?? [];
-      for (const l of arr) l(socket);
+      for (const l of arr) l(socket, info);
     },
   };
 }
@@ -133,6 +135,15 @@ describe('joinHarnessSwarm — happy path', () => {
     expect(cb).toHaveBeenCalledTimes(2);
   });
 
+  it('passes the peer Noise key (hex) to onPeerConnected (P-002)', async () => {
+    const { swarm, emit } = fakeSwarm();
+    const { store } = fakeStore();
+    const cb = vi.fn();
+    await joinHarnessSwarm({ store, topic: topic32(), swarm, onPeerConnected: cb });
+    emit('connection', { pipe: vi.fn() }, { publicKey: Buffer.from('abcd', 'hex') });
+    expect(cb).toHaveBeenCalledWith('abcd');
+  });
+
   it('swallows onPeerConnected throws (diagnostic callback)', async () => {
     const { swarm, emit } = fakeSwarm();
     const { store } = fakeStore();
@@ -199,5 +210,43 @@ describe('_setSharedSwarmForTests / _peekSharedSwarmForTests', () => {
     expect(_peekSharedSwarmForTests()).toBe(s);
     _setSharedSwarmForTests(null);
     expect(_peekSharedSwarmForTests()).toBeNull();
+  });
+});
+
+describe('swarmConstructorOpts (P-001 — maxPeers cap)', () => {
+  const KEY = 'PAPERCUSP_SWARM_MAX_PEERS';
+  const orig = process.env[KEY];
+  afterEach(() => {
+    if (orig === undefined) delete process.env[KEY];
+    else process.env[KEY] = orig;
+  });
+
+  it('defaults maxPeers to 256', () => {
+    delete process.env[KEY];
+    expect(swarmConstructorOpts()).toEqual({ maxPeers: 256 });
+  });
+
+  it('honors a positive PAPERCUSP_SWARM_MAX_PEERS override', () => {
+    process.env[KEY] = '32';
+    expect(swarmConstructorOpts()).toEqual({ maxPeers: 32 });
+  });
+
+  it('falls back to the default for non-numeric / non-positive values', () => {
+    process.env[KEY] = 'nope';
+    expect(swarmConstructorOpts().maxPeers).toBe(256);
+    process.env[KEY] = '0';
+    expect(swarmConstructorOpts().maxPeers).toBe(256);
+  });
+});
+
+describe('extractPublicKeyHex (P-002)', () => {
+  it('extracts the hex of a PeerInfo.publicKey buffer', () => {
+    expect(extractPublicKeyHex({ publicKey: Buffer.from('deadbeef', 'hex') })).toBe('deadbeef');
+  });
+  it('returns undefined for missing / malformed peerInfo', () => {
+    expect(extractPublicKeyHex(undefined)).toBeUndefined();
+    expect(extractPublicKeyHex(null)).toBeUndefined();
+    expect(extractPublicKeyHex({})).toBeUndefined();
+    expect(extractPublicKeyHex({ publicKey: 123 })).toBeUndefined();
   });
 });

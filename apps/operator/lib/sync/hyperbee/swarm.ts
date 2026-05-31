@@ -55,9 +55,29 @@ export interface JoinHarnessSwarmOpts {
   topic: Buffer;
   /** Test seam: supply a swarm; runtime wrapper auto-instantiates. */
   swarm: HyperswarmLike;
-  /** Hook fires every time a peer connects + replicates. Useful for
-   *  the substrate dashboard or boot-history logging. */
-  onPeerConnected?: () => void;
+  /** Hook fires every time a peer connects + replicates. Receives the peer's
+   *  Noise public key (hex) when Hyperswarm surfaces it (P-002). Useful for the
+   *  substrate dashboard, boot-history, and per-peer accounting/rate-limiting. */
+  onPeerConnected?: (remotePublicKeyHex?: string) => void;
+}
+
+/**
+ * Pull the remote peer's Noise public key (hex) out of Hyperswarm's PeerInfo
+ * (the 2nd arg of the `connection` event), defensively — the substrate's
+ * per-peer accounting + DoS guard key off this. Returns undefined when the
+ * shape isn't what we expect (older builds / test fakes).
+ */
+export function extractPublicKeyHex(peerInfo: unknown): string | undefined {
+  const pk = (peerInfo as { publicKey?: { toString?: (enc: string) => string } } | null | undefined)
+    ?.publicKey;
+  if (pk && typeof pk.toString === 'function') {
+    try {
+      return pk.toString('hex');
+    } catch {
+      return undefined;
+    }
+  }
+  return undefined;
 }
 
 export async function joinHarnessSwarm(
@@ -70,8 +90,9 @@ export async function joinHarnessSwarm(
   if (!opts.swarm) throw new Error('joinHarnessSwarm: swarm required');
 
   let connectionCount = 0;
-  const handler = (socket: unknown): void => {
+  const handler = (socket: unknown, peerInfo?: unknown): void => {
     connectionCount++;
+    const remotePublicKeyHex = extractPublicKeyHex(peerInfo);
     try {
       // corestore.replicate(stream) connects the corestore to the
       // peer's stream. Returns a stream we pipe nothing else through;
@@ -95,7 +116,7 @@ export async function joinHarnessSwarm(
     }
     if (opts.onPeerConnected) {
       try {
-        opts.onPeerConnected();
+        opts.onPeerConnected(remotePublicKeyHex);
       } catch {
         // Diagnostic-only callback; swallow.
       }
@@ -132,6 +153,24 @@ export async function joinHarnessSwarm(
 
 let _sharedSwarm: HyperswarmLike | null = null;
 
+/** Default total-connection ceiling. Hyperswarm's own default is unlimited;
+ *  this bounds a connection-flood DoS regardless of the data layer. Generous
+ *  for the dogfood scale (a few peers × a few harnesses); override for larger
+ *  topologies via PAPERCUSP_SWARM_MAX_PEERS. */
+const DEFAULT_MAX_PEERS = 256;
+
+/**
+ * Constructor options for the shared Hyperswarm — the DoS resource ceiling
+ * (P-001 of hyperswarm-dos-hardening). `maxPeers` caps total concurrent peer
+ * connections. Pure + exported so the wiring is unit-testable without
+ * constructing the real (network-touching) swarm.
+ */
+export function swarmConstructorOpts(): { maxPeers: number } {
+  const raw = Number.parseInt(process.env.PAPERCUSP_SWARM_MAX_PEERS ?? '', 10);
+  const maxPeers = Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_MAX_PEERS;
+  return { maxPeers };
+}
+
 /**
  * Lazy-construct ONE Hyperswarm for the entire process. Hyperswarm
  * is heavy (~50ms cold start + a UDP socket + DHT bootstrapping);
@@ -143,8 +182,8 @@ let _sharedSwarm: HyperswarmLike | null = null;
 export async function getSharedSwarm(): Promise<HyperswarmLike> {
   if (_sharedSwarm) return _sharedSwarm;
   const mod = await import('hyperswarm');
-  const Swarm = (mod as { default: new () => HyperswarmLike }).default;
-  _sharedSwarm = new Swarm();
+  const Swarm = (mod as { default: new (opts?: { maxPeers?: number }) => HyperswarmLike }).default;
+  _sharedSwarm = new Swarm(swarmConstructorOpts());
   return _sharedSwarm;
 }
 
