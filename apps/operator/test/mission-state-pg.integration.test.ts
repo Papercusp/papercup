@@ -127,24 +127,33 @@ describe('mission-state-pg against real Postgres', () => {
     expect(st.readyForProdAt).toBeNull();
   });
 
-  // TRIPWIRE — KNOWN BUG (found by this real-PG suite, hidden by makeMockPg):
-  // persistLanesPg interpolates `${JSON.stringify(lanes)}` into the JSONB `lanes`
-  // column, but postgres-js JSON-encodes the value AGAIN for a jsonb column — so
-  // the array lands as a jsonb STRING scalar ("[…]"), jsonb_typeof = 'string'.
-  // readMissionState then sees a non-array and returns []. Net: lane state never
-  // survives a persist→read round-trip in production. Fix: pass the array via the
-  // postgres-js json helper (e.g. `${ctx.pg.json(lanes)}`) instead of pre-
-  // stringifying. When that lands, this test flips RED — replace it with a real
-  // round-trip + the "clear preserves lanes" invariant from the module doc.
-  it('[tripwire] persistLanesPg currently double-encodes lanes (they do NOT round-trip)', async () => {
+  // D-007 FIX VERIFIED: persistLanesPg now uses sql.json (via pgJson), so lanes
+  // land as a real jsonb array and round-trip. (Was the original tripwire.)
+  it('round-trips the lanes JSONB array', async () => {
     const ctx = mkCtx();
-    await persistLanesPg(ctx, [{ id: 1, feature_id: 'F-001', started_at: 111 }]);
+    const lanes = [
+      { id: 1, feature_id: 'F-001', started_at: 111 },
+      { id: 2, feature_id: 'F-002', started_at: 222, finished_at: 333 },
+    ];
+    await persistLanesPg(ctx, lanes);
     const [row] = await sql<{ jt: string | null }[]>`
       SELECT jsonb_typeof(lanes) AS jt
         FROM harness_shared.harness_mission_state
        WHERE workspace_id = ${ctx.workspaceId} AND harness_slug = ${ctx.harnessSlug}`;
-    expect(row.jt).toBe('string'); // bug: should be 'array'
-    expect((await readMissionState(ctx)).lanes).toEqual([]); // bug: should be the array
+    expect(row.jt).toBe('array');
+    expect((await readMissionState(ctx)).lanes).toEqual(lanes);
+  });
+
+  it('clearMissionStatePg resets the sentinels but PRESERVES lanes', async () => {
+    const ctx = mkCtx();
+    await setCostWarnFiredPg(ctx);
+    await setReadyForProdPg(ctx);
+    await persistLanesPg(ctx, [{ id: 1, feature_id: 'F-keep', started_at: 1 }]);
+    await clearMissionStatePg(ctx);
+    const st = await readMissionState(ctx);
+    expect(st.costWarnFired).toBe(false);
+    expect(st.readyForProdAt).toBeNull();
+    expect(st.lanes).toEqual([{ id: 1, feature_id: 'F-keep', started_at: 1 }]);
   });
 
   it('isolates state by (workspace, harness)', async () => {

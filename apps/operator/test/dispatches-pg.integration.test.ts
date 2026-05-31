@@ -59,17 +59,16 @@ describe('dispatches-pg against real Postgres', () => {
     expect(n).toBe(2);
   });
 
-  // TRIPWIRE — same jsonb double-encode bug class as mission-state lanes (D-006).
-  // recordDispatchPg JSON.stringifies an object body, then postgres-js re-encodes
-  // it for the jsonb column → result_body lands as a jsonb STRING scalar, not the
-  // object. Fix = pass via the json helper, not pre-stringified.
-  it('[tripwire] an object result body is double-encoded into a jsonb string scalar', async () => {
+  // D-007 FIX VERIFIED: recordDispatchPg now uses sql.json (via pgJson), so an
+  // object result_body lands as a real jsonb object and round-trips.
+  it('round-trips an object result body as a jsonb object', async () => {
     const c = mkCtx();
     await recordDispatchPg(c, 'p', 'obj', 'worker', { ok: true, n: 1 });
-    const [row] = await db.sql<{ jt: string | null }[]>`
-      SELECT jsonb_typeof(result_body) AS jt
+    const [row] = await db.sql<{ jt: string | null; body: unknown }[]>`
+      SELECT jsonb_typeof(result_body) AS jt, result_body AS body
         FROM harness_shared.harness_dispatches
        WHERE workspace_id = ${c.workspaceId} AND child_slug = 'obj'`;
-    expect(row.jt).toBe('string'); // bug: should be 'object'
+    expect(row.jt).toBe('object');
+    expect(row.body).toEqual({ ok: true, n: 1 });
   });
 });

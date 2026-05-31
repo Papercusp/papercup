@@ -77,24 +77,23 @@ describe('chunk-plan-pg against real Postgres', () => {
     const got = await readPlan(ctx, 'F-001');
     expect(got.map((c) => c.chunkId)).toEqual(['F-001-1', 'F-001-2']);
     expect(got[0].index).toBe(1);
+    expect(got[0].files).toEqual(['a.ts', 'b.ts']);
     expect(got[0].description).toBe('do a');
     expect(got[0].status).toBe('pending');
     expect(got[0].strikes).toBe(0);
     expect(got[0].lastError).toBeNull();
   });
 
-  // TRIPWIRE — systemic jsonb double-encode (D-006). `files` is written via
-  // `${JSON.stringify(files)}::jsonb`, which (probe-confirmed) lands as a jsonb
-  // STRING scalar even with the cast. readPlan therefore returns `files` as a
-  // string, not the declared string[]. Fix = `${ctx.pg.json(files)}`. When fixed,
-  // this flips RED — restore a real `files` round-trip assertion.
-  it('[tripwire] chunk files are double-encoded into a jsonb string scalar', async () => {
+  // D-007 FIX VERIFIED: persistPlan/updateChunkPlan now use sql.json (via pgJson),
+  // so `files` lands as a real jsonb array and round-trips.
+  it('round-trips chunk files as a jsonb array', async () => {
     const ctx = mkCtx();
-    await persistPlan(ctx, plan('F-jt', [{ id: 'F-jt-1', files: ['x.ts'], description: 'x' }]));
+    await persistPlan(ctx, plan('F-jt', [{ id: 'F-jt-1', files: ['x.ts', 'y.ts'], description: 'x' }]));
     const [row] = await db.sql<{ jt: string | null }[]>`
       SELECT jsonb_typeof(files) AS jt FROM harness_shared.harness_chunk_plans
        WHERE feature_id = 'F-jt' AND harness_slug = ${ctx.harnessSlug}`;
-    expect(row.jt).toBe('string'); // bug: should be 'array'
+    expect(row.jt).toBe('array');
+    expect((await readPlan(ctx, 'F-jt'))[0].files).toEqual(['x.ts', 'y.ts']);
   });
 
   it('setChunkStatus updates status and COALESCEs only the supplied extras', async () => {
@@ -126,6 +125,7 @@ describe('chunk-plan-pg against real Postgres', () => {
       description: 'new',
     } as unknown as Parameters<typeof updateChunkPlan>[2]);
     const [c] = await readPlan(ctx, 'F-5');
+    expect(c.files).toEqual(['new.ts']);
     expect(c.description).toBe('new');
     expect(c.status).toBe('pending');
     expect(c.lastError).toBeNull();
