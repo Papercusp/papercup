@@ -14,7 +14,9 @@ updated: 2026-05-31
 
 **Phase D** (convergence) — **IMPLEMENTED**, behind the default-off `inboxDurableEscalations` flag (human-greenlit). P-031 flag; P-032 additive `CardSpec.onCard` surfaces the correlationId (tooldef, unit-tested); P-033 `openEscalation` persists a `meta` link (generic coord lib untouched); P-034 `chat:ask_choice` writes the linked escalation around `ctx.askUser` + closes it on resolve; P-035 `coord:resolve` → `unblockLinkedCard` → `resolveCardResponse` resumes the waiting agent; P-036 convergence test (real correlator + `InMemoryCoordLog`) green. Flag OFF ⇒ live `ctx.askUser` path 100% unchanged (the safety property: flag-off escalations carry no `cardCorrelationId`, so the fan-out is a no-op).
 
-**Next (for the human):** the ONLY thing not verifiable headless is the live agent round-trip — flip `inboxDurableEscalations` ON, raise a decision card from a real agent, confirm it appears in the inbox and that resolving it there resumes the agent. Optional: the needs-human plan-item Answer-InputCard spot-check.
+**Spot-check DONE (live, non-mutating):** drove the desktop — a needs-human plan item renders the card with terminal **Resolve/Drop** + navigate **Answer/Chat**, and clicking **Answer** reveals the inline `InputCard` ("Type your answer…") while the card stays live. Combined with the earlier escalation-card live check, the whole inbox card UI is confirmed in the running app.
+
+**Next (for the human) — the ONLY thing not verifiable headless:** flip `inboxDurableEscalations` ON, raise a decision card from a real agent (`chat:ask_choice`), confirm it appears in the inbox AND that resolving it there resumes the blocked agent. That's the live agent↔human round-trip; everything feeding it is unit-tested + the flag is off by default.
 
 ## Background
 
