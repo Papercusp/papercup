@@ -12,9 +12,9 @@ related: [agent-action-registry-plan-2026-05-03, tooldef-auth-rfc-2026-05-31, pa
 
 ## Now
 
-**State:** Phase 1 COMPLETE + verified — this is the plan's substantive value. Shipped: the Capability contract (P-002), both adapters (P-003), the §3 safety filter (P-011), and the full palette↔agent-catalog unification (P-004) — GET /capabilities (LIVE-VERIFIED: 8 §3-eligible role-gated tools, no leaks, destructive→confirm), POST /run-tool (loopback-only, full dispatch-stack gating + §3 re-check + confirm + audit), and GlobalCommandPalette wiring (fetch+render+execute+toast). 22 unit tests green; tsc + full vite build clean. D-004/D-005 settle the principal; D-006 settles Phase 2 (surfaces = operator overlay, and Phase 2 is OPTIONAL because the adapter already unifies projection without per-tool annotations).
+**State:** Phase 1 COMPLETE + verified; this is the plan's substantive value and it's shipped. Done: Capability contract (P-002), both adapters (P-003), §3 safety filter (P-011), full palette↔agent-catalog unification (P-004 — GET /capabilities LIVE-VERIFIED, POST /run-tool built+gated, GlobalCommandPalette wired), role-aware listing, and an agent-insight doc. 22 unit tests + the route-invariant suite (shadowing/loopback/destructive-public/route-stack) pass; tsc + full vite build clean. The one regression-suite failure (auth-posture on /admin/* routes) is pre-existing on HEAD and unrelated (flagged by the dogfood agent earlier — none are these /agent-mcp/* routes). Decisions D-001..D-006 settle direction, principal, and Phase-2 scope.
 
-**Next:** Two non-autonomous items remain: P-005 — a :3070 host restart to live-smoke POST /run-tool (not forced; shared service); P-009 — the human end-state decision (conform vs merge). Phase 2 (P-006/P-008/P-012) is optional polish (D-006), build-on-demand. Next autonomous pass: regression-test the change set + write an agent-insight doc for the capability-contract architecture.
+**Next:** Only non-autonomous work remains: P-005 — a :3070 host restart makes POST /run-tool live for the final invoke/palette end-to-end smoke (the loop is now watching for that restart on a long interval; will run the smoke when it lands). P-009 — the human end-state decision (conform vs merge). Phase 2 (P-006/P-008/P-012) is optional polish (D-006), build-on-demand.
 
 ## 1. Problem (grounded in code)
 
