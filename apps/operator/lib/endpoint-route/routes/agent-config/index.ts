@@ -43,7 +43,9 @@ export default [
       }
       const next: AgentConfig = {
         backend:
-          body.backend === 'claude-code' || body.backend === 'omp' ? body.backend : 'auto',
+          body.backend === 'claude-code' || body.backend === 'omp' || body.backend === 'codex'
+            ? body.backend
+            : 'auto',
         cmd: typeof body.cmd === 'string' ? body.cmd : '',
         models:
           body.models && typeof body.models === 'object' && !Array.isArray(body.models)

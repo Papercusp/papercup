@@ -25,7 +25,7 @@ import { dirname } from 'node:path';
 import { readOperatorState, writeOperatorState } from './operator-state-pg';
 import { papercuspPath } from './papercusp-root';
 
-export type AgentBackend = 'claude-code' | 'omp';
+export type AgentBackend = 'claude-code' | 'omp' | 'codex';
 
 export interface AgentConfig {
   /** Which backend to drive. 'auto' lets resolveBackend infer from the
@@ -95,7 +95,7 @@ export function parseBackends(raw: unknown): Partial<Record<SurfaceKey, AgentBac
   const out: Partial<Record<SurfaceKey, AgentBackend>> = {};
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return out;
   for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
-    if ((SURFACE_KEYS as readonly string[]).includes(k) && (v === 'omp' || v === 'claude-code')) {
+    if ((SURFACE_KEYS as readonly string[]).includes(k) && (v === 'omp' || v === 'claude-code' || v === 'codex')) {
       out[k as SurfaceKey] = v;
     }
   }
@@ -176,7 +176,7 @@ export function applyToProcessEnv(cfg: AgentConfig): void {
 }
 
 function validBackend(v: unknown): AgentConfig['backend'] | undefined {
-  if (v === 'claude-code' || v === 'omp' || v === 'auto') return v;
+  if (v === 'claude-code' || v === 'omp' || v === 'codex' || v === 'auto') return v;
   return undefined;
 }
 
@@ -190,12 +190,13 @@ function validBackend(v: unknown): AgentConfig['backend'] | undefined {
  * so the "Test current backend" button exercises the same backend the user
  * actually selected.
  */
-export function effectiveBackend(cfg: AgentConfig): 'claude-code' | 'omp' {
+export function effectiveBackend(cfg: AgentConfig): AgentBackend {
   if (cfg.backend !== 'auto') return cfg.backend;
   const cmd = (cfg.cmd || process.env.AGENT_CMD || process.env.CLAUDE_CMD || 'omp').trim();
   const first = cmd.split(/\s+/).filter(Boolean)[0] ?? '';
   if (/(?:^|\/)(omp|pi)$/.test(first)) return 'omp';
   if (/(?:^|\/)claude$/.test(first)) return 'claude-code';
+  if (/(?:^|\/)codex$/.test(first)) return 'codex';
   return 'omp';
 }
 

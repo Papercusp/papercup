@@ -20,7 +20,7 @@ import { SURFACE_KEYS, type SurfaceKey, type AgentBackend } from '@/lib/agent-co
 type SurfaceChoice = 'inherit' | AgentBackend;
 
 const ConfigSchema = z.object({
-  backend: z.enum(['auto', 'claude-code', 'omp']),
+  backend: z.enum(['auto', 'claude-code', 'omp', 'codex']),
   cmd: z.string().optional().default(''),
   // Per-role models stored as a JSON-string textarea so users can
   // copy/paste between machines. Validated on submit.
@@ -29,7 +29,7 @@ const ConfigSchema = z.object({
 type ConfigFormData = z.infer<typeof ConfigSchema>;
 
 interface AgentConfig {
-  backend: 'auto' | 'claude-code' | 'omp';
+  backend: 'auto' | 'claude-code' | 'omp' | 'codex';
   cmd: string;
   models: Record<string, string>;
   backends?: Partial<Record<SurfaceKey, AgentBackend>>;
@@ -42,7 +42,7 @@ interface DetectedBinaries {
 interface ConfigSnapshot {
   config: AgentConfig;
   binaries: DetectedBinaries;
-  effectiveBackend: 'claude-code' | 'omp';
+  effectiveBackend: 'claude-code' | 'omp' | 'codex';
   envOverrides: { AGENT_BACKEND: string | null; AGENT_CMD: string | null; CLAUDE_CMD: string | null };
 }
 
@@ -216,10 +216,10 @@ export default function AgentSettingsPage() {
       <form onSubmit={submit(onSubmit)} style={{ marginTop: 16, display: 'flex', flexDirection: 'column', gap: 16 }}>
         <FormField
           label="Backend (sets AGENT_BACKEND)"
-          description="The CLI the orchestrator + harness drive. 'omp' is the default (routes through Meridian + Claude Max). 'claude-code' uses the local `claude` CLI. 'auto' infers from the binary name and falls back to omp."
+          description="The CLI the orchestrator + harness drive. 'omp' is the default (routes through Meridian + Claude Max). 'claude-code' uses the local `claude` CLI. 'codex' uses the local `codex` CLI (ChatGPT OAuth). 'auto' infers from the binary name and falls back to omp."
         >
           <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
-            {(['auto', 'claude-code', 'omp'] as const).map((b) => (
+            {(['auto', 'claude-code', 'omp', 'codex'] as const).map((b) => (
               <label key={b} style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 13 }}>
                 <input type="radio" value={b} {...register('backend')} />
                 <code>{b}</code>
@@ -236,11 +236,11 @@ export default function AgentSettingsPage() {
 
         <FormField
           label="Custom command (sets AGENT_CMD)"
-          description={`Overrides the default binary + flags. Equivalent to setting the AGENT_CMD env var. Leave empty for "${watchBackend === 'omp' ? 'omp -p' : 'claude -p'}".`}
+          description={`Overrides the default binary + flags. Equivalent to setting the AGENT_CMD env var. Leave empty for "${watchBackend === 'omp' ? 'omp -p' : watchBackend === 'codex' ? 'codex exec' : 'claude -p'}".`}
         >
           <input
             type="text"
-            placeholder={watchBackend === 'omp' ? 'omp -p' : 'claude -p --dangerously-skip-permissions'}
+            placeholder={watchBackend === 'omp' ? 'omp -p' : watchBackend === 'codex' ? 'codex exec' : 'claude -p --dangerously-skip-permissions'}
             className="pc-input"
             {...register('cmd')}
           />
@@ -318,6 +318,7 @@ export default function AgentSettingsPage() {
                   <option value="inherit">Inherit global</option>
                   <option value="omp">omp</option>
                   <option value="claude-code">claude-code</option>
+                  <option value="codex">codex</option>
                 </select>
               </label>
             ))}
@@ -374,7 +375,7 @@ export default function AgentSettingsPage() {
           from the shell instead. Either set them before invoking:
         </p>
         <pre className="pc-code" style={{ marginTop: 8 }}>{`export AGENT_BACKEND=${watchBackend === 'auto' ? 'omp' : watchBackend}
-export AGENT_CMD='${watchBackend === 'omp' ? 'omp -p' : 'claude -p'}'`}</pre>
+export AGENT_CMD='${watchBackend === 'omp' ? 'omp -p' : watchBackend === 'codex' ? 'codex exec' : 'claude -p'}'`}</pre>
         <p style={{ fontSize: 12, color: 'var(--fg-mute)', margin: 0 }}>
           …or rely on the binary auto-inference (the orchestrator detects{' '}
           <code>omp</code>/<code>pi</code> in the command name).
