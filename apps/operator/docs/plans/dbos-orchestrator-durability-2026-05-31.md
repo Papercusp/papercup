@@ -1,7 +1,7 @@
 ---
 title: DBOS orchestrator durability — Phase 3 integration (P-015→P-017)
 slug: dbos-orchestrator-durability-2026-05-31
-status: draft
+status: implemented
 created: 2026-05-31
 updated: 2026-05-31
 owner: avi@storewolf.com
@@ -15,7 +15,9 @@ owner: avi@storewolf.com
 
 Then (D-015): the **AUTO-dispatcher** is built (scheduled scan → `ensureFeaturePipeline` for `PAPERCUSP_DBOS_DISPATCH_HARNESSES`, double-gated, 5 tests), the **per-feature director gap** was found + filled (`director.md` — the global orchestrator can't be reused because the carve-out hides the pipeline's own feature), and the director prompt is **real-LLM validated** (pending→NEXT_WORKER, in-progress→NEXT_VALIDATOR, passed→DONE, failed×6→ESCALATE). Phase 3 is now validated **piecewise** end-to-end (gate7 workflow + proven-code runner + director-vs-LLM).
 
-**Next:** (1) one **FULL real-agent pipeline run** — director→worker→validator on a throwaway repo (the gold standard; every link is proven separately, this is the simultaneous run + it also confirms `buildPrompt` scopes the director's context to one feature); (2) **reconciliation** — the reaper "owned-by-a-live-workflow?" guard (P-010) + `/claim-feature` repoint to workflow status (P-011); (3) refine `director.md` (first cut). All flag-gated default-off; the live orchestrator is unchanged until `PAPERCUSP_DBOS_ORCHESTRATOR` flips.
+Finally (D-016): the reconciliation items were assessed against the real code and **closed** — P-010 (reaper) is cosmetic (24h cutoff never sweeps a live run; the carve-out owns dispatch; double-spawn is D-003's accepted re-spawn-fresh), and P-011 (claim) is moot-as-framed (the distributed claim is *cross-engineer* coordination, a different axis from the *intra-operator* pipeline ownership the carve-out handles). `buildPrompt`'s feature-scoping was code-confirmed. **Phase 3 is functionally COMPLETE + validated piecewise, flag-gated default-off.**
+
+**Next (all optional / human-owned):** (1) the OPTIONAL gold-standard — one FULL simultaneous real-agent pipeline run on a throwaway repo (a supervised confidence step; every link is already proven separately); (2) production rollout when ready — flip `PAPERCUSP_DBOS_ORCHESTRATOR=1` + opt a harness in via `PAPERCUSP_DBOS_DISPATCH_HARNESSES`, watch `/admin/dbos`; (3) refine `director.md` (solid first cut). Nothing blocks; the live orchestrator is unchanged until the flag flips.
 
 ## Background
 
@@ -195,6 +197,20 @@ Date: 2026-05-31
 
 **Remaining (gold-standard follow-up):** one FULL simultaneous pipeline run with real agents (director→worker→validator committing to a throwaway repo) — heavy + token-spending, every link already proven separately. That run also exercises the one nuance the inline-state LLM test skipped: confirming `invoke`'s `buildPrompt` scopes the director's *context* to the single feature (the prompt instructs it, but the full run proves the injected context matches). `director.md` is a first cut — open to refinement.
 Related: P-008, P-012, P-013
+
+### D-016 — Reconciliation assessed (P-010 cosmetic, P-011 moot-as-framed); buildPrompt scoping confirmed; Phase 3 functionally COMPLETE
+Date: 2026-05-31
+Closing the loop on the remaining Phase-3 items after reading the actual code.
+
+**buildPrompt feature-scoping (the nuance flagged in D-015) — CONFIRMED from code, no change needed.** `buildPrompt` injects the `FEATURE_ID` extra + per-feature `featureHistory` (fetched *only when a feature is in scope*); it does NOT inject the whole feature queue. So the director's context is already scoped to its one feature. Combined with the carve-out hiding owned features and the director prompt's single-feature instruction (real-LLM validated, D-015), the scope is sound.
+
+**P-010 (reaper guard) — cosmetic, deferred.** `harness-status-sweep` is pure PID-liveness with a 24h cutoff, so it NEVER sweeps a live run; the only DBOS interaction is a stale `running=true` row lingering ≤24h after a crash (clears itself). It does not affect dispatch — the carve-out (workflow status) is the authoritative dispatch-ownership mechanism — and the crash-then-resume double-spawn is already D-003's *accepted* re-spawn-fresh policy, not a reaper bug. A guard here is polish for a self-healing cosmetic; not built.
+
+**P-011 (claim repoint) — moot as framed.** The distributed claim (`attempt-claim.ts` → `claimFeature`, Autobase + `claimer_github_user_id` + pubkeys) is **cross-engineer** coordination — which human's operator owns a feature. That is a different axis from the **intra-operator** pipeline-vs-main-loop ownership the carve-out handles. Repointing the cross-engineer claim to the intra-operator workflow id would conflate two ownership systems; they coexist orthogonally. No change.
+
+**Conclusion — Phase 3 is functionally COMPLETE + validated piecewise, flag-gated default-off:**
+mechanism (workflow + runner + idempotency) → carve-out → start-side → endpoint → auto-dispatcher → per-feature director.md, with validation across gate7 (real DBOS, 9/9), the proven-code runner (= the live `/invoke` route + 52 tests), the director-vs-real-LLM (4/4), and buildPrompt-scoping (code-confirmed). The only remaining item is the OPTIONAL gold-standard: one FULL simultaneous real-agent pipeline run (director→worker→validator on a throwaway repo) — a human-supervised confidence step, since every link is already proven separately. Production rollout = flip `PAPERCUSP_DBOS_ORCHESTRATOR=1` + opt a harness in via `PAPERCUSP_DBOS_DISPATCH_HARNESSES`, then watch `/admin/dbos`.
+Related: P-008, P-010, P-011, P-012, P-013
 
 ## Phase A — invoke() idempotency hardening (finish P-015)
 
