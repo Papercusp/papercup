@@ -22,6 +22,7 @@
  */
 import { DBOS, WorkflowQueue } from '@dbos-inc/dbos-sdk';
 import { parseDecision } from '@papercusp/orchestrator';
+import { classifyDecision } from './orchestrator-decide';
 
 export interface PipelineInput {
   harnessSlug: string;
@@ -61,6 +62,8 @@ export type PipelineInvokeRunner = (
   role: string,
   featureId: string,
   idempotencyKey: string,
+  /** Complete KEY=value extras for this agent run (e.g. FEATURE_ID=, VAL_ID=). */
+  extras: string[],
   workspaceId?: string,
 ) => Promise<{ output: string; exitCode: number }>;
 
@@ -75,20 +78,26 @@ function runner(): PipelineInvokeRunner {
   return _runner;
 }
 
-const MAX_TURNS = Number(process.env.PAPERCUSP_DBOS_PIPELINE_MAX_TURNS ?? 200);
-const TERMINAL = new Set(['DONE', 'ESCALATE', 'IDLE']);
+/**
+ * Terminal finalizer (P-001/P-002): runs the post-DONE curator/documenter/archive
+ * (or the ESCALATE curator) when the pipeline reaches a terminal outcome. Injected
+ * by the operator (orchestrator-runner) so the workflow stays free of I/O; when
+ * unwired (tests, or before boot) finalization is skipped.
+ */
+export type PipelineFinalizer = (input: {
+  harnessSlug: string;
+  featureId: string;
+  workspaceId?: string;
+  outcome: 'done' | 'escalate';
+  reason?: string;
+}) => Promise<void>;
 
-// The dispatch verbs this durable pipeline handles. Verbs outside this map
-// (NEXT_HARNESS, NEXT_EXPERT, parallel NEXT_WORKER with N=, …) are left to the
-// legacy main loop: the workflow stops and the caller falls back.
-const VERB_TO_ROLE: Record<string, string> = {
-  NEXT_WORKER: 'worker',
-  NEXT_VALIDATOR: 'validator',
-  NEXT_ARCHITECT: 'architect',
-  NEXT_SCOPER: 'scoper',
-  NEXT_TESTER: 'tester',
-  NEXT_SECURITY: 'security',
-};
+let _finalizer: PipelineFinalizer | null = null;
+export function setPipelineFinalizer(fn: PipelineFinalizer): void {
+  _finalizer = fn;
+}
+
+const MAX_TURNS = Number(process.env.PAPERCUSP_DBOS_PIPELINE_MAX_TURNS ?? 200);
 
 const key = (slug: string, feature: string, role: string, turn: number): string =>
   `${slug}:${feature}:${role}:t${turn}`;
@@ -96,6 +105,11 @@ const key = (slug: string, feature: string, role: string, turn: number): string 
 async function featurePipelineImpl(input: PipelineInput): Promise<string> {
   const orchestratorRole = input.orchestratorRole ?? 'director';
   let lastVerb = 'NONE';
+  // The terminal outcome to finalize after the loop (DONE → curator+documenter+
+  // archive; ESCALATE → curator). null for IDLE / unsupported / max-turns (stop,
+  // the dispatcher re-scans; no finalization).
+  let terminal: { outcome: 'done' | 'escalate'; reason?: string } | null = null;
+
   for (let turn = 0; turn < MAX_TURNS; turn++) {
     // Step: the orchestrator agent decides the next action (checkpointed).
     // A failed/empty invoke must NOT look like a clean terminal decision:
@@ -110,6 +124,7 @@ async function featurePipelineImpl(input: PipelineInput): Promise<string> {
           orchestratorRole,
           input.featureId,
           key(input.harnessSlug, input.featureId, orchestratorRole, turn),
+          [`FEATURE_ID=${input.featureId}`],
           input.workspaceId,
         );
         if (r.exitCode !== 0 || !r.output.trim()) {
@@ -119,26 +134,57 @@ async function featurePipelineImpl(input: PipelineInput): Promise<string> {
       },
       { name: `decide-${turn}`, retriesAllowed: true, maxAttempts: 3, intervalSeconds: 5, backoffRate: 2 },
     );
-    const parsed = parseDecision(decision.output);
-    if (!parsed || TERMINAL.has(parsed.verb)) {
-      lastVerb = parsed?.verb ?? 'NONE';
+
+    const action = classifyDecision(parseDecision(decision.output), input.featureId);
+
+    if (action.kind === 'terminal') {
+      lastVerb = action.outcome.toUpperCase();
+      if (action.outcome === 'done' || action.outcome === 'escalate') {
+        terminal = { outcome: action.outcome, reason: action.reason };
+      }
       break;
     }
-    const role = VERB_TO_ROLE[parsed.verb];
-    if (!role || parsed.n != null) {
-      // Unsupported here (parallel-lane NEXT_WORKER N=k, NEXT_HARNESS, …) — stop;
-      // the caller routes this feature through the legacy main loop.
-      lastVerb = `UNSUPPORTED:${parsed.verb}`;
+    if (action.kind === 'unsupported') {
+      // Global-only verb (parallel lanes, NEXT_HARNESS, CEO mode) — deliberately
+      // not handled per-feature (D-001). Stop; the dispatcher owns cross-feature work.
+      lastVerb = `UNSUPPORTED:${action.verb}`;
       break;
     }
-    const feature = parsed.arg ?? input.featureId;
-    // Step: run the dispatched role as an idempotent agent run (checkpointed).
+
+    // dispatch: run the role as an idempotent agent run (checkpointed).
     await DBOS.runStep(
-      () => runner()(input.harnessSlug, role, feature, key(input.harnessSlug, feature, role, turn), input.workspaceId),
-      { name: `invoke-${role}-${turn}` },
+      () =>
+        runner()(
+          input.harnessSlug,
+          action.role,
+          action.feature,
+          key(input.harnessSlug, action.feature, action.role, turn),
+          action.extras,
+          input.workspaceId,
+        ),
+      { name: `invoke-${action.role}-${turn}` },
     );
-    lastVerb = parsed.verb;
+    lastVerb = action.role.toUpperCase();
   }
+
+  // Finalize a terminal outcome (checkpointed → runs once, not re-run on replay).
+  // Skipped cleanly when no finalizer is wired (tests / pre-boot).
+  if (terminal && _finalizer) {
+    const fin = _finalizer;
+    const { outcome, reason } = terminal;
+    await DBOS.runStep(
+      () =>
+        fin({
+          harnessSlug: input.harnessSlug,
+          featureId: input.featureId,
+          workspaceId: input.workspaceId,
+          outcome,
+          reason,
+        }),
+      { name: `finalize-${outcome}` },
+    );
+  }
+
   return `pipeline-complete (last=${lastVerb})`;
 }
 
