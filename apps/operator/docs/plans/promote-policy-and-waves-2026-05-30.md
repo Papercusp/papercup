@@ -25,9 +25,14 @@ Phase D: **P-008 + the P-009 decision core done** — `lib/harness/waves.ts` now
 `decideWaveAdvance` (cursor null→promote first; un-populated wave→wait [idempotency guard]; blocked→surface;
 in-progress→wait; drained→promote next; complete→none). 22 tests, tsc clean.
 
-**Next:** the **P-009 sweep wiring** — a periodic `wave-advance-sweep` (mirroring `harness-status-sweep`):
-per started plan with a `## Promote` policy, query features → `decideWaveAdvance` → launch the promote agent
-for a `promote` action (sets the cursor) / raise an issue for `blocked`. The risky live-integration half.
+P-009 orchestration done: `wave-advance-sweep.ts` — `runWaveAdvanceTick(deps)` (dep-injected, testable):
+per started plan → `decideWaveAdvance` → promote (launch, then cursor — idempotent) / onBlocked / wait;
+no-policy plans skipped; per-plan errors caught. 7 tests, tsc clean.
+
+**Next:** P-009b-ii — the thin real-deps adapter + lifecycle: `listStartedPlans` (harness_plan_status query),
+`getPlanWaves` (readPlanBySlug + parsePromotePolicy), `getPlanFeatures` (consolidated query), `setCursor`
+(UPDATE), `promoteWave` (launch the promote agent — the one uncertain dep), `onBlocked` (→ Phase E issue),
++ `ensureWaveAdvanceSweep` (mirror `harness-status-sweep`) + startup registration.
 
 **Follow-up (small):** `yaml` is imported by the parser but is an undeclared (stable, lockfile-present,
 already-bundled) transitive dep — declare it as a direct operator dep when the lockfile is next reconciled
