@@ -11,9 +11,9 @@ owner: avi@storewolf.com
 
 ## Now
 
-**State:** Blocker cleared (b437af64 — registered the `libs/chat-protocol` workspace); `npm install` is healthy and `@dbos-inc/dbos-sdk` is installed in the operator. **Phase 0**: cross-version resume gate PASSED + integration committed (0443ccb7). **Phase 1 committed (5c9bb737)**: the AutoLoop ticker as a DBOS scheduled workflow (skip-missed, D-009) + a per-(harness,role) dedup-keyed fire queue (D-010), reusing the now-exported `autoloop.ts` helpers; flag-gated by `PAPERCUSP_DBOS_AUTOLOOP=1` (D-011) with the legacy ticker standing down. Mechanics verified in isolation (dedup single-fire + scheduled cadence, `gate2.mjs`); `tsc` clean against the installed SDK. Findings folded in: `runAdminServer:false` (DBOS admin :3001 collides with Restart), scheduled fns must also be registered workflows.
+**State:** Phase 0 + most of Phase 1 done and verified, all committed on `main`. **In-operator boot smoke PASSED at module level** — the real `bootstrap.ts` + `hello-workflow.ts` launch DBOS and run a durable workflow against embedded PG16 (`schema=dbos`, `source=env`, helloWorkflow `SUCCESS`). Commits: P-001 bootstrap (0443ccb7), workspace-install fix (b437af64), Phase 1 scheduled+dedup AutoLoop (5c9bb737), P-006 fire-step retries + recovery cap (958a7a59 — retry contract verified, `gate3.mjs`). Mechanics all proven against real embedded PG: cross-version resume, dedup single-fire, scheduled cadence, retry-with-backoff. `tsc` clean throughout.
 
-**Next:** In-operator smoke (now unblocked): restart the dev API with `PAPERCUSP_DBOS_ENABLE=1` (+ `PAPERCUSP_DBOS_AUTOLOOP=1`), confirm the `dbos` schema + `helloWorkflow` + AutoLoop ticks land — then P-007 (the `/admin` DBOS events tab) and P-006 (retry/recovery-cap mapping).
+**Next:** P-007 — the `/admin` DBOS events tab (a PG-query read route over the `dbos.*` system tables + a nuqs-stated admin tab), best done with the Tauri desktop up for visual QA. The full live-service end-to-end boot (flip `PAPERCUSP_DBOS_ENABLE`/`PAPERCUSP_DBOS_AUTOLOOP` + restart the dev API) is the remaining confirmation, deferred to avoid disrupting the shared running services.
 
 ## Background
 
