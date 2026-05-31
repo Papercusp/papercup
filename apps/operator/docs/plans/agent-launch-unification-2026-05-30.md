@@ -33,8 +33,9 @@ live e2e.** Unified the agent-backend refactor handoff + psu role sessions:
 **P-041 consumption DONE (2026-05-31):** `surfaceModel()` is now wired into all
 8 brain surfaces (converse/oracle/scanner/delegate/architect/brainstorm/
 agent_chats/plans) — additive (`surfaceModel ?? existing`), a no-op until a
-per-surface model is set. Commit `6c9db80e`. Still optional: a per-surface
-model column in the `/settings/agent` UI (CLI/config can set it today).
+per-surface model is set. Commit `6c9db80e`. The per-surface model column
+in the `/settings/agent` UI is now also wired (load/save/render, commit
+`407094cf`) — UI e2e through the Tauri shell is its only pending gate.
 
 **Deferred follow-ups (gated on the e2e + parity):** P-032 (delete the legacy
 `buildEngineerOmpLaunchCommand` / console-launch `mode:'omp'`, converging omp
