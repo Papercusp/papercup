@@ -18,6 +18,8 @@
 import { DBOS } from '@dbos-inc/dbos-sdk';
 import { flushTelemetry } from '@/lib/telemetry-flush';
 import { runScratchGc } from '@/lib/scratch-gc';
+import { runMemoryCleanupOnce } from '@/lib/memory/cleanup-worker';
+import { runCompletionRefVerifierOnce } from '@/lib/harness/completion-ref-verifier';
 import { readRegistry } from '@/lib/workspace-registry';
 
 // Hourly: drain the telemetry ring buffer → archive, forward to PostHog (gated),
@@ -44,3 +46,22 @@ const scratchGcWorkflow = DBOS.registerWorkflow(scratchGcTick, {
   name: 'scratchGc', maxRecoveryAttempts: 5,
 });
 DBOS.registerScheduled(scratchGcWorkflow, { name: 'scratchGc', crontab: '0 0 3 * * *' });
+
+// Every 6h: purge expired mem0 ephemeral memories.
+async function memoryCleanupTick(): Promise<void> {
+  await DBOS.runStep(() => runMemoryCleanupOnce(), { name: 'memory-cleanup' });
+}
+const memoryCleanupWorkflow = DBOS.registerWorkflow(memoryCleanupTick, {
+  name: 'memoryCleanup', maxRecoveryAttempts: 5,
+});
+DBOS.registerScheduled(memoryCleanupWorkflow, { name: 'memoryCleanup', crontab: '0 0 */6 * * *' });
+
+// Every minute: poll completion_refs against the remote (git ls-remote),
+// stamping verified/divergent. Per-feature backoff stays in the worker.
+async function completionRefTick(): Promise<void> {
+  await DBOS.runStep(() => runCompletionRefVerifierOnce(), { name: 'completion-ref-verify' });
+}
+const completionRefWorkflow = DBOS.registerWorkflow(completionRefTick, {
+  name: 'completionRefVerify', maxRecoveryAttempts: 5,
+});
+DBOS.registerScheduled(completionRefWorkflow, { name: 'completionRefVerify', crontab: '0 * * * * *' });

@@ -411,16 +411,30 @@ const _g = globalThis as unknown as Singleton;
  * Start the periodic verifier. Idempotent across HMR / multiple
  * instrumentation.register() calls — second call is a no-op.
  */
+/**
+ * One full verifier pass across every harness with verifiable work.
+ * Exposed for the DBOS scheduled-workflow migration (dbos-durable-jobs-2026-05-31
+ * Phase 2) — the legacy daemon tick now delegates to this.
+ */
+export async function runCompletionRefVerifierOnce(
+  runGit: RunGitLsRemote = defaultRunGitLsRemote,
+): Promise<void> {
+  const slugs = await selectHarnessesWithVerifiableWork();
+  for (const slug of slugs) {
+    await verifyHarnessFeaturesWithBackoff(slug, runGit);
+  }
+}
+
 export function startCompletionRefVerifier(opts: StartOpts = {}): void {
   if (_g.__completionRefVerifierTimer) return;
+  // Phase 2 A/B (dbos-durable-jobs-2026-05-31 D-011): DBOS owns the schedule
+  // when PAPERCUSP_DBOS_TIMERS=1, so the legacy timer stands down.
+  if (process.env.PAPERCUSP_DBOS_TIMERS === '1') return;
   const interval = opts.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
   const runGit = opts.runGitLsRemote ?? defaultRunGitLsRemote;
   const tick = async (): Promise<void> => {
     try {
-      const slugs = await selectHarnessesWithVerifiableWork();
-      for (const slug of slugs) {
-        await verifyHarnessFeaturesWithBackoff(slug, runGit);
-      }
+      await runCompletionRefVerifierOnce(runGit);
     } catch (err) {
       console.warn(
         '[completion-ref-verifier] tick failed:',
