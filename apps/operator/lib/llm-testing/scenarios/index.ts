@@ -45,6 +45,13 @@ import { O2_REFUSE_SPECULATION } from './oracle/O2-refuse-speculation';
 import { O3_HARNESS_QUESTION } from './oracle/O3-harness-question';
 import { A1_CLARIFYING_QUESTIONS } from './architect/A1-clarifying-questions';
 import { A2_SCOPE_PUSHBACK } from './architect/A2-scope-pushback';
+import { A3_REJECT_THEN_REFINE } from './architect/A3-reject-then-refine';
+import { A4_NO_HALLUCINATED_PLAN_ITEMS } from './architect/A4-no-hallucinated-plan-items';
+import { A5_TRADEOFF_EXPLANATION } from './architect/A5-tradeoff-explanation';
+import { A6_NO_SPEC_WITHOUT_READING } from './architect/A6-no-spec-without-reading';
+import { O4_NO_TOOL_USE_FOR_SIMPLE_FACT } from './oracle/O4-no-tool-use-for-simple-fact';
+import { O5_HARNESS_SCOPED_ANSWER } from './oracle/O5-harness-scoped-answer';
+import { O6_GRACEFUL_NOT_FOUND } from './oracle/O6-graceful-not-found';
 
 export const SCENARIOS: ReadonlyArray<Scenario> = [
   // operator (S01–S12)
@@ -74,13 +81,20 @@ export const SCENARIOS: ReadonlyArray<Scenario> = [
   M10_IDEAS_NOT_OPERATORS,
   M11_NO_IMPLEMENTATION_ASKS,
   M12_NO_STACKED_QUESTIONS_PROSE,
-  // oracle (O1–O3) — Phase 4 abstraction validation
+  // oracle (O1–O6) — Phase 4 abstraction validation + P-027 expansion
   O1_DOCS_QUESTION,
   O2_REFUSE_SPECULATION,
   O3_HARNESS_QUESTION,
-  // architect (A1–A2) — third target, harness-scoped
+  O4_NO_TOOL_USE_FOR_SIMPLE_FACT,
+  O5_HARNESS_SCOPED_ANSWER,
+  O6_GRACEFUL_NOT_FOUND,
+  // architect (A1–A6) — third target, harness-scoped + P-027 expansion
   A1_CLARIFYING_QUESTIONS,
   A2_SCOPE_PUSHBACK,
+  A3_REJECT_THEN_REFINE,
+  A4_NO_HALLUCINATED_PLAN_ITEMS,
+  A5_TRADEOFF_EXPLANATION,
+  A6_NO_SPEC_WITHOUT_READING,
 ];
 
 export function getScenario(id: string): Scenario {
