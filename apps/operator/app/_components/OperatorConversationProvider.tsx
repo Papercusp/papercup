@@ -59,7 +59,7 @@ import {
   type OperatorMode,
 } from '@/lib/operator-converse-tags';
 import { getVoiceState, speak, subscribeVoiceState } from './voice/voice-mode';
-import { useSyncQuery } from '@restart/sync';
+import { useSyncQuery } from '@papercusp/sync';
 import { useWorkspaceId } from '@/lib/use-workspace-id';
 import type { ChatMessage, ChatToolCall } from './chat/ChatConversation';
 import { useStateSnapshots } from '@/lib/use-state-snapshots';
