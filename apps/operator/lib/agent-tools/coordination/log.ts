@@ -14,9 +14,42 @@
 
 import { getOrgPg } from '@papercusp/db-org';
 import { PgCoordLog } from '@papercusp/coordination/event-log';
+import type { CoordEventLog } from '@papercusp/coordination/event-log';
 import { ensureCoordEventLogTable } from '@/lib/ensure-schema';
 
-export const coordLog = new PgCoordLog({
-  getSql: () => getOrgPg().sql,
-  ensureSchema: ensureCoordEventLogTable,
-});
+function makeDefaultLog(): CoordEventLog {
+  return new PgCoordLog({
+    getSql: () => getOrgPg().sql,
+    ensureSchema: ensureCoordEventLogTable,
+  });
+}
+
+let impl: CoordEventLog = makeDefaultLog();
+
+/**
+ * Swap the backing CoordEventLog. Tests inject `new InMemoryCoordLog()` so the
+ * channel modules exercise the real fold logic without touching — and
+ * polluting — the live `harness_shared.coord_event_log`. Call `resetCoordLog()`
+ * in afterEach to restore the PG backend.
+ */
+export function configureCoordLog(next: CoordEventLog): void {
+  impl = next;
+}
+
+/** Restore the default PgCoordLog backend (afterEach in tests). */
+export function resetCoordLog(): void {
+  impl = makeDefaultLog();
+}
+
+/**
+ * The operator's single CoordEventLog seam. A stable object that delegates to
+ * the currently-configured backend, so the channel modules can `import
+ * { coordLog }` once while tests swap the implementation underneath.
+ */
+export const coordLog: CoordEventLog = {
+  appendLine: (surface, writerKey, line) => impl.appendLine(surface, writerKey, line),
+  readLines: (surface, opts) => impl.readLines(surface, opts),
+  putEvent: (surface, msgId, record) => impl.putEvent(surface, msgId, record),
+  readEvents: (surface) => impl.readEvents(surface),
+  getEvent: (surface, msgId) => impl.getEvent(surface, msgId),
+};

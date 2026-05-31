@@ -19,6 +19,15 @@
  * DB dump into every snapshot — point-in-time DB restore depends on it.
  * The `db-dumps/hook.log` file still stays out via the `*.log` rule.
  */
+/**
+ * The load-bearing self-exclusion rules: directories that live INSIDE the
+ * workspace root and must never enter a snapshot — `backups/` (the kopia repo
+ * itself, the 1TB-runaway case) plus the restore/rollback scratch dirs. Every
+ * one of these is asserted against the live kopia global policy before each
+ * snapshot (assertSelfExclusionPolicy). Don't remove.
+ */
+export const SELF_EXCLUSION_RULES = ['backups', '.restored', '.broken-*', '.rolled-back-*'];
+
 export const IGNORE_PATTERNS = [
   'node_modules', '.next', 'out', 'target', 'dist', 'build', '.turbo', '.cache',
   '.svelte-kit', '.nuxt', '.angular', '.vite', '.parcel-cache',
@@ -29,7 +38,7 @@ export const IGNORE_PATTERNS = [
   'tmp', '.tmp', '*.swp', '*.swo', '.DS_Store', 'Thumbs.db',
   'proc-macro-srv*', '*.log',
   // Self-exclude — see the module comment above. Don't remove.
-  'backups', '.restored', '.broken-*', '.rolled-back-*',
+  ...SELF_EXCLUSION_RULES,
 ];
 
 /**

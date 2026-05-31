@@ -12,7 +12,7 @@ Each feature reserves a unique integer for its `<feature_key>`.
 
 | `feature_key` | Feature             | Source                                                     | `<within-feature key>` |
 |---------------|---------------------|------------------------------------------------------------|------------------------|
-| `101`         | SU agent file locks | `apps/operator/lib/agent-tools/locks/in-workspace-txn.ts`  | `hashtext('su:' \|\| coordination_domain)` |
+| `101`         | SU agent file locks | `packages/locks/src/in-workspace-txn.ts`                   | `hashtext('su:' \|\| coordination_domain)` |
 
 ## Adding a new feature
 

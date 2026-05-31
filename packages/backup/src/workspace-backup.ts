@@ -3,9 +3,11 @@
  * cheap (paths only), real work happens in `ensureRepo` and `snapshot`.
  *
  * The class is a thin wrapper around the kopia CLI — every method shells
- * out, parses --json output, and writes a PG row in the same transaction
- * as the kopia side-effect. Kopia is the source of truth for snapshot
- * contents; PG is the source of truth for settings + metadata + UI state.
+ * out, parses --json output, and records the result in PG. PG access is the
+ * raw org handle with NO transaction wrapping the kopia side-effect (it's a
+ * discrete INSERT → kopia → UPDATE; a CLI shell-out can't share a SQL txn).
+ * Kopia is the source of truth for snapshot contents; PG is the source of
+ * truth for settings + metadata + UI state.
  *
  * Implements the full kopia lifecycle: ensureRepo, snapshot, list, stats,
  * verify, maintenance, restore (to-clone + in-place), promote/rollback of a
@@ -30,7 +32,7 @@ import {
   type VerifyResult,
   RETENTION_PRESETS,
 } from './types';
-import { IGNORE_PATTERNS, diffPolicyIgnores } from './policy';
+import { IGNORE_PATTERNS, SELF_EXCLUSION_RULES, diffPolicyIgnores } from './policy';
 
 const KOPIA_BIN = process.env.KOPIA_BIN ?? 'kopia';
 
@@ -719,18 +721,24 @@ export class WorkspaceBackup {
    * snapshot.
    */
   private async assertSelfExclusionPolicy(env: NodeJS.ProcessEnv): Promise<void> {
-    const check = async () => {
+    // Verify the live kopia policy still excludes EVERY load-bearing
+    // self-exclusion rule — not just 'backups'. `.restored` / `.broken-*` /
+    // `.rolled-back-*` also live inside the workspace root and would be
+    // snapshotted recursively if dropped.
+    const missingRules = async (): Promise<string[]> => {
       const raw = await this.kopia(['policy', 'show', '--global', '--json'], { env });
       const parsed = JSON.parse(raw) as { files?: { ignore?: string[] } };
       const rules = parsed.files?.ignore ?? [];
-      return rules.includes('backups');
+      return SELF_EXCLUSION_RULES.filter((r) => !rules.includes(r));
     };
-    if (await check()) return;
+    if ((await missingRules()).length === 0) return;
     await this.applyGlobalPolicy(env);
-    if (await check()) return;
+    const stillMissing = await missingRules();
+    if (stillMissing.length === 0) return;
     throw new Error(
-      `[backup] refusing to snapshot ${this.workspaceId}: global policy is missing self-exclusion for 'backups'. ` +
-      `This would cause the kopia repo at ${this.repoPath} to be included recursively in its own snapshot.`,
+      `[backup] refusing to snapshot ${this.workspaceId}: global policy is missing self-exclusion ` +
+      `rule(s) [${stillMissing.join(', ')}]. This would include the kopia repo / restore scratch ` +
+      `dirs at ${this.repoPath} recursively in its own snapshot.`,
     );
   }
 

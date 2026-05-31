@@ -1,30 +1,26 @@
 /**
- * Unit tests for the messages + envelope substrate.
+ * Operator-level tests for the coordination message channel
+ * (sendMessage / readInbox / appendAck / readThread).
  *
- * Pure filesystem, no PG. Uses PAPERCUSP_COORD_DIR to redirect every
- * coord/ access to a per-test temp dir.
+ * These exercise the real inbox-fold + thread-traversal logic against an
+ * in-memory CoordEventLog double — NO Postgres, NO live
+ * `harness_shared.coord_event_log`. (The PG backend itself is covered by the
+ * package's event-log conformance suite, run against PgCoordLog in
+ * `event-log-conformance.test.ts`.) Earlier this file claimed "pure
+ * filesystem, no PG" and set PAPERCUSP_COORD_DIR, but after the FS→PG cutover
+ * the channel modules route through `coordLog` (PgCoordLog), which ignored
+ * that env — so the tests wrote into and read from the live coord table.
+ * Injecting `InMemoryCoordLog` via the `configureCoordLog` seam is the fix.
  *
  *   npx vitest run lib/agent-tools/coordination/__tests__/messages.test.ts
  */
 
-import { promises as fs } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import {
-  appendCoordLine,
-  newMsgId,
-  readCoordFile,
-  type CoordEnvelope,
-} from '../envelope';
-import { coordDir, outboxFile } from '../paths';
-import {
-  appendAck,
-  readInbox,
-  readThread,
-  sendMessage,
-} from '../messages';
+import { InMemoryCoordLog } from '@papercusp/coordination/event-log';
+
+import { configureCoordLog, resetCoordLog } from '../log';
+import { appendAck, readInbox, readThread, sendMessage } from '../messages';
 import type { AgentIdentity } from '../identity';
 
 function fakeIdentity(ownerId: string): AgentIdentity {
@@ -37,57 +33,11 @@ function fakeIdentity(ownerId: string): AgentIdentity {
   };
 }
 
-let tmp = '';
-let prevEnv: string | undefined;
-beforeEach(async () => {
-  tmp = await fs.mkdtemp(join(tmpdir(), 'coord-msgs-'));
-  prevEnv = process.env.PAPERCUSP_COORD_DIR;
-  process.env.PAPERCUSP_COORD_DIR = tmp;
+beforeEach(() => {
+  configureCoordLog(new InMemoryCoordLog());
 });
-afterEach(async () => {
-  if (prevEnv === undefined) delete process.env.PAPERCUSP_COORD_DIR;
-  else process.env.PAPERCUSP_COORD_DIR = prevEnv;
-  await fs.rm(tmp, { recursive: true, force: true });
-});
-
-describe('paths + envelope', () => {
-  it('coordDir() honours PAPERCUSP_COORD_DIR', () => {
-    expect(coordDir()).toBe(tmp);
-  });
-
-  it('outboxFile() sanitises and lives under messages/', () => {
-    const p = outboxFile('pus-1a2b3c4d-5e6f-7a8b');
-    expect(p).toBe(join(tmp, 'messages', 'pus-1a2b3c4d-5e6f-7a8b.jsonl'));
-  });
-
-  it('newMsgId() produces unique sortable-ish ids', () => {
-    const a = newMsgId();
-    const b = newMsgId();
-    expect(a).not.toBe(b);
-    expect(a.length).toBeGreaterThan(10);
-  });
-
-  it('appendCoordLine + readCoordFile roundtrip; readCoordFile skips bad lines', async () => {
-    const f = join(tmp, 'demo.jsonl');
-    const env: CoordEnvelope = {
-      ts: new Date().toISOString(),
-      msg_id: 'm1',
-      from: 'a',
-      to: ['b'],
-      kind: 'message',
-      summary: 'hi',
-    };
-    await appendCoordLine(f, env);
-    // a malformed line in the middle must not break the read
-    await fs.appendFile(f, '{this is not json}\n', 'utf8');
-    await appendCoordLine(f, { ...env, msg_id: 'm2', summary: 'hi again' });
-    const read = await readCoordFile(f);
-    expect(read.map((r) => r.msg_id)).toEqual(['m1', 'm2']);
-  });
-
-  it('readCoordFile on a missing file returns []', async () => {
-    expect(await readCoordFile(join(tmp, 'missing.jsonl'))).toEqual([]);
-  });
+afterEach(() => {
+  resetCoordLog();
 });
 
 describe('sendMessage / readInbox', () => {

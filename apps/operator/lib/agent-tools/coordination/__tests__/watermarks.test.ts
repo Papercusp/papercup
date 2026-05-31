@@ -1,38 +1,38 @@
 /**
- * Unit tests for watermarks (F-H2 — turn-start inbox scoping).
- * Pure filesystem, no PG.
+ * Operator-level tests for watermarks (F-H2 — turn-start inbox scoping).
+ *
+ * Run against an in-memory WatermarkStore double — NO Postgres, NO live
+ * `harness_shared.coord_watermarks`. After the FS→PG cutover the adapter
+ * routes through `PgWatermarkStore`, so the old "pure filesystem, no PG"
+ * fixture (PAPERCUSP_COORD_DIR + a malformed-file case) read/wrote the live
+ * (workspace, owner) row and leaked state across tests. Injecting
+ * `InMemoryWatermarkStore` via `configureWatermarkStore` is the fix. The
+ * store's own read/write semantics (incl. defensive parse of a malformed
+ * persisted value) are covered by the package watermark-store conformance
+ * suite.
  */
 
-import { promises as fs } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { emptyWatermark, readWatermark, writeWatermark } from '../watermarks';
-import { watermarkFile } from '../paths';
+import { InMemoryWatermarkStore } from '@papercusp/coordination/watermark-store';
 
-let tmp = '';
-let prev: string | undefined;
-beforeEach(async () => {
-  tmp = await fs.mkdtemp(join(tmpdir(), 'coord-wm-'));
-  prev = process.env.PAPERCUSP_COORD_DIR;
-  process.env.PAPERCUSP_COORD_DIR = tmp;
+import {
+  configureWatermarkStore,
+  emptyWatermark,
+  readWatermark,
+  resetWatermarkStore,
+  writeWatermark,
+} from '../watermarks';
+
+beforeEach(() => {
+  configureWatermarkStore(new InMemoryWatermarkStore());
 });
-afterEach(async () => {
-  if (prev === undefined) delete process.env.PAPERCUSP_COORD_DIR;
-  else process.env.PAPERCUSP_COORD_DIR = prev;
-  await fs.rm(tmp, { recursive: true, force: true });
+afterEach(() => {
+  resetWatermarkStore();
 });
 
 describe('readWatermark', () => {
-  it('returns an empty watermark when the file does not exist', async () => {
-    expect(await readWatermark('agent-a')).toEqual(emptyWatermark());
-  });
-
-  it('returns an empty watermark when the file is malformed', async () => {
-    const file = watermarkFile('agent-a');
-    await fs.mkdir(join(tmp, 'watermarks'), { recursive: true });
-    await fs.writeFile(file, '{ not json', 'utf8');
+  it('returns an empty watermark when nothing was ever written', async () => {
     expect(await readWatermark('agent-a')).toEqual(emptyWatermark());
   });
 

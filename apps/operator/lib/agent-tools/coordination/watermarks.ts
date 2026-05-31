@@ -15,16 +15,37 @@
 
 import { getOrgPg } from '@papercusp/db-org';
 import { ensureCoordWatermarksTable } from '@/lib/ensure-schema';
-import { PgWatermarkStore } from '@papercusp/coordination/watermark-store';
+import {
+  PgWatermarkStore,
+  type WatermarkStore,
+} from '@papercusp/coordination/watermark-store';
 import { emptyWatermark, type Watermark } from '@papercusp/coordination/core';
 
 export { emptyWatermark };
 export type { Watermark };
 
-const store = new PgWatermarkStore({
-  getSql: () => getOrgPg().sql,
-  ensureSchema: ensureCoordWatermarksTable,
-});
+function makeDefaultStore(): WatermarkStore {
+  return new PgWatermarkStore({
+    getSql: () => getOrgPg().sql,
+    ensureSchema: ensureCoordWatermarksTable,
+  });
+}
+
+let store: WatermarkStore = makeDefaultStore();
+
+/**
+ * Swap the backing WatermarkStore. Tests inject `new InMemoryWatermarkStore()`
+ * so they don't read/write the live `harness_shared.coord_watermarks` row for
+ * (workspace, owner). Call `resetWatermarkStore()` in afterEach.
+ */
+export function configureWatermarkStore(next: WatermarkStore): void {
+  store = next;
+}
+
+/** Restore the default PgWatermarkStore backend (afterEach in tests). */
+export function resetWatermarkStore(): void {
+  store = makeDefaultStore();
+}
 
 /**
  * Read an agent's watermark. A never-written owner reads as an empty
