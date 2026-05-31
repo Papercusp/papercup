@@ -88,9 +88,25 @@ async function featurePipelineImpl(input: PipelineInput): Promise<string> {
   let lastVerb = 'NONE';
   for (let turn = 0; turn < MAX_TURNS; turn++) {
     // Step: the orchestrator agent decides the next action (checkpointed).
+    // A failed/empty invoke must NOT look like a clean terminal decision:
+    // parseDecision('') is null, which would break the loop and FALSE-SUCCESS
+    // the pipeline with no work done (observed on a transient agent failure in
+    // the real-agent gold-standard run). Throw so DBOS retries the step; after
+    // the retries are exhausted the workflow ERRORs rather than false-succeeding.
     const decision = await DBOS.runStep(
-      () => runner()(input.harnessSlug, orchestratorRole, input.featureId, key(input.harnessSlug, input.featureId, orchestratorRole, turn)),
-      { name: `decide-${turn}` },
+      async () => {
+        const r = await runner()(
+          input.harnessSlug,
+          orchestratorRole,
+          input.featureId,
+          key(input.harnessSlug, input.featureId, orchestratorRole, turn),
+        );
+        if (r.exitCode !== 0 || !r.output.trim()) {
+          throw new Error(`decide invoke failed (exit=${r.exitCode}, empty=${!r.output.trim()})`);
+        }
+        return r;
+      },
+      { name: `decide-${turn}`, retriesAllowed: true, maxAttempts: 3, intervalSeconds: 5, backoffRate: 2 },
     );
     const parsed = parseDecision(decision.output);
     if (!parsed || TERMINAL.has(parsed.verb)) {
