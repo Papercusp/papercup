@@ -10,8 +10,8 @@ import { DOGFOOD_REACTIVE_TABLES, EXISTING_HYPERBEE_REACTIVE_TABLES } from './en
  * embedded PG18.
  */
 describe('DOGFOOD_REACTIVE_TABLES', () => {
-  it('contains the 13 dogfood tables (12 from initial set + shared_repo_binding_cache)', () => {
-    expect(DOGFOOD_REACTIVE_TABLES).toHaveLength(13);
+  it('contains the 14 dogfood tables (12 initial + shared_repo_binding_cache + feature_working_set)', () => {
+    expect(DOGFOOD_REACTIVE_TABLES).toHaveLength(14);
   });
 
   it('includes shared_repo_binding_cache (Phase 1a P-013a)', () => {
