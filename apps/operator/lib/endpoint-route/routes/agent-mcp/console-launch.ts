@@ -16,9 +16,6 @@ import { buildConsoleEnvelope } from '@/lib/console-launcher';
 import { PrincipalCheckError, requirePrincipal } from '@/lib/auth/require-principal';
 import { defineTool } from '@papercusp/agent-mcp';
 import { recordAdvSession, markAdvSessionEnded, resolveWindowIdForTitleFragment, setAdvSessionPid, setAdvSessionWindowId } from '@/lib/adv-sessions';
-import { readOmpIntegrationState } from '@/lib/desktop-install/omp-integration';
-import { resolveInstallPaths } from '@/lib/desktop-install/papercusp-files';
-import { ensureOmpSuInstalled } from '@/lib/ensure-omp-su';
 
 // Fire-and-forget child-exit listener that ends the adv_sessions row
 // when the spawned terminal closes. detached+unref'd children still
@@ -53,37 +50,8 @@ const CORS_HEADERS: Record<string, string> = {
   'access-control-allow-headers': 'content-type, accept',
 };
 
-/**
- * Allowlist of curated kickoff kinds the launch route accepts.
- * Per `plans-newbutton-and-subharness-scope-2026-05-25` D-003: the
- * brief body lives in-repo at `apps/operator/prompts/kickoffs/<kind>.md`
- * and is never passed as a free-text payload. Add a kind here only
- * after the brief MD file + the renderer in
- * `lib/agent-kickoff/prompt-file.ts` both exist.
- */
-const KICKOFF_KIND_ALLOW = new Set<string>(['new-plan']);
-
-type KickoffValidation =
-  | { kind: 'ok'; value: { kind: 'new-plan' } | null }
-  | { kind: 'error'; error: string };
-
-/** Test-only re-export of the validator. Underscore-prefixed to
- *  signal "internal"; consumed by lib/agent-kickoff/kickoff-test-exports.ts. */
-export const __validateKickoffForTest = (raw: { kind?: string } | null | undefined) =>
-  validateKickoff(raw);
-
-function validateKickoff(raw: { kind?: string } | null | undefined): KickoffValidation {
-  if (!raw) return { kind: 'ok', value: null };
-  const k = typeof raw.kind === 'string' ? raw.kind.trim() : '';
-  if (!k) return { kind: 'ok', value: null };
-  if (!KICKOFF_KIND_ALLOW.has(k)) {
-    return {
-      kind: 'error',
-      error: `kickoff.kind '${k.slice(0, 32)}' is not in the allowlist (${[...KICKOFF_KIND_ALLOW].join(', ')})`,
-    };
-  }
-  return { kind: 'ok', value: { kind: k as 'new-plan' } };
-}
+// (kickoff-kind allowlist + validator moved to @/lib/agent-kickoff/kickoff-kind
+//  in P-032 — this route no longer launches omp/kickoff; omp rides launch-su.)
 
 function jsonRes(body: unknown, init?: number | ResponseInit): Response {
   const r = Response.json(body, typeof init === 'number' ? { status: init } : init);
@@ -252,25 +220,6 @@ function formatWindowTitle(opts: AppearanceOpts): string {
   return name ? `${tag}${advTag}: ${name}` : `${tag}${advTag}`;
 }
 
-function buildOmpOneliner(
-  cwd: string,
-  env: Record<string, string>,
-  launchCommand: string,
-  appearance: AppearanceOpts,
-): string {
-  const envExports: string[] = [];
-  for (const [k, v] of Object.entries(env)) {
-    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(k)) continue;
-    envExports.push(`export ${k}=${shellEscape(v)}`);
-  }
-  return [
-    buildAppearancePrelude(appearance),
-    `cd ${shellEscape(cwd)}`,
-    ...envExports,
-    `exec ${launchCommand}`,
-  ].join(' && ');
-}
-
 function buildOneliner(
   cwd: string,
   env: Record<string, string>,
@@ -389,150 +338,34 @@ const post = defineTool({
     if (denied) return denied;
     let body: {
       slug?: string | null;
-      mode?: 'shell' | 'omp';
-      // plan-agent-launch P-023: when set, the new terminal resumes
-      // an existing session (`<agent-cli> -r <sessionId>` in shell mode,
-      // `omp-su -r <sessionId>` in OMP mode) instead of opening fresh.
+      // plan-agent-launch P-023: when set, the new terminal resumes an
+      // existing session (`<agent-cli> -r <sessionId>`) instead of opening fresh.
       resumeSessionId?: string | null;
       // /adv plumbing: tag this session with the plan it was
       // launched from so /adv/sessions can group + display.
       planSlug?: string | null;
       label?: string | null;
-      model?: string | null;
-      // plans-newbutton-and-subharness-scope-2026-05-25 P-005:
-      // curated kickoff briefs. Only the kinds in KICKOFF_KIND_ALLOW
-      // are accepted — the brief body lives in-repo at
-      // apps/operator/prompts/kickoffs/<kind>.md (D-003).
-      kickoff?: { kind?: string } | null;
     } = {};
     try {
       const text = await req.text();
       if (text.trim()) body = JSON.parse(text);
     } catch { /* ignore — empty body is fine */ }
 
-    const mode = body.mode === 'omp' ? 'omp' : 'shell';
-
-    const kickoff = validateKickoff(body.kickoff ?? null);
-    if (kickoff.kind === 'error') {
-      return jsonRes({ status: 'error', error: kickoff.error }, 400);
-    }
-
+    // This route is the SHELL superuser-console launcher. The omp launch
+    // flavour was retired in P-032 — omp now rides launch-su → psu like
+    // every other backend, so there is no longer a mode/kickoff/model branch
+    // here. (resumeSessionId stays: shell consoles can resume `<cli> -r`.)
     let envelope;
     try {
       envelope = await buildConsoleEnvelope({
         workspaceId: activeWorkspaceId(),
         slug: body.slug ?? null,
         operatorBaseUrl: new URL(req.url).origin,
-        mode,
         resumeSessionId: body.resumeSessionId ?? undefined,
-        ompModel: body.model?.trim() || undefined,
-        kickoff: kickoff.value ?? undefined,
       });
     } catch (e: any) {
       console.warn(`[console-launch] envelope build failed: ${e?.message}`);
       return jsonRes({ status: 'error', error: e?.message ?? 'envelope build failed' }, 400);
-    }
-
-    if (envelope.mode === 'omp') {
-      if (process.platform !== 'linux') {
-        return jsonRes(
-          { status: 'error', error: 'server-side spawn only implemented for Linux' },
-          501,
-        );
-      }
-      await ensureOmpSuInstalled();
-      const ompIntegration = await readOmpIntegrationState();
-      const installPaths = resolveInstallPaths(homedir());
-      if (!existsSync(installPaths.playbookPath) || !existsSync(installPaths.extensionPath)) {
-        return jsonRes(
-          {
-            status: 'error',
-            code: 'omp_not_bootstrapped',
-            error:
-              'Papercusp engineer OMP files are missing. Install the engineer playbook and coordination extension before launching an /adv OMP session.',
-            installCmd: 'bash apps/operator/scripts/install-standalone-mcp.sh',
-          },
-          200,
-        );
-      }
-      if (!ompIntegration.mcpServerInstalled) {
-        return jsonRes(
-          {
-            status: 'error',
-            code: 'omp_not_bootstrapped',
-            error:
-              'Papercusp OMP integration is missing. Install the Papercusp MCP integration before launching an /adv OMP session.',
-            installCmd: 'bash apps/operator/scripts/install-standalone-mcp.sh',
-          },
-          200,
-        );
-      }
-      if (!isOnPath('omp')) {
-        return jsonRes(
-          {
-            status: 'error',
-            code: 'omp_not_installed',
-            error:
-              '@oh-my-pi/cli not found on PATH. Install the OMP runtime with `npm i -g @oh-my-pi/cli`; the operator supplies the engineer playbook + coordination files for /adv launches.',
-            installCmd: 'npm i -g @oh-my-pi/cli',
-          },
-          200,
-        );
-      }
-      const term = findLinuxTerminal();
-      if (!term) {
-        return jsonRes(
-          { status: 'error', error: 'no terminal emulator found. Set $TERMINAL or install gnome-terminal / konsole / alacritty / kitty / wezterm / xterm' },
-          500,
-        );
-      }
-      const advSessionId = await recordAdvSession({
-        planSlug: body.planSlug ?? null,
-        mode: 'omp',
-        terminalBin: term.bin,
-        pid: null,
-        label: body.label ?? null,
-        cwd: envelope.cwd,
-      });
-      const ompEnv = {
-        ...envelope.env,
-        ...(advSessionId != null ? { PAPERCUSP_ADV_SESSION_ID: String(advSessionId) } : {}),
-      };
-      const ompOneliner = buildOmpOneliner(
-        envelope.cwd,
-        ompEnv,
-        envelope.launchCommand ?? 'omp-su',
-        { mode: 'omp', planSlug: body.planSlug ?? null, label: body.label ?? null, advSessionId },
-      );
-      try {
-        const child = spawn(term.bin, [...term.args, 'bash', '-lc', ompOneliner], {
-          detached: true,
-          stdio: 'ignore',
-          cwd: envelope.cwd,
-          env: { ...process.env, ...ompEnv, ...(envelope.secretEnv ?? {}) },
-        });
-        if (advSessionId != null) {
-          void setAdvSessionPid(advSessionId, child.pid ?? null);
-          // Title-fragment lookup uses our unique [adv:N] tag, so it's
-          // race-free against concurrent terminal opens/closes. The
-          // previous "diff before/after wmctrl listing" approach was
-          // a parallel writer with no synchronization — a window that
-          // appeared OR disappeared during the poll could win the
-          // write and stomp a correct id.
-          void resolveAndStoreWindowIdForAdvSession(advSessionId);
-        }
-        attachExitWatcher(child, Promise.resolve(advSessionId));
-        child.unref();
-        console.log(`[console-launch] spawned omp agent ${term.bin} pid=${child.pid}`);
-        return jsonRes({ status: 'ok', pid: child.pid, terminal: term.bin, mode: 'omp', advSessionId });
-      } catch (e: any) {
-        if (advSessionId != null) void markAdvSessionEnded(advSessionId, -1);
-        console.warn(`[console-launch] omp spawn ${term.bin} failed: ${e?.message}`);
-        return jsonRes(
-          { status: 'error', error: `spawn ${term.bin} failed: ${e?.message}` },
-          500,
-        );
-      }
     }
 
     try {

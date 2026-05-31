@@ -22,7 +22,6 @@ import { join, resolve as resolvePath } from 'node:path';
 import { resolveAgentBin, resolveBackend } from '@papercusp/papercup-shared/agent';
 
 import { papercuspPath } from '@/lib/papercusp-root';
-import { buildKickoffPromptFile } from '@/lib/agent-kickoff/prompt-file';
 import {
   resolveContextEnv,
   resolveProjectDir,
@@ -40,8 +39,6 @@ import {
  *           Papercusp engineer playbook + coordination extension,
  *           scoped to the local superuser MCP surface.
  */
-export type ConsoleMode = 'shell' | 'omp';
-
 export interface ConsoleEnvelope {
   /** Working directory the terminal opens in. */
   cwd: string;
@@ -51,29 +48,14 @@ export interface ConsoleEnvelope {
    * spawned shell's argv and is visible in `ps`).
    */
   env: Record<string, string>;
-  /** Pretty-printed .mcp.json contents. Empty in `omp` mode — engineer
-   *  OMP launches do not need a per-cwd MCP file. */
+  /** Pretty-printed .mcp.json contents the engineer's claude/codex agent
+   *  auto-discovers when they cd into `cwd`. */
   mcpJsonContents: string;
   /** Greeting command the launcher runs before exec'ing the user's shell. */
   greetingCmd: string;
   /** True iff ~/.papercusp/superuser-token is missing. Tauri side
    *  should run install-standalone-mcp.sh before launching. */
   needsSuperuserBootstrap: boolean;
-  /** Which launch flavour this envelope describes. */
-  mode: ConsoleMode;
-  /**
-   * `omp` mode only — secret env (the power-user access + refresh
-   * tokens). Passed to the terminal via the spawn `env` option ONLY,
-   * never inline-`export`ed into the oneliner: argv leaks to `ps`,
-   * shell history, and kernel audit (D-006). Env is visible only via
-   * `/proc/<pid>/environ` to the same user — the accepted middle.
-   */
-  secretEnv?: Record<string, string>;
-  /**
-   * `omp` mode only — the command the terminal `exec`s in place of the
-   * user's `$SHELL` (e.g. `omp --append-system-prompt …`).
-   */
-  launchCommand?: string;
 }
 
 export interface BuildEnvelopeOpts {
@@ -83,29 +65,15 @@ export interface BuildEnvelopeOpts {
   slug: string | null;
   /** The operator's own base URL (e.g. http://localhost:3070). */
   operatorBaseUrl: string;
-  /** Launch flavour. Default `'shell'` (preserves the engineer path). */
-  mode?: ConsoleMode;
   /**
-   * plan-agent-launch P-023: when set, the terminal resumes an existing
-   * session instead of opening fresh — `<agent-cli> -r <sessionId>` in
-   * shell mode, `omp -r <sessionId>` in OMP mode.
+   * plan-agent-launch P-023: when set, the shell console resumes an existing
+   * session (`<agent-cli> -r <sessionId>`) instead of opening fresh.
    */
   resumeSessionId?: string;
-  /** Optional OMP model fuzzy-match argument for `omp --model`. */
-  ompModel?: string;
-  /**
-   * Optional kickoff brief — per
-   * `plans-newbutton-and-subharness-scope-2026-05-25` P-004/P-005.
-   * When set in OMP mode the envelope builder calls the shared kickoff
-   * factory and appends the brief to the OMP launchCommand as a
-   * second `--append-system-prompt=<path>`. Ignored in shell mode.
-   */
-  kickoff?: KickoffSpec;
 }
 
-/** Curated kickoff-kind allowlist for the launch surface. */
-export type KickoffSpec = { kind: 'new-plan' };
-
+// (kickoff-kind allowlist moved to @/lib/agent-kickoff/kickoff-kind in P-032,
+//  when the omp launch flavour was retired from this module.)
 const TOKEN_PATH = join(homedir(), '.papercusp', 'superuser-token');
 
 /**
@@ -183,35 +151,6 @@ export async function buildConsoleEnvelope(
   const scriptsDir = resolveScriptsDir();
   if (scriptsDir) env.PAPERCUSP_SCRIPTS_DIR = scriptsDir;
 
-  // 2c. omp mode — launch the local OMP CLI directly with the
-  //     engineer-collaborator playbook + coordination extension. This
-  //     avoids depending on whatever profile the ambient `omp-su`
-  //     wrapper was last installed with; /adv is always the
-  //     engineer-collaborator surface.
-  if ((opts.mode ?? 'shell') === 'omp') {
-    const token = readSuperuserToken();
-    const extraSystemPromptPaths: string[] = [];
-    if (opts.kickoff) {
-      const briefPath = await buildKickoffPromptFile(
-        kickoffSpecToCtx(opts.kickoff, opts.slug),
-      );
-      if (briefPath) extraSystemPromptPaths.push(briefPath);
-    }
-    return {
-      cwd,
-      env,
-      mcpJsonContents: '',
-      greetingCmd: '',
-      needsSuperuserBootstrap: false,
-      mode: 'omp',
-      secretEnv: token ? { PAPERCUSP_SUPERUSER_TOKEN: token } : undefined,
-      launchCommand: buildEngineerOmpLaunchCommand({
-        ompModel: opts.ompModel,
-        resumeSessionId: opts.resumeSessionId,
-        extraSystemPromptPaths,
-      }),
-    };
-  }
 
   // 3. Build the .mcp.json that the user's claude/codex agent will
   //    auto-discover when they cd here. Points at the superuser door.
@@ -264,7 +203,6 @@ export async function buildConsoleEnvelope(
     mcpJsonContents,
     greetingCmd,
     needsSuperuserBootstrap,
-    mode: 'shell',
   };
 }
 
@@ -280,78 +218,4 @@ export function shellSafeId(id: string): string {
     throw new Error(`refusing to embed unsafe session id: ${id.slice(0, 32)}`);
   }
   return id;
-}
-
-/**
- * Validate an OMP model fuzzy-match value before embedding it in an
- * `omp-su --model <value>` shell command. OMP model names/patterns use
- * provider slashes plus URL-ish model ids; spaces and shell metachars
- * are not valid model selectors and should never reach the shell.
- */
-export function shellSafeOmpModel(model: string): string {
-  const trimmed = model.trim();
-  if (!/^[A-Za-z0-9._:/+-]+$/.test(trimmed)) {
-    throw new Error(`refusing to embed unsafe OMP model: ${trimmed.slice(0, 32)}`);
-  }
-  return trimmed;
-}
-
-export function buildEngineerOmpLaunchCommand(input: {
-  ompModel?: string;
-  resumeSessionId?: string;
-  /**
-   * Additional `--append-system-prompt=<path>` flags appended after
-   * the engineer-collaborator brief. OMP applies repeated
-   * `--append-system-prompt` flags additively in order, so caller
-   * order determines layering (each subsequent brief is appended
-   * after the previous one in the final system prompt).
-   */
-  extraSystemPromptPaths?: string[];
-}): string {
-  const launchParts = [
-    'omp',
-    '--append-system-prompt',
-    '"$HOME/.papercusp/engineer-collaborator.md"',
-    '-e',
-    '"$HOME/.papercusp/papercusp-coord.ts"',
-  ];
-  for (const path of input.extraSystemPromptPaths ?? []) {
-    launchParts.push(`--append-system-prompt=${shellSafePromptPath(path)}`);
-  }
-  if (input.ompModel) launchParts.push('--model', shellSafeOmpModel(input.ompModel));
-  if (input.resumeSessionId) launchParts.push('-r', shellSafeId(input.resumeSessionId));
-  return launchParts.join(' ');
-}
-
-/**
- * Validate + shell-escape a kickoff prompt file path before embedding
- * it in the OMP `--append-system-prompt=<path>` flag. The path is
- * server-generated (under /dev/shm/papercusp-kickoff-* per the
- * factory), but we still gate it: rejects empty / non-absolute paths
- * and shell-quotes whitespace.
- */
-function shellSafePromptPath(p: string): string {
-  if (typeof p !== 'string' || p.length === 0) {
-    throw new Error('extraSystemPromptPath must be a non-empty string');
-  }
-  if (!p.startsWith('/')) {
-    throw new Error(`extraSystemPromptPath must be absolute: ${p.slice(0, 64)}`);
-  }
-  if (/['"\n\r\0]/.test(p)) {
-    throw new Error(`extraSystemPromptPath rejects quote/control chars: ${p.slice(0, 64)}`);
-  }
-  // Wrap in double-quotes so spaces in the path survive the bash
-  // oneliner; the rejection above means no quote-escape gymnastics.
-  return `"${p}"`;
-}
-
-/** Translate a curated KickoffSpec into the factory's input shape. */
-function kickoffSpecToCtx(
-  spec: KickoffSpec,
-  harnessSlug: string | null,
-): import('@/lib/agent-kickoff/prompt-file').KickoffCtx {
-  switch (spec.kind) {
-    case 'new-plan':
-      return { kind: 'new-plan', harnessSlug };
-  }
 }

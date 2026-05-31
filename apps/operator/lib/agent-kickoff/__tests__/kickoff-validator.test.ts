@@ -8,10 +8,9 @@
  */
 import { describe, expect, it } from 'vitest';
 
-// The validator is a private helper inside the route module; we
-// re-export it for tests via a thin barrel to avoid mutating the
-// route's public surface.
-import { validateKickoffForTest as validateKickoff } from '../kickoff-test-exports';
+// The kickoff-kind allowlist is a shared lib helper (one source for every
+// launch surface). P-032 lifted it out of the console-launch route.
+import { validateKickoffKind as validateKickoff } from '../kickoff-kind';
 
 describe('validateKickoff', () => {
   it('passes null through as null (no kickoff requested)', () => {

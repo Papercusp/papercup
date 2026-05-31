@@ -20,6 +20,7 @@ import { join } from 'node:path';
 import { defineTool } from '@papercusp/agent-mcp';
 import { isSuAgent } from '@/lib/su-agents';
 import { buildKickoffPromptFile } from '@/lib/agent-kickoff/prompt-file';
+import { validateKickoffKind } from '@/lib/agent-kickoff/kickoff-kind';
 
 const JSON_HEADERS = { 'content-type': 'application/json' } as const;
 const SLUG_RE = /^[A-Za-z0-9._-]+$/;
@@ -28,8 +29,6 @@ const SLUG_RE = /^[A-Za-z0-9._-]+$/;
 // metacharacters (shellEscape is the real guard; this rejects the absurd).
 const MODEL_RE = /^[A-Za-z0-9._:/-]{1,80}$/;
 const SESSION_ID_RE = /^[A-Za-z0-9._-]{1,128}$/;
-// Curated kickoff kinds the launch accepts (mirrors console-launch's allowlist).
-const KICKOFF_KINDS = new Set(['new-plan']);
 
 function json(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers: JSON_HEADERS });
@@ -102,10 +101,11 @@ const launchSu = defineTool({
     const resumeSessionId = body.resume_session_id?.trim() || null;
     if (model && !MODEL_RE.test(model)) return json({ status: 'error', error: 'invalid model' }, 400);
     if (resumeSessionId && !SESSION_ID_RE.test(resumeSessionId)) return json({ status: 'error', error: 'invalid resume session id' }, 400);
-    const kickoffKind = body.kickoff?.kind?.trim() || null;
-    if (kickoffKind && !KICKOFF_KINDS.has(kickoffKind)) {
-      return json({ status: 'error', error: `kickoff.kind '${kickoffKind.slice(0, 32)}' not allowed (${[...KICKOFF_KINDS].join(', ')})` }, 400);
+    const kickoffV = validateKickoffKind(body.kickoff ?? null);
+    if (kickoffV.kind === 'error') {
+      return json({ status: 'error', error: kickoffV.error }, 400);
     }
+    const kickoffKind = kickoffV.value?.kind ?? null;
 
     if (process.platform !== 'linux') {
       return json({ status: 'error', error: 'server-side spawn only implemented for Linux' }, 501);
