@@ -36,6 +36,9 @@ export const AGENT_ROLES = [
   'oracle',
   // Coordinator + cross-cutting expert roles (built-in, fire on plan events).
   'orchestrator',
+  // Promotes one `## Promote` wave of a plan into the harness (launched by the
+  // wave-advance sweep / a human). promote-policy-and-waves-2026-05-30 (Phase F).
+  'promote',
   'expert',
   'feedback',
   'project_manager',

@@ -30,9 +30,18 @@ adapter (`wave-advance-sweep-live.ts`) + boot registration. tsc clean; ~60 unit 
 ⚠️ The live sweep is **unverified at runtime** and has two connection points open (see P-009): `promoteWave`
 → **Phase F** (the `promote` role), `onBlocked` → **Phase E** (raise a `harness_issues` row).
 
-**Next:** **Phase E** (blocked-wave → issue → scanner) + **Phase F** (the `promote` agent persona + how the
-sweep launches it) + the **first real dogfood** — all best done in **one host-running session** so the wired
-sweep can finally be exercised end-to-end against the `restart` universal-schema plan.
+Phase F started: **P-014 done** — promote-role prompt (`harness/prompts/promote.md`) + `AGENT_ROLES`
+registration. The mechanism is now **authored end-to-end** (parser → schema → promote → waves → sweep →
+role), ~60 unit tests + tsc-clean on all new code.
+
+**Remaining — host-only (can't be built/verified without a running harness):**
+- **P-014 run-verification** — confirm `invoke promote` runs the role + receives EXTRAS as the sweep sends.
+- **Phase E** — `onBlocked` → a `harness_issues` row (currently logs) → scanner.
+- **P-015 dogfood** — author the `restart` universal-schema plan's real `## Promote` block, start it, watch
+  Tier-1 promote + drain → Tier-2 auto-generate. This is the actual end-to-end proof.
+
+Do these in **one host-running session** (`papercusp-desktop` up). Also: **push the submodule** (migration
+`3dac481` + promote.md) when ready.
 
 **Follow-up (small):** `yaml` is imported by the parser but is an undeclared (stable, lockfile-present,
 already-bundled) transitive dep — declare it as a direct operator dep when the lockfile is next reconciled
@@ -173,9 +182,13 @@ See the consuming plan's §9a for the full dogfood narrative: `Restart/docs/plan
 
 ## Phase F — promote agent + first dogfood
 
-- **P-014** `todo` Promote-agent persona/role: "read the plan's `## Promote` policy and execute it via
-  `plans:promote` per wave; for generative waves, source the runtime set." Lives under `apps/operator/prompts/`
-  + wired so `plans:launch` can target it.
+- **P-014** `done` (authored, ⚠️ run unverified) Promote-agent role: prompt at
+  `libs/papercusp/packages/harness/prompts/promote.md` (deterministic executor — read the wave from EXTRAS,
+  promote it via `plans:promote`; resolve the `for_each` set for generative waves; one wave per invoke; never
+  fabricate features) + registered in `AGENT_ROLES` (`packages/agent-mcp/src/role-config.ts`; no
+  role-exhaustiveness break). **Remaining (host-only):** confirm `invoke promote` actually runs the role
+  through the harness run mechanism, and align `wave-advance-sweep-live.promoteWave`'s `/invoke?role=promote`
+  call with how the role receives EXTRAS (plan_slug/wave/needs_items).
 - **P-015** `todo` **First real dogfood:** author the `restart` `universal-schema-2026-05-30` plan's actual
   `## Promote` block (Tier-1 static + Tier-2 generative), promote Tier-1 into the `restart` harness, run it,
   and verify the deterministic wave-advance fires Tier-2 once Tier-1 drains. (Confirm `restart` is a registered
