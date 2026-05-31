@@ -11,9 +11,9 @@ owner: aviynw3@gmail.com
 
 ## Now
 
-**State:** **Phase A fully implemented + tested (2026-05-31).** Per-window resolution now covers BOTH transports: fetch stamps `x-papercusp-workspace` (P-013); streams append `?ws=` on connect because EventSource/IpcEventSource can't set headers (P-015) — `installWorkspaceParamEventSource` wraps `window.EventSource`, and `workspaceContextMiddleware` reads the header then falls back to `?ws=` (unknown→400 either way, D-007). `activeWorkspaceId()` prefers the request scope (ALS > process pin > `reg.current`), so harness resolution + PG row-scoping went per-request with ~zero call-site changes (D-002). Commits d5604fb98 (backend), 6bdca2265 (fetch), a7bae5e2d (streams). **42/42 new unit tests green; touched files typecheck clean; middleware live-verified on `:3070` (D-007 fires with the exact error body).** Key finding: the headline sync SSE (`/api/zero-harness/sse`) is GLOBAL-broadcast by design (no per-event workspace; client re-fetches via the fixed fetch path), so it was never a half-fix vector; the streams that DO resolve a workspace (oracle, agent-mcp events, agent-chats) capture it at connect inside `sseResponse`'s `ReadableStream.start` (still within the middleware ALS scope) — they were capturing the GLOBAL only because the connect lacked the workspace, which `?ws=` now supplies.
+**State:** **Phase A complete + Phase B's concrete items done (2026-05-31).** Per-window resolution covers fetch (header, P-013) + streams (`?ws=`, P-015); `activeWorkspaceId()` prefers the request scope (ALS). Phase B: **P-022** — MCP `tools/call` now wraps dispatch in `runWithWorkspaceIfConcrete(ctx.workspaceId)` so tool handlers resolving a harness via `activeWorkspaceId()` (not just the PG GUC `withWorkspace` already set) see the caller's workspace, `'*'` unpinned. **P-021** — `runInRequestScope`/`isInRequestScope` + a deduped dev warning when `activeWorkspaceId()` falls to the global *inside* a request scope (the ALS-context-loss guardrail the review flagged; gated to NODE_ENV=development / PAPERCUSP_DEBUG_WORKSPACE). Commits 7e07a60b6 (P-022), ab661d910 (P-021). Full workspace suite **53/53**, touched files typecheck clean. The middleware (incl. P-022) is live on `:3070`; the rest goes live on the next restart (no hot-reload).
 
-**Next:** An agent does P-014 (live-verify a real SSE subscription resolves per-window in the Tauri shell — needs a `:3070` restart) + P-016 (confirm `resolveProject` honors the request workspace, since papercup resolved under every workspace header on the dogfood host). Then Phases B (background/MCP ALS safety) → F.
+**Next:** An agent does P-020 — now EMPIRICALLY driven by P-021: run dev with PAPERCUSP_DEBUG_WORKSPACE=1, watch which background readers (scanner sweep, orchestrator spawn, scheduled routines, SSE/WS push fan-out) warn that they resolved the global inside a scope, and thread an explicit workspace from each job's creation context. Then P-014/P-016 live-verify + Phase E (packaged child-HOME migration).
 
 ## Background
 
@@ -302,9 +302,9 @@ owner thread: today 1×, naive-concurrent N×, **this 1× + transient children**
 - **P-020** `todo` For each background reader (P-001 class b), thread an explicit
   workspace from the job's creation context (scanner sweep, orchestrator spawn,
   scheduled routine, SSE/WS push fan-out) — never the global.
-- **P-022** `todo` For MCP/agent tool calls (P-001 class c), carry the launch-time
+- **P-022** `done` For MCP/agent tool calls (P-001 class c), carry the launch-time (MCP tools/call dispatch wraps in runWithWorkspaceIfConcretectx.workspaceId so activeWorkspaceId harness resolution, not just the PG GUC resolves the caller's workspace; '*' stays unpinned.)
   harness/workspace scope into the ALS for the duration of the tool call.
-- **P-021** `todo` Dev assert/log when `activeWorkspaceId()` falls through to the
+- **P-021** `done` Dev assert/log when `activeWorkspaceId()` falls through to the (runInRequestScope + isInRequestScope; activeWorkspaceId warns deduped, NODE_ENV=development/PAPERCUSP_DEBUG_WORKSPACE when it falls to the global inside a request scope. Drives P-020 empirically.)
   global *inside a request* (header missing, or ALS lost across an async boundary).
 
 ## Phase C — `/adv` view drives off the window's workspace
