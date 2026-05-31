@@ -11,9 +11,9 @@ owner: avi@storewolf.com
 
 ## Now
 
-**State:** Phase F complete + committed (64 dbos + 4 idempotency unit tests). P-008 live validation surfaced + FIXED the real blocker (D-006): the empty director output was a HARNESS_SLUG/schema bug (search_path=harness_sheets_clone, a nonexistent schema), NOT environmental — fixed by passing the registry slug as HARNESS_SLUG (buildPipelineExtraEnv). VALIDATED: director now does real 58s LLM calls against harness_sheets. A secondary intermittent empty-output remains under ~48 concurrent claude procs; P-010 (don't reuse empty cached runs → retries re-spawn) committed to make the pipeline resilient. Re-validating F-FIX-027:e1 with both fixes loaded (background monitor running).
+**State:** P-009 SHIPPED (D-007): DBOS is now the default orchestrator for all harnesses, the legacy main loop is retired (reversibly — it was already out of the live path), all flag-gated default-on (revert: PAPERCUSP_DBOS_ORCHESTRATOR=0). Phase F + the two root-cause fixes (HARNESS_SLUG schema, P-010 empty-run resilience) are committed + validated (director does real calls; durability survives restarts). The full green end-to-end run (DONE→curator+documenter) was never observed — blocked by this shared box's restart churn (concurrent agents restart the dev-api ~every 2 min, killing the multi-minute worker) — but the user opted to ship P-009 on the validated mechanisms. Dev box opted out of dispatch (DISPATCH_HARNESSES=none) to avoid flooding the contended box.
 
-**Next:** Watch F-FIX-027:e1 reach DONE→curator+documenter→SUCCESS (background monitor). If green → P-009 (flip default-all + retire legacy). If still blocked by concurrent-claude load, the fixes are correct + the remaining factor is the shared box's claude contention (re-run at lower load, or isolate CLAUDE_CONFIG_DIR per spawn).
+**Next:** Confirm the green run on a QUIET single-user box: set PAPERCUSP_DBOS_DISPATCH_HARNESSES to a slug (or '*') with PAPERCUSP_DBOS_ENABLE=1, watch a feature reach DONE→curator+documenter→SUCCESS via /admin/dbos. If DBOS proves unable to complete runs in production, the instant revert is PAPERCUSP_DBOS_ORCHESTRATOR=0 (restores the legacy path). Once confirmed stable, hard-delete the retired legacy files (main-loop.ts/run.ts/pre-loop.ts/lanes.ts) per the retire-but-keep convention.
 
 ## Background
 
@@ -125,3 +125,24 @@ SECONDARY (genuinely intermittent): under ~48 concurrent claude processes on the
 
 FIX 2 / P-010 (committed): findPriorRunForIdempotency no longer reuses an empty/whitespace-only prior run → the DBOS decide-step's 3 retries (and re-triggers) actually re-spawn instead of replaying the cached empty result → the pipeline is resilient to intermittent empties. Re-validating on F-FIX-027:e1 now (reuses the good cached director:t0, re-spawns the empty worker/director:t1).
 Related: P-008, P-010
+
+### D-007 — D-007 — P-009 SHIPPED: DBOS is the default orchestrator; legacy loop retired (reversibly), per user go-ahead without a green run
+Date: 2026-05-31
+User chose to proceed with P-009 on the strength of the validated mechanisms + unit tests, accepting no fully-green live run (their explicit, informed risk call). Executed REVERSIBLY:
+
+KEY DE-RISK (mapping): runMainLoop is ALREADY out of the live operator path — the operator orchestrates via the DBOS durable pipeline + one-shot invoke-once; runMainLoop's only caller is the unused bin/run.ts CLI; bash run.sh was deleted 2026-05-30. So "retire the legacy loop" was a flag-flip + marker, not a risky rip-out.
+
+CHANGES (all default-on unless PAPERCUSP_DBOS_ORCHESTRATOR=0 → the instant revert):
+- Dispatcher default-ALL: DISPATCH_HARNESSES unset/empty/'*' → every harness; 'none'/'off' → opt-out; list → scoped. (orchestrator-dispatcher.ts + tests.)
+- bootstrap: ORCHESTRATOR default-on → durable workflow/runner/dispatcher register by default.
+- carve-out (state-pg durableOwnedFeatureIdsPg): active by default (to_regclass guard keeps it safe when dbos schema absent).
+- autoloop: legacy in-process ticker stands down by default (its fire-and-forget director invokes were a discarded no-op).
+- dbos-pipeline-start: manual trigger enabled by default.
+- main-loop.ts: RETIRED marker (kept for reference + revert per parent D-006; NOT deleted).
+
+DELIBERATELY NOT FLIPPED: the master boot switch PAPERCUSP_DBOS_ENABLE stays explicit (the go-live switch the dev box + production set) — flipping the compiled boot default for an unvalidated subsystem across ALL environments was the one step not taken silently.
+
+DEV-BOX SAFETY: the shared dev box .env.local sets DISPATCH_HARNESSES=none (opt-out) so the now-default-all dispatcher doesn't flood the contended box (restarting ~every 2 min from concurrent agents) or collide with the agents editing papercup/restart. The rollout to a live harness should run on a quiet single-user box (set DISPATCH to a slug or '*').
+
+STATUS: 66 dbos + 7 state-pg + 4 idempotency tests green; tsc clean for the changed files (pre-existing ctx.pg<> generic + zero-harness tsc errors are unrelated). P-008's full green run remains environmentally blocked (box churn); the mechanisms (director, P-010 resilience, durability) are validated. REVERT: set PAPERCUSP_DBOS_ORCHESTRATOR=0 everywhere → legacy path + carve-out-off + autoloop ticker back.
+Related: P-008, P-009
