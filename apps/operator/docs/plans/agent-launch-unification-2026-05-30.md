@@ -52,6 +52,28 @@ Phase 5 (/adv role+feature surfacing + per-surface model coupling + docs).
 Manual e2e for Phase 3 (P-024) is gated on an operator reload (the
 bootstrap-role + options routes register at boot).
 
+**✅ Phase 2 CODE-COMPLETE (codex in the orchestrator pipeline):**
+- **P-010** (env.ts resolver + model normalizer for codex) — landed in P-001.
+- **P-011** — `invoke.ts` codex spawn path: `StreamFormat 'codex-json'` +
+  `selectStreamFormat`/`streamFormatFlags` (`codex exec --json` +
+  unconditional sandbox bypass), `extractResult` codex JSONL parsing (so
+  `parseDecision` works), backend-aware model flag (`-m`), prompt via stdin
+  `-`, and `writeSignedSpawnCodexHome` (per-spawn `CODEX_HOME` w/ config.toml
+  carrying the SAME signed role-scoped URL — sig-auth, no bearer — + ChatGPT
+  auth symlink) wired + cleaned up. 5 unit tests (flags + JSONL parsing).
+  Commits: orchestrator `03a2c38`, parent bump `26d6eb42`.
+- **P-013 (live e2e) PENDING** — a real codex `worker` on a feature must
+  stream a result + fire an MCP tool_call. Can't be closed from here (needs a
+  running harness + the operator on this code + authed codex). The deterministic
+  parts are unit-tested; the spawn wiring mirrors the live-verified chat-stream
+  reference but is itself UNVERIFIED-live. Per-role codex via
+  `.harness/config.json` `aiBackend.roles[role].agentCmd='codex'`.
+
+**Next:** Phase 4 (migrate legacy console-launch onto psu) + Phase 5
+(/adv role+feature+backend surfacing, per-surface model coupling, docs).
+Codex interactive role sessions (psu --role on codex) also unblock now that
+the CODEX_HOME spawn machinery exists (currently 400'd in bootstrap-role).
+
 **Reference (do not duplicate — read these):** the handoff brief
 `agent-backend-refactor-handoff-2026-05-30.md` is the canonical reference for
 §2 (the two-backend-systems model), §7 (how to live-test codex), §8 (LANDMINES
@@ -118,10 +140,10 @@ P-003 done **`buildRoleLaunchSpec`** (`apps/operator/lib/role-launch-spec.ts`) �
 > Re-applies the brains' codex pattern in the orchestrator codebase, now on
 > top of the reconciled backend + spec from Phase 1.
 
-P-010 todo `orchestrator/env.ts` — `resolveAgentBackend` maps env `codex` + a `codex` binary; `normalizeModelForBackend` handles codex bare model ids. blocked-by:P-001
-P-011 todo `invoke.ts` / `buildRoleLaunchSpec` — codex arg-branch (`codex exec --json --skip-git-repo-check --ephemeral`, prompt on stdin, per-spawn `CODEX_HOME` with `AGENTS.md`+`config.toml`+`auth.json` symlink), codex structured-output flags, and a `handleCodexEvent` parser mirroring `chat-stream.ts@6454481` (tool name on `item.tool`, emit on `item.completed` only). **Landmine:** codex MCP tool-calls need `-s danger-full-access --dangerously-bypass-approvals-and-sandbox` (handoff §8). blocked-by:P-003,P-010
-P-012 todo Per-role codex via `.harness/config.json` `aiBackend.roles[role].agentCmd='codex'` + (optional) a HarnessSettingsPanel control. blocked-by:P-011
-P-013 todo Live-test (codex is logged in — verify, don't compile-only): a codex `worker` on a real feature streams a result + fires an MCP tool_call. Commit submodule-first, then bump the parent pointer (handoff §8). blocked-by:P-011
+P-010 done `orchestrator/env.ts` codex in `resolveAgentBackend` + `normalizeModelForBackend` (landed in P-001, papercusp `ad15d1f`).
+P-011 done `invoke.ts` codex spawn path: `codex-json` StreamFormat, `codex exec --json` flags + unconditional sandbox bypass, `extractResult` JSONL parsing (agent_message item.completed), backend-aware `-m` model flag, stdin `-` prompt, `writeSignedSpawnCodexHome` (per-spawn CODEX_HOME config.toml w/ signed role-scoped URL + auth symlink) wired + cleaned up. 5 unit tests. orchestrator `03a2c38`, parent `26d6eb42`. (Used `buildRoleLaunchSpec`? No — invoke keeps its own assembly; codex wired in-place per the de-risk in P-003.)
+P-012 done Per-role codex is configurable via `.harness/config.json` `aiBackend.roles[role].agentCmd='codex'` (resolveAgentForRole + the codex spawn path consume it). HarnessSettingsPanel control optional/deferred.
+P-013 todo **Live e2e (the verification gate)** — a real codex `worker` on a feature streams a result + fires an MCP tool_call. Deterministic parts unit-tested; spawn wiring mirrors the live-verified chat-stream reference but is UNVERIFIED-live. Needs a running harness + operator-on-this-code + authed codex. blocked-by:P-011
 
 ## Phase 3 — psu interactive role sessions (folds in psu-role-sessions plan)
 
