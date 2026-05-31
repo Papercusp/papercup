@@ -133,6 +133,11 @@ export interface PlanGetResult {
   /** P-006: Map of plan-item-id → { featureId, status }. Present when the
    *  plan has features promoted from it; absent for legacy / no-features plans. */
   linkedFeatures?: Record<string, { featureId: string; status: string }>;
+  /** P-083: per-plan-item test coverage (plan↔test rollup via the VAL). */
+  planItemTests?: Record<
+    string,
+    { valsTotal: number; valsRequiringTest: number; valsCovered: number; valsPassing: number }
+  >;
 }
 
 export type SearchScope = 'title' | 'now' | 'items' | 'decisions' | 'prose';

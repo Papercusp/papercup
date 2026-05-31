@@ -16,6 +16,8 @@ import { ctxToPlanSourceOpts, resolveCtxHarnessSlug } from './_ctx-opts';
 import { resolveEffectiveStatus } from './effective-status';
 import { hashPlanContent } from './content-hash';
 import { DEFAULT_WORKSPACE_ID } from '../../workspace-registry';
+import { ensureHarnessPlanAssertionsTable } from '../../ensure-schema';
+import { computePlanItemTestStatus, type PlanItemTestStatus } from '../../harness-test-rollup';
 
 const ALL_ROLES = [
   'scoper',
@@ -109,6 +111,37 @@ export default defineTool({
       // Non-fatal — UI degrades to no badges.
     }
 
+    // P-083: per-plan-item test coverage (the plan↔test rollup, through the
+    // VAL). Mirrors linkedFeatures — computed server-side, decorated client-
+    // side by decoratePlanItemTestBadges. Skips the tests query when the plan
+    // has no inline-VAL assertions. Non-fatal.
+    let planItemTests: Record<string, PlanItemTestStatus> = {};
+    try {
+      await ensureHarnessPlanAssertionsTable();
+      planItemTests = await withWorkspace(DEFAULT_WORKSPACE_ID, async (tx) => {
+        const assertions = await tx<{ val_id: string; item_id: string; requires_test: boolean }[]>`
+          SELECT val_id, item_id, requires_test FROM harness_shared.harness_plan_assertions
+           WHERE workspace_id = ${DEFAULT_WORKSPACE_ID} AND harness_slug = ${harnessSlug} AND plan_slug = ${args.slug}
+        `;
+        if (assertions.length === 0) return {};
+        const testRows = await tx<{ status: string; payload: { coversVALs?: unknown } }[]>`
+          SELECT status, payload FROM harness_shared.harness_tests
+           WHERE workspace_id = ${DEFAULT_WORKSPACE_ID} AND harness_slug = ${harnessSlug}
+        `;
+        return computePlanItemTestStatus(
+          assertions,
+          testRows.map((r) => ({
+            status: r.status,
+            coversVALs: Array.isArray(r.payload?.coversVALs)
+              ? (r.payload.coversVALs as unknown[]).filter((v): v is string => typeof v === 'string')
+              : [],
+          })),
+        );
+      });
+    } catch {
+      // Non-fatal — UI degrades to no coverage badges.
+    }
+
     return {
       content: [
         {
@@ -127,6 +160,7 @@ export default defineTool({
             raw: parsed.raw,
             contentHash: hashPlanContent(parsed.raw),
             linkedFeatures,
+            planItemTests,
           }),
         },
       ],
