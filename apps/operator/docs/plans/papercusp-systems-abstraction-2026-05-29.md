@@ -19,9 +19,9 @@ and the order to do it in.
 
 ## Now
 
-**State:** Generalization follow-on (D-011/D-012) COMPLETE and hardened: 10 libs generalized, audited twice, all coupling fixed; catalogued, documented, and grouped under libs/generic/; operator verified healthy; post-move QA 13/13 suites green.
+**State:** Generalization arc complete: 10 libs generalized + double-audited, grouped under libs/generic/, 9 in-repo packages promoted to private Papercusp/* repos, Restart↔Papercusp submodule sync reconciled (incl. selective papergrid reconciliation). @restart retirement now landed for Papercup (D-014): the scope was renamed (not deleted) so Papercup is already 0-@restart and old imports already fail to resolve; a GATING CI guard (scripts/check-no-restart-imports.mjs, npm lint:no-restart, in test.yml) makes that permanent + loud. Remaining for a true "retire ALL": the sibling Restart project still has 357 @restart imports / 52 deps and must run its own @restart->@papercusp sweep before @restart can be broken there — that breaks an active project, so it needs an explicit owner.
 
-**Next:** Nothing pending. Optional future step needing human go-ahead: promote the in-repo packages/* generic libs to their own repos under libs/generic/.
+**Next:** Decide whether to drive Restart's @restart->@papercusp import migration (357 imports) — needed before @restart can be retired Restart-side; until then Papercup is fully retired + guarded.
 
 ## Background
 
@@ -631,6 +631,17 @@ Gotchas hit (for any future promotion):
 4. Running `npx vitest` inside each fresh submodule created untracked node_modules → dirtied the parent. Added a `.gitignore` (node_modules/dist) to each repo + pushed, so a clone-and-install workflow stays clean.
 
 This is the LAST item — the whole generalization + grouping + promotion arc is complete. Only the SEAMED/kept-tie-in libs (locks, coordination, backup, docs-engine in packages/; host-platform in libs/) and file-claim remain in-repo, by design.
+
+
+### D-014 — @restart retirement is per-project + fail-loud-guarded, NOT a global break (would break Restart's 357 imports)
+Date: 2026-05-31
+Goal: "retire all the restart versions safely so that (1) no code is deleted, (2) any old imports fail." Investigation finding: the two projects are at very different stages, so a *global* @restart break is unsafe.
+
+**Papercup — already retired, now guarded.** 0 live `@restart/*` imports, 0 package.json deps, no `node_modules/@restart/*` symlinks, no tsconfig path maps; every lib's package name is `@papercusp/*`. The scope rename *renamed* (didn't delete) — the code lives intact under `@papercusp/*`. So in Papercup an `@restart/*` import already fails at resolve time ("Cannot find module"). To make that permanent + loud rather than incidental, added a GATING guard: `scripts/check-no-restart-imports.mjs` (npm `lint:no-restart`, wired into `.github/workflows/test.yml`) scans tracked code + package.json and fails the build with a "use @papercusp/<name>" message on any straggler. Proven to fail on a synthetic offender and pass clean on HEAD. Commit 2cc50434a.
+
+**Restart — NOT retired; do not break autonomously.** The sibling Restart project (`/home/marsh-office/Restart`) still has 357 `@restart/*` imports, 52 package.json deps, and a full `node_modules/@restart/*` tree. The shared repos are `@papercusp/*` on `main` but carry `restart-pin-*` branches (e.g. `Papercusp/ui-primitives@restart-pin-d31ac5df`) where Restart pins its versions. Making `@restart/*` fail globally would break Restart until it migrates all 357 imports — that's a Restart-side migration decision, out of scope for an autonomous Papercup pass. The same guard script can be dropped into Restart once Restart finishes its own `@restart -> @papercusp` import sweep.
+
+**Net:** retirement is enforced per-project. Papercup is done + guarded; Restart's migration is the remaining "all" work and needs an explicit owner/decision because it temporarily breaks an active project.
 
 ## Addendum — Phase 1 shipped (2026-05-30) + impact on in-flight plans
 
