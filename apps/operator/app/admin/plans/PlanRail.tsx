@@ -70,7 +70,9 @@ const COUNT_LABELS: Record<ItemStatus | 'unknown', string> = {
 
 interface Props {
   list: AsyncResult<{ plans: PlanListRow[] }>;
-  selectedSlug: string | null;
+  /** Plans toggled into the cross-plan item filter (multi-select OR).
+   *  Selected plans float to the top of the rail. */
+  selectedSlugs: string[];
   query: string;
   /** Plan slugs the server-side cross-plan search returned. The rail
    *  unions these with the title/slug substring match so a search for
@@ -85,9 +87,10 @@ interface Props {
 }
 
 const PlanRail = forwardRef<PlanRailHandle, Props>(function PlanRail(
-  { list, selectedSlug, query, searchHitSlugs, onSelect, onStartToggle, harnessSlug }: Props,
+  { list, selectedSlugs, query, searchHitSlugs, onSelect, onStartToggle, harnessSlug }: Props,
   ref,
 ) {
+  const selectedKey = selectedSlugs.join('|');
   const { data, loading, error, refresh } = list;
 
   // Filter reads — PlanFilters / PlanBucketTabs own the writes; same keys.
@@ -121,34 +124,43 @@ const PlanRail = forwardRef<PlanRailHandle, Props>(function PlanRail(
     const bucketed = fBuckets.length
       ? filtered.filter((p) => fBuckets.includes(bucketOf(p)))
       : filtered;
+    const sel = new Set(selectedSlugs);
     return [...bucketed].sort((a, b) => {
+      // Plans toggled into the filter float to the very top.
+      const selA = sel.has(a.slug) ? 0 : 1;
+      const selB = sel.has(b.slug) ? 0 : 1;
+      if (selA !== selB) return selA - selB;
       const sa = BUCKET_ORDER[bucketOf(a)] ?? 99;
       const sb = BUCKET_ORDER[bucketOf(b)] ?? 99;
       if (sa !== sb) return sa - sb;
       return (b.updated ?? '').localeCompare(a.updated ?? '');
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [plans, fBucketsKey, fOwner, fDate, fArchived, fLegacy, fInbox, fActionable, query, searchHitSlugs]);
+  }, [plans, fBucketsKey, fOwner, fDate, fArchived, fLegacy, fInbox, fActionable, query, searchHitSlugs, selectedKey]);
 
   useImperativeHandle(
     ref,
-    () => ({
-      next: () => {
-        if (!sorted.length) return;
-        const i = sorted.findIndex((p) => p.slug === selectedSlug);
-        const nextIdx = i < 0 ? 0 : Math.min(i + 1, sorted.length - 1);
-        const nxt = sorted[nextIdx];
-        if (nxt) onSelect(nxt.slug);
-      },
-      prev: () => {
-        if (!sorted.length) return;
-        const i = sorted.findIndex((p) => p.slug === selectedSlug);
-        const prevIdx = i < 0 ? sorted.length - 1 : Math.max(i - 1, 0);
-        const prv = sorted[prevIdx];
-        if (prv) onSelect(prv.slug);
-      },
-    }),
-    [sorted, selectedSlug, onSelect],
+    () => {
+      // Anchor j/k navigation on the most-recently toggled plan.
+      const cur = selectedSlugs[selectedSlugs.length - 1] ?? null;
+      return {
+        next: () => {
+          if (!sorted.length) return;
+          const i = sorted.findIndex((p) => p.slug === cur);
+          const nextIdx = i < 0 ? 0 : Math.min(i + 1, sorted.length - 1);
+          const nxt = sorted[nextIdx];
+          if (nxt) onSelect(nxt.slug);
+        },
+        prev: () => {
+          if (!sorted.length) return;
+          const i = sorted.findIndex((p) => p.slug === cur);
+          const prevIdx = i < 0 ? sorted.length - 1 : Math.max(i - 1, 0);
+          const prv = sorted[prevIdx];
+          if (prv) onSelect(prv.slug);
+        },
+      };
+    },
+    [sorted, selectedKey, onSelect], // eslint-disable-line react-hooks/exhaustive-deps
   );
 
   if (loading) {
@@ -189,7 +201,7 @@ const PlanRail = forwardRef<PlanRailHandle, Props>(function PlanRail(
         <PlanRow
           key={p.slug}
           plan={p}
-          active={p.slug === selectedSlug}
+          active={selectedSlugs.includes(p.slug)}
           onSelect={() => onSelect(p.slug)}
           onStartToggle={onStartToggle}
           harnessSlug={harnessSlug}

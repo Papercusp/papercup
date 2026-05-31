@@ -118,7 +118,16 @@ export default function PlansClient() {
   const [, setJump] = useQueryState('jump', parseAsString);
   // Per-plan filter for the item list — the left rail sets it (clicking a
   // plan FILTERS the list to that plan; it does NOT open the plan).
-  const [itemPlan, setItemPlan] = useQueryState('itemPlan', parseAsString);
+  // Multi-select OR filter: plans toggled in the rail narrow the item list
+  // to those plans. Click a selected plan again to remove it.
+  const [itemPlans, setItemPlans] = useQueryState(
+    'itemPlans',
+    parseAsArrayOf(parseAsString).withDefault([]),
+  );
+  const toggleItemPlan = useCallback(
+    (s: string) => void setItemPlans(itemPlans.includes(s) ? itemPlans.filter((x) => x !== s) : [...itemPlans, s]),
+    [itemPlans, setItemPlans],
+  );
 
   // Additive filter facets.
   const [istatus, setIstatus] = useQueryState(
@@ -416,9 +425,9 @@ export default function PlansClient() {
     setSlug(null);
     void setQ(null);
     void setIstatus([]);
-    void setItemPlan(null);
+    void setItemPlans([]);
     void setView('inbox');
-  }, [leaveGuard, setPane, setSlug, setQ, setIstatus, setItemPlan, setView]);
+  }, [leaveGuard, setPane, setSlug, setQ, setIstatus, setItemPlans, setView]);
 
   // "Plans" — the plan browser view. Closes any open plan + search; plan-status
   // / harness filters stay applied (they scope which plans show).
@@ -547,10 +556,10 @@ export default function PlansClient() {
           <PlanRail
             ref={railRef}
             list={railList}
-            selectedSlug={itemPlan}
+            selectedSlugs={itemPlans}
             query={q}
             searchHitSlugs={searchHitSlugs}
-            onSelect={(s) => void setItemPlan(itemPlan === s ? null : s)}
+            onSelect={toggleItemPlan}
             onStartToggle={() => planList.refresh()}
             harnessSlug={harnessFilter ?? advActiveSlug}
           />
@@ -599,7 +608,7 @@ export default function PlansClient() {
             refresh={refreshItems}
             onPick={navPlanTarget}
             harnessByPlan={harnessByPlan}
-            planFilter={itemPlan}
+            planFilters={itemPlans}
             title={itemTitle}
             subtitle={itemSubtitle}
           />
@@ -645,7 +654,7 @@ export default function PlansClient() {
                 refresh={refreshItems}
                 onPick={navPlanTarget}
                 harnessByPlan={harnessByPlan}
-                planFilter={itemPlan}
+                planFilters={itemPlans}
                 title={itemTitle}
                 subtitle={itemSubtitle}
               />

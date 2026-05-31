@@ -30,8 +30,9 @@ interface Props {
   onPick: (slug: string, targetId?: string) => void;
   /** plan-slug → harness-slug map; lets needs-human rows relaunch the loop. */
   harnessByPlan?: Map<string, string>;
-  /** When set, show only this plan's items (the rail acts as a filter). */
-  planFilter?: string | null;
+  /** Narrow the list to these plans (multi-select OR; the rail toggles
+   *  them). Empty/undefined = all plans. */
+  planFilters?: string[];
   /** Heading title + one-line summary of the active filter (from PlansClient). */
   title: string;
   subtitle: string;
@@ -51,8 +52,13 @@ export default function PlanItemsList({
   refresh,
   onPick,
   harnessByPlan,
-  planFilter,
+  planFilters,
 }: Props) {
+  // A single selected plan renders "bare" (no repeated title); multiple
+  // selected (or none) render grouped with plan headers.
+  const planList = planFilters ?? [];
+  const planFiltersKey = planList.join('|');
+  const bareSingle = planList.length === 1 ? planList[0]! : null;
   // Selected item for the read-only detail pane, encoded
   // "<planSlug>::<itemId>". Distinct from PlansClient's `?plan=` (which
   // opens the FULL PlanDetail) — this only drives the right-hand preview.
@@ -70,7 +76,7 @@ export default function PlanItemsList({
   // selection stays put.
   const autoExpandRef = useRef<string | null>(null);
   useEffect(() => {
-    if (!selectedPlan || !selectedItemId || planFilter) {
+    if (!selectedPlan || !selectedItemId || planList.length > 0) {
       autoExpandRef.current = null;
       return;
     }
@@ -82,7 +88,7 @@ export default function PlanItemsList({
     if (autoExpandRef.current === token) return;
     autoExpandRef.current = token;
     void setExpandedGroups([...expandedGroups, selectedPlan]);
-  }, [selectedPlan, selectedItemId, planFilter, expandedGroups, setExpandedGroups]);
+  }, [selectedPlan, selectedItemId, planFiltersKey, expandedGroups, setExpandedGroups]);
 
   if (loading) {
     return (
@@ -105,9 +111,13 @@ export default function PlanItemsList({
     );
   }
 
-  const rows = planFilter ? items.filter((r) => r.plan === planFilter) : items;
+  const rows = planList.length ? items.filter((r) => planList.includes(r.plan)) : items;
   if (!rows.length) {
-    const empty = planFilter ? `No items in ${planFilter}.` : 'No items match the current filters.';
+    const empty = bareSingle
+      ? `No items in ${bareSingle}.`
+      : planList.length
+        ? 'No items in the selected plans.'
+        : 'No items match the current filters.';
     return (
       <div className="pc-items pc-items--mixed">
         <div className="pc-items__empty">{empty}</div>
@@ -174,7 +184,7 @@ export default function PlanItemsList({
               // When the left rail has filtered to one plan, don't repeat
               // its title here — render the items bare (the plan name is
               // already shown, selected, in the rail).
-              if (planFilter) {
+              if (bareSingle) {
                 return (
                   <li key={planSlug} className="pc-items__group pc-items__group--bare">
                     {renderRows(planSlug, planRows)}
