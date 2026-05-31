@@ -25,8 +25,14 @@ import { getHarnessAdminUrl } from '@/lib/embedded-pg-discovery';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
 import { ensureFeaturePipeline } from './orchestrator-start';
 
-/** Feature statuses that warrant starting (or continuing) a durable pipeline. */
-const NEEDS_WORK = new Set(['pending', 'failed']);
+/**
+ * Feature statuses that warrant starting a durable pipeline. The live vocabulary
+ * is `todo` (not started) / `failing` (failed validation, needs rework); the
+ * `pending`/`failed` aliases from the FeatureRecord type are kept for safety.
+ * `in_progress` is excluded (already being worked), as are `passed`/`blocked`/
+ * `deprecated`/`proposed`.
+ */
+const NEEDS_WORK = new Set(['todo', 'failing', 'pending', 'failed']);
 const DEFAULT_CAP = 4;
 
 /**
