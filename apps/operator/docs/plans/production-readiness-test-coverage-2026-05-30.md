@@ -179,13 +179,13 @@ oracle 3 thin); **3** property + **1** bench; **0** coverage measurement.
   gates) and `ui:dispatch`/`get_state` (the agent→UI control surface CLAUDE.md
   calls load-bearing) — 0 tests each.
 
-- **P-019** `todo` Converse loop handler test
+- **P-019** `done` Converse loop handler test (SHIPPED 7338b0ad3: replaced the broken converse-mcp-url.test.ts 2/2 red — wrong mock paths + stale stdio shape + fail-on-console with converse.test.ts 7: mcpUrl http shape, budget-gate throw, single empty-output retry, empty-then-output success, no-retry-after-output, <spawn>-dispatch. Token controlled via surgical node:fs stub.)
   (`agent-tools/operator/converse.ts`): drive the loop with a mocked agent stream —
   assert budget-exceeded throw, the single empty-output retry (no retry after a
   committed delta), and `<spawn>`-tag dispatch. Fix the stale `buildOperatorPrompt`
   mock in `__tests__/converse-mcp-url.test.ts` while there.
 
-- **P-031** `todo` Carve-out from P-013: `harness/spawn.ts` (/launch, /invoke) route tests. Deferred because the handler shells out via `node:child_process.spawn` to the orchestrator — exercising it risks real spawns, so it needs its own file with `node:child_process` + getOrgPg + listUnconsumedEvents/consumeEvents fully mocked. Assert: public reachability, payload validation, and that a valid /launch dispatches spawn() with the expected argv WITHOUT a real child process. Posture context in D-009.
+- **P-031** `done` Carve-out from P-013: `harness/spawn.ts` (/launch, /invoke) route tests. Deferred because the handler shells out via `node:child_process.spawn` to the orchestrator — exercising it risks real spawns, so it needs its own file with `node:child_process` + getOrgPg + listUnconsumedEvents/consumeEvents fully mocked. Assert: public reachability, payload validation, and that a valid /launch dispatches spawn() with the expected argv WITHOUT a real child process. Posture context in D-009. (— lib/endpoint-route/__tests__/harness-spawn-routes.test.ts; 13 tests reachability + loopback 403 + validation + launchRun dispatch + spawn argv via fake child, no real process; commit 78ec58c81)
 
 ## Phase 3 — Live UI + sync (the user-facing gap)
 
