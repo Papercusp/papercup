@@ -8,21 +8,23 @@
  * Renders the non-plan-item AttentionItem kinds from plans:attention —
  * coord escalations, coord messages-to-human, smoke-test failures, plans
  * awaiting review — grouped (per the reader's plan / "Alerts" buckets),
- * importance-sorted, master-detail like PlanItemsList: pick a row, its
- * message + per-kind action buttons show in the right pane.
+ * importance-sorted, master-detail like PlanItemsList: pick a row, the
+ * selected item shows in the right pane as the shared chat card.
  *
- * Action dispatch (P-017): Resolve (coord:resolve, choosing the escalation's
- * option) and Ack (coord:ack) round-trip through the /api/admin/coord proxy
- * and refresh on success — the first human-facing way to clear an escalation
- * (until now only agents could, via the MCP tools). View-log / Open are
- * read-only and live in the source harness view, so they point there.
+ * The detail pane is now the unified card (inbox-cards-unification P-020):
+ * `attentionItemToCardSpec(item)` feeds `AskChoiceCard`; terminal picks
+ * dispatch through `resolveAttentionAction` (coord:resolve / coord:ack via
+ * the /api/admin/coord proxy, D-007) and refresh on success; the "💬 Chat"
+ * navigate option expands an inline `PlanChat` beneath the card (D-006);
+ * View-log / Open point at the source harness view.
  */
 
-import { Fragment, useState } from 'react';
+import { useState } from 'react';
 import { parseAsString, useQueryState } from 'nuqs';
 import { toast } from 'sonner';
-import PlanChatModal from './PlanChatModal';
-import { ackCoordMessage, resolveEscalation } from './plans-api';
+import PlanChat from './PlanChat';
+import { AskChoiceCard, type AskChoiceResponse, type AskChoiceAnswered } from '@/app/_components/chat/AskChoiceCard';
+import { attentionItemToCardSpec, resolveAttentionAction } from './attention-card';
 import type { AttentionGroup, AttentionItem, AttentionKind } from './plans-api';
 
 const KIND_LABEL: Record<AttentionKind, string> = {
@@ -161,6 +163,7 @@ export default function PlanOtherList({ groups, loading, error, refresh, kinds, 
         </div>
 
         <OtherDetail
+          key={selItem?.id ?? 'none'}
           item={selItem}
           onResolved={() => {
             void setSelected(null);
@@ -175,6 +178,7 @@ export default function PlanOtherList({ groups, loading, error, refresh, kinds, 
 function OtherDetail({ item, onResolved }: { item: AttentionItem | null; onResolved: () => void }) {
   const [chatOpen, setChatOpen] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [answered, setAnswered] = useState<AskChoiceAnswered | undefined>(undefined);
 
   if (!item) {
     return (
@@ -185,149 +189,64 @@ function OtherDetail({ item, onResolved }: { item: AttentionItem | null; onResol
   }
 
   const kindLabel = KIND_LABEL[item.kind];
-  const ref = item.ref;
+  const spec = attentionItemToCardSpec(item);
+  const chatLabel = item.planSlug
+    ? `${item.planSlug} · ${kindLabel}`
+    : `${item.harnessSlug ?? 'harness'} · ${kindLabel}`;
 
-  const runResolve = async (choice: string) => {
-    if (busy || ref.kind !== 'coord-escalation') return;
-    setBusy(true);
-    try {
-      const res = await resolveEscalation({ msg_id: String(ref.msgId), choice });
-      if (res?.error) throw new Error(res.error);
-      toast.success(`Escalation resolved (${choice}).`);
-      onResolved();
-    } catch (e) {
-      toast.error('Resolve failed', { description: e instanceof Error ? e.message : String(e) });
-    } finally {
-      setBusy(false);
+  // The shared card surfaces this item's options; terminal picks dispatch to
+  // the durable backend, navigate picks open a sub-surface (inline chat / the
+  // harness source view). (inbox-cards-unification P-020 / D-006.)
+  const onResponse = async (resp: AskChoiceResponse) => {
+    if (resp.action === 'navigate') {
+      if (resp.option_id === 'chat') {
+        setChatOpen(true);
+      } else {
+        toast.info(
+          `${resp.label}: this ${kindLabel} lives in its harness view${
+            item.harnessSlug ? ` (${item.harnessSlug})` : ''
+          }; the detail above mirrors it.`,
+        );
+      }
+      return;
+    }
+    if (resp.action === 'submit') {
+      const pick = resp.picks[0];
+      if (!pick || busy) return;
+      setBusy(true);
+      try {
+        const r = await resolveAttentionAction(item, pick.option_id);
+        if (r.resolved) {
+          setAnswered({ picks: resp.picks, at: Date.now() });
+          toast.success(`${kindLabel} resolved (${pick.label}).`);
+          onResolved();
+        }
+      } catch (e) {
+        toast.error('Action failed', { description: e instanceof Error ? e.message : String(e) });
+      } finally {
+        setBusy(false);
+      }
     }
   };
-
-  const runAck = async () => {
-    if (busy || ref.kind !== 'coord-message') return;
-    setBusy(true);
-    try {
-      const res = await ackCoordMessage({ msg_id: String(ref.msgId) });
-      if (res?.error) throw new Error(res.error);
-      toast.success('Message acknowledged.');
-      onResolved();
-    } catch (e) {
-      toast.error('Ack failed', { description: e instanceof Error ? e.message : String(e) });
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  // Escalation options become individual Resolve buttons (one per option the
-  // escalating agent offered); a no-option escalation gets a single Resolve.
-  const escOptions =
-    ref.kind === 'coord-escalation' && Array.isArray(ref.options)
-      ? (ref.options as { id: string; label: string }[])
-      : [];
 
   return (
     <aside className="pc-items__detail">
-      <PlanChatModal
-        open={chatOpen}
-        onClose={() => setChatOpen(false)}
-        harnessSlug={item.harnessSlug}
-        label={item.planSlug ? `${item.planSlug} · ${kindLabel}` : `${item.harnessSlug ?? 'harness'} · ${kindLabel}`}
-      />
-      {/* Actions live on the top header bar (matching PlanItemPreview), not
-          inside the card body. */}
       <div className="pc-items__detail-toolbar">
-        <span className={`pc-kind pc-kind--${item.kind}`}>{KIND_LABEL[item.kind]}</span>
+        <span className={`pc-kind pc-kind--${item.kind}`}>{kindLabel}</span>
         <span className={`pc-count pc-count--${item.status}`}>{item.status}</span>
         {item.importance !== 'normal' ? (
           <span className={`pc-imp pc-imp--${item.importance}`}>{item.importance}</span>
         ) : null}
-        <div className="pc-items__detail-actions">
-          {item.actions.map((a) => {
-            if (a.id === 'chat') {
-              return (
-                <button
-                  key={a.id}
-                  type="button"
-                  className="pc-items__action-btn pc-items__action-btn--chat"
-                  onClick={() => setChatOpen(true)}
-                  title={`Open an in-app, context-scoped agent chat about this ${kindLabel}`}
-                >
-                  {`💬 ${a.label}`}
-                </button>
-              );
-            }
-            if (a.id === 'resolve' && ref.kind === 'coord-escalation') {
-              if (escOptions.length) {
-                return (
-                  <Fragment key={a.id}>
-                    {escOptions.map((o) => (
-                      <button
-                        key={o.id}
-                        type="button"
-                        className="pc-items__resolve"
-                        disabled={busy}
-                        onClick={() => void runResolve(o.id)}
-                        title={`Resolve this escalation as: ${o.label}`}
-                      >
-                        {`✓ ${o.label}`}
-                      </button>
-                    ))}
-                  </Fragment>
-                );
-              }
-              return (
-                <button
-                  key={a.id}
-                  type="button"
-                  className="pc-items__resolve"
-                  disabled={busy}
-                  onClick={() => void runResolve('resolved')}
-                  title="Resolve this escalation"
-                >
-                  {a.label}
-                </button>
-              );
-            }
-            if (a.id === 'ack' && ref.kind === 'coord-message') {
-              return (
-                <button
-                  key={a.id}
-                  type="button"
-                  className={a.primary ? 'pc-items__resolve' : 'pc-items__action-btn'}
-                  disabled={busy}
-                  onClick={() => void runAck()}
-                  title="Acknowledge this message"
-                >
-                  {a.label}
-                </button>
-              );
-            }
-            // view-log / open / fallback — read-only navigations whose source
-            // of truth is the harness view (smoke panel, pending reviews).
-            // No crisp in-Plans target, so point the human there.
-            return (
-              <button
-                key={a.id}
-                type="button"
-                className="pc-items__action-btn"
-                onClick={() =>
-                  toast.info(
-                    `${a.label}: this ${kindLabel} lives in its harness view${
-                      item.harnessSlug ? ` (${item.harnessSlug})` : ''
-                    }; the detail below mirrors it.`,
-                  )
-                }
-                title={a.label}
-              >
-                {a.label}
-              </button>
-            );
-          })}
-        </div>
+        {item.harnessSlug ? <span className="pc-pill pc-pill--harness">{item.harnessSlug}</span> : null}
       </div>
       <div className="pc-items__detail-body">
-        <h3>{item.title}</h3>
-        {item.harnessSlug ? <span className="pc-pill pc-pill--harness">{item.harnessSlug}</span> : null}
-        {item.body ? <p>{item.body}</p> : null}
+        <AskChoiceCard
+          args={spec}
+          answered={answered}
+          allowDecline={false}
+          onResponse={(r) => void onResponse(r)}
+        />
+        {chatOpen ? <PlanChat harnessSlug={item.harnessSlug} label={chatLabel} /> : null}
       </div>
     </aside>
   );
