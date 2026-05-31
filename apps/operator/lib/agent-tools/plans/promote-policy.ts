@@ -169,3 +169,67 @@ export function parsePromotePolicy(planRaw: string): ParsePromoteResult {
 export function getPromotePolicy(planRaw: string): PromotePolicy | null {
   return parsePromotePolicy(planRaw).policy;
 }
+
+// ── Wave resolution ──────────────────────────────────────────────────────────
+
+/** A feature resolved from a wave — the shape `plans:promote`'s FEATURE_INPUT
+ *  accepts. (Generated features carry no `from_items`; they aren't plan items.) */
+export interface BuiltFeature {
+  title: string;
+  from_items?: string[];
+  acceptance?: string[];
+  body?: string;
+  assigned_role?: string;
+  blocked_by?: string[];
+  order?: number;
+}
+
+export interface BuildWaveResult {
+  features: BuiltFeature[];
+  warnings: string[];
+}
+
+/** Substitute the `{item}` placeholder. */
+const sub = (s: string, item: string): string => s.replace(/\{item\}/g, item);
+
+/**
+ * Resolve a wave's features: static `features[]` verbatim, plus the generative
+ * `feature_template` expanded **once per `generateItems`** (with `{item}`
+ * substituted in title/acceptance/body). A generative wave with no items yields
+ * no generated features + a warning — the caller (promote agent) is responsible
+ * for resolving the `for_each` set (e.g. the discovered universal types) and
+ * passing it; this keeps the promote tool domain-agnostic.
+ */
+export function buildWaveFeatures(
+  wave: PromoteWave,
+  opts: { generateItems?: string[] } = {},
+): BuildWaveResult {
+  const warnings: string[] = [];
+  const features: BuiltFeature[] = [];
+
+  for (const f of wave.features ?? []) features.push({ ...f });
+
+  if (wave.generate) {
+    const items = opts.generateItems ?? [];
+    if (items.length === 0) {
+      warnings.push(
+        `wave ${wave.id} is generative (for_each: ${wave.generate.for_each}) but no generateItems were provided`,
+      );
+    }
+    const t = wave.generate.feature_template;
+    for (const item of items) {
+      const bodyParts = [
+        t.body ? sub(t.body, item) : null,
+        t.agent_hint ? `Hint: ${sub(t.agent_hint, item)}` : null,
+      ].filter(Boolean) as string[];
+      features.push({
+        title: sub(t.title, item),
+        ...(t.acceptance && { acceptance: t.acceptance.map((a) => sub(a, item)) }),
+        ...(bodyParts.length > 0 && { body: bodyParts.join('\n\n') }),
+        ...(t.assigned_role && { assigned_role: t.assigned_role }),
+      });
+    }
+  }
+
+  return { features, warnings };
+}

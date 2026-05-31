@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { parsePromotePolicy, getPromotePolicy, extractPromoteSection } from './promote-policy';
+import {
+  parsePromotePolicy,
+  getPromotePolicy,
+  extractPromoteSection,
+  buildWaveFeatures,
+  type PromoteWave,
+} from './promote-policy';
 
 const wrap = (promoteSection: string) =>
   `---\ntitle: T\nslug: t\nstatus: active\n---\n\n# T\n\n## Now\n\n**State:** x\n\n${promoteSection}\n\n## Decisions\n`;
@@ -102,5 +108,59 @@ describe('parsePromotePolicy', () => {
     const numbered = wrap('## 9a. Promote\n\n```yaml\nwaves:\n  - id: w\n    features: [{title: Z}]\n```');
     expect(extractPromoteSection(numbered)).not.toBeNull();
     expect(getPromotePolicy(numbered)?.waves[0].features?.[0].title).toBe('Z');
+  });
+});
+
+describe('buildWaveFeatures', () => {
+  it('returns static features verbatim (no warnings)', () => {
+    const wave: PromoteWave = {
+      id: 'tier1',
+      features: [{ title: 'Fix fetchers', from_items: ['P-001'], assigned_role: 'worker' }],
+    };
+    const r = buildWaveFeatures(wave);
+    expect(r.warnings).toEqual([]);
+    expect(r.features).toEqual([{ title: 'Fix fetchers', from_items: ['P-001'], assigned_role: 'worker' }]);
+  });
+
+  it('expands a generative template once per generateItems, substituting {item}', () => {
+    const wave: PromoteWave = {
+      id: 'tier2',
+      generate: {
+        for_each: 'universal_type',
+        feature_template: {
+          title: 'Universal schema: {item}',
+          acceptance: ['validates vs asinDetails for {item}'],
+          assigned_role: 'worker',
+          agent_hint: 'row-grain for {item}',
+        },
+      },
+    };
+    const r = buildWaveFeatures(wave, { generateItems: ['LAPTOP', 'CAMERA'] });
+    expect(r.warnings).toEqual([]);
+    expect(r.features.map((f) => f.title)).toEqual(['Universal schema: LAPTOP', 'Universal schema: CAMERA']);
+    expect(r.features[0].acceptance).toEqual(['validates vs asinDetails for LAPTOP']);
+    expect(r.features[0].assigned_role).toBe('worker');
+    expect(r.features[1].body).toContain('Hint: row-grain for CAMERA'); // agent_hint folded into body
+    expect(r.features[0].from_items).toBeUndefined(); // generated features aren't plan items
+  });
+
+  it('a generative wave with no generateItems → warning + no generated features', () => {
+    const wave: PromoteWave = {
+      id: 'tier2',
+      generate: { for_each: 'universal_type', feature_template: { title: 'X: {item}' } },
+    };
+    const r = buildWaveFeatures(wave);
+    expect(r.features).toEqual([]);
+    expect(r.warnings.join(' ')).toMatch(/generative.*no generateItems/);
+  });
+
+  it('a mixed wave yields static + generated features', () => {
+    const wave: PromoteWave = {
+      id: 'mix',
+      features: [{ title: 'static one' }],
+      generate: { for_each: 'thing', feature_template: { title: 'gen {item}' } },
+    };
+    const r = buildWaveFeatures(wave, { generateItems: ['A'] });
+    expect(r.features.map((f) => f.title)).toEqual(['static one', 'gen A']);
   });
 });
