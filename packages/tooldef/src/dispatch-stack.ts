@@ -36,6 +36,7 @@ import type { CardResponse, CardSpec } from './types';
 import { validateSync, formatIssues, type StandardSchemaV1 } from './standard-schema';
 import {
   PASS_THROUGH,
+  HarnessRequiredError,
   UnauthorizedToolError,
   defaultComputeQuotaWindow,
   type DispatchProjectedDeps,
@@ -532,6 +533,9 @@ const invokeStep: DispatchStep = {
       }
       if (err instanceof UnauthorizedToolError) {
         return { ok: false, error: { code: 'unauthorized', message: err.message } };
+      }
+      if (err instanceof HarnessRequiredError) {
+        return { ok: false, error: { code: 'harness_required', message: err.message } };
       }
       return {
         ok: false,

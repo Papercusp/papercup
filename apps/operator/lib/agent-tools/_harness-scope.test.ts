@@ -3,7 +3,8 @@
  * Pure function — covers the arg/ctx precedence + the '*'-as-no-choice rule.
  */
 import { describe, expect, it } from 'vitest';
-import { isAllHarnessSentinel, resolveHarnessScope } from './_harness-scope';
+import { HarnessRequiredError } from '@papercusp/agent-mcp';
+import { harnessScopedCtx, isAllHarnessSentinel, resolveHarnessScope } from './_harness-scope';
 
 describe('isAllHarnessSentinel', () => {
   it('treats * and all (any case) as the sentinel', () => {
@@ -43,5 +44,24 @@ describe('resolveHarnessScope', () => {
 
   it('trims whitespace on the arg', () => {
     expect(resolveHarnessScope('  restart  ', null)).toEqual({ kind: 'harness', slug: 'restart' });
+  });
+});
+
+describe('harnessScopedCtx', () => {
+  it('throws HarnessRequiredError when no harness is resolvable', () => {
+    expect(() => harnessScopedCtx(undefined, { harnessSlug: '*' })).toThrow(HarnessRequiredError);
+    expect(() => harnessScopedCtx(undefined, { harnessSlug: undefined })).toThrow(HarnessRequiredError);
+  });
+
+  it("'all' arg → ctx with harnessSlug '*' (preserving other ctx fields)", () => {
+    expect(harnessScopedCtx('all', { harnessSlug: '*', runId: 'r' })).toEqual({ harnessSlug: '*', runId: 'r' });
+  });
+
+  it('concrete arg wins over ctx → ctx with that slug', () => {
+    expect(harnessScopedCtx('restart', { harnessSlug: 'papercup' })).toEqual({ harnessSlug: 'restart' });
+  });
+
+  it('scoped session (concrete ctx, no arg) → that slug', () => {
+    expect(harnessScopedCtx(undefined, { harnessSlug: 'papercup' })).toEqual({ harnessSlug: 'papercup' });
   });
 });

@@ -121,6 +121,7 @@ export {
   dispatchProjectedToolStream,
   defaultComputeQuotaWindow,
   UnauthorizedToolError,
+  HarnessRequiredError,
   PASS_THROUGH,
   type QuotaWindow,
   type DispatchProjectedDeps,

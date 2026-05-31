@@ -78,6 +78,19 @@ export class UnauthorizedToolError extends Error {
   override readonly name = 'UnauthorizedToolError';
 }
 
+/**
+ * Throw from a handler (or a shared resolver it calls) to signal that the
+ * tool needs a harness in scope and none was resolvable — no explicit
+ * `harness` arg, and `ctx.harnessSlug` unset or the `'*'` wildcard. The
+ * dispatcher surfaces this as the uniform `harness_required` code instead
+ * of a generic `handler_error`, so callers get a self-documenting "pass a
+ * slug / `all` / scope the session" message. See
+ * `apps/operator/lib/agent-tools/_harness-scope.ts`.
+ */
+export class HarnessRequiredError extends Error {
+  override readonly name = 'HarnessRequiredError';
+}
+
 export interface DispatchProjectedResult {
   ok: boolean;
   result?: ToolResult;

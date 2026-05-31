@@ -21,6 +21,8 @@
  * resolvers wrap this and throw `HarnessRequiredError` for the dispatcher.
  */
 
+import { HarnessRequiredError } from '@papercusp/agent-mcp';
+
 /** Canonical "all harnesses / operator scope" sentinel. `'*'` can't collide
  *  with a real slug; `'all'` is an accepted friendly alias. */
 export const HARNESS_ALL = '*';
@@ -62,3 +64,24 @@ export const HARNESS_REQUIRED_DETAIL =
   "No harness in scope. Pass `harness: '<slug>'` for a specific harness, " +
   "`harness: 'all'` for operator / cross-harness scope (e.g. Papercusp's own), " +
   'or launch this session scoped to a harness.';
+
+/**
+ * For tools that resolve their harness through a **ctx-taking** helper (the
+ * `plans:*` resolvers `ctxToPlanSourceOpts` / `resolveCtxHarnessSlug`): apply
+ * the per-call `harness` arg by returning a ctx whose `harnessSlug` is the
+ * resolved scope, and **throw `HarnessRequiredError`** (→ dispatcher
+ * `harness_required`) when none is resolvable.
+ *
+ * `'all'` maps to the `'*'` wildcard — which those resolvers already treat as
+ * "operator scope" (Papercusp's own plans). A concrete slug passes through.
+ * So the existing resolvers stay UNCHANGED; the gate lives here, in the
+ * handler, exactly as the `docs:*` tools gate before `resolveAdapter`.
+ */
+export function harnessScopedCtx<T extends { harnessSlug?: string }>(
+  argHarness: string | null | undefined,
+  ctx: T,
+): T & { harnessSlug: string } {
+  const scope = resolveHarnessScope(argHarness, ctx);
+  if (scope.kind === 'none') throw new HarnessRequiredError(HARNESS_REQUIRED_DETAIL);
+  return { ...ctx, harnessSlug: scope.kind === 'all' ? HARNESS_ALL : scope.slug };
+}
