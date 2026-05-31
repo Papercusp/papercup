@@ -9,7 +9,7 @@ import { cleanup, render, screen, fireEvent } from '@testing-library/react';
 
 afterEach(() => cleanup());
 
-import { AskChoiceCard } from './AskChoiceCard';
+import { AskChoiceCard, type AskChoiceArgs } from './AskChoiceCard';
 
 const args = {
   question: 'Pick one',
@@ -116,5 +116,69 @@ describe('AskChoiceCard', () => {
     );
     fireEvent.click(optButton('Option B'));
     expect(onResponse).toHaveBeenCalled();
+  });
+});
+
+// Non-terminal "navigate" options (inbox-cards-unification Phase A / D-003):
+// clicking one opens a sub-surface (💬 Chat / View log) and leaves the card
+// live — it does NOT submit/answer.
+describe('AskChoiceCard — non-terminal (navigate) options', () => {
+  const navArgs: AskChoiceArgs = {
+    question: 'Resolve or chat',
+    options: [
+      { id: 'resolve', label: 'Resolve', style: 'primary' },
+      { id: 'chat', label: 'Chat', terminal: false },
+    ],
+  };
+
+  it('non-terminal click fires {action:navigate} and does NOT submit', () => {
+    const onResponse = vi.fn();
+    render(<AskChoiceCard args={navArgs} onResponse={onResponse} />);
+    fireEvent.click(optButton('Chat'));
+    expect(onResponse).toHaveBeenCalledWith({ action: 'navigate', option_id: 'chat', label: 'Chat' });
+    expect(onResponse).not.toHaveBeenCalledWith(
+      expect.objectContaining({ action: 'submit' }),
+    );
+  });
+
+  it('card stays live after navigate — a terminal option still submits', () => {
+    const onResponse = vi.fn();
+    render(<AskChoiceCard args={navArgs} onResponse={onResponse} />);
+    fireEvent.click(optButton('Chat'));
+    fireEvent.click(optButton('Resolve'));
+    expect(onResponse).toHaveBeenLastCalledWith({
+      action: 'submit',
+      picks: [{ option_id: 'resolve', label: 'Resolve' }],
+    });
+  });
+
+  it('navigate renders as the quiet secondary nav-btn, not a terminal option', () => {
+    render(<AskChoiceCard args={navArgs} onResponse={vi.fn()} />);
+    expect((optButton('Chat') as HTMLElement).className).toContain('ask-choice-nav-btn');
+  });
+
+  it('legacy onAnswer does NOT fire on navigate (only submit)', () => {
+    const onAnswer = vi.fn();
+    render(<AskChoiceCard args={navArgs} onAnswer={onAnswer} onResponse={vi.fn()} />);
+    fireEvent.click(optButton('Chat'));
+    expect(onAnswer).not.toHaveBeenCalled();
+  });
+
+  it('answered state disables the navigate option too', () => {
+    render(
+      <AskChoiceCard
+        args={navArgs}
+        answered={{ picks: [{ option_id: 'resolve', label: 'Resolve' }], at: 0 }}
+        onResponse={vi.fn()}
+      />,
+    );
+    expect((optButton('Chat') as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it('multi-select ignores terminal flag — every option is a checkbox toggle', () => {
+    render(<AskChoiceCard args={{ ...navArgs, multi: true }} onResponse={vi.fn()} />);
+    // In multi mode the 'chat' option renders inline as a checkbox, not a nav-btn.
+    expect(screen.getByRole('checkbox', { name: 'Chat' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /^Chat$/ })).toBeNull();
   });
 });

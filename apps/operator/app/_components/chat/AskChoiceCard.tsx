@@ -33,6 +33,15 @@ export interface AskChoiceOption {
   label: string;
   hint?: string;
   style?: 'default' | 'primary' | 'danger';
+  /**
+   * Terminal options (default) commit a `submit` and disable the card.
+   * Non-terminal options (`terminal: false`) are *navigational* — clicking
+   * one fires `{action:'navigate', option_id}` and leaves the card live (it
+   * opens a sub-surface, e.g. "💬 Chat" / "View log", rather than answering).
+   * They render as a quiet secondary action row beneath the terminal options.
+   * Only meaningful in single-select; ignored in `multi` mode.
+   */
+  terminal?: boolean;
 }
 
 export interface AskChoiceArgs {
@@ -53,12 +62,15 @@ export interface AskChoiceAnswered {
 
 /**
  * Card response surface — the new ctx.askUser shape (#2 + L4):
- *   submit  — user committed picks
- *   decline — user explicitly skipped (Skip button)
- *   cancel  — orchestrated by parent (run abort) — not a user button
+ *   submit   — user committed picks
+ *   navigate — user clicked a non-terminal option (open a sub-surface; the
+ *              card stays live, nothing is answered)
+ *   decline  — user explicitly skipped (Skip button)
+ *   cancel   — orchestrated by parent (run abort) — not a user button
  */
 export type AskChoiceResponse =
   | { action: 'submit'; picks: Array<{ option_id: string; label: string }> }
+  | { action: 'navigate'; option_id: string; label: string }
   | { action: 'decline'; reason?: string }
   | { action: 'cancel' };
 
@@ -106,6 +118,13 @@ export function AskChoiceCard({
   const isAnswered = !!answered;
   const buttonsDisabled = isAnswered && disableWhenAnswered;
   const multi = args.multi === true;
+
+  // Partition single-select options into terminal (commit + disable) and
+  // navigate (open a sub-surface; card stays live). Multi-select ignores the
+  // flag — every option is a toggle. Chat callers pass no `terminal`, so
+  // `navOptions` is empty and the card renders exactly as before.
+  const mainOptions = multi ? args.options : args.options.filter((o) => o.terminal !== false);
+  const navOptions = multi ? [] : args.options.filter((o) => o.terminal === false);
 
   /**
    * Bridge: callers may pass onResponse (new), onAnswer (legacy), or
@@ -156,7 +175,7 @@ export function AskChoiceCard({
         {renderPickedSummary()}
       </div>
       <div className="ask-choice-options">
-        {args.options.map((opt) => {
+        {mainOptions.map((opt) => {
           const isPicked = pickedIds.has(opt.id);
           const isToggled = multi && !isAnswered && selected.has(opt.id);
           const showHighlight = isPicked || isToggled;
@@ -223,6 +242,24 @@ export function AskChoiceCard({
           );
         })}
       </div>
+      {navOptions.length > 0 && (
+        <div className="ask-choice-nav">
+          {navOptions.map((opt) => (
+            <button
+              key={opt.id}
+              type="button"
+              disabled={buttonsDisabled}
+              aria-label={opt.label}
+              className="ask-choice-nav-btn"
+              data-style={opt.style ?? 'default'}
+              onClick={() => fire({ action: 'navigate', option_id: opt.id, label: opt.label })}
+            >
+              {opt.label}
+              {opt.hint && <span className="ask-choice-nav-hint">{opt.hint}</span>}
+            </button>
+          ))}
+        </div>
+      )}
       {multi && !isAnswered && (
         <div className="ask-choice-submit-row">
           <span className="ask-choice-submit-hint">

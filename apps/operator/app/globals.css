@@ -24602,6 +24602,47 @@ body:has(.operator-panel) {
   cursor: not-allowed;
 }
 
+/* Non-terminal "navigate" options (e.g. 💬 Chat, View log) — a quiet
+   secondary row beneath the terminal options. They open a sub-surface and
+   leave the card live, so they read as links/pills, not answers.
+   (inbox-cards-unification Phase A / D-003.) */
+.ask-choice-nav {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px dashed rgb(from var(--accent-strong) r g b / 0.18);
+}
+.ask-choice-nav-btn {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 5px 12px;
+  border: 1px solid rgb(from var(--accent-strong) r g b / 0.30);
+  border-radius: 999px;
+  background: transparent;
+  color: #bae6fd;
+  font-size: 12px;
+  font-weight: 650;
+  cursor: pointer;
+  transition: background-color 120ms, border-color 120ms, color 120ms;
+}
+.ask-choice-nav-btn:hover:not(:disabled) {
+  background: rgb(from var(--accent) r g b / 0.12);
+  border-color: rgb(from var(--accent-strong) r g b / 0.5);
+  color: #eaf8ff;
+}
+.ask-choice-nav-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.ask-choice-nav-hint {
+  color: var(--fg-mute, #6b7f96);
+  font-weight: 500;
+}
+
 /* ── Operator chat metallic pass 2 ──────────────────────────────────── */
 
 .op-chat-sidebar .oracle-empty-state {
