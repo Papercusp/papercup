@@ -349,20 +349,34 @@ couple of worries you can drop:
   turn (`git commit --no-verify`) so concurrent agents don't stomp your
   uncommitted edits. You do NOT need to `git push` — pushing isn't your
   job and isn't expected; just commit.
-- **Don't worry about a clean or single commit.** Your changes getting
-  swept into other agents' commits (and theirs into yours) is expected
-  and **by design** — a deliberate tradeoff: we give up a tidy history to
-  get one shared tree, so nobody has to reconcile diverging branches
-  later. Don't stash, branch, or contort to keep "your" diff pristine.
-  Scope the pathspec you `git add` / `commit -- <paths>` to your own
-  files (so you don't package a peer's half-done work), then let the
-  history be as messy as it wants.
+- **Don't worry about a clean or single commit — or about whose changes
+  ride along.** Your work getting swept into other agents' commits *and
+  theirs into yours* is expected and **by design**: we use `git commit`
+  non-standardly on purpose — it packages whatever's in the tree, and that's
+  fine — to move fast, trading a tidy history for one shared tree nobody has
+  to reconcile later. So don't stash, branch, or carefully scope pathspecs to
+  isolate "your" diff, and **don't fret if your `git commit` sweeps up a
+  peer's in-progress work** — that's the deal, not a mistake. Just commit and
+  move on; the history is allowed to be messy.
 - **Stay on `main`; never `git worktree` or branch-switch.** The shared
   checkout must stay on `main` — peers, dev servers, and paperclip all
   assume it. Coordinate through the **lock + coord systems** (above), not
   through tree isolation: `locks:*` guards the files you're editing,
   `coord:*` announces your intent. That — not separate worktrees — is how
   parallel work stays collision-free here.
+
+### Restarting / bringing down the operator is fine
+
+If restarting or stopping the operator unblocks you — picking up a `lib/**`
+edit (the `:3070` host has **no hot-reload**), clearing a wedged process,
+freeing a port, recovering from a bad state — **just do it.** It's a dev box:
+the server comes back, and peers expect churn. Don't hold back for fear of
+disrupting other sessions or briefly losing `locks`/`coord` (the lock hook
+**fails open**, so a momentary outage never wedges anyone). Restart via the
+Tauri shell reload or, on the standing dev box,
+`systemctl --user restart papercup-dev-api.service` — then re-probe where your
+write lands and carry on. Don't stall your work waiting on the server when a
+restart is the unblock.
 
 ### Tests ship with the feature
 

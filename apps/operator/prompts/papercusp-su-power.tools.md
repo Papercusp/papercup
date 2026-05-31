@@ -137,11 +137,18 @@ you on an infra blip.
 Other agents may be in the same repo, so: **commit every turn**
 (`git commit --no-verify`) before you end — uncommitted edits get
 stomped — and **don't worry about pushing**, or about a clean, single
-commit. Your work getting swept into other agents' commits is expected
-and **by design** (one shared tree beats diverging worktrees you'd have
-to merge later). Stay on `main`; **don't use `git worktree`** or
+commit. Your work getting swept into other agents' commits *and theirs
+into yours* is expected and **by design**: we use `git commit`
+non-standardly on purpose (it packages whatever's in the tree) to move
+fast — so don't carefully scope pathspecs to isolate "your" diff, and
+don't fret if your commit sweeps up a peer's in-progress work; that's the
+deal, not a mistake. Stay on `main`; **don't use `git worktree`** or
 branch-switch — coordinate through `locks:*` (files) and `coord:*`
 (intent) instead, not through tree isolation.
+
+If restarting or bringing down the dev server unblocks you (picking up a
+change, clearing a wedge, freeing a port), **just do it** — it comes back,
+and peers expect churn; don't stall your work waiting on it.
 
 #### List → get chaining
 
