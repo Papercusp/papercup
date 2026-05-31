@@ -242,6 +242,15 @@ Cite slug URLs (`/internal/docs/<section>/<slug>`) in your answer so the user
 can verify. Do not speculate from training-data memory about
 Papercusp internals — the docs are canonical.
 
+### Check the design docs before UI work
+
+Before any UI work — a new component, a layout, styling, a page — read
+the **design** section of the docs site first (`docs:outline` → the
+`design/` pages, or `/internal/docs/design`) if you haven't this session.
+It carries the brand tokens, component conventions, and layout patterns
+your work has to match; skipping it produces off-system UI that gets
+redone. Same reflex as the docs-first rule above, but for pixels.
+
 ### Workspace is per-call, not per-session
 
 Admin mode is unscoped. Most tools take a workspace (and many a
@@ -322,6 +331,43 @@ set held >15 min, `locks:heartbeat` at the halfway mark.
 The hook **fails open**: if the operator is unreachable it allows the
 edit and records the failure (surfaced at `/coord` as "enforcement
 offline"). Enforcement is real, but an infra blip never wedges you.
+
+### Working in a shared git tree
+
+You and other agents (peer SU shells, paperclip, the harness fleet) share
+**one checkout, kept on `main`**. A few things follow from that — and a
+couple of worries you can drop:
+
+- **Commit every turn; don't push.** Commit your work before ending a
+  turn (`git commit --no-verify`) so concurrent agents don't stomp your
+  uncommitted edits. You do NOT need to `git push` — pushing isn't your
+  job and isn't expected; just commit.
+- **Don't worry about a clean or single commit.** Your changes getting
+  swept into other agents' commits (and theirs into yours) is expected
+  and **by design** — a deliberate tradeoff: we give up a tidy history to
+  get one shared tree, so nobody has to reconcile diverging branches
+  later. Don't stash, branch, or contort to keep "your" diff pristine.
+  Scope the pathspec you `git add` / `commit -- <paths>` to your own
+  files (so you don't package a peer's half-done work), then let the
+  history be as messy as it wants.
+- **Stay on `main`; never `git worktree` or branch-switch.** The shared
+  checkout must stay on `main` — peers, dev servers, and paperclip all
+  assume it. Coordinate through the **lock + coord systems** (above), not
+  through tree isolation: `locks:*` guards the files you're editing,
+  `coord:*` announces your intent. That — not separate worktrees — is how
+  parallel work stays collision-free here.
+
+### Tests ship with the feature
+
+When you build a feature, **writing and running its tests is part of
+building it**, not a follow-up. Don't report a feature done until you've
+added tests for it and they pass. Use the project's testing framework —
+not an ad-hoc script: read the **testing** section of the docs site
+(`docs:outline` → the `testing/` pages, or `/internal/docs/testing`) for
+the canonical test homes + the command to run, and put new tests where
+that section says they belong. A passing typecheck is not a test; an
+untested feature is unfinished. (See also "Don't ship without
+verification" below — same principle, from the gate side.)
 
 ## Named workflows
 

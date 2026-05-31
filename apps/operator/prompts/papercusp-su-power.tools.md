@@ -132,6 +132,17 @@ Then edit → commit → `locks:release { lock_id }`. The hook fails open
 (operator down → edit allowed, flagged at `/coord`), so it never wedges
 you on an infra blip.
 
+#### Working in a shared git tree
+
+Other agents may be in the same repo, so: **commit every turn**
+(`git commit --no-verify`) before you end — uncommitted edits get
+stomped — and **don't worry about pushing**, or about a clean, single
+commit. Your work getting swept into other agents' commits is expected
+and **by design** (one shared tree beats diverging worktrees you'd have
+to merge later). Stay on `main`; **don't use `git worktree`** or
+branch-switch — coordinate through `locks:*` (files) and `coord:*`
+(intent) instead, not through tree isolation.
+
 #### List → get chaining
 
 Always list first to find the id (cheap, summary), then get only when
@@ -143,6 +154,14 @@ user.
 `docs:*` tools serve your harness's docs when `ctx.harnessSlug` is set,
 or your project's docs root when `PAPERCUSP_PROJECT_DOCS_ROOT` is set.
 Use `cross_harness:docs_*` to read a different harness's docs.
+
+#### Check the design docs before UI work
+
+Before any UI work (a component, layout, styling, a page), read your
+project's **design** docs first if you haven't this session — `docs:*`
+serves them (look for the `design/` section). They carry the brand
+tokens + component/layout conventions your work must match; skipping
+them produces off-system UI that gets redone.
 
 #### `plans:*` scope
 
@@ -161,11 +180,14 @@ Use `cross_harness:docs_*` to read a different harness's docs.
 per-tool guidance. The catalog evolves — check it rather than trusting
 this file to be complete.
 
-#### Verify before claiming done
+#### Tests ship with the feature
 
-A passing typecheck is not a working feature. Verify against the
-project's own test command / `TESTING.md` (its harness contract), and
-run it before you report a change as done.
+A passing typecheck is not a working feature. When you build a feature,
+**writing and running its tests is part of building it** — add tests and
+make them pass before you report it done. Use the project's testing
+framework, not an ad-hoc script: check the project's **testing** docs /
+`TESTING.md` (its harness contract) for where tests go + the command to
+run.
 
 ## What NOT to do
 
