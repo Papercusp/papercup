@@ -23,7 +23,11 @@
 import { Hono } from 'hono';
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { extname, join, resolve, sep } from 'node:path';
+import { getAllFlags, isBackendConfigured } from '@papercusp/flags/server';
 import { activeWorkspaceId } from '../lib/workspace-registry';
+import { resolveDistinctId } from '../lib/flag-distinct-id';
+import { reinitFlagBackend } from '../lib/flag-bus';
+import { isTestingFeaturesEnabled } from '../lib/posthog-config';
 
 /**
  * Vite SPA `dist/` root. In dev (host run via `tsx` from source) this
@@ -72,14 +76,30 @@ function serveFile(absPath: string, status = 200): Response {
 }
 
 /**
- * Serve the SPA shell with the active workspace id injected as a pre-hydration
- * global. The browser namespaces per-workspace localStorage off this, so it
- * must be set before the deferred module bundle runs — and independent of the
- * URL, which doesn't reliably carry `?ws=` (workspace-localstorage-isolation-
- * 2026-05-27, D-001). The operator process is workspace-specific (HOME-remapped),
- * so `activeWorkspaceId()` is the right source.
+ * Serve the SPA shell with pre-hydration globals injected:
+ *
+ *   - `window.__PAPERCUSP_WS__` — the active workspace id. The browser
+ *     namespaces per-workspace localStorage off this, so it must be set
+ *     before the deferred module bundle runs — and independent of the URL,
+ *     which doesn't reliably carry `?ws=` (workspace-localstorage-isolation-
+ *     2026-05-27, D-001). The operator process is workspace-specific
+ *     (HOME-remapped), so `activeWorkspaceId()` is the right source.
+ *
+ *   - `window.__PAPERCUSP_FLAGS__` — the resolved feature-flag payload. The
+ *     flags client (`libs/flags` client `readInitialPayload`) seeds its
+ *     snapshot from this global, so flag-gated UI paints with the real flag
+ *     state on first render instead of FLAG_DEFAULTS. Without it, an enabled
+ *     flag's surface renders hidden for one paint, then pops in once the
+ *     async `/api/flags/bootstrap` fetch resolves — the flash this removes.
+ *     This is data injection into a static shell, NOT server-side rendering:
+ *     the client still renders 100% of the UI, and still revalidates via
+ *     `loadFlags()` + the SSE flag stream. We compute it exactly as the
+ *     `/flags/bootstrap` route does (same reinit guard + distinct-id), since
+ *     this host owns the same in-process flag backend. Best-effort: a flag
+ *     backend hiccup must never break the shell, so on any error we omit the
+ *     seed and let the client fall back to its async bootstrap.
  */
-function serveIndexHtmlWithWorkspace(indexPath: string): Response {
+async function serveIndexHtmlWithWorkspace(indexPath: string, req: Request): Promise<Response> {
   let html = readFileSync(indexPath, 'utf-8');
   let wsId = 'default';
   try {
@@ -87,7 +107,17 @@ function serveIndexHtmlWithWorkspace(indexPath: string): Response {
   } catch {
     /* registry unreadable — fall back to 'default' */
   }
-  const inject = `<script>window.__PAPERCUSP_WS__=${JSON.stringify(wsId)};</script>`;
+  const globals = [`window.__PAPERCUSP_WS__=${JSON.stringify(wsId)};`];
+  try {
+    if (isBackendConfigured() !== isTestingFeaturesEnabled()) {
+      reinitFlagBackend();
+    }
+    const flags = await getAllFlags(resolveDistinctId(req));
+    globals.push(`window.__PAPERCUSP_FLAGS__=${JSON.stringify(flags)};`);
+  } catch {
+    /* flag backend unavailable — client bootstraps flags asynchronously */
+  }
+  const inject = `<script>${globals.join('')}</script>`;
   // Insert right after <head> so it runs before the deferred module bundle.
   html = html.includes('<head>') ? html.replace('<head>', `<head>${inject}`) : inject + html;
   return new Response(html, {
@@ -108,7 +138,7 @@ export const spaRoutes = new Hono();
 // Final fallback — registered last in `host-handler.ts`, so `/api/*`,
 // `/internal/docs/*`, `/wiki`, `/drizzle-studio` and the cross-app proxies
 // have all already terminated before a request reaches here.
-spaRoutes.get('*', (c) => {
+spaRoutes.get('*', async (c) => {
   const pathname = decodeURI(new URL(c.req.url).pathname);
   const rel = pathname.replace(/^\/+/, '');
 
@@ -127,7 +157,7 @@ spaRoutes.get('*', (c) => {
   // (2) Extensionless → SPA shell. Client router (TSR) owns the route,
   //     including its own not-found component, so this is always 200.
   const indexPath = join(SPA_DIST_ROOT, 'index.html');
-  if (existsSync(indexPath)) return serveIndexHtmlWithWorkspace(indexPath);
+  if (existsSync(indexPath)) return serveIndexHtmlWithWorkspace(indexPath, c.req.raw);
 
   // dist/ not built — actionable 503 rather than a bare crash.
   return new Response(
