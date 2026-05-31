@@ -19,6 +19,7 @@ import AdvChatPanel from './AdvChatPanel';
 import AdvAgentsPanel from './AdvAgentsPanel';
 import AdvLogsPanel from './AdvLogsPanel';
 import AdvOverviewPanel from './AdvOverviewPanel';
+import AdvInsightsPanel from './AdvInsightsPanel';
 
 const CHAT_PANEL_TYPE = 'adv:chat';
 
@@ -68,6 +69,10 @@ function ensureRegistered() {
   panelRegistry.register('adv:agents', AdvAgentsPanel, { title: 'Agents' });
   panelRegistry.register('adv:logs', AdvLogsPanel, { title: 'Run log' });
   panelRegistry.register('adv:overview', AdvOverviewPanel, { title: 'Overview' });
+  // Phase-8 Insights (P-073) — built + tested but previously had no in-shell
+  // mount; register it so it's openable from the panel menu (additive — not
+  // forced into the default layout).
+  panelRegistry.register('adv:insights', AdvInsightsPanel, { title: 'Insights' });
   // keepAlive: the chat keeps its SSE stream + transcript when its tab is
   // inactive. Multi-instance: several chat slots can coexist (the open-chat
   // drain fills the first free one).
