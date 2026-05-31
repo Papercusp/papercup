@@ -114,11 +114,15 @@ a Papercusp tie-in by decision even though they have a host seam.
 Repointing `node_modules/@papercusp/*` symlinks makes the *running*
 operator resolve fine, but it is **not** the whole job:
 
-1. **`file:` workspace deps go stale.** `apps/operator/package.json` +
-   `packages/agent-mcp/package.json` declare `"@papercusp/x":
-   "file:../../libs/x"`. A path move must rewrite those (+ `.github/workflows`
-   working-dirs, `scripts/scaffold-tests.mjs`, docs `--workspace` paths) or a
-   fresh `npm install` breaks. Symlinks + root workspace globs are not enough.
+1. **Path refs beyond symlinks go stale.** Repointing symlinks + the root
+   workspace globs is not enough — a path move must also rewrite: `file:`
+   workspace deps (`apps/operator/package.json`, `packages/agent-mcp/package.json`
+   declare `"@papercusp/x": "file:../../libs/x"` — breaks a fresh `npm install`),
+   `.github/workflows` working-dirs, `scripts/scaffold-tests.mjs` dirs, docs
+   `--workspace` paths, **`Dockerfile` `COPY` lines**, and **test-discovery
+   globs** (`apps/operator/lib/testing-domains-registry.ts`). Grep every file
+   type, not just `*.json`/`*.yml`. (Skip refs that are example harness sub-slugs
+   like `papercup/libs/sync`, and `Dockerfile.papercup` — bannered "do not fix".)
 2. **The operator services are transient `systemd-run --user` units**
    (`papercup-dev-api` = :3070 host, CWD `apps/operator`; `papercup-dev` =
    operator-vite watcher, CWD repo root). `systemctl --user stop` **destroys**

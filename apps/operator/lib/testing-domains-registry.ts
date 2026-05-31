@@ -338,7 +338,7 @@ defineTestDomain({
   description: 'SSE / IPC / adapters / sync-resolver.',
   tier: 'surface',
   sections: [
-    { id: 'sse', label: 'SSE', globs: ['libs/sse/**/*.test.ts'] },
+    { id: 'sse', label: 'SSE', globs: ['libs/generic/sse/**/*.test.ts'] },
     { id: 'ipc', label: 'IPC', globs: ['apps/operator/lib/endpoint-ipc/**/*.test.ts'] },
     { id: 'adapters', label: 'Adapters', globs: ['packages/desktop-ipc/src/**/*.test.ts'] },
   ],
