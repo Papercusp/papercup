@@ -9,8 +9,16 @@ owner: aviynw3@gmail.com
 
 ## Now
 
-**State: ALL FIVE PHASES CODE-COMPLETE (2026-05-31). One outstanding gate:
-live e2e.** Unified the agent-backend refactor handoff + psu role sessions:
+**State: ALL FIVE PHASES CODE-COMPLETE + LIVE-VERIFIED (2026-05-31). codex
+interactive role sessions now also SHIPPED. Only deferral left is P-032 (omp→psu
+convergence), which has confirmed-unmet preconditions — see its entry.** The
+verification debt from session 1 is essentially burned down: Phase 3 launch
+plumbing, P-013 codex worker, P-041 settings UI, and D-001 tool-scoping are all
+live-verified (details in the e2e handoff brief). Remaining truly-open slivers:
+the codex interactive **TUI** launch (inherent human step) and the Phase-4
+launch-button render/click **in-webview** (needs a fresh Xvfb Tauri instance —
+don't drive the user's live window). Unified the agent-backend refactor handoff
++ psu role sessions:
 - **Phase 1** (shared spine): P-001 unify `AGENT_BACKENDS` + drift guard;
   P-002 `consumes` single-source; P-003 `buildRoleLaunchSpec`.
 - **Phase 2** (codex orchestrator pipeline): P-010/P-011/P-012 — codex spawn
@@ -240,7 +248,7 @@ P-024 todo Manual e2e: `psu --role=worker` → harness → feature → backend o
 
 P-030 done All 6 `launchOmpAgent` call sites (PlanActions, PlanItemPreview, PlansClient, AgentLauncherButton, AdvSessionsClient ×3) re-pointed through a unified `lib/launch-agent.ts` `launchAgent({ agent, … })` dispatcher: `omp` (default) → the unchanged launchOmpAgent path (model/kickoff/resume preserved); `claude`/`codex` → `POST /adv/sessions/launch-su` → psu → `*-su` wrapper. 6 dispatch unit tests. Commit `c288cbf1`. (Lowest-regression migration: omp behavior byte-identical; claude/codex are the new capability.)
 P-031 done Agent selection on the primary launch surface is the existing AdvSessions `suAgent` select + "Launch SU" control (built in the psu-wrappers arc). Per-button selectors on the smaller plan buttons can be added incrementally; they default to omp today.
-P-032 todo **Deferred per the "keep fallback" choice.** Retire `buildEngineerOmpLaunchCommand` + console-launch `mode:'omp'` once the psu path reaches model/kickoff/resume parity AND a UI e2e confirms claude/codex launches — then converge omp onto psu too. Until then the omp builder remains the (default) implementation behind `launchAgent`. blocked-by:P-030
+P-032 todo **Deferred per the locked "keep fallback" choice — preconditions confirmed UNMET (2026-05-31), do NOT execute yet.** Verified the exact live call graph: `launchAgent('omp')` → `launchOmpAgent` (`native-omp-launch.ts`) → POST `/api/agent-mcp/console/launch {mode:'omp'}` → `buildConsoleEnvelope({mode:'omp'})` (`console-launcher.ts:208`) → `buildEngineerOmpLaunchCommand`. This is the **live default omp launch path**, NOT dead code — every omp launch button rides it. (`bootstrap-su` uses `buildConsoleEnvelope({mode:'shell'})`, a different branch; `plans-api.ts` resume POSTs `console/launch {mode:'shell'}`. So only `launchOmpAgent` reaches the omp branch.) **Concrete convergence blocker:** `launchOmpAgent` forwards `model` + kickoff + resume; `psu`/`launch-su` have **no `--model`/`--kickoff` passthrough**, so flipping omp onto psu now would *regress* omp launches. Work order when ready: (1) add `--model`/`--kickoff` (and confirm `--resume`) passthrough to `launch-su` + `psu-launcher.mjs` and into the `omp-su` wrapper invocation; (2) repoint `launchOmpAgent` (or the dispatcher's omp branch) at `launch-su` → psu; (3) Phase-4 in-webview e2e of all three launch buttons (drive a **fresh Xvfb Tauri instance**, not the user's live window — see the e2e handoff brief's session-2 note); (4) delete `buildEngineerOmpLaunchCommand` + the route's `mode:'omp'` branch + reconcile the `adv_sessions.mode==='omp'` resume-thread checks (`adv/sessions.ts:105/159/169`). blocked-by:P-030
 
 ## Phase 5 — surfacing, model coupling, docs
 
