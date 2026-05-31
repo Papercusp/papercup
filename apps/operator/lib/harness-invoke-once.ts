@@ -17,6 +17,7 @@
  * sites stay in lockstep.
  */
 import { invokeOnceBin, tsxBin } from '@/lib/harness-paths';
+import { getHarnessAdminUrl } from '@/lib/embedded-pg-discovery';
 
 export interface InvokeOnceSpec {
   /** PROJECT_DIR — the user's project root. */
@@ -54,6 +55,13 @@ export function buildInvokeOnce(spec: InvokeOnceSpec): {
     EXTRAS_JSON: JSON.stringify(spec.extras),
     // invoke-once → env.ts resolveAgentCmd() reads AGENT_CMD ?? CLAUDE.
     CLAUDE: process.env.AGENT_CMD ?? process.env.CLAUDE ?? 'omp -p',
+    // Production launchers must enable the PG state path + provide the DSN — the
+    // pg-bootstrap otherwise runs with empty in-memory state and the spawned
+    // agent's tools (spawn-mcp) fail "no PG DSN in env". Mirrors harness-launch.ts
+    // so invoke-route/scoper/expert agents hit the SAME Postgres the operator
+    // uses. `??` keeps any explicit override (e.g. tests forcing in-memory).
+    PAPERCUSP_USE_PG_STATE: process.env.PAPERCUSP_USE_PG_STATE ?? '1',
+    DATABASE_URL: process.env.DATABASE_URL ?? getHarnessAdminUrl(),
   };
   if (spec.resultPath) env.RESULT_PATH = spec.resultPath;
   for (const [k, v] of Object.entries(spec.extraEnv ?? {})) {
