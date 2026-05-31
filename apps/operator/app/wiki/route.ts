@@ -21,9 +21,10 @@ const SEARCH_DIRS = ['.harness', '', '.claude/skills'] as const;
 // Used to translate a hit at `<root>/.harness/supervisor-notes.md` into
 // the URL `?specTab=supervisor`.
 const TAB_BY_FILENAME: Record<string, string> = {
-  'SPEC.md': 'spec',
+  // SPEC.md + validation-contract.md dropped — deprecated (D-004/D-005); they no
+  // longer have a SpecEditor tab, so a wiki hit on them falls through to the
+  // default config panel (tab === null below) rather than a dead specTab.
   'AGENTS.md': 'agents',
-  'validation-contract.md': 'contract',
   'supervisor-notes.md': 'supervisor',
   'knowledge.md': 'knowledge',
 };
