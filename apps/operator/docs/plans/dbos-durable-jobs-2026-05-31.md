@@ -11,9 +11,9 @@ owner: avi@storewolf.com
 
 ## Now
 
-**State:** Phases 0 + 1 complete; **Phase 2 in progress** — the 4 simple periodic timers (telemetry-flush, scratch-gc, memory-cleanup, completion-ref-verifier) migrated to DBOS scheduled workflows + verified + committed (53fd89b2, 68533dbd). Correction (D-017): the `@restart→@papercusp` rename is **already done** (0 `@restart` imports, scout-convergence shipped, 0 consumer fallout); the ~598 tsc errors are pre-existing operator baseline (zero-harness/generated.ts/tests/agent-mcp, CI known-red), NOT churn — so nothing was actually blocked. Everything verified against real embedded PG16; tsc clean for all touched files; all on `main` via mine-only pathspecs.
+**State:** Phases 0 + 1 complete; **Phase 2 largely done** — **5 server-side periodic timers migrated** to DBOS scheduled workflows + verified + committed (telemetry-flush, scratch-gc, memory-cleanup, completion-ref-verifier, embed-backfill; commits 53fd89b2, 68533dbd, ef896e63). Scope corrected (D-018): the operator scanner (P-009) is a client-side UI loop, not a server timer → dropped; embeddings (P-010) turned out simple-tier → migrated. All flag-gated by `PAPERCUSP_DBOS_TIMERS=1` with legacy stand-down (D-011), verified on embedded PG16, tsc-clean, all on `main` via mine-only pathspecs.
 
-**Next:** Remaining Phase 2: the complex migrations — P-009 operator scanner (scan-lock mutual exclusion), P-010 embeddings (rate-limited queue), P-011 backups (per-workspace cadence) — each per its subsystem. Then P-012 (prune dead bullmq/ioredis/redis deps) + P-013 (delete old timer paths + flags) once the rename's uncommitted package.json changes are committed. Separately, the live-service boot is unblocked (restart dev API with PAPERCUSP_DBOS_ENABLE=1 PAPERCUSP_DBOS_TIMERS=1 [+AUTOLOOP], open /admin/dbos).
+**Next:** Only genuinely-complex migration left: **P-011 backups** — `startBackupScheduler` in `packages/backup`, per-workspace cadence → needs a per-workspace enumeration design (AutoLoop's per-harness shape). Then P-012 (prune dead bullmq/ioredis/redis deps) + P-013 (delete old timer paths + flags) once the rename's uncommitted package.json changes are committed. Live-service boot is unblocked (restart dev API with PAPERCUSP_DBOS_ENABLE=1 PAPERCUSP_DBOS_TIMERS=1 [+AUTOLOOP], open /admin/dbos).
 
 ## Background
 
@@ -231,6 +231,21 @@ Date: 2026-05-31
 
 **Remaining Phase 2:** the **complex** migrations — operator scanner (P-009, scan-lock mutual exclusion), embeddings (P-010, rate-limited queue), backups (P-011, per-workspace cadence) — each needs per-subsystem care. Plus P-012 (prune dead `bullmq`/`ioredis`/`redis` deps) + P-013 (delete old timer paths + flags) — deferred only because they edit `package.json` files that currently carry the rename's *uncommitted* working-tree changes; do them once those are committed. The live-service boot is now genuinely unblocked (needs a dev-API restart).
 Related: P-009, P-010, P-011, P-012
+
+
+### D-018 — Phase 2 scope correction: scanner is client-side (dropped), embeddings migrated, backups the sole complex remainder
+Date: 2026-05-31
+Investigating the "complex three" corrected the D-016 classification:
+
+- **P-009 operator scanner — DROPPED.** It is **not** a server-side timer: the scan cadence is a **client-side `setInterval`** in `app/_components/OperatorBackgroundScanner.tsx` (runs in the browser/webview while the operator UI is open). A server-side DBOS scheduled workflow cannot replace a per-client UI loop. (A server-authoritative scan cadence, if ever wanted, is a separate design — not a timer migration.) The `operator:scan` tool itself is on-demand/agent-triggered; the director-driven scans already route through the AutoLoop migration.
+
+- **P-010 embeddings — MIGRATED (`ef896e63`).** `embed-backfill` (5-min periodic semantic-index sweep) → DBOS scheduled workflow via a new `runEmbedBackfillOnce()` wrapping the existing battery-aware sweep. So it was a simple-tier item, not complex.
+
+**Total server-side periodic timers now migrated (5):** `telemetry-flush`, `scratch-gc`, `memory/cleanup-worker`, `harness/completion-ref-verifier`, `search/embed-backfill` — all in `lib/dbos/periodic-workflows.ts` as scheduled workflows (skip-missed), flag-gated by `PAPERCUSP_DBOS_TIMERS=1` with legacy `setInterval` stand-down (D-011), verified registering + launching on embedded PG16, tsc-clean.
+
+- **P-011 backups — the ONLY genuinely-complex remaining migration.** `startBackupScheduler` lives in `packages/backup` with **per-workspace cadence** (not a single global schedule), so it needs a per-workspace enumeration design (the shape AutoLoop uses per-harness) plus care around the backup package boundary. Deferred to a focused pass.
+- **P-012 / P-013** (prune dead `bullmq`/`ioredis`/`redis` deps; delete old timer paths + flags) still deferred behind the rename's *uncommitted* `package.json` working-tree changes — do once those are committed.
+Related: P-009, P-010, P-011
 
 ## Phase 0 — Spike & validation (GATE)
 
