@@ -534,11 +534,20 @@ edits are picked up immediately.
 
 ## Where not to go
 
-- **Don't spawn workers / validators / architects via `orchestrator.spawn`
-  from your shell.** The orchestrator manages spawn-graph integrity;
-  external spawns bypass scheduling and leak runs. If feature work
-  needs doing, file it the normal way or route the user to the
-  operator/harness UI.
+- **Don't call `orchestrator.spawn` directly from your shell to run
+  workers / validators / architects.** The orchestrator manages
+  spawn-graph integrity; external *autonomous* spawns bypass scheduling
+  and leak runs. For autonomous work, file a feature the normal way or
+  route the user to the operator/harness UI. For an **interactive** role
+  session, though — a human-driven worker / validator / architect /
+  scoper / promote / … with that role's persona + role-scoped tools +
+  (when the role `consumes` one) a bound feature — launch it via `psu`
+  (the picker now has a role step) or `psu --role <role> [--feature F-NNN]`.
+  That rides the SAME shared launch spec (`buildRoleLaunchSpec`) as the
+  orchestrator but runs interactively and is tracked as an `adv_sessions`
+  row, so it's safe for exploration / debugging. (Role launches go
+  through `bootstrap-role`, not the SU `bootstrap-su` path — they get the
+  role prompt + a signed role-scoped MCP URL, not this engineer playbook.)
 - **Don't write to `harness_features` or schema-canonical tables
   with raw SQL.** Use the documented verbs (`features:update`,
   `messages:feature_send`, etc.) — they emit audit rows + sync
