@@ -11,19 +11,9 @@ owner: aviynw3@gmail.com
 
 ## Now
 
-**State:** Approved (2026-05-31). P-022 resolved — operator recommendations and
-design reviews stay in their own surfaces (importance-aware only); P-028 dropped.
-Implementation underway at Phase 1. Prior context: the escalation→needs-human
-folding already shipped (`plans-central-harness-ux-2026-05-26` D-003; P-010–P-014
-done). This plan adds an **importance** level on all items
-(`urgent | high | normal | low`); a generic `AttentionItem` type so coord
-escalations, coord messages-to-human, smoke-test failures, and plan-ready-for-review
-fold into the same view under a new **"Other"** item-filter; the "Needs
-Decision"→**"ToDos"** rename; cross-harness attention; **event-driven push over IPC
-(no polling)**; and operator/orchestrator reading importance.
+**State:** Phase 1 landed (commit 6e5b6715): importance is a first-class item axis. P-002 done — `@papercusp/plan-parser` parses an `importance:` keyword (urgent|high|normal|low, default normal, glyph-agnostic like blocked-by; unknown→normal with no parseWarning). P-003 done — `plans:items` sorts by importance (urgent→low, stable) and `plans:lint` emits a soft `unknown_importance` warning. P-001 done — plan-format spec documents importance + the misleading `- [ ]` item example was corrected to the canonical `- **P-NNN** \`status\`` form (note: the served HTML mirror under apps/operator/public/internal/docs/ regenerates on the next docs/prod build). P-004 PARTIAL — `plans:add-item`/`buildItemLine` take an optional `importance` arg (emitted only when ≠ normal); the hard-required enforcement + the new `plans:set-importance` verb + caller updates (UI +Item picker, architect plan-block-handler) are deliberately sequenced to land WITH P-005 so agents have the rubric in their prompt before being forced to choose. Tests green: plan-parser 13, operator write-mutators 29 + lint 4.
 
-**Next:** Phase 1 — `importance:` keyword in the plan-format spec + parser + a
-`plans:items` sort + `plans:add-item` authoring enforcement (P-001..P-004).
+**Next:** P-005 — add the importance rubric to the scoper/architect/orchestrator/operator prompts — then finish P-004 (make the add-item arg required, add plans:set-importance, update callers), then Phase 3 (AttentionItem + adapters).
 
 ## Background
 
@@ -58,9 +48,9 @@ adv-harness-tab-migration D-002/D-003); `plans:items` / `plans:list` already acc
 
 ## Phase 1 — Importance on plan items (data + authoring)
 
-- **P-001** `todo` plan-format spec (`apps/operator-docs/src/content/docs/spec/plan-format.mdx`) — document an `importance:` keyword on items, values `urgent | high | normal | low`, default `normal`, parsed glyph-agnostically exactly like `blocked-by:`; also correct the spec's item-line example to the canonical `- **P-NNN** ` + backtick-status form. Add a worked example. References D-002, D-003.
-- **P-002** `todo` `packages/plan-parser` — parse `importance:` into `PlanItem.importance` (default `normal`); surface it through effective-status output and the items array. Add a property test for the keyword parse (separator-agnostic, default, bad-value → normal + warning). References D-003.
-- **P-003** `todo` `plans:items` returns `importance`; sort ToDos and needs-human items by importance (urgent→low) then age. `plans:lint` validates the value is one of the four (warning, degrade to `normal`, on unknown).
+- **P-001** `done` plan-format spec (`apps/operator-docs/src/content/docs/spec/plan-format.mdx`) — document an `importance:` keyword on items, values `urgent | high | normal | low`, default `normal`, parsed glyph-agnostically exactly like `blocked-by:`; also correct the spec's item-line example to the canonical `- **P-NNN** ` + backtick-status form. Add a worked example. References D-002, D-003.
+- **P-002** `done` `packages/plan-parser` — parse `importance:` into `PlanItem.importance` (default `normal`); surface it through effective-status output and the items array. Add a property test for the keyword parse (separator-agnostic, default, bad-value → normal + warning). References D-003.
+- **P-003** `done` `plans:items` returns `importance`; sort ToDos and needs-human items by importance (urgent→low) then age. `plans:lint` validates the value is one of the four (warning, degrade to `normal`, on unknown).
 - **P-004** `todo` `plans:add-item` REQUIRES an `importance` arg (no silent default) so the rubric is enforced at authoring; `plans:set-status` plus a new `plans:set-importance` can change it later. References D-002.
 
 ## Phase 2 — Rubric + agent enforcement
