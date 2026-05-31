@@ -5,4 +5,5 @@
  * this path so `@/lib/transport-adapters` consumers resolve unchanged; new
  * code should import from '@papercusp/desktop-ipc' directly.
  */
+import './configure';
 export * from '@papercusp/desktop-ipc';

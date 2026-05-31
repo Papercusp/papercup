@@ -6,4 +6,5 @@
  * resolve unchanged; new code should import from
  * '@papercusp/desktop-ipc/desktop-bootstrap' directly.
  */
+import './configure';
 export * from '@papercusp/desktop-ipc/desktop-bootstrap';
