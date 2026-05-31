@@ -74,22 +74,23 @@ describe('psu-launcher arg parsing', () => {
     expect(parseArgs(['--no-picker', '--agent=omp', '--harness=x', '--no-plan']).noPlan).toBe(true);
   });
 
-  it('resumeArgsFor maps each agent to its wrapper + resume args', () => {
+  it('resumeArgsFor maps each agent to its RAW CLI + resume args (P-042, no wrapper)', () => {
     expect(resumeArgsFor({ agent: 'claude', cwd: '/x' })).toEqual({
-      wrapperBin: 'claude-su',
-      args: ['--continue'],
+      bin: 'claude',
+      args: ['--continue', '--dangerously-skip-permissions', '--permission-mode', 'bypassPermissions'],
     });
+    // omp: thread target (or -c) + yolo; -e only when a coordExtPath is supplied.
     expect(resumeArgsFor({ agent: 'omp', cwd: '/x', ompThreadId: 'thr-1' })).toEqual({
-      wrapperBin: 'omp-su',
-      args: ['-r', 'thr-1'],
+      bin: 'omp',
+      args: ['-r', 'thr-1', '--approval-mode', 'yolo'],
     });
-    expect(resumeArgsFor({ agent: 'omp', cwd: '/x', ompThreadId: null })).toEqual({
-      wrapperBin: 'omp-su',
-      args: ['-c'],
+    expect(resumeArgsFor({ agent: 'omp', cwd: '/x', ompThreadId: null }, { coordExtPath: '/h/.papercusp/papercusp-coord.ts' })).toEqual({
+      bin: 'omp',
+      args: ['-c', '--approval-mode', 'yolo', '-e', '/h/.papercusp/papercusp-coord.ts'],
     });
     expect(resumeArgsFor({ agent: 'codex', cwd: '/x' })).toEqual({
-      wrapperBin: 'codex-su',
-      args: ['resume', '--last'],
+      bin: 'codex',
+      args: ['--dangerously-bypass-hook-trust', '--dangerously-bypass-approvals-and-sandbox', 'resume', '--last'],
     });
     expect(() => resumeArgsFor({ agent: 'gemini', cwd: '/x' })).toThrow();
   });

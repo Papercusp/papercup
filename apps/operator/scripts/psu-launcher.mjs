@@ -20,7 +20,8 @@
  * Scripting:     psu --no-picker --agent=<claude|omp|codex> --harness=<slug> [--plan=<slug>|--no-plan]
  */
 import { spawn } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -179,20 +180,36 @@ export function suLaunchArgs(backend, { promptFile, coordExtPath } = {}) {
 }
 
 /**
- * Per-agent resume command. Pure — exported for tests. Returns the
- * `*-su` wrapper to exec + the resume args. Semantics: claude/omp
- * continue the most recent conversation in the session's cwd (omp can
- * target an exact thread when one was captured); codex resumes its most
- * recent session.
+ * Per-agent resume command — RAW CLI (no `*-su` wrapper, P-042). Pure —
+ * exported for tests. Returns the raw `bin` + resume args, re-supplying the
+ * same launch flags the fresh-launch path uses (the wrappers used to bake
+ * these). Semantics: claude/omp continue the most recent conversation in the
+ * session's cwd (omp targets an exact thread when one was captured); codex
+ * resumes its most recent session from its per-session CODEX_HOME (set by the
+ * caller via env — derived from the session id, which still holds that
+ * session's history).
+ *
+ * MCP + (claude) lock hooks are user-level → survive a raw resume. omp re-adds
+ * the coordination extension via `-e <coordExtPath>` (per-invocation, not saved
+ * in the thread). codex re-supplies its bypass flags; its hooks/MCP live in the
+ * CODEX_HOME the caller points at.
  */
-export function resumeArgsFor(session) {
-  const wrapperBin = { claude: 'claude-su', omp: 'omp-su', codex: 'codex-su' }[session.agent];
-  if (!wrapperBin) throw new Error(`unknown agent: ${session.agent}`);
-  let args;
-  if (session.agent === 'omp') args = session.ompThreadId ? ['-r', session.ompThreadId] : ['-c'];
-  else if (session.agent === 'codex') args = ['resume', '--last'];
-  else args = ['--continue'];
-  return { wrapperBin, args };
+export function resumeArgsFor(session, { coordExtPath } = {}) {
+  if (session.agent === 'claude') {
+    return { bin: 'claude', args: ['--continue', '--dangerously-skip-permissions', '--permission-mode', 'bypassPermissions'] };
+  }
+  if (session.agent === 'omp') {
+    const args = session.ompThreadId ? ['-r', session.ompThreadId] : ['-c'];
+    args.push('--approval-mode', 'yolo');
+    if (coordExtPath) args.push('-e', coordExtPath);
+    return { bin: 'omp', args };
+  }
+  if (session.agent === 'codex') {
+    // Bypass flags BEFORE the `resume` subcommand (top-level), mirroring the
+    // old codex-su wrapper. CODEX_HOME (the session's home) is set by the caller.
+    return { bin: 'codex', args: ['--dangerously-bypass-hook-trust', '--dangerously-bypass-approvals-and-sandbox', 'resume', '--last'] };
+  }
+  throw new Error(`resumeArgsFor: unknown agent: ${session.agent}`);
 }
 
 /** Map a plan picker value to the bootstrap-su `plan_slug` (NO_PLAN → null). Pure. */
@@ -458,20 +475,32 @@ function fmtAge(iso) {
   return `${Math.floor(ms / d)}d ago`;
 }
 
-/** Resume a resolved session: cd to its recorded cwd + run the agent's
- *  resume command there, so resume works no matter where it was launched. */
+/** Resume a resolved session: cd to its recorded cwd + exec the RAW agent's
+ *  resume command there (P-042 — no `*-su` wrapper), re-establishing the same
+ *  per-session config the wrapper used to bake. */
 function launchResume(session) {
-  const { wrapperBin, args } = resumeArgsFor(session);
-  console.error(`psu: resuming ${session.agent} in ${session.cwd}  (${wrapperBin} ${args.join(' ')})`);
-  runWrapper({
-    wrapperBin,
-    args,
-    cwd: session.cwd,
-    envelopeEnv: {
-      PAPERCUSP_AGENT: session.agent,
-      ...(session.id != null ? { PAPERCUSP_ADV_SESSION_ID: String(session.id) } : {}),
-    },
-  });
+  // omp re-loads the coordination extension per invocation; claude/codex don't
+  // use -e. Stable path, only added when actually installed.
+  const coordExt = join(homedir(), '.papercusp', 'papercusp-coord.ts');
+  const coordExtPath = session.agent === 'omp' && existsSync(coordExt) ? coordExt : undefined;
+  const { bin, args } = resumeArgsFor(session, { coordExtPath });
+
+  // Per-session coord/lock owner (a fresh process gets a fresh SID).
+  const env = {
+    PAPERCUSP_AGENT: session.agent,
+    PAPERCUSP_SID: `su-${randomUUID()}`,
+    ...(session.id != null ? { PAPERCUSP_ADV_SESSION_ID: String(session.id) } : {}),
+  };
+  // codex resumes from its per-session CODEX_HOME — derived from the session id
+  // (that home still holds the session's history; only re-launching the SAME
+  // session rebuilds it). The home's config.toml carries the baked superuser
+  // bearer, so no PAPERCUSP_SU_TOKEN is needed.
+  if (session.agent === 'codex' && session.id != null) {
+    env.CODEX_HOME = join(homedir(), '.papercusp', 'su-codex-homes', `session-${session.id}`);
+  }
+
+  console.error(`psu: resuming ${session.agent} in ${session.cwd}  (${bin} ${args.join(' ')})`);
+  runWrapper({ wrapperBin: bin, args, cwd: session.cwd, envelopeEnv: env });
 }
 
 // `psu --resume` (picker) or `psu --resume=<id>` / `psu --resume <id>`

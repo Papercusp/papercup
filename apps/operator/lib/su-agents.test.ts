@@ -1,11 +1,9 @@
 import { describe, it, expect } from 'vitest';
-import { SU_AGENTS, SU_WRAPPER_BIN, isSuAgent } from './su-agents';
+import { SU_AGENTS, isSuAgent } from './su-agents';
 
 describe('su-agents', () => {
-  it('maps each agent to its installed *-su wrapper', () => {
-    expect(SU_WRAPPER_BIN.claude).toBe('claude-su');
-    expect(SU_WRAPPER_BIN.omp).toBe('omp-su');
-    expect(SU_WRAPPER_BIN.codex).toBe('codex-su');
+  it('lists exactly the three superuser agents', () => {
+    expect(SU_AGENTS).toEqual(['claude', 'omp', 'codex']);
   });
 
   it('isSuAgent guards exactly the three kinds', () => {
