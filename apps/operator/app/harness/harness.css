@@ -7633,7 +7633,7 @@ body:has(.h-top-collapse-inline) main {
   color: color-mix(in oklab, var(--accent-cool), white 8%) !important;
   background:
     radial-gradient(circle at 18% 0%, rgba(224, 247, 255, 0.18), transparent 34%),
-    linear-gradient(180deg, rgba(15, 35, 55, 0.92), color-mix(in srgb, var(--bg), transparent 4%)) !important;
+    linear-gradient(180deg, color-mix(in srgb, var(--bg-raised), transparent 8%), color-mix(in srgb, var(--bg), transparent 4%)) !important;
   border: 1px solid color-mix(in srgb, var(--accent-strong), transparent 64%) !important;
   box-shadow:
     0 12px 30px rgba(0, 0, 0, 0.42),
@@ -7703,7 +7703,7 @@ body:has(.h-top-collapse-inline) main {
   border-color: color-mix(in srgb, var(--accent-soft), transparent 42%) !important;
   background:
     radial-gradient(circle at 18% 0%, rgba(224, 247, 255, 0.24), transparent 36%),
-    linear-gradient(180deg, rgba(20, 47, 72, 0.96), color-mix(in srgb, var(--bg-1), transparent 2%)) !important;
+    linear-gradient(180deg, color-mix(in srgb, var(--bg-raised-high), transparent 4%), color-mix(in srgb, var(--bg-1), transparent 2%)) !important;
   box-shadow:
     0 16px 38px rgba(0, 0, 0, 0.46),
     0 0 0 1px color-mix(in srgb, var(--accent), transparent 84%),
@@ -9335,7 +9335,7 @@ body:has(.h-top-collapse-inline) main {
 .h-top-collapse-btn.h-top-collapse-inline {
   color: color-mix(in oklab, var(--fg), white 8%) !important;
   border-color: color-mix(in srgb, var(--accent-strong), transparent 64%) !important;
-  background: linear-gradient(180deg, rgba(20, 43, 61, 0.94), color-mix(in srgb, var(--bg-1), transparent 6%)) !important;
+  background: linear-gradient(180deg, color-mix(in srgb, var(--bg-raised-high), transparent 6%), color-mix(in srgb, var(--bg-1), transparent 6%)) !important;
   box-shadow: 0 9px 24px rgba(0, 0, 0, 0.36), 0 0 0 1px color-mix(in srgb, var(--accent-strong), transparent 92%), inset 0 1px 0 rgba(255,255,255,0.08) !important;
 }
 
@@ -10989,7 +10989,7 @@ body:has(.h-top-collapse-inline) main {
   background:
     linear-gradient(180deg, rgba(255,255,255,0.13), rgba(255,255,255,0.025) 42%, rgba(0,0,0,0.18)),
     repeating-linear-gradient(100deg, rgba(255,255,255,0.04) 0 1px, transparent 1px 5px),
-    linear-gradient(180deg, rgba(18, 37, 53, 0.96), color-mix(in srgb, var(--bg-deeper), transparent 2%)) !important;
+    linear-gradient(180deg, color-mix(in srgb, var(--bg-raised), transparent 4%), color-mix(in srgb, var(--bg-deeper), transparent 2%)) !important;
   box-shadow:
     0 7px 18px rgba(0, 0, 0, 0.42),
     0 0 0 1px color-mix(in srgb, var(--bg-deepest), transparent 30%),
@@ -12522,12 +12522,12 @@ body:has(.h-top-collapse-inline) main {
 }
 
 [data-index] > .h-feature-row.h-row-even {
-  background: rgba(15, 32, 53, 0.97) !important;
+  background: color-mix(in srgb, var(--bg-raised), transparent 3%) !important;
 }
 
 [data-index] > .h-feature-row:hover,
 [data-index] > .h-feature-row:focus-visible {
-  background: rgba(16, 39, 63, 0.99) !important;
+  background: color-mix(in srgb, var(--bg-raised), transparent 1%) !important;
   border: 0 !important;
   box-shadow: none !important;
 }
@@ -12583,14 +12583,14 @@ body:has(.h-top-collapse-inline) main {
 
 .h-feature-row.h-row-even,
 .h-issue.h-row-even {
-  background: rgba(15, 32, 53, 0.97) !important;
+  background: color-mix(in srgb, var(--bg-raised), transparent 3%) !important;
 }
 
 .h-feature-row:hover,
 .h-feature-row:focus-visible,
 .h-issue:hover,
 .h-issue:focus-visible {
-  background: rgba(16, 39, 63, 0.99) !important;
+  background: color-mix(in srgb, var(--bg-raised), transparent 1%) !important;
   border: 0 !important;
   box-shadow: none !important;
 }
@@ -15040,7 +15040,7 @@ html body .h-root.h-root :is(
 .h-root .h-main-shell.embed > .h-config-panel .h-config-tab:hover,
 .h-root .h-main-shell.brainstorm-full .h-bsfull-sub:hover {
   border-color: color-mix(in srgb, var(--accent-strong), transparent 66%) !important;
-  background: linear-gradient(180deg, rgba(14, 35, 54, 0.96), color-mix(in srgb, var(--bg), transparent 2%)) !important;
+  background: linear-gradient(180deg, color-mix(in srgb, var(--bg-raised), transparent 4%), color-mix(in srgb, var(--bg), transparent 2%)) !important;
 }
 
 .h-root .h-main-shell.embed > .h-config-panel .h-config-tab.on,
@@ -15050,7 +15050,7 @@ html body .h-root.h-root :is(
 .h-root .h-main-shell.brainstorm-full .h-bsfull-sub[aria-selected="true"] {
   color: color-mix(in oklab, var(--fg), var(--accent-strong) 15%) !important;
   border-color: color-mix(in srgb, var(--accent), transparent 48%) !important;
-  background: linear-gradient(180deg, rgba(18, 53, 73, 0.92), color-mix(in srgb, var(--bg), transparent 2%)) !important;
+  background: linear-gradient(180deg, color-mix(in srgb, var(--bg-raised-high), transparent 8%), color-mix(in srgb, var(--bg), transparent 2%)) !important;
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.08),
     0 0 18px color-mix(in srgb, var(--accent), transparent 90%) !important;
@@ -15098,7 +15098,7 @@ html body .h-root.h-root :is(
   border-color: color-mix(in srgb, var(--accent), transparent 58%) !important;
   background:
     radial-gradient(circle at 18% 10%, rgba(255,255,255,0.14), transparent 34%),
-    linear-gradient(180deg, rgba(18, 53, 73, 0.58), color-mix(in srgb, var(--bg), transparent 4%)) !important;
+    linear-gradient(180deg, color-mix(in srgb, var(--bg-raised-high), transparent 42%), color-mix(in srgb, var(--bg), transparent 4%)) !important;
 }
 
 .h-issues-filter.h-issues-filter--closed.on {
@@ -15988,7 +15988,7 @@ html body .h-root.h-root :is(
   border-color: color-mix(in srgb, var(--accent), transparent 66%) !important;
   background:
     radial-gradient(circle at 18% 12%, color-mix(in srgb, var(--accent-soft), transparent 88%), transparent 34%),
-    linear-gradient(180deg, rgba(10, 36, 56, 0.94), color-mix(in srgb, var(--bg-deeper), transparent 2%)) !important;
+    linear-gradient(180deg, color-mix(in srgb, var(--bg-raised), transparent 6%), color-mix(in srgb, var(--bg-deeper), transparent 2%)) !important;
 }
 
 .h-root .h-dashboard-panel-anchor[data-dashboard-panel="issues"] .h-issues-filter.h-issues-filter--all.on {
@@ -19554,7 +19554,7 @@ body > .h-top-collapse-btn.h-top-collapse-inline .h-top-collapse-state {
   .h-insights-status-row
 ):is(:hover, :focus-visible, :focus-within, .is-active, .is-focused, .is-selected) {
   --h-row-border-alpha: 36%;
-  background: color-mix(in oklab, var(--h-row-tone) 22%, rgba(17, 37, 61, 0.98)) !important;
+  background: color-mix(in oklab, var(--h-row-tone) 22%, color-mix(in srgb, var(--bg-raised), transparent 2%)) !important;
   border-color: color-mix(in oklab, var(--h-row-tone), transparent var(--h-row-border-alpha)) !important;
   box-shadow: none !important;
   filter: none !important;

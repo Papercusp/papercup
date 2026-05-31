@@ -133,7 +133,7 @@ const tabBtn = (on: boolean): CSSProperties => ({
 const pill = (on: boolean): CSSProperties => ({
   padding: '3px 10px', borderRadius: 999,
   border: `1px solid ${on ? 'rgba(103,232,249,0.5)' : 'rgba(103,232,249,0.18)'}`,
-  background: on ? 'rgba(17,34,53,0.98)' : 'transparent', color: '#dbeafe', cursor: 'pointer', fontSize: 12,
+  background: on ? 'color-mix(in srgb, var(--bg-raised), transparent 2%)' : 'transparent', color: '#dbeafe', cursor: 'pointer', fontSize: 12,
 });
 const tbl: CSSProperties = { width: '100%', borderCollapse: 'collapse', fontSize: 12 };
 const th: CSSProperties = {

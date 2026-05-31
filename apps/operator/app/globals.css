@@ -7838,7 +7838,7 @@ body.h-harness-top-collapsed .pc-header {
   background:
     radial-gradient(ellipse at 16% 0%, rgba(var(--operator-white-hot), 0.050), transparent 52%),
     linear-gradient(90deg, rgba(var(--operator-gold), 0.14), transparent 18% 82%, rgba(var(--operator-arc), 0.12)),
-    linear-gradient(180deg, rgba(15, 34, 49, 0.72), color-mix(in srgb, var(--bg-deeper), transparent 28%));
+    linear-gradient(180deg, color-mix(in srgb, var(--bg-raised), transparent 28%), color-mix(in srgb, var(--bg-deeper), transparent 28%));
   box-shadow:
     inset 0 1px 0 rgba(var(--operator-white-hot), 0.090),
     inset 0 -1px 0 rgba(var(--operator-arc), 0.12),
@@ -7961,7 +7961,7 @@ body.h-harness-top-collapsed .pc-header {
     repeating-linear-gradient(135deg, rgba(var(--operator-gold), 0.40) 0 1px, transparent 1px 6px) top 8px right 144px / 82px 6px no-repeat,
     repeating-linear-gradient(45deg, rgba(var(--operator-arc), 0.36) 0 1px, transparent 1px 6px) bottom 7px left 178px / 96px 6px no-repeat,
     linear-gradient(90deg, rgba(var(--operator-armor), 0.24), rgba(var(--operator-arc), 0.10) 22%, rgba(255, 255, 255, 0.032) 48%, rgba(var(--operator-gold), 0.075) 72%, rgba(var(--operator-armor), 0.18)),
-    linear-gradient(180deg, rgba(14, 35, 50, 0.96), color-mix(in srgb, var(--bg-deeper), transparent 4%));
+    linear-gradient(180deg, color-mix(in srgb, var(--bg-raised), transparent 4%), color-mix(in srgb, var(--bg-deeper), transparent 4%));
   box-shadow:
     inset 0 1px 0 rgba(248, 253, 255, 0.18),
     inset 0 -20px 38px rgba(0, 0, 0, 0.36),
@@ -8189,7 +8189,7 @@ body.h-harness-top-collapsed .pc-header {
     repeating-linear-gradient(135deg, rgba(var(--operator-gold), 0.32) 0 1px, transparent 1px 6px) top 8px right 144px / 82px 6px no-repeat,
     repeating-linear-gradient(45deg, rgba(var(--operator-arc), 0.28) 0 1px, transparent 1px 6px) bottom 7px left 178px / 96px 6px no-repeat,
     linear-gradient(90deg, rgba(var(--operator-armor), 0.14), rgba(var(--operator-arc), 0.085) 22%, rgba(255, 255, 255, 0.028) 48%, rgba(var(--operator-gold), 0.055) 72%, rgba(var(--operator-armor), 0.11)),
-    linear-gradient(180deg, rgba(12, 33, 48, 0.95), color-mix(in srgb, var(--bg-deeper), transparent 5%));
+    linear-gradient(180deg, color-mix(in srgb, var(--bg-raised), transparent 5%), color-mix(in srgb, var(--bg-deeper), transparent 5%));
 }
 
 .operator-feed-head {
@@ -12600,7 +12600,7 @@ html[data-visual-effects='minimal'] .pc-header-quote--hud::after {
   height: 53vh;
   background:
     linear-gradient(90deg, transparent, rgba(103, 232, 249, 0.26) 18%, transparent 19% 24%, rgba(34, 211, 238, 0.18) 25%, transparent 26%),
-    linear-gradient(135deg, color-mix(in srgb, var(--bg), transparent 2%), rgba(6, 32, 58, 0.97) 45%, color-mix(in srgb, var(--bg-deeper), transparent 1%));
+    linear-gradient(135deg, color-mix(in srgb, var(--bg), transparent 2%), color-mix(in srgb, var(--bg-raised), transparent 3%) 45%, color-mix(in srgb, var(--bg-deeper), transparent 1%));
   box-shadow:
     0 0 44px rgba(34, 211, 238, 0.22),
     inset 0 0 54px rgba(103, 232, 249, 0.12),
@@ -17598,7 +17598,7 @@ body:has(.pc-settings-nav-link[href="/settings/shortcuts"][aria-current="page"])
   box-shadow:
     inset 0 1px 0 rgba(255,255,255,0.16),
     inset 0 -1px 0 rgba(0,0,0,0.28),
-    0 18px 34px rgba(10, 60, 94, 0.18);
+    0 18px 34px color-mix(in srgb, var(--bg-raised-high), transparent 82%);
 }
 
 .pc-marketplace-card-actions .pc-button.ghost {
@@ -19605,7 +19605,7 @@ html[data-visual-effects='minimal'] .operator-panel__metric-card {
     radial-gradient(circle at 18% 10%, rgba(255, 255, 255, 0.20), transparent 34%),
     linear-gradient(110deg, rgba(255, 255, 255, 0.09), transparent 22% 72%, rgba(255, 255, 255, 0.045)),
     repeating-linear-gradient(100deg, rgba(255, 255, 255, 0.035) 0 1px, transparent 1px 5px),
-    linear-gradient(180deg, rgba(38, 50, 60, 0.92) 0%, color-mix(in srgb, var(--bg-popover), transparent 4%) 44%, color-mix(in srgb, var(--bg-deeper), transparent 2%) 100%) !important;
+    linear-gradient(180deg, color-mix(in srgb, var(--bg-raised-high), transparent 8%) 0%, color-mix(in srgb, var(--bg-popover), transparent 4%) 44%, color-mix(in srgb, var(--bg-deeper), transparent 2%) 100%) !important;
   box-shadow:
     0 0 0 1px color-mix(in srgb, var(--bg-deepest), transparent 22%),
     0 10px 24px rgba(0, 0, 0, 0.32),
@@ -19846,7 +19846,7 @@ body:has(.operator-panel) {
     linear-gradient(
       180deg,
       color-mix(in oklab, var(--operator-action-tone), transparent 84%) 0%,
-      rgba(21, 30, 40, 0.96) 42%,
+      color-mix(in srgb, var(--bg-raised), transparent 4%) 42%,
       color-mix(in srgb, var(--bg-deeper), transparent 1%) 100%
     ) !important;
   box-shadow:
@@ -19885,7 +19885,7 @@ body:has(.operator-panel) {
     linear-gradient(
       180deg,
       color-mix(in oklab, var(--operator-action-tone), transparent 76%) 0%,
-      color-mix(in oklab, rgba(21, 30, 40, 0.96), white 5%) 46%,
+      color-mix(in oklab, color-mix(in srgb, var(--bg-raised), transparent 4%), white 5%) 46%,
       color-mix(in srgb, var(--bg-deep), transparent 1%) 100%
     ) !important;
   box-shadow:
@@ -23514,7 +23514,7 @@ body:has(.operator-panel) {
 .operator-entry.operator-entry--suggestion .operator-mini-btn--ghost:focus-visible {
   opacity: 1;
   border-color: rgba(203, 213, 225, 0.38) !important;
-  background: rgba(30, 41, 59, 0.48) !important;
+  background: color-mix(in srgb, var(--bg-raised-high), transparent 52%) !important;
 }
 
 .operator-entry.operator-entry--suggestion .operator-state-text {
@@ -25076,7 +25076,7 @@ body:has(.operator-panel) {
 .pc-header .pc-header-cta--mission .pc-header-cta-orb {
   background:
     radial-gradient(circle at 34% 26%, rgba(255,255,255,0.36), transparent 24%),
-    linear-gradient(180deg, rgba(15, 63, 84, 0.98), color-mix(in srgb, var(--bg), transparent 0%)) !important;
+    linear-gradient(180deg, color-mix(in srgb, var(--bg-raised-high), transparent 2%), color-mix(in srgb, var(--bg), transparent 0%)) !important;
   border-color: rgb(from var(--accent-strong) r g b / 0.56) !important;
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.26),
@@ -25093,7 +25093,7 @@ body:has(.operator-panel) {
 .pc-header .pc-header-cta--operator .pc-header-cta-orb {
   background:
     radial-gradient(circle at 34% 26%, rgba(255,255,255,0.34), transparent 24%),
-    linear-gradient(180deg, rgba(27, 50, 74, 0.98), color-mix(in srgb, var(--bg), transparent 0%)) !important;
+    linear-gradient(180deg, color-mix(in srgb, var(--bg-raised-high), transparent 2%), color-mix(in srgb, var(--bg), transparent 0%)) !important;
   border-color: color-mix(in srgb, var(--accent-soft), transparent 50%) !important;
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.26),
@@ -25868,7 +25868,7 @@ body:has(.operator-panel) {
 }
 
 .pc-setup-wizard:not(.pc-setup-wizard--recap) .pc-setup-wizard__step[data-active="true"] .pc-setup-wizard__step-btn {
-  background: rgba(30, 41, 59, 0.52);
+  background: color-mix(in srgb, var(--bg-raised-high), transparent 48%);
   border-color: rgb(from var(--accent-strong) r g b / 0.46);
   box-shadow: none;
 }

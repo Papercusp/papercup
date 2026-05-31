@@ -9,6 +9,8 @@
     "bg":            { "$value": "#000000", "$type": "color", "$description": "Pure black page background" },
     "bg-1":          { "$value": "#0A0A0A", "$type": "color", "$description": "Near-black base surface (tier 1)" },
     "bg-popover":    { "$value": "#121212", "$type": "color", "$description": "Solid elevated surface for popovers/menus" },
+    "bg-raised":     { "$value": "#181818", "$type": "color", "$description": "Solid raised panel — subtle grey elevation above the black page (frost: bespoke navy)" },
+    "bg-raised-high":{ "$value": "#202020", "$type": "color", "$description": "Solid raised emphasis/hover panel — one step lighter than --bg-raised" },
     "fg":            { "$value": "#F5F5F5", "$type": "color", "$description": "Near-white primary text" },
     "fg-dim":        { "$value": "#B8B8B8", "$type": "color", "$description": "Dimmed text" },
     "fg-mute":       { "$value": "#808080", "$type": "color", "$description": "Muted text" },

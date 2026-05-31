@@ -121,7 +121,7 @@ export default function AdminShell({
         .pc-adminshell__tab[aria-selected="true"] {
           color: #f7fdff;
           background:
-            linear-gradient(180deg, rgba(17, 34, 53, 0.98), color-mix(in srgb, var(--bg-1), transparent 1%));
+            linear-gradient(180deg, color-mix(in srgb, var(--bg-raised), transparent 2%), color-mix(in srgb, var(--bg-1), transparent 1%));
           border-color: rgba(103, 232, 249, 0.38);
           border-bottom-color: color-mix(in srgb, var(--bg), transparent 2%);
           box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.035);

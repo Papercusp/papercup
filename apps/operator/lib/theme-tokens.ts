@@ -12,7 +12,7 @@
 /** The only CSS variables a theme may set. Mirrors the color/overlay tokens in
  * `app/_semantic.css` (generated from `design-tokens/desktop.semantic.tokens.json`). */
 export const THEME_TOKENS = [
-  'bg-deepest', 'bg-deeper', 'bg-deep', 'bg', 'bg-1', 'bg-2', 'bg-3', 'bg-4', 'bg-popover',
+  'bg-deepest', 'bg-deeper', 'bg-deep', 'bg', 'bg-1', 'bg-2', 'bg-3', 'bg-4', 'bg-popover', 'bg-raised', 'bg-raised-high',
   'fg', 'fg-dim', 'fg-mute',
   'border', 'border-strong',
   'accent', 'accent-strong', 'accent-cool', 'accent-soft', 'accent-deep', 'accent-deeper', 'accent-ink',

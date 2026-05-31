@@ -324,7 +324,7 @@ export default function FeaturesAdmin() {
           transform: translateY(-1px);
         }
         .fa-preset.active {
-          background: linear-gradient(180deg, rgba(16, 35, 55, 0.98), color-mix(in srgb, var(--bg-1), transparent 1%));
+          background: linear-gradient(180deg, color-mix(in srgb, var(--bg-raised), transparent 2%), color-mix(in srgb, var(--bg-1), transparent 1%));
           border-color: rgba(103, 232, 249, 0.42);
         }
         .fa-preset:disabled { opacity: 0.62; cursor: progress; }

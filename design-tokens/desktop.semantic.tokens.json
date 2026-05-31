@@ -8,6 +8,8 @@
   "bg-3":            { "$value": "rgba(255, 255, 255, 0.075)", "$type": "color", "$description": "Translucent surface tier 3" },
   "bg-4":            { "$value": "rgba(255, 255, 255, 0.12)",  "$type": "color", "$description": "Translucent surface tier 4" },
   "bg-popover":      { "$value": "#0D1829", "$type": "color", "$description": "Solid elevated surface for HoverCard/Popover/floating menus" },
+  "bg-raised":       { "$value": "#112235", "$type": "color", "$description": "Surface depth scale — solid raised panel (above the page/popover band). Frost: the bespoke panel navy (mode rgb(17,34,53))." },
+  "bg-raised-high":  { "$value": "#143049", "$type": "color", "$description": "Surface depth scale — solid raised emphasis/hover panel (lighter than --bg-raised)." },
   "fg":              { "$value": "#E7F7FF", "$type": "color" },
   "fg-dim":          { "$value": "#B9D4E8", "$type": "color" },
   "fg-mute":         { "$value": "#7F9BB4", "$type": "color" },
