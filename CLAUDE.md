@@ -147,36 +147,33 @@ canonical checkout and **must always have `main` checked out**. Other
 agents (paperclip, the operator UI, Next.js dev/prod, the harness
 fleet) all assume this. Branch-switching there breaks them all.
 
-If you need to work on a branch (review-merge work, experimental
-spike, multi-day feature, anything that isn't a quick fix on main),
-**use a git worktree** in a sibling directory:
+**Work on `main` directly — do NOT use `git worktree` or feature
+branches.** We deliberately run one shared tree rather than many
+diverging worktrees: it's simpler, and it spares everyone the
+merge-reconciliation tax later. The tradeoff is a messy history — your
+work gets swept into other agents' commits and theirs into yours — and
+that's expected and fine. Coordinate through the **lock + coord
+systems**, not through tree isolation:
 
-```bash
-git -C /home/marsh-office/papercupai-workspace/papercup \
-    worktree add /home/marsh-office/papercupai-workspace/papercup-<topic> <branch>
-ln -s /home/marsh-office/papercupai-workspace/papercup/node_modules \
-      /home/marsh-office/papercupai-workspace/papercup-<topic>/node_modules
-```
+- **`locks:*`** claims the files you're about to edit. A `PreToolUse`
+  hook does this per-edit automatically and blocks an edit when another
+  agent holds the file; call `locks:acquire` by hand only for a
+  multi-file change you must hold across several edits + the commit.
+- **`coord:*`** announces what you're working on (`coord:declare-intent`)
+  so peers see you, and carries hand-offs / messages.
 
-The worktree has its own working copy + index but shares git history
-with the main checkout. Symlinking node_modules avoids a full
-`npm install` (workspace hoisting means dev tooling resolves through
-the root). Drop the worktree with `git worktree remove <path>` when
-done.
+Parallel agents on one `main`, serialized by locks + coord, is how
+concurrent work stays collision-free here. Don't `git push`, either —
+pushing isn't expected; just commit (see below).
 
 **Symptoms that you've forgotten this rule:**
 - `git status` shows `On branch <not-main>` in the main checkout —
-  switch back immediately, recover any in-flight work via
-  `git stash` or worktree.
+  switch back to `main` immediately and recover any in-flight work via
+  `git stash`.
 - Paperclip starts editing files that look stale or wrong — it
   almost certainly thinks it's on a different branch than you.
 - Dev/prod servers start serving 404s or HMR-error pages for routes
-  that exist on disk — branch divergence between server and
-  source.
-
-**Existing worktrees** (don't reuse without checking):
-- `/tmp/papercup-migration` (`feat/hetzner-deploy`)
-- `/tmp/papercup-tauri-mobile-ref` (detached HEAD, mobile reference)
+  that exist on disk — branch divergence between server and source.
 
 ## Commit discipline: **commit before ending every turn**
 
