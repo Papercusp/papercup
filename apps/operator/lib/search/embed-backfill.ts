@@ -353,7 +353,18 @@ async function _runSweepLogged(label: string): Promise<void> {
   }
 }
 
+/**
+ * One periodic embed-backfill sweep (battery-aware + logged). Exposed for the
+ * DBOS scheduled-workflow migration (dbos-durable-jobs-2026-05-31 Phase 2).
+ */
+export async function runEmbedBackfillOnce(): Promise<void> {
+  await _runSweepLogged('periodic');
+}
+
 export function startEmbedBackfillWorker(): void {
+  // Phase 2 A/B (dbos-durable-jobs-2026-05-31 D-011): DBOS owns the schedule
+  // when PAPERCUSP_DBOS_TIMERS=1, so the legacy timer stands down.
+  if (process.env.PAPERCUSP_DBOS_TIMERS === '1') return;
   if (_bootTimer || _periodicTimer) return;
   _bootTimer = setTimeout(() => { void _runSweepLogged('boot'); }, 10_000);
   _periodicTimer = setInterval(() => { void _runSweepLogged('periodic'); }, CADENCE_MS);

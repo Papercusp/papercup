@@ -20,6 +20,7 @@ import { flushTelemetry } from '@/lib/telemetry-flush';
 import { runScratchGc } from '@/lib/scratch-gc';
 import { runMemoryCleanupOnce } from '@/lib/memory/cleanup-worker';
 import { runCompletionRefVerifierOnce } from '@/lib/harness/completion-ref-verifier';
+import { runEmbedBackfillOnce } from '@/lib/search/embed-backfill';
 import { readRegistry } from '@/lib/workspace-registry';
 
 // Hourly: drain the telemetry ring buffer → archive, forward to PostHog (gated),
@@ -65,3 +66,13 @@ const completionRefWorkflow = DBOS.registerWorkflow(completionRefTick, {
   name: 'completionRefVerify', maxRecoveryAttempts: 5,
 });
 DBOS.registerScheduled(completionRefWorkflow, { name: 'completionRefVerify', crontab: '0 * * * * *' });
+
+// Every 5min: embed-backfill sweep (battery-aware). The sweep's own batching
+// is the rate limit on the embedding API (P-010).
+async function embedBackfillTick(): Promise<void> {
+  await DBOS.runStep(() => runEmbedBackfillOnce(), { name: 'embed-backfill' });
+}
+const embedBackfillWorkflow = DBOS.registerWorkflow(embedBackfillTick, {
+  name: 'embedBackfill', maxRecoveryAttempts: 5,
+});
+DBOS.registerScheduled(embedBackfillWorkflow, { name: 'embedBackfill', crontab: '0 */5 * * * *' });
