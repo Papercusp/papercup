@@ -178,4 +178,14 @@ export const PROJECTED_DEPS: DispatchProjectedDeps = {
   auditAuth: (event) => {
     void recordToolAuthzEvent(event);
   },
+  // RFC tooldef-auth Phase 3 (D1): default-deny ON. Audited 2026-05-31 — every built-in
+  // is type-certain gated (defineTool requires `capability`; defineUITool routes through
+  // it) and every bundled plugin tool declares capabilities + roles. So this denies
+  // nothing currently registered. Its purpose is the fail-closed floor for a FUTURE /
+  // third-party tool that forgets to declare a gate: it gets a loud `ungated` 403 (not
+  // silent), telling the author to declare a capability/roles/requireRoles/authorize — or
+  // mark the tool `public`. To re-verify before/after adding plugins: run
+  // listUngatedProjectedTools() against the live registry (empty = clean). Reversible:
+  // set false to revert to allow-by-omission.
+  defaultDeny: true,
 };
