@@ -46,6 +46,7 @@
     "@codemirror/lang-markdown": "^6.5.0",
     "@codemirror/theme-one-dark": "^6.1.3",
     "@dagrejs/dagre": "^3.0.0",
+    "@dbos-inc/dbos-sdk": "^4.18.10",
     "@elevenlabs/client": "^1.4.0",
     "@excalidraw/excalidraw": "^0.18.1",
     "@formkit/auto-animate": "^0.9.0",

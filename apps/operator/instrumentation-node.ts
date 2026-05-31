@@ -372,6 +372,22 @@ export async function register(): Promise<void> {
       }
     })();
   }
+
+  // DBOS Transact durable-jobs substrate (dbos-durable-jobs-2026-05-31,
+  // Phase 0). Gated by PAPERCUSP_DBOS_ENABLE=1; default OFF so the existing
+  // boot path is unchanged until opted in. Dynamic import so the operator
+  // does NOT require @dbos-inc/dbos-sdk to be installed when the flag is off
+  // (it isn't a hard dep of the boot path — only of this opt-in block).
+  if (process.env.PAPERCUSP_DBOS_ENABLE === '1') {
+    void (async () => {
+      try {
+        const { startDbos } = await import('./lib/dbos/bootstrap');
+        await startDbos();
+      } catch (err) {
+        console.warn('[dbos] boot failed (non-fatal):', err instanceof Error ? err.message : err);
+      }
+    })();
+  }
 }
 
 let _backfillRan = false;
